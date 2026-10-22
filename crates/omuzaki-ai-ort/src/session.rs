@@ -4,37 +4,37 @@
 //! How that is done with `ort`, which wraps every value in a heap object:
 //! - **Inputs** are copied into tensors the session owns, one per model input, kept between runs and replaced only when
 //!   a call arrives with another shape. (Copying costs a memcpy; wrapping the caller's slices allocates per run.)
-//! - **Outputs** are preallocated tensors handed to ONNX Runtime through [`RunOptions`], built from the shapes the first
-//!   run at a given input shape produced and reused until the input shapes change. That first run, and the first after
-//!   each shape change, allocates; a model with fixed shapes does it once.
+//! - **Outputs** are preallocated tensors, built from the shapes the first run at a given input shape produced and
+//!   reused until the input shapes change. That first run, and the first after each shape change, allocates; a model
+//!   with fixed shapes does it once.
+//! - **The run itself** calls ONNX Runtime's `Run` through [`raw::RawRun`] with name and pointer lists built once:
+//!   `ort`'s own run keeps its lists on the stack only up to 6 inputs and 4 outputs, and copies a name list of 768 bytes
+//!   or more, on every run. `IoBinding` was measured and not used: it allocates 2 per run for one output even with
+//!   every tensor bound once, because each run wraps every output in a new value.
 //! - Only the outputs the slot reads are computed.
 //! - All of a call's output shapes are checked against the slot before any caller buffer is written.
-//!
-//! **Known exception:** `ort` rc.13 keeps its per-run name and value lists on the stack up to 6 inputs and 4
-//! outputs and spills them to the heap above that, in its own code (`Session::run_with_options`,
-//! `OutputSelector::resolve_outputs`, `SessionOutputs::new`). A model with more ports than that allocates a few times
-//! per run (7 for 7 inputs and 5 outputs, pinned by `tests/allocations.rs`); avoiding it needs `unsafe` FFI or a patched
-//! `ort`. A second case of the same kind: when a name list (the inputs' or the outputs') totals 768 bytes or more,
-//! `with_cstr_ptr_array` copies it into fresh `CString`s on every run (one allocation per run for one 800-byte input
-//! name, pinned in the same test file). Every model shipped today is under the limits.
+//! - `float16` tensors travel as raw bits ([`half::f16`] only at the `ort` boundary), so a round trip is bit for bit.
 
+use half::f16;
 use omuzaki_ai_api::{
     DType, Dim, MAX_RANK, Port, RunError, Session, SessionInfo, Signature, TensorBuf, TensorData, TensorDataMut,
     TensorProblem, TensorRef,
 };
 use ort::memory::Allocator;
-use ort::session::{
-    HasSelectedOutputs, OutputSelector, RunOptions, Session as OrtSession, SessionInputValue, SessionOutputs,
-};
+use ort::session::{OutputSelector, RunOptions, Session as OrtSession, SessionInputValue};
 use ort::value::{DynValue, Tensor};
 
 use crate::graph::Skipped;
+
+mod raw;
+use raw::RawRun;
 
 /// Output tensors preallocated for one set of input shapes.
 struct Prepared {
     /// The input shapes (model input order) these outputs were sized for.
     input_shapes: Vec<Vec<usize>>,
-    options: RunOptions<HasSelectedOutputs>,
+    /// One per picked output, in the order of [`OrtModelSession::picks`].
+    outputs: Vec<DynValue>,
 }
 
 /// A model loaded through ONNX Runtime.
@@ -51,6 +51,8 @@ pub struct OrtModelSession {
     values: Vec<SessionInputValue<'static>>,
     shapes: Vec<Vec<usize>>,
     prepared: Option<Prepared>,
+    /// Names and pointer lists for `Run`, built on the first prepared run.
+    raw: Option<RawRun>,
 }
 
 impl OrtModelSession {
@@ -63,7 +65,7 @@ impl OrtModelSession {
         skipped: Vec<Skipped>,
     ) -> Self {
         let shapes = vec![Vec::new(); feeds.len()];
-        Self { session, signature, feeds, picks, info, skipped, values: Vec::new(), shapes, prepared: None }
+        Self { session, signature, feeds, picks, info, skipped, values: Vec::new(), shapes, prepared: None, raw: None }
     }
 
     /// The providers that were asked for and not used, with the reason for each, in the order they were tried. Empty
@@ -84,6 +86,7 @@ fn tensor(dtype: DType, shape: &[usize]) -> Result<DynValue, RunError> {
         DType::I64 => Tensor::<i64>::new(&allocator, shape).map(Tensor::into_dyn),
         DType::I32 => Tensor::<i32>::new(&allocator, shape).map(Tensor::into_dyn),
         DType::U8 => Tensor::<u8>::new(&allocator, shape).map(Tensor::into_dyn),
+        DType::F16 => Tensor::<f16>::new(&allocator, shape).map(Tensor::into_dyn),
         other => return Err(RunError::Failed(format!("tensors of type {other:?} are not carried by this runtime"))),
     };
     value.map_err(|e| failed(&e))
@@ -94,14 +97,21 @@ fn fill(value: &mut SessionInputValue<'static>, data: TensorData<'_>) -> Result<
     let SessionInputValue::Owned(value) = value else {
         return Err(RunError::Failed("an input tensor is not owned by the session".to_owned()));
     };
+    macro_rules! write {
+        ($ty:ty, $src:expr, $convert:expr) => {
+            value.try_extract_tensor_mut::<$ty>().map(|(_, dst)| {
+                for (d, s) in dst.iter_mut().zip($src) {
+                    *d = $convert(*s);
+                }
+            })
+        };
+    }
     match data {
-        TensorData::F32(d) => value.try_extract_tensor_mut::<f32>().map(|(_, dst)| dst.copy_from_slice(d)),
-        TensorData::I64(d) => value.try_extract_tensor_mut::<i64>().map(|(_, dst)| dst.copy_from_slice(d)),
-        TensorData::I32(d) => value.try_extract_tensor_mut::<i32>().map(|(_, dst)| dst.copy_from_slice(d)),
-        TensorData::U8(d) => value.try_extract_tensor_mut::<u8>().map(|(_, dst)| dst.copy_from_slice(d)),
-        TensorData::F16(_) => {
-            return Err(RunError::Failed("float16 tensors are not carried by this runtime yet".to_owned()));
-        }
+        TensorData::F32(d) => write!(f32, d, |s| s),
+        TensorData::I64(d) => write!(i64, d, |s| s),
+        TensorData::I32(d) => write!(i32, d, |s| s),
+        TensorData::U8(d) => write!(u8, d, |s| s),
+        TensorData::F16(d) => write!(f16, d, f16::from_bits),
     }
     .map_err(|e| failed(&e))
 }
@@ -144,6 +154,7 @@ fn output_dims(value: &DynValue, dtype: DType) -> Result<([usize; MAX_RANK], usi
         DType::I64 => dims(value.try_extract_tensor::<i64>().map_err(|e| failed(&e))?.0),
         DType::I32 => dims(value.try_extract_tensor::<i32>().map_err(|e| failed(&e))?.0),
         DType::U8 => dims(value.try_extract_tensor::<u8>().map_err(|e| failed(&e))?.0),
+        DType::F16 => dims(value.try_extract_tensor::<f16>().map_err(|e| failed(&e))?.0),
         other => Err(RunError::Failed(format!("outputs of type {other:?} are not carried by this runtime"))),
     }
 }
@@ -157,39 +168,44 @@ fn check_output(signature: &Signature, index: usize, value: &DynValue, dtype: DT
 /// Copies one ONNX Runtime output (already checked) into the caller's buffer through [`TensorBuf::resize`].
 fn copy_out(value: &DynValue, buf: &mut TensorBuf) -> Result<(), RunError> {
     macro_rules! copy {
-        ($ty:ty, $variant:ident) => {{
+        ($ty:ty, $variant:ident, $convert:expr) => {{
             let (shape, data) = value.try_extract_tensor::<$ty>().map_err(|e| failed(&e))?;
             let (dims, rank) = dims(shape)?;
             match buf.resize(&dims[..rank]) {
-                Ok(TensorDataMut::$variant(dst)) if dst.len() == data.len() => dst.copy_from_slice(data),
+                Ok(TensorDataMut::$variant(dst)) if dst.len() == data.len() => {
+                    for (d, s) in dst.iter_mut().zip(data) {
+                        *d = $convert(*s);
+                    }
+                }
                 Ok(_) => return Err(RunError::Failed("an output has an unexpected size or type".to_owned())),
                 Err(problem) => return Err(RunError::Failed(problem.to_string())),
             }
         }};
     }
     match buf.dtype() {
-        DType::F32 => copy!(f32, F32),
-        DType::I64 => copy!(i64, I64),
-        DType::I32 => copy!(i32, I32),
-        DType::U8 => copy!(u8, U8),
+        DType::F32 => copy!(f32, F32, |s| s),
+        DType::I64 => copy!(i64, I64, |s| s),
+        DType::I32 => copy!(i32, I32, |s| s),
+        DType::U8 => copy!(u8, U8, |s| s),
+        DType::F16 => copy!(f16, F16, f16::to_bits),
         other => return Err(RunError::Failed(format!("outputs of type {other:?} are not carried by this runtime"))),
     }
     Ok(())
 }
 
 /// Moves every picked output into the caller's buffers, or none: all shapes are checked against the slot before the
-/// first buffer is touched, so a rejected call leaves the caller's buffers as they were.
-fn deliver(
+/// first buffer is touched, so a rejected call leaves the caller's buffers as they were. `values` yields the outputs in
+/// slot order and is walked twice.
+fn deliver<'a>(
     signature: &Signature,
-    picks: &[String],
-    results: &SessionOutputs<'_>,
+    values: impl Iterator<Item = &'a DynValue> + Clone,
     outputs: &mut [TensorBuf],
 ) -> Result<(), RunError> {
-    for (index, (name, buf)) in picks.iter().zip(outputs.iter()).enumerate() {
-        check_output(signature, index, &results[name.as_str()], buf.dtype())?;
+    for (index, (value, buf)) in values.clone().zip(outputs.iter()).enumerate() {
+        check_output(signature, index, value, buf.dtype())?;
     }
-    for (name, buf) in picks.iter().zip(outputs.iter_mut()) {
-        copy_out(&results[name.as_str()], buf)?;
+    for (value, buf) in values.zip(outputs.iter_mut()) {
+        copy_out(value, buf)?;
     }
     Ok(())
 }
@@ -220,9 +236,10 @@ impl OrtModelSession {
 
     /// Runs into the preallocated outputs. `None` when ONNX Runtime refused (the outputs no longer fit).
     fn run_prepared(&mut self, outputs: &mut [TensorBuf]) -> Option<Result<(), RunError>> {
-        let prepared = self.prepared.as_ref()?;
-        let results = self.session.run_with_options(self.values.as_slice(), &prepared.options).ok()?;
-        Some(deliver(&self.signature, &self.picks, &results, outputs))
+        let prepared = self.prepared.as_mut()?;
+        let raw = self.raw.as_mut()?;
+        raw.run(&self.session, &self.values, &mut prepared.outputs).ok()?;
+        Some(deliver(&self.signature, prepared.outputs.iter(), outputs))
     }
 
     /// Runs with the outputs ONNX Runtime allocates, copies them out, and sizes output tensors for the next call at
@@ -234,14 +251,14 @@ impl OrtModelSession {
         }
         let options = RunOptions::new().map_err(|e| failed(&e))?.with_outputs(selector);
         let results = self.session.run_with_options(self.values.as_slice(), &options).map_err(|e| failed(&e))?;
-        deliver(&self.signature, &self.picks, &results, outputs)?;
+        deliver(&self.signature, self.picks.iter().map(|name| &results[name.as_str()]), outputs)?;
         drop(results);
-        let mut selector = OutputSelector::no_default();
-        for (name, buf) in self.picks.iter().zip(outputs.iter()) {
-            selector = selector.with(name.as_str()).preallocate(name.as_str(), tensor(buf.dtype(), buf.shape())?);
+        if self.raw.is_none() {
+            let inputs = self.session.inputs().iter().map(ort::value::Outlet::name);
+            self.raw = Some(RawRun::new(inputs, self.picks.iter().map(String::as_str)).map_err(RunError::Failed)?);
         }
-        let options = RunOptions::new().map_err(|e| failed(&e))?.with_outputs(selector);
-        self.prepared = Some(Prepared { input_shapes: self.shapes.clone(), options });
+        let prepared = outputs.iter().map(|buf| tensor(buf.dtype(), buf.shape())).collect::<Result<_, _>>()?;
+        self.prepared = Some(Prepared { input_shapes: self.shapes.clone(), outputs: prepared });
         Ok(())
     }
 }

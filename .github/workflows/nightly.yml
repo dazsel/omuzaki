@@ -154,11 +154,18 @@ jobs:
           mkdir track-roi-timing-windows
           cp target/x86_64-pc-windows-gnu/release/examples/track_roi_timing.exe track-roi-timing-windows/
           cat > track-roi-timing-windows/RUN.txt <<'TXT'
-          track_roi_timing.exe prints a Markdown table of the track_roi timing (640x480, 1 thread, 1,000 calls).
-          Set two folders, then run it:
+          track_roi_timing.exe prints a Markdown table of the track_roi timing (640x480, 1,000 calls) for each
+          runtime whose variables are set.
+          ONNX Runtime (1 thread):
             OMUZAKI_TRACK_MODELS  the model folder: tools/models/mediapipe-face.sh --out <dir> (checks its own SHA-256)
             OMUZAKI_ORT_CACHE     a folder holding the pinned ONNX Runtime archive under its release file name
-          track_roi_timing.exe --pins prints that archive's URL, SHA-256 and size; the probe checks them again on load.
+          LiteRT with XNNPACK (1 and 2 threads):
+            OMUZAKI_FACE_TASK     the official face_landmarker.task (--pins prints its URL, SHA-256 and size)
+            OMUZAKI_LITERT_CACHE  a folder holding omuzaki-litert-<version>-win-x64.zip, from the artifact
+                                  litert-<version>-win-x64 of the latest runtime-litert run on main
+            OMUZAKI_LITERT_SHA256 the digest in that run's artifact litert-digest-win-x64
+          track_roi_timing.exe --pins prints the ONNX Runtime archive and the face bundle; the probe checks them again
+          on load.
           TXT
           (cd track-roi-timing-windows && sha256sum track_roi_timing.exe > track_roi_timing.exe.sha256)
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

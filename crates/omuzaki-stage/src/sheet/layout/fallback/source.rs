@@ -6,9 +6,10 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use omuzaki_ai_api::{FetchError, FileSource, NoProgress, Sha256};
+use omuzaki_ai_api::{FetchError, FileSource, NoProgress, Progress, Sha256};
 use sha2::Digest as _;
 
+use super::MissingGlyph;
 use super::catalog::FontSpec;
 
 /// Why a fallback font could not be loaded.
@@ -142,23 +143,83 @@ fn io_error(path: &Path, e: &std::io::Error) -> FontError {
     FontError::Io { path: path.display().to_string(), reason: e.to_string() }
 }
 
+/// Bytes in the "N MB" of a download label.
+const MB: u64 = 1_000_000;
+
+/// The most characters [`PinnedFonts::offline_hint`] lists before it says how many more there are.
+const MAX_HINT_CHARACTERS: usize = 12;
+
 /// Fonts from the shared verified cache: the cache fetches, checks and stores each pinned file (`omuzaki_ai`'s
 /// `VerifiedCache` in the app), and this reads the file back. The bytes are checked again here, so a font is never
 /// drawn from bytes that did not pass the pin.
 pub struct PinnedFonts {
     source: Arc<dyn FileSource>,
+    progress: Arc<dyn Progress>,
 }
 
 impl PinnedFonts {
-    /// Fonts from `source`.
+    /// Fonts from `source`. The app passes the shared download cache,
+    /// `VerifiedCache::new(omuzaki_http::app_cache_dir()?, HttpFetcher::new())`, so fonts download over HTTPS on first need
+    /// into the folder models share; the stage itself never links the HTTPS client, so it still builds for the web.
     pub fn new(source: Arc<dyn FileSource>) -> Self {
-        Self { source }
+        Self { source, progress: Arc::new(NoProgress) }
+    }
+
+    /// Reports each download to `progress`, under the stage name [`PinnedFonts::download_label`] gives (and so a
+    /// cancel from it stops the download).
+    #[must_use]
+    pub fn with_progress(mut self, progress: Arc<dyn Progress>) -> Self {
+        self.progress = progress;
+        self
+    }
+
+    /// The progress stage of a font download: `downloading <file> (N MB)`, N rounded up to a whole megabyte.
+    pub fn download_label(spec: &FontSpec) -> String {
+        format!("downloading {} ({} MB)", spec.file_name, spec.size.div_ceil(MB).max(1))
+    }
+
+    /// What export tells the user when fonts are missing (offline, say): the characters that could not be drawn and
+    /// how to fix it. Connecting is only suggested for characters a downloadable font would draw; a character no
+    /// catalog font covers is listed apart, without that advice. `None` when nothing is missing.
+    pub fn offline_hint(missing: &[MissingGlyph]) -> Option<String> {
+        let list = |downloadable: bool| {
+            let characters: Vec<String> =
+                missing.iter().filter(|m| m.downloadable == downloadable).map(|m| m.character.to_string()).collect();
+            let more = characters.len().saturating_sub(MAX_HINT_CHARACTERS);
+            let tail = if more > 0 { format!(" and {more} more") } else { String::new() };
+            let shown = characters.iter().take(MAX_HINT_CHARACTERS).cloned().collect::<Vec<_>>().join(" ");
+            (!characters.is_empty()).then(|| format!("{shown}{tail}"))
+        };
+        let mut parts = Vec::new();
+        if let Some(fetchable) = list(true) {
+            parts.push(format!("connect once to download these fonts; no font drew: {fetchable}"));
+        }
+        if let Some(uncovered) = list(false) {
+            parts.push(format!("no available font covers: {uncovered}"));
+        }
+        (!parts.is_empty()).then(|| parts.join("; "))
+    }
+}
+
+/// Forwards a download's progress under a fixed stage name.
+struct Labelled<'a> {
+    label: &'a str,
+    inner: &'a dyn Progress,
+}
+
+impl Progress for Labelled<'_> {
+    fn stage(&self, _: &str, fraction: f32) {
+        self.inner.stage(self.label, fraction);
+    }
+    fn is_cancelled(&self) -> bool {
+        self.inner.is_cancelled()
     }
 }
 
 impl FontSource for PinnedFonts {
     fn load(&self, spec: &FontSpec) -> Result<Vec<u8>, FontError> {
-        let path = self.source.get(&spec.pin(), &NoProgress)?;
+        let label = Self::download_label(spec);
+        let path = self.source.get(&spec.pin(), &Labelled { label: &label, inner: self.progress.as_ref() })?;
         let bytes = read_file_bounded(&path, spec)?;
         verify(spec, &bytes)?;
         Ok(bytes)

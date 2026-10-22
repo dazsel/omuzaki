@@ -1,7 +1,7 @@
-//! The tracking input (PF-01; `docs/design/first-run.md` §4, §5): which kind of source drives the face, which camera
-//! it reads, whether the live mirror runs, and the camera permission. The `input.*` ops ask an [`InputHost`]; the App
-//! injects [`LiveInput`], which starts and stops a [`Tracker`] and hands each new frame source to the perform thread
-//! through a [`SourceSlot`].
+//! The tracking input (PF-01, PF-02; `docs/design/first-run.md` §4, §5): which kind of source drives the face, which
+//! camera it reads, whether the live mirror runs, and the camera permission. The `input.*` ops ask an [`InputHost`];
+//! the App injects [`LiveInput`], which starts and stops a [`Tracker`] (the webcam's, or the phone link's from
+//! [`LiveInput::with_phone`]) and hands each new frame source to the perform thread through a [`SourceSlot`].
 //!
 //! # Who may do what
 //!
@@ -217,7 +217,7 @@ pub enum InputError {
     /// The chosen kind of source captures nothing, so there is no mirror to start.
     #[error("the life layer captures nothing, so there is no live mirror to start")]
     NothingToCapture,
-    /// This build has no receiver for the kind of source (the iPhone link is PF-02).
+    /// This build has no receiver for the kind of source: the App gave the input no phone tracker.
     #[error("this build has no {0:?} input yet")]
     Unsupported(SourceKind),
     /// The camera refused to start.
@@ -400,9 +400,18 @@ impl std::fmt::Debug for SourceSlot {
     }
 }
 
+/// Which of the input's trackers a capture runs on.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Device {
+    Webcam,
+    Phone,
+}
+
 /// The input's own state, behind the host's lock.
 struct Inner {
     tracker: Box<dyn Tracker>,
+    /// The phone link (PF-02 to PF-04), when the App has one: its one device is the protocol the person chose.
+    phone: Option<Box<dyn Tracker>>,
     permission: Box<dyn CameraPermission>,
     config: TrackerConfig,
     source: SourceKind,
@@ -418,25 +427,49 @@ impl Inner {
         self.tracker.devices().iter().any(|info| info.id == *camera)
     }
 
-    /// What starting the mirror on the current choice would need, checked without starting anything: the camera to
-    /// open.
-    fn startable(&self) -> Result<CameraId, InputError> {
+    /// What starting the mirror on the current choice would need, checked without starting anything: the tracker
+    /// and the device to open.
+    fn startable(&self) -> Result<(Device, CameraId), InputError> {
         match self.source {
             SourceKind::LifeLayer => return Err(InputError::NothingToCapture),
-            SourceKind::Iphone => return Err(InputError::Unsupported(SourceKind::Iphone)),
+            SourceKind::Iphone => {
+                let unsupported = || InputError::Unsupported(SourceKind::Iphone);
+                let phone = self.phone.as_ref().ok_or_else(unsupported)?;
+                let link = phone.devices().into_iter().next().ok_or_else(unsupported)?;
+                return Ok((Device::Phone, link.id));
+            }
             SourceKind::Webcam => {}
         }
         let camera = self.camera.clone().ok_or(InputError::NoCameraBound)?;
         if !self.has_camera(&camera) {
             return Err(InputError::no_camera(camera));
         }
-        Ok(camera)
+        Ok((Device::Webcam, camera))
     }
 
-    /// Starts the tracker on `camera` and posts its source. On a refusal the mirror is off and the performer reads
-    /// nothing.
+    /// Starts the webcam's tracker on `camera` and posts its source. On a refusal the mirror is off and the performer
+    /// reads nothing.
     fn start(&mut self, camera: CameraId, slot: &SourceSlot) -> Result<(), InputError> {
-        match self.tracker.start(&camera, &self.config) {
+        self.start_on(Device::Webcam, camera, slot)
+    }
+
+    /// Starts `device`'s tracker on `camera` (the phone link's protocol, for the phone) and posts its source, after
+    /// stopping the other tracker. On a refusal the mirror is off and the performer reads nothing.
+    fn start_on(&mut self, device: Device, camera: CameraId, slot: &SourceSlot) -> Result<(), InputError> {
+        let started = match (device, self.phone.as_mut()) {
+            (Device::Webcam, phone) => {
+                if let Some(phone) = phone {
+                    phone.stop();
+                }
+                self.tracker.start(&camera, &self.config)
+            }
+            (Device::Phone, Some(phone)) => {
+                self.tracker.stop();
+                phone.start(&camera, &self.config)
+            }
+            (Device::Phone, None) => return Err(InputError::Unsupported(SourceKind::Iphone)),
+        };
+        match started {
             Ok(source) => {
                 slot.post(source);
                 self.preview = PreviewState::On { camera };
@@ -450,9 +483,12 @@ impl Inner {
         }
     }
 
-    /// Stops the tracker and hands the performer a source that delivers nothing. Idempotent.
+    /// Stops the trackers and hands the performer a source that delivers nothing. Idempotent.
     fn stop(&mut self, slot: &SourceSlot) {
         self.tracker.stop();
+        if let Some(phone) = self.phone.as_mut() {
+            phone.stop();
+        }
         if self.preview.is_on() {
             slot.post(Box::new(NoSource));
         }
@@ -486,6 +522,7 @@ impl LiveInput {
     ) -> Self {
         let inner = Inner {
             tracker,
+            phone: None,
             permission,
             config,
             source: SourceKind::default(),
@@ -494,6 +531,15 @@ impl LiveInput {
             refused: false,
         };
         Self { inner: Mutex::new(inner), slot, perform }
+    }
+
+    /// With `phone` as the tracker the iPhone source starts (`omuzaki-track-net`'s `NetTracker`: its one device is
+    /// the protocol the person chose). Without one, that source is [`InputError::Unsupported`].
+    #[must_use]
+    pub fn with_phone(self, phone: Box<dyn Tracker>) -> Self {
+        let mut inner = self.inner.into_inner().unwrap_or_else(PoisonError::into_inner);
+        inner.phone = Some(phone);
+        Self { inner: Mutex::new(inner), slot: self.slot, perform: self.perform }
     }
 
     fn inner(&self) -> MutexGuard<'_, Inner> {
@@ -524,7 +570,8 @@ impl InputHost for LiveInput {
             return Ok(before);
         }
         inner.camera.clone_from(&camera);
-        if inner.preview.is_on() {
+        // A running phone capture does not read the camera: rebinding it changes nothing until the webcam runs.
+        if inner.preview.is_on() && inner.source.uses_camera() {
             match camera {
                 Some(id) => {
                     if let Err(error) = inner.start(id, &self.slot) {
@@ -556,9 +603,9 @@ impl InputHost for LiveInput {
             }
             return Ok(before);
         }
-        let camera = inner.startable()?;
+        let (device, id) = inner.startable()?;
         if mode == Mode::Apply {
-            inner.start(camera, &self.slot)?;
+            inner.start_on(device, id, &self.slot)?;
         }
         Ok(before)
     }

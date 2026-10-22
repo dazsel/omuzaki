@@ -144,9 +144,19 @@ impl Performer {
         &mut self.stack.trigger
     }
 
+    /// The audio (lip-sync) layer of the stack: what a voice writes before each step (`PerformHost::set_voice`).
+    pub fn audio_layer_mut(&mut self) -> &mut Layer {
+        &mut self.stack.audio
+    }
+
     /// Sets the audio cues for the coming steps. `onset` is one-shot: it applies to the next step only.
     pub fn set_cues(&mut self, cues: Cues) {
         self.cues = cues;
+    }
+
+    /// The audio cues the coming step reads (`onset` stays set until a step has consumed it).
+    pub fn cues(&self) -> &Cues {
+        &self.cues
     }
 
     /// The retarget in use.
@@ -191,6 +201,7 @@ impl Performer {
         self.parts.life.reset();
         self.parts.animator.reset();
         self.stack.tracker.clear();
+        self.stack.audio.clear();
         self.stack.trigger.clear();
         self.cues = Cues::default();
         self.origin = None;
