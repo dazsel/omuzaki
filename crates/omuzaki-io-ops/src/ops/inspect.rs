@@ -32,9 +32,9 @@ use omuzaki_store_api::{ContentHash, Store, StoreError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::error::from_io;
 use super::avatar::{self, Source};
 use super::sidecar::DirResolver;
+use crate::error::from_io;
 use omuzaki_avatar_api::summary::AvatarSummary;
 use omuzaki_io_api::NoProgress;
 use omuzaki_render_api::Capabilities;
@@ -161,8 +161,7 @@ impl Inspect {
         resolver: &dyn Resolver,
     ) -> Result<Inspection, OpError> {
         let options = if self.strict { ImportOptions::default().strict() } else { ImportOptions::default() };
-        let source =
-            Source { name, bytes, format: self.format.as_ref(), resolver, progress: &NoProgress, field };
+        let source = Source { name, bytes, format: self.format.as_ref(), resolver, progress: &NoProgress, field };
         let mtoon = avatar::mtoon(ctx.service::<Capabilities>().ok());
         let prepared = avatar::prepare(&source, None, &options, mtoon, ctx.clock, ctx.doc)?;
         Ok(Inspection {
@@ -243,7 +242,7 @@ impl Op for Inspect {
     fn meta() -> OpMeta {
         OpMeta {
             name: "io.inspect",
-            summary: "Read a model file (glTF, VRM) or a stored asset and report what is in it, without importing it; \
+            summary: "Read a model file (glTF, VRM, FBX) or a stored asset and report what is in it, without importing it; \
                       with `as: avatar`, also prepare it as an avatar and return the summary, report and confirm token.",
             kind: OpKind::Query,
             scope: Scope::Read,

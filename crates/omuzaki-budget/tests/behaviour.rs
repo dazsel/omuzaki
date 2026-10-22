@@ -54,11 +54,13 @@ fn sustained_overrun_steps_down_one_rung_with_the_numbers() {
     assert!(feed(&mut s, &mut f, DOWN_SAMPLES - 1, 5.0).is_empty(), "not yet");
     let changes = feed(&mut s, &mut f, 1, 5.0);
     let [c] = changes[..] else { panic!("one change, got {changes:?}") };
-    assert_eq!((c.direction, c.step), (Direction::Down, Step::PostEffectsOff));
+    assert_eq!((c.direction, c.step), (Direction::Down, Step::DepthOfFieldOff));
     assert_eq!(c.frame, u64::from(DOWN_SAMPLES));
     assert!((c.measured.0 - 0.005).abs() < 1e-12 && c.budget == budget::HIGH_GPU);
     assert_eq!((c.from, c.to), (Quality::high(), s.quality()));
-    assert!(!s.quality().post_effects && s.quality().shadows == Quality::high().shadows);
+    let post = s.quality().post_effects;
+    assert!(!post.depth_of_field && post.bloom && post.grain_and_grade, "only the most expensive effect goes first");
+    assert_eq!(s.quality().shadows, Quality::high().shadows);
     assert_eq!(s.rungs(), 1);
 }
 
@@ -103,7 +105,7 @@ fn rungs_that_change_nothing_are_skipped() {
             Step::SamplesTwo,
             Step::SamplesOne
         ],
-        "no post_effects or ShadowsLow rung: nothing to lower there"
+        "no post effect or ShadowsLow rung: nothing to lower there"
     );
 }
 
@@ -142,7 +144,7 @@ fn steps_back_up_after_a_long_comfortable_stretch() {
     );
     let up = feed(&mut s, &mut f, 1, 2.0);
     let [c] = up[..] else { panic!("one change, got {up:?}") };
-    assert_eq!((c.direction, c.step), (Direction::Up, Step::PostEffectsOff));
+    assert_eq!((c.direction, c.step), (Direction::Up, Step::DepthOfFieldOff));
     assert_eq!(s.quality(), Quality::high());
 }
 

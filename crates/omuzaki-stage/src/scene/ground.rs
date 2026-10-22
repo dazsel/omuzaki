@@ -1,9 +1,9 @@
-//! The scene's ground on the renderer (design D2, D10 step 3): the shadow-catcher disc a resolved scene owes, made
+//! The scene's ground on the renderer (design D2, D10 step 3): the shadow-catcher or floor disc a resolved scene owes, made
 //! when the scene's ground changes and drawn under the subject every frame. Both stages hold one, so a kit character
 //! and an imported avatar stand on the same ground.
 
 use omuzaki_core::glam::Mat4;
-use omuzaki_render_api::{AlphaMode, Colour, Instance, Material, MaterialId, MeshId, Renderer, Scene};
+use omuzaki_render_api::{AlphaMode, Colour, Instance, Material, MaterialId, MeshId, Renderer, Scene, Shading};
 use omuzaki_stage_api::GroundKind;
 
 use super::resolve::ResolvedGround;
@@ -20,8 +20,8 @@ pub(crate) struct StageGround {
 }
 
 impl StageGround {
-    /// Makes the renderer's ground `ground`: the old disc is released and, for a shadow ground, a new one is made at
-    /// the ground's radius and opacity. Cold: it allocates on the renderer. On an error the stage has no ground.
+    /// Makes the renderer's ground `ground`: the old disc is released and, for a shadow ground or a floor, a new one is
+    /// made at the ground's radius (and a shadow ground's opacity, a floor's colour). Cold: it allocates on the renderer. On an error the stage has no ground.
     ///
     /// # Errors
     /// [`StageError::Render`] if the renderer refuses the disc, or [`StageError::Scene`]-like framing errors for a
@@ -34,10 +34,22 @@ impl StageGround {
         let recipe = GroundRecipe { radius: ground.radius_m, segments: SEGMENTS, shadow_opacity: ground.opacity };
         let invalid = |e: crate::recipe::RecipeError| StageError::Framing { reason: format!("the ground: {e}") };
         let mesh = recipe.mesh().map_err(invalid)?;
-        let mut material = Material::toon(Colour::BLACK);
-        material.shading = recipe.shading().map_err(invalid)?;
-        material.alpha = AlphaMode::Blend;
-        material.receives_shadows = true;
+        let material = if ground.kind == GroundKind::Floor {
+            // A plain toon surface: lit like the cast, so a spot leaves its pool and the key its shadow. No rim: seen at
+            // a grazing angle, a floor is all edge, and a rim (or the scene's back-light rim) would flood it.
+            let mut floor = Material::toon(ground.colour);
+            if let Shading::Toon(toon) = &mut floor.shading {
+                toon.rim.strength = 0.0;
+            }
+            floor.receives_shadows = true;
+            floor
+        } else {
+            let mut catcher = Material::toon(Colour::BLACK);
+            catcher.shading = recipe.shading().map_err(invalid)?;
+            catcher.alpha = AlphaMode::Blend;
+            catcher.receives_shadows = true;
+            catcher
+        };
         let mesh = renderer.create_mesh(&mesh).map_err(|source| StageError::render("the ground disc", source))?;
         match renderer.create_material(&material) {
             Ok(material) => {

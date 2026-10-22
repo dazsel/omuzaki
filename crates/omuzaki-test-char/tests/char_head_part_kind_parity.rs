@@ -26,7 +26,7 @@ use omuzaki_char_mock::mock_character;
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::Vec3;
 use omuzaki_core::mesh::MeshData;
-use omuzaki_render_api::Shading;
+use omuzaki_render_api::{Shading, Skin};
 use omuzaki_test::meshcmp::{MeshTolerance, compare_meshes};
 use serde::Deserialize;
 use serde_json::json;
@@ -146,8 +146,10 @@ fn the_skin_materials_equal_the_prototypes_field_by_field() {
         assert_eq!(toon.rim.power, 3.0, "{js_name} rim power is the prototype's default");
         assert_eq!(spec.double_sided, js.double_sided, "{js_name} sides");
         assert_eq!(spec.receives_shadows, js.receive_shadow, "{js_name} receives shadows");
-        // The neck has no skin treatment; the others carry the prototype's floor and hue-keep.
-        assert_eq!(toon.skin.map(|s| s.floor), js.skin_floor, "{js_name} skin floor");
+        // The prototype's neck has no skin treatment. Ours carries the default floor and the hue-keep, so a coloured
+        // light can't turn the neck a different hue from the face beside it (#1165); the others are the prototype's.
+        let floor = if *js_name == "skin-neck" { Some(Skin::default().floor) } else { js.skin_floor };
+        assert_eq!(toon.skin.map(|s| s.floor), floor, "{js_name} skin floor");
         if let Some(skin) = toon.skin {
             assert_eq!(skin.hue_keep, fixture.hue_keep, "{js_name} hue keep");
         }

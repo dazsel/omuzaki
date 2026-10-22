@@ -147,7 +147,7 @@ fn scene() -> Scene {
 
 /// What the test stages render with: no multisampling or post effects, so the face is all that differs.
 pub fn quality() -> Quality {
-    Quality { samples: 1, render_scale: 1.0, post_effects: false, ..Quality::offline() }
+    Quality { samples: 1, render_scale: 1.0, post_effects: false.into(), ..Quality::offline() }
 }
 
 /// A camera in front of the head, framing the face window.

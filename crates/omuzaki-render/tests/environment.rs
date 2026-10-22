@@ -133,7 +133,7 @@ fn character_scene(renderer: &mut dyn Renderer) -> Scene {
 }
 
 fn quality() -> Quality {
-    Quality { samples: 1, render_scale: 1.0, post_effects: false, ..Quality::offline() }
+    Quality { samples: 1, render_scale: 1.0, post_effects: false.into(), ..Quality::offline() }
 }
 
 /// The four pictures of [`SHOTS`] on `renderer`, with the sky turned by `rotation_deg`.

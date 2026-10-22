@@ -461,6 +461,10 @@ pub struct SetLighting {
     /// How much the scene's light colours the outlines, 0 or more.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outline_light: Option<f32>,
+    /// How strongly lights behind the cast edge its silhouette in their colour (a stage's back light), 0 or more; 0
+    /// lights with the toon ramp alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub back_light_rim: Option<f32>,
     /// The darkest the skin's shadow gets, 0 or more, or `off` for each material's own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skin_floor: Option<OrOff<f32>>,
@@ -483,9 +487,9 @@ impl Op for SetLighting {
     fn meta() -> OpMeta {
         OpMeta {
             name: "stage.set_lighting",
-            summary: "Change a scene's exposure, background, ambient light, bloom, outline light, skin shadow floor, \
-                      fog or environment (a sky or an HDRI that lights the cast and can be the backdrop); only the \
-                      fields given change.",
+            summary: "Change a scene's exposure, background, ambient light, bloom, outline light, back-light rim, skin \
+                      shadow floor, fog or environment (a sky or an HDRI that lights the cast and can be the \
+                      backdrop); only the fields given change.",
             kind: OpKind::Edit,
             scope: Scope::EditScene,
             undo: Undo::Auto,
@@ -507,6 +511,9 @@ impl Op for SetLighting {
         }
         if let Some(outline_light) = self.outline_light {
             l.outline_light = outline_light;
+        }
+        if let Some(back_light_rim) = self.back_light_rim {
+            l.back_light_rim = back_light_rim;
         }
         if let Some(floor) = &self.skin_floor {
             l.skin_floor = floor.clone().into_option();

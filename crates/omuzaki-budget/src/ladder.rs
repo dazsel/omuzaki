@@ -9,9 +9,10 @@ use omuzaki_render_api::{Quality, ShadowQuality};
 /// One rung of the ladder: a single knob moved one notch down.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Step {
-    /// Bloom, depth of field, grain and grade off. They are one switch today (`Quality::post_effects`; one per
-    /// effect is proposed); depth of field is the most expensive, so this rung comes first.
-    PostEffectsOff,
+    /// Depth of field off: the most expensive effect by far (about ten times grain and grade), so the first rung.
+    DepthOfFieldOff,
+    /// Bloom off.
+    BloomOff,
     /// Render at [`Step::SCALE_HIGH`] of the target's size.
     RenderScaleHigh,
     /// Redraw the shadow map only every [`Step::SHADOW_INTERVAL`]-th frame.
@@ -26,13 +27,16 @@ pub enum Step {
     SamplesTwo,
     /// One sample per pixel.
     SamplesOne,
+    /// Film grain and the colour grade off: nearly free and part of the author's look, so the last rung.
+    GrainAndGradeOff,
 }
 
 impl Step {
     /// Every rung, cheapest look-loss first. The costs behind this order are estimates until real measurements are
     /// wired in; the order is one table, so re-ordering is a one-line change.
-    pub const LADDER: [Self; 8] = [
-        Self::PostEffectsOff,
+    pub const LADDER: [Self; 10] = [
+        Self::DepthOfFieldOff,
+        Self::BloomOff,
         Self::RenderScaleHigh,
         Self::ShadowsLessOften,
         Self::ShadowsLow,
@@ -40,6 +44,7 @@ impl Step {
         Self::ShadowsOff,
         Self::SamplesTwo,
         Self::SamplesOne,
+        Self::GrainAndGradeOff,
     ];
     /// `shadow_interval` after [`Step::ShadowsLessOften`].
     pub const SHADOW_INTERVAL: u8 = 4;
@@ -51,7 +56,9 @@ impl Step {
     /// A stable lower-case name for logs and the "quality was lowered" notice.
     pub const fn name(self) -> &'static str {
         match self {
-            Self::PostEffectsOff => "post_effects_off",
+            Self::DepthOfFieldOff => "depth_of_field_off",
+            Self::BloomOff => "bloom_off",
+            Self::GrainAndGradeOff => "grain_and_grade_off",
             Self::ShadowsLessOften => "shadows_less_often",
             Self::RenderScaleHigh => "render_scale_high",
             Self::ShadowsLow => "shadows_low",
@@ -65,7 +72,9 @@ impl Step {
     /// Applies the rung to `quality`.
     pub(crate) fn apply(self, quality: &mut Quality) {
         match self {
-            Self::PostEffectsOff => quality.post_effects = false,
+            Self::DepthOfFieldOff => quality.post_effects.depth_of_field = false,
+            Self::BloomOff => quality.post_effects.bloom = false,
+            Self::GrainAndGradeOff => quality.post_effects.grain_and_grade = false,
             Self::ShadowsLessOften => quality.shadow_interval = quality.shadow_interval.max(Self::SHADOW_INTERVAL),
             Self::RenderScaleHigh => quality.render_scale = quality.render_scale.min(Self::SCALE_HIGH),
             Self::ShadowsLow => {
@@ -97,7 +106,7 @@ mod tests {
     #[test]
     fn the_ladder_walks_high_down_to_the_floor() {
         let floor = quality_at(&Quality::high(), Step::LADDER.len());
-        assert!(!floor.post_effects);
+        assert!(!floor.post_effects.any());
         assert_eq!((floor.shadows, floor.shadow_interval, floor.samples), (ShadowQuality::Off, 4, 1));
         assert!((floor.render_scale - Step::SCALE_LOW).abs() < f32::EPSILON);
         assert_eq!(floor.validate(), Ok(()), "every rung leaves a valid quality");

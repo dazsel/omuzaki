@@ -110,6 +110,8 @@ pub struct LiveApp {
     approvals: Option<Arc<DiskApprovals>>,
     /// The OS input hub and the dispatcher that runs its bindings; `None` if the hub's store could not be read.
     input: Option<InputWiring>,
+    /// The OS keychain the connectors keep their secrets in; `None` without a data folder.
+    secrets: Option<Arc<dyn SecretStore>>,
 }
 
 /// The OS input hub (ADR 0060) as the app runs it: its control is in the runner's services (the `input.*` capture and
@@ -367,6 +369,7 @@ impl LiveApp {
             feed: stream.map(ProgramFeed::new),
             automation,
             approvals,
+            secrets,
         })
     }
 
@@ -380,6 +383,11 @@ impl LiveApp {
     /// a data folder, when nothing can be approved.
     pub fn approvals(&self) -> Option<&Arc<DiskApprovals>> {
         self.approvals.as_ref()
+    }
+
+    /// The keychain, for the Settings window's OBS password (which no op carries); `None` without a data folder.
+    pub fn keychain(&self) -> Option<crate::settings::connectors::Keychain> {
+        self.secrets.clone().map(crate::settings::connectors::Keychain)
     }
 
     /// Starts drawing the stage: `stage` (from [`project_stage`](crate::live::viewport::project_stage), made on
