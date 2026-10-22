@@ -17,7 +17,12 @@ thiserror.workspace = true
 schemars.workspace = true
 # The client's WebSocket: sync, one connection thread, no async runtime (ws:// to OBS on this machine or the LAN).
 tungstenite = "0.30"
+omuzaki-char-api = { path = "../omuzaki-char-api" }
 omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-doc-api = { path = "../omuzaki-doc-api" }
+# The go-live notice reads the cast (`scenes/<id>/cast`) and an imported model's terms (`sources/avatar`).
+omuzaki-io-api = { path = "../omuzaki-io-api" }
+omuzaki-stage-api = { path = "../omuzaki-stage-api" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-secrets-api = { path = "../omuzaki-secrets-api" }
 omuzaki-settings-api = { path = "../omuzaki-settings-api" }
@@ -27,6 +32,7 @@ omuzaki-settings-api = { path = "../omuzaki-settings-api" }
 testing = []
 
 [dev-dependencies]
+omuzaki-avatar-api = { path = "../omuzaki-avatar-api" }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-secrets-mock = { path = "../omuzaki-secrets-mock" }
 omuzaki-settings-mock = { path = "../omuzaki-settings-mock" }

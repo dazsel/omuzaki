@@ -302,3 +302,78 @@ fn a_slow_answer_times_out_and_the_next_call_is_fine() {
     let version = client.request(&crate::protocol::GetVersion {}).unwrap();
     assert_eq!(version.obs_web_socket_version, crate::testing::FAKE_VERSION);
 }
+
+/// A document whose scene `stage` casts `members` (member id, character) and whose characters have the given
+/// `sources/avatar` terms (`None`: no row).
+fn cast_doc(members: &[(&str, &str)], terms: &[(&str, Option<omuzaki_io_api::CommercialUsage>)]) -> MemDoc {
+    let cast: serde_json::Map<String, Value> =
+        members.iter().map(|(m, c)| ((*m).to_owned(), json!({ "character": c }))).collect();
+    let characters: serde_json::Map<String, Value> = terms
+        .iter()
+        .map(|(c, usage)| {
+            let node = usage.map_or_else(
+                || json!({ "name": c }),
+                |usage| {
+                    let terms =
+                        omuzaki_io_api::UseTerms { commercial_usage: usage, ..omuzaki_io_api::UseTerms::default() };
+                    json!({ "name": c, "sources": { super::golive::AVATAR_PART: { "schema": 1, "terms": terms } } })
+                },
+            );
+            ((*c).to_owned(), node)
+        })
+        .collect();
+    MemDoc::from_value(json!({ "scenes": { "stage": { "cast": cast } }, "characters": characters }))
+}
+
+fn start_stream(doc: &MemDoc, services: &Services, dry_run: bool) -> Value {
+    crate::link();
+    let op = (find("obs.stream.start").unwrap().decode)(json!({})).unwrap();
+    let (clock, actor) = (FakeClock::new(Seconds(0.0)), Actor::Person { name: "host".into() });
+    let ctx = OpCtx::new(doc, &actor, &clock).with_services(services).with_dry_run(dry_run);
+    op.plan(&ctx).unwrap().output.unwrap()
+}
+
+#[test]
+fn going_live_with_a_non_profit_model_warns_and_still_starts_the_stream() {
+    use omuzaki_io_api::CommercialUsage::{PersonalNonProfit, PersonalProfit};
+    assert_eq!(super::golive::AVATAR_PART, omuzaki_avatar_api::anchors::AVATAR_PART);
+    let fake = FakeObs::start(FakeConfig::default());
+    let service = Arc::new(ObsService::new());
+    let services = rig(&service, fake.port(), false);
+    call("obs.connect", json!({}), &services).unwrap();
+
+    // One non-profit model among a profit-allowed one, a kit character (no row) and a repeat: one warning, naming it.
+    let doc = cast_doc(
+        &[("a", "ava"), ("b", "bea"), ("c", "kit"), ("d", "ava")],
+        &[("ava", Some(PersonalNonProfit)), ("bea", Some(PersonalProfit)), ("kit", None)],
+    );
+    let dry = start_stream(&doc, &services, true);
+    assert_eq!(dry["warnings"].as_array().unwrap().len(), 1, "{dry}");
+    assert_eq!(fake.count("StartStream"), 0, "a dry run sends nothing");
+    let live = start_stream(&doc, &services, false);
+    let warnings = live["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1, "{live}");
+    assert_eq!(warnings[0]["rule"], "rights.perform_non_profit");
+    assert_eq!(warnings[0]["severity"], "warning");
+    assert_eq!(warnings[0]["location"], "characters/ava/sources/avatar");
+    assert!(warnings[0]["message"].as_str().unwrap().contains("`ava`"));
+    assert_eq!(fake.count("StartStream"), 1, "the notice never blocks");
+    assert_eq!(fake.state().stream, Output::Started);
+    call("obs.stream.stop", json!({}), &services).unwrap();
+
+    // Two non-profit models: two warnings, in cast order.
+    let doc =
+        cast_doc(&[("a", "zoe"), ("b", "ava")], &[("ava", Some(PersonalNonProfit)), ("zoe", Some(PersonalNonProfit))]);
+    let both = start_stream(&doc, &services, false);
+    let at: Vec<&str> = both["warnings"].as_array().unwrap().iter().map(|w| w["location"].as_str().unwrap()).collect();
+    assert_eq!(at, ["characters/zoe/sources/avatar", "characters/ava/sources/avatar"]);
+    call("obs.stream.stop", json!({}), &services).unwrap();
+
+    // Nothing to say: the output is exactly what it was before the notice.
+    let doc = cast_doc(&[("a", "bea"), ("b", "kit")], &[("bea", Some(PersonalProfit)), ("kit", None)]);
+    let quiet = start_stream(&doc, &services, false);
+    assert_eq!(
+        quiet,
+        json!({ "applied": true, "output": "stream", "output_active": true, "state": "started", "already": false })
+    );
+}
