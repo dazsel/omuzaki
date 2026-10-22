@@ -165,6 +165,7 @@ impl MockRenderer {
             gpu: Some(GpuTimings { frame, passes: gpu, painters: None }),
             draw_calls: drawn.draw_calls,
             triangles: drawn.triangles,
+            particles: 0,
         }
     }
 }
@@ -188,6 +189,7 @@ impl Renderer for MockRenderer {
             materials: self.materials.len() as u32,
             targets: self.targets.len() as u32,
             environments: self.environments.len() as u32,
+            particle_systems: 0,
             gpu_bytes,
         }
     }
@@ -322,6 +324,8 @@ impl Renderer for MockRenderer {
             ResourceRef::Environment(id) => {
                 self.environments.remove(id.index(), id.generation()).map(drop).ok_or_else(unknown)
             }
+            // No particle system exists until the mock draws particles (#809), so every handle is unknown.
+            ResourceRef::ParticleSystem(_) => Err(unknown()),
             ResourceRef::Texture(id) => {
                 if self.textures.get(id.index(), id.generation()).is_none() {
                     return Err(unknown());

@@ -436,6 +436,8 @@ impl Renderer for WgpuRenderer {
             ResourceRef::Environment(id) => {
                 resources.environments.remove(id.index(), id.generation()).map(drop).ok_or_else(unknown)
             }
+            // No particle system is ever created until the particle pass lands, so every handle is unknown.
+            ResourceRef::ParticleSystem(_) => Err(unknown()),
         }
     }
 
@@ -541,6 +543,7 @@ impl Renderer for WgpuRenderer {
                 gpu: gpu_timings,
                 draw_calls: stats.draw_calls,
                 triangles: stats.triangles,
+                particles: 0,
             })
         })?;
         // Only now, with the frame's error scopes passed, were its morph dispatches done: a scope that fails turns the

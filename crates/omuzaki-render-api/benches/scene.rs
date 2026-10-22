@@ -5,7 +5,10 @@ use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use omuzaki_core::glam::{Mat4, Vec3};
-use omuzaki_render_api::{Camera, Colour, Instance, JointRange, Light, MaterialId, MeshId, Scene};
+use omuzaki_core::time::Seconds;
+use omuzaki_render_api::{
+    Camera, Colour, EmitterShape, Instance, JointRange, Light, MaterialId, MeshId, ParticleSystemId, Scene, SpawnBatch,
+};
 
 /// A character with a 128-joint skeleton, 200 props and a full light rig.
 fn fill(scene: &mut Scene) {
@@ -39,5 +42,24 @@ fn scene_benches(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, scene_benches);
+/// The most spawn batches a scene may hold (particles.md D2), 19 slots each: 19,456 slots, under the 20,000 cap.
+fn fill_particles(scene: &mut Scene) {
+    let system = ParticleSystemId::from_parts(0, 1);
+    scene.particles.extend((0..1024u16).map(|i| SpawnBatch {
+        shape: EmitterShape::sphere(0.1),
+        start: Seconds(f64::from(i) * 0.01),
+        count: 19,
+        seed: u32::from(i),
+        ..SpawnBatch::new(system, Mat4::from_translation(Vec3::splat(f32::from(i))))
+    }));
+}
+
+/// The #755 target: validating 1,024 batches takes at most 5 µs.
+fn particle_benches(c: &mut Criterion) {
+    let mut scene = Scene::new(Camera::default());
+    fill_particles(&mut scene);
+    c.bench_function("scene_validate_1024_spawn_batches", |b| b.iter(|| black_box(&scene).validate()));
+}
+
+criterion_group!(benches, scene_benches, particle_benches);
 criterion_main!(benches);

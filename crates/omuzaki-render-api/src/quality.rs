@@ -87,6 +87,14 @@ pub struct Quality {
     /// they differ ten-fold in cost. Exposure and tone mapping always run. `true` or `false` in JSON still means all or
     /// none.
     pub post_effects: PostQuality,
+    /// The share of particles drawn, `0..=1` (particles.md D8): the frame-budget scheduler's first knob. The same
+    /// particles survive at every step, so stepping down thins an effect and never restarts it.
+    #[serde(default = "full_density")]
+    pub particle_density: f32,
+}
+
+const fn full_density() -> f32 {
+    1.0
 }
 
 /// Which post effects a frame may spend GPU time on (#657). They differ by about ten times in cost (at 1080p on a
@@ -172,6 +180,7 @@ impl Quality {
             shadows: ShadowQuality::Low,
             shadow_interval: 2,
             post_effects: PostQuality::NONE,
+            particle_density: 1.0,
         }
     }
 
@@ -184,6 +193,7 @@ impl Quality {
             shadows: ShadowQuality::High,
             shadow_interval: 1,
             post_effects: PostQuality::ALL,
+            particle_density: 1.0,
         }
     }
 
@@ -196,6 +206,7 @@ impl Quality {
             shadows: ShadowQuality::High,
             shadow_interval: 1,
             post_effects: PostQuality::ALL,
+            particle_density: 1.0,
         }
     }
 
@@ -219,6 +230,9 @@ impl Quality {
         }
         if self.shadow_interval == 0 {
             return bad("shadow_interval must be at least 1".into());
+        }
+        if !(0.0..=1.0).contains(&self.particle_density) {
+            return bad(format!("particle_density {} isn't in 0..=1", self.particle_density));
         }
         Ok(())
     }
@@ -270,7 +284,8 @@ mod tests {
 
     #[test]
     fn invalid_settings_say_what_to_fix() {
-        let cases: [(&str, Break); 4] = [
+        let cases: [(&str, Break); 5] = [
+            ("particle_density", |q| q.particle_density = 1.5),
             ("render_scale", |q| q.render_scale = 8.0),
             ("render_scale", |q| q.render_scale = f32::NAN),
             ("samples", |q| q.samples = 3),

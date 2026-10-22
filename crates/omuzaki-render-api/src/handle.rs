@@ -62,6 +62,12 @@ handle!(
     EnvironmentId
 );
 
+handle!(
+    /// A particle system created with
+    /// [`Renderer::create_particle_system`](crate::Renderer::create_particle_system).
+    ParticleSystemId
+);
+
 /// Any resource, for [`Renderer::release`](crate::Renderer::release).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ResourceRef {
@@ -75,6 +81,8 @@ pub enum ResourceRef {
     Target(TargetId),
     /// An environment.
     Environment(EnvironmentId),
+    /// A particle system.
+    ParticleSystem(ParticleSystemId),
 }
 
 macro_rules! resource_from {
@@ -86,7 +94,8 @@ macro_rules! resource_from {
         })*
     };
 }
-resource_from!(MeshId => Mesh, TextureId => Texture, MaterialId => Material, TargetId => Target, EnvironmentId => Environment);
+resource_from!(MeshId => Mesh, TextureId => Texture, MaterialId => Material, TargetId => Target, EnvironmentId => Environment,
+    ParticleSystemId => ParticleSystem);
 
 impl ResourceRef {
     /// The kind of resource, for error messages.
@@ -97,6 +106,7 @@ impl ResourceRef {
             Self::Material(_) => "material",
             Self::Target(_) => "target",
             Self::Environment(_) => "environment",
+            Self::ParticleSystem(_) => "particle system",
         }
     }
 }
@@ -118,5 +128,6 @@ mod tests {
         assert_eq!(ResourceRef::from(TextureId::from_parts(1, 1)).kind(), "texture");
         assert_eq!(ResourceRef::from(TargetId::from_parts(1, 1)).kind(), "target");
         assert_eq!(ResourceRef::from(EnvironmentId::from_parts(1, 1)).kind(), "environment");
+        assert_eq!(ResourceRef::from(ParticleSystemId::from_parts(1, 1)).kind(), "particle system");
     }
 }

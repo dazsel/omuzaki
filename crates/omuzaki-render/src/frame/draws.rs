@@ -17,18 +17,20 @@ use super::uniform::{self, FrameUniform, InstanceUniform};
 use crate::resource::SceneResources;
 use crate::shared::{Layouts, Shared};
 
-/// A set of passes, one bit per [`Pass`]. Eight passes fit a byte.
+/// A set of passes, one bit per [`Pass`]. Nine passes fit sixteen bits.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct PassSet(u8);
+pub(crate) struct PassSet(u16);
+
+const _: () = assert!(Pass::COUNT <= 16, "PassSet holds one bit per pass");
 
 impl PassSet {
-    /// The set plus `pass`. (`Pass::COUNT` is 8, so the shift never leaves the byte.)
+    /// The set plus `pass`.
     fn with(self, pass: Pass) -> Self {
-        Self(self.0 | (1u8 << pass.index()))
+        Self(self.0 | (1u16 << pass.index()))
     }
 
     fn contains(self, pass: Pass) -> bool {
-        self.0 & (1u8 << pass.index()) != 0
+        self.0 & (1u16 << pass.index()) != 0
     }
 }
 

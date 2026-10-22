@@ -110,6 +110,7 @@ impl Resources {
             materials: self.materials.len() as u32,
             targets: self.targets.len() as u32,
             environments: self.environments.len() as u32,
+            particle_systems: 0,
             gpu_bytes,
         }
     }
