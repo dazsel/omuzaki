@@ -59,6 +59,16 @@ pub struct OpRunParams {
     pub args: Map<String, Value>,
 }
 
+/// The node that does what a refused scope's ops do, with a literal target the show's approval names (design D7).
+fn instead(scope: Scope) -> Option<&'static str> {
+    match scope {
+        Scope::Net => Some("net.http"),
+        Scope::Fs => Some("file.*"),
+        Scope::Process => Some("exec.run"),
+        _ => None,
+    }
+}
+
 /// Why an op can't run from a show, or `None` when it can.
 fn refusal(registration: &OpRegistration) -> Option<String> {
     let meta = (registration.meta)();
@@ -74,7 +84,43 @@ fn refusal(registration: &OpRegistration) -> Option<String> {
         meta.scope,
         Scope::Read | Scope::Perform | Scope::Broadcast | Scope::Render | Scope::EditCharacter | Scope::EditScene
     );
-    (!allowed).then(|| format!("it needs the {} scope, which shows never get", meta.scope.name()))
+    if allowed {
+        return None;
+    }
+    let scope = meta.scope.name();
+    Some(match instead(meta.scope) {
+        Some(node) => format!("it needs the {scope} scope, which shows never get; use the {node} node instead"),
+        None => format!("it needs the {scope} scope, which shows never get"),
+    })
+}
+
+/// The schema at a dotted argument path (object keys and list indices), as `placeholders` walks it.
+fn schema_at<'a>(schema: &'a Value, path: &str) -> Option<&'a Value> {
+    path.split('.').try_fold(schema, |schema, key| match properties(schema) {
+        Some(props) => props.get(key),
+        None => resolve(schema).get("items"),
+    })
+}
+
+/// The value a placeholder stands for when the arguments are checked before anything is wired: the schema's default,
+/// else its first allowed value (an enum's first name), else the default of the input's type.
+fn stand_in(schema: Option<&Value>, ty: PortType) -> Value {
+    let schema = schema.map(resolve);
+    let allowed = schema.and_then(|s| {
+        s.get("default").or_else(|| s.get("const")).or_else(|| s.get("enum").and_then(|e| e.get(0))).or_else(|| {
+            ["oneOf", "anyOf"].iter().find_map(|key| s.get(*key)?.as_array()?.iter().find_map(|o| o.get("const")))
+        })
+    });
+    if let Some(value) = allowed {
+        return value.clone();
+    }
+    match ty {
+        PortType::Text => Value::String(String::new()),
+        PortType::Number => Value::from(0),
+        PortType::Bool => Value::Bool(false),
+        PortType::List => Value::Array(Vec::new()),
+        _ => Value::Null,
+    }
 }
 
 /// Every placeholder under `args`, by name, typed from `schema` at its path.
@@ -129,14 +175,19 @@ fn unknown_args(args: &Value, schema: &Value, path: &str, out: &mut Vec<String>)
 
 /// `args` with each placeholder replaced by its input's value and each `$$` unescaped.
 fn substitute(args: &Value, inputs: &BTreeMap<String, Val>) -> Value {
+    let inputs: BTreeMap<String, Value> = inputs.iter().map(|(k, v)| (k.clone(), v.to_json())).collect();
+    substitute_json(args, &inputs)
+}
+
+fn substitute_json(args: &Value, inputs: &BTreeMap<String, Value>) -> Value {
     match args {
         Value::String(s) => match s.strip_prefix(PLACEHOLDER) {
-            Some(name) => inputs.get(name).map_or(Value::Null, Val::to_json),
+            Some(name) => inputs.get(name).cloned().unwrap_or(Value::Null),
             None if s.starts_with("$$") => Value::String(s[1..].to_owned()),
             None => args.clone(),
         },
-        Value::Object(map) => Value::Object(map.iter().map(|(k, v)| (k.clone(), substitute(v, inputs))).collect()),
-        Value::Array(items) => Value::Array(items.iter().map(|v| substitute(v, inputs)).collect()),
+        Value::Object(map) => Value::Object(map.iter().map(|(k, v)| (k.clone(), substitute_json(v, inputs))).collect()),
+        Value::Array(items) => Value::Array(items.iter().map(|v| substitute_json(v, inputs)).collect()),
         other => other.clone(),
     }
 }
@@ -206,7 +257,8 @@ impl OpRun {
                 cx.set("output", Val::from(output.unwrap_or(Value::Null)))?;
                 cx.fire("done")
             }
-            Err(e) => cx.fail("failed", l10n::op_failed(self.op.as_str(), e.message)),
+            // The code first (`limited: ...`), so a graph can tell a refusal from a failure by reading the text.
+            Err(e) => cx.fail("failed", l10n::op_failed(e.code.to_string(), e.message)),
         }
     }
 }
@@ -236,7 +288,16 @@ impl NodeKind for OpRun {
 
     fn needs(params: &OpRunParams) -> Vec<Need> {
         match find(&params.op) {
-            Some(registration) => vec![Need::Scope((registration.meta)().scope), Need::op(params.op.clone())],
+            Some(registration) => {
+                let scope = (registration.meta)().scope;
+                // Reading and performing are what every show may do; anything else is approved per show (D11).
+                let mut needs = Vec::new();
+                if !matches!(scope, Scope::Read | Scope::Perform) {
+                    needs.push(Need::Scope(scope));
+                }
+                needs.push(Need::op(params.op.clone()));
+                needs
+            }
             None => Vec::new(),
         }
     }
@@ -261,10 +322,20 @@ impl NodeKind for OpRun {
         }
         let mut found = BTreeMap::new();
         placeholders(&args, Some(schema.as_value()), "", &mut found);
-        for (name, (_, path)) in found {
+        let mut stand_ins = BTreeMap::new();
+        for (name, (ty, path)) in &found {
             if FIXED_INPUTS.contains(&name.as_str()) || PortName::new(name.as_str()).is_err() {
                 errors
                     .push(ParamError::new(format!("args.{path}"), l10n::bad_placeholder(path.as_str(), name.as_str())));
+            }
+            stand_ins.insert(name.clone(), stand_in(schema_at(schema.as_value(), path), *ty));
+        }
+        if errors.is_empty() {
+            // The whole object must decode with each input at its type's default, so a missing required argument or a
+            // constant of the wrong type is found now, not on the first event.
+            if let Err(e) = (registration.decode)(substitute_json(&args, &stand_ins)) {
+                let path = e.field.as_deref().map_or_else(|| "args".to_owned(), |f| format!("args.{f}"));
+                errors.push(ParamError::new(path, l10n::invalid_args(params.op.as_str(), e.message)));
             }
         }
         if errors.is_empty() { Ok(()) } else { Err(ParamErrors(errors)) }

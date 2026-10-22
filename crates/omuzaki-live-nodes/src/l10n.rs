@@ -31,9 +31,9 @@ omuzaki_l10n_api::messages! {
     /// The arguments, with the inputs filled in, don't decode for the op.
     pub invalid_args = "live-nodes-invalid-args" (op: Id, reason: Verbatim)
         => "The arguments for { $op } don't fit: { $reason }";
-    /// The op ran and refused or failed.
-    pub op_failed = "live-nodes-op-failed" (op: Id, reason: Verbatim)
-        => "{ $op } failed: { $reason }";
+    /// The op ran and refused or failed: its error code, then its message.
+    pub op_failed = "live-nodes-op-failed" (code: Id, reason: Verbatim)
+        => "{ $code }: { $reason }";
     /// Too many op calls are waiting for their answers.
     pub op_limited = "live-nodes-op-limited" (op: Id)
         => "{ $op } wasn't run: too many actions are still waiting for their answers.";

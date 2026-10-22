@@ -182,7 +182,7 @@ fn a_refused_reply_fires_failed_with_the_reason() {
     h.advance(Seconds(0.0));
     assert_eq!(h.fired()[0].port.as_str(), "failed");
     let error = h.fired()[0].values.iter().find(|(p, _)| p.as_str() == "error").map(|(_, v)| v.clone());
-    assert_eq!(error, Some(Val::text("test.say failed: OBS isn't connected")));
+    assert_eq!(error, Some(Val::text("conflict: OBS isn't connected")));
 }
 
 #[test]
@@ -215,10 +215,11 @@ fn ops_a_show_may_not_run_and_misspelt_arguments_are_refused_at_compile() {
 }
 
 #[test]
-fn op_run_needs_its_ops_scope_and_the_op() {
+fn a_perform_op_needs_only_the_op() {
+    // Every show may perform; only the op itself is listed for the approval card.
     let h = node("op.run", json!({ "op": "test.say", "args": { "text": "hi" } })).unwrap();
     let needs = serde_json::to_value(h.needs()).unwrap();
-    assert!(needs.to_string().contains("perform") && needs.to_string().contains("test.say"), "{needs}");
+    assert!(!needs.to_string().contains("perform") && needs.to_string().contains("test.say"), "{needs}");
 }
 
 #[test]
