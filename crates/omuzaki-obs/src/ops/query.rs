@@ -113,11 +113,15 @@ impl Op for Sources {
             return Err(OpError::invalid("scene", "name a scene from obs.scenes"));
         }
         if service.client().is_none() {
-            return Ok(Plan::answer(json!({ "connected": false, "sources": [], "hint": "connect with obs.connect first" })));
+            return Ok(Plan::answer(
+                json!({ "connected": false, "sources": [], "hint": "connect with obs.connect first" }),
+            ));
         }
         let items = match service.request(&GetSceneItemList { scene_name: self.scene.clone() }) {
             Ok(items) => items,
-            Err(ObsError::Refused { code: STATUS_RESOURCE_NOT_FOUND, .. }) => return Err(no_scene(service, &self.scene)),
+            Err(ObsError::Refused { code: STATUS_RESOURCE_NOT_FOUND, .. }) => {
+                return Err(no_scene(service, &self.scene));
+            }
             Err(e) => return Err(op_error(e)),
         };
         // OBS lists items bottom-up by index; a person reads top-down.

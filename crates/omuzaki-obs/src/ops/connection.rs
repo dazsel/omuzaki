@@ -43,7 +43,9 @@ impl Connect {
     fn config(&self, ctx: &OpCtx<'_>) -> ClientConfig {
         let settings = ctx.service::<dyn Settings>().ok();
         let host = self.host.clone().unwrap_or_else(|| {
-            settings.and_then(|s| s.get::<settings::Host>().ok()).unwrap_or_else(<settings::Host as omuzaki_settings_api::setting::Setting>::default)
+            settings
+                .and_then(|s| s.get::<settings::Host>().ok())
+                .unwrap_or_else(<settings::Host as omuzaki_settings_api::setting::Setting>::default)
         });
         let port = self.port.unwrap_or_else(|| {
             settings.and_then(|s| s.get::<settings::Port>().ok()).unwrap_or(crate::limits::DEFAULT_PORT)

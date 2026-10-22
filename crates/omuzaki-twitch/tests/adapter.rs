@@ -171,11 +171,12 @@ impl FakeSocket {
 fn helix(scopes: &[&str]) -> Arc<FakeHttp> {
     let info = json!({ "client_id": "test-client", "login": "kitdemo", "user_id": "1001", "scopes": scopes,
                        "expires_in": 3600 });
-    Arc::new(
-        FakeHttp::new()
-            .json(Method::Get, &format!("{OAUTH}/validate"), 200, info)
-            .json(Method::Post, &format!("{API}/eventsub/subscriptions"), 202, json!({ "data": [] })),
-    )
+    Arc::new(FakeHttp::new().json(Method::Get, &format!("{OAUTH}/validate"), 200, info).json(
+        Method::Post,
+        &format!("{API}/eventsub/subscriptions"),
+        202,
+        json!({ "data": [] }),
+    ))
 }
 
 fn service(socket: &str, http: &Arc<FakeHttp>, sink: &Arc<Sink>) -> TwitchService {

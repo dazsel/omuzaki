@@ -89,7 +89,11 @@ no_args!(
 );
 
 /// Sends a start or stop request; OBS's "already running" or "not running" is success with `already: true`.
-fn toggle<R: RequestType>(service: &ObsService, request: &R, already: u32) -> Result<(bool, Option<R::Response>), OpError> {
+fn toggle<R: RequestType>(
+    service: &ObsService,
+    request: &R,
+    already: u32,
+) -> Result<(bool, Option<R::Response>), OpError> {
     match service.request(request) {
         Ok(response) => Ok((false, Some(response))),
         Err(ObsError::Refused { code, .. }) if code == already => Ok((true, None)),
@@ -108,7 +112,10 @@ fn output<R: RequestType>(
     let state = if start { "started" } else { "stopped" };
     let code = if start { STATUS_OUTPUT_RUNNING } else { STATUS_OUTPUT_NOT_RUNNING };
     let (already, response) = toggle(service, request, code)?;
-    Ok((json!({ "applied": true, "output": output, "output_active": start, "state": state, "already": already }), response))
+    Ok((
+        json!({ "applied": true, "output": output, "output_active": start, "state": state, "already": already }),
+        response,
+    ))
 }
 
 fn answer(value: Value) -> Plan {
@@ -242,7 +249,9 @@ impl Op for ReplaySave {
         match service.request(&SaveReplayBuffer {}) {
             Ok(_) => {}
             Err(ObsError::Refused { code: STATUS_OUTPUT_NOT_RUNNING, .. }) => {
-                return Err(OpError::conflict("OBS's replay buffer isn't running").hint("start it with obs.replay.start"));
+                return Err(
+                    OpError::conflict("OBS's replay buffer isn't running").hint("start it with obs.replay.start")
+                );
             }
             Err(e) => return Err(op_error(e)),
         }

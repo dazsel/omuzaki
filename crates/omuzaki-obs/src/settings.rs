@@ -46,7 +46,8 @@ pub struct Port;
 
 impl Setting for Port {
     type Value = u16;
-    const META: SettingMeta = machine("obs.port", "The port of OBS's WebSocket server (Tools, WebSocket Server Settings)");
+    const META: SettingMeta =
+        machine("obs.port", "The port of OBS's WebSocket server (Tools, WebSocket Server Settings)");
 
     fn default() -> u16 {
         DEFAULT_PORT

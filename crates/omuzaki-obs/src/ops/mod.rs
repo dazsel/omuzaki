@@ -31,8 +31,9 @@ pub(crate) fn op_error(e: ObsError) -> OpError {
     match e {
         ObsError::Unreachable { .. } => OpError::unsupported(e.to_string())
             .hint("start OBS and turn on Tools > WebSocket Server Settings > Enable WebSocket server"),
-        ObsError::RemoteNotAllowed(_) => OpError::denied(e.to_string())
-            .hint("a person allows it in Settings > Connectors > OBS (obs.allow_remote)"),
+        ObsError::RemoteNotAllowed(_) => {
+            OpError::denied(e.to_string()).hint("a person allows it in Settings > Connectors > OBS (obs.allow_remote)")
+        }
         ObsError::Auth(_) => OpError::denied(e.to_string()).hint(
             "the password is wrong or missing: a person stores it (OBS shows it in WebSocket Server Settings) under \
              the secret label obs/websocket, in Settings > Connectors > OBS",

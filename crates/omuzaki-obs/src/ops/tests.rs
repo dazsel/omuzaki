@@ -33,7 +33,12 @@ fn rig(service: &Arc<ObsService>, port: u16, password: bool) -> Services {
     }
     let settings = Arc::new(MemorySettings::with_clock(Arc::new(FakeClock::new(Seconds(0.0)))));
     settings
-        .set::<crate::settings::Port>(&port, Layer::Base, omuzaki_ops_api::Mode::Apply, &Actor::Person { name: "host".into() })
+        .set::<crate::settings::Port>(
+            &port,
+            Layer::Base,
+            omuzaki_ops_api::Mode::Apply,
+            &Actor::Person { name: "host".into() },
+        )
         .unwrap();
     ServicesBuilder::new()
         .insert::<ObsService>(Arc::clone(service))
@@ -47,7 +52,9 @@ fn run(name: &str, args: Value, services: &Services, dry_run: bool) -> Result<Va
     let op = (find(name).unwrap().decode)(args).map_err(|e| e.message)?;
     let (doc, clock, actor) = (MemDoc::new(), FakeClock::new(Seconds(0.0)), Actor::Person { name: "host".into() });
     let ctx = OpCtx::new(&doc, &actor, &clock).with_services(services).with_dry_run(dry_run);
-    op.plan(&ctx).map(|p| p.output.unwrap_or(Value::Null)).map_err(|e| format!("{}: {}", e.message, e.hint.unwrap_or_default()))
+    op.plan(&ctx)
+        .map(|p| p.output.unwrap_or(Value::Null))
+        .map_err(|e| format!("{}: {}", e.message, e.hint.unwrap_or_default()))
 }
 
 fn call(name: &str, args: Value, services: &Services) -> Result<Value, String> {
@@ -90,7 +97,8 @@ fn each_action_sends_its_request_and_changes_obs() {
 
     call("obs.scene.set", json!({ "scene": "BRB" }), &services).unwrap();
     assert_eq!(fake.state().program, "BRB");
-    call("obs.source.set_visible", json!({ "scene": "Main", "source": "Alerts", "visible": false }), &services).unwrap();
+    call("obs.source.set_visible", json!({ "scene": "Main", "source": "Alerts", "visible": false }), &services)
+        .unwrap();
     assert!(!fake.state().scenes[0].items[2].enabled);
     call("obs.source.set_visible", json!({ "scene": "Main", "source": "Alerts", "visible": true }), &services).unwrap();
     assert!(fake.state().scenes[0].items[2].enabled);
@@ -115,8 +123,9 @@ fn each_action_sends_its_request_and_changes_obs() {
     call("obs.replay.stop", json!({}), &services).unwrap();
     assert_eq!(fake.state().replay, Output::Stopped);
 
-    let near = call("obs.source.set_visible", json!({ "scene": "Main", "source": "Alrets", "visible": true }), &services)
-        .unwrap_err();
+    let near =
+        call("obs.source.set_visible", json!({ "scene": "Main", "source": "Alrets", "visible": true }), &services)
+            .unwrap_err();
     assert!(near.contains("did you mean Alerts"), "{near}");
     let scene = call("obs.scene.set", json!({ "scene": "brb " }), &services).unwrap_err();
     assert!(scene.contains("did you mean BRB"), "{scene}");
@@ -126,8 +135,16 @@ fn each_action_sends_its_request_and_changes_obs() {
 fn every_action_needs_broadcast_and_a_dry_run_sends_nothing() {
     crate::link();
     let actions = [
-        "obs.connect", "obs.disconnect", "obs.scene.set", "obs.source.set_visible", "obs.stream.start",
-        "obs.stream.stop", "obs.record.start", "obs.record.stop", "obs.replay.start", "obs.replay.stop",
+        "obs.connect",
+        "obs.disconnect",
+        "obs.scene.set",
+        "obs.source.set_visible",
+        "obs.stream.start",
+        "obs.stream.stop",
+        "obs.record.start",
+        "obs.record.stop",
+        "obs.replay.start",
+        "obs.replay.stop",
         "obs.replay.save",
     ];
     for name in actions {
@@ -186,7 +203,8 @@ fn a_restarted_obs_is_reconnected_on_the_backoff() {
 fn a_wrong_password_is_never_retried_and_never_shown() {
     let fake = locked();
     let service = ObsService::with_backoff_unit(Duration::from_millis(5));
-    let error = service.connect(ClientConfig::at("127.0.0.1", fake.port()), Some(SecretValue::new("not-it"))).unwrap_err();
+    let error =
+        service.connect(ClientConfig::at("127.0.0.1", fake.port()), Some(SecretValue::new("not-it"))).unwrap_err();
     assert!(matches!(error, ObsError::Auth(_)), "{error:?}");
     assert!(matches!(service.status(), ObsStatus::AuthFailed { .. }));
     std::thread::sleep(Duration::from_millis(100));
@@ -232,7 +250,8 @@ fn a_subscriber_that_never_reads_keeps_the_newest_events() {
 #[test]
 fn a_slow_answer_times_out_and_the_next_call_is_fine() {
     let fake = FakeObs::start(FakeConfig::default());
-    let config = ClientConfig { request_timeout: Duration::from_millis(150), ..ClientConfig::at("127.0.0.1", fake.port()) };
+    let config =
+        ClientConfig { request_timeout: Duration::from_millis(150), ..ClientConfig::at("127.0.0.1", fake.port()) };
     let client = ObsClient::open(&config, None, Arc::new(EventHub::new())).unwrap();
     fake.delay("GetSceneList", Duration::from_millis(400));
     assert!(matches!(client.request(&GetSceneList {}), Err(ObsError::Timeout(_))));

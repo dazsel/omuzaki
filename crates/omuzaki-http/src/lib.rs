@@ -20,11 +20,11 @@ use omuzaki_ai_api::{Body, FetchError, Fetcher};
 
 mod transport;
 
-pub use transport::{ConnectHttp, MAX_IN_FLIGHT, MAX_TIMEOUT_S};
 use reqwest::blocking::{Client, Response};
 use reqwest::header::{ACCEPT_ENCODING, CONTENT_RANGE, RANGE};
 use reqwest::redirect::Policy;
 use reqwest::{StatusCode, Url};
+pub use transport::{ConnectHttp, MAX_IN_FLIGHT, MAX_TIMEOUT_S};
 
 /// The settings behind [`HttpFetcher`]; see [`HttpFetcher::builder`].
 #[derive(Clone, Debug)]

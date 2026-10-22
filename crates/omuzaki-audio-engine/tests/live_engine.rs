@@ -1,5 +1,6 @@
 //! The live engine on the scripted fake host: the microphone reaches taps on its bus at 48 and 16 kHz, mute silences
-//! what honours it, feeds mix in, and a vanished device is marked lost and comes back.
+//! what honours it, feeds mix in, a vanished device is marked lost and comes back, and the mouth voice tap (what lip
+//! sync reads) carries the mic.
 
 #![allow(clippy::unwrap_used)] // helpers outside `#[test]` fns: a panic is a clear test failure
 #![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)] // sample counts and test tones
@@ -12,7 +13,7 @@ use omuzaki_audio_api::engine::AudioEngine;
 use omuzaki_audio_api::graph::{BusSpec, Channels, GraphSpec, MIC_BUS, MicMode, SourceRef};
 use omuzaki_audio_api::ids::{BusId, DeviceRole, FeedId};
 use omuzaki_audio_api::report::{AudioEvent, ClockSource};
-use omuzaki_audio_api::tap::{DropPolicy, FeedRequest, TapFormat, TapPoint, TapRate, TapReader, TapRequest};
+use omuzaki_audio_api::tap::{DropPolicy, FeedRequest, TapFormat, TapPoint, TapRate, TapReader, TapRequest, VoiceUse};
 use omuzaki_audio_engine::LiveEngine;
 use omuzaki_audio_mock::backend::{Event, FakeBackend, FakeDevice, InputSource, Script, fake_id};
 use omuzaki_core::time::Seconds;
@@ -202,31 +203,20 @@ fn a_vanished_microphone_is_lost_then_reconnected() {
 }
 
 #[test]
-fn lip_sync_hears_the_microphone_and_stops_when_muted() {
-    use omuzaki_audio_api::voice::VoiceSource;
-    use omuzaki_audio_engine::voice::LipSync;
-
+fn the_mouth_voice_tap_carries_the_microphone_and_honours_mute() {
+    // What lip sync reads (Tracking's `VoiceListener`): the PF-12 `Voice(Mouth)` tap, resolved to the heard mic.
     let (backend, engine) = engine_with_mic();
     engine.apply(&mic_graph()).unwrap();
-    let lips = LipSync::start(&engine).unwrap();
-    assert!(lips.latest().is_none(), "nothing heard yet");
-    backend.step(24_000);
-    // The worker reads on its own thread: wait on what it publishes, with a deadline.
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let frame = loop {
-        if let Some(f) = lips.latest().filter(|f| f.active && f.open > 0.3) {
-            break f;
-        }
-        assert!(Instant::now() < deadline, "lip sync never heard the tone: {:?}", lips.latest());
-        std::thread::yield_now();
-    };
-    assert!(frame.level_db > -15.0, "{frame:?}");
+    let (mut mouth, info) = engine.tap_ring(&request(TapPoint::Voice(VoiceUse::Mouth), TapRate::Graph48k)).unwrap();
+    assert_eq!(info.rate, 48_000);
+    backend.step(48_000);
+    let heard = drain(&mut mouth);
+    assert!(heard.len() >= 47_000, "{} samples", heard.len());
+    let expected = TONE_AMPLITUDE / std::f64::consts::SQRT_2;
+    assert!((rms(&heard[heard.len() / 2..]) - expected).abs() < 0.01, "mouth tap rms {}", rms(&heard));
 
     engine.set_mic_mode(MicMode::Muted).unwrap();
-    backend.step(24_000);
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while lips.latest().is_some_and(|f| f.active || f.open > 0.01) {
-        assert!(Instant::now() < deadline, "the mouth stays open while muted: {:?}", lips.latest());
-        std::thread::yield_now();
-    }
+    backend.step(48_000);
+    let muted = drain(&mut mouth);
+    assert!(rms(&muted[muted.len() / 2..]) < 1e-4, "the mouth tap is silent while muted: {}", rms(&muted));
 }

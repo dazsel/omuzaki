@@ -487,7 +487,13 @@ fn serve(stream: TcpStream, id: u64, shared: &Mutex<Shared>, stop: &AtomicBool, 
 }
 
 fn not_found(what: &str) -> (RequestStatus, Option<Value>) {
-    (RequestStatus::failure(STATUS_RESOURCE_NOT_FOUND, Some(format!("No source was found by the name of `{what}`."))), None)
+    (
+        RequestStatus::failure(
+            STATUS_RESOURCE_NOT_FOUND,
+            Some(format!("No source was found by the name of `{what}`.")),
+        ),
+        None,
+    )
 }
 
 fn ok(data: Value) -> (RequestStatus, Option<Value>) {
@@ -515,15 +521,24 @@ fn step(s: &mut Shared, which: Which, start: bool) -> Result<Option<String>, (Re
     };
     match (current, start) {
         (Output::Started, true) => {
-            return Err((RequestStatus::failure(STATUS_OUTPUT_RUNNING, Some("The output is already running.".into())), None));
+            return Err((
+                RequestStatus::failure(STATUS_OUTPUT_RUNNING, Some("The output is already running.".into())),
+                None,
+            ));
         }
         (Output::Stopped, false) => {
-            return Err((RequestStatus::failure(STATUS_OUTPUT_NOT_RUNNING, Some("The output is not running.".into())), None));
+            return Err((
+                RequestStatus::failure(STATUS_OUTPUT_NOT_RUNNING, Some("The output is not running.".into())),
+                None,
+            ));
         }
         _ => {}
     }
-    let (middle, end) =
-        if start { (OutputState::Starting, OutputState::Started) } else { (OutputState::Stopping, OutputState::Stopped) };
+    let (middle, end) = if start {
+        (OutputState::Starting, OutputState::Started)
+    } else {
+        (OutputState::Stopping, OutputState::Stopped)
+    };
     let path = (matches!(which, Which::Record) && !start).then(|| s.file("record"));
     for (state, active) in [(middle, !start), (end, start)] {
         let event = match which {

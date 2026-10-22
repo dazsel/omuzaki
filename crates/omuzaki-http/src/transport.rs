@@ -132,7 +132,8 @@ impl ConnectHttp {
     fn begin(&self, req: &HttpRequest, cancel: &dyn Cancel) -> Result<Incoming, HttpError> {
         let url = Url::parse(&req.url).map_err(|e| HttpError::Refused(format!("not a valid address: {e}")))?;
         let local = check_address(&url)?;
-        if let Some((name, _)) = req.headers.iter().find(|(n, _)| OWN_HEADERS.contains(&n.to_ascii_lowercase().as_str()))
+        if let Some((name, _)) =
+            req.headers.iter().find(|(n, _)| OWN_HEADERS.contains(&n.to_ascii_lowercase().as_str()))
         {
             return Err(HttpError::Refused(format!("the {name} header is the transport's to set")));
         }
@@ -212,7 +213,9 @@ fn build(client: &Client, url: Url, req: &HttpRequest, timeout: Duration) -> Res
     }
     builder = match &req.body {
         HttpBody::Empty => builder,
-        HttpBody::Bytes { content_type, data } => builder.header(CONTENT_TYPE, content_type.as_str()).body(data.clone()),
+        HttpBody::Bytes { content_type, data } => {
+            builder.header(CONTENT_TYPE, content_type.as_str()).body(data.clone())
+        }
         HttpBody::Json(value) => {
             let data = serde_json::to_vec(value).map_err(|e| HttpError::Refused(format!("the JSON body: {e}")))?;
             builder.header(CONTENT_TYPE, "application/json").body(data)
@@ -424,7 +427,9 @@ mod tests {
         assert_eq!(content_type, "multipart/form-data; boundary=B");
         let text = String::from_utf8_lossy(&body);
         assert!(text.starts_with("--B\r\nContent-Disposition: form-data; name=\"a%22b\"\r\n\r\none\r\n"));
-        assert!(text.contains("name=\"file\"; filename=\"x.png\"\r\nContent-Type: image/png\r\n\r\n\u{1}\u{2}\u{3}\r\n"));
+        assert!(
+            text.contains("name=\"file\"; filename=\"x.png\"\r\nContent-Type: image/png\r\n\r\n\u{1}\u{2}\u{3}\r\n")
+        );
         assert!(text.ends_with("--B--\r\n"));
     }
 

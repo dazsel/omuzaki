@@ -160,7 +160,9 @@ fn a_silent_server_times_out() {
 fn a_redirect_is_returned_not_followed() {
     let (elsewhere, other) = server(vec![Some(OK)]);
     let redirect: &'static [u8] = Box::leak(
-        format!("HTTP/1.1 302 Found\r\nLocation: {elsewhere}\r\nContent-Length: 0\r\n\r\n").into_bytes().into_boxed_slice(),
+        format!("HTTP/1.1 302 Found\r\nLocation: {elsewhere}\r\nContent-Length: 0\r\n\r\n")
+            .into_bytes()
+            .into_boxed_slice(),
     );
     let (url, _seen) = server(vec![Some(redirect)]);
     let answer = transport().send(&request(Method::Get, &url, HttpBody::Empty), &NeverCancel).expect("answered");
@@ -182,7 +184,12 @@ fn a_multipart_body_reaches_the_server_with_its_parts() {
     let (url, seen) = server(vec![Some(OK)]);
     let parts = vec![
         Part { name: "prompt".into(), file_name: None, content_type: None, data: b"a fox".to_vec() },
-        Part { name: "image".into(), file_name: Some("in.png".into()), content_type: Some("image/png".into()), data: vec![0, 1, 2] },
+        Part {
+            name: "image".into(),
+            file_name: Some("in.png".into()),
+            content_type: Some("image/png".into()),
+            data: vec![0, 1, 2],
+        },
     ];
     transport().send(&request(Method::Post, &url, HttpBody::Multipart(parts)), &NeverCancel).expect("answered");
     let seen = seen.recv_timeout(Duration::from_secs(10)).unwrap();
@@ -192,7 +199,9 @@ fn a_multipart_body_reaches_the_server_with_its_parts() {
     let parts: Vec<&str> = body.split(&format!("--{boundary}")).filter(|p| !p.is_empty() && *p != "--\r\n").collect();
     assert_eq!(parts.len(), 2);
     assert!(parts[0].contains("name=\"prompt\"\r\n\r\na fox\r\n"));
-    assert!(parts[1].contains("name=\"image\"; filename=\"in.png\"\r\nContent-Type: image/png\r\n\r\n\u{0}\u{1}\u{2}\r\n"));
+    assert!(
+        parts[1].contains("name=\"image\"; filename=\"in.png\"\r\nContent-Type: image/png\r\n\r\n\u{0}\u{1}\u{2}\r\n")
+    );
 }
 
 #[test]

@@ -150,7 +150,9 @@ fn outputs_step_through_their_states_and_refuse_what_already_holds() {
     assert!(raw.call(&crate::protocol::StartReplayBuffer {}).request_status.result);
     assert!(raw.call(&SaveReplayBuffer {}).request_status.result);
     let saved = raw.events(Duration::from_millis(200));
-    assert!(saved.iter().any(|e| matches!(e, ObsEvent::ReplayBufferSaved { saved_replay_path } if saved_replay_path.starts_with(FAKE_FOLDER))));
+    assert!(saved.iter().any(
+        |e| matches!(e, ObsEvent::ReplayBufferSaved { saved_replay_path } if saved_replay_path.starts_with(FAKE_FOLDER))
+    ));
 }
 
 #[test]

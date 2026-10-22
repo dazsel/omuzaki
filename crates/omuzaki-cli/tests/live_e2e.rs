@@ -44,19 +44,25 @@ fn fake_eventsub(title: &'static str) -> (String, std::thread::JoinHandle<()>) {
     let thread = std::thread::spawn(move || {
         let Ok((stream, _)) = listener.accept() else { return };
         let Ok(mut ws) = tungstenite::accept(stream) else { return };
-        send(&mut ws, &json!({
-            "metadata": { "message_id": "w1", "message_type": "session_welcome" },
-            "payload": { "session": { "id": "S1", "keepalive_timeout_seconds": 10 } },
-        }));
-        send(&mut ws, &json!({
-            "metadata": { "message_id": "n1", "message_type": "notification",
-                          "subscription_type": "channel.channel_points_custom_reward_redemption.add" },
-            "payload": { "event": {
-                "id": "redemption-1", "broadcaster_user_id": "1001", "broadcaster_user_login": "kitdemo",
-                "user_id": "2002", "user_login": "viewer", "user_name": "Viewer", "user_input": "",
-                "reward": { "id": "r1", "title": title, "cost": 100 },
-            } },
-        }));
+        send(
+            &mut ws,
+            &json!({
+                "metadata": { "message_id": "w1", "message_type": "session_welcome" },
+                "payload": { "session": { "id": "S1", "keepalive_timeout_seconds": 10 } },
+            }),
+        );
+        send(
+            &mut ws,
+            &json!({
+                "metadata": { "message_id": "n1", "message_type": "notification",
+                              "subscription_type": "channel.channel_points_custom_reward_redemption.add" },
+                "payload": { "event": {
+                    "id": "redemption-1", "broadcaster_user_id": "1001", "broadcaster_user_login": "kitdemo",
+                    "user_id": "2002", "user_login": "viewer", "user_name": "Viewer", "user_input": "",
+                    "reward": { "id": "r1", "title": title, "cost": 100 },
+                } },
+            }),
+        );
         while let Ok(m) = ws.read() {
             if matches!(m, Message::Close(_)) {
                 break;
@@ -102,10 +108,15 @@ fn a_twitch_redeem_switches_the_obs_scene_through_the_show() {
     let (socket, twitch_thread) = fake_eventsub("BRB");
     let helix: Arc<dyn HttpTransport> = Arc::new(
         FakeHttp::new()
-            .json(Method::Get, &format!("{OAUTH}/validate"), 200, json!({
-                "client_id": "test-client", "login": "kitdemo", "user_id": "1001",
-                "scopes": ["channel:read:redemptions"], "expires_in": 3600,
-            }))
+            .json(
+                Method::Get,
+                &format!("{OAUTH}/validate"),
+                200,
+                json!({
+                    "client_id": "test-client", "login": "kitdemo", "user_id": "1001",
+                    "scopes": ["channel:read:redemptions"], "expires_in": 3600,
+                }),
+            )
             .json(Method::Post, &format!("{API}/eventsub/subscriptions"), 202, json!({ "data": [] })),
     );
 
@@ -127,27 +138,33 @@ fn a_twitch_redeem_switches_the_obs_scene_through_the_show() {
     let dir = common::new_project();
     let doc = SavedProject::open(dir.path()).expect("the project opens");
     let runner = Arc::new(
-        Executor::new(Box::new(doc), Arc::new(SystemClock::new())).expect("the executor builds").with_services(services),
+        Executor::new(Box::new(doc), Arc::new(SystemClock::new()))
+            .expect("the executor builds")
+            .with_services(services),
     );
     automation.attach(&(Arc::clone(&runner) as Arc<dyn Runner>));
 
     // The person's setup, every step an op.
     person(&runner, "obs.connect", json!({ "port": obs.port() }));
     person(&runner, "show.create", json!({ "id": "main", "name": "Main show" }));
-    person(&runner, "automation.add_graph", json!({
-        "id": "brb",
-        "graph": {
-            "graph": { "name": "Be right back" },
-            "nodes": {
-                "redeem": { "kind": "on.event", "params": { "kind": "redeem", "where": { "reward.title": "BRB" } } },
-                "switch": {
-                    "kind": "op.run",
-                    "params": { "op": "obs.scene.set", "args": { "scene": "BRB" } },
-                    "in": { "in": "redeem.fired" },
+    person(
+        &runner,
+        "automation.add_graph",
+        json!({
+            "id": "brb",
+            "graph": {
+                "graph": { "name": "Be right back" },
+                "nodes": {
+                    "redeem": { "kind": "on.event", "params": { "kind": "redeem", "where": { "reward.title": "BRB" } } },
+                    "switch": {
+                        "kind": "op.run",
+                        "params": { "op": "obs.scene.set", "args": { "scene": "BRB" } },
+                        "in": { "in": "redeem.fired" },
+                    },
                 },
             },
-        },
-    }));
+        }),
+    );
     let started = person(&runner, "automation.start", json!({}));
     assert_eq!(started["graphs"].as_array().map(Vec::len), Some(1), "{started}");
     person(&runner, "twitch.connect", json!({}));
