@@ -3572,6 +3572,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-app"
+version = "0.0.0"
+dependencies = [
+ "getrandom 0.4.3",
+ "omuzaki-core",
+ "omuzaki-doc",
+ "omuzaki-doc-api",
+ "omuzaki-history-api",
+ "omuzaki-mcp",
+ "omuzaki-ops",
+ "omuzaki-ops-api",
+ "rmcp",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "omuzaki-assets-lock"
 version = "0.0.0"
 dependencies = [

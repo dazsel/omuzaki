@@ -1,6 +1,9 @@
 //! A whole journalled session: what the writer makes durable, what the keeper saves, and what opening again finds,
 //! after a clean close and after a crash.
 
+// Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -66,7 +69,7 @@ fn a_closed_session_reopens_from_its_files_with_nothing_to_replay() {
     assert!(journal.admit().is_err(), "a closed journal admits nothing");
     let again = reopen(tmp.path()).unwrap();
     assert!(again.recovery.is_none(), "clean");
-    assert!(again.tail.is_empty());
+    assert_eq!(again.tail, []);
     assert_eq!(again.last_lsn, Lsn(4), "session, two ops, close");
     assert_eq!(again.project.get(&path("project/note")), Some(&json!("two")));
 }
