@@ -6,6 +6,7 @@
 //! | [`rigid`] | `choker`, `bell`, `charm`, `hairpin` and `halo`: small rigid jewellery, the bell, charm and halo on a two-bone spring chain |
 //! | [`horns`] | `horns`: swept back, ram, oni and antler, with an optional ember-crack glow |
 //! | [`headphones`] | `headphones`: a band over the hair, cups at the ears, optional cat ears and mic |
+//! | [`headdress`] | `headdress`: a frilled headband over the hair |
 //! | [`hat`] | `hat`: beret, cap, witch hat, beanie and crown |
 //! | [`glasses`] | `glasses`: round, square, cat-eye and sunglasses |
 //! | [`tail`] | `tail`: fox, cat, dragon and bunny on a spring-bone chain |
@@ -17,6 +18,7 @@
 pub mod attach;
 pub mod glasses;
 pub mod hat;
+pub mod headdress;
 pub mod headphones;
 pub mod horns;
 pub mod rigid;
