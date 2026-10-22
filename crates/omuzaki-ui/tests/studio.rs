@@ -18,7 +18,7 @@ use eframe::egui_wgpu;
 use egui::accesskit::Role;
 use egui::{Key, Modifiers, vec2};
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable as _;
+use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::wgpu::WgpuTestRenderer;
 use omuzaki_char_api::{BuildServices, CharId, RegistryBuilder, paths};
 use omuzaki_doc_api::DocPath;
@@ -31,6 +31,19 @@ use omuzaki_ui::shell::Shell;
 use omuzaki_ui::studio;
 use omuzaki_ui::wiring::{Core, Document, core_on};
 use serde_json::json;
+
+/// Runs frames until `seen` holds: the runner's events reach the shell through its own thread, so the frame they land
+/// in is not fixed. Gives up after a bound that no healthy run comes near.
+fn until(h: &mut Harness<'_, Studio>, what: &str, seen: impl Fn(&Harness<'_, Studio>) -> bool) {
+    for _ in 0..500 {
+        if seen(h) {
+            return;
+        }
+        std::thread::yield_now();
+        h.step();
+    }
+    panic!("never: {what}");
+}
 
 /// The head parameter both actors edit.
 const WIDTH: &str = "cranium/half_width";
@@ -189,17 +202,20 @@ fn an_agents_edit_reaches_the_studio_at_once_and_each_side_undoes_only_its_own()
 
     // The agent's edit, made outside the UI as an MCP tool call is: the shell hears it and History lists it.
     set_width(runner.as_ref(), agent.clone(), start * 1.1);
-    h.run_steps(2);
-    assert!(h.query_by_label_contains("part.set_param").is_some(), "History shows the agent's op");
+    until(&mut h, "History shows the agent's op", |h| {
+        h.query_all_by_label_contains(": part.set_param").next().is_some()
+    });
 
     // The person's own edit, then Ctrl+Z in the studio: theirs is undone, the agent's stays.
     set_width(runner.as_ref(), you(), start * 1.2);
-    h.run_steps(2);
+    until(&mut h, "History shows the person's op", |h| {
+        h.query_all_by_label_contains("You: part.set_param").next().is_some()
+    });
     h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
     h.run_steps(2);
     assert!((width(runner.as_ref()) - start * 1.1).abs() < 1e-6, "the person's undo took back only their own edit");
     assert!(h.query_by_label_contains("Undid").is_some(), "the status bar says what was undone");
-    assert!(h.query_all_by_label_contains("undone").next().is_some(), "History marks the undone step");
+    until(&mut h, "History marks the undone step", |h| h.query_all_by_label_contains("undone").next().is_some());
     assert!(h.query_all_by_label_contains("designer").next().is_some(), "History names the agent as the actor");
     assert!(h.query_all_by_label("You").next().is_some(), "and the person as You");
 
@@ -489,4 +505,64 @@ fn palette_evidence() {
     h.run_steps(2);
     rename_in_palette(&mut h, "Mika");
     save(&mut h, "palette-form-1366x768.png");
+}
+
+#[test]
+fn history_shows_a_steps_details_and_adjust_reopens_it_in_the_palette() {
+    let core = core(Document::empty());
+    let runner = Arc::clone(&core.runner);
+    let mut h = studio(&core, None, vec2(1920.0, 1080.0));
+    h.get_by_role_and_label(Role::Button, "History").click();
+    h.run_steps(2);
+    let start = width(runner.as_ref());
+    set_width(runner.as_ref(), you(), start * 1.2);
+    until(&mut h, "the status bar names what Ctrl+Z would undo", |h| {
+        h.query_by_label_contains("Ctrl+Z undoes part.set_param head").is_some()
+    });
+    let row = h
+        .query_all_by_role(Role::Button)
+        .find(|n| n.accesskit_node().label().is_some_and(|l| l.starts_with("You: part.set_param")))
+        .unwrap_or_else(|| panic!("the person's step is listed"));
+    row.click();
+    h.run_steps(2);
+    assert!(h.query_by_label_contains(&format!("{WIDTH}: ")).is_some(), "the details show the value that changed");
+    // A new popover sizes itself on its first frame and settles on the next ones.
+    h.run_steps(3);
+    h.get_by_role_and_label(Role::Button, "Adjust").click();
+    h.run_steps(3);
+    assert!(h.state().shell.palette_open(), "Adjust opens the palette");
+    assert!(h.query_by_label_contains("Same as MCP tool part_set_param").is_some(), "on the step's own op");
+    let shown: Vec<String> = h.query_all_by_label("value").filter_map(|n| n.accesskit_node().value()).collect();
+    let expected = format!("{:.2}", start * 1.2);
+    assert!(shown.iter().any(|v| v.starts_with(&expected)), "filled with the step's arguments: {shown:?}, {expected}");
+}
+
+/// History at 1920x1080 over the real studio: the person's and an agent's steps, newest first, with the agent's step's
+/// details open beside its row.
+#[test]
+#[ignore = "writes images; run by the visual evidence job"]
+fn history_evidence() {
+    let Ok(out) = std::env::var("OMUZAKI_EVIDENCE_OUT") else { panic!("set OMUZAKI_EVIDENCE_OUT to a folder") };
+    let Some(gpu) = gpu() else { panic!("the evidence needs a Vulkan adapter") };
+    let core = core(Document::empty());
+    let runner = Arc::clone(&core.runner);
+    let mut h = studio(&core, Some(gpu), vec2(1920.0, 1080.0));
+    h.get_by_role_and_label(Role::Button, "History").click();
+    h.run_steps(2);
+    let agent = connect_agent(&core);
+    let start = width(runner.as_ref());
+    set_width(runner.as_ref(), you(), start * 1.05);
+    set_width(runner.as_ref(), agent, start * 1.1);
+    set_width(runner.as_ref(), you(), start * 1.15);
+    until(&mut h, "three steps listed", |h| h.query_all_by_label_contains(": part.set_param").count() == 3);
+    let row = h
+        .query_all_by_role(Role::Button)
+        .find(|n| n.accesskit_node().label().is_some_and(|l| l.starts_with("designer")))
+        .unwrap_or_else(|| panic!("the agent's step is listed"));
+    row.click();
+    // Past the popover's fade-in.
+    h.run_steps(30);
+    let image = h.render().unwrap_or_else(|e| panic!("{e}"));
+    let path = format!("{out}/history-1920x1080.png");
+    image.save(&path).unwrap_or_else(|e| panic!("writing {path}: {e}"));
 }

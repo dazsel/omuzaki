@@ -13,6 +13,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex, Weak};
+use std::time::Instant;
 
 use egui::{
     Align, CentralPanel, Context, Frame, Key, Layout as Flow, Margin, Panel, Popup, Response, RichText, Ui, Vec2,
@@ -25,11 +26,11 @@ use omuzaki_ui_api::registry::{PanelDef, PanelKind, Region, Registry, WorkspaceD
 
 use super::class::{DockMode, Plan, RAIL, STATUS_BAR, TOP_BAR};
 use super::dock::{self, Dock};
+use super::history::{HistoryLog, step_label};
 use super::host::Bodies;
 use super::keys::{self, Action};
 use super::layout::{Known, Layout, PanelId};
 use super::palette::{Command, Palette, Place, PlaceTarget};
-use super::panels::HistoryLog;
 use super::persist::LayoutStore;
 use super::registry;
 use super::requests::{ShellRequest, ShellRequests};
@@ -296,7 +297,7 @@ impl Shell {
         self.top_bar(ui, &plan);
         self.status_bar(ui);
         self.ensure_view(&plan);
-        self.carry_out(&plan);
+        self.carry_out(&ctx, &plan);
         if self.views.get(self.active).is_some_and(|v| v.as_ref().is_some_and(|v| !v.rail.is_empty())) {
             self.rail(ui);
         }
@@ -316,6 +317,12 @@ impl Shell {
             self.palette.close();
             return;
         }
+        let places = self.places();
+        self.palette.open(self.runner.as_ref(), &places, ctx);
+    }
+
+    /// The workspaces and panels the palette finds.
+    fn places(&self) -> Vec<Place> {
         let mut places: Vec<Place> = self
             .workspaces
             .iter()
@@ -324,7 +331,7 @@ impl Shell {
             .collect();
         places
             .extend(self.registry.panels().iter().map(|p| Place { target: PlaceTarget::Panel(p.id), title: p.title }));
-        self.palette.open(self.runner.as_ref(), &places, ctx);
+        places
     }
 
     /// Draws the palette over everything, and does what it chose.
@@ -366,6 +373,7 @@ impl Shell {
         for event in &self.frame_events {
             match event {
                 Event::OpApplied { record, .. } if log.records.last().is_none_or(|last| record.seq > last.seq) => {
+                    log.seen.insert(record.seq, Instant::now());
                     log.records.push(record.clone());
                 }
                 Event::Undone { tx, .. } => {
@@ -378,7 +386,9 @@ impl Shell {
             }
         }
         let over = log.records.len().saturating_sub(HISTORY_PAGE);
-        log.records.drain(..over);
+        for gone in log.records.drain(..over) {
+            log.seen.remove(&gone.seq);
+        }
     }
 
     fn act(&mut self, action: Action) {
@@ -427,8 +437,13 @@ impl Shell {
             Err(error) => HistoryLog { error: Some(error.message), ..HistoryLog::default() },
         };
         // Which steps are undone is known only from the events, so it outlives a read of the log.
-        let undone = self.models.get_mut::<HistoryLog>().map(|old| std::mem::take(&mut old.undone));
-        let log = HistoryLog { undone: undone.unwrap_or_default(), ..log };
+        let old = self
+            .models
+            .get_mut::<HistoryLog>()
+            .map(|old| (std::mem::take(&mut old.undone), std::mem::take(&mut old.seen)));
+        let (undone, mut seen) = old.unwrap_or_default();
+        seen.retain(|seq, _| log.records.iter().any(|r| r.seq == *seq));
+        let log = HistoryLog { undone, seen, ..log };
         self.models.insert(log);
     }
 
@@ -670,7 +685,7 @@ impl Shell {
     }
 
     /// Carries out what panels and the app asked for since the last frame ([`ShellRequests`]).
-    fn carry_out(&mut self, plan: &Plan) {
+    fn carry_out(&mut self, ctx: &Context, plan: &Plan) {
         for request in self.requests.take() {
             match request {
                 ShellRequest::Workspace(id) => {
@@ -681,6 +696,10 @@ impl Shell {
                 }
                 ShellRequest::ShowPanel(id) => self.show_panel(id),
                 ShellRequest::ClosePanel(id) => self.close_panel(id),
+                ShellRequest::Adjust { op, args } => {
+                    let places = self.places();
+                    self.palette.adjust(self.runner.as_ref(), &places, ctx, &op, &args);
+                }
             }
         }
     }
@@ -793,12 +812,14 @@ impl Shell {
         let ctx = ui.ctx().clone();
         let ds = ds(&ctx);
         let frame = Frame::new().fill(ds.theme.bg2).inner_margin(Margin::symmetric(8, 0));
-        let undo = match &self.note {
-            Note::Nothing | Note::NothingToUndo => say(&ctx, Word::StatusNothingToUndo, &[]),
-            Note::Undid(label) => say(&ctx, Word::StatusUndid, &[("label", label)]),
-            Note::Redid(label) => say(&ctx, Word::StatusRedid, &[("label", label)]),
-            Note::NothingToRedo => say(&ctx, Word::StatusNothingToRedo, &[]),
-            Note::Failed(why) => why.clone(),
+        let next = self.models.get::<HistoryLog>().and_then(|log| log.next_undo(&self.actor)).map(step_label);
+        let undo = match (&self.note, next) {
+            (Note::Nothing | Note::NothingToUndo, Some(label)) => say(&ctx, Word::StatusCanUndo, &[("label", &label)]),
+            (Note::Nothing | Note::NothingToUndo, None) => say(&ctx, Word::StatusNothingToUndo, &[]),
+            (Note::Undid(label), _) => say(&ctx, Word::StatusUndid, &[("label", label)]),
+            (Note::Redid(label), _) => say(&ctx, Word::StatusRedid, &[("label", label)]),
+            (Note::NothingToRedo, _) => say(&ctx, Word::StatusNothingToRedo, &[]),
+            (Note::Failed(why), _) => why.clone(),
         };
         Panel::bottom("shell_status").exact_size(STATUS_BAR).frame(frame).show(ui, |ui| {
             ui.horizontal_centered(|ui| {

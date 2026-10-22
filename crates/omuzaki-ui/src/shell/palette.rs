@@ -201,6 +201,18 @@ impl Palette {
         };
     }
 
+    /// Opens the palette on `op`'s form, filled with `args` (History's Adjust): the op as it ran, to change and run
+    /// again. Opens on the search when no such op is registered.
+    pub fn adjust(&mut self, runner: &dyn Runner, places: &[Place], ctx: &Context, op: &str, args: &Value) {
+        self.open(runner, places, ctx);
+        let Some(index) = self.ops.iter().position(|info| info.name == op) else { return };
+        let Some(info) = self.ops.get(index) else { return };
+        let form = Form::from_schema(&info.schema);
+        let value = form.value_from_json(args);
+        self.args = Some(Args { op: index, form, value, preview: Preview::default() });
+        self.focus_input = false;
+    }
+
     /// Closes the palette and forgets what was typed (the recents stay).
     pub fn close(&mut self) {
         *self = Self {

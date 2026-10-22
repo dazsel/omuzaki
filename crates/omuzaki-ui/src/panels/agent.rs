@@ -17,7 +17,7 @@ use crate::ds::icons;
 use crate::ds::theme::{Ds, ds};
 use crate::ds::widgets::approval_card::{ApprovalCard, Decision as CardDecision};
 use crate::ds::widgets::{Button, EmptyState};
-use crate::shell::panels::HistoryLog;
+use crate::shell::history::HistoryLog;
 
 /// The agent sessions of the app's executor, shared with panels as a view model.
 #[derive(Clone)]

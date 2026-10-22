@@ -26,3 +26,12 @@ steps = [
     { run = ["cargo", "test", "--locked", "-p", "omuzaki-ui", "--test", "studio", "--", "--ignored", "--exact", "palette_evidence"] },
 ]
 images = ["palette-search-1366x768.png", "palette-form-1366x768.png"]
+
+[[case]]
+name = "history"
+description = "History over the real studio at 1920x1080 (spine/ui, #446): the person's and an agent's steps newest first, each with who and when, the status bar naming what Ctrl+Z undoes, and the agent's step's details open beside its row."
+env = { OMUZAKI_EVIDENCE_OUT = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-ui", "--test", "studio", "--", "--ignored", "--exact", "history_evidence"] },
+]
+images = ["history-1920x1080.png"]
