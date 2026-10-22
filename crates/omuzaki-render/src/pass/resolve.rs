@@ -9,8 +9,9 @@
 //! glow `Bloom` published and the blurred image `DepthOfField` published are folded in per tap (so they cost one read
 //! each, not an extra pass over an HDR image), and film grain, the colour grade and a one-level dither are applied to
 //! the averaged *straight* display colour. Alpha is never touched by them, so a transparent pixel stays transparent and
-//! the output is correct whether the target stores straight or premultiplied colour. `Quality::post_effects` off means
-//! none of this runs and the pass is exactly exposure and tone mapping.
+//! the output is correct whether the target stores straight or premultiplied colour. Each of `Quality::post_effects`'
+//! switches gates its own effect; with all three off none of this runs and the pass is exactly exposure and tone
+//! mapping.
 //!
 //! The dither (triangular, one output level, only while an effect is on) is what keeps a bloom's long fall-off and a
 //! graded gradient from banding in 8 bits; grain and dither are seeded from `FrameInfo::index` and the pixel alone, so a
@@ -325,7 +326,7 @@ fn params_for(cx: &PassCx<'_>, glow: bool, depth_of_field: bool, backdrop: Backd
     let (internal_f, target_f) = (internal.as_vec2(), target.as_vec2());
     let ratio = internal_f / target_f;
 
-    let effects = cx.frame.quality.post_effects;
+    let effects = cx.frame.quality.post_effects.grain_and_grade;
     let grade = effects.then(|| grade_to_apply(post.grade)).flatten();
     let grain = effects.then(|| grain_to_apply(post.grain)).flatten();
     let any = glow || depth_of_field || grade.is_some() || grain.is_some();

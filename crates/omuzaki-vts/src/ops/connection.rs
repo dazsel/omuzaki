@@ -40,7 +40,8 @@ pub struct Connect {
 pub struct Disconnect {}
 
 /// Report the bridge to `VTube Studio`: its state, VTS's version and frame rate, the loaded model, its hotkeys, the
-/// parameters another plugin owns, the expressions the bridge switched on, and the loaded model's mapping.
+/// parameters another plugin owns, the expressions the bridge switched on, the loaded model's mapping, the custom
+/// `Omuzaki*` parameters to map in VTS and the VTS inputs Omuzaki may feed.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(extend("examples" = [{}]))]
@@ -152,7 +153,13 @@ impl Op for Status {
             answer["port"] = json!(config.port);
             answer["instance"] = json!(config.instance);
         }
-        answer["parameters"] = json!(service.channel_map().params().count());
+        let map = service.channel_map();
+        answer["parameters"] = json!(map.params().count());
+        // The custom parameters a person maps in VTS, and the VTS inputs Omuzaki may feed (each on only by choice).
+        let custom: Vec<&str> = map.params().filter(|p| !p.default_input).map(|p| p.name.as_str()).collect();
+        answer["custom_parameters"] = json!(custom);
+        let defaults: Vec<Value> = map.defaults().map(|(name, on)| json!({ "name": name, "on": on })).collect();
+        answer["default_inputs"] = json!(defaults);
         if let BridgeStatus::Connected(c) = &status
             && let Some(model) = &c.model
         {

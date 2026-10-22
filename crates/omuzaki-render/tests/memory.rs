@@ -24,7 +24,7 @@ fn renderers() -> [(&'static str, Box<dyn Renderer>); 2] {
 }
 
 fn plain() -> Quality {
-    Quality { samples: 1, render_scale: 1.0, post_effects: false, ..Quality::offline() }
+    Quality { samples: 1, render_scale: 1.0, post_effects: false.into(), ..Quality::offline() }
 }
 
 /// What `gpu_bytes` grows by when `mesh` is created with `options` and drawn once by one instance, which blends its

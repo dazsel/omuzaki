@@ -149,6 +149,13 @@ fn connect_stores_the_token_and_status_reports_the_model() {
     assert_eq!(status["hotkeys"].as_array().map(Vec::len), Some(2));
     assert_eq!(status["mapping"], json!([]));
     assert!(status["parameters"].as_u64().unwrap() > 0);
+    // The custom parameters to map in VTS, and the VTS inputs Omuzaki may feed, each off until a person turns it on.
+    let custom = status["custom_parameters"].as_array().unwrap();
+    assert!(!custom.is_empty() && custom.iter().all(|n| n.as_str().unwrap().starts_with("Omuzaki")), "{custom:?}");
+    let inputs = status["default_inputs"].as_array().unwrap();
+    assert!(inputs.iter().any(|d| d["name"] == "MouthOpen"), "{inputs:?}");
+    let on = inputs.iter().filter(|d| d["on"] == true).count();
+    assert_eq!(status["parameters"].as_u64(), Some((custom.len() + on) as u64), "the custom ones and the inputs on");
 
     // Connecting again is a no-op on the same session, and answers at once.
     let again = rig.call("vts.connect", json!({ "port": rig.mock.port() })).unwrap();

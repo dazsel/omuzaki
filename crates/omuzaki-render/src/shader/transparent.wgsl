@@ -17,11 +17,15 @@ fn fs_blend(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<
         let facing = normalize(in.world_normal);
         let face = select(-1.0, 1.0, front);
         colour = mtoon_colour(albedo.rgb, uv, facing * face, in.world_position, in.colour, face);
+        colour += back_light_rim(facing * face, in.world_position);
     } else if (material.flags.y == SHADING_TOON) {
         let facing = normalize(in.world_normal);
         let n = select(-facing, facing, front);
         colour = toon_colour(program_albedo(albedo.rgb, program), n, in.world_position);
         colour = program_light(colour, n, view_direction(in.world_position), program);
+        if (material.rim.w > 0.0) {
+            colour += back_light_rim(n, in.world_position);
+        }
     }
     // Fog fades the surface colour only; the alpha still decides how much of it covers what is behind.
     return vec4<f32>(apply_fog(colour, in.world_position), program_alpha(program, albedo.a));

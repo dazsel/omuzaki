@@ -45,6 +45,7 @@ pub mod fit_bones;
 pub mod fit_decimate;
 pub mod fit_meshes;
 pub mod fit_texture;
+mod fit_texture_jpeg_scan;
 pub mod gather;
 pub mod limits;
 pub mod msg;
