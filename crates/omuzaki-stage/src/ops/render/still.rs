@@ -305,15 +305,20 @@ pub fn encode_png(image: &Image) -> Result<Vec<u8>, StageError> {
         let reason = format!("{} bytes for a {width}x{height} RGBA image (needs {expected:?})", image.rgba8.len());
         return Err(StageError::render("the PNG", RenderError::invalid("image", reason)));
     }
-    let straight = match image.alpha {
-        AlphaEncoding::Straight => image.rgba8.clone(),
-        AlphaEncoding::Premultiplied => unpremultiply(&image.rgba8),
-    };
+    let straight = straight_rgba(image);
     let mut bytes = Vec::new();
     PngEncoder::new(&mut bytes)
         .write_image(&straight, width, height, ExtendedColorType::Rgba8)
         .map_err(|error| StageError::render("the PNG", RenderError::invalid("image", error.to_string())))?;
     Ok(bytes)
+}
+
+/// `image`'s pixels with straight alpha: as they are, or unpremultiplied ([`unpremultiply`]).
+pub fn straight_rgba(image: &Image) -> Vec<u8> {
+    match image.alpha {
+        AlphaEncoding::Straight => image.rgba8.clone(),
+        AlphaEncoding::Premultiplied => unpremultiply(&image.rgba8),
+    }
 }
 
 /// The straight-alpha pixels of premultiplied `rgba8`: each colour channel `c` with alpha `a` becomes `c * 255 / a`,
