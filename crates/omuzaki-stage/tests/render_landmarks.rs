@@ -109,7 +109,9 @@ fn a_face_turned_away_from_the_camera_reports_no_landmarks() {
 }
 
 /// The head-shape profiles blended from `round-u` toward `egg-oval` in five steps (outline and layout together, as
-/// `ShapeProfiles::blend` gives them): the rendered eye-to-chin drop over the IOD moves one way at every step.
+/// `ShapeProfiles::blend` gives them): the rendered eye-to-chin drop over the IOD moves one way at every step. The points
+/// are projected from the geometry, not read from pixels, so the live quality's 2 x 2 supersampling reports the same
+/// points as offline's 4 x 4 at a quarter of the mock's work (#2300).
 #[test]
 fn blending_round_u_toward_egg_oval_moves_the_rendered_drop_one_way() {
     use omuzaki_char::head::presets::ShapeProfiles;
@@ -122,8 +124,11 @@ fn blending_round_u_toward_egg_oval_moves_the_rendered_drop_one_way() {
         node["parts"]["head"]["params"]["outline"] = serde_json::to_value(profile.outline).unwrap();
         node["face"]["layout"] = serde_json::to_value(profile.layout).unwrap();
         let harness = Harness::new(TestDoc(MemDoc::from_value(root)));
-        let result =
-            run(&harness, json!({ "character": "standard", "preset": "measure", "size": [768, 768] })).unwrap();
+        let result = run(
+            &harness,
+            json!({ "character": "standard", "preset": "measure", "size": [768, 768], "quality": "live" }),
+        )
+        .unwrap();
         let face = front_face(&result, "standard");
         drops.push((face.chin[1] - face.eye_right[1].midpoint(face.eye_left[1])) / iod(&face));
     }

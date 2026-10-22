@@ -11,13 +11,16 @@ use std::collections::BTreeMap;
 
 use omuzaki_char_api::{BuildOptions, BuildServices, CharId, CharacterBuilder, RegistryBuilder};
 use omuzaki_core::glam::{Affine3A, Vec3};
-use omuzaki_render_api::{Background, Bloom, Colour, ColourGrade, DepthOfField, FilmGrain, Projection, Tonemap};
+use omuzaki_render_api::{
+    BackdropFit, Background, Bloom, Colour, ColourGrade, DepthOfField, FilmGrain, Fog, Projection, Tonemap,
+};
 use omuzaki_stage::StageError;
 use omuzaki_stage::scene::landmarks::Landmarks;
 use omuzaki_stage::scene::resolve::{Changes, CheckedScene, Figure, ResolvedScene};
 use omuzaki_stage_api::{
-    Anchor, Backdrop, BloomDef, CameraDef, CameraId, CastMember, DepthOfFieldDef, Focus, FocusSubject, Framing,
-    GradeDef, GroundKind, LightDef, LightId, LightShape, MemberId, SceneDef, SceneSettings,
+    Anchor, Backdrop, Bars, BloomDef, CameraDef, CameraId, CastMember, DepthOfFieldDef, EnvironmentDef,
+    EnvironmentSource, Focus, FocusSubject, FogDef, Framing, GradeDef, GroundKind, LightDef, LightId, LightShape,
+    MemberId, SceneDef, SceneSettings,
 };
 
 thread_local! {
@@ -276,7 +279,8 @@ fn each_row_of_the_mapping() {
     def.scene.ground.radius = Some(2.0);
     def.scene.ground.opacity = 0.5;
     let out = resolved(&def, &figures);
-    assert_eq!(out.background, Background::Solid { colour: Colour::rgb(0, 177, 64) });
+    let green = Colour::rgb(0, 177, 64);
+    assert_eq!(out.background, Background::Gradient { top: green, bottom: green }, "shown as authored");
     assert_eq!(out.post.exposure, 1.5);
     assert_eq!(out.post.tonemap, Tonemap::None);
     assert_eq!(out.post.bloom, Some(Bloom { strength: 0.4, radius: 0.3, threshold: 0.8 }));
@@ -338,6 +342,8 @@ fn only_flag(edit: fn(&mut SceneDef), pick: fn(&Changes) -> bool) {
         changes.post,
         changes.ground,
         changes.skin_floor,
+        changes.fog,
+        changes.environment,
     ];
     assert_eq!(flags.iter().filter(|f| **f).count(), 1, "only one flag: {changes:?}");
     assert_eq!(allocations, 0);
@@ -620,4 +626,125 @@ fn a_figure_root_lifted_in_y_is_refused() {
     let mut level = good.clone();
     level.get_mut(&member("kiri")).unwrap().root = Affine3A::from_translation(Vec3::new(1.0, 1e-6, 1.0));
     assert!(out.resolve_into(checked(&def), &level, ASPECT).is_ok());
+}
+
+// ---- phase 2: fog, the environment and its backdrop (#931) ----
+
+fn fog() -> FogDef {
+    FogDef { colour: Colour::hex(0x002a_2238), near: 2.0, far: 9.0 }
+}
+
+#[test]
+fn fog_is_in_subject_units_at_two_statures() {
+    let mut def = scene();
+    def.lighting.fog = Some(fog());
+    for height_m in [0.966, 1.714] {
+        let mut figures = figures([0.0, 0.0]);
+        for figure in figures.values_mut() {
+            figure.height_m = height_m;
+        }
+        let got = resolved(&def, &figures).fog.unwrap();
+        let want = Fog { colour: Colour::hex(0x002a_2238), near: 2.0 * height_m, far: 9.0 * height_m };
+        assert!(
+            got.colour == want.colour && (got.near - want.near).abs() < 1e-5 && (got.far - want.far).abs() < 1e-5,
+            "{height_m} m: {got:?} vs {want:?}"
+        );
+    }
+}
+
+#[test]
+fn the_environment_backdrop_shows_the_environment_or_the_rigs_colour_without_one() {
+    let (mut def, figures) = (scene(), figures([0.0, 0.0]));
+    def.scene.backdrop = Backdrop::Environment {};
+    def.lighting.background = Colour::hex(0x0040_3020);
+    assert_eq!(resolved(&def, &figures).background, Background::Solid { colour: Colour::hex(0x0040_3020) });
+    def.lighting.environment = Some(EnvironmentDef { intensity: 0.6, rotation: 45.0, ..EnvironmentDef::default() });
+    let out = resolved(&def, &figures);
+    assert_eq!(out.background, Background::Environment);
+    let environment = out.environment.unwrap();
+    assert_eq!((environment.intensity, environment.rotation_deg, environment.toon_ramp), (0.6, 45.0, true));
+    assert_eq!(environment.source, EnvironmentDef::default().source);
+}
+
+#[test]
+fn fog_and_environment_values_are_value_only_and_allocate_nothing() {
+    fn with_environment(d: &mut SceneDef) {
+        d.lighting.environment = Some(EnvironmentDef::default());
+        d.lighting.fog = Some(fog());
+    }
+    let (mut def, figures) = (scene(), figures([0.0, 0.0]));
+    with_environment(&mut def);
+    let mut out = resolved(&def, &figures);
+    for (edit, pick) in [
+        (
+            (|d: &mut SceneDef| d.lighting.fog.as_mut().unwrap().far = 12.0) as fn(&mut SceneDef),
+            (|c: &Changes| c.fog) as fn(&Changes) -> bool,
+        ),
+        (|d| d.lighting.environment.as_mut().unwrap().intensity = 0.3, |c| c.environment && !c.sky),
+        (|d| d.lighting.environment.as_mut().unwrap().rotation = 90.0, |c| c.environment && !c.sky),
+    ] {
+        edit(&mut def);
+        let proof = checked(&def);
+        let (changes, allocations) = counted(|| out.resolve_into(proof, &figures, ASPECT).unwrap());
+        assert!(pick(&changes) && changes.value_only(), "{changes:?}");
+        assert_eq!(allocations, 0);
+    }
+}
+
+#[test]
+fn a_new_sky_is_not_value_only() {
+    let (mut def, figures) = (scene(), figures([0.0, 0.0]));
+    def.lighting.environment = Some(EnvironmentDef::default());
+    let mut out = resolved(&def, &figures);
+    def.lighting.environment = Some(EnvironmentDef {
+        source: EnvironmentSource::Sky { zenith: Colour::WHITE, horizon: Colour::WHITE, ground: Colour::BLACK },
+        ..EnvironmentDef::default()
+    });
+    let changes = out.resolve_into(checked(&def), &figures, ASPECT).unwrap();
+    assert!(changes.environment && changes.sky && !changes.value_only(), "{changes:?}");
+    def.lighting.environment = None;
+    let changes = out.resolve_into(checked(&def), &figures, ASPECT).unwrap();
+    assert!(changes.sky && out.environment.is_none(), "removing it is a change of source too");
+}
+
+#[test]
+fn a_gradient_and_an_image_resolve_to_pictures_with_the_rigs_colour_in_the_bars_by_default() {
+    let (mut def, figures) = (scene(), figures([0.0, 0.0]));
+    let (top, bottom) = (Colour::hex(0x001d_2b4f), Colour::hex(0x00e8_a87c));
+    def.scene.backdrop = Backdrop::Gradient { top, bottom };
+    assert_eq!(resolved(&def, &figures).background, Background::Gradient { top, bottom });
+
+    let asset = omuzaki_store_api::ContentHash::of(b"a picture");
+    def.lighting.background = Colour::hex(0x0040_3020);
+    def.scene.backdrop = Backdrop::Image { asset, fit: BackdropFit::Contain, bars: None };
+    let out = resolved(&def, &figures);
+    let rig = Colour::hex(0x0040_3020);
+    assert_eq!(out.background, Background::Gradient { top: rig, bottom: rig }, "the bars until the stage has it");
+    let image = out.backdrop_image.unwrap();
+    assert_eq!((image.asset, image.fit, image.top, image.bottom), (asset, BackdropFit::Contain, rig, rig));
+
+    def.scene.backdrop = Backdrop::Image { asset, fit: BackdropFit::Cover, bars: Some(Bars { top, bottom }) };
+    let image = resolved(&def, &figures).backdrop_image.unwrap();
+    assert_eq!((image.fit, image.top, image.bottom), (BackdropFit::Cover, top, bottom));
+}
+
+#[test]
+fn an_images_fit_and_bars_are_values_and_its_asset_is_not() {
+    let (mut def, figures) = (scene(), figures([0.0, 0.0]));
+    let asset = omuzaki_store_api::ContentHash::of(b"a picture");
+    def.scene.backdrop = Backdrop::Image { asset, fit: BackdropFit::Cover, bars: None };
+    let mut out = resolved(&def, &figures);
+    def.scene.backdrop = Backdrop::Image { asset, fit: BackdropFit::Contain, bars: None };
+    let proof = checked(&def);
+    let (changes, allocations) = counted(|| out.resolve_into(proof, &figures, ASPECT).unwrap());
+    assert!(changes.backdrop && !changes.image && changes.value_only(), "{changes:?}");
+    assert_eq!(allocations, 0);
+
+    let other = omuzaki_store_api::ContentHash::of(b"another picture");
+    def.scene.backdrop = Backdrop::Image { asset: other, fit: BackdropFit::Contain, bars: None };
+    let changes = out.resolve_into(checked(&def), &figures, ASPECT).unwrap();
+    assert!(changes.image && !changes.value_only(), "{changes:?}");
+    def.scene.backdrop = Backdrop::Transparent {};
+    let changes = out.resolve_into(checked(&def), &figures, ASPECT).unwrap();
+    assert!(changes.image && out.backdrop_image.is_none(), "removing it is a change of picture too");
 }

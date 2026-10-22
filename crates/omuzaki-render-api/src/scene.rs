@@ -9,13 +9,17 @@
 //!   rebuilding the scene allocates nothing.
 
 use omuzaki_core::glam::camera::rh::proj::directx;
-use omuzaki_core::glam::{Mat4, Vec3};
+use omuzaki_core::glam::{Mat3, Mat4, Vec2, Vec3, Vec4};
 use omuzaki_core::time::Seconds;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::limits::{MAX_JOINTS, MAX_LIGHTS, MAX_MORPH_WEIGHTS};
-use crate::{Colour, EnvironmentUse, MaterialId, MeshId, RenderError};
+use crate::{Colour, EnvironmentUse, MaterialId, MeshId, RenderError, TextureId};
+
+/// The vertical field of view, in degrees, through which an orthographic camera sees an environment backdrop
+/// ([`Camera::sky_rays`]).
+pub const SKY_LENS_DEG: f32 = 50.0;
 
 /// How the camera projects the world.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -99,6 +103,20 @@ impl Camera {
                 directx::orthographic(-half_w, half_w, -half_h, half_h, near, far)
             }
         }
+    }
+
+    /// The world-space view direction through each point of the picture, as [`Background::Environment`] sees the sky:
+    /// `rays * (x, y, 1)` for a point at normalised device coordinates `(x, y)` (both `-1..=1`, +Y up), not normalised.
+    /// A perspective camera's own lens; an orthographic camera's view direction through [`SKY_LENS_DEG`], so a sprite
+    /// shot still shows the sky's shape. Every renderer uses this one definition.
+    pub fn sky_rays(&self, aspect: f32) -> Mat3 {
+        let fov = match self.projection {
+            Projection::Perspective { fov_y_deg, .. } => fov_y_deg,
+            Projection::Orthographic { .. } => SKY_LENS_DEG,
+        };
+        let tan = (fov.to_radians() * 0.5).tan();
+        let axes = Mat3::from_mat4(self.transform);
+        Mat3::from_cols(axes.x_axis * (tan * aspect), axes.y_axis * tan, -axes.z_axis)
     }
 
     /// Checks that the transform and projection are usable.
@@ -301,9 +319,9 @@ impl Instance {
     }
 }
 
-/// What is behind everything.
-#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+/// What is behind everything. A per-frame value holding a texture handle, so it has no wire form: the scene document's
+/// backdrop is what gets saved.
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Background {
     /// A flat colour (alpha allowed).
     Solid {
@@ -312,6 +330,75 @@ pub enum Background {
     },
     /// Nothing: the frame's alpha shows the character alone (BR-01).
     Transparent,
+    /// The scene's [`environment`](Scene::environment) seen behind everything (LK-08, scenes D2): the sky's radiance
+    /// in each pixel's view direction, turned and scaled as the scene uses it, opaque. Like a solid colour it goes
+    /// through exposure and tone mapping and is not fogged. A perspective camera sees the sky through its own lens; an
+    /// orthographic one, which has no lens, sees it through a 50° one looking the same way. Without an environment in
+    /// the scene it is black.
+    Environment,
+    /// A vertical gradient from `top` at the frame's top edge to `bottom` at its bottom edge (scenes D2). Like
+    /// [`Texture`](Self::Texture), and unlike `Solid`, it is a display-referred picture shown as authored: the frame is
+    /// rendered over nothing, exposed and tone mapped, and then laid over the gradient in sRGB-encoded display values,
+    /// exactly as a compositor (OBS) lays a transparent output over a picture. The colours blend in those encoded
+    /// values, as CSS gradients and image editors do, with their alphas premultiplied.
+    Gradient {
+        /// The colour along the top edge.
+        top: Colour,
+        /// The colour along the bottom edge.
+        bottom: Colour,
+    },
+    /// A colour texture shown behind everything as authored, like [`Gradient`](Self::Gradient): `fit` places it in the
+    /// frame, and wherever it leaves the frame uncovered (`contain` on a frame of another shape) the gradient from
+    /// `top` to `bottom` shows; set both to one colour for a flat letterbox. The texture is read through its mips with
+    /// its own alpha, so a texture with holes shows the gradient through them.
+    Texture {
+        /// The texture, made with [`Renderer::create_texture`](crate::Renderer::create_texture); an sRGB colour
+        /// texture is what a loaded image is.
+        texture: TextureId,
+        /// How it fills the frame.
+        fit: BackdropFit,
+        /// The letterbox gradient's top colour.
+        top: Colour,
+        /// The letterbox gradient's bottom colour.
+        bottom: Colour,
+    },
+}
+
+/// How a [`Background::Texture`] meets a frame of another shape.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BackdropFit {
+    /// Fills the frame, centred, cropping whatever overflows: no letterbox.
+    #[default]
+    Cover,
+    /// Shows the whole texture, centred, as large as fits: the gradient shows in the bars.
+    Contain,
+}
+
+impl BackdropFit {
+    /// Where the frame's pixel centre `at` (in `0..1` across the frame, rows top to bottom) reads a texture of aspect
+    /// `texture` (width over height) in a frame of aspect `frame`: the texture coordinates, which leave `0..1` in the
+    /// bars of `contain`. The one placement both renderers use.
+    pub fn uv(self, at: Vec2, frame: f32, texture: f32) -> Vec2 {
+        // The texture's size in frame units: one side spans the frame, the other keeps its aspect.
+        let wider = texture > frame;
+        let span = match (self, wider) {
+            (Self::Cover, true) | (Self::Contain, false) => Vec2::new(texture / frame, 1.0),
+            (Self::Cover, false) | (Self::Contain, true) => Vec2::new(1.0, frame / texture),
+        };
+        (at - Vec2::splat(0.5)) / span + Vec2::splat(0.5)
+    }
+}
+
+/// The colour a [`Background::Gradient`] shows at `down` (`0` at the top edge, `1` at the bottom): the two colours'
+/// sRGB-encoded values, premultiplied by their alphas, blended linearly. Returns the premultiplied encoded colour and
+/// the alpha. The one definition both renderers use.
+pub fn gradient_at(top: Colour, bottom: Colour, down: f32) -> Vec4 {
+    let encoded = |c: Colour| {
+        let a = c.alpha();
+        (Vec3::new(f32::from(c.r), f32::from(c.g), f32::from(c.b)) / 255.0 * a).extend(a)
+    };
+    encoded(top).lerp(encoded(bottom), down.clamp(0.0, 1.0))
 }
 
 impl Default for Background {
@@ -753,13 +840,38 @@ mod tests {
         assert_eq!(serde_json::from_value::<Post>(serde_json::to_value(post).unwrap()).unwrap(), post);
         let fog = Fog { colour: Colour::hex(0x002a_2238), near: 2.0, far: 9.0 };
         assert_eq!(serde_json::from_value::<Fog>(serde_json::to_value(fog).unwrap()).unwrap(), fog);
-        for schema in [
-            schemars::schema_for!(Light),
-            schemars::schema_for!(Post),
-            schemars::schema_for!(Background),
-            schemars::schema_for!(Fog),
-        ] {
+        for schema in [schemars::schema_for!(Light), schemars::schema_for!(Post), schemars::schema_for!(Fog)] {
             assert!(serde_json::to_value(schema).is_ok());
         }
+    }
+
+    #[test]
+    fn cover_crops_and_contain_letterboxes_a_texture_of_another_shape() {
+        let (wide, tall) = (16.0 / 9.0, 9.0 / 16.0);
+        let corner = Vec2::ZERO;
+        // A 16:9 picture in a 9:16 frame: cover keeps the middle slice, contain bars above and below.
+        let cover = BackdropFit::Cover.uv(corner, tall, wide);
+        assert!((cover.y - 0.0).abs() < 1e-6 && cover.x > 0.0, "cover crops the sides: {cover}");
+        let contain = BackdropFit::Contain.uv(corner, tall, wide);
+        assert!((contain.x - 0.0).abs() < 1e-6 && contain.y < 0.0, "contain bars the top: {contain}");
+        // The centre is the centre either way, and a picture of the frame's own shape fills it exactly.
+        for fit in [BackdropFit::Cover, BackdropFit::Contain] {
+            assert!((fit.uv(Vec2::splat(0.5), tall, wide) - Vec2::splat(0.5)).length() < 1e-6);
+            assert!((fit.uv(Vec2::new(0.25, 0.75), wide, wide) - Vec2::new(0.25, 0.75)).length() < 1e-6);
+        }
+        // A 9:16 picture in a 16:9 frame: contain bars the sides, by the share the picture leaves.
+        let contain = BackdropFit::Contain.uv(Vec2::new(0.5 - 0.5 * tall / wide, 0.5), wide, tall);
+        assert!(contain.x.abs() < 1e-5, "the picture's left edge sits where its width ends: {contain}");
+    }
+
+    #[test]
+    fn a_gradient_blends_encoded_premultiplied_colours() {
+        let (black, white) = (Colour::BLACK, Colour::WHITE);
+        assert_eq!(gradient_at(white, black, 0.0), Vec4::ONE);
+        assert_eq!(gradient_at(white, black, 1.0), Vec4::W);
+        assert_eq!(gradient_at(white, black, 0.5), Vec4::new(0.5, 0.5, 0.5, 1.0), "half way in encoded values");
+        let clear = Colour::rgba(255, 0, 0, 0);
+        assert_eq!(gradient_at(clear, white, 0.5), Vec4::splat(0.5), "a clear end adds no colour of its own");
+        assert_eq!(gradient_at(white, black, 7.0), Vec4::W, "outside 0..1 holds the end colour");
     }
 }

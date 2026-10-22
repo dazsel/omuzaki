@@ -320,9 +320,8 @@ impl Renderer for WgpuRenderer {
             self.check_size(*size, "environment size")?;
         }
         let shared = &self.shared;
-        let baked = shared
-            .gpu
-            .scoped("an environment", || GpuEnvironment::create(&shared.gpu, &shared.layouts.environment, desc))?;
+        let baked =
+            shared.gpu.scoped("an environment", || GpuEnvironment::create(&shared.gpu, &shared.layouts, desc))?;
         let (index, generation) = self.resources.environments.insert(baked);
         Ok(EnvironmentId::from_parts(index, generation))
     }
