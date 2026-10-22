@@ -291,7 +291,7 @@ fn the_agent_panel_shows_a_connected_agent_and_the_person_can_pause_it() {
     h.run_steps(2);
     assert!(h.query_all_by_label_contains("designer").next().is_some(), "the session is listed by its client name");
 
-    h.get_by_label("Pause").click();
+    h.get_by_label("Pause designer").click();
     h.run_steps(2);
     let start = width(core.runner.as_ref());
     let request = Request {
@@ -306,9 +306,9 @@ fn the_agent_panel_shows_a_connected_agent_and_the_person_can_pause_it() {
     };
     assert!(core.runner.run(request).is_err(), "a paused agent's request does not run");
     assert!((width(core.runner.as_ref()) - start).abs() < 1e-9);
-    h.get_by_label("Resume").click();
+    h.get_by_label("Resume designer").click();
     h.run_steps(2);
-    assert!(h.query_by_label("Pause").is_some(), "resumed, it can be paused again");
+    assert!(h.query_by_label("Pause designer").is_some(), "resumed, it can be paused again");
 }
 
 #[test]
