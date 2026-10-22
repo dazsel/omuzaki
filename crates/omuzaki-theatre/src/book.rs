@@ -312,6 +312,10 @@ impl TheatreBook {
     }
 
     /// The book of the project in `dir`: read from [`BOOK_FILE`] when there is one, and saved there after each change.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the app's own state file in the project folder it opened, never a path an op names"
+    )]
     pub fn for_project(dir: &Path) -> Self {
         let file = dir.join(BOOK_FILE);
         let book = std::fs::read(&file)
@@ -354,6 +358,10 @@ impl TheatreBook {
 
     /// Saves the book to the project's file if it changed since the last save. Never call it from an op: it writes a
     /// file, and ops run under the executor's lock.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the app's own state file in the project folder it opened, never a path an op names"
+    )]
     pub fn flush(&self) {
         let revision = self.revision();
         if self.saved.swap(revision, Ordering::AcqRel) == revision {
