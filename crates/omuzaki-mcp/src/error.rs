@@ -68,6 +68,13 @@ pub enum ServerError {
     /// A stored access token record is a tombstone: the token was revoked and stays revoked.
     #[error("the access token `{0}` was revoked and can't be admitted again")]
     TokenRevoked(String),
+    /// The session registry would not open a session for an in-app client (an unknown parent, or a ceiling above the
+    /// person's or the parent's), so no stream was created.
+    #[error("couldn't open a session: {0}")]
+    SessionRefused(#[source] omuzaki_ops_api::OpError),
+    /// An in-app link needs the session registry ([`McpOptions::with_sessions`](crate::McpOptions::with_sessions)).
+    #[error("this server has no session registry, so it can't open an in-app session")]
+    NoRegistry,
     /// The transport failed before the MCP handshake completed.
     #[error("MCP handshake failed: {0}")]
     Handshake(String),

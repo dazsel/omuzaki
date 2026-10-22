@@ -1,0 +1,7 @@
+{"request":{"body":{"max_tokens":256,"messages":[{"content":[{"text":"hello","type":"text"}],"role":"user"}],"model":"llama3.2","stream":true,"stream_options":{"include_usage":true},"tool_choice":"auto","tools":[{"function":{"description":"A tool","name":"render_preview","parameters":{"type":"object"}},"type":"function"}]},"method":"POST","path":"/v1/chat/completions"}}
+{"Start":{"model":"llama3.2:3b"}}
+{"ToolUseStart":{"id":"call_k8x2m1ab","name":"render_preview"}}
+{"ToolUseInput":"{\"camera\":\"front\",\"size\":512}"}
+{"ToolUseEnd":{"id":"call_k8x2m1ab"}}
+{"Usage":{"input":120,"output":21,"cache_read":0,"cache_write":0}}
+{"Stop":"ToolUse"}

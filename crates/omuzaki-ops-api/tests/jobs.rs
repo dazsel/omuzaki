@@ -73,8 +73,8 @@ fn states() -> Vec<JobState> {
         JobState::Queued,
         JobState::Running,
         JobState::Held,
-        JobState::Done { tx: TxId(3), seq: Some(9) },
-        JobState::Done { tx: TxId(3), seq: None },
+        JobState::done(TxId(3), Some(9)),
+        JobState::done(TxId(3), None),
         JobState::Failed { error: OpError::internal("boom") },
         JobState::Cancelled { by: Some(person()), reason: CancelReason::Requested },
         JobState::Cancelled { by: None, reason: CancelReason::Timeout },
@@ -136,7 +136,7 @@ fn job_types_round_trip_and_have_schemas() {
 fn job_state_json_is_tagged_by_state() {
     assert_eq!(serde_json::to_value(JobState::Queued).unwrap(), json!({"state": "queued"}));
     assert_eq!(
-        serde_json::to_value(JobState::Done { tx: TxId(3), seq: None }).unwrap(),
+        serde_json::to_value(JobState::done(TxId(3), None)).unwrap(),
         json!({"state": "done", "tx": 3, "seq": null})
     );
     assert_eq!(serde_json::to_value(JobId(7)).unwrap(), json!(7));
@@ -498,4 +498,19 @@ fn position_detail_round_trips_and_old_errors_still_parse() {
     }))
     .unwrap();
     assert_eq!(old.detail, None);
+}
+
+#[test]
+fn a_done_state_carries_its_outcome_in_memory_only() {
+    use omuzaki_ops_api::{Outcome, Plan};
+    use std::sync::Arc;
+
+    let outcome = Arc::new(Outcome::new(Plan::answer(json!({"frames": 3}))));
+    let done = JobState::done(TxId(3), Some(9)).with_outcome(Arc::clone(&outcome));
+    assert_eq!(done.outcome(), Some(&*outcome));
+    // Not serialised: a journal entry or an event log would otherwise carry every job's patch.
+    assert_eq!(serde_json::to_value(&done).unwrap(), serde_json::to_value(JobState::done(TxId(3), Some(9))).unwrap());
+    // Only a finished job has one.
+    assert_eq!(JobState::Running.with_outcome(outcome).outcome(), None);
+    assert_eq!(JobState::done(TxId(3), None).outcome(), None);
 }

@@ -1,0 +1,42 @@
+# Anthropic models the Messages provider can serve: their limits and the prices that make a spend cap mean something
+# (llm-api D4, D6). Prices are integer micro-dollars per million tokens ($1 per MTok = 1,000,000), read from
+# https://platform.claude.com/docs/en/about-claude/pricing and the models overview on 2026-10-15. All four models
+# take images and tools, support the effort setting and cache prefixes; context window 1M tokens, 128K output.
+# A model that is not listed here is listed by `list_models` but cannot be built until a reviewed change adds it.
+# Cache write is the 5-minute rate (the only one used). Haiku 5.5 is dearer for prompts over 100,000 tokens, where a
+# prompt counts input, cache reads and cache writes.
+
+[[model]]
+id = "claude-fable-5-1"
+as_of = "2026-10-15"
+source = "https://platform.claude.com/docs/en/about-claude/pricing"
+context_window = 1_000_000
+max_output = 128_000
+tiers = [{ input = 10_000_000, output = 50_000_000, cache_read = 250_000, cache_write = 12_500_000 }]
+
+[[model]]
+id = "claude-opus-5-5"
+as_of = "2026-10-15"
+source = "https://platform.claude.com/docs/en/about-claude/pricing"
+context_window = 1_000_000
+max_output = 128_000
+tiers = [{ input = 4_000_000, output = 20_000_000, cache_read = 200_000, cache_write = 5_000_000 }]
+
+[[model]]
+id = "claude-sonnet-5-5"
+as_of = "2026-10-15"
+source = "https://platform.claude.com/docs/en/about-claude/pricing"
+context_window = 1_000_000
+max_output = 128_000
+tiers = [{ input = 2_000_000, output = 10_000_000, cache_read = 100_000, cache_write = 2_500_000 }]
+
+[[model]]
+id = "claude-haiku-5-5"
+as_of = "2026-10-15"
+source = "https://platform.claude.com/docs/en/about-claude/pricing"
+context_window = 1_000_000
+max_output = 128_000
+tiers = [
+    { prompt_up_to = 100_000, input = 100_000, output = 500_000, cache_read = 10_000, cache_write = 125_000 },
+    { input = 500_000, output = 2_500_000, cache_read = 50_000, cache_write = 625_000 },
+]

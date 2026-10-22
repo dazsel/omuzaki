@@ -237,6 +237,8 @@ async fn an_unsaved_change_warns_on_the_first_line_even_when_another_actor_chang
     let h = Harness::connect(with(&probe)).await;
     // A person edits the project after the session's start, so this call's heads-up has something to report.
     h.runner.person_sets_blend(0.5);
+    // No wait for the event log here: the result must report a change that committed before the call, however far the
+    // feed lags (see `a_change_committed_before_the_call_is_in_its_heads_up_however_slow_the_feed_is`).
 
     let result = h.call("face_set_blend", json!({"character": "mira", "blend": 0.4})).await;
     assert_eq!(result.is_error, Some(false));

@@ -1,19 +1,28 @@
 //! The Rhai engine: one fresh engine per run, the limits, cancel, output and error mapping.
 
-use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, PoisonError, RwLock};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock};
 
 use omuzaki_core::time::{Clock, SystemClock};
-use omuzaki_doc_api::Value;
-use omuzaki_ops_api::{Actor, Cause, CauseKind, Grants, Mode, OpError, OpInfo, OpKind, Request, TxId, Undo};
+use omuzaki_doc_api::{DocPath, Value};
+use omuzaki_ops_api::{Actor, Cause, CauseKind, Grants, Mode, OpError, OpInfo, Request, TxId};
 use rhai::packages::{
     BasicArrayPackage, BasicMapPackage, BasicMathPackage, CorePackage, LogicPackage, MoreStringPackage, Package,
 };
 use rhai::serde::{from_dynamic, to_dynamic};
-use rhai::{Dynamic, Engine, EvalAltResult, Map, Module, NativeCallContext, ParseErrorType, Position, Scope, Shared};
+use rhai::{
+    Dynamic, Engine, EvalAltResult, Map, Module, NativeCallContext, OptimizationLevel, ParseErrorType, Position, Scope,
+    Shared,
+};
+use serde::Serialize;
 use serde_json::Map as JsonMap;
 
+use crate::bindings::Bindings;
+use crate::budget;
+use crate::check::{Diagnostic, effective_grants};
+use crate::closures;
+use crate::convert::{Convert, from_json, oversized, oversized_fields, size_kind, to_json};
+use crate::guards::Form;
 use crate::{Calls, Cancel, LimitKind, Limits, OutputKind, OutputLine, PlannedCall, ScriptError, ScriptErrorKind};
 
 /// What to run and as whom.
@@ -35,7 +44,7 @@ pub struct RunRequest {
 }
 
 /// What a run that finished produced.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ScriptOutcome {
     /// The script's last value, as JSON.
     pub value: Value,
@@ -45,20 +54,58 @@ pub struct ScriptOutcome {
     pub calls: u32,
     /// The transaction the calls implementation committed, if it owns one.
     pub tx: Option<TxId>,
-    /// Each call a dry run planned; empty for a real run.
+    /// Each call a dry run planned; empty for a real run. A dry run sends every call against the document as it was
+    /// before the script, so a script whose later calls read what earlier ones wrote may plan differently from a real
+    /// run; the console says so on the result.
     pub plans: Vec<PlannedCall>,
 }
 
 /// Why the engine was told to stop; carried as the `ErrorTerminated` token, which a script cannot catch.
 #[derive(Copy, Clone)]
-enum Stop {
+pub(crate) enum Stop {
     Cancelled,
     Limit(LimitKind),
 }
 
+impl Stop {
+    fn kind(self) -> ScriptErrorKind {
+        match self {
+            Self::Cancelled => ScriptErrorKind::Cancelled,
+            Self::Limit(kind) => ScriptErrorKind::Limit(kind),
+        }
+    }
+
+    /// What a run that ended for this reason reports when it has no error of Rhai's to quote.
+    fn message(self) -> &'static str {
+        match self {
+            Self::Cancelled => "the run was cancelled",
+            Self::Limit(LimitKind::Memory) => "the run held more memory than the limit",
+            Self::Limit(LimitKind::StringSize) => "a text was longer than the string limit",
+            Self::Limit(LimitKind::Operations) => "the run passed its operation limit",
+            Self::Limit(LimitKind::Time) => "the run passed its wall-clock limit",
+            Self::Limit(_) => "the run passed one of its limits",
+        }
+    }
+}
+
 /// Why an op is not callable from a script, carried like [`Stop`] so a script can't catch it.
 #[derive(Clone)]
-struct Refusal(Arc<str>);
+pub(crate) struct Refusal(pub(crate) Arc<OpError>);
+
+/// The engine's tag: the run, reachable from the context of every native call ([`run_of`]).
+///
+/// Rhai keeps the tag in its call state, and clones that state each time native code calls back into the engine
+/// (`NativeCallContext::call_native_fn_raw`, `FnPtr::call_within_context`). Cloning the tag marks the run, so
+/// [`Run::progress`] knows the next tick is the first one of such a call. Nothing else clones it: [`run_of`] borrows
+/// it.
+pub(crate) struct Tag(Arc<Run>);
+
+impl Clone for Tag {
+    fn clone(&self) -> Self {
+        self.0.fresh.store(true, Ordering::Relaxed);
+        Self(self.0.clone())
+    }
+}
 
 /// The run's services, borrowed from `run`'s caller.
 struct Lent {
@@ -75,12 +122,28 @@ struct Output {
 }
 
 /// The state of one run, shared by the engine's callbacks (which must be `'static`).
-struct Run {
+pub(crate) struct Run {
     /// Cleared by [`Lease`] before `run` returns, so no callback can reach the borrowed services afterwards.
     lent: RwLock<Option<Lent>>,
     limits: Limits,
     request: RunRequest,
     sent: AtomicU32,
+    /// `get(path)` reads, which count against [`Limits::calls`] with the calls sent but are not reported as calls.
+    reads: AtomicU32,
+    /// JSON bytes of the dry-run plans kept so far.
+    plan_bytes: AtomicUsize,
+    /// The reason the run must stop, set once by the first one found: by a progress tick (cancel, time, memory,
+    /// operations), or by a formatting function (a text cut at the string limit, or a run already over its memory
+    /// limit). The run ends at the next tick that may stop it ([`Run::progress`]), or before it commits.
+    due: OnceLock<Stop>,
+    /// Rhai operations so far, counted here: every tick, in every call context (see [`Run::progress`]).
+    ops: AtomicU64,
+    /// Set when Rhai clones its call state for a call made from native code ([`Tag`]); the next tick is that call's
+    /// first.
+    fresh: AtomicBool,
+    /// Set while a stop is held at the first tick of a call, until a formatting function confirms the call was its own
+    /// ([`Run::confirm_format`]); see [`Run::progress`].
+    held: AtomicBool,
     output: Mutex<Output>,
     plans: Mutex<Vec<PlannedCall>>,
 }
@@ -97,11 +160,17 @@ impl Drop for Clear<'_> {
 
 #[allow(clippy::unnecessary_box_returns)] // Rhai's callbacks return `Box<EvalAltResult>`
 fn terminate(stop: Stop) -> Box<EvalAltResult> {
-    EvalAltResult::ErrorTerminated(Dynamic::from(stop), Position::NONE).into()
+    terminate_at(stop, Position::NONE)
+}
+
+/// Ends the run at `at` with `token`, which a script can't catch.
+#[allow(clippy::unnecessary_box_returns)] // as above
+pub(crate) fn terminate_at<T: Clone + Send + Sync + 'static>(token: T, at: Position) -> Box<EvalAltResult> {
+    EvalAltResult::ErrorTerminated(Dynamic::from(token), at).into()
 }
 
 #[allow(clippy::unnecessary_box_returns)] // as above
-fn runtime(message: impl Into<String>) -> Box<EvalAltResult> {
+pub(crate) fn runtime(message: impl Into<String>) -> Box<EvalAltResult> {
     EvalAltResult::ErrorRuntime(message.into().into(), Position::NONE).into()
 }
 
@@ -129,14 +198,15 @@ impl Run {
         f()
     }
 
-    /// The one call path the bindings use: stops on cancel and at the call limit, then sends the request.
-    fn invoke(&self, op: &str, args: Value) -> Result<Value, Box<EvalAltResult>> {
+    /// The one call path the bindings use: stops on cancel and at the call limit, then sends the request. A failed op
+    /// is raised at `at` as a map of the `OpError` with the `op`, `line` and `column`.
+    pub(crate) fn invoke(&self, op: &str, args: Value, at: Position) -> Result<Value, Box<EvalAltResult>> {
         let lent = self.lent.read().unwrap_or_else(PoisonError::into_inner);
         let Some(lent) = lent.as_ref() else { return Err(terminate(Stop::Cancelled)) };
         if lent.cancel.is_cancelled() {
             return Err(terminate(Stop::Cancelled));
         }
-        if self.sent.load(Ordering::SeqCst) >= self.limits.calls {
+        if self.used_calls() >= self.limits.calls {
             return Err(terminate(Stop::Limit(LimitKind::Calls)));
         }
         self.sent.fetch_add(1, Ordering::SeqCst);
@@ -155,22 +225,52 @@ impl Run {
             Ok(outcome) => {
                 let value = outcome.plan.output.clone().unwrap_or(Value::Null);
                 if dry {
-                    self.plans.lock().unwrap_or_else(PoisonError::into_inner).push(PlannedCall {
-                        op: op.to_owned(),
-                        args,
-                        plan: outcome.plan,
-                    });
+                    let planned = PlannedCall { op: op.to_owned(), args, plan: outcome.plan };
+                    let mut plans = self.plans.lock().unwrap_or_else(PoisonError::into_inner);
+                    // The plans are bounded like the result: the JSON array of them, brackets and commas included,
+                    // may be no larger than `result_bytes`, or the run stops (a dry run of 10,000 calls would
+                    // otherwise hold 10,000 plans). `plan_bytes` starts at the two brackets.
+                    let comma = usize::from(!plans.is_empty());
+                    let size = serde_json::to_vec(&planned).map_or(usize::MAX, |json| json.len());
+                    let size = size.saturating_add(comma);
+                    let total = self.plan_bytes.fetch_add(size, Ordering::SeqCst).saturating_add(size);
+                    if total > self.limits.result_bytes {
+                        return Err(terminate_at(Stop::Limit(LimitKind::Result), at));
+                    }
+                    plans.push(planned);
                 }
                 Ok(value)
             }
-            Err(error) => {
-                let mut map = to_dynamic(&error).map_err(|e| runtime(e.to_string()))?;
-                if let Some(fields) = map.write_lock::<Map>().as_mut() {
-                    fields.insert("op".into(), Dynamic::from(op.to_owned()));
-                }
-                Err(EvalAltResult::ErrorRuntime(map, Position::NONE).into())
-            }
+            Err(error) => Err(raise(&error, op, at)),
         }
+    }
+
+    /// Calls sent plus reads made: what [`Limits::calls`] limits.
+    fn used_calls(&self) -> u32 {
+        self.sent.load(Ordering::SeqCst).saturating_add(self.reads.load(Ordering::SeqCst))
+    }
+
+    /// `get(path)`: reads the document through [`Calls::get`], as a script value (`()` when there is nothing there).
+    pub(crate) fn read(&self, path: &str, at: Position) -> Result<Dynamic, Box<EvalAltResult>> {
+        let lent = self.lent.read().unwrap_or_else(PoisonError::into_inner);
+        let Some(lent) = lent.as_ref() else { return Err(terminate(Stop::Cancelled)) };
+        if lent.cancel.is_cancelled() {
+            return Err(terminate(Stop::Cancelled));
+        }
+        if self.used_calls() >= self.limits.calls {
+            return Err(terminate_at(Stop::Limit(LimitKind::Calls), at));
+        }
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        let path = DocPath::parse(path).map_err(|e| {
+            let error =
+                OpError::invalid("path", e.to_string()).hint("write a document path such as `characters/aki/face`");
+            raise(&error, "get", at)
+        })?;
+        let Some(value) = lent.calls.get(&path).map_err(|e| raise(&e, "get", at))? else { return Ok(Dynamic::UNIT) };
+        if let Some(kind) = oversized(&value, &self.limits) {
+            return Err(terminate_at(Stop::Limit(kind), at));
+        }
+        from_json(&value).map_err(runtime)
     }
 
     /// Why the run must stop now, if it must: cancelled (or the lease is over), or out of wall-clock time.
@@ -182,8 +282,90 @@ impl Run {
         (clock.now().0 - started >= f64::from(self.limits.seconds)).then_some(Stop::Limit(LimitKind::Time))
     }
 
+    /// Marks the run to end for `stop`, unless an earlier reason already did.
+    pub(crate) fn note_stop(&self, stop: Stop) {
+        let _ = self.due.set(stop); // a reason found earlier stands
+    }
+
+    /// The reason the run must stop, if one was found.
+    fn due(&self) -> Option<Stop> {
+        self.due.get().copied()
+    }
+
+    /// Whether the run must stop: a reason was found, or it already holds more than its memory limit (which is then
+    /// the reason). Every formatting path asks this first and formats nothing when it is true: the run is ending, and
+    /// a value it could only copy past its limit is not worth formatting.
+    pub(crate) fn stopping(&self) -> bool {
+        if self.due.get().is_none() && budget::used_here() > self.limits.memory_bytes {
+            self.note_stop(Stop::Limit(LimitKind::Memory));
+        }
+        self.due.get().is_some()
+    }
+
+    /// The engine's per-operation check: `Some` ends the run.
+    ///
+    /// The check never ends the run inside a formatting call, so Rhai can never fall back to its own formatting. Rhai
+    /// builds `${...}` by calling `to_string` through `NativeCallContext::call_native_fn_raw`, whose first step is a
+    /// tick of its own; an error from that tick is swallowed (`print_with_func`) and the whole value is formatted by
+    /// Rhai instead, unbounded. That tick is always the first one after Rhai clones its call state for the call, which
+    /// clones the [`Tag`]. Every call a native function makes back into the engine starts the same way (`contains`
+    /// comparing elements with `==`, a closure called by `map`), and at that tick nothing tells them apart.
+    ///
+    /// So a stop that is due at such a first tick is held, once: the formatting function confirms the call was its own
+    /// when it runs ([`Run::confirm_format`]) and answers an empty text, and the run stops at the next tick. A hold
+    /// nobody confirmed means the call was not formatting, and the stop is delivered at the next tick, whatever it is:
+    /// a native loop stops at its next element. Delivering there would be harmful only if the next tick were another
+    /// `to_string` call, which a loop that ended on an unconfirmed hold could be followed by (`${[m, a.contains(x)]}`);
+    /// so every package function whose calls back into the engine have no tick of their own after the first checks the
+    /// run before it returns (`loops`), and a closure must have a body that ticks (`closures`).
+    ///
+    /// Operations are counted here, and Rhai's own operation limit is off: it fires inside that same first tick, and
+    /// Rhai's count loses what a call made from native code did (a callback of `map` ticks on a clone that is dropped).
     fn progress(&self, started: f64, clock: &dyn Clock) -> Option<Dynamic> {
-        self.stop(started, clock).map(Dynamic::from)
+        let ops = self.ops.fetch_add(1, Ordering::Relaxed).saturating_add(1);
+        let first_of_call = self.fresh.swap(false, Ordering::Relaxed);
+        if self.due.get().is_none()
+            && let Some(stop) = self.reason(ops, started, clock)
+        {
+            self.note_stop(stop);
+        }
+        let stop = self.due()?;
+        if first_of_call && !self.held.swap(true, Ordering::Relaxed) {
+            return None;
+        }
+        Some(Dynamic::from(stop))
+    }
+
+    /// Called by a formatting function as it starts: the stop held at the tick just before, if any, was held for this
+    /// call, which answers an empty text, and the next tick may hold one again.
+    pub(crate) fn confirm_format(&self) {
+        self.held.store(false, Ordering::Relaxed);
+    }
+
+    /// Ends a native loop that calls back into the engine when the run must stop: before each element and before it
+    /// returns (see [`Run::progress`]).
+    ///
+    /// # Errors
+    /// The stop, raised as Rhai's termination, which a script can't catch.
+    pub(crate) fn check(&self) -> Result<(), Box<EvalAltResult>> {
+        self.due().map_or(Ok(()), |stop| Err(terminate(stop)))
+    }
+
+    /// Whether the run must stop, for a loop that can't return an error from where it asks (a sort's comparison).
+    pub(crate) fn halted(&self) -> bool {
+        self.due.get().is_some()
+    }
+
+    /// Why the run must stop at a tick with `ops` operations counted, if it must.
+    fn reason(&self, ops: u64, started: f64, clock: &dyn Clock) -> Option<Stop> {
+        if ops > self.limits.operations {
+            return Some(Stop::Limit(LimitKind::Operations));
+        }
+        if budget::used_here() > self.limits.memory_bytes {
+            return Some(Stop::Limit(LimitKind::Memory));
+        }
+        // Includes a callback that outlives its lease, which stops at once: nothing it can reach is borrowed any more.
+        self.stop(started, clock)
     }
 
     fn print(&self, kind: OutputKind, text: &str) {
@@ -201,27 +383,52 @@ impl Run {
     }
 }
 
-fn run_of(context: &NativeCallContext<'_>) -> Result<Arc<Run>, Box<EvalAltResult>> {
-    context.tag().and_then(|tag| tag.clone().try_cast::<Arc<Run>>()).ok_or_else(|| runtime("no run is active"))
+/// The run a native call belongs to. Borrows the tag rather than cloning it, which would mark the run ([`Tag`]).
+pub(crate) fn run_of(context: &NativeCallContext<'_>) -> Result<Arc<Run>, Box<EvalAltResult>> {
+    context
+        .tag()
+        .and_then(|tag| tag.read_lock::<Tag>().map(|tag| tag.0.clone()))
+        .ok_or_else(|| runtime("no run is active"))
+}
+
+/// A failed op as the error a script sees: the `OpError` as a map, plus the `op` and the `line` and `column` of the call.
+#[allow(clippy::unnecessary_box_returns)] // as above
+fn raise(error: &OpError, op: &str, at: Position) -> Box<EvalAltResult> {
+    let to_int = |n: Option<usize>| Dynamic::from(i64::try_from(n.unwrap_or(1)).unwrap_or(i64::MAX));
+    let mut map = match to_dynamic(error) {
+        Ok(map) => map,
+        Err(e) => return runtime(e.to_string()),
+    };
+    if let Some(fields) = map.write_lock::<Map>().as_mut() {
+        // `field` and `hint` are always there, `()` when the error has none, so a script can read them unguarded.
+        for key in ["field", "hint"] {
+            fields.entry(key.into()).or_insert(Dynamic::UNIT);
+        }
+        fields.insert("op".into(), Dynamic::from(op.to_owned()));
+        fields.insert("line".into(), to_int(at.line()));
+        fields.insert("column".into(), to_int(at.position()));
+    }
+    EvalAltResult::ErrorRuntime(map, at).into()
 }
 
 /// Runs scripts. Holds the engine's shared parts; each [`run`](Self::run) builds a fresh engine from them.
 pub struct ScriptHost {
     packages: Vec<Shared<Module>>,
-    bindings: Vec<(String, Shared<Module>)>,
+    pub(crate) bindings: Arc<Bindings>,
     limits: Limits,
     clock: Arc<dyn Clock>,
 }
 
 impl ScriptHost {
-    /// A host whose scripts can call `ops::area::verb({..})` for each op in `ops`, held to `limits`.
+    /// A host whose scripts can call `ops::area::verb({..})` for each op in `ops`, held to `limits`. The bindings are
+    /// generated once from `ops` and shared by every run; each call takes one map, which the op checks against its own
+    /// schema. `get(path)` and `try_op(f)` come with them.
     ///
-    /// Only queries and edits that undo with their patch ([`Undo::Auto`]) can be called: the run's rollback can't undo
-    /// a job or an edit with outside effects, so those are bound to a refusal (`ScriptErrorKind::Refused`) that is
-    /// raised before anything is sent.
-    ///
-    /// The bindings are the plain call path; the schema-aware generated bindings, `get`, `try_op` and the static check
-    /// come with the next task.
+    /// Only queries and edits that undo with their patch ([`Undo::Auto`](omuzaki_ops_api::Undo::Auto)) can be called:
+    /// the run's rollback can't undo a job (which also can't join a transaction) or an edit with outside effects, and
+    /// a script can't start another `script.run`. Those are bound to a refusal ([`ScriptErrorKind::Refused`], the
+    /// `Unsupported` error and its hint in [`ScriptError::op_error`]) that is raised before anything is sent;
+    /// [`check`](Self::check) reports the same refusals.
     pub fn new(ops: &[OpInfo], limits: Limits) -> Self {
         let packages = vec![
             CorePackage::new().as_shared_module(),
@@ -231,50 +438,19 @@ impl ScriptHost {
             BasicMapPackage::new().as_shared_module(),
             BasicMathPackage::new().as_shared_module(),
         ];
-        let mut areas: BTreeMap<String, Module> = BTreeMap::new();
-        for info in ops {
-            let Some((area, verb)) = info.name.split_once('.') else { continue };
-            let name = info.name.to_owned();
-            let refusal = refusal(info).map(|reason| Refusal(reason.into()));
-            let limits = limits.clone();
-            areas.entry(format!("ops::{area}")).or_default().set_native_fn(
-                verb,
-                move |context: NativeCallContext<'_>, args: Map| -> Result<Dynamic, Box<EvalAltResult>> {
-                    let at = context.call_position();
-                    if let Some(refusal) = &refusal {
-                        return Err(EvalAltResult::ErrorTerminated(Dynamic::from(refusal.clone()), at).into());
-                    }
-                    let args = match to_json(Dynamic::from_map(args), limits.value_depth) {
-                        Ok(args) => args,
-                        Err(Convert::Depth) => {
-                            return Err(EvalAltResult::ErrorTerminated(
-                                Dynamic::from(Stop::Limit(LimitKind::Depth)),
-                                at,
-                            )
-                            .into());
-                        }
-                        Err(Convert::Other(message)) => return Err(runtime(message)),
-                    };
-                    // Rhai never sizes map keys, so the converted arguments get the same check as `params` and op
-                    // outputs before the op sees them.
-                    if let Some(kind) = oversized(&args, &limits) {
-                        return Err(EvalAltResult::ErrorTerminated(Dynamic::from(Stop::Limit(kind)), at).into());
-                    }
-                    let value = run_of(&context)?.invoke(&name, args).map_err(|mut e| {
-                        e.set_position(at);
-                        e
-                    })?;
-                    // Checked before conversion, as `params` are: Rhai sizes a native result only after building it,
-                    // and never checks map keys.
-                    if let Some(kind) = oversized(&value, &limits) {
-                        return Err(EvalAltResult::ErrorTerminated(Dynamic::from(Stop::Limit(kind)), at).into());
-                    }
-                    to_dynamic(value).map_err(|e| runtime(e.to_string()))
-                },
-            );
-        }
-        let bindings = areas.into_iter().map(|(path, module)| (path, Shared::new(module))).collect();
+        let bindings = Arc::new(Bindings::new(ops, &limits));
         Self { packages, bindings, limits, clock: Arc::new(SystemClock::new()) }
+    }
+
+    /// A host over bindings built earlier from the same ops and limits (see `registered_host`).
+    pub(crate) fn from_bindings(bindings: Arc<Bindings>, limits: Limits) -> Self {
+        let host = Self::new(&[], limits);
+        Self { bindings, ..host }
+    }
+
+    /// The limits this host holds its runs to.
+    pub(crate) fn limits(&self) -> &Limits {
+        &self.limits
     }
 
     /// Reads the wall-clock limit from `clock`, so tests need no sleep.
@@ -284,41 +460,72 @@ impl ScriptHost {
         self
     }
 
-    fn engine(&self, run: &Arc<Run>, started: f64) -> Engine {
+    /// The engine a run and the check both parse with: the same packages, bindings, limits and disabled symbols, so
+    /// what the check accepts is what the run accepts. No optimizer: it would fold calls away and leave the syntax
+    /// tree the check reads different from the code that runs.
+    pub(crate) fn base_engine(&self) -> Engine {
         let mut engine = Engine::new_raw();
         for package in &self.packages {
             engine.register_global_module(package.clone());
         }
-        for (path, module) in &self.bindings {
-            engine.register_static_module(path, module.clone());
-        }
+        self.bindings.install(&mut engine);
+        crate::guards::install(&mut engine, &self.limits);
+        crate::loops::install(&mut engine);
         let limits = &self.limits;
         engine
-            .set_max_operations(limits.operations)
+            // Off: the run counts operations itself (`Run::progress`), since Rhai's own limit fires inside formatting.
+            .set_max_operations(0)
             .set_max_call_levels(limits.call_depth)
             .set_max_expr_depths(limits.expr_depth, limits.fn_expr_depth)
             .set_max_string_size(limits.string_bytes)
             .set_max_array_size(limits.array_len)
             .set_max_map_size(limits.map_len)
-            .set_default_tag(Dynamic::from(run.clone()));
+            .set_optimization_level(OptimizationLevel::None);
         for symbol in ["eval", "Fn", "call", "curry", "import"] {
             engine.disable_symbol(symbol);
         }
+        engine
+    }
+
+    fn engine(&self, run: &Arc<Run>, started: f64) -> Engine {
+        let mut engine = self.base_engine();
+        engine.set_default_tag(Dynamic::from(Tag(run.clone())));
         let sink = run.clone();
         engine.on_print(move |text| sink.print(OutputKind::Print, text));
         let sink = run.clone();
         engine.on_debug(move |text, _, _| sink.print(OutputKind::Note, text));
         let sink = run.clone();
-        // A float would otherwise reach the math package's `log(x)` (the logarithm), so it is overloaded too.
-        engine.register_fn("log", move |value: Dynamic| sink.print(OutputKind::Note, &value.to_string()));
+        // The text is cut at the output limit while it is built, not after: see `guards`.
+        let room = self.limits.output_bytes.saturating_add(1);
+        // By reference: a by-value argument is a copy of the whole value, which is what this is trying not to make.
+        engine.register_fn("log", move |value: &mut Dynamic| {
+            if sink.stopping() {
+                return;
+            }
+            sink.print(OutputKind::Note, &crate::guards::format_bounded(value, Form::Text, room).0);
+        });
         let sink = run.clone();
-        engine.register_fn("log", move |value: f64| sink.print(OutputKind::Note, &value.to_string()));
+        // A float would otherwise reach the math package's `log(x)` (the logarithm), so it is overloaded too.
+        engine.register_fn("log", move |value: f64| {
+            sink.print(
+                OutputKind::Note,
+                &crate::guards::format_bounded(&Dynamic::from_float(value), Form::Text, room).0,
+            );
+        });
         let (watch, clock) = (run.clone(), self.clock.clone());
         engine.on_progress(move |_| watch.progress(started, clock.as_ref()));
         engine
     }
 
-    /// Runs a script. Any failure, limit or cancel rolls back through [`Calls::rollback`].
+    /// Runs a script on a worker thread whose stack is sized for the deepest value the limits let it build
+    /// ([`Limits::worker_stack_bytes`]), so a deeply nested value can't overflow the stack and abort the process. Any
+    /// failure, limit or cancel rolls back through [`Calls::rollback`].
+    ///
+    /// `calls` and `cancel` are used from the worker thread while the caller waits, which their `Send + Sync`
+    /// supertraits already allow; the call returns when the run is over, and nothing outlives it. A panic in the run
+    /// is raised again in the caller. Limits that would need more stack than [`Limits::MAX_WORKER_STACK_BYTES`] are
+    /// refused with [`ScriptErrorKind::Refused`]. On `wasm32`, which has no threads, the run happens on the caller's
+    /// thread.
     ///
     /// # Errors
     /// A [`ScriptError`] carrying the position, the kind and the output printed so far.
@@ -329,15 +536,83 @@ impl ScriptHost {
         calls: &dyn Calls,
         cancel: &dyn Cancel,
     ) -> Result<ScriptOutcome, ScriptError> {
+        if !budget::installed() {
+            return Err(refused(
+                "no memory budget is installed: set `omuzaki_script::MemoryBudget` as the binary's `#[global_allocator]` \
+                 so a run's memory can be limited",
+            ));
+        }
+        let Some(stack) = self.limits.worker_stack_bytes() else {
+            return Err(refused(
+                "the array and map limits allow nesting that needs more stack than a run may have; lower `array_len` or `map_len`",
+            ));
+        };
+        self.run_on_worker(stack, request, calls, cancel)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[allow(clippy::result_large_err)] // as `run`
+    fn run_on_worker(
+        &self,
+        stack: usize,
+        request: RunRequest,
+        calls: &dyn Calls,
+        cancel: &dyn Cancel,
+    ) -> Result<ScriptOutcome, ScriptError> {
+        std::thread::scope(|scope| {
+            let worker = std::thread::Builder::new()
+                .name("omuzaki-script".to_owned())
+                .stack_size(stack)
+                .spawn_scoped(scope, || self.run_here(request, calls, cancel));
+            match worker {
+                Ok(worker) => worker.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+                Err(error) => Err(refused(&format!("the worker thread for the run could not start: {error}"))),
+            }
+        })
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[allow(clippy::result_large_err)] // as `run`
+    fn run_on_worker(
+        &self,
+        _stack: usize,
+        request: RunRequest,
+        calls: &dyn Calls,
+        cancel: &dyn Cancel,
+    ) -> Result<ScriptOutcome, ScriptError> {
+        self.run_here(request, calls, cancel)
+    }
+
+    /// The run itself, on the calling thread.
+    #[allow(clippy::result_large_err)] // as `run`
+    fn run_here(
+        &self,
+        mut request: RunRequest,
+        calls: &dyn Calls,
+        cancel: &dyn Cancel,
+    ) -> Result<ScriptOutcome, ScriptError> {
+        let _counting = budget::Counting::start();
+        // The run's grants are the caller's, narrowed to what the script names (design section 3). A source that does
+        // not analyse cleanly is refused below, so its grants are never used.
+        let analysis = self.analyze(&request.source);
+        if analysis.report.parse_errors.is_empty() {
+            request.grants = effective_grants(&request.grants, &analysis.report);
+        }
         let run = Arc::new(Run {
             lent: RwLock::new(None),
             limits: self.limits.clone(),
             request,
             sent: AtomicU32::new(0),
+            reads: AtomicU32::new(0),
+            plan_bytes: AtomicUsize::new(2),
+            due: OnceLock::new(),
+            ops: AtomicU64::new(0),
+            fresh: AtomicBool::new(false),
+            held: AtomicBool::new(false),
             output: Mutex::new(Output::default()),
             plans: Mutex::new(Vec::new()),
         });
-        let result = run.lend(calls, cancel, || self.execute(&run, calls, cancel));
+        let result = run.lend(calls, cancel, || self.execute(&run, calls, cancel, analysis.ceiling_error.as_ref()));
         let mut rolled = Ok(());
         if result.is_err() {
             rolled = calls.rollback();
@@ -352,7 +627,13 @@ impl ScriptHost {
     }
 
     #[allow(clippy::result_large_err)] // as `run`
-    fn execute(&self, run: &Arc<Run>, calls: &dyn Calls, cancel: &dyn Cancel) -> Result<ScriptOutcome, ScriptError> {
+    fn execute(
+        &self,
+        run: &Arc<Run>,
+        calls: &dyn Calls,
+        cancel: &dyn Cancel,
+        ceiling_error: Option<&Diagnostic>,
+    ) -> Result<ScriptOutcome, ScriptError> {
         let fail = |kind, message: &str| ScriptError {
             kind,
             line: 1,
@@ -374,9 +655,16 @@ impl ScriptHost {
         if cancel.is_cancelled() {
             return Err(fail(ScriptErrorKind::Cancelled, "the run was cancelled before it started"));
         }
-        let params_break = map_breaks(&run.request.params, &self.limits)
-            .or_else(|| run.request.params.values().find_map(|value| oversized_in(value, &self.limits, 1)));
-        if let Some(kind) = params_break {
+        if let Some(problem) = ceiling_error {
+            // A ceiling that can't be read must not silently stop narrowing the run.
+            return Err(ScriptError {
+                line: problem.line,
+                column: problem.column,
+                ..fail(ScriptErrorKind::Parse, &problem.message)
+            });
+        }
+        // Measured before `params` is converted: the whole map is held to the limits as one value.
+        if let Some(kind) = oversized_fields(&run.request.params, &self.limits) {
             return Err(fail(ScriptErrorKind::Limit(kind), "`params` holds a value larger than the script limits"));
         }
         let started = self.clock.now().0;
@@ -389,7 +677,32 @@ impl ScriptHost {
             };
             located(kind, e.0.to_string(), e.1, None)
         })?;
-        let value = evaluate(&engine, &ast, &run.request.params, &self.limits)?;
+        if let Some(stray) = closures::stray(&ast) {
+            return Err(located(ScriptErrorKind::Parse, stray.message, stray.at, None));
+        }
+        let value = evaluate(&engine, &ast, &run.request.params, &self.limits);
+        // A reason to stop that no tick could deliver yet (found at the first tick of a call, or by a formatting
+        // function) ends the run all the same: whether the script then finished, or failed for a reason that only
+        // arose because it ran on (a text it went on to build was too long), it was bound to stop for this one.
+        if let Some(stop) = run.due() {
+            return Err(match value {
+                Err(error) if error.kind == stop.kind() => error,
+                Err(error) => {
+                    ScriptError { message: stop.message().to_owned(), kind: stop.kind(), op_error: None, ..error }
+                }
+                Ok(_) => fail(stop.kind(), stop.message()),
+            });
+        }
+        let value = value?;
+        // The progress tick reads the live heap between operations; the last operation (or the conversion of the
+        // result) can pass the budget and free it again before another tick, so the peak is read here, before anything
+        // becomes durable.
+        if budget::peak_here() > self.limits.memory_bytes {
+            return Err(fail(
+                ScriptErrorKind::Limit(LimitKind::Memory),
+                "the run held more memory than the memory limit",
+            ));
+        }
         let too_big = serde_json::to_vec(&value).map_or(true, |json| json.len() > self.limits.result_bytes);
         if too_big {
             return Err(fail(ScriptErrorKind::Limit(LimitKind::Result), "the result is larger than the result limit"));
@@ -421,8 +734,7 @@ impl ScriptHost {
 
 /// Evaluates `ast` and returns its result as JSON. The scope, the returned value and every local a script built are
 /// dropped before this returns, on success and on error alike, so dropping a deeply nested value happens before
-/// `Calls::commit` makes anything durable and before a limit error rolls back. The nesting bound itself (and a worker
-/// thread whose stack comes from the operation limit) is open in #1877.
+/// `Calls::commit` makes anything durable and before a limit error rolls back.
 #[allow(clippy::result_large_err)] // as `ScriptHost::run`
 fn evaluate(
     engine: &Engine,
@@ -441,201 +753,53 @@ fn evaluate(
     let mut scope = Scope::new();
     let params = to_dynamic(params).map_err(|e| fail(ScriptErrorKind::Runtime, &e.to_string()))?;
     scope.push_constant_dynamic("params", params);
-    let returned = engine.eval_ast_with_scope::<Dynamic>(&mut scope, ast).map_err(|e| classify(&e))?;
+    let returned =
+        engine.eval_ast_with_scope::<Dynamic>(&mut scope, ast).map_err(|e| classify(&e, limits.string_bytes))?;
     to_json(returned, limits.value_depth).map_err(|e| match e {
         Convert::Depth => fail(ScriptErrorKind::Limit(LimitKind::Depth), "the result is nested deeper than the limit"),
         Convert::Other(message) => fail(ScriptErrorKind::Runtime, &format!("the result is not JSON: {message}")),
     })
 }
 
-/// Why `info` can't be called from a script, if it can't.
-fn refusal(info: &OpInfo) -> Option<String> {
-    let name = info.name;
-    match (info.kind, info.undo) {
-        (OpKind::Query, _) | (OpKind::Edit, Undo::Auto) => None,
-        (OpKind::Job, _) => Some(format!("`{name}` is a job, which a script can't start: run it as a job instead")),
-        (OpKind::Edit, _) => {
-            Some(format!("`{name}` has effects outside the document, which a script's rollback can't undo"))
-        }
-    }
-}
-
-/// The first collection limit a JSON value breaks, if any. Values converted outside the engine (`params`, op outputs)
-/// are checked with this before conversion: Rhai doesn't size values pushed into the scope, and never checks map keys.
-/// Iterative, so a deeply nested value can't overflow the stack.
-fn oversized(value: &Value, limits: &Limits) -> Option<LimitKind> {
-    oversized_in(value, limits, 0)
-}
-
-/// [`oversized`] for a value that sits `outer` containers deep already (a `params` field is inside the `params` map).
-/// Nesting beyond [`Limits::value_depth`] is [`LimitKind::Depth`], so the recursive conversion into Rhai is bounded.
-fn oversized_in(value: &Value, limits: &Limits, outer: usize) -> Option<LimitKind> {
-    let mut pending = vec![(value, outer)];
-    while let Some((value, depth)) = pending.pop() {
-        match value {
-            Value::String(text) if text.len() > limits.string_bytes => return Some(LimitKind::StringSize),
-            Value::Array(_) | Value::Object(_) if depth >= limits.value_depth => return Some(LimitKind::Depth),
-            Value::Array(items) if items.len() > limits.array_len => return Some(LimitKind::ArraySize),
-            Value::Array(items) => pending.extend(items.iter().map(|item| (item, depth + 1))),
-            Value::Object(fields) => {
-                if let Some(kind) = map_breaks(fields, limits) {
-                    return Some(kind);
-                }
-                pending.extend(fields.values().map(|field| (field, depth + 1)));
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-/// Why [`to_json`] failed.
-enum Convert {
-    /// Arrays and maps nest deeper than [`Limits::value_depth`].
-    Depth,
-    /// A value with no JSON form.
-    Other(String),
-}
-
-/// One array or map being converted: what is left to visit and what has been converted so far.
-struct Frame {
-    rest: Box<dyn Iterator<Item = (String, Dynamic)>>,
-    key: String,
-    done: Done,
-}
-
-enum Done {
-    Array(Vec<Value>),
-    Object(JsonMap<String, Value>),
-}
-
-/// A script value as JSON, walked with an explicit stack: rhai's `from_dynamic` recurses once per level, so a script
-/// that wraps a value in an array in a loop could overflow the stack from inside the limits on size and operations.
-/// Fails with [`Convert::Depth`] beyond `max_depth` levels of arrays and maps. The value is consumed, and on failure
-/// whatever is left is taken apart without recursion as well, so dropping a deep value can't overflow either.
-fn to_json(root: Dynamic, max_depth: usize) -> Result<Value, Convert> {
-    let mut stack: Vec<Frame> = Vec::new();
-    let mut next = Some(root);
-    let mut finished: Option<Value> = None;
-    loop {
-        if let Some(item) = next.take() {
-            let item = item.flatten();
-            if item.is_array() || item.is_map() {
-                if stack.len() >= max_depth {
-                    abandon(stack, Some(item));
-                    return Err(Convert::Depth);
-                }
-                stack.push(open(item));
-            } else {
-                match from_dynamic::<Value>(&item) {
-                    Ok(value) => finished = Some(value),
-                    Err(e) => {
-                        abandon(stack, None);
-                        return Err(Convert::Other(e.to_string()));
-                    }
-                }
-            }
-        }
-        if let Some(value) = finished.take() {
-            let Some(top) = stack.last_mut() else { return Ok(value) };
-            match &mut top.done {
-                Done::Array(items) => items.push(value),
-                Done::Object(fields) => {
-                    fields.insert(std::mem::take(&mut top.key), value);
-                }
-            }
-        }
-        let Some(top) = stack.last_mut() else {
-            return Err(Convert::Other("the conversion lost its place".to_owned()));
-        };
-        match top.rest.next() {
-            Some((key, item)) => {
-                top.key = key;
-                next = Some(item);
-            }
-            None => {
-                finished = stack.pop().map(|frame| match frame.done {
-                    Done::Array(items) => Value::Array(items),
-                    Done::Object(fields) => Value::Object(fields),
-                });
-            }
-        }
-    }
-}
-
-/// Starts converting an array or map.
-fn open(container: Dynamic) -> Frame {
-    if container.is_array() {
-        let items = container.into_array().unwrap_or_default();
-        let done = Done::Array(Vec::with_capacity(items.len()));
-        Frame { rest: Box::new(items.into_iter().map(|item| (String::new(), item))), key: String::new(), done }
-    } else {
-        let fields = container.try_cast::<Map>().unwrap_or_default();
-        let done = Done::Object(JsonMap::new());
-        Frame { rest: Box::new(fields.into_iter().map(|(k, v)| (k.to_string(), v))), key: String::new(), done }
-    }
-}
-
-/// Drops what a failed conversion still holds, one level at a time, so no destructor recurses.
-fn abandon(stack: Vec<Frame>, extra: Option<Dynamic>) {
-    let mut pending: Vec<Dynamic> = extra.into_iter().collect();
-    for frame in stack {
-        pending.extend(frame.rest.map(|(_, item)| item));
-    }
-    while let Some(item) = pending.pop() {
-        let item = item.flatten();
-        if item.is_array() {
-            pending.extend(item.into_array().unwrap_or_default());
-        } else if item.is_map() {
-            pending.extend(item.try_cast::<Map>().unwrap_or_default().into_values());
-        }
-    }
-}
-
-/// The limit a map itself breaks: its size, or a key (which becomes a Rhai string) over the string limit.
-fn map_breaks(fields: &JsonMap<String, Value>, limits: &Limits) -> Option<LimitKind> {
-    if fields.len() > limits.map_len {
-        return Some(LimitKind::MapSize);
-    }
-    fields.keys().any(|key| key.len() > limits.string_bytes).then_some(LimitKind::StringSize)
-}
-
-fn size_kind(typ: &str) -> LimitKind {
-    let typ = typ.to_ascii_lowercase();
-    if typ.contains("string") {
-        LimitKind::StringSize
-    } else if typ.contains("array") {
-        LimitKind::ArraySize
-    } else {
-        LimitKind::MapSize
-    }
-}
-
-fn located(kind: ScriptErrorKind, message: String, at: Position, op_error: Option<OpError>) -> ScriptError {
-    let to_u32 = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+/// A run that was not started, for a reason in the host's own setup.
+fn refused(message: &str) -> ScriptError {
     ScriptError {
-        kind,
-        line: at.line().map_or(1, to_u32),
-        column: at.position().map_or(1, to_u32),
-        op_error,
-        message,
+        kind: ScriptErrorKind::Refused,
+        line: 1,
+        column: 1,
+        op_error: None,
+        message: message.to_owned(),
         output: Vec::new(),
     }
 }
 
-/// Maps Rhai's error to ours, looking through the wrappers a call inside a script function adds.
-fn classify(error: &EvalAltResult) -> ScriptError {
+/// A position as 1-based `(line, column)`; `(1, 1)` for a failure with no place in the source.
+pub(crate) fn line_col(at: Position) -> (u32, u32) {
+    let to_u32 = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+    (at.line().map_or(1, to_u32), at.position().map_or(1, to_u32))
+}
+
+pub(crate) fn located(kind: ScriptErrorKind, message: String, at: Position, op_error: Option<OpError>) -> ScriptError {
+    let (line, column) = line_col(at);
+    ScriptError { kind, line, column, op_error, message, output: Vec::new() }
+}
+
+/// Maps Rhai's error to ours, looking through the wrappers a call inside a script function adds. A thrown value is
+/// described in at most `room` bytes: Rhai's own text for it formats the whole value, after the run has stopped
+/// counting its memory, and a thrown map can hold more than the budget.
+fn classify(error: &EvalAltResult, room: usize) -> ScriptError {
     let at = error.position();
     let (kind, op_error) = match error {
-        EvalAltResult::ErrorInFunctionCall(_, _, inner, _) => return classify(inner),
-        EvalAltResult::ErrorTooManyOperations(_) => (ScriptErrorKind::Limit(LimitKind::Operations), None),
+        EvalAltResult::ErrorInFunctionCall(_, _, inner, _) => return classify(inner, room),
         EvalAltResult::ErrorStackOverflow(_) => (ScriptErrorKind::Limit(LimitKind::Depth), None),
         EvalAltResult::ErrorDataTooLarge(typ, _) => (ScriptErrorKind::Limit(size_kind(typ)), None),
         EvalAltResult::ErrorTerminated(token, _) => match token.clone().try_cast::<Stop>() {
             Some(Stop::Cancelled) => (ScriptErrorKind::Cancelled, None),
             Some(Stop::Limit(kind)) => (ScriptErrorKind::Limit(kind), None),
             None => match token.clone().try_cast::<Refusal>() {
-                Some(Refusal(reason)) => return located(ScriptErrorKind::Refused, reason.to_string(), at, None),
+                Some(Refusal(error)) => {
+                    return located(ScriptErrorKind::Refused, error.message.clone(), at, Some((*error).clone()));
+                }
                 None => (ScriptErrorKind::Runtime, None),
             },
         },
@@ -645,8 +809,18 @@ fn classify(error: &EvalAltResult) -> ScriptError {
         },
         _ => (ScriptErrorKind::Runtime, None),
     };
-    let message = op_error.as_ref().map_or_else(|| error.to_string(), |e| e.message.clone());
+    let message = op_error.as_ref().map_or_else(|| describe(error, room), |e| e.message.clone());
     located(kind, message, at, op_error)
+}
+
+/// Rhai's text for `error`, with a thrown value cut at `room` bytes while it is formatted.
+fn describe(error: &EvalAltResult, room: usize) -> String {
+    match error {
+        EvalAltResult::ErrorRuntime(thrown, at) if !thrown.is_unit() && !thrown.is_string() => {
+            EvalAltResult::ErrorRuntime(crate::guards::display_bounded(thrown, room).into(), *at).to_string()
+        }
+        _ => error.to_string(),
+    }
 }
 
 /// The `OpError` an inner call's failure carried into the script (a map that names the op).
@@ -705,6 +879,12 @@ mod tests {
                 dry_run: false,
             },
             sent: AtomicU32::new(0),
+            reads: AtomicU32::new(0),
+            plan_bytes: AtomicUsize::new(2),
+            due: OnceLock::new(),
+            ops: AtomicU64::new(0),
+            fresh: AtomicBool::new(false),
+            held: AtomicBool::new(false),
             output: Mutex::new(Output::default()),
             plans: Mutex::new(Vec::new()),
         })
@@ -721,12 +901,12 @@ mod tests {
         let kept = run();
         {
             let calls = Counting(&reached);
-            let inside = kept.lend(&calls, &Never, || kept.invoke("face.set_profile", Value::Null));
+            let inside = kept.lend(&calls, &Never, || kept.invoke("face.set_profile", Value::Null, Position::NONE));
             assert!(inside.is_err(), "the counted call answers an error");
             assert_eq!(reached.load(Ordering::SeqCst), 1, "inside the lease the call reaches the services");
         } // `calls` is dropped here; the lease ended before it.
         assert!(kept.lent.read().unwrap().is_none(), "the slot is empty once `lend` returns");
-        let after = kept.invoke("face.set_profile", Value::Null).unwrap_err();
+        let after = kept.invoke("face.set_profile", Value::Null, Position::NONE).unwrap_err();
         assert!(is_cancel(&after), "a late call stops as cancelled");
         assert!(kept.progress(0.0, &SystemClock::new()).is_some(), "a late progress tick stops the engine");
         assert_eq!(reached.load(Ordering::SeqCst), 1, "nothing reached the services after the lease");
@@ -740,8 +920,90 @@ mod tests {
         let panicked = catch_unwind(AssertUnwindSafe(|| kept.lend(&calls, &Never, || panic!("inside the run"))));
         assert!(panicked.is_err());
         assert!(kept.lent.read().unwrap().is_none(), "unwinding empties the slot too");
-        assert!(is_cancel(&kept.invoke("face.set_profile", Value::Null).unwrap_err()));
+        assert!(is_cancel(&kept.invoke("face.set_profile", Value::Null, Position::NONE).unwrap_err()));
         assert_eq!(reached.load(Ordering::SeqCst), 0);
+    }
+
+    /// Scripts that nest a value one level per step until the size limits stop them.
+    const NESTERS: [&str; 3] = [
+        "let v = []; loop { v = [v]; }",
+        "let v = #{}; loop { v = #{ a: v }; }",
+        "let v = []; loop { v = [#{ a: v }]; }",
+    ];
+
+    /// Runs `source` on a thread with only `stack` bytes.
+    #[allow(clippy::result_large_err)] // the run's own result
+    fn run_on_share(host: &ScriptHost, stack: usize, source: &str) -> Result<ScriptOutcome, ScriptError> {
+        std::thread::scope(|scope| {
+            std::thread::Builder::new()
+                .stack_size(stack)
+                .spawn_scoped(scope, || {
+                    let request = RunRequest {
+                        name: "nest".into(),
+                        source: source.into(),
+                        actor: Actor::Person { name: "tester".into() },
+                        grants: Grants::person(),
+                        tx: None,
+                        params: JsonMap::new(),
+                        dry_run: false,
+                    };
+                    host.run_here(request, &Counting(&AtomicUsize::new(0)), &Never)
+                })
+                .unwrap()
+                .join()
+                .unwrap()
+        })
+    }
+
+    fn share_limits() -> Limits {
+        Limits { array_len: 5_000, map_len: 5_000, operations: 1_000_000_000, seconds: 120, ..Limits::console() }
+    }
+
+    /// Nesting as deep as the limits allow, run on a thread with only the per-level share of the worker stack (the
+    /// base is left out), must end with the size limit. This asserts the margin of `Limits::STACK_PER_LEVEL`: if a
+    /// level cost more than it is allotted, the thread would overflow and abort the test process.
+    #[test]
+    fn the_per_level_share_of_the_worker_stack_holds_the_deepest_nesting_the_limits_allow() {
+        let limits = share_limits();
+        let stack = limits.worker_stack_bytes().unwrap() - Limits::STACK_BASE;
+        let host = ScriptHost::new(&[], limits);
+        for source in NESTERS {
+            let kind = run_on_share(&host, stack, source).unwrap_err().kind;
+            assert!(
+                matches!(kind, ScriptErrorKind::Limit(LimitKind::ArraySize | LimitKind::MapSize)),
+                "{source}: {kind:?}"
+            );
+        }
+    }
+
+    /// What a script can do to a value nested just under the limits (printing it, interpolating it, comparing it,
+    /// throwing it) recurses once per level too, so each must fit in the same per-level share.
+    #[test]
+    fn the_per_level_share_also_holds_what_a_script_does_with_the_deepest_value() {
+        let limits = Limits { array_len: 1_000, map_len: 1_000, ..share_limits() };
+        let stack = limits.worker_stack_bytes().unwrap() - Limits::STACK_BASE;
+        let host = ScriptHost::new(&[], limits);
+        let builds = [
+            "let v = []; for i in 0..950 { v = [v]; }",
+            "let v = #{}; for i in 0..950 { v = #{ a: v }; }",
+            "let v = []; for i in 0..480 { v = [#{ a: v }]; }",
+        ];
+        let uses = [
+            "let s = `${v}`; s.len()",
+            "print(v); 1",
+            "let w = v; v == w",
+            "let w = v; v != w",
+            "throw v",
+            "try { throw v; } catch (e) { 1 }",
+            "let w = [v, v]; w.len()",
+        ];
+        for build in builds {
+            for usage in uses {
+                let source = format!("{build}\n{usage}");
+                // Any outcome but an abort is fine: a value, a runtime error or a size limit.
+                let _ = run_on_share(&host, stack, &source);
+            }
+        }
     }
 
     /// Sets a flag when it is dropped; a script holds one in a local.
@@ -778,5 +1040,551 @@ mod tests {
         let (dropped, result) = marked("let v = marker(); throw 1;");
         assert!(result.is_err());
         assert!(dropped.load(Ordering::SeqCst), "the scope is gone before `run` rolls back");
+    }
+}
+
+/// The peak heap a run reaches, read after the run on the same thread (`run_here`), against the budget.
+#[cfg(test)]
+mod peak {
+    use super::*;
+
+    /// Answers nothing: the scripts here call no op.
+    struct NoCalls;
+
+    impl Calls for NoCalls {
+        fn call(&self, _: Request) -> Result<omuzaki_ops_api::Outcome, OpError> {
+            Err(OpError::internal("no op is expected"))
+        }
+
+        fn get(&self, _: &DocPath) -> Result<Option<Value>, OpError> {
+            Ok(None)
+        }
+    }
+
+    struct Never;
+
+    impl Cancel for Never {
+        fn is_cancelled(&self) -> bool {
+            false
+        }
+    }
+
+    /// Runs `source` under the console limits and returns how it ended and the most heap it held, in bytes.
+    fn peak_of(source: &str) -> (Result<ScriptOutcome, ScriptError>, usize) {
+        peak_with(Limits::console(), source)
+    }
+
+    /// As [`peak_of`], under `limits`.
+    fn peak_with(limits: Limits, source: &str) -> (Result<ScriptOutcome, ScriptError>, usize) {
+        let host = ScriptHost::new(&[], limits);
+        let request = RunRequest {
+            name: "peak".into(),
+            source: source.into(),
+            actor: Actor::Person { name: "tester".into() },
+            grants: Grants::person(),
+            tx: None,
+            params: JsonMap::new(),
+            dry_run: false,
+        };
+        let result = host.run_here(request, &NoCalls, &Never);
+        (result, budget::peak_here())
+    }
+
+    const LONG_KEY: &str = r#"let k = "x"; while k.len < 500000 { k += k; }"#;
+
+    /// A native call that copies a value many times must be refused before it copies, not after: the budget is only
+    /// read between operations, so the peak is what shows whether a call got through.
+    #[test]
+    fn a_native_call_cannot_copy_past_the_budget_before_the_next_read() {
+        let limit = Limits::console().memory_bytes;
+        // `pad` clones a map whose keys no data limit counts: 100 copies of ten half-megabyte keys is 500 MiB.
+        let pad = format!("{LONG_KEY} let m = #{{}}; for i in 0..10 {{ m[k + i] = 1; }} let a = []; a.pad(100, m); 1");
+        // `replace` builds a result as long as the matches times the replacement, 20,000 x 20,000 here.
+        let replace = r#"let a = "a"; while a.len < 20000 { a += a; } let b = a.replace("a", a); b.len"#;
+        for (name, source) in [("pad", pad.as_str()), ("replace", replace)] {
+            let (result, peak) = peak_of(source);
+            let kind = result.expect_err(name).kind;
+            assert!(matches!(kind, ScriptErrorKind::Limit(_)), "{name}: {kind:?}");
+            assert!(peak < limit / 4, "{name}: held {} MiB before it was refused", peak >> 20);
+        }
+    }
+
+    /// Without any one call to blame, the run still ends at the budget, within one operation of it.
+    #[test]
+    fn map_keys_stop_within_one_operation_of_the_budget() {
+        let limit = Limits::console().memory_bytes;
+        let (result, peak) = peak_of(&format!("{LONG_KEY} let m = #{{}}; for i in 0..2000 {{ m[k + i] = 1; }}"));
+        assert_eq!(result.expect_err("stops").kind, ScriptErrorKind::Limit(LimitKind::Memory));
+        assert!(peak <= limit + (4 << 20), "held {} MiB with a {} MiB budget", peak >> 20, limit >> 20);
+    }
+
+    /// Turning a value into text builds the whole text before any output limit looks at it, unless it is bounded.
+    #[test]
+    fn formatting_a_huge_value_stops_at_the_limit_instead_of_building_it() {
+        // 300 half-megabyte keys: about 150 MiB, under the budget, and each key is more than the output limit.
+        let build = format!("{LONG_KEY} let m = #{{}}; for i in 0..300 {{ m[k + i] = 1; }}");
+        let (_, held) = peak_of(&build);
+        // The last number is the copies of the value the statement makes before it formats anything.
+        for (name, statement, ends, copies) in [
+            ("log", "log(m);", "ok", 0),
+            ("print", "print(m);", "ok", 0),
+            ("debug", "debug(m);", "ok", 0),
+            ("to_string", "let s = m.to_string();", "limit", 0),
+            // Rhai builds these by calling `to_string` and, if that fails, formatting the whole value itself.
+            ("interpolation", "let s = `a${m}b`;", "limit", 1),
+            ("string plus value", r#"let s = "a" + m;"#, "limit", 1),
+            ("value plus string", r#"let s = m + "a";"#, "limit", 1),
+            ("string append", r#"let s = "a"; s += m;"#, "limit", 1),
+            ("interpolated array", "let s = `${[m]}`;", "limit", 1),
+            ("string append call", r#"let s = "a"; s.append(m);"#, "limit", 1),
+            ("JSON", "let s = m.to_json();", "limit", 0),
+        ] {
+            let (result, peak) = peak_of(&format!("{build} {statement}"));
+            match (ends, &result) {
+                ("ok", Ok(outcome)) => {
+                    assert!(
+                        outcome.output.iter().any(|line| line.text == "output truncated"),
+                        "{name}: {:?}",
+                        outcome.output
+                    );
+                }
+                ("limit", Err(error)) => {
+                    assert!(
+                        matches!(error.kind, ScriptErrorKind::Limit(LimitKind::StringSize | LimitKind::Memory)),
+                        "{name}: {error}"
+                    );
+                }
+                _ => panic!("{name}: {:?}", result.as_ref().map(|o| &o.output)),
+            }
+            // Formatting in full is several times the value; the copy a script makes to interpolate or add a value
+            // is the one extra it is allowed (and is what the memory limit then stops).
+            let allowed = copies * held + (8 << 20);
+            assert!(
+                peak <= held + allowed,
+                "{name}: held {} MiB over the {} MiB it started with",
+                peak >> 20,
+                held >> 20
+            );
+        }
+    }
+
+    /// A run that is already over its memory limit formats nothing, on any path, and ends with `Limit(Memory)`.
+    #[test]
+    fn a_run_over_its_limit_formats_nothing_and_stops_with_the_memory_limit() {
+        let tight = Limits { memory_bytes: 2_500_000, ..Limits::console() };
+        // Three half-megabyte keys: 1.5 MB held, so one more copy of the map is over the limit.
+        let build = format!("{LONG_KEY} let m = #{{}}; for i in 0..3 {{ m[k + i] = 1; }} let over = m;");
+        let (_, base) = peak_with(tight.clone(), &build);
+        for (name, statement) in [
+            ("interpolation", "let s = `a${m}b`;"),
+            ("interpolated array", "let s = `${[m]}`;"),
+            ("string plus value", r#"let s = "a" + m;"#),
+            ("value plus string", r#"let s = m + "a";"#),
+            ("string append", r#"let s = "a"; s += m;"#),
+            ("to_string", "let s = m.to_string();"),
+            ("to_debug", "let s = m.to_debug();"),
+            ("print", "print(m);"),
+            ("debug", "debug(m);"),
+            ("log", "log(m);"),
+        ] {
+            let (result, peak) = peak_with(tight.clone(), &format!("{build} {statement}"));
+            assert_eq!(result.expect_err(name).kind, ScriptErrorKind::Limit(LimitKind::Memory), "{name}");
+            // The limit plus the copy the statement itself makes plus a tick's worth of small work.
+            assert!(peak <= base + 1_500_000 + (1 << 20), "{name}: peak {} KiB from {} KiB", peak >> 10, base >> 10);
+        }
+    }
+
+    /// The message of an uncaught `throw` is Rhai's text for the thrown value, built after the run stopped counting.
+    #[test]
+    fn throwing_a_huge_value_reports_it_cut_at_the_limit() {
+        let build = format!("{LONG_KEY} let m = #{{}}; for i in 0..300 {{ m[k + i] = 1; }}");
+        let (_, held) = peak_of(&build);
+        let (result, peak) = peak_of(&format!("{build} throw m;"));
+        let error = result.expect_err("a thrown value is an error");
+        assert_eq!(error.kind, ScriptErrorKind::Runtime, "{}", error.message.len());
+        assert!(error.message.starts_with("Runtime error: #{"), "{}", &error.message[..40]);
+        assert!(error.message.len() <= Limits::console().string_bytes + 64, "{} bytes", error.message.len());
+        // `throw m` copies the value once (a copy of what the script already holds, as the module docs of `guards` say);
+        // formatting it in full would be several more.
+        assert!(peak <= 2 * held + (8 << 20), "held {} MiB with {} MiB to start", peak >> 20, held >> 20);
+        // A small thrown value keeps Rhai's own text.
+        let (result, _) = peak_of("throw #{ a: 1 };");
+        let mut small = Map::new();
+        small.insert("a".into(), Dynamic::from(1_i64));
+        let rhais = EvalAltResult::ErrorRuntime(Dynamic::from_map(small), Position::new(1, 1)).to_string();
+        assert_eq!(result.expect_err("thrown").message, rhais);
+    }
+
+    /// The last operation can pass the budget and free what it took before another progress tick looks.
+    #[test]
+    fn a_final_call_that_passed_the_budget_cannot_commit() {
+        // 256 KiB of text; the last `+` of four copies makes a 768 KiB string while a 512 KiB one and the original are
+        // alive: about 1.5 MiB at once, against a 1.2 MiB budget, released again when the call returns.
+        let build = r#"let s = "x"; while s.len < 200000 { s += s; } "#;
+        let tight = Limits { memory_bytes: 1_200_000, ..Limits::console() };
+        let (result, _) = peak_with(tight.clone(), &format!("{build} (s + s + s).len()"));
+        assert_eq!(result.expect_err("over budget").kind, ScriptErrorKind::Limit(LimitKind::Memory));
+        let (result, _) = peak_with(tight, &format!("{build} (s + s).len()"));
+        assert_eq!(result.expect("a smaller last call commits").value, 524_288);
+    }
+
+    /// The bounded versions say what Rhai's own do for values that fit.
+    #[test]
+    fn bounded_formatting_matches_rhais_own_for_values_that_fit() {
+        let script = r#"let v = [1, "a", #{ k: 2.5, j: [()] }, (), true, 'c', 1.0e10];
+            print(v); debug(v); print(v.to_string()); print(v.to_debug()); print(`${v}`);"#;
+        let (ours, _) = peak_of(script);
+        let ours: Vec<String> = ours.expect("runs").output.into_iter().map(|line| line.text).collect();
+        let lines = Arc::new(Mutex::new(Vec::<String>::new()));
+        let mut plain = Engine::new();
+        let capture = lines.clone();
+        plain.on_print(move |text| capture.lock().unwrap().push(text.to_owned()));
+        let capture = lines.clone();
+        plain.on_debug(move |text, _, _| capture.lock().unwrap().push(text.to_owned()));
+        plain.run(script).unwrap();
+        assert_eq!(ours, *lines.lock().unwrap());
+    }
+
+    #[test]
+    fn padding_and_replacing_within_the_limits_still_work() {
+        let (result, _) = peak_of(r#"let a = [1]; a.pad(5, "x"); let s = "a-b-c"; s.replace("-", "+"); [a.len(), s]"#);
+        assert_eq!(result.expect("runs").value, serde_json::json!([5, "a+b+c"]));
+        let (result, _) =
+            peak_of(r#"let s = "abc"; s.replace('b', "XY"); s.replace("XY", 'z'); s.replace('a', 'q'); s"#);
+        assert_eq!(result.expect("runs").value, "qzc");
+    }
+
+    /// A large map: twenty half-megabyte keys, about 10 MiB, far more text than the 1 MiB string limit.
+    fn large_map() -> String {
+        format!("{LONG_KEY} let m = #{{}}; for i in 0..20 {{ m[k + i] = 1; }}")
+    }
+
+    /// A run that has passed its memory limit while it builds an interpolated part formats none of it, whichever tick
+    /// the stop falls due at. Rhai swallows a stop delivered at the first tick of its own `to_string` call and formats
+    /// the whole value itself, several times its size, so the peak shows whether one got through. Passing the map to
+    /// `f` copies it, which passes the limit; the pads in `f` move the tick at which the stop is due relative to the
+    /// `to_string` call that formats what `f` returns.
+    #[test]
+    fn a_run_over_its_memory_limit_never_formats_a_large_map_in_full() {
+        let tight = Limits { memory_bytes: 15 << 20, ..Limits::console() };
+        // What the run holds once one copy of the map has passed the limit: it stops there.
+        let (result, base) = peak_with(tight.clone(), &format!("{} let over = m;", large_map()));
+        assert_eq!(result.expect_err("over the limit").kind, ScriptErrorKind::Limit(LimitKind::Memory));
+        let one_format = tight.string_bytes;
+        for pads in 0..8 {
+            let f = format!("fn f(x) {{ {} x }}", "1;".repeat(pads));
+            let (result, peak) =
+                peak_with(tight.clone(), &format!("{f}\n{} let s = `${{f(m)}}`; s.len()", large_map()));
+            let kind = result.expect_err("over the limit").kind;
+            assert_eq!(kind, ScriptErrorKind::Limit(LimitKind::Memory), "{pads} pads");
+            assert!(
+                peak <= base + one_format + (1 << 20),
+                "{pads} pads: peak {} KiB, from {} KiB when the run passed its limit",
+                peak >> 10,
+                base >> 10
+            );
+        }
+    }
+
+    /// A run whose operation budget runs out inside an interpolation, at any tick up to and including the one of Rhai's
+    /// own `to_string` call, stops with `Limit(Operations)` and never formats the map in full. Rhai's operation limit
+    /// fired inside that call, where its error is swallowed and the whole value formatted instead.
+    #[test]
+    fn an_operation_budget_running_out_mid_interpolation_never_formats_a_large_map_in_full() {
+        let (_, base) = peak_of(&large_map());
+        let script = format!("{} let s = `${{m}}`;", large_map());
+        let run = |operations| peak_with(Limits { operations, ..Limits::console() }, &script);
+        let runs_out = |operations| {
+            matches!(run(operations).0, Err(ScriptError { kind: ScriptErrorKind::Limit(LimitKind::Operations), .. }))
+        };
+        // The fewest operations with which the run does not run out: the budget is spent mid-interpolation just below.
+        let (mut low, mut high) = (1, Limits::console().operations);
+        while low < high {
+            let middle = low + (high - low) / 2;
+            if runs_out(middle) { low = middle + 1 } else { high = middle }
+        }
+        // The template copies the map once (what the run already holds, as the module docs of `guards` say), and a
+        // bounded format adds at most the string limit; formatting in full would be several copies more.
+        let allowed = base + Limits::console().string_bytes + (1 << 20);
+        for operations in low.saturating_sub(8)..=low {
+            let (result, peak) = run(operations);
+            let kind = result.expect_err("stops").kind;
+            if operations < low {
+                assert_eq!(kind, ScriptErrorKind::Limit(LimitKind::Operations), "{operations} operations");
+            }
+            assert!(
+                peak <= base + allowed,
+                "{operations} operations: peak {} KiB, from {} KiB before the template",
+                peak >> 10,
+                base >> 10
+            );
+        }
+    }
+
+    /// How a value of a type takes part in the paths that turn it into text.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Joins {
+        /// Formatted on every path.
+        Formatted,
+        /// A string: copied as it is into a template, and joined to a string by a version of its own.
+        AsText,
+        /// A character, `()` or a blob: joined to a string by a version of its own (rhai's `string_more.rs`), which
+        /// formats nothing.
+        ByItsOwnVersion,
+    }
+
+    /// A value of every type a run can hold, and a function pointer (which the closure check keeps out of a variable;
+    /// the engine is driven directly here). rhai 1.26.1's `print_debug_functions` has versions of its own for the
+    /// first eight, which are found before any version for any value; integers, ranges and blobs reach the any-value
+    /// one.
+    const TYPES: [(&str, Joins); 12] = [
+        ("()", Joins::ByItsOwnVersion),
+        ("true", Joins::Formatted),
+        ("'c'", Joins::ByItsOwnVersion),
+        ("\"text\"", Joins::AsText),
+        ("2.5", Joins::Formatted),
+        ("|x| x", Joins::Formatted),
+        ("[1, 'c', \"s\", ()]", Joins::Formatted),
+        ("#{ a: [2.0], b: \"t\" }", Joins::Formatted),
+        ("42", Joins::Formatted),
+        ("1..5", Joins::Formatted),
+        ("1..=5", Joins::Formatted),
+        ("\"ab\".to_blob()", Joins::ByItsOwnVersion),
+    ];
+
+    /// Every way a script turns a value `v` into text.
+    const PATHS: [&str; 11] = [
+        "`${v}`",
+        "`a${v}b`",
+        "v.to_string()",
+        "v.to_debug()",
+        "print(v)",
+        "debug(v)",
+        "\"a\" + v",
+        "v + \"a\"",
+        "let s = \"a\"; s += v; s",
+        "let s = \"a\"; s.append(v); s",
+        "log(v)",
+    ];
+
+    /// A run's state for driving its engine directly, as `run_here` would make it.
+    fn new_run(limits: Limits, source: &str) -> Arc<Run> {
+        Arc::new(Run {
+            lent: RwLock::new(None),
+            limits,
+            request: RunRequest {
+                name: "direct".into(),
+                source: source.into(),
+                actor: Actor::Person { name: "tester".into() },
+                grants: Grants::person(),
+                tx: None,
+                params: JsonMap::new(),
+                dry_run: false,
+            },
+            sent: AtomicU32::new(0),
+            reads: AtomicU32::new(0),
+            plan_bytes: AtomicUsize::new(2),
+            due: OnceLock::new(),
+            ops: AtomicU64::new(0),
+            fresh: AtomicBool::new(false),
+            held: AtomicBool::new(false),
+            output: Mutex::new(Output::default()),
+            plans: Mutex::new(Vec::new()),
+        })
+    }
+
+    /// The text a script answers or prints, and how many times one of the bounded functions formatted a value.
+    fn formatted(source: &str) -> (String, Vec<String>, usize) {
+        let host = ScriptHost::new(&[], Limits::console());
+        let run = new_run(Limits::console(), source);
+        let engine = host.engine(&run, host.clock.now().0);
+        let before = crate::guards::FORMATS.with(std::cell::Cell::get);
+        let value = run.lend(&NoCalls, &Never, || engine.eval::<Dynamic>(source)).expect(source);
+        let count = crate::guards::FORMATS.with(std::cell::Cell::get) - before;
+        let lines = run.output.lock().unwrap().lines.iter().map(|line| line.text.clone()).collect();
+        (value.to_string(), lines, count)
+    }
+
+    /// The same, from Rhai's own functions, with the packages a run loads.
+    fn rhais(source: &str) -> (String, Vec<String>) {
+        let lines = Arc::new(Mutex::new(Vec::<String>::new()));
+        let mut plain = Engine::new_raw();
+        for package in &ScriptHost::new(&[], Limits::console()).packages {
+            plain.register_global_module(package.clone());
+        }
+        let capture = lines.clone();
+        plain.on_print(move |text| capture.lock().unwrap().push(text.to_owned()));
+        let capture = lines.clone();
+        plain.on_debug(move |text, _, _| capture.lock().unwrap().push(text.to_owned()));
+        let value = plain.eval::<Dynamic>(source).expect(source);
+        let lines = lines.lock().unwrap().clone();
+        (value.to_string(), lines)
+    }
+
+    /// Every formatting path, for every type a script can hold, goes through the bounded functions and answers what
+    /// Rhai's own would. The exceptions are where Rhai formats nothing: a string in a template is copied as it is, and
+    /// joining a string with a string, a character, `()` or a blob has a version of its own that only joins text.
+    #[test]
+    fn every_formatting_path_uses_the_bounded_functions_for_every_type() {
+        for (value, joins) in TYPES {
+            for path in PATHS {
+                let source = format!("let v = {value}; {path}");
+                let (ours, our_lines, count) = formatted(&source);
+                let joined = path.contains('+') || path.contains("append");
+                let copies_text = match joins {
+                    Joins::Formatted => false,
+                    Joins::AsText => joined || path.contains("${"),
+                    Joins::ByItsOwnVersion => joined,
+                };
+                assert!(count > 0 || copies_text, "{source}: formatted by Rhai's own function");
+                if path != "log(v)" {
+                    assert_eq!((ours, our_lines), rhais(&source), "{source}");
+                }
+            }
+        }
+        // `to_json` is a map's alone.
+        let source = r#"let v = #{ a: [2.0, 'c', ()], b: "t\u0001", c: #{ d: true }, e: "ab".to_blob() }; v.to_json()"#;
+        let (ours, _, count) = formatted(source);
+        assert!(count > 0, "to_json: formatted by Rhai's own function");
+        assert_eq!(ours, rhais(source).0, "to_json");
+    }
+
+    /// Padding with a value whose heap the old count missed (a blob, counted as one small node) is refused before it
+    /// copies: a thousand copies of a 64 KiB blob would hold 64 MiB first.
+    #[test]
+    fn padding_with_a_large_blob_is_refused_before_it_copies() {
+        let build = r#"let k = "x"; while k.len < 65536 { k += k; } let b = k.to_blob(); let a = [];"#;
+        let (_, base) = peak_of(build);
+        let (result, peak) = peak_of(&format!("{build} a.pad(1000, b); a.len()"));
+        let kind = result.expect_err("refused").kind;
+        assert!(matches!(kind, ScriptErrorKind::Limit(LimitKind::ArraySize | LimitKind::Memory)), "{kind:?}");
+        assert!(peak <= base + (1 << 20), "peak {} KiB from {} KiB", peak >> 10, base >> 10);
+        // Under the limits, a blob pads as before.
+        let (result, _) = peak_of(r#"let b = "ab".to_blob(); let a = []; a.pad(3, b); a.len()"#);
+        assert_eq!(result.expect("pads").value, 3);
+    }
+
+    /// Says "cancelled" from its `at`-th poll on; the run polls once a tick while it has no reason to stop.
+    struct CancelAt {
+        polls: AtomicUsize,
+        at: usize,
+    }
+
+    impl Cancel for CancelAt {
+        fn is_cancelled(&self) -> bool {
+            self.polls.fetch_add(1, Ordering::SeqCst) + 1 >= self.at
+        }
+    }
+
+    /// A clock that moves a millisecond each time it is read; the run reads it once a tick while it has no reason to
+    /// stop.
+    struct Millis(AtomicU64);
+
+    impl Clock for Millis {
+        fn now(&self) -> omuzaki_core::time::Seconds {
+            #[allow(clippy::cast_precision_loss)] // test counts stay far below 2^52
+            omuzaki_core::time::Seconds(self.0.fetch_add(1, Ordering::SeqCst) as f64 / 1000.0)
+        }
+    }
+
+    /// Runs `source` under `limits`, `clock` and `cancel`, and answers how it stopped (`None` if it finished) and the
+    /// operations it counted.
+    fn counted(
+        limits: &Limits,
+        clock: &Arc<dyn Clock>,
+        cancel: &dyn Cancel,
+        source: &str,
+    ) -> (Option<ScriptErrorKind>, u64) {
+        let host = ScriptHost::new(&[], limits.clone()).with_clock(clock.clone());
+        let run = new_run(limits.clone(), source);
+        let engine = host.engine(&run, clock.now().0);
+        let _counting = budget::Counting::start();
+        let result = run.lend(&NoCalls, cancel, || engine.eval::<Dynamic>(source));
+        let kind = result.err().map(|error| classify(&error, limits.string_bytes).kind);
+        (kind, run.ops.load(Ordering::SeqCst))
+    }
+
+    /// A 64 KiB map and 100,000 zeros to look for it in: each comparison copies the map, as the package's loops do.
+    const SEARCH: &str = r#"let k = "x"; while k.len < 4096 { k += k; } let m = #{}; for i in 0..16 { m[k + i] = 1; }
+        let a = []; a.pad(100000, 0);"#;
+
+    fn never() -> Arc<dyn Clock> {
+        Arc::new(SystemClock::new())
+    }
+
+    /// A search over 100,000 elements stops at its next element once the run is cancelled, out of time or out of
+    /// operations, instead of copying the map for every element left. The stop falls due 1,000 elements in.
+    #[test]
+    fn contains_and_index_of_stop_at_their_next_element() {
+        let (_, base) = counted(&Limits::console(), &never(), &Never, SEARCH);
+        let due = base + 1000;
+        for search in ["a.contains(m)", "a.index_of(m)", "m in a", "a.index_of(m, 5)"] {
+            let source = format!("{SEARCH} {search}");
+            let at = usize::try_from(due).unwrap();
+            let (kind, ops) =
+                counted(&Limits::console(), &never(), &CancelAt { polls: AtomicUsize::new(0), at }, &source);
+            assert_eq!(kind, Some(ScriptErrorKind::Cancelled), "{search}");
+            assert!(ops <= due + 3, "{search}: cancelled at operation {due}, ran to {ops}");
+            let seconds = u32::try_from(due / 1000).unwrap();
+            let millis: Arc<dyn Clock> = Arc::new(Millis(AtomicU64::new(0)));
+            let (kind, ops) = counted(&Limits { seconds, ..Limits::console() }, &millis, &Never, &source);
+            assert_eq!(kind, Some(ScriptErrorKind::Limit(LimitKind::Time)), "{search}");
+            let deadline = u64::from(seconds) * 1000;
+            assert!(ops <= deadline + 3, "{search}: out of time at operation {deadline}, ran to {ops}");
+            let (kind, ops) = counted(&Limits { operations: due, ..Limits::console() }, &never(), &Never, &source);
+            assert_eq!(kind, Some(ScriptErrorKind::Limit(LimitKind::Operations)), "{search}");
+            assert!(ops <= due + 3, "{search}: out of operations at {due}, ran to {ops}");
+        }
+    }
+
+    /// The other loops that call back into the engine for each element stop the same way: `==` and `!=` on arrays
+    /// and maps, and the sorts and dedups, which ignore their comparer's errors and would otherwise carry on.
+    #[test]
+    fn comparing_sorting_and_deduplicating_stop_at_their_next_element() {
+        let build = "let a = []; a.pad(100000, 0); let b = a; let m = #{}; for i in 0..10000 { m[`k${i}`] = 1; } \
+                     let n = m;";
+        let (_, base) = counted(&Limits::console(), &never(), &Never, build);
+        let due = base + 1000;
+        for step in [
+            "a == b",
+            "a != b",
+            "m == n",
+            "m != n",
+            "a.dedup()",
+            "a.dedup(|x, y| x == y)",
+            "a.sort(|x, y| x - y)",
+            "a.sort_by(|x, y| x - y)",
+        ] {
+            let source = format!("{build} {step}");
+            let (kind, ops) = counted(&Limits { operations: due, ..Limits::console() }, &never(), &Never, &source);
+            assert_eq!(kind, Some(ScriptErrorKind::Limit(LimitKind::Operations)), "{step}");
+            assert!(ops <= due + 4, "{step}: out of operations at {due}, ran to {ops}");
+        }
+    }
+
+    /// A loop that ends with its last element's stop held must not hand that stop to the `to_string` call of the
+    /// template part that follows it, where Rhai would swallow it and format the part in full: the loops check the
+    /// run before they return. The budget is swept over the end of the search.
+    #[test]
+    fn a_stop_due_at_the_end_of_a_loop_is_not_delivered_inside_the_next_format() {
+        let build = format!("{} let a = []; a.pad(20, 0);", large_map());
+        let (_, base) = peak_of(&build);
+        let (_, before) = counted(&Limits::console(), &never(), &Never, &build);
+        let script = format!("{build} let s = `${{[m, a.contains(1)]}}`;");
+        for operations in before..before + 60 {
+            let (result, peak) = peak_with(Limits { operations, ..Limits::console() }, &script);
+            let kind = result.expect_err("stops").kind;
+            assert!(
+                matches!(kind, ScriptErrorKind::Limit(LimitKind::Operations | LimitKind::StringSize)),
+                "{operations}: {kind:?}"
+            );
+            // The template copies the map once; a bounded format adds at most the string limit.
+            assert!(
+                peak <= 2 * base + Limits::console().string_bytes + (1 << 20),
+                "{operations} operations: peak {} KiB from {} KiB",
+                peak >> 10,
+                base >> 10
+            );
+        }
     }
 }

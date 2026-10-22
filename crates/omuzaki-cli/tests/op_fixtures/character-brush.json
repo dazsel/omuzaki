@@ -1,0 +1,13 @@
+{
+  "about": "One weight brush stroke on the body, so there are brushes to mirror, report or clear.",
+  "base": "character",
+  "steps": [
+    {
+      "op": "rig.weights.brush",
+      "args": {
+        "character": "kit", "part": "body", "centre": [0.2, 1.3, 0.0], "radius": 0.15,
+        "joint": { "humanoid": "leftLowerArm" }, "strength": 0.6
+      }
+    }
+  ]
+}

@@ -44,6 +44,10 @@ pub struct WgpuRenderer {
     paints: PaintLog,
     /// Pixels staged by the current painter, kept between paints so repainting allocates nothing once warm.
     staging: Staging,
+    /// Makes the next frame lose its morph dispatches and fail its error scope, so a test can check what the morph pool
+    /// does with a frame that never got that far.
+    #[cfg(test)]
+    inject_frame_failure: bool,
 }
 
 impl std::fmt::Debug for WgpuRenderer {
@@ -93,11 +97,13 @@ impl WgpuRenderer {
         // A broken registration (a duplicate name, say) fails creation here rather than at the first draw.
         program::Registry::global()?;
         let device = gpu.device.clone();
-        let (shared, frame, graph) = scope_errors(&device, "the renderer", move || {
+        let (shared, frame, graph, morphs) = scope_errors(&device, "the renderer", move || {
             let shared = Shared::new(gpu);
             let frame = FrameState::new(&shared.gpu.device, &shared.layouts);
             let graph = FrameGraph::new(&shared);
-            Ok((shared, frame, graph))
+            // The morph path is chosen here, once: the GPU's where the device has compute, else the CPU's.
+            let morphs = morph::MorphPool::new(&shared.gpu.device);
+            Ok((shared, frame, graph, morphs))
         })?;
         let capabilities = Capabilities {
             backend: shared.gpu.backend_name.clone(),
@@ -115,12 +121,31 @@ impl WgpuRenderer {
         Ok(Self {
             shared,
             capabilities,
-            resources: Resources::default(),
+            resources: Resources { morphs, ..Resources::default() },
             frame,
             graph,
             paints: PaintLog::default(),
             staging: Staging::default(),
+            #[cfg(test)]
+            inject_frame_failure: false,
         })
+    }
+
+    /// Which path blends morph targets: `"gpu"` (a compute pass, where the device has compute) or `"cpu"`. It is chosen
+    /// when the renderer is created and never changes under a live mesh: there is no fallback mid-session.
+    #[must_use]
+    pub fn morph_path(&self) -> &'static str {
+        self.resources.morphs.path().name()
+    }
+
+    /// Switches morph blending to the CPU path on a device that has compute, so tests can check both paths on one
+    /// adapter. Not part of the renderer's contract.
+    ///
+    /// # Errors
+    /// `Invalid` once a mesh with morph targets has been created.
+    #[doc(hidden)]
+    pub fn force_cpu_morph(&mut self) -> Result<(), RenderError> {
+        self.resources.morphs.force_cpu()
     }
 
     /// The target's output texture: sRGB-encoded RGBA8 at the target's size, valid after a frame has been rendered.
@@ -203,8 +228,18 @@ impl Renderer for WgpuRenderer {
             }
         }
         let gpu = &self.shared.gpu;
-        let uploaded = gpu.scoped("a mesh", || GpuMesh::upload(gpu, mesh, options))?;
+        // The GPU morph path reads the mesh's own vertices from a compute shader, so only then do they need `STORAGE`.
+        let blend_on_gpu = self.resources.morphs.path() == morph::MorphPath::Gpu;
+        let uploaded = gpu.scoped("a mesh", || GpuMesh::upload(gpu, mesh, options, blend_on_gpu))?;
         let (index, generation) = self.resources.meshes.insert(uploaded);
+        // The GPU morph path uploads the mesh's targets once, here; a mesh it cannot hold is refused outright.
+        let attached = self.resources.meshes.get(index, generation).map_or(Ok(()), |m| {
+            gpu.scoped("morph targets", || self.resources.morphs.attach(&gpu.device, index, generation, m))
+        });
+        if let Err(error) = attached {
+            self.resources.meshes.remove(index, generation);
+            return Err(error);
+        }
         Ok(MeshId::from_parts(index, generation))
     }
 
@@ -281,7 +316,7 @@ impl Renderer for WgpuRenderer {
     fn paint_texture(&mut self, texture: TextureId, painter: &mut dyn Painter) -> Result<(), RenderError> {
         self.shared.gpu.check_alive()?;
         let start = Instant::now();
-        let Self { shared, resources, paints, staging, .. } = self;
+        let Self { shared, resources, paints, staging, graph, .. } = self;
         let entry = resources
             .textures
             .get(texture.index(), texture.generation())
@@ -292,9 +327,26 @@ impl Renderer for WgpuRenderer {
                 "only dynamic textures can be painted; create it with TextureUsage::Dynamic",
             ));
         }
-        let mut target = GpuPaintTarget::new(&shared.gpu, entry, staging);
-        painter.paint(&mut target)?;
-        let changed = shared.gpu.scoped("a texture paint", || Ok(target.commit()))?;
+        // The painter runs inside the scope too: a GPU painter's own uploads and recorded commands are checked with the
+        // submit, so a fault in them is this call's error, not wgpu's uncaptured-error panic.
+        let mut submitted = None;
+        let changed = shared.gpu.scoped("a texture paint", || {
+            let mut target = GpuPaintTarget::new(&shared.gpu, entry, staging, graph.timer_mut());
+            painter.paint(&mut target)?;
+            let (changed, timed) = target.commit();
+            submitted = timed;
+            Ok(changed)
+        });
+        let changed = match changed {
+            Ok(changed) => changed,
+            Err(error) => {
+                // An invalid submit runs nothing, so its timestamps are never written: `PaintTextures` must not count them.
+                if let (Some(timer), Some(end)) = (graph.timer_mut(), submitted) {
+                    timer.cancel_paint(end);
+                }
+                return Err(error);
+            }
+        };
         paints.record(texture, changed, start.elapsed());
         Ok(())
     }
@@ -408,8 +460,10 @@ impl Renderer for WgpuRenderer {
         }
         let samples = shared.gpu.samples_for(quality.samples);
 
+        #[cfg(test)]
+        let inject_frame_failure = self.inject_frame_failure;
         let gpu = &shared.gpu;
-        gpu.scoped("a frame", || {
+        let report = gpu.scoped("a frame", || {
             // Everything that can fail on the caller's data happens before the GPU is touched, so on error the target
             // keeps its previous frame.
             frame.prepare(&gpu.device, &gpu.queue, &shared.layouts, scene, scene_resources, internal)?;
@@ -428,6 +482,21 @@ impl Renderer for WgpuRenderer {
             };
             let mut encoder =
                 gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
+            // The GPU morph blend runs first, so every pass that draws a morphed instance reads its finished stream.
+            #[cfg(test)]
+            if inject_frame_failure {
+                // A buffer that cannot exist: the frame's error scope fails, and the dispatches are never recorded.
+                let _ = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("injected scope error"),
+                    size: 4,
+                    usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::VERTEX,
+                    mapped_at_creation: false,
+                });
+            } else {
+                scene_resources.morphs.record(&mut encoder);
+            }
+            #[cfg(not(test))]
+            scene_resources.morphs.record(&mut encoder);
             let mut cx = PassCx {
                 shared,
                 resources: scene_resources,
@@ -458,7 +527,11 @@ impl Renderer for WgpuRenderer {
                 draw_calls: stats.draw_calls,
                 triangles: stats.triangles,
             })
-        })
+        })?;
+        // Only now, with the frame's error scopes passed, were its morph dispatches done: a scope that fails turns the
+        // submit into an error, and the next frame must queue them again.
+        scene_resources.morphs.submitted();
+        Ok(report)
     }
 
     fn read_target(&mut self, target: TargetId) -> Result<Image, RenderError> {
@@ -492,6 +565,46 @@ mod tests {
         assert_eq!(internal_size(UVec2::new(1920, 1080), 1.5), UVec2::new(2880, 1620));
         assert_eq!(internal_size(UVec2::new(64, 64), 0.25), UVec2::splat(16));
         assert_eq!(internal_size(UVec2::new(1, 1), 0.25), UVec2::ONE, "a one-pixel target still renders one pixel");
+    }
+
+    /// A frame that fails its error scope after the morph blend was prepared never ran the blend, so the next frame with
+    /// the same weights must queue it again, whichever path blends.
+    #[test]
+    fn a_frame_whose_error_scope_fails_does_not_make_the_next_one_skip_its_morph_blend() {
+        use omuzaki_core::glam::{Mat4, Vec2, Vec3};
+        use omuzaki_core::id::Slug;
+        use omuzaki_render_api::{Background, MeshOptions, MorphRange, MorphSet, Projection, RendererExt, Tonemap};
+
+        let mut r = renderer();
+        let quad = omuzaki_render_mock::shapes::quad(Vec2::splat(0.25));
+        let slide = vec![Vec3::new(0.5, 0.0, 0.0); quad.positions.len()];
+        let set =
+            MorphSet::from_dense(quad.positions.len(), &[(Slug::new("slide").unwrap(), &slide, &[])], 0.0).unwrap();
+        let mesh = r.create_mesh_with(&quad, &MeshOptions { morphs: Some(set), ..MeshOptions::default() }).unwrap();
+        let material = r.create_material(&Material::unlit(Colour::WHITE)).unwrap();
+        let target = r.create_target(&TargetDesc { size: UVec2::splat(64), alpha: AlphaEncoding::Straight }).unwrap();
+        let camera = Camera::look_at(
+            Vec3::new(0.0, 0.0, 5.0),
+            Vec3::ZERO,
+            Vec3::Y,
+            Projection::Orthographic { height: 2.0, near: 0.1, far: 20.0 },
+        );
+        let mut scene = Scene::new(camera);
+        scene.background = Background::Solid { colour: Colour::BLACK };
+        scene.post.tonemap = Tonemap::None;
+        let mut instance = Instance::new(mesh, material, Mat4::IDENTITY);
+        instance.morph = Some(MorphRange { start: 0, len: 1 });
+        scene.instances.push(instance);
+        scene.morph_weights.push(0.5);
+        let quality = Quality { samples: 1, render_scale: 1.0, post_effects: false, ..Quality::offline() };
+
+        r.inject_frame_failure = true;
+        assert!(r.render(target, &scene, &quality).is_err(), "the injected scope error fails the frame");
+        r.inject_frame_failure = false;
+        // The quad slides half way: it covers columns 32 to 47 of the middle row.
+        let image = r.render_image(UVec2::splat(64), AlphaEncoding::Straight, &scene, &quality).unwrap();
+        assert_eq!(image.pixel(40, 32).map(|p| p[0]), Some(255), "the blend ran: the quad is where the weight puts it");
+        assert_eq!(image.pixel(28, 32).map(|p| p[0]), Some(0), "and not where the base mesh is");
     }
 
     #[test]

@@ -42,7 +42,13 @@ pub trait Updater: Send + Sync {
     fn hold(&self, why: HoldReason) -> Hold;
 
     /// The app calls this once the main window is up. Idempotent; writes the marker the launcher reads.
-    fn healthy(&self);
+    ///
+    /// The marker is the only thing that stops the launcher counting the trial as failed, so a failed write is an
+    /// error the caller sees, not a silent success.
+    ///
+    /// # Errors
+    /// [`UpdateError::Io`] when the marker cannot be written (a full disk, permissions).
+    fn healthy(&self) -> Result<(), UpdateError>;
 
     /// A new bounded queue of events.
     fn subscribe(&self) -> UpdateEvents;

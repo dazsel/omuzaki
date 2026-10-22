@@ -9,16 +9,19 @@
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use constant_time_eq::constant_time_eq;
 use hyper::HeaderMap;
 use hyper::header::AUTHORIZATION;
-use omuzaki_ops_api::{Actor, Grants};
+use omuzaki_ops_api::{Actor, EndReason, Grants};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{SessionManager, StreamableHttpServerConfig, StreamableHttpService};
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::agent::Credential;
 use crate::error::ServerError;
 use crate::limits::{Admission, Limits, SessionSlots, SessionsFull};
 use crate::server::McpServer;
@@ -39,13 +42,33 @@ const HASH_CONTEXT: &str = "omuzaki-mcp 2026-10 http access token hash";
 const LOOPBACK_HOSTS: [&str; 3] = ["localhost", "127.0.0.1", "::1"];
 
 /// Names an access token in logs and for [`HttpServer::revoke`](crate::HttpServer::revoke). Not secret.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TokenId(u64);
 
 impl fmt::Display for TokenId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "token-{}", self.0)
     }
+}
+
+/// One live access token, as the "connected apps" panel shows it. Never carries the secret or its hash.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct TokenInfo {
+    /// Names the token for [`HttpServer::revoke`](crate::HttpServer::revoke).
+    pub id: TokenId,
+    /// What the user called this client.
+    pub label: String,
+    /// The scopes every session opened with the token holds.
+    pub grants: Grants,
+    /// When a request last presented this token and passed the check; `None` if none has.
+    pub last_used: Option<SystemTime>,
+    /// How many sessions the token has open now.
+    pub open_sessions: usize,
+    /// Who issued the token: the principal of the sessions opened with it.
+    pub issuer: Actor,
+    /// Whether the person has paired this credential in the studio window.
+    pub paired: bool,
 }
 
 /// A secret that lets one client use the HTTP port with fixed grants. Returned once by
@@ -178,6 +201,8 @@ pub(crate) enum Denied {
 pub(crate) struct Endpoint {
     id: TokenId,
     label: String,
+    /// What the token's sessions are admitted with, and how the port ends them (see [`Credential`]).
+    credential: Arc<Credential>,
     service: StreamableHttpService<Session, LocalSessionManager>,
     sessions: Arc<LocalSessionManager>,
     /// How many sessions this token may have open (`max_sessions_per_token`).
@@ -220,8 +245,10 @@ impl Endpoint {
         Err(refused)
     }
 
-    /// Ends every session of this endpoint. Each session's open transaction is rolled back as its handler drops.
-    pub(crate) async fn close(&self) {
+    /// Ends every session of this endpoint for `reason`. Each session ends through the registry, which abandons its open
+    /// transaction (without a registry the handler rolls it back as it drops).
+    pub(crate) async fn close(&self, reason: EndReason) {
+        self.credential.will_end_with(reason);
         self.cancel.cancel();
         let ids: Vec<_> = self.sessions.sessions.read().await.keys().cloned().collect();
         for id in ids {
@@ -238,6 +265,9 @@ struct Entry {
     hash: [u8; HASH_BYTES],
     record: TokenRecord,
     endpoint: Arc<Endpoint>,
+    /// Unix milliseconds of the last request that presented this token, 0 for never. Atomic so [`Registry::authorize`]
+    /// can record it under the read lock it already holds, and nothing else is shared with it.
+    last_used: AtomicU64,
 }
 
 /// The live tokens.
@@ -249,6 +279,8 @@ pub(crate) struct Registry {
     cancel: CancellationToken,
     allowed_origins: Vec<String>,
     limits: Limits,
+    /// Where a session's credential revocation (the registry asked for it) is sent; the port revokes the token.
+    revocations: mpsc::UnboundedSender<TokenId>,
 }
 
 impl Registry {
@@ -257,8 +289,23 @@ impl Registry {
         allowed_origins: Vec<String>,
         limits: Limits,
         cancel: CancellationToken,
+        revocations: mpsc::UnboundedSender<TokenId>,
     ) -> Self {
-        Self { server, entries: RwLock::default(), next_id: AtomicU64::new(1), cancel, allowed_origins, limits }
+        Self {
+            server,
+            entries: RwLock::default(),
+            next_id: AtomicU64::new(1),
+            cancel,
+            allowed_origins,
+            limits,
+            revocations,
+        }
+    }
+
+    /// Why the port closes sessions on behalf of the person: they revoked the token (`credential`) or changed what it
+    /// may do.
+    fn revoked(&self, credential: bool) -> EndReason {
+        EndReason::Revoked { by: self.server.person(), credential }
     }
 
     /// The limits every token's endpoint is held to.
@@ -291,7 +338,7 @@ impl Registry {
     fn insert(&self, record: TokenRecord) -> Result<TokenId, ServerError> {
         let hash = record.admissible_hash()?;
         let id = TokenId(self.next_id.fetch_add(1, Ordering::Relaxed));
-        let endpoint = Arc::new(self.endpoint(id, record.label.clone(), record.grants.clone())?);
+        let endpoint = Arc::new(self.endpoint(id, &record)?);
         let mut entries = self.write();
         // Two live tokens with one hash would make `authorize` pick whichever is last: refuse rather than guess.
         if entries.iter().any(|e| constant_time_eq(&e.hash, &hash)) {
@@ -300,7 +347,7 @@ impl Registry {
                 reason: "a token with the same secret is already admitted".to_owned(),
             });
         }
-        entries.push(Entry { id, hash, record, endpoint });
+        entries.push(Entry { id, hash, record, endpoint, last_used: AtomicU64::new(0) });
         Ok(id)
     }
 
@@ -311,14 +358,19 @@ impl Registry {
 
     /// Marks a live token as paired (or not). False if there is no such token.
     pub(crate) fn set_paired(&self, id: TokenId, paired: bool) -> bool {
-        self.write().iter_mut().find(|e| e.id == id).map(|e| e.record.paired = paired).is_some()
+        let mut entries = self.write();
+        let Some(entry) = entries.iter_mut().find(|e| e.id == id) else { return false };
+        entry.record.paired = paired;
+        entry.endpoint.credential.set_paired(paired);
+        true
     }
 
     /// Replaces a live token's grants. Its open sessions end, because they were opened under the old ones; new
     /// sessions get the new grants. False if there is no such token.
     pub(crate) async fn set_grants(&self, id: TokenId, grants: Grants) -> Result<bool, ServerError> {
-        let Some(label) = self.record(id).map(|r| r.label) else { return Ok(false) };
-        let fresh = Arc::new(self.endpoint(id, label, grants.clone())?);
+        let Some(mut record) = self.record(id) else { return Ok(false) };
+        record.grants = grants.clone();
+        let fresh = Arc::new(self.endpoint(id, &record)?);
         let old = {
             let mut entries = self.write();
             entries.iter_mut().find(|e| e.id == id).map(|entry| {
@@ -328,7 +380,7 @@ impl Registry {
         };
         // Close outside the lock. If the token was revoked meanwhile, the fresh endpoint was never installed.
         let live = old.is_some();
-        old.unwrap_or(fresh).close().await;
+        old.unwrap_or(fresh).close(self.revoked(false)).await;
         Ok(live)
     }
 
@@ -345,7 +397,7 @@ impl Registry {
             entries.iter().position(|e| e.id == id).map(|i| entries.remove(i))
         };
         let entry = removed?;
-        entry.endpoint.close().await;
+        entry.endpoint.close(self.revoked(true)).await;
         tracing::info!(token = %entry.id, label = %entry.record.label, "access token revoked");
         Some(TokenRecord { revoked: true, ..entry.record })
     }
@@ -354,7 +406,7 @@ impl Registry {
     pub(crate) async fn close_all(&self) {
         let endpoints: Vec<_> = self.read_endpoints();
         for endpoint in endpoints {
-            endpoint.close().await;
+            endpoint.close(EndReason::Closed).await;
         }
     }
 
@@ -364,23 +416,68 @@ impl Registry {
         // Compare against every token, without stopping at the first match, so timing doesn't reveal how close a guess
         // was or which slot matched. Hashing first makes every comparison the same length, so even that is hidden.
         let presented = hash_secret(presented);
+        let entries = self.read();
         let mut found = None;
-        for entry in self.read().iter() {
+        for entry in entries.iter() {
             if constant_time_eq(&entry.hash, &presented) {
-                found = Some(Arc::clone(&entry.endpoint));
+                found = Some(entry);
             }
         }
-        found.ok_or(Denied::Unknown)
+        let entry = found.ok_or(Denied::Unknown)?;
+        // Wall-clock time, shown to people and never replayed: ADR 0009 only forbids clock reads on replayed paths.
+        record_use(&entry.last_used, now_millis());
+        Ok(Arc::clone(&entry.endpoint))
     }
 
-    fn endpoint(&self, id: TokenId, label: String, grants: Grants) -> Result<Endpoint, ServerError> {
-        let server = self.server.with_grants(grants)?;
+    /// The live tokens in id order, for the connected-apps panel. Each row's open sessions are counted after the lock is
+    /// released, so no lock is held across an await.
+    pub(crate) async fn tokens(&self) -> Vec<TokenInfo> {
+        let mut rows: Vec<(TokenInfo, Arc<Endpoint>)> = self
+            .read()
+            .iter()
+            .map(|e| {
+                let info = TokenInfo {
+                    id: e.id,
+                    label: e.record.label.clone(),
+                    grants: e.record.grants.clone(),
+                    last_used: millis_to_time(e.last_used.load(Ordering::Relaxed)),
+                    open_sessions: 0,
+                    issuer: e.record.issuer.clone(),
+                    paired: e.record.paired,
+                };
+                (info, Arc::clone(&e.endpoint))
+            })
+            .collect();
+        rows.sort_by_key(|(info, _)| info.id);
+        let mut infos = Vec::with_capacity(rows.len());
+        for (mut info, endpoint) in rows {
+            info.open_sessions = endpoint.open_sessions().await;
+            infos.push(info);
+        }
+        infos
+    }
+
+    fn endpoint(&self, id: TokenId, record: &TokenRecord) -> Result<Endpoint, ServerError> {
+        let label = record.label.clone();
+        let revocations = self.revocations.clone();
+        let credential = Arc::new(Credential::new(
+            label.clone(),
+            record.issuer.clone(),
+            record.paired,
+            self.limits.idle_timeout,
+            Some(Box::new(move || {
+                // The port is gone when nobody listens; then there is nothing left to revoke.
+                let _ = revocations.send(id);
+            })),
+        ));
+        let server = self.server.with_credential(record.grants.clone(), Some(Arc::clone(&credential)))?;
         let cancel = self.cancel.child_token();
         // Sessions that go quiet (a crashed client never sends DELETE) are dropped after the idle timeout, which also
         // rolls back whatever transaction they left open and removes the session from the table the cap counts.
         let mut sessions = LocalSessionManager::default();
         sessions.session_config.keep_alive = Some(self.limits.idle_timeout);
         let sessions = Arc::new(sessions);
+        credential.attach(Arc::clone(&sessions));
         // Origin validation is on even with an empty list, so a request that carries any `Origin` (a web page) is
         // refused unless the host listed it. Requests without one (every non-browser client) are checked by token.
         let config = StreamableHttpServerConfig::default()
@@ -392,7 +489,7 @@ impl Registry {
             .with_cancellation_token(cancel.clone());
         let service = StreamableHttpService::new(move || Ok(server.http_session()), Arc::clone(&sessions), config);
         let slots = SessionSlots::new(self.limits.max_sessions_per_token);
-        Ok(Endpoint { id, label, service, sessions, slots, cancel })
+        Ok(Endpoint { id, label, credential, service, sessions, slots, cancel })
     }
 
     fn read_endpoints(&self) -> Vec<Arc<Endpoint>> {
@@ -433,6 +530,22 @@ fn hash_secret(secret: &str) -> [u8; HASH_BYTES] {
     *blake3::keyed_hash(&blake3::derive_key(HASH_CONTEXT, &[]), secret.as_bytes()).as_bytes()
 }
 
+/// Unix milliseconds now. A clock set before 1970 reads as 0, which is "never", so it records nothing rather than a
+/// wrong time.
+fn now_millis() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).ok().and_then(|d| u64::try_from(d.as_millis()).ok()).unwrap_or(0)
+}
+
+/// Stores a use time without moving the recorded time backward. Two requests can read the clock in one order and store
+/// in the other, so an unconditional store could overwrite a later time with an earlier one; `fetch_max` never does.
+fn record_use(last_used: &AtomicU64, millis: u64) {
+    last_used.fetch_max(millis, Ordering::Relaxed);
+}
+
+fn millis_to_time(millis: u64) -> Option<SystemTime> {
+    (millis != 0).then(|| UNIX_EPOCH + Duration::from_millis(millis))
+}
+
 fn to_hex(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(2 * bytes.len());
     for byte in bytes {
@@ -459,7 +572,10 @@ fn from_hex(text: &str) -> Option<[u8; HASH_BYTES]> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::mpsc::{Receiver, channel};
+
     use hyper::header::HeaderValue;
+    use omuzaki_ops_api::{Event, OpError, OpInfo, Outcome, Request as OpRequest, Runner, TxId};
 
     use super::*;
 
@@ -538,5 +654,101 @@ mod tests {
             let bad = TokenRecord { hash: hash.to_owned(), ..record() };
             assert!(matches!(bad.admissible_hash(), Err(ServerError::BadTokenRecord { .. })), "{hash:?}");
         }
+    }
+
+    /// A runner with no ops: the registry's own bookkeeping doesn't depend on what a tool does.
+    struct Idle;
+
+    impl Runner for Idle {
+        fn ops(&self) -> Vec<OpInfo> {
+            Vec::new()
+        }
+        fn run(&self, _: OpRequest) -> Result<Outcome, OpError> {
+            Err(OpError::unsupported("this runner has no ops"))
+        }
+        fn begin(&self, _: &str, _: &Actor) -> TxId {
+            TxId(1)
+        }
+        fn commit(&self, _: TxId, _: &Actor) -> Result<(), OpError> {
+            Ok(())
+        }
+        fn rollback(&self, _: TxId, _: &Actor) -> Result<(), OpError> {
+            Ok(())
+        }
+        fn undo(&self, _: &Actor, _: &Grants) -> Result<Option<String>, OpError> {
+            Ok(None)
+        }
+        fn redo(&self, _: &Actor, _: &Grants) -> Result<Option<String>, OpError> {
+            Ok(None)
+        }
+        fn subscribe(&self, _: &Grants) -> Result<Receiver<Event>, OpError> {
+            Ok(channel().1)
+        }
+        fn get(&self, _: &omuzaki_doc_api::DocPath, _: &Grants) -> Result<Option<serde_json::Value>, OpError> {
+            Ok(None)
+        }
+        fn log(&self, _: u64, _: usize, _: &Grants) -> Result<Vec<omuzaki_ops_api::OpRecord>, OpError> {
+            Ok(Vec::new())
+        }
+    }
+
+    fn registry() -> Registry {
+        let server = McpServer::new(Arc::new(Idle), crate::server::McpOptions::default()).unwrap();
+        let limits = Limits {
+            idle_timeout: Duration::from_mins(30),
+            max_sessions_per_token: 32,
+            max_body_bytes: 4 * 1024 * 1024,
+            body_timeout: Duration::from_secs(30),
+        };
+        Registry::new(server, Vec::new(), limits, CancellationToken::new(), tokio::sync::mpsc::unbounded_channel().0)
+    }
+
+    #[test]
+    fn authorize_records_a_use_only_when_the_secret_is_right() {
+        let registry = registry();
+        let token = registry.issue("codex".to_owned(), Grants::agent_default()).unwrap();
+        let last_used = || registry.read()[0].last_used.load(Ordering::Relaxed);
+        let headers = |value: &str| {
+            let mut map = HeaderMap::new();
+            map.insert(AUTHORIZATION, HeaderValue::from_str(value).unwrap());
+            map
+        };
+        assert_eq!(last_used(), 0, "a token starts never used");
+        assert!(registry.authorize(&headers("Bearer omuzaki_mcp_wrong")).is_err());
+        assert_eq!(last_used(), 0, "a failed check records nothing");
+        let before = now_millis();
+        assert!(registry.authorize(&headers(&token.bearer_header())).is_ok());
+        let used = last_used();
+        assert!(before <= used && used <= now_millis(), "{used} is not between {before} and now");
+        assert_eq!(millis_to_time(0), None);
+    }
+
+    #[test]
+    fn a_later_use_time_is_never_overwritten_by_an_earlier_one() {
+        let last_used = AtomicU64::new(0);
+        record_use(&last_used, 5_000);
+        record_use(&last_used, 4_000);
+        assert_eq!(last_used.load(Ordering::Relaxed), 5_000, "an earlier use must not move the time back");
+        record_use(&last_used, 6_000);
+        assert_eq!(last_used.load(Ordering::Relaxed), 6_000, "a later use must move the time forward");
+    }
+
+    #[test]
+    fn concurrent_uses_keep_the_latest_time() {
+        let last_used = Arc::new(AtomicU64::new(0));
+        let handles: Vec<_> = (1..=8u64)
+            .map(|t| {
+                let last_used = Arc::clone(&last_used);
+                std::thread::spawn(move || {
+                    for i in 0..1_000u64 {
+                        record_use(&last_used, t * 10_000 + i);
+                    }
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        assert_eq!(last_used.load(Ordering::Relaxed), 8 * 10_000 + 999);
     }
 }

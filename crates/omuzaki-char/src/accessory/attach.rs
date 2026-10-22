@@ -121,6 +121,15 @@ fn joint_frame(published: &Published, joint: &JointRef) -> Option<DMat4> {
     Some(DMat4::from_rotation_translation(rotation.as_dquat(), position))
 }
 
+/// The rotation of `joint` in the bind pose, world space: a humanoid bone's carries the hang of its ancestors; a bone a part
+/// contributed has none.
+pub(super) fn joint_rotation(published: &Published, joint: &JointRef) -> DQuat {
+    match joint {
+        JointRef::Humanoid(bone) => bind_rotation(&published.bind(), *bone).as_dquat(),
+        JointRef::Named(_) => DQuat::IDENTITY,
+    }
+}
+
 /// The frame of an anchor: its position and rotation.
 fn anchor_frame(anchor: &Anchor) -> DMat4 {
     DMat4::from_rotation_translation(anchor.rotation.as_dquat(), DVec3::from(anchor.position))
@@ -260,6 +269,12 @@ pub fn attach_points(built: &BuiltCharacter) -> Vec<AttachPoint> {
 /// in a part's `attach`, with an optional `offset` (metres, degrees about x then y then z, uniform scale).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit"}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
 pub struct ListAnchors {
     /// The character to list.
     pub character: CharId,

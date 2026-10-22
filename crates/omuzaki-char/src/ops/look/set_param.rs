@@ -13,6 +13,12 @@ use crate::ops::character::access as character;
 /// Sets one override of a character's look, on top of its preset, or clears it so the preset's value shows through.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "param": "cloth.outline_width_scale", "value": 1.2}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
 pub struct LookSetParam {
     /// The character to restyle.
     pub character: CharId,

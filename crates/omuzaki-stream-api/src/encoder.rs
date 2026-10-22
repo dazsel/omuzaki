@@ -278,9 +278,11 @@ pub struct Frame<'a> {
     pub capture_time: Ticks,
     /// The pixels on the CPU (`read_target`'s result), already in the alpha form the output asked for.
     pub cpu: Option<&'a Image>,
-    /// The target's native GPU handles, the painters' convention (`(wgpu::Device, wgpu::Queue, wgpu::Texture)`);
-    /// the consumer calls `downcast_ref`. The borrow is shared because one frame fans out to several outputs in
-    /// turn. No GPU type enters this crate.
+    /// The target's native GPU handles, in the form the renderer that drew the frame documents for its targets (for
+    /// the wgpu renderer, `(wgpu::Device, wgpu::Queue, wgpu::Texture)` of the output texture, to read from); the consumer
+    /// calls `downcast_ref`. This is the stream's own convention, not `PaintTarget::native`'s, which lends painters an
+    /// encoder to record into. The borrow is shared because one frame fans out to several outputs in turn. No GPU type
+    /// enters this crate.
     pub gpu: Option<&'a dyn Any>,
 }
 
