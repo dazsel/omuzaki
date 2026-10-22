@@ -163,9 +163,19 @@ impl Layouts {
             },
             count: None,
         };
+        // One map's matrix, picked by a dynamic offset (`shadow/map.rs`).
         let shadow_caster = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("shadow caster"),
-            entries: &[uniform(0, wgpu::ShaderStages::VERTEX)],
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: true,
+                    min_binding_size: wgpu::BufferSize::new(64),
+                },
+                count: None,
+            }],
         });
         let shadow_receiver = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("shadow receiver"),
@@ -176,7 +186,7 @@ impl Layouts {
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Depth,
-                        view_dimension: wgpu::TextureViewDimension::D2,
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
                         multisampled: false,
                     },
                     count: None,

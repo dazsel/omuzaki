@@ -8,7 +8,7 @@
 use omuzaki_core::glam::UVec2;
 
 use crate::gpu::{DEPTH_FORMAT, SCENE_FORMAT};
-use crate::shadow::map::ShadowMap;
+use crate::shadow::map::ShadowMaps;
 use crate::shared::Shared;
 
 /// What the post passes leave for `Resolve` to composite. A pass sets its field while it records and `begin_frame`
@@ -40,9 +40,9 @@ pub(crate) struct Attachments {
     cleared: bool,
     resolved: bool,
     pub(crate) bytes: u64,
-    /// The target's shadow map and its lookup settings: drawn by `Shadows`, bound by the lit passes at group 2. It is
-    /// here, not in the pass, because a live frame that skips the redraw must still find the last map of this target.
-    pub(crate) shadow: ShadowMap,
+    /// The target's shadow maps and their lookup settings: drawn by `Shadows`, bound by the lit passes at group 2. They
+    /// are here, not in the pass, because a live frame that skips a redraw must still find the last maps of this target.
+    pub(crate) shadow: ShadowMaps,
 }
 
 fn texture(
@@ -97,7 +97,7 @@ impl Attachments {
             post: PostProducts::default(),
             cleared: false,
             resolved: false,
-            shadow: ShadowMap::new(shared, 1),
+            shadow: ShadowMaps::new(shared, 1, 1),
             // 8 bytes of colour per sample (plus the resolved copy when multisampled), 4 of depth.
             bytes: pixels * (8 + if samples > 1 { 8 * u64::from(samples) } else { 0 } + 4 * u64::from(samples)),
         }
