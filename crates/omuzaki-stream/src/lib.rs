@@ -29,6 +29,7 @@
 
 pub mod alpha;
 pub mod i420;
+pub mod live_hold;
 pub mod ops;
 pub mod record;
 pub mod replay;

@@ -149,6 +149,8 @@ pub struct StreamService {
     pub(crate) recording: Mutex<Option<ActiveTake>>,
     /// The replay buffer while it runs (`replay::control`).
     pub(crate) replay: Mutex<Option<crate::replay::control::ActiveReplay>>,
+    /// The update hold the live outputs share (`live_hold`).
+    live_holds: crate::live_hold::LiveHolds,
 }
 
 impl StreamService {
@@ -158,6 +160,11 @@ impl StreamService {
     /// [`StreamError::Io`] if the pump thread cannot be started.
     pub fn new() -> Result<Self, StreamError> {
         Self::with_epoch(Instant::now())
+    }
+
+    /// The update hold the live outputs share: `output.start` wraps each live output in it.
+    pub fn live_holds(&self) -> &crate::live_hold::LiveHolds {
+        &self.live_holds
     }
 
     /// As [`new`](Self::new), with the pipeline clock's zero at `epoch`. The app gives the stream service and the
@@ -193,7 +200,13 @@ impl StreamService {
             .name("omuzaki-stream-pump".into())
             .spawn(move || pump(&pump_inner, &full_rx, &free_tx))
             .map_err(|e| StreamError::Io(format!("the stream pump thread could not start: {e}")))?;
-        Ok(Self { inner, pump: Mutex::new(Some(pump)), recording: Mutex::new(None), replay: Mutex::new(None) })
+        Ok(Self {
+            inner,
+            pump: Mutex::new(Some(pump)),
+            recording: Mutex::new(None),
+            replay: Mutex::new(None),
+            live_holds: crate::live_hold::LiveHolds::new(),
+        })
     }
 
     /// The time now on the service's clock, for callers with no capture time of their own.

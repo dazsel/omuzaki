@@ -1,6 +1,7 @@
 src/encoder.rs: pub enum StreamKind {
 src/encoder.rs: pub enum CodecId {
 src/encoder.rs: pub fn kind(self) -> StreamKind {
+src/encoder.rs: pub fn carries_alpha(self) -> bool {
 src/encoder.rs: pub enum AlphaKind {
 src/encoder.rs: pub struct VideoSpec {
 src/encoder.rs: pub fn validate(&self) -> Result<(), StreamError> {
