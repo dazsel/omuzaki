@@ -8,6 +8,7 @@ use omuzaki_core::glam::{DVec2, DVec3};
 
 use super::edge::{Tube, loop_tube};
 use super::shell::{Frame, Skinning, Tones};
+use crate::kit::curve::fraction;
 use crate::kit::grid::MeshBuilder;
 use crate::outfit::common::GarmentError;
 use crate::outfit::shirt::sleeve::{self, SEGMENTS, SleeveShape, SleeveSpec};
@@ -31,6 +32,8 @@ pub struct SleeveCut {
     pub shape: SleeveShape,
     /// The rolled cuff's radius beyond the cloth, metres; 0 for none.
     pub cuff: f64,
+    /// A knitted rib cuff's length up the arm from the sleeve's end, metres; 0 for none.
+    pub rib: f64,
 }
 
 /// Both sleeves in one mesh, left then right.
@@ -104,12 +107,77 @@ pub fn build(frame: &Frame, cut: &SleeveCut, tones: &Tones, tile: Option<f64>) -
         let radius = frame.cut.thickness / 2.0 + cut.cuff;
         loop_tube(&mut side, &Tube { points, skins, radius, colour: tones.edge }, &axis)?;
     }
+    if cut.rib > 0.0 {
+        rib_cuff(&mut side, &left, cut.rib, frame.cut.thickness, tones)?;
+    }
     let mut mesh = side.clone();
     let offset = side.vertex_count();
     mesh.merge(&side.mirrored())?;
     let right: Vec<Range<usize>> = sheets.iter().map(|r| r.start + offset..r.end + offset).collect();
     sheets.extend(right);
     Ok(Sleeves { mesh, arm: left.arm, sheets, end_radius: left.end_radius })
+}
+
+/// Points round a rib cuff.
+const RIB_AROUND: usize = 96;
+/// Ribs round a rib cuff.
+const RIB_RIBS: usize = 24;
+/// How far a rib cuff stands off the sleeve under it, metres.
+const RIB_STANDOFF: f64 = 0.0005;
+/// How far past the sleeve's end a rib cuff reaches, metres, covering it.
+const RIB_PAST: f64 = 0.002;
+
+/// Adds a knitted rib cuff `length` long round the end of the left sleeve `left` (whose outside is the first sheet of
+/// `side`): a closed [`band`](super::edge::band) following the sleeve, from up the arm to just past its end.
+///
+/// # Errors
+/// The kit's.
+#[allow(clippy::many_single_char_names, clippy::cast_precision_loss)] // the grid's textbook names; tiny counts
+fn rib_cuff(
+    side: &mut MeshBuilder,
+    left: &sleeve::Sleeve,
+    length: f64,
+    thickness: f64,
+    tones: &Tones,
+) -> Result<(), GarmentError> {
+    let cols = SEGMENTS + 1;
+    let positions: Vec<DVec3> = side.mesh().positions[..left.rows * cols].iter().map(|p| p.as_dvec3()).collect();
+    let skins = skins_of(side, 0..left.rows * cols);
+    let along = |p: DVec3| (p - left.wrist).dot(left.forearm);
+    #[allow(clippy::cast_precision_loss)] // a ring's point count is tiny
+    let rows: Vec<f64> = (0..left.rows)
+        .map(|r| positions[r * cols..r * cols + SEGMENTS].iter().map(|p| along(*p)).sum::<f64>() / SEGMENTS as f64)
+        .collect();
+    let end = rows[left.rows - 1];
+    let middle = end + RIB_PAST - length / 2.0;
+    // The sleeve's outside at `a` along the forearm and `u` (0 to 1) round it, pushed off it.
+    let surface = |k: usize, dy: f64| -> Result<(DVec3, DVec3, Skinning), GarmentError> {
+        let a = (middle - dy).min(end);
+        let r = rows.iter().rposition(|x| *x <= a).unwrap_or(0).min(left.rows - 2);
+        let f = ((a - rows[r]) / (rows[r + 1] - rows[r])).clamp(0.0, 1.0);
+        let u = fraction(k, RIB_AROUND) * SEGMENTS as f64;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a segment index
+        let s = (u.floor() as usize).min(SEGMENTS - 1);
+        let g = u - s as f64;
+        let at = |row: usize| positions[row * cols + s].lerp(positions[row * cols + s + 1], g);
+        let p = at(r).lerp(at(r + 1), f);
+        let axis = left.wrist + left.forearm * along(p);
+        let normal = (p - axis).normalize_or_zero();
+        // Where the sleeve stops, the cuff runs on along the forearm.
+        let p = p + left.forearm * (middle - dy - a);
+        Ok((p + normal * RIB_STANDOFF, normal, skins[(r + usize::from(f > 0.5)) * cols + s].clone()))
+    };
+    super::edge::band(
+        side,
+        &super::edge::Band {
+            around: RIB_AROUND,
+            surface: &surface,
+            height: length,
+            thickness,
+            colour: tones.outer,
+            ribs: RIB_RIBS,
+        },
+    )
 }
 
 /// How far `p` is inside the bodice's outside (the cloth's ease and thickness over the torso), metres: negative outside

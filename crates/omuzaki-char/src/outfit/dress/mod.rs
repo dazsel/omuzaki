@@ -74,8 +74,14 @@ pub enum DressSleeves {
 impl DressSleeves {
     /// The cut of the sleeves, if any.
     fn cut(self) -> Option<SleeveCut> {
-        let plain =
-            SleeveCut { width: 0.004, ease_at_elbow: 0.004, length: 0.3, shape: SleeveShape::default(), cuff: 0.0012 };
+        let plain = SleeveCut {
+            width: 0.004,
+            ease_at_elbow: 0.004,
+            length: 0.3,
+            shape: SleeveShape::default(),
+            cuff: 0.0012,
+            rib: 0.0,
+        };
         match self {
             Self::Straps => None,
             Self::Short => Some(plain),
@@ -267,7 +273,7 @@ fn add_sash(
     let y = frame.waist();
     let surface =
         |k: usize, dy: f64| frame.on(y + dy, -std::f64::consts::PI + TAU * fraction(k, SASH_SEGMENTS), 0.0004);
-    band(mesh, &Band { around: SASH_SEGMENTS, surface: &surface, height, thickness: 0.0025, colour })
+    band(mesh, &Band { around: SASH_SEGMENTS, surface: &surface, height, thickness: 0.0025, colour, ribs: 0 })
 }
 
 impl Garment for Dress {

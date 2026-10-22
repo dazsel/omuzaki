@@ -223,7 +223,15 @@ pub struct Band<'a> {
     pub thickness: f64,
     /// Its vertex colour (linear RGB).
     pub colour: [f32; 3],
+    /// Ribs across it, round the band (a knitted rib's): each a raised, lighter ridge; 0 for a smooth band. Take
+    /// `around` at least four times this.
+    pub ribs: usize,
 }
+
+/// How far a rib's ridge stands over its furrow, metres.
+const RIB_DEPTH: f64 = 0.0005;
+/// How much darker a rib's furrow is than its ridge.
+const RIB_SHADE: f32 = 0.16;
 
 /// Points round a band's section.
 const BAND_SECTION: usize = 16;
@@ -249,18 +257,29 @@ pub fn band(builder: &mut MeshBuilder, band: &Band<'_>) -> Result<(), GarmentErr
         middles.push(p + normal * half_t);
         skins.push(skin);
     }
+    // How far up a rib's ridge `i` is: 1 on a ridge, 0 in a furrow.
+    #[allow(clippy::cast_precision_loss)] // counts round a band are tiny
+    let ridge = |i: usize| {
+        if band.ribs == 0 { 1.0 } else { 0.5 + 0.5 * (TAU * band.ribs as f64 * (i % n) as f64 / n as f64).cos() }
+    };
     for i in 0..=n {
         for j in 0..=BAND_SECTION {
             let a = TAU * fraction(j % BAND_SECTION, BAND_SECTION);
             let (s, c) = (crate::kit::curve::sup(a.sin(), BAND_SQUARE), crate::kit::curve::sup(a.cos(), BAND_SQUARE));
             let (p, normal, _) = (band.surface)(i % n, s * half_h)?;
-            points.push(p + normal * (half_t + c * half_t));
+            // The ribs raise the outer face only.
+            let rib = if band.ribs > 0 { RIB_DEPTH * ridge(i) * c.max(0.0) } else { 0.0 };
+            points.push(p + normal * (half_t + c * half_t + rib));
         }
     }
     let grid = Grid::new(n + 1, BAND_SECTION + 1, points)?;
     let inside = |i: usize, _: usize| middles[i % n];
     let skin = |_: DVec3, i: usize, _: usize| skins[i % n].clone();
-    let colour = |_: usize, _: usize, _: DVec3| [band.colour[0], band.colour[1], band.colour[2], 1.0];
+    #[allow(clippy::cast_possible_truncation)] // a shade in 0..=1
+    let colour = |i: usize, _: usize, _: DVec3| {
+        let shade = if band.ribs > 0 { 1.0 - RIB_SHADE * (1.0 - ridge(i) as f32) } else { 1.0 };
+        [band.colour[0] * shade, band.colour[1] * shade, band.colour[2] * shade, 1.0]
+    };
     let options = GridOptions {
         wrap_i: true,
         wrap_j: true,

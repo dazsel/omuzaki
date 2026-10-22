@@ -220,6 +220,7 @@ impl RobeParams {
             length: s.length,
             shape: SleeveShape { flare: s.bell, past: s.past, lining: 1.0 },
             cuff: s.cuff,
+            rib: 0.0,
         }
     }
 }

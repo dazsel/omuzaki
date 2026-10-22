@@ -36,6 +36,7 @@ pub mod common;
 pub mod drape;
 pub mod dress;
 pub mod hood;
+pub mod hoodie;
 pub mod legwear;
 pub mod loft;
 pub mod neckwear;

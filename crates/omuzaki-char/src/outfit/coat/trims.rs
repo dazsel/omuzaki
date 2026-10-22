@@ -9,7 +9,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::Front;
-use super::edge::{Patch, Tube, cord, patch};
+use super::edge::{Band, Patch, Tube, band, cord, patch};
 use super::shell::{Frame, Skinning, Tones};
 use crate::kit::curve::{TAU, fraction, lerp, sstep};
 use crate::kit::grid::MeshBuilder;
@@ -424,6 +424,125 @@ pub fn front_band(mesh: &mut MeshBuilder, frame: &Frame, band: &FrontBand) -> Re
         patch(mesh, &piece)?;
     }
     Ok(4)
+}
+
+/// Points round a rib hem band.
+const HEM_AROUND: usize = 288;
+/// Ribs round a rib hem band.
+const HEM_RIBS: usize = 72;
+
+/// How far a rib band stands proud of the cloth it is knitted into, metres (its ribs stand further).
+const RIB_PROUD: f64 = 0.0003;
+/// How far a rib band's underside stands off the lining, metres.
+const RIB_UNDER: f64 = 0.0002;
+
+/// Adds a knitted rib band `height` tall round the hem of a closed coat, from the hem up: a closed [`band`] knitted in
+/// place of the shell's cloth, as thick as the cloth and a little proud of it (a rib gathers the hem in rather than
+/// standing out over it, so it comes no nearer the arms than the cloth). A coat with an open front has none.
+///
+/// # Errors
+/// The surface's or the kit's.
+pub fn hem_rib(mesh: &mut MeshBuilder, frame: &Frame, height: f64, colour: [f32; 3]) -> Result<(), GarmentError> {
+    if !frame.closed() || height <= 0.0 {
+        return Ok(());
+    }
+    let lift = RIB_UNDER - frame.cut.thickness;
+    let surface = |k: usize, dy: f64| {
+        let phi = TAU * fraction(k, HEM_AROUND);
+        frame.on(frame.hem_at(phi) + height / 2.0 + dy, phi, lift)
+    };
+    band(
+        mesh,
+        &Band {
+            around: HEM_AROUND,
+            surface: &surface,
+            height,
+            thickness: frame.cut.thickness + RIB_PROUD - RIB_UNDER,
+            colour,
+            ribs: HEM_RIBS,
+        },
+    )
+}
+
+/// A hood's drawstrings: two cords hanging from the neckline either side of the centre front, each ending in an aglet.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct Drawstrings {
+    /// Whether there are any.
+    pub on: bool,
+    /// How far they hang below the neckline, metres.
+    pub length: f64,
+    /// How far either side of the centre front they come out, radians.
+    pub spread: f64,
+    /// The cord's radius, metres.
+    pub radius: f64,
+    /// The cord's colour.
+    pub colour: omuzaki_face_api::ColourRef,
+    /// The aglets' colour.
+    pub aglet: omuzaki_face_api::ColourRef,
+}
+
+impl Default for Drawstrings {
+    fn default() -> Self {
+        Self {
+            on: true,
+            length: 0.11,
+            spread: 0.16,
+            radius: 0.0016,
+            colour: omuzaki_face_api::ColourRef::rgb(0xee, 0xec, 0xe6),
+            aglet: omuzaki_face_api::ColourRef::rgb(0xc8, 0xc4, 0xbc),
+        }
+    }
+}
+
+impl Drawstrings {
+    /// Checks the drawstrings, their fields under `drawstrings/`.
+    pub fn check(&self, c: &mut omuzaki_face_api::Check) {
+        c.range("drawstrings/length", self.length, 0.02, 0.3);
+        c.range("drawstrings/spread", self.spread, 0.05, 0.6);
+        c.range("drawstrings/radius", self.radius, 0.0005, 0.004);
+    }
+}
+
+/// How long an aglet is, metres, and how much thicker than its cord.
+const AGLET: (f64, f64) = (0.012, 1.35);
+/// How far under the neckline the drawstrings come out, metres.
+const DRAWSTRING_BELOW: f64 = 0.006;
+
+/// Adds `strings` to `mesh` (cords in `colours.0`, aglets in `colours.1`, linear RGB): each down the outside from just
+/// under the neckline, lying on the cloth, the hem's rib or the hem where it ends sooner.
+///
+/// # Errors
+/// The surface's or the kit's.
+pub fn drawstrings(
+    mesh: &mut MeshBuilder,
+    frame: &Frame,
+    strings: &Drawstrings,
+    colours: ([f32; 3], [f32; 3]),
+    lowest: f64,
+) -> Result<(), GarmentError> {
+    const STEPS: usize = 24;
+    if !strings.on {
+        return Ok(());
+    }
+    let (aglet, thicker) = AGLET;
+    for phi in [strings.spread, TAU - strings.spread] {
+        let from = frame.neck(phi) - DRAWSTRING_BELOW;
+        let to = (from - strings.length).max(lowest);
+        for (span, radius, colour) in
+            [((from, to), strings.radius, colours.0), ((to + aglet, to), strings.radius * thicker, colours.1)]
+        {
+            let (mut points, mut skins) = (Vec::with_capacity(STEPS + 1), Vec::with_capacity(STEPS + 1));
+            for k in 0..=STEPS {
+                let lift = frame.cut.lip + STANDOFF + radius;
+                let (p, _, skin) = frame.on(lerp(span.0, span.1, fraction(k, STEPS)), phi, lift)?;
+                points.push(p);
+                skins.push(skin);
+            }
+            cord(mesh, &Tube { points: &points, skins: &skins, radius, colour })?;
+        }
+    }
+    Ok(())
 }
 
 /// How far `p` stands outside the body under the coat (the column at no offset), metres, in its height's plane.
