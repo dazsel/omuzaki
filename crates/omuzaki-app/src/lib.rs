@@ -29,6 +29,7 @@
 pub mod bridge;
 mod core;
 mod error;
+pub mod history;
 pub mod ops;
 mod recover;
 pub mod studio;

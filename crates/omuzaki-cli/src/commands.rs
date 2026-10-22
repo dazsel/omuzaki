@@ -31,6 +31,10 @@ pub fn execute(cli: &Cli, runner: Arc<dyn Runner>, session: &Session, stdin: &mu
             let mode = if *dry_run { Mode::DryRun } else { Mode::Apply };
             run(runner.as_ref(), session, op, args::parse(args.as_deref(), stdin)?, mode, cli.json)
         }
+        Command::History { action } => {
+            let (op, args, dry_run) = action.op();
+            run(runner.as_ref(), session, op, args, if dry_run { Mode::DryRun } else { Mode::Apply }, cli.json)
+        }
         Command::Undo => report_history(&UNDO, runner.undo(&session.actor, &session.grants)?, cli.json),
         Command::Redo => report_history(&REDO, runner.redo(&session.actor, &session.grants)?, cli.json),
         Command::Mcp(args) => mcp::serve_stdio(runner, session, args).map(|()| String::new()),

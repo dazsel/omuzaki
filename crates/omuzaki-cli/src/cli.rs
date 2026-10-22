@@ -86,6 +86,16 @@ pub enum Command {
     /// Like `undo`, it works across commands: the history is kept with the project.
     Redo,
 
+    /// List, compare, restore or name the project's past states (the `history.*` ops, shortened for the shell).
+    ///
+    /// The history is read from the project's journal, so it covers every session, and a restore is one undoable
+    /// step: `omuzaki undo` takes it back.
+    History {
+        /// What to do with the history.
+        #[command(subcommand)]
+        action: HistoryCommand,
+    },
+
     /// Serve the ops to an AI agent over MCP on stdin/stdout.
     ///
     /// Reads JSON-RPC messages from stdin and writes only protocol messages to stdout, until the client closes stdin.
@@ -105,6 +115,71 @@ pub enum Command {
         #[command(subcommand)]
         action: StoreCommand,
     },
+}
+
+/// A `omuzaki history` subcommand: each is one `history.*` op.
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+pub enum HistoryCommand {
+    /// The project's changes, newest first, with who made each and when (`history.list`).
+    List {
+        /// At most this many.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Only changes older than this transaction (the `next` the last page printed).
+        #[arg(long, value_name = "TX")]
+        before: Option<u64>,
+    },
+    /// What differs between the state after transaction `from` and now, or transaction `--to` (`history.diff`).
+    Diff {
+        /// The earlier transaction.
+        from: u64,
+        /// The later transaction; now when left out.
+        #[arg(long, value_name = "TX")]
+        to: Option<u64>,
+    },
+    /// Put the project back as it was after transaction `tx`, as one undoable step (`history.restore`).
+    Restore {
+        /// The transaction to go back to.
+        tx: u64,
+        /// Show what would change, without changing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Name the project's current state, or the state after transaction `--at`, as a version (`history.name`).
+    Name {
+        /// The version's name.
+        name: String,
+        /// The transaction to name; now when left out.
+        #[arg(long, value_name = "TX")]
+        at: Option<u64>,
+    },
+}
+
+impl HistoryCommand {
+    /// The op this runs, its arguments, and whether it is a dry run.
+    pub fn op(&self) -> (&'static str, serde_json::Value, bool) {
+        use serde_json::json;
+        let tx = |n: u64| json!({ "tx": n });
+        match self {
+            Self::List { limit, before } => {
+                let mut args = serde_json::Map::new();
+                if let Some(limit) = limit {
+                    args.insert("limit".into(), json!(limit));
+                }
+                if let Some(before) = before {
+                    args.insert("before".into(), json!(before));
+                }
+                ("history.list", serde_json::Value::Object(args), false)
+            }
+            Self::Diff { from, to } => {
+                ("history.diff", json!({ "from": tx(*from), "to": to.map_or(json!("now"), tx) }), false)
+            }
+            Self::Restore { tx: at, dry_run } => ("history.restore", json!({ "to": tx(*at) }), *dry_run),
+            Self::Name { name, at } => {
+                ("history.name", json!({ "name": name, "at": at.map_or(json!("now"), tx) }), false)
+            }
+        }
+    }
 }
 
 /// What `omuzaki mcp` gives the agent.
@@ -284,6 +359,14 @@ mod tests {
         );
         assert!(try_parse_from(["omuzaki", "mcp", "--grant", "fly"]).is_err());
         assert_eq!(parse(&["registrations"]).command, Command::Registrations);
+        assert_eq!(
+            parse(&["history", "restore", "7", "--dry-run"]).command,
+            Command::History { action: HistoryCommand::Restore { tx: 7, dry_run: true } }
+        );
+        let Command::History { action } = parse(&["history", "name", "first look", "--at", "3"]).command else {
+            panic!("not history");
+        };
+        assert_eq!(action.op(), ("history.name", serde_json::json!({"name": "first look", "at": {"tx": 3}}), false));
         assert_eq!(
             parse(&["run", "face.set_profile", "--args", "{}", "--dry-run"]).command,
             Command::Run { op: "face.set_profile".into(), args: Some("{}".into()), dry_run: true }

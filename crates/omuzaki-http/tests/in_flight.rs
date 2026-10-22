@@ -60,7 +60,12 @@ fn one_request_past_the_cap_is_refused_and_all_return_once_cancelled() {
         std::thread::yield_now();
         ninth = transport.send(&req, &probe);
     }
-    assert!(matches!(&ninth, Err(HttpError::Refused(m)) if m.contains("in flight")), "{ninth:?}");
+    if !matches!(&ninth, Err(HttpError::Refused(m)) if m.contains("in flight")) {
+        // Say why the slots never filled: a caller whose request ended early gave its slot back.
+        flag.cancel();
+        let ended: Vec<String> = callers.into_iter().map(|caller| format!("{:?}", caller.join())).collect();
+        panic!("the probe got {ninth:?}; the callers ended with {ended:?}");
+    }
     flag.cancel();
     for caller in callers {
         assert_eq!(caller.join().unwrap(), Err(HttpError::Cancelled));

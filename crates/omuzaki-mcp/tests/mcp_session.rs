@@ -61,10 +61,7 @@ impl ClientHandler for TestClient {
         let _ = self.updates.send(params.uri);
     }
 
-    fn on_tool_list_changed(
-        &self,
-        _context: NotificationContext<RoleClient>,
-    ) -> impl Future<Output = ()> + Send + '_ {
+    fn on_tool_list_changed(&self, _context: NotificationContext<RoleClient>) -> impl Future<Output = ()> + Send + '_ {
         if let Some(lists) = &self.lists {
             let _ = lists.send(());
         }

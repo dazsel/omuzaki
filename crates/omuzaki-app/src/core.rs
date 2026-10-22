@@ -6,11 +6,14 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use omuzaki_core::time::SystemClock;
-use omuzaki_doc::journal::{JournalFs, JournalOptions, ProjectJournal, Recover, SessionStart, SystemWall, reopen_with};
+use omuzaki_doc::journal::{
+    JournalFs, JournalHistory, JournalOptions, ProjectJournal, Recover, SessionStart, SystemWall, reopen_with,
+};
 use omuzaki_doc::snapshot::{SessionSnapshots, Snapshotter, snapshot_dir};
 use omuzaki_doc::{Project, ProjectLock};
 use omuzaki_doc_api::{DocPath, Value};
-use omuzaki_history_api::{JournalSink, JournalStatus, Snapshots};
+use omuzaki_history_api::state::HistoryView;
+use omuzaki_history_api::{HistoryLog, JournalSink, JournalStatus, Snapshots};
 use omuzaki_mcp::{
     AccessToken, Connections, HttpOptions, HttpServer, InAppLink, InAppSpec, McpOptions, McpServer, ToolMode,
 };
@@ -23,6 +26,7 @@ use omuzaki_store::DiskStore;
 use tokio::runtime::{Handle, Runtime};
 
 use crate::AppError;
+use crate::history::{HistorySnapshots, ProjectHistory};
 use crate::recover::{self, RecoveryReport};
 use crate::studio;
 
@@ -195,10 +199,17 @@ impl AppCore {
         let mut shadow = reopened.project;
 
         let connections = Connections::default();
+        let session = session_id();
         let session_snapshots = Arc::new(SessionSnapshots::new(snapshots.clone()));
+        let log = Arc::new(JournalHistory::new(dir, snapshots.clone()));
+        let history = Arc::new(ProjectHistory::new(snapshots.clone(), log.clone()));
+        let history_snapshots =
+            HistorySnapshots::new(session_snapshots.clone(), history.clone(), snapshots.clone(), session.clone());
         let services = ServicesBuilder::from(options.services.clone())
             .insert::<dyn ConnectionService>(Arc::new(connections.clone()))
-            .insert::<dyn Snapshots>(session_snapshots.clone())
+            .insert::<dyn Snapshots>(Arc::new(history_snapshots))
+            .insert::<dyn HistoryLog>(log.clone())
+            .insert::<dyn HistoryView>(history)
             .build();
         let executor =
             Executor::restore(Box::new(shadow.clone()), Arc::new(SystemClock::new()), wall.clone(), &reopened.history)?
@@ -218,7 +229,7 @@ impl AppCore {
         let root = executor.get(&DocPath::root(), &Grants::person())?.unwrap_or_default();
         shadow.reset_to(&root).map_err(|e| OpError::internal(format!("the recovered project can't be stored: {e}")))?;
         let start = SessionStart::new(
-            session_id(),
+            session,
             &options.app_version,
             reopened.last_lsn,
             executor.history_export(),
@@ -234,6 +245,7 @@ impl AppCore {
         let journal = ProjectJournal::start(shadow, start, options.journal)?;
         recover::end_interrupted(&journal, &reopened.interrupted, &mut recovery);
         session_snapshots.bind(journal.clone());
+        log.bind(journal.clone());
         let executor = Arc::new(executor.with_journal(journal.clone()));
 
         let root_path = project_dir_text(dir);

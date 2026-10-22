@@ -151,6 +151,46 @@ fn undo_and_redo_in_a_separate_process_reach_the_last_ones_history() {
 }
 
 #[test]
+fn history_lists_restores_and_names_across_processes() {
+    let project = new_project();
+    let set =
+        |text: &str| fixture(project.path(), &["run", "demo.set_note", "--args", &json!({"text": text}).to_string()]);
+    set("first");
+    set("second");
+
+    let listed = fixture(project.path(), &["--json", "history", "list"]);
+    assert_eq!(listed.code, Some(0), "{}", listed.stderr);
+    let page: Value = serde_json::from_str(&listed.stdout).expect("--json output");
+    let txs = page["plan"]["output"]["transactions"].as_array().expect("transactions").clone();
+    assert_eq!(txs.len(), 2, "{page}");
+    let first = txs[1]["tx"].as_u64().unwrap().to_string();
+
+    let diff = fixture(project.path(), &["--json", "history", "diff", &first]);
+    let diff: Value = serde_json::from_str(&diff.stdout).expect("--json output");
+    assert_eq!(diff["plan"]["output"]["changes"], 1, "{diff}");
+
+    let restored = fixture(project.path(), &["history", "restore", &first]);
+    assert_eq!(restored.code, Some(0), "{}", restored.stderr);
+    assert!(project_toml(project.path()).contains("note = \"first\""), "{}", project_toml(project.path()));
+    // One undoable step, from another process.
+    fixture(project.path(), &["undo"]);
+    assert!(project_toml(project.path()).contains("note = \"second\""), "{}", project_toml(project.path()));
+
+    let named = fixture(project.path(), &["history", "name", "first look", "--at", &first]);
+    assert_eq!(named.code, Some(0), "{}", named.stderr);
+    let again = fixture(project.path(), &["history", "name", "first look"]);
+    assert_ne!(again.code, Some(0), "a name is unique: {}", again.stdout);
+    let page: Value = serde_json::from_str(&fixture(project.path(), &["--json", "history", "list"]).stdout).unwrap();
+    let versions: Vec<&Value> = page["plan"]["output"]["transactions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|t| t["names"].as_array().unwrap())
+        .collect();
+    assert_eq!(versions, [&json!("first look")], "{page}");
+}
+
+#[test]
 fn a_bad_call_exits_with_the_documented_code_and_leaves_the_project_alone() {
     let project = new_project();
     let before = project_toml(project.path());

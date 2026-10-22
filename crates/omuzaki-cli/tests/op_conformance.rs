@@ -332,6 +332,23 @@ impl Rig {
     fn new(reg: &'static OpRegistration, fixture: Option<&str>) -> Result<Self, String> {
         let dir = fixture_project(fixture.unwrap_or(DEFAULT_FIXTURE))?;
         let doc = Saved::open(dir.path()).map_err(|e| format!("opening the fixture failed: {e}"))?;
+        // History with transactions 7 and 9 at the fixture's own state, so the `history.*` examples resolve.
+        let now = doc.get(&DocPath::root()).cloned().unwrap_or(Value::Null);
+        let view = omuzaki_history_mock::branch::MemoryHistoryView::new(
+            Arc::new(omuzaki_history_mock::branch::MemoryBranchStore::new()),
+            now.clone(),
+        );
+        let log = omuzaki_history_mock::MemoryHistoryLog::default();
+        for tx in [7, 9, 41] {
+            view.record_tx(omuzaki_ops_api::TxId(tx), now.clone());
+            log.push(omuzaki_history_api::TxSummary::new(
+                omuzaki_ops_api::TxId(tx),
+                "conformance",
+                "test",
+                Actor::System,
+                omuzaki_history_api::Lsn(tx),
+            ));
+        }
         let project = ProjectDir::open(dir.path()).map_err(|e| format!("opening the fixture folder failed: {e}"))?;
         let runner = Executor::with_registrations(Box::new(doc), Arc::new(SystemClock::new()), [reg])
             .map_err(|e| e.to_string())?
@@ -367,6 +384,8 @@ impl Rig {
                     .insert::<dyn InputHost>(Arc::new(IdleInput))
                     // Snapshots with nothing to reload: `project.save` and `project.reload` run as they would on a
                     // project whose files match the document.
+                    .insert::<dyn omuzaki_history_api::state::HistoryView>(Arc::new(view))
+                    .insert::<dyn omuzaki_history_api::HistoryLog>(Arc::new(log))
                     .insert::<dyn Snapshots>(Arc::new(MemorySnapshots::new(
                         Value::Null,
                         Arc::new(omuzaki_history_mock::SystemWallClock),
