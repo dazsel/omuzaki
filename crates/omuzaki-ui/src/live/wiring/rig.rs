@@ -10,6 +10,7 @@ use omuzaki_anim::retarget::ArkitRetarget;
 use omuzaki_anim_api::{ChannelBuf, DeviceProfile, FrameSource, HumanoidPose, LifeConfig};
 use omuzaki_ops_api::Mode;
 use omuzaki_secrets_api::prelude::SecretStore;
+use omuzaki_settings_api::service::Settings;
 use omuzaki_stage::perform::host::PerformHost;
 use omuzaki_stage::perform::input::{InputHost as _, LiveInput, NoPrompt};
 use omuzaki_stage::perform::{Performer, PerformerParts};
@@ -52,6 +53,9 @@ pub struct Extras {
     pub data: Option<PathBuf>,
     /// Handed every frame the perform thread publishes (the `VTube Studio` bridge's feed).
     pub tap: Option<FrameTap>,
+    /// The app's settings, for the `settings.*` ops and every op that saves a choice (the app puts it in the runner's
+    /// services; the rig ignores it).
+    pub settings: Option<Arc<dyn Settings>>,
 }
 
 impl std::fmt::Debug for Extras {
@@ -63,6 +67,7 @@ impl std::fmt::Debug for Extras {
             .field("secrets", &self.secrets.is_some())
             .field("data", &self.data)
             .field("tap", &self.tap.is_some())
+            .field("settings", &self.settings.is_some())
             .finish()
     }
 }

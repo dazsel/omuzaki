@@ -20,14 +20,14 @@ use egui::{
     WidgetInfo, WidgetType,
 };
 use egui_tiles::{Tile, Tree};
-use omuzaki_ops_api::{Actor, Event, Grants, OpError, OpRecord, Runner, SessionInfo, SessionState};
+use omuzaki_ops_api::{Actor, ErrorCode, Event, Grants, OpError, OpRecord, Runner, SessionInfo, SessionState};
 use omuzaki_ui_api::panel::{PanelCtx, ThemeKind as ApiTheme, ViewModels};
 use omuzaki_ui_api::registry::{PanelDef, PanelKind, Region, Registry, WorkspaceDef};
 
 use super::class::{DockMode, Plan, RAIL, STATUS_BAR, TOP_BAR};
 use super::dock::{self, Dock, PanelAsk};
 use super::handles;
-use super::history::{HistoryLog, step_label};
+use super::history::{HistoryLog, Preview, step_label};
 use super::host::Bodies;
 use super::keys::{self, Action};
 use super::layout::{Known, Layout, PanelId};
@@ -48,6 +48,7 @@ use crate::panels::agent::fences::{FenceBoard, fence_chip};
 use crate::panels::agent::review::Reviews;
 use crate::panels::agent::{self as agent, AgentFeed, Agents};
 use crate::panels::edit::EditFocus;
+use crate::settings::SettingsWindow;
 
 const MENU_ICON: &str = egui_phosphor::regular::LIST;
 /// How many op-log records the History panel keeps (the newest), and how many it asks the runner for at a time.
@@ -175,6 +176,8 @@ pub struct Shell {
     attention: bool,
     /// The shortcut sheet is open.
     sheet: bool,
+    /// The Settings window, while it is open.
+    settings: Option<SettingsWindow>,
 }
 
 impl Shell {
@@ -200,6 +203,7 @@ impl Shell {
         let requests = ShellRequests::default();
         let mut models = ViewModels::new();
         models.insert(requests.clone());
+        models.insert(Preview::default());
         let mut shell = Self {
             runner,
             registry,
@@ -228,6 +232,7 @@ impl Shell {
             note: Note::Nothing,
             attention: false,
             sheet: false,
+            settings: None,
             palette: Palette::default(),
             requests,
         };
@@ -278,6 +283,11 @@ impl Shell {
     /// Whether the layout is locked against dragging.
     pub const fn locked(&self) -> bool {
         self.locked
+    }
+
+    /// The whole document as History's preview holds it, while a past state is on show in the viewport.
+    pub fn previewed(&self) -> Option<omuzaki_doc_api::Value> {
+        self.models.get::<Preview>().and_then(|preview| preview.with(|v| v.map(|v| (*v.doc).clone())))
     }
 
     /// Where each docked panel of the active workspace was drawn last frame, by id: its body, under its tab strip. For
@@ -337,7 +347,22 @@ impl Shell {
         if self.sheet {
             self.sheet = sheet::show(&ctx);
         }
+        if let Some(window) = self.settings.as_mut()
+            && !window.show(&ctx, &self.runner, &self.actor)
+        {
+            self.settings = None;
+        }
         self.save_if_edited(&ctx);
+    }
+
+    /// The Settings window, while it is open.
+    pub const fn settings_window(&self) -> Option<&SettingsWindow> {
+        self.settings.as_ref()
+    }
+
+    /// Opens the Settings window, or closes it when it is open (Ctrl+, and the menu).
+    pub fn toggle_settings(&mut self) {
+        self.settings = if self.settings.is_some() { None } else { Some(SettingsWindow::new()) };
     }
 
     /// Whether the shortcut sheet is open.
@@ -500,6 +525,7 @@ impl Shell {
             Action::NextPanel => self.cycle_focus(1),
             Action::PreviousPanel => self.cycle_focus(-1),
             Action::ShortcutSheet => self.sheet = !self.sheet,
+            Action::Settings => self.toggle_settings(),
             Action::PauseAgent => self.pause_agent(ctx),
         }
     }
@@ -544,6 +570,13 @@ impl Shell {
     fn step_history(&mut self, undo: bool) {
         let grants = Grants::person();
         let result = if undo { self.runner.undo(&self.actor, &grants) } else { self.runner.redo(&self.actor, &grants) };
+        // A step a later change depends on can't be undone alone: History shows why on a card until it is dismissed or
+        // a step goes through.
+        let conflict = result.as_ref().err().filter(|e| e.code == ErrorCode::Conflict).map(|e| e.message.clone());
+        self.refresh_history();
+        if let Some(log) = self.models.get_mut::<HistoryLog>() {
+            log.conflict = conflict;
+        }
         self.note = match (result, undo) {
             (Ok(Some(label)), true) => Note::Undid(label),
             (Ok(Some(label)), false) => Note::Redid(label),
@@ -551,7 +584,6 @@ impl Shell {
             (Ok(None), false) => Note::NothingToRedo,
             (Err(error), _) => Note::Failed(error.message),
         };
-        self.refresh_history();
     }
 
     /// Reads the op log again: after an undo or redo here, and when the runner says the log changed.
@@ -564,10 +596,10 @@ impl Shell {
         let old = self
             .models
             .get_mut::<HistoryLog>()
-            .map(|old| (std::mem::take(&mut old.undone), std::mem::take(&mut old.seen)));
-        let (undone, mut seen) = old.unwrap_or_default();
+            .map(|old| (std::mem::take(&mut old.undone), std::mem::take(&mut old.seen), old.conflict.take()));
+        let (undone, mut seen, conflict) = old.unwrap_or_default();
         seen.retain(|seq, _| log.records.iter().any(|r| r.seq == *seq));
-        let log = HistoryLog { undone, seen, ..log };
+        let log = HistoryLog { undone, seen, conflict, ..log };
         self.models.insert(log);
     }
 
@@ -901,6 +933,13 @@ impl Shell {
                     }
                 }
                 ShellRequest::ShowPanel(id) => self.show_panel(id),
+                ShellRequest::Undo => self.step_history(true),
+                ShellRequest::Redo => self.step_history(false),
+                ShellRequest::DismissConflict => {
+                    if let Some(log) = self.models.get_mut::<HistoryLog>() {
+                        log.conflict = None;
+                    }
+                }
                 ShellRequest::ClosePanel(id) => self.close_panel(id),
                 ShellRequest::Adjust { op, args } => {
                     let places = self.places();
@@ -949,16 +988,20 @@ impl Shell {
                     self.workspace_tabs(ui, plan);
                 }
                 // At the bar's right end, in reading order: Tab meets search, then the agents, then Go Live.
-                a11y::trailing(ui, "shell_top_trailing", |ui| {
-                    let search = say(&ctx, Word::SearchOrRun, &[]);
+                let search = say(&ctx, Word::SearchOrRun, &[]);
+                let (agents, waiting) = self.agent_chip_label(&ctx);
+                let off = say(&ctx, Word::GoLiveOff, &[]);
+                let go_live = say(&ctx, Word::GoLive, &[]);
+                let key = (&search, &agents, waiting, &go_live, plan.go_live_icon);
+                a11y::trailing(ui, "shell_top_trailing", key, |ui| {
                     if ui.add(Button::new(&search).icon(icons::MAGNIFYING_GLASS).shortcut_hint("Ctrl K")).clicked() {
                         self.toggle_palette(&ctx);
                     }
-                    if self.agent_chip(ui) {
+                    let button = Button::new(&agents).icon(icons::ROBOT);
+                    // Quiet while nothing waits; a raised button while a request waits for the person.
+                    if ui.add(if waiting { button } else { button.ghost() }).clicked() {
                         self.show_panel(agent::ID);
                     }
-                    let off = say(&ctx, Word::GoLiveOff, &[]);
-                    let go_live = say(&ctx, Word::GoLive, &[]);
                     if plan.go_live_icon {
                         icon_button(ui, icons::BROADCAST, &Tip::new(&go_live).detail(&off), false);
                     } else {
@@ -1035,6 +1078,11 @@ impl Shell {
                 }
             }
             ui.separator();
+            let settings = say(&ctx, Word::MenuSettings, &[]);
+            if ui.add(Button::new(&settings).ghost().icon(icons::GEAR).shortcut_hint("Ctrl ,")).clicked() {
+                self.toggle_settings();
+            }
+            ui.separator();
             heading(ui, Word::MenuHelp);
             if ui.add(Button::new(&say(&ctx, Word::MenuRunSetup, &[])).ghost().icon(icons::SPARKLE)).clicked() {
                 self.requests.push(ShellRequest::Workspace(crate::live::registration::PERFORM_WORKSPACE));
@@ -1070,8 +1118,9 @@ impl Shell {
 
     /// The top bar's agent chip: how many agents are connected, or how many requests wait for the person. True when
     /// it was clicked (it opens the Agent panel).
-    fn agent_chip(&self, ui: &mut Ui) -> bool {
-        let ctx = ui.ctx().clone();
+    /// The agent chip's words, and whether a request waits for the person.
+    fn agent_chip_label(&self, ctx: &egui::Context) -> (String, bool) {
+        let ctx = ctx.clone();
         let feed = self.models.get::<AgentFeed>();
         let live = feed.map_or(0, |f| f.live().count());
         let waiting = feed.map_or(0, |f| f.approvals().len());
@@ -1080,9 +1129,7 @@ impl Shell {
             (0, _) => say(&ctx, Word::AgentChip, &[]),
             (n, _) => say(&ctx, Word::AgentChipCount, &[("count", &n.to_string())]),
         };
-        // Quiet while nothing waits; a raised button while a request waits for the person.
-        let button = Button::new(&label).icon(icons::ROBOT);
-        ui.add(if waiting > 0 { button } else { button.ghost() }).clicked()
+        (label, waiting > 0)
     }
 
     fn status_bar(&mut self, ui: &mut Ui) {

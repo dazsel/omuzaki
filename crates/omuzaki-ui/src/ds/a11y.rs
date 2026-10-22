@@ -35,23 +35,42 @@ pub const ORDERED_BY_DATA: &str = "ordered-by-data";
 /// controls in the order the eye reads them. A right-to-left layout puts them in the same places but registers them
 /// backwards, so Tab would walk the row from its right end (WCAG 2.4.3).
 ///
-/// The width is the one the contents took last frame, kept under `id_salt`; on the first frame, and whenever it
-/// changes, the contents are measured in an invisible pass and the frame is drawn again, so nothing is seen out of place.
-pub fn trailing<R>(ui: &mut egui::Ui, id_salt: &str, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
+/// The contents are measured in an invisible pass, at the row's whole width, on the first frame and whenever `key`
+/// (what the contents show: their labels, their state), the row's width or the fonts change; that frame is drawn
+/// again at once, so nothing is seen out of place. Between measurements the width is kept under `id_salt`. Measuring
+/// only at the whole width matters: a width read back from the placed contents would be one a squeezed control was
+/// cut to, and would stay cut.
+pub fn trailing<R>(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    key: impl std::hash::Hash,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
     use egui::{Layout, Rect, UiBuilder, pos2};
     let id = ui.id().with(("trailing", id_salt));
-    let known: Option<f32> = ui.ctx().data(|d| d.get_temp(id));
     let row = ui.available_rect_before_wrap();
-    let left = known.map_or(row.left(), |width| (row.right() - width).max(row.left()));
+    let ds = crate::ds::theme::ds(ui.ctx());
+    // What the contents' natural width depends on besides themselves: the room, the scale and the fonts in use.
+    #[allow(clippy::cast_possible_truncation)] // a row's width in whole points
+    let room = row.width().round() as i32;
+    let fingerprint = {
+        use std::hash::{Hash as _, Hasher as _};
+        let mut hasher = std::hash::DefaultHasher::new();
+        (key, room, ds.text.strong.size.to_bits(), ds.text.fonts_active()).hash(&mut hasher);
+        hasher.finish()
+    };
+    let known: Option<(u64, f32)> = ui.ctx().data(|d| d.get_temp(id));
+    let width = known.filter(|(seen, _)| *seen == fingerprint).map(|(_, width)| width);
+    let left = width.map_or(row.left(), |width| (row.right() - width).max(row.left()));
     let place = Rect::from_min_max(pos2(left, row.top()), row.right_bottom());
     let mut builder = UiBuilder::new().max_rect(place).layout(Layout::left_to_right(ui.layout().cross_align));
-    if known.is_none() {
+    if width.is_none() {
         builder = builder.sizing_pass().invisible();
     }
     let inner = ui.scope_builder(builder, add_contents);
-    let width = inner.response.rect.width();
-    if known.is_none_or(|known| (known - width).abs() > 0.5) {
-        ui.ctx().data_mut(|d| d.insert_temp(id, width));
+    if width.is_none() {
+        let measured = inner.response.rect.width();
+        ui.ctx().data_mut(|d| d.insert_temp(id, (fingerprint, measured)));
         ui.ctx().request_discard("a trailing row was measured");
     }
     inner.inner

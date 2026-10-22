@@ -23,6 +23,12 @@ pub enum ShellRequest {
         /// Its arguments as they were run.
         args: Value,
     },
+    /// Undo the person's newest step, as Ctrl+Z does (History's Undo).
+    Undo,
+    /// Redo the person's step undone last, as Ctrl+Shift+Z does (History's Redo).
+    Redo,
+    /// Put away the card that says an undo could not be done.
+    DismissConflict,
 }
 
 /// The queue of requests, shared by the shell and every panel (clones are one queue).
