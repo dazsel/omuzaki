@@ -204,7 +204,7 @@ fn more_places(rest: &[Change]) -> String {
     if places.len() > MAX_MORE_PLACES {
         places = group(1);
     }
-    places.sort_by(|a, b| b.1.cmp(&a.1));
+    places.sort_by_key(|place| std::cmp::Reverse(place.1));
     let named: Vec<String> = places.iter().take(MAX_MORE_PLACES).map(|(p, n)| format!("{p} ({n})")).collect();
     let others = if places.len() > MAX_MORE_PLACES { " and elsewhere" } else { "" };
     format!("under {}{others}: read them with doc_get", named.join(", "))

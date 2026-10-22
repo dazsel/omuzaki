@@ -334,7 +334,10 @@ mod tests {
     }
 
     fn args(value: Value) -> JsonObject {
-        value.as_object().unwrap().clone()
+        match value {
+            Value::Object(object) => object,
+            other => panic!("not an object: {other}"),
+        }
     }
 
     fn text(result: &CallToolResult) -> String {

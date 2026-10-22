@@ -109,6 +109,7 @@ impl Builtin {
     }
 
     /// The MCP tool definition.
+    #[allow(clippy::too_many_lines, reason = "one description per built-in tool")]
     pub(crate) fn tool(self) -> Tool {
         let (description, destructive) = match self {
             Self::Undo => (
@@ -222,6 +223,7 @@ impl Builtin {
 }
 
 /// `tx_begin` takes a label, `history_log` an optional `after_n`; the others take nothing.
+#[allow(clippy::too_many_lines, reason = "one schema per built-in tool")]
 fn input_schema(builtin: Builtin) -> JsonObject {
     let schema = match builtin {
         Builtin::Log => json!({
