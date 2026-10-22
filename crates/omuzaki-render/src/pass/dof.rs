@@ -13,6 +13,11 @@
 //! zone divided by the distance from the camera, so a far wall blurs to at most `max_blur` and things very close blur
 //! hard. `max_blur` is a fraction of the image height, so the look is the same at every `render_scale`.
 //!
+//! **Packed circle of confusion.** The gather reads one image a tap when the scene is opaque (a solid background of full
+//! alpha): the prepass keeps each pixel's `CoC` in the alpha of its colour, which is all the alpha an opaque scene has to
+//! lose, and the gather writes alpha 1. A scene with transparency keeps the `CoC` in an image of its own and the colour's
+//! real alpha, at two fetches a tap (`fs_gather` in the shader, the `packed` pipeline constant).
+//!
 //! **Quality.** Every mode draws the same blur; what changes is how finely it is sampled (`Detail`). Live gathers about
 //! 1.5 taps per pixel of blur radius (8 to 20) and compares one depth sample per place it looks; frame-exact offline
 //! gathers 6 per pixel (up to 128) and compares four, which turns the live mode's fine noise into a smooth disc and keeps
@@ -22,7 +27,8 @@
 
 use bytemuck::{Pod, Zeroable};
 use omuzaki_core::glam::UVec2;
-use omuzaki_render_api::{DepthOfField as Look, Pass, QualityMode, RenderError};
+use omuzaki_render_api::{Background, DepthOfField as Look, Pass, QualityMode, RenderError};
+use wgpu::util::DeviceExt;
 
 use super::bloom::reduction_taps;
 use super::{FramePass, Outcome, PassCx};
@@ -41,6 +47,8 @@ const MIN_TILE: u32 = 8;
 const MIN_REACH: f32 = 0.5;
 /// How many target sizes keep their images at once.
 const CACHED_SIZES: usize = 3;
+/// The golden angle in radians, which turns the gather's spiral from one tap to the next.
+const GOLDEN_ANGLE: f64 = 2.399_963_2;
 
 /// What a quality mode spends on the blur: gather taps (roughly `density` per pixel of blur radius, within
 /// `MIN_TAPS..=cap`) and how many of a multisampled depth attachment's samples the prepass compares per place it looks.
@@ -55,6 +63,8 @@ impl Detail {
     const MIN_TAPS: u32 = 8;
     const LIVE: Self = Self { density: 1.5, cap: 20, depth_samples: 1 };
     const OFFLINE: Self = Self { density: 6.0, cap: 128, depth_samples: 4 };
+    /// The most taps any mode gathers: the length of the shader's spiral table (`spiral` in `post_dof.wgsl`).
+    const MOST_TAPS: usize = 128;
 
     fn for_mode(mode: QualityMode) -> Self {
         match mode {
@@ -111,6 +121,28 @@ impl Request {
         let widest = self.max_coc.ceil() as u32;
         (widest.div_ceil(4) * 4).max(MIN_TILE)
     }
+}
+
+/// The direction of each tap of the gather's spiral, `(cos, sin)` of the tap's number times the golden angle, padded to the
+/// `vec4` a uniform array element is. The same for every frame and every pixel; the pixel's own angle turns it.
+fn spiral_table() -> [[f32; 4]; Detail::MOST_TAPS] {
+    let mut table = [[0.0; 4]; Detail::MOST_TAPS];
+    for (i, entry) in table.iter_mut().enumerate() {
+        // Computed in double precision so that the single-precision entries are the nearest floats to the angles.
+        #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+        let (sin, cos) = (i as f64 * GOLDEN_ANGLE).sin_cos();
+        #[allow(clippy::cast_possible_truncation)]
+        {
+            *entry = [cos as f32, sin as f32, 0.0, 0.0];
+        }
+    }
+    table
+}
+
+/// Whether the scene's alpha is 1 everywhere, so that the circle of confusion can live in the colour's alpha: a solid,
+/// fully opaque background. Opaque and masked surfaces write alpha 1, and a blended one over alpha 1 leaves 1.
+fn opaque(cx: &PassCx<'_>) -> bool {
+    matches!(cx.frame.scene.background, Background::Solid { colour } if colour.alpha() >= 1.0)
 }
 
 /// Half of `size`, rounded up (so the last odd row or column still has a pixel) and never below one.
@@ -233,7 +265,10 @@ impl Layers {
         let params_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("dof params"),
             layout: &dof.params_layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: params.as_entire_binding() }],
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: params.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: dof.spiral.as_entire_binding() },
+            ],
         });
         let tiles_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("dof tiles"),
@@ -257,20 +292,23 @@ impl Layers {
     }
 }
 
-/// The pipelines, compiled when first needed: one prepass per kind of depth attachment (multisampled or not), the block
-/// search and the gather.
+/// The pipelines, compiled when first needed: one prepass per kind of depth attachment (multisampled or not) and of
+/// scene (opaque, so packed, or not), the block search and a gather for each kind of scene.
 #[derive(Default)]
 struct Pipelines {
-    prepass_multisampled: Option<wgpu::RenderPipeline>,
-    prepass_single: Option<wgpu::RenderPipeline>,
+    /// Indexed by `[multisampled][packed]`.
+    prepass: [[Option<wgpu::RenderPipeline>; 2]; 2],
     tiles: Option<wgpu::RenderPipeline>,
-    gather: Option<wgpu::RenderPipeline>,
+    /// Indexed by `[packed]`.
+    gather: [Option<wgpu::RenderPipeline>; 2],
 }
 
 /// See the module docs.
 pub(crate) struct DepthOfField {
     layers_layout: wgpu::BindGroupLayout,
     params_layout: wgpu::BindGroupLayout,
+    /// The gather's spiral ([`spiral_table`]), bound with the params of every size's images.
+    spiral: wgpu::Buffer,
     /// How the gather reads the tiles (binding 1, beside the prepass's depth at binding 0 of the same group index).
     tiles_layout: wgpu::BindGroupLayout,
     /// How the prepass reads depth: `[single sample, multisampled]`.
@@ -301,16 +339,33 @@ impl DepthOfField {
             layers_layout: layers_layout(device),
             params_layout: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("dof params"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(size_of::<Params>() as u64),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(size_of::<Params>() as u64),
+                        },
+                        count: None,
                     },
-                    count: None,
-                }],
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(size_of::<[[f32; 4]; Detail::MOST_TAPS]>() as u64),
+                        },
+                        count: None,
+                    },
+                ],
+            }),
+            spiral: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("dof spiral"),
+                contents: bytemuck::bytes_of(&spiral_table()),
+                usage: wgpu::BufferUsages::UNIFORM,
             }),
             tiles_layout: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("dof tiles"),
@@ -338,6 +393,7 @@ impl DepthOfField {
         entry: &str,
         groups: &[&wgpu::BindGroupLayout],
         targets: &[wgpu::TextureFormat],
+        packed: bool,
     ) -> wgpu::RenderPipeline {
         let layouts: Vec<Option<&wgpu::BindGroupLayout>> = groups.iter().copied().map(Some).collect();
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -361,7 +417,10 @@ impl DepthOfField {
             fragment: Some(wgpu::FragmentState {
                 module,
                 entry_point: Some(entry),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &[("packed", f64::from(u8::from(packed)))],
+                    ..wgpu::PipelineCompilationOptions::default()
+                },
                 targets: &targets,
             }),
             multiview_mask: None,
@@ -370,7 +429,7 @@ impl DepthOfField {
     }
 
     /// Compiles whatever this frame needs that is not built yet.
-    fn build_pipelines(&mut self, shared: &Shared, multisampled: bool) {
+    fn build_pipelines(&mut self, shared: &Shared, multisampled: bool, packed: bool) {
         let device = &shared.gpu.device;
         let module = |depth_type: &str| {
             device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -381,38 +440,40 @@ impl DepthOfField {
             })
         };
         let colour_input = &shared.layouts.colour_input;
-        if self.pipelines.gather.is_none() {
+        let kind = usize::from(packed);
+        if self.pipelines.tiles.is_none() || self.pipelines.gather[kind].is_none() {
             // Neither of these reads depth; the single-sample module is the cheaper one to compile them from.
             let module = module("texture_depth_2d");
             let layers = [&self.layers_layout, &self.params_layout];
-            let tiles = Self::pipeline(device, &module, "fs_tiles", &layers, &[COC_FORMAT]);
-            let gather = Self::pipeline(
-                device,
-                &module,
-                "fs_gather",
-                &[layers[0], layers[1], &self.tiles_layout],
-                &[SCENE_FORMAT, COC_FORMAT],
-            );
-            (self.pipelines.tiles, self.pipelines.gather) = (Some(tiles), Some(gather));
+            if self.pipelines.tiles.is_none() {
+                self.pipelines.tiles = Some(Self::pipeline(device, &module, "fs_tiles", &layers, &[COC_FORMAT], false));
+            }
+            if self.pipelines.gather[kind].is_none() {
+                self.pipelines.gather[kind] = Some(Self::pipeline(
+                    device,
+                    &module,
+                    "fs_gather",
+                    &[layers[0], layers[1], &self.tiles_layout],
+                    &[SCENE_FORMAT, COC_FORMAT],
+                    packed,
+                ));
+            }
         }
-        let (slot, depth_type, layout) = if multisampled {
-            (&self.pipelines.prepass_multisampled, "texture_depth_multisampled_2d", &self.depth_layouts[1])
+        let (depth_type, layout) = if multisampled {
+            ("texture_depth_multisampled_2d", &self.depth_layouts[1])
         } else {
-            (&self.pipelines.prepass_single, "texture_depth_2d", &self.depth_layouts[0])
+            ("texture_depth_2d", &self.depth_layouts[0])
         };
+        let slot = &mut self.pipelines.prepass[usize::from(multisampled)][kind];
         if slot.is_none() {
-            let prepass = Self::pipeline(
+            *slot = Some(Self::pipeline(
                 device,
                 &module(depth_type),
                 "fs_prepass",
                 &[colour_input, &self.params_layout, layout],
                 &[SCENE_FORMAT, COC_FORMAT],
-            );
-            if multisampled {
-                self.pipelines.prepass_multisampled = Some(prepass);
-            } else {
-                self.pipelines.prepass_single = Some(prepass);
-            }
+                packed,
+            ));
         }
     }
 
@@ -488,12 +549,16 @@ impl FramePass for DepthOfField {
         let Some(request) = requested(cx) else { return Ok(Outcome::Skipped) };
         let shared = cx.shared;
         let multisampled = cx.frame.samples > 1;
-        self.build_pipelines(shared, multisampled);
+        let packed = opaque(cx);
+        self.build_pipelines(shared, multisampled, packed);
         let at = self.layers_for(shared, cx.frame.target_size);
-        let prepass = if multisampled { &self.pipelines.prepass_multisampled } else { &self.pipelines.prepass_single };
-        let (Some(prepass), Some(tiles), Some(gather), Some(layers)) =
-            (prepass, &self.pipelines.tiles, &self.pipelines.gather, self.layers.get(at))
-        else {
+        let kind = usize::from(packed);
+        let (Some(prepass), Some(tiles), Some(gather), Some(layers)) = (
+            &self.pipelines.prepass[usize::from(multisampled)][kind],
+            &self.pipelines.tiles,
+            &self.pipelines.gather[kind],
+            self.layers.get(at),
+        ) else {
             return Err(RenderError::Backend("depth of field: the pipelines or images were not built".into()));
         };
 
@@ -540,6 +605,22 @@ mod tests {
     use omuzaki_render_api::Camera;
 
     use super::*;
+
+    #[test]
+    fn the_spiral_table_is_the_golden_angle_walked_tap_by_tap_and_covers_every_mode() {
+        let table = spiral_table();
+        assert_eq!(table.len(), Detail::OFFLINE.cap as usize, "a table entry for every tap the deepest mode gathers");
+        for (i, [cos, sin, ..]) in table.iter().copied().enumerate() {
+            assert!((cos * cos + sin * sin - 1.0).abs() < 1e-6, "tap {i} is a unit direction");
+            let angle = f64::from(u32::try_from(i).unwrap()) * GOLDEN_ANGLE;
+            assert!(
+                (f64::from(cos) - angle.cos()).abs() < 1e-6 && (f64::from(sin) - angle.sin()).abs() < 1e-6,
+                "tap {i}"
+            );
+        }
+        assert_eq!(table[0][..2], [1.0, 0.0], "the first tap looks straight along the pixel's own angle");
+        assert!(Detail::LIVE.cap as usize <= table.len());
+    }
 
     #[test]
     fn params_are_eighty_bytes() {

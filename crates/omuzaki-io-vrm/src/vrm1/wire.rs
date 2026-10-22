@@ -1,5 +1,6 @@
 //! The JSON shapes of the VRM 1.0 extensions, as serde types: `VRMC_vrm` (`VRMC_vrm-1.0/*.md` and
-//! `schema/VRMC_vrm.*.schema.json`), `VRMC_springBone-1.0` and `VRMC_node_constraint-1.0`.
+//! `schema/VRMC_vrm.*.schema.json`), `VRMC_springBone-1.0` with its `_extended_collider` and `_limit` extensions, and
+//! `VRMC_node_constraint-1.0`.
 //!
 //! One type per JSON object serves reading and writing. Fields the spec gives a default are `Option`s here: the reader
 //! applies the default, the writer sets every one explicitly. Names of the same kind (`type`, `source`) follow the
@@ -189,7 +190,8 @@ pub(crate) struct WireSpringBone {
 #[serde(default)]
 pub(crate) struct WireCollider {
     pub node: usize,
-    /// Absent when the collider is described only by `VRMC_springBone_extended_collider`, which this crate drops.
+    /// Absent only in a file that leaves out the base shape the spec asks for; `VRMC_springBone_extended_collider`
+    /// (in `extensions`) then carries the shape.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shape: Option<WireShape>,
     #[serde(skip_serializing_if = "Extensions::is_empty")]
@@ -254,9 +256,112 @@ pub(crate) struct WireJoint {
     pub gravity_dir: Option<[f32; 3]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub drag_force: Option<f32>,
-    /// `VRMC_springBone_limit` lives here; this crate drops it and says so.
+    /// `VRMC_springBone_limit` lives here.
     #[serde(skip_serializing_if = "Extensions::is_empty")]
     pub extensions: Extensions,
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// VRMC_springBone_extended_collider and VRMC_springBone_limit
+
+/// The extension on a collider that gives it an inside or plane shape.
+pub(crate) const EXTENDED_COLLIDER: &str = "VRMC_springBone_extended_collider";
+/// The extension on a spring joint that limits its rotation.
+pub(crate) const LIMIT: &str = "VRMC_springBone_limit";
+
+/// `colliders[*].extensions.VRMC_springBone_extended_collider` (`VRMC_springBone_extended_collider-1.0/README.md`).
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct WireExtendedCollider {
+    pub spec_version: String,
+    /// Optional in the spec; without it the base shape stands.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shape: Option<WireExtShape>,
+}
+
+/// Exactly one of the three must be present; the reader checks that.
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct WireExtShape {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sphere: Option<WireExtSphere>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capsule: Option<WireExtCapsule>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plane: Option<WirePlane>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct WireExtSphere {
+    pub offset: [f32; 3],
+    pub radius: f32,
+    pub inside: bool,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct WireExtCapsule {
+    pub offset: [f32; 3],
+    pub radius: f32,
+    pub tail: [f32; 3],
+    pub inside: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct WirePlane {
+    pub offset: [f32; 3],
+    pub normal: [f32; 3],
+}
+
+impl Default for WirePlane {
+    /// The schema's defaults: through the origin, facing +Z.
+    fn default() -> Self {
+        Self { offset: [0.0; 3], normal: [0.0, 0.0, 1.0] }
+    }
+}
+
+/// `springs[*].joints[*].extensions.VRMC_springBone_limit` (`VRMC_springBone_limit-1.0/README.md`). `limit` is required:
+/// a body without it fails to parse and the reader reports it.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WireSpringLimit {
+    #[serde(default)]
+    pub spec_version: String,
+    pub limit: WireLimit,
+}
+
+/// Exactly one of the three must be present; the reader checks that.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub(crate) struct WireLimit {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub cone: Option<WireAngleLimit>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub hinge: Option<WireAngleLimit>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub spherical: Option<WireSphericalLimit>,
+}
+
+/// A cone or hinge limit: `angle` is required.
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct WireAngleLimit {
+    pub angle: f32,
+    #[serde(default = "identity_rotation")]
+    pub rotation: [f32; 4],
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct WireSphericalLimit {
+    pub pitch: f32,
+    pub yaw: f32,
+    #[serde(default = "identity_rotation")]
+    pub rotation: [f32; 4],
+}
+
+/// The schema's default rotation, `[x, y, z, w]` of the identity.
+fn identity_rotation() -> [f32; 4] {
+    [0.0, 0.0, 0.0, 1.0]
 }
 
 // ---------------------------------------------------------------------------------------------------------------

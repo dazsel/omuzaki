@@ -76,6 +76,28 @@ fn an_updated_mesh_draws_like_a_fresh_one_with_its_outline_and_shadow() {
     assert_ne!(flat.rgba8, waved.rgba8, "the wave must be visible, or the comparison proves nothing");
 }
 
+/// The GPU path welds a dynamic mesh's outline directions and fits its bounds in the update; the CPU path does both from its
+/// copy of the vertices when a frame needs them. They must draw the same picture, the outline and the shadow included.
+#[test]
+fn the_cpu_and_gpu_paths_draw_an_updated_mesh_alike() {
+    let mut gpu = support::renderer();
+    let mut cpu = support::renderer();
+    cpu.force_cpu_morph().unwrap();
+    let mut images = Vec::new();
+    for r in [&mut gpu, &mut cpu] {
+        let material = r.create_material(&outlined()).unwrap();
+        let dynamic = r.create_mesh_with(&grid::grid(40, 20), &DYNAMIC).unwrap();
+        let mut frames = Vec::new();
+        for t in [0.7, 2.1] {
+            let (positions, normals) = mesh_vertices(&grid::waved(40, 20, t));
+            r.update_vertices(dynamic, &positions, &normals).unwrap();
+            frames.push(render(r, dynamic, material).rgba8);
+        }
+        images.push(frames);
+    }
+    assert_eq!(images[0], images[1], "the paths drew an updated mesh differently");
+}
+
 #[test]
 fn a_bad_update_is_an_error_and_leaves_the_mesh_as_it_was() {
     let mut r = support::renderer();

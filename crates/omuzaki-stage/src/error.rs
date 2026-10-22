@@ -73,6 +73,13 @@ pub enum StageError {
         /// What is missing or unusable.
         reason: String,
     },
+    /// An imported avatar can't go on the stage: it fails its own validation, or a mesh names a bone or material it
+    /// doesn't have.
+    #[error("the imported avatar can't be staged: {reason}")]
+    Avatar {
+        /// What is wrong with it.
+        reason: String,
+    },
     /// The scene breaks a rule (D13).
     #[error("the scene can't be resolved: {source}")]
     Scene {

@@ -222,7 +222,7 @@ pub fn build_character(
 }
 
 /// The definition of `id` with `variant` applied, read from the document.
-fn read_definition(doc: &dyn DocRead, id: &CharId, variant: Option<&VariantId>) -> Result<CharacterDef, OpError> {
+pub(crate) fn read_definition(doc: &dyn DocRead, id: &CharId, variant: Option<&VariantId>) -> Result<CharacterDef, OpError> {
     let node = doc.get(&paths::character(id)).ok_or_else(|| {
         OpError::not_found(format!("there is no character '{id}'"))
             .hint("check the id; characters live under characters/<id>")

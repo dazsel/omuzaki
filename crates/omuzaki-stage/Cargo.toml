@@ -26,12 +26,16 @@ unicode-bidi.workspace = true
 unicode-normalization.workspace = true
 omuzaki-ai-api = { path = "../omuzaki-ai-api" }
 omuzaki-anim-api = { path = "../omuzaki-anim-api" }
+omuzaki-avatar = { path = "../omuzaki-avatar" }
+omuzaki-avatar-api = { path = "../omuzaki-avatar-api" }
 omuzaki-budget = { path = "../omuzaki-budget" }
 omuzaki-char-api = { path = "../omuzaki-char-api" }
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 omuzaki-face-api = { path = "../omuzaki-face-api" }
 omuzaki-io-api = { path = "../omuzaki-io-api" }
+# An imported character's avatar, rebuilt from its stored original when it goes on a stage (`body`).
+omuzaki-io-ops = { path = "../omuzaki-io-ops" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-render-api = { path = "../omuzaki-render-api" }
 omuzaki-settings-api = { path = "../omuzaki-settings-api" }
@@ -68,6 +72,9 @@ omuzaki-anim-mock = { path = "../omuzaki-anim-mock" }
 omuzaki-char-mock = { path = "../omuzaki-char-mock" }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-face-mock = { path = "../omuzaki-face-mock" }
+# A kit character exported to VRM and imported back as an avatar: the bring-your-own-model path without a third-party
+# file (`tests/avatar_stage.rs`).
+omuzaki-io-vrm = { path = "../omuzaki-io-vrm" }
 omuzaki-render-mock = { path = "../omuzaki-render-mock" }
 omuzaki-settings = { path = "../omuzaki-settings" }
 omuzaki-stream = { path = "../omuzaki-stream" }
