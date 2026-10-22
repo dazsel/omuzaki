@@ -12,6 +12,8 @@ use serde_json::json;
 
 use super::record::op_error;
 use crate::service::{OutputId, StreamService};
+use omuzaki_update_api::hold::HoldReason;
+use omuzaki_update_api::updater::Updater;
 
 /// List the kinds of output this build can start, and whether each works on this machine now.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -125,7 +127,10 @@ impl Op for Start {
             })));
         }
         available.map_err(op_error)?;
-        let id = service.start((kind.make)(), cfg.clone()).map_err(op_error)?;
+        // The live outputs share one `Streaming` update hold while any of them runs (#1106).
+        let hold = ctx.service::<dyn Updater>().ok().map(|u| u.hold(HoldReason::Streaming));
+        let output = service.live_holds().wrap_boxed((kind.make)(), hold);
+        let id = service.start(Box::new(output), cfg.clone()).map_err(op_error)?;
         Ok(Plan::answer(json!({
             "started": true,
             "id": id,

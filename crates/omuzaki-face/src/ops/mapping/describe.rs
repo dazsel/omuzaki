@@ -161,6 +161,12 @@ const FORMULAS: &[(&str, &str)] = &[
     ("cheeks/blush", "blush per unit of blush"),
     ("gaze/x", "sideways look per unit of the eye-look channels, clamped to -1..1"),
     ("gaze/y", "vertical look per unit of the eye-look channels, clamped to -1..1"),
+    (
+        "amplify/knee",
+        "subtle-movement expander: each ARKit channel below this is multiplied by amplify.gain, then runs straight to \
+         1 (0 turns it off), 0..0.5",
+    ),
+    ("amplify/gain", "the expander's boost below its knee, 1..4; knee x gain is at most 1"),
 ];
 
 #[cfg(test)]
@@ -175,6 +181,6 @@ mod tests {
             assert!(formula(path).is_some(), "{path} has no formula");
         }
         assert_eq!(listed.len(), default.len(), "the table lists a path that FaceMapping doesn't have: {listed:?}");
-        assert_eq!(default.len(), 57);
+        assert_eq!(default.len(), 59);
     }
 }
