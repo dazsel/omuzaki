@@ -223,7 +223,8 @@ pub(crate) fn resolve(ctx: &OpCtx<'_>, subject: &Subject, at: &str) -> Result<Re
     match subject {
         Subject::Face(face) => measure_subject(ctx, face, at),
         Subject::Target { target } => {
-            let field = format!("{at}.target");
+            // A subject flattened into the op's arguments (`measure.feature_spacing`) has no prefix.
+            let field = if at.is_empty() { "target".to_owned() } else { format!("{at}.target") };
             let hash = target_hash(ctx, target, &field)?;
             let (t, private) = read_target(ctx, &hash, &field)?;
             let store = ctx.service::<dyn Store>()?;
