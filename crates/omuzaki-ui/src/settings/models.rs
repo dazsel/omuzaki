@@ -6,8 +6,7 @@
 //! Like the settings page it holds nothing of its own: it reads `model.list` (when it opens, after each of its own
 //! changes, and once a second, so an agent's switch shows) and every change is a `model.*` op run as the person. Adding
 //! is a job that copies, probes and smoke-tests the file in a sandboxed worker, so it runs on a thread of its own while
-//! the page shows its row; the dropped file's folder is the root the person grants for it (ADR 0013), the same grant a
-//! file dialog gives.
+//! the page shows its row; each dropped file's folder is the root the person grants for it (ADR 0013).
 
 use std::path::Path;
 use std::sync::Arc;
@@ -189,7 +188,8 @@ impl ModelsPage {
         let Some(path) = model.next() else { return };
         let more: Vec<String> = model.collect();
         let name = Path::new(&path).file_name().map_or_else(|| path.clone(), |n| n.to_string_lossy().into_owned());
-        // The person picked these files by dropping them: their folders are what they share, as a file dialog would.
+        // The person picked these files by dropping them, so they share them (ADR 0013). The fence opens a file through
+        // the root folder it lies in, so the root is each file's folder until roots can be single files (#281).
         let grants = files
             .iter()
             .filter_map(|f| Path::new(f).parent())
