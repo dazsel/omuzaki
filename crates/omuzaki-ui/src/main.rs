@@ -17,6 +17,7 @@ use omuzaki_anim_api::HumanoidPose;
 use omuzaki_core::glam::UVec2;
 use omuzaki_ops_api::Runner;
 use omuzaki_render::WgpuRenderer;
+use omuzaki_script::ScriptStore;
 use omuzaki_settings_api::service::Settings as SettingsService;
 use omuzaki_stage::frame::Stage;
 use omuzaki_theatre::TheatreBook;
@@ -30,6 +31,9 @@ use omuzaki_ui::panels::agent::Agents;
 use omuzaki_ui::panels::edit::EditFocus;
 use omuzaki_ui::panels::setup::FirstRun;
 use omuzaki_ui::panels::viewport::ViewportServices;
+use omuzaki_ui::script::Scripting;
+use omuzaki_ui::script::consent::ConsentBook;
+use omuzaki_ui::script::store::DirScriptStore;
 use omuzaki_ui::shell::persist::LayoutStore;
 use omuzaki_ui::shell::stub::NullRunner;
 use omuzaki_ui::shell::{Shell, class};
@@ -210,6 +214,7 @@ fn core_of(
     live: Option<&LiveApp>,
     dir: Option<&PathBuf>,
     settings: Option<Arc<dyn SettingsService>>,
+    scripts: Option<Arc<dyn ScriptStore>>,
 ) -> Option<(Core, Theatre)> {
     if let Some(live) = live {
         return Some((live.core(), live.theatre()));
@@ -218,6 +223,9 @@ fn core_of(
     let mut services = omuzaki_ops_api::ServicesBuilder::new().insert::<TheatreBook>(Arc::new(book.clone()));
     if let Some(settings) = settings {
         services = services.insert::<dyn SettingsService>(settings);
+    }
+    if let Some(scripts) = scripts {
+        services = services.insert::<dyn ScriptStore>(scripts);
     }
     match wiring::core_on(open_document(dir), services.build()) {
         Ok(core) => {
@@ -283,6 +291,11 @@ fn history_pictures(
     omuzaki_ui::shell::pictures::taken(Arc::clone(&core.runner), Box::new(renderer), dir)
 }
 
+/// Every allocation goes through the scripts' memory budget, so a script run can be held to its memory limit (a run
+/// refuses to start without it).
+#[global_allocator]
+static ALLOCATOR: omuzaki_script::MemoryBudget = omuzaki_script::MemoryBudget::system();
+
 fn main() -> eframe::Result {
     tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).init();
     let args = Args::parse();
@@ -312,7 +325,20 @@ fn main() -> eframe::Result {
                 None => omuzaki_ui::ds::apply_settings(&cc.egui_ctx, omuzaki_ui::ds::Settings::default()),
             }
             let live = start_live(cc, open_document(dir.as_ref()), settings.clone());
-            let (core, theatre) = core_of(live.as_ref(), dir.as_ref(), settings).unzip();
+            // My scripts: the live slice's, or a folder of their own when it did not start.
+            let mine = match live.as_ref() {
+                Some(live) => live.script_store(),
+                None => DirScriptStore::in_user_config().map(|store| Arc::new(store) as Arc<dyn ScriptStore>),
+            };
+            let (core, theatre) = core_of(live.as_ref(), dir.as_ref(), settings, mine.clone()).unzip();
+            let scripting = core.as_ref().map(|core| {
+                let agreed = omuzaki_ui::shell::persist::user_config_dir()
+                    .map_or_else(ConsentBook::in_memory, |config| {
+                        ConsentBook::in_file(config.join("scripts-agreed.json"))
+                    });
+                let project = dir.as_ref().map(|dir| dir.to_string_lossy().into_owned()).unwrap_or_default();
+                Scripting::new(Arc::clone(&core.runner), mine, project, agreed)
+            });
             let generation = core.as_ref().map(|core| Generation {
                 runner: Arc::clone(&core.runner),
                 store: live.as_ref().and_then(LiveApp::generated_store),
@@ -320,6 +346,9 @@ fn main() -> eframe::Result {
             let mut shell = studio_shell(cc, core, dir.as_ref());
             if let Some(generation) = generation {
                 shell.insert_view(generation);
+            }
+            if let Some(scripting) = scripting {
+                shell.insert_view(scripting);
             }
             if let Some(theatre) = theatre {
                 shell.insert_view(theatre);

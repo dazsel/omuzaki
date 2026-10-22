@@ -332,6 +332,9 @@ impl Shell {
         if let Some(action) = keys::resolve(&ctx) {
             self.act(&ctx, action);
         }
+        if let Some(scripting) = self.models.get::<crate::script::Scripting>() {
+            scripting.poll();
+        }
         if self.maximised && !ctx.text_edit_focused() && ctx.input(|i| i.key_pressed(Key::Escape)) {
             self.maximised = false;
         }
@@ -531,7 +534,23 @@ impl Shell {
             Action::ShortcutSheet => self.sheet = !self.sheet,
             Action::Settings => self.toggle_settings(),
             Action::PauseAgent => self.pause_agent(ctx),
+            Action::RecordMacro => self.record_macro(ctx),
         }
+    }
+
+    /// Starts or stops recording a macro (Ctrl+Shift+M); a stopped recording waits in the Macros panel to be saved.
+    fn record_macro(&mut self, ctx: &Context) {
+        let Some(scripting) = self.models.get::<crate::script::Scripting>().cloned() else { return };
+        let ds = ds(ctx);
+        let was = scripting.recording();
+        let name = crate::panels::text::say(&ds, crate::script::text::NEW_MACRO, &[]).into_owned();
+        self.note = match scripting.toggle_recording(&self.actor, &name) {
+            Ok(()) if was => {
+                Note::Said(crate::panels::text::say(&ds, crate::script::text::REC_STOPPED, &[]).into_owned())
+            }
+            Ok(()) => Note::Said(crate::panels::text::say(&ds, crate::script::text::REC_STARTED, &[]).into_owned()),
+            Err(error) => Note::Failed(error.message),
+        };
     }
 
     /// The agent the person means by "the active agent": the newest one working, else the newest one paused.
@@ -1184,6 +1203,12 @@ impl Shell {
                 }
                 ui.with_layout(Flow::right_to_left(Align::Center), |ui| {
                     ui.label(small(say(&ctx, Word::StatusHealth, &[])));
+                    if self.models.get::<crate::script::Scripting>().is_some_and(crate::script::Scripting::recording) {
+                        let rec = crate::panels::text::say(&ds, crate::script::text::REC, &[]);
+                        let chip = ui.add(crate::ds::widgets::StatusChip::new(crate::ds::tokens::Status::Danger, &rec));
+                        let how = crate::panels::text::say(&ds, crate::script::text::REC_HOW_TO_STOP, &[]);
+                        chip.on_hover_text(how.as_ref());
+                    }
                 });
             });
         });

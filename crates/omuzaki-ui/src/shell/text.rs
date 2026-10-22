@@ -70,6 +70,7 @@ words! {
     SheetSheet = "ui-shell-sheet-sheet" => "Show these shortcuts",
     SheetSettings = "ui-shell-sheet-settings" => "Open the settings",
     SheetPause = "ui-shell-sheet-pause" => "Pause or resume the agent",
+    SheetRecord = "ui-shell-sheet-record" => "Start or stop recording a macro",
     SheetDivider = "ui-shell-sheet-divider" => "Move a focused divider (arrow keys)",
     StatusAgentPaused = "ui-shell-status-agent-paused" => "{name} is paused",
     StatusAgentResumed = "ui-shell-status-agent-resumed" => "{name} is working again",

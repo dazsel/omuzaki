@@ -13,7 +13,7 @@ use crate::ds::widgets::{Button, KeyCaps};
 const WIDTH: f32 = 380.0;
 
 /// The keys the sheet lists, in the order of `shell.md` section 16, and what each does.
-const KEYS: [(Modifiers, Key, Word); 11] = [
+const KEYS: [(Modifiers, Key, Word); 12] = [
     (Modifiers::COMMAND, Key::K, Word::SheetPalette),
     (Modifiers::COMMAND, Key::Z, Word::SheetUndo),
     (Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::Z, Word::SheetRedo),
@@ -22,6 +22,7 @@ const KEYS: [(Modifiers, Key, Word); 11] = [
     (Modifiers::COMMAND, Key::Space, Word::SheetMaximise),
     (Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::L, Word::SheetLock),
     (Modifiers::COMMAND.plus(Modifiers::ALT), Key::P, Word::SheetPause),
+    (Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::M, Word::SheetRecord),
     (Modifiers::NONE, Key::ArrowRight, Word::SheetDivider),
     (Modifiers::COMMAND, Key::Slash, Word::SheetSheet),
     (Modifiers::COMMAND, Key::Comma, Word::SheetSettings),

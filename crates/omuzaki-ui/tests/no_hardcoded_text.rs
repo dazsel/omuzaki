@@ -116,8 +116,10 @@ const NOT_FOR_PEOPLE: &[&str] = &[
 /// Files outside the components whose literals are not prose: the audits' and the contrast table's failure reports,
 /// which only a failing test prints; the font table's file names; and the schema form's reading of JSON Schema, whose
 /// type names are the schema's own vocabulary, shown as a read-only row's detail; and the lexicon's translator notes,
-/// which go into the Fluent files for translators and are never drawn.
-const NOT_PROSE: &[&str] = &["audit.rs", "contrast.rs", "fonts.rs", "schema_form/model.rs", "ds/lexicon.rs"];
+/// which go into the Fluent files for translators and are never drawn; and My scripts' folder store, whose refusals are
+/// op errors (`script.save_mine` returns them), which are English like every op's.
+const NOT_PROSE: &[&str] =
+    &["audit.rs", "contrast.rs", "fonts.rs", "schema_form/model.rs", "ds/lexicon.rs", "script/store.rs"];
 
 /// Names given to things in the document or the window, not UI text: the product, the kit's sample character, and the
 /// name of the project folder the studio makes for itself.

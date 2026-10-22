@@ -2043,6 +2043,18 @@ ui-panel-library = Library
 ui-panel-live-stage = Stage
 
 # A panel's title (a short tab label), or what its body says while it can't work.
+ui-panel-script-console = Console
+
+# A panel's title (a short tab label), or what its body says while it can't work.
+ui-panel-script-macros = Macros
+
+# A panel's title (a short tab label), or what its body says while it can't work.
+ui-panel-script-ops = Ops
+
+# A panel's title (a short tab label), or what its body says while it can't work.
+ui-panel-script-scripts = Scripts
+
+# A panel's title (a short tab label), or what its body says while it can't work.
 ui-panel-setup = Setup
 
 # A panel's title (a short tab label), or what its body says while it can't work.
@@ -2932,6 +2944,320 @@ ui-panels-widest-render = { $name } can read the project and render previews.
 # $cap (id, never translated): "hair-b"
 ui-panels-widest-spend = { $name } can spend up to { $cap } on paid connectors.
 
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+# $count (id, never translated): "hair-b"
+ui-script-area-ops = { $count } ops
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+# $min (id, never translated): "hair-b"
+ui-script-at-least = at least { $min }
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+# $line (id, never translated): "hair-b"
+# $column (id, never translated): "hair-b"
+# $message (id, never translated): "hair-b"
+ui-script-at-line = Line { $line }, column { $column }: { $message }
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+# $max (id, never translated): "hair-b"
+ui-script-at-most = at most { $max }
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+# $agent (id, never translated): "hair-b"
+ui-script-by-agent = The agent { $agent } saved this script.
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+# $person (id, never translated): "hair-b"
+ui-script-by-person = { $person } saved this script.
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+# $plugin (id, never translated): "hair-b"
+ui-script-by-plugin = The plugin { $plugin } saved this script.
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-by-system = This script came in with an import.
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-by-you = You saved this script.
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-cancel = Cancel
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-consent-calls = It calls:
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-consent-title = Run this script?
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+# $name (id, never translated): "hair-b"
+ui-script-delete-item = Delete { $name }
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-delete-sure = Delete
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-discard = Discard
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-divider = Resize the editor and the output
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-dry-done = Dry run: nothing changed. Each call saw the document as it was before the script, so later calls may plan differently in a real run.
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-dry-run = Dry run
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-editor = Script
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-editor-hint = Type ops:: to see what you can call. Ctrl+Enter runs, Ctrl+Space completes.
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+# $line (id, never translated): "hair-b"
+# $column (id, never translated): "hair-b"
+# $message (id, never translated): "hair-b"
+ui-script-failed-at = Line { $line }, column { $column }: { $message }
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-in-project = In this project
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-insert = Insert
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+# $op (id, never translated): "hair-b"
+ui-script-insert-call = Insert a call to { $op }
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-keep = Keep
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-kind-any = any value
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-kind-bool = true or false
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-kind-integer = whole number
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-kind-list = list
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-kind-macro = macro
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-kind-map = map
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-kind-number = number
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-kind-script = script
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-kind-text = text
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-lib-empty = An empty macro can't be a library item
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-lib-not-in-build = Saving to the library isn't in this build yet
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+# $op (id, never translated): "hair-b"
+# $scope (id, never translated): "hair-b"
+ui-script-lib-scope = { $op } needs { $scope }; library items only edit a character or the scene
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-lib-two-targets = It edits more than one character; a library item edits one
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+# $reason (id, never translated): "hair-b"
+ui-script-list-failed = The scripts couldn't be listed: { $reason }
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-macro-name = Macro name
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-mine = My scripts
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-needs-name-and-steps = Name it, and record at least one edit
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-new-macro = New macro
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-new-recording = New recording
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-new-script = New script
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-no-macros = None yet. Record one, or press Ctrl+Shift+M anywhere.
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-no-ops-found = No op matches.
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-no-problems = No problems
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-no-scripting = Scripts aren't available
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-no-scripting-how = This studio was started without a document to run scripts on.
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-no-steps = No edits were recorded.
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-none-in-project = None yet. Save a script to the project to share it with this character.
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-none-mine = None yet. Your own scripts and macros, in every project.
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-nothing-changed = Done. Nothing changed.
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-nothing-to-run = Write a script first
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-one-problem = 1 problem
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+# $op (id, never translated): "hair-b"
+# $scope (id, never translated): "hair-b"
+# $summary (id, never translated): "hair-b"
+ui-script-op-hover = { $op } ({ $scope }): { $summary }
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+# $name (id, never translated): "hair-b"
+# $kind (id, never translated): "hair-b"
+ui-script-open-item = Open { $name }, { $kind }
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-output-empty = What the script prints shows here.
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+# $count (id, never translated): "hair-b"
+ui-script-problems = { $count } problems
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+# $min (id, never translated): "hair-b"
+# $max (id, never translated): "hair-b"
+ui-script-range = { $min } to { $max }
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-reaches = It can reach outside the studio: it streams, publishes, spends, uses the network, files or programs.
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-rec = ● REC
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-rec-full = The recording got too long and left the later edits out.
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-rec-how-to-stop = Recording a macro: Ctrl+Shift+M stops
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-rec-started = Recording a macro. Ctrl+Shift+M stops.
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-rec-stopped = Recording stopped. Save it in the Script workspace's Macros panel.
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-record = Record a macro
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-recording-how = Recording your edits. Undo takes a step out; agents' work is never recorded.
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-replay = Replay
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+# $step (id, never translated): "hair-b"
+# $op (id, never translated): "hair-b"
+# $message (id, never translated): "hair-b"
+ui-script-replay-failed = Step { $step } ({ $op }) failed: { $message }. Nothing changed.
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+# $count (id, never translated): "hair-b"
+ui-script-replayed = Replayed { $count } steps as one undo step.
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-replaying = A replay is under way
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-required = required
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-rolled-back = Nothing changed: the run was undone whole.
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-run = Run
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-running = Running… Esc stops it.
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-save = Save
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-save-as-script = Save as script
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-save-library = Save as library item
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-save-mine = Save to My scripts
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-save-project = Save to project
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+# $name (id, never translated): "hair-b"
+ui-script-saved = Saved as { $name }
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-saved-macros = Saved macros
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-script-name = Script name
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-search-ops = Search ops
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-stop = Stop
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-stop-recording = Stop recording
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-stopped = Stopped. Nothing changed.
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+# $op (id, never translated): "hair-b"
+ui-script-unavailable-op = { $op } isn't in this build
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+# $name (id, never translated): "hair-b"
+# $count (id, never translated): "hair-b"
+ui-script-undo-step = Undo: { $name }, { $count } ops
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+# $id (id, never translated): "hair-b"
+# $problem (id, never translated): "hair-b"
+ui-script-unreadable = { $id } can't be read: { $problem }
+
+# The Script workspace: the console's editor and output, the scripts list, macros and the ops reference.
+ui-script-untitled = Untitled script
+
 # The line under a setting in the Settings window, saying what it does.
 ui-setting-connectors-entries = Each connector's settings: enabled, endpoint, plan tier, command line, declared model licences
 
@@ -3781,6 +4107,9 @@ ui-shell-sheet-panels = Next or previous panel
 
 # The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
 ui-shell-sheet-pause = Pause or resume the agent
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-sheet-record = Start or stop recording a macro
 
 # The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
 ui-shell-sheet-redo = Redo

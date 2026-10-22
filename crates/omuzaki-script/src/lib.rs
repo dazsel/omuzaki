@@ -6,7 +6,7 @@
 //! | Where | Holds |
 //! |---|---|
 //! | [`ScriptHost`] | the engine: [`run`](ScriptHost::run) a script, [`check`](ScriptHost::check) one without running it |
-//! | `bindings` (private) | the table of registered ops, the `ops::area::verb` modules generated from it, `try_op` and `get` |
+//! | `bindings` (private), [`script_call`] | the table of registered ops, the `ops::area::verb` modules generated from it, `try_op` and `get`; how a script spells a call |
 //! | [`CheckReport`], [`effective_grants`] | the static check, and the grants a run gets from it |
 //! | [`Calls`], [`RunnerCalls`], [`JobScript`] | where a run's requests go: a `Runner` (console, CLI) or a driver job (`script.run`) |
 //! | [`Macro`], [`MacroRecorder`], [`play`], [`to_jsonl`] | macros: record a person's edits, replay them as one transaction, the file |
@@ -41,6 +41,7 @@ mod store;
 #[doc(hidden)]
 pub mod testing;
 
+pub use bindings::script_call;
 pub use budget::MemoryBudget;
 pub use calls::{Calls, Cancel, PlannedCall, RunnerCalls};
 pub use check::{CheckReport, Diagnostic, FieldError, FieldErrorKind, OpUse, Refused, effective_grants};

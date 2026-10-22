@@ -106,11 +106,22 @@ impl Bindings {
     }
 }
 
-/// How a script spells one half of an op name. A word Rhai reserves (the keyword for writing a module's items out,
-/// `import`, `private`, `match` and the like) can't appear in a path, so it gets a trailing underscore, as in
-/// `ops::import_::clip`. Found by asking the parser, so it follows Rhai's own list.
+/// How a script calls the op `name`: `ops::area::verb`, with a word Rhai reserves spelled as [`Bindings`] spells it.
+/// `None` for a name without an area, which no script can call. For surfaces that write calls (the console's
+/// completions, a macro saved as a script).
+pub fn script_call(name: &str) -> Option<String> {
+    let (area, verb) = name.split_once('.')?;
+    let probe = Engine::new_raw();
+    Some(format!("{NAMESPACE}::{}::{}", spelled_in_script(&probe, area), spelled_in_script(&probe, verb)))
+}
+
+/// How a script spells one half of an op name. A verb of several words (`bus.mute` in `audio.bus.mute`) joins them
+/// with underscores, since a function name has no dots: `ops::audio::bus_mute`. A word Rhai reserves (the keyword for
+/// writing a module's items out, `import`, `private`, `match` and the like) can't appear in a path, so it gets a
+/// trailing underscore, as in `ops::import_::clip`. Found by asking the parser, so it follows Rhai's own list.
 fn spelled_in_script(probe: &Engine, word: &str) -> String {
-    if probe.compile(format!("let {word} = 0;")).is_ok() { word.to_owned() } else { format!("{word}_") }
+    let word = word.replace('.', "_");
+    if probe.compile(format!("let {word} = 0;")).is_ok() { word } else { format!("{word}_") }
 }
 
 /// Why `info` can't be called from a script, if it can't: v1 runs `Query` ops and `Edit` ops that undo with their

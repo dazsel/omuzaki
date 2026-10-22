@@ -123,6 +123,8 @@ pub struct LiveApp {
     theatre: TheatreBook,
     /// The store renders and connector outputs land in, for the Theatre's evidence and references.
     renders: Option<Arc<dyn Store>>,
+    /// My scripts.
+    scripts: Option<Arc<dyn omuzaki_script::ScriptStore>>,
 }
 
 /// The OS input hub (ADR 0060) as the app runs it: its control is in the runner's services (the `input.*` capture and
@@ -263,6 +265,8 @@ impl LiveApp {
             data,
             tap: None,
             settings,
+            scripts: crate::script::store::DirScriptStore::in_user_config()
+                .map(|store| Arc::new(store) as Arc<dyn omuzaki_script::ScriptStore>),
         };
         Self::start_with(document, inputs.webcam, extras, clock, transparency, &base)
     }
@@ -283,6 +287,7 @@ impl LiveApp {
         let models = extras.models.clone();
         let secrets = extras.secrets.clone();
         let settings = extras.settings.clone();
+        let scripts = extras.scripts.clone();
         let data = extras.data.clone();
         // The shows: the automation engine runs their rules through this app's runner, and Twitch's events reach it.
         let automation = Arc::new(Automation::new());
@@ -308,6 +313,9 @@ impl LiveApp {
         }
         if let Some(settings) = &settings {
             services = services.insert::<dyn Settings>(Arc::clone(settings));
+        }
+        if let Some(scripts) = &scripts {
+            services = services.insert::<dyn omuzaki_script::ScriptStore>(Arc::clone(scripts));
         }
         services = services.insert::<Automation>(Arc::clone(&automation)).insert::<TwitchService>(Arc::new(twitch));
         if let Some(vts) = vts {
@@ -374,6 +382,7 @@ impl LiveApp {
             project: project_key,
             theatre,
             renders,
+            scripts,
         })
     }
 
@@ -401,6 +410,11 @@ impl LiveApp {
     /// The Theatre as the studio's panels read it: the core's book and the render store.
     pub fn theatre(&self) -> crate::theatre::Theatre {
         crate::theatre::Theatre::new(self.theatre.clone(), self.renders.clone())
+    }
+
+    /// My scripts, for the Script workspace; `None` when the OS gives no config folder.
+    pub fn script_store(&self) -> Option<Arc<dyn omuzaki_script::ScriptStore>> {
+        self.scripts.clone()
     }
 
     /// The store generated files land in, for the Generated tray; `None` without a connector host.

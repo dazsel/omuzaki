@@ -63,6 +63,7 @@ omuzaki-ops = { path = "../omuzaki-ops" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-render = { path = "../omuzaki-render" }
 omuzaki-render-api = { path = "../omuzaki-render-api" }
+omuzaki-script = { path = "../omuzaki-script" }
 omuzaki-settings = { path = "../omuzaki-settings" }
 omuzaki-settings-api = { path = "../omuzaki-settings-api" }
 omuzaki-setup = { path = "../omuzaki-setup" }

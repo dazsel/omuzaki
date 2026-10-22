@@ -186,3 +186,13 @@ pub const FILE: &str = egui_phosphor::regular::FILE;
 pub const PERSON_SIMPLE_RUN: &str = egui_phosphor::regular::PERSON_SIMPLE_RUN;
 /// Not allowed: the rights badge of a file that can't be published.
 pub const PROHIBIT: &str = egui_phosphor::regular::PROHIBIT;
+/// Code: the Script workspace and its empty states.
+pub const CODE: &str = egui_phosphor::regular::CODE;
+/// The Console: where a script is written and run.
+pub const TERMINAL_WINDOW: &str = egui_phosphor::regular::TERMINAL_WINDOW;
+/// Save.
+pub const FLOPPY: &str = egui_phosphor::regular::FLOPPY_DISK;
+/// The Ops reference: a call's braces.
+pub const BRACKETS_CURLY: &str = egui_phosphor::regular::BRACKETS_CURLY;
+/// A saved script.
+pub const FILE_CODE: &str = egui_phosphor::regular::FILE_CODE;
