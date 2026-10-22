@@ -3712,6 +3712,7 @@ name = "omuzaki-ai-ort"
 version = "0.0.0"
 dependencies = [
  "flate2",
+ "half",
  "hound",
  "omuzaki-ai-api",
  "omuzaki-ai-native",
@@ -4842,6 +4843,8 @@ dependencies = [
  "omuzaki-track",
  "omuzaki-track-api",
  "omuzaki-track-mock",
+ "omuzaki-track-net",
+ "omuzaki-track-voice",
  "proptest",
  "schemars",
  "serde",
@@ -5064,6 +5067,7 @@ version = "0.0.0"
 dependencies = [
  "criterion",
  "omuzaki-ai-api",
+ "omuzaki-ai-litert",
  "omuzaki-ai-ort",
  "omuzaki-core",
  "omuzaki-track",
@@ -5080,6 +5084,7 @@ dependencies = [
  "nalgebra",
  "omuzaki-ai-api",
  "omuzaki-ai-mock",
+ "omuzaki-ai-native",
  "omuzaki-anim-api",
  "omuzaki-core",
  "omuzaki-pixfmt",
@@ -5090,6 +5095,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "toml",
+ "zip",
 ]
 
 [[package]]
@@ -5112,6 +5118,33 @@ dependencies = [
  "omuzaki-anim-api",
  "omuzaki-core",
  "omuzaki-track-api",
+]
+
+[[package]]
+name = "omuzaki-track-net"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-anim-api",
+ "omuzaki-core",
+ "omuzaki-settings-api",
+ "omuzaki-track-api",
+ "proptest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omuzaki-track-voice"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "omuzaki-anim-api",
+ "omuzaki-audio-api",
+ "omuzaki-core",
+ "omuzaki-face-api",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -5305,6 +5338,7 @@ version = "2.0.0-rc.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4336a1e2b38848325241c72889086886004e589b7c74f335e60a8e8db5138a0b"
 dependencies = [
+ "half",
  "libloading 0.9.0",
  "ndarray",
  "ort-sys",

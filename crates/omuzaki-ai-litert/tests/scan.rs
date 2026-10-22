@@ -166,10 +166,11 @@ fn ports_carry_dtypes_and_no_data() {
         }),
         "graph input 1 is a constant",
     );
-    refused(
-        scan_with(|m| _ = tensor_of(m, 0).set(4, Value::Table(Table::default()))),
-        "graph input 0 is a constant or quantized",
-    );
+    // A port with a scale is quantized; an empty quantization table (what the TFLite converter writes on float
+    // ports, MediaPipe's face landmark graph among them) is not.
+    let scale = Table(vec![(2, Value::Ints(vec![0x3f80_0000]))]); // [1.0f32]: an `[int]` has a `[float]`'s layout
+    refused(scan_with(|m| _ = tensor_of(m, 0).set(4, Value::Table(scale))), "graph input 0 is a constant or quantized");
+    assert!(scan_with(|m| _ = tensor_of(m, 0).set(4, Value::Table(Table::default()))).is_ok());
     malformed(scan_with(|m| _ = tensor_of(m, 0).set(1, Value::I8(1)))); // FLOAT16 is internal only
     refused(scan_with(|m| _ = tensor_of(m, 0).set(1, Value::I8(5))), "element type 5"); // STRING
 }

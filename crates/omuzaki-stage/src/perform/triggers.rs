@@ -368,6 +368,11 @@ impl TriggerBook {
         self.expressions.clone()
     }
 
+    /// The expression library the table bakes against, borrowed: what the voice's lip sync bakes its visemes from.
+    pub(super) fn expression_set(&self) -> &ExpressionSet {
+        &self.expressions
+    }
+
     /// Whether the set has `expression`.
     pub(super) fn has_expression(&self, expression: &ExpressionId) -> bool {
         self.expressions.0.contains_key(expression)

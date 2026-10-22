@@ -34,10 +34,10 @@ const MEMBERS: &[(&str, &str)] = &[
 ];
 
 /// Crates of another area that an area test crate loads at run time, with the area whose test crate may use them. The
-/// track area's real-model tests run the graphs through the ONNX Runtime wrapper (`omuzaki-ai-ort`), which no
-/// implementation crate may depend on, so its test crate is the one place the tracker meets the runtime. Only that
-/// crate is allowed: every other area's test crate still fails on it.
-const GUESTS: &[(&str, &str)] = &[("omuzaki-ai-ort", "track")];
+/// track area's real-model tests run the graphs through the runtimes (`omuzaki-ai-ort`, `omuzaki-ai-litert`), which no
+/// implementation crate may depend on, so its test crate is the one place the tracker meets them. Only that crate is
+/// allowed: every other area's test crate still fails on them.
+const GUESTS: &[(&str, &str)] = &[("omuzaki-ai-ort", "track"), ("omuzaki-ai-litert", "track")];
 
 /// The area an area test crate covers, from its name; `None` for every other crate.
 pub fn area_of(name: &str) -> Option<&str> {
@@ -194,7 +194,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_track_test_crate_may_load_the_onnx_runtime_wrapper() {
+    fn only_the_track_test_crate_may_load_the_runtime_wrappers() {
         let got = found(&with_leaves(&[
             ("omuzaki-test-face", &[("omuzaki-face", Dev), ("omuzaki-ai-ort", Dev)]),
             ("omuzaki-test-track", &[("omuzaki-track", Dev), ("omuzaki-ai-ort", Dev), ("omuzaki-ai", Dev)]),
@@ -202,7 +202,7 @@ mod tests {
         assert_eq!(got.len(), 2, "{got:?}");
         assert!(got[0].starts_with("omuzaki-test-face → omuzaki-ai-ort: the face area test crate"), "{}", got[0]);
         assert!(got[1].starts_with("omuzaki-test-track → omuzaki-ai:"), "{}", got[1]);
-        assert!(got[1].contains("(omuzaki-track, omuzaki-track-*, omuzaki-ai-ort)"), "{}", got[1]);
+        assert!(got[1].contains("(omuzaki-track, omuzaki-track-*, omuzaki-ai-ort, omuzaki-ai-litert)"), "{}", got[1]);
     }
 
     #[test]

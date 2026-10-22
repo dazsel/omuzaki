@@ -13,6 +13,16 @@
 //!
 //! The one exception is the retarget's own `set_config`, which its contract allows to allocate between frames.
 //!
+//! # The voice
+//!
+//! [`PerformHost::set_voice`] attaches a voice: the reading end of an analyser's mailbox (`omuzaki-track-voice`) and
+//! the lip sync baked from the character's visemes on the handle's side. Before every step the control takes the
+//! newest voice frame and writes the performer's audio layer and the life layer's cues (FE-08, PF-08), so any loop
+//! built on the control (the stage's [`LiveStage`](super::live::LiveStage), the studio's perform thread) moves the
+//! mouth with the voice. [`PerformHost::set_expressions`] re-bakes the visemes with the triggers. Attaching,
+//! detaching and a new expression set are the only voice requests: they hand over, and drop, one boxed value each,
+//! which is not steady state; the per-step work allocates nothing.
+//!
 //! # What is reported
 //!
 //! The handle keeps two views of the settings. **Requested** is the base of the next merge, so back-to-back changes
@@ -37,10 +47,13 @@ use std::time::Instant;
 use omuzaki_anim::{
     MAX_NEUTRAL_FRAMES, MAX_TRIGGERS, MIN_NEUTRAL_FRAMES, NeutralCapture, NeutralError, TriggerFades, TriggerSlot,
 };
-use omuzaki_anim_api::{ARKIT_COUNT, Calibration, Channel, ChannelBuf, DeviceProfile, HeadPose, RetargetConfig, Tick};
+use omuzaki_anim_api::{
+    ARKIT_COUNT, Calibration, Channel, ChannelBuf, Cues, DeviceProfile, HeadPose, RetargetConfig, Tick, TrackStatus,
+};
 use omuzaki_core::glam::Vec3;
 use omuzaki_core::time::Seconds;
 use omuzaki_face_api::ExpressionSet;
+use omuzaki_track_voice::{LipSync, LipSyncConfig, VoiceReader};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -120,6 +133,17 @@ pub trait PerformHost: Send + Sync {
     /// # Errors
     /// [`PerformError::QueueFull`] or [`PerformError::Disconnected`]; nothing changes then.
     fn set_expressions(&self, _set: ExpressionSet, _rest: ChannelBuf) -> Result<(), PerformError> {
+        Err(PerformError::Unsupported)
+    }
+
+    /// Attaches a voice, replacing one attached before, or detaches it with `None`. From the next step the newest frame
+    /// in `voice` (from a `VoiceListener` or any analyser) opens the mouth through the character's visemes (the
+    /// expressions of the last [`set_expressions`](Self::set_expressions)) and gives the life layer its loudness and
+    /// onsets; `config` sets how the mouth follows. Detaching withdraws the audio layer and quiets the cues.
+    ///
+    /// # Errors
+    /// [`PerformError::QueueFull`] or [`PerformError::Disconnected`]; nothing changes then.
+    fn set_voice(&self, _voice: Option<VoiceReader>, _config: LipSyncConfig) -> Result<(), PerformError> {
         Err(PerformError::Unsupported)
     }
 
@@ -325,12 +349,21 @@ enum Command {
     Calibration(Calibration),
     /// One trigger slot, baked on the control side; `None` empties it.
     Trigger { index: usize, slot: Option<TriggerSlot>, generation: u64 },
-    /// Every trigger slot whose values changed, from [`PerformHost::set_expressions`].
-    Triggers(Rebaked),
+    /// Every trigger slot whose values changed, from [`PerformHost::set_expressions`], and the voice's lip sync baked
+    /// from the new set when a voice is attached.
+    Triggers(Rebaked, Option<Box<LipSync>>),
+    /// A voice to attach, or `None` to detach, from [`PerformHost::set_voice`].
+    Voice(Option<Box<Voice>>),
     /// A batch of binds in one request, from [`PerformHost::bind_triggers`].
     BindBatch(BindBatch),
     /// A key press (`down`) or release on a trigger slot.
     Press { index: usize, down: bool },
+}
+
+/// An attached voice, as the control holds it: the analyser's mailbox and the lip sync over the character's visemes.
+struct Voice {
+    reader: VoiceReader,
+    lips: LipSync,
 }
 
 /// The handle's two views of the settings (see the module docs). Behind a lock only the handle side takes.
@@ -383,6 +416,8 @@ struct Shared {
     book: Mutex<RetargetBook>,
     /// The trigger table. Handle side only, like `book`: the control receives baked slots.
     triggers: Mutex<TriggerBook>,
+    /// The attached voice's settings, or `None` with no voice. Handle side only; taken after `triggers`.
+    voice: Mutex<Option<LipSyncConfig>>,
 }
 
 /// Locks `m`; a panic elsewhere cannot leave these plain records half-written, so a poisoned lock is still good.
@@ -588,6 +623,7 @@ pub fn perform_channel(performer: &Performer) -> (PerformHandle, PerformControl)
             in_flight: VecDeque::with_capacity(COMMAND_QUEUE_LEN),
         }),
         triggers: Mutex::new(TriggerBook::new()),
+        voice: Mutex::new(None),
     });
     let control = PerformControl {
         commands: commands_rx,
@@ -602,6 +638,8 @@ pub fn perform_channel(performer: &Performer) -> (PerformHandle, PerformControl)
         live: Live::START,
         fps: FpsMeter::default(),
         triggers: TriggerLayer::new(TriggerFades::default()),
+        voice: None,
+        head_rest: HeadRest::Waiting,
     };
     (PerformHandle { commands: commands_tx, shared }, control)
 }
@@ -738,8 +776,19 @@ impl PerformHost for PerformHandle {
     fn set_expressions(&self, expressions: ExpressionSet, rest: ChannelBuf) -> Result<(), PerformError> {
         let mut book = lock(&self.shared.triggers);
         let (next, changes) = book.with_expressions(expressions, &rest);
-        self.send(Command::Triggers(changes))?;
+        let lips = lock(&self.shared.voice).map(|config| Box::new(LipSync::new(next.expression_set(), config)));
+        self.send(Command::Triggers(changes, lips))?;
         *book = next;
+        Ok(())
+    }
+
+    fn set_voice(&self, voice: Option<VoiceReader>, config: LipSyncConfig) -> Result<(), PerformError> {
+        let book = lock(&self.shared.triggers);
+        let mut attached = lock(&self.shared.voice);
+        let voice = voice.map(|reader| Box::new(Voice { reader, lips: LipSync::new(book.expression_set(), config) }));
+        let on = voice.is_some();
+        self.send(Command::Voice(voice))?;
+        *attached = on.then_some(config);
         Ok(())
     }
 
@@ -870,6 +919,26 @@ pub struct PerformControl {
     fps: FpsMeter,
     /// The trigger fades, written into the performer's trigger layer before each of its steps.
     triggers: TriggerLayer,
+    /// The attached voice, written into the performer's audio layer and cues before each of its steps.
+    voice: Option<Box<Voice>>,
+    /// The session's head rest from the first tracked frame, for a calibration that has none (#542).
+    head_rest: HeadRest,
+}
+
+/// Where the first-frame head rest stands (#542). A calibration whose head rest has no position (none saved, or one
+/// made from a source without depth) measures the head from a level, centred pose, so a performer who sits turned or
+/// leans in starts turned, with no shift or lean. Until a calibration says otherwise, the first tracked frame's head
+/// becomes the rest instead, as the prototype did. It is a session default, not a calibration: it goes to the
+/// retarget only, so [`PerformHost::calibration`] still reports the calibration as set and nothing saves it; the next
+/// session takes its own first frame. Any calibration that is set or captured replaces it.
+#[derive(Copy, Clone, Debug, PartialEq)]
+enum HeadRest {
+    /// No tracked frame with a head position yet.
+    Waiting,
+    /// Seen on the last step, applied before the next.
+    Pending(HeadPose),
+    /// Applied, or not needed: the calibration in use has a positioned head rest.
+    Done,
 }
 
 impl PerformControl {
@@ -885,6 +954,7 @@ impl PerformControl {
             let Ok(command) = self.commands.try_recv() else { break };
             self.run(command, performer);
         }
+        self.rest_head(performer);
         let Some((first, count)) = self.due_steps(now) else {
             self.publish();
             return None;
@@ -901,9 +971,19 @@ impl PerformControl {
         Some(out)
     }
 
-    /// Runs one step. The trigger fades go first, so the layer they write is the one this step resolves.
+    /// Runs one step. The trigger fades and the voice go first, so the layers they write are the ones this step
+    /// resolves.
     fn step_performer<'p>(&mut self, performer: &'p mut Performer, tick: Tick) -> PerformOutput<'p> {
         self.triggers.step(STEP_SECS, performer.trigger_layer_mut());
+        if let Some(voice) = self.voice.as_deref_mut() {
+            if let Some(frame) = voice.reader.poll() {
+                voice.lips.take(&frame);
+            }
+            let rest = *performer.rest();
+            let mut cues = Cues::default();
+            voice.lips.step(STEP_SECS, &rest, performer.audio_layer_mut(), &mut cues);
+            performer.set_cues(cues);
+        }
         performer.step(tick)
     }
 
@@ -941,6 +1021,12 @@ impl PerformControl {
         }
         performer.reset();
         self.triggers.reset();
+        // The first-frame head rest belongs to the timeline that ended: the next tracked frame takes it again.
+        let set = self.shared.calibration.read();
+        if set.head_rest.position.is_none() {
+            performer.retarget_mut().set_calibration(set);
+            self.head_rest = HeadRest::Waiting;
+        }
         self.origin = None;
         self.next_step = 0;
         self.skipped = 0;
@@ -992,8 +1078,18 @@ impl PerformControl {
                 self.shared.calibrations_applied.fetch_add(1, Ordering::AcqRel);
             }
             Command::Trigger { index, slot, generation } => self.set_trigger(index, slot.as_ref(), generation),
-            Command::Triggers(slots) => {
+            Command::Triggers(slots, lips) => {
                 self.triggers.rebake(&slots);
+                if let (Some(voice), Some(lips)) = (self.voice.as_deref_mut(), lips) {
+                    voice.lips = *lips;
+                }
+            }
+            Command::Voice(voice) => {
+                if voice.is_none() {
+                    performer.audio_layer_mut().clear();
+                    performer.set_cues(Cues::default());
+                }
+                self.voice = voice;
             }
             Command::BindBatch(batch) => {
                 for (index, slot, generation) in batch.binds() {
@@ -1018,9 +1114,34 @@ impl PerformControl {
     }
 
     /// Sets the calibration and publishes it: the mailbox always holds the one in use.
-    fn set_calibration(&self, performer: &mut Performer, calibration: &Calibration) {
+    fn set_calibration(&mut self, performer: &mut Performer, calibration: &Calibration) {
         performer.retarget_mut().set_calibration(*calibration);
         self.shared.calibration.write(calibration);
+        self.head_rest = if calibration.head_rest.position.is_some() { HeadRest::Done } else { HeadRest::Waiting };
+    }
+
+    /// Applies a first-frame head rest seen on the last step (see [`HeadRest`]), if the calibration in use still has
+    /// no positioned one.
+    fn rest_head(&mut self, performer: &mut Performer) {
+        let HeadRest::Pending(head) = self.head_rest else { return };
+        self.head_rest = HeadRest::Done;
+        let mut calibration = *performer.retarget().calibration();
+        if calibration.head_rest.position.is_none() {
+            calibration.head_rest = head;
+            performer.retarget_mut().set_calibration(calibration);
+        }
+    }
+
+    /// Notes the first tracked frame with a positioned head while the first-frame head rest is waiting and no capture
+    /// is running (a capture sets the rest itself).
+    fn watch_head(&mut self, out: &PerformOutput<'_>) {
+        if self.head_rest != HeadRest::Waiting || self.running.is_some() {
+            return;
+        }
+        let tracked = out.frame.filter(|frame| frame.status == TrackStatus::Tracking);
+        if let Some(head) = tracked.and_then(|frame| frame.head).filter(|head| head.position.is_some()) {
+            self.head_rest = HeadRest::Pending(head);
+        }
     }
 
     /// Takes in one executed step: the tracking state, the frame rate and the capture.
@@ -1031,6 +1152,7 @@ impl PerformControl {
             self.fps.arrived(frame.time.0);
         }
         self.live.fps = self.fps.fps;
+        self.watch_head(out);
         self.feed_capture(out);
     }
 
