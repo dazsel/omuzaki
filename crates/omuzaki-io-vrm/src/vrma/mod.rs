@@ -26,6 +26,7 @@
 mod read;
 mod steps;
 
+use omuzaki_core::glam::{Quat, Vec3};
 use omuzaki_gltf::animation::{Animation, Channel, Interpolation as GltfInterpolation, Path, Sampler, write_animation};
 use omuzaki_gltf::pack::Packer;
 use omuzaki_gltf::schema::{Asset, Document, Node, Scene};
@@ -152,12 +153,12 @@ fn write(animation: &IoAnimation, generator: Option<&str>) -> Result<Vec<u8>, Io
         let (node, path, sampler) = match track {
             Track::Hips(keys) => {
                 let (times, values) = expand_steps(keys, &at, &mut steps);
-                (hips, Path::Translation, sampler(times, values.iter().flat_map(|v| v.to_array())))
+                (hips, Path::Translation, sampler(times, values.iter().flat_map(Vec3::to_array)))
             }
             Track::Rotation { bone, keys, .. } => {
                 let Some(node) = node_of(*bone) else { continue };
                 let (times, values) = expand_steps(keys, &at, &mut steps);
-                (node, Path::Rotation, sampler(times, values.iter().flat_map(|q| q.to_array())))
+                (node, Path::Rotation, sampler(times, values.iter().flat_map(Quat::to_array)))
             }
             Track::Expression { name, keys, .. } => {
                 doc.nodes.push(Node { name: format!("expression_{name}"), ..Node::default() });
@@ -174,7 +175,7 @@ fn write(animation: &IoAnimation, generator: Option<&str>) -> Result<Vec<u8>, Io
                 doc.nodes.push(Node { name: "lookAt".into(), ..Node::default() });
                 look_at = Some(doc.nodes.len() - 1);
                 let (times, values) = expand_steps(keys, &at, &mut steps);
-                (doc.nodes.len() - 1, Path::Rotation, sampler(times, values.iter().flat_map(|q| q.to_array())))
+                (doc.nodes.len() - 1, Path::Rotation, sampler(times, values.iter().flat_map(Quat::to_array)))
             }
             _ => continue,
         };

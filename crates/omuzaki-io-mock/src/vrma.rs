@@ -137,11 +137,11 @@ fn write(animation: &IoAnimation, generator: Option<&str>) -> Vec<u8> {
         let input = bin.push(track.times(), 1, "SCALAR", true);
         let (output, path) = match track {
             Track::Rotation { keys, .. } | Track::LookAt(keys) => {
-                let flat: Vec<f32> = keys.values.iter().flat_map(|q| q.to_array()).collect();
+                let flat: Vec<f32> = keys.values.iter().flat_map(Quat::to_array).collect();
                 (bin.push(&flat, 4, "VEC4", false), "rotation")
             }
             Track::Hips(keys) => {
-                let flat: Vec<f32> = keys.values.iter().flat_map(|v| v.to_array()).collect();
+                let flat: Vec<f32> = keys.values.iter().flat_map(Vec3::to_array).collect();
                 (bin.push(&flat, 3, "VEC3", false), "translation")
             }
             Track::Expression { keys, .. } => {
@@ -220,7 +220,7 @@ fn floats(root: &Value, bin: &[u8], ix: usize) -> Result<Vec<f32>, IoError> {
         .checked_add(len)
         .and_then(|end| bin.get(offset..end))
         .ok_or_else(|| malformed("accessor runs past the BIN chunk"))?;
-    Ok(raw.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
+    Ok(raw.as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes(*c)).collect())
 }
 
 /// Reads a `.vrma` the mock wrote back into an animation (provenance `None`; the file carries none).
@@ -272,14 +272,17 @@ pub fn read_vrma(bytes: &[u8]) -> Result<IoAnimation, IoError> {
         let path = channel["target"]["path"].as_str().unwrap_or_default();
         let track = if let Some((_, bone)) = node_bone.iter().find(|(n, _)| *n == node) {
             if path == "rotation" {
-                Track::rotation(*bone, keys(step, &times, out.chunks_exact(4).map(Quat::from_slice).collect()))
+                Track::rotation(
+                    *bone,
+                    keys(step, &times, out.as_chunks::<4>().0.iter().map(|q| Quat::from_array(*q)).collect()),
+                )
             } else {
-                Track::hips(keys(step, &times, out.chunks_exact(3).map(Vec3::from_slice).collect()))
+                Track::hips(keys(step, &times, out.as_chunks::<3>().0.iter().map(|v| Vec3::from_array(*v)).collect()))
             }
         } else if let Some((_, name)) = expressions.iter().find(|(n, _)| *n == node) {
-            Track::expression(name.clone(), keys(step, &times, out.chunks_exact(3).map(|v| v[0]).collect()))
+            Track::expression(name.clone(), keys(step, &times, out.as_chunks::<3>().0.iter().map(|v| v[0]).collect()))
         } else if look_at == Some(node) {
-            Track::look_at(keys(step, &times, out.chunks_exact(4).map(Quat::from_slice).collect()))
+            Track::look_at(keys(step, &times, out.as_chunks::<4>().0.iter().map(|q| Quat::from_array(*q)).collect()))
         } else {
             return Err(malformed(format!("channel targets node {node}, which is no bone, expression or look-at")));
         };

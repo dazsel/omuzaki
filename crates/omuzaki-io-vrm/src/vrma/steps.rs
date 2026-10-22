@@ -79,7 +79,7 @@ mod tests {
     #[test]
     fn a_change_gets_a_hold_a_tenth_of_a_millisecond_before_it() {
         let (t, v, report) = expand(&[0.0, 1.0, 2.0, 3.0], &[0.0, 1.0, 1.0, 0.0]);
-        assert!(report.findings.is_empty());
+        assert_eq!(report.findings, []);
         assert_eq!(v, [0.0, 0.0, 1.0, 1.0, 1.0, 0.0]);
         assert_eq!(t.len(), 6);
         assert!((f64::from(t[1]) - (1.0 - HOLD_S)).abs() < 1e-7 && (f64::from(t[4]) - (3.0 - HOLD_S)).abs() < 1e-6);
@@ -89,7 +89,7 @@ mod tests {
     #[test]
     fn close_keys_split_their_gap_and_linear_tracks_pass_through() {
         let (t, _, report) = expand(&[0.0, 0.0001], &[0.0, 1.0]);
-        assert!(report.findings.is_empty());
+        assert_eq!(report.findings, []);
         assert!((t[1] - 0.00005).abs() < 1e-9, "{t:?}");
         let mut r = Report::new();
         let linear = Keys::linear(vec![0.0, 1.0], vec![0.0, 1.0]);

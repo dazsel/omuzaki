@@ -60,6 +60,7 @@ fn scanned_files() -> Vec<PathBuf> {
         ops.join("ops/inspect.rs"),
         ops.join("convert/material.rs"),
         ops.join("convert/texture.rs"),
+        ops.join("convert/animation.rs"),
         sibling("omuzaki-io-api/src/meta"),
         sibling("omuzaki-io-vrm/src"),
         sibling("omuzaki-io-gltf/src"),

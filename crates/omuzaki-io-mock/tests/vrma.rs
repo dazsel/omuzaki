@@ -1,6 +1,8 @@
 //! The animation half of the io contract (`docs/design/io-api.md` D11): every `anim.*` rule, the rights preflight,
 //! the registry, and a round trip through the mock's VRMA writer and reader.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use omuzaki_core::glam::{Quat, Vec3};
 use omuzaki_io_api::{
     ExportCtx, ExportOptions, ExpressionName, HUMAN_BONES, HumanBoneName, IoAnimation, IoError, Keys, PresetExpression,
@@ -9,6 +11,9 @@ use omuzaki_io_api::{
 };
 use omuzaki_io_mock::{MockVrmaExporter, read_vrma};
 use omuzaki_store_api::{Commercial, Provenance, Source};
+
+/// A named way to break an animation (or its rest tree) so one rule fires.
+type Break<T> = (&'static str, Box<dyn Fn(&mut T)>);
 
 fn bone(name: &str) -> HumanBoneName {
     HumanBoneName::new(name).unwrap()
@@ -87,7 +92,7 @@ fn a_well_formed_animation_passes_and_summarises() {
 
 #[test]
 fn every_track_rule_fires_where_it_should() {
-    let cases: Vec<(&str, Box<dyn Fn(&mut IoAnimation)>)> = vec![
+    let cases: Vec<Break<IoAnimation>> = vec![
         ("anim.no_tracks", Box::new(|a| a.tracks.clear())),
         ("anim.no_keys", Box::new(|a| a.tracks[2] = Track::hips(Keys::linear(vec![], vec![])))),
         (
@@ -106,14 +111,14 @@ fn every_track_rule_fires_where_it_should() {
             "anim.rotation_not_unit",
             Box::new(|a| {
                 a.tracks[1] =
-                    Track::rotation(bone("spine"), Keys::linear(vec![0.0], vec![Quat::from_xyzw(0.0, 0.0, 0.0, 2.0)]))
+                    Track::rotation(bone("spine"), Keys::linear(vec![0.0], vec![Quat::from_xyzw(0.0, 0.0, 0.0, 2.0)]));
             }),
         ),
         ("anim.duplicate_track", Box::new(|a| a.tracks.push(a.tracks[1].clone()))),
         (
             "anim.eye_bone",
             Box::new(|a| {
-                a.tracks.push(Track::rotation(bone("leftEye"), Keys::linear(vec![0.0], vec![Quat::IDENTITY])))
+                a.tracks.push(Track::rotation(bone("leftEye"), Keys::linear(vec![0.0], vec![Quat::IDENTITY])));
             }),
         ),
         (
@@ -136,7 +141,7 @@ fn every_track_rule_fires_where_it_should() {
 
 #[test]
 fn rest_rules_need_the_required_bones_their_parents_and_a_standing_hips() {
-    let breaks: Vec<(&str, Box<dyn Fn(&mut RestHumanoid)>)> = vec![
+    let breaks: Vec<Break<RestHumanoid>> = vec![
         ("anim.rest_invalid", Box::new(|r| r.bones.retain(|b| b.bone != bone("leftHand")))),
         ("anim.rest_invalid", Box::new(|r| r.bones.retain(|b| b.bone != bone("chest")))),
         ("anim.rest_invalid", Box::new(|r| r.bones.push(RestBone::new(bone("leftEye"), Vec3::Y)))),

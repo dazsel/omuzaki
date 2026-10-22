@@ -531,7 +531,7 @@ fn check_rest(rest: &RestHumanoid, r: &mut Report) {
         }
     }
     if let Some(height) = rest.hips_height()
-        && !(height > MIN_REST_HIPS_HEIGHT)
+        && height.partial_cmp(&MIN_REST_HIPS_HEIGHT) != Some(std::cmp::Ordering::Greater)
     {
         r.push(
             Finding::error("anim.rest_hips_height", format!("the rest hips stand at {height} m"))

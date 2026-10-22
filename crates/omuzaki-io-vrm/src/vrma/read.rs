@@ -101,7 +101,7 @@ pub fn read_vrma(bytes: &[u8]) -> Result<IoAnimation, IoError> {
 }
 
 fn quats(values: &[f32], keys: impl Fn(Vec<Quat>) -> Keys<Quat>) -> Keys<Quat> {
-    keys(values.chunks_exact(4).map(Quat::from_slice).collect())
+    keys(values.as_chunks::<4>().0.iter().map(|q| Quat::from_array(*q)).collect())
 }
 
 fn keys_of<T>(values: &[f32], width: usize, f: impl Fn(&[f32]) -> T, step: bool, times: &[f32]) -> Keys<T> {

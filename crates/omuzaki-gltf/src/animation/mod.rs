@@ -248,13 +248,12 @@ pub fn write_animation(
                 at(c),
             ));
         }
-        let input = match inputs.iter().find(|(times, _)| bit_equal(times, &s.times)) {
-            Some((_, ix)) => *ix,
-            None => {
-                let ix = floats(pack, &s.times, "SCALAR", 1, true);
-                inputs.push((&s.times, ix));
-                ix
-            }
+        let input = if let Some((_, ix)) = inputs.iter().find(|(times, _)| bit_equal(times, &s.times)) {
+            *ix
+        } else {
+            let ix = floats(pack, &s.times, "SCALAR", 1, true);
+            inputs.push((&s.times, ix));
+            ix
         };
         let output = match channel.path {
             Path::Rotation => floats(pack, &s.values, "VEC4", 4, false),
@@ -325,7 +324,7 @@ pub fn read_animations(doc: &Document, accessors: &Accessors<'_>) -> Result<Vec<
             };
             let per_key = if interpolation == Interpolation::CubicSpline { 3 } else { 1 } * path.width();
             let ok = match path {
-                Path::Weights => !times.is_empty() && values.len() % (times.len() * per_key) == 0,
+                Path::Weights => !times.is_empty() && values.len().is_multiple_of(times.len() * per_key),
                 _ => values.len() == times.len() * per_key,
             };
             if !ok {
