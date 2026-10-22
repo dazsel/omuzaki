@@ -12,8 +12,8 @@ use crate::ds::strings::Msg;
 use crate::ds::theme::{Ds, ds};
 use crate::ds::tokens::{radius, size, space};
 use crate::ds::widgets::{
-    Choice, ColourEvent, ColourField, CurveEditor, CurveEvent, Dropdown, FormRow, NumberField, ParamEvent, ParamSlider,
-    Section, Segment, Segmented, TextField, Toggle,
+    Button, Choice, ColourEvent, ColourField, CurveEditor, CurveEvent, Dropdown, FormRow, NumberField, ParamEvent,
+    ParamSlider, Section, Segment, Segmented, TextField, Toggle,
 };
 
 /// Options a dropdown holds without allocating; a longer list costs one `Vec` per frame.
@@ -122,7 +122,7 @@ const fn has_gesture(kind: &Kind) -> bool {
     match kind {
         Kind::Real { slider, .. } => *slider,
         Kind::Int { control, .. } => !matches!(control, IntControl::Number),
-        Kind::Colour { .. } | Kind::Curve | Kind::Text(_) => true,
+        Kind::Colour { .. } | Kind::Curve | Kind::Text(_) | Kind::Json => true,
         Kind::Choice(_) | Kind::Toggle | Kind::Section(_) | Kind::ReadOnly => false,
     }
 }
@@ -256,6 +256,9 @@ struct RowOut {
 }
 
 fn field(ui: &mut Ui, cx: &mut Cx<'_>, node: &Node, value: &mut FormValue) {
+    if node.optional && *value == FormValue::Absent {
+        return unset(ui, cx, node, value);
+    }
     let modified = node.default.as_ref().is_some_and(|d| d != value);
     let mut out = RowOut::default();
     let ds = cx.ds;
@@ -334,6 +337,7 @@ fn field(ui: &mut Ui, cx: &mut Cx<'_>, node: &Node, value: &mut FormValue) {
                 out.phase = text_phase(ui.ctx(), checked.with("original"), &response, text);
             });
         }
+        (Kind::Json, FormValue::Json(json)) => json_field(ui, cx, node, json, modified, &mut out),
         (Kind::Section(children), FormValue::Object(values)) => {
             Section::new(&node.label).default_open(true).id_salt(&node.path).show(ui, |ui| {
                 for i in 0..children.len() {
@@ -634,6 +638,22 @@ fn arrow_step(ui: &Ui, node: &Node, n: i128, (min, max): (Option<i128>, Option<i
     (moved != n).then_some(moved)
 }
 
+/// A value with no control of its own, typed as JSON; the form is held back while the text doesn't parse.
+fn json_field(ui: &mut Ui, cx: &mut Cx<'_>, node: &Node, json: &mut String, modified: bool, out: &mut RowOut) {
+    let ds = cx.ds;
+    let checked = ui.id().with(("checked", node.path.as_str()));
+    let parses = serde_json::from_str::<omuzaki_doc_api::Value>(json).is_ok();
+    row(ui, ds, &mut cx.scratch.words, node, modified, out, |ui, name, _, out| {
+        let error = if parses { std::borrow::Cow::Borrowed("") } else { text::say(ds, text::NOT_JSON, &[]) };
+        let mut field = TextField::new(name, json).id_salt(&node.path);
+        if !parses {
+            field = field.error(&error);
+        }
+        let response = ui.add(field);
+        out.phase = text_phase(ui.ctx(), checked.with("original"), &response, json);
+    });
+}
+
 /// What the last pattern check of one field was, so the matcher runs when the text changes and not every frame.
 #[derive(Clone)]
 struct Checked {
@@ -752,6 +772,21 @@ fn reset_target(
     let name = say(words, ds, Msg::ParamReset, "label", label);
     a11y::describe(&response, || WidgetInfo::labeled(WidgetType::Button, true, name), |_| {});
     *reset |= response.clicked();
+}
+
+/// An optional field with no value: its label and a Set button, which gives it its natural value.
+fn unset(ui: &mut Ui, cx: &mut Cx<'_>, node: &Node, value: &mut FormValue) {
+    let ds = cx.ds;
+    let mut set = false;
+    FormRow::new(&node.label).show(ui, |ui, name| {
+        let label = text::say(ds, text::SET, &[]);
+        let named = text::say(ds, text::SET_FIELD, &[("label", name)]);
+        set = ui.add(Button::new(&label).ghost().icon(icons::PLUS).accessible_label(&named)).clicked();
+    });
+    if set {
+        *value = node.natural_value();
+        cx.report(node, EditPhase::Commit);
+    }
 }
 
 /// A shape no control handles, or a value that does not fit its field: say so, and leave the value alone.

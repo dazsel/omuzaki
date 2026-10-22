@@ -10,7 +10,7 @@ const MAX_LEN: usize = 64;
 
 /// The tool name for an op (or built-in) name.
 pub(crate) fn tool_name(op_name: &str) -> String {
-    op_name.replace('.', "_")
+    omuzaki_ops_api::tool_name(op_name)
 }
 
 /// The tool name for `op_name`, checked against the client rule.

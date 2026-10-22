@@ -19,9 +19,23 @@ use crate::ds::widgets::EmptyState;
 #[derive(Default)]
 pub struct Bodies {
     built: HashMap<&'static str, Box<dyn Panel>>,
+    /// The panels drawn in the egui frame `drawn_in`, so overlays can tell what is on screen.
+    drawn: Vec<&'static str>,
+    drawn_in: u64,
 }
 
 impl Bodies {
+    /// Whether the panel registered as `id` was drawn in this egui frame (it is on screen, not behind a tab).
+    pub fn on_screen(&self, ctx: &egui::Context, id: &str) -> bool {
+        self.drawn_in == ctx.cumulative_frame_nr() && self.drawn.contains(&id)
+    }
+
+    /// Whether the panel registered as `id` was on screen in the frame before the docks were drawn: what the top bar,
+    /// drawn first, asks.
+    pub fn on_screen_before(&self, ctx: &egui::Context, id: &str) -> bool {
+        self.drawn_in.saturating_add(1) >= ctx.cumulative_frame_nr() && self.drawn.contains(&id)
+    }
+
     /// The tab title of `def`: the panel's own when it has one (an inspector naming its selection), else the
     /// registered English one. Not yet translated: the caller passes it through [`title`].
     pub fn title(&self, def: &PanelDef) -> Cow<'static, str> {
@@ -35,8 +49,16 @@ impl Bodies {
     /// none, by its title (the API's promise). A maximised panel has no tab to name it, and an unavailable one still
     /// answers to its explicit label, so the name belongs to the body and not to the tab.
     pub fn draw(&mut self, ui: &mut Ui, def: &'static PanelDef, ctx: &PanelCtx<'_>) {
-        let panel = self.built.entry(def.id).or_insert_with(|| (def.build)(ctx));
         let egui_ctx = ui.ctx().clone();
+        let frame = egui_ctx.cumulative_frame_nr();
+        if self.drawn_in != frame {
+            self.drawn.clear();
+            self.drawn_in = frame;
+        }
+        if !self.drawn.contains(&def.id) {
+            self.drawn.push(def.id);
+        }
+        let panel = self.built.entry(def.id).or_insert_with(|| (def.build)(ctx));
         let label = match panel.accessibility_label() {
             Some(label) => label,
             None => title(&egui_ctx, &panel.title().unwrap_or(Cow::Borrowed(def.title))).into_owned().into(),

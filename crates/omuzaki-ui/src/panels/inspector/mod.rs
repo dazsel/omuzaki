@@ -31,12 +31,16 @@
 
 pub mod params;
 
+use std::collections::HashSet;
+
 use egui::{RichText, ScrollArea, Ui};
 use omuzaki_char_api::{CharId, PartId};
-use omuzaki_ops_api::{OpError, TxId};
+use omuzaki_ops_api::{OpError, SessionId, TxId};
 use schemars::Schema;
 use serde_json::{Value, json};
 
+use super::agent::AgentFeed;
+use super::agent::fences::{FenceBoard, fence_note};
 use super::edit::EditFocus;
 use super::io::{DocWatch, Io};
 use super::text::{self, say};
@@ -89,6 +93,8 @@ pub struct Inspector {
     /// The gesture's rollback was refused: the transaction stays open until the person retries or keeps it.
     stuck: bool,
     problem: Option<String>,
+    /// The sessions whose "is working on this part" note the person dismissed.
+    dismissed: HashSet<SessionId>,
 }
 
 impl Inspector {
@@ -105,6 +111,7 @@ impl Inspector {
             ended_early: None,
             stuck: false,
             problem: None,
+            dismissed: HashSet::new(),
         }
     }
 
@@ -121,6 +128,24 @@ impl Inspector {
     /// The form's current value, as JSON in the parameters' shape (lists keyed by index).
     pub fn value(&self) -> Option<Value> {
         self.shown.as_ref().map(|s| Value::from(&s.value))
+    }
+
+    /// The note on a part a live agent session holds (`agent-sessions.md` section 5.3): inline and dismissible, never
+    /// a modal. The person's edit always goes through; the agent is told.
+    pub fn fence_note(&mut self, ui: &mut Ui, feed: Option<&AgentFeed>) {
+        let Some(feed) = feed else { return };
+        let board = FenceBoard::from_feed(feed);
+        let (Some(character), Some(part)) = (self.focus.character(), self.focus.primary()) else { return };
+        if board.is_empty() {
+            return;
+        }
+        let Ok(path) = omuzaki_doc_api::DocPath::parse(&format!("characters/{character}/parts/{part}")) else { return };
+        let Some(holder) = board.holder_of(&path) else { return };
+        let mut dismissed = self.dismissed.contains(&holder.session);
+        fence_note(ui, holder, &mut dismissed);
+        if dismissed {
+            self.dismissed.insert(holder.session);
+        }
     }
 
     /// Draws the inspector for one frame.
@@ -415,6 +440,7 @@ struct InspectorPanel(Inspector);
 
 impl omuzaki_ui_api::panel::Panel for InspectorPanel {
     fn ui(&mut self, ui: &mut Ui, ctx: &omuzaki_ui_api::panel::PanelCtx<'_>) {
+        self.0.fence_note(ui, ctx.view::<AgentFeed>());
         self.0.ui(ui, Io::from_ctx(ctx));
     }
 
