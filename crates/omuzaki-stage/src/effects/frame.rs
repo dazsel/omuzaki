@@ -17,13 +17,15 @@ use omuzaki_face_api::Palette;
 use omuzaki_render_api::limits::MAX_SPAWN_BATCHES;
 use omuzaki_render_api::{
     AlphaEncoding, CellPick, Colour, ColourSet, EmitterShape, ParticleParams, ParticleSystemDesc, ParticleSystemId,
-    Pass, RenderError, Renderer, ResourceRef, SpawnBatch, Sprite, TextureDesc, TextureId,
+    Pass, PixelRect, RenderError, Renderer, RendererExt, ResourceRef, SpawnBatch, Sprite, TextureDesc, TextureId,
 };
 use omuzaki_stage_api::effects::{
     BurstShape, ColourSource, EffectPreset, MAX_PENDING_EFFECTS, SpriteDef, WeatherSource,
 };
 
 use super::anchor::{Anchors, Figure};
+use super::atlas::{Cell, EmoteAtlas, MAX_PICK, Request as CellRequest};
+use super::emotes::{CELL_PX, Done, UPLOADS_PER_FRAME};
 use super::log::{EffectLimits, EmissionLog, Spawn, StreamKey};
 use super::service::{
     BurstRecord, Outcome, OutcomeKind, Request, Ring, StageEffects, StatusRecord, WeatherRecord, finding,
@@ -114,6 +116,8 @@ pub struct EffectsFrame {
     findings: u32,
     drawn: Option<bool>,
     atlas: Option<TextureId>,
+    cells: EmoteAtlas,
+    frame: u64,
     density: f32,
 }
 
@@ -162,6 +166,8 @@ impl EffectsFrame {
             findings: 0,
             drawn: None,
             atlas: None,
+            cells: EmoteAtlas::chat(),
+            frame: 0,
             density: 1.0,
         }
     }
@@ -230,6 +236,8 @@ impl EffectsFrame {
             self.systems.clear();
         }
         self.density = ctx.density;
+        self.frame = self.frame.wrapping_add(1);
+        self.upload(renderer);
         let t = ctx.t;
         if let Live::Preset { until: Some(until), .. } = self.live
             && t.0 >= until.0
@@ -244,6 +252,7 @@ impl EffectsFrame {
         }
         self.run_weather(renderer, t);
         self.log.prune(t);
+        self.pin_cells();
         self.release_unused(renderer);
         particles.clear();
         if self.drawn == Some(true) {
@@ -326,15 +335,12 @@ impl EffectsFrame {
         let outcome = match system {
             Some(system) => {
                 let atlas = matches!(preset.sprite, SpriteDef::Atlas(_));
-                if atlas && record.emote_count > 0 {
-                    // No emote images are fetched yet: every emote draws the placeholder, cell 0.
-                    self.findings |= finding::EMOTES;
-                }
+                let cells = if atlas { self.emote_cells(record) } else { CellPick::All };
                 let spawn = Spawn {
                     shape: emitter_shape(shape),
                     velocity,
                     seed: record.seed,
-                    cells: if atlas { CellPick::list(&[0]).unwrap_or(CellPick::All) } else { CellPick::All },
+                    cells,
                     colours,
                     scale: record.scale,
                     ..Spawn::new(system, emitter)
@@ -355,6 +361,74 @@ impl EffectsFrame {
                 thinned: outcome.thinned,
             },
         });
+    }
+
+    /// The atlas cells a burst's emotes draw: each ready emote's own cell, the placeholder for the rest. A missing
+    /// emote is asked for, so a later burst shows its picture; a batch keeps the cells it was born with (D13).
+    fn emote_cells(&mut self, record: &BurstRecord) -> CellPick {
+        let keys = &record.emotes[..usize::from(record.emote_count).min(MAX_PICK)];
+        if keys.is_empty() {
+            return CellPick::list(&[0]).unwrap_or(CellPick::All);
+        }
+        for &key in keys {
+            if self.cells.lookup(key, self.frame) == Cell::Missing && self.cells.request(key) == CellRequest::Started {
+                let asked = self.service.emotes().is_some_and(|pipe| pipe.want(key));
+                if !asked {
+                    self.cells.cancel(key);
+                }
+            }
+        }
+        let mut picked = [0u16; MAX_PICK];
+        let n = self.cells.cells_for(keys, self.frame, &mut picked);
+        if picked[..n].contains(&0) {
+            self.findings |= finding::EMOTES;
+        }
+        CellPick::list(&picked[..n]).unwrap_or(CellPick::All)
+    }
+
+    /// Uploads at most two finished emote pictures into the atlas. Never waits; allocation-free.
+    fn upload(&mut self, renderer: &mut dyn Renderer) {
+        let service = Arc::clone(&self.service);
+        let Some(pipe) = service.emotes() else { return };
+        let (atlas, cells, frame) = (self.atlas, &mut self.cells, self.frame);
+        pipe.take(UPLOADS_PER_FRAME, |done| match done {
+            Done::Loaded { key, pixels } => {
+                match (atlas, cells.insert(key, frame)) {
+                    (Some(texture), Some(cell)) => {
+                        let columns = u32::from(ATLAS_CELLS);
+                        let rect = PixelRect {
+                            x: u32::from(cell) % columns * CELL_PX,
+                            y: u32::from(cell) / columns * CELL_PX,
+                            width: CELL_PX,
+                            height: CELL_PX,
+                        };
+                        if let Err(error) = renderer.update_texture(texture, rect, &pixels) {
+                            tracing::warn!(%error, "a chat emote's picture could not be uploaded");
+                            cells.forget(key);
+                        }
+                    }
+                    // No atlas yet, or every cell pinned: the emote stays the placeholder until asked again.
+                    (None, Some(_)) => cells.forget(key),
+                    (_, None) => {}
+                }
+                pipe.give_back(pixels);
+            }
+            Done::Failed { key, .. } => cells.cancel(key),
+        });
+    }
+
+    /// Pins the cells the live emote batches draw, so a picture never changes in mid-air (D13).
+    fn pin_cells(&mut self) {
+        self.cells.clear_pins();
+        for batch in self.log.batches() {
+            if let CellPick::List { .. } = batch.cells {
+                for &cell in batch.cells.as_slice() {
+                    if cell != 0 {
+                        self.cells.pin(cell);
+                    }
+                }
+            }
+        }
     }
 
     /// The weather to draw now: its look, its rate and where.

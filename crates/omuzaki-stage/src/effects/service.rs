@@ -25,6 +25,7 @@ use omuzaki_stage_api::effects::{
     MAX_BURST_EMOTES, MAX_CLEAR_FADE_S, MAX_PENDING_EFFECTS, PresetInfo, SpriteDef, WeatherSource,
 };
 
+use super::emotes::{EmotePipe, EmoteSource};
 use super::presets;
 
 /// Outcomes kept for [`StageEffects::take_events`]; the oldest are dropped when nobody takes them.
@@ -270,7 +271,7 @@ pub mod finding {
     pub const SYSTEM: u32 = 1 << 3;
     /// Every system slot was in use; an effect was skipped.
     pub const SYSTEMS_FULL: u32 = 1 << 4;
-    /// Chat emotes draw the placeholder (no emote images are fetched yet).
+    /// A chat emote drew the placeholder: its picture wasn't ready, couldn't be had, or pictures are off.
     pub const EMOTES: u32 = 1 << 5;
 
     /// Each finding's text.
@@ -280,7 +281,7 @@ pub mod finding {
         (BONE, "a bone anchor names a bone this character lacks; its root was used"),
         (SYSTEM, "a particle system could not be made; its effect was skipped"),
         (SYSTEMS_FULL, "every particle system slot is in use; an effect was skipped"),
-        (EMOTES, "chat emotes draw the placeholder heart"),
+        (EMOTES, "a chat emote drew the placeholder heart: its picture was not ready or could not be fetched"),
     ];
 }
 
@@ -313,6 +314,7 @@ pub struct StageEffects {
     status: Mutex<StatusRecord>,
     session: u64,
     counter: AtomicU64,
+    pipe: Option<EmotePipe>,
 }
 
 impl StageEffects {
@@ -326,7 +328,21 @@ impl StageEffects {
             status: Mutex::new(StatusRecord::default()),
             session,
             counter: AtomicU64::new(0),
+            pipe: None,
         }
+    }
+
+    /// The same service, fetching chat emotes' pictures from `source` (D13). Without it every emote draws the
+    /// placeholder. Starts the pipeline's worker.
+    #[must_use]
+    pub fn with_emotes(mut self, source: EmoteSource) -> Self {
+        self.pipe = Some(EmotePipe::start(source));
+        self
+    }
+
+    /// The chat-emote pipeline, when there is one.
+    pub fn emotes(&self) -> Option<&EmotePipe> {
+        self.pipe.as_ref()
     }
 
     fn next(&self) -> u64 {
@@ -461,6 +477,13 @@ impl StageEffects {
     fn remember_emotes(&self, seq: u64, list: &[ChatEmoteRef]) {
         if list.is_empty() {
             return;
+        }
+        if let Some(pipe) = &self.pipe {
+            for emote in list {
+                if let Some(url) = &emote.image {
+                    pipe.note(key_of(url), url);
+                }
+            }
         }
         let mut emotes = self.emotes.lock().unwrap_or_else(PoisonError::into_inner);
         if emotes.len() == MAX_EMOTE_LISTS {

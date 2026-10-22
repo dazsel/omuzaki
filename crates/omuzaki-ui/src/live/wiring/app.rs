@@ -14,7 +14,7 @@ use omuzaki_connect_api::Connectors;
 use omuzaki_core::glam::UVec2;
 use omuzaki_core::time::{Clock, Seconds, SystemClock};
 use omuzaki_face_api::ExpressionSet;
-use omuzaki_http::ConnectHttp;
+use omuzaki_http::{ConnectHttp, HttpFetcher};
 use omuzaki_input::{BindingDispatcher, BindingRunner, DispatchReport, Hub, HubConfig};
 use omuzaki_input_api::feed::{InputControl, InputHub, IntentFeed, MotionFeed};
 use omuzaki_live::Automation;
@@ -28,6 +28,7 @@ use omuzaki_render::WgpuRenderer;
 use omuzaki_secrets::KeychainSecrets;
 use omuzaki_secrets_api::prelude::SecretStore;
 use omuzaki_settings_api::service::Settings;
+use omuzaki_stage::effects::emotes::EmoteSource;
 use omuzaki_stage::effects::log::EffectLimits;
 use omuzaki_stage::effects::service::StageEffects;
 use omuzaki_stage::frame::Stage;
@@ -306,7 +307,7 @@ impl LiveApp {
         host.set_expressions(ExpressionSet::starter(), ChannelBuf::NEUTRAL).map_err(StartError::Perform)?;
         let window = OutputHost::new(transparency, PhysicalSize::FULL_HD);
         let input: Arc<dyn InputHost> = rig.input();
-        let effects = Arc::new(session_effects());
+        let effects = Arc::new(session_effects(settings.as_ref()));
         let mut services = ServicesBuilder::new()
             .insert::<dyn EffectService>(Arc::clone(&effects) as Arc<dyn EffectService>)
             .insert::<dyn PerformHost>(host)
@@ -609,12 +610,22 @@ fn start_stream(epoch: std::time::Instant) -> Option<Arc<StreamService>> {
     }
 }
 
-/// The stage's effect service with a seed per session: bursts asked for without one differ from run to run, and a
-/// take records each seed.
-fn session_effects() -> StageEffects {
+/// The stage's effect service with a seed per session (bursts asked for without one differ from run to run, and a take
+/// records each seed), fetching chat emotes' pictures (particles.md D13): HTTPS with a 5 s timeout and no redirects,
+/// so nothing leaves the host list, cached in the app's cache folder, and switched by `effects.chat_emotes`.
+fn session_effects(settings: Option<&Arc<dyn Settings>>) -> StageEffects {
     #[allow(clippy::cast_possible_truncation, reason = "the clock's low 64 bits are the seed")]
     let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64);
-    StageEffects::new(seed)
+    let five = std::time::Duration::from_secs(5);
+    let fetcher = HttpFetcher::builder().connect_timeout(five).read_timeout(five).max_redirects(0).retries(1).build();
+    let mut source = EmoteSource::new(Arc::new(fetcher));
+    if let Some(settings) = settings {
+        source = source.with_settings(Arc::clone(settings));
+    }
+    if let Ok(cache) = omuzaki_http::app_cache_dir() {
+        source = source.with_cache(cache.join("chat-emotes"));
+    }
+    StageEffects::new(seed).with_emotes(source)
 }
 
 /// The live audio engine on this machine's devices, its clock counting from `epoch`; `None` (with a warning) when it

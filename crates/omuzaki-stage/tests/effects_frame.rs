@@ -254,7 +254,7 @@ fn a_camera_top_burst_is_a_strip_above_the_frame_and_a_missing_member_falls_back
     let omuzaki_render_api::EmitterShape::Rect { half, .. } = strip.shape else { panic!("a strip: {:?}", strip.shape) };
     assert!(half.x > half.y, "wide and shallow: {half:?}");
     assert!(strip.emitter.w_axis.y > 1.0, "above the frame's top edge at the subject's distance");
-    assert_eq!(strip.cells.as_slice(), [0], "every emote draws the placeholder until images are fetched");
+    assert_eq!(strip.cells.as_slice(), [0, 0], "without an emote pipeline every emote draws the placeholder");
     let status = service.status();
     assert!(status.findings.iter().any(|f| f.contains("not on this stage")), "{:?}", status.findings);
     assert!(status.findings.iter().any(|f| f.contains("placeholder")), "{:?}", status.findings);
