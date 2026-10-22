@@ -207,6 +207,7 @@ pub fn finish(
     }
     if let Some(sleeves) = &sleeves {
         self::sleeves::tint(&mut output, ctx, sleeves, &tones)?;
+        self::sleeves::clear_torso(&mut output, ctx, frame, sleeves)?;
         self::sleeves::weld(&mut output, ctx, frame, &bodice_vertices, sleeves)?;
     }
     let axis = DVec2::new(frame.table.ring(frame.waist()).centre.x, frame.table.ring(frame.waist()).centre.z);

@@ -151,6 +151,7 @@ pub fn lapels(mesh: &mut MeshBuilder, frame: &Frame, lapel: &Lapel, tones: &Tone
             thickness: frame.cut.thickness,
             colours: (top, tones.lining),
             edge: tones.edge,
+            uvs: None,
         };
         patch(mesh, &piece)?;
     }
@@ -199,6 +200,7 @@ pub fn pocket(mesh: &mut MeshBuilder, frame: &Frame, pocket: &Pocket, tones: &To
         thickness: frame.cut.thickness,
         colours: (tones.outer.map(|c| c * 0.94), tones.lining),
         edge: tones.edge,
+        uvs: None,
     };
     patch(mesh, &piece)?;
     Ok(2)
@@ -285,6 +287,8 @@ impl Clasps {
 
 /// How far a clasp's hanging pieces stand off the cloth beyond the stud, metres per unit of scale.
 const CLASP_STANDOFF: f64 = 0.002;
+/// How many times a clasp is pushed out to clear the body.
+const CLASP_TRIES: usize = 8;
 /// How far in from each front edge a clasp's stud sits, radians.
 const CLASP_IN: f64 = 0.06;
 
@@ -306,7 +310,22 @@ pub fn clasps(metal: &mut MeshBuilder, frame: &Frame, clasps: &Clasps) -> Result
         let (foot, normal, skin) = frame.on(y, phi, frame.cut.lip)?;
         let level = (normal - DVec3::Y * normal.y).try_normalize().unwrap_or(normal);
         let basis = clasp::frame(foot, DVec3::Y, level).map_err(trim)?;
-        clasp::pieces(metal, None, (&basis, &basis), clasps.style, (k, CLASP_STANDOFF * k), &skin).map_err(trim)?;
+        // Out from the cloth until every piece clears the body under the coat by the cloth's own stand-off: over the
+        // front's opening the chest can come nearer than the cloth the clasp is sewn to.
+        let least = frame.cut.ease + frame.cut.thickness;
+        let mut standoff = CLASP_STANDOFF * k;
+        let mut pieces = MeshBuilder::new();
+        for _ in 0..CLASP_TRIES {
+            pieces = MeshBuilder::new();
+            clasp::pieces(&mut pieces, None, (&basis, &basis), clasps.style, (k, standoff), &skin).map_err(trim)?;
+            let nearest =
+                pieces.mesh().positions.iter().map(|p| outside(frame, p.as_dvec3())).fold(f64::INFINITY, f64::min);
+            if nearest >= least {
+                break;
+            }
+            standoff += (least - nearest).max(0.0005);
+        }
+        metal.merge(&pieces).map_err(|e| GarmentError::invalid("clasps", e.to_string()))?;
         studs.push((foot, level, skin));
     }
     if clasps.sag > 0.0 {
@@ -336,4 +355,80 @@ pub fn clasps(metal: &mut MeshBuilder, frame: &Frame, clasps: &Clasps) -> Result
         }
     }
     Ok(())
+}
+
+/// A band laid along both front edges of an open front, from the hem to the collar line: a facing turned out, plain or
+/// in a textured material.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct FrontBand {
+    /// Its width round the body, metres.
+    pub width: f64,
+    /// Its top's colour and its underside's (linear RGB), and its rolled edge's.
+    pub colours: ([f32; 3], [f32; 3], [f32; 3]),
+    /// Whether to give it texture coordinates: along it in widths, across it 0 to 1.
+    pub textured: bool,
+}
+
+/// The rows of a front band are about this far apart, metres.
+const BAND_ROW: f64 = 0.008;
+
+/// Adds `band` to `mesh` along the front edges of `frame`; returns the open borders it added (two a side), none for a
+/// closed front.
+///
+/// # Errors
+/// The kit's.
+#[allow(clippy::many_single_char_names)] // the grid's textbook names
+pub fn front_band(mesh: &mut MeshBuilder, frame: &Frame, band: &FrontBand) -> Result<usize, GarmentError> {
+    let Front::Open { .. } = frame.cut.front else { return Ok(0) };
+    let (from, to) = (frame.hem_at(frame.edge(frame.hem)) + 0.003, frame.top - 0.003);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a small row count
+    let rows = (((to - from) / BAND_ROW).ceil() as usize).clamp(8, 240);
+    let cols = 4;
+    let lift = frame.cut.lip + STANDOFF;
+    for side in [1.0, -1.0] {
+        let (mut points, mut normals, mut skins, mut uvs) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let mut along = 0.0;
+        let mut last: Option<DVec3> = None;
+        for i in 0..rows {
+            let y = lerp(from, to, fraction(i, rows - 1));
+            let r = radius(frame, y);
+            let edge = frame.edge(y) + 0.002 / r;
+            let mut row = Vec::with_capacity(cols);
+            for j in 0..cols {
+                let t = fraction(j, cols - 1);
+                let phi = edge + t * band.width / r;
+                let phi = if side > 0.0 { phi } else { TAU - phi };
+                row.push((frame.on(y, phi, lift)?, t));
+            }
+            let middle = row[cols / 2].0.0;
+            along += last.map_or(0.0, |p| p.distance(middle));
+            last = Some(middle);
+            for ((p, n, skin), t) in row {
+                points.push(p);
+                normals.push(n);
+                skins.push(skin);
+                uvs.push(omuzaki_core::glam::DVec2::new(along / band.width, if side > 0.0 { t } else { 1.0 - t }));
+            }
+        }
+        let piece = Patch {
+            rows,
+            cols,
+            points,
+            normals,
+            skins,
+            thickness: frame.cut.thickness,
+            colours: (band.colours.0, band.colours.1),
+            edge: band.colours.2,
+            uvs: band.textured.then_some(uvs),
+        };
+        patch(mesh, &piece)?;
+    }
+    Ok(4)
+}
+
+/// How far `p` stands outside the body under the coat (the column at no offset), metres, in its height's plane.
+fn outside(frame: &Frame, p: DVec3) -> f64 {
+    let Ok(ring) = frame.column.ring(p.y, 0.0) else { return f64::INFINITY };
+    let d = p - ring.centre;
+    ring.along_ray(omuzaki_core::glam::DVec2::new(d.dot(ring.across), d.dot(ring.through))).1
 }

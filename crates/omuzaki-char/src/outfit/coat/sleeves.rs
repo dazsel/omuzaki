@@ -112,8 +112,8 @@ pub fn build(frame: &Frame, cut: &SleeveCut, tones: &Tones, tile: Option<f64>) -
     Ok(Sleeves { mesh, arm: left.arm, sheets, end_radius: left.end_radius })
 }
 
-/// How far `p` is inside the bodice's outside (the cloth's ease and thickness over the torso), metres: negative
-/// outside it.
+/// How far `p` is inside the bodice's outside (the cloth's ease and thickness over the torso), metres: negative outside
+/// it.
 fn in_body(frame: &Frame, p: DVec3) -> f64 {
     let column = &frame.column;
     if !(column.bottom()..=column.neck_top()).contains(&p.y) {
@@ -122,7 +122,20 @@ fn in_body(frame: &Frame, p: DVec3) -> f64 {
     let outside = frame.cut.ease + frame.cut.thickness + union::LIFT;
     let Ok(ring) = column.ring(p.y, outside) else { return f64::NEG_INFINITY };
     let d = p - ring.centre;
-    -ring.along_ray(DVec2::new(d.dot(ring.across), d.dot(ring.through))).1
+    // Only round the armhole is the bodice welded to the sleeves: below it the depth falls away, so the cut closes off
+    // smoothly and what is under it is moved clear instead ([`clear_torso`]).
+    let falling = -ring.along_ray(DVec2::new(d.dot(ring.across), d.dot(ring.through))).1
+        - (floor(frame) - p.y).max(0.0) * BELOW_ARMHOLE;
+    // Over the bodice the cut (where the weld slides vertices to) never falls nearer the torso than half the ease and
+    // half the margin [`clear_torso`] keeps, measured as it measures. Under the waist seam it falls away freely.
+    if p.y < frame.waist() {
+        return falling;
+    }
+    let Ok(body) = column.ring(p.y, 0.0) else { return falling };
+    let d = p - body.centre;
+    let near = frame.cut.ease / 2.0 + TORSO_MARGIN / 2.0
+        - body.along_ray(DVec2::new(d.dot(body.across), d.dot(body.through))).1;
+    falling.max(near)
 }
 
 /// Welds the sleeves (`<part>-sleeves`) and the bodice of the shell (`<part>-shell`) in `output` into one surface: the
@@ -185,6 +198,111 @@ pub fn tint(output: &mut PartOutput, ctx: &BuildCtx<'_>, sleeves: &Sleeves, tone
                 }
             }
         }
+    }
+    Ok(())
+}
+
+/// How fast the depth the bodice cuts the sleeves by falls away below the armhole, metres per metre.
+const BELOW_ARMHOLE: f64 = 1.0;
+/// How far below the shoulder's joint the armhole reaches, in the arm's radii at its root.
+const ARMPIT: f64 = 2.2;
+
+/// The lowest the sleeves are welded to the bodice: the armpit, or the waist seam if that is higher (below it the skirt
+/// hangs clear of the arms).
+fn floor(frame: &Frame) -> f64 {
+    let fit = frame.column.fit();
+    let shoulder = fit.joint(&omuzaki_char_api::JointRef::Humanoid(omuzaki_anim_api::HumanoidBone::LeftUpperArm));
+    let root = crate::outfit::loft::ring_at(fit.as_ref(), omuzaki_char_api::BodyRegion::ArmL, 0.0, 2.0, 0.0);
+    let armpit = match (shoulder, root) {
+        (Some(s), Ok(r)) => f64::from(s.y) - ARMPIT * r.radii.max_element(),
+        _ => frame.waist(),
+    };
+    armpit.max(frame.waist())
+}
+
+/// How far beyond half the ease the sleeves' lining keeps off the torso below the armhole, metres.
+const TORSO_MARGIN: f64 = 0.0012;
+/// How many halvings find how far a vertex can be lifted off the torso before it meets the arm.
+const LIFT_STEPS: usize = 24;
+/// How far a vertex caught between the side and the arm slides out of the crease per step, metres, and at most how many
+/// steps.
+const CREASE_STEP: f64 = 0.0002;
+const CREASE_STEPS: usize = 100;
+/// The step of the numerical gradients that find the way out of the crease, metres.
+const GRADIENT_STEP: f64 = 1e-4;
+
+/// Moves the vertices of `<part>-sleeves` below the armhole ([`floor`]) out from the torso's axis until they clear it: on
+/// a body whose arms hang against its sides a sleeve, round the arm with its ease, would come nearer the torso than the
+/// cloth is allowed to (round the armhole the bodice is welded to it instead). The lining keeps half the ease and a margin off
+/// the torso, the outside a cloth's thickness more. `ranges` are the lining's vertices; the weld keeps the order, so
+/// this runs before it.
+///
+/// # Errors
+/// [`BuildError::Part`] if the output has no sleeves or a ring the fit can't give.
+pub fn clear_torso(
+    output: &mut PartOutput,
+    ctx: &BuildCtx<'_>,
+    frame: &Frame,
+    sleeves: &Sleeves,
+) -> Result<(), BuildError> {
+    let name = format!("{}-sleeves", ctx.part);
+    let mesh = output
+        .meshes
+        .iter_mut()
+        .find(|m| m.name == name)
+        .ok_or_else(|| ctx.fail(format!("the garment has no mesh `{name}`")))?;
+    let per_side = sleeves.sheets.len() / 2;
+    let lining: Vec<&Range<usize>> =
+        sleeves.sheets.iter().enumerate().filter(|(k, _)| per_side > 1 && k % per_side == 1).map(|(_, r)| r).collect();
+    let least = frame.cut.ease / 2.0 + TORSO_MARGIN;
+    let floor = floor(frame);
+    let right = sleeves.arm.mirrored();
+    let in_arm = |p: DVec3| sleeves.arm.inside(p).max(right.inside(p));
+    let arm_room = frame.cut.ease / 2.0 - TORSO_MARGIN;
+    for (k, p) in mesh.geometry.positions.iter_mut().enumerate() {
+        let q = p.as_dvec3();
+        if q.y >= floor {
+            continue;
+        }
+        let inside = lining.iter().any(|r| r.contains(&k));
+        let need = if inside { least } else { least + frame.cut.thickness };
+        let moved = frame.column.lift(q, need).map_err(|e| ctx.fail(e.to_string()))?;
+        // Where the arm hangs close against the side, the lift is cut short before it carries the vertex further into
+        // the arm (with the sleeve's ease) than half the ease, or than it already was.
+        let allowed = in_arm(q).max(arm_room);
+        let mut t = 1.0;
+        if in_arm(moved) > allowed {
+            let (mut lo, mut hi) = (0.0, 1.0);
+            for _ in 0..LIFT_STEPS {
+                let mid = f64::midpoint(lo, hi);
+                if in_arm(q.lerp(moved, mid)) > allowed { hi = mid } else { lo = mid }
+            }
+            t = lo;
+        }
+        let mut at = q.lerp(moved, t);
+        if t < 1.0 {
+            // Caught between the side and the arm: slide out of the crease, along it, where both fall away.
+            let torso = |p: DVec3| {
+                frame.column.ring(p.y, 0.0).map_or(0.0, |ring| {
+                    let d = p - ring.centre;
+                    need - ring.along_ray(DVec2::new(d.dot(ring.across), d.dot(ring.through))).1
+                })
+            };
+            let arm = |p: DVec3| in_arm(p) - allowed;
+            for _ in 0..CREASE_STEPS {
+                if torso(at) <= 0.0 && arm(at) <= 0.0 {
+                    break;
+                }
+                let away = |f: &dyn Fn(DVec3) -> f64| {
+                    let dx = f(at + DVec3::X * GRADIENT_STEP) - f(at - DVec3::X * GRADIENT_STEP);
+                    let dz = f(at + DVec3::Z * GRADIENT_STEP) - f(at - DVec3::Z * GRADIENT_STEP);
+                    -DVec3::new(dx, 0.0, dz).normalize_or_zero()
+                };
+                let Some(dir) = (away(&torso) + away(&arm)).try_normalize() else { break };
+                at += dir * CREASE_STEP;
+            }
+        }
+        *p = at.as_vec3();
     }
     Ok(())
 }

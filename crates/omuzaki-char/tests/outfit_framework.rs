@@ -919,6 +919,8 @@ fn fabrics() -> Vec<(&'static str, FabricStyle)> {
         ("horizontal stripes", stripes(StripeDirection::Horizontal)),
         ("diagonal stripes", stripes(StripeDirection::Diagonal)),
         ("plaid", plaid()),
+        ("damask", FabricStyle::Damask { ground: a.clone(), figure: b.clone(), period: 0.03 }),
+        ("interlace", FabricStyle::Interlace { ground: a.clone(), strand: b.clone(), edge: a.clone(), period: 0.03 }),
     ]
 }
 

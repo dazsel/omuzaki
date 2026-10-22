@@ -37,6 +37,10 @@ const SKIRT_ROW: f64 = 0.012;
 const BODICE_ROW: f64 = 0.009;
 /// The fewest and most rows of either.
 const ROWS: (usize, usize) = (6, 44);
+/// How far the waist seam's ring stands clear of the arms beyond the cloth, metres.
+const SEAM_MARGIN: f64 = 0.004;
+/// How far the waist seam comes down at a time to clear the arms, metres.
+const SEAM_STEP: f64 = 0.004;
 /// The highest a hem goes, as a fraction of the torso.
 const HIGHEST_HEM: f64 = 0.3;
 /// The least length of skirt below the waist seam, metres.
@@ -149,8 +153,9 @@ impl Frame {
                 format!("the hem at {hem:.3} m is not {MIN_SKIRT} m below the waist seam at {waist:.3} m"),
             ));
         }
-        let ring = column.ring(waist, cut.ease)?;
         let cloud = Cloud::of(fit.as_ref(), under)?;
+        let waist = clear_seam(&column, &cloud, cut, waist, hem + 2.0 * MIN_SKIRT)?;
+        let ring = column.ring(waist, cut.ease)?;
         let spec = HangSpec {
             waist: ring,
             bottom: hem - cut.back_drop.max(0.0) - 0.01,
@@ -312,6 +317,29 @@ impl Frame {
         let w = sstep(self.torso(HIP_HANDOVER.0), self.torso(HIP_HANDOVER.1), p.y) as f32;
         if w <= 0.0 { torso } else { mix_skin(&torso, &self.thighs.at(p), w) }
     }
+}
+
+/// The seam at `waist` or the highest below it, down to `lowest`, whose ring stands clear of the arms by the cloth and a
+/// margin: the skirt hangs from the seam's ring and isn't cut where the arms pass, so on a body whose arms hang close
+/// beside the chest the seam comes down below them. A cape's seam encloses the arms and stays.
+fn clear_seam(column: &Column, cloud: &Cloud, cut: &CoatCut, waist: f64, lowest: f64) -> Result<f64, GarmentError> {
+    if cut.arms == Arms::Enclose {
+        return Ok(waist);
+    }
+    let reach = cut.thickness + cut.lip + SEAM_MARGIN;
+    let mut y = waist;
+    while y > lowest {
+        let ring = column.ring(y, cut.ease)?;
+        let clear = cloud.arms_at(y, SEAM_STEP).all(|a| {
+            let d = a.p - ring.centre;
+            ring.along_ray(DVec2::new(d.dot(ring.across), d.dot(ring.through))).1 > reach
+        });
+        if clear {
+            return Ok(y);
+        }
+        y -= SEAM_STEP;
+    }
+    Ok(lowest.max(y))
 }
 
 /// `phi` in `-PI..=PI`.

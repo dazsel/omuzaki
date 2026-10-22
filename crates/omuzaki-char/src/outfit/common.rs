@@ -141,6 +141,27 @@ pub enum FabricStyle {
         /// The bands of one repeat, at most [`MAX_PLAID_BANDS`].
         bands: Vec<PlaidBand>,
     },
+    /// A damask: a flower and leaves repeated on a lattice, woven tone on tone over a ground (a lining, a gown).
+    Damask {
+        /// The ground colour.
+        ground: ColourRef,
+        /// The figure's colour.
+        figure: ColourRef,
+        /// The repeat's size, metres.
+        period: f64,
+    },
+    /// An interlace band: two strands weaving over and under each other along it between two fillets (a trim's band,
+    /// laid with its length along the texture's x).
+    Interlace {
+        /// The ground colour.
+        ground: ColourRef,
+        /// The strands' colour.
+        strand: ColourRef,
+        /// The strands' outlines and the fillets.
+        edge: ColourRef,
+        /// The repeat's size along the band, and the band's width, metres.
+        period: f64,
+    },
 }
 
 impl Default for FabricStyle {
@@ -181,6 +202,9 @@ impl Validate for FabricStyle {
             Self::Stripes { period, width, .. } => {
                 c.range("period", *period, MIN_PERIOD, MAX_PERIOD);
                 band_width(c, "width", *width, *period);
+            }
+            Self::Damask { period, .. } | Self::Interlace { period, .. } => {
+                c.range("period", *period, MIN_PERIOD, MAX_PERIOD);
             }
             Self::Plaid { period, bands, .. } => {
                 c.range("period", *period, MIN_PERIOD, MAX_PERIOD);
@@ -270,6 +294,14 @@ pub fn fabric_tile(
                 .map(|b| Ok::<_, BuildError>((colour(&b.colour)?, b.offset, b.width)))
                 .collect::<Result<Vec<_>, _>>()?;
             plaid(&mut list, colour(ground)?, *period, &bands, repeats);
+            *period
+        }
+        FabricStyle::Damask { ground, figure, period } => {
+            damask(&mut list, colour(ground)?, colour(figure)?, *period, repeats);
+            *period
+        }
+        FabricStyle::Interlace { ground, strand, edge, period } => {
+            interlace(&mut list, [colour(ground)?, colour(strand)?, colour(edge)?], *period, repeats);
             *period
         }
     };
@@ -390,6 +422,106 @@ fn plaid(list: &mut DrawList, ground: Colour, period: f64, bands: &[(Colour, f64
                 }
             }
         }
+    }
+}
+
+/// The points of a closed or open polyline `f(s)` for `s` in `0..=1`, `n` segments, on the f32 drawing plane.
+#[allow(clippy::cast_possible_truncation)] // the drawing plane is f32
+fn curve(n: usize, f: impl Fn(f64) -> (f64, f64)) -> Vec<Vec2> {
+    (0..=n).map(|k| f(crate::kit::curve::fraction(k, n))).map(|(x, y)| Vec2::new(x as f32, y as f32)).collect()
+}
+
+/// A damask, `repeats` x `repeats` repeats: in each, a four-petalled flower with leaves between its petals at the
+/// middle, and a smaller one at the corners (quartered by the tile's edges, so it repeats without a seam), on the ground.
+#[allow(clippy::many_single_char_names)] // the petal is drawn in its own frame: centre, cos, sin, x, y
+fn damask(list: &mut DrawList, ground: Colour, figure: Colour, period: f64, repeats: u32) {
+    use std::f64::consts::{FRAC_PI_4, TAU};
+    let size = period * f64::from(repeats);
+    rect(list, ground, 0.0, size, 0.0, size, 1.0);
+    // A petal: a pointed oval from the flower's centre out to `reach`, turned to `angle`.
+    let petal = |list: &mut DrawList, (cx, cy): (f64, f64), angle: f64, reach: f64, width: f64| {
+        let (c, s) = (angle.cos(), angle.sin());
+        let points = curve(24, |t| {
+            let a = TAU * t;
+            // A lens: x along the petal from 0 to `reach`, y its half-width, pointed at both ends.
+            let x = reach * (1.0 - a.cos()) / 2.0;
+            let y = width * a.sin() * (1.0 - a.cos()).sqrt() / std::f64::consts::SQRT_2;
+            (cx + x * c - y * s, cy + x * s + y * c)
+        });
+        let path = list.path().polyline(&points).close().finish();
+        list.fill(path, Paint::Solid(figure));
+    };
+    let flower = |list: &mut DrawList, at: (f64, f64), r: f64| {
+        for k in 0..4 {
+            let a = f64::from(k) * std::f64::consts::FRAC_PI_2;
+            petal(list, at, a, r, r * 0.42);
+            petal(list, at, a + FRAC_PI_4, r * 0.62, r * 0.2);
+        }
+        #[allow(clippy::cast_possible_truncation)] // the drawing plane is f32
+        let path =
+            list.path().ellipse(Vec2::new(at.0 as f32, at.1 as f32), (r * 0.16) as f32, (r * 0.16) as f32).finish();
+        list.fill(path, Paint::Solid(ground));
+    };
+    for i in 0..=repeats {
+        for j in 0..=repeats {
+            let (x, y) = (period * f64::from(i), period * f64::from(j));
+            flower(list, (x, y), period * 0.22);
+            if i < repeats && j < repeats {
+                flower(list, (x + period / 2.0, y + period / 2.0), period * 0.34);
+            }
+        }
+    }
+}
+
+/// An interlace band, `repeats` x `repeats` repeats: two strands crossing twice in each repeat, the first over at the
+/// middle and under at the ends, outlined in the edge colour so each crossing reads, between fillets at the band's
+/// edges (the top and bottom of the tile).
+fn interlace(list: &mut DrawList, [ground, strand, edge]: [Colour; 3], period: f64, repeats: u32) {
+    use std::f64::consts::TAU;
+    /// Samples along one repeat.
+    const STEPS: i64 = 48;
+    let size = period * f64::from(repeats);
+    rect(list, ground, 0.0, size, 0.0, size, 1.0);
+    let width = period * 0.12;
+    let outline = width * 1.5;
+    let draw = |list: &mut DrawList, points: &[Vec2]| {
+        let path = list.path().polyline(points).finish();
+        for (paint, w) in [(edge, outline), (strand, width)] {
+            #[allow(clippy::cast_possible_truncation)] // the drawing plane is f32
+            list.push(omuzaki_face_api::Cmd::Stroke {
+                path,
+                paint: Paint::Solid(paint),
+                width: w as f32,
+                cap: omuzaki_face_api::Cap::Butt,
+                join: omuzaki_face_api::Join::Round,
+                opacity: 1.0,
+            });
+        }
+    };
+    for row in 0..repeats {
+        let y0 = period * f64::from(row);
+        // `x` in repeats along the whole tile, sampled at the same points of every repeat, so the strands run on
+        // unbroken across every repeat's edge and each repeat is drawn alike.
+        #[allow(clippy::cast_possible_truncation)] // the drawing plane is f32
+        let wave = |sign: f64, (from, to): (i64, i64)| -> Vec<Vec2> {
+            (from..=to)
+                .map(|k| {
+                    #[allow(clippy::cast_precision_loss)] // a few hundred samples
+                    let x = k as f64 / STEPS as f64;
+                    let y = y0 + period * (0.5 + sign * 0.26 * (TAU * x).sin());
+                    Vec2::new((x * period) as f32, y as f32)
+                })
+                .collect()
+        };
+        let end = i64::from(repeats) * STEPS;
+        // The falling strand, then the rising one over it, then the falling one again over every repeat's ends.
+        draw(list, &wave(-1.0, (-3, end + 3)));
+        draw(list, &wave(1.0, (-3, end + 3)));
+        for k in 0..=i64::from(repeats) {
+            draw(list, &wave(-1.0, (k * STEPS - 6, k * STEPS + 6)));
+        }
+        rect(list, edge, 0.0, size, y0, y0 + period * 0.07, 1.0);
+        rect(list, edge, 0.0, size, y0 + period * 0.93, y0 + period, 1.0);
     }
 }
 

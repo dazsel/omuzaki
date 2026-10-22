@@ -31,7 +31,7 @@ use crate::outfit::trousers::rows::mix_skin;
 const DOWN_GRID: (usize, usize) = (10, 33);
 /// The folded hood: how far round from the centre back it reaches either side (radians), its depth at the centre back
 /// and at its ends (fractions of the torso), and how far under the collar line its top edge lies (metres).
-const DOWN: (f64, f64, f64, f64) = (1.45, 0.3, 0.06, 0.004);
+const DOWN: (f64, f64, f64, f64) = (1.15, 0.3, 0.06, 0.004);
 /// How far round from the centre front the folded hood stays clear of an open front's edge, radians.
 const DOWN_FRONT: f64 = 0.3;
 /// The raised hood's rows over the head, rows down the neck, and points from the rim to the seam.
@@ -160,6 +160,7 @@ fn down(mesh: &mut MeshBuilder, frame: &Frame, hood: &Hood, tones: &Tones) -> Re
         thickness: frame.cut.thickness * 1.5,
         colours: (tones.outer, tones.lining),
         edge: tones.edge,
+        uvs: None,
     };
     patch(mesh, &piece)
 }

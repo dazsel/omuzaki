@@ -6,7 +6,7 @@
 //! - [`patch`]: a thin slab lying on the surface (a lapel, a pocket, a collar band, a pouch), its top sheet and its
 //!   underside joined by a rolled edge.
 
-use omuzaki_core::glam::DVec3;
+use omuzaki_core::glam::{DVec2, DVec3};
 
 use super::shell::Skinning;
 use crate::kit::curve::{TAU, fraction};
@@ -145,6 +145,8 @@ pub struct Patch {
     pub colours: ([f32; 3], [f32; 3]),
     /// The rolled edge's colour.
     pub edge: [f32; 3],
+    /// Texture coordinates of each point, for a patch in a textured material; `None` for none.
+    pub uvs: Option<Vec<DVec2>>,
 }
 
 /// Adds `patch`: its top, its underside and the rolled edge round its border. Two open borders (the top's and the
@@ -168,7 +170,9 @@ pub fn patch(builder: &mut MeshBuilder, patch: &Patch) -> Result<(), GarmentErro
         let skin = |_: DVec3, i: usize, j: usize| patch.skins[i * cols + j].clone();
         let tone = if under { patch.colours.1 } else { patch.colours.0 };
         let colour = |_: usize, _: usize, _: DVec3| [tone[0], tone[1], tone[2], 1.0];
+        let uv = |i: usize, j: usize| patch.uvs.as_ref().map_or(DVec2::ZERO, |u| u[i * cols + j]);
         let options = GridOptions {
+            uv: patch.uvs.as_ref().map(|_| &uv as &dyn Fn(usize, usize) -> DVec2),
             invert: under,
             inside: Some(&inside),
             colour: Some(&colour),
