@@ -22,6 +22,10 @@ pub const MAX_HOLD: u32 = 8;
 pub const DENSITY_UP_MARGIN: f64 = 0.6;
 /// ...for this many consecutive samples (2 s at 30 fps), times the current hold (particles.md D8).
 pub const DENSITY_UP_SAMPLES: u32 = 60;
+/// The highest encoder load (encode time per frame over the frame period) an output may sustain (record.md D2). Over it
+/// for [`DOWN_SAMPLES`] samples, quality steps down to free the CPU the encoder shares with the renderer; what the
+/// output encodes never changes.
+pub const OUTPUT_LOAD_LIMIT: f32 = 0.9;
 
 /// Which way quality moved.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -111,6 +115,10 @@ pub struct Scheduler {
     hold: u32,
     /// Submission number of the last step up.
     last_up: Option<u64>,
+    /// The newest highest encoder load ([`observe_output`](Self::observe_output)).
+    output_load: Option<f32>,
+    output_over: u32,
+    output_under: u32,
 }
 
 impl Scheduler {
@@ -136,6 +144,9 @@ impl Scheduler {
             under: 0,
             hold: 1,
             last_up: None,
+            output_load: None,
+            output_over: 0,
+            output_under: 0,
         }
     }
 
@@ -192,6 +203,7 @@ impl Scheduler {
             last_face: self.last_face,
             newest: self.newest,
             stale_through: self.newest.unwrap_or(0),
+            output_load: self.output_load,
             ..Self::new(requested, budget)
         };
     }
@@ -245,7 +257,9 @@ impl Scheduler {
             }
         } else {
             self.over = 0;
-            if self.density > 0 && self.ladder_given_back() {
+            if self.outputs_busy() {
+                self.under = 0;
+            } else if self.density > 0 && self.ladder_given_back() {
                 let particles_calm = self.particle_ema.is_none_or(|t| t < budget::PARTICLES_GPU.0 * DENSITY_UP_MARGIN);
                 if smoothed < self.budget.0 * DENSITY_UP_MARGIN && particles_calm {
                     self.under += 1;
@@ -267,6 +281,57 @@ impl Scheduler {
         None
     }
 
+    /// Takes one sample of the highest encoder load among the running outputs (`OutputStatus::load`: encode time per
+    /// frame over the frame period, smoothed by the output). Returns the change of quality it caused, if any.
+    /// Allocation-free and lock-free. It never touches an output's size or rate: those are fixed when it starts.
+    ///
+    /// Over [`OUTPUT_LOAD_LIMIT`] for [`DOWN_SAMPLES`] samples in a row steps one rung down, as frame time does. Under
+    /// [`UP_MARGIN`] of the limit for [`UP_SAMPLES`] times the hold, while the frame time also has room, takes one back;
+    /// flaps double the hold as they do for frame time, counted in `FrameReport::frame`s. [`observe`](Self::observe)
+    /// holds its own step up back while the latest load is at or above that margin. A `NaN` or negative load is
+    /// ignored, and only [`QualityMode::Live`] is scheduled.
+    pub fn observe_output(&mut self, load: f32) -> Option<Change> {
+        if load.is_nan() || load < 0.0 {
+            return None;
+        }
+        self.output_load = Some(load);
+        if self.requested.mode != QualityMode::Live {
+            return None;
+        }
+        let frame = self.newest.unwrap_or(0);
+        let measured = self.ema.unwrap_or(self.budget.0);
+        if load > OUTPUT_LOAD_LIMIT {
+            self.output_under = 0;
+            self.output_over = self.output_over.saturating_add(1);
+            if self.output_over >= DOWN_SAMPLES {
+                return self.step_down(frame, measured);
+            }
+            return None;
+        }
+        self.output_over = 0;
+        let frame_has_room = self.ema.is_none_or(|t| t < self.budget.0 * UP_MARGIN);
+        if !self.outputs_busy() && frame_has_room {
+            self.output_under = self.output_under.saturating_add(1);
+            if self.output_under >= UP_SAMPLES * self.hold {
+                return self.step_up(frame, measured);
+            }
+        } else {
+            self.output_under = 0;
+        }
+        None
+    }
+
+    /// The newest encoder load, if an output has reported one.
+    pub fn output_load(&self) -> Option<f32> {
+        self.output_load
+    }
+
+    /// Whether the outputs leave too little room to take quality back: the latest load is at or above [`UP_MARGIN`] of
+    /// [`OUTPUT_LOAD_LIMIT`].
+    fn outputs_busy(&self) -> bool {
+        self.output_load.is_some_and(|load| f64::from(load) >= f64::from(OUTPUT_LOAD_LIMIT) * UP_MARGIN)
+    }
+
     /// `FrameReport::frame` went backwards, so the caller broke the contract on [`observe`](Self::observe) or restarted
     /// its numbering: forget everything measured so far (the quality stays) and take no decision on this report.
     fn start_new_sequence(&mut self, frame: u64) {
@@ -281,6 +346,7 @@ impl Scheduler {
         self.stale_through = 0;
         self.last_up = None;
         (self.over, self.under) = (0, 0);
+        (self.output_over, self.output_under) = (0, 0);
     }
 
     /// The face painter's own line: only a GPU timing carries it, and each finished frame counts once.
@@ -385,6 +451,7 @@ impl Scheduler {
         self.ema = None;
         self.particle_ema = None;
         (self.over, self.under, self.particle_over) = (0, 0, 0);
+        (self.output_over, self.output_under) = (0, 0);
         Change { frame, direction, step, from, to: self.quality, measured: Seconds(measured), budget: self.budget }
     }
 }
