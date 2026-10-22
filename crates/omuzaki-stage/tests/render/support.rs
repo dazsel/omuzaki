@@ -120,6 +120,32 @@ impl Harness {
         f(&job)
     }
 
+    /// The document the jobs read.
+    pub fn doc(&self) -> &MemDoc {
+        &self.doc.0
+    }
+
+    /// The document, to edit between jobs.
+    pub fn doc_mut(&mut self) -> &mut MemDoc {
+        &mut self.doc.0
+    }
+
+    /// Runs `op` to the end as the executor does: plans it as a dry run, runs its work, finishes it against the
+    /// document and applies the finished patch. Returns the dry run's plan and the finished one.
+    ///
+    /// # Errors
+    /// Whatever planning, the work or finishing fails with.
+    pub fn run_to_end<O: Op>(&mut self, op: &O) -> Result<(Plan, Plan), OpError> {
+        let (plan, value) = self.run(op)?;
+        let actor = Actor::Person { name: "test".to_owned() };
+        let clock = FakeClock::new(Seconds(0.0));
+        let ctx = OpCtx::new(&self.doc.0, &actor, &clock).with_services(&self.services);
+        let finished = op.finish(&ctx, value)?;
+        omuzaki_doc_api::DocWrite::apply(&mut self.doc.0, &finished.patch)
+            .map_err(|e| OpError::internal(format!("applying the finished patch: {e}")))?;
+        Ok((plan, finished))
+    }
+
     /// Plans `op` as a dry run, then runs its work, as a job would. Returns the plan and the work's result.
     ///
     /// # Errors

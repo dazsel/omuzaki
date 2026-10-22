@@ -429,15 +429,17 @@ impl Stage {
     /// or whatever the face update reports.
     pub fn redraw(&mut self, renderer: &mut dyn Renderer, input: &FrameInput) -> Result<FrameOutput, StageError> {
         let uploads = self.dynamic.upload(&self.built.runtimes, renderer)?;
-        self.update_face(renderer, self.tick, input)?;
+        // A pin set since the last tick holds here too: the face and the frame info see the pinned time.
+        let tick = self.pinned.unwrap_or(self.tick);
+        self.update_face(renderer, tick, input)?;
         self.plan.fill(&mut self.scene, self.rig.skin(), self.root);
         self.ground.push(&mut self.scene);
         // What the last tick wrote into the scene, so a redraw before any tick doesn't render the caller's frame info.
-        self.scene.frame = self.frame_info(self.tick);
+        self.scene.frame = self.frame_info(tick);
         let report = renderer
             .render(self.target, &self.scene, &self.quality)
             .map_err(|source| StageError::render("the still", source))?;
-        Ok(FrameOutput { tick: self.tick, report, uploads })
+        Ok(FrameOutput { tick, report, uploads })
     }
 
     /// The scene as last rendered.

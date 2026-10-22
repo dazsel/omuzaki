@@ -45,7 +45,7 @@ use omuzaki_stage::sheet::turnaround::{
 };
 use omuzaki_stage::{StageError, UploadOptions};
 
-const CELL: UVec2 = UVec2::new(120, 240);
+const CELL: UVec2 = UVec2::new(240, 240);
 
 fn built() -> BuiltCharacter {
     let def = omuzaki_char_mock::mock_character().expect("the fixture parses");
@@ -794,12 +794,11 @@ fn settling_from_rest_advances_the_springs_by_the_requested_steps_whatever_the_c
 }
 
 /// The topmost and bottom-most rows of `built`'s vertices turned by `yaw_deg`, projected by hand through a camera
-/// `distance` metres in front of the middle of the character's height (`ortho` or the 12 degree lens), in a cell of
-/// `CELL`: an independent calculation of what the sheet reports.
-fn rows_by_hand(built: &BuiltCharacter, yaw_deg: f32, ortho: bool) -> (f32, f32) {
+/// `distance` metres in front of the middle of the character's height (`ortho` or the 12 degree lens), framing
+/// `framed` metres of height in a cell of `CELL`: an independent calculation of what the sheet reports.
+fn rows_by_hand(built: &BuiltCharacter, yaw_deg: f32, ortho: bool, framed: f32) -> (f32, f32) {
     let points: Vec<Vec3> = built.meshes.iter().flat_map(|m| m.mesh.geometry.positions.iter().copied()).collect();
     let (sole, crown) = points.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| (lo.min(p.y), hi.max(p.y)));
-    let framed = (crown - sole) * (1.0 + 2.0 * MARGIN);
     let mid = f32::midpoint(crown, sole);
     let half = 6.0_f32.to_radians().tan();
     let distance = 0.5 * framed / half;
@@ -829,7 +828,24 @@ fn the_crown_and_soles_are_projected_where_the_geometry_is_in_every_lens() {
         character
     };
     let character = shifted();
-    let expected = |view: View, ortho: bool| rows_by_hand(&character, view.yaw_deg(), ortho);
+    // The height the shot frames: the character's own plus the margin, or more when its width across every view
+    // (40 cm toward the camera turns into 40 cm to the side) needs a wider shot than the cell's shape gives.
+    let framed = |character: &BuiltCharacter| {
+        let points = || character.meshes.iter().flat_map(|m| m.mesh.geometry.positions.iter().copied());
+        let (sole, crown) = points().fold((f32::MAX, f32::MIN), |(lo, hi), p| (lo.min(p.y), hi.max(p.y)));
+        let half_width = View::ALL
+            .iter()
+            .flat_map(|view| {
+                let turn = view.yaw_deg().to_radians();
+                points().map(move |p| (p.x * turn.cos() + p.z * turn.sin()).abs())
+            })
+            .fold(0.0_f32, f32::max);
+        let tall = (crown - sole) * (1.0 + 2.0 * MARGIN);
+        let wide = 2.0 * half_width * (1.0 + 2.0 * MARGIN) * CELL.y as f32 / CELL.x as f32;
+        tall.max(wide)
+    };
+    let height = framed(&character);
+    let expected = |view: View, ortho: bool| rows_by_hand(&character, view.yaw_deg(), ortho, height);
     let mut seen = Vec::new();
     for lens in [Lens::Telephoto, Lens::Orthographic] {
         let sheet = with_built(shifted(), |stage, renderer| {
@@ -893,7 +909,13 @@ fn the_sheet_is_drawn_at_one_time_whatever_the_clock_and_the_frames_before() {
         }
         times.lock().expect("the notes").clear();
         let sheet = render_turnaround(&mut stage, &mut renderer, &spec()).expect("the sheet renders");
-        let seen = times.lock().expect("the notes").clone();
+        let mut seen = times.lock().expect("the notes").clone();
+        // After earlier frames the sheet paints the caller's face again at the caller's time when it gives the stage
+        // back; every paint before that is the sheet's.
+        if prior > 0 {
+            let restored = seen.pop().expect("the caller's face is painted again");
+            assert!(restored.to_bits() != SHEET_TICK.time.0.to_bits(), "the caller's own time: {restored}");
+        }
         // The frame after the sheet is the one the clock would have given without it.
         let next = stage.tick(&mut renderer, &FrameInput::default()).expect("a frame").tick.index;
         stage.release(&mut renderer).expect("released");
@@ -946,8 +968,10 @@ fn the_rows_follow_a_pose_that_moves_skinned_geometry() {
     lowered.hips_offset = Vec3::new(0.0, -0.02, 0.0);
     let posed = draw(SheetPose::custom(lowered));
     let (a, b) = (rest.views[0].framing, posed.views[0].framing);
+    // The shot is framed from the posed geometry, so the moved extremes show as a different scale rather than as
+    // rows outside the margin.
     assert!(
-        (a.crown_row - b.crown_row).abs() > 1.0 || (a.ground_row - b.ground_row).abs() > 1.0,
+        (a.px_per_m - b.px_per_m).abs() > 1.0,
         "the pose moves the extremes, or this test aims at nothing: {a:?} vs {b:?}"
     );
     let (top, bottom) = silhouette(&posed);
@@ -982,32 +1006,96 @@ fn the_sheet_gives_back_an_outer_pin_and_the_frame_info() {
 }
 
 #[test]
-fn a_pose_that_leaves_the_frame_fails_closed_and_the_sheet_still_gives_everything_back() {
+fn a_view_that_settles_out_of_the_frame_fails_closed_and_the_sheet_still_gives_everything_back() {
     let mut renderer = MockRenderer::new();
-    let mut stage = stage_clocked(&mut renderer, built(), StageClock::fixed(60.0));
+    // The hair rises 5 cm for every settle step: far above anything the posed framing measured.
+    let mut stage = stage_clocked(&mut renderer, drifting_by(Vec3::Y * 0.05), StageClock::fixed(60.0));
     for _ in 0..2 {
         stage.tick(&mut renderer, &FrameInput::default()).expect("a frame");
     }
     let before = stage.scene().clone();
     let targets = renderer.stats().targets;
-    // Sitting: the hips drop half a metre, far below the sole the shot was framed for.
-    let mut sitting = built().rig.bind;
-    sitting.hips_offset = Vec3::new(0.0, -0.5, 0.0);
-    let error = render_turnaround(&mut stage, &mut renderer, &spec().with_pose(SheetPose::custom(sitting)))
-        .expect_err("the pose does not fit");
+    let error =
+        render_turnaround(&mut stage, &mut renderer, &spec().with_settle_steps(40)).expect_err("it does not fit");
     assert!(matches!(error, TurnaroundError::Unsupported(_)), "{error}");
-    assert!(error.to_string().contains("#1854"), "the message names the follow-up: {error}");
+    assert!(error.to_string().contains("settles beyond the margin"), "the message says why: {error}");
     // Every field the sheet saves is back: the settings, the frame info, the pin, the target.
     assert!(same_settings(stage.scene(), &before));
     assert_eq!(stage.scene().frame, before.frame);
     assert_eq!(renderer.stats().targets, targets, "the sheet's target is released");
     let next = stage.tick(&mut renderer, &FrameInput::default()).expect("a frame").tick;
     assert_eq!(next.index, 2, "no pin is left: the clock carries on");
-    // A pose that does fit still renders.
-    let mut nudged = built().rig.bind;
-    nudged.hips_offset = Vec3::new(0.0, -0.01, 0.0);
-    render_turnaround(&mut stage, &mut renderer, &spec().with_pose(SheetPose::custom(nudged))).expect("it fits");
     stage.release(&mut renderer).expect("released");
+}
+
+/// The rows and columns the drawn character spans in each view of `sheet`, as fractions of the cell.
+fn fill(sheet: &TurnaroundSheet) -> Vec<(f32, f32)> {
+    sheet.views.iter().map(|v| (v.framing.crown_row, v.framing.ground_row)).collect()
+}
+
+/// The opaque columns of a cell: `(first, last + 1)`.
+fn columns(image: &Image) -> (u32, u32) {
+    let cols: Vec<u32> = (0..image.size.x).filter(|&x| (0..image.size.y).any(|y| opaque(image, x, y))).collect();
+    (*cols.first().expect("something is drawn"), *cols.last().expect("something is drawn") + 1)
+}
+
+/// Sitting (the hips half a metre down) and arms raised over the head: poses the bind height doesn't frame. Each is
+/// framed from its own drawn extent, so crown and soles sit inside the margin in every view and fill the cell's height
+/// as the rest pose does.
+#[test]
+fn custom_poses_are_framed_from_their_posed_bounds() {
+    let rest = sheet(&spec());
+    let share = |sheet: &TurnaroundSheet| {
+        let (crown, ground) = fill(sheet).into_iter().fold((f32::MAX, f32::MIN), |(c, g), (a, b)| (c.min(a), g.max(b)));
+        (ground - crown) / CELL.y as f32
+    };
+    let mut sitting = built().rig.bind;
+    sitting.hips_offset = Vec3::new(0.0, -0.5, 0.0);
+    let mut raised = built().rig.bind;
+    for (bone, angle) in [(HumanoidBone::LeftUpperArm, 2.6_f32), (HumanoidBone::RightUpperArm, -2.6)] {
+        raised.set(bone, omuzaki_core::glam::Quat::from_rotation_z(angle));
+    }
+    for (name, pose) in [("sitting", sitting), ("arms raised", raised)] {
+        let posed = sheet(&spec().with_pose(SheetPose::custom(pose)));
+        let margin = MARGIN * CELL.y as f32;
+        for view in &posed.views {
+            dump(&format!("posed-{name}-{:?}", view.view), &view.image);
+            let (top, bottom) = extent(&view.image);
+            // The settle steps may lift the hair a little into the margin; nothing leaves the cell.
+            assert!(top as f32 >= 0.5 * margin, "{name} {:?}: the crown at row {top} is inside the cell", view.view);
+            assert!(
+                bottom as f32 + 1.0 <= CELL.y as f32 - 0.5 * margin,
+                "{name} {:?}: the soles at {bottom}",
+                view.view
+            );
+        }
+        let (a, b) = (share(&rest), share(&posed));
+        println!("{name}: fills {b:.3} of the cell's height, the rest pose {a:.3}");
+        assert!((a - b).abs() <= 0.03 * a, "{name}: the fill share {b:.3} is within 3% of the rest pose's {a:.3}");
+    }
+}
+
+/// A pose that reaches further across than a narrow cell holds: the shot widens until it fits, on both axes.
+#[test]
+fn a_pose_wider_than_a_narrow_cell_is_framed_by_its_width() {
+    let narrow = UVec2::new(CELL.x / 3, CELL.y);
+    // The whole character half a metre to its left: in every view but the side ones it reaches further across than
+    // the rest pose's arms.
+    let mut spread = built().rig.bind;
+    spread.hips_offset = Vec3::new(0.5, 0.0, 0.0);
+    let spec = TurnaroundSpec::new(narrow).with_lens(Lens::Orthographic).with_settle_steps(4);
+    let rest = sheet(&spec);
+    let posed = sheet(&spec.clone().with_pose(SheetPose::custom(spread)));
+    let front = &posed.views[0];
+    dump("posed-spread-front", &front.image);
+    let (left, right) = columns(&front.image);
+    assert!(left > 0 && right < narrow.x, "the pose is inside the cell's columns: {left}..{right} of {}", narrow.x);
+    assert!(
+        front.framing.px_per_m < rest.views[0].framing.px_per_m,
+        "the shot widened for the pose: {} px/m against {}",
+        front.framing.px_per_m,
+        rest.views[0].framing.px_per_m
+    );
 }
 
 #[test]
@@ -1039,4 +1127,49 @@ fn the_sheet_renders_on_the_software_adapter() {
     // On a GPU the moved tile camera rounds a hair strand's edge differently now and then, flipping a sample's
     // coverage in a handful of scattered pixels (7 of 28 800 measured on lavapipe), so only the total is held.
     assert_stitched(&single, &tiled, 48, usize::MAX);
+}
+
+/// A face painter that notes what it was asked to paint: the mapped parameters and the time.
+struct InputRecorder {
+    inner: MockPainter,
+    painted: Arc<Mutex<Vec<String>>>,
+}
+
+impl FacePainter for InputRecorder {
+    fn layers(&self) -> &[FaceLayerSpec] {
+        self.inner.layers()
+    }
+
+    fn paint(&mut self, input: &FaceInput<'_>, out: &mut FaceDrawing) -> Result<(), FaceError> {
+        self.painted.lock().expect("the notes").push(format!("{:?} at {}", input.params, input.time.0));
+        self.inner.paint(input, out)
+    }
+}
+
+#[test]
+fn the_sheet_gives_back_the_callers_face() {
+    let mut renderer = MockRenderer::new();
+    let mut stage = stage_clocked(&mut renderer, built(), StageClock::fixed(60.0));
+    let painted = Arc::new(Mutex::new(Vec::new()));
+    let noted = Arc::clone(&painted);
+    let rig = FaceRig::new(Box::new(move |projection, _| {
+        let recorder = InputRecorder { inner: MockPainter::new(*projection), painted: Arc::clone(&noted) };
+        FaceSystem::new(Box::new(recorder), Box::new(MockRasterizer))
+    }))
+    .with_executor(Box::new(InlineExecutor));
+    stage.set_face(&mut renderer, rig).expect("the face binds");
+    let last = || painted.lock().expect("the notes").last().cloned().expect("a paint");
+    let mut channels = omuzaki_anim_api::ChannelBuf::NEUTRAL;
+    channels.set(omuzaki_anim_api::Channel::JAW_OPEN, 1.0);
+    channels.set(omuzaki_anim_api::Channel::EYE_BLINK_LEFT, 1.0);
+    for _ in 0..3 {
+        stage.tick(&mut renderer, &FrameInput { channels, ..FrameInput::default() }).expect("an open-mouthed frame");
+    }
+    let callers = last();
+
+    render_turnaround(&mut stage, &mut renderer, &spec()).expect("the sheet renders");
+    let paints = painted.lock().expect("the notes").clone();
+    assert!(paints.iter().rev().skip(1).any(|p| *p != callers), "the sheet painted its own neutral face: {paints:?}");
+    assert_eq!(last(), callers, "the caller's face is painted again, at the caller's time, after the sheet's");
+    stage.release(&mut renderer).expect("released");
 }

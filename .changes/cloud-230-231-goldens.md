@@ -1,0 +1,6 @@
+# Project goldens: render.golden.bless, render.golden.check and render.golden.set_scene
+
+- A character's golden manifest lives in the document at `goldens/<character>`. It holds the shots the character is checked in (framing, angle, light rig, expression, pose, size and a tolerance each) and, for the base and every variant, a hash of what its render depends on and the stored golden of each shot (#230).
+- `render.golden.bless {character, variants?, scenes?}` renders through `render.preview` and records the goldens. The game face (the variant for the widest shots) is pixel-exact by default. Blessing twice gives the same manifest, and a bless is undoable.
+- `render.golden.check {character, intended?, rerender?}` renders every variant whose definition changed since the bless and holds it to its goldens: byte for byte for a pixel-exact variant, within the shot's tolerance otherwise. A change on an `intended` variant is reported, not failed. A failing render comes with a heatmap and a difference picture. The dry run reports how many renders it will make, and variants an edit didn't reach are not rendered again (#231).
+- `render.golden.set_scene` adds, changes or removes one shot without rendering. A new tolerance keeps the shot's goldens; any other change drops them until the next bless.
