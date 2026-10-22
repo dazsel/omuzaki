@@ -6,6 +6,7 @@
 pub mod aux_window;
 pub mod broadcast;
 pub mod ds;
+pub mod generate;
 pub mod live;
 pub mod output_window;
 pub mod panels;

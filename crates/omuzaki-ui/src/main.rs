@@ -23,6 +23,7 @@ use omuzaki_theatre::TheatreBook;
 use omuzaki_ui::aux_window::{Backend, Platform, SurfaceRoute, transparency};
 use omuzaki_ui::ds::script_fonts::ScriptFonts;
 use omuzaki_ui::ds::settings_keys::SettingsLink;
+use omuzaki_ui::generate::Generation;
 use omuzaki_ui::live::viewport::{NativePresenter, Presenter, ViewportError, kit_stage, project_stage};
 use omuzaki_ui::live::wiring::{LiveApp, LiveScene, RealClock};
 use omuzaki_ui::panels::agent::Agents;
@@ -312,7 +313,14 @@ fn main() -> eframe::Result {
             }
             let live = start_live(cc, open_document(dir.as_ref()), settings.clone());
             let (core, theatre) = core_of(live.as_ref(), dir.as_ref(), settings).unzip();
+            let generation = core.as_ref().map(|core| Generation {
+                runner: Arc::clone(&core.runner),
+                store: live.as_ref().and_then(LiveApp::generated_store),
+            });
             let mut shell = studio_shell(cc, core, dir.as_ref());
+            if let Some(generation) = generation {
+                shell.insert_view(generation);
+            }
             if let Some(theatre) = theatre {
                 shell.insert_view(theatre);
             }

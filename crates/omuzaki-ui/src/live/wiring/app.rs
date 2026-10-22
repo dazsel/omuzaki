@@ -403,6 +403,11 @@ impl LiveApp {
         crate::theatre::Theatre::new(self.theatre.clone(), self.renders.clone())
     }
 
+    /// The store generated files land in, for the Generated tray; `None` without a connector host.
+    pub fn generated_store(&self) -> Option<Arc<dyn Store>> {
+        self.renders.clone()
+    }
+
     /// The keychain, for the Settings window's OBS password (which no op carries); `None` without a data folder.
     pub fn keychain(&self) -> Option<crate::settings::connectors::Keychain> {
         self.secrets.clone().map(crate::settings::connectors::Keychain)

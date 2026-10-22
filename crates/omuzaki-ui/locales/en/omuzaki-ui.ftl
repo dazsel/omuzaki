@@ -1001,6 +1001,473 @@ ui-form-set-field = Set { $label }
 # A generated form field's own words.
 ui-form-whole = Enter a whole number
 
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-about = {"up to "}
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-accept = Accept
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+# $count (id, never translated): "hair-b"
+ui-generate-accept-chosen = Accept { $count }
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-accepted = Accepted
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-all-states = All
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-and = {" and "}
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-can-publish = Can be published
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-cancel = Cancel
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+# $why (id, never translated): "hair-b"
+ui-generate-cant-publish = Can't be published: { $why }
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-cap-dcc = Programs
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-cap-image = Images
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-cap-llm = Text
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-cap-model3d = 3D models
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-cap-motion = Motion
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-cap-music = Music
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-cap-texture = Textures
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-cap-vision = Vision
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-cap-voice = Voice
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+# $usd (id, never translated): "hair-b"
+ui-generate-card-budget = Budget left this session: { $usd }
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+# $licence (id, never translated): "hair-b"
+# $commercial (id, never translated): "hair-b"
+ui-generate-card-licence = Results: { $licence }. { $commercial }
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+# $about (id, never translated): "hair-b"
+# $usd (id, never translated): "hair-b"
+ui-generate-card-paid-local = This stays on this computer and costs { $about }{ $usd }.
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+# $what (id, never translated): "hair-b"
+# $hosts (id, never translated): "hair-b"
+ui-generate-card-sends-free = This sends { $what } to { $hosts }. It costs nothing.
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+# $what (id, never translated): "hair-b"
+# $hosts (id, never translated): "hair-b"
+# $about (id, never translated): "hair-b"
+# $usd (id, never translated): "hair-b"
+ui-generate-card-sends-paid = This sends { $what } to { $hosts } and costs { $about }{ $usd }.
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-card-title = Before it runs
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-commercial-no = Not for commercial use.
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-commercial-ok = You can publish and sell them.
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-commercial-unknown = Whether you can sell them isn't known, so Omuzaki treats them as not for publishing.
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-compare = Compare
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-compare-close = Close comparison
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-compare-how = Choose two to compare them side by side.
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+# $usd (id, never translated): "hair-b"
+ui-generate-cost = { $usd }
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-count = How many
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+# $count (id, never translated): "hair-b"
+# $what (id, never translated): "hair-b"
+ui-generate-counted = { $count } { $what }
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-disabled = Off
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-enabled = Enabled
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-endpoint = Address
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-endpoint-hint = http://127.0.0.1:8188
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-endpoint-leaves = This address is on another computer: what you send now leaves this one.
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-endpoint-local = This address is on this computer: nothing leaves it.
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-endpoint-reset = Use the default
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-endpoint-save = Save address
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-free = Free
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-generators = Generators
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+# $hosts (id, never translated): "hair-b"
+ui-generate-goes-to = It goes to: { $hosts }
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-key = API key
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-key-empty = Type or paste a key first
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+# $reason (id, never translated): "hair-b"
+ui-generate-key-failed = The key wasn't saved: { $reason }
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-key-hint = Paste the key
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-key-missing = No key yet
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-key-remove = Remove key
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-key-save = Save key
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-key-saved = Key saved
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-key-short = That doesn't look like a key
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-key-where = The key goes to this computer's keychain. Omuzaki never shows it again, logs it or puts it in a project.
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-kind-audio = Audio
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-kind-mesh = 3D model
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-kind-motion = Motion
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-kind-text = Text
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-kind-video = Video
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-licence = What you can do with the results
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-licence-from-model = The licence is the one you declare for each model it runs.
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+# $licence (id, never translated): "hair-b"
+ui-generate-licence-line = Results carry the licence { $licence }.
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-list = Generators
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-local-line = Stays on this computer
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-make = Generate
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-make-none = Turn on a generator in Settings, Connectors, Generators to make images here.
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-make-with = Generator
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+# $name (id, never translated): "hair-b"
+ui-generate-making = Generating with { $name }...
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+# $model (id, never translated): "hair-b"
+ui-generate-model = { $model }
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-model-commercial = commercial use allowed
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+# $model (id, never translated): "hair-b"
+# $licence (id, never translated): "hair-b"
+# $commercial (id, never translated): "hair-b"
+ui-generate-model-line = { $model }: { $licence }, { $commercial }
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-model-noncommercial = not for commercial use
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-model-unknown = commercial use unknown
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-models = Model licences you declared
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-needs-key = Needs key
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-needs-plan = Needs plan
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-no-generators = No generators in this build
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-no-generators-how = Generators are the image, texture, voice, music and model services Omuzaki can call. None is built into this copy.
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-no-keychain = This studio has no keychain to keep the key in.
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-no-models = No model licences declared. Results are not publishable until you declare the model's licence.
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-no-prompt = Untitled
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-no-tray = Generation isn't available
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-no-tray-how = This studio was started without a store for generated files.
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+# $reason (id, never translated): "hair-b"
+ui-generate-not-saved = Not saved: { $reason }
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-not-set-up = Not set up
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-open-settings = Open Connectors
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-paid = Paid
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-pending = To decide
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-plan = Your plan
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+# $plan (id, never translated): "hair-b"
+ui-generate-plan-chip = Plan { $plan }
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-plan-none = Not set
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+# $plans (id, never translated): "hair-b"
+ui-generate-plan-rule = Only these plans make publishable results: { $plans }.
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-price-changed = The price changed before it ran. Check the new one.
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-privacy = What it sends
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-prompt = Describe it
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-ready = Ready
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+# $reason (id, never translated): "hair-b"
+ui-generate-refused = Not done: { $reason }
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-refused-consent = It would use a real person's likeness or voice without consent on record.
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-refused-key = This generator needs its key first.
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+# $reason (id, never translated): "hair-b"
+ui-generate-refused-other = It can't run: { $reason }
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-refused-plan = Set your plan for this generator first.
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-refused-private = It would send private test material, which never leaves this computer.
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-regenerate = Make another
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-reject = Reject
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+# $count (id, never translated): "hair-b"
+ui-generate-reject-chosen = Reject { $count }
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-reject-confirm = Reject it
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-reject-why = Why? (optional)
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-rejected = Rejected
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+# $reason (id, never translated): "hair-b"
+ui-generate-rejected-because = Rejected: { $reason }
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+# $words (id, never translated): "hair-b"
+ui-generate-retention = What they keep: { $words }
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+# $name (id, never translated): "hair-b"
+# $status (id, never translated): "hair-b"
+ui-generate-row-name = { $name }, { $status }
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-run = Run
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+# $count (id, never translated): "hair-b"
+ui-generate-run-done = Made { $count }: they're in Generated
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+# $reason (id, never translated): "hair-b"
+ui-generate-run-failed = It didn't run: { $reason }
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+# $what (id, never translated): "hair-b"
+ui-generate-sends = A call sends: { $what }
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-sends-audio = audio
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-sends-files = files
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-sends-images = images
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-sends-meshes = meshes
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-sends-nothing = A call sends nothing off this computer.
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-sends-prompt = the prompt
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+# $host (id, never translated): "hair-b"
+ui-generate-sends-to = Sends to { $host }
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-sends-video = video
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-show = Show
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-stays = Stays on this computer
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-test = Test connection
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+# $reason (id, never translated): "hair-b"
+ui-generate-test-failed = It didn't answer: { $reason }
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-test-ok = It answered.
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-testing = Testing...
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+# $licence (id, never translated): "hair-b"
+ui-generate-tile-licence = Licence: { $licence }
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+# $prompt (id, never translated): "hair-b"
+# $connector (id, never translated): "hair-b"
+# $id (id, never translated): "hair-b"
+ui-generate-tile-name = { $prompt }, from { $connector }, { $id }
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-trains-no = They don't train on what you send.
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-trains-unknown = Their terms don't say whether they train on what you send.
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-trains-yes = They may train on what you send.
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-tray-empty = Nothing generated yet
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-tray-empty-how = What a generator makes lands here first. Accept it to use it, or reject it.
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-unavailable = Generators aren't available
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+# $reason (id, never translated): "hair-b"
+ui-generate-unavailable-why = { $reason }
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-why-noncommercial = not for commercial use
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-why-private = private test material
+
+# Generation: the Generators settings page, the key field, the Generated tray and the cost card before a run.
+ui-generate-why-unknown = unknown licence
+
 # The Live workspace: the camera, tracking, the stage, expressions and outputs.
 ui-live-calibrate = Calibrate
 
@@ -1564,6 +2031,9 @@ ui-live-strip-press = Show { $name } ({ $key })
 ui-live-title = Live
 
 # A panel's title (a short tab label), or what its body says while it can't work.
+ui-panel-generated = Generated
+
+# A panel's title (a short tab label), or what its body says while it can't work.
 ui-panel-history = History
 
 # A panel's title (a short tab label), or what its body says while it can't work.
@@ -1576,13 +2046,10 @@ ui-panel-live-stage = Stage
 ui-panel-setup = Setup
 
 # A panel's title (a short tab label), or what its body says while it can't work.
-ui-panel-theatre-compare = Compare
-
-# A panel's title (a short tab label), or what its body says while it can't work.
 ui-panel-theatre-plan = Plan
 
 # A panel's title (a short tab label), or what its body says while it can't work.
-ui-panel-theatre-stage = Stage
+ui-panel-theatre-stage = Agent view
 
 # A panel's title (a short tab label), or what its body says while it can't work.
 ui-panel-theatre-steps = Steps

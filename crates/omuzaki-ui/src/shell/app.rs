@@ -946,6 +946,14 @@ impl Shell {
                     }
                 }
                 ShellRequest::ClosePanel(id) => self.close_panel(id),
+                ShellRequest::Settings(page, connector) => {
+                    let keychain = self.models.get::<Keychain>().cloned();
+                    let mut window = SettingsWindow::on(page).with_keychain(keychain);
+                    if let Some(connector) = connector {
+                        window.connectors().show_connector(connector);
+                    }
+                    self.settings = Some(window);
+                }
                 ShellRequest::Adjust { op, args } => {
                     let places = self.places();
                     self.palette.adjust(self.runner.as_ref(), &places, ctx, &op, &args);

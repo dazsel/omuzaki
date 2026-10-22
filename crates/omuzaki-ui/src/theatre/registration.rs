@@ -29,7 +29,7 @@ omuzaki_ui_api::register_panel! {
 }
 
 omuzaki_ui_api::register_panel! {
-    id: "theatre-stage", title: "Stage", icon: icons::BINOCULARS, region: Region::Center, min_size: [480.0, 320.0],
+    id: "theatre-stage", title: "Agent view", icon: icons::BINOCULARS, region: Region::Center, min_size: [480.0, 320.0],
     order: 40, build: |ctx| Box::new(StagePanel::new(EditFocus::from_ctx(ctx))),
 }
 

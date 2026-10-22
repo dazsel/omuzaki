@@ -211,7 +211,8 @@ impl Dock<'_> {
                 width + 2.0 * margin
             })
             .sum();
-        names + ds(self.ctx).metrics.icon_button > width
+        // `egui_tiles` puts a gap before the "⋯" button and another after it, and scrolls at the first pixel over.
+        names + ds(self.ctx).metrics.icon_button + 2.0 * style.spacing.item_spacing.x > width
     }
 
     /// The "⋯" menu of the panel `def`: move it to the other side, close it, or reset the layout.

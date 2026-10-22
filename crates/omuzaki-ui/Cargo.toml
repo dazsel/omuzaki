@@ -98,11 +98,14 @@ egui_kittest.workspace = true
 image.workspace = true
 omuzaki-anim-mock = { path = "../omuzaki-anim-mock" }
 omuzaki-char-mock = { path = "../omuzaki-char-mock" }
+omuzaki-connect-mock = { path = "../omuzaki-connect-mock" }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+omuzaki-http-mock = { path = "../omuzaki-http-mock" }
 omuzaki-ops-mock = { path = "../omuzaki-ops-mock" }
 omuzaki-osc = { path = "../omuzaki-osc" }
 omuzaki-render-mock = { path = "../omuzaki-render-mock" }
 omuzaki-settings-mock = { path = "../omuzaki-settings-mock" }
+omuzaki-store-mock = { path = "../omuzaki-store-mock" }
 omuzaki-test = { path = "../omuzaki-test" }
 omuzaki-track-mock = { path = "../omuzaki-track-mock" }
 omuzaki-ui-mock = { path = "../omuzaki-ui-mock" }

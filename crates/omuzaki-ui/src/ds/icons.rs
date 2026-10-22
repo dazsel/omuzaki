@@ -180,3 +180,9 @@ pub const CROSSHAIR: &str = egui_phosphor::regular::CROSSHAIR;
 pub const COLUMNS: &str = egui_phosphor::regular::COLUMNS;
 /// Steps: a stack of cards, one per transaction.
 pub const CARDS: &str = egui_phosphor::regular::CARDS;
+/// A file of no particular kind.
+pub const FILE: &str = egui_phosphor::regular::FILE;
+/// Motion data.
+pub const PERSON_SIMPLE_RUN: &str = egui_phosphor::regular::PERSON_SIMPLE_RUN;
+/// Not allowed: the rights badge of a file that can't be published.
+pub const PROHIBIT: &str = egui_phosphor::regular::PROHIBIT;
