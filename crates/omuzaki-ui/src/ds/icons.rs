@@ -39,6 +39,8 @@ pub const CARET_UP: &str = egui_phosphor::regular::CARET_UP;
 pub const CARET_UP_DOWN: &str = egui_phosphor::regular::CARET_UP_DOWN;
 /// Reset to default.
 pub const ARROW_COUNTER_CLOCKWISE: &str = egui_phosphor::regular::ARROW_COUNTER_CLOCKWISE;
+/// Redo.
+pub const ARROW_CLOCKWISE: &str = egui_phosphor::regular::ARROW_CLOCKWISE;
 /// Search.
 pub const MAGNIFYING_GLASS: &str = egui_phosphor::regular::MAGNIFYING_GLASS;
 /// Pick a colour from the screen.
@@ -119,6 +121,8 @@ pub const COMMAND: &str = egui_phosphor::regular::COMMAND;
 pub const CHAT_CIRCLE_TEXT: &str = egui_phosphor::regular::CHAT_CIRCLE_TEXT;
 /// Next.
 pub const ARROW_RIGHT: &str = egui_phosphor::regular::ARROW_RIGHT;
+/// Back.
+pub const ARROW_LEFT: &str = egui_phosphor::regular::ARROW_LEFT;
 /// A marker.
 pub const FLAG: &str = egui_phosphor::regular::FLAG;
 /// Delete.

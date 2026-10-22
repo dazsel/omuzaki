@@ -7,7 +7,7 @@ use crate::ds::gallery::layout::{caption, specimen};
 use crate::ds::gallery::text::{tr, translate};
 use crate::ds::theme::ds;
 use crate::ds::widgets::TextField;
-use crate::register_story;
+use omuzaki_ui_api::register_story;
 
 /// The sample contents are the person's data, not the gallery's text, but they start as words, so they are written
 /// into the fields in the gallery's language the first time the story is drawn.

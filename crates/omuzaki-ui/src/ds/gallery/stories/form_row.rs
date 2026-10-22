@@ -8,7 +8,7 @@ use crate::ds::gallery::layout::{caption, panel};
 use crate::ds::gallery::text::{tr, translate};
 use crate::ds::theme::ds;
 use crate::ds::widgets::{Choice, ColourField, Dropdown, FormRow, ParamSlider, Segment, Segmented, TextField, Toggle};
-use crate::register_story;
+use omuzaki_ui_api::register_story;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Side {
