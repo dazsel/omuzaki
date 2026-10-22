@@ -1,0 +1,28 @@
+[package]
+name = "omuzaki-performer-mock"
+description = "The AI performer's fake harness (ai-performer.md §9): ScriptedEars, FakeVoice, RecordingStage, ScriptedBrain, FakePerception, FakeCatalog, FakeWallet and the voice lead fakes on one FakeClock, plus the golden-transcript writer and differ."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+omuzaki-anim-api = { path = "../omuzaki-anim-api" }
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-llm-api = { path = "../omuzaki-llm-api" }
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+omuzaki-performer-api = { path = "../omuzaki-performer-api" }
+omuzaki-stage-api = { path = "../omuzaki-stage-api" }
+
+[dev-dependencies]
+omuzaki-l10n-api = { path = "../omuzaki-l10n-api" }
+omuzaki-llm-mock = { path = "../omuzaki-llm-mock" }
+
+[lints]
+workspace = true
+
+[package.metadata.omuzaki]
+kind = "Mock"
+summary = "the AI performer's fake harness (`ai-performer.md` §9): `ScriptedEars`, `FakeVoice` (instant synthesis, 60 ms of audio per char, chunks back to back), `RecordingStage`, `ScriptedBrain`, `FakePerception`, `FakeCatalog`, `FakeWallet`, `RecordingLead` and `FakeCut` on one `FakeClock`, and the golden-transcript `Transcript` writer and differ; passes the contract's conformance checks, and `FakeLlm` drives the §10 five-turn golden"
