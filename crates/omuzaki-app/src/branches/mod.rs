@@ -11,6 +11,7 @@
 //! checkpoint, ask for review on a branch it works on, and rename or delete only a branch made for its session.
 //! Switching the folder and deciding a review are a person's.
 
+pub(crate) mod handle;
 pub(crate) mod ids;
 mod lane;
 pub mod merges;
@@ -172,6 +173,7 @@ impl HostBranches {
             failpoint,
             me: me.clone(),
         });
+        this.shared.handle.bind(&this);
         this.watch(&lane);
         {
             let mut state = lock(&this.state);

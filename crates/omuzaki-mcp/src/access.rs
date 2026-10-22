@@ -23,9 +23,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent::Credential;
 use crate::error::ServerError;
+use crate::hop::LaneSession;
 use crate::limits::{Admission, Limits, SessionSlots, SessionsFull};
 use crate::server::McpServer;
-use crate::session::Session;
 
 /// Every secret starts with this, so a leaked one is recognisable (and findable by secret scanners).
 const SECRET_PREFIX: &str = "omuzaki_mcp_";
@@ -218,7 +218,7 @@ pub(crate) struct Endpoint {
     label: String,
     /// What the token's sessions are admitted with, and how the port ends them (see [`Credential`]).
     credential: Arc<Credential>,
-    service: StreamableHttpService<Session, LocalSessionManager>,
+    service: StreamableHttpService<LaneSession, LocalSessionManager>,
     sessions: Arc<LocalSessionManager>,
     /// How many sessions this token may have open (`max_sessions_per_token`).
     slots: SessionSlots,
@@ -227,7 +227,7 @@ pub(crate) struct Endpoint {
 }
 
 impl Endpoint {
-    pub(crate) fn service(&self) -> &StreamableHttpService<Session, LocalSessionManager> {
+    pub(crate) fn service(&self) -> &StreamableHttpService<LaneSession, LocalSessionManager> {
         &self.service
     }
 

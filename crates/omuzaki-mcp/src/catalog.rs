@@ -91,11 +91,11 @@ impl Catalog {
         ops: &[OpInfo],
         grants: &Grants,
         guidance: &Guidance,
-        registry: bool,
+        (registry, branches): (bool, bool),
         mode: ToolMode,
     ) -> Result<Self, ServerError> {
         let mut entries = ops.iter().map(|op| op_entry(op, grants, guidance)).collect::<Result<Vec<_>, _>>()?;
-        entries.extend(Builtin::ALL.into_iter().filter(|b| b.offered(registry, mode)).map(|b| {
+        entries.extend(Builtin::ALL.into_iter().filter(|b| b.offered(registry, branches, mode)).map(|b| {
             let tool = b.tool();
             let signature = signature(b.name(), &tool.input_schema);
             Entry { tool, op: b.title().to_owned(), route: Route::Builtin(b), signature, scope: Scope::Read }
@@ -204,7 +204,7 @@ mod tests {
     }
 
     fn build(ops: &[OpInfo]) -> Result<Catalog, ServerError> {
-        Catalog::build(ops, &Grants::agent_default(), &Guidance::default(), false, ToolMode::All)
+        Catalog::build(ops, &Grants::agent_default(), &Guidance::default(), (false, false), ToolMode::All)
     }
 
     #[test]

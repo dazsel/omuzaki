@@ -894,6 +894,30 @@ impl BranchError {
     }
 }
 
+impl From<BranchError> for omuzaki_ops_api::OpError {
+    /// The error a surface (an op, an MCP tool, the command line) reports for a failed branch call, with its hint:
+    /// unknown names are `not_found`, what is in the way is `conflict`, a bad name or request is `invalid`, a refusal by
+    /// role is `denied`, and storage trouble is `unavailable`.
+    fn from(error: BranchError) -> Self {
+        use omuzaki_ops_api::OpError;
+        let hint = error.hint();
+        let op = match &error {
+            BranchError::NotFound(_) | BranchError::PointNotFound(_) => OpError::not_found(error.to_string()),
+            BranchError::NameTaken(_) | BranchError::Busy(_) | BranchError::Refused(_) | BranchError::LaneLimit => {
+                OpError::conflict(error.to_string())
+            }
+            BranchError::InvalidName(_) => OpError::invalid("name", error.to_string()),
+            BranchError::Invalid(_) => OpError::invalid("args", error.to_string()),
+            BranchError::Denied(reason) => OpError::denied(reason.clone()),
+            BranchError::Io(_) => OpError::unavailable("branches").hint(error.to_string()),
+        };
+        match hint {
+            Some(hint) => op.hint(hint),
+            None => op,
+        }
+    }
+}
+
 /// The lane manager, implemented by `omuzaki-host`. Surfaces call it; ops never do (design 5.7).
 pub trait Branches: Send + Sync {
     /// Every branch, in the bin or not.

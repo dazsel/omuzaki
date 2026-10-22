@@ -306,6 +306,7 @@ impl AppCore {
             approval_ids: Arc::new(AtomicU64::new(0)),
             lane_states: LaneStates::default(),
             wall: Arc::new(SystemWall),
+            handle: Arc::default(),
         };
         let failpoint = options.failpoint.0.clone().unwrap_or_else(|| Arc::new(|_| Ok(())));
         let branches = HostBranches::open(shared, options.recover, failpoint, options.max_lanes)?;

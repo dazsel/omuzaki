@@ -1,5 +1,6 @@
-//! The tools that aren't ops: undo/redo, the op log, transactions, sessions, reading the document and finding ops. They
-//! call the `Runner` directly, so they exist whatever ops are registered, and their names are reserved.
+//! The tools that aren't ops: undo/redo, the op log, transactions, sessions, reading the document, finding ops and
+//! working on branches. They call the `Runner` (or the host's branches) directly, so they exist whatever ops are
+//! registered, and their names are reserved.
 
 use rmcp::model::{JsonObject, Tool, ToolAnnotations};
 use serde_json::{Value, json};
@@ -27,6 +28,10 @@ pub(crate) enum Builtin {
     OpsDescribe,
     OpsRun,
     ToolsEnable,
+    BranchCreate,
+    BranchCheckpoint,
+    BranchSwitch,
+    BranchWork,
 }
 
 /// The longest `approval_wait` waits, in seconds, and how long it waits when no timeout is given.
@@ -34,7 +39,7 @@ pub(crate) const APPROVAL_WAIT_MAX_SECONDS: u64 = 50;
 pub(crate) const APPROVAL_WAIT_DEFAULT_SECONDS: u64 = 30;
 
 impl Builtin {
-    pub(crate) const ALL: [Builtin; 14] = [
+    pub(crate) const ALL: [Builtin; 18] = [
         Self::Undo,
         Self::Redo,
         Self::Log,
@@ -49,6 +54,10 @@ impl Builtin {
         Self::OpsDescribe,
         Self::OpsRun,
         Self::ToolsEnable,
+        Self::BranchCreate,
+        Self::BranchCheckpoint,
+        Self::BranchSwitch,
+        Self::BranchWork,
     ];
 
     /// Whether the tool talks to the executor's session registry, and so exists only when the host wired one.
@@ -56,10 +65,18 @@ impl Builtin {
         matches!(self, Self::SessionInfo | Self::SessionList | Self::ApprovalWait)
     }
 
-    /// Whether the tool exists on a server with (or without) a session registry, listing tools in `mode`. `ops_run`
-    /// and `tools_enable` stand in for the op tools a core list leaves out, so only a core list has them.
-    pub(crate) fn offered(self, registry: bool, mode: ToolMode) -> bool {
+    /// Whether the tool works on the host's branches, and so exists only when the host wired them (and a registry: a
+    /// branch tool acts as this connection's session).
+    pub(crate) const fn needs_branches(self) -> bool {
+        matches!(self, Self::BranchCreate | Self::BranchCheckpoint | Self::BranchSwitch | Self::BranchWork)
+    }
+
+    /// Whether the tool exists on a server with (or without) a session registry and the host's branches, listing tools
+    /// in `mode`. `ops_run` and `tools_enable` stand in for the op tools a core list leaves out, so only a core list
+    /// has them.
+    pub(crate) fn offered(self, registry: bool, branches: bool, mode: ToolMode) -> bool {
         (registry || !self.needs_registry())
+            && ((registry && branches) || !self.needs_branches())
             && (mode == ToolMode::Core || !matches!(self, Self::OpsRun | Self::ToolsEnable))
     }
 
@@ -85,6 +102,10 @@ impl Builtin {
             Self::OpsDescribe => "ops.describe",
             Self::OpsRun => "ops.run",
             Self::ToolsEnable => "tools.enable",
+            Self::BranchCreate => "branch.create",
+            Self::BranchCheckpoint => "branch.checkpoint",
+            Self::BranchSwitch => "branch.switch",
+            Self::BranchWork => "branch.work",
         }
     }
 
@@ -105,6 +126,10 @@ impl Builtin {
             Self::OpsDescribe => "ops_describe",
             Self::OpsRun => "ops_run",
             Self::ToolsEnable => "tools_enable",
+            Self::BranchCreate => "branch_create",
+            Self::BranchCheckpoint => "branch_checkpoint",
+            Self::BranchSwitch => "branch_switch",
+            Self::BranchWork => "branch_work",
         }
     }
 
@@ -208,6 +233,38 @@ impl Builtin {
                  Pass `disable: true` to take them off the list again. The ops stay callable through ops_run either way.",
                 false,
             ),
+            Self::BranchCreate => (
+                "Make a branch: a copy of the project where you can try something without touching the person's \
+                 version. `name` is lowercase words joined by `-` and `/` (`designer/oval-face`); `from` the branch to \
+                 start from (yours by default); `title` a readable name; `focus` the parts it is about \
+                 (`characters/mia/parts/hair`), shown to the person. It starts as that branch's committed state now. A \
+                 branch you make is yours to check point, mark ready and rename. Making one changes no document and is \
+                 not an undo step. Then call branch_work to move onto it. branch_list (an op) lists the branches.",
+                false,
+            ),
+            Self::BranchCheckpoint => (
+                "Record your branch as it is now as a point of its history, named by `label` (an open transaction is \
+                 left out). With `ready: true` it asks the person to review that point, and `note` says what to look \
+                 at: they merge it into their branch or send it back with a comment, and either comes back at the top \
+                 of a later result. Not an undo step and changes no document; with nothing changed since the last \
+                 point it returns that point again.",
+                false,
+            ),
+            Self::BranchSwitch => (
+                "Switch the project folder to another branch. This is the person's own action: an agent is refused. To \
+                 work on a branch, move your session with branch_work; to hand your work over, branch_checkpoint with \
+                 `ready: true`.",
+                false,
+            ),
+            Self::BranchWork => (
+                "Move this session onto another branch (`branch`, by name): from then on your edits, undo and \
+                 transactions are that branch's, and the person's version is untouched. It ends this session (commit \
+                 or roll back an open transaction first) and opens one on that branch for the same connection, with \
+                 the same grants and the budget left; the reply names the session it ended. Resource subscriptions \
+                 and enabled tool areas start fresh. Not an undo step: call branch_work again to move back (`main`, \
+                 or the folder's branch, is the person's).",
+                false,
+            ),
         };
         let read_only =
             matches!(self, Self::Log | Self::SessionInfo | Self::SessionList | Self::ApprovalWait | Self::DocGet)
@@ -309,6 +366,37 @@ fn input_schema(builtin: Builtin) -> JsonObject {
                 "dry_run": {"type": "boolean", "default": false, "description": "Preview an edit without applying it."}
             },
             "required": ["op"],
+            "additionalProperties": false
+        }),
+        Builtin::BranchCreate => json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "minLength": 1, "description": "The new branch's name, e.g. `designer/oval-face`."},
+                "from": {"type": "string", "description": "The branch to start from, by name. Yours by default."},
+                "title": {"type": "string", "description": "A readable name, shown to the person."},
+                "focus": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "The parts the branch is about, by path, e.g. [\"characters/mia/parts/hair\"]."
+                }
+            },
+            "required": ["name"],
+            "additionalProperties": false
+        }),
+        Builtin::BranchCheckpoint => json!({
+            "type": "object",
+            "properties": {
+                "label": {"type": "string", "minLength": 1, "description": "What this point is, e.g. 'oval face, softer chin'."},
+                "ready": {"type": "boolean", "default": false, "description": "Ask the person to review this point."},
+                "note": {"type": "string", "description": "With `ready`: what the person should look at."}
+            },
+            "required": ["label"],
+            "additionalProperties": false
+        }),
+        Builtin::BranchSwitch | Builtin::BranchWork => json!({
+            "type": "object",
+            "properties": {"branch": {"type": "string", "minLength": 1, "description": "The branch, by name."}},
+            "required": ["branch"],
             "additionalProperties": false
         }),
         Builtin::ToolsEnable => json!({

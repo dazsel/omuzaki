@@ -13,10 +13,10 @@ use omuzaki_doc::branch::{DiskBranchStore, Refs};
 use omuzaki_doc::journal::{JournalFs, JournalHistory, JournalOptions, ProjectJournal, Reopened, SessionStart};
 use omuzaki_doc::snapshot::{SessionSnapshots, Snapshotter};
 use omuzaki_doc_api::DocPath;
-use omuzaki_history_api::branch::{BranchId, LaneState};
+use omuzaki_history_api::branch::{BranchId, Branches, LaneState};
 use omuzaki_history_api::state::{BranchStore, HistoryView};
 use omuzaki_history_api::{HistoryExport, HistoryLog, Snapshots, WallClock};
-use omuzaki_mcp::{Connections, McpOptions, McpServer, ToolMode};
+use omuzaki_mcp::{BranchHost, Connections, LaneServers, McpOptions, McpServer, ToolMode};
 use omuzaki_ops::Executor;
 use omuzaki_ops_api::{Actor, ConnectionService, Grants, ProjectDir, Runner, Services, ServicesBuilder, SessionState};
 
@@ -50,6 +50,8 @@ pub(crate) struct Shared {
     pub approval_ids: Arc<AtomicU64>,
     pub lane_states: LaneStates,
     pub wall: Arc<dyn WallClock>,
+    /// The lane manager as every lane's MCP server reaches it (`branch_create`, `branch_work`).
+    pub handle: Arc<super::handle::BranchesHandle>,
 }
 
 /// One open lane.
@@ -213,7 +215,12 @@ pub(crate) fn open(
         .with_connections(connections)
         .with_sessions(executor.clone(), shared.person.clone())
         .with_journal(journal.clone())
-        .with_roots(crate::core::project_dir_text(&shared.dir), std::iter::empty::<String>());
+        .with_roots(crate::core::project_dir_text(&shared.dir), std::iter::empty::<String>())
+        .with_branches(BranchHost::new(
+            Arc::clone(&shared.handle) as Arc<dyn Branches>,
+            Arc::clone(&shared.handle) as Arc<dyn LaneServers>,
+            branch.clone(),
+        ));
     let mcp_options = with_resource_providers(mcp_options, &services);
     let mcp = McpServer::new(executor.clone() as Arc<dyn Runner>, mcp_options)?.with_jobs(executor.clone());
     let baseline = Arc::strong_count(&executor);

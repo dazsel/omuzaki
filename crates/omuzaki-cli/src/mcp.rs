@@ -56,14 +56,23 @@ pub fn serve_stdio(runner: Arc<dyn Runner>, session: &Session, args: &McpArgs) -
 }
 
 /// Serves the app core's MCP server to one MCP client on stdin/stdout: the same server, sessions, journal and project
-/// root as the core's other surfaces, with the core's headless rules (nothing waits for an approval). Returns when the
-/// client closes the connection; the caller closes the core.
+/// root as the core's other surfaces, with the core's headless rules (nothing waits for an approval). With `branch` the
+/// agent works on that branch's lane (`new` makes one, see [`crate::branch::for_agent`]). Returns when the client
+/// closes the connection; the caller closes the core.
 ///
 /// # Errors
 /// As [`serve_stdio`].
-pub fn serve_core(core: &AppCore) -> Result<(), OpError> {
+pub fn serve_core(core: &AppCore, branch: Option<&str>, session: &crate::session::Session) -> Result<(), OpError> {
     log_to_stderr();
-    core.runtime().block_on(core.mcp().serve_stdio()).map_err(|e| server_error(&e))
+    let server = match branch {
+        None => core.mcp(),
+        Some(name) => {
+            let branch = crate::branch::for_agent(core, name, session)?;
+            eprintln!("omuzaki: serving branch {}", branch.name);
+            core.mcp_on(&branch.id).map_err(|e| e.to_op_error())?
+        }
+    };
+    core.runtime().block_on(server.serve_stdio()).map_err(|e| server_error(&e))
 }
 
 /// Sends `tracing` events to stderr, at `warn` unless `RUST_LOG` asks for another level.

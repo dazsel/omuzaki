@@ -37,6 +37,10 @@ pub fn execute(cli: &Cli, runner: Arc<dyn Runner>, session: &Session, stdin: &mu
         }
         Command::Undo => report_history(&UNDO, runner.undo(&session.actor, &session.grants)?, cli.json),
         Command::Redo => report_history(&REDO, runner.redo(&session.actor, &session.grants)?, cli.json),
+        Command::Mcp(args) if args.branch.is_some() => {
+            Err(OpError::invalid("branch", "branches belong to a project")
+                .hint("pass the project folder: --project <DIR>"))
+        }
         Command::Mcp(args) => mcp::serve_stdio(runner, session, args).map(|()| String::new()),
         // `app::run` runs it on the app core, which holds the branches; without a project there are none.
         Command::Branch { .. } => Err(OpError::invalid("project", "branches belong to a project")

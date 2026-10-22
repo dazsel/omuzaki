@@ -206,6 +206,7 @@
 mod access;
 mod agent;
 mod approvals;
+mod branches;
 pub mod bridge;
 mod builtin;
 mod catalog;
@@ -217,6 +218,7 @@ mod events;
 mod finder;
 mod floats;
 mod gate;
+mod hop;
 mod http;
 mod in_app;
 mod info;
@@ -235,9 +237,11 @@ mod signature;
 mod suggest;
 
 pub use access::{AccessToken, RECORD_VERSION, TokenId, TokenInfo, TokenRecord};
+pub use branches::{BranchHost, LaneServers};
 pub use catalog::ToolMode;
 pub use connection::Connections;
 pub use error::ServerError;
+pub use hop::LaneSession;
 pub use http::{HttpOptions, HttpServer, PairedHook, RevokedHook};
 pub use in_app::{InAppEnd, InAppLink, InAppSpec};
 pub use prompts::{PromptArg, PromptDef};

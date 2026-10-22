@@ -6,19 +6,23 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use omuzaki_history_api::JournalSink;
-use omuzaki_ops_api::{Actor, Grants, Jobs, OpInfo, Runner, Sessions};
+use omuzaki_ops_api::{Actor, EndReason, Grants, Jobs, OpInfo, Runner, Sessions};
 use rmcp::ServiceExt;
+use rmcp::handler::server::ServerHandler;
 use rmcp::model::Tool;
 use rmcp::service::RoleServer;
 use rmcp::transport::IntoTransport;
 use serde_json::Value;
+use tokio::sync::watch;
 
 use crate::agent::{self, Credential};
+use crate::branches::BranchHost;
 use crate::catalog::{Catalog, ToolMode};
 use crate::connection::{self, Connections};
 use crate::describe::{Guidance, core_note, instructions};
 use crate::error::ServerError;
 use crate::events::EventHub;
+use crate::hop::LaneSession;
 use crate::prompts::{PromptDef, Prompts};
 use crate::resources::{Providers, ResourceProvider};
 use crate::session::Session;
@@ -54,6 +58,8 @@ pub struct McpOptions {
     roots: Vec<String>,
     /// Which tools `tools/list` shows (see [`McpOptions::with_tools`]).
     tools: ToolMode,
+    /// The host's branches and the branch this server's lane holds (see [`McpOptions::with_branches`]).
+    branches: Option<BranchHost>,
 }
 
 /// The executor's session registry, the person every connection works for, and how long a paused session's calls are
@@ -90,6 +96,7 @@ impl McpOptions {
             sessions: None,
             roots: Vec::new(),
             tools: ToolMode::All,
+            branches: None,
         }
     }
 
@@ -170,6 +177,16 @@ impl McpOptions {
         self
     }
 
+    /// Serves this lane's branch (`docs/design/branches.md` 8.1): `session_info` names it, `branch_create`,
+    /// `branch_checkpoint`, `branch_switch` and `branch_work` are offered (with a session registry), a connection can
+    /// move to another lane's server with `branch_work`, and a result opens with the person's review outcomes for this
+    /// branch ("the person sent back aria/oval: 'rounder'").
+    #[must_use]
+    pub fn with_branches(mut self, host: BranchHost) -> Self {
+        self.branches = Some(host);
+        self
+    }
+
     /// Also offers `prompt` (a recipe) to agents whose session has every op in its [`needs`](PromptDef::needs). A
     /// prompt with the name of one already added, built-in or the host's, replaces it.
     #[must_use]
@@ -199,6 +216,8 @@ pub(crate) struct Shared {
     pub tools: ToolMode,
     /// When each task was created.
     pub task_times: crate::jobs::TaskTimes,
+    /// The host's branches, if it wired them.
+    pub branches: Option<BranchHost>,
     next_session: AtomicU64,
 }
 
@@ -221,7 +240,13 @@ impl View {
         credential: Option<Arc<Credential>>,
     ) -> Result<Self, ServerError> {
         let grants = with_roots(grants, &shared.roots);
-        let catalog = Catalog::build(ops, &grants, &shared.guidance, shared.sessions.is_some(), shared.tools)?;
+        let catalog = Catalog::build(
+            ops,
+            &grants,
+            &shared.guidance,
+            (shared.sessions.is_some(), shared.branches.is_some()),
+            shared.tools,
+        )?;
         let mut instructions = instructions(&grants, &shared.guidance, shared.sessions.is_some());
         if catalog.mode() == ToolMode::Core {
             instructions.push('\n');
@@ -277,6 +302,7 @@ impl McpServer {
             roots: options.roots,
             tools: options.tools,
             task_times: crate::jobs::TaskTimes::default(),
+            branches: options.branches,
             next_session: AtomicU64::new(1),
         };
         let view = View::build(&ops, options.grants, &shared, None)?;
@@ -372,8 +398,8 @@ impl McpServer {
 
     /// A handler for one HTTP session: as [`McpServer::session`], steering clients to the `initialize` lifecycle (see
     /// [`Session::for_http`]).
-    pub(crate) fn http_session(&self) -> Session {
-        self.session().for_http()
+    pub(crate) fn http_session(&self) -> LaneSession {
+        LaneSession::new(self.session().for_http())
     }
 
     /// Serves one client over `transport` until it disconnects.
@@ -386,7 +412,7 @@ impl McpServer {
         T: IntoTransport<RoleServer, E, A>,
         E: std::error::Error + Send + Sync + 'static,
     {
-        serve_session(self.session(), transport).await
+        serve_session(LaneSession::new(self.session()), transport).await
     }
 
     /// Serves one client over this process's stdin and stdout until it disconnects: what `omuzaki mcp` runs.
@@ -400,9 +426,22 @@ impl McpServer {
     }
 }
 
+/// A connection's handler that says when its session ended: a [`Session`], or a [`LaneSession`] that can move.
+pub(crate) trait Served: ServerHandler {
+    /// Wakes when the session ends, with the reason.
+    fn ended(&self) -> watch::Receiver<Option<EndReason>>;
+}
+
+impl Served for Session {
+    fn ended(&self) -> watch::Receiver<Option<EndReason>> {
+        Session::ended(self)
+    }
+}
+
 /// Serves `session` over `transport` until the client leaves or the registry ends the session, whichever comes first.
-pub(crate) async fn serve_session<T, E, A>(session: Session, transport: T) -> Result<(), ServerError>
+pub(crate) async fn serve_session<S, T, E, A>(session: S, transport: T) -> Result<(), ServerError>
 where
+    S: Served,
     T: IntoTransport<RoleServer, E, A>,
     E: std::error::Error + Send + Sync + 'static,
 {

@@ -67,6 +67,12 @@ fn run_on_core(cli: &Cli, dir: &Path, mut session: Session) -> Result<Reply, OpE
         Ok(core) => core,
         // The studio has the project: an agent's `omuzaki mcp` works in it through the bridge (agent-sessions 10.2).
         Err(AppError::Store(StoreError::Locked { .. })) if matches!(cli.command, Command::Mcp(_)) => {
+            if let Command::Mcp(args) = &cli.command
+                && let Some(branch) = &args.branch
+            {
+                return Err(OpError::invalid("branch", "the studio has this project open, so it decides the lanes")
+                    .hint(format!("connect without --branch, then call branch_work {{\"branch\": \"{branch}\"}}")));
+            }
             return bridge_to_studio(dir);
         }
         Err(error) => return Err(error.to_op_error()),
@@ -79,7 +85,9 @@ fn run_on_core(cli: &Cli, dir: &Path, mut session: Session) -> Result<Reply, OpE
     session.jobs = Some(core.jobs());
     session.project = Some(project_root(dir)?);
     let result = match &cli.command {
-        Command::Mcp(_) => crate::mcp::serve_core(&core).map(|()| Reply::ok(String::new())),
+        Command::Mcp(args) => {
+            crate::mcp::serve_core(&core, args.branch.as_deref(), &session).map(|()| Reply::ok(String::new()))
+        }
         Command::Branch { action } => crate::branch::run(&core, action, &session, cli.json),
         _ => execute(cli, core.runner(), &session, &mut io::stdin()).map(Reply::ok),
     };

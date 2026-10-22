@@ -203,6 +203,12 @@ pub struct McpArgs {
     /// which reach every op, so the list stays small) or `all` (one tool per op).
     #[arg(long, value_enum, default_value_t = ToolList::Core, value_name = "LIST")]
     pub tools: ToolList,
+
+    /// The branch the agent works on from its first call: a branch's name, or `new` for a new branch from the
+    /// folder's as it is now (`agent/session-<n>`). The person's version stays untouched; without it the agent works
+    /// on the folder's branch, and can still move with `branch_work`.
+    #[arg(long, value_name = "NAME|new")]
+    pub branch: Option<String>,
 }
 
 impl McpArgs {

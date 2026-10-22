@@ -7,7 +7,7 @@ use std::time::Duration;
 use omuzaki_history_api::{JournalSink, JournalStatus};
 use omuzaki_ops_api::{
     Actor, Budget, Cause, CauseKind, EndReason, ErrorCode, ErrorDetail, Grants, Jobs, Limits, Mode, OpError, OpKind,
-    PauseReason, Request, Runner, Scope, SessionSpec, SessionState, Sessions, Transport,
+    PauseReason, Request, Runner, Scope, SessionInfo, SessionSpec, SessionState, Sessions, Transport,
 };
 use rmcp::ErrorData as McpError;
 use rmcp::handler::server::ServerHandler;
@@ -81,6 +81,39 @@ pub struct Session {
     state: Arc<Mutex<State>>,
     /// Woken when `tools_enable` changes this session's tool list, for a `subscriptions/listen` stream to say so.
     tools_changed: Arc<Notify>,
+    /// What a session moved here by `branch_work` takes over from the one it replaces; used by the admission.
+    carry: Mutex<Option<Carry>>,
+}
+
+/// What `branch_work` carries from the session it ends to the one it opens on another lane (design branches.md 8.1).
+/// The ended session is not made the new one's `parent`: to the registry a parent is a live session whose sub-agent
+/// holds at most what it holds, and the one moved from is ended by then. The reply names it instead.
+pub(crate) struct Carry {
+    pub grants: Grants,
+    pub budget: Budget,
+    pub limits: Limits,
+    pub fence: Vec<omuzaki_doc_api::DocPath>,
+    pub role: Option<String>,
+    pub model: Option<String>,
+}
+
+impl Carry {
+    /// What `from` holds now: its grants, the budget it has left, its limits, fence, role and model.
+    pub(crate) fn of(from: &SessionInfo) -> Self {
+        let (budget, spent) = (from.budget, from.spent);
+        Self {
+            grants: from.grants.clone(),
+            budget: Budget {
+                usd_micros: budget.usd_micros.saturating_sub(spent.usd_micros),
+                tokens: budget.tokens.map(|t| t.saturating_sub(spent.tokens)),
+                seconds: budget.seconds.map(|t| t.saturating_sub(spent.seconds)),
+            },
+            limits: from.limits,
+            fence: from.fence.clone(),
+            role: from.role.clone(),
+            model: from.model.clone(),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -102,6 +135,8 @@ struct State {
     own: OwnTxs,
     /// The approvals this session asked a person for, and which decisions it has been told about.
     approvals: OwnApprovals,
+    /// How many of the branch review outcomes this session has been told about (or were before it started).
+    reviews: usize,
     /// The areas whose ops a core tool list shows this session (`tools_enable`).
     enabled: BTreeSet<String>,
 }
@@ -119,7 +154,8 @@ impl Session {
     pub(crate) fn new(shared: Arc<Shared>, view: Arc<View>, serial: u64) -> Self {
         shared.connections.open(serial);
         let latest = shared.hub.latest();
-        let state = State { seen: latest, approvals: OwnApprovals::new(latest), ..State::default() };
+        let reviews = shared.branches.as_ref().map_or(0, crate::branches::BranchHost::reviews_now);
+        let state = State { seen: latest, approvals: OwnApprovals::new(latest), reviews, ..State::default() };
         Self {
             shared,
             view,
@@ -134,6 +170,7 @@ impl Session {
             last_active: Mutex::new(Instant::now()),
             state: Arc::new(Mutex::new(state)),
             tools_changed: Arc::new(Notify::new()),
+            carry: Mutex::new(None),
         }
     }
 
@@ -156,6 +193,56 @@ impl Session {
     /// Wakes when this session ends, with the reason (see [`Session::ended`]).
     pub(crate) fn ended(&self) -> watch::Receiver<Option<EndReason>> {
         self.ended.subscribe()
+    }
+
+    /// The host's branches as this session's lane sees them, if the host wired them.
+    pub(crate) fn branch_host(&self) -> Result<&crate::branches::BranchHost, OpError> {
+        self.shared.branches.as_ref().ok_or_else(|| OpError::unsupported("this server has no branches"))
+    }
+
+    /// Whether `tool` (its name or its dotted alias) is `branch_work`.
+    pub(crate) fn is_branch_work(&self, tool: &str) -> bool {
+        self.view.catalog.get(tool).is_some_and(|entry| matches!(entry.route, Route::Builtin(Builtin::BranchWork)))
+    }
+
+    /// This connection's session, opened now if no call has yet.
+    pub(crate) fn linked(&self, context: &RequestContext<RoleServer>) -> Result<Link, OpError> {
+        self.name_client(context);
+        self.link(context).cloned().map_err(Clone::clone)
+    }
+
+    /// A handler for the same connection on another lane's server (`branch_work`): the same view (grants, credential
+    /// and tool list) over `to`'s runner, taking over `carry` when it is admitted.
+    pub(crate) fn moved_to(&self, to: &crate::server::McpServer, carry: Carry) -> Self {
+        let mut moved = Session::new(to.shared_arc(), Arc::clone(&self.view), to.next_serial()).with_jobs(to.jobs());
+        moved.http = self.http;
+        *lock(&moved.carry) = Some(carry);
+        moved
+    }
+
+    /// The label of this session's open transaction, which stops it from moving.
+    pub(crate) fn open_tx_label(&self) -> Option<String> {
+        lock(&self.state).tx.as_ref().map(|tx| tx.label.clone())
+    }
+
+    /// Ends this session as `Closed` because its connection moved to another lane; the connection stays open.
+    pub(crate) fn end_moved(&self) {
+        let Some(Ok(link)) = self.link.get() else { return };
+        self.ended.send_replace(Some(EndReason::Closed));
+        if let (Some(host), Some(id)) = (&self.shared.sessions, link.id)
+            && let Err(error) = host.sessions.end(id, EndReason::Closed)
+        {
+            tracing::warn!(%error, "the session a connection moved away from didn't end");
+        }
+    }
+
+    /// `result` opening with the review outcomes for this lane's branch that this session hasn't been told about.
+    fn with_reviews(&self, result: CallToolResult) -> CallToolResult {
+        let Some(host) = &self.shared.branches else { return result };
+        let seen = lock(&self.state).reviews;
+        let (notes, now) = host.reviews_since(seen);
+        lock(&self.state).reviews = now;
+        crate::branches::with_reviews(result, &notes)
     }
 
     /// Gives this handler the host's job manager (see [`McpServer::with_jobs`](crate::McpServer::with_jobs)).
@@ -247,7 +334,7 @@ impl Session {
             None if self.http => (Transport::Http { token: "mcp".to_owned() }, host.person.clone()),
             None => (Transport::Stdio, host.person.clone()),
         };
-        let spec = SessionSpec {
+        let mut spec = SessionSpec {
             transport,
             client,
             model: None,
@@ -259,6 +346,14 @@ impl Session {
             role: None,
             fence: Vec::new(),
         };
+        if let Some(carry) = lock(&self.carry).take() {
+            spec.grants = carry.grants;
+            spec.budget = carry.budget;
+            spec.limits = carry.limits;
+            spec.fence = carry.fence;
+            spec.role = carry.role;
+            spec.model = carry.model;
+        }
         // Before the open, so an end that follows at once is not missed.
         let after = self.shared.hub.latest();
         let info = host
@@ -744,6 +839,20 @@ impl Session {
             }
             // `dispatch` serves both: one becomes the op it names, the other needs the request's peer.
             Builtin::OpsRun | Builtin::ToolsEnable => Err(OpError::internal("routed in dispatch")),
+            Builtin::BranchCreate | Builtin::BranchCheckpoint | Builtin::BranchSwitch => {
+                let host = self.branch_host()?.clone();
+                let session = self.registry()?.session_of(&actor).map(|me| me.id);
+                let result = tokio::task::spawn_blocking(move || match builtin {
+                    Builtin::BranchCreate => crate::branches::create(&host, &args, &actor, session),
+                    Builtin::BranchCheckpoint => crate::branches::checkpoint(&host, &args, &actor),
+                    _ => crate::branches::switch(&host, &args, &actor),
+                })
+                .await
+                .map_err(|e| OpError::internal(format!("the branch call stopped: {e}")))??;
+                Ok(result.into())
+            }
+            Builtin::BranchWork => Err(OpError::unsupported("this connection can't move to another branch")
+                .hint("connect with `omuzaki mcp --branch <name>` to work on a branch")),
             Builtin::SessionInfo | Builtin::SessionList | Builtin::ApprovalWait => {
                 let grants = standing.clone()?.grants;
                 if !grants.allows(Scope::Read) {
@@ -784,7 +893,7 @@ impl Session {
     }
 
     /// The registry, which these three tools exist only for.
-    fn registry(&self) -> Result<&Arc<dyn Sessions>, OpError> {
+    pub(crate) fn registry(&self) -> Result<&Arc<dyn Sessions>, OpError> {
         self.shared
             .sessions
             .as_ref()
@@ -805,7 +914,11 @@ impl Session {
                 state.approvals.remember(approval.id, self.own_approval(approval));
             }
         }
-        Ok(info::session_info(&me, &pending, self.view.credential.as_deref()))
+        let result = info::session_info(&me, &pending, self.view.credential.as_deref());
+        Ok(match &self.shared.branches {
+            Some(host) => crate::branches::with_branch(result, &host.name()),
+            None => result,
+        })
     }
 
     /// `session_list`: every live session, this one marked.
@@ -1482,6 +1595,7 @@ impl ServerHandler for Session {
                 None => result,
             },
         };
+        let result = if log_text { result } else { self.with_reviews(result) };
         Ok(result.into())
     }
 

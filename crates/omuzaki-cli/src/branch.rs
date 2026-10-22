@@ -150,6 +150,22 @@ fn folder(core: &AppCore) -> BranchInfo {
     })
 }
 
+/// The branch `omuzaki mcp --branch` serves: the one called `name`, or for `new` a new branch from the folder's as it
+/// is now, called `agent/session-<n>` with the first free `n`.
+///
+/// # Errors
+/// An unknown branch, or one that can't be made.
+pub fn for_agent(core: &AppCore, name: &str, session: &Session) -> Result<BranchInfo, OpError> {
+    if name != "new" {
+        return by_name(core, name);
+    }
+    let branches = core.branches();
+    let taken: Vec<String> = branches.list().into_iter().map(|b| b.name.to_string()).collect();
+    let free = (1..).map(|n| format!("agent/session-{n}")).find(|n| !taken.contains(n)).unwrap_or_default();
+    let new = NewBranch::new(self::name(&free)?, branches.folder()).with_title("An agent's session");
+    branches.create(new, &session.actor).map_err(branch_error)
+}
+
 /// `--from`: a branch's name, a transaction number, or a state reference as JSON.
 fn start(core: &AppCore, from: Option<&str>) -> Result<(BranchId, StateRef), OpError> {
     let here = core.branches().folder();

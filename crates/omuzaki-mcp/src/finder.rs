@@ -330,7 +330,7 @@ mod tests {
             op("stage.set_backdrop", "Set the stage's backdrop: a colour, an image or transparent.", Scope::EditScene),
             op("face.set_profile", "Shape the face's profile.", Scope::EditCharacter),
         ];
-        Catalog::build(&ops, &Grants::agent_default(), &Guidance::default(), false, mode).unwrap()
+        Catalog::build(&ops, &Grants::agent_default(), &Guidance::default(), (false, false), mode).unwrap()
     }
 
     fn args(value: Value) -> JsonObject {
