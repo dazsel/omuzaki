@@ -36,6 +36,7 @@ omuzaki-store-api = { path = "../omuzaki-store-api" }
 tempfile.workspace = true
 omuzaki-char-mock = { path = "../omuzaki-char-mock" }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+omuzaki-face-mock = { path = "../omuzaki-face-mock" }
 omuzaki-io-mock = { path = "../omuzaki-io-mock" }
 omuzaki-store-mock = { path = "../omuzaki-store-mock" }
 
