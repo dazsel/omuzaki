@@ -185,7 +185,7 @@ impl HostBranches {
         let state = lock(&self.state);
         // The folder lane is open from project open to close; only a switch replaces it, under this lock.
         let folder = state.lanes.get(&state.folder).or_else(|| state.lanes.values().next());
-        folder.map(Arc::clone).unwrap_or_else(|| unreachable_lane())
+        folder.map_or_else(unreachable_lane, Arc::clone)
     }
 
     /// The lane of `branch` if it is open.
@@ -394,7 +394,7 @@ impl HostBranches {
         self.sync_states(state);
         self.emit(&BranchEvent::lane_opened(id.clone()));
         if !lane.recovery.is_empty() {
-            let name = self.live(id).map(|i| i.name.to_string()).unwrap_or_else(|_| id.to_string());
+            let name = self.live(id).map_or_else(|_| id.to_string(), |i| i.name.to_string());
             self.emit(&BranchEvent::lane_recovered(id.clone(), format!("{name}: {}", lane.recovery.summary())));
         }
         Ok(lane)
@@ -466,12 +466,11 @@ impl HostBranches {
         made: &Made<'_>,
         tree: Option<Value>,
     ) -> Result<(Point, PointId), BranchError> {
-        let (tree, history) = match tree {
-            Some(tree) => (tree, None),
-            None => {
-                let committed = lane.executor.committed().map_err(|e| BranchError::Busy(e.message))?;
-                (committed.tree, committed.history)
-            }
+        let (tree, history) = if let Some(tree) = tree {
+            (tree, None)
+        } else {
+            let committed = lane.executor.committed().map_err(|e| BranchError::Busy(e.message))?;
+            (committed.tree, committed.history)
         };
         let store = self.shared.snapshots.store().as_ref();
         let head = read_point(store, &info.head)?;

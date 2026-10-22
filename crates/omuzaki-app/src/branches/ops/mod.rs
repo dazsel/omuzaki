@@ -13,6 +13,7 @@ use omuzaki_ops_api::OpError;
 pub const MERGE_OP: &str = "branch.merge";
 
 /// A branch error as the op error an agent reads, with the hint where there is one.
+#[allow(clippy::needless_pass_by_value, reason = "it is the `map_err` adapter for a `BranchError`")]
 pub(crate) fn branch_error(error: BranchError) -> OpError {
     let hint = error.hint();
     let op = match &error {

@@ -60,6 +60,7 @@ fn request(actor: &Actor, op: &str, args: Value, mode: Mode) -> Request {
     }
 }
 
+#[allow(clippy::needless_pass_by_value, reason = "the tests read better passing json! values")]
 fn put(runner: &dyn Runner, path: &str, value: Value) {
     runner.run(request(&person(), "test.put", json!({"path": path, "value": value}), Mode::Apply)).unwrap();
 }

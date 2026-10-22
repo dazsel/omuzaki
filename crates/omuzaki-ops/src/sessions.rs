@@ -226,19 +226,16 @@ impl Registry {
         }
         let fence = normalize_fence(spec.fence)?;
         self.check_claim(None, spec.parent, &fence)?;
-        let id = match &self.shared_ids {
-            Some(counter) => {
-                let id = counter.fetch_add(1, Ordering::SeqCst);
-                if id == u64::MAX {
-                    return Err(OpError::internal("session ids ran out"));
-                }
-                SessionId(id)
+        let id = if let Some(counter) = &self.shared_ids {
+            let id = counter.fetch_add(1, Ordering::SeqCst);
+            if id == u64::MAX {
+                return Err(OpError::internal("session ids ran out"));
             }
-            None => {
-                let id = SessionId(self.next_id);
-                self.next_id = self.next_id.checked_add(1).ok_or_else(|| OpError::internal("session ids ran out"))?;
-                id
-            }
+            SessionId(id)
+        } else {
+            let id = SessionId(self.next_id);
+            self.next_id = self.next_id.checked_add(1).ok_or_else(|| OpError::internal("session ids ran out"))?;
+            id
         };
         let client = sanitise(&spec.client);
         let info = SessionInfo {
