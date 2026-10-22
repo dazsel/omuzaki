@@ -1,3 +1,6 @@
 # Hair colour and motion you can edit by name
 
 - Hair colour ops (#183): `hair.set_shading` sets one field of a hair part's shading, `hair.streak.add`, `hair.streak.set` and `hair.streak.remove` edit its coloured streaks, and `hair.recolour` sets the root, mid and tip colours through the palette's hair slots, so a colourway swap recolours the hair too. A streak now tints exactly its share of the clumps (a fifth of 44 is 9), the same clumps for its seed whatever other groups do.
+- Hair motion (#321): `hair.physics.preset` gives a hair part a named feel (silky, the default; bouncy; heavy; stiff), `hair.physics.set` tunes one field, `hair.group.set_dynamics` sets whether a group is simulated, what it follows and its stiffness, and the `hair.settle` query runs the simulation and reports the sag at rest, the swing after a turn and the settle time. After a 25 degree turn the kit's hair settles in 0.58 s silky, 0.32 s bouncy and 0.12 s heavy; stiff barely moves.
+- The hair's body colliders now sit inside the body on every template and body shape: the back spheres had poked up to 17 mm out of the torso near the shoulders, which held hair off the back.
+- Ops that build a character to read its geometry (`hair.settle`, the weight brushes, fitting, attaching accessories) now build a character wearing a painted part such as the plaid skirt.

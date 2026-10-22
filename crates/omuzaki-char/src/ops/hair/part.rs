@@ -47,6 +47,13 @@ pub(crate) fn load(ctx: &OpCtx<'_>, id: &CharId, part: &PartId) -> Result<HairPa
     Ok(HairPart { params_path: paths::part_params(id, part), kind, hair, def })
 }
 
+impl HairPart {
+    /// This part as if it held `hair`: for an op that writes two branches, the second from the state the first left.
+    pub(crate) fn holding(&self, hair: HairParams) -> Self {
+        Self { params_path: self.params_path.clone(), kind: self.kind, hair, def: self.def.clone() }
+    }
+}
+
 /// The ids of the character's hair parts, for hints.
 pub(crate) fn hair_parts(def: &CharacterDef) -> Vec<String> {
     def.parts
