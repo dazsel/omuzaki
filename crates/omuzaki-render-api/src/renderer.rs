@@ -16,7 +16,7 @@ use crate::{
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Capabilities {
-    /// A human-readable name for logs and bug reports, for example `"mock-cpu"` or `"wgpu Vulkan (NVIDIA RTX 4090)"`.
+    /// A human-readable name for logs and bug reports, for example `"mock-cpu"` or `"wgpu Vulkan (<the adapter's name>)"`.
     pub backend: String,
     /// The largest texture or target side. At least [`limits::GUARANTEED_TEXTURE_SIZE`](crate::limits).
     pub max_texture_size: u32,
