@@ -406,5 +406,8 @@ fn presets_parse_from_the_designs_toml_shape() {
     let d = desc(up);
     let b = SpawnBatch::new(system(), Mat4::IDENTITY);
     let peak = evaluate(&d, &b, 0, Seconds(f64::from(6.0f32.ln() / 3.0)), 1.0).unwrap();
-    assert!(peak.velocity.y.abs() < 1e-4 && (peak.position.y - (5.0 / 3.0 - 6.0f32.ln() / 3.0)).abs() < 1e-4, "{peak:?}");
+    assert!(
+        peak.velocity.y.abs() < 1e-4 && (peak.position.y - (5.0 / 3.0 - 6.0f32.ln() / 3.0)).abs() < 1e-4,
+        "{peak:?}"
+    );
 }
