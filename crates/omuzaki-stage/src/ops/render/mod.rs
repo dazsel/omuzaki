@@ -6,6 +6,7 @@ pub mod compare;
 pub mod contact_sheet;
 pub mod job;
 pub mod picture;
+pub mod pose;
 pub mod preview;
 pub mod still;
 pub mod turnaround;

@@ -6,10 +6,10 @@
 //! fallback timer, each probe under a hard timeout, and publishes the answer through an atomic, so the UI thread never
 //! waits on a process. A failed or unknown probe publishes "unknown", which leaves the manual toggle in charge. Tests install a fake source and need no OS.
 //!
-//! Platform probes use each system's own command line tool, so they need no unsafe code and no new dependency:
-//! Windows `reg query` (the `UserPreferencesMask` bit behind `SPI_GETCLIENTAREAANIMATION`), macOS `defaults`
-//! (`accessibilityDisplayShouldReduceMotion` is backed by the `reduceMotion` accessibility key), Linux the XDG
-//! desktop portal (`org.freedesktop.appearance`) then GNOME's `enable-animations`. The web build reads
+//! Windows is asked directly (`SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION)`, the "Animation effects" setting), so
+//! no process is started there and none can outlive the probe (#794). Elsewhere each system's own command line tool is
+//! used: macOS `defaults` (`accessibilityDisplayShouldReduceMotion` is backed by the `reduceMotion` accessibility key),
+//! Linux the XDG desktop portal (`org.freedesktop.appearance`) then GNOME's `enable-animations`. The web build reads
 //! `prefers-reduced-motion` in the browser shell and hands it in through [`OsMotionSource`]; this crate is native only.
 //! The parsers are pure functions, tested on captured output.
 
@@ -169,6 +169,7 @@ fn encode(v: Option<bool>) -> u8 {
 
 /// Runs `program`, returning its stdout when it exits successfully within [`PROBE_TIMEOUT`]; a tool that is missing,
 /// fails or hangs gives `None` (a hung one is killed).
+#[cfg(not(target_os = "windows"))]
 fn run(program: &str, args: &[&str]) -> Option<String> {
     run_within(&std::env::temp_dir(), program, args, PROBE_TIMEOUT)
 }
@@ -239,9 +240,8 @@ fn read_capture(path: &std::path::Path) -> Option<String> {
 ///
 /// Unix: the probe leads its own process group, so one `SIGKILL` to the group (a direct syscall: it cannot hang, and
 /// its error comes back) ends every descendant, including a daemon a tool autolaunched (gsettings may start dbus).
-/// `ESRCH`, the group already gone, is the goal reached. Windows: the probe is `reg query`, which starts no
-/// descendants, so `TerminateProcess` on the direct child is the whole tree; a Windows probe that gains descendants
-/// needs a Job object with kill-on-close.
+/// `ESRCH`, the group already gone, is the goal reached. Windows reads the setting without a process; a tool run
+/// through [`run_probe`] there is ended with `TerminateProcess`.
 fn kill_tree(child: &mut std::process::Child) -> bool {
     #[cfg(unix)]
     let signalled = match rustix::process::kill_process_group(
@@ -261,11 +261,19 @@ fn kill_tree(child: &mut std::process::Child) -> bool {
     signalled
 }
 
+/// Windows' "Animation effects": off means reduce. A failed call reads as unknown.
 #[cfg(target_os = "windows")]
+#[allow(
+    unsafe_code,
+    reason = "one Win32 query that writes a BOOL into a local it is handed; nothing outlives the call"
+)]
 fn probe_platform() -> Option<bool> {
-    run("reg", &["query", r"HKCU\Control Panel\Desktop", "/v", "UserPreferencesMask"])
-        .as_deref()
-        .and_then(parse_windows_mask)
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SPI_GETCLIENTAREAANIMATION, SystemParametersInfoW};
+    let mut animate: i32 = 0;
+    // SAFETY: SPI_GETCLIENTAREAANIMATION writes one BOOL (an i32) through the pointer, which points at `animate`, alive
+    // and writable for the whole call; the other arguments are unused for this action and zero.
+    let ok = unsafe { SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, (&raw mut animate).cast(), 0) };
+    (ok != 0).then_some(animate == 0)
 }
 
 #[cfg(target_os = "macos")]
@@ -303,14 +311,6 @@ fn probe_platform() -> Option<bool> {
 /// is cut off and that nothing is left in `dir`.
 pub fn run_probe(dir: &std::path::Path, program: &str, args: &[&str], limit: Duration) -> Option<String> {
     run_within(dir, program, args, limit)
-}
-
-/// `reg query ... UserPreferencesMask` output. The first byte's `0x02` bit is "animate controls and elements inside
-/// windows" (`SPI_GETCLIENTAREAANIMATION`); clear means reduce.
-pub fn parse_windows_mask(output: &str) -> Option<bool> {
-    let hex = output.lines().find(|l| l.contains("REG_BINARY"))?.split_whitespace().last()?;
-    let first = u8::from_str_radix(hex.get(0..2)?, 16).ok()?;
-    Some(first & 0x02 == 0)
 }
 
 /// `defaults read com.apple.universalaccess reduceMotion`: `1` or `0`.

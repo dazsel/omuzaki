@@ -10,6 +10,7 @@ pub mod output_window;
 pub mod panels;
 pub mod shell;
 pub mod studio;
+pub mod testing;
 pub mod wiring;
 
 // Lets `register_story!` and `register_contrast!` record each registration for the link gate (ADR 0015).

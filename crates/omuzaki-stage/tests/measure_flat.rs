@@ -3,7 +3,7 @@
 //! shading. The face front is the cheeks' band: across the middle of the head, from well under the eye line (the eyes
 //! reach below it) to well above the chin, projected through the shot's camera. Its skin pixels are the ones near
 //! the region's median hue (the eye whites and the mouth fall outside). The `measure` render preset file is checked
-//! here too, until #376 reads it.
+//! here too; `recipe::RenderPreset` reads it for `render.preview` (#376).
 
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
 #![allow(clippy::expect_used, clippy::unwrap_used)]

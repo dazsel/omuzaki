@@ -7,6 +7,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Instant;
 
 use egui::accesskit::Role;
@@ -16,11 +17,13 @@ use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use omuzaki_core::time::Seconds;
 use omuzaki_doc_api::{DocPath, DocVersion, Patch};
 use omuzaki_ops_api::{Actor, Cause, CauseKind, OpRecord, TxId};
+use omuzaki_ui::ds::strings::{English, Pseudo};
 use omuzaki_ui::ds::testing::{harness_state, press};
-use omuzaki_ui::ds::{Settings, apply_settings};
+use omuzaki_ui::ds::{Settings, apply_settings, set_strings};
 use omuzaki_ui::shell::history::{History, HistoryLog};
 use omuzaki_ui::shell::requests::{ShellRequest, ShellRequests};
 use omuzaki_ui::shell::stub::NullRunner;
+use omuzaki_ui::shell::text::{Word, say};
 use omuzaki_ui_api::panel::{Panel as _, PanelCtx, ViewModels};
 use serde_json::json;
 
@@ -111,6 +114,19 @@ fn rows_are_newest_first_and_say_who_did_what_and_whether_it_is_undone() {
     assert!(shown[1].starts_with("Omuzaki: character.rename"), "{shown:?}");
     assert!(shown[2].starts_with("designer: face.set_profile"), "{shown:?}");
     assert!(h.query_all_by_label("designer").next().is_some(), "the actor chip names the agent");
+}
+
+#[test]
+fn the_person_is_named_through_the_message_table() {
+    // #296: "You" is the person's display name, not their identity, so a translation changes it.
+    let mut h = rig(30);
+    set_strings(&h.ctx, Arc::new(Pseudo(English)));
+    h.run_steps(3);
+    let shown = rows(&h);
+    let you = say(&h.ctx, Word::HistoryYou, &[]);
+    assert_ne!(you, "You", "the pseudo-locale changes it");
+    assert!(shown[0].starts_with(&format!("{you}: ")), "{shown:?}");
+    assert!(shown.iter().all(|row| !row.starts_with("You: ")), "{shown:?}");
 }
 
 #[test]

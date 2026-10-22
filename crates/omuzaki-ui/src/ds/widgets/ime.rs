@@ -16,6 +16,15 @@
 //! is processed, and ends the composition outright: the preedit and the selection it stood in for are dropped, nothing
 //! of the old text is ever put back, and a later commit goes in at the caret like any text with no composition.
 //!
+//! **Events apply in the order they came (#822).** egui's `TextEdit` takes a whole frame of events at once, and the
+//! editor's selection is set once, before it runs. Two things depend on where the caret is after earlier events of the
+//! same frame, and so wait for the next frame, carrying every event after them along: a preedit that starts a
+//! composition after something edited or moved (typing, a key, a commit, a platform delete, a click), and the end of
+//! a composition over a selection (which puts the selection back) after such an event. Everything else keeps its
+//! place, so a batch of any length applies as if each event had come in a frame of its own; the reference model in
+//! `tests/ime.rs` holds the widget to that. A platform's surrounding delete during a composition counts from where the
+//! composition starts.
+//!
 //! **The cancellation rule is an allowlist.** The OS IME has already consumed every key it wanted, so any event that
 //! still reaches the widget while it composes is the person editing or moving. Every key press, text, paste, cut and
 //! pointer press therefore ends the composition first and then runs normally. The exceptions are Enter and Escape
@@ -34,7 +43,7 @@ struct Composition {
     /// The composing text, never part of the widget's value.
     preedit: String,
     /// The editor's selection when the composition began. The composition ends when the selection is anything else.
-    /// `None` when text was inserted earlier in the frame it began: the caret is known only after that frame.
+    /// `None` when the editor had no state yet.
     range: Option<CCursorRange>,
     /// The widget's text as the last frame left it: a different text now was put there by the owner (a reset, a clear
     /// button), which ends the composition.
@@ -43,7 +52,7 @@ struct Composition {
 
 impl Composition {
     /// The characters the preedit stands in for, as `from..to`: the selection it began over, or an empty span at the
-    /// caret. Both are the end of the text while the caret is not known yet.
+    /// caret. Both are the end of the text while the caret is not known.
     fn span(&self) -> (usize, usize) {
         self.range.map_or((usize::MAX, usize::MAX), |r| {
             (r.primary.index.0.min(r.secondary.index.0), r.primary.index.0.max(r.secondary.index.0))
@@ -83,10 +92,12 @@ pub(crate) fn begin(ctx: &Context, id: Id, value: &str) -> Ime {
     let mut composition = if focused { stored } else { None };
     let mut interrupt = false;
     let caret = TextEdit::load_state(ctx, id).and_then(|state| state.cursor.char_range());
-    // A composition that began in a frame that also inserted text takes the caret as it is now.
+    // A composition that began before the editor had a state takes the caret as it is now.
     if let Some(c) = composition.as_mut().filter(|c| c.range.is_none()) {
         c.range = caret;
     }
+    // The events a preedit carried over from the last frame come first; a widget that lost the keyboard drops them.
+    let carried = ctx.data_mut(|d| d.remove_temp::<Vec<Event>>(id.with("carried")));
     let moved = |c: &Composition| caret.zip(c.held()).is_some_and(|(r, held)| !same_range(r, held));
     // The editor's state to set before it runs: the selection back (a composition over it ended), or the caret held at
     // the start of the selection a composition replaces.
@@ -106,67 +117,18 @@ pub(crate) fn begin(ctx: &Context, id: Id, value: &str) -> Ime {
         composition = None;
         interrupt = true;
     }
+    let mut route = Route { composition, set_state, caret, interrupt, ime_turn: false, pushed: false };
     if focused {
-        ctx.input_mut(|i| {
-            let events = std::mem::take(&mut i.events);
-            let mut ime_turn = false;
-            let mut inserted = false;
-            for event in events {
-                match event {
-                    Event::Ime(ime) => match ime {
-                        ImeEvent::Preedit { text, .. } if !text.is_empty() => {
-                            // Text committed earlier in this frame moves the caret: it is read after the frame.
-                            let range = if inserted { None } else { composition.as_ref().map_or(caret, |c| c.range) };
-                            let started = composition.is_none();
-                            composition = Some(Composition { preedit: text, range, seen: String::new() });
-                            if started && let Some(held) = composition.as_ref().filter(|c| c.over_selection()) {
-                                set_state = held.held();
-                            }
-                            ime_turn = true;
-                        }
-                        // Empty notifications with no composition running are noise some platforms repeat.
-                        ImeEvent::Preedit { text, .. } | ImeEvent::Commit(text)
-                            if text.is_empty() && composition.is_none() => {}
-                        ImeEvent::Commit(text) if !text.is_empty() => {
-                            end(&mut composition, &mut set_state);
-                            ime_turn = true;
-                            inserted = true;
-                            i.events.push(Event::Text(text));
-                        }
-                        ImeEvent::Preedit { .. } | ImeEvent::Commit(_) => {
-                            end(&mut composition, &mut set_state);
-                            ime_turn = true;
-                        }
-                        ImeEvent::DeleteSurrounding { .. } => i.events.push(Event::Ime(ime)),
-                        #[expect(deprecated, reason = "egui no longer sends them; named so the match stays exhaustive")]
-                        ImeEvent::Enabled | ImeEvent::Disabled => {}
-                    },
-                    // The key that confirms a candidate or cancels one is the IME's, in the frame of the commit too.
-                    Event::Key { key: Key::Enter | Key::Escape, .. } if composition.is_some() || ime_turn => {}
-                    // Everything else that edits or moves ends the composition before it takes effect.
-                    Event::Text(_)
-                    | Event::Paste(_)
-                    | Event::Cut
-                    | Event::Key { pressed: true, .. }
-                    | Event::PointerButton { pressed: true, .. }
-                        if composition.is_some() =>
-                    {
-                        end(&mut composition, &mut set_state);
-                        interrupt = true;
-                        i.events.push(event);
-                    }
-                    other => {
-                        // Typing or a key before a preedit in this frame has already used up or moved the selection.
-                        inserted |= matches!(
-                            other,
-                            Event::Text(_) | Event::Paste(_) | Event::Cut | Event::Key { pressed: true, .. }
-                        );
-                        i.events.push(other);
-                    }
-                }
-            }
+        let carry = ctx.input_mut(|i| {
+            let events = carried.unwrap_or_default().into_iter().chain(std::mem::take(&mut i.events));
+            route.run(events, &mut i.events)
         });
+        if !carry.is_empty() {
+            ctx.data_mut(|d| d.insert_temp(id.with("carried"), carry));
+            ctx.request_repaint();
+        }
     }
+    let Route { composition, set_state, interrupt, .. } = route;
     if let Some(range) = set_state
         && let Some(mut state) = TextEdit::load_state(ctx, id)
     {
@@ -177,6 +139,132 @@ pub(crate) fn begin(ctx: &Context, id: Id, value: &str) -> Ime {
         ctx.memory_mut(egui::Memory::interrupt_ime);
     }
     Ime { composition, preedit_end_x: Cell::new(0.0), caret_x: Cell::new(0.0) }
+}
+
+/// One frame's walk through the input events, in the order they came.
+struct Route {
+    composition: Option<Composition>,
+    /// The editor's state to set before it runs: the selection back (a composition over it ended), or the caret held at
+    /// the start of the selection a composition replaces.
+    set_state: Option<CCursorRange>,
+    /// The editor's selection as the frame began.
+    caret: Option<CCursorRange>,
+    /// Whether the platform's composition must be dropped.
+    interrupt: bool,
+    /// Whether the IME acted this frame (its Enter or Escape is then its own).
+    ime_turn: bool,
+    /// Whether the editor has been handed an event that edits or moves at its caret this frame.
+    pushed: bool,
+}
+
+impl Route {
+    /// Hands `events` to the editor, in order, through `out`, and returns the ones that wait for the next frame.
+    fn run(&mut self, mut events: impl Iterator<Item = Event>, out: &mut Vec<Event>) -> Vec<Event> {
+        while let Some(event) = events.next() {
+            if self.waits(&event) {
+                return std::iter::once(event).chain(events).collect();
+            }
+            self.take(event, out);
+        }
+        Vec::new()
+    }
+
+    /// Whether `event` depends on where the caret is after the events the editor was already handed: a preedit that
+    /// starts a composition, or the end of a composition over a selection, which puts the selection back in the
+    /// editor's state (set once, before the editor runs).
+    fn waits(&self, event: &Event) -> bool {
+        let starts = self.composition.is_none()
+            && matches!(event, Event::Ime(ImeEvent::Preedit { text, .. }) if !text.is_empty());
+        let restores = self.composition.as_ref().is_some_and(Composition::over_selection) && ends(event);
+        self.pushed && (starts || restores)
+    }
+
+    fn take(&mut self, event: Event, out: &mut Vec<Event>) {
+        match event {
+            Event::Ime(ime) => self.ime(ime, out),
+            // The key that confirms a candidate or cancels one is the IME's, in the frame of the commit too.
+            Event::Key { key: Key::Enter | Key::Escape, .. } if self.composition.is_some() || self.ime_turn => {}
+            // Everything else that edits or moves ends the composition before it takes effect.
+            Event::Text(_)
+            | Event::Paste(_)
+            | Event::Cut
+            | Event::Key { pressed: true, .. }
+            | Event::PointerButton { pressed: true, .. } => {
+                if self.composition.is_some() {
+                    end(&mut self.composition, &mut self.set_state);
+                    self.interrupt = true;
+                }
+                self.pushed = true;
+                out.push(event);
+            }
+            other => out.push(other),
+        }
+    }
+
+    fn ime(&mut self, ime: ImeEvent, out: &mut Vec<Event>) {
+        match ime {
+            ImeEvent::Preedit { text, .. } if !text.is_empty() => {
+                // A new composition starts over the selection the editor will hold: one an earlier composition in this
+                // frame gave back, or the selection as the frame began.
+                let range = self.composition.as_ref().map_or(self.set_state.or(self.caret), |c| c.range);
+                let started = self.composition.is_none();
+                self.composition = Some(Composition { preedit: text, range, seen: String::new() });
+                if started && let Some(held) = self.composition.as_ref().filter(|c| c.over_selection()) {
+                    self.set_state = held.held();
+                }
+                self.ime_turn = true;
+            }
+            // Empty notifications with no composition running are noise some platforms repeat.
+            ImeEvent::Preedit { text, .. } | ImeEvent::Commit(text)
+                if text.is_empty() && self.composition.is_none() => {}
+            ImeEvent::Commit(text) if !text.is_empty() => {
+                end(&mut self.composition, &mut self.set_state);
+                self.ime_turn = true;
+                self.pushed = true;
+                out.push(Event::Text(text));
+            }
+            ImeEvent::Preedit { .. } | ImeEvent::Commit(_) => {
+                end(&mut self.composition, &mut self.set_state);
+                self.ime_turn = true;
+            }
+            ImeEvent::DeleteSurrounding { before_chars, after_chars } => {
+                // The editor deletes around its caret, held at the start of the composition: the composition moves
+                // back with the text before it, and loses what was deleted after.
+                if let Some(c) = self.composition.as_mut() {
+                    c.range = c.range.map(|r| deleted_around(r, before_chars, after_chars));
+                }
+                self.pushed = true;
+                out.push(Event::Ime(ime));
+            }
+            #[expect(deprecated, reason = "egui no longer sends them; named so the match stays exhaustive")]
+            ImeEvent::Enabled | ImeEvent::Disabled => {}
+        }
+    }
+}
+
+/// Whether `event` ends a running composition: a commit, an empty preedit, or anything that edits or moves other than
+/// Enter and Escape, which are the IME's.
+fn ends(event: &Event) -> bool {
+    match event {
+        Event::Ime(ImeEvent::Commit(_)) | Event::Text(_) | Event::Paste(_) | Event::Cut => true,
+        Event::Ime(ImeEvent::Preedit { text, .. }) => text.is_empty(),
+        Event::Key { key, pressed: true, .. } => !matches!(key, Key::Enter | Key::Escape),
+        Event::PointerButton { pressed, .. } => *pressed,
+        _ => false,
+    }
+}
+
+/// The composition's selection `range` after the editor deleted `before` characters before its caret, held at the
+/// start of `range`, and `after` characters after it (which come out of the selection it stands in for first).
+fn deleted_around(range: CCursorRange, before: usize, after: usize) -> CCursorRange {
+    let (a, b) = (range.primary.index.0, range.secondary.index.0);
+    let from = a.min(b);
+    let width = a.max(b) - from;
+    let width = width - after.min(width);
+    let from = from.saturating_sub(before);
+    let (start, stop) = (CCursor::new(from), CCursor::new(from + width));
+    // `two` takes the secondary end first.
+    if a <= b { CCursorRange::two(stop, start) } else { CCursorRange::two(start, stop) }
 }
 
 fn same_range(a: CCursorRange, b: CCursorRange) -> bool {

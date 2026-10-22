@@ -5219,6 +5219,7 @@ dependencies = [
  "omuzaki-link-build",
  "omuzaki-measure",
  "omuzaki-metrics-api",
+ "omuzaki-ops",
  "omuzaki-ops-api",
  "omuzaki-render",
  "omuzaki-render-api",
@@ -5637,6 +5638,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "wgpu",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

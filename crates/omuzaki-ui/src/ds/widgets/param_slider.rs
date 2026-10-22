@@ -1029,7 +1029,13 @@ impl<'a> Show<'a> {
                     .desired_width(rect.width())
                     .min_size(rect.size())
                     // Esc is ours (it cancels the edit, unless the IME is composing): egui must not surrender focus on it.
-                    .event_filter(egui::EventFilter { escape: true, ..egui::EventFilter::default() });
+                    // The arrows move the caret while typing, never the keyboard to another widget.
+                    .event_filter(egui::EventFilter {
+                        escape: true,
+                        horizontal_arrows: true,
+                        vertical_arrows: true,
+                        ..egui::EventFilter::default()
+                    });
                 if ime.composing() {
                     field_edit = field_edit.layouter(&mut composing_layout);
                 }

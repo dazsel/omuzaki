@@ -83,6 +83,10 @@ pub struct FitReference {
     /// the character's order. `[]`: the body alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parts: Option<Vec<PartId>>,
+    /// The most candidate bodies the fit builds and scores, 1 to 600 (omitted: 600). Fewer is quicker and rougher;
+    /// either way the fit ends sooner once two sweeps gain nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evaluations: Option<u32>,
     /// Whether to return the heatmaps (default true). A caller that needs only the numbers leaves them out.
     #[serde(default = "with_heatmaps")]
     pub heatmaps: bool,
@@ -114,6 +118,10 @@ pub struct FitApply {
     /// the character's order. `[]`: the body alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parts: Option<Vec<PartId>>,
+    /// The most candidate bodies the fit builds and scores, 1 to 600 (omitted: 600). Fewer is quicker and rougher;
+    /// either way the fit ends sooner once two sweeps gain nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evaluations: Option<u32>,
 }
 
 /// What `plan` chose and `work` fits: the character's only body part as stored when the job was planned. It is the
@@ -198,7 +206,12 @@ fn plan_fit(
     character: &CharId,
     views: &[ViewMask],
     parts: Option<&[PartId]>,
+    evaluations: Option<u32>,
 ) -> Result<Plan, OpError> {
+    if let Some(n) = evaluations.filter(|n| !(1..=MAX_EVALUATIONS).contains(&(*n as usize))) {
+        return Err(OpError::invalid("evaluations", format!("{n} is not from 1 to {MAX_EVALUATIONS}"))
+            .hint("leave it out for the full fit, or give fewer for a quicker, rougher one"));
+    }
     let (def, part, body) = load(ctx, character)?;
     // Under the document lock nothing is read from the store: an asset view is loaded and decoded in `work`.
     let targets = parse_views(views, Assets::Defer(ctx.service::<dyn Store>().is_ok()))?;
@@ -359,21 +372,24 @@ fn fit_in_job(
     job: &JobCtx<'_>,
     chosen: &Chosen,
     views: &[ViewMask],
+    evaluations: Option<u32>,
 ) -> Result<(Vec<Target>, Option<Rebuild>, FitResult), OpError> {
+    let budget = evaluations.map_or(MAX_EVALUATIONS, |n| n as usize);
     let targets = parse_views(views, Assets::Read(job.service::<dyn Store>().ok()))?;
     let rebuild = if chosen.parts.is_empty() { None } else { Some(Rebuild::read(job, chosen)?) };
     let follow = |params: &FitParams| rebuild.as_ref().map_or_else(|| Ok(Vec::new()), |r| r.meshes(params));
     let input = FitInput { template: &chosen.template, targets: &targets, fixed: &[] };
     #[allow(clippy::cast_precision_loss)] // counts up to MAX_EVALUATIONS, far inside f32's exact integers
     let mut watch = |done: usize| {
-        job.progress("fitting", done as f32 / MAX_EVALUATIONS as f32);
+        job.progress("fitting", done as f32 / budget as f32);
         !job.is_cancelled()
     };
-    let result =
-        fit_from(&input, &chosen.body, rebuild.is_some().then_some(&follow), &mut watch).map_err(|e| match e {
+    let result = fit_from(&input, &chosen.body, rebuild.is_some().then_some(&follow), budget, &mut watch).map_err(
+        |e| match e {
             FitError::Stopped => OpError::cancelled(job.id()),
             other => from_fit(&other),
-        })?;
+        },
+    )?;
     Ok((targets, rebuild, result))
 }
 
@@ -457,12 +473,12 @@ impl Op for FitReference {
     }
 
     fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
-        plan_fit(ctx, &self.character, &self.views, self.parts.as_deref())
+        plan_fit(ctx, &self.character, &self.views, self.parts.as_deref(), self.evaluations)
     }
 
     fn work(&self, job: &JobCtx<'_>) -> Result<Value, OpError> {
         let chosen = chosen(job)?;
-        let (targets, rebuild, result) = fit_in_job(job, &chosen, &self.views)?;
+        let (targets, rebuild, result) = fit_in_job(job, &chosen, &self.views, self.evaluations)?;
         let mut out = summary(&chosen, &result);
         if self.heatmaps {
             let maps = heatmaps(&chosen, &targets, rebuild.as_ref(), &result)?;
@@ -517,12 +533,12 @@ impl Op for FitApply {
     }
 
     fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
-        plan_fit(ctx, &self.character, &self.views, self.parts.as_deref())
+        plan_fit(ctx, &self.character, &self.views, self.parts.as_deref(), self.evaluations)
     }
 
     fn work(&self, job: &JobCtx<'_>) -> Result<Value, OpError> {
         let chosen = chosen(job)?;
-        let (_, _, result) = fit_in_job(job, &chosen, &self.views)?;
+        let (_, _, result) = fit_in_job(job, &chosen, &self.views, self.evaluations)?;
         // `work` checked that the character still matches the plan's inputs, so the plan's are what the fit used.
         let fitted = Fitted {
             summary: summary(&chosen, &result),

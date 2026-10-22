@@ -387,7 +387,7 @@ impl LivePanel {
 
     fn failure(&self, ui: &mut Ui) {
         if let Some(failure) = self.model.failure() {
-            let line = format!("{}: {}", failure.op, failure.message);
+            let line = say(ui.ctx(), Word::OpFailed, &[("op", failure.op), ("reason", &failure.message)]);
             ui.add(StatusChip::new(Status::Danger, &line));
         }
     }
