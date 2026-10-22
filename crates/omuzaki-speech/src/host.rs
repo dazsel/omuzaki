@@ -32,7 +32,7 @@
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::thread::{self, JoinHandle, Thread};
 use std::time::{Duration, Instant};
 
@@ -261,18 +261,52 @@ fn add_time(counter: &AtomicU64, elapsed: Duration) {
     counter.fetch_add(u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX), Ordering::Relaxed);
 }
 
+/// The extra consumers of the host's events ([`SpeechHost::subscribe`]), each with its own queue.
+type Subscribers = Arc<Mutex<Vec<Weak<DropOldestQueue<SpeechEvent>>>>>;
+
 /// Where the workers publish events; counts what the bounded queue had to evict.
 #[derive(Clone)]
 struct Emitter {
     queue: Arc<DropOldestQueue<SpeechEvent>>,
+    subscribers: Subscribers,
     counters: Arc<Counters>,
 }
 
 impl Emitter {
     fn emit(&self, event: SpeechEvent) {
+        {
+            let mut subscribers = self.subscribers.lock().unwrap_or_else(PoisonError::into_inner);
+            subscribers.retain(|weak| match weak.upgrade() {
+                Some(queue) => {
+                    // A subscriber that falls behind loses its own oldest events, never the host's.
+                    let _ = queue.push(event.clone());
+                    true
+                }
+                None => false,
+            });
+        }
         if self.queue.push(event).is_some() {
             self.counters.events_dropped.fetch_add(1, Ordering::Relaxed);
         }
+    }
+}
+
+/// A consumer's own copy of the host's events, from [`SpeechHost::subscribe`]: reading it takes nothing from the host's
+/// queue or from other subscribers. Dropping it unsubscribes.
+pub struct SpeechEvents(Arc<DropOldestQueue<SpeechEvent>>);
+
+impl SpeechEvents {
+    /// The next event if one is waiting.
+    #[must_use]
+    pub fn try_next(&self) -> Option<SpeechEvent> {
+        self.0.try_pop()
+    }
+
+    /// Waits up to `timeout` for the next event. `None` on timeout, or once the host has stopped and all events were
+    /// read.
+    #[must_use]
+    pub fn next_timeout(&self, timeout: Duration) -> Option<SpeechEvent> {
+        self.0.pop_timeout(timeout)
     }
 }
 
@@ -380,9 +414,24 @@ impl TapSink for AudioInput {
     }
 }
 
+/// Makes transcript claims on a host without holding one: a consumer that wants transcripts only some of the time (voice
+/// commands while they are on) keeps this and takes a [`TranscriptDemand`] when it needs one.
+#[derive(Clone)]
+pub struct TranscriptSwitch {
+    demand: Arc<Demand>,
+}
+
+impl TranscriptSwitch {
+    /// A claim: Whisper runs while it (or a clone) is alive.
+    pub fn claim(&self) -> TranscriptDemand {
+        TranscriptDemand::new(&self.demand)
+    }
+}
+
 /// A running speech host. [`stop`](Self::stop) drains the workers; dropping it without that aborts them.
 pub struct SpeechHost {
     events: Arc<DropOldestQueue<SpeechEvent>>,
+    subscribers: Subscribers,
     jobs: Arc<DropOldestQueue<Job>>,
     counters: Arc<Counters>,
     demand: Arc<Demand>,
@@ -424,7 +473,12 @@ impl SpeechHost {
         let counters = Arc::new(Counters::default());
         let events = Arc::new(DropOldestQueue::new(config.event_queue));
         let jobs = Arc::new(DropOldestQueue::new(config.utterance_queue));
-        let emitter = Emitter { queue: Arc::clone(&events), counters: Arc::clone(&counters) };
+        let subscribers = Subscribers::default();
+        let emitter = Emitter {
+            queue: Arc::clone(&events),
+            subscribers: Arc::clone(&subscribers),
+            counters: Arc::clone(&counters),
+        };
         let demand = Arc::new(Demand::default());
         let language = Arc::new(Mutex::new(config.language.clone()));
         let stop = Arc::new(AtomicBool::new(false));
@@ -459,6 +513,7 @@ impl SpeechHost {
         let input = AudioInput { producer, wake: vad_wake.clone() };
         let host = Self {
             events,
+            subscribers,
             jobs,
             counters,
             demand,
@@ -492,10 +547,29 @@ impl SpeechHost {
         SpeechEars::new(Arc::clone(&self.events), origin, echo)
     }
 
+    /// A second reader of the host's events (the voice-command listener next to the AI performer's ears): from now on
+    /// every event is also put on a queue of its own, holding at most `capacity` (the oldest go first).
+    pub fn subscribe(&self, capacity: usize) -> SpeechEvents {
+        let queue = Arc::new(DropOldestQueue::new(capacity.max(1)));
+        self.subscribers.lock().unwrap_or_else(PoisonError::into_inner).push(Arc::downgrade(&queue));
+        SpeechEvents(queue)
+    }
+
     /// Asks for transcripts: Whisper runs for utterances that end while the returned claim (or a clone) is alive.
     /// Without any claim the host only listens.
     pub fn request_transcripts(&self) -> TranscriptDemand {
         TranscriptDemand::new(&self.demand)
+    }
+
+    /// Whether any consumer holds a transcript claim now, so utterances that end are transcribed.
+    #[must_use]
+    pub fn transcripts_wanted(&self) -> bool {
+        self.demand.wanted()
+    }
+
+    /// A switch that makes transcript claims on this host later, without holding one now.
+    pub fn transcript_switch(&self) -> TranscriptSwitch {
+        TranscriptSwitch { demand: Arc::clone(&self.demand) }
     }
 
     /// Changes the Whisper language for utterances that start transcribing from now on.
@@ -541,6 +615,9 @@ impl SpeechHost {
             let _ = handle.join();
         }
         self.events.close();
+        for queue in self.subscribers.lock().unwrap_or_else(PoisonError::into_inner).iter().filter_map(Weak::upgrade) {
+            queue.close();
+        }
     }
 }
 

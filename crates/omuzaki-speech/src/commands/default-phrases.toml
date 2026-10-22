@@ -1,0 +1,103 @@
+# The voice commands a new person starts with (AP-10): ids that shows and templates refer to, with the phrases that
+# say them in English and Japanese. A person changes them with `voice_commands.set_phrases`; their own list lives in
+# their profile, never in a show.
+
+[[command]]
+id = "wave"
+say = ["wave", "say hi", "wave hello"]
+lang = "en"
+
+[[command]]
+id = "nod"
+say = ["nod", "nod your head"]
+lang = "en"
+
+[[command]]
+id = "shake_head"
+say = ["shake your head", "shake head"]
+lang = "en"
+
+[[command]]
+id = "smile"
+say = ["smile", "big smile"]
+lang = "en"
+
+[[command]]
+id = "surprised"
+say = ["look surprised", "surprise"]
+lang = "en"
+
+[[command]]
+id = "sad"
+say = ["look sad", "sad face"]
+lang = "en"
+
+[[command]]
+id = "angry"
+say = ["look angry", "angry face"]
+lang = "en"
+
+[[command]]
+id = "spin"
+say = ["spin", "do a spin"]
+lang = "en"
+
+[[command]]
+id = "bow"
+say = ["bow", "take a bow"]
+lang = "en"
+
+[[command]]
+id = "clip"
+say = ["clip that", "clip it"]
+lang = "en"
+
+[[command]]
+id = "wave"
+say = ["手を振って"]
+lang = "ja"
+
+[[command]]
+id = "nod"
+say = ["うなずいて", "頷いて"]
+lang = "ja"
+
+[[command]]
+id = "shake_head"
+say = ["首を横に振って"]
+lang = "ja"
+
+[[command]]
+id = "smile"
+say = ["笑って", "笑顔"]
+lang = "ja"
+
+[[command]]
+id = "surprised"
+say = ["驚いて", "びっくりして"]
+lang = "ja"
+
+[[command]]
+id = "sad"
+say = ["悲しい顔", "悲しんで"]
+lang = "ja"
+
+[[command]]
+id = "angry"
+say = ["怒って", "怒った顔"]
+lang = "ja"
+
+[[command]]
+id = "spin"
+say = ["回って", "くるっと回って"]
+lang = "ja"
+
+[[command]]
+id = "bow"
+say = ["お辞儀して", "おじぎして"]
+lang = "ja"
+
+[[command]]
+id = "clip"
+say = ["クリップして", "今のクリップ"]
+lang = "ja"

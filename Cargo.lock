@@ -5568,6 +5568,7 @@ dependencies = [
 name = "omuzaki-speech"
 version = "0.0.0"
 dependencies = [
+ "criterion",
  "hound",
  "omuzaki-ai-api",
  "omuzaki-ai-mock",
@@ -5578,8 +5579,11 @@ dependencies = [
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
  "omuzaki-l10n-api",
+ "omuzaki-live-api",
  "omuzaki-ops-api",
  "omuzaki-performer-api",
+ "omuzaki-settings-api",
+ "omuzaki-settings-mock",
  "omuzaki-store-api",
  "schemars",
  "serde",
@@ -5588,6 +5592,7 @@ dependencies = [
  "thiserror 2.0.21",
  "toml",
  "tracing",
+ "unicode-normalization",
  "whisper-rs",
 ]
 
