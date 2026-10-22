@@ -24,14 +24,16 @@ pub use omuzaki_core::__record_registration;
 // character and stage contracts and the renderer self-register too (part kinds and looks, the stage's facts, shading
 // programs), and the viewport draws with all three. The model registry registers the `model.*` ops,
 // and the face tracker and the phone link their own (the phone's `input.phone` setting). The audio engine registers the
-// `audio.*` ops, the OBS client the `obs.*` ops, the VTube Studio bridge the `vts.*` ops, the automation engine and its
-// nodes the `show.*` and `automation.*` ops, Twitch the `twitch.*` ops, the settings store the `settings.*` ops the
-// virtual camera its output kind and the OS input hub the `input.capture.*` and `input.binding.*` ops and its backends
-// (ADR 0015). The studio's own `ui.*` settings register here (`ds::settings_keys`).
+// `audio.*` ops, the voice effects their `fx.*` kinds and `audio.fx.*` ops, the OBS client the `obs.*` ops, the VTube
+// Studio bridge the `vts.*` ops, the automation engine and its nodes the `show.*` and `automation.*` ops, Twitch the
+// `twitch.*` ops, the settings store the `settings.*` ops the virtual camera its output kind and the OS input hub the
+// `input.capture.*` and `input.binding.*` ops and its backends (ADR 0015). The studio's own `ui.*` settings register
+// here (`ds::settings_keys`).
 omuzaki_core::define_link! {
     omuzaki_ai::link();
     omuzaki_anim::link();
     omuzaki_audio_engine::link();
+    omuzaki_audio_fx::link();
     omuzaki_char::link();
     omuzaki_char_api::link();
     omuzaki_connect::link();
@@ -45,6 +47,7 @@ omuzaki_core::define_link! {
     omuzaki_stage::link();
     omuzaki_stage_api::link();
     omuzaki_stream::link();
+    omuzaki_stream_share::link();
     omuzaki_track::link();
     omuzaki_track_net::link();
     omuzaki_twitch::link();

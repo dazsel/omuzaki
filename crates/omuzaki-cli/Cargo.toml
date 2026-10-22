@@ -49,8 +49,12 @@ omuzaki-stage = { path = "../omuzaki-stage" }
 omuzaki-stream = { path = "../omuzaki-stream" }
 # The `vcam` output kind (`output.start { kind: "vcam" }`).
 omuzaki-vcam = { path = "../omuzaki-vcam" }
+# The `spout` and `syphon` output kinds (`output.start { kind: "spout" }`).
+omuzaki-stream-share = { path = "../omuzaki-stream-share" }
 # The audio ops (`audio.devices`, `audio.mic`, `audio.status`).
 omuzaki-audio-engine = { path = "../omuzaki-audio-engine" }
+# The voice effect kinds (`fx.*`) and the voice preset ops (`audio.fx.*`).
+omuzaki-audio-fx = { path = "../omuzaki-audio-fx" }
 # The OBS remote-control ops (`obs.*`).
 omuzaki-obs = { path = "../omuzaki-obs" }
 omuzaki-vts = { path = "../omuzaki-vts" }
@@ -118,4 +122,4 @@ summary = "the `omuzaki` command: ops, help, run (dry-run/JSON), undo/redo, all 
 wasm = false
 # Held only to link their registrations in (`omuzaki_cli::link`, ADR 0015); this crate's source calls none of their API.
 # A change to one of them runs just `tests/registrations.rs` here (`cargo xtask check --affected`), not every test.
-link_only = ["omuzaki-io-fbx", "omuzaki-io-gltf", "omuzaki-io-ops", "omuzaki-io-vrm", "omuzaki-stage", "omuzaki-stream", "omuzaki-vcam", "omuzaki-audio-engine", "omuzaki-obs", "omuzaki-vts", "omuzaki-live", "omuzaki-live-nodes", "omuzaki-twitch"]
+link_only = ["omuzaki-io-fbx", "omuzaki-io-gltf", "omuzaki-io-ops", "omuzaki-io-vrm", "omuzaki-stage", "omuzaki-stream", "omuzaki-stream-share", "omuzaki-vcam", "omuzaki-audio-engine", "omuzaki-audio-fx", "omuzaki-obs", "omuzaki-vts", "omuzaki-live", "omuzaki-live-nodes", "omuzaki-twitch"]

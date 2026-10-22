@@ -27,3 +27,20 @@ impl FxPreset {
             && self.chain.iter().zip(current).all(|(a, b)| a.id == b.id && a.kind == b.kind && a.config == b.config)
     }
 }
+
+/// A character's `voice.toml` (`characters/<id>/voice` in the document): its presets, by name.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct VoiceFile {
+    /// The presets, in the order the person keeps them. Names are unique.
+    #[serde(default, rename = "preset", skip_serializing_if = "Vec::is_empty")]
+    pub presets: Vec<FxPreset>,
+}
+
+impl VoiceFile {
+    /// The preset called `name`.
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<&FxPreset> {
+        self.presets.iter().find(|p| p.name == name)
+    }
+}

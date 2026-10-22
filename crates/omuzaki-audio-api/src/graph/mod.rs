@@ -23,6 +23,10 @@ use crate::ids::{BusId, DeviceRole, FeedId, GateId, NodeId, NodeKindId, PlayerId
 use crate::node::NodeConfig;
 use crate::tap::VoiceTaps;
 
+/// Where the project document keeps the graph: `audio/graph`, as path segments. The `audio.bus.*` ops write it, the
+/// `audio.fx.apply` op writes the `mic` bus's chain in it, and the engine follows it.
+pub const GRAPH_DOC_PATH: [&str; 2] = ["audio", "graph"];
+
 /// The bus every voice tap sits on, and the one `MicMode` mutes.
 pub const MIC_BUS: &str = "mic";
 /// The bus the co-host's voice plays on; in `MicMode::CohostOnly` it reaches `monitor_out` only.
