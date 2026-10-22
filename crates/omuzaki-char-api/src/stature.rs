@@ -26,7 +26,7 @@ use crate::error::BuildError;
 use crate::ids::{JointRef, PartId};
 use crate::kind::{
     Anchor, AnchorsFact, BodyFit, BodyRegion, CollidersFact, FitFact, HeadFact, HeadSurface, PartOutput, Publishes,
-    Section,
+    RegionEnd, Section,
 };
 use crate::rig::RigContribution;
 
@@ -152,6 +152,14 @@ struct ScaledFit {
 impl BodyFit for ScaledFit {
     fn section(&self, region: BodyRegion, t: f32) -> Option<Section> {
         self.inner.section(region, t).map(|sec| Section {
+            centre: sec.centre * self.scale,
+            axis: sec.axis,
+            radii: sec.radii * self.scale,
+        })
+    }
+
+    fn cap(&self, region: BodyRegion, end: RegionEnd, height: f32) -> Option<Section> {
+        self.inner.cap(region, end, height / self.scale).map(|sec| Section {
             centre: sec.centre * self.scale,
             axis: sec.axis,
             radii: sec.radii * self.scale,

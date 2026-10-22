@@ -15,6 +15,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 omuzaki-anim-api = { path = "../omuzaki-anim-api" }
 omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-osc = { path = "../omuzaki-osc" }
 omuzaki-settings-api = { path = "../omuzaki-settings-api" }
 omuzaki-track-api = { path = "../omuzaki-track-api" }
 

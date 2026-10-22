@@ -20,20 +20,31 @@ use omuzaki_core::glam::{Mat4, Vec3};
 use omuzaki_io_api::{Blob, EncodedImage, ImageMime, IoScene, Mesh, MeshData, Node, Primitive, Skin};
 use omuzaki_io_ops::gather::avatar::add_avatar;
 use omuzaki_io_ops::gather::{GatherOptions, GatherPurpose, gather};
-use omuzaki_io_ops::vrchat_rank::{AvatarStats, Platform, Rank, rank, stats_from_ioscene, texture_mib};
+use omuzaki_io_ops::limits::LimitTable;
+use omuzaki_io_ops::vrchat_rank::{AvatarStats, LimitsError, Platform, Rank, rank, stats_from_ioscene, texture_mib};
 use toml::Value;
 
-const LIMITS: &str = include_str!("../data/vrchat-performance.toml");
+const PC_LIMITS: &str = include_str!("../data/platforms/vrchat-pc.toml");
+const ANDROID_LIMITS: &str = include_str!("../data/platforms/vrchat-quest.toml");
 const MIB: f64 = 1024.0 * 1024.0;
 
 /// The stats the page disables on Android. They are Unsupported there and never count.
 const ANDROID_UNSUPPORTED: [&str; 6] =
     ["lights", "cloths", "cloth_vertices", "physics_colliders", "physics_rigidbodies", "audio_sources"];
 
-/// The rows of one platform's table, keyed by stat name.
+/// The rows of one platform's table, keyed by stat name, as the file writes them: the supported rows only, with the one
+/// `bounds` row of `[x, y, z]` per tier.
 fn table(platform: &str) -> BTreeMap<String, Value> {
-    let file: Value = toml::from_str(LIMITS).unwrap();
-    file[platform].as_table().unwrap().iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+    let text = if platform == "pc" { PC_LIMITS } else { ANDROID_LIMITS };
+    let file: Value = toml::from_str(text).unwrap();
+    let rows: BTreeMap<String, Value> = file["limits"]["stats"]
+        .as_table()
+        .unwrap()
+        .iter()
+        .filter(|(_, v)| v.is_array())
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    rows
 }
 
 /// A scalar row as four integers, or `None` for bounds (which are per axis).
@@ -245,6 +256,33 @@ fn an_export_scene_counts_its_textures_from_the_image_headers() {
 }
 
 #[test]
+fn the_platform_general_counts_come_from_the_scene() {
+    // One mesh of 2 triangles and 3 vertices, with 3 morph targets, drawn by two nodes; one node that draws nothing and is
+    // called `HatAttachment`; one mesh node that merely ends in the same word, which is not an attachment; and two images.
+    let (mut scene, mesh) = mesh_scene(2, 1.0);
+    scene.meshes[mesh.index()].primitives[0].morph_targets =
+        (0..3).map(|_| omuzaki_io_api::MorphTarget::new(vec![Vec3::ZERO; 3])).collect();
+    for name in ["left", "right", "BodyAttachment"] {
+        let mut node = Node::new(name);
+        node.mesh = Some(mesh);
+        let ix = scene.add_node(node);
+        scene.roots.push(ix);
+    }
+    let hat = scene.add_node(Node::new("HatAttachment"));
+    scene.roots.push(hat);
+    let other = scene.add_node(Node::new("Hat"));
+    scene.roots.push(other);
+    scene.add_image(EncodedImage::new("wide", ImageMime::Png, Blob::new(png(100, 30, false))));
+    scene.add_image(EncodedImage::new("tall", ImageMime::Png, Blob::new(png(8, 64, true))));
+    let stats = stats_from_ioscene(&scene).unwrap();
+    assert_eq!(stats.vertices, 9, "3 vertices drawn by 3 nodes");
+    assert_eq!(stats.morph_targets, 3, "the mesh's targets count once, however many nodes draw it");
+    assert_eq!(stats.meshes, 3);
+    assert_eq!(stats.attachments, 1, "only a node that draws nothing and is named *Attachment");
+    assert_eq!((stats.textures, stats.max_texture_side), (2, 100));
+}
+
+#[test]
 fn the_gathered_mock_character_counts_its_rig_and_meshes() {
     let def = mock_character().unwrap();
     let built = RegistryBuilder
@@ -358,4 +396,24 @@ fn a_bind_pose_different_from_the_rest_pose_places_the_vertices_by_the_bind_pose
     // bind pose) is shown at half size in the rest pose: 3 m becomes 1.5 m.
     let scene = skinned_scene(1.0, vec![Mat4::from_scale(Vec3::splat(0.5))]);
     assert_eq!(stats_from_ioscene(&scene).unwrap().bounds, [1.5, 0.0, 0.0]);
+}
+
+#[test]
+fn the_error_type_keeps_its_variants_and_its_conversion_from_toml() {
+    // `Parse` wraps the parser's error and converts from it, `Shape` names a stat: as this module has always had them.
+    let parse: LimitsError = toml::from_str::<Value>("x =").unwrap_err().into();
+    assert!(matches!(parse, LimitsError::Parse(_)), "{parse}");
+    assert!(parse.to_string().starts_with("the VRChat limits data does not parse: "));
+    let shape = LimitsError::Shape("triangles");
+    assert_eq!(shape.to_string(), "stat 'triangles' has limits of the wrong shape");
+    // The engine's errors arrive as one or the other: text the parser rejects is `Parse`, a table that parsed and then
+    // failed a check is `Shape`.
+    let rejected = LimitTable::parse("not toml =").unwrap_err();
+    assert!(matches!(LimitsError::from(rejected), LimitsError::Parse(_)));
+    let checked = LimitTable::parse(
+        "[limits]\nplatform = \"t\"\nversion = \"v\"\nsource = \"s\"\nretrieved = \"2026-10-12\"\ntiers = [\"a\"]\n\
+         beyond = \"b\"\n[limits.texture]\nopaque_bits = 1.0\nalpha_bits = 1.0\nmips = false\n[limits.stats]\ncats = [1]\n",
+    )
+    .unwrap_err();
+    assert!(matches!(LimitsError::from(checked), LimitsError::Shape(_)));
 }

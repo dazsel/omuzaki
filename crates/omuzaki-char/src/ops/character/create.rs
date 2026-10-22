@@ -24,8 +24,8 @@ use crate::template::{Template, TemplateDefaults};
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum StartingParts {
-    /// A body, a head and hair (ids `body`, `head`, `hair`), with the template's own numbers: the character builds and
-    /// renders straight away.
+    /// A body, a head, hair and an outfit of a shirt, trousers and boots (ids `body`, `head`, `hair`, `shirt`,
+    /// `trousers`, `boots`), with the template's own numbers: the character builds and renders straight away, dressed.
     #[default]
     Defaults,
     /// No parts at all: add each one with `part.add`.
@@ -34,11 +34,12 @@ pub enum StartingParts {
 
 /// Creates a character from a body template.
 ///
-/// With `parts: "defaults"` (the default) the character starts with a body, a head and hair, taking the template's
-/// own proportions and head, so it builds and renders at once. With `parts: "empty"` it has no parts: add them one by
-/// one with `part.add`. Either way the palette starts with the three standard skin colours (`skin`, `skin_shade`,
-/// `skin_line`) that the head and body refer to, and the face starts as the template's, with the built-in expression
-/// library (moods, accents, visemes and blink) when the template brings none.
+/// With `parts: "defaults"` (the default) the character starts with a body, a head, hair and an outfit (a shirt,
+/// trousers and boots), taking the template's own proportions and head, so it builds and renders at once, dressed.
+/// With `parts: "empty"` it has no parts: add them one by one with `part.add`. Either way the palette starts with the
+/// three standard skin colours (`skin`, `skin_shade`, `skin_line`) that the head and body refer to, and the face starts
+/// as the template's, with the built-in expression library (moods, accents, visemes and blink) when the template brings
+/// none.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(extend(
@@ -61,7 +62,8 @@ pub struct CharacterCreate {
     /// 4294967295; 0 when left out.
     #[serde(default)]
     pub seed: u32,
-    /// Which parts to start with: `defaults` (body, head and hair; the default) or `empty` (none).
+    /// Which parts to start with: `defaults` (body, head, hair, shirt, trousers and boots; the default) or `empty`
+    /// (none).
     #[serde(default)]
     pub parts: StartingParts,
 }
@@ -83,12 +85,22 @@ struct Starter {
     params: fn(&TemplateDefaults, &PartKindRegistration) -> Result<Value, serde_json::Error>,
 }
 
-/// The default parts, in the order they are listed. Hair builds after the head it reads, whatever the order here.
-const STARTERS: [Starter; 3] = [
+/// The default parts, in the order they are listed. Each builds after the parts it reads (hair after the head, the
+/// outfit after the body), whatever the order here. The outfit takes its kinds' defaults, which fit any body.
+const STARTERS: [Starter; 6] = [
     Starter { id: "body", kind: "body", params: |template, _| serde_json::to_value(&template.body) },
     Starter { id: "head", kind: "head", params: |template, _| serde_json::to_value(&template.head) },
-    Starter { id: "hair", kind: "hair", params: |_, kind| Ok((kind.defaults)()) },
+    Starter { id: "hair", kind: "hair", params: kind_defaults },
+    Starter { id: "shirt", kind: "shirt", params: kind_defaults },
+    Starter { id: "trousers", kind: "trousers", params: kind_defaults },
+    Starter { id: "boots", kind: "boots", params: kind_defaults },
 ];
+
+/// A starting part that takes its kind's own defaults.
+#[allow(clippy::unnecessary_wraps)] // the signature every starter's parameters share
+fn kind_defaults(_: &TemplateDefaults, kind: &PartKindRegistration) -> Result<Value, serde_json::Error> {
+    Ok((kind.defaults)())
+}
 
 /// A built-in id that turned out not to be a valid slug: a bug in the table above, not in the caller's arguments.
 fn built_in<T, E: Display>(what: &str, id: &str, made: Result<T, E>) -> Result<T, OpError> {
@@ -115,7 +127,7 @@ impl Starter {
             kind: built_in("part kind", self.kind, PartKindId::new(self.kind))?,
             parent: None,
             enabled: true,
-            layer: tree::default_layer((kind.meta)().category),
+            layer: tree::layer_of(kind),
             attach: None,
             params,
         };
@@ -174,7 +186,7 @@ impl Op for CharacterCreate {
     fn meta() -> OpMeta {
         OpMeta {
             name: "character.create",
-            summary: "Create a character from a body template, with a default body, head and hair or no parts.",
+            summary: "Create a character from a body template, dressed in the default parts or with none.",
             kind: OpKind::Edit,
             scope: Scope::EditCharacter,
             undo: Undo::Auto,

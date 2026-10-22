@@ -1,0 +1,79 @@
+[package]
+name = "omuzaki-input"
+description = "OS input for motion (ADR 0060): the hub behind omuzaki-input-api, with the capture gate, the indicator, the kill switch, the normaliser that turns keys into zones, the binding matcher and the per-OS backends."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+# The raw injector, the manual control tick and a fake process list, for this crate's own tests and benches only
+# (design §13 IN-3: no other crate enables it, which `tests/gate.rs` checks).
+test-hooks = []
+
+[dependencies]
+gilrs.workspace = true
+inventory.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-input-api = { path = "../omuzaki-input-api" }
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+omuzaki-osc = { path = "../omuzaki-osc" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[target.'cfg(any(target_os = "linux", windows, target_os = "macos"))'.dependencies]
+midir.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd.workspace = true
+evdev.workspace = true
+futures-util.workspace = true
+rustix = { workspace = true, features = ["event"] }
+tokio = { workspace = true, features = ["time"] }
+x11rb.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-foundation.workspace = true
+objc2-core-graphics.workspace = true
+objc2-io-kit.workspace = true
+
+# The build script declares the feature modules from their folders (ADR 0054 §1), so a backend is a folder.
+[build-dependencies]
+omuzaki-embed = { path = "../omuzaki-embed" }
+
+[dev-dependencies]
+criterion.workspace = true
+proptest.workspace = true
+tempfile.workspace = true
+omuzaki-doc-api = { path = "../omuzaki-doc-api" }
+omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+omuzaki-input = { path = ".", features = ["test-hooks"] }
+omuzaki-ops-mock = { path = "../omuzaki-ops-mock" }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# XTest drives the X11 backend's test only; the crate itself never sends input (§3 rule 4).
+x11rb = { workspace = true, features = ["xtest"] }
+
+[[bench]]
+name = "normalise"
+harness = false
+required-features = ["test-hooks"]
+
+[lints]
+workspace = true
+
+# Native only: it reads the OS's input devices.
+[package.metadata.omuzaki]
+kind = "Implementation"
+summary = "OS input (ADR 0060, `docs/design/input-motion.md`): the hub behind `omuzaki-input-api`; capture is off by default, started only by a person while an installed indicator is drawn, paused by a stale indicator or a protected program and ended through epochs, never by writing into another thread's ring; one capture thread per backend normalises raw keys to zones (the only place key identities exist), matches chords and pushes to its own SPSC rings with held snapshots; the feeds keep per-binding holder sets so a release always ends what its press started; the binding store and the protected-program list live in the data folder; MIDI controllers (midir) and OSC on 127.0.0.1 are binding sources, and `BindingRunner` runs each hit's op as the person or hands its trigger edges on (#469)"
+wasm = false
+registers = true
+generated-mods = ["src"]

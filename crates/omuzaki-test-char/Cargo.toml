@@ -19,6 +19,7 @@ omuzaki-char = { path = "../omuzaki-char" }
 omuzaki-char-api = { path = "../omuzaki-char-api" }
 omuzaki-char-mock = { path = "../omuzaki-char-mock" }
 omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-face-mock = { path = "../omuzaki-face-mock" }
 omuzaki-render-api = { path = "../omuzaki-render-api" }
 omuzaki-rig = { path = "../omuzaki-rig" }
 omuzaki-test = { path = "../omuzaki-test" }

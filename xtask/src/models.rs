@@ -357,13 +357,14 @@ fn is_non_commercial(spdx: &str) -> bool {
 /// `(crate, file, generator)`. The generator is the call that must appear in that crate's `build.rs`. A file allowed for
 /// one crate is not allowed for another, and nothing is allowed by file name alone. Each generator emits only `mod` /
 /// `#[path]` lines into the crate's own `src/`, `link()` calls, or data, never a registration macro.
-const GENERATED: [(&str, &str, &str); 15] = [
+const GENERATED: [(&str, &str, &str); 16] = [
     ("omuzaki-anim", "crate_mods.rs", "omuzaki_embed::modules"),
     ("omuzaki-char", "ops_mods.rs", "omuzaki_embed::modules"),
     ("omuzaki-char", "looks.rs", "looks.rs"),
     ("omuzaki-cli", "link_calls.rs", "omuzaki_link_build::emit"),
     ("omuzaki-doc", "migrations.rs", "migration_files::module_decls"),
     ("omuzaki-face", "ops_mods.rs", "omuzaki_embed::modules"),
+    ("omuzaki-input", "crate_mods.rs", "omuzaki_embed::modules"),
     ("omuzaki-io-ops", "ops_mods.rs", "omuzaki_embed::modules"),
     ("omuzaki-link-probe", "link_calls.rs", "omuzaki_link_build::emit"),
     ("omuzaki-mcp", "recipes_mods.rs", "omuzaki_embed::modules"),

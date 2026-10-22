@@ -185,10 +185,10 @@ fn handing_back_a_region_has_no_jump() {
     // go. A spring that kept its old position would still be on its way; snapped springs are already at the source.
     // (driven channel, a spring-driven channel in the same region, how far it may differ: noise is written on top)
     let cases = [
-        (Channel::EYE_BLINK_RIGHT, Channel::EYE_WIDE_LEFT, 0.045),
+        (Channel::EYE_BLINK_RIGHT, Channel::EYE_WIDE_LEFT, 0.01),
         (Channel::BROW_DOWN_RIGHT, Channel::BROW_INNER_UP, 0.0),
         (Channel::MOUTH_PRESS_LEFT, Channel::JAW_OPEN, 0.0),
-        (Channel::HEAD_ROLL, Channel::HEAD_YAW, 0.036),
+        (Channel::HEAD_ROLL, Channel::HEAD_YAW, 0.01),
     ];
     for (driven, sprung, tolerance) in cases {
         let jump = if sprung == Channel::HEAD_YAW { 0.8 } else { 0.7 };
@@ -208,6 +208,52 @@ fn handing_back_a_region_has_no_jump() {
         let value = first_free.expect("frame 90 ran");
         assert!((value - jump).abs() <= tolerance, "{sprung}: {value} against the source {jump}");
     }
+}
+
+#[test]
+fn handing_back_eases_the_couplings_in() {
+    // A smile of 0.4 on the face while a person owns the eyes for four seconds: the cheek push (smile x 0.35 = +0.14
+    // when free) must not land on the first free frame, and must be fully there once the ease is over.
+    let mut scene = |tick: &Tick| {
+        let mut bus = bus_of(|v| {
+            v[Channel::MOUTH_SMILE_LEFT] = 0.4;
+            v[Channel::MOUTH_SMILE_RIGHT] = 0.4;
+        });
+        if tick.index < 240 {
+            bus.owners.claim(Source::Tracker, ChannelMask::of(Channel::EYE_BLINK_RIGHT));
+        }
+        (bus, Cues::default())
+    };
+    let mut cheek = Vec::new();
+    simulate(&mut Life::new(LifeConfig::new(2)), 60.0, 330, &mut scene, |tick, _, bus| {
+        if tick.index >= 239 {
+            cheek.push(bus.values[Channel::CHEEK_SQUINT_LEFT]);
+        }
+    });
+    assert_eq!(cheek[0], 0.0, "while owned the layer writes nothing to the eyes");
+    assert!(cheek[1] < 0.03, "the first free frame stays near the source: {}", cheek[1]);
+    assert!(cheek.windows(2).skip(1).all(|w| w[1] >= w[0] - 0.01), "and the push rises smoothly");
+    let end = cheek[cheek.len() - 1];
+    assert!((end - 0.14).abs() < 0.03, "then settles at smile x smile_to_lids: {end}");
+}
+
+#[test]
+fn a_zero_hand_back_time_brings_everything_in_at_once() {
+    let mut config = LifeConfig::new(2);
+    config.params.face.hand_back_s = 0.0;
+    let mut scene = |tick: &Tick| {
+        let mut bus = bus_of(|v| {
+            v[Channel::MOUTH_SMILE_LEFT] = 0.4;
+            v[Channel::MOUTH_SMILE_RIGHT] = 0.4;
+        });
+        if tick.index < 60 {
+            bus.owners.claim(Source::Tracker, ChannelMask::of(Channel::EYE_BLINK_RIGHT));
+        }
+        (bus, Cues::default())
+    };
+    let mut cheek = Vec::new();
+    simulate(&mut Life::new(config), 60.0, 300, &mut scene, |_, _, bus| cheek.push(bus.values[Channel::CHEEK_SQUINT_LEFT]));
+    assert!(cheek[299] > 0.1, "the push still arrives: {}", cheek[299]);
 }
 
 #[test]

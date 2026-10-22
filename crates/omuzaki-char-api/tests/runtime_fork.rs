@@ -127,7 +127,7 @@ impl PartRuntime for Opaque {
 }
 
 fn step(runtime: &mut dyn PartRuntime, frame: u32, wind: Vec3) {
-    let ctx = StepCtx { dt: 1.0 / 60.0, time: Seconds(f64::from(frame) / 60.0), pose: &Still, wind };
+    let ctx = StepCtx::new(1.0 / 60.0, Seconds(f64::from(frame) / 60.0), &Still, wind);
     runtime.step(&ctx);
 }
 
