@@ -3,6 +3,9 @@
 //! step. They read other branches only through [`BranchStore`](omuzaki_history_api::state::BranchStore), never another
 //! lane's live document, so an op never waits on another lane.
 
+mod list;
+mod merge;
+
 use omuzaki_history_api::branch::BranchError;
 use omuzaki_ops_api::OpError;
 

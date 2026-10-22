@@ -18,6 +18,7 @@ tokio = { workspace = true, features = ["io-std", "io-util", "net", "time"] }
 tracing.workspace = true
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc = { path = "../omuzaki-doc" }
+omuzaki-char-api = { path = "../omuzaki-char-api" }
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 omuzaki-history-api = { path = "../omuzaki-history-api" }
 omuzaki-mcp = { path = "../omuzaki-mcp" }

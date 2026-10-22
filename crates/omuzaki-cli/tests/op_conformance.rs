@@ -321,6 +321,39 @@ impl PerformHost for IdleHost {
     }
 }
 
+/// The branches the `branch.*` examples read: `main` at `now`, and `aria/oval` forked from it with the project's
+/// note set.
+fn branches_at(now: &Value) -> Arc<omuzaki_history_mock::branch::MemoryBranchStore> {
+    use omuzaki_history_api::branch::{
+        BranchId, BranchInfo, BranchName, Contains, LaneState, Point, PointKind, Version,
+    };
+    use omuzaki_history_api::{Lsn, SnapshotId, WallTime};
+    let store = Arc::new(omuzaki_history_mock::branch::MemoryBranchStore::new());
+    let snapshot = SnapshotId(omuzaki_store_api::ContentHash::of(b"conformance"));
+    let main_point =
+        Point::new(BranchId::main(), 1, snapshot, Lsn(1), PointKind::Checkpoint, Actor::System, WallTime(1));
+    let main_head = store.put_point(main_point, now.clone()).expect("a point encodes");
+    let mut main = BranchInfo::new(BranchId::main(), BranchName::main(), main_head, 1, WallTime(1), Actor::System);
+    main.lane = LaneState::open(true, 0);
+    store.put_branch(main);
+    let oval_id = BranchId::new("9c41d07a5e2b1f30").expect("a branch id");
+    let mut theirs = now.clone();
+    if let Some(project) = theirs.get_mut("project").and_then(Value::as_object_mut) {
+        project.insert("note".to_owned(), Value::from("from aria/oval"));
+    }
+    let from_main = Contains::new().with(BranchId::main(), Version::new(1, main_head));
+    let oval_point =
+        Point::new(oval_id.clone(), 1, snapshot, Lsn(2), PointKind::Checkpoint, Actor::System, WallTime(2))
+            .with_parents(vec![main_head])
+            .with_contains(from_main.clone());
+    let oval_head = store.put_point(oval_point, theirs).expect("a point encodes");
+    let name = BranchName::new("aria/oval").expect("a branch name");
+    let mut oval = BranchInfo::new(oval_id, name, oval_head, 1, WallTime(2), Actor::System);
+    oval.inherits = from_main;
+    store.put_branch(oval);
+    store
+}
+
 struct Rig {
     runner: Executor,
     dir: tempfile::TempDir,
@@ -334,10 +367,8 @@ impl Rig {
         let doc = Saved::open(dir.path()).map_err(|e| format!("opening the fixture failed: {e}"))?;
         // History with transactions 7 and 9 at the fixture's own state, so the `history.*` examples resolve.
         let now = doc.get(&DocPath::root()).cloned().unwrap_or(Value::Null);
-        let view = omuzaki_history_mock::branch::MemoryHistoryView::new(
-            Arc::new(omuzaki_history_mock::branch::MemoryBranchStore::new()),
-            now.clone(),
-        );
+        let branches = branches_at(&now);
+        let view = omuzaki_history_mock::branch::MemoryHistoryView::new(Arc::clone(&branches), now.clone());
         let log = omuzaki_history_mock::MemoryHistoryLog::default();
         for tx in [7, 9, 41] {
             view.record_tx(omuzaki_ops_api::TxId(tx), now.clone());
@@ -384,6 +415,9 @@ impl Rig {
                     // Snapshots with nothing to reload: `project.save` and `project.reload` run as they would on a
                     // project whose files match the document.
                     .insert::<dyn omuzaki_history_api::state::HistoryView>(Arc::new(view))
+                    // `main` (the folder branch, at the fixture's state) and `aria/oval`, forked from it with the note
+                    // changed: the `branch.*` examples merge, list and compare them.
+                    .insert::<dyn omuzaki_history_api::state::BranchStore>(branches)
                     .insert::<dyn omuzaki_history_api::HistoryLog>(Arc::new(log))
                     .insert::<dyn Snapshots>(Arc::new(MemorySnapshots::new(
                         Value::Null,
