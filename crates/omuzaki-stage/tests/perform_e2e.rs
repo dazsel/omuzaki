@@ -3,8 +3,9 @@
 //! reads the mailbox's reader with the real `ArkitRetarget`, `Life` (seed 7) and `BusAnimator`, stepped at 60 Hz on a
 //! fake clock.
 //!
-//! The trace is checked against `tests/golden/perform_trace.json`, which the `MockAnimator` run of `perform.rs` wrote:
-//! `BusAnimator` is its counterpart, so the two must agree.
+//! The trace is checked against `tests/golden/perform_trace_bus.json` (`OMUZAKI_BLESS=1 cargo test` rewrites it). It
+//! matches `perform_trace.json`, which the `MockAnimator` run of `perform.rs` wrote, on every channel; only the neck and
+//! head differ, because `BusAnimator` splits the head rotation by slerp and the mock by Euler angles (#1875).
 
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
 #![allow(clippy::expect_used, clippy::unwrap_used)]
@@ -25,7 +26,7 @@ use omuzaki_anim_api::{
     Channel, ChannelBuf, ChannelMask, DeviceProfile, FrameSource, HumanoidBone, HumanoidPose, LifeConfig, Source, Tick,
 };
 use omuzaki_anim_mock::track::{RecordedTrack, SyntheticSpec, synthetic_track};
-use omuzaki_core::glam::EulerRot;
+use omuzaki_core::glam::{EulerRot, Quat};
 use omuzaki_core::time::Seconds;
 use omuzaki_stage::perform::{PerformOutput, Performer, PerformerParts, STEP_HZ};
 use omuzaki_track_api::mailbox::{MailboxWriter, mailbox};
@@ -148,10 +149,26 @@ fn the_trace_through_the_mailbox_matches_the_perform_golden() {
             seen.push((i, values_of(&out)));
         }
     }
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden/perform_trace.json");
-    // A test reads its own checked-in golden; no op runs here.
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden/perform_trace_bus.json");
+    // A test reads and (when blessing) writes its own checked-in golden; no op runs here.
     #[allow(clippy::disallowed_methods)]
-    let text = std::fs::read_to_string(&path).expect("tests/golden/perform_trace.json");
+    if std::env::var_os("OMUZAKI_BLESS").is_some() {
+        // f32 values go out at their shortest round-trip form, as the mock's golden has them.
+        let short = |x: &f32| x.to_string().parse::<f64>().unwrap_or(0.0);
+        let samples: Vec<_> = seen
+            .iter()
+            .map(|(step, v)| {
+                let v: Vec<f64> = v.iter().map(short).collect();
+                serde_json::json!({
+                    "step": step, "jaw_open": v[0], "mouth_smile_left": v[1], "brow_inner_up": v[2],
+                    "head_yaw": v[3], "breath": v[4], "neck": &v[5..9], "head": &v[9..13],
+                })
+            })
+            .collect();
+        std::fs::write(&path, serde_json::to_string_pretty(&samples).expect("json") + "\n").expect("write golden");
+    }
+    #[allow(clippy::disallowed_methods)]
+    let text = std::fs::read_to_string(&path).expect("tests/golden/perform_trace_bus.json (OMUZAKI_BLESS=1 writes it)");
     let golden: Vec<Sample> = serde_json::from_str(&text).unwrap();
     assert_eq!(golden.len(), seen.len());
     for (want, (step, got)) in golden.iter().zip(&seen) {
@@ -221,26 +238,29 @@ fn a_lost_gap_hands_over_to_life_through_the_mailbox_without_a_jump() {
     assert!(blinks > 0, "life never blinked after taking over");
 }
 
+/// Largest component difference of two quaternions, sign-normalised (`acos`-based angles lose precision near 0).
+fn gap(a: Quat, b: Quat) -> f32 {
+    let b = if a.dot(b) < 0.0 { -b } else { b };
+    (a - b).to_array().iter().fold(0.0_f32, |m, d| m.max(d.abs()))
+}
+
 #[test]
-fn the_neck_and_head_split_the_bus_head_angles_on_every_step() {
-    // `BusAnimator` gives the neck its share of each bus angle and the head the rest. The two rotations do not
-    // commute, so their product only approximates the bus rotation; each bone is checked against its own share.
+fn the_neck_and_head_split_the_bus_head_rotation_by_slerp_on_every_step() {
+    // `BusAnimator` slerps the bus rotation: the neck carries `neck_share` of its angle about the same axis, and
+    // Neck · Head is the bus rotation exactly.
     let share = BusAnimatorParams::default().neck_share;
     let mut chain = Chain::new(&track(14.0, Some((Seconds(4.0), Seconds(12.0)))));
     for i in 0..(14 * 60) {
         chain.publish(i);
         let out = chain.perform.advance(mid_step(i)).expect("one step per call");
         let v = &out.bus.values;
-        let bus = [v[Channel::HEAD_YAW], v[Channel::HEAD_PITCH], v[Channel::HEAD_ROLL]];
-        let check = |bone: HumanoidBone, part: f32| {
-            let (yaw, pitch, roll) = out.pose.get(bone).to_euler(EulerRot::YXZ);
-            let want = [bus[0] * part, bus[1] * part, bus[2] * part];
-            let got = [yaw, pitch, roll];
-            let err = got.iter().zip(want).map(|(g, w)| (g - w).abs()).fold(0.0_f32, f32::max);
-            assert!(err <= 1e-4, "step {i}: {bone:?} is {got:?}, want {want:?}");
-        };
-        check(HumanoidBone::Neck, share);
-        check(HumanoidBone::Head, 1.0 - share);
+        let whole =
+            Quat::from_euler(EulerRot::YXZ, v[Channel::HEAD_YAW], v[Channel::HEAD_PITCH], v[Channel::HEAD_ROLL]);
+        let (neck, head) = (out.pose.get(HumanoidBone::Neck), out.pose.get(HumanoidBone::Head));
+        let product = neck * head;
+        assert!(gap(product, whole) <= 1e-5, "step {i}: Neck·Head is off the bus rotation");
+        let want = Quat::IDENTITY.slerp(whole, share);
+        assert!(gap(neck, want) <= 1e-5, "step {i}: the neck is not {share} of the bus rotation");
     }
 }
 

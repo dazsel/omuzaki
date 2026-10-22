@@ -119,6 +119,7 @@ impl SceneDef {
         let l = &self.lighting;
         non_negative("lighting.exposure", l.exposure)?;
         non_negative("lighting.outline_light", l.outline_light)?;
+        non_negative("lighting.back_light_rim", l.back_light_rim)?;
         if let Some(f) = l.skin_floor {
             non_negative("lighting.skin_floor", f)?;
         }

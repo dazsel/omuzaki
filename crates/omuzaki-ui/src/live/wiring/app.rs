@@ -1,7 +1,7 @@
 //! [`LiveApp`]: the live slice as the app starts it. The perform thread, the op runner with the performer in its
 //! services, and the output window, started together and stopped in the quit order of [`super`].
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use egui::Context;
@@ -15,6 +15,8 @@ use omuzaki_core::glam::UVec2;
 use omuzaki_core::time::{Clock, Seconds, SystemClock};
 use omuzaki_face_api::ExpressionSet;
 use omuzaki_http::ConnectHttp;
+use omuzaki_input::{BindingDispatcher, BindingRunner, DispatchReport, Hub, HubConfig};
+use omuzaki_input_api::feed::{InputControl, InputHub, IntentFeed, MotionFeed};
 use omuzaki_live::Automation;
 use omuzaki_live::approvals::DiskApprovals;
 use omuzaki_live::vars::DiskVariables;
@@ -106,10 +108,63 @@ pub struct LiveApp {
     automation: Arc<Automation>,
     /// What this machine approved for each show; only the approval card and Settings write it (never an op).
     approvals: Option<Arc<DiskApprovals>>,
+    /// The OS input hub and the dispatcher that runs its bindings; `None` if the hub's store could not be read.
+    input: Option<InputWiring>,
     /// The OS keychain the connectors keep their secrets in; `None` without a data folder.
     secrets: Option<Arc<dyn SecretStore>>,
     /// The project folder's real path, which keys a show's approvals as the engine does.
     project: String,
+}
+
+/// The OS input hub (ADR 0060) as the app runs it: its control is in the runner's services (the `input.*` capture and
+/// binding ops), and the dispatcher runs each binding's action as the person (#469). Capture stays off until a person
+/// starts it from a drawn indicator.
+struct InputWiring {
+    /// Runs the bindings' actions; dropped first, so no action runs while the hub stops.
+    dispatcher: Option<BindingDispatcher>,
+    /// The motion and intent feeds, held for the stage until it reads input motion (ST-1, ST-2).
+    _feeds: Option<(Box<dyn MotionFeed>, Box<dyn IntentFeed>)>,
+    hub: Hub,
+}
+
+impl InputWiring {
+    /// The hub, stamping input on the perform loop's clock as the trackers stamp their frames, and keeping its bindings
+    /// and protected programs in the app's data folder; `None` (with a warning) if its store could not be read.
+    fn hub(clock: &dyn PerformClock, data: Option<PathBuf>) -> Option<Hub> {
+        let clock: Arc<dyn Clock> = match clock.observer() {
+            Some(observer) => Arc::new(ObservedClock(observer)),
+            None => Arc::new(SystemClock::new()),
+        };
+        Hub::new(HubConfig::new(clock, data))
+            .inspect_err(
+                |error| tracing::warn!(%error, "the input hub did not start: OS input and bindings are unavailable"),
+            )
+            .ok()
+    }
+
+    /// Puts the hub's control in the runner's services, for the `input.*` ops.
+    fn serve(services: ServicesBuilder, hub: Option<&Hub>) -> ServicesBuilder {
+        match hub {
+            Some(hub) => services.insert::<dyn InputControl>(hub.control()),
+            None => services,
+        }
+    }
+
+    /// Takes the hub's feeds and starts the dispatcher on `runner`, as the person at the app.
+    fn start(hub: Hub, runner: Arc<dyn Runner>) -> Self {
+        let Some((motion, intents, bindings)) = hub.take_feeds() else {
+            return Self { dispatcher: None, _feeds: None, hub };
+        };
+        let person = Actor::Person { name: "you".to_owned() };
+        let dispatcher = match BindingRunner::new(bindings, runner, hub.control(), person).spawn() {
+            Ok(dispatcher) => Some(dispatcher),
+            Err(error) => {
+                tracing::warn!(%error, "the binding dispatcher did not start: bindings do nothing");
+                None
+            }
+        };
+        Self { dispatcher, _feeds: Some((motion, intents)), hub }
+    }
 }
 
 /// The frame rate the program is fed to the outputs at (spec §10's budget scene).
@@ -211,6 +266,7 @@ impl LiveApp {
         transparency: Transparency,
         base: &HumanoidPose,
     ) -> Result<Self, StartError> {
+        let hub = InputWiring::hub(clock.as_ref(), extras.data.clone());
         let performer = live_performer(Box::new(NoSource), ChannelBuf::NEUTRAL, *base);
         // The viewport reads the tracker's latency while the input owns the tracker: two handles to one.
         let tracker = SharedTracker::new(tracker);
@@ -222,24 +278,7 @@ impl LiveApp {
         // The shows: the automation engine runs their rules through this app's runner, and Twitch's events reach it.
         let automation = Arc::new(Automation::new());
         let twitch = TwitchService::new(Arc::new(ConnectHttp::new()), Arc::clone(&automation) as Arc<dyn EventSink>);
-        // The VTube Studio bridge: the perform thread feeds it every step's channels; the `vts.*` ops connect it.
-        let vts = match VtsService::new() {
-            Ok(service) => {
-                let service = match &secrets {
-                    Some(store) => service.with_tokens(Arc::new(SecretTokens(Arc::clone(store)))),
-                    None => service,
-                };
-                let service = Arc::new(service);
-                let mut feed = service.feed();
-                let face = |t: Tracking| t == Tracking::Tracking;
-                extras.tap.get_or_insert(Box::new(move |frame| feed.push(&frame.channels, face(frame.tracking))));
-                Some(service)
-            }
-            Err(error) => {
-                tracing::warn!(%error, "the VTube Studio bridge did not start: the `vts.*` ops are unavailable");
-                None
-            }
-        };
+        let vts = vts_bridge(secrets.as_ref(), &mut extras);
         let (rig, reader) =
             LiveRig::start_with(Box::new(tracker.clone()), extras, TrackerConfig::default(), performer, clock)
                 .map_err(StartError::Wiring)?;
@@ -265,6 +304,7 @@ impl LiveApp {
         if let Some(vts) = vts {
             services = services.insert::<VtsService>(vts);
         }
+        services = InputWiring::serve(services, hub.as_ref());
         services = with_connectors(services, data.as_deref(), secrets.as_ref(), settings.as_ref());
         // Frames and the microphone count from one zero, so a take's audio lines up with its video.
         let epoch = std::time::Instant::now();
@@ -303,6 +343,8 @@ impl LiveApp {
             rig: Some(rig),
             channel_reader: reader.clone(),
             reader: Some(reader),
+            // Before `core` moves: the dispatcher runs on its runner.
+            input: hub.map(|hub| InputWiring::start(hub, Arc::clone(&core.runner))),
             core,
             output: OutputWindow::new(OutputPlan::default(), transparency),
             host: window,
@@ -384,6 +426,18 @@ impl LiveApp {
     /// The app's executor: the runner, and the agent sessions on it.
     pub fn core(&self) -> Core {
         self.core.clone()
+    }
+
+    /// The OS input hub, for the shell's capture indicator and the binding editor (its `IndicatorHost`, `ChordStore` and
+    /// `ProtectList`). `None` if it did not start, or after [`shutdown`](Self::shutdown).
+    pub fn input_hub(&self) -> Option<&Hub> {
+        self.input.as_ref().map(|input| &input.hub)
+    }
+
+    /// What the bindings' actions did (ops run and failed, trigger edges, the latest failure), for the binding editor.
+    /// `None` if the dispatcher did not start, or after [`shutdown`](Self::shutdown).
+    pub fn binding_report(&self) -> Option<DispatchReport> {
+        self.input.as_ref()?.dispatcher.as_ref().map(BindingDispatcher::report)
     }
 
     /// The rig: the input and the loop's counts. `None` after [`shutdown`](Self::shutdown).
@@ -472,6 +526,8 @@ impl LiveApp {
         if let Some(feed) = self.feed.take() {
             feed.service().shutdown();
         }
+        // Capture ends and no binding runs from here on.
+        self.input = None;
         self.output.set_open(false);
         self.host.publish(&self.output, WindowHost::surface(&self.host).scale_factor);
         if let Some(view) = self.viewport.take()
@@ -609,6 +665,28 @@ fn connector_host(
         services,
     });
     Some((store, Arc::new(host)))
+}
+
+/// The `VTube Studio` bridge: the perform thread feeds it every step's channels through `extras`' tap; the `vts.*` ops
+/// connect it. `None`, with a warning, when it can't start.
+fn vts_bridge(secrets: Option<&Arc<dyn SecretStore>>, extras: &mut Extras) -> Option<Arc<VtsService>> {
+    match VtsService::new() {
+        Ok(service) => {
+            let service = match secrets {
+                Some(store) => service.with_tokens(Arc::new(SecretTokens(Arc::clone(store)))),
+                None => service,
+            };
+            let service = Arc::new(service);
+            let mut feed = service.feed();
+            let face = |t: Tracking| t == Tracking::Tracking;
+            extras.tap.get_or_insert(Box::new(move |frame| feed.push(&frame.channels, face(frame.tracking))));
+            Some(service)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "the VTube Studio bridge did not start: the `vts.*` ops are unavailable");
+            None
+        }
+    }
 }
 
 /// Keeps the mixer on the project's graph: the `audio.bus.*` ops edit it, undo included.

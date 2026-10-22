@@ -133,7 +133,7 @@ fn requested(cx: &PassCx<'_>) -> Option<Look> {
     let look = cx.frame.scene.post.bloom?;
     let finite = |v: f32| if v.is_finite() { v } else { 0.0 };
     let strength = finite(look.strength).clamp(0.0, MAX_STRENGTH);
-    (cx.frame.quality.post_effects && strength > 0.0).then(|| Look {
+    (cx.frame.quality.post_effects.bloom && strength > 0.0).then(|| Look {
         strength,
         radius: finite(look.radius).clamp(0.0, 1.0),
         threshold: finite(look.threshold).max(0.0),

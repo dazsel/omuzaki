@@ -17,8 +17,6 @@ const BROWS: [(Channel, Side); 5] = [
 ];
 /// The first three channels raise the brow; a kick adds to them.
 const RAISERS: usize = 3;
-/// A kick varies by up to this much from one syllable to the next, so no two are identical.
-const KICK_JITTER: f32 = 0.03;
 /// How slowly the brows wander, seconds per cycle.
 const WOBBLE_PERIOD_S: f32 = 1.4;
 
@@ -54,7 +52,7 @@ impl Brows {
             return;
         }
         self.bank.write(out, &pos);
-        let amplitude = frame.params.face.brow_noise;
+        let amplitude = frame.ease.brows * frame.params.face.brow_noise;
         let sides = [
             (Channel::BROW_OUTER_UP_LEFT, Channel::BROW_DOWN_LEFT, Texture::BrowLeft, Side::Left),
             (Channel::BROW_OUTER_UP_RIGHT, Channel::BROW_DOWN_RIGHT, Texture::BrowRight, Side::Right),
@@ -73,7 +71,7 @@ impl Brows {
         }
         let face = &frame.params.face;
         if frame.onset {
-            let strength = face.brow_kick_base + face.brow_kick_per_loud * frame.loud + KICK_JITTER * rng.next_f32();
+            let strength = face.brow_kick_base + face.brow_kick_per_loud * frame.loud + face.brow_kick_jitter * rng.next_f32();
             self.kick = self.kick.max(strength);
         }
         self.kick *= (-frame.dt / face.brow_kick_decay_s.max(1e-3)).exp();

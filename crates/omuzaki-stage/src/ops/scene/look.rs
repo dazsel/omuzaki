@@ -182,14 +182,14 @@ pub enum Radius {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(extend(
-    "examples" = [{"opacity": 0.4}, {"kind": "none"}, {"scene": "night_stream", "radius": 1.5}, {"radius": "fit"}],
+    "examples" = [{"opacity": 0.4}, {"kind": "none"}, {"kind": "floor", "colour": "#26242e"}, {"scene": "night_stream", "radius": 1.5}, {"radius": "fit"}],
     "x-omuzaki-fixture" = "scenes"
 ))]
 pub struct SetGround {
     /// The scene; the one the project opens in when left out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scene: Option<SceneId>,
-    /// `shadow` (a disc that catches the cast's shadow) or `none`.
+    /// `shadow` (a disc that catches the cast's shadow), `floor` (a lit stage floor the lights pool on) or `none`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<GroundKind>,
     /// How dark the shadow is, 0 to 1.
@@ -198,14 +198,17 @@ pub struct SetGround {
     /// The disc's radius in subject units, or `fit` to size it to the cast.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub radius: Option<Radius>,
+    /// A floor's colour, `#rrggbb`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub colour: Option<omuzaki_render_api::Colour>,
 }
 
 impl Op for SetGround {
     fn meta() -> OpMeta {
         OpMeta {
             name: "stage.set_ground",
-            summary: "Change a scene's ground: a shadow-catcher disc or none, its shadow's opacity, and its radius (or \
-                      `fit` to size it to the cast). Only the fields given change.",
+            summary: "Change a scene's ground: a shadow-catcher disc, a lit floor or none, its shadow's opacity, its \
+                      radius (or `fit` to size it to the cast) and a floor's colour. Only the fields given change.",
             kind: OpKind::Edit,
             scope: Scope::EditScene,
             undo: Undo::Auto,
@@ -221,6 +224,7 @@ impl Op for SetGround {
         let ground = &mut edit.def.scene.ground;
         ground.kind = self.kind.unwrap_or(ground.kind);
         ground.opacity = self.opacity.unwrap_or(ground.opacity);
+        ground.colour = self.colour.or(ground.colour);
         match self.radius {
             Some(Radius::Fit(Fit::Fit)) => ground.radius = None,
             Some(Radius::Units(r)) => ground.radius = Some(r),

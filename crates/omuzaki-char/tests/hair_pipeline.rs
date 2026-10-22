@@ -76,7 +76,8 @@ impl GroupGenerator for Stub {
                         ctx.clump(vec![root, root - Vec3::Y * 0.1], c.width, c.thickness, 1.0)
                     })
                     .collect();
-                CompiledGroup { clumps, geometry: GroupGeometry::Strip { columns: c.columns, u: Vec::new() } }
+                let u = (0..c.count).map(|k| f32::from(k) / f32::from(c.count.max(2) - 1)).collect();
+                CompiledGroup { clumps, geometry: GroupGeometry::Strip { columns: c.columns, u } }
             }
             _ => CompiledGroup::tubes(Vec::new()),
         }
@@ -198,7 +199,11 @@ fn character(hair: &HairParams) -> CharacterDef {
 }
 
 fn hair_output(def: &CharacterDef) -> Result<PartOutput, BuildError> {
-    let (id, options, services) = (CharId::new("t").unwrap(), BuildOptions::default(), BuildServices::default());
+    hair_output_with(def, &BuildOptions::default())
+}
+
+fn hair_output_with(def: &CharacterDef, options: &BuildOptions) -> Result<PartOutput, BuildError> {
+    let (id, options, services) = (CharId::new("t").unwrap(), options.clone(), BuildServices::default());
     let mut assembler = Assembler::new(&id, def, &options);
     let mut result = None;
     for part in plan(def).unwrap() {
@@ -373,7 +378,7 @@ fn two_group_style() -> HairParams {
 }
 
 #[test]
-fn static_groups_make_one_head_skinned_mesh_and_simulated_groups_a_second_one() {
+fn static_groups_make_one_head_skinned_mesh_and_simulated_groups_a_dynamic_one() {
     let out = hair_output(&character(&two_group_style())).unwrap();
     let names: Vec<_> = out.meshes.iter().map(|m| m.name.as_str()).collect();
     assert_eq!(names, ["hair-static", "hair-dynamic"]);
@@ -383,31 +388,37 @@ fn static_groups_make_one_head_skinned_mesh_and_simulated_groups_a_second_one() 
         stat.geometry.joints.iter().all(|j| *j == [0; 4])
             && stat.geometry.weights.iter().all(|w| *w == [1.0, 0.0, 0.0, 0.0])
     );
-    assert!(!dynamic.dynamic && dynamic.joint_bones == [omuzaki_char_api::JointRef::HEAD]);
-    assert!(
-        dynamic.geometry.joints.iter().all(|j| *j == [0; 4])
-            && dynamic.geometry.weights.iter().all(|w| *w == [1.0, 0.0, 0.0, 0.0])
-    );
+    // The simulated group is the runtime's: unskinned, in character space, rewritten every step.
+    assert!(dynamic.dynamic && dynamic.joint_bones.is_empty() && !dynamic.geometry.is_skinned());
+    dynamic.validate().unwrap();
     // 4 static clumps (2 locks, mirrored), 1 dynamic, 4 rings of 8 each, and each clump's two caps.
     assert_eq!(stat.geometry.positions.len(), tube_mesh_vertices(4, 4));
     assert_eq!(dynamic.geometry.positions.len(), tube_mesh_vertices(1, 4));
     assert!(stat.casts_shadow && stat.render_order == 1);
-    assert!(out.runtime.is_none(), "the simulation is not built yet");
+    let runtime = out.runtime.as_ref().expect("the simulated group has a runtime");
+    let view = runtime.dynamic_mesh(0).unwrap();
+    assert_eq!(view.mesh, 1, "it rewrites the dynamic mesh");
+    assert_eq!(view.positions, dynamic.geometry.positions, "starting from its built shape");
 }
 
 #[test]
-fn a_simulated_group_is_skinned_to_the_head_while_the_part_has_no_runtime() {
-    // Until #322 lands, nothing moves the simulated groups, so they must follow the head: no mesh is unskinned or
-    // dynamic, and each one's weights and joints validate against the head as its only bone.
-    let out = hair_output(&character(&two_group_style())).unwrap();
-    assert!(out.runtime.is_none(), "no runtime yet");
-    assert!(out.meshes.iter().any(|m| m.name == "hair-dynamic"), "the simulated group has a mesh");
+fn built_for_export_a_simulated_group_is_skinned_to_strand_chains() {
+    // Other apps have no hair runtime: the export build skins the simulated group to spring chains of its own, which
+    // VRM writes as spring bones, and adds no runtime.
+    let options = BuildOptions { rig_export: true, ..BuildOptions::default() };
+    let out = hair_output_with(&character(&two_group_style()), &options).unwrap();
+    assert!(out.runtime.is_none(), "no runtime in an export build");
+    assert_eq!(out.rig.chains.len(), 1, "one strand chain for the one simulated lock");
     for mesh in &out.meshes {
-        assert!(!mesh.dynamic, "{} is not dynamic without a runtime", mesh.name);
+        assert!(!mesh.dynamic, "{} is not dynamic", mesh.name);
         assert!(mesh.geometry.is_skinned(), "{} is skinned", mesh.name);
-        assert_eq!(mesh.joint_bones, [omuzaki_char_api::JointRef::HEAD], "{} is rigid to the head", mesh.name);
         mesh.validate().unwrap();
     }
+    let dynamic = out.meshes.iter().find(|m| m.name == "hair-dynamic").unwrap();
+    assert_eq!(dynamic.joint_bones[0], omuzaki_char_api::JointRef::HEAD);
+    assert_eq!(dynamic.joint_bones.len(), 1 + 5, "the head, then the strand's five bones");
+    let tip = dynamic.geometry.weights.iter().zip(&dynamic.geometry.joints).any(|(w, j)| w[1] + w[2] > 0.9 && j[1] > 0);
+    assert!(tip, "the lock's far end follows the strand's bones");
 }
 
 #[test]
@@ -457,7 +468,7 @@ fn a_disabled_group_is_not_in_the_mesh() {
 }
 
 #[test]
-fn a_shell_follows_the_tubes_and_a_strip_is_reported_not_drawn() {
+fn a_shell_follows_the_tubes_and_a_strip_follows_them_both_in_the_simulated_mesh() {
     let mut style = two_group_style();
     style.groups.insert(
         gid("0-cap"),
@@ -481,13 +492,15 @@ fn a_shell_follows_the_tubes_and_a_strip_is_reported_not_drawn() {
         tube_mesh_indices(4, 4) + 3,
         "the shell's triangle is renumbered after the tubes"
     );
-    assert!(out.warnings.iter().any(|w| w.contains("z-curtain") && w.contains("strip")), "{:?}", out.warnings);
+    assert!(out.warnings.is_empty(), "the curtain is drawn, so nothing is reported: {:?}", out.warnings);
     let dynamic = out.meshes.iter().find(|m| m.name == "hair-dynamic").unwrap();
+    dynamic.geometry.validate().unwrap();
     assert_eq!(
         dynamic.geometry.positions.len(),
-        tube_mesh_vertices(1, 4),
-        "the strip's clumps add nothing to the tube mesh"
+        tube_mesh_vertices(1, 4) + 3 * 5 * 2,
+        "the tube, then the strips: 3 guides of 5 columns of the stub's 2 points"
     );
+    assert_eq!(dynamic.geometry.indices.len(), tube_mesh_indices(1, 4) + 3 * 4 * 6);
 }
 
 #[test]
@@ -649,4 +662,27 @@ fn a_missing_tube_mesh_asks_for_a_rebuild_instead_of_claiming_done() {
     let mut none = built();
     none.meshes.clear();
     assert_eq!(recolour_part(&def, &pid("hair"), &services, &mut none), Ok(Recoloured::NeedsRebuild));
+}
+
+#[test]
+fn a_recolour_finds_every_strip_and_paints_its_columns_with_its_tint() {
+    omuzaki_char::link();
+    let mut before = character(&streaked());
+    colourway(&mut before, 5);
+    let mut after = before.clone();
+    colourway(&mut after, 120);
+    let mut recoloured = hair_output(&before).unwrap();
+    assert_eq!(recolour_part(&after, &pid("hair"), &BuildServices::default(), &mut recoloured), Ok(Recoloured::Done));
+    let rebuilt = hair_output(&after).unwrap();
+    let simulated =
+        |out: &PartOutput| out.meshes.iter().find(|m| m.name == "hair-dynamic").unwrap().geometry.colours.clone();
+    let (new, want, old) = (simulated(&recoloured), simulated(&rebuilt), simulated(&hair_output(&before).unwrap()));
+    let strips = new.len() - 44 * 5 * 2..new.len();
+    assert!(
+        strips.start >= tube_mesh_vertices(1, 4),
+        "the curtain's 44 strips of 5 columns of 2 points follow the tubes"
+    );
+    assert_eq!(new[strips.clone()], want[strips.clone()]);
+    assert!(new[strips.clone()] != old[strips.clone()], "the palette really changes some strip's colour");
+    assert!(new[strips].iter().any(|c| *c != [1.0; 4]), "some strip is streaked");
 }

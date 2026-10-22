@@ -38,7 +38,7 @@ const PPM: f32 = 64.0;
 
 /// One sample per pixel and no effects, in the given shadow quality and mode.
 fn quality(shadows: ShadowQuality) -> Quality {
-    Quality { samples: 1, render_scale: 1.0, post_effects: false, shadows, ..Quality::offline() }
+    Quality { samples: 1, render_scale: 1.0, post_effects: false.into(), shadows, ..Quality::offline() }
 }
 
 fn live(shadows: ShadowQuality, interval: u8) -> Quality {

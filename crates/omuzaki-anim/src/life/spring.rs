@@ -13,9 +13,14 @@ const STABLE_OMEGA_H: f32 = 0.4;
 const MAX_FREQ_HZ: f32 = 30.0;
 /// Damping ratios above this are clamped (the bound above assumes it).
 const MAX_DAMPING: f32 = 2.0;
-/// One side's spring runs this much faster and the other this much slower (the prototype's 8%), so a symmetric move
-/// still has one side arriving first.
-pub(super) const SIDE_SKEW: f32 = 0.08;
+/// The largest side skew honoured, so a wild setting cannot push a spring past the stability bound above.
+const MAX_SIDE_SKEW: f32 = 0.5;
+
+/// How much faster one side's spring runs and how much slower the other (the prototype's 8%), so a symmetric move
+/// still has one side arriving first: [`LifeDynamics::side_skew`] clamped to `0..=`[`MAX_SIDE_SKEW`] (NaN counts as 0).
+pub(super) fn side_skew(dynamics: &LifeDynamics) -> f32 {
+    if dynamics.side_skew.is_nan() { 0.0 } else { dynamics.side_skew.clamp(0.0, MAX_SIDE_SKEW) }
+}
 
 /// How one frame is cut into sub-steps. Shared by every spring in the frame.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -33,7 +38,7 @@ impl Substeps {
                 .iter()
                 .map(|d| d.freq_hz)
                 .fold(0.0_f32, |m, f| if f.is_finite() { m.max(f) } else { m });
-        let omega = TAU * fastest.min(MAX_FREQ_HZ) * (1.0 + SIDE_SKEW);
+        let omega = TAU * fastest.min(MAX_FREQ_HZ) * (1.0 + side_skew(dynamics));
         let longest = (STABLE_OMEGA_H / omega.max(1e-3)).min(MAX_SUBSTEP);
         // The small slack keeps `1/60 * 240` from rounding up to five steps.
         let n = (dt / longest - 1e-3).ceil().max(1.0) as u32;

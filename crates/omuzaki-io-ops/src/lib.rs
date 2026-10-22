@@ -27,7 +27,10 @@
 //! | [`prepare::arkit`], [`prepare::arkit_shapes`] | the `ARKit` channels a model can already express, and the rest made from its geometry |
 //! | [`prepare::avatar`] | `to_avatar`: the whole preparation of a model as an `ImportedAvatar` |
 //! | [`fit_bones`] | `reduce_bones`: cut a skin's joints to a budget, the `fit.bones` stage |
+//! | [`fit_decimate`] | `decimate`, `decimate_scene`: cut triangles to a budget, morph targets and skin weights kept consistent |
 //! | [`fit_texture`] | `resize`, `downscale_to`: the texture resampler for a platform fit, in linear light with premultiplied alpha |
+//! | [`fit_meshes`] | `merge_meshes`: join mesh nodes that no expression binds, the `fit.meshes` stage |
+//! | [`limits`] | platform limit tables as data (`data/platforms/*.toml`), their evaluation and the measured scene stats |
 //! | [`msg`], [`report_sections`] | the crate's `messages!` table (the import report's lines and fixes first) and the report's four sections by rule id |
 //! | [`ops::progress::JobProgress`] | the adapter from a job's context to the io progress trait |
 //!
@@ -39,8 +42,12 @@
 pub mod convert;
 mod error;
 pub mod fit_bones;
+pub mod fit_decimate;
+pub mod fit_meshes;
 pub mod fit_texture;
+mod fit_texture_jpeg_scan;
 pub mod gather;
+pub mod limits;
 pub mod msg;
 pub mod ops;
 pub mod prepare;

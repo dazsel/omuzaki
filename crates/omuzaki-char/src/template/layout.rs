@@ -289,17 +289,24 @@ pub struct BodyLayout {
     joints: [Option<DVec3>; HUMANOID_COUNT],
     head_base: Option<DVec3>,
     regions: BTreeMap<BodyRegion, Region>,
+    hand: Option<HandTable>,
 }
 
 impl BodyLayout {
     /// A layout with no joints and no regions: every lookup reads `None`.
     pub fn empty() -> Self {
-        Self { joints: [None; HUMANOID_COUNT], head_base: None, regions: BTreeMap::new() }
+        Self { joints: [None; HUMANOID_COUNT], head_base: None, regions: BTreeMap::new(), hand: None }
     }
 
     /// The position of a body joint at full precision. `None` for `head`, the eyes and the jaw (the head part's).
     pub fn joint64(&self, bone: HumanoidBone) -> Option<DVec3> {
         self.joints[bone.index()]
+    }
+
+    /// The hand table the layout was built from (the template's own hand: its size, finger and thumb numbers), which
+    /// the hand meshes are built on so they reach the joints placed from it. `None` for an empty layout.
+    pub fn hand_table(&self) -> Option<&HandTable> {
+        self.hand.as_ref()
     }
 
     /// Every joint the body owns, parents before children.
@@ -1163,6 +1170,7 @@ fn build_stage(
         layout.put_pair(bone, p);
     }
     layout.head_base = Some(j.head_base);
+    layout.hand = Some(table.hand);
 
     let plain = Look { size: 1.0, across: 1.0, gain: None, inside: None, join: None };
     let torso_gain = |y: f64, v: f64| shaper.torso(y, v);

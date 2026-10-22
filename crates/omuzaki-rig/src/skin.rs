@@ -35,7 +35,7 @@ impl Skinner {
     }
 
     /// Writes the skinning matrix of every bone for the local transforms in `local` into `out`, indexed by
-    /// [`BoneId`](omuzaki_anim_api::BoneId). `out` should hold [`RigSkeleton::len`] matrices; a shorter slice is filled as
+    /// [`BoneId`]. `out` should hold [`RigSkeleton::len`] matrices; a shorter slice is filled as
     /// far as it goes. Runs the forward-kinematics pass itself; a caller that already has the world pose uses
     /// [`skin_from_world`](Self::skin_from_world). Hot path: no allocation.
     pub fn skin(&mut self, local: &Pose, out: &mut [Mat4]) {

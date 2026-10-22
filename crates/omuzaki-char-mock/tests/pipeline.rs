@@ -91,12 +91,7 @@ fn assert_same(a: &BuiltCharacter, b: &BuiltCharacter) {
 /// Steps every simulation of `built` through `frames` frames of a fixed, windy scene.
 fn run(built: &mut BuiltCharacter, frames: u32) {
     for frame in 0..frames {
-        let ctx = StepCtx {
-            dt: 1.0 / 60.0,
-            time: Seconds(f64::from(frame) / 60.0),
-            pose: &RestPose,
-            wind: Vec3::new(1.0, 0.0, 0.25),
-        };
+        let ctx = StepCtx::new(1.0 / 60.0, Seconds(f64::from(frame) / 60.0), &RestPose, Vec3::new(1.0, 0.0, 0.25));
         for slot in &mut built.runtimes {
             slot.runtime.step(&ctx);
         }

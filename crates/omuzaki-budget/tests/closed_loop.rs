@@ -19,7 +19,13 @@ fn cost_ms(q: &Quality, load: f64) -> f64 {
         ShadowQuality::Low => 0.3,
         ShadowQuality::High => 0.8,
     } / f64::from(q.shadow_interval);
-    let post = if q.post_effects { 1.2 } else { 0.0 };
+    // Depth of field about ten times grain and grade, bloom between (#657).
+    let post =
+        [(q.post_effects.depth_of_field, 0.9), (q.post_effects.bloom, 0.25), (q.post_effects.grain_and_grade, 0.05)]
+            .iter()
+            .filter(|(on, _)| *on)
+            .map(|(_, ms)| ms)
+            .sum::<f64>();
     let pixels = 1.4 * f64::from(q.render_scale).powi(2) * (0.5 + 0.125 * f64::from(q.samples));
     load * (pixels + shadows + post)
 }

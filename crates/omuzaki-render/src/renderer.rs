@@ -639,7 +639,7 @@ mod tests {
         instance.morph = Some(MorphRange { start: 0, len: 1 });
         scene.instances.push(instance);
         scene.morph_weights.push(0.5);
-        let quality = Quality { samples: 1, render_scale: 1.0, post_effects: false, ..Quality::offline() };
+        let quality = Quality { samples: 1, render_scale: 1.0, post_effects: false.into(), ..Quality::offline() };
 
         r.inject_frame_failure = true;
         assert!(r.render(target, &scene, &quality).is_err(), "the injected scope error fails the frame");
@@ -781,7 +781,7 @@ mod tests {
         scene.background = Background::Solid { colour: Colour::WHITE };
         scene.post.tonemap = Tonemap::None;
         scene.instances.push(Instance::new(mesh, material, Mat4::IDENTITY));
-        let quality = Quality { samples: 1, render_scale: 1.0, post_effects: false, ..Quality::offline() };
+        let quality = Quality { samples: 1, render_scale: 1.0, post_effects: false.into(), ..Quality::offline() };
 
         // Flipped normals push the hull inwards, which a stale (creation-time) set of directions would not.
         let flipped: Vec<Vec3> = cube.normals.iter().map(|n| -*n).collect();

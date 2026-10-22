@@ -479,6 +479,16 @@ source delivers them; the action catalogue and the dispatcher belong to #469 and
 Note for #469 (filed by the lead, not here): PF-05 consumes `BindingFeed` from `omuzaki-input` and adds no second OS
 capture path; OSC, MIDI and Stream Deck are other sources of the same `BindingHit`.
 
+**As built for #469.** The dispatcher is `BindingRunner` in `omuzaki-input`: an op binding runs its op on the press
+(a repeat or a release runs nothing), as the person, with `CauseKind::Binding` and the binding's name; a trigger
+binding hands every edge to the App's trigger sink. MIDI and OSC are two more device classes served by two more
+backends of the same hub, so they are gated, paused and released like every other class. MIDI (`midi.midir`): a note,
+a controller (down at 64 or more) or a program change (a tap) is learned with `ChordStore::learn` like a key; each
+controller is a silent source. OSC (`osc.udp`): `/omuzaki/binding/<id>` on 127.0.0.1 port 39570 presses (a number of
+0.5 or more, or `T`), releases (below 0.5, or `F`) or taps (no argument) a binding by id, with no chord; nothing from
+the network is accepted, because a binding runs as the person. A Stream Deck reaches either through Bitfocus Companion
+or an OSC or MIDI plugin; a first-party Stream Deck plugin would be its own package.
+
 ## 5a. Invariants: held state, ordering and scopes
 
 The review rounds found the same classes of problem more than once. This section states each as one rule and lists every

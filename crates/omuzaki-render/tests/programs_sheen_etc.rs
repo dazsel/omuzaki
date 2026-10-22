@@ -96,7 +96,7 @@ fn exact_scene(eye: Vec3) -> Scene {
 }
 
 fn plain() -> Quality {
-    Quality { samples: 1, render_scale: 1.0, post_effects: false, ..Quality::offline() }
+    Quality { samples: 1, render_scale: 1.0, post_effects: false.into(), ..Quality::offline() }
 }
 
 /// A black toon material with no rim, so the lit colour is zero and only the program shows.

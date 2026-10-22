@@ -96,7 +96,7 @@ fn an_uncalibrated_blink_has_the_prototypes_gain_path_window_0_28_to_0_8() {
 #[test]
 fn a_blink_with_a_fitted_range_has_the_wider_window_0_25_to_0_85() {
     let mut cal = Calibration::identity(DeviceProfile::Webcam);
-    cal.set_range(Channel::EYE_BLINK_LEFT, ChannelRange { lo: 0.02, hi: 0.9 });
+    cal.set_fitted(Channel::EYE_BLINK_LEFT, ChannelRange { lo: 0.02, hi: 0.9 }, 120);
     assert_eq!(blink_at(&cal, 0.2), 0.0);
     assert!(near(blink_at(&cal, 0.25), 0.0) && near(blink_at(&cal, 0.55), 0.5), "linear from 0.25");
     assert!(near(blink_at(&cal, 0.85), 1.0));
@@ -107,8 +107,22 @@ fn calibrating_neutral_keeps_the_gain_path_window_and_a_fitted_range_switches_to
     let mut cal = default_calibration(DeviceProfile::Webcam);
     cal.rest_at(&frame(&[(Channel::EYE_BLINK_LEFT, 0.07)]));
     assert_eq!(blink_at(&cal, 0.26), 0.0, "rest_at moves lo and keeps the span: still the 0.28 window");
-    cal.set_range(Channel::EYE_BLINK_LEFT, ChannelRange { lo: 0.07, hi: 0.9 });
+    cal.set_fitted(Channel::EYE_BLINK_LEFT, ChannelRange { lo: 0.07, hi: 0.9 }, 120);
     assert!(near(blink_at(&cal, 0.26), 0.01 / 0.6), "a fitted range: the 0.25 window");
+}
+
+#[test]
+fn a_fitted_range_with_exactly_the_default_span_still_gets_the_fitted_window() {
+    // The span heuristic read this as a default range; the provenance says it was measured.
+    let mut cal = default_calibration(DeviceProfile::Webcam);
+    let default = cal.range(Channel::EYE_BLINK_LEFT);
+    cal.set_fitted(Channel::EYE_BLINK_LEFT, ChannelRange { lo: 0.05, hi: 0.05 + (default.hi - default.lo) }, 90);
+    assert!(near(blink_at(&cal, 0.55), 0.5), "linear from 0.25 over 0.25..0.85");
+    assert!(near(blink_at(&cal, 0.26), 0.01 / 0.6), "inside the fitted window, outside the 0.28 one");
+    // And a default range moved by set_range stays a default one.
+    let mut moved = default_calibration(DeviceProfile::Webcam);
+    moved.set_range(Channel::EYE_BLINK_LEFT, ChannelRange { lo: 0.05, hi: 0.05 + (default.hi - default.lo) });
+    assert_eq!(blink_at(&moved, 0.26), 0.0, "still the 0.28 window");
 }
 
 #[test]
@@ -118,7 +132,7 @@ fn the_blink_window_follows_set_calibration_and_is_chosen_per_channel() {
     let before = run(&mut r, &both).values;
     assert_eq!((before[Channel::EYE_BLINK_LEFT], before[Channel::EYE_BLINK_RIGHT]), (0.0, 0.0), "below 0.28 and 0.25");
     let mut cal = *r.calibration();
-    cal.set_range(Channel::EYE_BLINK_RIGHT, ChannelRange { lo: 0.0, hi: 0.9 });
+    cal.set_fitted(Channel::EYE_BLINK_RIGHT, ChannelRange { lo: 0.0, hi: 0.9 }, 120);
     r.set_calibration(cal);
     let after = run(&mut r, &both).values;
     assert_eq!(after[Channel::EYE_BLINK_LEFT], 0.0, "the left eye is still on the gain path");

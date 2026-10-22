@@ -7,11 +7,15 @@
 //! [`Calibration`] built from their device's profile.
 //!
 //! Per channel, in this order (all in the implementation's hot loop, none allocating):
-//! 1. optional left/right mirror ([`RetargetConfig::mirror`])
-//! 2. range normalise to `0..1`
-//! 3. [`Response`]: dead zone, saturation, curve, inversion (PF-22); eye-blink has a built-in dead zone
-//! 4. exaggeration on the [`EXAGGERATED`] channels (FE-06): `value^(1/amount)`
-//! 5. One-Euro smoothing, parameters from [`OneEuroParams::for_smoothing`] (PF-21)
+//! 1. range normalise to `0..1`
+//! 2. [`Response`]: dead zone, saturation, curve, inversion (PF-22); eye-blink has a built-in dead zone
+//! 3. exaggeration on the [`EXAGGERATED`] channels (FE-06): `value^(1/amount)`
+//! 4. One-Euro smoothing, parameters from [`OneEuroParams::for_smoothing`] (PF-21)
+//! 5. optional left/right mirror ([`RetargetConfig::mirror`]), last
+//!
+//! Steps 1 to 4 are keyed by the **tracker's** channel: a [`Calibrator`] measures ranges on raw tracker frames, so
+//! `mouthSmileLeft`'s range, response and filter apply to the value the tracker called `mouthSmileLeft`, and only then
+//! does mirroring move the result onto `mouthSmileRight`. Applying a range after the swap would use the wrong side's.
 //!
 //! Gaze, head pose and lean come from the frame's head and eye data; see [`Retarget::apply`].
 
@@ -103,6 +107,36 @@ impl ChannelRange {
     }
 }
 
+/// Where a channel's [`ChannelRange`] came from. The retarget reads it to pick the built-in blink window: the
+/// prototype tuned one for a range derived from a gain table or the identity ([`Default`](RangeSource::Default)) and
+/// another for a range measured on the performer ([`Fitted`](RangeSource::Fitted)), and the two cannot be told apart by
+/// the numbers (a fitted range can have exactly the default span).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RangeSource {
+    /// The identity or a gain-table range ([`Calibration::identity`], [`Calibration::from_gains`]).
+    #[default]
+    Default,
+    /// Measured on the performer by a calibration step, from `samples` frames.
+    #[non_exhaustive]
+    Fitted {
+        /// How many frames the fit used (`0` when not recorded).
+        samples: u32,
+    },
+}
+
+impl RangeSource {
+    /// A fitted range from `samples` frames.
+    pub const fn fitted(samples: u32) -> Self {
+        Self::Fitted { samples }
+    }
+
+    /// True for [`RangeSource::Fitted`].
+    pub const fn is_fitted(self) -> bool {
+        matches!(self, Self::Fitted { .. })
+    }
+}
+
 /// Everything the retarget needs to know about one performer on one device (spec PF-20). `Copy` and fixed-size so the
 /// hot loop reads it without indirection; saved per user and device, and remembered.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -110,6 +144,7 @@ pub struct Calibration {
     /// The device class the ranges were made for.
     pub profile: DeviceProfile,
     ranges: [ChannelRange; ARKIT_COUNT],
+    sources: [RangeSource; ARKIT_COUNT],
     /// The performer's relaxed head pose; head angles and lean are measured from it.
     pub head_rest: HeadPose,
 }
@@ -118,7 +153,12 @@ impl Calibration {
     /// Every range is `0..1` and the head rest pose is level: right for `ARKit`-scaled sources, and the neutral
     /// starting point for building others.
     pub fn identity(profile: DeviceProfile) -> Self {
-        Self { profile, ranges: [ChannelRange::IDENTITY; ARKIT_COUNT], head_rest: HeadPose::default() }
+        Self {
+            profile,
+            ranges: [ChannelRange::IDENTITY; ARKIT_COUNT],
+            sources: [RangeSource::Default; ARKIT_COUNT],
+            head_rest: HeadPose::default(),
+        }
     }
 
     /// Ranges from a per-channel gain, for uncalibrated sources that read low. The implementation owns the gain
@@ -136,15 +176,32 @@ impl Calibration {
         if channel.is_arkit() { self.ranges[channel.index()] } else { ChannelRange::IDENTITY }
     }
 
-    /// Sets the range of an `ARKit` channel; other channels are ignored.
+    /// Where the range of an `ARKit` channel came from ([`RangeSource::Default`] for any other channel).
+    pub fn source(&self, channel: Channel) -> RangeSource {
+        if channel.is_arkit() { self.sources[channel.index()] } else { RangeSource::Default }
+    }
+
+    /// Sets the range of an `ARKit` channel; other channels are ignored. The channel keeps its [`RangeSource`]: moving
+    /// a default range (as "calibrate neutral" does) leaves it a default one. A calibration step that *measured* the
+    /// range calls [`Calibration::set_fitted`] instead.
     pub fn set_range(&mut self, channel: Channel, range: ChannelRange) {
         if channel.is_arkit() {
             self.ranges[channel.index()] = range;
         }
     }
 
+    /// Sets the range of an `ARKit` channel and records that it was measured on the performer, from `samples` frames.
+    /// Other channels are ignored.
+    pub fn set_fitted(&mut self, channel: Channel, range: ChannelRange, samples: u32) {
+        if channel.is_arkit() {
+            self.ranges[channel.index()] = range;
+            self.sources[channel.index()] = RangeSource::fitted(samples);
+        }
+    }
+
     /// The "calibrate neutral" button: takes the frame as the performer's rest face. Each present channel's `lo`
-    /// moves to the frame's value and `hi` moves with it, keeping the span (the prototype's neutral subtraction).
+    /// moves to the frame's value and `hi` moves with it, keeping the span (the prototype's neutral subtraction) and the
+    /// range's [`RangeSource`].
     pub fn rest_at(&mut self, frame: &TrackFrame) {
         for c in frame.present {
             let r = &mut self.ranges[c.index()];
@@ -163,13 +220,22 @@ impl Calibration {
 struct CalibrationFile {
     profile: DeviceProfile,
     ranges: BTreeMap<Channel, ChannelRange>,
+    /// The provenance of each range that is not a default one. A file written before provenance existed has no such
+    /// table (`None`): its ranges were all saved by a calibration, so they read as fitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sources: Option<BTreeMap<Channel, RangeSource>>,
     head_rest: HeadPose,
 }
 
 impl From<Calibration> for CalibrationFile {
     fn from(c: Calibration) -> Self {
         let ranges = Channel::arkit().iter().map(|i| (i.channel, c.ranges[i.channel.index()])).collect();
-        Self { profile: c.profile, ranges, head_rest: c.head_rest }
+        let sources = Channel::arkit()
+            .iter()
+            .filter(|i| c.sources[i.channel.index()] != RangeSource::Default)
+            .map(|i| (i.channel, c.sources[i.channel.index()]))
+            .collect();
+        Self { profile: c.profile, ranges, sources: Some(sources), head_rest: c.head_rest }
     }
 }
 
@@ -182,6 +248,17 @@ impl TryFrom<CalibrationFile> for Calibration {
                 return Err(crate::frame::NotArkit(channel));
             }
             cal.set_range(channel, range);
+        }
+        match f.sources {
+            Some(sources) => {
+                for (channel, source) in sources {
+                    if !channel.is_arkit() {
+                        return Err(crate::frame::NotArkit(channel));
+                    }
+                    cal.sources[channel.index()] = source;
+                }
+            }
+            None => cal.sources = [RangeSource::fitted(0); ARKIT_COUNT],
         }
         cal.head_rest = f.head_rest;
         Ok(cal)
@@ -300,7 +377,9 @@ impl Default for LostPolicy {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct RetargetConfig {
-    /// Swap left and right: for sources whose preview is a selfie mirror (spec PF-27).
+    /// Swap left and right: for sources whose preview is a selfie mirror (spec PF-27). Mirroring is the **last** step
+    /// per channel: the range, response, exaggeration and filter have all been applied to the tracker's own channel
+    /// first, so a calibration made on the raw tracker stays valid when the preview is mirrored.
     pub mirror: bool,
     /// Exaggeration (FE-06): `1` literal, `1.5` anime. Applies to [`EXAGGERATED`] channels.
     pub exaggeration: f32,
@@ -337,6 +416,9 @@ impl Default for RetargetConfig {
 /// same trait.
 pub trait Retarget: Send {
     /// Processes one frame into `out`. Hot path: no allocation, no locking, no I/O.
+    ///
+    /// Per channel the stages run range, response, exaggeration, filter and then mirror (see the module docs): all but
+    /// the last are keyed by the tracker's channel.
     ///
     /// Contract for `out` (the caller passes the tracker slot of its [`LayerStack`](crate::LayerStack)):
     /// - `values`/`mask`: the `ARKit` channels in `frame.present` (after mirroring), plus `headYaw`, `headPitch`,
@@ -513,6 +595,30 @@ mod tests {
         let json = serde_json::to_string(&cal).unwrap();
         assert!(json.contains("\"jawOpen\":{\"lo\":0.05,\"hi\":0.7}"), "{json}");
         assert_eq!(serde_json::from_str::<Calibration>(&json).unwrap(), cal);
+    }
+
+    #[test]
+    fn provenance_is_default_until_a_calibration_fits_a_range_and_survives_a_save() {
+        let mut cal = Calibration::identity(DeviceProfile::Webcam);
+        assert_eq!(cal.source(Channel::JAW_OPEN), RangeSource::Default);
+        cal.set_range(Channel::JAW_OPEN, ChannelRange { lo: 0.1, hi: 0.6 });
+        assert_eq!(cal.source(Channel::JAW_OPEN), RangeSource::Default, "moving a range keeps its provenance");
+        cal.set_fitted(Channel::JAW_OPEN, ChannelRange { lo: 0.1, hi: 0.6 }, 240);
+        assert_eq!(cal.source(Channel::JAW_OPEN), RangeSource::fitted(240));
+        cal.rest_at(&TrackFrame::empty(0, Seconds(0.0), DeviceProfile::Webcam));
+        let json = serde_json::to_string(&cal).unwrap();
+        assert!(json.contains("\"jawOpen\":{\"fitted\":{\"samples\":240}}"), "{json}");
+        let back: Calibration = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, cal);
+        assert_eq!(back.source(Channel::MOUTH_SMILE_LEFT), RangeSource::Default);
+        assert_eq!(cal.source(Channel::HEAD_YAW), RangeSource::Default, "a non-ARKit channel has no range to fit");
+    }
+
+    #[test]
+    fn a_calibration_saved_before_provenance_reads_as_fitted() {
+        let json = r#"{"profile":"webcam","ranges":{"jawOpen":{"lo":0.0,"hi":0.5}},"head_rest":{"yaw":0.0,"pitch":0.0,"roll":0.0}}"#;
+        let cal: Calibration = serde_json::from_str(json).expect("an old file loads");
+        assert!(Channel::arkit().iter().all(|i| cal.source(i.channel) == RangeSource::fitted(0)));
     }
 
     #[test]

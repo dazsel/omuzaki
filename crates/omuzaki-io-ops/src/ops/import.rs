@@ -761,7 +761,7 @@ impl Op for Import {
     fn meta() -> OpMeta {
         OpMeta {
             name: "io.import",
-            summary: "Import a model file (glTF, VRM): store the original and its images with their licence record, \
+            summary: "Import a model file (glTF, VRM, FBX): store the original and its images with their licence record, \
                       and record the asset in the project; with `as: avatar` and the confirm token from io.inspect, \
                       make it a character to perform as.",
             kind: OpKind::Job,

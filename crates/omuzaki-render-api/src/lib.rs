@@ -53,7 +53,7 @@ pub use mtoon::Mtoon;
 pub use omuzaki_core::colour::{Colour, ColourParseError, srgb_decode, srgb_encode, to_byte};
 pub use omuzaki_core::mesh::{ExtraAttribute, MeshData, MeshError};
 pub use pass::{FrameReport, GpuTimings, Pass, PassTimes};
-pub use quality::{Quality, QualityMode, ShadowQuality, budget};
+pub use quality::{PostQuality, Quality, QualityMode, ShadowQuality, budget};
 pub use renderer::{Capabilities, MtoonSupport, PaintTarget, Painter, Renderer, RendererExt};
 pub use resource::{
     AlphaEncoding, ColourSpace, Filter, Image, PixelRect, ResourceStats, Sampler, TargetDesc, TextureDesc,

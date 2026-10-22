@@ -2440,7 +2440,7 @@ ui-setting-obs-host = The computer OBS runs on: 127.0.0.1 for this one
 ui-setting-obs-port = The port of OBS's WebSocket server (Tools, WebSocket Server Settings)
 
 # The line under a setting in the Settings window, saying what it does.
-ui-setting-output-window = The clean output window's backdrop, key colour, size, title and stacking, as last opened
+ui-setting-output-window = The output window's mode, backdrop, key colour, size, title, stacking, opacity and click-through, as last opened
 
 # The line under a setting in the Settings window, saying what it does.
 ui-setting-perform-retarget = How the face is smoothed, exaggerated and mirrored

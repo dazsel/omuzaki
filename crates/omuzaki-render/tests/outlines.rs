@@ -47,7 +47,7 @@ fn scene(distance: f32) -> Scene {
 
 /// One sample, no effects: pixels are exactly covered or not.
 fn plain() -> Quality {
-    Quality { samples: 1, render_scale: 1.0, post_effects: false, ..Quality::offline() }
+    Quality { samples: 1, render_scale: 1.0, post_effects: false.into(), ..Quality::offline() }
 }
 
 fn draw(r: &mut dyn Renderer, scene: &Scene, quality: &Quality) -> Image {

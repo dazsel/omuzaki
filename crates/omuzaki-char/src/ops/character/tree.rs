@@ -7,7 +7,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use omuzaki_char_api::{Attach, CharacterDef, PartCategory, PartId, PartKindId, TreeError, requires_of};
+use omuzaki_char_api::{
+    Attach, CharacterDef, PartCategory, PartId, PartKindId, PartKindRegistration, TreeError, requires_of,
+};
 use omuzaki_ops_api::OpError;
 
 use super::access::list;
@@ -20,6 +22,12 @@ pub(crate) fn default_layer(category: PartCategory) -> i32 {
         PartCategory::Garment | PartCategory::Footwear => 20,
         PartCategory::Accessory => 50,
     }
+}
+
+/// The layer a new part of `kind` goes on: the kind's own ([`PartKind::layer`](omuzaki_char_api::PartKind::layer)), else
+/// its category's.
+pub(crate) fn layer_of(kind: &PartKindRegistration) -> i32 {
+    (kind.layer)().unwrap_or_else(|| default_layer((kind.meta)().category))
 }
 
 /// One reason a single part cannot be built. A problem is about one part and one rule, so "the same problem before
