@@ -10,7 +10,7 @@
 //! | [`encoder`] | stream and encoder specs, [`Frame`](encoder::Frame), the [`Encoder`](encoder::Encoder) traits |
 //! | [`mux`] | [`Container`](mux::Container) and the [`Muxer`](mux::Muxer) traits |
 //! | [`input`] | the [`InputTap`] trait, [`FrameStamp`] and the tail contract |
-//! | [`output`] | the [`Output`](output::Output) trait and its config and status |
+//! | [`output`] | the [`Output`](output::Output) trait, its config and status, and the [`OutputKind`](output::OutputKind) registry (`register_output!`) |
 //! | [`error`] | [`StreamError`](error::StreamError) |
 //! | [`window`] | the clean output window: the [`WindowHost`](window::WindowHost) and [`PaletteSource`](window::PaletteSource) services and their types |
 
@@ -26,3 +26,8 @@ pub mod time;
 pub mod window;
 
 pub use input::{FrameStamp, InputTap, TailMode, TailStep};
+
+#[doc(hidden)]
+pub use inventory as __inventory;
+#[doc(hidden)]
+pub use omuzaki_core::__record_registration;

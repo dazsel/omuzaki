@@ -6,7 +6,7 @@ area: design
 
 # Connectors: the framework, rights, the tray, cost and privacy, keys and capabilities
 
-**Status:** proposed. **Decision record:**
+**Status:** Accepted. **Decision record:**
 `docs/decisions/0030-connectors.md`. **Features:** CN-01 to CN-12, spec v3 §14, §6, §7, §39 rules 2
 and 6.
 

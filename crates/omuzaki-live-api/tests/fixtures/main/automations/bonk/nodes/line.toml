@@ -1,0 +1,9 @@
+kind = "text.format"
+pos = [660.0, 80.0]
+
+[in]
+n = "count.value"
+user = "redeem.user_name"
+
+[params]
+template = "Bonk #{n} from {user}!"
