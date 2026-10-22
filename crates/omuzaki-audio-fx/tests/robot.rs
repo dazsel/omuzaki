@@ -1,4 +1,15 @@
 //! `fx.robot` (#915): the ring modulator's sidebands and the comb's echoes, measured on the node.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::float_cmp,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::many_single_char_names
+)]
 
 mod common;
 

@@ -74,7 +74,9 @@ fn interpolator() -> [[f64; TAPS]; OVERSAMPLE] {
             *c = sinc * bessel_i0(KAISER_BETA * (1.0 - r * r).max(0.0).sqrt()) / bessel_i0(KAISER_BETA);
         }
         let sum: f64 = phase.iter().sum();
-        phase.iter_mut().for_each(|c| *c /= sum);
+        for c in phase.iter_mut() {
+            *c /= sum;
+        }
     }
     phases
 }
@@ -234,7 +236,7 @@ impl Limiter {
         let d = self.delay_at;
         for (c, ch) in self.channels.iter_mut().enumerate().take(self.count) {
             let old = std::mem::replace(&mut ch.delay[d], frame[c]);
-            #[allow(clippy::cast_possible_truncation)] // the audio is f32
+            #[allow(clippy::float_cmp)] // exactly unity is the common case, passed through untouched
             let out = if self.applied == 1.0 { old } else { (f64::from(old) * self.applied) as f32 };
             frame[c] = out;
         }

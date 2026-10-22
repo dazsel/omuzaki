@@ -1,5 +1,16 @@
 //! The shifter's analysis (#917): the F0 track and the pitch marks, against the synthetic voice's known F0 and
 //! glottal closures.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::float_cmp,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::many_single_char_names
+)]
 
 use omuzaki_audio_fx::pitch::analysis::{Analysis, HOP};
 use omuzaki_audio_fx::pitch::f0::{DECIMATION, SPAN, WINDOW};

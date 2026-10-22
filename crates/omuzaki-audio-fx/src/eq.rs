@@ -22,7 +22,7 @@ pub const MAX_BANDS: usize = 8;
 /// How often the coefficients follow the smoothed parameters, in samples of the graph clock.
 pub const COEF_INTERVAL: u64 = 32;
 
-/// Parameters per band: type, freq, q, gain_db, on.
+/// Parameters per band: `type`, `freq`, `q`, `gain_db`, `on`.
 const PER_BAND: usize = 5;
 
 macro_rules! band {
@@ -72,7 +72,7 @@ macro_rules! band {
     };
 }
 
-const fn flatten(bands: [[ParamSpec; PER_BAND]; MAX_BANDS]) -> [ParamSpec; PER_BAND * MAX_BANDS] {
+const fn flatten(bands: &[[ParamSpec; PER_BAND]; MAX_BANDS]) -> [ParamSpec; PER_BAND * MAX_BANDS] {
     let mut out = [bands[0][0]; PER_BAND * MAX_BANDS];
     let mut b = 0;
     while b < MAX_BANDS {
@@ -89,7 +89,7 @@ const fn flatten(bands: [[ParamSpec; PER_BAND]; MAX_BANDS]) -> [ParamSpec; PER_B
 /// The parameters of `fx.eq`: `b1.type` to `b8.on`. Type 0 is low-pass, 1 high-pass, 2 low shelf, 3 high shelf and 4 a
 /// bell; every band starts as a flat bell at 1 kHz, so a new EQ changes nothing.
 pub static PARAMS: [ParamSpec; PER_BAND * MAX_BANDS] =
-    flatten([band!(1), band!(2), band!(3), band!(4), band!(5), band!(6), band!(7), band!(8)]);
+    flatten(&[band!(1), band!(2), band!(3), band!(4), band!(5), band!(6), band!(7), band!(8)]);
 
 /// The `fx.eq` kind. Config: `bands`, 1 to 8 (default 8).
 #[derive(Debug)]

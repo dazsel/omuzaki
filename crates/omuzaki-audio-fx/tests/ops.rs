@@ -1,8 +1,17 @@
 //! The `audio.fx.*` ops (#1265): each op as an agent and as a person, the preset file's round trip through TOML, undo,
 //! applying presets to the microphone (with the SE-05 refusal of a voice model for agents), and the render jobs:
 //! `compare` of dry against +5 semitones reports an F0 ratio of 1.335 within 1%.
-
-#![allow(clippy::unwrap_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::float_cmp,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::many_single_char_names
+)]
 
 use omuzaki_audio_api::graph::{Channels, GraphSpec, NodeSpec};
 use omuzaki_audio_api::ids::{BusId, NodeId, NodeKindId};
@@ -193,7 +202,7 @@ fn save_refuses_an_unknown_kind_and_a_missing_character() {
         id: NodeId::new("x").unwrap(),
         kind: NodeKindId::new("fx.nothing").unwrap(),
         config: NodeConfig::default(),
-        params: Default::default(),
+        params: std::collections::BTreeMap::default(),
         enabled: true,
         sidechain: None,
     }];
@@ -237,7 +246,7 @@ fn apply_puts_a_preset_on_the_mic_and_a_matching_one_changes_only_parameters() {
     assert_eq!(mic_chain(&doc)[2].params["semitones"], -7.0);
     let (out, _) = run(&mut doc, &person(), &Apply { dry: true, ..Apply::default() }).unwrap();
     assert_eq!(out["applied"], "dry");
-    assert!(mic_chain(&doc).is_empty());
+    assert_eq!(mic_chain(&doc), Vec::new());
     let neither = run(&mut doc, &agent(), &Apply::default()).unwrap_err();
     assert_eq!(neither.code, ErrorCode::Invalid);
     // Undo of the first apply removes the graph it created, and the `audio` table with it.
@@ -254,7 +263,7 @@ fn a_voice_model_on_the_mic_needs_a_person() {
         id: NodeId::new("vc").unwrap(),
         kind: NodeKindId::new("model.stream").unwrap(),
         config: NodeConfig::default(),
-        params: Default::default(),
+        params: std::collections::BTreeMap::default(),
         enabled: true,
         sidechain: None,
     }];

@@ -1,6 +1,14 @@
 //! What the effect tests share: running a node over a signal, and measuring the result with code that does not share
 //! anything with the effects (a direct DTFT, RMS, levels).
-#![allow(dead_code, clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+#![allow(
+    dead_code,
+    clippy::expect_used,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::many_single_char_names
+)]
 
 use std::f64::consts::PI;
 

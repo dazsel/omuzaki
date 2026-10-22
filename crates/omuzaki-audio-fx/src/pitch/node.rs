@@ -120,11 +120,13 @@ impl Pitch {
         &self.analysis
     }
 
+    #[allow(clippy::float_cmp)] // the exact defaults
     fn at_identity(&self) -> bool {
         self.params[0].target() == 0.0 && self.params[1].target() == 1.0 && self.params[2].target() == 0.0
     }
 
     /// One sample in, the sample `LATENCY` earlier out.
+    #[allow(clippy::float_cmp)] // an exact 1 is no formant move
     pub fn step(&mut self, x: f64) -> f64 {
         let [semitones, formant, monotone_hz, mix] = self.params.each_mut().map(Smoothed::next);
         self.identity.set(self.at_identity());

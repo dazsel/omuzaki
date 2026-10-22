@@ -35,7 +35,7 @@ const KEY_ATTACK_MS: f64 = 5.0;
 const KEY_RELEASE_MS: f64 = 150.0;
 
 /// The seed of the noise bed when the config names none.
-pub const DEFAULT_SEED: u64 = 0x0A11_0FF1_CE;
+pub const DEFAULT_SEED: u64 = 0x000A_110F_F1CE;
 
 /// Indexes into [`PARAMS`].
 mod at {

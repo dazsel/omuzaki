@@ -30,7 +30,7 @@ impl Op for Kinds {
     }
 
     fn plan(&self, _ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
-        let kinds: Vec<_> = node_kinds().into_iter().map(|k| k.info()).collect();
+        let kinds: Vec<_> = node_kinds().into_iter().map(omuzaki_audio_api::NodeKind::info).collect();
         Ok(Plan::answer(json!({ "kinds": kinds })))
     }
 }
@@ -38,7 +38,7 @@ impl Op for Kinds {
 /// List a character's voice presets and the built-in ones.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(extend("examples" = [{}, { "character": "mira" }], "x-omuzaki-fixture" = "character"))]
+#[schemars(extend("examples" = [{}, { "character": "kit" }], "x-omuzaki-fixture" = "character"))]
 pub struct PresetList {
     /// The character whose presets to list. Without one, only the built-in presets.
     #[serde(default)]
@@ -102,8 +102,8 @@ impl Op for PresetGet {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(extend("examples" = [
-    { "character": "mira", "preset": "Mira low", "copy": "Deeper" },
-    { "character": "mira", "preset": "Bright", "chain": [
+    { "character": "kit", "preset": "Kit low", "copy": "Deeper" },
+    { "character": "kit", "preset": "Bright", "chain": [
         { "id": "gate", "kind": "fx.gate" },
         { "id": "pitch", "kind": "fx.pitch", "params": { "semitones": 3.0, "formant": 1.1 } }
     ] }
@@ -168,8 +168,8 @@ impl Op for PresetSave {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(extend("examples" = [
-    { "character": "mira", "preset": "Mira low", "node": "pitch", "param": "semitones", "value": -3.0 }
-], "x-omuzaki-fixture" = "character"))]
+    { "character": "kit", "preset": "Kit low", "node": "pitch", "param": "semitones", "value": -3.0 }
+], "x-omuzaki-fixture" = "character-voice"))]
 pub struct PresetSetParam {
     /// The character.
     pub character: String,
@@ -232,7 +232,7 @@ impl Op for PresetSetParam {
 /// Rename a character's preset.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(extend("examples" = [{ "character": "mira", "preset": "Mira low", "to": "Mira deep" }], "x-omuzaki-fixture" = "character"))]
+#[schemars(extend("examples" = [{ "character": "kit", "preset": "Kit low", "to": "Kit deep" }], "x-omuzaki-fixture" = "character-voice"))]
 pub struct PresetRename {
     /// The character.
     pub character: String,
@@ -279,7 +279,7 @@ impl Op for PresetRename {
 /// Delete one of a character's presets.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(extend("examples" = [{ "character": "mira", "preset": "Mira low" }], "x-omuzaki-fixture" = "character"))]
+#[schemars(extend("examples" = [{ "character": "kit", "preset": "Kit low" }], "x-omuzaki-fixture" = "character-voice"))]
 pub struct PresetDelete {
     /// The character.
     pub character: String,

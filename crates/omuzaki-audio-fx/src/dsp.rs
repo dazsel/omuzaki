@@ -109,7 +109,7 @@ impl Fade {
 }
 
 /// A uniform number in `[-1, 1)` from `seed` and the graph-clock index `n`: the same at the same index however the
-/// blocks are cut, and the same on every run (SplitMix64).
+/// blocks are cut, and the same on every run (`SplitMix64`).
 pub(crate) fn noise(seed: u64, n: u64) -> f64 {
     let mut z = seed ^ n.wrapping_mul(0x9E37_79B9_7F4A_7C15);
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -127,8 +127,7 @@ pub(crate) fn dot(a: &[f64], b: &[f64]) -> f64 {
     let (a, b) = (&a[..n], &b[..n]);
     let rest = n / 4 * 4;
     let mut sums = [0.0f64; 4];
-    for (qa, qb) in a.chunks_exact(4).zip(b.chunks_exact(4)) {
-        let (Ok(qa), Ok(qb)) = (<&[f64; 4]>::try_from(qa), <&[f64; 4]>::try_from(qb)) else { continue };
+    for (qa, qb) in a.as_chunks::<4>().0.iter().zip(b.as_chunks::<4>().0) {
         for k in 0..4 {
             sums[k] += qa[k] * qb[k];
         }
@@ -143,8 +142,7 @@ pub(crate) fn distance(a: &[f64], b: &[f64]) -> f64 {
     let (a, b) = (&a[..n], &b[..n]);
     let rest = n / 4 * 4;
     let mut sums = [0.0f64; 4];
-    for (qa, qb) in a.chunks_exact(4).zip(b.chunks_exact(4)) {
-        let (Ok(qa), Ok(qb)) = (<&[f64; 4]>::try_from(qa), <&[f64; 4]>::try_from(qb)) else { continue };
+    for (qa, qb) in a.as_chunks::<4>().0.iter().zip(b.as_chunks::<4>().0) {
         for k in 0..4 {
             let d = qa[k] - qb[k];
             sums[k] += d * d;

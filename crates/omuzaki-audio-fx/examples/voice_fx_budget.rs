@@ -11,7 +11,18 @@
 //! The CPU is timed per 256-sample block on the thread that runs the chain; a block is 5.33 ms of audio, so a block
 //! that takes `t` uses `t / 5.33 ms` of one core, and `/ 8` of eight. §10 measures it on `Dev` pinned to one E-core;
 //! anywhere else the number is `reported` and never gates.
-#![allow(clippy::unwrap_used, clippy::print_stdout, clippy::cast_precision_loss)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stdout,
+    clippy::float_cmp,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::many_single_char_names
+)]
 
 use std::path::PathBuf;
 use std::time::Instant;

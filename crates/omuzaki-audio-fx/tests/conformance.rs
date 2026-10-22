@@ -1,6 +1,17 @@
 //! Every effect kind passes the node conformance suite of `omuzaki-audio-mock` (latency honesty, block-size invariance,
 //! no allocation, finite and stable, silence decay, reset, parameter sweeps without clicks), on every channel count it
 //! claims and at its default, minimum and maximum settings.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::float_cmp,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::many_single_char_names
+)]
 
 use omuzaki_audio_api::graph::Channels;
 use omuzaki_audio_api::node::{BlockMut, ConfigValue, NodeConfig};

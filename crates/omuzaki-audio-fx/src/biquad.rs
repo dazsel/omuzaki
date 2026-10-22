@@ -63,9 +63,10 @@ impl Coefs {
             Shape::LowPass => {
                 ([(1.0 - cos) / 2.0, 1.0 - cos, (1.0 - cos) / 2.0], [1.0 + alpha, -2.0 * cos, 1.0 - alpha])
             }
-            Shape::HighPass => {
-                ([(1.0 + cos) / 2.0, -(1.0 + cos), (1.0 + cos) / 2.0], [1.0 + alpha, -2.0 * cos, 1.0 - alpha])
-            }
+            Shape::HighPass => (
+                [f64::midpoint(1.0, cos), -(1.0 + cos), f64::midpoint(1.0, cos)],
+                [1.0 + alpha, -2.0 * cos, 1.0 - alpha],
+            ),
             Shape::Peaking => {
                 ([1.0 + alpha * a, -2.0 * cos, 1.0 - alpha * a], [1.0 + alpha / a, -2.0 * cos, 1.0 - alpha / a])
             }

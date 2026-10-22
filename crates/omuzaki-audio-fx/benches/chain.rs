@@ -4,7 +4,17 @@
 //!
 //! Criterion reports the time per second of audio; a second of audio is 1,000 ms of real time, so the CPU share of 8
 //! cores is `time / 1 s / 8`. The budget harness's report of the same number is `examples/voice_fx_budget.rs`.
-#![allow(clippy::unwrap_used)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::float_cmp,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::many_single_char_names
+)]
 
 use std::hint::black_box;
 

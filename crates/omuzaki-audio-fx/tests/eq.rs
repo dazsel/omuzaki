@@ -1,6 +1,17 @@
 //! `fx.eq` (#1158): each band shape's measured magnitude response matches the analytic RBJ cookbook response within
 //! 0.1 dB at 20 frequencies. The response is measured by a direct DTFT of the node's impulse response; the analytic
 //! answer is computed here from the cookbook's formulas, independently of `omuzaki_audio_fx::biquad`.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::float_cmp,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::many_single_char_names
+)]
 
 mod common;
 
@@ -18,7 +29,7 @@ fn cookbook(shape: u8, f0: f64, q: f64, gain_db: f64) -> ([f64; 3], [f64; 3]) {
     let sq = 2.0 * a.sqrt() * alpha;
     match shape {
         0 => ([(1.0 - c) / 2.0, 1.0 - c, (1.0 - c) / 2.0], [1.0 + alpha, -2.0 * c, 1.0 - alpha]),
-        1 => ([(1.0 + c) / 2.0, -(1.0 + c), (1.0 + c) / 2.0], [1.0 + alpha, -2.0 * c, 1.0 - alpha]),
+        1 => ([f64::midpoint(1.0, c), -(1.0 + c), f64::midpoint(1.0, c)], [1.0 + alpha, -2.0 * c, 1.0 - alpha]),
         2 => (
             [
                 a * ((a + 1.0) - (a - 1.0) * c + sq),

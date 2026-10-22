@@ -211,7 +211,7 @@ pub fn from_lsf(lsf: &Lsf) -> Poly {
     for k in 1..=ORDER {
         let pk = p[k] + p[k - 1];
         let qk = q[k] - q[k - 1];
-        a[k] = 0.5 * (pk + qk);
+        a[k] = f64::midpoint(pk, qk);
     }
     a
 }

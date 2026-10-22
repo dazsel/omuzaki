@@ -1,4 +1,15 @@
 //! `fx.pitch` (#1443): pitch and formant shifts measured on the output by code the shifter does not share.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::float_cmp,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::many_single_char_names
+)]
 
 mod common;
 

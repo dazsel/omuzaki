@@ -4,6 +4,17 @@
 //!
 //! The gate reads what the nodes declare, which the conformance suite holds to what they do. A test kind that declares
 //! one sample more than the room left shows the gate fails when it should.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::float_cmp,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::many_single_char_names
+)]
 
 use omuzaki_audio_api::graph::{Channels, NodeSpec};
 use omuzaki_audio_api::ids::{NodeId, NodeKindId};
@@ -63,7 +74,7 @@ fn late() -> NodeSpec {
         id: NodeId::new("late").unwrap(),
         kind: NodeKindId::new("test.one_too_many").unwrap(),
         config: NodeConfig::default(),
-        params: Default::default(),
+        params: std::collections::BTreeMap::default(),
         enabled: true,
         sidechain: None,
     }
@@ -97,7 +108,9 @@ fn a_kind_declaring_one_sample_too_many_fails_the_gate() {
 #[test]
 fn a_disabled_node_delays_by_its_latency_and_an_enabled_chain_by_its_declared_latency() {
     let mut off = budget_chain_with_pitch();
-    off.iter_mut().for_each(|n| n.enabled = false);
+    for n in &mut off {
+        n.enabled = false;
+    }
     let mut chain = Chain::build(&off).unwrap();
     let latency = chain.latency() as usize;
     let mut x = vec![0.0f32; 4096];

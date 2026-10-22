@@ -213,11 +213,33 @@ macro_rules! output_op {
     };
 }
 
-output_op!(StreamStart, "obs.stream.start", "Start OBS's stream (goes live).", StartStream {}, "stream", true);
 output_op!(StreamStop, "obs.stream.stop", "Stop OBS's stream (ends the broadcast).", StopStream {}, "stream", false);
 output_op!(RecordStart, "obs.record.start", "Start OBS's own recording.", StartRecord {}, "record", true);
 output_op!(ReplayStart, "obs.replay.start", "Start OBS's replay buffer.", StartReplayBuffer {}, "replay", true);
 output_op!(ReplayStop, "obs.replay.stop", "Stop OBS's replay buffer.", StopReplayBuffer {}, "replay", false);
+
+impl Op for StreamStart {
+    fn meta() -> OpMeta {
+        live_action(
+            "obs.stream.start",
+            "Start OBS's stream (goes live); warns when a cast model's terms are non-profit.",
+        )
+    }
+
+    fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        // The go-live notice (#1089): said on the dry run too, so an agent sees it before it asks; it never blocks.
+        let warnings = super::golive::non_profit_warnings(ctx.doc);
+        let mut value = if ctx.dry_run {
+            would(service(ctx)?, &json!({ "output": "stream", "state": "started" })).output.unwrap_or(Value::Null)
+        } else {
+            output(ctx, &StartStream {}, "stream", true)?.0
+        };
+        if !warnings.is_empty() {
+            value["warnings"] = json!(warnings);
+        }
+        Ok(answer(value))
+    }
+}
 
 impl Op for RecordStop {
     fn meta() -> OpMeta {

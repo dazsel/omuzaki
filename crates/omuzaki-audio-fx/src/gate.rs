@@ -168,13 +168,14 @@ impl Gate {
         // `close_db <= open_db`, enforced here so a preset can never make the gate open and close at once.
         let close = self.close_db.min(self.open_db);
         match self.state {
-            GateState::Closed | GateState::Closing if level > self.open_db => self.go(GateState::Open),
+            GateState::Closed | GateState::Closing | GateState::Hold if level > self.open_db => {
+                self.go(GateState::Open);
+            }
             GateState::Open if level < close => {
                 self.held = 0;
                 self.go(GateState::Hold);
                 self.hold_tick();
             }
-            GateState::Hold if level > self.open_db => self.go(GateState::Open),
             GateState::Hold => self.hold_tick(),
             _ => {}
         }

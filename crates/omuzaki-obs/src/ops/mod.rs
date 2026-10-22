@@ -14,6 +14,7 @@
 
 pub mod action;
 pub mod connection;
+mod golive;
 pub mod query;
 
 #[cfg(test)]

@@ -18,6 +18,15 @@
 //! depend on how the blocks are cut (anything periodic is aligned to the graph clock), and its audio-thread methods
 //! never allocate. `tests/conformance.rs` holds every kind to them with the suite in `omuzaki-audio-mock`.
 #![deny(missing_docs)]
+// DSP: sample and tap indexes (far below 2^52) become f64 and back, audio is f32, and filter maths keeps the names of
+// its textbooks (`a`, `b`, `k`, `x`, `y`).
+#![allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::many_single_char_names
+)]
 
 pub mod biquad;
 pub mod chain;

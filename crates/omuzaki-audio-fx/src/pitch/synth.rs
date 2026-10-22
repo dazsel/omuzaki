@@ -86,7 +86,7 @@ fn expand(a: &Poly, gamma: f64) -> Poly {
 fn widen(a: &Poly, target: f64) -> (Poly, f64) {
     let (mut lo, mut hi) = (0.9, 1.0);
     for _ in 0..14 {
-        let mid = 0.5 * (lo + hi);
+        let mid = f64::midpoint(lo, hi);
         if power_gain(&expand(a, mid)).is_none_or(|e| e > target) {
             hi = mid;
         } else {
@@ -163,31 +163,22 @@ impl Synth {
         let frame = analysis.frame_at(t);
         self.warm = if frame.lsf.is_some() { (self.warm + 1).min(WARP_IN) } else { 0 };
         let beta = 1.0 + (beta - 1.0) * f64::from(self.warm) / f64::from(WARP_IN);
-        match frame.lsf {
-            Some(lsf) if beta != 1.0 => {
-                let warped = from_lsf(&warp(&lsf, beta, MIN_GAP, CEILING));
-                // Squeezing the line spectral frequencies together (β < 1) narrows the resonances, by up to 50 dB of
-                // energy on a voice whose spectrum falls steeply above 4 kHz: the warped filter is widened (its poles
-                // pulled in) until it has no more energy than the original, and then it keeps the original's power for
-                // a white excitation, so moving the formants doesn't move the level. Either filter unstable (a
-                // degenerate frame): keep the original, unwarped.
-                match (power_gain(&frame.a), power_gain(&warped)) {
-                    (Some(original), Some(moved)) => {
-                        let (a, moved) = if moved > original { widen(&warped, original) } else { (warped, moved) };
-                        self.a = a;
-                        self.gain_target = (original / moved).sqrt().clamp(1.0 / 256.0, 256.0);
-                    }
-                    _ => {
-                        self.a = frame.a;
-                        self.gain_target = 1.0;
-                    }
-                }
-            }
-            _ => {
-                self.a = frame.a;
-                self.gain_target = 1.0;
+        // Squeezing the line spectral frequencies together (β < 1) narrows the resonances, by up to 50 dB of energy on
+        // a voice whose spectrum falls steeply above 4 kHz: the warped filter is widened (its poles pulled in) until it
+        // has no more energy than the original, and then it keeps the original's power for a white excitation, so
+        // moving the formants doesn't move the level. No warp, or either filter unstable (a degenerate frame): keep the
+        // original, unwarped.
+        if let Some(lsf) = frame.lsf.filter(|_| (beta - 1.0).abs() > f64::EPSILON) {
+            let warped = from_lsf(&warp(&lsf, beta, MIN_GAP, CEILING));
+            if let (Some(original), Some(moved)) = (power_gain(&frame.a), power_gain(&warped)) {
+                let (a, moved) = if moved > original { widen(&warped, original) } else { (warped, moved) };
+                self.a = a;
+                self.gain_target = (original / moved).sqrt().clamp(1.0 / 256.0, 256.0);
+                return;
             }
         }
+        self.a = frame.a;
+        self.gain_target = 1.0;
     }
 
     /// Places the grain for the synthesis mark `exact` (outputs before `t` are already gone) and returns the next mark.
@@ -225,14 +216,14 @@ impl Synth {
             // cos(π j / half) by rotation, so a grain costs no trigonometry per sample.
             let (sin, cos) = (PI / half as f64).sin_cos();
             let (mut c, mut s) = (1.0f64, 0.0f64);
-            let first = if sign < 0 { 1 } else { 0 };
+            let first = i64::from(sign < 0);
             if first == 1 {
                 (c, s) = (c * cos - s * sin, s * cos + c * sin);
             }
             for j in first..half {
                 let at = to + sign * j;
                 if at >= t {
-                    let w = 0.5 * (1.0 + c);
+                    let w = f64::midpoint(1.0, c);
                     self.ola.add(at, gain * w * e.get(from + sign * j));
                 }
                 (c, s) = (c * cos - s * sin, s * cos + c * sin);
