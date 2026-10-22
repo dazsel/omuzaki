@@ -20,14 +20,14 @@ use egui::{
     WidgetInfo, WidgetType,
 };
 use egui_tiles::{Tile, Tree};
-use omuzaki_ops_api::{Actor, Event, Grants, OpError, OpRecord, Runner, SessionInfo, SessionState};
+use omuzaki_ops_api::{Actor, ErrorCode, Event, Grants, OpError, OpRecord, Runner, SessionInfo, SessionState};
 use omuzaki_ui_api::panel::{PanelCtx, ThemeKind as ApiTheme, ViewModels};
 use omuzaki_ui_api::registry::{PanelDef, PanelKind, Region, Registry, WorkspaceDef};
 
 use super::class::{DockMode, Plan, RAIL, STATUS_BAR, TOP_BAR};
 use super::dock::{self, Dock, PanelAsk};
 use super::handles;
-use super::history::{HistoryLog, step_label};
+use super::history::{HistoryLog, Preview, step_label};
 use super::host::Bodies;
 use super::keys::{self, Action};
 use super::layout::{Known, Layout, PanelId};
@@ -200,6 +200,7 @@ impl Shell {
         let requests = ShellRequests::default();
         let mut models = ViewModels::new();
         models.insert(requests.clone());
+        models.insert(Preview::default());
         let mut shell = Self {
             runner,
             registry,
@@ -278,6 +279,11 @@ impl Shell {
     /// Whether the layout is locked against dragging.
     pub const fn locked(&self) -> bool {
         self.locked
+    }
+
+    /// The whole document as History's preview holds it, while a past state is on show in the viewport.
+    pub fn previewed(&self) -> Option<omuzaki_doc_api::Value> {
+        self.models.get::<Preview>().and_then(|preview| preview.with(|v| v.map(|v| (*v.doc).clone())))
     }
 
     /// Where each docked panel of the active workspace was drawn last frame, by id: its body, under its tab strip. For
@@ -544,6 +550,13 @@ impl Shell {
     fn step_history(&mut self, undo: bool) {
         let grants = Grants::person();
         let result = if undo { self.runner.undo(&self.actor, &grants) } else { self.runner.redo(&self.actor, &grants) };
+        // A step a later change depends on can't be undone alone: History shows why on a card until it is dismissed or
+        // a step goes through.
+        let conflict = result.as_ref().err().filter(|e| e.code == ErrorCode::Conflict).map(|e| e.message.clone());
+        self.refresh_history();
+        if let Some(log) = self.models.get_mut::<HistoryLog>() {
+            log.conflict = conflict;
+        }
         self.note = match (result, undo) {
             (Ok(Some(label)), true) => Note::Undid(label),
             (Ok(Some(label)), false) => Note::Redid(label),
@@ -551,7 +564,6 @@ impl Shell {
             (Ok(None), false) => Note::NothingToRedo,
             (Err(error), _) => Note::Failed(error.message),
         };
-        self.refresh_history();
     }
 
     /// Reads the op log again: after an undo or redo here, and when the runner says the log changed.
@@ -564,10 +576,10 @@ impl Shell {
         let old = self
             .models
             .get_mut::<HistoryLog>()
-            .map(|old| (std::mem::take(&mut old.undone), std::mem::take(&mut old.seen)));
-        let (undone, mut seen) = old.unwrap_or_default();
+            .map(|old| (std::mem::take(&mut old.undone), std::mem::take(&mut old.seen), old.conflict.take()));
+        let (undone, mut seen, conflict) = old.unwrap_or_default();
         seen.retain(|seq, _| log.records.iter().any(|r| r.seq == *seq));
-        let log = HistoryLog { undone, seen, ..log };
+        let log = HistoryLog { undone, seen, conflict, ..log };
         self.models.insert(log);
     }
 
@@ -901,6 +913,13 @@ impl Shell {
                     }
                 }
                 ShellRequest::ShowPanel(id) => self.show_panel(id),
+                ShellRequest::Undo => self.step_history(true),
+                ShellRequest::Redo => self.step_history(false),
+                ShellRequest::DismissConflict => {
+                    if let Some(log) = self.models.get_mut::<HistoryLog>() {
+                        log.conflict = None;
+                    }
+                }
                 ShellRequest::ClosePanel(id) => self.close_panel(id),
                 ShellRequest::Adjust { op, args } => {
                     let places = self.places();
