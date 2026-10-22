@@ -381,7 +381,7 @@ impl StagePanel {
             && self.followed != Some(step.tx)
         {
             self.followed = Some(step.tx);
-            if let Some(bounds) = parts_bounds(viewport, step) {
+            if let Some(bounds) = follow_bounds(viewport, step) {
                 viewport.frame(bounds);
             }
         }
@@ -512,14 +512,34 @@ fn parts_bounds(viewport: &Viewport, step: &Step) -> Option<Bounds> {
         .reduce(Bounds::union)
 }
 
-/// A soft highlight on the parts the newest step changed.
+/// What following `step` frames: the parts it changed, or the whole character when they are most of it (a body
+/// change framed on the body alone would cut off the head).
+fn follow_bounds(viewport: &Viewport, step: &Step) -> Option<Bounds> {
+    let changed = parts_bounds(viewport, step)?;
+    let whole = viewport.parts().map(|(_, b)| b).reduce(Bounds::union).unwrap_or(changed);
+    Some(if changed.radius() > whole.radius() * MOST_OF_IT { whole } else { changed })
+}
+
+/// The share of the character's size above which a change is framed on the whole character.
+const MOST_OF_IT: f32 = 0.5;
+
+/// A quiet outline round the parts the newest step changed: corner marks, so the character under it stays in view.
 fn highlight(ui: &Ui, ds: &Ds, viewport: &Viewport, rect: Rect, step: &Step) {
     let Some(bounds) = parts_bounds(viewport, step) else { return };
     let Some([l, t, r, b]) = viewport.camera().project_bounds(bounds, [rect.width(), rect.height()]) else { return };
     let marked = Rect::from_min_max(rect.min + vec2(l, t), rect.min + vec2(r, b)).expand(6.0).intersect(rect);
+    let arm = (marked.width().min(marked.height()) * 0.2).clamp(6.0, 24.0);
+    let stroke = Stroke::new(2.0, ds.theme.agent);
     let painter = ui.painter();
-    painter.rect_filled(marked, 8.0, ds.theme.agent_glow);
-    painter.rect_stroke(marked, 8.0, Stroke::new(1.5, ds.theme.agent), StrokeKind::Middle);
+    for (corner, dx, dy) in [
+        (marked.left_top(), arm, arm),
+        (marked.right_top(), -arm, arm),
+        (marked.left_bottom(), arm, -arm),
+        (marked.right_bottom(), -arm, -arm),
+    ] {
+        painter.line_segment([corner, corner + vec2(dx, 0.0)], stroke);
+        painter.line_segment([corner, corner + vec2(0.0, dy)], stroke);
+    }
 }
 
 /// The caption pill naming the newest step, at the top of the viewport.

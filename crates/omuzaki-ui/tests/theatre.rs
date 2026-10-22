@@ -8,6 +8,7 @@
 //! - TH-08, TH-11: a reason shows under its card, Explain says when there is none, and a failed gate is a gate card.
 //! - TH-10: the budget meter shows what the session spent against its limits.
 //! - TH-09: drawing on the stage's viewport (on the software GPU) sends a note with its region, part and camera.
+//! - The evidence: the whole workspace on the software GPU, with the thumbnailer's pictures (ignored; run by hand).
 //!
 //! The book takes the runner's events in the test's own thread, as its watcher does on its own, so every test is
 //! ordered without a wait.
@@ -32,7 +33,9 @@ use omuzaki_ui::panels::agent::AgentFeed;
 use omuzaki_ui::panels::edit::EditFocus;
 use omuzaki_ui::panels::io::Io;
 use omuzaki_ui::panels::viewport::ViewportServices;
+use omuzaki_ui::shell::pictures::HistoryPictures;
 use omuzaki_ui::theatre::Theatre;
+use omuzaki_ui::theatre::compare::CompareStrip;
 use omuzaki_ui::theatre::plan::PlanBoard;
 use omuzaki_ui::theatre::stage::{StagePanel, Views as StageViews};
 use omuzaki_ui::theatre::steps::{StepsView, Views};
@@ -53,10 +56,14 @@ struct Studio {
 }
 
 fn studio() -> Studio {
+    studio_on(Document::empty())
+}
+
+fn studio_on(document: Document) -> Studio {
     omuzaki_ui::link();
     let book = TheatreBook::new();
     let services = ServicesBuilder::new().insert::<TheatreBook>(Arc::new(book.clone())).build();
-    let core = core_on(Document::empty(), services).unwrap();
+    let core = core_on(document, services).unwrap();
     let spec = SessionSpec {
         transport: Transport::Stdio,
         client: "claude".into(),
@@ -127,6 +134,9 @@ struct Rig {
     steps: StepsView,
     stage: StagePanel,
     viewport: Option<ViewportServices>,
+    /// History's pictures, when the rig takes them: the cards and the compare strip below the stage then show them.
+    pictures: Option<HistoryPictures>,
+    compare: CompareStrip,
 }
 
 fn rig_on(studio: Studio, viewport: Option<ViewportServices>, focus: EditFocus) -> Rig {
@@ -142,6 +152,8 @@ fn rig_on(studio: Studio, viewport: Option<ViewportServices>, focus: EditFocus) 
         steps: StepsView::default(),
         stage: StagePanel::new(focus),
         viewport,
+        pictures: None,
+        compare: CompareStrip::default(),
     }
 }
 
@@ -157,7 +169,7 @@ fn frame(ui: &mut egui::Ui, rig: &mut Rig) {
         feed: Some(&rig.feed),
         log: None,
         preview: None,
-        pictures: None,
+        pictures: rig.pictures.as_ref(),
         requests: None,
     };
     let stage =
@@ -167,6 +179,12 @@ fn frame(ui: &mut egui::Ui, rig: &mut Rig) {
         .exact_size(460.0)
         .resizable(false)
         .show(ui, |ui| rig.steps.ui(ui, &rig.theatre, io, views));
+    if let Some(pictures) = &rig.pictures {
+        egui::Panel::bottom("compare")
+            .exact_size(300.0)
+            .resizable(false)
+            .show(ui, |ui| rig.compare.ui(ui, &rig.theatre, io, Some(pictures)));
+    }
     egui::CentralPanel::default().show(ui, |ui| rig.stage.show(ui, &rig.theatre, io, stage));
 }
 
@@ -362,6 +380,99 @@ fn drawing_on_the_stage_sends_a_note_with_its_region_part_and_camera() {
     assert!((share(&region["h"]) * f64::from(rect.height()) - 80.0).abs() < 2.0, "{region}");
     assert!(note["camera"]["distance"].as_f64().unwrap() > 0.0);
     assert!(note["part"].is_string(), "the part under the region: {note}");
+}
+
+/// The Theatre for the pull request, at 1920x1080 and 1366x768: an agent in a real session over a project folder with
+/// the kit, its plan, three steps pictured by the stage's thumbnailer, a reason, a failed gate in "at gates" mode, the
+/// compare strip, and a note being drawn on the stage. `OMUZAKI_EVIDENCE_OUT=<folder> cargo test -p omuzaki-ui --test
+/// theatre -- --ignored`.
+#[test]
+#[ignore = "renders the kit on the GPU (lavapipe in CI) and writes evidence images"]
+fn theatre_evidence() {
+    use omuzaki_render::{AdapterPreference, HeadlessOptions, WgpuRenderer};
+    let Ok(out) = std::env::var("OMUZAKI_EVIDENCE_OUT") else { panic!("set OMUZAKI_EVIDENCE_OUT to a folder") };
+    let dir = tempfile::tempdir().unwrap();
+    let studio = studio_on(Document::project(dir.path()).unwrap());
+    let renderer = WgpuRenderer::headless(&HeadlessOptions { adapter: AdapterPreference::Software }).unwrap();
+    let pictures =
+        omuzaki_ui::shell::pictures::taken(studio.core.runner.clone(), Box::new(renderer), dir.path()).unwrap();
+    let kit = omuzaki_ui::studio::open_character(studio.core.runner.as_ref()).unwrap();
+    let session = studio.core.sessions.session_of(&studio.agent).unwrap();
+    let budget = Budget { usd_micros: 2_000_000, tokens: Some(20_000), seconds: Some(600) };
+    studio.core.sessions.set_budget(session.id, budget, &you()).unwrap();
+    studio.run_as(&you(), "theatre.pause_mode", json!({ "agent": "claude#1", "mode": "gates" })).unwrap();
+    let items = json!({ "items": [
+        { "id": "legs", "text": "Match the sheet's proportions", "status": "running" },
+        { "id": "build", "text": "Widen the shoulders a little" },
+        { "id": "check", "text": "Check the likeness against the sheet" }
+    ] });
+    studio.agent("theatre.plan", items);
+    let step = |name: &str, value: f64| {
+        let args = json!({ "character": kit.as_str(), "name": name, "value": value });
+        let tx = studio.agent("body.set_proportion", args).applied.unwrap().tx;
+        assert!(pictures.wait_for(tx, std::time::Duration::from_secs(60)), "the thumbnailer pictured {tx:?}");
+    };
+    step("leg_length", 1.15);
+    studio.agent("theatre.explain", json!({ "text": "The sheet's legs are longer than the kit's default." }));
+    studio.agent("theatre.item", json!({ "id": "legs", "status": "done" }));
+    studio.agent("theatre.item", json!({ "id": "build", "status": "running" }));
+    step("shoulder_width", 1.12);
+    studio.agent("theatre.explain", json!({ "text": "The sheet's shoulders are wider than the hips." }));
+    studio.agent("theatre.item", json!({ "id": "build", "status": "done" }));
+    studio.agent("theatre.item", json!({ "id": "check", "status": "running" }));
+    step("leg_length", 1.05);
+    let gate = json!({ "gate": "likeness", "message": "The legs are now 6% shorter than the sheet's." });
+    studio.agent("theatre.gate", gate);
+    let first = studio.book.snapshot().steps[0].tx;
+    studio.run_as(&you(), "theatre.reference", json!({ "picture": format!("step:{}", first.0) })).unwrap();
+
+    let state = support::render_state();
+    let services = ViewportServices {
+        gpu: Some(state.clone()),
+        builder: Arc::new(RegistryBuilder),
+        build: BuildServices::default(),
+    };
+    let mut rig = rig_on(studio, Some(services), EditFocus::new(kit));
+    rig.pictures = Some(pictures);
+    let mut h = Harness::builder()
+        .with_size(vec2(1920.0, 1080.0))
+        .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(state))
+        .build_ui_state(frame, rig);
+    h.run_steps(12);
+    click(&mut h, "Draw to direct");
+    let rect = h.state().stage_rect().expect("the viewport is drawn");
+    let (from, to) = (rect.center() + vec2(-60.0, -170.0), rect.center() + vec2(60.0, -60.0));
+    h.event(UiEvent::PointerMoved(from));
+    h.event(UiEvent::PointerButton {
+        pos: from,
+        button: PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    h.run_steps(1);
+    for step in 1..=4_u8 {
+        h.event(UiEvent::PointerMoved(from + (to - from) * (f32::from(step) / 4.0)));
+        h.run_steps(1);
+    }
+    h.event(UiEvent::PointerButton {
+        pos: to,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    h.run_steps(2);
+    h.get_by_label("What should change here?").click();
+    h.run_steps(1);
+    h.event(UiEvent::Text("the fringe should cover the brows".into()));
+    h.run_steps(4);
+    assert!(shows(&h, "Gate failed"), "{:?}", all_strings(&h));
+    for (w, ht) in [(1920.0, 1080.0), (1366.0, 768.0)] {
+        h.set_size(vec2(w, ht));
+        h.run_steps(8);
+        let image = h.render().unwrap();
+        let path = format!("{out}/theatre-{w}x{ht}.png");
+        image.save(&path).unwrap_or_else(|e| panic!("writing {path}: {e}"));
+    }
 }
 
 impl Rig {

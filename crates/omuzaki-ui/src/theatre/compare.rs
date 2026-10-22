@@ -64,8 +64,10 @@ impl CompareStrip {
         let sources = Sources { steps, renders: theatre.renders.as_ref() };
         let loaded: Vec<Option<Picture>> =
             columns.iter().map(|c| c.source.as_ref().and_then(|s| self.pictures.get(ui.ctx(), sources, s))).collect();
-        let side = ((ui.available_width() - 2.0 * GAP) / 3.0).clamp(48.0, LARGEST);
-        ui.horizontal(|ui| {
+        // Room under the pictures for their captions, the two lines and the buttons.
+        let below = 7.0 * ui.text_style_height(&egui::TextStyle::Body);
+        let side = ((ui.available_width() - 2.0 * GAP) / 3.0).min(ui.available_height() - below).clamp(48.0, LARGEST);
+        ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = GAP;
             for (column, picture) in columns.iter().zip(&loaded) {
                 tile(ui, &ds, column, picture.as_ref(), side);
