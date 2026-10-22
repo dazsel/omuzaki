@@ -13,8 +13,8 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use omuzaki_audio::host::{AudioInput, ModelPaths, SpeechEvent};
-use omuzaki_audio::{HostConfig, SpeechHost};
+use omuzaki_speech::host::{AudioInput, ModelPaths, SpeechEvent};
+use omuzaki_speech::{HostConfig, SpeechHost};
 
 const BLOCK: usize = 160; // 10 ms, a typical capture callback
 const SPEC_CORES: f64 = 8.0;

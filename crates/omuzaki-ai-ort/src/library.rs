@@ -47,7 +47,7 @@ pub(crate) fn flavour_providers(preferred: &[Provider], wanted: &[Provider]) -> 
 pub struct Loaded {
     /// The pinned build whose library was handed to `ort`.
     pub build: &'static Build,
-    /// False when another crate in this process (`omuzaki-audio`) had already initialised `ort` with its own copy
+    /// False when another crate in this process (`omuzaki-speech`) had already initialised `ort` with its own copy
     /// first; that copy is the one in use, so `build` is only what we would have loaded.
     pub ours: bool,
 }
@@ -63,7 +63,7 @@ pub fn loaded() -> Option<Loaded> {
 /// The flavour is picked by the first call: from [`prefer_providers`] if the app set one, else from `wanted`; CUDA when
 /// that asks for it and a CUDA build exists for the platform, the platform's default build otherwise ([`select_here`]).
 ///
-/// `ort::init_from` is itself once-only and first-wins: if `omuzaki-audio` (which loads its own pinned copy) initialised
+/// `ort::init_from` is itself once-only and first-wins: if `omuzaki-speech` (which loads its own pinned copy) initialised
 /// it first, this returns `ours: false` and every session in the process uses that library.
 ///
 /// # Errors

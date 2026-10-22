@@ -8,11 +8,11 @@ mod common;
 use std::time::Duration;
 
 use common::{data_dir, existing, feed_all, models_dir, ort_library, read_wav};
-use omuzaki_audio::asr::{Recognizer, Whisper};
-use omuzaki_audio::catalog;
-use omuzaki_audio::host::{ModelPaths, SpeechEvent};
-use omuzaki_audio::synth::{silence, white_noise};
-use omuzaki_audio::{HostConfig, SpeechHost};
+use omuzaki_speech::asr::{Recognizer, Whisper};
+use omuzaki_speech::catalog;
+use omuzaki_speech::host::{ModelPaths, SpeechEvent};
+use omuzaki_speech::synth::{silence, white_noise};
+use omuzaki_speech::{HostConfig, SpeechHost};
 
 #[test]
 fn silence_transcribes_without_error_and_without_inventing_much() {

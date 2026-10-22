@@ -1,4 +1,4 @@
-//! `omuzaki-audio`: the speech host (spec v3 ML-03), built from the spike.
+//! `omuzaki-speech`: the speech host (spec v3 ML-03), built from the spike.
 //!
 //! Microphone samples go in, speech events and transcripts come out:
 //!

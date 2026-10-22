@@ -1,8 +1,8 @@
 section = "models"
 item = "Whisper weights (ggml files), whisper.cpp, whisper-rs 0.16 / whisper-rs-sys 0.15"
 kind = "model+crate"
-used_for = "ASR (`omuzaki-audio`)"
+used_for = "ASR (`omuzaki-speech`)"
 status = "yes"
-condition = "**Weights:** MIT, \"Copyright (c) 2022 OpenAI\" (openai/whisper `LICENSE`); the ggml conversions come from `ggerganov/whisper.cpp` (Hugging Face licence tag `mit`, revision `5359861c...`). **whisper.cpp** (built from source by `whisper-rs-sys`): MIT, \"Copyright (c) 2023-2024 The ggml authors\" in the vendored copy (the upstream file now says 2023-2026); ship the notice. **whisper-rs / whisper-rs-sys:** Unlicense (public-domain dedication; no notice required). Models are pinned by URL, size and sha256 in `omuzaki_audio::catalog` and never committed"
+condition = "**Weights:** MIT, \"Copyright (c) 2022 OpenAI\" (openai/whisper `LICENSE`); the ggml conversions come from `ggerganov/whisper.cpp` (Hugging Face licence tag `mit`, revision `5359861c...`). **whisper.cpp** (built from source by `whisper-rs-sys`): MIT, \"Copyright (c) 2023-2024 The ggml authors\" in the vendored copy (the upstream file now says 2023-2026); ship the notice. **whisper-rs / whisper-rs-sys:** Unlicense (public-domain dedication; no notice required). Models are pinned by URL, size and sha256 in `omuzaki_speech::catalog` and never committed"
 audit = "B5"
 crates = ["whisper-rs"]

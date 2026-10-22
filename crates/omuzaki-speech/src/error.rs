@@ -7,7 +7,7 @@ use std::path::PathBuf;
 pub enum SpeechError {
     /// A model or library file is not where the caller said it would be. Models are never committed or bundled; the
     /// message names the catalogue entry that provides the file.
-    #[error("{what} not found at {path}; {fetch} (omuzaki_audio::catalog) or fix the path")]
+    #[error("{what} not found at {path}; {fetch} (omuzaki_speech::catalog) or fix the path")]
     ModelMissing {
         /// What the file is ("Silero VAD model", "Whisper model", "ONNX Runtime library").
         what: &'static str,
