@@ -25,7 +25,7 @@ use omuzaki_ui_api::panel::{PanelCtx, ThemeKind as ApiTheme, ViewModels};
 use omuzaki_ui_api::registry::{PanelDef, PanelKind, Region, Registry, WorkspaceDef};
 
 use super::class::{DockMode, Plan, RAIL, STATUS_BAR, TOP_BAR};
-use super::dock::{self, Dock};
+use super::dock::{self, Dock, PanelAsk};
 use super::handles;
 use super::history::{HistoryLog, step_label};
 use super::host::Bodies;
@@ -681,6 +681,18 @@ impl Shell {
         let rect = ui.max_rect();
         dock::enforce_minimums(&mut view.tree, &self.registry);
         let pinned = dock::pinned(&view.tree, &self.registry);
+        let mut asks = Vec::new();
+        let primary = view
+            .shown
+            .panels()
+            .into_iter()
+            .find_map(|p| self.registry.panel(p).filter(|d| d.kind == PanelKind::Primary).map(|d| d.id));
+        let sides: Vec<(String, Option<bool>)> = view
+            .shown
+            .panels()
+            .into_iter()
+            .map(|p| (p.to_owned(), primary.and_then(|primary| view.shown.side_of(p, primary))))
+            .collect();
         let mut dock = Dock {
             ctx: &ctx,
             registry: &self.registry,
@@ -689,6 +701,8 @@ impl Shell {
             locked: self.locked,
             pinned: &pinned,
             focus: &mut self.focus,
+            asks: &mut asks,
+            sides: &sides,
         };
         view.tree.ui(&mut dock, ui);
         let moved = handles::name_handles(ui, &mut view.tree, &self.registry);
@@ -697,6 +711,39 @@ impl Shell {
         if let Some(layout) = moved {
             self.record(&layout);
         }
+        for ask in asks {
+            self.panel_ask(ask);
+        }
+    }
+
+    /// Carries out what a panel's "⋯" menu asked for.
+    fn panel_ask(&mut self, ask: PanelAsk) {
+        let (panel, left) = match ask {
+            PanelAsk::Reset => return self.reset_layout(),
+            PanelAsk::Close(panel) => {
+                if let Some(def) = self.registry.panel(&panel) {
+                    self.close_panel(def.id);
+                }
+                return;
+            }
+            PanelAsk::MoveLeft(panel) => (panel, true),
+            PanelAsk::MoveRight(panel) => (panel, false),
+        };
+        let Some(view) = self.views.get_mut(self.active).and_then(Option::as_mut) else { return };
+        let primary = view
+            .shown
+            .panels()
+            .into_iter()
+            .find_map(|p| self.registry.panel(p).filter(|d| d.kind == PanelKind::Primary).map(|d| d.id));
+        let Some(primary) = primary else { return };
+        let layout = view.shown.moved(&panel, left, primary);
+        if layout == view.shown {
+            return;
+        }
+        view.tree = layout.to_tree(egui::Id::new(("shell_tree", self.workspaces[self.active].id)));
+        view.tree.make_active(|_, tile| matches!(tile, Tile::Pane(PanelId(p)) if *p == panel));
+        self.record(&layout);
+        self.focus = Some(panel);
     }
 
     /// Saves the arrangement when a drag or click ends and it differs from the one before. The full-size arrangement
@@ -1109,7 +1156,7 @@ impl Shell {
 }
 
 /// An icon-only button: its tooltip is also its accessible name (`design-system.md`, Tooltips).
-fn icon_button(ui: &mut Ui, glyph: &str, tip: &Tip<'_>, enabled: bool) -> Response {
+pub(super) fn icon_button(ui: &mut Ui, glyph: &str, tip: &Tip<'_>, enabled: bool) -> Response {
     let ds = ds(ui.ctx());
     let colour = if enabled { ds.theme.text } else { ds.theme.text_disabled };
     let label = RichText::new(glyph).font(ds.text.icon(16.0, false)).color(colour);

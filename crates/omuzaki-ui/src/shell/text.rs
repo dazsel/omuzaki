@@ -41,6 +41,11 @@ macro_rules! words {
 words! {
     MenuName = "shell-menu-name" => "Menu",
     MenuView = "shell-menu-view" => "View",
+    PanelMenu = "shell-panel-menu" => "{panel} options",
+    PanelMoveLeft = "shell-panel-move-left" => "Move to the left",
+    PanelMoveRight = "shell-panel-move-right" => "Move to the right",
+    PanelClose = "shell-panel-close" => "Close panel",
+    PanelLocked = "shell-panel-locked" => "The layout is locked",
     MenuEdit = "shell-menu-edit" => "Edit",
     MenuAgents = "shell-menu-agents" => "Agents",
     MenuHelp = "shell-menu-help" => "Help",

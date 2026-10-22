@@ -763,3 +763,27 @@ fn the_menus_undo_names_the_step_and_is_off_with_nothing_to_undo() {
     let undo = harness.get_by_role_and_label(Role::Button, "Undo");
     assert!(undo.accesskit_node().is_disabled(), "nothing to undo on a fresh shell");
 }
+
+#[test]
+fn a_panels_menu_moves_it_to_the_other_side_or_closes_it_without_a_drag() {
+    // shell.md section 4 rule 4 (WCAG 2.5.7): every drag has a menu equivalent.
+    let mut harness = plain(vec2(1920.0, 1080.0));
+    assert!(harness.query_by_label("Viewport options").is_none(), "the primary panel never moves, so it has no menu");
+    harness.get_by_label("Outliner options").click();
+    harness.run_steps(2);
+    assert!(harness.query_by_label("Move to the left").is_none(), "it is on the left already");
+    harness.get_by_role_and_label(Role::Button, "Move to the right").click();
+    harness.run_steps(3);
+    let layout = harness.state().shown_layout().expect("built");
+    assert_eq!(layout.panels().last().copied(), Some("history"), "{:?}", layout.panels());
+    let panels = layout.panels();
+    let at = |p: &str| panels.iter().position(|x| *x == p).expect("shown");
+    assert!(at("outliner") > at("viewport"), "the Outliner is right of the viewport: {panels:?}");
+    assert_eq!(harness.state().focused_panel(), Some("outliner"));
+    assert_shows(&harness, "No character is open");
+    harness.get_by_label("Library options").click();
+    harness.run_steps(2);
+    harness.get_by_role_and_label(Role::Button, "Close panel").click();
+    harness.run_steps(3);
+    assert!(!harness.state().shown_layout().expect("built").contains("library"));
+}

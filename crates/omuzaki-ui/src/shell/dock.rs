@@ -1,7 +1,7 @@
 //! How the docking widget draws and constrains the panels: what may be dragged or resized, the minimum size of each
 //! panel, and which panel a tab press focuses (`shell.md` section 4).
 
-use egui::{Context, Response, Ui, WidgetText};
+use egui::{Context, Popup, Response, Ui, WidgetText};
 use egui_tiles::{Behavior, Container, LinearDir, SimplificationOptions, Tile, TileId, Tiles, Tree, UiResponse};
 
 use omuzaki_ui_api::panel::PanelCtx;
@@ -9,9 +9,11 @@ use omuzaki_ui_api::registry::{PanelKind, Registry};
 
 use super::host::Bodies;
 use super::layout::PanelId;
-use super::text::title;
+use super::text::{Word, say, title};
+use crate::ds::icons;
 use crate::ds::theme::ds;
 use crate::ds::tokens::size;
+use crate::ds::widgets::{Button, Tip};
 
 /// The shortest any docked panel gets, whatever its registration says.
 const MIN_TILE: f32 = 160.0;
@@ -34,6 +36,24 @@ pub struct Dock<'a> {
     pub pinned: &'a [TileId],
     /// The focused panel; a press in a panel or on its tab sets it.
     pub focus: &'a mut Option<String>,
+    /// What the panels' menus asked for this frame; the shell carries it out after the tree is drawn.
+    pub asks: &'a mut Vec<PanelAsk>,
+    /// Which side of the primary panel each panel is on (`Layout::side_of`), so a menu offers only the other side.
+    pub sides: &'a [(String, Option<bool>)],
+}
+
+/// What a panel's "⋯" menu asks of the shell: the keyboard's way to do what a drag does (`shell.md` section 4 rule 4,
+/// WCAG 2.5.7).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PanelAsk {
+    /// Move the panel to the left of the primary panel.
+    MoveLeft(String),
+    /// Move the panel to the right of the primary panel.
+    MoveRight(String),
+    /// Take the panel out of the arrangement.
+    Close(String),
+    /// Go back to the workspace's default arrangement.
+    Reset,
 }
 
 impl Behavior<PanelId> for Dock<'_> {
@@ -52,6 +72,48 @@ impl Behavior<PanelId> for Dock<'_> {
             }
         }
         UiResponse::None
+    }
+
+    /// The "⋯" menu at the right of a tab group, for its shown panel; the primary panel has none, since it never moves.
+    fn top_bar_right_ui(
+        &mut self,
+        tiles: &Tiles<PanelId>,
+        ui: &mut Ui,
+        _tile: TileId,
+        tabs: &egui_tiles::Tabs,
+        _scroll_offset: &mut f32,
+    ) {
+        let active = tabs.active.or_else(|| tabs.children.first().copied());
+        let Some(Tile::Pane(PanelId(panel))) = active.and_then(|t| tiles.get(t)) else { return };
+        let Some(def) = self.registry.panel(panel).filter(|d| d.kind != PanelKind::Primary) else { return };
+        let ctx = ui.ctx().clone();
+        let name = title(&ctx, &self.bodies.title(def)).into_owned();
+        let label = say(&ctx, Word::PanelMenu, &[("panel", &name)]);
+        let button = super::app::icon_button(ui, icons::DOTS_THREE, &Tip::new(&label), true);
+        let id = def.id.to_owned();
+        Popup::menu(&button).show(|ui| {
+            let items = [
+                (Word::PanelMoveLeft, icons::ARROW_LEFT, PanelAsk::MoveLeft(id.clone())),
+                (Word::PanelMoveRight, icons::ARROW_RIGHT, PanelAsk::MoveRight(id.clone())),
+                (Word::PanelClose, icons::X, PanelAsk::Close(id.clone())),
+                (Word::ResetLayout, icons::ARROW_COUNTER_CLOCKWISE, PanelAsk::Reset),
+            ];
+            let side = self.sides.iter().find(|(p, _)| *p == id).and_then(|(_, side)| *side);
+            for (word, glyph, ask) in items {
+                // A panel already on one side is offered only the other.
+                match (&ask, side) {
+                    (PanelAsk::MoveLeft(_), Some(true)) | (PanelAsk::MoveRight(_), Some(false)) => continue,
+                    _ => {}
+                }
+                let locked = self.locked && ask != PanelAsk::Reset;
+                let reason = say(&ctx, Word::PanelLocked, &[]);
+                let text = say(&ctx, word, &[]);
+                let button = Button::new(&text).ghost().icon(glyph).disabled_if(locked, &reason);
+                if ui.add(button).clicked() {
+                    self.asks.push(ask);
+                }
+            }
+        });
     }
 
     fn on_tab_button(&mut self, tiles: &mut Tiles<PanelId>, tile: TileId, button: Response) -> Response {
