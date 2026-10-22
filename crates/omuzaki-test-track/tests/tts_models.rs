@@ -252,3 +252,76 @@ fn write_wav48(pcm: &[f32]) {
     }
     wav.finalize().unwrap();
 }
+
+/// Barge-in on the real VAD (#1458): Silero holds three frames after the start of speech our own TTS made, and never on
+/// the synthetic non-speech set (silence, noise at two levels, mains hum, a whistle, keyboard clicks).
+#[test]
+fn silero_holds_on_kokoro_speech_and_never_on_the_non_speech_set() {
+    use omuzaki_speech::host::SpeechEvent;
+    use omuzaki_speech::segmenter::FRAME;
+    use omuzaki_speech::slots::vad::non_speech;
+    use omuzaki_speech::slots::vad_slot;
+    use omuzaki_speech::{HostConfig, SegmenterConfig, SpeechHost};
+
+    let Some(files) = tts_folders() else { return };
+    let dir = temp("held");
+    let registry = registry(files, &dir);
+    install(&registry, &vad_slot(), "silero-vad");
+    install(&registry, &asr_slot(), "whisper-tiny-en");
+    install(&registry, &tts_slot(), "kokoro-82m");
+
+    let mut tts = registry.open(&tts_slot(), None).unwrap();
+    let mut call = TtsCall::new();
+    let lines = ["Wait, hold on a second.", "Hey, can I jump in here?", "No no no, that's not right."];
+    let silence = |tenths: usize| vec![0.0f32; tenths * 1_600];
+    let mut audio = silence(5);
+    for line in lines {
+        let utterance = Utterance { voice: "af_heart", ..Utterance::plain(line) };
+        audio.extend(resample(call.speak(tts.as_mut(), &utterance).unwrap(), TTS_RATE, 16_000));
+        audio.extend(silence(10));
+    }
+    let noise_from = audio.len();
+    for sound in non_speech() {
+        audio.extend(sound);
+        audio.extend(silence(5));
+    }
+
+    let config = HostConfig {
+        segmenter: SegmenterConfig { min_silence_ms: 300, ..SegmenterConfig::default() },
+        ..HostConfig::default()
+    };
+    let vad = registry.open(&vad_slot(), None).unwrap();
+    let asr = registry.open(&asr_slot(), None).unwrap();
+    let (mut host, mut input) = SpeechHost::open(vad, asr, &config).unwrap();
+    for block in audio.chunks(160) {
+        while input.free() < block.len() {
+            std::thread::yield_now();
+        }
+        input.push(block);
+    }
+    host.stop();
+    let events: Vec<SpeechEvent> = std::iter::from_fn(|| host.try_next_event()).collect();
+    let frame = FRAME as f64 / 16_000.0;
+    let noise_at = noise_from as f64 / 16_000.0;
+    let (mut starts, mut helds) = (Vec::new(), Vec::new());
+    for event in &events {
+        match event {
+            SpeechEvent::SpeechStarted { at } => starts.push(*at),
+            SpeechEvent::Held { at } => helds.push(*at),
+            _ => {}
+        }
+    }
+    let speech_starts: Vec<f64> = starts.iter().copied().filter(|t| *t < noise_at).collect();
+    let speech_helds: Vec<f64> = helds.iter().copied().filter(|t| *t < noise_at).collect();
+    let noise_starts = starts.len() - speech_starts.len();
+    let noise_helds = helds.len() - speech_helds.len();
+    eprintln!(
+        "held on Kokoro speech: starts {speech_starts:?}, held {speech_helds:?}; non-speech: {noise_starts} starts, \
+         {noise_helds} held"
+    );
+    assert_eq!(speech_helds.len(), lines.len(), "one held per line: {events:?}");
+    for (start, held) in speech_starts.iter().zip(&speech_helds) {
+        assert!((held - start - 3.0 * frame).abs() < 1e-9, "held at frame 3 of the speech: {start} {held}");
+    }
+    assert_eq!(noise_helds, 0, "never on the non-speech set: {events:?}");
+}

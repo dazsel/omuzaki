@@ -42,6 +42,7 @@ use omuzaki_performer_api::limits::CHUNK_MAX_CHARS;
 use omuzaki_performer_api::speech::{SpeakHow, SpeechControl, SpeechHandle, SpeechState, Voice, VoiceError};
 use omuzaki_performer_api::voice::{CutProbe, CutSource, CutState, SPEED_MAX, SPEED_MIN, VoiceAssignment, VoiceLead};
 
+use crate::ears::EchoLog;
 use crate::slots::tts::{TTS_RATE, TtsCall, Utterance};
 
 /// How far ahead of playback the pump keeps the feed (§3.1).
@@ -347,6 +348,8 @@ struct Shared {
     /// A synthesis finished.
     progress: Condvar,
     stop: AtomicBool,
+    /// Where each chunk's text and play times go as it starts playing, so the ears can drop the performer's own echo.
+    echo: Mutex<Option<EchoLog>>,
 }
 
 /// The TTS host: see the module docs.
@@ -394,6 +397,7 @@ impl TtsHost {
             work: Condvar::new(),
             progress: Condvar::new(),
             stop: AtomicBool::new(false),
+            echo: Mutex::new(None),
         });
         {
             let mut state = lock(&shared.state);
@@ -452,6 +456,12 @@ impl TtsHost {
             }
             state = self.shared.progress.wait_timeout(state, left).unwrap_or_else(PoisonError::into_inner).0;
         }
+    }
+
+    /// Writes each chunk's text and play times to `echo` as it starts playing, so [`SpeechEars`](crate::SpeechEars)
+    /// can drop the performer's own voice when the microphone hears it.
+    pub fn set_echo(&self, echo: EchoLog) {
+        *lock(&self.shared.echo) = Some(echo);
     }
 
     /// The counters.
@@ -709,7 +719,11 @@ impl Shared {
             if !matches!(inner.state, SpeechState::Playing { .. })
                 && let Some(at) = on.playhead.place(on.start, 0)
             {
-                inner.state = SpeechState::playing(self.clock.time_of(at), chunk.seconds(len));
+                let (from, duration) = (self.clock.time_of(at), chunk.seconds(len));
+                inner.state = SpeechState::playing(from, duration);
+                if let Some(echo) = lock(&self.echo).as_ref() {
+                    echo.said(&chunk.text, from, Seconds(from.0 + duration.0));
+                }
             }
             let total = len + chunk.pad;
             if inner.written + inner.pad_written == total

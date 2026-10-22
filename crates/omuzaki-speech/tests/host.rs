@@ -68,12 +68,13 @@ fn events_arrive_in_order_for_each_utterance() {
         .iter()
         .map(|e| match e {
             SpeechEvent::SpeechStarted { .. } => "started",
+            SpeechEvent::Held { .. } => "held",
             SpeechEvent::SpeechEnded { .. } => "ended",
             SpeechEvent::Final { .. } => "final",
             other => panic!("unexpected {other:?}"),
         })
         .collect();
-    assert_eq!(kinds, ["started", "ended", "final"]);
+    assert_eq!(kinds, ["started", "held", "ended", "final"]);
 }
 
 #[test]
@@ -143,8 +144,8 @@ fn an_application_that_never_polls_loses_the_oldest_events_and_the_count_says_so
     let stats = host.stop();
     let events = drain(&host);
     assert_eq!(events.len(), 3);
-    // 4 utterances x (started, ended) + their finals = 12 events; 3 are kept.
-    assert_eq!(stats.events_dropped, 12 - 3);
+    // 4 utterances x (started, held, ended, final) = 16 events; 3 are kept.
+    assert_eq!(stats.events_dropped, 16 - 3);
     assert!(matches!(events.last(), Some(SpeechEvent::Final { utterance: 3, .. })), "{events:?}");
 }
 

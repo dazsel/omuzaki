@@ -16,7 +16,9 @@
 //! - [`vad`] and [`segmenter`]: voice activity on a `vad@1` session and the hysteresis state machine that turns its
 //!   per-frame probabilities into speech start and end.
 //! - [`asr`]: speech to text on an `asr@1` session.
-//! - [`host`]: [`SpeechHost`] runs both workers and owns the back-pressure policy.
+//! - [`host`]: [`SpeechHost`] runs both workers and owns the back-pressure policy. It reports `Held` (the barge-in,
+//!   three speech frames in a row), the mute flag, and which utterances were spoken privately (`CohostOnly`).
+//! - [`ears`]: [`SpeechEars`], the host as the AI performer hears it, dropping its own echo.
 //! - [`tts`]: [`TtsHost`], the performer's voice: a synth thread and a pump writing the `ai_voice` feeds, cut at once,
 //!   resumed from a cache, pitched by the declared rate.
 //! - [`voices`]: the voice catalog, the consent gate every cloned voice passes, the public-figure warning and the
@@ -36,6 +38,7 @@
 #![allow(clippy::doc_markdown)]
 
 pub mod asr;
+pub mod ears;
 pub mod error;
 pub mod g2p;
 pub mod host;
@@ -50,6 +53,7 @@ pub mod voices;
 pub mod whisper_runtime;
 
 pub use asr::{AsrCall, Recognizer, Transcript, Whisper};
+pub use ears::{EchoLog, SpeechEars};
 pub use error::SpeechError;
 pub use host::{AudioInput, DEFAULT_HANGOVER_MS, HostConfig, HostStats, SpeechEvent, SpeechHost, TranscriptDemand};
 pub use kokoro_runtime::Kokoro;

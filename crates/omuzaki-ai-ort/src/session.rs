@@ -53,6 +53,8 @@ pub struct OrtModelSession {
     prepared: Option<Prepared>,
     /// Names and pointer lists for `Run`, built on the first prepared run.
     raw: Option<RawRun>,
+    /// A prepared run was refused for outputs sized by the data, not the input shapes: allocate outputs per call.
+    data_dependent: bool,
 }
 
 impl OrtModelSession {
@@ -65,7 +67,19 @@ impl OrtModelSession {
         skipped: Vec<Skipped>,
     ) -> Self {
         let shapes = vec![Vec::new(); feeds.len()];
-        Self { session, signature, feeds, picks, info, skipped, values: Vec::new(), shapes, prepared: None, raw: None }
+        Self {
+            session,
+            signature,
+            feeds,
+            picks,
+            info,
+            skipped,
+            values: Vec::new(),
+            shapes,
+            prepared: None,
+            raw: None,
+            data_dependent: false,
+        }
     }
 
     /// The providers that were asked for and not used, with the reason for each, in the order they were tried. Empty
@@ -257,8 +271,10 @@ impl OrtModelSession {
             let inputs = self.session.inputs().iter().map(ort::value::Outlet::name);
             self.raw = Some(RawRun::new(inputs, self.picks.iter().map(String::as_str)).map_err(RunError::Failed)?);
         }
-        let prepared = outputs.iter().map(|buf| tensor(buf.dtype(), buf.shape())).collect::<Result<_, _>>()?;
-        self.prepared = Some(Prepared { input_shapes: self.shapes.clone(), outputs: prepared });
+        if !self.data_dependent {
+            let prepared = outputs.iter().map(|buf| tensor(buf.dtype(), buf.shape())).collect::<Result<_, _>>()?;
+            self.prepared = Some(Prepared { input_shapes: self.shapes.clone(), outputs: prepared });
+        }
         Ok(())
     }
 }
@@ -279,8 +295,11 @@ impl Session for OrtModelSession {
         if let Some(done) = self.run_prepared(outputs) {
             return done;
         }
-        // The output sizes depend on more than the input shapes (data-dependent shapes): size them afresh.
+        // The output sizes depend on more than the input shapes (data-dependent shapes, as a TTS model's waveform):
+        // size them afresh, and from now on let ONNX Runtime allocate them. A refused prepared run has already done
+        // most of the graph's work, so trying again on every call would nearly double the cost of each.
         self.prepared = None;
+        self.data_dependent = true;
         self.run_and_learn(outputs)
     }
 

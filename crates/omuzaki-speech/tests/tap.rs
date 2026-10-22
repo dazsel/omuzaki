@@ -40,6 +40,7 @@ fn summary(events: &[SpeechEvent]) -> Vec<(&'static str, i64)> {
         .iter()
         .map(|e| match e {
             SpeechEvent::SpeechStarted { at } => ("started", frame(*at)),
+            SpeechEvent::Held { at } => ("held", frame(*at)),
             SpeechEvent::SpeechEnded { end, .. } => ("ended", frame(*end)),
             SpeechEvent::Final { end, .. } => ("final", frame(*end)),
             SpeechEvent::SpeechRejected { end, .. } => ("rejected", frame(*end)),

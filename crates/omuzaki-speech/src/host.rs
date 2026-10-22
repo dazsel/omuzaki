@@ -38,10 +38,11 @@ use std::time::{Duration, Instant};
 
 use omuzaki_ai_api::Session;
 use omuzaki_audio_api::TapSink;
-use omuzaki_audio_api::ring::{self, Consumer, Producer};
+use omuzaki_audio_api::ring::{self, Consumer, Producer, TapFlags};
 use omuzaki_audio_api::tap::DropPolicy;
 
 use crate::asr::{Recognizer, Whisper};
+use crate::ears::{EchoLog, SpeechEars};
 use crate::queue::DropOldestQueue;
 use crate::segmenter::{Event, FRAME, Segmenter, SegmenterConfig, ms_to_samples};
 use crate::vad::{SileroVad, VoiceActivity, is_unavailable};
@@ -109,11 +110,20 @@ pub struct Latency {
 /// What the host reports. Times are seconds since the first sample pushed.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SpeechEvent {
-    /// Speech began (first frame over the threshold, no padding). The earliest signal, for barge-in.
+    /// Speech began (first frame over the threshold, no padding). The earliest signal; it may still be a click.
     SpeechStarted {
         /// When.
         at: f64,
     },
+    /// The speech that started has run for `barge_in_frames` frames in a row (96 ms by default): someone really is
+    /// talking. Once per utterance. The AI performer cuts its own speech on this (`ai-performer.md` §5.4).
+    Held {
+        /// The end of the frame that completed the run.
+        at: f64,
+    },
+    /// The person muted (`true`) or unmuted (`false`) the microphone. While muted nothing is heard: a speech in
+    /// progress is dropped unreported and no event follows until the unmute.
+    Muted(bool),
     /// An utterance ended; it was queued for Whisper if a consumer wanted transcripts (see [`TranscriptDemand`]).
     SpeechEnded {
         /// Its number, counting up from zero; the same id appears on its transcripts.
@@ -153,6 +163,9 @@ pub enum SpeechEvent {
         text: String,
         /// How long it took.
         latency: Latency,
+        /// Some of it was spoken in `MicMode::CohostOnly` (the tap's `private` flag): the person believes it is
+        /// private, so it gets a private turn (`ai-performer.md` §5.5).
+        private: bool,
     },
     /// Whisper could not keep up and this utterance was evicted from the full queue unprocessed.
     UtteranceDropped {
@@ -318,6 +331,8 @@ struct Job {
     start: f64,
     end: f64,
     samples: Vec<f32>,
+    /// Spoken (at least in part) with the tap's `private` flag.
+    private: bool,
     /// When the VAD thread queued it, for the latency report.
     queued: Instant,
 }
@@ -347,11 +362,21 @@ impl AudioInput {
     pub fn free(&self) -> usize {
         self.producer.free()
     }
+
+    /// Marks the samples pushed from now on as muted or private. The engine calls this through [`TapSink::flags`]
+    /// when the person mutes or enters `CohostOnly`; a direct feeder calls it itself. Wait-free.
+    pub fn set_flags(&mut self, flags: TapFlags) {
+        self.producer.set_flags(flags);
+    }
 }
 
 impl TapSink for AudioInput {
     fn push(&mut self, samples: &[f32]) -> usize {
         AudioInput::push(self, samples)
+    }
+
+    fn flags(&mut self, flags: TapFlags) {
+        self.set_flags(flags);
     }
 }
 
@@ -458,6 +483,13 @@ impl SpeechHost {
     #[must_use]
     pub fn next_event_timeout(&self, timeout: Duration) -> Option<SpeechEvent> {
         self.events.pop_timeout(timeout)
+    }
+
+    /// The host's events as the AI performer hears them ([`Ears`](omuzaki_performer_api::ears::Ears)), times on the
+    /// runner clock where `origin` is the time of the first sample pushed. It takes the events: read them through the
+    /// ears only from then on. Transcripts that are the performer's own voice in `echo` are dropped and counted.
+    pub fn ears(&self, origin: omuzaki_core::time::Seconds, echo: EchoLog) -> SpeechEars {
+        SpeechEars::new(Arc::clone(&self.events), origin, echo)
     }
 
     /// Asks for transcripts: Whisper runs for utterances that end while the returned claim (or a clone) is alive.
@@ -580,6 +612,11 @@ struct VadWorker {
     last_partial: usize,
     /// True while the VAD keeps failing, so only the first error of a run becomes an event.
     vad_failing: bool,
+    /// The flags of the newest samples read, which the frame being filled takes.
+    heard: TapFlags,
+    /// The mute state last reported, and whether the utterance in progress heard a private sample.
+    reported_muted: bool,
+    utterance_private: bool,
 }
 
 impl VadWorker {
@@ -604,6 +641,9 @@ impl VadWorker {
             next_utterance: 0,
             last_partial: 0,
             vad_failing: false,
+            heard: TapFlags::default(),
+            reported_muted: false,
+            utterance_private: false,
         }
     }
 
@@ -613,7 +653,13 @@ impl VadWorker {
         loop {
             // Read the stop flag *before* draining: samples pushed before stop() are then guaranteed to be seen.
             let stopping = self.stop.load(Ordering::Acquire);
-            let read = self.consumer.pop_into(&mut frame[filled..]);
+            let run = self.consumer.read(&mut frame[filled..]);
+            let read = run.len;
+            if read > 0 {
+                // A frame takes the flags of its newest samples: a switch to private just before speech starts makes
+                // that speech private, and the private silence before a public utterance doesn't.
+                self.heard = TapFlags { muted: run.muted, private: run.private };
+            }
             filled += read;
             self.counters.samples_dropped.store(self.consumer.dropped(), Ordering::Relaxed);
             if filled == FRAME {
@@ -640,6 +686,25 @@ impl VadWorker {
         let started = Instant::now();
         self.history.extend(frame.iter().copied());
         self.total += FRAME;
+        let TapFlags { muted, private } = self.heard;
+        if muted != self.reported_muted {
+            self.reported_muted = muted;
+            if muted {
+                // Nothing is heard while muted: the speech in progress goes unreported, as if it never happened.
+                self.segmenter.abandon();
+                self.speech_start = None;
+                self.utterance_private = false;
+            }
+            self.emitter.emit(SpeechEvent::Muted(muted));
+        }
+        if muted {
+            self.trim_history();
+            self.counters.frames.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        if self.speech_start.is_some() {
+            self.utterance_private |= private;
+        }
         let probability = match self.vad.probability(frame) {
             Ok(probability) => {
                 self.vad_failing = false;
@@ -664,6 +729,9 @@ impl VadWorker {
         };
         let event = self.segmenter.push(probability);
         if let Some(event) = event {
+            if matches!(event, Event::Start { .. }) {
+                self.utterance_private = private;
+            }
             self.handle(event);
         }
         self.maybe_partial();
@@ -679,10 +747,12 @@ impl VadWorker {
                 self.last_partial = at;
                 self.emitter.emit(SpeechEvent::SpeechStarted { at: seconds(at) });
             }
+            Event::Held { at } => self.emitter.emit(SpeechEvent::Held { at: seconds(at) }),
             Event::End(segment) => {
                 let utterance = self.next_utterance;
                 self.next_utterance += 1;
                 self.speech_start = None;
+                let private = std::mem::take(&mut self.utterance_private);
                 let (start, end) = (seconds(segment.start), seconds(segment.end.min(self.total)));
                 self.emitter.emit(SpeechEvent::SpeechEnded { utterance, start, end });
                 if !self.demand.wanted() {
@@ -691,7 +761,7 @@ impl VadWorker {
                 }
                 self.counters.utterances.fetch_add(1, Ordering::Relaxed);
                 let samples = self.copy_out(segment.start, segment.end);
-                let job = Job { kind: JobKind::Final, utterance, start, end, samples, queued: Instant::now() };
+                let job = Job { kind: JobKind::Final, utterance, start, end, samples, private, queued: Instant::now() };
                 if let Some(evicted) = self.jobs.push(job) {
                     self.counters.utterances_dropped.fetch_add(1, Ordering::Relaxed);
                     self.emitter.emit(SpeechEvent::UtteranceDropped {
@@ -703,6 +773,7 @@ impl VadWorker {
             }
             Event::Rejected(segment) => {
                 self.speech_start = None;
+                self.utterance_private = false;
                 let end = segment.end.min(self.total);
                 self.emitter.emit(SpeechEvent::SpeechRejected { start: seconds(segment.start), end: seconds(end) });
             }
@@ -724,6 +795,7 @@ impl VadWorker {
             start: seconds(from),
             end: seconds(self.total),
             samples: self.copy_out(from, self.total),
+            private: self.utterance_private,
             queued: Instant::now(),
         };
         if self.jobs.set_ephemeral(job).is_some() {
@@ -788,6 +860,7 @@ impl AsrWorker {
                     end: job.end,
                     text: t.text,
                     latency: Latency { queue_wait, asr: t.elapsed, detect_to_final: job.queued.elapsed() },
+                    private: job.private,
                 },
                 (Ok(t), JobKind::Partial) => {
                     SpeechEvent::Partial { utterance: job.utterance, start: job.start, end: job.end, text: t.text }

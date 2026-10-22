@@ -66,13 +66,14 @@ fn scripted_sessions_give_a_phrase_and_its_text() {
         .iter()
         .map(|e| match e {
             SpeechEvent::SpeechStarted { .. } => "started",
+            SpeechEvent::Held { .. } => "held",
             SpeechEvent::SpeechEnded { .. } => "ended",
             SpeechEvent::Final { .. } => "final",
             _ => "other",
         })
         .collect();
-    assert_eq!(kinds, ["started", "ended", "final"], "{events:?}");
-    let SpeechEvent::Final { text, start, end, .. } = &events[2] else { unreachable!() };
+    assert_eq!(kinds, ["started", "held", "ended", "final"], "{events:?}");
+    let SpeechEvent::Final { text, start, end, .. } = &events[3] else { unreachable!() };
     assert_eq!(text, "hello chat");
     // Speech from 0.5 s to 1.5 s, with the segmenter's 100 ms of padding either side.
     assert!((start - 0.4).abs() < 0.07 && (end - 1.6).abs() < 0.07, "{start} {end}");
