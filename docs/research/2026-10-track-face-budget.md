@@ -1,3 +1,9 @@
+---
+title: "The track.face budget: which runtime meets 5 ms p95 (2026-10-22)"
+summary: "LiteRT with XNNPACK on MediaPipe's official TFLite graphs runs track_roi twice as fast as ONNX Runtime; the deciding run is on R (#903)"
+area: research
+---
+
 # The `track.face` budget: which runtime meets 5 ms p95 (#903)
 
 **Question.** Spec §10 budgets `track.face` at 5 ms p95 on `R`, from camera frame in to channels out. One-thread ONNX

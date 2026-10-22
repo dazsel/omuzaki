@@ -659,3 +659,62 @@ fn advance_allocates_nothing_with_responses_configured_and_commands_arriving() {
     assert_eq!(host.status().calibration, CalibrationState::Done { frames: 30 }, "the capture ran in the window");
     assert_eq!(performer.retarget().config().responses.len(), 2, "and the responses survived the changes");
 }
+
+/// A tracker that sends the same tracked frame every step: a performer sitting turned and leaning in.
+struct Sitting {
+    seq: u64,
+    head: HeadPose,
+}
+
+impl FrameSource for Sitting {
+    fn poll(&mut self, now: Seconds) -> Option<TrackFrame> {
+        self.seq += 1;
+        let mut frame = TrackFrame::empty(self.seq, now, DeviceProfile::Webcam);
+        frame.head = Some(self.head);
+        Some(frame)
+    }
+}
+
+const TURNED: HeadPose = HeadPose { yaw: 0.4, pitch: 0.1, roll: 0.0, position: Some(Vec3::new(0.05, 0.0, -0.45)) };
+
+/// The head channels the performer shows after `steps` steps from `first` on.
+fn head_after(control: &mut PerformControl, performer: &mut Performer, first: u64, steps: u64) -> [f32; 2] {
+    let mut out = [0.0; 2];
+    for i in first..first + steps {
+        let step = control.advance(performer, mid_step(i)).expect("one step is due");
+        out = [step.bus.values[Channel::HEAD_YAW], step.bus.values[Channel::HEAD_SHIFT_X]];
+    }
+    out
+}
+
+#[test]
+fn without_a_head_rest_the_first_tracked_frame_is_the_rest_and_a_calibration_replaces_it() {
+    // #542: an uncalibrated performer who sits turned starts facing forward, not turned.
+    let (handle, mut control, mut performer) = rig(Box::new(Sitting { seq: 0, head: TURNED }));
+    let [yaw, shift] = head_after(&mut control, &mut performer, 1, 60);
+    assert!(yaw.abs() < 0.02 && shift.abs() < 0.01, "the first frame is the rest: yaw {yaw}, shift {shift}");
+    assert_eq!(handle.calibration().head_rest.position, None, "a session default, not a calibration");
+
+    // A calibration with its own positioned rest (a level, centred head) replaces it: the turn shows.
+    let mut level = handle.calibration();
+    level.head_rest = HeadPose { position: Some(Vec3::new(0.0, 0.0, -0.45)), ..HeadPose::default() };
+    handle.set_calibration(level).unwrap();
+    let [yaw, _] = head_after(&mut control, &mut performer, 61, 60);
+    assert!(yaw.abs() > 0.2, "the calibration's rest is used: yaw {yaw}");
+
+    // Reset with that calibration keeps it.
+    control.reset(&mut performer);
+    let [yaw, _] = head_after(&mut control, &mut performer, 0, 60);
+    assert!(yaw.abs() > 0.2, "a positioned calibration survives a reset: yaw {yaw}");
+}
+
+#[test]
+fn a_reset_takes_the_first_frame_again() {
+    let (_handle, mut control, mut performer) = rig(Box::new(Sitting { seq: 0, head: TURNED }));
+    head_after(&mut control, &mut performer, 1, 30);
+    assert!(performer.retarget().calibration().head_rest.position.is_some());
+    control.reset(&mut performer);
+    assert_eq!(performer.retarget().calibration().head_rest.position, None, "the session default is dropped");
+    let [yaw, _] = head_after(&mut control, &mut performer, 0, 60);
+    assert!(yaw.abs() < 0.02, "and taken again from the next tracked frame: yaw {yaw}");
+}

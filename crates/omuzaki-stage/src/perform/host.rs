@@ -48,7 +48,7 @@ use omuzaki_anim::{
     MAX_NEUTRAL_FRAMES, MAX_TRIGGERS, MIN_NEUTRAL_FRAMES, NeutralCapture, NeutralError, TriggerFades, TriggerSlot,
 };
 use omuzaki_anim_api::{
-    ARKIT_COUNT, Calibration, Channel, ChannelBuf, Cues, DeviceProfile, HeadPose, RetargetConfig, Tick,
+    ARKIT_COUNT, Calibration, Channel, ChannelBuf, Cues, DeviceProfile, HeadPose, RetargetConfig, Tick, TrackStatus,
 };
 use omuzaki_core::glam::Vec3;
 use omuzaki_core::time::Seconds;
@@ -639,6 +639,7 @@ pub fn perform_channel(performer: &Performer) -> (PerformHandle, PerformControl)
         fps: FpsMeter::default(),
         triggers: TriggerLayer::new(TriggerFades::default()),
         voice: None,
+        head_rest: HeadRest::Waiting,
     };
     (PerformHandle { commands: commands_tx, shared }, control)
 }
@@ -920,6 +921,24 @@ pub struct PerformControl {
     triggers: TriggerLayer,
     /// The attached voice, written into the performer's audio layer and cues before each of its steps.
     voice: Option<Box<Voice>>,
+    /// The session's head rest from the first tracked frame, for a calibration that has none (#542).
+    head_rest: HeadRest,
+}
+
+/// Where the first-frame head rest stands (#542). A calibration whose head rest has no position (none saved, or one
+/// made from a source without depth) measures the head from a level, centred pose, so a performer who sits turned or
+/// leans in starts turned, with no shift or lean. Until a calibration says otherwise, the first tracked frame's head
+/// becomes the rest instead, as the prototype did. It is a session default, not a calibration: it goes to the
+/// retarget only, so [`PerformHost::calibration`] still reports the calibration as set and nothing saves it; the next
+/// session takes its own first frame. Any calibration that is set or captured replaces it.
+#[derive(Copy, Clone, Debug, PartialEq)]
+enum HeadRest {
+    /// No tracked frame with a head position yet.
+    Waiting,
+    /// Seen on the last step, applied before the next.
+    Pending(HeadPose),
+    /// Applied, or not needed: the calibration in use has a positioned head rest.
+    Done,
 }
 
 impl PerformControl {
@@ -935,6 +954,7 @@ impl PerformControl {
             let Ok(command) = self.commands.try_recv() else { break };
             self.run(command, performer);
         }
+        self.rest_head(performer);
         let Some((first, count)) = self.due_steps(now) else {
             self.publish();
             return None;
@@ -1001,6 +1021,12 @@ impl PerformControl {
         }
         performer.reset();
         self.triggers.reset();
+        // The first-frame head rest belongs to the timeline that ended: the next tracked frame takes it again.
+        let set = self.shared.calibration.read();
+        if set.head_rest.position.is_none() {
+            performer.retarget_mut().set_calibration(set);
+            self.head_rest = HeadRest::Waiting;
+        }
         self.origin = None;
         self.next_step = 0;
         self.skipped = 0;
@@ -1088,9 +1114,34 @@ impl PerformControl {
     }
 
     /// Sets the calibration and publishes it: the mailbox always holds the one in use.
-    fn set_calibration(&self, performer: &mut Performer, calibration: &Calibration) {
+    fn set_calibration(&mut self, performer: &mut Performer, calibration: &Calibration) {
         performer.retarget_mut().set_calibration(*calibration);
         self.shared.calibration.write(calibration);
+        self.head_rest = if calibration.head_rest.position.is_some() { HeadRest::Done } else { HeadRest::Waiting };
+    }
+
+    /// Applies a first-frame head rest seen on the last step (see [`HeadRest`]), if the calibration in use still has
+    /// no positioned one.
+    fn rest_head(&mut self, performer: &mut Performer) {
+        let HeadRest::Pending(head) = self.head_rest else { return };
+        self.head_rest = HeadRest::Done;
+        let mut calibration = *performer.retarget().calibration();
+        if calibration.head_rest.position.is_none() {
+            calibration.head_rest = head;
+            performer.retarget_mut().set_calibration(calibration);
+        }
+    }
+
+    /// Notes the first tracked frame with a positioned head while the first-frame head rest is waiting and no capture
+    /// is running (a capture sets the rest itself).
+    fn watch_head(&mut self, out: &PerformOutput<'_>) {
+        if self.head_rest != HeadRest::Waiting || self.running.is_some() {
+            return;
+        }
+        let tracked = out.frame.filter(|frame| frame.status == TrackStatus::Tracking);
+        if let Some(head) = tracked.and_then(|frame| frame.head).filter(|head| head.position.is_some()) {
+            self.head_rest = HeadRest::Pending(head);
+        }
     }
 
     /// Takes in one executed step: the tracking state, the frame rate and the capture.
@@ -1101,6 +1152,7 @@ impl PerformControl {
             self.fps.arrived(frame.time.0);
         }
         self.live.fps = self.fps.fps;
+        self.watch_head(out);
         self.feed_capture(out);
     }
 
