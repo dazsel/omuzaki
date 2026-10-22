@@ -263,3 +263,27 @@ fn the_op_is_a_registered_publish_job() {
     let meta = (entry.meta)();
     assert_eq!((meta.kind, meta.scope), (omuzaki_ops_api::OpKind::Job, Scope::Publish));
 }
+
+/// A character's own named expression (#771) is baked under its export name: `smug` is no VRM preset, so the file
+/// carries it as `omuzaki_smug`, and an expression named like a preset (`happy`) stays that preset.
+#[test]
+fn a_named_expression_is_exported_under_its_own_name() {
+    let mut project = Project::new("CC0-1.0", Commercial::Ok);
+    let face = omuzaki_doc_api::DocPath::parse("characters/mira/face/expressions").unwrap();
+    let mut expressions = project.doc.get(&face).cloned().unwrap_or_else(|| json!({}));
+    let before = expressions.clone();
+    expressions["smug"] = json!({ "kind": "emotion", "deltas": { "mouthSmileLeft": 1.0, "browDownRight": 0.75 } });
+    expressions["happy"] = json!({ "kind": "emotion", "deltas": { "mouthSmileLeft": 1.0, "mouthSmileRight": 1.0 } });
+    let had = project.doc.get(&face).is_some();
+    let patch = omuzaki_doc_api::Patch::new().with(face, had.then_some(before), Some(expressions));
+    project.doc.apply(&patch).unwrap();
+
+    let result = project.export(&vrm("out/mira.vrm", "private")).unwrap();
+    let bake = result.bake.expect("the face was baked");
+    let named: Vec<&str> =
+        bake.channels.iter().map(|c| c.channel.as_str()).filter(|c| c.starts_with("omuzaki_")).collect();
+    assert_eq!(named, ["omuzaki_smug"], "only the expression that is no preset is asked for by its own name");
+    let avatar = read_back(&project.file("out/mira.vrm")).avatar.expect("an avatar");
+    assert!(avatar.expressions.contains_key(&ExpressionName::parse("omuzaki_smug").unwrap()));
+    assert!(avatar.expressions.contains_key(&ExpressionName::Preset(PresetExpression::Happy)));
+}

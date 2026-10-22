@@ -15,7 +15,8 @@
 //!    made from geometry ([`arkit_shapes::generate`]): the outcomes choose the gaze route.
 //! 5. **Conversion**, one private module each: the skeleton (`skeleton`), materials and textures (`materials`),
 //!    meshes with their own skins and sparse morphs (`meshes`), expressions and drivers (`expressions`), the gaze route
-//!    and look-at (`gaze`), and springs and constraints (`physics`).
+//!    and look-at (`gaze`), and springs and constraints (`physics`). The anchors attachments build against come from the
+//!    skeleton, the bind and the head's meshes ([`avatar_anchors`]).
 //! 6. **Retained**: everything export needs that the runtime does not use, so an unedited avatar re-exports with
 //!    every field of the original (D8). Node names, transforms and the scene graph are taken before any step changes
 //!    them; materials, textures and images as cleanup left them (it only drops unused ones; values are untouched).
@@ -34,6 +35,7 @@ pub(crate) use materials::apply_edit as apply_material_edit;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use omuzaki_avatar_api::anchors::avatar_anchors;
 use omuzaki_avatar_api::avatar::ImportedAvatar;
 use omuzaki_avatar_api::def::AvatarDef;
 use omuzaki_avatar_api::retained::{Retained, RetainedAnnotation, RetainedNode, RetainedSkin, RetainedTransform};
@@ -157,6 +159,7 @@ fn prepare(
     meshes::convert(&work, &rig, &names, &mut avatar, &mut report);
     expressions::convert(&work, def, &arkit, &names, &mut avatar, &mut report);
     physics::convert(&work, &rig, &mut avatar, &mut report);
+    avatar.anchors = avatar_anchors(&avatar);
     retain(scene, &work, &rig, nodes, &mut avatar.retained);
     // A step that could not convert part of the model said why in an error finding; that is the reason to give.
     if report.has_errors() {

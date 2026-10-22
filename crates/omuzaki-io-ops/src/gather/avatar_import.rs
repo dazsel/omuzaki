@@ -21,20 +21,23 @@ use std::collections::BTreeMap;
 use omuzaki_anim_api::spring::JointLimit;
 use omuzaki_anim_api::{Axis, ConstraintKind, SignedAxis};
 use omuzaki_avatar_api::avatar::AvatarFace;
-use omuzaki_avatar_api::body::BodyView;
+use omuzaki_avatar_api::body::{BodyView, MeshView};
 use omuzaki_avatar_api::def::AvatarDef;
 use omuzaki_avatar_api::expression::AvatarExpression;
 use omuzaki_avatar_api::retained::{Retained, RetainedInstance, RetainedMesh};
+use omuzaki_char_api::{JointRef, MaterialName, PartId, TextureName};
 use omuzaki_core::glam::{Mat4, Vec3};
 use omuzaki_io_api::{
     self as io, Avatar, Blob, EncodedImage, FirstPerson, IoError, IoScene, MaterialIx, MeshAnnotation, MeshIx, Node,
-    NodeIx, SkinIx,
+    NodeIx, Report, SkinIx,
 };
 use omuzaki_render_api::MorphSet;
 use omuzaki_store_api::ContentHash;
 
 use super::springs::shape as io_shape;
 use crate::convert::bones::to_file;
+use crate::convert::material::{SceneTexture, export_material};
+use crate::convert::texture::{encode_png, sampler_to_io};
 use crate::prepare::avatar::apply_material_edit;
 use crate::prepare::avatar::physics::in_bone_frame;
 
@@ -119,7 +122,105 @@ pub fn gather_imported(
         })
         .collect();
     scene.avatar = Some(avatar);
+    add_attachments(&mut scene, body, &node_of_bone)?;
     Ok(scene)
+}
+
+/// The attachments' meshes ([`MeshView::part`], built by the kit onto the avatar), after everything the file had. A
+/// mesh that follows one bone becomes a node under that bone's node, its vertices in the bone's frame at rest, as a
+/// prop parented to a bone is in any 3D tool; one spread over several bones is a skinned node at the root, with the
+/// inverse binds it runs with. Their materials and textures are written from the kit's specs, as a built character's
+/// are; the notes that conversion makes (an approximated shading program) were the kit's to show, not repeated here.
+///
+/// # Errors
+/// [`IoError::Internal`] for a mesh that follows a bone the file has no node for, or a material or texture that does
+/// not convert (an attached avatar that validated has neither).
+fn add_attachments(scene: &mut IoScene, body: &BodyView<'_>, node_of_bone: &[Option<NodeIx>]) -> Result<(), IoError> {
+    let attached: Vec<MeshView<'_>> =
+        (0..body.meshes.len()).filter_map(|i| body.meshes.get(i)).filter(|m| m.part.is_some()).collect();
+    if attached.is_empty() {
+        return Ok(());
+    }
+    let mut notes = Report::new();
+    let internal = |what: String| IoError::Internal(what);
+    let mut textures: BTreeMap<&TextureName, SceneTexture> = BTreeMap::new();
+    let mut materials: BTreeMap<&MaterialName, MaterialIx> = BTreeMap::new();
+    for view in &attached {
+        let name = &view.mesh.material;
+        if materials.contains_key(name) {
+            continue;
+        }
+        let spec =
+            body.materials.get(name).ok_or_else(|| internal(format!("attached material '{name}' is missing")))?;
+        if let Some(texture) = spec.base_texture.as_ref().filter(|t| !textures.contains_key(*t)) {
+            let data = body
+                .textures
+                .get(texture)
+                .ok_or_else(|| internal(format!("attached texture '{texture}' is missing")))?;
+            let uri = format!("images/{}", scene.images.len());
+            let image = encode_png(texture.as_str(), data, &uri, &mut notes).map_err(|e| internal(e.to_string()))?;
+            let image = scene.add_image(image);
+            let tex = scene.add_texture(io::Texture { image, sampler: sampler_to_io(&data.desc) });
+            textures.insert(texture, SceneTexture { tex: io::TexRef::of(tex), colour_space: data.desc.colour_space });
+        }
+        let at = format!("materials/{}", scene.materials.len());
+        let material = export_material(name.as_str(), spec, &|t| textures.get(t).copied(), &at, &mut notes)
+            .map_err(|e| internal(e.to_string()))?;
+        materials.insert(name, scene.add_material(material));
+    }
+    let mut taken = BTreeMap::<String, usize>::new();
+    for view in attached {
+        let part = view.part.map(PartId::as_str).unwrap_or_default();
+        let seen = taken.entry(part.to_owned()).or_default();
+        *seen += 1;
+        let name = if *seen == 1 { part.to_owned() } else { format!("{part}.{seen}") };
+        let joints = view
+            .mesh
+            .joint_bones
+            .iter()
+            .map(|joint| {
+                let bone = match joint {
+                    JointRef::Humanoid(bone) => body.skeleton.humanoid_bone(*bone),
+                    JointRef::Named(bone) => body.skeleton.find(bone.as_str()),
+                };
+                bone.and_then(|b| node_of_bone.get(b.index()).copied().flatten()).ok_or_else(|| {
+                    internal(format!("attachment '{name}' follows {joint:?}, which the file has no node for"))
+                })
+            })
+            .collect::<Result<Vec<NodeIx>, _>>()?;
+        let inverse_bind = view.inverse_bind.unwrap_or_default();
+        let mut geometry = view.mesh.geometry.clone();
+        let parent = match (joints.as_slice(), inverse_bind) {
+            ([bone], [to_bone]) => {
+                for p in &mut geometry.positions {
+                    *p = to_bone.transform_point3(*p);
+                }
+                for n in &mut geometry.normals {
+                    *n = to_bone.transform_vector3(*n).normalize_or_zero();
+                }
+                geometry.joints.clear();
+                geometry.weights.clear();
+                Some(*bone)
+            }
+            _ => None,
+        };
+        let material = materials.get(&view.mesh.material).copied();
+        let mut primitive = io::Primitive::new(geometry);
+        primitive.material = material;
+        let mut mesh = io::Mesh::new(name.clone());
+        mesh.primitives.push(primitive);
+        let mut node = Node::new(name.clone());
+        node.mesh = Some(scene.add_mesh(mesh));
+        if parent.is_none() && !joints.is_empty() {
+            node.skin = Some(scene.add_skin(io::Skin::new(name, joints, inverse_bind.to_vec())));
+        }
+        let at = scene.add_node(node);
+        match parent.and_then(|p| scene.nodes.get_mut(p.index())) {
+            Some(bone) => bone.children.push(at),
+            None => scene.roots.push(at),
+        }
+    }
+    Ok(())
 }
 
 /// The node each bone came from, by bone index.

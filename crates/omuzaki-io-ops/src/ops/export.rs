@@ -16,7 +16,7 @@
 
 use omuzaki_char_api::{CharId, VariantId};
 use omuzaki_core::time::SystemClock;
-use omuzaki_face_api::{BakerInput, face_baker};
+use omuzaki_face_api::{BakerInput, FaceProfile, face_baker};
 use omuzaki_io_api::{
     ARKIT_52, BakeReport, BakeRequest, ExportCtx, ExportOptions, ExpressionName, Finding, FormatId, IoScene,
     OutputFile, PerfectSync, Purpose, Report, find_exporter, formats, run_export,
@@ -32,6 +32,7 @@ use std::io::Write;
 
 use super::check_export::{CheckExport, ExportCheck, ExportScene, Shape};
 use super::progress::JobProgress;
+use crate::convert::channels::{channel_for, named_expression};
 use crate::error::from_io;
 
 /// What `asset.generator` says in every file Omuzaki writes. No version: the bytes must not change between builds.
@@ -187,6 +188,19 @@ fn arkit_channels() -> Result<Vec<ExpressionName>, OpError> {
         .collect()
 }
 
+/// The face's own expressions that aren't a VRM preset, by the names they export under (`omuzaki_smug`), for the
+/// baker to realise from their channel deltas. A name a channel already exports under (an extra like `omuzaki_blush`)
+/// stays the channel's.
+fn named_expressions(profile: &FaceProfile) -> Vec<ExpressionName> {
+    profile
+        .expressions
+        .0
+        .keys()
+        .filter_map(named_expression)
+        .filter(|name| !matches!(name, ExpressionName::Preset(_)) && channel_for(name.as_str()).is_none())
+        .collect()
+}
+
 /// How many of the 52 channels `scene`'s avatar has.
 fn arkit_present(scene: &IoScene) -> usize {
     let Some(avatar) = &scene.avatar else { return 0 };
@@ -232,7 +246,9 @@ fn bake_face(
     };
     let input = BakerInput { profile: &face.profile, projection: face.projection, head_centre: face.head_centre };
     let baker = factory.create(input).map_err(|e| from_io(e, "character"))?;
-    let request = BakeRequest::new(arkit_channels()?, face.target);
+    let mut channels = arkit_channels()?;
+    channels.extend(named_expressions(&face.profile));
+    let request = BakeRequest::new(channels, face.target);
     let report = baker.bake(scene, &request, &JobProgress(job)).map_err(|e| from_io(e, "character"))?;
     Ok((wanted, Some(report), None))
 }

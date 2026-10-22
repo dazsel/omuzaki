@@ -288,3 +288,52 @@ fn blink_aa_and_happy_show_different_faces_from_the_file_alone() {
         sheet.save(std::path::Path::new(&dir).join("bake-presets.png")).unwrap();
     }
 }
+
+/// A face's own named expression (#771) is requested as `omuzaki_<id>` and baked from its channel deltas, as a preset
+/// is: `smug` (a one-sided smile, a lowered brow and the jaw pushed aside) binds the jaw's morph at its weight and flips
+/// the mouth and brow atlases, and the baked scene exports and reads back with the expression.
+#[test]
+fn a_named_expression_is_baked_from_its_deltas() {
+    use omuzaki_anim_api::{Channel, ExpressionId};
+    use omuzaki_face_api::{ChannelValues, Expression as FaceExpression, ExpressionKind, IntensityCurve, Playback};
+
+    let mut profile = mock_profile();
+    let deltas = ChannelValues::default()
+        .with(Channel::MOUTH_SMILE_LEFT, 1.0)
+        .with(Channel::BROW_DOWN_RIGHT, 0.75)
+        .with(Channel::JAW_LEFT, 0.5);
+    let smug = FaceExpression {
+        kind: ExpressionKind::Emotion,
+        deltas,
+        curve: IntensityCurve::Linear,
+        playback: Playback::default(),
+    };
+    profile.expressions.0.insert(ExpressionId::new("smug").unwrap(), smug);
+    let baker = FaceBaker::new(BakerInput { profile: &profile, projection: mock_projection(), head_centre: CENTRE });
+    let name = ExpressionName::parse("omuzaki_smug").unwrap();
+    let mut channels = arkit();
+    channels.push(name.clone());
+    let mut scene = scene();
+    let report = baker.bake(&mut scene, &BakeRequest::new(channels, BODY_NODE), &NoProgress).unwrap();
+    assert_eq!(realisation(&report, "omuzaki_smug"), Realisation::Mixed, "a morph and atlas flips together");
+
+    let avatar = scene.avatar.as_ref().unwrap();
+    let expression = &avatar.expressions[&name];
+    let jaw = avatar.expressions[&ExpressionName::parse("jawLeft").unwrap()].morph_binds[0];
+    assert!(
+        expression.morph_binds.iter().any(|b| b.index == jaw.index && (b.weight - 0.5).abs() < 1e-6),
+        "the jaw's morph at the expression's weight: {:?}",
+        expression.morph_binds
+    );
+    assert!(!expression.uv_binds.is_empty() && expression.is_binary, "the smile and the brow flip their atlases");
+
+    let file = run_export(&MockVrm1Exporter, &scene, &ExportCtx::new(&ExportOptions::default())).unwrap();
+    let back = run_import(
+        &MockVrm1Importer,
+        &ImportInput::new(&file.files[0].bytes),
+        &ImportCtx::new(&ImportOptions::default()),
+    )
+    .unwrap()
+    .scene;
+    assert!(back.avatar.unwrap().expressions.contains_key(&name), "the file carries omuzaki_smug");
+}

@@ -56,13 +56,20 @@ fn driven_morph(avatar: &ImportedAvatar) -> (ExprIx, Channel) {
         .expect("a channel drives the morph expression")
 }
 
-/// The bone behind each entry of the scene's joint palette, mesh after mesh, as the stage fills it.
+/// The bone behind each entry of the scene's joint palette, as the stage fills it: each distinct joint run once (the
+/// same joints with the same inverse binds), in the meshes' draw order.
 fn palette_bones(avatar: &ImportedAvatar) -> Vec<BoneId> {
     let mut order: Vec<_> = avatar.meshes.iter().collect();
     order.sort_by_key(|m| m.mesh.render_order);
-    order
-        .iter()
-        .flat_map(|m| &m.mesh.joint_bones)
+    let mut runs: Vec<(&[JointRef], &[Mat4])> = Vec::new();
+    for mesh in order {
+        let run = (mesh.mesh.joint_bones.as_slice(), mesh.inverse_bind.as_slice());
+        if !run.0.is_empty() && !runs.contains(&run) {
+            runs.push(run);
+        }
+    }
+    runs.iter()
+        .flat_map(|(joints, _)| *joints)
         .map(|joint| match joint {
             JointRef::Humanoid(bone) => avatar.skeleton.humanoid_bone(*bone).expect("a mapped bone"),
             JointRef::Named(name) => avatar.skeleton.find(name.as_str()).expect("a named bone"),
@@ -85,7 +92,7 @@ fn at_its_bind_pose_every_joint_of_the_imported_kit_is_the_identity() {
     stage.tick(&mut renderer, &input_at(&base)).expect("a frame");
     let scene = stage.scene();
     assert_eq!(scene.instances.len(), stage.avatar().meshes.len(), "one instance per mesh");
-    assert_eq!(scene.joints.len(), bones.len(), "one palette entry per joint of every mesh");
+    assert_eq!(scene.joints.len(), bones.len(), "one palette entry per joint of every distinct run");
     // The meshes are stored in their bind pose: each bone's model matrix at bind undoes its inverse bind exactly. The
     // spring bones are the exception: on the first step they settle out of the head's collider, as they would in any
     // VRM runtime.

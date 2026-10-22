@@ -1,5 +1,9 @@
 //! The avatar's part of the renderer's `Scene` each frame: one instance per mesh in draw order, its joint run (each
 //! bone's model-space matrix times the mesh's own inverse bind for that joint) and its morph weights.
+//!
+//! Meshes with the same joint run share it in the palette. A file's primitives usually share one skin (a `VRoid` face
+//! is about ten primitives on one skin of 150 or more joints), so one run per mesh would pass the scene's 2048 joint
+//! matrices on an ordinary model; one run per skin keeps the palette at the skeleton's size.
 
 use omuzaki_anim_api::{MAX_BONES, Pose};
 use omuzaki_avatar::buffers::MorphWeights;
@@ -25,7 +29,8 @@ struct Draw {
     material: MaterialId,
     casts_shadow: bool,
     order: i16,
-    joints: Box<[Joint]>,
+    /// Its run in the palette, `None` for a mesh without joints.
+    skin: Option<JointRange>,
     morph: Option<MorphRange>,
 }
 
@@ -33,8 +38,8 @@ struct Draw {
 #[derive(Debug)]
 pub(crate) struct AvatarPlan {
     draws: Vec<Draw>,
-    /// Joint palette entries per frame: the sum of the draws' runs.
-    joints: usize,
+    /// The palette per frame: every distinct run, one after the other, as the draws' ranges point into it.
+    joints: Box<[Joint]>,
     /// Morph weights per frame.
     weights: usize,
 }
@@ -55,12 +60,18 @@ impl AvatarPlan {
     /// # Errors
     /// [`StageError::Avatar`] for a joint naming a bone the skeleton lacks or a joint run without its inverse binds
     /// (which [`ImportedAvatar::validate`] refuses), or an upload of another avatar.
-    pub(crate) fn new(avatar: &ImportedAvatar, upload: &AvatarUpload, weights: &MorphWeights) -> Result<Self, StageError> {
+    pub(crate) fn new(
+        avatar: &ImportedAvatar,
+        upload: &AvatarUpload,
+        weights: &MorphWeights,
+    ) -> Result<Self, StageError> {
         let uploaded = upload.meshes();
         if uploaded.len() != avatar.meshes.len() || weights.meshes() != avatar.meshes.len() {
             return Err(StageError::Avatar { reason: "the upload or the weights were made for another avatar".into() });
         }
         let mut keyed = Vec::with_capacity(avatar.meshes.len());
+        let mut palette: Vec<Joint> = Vec::new();
+        let mut runs: Vec<JointRange> = Vec::new();
         for (index, (avatar_mesh, up)) in avatar.meshes.iter().zip(uploaded).enumerate() {
             let mesh = &avatar_mesh.mesh;
             if avatar_mesh.inverse_bind.len() != mesh.joint_bones.len() {
@@ -80,11 +91,15 @@ impl AvatarPlan {
                 .map(|(joint, inverse_bind)| {
                     bone_of(avatar, joint).map(|bone| Joint { bone, inverse_bind: *inverse_bind }).ok_or_else(|| {
                         StageError::Avatar {
-                            reason: format!("mesh {index} ('{}') is skinned to {joint:?}, which the skeleton lacks", mesh.name),
+                            reason: format!(
+                                "mesh {index} ('{}') is skinned to {joint:?}, which the skeleton lacks",
+                                mesh.name
+                            ),
                         }
                     })
                 })
-                .collect::<Result<Box<[Joint]>, _>>()?;
+                .collect::<Result<Vec<Joint>, _>>()?;
+            let skin = (!joints.is_empty()).then(|| share(&mut palette, &mut runs, &joints));
             let morph = weights
                 .range(index)
                 .filter(|range| !range.is_empty())
@@ -93,19 +108,22 @@ impl AvatarPlan {
                 i16::try_from(mesh.render_order.clamp(i32::from(i16::MIN), i32::from(i16::MAX))).unwrap_or_default();
             keyed.push((
                 mesh.render_order,
-                Draw { mesh: up.mesh, material: up.material, casts_shadow: mesh.casts_shadow, order, joints, morph },
+                Draw { mesh: up.mesh, material: up.material, casts_shadow: mesh.casts_shadow, order, skin, morph },
             ));
         }
         keyed.sort_by_key(|(render_order, _)| *render_order);
-        let joints = keyed.iter().map(|(_, draw)| draw.joints.len()).sum();
-        Ok(Self { draws: keyed.into_iter().map(|(_, draw)| draw).collect(), joints, weights: weights.as_slice().len() })
+        Ok(Self {
+            draws: keyed.into_iter().map(|(_, draw)| draw).collect(),
+            joints: palette.into_boxed_slice(),
+            weights: weights.as_slice().len(),
+        })
     }
 
     /// Grows the scene's buffers to hold this plan's frame, so [`fill`](Self::fill) never allocates. Cold.
     pub(crate) fn reserve(&self, scene: &mut Scene) {
         // One more for the ground disc the stage adds after the avatar.
         scene.instances.reserve((self.draws.len() + 1).saturating_sub(scene.instances.len()));
-        scene.joints.reserve(self.joints.saturating_sub(scene.joints.len()));
+        scene.joints.reserve(self.joints.len().saturating_sub(scene.joints.len()));
         scene.morph_weights.reserve(self.weights.saturating_sub(scene.morph_weights.len()));
     }
 
@@ -117,20 +135,36 @@ impl AvatarPlan {
         scene.joints.clear();
         scene.morph_weights.clear();
         scene.morph_weights.extend_from_slice(weights.as_slice());
+        scene.joints.extend(self.joints.iter().map(|j| world.local[j.bone].to_mat4() * j.inverse_bind));
         for draw in &self.draws {
             let mut instance = Instance::new(draw.mesh, draw.material, root);
             instance.casts_shadow = draw.casts_shadow;
             instance.order = draw.order;
             instance.morph = draw.morph;
-            if !draw.joints.is_empty() {
-                let start = scene.joints.len();
-                scene.joints.extend(draw.joints.iter().map(|j| world.local[j.bone].to_mat4() * j.inverse_bind));
-                instance.skin = Some(JointRange {
-                    start: u32::try_from(start).unwrap_or(u32::MAX),
-                    len: u32::try_from(draw.joints.len()).unwrap_or(u32::MAX),
-                });
-            }
+            instance.skin = draw.skin;
             scene.instances.push(instance);
         }
     }
+}
+
+/// The range of `joints` in `palette`: an earlier run with the same bones and inverse binds if there is one, else
+/// `joints` added at the end. `runs` holds the ranges added so far.
+fn share(palette: &mut Vec<Joint>, runs: &mut Vec<JointRange>, joints: &[Joint]) -> JointRange {
+    let same = |run: &&JointRange| {
+        let start = run.start as usize;
+        palette.get(start..start + run.len as usize).is_some_and(|earlier| {
+            earlier.len() == joints.len()
+                && earlier.iter().zip(joints).all(|(a, b)| a.bone == b.bone && a.inverse_bind == b.inverse_bind)
+        })
+    };
+    if let Some(run) = runs.iter().find(same) {
+        return *run;
+    }
+    let run = JointRange {
+        start: u32::try_from(palette.len()).unwrap_or(u32::MAX),
+        len: u32::try_from(joints.len()).unwrap_or(u32::MAX),
+    };
+    palette.extend_from_slice(joints);
+    runs.push(run);
+    run
 }
