@@ -256,6 +256,8 @@ impl Rig {
                     .insert::<dyn omuzaki_audio_api::engine::AudioEngine>(Arc::new(
                         omuzaki_audio_mock::MockEngine::new(),
                     ))
+                    // No OBS connection: the `obs.*` examples dry-run and say they would need one.
+                    .insert::<omuzaki_obs::service::ObsService>(Arc::new(omuzaki_obs::service::ObsService::new()))
                     .insert::<dyn PerformHost>(Arc::new(IdleHost))
                     .insert::<dyn InputHost>(Arc::new(IdleInput))
                     .build(),

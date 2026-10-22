@@ -4112,6 +4112,7 @@ dependencies = [
  "omuzaki-io-vrm",
  "omuzaki-link-build",
  "omuzaki-mcp",
+ "omuzaki-obs",
  "omuzaki-ops",
  "omuzaki-ops-api",
  "omuzaki-render-api",
@@ -4717,10 +4718,17 @@ name = "omuzaki-obs"
 version = "0.0.0"
 dependencies = [
  "base64",
+ "omuzaki-core",
+ "omuzaki-doc-mock",
+ "omuzaki-ops-api",
+ "omuzaki-secrets-api",
+ "omuzaki-secrets-mock",
+ "schemars",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.21",
+ "tungstenite",
 ]
 
 [[package]]

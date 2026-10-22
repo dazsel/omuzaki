@@ -1,6 +1,6 @@
 [package]
 name = "omuzaki-obs"
-description = "The OBS Studio remote-control protocol (obs-websocket v5) as data: messages, the auth answer and limits (BR-19). No I/O; clean-room from the public protocol document."
+description = "OBS Studio remote control (obs-websocket v5, BR-19): the protocol as data, a client, the connection service and the obs.* ops. Clean-room from the public protocol document."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -14,12 +14,24 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
+schemars.workspace = true
+# The client's WebSocket: sync, one connection thread, no async runtime (ws:// to OBS on this machine or the LAN).
+tungstenite = "0.30"
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+omuzaki-secrets-api = { path = "../omuzaki-secrets-api" }
+
+[dev-dependencies]
+omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+omuzaki-secrets-mock = { path = "../omuzaki-secrets-mock" }
 
 [lints]
 workspace = true
 
 [package.metadata.omuzaki]
 kind = "Implementation"
-summary = "the OBS Studio remote-control protocol (obs-websocket v5) as data (BR-19): the `Frame` and `Message`, the handshake, the supported requests with their responses, `ObsEvent`, the `auth_response` answer, `EventSubscription` and `CloseCode`; clean-room from the public protocol document, no I/O, native only"
-# Native only: the later client task opens a WebSocket to a local app
+summary = "OBS Studio remote control (obs-websocket v5, BR-19): the protocol as data (`Frame`, `Message`, the handshake, the supported requests and responses, `ObsEvent`, `auth_response`, `EventSubscription`, `CloseCode`), `ObsClient` (one connection thread, requests matched by id, events to subscribers), `ObsService` and the ops `obs.connect`, `obs.disconnect`, `obs.status`, `obs.scenes`, `obs.set_scene`, `obs.stream`, `obs.record`; clean-room from the public protocol document, native only"
+# Native only: the client opens a WebSocket to a local app
 wasm = false
+# The obs.* ops register themselves (ADR 0015, `cargo xtask lint-registers`).
+registers = true

@@ -1,7 +1,5 @@
-//! The OBS Studio remote-control protocol (obs-websocket v5) as plain data: messages, the authentication answer and
-//! the protocol's limits, for the BR-19 broadcast bridge.
-//!
-//! Nothing here does I/O. The fake server, the client, the ops and the UI are later tasks built on these types.
+//! OBS Studio remote control (obs-websocket v5) for the BR-19 broadcast bridge: the protocol as plain data, a client
+//! that speaks it, the app's connection service and the `obs.*` ops.
 //!
 //! # Clean-room
 //!
@@ -24,8 +22,16 @@
 //! | [`protocol`] | the [`Frame`](protocol::Frame) and [`Message`](protocol::Message), every handshake message, the supported requests with their responses, and [`ObsEvent`](protocol::ObsEvent) |
 //! | [`auth`] | the answer to the server's authentication challenge |
 //! | [`limits`] | the default port, the RPC version, [`EventSubscription`](limits::EventSubscription) and [`CloseCode`](limits::CloseCode) |
+//! | [`client`] | [`ObsClient`](client::ObsClient): one connection, requests matched by id, events to subscribers |
+//! | [`service`] | [`ObsService`](service::ObsService): the app's one connection, shared by the ops, the UI and automations |
+//! | [`ops`] | `obs.connect`, `obs.disconnect`, `obs.status`, `obs.scenes`, `obs.set_scene`, `obs.stream`, `obs.record` |
 #![deny(missing_docs)]
 
 pub mod auth;
+pub mod client;
 pub mod limits;
+pub mod ops;
 pub mod protocol;
+pub mod service;
+
+omuzaki_core::define_link!();
