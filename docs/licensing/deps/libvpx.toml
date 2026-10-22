@@ -1,0 +1,7 @@
+section = "rust"
+item = "libvpx"
+kind = "native"
+used_for = "VP9 encode and decode for the WebM take with alpha (`omuzaki-stream` `vp9`), loaded at run time from the system's own library or the file `OMUZAKI_LIBVPX` names; nothing links it at build time and nothing ships it yet"
+status = "conditions"
+condition = "BSD-3-Clause (\"Copyright (c) 2010, The WebM Project authors\") plus the WebM Project's royalty-free patent grant (PATENTS file); keep both notices when a build bundles the library. Shown on 1.14.0 (Ubuntu libvpx9): `vpx_codec_version_str` reports v1.14.0, encoder ABI 34, decoder ABI 12"
+audit = "B4"

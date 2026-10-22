@@ -204,7 +204,8 @@ fn the_record_ops_start_report_and_stop_a_take_in_the_configured_folder() {
     assert_eq!(call("record.status", json!({}), &services)["recording"], false);
     let started = call("record.start", json!({ "name": "op take" }), &services);
     assert_eq!(started["started"], true);
-    assert_eq!(started["format"], "png_sequence", "auto resolves to what this build writes");
+    let best = if omuzaki_stream::vp9::available().is_ok() { "webm_vp9_alpha" } else { "png_sequence" };
+    assert_eq!(started["format"], best, "auto resolves to the best format this machine writes");
     let stem = started["stem"].as_str().unwrap().to_owned();
     assert!(stem.ends_with("_op_take"), "{stem}");
     assert_eq!(call("record.status", json!({}), &services)["recording"], true);

@@ -16,6 +16,8 @@ bytes.workspace = true
 directories.workspace = true
 hound.workspace = true
 image.workspace = true
+# Loads libvpx (BSD-3-Clause) at run time for the `WebM` VP9 take with alpha (`src/vp9`).
+libloading = "0.9"
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -53,9 +53,11 @@ pub struct Stop {}
 #[schemars(extend("examples" = [{}]))]
 pub struct Status {}
 
-/// The format a request asks for, with `auto` resolved to what this build writes best.
+/// The format a request asks for, with `auto` resolved to what this machine writes best: `WebM` VP9 with alpha when
+/// libvpx loads, else the PNG sequence.
 fn resolve_format(asked: RecordFormat) -> RecordFormat {
     match asked {
+        RecordFormat::Auto if crate::vp9::available().is_ok() => RecordFormat::WebmVp9Alpha,
         RecordFormat::Auto => RecordFormat::PngSequence,
         other => other,
     }
@@ -91,10 +93,17 @@ impl Op for Start {
         let stem = unique_stem(&dir, &stem(std::time::SystemTime::now(), name.as_deref()));
         if ctx.dry_run {
             let program = service.program();
+            // A dry run reports whether the format can be written here, rather than failing on this machine.
+            let available = match format {
+                RecordFormat::WebmVp9Alpha => crate::vp9::available(),
+                _ => Ok(()),
+            };
             return Ok(Plan::answer(json!({
                 "started": false,
                 "stem": stem,
                 "format": format,
+                "available": available.is_ok(),
+                "hint": available.err().map(|e| e.to_string()),
                 "dir": dir,
                 "size": [program.size.x, program.size.y],
                 "fps": [program.fps.0, program.fps.1],

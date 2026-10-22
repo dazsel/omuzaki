@@ -34,10 +34,13 @@ use serde::{Deserialize, Serialize};
 
 use super::settings::RecordFormat;
 use super::take::{Gap, GapCause, StopCause, TakeReport, TrackReport};
+use crate::i420;
 use crate::service::{OutputId, StreamService};
 use crate::sinks::png::PngSink;
 use crate::sinks::wav::WavSink;
+use crate::sinks::webm::{WebmSink, WebmTrack};
 use crate::timeline::AudioSource;
+use crate::vp9::{self, EncoderSettings, I420, Vp9Encoder};
 
 /// Frames a recording may hold in its queue before it repeats one (D2: 0.53 s at 30 fps).
 pub const QUEUE_FRAMES: usize = 16;
@@ -200,6 +203,189 @@ impl VideoWriter for PngWriter {
         }
         let filled = self.sink.fill_gaps(frames)?;
         Ok(VideoDone { path: self.sink.dir().to_owned(), encoder: "png".into(), bytes, filled })
+    }
+}
+
+/// The colour's constant-quality level (0 best, 63 worst): visually clean for a character on a transparent stage.
+pub const VP9_COLOUR_CQ: u32 = 14;
+/// The alpha's level: edges matter more than colour, so it is coded finer (mean edge error under one level).
+pub const VP9_ALPHA_CQ: u32 = 6;
+/// libvpx's real-time speed (5 slowest to 9 fastest). Measured at 1080p30 on a 4-core VM: 2.5 ms to convert and
+/// 12 ms to encode both pictures, against a 33 ms frame.
+pub const VP9_CPU_USED: i32 = 6;
+/// Threads converting each frame to the two pictures.
+const CONVERT_THREADS: usize = 4;
+/// Seconds between keyframes, which is how much a crash can lose and how finely a take can be cut.
+pub const VP9_KEY_SECONDS: u32 = 2;
+
+/// What the encoder thread hands back when its queue closes.
+struct WebmDone {
+    sink: WebmSink,
+    encoded: u64,
+}
+
+/// `WebM` VP9 with alpha: a pool of frame buffers and one encoder thread running the colour and alpha encoders.
+struct WebmWriter {
+    queue: Option<SyncSender<(u64, Image)>>,
+    free: Receiver<Image>,
+    worker: Option<JoinHandle<Result<WebmDone, StreamError>>>,
+    queued: Arc<AtomicU64>,
+    error: Arc<Mutex<Option<StreamError>>>,
+    path: PathBuf,
+    encoder: String,
+}
+
+impl WebmWriter {
+    fn start(path: &std::path::Path, cfg: &OutputConfig) -> Result<Self, StreamError> {
+        let settings = |cq_level, studio_range| EncoderSettings {
+            width: cfg.size.x,
+            height: cfg.size.y,
+            fps: cfg.fps,
+            cq_level,
+            cpu_used: VP9_CPU_USED,
+            threads: vp9::default_threads(),
+            studio_range,
+            realtime: true,
+        };
+        // Both encoders start here, so a refusal fails `record.start` instead of the first frame.
+        let colour = Vp9Encoder::new(settings(VP9_COLOUR_CQ, true))?;
+        let alpha = Vp9Encoder::new(settings(VP9_ALPHA_CQ, false))?;
+        let sink =
+            WebmSink::create(path, WebmTrack { width: cfg.size.x, height: cfg.size.y, fps: cfg.fps, alpha: true })?;
+        let (queue_tx, queue_rx) = sync_channel::<(u64, Image)>(QUEUE_FRAMES);
+        let (free_tx, free_rx) = sync_channel::<Image>(QUEUE_FRAMES);
+        for _ in 0..QUEUE_FRAMES {
+            let empty =
+                Image { size: UVec2::ZERO, alpha: omuzaki_render_api::AlphaEncoding::Straight, rgba8: Vec::new() };
+            free_tx.try_send(empty).map_err(|_| StreamError::Io("the frame buffers could not be made".into()))?;
+        }
+        let queued = Arc::new(AtomicU64::new(0));
+        let error = Arc::new(Mutex::new(None));
+        let key_every = u64::from(VP9_KEY_SECONDS) * u64::from(cfg.fps.0) / u64::from(cfg.fps.1.max(1));
+        let job = WebmJob { colour, alpha, sink, key_every: key_every.max(1) };
+        let (thread_queued, thread_error) = (Arc::clone(&queued), Arc::clone(&error));
+        let worker = std::thread::Builder::new()
+            .name("omuzaki-record-vp9".into())
+            .spawn(move || job.run(&queue_rx, &free_tx, &thread_queued, &thread_error))
+            .map_err(|e| StreamError::Io(format!("the VP9 encoder thread could not start: {e}")))?;
+        Ok(Self {
+            queue: Some(queue_tx),
+            free: free_rx,
+            worker: Some(worker),
+            queued,
+            error,
+            path: path.to_owned(),
+            encoder: format!("libvpx-vp9 {}", vp9::version().unwrap_or_default()),
+        })
+    }
+}
+
+/// The encoder thread's state.
+struct WebmJob {
+    colour: Vp9Encoder,
+    alpha: Vp9Encoder,
+    sink: WebmSink,
+    key_every: u64,
+}
+
+impl WebmJob {
+    fn run(
+        mut self,
+        rx: &Receiver<(u64, Image)>,
+        free: &SyncSender<Image>,
+        queued: &AtomicU64,
+        error: &Mutex<Option<StreamError>>,
+    ) -> Result<WebmDone, StreamError> {
+        match self.encode_all(rx, free, queued) {
+            Ok(encoded) => Ok(WebmDone { sink: self.sink, encoded }),
+            Err(e) => {
+                lock(error).get_or_insert(e.clone());
+                Err(e)
+            }
+        }
+    }
+
+    fn encode_all(
+        &mut self,
+        rx: &Receiver<(u64, Image)>,
+        free: &SyncSender<Image>,
+        queued: &AtomicU64,
+    ) -> Result<u64, StreamError> {
+        let (mut colour, mut alpha) = (I420::default(), I420::default());
+        let (mut colour_out, mut alpha_out) = (Vec::new(), Vec::new());
+        let mut encoded = 0u64;
+        let mut since_key = 0u64;
+        while let Ok((index, image)) = rx.recv() {
+            let converted = i420::rgba_to_i420_threads(
+                &image.rgba8,
+                image.size.x,
+                image.size.y,
+                &mut colour,
+                &mut alpha,
+                CONVERT_THREADS,
+            );
+            queued.fetch_sub(1, Ordering::Relaxed);
+            // The pool's channel has room for every buffer, so returning one never fails while the writer lives.
+            let _ = free.try_send(image);
+            if !converted {
+                return Err(StreamError::Config("a frame's pixels do not match its size".into()));
+            }
+            let key = since_key == 0 || since_key >= self.key_every || self.sink.needs_key(index);
+            let pts = i64::try_from(index).unwrap_or(i64::MAX);
+            colour_out.clear();
+            alpha_out.clear();
+            // The two pictures are independent: encode them side by side.
+            let (colour_encoder, alpha_encoder) = (&mut self.colour, &mut self.alpha);
+            let alpha_result = std::thread::scope(|scope| {
+                let alpha_job = scope.spawn(|| alpha_encoder.encode(&alpha, pts, key, &mut alpha_out));
+                colour_encoder.encode(&colour, pts, key, &mut colour_out)?;
+                alpha_job.join().map_err(|_| StreamError::Encode("the alpha encoder panicked".into()))
+            })?;
+            alpha_result?;
+            // No look-ahead and no frame dropping: one packet each per frame in.
+            let (Some(c), Some(a)) = (colour_out.first(), alpha_out.first()) else {
+                return Err(StreamError::Encode(format!("libvpx returned no packet for frame {index}")));
+            };
+            self.sink.write_frame(index, c.key, &c.data, Some(&a.data))?;
+            since_key = if c.key { 1 } else { since_key + 1 };
+            encoded += 1;
+        }
+        Ok(encoded)
+    }
+}
+
+impl VideoWriter for WebmWriter {
+    fn submit(&mut self, index: u64, image: &Image) -> Result<bool, StreamError> {
+        if let Some(e) = lock(&self.error).clone() {
+            return Err(e);
+        }
+        let Ok(mut buffer) = self.free.try_recv() else { return Ok(false) };
+        buffer.size = image.size;
+        buffer.alpha = image.alpha;
+        buffer.rgba8.clear();
+        buffer.rgba8.extend_from_slice(&image.rgba8);
+        let queue = self.queue.as_ref().ok_or(StreamError::Stopped)?;
+        self.queued.fetch_add(1, Ordering::Relaxed);
+        queue.try_send((index, buffer)).map_err(|_| StreamError::Encode("the VP9 encoder stopped".into()))?;
+        Ok(true)
+    }
+
+    #[allow(clippy::cast_precision_loss)] // At most `QUEUE_FRAMES`.
+    fn queue_fill(&self) -> f32 {
+        self.queued.load(Ordering::Relaxed) as f32 / QUEUE_FRAMES as f32
+    }
+
+    fn finish(mut self: Box<Self>, frames: u64) -> Result<VideoDone, StreamError> {
+        self.queue = None;
+        let worker = self.worker.take().ok_or(StreamError::Stopped)?;
+        let done = worker.join().map_err(|_| StreamError::Encode("the VP9 encoder thread panicked".into()))??;
+        let bytes = done.sink.finish(frames)?;
+        Ok(VideoDone {
+            path: self.path.clone(),
+            encoder: self.encoder.clone(),
+            bytes,
+            filled: frames.saturating_sub(done.encoded),
+        })
     }
 }
 
@@ -370,15 +556,12 @@ impl Recorder {
         }
     }
 
-    fn open_video(&self) -> Result<Box<dyn VideoWriter>, StreamError> {
+    fn open_video(&self, cfg: &OutputConfig) -> Result<Box<dyn VideoWriter>, StreamError> {
         match self.format {
             RecordFormat::PngSequence => {
                 Ok(Box::new(PngWriter::start(PngSink::create(&self.video_path(), &self.stem)?)?))
             }
-            RecordFormat::WebmVp9Alpha => Err(StreamError::Unavailable {
-                what: "WebM VP9 with alpha".into(),
-                hint: "record as png_sequence for now".into(),
-            }),
+            RecordFormat::WebmVp9Alpha => Ok(Box::new(WebmWriter::start(&self.video_path(), cfg)?)),
             _ => Err(StreamError::Config(format!("{:?} is not a format a take can be written in", self.format))),
         }
     }
@@ -435,7 +618,7 @@ impl Output for Recorder {
         }
         std::fs::create_dir_all(&self.dir)
             .map_err(|e| StreamError::Io(format!("could not create {}: {e}", self.dir.display())))?;
-        let video = self.open_video()?;
+        let video = self.open_video(cfg)?;
         let mut states = Vec::with_capacity(self.tracks.len());
         for track in self.tracks.drain(..) {
             let sink =
