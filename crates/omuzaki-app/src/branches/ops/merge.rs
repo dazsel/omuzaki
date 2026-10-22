@@ -447,9 +447,9 @@ fn validate(
         match def.build_order(&requires_of) {
             Ok(_) => {}
             Err(TreeError::MissingParent { part: child, parent }) => {
-                let note = format!("part {child}'s parent {parent} isn't in the result");
-                invalid.entry(part_unit(&character, child.as_str())).or_default().push(note.clone());
-                invalid.entry(part_unit(&character, parent.as_str())).or_default().push(note);
+                let why = format!("part {child}'s parent {parent} isn't in the result");
+                invalid.entry(part_unit(&character, child.as_str())).or_default().push(why.clone());
+                invalid.entry(part_unit(&character, parent.as_str())).or_default().push(why);
             }
             Err(TreeError::Cycle(cycle)) => {
                 let names: Vec<&str> = cycle.iter().map(omuzaki_char_api::PartId::as_str).collect();

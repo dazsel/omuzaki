@@ -11,6 +11,7 @@
 //! checkpoint, ask for review on a branch it works on, and rename or delete only a branch made for its session.
 //! Switching the folder and deciding a review are a person's.
 
+pub(crate) mod ids;
 mod lane;
 pub mod merges;
 pub mod ops;
@@ -787,7 +788,10 @@ impl Branches for HostBranches {
                 outside.files.join(", ")
             )));
         }
-        old.executor.committed().map_err(|e| BranchError::Busy(e.message))?;
+        // An agent's open transaction is left out of the switch point: refuse now if that can't be done.
+        if !export.open.is_empty() {
+            old.executor.committed().map_err(|e| BranchError::Busy(e.message))?;
+        }
         // 2. The target's lane.
         let target_lane = self.lane_locked(&mut state, to)?;
         let fail = |step: &'static str| (self.failpoint)(step).map_err(BranchError::Io);

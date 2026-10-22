@@ -28,6 +28,7 @@ use omuzaki_store_api::Store;
 use tokio::runtime::{Handle, Runtime};
 
 use crate::AppError;
+use crate::branches::ids::IdMark;
 use crate::branches::routed::FolderRunner;
 use crate::branches::{Failpoint, HostBranches, IDLE_CLOSE, LaneStates, Shared};
 use crate::recover::RecoveryReport;
@@ -205,8 +206,10 @@ pub struct AppCore {
     branches: Arc<HostBranches>,
     /// The person's runner, session registry and job manager, routed to the lane each call is about.
     routed: Arc<FolderRunner>,
-    /// Closes idle side lanes; stopped at close.
+    /// Closes idle side lanes and keeps the session id mark ahead; stopped at close.
     reaper: Mutex<Option<Reaper>>,
+    /// The session id mark, written exactly at a clean close.
+    ids: Arc<IdMark>,
     /// Always `Some` until the drop, which shuts it down without waiting: a stdio server leaves a thread blocked on
     /// standard input, and a plain drop of the runtime would wait for it forever.
     runtime: Option<Runtime>,
@@ -284,6 +287,8 @@ impl AppCore {
         if let (Some(data), None) = (&options.data_dir, options.services.get::<dyn Store>()) {
             services = services.insert::<dyn Store>(Arc::new(LazyDiskStore::new(data.join(ASSET_STORE))));
         }
+        let session_ids = Arc::new(AtomicU64::new(1));
+        let ids = Arc::new(IdMark::open(dir, Arc::clone(&session_ids)));
         let shared = Shared {
             dir: dir.to_path_buf(),
             project_dir,
@@ -297,7 +302,7 @@ impl AppCore {
             app_version: options.app_version.clone(),
             services: services.build(),
             journal_fs: options.journal_fs.0.clone(),
-            session_ids: Arc::new(AtomicU64::new(1)),
+            session_ids,
             approval_ids: Arc::new(AtomicU64::new(0)),
             lane_states: LaneStates::default(),
             wall: Arc::new(SystemWall),
@@ -323,8 +328,10 @@ impl AppCore {
         if let Some(settings) = &remember {
             record_opened(settings.as_ref(), dir, &root);
         }
-        let reaper = Reaper::start(&branches);
+        ids.keep_ahead();
+        let reaper = Reaper::start(&branches, Arc::clone(&ids));
         Ok(Self {
+            ids,
             routed: Arc::new(FolderRunner::new(branches.clone())),
             branches,
             reaper: Mutex::new(Some(reaper)),
@@ -583,19 +590,21 @@ impl AppCore {
         let Some(folder_lock) = lock(&self.lock).take() else { return Ok(()) };
         self.stop_serving();
         let closed = self.branches.close_all();
+        self.ids.close();
         drop(folder_lock);
         closed
     }
 }
 
-/// Closes idle side lanes every [`REAP_EVERY`] (design 5.2), until stopped or the lanes are gone.
+/// Closes idle side lanes every [`REAP_EVERY`] (design 5.2) and keeps the session id mark ahead, until stopped or the
+/// lanes are gone.
 struct Reaper {
     stop: Sender<()>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl Reaper {
-    fn start(branches: &Arc<HostBranches>) -> Self {
+    fn start(branches: &Arc<HostBranches>, ids: Arc<IdMark>) -> Self {
         let (stop, stopped) = channel();
         let lanes = Arc::downgrade(branches);
         let thread = std::thread::Builder::new()
@@ -604,6 +613,7 @@ impl Reaper {
                 while let Err(RecvTimeoutError::Timeout) = stopped.recv_timeout(REAP_EVERY) {
                     let Some(branches) = lanes.upgrade() else { return };
                     branches.close_idle(IDLE_CLOSE);
+                    ids.keep_ahead();
                 }
             })
             .inspect_err(|error| tracing::warn!(%error, "idle branches stay open until the project closes"))
