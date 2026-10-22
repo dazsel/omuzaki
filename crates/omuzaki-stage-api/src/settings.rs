@@ -20,6 +20,9 @@ pub enum Backdrop {
     },
     /// Nothing: alpha, for OBS and Spout (BR-01).
     Transparent {},
+    /// The lighting's environment (phase 2, with LK-08): the sky behind the cast, turned and as bright as it lights
+    /// them. Without an environment in the lighting it shows the lighting's `background` colour, and the check says so.
+    Environment {},
 }
 
 impl Default for Backdrop {
@@ -202,6 +205,10 @@ mod tests {
         assert!(matches!(b, Backdrop::Colour { .. }));
         assert_eq!(serde_json::to_value(Backdrop::Transparent {}).unwrap(), json!({"kind": "transparent"}));
         assert!(serde_json::from_value::<Backdrop>(json!({"kind": "gradient"})).is_err(), "phase 2");
+        assert_eq!(
+            serde_json::from_value::<Backdrop>(json!({"kind": "environment"})).unwrap(),
+            Backdrop::Environment {}
+        );
         assert!(serde_json::from_value::<Backdrop>(json!({"kind": "lighting", "colour": "#fff"})).is_err());
     }
 

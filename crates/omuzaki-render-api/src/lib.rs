@@ -61,5 +61,5 @@ pub use resource::{
 };
 pub use scene::{
     Background, Bloom, Camera, ColourGrade, DepthOfField, FilmGrain, Fog, FrameInfo, Instance, JointRange, Light,
-    MorphRange, Post, Projection, Scene, Tonemap,
+    MorphRange, Post, Projection, SKY_LENS_DEG, Scene, Tonemap,
 };

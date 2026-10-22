@@ -139,10 +139,15 @@ fn spiral_table() -> [[f32; 4]; Detail::MOST_TAPS] {
     table
 }
 
-/// Whether the scene's alpha is 1 everywhere, so that the circle of confusion can live in the colour's alpha: a solid,
-/// fully opaque background. Opaque and masked surfaces write alpha 1, and a blended one over alpha 1 leaves 1.
+/// Whether the scene's alpha is 1 everywhere, so that the circle of confusion can live in the colour's alpha: a fully
+/// opaque solid background, or the environment. Opaque and masked surfaces write alpha 1, and a blended one over alpha
+/// 1 leaves 1.
 fn opaque(cx: &PassCx<'_>) -> bool {
-    matches!(cx.frame.scene.background, Background::Solid { colour } if colour.alpha() >= 1.0)
+    match cx.frame.scene.background {
+        Background::Solid { colour } => colour.alpha() >= 1.0,
+        Background::Environment => true,
+        Background::Transparent => false,
+    }
 }
 
 /// Half of `size`, rounded up (so the last odd row or column still has a pixel) and never below one.

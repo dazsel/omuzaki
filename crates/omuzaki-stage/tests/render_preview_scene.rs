@@ -248,3 +248,98 @@ fn on_the_gpu_the_default_scene_and_every_rig() {
     let two = sheet(cells, 2);
     keep("preview-light-rigs-sheet", &two.hash);
 }
+
+/// On lavapipe (#931, LK-08): soft-sd and tall in the studio rig, then with fog, then with a sky environment as the
+/// backdrop, then with a spot as well, full and bust. Fog and the spot are in subject units, so both statures take the
+/// same share of fog and the same light. Set `OMUZAKI_EVIDENCE_DIR` to keep the sheet.
+#[cfg(feature = "wgpu")]
+#[test]
+#[allow(clippy::disallowed_methods, reason = "the evidence image is written beside the test, not by an op")]
+fn on_the_gpu_fog_a_sky_environment_and_a_spot_on_two_statures() {
+    use omuzaki_char::ops::character::create::CharacterCreate;
+    use omuzaki_render::{AdapterPreference, HeadlessOptions, WgpuRenderer};
+    use omuzaki_stage::ops::render::contact_sheet::{ContactSheet, ContactSheetResult};
+    use omuzaki_stage::ops::scene::create::CreateScene;
+    use omuzaki_stage::ops::scene::light::{AddLight, SetLightRig, SetLighting};
+    use omuzaki_stage::ops::scene::look::SetBackdrop;
+    use omuzaki_store_api::Store;
+
+    const SIZE: [u32; 2] = [192, 256];
+    const LOOKS: [&str; 4] = ["studio", "fog", "sky", "spot"];
+    let mut doc = MemDoc::from_value(json!({}));
+    for template in ["soft-sd", "tall"] {
+        let id = template.replace('-', "_");
+        apply::<CharacterCreate>(&mut doc, json!({ "id": id, "name": template, "template": template, "seed": 7 }));
+    }
+    // Each look adds one thing to the one before it.
+    let fog = json!({ "fog": { "colour": "#2a2238", "near": 0.8, "far": 5.0 } });
+    let sky = json!({ "environment": { "kind": "sky", "intensity": 0.35 } });
+    let spot = json!({ "kind": "spot", "role": "accent", "position": [-1.0, 1.2, 0.3], "target": [0.0, 0.8, 0.0],
+                       "cone": 25.0, "penumbra": 0.4, "intensity": 1.2, "colour": "#ffc890" });
+    for (i, look) in LOOKS.iter().enumerate() {
+        apply::<CreateScene>(&mut doc, json!({ "id": look, "cast": [] }));
+        apply::<SetLightRig>(&mut doc, json!({ "scene": look, "rig": "viewer-studio" }));
+        if i >= 1 {
+            let mut args = fog.clone();
+            args["scene"] = json!(look);
+            apply::<SetLighting>(&mut doc, args);
+        }
+        if i >= 2 {
+            let mut args = sky.clone();
+            args["scene"] = json!(look);
+            apply::<SetLighting>(&mut doc, args);
+            apply::<SetBackdrop>(&mut doc, json!({ "scene": look, "kind": "environment" }));
+        }
+        if i >= 3 {
+            let mut args = spot.clone();
+            args["scene"] = json!(look);
+            apply::<AddLight>(&mut doc, args);
+        }
+    }
+    let renderer =
+        WgpuRenderer::headless(&HeadlessOptions { adapter: AdapterPreference::Software }).expect("lavapipe opens");
+    let harness = Harness::on(TestDoc(doc), Box::new(renderer));
+    let image = |hash: &str| {
+        let png = harness.store.get(&hash.parse().unwrap()).unwrap();
+        image::load_from_memory(&png).unwrap().to_rgba8()
+    };
+
+    let mut cells = Vec::new();
+    for id in ["soft_sd", "tall"] {
+        for framing in ["full", "bust"] {
+            let shots: Vec<_> = LOOKS
+                .iter()
+                .map(|look| {
+                    run(
+                        &harness,
+                        json!({ "character": id, "scene": look, "framing": framing, "size": SIZE, "quality": "offline" }),
+                    )
+                    .unwrap_or_else(|e| panic!("{id} {framing} in {look}: {e:?}"))
+                })
+                .collect();
+            let [studio, fogged, sky, spot] = [0, 1, 2, 3].map(|i| image(&shots[i].hash));
+            let differ = |a: &image::RgbaImage, b: &image::RgbaImage| {
+                a.pixels().zip(b.pixels()).filter(|(p, q)| p.0.iter().zip(q.0).any(|(x, y)| x.abs_diff(y) > 6)).count()
+            };
+            let all = (SIZE[0] * SIZE[1]) as usize;
+            let (by_fog, by_sky, by_spot) = (differ(&studio, &fogged), differ(&fogged, &sky), differ(&sky, &spot));
+            println!("{id} {framing}: fog changes {by_fog}, the sky {by_sky}, the spot {by_spot} of {all} pixels");
+            // Fog starts 0.8 subject heights from the camera, which a bust of a tall figure is nearer than.
+            if framing == "full" {
+                assert!(by_fog > all / 20, "{id} {framing}: the fog shows");
+            }
+            assert!(by_sky > all / 4, "{id} {framing}: the sky shows behind the character");
+            assert!(by_spot > all / 200, "{id} {framing}: the spot lights the character");
+            // The backdrop is opaque sky, not the rig's background colour.
+            let (top, before) = (sky.get_pixel(SIZE[0] / 2, 0).0, fogged.get_pixel(SIZE[0] / 2, 0).0);
+            assert!(top[3] == 255 && top != before, "{id} {framing}: the sky is behind, got {top:?} for {before:?}");
+            cells.extend(shots.into_iter().map(|s| s.uri));
+        }
+    }
+    let op: ContactSheet = serde_json::from_value(json!({ "images": cells, "columns": LOOKS.len() })).unwrap();
+    let sheet: ContactSheetResult = serde_json::from_value(harness.run(&op).expect("lays out").1).unwrap();
+    if let Some(dir) = std::env::var_os("OMUZAKI_EVIDENCE_DIR") {
+        let png = harness.store.get(&sheet.hash.parse().unwrap()).unwrap();
+        std::fs::write(std::path::Path::new(&dir).join("scene-fog-sky-spot-sheet.png"), png).unwrap();
+    }
+}

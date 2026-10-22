@@ -9,13 +9,17 @@
 //!   rebuilding the scene allocates nothing.
 
 use omuzaki_core::glam::camera::rh::proj::directx;
-use omuzaki_core::glam::{Mat4, Vec3};
+use omuzaki_core::glam::{Mat3, Mat4, Vec3};
 use omuzaki_core::time::Seconds;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::limits::{MAX_JOINTS, MAX_LIGHTS, MAX_MORPH_WEIGHTS};
 use crate::{Colour, EnvironmentUse, MaterialId, MeshId, RenderError};
+
+/// The vertical field of view, in degrees, through which an orthographic camera sees an environment backdrop
+/// ([`Camera::sky_rays`]).
+pub const SKY_LENS_DEG: f32 = 50.0;
 
 /// How the camera projects the world.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -99,6 +103,20 @@ impl Camera {
                 directx::orthographic(-half_w, half_w, -half_h, half_h, near, far)
             }
         }
+    }
+
+    /// The world-space view direction through each point of the picture, as [`Background::Environment`] sees the sky:
+    /// `rays * (x, y, 1)` for a point at normalised device coordinates `(x, y)` (both `-1..=1`, +Y up), not normalised.
+    /// A perspective camera's own lens; an orthographic camera's view direction through [`SKY_LENS_DEG`], so a sprite
+    /// shot still shows the sky's shape. Every renderer uses this one definition.
+    pub fn sky_rays(&self, aspect: f32) -> Mat3 {
+        let fov = match self.projection {
+            Projection::Perspective { fov_y_deg, .. } => fov_y_deg,
+            Projection::Orthographic { .. } => SKY_LENS_DEG,
+        };
+        let tan = (fov.to_radians() * 0.5).tan();
+        let axes = Mat3::from_mat4(self.transform);
+        Mat3::from_cols(axes.x_axis * (tan * aspect), axes.y_axis * tan, -axes.z_axis)
     }
 
     /// Checks that the transform and projection are usable.
@@ -312,6 +330,12 @@ pub enum Background {
     },
     /// Nothing: the frame's alpha shows the character alone (BR-01).
     Transparent,
+    /// The scene's [`environment`](Scene::environment) seen behind everything (LK-08, scenes D2): the sky's radiance
+    /// in each pixel's view direction, turned and scaled as the scene uses it, opaque. Like a solid colour it goes
+    /// through exposure and tone mapping and is not fogged. A perspective camera sees the sky through its own lens; an
+    /// orthographic one, which has no lens, sees it through a 50° one looking the same way. Without an environment in
+    /// the scene it is black.
+    Environment,
 }
 
 impl Default for Background {

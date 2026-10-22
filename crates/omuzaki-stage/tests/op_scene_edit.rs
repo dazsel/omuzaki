@@ -392,3 +392,68 @@ fn backdrop_ground_and_post_edit_one_path_and_refuse_what_doesnt_fit() {
     let error = refused::<SetPost>(&doc, json!({ "grain": 2.0 }));
     assert_eq!(error.field.as_deref(), Some("scene.post.grain"));
 }
+
+// ---- #931: spot lights, fog and the environment ----------------------------------------------------------------
+
+#[test]
+fn a_spot_is_added_with_its_beam_and_edited_without_the_fields_of_other_kinds() {
+    let mut doc = project();
+    let (_, out) = edit::<AddLight>(
+        &mut doc,
+        json!({ "kind": "spot", "role": "accent", "position": [0.0, 2.6, 1.2], "target": [0.0, 1.0, 0.0],
+                "cone": 25.0, "intensity": 6.0, "shadow": true }),
+    );
+    assert_eq!(out["light"], "accent");
+    assert_eq!(out["shadow_taken_from"], json!([]), "a spot's shadow leaves the directional key's alone");
+    let lights = scene(&doc, "main").lighting.lights;
+    let accent = &lights[&omuzaki_stage_api::LightId::new("accent").unwrap()];
+    assert_eq!(
+        accent.shape,
+        omuzaki_stage_api::LightShape::Spot {
+            position: [0.0, 2.6, 1.2],
+            target: [0.0, 1.0, 0.0],
+            cone: 25.0,
+            penumbra: 0.2,
+            range: 6.0
+        }
+    );
+    assert!(accent.shadow && lights[&omuzaki_stage_api::LightId::new("key").unwrap()].shadow);
+
+    let (patch, _) = edit::<SetLight>(&mut doc, json!({ "light": "accent", "cone": 35.0 }));
+    assert_eq!(paths_of(&patch), ["scenes/main/lighting/lights/accent/cone"]);
+    let wrong = refused::<SetLight>(&doc, json!({ "light": "accent", "azimuth": 10.0 }));
+    assert_eq!(wrong.field.as_deref(), Some("azimuth"));
+    let wrong = refused::<SetLight>(&doc, json!({ "light": "key", "target": [0.0, 1.0, 0.0] }));
+    assert_eq!(wrong.field.as_deref(), Some("target"));
+    let wrong = refused::<AddLight>(&doc, json!({ "kind": "point", "cone": 20.0 }));
+    assert_eq!(wrong.field.as_deref(), Some("cone"));
+    let wide = refused::<SetLight>(&doc, json!({ "light": "accent", "cone": 120.0 }));
+    assert_eq!(wide.field.as_deref(), Some("lighting.lights.accent.cone"));
+}
+
+#[test]
+fn fog_and_an_environment_are_set_and_turned_off_and_the_backdrop_shows_the_sky() {
+    let mut doc = project();
+    let (_, out) = edit::<SetLighting>(
+        &mut doc,
+        json!({ "fog": { "colour": "#2a2238", "near": 2.0, "far": 9.0 },
+                "environment": { "kind": "sky", "intensity": 0.6 } }),
+    );
+    assert_eq!(out["changed"].as_array().map(Vec::len), Some(2), "{out}");
+    let lighting = scene(&doc, "main").lighting;
+    assert_eq!(lighting.fog.map(|f| (f.near, f.far)), Some((2.0, 9.0)));
+    assert_eq!(lighting.environment.map(|e| e.intensity), Some(0.6));
+    edit::<SetBackdrop>(&mut doc, json!({ "kind": "environment" }));
+    assert_eq!(scene(&doc, "main").scene.backdrop, Backdrop::Environment {});
+    let described = plan::<DescribeScene>(&doc, json!({})).unwrap().output.unwrap();
+    assert_eq!(described["lighting"]["environment"]["kind"], "sky");
+    assert_eq!(described["findings"], json!([]));
+
+    let far = refused::<SetLighting>(&doc, json!({ "fog": { "colour": "#000000", "near": 5.0, "far": 4.0 } }));
+    assert_eq!(far.field.as_deref(), Some("lighting.fog.far"));
+    edit::<SetLighting>(&mut doc, json!({ "fog": "off", "environment": "off" }));
+    let lighting = scene(&doc, "main").lighting;
+    assert_eq!((lighting.fog, lighting.environment), (None, None));
+    let described = plan::<DescribeScene>(&doc, json!({})).unwrap().output.unwrap();
+    assert_eq!(described["findings"][0]["kind"], "no_environment", "the backdrop has no sky to show now");
+}

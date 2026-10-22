@@ -4,6 +4,7 @@
 pub mod alone;
 pub mod apply;
 pub mod default;
+pub mod environment;
 pub mod frame;
 pub(crate) mod ground;
 pub mod landmarks;

@@ -47,7 +47,7 @@ hound = "3.5"   # WAV reading in the speech host benchmark (Apache-2.0), omuzaki
 http-body-util = "0.1"
 hyper = { version = "1", default-features = false, features = ["http1", "server"] }
 hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "hdr"] }
 inventory = "0.3"
 cpal = { version = "0.18", default-features = false }   # audio device I/O for the live engine (Apache-2.0); `asio` stays off (docs/licensing/deps/cpal.toml), omuzaki-audio-engine
 libc = "0.2"   # the Linux virtual camera's device calls (open, ioctl, write) (MIT OR Apache-2.0), omuzaki-vcam; already in the lock

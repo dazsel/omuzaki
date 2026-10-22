@@ -89,8 +89,9 @@ impl Lighting {
     /// doesn't know is a [`SceneError`] at `lighting.lights.<id>.anchor`.
     ///
     /// Directions: `azimuth` 0 is from +Z and +90 from +X; `elevation` is up from the horizon. The anchor's yaw turns
-    /// them. Points: `position` and `range` scale by the anchor's height, then go through its root; `intensity` scales
-    /// by the height squared, so the light on a face is the same at any stature. A directional light's `shadow` becomes
+    /// them. Points and spots: `position`, a spot's `target` and `range` scale by the anchor's height, then go through
+    /// its root; `intensity` scales by the height squared, so the light on a face is the same at any stature; a spot's
+    /// cone and penumbra are angles and fractions, which don't scale. A directional or spot light's `shadow` becomes
     /// `casts_shadow`; a point light has no shadow in the render contract, so `shadow` is ignored for it.
     ///
     /// # Errors
@@ -146,6 +147,21 @@ fn resolve_light(def: &LightDef, frame: &AnchorFrame) -> Light {
                 colour: def.colour,
                 intensity: def.intensity * h * h,
                 range: range * h,
+            }
+        }
+        LightShape::Spot { position, target, cone, penumbra, range } => {
+            let h = frame.height_m;
+            let lamp = frame.root.transform_point3(Vec3::from_array(position) * h);
+            let aim = frame.root.transform_point3(Vec3::from_array(target) * h);
+            Light::Spot {
+                position: lamp,
+                direction: aim - lamp,
+                colour: def.colour,
+                intensity: def.intensity * h * h,
+                range: range * h,
+                cone_outer_deg: cone,
+                penumbra,
+                casts_shadow: def.shadow,
             }
         }
     }

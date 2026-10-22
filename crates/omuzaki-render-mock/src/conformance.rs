@@ -84,6 +84,7 @@ pub const CHECKS: &[(&str, Check)] = &[
     ("an HDRI is equirectangular and rotates", an_hdri_is_equirectangular_and_rotates),
     ("the toon ramp quantises the sky's light", the_toon_ramp_quantises_the_skys_light),
     ("environments are resources", environments_are_resources),
+    ("the environment backdrop shows the sky", the_environment_backdrop_shows_the_sky),
     ("a UV transform picks the atlas cell", uv_transform_atlas),
 ];
 
@@ -979,6 +980,84 @@ fn the_toon_ramp_quantises_the_skys_light(r: &mut dyn Renderer) -> Outcome {
         smooth < 2.0 / 3.0 - 0.06,
         "unbanded, a surface tilted 53° from the zenith is dimmer than one facing it ({smooth})"
     );
+    Ok(())
+}
+
+/// The linear colour at the centre of a picture with the environment as its background, seen from the origin looking
+/// along `forward` through a 30° lens, with `cover` putting a white unlit quad in front of the camera.
+fn backdrop_value(
+    r: &mut dyn Renderer,
+    env: Option<&EnvironmentDesc>,
+    using: impl Fn(EnvironmentUse) -> EnvironmentUse,
+    forward: Vec3,
+    cover: bool,
+) -> Result<(Vec3, u8), Failure> {
+    let lens = Projection::Perspective { fov_y_deg: 30.0, near: 0.1, far: 20.0 };
+    let id = env.map(|e| r.create_environment(e)).transpose()?;
+    let mut s = scene(Colour::rgb(255, 0, 255));
+    s.background = Background::Environment;
+    s.camera = Camera::look_at(Vec3::ZERO, forward, Vec3::Y, lens);
+    s.environment = id.map(|id| using(EnvironmentUse::new(id)));
+    let quad = if cover {
+        let mesh = r.create_mesh(&shapes::quad(Vec2::splat(4.0)))?;
+        let material = r.create_material(&Material::unlit(Colour::WHITE))?;
+        let place = Mat4::from_translation(forward * 3.0)
+            * Mat4::from_quat(omuzaki_core::glam::Quat::from_rotation_arc(Vec3::Z, -forward));
+        s.instances.push(Instance::new(mesh, material, place));
+        Some((mesh, material))
+    } else {
+        None
+    };
+    let got = draw(r, &s, &plain()).and_then(|img| pixel(&img, CENTRE));
+    if let Some((mesh, material)) = quad {
+        r.release(mesh.into())?;
+        r.release(material.into())?;
+    }
+    if let Some(id) = id {
+        r.release(id.into())?;
+    }
+    let got = got?;
+    Ok((linear(got), got.a))
+}
+
+/// `Background::Environment` shows the sky's radiance in each pixel's view direction, turned and scaled as the scene
+/// uses it, opaque; a surface in front hides it, and without an environment it is black. A procedural sky looking at the
+/// horizon shows its horizon colour; the HDRI of `an_hdri_is_equirectangular_and_rotates` shows its bright half towards
+/// +Z, and towards +X once turned 90°.
+fn the_environment_backdrop_shows_the_sky(r: &mut dyn Renderer) -> Outcome {
+    let horizon = Colour::rgb(200, 120, 60);
+    let sky = EnvironmentDesc::Sky { zenith: Colour::WHITE, horizon, ground: Colour::BLACK };
+    let same = |u: EnvironmentUse| u;
+    let (level, alpha) = backdrop_value(r, Some(&sky), same, Vec3::Z, false)?;
+    ensure!(alpha == 255, "the environment backdrop is opaque, got alpha {alpha}");
+    ensure!(
+        (level - linear(horizon)).abs().max_element() <= 0.01,
+        "looking at the horizon shows the horizon colour {}, got {level}",
+        linear(horizon)
+    );
+    let (up, _) = backdrop_value(r, Some(&sky), same, Vec3::new(0.0, 1.0, 0.01), false)?;
+    expect_level(up, 1.0, 0.01, "looking straight up shows the zenith")?;
+    let (half, _) = backdrop_value(r, Some(&sky), |u| EnvironmentUse { intensity: 0.5, ..u }, Vec3::Z, false)?;
+    ensure!(
+        (half - linear(horizon) * 0.5).abs().max_element() <= 0.01,
+        "intensity 0.5 halves the backdrop, got {half}"
+    );
+    let rgb: Vec<f32> =
+        (0..2).flat_map(|_| (0..4).flat_map(|column| [if column >= 2 { 1.0_f32 } else { 0.0 }; 3])).collect();
+    let hdri = EnvironmentDesc::Hdri { size: UVec2::new(4, 2), rgb };
+    let turned = |degrees: f32| move |u: EnvironmentUse| EnvironmentUse { rotation_deg: degrees, ..u };
+    for (forward, degrees, want, what) in [
+        (Vec3::Z, 0.0, 1.0, "looking at +Z, sky unturned"),
+        (-Vec3::Z, 0.0, 0.0, "looking at -Z, sky unturned"),
+        (Vec3::X, 90.0, 1.0, "looking at +X, sky turned 90°"),
+        (Vec3::X, -90.0, 0.0, "looking at +X, sky turned -90°"),
+    ] {
+        expect_level(backdrop_value(r, Some(&hdri), turned(degrees), forward, false)?.0, want, 0.01, what)?;
+    }
+    expect_level(backdrop_value(r, Some(&sky), same, -Vec3::Z, true)?.0, 1.0, 0.01, "a white surface in front")?;
+    let (none, alpha) = backdrop_value(r, None, same, Vec3::Z, false)?;
+    ensure!(alpha == 255, "without an environment the backdrop is opaque black, got alpha {alpha}");
+    expect_level(none, 0.0, 0.002, "without an environment")?;
     Ok(())
 }
 

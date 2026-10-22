@@ -59,6 +59,17 @@ fn grid_for(samples: u8) -> u32 {
     (1u32..=4).find(|g| g * g >= u32::from(samples)).unwrap_or(4)
 }
 
+/// Paints the environment's radiance into every pixel of `surface`, seen through `rays` (`Camera::sky_rays`), opaque.
+fn fill_backdrop(surface: &mut Surface, environment: &EnvLight<'_>, rays: Mat3) {
+    let (size, width) = (surface.size.as_vec2(), surface.size.x as usize);
+    for (i, pixel) in surface.colour.iter_mut().enumerate() {
+        #[allow(clippy::cast_precision_loss)] // the internal picture is at most 4096 on a side
+        let (x, y) = ((i % width) as f32, (i / width) as f32);
+        let ndc = Vec2::new((x + 0.5) / size.x * 2.0 - 1.0, 1.0 - (y + 0.5) / size.y * 2.0);
+        *pixel = environment.radiance(rays * ndc.extend(1.0)).extend(1.0);
+    }
+}
+
 /// Draws `scene` for a target of `desc`.
 ///
 /// `painted` says a painter ran since the last frame, so the `PaintTextures` pass is reported.
@@ -89,17 +100,20 @@ pub(crate) fn draw_frame(
                 .map(|data| EnvLight::new(data, &using))
         })
         .transpose()?;
-    let lights = Lights::new(&scene.lights).with_environment(environment);
-    let fog = FogLight::new(scene.fog);
-    let textures = Textures(res.textures);
-
     let background = match scene.background {
         omuzaki_render_api::Background::Solid { colour } => {
             (colour.to_linear() * colour.alpha()).extend(colour.alpha())
         }
         omuzaki_render_api::Background::Transparent => Vec4::ZERO,
+        omuzaki_render_api::Background::Environment => Vec4::W,
     };
     let mut surface = Surface::new(internal, background);
+    if let (omuzaki_render_api::Background::Environment, Some(environment)) = (scene.background, &environment) {
+        fill_backdrop(&mut surface, environment, scene.camera.sky_rays(aspect));
+    }
+    let lights = Lights::new(&scene.lights).with_environment(environment);
+    let fog = FogLight::new(scene.fog);
+    let textures = Textures(res.textures);
     let mut out = Drawn {
         image: Image { size: desc.size, alpha: desc.alpha, rgba8: Vec::new() },
         render_size: internal,

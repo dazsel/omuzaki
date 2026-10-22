@@ -5,8 +5,8 @@
 
 use std::f64::consts::PI;
 
-use omuzaki_core::glam::{Mat3, Vec3};
-use omuzaki_render_api::{EnvironmentDesc, EnvironmentUse, RenderError, sky_radiance};
+use omuzaki_core::glam::{Mat3, UVec2, Vec3};
+use omuzaki_render_api::{Colour, EnvironmentDesc, EnvironmentUse, RenderError, sky_radiance};
 
 /// Pixels of the equirectangular grid a procedural sky is sampled on. Fine enough that the nine coefficients are the
 /// sky's to within the quadrature error, small enough to project in microseconds.
@@ -16,8 +16,18 @@ const SKY_GRID: (u32, u32) = (64, 32);
 pub(crate) struct EnvironmentData {
     /// Radiance projected on the nine real spherical harmonics, linear RGB, in `Y00, Y1-1, Y10, Y11, Y2-2 ...` order.
     sh: [[f64; 3]; 9],
+    /// What a backdrop shows: the sky's own picture.
+    picture: Picture,
     /// Bytes the radiance map would occupy on a GPU (RGBA16F with a mip chain), for `ResourceStats`.
     pub(crate) gpu_bytes: u64,
+}
+
+/// The sky's own picture, for a backdrop.
+enum Picture {
+    /// A procedural sky's colours: zenith, horizon, ground.
+    Sky([Colour; 3]),
+    /// An HDRI's size and linear RGB pixels.
+    Hdri(UVec2, Vec<f32>),
 }
 
 /// The values of the nine real spherical harmonics towards the unit vector `n`.
@@ -76,7 +86,37 @@ impl EnvironmentData {
                 }
             }
         };
-        Ok(Self { sh: project(width, height, radiance), gpu_bytes })
+        let picture = match desc {
+            EnvironmentDesc::Sky { zenith, horizon, ground } => Picture::Sky([*zenith, *horizon, *ground]),
+            EnvironmentDesc::Hdri { size, rgb } => Picture::Hdri(*size, rgb.clone()),
+        };
+        Ok(Self { sh: project(width, height, radiance), picture, gpu_bytes })
+    }
+
+    /// The radiance seen towards the unit direction `dir` in the environment's own frame, as the GPU renderer's backdrop
+    /// reads it: a procedural sky's exactly, an HDRI's pixels filtered bilinearly (wrapping around the horizon,
+    /// clamped at the poles).
+    fn radiance(&self, dir: Vec3) -> Vec3 {
+        match &self.picture {
+            Picture::Sky([zenith, horizon, ground]) => sky_radiance(*zenith, *horizon, *ground, dir.y),
+            Picture::Hdri(size, rgb) => {
+                let across = dir.z.atan2(dir.x) / std::f32::consts::TAU + 0.5;
+                let down = dir.y.clamp(-1.0, 1.0).acos() / std::f32::consts::PI;
+                #[allow(clippy::cast_precision_loss)] // HDRI sides are far below 2^24
+                let (column, row) =
+                    (across * size.x as f32 - 0.5, (down * size.y as f32 - 0.5).clamp(0.0, (size.y - 1) as f32));
+                let (left, top) = (column.floor(), row.floor());
+                let (along, below) = (column - left, row - top);
+                #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap, clippy::cast_sign_loss)]
+                let texel = |right: i64, under: i64| {
+                    let column = (left as i64 + right).rem_euclid(i64::from(size.x)) as usize;
+                    let row = (top as i64 + under).clamp(0, i64::from(size.y) - 1) as usize;
+                    let at = (row * size.x as usize + column) * 3;
+                    Vec3::new(rgb[at], rgb[at + 1], rgb[at + 2])
+                };
+                texel(0, 0).lerp(texel(1, 0), along).lerp(texel(0, 1).lerp(texel(1, 1), along), below)
+            }
+        }
     }
 
     /// The diffuse irradiance (`∫ L max(n·ω, 0) dω`) for a unit normal in the environment's own frame.
@@ -168,13 +208,15 @@ impl<'a> EnvLight<'a> {
         };
         light * self.intensity
     }
+
+    /// The radiance a backdrop shows towards the world direction `d` (any length).
+    pub(crate) fn radiance(&self, d: Vec3) -> Vec3 {
+        self.data.radiance((self.to_sky * d).normalize_or(Vec3::Y)) * self.intensity
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use omuzaki_core::glam::UVec2;
-    use omuzaki_render_api::Colour;
-
     use super::*;
 
     fn sky(zenith: Colour, horizon: Colour, ground: Colour) -> EnvironmentData {

@@ -21,6 +21,7 @@
 //! `cx.frame.draws.for_pass(Pass::X)`, already filtered; the quality is `cx.frame.quality`. A product another pass
 //! reads (the shadow map `Opaque` samples) is published through `frame/attachments.rs`.
 
+mod backdrop;
 mod bloom;
 mod dof;
 mod opaque;

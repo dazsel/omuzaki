@@ -6,6 +6,7 @@
 //! The shader side is `shader/environment.wgsl`. Without an environment in the scene, passes bind [`GpuEnvironment::none`],
 //! an all-zero stand-in that lights nothing.
 
+pub(crate) mod backdrop;
 mod bake;
 mod half;
 
@@ -14,6 +15,8 @@ use omuzaki_core::glam::{Mat3, Vec3};
 use omuzaki_render_api::{EnvironmentDesc, EnvironmentUse, RenderError};
 
 use crate::gpu::Gpu;
+use crate::shared::Layouts;
+use backdrop::GpuBackdrop;
 use bake::{Baked, SPECULAR_FACE, SPECULAR_LEVELS};
 
 /// Mirrors `struct Environment` in `shader/environment.wgsl`.
@@ -39,6 +42,8 @@ pub(crate) struct GpuEnvironment {
     /// Kept alive by the bind group; named so `bytes` stays honest about what it counts.
     _cube: wgpu::Texture,
     bind_group: wgpu::BindGroup,
+    /// The sky as a [`Background::Environment`](omuzaki_render_api::Background) shows it.
+    backdrop: GpuBackdrop,
     /// Estimated GPU memory, for `ResourceStats`.
     pub(crate) bytes: u64,
 }
@@ -99,14 +104,12 @@ impl GpuEnvironment {
     ///
     /// # Errors
     /// `Invalid` per [`EnvironmentDesc::validate`], `LimitExceeded` if a size computation overflows.
-    pub(crate) fn create(
-        gpu: &Gpu,
-        layout: &wgpu::BindGroupLayout,
-        desc: &EnvironmentDesc,
-    ) -> Result<Self, RenderError> {
+    pub(crate) fn create(gpu: &Gpu, layouts: &Layouts, desc: &EnvironmentDesc) -> Result<Self, RenderError> {
         let Baked { diffuse, specular } = bake::bake(desc)?;
+        let backdrop = GpuBackdrop::new(gpu, &layouts.backdrop, Some(desc));
         let bytes = cube_bytes(SPECULAR_FACE, SPECULAR_LEVELS)?
             .checked_add(size_of::<EnvironmentUniform>() as u64)
+            .and_then(|b| b.checked_add(backdrop.bytes))
             .ok_or(RenderError::LimitExceeded { what: "environment size", limit: u64::MAX })?;
         let base = EnvironmentUniform {
             sh: diffuse.packed,
@@ -118,14 +121,15 @@ impl GpuEnvironment {
             params: [0.0, (SPECULAR_LEVELS - 1) as f32, 0.0, 0.0],
         };
         let cube = upload_cube(gpu, SPECULAR_FACE, &specular.levels);
-        Ok(Self::assemble(gpu, layout, base, cube, bytes))
+        Ok(Self::assemble(gpu, &layouts.environment, base, cube, backdrop, bytes))
     }
 
-    /// The stand-in for a scene without an environment: lights nothing, reads a black cube.
-    pub(crate) fn none(gpu: &Gpu, layout: &wgpu::BindGroupLayout) -> Self {
+    /// The stand-in for a scene without an environment: lights nothing, reads a black cube, shows black.
+    pub(crate) fn none(gpu: &Gpu, layouts: &Layouts) -> Self {
         let black = vec![vec![0.0_f32; 6 * 4]];
         let cube = upload_cube(gpu, 1, &black);
-        Self::assemble(gpu, layout, EnvironmentUniform::zeroed(), cube, 0)
+        let backdrop = GpuBackdrop::new(gpu, &layouts.backdrop, None);
+        Self::assemble(gpu, &layouts.environment, EnvironmentUniform::zeroed(), cube, backdrop, 0)
     }
 
     fn assemble(
@@ -133,6 +137,7 @@ impl GpuEnvironment {
         layout: &wgpu::BindGroupLayout,
         base: EnvironmentUniform,
         cube: wgpu::Texture,
+        backdrop: GpuBackdrop,
         bytes: u64,
     ) -> Self {
         let uniform = gpu.device.create_buffer(&wgpu::BufferDescriptor {
@@ -163,7 +168,12 @@ impl GpuEnvironment {
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&sampler) },
             ],
         });
-        Self { base, uniform, _cube: cube, bind_group, bytes }
+        Self { base, uniform, _cube: cube, bind_group, backdrop, bytes }
+    }
+
+    /// The sky as a backdrop shows it.
+    pub(crate) fn backdrop(&self) -> &GpuBackdrop {
+        &self.backdrop
     }
 
     /// Group 3 for the passes that light with this environment.
@@ -178,8 +188,7 @@ impl GpuEnvironment {
 
     /// The uniform for one frame's use: the baked fields plus intensity, the turn from world to sky and the ramp flag.
     fn uniform_for(&self, using: &EnvironmentUse) -> EnvironmentUniform {
-        // Turning the sky by +θ about Y is turning every lookup direction by -θ.
-        let to_sky = Mat3::from_rotation_y(-using.rotation_deg.to_radians());
+        let to_sky = to_sky(using);
         let column = |v: Vec3| [v.x, v.y, v.z, 0.0];
         let mut uniform = self.base;
         uniform.to_sky = [column(to_sky.x_axis), column(to_sky.y_axis), column(to_sky.z_axis)];
@@ -187,6 +196,12 @@ impl GpuEnvironment {
         uniform.params[0] = using.intensity;
         uniform
     }
+}
+
+/// The turn from a world direction to the sky's frame: turning the sky by +θ about Y is turning every lookup direction
+/// by -θ.
+pub(crate) fn to_sky(using: &EnvironmentUse) -> Mat3 {
+    Mat3::from_rotation_y(-using.rotation_deg.to_radians())
 }
 
 /// A filterable `Rgba16Float` cube of `levels.len()` levels whose base side is `face`, from RGBA `f32` texels (six faces

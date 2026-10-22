@@ -318,6 +318,8 @@ impl LightRig {
                 threshold: self.bloom.threshold,
             }),
             lights,
+            fog: None,
+            environment: None,
         })
     }
 

@@ -20,20 +20,22 @@ pub enum BackdropKind {
     Colour,
     /// Nothing: alpha, for OBS and other compositors.
     Transparent,
+    /// The lighting's environment: its sky, turned and as bright as it lights the cast (`stage.set_lighting` sets one).
+    Environment,
 }
 
 /// Sets what shows behind a scene's cast.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(extend(
-    "examples" = [{"kind": "transparent"}, {"kind": "colour", "colour": "#00b140"}, {"scene": "night_stream", "kind": "lighting"}],
+    "examples" = [{"kind": "transparent"}, {"kind": "colour", "colour": "#00b140"}, {"scene": "night_stream", "kind": "lighting"}, {"kind": "environment"}],
     "x-omuzaki-fixture" = "scenes"
 ))]
 pub struct SetBackdrop {
     /// The scene; the one the project opens in when left out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scene: Option<SceneId>,
-    /// `lighting`, `colour` (with `colour`) or `transparent`.
+    /// `lighting`, `colour` (with `colour`), `transparent` or `environment`.
     pub kind: BackdropKind,
     /// The colour, for `colour` only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -45,7 +47,7 @@ impl Op for SetBackdrop {
         OpMeta {
             name: "stage.set_backdrop",
             summary: "Set what shows behind a scene's cast: the lighting's background, a colour of its own (a green \
-                      screen), or transparent for compositing in OBS.",
+                      screen), transparent for compositing in OBS, or the lighting's environment (its sky).",
             kind: OpKind::Edit,
             scope: Scope::EditScene,
             undo: Undo::Auto,
@@ -65,6 +67,7 @@ impl Op for SetBackdrop {
             }
             (BackdropKind::Lighting, None) => Backdrop::Lighting {},
             (BackdropKind::Transparent, None) => Backdrop::Transparent {},
+            (BackdropKind::Environment, None) => Backdrop::Environment {},
         };
         let mut edit = SceneEdit::open(ctx.doc, self.scene.as_ref())?;
         edit.def.scene.backdrop = backdrop;

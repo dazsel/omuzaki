@@ -11,13 +11,14 @@ use std::collections::BTreeMap;
 
 use omuzaki_char_api::{BuildOptions, BuildServices, CharId, CharacterBuilder, RegistryBuilder};
 use omuzaki_core::glam::{Affine3A, Vec3};
-use omuzaki_render_api::{Background, Bloom, Colour, ColourGrade, DepthOfField, FilmGrain, Projection, Tonemap};
+use omuzaki_render_api::{Background, Bloom, Colour, ColourGrade, DepthOfField, FilmGrain, Fog, Projection, Tonemap};
 use omuzaki_stage::StageError;
 use omuzaki_stage::scene::landmarks::Landmarks;
 use omuzaki_stage::scene::resolve::{Changes, CheckedScene, Figure, ResolvedScene};
 use omuzaki_stage_api::{
-    Anchor, Backdrop, BloomDef, CameraDef, CameraId, CastMember, DepthOfFieldDef, Focus, FocusSubject, Framing,
-    GradeDef, GroundKind, LightDef, LightId, LightShape, MemberId, SceneDef, SceneSettings,
+    Anchor, Backdrop, BloomDef, CameraDef, CameraId, CastMember, DepthOfFieldDef, EnvironmentDef, EnvironmentSource,
+    Focus, FocusSubject, FogDef, Framing, GradeDef, GroundKind, LightDef, LightId, LightShape, MemberId, SceneDef,
+    SceneSettings,
 };
 
 thread_local! {
@@ -338,6 +339,8 @@ fn only_flag(edit: fn(&mut SceneDef), pick: fn(&Changes) -> bool) {
         changes.post,
         changes.ground,
         changes.skin_floor,
+        changes.fog,
+        changes.environment,
     ];
     assert_eq!(flags.iter().filter(|f| **f).count(), 1, "only one flag: {changes:?}");
     assert_eq!(allocations, 0);
@@ -620,4 +623,83 @@ fn a_figure_root_lifted_in_y_is_refused() {
     let mut level = good.clone();
     level.get_mut(&member("kiri")).unwrap().root = Affine3A::from_translation(Vec3::new(1.0, 1e-6, 1.0));
     assert!(out.resolve_into(checked(&def), &level, ASPECT).is_ok());
+}
+
+// ---- phase 2: fog, the environment and its backdrop (#931) ----
+
+fn fog() -> FogDef {
+    FogDef { colour: Colour::hex(0x002a_2238), near: 2.0, far: 9.0 }
+}
+
+#[test]
+fn fog_is_in_subject_units_at_two_statures() {
+    let mut def = scene();
+    def.lighting.fog = Some(fog());
+    for height_m in [0.966, 1.714] {
+        let mut figures = figures([0.0, 0.0]);
+        for figure in figures.values_mut() {
+            figure.height_m = height_m;
+        }
+        let got = resolved(&def, &figures).fog.unwrap();
+        let want = Fog { colour: Colour::hex(0x002a_2238), near: 2.0 * height_m, far: 9.0 * height_m };
+        assert!(
+            got.colour == want.colour && (got.near - want.near).abs() < 1e-5 && (got.far - want.far).abs() < 1e-5,
+            "{height_m} m: {got:?} vs {want:?}"
+        );
+    }
+}
+
+#[test]
+fn the_environment_backdrop_shows_the_environment_or_the_rigs_colour_without_one() {
+    let (mut def, figures) = (scene(), figures([0.0, 0.0]));
+    def.scene.backdrop = Backdrop::Environment {};
+    def.lighting.background = Colour::hex(0x0040_3020);
+    assert_eq!(resolved(&def, &figures).background, Background::Solid { colour: Colour::hex(0x0040_3020) });
+    def.lighting.environment = Some(EnvironmentDef { intensity: 0.6, rotation: 45.0, ..EnvironmentDef::default() });
+    let out = resolved(&def, &figures);
+    assert_eq!(out.background, Background::Environment);
+    let environment = out.environment.unwrap();
+    assert_eq!((environment.intensity, environment.rotation_deg, environment.toon_ramp), (0.6, 45.0, true));
+    assert_eq!(environment.source, EnvironmentDef::default().source);
+}
+
+#[test]
+fn fog_and_environment_values_are_value_only_and_allocate_nothing() {
+    fn with_environment(d: &mut SceneDef) {
+        d.lighting.environment = Some(EnvironmentDef::default());
+        d.lighting.fog = Some(fog());
+    }
+    let (mut def, figures) = (scene(), figures([0.0, 0.0]));
+    with_environment(&mut def);
+    let mut out = resolved(&def, &figures);
+    for (edit, pick) in [
+        (
+            (|d: &mut SceneDef| d.lighting.fog.as_mut().unwrap().far = 12.0) as fn(&mut SceneDef),
+            (|c: &Changes| c.fog) as fn(&Changes) -> bool,
+        ),
+        (|d| d.lighting.environment.as_mut().unwrap().intensity = 0.3, |c| c.environment && !c.sky),
+        (|d| d.lighting.environment.as_mut().unwrap().rotation = 90.0, |c| c.environment && !c.sky),
+    ] {
+        edit(&mut def);
+        let proof = checked(&def);
+        let (changes, allocations) = counted(|| out.resolve_into(proof, &figures, ASPECT).unwrap());
+        assert!(pick(&changes) && changes.value_only(), "{changes:?}");
+        assert_eq!(allocations, 0);
+    }
+}
+
+#[test]
+fn a_new_sky_is_not_value_only() {
+    let (mut def, figures) = (scene(), figures([0.0, 0.0]));
+    def.lighting.environment = Some(EnvironmentDef::default());
+    let mut out = resolved(&def, &figures);
+    def.lighting.environment = Some(EnvironmentDef {
+        source: EnvironmentSource::Sky { zenith: Colour::WHITE, horizon: Colour::WHITE, ground: Colour::BLACK },
+        ..EnvironmentDef::default()
+    });
+    let changes = out.resolve_into(checked(&def), &figures, ASPECT).unwrap();
+    assert!(changes.environment && changes.sky && !changes.value_only(), "{changes:?}");
+    def.lighting.environment = None;
+    let changes = out.resolve_into(checked(&def), &figures, ASPECT).unwrap();
+    assert!(changes.sky && out.environment.is_none(), "removing it is a change of source too");
 }
