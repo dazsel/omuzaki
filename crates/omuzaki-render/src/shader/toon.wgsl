@@ -143,6 +143,35 @@ fn shadow_visibility(position: vec3<f32>, n: vec3<f32>) -> f32 {
     return sum / 9.0;
 }
 
+// What light number `index` (`l`, not a hemisphere light) sends toward a surface point at `position` with normal `n`:
+// its colour where it arrives (D10's falloff for point and spot lights, a spot's cone), the unit vector toward it, and
+// how much of it the shadow lets through (the light that casts shadows; 1 for the rest).
+struct Incident {
+    colour: vec3<f32>,
+    to_light: vec3<f32>,
+    shadow: f32,
+}
+
+fn incident_light(l: Light, index: u32, n: vec3<f32>, position: vec3<f32>) -> Incident {
+    var out: Incident;
+    out.to_light = l.vector.xyz;
+    out.colour = l.colour.rgb;
+    out.shadow = 1.0;
+    if (l.vector.w != LIGHT_DIRECTIONAL) {
+        // Point and spot lights: D10's falloff, and a spot is also confined to its cone (no spot shadows yet).
+        let offset = l.vector.xyz - position;
+        let distance = length(offset);
+        out.to_light = offset / max(distance, 1e-6);
+        out.colour = out.colour * point_falloff(distance, l.colour.w);
+        if (l.vector.w == LIGHT_SPOT) {
+            out.colour = out.colour * spot_cone(l, out.to_light);
+        }
+    } else if (u32(shadow.params.x) == index + 1u) {
+        out.shadow = shadow_visibility(position, n);
+    }
+    return out;
+}
+
 // The light a surface point at `position` with normal `n` receives from light number `index` (`l`), before the albedo:
 // for directional and point lights the colour tinted by the ramp (the shadow side shows `material.shade`, never grey).
 // The light that casts shadows has its colour multiplied by `shadow_visibility` before the ramp, as in three.js:
@@ -151,21 +180,8 @@ fn light_irradiance(l: Light, index: u32, n: vec3<f32>, position: vec3<f32>) -> 
     if (l.vector.w == LIGHT_HEMISPHERE) {
         return mix(l.ground.rgb, l.colour.rgb, 0.5 + 0.5 * n.y);
     }
-    var to_light = l.vector.xyz;
-    var colour = l.colour.rgb;
-    if (l.vector.w != LIGHT_DIRECTIONAL) {
-        // Point and spot lights: D10's falloff, and a spot is also confined to its cone (no spot shadows yet).
-        let offset = l.vector.xyz - position;
-        let distance = length(offset);
-        to_light = offset / max(distance, 1e-6);
-        colour = colour * point_falloff(distance, l.colour.w);
-        if (l.vector.w == LIGHT_SPOT) {
-            colour = colour * spot_cone(l, to_light);
-        }
-    } else if (u32(shadow.params.x) == index + 1u) {
-        colour = colour * shadow_visibility(position, n);
-    }
-    return colour * mix(material.shade.rgb, vec3<f32>(1.0), terminator(dot(n, to_light)));
+    let incident = incident_light(l, index, n, position);
+    return incident.colour * incident.shadow * mix(material.shade.rgb, vec3<f32>(1.0), terminator(dot(n, incident.to_light)));
 }
 
 // The unit vector from a surface point toward the eye. An orthographic camera looks along one axis everywhere.
@@ -198,19 +214,203 @@ fn toon_colour(albedo: vec3<f32>, n: vec3<f32>, position: vec3<f32>) -> vec3<f32
     return colour;
 }
 
+// ---- MToon ----
+//
+// A material with `MTOON_ON` is lit by VRMC_materials_mtoon 1.0 in place of the ramp above, ported from three-vrm's
+// `mtoon.frag` (@pixiv/three-vrm-materials-mtoon, MIT) in the same light units, with the spec's GI equalisation as
+// UniVRM defines it (three-vrm leaves it out). Per fragment:
+//   uv        = the mesh's UV turned about (0.5, 0.5) and scrolled by the scene time, both times the mask's blue channel
+//   per light   shading = linearstep(-1 + toony, 1 - toony, N.L + shift) * shadow
+//               direct += colour * mix(shade, lit, shading) / PI;  reaching += colour
+//   ambient   = mix(E(N), (E(up) + E(down)) / 2, gi)        E: the hemisphere lights and the environment, no ramp
+//   indirect  = ambient * lit / PI;  reaching += ambient
+//   rim       = (rim colour * (1 - N.V + lift)^fresnel + matcap) * rim texture
+//   colour    = direct + indirect + mix(1, reaching / PI, rim lighting mix) * rim + emissive
+// Every MToon texture is read in uniform control flow: each read sits behind a test of the material's own flags.
+
+fn mtoon_on() -> bool {
+    return (material.mtoon_flags.x & MTOON_ON) != 0u;
+}
+
+fn mtoon_has(bit: u32) -> bool {
+    return (material.mtoon_flags.x & bit) != 0u;
+}
+
+fn mtoon_texture_flags(slot: u32) -> u32 {
+    return (material.mtoon_flags.y >> (4u * slot)) & 15u;
+}
+
+// The UV every texture of an MToon material reads (through `material_uv`), from the mesh's: turned by
+// `rotation * time * mask` about the centre, then scrolled by `scroll * time * mask`. The mask is the blue channel of
+// the animation mask texture at the mesh's own UV (1 without one). Any other material reads the mesh's UV unchanged.
+fn mtoon_uv(uv: vec2<f32>) -> vec2<f32> {
+    if (!mtoon_on()) {
+        return uv;
+    }
+    var mask = 1.0;
+    if (mtoon_has(MTOON_MASK_TEXTURE)) {
+        let sampled = textureSample(mtoon_mask_texture, mtoon_mask_sampler, material_uv(uv));
+        mask = texel(sampled, mtoon_texture_flags(6u)).b;
+    }
+    let time = frame.look.y * mask;
+    let phase = material.mtoon_uv.z * time;
+    let c = cos(phase);
+    let s = sin(phase);
+    let turned = mat2x2<f32>(c, -s, s, c) * (uv - vec2<f32>(0.5)) + vec2<f32>(0.5);
+    return turned + material.mtoon_uv.xy * time;
+}
+
+// MToon's terminator: `linearstep(-1 + toony, 1 - toony, n_dot_l + shift)` times the shadow, a step when toony is 1.
+fn mtoon_shading(n_dot_l: f32, shadow: f32, shift: f32) -> f32 {
+    let low = -1.0 + material.mtoon_shading.y;
+    let high = 1.0 - material.mtoon_shading.y;
+    let x = n_dot_l + shift;
+    var shading = select(0.0, 1.0, x >= low);
+    if (high > low) {
+        shading = saturate((x - low) / (high - low));
+    }
+    return shading * shadow;
+}
+
+// The normal map applied to unit normal `n`: three.js `getTangentFrame` (the tangents from the screen-space
+// derivatives of the position and the UV, as three-vrm does for a mesh without tangents), flipped with the face.
+// WGSL's framebuffer y runs down where GL's runs up, so both y derivatives are negated to build GL's frame. That frame's
+// bitangent points along +v, and glTF's green channel points along -v (its UV origin is the top left), so the map's y is
+// negated, as three's GLTFLoader does with `normalScale.y` for derivative tangents.
+fn mtoon_normal(n: vec3<f32>, position: vec3<f32>, uv: vec2<f32>, face: f32) -> vec3<f32> {
+    let sampled = texel(textureSample(mtoon_normal_texture, mtoon_normal_sampler, uv), mtoon_texture_flags(5u)).xyz;
+    let map_scale = material.mtoon_uv.w * vec2<f32>(1.0, -1.0);
+    let map_n = vec3<f32>((sampled.xy * 2.0 - 1.0) * map_scale, sampled.z * 2.0 - 1.0);
+    let q0 = dpdx(position);
+    let q1 = -dpdy(position);
+    let st0 = dpdx(uv);
+    let st1 = -dpdy(uv);
+    let q1perp = cross(q1, n);
+    let q0perp = cross(n, q0);
+    let t = q1perp * st0.x + q0perp * st1.x;
+    let b = q1perp * st0.y + q0perp * st1.y;
+    let det = max(dot(t, t), dot(b, b));
+    var scale = 0.0;
+    if (det > 0.0) {
+        scale = inverseSqrt(det) * face;
+    }
+    return normalize(t * (scale * map_n.x) + b * (scale * map_n.y) + n * map_n.z);
+}
+
+// The matcap toward unit normal `n` seen along `v` (toward the eye): three-vrm's sphere mapping in view space.
+fn mtoon_matcap(n: vec3<f32>, v: vec3<f32>) -> vec3<f32> {
+    let to_view = mat3x3<f32>(frame.view[0].xyz, frame.view[1].xyz, frame.view[2].xyz);
+    let view_v = normalize(to_view * v);
+    let view_n = normalize(to_view * n);
+    let x = normalize(vec3<f32>(view_v.z, 0.0, -view_v.x));
+    let y = cross(view_v, x);
+    let sphere = 0.5 + 0.5 * vec2<f32>(dot(x, view_n), -dot(y, view_n));
+    let sampled = textureSample(mtoon_matcap_texture, mtoon_matcap_sampler, sphere);
+    return material.mtoon_matcap.rgb * texel(sampled, mtoon_texture_flags(2u)).rgb;
+}
+
+// The ambient light on a surface facing `n`: the hemisphere lights and the environment's harmonics (never through the
+// kit's ramp), flattened toward the mean of straight up and straight down by the GI equalisation.
+fn mtoon_ambient(n: vec3<f32>) -> vec3<f32> {
+    var toward = vec3<f32>(0.0);
+    var flat = vec3<f32>(0.0);
+    for (var i = 0u; i < frame.counts.x; i++) {
+        let l = frame.lights[i];
+        if (l.vector.w == LIGHT_HEMISPHERE) {
+            toward += mix(l.ground.rgb, l.colour.rgb, 0.5 + 0.5 * n.y);
+            flat += 0.5 * (l.ground.rgb + l.colour.rgb);
+        }
+    }
+    let intensity = environment.params.x;
+    if (intensity != 0.0) {
+        toward += sh_irradiance(sky_direction(n)) * intensity;
+        let up = sh_irradiance(sky_direction(vec3<f32>(0.0, 1.0, 0.0)));
+        let down = sh_irradiance(sky_direction(vec3<f32>(0.0, -1.0, 0.0)));
+        flat += 0.5 * (up + down) * intensity;
+    }
+    return mix(toward, flat, material.mtoon_shading.z);
+}
+
+// The MToon colour of a surface: its `lit` colour (the albedo: the base colour, texture and vertex colour), the
+// animated `uv`, the unit normal `n` facing the viewer (`face` -1 on a back face), the world `position` and the vertex
+// colour. Samples first (uniform control flow), then lights.
+fn mtoon_colour(lit: vec3<f32>, uv: vec2<f32>, n: vec3<f32>, position: vec3<f32>, vertex_colour: vec4<f32>, face: f32) -> vec3<f32> {
+    let texture_uv = material_uv(uv);
+    var shade = material.mtoon_shade.rgb;
+    if (mtoon_has(MTOON_SHADE_TEXTURE)) {
+        shade *= texel(textureSample(mtoon_shade_texture, mtoon_shade_sampler, texture_uv), mtoon_texture_flags(0u)).rgb;
+    }
+    if ((material.flags.x & FLAG_VERTEX_COLOURS) != 0u) {
+        shade *= vertex_colour.rgb;
+    }
+    var shift = material.mtoon_shading.x;
+    if (mtoon_has(MTOON_SHIFT_TEXTURE)) {
+        let sampled = textureSample(mtoon_shift_texture, mtoon_shift_sampler, texture_uv);
+        shift += texel(sampled, mtoon_texture_flags(1u)).r * material.mtoon_shade.w;
+    }
+    var normal = n;
+    if (mtoon_has(MTOON_NORMAL_TEXTURE)) {
+        normal = mtoon_normal(n, position, texture_uv, face);
+    }
+    var emissive = material.emissive.rgb;
+    if (mtoon_has(MTOON_EMISSIVE_TEXTURE)) {
+        let sampled = textureSample(mtoon_emissive_texture, mtoon_emissive_sampler, texture_uv);
+        emissive *= texel(sampled, mtoon_texture_flags(4u)).rgb;
+    }
+    var rim_texture = vec3<f32>(1.0);
+    if (mtoon_has(MTOON_RIM_TEXTURE)) {
+        rim_texture = texel(textureSample(mtoon_rim_texture, mtoon_rim_sampler, texture_uv), mtoon_texture_flags(3u)).rgb;
+    }
+    // three-vrm's view direction: toward the eye's position, for either projection.
+    let v = normalize(frame.camera_position.xyz - position);
+    var matcap = vec3<f32>(0.0);
+    if (mtoon_has(MTOON_MATCAP_TEXTURE)) {
+        matcap = mtoon_matcap(normal, v);
+    }
+
+    var direct = vec3<f32>(0.0);
+    var reaching = vec3<f32>(0.0);
+    for (var i = 0u; i < frame.counts.x; i++) {
+        let l = frame.lights[i];
+        if (l.vector.w == LIGHT_HEMISPHERE) {
+            continue;
+        }
+        // The shadow is looked up along the surface's own normal, the light's angle taken against the mapped one.
+        let incident = incident_light(l, i, n, position);
+        let n_dot_l = clamp(dot(normal, incident.to_light), -1.0, 1.0);
+        let shading = mtoon_shading(n_dot_l, incident.shadow, shift);
+        direct += incident.colour * mix(shade, lit, shading) / PI;
+        reaching += incident.colour;
+    }
+    let ambient = mtoon_ambient(normal);
+    let indirect = ambient * lit / PI;
+    reaching += ambient;
+
+    let rim_mix = mix(vec3<f32>(1.0), reaching / PI, material.mtoon_shading.w);
+    let fresnel = max(saturate(1.0 - dot(v, normal) + material.mtoon_matcap.w), 1e-6);
+    let rim = (material.mtoon_rim.rgb * pow(fresnel, material.mtoon_rim.w) + matcap) * rim_texture;
+    return direct + indirect + rim_mix * rim + emissive;
+}
+
 // ---- the Opaque pass ----
 
 @fragment
 fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
     // Transformed: the base texture and the UV overlays inside `surface_albedo` read `material_uv(in.uv)` (common.wgsl).
     // The environment cube (`environment_light`, environment.wgsl) is addressed by direction, not UV: not transformed.
-    let albedo = surface_albedo(in.uv, in.colour, in.local);
+    // An MToon material's UV animation moves every texture it reads, the base texture among them.
+    let uv = mtoon_uv(in.uv);
+    let albedo = surface_albedo(uv, in.colour, in.local);
     if (material.flags.z == ALPHA_MASK && albedo.a < material.alpha.x) {
         discard;
     }
     let program = ProgramIn(array<vec4<f32>, 4>(in.extra0, in.extra1, in.extra2, in.extra3), front, in.world_position);
     var colour = albedo.rgb;
-    if (material.flags.y == SHADING_TOON) {
+    if (mtoon_on()) {
+        let facing = normalize(in.world_normal);
+        let face = select(-1.0, 1.0, front);
+        colour = mtoon_colour(albedo.rgb, uv, facing * face, in.world_position, in.colour, face);
+    } else if (material.flags.y == SHADING_TOON) {
         // The back of a double-sided surface is lit as a face of its own (three.js: `normal *= faceDirection`). A
         // shading program colours the surface before the lights and the lit result after them.
         let facing = normalize(in.world_normal);

@@ -1,0 +1,10 @@
+section = "in-use"
+item = "MToon reference render (@pixiv/three-vrm 3.5.5 on three.js)"
+kind = "asset"
+used_for = "the golden the wgpu renderer's MToon 1.0 shading is compared against (#592): the repository's own test spheres and lights, rendered by three-vrm"
+status = "yes"
+condition = "the scene is first party and the image is the output of MIT-licensed code (three-vrm and three.js, their own rows); no third-party material is in the picture, so no notice is owed for it"
+audit = "(Dazsel, 2026-10-22)"
+paths = [
+  "crates/omuzaki-render/tests/golden/mtoon-three-vrm.png",
+]
