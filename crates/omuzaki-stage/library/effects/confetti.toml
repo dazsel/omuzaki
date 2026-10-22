@@ -3,7 +3,7 @@ title = "Confetti"
 summary = "A burst of paper confetti in the subject's palette that tumbles and flutters down."
 tags = ["celebration", "burst"]
 version = "1.0.0"
-origin = "designed for ST-13: paper rectangles 12 to 18 mm, launched at 1.8 to 3 m/s, fluttering down at about 0.7 m/s; tuned on bust renders so the pop stays near the subject and rains back through the frame (#1171)"
+origin = "designed for ST-13: paper rectangles 12 to 18 mm, launched at 1.6 to 2.6 m/s, fluttering down at about 0.2 m/s; tuned on bust renders so the pop stays near the subject and drifts back down through the frame for about two seconds (#1171)"
 kind = "burst"
 sprite = { shape = "rect", aspect = 0.6 }
 
@@ -13,12 +13,12 @@ at = { from = "subject", point = "chest", offset = [0.0, 0.0, 0.15] }
 colours = "palette"
 
 [particles]
-lifetime = [4.5, 6.0]
-speed = [1.8, 3.0]
+lifetime = [3.0, 4.0]
+speed = [1.6, 2.6]
 direction = [0.0, 1.0, 0.0]
 spread_deg = 45.0
-gravity = [0.0, -2.0, 0.0]
-drag = 3.0
+gravity = [0.0, -0.8, 0.0]
+drag = 4.0
 wind = [0.0, 0.0, 0.0]
 flutter = { amplitude_m = 0.05, frequency_hz = 1.5 }
 size = [0.012, 0.018]

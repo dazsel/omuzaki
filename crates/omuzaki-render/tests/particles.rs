@@ -147,12 +147,12 @@ fn close(a: Colour, b: Colour) -> bool {
 }
 
 /// D6: the cleared depth never matches. A zero-coverage particle at the far plane leaves the target untouched with
-/// `w < 1` there (a far plane at 0.5 m) and with `w > 1` (the default 100 m); a covering one at the far plane still
-/// draws; one beyond it draws nothing and never hides nearer geometry.
+/// `w < 1` there (a far plane at 0.8 m, beyond the near fade) and with `w > 1` (the default 100 m); a covering one at
+/// the far plane still draws; one beyond it draws nothing and never hides nearer geometry.
 #[test]
 fn the_far_plane_and_the_depth_clamp() {
     let mut r = support::renderer();
-    for far in [0.5, 100.0] {
+    for far in [0.8, 100.0] {
         let hidden = square(&mut r, Colour::WHITE, 0.0, far);
         let picture =
             render(&mut r, &at(eye(far), Background::Transparent, hidden, far * 0.9999), AlphaEncoding::Straight);

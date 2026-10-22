@@ -40,7 +40,7 @@ fn under_webgpu_the_particle_checks_pass_and_the_sheet_matches_the_native_golden
         }
         ran += 1;
     }
-    assert_eq!(ran, 16, "every particle check ran");
+    assert_eq!(ran, 17, "every particle check ran");
 
     let grey = Background::Solid { colour: Colour::hex(0x0080_8080) };
     for (background, alpha, name) in [
