@@ -8,7 +8,8 @@ use omuzaki_ops_api::OpError;
 
 use std::path::Path;
 
-use omuzaki_app::{AppCore, AppOptions};
+use omuzaki_app::{AppCore, AppError, AppOptions};
+use omuzaki_doc::StoreError;
 
 use crate::cli::{Cli, Command};
 use crate::commands::execute;
@@ -50,8 +51,24 @@ fn run_with_runner(cli: &Cli) -> Result<Reply, OpError> {
 }
 
 /// Runs `cli`'s command on the project in `dir`, opened through the app core, and closes it.
+/// Relays stdio into the studio that holds `dir`, keeping the client's credential in the user's local data folder.
+fn bridge_to_studio(dir: &Path) -> Result<Reply, OpError> {
+    crate::mcp::log_to_stderr();
+    let paths = omuzaki_settings::Paths::from_env()
+        .map_err(|e| OpError::unsupported(e.to_string()).hint("set OMUZAKI_DATA_DIR and OMUZAKI_CONFIG_DIR"))?;
+    omuzaki_app::bridge::serve_stdio(dir, paths.data()).map_err(|e| e.to_op_error())?;
+    Ok(Reply::ok(String::new()))
+}
+
 fn run_on_core(cli: &Cli, dir: &Path, mut session: Session) -> Result<Reply, OpError> {
-    let core = AppCore::open(dir, AppOptions::headless(session.actor.clone())).map_err(|e| e.to_op_error())?;
+    let core = match AppCore::open(dir, AppOptions::headless(session.actor.clone())) {
+        Ok(core) => core,
+        // The studio has the project: an agent's `omuzaki mcp` works in it through the bridge (agent-sessions 10.2).
+        Err(AppError::Store(StoreError::Locked { .. })) if matches!(cli.command, Command::Mcp) => {
+            return bridge_to_studio(dir);
+        }
+        Err(error) => return Err(error.to_op_error()),
+    };
     if !core.recovery().is_empty() {
         // Headless recovery restores to the last committed change and says so (journal.md 8.4); stdout is the reply.
         eprintln!("omuzaki: {}", core.recovery().summary());

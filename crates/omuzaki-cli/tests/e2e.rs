@@ -357,3 +357,48 @@ fn files_come_to(dir: &std::path::Path, done: impl Fn(&str) -> bool) {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
 }
+
+#[test]
+fn omuzaki_mcp_bridges_into_a_studio_that_holds_the_project_after_the_person_pairs_it() {
+    omuzaki_cli::link();
+    let (project, data) = (new_project(), tempfile::tempdir().unwrap());
+    // This test plays the studio: it holds the project and takes agents on its port.
+    let person = omuzaki_ops_api::Actor::Person { name: "pat".into() };
+    let studio = omuzaki_app::AppCore::open(project.path(), omuzaki_app::AppOptions::studio(person.clone())).unwrap();
+    studio.serve_http(omuzaki_mcp::HttpOptions::default().with_bind("127.0.0.1:0".parse().unwrap())).unwrap();
+    let events = studio.subscribe();
+
+    let data_dir = data.path().to_str().unwrap();
+    let env = [("OMUZAKI_DATA_DIR", data_dir), ("OMUZAKI_CONFIG_DIR", data_dir)];
+    let mut mcp = Mcp::start_with_env(OMUZAKI, project.path(), &env);
+    mcp.handshake();
+    let sessions = studio.sessions();
+    let deadline = Instant::now() + LIMIT;
+    while sessions.approvals().is_empty() {
+        assert!(Instant::now() < deadline, "no pairing card");
+        thread::yield_now();
+    }
+    let card = sessions.approvals().remove(0);
+    assert_eq!(card.need, omuzaki_ops_api::Need::Pairing { client: "e2e".into() });
+    sessions.resolve(card.id, omuzaki_ops_api::Decision::Approve, &person).unwrap();
+
+    // The agent's op runs in the studio's executor, in the agent's name.
+    mcp.call("character_create", &json!({"id": "mia", "name": "Mia", "template": "soft-sd"}));
+    let applied = loop {
+        let event = serde_json::to_value(events.recv_timeout(LIMIT).expect("an event")).unwrap();
+        if event["event"] == "op_applied" {
+            break event;
+        }
+    };
+    assert_eq!(applied["record"]["op"], "character.create", "{applied}");
+    let actor: omuzaki_ops_api::Actor = serde_json::from_value(applied["record"]["actor"].clone()).unwrap();
+    assert!(matches!(&actor, omuzaki_ops_api::Actor::Agent { id, .. } if id.starts_with("e2e#")), "{actor:?}");
+    let (code, stderr) = mcp.close();
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(stderr.contains("Pair \"e2e\""), "the person is told to pair the client: {stderr}");
+    studio.close().unwrap();
+    // The test reads the project's files as a person would, not as an op.
+    #[allow(clippy::disallowed_methods)]
+    let saved = std::fs::read_to_string(project.path().join("characters").join("mia.toml"));
+    assert!(saved.is_ok_and(|text| text.contains("Mia")), "the studio saved the agent's character");
+}

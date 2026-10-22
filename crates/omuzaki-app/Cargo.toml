@@ -10,9 +10,10 @@ repository.workspace = true
 
 [dependencies]
 getrandom.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["net", "time"] }
+tokio = { workspace = true, features = ["io-std", "io-util", "net", "time"] }
 tracing.workspace = true
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc = { path = "../omuzaki-doc" }
@@ -21,12 +22,13 @@ omuzaki-history-api = { path = "../omuzaki-history-api" }
 omuzaki-mcp = { path = "../omuzaki-mcp" }
 omuzaki-ops = { path = "../omuzaki-ops" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+omuzaki-store-api = { path = "../omuzaki-store-api" }
 
 [dev-dependencies]
 rmcp = { workspace = true, features = ["client"] }
 schemars.workspace = true
-serde.workspace = true
 tempfile.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
 
 [lints]
 workspace = true
@@ -34,4 +36,6 @@ workspace = true
 [package.metadata.omuzaki]
 kind = "App"
 registers = true
+# Native only: the MCP server, the loopback port and the bridge run on tokio's network stack.
+wasm = false
 summary = "the app core: `AppCore` opens a project through its journal (recovering after a crash, history restored), runs one executor and serves it to the studio, the CLI and MCP (HTTP port, in-app link); `close` ends the session cleanly"

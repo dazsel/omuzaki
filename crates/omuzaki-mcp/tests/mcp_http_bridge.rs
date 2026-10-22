@@ -78,9 +78,8 @@ async fn connect(
 async fn only_the_pairing_key_gets_a_bridge_credential_and_web_pages_never_do() {
     let rig = rig().await;
     let http = reqwest::Client::new();
-    let pair = |key: &str| {
-        http.post(rig.server.pair_url()).bearer_auth(key.to_owned()).body(r#"{"client":"claude-code"}"#)
-    };
+    let pair =
+        |key: &str| http.post(rig.server.pair_url()).bearer_auth(key.to_owned()).body(r#"{"client":"claude-code"}"#);
     assert_eq!(pair("omuzaki_mcp_wrong").send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
     assert_eq!(http.post(rig.server.pair_url()).send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
     let from_page = pair(&rig.key).header("Origin", "https://example.com").send().await.unwrap();
@@ -112,7 +111,10 @@ async fn a_new_credential_waits_for_the_person_to_pair_it_once() {
     // The first session is the stdio client's, for the studio's person, and waits on a pairing card.
     let (client, relay) = connect(&rig, &token).await;
     until("the session waits to be paired", || {
-        rig.studio.sessions().iter().any(|s| matches!(s.state, SessionState::Paused { reason: PauseReason::Pairing, .. }))
+        rig.studio
+            .sessions()
+            .iter()
+            .any(|s| matches!(s.state, SessionState::Paused { reason: PauseReason::Pairing, .. }))
     })
     .await;
     let spec = rig.studio.specs().remove(0);

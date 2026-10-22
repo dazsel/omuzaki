@@ -11,8 +11,10 @@ use std::time::Duration;
 use omuzaki_app::{AppCore, AppOptions};
 use omuzaki_doc::{Project, StoreError};
 use omuzaki_doc_api::{DocPath, DocRead, Patch};
-use omuzaki_mcp::InAppSpec;
-use omuzaki_ops_api::{Actor, Event, Grants, Mode, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
+use omuzaki_mcp::{HttpOptions, InAppSpec};
+use omuzaki_ops_api::{
+    Actor, Decision, Event, Grants, Mode, Need, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op,
+};
 use rmcp::model::{CallToolRequestParams, CallToolResult, ClientCapabilities, ClientConfig, Implementation};
 use rmcp::service::{RoleClient, RunningService};
 use rmcp::{ClientHandler, ClientLifecycleMode, ClientServiceExt};
@@ -76,7 +78,7 @@ impl ClientHandler for Client {
     }
 }
 
-async fn call(client: &RunningService<RoleClient, Client>, tool: &str, args: Value) -> CallToolResult {
+async fn call<H: ClientHandler>(client: &RunningService<RoleClient, H>, tool: &str, args: Value) -> CallToolResult {
     let args = args.as_object().unwrap().clone();
     client.call_tool(CallToolRequestParams::new(tool.to_owned()).with_arguments(args)).await.expect("call")
 }
@@ -196,5 +198,98 @@ fn a_project_open_in_one_core_is_refused_to_another() {
     let runner = core.runner();
     assert_eq!(runner.get(&note_path(), &Grants::person()).unwrap(), Some(json!("still works")));
     drop(runner);
+    core.close().unwrap();
+}
+
+/// An MCP client named like a coding agent, as `omuzaki mcp` sees it on stdio.
+struct Agent;
+
+impl ClientHandler for Agent {
+    fn get_info(&self) -> ClientConfig {
+        ClientConfig::new(ClientCapabilities::default(), Implementation::new("claude-code", "1"))
+    }
+}
+
+/// Connects `Agent` through the bridge, as `omuzaki mcp` started by the agent does while the studio has the project.
+fn bridge_in(
+    core: &AppCore,
+    data: &Path,
+) -> (RunningService<RoleClient, Agent>, tokio::task::JoinHandle<Result<(), omuzaki_app::AppError>>) {
+    let (agent_end, bridge_end) = tokio::io::duplex(1 << 16);
+    let (read, write) = tokio::io::split(bridge_end);
+    let (dir, data) = (core.dir().to_path_buf(), data.to_path_buf());
+    let relay = core
+        .runtime()
+        .spawn(async move { omuzaki_app::bridge::relay(&dir, &data, tokio::io::BufReader::new(read), write).await });
+    let agent = core
+        .runtime()
+        .block_on(Agent.serve_with_lifecycle(agent_end, ClientLifecycleMode::Initialize))
+        .expect("the agent connects through the bridge");
+    (agent, relay)
+}
+
+fn until(what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !done() {
+        assert!(std::time::Instant::now() < deadline, "never happened: {what}");
+        std::thread::yield_now();
+    }
+}
+
+fn port() -> HttpOptions {
+    HttpOptions::default().with_bind("127.0.0.1:0".parse().unwrap())
+}
+
+#[test]
+fn an_agent_started_as_omuzaki_mcp_bridges_into_the_studio_after_one_pairing() {
+    let (tmp, data) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let core = AppCore::create(tmp.path(), "demo", options()).unwrap();
+    core.serve_http(port()).unwrap();
+    assert!(omuzaki_app::studio::rendezvous(tmp.path()).is_some(), "the studio says where it is");
+    let events = core.subscribe();
+
+    // The first time, the agent's session waits on a pairing card in the studio, for this client by name.
+    let (agent, relay) = bridge_in(&core, data.path());
+    let sessions = core.sessions();
+    until("the pairing card", || !sessions.approvals().is_empty());
+    let card = sessions.approvals().remove(0);
+    assert_eq!(card.need, Need::Pairing { client: "claude-code".into() });
+    sessions.resolve(card.id, Decision::Approve, &person()).unwrap();
+
+    // Paired, the agent edits the studio's own document: the person sees it at once, and the agent sees theirs.
+    let done = core.runtime().block_on(call(&agent, "test_set_note", json!({"note": "from the bridge"})));
+    assert_ne!(done.is_error, Some(true), "{}", text(&done));
+    assert!(matches!(next_applied(&events), Actor::Agent { .. }));
+    assert_eq!(note(&core), Some(json!("from the bridge")));
+    set(&core, "from the person");
+    let log = core.runtime().block_on(call(&agent, "history_log", json!({})));
+    assert!(text(&log).contains("from the person"), "{}", text(&log));
+    core.runtime().block_on(agent.cancel()).unwrap();
+    core.runtime().block_on(relay).unwrap().unwrap();
+    core.close().unwrap();
+    assert!(omuzaki_app::studio::rendezvous(tmp.path()).is_none(), "a closed studio takes no agents");
+
+    // After a restart the client is still paired: no card, and it works at once.
+    let core = AppCore::open(tmp.path(), options()).unwrap();
+    core.serve_http(port()).unwrap();
+    let (agent, relay) = bridge_in(&core, data.path());
+    let again = core.runtime().block_on(call(&agent, "test_set_note", json!({"note": "again"})));
+    assert_ne!(again.is_error, Some(true), "{}", text(&again));
+    assert_eq!(core.sessions().approvals(), []);
+    assert_eq!(note(&core), Some(json!("again")));
+    core.runtime().block_on(agent.cancel()).unwrap();
+    core.runtime().block_on(relay).unwrap().unwrap();
+    core.close().unwrap();
+}
+
+#[test]
+fn without_a_studio_taking_agents_the_bridge_says_what_to_do() {
+    let (tmp, data) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let core = AppCore::create(tmp.path(), "demo", options()).unwrap();
+    let input = tokio::io::BufReader::new(&b"{}\n"[..]);
+    let refused =
+        core.runtime().block_on(omuzaki_app::bridge::relay(tmp.path(), data.path(), input, tokio::io::sink()));
+    let refused = refused.unwrap_err().to_op_error();
+    assert_eq!(refused.code, omuzaki_ops_api::ErrorCode::Conflict, "{refused:?}");
     core.close().unwrap();
 }

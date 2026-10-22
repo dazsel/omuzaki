@@ -4,6 +4,7 @@ use omuzaki_doc::StoreError;
 use omuzaki_doc::journal::JournalError;
 use omuzaki_history_api::SyncError;
 use omuzaki_mcp::ServerError;
+use omuzaki_mcp::bridge::BridgeError;
 use omuzaki_ops::ExecutorError;
 use omuzaki_ops_api::OpError;
 
@@ -29,6 +30,9 @@ pub enum AppError {
     /// Saving didn't finish: the reason, or that it timed out. Nothing applied is lost; the journal holds it.
     #[error(transparent)]
     Sync(#[from] SyncError),
+    /// The bridge to a running studio failed: it refused, stopped answering, or the client's stdio failed.
+    #[error(transparent)]
+    Bridge(#[from] BridgeError),
     /// The async runtime the MCP server runs on can't start.
     #[error("the MCP runtime can't start: {0}")]
     Runtime(#[source] std::io::Error),
@@ -65,6 +69,10 @@ impl AppError {
             }
             Self::Store(_) => OpError::invalid("project", self.to_string())
                 .hint("fix the file named above (or restore it from version control), then try again"),
+            Self::Bridge(BridgeError::Refused { .. }) => OpError::denied(self.to_string())
+                .hint("pair the client in Omuzaki's window, or close Omuzaki to run without it"),
+            Self::Bridge(_) => OpError::conflict(self.to_string())
+                .hint("check that Omuzaki is still running with this project, then start the client again"),
             _ => OpError::internal(self.to_string()).hint("this is a bug in Omuzaki: report it"),
         }
     }

@@ -773,7 +773,8 @@ mod tests {
             max_body_bytes: 4 * 1024 * 1024,
             body_timeout: Duration::from_secs(30),
         };
-        let (revocations, pairings) = (tokio::sync::mpsc::unbounded_channel().0, tokio::sync::mpsc::unbounded_channel().0);
+        let (revocations, pairings) =
+            (tokio::sync::mpsc::unbounded_channel().0, tokio::sync::mpsc::unbounded_channel().0);
         Registry::new(server, Vec::new(), limits, CancellationToken::new(), revocations, pairings)
     }
 

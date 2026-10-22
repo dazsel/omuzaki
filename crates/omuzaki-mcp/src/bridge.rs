@@ -156,7 +156,7 @@ where
         }
         Ok::<(), BridgeError>(())
     });
-    let send = |http: &mut StreamableHttpClientTransport<reqwest::Client>, line: &str| {
+    let forward = |http: &mut StreamableHttpClientTransport<reqwest::Client>, line: &str| {
         let message: ClientJsonRpcMessage =
             serde_json::from_str(line).map_err(|e| BridgeError::Malformed(e.to_string()))?;
         let url = url.to_owned();
@@ -167,14 +167,14 @@ where
         Ok::<(), BridgeError>(())
     };
     if let Some(first) = first {
-        send(&mut http, &first)?;
+        forward(&mut http, &first)?;
     }
     let mut lines = input.lines();
     let result = loop {
         tokio::select! {
             line = lines.next_line() => match line {
                 Ok(Some(line)) if line.trim().is_empty() => {}
-                Ok(Some(line)) => if let Err(e) = send(&mut http, &line) { break Err(e) },
+                Ok(Some(line)) => if let Err(e) = forward(&mut http, &line) { break Err(e) },
                 Ok(None) => break Ok(()),
                 Err(e) => break Err(e.into()),
             },

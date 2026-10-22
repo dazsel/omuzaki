@@ -17,14 +17,20 @@
 //!    opens the loopback HTTP port with [`AppCore::serve_http`] and the built-in assistant's link with
 //!    [`AppCore::connect_in_app`]; `omuzaki mcp` serves it on stdio.
 //!
+//! While the HTTP port is open, the core publishes how to reach it ([`studio`]), so `omuzaki mcp` started by a coding
+//! agent bridges into this core ([`bridge`]) instead of opening the project a second time; the person pairs each new
+//! client once, on a card.
+//!
 //! [`AppCore::close`] ends the session cleanly: the HTTP port closes (its sessions end), jobs are cancelled, and the
 //! journal writes the files, a close snapshot carrying the history, and its `close` record. Dropping the core closes
 //! it too; [`AppCore::abandon`] stops without closing, as a crash would, so the next open recovers.
 #![deny(missing_docs)]
 
+pub mod bridge;
 mod core;
 mod error;
 mod recover;
+pub mod studio;
 
 pub use core::{AppCore, AppOptions};
 pub use error::AppError;

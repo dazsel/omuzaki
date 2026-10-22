@@ -63,7 +63,7 @@ pub fn serve_core(core: &AppCore) -> Result<(), OpError> {
 }
 
 /// Sends `tracing` events to stderr, at `warn` unless `RUST_LOG` asks for another level.
-fn log_to_stderr() {
+pub(crate) fn log_to_stderr() {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
     // `try_init` fails only if a logger is already installed, and then that one keeps the job.
     let _ = tracing_subscriber::fmt().with_env_filter(filter).with_writer(io::stderr).with_ansi(false).try_init();

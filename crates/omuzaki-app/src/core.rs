@@ -20,6 +20,7 @@ use tokio::runtime::{Handle, Runtime};
 
 use crate::AppError;
 use crate::recover::{self, RecoveryReport};
+use crate::studio;
 
 /// How long closing may take to make everything durable and save the files.
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -94,6 +95,8 @@ pub struct AppCore {
     handle: Handle,
     http: Mutex<Option<HttpServer>>,
     person: Actor,
+    /// What a bridged client (`omuzaki mcp` while this core has the project) may do once paired.
+    agent_grants: Grants,
     dir: PathBuf,
     recovery: RecoveryReport,
     /// Held for as long as the project is open: one writer per folder.
@@ -150,7 +153,7 @@ impl AppCore {
         let executor = Arc::new(executor.with_journal(journal.clone()));
 
         let root_path = project_dir_text(dir);
-        let mcp_options = McpOptions::with_grants(options.agent_grants)
+        let mcp_options = McpOptions::with_grants(options.agent_grants.clone())
             .with_connections(connections)
             .with_sessions(executor.clone(), options.person.clone())
             .with_journal(journal.clone())
@@ -173,6 +176,7 @@ impl AppCore {
             runtime: Some(runtime),
             http: Mutex::new(None),
             person: options.person,
+            agent_grants: options.agent_grants,
             dir: dir.to_path_buf(),
             recovery,
             lock: Mutex::new(Some(folder_lock)),
@@ -302,6 +306,12 @@ impl AppCore {
     /// Opens the loopback MCP port (`127.0.0.1:7437/mcp` by default) for other apps. Clients need a token from
     /// [`issue_token`](Self::issue_token). Returns the URL. A second call returns the port already open.
     ///
+    /// It also takes agents started as `omuzaki mcp` (`agent-sessions.md` 10.2): the core publishes the port and a
+    /// pairing key in the project's private folder ([`studio`](crate::studio)), a bridge buys its own credential with
+    /// the key, and its first session waits on a pairing card until the person pairs it. Paired credentials are stored
+    /// beside the key and admitted again here, so a paired client needs no click after a restart; a revoked one is
+    /// dropped. The `on_paired` and `on_revoked` hooks of `options` are the core's.
+    ///
     /// # Errors
     /// [`AppError::Mcp`] if the port can't be bound.
     pub fn serve_http(&self, options: HttpOptions) -> Result<String, AppError> {
@@ -309,7 +319,22 @@ impl AppCore {
         if let Some(port) = http.as_ref() {
             return Ok(port.url());
         }
+        let (paired, revoked) = (self.dir.clone(), self.dir.clone());
+        let options = options
+            .on_paired(move |record| studio::remember_paired(&paired, record))
+            .on_revoked(move |tombstone| studio::forget(&revoked, &tombstone));
         let port = self.runtime().block_on(self.mcp.serve_http(options))?;
+        for record in studio::paired_records(&self.dir) {
+            let label = record.label.clone();
+            if let Err(error) = port.admit(record) {
+                tracing::warn!(%error, client = %label, "a paired bridge credential can't be admitted; it pairs again");
+            }
+        }
+        let key = port.enable_pairing(self.agent_grants.clone(), self.person.clone())?;
+        let rendezvous = studio::Rendezvous::new(port.url(), port.pair_url(), key);
+        if let Err(error) = studio::publish(&self.dir, &rendezvous) {
+            tracing::warn!(%error, "couldn't publish the MCP port; `omuzaki mcp` can't bridge into this studio");
+        }
         let url = port.url();
         *http = Some(port);
         Ok(url)
@@ -354,6 +379,7 @@ impl AppCore {
 
     fn stop_serving(&self) {
         if let Some(port) = lock(&self.http).take() {
+            studio::withdraw(&self.dir);
             self.runtime().block_on(port.shutdown());
         }
         self.executor.shutdown_jobs();
