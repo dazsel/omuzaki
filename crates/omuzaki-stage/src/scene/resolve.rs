@@ -145,6 +145,8 @@ pub struct ResolvedScene {
     pub post: Post,
     /// Scales outline colours (the lighting's `outline_light`).
     pub outline_light: f32,
+    /// How strongly lights behind the cast edge its silhouette (the lighting's `back_light_rim`).
+    pub back_light_rim: f32,
     /// The ground under the cast.
     pub ground: ResolvedGround,
     /// Overrides every cast skin material's shadow floor while set.
@@ -214,7 +216,7 @@ impl ResolvedEnvironment {
 }
 
 /// The ground under the cast, in metres.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 #[non_exhaustive]
 pub struct ResolvedGround {
     /// Which ground.
@@ -223,6 +225,14 @@ pub struct ResolvedGround {
     pub opacity: f32,
     /// The disc's radius.
     pub radius_m: f32,
+    /// A floor's colour.
+    pub colour: Colour,
+}
+
+impl Default for ResolvedGround {
+    fn default() -> Self {
+        Self { kind: GroundKind::default(), opacity: 0.0, radius_m: 0.0, colour: omuzaki_stage_api::Ground::FLOOR }
+    }
 }
 
 impl Default for ResolvedScene {
@@ -241,6 +251,7 @@ impl ResolvedScene {
             background: Background::default(),
             post: Post::default(),
             outline_light: 1.0,
+            back_light_rim: 0.0,
             ground: ResolvedGround::default(),
             skin_floor: None,
             fog: None,
@@ -337,7 +348,8 @@ impl ResolvedScene {
             post: replace(&mut self.post, post),
             ground: replace(&mut self.ground, ground),
             skin_floor: replace(&mut self.skin_floor, def.lighting.skin_floor)
-                | replace(&mut self.outline_light, def.lighting.outline_light),
+                | replace(&mut self.outline_light, def.lighting.outline_light)
+                | replace(&mut self.back_light_rim, def.lighting.back_light_rim),
             fog: replace(&mut self.fog, fog),
             sky: self.environment.map(|e| e.source) != environment.map(|e| e.source),
             environment: replace(&mut self.environment, environment),
@@ -443,7 +455,7 @@ fn light_usable(light: &Light) -> bool {
 }
 
 /// The last gate before `Ok`: a valid figure can still overflow a derived number (a huge position, a long distance),
-/// so the lights, the depth of field and the ground are checked finite here and the previous scene is kept if not.
+/// so the lights, the post settings and the ground are checked here and the previous scene is kept if not.
 /// The cameras are checked as they are built.
 fn finite_or_error(lights: &LightBuf, post: &Post, ground: &ResolvedGround) -> Result<(), StageError> {
     let unusable =
@@ -454,11 +466,14 @@ fn finite_or_error(lights: &LightBuf, post: &Post, ground: &ResolvedGround) -> R
             "a resolved light isn't a finite number, or its range came out at or below 0",
         )));
     }
-    let dof_finite = post
-        .depth_of_field
-        .is_none_or(|dof| dof.focus_distance.is_finite() && dof.focus_range.is_finite() && dof.max_blur.is_finite());
-    if !dof_finite {
-        return unusable("scene.post.depth_of_field", "the depth of field");
+    // The renderer refuses a post out of its ranges (`Post::validate`), so a scene that resolves to one (a subject
+    // focus behind the camera, a derived number that overflowed) fails here and keeps the previous scene instead.
+    if let Err(error) = post.validate() {
+        let reason = match error {
+            omuzaki_render_api::RenderError::Invalid { reason, .. } => reason,
+            other => other.to_string(),
+        };
+        return Err(scene_error(SceneError::new("scene.post", reason)));
     }
     if !(ground.radius_m.is_finite() && ground.opacity.is_finite()) {
         return unusable("scene.ground", "the ground radius");
@@ -633,5 +648,10 @@ fn resolve_ground(def: &SceneDef, figures: &BTreeMap<MemberId, Figure>, unit: f3
         },
         |r| r * unit,
     );
-    ResolvedGround { kind: g.kind, opacity: g.opacity, radius_m }
+    ResolvedGround {
+        kind: g.kind,
+        opacity: g.opacity,
+        radius_m,
+        colour: g.colour.unwrap_or(omuzaki_stage_api::Ground::FLOOR),
+    }
 }

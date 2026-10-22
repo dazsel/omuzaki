@@ -4,13 +4,15 @@
 //!   exporter, so import is tested without depending on export.
 //! - [`tiny_avatar`] builds a minimal valid VRM scene: the 15 required humanoid bones in a skeleton, one skinned
 //!   triangle with a morph target, two expressions, meta and a provenance record.
+//! - [`vroid_like_avatar`] is [`tiny_avatar`] with `VRoid`-style morph target names and two presets bound to them: the
+//!   one input the ARKit-52 synthesis tests share, through the mock's preflight and through the real VRM exporter.
 
 use std::collections::BTreeMap;
 
 use omuzaki_core::glam::{Mat4, Vec2, Vec3, Vec4};
 use omuzaki_io_api::{
-    Avatar, ExpressionName, IoScene, Material, Mesh, MeshData, MorphTarget, Node, NodeIx, Override, Pbr, Primitive,
-    Shading, Skin, VRM_LICENSE_URLS, VrmMeta,
+    Avatar, Expression, ExpressionName, IoScene, Material, Mesh, MeshData, MorphBind, MorphTarget, Node, NodeIx,
+    Override, Pbr, PresetExpression, Primitive, Shading, Skin, VRM_LICENSE_URLS, VrmMeta,
 };
 use omuzaki_store_api::{Commercial, Provenance, Source};
 use serde_json::json;
@@ -167,4 +169,27 @@ pub fn glb_from_json(doc: &serde_json::Value, bin: &[u8]) -> Vec<u8> {
 pub fn glb_parts(bytes: &[u8]) -> Option<(serde_json::Value, Vec<u8>)> {
     let (json, bin) = glb::split(bytes).ok()?;
     Some((serde_json::from_slice(json).ok()?, bin.to_vec()))
+}
+
+/// [`tiny_avatar`] with `VRoid`-style morph target names on the body (`Fcl_MTH_A`, `Fcl_MTH_O`, `Fcl_EYE_Close_L`,
+/// `Fcl_BRW_Angry`) and only two presets, `happy` and `lookUp`, bound to the second and third. Synthesising the 52
+/// `ARKit` channels from it builds some and leaves the rest missing.
+pub fn vroid_like_avatar() -> IoScene {
+    let mut scene = tiny_avatar();
+    let names = ["Fcl_MTH_A", "Fcl_MTH_O", "Fcl_EYE_Close_L", "Fcl_BRW_Angry"];
+    let mesh = &mut scene.meshes[0];
+    let first = mesh.primitives[0].morph_targets[0].clone();
+    mesh.primitives[0].morph_targets = vec![first; names.len()];
+    mesh.morph_target_names = names.iter().map(|n| (*n).to_owned()).collect();
+    let bound = |index| {
+        let mut e = Expression::new();
+        e.morph_binds.push(MorphBind { node: BODY_NODE, index, weight: 1.0 });
+        e
+    };
+    if let Some(avatar) = scene.avatar.as_mut() {
+        avatar.expressions.clear();
+        avatar.expressions.insert(ExpressionName::Preset(PresetExpression::Happy), bound(1));
+        avatar.expressions.insert(ExpressionName::Preset(PresetExpression::LookUp), bound(2));
+    }
+    scene
 }

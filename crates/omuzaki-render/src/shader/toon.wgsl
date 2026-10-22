@@ -18,6 +18,7 @@
 //                                                                           through this ramp when the scene asks for it)
 //   colour     = albedo * irradiance / PI + emissive + rim
 //   skin       = keep the albedo's hue under coloured light, never fall below `floor * albedo`
+//   back rim   = + the stage's back lights on the silhouette, when the scene asks for them (`back_light_rim`)
 //
 // Colour is linear light and the result is written unclamped to the HDR scene colour; `Resolve` tone maps.
 
@@ -245,6 +246,35 @@ fn toon_colour(albedo: vec3<f32>, n: vec3<f32>, position: vec3<f32>) -> vec3<f32
     return colour;
 }
 
+// A stage's back light (`Scene::back_light_rim`, `frame.look.z`): light arriving from behind a surface, as the eye sees
+// it, edges the silhouette in the light's colour. The toon ramp cannot do this on its own, because it tints both sides
+// of a form with every light it reaches. Each spot, point or directional light adds its colour (falloff, cone and shadow
+// included) times how far behind the surface it sits from the eye, times the side of the form that faces it, on a crisp
+// band at the silhouette (a cel rim, not a soft fresnel glow, which would light the whole of a thin arm); the sum is added to the lit colour after the skin treatment, so a cool rim reads on skin too. 0 (the
+// default) skips it, and so does a toon material with no rim of its own (a floor, a backdrop card).
+const BACK_RIM_BAND: vec2<f32> = vec2<f32>(0.55, 0.8);
+
+fn back_light_rim(n: vec3<f32>, position: vec3<f32>) -> vec3<f32> {
+    let strength = frame.look.z;
+    if (strength <= 0.0) {
+        return vec3<f32>(0.0);
+    }
+    let v = view_direction(position);
+    let edge = smoothstep(BACK_RIM_BAND.x, BACK_RIM_BAND.y, 1.0 - saturate(dot(n, v)));
+    var rim = vec3<f32>(0.0);
+    for (var i = 0u; i < frame.counts.x; i++) {
+        let l = frame.lights[i];
+        if (l.vector.w == LIGHT_HEMISPHERE) {
+            continue;
+        }
+        let incident = incident_light(l, i, n, position);
+        let behind = saturate(-dot(incident.to_light, v));
+        let side = saturate(0.5 + 0.5 * dot(n, incident.to_light));
+        rim += incident.colour * incident.shadow * behind * side;
+    }
+    return rim * edge * strength;
+}
+
 // ---- MToon ----
 //
 // A material with `MTOON_ON` is lit by VRMC_materials_mtoon 1.0 in place of the ramp above, ported from three-vrm's
@@ -441,6 +471,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
         let facing = normalize(in.world_normal);
         let face = select(-1.0, 1.0, front);
         colour = mtoon_colour(albedo.rgb, uv, facing * face, in.world_position, in.colour, face);
+        colour += back_light_rim(facing * face, in.world_position);
     } else if (material.flags.y == SHADING_TOON) {
         // The back of a double-sided surface is lit as a face of its own (three.js: `normal *= faceDirection`). A
         // shading program colours the surface before the lights and the lit result after them.
@@ -448,6 +479,9 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
         let n = select(-facing, facing, front);
         colour = toon_colour(program_albedo(albedo.rgb, program), n, in.world_position);
         colour = program_light(colour, n, view_direction(in.world_position), program);
+        if (material.rim.w > 0.0) {
+            colour += back_light_rim(n, in.world_position);
+        }
     }
     // Opaque and masked surfaces cover what is behind them completely. Fog fades unlit surfaces too.
     return vec4<f32>(apply_fog(colour, in.world_position), 1.0);

@@ -97,7 +97,9 @@ pub fn skin_ear(ctx: &BuildCtx<'_>, p: &HeadParams) -> Result<MaterialSpec, Buil
     })
 }
 
-/// The neck (`skin-neck`): skin without rim light or outline, mostly hidden by the collar and the chin.
+/// The neck (`skin-neck`): skin without rim light or outline, mostly hidden by the collar and the chin. It takes the
+/// skin treatment the ears and the body take, so coloured light leaves it the skin's hue like them instead of painting a
+/// saturated band between the chin and the chest.
 ///
 /// # Errors
 /// [`BuildError::Colour`] if a skin slot is missing from the palette.
@@ -108,6 +110,7 @@ pub fn skin_neck(ctx: &BuildCtx<'_>, p: &HeadParams) -> Result<MaterialSpec, Bui
         shift: 0.1,
         softness: 0.2,
         rim: Rim { strength: 0.0, ..Rim::default() },
+        skin: Some(Skin { floor: Skin::default().floor, hue_keep: HUE_KEEP }),
         ..Toon::default()
     });
     Ok(neck)

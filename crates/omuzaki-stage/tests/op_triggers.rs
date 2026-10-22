@@ -394,6 +394,8 @@ fn the_ops_bind_list_press_and_unbind_through_the_host() {
     let listed = run(&rig.handle, "trigger.list", json!({}), false).unwrap();
     assert_eq!(listed["max"], json!(MAX_TRIGGERS));
     assert_eq!(listed["triggers"].as_array().unwrap().len(), 5);
+    let ids = listed["expressions"].as_array().unwrap();
+    assert!(ids.contains(&json!("happy")), "the expressions a key can show: {ids:?}");
     assert_eq!(run(&rig.handle, "trigger.press", json!({ "key": "F5" }), false).unwrap(), json!({ "pressed": true }));
     assert_eq!(run(&rig.handle, "trigger.unbind", json!({ "key": "F5" }), false).unwrap(), json!({ "removed": true }));
 }

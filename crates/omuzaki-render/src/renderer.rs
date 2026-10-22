@@ -472,6 +472,7 @@ impl Renderer for WgpuRenderer {
             });
         }
         let samples = shared.gpu.samples_for(quality.samples);
+        let rounds = crate::frame::supersample::rounds(quality, samples);
 
         #[cfg(test)]
         let inject_frame_failure = self.inject_frame_failure;
@@ -479,7 +480,7 @@ impl Renderer for WgpuRenderer {
         let report = gpu.scoped("a frame", || {
             // Everything that can fail on the caller's data happens before the GPU is touched, so on error the target
             // keeps its previous frame.
-            frame.prepare(&gpu.device, &gpu.queue, &shared.layouts, scene, scene_resources, internal)?;
+            frame.prepare(shared, scene, scene_resources, internal, rounds, samples)?;
             let output = entry.output_view.clone();
             let attachments: &mut Attachments = entry.attachments(shared, internal, samples);
             attachments.begin_frame();
@@ -490,7 +491,7 @@ impl Renderer for WgpuRenderer {
                 internal_size: internal,
                 target_size: desc.size,
                 samples,
-                bind_group: frame.bind_group(),
+                bind_groups: frame.bind_groups(rounds),
                 draws: &frame.draws,
             };
             let mut encoder =
@@ -521,10 +522,11 @@ impl Renderer for WgpuRenderer {
                 encoder: &mut encoder,
                 stats: FrameStats::default(),
                 extra_cpu: std::time::Duration::ZERO,
+                round: 0,
             };
-            let recorded = graph.record(&mut cx)?;
+            let recorded = graph.record(&mut cx, rounds)?;
             let stats = cx.stats;
-            graph.resolve_timings(&mut encoder, scene.frame.index, recorded.ran);
+            graph.resolve_timings(&mut encoder, scene.frame.index, recorded.ran, rounds);
             gpu.queue.submit([encoder.finish()]);
             entry.has_frame = true;
             paints.clear();
@@ -637,7 +639,7 @@ mod tests {
         instance.morph = Some(MorphRange { start: 0, len: 1 });
         scene.instances.push(instance);
         scene.morph_weights.push(0.5);
-        let quality = Quality { samples: 1, render_scale: 1.0, post_effects: false, ..Quality::offline() };
+        let quality = Quality { samples: 1, render_scale: 1.0, post_effects: false.into(), ..Quality::offline() };
 
         r.inject_frame_failure = true;
         assert!(r.render(target, &scene, &quality).is_err(), "the injected scope error fails the frame");
@@ -779,7 +781,7 @@ mod tests {
         scene.background = Background::Solid { colour: Colour::WHITE };
         scene.post.tonemap = Tonemap::None;
         scene.instances.push(Instance::new(mesh, material, Mat4::IDENTITY));
-        let quality = Quality { samples: 1, render_scale: 1.0, post_effects: false, ..Quality::offline() };
+        let quality = Quality { samples: 1, render_scale: 1.0, post_effects: false.into(), ..Quality::offline() };
 
         // Flipped normals push the hull inwards, which a stale (creation-time) set of directions would not.
         let flipped: Vec<Vec3> = cube.normals.iter().map(|n| -*n).collect();

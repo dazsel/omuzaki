@@ -40,7 +40,7 @@ fn serial() -> MutexGuard<'static, ()> {
 }
 
 fn quality() -> Quality {
-    Quality { samples: 1, render_scale: 1.0, post_effects: false, ..Quality::offline() }
+    Quality { samples: 1, render_scale: 1.0, post_effects: false.into(), ..Quality::offline() }
 }
 
 /// The mock character in its rest pose, with a row of pillars receding behind it (so fog has depth to work on), on the
