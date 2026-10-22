@@ -20,6 +20,21 @@ Snapshot refreshed hourly by `refresh.py` (git, GitHub and CI parts); last refre
 | CI runs | 8,043 (6,382 here, 1,661 in the earlier repository) |
 | Code reviews | 1,267 recorded (1,244 by Codex) |
 
+## Charts
+
+Drawn by `charts.py` (standard library only) from the CSVs; `refresh.py` redraws them, and the one-page viewer
+`index.html` (headline numbers, every chart and the story of how the project was built), on every refresh. Open
+`index.html` in a browser.
+
+![Agents working at once](charts/agents-at-once.svg)
+![Agent-hours per day](charts/agent-hours.svg)
+![Lines of code](charts/lines-of-code.svg)
+![Commits per day](charts/commits.svg)
+![Pull requests per day](charts/pull-requests.svg)
+![Issues opened and closed](charts/issues.svg)
+![Open issues and pull requests](charts/backlog.svg)
+![CI runs per day](charts/ci-runs.svg)
+
 ## Timeline
 
 - **2026-10-10 to 10-13: an earlier repository.** A local Claude Code session (the Director) planned the work and

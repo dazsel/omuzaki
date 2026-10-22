@@ -203,3 +203,6 @@ if not p.exists():
     p.write_text("snapshot_utc,open_issues,open_prs\n")
 with open(p, "a") as f:
     f.write(f"{datetime.now(timezone.utc):%Y-%m-%dT%H:%MZ},{len(open_issues)},{len(open_prs)}\n")
+
+import runpy
+runpy.run_path(str(DIR / "charts.py"))
