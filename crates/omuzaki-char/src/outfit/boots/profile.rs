@@ -262,6 +262,12 @@ impl Space {
     pub fn floor(&self) -> f64 {
         self.flat(0.0)
     }
+
+    /// The boot-space height of body height `world`: the inverse of [`Space::up`].
+    pub fn down(&self, world: f64) -> f64 {
+        let below = world - self.sole_top_world;
+        if below > 0.0 { self.sole_top + below / self.stretch } else { self.sole_top + below }
+    }
 }
 
 // ------------------------------------------------------------------------------------------------------- weights
@@ -343,6 +349,8 @@ pub struct Boot {
     crease_scale: f64,
     /// The ease of a fitted boot: the cuff's fold must not sink into the leg by more than half of it.
     fitted_ease: Option<f64>,
+    /// On a fitted boot, the body heights of the foot's lowest point and of the ankle joint.
+    foot: Option<(f64, f64)>,
 }
 
 impl Boot {
@@ -355,8 +363,18 @@ impl Boot {
         let thickness = params.sole.thickness;
         match &params.profile {
             Some(profile) => Self::explicit(profile, shape, thickness),
-            None => Self::derive(params, fit, shape),
+            None => Self::derive(params, fit, shape, params.height.fraction()),
         }
+    }
+
+    /// The boot fitted to the body as [`Boot::new`] fits one without a profile, its top `top` of the way from the
+    /// ankle joint to the knee joint: what the shoes are cut from, their collar somewhere below that top.
+    ///
+    /// # Errors
+    /// As [`Boot::new`].
+    pub fn fitted(params: &BootsParams, fit: &dyn BodyFit, top: f64) -> Result<Self, GarmentError> {
+        let shape = Shape { widen: params.toe.width, squareness: params.toe.squareness() };
+        Self::derive(params, fit, shape, top)
     }
 
     /// The boot of an explicit profile: exactly its knots, in the bind frame, the sole's top `thickness` above the floor.
@@ -371,18 +389,19 @@ impl Boot {
             skin: SkinRamp::PROTOTYPE,
             crease_scale: 1.0,
             fitted_ease: None,
+            foot: None,
         })
     }
 
     /// The boot fitted to the body: the sole and heel `ease` below the lowest point of the foot, the cuff top at the
     /// height of `params.height` up the shin, and a profile that holds the foot and leg, `ease` clear of them.
-    fn derive(params: &BootsParams, fit: &dyn BodyFit, shape: Shape) -> Result<Self, GarmentError> {
+    fn derive(params: &BootsParams, fit: &dyn BodyFit, shape: Shape, top: f64) -> Result<Self, GarmentError> {
         let ease = params.common.ease;
         let thickness = params.sole.thickness;
         let skin = SkinRamp::of_body(fit)?;
         let feet = Body::of(fit)?;
         let (ankle, knee) = (feet.ankle, feet.knee);
-        let top_world = ankle + params.height.fraction() * (knee - ankle);
+        let top_world = ankle + top * (knee - ankle);
         // The heel block's top (never the sole's) is what clears the foot: the sole and the heel stand on one flat bottom,
         // so a heel taller than the sole drops the whole boot by the difference.
         let drop = (params.heel.height - thickness).max(0.0);
@@ -390,7 +409,12 @@ impl Boot {
         let space = Space::fitted(thickness, sole_top_world, top_world)?;
         let curves = derive_curves(&feet, &space, &shape, ease)?;
         let crease_scale = (ease / CREASE_EASE).min(1.0);
-        Ok(Self { curves, shape, space, skin, crease_scale, fitted_ease: Some(ease) })
+        Ok(Self { curves, shape, space, skin, crease_scale, fitted_ease: Some(ease), foot: Some((feet.floor, ankle)) })
+    }
+
+    /// On a fitted boot, the body heights of the foot's lowest point and of the ankle joint.
+    pub fn foot(&self) -> Option<(f64, f64)> {
+        self.foot
     }
 
     /// The map from boot space to the body.
