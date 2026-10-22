@@ -11,10 +11,6 @@
 //! 3. the renderer's report goes to the [`Scheduler`], and the quality it decides on ([`Stage::set_quality`]) applies
 //!    from the next frame.
 //!
-//! When a voice is attached ([`LiveStage::set_voice`]), step 2 starts by taking the newest voice frame: lip sync writes
-//! the performer's audio layer through the character's visemes, and the voice's loudness and onsets become the life
-//! layer's cues (FE-08, PF-08).
-//!
 //! The loop then calls [`LiveStage::service`] once, outside the frame's deadline: it moves a face variant switch along
 //! and installs the swapped character's expressions for the triggers (the work that builds, allocates or waits).
 //!
@@ -24,12 +20,10 @@
 
 use std::sync::Arc;
 
-use omuzaki_anim_api::Cues;
 use omuzaki_budget::{Change, Scheduler};
 use omuzaki_core::glam::Mat4;
 use omuzaki_core::time::Seconds;
 use omuzaki_render_api::{Quality, Renderer};
-use omuzaki_track_voice::{LipSync, LipSyncConfig, VoiceReader};
 
 use super::frame::PerformFrame;
 use super::host::{PerformControl, PerformError, PerformHandle, PerformHost, perform_channel};
@@ -72,17 +66,6 @@ pub struct LiveStage {
     resumed: bool,
     /// The stage's [`revision`](Stage::revision) the triggers' expressions were installed for.
     expressions_for: u64,
-    /// The voice driving the mouth and the cues, when one is attached.
-    voice: Option<Voice>,
-}
-
-/// An attached voice: the mailbox the analyser publishes to, and the lip sync over the character's visemes.
-struct Voice {
-    reader: VoiceReader,
-    lips: LipSync,
-    config: LipSyncConfig,
-    /// The loop time of the last frame the voice was stepped at.
-    last: Option<f64>,
 }
 
 impl LiveStage {
@@ -122,7 +105,6 @@ impl LiveStage {
             subject_dirty: false,
             resumed: false,
             expressions_for: 0,
-            voice: None,
         };
         live.install_expressions()?;
         Ok(live)
@@ -135,7 +117,8 @@ impl LiveStage {
     /// # Errors
     /// [`PerformError::QueueFull`] when the performer has too many requests waiting; nothing changes then.
     pub fn install_expressions(&self) -> Result<(), PerformError> {
-        self.handle.set_expressions(self.character_expressions(), *self.performer.rest())
+        let expressions = self.stage.built().face.as_ref().map(|face| face.profile.expressions.clone()).unwrap_or_default();
+        self.handle.set_expressions(expressions, *self.performer.rest())
     }
 
     /// Runs one display frame at `now` (seconds on the loop's clock). Returns the frame, or `None` when no performer
@@ -150,9 +133,6 @@ impl LiveStage {
         }
         self.sources.swap_into(&mut self.performer);
         self.take_scene();
-        if !self.paused {
-            self.drive_voice(now);
-        }
         let output = if self.paused {
             self.stage.redraw(renderer, self.frames.input())?
         } else {
@@ -208,51 +188,7 @@ impl LiveStage {
         }
         self.install_expressions()?;
         self.expressions_for = revision;
-        if let Some(config) = self.voice.as_ref().map(|voice| voice.config) {
-            let lips = LipSync::new(&self.character_expressions(), config);
-            if let Some(voice) = self.voice.as_mut() {
-                voice.lips = lips;
-            }
-        }
         Ok(true)
-    }
-
-    /// Attaches a voice: from the next frame, the newest frame in `reader` (from a
-    /// [`VoiceListener`](omuzaki_track_voice::VoiceListener) or any analyser) moves the mouth through the character's
-    /// visemes and gives the life layer its cues. Replaces a voice attached before. Cold: reads the character's
-    /// expressions; [`refresh_expressions`](Self::refresh_expressions) re-reads them after a swap.
-    pub fn set_voice(&mut self, reader: VoiceReader, config: LipSyncConfig) {
-        let lips = LipSync::new(&self.character_expressions(), config);
-        self.voice = Some(Voice { reader, lips, config, last: None });
-    }
-
-    /// Detaches the voice: the audio layer is withdrawn and the cues go quiet.
-    pub fn clear_voice(&mut self) {
-        self.voice = None;
-        self.performer.audio_layer_mut().clear();
-        self.performer.set_cues(Cues::default());
-    }
-
-    /// The stage character's expressions (empty without a face).
-    fn character_expressions(&self) -> omuzaki_face_api::ExpressionSet {
-        self.stage.built().face.as_ref().map(|face| face.profile.expressions.clone()).unwrap_or_default()
-    }
-
-    /// Steps the voice's lip sync to `now` and writes the audio layer and cues. Allocation-free.
-    #[allow(clippy::cast_possible_truncation)] // a frame gap of seconds fits f32
-    fn drive_voice(&mut self, now: Seconds) {
-        let Some(voice) = self.voice.as_mut() else { return };
-        if let Some(frame) = voice.reader.poll() {
-            voice.lips.take(&frame);
-        }
-        let dt = voice.last.map_or(0.0, |last| (now.0 - last) as f32);
-        voice.last = Some(now.0);
-        let mut cues = Cues::default();
-        let rest = *self.performer.rest();
-        voice.lips.step(dt, &rest, self.performer.audio_layer_mut(), &mut cues);
-        // A display frame can run no fixed step; an onset no step has read yet stays pending.
-        cues.onset |= self.performer.cues().onset;
-        self.performer.set_cues(cues);
     }
 
     /// Takes a posted scene, or a moved subject root, into the stage. Never waits: a poster holding the mailbox means

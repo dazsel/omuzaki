@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use omuzaki_anim::BusAnimatorParams;
-use omuzaki_anim_api::{Channel, DeviceProfile, HeadPose, HumanoidBone, HumanoidPose, TrackFrame};
+use omuzaki_anim_api::{Channel, ChannelBuf, DeviceProfile, HeadPose, HumanoidBone, HumanoidPose, TrackFrame};
 use omuzaki_char_api::{BuildOptions, BuildServices, CharId, CharacterBuilder, RegistryBuilder};
 use omuzaki_char_api::{BuiltCharacter, JointRef};
 use omuzaki_core::glam::EulerRot;
@@ -934,7 +934,7 @@ fn a_voice_opens_the_mouth_through_the_characters_visemes_and_withdraws_when_sil
     let shut = live.bus(Channel::JAW_OPEN);
 
     let (mut writer, reader) = voice_mailbox();
-    live.inner.as_mut().unwrap().set_voice(reader, LipSyncConfig::default());
+    live.live().handle().set_voice(Some(reader), LipSyncConfig::default()).unwrap();
     writer.publish(&saying_a(1, 0.7, 1));
     live.frames(30);
     let open = live.bus(Channel::JAW_OPEN);
@@ -950,9 +950,17 @@ fn a_voice_opens_the_mouth_through_the_characters_visemes_and_withdraws_when_sil
     writer.publish(&saying_a(3, 0.7, 2));
     live.frames(30);
     assert!(live.bus(Channel::JAW_OPEN) > shut + 0.5);
-    live.inner.as_mut().unwrap().clear_voice();
+    live.live().handle().set_voice(None, LipSyncConfig::default()).unwrap();
     live.frames(5);
     assert!((live.bus(Channel::JAW_OPEN) - shut).abs() < 0.02, "clearing the voice withdraws the audio layer");
+
+    // A character without visemes: the voice re-bakes with the new set and moves no mouth.
+    let (mut writer, reader) = voice_mailbox();
+    live.live().handle().set_voice(Some(reader), LipSyncConfig::default()).unwrap();
+    live.live().handle().set_expressions(ExpressionSet::default(), ChannelBuf::NEUTRAL).unwrap();
+    writer.publish(&saying_a(1, 0.7, 1));
+    live.frames(30);
+    assert!((live.bus(Channel::JAW_OPEN) - shut).abs() < 0.02, "no visemes, no mouth: {}", live.bus(Channel::JAW_OPEN));
 }
 
 #[test]
@@ -961,7 +969,7 @@ fn a_live_frame_with_a_voice_allocates_nothing() {
         Live::new(Quiet(Recorder::new(false)), vec![("cam", turning(30.0, sweep))], Quality::live(), Painter::None);
     live.go_live("cam");
     let (mut writer, reader) = voice_mailbox();
-    live.inner.as_mut().unwrap().set_voice(reader, LipSyncConfig::default());
+    live.live().handle().set_voice(Some(reader), LipSyncConfig::default()).unwrap();
     live.frames(120);
     let (result, allocations) = allocations_in(|| {
         for step in 0..600u64 {

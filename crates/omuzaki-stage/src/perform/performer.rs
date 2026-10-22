@@ -144,7 +144,7 @@ impl Performer {
         &mut self.stack.trigger
     }
 
-    /// The audio (lip-sync) layer of the stack: what a voice source writes between steps (`LiveStage::set_voice`).
+    /// The audio (lip-sync) layer of the stack: what a voice writes before each step (`PerformHost::set_voice`).
     pub fn audio_layer_mut(&mut self) -> &mut Layer {
         &mut self.stack.audio
     }
