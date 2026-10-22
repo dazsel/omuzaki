@@ -25,6 +25,7 @@ Snapshot refreshed hourly by `refresh.py` (git, GitHub and CI parts); last refre
 | Issues (this repository) | 1,921 opened, 882 closed |
 | CI runs | 8,128 (6,467 here, 1,661 in the earlier repository) |
 | Code reviews | 1,267 recorded (1,244 by Codex) |
+| Tokens, cumulative | about 29 billion of every kind, mostly cache reads: 15.6 B in local sessions (measured), 9.5 B in cloud sessions before 10-21 (estimated) and the cloud project's own total since (`cloud_usage_snapshots.csv`) |
 
 ## Charts
 
@@ -41,6 +42,7 @@ Drawn by `charts.py` (standard library only) from the CSVs; `refresh.py` redraws
 ![Open issues and pull requests](charts/backlog.svg)
 ![CI runs per day](charts/ci-runs.svg)
 ![Cloud project tokens](charts/cloud-tokens.svg)
+![Tokens, cumulative](charts/tokens-cumulative.svg)
 
 ## Timeline
 
@@ -72,6 +74,7 @@ Drawn by `charts.py` (standard library only) from the CSVs; `refresh.py` redraws
 | `ci_daily.csv` | CI runs per day and workflow: result counts and wall-clock minutes (start to last update, not billed minutes); the earlier repository's runs are one "all" row a day | this repository 2026-10-22 4:11 PM PT; the earlier one 2026-10-18 8:22 AM PT |
 | `backlog_snapshots.csv` | Open issues and open pull requests at each refresh (one row per run) | each row's own time |
 | `events.csv` | The milestones drawn as dashed lines on the charts (the first commit, the move to this repository, the peak, the pause, the switch to spine-first work) | kept by hand; add a row when something changes how the work runs |
+| `tokens_daily.csv` | Tokens per day and cumulative, by source and kind (input, output, cache write, cache read); totals only, no cost. `local_measured` is every local session (the Director and its subagents) from its own logs; `cloud_estimated` is the cloud sessions before the move, at the local agents' tokens per agent-hour times their estimated hours | local 2026-10-22 4:39 PM PT; cloud estimates stop at the move (2026-10-21 3:36 PM PT), and the cloud project's measured totals after it are in `cloud_usage_snapshots.csv`. Not refreshed hourly: it needs the local logs |
 | `cloud_usage_snapshots.csv` | Sessions in the cloud project and their token totals (input, output, cache read and write) at each refresh; totals only, no cost and no per-session detail | each row's own time |
 | `reviews_daily.csv` | Code reviews per day by reviewer, model and verdict, with blocking findings | **2026-10-17 6:21 PM PT**; the reviews from then until the review gate ended on 10-21 are missing |
 
