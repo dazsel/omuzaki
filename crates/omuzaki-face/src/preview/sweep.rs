@@ -19,8 +19,8 @@ use serde::Serialize;
 use super::metrics::{LayerChange, layer_change};
 use super::{FaceSubject, Preview};
 
-/// The channels a front-facing painted face does not draw, by contract.
-pub const UNMAPPED: [Channel; 3] = [Channel::JAW_FORWARD, Channel::MOUTH_SHRUG_LOWER, Channel::MOUTH_SHRUG_UPPER];
+/// The channels a front-facing painted face does not draw, by contract (design doc `char-face-api.md`, Q3).
+pub use omuzaki_face_api::UNMAPPED;
 
 /// The setting a channel is pushed in, when it only shows in one: the channels set first, at rest and pushed alike.
 pub fn context(channel: Channel) -> &'static [(Channel, f32)] {
