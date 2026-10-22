@@ -1502,6 +1502,21 @@ mod tests {
         assert_eq!(store.sweep(&|_| false, GRACE, now()).unwrap().removed, vec![hash]);
     }
 
+    /// Sets a folder's modification time. A folder opens as a file does on Unix; Windows opens one only with backup
+    /// semantics, and for the one right (`FILE_WRITE_ATTRIBUTES`) that a time change needs.
+    fn set_folder_modified(dir: &Path, when: SystemTime) {
+        #[cfg(windows)]
+        let handle = {
+            use std::os::windows::fs::OpenOptionsExt;
+            const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
+            const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+            fs::OpenOptions::new().access_mode(FILE_WRITE_ATTRIBUTES).custom_flags(FILE_FLAG_BACKUP_SEMANTICS).open(dir)
+        };
+        #[cfg(not(windows))]
+        let handle = fs::File::open(dir);
+        handle.unwrap().set_modified(when).unwrap();
+    }
+
     #[test]
     fn a_legacy_object_without_a_marker_is_collected_after_the_timeout() {
         let (root, store) = fake_store();
@@ -1510,7 +1525,7 @@ mod tests {
         // days ago. Removing the file also moves the directory's time, so set it back.
         let dir = store.paths(&hash).dir;
         fs::remove_file(dir.join(COMMITTED_FILE)).unwrap();
-        fs::File::open(&dir).unwrap().set_modified(SystemTime::now() - Duration::from_hours(48)).unwrap();
+        set_folder_modified(&dir, SystemTime::now() - Duration::from_hours(48));
         // A legacy store is one opened afresh: this process has no memory of committing the object.
         let mut store = DiskStore::open(root.path()).unwrap();
         store.clock = now;
