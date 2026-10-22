@@ -41,6 +41,7 @@ pose.list
 
 [edits with Undo::None]
 # Transitional: live actions until live-action undo lands (#139, change #2106).
+audio.mic
 output.start
 output.stop
 output.window.close

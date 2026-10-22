@@ -45,9 +45,8 @@ impl CpalBackend {
     }
 
     fn find(&self, id: &DeviceId) -> Result<cpal::Device, BackendError> {
-        let wanted: cpal::DeviceId = format!("{}:{}", id.host, id.id)
-            .parse()
-            .map_err(|_| BackendError::UnknownDevice(id.clone()))?;
+        let wanted: cpal::DeviceId =
+            format!("{}:{}", id.host, id.id).parse().map_err(|_| BackendError::UnknownDevice(id.clone()))?;
         self.host.device_by_id(&wanted).ok_or_else(|| BackendError::UnknownDevice(id.clone()))
     }
 }
@@ -82,15 +81,7 @@ fn info(device: &cpal::Device, direction: Direction, default: Option<&DeviceId>)
         .into_iter()
         .filter(|r| ranges.iter().any(|c| (c.min_sample_rate()..=c.max_sample_rate()).contains(r)))
         .collect();
-    Some(DeviceInfo {
-        is_default: default == Some(&id),
-        id,
-        label,
-        direction,
-        rates,
-        channels,
-        latency_hint: None,
-    })
+    Some(DeviceInfo { is_default: default == Some(&id), id, label, direction, rates, channels, latency_hint: None })
 }
 
 impl AudioBackend for CpalBackend {
@@ -157,7 +148,8 @@ fn choose(
     default: Option<cpal::SupportedStreamConfig>,
     wanted: StreamConfig,
 ) -> Result<(cpal::StreamConfig, SampleFormat), BackendError> {
-    let has_rate = |c: &cpal::SupportedStreamConfigRange| (c.min_sample_rate()..=c.max_sample_rate()).contains(&wanted.rate);
+    let has_rate =
+        |c: &cpal::SupportedStreamConfigRange| (c.min_sample_rate()..=c.max_sample_rate()).contains(&wanted.rate);
     let score = |c: &cpal::SupportedStreamConfigRange| {
         (has_rate(c), c.channels() == wanted.channels, c.sample_format() == SampleFormat::F32, c.channels())
     };
@@ -165,7 +157,9 @@ fn choose(
     let (channels, rate, format) = match (best, default) {
         (Some(c), _) if has_rate(&c) => (c.channels(), wanted.rate, c.sample_format()),
         (_, Some(d)) if convertible(d.sample_format()) => (d.channels(), d.sample_rate(), d.sample_format()),
-        (Some(c), _) => (c.channels(), c.max_sample_rate().min(wanted.rate.max(c.min_sample_rate())), c.sample_format()),
+        (Some(c), _) => {
+            (c.channels(), c.max_sample_rate().min(wanted.rate.max(c.min_sample_rate())), c.sample_format())
+        }
         _ => return Err(BackendError::Unsupported("the device offers no sample format the engine reads".into())),
     };
     let buffer_size = if wanted.buffer_frames > 0 {
@@ -179,7 +173,13 @@ fn choose(
 fn convertible(format: SampleFormat) -> bool {
     matches!(
         format,
-        SampleFormat::F32 | SampleFormat::F64 | SampleFormat::I16 | SampleFormat::I32 | SampleFormat::U16 | SampleFormat::I8 | SampleFormat::U8
+        SampleFormat::F32
+            | SampleFormat::F64
+            | SampleFormat::I16
+            | SampleFormat::I32
+            | SampleFormat::U16
+            | SampleFormat::I8
+            | SampleFormat::U8
     )
 }
 
@@ -237,7 +237,10 @@ fn open_input(
                 let lag = stamp.callback.duration_since(stamp.capture);
                 let device = callback.checked_sub(lag).unwrap_or(callback);
                 if convert(format, data, &mut buffer) {
-                    on_data(&buffer, CallbackTime { callback: seconds(epoch, callback), device: seconds(epoch, device) });
+                    on_data(
+                        &buffer,
+                        CallbackTime { callback: seconds(epoch, callback), device: seconds(epoch, device) },
+                    );
                 }
             },
             move |e| on_error(map_error(&e)),
@@ -245,7 +248,10 @@ fn open_input(
         )
         .map_err(|e| map_error(&e))?;
     stream.play().map_err(|e| map_error(&e))?;
-    Ok((stream, StreamConfig { rate: config.sample_rate, channels: config.channels, buffer_frames: wanted.buffer_frames }))
+    Ok((
+        stream,
+        StreamConfig { rate: config.sample_rate, channels: config.channels, buffer_frames: wanted.buffer_frames },
+    ))
 }
 
 fn open_output(
@@ -279,7 +285,10 @@ fn open_output(
         )
         .map_err(|e| map_error(&e))?;
     stream.play().map_err(|e| map_error(&e))?;
-    Ok((stream, StreamConfig { rate: config.sample_rate, channels: config.channels, buffer_frames: wanted.buffer_frames }))
+    Ok((
+        stream,
+        StreamConfig { rate: config.sample_rate, channels: config.channels, buffer_frames: wanted.buffer_frames },
+    ))
 }
 
 /// A stream held on its own thread until dropped.

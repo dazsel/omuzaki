@@ -39,7 +39,8 @@ fn engine_with_mic() -> (FakeBackend, LiveEngine) {
         .with_input(InputSource::Function(Arc::new(tone)));
     let backend = FakeBackend::new(vec![mic], Script::new());
     let engine = LiveEngine::new(Arc::new(backend.clone()), None).unwrap();
-    let binding = Binding::Fixed { id: fake_id("mic"), label: "mic".into(), channels: ChannelMap::mono(0), speakers: false };
+    let binding =
+        Binding::Fixed { id: fake_id("mic"), label: "mic".into(), channels: ChannelMap::mono(0), speakers: false };
     engine.bind(&role("mic"), binding).unwrap();
     (backend, engine)
 }
@@ -107,7 +108,8 @@ fn wait_for(events: &omuzaki_audio_api::report::AudioEvents, want: impl Fn(&Audi
 fn the_microphone_reaches_its_bus_at_both_tap_rates() {
     let (backend, engine) = engine_with_mic();
     engine.apply(&mic_graph()).unwrap();
-    let (mut full, info) = engine.tap_ring(&request(TapPoint::BusPostFader(bus_id(MIC_BUS)), TapRate::Graph48k)).unwrap();
+    let (mut full, info) =
+        engine.tap_ring(&request(TapPoint::BusPostFader(bus_id(MIC_BUS)), TapRate::Graph48k)).unwrap();
     let (mut speech, speech_info) =
         engine.tap_ring(&request(TapPoint::BusPostFader(bus_id(MIC_BUS)), TapRate::Speech16k)).unwrap();
     assert_eq!((info.rate, speech_info.rate), (48_000, 16_000));
@@ -157,9 +159,19 @@ fn muting_silences_the_mic_bus_and_unmuting_brings_it_back() {
 fn a_feed_mixes_into_its_bus() {
     let (backend, engine) = engine_with_mic();
     let tts = bus("tts", SourceRef::Feed { id: FeedId::new("tts").unwrap() });
-    engine.apply(&GraphSpec { buses: vec![bus(MIC_BUS, SourceRef::Device { role: role("mic") }), tts], ..GraphSpec::default() }).unwrap();
-    let request_feed =
-        FeedRequest { id: FeedId::new("tts").unwrap(), rate: 48_000, mono: true, capacity: Seconds(1.0), consumer: "test".into() };
+    engine
+        .apply(&GraphSpec {
+            buses: vec![bus(MIC_BUS, SourceRef::Device { role: role("mic") }), tts],
+            ..GraphSpec::default()
+        })
+        .unwrap();
+    let request_feed = FeedRequest {
+        id: FeedId::new("tts").unwrap(),
+        rate: 48_000,
+        mono: true,
+        capacity: Seconds(1.0),
+        consumer: "test".into(),
+    };
     let mut feed = engine.feed(&request_feed).unwrap();
     let (mut tap, _) = engine.tap_ring(&request(TapPoint::BusPostFader(bus_id("tts")), TapRate::Graph48k)).unwrap();
     let pulse = vec![0.25f32; 24_000];

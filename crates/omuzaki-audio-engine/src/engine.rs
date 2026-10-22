@@ -37,8 +37,8 @@ use omuzaki_core::time::Seconds;
 
 use crate::dsp::{Decimator, MeterState, Resampler};
 use crate::executor::{
-    Bridge, BridgeWriter, Bus, Command, Compiled, Executor, Feed, Garbage, Link, MAX_ENTRIES, SendState, Shared, Source,
-    Tap, TapLink, bus_buffers, lock,
+    Bridge, BridgeWriter, Bus, Command, Compiled, Executor, Feed, Garbage, Link, MAX_ENTRIES, SendState, Shared,
+    Source, Tap, TapLink, bus_buffers, lock,
 };
 
 /// The callback size the engine asks devices for (design section 3.2).
@@ -105,6 +105,8 @@ struct Inner {
     next_token: AtomicU64,
     stop: AtomicBool,
     profile: Option<Arc<dyn ProfileStore>>,
+    /// The pipeline clock's zero.
+    epoch: Instant,
 }
 
 /// The live audio engine.
@@ -131,6 +133,20 @@ impl LiveEngine {
     /// [`AudioError::Internal`] when the housekeeping thread cannot start; [`AudioError::Profile`] when the profile
     /// cannot be read.
     pub fn new(backend: Arc<dyn AudioBackend>, profile: Option<Arc<dyn ProfileStore>>) -> Result<Self, AudioError> {
+        Self::with_epoch(backend, profile, Instant::now())
+    }
+
+    /// As [`new`](Self::new), with the pipeline clock's zero at `epoch`: the same instant the backend counts device
+    /// times from (`CpalBackend::new`) and the stream service counts capture times from, so the engine clock, frames
+    /// and takes share one timeline. The timer clock (no device) stamps its blocks from it too.
+    ///
+    /// # Errors
+    /// As [`new`](Self::new).
+    pub fn with_epoch(
+        backend: Arc<dyn AudioBackend>,
+        profile: Option<Arc<dyn ProfileStore>>,
+        epoch: Instant,
+    ) -> Result<Self, AudioError> {
         let bindings = match &profile {
             Some(p) => p.bindings()?,
             None => BTreeMap::new(),
@@ -167,6 +183,7 @@ impl LiveEngine {
             next_token: AtomicU64::new(1),
             stop: AtomicBool::new(false),
             profile,
+            epoch,
         });
         let worker = Arc::clone(&inner);
         let housekeeper = std::thread::Builder::new()
@@ -219,7 +236,10 @@ fn housekeep(inner: &Inner) {
             if frames > 0
                 && let Ok(mut executor) = inner.executor.try_lock()
             {
-                executor.run(frames, None);
+                // The block's first frame is `carry` frames old: it should have been made that long ago.
+                #[allow(clippy::cast_precision_loss)]
+                let first = now.duration_since(inner.epoch).as_secs_f64() - carry / f64::from(SAMPLE_RATE);
+                executor.run(frames, Some(Seconds(first)));
                 #[allow(clippy::cast_precision_loss)]
                 {
                     carry -= frames as f64;
@@ -284,7 +304,10 @@ impl Inner {
                 if let (Some(input), Some(lost_at)) = (control.inputs.get(&role), lost_at)
                     && input.stream.is_some()
                 {
-                    self.emit(&AudioEvent::Reconnected { role, gap: Seconds(now.duration_since(lost_at).as_secs_f64()) });
+                    self.emit(&AudioEvent::Reconnected {
+                        role,
+                        gap: Seconds(now.duration_since(lost_at).as_secs_f64()),
+                    });
                 }
             }
         }
@@ -434,7 +457,16 @@ impl Inner {
         let lost_at = None;
         control.inputs.insert(
             role.clone(),
-            Input { token, binding: binding.clone(), stream: Some(stream), failed, rate: config.rate, underruns, lost_at, retry_at: None },
+            Input {
+                token,
+                binding: binding.clone(),
+                stream: Some(stream),
+                failed,
+                rate: config.rate,
+                underruns,
+                lost_at,
+                retry_at: None,
+            },
         );
         if self.clock_token.compare_exchange(0, token, Ordering::AcqRel, Ordering::Acquire).is_ok() {
             self.emit(&AudioEvent::ClockSourceChanged { source: ClockSource::Device });
@@ -457,7 +489,8 @@ fn compile(spec: &GraphSpec, generation: u64, mic_mode: MicMode) -> Result<(Comp
         let Some(b) = spec.bus(id) else { return Err(internal(format!("bus `{id}` vanished while compiling"))) };
         let mut chain = Vec::with_capacity(b.chain.len());
         for n in &b.chain {
-            let kind = node_kind(&n.kind).ok_or_else(|| AudioError::Node(NodeError::BadConfig(format!("unknown node kind `{}`", n.kind))))?;
+            let kind = node_kind(&n.kind)
+                .ok_or_else(|| AudioError::Node(NodeError::BadConfig(format!("unknown node kind `{}`", n.kind))))?;
             let info = kind.info();
             let mut node = kind.create(&n.config, b.channels)?;
             for (name, value) in &n.params {
@@ -508,12 +541,16 @@ fn compile(spec: &GraphSpec, generation: u64, mic_mode: MicMode) -> Result<(Comp
 }
 
 /// Where a requested tap reads, and the voice consumer when it was asked for by use.
-fn resolve_tap(control: &Control, requested: &TapPoint) -> Result<(TapPoint, Option<omuzaki_audio_api::tap::VoiceUse>), AudioError> {
+fn resolve_tap(
+    control: &Control,
+    requested: &TapPoint,
+) -> Result<(TapPoint, Option<omuzaki_audio_api::tap::VoiceUse>), AudioError> {
     let (point, voice) = match requested {
         TapPoint::Voice(consumer) => {
             let mic = BusId::new(MIC_BUS).map_err(internal)?;
             let raw_voice = DeviceRole::new(RAW_VOICE_ROLE).map_err(internal)?;
-            let setup = if control.bindings.contains_key(&raw_voice) { VoiceSetup::TwoInputs } else { VoiceSetup::OwnChain };
+            let setup =
+                if control.bindings.contains_key(&raw_voice) { VoiceSetup::TwoInputs } else { VoiceSetup::OwnChain };
             let routing = VoiceRouting { mic: &mic, raw_voice: &raw_voice };
             (control.graph.voice_taps.resolve(*consumer, setup, routing).point, Some(*consumer))
         }
@@ -531,11 +568,7 @@ fn resolve_tap(control: &Control, requested: &TapPoint) -> Result<(TapPoint, Opt
 fn point_latency(control: &Control, point: &TapPoint) -> u32 {
     let chain = |bus: &BusId| {
         control.graph.bus(bus).map_or(0, |b| {
-            b.chain
-                .iter()
-                .filter(|n| n.enabled)
-                .filter_map(|n| node_kind(&n.kind).map(|k| k.info().latency.max))
-                .sum()
+            b.chain.iter().filter(|n| n.enabled).filter_map(|n| node_kind(&n.kind).map(|k| k.info().latency.max)).sum()
         })
     };
     match point {
@@ -671,7 +704,9 @@ impl AudioEngine for LiveEngine {
             .find(|b| &b.id == bus)
             .and_then(|b| b.chain.iter_mut().find(|n| &n.id == node))
             .ok_or_else(|| AudioError::UnknownNode { bus: bus.clone(), node: node.clone() })?;
-        let info = node_kind(&spec.kind).map(omuzaki_audio_api::NodeKind::info).ok_or_else(|| internal("a running node lost its kind"))?;
+        let info = node_kind(&spec.kind)
+            .map(omuzaki_audio_api::NodeKind::info)
+            .ok_or_else(|| internal("a running node lost its kind"))?;
         let name = info
             .params
             .get(usize::from(param.0))
@@ -684,7 +719,8 @@ impl AudioEngine for LiveEngine {
 
     fn set_bus_gain_db(&self, bus: &BusId, db: f32) -> Result<(), AudioError> {
         let mut control = lock(&self.inner.control);
-        let at = control.order.iter().position(|(id, _)| id == bus).ok_or_else(|| AudioError::UnknownBus(bus.clone()))?;
+        let at =
+            control.order.iter().position(|(id, _)| id == bus).ok_or_else(|| AudioError::UnknownBus(bus.clone()))?;
         if let Some(b) = control.graph.buses.iter_mut().find(|b| &b.id == bus) {
             b.gain_db = db;
         }
@@ -694,7 +730,8 @@ impl AudioEngine for LiveEngine {
 
     fn set_bus_muted(&self, bus: &BusId, muted: bool) -> Result<(), AudioError> {
         let mut control = lock(&self.inner.control);
-        let at = control.order.iter().position(|(id, _)| id == bus).ok_or_else(|| AudioError::UnknownBus(bus.clone()))?;
+        let at =
+            control.order.iter().position(|(id, _)| id == bus).ok_or_else(|| AudioError::UnknownBus(bus.clone()))?;
         if let Some(b) = control.graph.buses.iter_mut().find(|b| &b.id == bus) {
             b.muted = muted;
         }
@@ -758,7 +795,12 @@ impl AudioEngine for LiveEngine {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Ring sizes: seconds of audio.
         let capacity = ((request.capacity.0.max(0.05) * f64::from(request.rate)) as usize).max(MAX_BLOCK) * channels;
         let (producer, consumer) = ring(capacity, DropPolicy::DropNewest, 0);
-        self.inner.send(Command::AddFeed(Box::new(Feed::new(request.id.clone(), consumer, !request.mono, request.rate))))?;
+        self.inner.send(Command::AddFeed(Box::new(Feed::new(
+            request.id.clone(),
+            consumer,
+            !request.mono,
+            request.rate,
+        ))))?;
         control.entries += 1;
         Ok(producer)
     }
@@ -815,7 +857,10 @@ impl AudioEngine for LiveEngine {
             .graph
             .buses
             .iter()
-            .map(|b| BusLatency { bus: b.id.clone(), chain_samples: point_latency(&control, &TapPoint::BusPostChain(b.id.clone())) })
+            .map(|b| BusLatency {
+                bus: b.id.clone(),
+                chain_samples: point_latency(&control, &TapPoint::BusPostChain(b.id.clone())),
+            })
             .collect();
         GraphReport { routes: Vec::new(), buses }
     }

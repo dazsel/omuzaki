@@ -8,6 +8,7 @@
 //! | [`engine`] | [`LiveEngine`](engine::LiveEngine): the control side, bindings, streams, taps, feeds, status |
 //! | `executor` | the real-time graph run on the clock device's callback |
 //! | [`dsp`] | the 16 kHz decimator, the edge resampler, the meters |
+//! | [`ops`] | `audio.devices`, `audio.mic`, `audio.status` |
 //!
 //! The executor follows the contract's real-time rules: on the audio thread nothing locks (it takes its own state with
 //! `try_lock`, which never waits), blocks, logs or frees; old graphs and closed taps go back to a housekeeping thread.
@@ -16,6 +17,7 @@ pub mod backend;
 pub mod dsp;
 pub mod engine;
 mod executor;
+pub mod ops;
 
 pub use backend::CpalBackend;
 pub use engine::LiveEngine;

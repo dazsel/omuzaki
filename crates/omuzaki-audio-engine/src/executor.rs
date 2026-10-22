@@ -368,7 +368,9 @@ impl Executor {
             if let TapPoint::Input(role) = &tap.point {
                 let found = self.bridges.iter().find(|b| &b.role == role);
                 match found {
-                    Some(b) if b.rings.len() >= 2 => feed_tap(tap, &[&b.block[0][..n], &b.block[1][..n]], self.mic_mode),
+                    Some(b) if b.rings.len() >= 2 => {
+                        feed_tap(tap, &[&b.block[0][..n], &b.block[1][..n]], self.mic_mode)
+                    }
                     Some(b) => feed_tap(tap, &[&b.block[0][..n]], self.mic_mode),
                     None => feed_silence(tap, n, self.mic_mode),
                 }
@@ -392,13 +394,27 @@ impl Executor {
                     Source::Device(role) => {
                         if let Some(bridge) = self.bridges.iter().find(|br| &br.role == role) {
                             let from = bridge.rings.len().min(2);
-                            mix_into(&mut bus.buf, bus.channels, [&bridge.block[0][..n], &bridge.block[1][..n]], from, 1.0, n);
+                            mix_into(
+                                &mut bus.buf,
+                                bus.channels,
+                                [&bridge.block[0][..n], &bridge.block[1][..n]],
+                                from,
+                                1.0,
+                                n,
+                            );
                         }
                     }
                     Source::Feed(id) => {
                         if let Some(feed) = self.feeds.iter().find(|f| &f.id == id) {
                             let from = if feed.stereo { 2 } else { 1 };
-                            mix_into(&mut bus.buf, bus.channels, [&feed.block[0][..n], &feed.block[1][..n]], from, 1.0, n);
+                            mix_into(
+                                &mut bus.buf,
+                                bus.channels,
+                                [&feed.block[0][..n], &feed.block[1][..n]],
+                                from,
+                                1.0,
+                                n,
+                            );
                         }
                     }
                     Source::Silent => {}
@@ -475,7 +491,12 @@ impl Executor {
     }
 }
 
-fn push_bounded<T>(list: &mut Vec<Box<T>>, item: Box<T>, wrap: impl FnOnce(Box<T>) -> Garbage, held: &mut Vec<Garbage>) {
+fn push_bounded<T>(
+    list: &mut Vec<Box<T>>,
+    item: Box<T>,
+    wrap: impl FnOnce(Box<T>) -> Garbage,
+    held: &mut Vec<Garbage>,
+) {
     if list.len() < MAX_ENTRIES {
         list.push(item);
     } else {
@@ -693,7 +714,9 @@ impl BridgeWriter {
         let mut made = 0;
         for (k, (&channel, producer)) in self.map.iter().zip(self.producers.iter_mut()).enumerate() {
             self.scratch.clear();
-            self.scratch.extend((0..frames).map(|f| interleaved.get(f * self.device_channels + channel).copied().unwrap_or(0.0)));
+            self.scratch.extend(
+                (0..frames).map(|f| interleaved.get(f * self.device_channels + channel).copied().unwrap_or(0.0)),
+            );
             self.resampled.clear();
             let resampled = &mut self.resampled;
             self.resamplers[k].process(&self.scratch, |s| resampled.push(s));

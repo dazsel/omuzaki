@@ -37,7 +37,8 @@ fn decimator_coefficients() -> [f32; DECIMATOR_TAPS] {
     for (n, value) in h.iter_mut().enumerate() {
         #[allow(clippy::cast_precision_loss)]
         let t = n as f64 - centre;
-        let sinc = if t == 0.0 { 2.0 * fc } else { (2.0 * std::f64::consts::PI * fc * t).sin() / (std::f64::consts::PI * t) };
+        let sinc =
+            if t == 0.0 { 2.0 * fc } else { (2.0 * std::f64::consts::PI * fc * t).sin() / (std::f64::consts::PI * t) };
         let r = t / centre;
         *value = sinc * bessel_i0(KAISER_BETA * (1.0 - r * r).max(0.0).sqrt()) / denom;
     }
