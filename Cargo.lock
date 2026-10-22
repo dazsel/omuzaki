@@ -5629,6 +5629,7 @@ dependencies = [
  "omuzaki-store-api",
  "omuzaki-stream",
  "omuzaki-stream-api",
+ "omuzaki-test",
  "omuzaki-track",
  "omuzaki-track-api",
  "omuzaki-track-mock",
