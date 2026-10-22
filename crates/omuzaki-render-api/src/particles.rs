@@ -417,7 +417,7 @@ pub struct ParticleParams {
     #[serde(default)]
     pub wind: [f32; 3],
     /// A horizontal sway.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flutter: Option<Flutter>,
     /// Metres: a sprite's height (a streak's width), `> 0`.
     pub size: Span,
@@ -435,13 +435,13 @@ pub struct ParticleParams {
     /// How it is lit.
     pub shading: ParticleShading,
     /// A line inside a shape's rim.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edge: Option<Edge>,
     /// `>= 0`: the colour is multiplied by `1 + glow`, so bloom picks it up.
     #[serde(default)]
     pub glow: f32,
     /// The world height below which a particle is not drawn (rain stops at the floor).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub floor: Option<f32>,
 }
 

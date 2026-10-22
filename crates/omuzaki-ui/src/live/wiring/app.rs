@@ -306,13 +306,9 @@ impl LiveApp {
         host.set_expressions(ExpressionSet::starter(), ChannelBuf::NEUTRAL).map_err(StartError::Perform)?;
         let window = OutputHost::new(transparency, PhysicalSize::FULL_HD);
         let input: Arc<dyn InputHost> = rig.input();
-        // A seed per session: bursts asked for without one differ from run to run, and a take records each seed.
-        let seed =
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64);
-        let effects = Arc::new(StageEffects::new(seed));
-        let effect_service: Arc<dyn EffectService> = Arc::clone(&effects) as Arc<dyn EffectService>;
+        let effects = Arc::new(session_effects());
         let mut services = ServicesBuilder::new()
-            .insert::<dyn EffectService>(effect_service)
+            .insert::<dyn EffectService>(Arc::clone(&effects) as Arc<dyn EffectService>)
             .insert::<dyn PerformHost>(host)
             .insert::<dyn InputHost>(input)
             .insert::<dyn WindowHost>(Arc::new(window.clone()))
@@ -334,13 +330,7 @@ impl LiveApp {
         services = with_connectors(services, data.as_deref(), secrets.as_ref(), settings.as_ref());
         // Frames and the microphone count from one zero, so a take's audio lines up with its video.
         let epoch = std::time::Instant::now();
-        let stream = match StreamService::with_epoch(epoch) {
-            Ok(stream) => Some(Arc::new(stream)),
-            Err(error) => {
-                tracing::warn!(%error, "the stream service did not start: recording and the live outputs are unavailable");
-                None
-            }
-        };
+        let stream = start_stream(epoch);
         if let Some(stream) = &stream {
             services = services.insert::<StreamService>(Arc::clone(stream));
         }
@@ -606,6 +596,25 @@ impl Tracker for NoTracker {
     fn latency(&self) -> LatencyStats {
         LatencyStats::default()
     }
+}
+
+/// The stream service counting from `epoch`, or `None` with a warning when it can't start.
+fn start_stream(epoch: std::time::Instant) -> Option<Arc<StreamService>> {
+    match StreamService::with_epoch(epoch) {
+        Ok(stream) => Some(Arc::new(stream)),
+        Err(error) => {
+            tracing::warn!(%error, "the stream service did not start: recording and the live outputs are unavailable");
+            None
+        }
+    }
+}
+
+/// The stage's effect service with a seed per session: bursts asked for without one differ from run to run, and a
+/// take records each seed.
+fn session_effects() -> StageEffects {
+    #[allow(clippy::cast_possible_truncation, reason = "the clock's low 64 bits are the seed")]
+    let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64);
+    StageEffects::new(seed)
 }
 
 /// The live audio engine on this machine's devices, its clock counting from `epoch`; `None` (with a warning) when it

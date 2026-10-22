@@ -25,11 +25,26 @@ fn plan<T: Op + DeserializeOwned>(doc: &MemDoc, args: Value) -> Result<Plan, OpE
     op.plan(&OpCtx::new(doc, &actor, &clock))
 }
 
-/// Applies the op and checks that undo and redo are exact; returns the patch and the output.
+/// Whether a null sits anywhere in `value`: a project file is TOML, which has none.
+fn holds_null(value: &Value) -> bool {
+    match value {
+        Value::Null => true,
+        Value::Array(items) => items.iter().any(holds_null),
+        Value::Object(fields) => fields.values().any(holds_null),
+        _ => false,
+    }
+}
+
+/// Applies the op and checks that it writes no null and that undo and redo are exact; returns the patch and the output.
 #[allow(clippy::needless_pass_by_value, reason = "every call site passes a json! literal")]
 fn edit<T: Op + DeserializeOwned>(doc: &mut MemDoc, args: Value) -> (Patch, Value) {
     let before = doc.root().clone();
     let plan = plan::<T>(doc, args.clone()).unwrap_or_else(|e| panic!("{} {args}: {e:?}", T::meta().name));
+    for change in &plan.patch.changes {
+        if let Some(after) = &change.after {
+            assert!(!holds_null(after), "{}: TOML can't store the null at {}: {after}", T::meta().name, change.path);
+        }
+    }
     doc.apply(&plan.patch).expect("applies");
     let after = doc.root().clone();
     doc.apply(&plan.patch.inverse()).expect("undoes");
