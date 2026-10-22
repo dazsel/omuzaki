@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use omuzaki_core::time::Seconds;
 use omuzaki_doc::Project;
-use omuzaki_doc::journal::{JournalOptions, ProjectJournal, SessionStart, SystemWall, reopen};
+use omuzaki_doc::journal::{JournalOptions, ProjectJournal, SessionStart, SystemWall, left_open, reopen};
 use omuzaki_doc::snapshot::Snapshotter;
 use omuzaki_history_api::{HistoryEntry, HistoryExport, JournalSink, RunningJob, Trigger};
 use omuzaki_ops_api::{Actor, JobId, JobState};
@@ -127,4 +127,22 @@ fn a_job_reported_once_is_not_reported_again_after_a_second_crash() {
     let again = reopen(tmp.path(), &snapshots(tmp.path())).unwrap();
     assert_eq!(again.interrupted, []);
     assert_eq!(again.last_job, 3);
+}
+
+#[test]
+fn left_open_is_true_after_a_crash_and_false_after_a_close_or_with_no_journal() {
+    let tmp = tempfile::tempdir().unwrap();
+    Project::create(tmp.path(), "demo").unwrap();
+    assert!(!left_open(tmp.path()), "never journalled");
+    let journal = start(tmp.path());
+    journal.append(started(1, "test.quick"));
+    journal.sync(WAIT).unwrap();
+    drop(journal); // a crash: the journal is never closed
+    assert!(left_open(tmp.path()));
+    assert!(reopen(tmp.path(), &snapshots(tmp.path())).unwrap().recovery.is_some(), "and opening agrees");
+
+    let again = start(tmp.path());
+    again.close(HistoryExport::empty(), WAIT).unwrap();
+    assert!(!left_open(tmp.path()));
+    assert!(!left_open(&tmp.path().join("gone")), "a missing folder is not a crash");
 }

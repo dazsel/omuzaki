@@ -26,9 +26,13 @@ omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-store = { path = "../omuzaki-store" }
 omuzaki-library-api = { path = "../omuzaki-library-api" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
+omuzaki-settings = { path = "../omuzaki-settings" }
+omuzaki-settings-api = { path = "../omuzaki-settings-api" }
+omuzaki-setup = { path = "../omuzaki-setup" }
 
 [dev-dependencies]
 omuzaki-library-mock = { path = "../omuzaki-library-mock" }
+omuzaki-settings-mock = { path = "../omuzaki-settings-mock" }
 omuzaki-store-mock = { path = "../omuzaki-store-mock" }
 proptest.workspace = true
 rmcp = { workspace = true, features = ["client"] }

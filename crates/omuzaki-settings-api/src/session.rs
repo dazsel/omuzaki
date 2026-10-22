@@ -78,6 +78,45 @@ impl WindowGeometry {
     }
 }
 
+/// Where first-run setup stands (`docs/design/first-run.md` §2). The step is an id (`welcome`, `character`, `input`,
+/// `calibrate`, `output`, `go_live`) so this crate does not depend on the setup machine; an id it does not know resumes
+/// at `welcome`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
+pub struct SetupProgress {
+    /// The step to resume at.
+    pub step: String,
+    /// The steps the person skipped or the probes made pointless, in flow order.
+    #[serde(default)]
+    pub skipped: Vec<String>,
+    /// Setup ended: finished, or skipped as a whole.
+    #[serde(default)]
+    pub finished: bool,
+}
+
+impl SetupProgress {
+    /// The step id setup starts at.
+    pub const WELCOME: &'static str = "welcome";
+
+    /// Progress at `step`, with `skipped` steps.
+    #[must_use]
+    pub fn new(step: impl Into<String>, skipped: Vec<String>, finished: bool) -> Self {
+        Self { step: step.into(), skipped, finished }
+    }
+
+    /// Setup from the start: Welcome, nothing skipped, not finished (what Run setup again writes).
+    #[must_use]
+    pub fn start() -> Self {
+        Self::new(Self::WELCOME, Vec::new(), false)
+    }
+
+    /// Setup ended at `step` with `skipped` steps.
+    #[must_use]
+    pub fn ended(step: impl Into<String>, skipped: Vec<String>) -> Self {
+        Self::new(step, skipped, true)
+    }
+}
+
 /// Everything `session.toml` remembers.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[non_exhaustive]
@@ -93,6 +132,9 @@ pub struct SessionState {
     /// Set before a project opens, cleared after: if it is still set at the next start, the app died while opening it
     /// and the startup plan is Welcome, so there is no crash loop.
     pub opening: Option<PathBuf>,
+    /// First-run setup: `None` when it was never decided, which [`Self::setup_needed`] reads with the project history.
+    #[serde(default)]
+    pub setup: Option<SetupProgress>,
 }
 
 impl SessionState {
@@ -129,6 +171,21 @@ impl SessionState {
         let index = index.min(self.recent.len());
         self.recent.insert(index, entry);
         self.recent.truncate(MAX_RECENT);
+    }
+
+    /// Whether the startup plan shows setup (`first-run.md` §2): never decided and no project history (a first run), or
+    /// started and not finished (resume). `None` with history is an existing user from before setup, who never sees it.
+    #[must_use]
+    pub fn setup_needed(&self) -> bool {
+        match &self.setup {
+            None => self.last_project.is_none() && self.recent.is_empty(),
+            Some(progress) => !progress.finished,
+        }
+    }
+
+    /// Records where setup stands; `None` puts it back to never decided (the undo of a first decision).
+    pub fn set_setup(&mut self, progress: Option<SetupProgress>) {
+        self.setup = progress;
     }
 
     /// Records a window's geometry.
@@ -182,6 +239,13 @@ pub trait SessionStore: Send + Sync {
     /// # Errors
     /// [`SettingErrorKind::Storage`](crate::error::SettingErrorKind::Storage).
     fn opened(&self, project: &Path, name: &str) -> Result<(), SettingError>;
+
+    /// Records where first-run setup stands (see [`SessionState::set_setup`]) and makes it durable **now**, like
+    /// [`begin_open`](Self::begin_open): a crash mid-setup resumes at the step the person was on.
+    ///
+    /// # Errors
+    /// [`SettingErrorKind::Storage`](crate::error::SettingErrorKind::Storage); the in-memory state is updated either way.
+    fn set_setup(&self, progress: Option<SetupProgress>) -> Result<(), SettingError>;
 
     /// Removes `project` from the recent list. **Debounced**: `state()` shows the change at once and the store writes
     /// it shortly after. A write that fails is logged as a warning and retried with the next change and by
@@ -247,6 +311,27 @@ mod tests {
         s.restore_recent(gone, 99, true);
         assert_eq!(s.last_project.as_deref(), Some(Path::new("/p/b")));
         assert_eq!(s.recent.len(), 3, "one entry per path");
+    }
+
+    #[test]
+    fn setup_shows_on_a_first_run_and_a_resume_and_never_to_an_existing_user() {
+        let history = |s: &mut SessionState| s.opened(Path::new("/p/a"), "A", 1);
+        let cases: [(Option<SetupProgress>, bool, bool); 6] = [
+            (None, false, true),
+            (None, true, false),
+            (Some(SetupProgress::start()), false, true),
+            (Some(SetupProgress::new("input", vec![], false)), true, true),
+            (Some(SetupProgress::ended("go_live", vec![])), false, false),
+            (Some(SetupProgress::ended("welcome", vec![])), true, false),
+        ];
+        for (setup, with_history, needed) in cases {
+            let mut s = SessionState::default();
+            if with_history {
+                history(&mut s);
+            }
+            s.setup = setup.clone();
+            assert_eq!(s.setup_needed(), needed, "{setup:?} with history {with_history}");
+        }
     }
 
     #[test]

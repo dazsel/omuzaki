@@ -24,7 +24,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use omuzaki_core::fsx::write_atomic;
 use omuzaki_settings_api::error::{SettingError, SettingErrorKind};
-use omuzaki_settings_api::session::{RecentProject, SessionState, SessionStore, WindowGeometry};
+use omuzaki_settings_api::session::{RecentProject, SessionState, SessionStore, SetupProgress, WindowGeometry};
 use serde::{Deserialize, Serialize};
 
 use crate::backend::{LOCK_WAIT, lock_beside, move_aside_path, storage};
@@ -52,6 +52,8 @@ struct FileOut<'a> {
     opening: Option<&'a Path>,
     recent: &'a [RecentProject],
     windows: &'a BTreeMap<String, WindowGeometry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    setup: Option<&'a SetupProgress>,
 }
 
 /// The file as it is read; keys this build does not know are ignored, and missing ones are empty.
@@ -69,6 +71,8 @@ struct FileIn {
     recent: Vec<RecentProject>,
     #[serde(default)]
     windows: BTreeMap<String, WindowGeometry>,
+    #[serde(default)]
+    setup: Option<SetupProgress>,
 }
 
 fn encode(state: &SessionState) -> Result<String, String> {
@@ -79,6 +83,7 @@ fn encode(state: &SessionState) -> Result<String, String> {
         opening: state.opening.as_deref(),
         recent: &state.recent,
         windows: &state.windows,
+        setup: state.setup.as_ref(),
     };
     toml::to_string(&file).map_err(|e| e.to_string())
 }
@@ -94,6 +99,7 @@ fn decode(text: &str) -> Result<SessionState, String> {
     state.opening = file.opening;
     state.recent = file.recent;
     state.windows = file.windows;
+    state.setup = file.setup;
     Ok(state)
 }
 
@@ -289,6 +295,10 @@ impl SessionStore for SessionFile {
         self.shared.durable(|state| state.opened(project, name, at))
     }
 
+    fn set_setup(&self, progress: Option<SetupProgress>) -> Result<(), SettingError> {
+        self.shared.durable(|state| state.set_setup(progress))
+    }
+
     fn forget(&self, project: &Path) {
         self.shared.debounced(|state| state.forget(project));
     }
@@ -424,5 +434,28 @@ mod tests {
         assert_eq!(decode(&text), Ok(state));
         assert!(decode("format = 2\n").is_err(), "a newer layout is not read as this one");
         assert_eq!(decode("format = 1\nfuture_key = 3\n"), Ok(SessionState::default()));
+    }
+
+    #[test]
+    fn setup_progress_is_on_disk_before_set_setup_returns() {
+        let tmp = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let (_, now) = clock();
+        let store = SessionFile::open_with(tmp.path(), Arc::clone(&now));
+        let progress = SetupProgress::new("input", vec!["calibrate".to_owned()], false);
+        store.set_setup(Some(progress.clone())).unwrap_or_else(|e| panic!("{e}"));
+        std::mem::forget(store);
+        assert_eq!(read(tmp.path()).setup, Some(progress));
+    }
+
+    #[test]
+    fn a_file_written_before_setup_existed_reads_unchanged_and_means_never_decided() {
+        // The layout as the first build wrote it: no `[setup]` table.
+        let golden = "format = 1\nlast_project = \"/shows/spring\"\n\n[[recent]]\npath = \"/shows/spring\"\n\
+                      name = \"Spring show\"\nopened = 1793000000\n\n[windows]\n";
+        let state = decode(golden).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(state.setup, None);
+        assert_eq!(state.recent[0].name, "Spring show");
+        assert!(!state.setup_needed(), "an existing user with history never sees setup");
+        assert_eq!(encode(&state).unwrap_or_else(|e| panic!("{e}")), golden, "and writes back the same bytes");
     }
 }

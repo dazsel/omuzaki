@@ -25,7 +25,7 @@ pub use format::{
     SegmentHeader, read_frame, segment_name, segment_seq, write_frame,
 };
 pub use fs::{Flush, JournalFile, JournalFs, StdFs};
-pub use history::{JournalHistory, read_all, summarise};
+pub use history::{JournalHistory, left_open, read_all, summarise};
 pub use open::{Recover, Recovery, Reopened, reopen, reopen_with};
 pub use reader::{End, Position, Reader, Scan};
 pub use record::{MAX_DEPTH, Record, SessionInfo, decode, encode, kind};

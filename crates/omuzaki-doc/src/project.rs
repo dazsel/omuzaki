@@ -137,6 +137,22 @@ impl Project {
         Self::open_source(&FileSource::Folder(dir.as_ref()))
     }
 
+    /// Judges the folder's `project.toml` alone, as [`open`](Self::open) judges it first, and returns its schema: a
+    /// cheap check that a project can be opened, for the startup plan's "this project can't be reopened" cards. It
+    /// reads one file and writes nothing; the rest of the tree is only read by opening.
+    ///
+    /// # Errors
+    /// [`StoreError::NotAProject`] when there is no `project.toml` (or no folder), an I/O or parse error naming the
+    /// file, [`StoreError::BadSchema`], or [`StoreError::SchemaTooNew`] for a project saved by a newer Omuzaki.
+    pub fn check(dir: impl AsRef<Path>) -> Result<u32, StoreError> {
+        let project = disk::read_project_file(&FileSource::Folder(dir.as_ref()))?;
+        let supported = migrate::supported_schema();
+        match migrate::schema_of_project(&project)? {
+            found if found > supported => Err(StoreError::SchemaTooNew { found, supported }),
+            found => Ok(found),
+        }
+    }
+
     /// Opens a project from its files' bytes, as a snapshot holds them, by exactly the rules of [`open`](Self::open):
     /// `project.toml` is judged first, hidden names and files that aren't `.toml` are left out of the tree, and older
     /// projects are upgraded in memory. Paths are `/`-separated and relative to the project; `dir` is where it saves.

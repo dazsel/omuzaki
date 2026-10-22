@@ -830,11 +830,15 @@ fn the_snapshot_leaves_out_the_apps_own_folder_only() {
 }
 
 /// Settings in memory holding one profile, "Stream" (`stream-0001`, the mock's first id).
+/// The settings mock with the profile "Stream" saved (the profile ops' examples name it) and first-run setup on its
+/// Go-live check (where `setup.finish` is honoured).
 fn settings_with_a_profile() -> Arc<dyn omuzaki_settings_api::service::Settings> {
     use omuzaki_settings_api::service::Settings as _;
     let settings = omuzaki_settings_mock::MemorySettings::default();
     let person = Actor::Person { name: "conformance".into() };
     let current = omuzaki_settings_api::profile::ProfileSource::Current;
     settings.save_profile("Stream", current, false, Mode::Apply, &person).expect("the mock saves a profile");
+    let go_live = omuzaki_settings_api::session::SetupProgress::new("go_live", Vec::new(), false);
+    settings.session().set_setup(Some(go_live)).expect("the mock records setup");
     Arc::new(settings)
 }

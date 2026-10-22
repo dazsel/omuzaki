@@ -24,6 +24,7 @@ use omuzaki_ops_api::{
     Actor, ConnectionService, Event, Grants, Jobs, Mode, OpError, Outcome, ProjectDir, Request, Runner, Services,
     ServicesBuilder, Sessions,
 };
+use omuzaki_settings_api::service::Settings;
 use omuzaki_store::{DiskStore, LazyDiskStore};
 use omuzaki_store_api::Store;
 use tokio::runtime::{Handle, Runtime};
@@ -70,6 +71,10 @@ pub struct AppOptions {
     /// The person's local data folder: the asset store lives in its `store/` (beside the keychain's lock file, as the
     /// studio keeps it), offered to every op as `dyn Store` unless the host's services carry one. `None` offers none.
     pub data_dir: Option<PathBuf>,
+    /// Whether opening is recorded in the person's session through the host's `dyn Settings` (settings.md D9): the
+    /// crash-loop guard is written before the load and cleared after, and the project goes to the top of Open Recent.
+    /// The studio's, never a headless host's: the CLI and MCP never restore a session, so they never write one.
+    pub remember: bool,
 }
 
 /// The file operations a core's journal writer makes (see [`AppOptions::with_journal_fs`]).
@@ -96,13 +101,14 @@ impl AppOptions {
             recover: Recover::Restore,
             journal_fs: JournalFsChoice::default(),
             data_dir: None,
+            remember: true,
         }
     }
 
     /// The options of a host with no window (`omuzaki` at the command line): nobody can approve, so requests that
     /// would wait are refused.
     pub fn headless(person: Actor) -> Self {
-        Self { approver: false, ..Self::studio(person) }
+        Self { approver: false, remember: false, ..Self::studio(person) }
     }
 
     /// These options with the journal's tunables set.
@@ -230,6 +236,12 @@ impl AppCore {
         let dir = dir.as_ref();
         let project_dir = ProjectDir::open(dir).map_err(|e| OpError::invalid("project", e.to_string()))?;
         let folder_lock = ProjectLock::acquire(dir)?;
+        // The crash-loop guard is durable before anything is loaded: if the load kills the process, the next start
+        // shows the Welcome screen with a notice instead of trying again (D9).
+        let remember = options.services.get_arc::<dyn Settings>().filter(|_| options.remember);
+        if let Some(settings) = &remember {
+            settings.session().begin_open(dir).map_err(AppError::Session)?;
+        }
         let store =
             DiskStore::open(snapshot_dir(dir)).map_err(|e| OpError::unavailable("snapshots").hint(e.to_string()))?;
         let snapshots = Arc::new(Snapshotter::new(dir, Arc::new(store)));
@@ -308,6 +320,9 @@ impl AppCore {
             .map_err(AppError::Runtime)?;
         if !recovery.is_empty() {
             tracing::warn!(recovery = %recovery.summary(), "opened after recovery");
+        }
+        if let Some(settings) = &remember {
+            record_opened(settings.as_ref(), dir, &root);
         }
         Ok(Self {
             executor,
@@ -556,6 +571,15 @@ impl Drop for AppCore {
         if let Some(runtime) = self.runtime.take() {
             runtime.shutdown_background();
         }
+    }
+}
+
+/// Clears the session's crash-loop guard and puts the project at the top of Open Recent. The project is open all the
+/// same when that can't be written: the stale guard costs one Welcome screen at the next start.
+fn record_opened(settings: &dyn Settings, dir: &Path, root: &Value) {
+    let name = root.pointer("/project/name").and_then(Value::as_str).unwrap_or("Untitled");
+    if let Err(error) = settings.session().opened(dir, name) {
+        tracing::warn!(%error, "the session didn't record the open project");
     }
 }
 

@@ -7,6 +7,7 @@ use omuzaki_mcp::ServerError;
 use omuzaki_mcp::bridge::BridgeError;
 use omuzaki_ops::ExecutorError;
 use omuzaki_ops_api::OpError;
+use omuzaki_settings_api::error::SettingError;
 
 /// Why the app core can't open, serve or close a project.
 #[derive(Debug, thiserror::Error)]
@@ -33,6 +34,10 @@ pub enum AppError {
     /// The bridge to a running studio failed: it refused, stopped answering, or the client's stdio failed.
     #[error(transparent)]
     Bridge(#[from] BridgeError),
+    /// The session file can't record that the project is being opened, so it isn't opened: a crash during the load
+    /// would otherwise repeat at every start (settings.md D9).
+    #[error("the session can't record the open: {0}")]
+    Session(#[source] SettingError),
     /// The async runtime the MCP server runs on can't start.
     #[error("the MCP runtime can't start: {0}")]
     Runtime(#[source] std::io::Error),
@@ -78,6 +83,9 @@ impl AppError {
                 .hint("pair the client in Omuzaki's window, or close Omuzaki to run without it"),
             Self::Bridge(_) => OpError::conflict(self.to_string())
                 .hint("check that Omuzaki is still running with this project, then start the client again"),
+            Self::Session(_) => OpError::unavailable("session").hint(format!(
+                "{self}; check that the local data folder exists and can be written, then open the project again"
+            )),
             _ => OpError::internal(self.to_string()).hint("this is a bug in Omuzaki: report it"),
         }
     }

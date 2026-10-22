@@ -203,22 +203,34 @@ src/session.rs: struct WindowGeometry: pub monitor: Option<String>
 src/session.rs: impl WindowGeometry: #[must_use] pub fn new(x: i32, y: i32, w: u32, h: u32) -> Self
 src/session.rs: impl WindowGeometry: #[must_use] pub fn maximised(mut self, maximised: bool) -> Self
 src/session.rs: impl WindowGeometry: #[must_use] pub fn on_monitor(mut self, monitor: impl Into<String>) -> Self
+src/session.rs: #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)] #[non_exhaustive] pub struct SetupProgress
+src/session.rs: struct SetupProgress: pub step: String
+src/session.rs: struct SetupProgress: #[serde(default)] pub skipped: Vec<String>
+src/session.rs: struct SetupProgress: #[serde(default)] pub finished: bool
+src/session.rs: impl SetupProgress: pub const WELCOME: &'static str = "welcome"
+src/session.rs: impl SetupProgress: #[must_use] pub fn new(step: impl Into<String>, skipped: Vec<String>, finished: bool) -> Self
+src/session.rs: impl SetupProgress: #[must_use] pub fn start() -> Self
+src/session.rs: impl SetupProgress: #[must_use] pub fn ended(step: impl Into<String>, skipped: Vec<String>) -> Self
 src/session.rs: #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)] #[non_exhaustive] pub struct SessionState
 src/session.rs: struct SessionState: pub last_project: Option<PathBuf>
 src/session.rs: struct SessionState: pub recent: Vec<RecentProject>
 src/session.rs: struct SessionState: pub windows: BTreeMap<String, WindowGeometry>
 src/session.rs: struct SessionState: pub last_seen_version: Option<String>
 src/session.rs: struct SessionState: pub opening: Option<PathBuf>
+src/session.rs: struct SessionState: #[serde(default)] pub setup: Option<SetupProgress>
 src/session.rs: impl SessionState: pub fn begin_open(&mut self, project: &Path)
 src/session.rs: impl SessionState: pub fn opened(&mut self, project: &Path, name: &str, at: i64)
 src/session.rs: impl SessionState: pub fn forget(&mut self, project: &Path)
 src/session.rs: impl SessionState: pub fn restore_recent(&mut self, entry: RecentProject, index: usize, last: bool)
+src/session.rs: impl SessionState: #[must_use] pub fn setup_needed(&self) -> bool
+src/session.rs: impl SessionState: pub fn set_setup(&mut self, progress: SetupProgress)
 src/session.rs: impl SessionState: pub fn set_window(&mut self, id: &str, geometry: WindowGeometry)
 src/session.rs: impl SessionState: pub fn mark_version_seen(&mut self, version: &str)
 src/session.rs: pub trait SessionStore: Send + Sync
 src/session.rs: trait SessionStore: fn state(&self) -> SessionState
 src/session.rs: trait SessionStore: fn begin_open(&self, project: &Path) -> Result<(), SettingError>
 src/session.rs: trait SessionStore: fn opened(&self, project: &Path, name: &str) -> Result<(), SettingError>
+src/session.rs: trait SessionStore: fn set_setup(&self, progress: SetupProgress) -> Result<(), SettingError>
 src/session.rs: trait SessionStore: fn forget(&self, project: &Path)
 src/session.rs: trait SessionStore: fn restore_recent(&self, entry: RecentProject, index: usize, last: bool)
 src/session.rs: trait SessionStore: fn set_window(&self, id: &str, geometry: WindowGeometry)

@@ -25,9 +25,9 @@ pub use omuzaki_core::__record_registration;
 // programs), and the viewport draws with all three. The model registry registers the `model.*` ops,
 // and the face tracker and the phone link their own (the phone's `input.phone` setting). The audio engine registers the
 // `audio.*` ops, the OBS client the `obs.*` ops, the VTube Studio bridge the `vts.*` ops, the automation engine and its
-// nodes the `show.*` and `automation.*` ops, Twitch the `twitch.*` ops, the settings store the `settings.*` ops the
-// virtual camera its output kind and the OS input hub the `input.capture.*` and `input.binding.*` ops and its backends
-// (ADR 0015). The studio's own `ui.*` settings register here (`ds::settings_keys`).
+// nodes the `show.*` and `automation.*` ops, Twitch the `twitch.*` ops, the settings store the `settings.*` ops,
+// first-run setup the `setup.*` ops, the virtual camera its output kind and the OS input hub the `input.capture.*` and
+// `input.binding.*` ops and its backends (ADR 0015). The studio's own `ui.*` settings register here (`ds::settings_keys`).
 omuzaki_core::define_link! {
     omuzaki_ai::link();
     omuzaki_anim::link();
@@ -42,6 +42,7 @@ omuzaki_core::define_link! {
     omuzaki_obs::link();
     omuzaki_render::link();
     omuzaki_settings::link();
+    omuzaki_setup::link();
     omuzaki_stage::link();
     omuzaki_stage_api::link();
     omuzaki_stream::link();

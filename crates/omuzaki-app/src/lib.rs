@@ -4,7 +4,9 @@
 //!
 //! [`AppCore::open`] does, in order:
 //!
-//! 1. **Takes the folder's lock** (`.omuzaki/lock`): one writer per project.
+//! 1. **Takes the folder's lock** (`.omuzaki/lock`): one writer per project. In the studio it then writes the session's
+//!    crash-loop guard ([`AppOptions::remember`]), so a load that kills the process is not retried at every start;
+//!    [`startup::plan`] reads it, the journals and `startup.reopen` to decide what the next start does.
 //! 2. **Reads the journal** ([`omuzaki_doc::journal::reopen`]): after a clean close the files are the truth; after a
 //!    crash, the newest snapshot plus the journal records after it.
 //! 3. **Builds the executor** with the history restored (every actor's undo and redo stacks, the next transaction and
@@ -32,6 +34,7 @@ mod error;
 pub mod history;
 pub mod ops;
 mod recover;
+pub mod startup;
 pub mod studio;
 
 pub use core::{AppCore, AppOptions, JournalFsChoice, with_resource_providers};
@@ -39,9 +42,12 @@ pub use error::AppError;
 pub use omuzaki_doc::journal::Recover;
 pub use recover::RecoveryReport;
 
-// The MCP server registers ops (`agent.connection`) and the library contract registers its own, so an App that links
-// the core links them through this (ADR 0015).
+// The MCP server registers ops (`agent.connection`), the library contract and the settings store register their own
+// (the settings and session ops, `startup.reopen`), and so does first-run setup (the `setup.*` ops), so an App that
+// links the core links them through this (ADR 0015).
 omuzaki_core::define_link! {
     omuzaki_mcp::link();
     omuzaki_library_api::link();
+    omuzaki_settings::link();
+    omuzaki_setup::link();
 }

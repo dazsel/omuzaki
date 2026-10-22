@@ -37,7 +37,7 @@ use omuzaki_settings_api::meta::{Apply, InProfile, SettingScope};
 use omuzaki_settings_api::profile::{ProfileId, ProfileInfo, ProfileSource, validate_name};
 use omuzaki_settings_api::registry::{self, SettingRegistration};
 use omuzaki_settings_api::service::{Layer, ListFilter, Resolved, Settings, Snapshot, Source};
-use omuzaki_settings_api::session::{RecentProject, SessionState, SessionStore, WindowGeometry};
+use omuzaki_settings_api::session::{RecentProject, SessionState, SessionStore, SetupProgress, WindowGeometry};
 use unicode_normalization::UnicodeNormalization;
 
 #[derive(Clone, Debug)]
@@ -652,6 +652,11 @@ impl SessionStore for MemorySession {
 
     fn restore_recent(&self, entry: RecentProject, index: usize, last: bool) {
         locked(&self.state).restore_recent(entry, index, last);
+    }
+
+    fn set_setup(&self, progress: Option<SetupProgress>) -> Result<(), SettingError> {
+        locked(&self.state).set_setup(progress);
+        Ok(())
     }
 
     fn set_window(&self, id: &str, geometry: WindowGeometry) {

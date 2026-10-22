@@ -41,6 +41,17 @@ pub fn read_all(project_dir: &Path) -> Result<Vec<(Lsn, Record)>, JournalError> 
     Ok(records)
 }
 
+/// Whether the project in `project_dir` was left open: its live journal has records and the last one is not a `close`
+/// (Omuzaki stopped without closing it: a crash, a kill, a power cut). This is the startup plan's recovery check
+/// (settings.md D9): it reads only the live journal, never opens the project and writes nothing. A project never
+/// journalled, or one whose journal does not read, is not reported; opening it says why.
+pub fn left_open(project_dir: &Path) -> bool {
+    let dir = journal_dir(project_dir);
+    let Some(first) = first_lsn(&dir) else { return false };
+    Reader::scan(&dir, Lsn(first.0.saturating_sub(1)))
+        .is_ok_and(|scan| scan.records.last().is_some_and(|(_, record)| !matches!(record, Record::Close { .. })))
+}
+
 /// The first LSN of the first used segment in `dir`, from its header; `None` when there is none.
 fn first_lsn(dir: &Path) -> Option<Lsn> {
     let mut segments: Vec<(u64, PathBuf)> = std::fs::read_dir(dir)

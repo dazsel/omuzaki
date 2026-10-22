@@ -127,15 +127,20 @@ pub(crate) fn load_from(
     source: &FileSource<'_>,
     accept: impl FnOnce(&Map<String, Value>) -> Result<(), StoreError>,
 ) -> Result<Loaded, StoreError> {
-    let project_file = [PROJECT_FILE.to_owned()];
-    if !source.is_file(&project_file) {
-        return Err(StoreError::NotAProject { dir: source.dir().to_path_buf() });
-    }
-    accept(&parse_text(source.path(&project_file), source.read_text(&project_file)?)?.0)?;
+    accept(&read_project_file(source)?)?;
     // The walk below reads `project.toml` again; one small file is cheaper than special-casing it.
     let mut files = Vec::new();
     let root = Value::Object(load_folder(source, &mut Vec::new(), &mut files)?);
     Ok(Loaded { root, files })
+}
+
+/// The contents of `project.toml`, or [`StoreError::NotAProject`] when the folder has none.
+pub(crate) fn read_project_file(source: &FileSource<'_>) -> Result<Map<String, Value>, StoreError> {
+    let project_file = [PROJECT_FILE.to_owned()];
+    if !source.is_file(&project_file) {
+        return Err(StoreError::NotAProject { dir: source.dir().to_path_buf() });
+    }
+    Ok(parse_text(source.path(&project_file), source.read_text(&project_file)?)?.0)
 }
 
 /// What an entry of the tree is on disk. Its name is the folder's name, or the file's without `.toml`.
