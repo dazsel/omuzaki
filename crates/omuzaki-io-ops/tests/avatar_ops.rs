@@ -548,3 +548,116 @@ fn an_imported_model_whose_terms_allow_sharing_passes_the_rights_gate() {
     let (_, errors) = export_check(&project, &id, "publish");
     assert!(!errors.iter().any(|r| r.starts_with("rights.")), "{errors:?}");
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// The licence ops on an imported avatar (#1367): the model is the `avatar` part, its row `sources/avatar`.
+// ---------------------------------------------------------------------------------------------------------------
+
+/// `licence.derive` of `id`.
+fn derived(project: &Project, id: &CharId) -> Value {
+    project.plan("licence.derive", json!({ "character": id })).expect("derive runs").output.unwrap()
+}
+
+fn rules(report: &Value) -> Vec<String> {
+    report["findings"].as_array().unwrap().iter().map(|f| f["rule"].as_str().unwrap().to_owned()).collect()
+}
+
+#[test]
+fn an_imported_model_derives_its_own_terms_with_no_orphaned_row() {
+    let mut project = Project::new();
+    let id = project.imported(&model(), &json!({}));
+    let out = derived(&project, &id);
+    assert_eq!(out["complete"], true, "{out:#}");
+    let found = rules(&out["report"]);
+    assert!(!found.iter().any(|r| r == "licence.source_orphaned" || r == "licence.no_parts"), "{found:?}");
+    let parts: Vec<&str> = out["parts"].as_array().unwrap().iter().map(|p| p["part"].as_str().unwrap()).collect();
+    assert_eq!(parts, ["avatar"]);
+    assert_eq!(out["parts"][0]["kind"], "External");
+    let terms = &out["record"]["meta"];
+    assert_eq!(terms["avatarPermission"], "everyone", "{terms:#}");
+    assert_eq!(terms["commercialUsage"], "personalProfit");
+}
+
+#[test]
+fn an_attachment_with_no_row_makes_the_derived_record_the_most_restrictive_and_is_named() {
+    let mut project = Project::new();
+    let id = project.imported(&model(), &json!({}));
+    let parts = DocPath::parse(&format!("characters/{id}/avatar/parts")).unwrap();
+    let before = project.doc.get(&parts).cloned();
+    let hat = json!({ "hat": { "kind": "mock-hat" } });
+    project.doc.apply(&Patch::new().with(parts, before, Some(hat))).unwrap();
+    let out = derived(&project, &id);
+    assert_eq!(out["complete"], false);
+    let missing: Vec<&str> = out["report"]["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["rule"] == "licence.part_source_missing")
+        .map(|f| f["location"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(missing, [format!("characters/{id}/sources/hat")], "{out:#}");
+    assert_eq!(out["record"]["meta"]["avatarPermission"], "onlyAuthor", "the floor is the most restrictive");
+}
+
+#[test]
+fn an_attachment_with_its_own_row_joins_the_models() {
+    let mut project = Project::new();
+    let id = project.imported(&model(), &json!({}));
+    let parts = DocPath::parse(&format!("characters/{id}/avatar/parts")).unwrap();
+    let before = project.doc.get(&parts).cloned();
+    let hat = json!({ "hat": { "kind": "mock-hat" } });
+    project.doc.apply(&Patch::new().with(parts, before, Some(hat))).unwrap();
+    // The hat's row: the same terms as the model's, recorded for the hat.
+    let row = project.value(&format!("characters/{id}/sources/avatar")).unwrap();
+    let path = DocPath::parse(&format!("characters/{id}/sources/hat")).unwrap();
+    project.doc.apply(&Patch::new().with(path, None, Some(row))).unwrap();
+    let out = derived(&project, &id);
+    assert_eq!(out["complete"], true, "{out:#}");
+    let joined: Vec<&str> = out["parts"].as_array().unwrap().iter().map(|p| p["part"].as_str().unwrap()).collect();
+    assert_eq!(joined, ["avatar", "hat"]);
+    let found = rules(&out["report"]);
+    assert!(!found.iter().any(|r| r.starts_with("licence.part_source") || r == "licence.source_orphaned"), "{found:?}");
+    assert_eq!(out["record"]["meta"]["avatarPermission"], "everyone", "the join of two equal rows is the same terms");
+}
+
+#[test]
+fn set_refuses_a_record_wider_than_the_models_terms() {
+    let mut project = Project::new();
+    let id = project.imported(&model(), &json!({}));
+    let mut record = derived(&project, &id)["record"].clone();
+    project
+        .plan("licence.set", json!({ "character": id, "record": record.clone() }))
+        .expect("the derived record is fine");
+    // The model forbids redistribution; a record that allows it grants more than the model does.
+    record["meta"]["allowRedistribution"] = json!(true);
+    let error = project.plan("licence.set", json!({ "character": id, "record": record })).expect_err("too wide");
+    assert_eq!(error.code, omuzaki_ops_api::ErrorCode::Invalid, "{error:?}");
+}
+
+#[test]
+fn describe_notes_a_non_profit_model_and_not_a_profit_one() {
+    let note = |scene: &IoScene| {
+        let mut project = Project::new();
+        let id = project.imported(scene, &json!({}));
+        let out = project.plan("licence.describe", json!({ "character": id })).unwrap().output.unwrap();
+        rules(&out["report"]).contains(&"rights.perform_non_profit".to_owned())
+    };
+    assert!(!note(&model()), "a profit model has no note");
+    let mut non_profit = model();
+    non_profit.meta.terms.commercial_usage = CommercialUsage::PersonalNonProfit;
+    assert!(note(&non_profit), "a non-profit model is noted");
+}
+
+#[test]
+fn publishing_a_non_profit_model_is_refused_by_the_gate() {
+    let mut scene = model();
+    scene.meta.terms.allow_redistribution = true;
+    scene.meta.terms.modification = Modification::AllowModificationRedistribution;
+    scene.meta.terms.commercial_usage = CommercialUsage::PersonalNonProfit;
+    let mut project = Project::new();
+    let id = project.imported(&scene, &json!({}));
+    let (ok, errors) = export_check(&project, &id, "publish");
+    assert!(!ok && errors.iter().any(|r| r.starts_with("rights.")), "{errors:?}");
+    let (_, errors) = export_check(&project, &id, "private");
+    assert!(!errors.iter().any(|r| r.starts_with("rights.")), "{errors:?}");
+}

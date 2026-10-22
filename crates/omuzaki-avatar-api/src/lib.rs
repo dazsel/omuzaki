@@ -3,6 +3,7 @@
 //! An imported avatar (a VRM or glTF a person brings) is a performer body of its own, not a part of a procedural
 //! `CharacterDef`: it brings its whole skeleton, its own weights and inverse bind matrices, and its own expressions.
 //! This crate holds the types the importer (`omuzaki-io-ops`) writes and everything downstream reads:
+//! - [`anchors`]: [`derive_anchors`](anchors::derive_anchors), the avatar's attachment points from its skeleton
 //! - [`avatar`]: [`ImportedAvatar`](avatar::ImportedAvatar), its meshes, [`driven`](avatar::ImportedAvatar::driven) and
 //!   [`validate`](avatar::ImportedAvatar::validate)
 //! - [`expression`]: expressions and their binds, override rules and the [`ChannelDrivers`](expression::ChannelDrivers)
@@ -18,6 +19,7 @@
 //! Callers import by path (ADR 0054 §2); [`prelude`] holds the few names nearly every caller needs.
 #![deny(missing_docs)]
 
+pub mod anchors;
 pub mod avatar;
 pub mod body;
 pub mod def;
