@@ -45,6 +45,9 @@ pub const STATION_TAIL: f64 = 0.004;
 pub const SHOULDER_SHADE: f64 = 0.10;
 /// See [`SHOULDER_SHADE`], metres.
 pub const SHADE_SPAN: f64 = 0.1;
+/// How far the arm the shirt's body is trimmed against starts behind the arm's start, metres: the body's vertices on
+/// the start's plane are inside it, and the sleeve there is still all but its whole width.
+pub const TUBE_LEAD: f64 = 0.004;
 /// How far either side of the elbow the extra ease at the elbow reaches, metres.
 pub const ELBOW_REACH: f64 = 0.05;
 
@@ -228,12 +231,12 @@ pub fn build(fit: &dyn BodyFit, spec: &SleeveSpec, tile: Option<f64>) -> Result<
     };
     let mut mesh = MeshBuilder::with_colours();
     mesh.add_grid(&grid, &options)?;
-    // The arm the body is trimmed against: from the arm's exact start (the smoothing moved the stations along the line),
-    // with the shirt's ease on the arm's own radius.
+    // The arm the body is trimmed against: from just behind the arm's exact start (the smoothing moved the stations
+    // along the line), with the shirt's ease on the arm's own radius.
     let first = a.iter().position(|&a| a > 0.0).unwrap_or(rows - 1);
-    let mut tube_points = vec![shoulder];
+    let mut tube_points = vec![shoulder + back * TUBE_LEAD, shoulder];
     tube_points.extend_from_slice(&points[first..]);
-    let mut tube_radii = vec![arm_radius(0.0)? + spec.ease];
+    let mut tube_radii = vec![arm_radius(0.0)? + spec.ease; 2];
     tube_radii.extend(arm_radii[first..].iter().map(|r| r + spec.ease));
     let arm = Tube::new(tube_points, tube_radii)?;
     let end_radius = radii.last().copied().unwrap_or_default();

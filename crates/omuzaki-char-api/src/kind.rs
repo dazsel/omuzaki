@@ -357,6 +357,17 @@ pub trait BodyFit: Debug + Send + Sync {
         None
     }
 
+    /// The same cap cut at `height`: the cross-section of only what lies there (a thin slab of it), where [`cap`]
+    /// holds everything above as well. Stacked along the axis, the slices follow a cap that leans or curls (an arm's
+    /// root rising into the shoulder), so a garment whose rings cut across them can find where they cross its plane.
+    /// `None` past the cap's top, or where the region has none; the default has none.
+    ///
+    /// [`cap`]: BodyFit::cap
+    fn cap_slice(&self, region: BodyRegion, end: RegionEnd, height: f32) -> Option<Section> {
+        let _ = (region, end, height);
+        None
+    }
+
     /// The bind-space position of a bone's joint.
     fn joint(&self, joint: &JointRef) -> Option<Vec3>;
 

@@ -296,8 +296,8 @@ impl PartKind for Shirt {
         let mut holes = MeshBuilder::new();
         let mut side = left.mesh.clone();
         if p.has_cuffs() {
-            let cuff =
-                cuff::build(&left, &cuff::CuffSpec { height: p.cuff.height, button: p.cuff.button }).map_err(fail)?;
+            let height = cuff::clear_of_hand(fit.as_ref(), &left, p.cuff.height);
+            let cuff = cuff::build(&left, &cuff::CuffSpec { height, button: p.cuff.button }).map_err(fail)?;
             side.merge(&cuff.cloth).map_err(|e| fail(e.into()))?;
             lines.merge(&cuff.lines).map_err(|e| fail(e.into()))?;
             holes.merge(&cuff.holes).map_err(|e| fail(e.into()))?;

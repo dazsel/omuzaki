@@ -483,6 +483,11 @@ fn left_hand(hand: &Hand, style: &Style) -> Result<(MeshBuilder, Block), KitErro
     Ok((builder, block))
 }
 
+/// The name of the left hand's mesh.
+pub const LEFT: &str = "hand-l";
+/// The name of the right hand's mesh.
+pub const RIGHT: &str = "hand-r";
+
 /// The hand meshes of `params.hands` for both hands of `layout`, using `material`: the left hand (a mitten, a simple
 /// hand or a five-finger hand, [`five`]), its mirror image, and for a mitten the finger-hint lines of each.
 ///
@@ -494,11 +499,11 @@ pub fn build(params: &BodyParams, layout: &BodyLayout, material: &MaterialName) 
     match params.hands {
         HandStyle::Mitten => {
             let (left, block) = left_hand(&hand, &mitten::STYLE)?;
-            parts.push(("hand-l", left));
+            parts.push((LEFT, left));
             parts.push(("hand-lines-l", mitten::lines(&hand, &block)?));
         }
-        HandStyle::Simple => parts.push(("hand-l", left_hand(&hand, &simple::STYLE)?.0)),
-        HandStyle::FiveFinger => parts.push(("hand-l", five::left_hand(&hand, layout)?)),
+        HandStyle::Simple => parts.push((LEFT, left_hand(&hand, &simple::STYLE)?.0)),
+        HandStyle::FiveFinger => parts.push((LEFT, five::left_hand(&hand, layout)?)),
     }
     // The layout is symmetric about x = 0 and the hand is built from the left joints, so the right hand is the left
     // one mirrored (x negated, winding reversed, bones swapped), never built separately.

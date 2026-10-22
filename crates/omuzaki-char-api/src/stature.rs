@@ -166,6 +166,14 @@ impl BodyFit for ScaledFit {
         })
     }
 
+    fn cap_slice(&self, region: BodyRegion, end: RegionEnd, height: f32) -> Option<Section> {
+        self.inner.cap_slice(region, end, height / self.scale).map(|sec| Section {
+            centre: sec.centre * self.scale,
+            axis: sec.axis,
+            radii: sec.radii * self.scale,
+        })
+    }
+
     fn joint(&self, joint: &JointRef) -> Option<Vec3> {
         self.inner.joint(joint).map(|p| p * self.scale)
     }

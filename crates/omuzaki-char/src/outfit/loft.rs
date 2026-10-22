@@ -167,6 +167,15 @@ pub fn ring_at(
             for leg in [BodyRegion::LegL, BodyRegion::LegR] {
                 clear_region(fit, &mut ring, leg, offset);
             }
+            // The arms' roots make the shoulders' tops and the armpits' walls.
+            for arm in [BodyRegion::ArmL, BodyRegion::ArmR] {
+                clear_root(fit, &mut ring, arm, offset);
+            }
+        }
+        BodyRegion::Neck => {
+            for arm in [BodyRegion::ArmL, BodyRegion::ArmR] {
+                clear_root(fit, &mut ring, arm, offset);
+            }
         }
         // The pelvis's floor lies between the thighs, below the torso's first section: each leg clears its own side.
         BodyRegion::LegL => clear_cap(fit, &mut ring, BodyRegion::Torso, RegionEnd::Start, offset, Some(1.0)),
@@ -256,6 +265,103 @@ fn clear_cap(
     {
         clear_section(ring, neighbour, &cap, offset, side);
     }
+}
+
+/// Slices a root is taken in, and points round each.
+const ROOT_LEVELS: usize = 24;
+const ROOT_SAMPLES: usize = 32;
+/// Steps of the search for the top of a root, and the furthest it looks, metres.
+const ROOT_STEPS: usize = 14;
+/// How much further than the root's own reach a ring's plane must pass to be clear of it: the slices' ellipses may
+/// stand a little wide of the start's.
+const CAP_SLACK: f64 = 1.0;
+const ROOT_LIMIT: f32 = 0.1;
+
+/// How far `neighbour`'s cap past its start rises ([`BodyFit::cap_slice`]), metres; 0 where it has none.
+fn root_top(fit: &dyn BodyFit, neighbour: BodyRegion) -> f32 {
+    let has = |h: f32| fit.cap_slice(neighbour, RegionEnd::Start, h).is_some();
+    if !has(0.0) {
+        return 0.0;
+    }
+    if has(ROOT_LIMIT) {
+        return ROOT_LIMIT;
+    }
+    let (mut lo, mut hi) = (0.0_f32, ROOT_LIMIT);
+    for _ in 0..ROOT_STEPS {
+        let mid = 0.5 * (lo + hi);
+        if has(mid) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    lo
+}
+
+/// Grows `ring` until it clears, by `offset`, the root of `neighbour` where the ring's plane cuts it: the cap past the
+/// neighbour's start, which leans and curls into the region the ring goes round (an arm's root rising into the shoulder,
+/// across the torso's rings). The root is lofted from its start's section through its slices to a point `offset` past
+/// its top, and the ring holds every point where that loft crosses its plane.
+fn clear_root(fit: &dyn BodyFit, ring: &mut Ring, neighbour: BodyRegion, offset: f64) {
+    let top = root_top(fit, neighbour);
+    let Some(start) = fit.section(neighbour, 0.0).filter(|s| s.centre.is_finite() && s.axis.is_finite()) else {
+        return;
+    };
+    if top <= 0.0 {
+        return;
+    }
+    // A ring whose plane passes clear of the ball round the whole root (its start's section and everything within its
+    // top of it) has nothing of it to hold.
+    let reach = f64::from(top + start.radii.max_element()) + offset.abs();
+    let below = ring.axis.dot(start.centre.as_dvec3() - ring.centre);
+    if below.abs() > reach * (1.0 + CAP_SLACK) {
+        return;
+    }
+    #[allow(clippy::cast_precision_loss)] // small counts
+    let levels: Vec<Section> = std::iter::once(Some(start))
+        .chain(
+            (0..ROOT_LEVELS)
+                .map(|k| fit.cap_slice(neighbour, RegionEnd::Start, top * (k as f32 + 0.5) / ROOT_LEVELS as f32)),
+        )
+        .flatten()
+        .filter(|s| s.centre.is_finite() && s.radii.is_finite())
+        .collect();
+    let height = |p: DVec3| (p - ring.centre).dot(ring.axis);
+    let rings: Vec<Vec<DVec3>> = levels
+        .iter()
+        .map(|s| {
+            let (across, through) = section_basis(neighbour, s.axis);
+            let (centre, across, through) = (s.centre.as_dvec3(), across.as_dvec3(), through.as_dvec3());
+            let radii = s.radii.as_dvec2() + DVec2::splat(offset);
+            (0..ROOT_SAMPLES)
+                .map(|k| {
+                    let (sin, cos) = (TAU * crate::kit::curve::fraction(k, ROOT_SAMPLES)).sin_cos();
+                    centre + across * (radii.x * cos) + through * (radii.y * sin)
+                })
+                .collect()
+        })
+        .collect();
+    let Some(last) = levels.last() else { return };
+    let apex = last.centre.as_dvec3() - start.axis.as_dvec3().normalize_or_zero() * offset;
+    let mut points = Vec::new();
+    let mut cross = |a: DVec3, b: DVec3| {
+        let (ha, hb) = (height(a), height(b));
+        if (ha < 0.0) != (hb < 0.0) {
+            let d = a.lerp(b, ha / (ha - hb)) - ring.centre;
+            points.push(DVec2::new(d.dot(ring.across), d.dot(ring.through)));
+        }
+    };
+    for pair in rings.windows(2) {
+        for (a, b) in pair[0].iter().zip(&pair[1]) {
+            cross(*a, *b);
+        }
+    }
+    if let Some(last) = rings.last() {
+        for a in last {
+            cross(*a, apex);
+        }
+    }
+    grow_to_hold(ring, &points);
 }
 
 /// Grows `ring` until it holds `section` of `region` with `offset` added to its radii; with `side`, only the part of

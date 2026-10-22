@@ -7,7 +7,7 @@
 //! offset, so the band closes round whatever sleeve it is given. The profile's lengths past the wrist stretch to the
 //! cuff's height.
 
-use omuzaki_char_api::JointRef;
+use omuzaki_char_api::{BodyFit, BodyRegion, JointRef, RegionEnd};
 use omuzaki_core::glam::DVec3;
 
 use super::sleeve::Sleeve;
@@ -16,6 +16,7 @@ use crate::kit::grid::{Grid, GridOptions, MeshBuilder, Skin};
 use crate::kit::loft::lathe_axis;
 use crate::kit::sweep::place;
 use crate::outfit::common::GarmentError;
+use crate::template::layout::section_basis;
 
 /// Segments round the band and the seam ring.
 pub const SEGMENTS: usize = 40;
@@ -100,6 +101,46 @@ pub struct Cuff {
     pub lines: MeshBuilder,
     /// The thread holes, drawn unlit.
     pub holes: MeshBuilder,
+}
+
+/// The clearance a cuff keeps over the hand inside it, metres.
+pub const HAND_CLEARANCE: f64 = 0.0005;
+/// Steps along the hand a cuff's height is checked at, metres.
+const HAND_STEP: f64 = 0.0005;
+/// Points taken round each slice of the hand.
+const HAND_SAMPLES: usize = 24;
+
+/// The height of a cuff on `sleeve`, at most `height`, that stops short of where the hand inside it (the cap past the
+/// end of `fit`'s left arm, [`BodyFit::cap_slice`]) grows wider than the cuff's inner face: a hand that spreads to its
+/// palm and thumb close past the wrist takes a shorter cuff. `height` itself over a fit without the hand.
+pub fn clear_of_hand(fit: &dyn BodyFit, sleeve: &Sleeve, height: f64) -> f64 {
+    let Some(end) = fit.section(BodyRegion::ArmL, 1.0) else { return height };
+    let (wrist, axis) = (sleeve.wrist, sleeve.forearm);
+    let inner = sleeve.end_radius + CUFF_PROFILE.iter().map(|&(_, offset)| offset).fold(f64::INFINITY, f64::min);
+    // Where along the cuff (stretched to `h`) its inner face is, at the hand's slice `a` past the wrist: the turned-back
+    // face runs to the cuff's far edge, so the hand must fit inside it all the way there.
+    let wider = |a: f64| -> bool {
+        #[allow(clippy::cast_possible_truncation)] // a fit is sampled in f32
+        let Some(s) = fit.cap_slice(BodyRegion::ArmL, RegionEnd::End, a as f32) else { return false };
+        let (across, through) = section_basis(BodyRegion::ArmL, s.axis);
+        let (centre, across, through) = (s.centre.as_dvec3(), across.as_dvec3(), through.as_dvec3());
+        let radii = s.radii.as_dvec2();
+        (0..HAND_SAMPLES).any(|k| {
+            let (sin, cos) = (TAU * fraction(k, HAND_SAMPLES)).sin_cos();
+            let p = centre + across * (radii.x * cos) + through * (radii.y * sin) - wrist;
+            (p - axis * p.dot(axis)).length() + HAND_CLEARANCE > inner
+        })
+    };
+    // The slices are measured from the arm's end, along its axis; the cuff's lengths from the wrist, along the forearm.
+    let lead = (wrist - end.centre.as_dvec3()).dot(end.axis.as_dvec3());
+    let mut a = 0.0;
+    while a < height {
+        if wider(a + lead) {
+            return a.max(HAND_STEP);
+        }
+        a += HAND_STEP;
+    }
+    height
 }
 
 /// Builds the cuff on the end of `sleeve`.

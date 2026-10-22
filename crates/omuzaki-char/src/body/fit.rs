@@ -23,7 +23,7 @@
 //! again until all are). It reaches no further across the body than it must, and takes what it must hold in front and
 //! behind.
 //!
-//! Then each reach is eased along its region with arcs of radius [`EASE_RADIUS`], so the fit has no corner for a
+//! Then each reach is eased along its region with arcs of radius [`EASE_RADIUS`] ([`TORSO_EASE_RADIUS`] on the torso), so the fit has no corner for a
 //! garment's facets to cut through. The joints and the bind pose are the template's, unchanged.
 
 use std::collections::BTreeMap;
@@ -52,10 +52,12 @@ const GROWTH_STEPS: usize = 48;
 /// and for the frames of two rows taken between them.
 const HOLD_MARGIN: f64 = 5e-5;
 
-/// The radius of the arc each reach is eased with along its region, metres: a garment's rings 6 mm apart sag less
-/// than half a millimetre into an arc this round, and the fit stands at most `m^2 r / 2` past a body whose widening
-/// falls at slope `m` (4 mm at 45°).
+/// The radius of the arc each reach is eased with along its region, metres: the fit stands at most `m^2 r / 2` past a
+/// body whose widening falls at slope `m` (1 mm at 45°), so it keeps close to a limb that swells and narrows.
 const EASE_RADIUS: f64 = 0.002;
+/// The same for the torso, which widens fastest of all into the armpits: a shirt's rows there are a centimetre apart, and
+/// across a tighter knee the flat between two of them would cut inside its ease.
+const TORSO_EASE_RADIUS: f64 = 0.005;
 
 /// Rounds of easing a region's widening and holding its points again.
 const EASE_ROUNDS: usize = 2;
@@ -313,11 +315,12 @@ impl Table {
     }
 
     /// Eases each reach along the region: every row's reach becomes the highest of the arcs of radius
-    /// [`EASE_RADIUS`] that peak at each row's own reach, `max_j (e_j - (s - s_j)^2 / 2 r)` (a parabolic dilation, as
+    /// [`EASE_RADIUS`] (or [`TORSO_EASE_RADIUS`]) that peak at each row's own reach, `max_j (e_j - (s - s_j)^2 / 2 r)` (a parabolic dilation, as
     /// the mesh's own junctions are bridged). No reach falls; a peak is rounded to the arc, so a garment lofted over
     /// the fit in rings a few millimetres apart follows it without its facets cutting into a corner; and where two arcs
     /// meet, or an arc meets the layout's section, the fit turns outwards, which a garment's facets stand clear of.
     fn ease(&mut self) {
+        let radius = if self.region == BodyRegion::Torso { TORSO_EASE_RADIUS } else { EASE_RADIUS };
         let mut along = vec![0.0_f64; self.rows.len()];
         for k in 1..self.rows.len() {
             along[k] = along[k - 1] + self.rows[k - 1].centre.distance(self.rows[k].centre);
@@ -327,7 +330,7 @@ impl Table {
             for (extra, at) in self.extra.iter_mut().zip(&along) {
                 let eased = peaks
                     .iter()
-                    .map(|&(s, e)| e - (at - s).powi(2) / (2.0 * EASE_RADIUS))
+                    .map(|&(s, e)| e - (at - s).powi(2) / (2.0 * radius))
                     .fold(f64::NEG_INFINITY, f64::max);
                 extra[side] = extra[side].max(eased);
             }
@@ -500,6 +503,8 @@ struct Cap {
     top: f64,
     /// Per level, from the end's plane up: how far its ellipse reaches past the end row's layout ellipse.
     extra: Vec<Reach>,
+    /// Per level, the same for the slab from that level to the next alone ([`BodyFit::cap_slice`]).
+    slices: Vec<Reach>,
 }
 
 impl Cap {
@@ -524,35 +529,62 @@ impl Cap {
             q + q.normalize_or_zero() * HOLD_MARGIN
         };
         let mut extra = Vec::with_capacity(CAP_LEVELS);
+        let mut slices = Vec::with_capacity(CAP_LEVELS);
         for level in 0..CAP_LEVELS {
-            let h = top * fraction(level, CAP_LEVELS);
+            let (h, next) = (top * fraction(level, CAP_LEVELS), top * fraction(level + 1, CAP_LEVELS));
             // The vertices this high, the ends of the edges from them (the rim, on the end's plane, among them), and
-            // where edges cross this height.
-            let mut points: Vec<DVec2> = vertices.iter().filter(|p| height(**p) >= h).map(|p| in_plane(*p)).collect();
+            // where edges cross this height; the slab to the next level keeps those below it, and where edges cross
+            // it.
+            let mut points: Vec<DVec2> = Vec::new();
+            let mut slab: Vec<DVec2> = Vec::new();
+            for p in vertices {
+                let d = height(*p);
+                if d >= h {
+                    points.push(in_plane(*p));
+                    if d <= next {
+                        slab.push(in_plane(*p));
+                    }
+                }
+            }
             for &(a, b) in segments {
-                let (ha, hb) = (height(a) - h, height(b) - h);
-                points
-                    .extend([(a, ha), (b, hb)].into_iter().filter(|(_, d)| *d >= -END_SLACK).map(|(p, _)| in_plane(p)));
-                if (ha < 0.0) != (hb < 0.0) {
-                    points.push(in_plane(a.lerp(b, ha / (ha - hb))));
+                for (p, d) in [(a, height(a)), (b, height(b))] {
+                    if d >= h - END_SLACK {
+                        points.push(in_plane(p));
+                        if d <= next {
+                            slab.push(in_plane(p));
+                        }
+                    }
+                }
+                let (ha, hb) = (height(a), height(b));
+                for cut in [h, next] {
+                    if (ha < cut) != (hb < cut) {
+                        let p = in_plane(a.lerp(b, (ha - cut) / (ha - hb)));
+                        slab.push(p);
+                        if cut == h {
+                            points.push(p);
+                        }
+                    }
                 }
             }
             if points.is_empty() {
                 break;
             }
             extra.push(enclose(row.radii, &points));
+            slices.push(if slab.is_empty() { extra[extra.len() - 1] } else { enclose(row.radii, &slab) });
         }
-        (!extra.is_empty()).then_some(Self { row, outward, top, extra })
+        (!extra.is_empty()).then_some(Self { row, outward, top, extra, slices })
     }
 
-    /// The section `height` past the end's plane, if the cap reaches that far.
-    fn section(&self, height: f64) -> Option<Section> {
+    /// The section `height` past the end's plane, if the cap reaches that far: of everything there and further out, or
+    /// with `slice` of only the slab there.
+    fn section(&self, height: f64, slice: bool) -> Option<Section> {
         if !(0.0..=self.top).contains(&height) {
             return None;
         }
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a non-negative level index
         let level = ((height / self.top * fraction(CAP_LEVELS, 1)).floor() as usize).min(self.extra.len() - 1);
-        let (offset, radii) = ellipse(self.row.radii, self.extra[level]);
+        let reach = if slice { self.slices[level] } else { self.extra[level] };
+        let (offset, radii) = ellipse(self.row.radii, reach);
         let centre = self.row.centre + self.outward * height + self.row.across * offset.x + self.row.through * offset.y;
         Some(Section { centre: centre.as_vec3(), axis: self.row.axis.as_vec3(), radii: radii.as_vec2() })
     }
@@ -609,7 +641,11 @@ impl BodyFit for BodyMeshFit {
     }
 
     fn cap(&self, region: BodyRegion, end: RegionEnd, height: f32) -> Option<Section> {
-        self.caps.get(&(region, end))?.section(f64::from(height))
+        self.caps.get(&(region, end))?.section(f64::from(height), false)
+    }
+
+    fn cap_slice(&self, region: BodyRegion, end: RegionEnd, height: f32) -> Option<Section> {
+        self.caps.get(&(region, end))?.section(f64::from(height), true)
     }
 
     fn joint(&self, joint: &JointRef) -> Option<Vec3> {

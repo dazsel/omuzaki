@@ -506,6 +506,10 @@ impl BodyFit for Envelope {
         self.inner.cap(region, end, height)
     }
 
+    fn cap_slice(&self, region: BodyRegion, end: RegionEnd, height: f32) -> Option<Section> {
+        self.inner.cap_slice(region, end, height)
+    }
+
     fn joint(&self, joint: &JointRef) -> Option<omuzaki_core::glam::Vec3> {
         self.inner.joint(joint)
     }
