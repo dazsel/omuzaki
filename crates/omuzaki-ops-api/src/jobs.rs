@@ -409,6 +409,12 @@ impl<'a> JobCtx<'a> {
         self.services.get::<S>().ok_or_else(|| OpError::unavailable(std::any::type_name::<S>()))
     }
 
+    /// Every service the job runs with, for an [`OpCtx`](crate::OpCtx) over [`read`](Self::read)'s document when the
+    /// work reuses a check that an op's `plan` also runs (`io.export` runs `io.check_export`'s).
+    pub fn services(&self) -> &'a Services {
+        self.services
+    }
+
     /// Asks whether the job may touch `path` and resolves it, exactly as [`OpCtx::fs_access`](crate::OpCtx::fs_access).
     ///
     /// # Errors

@@ -23,7 +23,8 @@ pub struct Endpoint {
 
 impl Endpoint {
     /// Reads `url`: `http://` or `https://`, then a host, an optional port and an optional path. A URL with user-info
-    /// (`user@host`), another scheme, an empty host or a port that is not a number is `None`.
+    /// (`user@host`), another scheme, an empty host, a bracketed host that is not an IPv6 address or a port that is
+    /// not a number is `None`.
     pub fn parse(url: &str) -> Option<Self> {
         let (scheme, rest) = url.split_once("://")?;
         let scheme = match scheme.to_ascii_lowercase().as_str() {
@@ -37,6 +38,8 @@ impl Endpoint {
         }
         let (host, port) = if let Some(bracketed) = authority.strip_prefix('[') {
             let (host, after) = bracketed.split_once(']')?;
+            // Brackets hold an IPv6 literal and nothing else (RFC 3986 §3.2.2).
+            host.parse::<std::net::Ipv6Addr>().ok()?;
             match after {
                 "" => (host, None),
                 _ => (host, Some(after.strip_prefix(':')?)),
@@ -96,6 +99,8 @@ mod tests {
             "http://a b",
             "http://[::1]junk",
             "http://[::1]:",
+            "https://[example.com]/",
+            "http://[127.0.0.1]",
         ] {
             assert_eq!(Endpoint::parse(bad), None, "{bad}");
         }

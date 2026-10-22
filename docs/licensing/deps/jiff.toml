@@ -1,0 +1,8 @@
+section = "rust"
+item = "jiff"
+kind = "crate"
+used_for = "wall-clock schedules and date conditions in IANA time zones, DST included, in `omuzaki-live-nodes` (`schedule.at`, `cond.time_between`, `cond.date`); its bundled time-zone database stands in where the OS has none (Windows)"
+status = "yes"
+condition = "Unlicense OR MIT (taken as MIT): keep the notice"
+audit = "(crates.io)"
+crates = ["jiff"]

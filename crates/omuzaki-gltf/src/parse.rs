@@ -162,15 +162,27 @@ fn array_cap<T>(limits: &Limits) -> u64 {
 }
 
 /// Refuses a document with more of anything than the limits allow. Nodes and images have limits of their own; every
-/// other top-level array is held to [`array_cap`].
+/// other top-level array is held to [`array_cap`], and so is each nested array summed over the document: all the
+/// primitives, all the morph targets, and all the scene roots, node children and skin joints (#633).
 fn check_counts(counts: &Counts, limits: &Limits) -> Result<(), IoError> {
     let len = |a: &[IgnoredAny]| a.len() as u64;
+    let primitives = &counts.meshes.total.primitives;
     for (what, limit, got) in [
-        ("node count", u64::from(limits.max_nodes), len(&counts.nodes)),
+        ("node count", u64::from(limits.max_nodes), counts.nodes.len),
         ("image count", u64::from(limits.max_images), len(&counts.images)),
-        ("scene count", array_cap::<schema::Scene>(limits), len(&counts.scenes)),
-        ("mesh count", array_cap::<schema::Mesh>(limits), len(&counts.meshes)),
-        ("skin count", array_cap::<schema::Skin>(limits), len(&counts.skins)),
+        ("scene count", array_cap::<schema::Scene>(limits), counts.scenes.len),
+        ("mesh count", array_cap::<schema::Mesh>(limits), counts.meshes.len),
+        ("primitive count", array_cap::<schema::Primitive>(limits), primitives.len),
+        (
+            "morph target count",
+            array_cap::<std::collections::BTreeMap<String, usize>>(limits),
+            primitives.total.targets.len,
+        ),
+        // A scene's roots and a node's children are distinct nodes, so a valid file has no more of either than nodes.
+        ("scene root count", u64::from(limits.max_nodes), counts.scenes.total.nodes.len),
+        ("node child count", u64::from(limits.max_nodes), counts.nodes.total.children.len),
+        ("skin joint count", array_cap::<usize>(limits), counts.skins.total.joints.len),
+        ("skin count", array_cap::<schema::Skin>(limits), counts.skins.len),
         ("material count", array_cap::<schema::Material>(limits), len(&counts.materials)),
         ("texture count", array_cap::<schema::Texture>(limits), len(&counts.textures)),
         ("sampler count", array_cap::<schema::Sampler>(limits), len(&counts.samplers)),

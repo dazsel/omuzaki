@@ -20,7 +20,7 @@
 //! | [`settings_keys`] | the setting keys the stream reads | stub |
 //! | [`replay`] | the replay buffer | stub |
 //! | `ffmpeg` (feature `ffmpeg`) | `FFmpeg` encoders | stub |
-//! | [`watchdog`] | the supervisor | stub |
+//! | [`watchdog`] | the [`policy`](watchdog::policy) (health, deadlines, restart budget, log) and the [`supervisor`](watchdog::supervisor) running it over process and thread workers | works |
 //! | `testing` (feature `testing`, or tests) | a fake encoder, a memory muxer and a scripted audio source | works |
 //!
 //! Benchmarks sit in `benches/` (`ring`, `replay`); the fake worker that the supervisor tests launch is `fake-worker`,

@@ -122,11 +122,27 @@ impl LiveEvent {
 }
 
 /// Checks the rules every payload keeps: an object, at most [`MAX_PAYLOAD_BYTES`] of JSON.
+/// A writer that only counts what it is given.
+struct ByteCount(usize);
+
+impl std::io::Write for ByteCount {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0 = self.0.saturating_add(buf.len());
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 fn check_payload_shape(payload: &Value) -> Result<(), EventError> {
     if !payload.is_object() {
         return Err(EventError::NotAnObject);
     }
-    let bytes = serde_json::to_vec(payload).map_or(usize::MAX, |b| b.len());
+    // Counted as it serialises, without building the text: this runs on every publish.
+    let mut counter = ByteCount(0);
+    let bytes = serde_json::to_writer(&mut counter, payload).map_or(usize::MAX, |()| counter.0);
     if bytes > MAX_PAYLOAD_BYTES {
         return Err(EventError::TooLarge { bytes });
     }

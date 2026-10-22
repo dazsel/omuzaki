@@ -1,0 +1,36 @@
+# The chibi-extreme end of the exaggeration dial (amount +1, preset `chibi-extreme`): each factor multiplies the
+# contract's default coefficient (the anime look, amount 0) at that path of the face mapping. Every factor is at least 1,
+# so turning the dial up never shrinks a coefficient. Wide eyes, big brow swings and large smiles; the resting face, the
+# thresholds and the fractions are the character's design and are not touched.
+
+[eyes]
+wide = 1.6
+squint = 1.3
+tilt_from_brows = 1.5
+
+[brows]
+inner_up = 1.4
+outer_up = 1.4
+down = 1.4
+sneer = 1.4
+inner_up_tilt = 1.5
+outer_up_tilt = 1.5
+down_tilt = 1.5
+outer_up_arch = 1.6
+inner_up_arch = 1.6
+
+[mouth]
+open = 1.2
+smile = 1.5
+frown = 1.4
+stretch = 1.3
+wide_smile = 1.6
+
+[cheeks]
+puff_blush = 1.5
+squint_blush = 1.5
+blush = 1.5
+
+[gaze]
+x = 1.15
+y = 1.15

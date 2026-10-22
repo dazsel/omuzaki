@@ -1,0 +1,4 @@
+# render.preview shows a character in a scene
+
+- `render.preview` stands the character alone in a copy of a stored scene (#416). By default that is the project's opening scene, or the built-in studio scene in a project without one. The character takes the subject's place, is lit, backed and grounded as the scene is, and is shot from the scene's opening camera. `scene` picks another scene. `camera` picks one of its cameras. `framing`, `yaw`, `pitch` and `zoom` adjust the shot: a framing without a camera is a fresh camera from the front. `light_rig` relights that one picture. The document never changes, and the result names the scene and camera used.
+- `scene::alone` is the stage-side join for this: `cast_alone`, `ShotChoice` and `stage_alone` turn a stored scene into what `Stage::set_scene` takes, for any view that shows one character in a scene. A still can render in that scene, ground disc included (`StillSpec::in_scene`).

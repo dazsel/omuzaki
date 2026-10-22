@@ -416,6 +416,59 @@ impl Default for GazeMap {
     }
 }
 
+/// The subtle-performance expander (spec FE-06 "amplified subtle performances"): below the knee, each `ARKit` channel
+/// is multiplied by the gain, so the small movements a webcam reads from a calm face show; above it, the curve runs
+/// straight to 1, so a full movement stays full. The anime extras are triggers, not measurements, and pass unchanged.
+///
+/// It is one curve for the whole face, a property of the character. Per-channel response curves (a performer's range on
+/// one blendshape, their dead zones) are retarget calibration (spec PF-22, `omuzaki-anim`) and run before the bus
+/// reaches the face; the expander shapes what the face does with the calibrated values.
+///
+/// The defaults (knee 0, gain 1) leave the channels untouched.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Amplify {
+    /// Where the expander stops boosting, as a channel value, `0..=0.5`. 0 turns it off.
+    pub knee: f64,
+    /// The boost below the knee, `1..=4`; `knee x gain` may not pass 1.
+    pub gain: f64,
+}
+
+impl Default for Amplify {
+    fn default() -> Self {
+        Self { knee: 0.0, gain: 1.0 }
+    }
+}
+
+impl Amplify {
+    /// True when the curve is the identity (or its numbers aren't), so [`FaceMapping::apply`] skips it.
+    pub fn is_identity(&self) -> bool {
+        !(self.knee > 0.0 && self.gain > 1.0 && self.knee.is_finite() && self.gain.is_finite())
+    }
+
+    /// The curve at `v` (a channel value, `0..=1`): `v x gain` below the knee, then a straight line from
+    /// `(knee, knee x gain)` to `(1, 1)`. Continuous, monotone, and 0 and 1 are fixed points.
+    pub fn curve(&self, v: f32) -> f32 {
+        let (knee, gain) = (coef(self.knee), coef(self.gain));
+        let top = (knee * gain).min(1.0);
+        let out = if v <= knee { v * gain } else { top + (v - knee) * (1.0 - top) / (1.0 - knee) };
+        // A mapping that was never validated can't push a channel out of its range.
+        out.clamp(0.0, 1.0)
+    }
+}
+
+impl Validate for Amplify {
+    fn check(&self, c: &mut Check) {
+        c.range("knee", self.knee, 0.0, 0.5);
+        c.range("gain", self.gain, 1.0, 4.0);
+        c.rule(
+            &["knee", "gain"],
+            self.knee * self.gain <= 1.0,
+            "knee x gain must be at most 1, or the curve would pass 1",
+        );
+    }
+}
+
 /// How one character's face reads the channels (spec FE-06 "exaggeration profiles"): a resting face and the
 /// coefficients of every formula. Stored in the face profile, so variants and ops edit single numbers.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -433,6 +486,8 @@ pub struct FaceMapping {
     pub cheeks: CheekMap,
     /// Gaze.
     pub gaze: GazeMap,
+    /// The subtle-performance expander on the `ARKit` channels, applied before every formula.
+    pub amplify: Amplify,
 }
 
 fn unit(v: f32) -> f32 {
@@ -452,6 +507,11 @@ impl FaceMapping {
     pub fn apply(&self, bus: &ChannelBuf) -> PaintParams {
         let mut sanitised = *bus;
         sanitised.sanitize();
+        if !self.amplify.is_identity() {
+            for info in Channel::arkit() {
+                sanitised.set(info.channel, self.amplify.curve(sanitised.get(info.channel)));
+            }
+        }
         let ch = &sanitised;
         let rest = &self.rest;
         let (left_eye, right_eye) = (self.eye(ch, Side::Left), self.eye(ch, Side::Right));
@@ -615,6 +675,7 @@ enum Side {
 impl Validate for FaceMapping {
     fn check(&self, c: &mut Check) {
         c.nested("rest", &self.rest);
+        c.nested("amplify", &self.amplify);
         let (eyes, brows, mouth, cheeks, gaze) = (&self.eyes, &self.brows, &self.mouth, &self.cheeks, &self.gaze);
         // Gains: non-negative numbers, up to a generous ceiling (a gain of 6 is already a cartoon).
         let gains = [
@@ -939,6 +1000,35 @@ mod tests {
         );
         let values = crate::expression::ChannelValues::default().with(Channel::JAW_OPEN, 0.6);
         assert_eq!(serde_json::to_string(&values).unwrap(), r#"{"jawOpen":0.6}"#);
+    }
+
+    #[test]
+    fn the_expander_lifts_small_movements_and_keeps_full_ones() {
+        let amp = Amplify { knee: 0.2, gain: 2.5 };
+        amp.clone().validate().unwrap();
+        assert!((amp.curve(0.1) - 0.25).abs() < 1e-6, "gain below the knee");
+        assert!((amp.curve(0.2) - 0.5).abs() < 1e-6, "the knee");
+        assert!((amp.curve(1.0) - 1.0).abs() < 1e-6 && amp.curve(0.0).abs() < 1e-9, "0 and 1 are fixed points");
+        let mut last = 0.0;
+        for i in 0..=100_u8 {
+            let x = f32::from(i) / 100.0;
+            let v = amp.curve(x);
+            assert!(v >= last && v >= x, "monotone and never below the input at {x}");
+            last = v;
+        }
+        let mut m = FaceMapping::default();
+        let b = with(&[(Channel::MOUTH_SMILE_LEFT, 0.1), (Channel::SWEAT_DROP, 0.1)]);
+        let calm = m.apply(&b);
+        m.amplify = amp;
+        let lifted = m.apply(&b);
+        assert!((lifted.mouth.smile_left - 2.5 * calm.mouth.smile_left).abs() < 1e-5, "an ARKit channel is lifted");
+        assert_eq!(lifted.sweat, calm.sweat, "an anime extra is a trigger and passes unchanged");
+        assert_eq!(m.rest_params(), FaceMapping::default().rest_params(), "the rest face doesn't move");
+        let mirrored = with(&[(Channel::MOUTH_SMILE_RIGHT, 0.1), (Channel::SWEAT_DROP, 0.1)]);
+        assert_eq!(m.apply(&mirrored), lifted.mirrored(), "the expander is symmetric");
+        let too_far = Amplify { knee: 0.5, gain: 3.0 };
+        assert_eq!(too_far.validate().unwrap_err().0[0].path, "knee");
+        assert!(Amplify::default().is_identity() && Amplify { knee: f64::NAN, gain: 2.0 }.is_identity());
     }
 
     #[test]

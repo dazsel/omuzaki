@@ -17,7 +17,7 @@ use omuzaki_io_api::{
 };
 use omuzaki_io_ops::convert::texture::encode_png;
 use omuzaki_io_ops::prepare::avatar::to_avatar;
-use omuzaki_render_api::{MtoonSupport, TextureDesc};
+use omuzaki_render_api::{ColourSpace, MtoonSupport, OutlineWidthMode, TextureDesc};
 
 /// A `size`-square PNG whose pixels are a fixed pattern, and those pixels.
 fn png(name: &str, size: u32) -> (EncodedImage, Vec<u8>) {
@@ -105,6 +105,7 @@ fn each_mtoon_group_the_renderer_cant_draw_is_one_finding() {
         MtoonSupport::OUTLINE_WIDTH_SCREEN,
         MtoonSupport::RIM_LIGHTING_MIX,
         MtoonSupport::OUTLINE_LIGHTING_MIX,
+        MtoonSupport::OUTLINE_WIDTH_TEXTURE,
     ]
     .into_iter()
     .fold(MtoonSupport::NONE, MtoonSupport::with);
@@ -188,4 +189,55 @@ fn an_edit_changes_the_runtime_and_leaves_the_file_retained() {
     assert_eq!(spec.base, omuzaki_core::colour::Colour::rgb(255, 0, 0), "the edit is what the stage shows");
     assert_eq!(avatar.retained.materials[0].source, m, "export applies the edit over the file's own values");
     assert!(report.has_rule("avatar.material_edit_unknown"), "an edit naming no material is reported");
+}
+
+/// A toon material with an `MToon` outline of `mode`, `width` wide, mixed `mix` with the light, its width multiplied
+/// by the scene's texture `width_texture`.
+fn outlined(name: &str, mode: OutlineMode, width: f32, mix: f32, width_texture: Option<TextureIx>) -> Material {
+    let mut toon = Toon::default();
+    toon.outline_mode = mode;
+    toon.outline_width = width;
+    toon.outline_lighting_mix = mix;
+    toon.outline_color = Vec3::new(0.1, 0.05, 0.2);
+    toon.outline_width_texture = width_texture.map(TexRef::of);
+    let mut m = Material::new(name, Shading::Toon(Box::new(toon)));
+    m.base_color = Vec4::ONE;
+    m
+}
+
+#[test]
+fn the_mtoon_outline_is_kept_as_the_file_has_it_where_the_renderer_draws_it() {
+    // #647: a screen-space outline with a width texture and a lighting mix, and a world-space one.
+    let (image, pixels) = png("outline_mask", 4);
+    let screen = outlined("Screen", OutlineMode::ScreenCoordinates, 0.012, 0.7, Some(TextureIx(0)));
+    let world = outlined("World", OutlineMode::WorldCoordinates, 0.004, 1.0, None);
+    let f = scene_with(vec![screen, world, toon_material("Plain", Vec4::ONE)], vec![image]);
+    let name = |n: &str| MaterialName(omuzaki_core::id::Slug::new(n).unwrap());
+
+    let (avatar, report) = to_avatar(&f.scene, &def(), MtoonSupport::OUTLINE_STYLE).expect("imports");
+    let outline = avatar.outlines.get(&name("screen")).expect("the screen outline is kept");
+    assert_eq!((outline.width_mode, outline.width, outline.lighting_mix), (OutlineWidthMode::Screen, 0.012, 0.7));
+    let texture = outline.width_texture.as_ref().and_then(|t| avatar.textures.get(t)).expect("the mask is decoded");
+    assert_eq!(texture.desc.colour_space, ColourSpace::Linear, "a width mask is linear data");
+    assert_eq!(texture.rgba8, pixels, "at full size, as the file has it");
+    let outline = avatar.outlines.get(&name("world")).expect("the world outline is kept");
+    assert_eq!((outline.width_mode, outline.width, outline.lighting_mix), (OutlineWidthMode::World, 0.004, 1.0));
+    assert!(!avatar.outlines.contains_key(&name("plain")), "no outline, no entry");
+    assert!(!report.has_rule("look.mtoon_not_drawn"), "every outline group is drawn: {report:?}");
+    let approximated =
+        report.findings.iter().any(|x| x.location.as_deref() == Some("materials/0/shading/outline_mode"));
+    assert!(!approximated, "a drawn screen width is not approximated: {report:?}");
+
+    // A renderer that draws none of it: the screen width stays the kit line's approximation, and the world width is
+    // drawn in metres with no mix and no mask.
+    let (avatar, report) = to_avatar(&f.scene, &def(), MtoonSupport::NONE).expect("imports");
+    assert!(!avatar.outlines.contains_key(&name("screen")));
+    let outline = avatar.outlines.get(&name("world")).expect("a world width is drawn by every renderer");
+    assert_eq!(
+        (outline.width_mode, outline.lighting_mix, outline.width_texture.is_some()),
+        (OutlineWidthMode::World, 0.0, false)
+    );
+    assert!(avatar.textures.is_empty(), "the mask is not decoded for a renderer that can't draw it");
+    let groups = report.findings.iter().filter(|x| x.rule == "look.mtoon_not_drawn").count();
+    assert_eq!(groups, 3, "the screen width, its lighting mix and the mask: {report:?}");
 }

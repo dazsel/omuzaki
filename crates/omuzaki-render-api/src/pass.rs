@@ -102,6 +102,10 @@ pub struct GpuTimings {
     pub frame: u64,
     /// GPU time per pass.
     pub passes: PassTimes,
+    /// Of `Pass::PaintTextures`, the painters' own commands (the face rasteriser's raster and resolve); the rest of that
+    /// pass is the renderer's own work on what they painted (premultiply and mip rebuild). `None` when nothing was
+    /// painted.
+    pub painters: Option<Seconds>,
 }
 
 /// What one [`Renderer::render`](crate::Renderer::render) call did, for the frame-budget scheduler (spec §8).

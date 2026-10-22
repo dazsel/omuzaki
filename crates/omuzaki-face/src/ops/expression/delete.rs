@@ -41,6 +41,12 @@ impl Op for DeleteExpression {
         if entry(library(face.as_ref())?, &self.id).is_none() {
             return Err(missing(&self.id));
         }
+        if face.as_ref().and_then(|f| f.get("default_expression")).and_then(serde_json::Value::as_str)
+            == Some(self.id.as_str())
+        {
+            return Err(OpError::invalid("id", format!("'{}' is the face's default expression", self.id))
+                .hint("set another default (or none) with face.expression.set_default first"));
+        }
         let working = edited_face(face.as_ref(), |entries| {
             entries.remove(self.id.as_str());
         })?;
