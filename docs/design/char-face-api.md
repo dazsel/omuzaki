@@ -114,6 +114,7 @@ Every ARKit channel and every anime extra reaches at least one paint parameter, 
 | `tongueOut`, `fangs` | `mouth.tongue`, `mouth.fangs` | none |
 | `cheekPuff`, `cheekSquint*`, `blush` | `blush`, `cheek_puff` | `cheeks.puff_blush`, `cheeks.squint_blush`, `cheeks.blush`; base `rest.blush` |
 | `sweatDrop` | `sweat` | none |
+| every `ARKit` channel, before the rows above | the channel itself | `amplify.knee`, `amplify.gain`: the subtle-movement expander (FE-06), off by default. Below the knee a channel is multiplied by the gain, above it the curve runs straight to 1. Per-channel response curves are retarget calibration (PF-22), not this. |
 
 **No painted effect (`UNMAPPED`):** `jawForward`, `mouthShrugLower`, `mouthShrugUpper`. They move lips in depth, which a front-facing 2D face can't show. They stay in the bus (trackers send them), painters ignore them, and a VRM bake writes empty targets for them (perfect sync lists them as inert, which io-api allows). Art can decide to give them a small effect (question Q3).
 
@@ -165,6 +166,8 @@ Everything below is `serde` + `JsonSchema` with `deny_unknown_fields` and defaul
 ### Expressions and visemes
 
 An expression is `{ kind, deltas: {channel: value}, curve }` in the bus's own vocabulary. `ExpressionSet::blend(base, weights)` adds scaled deltas and sanitises (clamps to the channel ranges); expressions add, so `happy` plus `aa` composes with no priority rule. The five **visemes** have the VRM preset names (`aa`, `ih`, `ou`, `ee`, `oh`), so a lip-sync source and a VRM export agree. `ExpressionSet::starter()` supplies the visemes, `blink` and five moods (`happy`, `angry`, `sad`, `relaxed`, `surprised`) as channel recipes. A test checks they land where the prototype's did: the five visemes open the mouth by 0.85, 0.62, 0.42, 0.32, 0.28 within 0.03 through the default mapping. FE-04 tunes the moods.
+
+**Playback (FE-03).** An expression may carry `playback = { fade_in_s, fade_out_s, auto_stop_s, group, layer }`. It says how the expression plays when a trigger shows it; the default (in 0.12 s, out 0.2 s, held, no group, no auto-stop) is left out of files. `group` makes expressions exclusive: showing one fades out the others in its group. `layer = "momentary"` plays over the held expressions. On each channel the momentary one moves, the held ones step back by its weight, so a wink takes the eye from a smile and gives it back when it ends. The profile's `default_expression` (a mood or an accent) fills in where nothing held shows. `omuzaki_face::player::ExpressionPlayer` runs all of this without allocating per frame, and the trigger runtime (PF-25) decides when to show and hide. In the built-in library every mood is in the group `mood`, and the accents are momentary with an auto-stop. Lip sync and scores give weights directly and skip playback.
 
 ![Eight mock-painted faces: neutral, happy (arcs, blush), surprised, angry, sad (tears), the aa viseme, a wink, a smirk with a sideways glance.](img/char-face-api-expressions.png)
 

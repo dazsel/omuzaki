@@ -1,0 +1,36 @@
+# The realistic end of the exaggeration dial (amount -1, preset `realistic`): each factor multiplies the contract's
+# default coefficient (the anime look, amount 0) at that path of the face mapping. Every factor is at most 1, so turning
+# the dial up never shrinks a coefficient. Small eye-opening travel, flatter brows and a quieter mouth; the resting face,
+# the thresholds and the fractions are the character's design and are not touched.
+
+[eyes]
+wide = 0.5
+squint = 0.7
+tilt_from_brows = 0.5
+
+[brows]
+inner_up = 0.7
+outer_up = 0.7
+down = 0.7
+sneer = 0.7
+inner_up_tilt = 0.6
+outer_up_tilt = 0.6
+down_tilt = 0.6
+outer_up_arch = 0.5
+inner_up_arch = 0.5
+
+[mouth]
+open = 0.85
+smile = 0.7
+frown = 0.7
+stretch = 0.8
+wide_smile = 0.6
+
+[cheeks]
+puff_blush = 0.5
+squint_blush = 0.5
+blush = 0.5
+
+[gaze]
+x = 0.9
+y = 0.9

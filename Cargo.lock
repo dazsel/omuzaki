@@ -5421,6 +5421,8 @@ dependencies = [
  "omuzaki-face",
  "omuzaki-face-api",
  "omuzaki-face-mock",
+ "omuzaki-io-api",
+ "omuzaki-io-mock",
  "omuzaki-link-build",
  "omuzaki-render-api",
  "omuzaki-render-mock",
