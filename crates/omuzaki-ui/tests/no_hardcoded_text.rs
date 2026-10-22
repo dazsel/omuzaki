@@ -99,6 +99,7 @@ const NOT_FOR_PEOPLE: &[&str] = &[
     "map_err(",
     // Logs and panics are for the developer reading them, not the person using the studio.
     "tracing::",
+    "request_discard(",
     "warn!(",
     "error!(",
     "info!(",
@@ -207,7 +208,9 @@ fn no_ui_module_writes_a_user_facing_word_into_its_drawing_code() {
             continue;
         }
         let component = path.starts_with(src.join("ds/widgets"));
-        offenders.extend(offenders_in(&source, component).into_iter().map(|(line, text)| format!("{shown}:{line}: {text:?}")));
+        offenders.extend(
+            offenders_in(&source, component).into_iter().map(|(line, text)| format!("{shown}:{line}: {text:?}")),
+        );
     }
     for area in ["ds/widgets", "shell", "panels", "live", "output_window"] {
         assert!(files.iter().any(|f| f.starts_with(src.join(area))), "the lint reads no file under src/{area}");

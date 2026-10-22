@@ -416,8 +416,9 @@ impl Outliner {
 
     /// Does what the person asked for.
     fn perform(&mut self, action: Action, character: &CharId, io: Io<'_>, ds: &Ds) {
-        // An action taken from the keyboard leaves the keyboard on the cursor row, wherever the cursor went.
-        if self.keyboard && action != Action::StartFilter {
+        // An action taken from the keyboard leaves the keyboard on the cursor row, wherever the cursor went; the two
+        // that send it elsewhere (the filter, the inspector) do not pull it back.
+        if self.keyboard && !matches!(action, Action::StartFilter | Action::ToInspector) {
             self.follow = true;
         }
         let id_of = |tree: &Tree, node: usize| tree.node(node).map(|n| n.id.clone());

@@ -10,9 +10,15 @@ use egui::{Response, WidgetInfo, accesskit};
 /// `refine` sets what `egui::WidgetType` cannot express (the exact role, a text value, min/max/step).
 ///
 /// Both closures run only when a screen reader or a test has switched AccessKit on, so a normal frame pays nothing.
+///
+/// A widget the keyboard has just reached is scrolled into view: egui moves the focus without scrolling, so Tab could
+/// otherwise land on a control below the fold of a panel (WCAG 2.4.11).
 pub fn describe(response: &Response, info: impl Fn() -> WidgetInfo, refine: impl FnOnce(&mut accesskit::Node)) {
     response.widget_info(info);
     response.ctx.accesskit_node_builder(response.id, refine);
+    if response.gained_focus() && super::focus::visible(&response.ctx) {
+        response.scroll_to_me_animation(None, egui::style::ScrollAnimation::none());
+    }
 }
 
 /// Debug check that a label is usable as an accessible name; the parameter types already forbid `None`.
@@ -24,3 +30,29 @@ pub fn require_label(label: &str) {
 /// such as the points of a curve (left to right by input value, though a rising curve climbs the screen). The
 /// reading-order check of the gallery exempts consecutive stops that both carry it.
 pub const ORDERED_BY_DATA: &str = "ordered-by-data";
+
+/// Lays out `add_contents` left to right at the trailing end of the row, so the keyboard and a screen reader meet the
+/// controls in the order the eye reads them. A right-to-left layout puts them in the same places but registers them
+/// backwards, so Tab would walk the row from its right end (WCAG 2.4.3).
+///
+/// The width is the one the contents took last frame, kept under `id_salt`; on the first frame, and whenever it
+/// changes, the contents are measured in an invisible pass and the frame is drawn again, so nothing is seen out of place.
+pub fn trailing<R>(ui: &mut egui::Ui, id_salt: &str, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    use egui::{Layout, Rect, UiBuilder, pos2};
+    let id = ui.id().with(("trailing", id_salt));
+    let known: Option<f32> = ui.ctx().data(|d| d.get_temp(id));
+    let row = ui.available_rect_before_wrap();
+    let left = known.map_or(row.left(), |width| (row.right() - width).max(row.left()));
+    let place = Rect::from_min_max(pos2(left, row.top()), row.right_bottom());
+    let mut builder = UiBuilder::new().max_rect(place).layout(Layout::left_to_right(ui.layout().cross_align));
+    if known.is_none() {
+        builder = builder.sizing_pass().invisible();
+    }
+    let inner = ui.scope_builder(builder, add_contents);
+    let width = inner.response.rect.width();
+    if known.is_none_or(|known| (known - width).abs() > 0.5) {
+        ui.ctx().data_mut(|d| d.insert_temp(id, width));
+        ui.ctx().request_discard("a trailing row was measured");
+    }
+    inner.inner
+}

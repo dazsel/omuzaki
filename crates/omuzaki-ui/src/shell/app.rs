@@ -38,8 +38,9 @@ use super::requests::{ShellRequest, ShellRequests};
 use super::saver::Saver;
 use super::sheet;
 use super::text::{Word, say, title};
+use crate::ds::paint::{self, RingPlacement};
 use crate::ds::theme::ds;
-use crate::ds::tokens::ThemeKind;
+use crate::ds::tokens::{ThemeKind, radius};
 use crate::ds::widgets::{Button, TabBar, TabItem, Tip, TipExt as _};
 use crate::ds::{a11y, icons};
 use crate::panels::agent::approvals::{self, Answer};
@@ -277,6 +278,20 @@ impl Shell {
     /// Whether the layout is locked against dragging.
     pub const fn locked(&self) -> bool {
         self.locked
+    }
+
+    /// Where each docked panel of the active workspace was drawn last frame, by id: its body, under its tab strip. For
+    /// a test or a tool that says which panel a widget is in.
+    pub fn panel_rects(&self) -> Vec<(String, egui::Rect)> {
+        let Some(view) = self.views.get(self.active).and_then(Option::as_ref) else { return Vec::new() };
+        view.tree
+            .active_tiles()
+            .into_iter()
+            .filter_map(|tile| match view.tree.tiles.get(tile) {
+                Some(Tile::Pane(PanelId(id))) => Some((id.clone(), view.tree.tiles.rect(tile)?)),
+                _ => None,
+            })
+            .collect()
     }
 
     /// The panel that has the keyboard's attention, if any.
@@ -703,6 +718,7 @@ impl Shell {
             focus: &mut self.focus,
             asks: &mut asks,
             sides: &sides,
+            menus: Vec::new(),
         };
         view.tree.ui(&mut dock, ui);
         let moved = handles::name_handles(ui, &mut view.tree, &self.registry);
@@ -932,20 +948,21 @@ impl Shell {
                 if !self.bodies.on_screen_before(&ctx, crate::panels::setup::ID) {
                     self.workspace_tabs(ui, plan);
                 }
-                ui.with_layout(Flow::right_to_left(Align::Center), |ui| {
+                // At the bar's right end, in reading order: Tab meets search, then the agents, then Go Live.
+                a11y::trailing(ui, "shell_top_trailing", |ui| {
+                    let search = say(&ctx, Word::SearchOrRun, &[]);
+                    if ui.add(Button::new(&search).icon(icons::MAGNIFYING_GLASS).shortcut_hint("Ctrl K")).clicked() {
+                        self.toggle_palette(&ctx);
+                    }
+                    if self.agent_chip(ui) {
+                        self.show_panel(agent::ID);
+                    }
                     let off = say(&ctx, Word::GoLiveOff, &[]);
                     let go_live = say(&ctx, Word::GoLive, &[]);
                     if plan.go_live_icon {
                         icon_button(ui, icons::BROADCAST, &Tip::new(&go_live).detail(&off), false);
                     } else {
                         ui.add(Button::new(&go_live).icon(icons::BROADCAST).disabled(&off));
-                    }
-                    if self.agent_chip(ui) {
-                        self.show_panel(agent::ID);
-                    }
-                    let search = say(&ctx, Word::SearchOrRun, &[]);
-                    if ui.add(Button::new(&search).icon(icons::MAGNIFYING_GLASS).shortcut_hint("Ctrl K")).clicked() {
-                        self.toggle_palette(&ctx);
                     }
                 });
             });
@@ -1164,6 +1181,7 @@ pub(super) fn icon_button(ui: &mut Ui, glyph: &str, tip: &Tip<'_>, enabled: bool
         ui.add_enabled(enabled, egui::Button::new(label).frame(false).min_size(Vec2::splat(ds.metrics.icon_button)));
     // The glyph is not a name: the tooltip's words are what a screen reader says.
     a11y::describe(&response, || WidgetInfo::labeled(WidgetType::Button, enabled, tip.name), |_| {});
+    paint::focus_ring(ui.painter(), &ds.theme, &response, response.rect, radius::CONTROL, RingPlacement::Outside);
     response.tip(*tip)
 }
 
