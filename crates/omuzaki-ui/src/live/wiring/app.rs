@@ -250,14 +250,7 @@ impl LiveApp {
         if let Some(stream) = &stream {
             services = services.insert::<StreamService>(Arc::clone(stream));
         }
-        let audio: Option<Arc<dyn AudioEngine>> =
-            match LiveEngine::with_epoch(Arc::new(CpalBackend::new(epoch)), None, epoch) {
-                Ok(audio) => Some(Arc::new(audio)),
-                Err(error) => {
-                    tracing::warn!(%error, "the audio engine did not start: the microphone is unavailable");
-                    None
-                }
-            };
+        let audio = start_audio(epoch);
         if let Some(audio) = &audio {
             services = services.insert::<dyn AudioEngine>(Arc::clone(audio));
         }
@@ -265,11 +258,8 @@ impl LiveApp {
         let project = document.dir().map(|dir| dir.to_string_lossy().into_owned());
         let core = wiring::core_on(document, services).map_err(StartError::Ops)?;
         automation.attach(&core.runner);
-        // The mixer follows the project: the audio.bus.* ops edit it, undo included.
-        if let Some(audio) = audio
-            && let Err(error) = omuzaki_audio_engine::follow(audio, &core.runner)
-        {
-            tracing::warn!(error = %error.message, "the audio mixer will not follow the project");
+        if let Some(audio) = audio {
+            follow_project(audio, &core.runner);
         }
         automation.attach_sessions(&core.sessions);
         // What this machine approved and the shows' variables live in the app's data folder, never in the project.
@@ -491,5 +481,24 @@ impl Tracker for NoTracker {
 
     fn latency(&self) -> LatencyStats {
         LatencyStats::default()
+    }
+}
+
+/// The live audio engine on this machine's devices, its clock counting from `epoch`; `None` (with a warning) when it
+/// can't start.
+fn start_audio(epoch: std::time::Instant) -> Option<Arc<dyn AudioEngine>> {
+    match LiveEngine::with_epoch(Arc::new(CpalBackend::new(epoch)), None, epoch) {
+        Ok(audio) => Some(Arc::new(audio)),
+        Err(error) => {
+            tracing::warn!(%error, "the audio engine did not start: the microphone is unavailable");
+            None
+        }
+    }
+}
+
+/// Keeps the mixer on the project's graph: the `audio.bus.*` ops edit it, undo included.
+fn follow_project(audio: Arc<dyn AudioEngine>, runner: &Arc<dyn Runner>) {
+    if let Err(error) = omuzaki_audio_engine::follow(audio, runner) {
+        tracing::warn!(error = %error.message, "the audio mixer will not follow the project");
     }
 }
