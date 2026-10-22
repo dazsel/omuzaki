@@ -11,7 +11,11 @@ use std::time::Duration;
 
 use common::{FakeRunner, FakeRunnerExt, data, fake_runner, text, tool};
 use omuzaki_mcp::{McpOptions, McpServer, ServerError};
-use omuzaki_ops_api::{Actor, Cause, CauseKind, Grants, OpKind, Scope};
+use omuzaki_ops_api::{
+    Actor, ApprovalId, Budget, Cause, CauseKind, Decision, EndReason, Ended, Grants, OpError, OpKind, PauseReason,
+    PendingApproval, Resolution, Scope, SessionId, SessionInfo, SessionSpec, SessionState, SessionUndo, Sessions,
+    Spend, Transport,
+};
 use rmcp::ClientLifecycleMode;
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ClientCapabilities, ClientConfig, Implementation, ProtocolVersion,
@@ -603,6 +607,236 @@ async fn a_transaction_left_open_is_rolled_back_when_the_agent_disconnects() {
 }
 
 // ---- identity and protocol versions -------------------------------------------------------------------------------
+
+/// A registry that refuses every session, and keeps what it was asked for. With `live` set it admits that session
+/// instead, which a test can change afterwards (pause it, narrow its grants).
+#[derive(Default)]
+struct OneSession {
+    asked: std::sync::Mutex<Vec<SessionSpec>>,
+    live: std::sync::Mutex<Option<SessionInfo>>,
+    /// Questions about the live session so far, and after how many of them it reads as paused (see
+    /// `a_pause_between_the_check_and_the_begin_leaves_no_transaction_behind`).
+    asked_about: std::sync::atomic::AtomicUsize,
+    pause_after: std::sync::Mutex<Option<(usize, Actor)>>,
+}
+
+impl Sessions for OneSession {
+    fn open(&self, spec: SessionSpec) -> Result<SessionInfo, OpError> {
+        self.asked.lock().unwrap().push(spec);
+        self.live.lock().unwrap().clone().ok_or_else(|| OpError::unsupported("not needed by this test"))
+    }
+    fn sessions(&self) -> Vec<SessionInfo> {
+        Vec::new()
+    }
+    fn session(&self, _: SessionId) -> Option<SessionInfo> {
+        None
+    }
+    fn session_of(&self, _: &Actor) -> Option<SessionInfo> {
+        let n = self.asked_about.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut info = self.live.lock().unwrap().clone();
+        if let (Some(info), Some((after, by))) = (info.as_mut(), self.pause_after.lock().unwrap().as_ref())
+            && n >= *after
+        {
+            info.state = SessionState::Paused { by: by.clone(), reason: PauseReason::Person };
+        }
+        info
+    }
+    fn pause(&self, _: SessionId, _: &Actor) -> Result<SessionInfo, OpError> {
+        Err(OpError::unsupported("no"))
+    }
+    fn resume(&self, _: SessionId, _: &Actor) -> Result<SessionInfo, OpError> {
+        Err(OpError::unsupported("no"))
+    }
+    fn set_grants(&self, _: SessionId, _: Grants, _: &Actor) -> Result<SessionInfo, OpError> {
+        Err(OpError::unsupported("no"))
+    }
+    fn set_budget(&self, _: SessionId, _: Budget, _: &Actor) -> Result<SessionInfo, OpError> {
+        Err(OpError::unsupported("no"))
+    }
+    fn charge(&self, _: SessionId, _: Spend) -> Result<SessionInfo, OpError> {
+        Err(OpError::unsupported("no"))
+    }
+    fn end(&self, _: SessionId, _: EndReason) -> Result<Ended, OpError> {
+        Err(OpError::unsupported("no"))
+    }
+    fn undo_session(&self, _: SessionId, _: &Actor) -> Result<SessionUndo, OpError> {
+        Err(OpError::unsupported("no"))
+    }
+    fn approvals(&self) -> Vec<PendingApproval> {
+        Vec::new()
+    }
+    fn resolve(&self, _: ApprovalId, _: Decision, _: &Actor) -> Result<Resolution, OpError> {
+        Err(OpError::unsupported("no"))
+    }
+}
+
+#[tokio::test]
+async fn a_connection_asks_the_registry_for_its_session_and_runs_nothing_if_refused() {
+    let registry = Arc::new(OneSession::default());
+    let alice = Actor::Person { name: "alice".into() };
+    let options = McpOptions::default().with_sessions(registry.clone(), alice.clone());
+    let h = Harness::connect_with(options, Lifecycle::Initialize).await;
+    let result = h.call("face_set_blend", json!({"character": "mira", "blend": 0.4})).await;
+    // The refusal is kept for the connection: a second call does not ask again, and runs nothing either.
+    let again = h.call("face_set_blend", json!({"character": "mira", "blend": 0.5})).await;
+
+    {
+        // The registry saw the client, the person and the server's grants, once.
+        let specs = registry.asked.lock().unwrap();
+        assert_eq!(specs.len(), 1, "one session per connection");
+        assert_eq!((specs[0].client.as_str(), &specs[0].on_behalf_of), ("test-client", &alice));
+        assert_eq!(specs[0].grants, Grants::agent_default());
+    }
+    // Without a session the agent has no name that could match a registered one, so nothing reaches the runner.
+    assert_eq!((result.is_error, again.is_error), (Some(true), Some(true)));
+    assert!(text(&result).contains("not needed by this test"), "{}", text(&result));
+    assert_eq!(h.runner.records().len(), 0);
+    // Resources are closed too: they are authorised by the server's grants, which a refused session must not borrow.
+    let log = h.client.read_resource(ReadResourceRequestParams::new("omuzaki://log")).await;
+    assert!(log.is_err(), "the op log was readable without a session");
+    assert!(h.client.list_resources(None).await.is_err(), "resources were listed without a session");
+    h.disconnect().await;
+}
+
+fn admitted_session(alice: &Actor) -> SessionInfo {
+    SessionInfo {
+        id: SessionId(1),
+        actor: Actor::Agent { id: "test-client#1".into(), model: None },
+        on_behalf_of: alice.clone(),
+        transport: Transport::Stdio,
+        client: "test-client".into(),
+        model: None,
+        parent: None,
+        role: None,
+        grants: Grants::agent_default(),
+        fence: Vec::new(),
+        budget: Budget::default(),
+        spent: Spend::default(),
+        limits: omuzaki_ops_api::Limits::default(),
+        state: SessionState::Active,
+        open_tx: None,
+        pending: Vec::new(),
+        steps: 0,
+        started_at: omuzaki_core::time::Seconds(0.0),
+        last_active_at: omuzaki_core::time::Seconds(0.0),
+    }
+}
+
+#[tokio::test]
+async fn resources_follow_the_sessions_current_state_and_grants() {
+    let registry = Arc::new(OneSession::default());
+    let alice = Actor::Person { name: "alice".into() };
+    *registry.live.lock().unwrap() = Some(admitted_session(&alice));
+    let options = McpOptions::default().with_sessions(registry.clone(), alice.clone());
+    let h = Harness::connect_with(options, Lifecycle::Initialize).await;
+    let log = || h.client.read_resource(ReadResourceRequestParams::new("omuzaki://log"));
+    assert!(log().await.is_ok(), "an active session with read reads the log");
+
+    // The person narrows the session below `read`: the connection's next read is refused.
+    registry.live.lock().unwrap().as_mut().unwrap().grants = Grants::of([Scope::EditCharacter]);
+    assert!(log().await.is_err(), "a revoked read is honoured by the next resource request");
+    registry.live.lock().unwrap().as_mut().unwrap().grants = Grants::agent_default();
+    assert!(log().await.is_ok());
+
+    // A paused session still reads (design §4.3); one that has ended reads nothing.
+    let paused = SessionState::Paused { by: alice, reason: PauseReason::Person };
+    registry.live.lock().unwrap().as_mut().unwrap().state = paused;
+    assert!(log().await.is_ok(), "the log stays readable while paused");
+    assert!(h.client.list_resources(None).await.is_ok());
+    let over = SessionState::Ended { reason: omuzaki_ops_api::EndReason::Closed, at: omuzaki_core::time::Seconds(1.0) };
+    registry.live.lock().unwrap().as_mut().unwrap().state = over;
+    assert!(log().await.is_err(), "an ended session's resources are closed");
+    assert!(h.client.list_resources(None).await.is_err());
+    h.disconnect().await;
+}
+
+/// A harness whose session the test can change, with `alice` as the person.
+async fn admitted_harness() -> (Harness, Arc<OneSession>, Actor) {
+    let registry = Arc::new(OneSession::default());
+    let alice = Actor::Person { name: "alice".into() };
+    *registry.live.lock().unwrap() = Some(admitted_session(&alice));
+    let options = McpOptions::default().with_sessions(registry.clone(), alice.clone());
+    (Harness::connect_with(options, Lifecycle::Initialize).await, registry, alice)
+}
+
+#[tokio::test]
+async fn the_log_tool_follows_the_sessions_current_grants() {
+    let (h, registry, _) = admitted_harness().await;
+    assert_ne!(h.call("history_log", json!({})).await.is_error, Some(true));
+    // The person narrows the session below `read`.
+    registry.live.lock().unwrap().as_mut().unwrap().grants = Grants::of([Scope::EditCharacter]);
+    let log = h.call("history_log", json!({})).await;
+    assert_eq!(log.is_error, Some(true), "a revoked read closes the log tool too");
+    assert!(text(&log).contains("`read` scope"), "{}", text(&log));
+    h.disconnect().await;
+}
+
+#[tokio::test]
+async fn tx_begin_is_refused_while_the_session_is_paused() {
+    let (h, registry, alice) = admitted_harness().await;
+    registry.live.lock().unwrap().as_mut().unwrap().state =
+        SessionState::Paused { by: alice, reason: PauseReason::Person };
+    let begin = h.call("tx_begin", json!({"label": "oval face"})).await;
+    assert_eq!(begin.is_error, Some(true));
+    assert!(text(&begin).contains("paused"), "{}", text(&begin));
+    assert!(!h.runner.has_open_tx(), "nothing was reserved with the runner");
+    // Resumed, it opens as usual (the registry reports the transaction the runner opened, `TxId(1)`).
+    {
+        let mut live = registry.live.lock().unwrap();
+        let live = live.as_mut().unwrap();
+        live.state = SessionState::Active;
+        live.open_tx = Some(omuzaki_ops_api::SessionTx { tx: omuzaki_ops_api::TxId(1), label: "oval face".into() });
+    }
+    assert_ne!(h.call("tx_begin", json!({"label": "oval face"})).await.is_error, Some(true));
+    h.disconnect().await;
+}
+
+/// `Runner::begin` cannot refuse: a pause that lands after the standing check but before the runner opens the
+/// transaction leaves an id that was never opened. The registry (no open transaction for the session) says so, and
+/// `tx_begin` reports the pause instead of storing an id every later edit would fail on.
+#[tokio::test]
+async fn a_pause_between_the_check_and_the_begin_leaves_no_transaction_behind() {
+    let (h, registry, alice) = admitted_harness().await;
+    // The connect asked once (the session opened at initialization); the next question is the standing check, which
+    // still sees it active; every question after that sees the pause.
+    let seen = registry.asked_about.load(std::sync::atomic::Ordering::SeqCst);
+    *registry.pause_after.lock().unwrap() = Some((seen + 1, alice));
+    let begin = h.call("tx_begin", json!({"label": "oval face"})).await;
+    assert_eq!(begin.is_error, Some(true));
+    assert!(text(&begin).contains("paused"), "{}", text(&begin));
+    // Nothing was kept: once resumed, a transaction opens (a second begin is not refused as "already open").
+    *registry.pause_after.lock().unwrap() = None;
+    registry.live.lock().unwrap().as_mut().unwrap().open_tx =
+        Some(omuzaki_ops_api::SessionTx { tx: omuzaki_ops_api::TxId(2), label: "oval face".into() });
+    let again = h.call("tx_begin", json!({"label": "oval face"})).await;
+    assert_ne!(again.is_error, Some(true), "{}", text(&again));
+    h.disconnect().await;
+}
+
+#[tokio::test]
+async fn a_connection_that_only_initialized_is_already_in_the_registry() {
+    let registry = Arc::new(OneSession::default());
+    let alice = Actor::Person { name: "alice".into() };
+    *registry.live.lock().unwrap() = Some(admitted_session(&alice));
+    let options = McpOptions::default().with_sessions(registry.clone(), alice);
+    let h = Harness::connect_with(options, Lifecycle::Initialize).await;
+    assert_eq!(registry.asked.lock().unwrap().len(), 1, "opened at initialization, before any tool or resource call");
+    h.disconnect().await;
+}
+
+#[tokio::test]
+async fn a_subscription_goes_quiet_when_read_is_revoked() {
+    let (mut h, registry, _) = admitted_harness().await;
+    #[allow(deprecated)] // the legacy subscribe call is what clients on the `initialize` lifecycle use
+    h.client.subscribe(SubscribeRequestParams::new("omuzaki://log")).await.unwrap();
+    h.call("face_set_blend", json!({"character": "mira", "blend": 0.5})).await;
+    assert_eq!(h.next_update().await, "omuzaki://log");
+    registry.live.lock().unwrap().as_mut().unwrap().grants = Grants::of([Scope::EditCharacter]);
+    h.call("face_set_blend", json!({"character": "mira", "blend": 0.6})).await;
+    let none = tokio::time::timeout(Duration::from_millis(300), h.updates.recv()).await;
+    assert!(none.is_err(), "no notification names the document after read was revoked: {none:?}");
+    h.disconnect().await;
+}
 
 #[tokio::test]
 async fn edits_are_attributed_to_the_connected_client() {

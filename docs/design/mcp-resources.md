@@ -6,7 +6,7 @@ area: design
 
 # MCP resources: the provider contract and URI table
 
-Prompts (recipes) are a separate seam: `PromptDef` and `McpOptions::with_prompt` (`prompts.rs`); the recipes land with the features whose ops they need.
+Prompts (recipes) are a separate seam: `PromptDef` and `McpOptions::with_prompt` (`prompts.rs`). Four of the spec's seven recipes are built in (create a character from a sheet, match a reference look, make an emote pack, make a Quest variant); each is offered only when every op it names exists, and the others land with the features whose ops they need.
 
 **Status:** built for the document (A1) and for provider updates (A2), both on main. The per-kind providers are planned. **Decision:** the seam stays in `omuzaki-mcp` until a second consumer exists.
 **Code:** `crates/omuzaki-mcp/src/resources/mod.rs`, `resources/doc.rs`, `events.rs` (`Updates`), `server.rs` (`McpOptions::with_provider`), `session.rs` (`list_resources`, `read_resource`, `require_read`).
@@ -48,8 +48,8 @@ The server enforces what the provider cannot:
 | `omuzaki://render/<id>.png` | `image/png` (a blob) | `RenderProvider` (`resources/renders.rs`) | available; the id is the stored PNG's content hash, so it never changes and nothing is listed |
 | `omuzaki://measure/liveliness/..` | `application/json` | `MeasureProvider` (per-kind, `resources/measure.rs`) | available; computed when read: it runs `measure.liveliness` through `Runner::run`, and nothing is stored |
 | `omuzaki://track/<id>` | `application/json` (a summary) | `TrackProvider` (per-kind) | planned |
-| `omuzaki://metrics/live` | `application/json` | `MetricsProvider` (per-kind) | planned (its source is designed elsewhere) |
-| `omuzaki://library/<item>` | `application/json` | `LibraryProvider` (per-kind) | planned |
+| `omuzaki://metrics/live` | `application/json` | `MetricsProvider` (per-kind, `resources/metrics.rs`) | available once the App registers it with a `MetricsSource`; a snapshot taken at each read, nothing is pushed for it (names and units are the source's: `docs/research/2026-10-live-metrics-snapshot.md`) |
+| `omuzaki://library/<item>[@<version>]` | `application/json` | `LibraryProvider` (per-kind, `resources/library.rs`) | available once the App registers it over its `Library`; one item with `info`, `publisher`, `manifest`, `versions` and a `note` that the publisher's text is data unless first-party or verified; never listed (a library is searched) |
 | `omuzaki://comments`, `omuzaki://comments/<thread>` | `application/json` | `CommentsProvider` (per-kind, `docs/design/comments.md` 9) | planned |
 | `omuzaki://ui/context` | not yet set | per-kind provider | planned |
 

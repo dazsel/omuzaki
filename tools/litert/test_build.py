@@ -165,9 +165,38 @@ class ReadBack(unittest.TestCase):
         self.assertEqual(build.max_version("nothing", "GLIBC_"), "")
 
     def test_delegated_reads_the_plan_line(self):
-        self.assertEqual(build.delegated("delegated 210 of 210 in 1 partitions\n"), (210, 210, 1))
+        self.assertEqual(build.delegated("delegated 210 of 210 in 1 partitions\n"), (210, 210, 1, []))
         with self.assertRaises(build.Mismatch):
             build.delegated("")
+
+    def test_delegated_lists_the_ops_left_out(self):
+        printed = "delegated 180 of 182 in 1 partitions\nundelegated 22\nundelegated custom:Foo\n"
+        self.assertEqual(build.delegated(printed), (180, 182, 1, ["22", "custom:Foo"]))
+        with self.assertRaisesRegex(build.Mismatch, "listed 1 undelegated nodes for 2 left out"):
+            build.delegated("delegated 180 of 182 in 1 partitions\nundelegated 22\n")
+
+
+class Delegation(unittest.TestCase):
+    def test_the_measured_counts_match_the_pins(self):
+        self.assertEqual(build.delegation_problem("face_detector", 164, 164, 1, []), "")
+        self.assertEqual(build.delegation_problem("face_landmarks_detector", 471, 471, 1, []), "")
+        self.assertEqual(build.delegation_problem("face_blendshapes", 181, 182, 1, ["45"]), "")
+
+    def test_a_change_in_either_direction_fails(self):
+        cases = [("face_detector", 163, 164, 1, ["3"]), ("face_detector", 164, 164, 2, []),
+                 ("face_blendshapes", 182, 182, 1, []), ("face_blendshapes", 180, 182, 1, ["45", "3"]),
+                 ("face_blendshapes", 181, 183, 1, ["45"]), ("face_blendshapes", 181, 182, 2, ["45"])]
+        for graph, taken, total, partitions, left in cases:
+            with self.subTest(graph=graph, taken=taken, total=total, partitions=partitions):
+                self.assertIn("pinned", build.delegation_problem(graph, taken, total, partitions, left))
+
+    def test_another_op_left_out_fails_at_the_same_count_and_names_both(self):
+        why = build.delegation_problem("face_blendshapes", 181, 182, 1, ["22"])
+        self.assertIn("leaving 22 on builtin kernels", why)
+        self.assertIn("leaving STRIDED_SLICE (45)", why)
+
+    def test_every_face_graph_has_a_pin(self):
+        self.assertEqual(sorted(build.PINS["delegation"]), sorted(build.FACE_GRAPHS))
 
 
 try:
@@ -180,25 +209,41 @@ except ImportError:  # the build job has no numpy; the check job runs these too,
 class Parity(unittest.TestCase):
     def test_the_largest_difference_is_returned(self):
         ours, reference = numpy.array([1.0, 2.0], numpy.float32), numpy.array([1.0, 2.5], numpy.float32)
-        self.assertEqual(build.max_abs_diff(ours, reference, "out"), 0.5)
+        self.assertEqual(build.max_abs_diff(ours, reference, "out"), (0.5, ""))
 
-    def test_a_nan_output_fails(self):
-        with self.assertRaisesRegex(build.Mismatch, "ours has a non-finite"):
-            build.max_abs_diff(numpy.array([numpy.nan], numpy.float32), numpy.zeros(1, numpy.float32), "out")
+    def test_nan_plus_finite_keeps_the_finite_difference_and_reports_the_nan(self):
+        ours, reference = numpy.array([numpy.nan, 0.5], numpy.float32), numpy.zeros(2, numpy.float32)
+        worst, problem = build.max_abs_diff(ours, reference, "out")
+        self.assertEqual(worst, 0.5)
+        self.assertEqual(problem, "out: 1 non-finite value(s), the first at index 0")
 
-    def test_an_infinite_difference_fails(self):
-        huge = numpy.array([numpy.inf], numpy.float32)
-        with self.assertRaisesRegex(build.Mismatch, "the wheel's has a non-finite"):
-            build.max_abs_diff(numpy.zeros(1, numpy.float32), huge, "out")
-
-    def test_a_non_finite_value_on_either_side_fails(self):
-        finite = numpy.zeros(2, numpy.float32)
+    def test_a_non_finite_value_on_either_side_is_reported_with_count_and_first_index(self):
+        finite = numpy.zeros(3, numpy.float32)
         for bad in (numpy.nan, numpy.inf):
-            broken = numpy.array([0.0, bad], numpy.float32)
-            with self.assertRaisesRegex(build.Mismatch, "non-finite"):
-                build.max_abs_diff(broken, finite, "out")
-            with self.assertRaisesRegex(build.Mismatch, "non-finite"):
-                build.max_abs_diff(finite, broken, "out")
+            broken = numpy.array([0.0, bad, bad], numpy.float32)
+            for ours, reference in ((broken, finite), (finite, broken)):
+                self.assertEqual(build.max_abs_diff(ours, reference, "out"),
+                                 (0.0, "out: 2 non-finite value(s), the first at index 1"))
+
+    def test_nan_plus_finite_over_the_gate_fails_on_both_counts(self):
+        wheel = [numpy.zeros(2, numpy.float32)]
+        ours = numpy.array([numpy.nan, 0.5], numpy.float32).tobytes()
+        worst, problems = build.graph_parity("g", ours, wheel)
+        self.assertEqual(worst, 0.5, "the tolerance gate sees the finite difference")
+        self.assertEqual(problems, ["g output 0: 1 non-finite value(s), the first at index 0"])
+
+    def test_a_non_finite_output_is_a_problem_and_the_other_outputs_are_still_measured(self):
+        wheel = [numpy.zeros(2, numpy.float32), numpy.zeros(2, numpy.float32)]
+        ours = numpy.array([0.0, numpy.nan, 0.25, 0.0], numpy.float32).tobytes()
+        worst, problems = build.graph_parity("g", ours, wheel)
+        self.assertEqual(worst, 0.25)
+        self.assertEqual(len(problems), 1)
+        self.assertRegex(problems[0], "g output 0: 1 non-finite")
+
+    def test_finite_outputs_give_the_largest_difference_and_no_problem(self):
+        wheel = [numpy.zeros(2, numpy.float32), numpy.zeros(1, numpy.float32)]
+        ours = numpy.array([0.0, 0.5, 0.25], numpy.float32).tobytes()
+        self.assertEqual(build.graph_parity("g", ours, wheel), (0.5, []))
 
 
 class Notices(unittest.TestCase):

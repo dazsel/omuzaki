@@ -517,3 +517,28 @@ fn a_lens_too_wide_to_stand_outside_the_subject_is_refused_with_the_reason() {
     };
     assert!(reason.contains("179.9 degree lens"), "{reason}");
 }
+
+/// #1978: the hands preset frames the hands, not the thighs or the feet, at 16:9, 9:16 and 1:1 on every template.
+#[test]
+fn the_hands_preset_centres_both_hands_at_every_aspect() {
+    for id in templates::TEMPLATES {
+        let l = landmarks(id);
+        let hands = l.hands.unwrap();
+        for aspect in [16.0 / 9.0, 9.0 / 16.0, 1.0] {
+            let camera = frame(Framing::Hands, &l, &CameraDef::preset(Framing::Hands), aspect).unwrap();
+            for corner in corners(hands.min, hands.max) {
+                let (x, y) = project(&camera, aspect, corner);
+                assert!(x.abs() <= 1.0 - (1.0 - HANDS_FILL) / 2.0 + 0.01, "{id} {aspect}: a hand corner at x = {x}");
+                assert!(
+                    y.abs() <= 0.5,
+                    "{id} {aspect}: a hand corner at y = {y}, outside the middle half of the frame"
+                );
+            }
+            let centre = project(&camera, aspect, hands.centre());
+            assert!(
+                centre.0.abs() < 0.02 && centre.1.abs() < 0.04,
+                "{id} {aspect}: the hands centre lands at {centre:?}"
+            );
+        }
+    }
+}

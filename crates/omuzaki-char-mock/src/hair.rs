@@ -155,6 +155,7 @@ fn hair_material(
         vertex_colours: true,
         outline: Some(Outline { colour: line, width: narrow(params.shading.outline_width) }),
         receives_shadows: true,
+        uv_transform: omuzaki_render_api::UvTransform::IDENTITY,
     })
 }
 

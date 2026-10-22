@@ -16,6 +16,12 @@ const STYLES: [&str; 3] = ["mitten", "simple", "five_finger"];
 /// parameters.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "style": "five_finger"}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
 pub struct SetHandStyle {
     /// The character whose hands change.
     pub character: CharId,

@@ -22,7 +22,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::any::Any;
 use std::cell::Cell;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -443,12 +443,14 @@ fn a_zoom_sweep_switches_variants_at_the_two_crossings_and_uploads_only_what_cha
     for (frame, step) in steps.into_iter().enumerate() {
         stage.scene_mut().camera = camera_for(&stage, sweep(&mut rng, step));
         let (variant, before) = (stage.built().variant.clone(), renderer.mesh_creates);
-        let old = stage.built().meshes.clone();
+        let (old, revision) = (stage.built().meshes.clone(), stage.revision());
         run_frame(&mut stage, &mut renderer, &FrameInput::default()).expect("frame");
         if stage.built().variant == variant {
             assert_eq!(renderer.mesh_creates, before, "frame {frame}: no switch, no new mesh");
+            assert_eq!(stage.revision(), revision, "frame {frame}: no switch, same revision");
             continue;
         }
+        assert_eq!(stage.revision(), revision + 1, "frame {frame}: a switch replaces the character once");
         let new = &stage.built().meshes;
         let changed = new
             .iter()
@@ -1126,5 +1128,279 @@ fn a_failed_release_after_a_resize_still_rebinds_the_face_system() {
     stage.tick(&mut renderer, &FrameInput::default()).expect("painting at the new density validates");
     assert_eq!(renderer.paints.len() - before, layers, "every layer repainted on the new textures");
     // The refused release left the old textures behind; that is the renderer's to clean up, not this test's.
+    stage.release(&mut renderer).expect("released");
+}
+
+// ---- #1485: replacing a rig mid-switch, and a painter failing during one ----
+
+#[test]
+fn replacing_a_rig_while_its_build_is_in_flight_never_swaps_in_the_old_rigs_variant() {
+    let (mut renderer, deferred) = (Spy::new(false), Deferred::default());
+    let mut stage = stage_about_to_zoom(&mut renderer, mock_rig_on(Box::new(deferred.clone())));
+    let stats = renderer.stats();
+    stage.scene_mut().camera = camera_for(&stage, 0.8);
+    stage.service_variants(&mut renderer, &FrameInput::default()).expect("the build is requested");
+    assert_eq!(deferred.pending(), 1, "a build is in flight, or this test aims at nothing");
+
+    // The new rig has no source: nothing it does may come from the old rig's build.
+    stage.set_face(&mut renderer, mock_rig()).expect("the new rig binds");
+    deferred.run_all();
+    for _ in 0..3 {
+        tick_at(&mut stage, &mut renderer, 0.8).expect("the stage runs");
+    }
+    assert_eq!(stage.built().variant, Some(id("game")), "the old rig's finished build was never staged or swapped in");
+    assert_eq!(renderer.stats(), stats, "and nothing it built reached the renderer");
+    stage.release(&mut renderer).expect("released");
+    assert_eq!(held(renderer.stats()), (0, 0, 0), "nothing leaked");
+}
+
+/// The mock painter, failing while `fail` is set.
+struct FailingPainter {
+    inner: MockPainter,
+    fail: Arc<AtomicBool>,
+}
+
+impl omuzaki_face_api::FacePainter for FailingPainter {
+    fn layers(&self) -> &[FaceLayerSpec] {
+        omuzaki_face_api::FacePainter::layers(&self.inner)
+    }
+
+    fn paint(
+        &mut self,
+        input: &omuzaki_face_api::FaceInput<'_>,
+        out: &mut omuzaki_face_api::FaceDrawing,
+    ) -> Result<(), FaceError> {
+        if self.fail.load(Ordering::Relaxed) {
+            return Err(FaceError::Invalid("the painter was told to fail".into()));
+        }
+        omuzaki_face_api::FacePainter::paint(&mut self.inner, input, out)
+    }
+}
+
+#[test]
+fn a_painter_failing_while_a_switch_is_staged_is_reported_and_the_current_variant_keeps_drawing() {
+    let fail = Arc::new(AtomicBool::new(false));
+    let painter_fail = Arc::clone(&fail);
+    let rig = FaceRig::new(Box::new(move |projection, _| {
+        let painter = FailingPainter { inner: MockPainter::new(*projection), fail: Arc::clone(&painter_fail) };
+        FaceSystem::new(Box::new(painter), Box::new(MockRasterizer))
+    }))
+    .with_executor(Box::new(InlineExecutor));
+    let mut renderer = Spy::new(false);
+    let mut stage = stage_about_to_zoom(&mut renderer, rig);
+    let stats = renderer.stats();
+
+    // The close-up has its own face window, so staging it warms a new face system, whose painter fails.
+    stage.scene_mut().camera = camera_for(&stage, 0.8);
+    fail.store(true, Ordering::Relaxed);
+    let error = stage.service_variants(&mut renderer, &FrameInput::default()).expect_err("the painter fails");
+    assert!(matches!(error, StageError::Face { .. }), "the painter's failure is reported as the face's: {error}");
+    assert!(error.to_string().contains("told to fail"), "{error}");
+    assert_eq!(renderer.stats(), stats, "nothing was left staged on the renderer");
+
+    // The current variant keeps drawing; once the painter recovers, the switch goes through.
+    fail.store(false, Ordering::Relaxed);
+    stage.tick(&mut renderer, &FrameInput::default()).expect("the current variant draws");
+    assert_eq!(stage.built().variant, Some(id("game")));
+    tick_at(&mut stage, &mut renderer, 0.8).expect("the switch is staged again");
+    tick_at(&mut stage, &mut renderer, 0.8).expect("and swapped in");
+    assert_eq!(stage.built().variant, Some(id("close-up")));
+    stage.release(&mut renderer).expect("released");
+    assert_eq!(held(renderer.stats()), (0, 0, 0), "nothing leaked");
+}
+
+#[test]
+fn the_face_expressions_are_shared_and_a_variant_swap_replaces_them_with_a_pointer_store() {
+    let mut renderer = Spy::new(false);
+    let mut stage = stage_about_to_zoom(&mut renderer, mock_rig());
+    let profile_expressions = |stage: &Stage| stage.built().face.as_ref().expect("a face").profile.expressions.clone();
+    let before = Arc::clone(stage.face_expressions().expect("the mock character has a face"));
+    assert_eq!(*before, profile_expressions(&stage), "the table is the face profile's");
+    let (held, allocations) = allocations_in(|| stage.face_expressions().map(Arc::clone));
+    assert_eq!(allocations, 0, "holding the table is a pointer copy: no clone, no allocation");
+    drop(held);
+
+    tick_at(&mut stage, &mut renderer, 0.8).expect("the switching frame");
+    assert_eq!(stage.built().variant, Some(id("close-up")));
+    let after = stage.face_expressions().expect("the close-up has a face");
+    assert!(!Arc::ptr_eq(&before, after), "the swap stored the table the build job made for the new variant");
+    assert_eq!(**after, profile_expressions(&stage), "and it is the new character's");
+    stage.release(&mut renderer).expect("released");
+}
+
+#[test]
+fn a_live_stage_installs_the_expressions_of_the_character_a_variant_swap_brings() {
+    use omuzaki_stage::perform::host::PerformHost as _;
+    use omuzaki_stage::perform::input::SourceSlot;
+    use omuzaki_stage::perform::live::LiveStage;
+
+    let mut renderer = Spy::new(false);
+    let stage = stage_on(&mut renderer, 32, true);
+    let performer = {
+        let parts = omuzaki_stage::perform::PerformerParts {
+            source: Box::new(omuzaki_stage::perform::input::NoSource),
+            retarget: Box::new(omuzaki_anim::retarget::ArkitRetarget::new(omuzaki_anim_api::DeviceProfile::Webcam)),
+            life: Box::new(omuzaki_anim::life::Life::new(omuzaki_anim_api::LifeConfig::new(7))),
+            animator: Box::new(omuzaki_anim_mock::animator::MockAnimator),
+        };
+        omuzaki_stage::perform::Performer::new(
+            parts,
+            omuzaki_anim_api::ChannelBuf::NEUTRAL,
+            omuzaki_anim_api::HumanoidPose::REST,
+        )
+    };
+    let mut live = LiveStage::new(
+        performer,
+        stage,
+        Arc::new(SourceSlot::new()),
+        Quality::live(),
+        omuzaki_render_api::budget::LIVE_GPU,
+    )
+    .expect("the loop starts");
+    let wanted = live.stage().built().face.as_ref().expect("the mock has a face").profile.expressions.clone();
+    assert_eq!(live.handle().expressions(), wanted, "installed at the start");
+    // Another character's set is installed by the app: the swap must put the face's own back.
+    live.handle()
+        .set_expressions(omuzaki_face_api::ExpressionSet::starter(), omuzaki_anim_api::ChannelBuf::NEUTRAL)
+        .unwrap();
+    assert_ne!(live.handle().expressions(), wanted);
+    let mut rng = Rng::new(571);
+    let revision = live.stage().revision();
+    let mut swapped_at = None;
+    for (frame, step) in (0..=900).enumerate() {
+        live.stage_mut().scene_mut().camera = camera_for(live.stage(), sweep(&mut rng, step));
+        // A frame per performer step: `now` is the middle of step `frame`.
+        let now = omuzaki_core::time::Seconds((frame as f64 + 0.5) / f64::from(omuzaki_stage::perform::STEP_HZ));
+        live.frame(&mut renderer, now).expect("frame");
+        if live.stage().revision() != revision {
+            assert_eq!(
+                live.handle().expressions(),
+                omuzaki_face_api::ExpressionSet::starter(),
+                "frame() installs nothing"
+            );
+            assert!(live.expressions_stale());
+            swapped_at = Some(frame);
+            // The loop's cold step, which it runs after every frame, installs the face's expressions again.
+            assert!(live.service(&mut renderer).expect("the service step runs"), "the expressions were installed");
+            assert!(!live.expressions_stale());
+            break;
+        }
+        live.service(&mut renderer).expect("the service step runs");
+    }
+    assert!(swapped_at.is_some(), "the zoom sweep switched variants");
+    assert_eq!(live.handle().expressions(), wanted, "the swap installed the character's expressions again");
+    live.into_stage().release(&mut renderer).expect("released");
+}
+
+// ---- the rig's GPU rasteriser goes from each face system to the next ----
+
+/// A GPU rasteriser that counts the paints it is offered and declines them (the mock renderer's targets are no wgpu
+/// tuple), so the CPU raster draws: a test sees whether the rig still hands paints to it.
+struct ProbeGpu(Arc<AtomicUsize>);
+
+impl GpuRasterizer for ProbeGpu {
+    fn rasterize_native(&mut self, _: &FaceLayerSpec, _: &DrawList, _: &mut dyn Any) -> Result<bool, FaceError> {
+        self.0.fetch_add(1, Ordering::Relaxed);
+        Ok(false)
+    }
+}
+
+/// The mock rig with a [`ProbeGpu`] counting into `offered`.
+fn probed_rig(offered: &Arc<AtomicUsize>) -> FaceRig {
+    mock_rig().with_gpu_rasterizer(Box::new(ProbeGpu(Arc::clone(offered))))
+}
+
+/// A GPU rasteriser that records the layers it is offered and declines them, and asks, once, for the layer the test
+/// names to be painted again: as the Vello rasteriser does when a repaint it recorded turns out to have outgrown a GPU
+/// buffer.
+struct AskingGpu {
+    offered: Arc<Mutex<Vec<FaceLayerId>>>,
+    ask: Arc<Mutex<Option<FaceLayerId>>>,
+}
+
+impl GpuRasterizer for AskingGpu {
+    fn rasterize_native(&mut self, spec: &FaceLayerSpec, _: &DrawList, _: &mut dyn Any) -> Result<bool, FaceError> {
+        self.offered.lock().expect("unpoisoned").push(spec.id);
+        Ok(false)
+    }
+
+    fn repaint_needed(&mut self, layer: FaceLayerId) -> bool {
+        let mut ask = self.ask.lock().expect("unpoisoned");
+        let asked = *ask == Some(layer);
+        if asked {
+            *ask = None;
+        }
+        asked
+    }
+}
+
+#[test]
+fn a_layer_the_gpu_rasteriser_asks_for_is_painted_again_while_the_face_does_not_change() {
+    let (offered, ask) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Mutex::new(None)));
+    let gpu = AskingGpu { offered: Arc::clone(&offered), ask: Arc::clone(&ask) };
+    let mut renderer = Spy::new(false);
+    let mut stage = stage_with_rig(&mut renderer, 32, false, mock_rig().with_gpu_rasterizer(Box::new(gpu)));
+    let take = || std::mem::take(&mut *offered.lock().expect("unpoisoned"));
+    let held = FrameInput::default();
+    stage.tick(&mut renderer, &held).expect("frame");
+    let layer = *take().first().expect("the first frame offers every layer");
+    stage.tick(&mut renderer, &held).expect("frame");
+    assert_eq!(take(), [], "an unchanged face is not painted");
+    *ask.lock().expect("unpoisoned") = Some(layer);
+    stage.tick(&mut renderer, &held).expect("frame");
+    assert_eq!(take(), [layer], "the layer asked for, and only it, is painted again with the same face");
+    stage.tick(&mut renderer, &held).expect("frame");
+    assert_eq!(take(), [], "once");
+    stage.release(&mut renderer).expect("released");
+}
+
+/// Paints offered to the GPU rasteriser by a frame whose face changes (a blink), then by one that changes it back.
+fn offered_by_a_blink(stage: &mut Stage, renderer: &mut Spy, offered: &AtomicUsize) -> usize {
+    let before = offered.load(Ordering::Relaxed);
+    stage.tick(renderer, &blink(true)).expect("frame");
+    stage.tick(renderer, &blink(false)).expect("frame");
+    offered.load(Ordering::Relaxed) - before
+}
+
+#[test]
+fn the_gpu_rasteriser_follows_the_face_into_a_new_variants_face_system() {
+    let offered = Arc::new(AtomicUsize::new(0));
+    let mut renderer = Spy::new(false);
+    let mut stage = stage_about_to_zoom(&mut renderer, probed_rig(&offered));
+    assert!(offered_by_a_blink(&mut stage, &mut renderer, &offered) > 0, "the first face system has the rasteriser");
+    // The close-up has its own face window, so it gets a face system of its own.
+    tick_at(&mut stage, &mut renderer, 0.8).expect("the switching frame");
+    assert_eq!(stage.built().variant, Some(id("close-up")));
+    stage.service_variants(&mut renderer, &FrameInput::default()).expect("the old face system is released");
+    assert!(offered_by_a_blink(&mut stage, &mut renderer, &offered) > 0, "the new face system got the rasteriser");
+    stage.release(&mut renderer).expect("released");
+}
+
+#[test]
+fn the_gpu_rasteriser_stays_with_a_face_system_a_variant_keeps() {
+    let offered = Arc::new(AtomicUsize::new(0));
+    let mut renderer = Spy::new(false);
+    let fixture = fixture_from(mock_character().unwrap(), brows_variants());
+    let mut stage = stage_from(&mut renderer, 32, true, probed_rig(&offered), fixture);
+    tick_at(&mut stage, &mut renderer, START_COVERAGE).expect("frame");
+    tick_at(&mut stage, &mut renderer, 0.8).expect("the switching frame");
+    assert_eq!(stage.built().variant, Some(id("close-up")), "the brows variant swapped in, keeping the face system");
+    assert!(offered_by_a_blink(&mut stage, &mut renderer, &offered) > 0, "the kept face system still has it");
+    stage.release(&mut renderer).expect("released");
+}
+
+#[test]
+fn the_gpu_rasteriser_follows_the_face_into_the_face_system_a_resize_makes() {
+    let offered = Arc::new(AtomicUsize::new(0));
+    let mut renderer = Spy::new(false);
+    // The real painter, whose layers follow the density (the mock painter's are fixed).
+    let rig = FaceRig::standard().with_gpu_rasterizer(Box::new(ProbeGpu(Arc::clone(&offered))));
+    let mut stage = stage_with_rig(&mut renderer, 32, false, rig);
+    stage.tick(&mut renderer, &FrameInput::default()).expect("frame");
+    stage.resize_face(&mut renderer, FACE_PX_PER_M / 2.0).expect("resized");
+    let before = offered.load(Ordering::Relaxed);
+    stage.tick(&mut renderer, &FrameInput::default()).expect("the frame after the resize repaints every layer");
+    assert!(offered.load(Ordering::Relaxed) > before, "the new face system was offered its repaint");
+    assert!(offered_by_a_blink(&mut stage, &mut renderer, &offered) > 0, "and keeps the rasteriser");
     stage.release(&mut renderer).expect("released");
 }

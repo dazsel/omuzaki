@@ -12,8 +12,7 @@
 //!   mixer as ramps;
 //! - a feed is 48 kHz only (no resampling at the edge), and a closed feed goes silent from the next block with no fade;
 //! - a tap that is not mixed down is refused for a stereo point (one scalar ring cannot carry two channels with
-//!   frame-true positions), and `TapDrops` counts samples a ring or sink refused, not samples an `Overwrite` ring lost
-//!   (only its reader sees those);
+//!   frame-true positions);
 //! - meters are the peak and RMS of the **last block** (not 300 ms), and the program-only fields keep their neutral
 //!   values;
 //! - `LatencyChanged` events are not sent.
@@ -101,11 +100,11 @@ impl Link {
         }
     }
 
-    /// Samples refused so far. A `DropNewest` ring counts them itself; an `Overwrite` ring loses samples where only its
-    /// reader can see them (`Consumer::overwritten`), so they are not counted here.
+    /// Samples lost so far: refused by a `DropNewest` ring or a sink, or overwritten in an `Overwrite` ring before its
+    /// reader got to them.
     fn dropped(&self) -> u64 {
         match self {
-            Self::Ring(producer) => producer.dropped(),
+            Self::Ring(producer) => producer.dropped() + producer.overwritten(),
             Self::Sink(_, _, refused) => *refused,
         }
     }
@@ -116,6 +115,8 @@ struct OpenTap {
     processor: TapProcessor,
     link: Link,
     flags: Option<TapFlags>,
+    /// The offset `TapInfo` handed out. `TapInfo` is immutable, so a tap whose offset would change is closed instead.
+    capture_offset: Seconds,
 }
 
 /// A feed: the reading end of its ring, and how many samples it has been short of.
@@ -300,19 +301,7 @@ impl State {
 
     fn open_tap(&mut self, request: &TapRequest, link: Link) -> Result<TapInfo, AudioError> {
         let plan = TapPlan::resolve(&self.graph, &request.point)?;
-        let stereo_point = matches!(
-            &plan.point,
-            TapPoint::BusPreChain(bus) | TapPoint::BusPostChain(bus) | TapPoint::BusPostFader(bus)
-                if self.graph.bus(bus).is_some_and(|b| b.channels == Channels::Stereo)
-        );
-        if stereo_point && !request.format.mono && request.format.rate == TapRate::Graph48k {
-            // The ring is a scalar stream, and the contract's positions count scalars: two channels in one ring
-            // would stamp every run twice as late as the frame clock. Down-mix with `mono: true` instead.
-            return Err(AudioError::TapUnavailable(format!(
-                "a stereo point cannot be read as two channels through one ring ({:?}): ask for mono",
-                plan.point
-            )));
-        }
+        check_tap_format(&self.graph, &plan, request)?;
         let info = TapInfo {
             first_sample: first_sample(request.format.rate, self.sample),
             rate: request.format.rate.hz(),
@@ -320,9 +309,34 @@ impl State {
             honours_mute: plan.honours_mute(),
         };
         let processor = TapProcessor::new(plan, request.format, self.sample);
-        self.taps.push(OpenTap { request: request.clone(), processor, link, flags: None });
+        self.taps.push(OpenTap {
+            request: request.clone(),
+            processor,
+            link,
+            flags: None,
+            capture_offset: info.capture_offset,
+        });
         Ok(info)
     }
+}
+
+/// Whether `request`'s format can be served at `plan`'s point in `graph`. Checked when a tap opens and again whenever
+/// `apply` re-resolves it, because a bus that becomes stereo changes the answer.
+fn check_tap_format(graph: &GraphSpec, plan: &TapPlan, request: &TapRequest) -> Result<(), AudioError> {
+    let stereo_point = matches!(
+        &plan.point,
+        TapPoint::BusPreChain(bus) | TapPoint::BusPostChain(bus) | TapPoint::BusPostFader(bus)
+            if graph.bus(bus).is_some_and(|b| b.channels == Channels::Stereo)
+    );
+    if stereo_point && !request.format.mono && request.format.rate == TapRate::Graph48k {
+        // The ring is a scalar stream, and the contract's positions count scalars: two channels in one ring
+        // would stamp every run twice as late as the frame clock. Down-mix with `mono: true` instead.
+        return Err(AudioError::TapUnavailable(format!(
+            "a stereo point cannot be read as two channels through one ring ({:?}): ask for mono",
+            plan.point
+        )));
+    }
+    Ok(())
 }
 
 /// The largest ring the mock makes, in samples: about 87 s of mono 48 kHz audio, far above any default capacity.
@@ -333,7 +347,8 @@ const MAX_RING_SAMPLES: u32 = 1 << 22;
 /// # Errors
 /// [`AudioError::Internal`] when `seconds` is negative, not finite, or asks for more than [`MAX_RING_SAMPLES`].
 fn ring_samples(seconds: Seconds, rate: u32) -> Result<usize, AudioError> {
-    let wanted = (seconds.0 * f64::from(rate)).round();
+    // Refused before rounding: `round` takes a tiny negative to negative zero, which the range check below accepts.
+    let wanted = if seconds.0 < 0.0 { f64::NAN } else { (seconds.0 * f64::from(rate)).round() };
     if !(0.0..=f64::from(MAX_RING_SAMPLES)).contains(&wanted) {
         return Err(AudioError::Internal(format!(
             "a ring of {} s at {rate} Hz is outside 0 to {MAX_RING_SAMPLES} samples",
@@ -378,16 +393,22 @@ impl AudioEngine for MockEngine {
         mixer.next_sample = state.sample;
         state.mixer = mixer;
         state.graph = graph.clone();
-        let State { graph, taps, .. } = &mut *state;
         // A tap whose point the new graph no longer has is closed; one whose voice signal now resolves elsewhere
-        // (`voice_taps` changed) follows it.
-        taps.retain_mut(|tap| match TapPlan::resolve(graph, &tap.request.point) {
-            Ok(plan) => {
-                tap.processor.replan(plan);
-                true
+        // (`voice_taps` changed) follows it. So is one whose format the point can no longer serve (a bus that became
+        // stereo), or whose `capture_offset` moved, because the offset in its `TapInfo` cannot be changed.
+        let mut taps = std::mem::take(&mut state.taps);
+        taps.retain_mut(|tap| {
+            let Ok(plan) = TapPlan::resolve(&state.graph, &tap.request.point) else { return false };
+            if check_tap_format(&state.graph, &plan, &tap.request).is_err() {
+                return false;
             }
-            Err(_) => false,
+            if state.capture_offset(&plan, tap.request.format.rate) != tap.capture_offset {
+                return false;
+            }
+            tap.processor.replan(plan);
+            true
         });
+        state.taps = taps;
         Ok(())
     }
 

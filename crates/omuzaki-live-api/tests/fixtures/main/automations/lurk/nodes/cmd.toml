@@ -1,0 +1,6 @@
+kind = "chat.command"
+pos = [0.0, 0.0]
+
+[params]
+name = "lurk"
+user_cooldown_s = 60

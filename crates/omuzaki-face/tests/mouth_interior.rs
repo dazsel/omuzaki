@@ -456,3 +456,27 @@ fn the_counter_sees_an_allocation() {
     });
     assert_eq!(allocations, 1, "without this the zero-allocation test proves nothing");
 }
+
+#[test]
+fn a_profile_with_no_fangs_paints_none_whatever_the_channel_says() {
+    let mut fangless = FaceProfile::default();
+    fangless.mouth.fang.kind = omuzaki_face_api::FangKind::None;
+    let pointed = FaceProfile::default();
+    // An open grin, and a closed smile (which shows one small fang on its line).
+    let open = |fangs: f32| params(|m| (m.open, m.smile_left, m.smile_right, m.fangs) = (0.7, 1.2, 1.2, fangs));
+    let closed = |fangs: f32| params(|m| (m.open, m.smile_left, m.smile_right, m.fangs) = (0.0, 1.2, 1.2, fangs));
+    for (name, with, without) in [("open", open(1.0), open(0.0)), ("closed", closed(1.0), closed(0.0))] {
+        for piece_of in [MouthPiece::Interior, MouthPiece::Shape] {
+            assert_eq!(
+                piece(piece_of, &fangless, &with),
+                piece(piece_of, &fangless, &without),
+                "{name} {piece_of:?}: a fangless profile painted fangs"
+            );
+        }
+        assert_ne!(
+            piece(MouthPiece::Interior, &pointed, &with),
+            piece(MouthPiece::Interior, &pointed, &without),
+            "{name}: the pointed profile shows no fang, so the comparison above proves nothing"
+        );
+    }
+}

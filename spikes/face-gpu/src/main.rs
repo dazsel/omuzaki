@@ -281,7 +281,9 @@ fn main() -> R<()> {
                 let (custom_ref, vello_ref, verr) = (&mut custom_state, &mut vello_state, &mut vello_err);
                 let measure = frame >= 3;
                 let mut painter = |target: &mut dyn PaintTarget| -> Result<(), omuzaki_render_api::RenderError> {
-                    let Some((device, queue, texture)) = target.native().downcast_mut::<NativePaintTarget>() else {
+                    // The spike times each candidate by submitting its own commands, as painters did before #2074; the
+                    // renderer's lent encoder (the tuple's fourth handle) stays empty, and the renderer submits it as is.
+                    let Some((device, queue, texture, _)) = target.native().downcast_mut::<NativePaintTarget>() else {
                         return Err(omuzaki_render_api::RenderError::invalid("native", "not a wgpu target"));
                     };
                     let timer = Timer::new(device, queue);
@@ -358,7 +360,7 @@ fn main() -> R<()> {
                 struct Hold(Option<Raster>);
                 let mut hold = Hold(None);
                 let mut grab = |target: &mut dyn PaintTarget| -> Result<(), omuzaki_render_api::RenderError> {
-                    if let Some((d, q, t)) = target.native().downcast_mut::<NativePaintTarget>() {
+                    if let Some((d, q, t, _)) = target.native().downcast_mut::<NativePaintTarget>() {
                         hold.0 = Some(readback(d, q, t));
                     }
                     Ok(())
@@ -398,7 +400,7 @@ fn main() -> R<()> {
         use omuzaki_render_api::Renderer as _;
         let mut mem = String::new();
         let mut probe = |target: &mut dyn PaintTarget| -> Result<(), omuzaki_render_api::RenderError> {
-            if let Some((d, _, _)) = target.native().downcast_mut::<NativePaintTarget>() {
+            if let Some((d, _, _, _)) = target.native().downcast_mut::<NativePaintTarget>() {
                 if let Some(r) = d.generate_allocator_report() {
                     let _ = write!(mem, "gpu memory allocated by this process: {:.1} MiB in {} blocks", r.total_allocated_bytes as f64 / 1048576.0, r.blocks.len());
                 }

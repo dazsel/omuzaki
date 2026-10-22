@@ -8,8 +8,14 @@ area: maintainers
 
 This file records what went wrong while running the project, why it happened, and the rule that keeps it from happening
 again. It's for everyone who runs the work: the Director, the area leads, implementer sessions and whoever maintains the
-automation (the merge loop, the stall audit, the watchers). The rules themselves live in `operating.md`; this file keeps
+automation (the merge loop, the stall audit, the watchers). The rules themselves live in `CLAUDE.md`; this file keeps
 the reasons, so nobody has to relearn them.
+
+**The biggest lesson (2026-10-21, ADR 0067):** a process built for many small, fenced, reviewed tasks produced about
+400,000 lines of good parts and no running product: integration had no owner, because every task was fenced to its own
+crates, and 61% of pull-request time went on review rounds. The project now builds spine first, one high-agency owner
+per area, with no review gate. The review, merge-loop and lead entries below are kept as history; the engineering
+lessons (parsers, test ordering, GPU ceilings, process hygiene) still apply.
 
 **Add an entry** when a problem costs real time or lets a defect through. Write down what happened, the cause and the rule.
 Leave out slips that cost nothing.
@@ -33,6 +39,16 @@ Leave out slips that cost nothing.
   rebases don't trigger a review. Large pull requests (over 400 lines, design docs or ADRs, `xtask/`, `.github/`,
   `tools/`) also get one deep local review, and merging waits for it for up to 60 minutes.
 - **The lesson:** before removing a quality check, measure what it catches.
+
+**Review findings are fixed in the PR, by the session that wrote it** (2026-10-15, later).
+- **What happened:** we had moved P2/P3 findings and everything after one fix round into follow-up issues, and archived
+  sessions as soon as their PR was ready. Follow-ups filed that day added about 57 scope items, and most sat unworked.
+  A fresh session also had to rebuild the context the first one already had.
+- **The rule:** the writing session stays open until its PR merges and fixes every finding itself, in as many rounds as
+  needed (the merge loop allows 6). A finding leaves only as wrong or as another area's code, answered on its thread.
+  `lead-approved` no longer merges over open findings. Existing follow-ups are folded into their open PR or into the
+  area's next Change. The earlier entry above ("once per fix round") still holds for when Codex re-reviews.
+- **The lesson:** a deferred fix is new scope. Fix it where the context is.
 
 **Match the review to the change** (2026-10-15).
 - **What happened:** the Director's own process-doc pull requests went through Codex rounds: eight findings and three
@@ -95,7 +111,7 @@ Leave out slips that cost nothing.
 **One session per issue** (2026-10-15).
 - **What happened:** two leads each started a session on the same issue within minutes of each other.
 - **The rule:** the issue's area owns it. Before starting a session, check the issue for a linked branch or pull request.
-  Leads archive each sub-session in the same step that reports its pull request merged or closed.
+  Leads archive each sub-session in the same step that reports its pull request merged or closed, never earlier.
 
 **What the watcher listens for must match what sessions are told to post** (2026-10-15).
 - **What happened:** the lead's watcher listened for `**<Area> (question):**`, but the session brief told sessions to
@@ -105,7 +121,7 @@ Leave out slips that cost nothing.
   containing `(question):**`, and the Codex bot is an explicit, exact-login exception to the maintainer filter.
 
 **Archiving destroys unpushed work** (2026-10-15).
-- **What happened:** the archiving rule (archive a session as soon as its work is done) didn't say the work had to be
+- **What happened:** the archiving rule at the time (archive a session as soon as its work is done; since replaced by "stay open until the PR merges") didn't say the work had to be
   pushed first. A session stopped early was archived after checking only that its branch had never been pushed, not
   its local `git status`.
 - **The rule:** archive only when `git status` is clean and the remote head matches the head the session reported. A

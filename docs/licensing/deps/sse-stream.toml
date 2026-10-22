@@ -1,0 +1,8 @@
+section = "rust"
+item = "sse-stream"
+kind = "crate"
+used_for = "Server-Sent Events framing of the Anthropic and OpenAI-compatible response bodies (`omuzaki-llm`); already in the lock through rmcp"
+status = "yes"
+condition = "MIT OR Apache-2.0 (the `license` field of sse-stream 0.2.6, checked 2026-10-15): keep the notices"
+audit = "(crates.io: MIT OR Apache-2.0)"
+crates = ["sse-stream"]

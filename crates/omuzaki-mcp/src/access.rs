@@ -14,12 +14,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use constant_time_eq::constant_time_eq;
 use hyper::HeaderMap;
 use hyper::header::AUTHORIZATION;
-use omuzaki_ops_api::{Actor, Grants};
+use omuzaki_ops_api::{Actor, EndReason, Grants};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{SessionManager, StreamableHttpServerConfig, StreamableHttpService};
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::agent::Credential;
 use crate::error::ServerError;
 use crate::limits::{Admission, Limits, SessionSlots, SessionsFull};
 use crate::server::McpServer;
@@ -199,6 +201,8 @@ pub(crate) enum Denied {
 pub(crate) struct Endpoint {
     id: TokenId,
     label: String,
+    /// What the token's sessions are admitted with, and how the port ends them (see [`Credential`]).
+    credential: Arc<Credential>,
     service: StreamableHttpService<Session, LocalSessionManager>,
     sessions: Arc<LocalSessionManager>,
     /// How many sessions this token may have open (`max_sessions_per_token`).
@@ -241,8 +245,10 @@ impl Endpoint {
         Err(refused)
     }
 
-    /// Ends every session of this endpoint. Each session's open transaction is rolled back as its handler drops.
-    pub(crate) async fn close(&self) {
+    /// Ends every session of this endpoint for `reason`. Each session ends through the registry, which abandons its open
+    /// transaction (without a registry the handler rolls it back as it drops).
+    pub(crate) async fn close(&self, reason: EndReason) {
+        self.credential.will_end_with(reason);
         self.cancel.cancel();
         let ids: Vec<_> = self.sessions.sessions.read().await.keys().cloned().collect();
         for id in ids {
@@ -273,6 +279,8 @@ pub(crate) struct Registry {
     cancel: CancellationToken,
     allowed_origins: Vec<String>,
     limits: Limits,
+    /// Where a session's credential revocation (the registry asked for it) is sent; the port revokes the token.
+    revocations: mpsc::UnboundedSender<TokenId>,
 }
 
 impl Registry {
@@ -281,8 +289,23 @@ impl Registry {
         allowed_origins: Vec<String>,
         limits: Limits,
         cancel: CancellationToken,
+        revocations: mpsc::UnboundedSender<TokenId>,
     ) -> Self {
-        Self { server, entries: RwLock::default(), next_id: AtomicU64::new(1), cancel, allowed_origins, limits }
+        Self {
+            server,
+            entries: RwLock::default(),
+            next_id: AtomicU64::new(1),
+            cancel,
+            allowed_origins,
+            limits,
+            revocations,
+        }
+    }
+
+    /// Why the port closes sessions on behalf of the person: they revoked the token (`credential`) or changed what it
+    /// may do.
+    fn revoked(&self, credential: bool) -> EndReason {
+        EndReason::Revoked { by: self.server.person(), credential }
     }
 
     /// The limits every token's endpoint is held to.
@@ -315,7 +338,7 @@ impl Registry {
     fn insert(&self, record: TokenRecord) -> Result<TokenId, ServerError> {
         let hash = record.admissible_hash()?;
         let id = TokenId(self.next_id.fetch_add(1, Ordering::Relaxed));
-        let endpoint = Arc::new(self.endpoint(id, record.label.clone(), record.grants.clone())?);
+        let endpoint = Arc::new(self.endpoint(id, &record)?);
         let mut entries = self.write();
         // Two live tokens with one hash would make `authorize` pick whichever is last: refuse rather than guess.
         if entries.iter().any(|e| constant_time_eq(&e.hash, &hash)) {
@@ -335,14 +358,19 @@ impl Registry {
 
     /// Marks a live token as paired (or not). False if there is no such token.
     pub(crate) fn set_paired(&self, id: TokenId, paired: bool) -> bool {
-        self.write().iter_mut().find(|e| e.id == id).map(|e| e.record.paired = paired).is_some()
+        let mut entries = self.write();
+        let Some(entry) = entries.iter_mut().find(|e| e.id == id) else { return false };
+        entry.record.paired = paired;
+        entry.endpoint.credential.set_paired(paired);
+        true
     }
 
     /// Replaces a live token's grants. Its open sessions end, because they were opened under the old ones; new
     /// sessions get the new grants. False if there is no such token.
     pub(crate) async fn set_grants(&self, id: TokenId, grants: Grants) -> Result<bool, ServerError> {
-        let Some(label) = self.record(id).map(|r| r.label) else { return Ok(false) };
-        let fresh = Arc::new(self.endpoint(id, label, grants.clone())?);
+        let Some(mut record) = self.record(id) else { return Ok(false) };
+        record.grants = grants.clone();
+        let fresh = Arc::new(self.endpoint(id, &record)?);
         let old = {
             let mut entries = self.write();
             entries.iter_mut().find(|e| e.id == id).map(|entry| {
@@ -352,7 +380,7 @@ impl Registry {
         };
         // Close outside the lock. If the token was revoked meanwhile, the fresh endpoint was never installed.
         let live = old.is_some();
-        old.unwrap_or(fresh).close().await;
+        old.unwrap_or(fresh).close(self.revoked(false)).await;
         Ok(live)
     }
 
@@ -369,7 +397,7 @@ impl Registry {
             entries.iter().position(|e| e.id == id).map(|i| entries.remove(i))
         };
         let entry = removed?;
-        entry.endpoint.close().await;
+        entry.endpoint.close(self.revoked(true)).await;
         tracing::info!(token = %entry.id, label = %entry.record.label, "access token revoked");
         Some(TokenRecord { revoked: true, ..entry.record })
     }
@@ -378,7 +406,7 @@ impl Registry {
     pub(crate) async fn close_all(&self) {
         let endpoints: Vec<_> = self.read_endpoints();
         for endpoint in endpoints {
-            endpoint.close().await;
+            endpoint.close(EndReason::Closed).await;
         }
     }
 
@@ -429,14 +457,27 @@ impl Registry {
         infos
     }
 
-    fn endpoint(&self, id: TokenId, label: String, grants: Grants) -> Result<Endpoint, ServerError> {
-        let server = self.server.with_grants(grants)?;
+    fn endpoint(&self, id: TokenId, record: &TokenRecord) -> Result<Endpoint, ServerError> {
+        let label = record.label.clone();
+        let revocations = self.revocations.clone();
+        let credential = Arc::new(Credential::new(
+            label.clone(),
+            record.issuer.clone(),
+            record.paired,
+            self.limits.idle_timeout,
+            Some(Box::new(move || {
+                // The port is gone when nobody listens; then there is nothing left to revoke.
+                let _ = revocations.send(id);
+            })),
+        ));
+        let server = self.server.with_credential(record.grants.clone(), Some(Arc::clone(&credential)))?;
         let cancel = self.cancel.child_token();
         // Sessions that go quiet (a crashed client never sends DELETE) are dropped after the idle timeout, which also
         // rolls back whatever transaction they left open and removes the session from the table the cap counts.
         let mut sessions = LocalSessionManager::default();
         sessions.session_config.keep_alive = Some(self.limits.idle_timeout);
         let sessions = Arc::new(sessions);
+        credential.attach(Arc::clone(&sessions));
         // Origin validation is on even with an empty list, so a request that carries any `Origin` (a web page) is
         // refused unless the host listed it. Requests without one (every non-browser client) are checked by token.
         let config = StreamableHttpServerConfig::default()
@@ -448,7 +489,7 @@ impl Registry {
             .with_cancellation_token(cancel.clone());
         let service = StreamableHttpService::new(move || Ok(server.http_session()), Arc::clone(&sessions), config);
         let slots = SessionSlots::new(self.limits.max_sessions_per_token);
-        Ok(Endpoint { id, label, service, sessions, slots, cancel })
+        Ok(Endpoint { id, label, credential, service, sessions, slots, cancel })
     }
 
     fn read_endpoints(&self) -> Vec<Arc<Endpoint>> {
@@ -659,7 +700,7 @@ mod tests {
             max_body_bytes: 4 * 1024 * 1024,
             body_timeout: Duration::from_secs(30),
         };
-        Registry::new(server, Vec::new(), limits, CancellationToken::new())
+        Registry::new(server, Vec::new(), limits, CancellationToken::new(), tokio::sync::mpsc::unbounded_channel().0)
     }
 
     #[test]
