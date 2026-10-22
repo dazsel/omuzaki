@@ -5,16 +5,17 @@
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use omuzaki_ai_api::{FileSource, Provider, Runtime, SessionOptions};
 use omuzaki_ai_litert::LiteRtRuntime;
 use omuzaki_ai_ort::{OrtRuntime, builds};
 use omuzaki_core::time::Seconds;
 use omuzaki_track::models::ModelDir;
-use omuzaki_track::{FaceTracker, FaceTrackerConfig, Mode, NormRect, RgbFrame};
+use omuzaki_track::{FaceTracker, FaceTrackerConfig, Mode, NormRect, RgbFrame, StageTimings};
 use sha2::Digest;
 
+use crate::cpu::process_cpu;
 use crate::percentile::nearest_rank;
 use crate::track_support::DirSource;
 
@@ -26,10 +27,8 @@ const ROI: NormRect = NormRect { x_center: 0.5, y_center: 0.5, width: 0.5, heigh
 const WARM_UP: u32 = 20;
 /// Timed calls.
 const CALLS: u32 = 1000;
-/// Intra-op threads of the ONNX Runtime sessions.
-const THREADS: u16 = 1;
-/// Intra-op threads LiteRT runs at, one row each.
-const LITERT_THREADS: [u16; 2] = [1, 2];
+/// Intra-op threads each runtime runs at, one row each (#1753).
+const THREADS: [u16; 3] = [1, 2, 4];
 /// What an error shows in place of a folder the user named.
 const HIDDEN: &str = "<folder>";
 
@@ -61,12 +60,28 @@ impl Setup {
     }
 }
 
-/// One row of the table: the runtime and its thread count, and the call's times in microseconds, sorted.
+/// One row of the tables: the runtime and its thread count, the whole call's times and each stage's, in microseconds
+/// and sorted, and the process's CPU time over the timed calls (`None` where the platform doesn't report it).
 struct Row {
     runtime: &'static str,
     threads: u16,
     micros: Vec<f64>,
+    stages: [Vec<f64>; STAGES.len()],
+    cpu: Option<Duration>,
 }
+
+/// How a stage's time is read from the tracker's timings.
+type Stage = fn(&StageTimings) -> u32;
+
+/// The stages of `track_roi` the probe splits it into (#1905), with how each is read from the tracker's timings. The
+/// detector does not run: `track_roi` starts from a given region.
+const STAGES: [(&str, Stage); 5] = [
+    ("warp", |t| t.warp_us),
+    ("landmark run", |t| t.landmark_run_us),
+    ("decode", StageTimings::landmark_decode_us),
+    ("blendshapes", |t| t.blendshapes_us),
+    ("smoothing and pose", |t| t.geometry_us),
+];
 
 /// `message` with every place in `hidden` replaced by [`HIDDEN`], longest first so a folder inside another is not left
 /// half showing. A place with nothing in it to leak (empty, or only dots and separators, like `.` or `/`) is left
@@ -112,7 +127,7 @@ pub fn run(setup: &Setup, out: &mut dyn Write) -> Result<(), String> {
     let mut rows = Vec::new();
     let mut measured = || -> Result<(), String> {
         if let Some((models, cache)) = ort {
-            rows.push(measure_ort(models, cache)?);
+            rows.extend(measure_ort(models, cache)?);
         }
         if let Some(((task, cache), sha256)) = litert {
             rows.extend(measure_litert(task, cache, sha256)?);
@@ -123,11 +138,11 @@ pub fn run(setup: &Setup, out: &mut dyn Write) -> Result<(), String> {
     table(&rows, out)
 }
 
-/// The ONNX Runtime row, over the converted model folder. Its errors may name paths: [`run`] redacts them.
-fn measure_ort(models: &OsStr, cache: &OsStr) -> Result<Row, String> {
+/// The ONNX Runtime rows, over the converted model folder. Its errors may name paths: [`run`] redacts them.
+fn measure_ort(models: &OsStr, cache: &OsStr) -> Result<Vec<Row>, String> {
     let dir = ModelDir::open(&PathBuf::from(models)).map_err(|e| format!("the model folder: {e}"))?;
-    let micros = time(&dir, &OrtRuntime, &DirSource(PathBuf::from(cache)), THREADS)?;
-    Ok(Row { runtime: "onnx", threads: THREADS, micros })
+    let natives = DirSource(PathBuf::from(cache));
+    THREADS.into_iter().map(|threads| time("onnx", &dir, &OrtRuntime, &natives, threads)).collect()
 }
 
 /// The LiteRT rows, over the official bundle unpacked in a scratch folder. Its errors may name paths.
@@ -144,14 +159,17 @@ fn measure_litert(task: &OsStr, cache: &OsStr, sha256: &str) -> Result<Vec<Row>,
     std::fs::copy(task, &copy).map_err(|e| format!("the face bundle: {e}"))?;
     let dir = omuzaki_track::task::unpack(&copy).map_err(|e| format!("the face bundle: {e}"))?;
     let natives = DirSource(scratch.path().to_path_buf());
-    LITERT_THREADS
-        .into_iter()
-        .map(|threads| Ok(Row { runtime: "tflite", threads, micros: time(&dir, &LiteRtRuntime, &natives, threads)? }))
-        .collect()
+    THREADS.into_iter().map(|threads| time("tflite", &dir, &LiteRtRuntime, &natives, threads)).collect()
 }
 
-/// `track_roi`'s sorted times, in microseconds, on `dir`'s graphs through `runtime` at `threads` threads.
-fn time(dir: &ModelDir, runtime: &dyn Runtime, natives: &dyn FileSource, threads: u16) -> Result<Vec<f64>, String> {
+/// `track_roi`'s row on `dir`'s graphs through `runtime` (named `name`) at `threads` threads.
+fn time(
+    name: &'static str,
+    dir: &ModelDir,
+    runtime: &dyn Runtime,
+    natives: &dyn FileSource,
+    threads: u16,
+) -> Result<Row, String> {
     let options = SessionOptions::new(vec![Provider::Cpu], threads);
     let graphs = dir.load(runtime, natives, &options).map_err(|e| format!("loading the graphs: {e}"))?;
     let geometry = dir.geometry().map_err(|e| format!("the model geometry: {e}"))?;
@@ -162,39 +180,79 @@ fn time(dir: &ModelDir, runtime: &dyn Runtime, natives: &dyn FileSource, threads
     let frame = RgbFrame { data: &pixels, width: W, height: H, stride: W as usize * 3 };
     let mut index = 0_u32;
     // A failed call would time partial work, so the first one stops the probe.
-    let mut call = |tracker: &mut FaceTracker| -> Result<f64, String> {
+    let mut call = |tracker: &mut FaceTracker| -> Result<(f64, StageTimings), String> {
         index += 1;
         let started = Instant::now();
-        let sample = tracker.track_roi(&frame, ROI, Seconds(f64::from(index) / 30.0));
+        let result = tracker.track_roi_timed(&frame, ROI, Seconds(f64::from(index) / 30.0));
         let micros = started.elapsed().as_secs_f64() * 1e6;
-        sample.map(std::hint::black_box).map_err(|e| format!("track_roi call {index} failed: {e}"))?;
-        Ok(micros)
+        let (sample, timings) = result.map_err(|e| format!("track_roi call {index} failed: {e}"))?;
+        std::hint::black_box(sample);
+        Ok((micros, timings))
     };
     for _ in 0..WARM_UP {
         call(&mut tracker)?;
     }
-    let mut micros = (0..CALLS).map(|_| call(&mut tracker)).collect::<Result<Vec<_>, _>>()?;
-    micros.sort_by(f64::total_cmp);
-    Ok(micros)
+    let cpu_before = process_cpu();
+    let calls = (0..CALLS).map(|_| call(&mut tracker)).collect::<Result<Vec<_>, _>>()?;
+    let cpu = process_cpu().zip(cpu_before).and_then(|(after, before)| after.checked_sub(before));
+    let sorted = |mut values: Vec<f64>| {
+        values.sort_by(f64::total_cmp);
+        values
+    };
+    let micros = sorted(calls.iter().map(|(micros, _)| *micros).collect());
+    let stages = STAGES.map(|(_, read)| sorted(calls.iter().map(|(_, t)| f64::from(read(t))).collect()));
+    Ok(Row { runtime: name, threads, micros, stages, cpu })
+}
+
+/// Mean, p50 and p95 of sorted microseconds, in milliseconds.
+fn summary(sorted: &[f64]) -> [f64; 3] {
+    let mean = sorted.iter().sum::<f64>() / f64::from(CALLS);
+    [mean / 1e3, nearest_rank(sorted, 50) / 1e3, nearest_rank(sorted, 95) / 1e3]
 }
 
 /// Prints the table of `rows` and the builds that ran them.
 fn table(rows: &[Row], out: &mut dyn Write) -> Result<(), String> {
     say(out, &format!("## track_roi timing, {W}x{H}, {CALLS} calls after {WARM_UP} warm-up\n"))?;
-    say(out, "| runtime | threads | mean (ms) | p50 (ms) | p95 (ms) |\n|---|---|---|---|---|")?;
+    say(
+        out,
+        "| runtime | threads | mean (ms) | p50 (ms) | p95 (ms) | CPU per call (ms) | cores busy |\n\
+         |---|---|---|---|---|---|---|",
+    )?;
     for row in rows {
-        let mean = row.micros.iter().sum::<f64>() / f64::from(CALLS);
+        let [mean, p50, p95] = summary(&row.micros);
+        // The process's CPU time over the timed calls, per call, and as cores kept busy during them.
+        let (cpu, cores) = row.cpu.map_or_else(
+            || ("not reported".to_owned(), "not reported".to_owned()),
+            |cpu| {
+                let per_call = cpu.as_secs_f64() * 1e3 / f64::from(CALLS);
+                (format!("{per_call:.2}"), format!("{:.2}", per_call / mean))
+            },
+        );
         say(
             out,
-            &format!(
-                "| {} | {} | {:.2} | {:.2} | {:.2} |",
-                row.runtime,
-                row.threads,
-                mean / 1e3,
-                nearest_rank(&row.micros, 50) / 1e3,
-                nearest_rank(&row.micros, 95) / 1e3
-            ),
+            &format!("| {} | {} | {mean:.2} | {p50:.2} | {p95:.2} | {cpu} | {cores} |", row.runtime, row.threads),
         )?;
+    }
+    say(out, "\n### Per stage, mean / p50 / p95 (ms)\n")?;
+    let header = STAGES.map(|(name, _)| name).join(" | ");
+    say(
+        out,
+        &format!("| runtime | threads | {header} | stages / call |\n|---|---|{}---|", "---|".repeat(STAGES.len())),
+    )?;
+    for row in rows {
+        let cells = row
+            .stages
+            .iter()
+            .map(|stage| {
+                let [mean, p50, p95] = summary(stage);
+                format!("{mean:.2} / {p50:.2} / {p95:.2}")
+            })
+            .collect::<Vec<_>>()
+            .join(" | ");
+        // How much of the whole call the stages account for: the rest is the call's own bookkeeping.
+        let covered = row.stages.iter().map(|stage| stage.iter().sum::<f64>()).sum::<f64>()
+            / row.micros.iter().sum::<f64>().max(f64::MIN_POSITIVE);
+        say(out, &format!("| {} | {} | {cells} | {:.1}% |", row.runtime, row.threads, covered * 100.0))?;
     }
     say(out, "")?;
     let ort = omuzaki_ai_ort::loaded().map_or_else(

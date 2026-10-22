@@ -11,6 +11,7 @@ use omuzaki_core::time::{Clock, Seconds};
 use omuzaki_pixfmt::MjpgDecoder;
 use omuzaki_track_api::camera::CameraStream;
 use omuzaki_track_api::clock::{ClockMap, MIN_STEP};
+use omuzaki_track_api::doctor::{Doctor, DoctorBoard};
 use omuzaki_track_api::error::TrackError;
 use omuzaki_track_api::mailbox::MailboxWriter;
 use omuzaki_track_api::tracker::LatencyStats;
@@ -18,8 +19,10 @@ use omuzaki_track_api::tracker::LatencyStats;
 use super::convert::{convert_into, rgb_len};
 use super::preview::{PreviewFrame, PreviewTap};
 use super::{Failures, FrameTracker};
+use crate::doctor::ObserveFrame;
 use crate::error::FaceTrackError;
 use crate::frame::RgbFrame;
+use crate::landmarks::NUM_LANDMARKS;
 use crate::sample::{FaceSample, StageTimings, to_track_frame};
 
 /// What `stop` must finish in: the task's budget for joining the thread (`track-api.md` T2).
@@ -257,6 +260,8 @@ pub(super) struct Run {
     pub(super) preview: Arc<PreviewTap>,
     pub(super) stats: Arc<Stats>,
     pub(super) error: Arc<Mutex<Option<TrackError>>>,
+    /// Where the tracking doctor's findings go.
+    pub(super) board: Arc<DoctorBoard>,
     pub(super) worker: Worker,
     pub(super) handoff: Handoff,
 }
@@ -342,6 +347,58 @@ impl Worker {
             std::thread::sleep(Duration::from_millis(1));
         }
         if handle.is_finished() { handle.join().ok().flatten() } else { None }
+    }
+}
+
+/// How often, in seconds of frames, the doctor reads the latency counters.
+const LATENCY_EVERY: f64 = 0.5;
+
+/// The tracking doctor on the camera thread (PF-28): every camera frame's arrival, each tracked frame's pixels and
+/// face, and the latency counters twice a second, published to the session's [`DoctorBoard`]. It reads a frame after
+/// its publish, like the preview, so it never delays one, and allocates nothing.
+struct Checkup {
+    doctor: Doctor,
+    board: Arc<DoctorBoard>,
+    /// The camera's frame interval, the line [`Finding::Overloaded`](omuzaki_track_api::doctor::Finding::Overloaded)
+    /// is drawn at.
+    interval: Duration,
+    /// The stage times of the last tracked frame and of the last latency reading.
+    last_frame: Option<f64>,
+    last_latency: Option<f64>,
+}
+
+impl Checkup {
+    fn new(board: Arc<DoctorBoard>, fps: u32) -> Self {
+        let interval = if fps > 0 { Duration::from_secs_f64(1.0 / f64::from(fps)) } else { Duration::ZERO };
+        Self { doctor: Doctor::default(), board, interval, last_frame: None, last_latency: None }
+    }
+
+    /// A camera frame arrived at `at`, on the stage clock. A recheck asked for since the last frame starts over here.
+    fn arrival(&mut self, at: Seconds) {
+        if self.board.take_recheck() {
+            self.doctor.recheck();
+            (self.last_frame, self.last_latency) = (None, None);
+        }
+        self.doctor.observe_arrival(at.0);
+    }
+
+    /// A tracked frame, captured at `time`, went out with `landmarks`.
+    #[allow(clippy::cast_possible_truncation)] // the time between two frames is far inside f32
+    fn frame(
+        &mut self,
+        frame: &RgbFrame<'_>,
+        landmarks: Option<&[[f32; 3]; NUM_LANDMARKS]>,
+        time: Seconds,
+        stats: &Stats,
+    ) {
+        let dt = self.last_frame.replace(time.0).map_or(0.0, |last| (time.0 - last) as f32);
+        self.doctor.observe_frame(frame, landmarks, dt);
+        let since = self.last_latency.map(|last| time.0 - last);
+        if since.is_none_or(|since| since >= LATENCY_EVERY) {
+            self.doctor.observe_latency(&stats.snapshot(), self.interval, since.unwrap_or(0.0) as f32);
+            self.last_latency = Some(time.0);
+        }
+        self.board.publish(&self.doctor);
     }
 }
 
@@ -466,6 +523,7 @@ fn hand_over(
 
 impl Run {
     /// Runs until `stop` is set or the stream fails. A failure publishes one lost frame and is kept in `error`.
+    #[allow(clippy::too_many_lines)] // one frame's path, capture to publish, reads best in one loop
     pub(super) fn run(self) {
         let Self {
             mut stream,
@@ -479,6 +537,7 @@ impl Run {
             preview,
             stats,
             error,
+            board,
             worker,
             handoff,
         } = self;
@@ -500,6 +559,7 @@ impl Run {
         let (mut device_clock, mut scratch) = (ClockMap::new(), PreviewFrame::default());
         let mut camera_seq = None::<u64>;
         let mut accepted = 0_u64;
+        let mut checkup = Checkup::new(board, mode.fps);
         // The same warm-up as the tracker's thread: nothing is waiting yet, so this times out after [`WARM_UP`].
         worker.done.recv_timeout(WARM_UP).ok();
         let fail = |why: TrackError| *error.lock().unwrap_or_else(PoisonError::into_inner) = Some(why);
@@ -527,6 +587,7 @@ impl Run {
                 stats.dropped.fetch_add(frame.seq.saturating_sub(previous + 1), Ordering::Relaxed);
             }
             camera_seq = Some(frame.seq);
+            checkup.arrival(arrived);
             // A device time before the last accepted one is a glitch, not a new epoch: the contract is to drop the
             // frame and keep the fit.
             let Ok(time) = device_clock.map(frame.captured, arrived) else {
@@ -563,12 +624,13 @@ impl Run {
                 break 'frames;
             };
             rgb = pixels;
-            let sample = if let Ok((sample, _timings)) = result {
-                sample
-            } else {
-                stats.tracking.fetch_add(1, Ordering::Relaxed);
-                None
-            };
+            let sample = result.map_or_else(
+                |_| {
+                    stats.tracking.fetch_add(1, Ordering::Relaxed);
+                    None
+                },
+                |(sample, _timings)| sample,
+            );
             let (seq, now) = out.publish(sample.as_ref(), time);
             // Latency is from when the frame was captured, not from the time its output was ordered at, and it is
             // taken before the preview, so that work cannot inflate it.
@@ -576,6 +638,7 @@ impl Run {
             let frame =
                 RgbFrame { data: &rgb, width: frame.width, height: frame.height, stride: 3 * frame.width as usize };
             preview.offer(&mut scratch, &frame, seq, sample.as_ref().map(|s| &s.landmarks));
+            checkup.frame(&frame, sample.as_ref().map(|s| &s.landmarks), time, &stats);
         }
         hand_over(worker, &stop, grace, &handoff, out.seq, stream);
     }

@@ -28,6 +28,7 @@ use omuzaki_track::{FaceSample, FaceTrackError, NormRect, RgbFrame, StageTimings
 use omuzaki_track_api::camera::{
     Camera, CameraFormat, CameraFormatRequest, CameraFrame, CameraId, CameraInfo, CameraStream, DeviceTime, PixelFormat,
 };
+use omuzaki_track_api::doctor::Finding;
 use omuzaki_track_api::error::TrackError;
 use omuzaki_track_api::tracker::{QualityTier, Tracker, TrackerConfig};
 use omuzaki_track_mock::FakeCamera;
@@ -384,6 +385,28 @@ fn a_camera_error_mid_stream_ends_the_thread_with_a_lost_frame_and_the_error() {
     until_lost(&mut *source);
     assert!(matches!(tracker.error(), Some(TrackError::Backend(_))), "{:?}", tracker.error());
     tracker.stop();
+}
+
+#[test]
+fn the_doctor_on_the_camera_thread_finds_a_dark_room_and_a_recheck_clears_it() {
+    let format = CameraFormat::new(64, 48, 30, PixelFormat::Rgb8);
+    let frames = (0..10_u64).map(|i| (DeviceTime(i * 33_000_000), vec![20_u8; 64 * 48 * 3])).collect();
+    let mut tracker = webcam(
+        FakeCamera::from_frames(format, frames),
+        Scripted::new(vec![false]),
+        WebcamConfig::default().with_mode(64, 48, 30),
+    );
+    assert_eq!(tracker.diagnoses(), []);
+    let _source = start(&mut tracker);
+    // The stream fails once its frames are served, after the last one was read: the findings are all in by then.
+    assert_eq!(wait_for_error(&tracker), TrackError::Lost);
+    let found: Vec<_> = tracker.diagnoses().into_iter().map(|d| d.finding).collect();
+    assert_eq!(found, [Finding::LowLight]);
+    assert!(tracker.diagnoses()[0].fix().contains("lamp"));
+    tracker.recheck();
+    assert_eq!(tracker.diagnoses(), []);
+    tracker.stop();
+    assert_eq!(tracker.diagnoses(), []);
 }
 
 #[test]
