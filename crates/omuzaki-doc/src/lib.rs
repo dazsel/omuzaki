@@ -71,6 +71,7 @@ mod lock;
 mod migrate;
 mod migrations;
 mod project;
+mod source;
 mod toml_read;
 mod toml_write;
 mod tree;

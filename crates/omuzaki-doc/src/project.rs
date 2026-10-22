@@ -14,6 +14,7 @@ use crate::error::StoreError;
 use crate::known::Known;
 use crate::layout::{Entry, Layout, Pending, Segs, doc_path};
 use crate::migrate;
+use crate::source::FileSource;
 use crate::toml_write::{RenderError, render};
 use crate::tree::{changed_paths, check_change, set, show};
 
@@ -88,14 +89,33 @@ impl Project {
     /// The folder isn't a project, a file can't be read or parsed, two entries claim one name, the schema is newer
     /// than this build understands, or a migration fails.
     pub fn open(dir: impl AsRef<Path>) -> Result<Self, StoreError> {
-        let dir = dir.as_ref();
+        Self::open_source(&FileSource::Folder(dir.as_ref()))
+    }
+
+    /// Opens a project from its files' bytes, as a snapshot holds them, by exactly the rules of [`open`](Self::open):
+    /// `project.toml` is judged first, hidden names and files that aren't `.toml` are left out of the tree, and older
+    /// projects are upgraded in memory. Paths are `/`-separated and relative to the project; `dir` is where it saves.
+    /// Nothing is read from or written to `dir`.
+    ///
+    /// # Errors
+    /// As [`open`](Self::open), with errors naming the files under `dir`.
+    pub fn open_files(
+        dir: impl AsRef<Path>,
+        files: impl IntoIterator<Item = (String, Vec<u8>)>,
+    ) -> Result<Self, StoreError> {
+        let files: BTreeMap<String, Vec<u8>> = files.into_iter().collect();
+        Self::open_source(&FileSource::Files { dir: dir.as_ref(), files: &files })
+    }
+
+    fn open_source(source: &FileSource<'_>) -> Result<Self, StoreError> {
+        let dir = source.dir();
         let migrations = migrate::registered();
         let supported = migrate::latest(&migrations);
         let too_new = |project: &Map<String, Value>| match migrate::schema_of_project(project)? {
             found if found > supported => Err(StoreError::SchemaTooNew { found, supported }),
             _ => Ok(()),
         };
-        let Loaded { mut root, files } = disk::load(dir, too_new)?;
+        let Loaded { mut root, files } = disk::load_from(source, too_new)?;
         let mut known = Known::default();
         let mut layout_files = Vec::with_capacity(files.len());
         for file in files {
