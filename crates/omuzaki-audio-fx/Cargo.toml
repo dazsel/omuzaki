@@ -23,8 +23,6 @@ thiserror.workspace = true
 [dev-dependencies]
 criterion.workspace = true
 omuzaki-audio-mock = { path = "../omuzaki-audio-mock" }
-# The budget harness: `examples/voice_fx_budget.rs` reports `voice.fx`, `voice.fx.pitch` and `voice.fx.cpu` with it.
-omuzaki-test = { path = "../omuzaki-test" }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 toml.workspace = true
 

@@ -4373,7 +4373,6 @@ dependencies = [
  "omuzaki-doc-mock",
  "omuzaki-ops-api",
  "omuzaki-store-api",
- "omuzaki-test",
  "schemars",
  "serde",
  "serde_json",
@@ -5826,6 +5825,16 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "toml",
+]
+
+[[package]]
+name = "omuzaki-test-audio"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-audio-api",
+ "omuzaki-audio-fx",
+ "omuzaki-audio-mock",
+ "omuzaki-test",
 ]
 
 [[package]]

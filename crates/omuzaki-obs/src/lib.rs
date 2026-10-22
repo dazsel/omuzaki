@@ -39,4 +39,8 @@ pub mod settings;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
-omuzaki_core::define_link!();
+// The go-live notice reads the character and scene contracts, which register their document keys (ADR 0015).
+omuzaki_core::define_link! {
+    omuzaki_char_api::link();
+    omuzaki_stage_api::link();
+}

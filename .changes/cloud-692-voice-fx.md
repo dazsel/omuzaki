@@ -11,5 +11,5 @@
   synthetic voice or a WAV file (person only) through presets and report its F0, formants, BS.1770 loudness, centroid,
   peak and latency, so an agent can tune a voice in numbers.
 - Budgets: the voice chain adds 5.3 ms (24.3 ms with the pitch shifter), and costs 0.33% of an 8-core machine
-  (`tests/budget.rs`, `benches/chain.rs`, `examples/voice_fx_budget.rs`).
+  (`tests/budget.rs`, `benches/chain.rs`, `omuzaki-test-audio`'s `examples/voice_fx_budget.rs`).
 - `omuzaki-audio-api` gains `VoiceFile` and `GRAPH_DOC_PATH`. The CLI and the studio link the crate.

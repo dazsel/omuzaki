@@ -4,7 +4,7 @@
 //! `--seconds` of the synthetic voice (300 by default: the §10 "mean over 5 min").
 //!
 //! ```text
-//! cargo run --release -p omuzaki-audio-fx --example voice_fx_budget -- [--seconds N] [--report DIR]
+//! cargo run --release -p omuzaki-test-audio --example voice_fx_budget -- [--seconds N] [--report DIR]
 //!     [--class CLASS] [--previous FILE] [--strict]
 //! ```
 //!
