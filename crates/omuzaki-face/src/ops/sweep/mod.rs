@@ -27,6 +27,7 @@ const SHEET_COLUMNS: u32 = 10;
 /// Pushes each face channel of a character to its far end and reports which ones visibly change the face.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend("examples" = [{"character": "kit", "width_px": 387}], "x-omuzaki-fixture" = "character"))]
 pub struct SweepChannels {
     /// The character whose face to sweep.
     pub character: CharId,

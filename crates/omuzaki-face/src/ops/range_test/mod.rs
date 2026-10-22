@@ -35,6 +35,7 @@ const SHEET_COLUMNS: u32 = 6;
 /// Paints every expression of a character at emote and stream sizes and flags the pairs that read the same.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend("examples" = [{"character": "kit", "sizes": [28, 56]}], "x-omuzaki-fixture" = "character"))]
 pub struct RangeTest {
     /// The character whose expressions to test.
     pub character: CharId,
