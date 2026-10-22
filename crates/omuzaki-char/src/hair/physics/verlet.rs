@@ -76,6 +76,9 @@ pub const STIFFNESS_HZ: f32 = 90.0;
 /// The bind-space height band over which a [`Follow::Body`] particle goes from following the chest (below) to the head
 /// (above), as `smoothstep(y, lo, hi)`. The prototype's numbers, for its head centre at 0.778 m.
 pub const BODY_BLEND: (f32, f32) = (0.56, 0.70);
+/// The head centre's bind-space height [`BODY_BLEND`] was set for; [`ChainSet::set_head_height`] moves the band with the
+/// head of a character of another size.
+pub const BODY_BLEND_HEAD: f32 = 0.778;
 
 /// Why a chain set could not be built or driven.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -155,6 +158,8 @@ pub struct ChainSet {
     spring: Vec<f32>,
     /// How much of the head each particle follows (1 for [`Follow::Head`]).
     head_weight: Vec<f32>,
+    /// Whether each particle's clump follows the body ([`Follow::Body`]).
+    follows_body: Vec<bool>,
     /// Whether any particle follows the chest at all (a body-following chain reaching below the blend's top).
     needs_chest: bool,
     pos: Vec<Vec3>,
@@ -225,6 +230,7 @@ impl ChainSet {
             stiffness: Vec::new(),
             spring: Vec::new(),
             head_weight: Vec::new(),
+            follows_body: Vec::new(),
             needs_chest: false,
             pos: Vec::new(),
             prev: Vec::new(),
@@ -268,6 +274,7 @@ impl ChainSet {
                     Follow::Head => 1.0,
                     Follow::Body => smoothstep(p.y, BODY_BLEND.0, BODY_BLEND.1),
                 });
+                set.follows_body.push(clump.follow == Follow::Body);
             }
             let count = set.rest.len() - start;
             for j in 0..count {
@@ -285,6 +292,23 @@ impl ChainSet {
         set.prev.clone_from(&set.rest);
         set.target.clone_from(&set.rest);
         Ok(set)
+    }
+
+    /// Moves the band over which a [`Follow::Body`] particle hands over from the chest to the head ([`BODY_BLEND`]) by
+    /// as much as `head_y`, the head centre's bind-space height, differs from [`BODY_BLEND_HEAD`]: so the band sits
+    /// as far under the head of any character as the prototype's sat under its own. Call it before the first
+    /// [`ChainSet::targets`]. A non-finite height changes nothing.
+    pub fn set_head_height(&mut self, head_y: f32) {
+        if !head_y.is_finite() {
+            return;
+        }
+        let shift = head_y - BODY_BLEND_HEAD;
+        for ((w, &body), p) in self.head_weight.iter_mut().zip(&self.follows_body).zip(&self.rest) {
+            if body {
+                *w = smoothstep(p.y, BODY_BLEND.0 + shift, BODY_BLEND.1 + shift);
+            }
+        }
+        self.needs_chest = self.head_weight.iter().any(|&w| w < 1.0);
     }
 
     /// Replaces the per-particle stiffness (one value in `0..=1` per particle, in [`ChainSet::positions`] order), for a
@@ -569,6 +593,27 @@ impl ChainSet {
     /// `HairClump::stiffness` at each particle.
     pub fn stiffness(&self) -> &[f32] {
         &self.stiffness
+    }
+
+    /// Each particle's target from the last [`ChainSet::targets`], world space: its rest point carried by the head, or
+    /// for a body-following particle by its blend of the head and the chest.
+    pub fn target_positions(&self) -> &[Vec3] {
+        &self.target
+    }
+
+    /// How much of the head each particle follows, the rest of it the chest's (1 for [`Follow::Head`]).
+    pub fn head_weights(&self) -> &[f32] {
+        &self.head_weight
+    }
+
+    /// Whether any particle follows the chest at all, so [`ChainSet::targets`] needs the pose's chest.
+    pub fn needs_chest(&self) -> bool {
+        self.needs_chest
+    }
+
+    /// The inverse of the root matrix from the last [`ChainSet::targets`] (world to character space).
+    pub fn root_inverse(&self) -> Mat4 {
+        self.root_inverse
     }
 
     /// The colliders after targeting: world centre and radius including the margin.

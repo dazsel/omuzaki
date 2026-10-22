@@ -39,7 +39,7 @@ use omuzaki_stage::frame::face::{FaceRig, InlineExecutor};
 use omuzaki_stage::frame::pose::seed_base_pose;
 use omuzaki_stage::frame::{Stage, StageClock};
 use omuzaki_stage::perform::host::PerformHost;
-use omuzaki_stage::perform::input::{LiveInput, NoPrompt, SourceKind, SourceSlot};
+use omuzaki_stage::perform::input::{InputHost, LiveInput, NoPrompt, SourceKind, SourceSlot};
 use omuzaki_stage::perform::live::LiveStage;
 use omuzaki_stage::perform::{STEP_HZ, Tracking};
 use omuzaki_stage::{StageError, UploadOptions};
@@ -97,10 +97,10 @@ fn the_default_character_is_complete_dressed_and_rigged_on_the_vrm_humanoid() {
         // Every humanoid bone VRM requires, and the fingers the hands are skinned to.
         let skeleton = &built.rig.skeleton;
         for bone in HumanoidBone::ALL.into_iter().filter(|b| b.is_required()) {
-            assert!(skeleton.humanoid(bone).is_some(), "{template}: no {bone:?}");
+            assert!(skeleton.humanoid_bone(bone).is_some(), "{template}: no {bone:?}");
         }
         for bone in [HumanoidBone::LeftIndexProximal, HumanoidBone::RightLittleDistal, HumanoidBone::LeftThumbDistal] {
-            assert!(skeleton.humanoid(bone).is_some(), "{template}: no {bone:?}");
+            assert!(skeleton.humanoid_bone(bone).is_some(), "{template}: no {bone:?}");
         }
 
         // What the stage, export and the doctor see: the same meshes, the skeleton, the painted face, the simulations.

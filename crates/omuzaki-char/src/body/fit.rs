@@ -219,12 +219,6 @@ impl Table {
         })
     }
 
-    /// Where `p` lies along the region in rows: `k + share` between rows `k` and `k + 1` whose planes it lies between
-    /// ([`locate`](Self::locate)), else `-1` before the first row's plane and `ROWS + 1` past the last's.
-    fn row_coordinate(&self, p: DVec3) -> f64 {
-        self.locate(p).map_or_else(|| self.off_the_ends(p), |at| fraction(at.row, 1) + at.share)
-    }
-
     /// Where `p`, which no row's plane reaches, lies along the region: `-1` before the first row and `ROWS + 1` past
     /// the last.
     fn off_the_ends(&self, p: DVec3) -> f64 {
@@ -501,7 +495,7 @@ fn keep_outside(tables: &mut [Table], region: BodyRegion, mesh: &MeshData) {
 }
 
 /// The rows of `table` whose planes the segment from `a` to `b` crosses (each end with where it lies along the table,
-/// [`Table::row_coordinate`]), and the point where it crosses each.
+/// `k + share` between rows `k` and `k + 1`, else `-1` or `ROWS + 1` off the ends), and the point where it crosses each.
 fn crossings(table: &Table, (a, xa): (DVec3, f64), (b, xb): (DVec3, f64)) -> Vec<(usize, DVec3)> {
     let (lo, hi) = (xa.min(xb).max(0.0), xa.max(xb).min(fraction(ROWS, 1)));
     if lo > hi {

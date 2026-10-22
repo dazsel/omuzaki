@@ -2,9 +2,10 @@
 //! ([`tube`](super::tube)) with the hair shading program.
 //!
 //! **Meshes.** Static groups (not simulated) go into one mesh, `<part>-static`, skinned wholly to the head joint.
-//! Simulated groups go into `<part>-dynamic`, skinned wholly to the head joint too and not marked dynamic, so they
-//! follow the head at their rest shape. That is interim: until the hair runtime lands (#322) nothing moves them, and
-//! #322 reverts this to an unskinned, dynamic mesh. Within a mesh the tubes come first, in group order, and any
+//! Simulated groups go into `<part>-dynamic`, an unskinned, dynamic mesh in character space that the hair runtime
+//! ([`HairRuntime`]) rewrites every step from its Verlet chains, which collide with the head, neck, upper back and
+//! shoulders ([`colliders`](super::physics::colliders)). An export build (`rig_export`) has no runtime: the dynamic
+//! mesh is skinned as the static one is, for the spring chains to move in other apps. Within a mesh the tubes come first, in group order, and any
 //! generator-made shells (the cap) after them, so a mesh can be walked clump by clump from the front
 //! ([`recolour`](Hair::recolour) does).
 //!
@@ -44,6 +45,7 @@ use super::r#gen::bangs;
 use super::r#gen::curtain::{self, BodyKeepOut, StripError};
 use super::r#gen::tail::Chain;
 use super::r#gen::{bun, tail};
+use super::physics::{self, runtime::HairRuntime};
 use super::tie;
 use super::tube::{CAP_VERTICES, OutwardFrame, RING, TubeError, TubeLook, TubeMesh, polar_angles, vertex_colour};
 
@@ -132,10 +134,26 @@ pub fn build_with(
     };
     let material = hair_material(ctx.part, params, ctx.palette, overlays)?;
     let mut out = PartOutput::new().with_materials(vec![(material_name.clone(), material)]).with_warnings(warnings);
-    // Hair follows the head, except a tail's locks, which follow their chain's bones (the runtime moves those).
+    // Static hair follows the head, except a tail's locks, which follow their chain's bones. Simulated hair is the
+    // runtime's to move, unskinned in character space; an export build skins it as static hair is, for its spring
+    // chains to move in other apps.
     for (simulated, built) in [(false, stat), (true, dynamic)] {
         let Some(Skinned { mut geometry, runs }) = built else { continue };
-        let joint_bones = skin_runs(&mut geometry, &runs).map_err(|e| ctx.fail(e))?;
+        let mesh = u16::try_from(out.meshes.len()).map_err(|_| ctx.fail("too many meshes".to_owned()))?;
+        let runtime = simulated && !ctx.rig_export;
+        let joint_bones = if runtime {
+            geometry.joints.clear();
+            geometry.weights.clear();
+            let clumps: Vec<_> =
+                entries.iter().filter(|e| e.simulate).flat_map(|e| e.group.clumps.iter().cloned()).collect();
+            let colliders = physics::colliders::from_character(head.as_ref(), body.as_deref());
+            let runtime = HairRuntime::new(&clumps, &params.physics, &colliders, head.centre().y, mesh, &geometry)
+                .map_err(|e| ctx.fail(format!("hair physics: {e}")))?;
+            out.runtime = Some(Box::new(runtime));
+            Vec::new()
+        } else {
+            skin_runs(&mut geometry, &runs).map_err(|e| ctx.fail(e))?
+        };
         out.meshes.push(PartMesh {
             name: mesh_name(ctx.part, simulated),
             geometry,
@@ -143,7 +161,7 @@ pub fn build_with(
             material: material_name.clone(),
             casts_shadow: true,
             render_order: 1,
-            dynamic: false,
+            dynamic: runtime,
         });
     }
     if let Some(mut geometry) = ties {
