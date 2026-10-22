@@ -9,3 +9,7 @@
   result is used at once. `input.calibrate` starts or cancels it while the preview runs; `input.calibration` shows the
   prompt and the time left. The Live workspace's panel for it comes next.
 - User-supplied models: add a model file to a slot, accept its notice, select, check and remove it (`model.*`).
+- `input.health` gives the health meter's numbers: frame rate, latency against the 5 ms tracking budget, lost frames
+  and what the doctor found.
+- VMC out: `input.vmc_out` sends the performed pose and face to another app over VMC (60 times a second, humanoid
+  bones and perfect-sync blendshapes), so a game engine or another avatar app moves with the character.

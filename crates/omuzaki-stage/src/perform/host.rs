@@ -53,6 +53,7 @@ use omuzaki_anim_api::{
 use omuzaki_core::glam::Vec3;
 use omuzaki_core::time::Seconds;
 use omuzaki_face_api::ExpressionSet;
+use omuzaki_track_api::pose_out::PoseTap;
 use omuzaki_track_voice::{LipSync, LipSyncConfig, VoiceReader};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -198,6 +199,15 @@ pub trait PerformHost: Send + Sync {
     /// [`PerformError::UnknownKey`] when no trigger is bound to `key`, or [`PerformError::QueueFull`] or
     /// [`PerformError::Disconnected`].
     fn press(&self, _key: &str, _down: bool) -> Result<bool, PerformError> {
+        Err(PerformError::Unsupported)
+    }
+
+    /// From the next step, publishes each step's pose and channels into `tap` (PF-04's VMC out), or stops with `None`.
+    /// The caller keeps its own reference to the tap, so the perform thread never frees one.
+    ///
+    /// # Errors
+    /// [`PerformError::QueueFull`] or [`PerformError::Disconnected`]; nothing changes then.
+    fn set_pose_tap(&self, _tap: Option<Arc<dyn PoseTap>>) -> Result<(), PerformError> {
         Err(PerformError::Unsupported)
     }
 
@@ -358,6 +368,8 @@ enum Command {
     BindBatch(BindBatch),
     /// A key press (`down`) or release on a trigger slot.
     Press { index: usize, down: bool },
+    /// Where to publish each step's pose, or `None` to stop, from [`PerformHost::set_pose_tap`].
+    PoseTap(Option<Arc<dyn PoseTap>>),
 }
 
 /// An attached voice, as the control holds it: the analyser's mailbox and the lip sync over the character's visemes.
@@ -640,6 +652,7 @@ pub fn perform_channel(performer: &Performer) -> (PerformHandle, PerformControl)
         triggers: TriggerLayer::new(TriggerFades::default()),
         voice: None,
         head_rest: HeadRest::Waiting,
+        pose_tap: None,
     };
     (PerformHandle { commands: commands_tx, shared }, control)
 }
@@ -836,6 +849,10 @@ impl PerformHost for PerformHandle {
         Ok(true)
     }
 
+    fn set_pose_tap(&self, tap: Option<Arc<dyn PoseTap>>) -> Result<(), PerformError> {
+        self.send(Command::PoseTap(tap))
+    }
+
     fn press(&self, key: &str, down: bool) -> Result<bool, PerformError> {
         let book = lock(&self.shared.triggers);
         let (slot, bound) = book.find(key).ok_or(PerformError::UnknownKey)?;
@@ -923,6 +940,8 @@ pub struct PerformControl {
     voice: Option<Box<Voice>>,
     /// The session's head rest from the first tracked frame, for a calibration that has none (#542).
     head_rest: HeadRest,
+    /// Where each advance's last step is published for an output (PF-04), if one runs.
+    pose_tap: Option<Arc<dyn PoseTap>>,
 }
 
 /// Where the first-frame head rest stands (#542). A calibration whose head rest has no position (none saved, or one
@@ -967,6 +986,9 @@ impl PerformControl {
         }
         let out = self.step_performer(performer, Tick::at_rate(last, STEP_HZ));
         self.observe(&out);
+        if let Some(tap) = &self.pose_tap {
+            tap.publish(out.pose, out.bus.values.arkit(), out.tick.time);
+        }
         self.publish();
         Some(out)
     }
@@ -1103,6 +1125,8 @@ impl PerformControl {
                     self.triggers.release(index);
                 }
             }
+            // The caller holds the tap too (see `set_pose_tap`), so the one replaced here is not freed here.
+            Command::PoseTap(tap) => self.pose_tap = tap,
         }
     }
 

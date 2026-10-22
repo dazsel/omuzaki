@@ -18,6 +18,7 @@
 //! The perform thread only calls [`SourceSlot::swap_into`] once per frame, which never blocks, allocates or frees: the
 //! source it replaces goes back into the slot, and the ops side drops it on its next call.
 
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -31,6 +32,7 @@ use omuzaki_track_api::camera::CameraId;
 use omuzaki_metrics_api::budget::{BudgetKey, BudgetUse, TRACK_FACE};
 use omuzaki_track_api::doctor::{Diagnosis, Finding};
 use omuzaki_track_api::error::TrackError;
+use omuzaki_track_api::pose_out::{PoseOutStatus, PoseOutput};
 use omuzaki_track_api::tracker::{Tracker, TrackerConfig};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -263,6 +265,12 @@ pub enum InputError {
     /// This input cannot run the guided calibration.
     #[error("this input has no guided calibration")]
     NoGuidedCalibration,
+    /// This build has no pose output (VMC out).
+    #[error("this build cannot send the pose to other apps")]
+    NoPoseOutput,
+    /// The pose output could not start.
+    #[error("the pose output could not start: {0}")]
+    PoseOutput(String),
 }
 
 impl InputError {
@@ -338,6 +346,21 @@ pub trait InputHost: Send + Sync {
     /// How the running capture is doing (PF-26).
     fn health(&self) -> InputHealth {
         InputHealth::default()
+    }
+
+    /// Sends the performed pose and face to `target` over VMC (PF-04's "out"), or stops with `None`, and answers what
+    /// the output did before. Sending again to another target moves it.
+    ///
+    /// # Errors
+    /// [`InputError::NoPoseOutput`] for a host without one, and [`InputError::PoseOutput`] when it cannot start.
+    fn set_pose_out(&self, target: Option<SocketAddr>, mode: Mode) -> Result<PoseOutStatus, InputError> {
+        let _ = (target, mode);
+        Err(InputError::NoPoseOutput)
+    }
+
+    /// What the pose output is doing.
+    fn pose_out(&self) -> PoseOutStatus {
+        PoseOutStatus::default()
     }
 }
 
@@ -495,6 +518,8 @@ struct Inner {
     refused: bool,
     /// Where each posted source copies its frames, for the guided calibration.
     tap: Arc<FrameTap>,
+    /// The App's pose output (VMC out), when it has one.
+    pose_out: Option<Box<dyn PoseOutput>>,
 }
 
 impl Inner {
@@ -607,6 +632,7 @@ impl LiveInput {
             preview: PreviewState::Off,
             refused: false,
             tap: Arc::default(),
+            pose_out: None,
         };
         Self { inner: Mutex::new(inner), slot, perform, guided: GuidedRun::default() }
     }
@@ -617,6 +643,15 @@ impl LiveInput {
     pub fn with_phone(self, phone: Box<dyn Tracker>) -> Self {
         let mut inner = self.inner.into_inner().unwrap_or_else(PoisonError::into_inner);
         inner.phone = Some(phone);
+        Self { inner: Mutex::new(inner), slot: self.slot, perform: self.perform, guided: self.guided }
+    }
+
+    /// With `output` as the pose output `input.vmc_out` starts (`omuzaki-track-net`'s `VmcOut`). Without one, that
+    /// op is [`InputError::NoPoseOutput`].
+    #[must_use]
+    pub fn with_pose_out(self, output: Box<dyn PoseOutput>) -> Self {
+        let mut inner = self.inner.into_inner().unwrap_or_else(PoisonError::into_inner);
+        inner.pose_out = Some(output);
         Self { inner: Mutex::new(inner), slot: self.slot, perform: self.perform, guided: self.guided }
     }
 
@@ -789,6 +824,31 @@ impl InputHost for LiveInput {
             }),
             findings,
         }
+    }
+
+    fn set_pose_out(&self, target: Option<SocketAddr>, mode: Mode) -> Result<PoseOutStatus, InputError> {
+        let mut inner = self.inner();
+        let output = inner.pose_out.as_mut().ok_or(InputError::NoPoseOutput)?;
+        let before = output.status();
+        if mode == Mode::DryRun || before.target == target {
+            return Ok(before);
+        }
+        if let Some(target) = target {
+            let tap = output.start(target).map_err(|e| InputError::PoseOutput(e.to_string()))?;
+            if let Err(e) = self.perform.set_pose_tap(Some(tap)) {
+                output.stop();
+                return Err(InputError::PoseOutput(e.to_string()));
+            }
+        } else {
+            // A tap left in place after a refused request only fills a slot nobody sends from.
+            self.perform.set_pose_tap(None).ok();
+            output.stop();
+        }
+        Ok(before)
+    }
+
+    fn pose_out(&self) -> PoseOutStatus {
+        self.inner().pose_out.as_ref().map(|output| output.status()).unwrap_or_default()
     }
 }
 

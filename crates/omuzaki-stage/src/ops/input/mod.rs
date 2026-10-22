@@ -14,6 +14,7 @@
 //! | `input.calibrate {cancel}` | `perform` | Confirm to start (it reads the face); anyone may cancel | none: calibrating again replaces it |
 //! | `input.calibration` | `read` | free | none (a query) |
 //! | `input.health` | `read` | free | none (a query) |
+//! | `input.vmc_out {to}` | `perform` | Confirm to start (it sends the performance out); anyone may stop | the inverse `input.vmc_out` |
 //!
 //! The two choices are Machine settings (`input.source`, `input.camera`): when the App registers a
 //! [`Settings`](omuzaki_settings_api::service::Settings) service, the ops write them there too, and their answer says
@@ -40,6 +41,7 @@ pub mod recheck;
 pub mod request_camera;
 pub mod select;
 pub mod state;
+pub mod vmc_out;
 
 /// The input behind the ops, or `Unavailable` when the app did not wire one in.
 fn host<'a>(ctx: &OpCtx<'a>) -> Result<&'a dyn InputHost, OpError> {
@@ -177,7 +179,10 @@ fn op_error(error: InputError) -> OpError {
         InputError::CalibrationRunning => {
             OpError::conflict(message).hint("wait for it to finish (`input.calibration`), or cancel it")
         }
-        InputError::NoGuidedCalibration => OpError::unsupported(message),
+        InputError::NoGuidedCalibration | InputError::NoPoseOutput => OpError::unsupported(message),
+        InputError::PoseOutput(_) => {
+            OpError::internal(message).hint("check the address, or pick another port if this one is taken")
+        }
     }
 }
 
@@ -204,6 +209,7 @@ mod tests {
             (InputError::Device(TrackError::Lost), ErrorCode::NotFound),
             (InputError::Device(TrackError::FormatUnsupported(CameraFormatRequest::default())), ErrorCode::Internal),
             (InputError::Device(TrackError::Backend("model".to_owned())), ErrorCode::Internal),
+            (InputError::PoseOutput("in use".to_owned()), ErrorCode::Internal),
         ];
         for (error, code) in cases {
             let mapped = op_error(error.clone());

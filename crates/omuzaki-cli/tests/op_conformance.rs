@@ -203,6 +203,15 @@ impl InputHost for IdleInput {
     fn calibrate_guided(&self, _mode: Mode) -> Result<GuidedStatus, InputError> {
         Ok(GuidedStatus::Idle)
     }
+
+    // A pose output that "starts" without sending: the `input.vmc_out` examples dry-run against it.
+    fn set_pose_out(
+        &self,
+        _target: Option<std::net::SocketAddr>,
+        _mode: Mode,
+    ) -> Result<omuzaki_track_api::pose_out::PoseOutStatus, InputError> {
+        Ok(omuzaki_track_api::pose_out::PoseOutStatus::default())
+    }
 }
 
 impl PerformHost for IdleHost {
