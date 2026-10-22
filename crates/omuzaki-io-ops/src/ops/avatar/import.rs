@@ -175,13 +175,18 @@ pub(crate) fn work(import: &Import, job: &JobCtx<'_>) -> Result<Value, OpError> 
         def.acknowledged = Some(Acknowledgement::new(today(job.service::<dyn WallClock>().ok()), by));
     }
     let served = folder.as_ref().map(FolderFiles::served).transpose()?.unwrap_or_default();
+    // A stored asset is used under the store's record joined with the tray's, not the one the file derives.
+    let rights = import.asset_rights(job, store)?;
+    let stored_original = rights.is_some();
+    let provenance = rights.unwrap_or_else(|| prepared.provenance.clone());
     let (stored, took) = timed(clock, || {
         store_files(
             &name,
             &bytes,
             &prepared.scene,
             &served,
-            &prepared.provenance,
+            &provenance,
+            stored_original,
             store,
             &progress,
             import.source_field(),
@@ -192,7 +197,7 @@ pub(crate) fn work(import: &Import, job: &JobCtx<'_>) -> Result<Value, OpError> 
     let character_name = Some(prepared.scene.meta.name.trim())
         .filter(|n| !n.is_empty())
         .map_or_else(|| name.rsplit_once('.').map_or(name.as_str(), |(stem, _)| stem).to_owned(), str::to_owned);
-    let mut row = PartSource::new(prepared.provenance.clone());
+    let mut row = PartSource::new(provenance.clone());
     row.terms = Some(prepared.scene.meta.terms.clone());
     let result = AvatarImported {
         asset: AssetRecord {
@@ -202,7 +207,7 @@ pub(crate) fn work(import: &Import, job: &JobCtx<'_>) -> Result<Value, OpError> 
             file: name.clone(),
             format: prepared.format,
             characters: std::iter::once(id.to_string()).collect(),
-            provenance: Some(prepared.provenance.clone()),
+            provenance: Some(provenance.clone()),
         },
         id,
         name: character_name,
@@ -211,7 +216,7 @@ pub(crate) fn work(import: &Import, job: &JobCtx<'_>) -> Result<Value, OpError> 
         summary: prepared.summary.with_timing(Stage::Store, took),
         scene: prepared.scene.summary(),
         report: prepared.report,
-        provenance: prepared.provenance,
+        provenance,
     };
     let mut value =
         serde_json::to_value(result).map_err(|e| OpError::internal(format!("serialising the import: {e}")))?;
