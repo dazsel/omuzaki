@@ -26,6 +26,7 @@
 
 pub mod app;
 pub mod args;
+pub mod branch;
 pub mod cli;
 pub mod commands;
 pub mod exit;

@@ -4615,6 +4615,7 @@ name = "omuzaki-app"
 version = "0.0.0"
 dependencies = [
  "getrandom 0.4.3",
+ "omuzaki-char-api",
  "omuzaki-core",
  "omuzaki-doc",
  "omuzaki-doc-api",
@@ -4892,6 +4893,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "toml",
  "tracing-subscriber",
  "tungstenite",
  "xtask",

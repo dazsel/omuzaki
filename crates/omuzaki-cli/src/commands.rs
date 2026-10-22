@@ -38,6 +38,9 @@ pub fn execute(cli: &Cli, runner: Arc<dyn Runner>, session: &Session, stdin: &mu
         Command::Undo => report_history(&UNDO, runner.undo(&session.actor, &session.grants)?, cli.json),
         Command::Redo => report_history(&REDO, runner.redo(&session.actor, &session.grants)?, cli.json),
         Command::Mcp(args) => mcp::serve_stdio(runner, session, args).map(|()| String::new()),
+        // `app::run` runs it on the app core, which holds the branches; without a project there are none.
+        Command::Branch { .. } => Err(OpError::invalid("project", "branches belong to a project")
+            .hint("pass the project folder: --project <DIR>")),
         Command::Registrations => Ok(registrations()),
         // `app::run` calls `store::run` itself so the exit code survives; this arm keeps the match whole and serves
         // callers that only want the text.

@@ -79,13 +79,14 @@ fn run_on_core(cli: &Cli, dir: &Path, mut session: Session) -> Result<Reply, OpE
     session.jobs = Some(core.jobs());
     session.project = Some(project_root(dir)?);
     let result = match &cli.command {
-        Command::Mcp(_) => crate::mcp::serve_core(&core).map(|()| String::new()),
-        _ => execute(cli, core.runner(), &session, &mut io::stdin()),
+        Command::Mcp(_) => crate::mcp::serve_core(&core).map(|()| Reply::ok(String::new())),
+        Command::Branch { action } => crate::branch::run(&core, action, &session, cli.json),
+        _ => execute(cli, core.runner(), &session, &mut io::stdin()).map(Reply::ok),
     };
     let closed = core.close().map_err(|e| e.to_op_error());
-    let text = result?;
+    let reply = result?;
     closed?;
-    Ok(Reply::ok(text))
+    Ok(reply)
 }
 
 /// What recovery did, for stderr: one line, or with `--json` a `{"recovery": {...}}` object.

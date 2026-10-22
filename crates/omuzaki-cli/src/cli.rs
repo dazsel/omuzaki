@@ -96,6 +96,14 @@ pub enum Command {
         action: HistoryCommand,
     },
 
+    /// List, make, switch, check point, merge and compare the project's branches: whole-project variants with their
+    /// own history, one of which is in the project folder.
+    Branch {
+        /// What to do with the branches.
+        #[command(subcommand)]
+        action: crate::branch::BranchCommand,
+    },
+
     /// Serve the ops to an AI agent over MCP on stdin/stdout.
     ///
     /// Reads JSON-RPC messages from stdin and writes only protocol messages to stdout, until the client closes stdin.
