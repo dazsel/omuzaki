@@ -7,16 +7,21 @@
 //! restart. Ops reach snapshots through the [`Snapshots`] service. This crate holds only the types and traits:
 //! `omuzaki-history-mock` has in-memory stand-ins.
 //!
+//! Branches (VC-02, ADR 0025) are in the public modules [`branch`] (branches, points, the `Branches` lane manager) and
+//! [`state`] (state references, `BranchStore`, `HistoryView`); import them by path.
+//!
 //! Projects keep regenerable caches and renders out of snapshots by declaring them with [`register_derived_path!`]
 //! next to the code that writes them.
 #![deny(missing_docs)]
 
 mod audit;
+pub mod branch;
 mod derived;
 mod entry;
 mod export;
 mod sink;
 mod snapshot;
+pub mod state;
 mod wall;
 
 pub use audit::{AUDIT_TEXT_MAX, AuditDecision, AuditFact, CUT_MARKER, cut_text};
