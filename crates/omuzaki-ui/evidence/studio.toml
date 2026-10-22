@@ -17,3 +17,12 @@ steps = [
     { run = ["cargo", "test", "--locked", "-p", "omuzaki-ui", "--test", "studio", "--", "--ignored", "--exact", "first_run_evidence"] },
 ]
 images = ["first-run-welcome-1366x768.png", "first-run-character-1366x768.png"]
+
+[[case]]
+name = "palette"
+description = "The command palette over the real studio at 1366x768 (spine/ui, #153): results for \"rename\", then character.rename's form generated from its schema with the open character filled in, the live dry-run preview, and the MCP tool it is the same as."
+env = { OMUZAKI_EVIDENCE_OUT = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-ui", "--test", "studio", "--", "--ignored", "--exact", "palette_evidence"] },
+]
+images = ["palette-search-1366x768.png", "palette-form-1366x768.png"]

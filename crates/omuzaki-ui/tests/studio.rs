@@ -412,3 +412,81 @@ fn first_run_evidence() {
     }
     h.state_mut().live.shutdown().unwrap_or_else(|e| panic!("{e}"));
 }
+
+/// Presses Tab until the text field called `label` has the keyboard.
+fn tab_to_text(h: &mut Harness<'_, Studio>, label: &str) {
+    for _ in 0..12 {
+        h.key_press(Key::Tab);
+        h.run_steps(2);
+        if h.query_by_role_and_label(Role::TextInput, label).is_some_and(|n| n.is_focused()) {
+            return;
+        }
+    }
+    panic!("Tab never reached {label}");
+}
+
+/// The palette over the real executor: Ctrl+K finds `character.rename`, Tab opens its form filled with the open
+/// character, the live preview dry-runs it, and Enter renames the character as the person, one undo step.
+fn rename_in_palette(h: &mut Harness<'_, Studio>, name: &str) {
+    h.key_press_modifiers(Modifiers::COMMAND, Key::K);
+    h.run_steps(2);
+    h.event(egui::Event::Text(">character.rename".to_owned()));
+    h.run_steps(2);
+    h.key_press(Key::Tab);
+    h.run_steps(2);
+    tab_to_text(h, "name");
+    h.event(egui::Event::Text(name.to_owned()));
+    // The preview waits for the arguments to settle (120 ms), then dry-runs them.
+    h.run_steps(20);
+}
+
+#[test]
+fn the_palette_renames_the_open_character_with_a_live_preview_and_undo() {
+    let core = core(Document::empty());
+    let mut h = studio(&core, None, vec2(1366.0, 768.0));
+    let name = || {
+        let path = DocPath::parse(&format!("characters/{}/name", studio::SAMPLE_ID)).unwrap_or_else(|e| panic!("{e}"));
+        core.runner.get(&path, &Grants::person()).unwrap_or_else(|e| panic!("{e}"))
+    };
+    let before = name();
+    rename_in_palette(&mut h, "Mika");
+    assert!(h.query_by_label_contains("Live preview").is_some());
+    assert!(h.query_by_label_contains("Values it would change: 1").is_some(), "the dry run found the one change");
+    assert_eq!(name(), before, "a preview changes nothing");
+    assert!(h.query_by_label_contains("Same as MCP tool character_rename").is_some());
+    h.key_press(Key::Enter);
+    h.run_steps(2);
+    assert_eq!(name(), Some(json!("Mika")));
+    assert!(h.query_by_label_contains("character.rename: done. Values changed: 1").is_some());
+    assert_eq!(h.state().shell.palette_recents(), ["character.rename"]);
+    h.key_press(Key::Escape);
+    h.run_steps(2);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    h.run_steps(2);
+    assert_eq!(name(), before, "Ctrl+Z undoes the palette's run");
+}
+
+/// The palette at 1366x768 over the real studio: its results for "rename", then `character.rename`'s form with the
+/// open character filled in, a name typed, and the live preview.
+#[test]
+#[ignore = "writes images; run by the visual evidence job"]
+fn palette_evidence() {
+    let Ok(out) = std::env::var("OMUZAKI_EVIDENCE_OUT") else { panic!("set OMUZAKI_EVIDENCE_OUT to a folder") };
+    let Some(gpu) = gpu() else { panic!("the evidence needs a Vulkan adapter") };
+    let core = core(Document::empty());
+    let mut h = studio(&core, Some(gpu), vec2(1366.0, 768.0));
+    h.key_press_modifiers(Modifiers::COMMAND, Key::K);
+    h.run_steps(2);
+    h.event(egui::Event::Text("rename".to_owned()));
+    h.run_steps(4);
+    let save = |h: &mut Harness<'_, Studio>, file: &str| {
+        let image = h.render().unwrap_or_else(|e| panic!("{e}"));
+        let path = format!("{out}/{file}");
+        image.save(&path).unwrap_or_else(|e| panic!("writing {path}: {e}"));
+    };
+    save(&mut h, "palette-search-1366x768.png");
+    h.key_press(Key::Escape);
+    h.run_steps(2);
+    rename_in_palette(&mut h, "Mika");
+    save(&mut h, "palette-form-1366x768.png");
+}

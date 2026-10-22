@@ -10,6 +10,7 @@
 //! own name (`Fold::key`), so a small window never overwrites the layout made on a big one and each is remembered.
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex, Weak};
 
@@ -222,6 +223,16 @@ impl Shell {
     /// before the first frame.
     pub fn insert_view<T: std::any::Any>(&mut self, value: T) {
         self.models.insert(value);
+    }
+
+    /// Keeps the command palette's recent ops in `file` between runs of the studio.
+    pub fn keep_palette_recents_in(&mut self, file: PathBuf) {
+        self.palette.keep_recents_in(file);
+    }
+
+    /// The command palette's recent ops, most recent first.
+    pub fn palette_recents(&self) -> &[String] {
+        self.palette.recents()
     }
 
     /// The queue panels and the app ask the shell through ([`ShellRequests`]); it is carried out each frame.

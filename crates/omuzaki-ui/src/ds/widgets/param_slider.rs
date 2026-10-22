@@ -36,7 +36,8 @@ use crate::register_contrast;
 /// The op that sets a parameter, for "Copy op call" (Ctrl+Shift+C) and the tooltip: the vocabulary an agent uses too (P8).
 ///
 /// The slider does not know which op its value belongs to, so the host says. What is copied is an MCP tool call,
-/// `{"name":"part.set_param","arguments":{"part":"hair","param":"width","value":0.62}}`, with the value as it is now.
+/// `{"name":"part_set_param","arguments":{"part":"hair","param":"width","value":0.62}}`, with the value as it is now and
+/// the tool named as the MCP server names it ([`omuzaki_ops_api::tool_name`]).
 #[derive(Clone, Copy, Debug)]
 pub struct OpCall<'a> {
     /// The op's registered name (`part.set_param`).
@@ -51,7 +52,8 @@ impl OpCall<'_> {
     /// The call as JSON text, with `value` as the argument it sets.
     fn json(&self, value: f64) -> String {
         let comma = if self.target.is_empty() { "" } else { "," };
-        format!("{{\"name\":\"{}\",\"arguments\":{{{}{comma}\"value\":{value}}}}}", self.op, self.target)
+        let tool = omuzaki_ops_api::tool_name(self.op);
+        format!("{{\"name\":\"{tool}\",\"arguments\":{{{}{comma}\"value\":{value}}}}}", self.target)
     }
 }
 

@@ -78,7 +78,7 @@ fn copy_op_call_copies_an_mcp_call_with_the_value_as_it_is_now() {
     h.run();
     assert_eq!(
         h.state().copied.first().map(String::as_str),
-        Some(r#"{"name":"part.set_param","arguments":{"part":"hair","param":"width","value":0.62}}"#)
+        Some(r#"{"name":"part_set_param","arguments":{"part":"hair","param":"width","value":0.62}}"#)
     );
 }
 
@@ -145,7 +145,7 @@ fn ctrl_v_pastes_and_ctrl_c_and_ctrl_shift_c_copy_on_a_focused_track() {
     assert_eq!(h.state().copied, ["0.62"], "Ctrl+C copies the value as shown");
     press(&mut h, Modifiers::CTRL | Modifiers::SHIFT, Key::C);
     let op = h.state().copied.last().cloned().unwrap_or_default();
-    assert!(op.contains("part.set_param"), "Ctrl+Shift+C copies the op call: {op}");
+    assert!(op.contains("\"name\":\"part_set_param\""), "Ctrl+Shift+C copies the op call: {op}");
     h.event(Event::Paste("0.25".to_owned()));
     h.run();
     assert!((h.state().value - 0.25).abs() < 1e-9);
