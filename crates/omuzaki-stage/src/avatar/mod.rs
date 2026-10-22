@@ -15,6 +15,7 @@
 //!
 //! After construction nothing in steps 1 to 5 allocates in stage-owned code; the renderer costs what it costs.
 
+pub mod attach;
 mod draw;
 pub mod ease;
 mod gaze;

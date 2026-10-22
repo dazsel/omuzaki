@@ -38,7 +38,7 @@ pub const CONFIRM_STALE: &str = "io.confirm_stale";
 pub const ACKNOWLEDGEMENT_NEEDED: &str = "io.acknowledgement_needed";
 
 /// The reserved part id of an imported avatar's own source row (`docs/design/byom.md` D5).
-pub const AVATAR_PART: &str = "avatar";
+pub const AVATAR_PART: &str = omuzaki_avatar_api::anchors::AVATAR_PART;
 
 /// The plan output key that carries who acknowledged the terms to the job.
 const ACKNOWLEDGED_BY: &str = "acknowledged_by";
@@ -141,8 +141,14 @@ pub(crate) fn work(import: &Import, job: &JobCtx<'_>) -> Result<Value, OpError> 
         Some(folder) => folder,
         None => &omuzaki_io_api::NoResolver,
     };
-    let source =
-        Source { name: &name, bytes: &bytes, format: import.format.as_ref(), resolver, progress: &progress, field: import.source_field() };
+    let source = Source {
+        name: &name,
+        bytes: &bytes,
+        format: import.format.as_ref(),
+        resolver,
+        progress: &progress,
+        field: import.source_field(),
+    };
     let prepared = job.read(|doc| prepare(&source, None, &options, mtoon, clock, doc))?;
     if import.confirm.as_deref() != Some(prepared.confirm.as_str()) {
         let mut error = OpError::conflict(format!(
@@ -170,7 +176,16 @@ pub(crate) fn work(import: &Import, job: &JobCtx<'_>) -> Result<Value, OpError> 
     }
     let served = folder.as_ref().map(FolderFiles::served).transpose()?.unwrap_or_default();
     let (stored, took) = timed(clock, || {
-        store_files(&name, &bytes, &prepared.scene, &served, &prepared.provenance, store, &progress, import.source_field())
+        store_files(
+            &name,
+            &bytes,
+            &prepared.scene,
+            &served,
+            &prepared.provenance,
+            store,
+            &progress,
+            import.source_field(),
+        )
     });
     let stored = stored.map_err(|e| if job.is_cancelled() { OpError::cancelled(job.id()) } else { e })?;
     let id = import.id.clone().unwrap_or_else(|| prepared.summary.id_suggestion.clone());
@@ -215,7 +230,8 @@ pub(crate) fn finish(ctx: &OpCtx<'_>, result: Value) -> Result<Plan, OpError> {
         .map_err(|e| OpError::internal(format!("the import's result is malformed: {e}")))?;
     require_free(ctx.doc, &imported.id)?;
     let mut patch = record_patch(ctx.doc, &imported.asset)?;
-    let def = serde_json::to_value(&imported.def).map_err(|e| OpError::internal(format!("writing the avatar node: {e}")))?;
+    let def =
+        serde_json::to_value(&imported.def).map_err(|e| OpError::internal(format!("writing the avatar node: {e}")))?;
     let node = json!({ "name": imported.name, "avatar": def });
     let character = paths::character(&imported.id);
     // A new project has no character table until its first character.

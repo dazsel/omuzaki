@@ -600,6 +600,27 @@ fn an_attachment_with_no_row_makes_the_derived_record_the_most_restrictive_and_i
 }
 
 #[test]
+fn an_attachment_with_its_own_row_joins_the_models() {
+    let mut project = Project::new();
+    let id = project.imported(&model(), &json!({}));
+    let parts = DocPath::parse(&format!("characters/{id}/avatar/parts")).unwrap();
+    let before = project.doc.get(&parts).cloned();
+    let hat = json!({ "hat": { "kind": "mock-hat" } });
+    project.doc.apply(&Patch::new().with(parts, before, Some(hat))).unwrap();
+    // The hat's row: the same terms as the model's, recorded for the hat.
+    let row = project.value(&format!("characters/{id}/sources/avatar")).unwrap();
+    let path = DocPath::parse(&format!("characters/{id}/sources/hat")).unwrap();
+    project.doc.apply(&Patch::new().with(path, None, Some(row))).unwrap();
+    let out = derived(&project, &id);
+    assert_eq!(out["complete"], true, "{out:#}");
+    let joined: Vec<&str> = out["parts"].as_array().unwrap().iter().map(|p| p["part"].as_str().unwrap()).collect();
+    assert_eq!(joined, ["avatar", "hat"]);
+    let found = rules(&out["report"]);
+    assert!(!found.iter().any(|r| r.starts_with("licence.part_source") || r == "licence.source_orphaned"), "{found:?}");
+    assert_eq!(out["record"]["meta"]["avatarPermission"], "everyone", "the join of two equal rows is the same terms");
+}
+
+#[test]
 fn set_refuses_a_record_wider_than_the_models_terms() {
     let mut project = Project::new();
     let id = project.imported(&model(), &json!({}));
