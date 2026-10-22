@@ -267,6 +267,12 @@ fn largest_move(a: &[Vec3], b: &[Vec3]) -> f32 {
     a.iter().zip(b).map(|(p, q)| p.distance(*q)).fold(0.0, f32::max)
 }
 
+/// How long the camera performs: 8 s in the nightly run (`OMUZAKI_FULL_TESTS`), 4 s in the pull request gate, whose test
+/// shards have a time limit (#2300): a debug-build frame of the dressed character costs about 0.1 s.
+fn performance_seconds() -> f32 {
+    if std::env::var_os("OMUZAKI_FULL_TESTS").is_some() { 8.0 } else { 4.0 }
+}
+
 #[test]
 fn the_default_character_performs_live_and_everything_holds() {
     for template in TEMPLATES {
@@ -275,7 +281,7 @@ fn the_default_character_performs_live_and_everything_holds() {
             let (lo, hi) = bounds(built.meshes.iter().flat_map(|m| m.mesh.geometry.positions.iter().copied()));
             (lo, hi, (hi - lo).length())
         };
-        let seconds = 8.0;
+        let seconds = performance_seconds();
         let mut live = Live::new(MockRenderer::new(), built, performance(seconds), 64);
 
         // Half a second for the source to bind, then the performance with a gusting breeze from the side.
@@ -313,7 +319,7 @@ fn the_default_character_performs_live_and_everything_holds() {
 
         // The camera has stopped and the wind dropped: the life layer keeps breathing, the simulations settle.
         live.set_wind(Vec3::ZERO);
-        for _ in 0..3 * HZ {
+        for _ in 0..2 * HZ {
             live.frame().unwrap();
         }
         let mut settled = 0.0_f32;
