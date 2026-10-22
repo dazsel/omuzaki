@@ -3,7 +3,9 @@
 //! Each seed runs a session on the app core with the journal on a [`SimFs`]: two people, one-op changes, transactions
 //! of one to five ops that commit or roll back, undo and redo, some of them acknowledged with `sync`. The power is cut
 //! before a seeded operation of the disk (any write, between a write and its flush, while a segment is prepared,
-//! while rotating into one), the core is abandoned, the disk keeps what a cut keeps, and the project is opened again,
+//! while rotating into one): a seeded few operations after a seeded step, or while the project opens. Counting from a
+//! step, not from the start, keeps the cut inside the session however the writer happens to batch. The core is
+//! abandoned, the disk keeps what a cut keeps, and the project is opened again,
 //! sometimes after a second cut during that recovery. The document must then be the one after some completed step at
 //! or after the last acknowledged one, with every person's undo and redo labels as they were then.
 //!
@@ -92,14 +94,24 @@ fn set(core: &AppCore, actor: &Actor, rng: &mut SimRng, tx: Option<omuzaki_ops_a
     drop(core.runner().run(request));
 }
 
+/// Where a session's cut goes: before the disk operation `ops` after the start of step `step`.
+#[derive(Clone, Copy)]
+struct Cut {
+    step: u64,
+    ops: u64,
+}
+
 /// Runs one seeded session to its cut; returns the states after each completed step and the index of the last one a
 /// `sync` acknowledged.
-fn session(core: &AppCore, fs: &SimFs, rng: &mut SimRng) -> (Vec<State>, usize) {
+fn session(core: &AppCore, fs: &SimFs, rng: &mut SimRng, cut: Option<Cut>) -> (Vec<State>, usize) {
     let runner = core.runner();
     let mut states = vec![state(core)];
     let mut acked = 0;
     let mut after_cut = 0;
     for step in 0..60u64 {
+        if let Some(cut) = cut.filter(|cut| cut.step == step) {
+            fs.cut_before(fs.ops() + cut.ops);
+        }
         let actor = person(rng.below(2));
         match rng.below(8) {
             0..=2 => set(core, &actor, rng, None),
@@ -152,12 +164,17 @@ fn run_seed(seed: u64) -> Covered {
     let journal = journal_dir(dir);
 
     let fs = SimFs::load(&journal, seed).unwrap();
-    // A cut somewhere in the session: a few disk operations per step.
-    fs.cut_before(1 + rng.below(160));
+    // One cut in eight while the project opens; the rest a few disk operations into a seeded step.
+    let cut = if rng.below(8) == 0 {
+        fs.cut_before(1 + rng.below(12));
+        None
+    } else {
+        Some(Cut { step: rng.below(60), ops: 1 + rng.below(8) })
+    };
     let options = AppOptions::headless(person(0)).with_journal_fs(Arc::new(fs.clone()));
     let (states, acked) = match AppCore::open(dir, options.clone()) {
         Ok(core) => {
-            let ran = session(&core, &fs, &mut rng);
+            let ran = session(&core, &fs, &mut rng, cut);
             core.abandon();
             ran
         }

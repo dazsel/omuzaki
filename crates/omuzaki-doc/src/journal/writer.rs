@@ -659,6 +659,11 @@ impl Writer {
                 Item::Entry(lsn, _) | Item::Close(lsn, _) => Some(*lsn),
                 Item::Tick(_) => None,
             });
+            // To the keeper before the durable mark is set, so whoever sees this LSN durable (waiting, or just
+            // checking) and then talks to the keeper is behind this batch.
+            if !work.items.is_empty() {
+                drop(self.keeper.send(KeeperMsg::Durable(work.items)));
+            }
             let mut progress = lock(&self.shared.progress);
             if let Some(lsn) = last {
                 progress.ordered = progress.ordered.max(lsn);
@@ -669,11 +674,6 @@ impl Writer {
             }
             progress.write_error = None;
             drop(progress);
-            // To the keeper before the durable mark is published, so whoever waited for this LSN and then talks to the
-            // keeper is behind this batch.
-            if !work.items.is_empty() {
-                drop(self.keeper.send(KeeperMsg::Durable(work.items)));
-            }
             self.shared.progressed.notify_all();
         }
     }
