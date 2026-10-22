@@ -97,7 +97,7 @@ fn render(ch: &Character, pose: &HumanoidPose) -> Image {
     }
     scene.validate().unwrap();
 
-    let quality = Quality { samples: 1, render_scale: 1.0, post_effects: false, ..Quality::offline() };
+    let quality = Quality { samples: 1, render_scale: 1.0, post_effects: false.into(), ..Quality::offline() };
     renderer.render_image(UVec2::splat(SIZE), AlphaEncoding::Straight, &scene, &quality).unwrap()
 }
 

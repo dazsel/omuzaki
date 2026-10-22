@@ -23,8 +23,8 @@ use std::path::PathBuf;
 use omuzaki_core::glam::{Mat4, UVec2, Vec2, Vec3};
 use omuzaki_render_api::{
     AlphaEncoding, Background, Bloom, Camera, Colour, ColourGrade, DepthOfField, FilmGrain, Filter, FrameInfo, Image,
-    Instance, Light, Material, MaterialId, MeshData, Outline, Pass, Projection, Quality, QualityMode, Renderer,
-    RendererExt, Sampler, Scene, TargetDesc, TextureDesc, Tonemap,
+    Instance, Light, Material, MaterialId, MeshData, Outline, Pass, PostQuality, Projection, Quality, QualityMode,
+    Renderer, RendererExt, Sampler, Scene, TargetDesc, TextureDesc, Tonemap,
 };
 use omuzaki_render_mock::shapes;
 
@@ -675,7 +675,7 @@ fn post_effects_off_is_exposure_and_tone_mapping_alone() {
     let mut scene = everything(&mut r);
     let target = r.create_target(&TargetDesc { size: UVec2::splat(SIZE), alpha: AlphaEncoding::Straight }).unwrap();
 
-    let plain = Quality { post_effects: false, ..offline() };
+    let plain = Quality { post_effects: false.into(), ..offline() };
     let report = r.render(target, &scene, &plain).unwrap();
     let with_everything_requested = r.read_target(target).unwrap();
     scene.post.bloom = None;
@@ -686,6 +686,48 @@ fn post_effects_off_is_exposure_and_tone_mapping_alone() {
     assert_eq!(with_everything_requested, r.read_target(target).unwrap(), "switched off by quality, byte for byte");
     assert!(report.cpu.get(Pass::Bloom).is_none() && report.cpu.get(Pass::DepthOfField).is_none());
     assert!(report.cpu.get(Pass::Resolve).is_some());
+}
+
+/// Each switch of `Quality::post_effects` gates its own effect alone (#657): the frame with one switched off is, byte for
+/// byte, the frame whose scene never asked for that effect, and the other effects still run.
+#[test]
+fn each_post_switch_turns_off_its_own_effect_alone() {
+    let mut r = support::renderer();
+    let scene = everything(&mut r);
+    let target = r.create_target(&TargetDesc { size: UVec2::splat(SIZE), alpha: AlphaEncoding::Straight }).unwrap();
+    let mut frame = |scene: &Scene, quality: &Quality| {
+        let report = r.render(target, scene, quality).unwrap();
+        let ran = (report.cpu.get(Pass::Bloom).is_some(), report.cpu.get(Pass::DepthOfField).is_some());
+        (r.read_target(target).unwrap(), ran)
+    };
+    let switched = |off: fn(&mut PostQuality)| {
+        let mut post_effects = PostQuality::ALL;
+        off(&mut post_effects);
+        Quality { post_effects, ..offline() }
+    };
+    let without = |drop: fn(&mut Scene)| {
+        let mut scene = scene.clone();
+        drop(&mut scene);
+        scene
+    };
+
+    let (picture, ran) = frame(&scene, &switched(|p| p.depth_of_field = false));
+    assert_eq!(ran, (true, false), "depth of field off, bloom on");
+    let asked_for_none = without(|s| s.post.depth_of_field = None);
+    assert_eq!(picture, frame(&asked_for_none, &offline()).0, "as if the scene never asked for depth of field");
+
+    let (picture, ran) = frame(&scene, &switched(|p| p.bloom = false));
+    assert_eq!(ran, (false, true), "bloom off, depth of field on");
+    assert_eq!(picture, frame(&without(|s| s.post.bloom = None), &offline()).0, "as if no bloom was asked for");
+
+    let (picture, ran) = frame(&scene, &switched(|p| p.grain_and_grade = false));
+    assert_eq!(ran, (true, true), "grain and grade off, the passes still run");
+    let plain = without(|s| {
+        s.post.grain = None;
+        s.post.grade = None;
+    });
+    assert_eq!(picture, frame(&plain, &offline()).0, "as if no grain or grade was asked for");
+    assert_ne!(picture, frame(&scene, &offline()).0, "and grain and grade do show when on");
 }
 
 #[test]

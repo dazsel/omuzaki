@@ -56,7 +56,7 @@ fn quad_scene() -> Scene {
 
 /// One sample, no effects: pixels are exactly covered or not.
 fn plain() -> Quality {
-    Quality { samples: 1, render_scale: 1.0, post_effects: false, ..Quality::offline() }
+    Quality { samples: 1, render_scale: 1.0, post_effects: false.into(), ..Quality::offline() }
 }
 
 fn pixel(image: &Image, (x, y): (u32, u32)) -> [u8; 4] {

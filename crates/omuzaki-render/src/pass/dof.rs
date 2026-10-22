@@ -165,7 +165,7 @@ fn requested(cx: &PassCx<'_>) -> Option<Request> {
     #[allow(clippy::cast_precision_loss)]
     let height = cx.frame.target_size.y as f32;
     let max_coc = finite(look.max_blur).clamp(0.0, MAX_BLUR) * height * 0.5;
-    let on = cx.frame.quality.post_effects && finite(look.focus_distance) > 0.0 && max_coc >= MIN_REACH;
+    let on = cx.frame.quality.post_effects.depth_of_field && finite(look.focus_distance) > 0.0 && max_coc >= MIN_REACH;
     on.then(|| Request { focus: look.focus_distance, half_range: finite(look.focus_range).max(0.0) * 0.5, max_coc })
 }
 

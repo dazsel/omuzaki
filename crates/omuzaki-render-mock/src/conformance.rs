@@ -177,7 +177,7 @@ fn headlight(intensity: f32) -> Light {
 
 /// No effects, one sample: pixels are exactly covered or not.
 fn plain() -> Quality {
-    Quality { samples: 1, render_scale: 1.0, post_effects: false, ..Quality::offline() }
+    Quality { samples: 1, render_scale: 1.0, post_effects: false.into(), ..Quality::offline() }
 }
 
 fn draw(r: &mut dyn Renderer, scene: &Scene, quality: &Quality) -> Result<Image, Failure> {

@@ -80,7 +80,7 @@ fn lit_columns(r: &mut impl Renderer, mesh: MeshId, weight: f32) -> Vec<u32> {
     instance.morph = Some(MorphRange { start: 0, len: 1 });
     scene.instances.push(instance);
     scene.morph_weights.push(weight);
-    let quality = Quality { samples: 1, render_scale: 1.0, post_effects: false, ..Quality::offline() };
+    let quality = Quality { samples: 1, render_scale: 1.0, post_effects: false.into(), ..Quality::offline() };
     let img = r.render_image(UVec2::splat(64), AlphaEncoding::Straight, &scene, &quality).unwrap();
     r.release(material.into()).unwrap();
     (0..64).filter(|x| img.rgba8[(32 * 64 + x) as usize * 4] > 128).collect()
@@ -129,7 +129,7 @@ use omuzaki_render_api::{AlphaMode, Image, Light, Outline, ShadowQuality, Sparse
 use omuzaki_render_mock::morph_vertices;
 
 fn plain() -> Quality {
-    Quality { samples: 1, render_scale: 1.0, post_effects: false, shadows: ShadowQuality::Low, ..Quality::offline() }
+    Quality { samples: 1, render_scale: 1.0, post_effects: false.into(), shadows: ShadowQuality::Low, ..Quality::offline() }
 }
 
 /// How many pixels differ by more than `tolerance` in some channel.

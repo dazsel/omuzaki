@@ -357,7 +357,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let quality = Quality {
         samples: args.samples,
         render_scale: args.scale,
-        post_effects: !args.post.is_empty(),
+        post_effects: (!args.post.is_empty()).into(),
         shadows: args.shadows,
         shadow_interval: args.interval,
         mode: if args.offline { QualityMode::Offline } else { QualityMode::Live },

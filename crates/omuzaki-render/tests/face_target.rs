@@ -116,7 +116,7 @@ fn quad_with(r: &mut dyn Renderer, texture: omuzaki_render_api::TextureId, x: f3
 }
 
 fn quality() -> Quality {
-    Quality { samples: 1, render_scale: 1.0, post_effects: false, ..Quality::offline() }
+    Quality { samples: 1, render_scale: 1.0, post_effects: false.into(), ..Quality::offline() }
 }
 
 /// Lowest red channel in `image` between pixel columns `x0..x1` (the quad's footprint), and the largest green-blue gap.

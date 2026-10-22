@@ -48,7 +48,7 @@ fn scene(lights: Vec<Light>) -> Scene {
 
 /// One sample per pixel, no effects: a pixel is exactly covered or not.
 fn plain() -> Quality {
-    Quality { samples: 1, render_scale: 1.0, post_effects: false, ..Quality::offline() }
+    Quality { samples: 1, render_scale: 1.0, post_effects: false.into(), ..Quality::offline() }
 }
 
 fn draw(r: &mut dyn Renderer, scene: &Scene) -> Image {

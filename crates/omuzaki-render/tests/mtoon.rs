@@ -41,7 +41,7 @@ fn scene(lights: Vec<Light>) -> Scene {
 }
 
 fn draw(r: &mut dyn Renderer, scene: &Scene) -> Image {
-    let quality = Quality { samples: 1, render_scale: 1.0, post_effects: false, ..Quality::offline() };
+    let quality = Quality { samples: 1, render_scale: 1.0, post_effects: false.into(), ..Quality::offline() };
     r.render_image(SIZE, AlphaEncoding::Straight, scene, &quality).unwrap()
 }
 
@@ -613,7 +613,7 @@ fn mtoon_spheres_evidence() {
         Light::Hemisphere { sky: Colour::rgb(200, 210, 235), ground: Colour::rgb(110, 95, 85), intensity: 1.0 },
     ];
     let mesh = r.create_mesh(&sphere(0.6)).unwrap();
-    let quality = Quality { samples: 1, render_scale: 1.0, post_effects: false, ..Quality::offline() };
+    let quality = Quality { samples: 1, render_scale: 1.0, post_effects: false.into(), ..Quality::offline() };
     // As the spec says (GI equalisation 0.9 by default), and with it off, as three-vrm draws it.
     let mut images = Vec::new();
     for (gi, name) in [(None, "mtoon-omuzaki.png"), (Some(0.0), "mtoon-omuzaki-gi0.png")] {
