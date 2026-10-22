@@ -47,6 +47,8 @@ omuzaki-vts = { path = "../omuzaki-vts" }
 omuzaki-vcam = { path = "../omuzaki-vcam" }
 omuzaki-char = { path = "../omuzaki-char" }
 omuzaki-char-api = { path = "../omuzaki-char-api" }
+omuzaki-connect = { path = "../omuzaki-connect" }
+omuzaki-connect-api = { path = "../omuzaki-connect-api" }
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc = { path = "../omuzaki-doc" }
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
@@ -61,6 +63,8 @@ omuzaki-settings = { path = "../omuzaki-settings" }
 omuzaki-settings-api = { path = "../omuzaki-settings-api" }
 omuzaki-setup = { path = "../omuzaki-setup" }
 omuzaki-stage = { path = "../omuzaki-stage" }
+omuzaki-store = { path = "../omuzaki-store" }
+omuzaki-store-api = { path = "../omuzaki-store-api" }
 omuzaki-stage-api = { path = "../omuzaki-stage-api" }
 omuzaki-stream = { path = "../omuzaki-stream" }
 omuzaki-stream-api = { path = "../omuzaki-stream-api" }

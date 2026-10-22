@@ -13,8 +13,8 @@ use omuzaki_core::glam::{Mat4, UVec2, Vec2, Vec3};
 use omuzaki_render::{AdapterPreference, NativePaintTarget, WgpuRenderer};
 use omuzaki_render_api::{
     AlphaEncoding, AlphaMode, Background, Camera, Colour, ColourSpace, Filter, Image, Instance, JointRange, Mapping,
-    Material, Overlay, PaintTarget, Pass, PixelRect, Projection, Quality, RenderError, Renderer, RendererExt, Sampler,
-    Scene, TargetDesc, TextureDesc, Tonemap,
+    Material, Overlay, PaintTarget, Pass, PixelRect, Projection, Quality, QualityMode, RenderError, Renderer,
+    RendererExt, Sampler, Scene, TargetDesc, TextureDesc, Tonemap,
 };
 use omuzaki_render_mock::{MockRenderer, shapes};
 
@@ -237,21 +237,30 @@ fn render_scale_changes_the_internal_size_but_not_the_picture() {
 #[test]
 fn any_sample_count_works_and_falls_back_to_what_the_hardware_has() {
     let mut r = support::renderer();
-    assert!((1..=8).contains(&r.capabilities().max_samples));
+    let hardware = r.capabilities().max_samples;
+    assert!((1..=8).contains(&hardware));
     let mesh = r.create_mesh(&shapes::quad(Vec2::splat(0.5))).unwrap();
     let material = r.create_material(&Material::unlit(Colour::WHITE)).unwrap();
     let mut s = scene(Colour::BLACK);
     s.instances.push(Instance::new(mesh, material, Mat4::from_rotation_z(0.5)));
-    // The software adapter has 1 and 4 only: 2 falls back to 1, and 8 and 16 to 4.
+    // The software adapter has 1 and 4 only: 2 falls back to 1, and a live frame's 8 and 16 to 4. An offline frame
+    // reaches 8 and 16 by drawing more rounds (`tests/supersample.rs`), so its edges get more levels.
+    let live = |samples| Quality { samples, mode: QualityMode::Live, ..plain() };
     let mut smoothed = Vec::new();
+    let mut levels = Vec::new();
     for samples in [1, 2, 4, 8, 16] {
         let image = draw(&mut r, &s, &Quality { samples, ..plain() });
         assert_close(pixel(&image, 32, 32), [255, 255, 255, 255], 1, &format!("centre with {samples} samples"));
-        smoothed.push(image.rgba8.as_chunks::<4>().0.iter().filter(|p| p[0] != 0 && p[0] != 255).count());
+        let edge: Vec<u8> =
+            image.rgba8.as_chunks::<4>().0.iter().map(|p| p[0]).filter(|&v| v != 0 && v != 255).collect();
+        smoothed.push(edge.len());
+        levels.push(edge.into_iter().collect::<std::collections::BTreeSet<u8>>().len());
     }
     assert_eq!(smoothed[0], 0, "one sample gives hard edges");
     assert!(smoothed[2] > 0, "four samples smooth the rotated edge");
-    assert_eq!(smoothed[4], smoothed[3], "asking for more than the hardware has draws with its maximum");
+    assert!(levels[4] > levels[2], "offline, 16 samples give the edge more levels than 4: {levels:?}");
+    let most = draw(&mut r, &s, &live(hardware));
+    assert_eq!(draw(&mut r, &s, &live(16)).rgba8, most.rgba8, "a live frame asking for more draws with the maximum");
 }
 
 // ---- exposure and tone mapping ----

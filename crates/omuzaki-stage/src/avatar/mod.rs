@@ -36,6 +36,8 @@ use crate::frame::face::SETTLE_DT;
 use crate::frame::rig::RigFrame;
 use crate::frame::{FrameInput, FrameOutput, StageClock};
 use crate::scene::apply::{Owed, SceneLink, reserve};
+use crate::scene::backdrop::StageBackdrop;
+use crate::scene::environment::StageEnvironment;
 use crate::scene::ground::StageGround;
 use crate::scene::resolve::ResolvedScene;
 
@@ -58,6 +60,8 @@ pub struct AvatarStage {
     subject_root: Mat4,
     link: SceneLink,
     ground: StageGround,
+    environment: StageEnvironment,
+    backdrop: StageBackdrop,
     submissions: u64,
     tick: Tick,
     scene: Scene,
@@ -117,6 +121,8 @@ impl AvatarStage {
             subject_root: Mat4::IDENTITY,
             link: SceneLink::new(),
             ground: StageGround::default(),
+            environment: StageEnvironment::default(),
+            backdrop: StageBackdrop::default(),
             submissions: 0,
             tick: Tick { index: 0, time: Seconds(0.0), dt: 0.0 },
             scene,
@@ -194,7 +200,9 @@ impl AvatarStage {
         self.submissions += 1;
         let index = if self.clock.is_live() { self.submissions } else { tick.index };
         self.scene.frame = FrameInfo { index, time: tick.time };
-        let report = renderer.render(self.target, &self.scene, &self.quality).map_err(|source| StageError::render(what, source))?;
+        let report = renderer
+            .render(self.target, &self.scene, &self.quality)
+            .map_err(|source| StageError::render(what, source))?;
         Ok(FrameOutput { tick, report, uploads })
     }
 
@@ -213,6 +221,10 @@ impl AvatarStage {
     /// [`Stage::set_scene`](crate::frame::Stage::set_scene) does.
     pub fn set_scene(&mut self, resolved: &ResolvedScene, subject_root: Mat4) -> Owed {
         let owed = self.link.set(resolved, &mut self.scene);
+        self.scene.environment = self.environment.use_for(resolved.environment.as_ref());
+        if let Some(picture) = self.backdrop.background_for(resolved.backdrop_image.as_ref()) {
+            self.scene.background = picture;
+        }
         self.set_subject_root(subject_root);
         owed
     }
@@ -277,22 +289,40 @@ impl AvatarStage {
     /// [`StageError::Render`] with the first release the renderer refused.
     pub fn release(mut self, renderer: &mut dyn Renderer) -> Result<(), StageError> {
         let ground = self.ground.release(renderer);
-        self.upload.release(renderer).and(ground)
+        let environment = self.environment.release(renderer);
+        let backdrop = self.backdrop.release(renderer);
+        self.upload.release(renderer).and(ground).and(environment).and(backdrop)
     }
 
-    /// Does the renderer work the last [`set_scene`](Self::set_scene) owes for the ground and records it as done, as
-    /// [`Stage::pay_scene`](crate::frame::Stage::pay_scene). An imported avatar's materials have no skin floor, so
-    /// that part is never owed work here. Cold.
+    /// Does the renderer work the last [`set_scene`](Self::set_scene) owes for the ground and the environment and
+    /// records it as done, as [`Stage::pay_scene`](crate::frame::Stage::pay_scene). An imported avatar's materials
+    /// have no skin floor, so that part is never owed work here. Cold.
     ///
     /// # Errors
-    /// [`StageError::Render`] if the renderer refuses the disc; the ground stays owed.
+    /// [`StageError::Render`] if the renderer refuses the disc or the environment, and [`StageError::Scene`] for an
+    /// HDRI whose pixels weren't loaded; that part stays owed.
     pub fn pay_scene(&mut self, renderer: &mut dyn Renderer) -> Result<(), StageError> {
         let owed = self.link.owed();
         if let Some(ground) = owed.ground {
             self.ground.set(renderer, &ground)?;
+            self.link.commit(&Owed { ground: Some(ground), ..Owed::default() });
         }
-        if !owed.is_empty() {
-            self.link.commit(&owed);
+        if let Some(source) = owed.environment {
+            let wanted = self.link.wanted();
+            self.environment.set(renderer, source, wanted.hdri.as_ref())?;
+            self.scene.environment = self.environment.use_for(wanted.environment.as_ref());
+            self.link.commit(&Owed { environment: Some(source), ..Owed::default() });
+        }
+        if let Some(asset) = owed.image {
+            let wanted = self.link.wanted();
+            self.backdrop.set(renderer, asset, wanted.image.as_ref())?;
+            if let Some(picture) = self.backdrop.background_for(wanted.backdrop_image.as_ref()) {
+                self.scene.background = picture;
+            }
+            self.link.commit(&Owed { image: Some(asset), ..Owed::default() });
+        }
+        if let Some(floor) = owed.skin_floor {
+            self.link.commit(&Owed { skin_floor: Some(floor), ..Owed::default() });
         }
         Ok(())
     }

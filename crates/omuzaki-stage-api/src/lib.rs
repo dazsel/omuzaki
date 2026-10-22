@@ -5,13 +5,13 @@
 //! - [`ids`]: [`SceneId`], [`MemberId`], [`LightId`], [`CameraId`], [`PropId`]
 //! - [`scene`]: [`SceneDef`] (read and written like `CharacterDef`), its document [`paths`], its limits
 //! - [`settings`]: [`SceneSettings`], [`Backdrop`], [`Ground`], [`PostDef`]
-//! - [`lighting`]: [`Lighting`], [`LightDef`], [`Ambient`]
+//! - [`lighting`]: [`Lighting`], [`LightDef`], [`Ambient`], [`FogDef`], [`EnvironmentDef`]
 //! - [`camera`], [`cast`]: [`CameraDef`], [`Framing`], [`CastMember`]
 //! - [`anchor`]: the [`Anchor`] a light or camera is measured against
 //! - [`check`]: [`SceneDef::check`], the one validator (design D13), with [`SceneError`] and [`Finding`]
 //!
-//! Phase 2 fields (spot lights, fog, environment, typed props, the other backdrop kinds) are additive and arrive with
-//! their own tasks.
+//! Phase 2 fields are additive (design D14): spot lights, fog, the environment and its backdrop are here; typed props
+//! and the other backdrop kinds arrive with their own tasks.
 #![deny(missing_docs)]
 
 omuzaki_core::define_link! {
@@ -34,8 +34,11 @@ pub use camera::{CameraDef, Framing};
 pub use cast::CastMember;
 pub use error::{Finding, FindingKind, Findings, SceneError};
 pub use ids::{CameraId, LightId, MemberId, PropId, SceneId};
-pub use lighting::{Ambient, BloomDef, LightDef, LightRole, LightShape, Lighting};
+pub use lighting::{
+    Ambient, BloomDef, EnvironmentDef, EnvironmentSource, FogDef, LightDef, LightRole, LightShape, Lighting,
+};
 pub use scene::{MAX_CAMERAS, MAX_CAST, MAX_LIGHTS, MAX_PROPS, REFERENCE_HEIGHT_M, SceneDef, paths};
 pub use settings::{
-    Backdrop, DepthOfFieldDef, Focus, FocusSubject, GradeDef, Ground, GroundKind, PostDef, SceneSettings,
+    Backdrop, BackdropFit, Bars, DepthOfFieldDef, Focus, FocusSubject, GradeDef, Ground, GroundKind, PostDef,
+    SceneSettings,
 };

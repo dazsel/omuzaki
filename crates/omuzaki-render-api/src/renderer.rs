@@ -20,7 +20,8 @@ pub struct Capabilities {
     pub backend: String,
     /// The largest texture or target side. At least [`limits::GUARANTEED_TEXTURE_SIZE`](crate::limits).
     pub max_texture_size: u32,
-    /// The largest `samples` the renderer honours without falling back to fewer.
+    /// The largest `samples` the GPU draws in one pass. Live frames that ask for more get this many; offline frames reach
+    /// the rest by jittered supersampling ([`Quality::samples`]).
     pub max_samples: u8,
     /// The passes this renderer can run.
     pub passes: Vec<Pass>,
@@ -177,7 +178,9 @@ where
 /// # Determinism
 /// `render` is a pure function of the resources' contents, the [`Scene`] and the [`Quality`]. In
 /// [`QualityMode::Offline`](crate::QualityMode) it never depends on earlier frames or on wall time; randomness (grain,
-/// sample jitter) derives from `Scene::frame.index`.
+/// dither) derives from `Scene::frame.index`. The supersampling pattern that reaches [`Quality::samples`] past
+/// [`Capabilities::max_samples`] is fixed: it never depends on the frame index, so a clip cut anywhere renders the same
+/// pictures.
 pub trait Renderer: Send {
     /// What this renderer can do. Constant for its lifetime.
     fn capabilities(&self) -> &Capabilities;

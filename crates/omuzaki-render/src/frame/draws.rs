@@ -12,9 +12,10 @@
 use omuzaki_core::glam::{Mat4, UVec2};
 use omuzaki_render_api::{AlphaMode, Instance, Material, Pass, RenderError, Scene};
 
+use super::supersample::{self, MAX_ROUNDS};
 use super::uniform::{self, FrameUniform, InstanceUniform};
 use crate::resource::SceneResources;
-use crate::shared::Layouts;
+use crate::shared::{Layouts, Shared};
 
 /// A set of passes, one bit per [`Pass`]. Eight passes fit a byte.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
@@ -77,15 +78,18 @@ impl Draws {
     }
 }
 
-/// The GPU buffers behind group 0, sized for the largest frame so far and replaced (with the bind group) only when a
+/// The GPU buffers behind group 0, sized for the largest frame so far and replaced (with the bind groups) only when a
 /// frame needs more.
 struct FrameBuffers {
+    /// One frame uniform per supersampling round, `stride` bytes apart; a frame that does not supersample uses the first.
     frame: wgpu::Buffer,
+    stride: u64,
     instances: wgpu::Buffer,
     instance_capacity: usize,
     joints: wgpu::Buffer,
     joint_capacity: usize,
-    bind_group: wgpu::BindGroup,
+    /// Group 0 for each round: its own frame uniform, the shared instances and joints.
+    bind_groups: Vec<wgpu::BindGroup>,
 }
 
 fn storage_buffer(device: &wgpu::Device, label: &str, capacity: usize, element: usize) -> wgpu::Buffer {
@@ -99,24 +103,32 @@ fn storage_buffer(device: &wgpu::Device, label: &str, capacity: usize, element: 
 
 impl FrameBuffers {
     fn new(device: &wgpu::Device, layouts: &Layouts, instance_capacity: usize, joint_capacity: usize) -> Self {
+        let size = size_of::<FrameUniform>() as u64;
+        let stride = size.next_multiple_of(u64::from(device.limits().min_uniform_buffer_offset_alignment));
         let frame = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("frame uniform"),
-            size: size_of::<FrameUniform>() as u64,
+            size: stride * u64::from(MAX_ROUNDS),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let instances = storage_buffer(device, "instances", instance_capacity, size_of::<InstanceUniform>());
         let joints = storage_buffer(device, "joints", joint_capacity, size_of::<Mat4>());
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("frame"),
-            layout: &layouts.frame,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: frame.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: instances.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: joints.as_entire_binding() },
-            ],
-        });
-        Self { frame, instances, instance_capacity, joints, joint_capacity, bind_group }
+        let bind_groups = (0..u64::from(MAX_ROUNDS))
+            .map(|round| {
+                let uniform =
+                    wgpu::BufferBinding { buffer: &frame, offset: round * stride, size: wgpu::BufferSize::new(size) };
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("frame"),
+                    layout: &layouts.frame,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Buffer(uniform) },
+                        wgpu::BindGroupEntry { binding: 1, resource: instances.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 2, resource: joints.as_entire_binding() },
+                    ],
+                })
+            })
+            .collect();
+        Self { frame, stride, instances, instance_capacity, joints, joint_capacity, bind_groups }
     }
 }
 
@@ -133,24 +145,27 @@ impl FrameState {
         Self { buffers: FrameBuffers::new(device, layouts, 1, 1), draws: Draws::default(), instances: Vec::new() }
     }
 
-    /// Group 0 for this frame; valid once [`prepare`](Self::prepare) has succeeded.
-    pub(crate) fn bind_group(&self) -> &wgpu::BindGroup {
-        &self.buffers.bind_group
+    /// Group 0 for each round of this frame (one unless it supersamples); valid once [`prepare`](Self::prepare) has
+    /// succeeded for that many rounds.
+    pub(crate) fn bind_groups(&self, rounds: u32) -> &[wgpu::BindGroup] {
+        let rounds = (rounds.clamp(1, MAX_ROUNDS) as usize).min(self.buffers.bind_groups.len());
+        &self.buffers.bind_groups[..rounds]
     }
 
-    /// Validates `scene` against the resources, builds the draw lists and uploads the frame data.
+    /// Validates `scene` against the resources, builds the draw lists and uploads the frame data: one frame uniform per
+    /// round, each with its round's sub-pixel offset ([`supersample::jitter`]) for a GPU drawing `hardware` samples.
     ///
     /// # Errors
     /// `UnknownHandle` for a released mesh, material or environment; `Invalid` when an instance's joint range is too short for its
     /// mesh. Nothing has been written to the GPU when this returns an error.
     pub(crate) fn prepare(
         &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        layouts: &Layouts,
+        shared: &Shared,
         scene: &Scene,
         resources: SceneResources<'_>,
         internal_size: UVec2,
+        rounds: u32,
+        hardware: u32,
     ) -> Result<(), RenderError> {
         self.draws.all.clear();
         self.instances.clear();
@@ -161,6 +176,12 @@ impl FrameState {
                 .get(using.id.index(), using.id.generation())
                 .ok_or(RenderError::UnknownHandle { what: "environment" })?;
             self.draws.environment = Some(using.id.index());
+        }
+        if let omuzaki_render_api::Background::Texture { texture, .. } = scene.background {
+            resources
+                .textures
+                .get(texture.index(), texture.generation())
+                .ok_or(RenderError::UnknownHandle { what: "texture" })?;
         }
         for (index, instance) in (0u32..).zip(&scene.instances) {
             let (mesh_slot, material_slot) = (instance.mesh.index(), instance.material.index());
@@ -193,8 +214,18 @@ impl FrameState {
             });
         }
 
-        self.reserve(device, layouts, self.instances.len(), scene.joints.len());
-        queue.write_buffer(&self.buffers.frame, 0, bytemuck::bytes_of(&uniform::frame_uniform(scene, internal_size)));
+        let (device, queue) = (&shared.gpu.device, &shared.gpu.queue);
+        self.reserve(device, &shared.layouts, self.instances.len(), scene.joints.len());
+        let rounds = rounds.clamp(1, MAX_ROUNDS);
+        for round in 0..rounds {
+            let jitter = supersample::jitter(round, rounds, hardware);
+            let packed = uniform::frame_uniform(scene, internal_size, jitter);
+            queue.write_buffer(
+                &self.buffers.frame,
+                u64::from(round) * self.buffers.stride,
+                bytemuck::bytes_of(&packed),
+            );
+        }
         if !self.instances.is_empty() {
             queue.write_buffer(&self.buffers.instances, 0, bytemuck::cast_slice(&self.instances));
         }

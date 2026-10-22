@@ -13,6 +13,10 @@ use crate::{Colour, RenderError};
 pub mod limits {
     /// Lights in one [`Scene`](crate::Scene).
     pub const MAX_LIGHTS: usize = 8;
+    /// Shadow maps one frame draws at most: one per shadow-casting directional light, in light order, up to this many
+    /// (and up to [`ShadowQuality::max_maps`](crate::ShadowQuality::max_maps)); further casting lights light without
+    /// shadow.
+    pub const MAX_SHADOW_MAPS: usize = 4;
     /// Skinning matrices in one [`Scene`](crate::Scene) (all skinned instances together).
     pub const MAX_JOINTS: usize = 2048;
     /// Morph weights in one [`Scene`](crate::Scene) (all morphed instances together).

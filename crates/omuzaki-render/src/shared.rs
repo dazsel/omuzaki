@@ -39,6 +39,8 @@ pub(crate) struct Layouts {
     pub(crate) shadow_receiver: wgpu::BindGroupLayout,
     /// Group 3 of the scene passes that light surfaces: the environment's uniform (b0), specular cube (b1) and sampler (b2).
     pub(crate) environment: wgpu::BindGroupLayout,
+    /// Group 0 of the environment backdrop's draw: its uniform (b0), the sky's picture (b1) and its sampler (b2).
+    pub(crate) backdrop: wgpu::BindGroupLayout,
 }
 
 /// Stand-ins for texture slots a material leaves empty, so one bind group layout serves every material.
@@ -117,7 +119,7 @@ fn material_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
 }
 
 impl Layouts {
-    fn new(device: &wgpu::Device) -> Self {
+    pub(crate) fn new(device: &wgpu::Device) -> Self {
         let both = wgpu::ShaderStages::VERTEX_FRAGMENT;
         let storage = wgpu::BufferBindingType::Storage { read_only: true };
         let frame = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -161,9 +163,19 @@ impl Layouts {
             },
             count: None,
         };
+        // One map's matrix, picked by a dynamic offset (`shadow/map.rs`).
         let shadow_caster = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("shadow caster"),
-            entries: &[uniform(0, wgpu::ShaderStages::VERTEX)],
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: true,
+                    min_binding_size: wgpu::BufferSize::new(64),
+                },
+                count: None,
+            }],
         });
         let shadow_receiver = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("shadow receiver"),
@@ -174,7 +186,7 @@ impl Layouts {
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Depth,
-                        view_dimension: wgpu::TextureViewDimension::D2,
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
                         multisampled: false,
                     },
                     count: None,
@@ -187,7 +199,15 @@ impl Layouts {
                 },
             ],
         });
-        Self { frame, material, colour_input, shadow_caster, shadow_receiver, environment: environment::layout(device) }
+        Self {
+            frame,
+            material,
+            colour_input,
+            shadow_caster,
+            shadow_receiver,
+            environment: environment::layout(device),
+            backdrop: environment::backdrop::layout(device),
+        }
     }
 }
 
@@ -240,7 +260,7 @@ impl Shared {
     pub(crate) fn new(gpu: Gpu) -> Self {
         let layouts = Layouts::new(&gpu.device);
         Self {
-            no_environment: GpuEnvironment::none(&gpu, &layouts.environment),
+            no_environment: GpuEnvironment::none(&gpu, &layouts),
             defaults: Defaults::new(&gpu),
             mips: MipGenerator::new(&gpu.device),
             layouts,

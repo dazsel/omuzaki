@@ -248,3 +248,308 @@ fn on_the_gpu_the_default_scene_and_every_rig() {
     let two = sheet(cells, 2);
     keep("preview-light-rigs-sheet", &two.hash);
 }
+
+/// On lavapipe (#931, LK-08): soft-sd and tall in the studio rig, then with fog, then with a sky environment as the
+/// backdrop, then with a spot as well, full and bust. Fog and the spot are in subject units, so both statures take the
+/// same share of fog and the same light. Set `OMUZAKI_EVIDENCE_DIR` to keep the sheet.
+#[cfg(feature = "wgpu")]
+#[test]
+#[allow(clippy::disallowed_methods, reason = "the evidence image is written beside the test, not by an op")]
+fn on_the_gpu_fog_a_sky_environment_and_a_spot_on_two_statures() {
+    use omuzaki_char::ops::character::create::CharacterCreate;
+    use omuzaki_render::{AdapterPreference, HeadlessOptions, WgpuRenderer};
+    use omuzaki_stage::ops::render::contact_sheet::{ContactSheet, ContactSheetResult};
+    use omuzaki_stage::ops::scene::create::CreateScene;
+    use omuzaki_stage::ops::scene::light::{AddLight, SetLightRig, SetLighting};
+    use omuzaki_stage::ops::scene::look::SetBackdrop;
+    use omuzaki_store_api::Store;
+
+    const SIZE: [u32; 2] = [192, 256];
+    const LOOKS: [&str; 4] = ["studio", "fog", "sky", "spot"];
+    let mut doc = MemDoc::from_value(json!({}));
+    for template in ["soft-sd", "tall"] {
+        let id = template.replace('-', "_");
+        apply::<CharacterCreate>(&mut doc, json!({ "id": id, "name": template, "template": template, "seed": 7 }));
+    }
+    // Each look adds one thing to the one before it.
+    let fog = json!({ "fog": { "colour": "#2a2238", "near": 0.8, "far": 5.0 } });
+    let sky = json!({ "environment": { "kind": "sky", "intensity": 0.35 } });
+    let spot = json!({ "kind": "spot", "role": "accent", "position": [-1.0, 1.2, 0.3], "target": [0.0, 0.8, 0.0],
+                       "cone": 25.0, "penumbra": 0.4, "intensity": 1.2, "colour": "#ffc890" });
+    for (i, look) in LOOKS.iter().enumerate() {
+        apply::<CreateScene>(&mut doc, json!({ "id": look, "cast": [] }));
+        apply::<SetLightRig>(&mut doc, json!({ "scene": look, "rig": "viewer-studio" }));
+        if i >= 1 {
+            let mut args = fog.clone();
+            args["scene"] = json!(look);
+            apply::<SetLighting>(&mut doc, args);
+        }
+        if i >= 2 {
+            let mut args = sky.clone();
+            args["scene"] = json!(look);
+            apply::<SetLighting>(&mut doc, args);
+            apply::<SetBackdrop>(&mut doc, json!({ "scene": look, "kind": "environment" }));
+        }
+        if i >= 3 {
+            let mut args = spot.clone();
+            args["scene"] = json!(look);
+            apply::<AddLight>(&mut doc, args);
+        }
+    }
+    let renderer =
+        WgpuRenderer::headless(&HeadlessOptions { adapter: AdapterPreference::Software }).expect("lavapipe opens");
+    let harness = Harness::on(TestDoc(doc), Box::new(renderer));
+    let image = |hash: &str| {
+        let png = harness.store.get(&hash.parse().unwrap()).unwrap();
+        image::load_from_memory(&png).unwrap().to_rgba8()
+    };
+
+    let mut cells = Vec::new();
+    for id in ["soft_sd", "tall"] {
+        for framing in ["full", "bust"] {
+            let shots: Vec<_> = LOOKS
+                .iter()
+                .map(|look| {
+                    run(
+                        &harness,
+                        json!({ "character": id, "scene": look, "framing": framing, "size": SIZE, "quality": "offline" }),
+                    )
+                    .unwrap_or_else(|e| panic!("{id} {framing} in {look}: {e:?}"))
+                })
+                .collect();
+            let [studio, fogged, sky, spot] = [0, 1, 2, 3].map(|i| image(&shots[i].hash));
+            let differ = |a: &image::RgbaImage, b: &image::RgbaImage| {
+                a.pixels().zip(b.pixels()).filter(|(p, q)| p.0.iter().zip(q.0).any(|(x, y)| x.abs_diff(y) > 6)).count()
+            };
+            let all = (SIZE[0] * SIZE[1]) as usize;
+            let (by_fog, by_sky, by_spot) = (differ(&studio, &fogged), differ(&fogged, &sky), differ(&sky, &spot));
+            println!("{id} {framing}: fog changes {by_fog}, the sky {by_sky}, the spot {by_spot} of {all} pixels");
+            // Fog starts 0.8 subject heights from the camera, which a bust of a tall figure is nearer than.
+            if framing == "full" {
+                assert!(by_fog > all / 20, "{id} {framing}: the fog shows");
+            }
+            assert!(by_sky > all / 4, "{id} {framing}: the sky shows behind the character");
+            assert!(by_spot > all / 200, "{id} {framing}: the spot lights the character");
+            // The backdrop is opaque sky, not the rig's background colour.
+            let (top, before) = (sky.get_pixel(SIZE[0] / 2, 0).0, fogged.get_pixel(SIZE[0] / 2, 0).0);
+            assert!(top[3] == 255 && top != before, "{id} {framing}: the sky is behind, got {top:?} for {before:?}");
+            cells.extend(shots.into_iter().map(|s| s.uri));
+        }
+    }
+    let op: ContactSheet = serde_json::from_value(json!({ "images": cells, "columns": LOOKS.len() })).unwrap();
+    let sheet: ContactSheetResult = serde_json::from_value(harness.run(&op).expect("lays out").1).unwrap();
+    if let Some(dir) = std::env::var_os("OMUZAKI_EVIDENCE_DIR") {
+        let png = harness.store.get(&sheet.hash.parse().unwrap()).unwrap();
+        std::fs::write(std::path::Path::new(&dir).join("scene-fog-sky-spot-sheet.png"), png).unwrap();
+    }
+}
+
+/// On lavapipe (#1165): soft-sd and standard at `full` and `bust` in a scene lit by the studio rig (before) and by the
+/// `stage` rig (after), applied with `stage.set_light_rig`. The stage is dark around the character, the magenta spot
+/// colours the hair, and no skin is clipped white. Set `OMUZAKI_EVIDENCE_DIR` to keep the sheet.
+#[cfg(feature = "wgpu")]
+#[test]
+#[allow(clippy::disallowed_methods, reason = "the evidence image is written beside the test, not by an op")]
+fn on_the_gpu_the_stage_rig_beside_the_studio_rig() {
+    use omuzaki_char::ops::character::create::CharacterCreate;
+    use omuzaki_render::{AdapterPreference, HeadlessOptions, WgpuRenderer};
+    use omuzaki_stage::ops::render::contact_sheet::{ContactSheet, ContactSheetResult};
+    use omuzaki_stage::ops::scene::create::CreateScene;
+    use omuzaki_stage::ops::scene::light::SetLightRig;
+    use omuzaki_store_api::Store;
+
+    const SIZE: [u32; 2] = [192, 256];
+    let mut doc = MemDoc::from_value(json!({}));
+    for template in ["soft-sd", "standard"] {
+        let id = template.replace('-', "_");
+        apply::<CharacterCreate>(&mut doc, json!({ "id": id, "name": template, "template": template, "seed": 7 }));
+    }
+    for (scene, rig) in [("studio", "viewer-studio"), ("show", "stage")] {
+        apply::<CreateScene>(&mut doc, json!({ "id": scene, "cast": [] }));
+        apply::<SetLightRig>(&mut doc, json!({ "scene": scene, "rig": rig }));
+    }
+    let renderer =
+        WgpuRenderer::headless(&HeadlessOptions { adapter: AdapterPreference::Software }).expect("lavapipe opens");
+    let harness = Harness::on(TestDoc(doc), Box::new(renderer));
+    let image = |hash: &str| {
+        let png = harness.store.get(&hash.parse().unwrap()).unwrap();
+        image::load_from_memory(&png).unwrap().to_rgba8()
+    };
+    let (mut cells, mut found) = (Vec::new(), Vec::new());
+    for id in ["soft_sd", "standard"] {
+        for framing in ["full", "bust"] {
+            let shot = |scene: &str| {
+                run(
+                    &harness,
+                    json!({ "character": id, "scene": scene, "framing": framing, "size": SIZE, "quality": "offline" }),
+                )
+                .unwrap_or_else(|e| panic!("{id} {framing} in {scene}: {e:?}"))
+            };
+            let (before, after) = (shot("studio"), shot("show"));
+            let picture = image(&after.hash);
+            let corner = picture.get_pixel(0, 0).0;
+            let figure: Vec<_> =
+                picture.pixels().filter(|p| p.0.iter().zip(corner).any(|(a, b)| a.abs_diff(b) > 12)).collect();
+            let clipped = figure.iter().filter(|p| p.0[..3].iter().all(|c| *c >= 250)).count();
+            // Magenta light: red and blue both above green. Skin keeps its own hue under coloured light (the toon
+            // skin's hue-keep), so the tint shows on the hair the head spot falls on; the studio rig has none.
+            let magenta = |picture: &image::RgbaImage| {
+                picture
+                    .pixels()
+                    .filter(|p| {
+                        let [red, green, blue, _] = p.0.map(i32::from);
+                        red - green > 45 && blue - green > 10
+                    })
+                    .count()
+            };
+            let (tinted, in_studio) = (magenta(&picture), magenta(&image(&before.hash)));
+            println!(
+                "{id} {framing}: {} figure pixels, {clipped} clipped white, {tinted} magenta ({in_studio} in the studio)",
+                figure.len()
+            );
+            assert_eq!(in_studio, 0, "{id} {framing}: the studio rig tints nothing magenta");
+            found.push((format!("{id} {framing}"), corner, figure.len(), clipped, tinted));
+            cells.extend([before.uri, after.uri]);
+        }
+    }
+    let op: ContactSheet = serde_json::from_value(json!({ "images": cells, "columns": 4 })).unwrap();
+    let sheet: ContactSheetResult = serde_json::from_value(harness.run(&op).expect("lays out").1).unwrap();
+    if let Some(dir) = std::env::var_os("OMUZAKI_EVIDENCE_DIR") {
+        let png = harness.store.get(&sheet.hash.parse().unwrap()).unwrap();
+        std::fs::write(std::path::Path::new(&dir).join("scene-stage-rig-sheet.png"), png).unwrap();
+    }
+    // Checked after the sheet is written, so a failure leaves the picture to look at.
+    for (shot, corner, figure, clipped, tinted) in found {
+        assert!(corner[..3].iter().all(|c| *c < 24), "{shot}: the stage is near black, got {corner:?}");
+        assert!(figure > (SIZE[0] * SIZE[1]) as usize / 20, "{shot}: the character shows");
+        assert!(clipped * 200 < figure, "{shot}: {clipped} pixels of skin are clipped white");
+        assert!(tinted * 200 > figure, "{shot}: the head spot colours the hair ({tinted} of {figure})");
+    }
+}
+
+/// A synthetic 4:3 room for backdrop tests: a wall darkening upward, a window of four panes with a sky gradient, and a
+/// floor band; drawn here, so it is the project's own.
+#[cfg(feature = "wgpu")]
+fn synthetic_room() -> Vec<u8> {
+    let (width, height) = (400u32, 300u32);
+    let picture = image::RgbaImage::from_fn(width, height, |column, row| {
+        let (across, down) = (column as f32 / width as f32, row as f32 / height as f32);
+        let mix =
+            |from: [f32; 3], to: [f32; 3], at: f32| [0, 1, 2].map(|i| from[i] + (to[i] - from[i]) * at.clamp(0.0, 1.0));
+        let window = (0.55..0.85).contains(&across) && (0.15..0.6).contains(&down);
+        let mullion = window && ((across - 0.70).abs() < 0.008 || (down - 0.375).abs() < 0.01);
+        let colour = if down > 0.78 {
+            [120.0, 84.0, 60.0]
+        } else if mullion {
+            [235.0, 230.0, 220.0]
+        } else if window {
+            mix([110.0, 150.0, 220.0], [250.0, 210.0, 170.0], (down - 0.15) / 0.45)
+        } else {
+            mix([70.0, 64.0, 92.0], [182.0, 170.0, 190.0], down / 0.78)
+        };
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // every channel is within 0..=255
+        let [red, green, blue] = colour.map(|channel| channel as u8);
+        image::Rgba([red, green, blue, 255])
+    });
+    let mut bytes = Vec::new();
+    picture.write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png).unwrap();
+    bytes
+}
+
+/// On lavapipe (#930, scenes D2): soft-sd before (a colour backdrop) and after (a gradient, a picture covering the frame
+/// and a picture contained in it with gradient bars), at 16:9 and 9:16. The backdrop shows as authored: its pixels
+/// are not exposed or tone mapped. Set `OMUZAKI_EVIDENCE_DIR` to keep the sheet.
+#[cfg(feature = "wgpu")]
+#[test]
+#[allow(clippy::disallowed_methods, reason = "the evidence image is written beside the test, not by an op")]
+fn on_the_gpu_gradient_and_image_backdrops_at_two_aspects() {
+    use omuzaki_char::ops::character::create::CharacterCreate;
+    use omuzaki_render::{AdapterPreference, HeadlessOptions, WgpuRenderer};
+    use omuzaki_stage::ops::render::contact_sheet::{ContactSheet, ContactSheetResult};
+    use omuzaki_stage::ops::scene::create::CreateScene;
+    use omuzaki_stage::ops::scene::look::SetBackdrop;
+    use omuzaki_store_api::{Commercial, ContentHash, Provenance, Source, Store};
+
+    const LOOKS: [&str; 4] = ["colour", "gradient", "cover", "contain"];
+    let room = synthetic_room();
+    let asset = ContentHash::of(&room);
+    let mut doc = MemDoc::from_value(json!({}));
+    apply::<CharacterCreate>(&mut doc, json!({ "id": "soft_sd", "name": "soft-sd", "template": "soft-sd", "seed": 7 }));
+    let (top, bottom) = ("#1d2b4f", "#e8a87c");
+    for look in LOOKS {
+        apply::<CreateScene>(&mut doc, json!({ "id": look, "cast": [] }));
+        let backdrop = match look {
+            "colour" => json!({ "scene": look, "kind": "colour", "colour": "#2b2d42" }),
+            "gradient" => json!({ "scene": look, "kind": "gradient", "top": top, "bottom": bottom }),
+            fit => json!({ "scene": look, "kind": "image", "asset": asset, "fit": fit, "top": top, "bottom": bottom }),
+        };
+        apply::<SetBackdrop>(&mut doc, backdrop);
+    }
+    let renderer =
+        WgpuRenderer::headless(&HeadlessOptions { adapter: AdapterPreference::Software }).expect("lavapipe opens");
+    let harness = Harness::on(TestDoc(doc), Box::new(renderer));
+    let provenance = Provenance {
+        source: Source::Authored,
+        author: None,
+        licence: "CC0-1.0".into(),
+        attribution: None,
+        commercial: Commercial::Ok,
+        consent: None,
+        private_test: false,
+    };
+    assert_eq!(harness.store.put(&room, provenance).unwrap(), asset);
+    let image = |hash: &str| {
+        let png = harness.store.get(&hash.parse().unwrap()).unwrap();
+        image::load_from_memory(&png).unwrap().to_rgba8()
+    };
+    let decoded = image::load_from_memory(&room).unwrap().to_rgba8();
+
+    let mut cells = Vec::new();
+    for size in [[256u32, 144], [144, 256]] {
+        for look in LOOKS {
+            let shot = run(
+                &harness,
+                json!({ "character": "soft_sd", "scene": look, "framing": "full", "size": size, "quality": "offline" }),
+            )
+            .unwrap_or_else(|e| panic!("{look} at {size:?}: {e:?}"));
+            let got = image(&shot.hash);
+            let corner = got.get_pixel(1, 1).0;
+            match look {
+                // A colour is shown as authored, so it keys exactly: #2b2d42 under ACES at the rig's exposure.
+                "colour" => assert!(
+                    corner[..3].iter().zip([0x2b_u8, 0x2d, 0x42]).all(|(a, b)| a.abs_diff(b) <= 1),
+                    "{size:?}: the colour is {corner:?}"
+                ),
+                // The gradient's top row is its top colour, exactly as authored: #1d2b4f.
+                "gradient" => assert!(
+                    corner[..3].iter().zip([0x1d_u8, 0x2b, 0x4f]).all(|(a, b)| a.abs_diff(b) <= 3),
+                    "{size:?}: the gradient's top is {corner:?}"
+                ),
+                // A 4:3 picture covering the frame shows its own pixels at the corner, cropped to fit.
+                "cover" => {
+                    let frame = size[0] as f32 / size[1] as f32;
+                    let uv = omuzaki_render_api::BackdropFit::Cover.uv(
+                        omuzaki_core::glam::Vec2::new(1.5 / size[0] as f32, 1.5 / size[1] as f32),
+                        frame,
+                        4.0 / 3.0,
+                    );
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a corner uv is in 0..1
+                    let want = decoded.get_pixel((uv.x * 400.0) as u32, (uv.y * 300.0) as u32).0;
+                    assert!(
+                        corner[..3].iter().zip(want).all(|(a, b)| a.abs_diff(b) <= 6),
+                        "{size:?}: the cover's corner is {corner:?}, the picture there {want:?}"
+                    );
+                }
+                _ => {}
+            }
+            assert_eq!(corner[3], 255, "{look} at {size:?}: the backdrop is opaque");
+            cells.push(shot.uri);
+        }
+    }
+    let op: ContactSheet = serde_json::from_value(json!({ "images": cells, "columns": LOOKS.len() })).unwrap();
+    let sheet: ContactSheetResult = serde_json::from_value(harness.run(&op).expect("lays out").1).unwrap();
+    if let Some(dir) = std::env::var_os("OMUZAKI_EVIDENCE_DIR") {
+        let png = harness.store.get(&sheet.hash.parse().unwrap()).unwrap();
+        std::fs::write(std::path::Path::new(&dir).join("scene-backdrops-sheet.png"), png).unwrap();
+    }
+}

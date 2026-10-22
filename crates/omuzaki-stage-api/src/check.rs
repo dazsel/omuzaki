@@ -9,7 +9,7 @@ use crate::error::{Finding, FindingKind, Findings, SceneError};
 use crate::ids::MemberId;
 use crate::lighting::{LightDef, LightShape};
 use crate::scene::{MAX_CAMERAS, MAX_CAST, MAX_LIGHTS, MAX_PROPS, SceneDef};
-use crate::settings::Focus;
+use crate::settings::{Backdrop, Focus};
 
 type Check = Result<(), SceneError>;
 
@@ -36,6 +36,12 @@ fn within(path: &str, value: f32, lo: f32, hi: f32) -> Check {
     } else {
         refuse(path, format!("must be between {lo} and {hi}, got {value}"))
     }
+}
+
+/// `value` is finite and above 0.
+fn positive(path: &str, value: f32) -> Check {
+    finite(path, value)?;
+    if value > 0.0 { Ok(()) } else { refuse(path, format!("must be more than 0, got {value}")) }
 }
 
 fn all_finite(path: &str, values: &[f32]) -> Check {
@@ -122,6 +128,17 @@ impl SceneDef {
             within("lighting.bloom.radius", b.radius, 0.0, 1.0)?;
             non_negative("lighting.bloom.threshold", b.threshold)?;
         }
+        if let Some(fog) = &l.fog {
+            non_negative("lighting.fog.near", fog.near)?;
+            finite("lighting.fog.far", fog.far)?;
+            if fog.far <= fog.near {
+                return refuse("lighting.fog.far", format!("must be beyond `near` ({}), got {}", fog.near, fog.far));
+            }
+        }
+        if let Some(environment) = &l.environment {
+            non_negative("lighting.environment.intensity", environment.intensity)?;
+            finite("lighting.environment.rotation", environment.rotation)?;
+        }
         for (id, light) in &l.lights {
             self.check_light(&format!("lighting.lights.{id}"), light)?;
         }
@@ -146,12 +163,19 @@ impl SceneDef {
             }
             LightShape::Point { position, range } => {
                 all_finite(&format!("{path}.position"), &position)?;
-                finite(&format!("{path}.range"), range)?;
-                if range > 0.0 {
-                    Ok(())
-                } else {
-                    refuse(format!("{path}.range"), format!("must be more than 0, got {range}"))
+                positive(&format!("{path}.range"), range)
+            }
+            LightShape::Spot { position, target, cone, penumbra, range } => {
+                all_finite(&format!("{path}.position"), &position)?;
+                all_finite(&format!("{path}.target"), &target)?;
+                // The beam's direction is target - position, so the two can't (nearly) coincide.
+                if position.iter().zip(target).all(|(p, t)| (p - t).abs() < 1e-6) {
+                    return refuse(format!("{path}.target"), "must not be the lamp's own position");
                 }
+                positive(&format!("{path}.cone"), cone)?;
+                within(&format!("{path}.cone"), cone, 0.0, 90.0)?;
+                within(&format!("{path}.penumbra"), penumbra, 0.0, 1.0)?;
+                positive(&format!("{path}.range"), range)
             }
         }
     }
@@ -223,6 +247,14 @@ impl SceneDef {
                 kind: FindingKind::NoLights,
                 path: "lighting.lights".into(),
                 message: "the lighting has no light other than the ambient, so nothing will cast a shape".into(),
+            });
+        }
+        if matches!(self.scene.backdrop, Backdrop::Environment {}) && self.lighting.environment.is_none() {
+            found.push(Finding {
+                kind: FindingKind::NoEnvironment,
+                path: "scene.backdrop".into(),
+                message: "the backdrop is the environment but the lighting has none, so its background colour shows"
+                    .into(),
             });
         }
         for (id, member) in &self.cast {

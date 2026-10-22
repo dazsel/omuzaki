@@ -49,6 +49,18 @@ pub enum ShadowQuality {
     High,
 }
 
+impl ShadowQuality {
+    /// How many shadow-casting directional lights get a map at this quality: none when off, the first one at `Low`
+    /// (the live default keeps one map's cost), up to [`MAX_SHADOW_MAPS`](crate::limits::MAX_SHADOW_MAPS) at `High`.
+    pub fn max_maps(self) -> usize {
+        match self {
+            Self::Off => 0,
+            Self::Low => 1,
+            Self::High => crate::limits::MAX_SHADOW_MAPS,
+        }
+    }
+}
+
 /// The knobs that trade image quality for GPU time. Presets: [`Quality::live`], [`Quality::high`], [`Quality::offline`].
 ///
 /// The preset numbers are starting points; the toon-viewport spike tunes them against the §10 budgets.

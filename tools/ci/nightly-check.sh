@@ -12,6 +12,9 @@ CI_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=lib.sh source-path=SCRIPTDIR
 source "$CI_DIR/lib.sh"
 
+# Tests that cut their case counts to fit the pull request gate's time limit run them in full here (#2300).
+export OMUZAKI_FULL_TESTS=1
+
 ci_begin "Nightly"
 ci_note "Commit" "$(git rev-parse --short HEAD)"
 ci_note "Runner" "${RUNNER_NAME:-local}"

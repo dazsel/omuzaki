@@ -11,11 +11,11 @@ use std::fmt;
 use omuzaki_core::glam::{Mat4, UVec2, Vec2, Vec3};
 use omuzaki_core::id::{Slug, SlugError};
 use omuzaki_render_api::{
-    AlphaEncoding, AlphaMode, Background, Camera, Colour, EnvironmentDesc, EnvironmentUse, ExtraAttribute, Filter, Fog,
-    FrameReport, Image, Instance, JointRange, Light, Mapping, Material, MaterialId, MeshData, MeshId, MeshOptions,
-    MeshUsage, MorphRange, MorphSet, Outline, Overlay, PaintTarget, ParamValue, PixelRect, ProgramParams, Projection,
-    Quality, RenderError, Renderer, RendererExt, Rim, Sampler, Scene, Shading, TargetDesc, TextureDesc, Tonemap, Toon,
-    UvTransform, limits,
+    AlphaEncoding, AlphaMode, BackdropFit, Background, Camera, Colour, EnvironmentDesc, EnvironmentUse, ExtraAttribute,
+    Filter, Fog, FrameReport, Image, Instance, JointRange, Light, Mapping, Material, MaterialId, MeshData, MeshId,
+    MeshOptions, MeshUsage, MorphRange, MorphSet, Outline, Overlay, PaintTarget, ParamValue, PixelRect, ProgramParams,
+    Projection, Quality, RenderError, Renderer, RendererExt, Rim, Sampler, Scene, Shading, TargetDesc, TextureDesc,
+    Tonemap, Toon, UvTransform, gradient_at, limits,
 };
 
 use crate::shapes;
@@ -84,6 +84,8 @@ pub const CHECKS: &[(&str, Check)] = &[
     ("an HDRI is equirectangular and rotates", an_hdri_is_equirectangular_and_rotates),
     ("the toon ramp quantises the sky's light", the_toon_ramp_quantises_the_skys_light),
     ("environments are resources", environments_are_resources),
+    ("the environment backdrop shows the sky", the_environment_backdrop_shows_the_sky),
+    ("gradient and texture backdrops show as authored", pictures_behind_show_as_authored),
     ("a UV transform picks the atlas cell", uv_transform_atlas),
 ];
 
@@ -979,6 +981,205 @@ fn the_toon_ramp_quantises_the_skys_light(r: &mut dyn Renderer) -> Outcome {
         smooth < 2.0 / 3.0 - 0.06,
         "unbanded, a surface tilted 53° from the zenith is dimmer than one facing it ({smooth})"
     );
+    Ok(())
+}
+
+/// The linear colour at the centre of a picture with the environment as its background, seen from the origin looking
+/// along `forward` through a 30° lens, with `cover` putting a white unlit quad in front of the camera.
+fn backdrop_value(
+    r: &mut dyn Renderer,
+    env: Option<&EnvironmentDesc>,
+    using: impl Fn(EnvironmentUse) -> EnvironmentUse,
+    forward: Vec3,
+    cover: bool,
+) -> Result<(Vec3, u8), Failure> {
+    let lens = Projection::Perspective { fov_y_deg: 30.0, near: 0.1, far: 20.0 };
+    let id = env.map(|e| r.create_environment(e)).transpose()?;
+    let mut s = scene(Colour::rgb(255, 0, 255));
+    s.background = Background::Environment;
+    s.camera = Camera::look_at(Vec3::ZERO, forward, Vec3::Y, lens);
+    s.environment = id.map(|id| using(EnvironmentUse::new(id)));
+    let quad = if cover {
+        let mesh = r.create_mesh(&shapes::quad(Vec2::splat(4.0)))?;
+        let material = r.create_material(&Material::unlit(Colour::WHITE))?;
+        let place = Mat4::from_translation(forward * 3.0)
+            * Mat4::from_quat(omuzaki_core::glam::Quat::from_rotation_arc(Vec3::Z, -forward));
+        s.instances.push(Instance::new(mesh, material, place));
+        Some((mesh, material))
+    } else {
+        None
+    };
+    let got = draw(r, &s, &plain()).and_then(|img| pixel(&img, CENTRE));
+    if let Some((mesh, material)) = quad {
+        r.release(mesh.into())?;
+        r.release(material.into())?;
+    }
+    if let Some(id) = id {
+        r.release(id.into())?;
+    }
+    let got = got?;
+    Ok((linear(got), got.a))
+}
+
+/// `Background::Environment` shows the sky's radiance in each pixel's view direction, turned and scaled as the scene
+/// uses it, opaque; a surface in front hides it, and without an environment it is black. A procedural sky looking at the
+/// horizon shows its horizon colour; the HDRI of `an_hdri_is_equirectangular_and_rotates` shows its bright half towards
+/// +Z, and towards +X once turned 90°.
+fn the_environment_backdrop_shows_the_sky(r: &mut dyn Renderer) -> Outcome {
+    let horizon = Colour::rgb(200, 120, 60);
+    let sky = EnvironmentDesc::Sky { zenith: Colour::WHITE, horizon, ground: Colour::BLACK };
+    let same = |u: EnvironmentUse| u;
+    let (level, alpha) = backdrop_value(r, Some(&sky), same, Vec3::Z, false)?;
+    ensure!(alpha == 255, "the environment backdrop is opaque, got alpha {alpha}");
+    ensure!(
+        (level - linear(horizon)).abs().max_element() <= 0.01,
+        "looking at the horizon shows the horizon colour {}, got {level}",
+        linear(horizon)
+    );
+    let (up, _) = backdrop_value(r, Some(&sky), same, Vec3::new(0.0, 1.0, 0.01), false)?;
+    expect_level(up, 1.0, 0.01, "looking straight up shows the zenith")?;
+    let (half, _) = backdrop_value(r, Some(&sky), |u| EnvironmentUse { intensity: 0.5, ..u }, Vec3::Z, false)?;
+    ensure!(
+        (half - linear(horizon) * 0.5).abs().max_element() <= 0.01,
+        "intensity 0.5 halves the backdrop, got {half}"
+    );
+    let rgb: Vec<f32> =
+        (0..2).flat_map(|_| (0..4).flat_map(|column| [if column >= 2 { 1.0_f32 } else { 0.0 }; 3])).collect();
+    let hdri = EnvironmentDesc::Hdri { size: UVec2::new(4, 2), rgb };
+    let turned = |degrees: f32| move |u: EnvironmentUse| EnvironmentUse { rotation_deg: degrees, ..u };
+    for (forward, degrees, want, what) in [
+        (Vec3::Z, 0.0, 1.0, "looking at +Z, sky unturned"),
+        (-Vec3::Z, 0.0, 0.0, "looking at -Z, sky unturned"),
+        (Vec3::X, 90.0, 1.0, "looking at +X, sky turned 90°"),
+        (Vec3::X, -90.0, 0.0, "looking at +X, sky turned -90°"),
+    ] {
+        expect_level(backdrop_value(r, Some(&hdri), turned(degrees), forward, false)?.0, want, 0.01, what)?;
+    }
+    expect_level(backdrop_value(r, Some(&sky), same, -Vec3::Z, true)?.0, 1.0, 0.01, "a white surface in front")?;
+    let (none, alpha) = backdrop_value(r, None, same, Vec3::Z, false)?;
+    ensure!(alpha == 255, "without an environment the backdrop is opaque black, got alpha {alpha}");
+    expect_level(none, 0.0, 0.002, "without an environment")?;
+    Ok(())
+}
+
+/// The gradient a picture backdrop shows at output pixel `(_, y)` of a `size` frame, as straight bytes: it changes down
+/// the frame only.
+fn gradient_pixel(top: Colour, bottom: Colour, size: UVec2, (_, y): (u32, u32)) -> Colour {
+    #[allow(clippy::cast_precision_loss)] // tiny images
+    let c = gradient_at(top, bottom, (y as f32 + 0.5) / size.y as f32);
+    let straight = if c.w > 0.0 { c.truncate() / c.w } else { Vec3::ZERO };
+    let byte = |v: f32| omuzaki_render_api::to_byte(v);
+    Colour::rgba(byte(straight.x), byte(straight.y), byte(straight.z), byte(c.w))
+}
+
+/// Gradient and texture backdrops are pictures shown as authored (scenes D2): whatever the exposure and tone curve, a
+/// gradient's pixels are its colours blended in encoded values, a texture fills the frame by `cover` or sits in it by
+/// `contain` with the gradient in the bars and through its holes, the scene lies over them as over a transparent
+/// output, and a released texture fails the render.
+fn pictures_behind_show_as_authored(r: &mut dyn Renderer) -> Outcome {
+    let (top, bottom) = (Colour::rgb(20, 40, 200), Colour::rgb(240, 200, 40));
+    let tol = tolerance(r).max(1);
+    let mut s = scene(Colour::BLACK);
+    s.post.tonemap = Tonemap::Aces;
+    s.post.exposure = 3.0;
+    s.background = Background::Gradient { top, bottom };
+    let image = draw(r, &s, &plain())?;
+    for y in [0, 13, 31, 50, 63] {
+        let want = gradient_pixel(top, bottom, SIZE, (5, y));
+        expect_pixel(&image, (5, y), want, tol, "a gradient row, exposed and tone mapped as authored")?;
+    }
+
+    // The scene over the gradient is the scene over nothing, laid over it: premultiplied, the two add.
+    let mesh = r.create_mesh(&small_quad())?;
+    let half =
+        r.create_material(&Material { alpha: AlphaMode::Blend, ..Material::unlit(Colour::rgba(255, 0, 0, 128)) })?;
+    s.instances.push(Instance::new(mesh, half, Mat4::IDENTITY));
+    let over = r.render_image(SIZE, AlphaEncoding::Premultiplied, &s, &plain())?;
+    s.background = Background::Transparent;
+    let alone = r.render_image(SIZE, AlphaEncoding::Premultiplied, &s, &plain())?;
+    for at in [CENTRE, (2, 2)] {
+        let (scene_px, got) = (pixel(&alone, at)?, pixel(&over, at)?);
+        let behind = gradient_pixel(top, bottom, SIZE, at);
+        let keep = 1.0 - f32::from(scene_px.a) / 255.0;
+        let add = |a: u8, b: u8| a.saturating_add(omuzaki_render_api::to_byte(f32::from(b) / 255.0 * keep));
+        let want = Colour::rgba(
+            add(scene_px.r, behind.r),
+            add(scene_px.g, behind.g),
+            add(scene_px.b, behind.b),
+            add(scene_px.a, behind.a),
+        );
+        ensure!(close(got, want, tol + 1), "the scene over the gradient at {at:?}: got {got}, expected {want}");
+    }
+    s.instances.clear();
+    r.release(half.into())?;
+    r.release(mesh.into())?;
+
+    // A 4 x 2 grid of colour blocks, each block 2 x 2 texels, so a block's middle reads one colour through any filter.
+    let blocks = [
+        Colour::rgb(255, 0, 0),
+        Colour::rgb(0, 255, 0),
+        Colour::rgb(0, 0, 255),
+        Colour::rgba(0, 0, 0, 0),
+        Colour::rgb(255, 255, 0),
+        Colour::rgb(0, 255, 255),
+        Colour::rgb(255, 0, 255),
+        Colour::rgb(128, 128, 128),
+    ];
+    let texels = UVec2::new(8, 4);
+    let rgba: Vec<u8> = (0..texels.y)
+        .flat_map(|y| (0..texels.x).map(move |x| (x / 2 + 4 * (y / 2)) as usize))
+        .flat_map(|block| {
+            let c = blocks[block];
+            [c.r, c.g, c.b, c.a]
+        })
+        .collect();
+    let texture = r.create_texture(&TextureDesc::colour(texels), Some(&rgba))?;
+    for (size, fit) in [
+        (UVec2::new(64, 64), BackdropFit::Cover),
+        (UVec2::new(64, 64), BackdropFit::Contain),
+        (UVec2::new(32, 64), BackdropFit::Cover),
+        (UVec2::new(64, 24), BackdropFit::Contain),
+    ] {
+        s.background = Background::Texture { texture, fit, top, bottom };
+        let image = r.render_image(size, AlphaEncoding::Straight, &s, &plain())?;
+        #[allow(clippy::cast_precision_loss)] // tiny images
+        let frame = size.x as f32 / size.y as f32;
+        let mut checked = [0u32; 2];
+        for y in 0..size.y {
+            for x in 0..size.x {
+                #[allow(clippy::cast_precision_loss)]
+                let at = Vec2::new((x as f32 + 0.5) / size.x as f32, (y as f32 + 0.5) / size.y as f32);
+                let uv = fit.uv(at, frame, 2.0);
+                let behind = gradient_pixel(top, bottom, size, (x, y));
+                let outside = uv.cmplt(Vec2::ZERO).any() || uv.cmpgt(Vec2::ONE).any();
+                // Texel coordinates with texel centres on whole numbers; a block's two texels are 2k and 2k + 1.
+                let p = uv * texels.as_vec2() - 0.5;
+                let inner = |v: f32| v.rem_euclid(2.0) <= 1.0 && v > -0.01;
+                let want = if outside {
+                    // Not next to the picture's edge, where the filter reaches across it.
+                    if (uv.x > -0.1 && uv.x < 1.1) && (uv.y > -0.1 && uv.y < 1.1) {
+                        continue;
+                    }
+                    checked[1] += 1;
+                    behind
+                } else if inner(p.x) && inner(p.y) {
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    let block = blocks[(p.x.max(0.0) as usize / 2) + 4 * (p.y.max(0.0) as usize / 2)];
+                    checked[0] += 1;
+                    if block.a == 0 { behind } else { block }
+                } else {
+                    continue;
+                };
+                expect_pixel(&image, (x, y), want, tol, &format!("{fit:?} in a {}x{} frame", size.x, size.y))?;
+            }
+        }
+        ensure!(checked[0] > 20, "{fit:?} in a {}x{} frame: few picture pixels checked ({checked:?})", size.x, size.y);
+        if fit == BackdropFit::Contain {
+            ensure!(checked[1] > 20, "{fit:?}: the bars show the gradient ({checked:?})");
+        }
+    }
+    r.release(texture.into())?;
+    expect_err(r.render_image(SIZE, AlphaEncoding::Straight, &s, &plain()), "a released backdrop texture", is_unknown)?;
     Ok(())
 }
 

@@ -1,7 +1,7 @@
 // The Shadows pass: casters drawn into the shadow map from the light, depth only. A pass's shader is `common.wgsl`
 // followed by this file.
 //
-//   group 2  b0  the light's view-projection (the first member of `struct Shadow` in toon.wgsl)
+//   group 2  b0  the view-projection of the map being drawn (picked by a dynamic offset, `shadow/map.rs`)
 //
 // Opaque casters have no fragment stage at all. Masked and blended ones (hair cards, lashes) run `fs_cutout`, which
 // drops the texels that would not be drawn: below the mask cutoff, and below one half of coverage for blended surfaces,
