@@ -213,14 +213,25 @@ pub fn assert_weights_valid(b: &BuiltCharacter, what: &str) {
 
 // ------------------------------------------------------------------------------------------------ posing
 
+/// The bones, joints and weights `mesh` is posed with. A simulated mesh (unskinned, its runtime moves it) is taken at
+/// its rest shape carried by the head, which is where its runtime holds it when nothing swings it.
+fn skin_of(mesh: &PartMesh) -> (Vec<JointRef>, Vec<[u16; 4]>, Vec<[f32; 4]>) {
+    let g = &mesh.geometry;
+    if mesh.dynamic && g.joints.is_empty() {
+        let n = g.positions.len();
+        return (vec![JointRef::HEAD], vec![[0; 4]; n], vec![[1.0, 0.0, 0.0, 0.0]; n]);
+    }
+    (mesh.joint_bones.clone(), g.joints.clone(), g.weights.clone())
+}
+
 /// The positions of `mesh` skinned with the local pose `local`.
 pub fn skinned(b: &BuiltCharacter, mesh: &PartMesh, local: &Pose) -> Vec<Vec3> {
     let skeleton = &b.rig.skeleton;
     let inverse_bind = b.rig.inverse_bind();
     let mut world = Pose::IDENTITY;
     skeleton.world_pose(local, &mut world);
-    let matrices: Vec<Mat4> = mesh
-        .joint_bones
+    let (bones, joints, weights) = skin_of(mesh);
+    let matrices: Vec<Mat4> = bones
         .iter()
         .map(|joint| {
             let id = b.rig.bone(joint).unwrap_or_else(|| panic!("{joint:?} is not in the rig")).index();
@@ -231,7 +242,7 @@ pub fn skinned(b: &BuiltCharacter, mesh: &PartMesh, local: &Pose) -> Vec<Vec3> {
     (0..g.positions.len())
         .map(|v| {
             (0..4)
-                .map(|k| matrices[usize::from(g.joints[v][k])].transform_point3(g.positions[v]) * g.weights[v][k])
+                .map(|k| matrices[usize::from(joints[v][k])].transform_point3(g.positions[v]) * weights[v][k])
                 .sum()
         })
         .collect()
@@ -243,8 +254,8 @@ pub fn skinned_geometry(b: &BuiltCharacter, mesh: &PartMesh, local: &Pose) -> om
     let inverse_bind = b.rig.inverse_bind();
     let mut world = Pose::IDENTITY;
     skeleton.world_pose(local, &mut world);
-    let matrices: Vec<Mat4> = mesh
-        .joint_bones
+    let (bones, joints, weights) = skin_of(mesh);
+    let matrices: Vec<Mat4> = bones
         .iter()
         .map(|joint| {
             let id = b.rig.bone(joint).unwrap_or_else(|| panic!("{joint:?} is not in the rig")).index();
@@ -255,7 +266,7 @@ pub fn skinned_geometry(b: &BuiltCharacter, mesh: &PartMesh, local: &Pose) -> om
     for v in 0..out.positions.len() {
         let (mut p, mut n) = (Vec3::ZERO, Vec3::ZERO);
         for k in 0..4 {
-            let (m, w) = (&matrices[usize::from(out.joints[v][k])], out.weights[v][k]);
+            let (m, w) = (&matrices[usize::from(joints[v][k])], weights[v][k]);
             p += m.transform_point3(mesh.geometry.positions[v]) * w;
             n += m.transform_vector3(mesh.geometry.normals[v]) * w;
         }
