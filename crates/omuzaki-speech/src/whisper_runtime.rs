@@ -51,6 +51,10 @@ pub struct Header {
 ///
 /// # Errors
 /// [`LoadError::Format`] for anything that isn't one.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a model file the registry fetched and checked by hash, not a file an op names; the fence is for ops"
+)]
 pub fn read_header(path: &Path) -> Result<Header, LoadError> {
     let mut bytes = [0u8; HEADER];
     std::fs::File::open(path)
@@ -273,6 +277,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::disallowed_methods, reason = "tests set up their fixtures on disk; the fence is for ops")]
     fn a_header_is_checked_without_loading_the_model() {
         let dir = std::env::temp_dir().join(format!("omuzaki-ggml-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();

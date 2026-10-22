@@ -224,6 +224,10 @@ pub fn utterances<'a>(speech: &[(f64, f64)], audio: &'a [f32], max_seconds: f64)
 ///
 /// # Errors
 /// What went wrong, in words.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the smoke tests' and evals' pinned clips, never a file an op names; the fence is for ops"
+)]
 pub fn decode_16k(path: &Path) -> Result<Vec<f32>, String> {
     let file = File::open(path).map_err(|e| e.to_string())?;
     let stream = MediaSourceStream::new(Box::new(file), MediaSourceStreamOptions::default());

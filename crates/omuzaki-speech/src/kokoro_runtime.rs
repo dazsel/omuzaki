@@ -105,6 +105,10 @@ fn onnx() -> Result<Box<dyn Runtime>, LoadError> {
     find_runtime(&id).ok_or_else(|| LoadError::Runtime("the onnx runtime isn't linked into this app".into()))
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a model file the registry fetched and checked by hash, not a file an op names; the fence is for ops"
+)]
 fn read(path: &Path) -> Result<Vec<u8>, LoadError> {
     std::fs::read(path).map_err(|e| LoadError::Format(format!("can't read {}: {e}", path.display())))
 }
