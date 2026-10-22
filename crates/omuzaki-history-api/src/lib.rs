@@ -8,7 +8,8 @@
 //! `omuzaki-history-mock` has in-memory stand-ins.
 //!
 //! Branches (VC-02, ADR 0025) are in the public modules [`branch`] (branches, points, the `Branches` lane manager) and
-//! [`state`] (state references, `BranchStore`, `HistoryView`); import them by path.
+//! [`state`] (state references, `BranchStore`, `HistoryView`), and [`merge_base`] (the base of a merge from version
+//! vectors); import them by path.
 //!
 //! Projects keep regenerable caches and renders out of snapshots by declaring them with [`register_derived_path!`]
 //! next to the code that writes them.
@@ -20,6 +21,7 @@ mod derived;
 mod entry;
 mod export;
 mod log;
+pub mod merge_base;
 mod sink;
 mod snapshot;
 pub mod state;
