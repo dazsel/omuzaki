@@ -1,6 +1,7 @@
 //! The shipped-model registry against the mock's `fake` runtime and `test_echo@1` slot: install with its smoke test,
 //! rollback, the choice chain, `min_app_version`, the state file and bad registrations. Everything is offline: the
 //! files come from an in-memory fetcher.
+#![allow(clippy::disallowed_methods, reason = "tests set up their fixtures on disk; the fence is for ops")]
 #![allow(clippy::unwrap_used)] // helpers outside `#[test]` fns: a panic is a clear test failure
 
 mod common;

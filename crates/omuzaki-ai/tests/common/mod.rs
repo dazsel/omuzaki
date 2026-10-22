@@ -3,6 +3,8 @@
 #![allow(dead_code)] // each test binary uses some of these
 #![allow(clippy::unwrap_used)] // helpers outside `#[test]` fns: a panic is a clear test failure (clippy.toml only exempts the tests)
 
+pub mod rig;
+
 use std::io::{self, Read};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
