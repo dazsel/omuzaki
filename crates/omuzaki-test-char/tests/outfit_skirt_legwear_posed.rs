@@ -26,6 +26,7 @@ use omuzaki_char_api::{
     RegistryBuilder,
 };
 use omuzaki_core::glam::{DVec3, Mat4, Quat, Vec3};
+use omuzaki_face_mock::MockRasterizer;
 use omuzaki_render_api::{Camera, Scene};
 use omuzaki_rig::pose::HumanoidRig;
 use omuzaki_rig::skeleton::RigSkeleton;
@@ -52,7 +53,13 @@ fn build(template: &str) -> BuiltCharacter {
     });
     let def = CharacterDef::from_node(&node).unwrap();
     RegistryBuilder
-        .build(&CharId::new("posed").unwrap(), &def, &BuildOptions::default(), &BuildServices::default())
+        .build(
+            &CharId::new("posed").unwrap(),
+            &def,
+            &BuildOptions::default(),
+            // The skirt's prints are painted.
+            &BuildServices::default().with_rasterizer(|| Box::new(MockRasterizer)),
+        )
         .unwrap()
 }
 
