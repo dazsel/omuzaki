@@ -8,6 +8,7 @@
 //!
 //! | Effect | What it draws |
 //! |---|---|
+//! | `heart` | a pink heart over the iris, with the iris ring's outline (and the heart catchlight, in `highlight`) |
 //! | `star` | a five-point star over the iris, lighter than it, with the iris ring's outline (and the star catchlight, in `highlight`) |
 //! | `gloom` | the iris darkened to one flat shade; the highlights lose their light (`highlight`); the hatch on the Overlay layer |
 //! | `shock` | the iris shrinks to a small disc with a white dot for a pupil, the eye white showing round it |
@@ -32,6 +33,7 @@ use omuzaki_core::glam::Vec2;
 use omuzaki_face_api::{Cap, Cmd, FaceLayerId, Join, Paint};
 
 use super::aperture::Eye;
+use super::highlight::heart;
 use super::iris::{Iris, lighten};
 use super::{FALLBACK_COLOUR, Side};
 use crate::painter::PaintCtx;
@@ -78,6 +80,19 @@ const STAR_OPACITY: f32 = 0.92;
 const STAR_OUTLINE_WIDTH: f32 = 0.0008;
 const STAR_OUTLINE_OPACITY: f32 = 0.6;
 
+// ---- heart
+
+/// The heart over the iris: its size as a share of the iris half-width (the heart path is about twice that wide), its
+/// colour, its opacity at full strength, and the outline's. The catchlight heart of the prototype alone is too small to
+/// read at stream size, so heart eyes paint the iris over, as star eyes do.
+const HEART_IRIS: f32 = 0.92;
+const HEART_COLOUR: Colour = Colour::rgb(0xff, 0x6f, 0x9a);
+const HEART_OPACITY: f32 = 0.94;
+const HEART_OUTLINE_WIDTH: f32 = 0.0008;
+const HEART_OUTLINE_OPACITY: f32 = 0.7;
+/// The heart sits this far below the iris centre, in iris half-heights, so its lobes are not cut by the upper lid.
+const HEART_DROP: f32 = 0.12;
+
 // ---- squeeze
 
 /// The chevron: its arms' ends, `(u, v)` in eye units, the vertex toward the nose, the width in metres.
@@ -95,10 +110,10 @@ const TEAR_DOWN: f32 = 0.62;
 const TEAR_CONTROL: Vec2 = Vec2::new(0.004, 0.010);
 const TEAR_HEIGHT: f32 = 0.013;
 
-/// The iris effects of one open eye, inside its aperture clip: gloom, shock, spiral and star eyes, in that order.
+/// The iris effects of one open eye, inside its aperture clip: gloom, shock, spiral, heart and star eyes, in that order.
 pub(super) fn paint_iris(ctx: &mut PaintCtx<'_>, side: Side) {
     let effects = ctx.params.effects;
-    let wanted = [effects.gloom, effects.shock, effects.spiral, effects.star].iter().any(|e| *e > OFF);
+    let wanted = [effects.gloom, effects.shock, effects.spiral, effects.heart, effects.star].iter().any(|e| *e > OFF);
     if !wanted {
         return;
     }
@@ -115,6 +130,9 @@ pub(super) fn paint_iris(ctx: &mut PaintCtx<'_>, side: Side) {
     }
     if effects.spiral > OFF {
         spiral(ctx, &iris, effects.spiral.min(1.0));
+    }
+    if effects.heart > OFF {
+        heart_iris(ctx, &iris, effects.heart.min(1.0));
     }
     if effects.star > OFF {
         star_iris(ctx, &iris, effects.star.min(1.0));
@@ -216,6 +234,23 @@ fn star_iris(ctx: &mut PaintCtx<'_>, iris: &Iris, strength: f32) {
         cap: Cap::Round,
         join: Join::Round,
         opacity: STAR_OUTLINE_OPACITY * strength,
+    });
+}
+
+/// Heart eyes: a pink heart over the iris, fading in with the effect, outlined in the ring's dark.
+fn heart_iris(ctx: &mut PaintCtx<'_>, iris: &Iris, strength: f32) {
+    let ring = fixed_colour(&ctx.profile.eyes.iris.ring, FALLBACK_COLOUR);
+    let centre = iris.at(0.0, -HEART_DROP);
+    let list = ctx.list(FaceLayerId::Base);
+    let path = heart(list, centre, iris.rx * HEART_IRIS);
+    list.push(Cmd::Fill { path, paint: Paint::Solid(HEART_COLOUR), opacity: HEART_OPACITY * strength });
+    list.push(Cmd::Stroke {
+        path,
+        paint: Paint::Solid(ring),
+        width: HEART_OUTLINE_WIDTH,
+        cap: Cap::Round,
+        join: Join::Round,
+        opacity: HEART_OUTLINE_OPACITY * strength,
     });
 }
 

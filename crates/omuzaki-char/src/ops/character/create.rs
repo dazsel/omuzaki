@@ -9,7 +9,7 @@ use omuzaki_char_api::{
 };
 use omuzaki_core::colour::Colour;
 use omuzaki_doc_api::Value;
-use omuzaki_face_api::{Palette, PaletteSlot, Validate};
+use omuzaki_face_api::{ExpressionSet, Palette, PaletteSlot, Validate};
 use omuzaki_ops_api::{Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -37,7 +37,8 @@ pub enum StartingParts {
 /// With `parts: "defaults"` (the default) the character starts with a body, a head and hair, taking the template's
 /// own proportions and head, so it builds and renders at once. With `parts: "empty"` it has no parts: add them one by
 /// one with `part.add`. Either way the palette starts with the three standard skin colours (`skin`, `skin_shade`,
-/// `skin_line`) that the head and body refer to, and the face starts as the template's.
+/// `skin_line`) that the head and body refer to, and the face starts as the template's, with the built-in expression
+/// library (moods, accents, visemes and blink) when the template brings none.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(extend(
@@ -144,7 +145,12 @@ fn find_template(id: &BodyTemplateId) -> Result<&'static dyn Template, OpError> 
 impl CharacterCreate {
     /// The character this op stores.
     fn definition(&self, template: &dyn Template) -> Result<CharacterDef, OpError> {
-        let defaults = template.defaults();
+        let mut defaults = template.defaults();
+        // A template that brings no expressions gets the built-in library, so a new face can emote and lip-sync.
+        if defaults.face.expressions.0.is_empty() {
+            defaults.face.expressions = ExpressionSet::library()
+                .map_err(|e| OpError::internal(format!("the built-in expression library doesn't read: {e}")))?;
+        }
         defaults.face.validate().map_err(|e| {
             OpError::internal(format!("the default face of template `{}` is invalid: {e}", template.id()))
         })?;

@@ -12,7 +12,9 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
 use common::{cache, fixture, local, with_source};
-use omuzaki_ai_api::{DType, Dim, Runtime as _, SessionOptions, Signature, TensorBuf, TensorRef, TensorSpec};
+use omuzaki_ai_api::{
+    DType, Dim, Runtime as _, SessionOptions, Signature, TensorBuf, TensorData, TensorRef, TensorSpec,
+};
 use omuzaki_ai_ort::OrtRuntime;
 
 thread_local! {
@@ -54,10 +56,13 @@ fn allocations_in_1000_runs(session: &mut dyn omuzaki_ai_api::Session, inputs: &
     }
     ALLOCATIONS.with(|n| n.set(0));
     WATCHING.with(|w| w.set(true));
+    let start = std::time::Instant::now();
     for _ in 0..1000 {
         session.run(inputs, &mut outputs).unwrap();
     }
+    let elapsed = start.elapsed();
     WATCHING.with(|w| w.set(false));
+    eprintln!("  {:.2} us per run (wall time; indicative only)", elapsed.as_secs_f64() * 1000.0);
     ALLOCATIONS.with(Cell::get)
 }
 
@@ -97,10 +102,8 @@ fn a_dynamic_shape_model_allocates_nothing_once_it_has_seen_the_shape() {
 }
 
 #[test]
-fn a_model_with_more_ports_than_ort_keeps_on_its_stack_still_runs_and_its_allocations_are_measured() {
-    let Some(natives) =
-        cache("a_model_with_more_ports_than_ort_keeps_on_its_stack_still_runs_and_its_allocations_are_measured")
-    else {
+fn a_model_with_more_ports_than_ort_keeps_on_its_stack_allocates_nothing_per_run() {
+    let Some(natives) = cache("a_model_with_more_ports_than_ort_keeps_on_its_stack_allocates_nothing_per_run") else {
         return;
     };
     let port = |name: String| TensorSpec::new(name, DType::F32, [Dim::Fixed(2)]);
@@ -116,18 +119,19 @@ fn a_model_with_more_ports_than_ort_keeps_on_its_stack_still_runs_and_its_alloca
     assert_eq!(outputs[3].as_f32().unwrap(), [16.0, 18.0]); // x3 + x4
     assert_eq!(outputs[4].as_f32().unwrap(), [24.0, 26.0]); // x5 + x6
 
+    // `ort`'s own run spills its lists to the heap above 6 inputs or 4 outputs (7 allocations per run here); this
+    // crate's run keeps its lists between runs.
     let total = allocations_in_1000_runs(session.as_mut(), &inputs);
-    eprintln!("1000 runs, 7 inputs and 5 outputs: {total} Rust-side allocations ({} per run)", total / 1000);
-    // Above 6 inputs or 4 outputs, `ort` spills its own lists to the heap on every run, in its code and not ours:
-    // `Session::run_with_options` (the input name and value lists), `OutputSelector::resolve_outputs` (output names and
-    // values), `Session::run_inner` (the output pointer list) and `SessionOutputs::new`. Removing them needs `unsafe`
-    // FFI or a patched `ort`. This pins the measured count (7 per run here) so any change shows.
-    assert_eq!(total, 7_000, "ort spills its lists above 6 inputs or 4 outputs; see above");
+    eprintln!("1000 runs, 7 inputs and 5 outputs: {total} Rust-side allocations");
+    assert_eq!(total, 0);
+    session.run(&inputs, &mut outputs).unwrap();
+    assert_eq!(outputs[0].as_f32().unwrap(), [1.0, 2.0]);
+    assert_eq!(outputs[4].as_f32().unwrap(), [24.0, 26.0]);
 }
 
 #[test]
-fn port_names_of_768_bytes_or_more_cost_ort_its_own_copies_every_run() {
-    let Some(natives) = cache("port_names_of_768_bytes_or_more_cost_ort_its_own_copies_every_run") else { return };
+fn port_names_of_768_bytes_or_more_allocate_nothing_per_run() {
+    let Some(natives) = cache("port_names_of_768_bytes_or_more_allocate_nothing_per_run") else { return };
     let long = "x".repeat(800);
     let slot = Signature {
         inputs: vec![TensorSpec::new(long, DType::F32, [Dim::Fixed(1), Dim::Fixed(4)])],
@@ -137,7 +141,25 @@ fn port_names_of_768_bytes_or_more_cost_ort_its_own_copies_every_run() {
     let input = [1.0f32, 2.0, 3.0, 4.0];
     let total = allocations_in_1000_runs(session.as_mut(), &[TensorRef::f32(&input, &[1, 4])]);
     eprintln!("1000 runs, one 800-byte input name: {total} Rust-side allocations");
-    // `ort`'s `with_cstr_ptr_array` (in `Session::run_inner`) copies the name list into fresh `CString`s once the
-    // names total 768 bytes or more; every real port name is far shorter. Same exception as above, and pinned.
-    assert_eq!(total, 1_000, "one copy of the name list per run");
+    // `ort`'s own run copies a name list of 768 bytes or more into fresh `CString`s every run (1 per run).
+    assert_eq!(total, 0);
+}
+
+#[test]
+fn a_float16_graph_round_trips_bit_for_bit_and_allocates_nothing_per_run() {
+    let Some(natives) = cache("a_float16_graph_round_trips_bit_for_bit_and_allocates_nothing_per_run") else { return };
+    let x = TensorSpec::new("x", DType::F16, [Dim::Fixed(1), Dim::Fixed(4)]);
+    let slot = Signature { inputs: vec![x.clone()], outputs: vec![TensorSpec { name: "y".into(), ..x }] };
+    let mut session = load("identity_f16.onnx", &slot, &natives);
+    // 1.0, negative zero, the smallest subnormal, and a NaN with a payload: bits an arithmetic round trip would change.
+    let bits = [0x3C00u16, 0x8000, 0x0001, 0x7E55];
+    let inputs = [TensorRef { data: TensorData::F16(&bits), shape: &[1, 4] }];
+    let mut outputs = TensorBuf::for_outputs(session.signature());
+    session.run(&inputs, &mut outputs).unwrap();
+    assert_eq!(outputs[0].dtype(), DType::F16);
+    assert_eq!(outputs[0].data(), TensorData::F16(&bits));
+
+    let total = allocations_in_1000_runs(session.as_mut(), &inputs);
+    eprintln!("1000 float16 identity runs: {total} Rust-side allocations");
+    assert_eq!(total, 0);
 }

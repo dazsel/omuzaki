@@ -1,0 +1,812 @@
+//! The outliner (`shell.md` section 6): the part tree read from the document, every action an op recorded by a fake
+//! runner, a keyboard-only flow, the filter, and bench S4: 10,000 rows cost what 40 do.
+//!
+//! The ops are the real `part.*` ops from `omuzaki-char`, run by `MockRunner` over an in-memory document holding the
+//! mock character; the runner is wrapped to record every request the panel makes.
+
+// A counting allocator is the only way to prove "no allocation"; the workspace denies unsafe code by default.
+#![allow(unsafe_code, clippy::cast_precision_loss)]
+
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
+use std::sync::mpsc::Receiver;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+use egui::accesskit::Role;
+use egui::{Context, Event as UiEvent, Key, Modifiers, RawInput, Rect, vec2};
+use egui_kittest::Harness;
+use egui_kittest::kittest::{NodeT as _, Queryable as _};
+use omuzaki_char_api::{CharId, PartId};
+use omuzaki_doc_api::{DocPath, Value};
+use omuzaki_doc_mock::MemDoc;
+use omuzaki_ops_api::{Actor, Event, Grants, OpError, OpInfo, OpRecord, Outcome, Request, Runner, TxId};
+use omuzaki_ops_mock::MockRunner;
+use omuzaki_ui::ds::testing::{harness_state, press};
+use omuzaki_ui::ds::{Settings, apply_settings};
+use omuzaki_ui::panels::edit::EditFocus;
+use omuzaki_ui::panels::io::Io;
+use omuzaki_ui::panels::outliner::Outliner;
+use serde_json::json;
+
+// ---- a runner that records what the panel asks for ----
+
+/// `MockRunner` with the real part ops, recording the name of every op the panel runs.
+struct Recorder {
+    inner: MockRunner<MemDoc>,
+    ops: Mutex<Vec<String>>,
+}
+
+impl Recorder {
+    fn ops(&self) -> Vec<String> {
+        self.ops.lock().map(|o| o.clone()).unwrap_or_default()
+    }
+}
+
+impl Runner for Recorder {
+    fn ops(&self) -> Vec<OpInfo> {
+        self.inner.ops()
+    }
+    fn run(&self, req: Request) -> Result<Outcome, OpError> {
+        if let Ok(mut ops) = self.ops.lock() {
+            ops.push(req.op.clone());
+        }
+        self.inner.run(req)
+    }
+    fn begin(&self, label: &str, actor: &Actor) -> TxId {
+        self.inner.begin(label, actor)
+    }
+    fn commit(&self, tx: TxId, actor: &Actor) -> Result<(), OpError> {
+        self.inner.commit(tx, actor)
+    }
+    fn rollback(&self, tx: TxId, actor: &Actor) -> Result<(), OpError> {
+        self.inner.rollback(tx, actor)
+    }
+    fn undo(&self, actor: &Actor, grants: &Grants) -> Result<Option<String>, OpError> {
+        self.inner.undo(actor, grants)
+    }
+    fn redo(&self, actor: &Actor, grants: &Grants) -> Result<Option<String>, OpError> {
+        self.inner.redo(actor, grants)
+    }
+    fn subscribe(&self, grants: &Grants) -> Result<Receiver<Event>, OpError> {
+        self.inner.subscribe(grants)
+    }
+    fn get(&self, path: &DocPath, grants: &Grants) -> Result<Option<Value>, OpError> {
+        self.inner.get(path, grants)
+    }
+    fn log(&self, after_seq: u64, limit: usize, grants: &Grants) -> Result<Vec<OpRecord>, OpError> {
+        self.inner.log(after_seq, limit, grants)
+    }
+}
+
+fn mock() -> CharId {
+    CharId::new("mock").unwrap_or_else(|_| panic!("an id"))
+}
+
+fn part(id: &str) -> PartId {
+    PartId::new(id).unwrap_or_else(|_| panic!("a part id"))
+}
+
+/// A runner over a document holding the mock character with `parts` instead of its own (or its own, for `None`).
+fn runner(parts: Option<Value>) -> Arc<Recorder> {
+    omuzaki_char::link();
+    omuzaki_char_mock::link();
+    let mut node: Value = serde_json::from_str(omuzaki_char_mock::CHARACTER_JSON).unwrap_or(Value::Null);
+    if let Some(parts) = parts {
+        node["parts"] = parts;
+    }
+    let doc = MemDoc::from_value(json!({"characters": {"mock": node}}));
+    Arc::new(Recorder { inner: MockRunner::new(doc), ops: Mutex::new(Vec::new()) })
+}
+
+struct Rig {
+    outliner: Outliner,
+    focus: EditFocus,
+    runner: Arc<Recorder>,
+    events: Receiver<Event>,
+    frame: Vec<Event>,
+    actor: Actor,
+}
+
+fn person() -> Actor {
+    Actor::Person { name: "kit".to_owned() }
+}
+
+fn rig_over(runner: Arc<Recorder>, size: egui::Vec2) -> Harness<'static, Rig> {
+    let focus = EditFocus::new(mock());
+    let events = runner.subscribe(&Grants::person()).unwrap_or_else(|e| panic!("{e}"));
+    let rig = Rig { outliner: Outliner::new(focus.clone()), focus, runner, events, frame: Vec::new(), actor: person() };
+    harness_state(Settings::default(), size, rig, |ui, r| {
+        r.frame = r.events.try_iter().collect();
+        let io = Io::new(&*r.runner, &r.actor, &r.frame);
+        r.outliner.ui(ui, io);
+    })
+}
+
+fn rig() -> Harness<'static, Rig> {
+    rig_over(runner(None), vec2(320.0, 480.0))
+}
+
+fn row_names(h: &Harness<'_, Rig>) -> Vec<String> {
+    let tree = h.state().outliner.tree();
+    let mut out = Vec::new();
+    let mut stack: Vec<usize> = tree.roots().iter().rev().copied().collect();
+    while let Some(i) = stack.pop() {
+        out.push(tree.nodes()[i].id.to_string());
+        stack.extend(tree.nodes()[i].children.iter().rev());
+    }
+    out
+}
+
+fn enabled(h: &Harness<'_, Rig>, id: &str) -> Option<bool> {
+    let tree = h.state().outliner.tree();
+    tree.find(&part(id)).map(|i| tree.nodes()[i].enabled)
+}
+
+fn settle(h: &mut Harness<'_, Rig>) {
+    h.run_steps(4);
+}
+
+/// A primary click at `pos`.
+fn click_at(h: &mut Harness<'_, Rig>, pos: egui::Pos2) {
+    h.event(UiEvent::PointerMoved(pos));
+    for pressed in [true, false] {
+        h.event(UiEvent::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+        h.step();
+    }
+    settle(h);
+}
+
+// ---- the tree ----
+
+#[test]
+fn the_tree_lists_the_characters_parts_in_build_order_and_a_click_selects() {
+    let mut h = rig();
+    assert_eq!(row_names(&h), ["body", "hair", "head", "shirt", "vest"]);
+    h.get_by_role_and_label(Role::TreeItem, "hair").click();
+    settle(&mut h);
+    assert_eq!(h.state().focus.selected(), vec![part("hair")]);
+    h.get_by_role_and_label(Role::TreeItem, "vest").click_modifiers(Modifiers::COMMAND);
+    settle(&mut h);
+    assert_eq!(h.state().focus.selected(), vec![part("hair"), part("vest")], "Ctrl extends");
+    h.get_by_role_and_label(Role::TreeItem, "body").click_modifiers(Modifiers::SHIFT);
+    settle(&mut h);
+    assert_eq!(h.state().focus.count(), 5, "Shift takes the range from the anchor (vest) to body");
+    assert!(h.state().runner.ops().is_empty(), "selecting is not a document change");
+}
+
+#[test]
+fn no_open_character_shows_why_and_the_fix() {
+    let mut h = rig();
+    h.state().focus.open(None);
+    settle(&mut h);
+    assert!(h.query_all_by_label_contains("No character is open").next().is_some());
+    assert!(!h.state().outliner.available());
+}
+
+// ---- every action is an op ----
+
+#[test]
+fn every_action_is_an_op_and_the_tree_follows_the_document() {
+    let mut h = rig();
+    // The eye: part.set_enabled.
+    h.get_by_role_and_label(Role::TreeItem, "shirt").click();
+    settle(&mut h);
+    let hair = h.get_by_role_and_label(Role::TreeItem, "hair").rect();
+    click_at(&mut h, egui::pos2(hair.right() - 14.0, hair.center().y));
+    assert_eq!(
+        enabled(&h, "hair"),
+        Some(false),
+        "the hair row's eye turned it off: {:?} {:?}",
+        h.state().runner.ops(),
+        omuzaki_ui::ds::testing::accesskit_strings(&h)
+    );
+
+    // Move down from the context menu: part.reorder.
+    h.get_by_role_and_label(Role::TreeItem, "shirt").click_secondary();
+    settle(&mut h);
+    h.get_by_label("Move down").click();
+    settle(&mut h);
+    assert_eq!(row_names(&h), ["body", "hair", "head", "vest", "shirt"], "the shirt now builds after the vest");
+
+    // Ctrl+D on the focused row: part.duplicate.
+    h.get_by_role_and_label(Role::TreeItem, "hair").click();
+    settle(&mut h);
+    press(&mut h, Modifiers::COMMAND, Key::D);
+    settle(&mut h);
+    assert!(row_names(&h).contains(&"hair-copy".to_owned()), "{:?}", row_names(&h));
+    assert_eq!(h.state().focus.selected(), vec![part("hair-copy")], "the copy is selected");
+
+    // Delete: part.remove.
+    press(&mut h, Modifiers::NONE, Key::Delete);
+    settle(&mut h);
+    assert!(!row_names(&h).contains(&"hair-copy".to_owned()));
+
+    assert_eq!(
+        h.state().runner.ops(),
+        ["part.set_enabled", "part.reorder", "part.duplicate", "part.remove"],
+        "each action is exactly one op, and nothing else wrote"
+    );
+}
+
+#[test]
+fn rename_is_listed_but_disabled_until_an_op_renames_a_part() {
+    let mut h = rig();
+    h.get_by_role_and_label(Role::TreeItem, "shirt").click_secondary();
+    settle(&mut h);
+    let rename = h.get_by_role_and_label(Role::Button, "Rename");
+    assert!(rename.accesskit_node().is_disabled(), "no part.rename op on main: never a guessed name");
+    let reason = rename.accesskit_node().description();
+    assert!(reason.as_deref().is_some_and(|r| r.contains("part.rename")), "the reason names the op: {reason:?}");
+    rename.click();
+    settle(&mut h);
+    assert!(h.state().runner.ops().is_empty(), "nothing ran: {:?}", h.state().runner.ops());
+}
+
+#[test]
+fn deleting_several_parts_is_one_undo_step() {
+    let mut h = rig();
+    h.get_by_role_and_label(Role::TreeItem, "shirt").click();
+    h.get_by_role_and_label(Role::TreeItem, "vest").click_modifiers(Modifiers::COMMAND);
+    settle(&mut h);
+    press(&mut h, Modifiers::NONE, Key::Delete);
+    settle(&mut h);
+    assert_eq!(row_names(&h), ["body", "hair", "head"]);
+    let state = h.state();
+    let undone = state.runner.undo(&state.actor, &Grants::person()).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(undone.as_deref(), Some("Delete parts"));
+    settle(&mut h);
+    assert_eq!(row_names(&h), ["body", "hair", "head", "shirt", "vest"], "one undo brings both back");
+}
+
+#[test]
+fn a_refused_op_says_why_and_changes_nothing() {
+    let mut h = rig_over(
+        runner(Some(json!({
+            "body": {"kind": "mock-body"},
+            "robe": {"kind": "mock-garment", "layer": 20},
+            "hood": {"kind": "mock-garment", "parent": "robe", "layer": 20}
+        }))),
+        vec2(320.0, 480.0),
+    );
+    h.get_by_role_and_label(Role::TreeItem, "robe").click();
+    settle(&mut h);
+    press(&mut h, Modifiers::NONE, Key::Delete);
+    settle(&mut h);
+    assert!(h.query_by_label_contains("That didn't work").is_some(), "a part with children can't be removed");
+    assert_eq!(row_names(&h), ["body", "robe", "hood"]);
+}
+
+#[test]
+fn a_drag_onto_a_sibling_reorders_and_esc_cancels() {
+    let mut h = rig();
+    let vest = h.get_by_role_and_label(Role::TreeItem, "vest").rect().center();
+    let shirt = h.get_by_role_and_label(Role::TreeItem, "shirt").rect();
+    let above_shirt = egui::pos2(shirt.center().x, shirt.top() + 3.0);
+
+    // Esc during the drag cancels it.
+    h.hover_at(vest);
+    h.event(UiEvent::PointerButton {
+        pos: vest,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    for p in [vest + vec2(0.0, -10.0), above_shirt] {
+        h.event(UiEvent::PointerMoved(p));
+        h.run();
+    }
+    press(&mut h, Modifiers::NONE, Key::Escape);
+    h.event(UiEvent::PointerButton {
+        pos: above_shirt,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    settle(&mut h);
+    assert!(h.state().runner.ops().is_empty(), "{:?}", h.state().runner.ops());
+
+    omuzaki_ui::ds::testing::drag(&mut h, &[vest, vest + vec2(0.0, -10.0), above_shirt, above_shirt]);
+    settle(&mut h);
+    assert_eq!(
+        row_names(&h),
+        ["body", "hair", "head", "vest", "shirt"],
+        "{:?} {:?}",
+        h.state().runner.ops(),
+        omuzaki_ui::ds::testing::accesskit_strings(&h)
+    );
+    assert_eq!(h.state().runner.ops(), ["part.reorder"]);
+}
+
+#[test]
+fn a_release_outside_every_row_cancels_the_drag() {
+    let mut h = rig();
+    let vest = h.get_by_role_and_label(Role::TreeItem, "vest").rect().center();
+    let shirt = h.get_by_role_and_label(Role::TreeItem, "shirt").rect();
+    let above_shirt = egui::pos2(shirt.center().x, shirt.top() + 3.0);
+    // Over a sibling (a target is set), then out into the empty space under the rows, and let go there.
+    let empty = egui::pos2(160.0, 440.0);
+    omuzaki_ui::ds::testing::drag(&mut h, &[vest, vest + vec2(0.0, -10.0), above_shirt, empty, empty]);
+    settle(&mut h);
+    assert!(h.state().runner.ops().is_empty(), "a release outside the rows reordered: {:?}", h.state().runner.ops());
+    assert_eq!(row_names(&h), ["body", "hair", "head", "shirt", "vest"]);
+}
+
+/// Three garments on one layer, in id order.
+fn three_on_one_layer() -> Harness<'static, Rig> {
+    rig_over(
+        runner(Some(json!({
+            "a": {"kind": "mock-garment", "layer": 20},
+            "b": {"kind": "mock-garment", "layer": 20},
+            "c": {"kind": "mock-garment", "layer": 20}
+        }))),
+        vec2(320.0, 480.0),
+    )
+}
+
+#[test]
+fn moving_one_of_three_equal_layer_siblings_moves_it_exactly_one_place_in_one_undo_step() {
+    let mut h = three_on_one_layer();
+    assert_eq!(row_names(&h), ["a", "b", "c"]);
+    h.get_by_role_and_label(Role::TreeItem, "a").click_secondary();
+    settle(&mut h);
+    h.get_by_label("Move down").click();
+    settle(&mut h);
+    assert_eq!(row_names(&h), ["b", "a", "c"], "down one place, not past c");
+    h.get_by_role_and_label(Role::TreeItem, "c").click_secondary();
+    settle(&mut h);
+    h.get_by_label("Move up").click();
+    settle(&mut h);
+    assert_eq!(row_names(&h), ["b", "c", "a"], "up one place");
+    // Each move is one undo step, however many layers it had to change.
+    let (runner, actor) = (Arc::clone(&h.state().runner), person());
+    runner.undo(&actor, &Grants::person()).unwrap_or_else(|e| panic!("{e}"));
+    settle(&mut h);
+    assert_eq!(row_names(&h), ["b", "a", "c"], "one undo undoes the whole second move");
+    runner.undo(&actor, &Grants::person()).unwrap_or_else(|e| panic!("{e}"));
+    settle(&mut h);
+    assert_eq!(row_names(&h), ["a", "b", "c"], "and one more undoes the first");
+}
+
+#[test]
+fn a_drag_among_equal_layer_siblings_lands_where_it_is_dropped() {
+    let mut h = three_on_one_layer();
+    let a = h.get_by_role_and_label(Role::TreeItem, "a").rect().center();
+    let c = h.get_by_role_and_label(Role::TreeItem, "c").rect();
+    let below_c = egui::pos2(c.center().x, c.bottom() - 3.0);
+    omuzaki_ui::ds::testing::drag(&mut h, &[a, a + vec2(0.0, 10.0), below_c, below_c]);
+    settle(&mut h);
+    assert_eq!(row_names(&h), ["b", "c", "a"]);
+}
+
+/// A request from an agent, run straight on the document (not through the panel).
+fn agent_runs(h: &Harness<'_, Rig>, op: &str, args: Value) {
+    let request = Request {
+        op: op.to_owned(),
+        args,
+        mode: omuzaki_ops_api::Mode::Apply,
+        actor: Actor::Agent { id: "designer".to_owned(), model: None },
+        grants: Grants::agent_default(),
+        cause: None,
+        tx: None,
+        base: None,
+    };
+    h.state().runner.inner.run(request).unwrap_or_else(|e| panic!("{e}"));
+}
+
+/// The drop lines on screen: the 2 pt accent bars a row paints when a drag would land on it.
+fn drop_lines(h: &Harness<'_, Rig>) -> Vec<Rect> {
+    let accent = omuzaki_ui::ds::theme::ds(&h.ctx).theme.accent;
+    let mut found = Vec::new();
+    for clipped in &h.output().shapes {
+        collect_bars(&clipped.shape, accent, &mut found);
+    }
+    found
+}
+
+fn collect_bars(shape: &egui::Shape, accent: egui::Color32, found: &mut Vec<Rect>) {
+    match shape {
+        egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| collect_bars(s, accent, found)),
+        egui::Shape::Rect(r) if r.fill == accent && (r.rect.height() - 2.0).abs() < 0.01 => found.push(r.rect),
+        _ => {}
+    }
+}
+
+#[test]
+fn the_row_under_the_pointer_shows_where_the_drag_would_land() {
+    let mut h = rig();
+    let vest = h.get_by_role_and_label(Role::TreeItem, "vest").rect().center();
+    let shirt = h.get_by_role_and_label(Role::TreeItem, "shirt").rect();
+    let above_shirt = egui::pos2(shirt.center().x, shirt.top() + 3.0);
+    let below_shirt = egui::pos2(shirt.center().x, shirt.bottom() - 3.0);
+    assert!(drop_lines(&h).is_empty(), "no line before a drag");
+    h.hover_at(vest);
+    h.run();
+    h.event(UiEvent::PointerButton {
+        pos: vest,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    for p in [vest + vec2(0.0, -4.0), vest + vec2(0.0, -10.0)] {
+        h.event(UiEvent::PointerMoved(p));
+        h.run();
+    }
+    h.event(UiEvent::PointerMoved(above_shirt));
+    h.run();
+    let lines = drop_lines(&h);
+    assert_eq!(lines.len(), 1, "one line while the drag is over the shirt: {lines:?}");
+    assert!((lines[0].center().y - (shirt.top() + 1.0)).abs() < 1.0, "on the shirt's top edge: {lines:?} {shirt:?}");
+    h.event(UiEvent::PointerMoved(below_shirt));
+    h.run();
+    let lines = drop_lines(&h);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!((lines[0].center().y - (shirt.bottom() - 1.0)).abs() < 1.0, "the shirt's bottom edge: {lines:?}");
+    // Out over the empty space under the rows: no target, so no line.
+    h.event(UiEvent::PointerMoved(egui::pos2(160.0, 440.0)));
+    h.run();
+    assert!(drop_lines(&h).is_empty(), "{:?}", drop_lines(&h));
+}
+
+#[test]
+fn a_drag_drops_the_part_it_began_on_even_if_the_tree_was_read_again_meanwhile() {
+    let mut h = rig();
+    let vest = h.get_by_role_and_label(Role::TreeItem, "vest").rect().center();
+    let shirt = h.get_by_role_and_label(Role::TreeItem, "shirt").rect();
+    let above_shirt = egui::pos2(shirt.center().x, shirt.top() + 3.0);
+    h.hover_at(vest);
+    h.run();
+    h.event(UiEvent::PointerButton {
+        pos: vest,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    for p in [vest + vec2(0.0, -4.0), vest + vec2(0.0, -10.0), above_shirt] {
+        h.event(UiEvent::PointerMoved(p));
+        h.run();
+    }
+    // An agent adds a part that sorts first by id and builds last, so every part's index in the tree moves by one
+    // while the rows the pointer is over stay where they are.
+    agent_runs(&h, "part.duplicate", json!({"character": "mock", "part": "vest", "new_id": "aaa"}));
+    agent_runs(&h, "part.reorder", json!({"character": "mock", "part": "aaa", "layer": 99}));
+    h.run_steps(3);
+    assert_eq!(row_names(&h).last().map(String::as_str), Some("aaa"), "the tree was read again");
+    h.event(UiEvent::PointerButton {
+        pos: above_shirt,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    settle(&mut h);
+    assert_eq!(row_names(&h), ["body", "hair", "head", "vest", "shirt", "aaa"], "the vest moved, nothing else");
+}
+
+/// Reorders `part` one place down (`Move down`) or up from its context menu.
+fn move_from_menu(h: &mut Harness<'_, Rig>, part: &str, item: &str) {
+    h.get_by_role_and_label(Role::TreeItem, part).click_secondary();
+    settle(h);
+    h.get_by_label(item).click();
+    settle(h);
+}
+
+#[test]
+fn moving_a_part_above_one_that_has_a_child_takes_a_free_layer_instead_of_raising_the_parent() {
+    // The vest (30) goes above the shirt (20). Raising the shirt to 31 would put it above its own hood (20).
+    let mut h = rig_over(
+        runner(Some(json!({
+            "body": {"kind": "mock-body"},
+            "shirt": {"kind": "mock-garment", "layer": 20},
+            "hood": {"kind": "mock-garment", "parent": "shirt", "layer": 20},
+            "vest": {"kind": "mock-garment", "layer": 30}
+        }))),
+        vec2(320.0, 480.0),
+    );
+    assert_eq!(row_names(&h), ["body", "shirt", "hood", "vest"]);
+    move_from_menu(&mut h, "vest", "Move up");
+    assert!(h.query_by_label_contains("didn't work").is_none(), "the op was refused");
+    assert_eq!(row_names(&h), ["body", "vest", "shirt", "hood"]);
+    assert_eq!(h.state().runner.ops(), ["part.reorder"], "one op, on the vest alone");
+}
+
+#[test]
+fn layer_changes_that_would_fail_midway_are_applied_in_an_order_every_step_accepts() {
+    // a and b are heads and c is hair, which needs a head built first; all on layer 0. Moving a below b gives a layer 1
+    // while c stays at 0, and then c would have to build before the head it reads: the op refuses that step.
+    let mut h = rig_over(
+        runner(Some(json!({
+            "a": {"kind": "mock-head"},
+            "b": {"kind": "mock-head"},
+            "c": {"kind": "mock-hair"}
+        }))),
+        vec2(320.0, 480.0),
+    );
+    assert_eq!(row_names(&h), ["a", "b", "c"]);
+    move_from_menu(&mut h, "a", "Move down");
+    assert!(h.query_by_label_contains("didn't work").is_none(), "an op was refused");
+    assert_eq!(row_names(&h), ["b", "a", "c"], "a moved one place");
+    // And one undo undoes the whole move.
+    let (runner, actor) = (Arc::clone(&h.state().runner), person());
+    runner.undo(&actor, &Grants::person()).unwrap_or_else(|e| panic!("{e}"));
+    settle(&mut h);
+    assert_eq!(row_names(&h), ["a", "b", "c"]);
+}
+
+// ---- the keyboard ----
+
+#[test]
+fn moving_above_a_part_on_the_last_layer_is_one_op_that_lowers_the_moved_part() {
+    // A body on layer 0 and two garments on i32::MAX. Moving b above a cannot raise a (there is no layer after the
+    // last), but b can take the layer below it.
+    let mut h = rig_over(
+        runner(Some(json!({
+            "body": {"kind": "mock-body"},
+            "a": {"kind": "mock-garment", "layer": i32::MAX},
+            "b": {"kind": "mock-garment", "layer": i32::MAX}
+        }))),
+        vec2(320.0, 480.0),
+    );
+    assert_eq!(row_names(&h), ["body", "a", "b"]);
+    move_from_menu(&mut h, "b", "Move up");
+    assert!(h.query_by_label_contains("didn't work").is_none(), "the move was refused");
+    assert_eq!(row_names(&h), ["body", "b", "a"]);
+    assert_eq!(h.state().runner.ops(), ["part.reorder"], "one op, on b alone");
+}
+
+#[test]
+fn a_keyboard_only_flow_selects_expands_filters_and_edits() {
+    let mut h = rig_over(
+        runner(Some(json!({
+            "body": {"kind": "mock-body"},
+            "robe": {"kind": "mock-garment", "layer": 20},
+            "hood": {"kind": "mock-garment", "parent": "robe", "layer": 20},
+            "clasp": {"kind": "mock-garment", "parent": "robe", "layer": 20}
+        }))),
+        vec2(320.0, 480.0),
+    );
+    // Tab from the filter field reaches the tree's one tab stop.
+    press(&mut h, Modifiers::NONE, Key::Tab);
+    press(&mut h, Modifiers::NONE, Key::Tab);
+    press(&mut h, Modifiers::NONE, Key::ArrowDown);
+    assert_eq!(h.state().focus.primary(), Some(part("robe")));
+    press(&mut h, Modifiers::NONE, Key::ArrowLeft);
+    settle(&mut h);
+    assert!(h.query_by_label("hood").is_none(), "Left collapses");
+    press(&mut h, Modifiers::NONE, Key::ArrowRight);
+    press(&mut h, Modifiers::NONE, Key::ArrowRight);
+    assert_eq!(h.state().focus.primary(), Some(part("clasp")), "Right expands, then goes to the first child");
+    press(&mut h, Modifiers::NONE, Key::ArrowLeft);
+    assert_eq!(h.state().focus.primary(), Some(part("robe")), "Left on a child goes to its parent");
+    press(&mut h, Modifiers::SHIFT, Key::ArrowDown);
+    assert_eq!(h.state().focus.count(), 2, "Shift+Down extends");
+    press(&mut h, Modifiers::NONE, Key::End);
+    assert_eq!(h.state().focus.selected(), vec![part("hood")]);
+    press(&mut h, Modifiers::NONE, Key::Home);
+    assert_eq!(h.state().focus.selected(), vec![part("body")]);
+    press(&mut h, Modifiers::NONE, Key::Enter);
+    assert!(h.state().focus.take_inspector_request(), "Enter sends the keyboard to the inspector");
+
+    // Typing starts the filter, which keeps a match's ancestors.
+    h.event(UiEvent::Text("hoo".to_owned()));
+    settle(&mut h);
+    assert!(h.query_by_label("hood").is_some() && h.query_by_label("robe").is_some());
+    assert!(h.query_by_label("body").is_none() && h.query_by_label("clasp").is_none());
+    // Down from the filter goes back to the rows.
+    press(&mut h, Modifiers::NONE, Key::ArrowDown);
+    press(&mut h, Modifiers::NONE, Key::ArrowDown);
+    assert_eq!(h.state().focus.primary(), Some(part("hood")));
+    press(&mut h, Modifiers::COMMAND, Key::D);
+    settle(&mut h);
+    assert_eq!(h.state().runner.ops(), ["part.duplicate"]);
+}
+
+// ---- agents ----
+
+#[test]
+fn a_part_an_agent_changed_gets_the_violet_dot_until_it_is_selected() {
+    let mut h = rig();
+    let agent = Actor::Agent { id: "designer".to_owned(), model: None };
+    let request = Request {
+        op: "part.set_enabled".to_owned(),
+        args: json!({"character": "mock", "part": "vest", "enabled": false}),
+        mode: omuzaki_ops_api::Mode::Apply,
+        actor: agent,
+        grants: Grants::agent_default(),
+        cause: None,
+        tx: None,
+        base: None,
+    };
+    h.state().runner.inner.run(request).unwrap_or_else(|e| panic!("{e}"));
+    settle(&mut h);
+    let described = |h: &Harness<'_, Rig>| {
+        h.get_by_role_and_label(Role::TreeItem, "vest").accesskit_node().description().unwrap_or_default()
+    };
+    assert!(described(&h).contains("Touched by an agent (designer)"), "{}", described(&h));
+    assert!(described(&h).contains("Hidden"), "the eye says the vest is off: {}", described(&h));
+    h.get_by_role_and_label(Role::TreeItem, "vest").click();
+    settle(&mut h);
+    assert!(!described(&h).contains("agent"), "seen once selected: {}", described(&h));
+}
+
+// ---- bench S4: 10,000 rows cost what 40 do ----
+
+struct Counting;
+
+thread_local! {
+    static MEASURING: Cell<bool> = const { Cell::new(false) };
+    static COUNT: Cell<usize> = const { Cell::new(0) };
+}
+
+// SAFETY: every method forwards to `System` unchanged; the counter is the only addition.
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        if MEASURING.try_with(Cell::get).unwrap_or(false) {
+            let _ = COUNT.try_with(|c| c.set(c.get() + 1));
+        }
+        unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(ptr, layout) }
+    }
+}
+
+#[global_allocator]
+static GLOBAL: Counting = Counting;
+
+/// A character with `count` garments in a flat list.
+fn flat(count: usize) -> Value {
+    let parts: serde_json::Map<String, Value> =
+        (0..count).map(|i| (format!("part-{i:05}"), json!({"kind": "mock-garment", "layer": 20}))).collect();
+    Value::Object(parts)
+}
+
+/// Median frame time and allocations per frame of an outliner over `count` parts, scrolled half way, at 1920×1080's
+/// left dock (320 × 1000 points).
+fn s4(count: usize) -> (f64, f64) {
+    s4_at(count, false)
+}
+
+/// As [`s4`]; with `cursor_at_end` the person has also tabbed into the rows and pressed End, so the keyboard cursor is
+/// the last row and the view is scrolled to it (the cursor searches of every frame start from the top).
+fn s4_at(count: usize, cursor_at_end: bool) -> (f64, f64) {
+    let runner = runner(Some(flat(count)));
+    let focus = EditFocus::new(mock());
+    let mut outliner = Outliner::new(focus.clone());
+    focus.select(part(&format!("part-{:05}", count / 2)));
+    let actor = person();
+    let ctx = Context::default();
+    apply_settings(&ctx, Settings::default());
+    let mut frame_with = |time: f64, measure: bool, events: Vec<UiEvent>| {
+        let input = RawInput {
+            screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(320.0, 1000.0))),
+            time: Some(time),
+            predicted_dt: 1.0 / 60.0,
+            events,
+            ..RawInput::default()
+        };
+        MEASURING.with(|m| m.set(measure));
+        let start = Instant::now();
+        let output = ctx.run_ui(input, |ui| outliner.ui(ui, Io::new(&*runner, &actor, &[])));
+        let took = start.elapsed().as_secs_f64();
+        MEASURING.with(|m| m.set(false));
+        output.drop_without_applying_deltas();
+        took
+    };
+    for i in 0..40 {
+        frame_with(f64::from(i) / 60.0, false, Vec::new());
+    }
+    if cursor_at_end {
+        let key = |key: Key| UiEvent::Key {
+            key,
+            physical_key: Some(key),
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        // Tab goes to the filter, then to the rows' one tab stop; End moves the cursor to the last row.
+        for (i, k) in [Key::Tab, Key::Tab, Key::End].into_iter().enumerate() {
+            frame_with(0.7 + i as f64 / 60.0, false, vec![key(k)]);
+            frame_with(0.7 + (i as f64 + 0.5) / 60.0, false, Vec::new());
+        }
+        for i in 0..10 {
+            frame_with(0.8 + f64::from(i) / 60.0, false, Vec::new());
+        }
+    }
+    COUNT.with(|c| c.set(0));
+    let mut times: Vec<f64> = (0..120).map(|i| frame_with(1.0 + f64::from(i) / 60.0, true, Vec::new())).collect();
+    let allocations = COUNT.with(Cell::get) as f64 / 120.0;
+    times.sort_by(f64::total_cmp);
+    (times[times.len() / 2], allocations)
+}
+
+#[test]
+fn bench_s4_ten_thousand_rows_cost_what_forty_do() {
+    // Best of three medians per size: a loaded machine slows whole runs, and the fastest one shows the cost of the work.
+    let best = |rows: usize| {
+        let runs: Vec<(f64, f64)> = (0..3).map(|_| s4(rows)).collect();
+        let fastest = runs.iter().map(|r| r.0).fold(f64::INFINITY, f64::min);
+        (fastest, runs[0].1)
+    };
+    let (small_ms, small_alloc) = best(40);
+    let (big_ms, big_alloc) = best(10_000);
+    eprintln!(
+        "S4: 40 rows {:.3} ms/frame, {small_alloc:.1} allocations; 10,000 rows {:.3} ms/frame, {big_alloc:.1} allocations",
+        small_ms * 1000.0,
+        big_ms * 1000.0
+    );
+    assert!(
+        big_alloc <= small_alloc + 1.0,
+        "allocations grow with the tree: {small_alloc} at 40, {big_alloc} at 10,000"
+    );
+    // The spec's bar is ±10%; a shared test machine's timer noise is larger, so the gate here catches a cost that grows
+    // with the tree (10,000 rows walked per frame is 250 times the work), and the PR quotes the release numbers.
+    assert!(big_ms <= small_ms * 1.5 + 0.000_2, "a frame costs more with 10,000 rows: {small_ms} s vs {big_ms} s");
+}
+
+#[test]
+fn bench_s4_a_scrolled_tree_with_the_cursor_on_its_last_row_costs_what_a_small_one_does() {
+    let best = |rows: usize| {
+        let runs: Vec<(f64, f64)> = (0..3).map(|_| s4_at(rows, true)).collect();
+        (runs.iter().map(|r| r.0).fold(f64::INFINITY, f64::min), runs[0].1)
+    };
+    let (small_ms, small_alloc) = best(40);
+    let (big_ms, big_alloc) = best(10_000);
+    eprintln!(
+        "S4 cursor on the last row: 40 rows {:.3} ms/frame, {small_alloc:.1} allocations; 10,000 rows {:.3} ms/frame, \
+         {big_alloc:.1} allocations",
+        small_ms * 1000.0,
+        big_ms * 1000.0
+    );
+    assert!(
+        big_alloc <= small_alloc + 1.0,
+        "allocations grow with the tree: {small_alloc} at 40, {big_alloc} at 10,000"
+    );
+    // The slack is 20 us, not the 200 us above: the cursor's two searches cost 0.2 ms at 10,000 rows, and that must show.
+    assert!(big_ms <= small_ms * 1.5 + 0.000_02, "a frame costs more with 10,000 rows: {small_ms} s vs {big_ms} s");
+}
+
+#[test]
+fn the_outliner_is_registered_and_passes_the_shells_conformance_check() {
+    omuzaki_ui::link();
+    let runner = MockRunner::new(MemDoc::new());
+    let actor = omuzaki_ops_api::Actor::System;
+    let ctx = omuzaki_ui_api::panel::PanelCtx::new(&runner, &actor);
+    let host = omuzaki_ui_mock::MockHost::new();
+    let problems = host.check("outliner", &ctx);
+    assert!(problems.is_empty(), "{problems:#?}");
+}
+
+// ---- task flows (the cloud half of the usability evidence; timing against other apps needs the local lane) ----
+
+#[test]
+fn task_flow_reorder_takes_two_inputs_from_the_menu_or_one_drag() {
+    let mut h = rig();
+    let start = std::time::Instant::now();
+    h.get_by_role_and_label(Role::TreeItem, "shirt").click_secondary();
+    settle(&mut h);
+    h.get_by_label("Move down").click();
+    settle(&mut h);
+    let menu = start.elapsed();
+    assert_eq!(h.state().runner.ops(), ["part.reorder"], "two inputs, one op");
+    assert_eq!(row_names(&h), ["body", "hair", "head", "vest", "shirt"]);
+
+    let vest = h.get_by_role_and_label(Role::TreeItem, "vest").rect().center();
+    let head = h.get_by_role_and_label(Role::TreeItem, "head").rect();
+    let above_head = egui::pos2(head.center().x, head.top() + 3.0);
+    let start = std::time::Instant::now();
+    omuzaki_ui::ds::testing::drag(&mut h, &[vest, vest + vec2(0.0, -10.0), above_head, above_head]);
+    settle(&mut h);
+    let dragged = start.elapsed();
+    assert_eq!(h.state().runner.ops(), ["part.reorder", "part.reorder"], "one drag, one op");
+    println!(
+        "FLOW reorder: menu 2 inputs {:.1} ms; drag 1 gesture {:.1} ms (headless, harness included)",
+        menu.as_secs_f64() * 1e3,
+        dragged.as_secs_f64() * 1e3
+    );
+}

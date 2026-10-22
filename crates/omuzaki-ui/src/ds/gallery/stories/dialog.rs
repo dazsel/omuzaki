@@ -7,7 +7,7 @@ use crate::ds::gallery::layout::{caption, specimen};
 use crate::ds::gallery::text::{tr, translate};
 use crate::ds::theme::ds;
 use crate::ds::widgets::{Button, Dialog, DialogAction, FirstFocus, TextField};
-use crate::register_story;
+use omuzaki_ui_api::register_story;
 
 #[derive(Default)]
 struct State {
