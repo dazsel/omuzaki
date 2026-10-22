@@ -17,8 +17,9 @@
 //! Printed per character, as mean, p50, p95, p99 and maximum:
 //! - `gpu.frame`: the GPU time of every pass but face paint, from timestamp queries, against `budget::LIVE_GPU`;
 //! - `gpu.face_paint`: the `paint_textures` pass on the frames that ran it (the painter's own commands and the
-//!   renderer's mip rebuild of what it painted), against `budget::FACE_PAINT_GPU`, and `gpu.frame_with_face`, the two
-//!   added on the frames that repainted;
+//!   renderer's mip rebuild of what it painted), against `budget::FACE_PAINT_GPU`, split into the painters' share (the
+//!   face rasteriser's raster and resolve, which is what the `gpu_face_timing` probe times) and the renderer's own, and
+//!   `gpu.frame_with_face`, the two added on the frames that repainted;
 //! - the frame thread: the wall time of `LiveStage::frame` (performer, stage, face and the renderer's recording), split
 //!   into the renderer's recording (with a CPU face raster, when the GPU one can't run) and the rest (the performer,
 //!   the stage and any wait for the GPU), against the frame period;
@@ -183,6 +184,8 @@ fn project(clock: &FakeClock) -> Result<(MemDoc, MemStore), Box<dyn Error>> {
 struct Samples {
     gpu_frame: Vec<f64>,
     gpu_paint: Vec<f64>,
+    gpu_painters: Vec<f64>,
+    gpu_paint_own: Vec<f64>,
     gpu_with_face: Vec<f64>,
     gpu_passes: Vec<(Pass, f64)>,
     frame: Vec<f64>,
@@ -327,6 +330,9 @@ fn measure(
             samples.gpu_frame.push(ms(gpu.passes.total()) - paint.map_or(0.0, ms));
             if let Some(paint) = paint {
                 samples.gpu_paint.push(ms(paint));
+                let painters = gpu.painters.map_or(0.0, ms);
+                samples.gpu_painters.push(painters);
+                samples.gpu_paint_own.push(ms(paint) - painters);
                 samples.gpu_with_face.push(ms(gpu.passes.total()));
             }
             for (pass, time) in gpu.passes.iter() {
@@ -387,6 +393,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("\n{name} ({id}): {} draw calls, {} triangles a frame", samples.draw_calls, samples.triangles);
         summary("gpu.frame", samples.gpu_frame, Some(ms(budget::LIVE_GPU)));
         summary("gpu.face_paint", samples.gpu_paint, Some(ms(budget::FACE_PAINT_GPU)));
+        summary("  the painters", samples.gpu_painters, None);
+        summary("  premultiply, mips", samples.gpu_paint_own, None);
         summary("gpu.frame_with_face", samples.gpu_with_face, None);
         let rest: Vec<f64> = samples.frame.iter().zip(&samples.recording).map(|(f, r)| f - r).collect();
         let deadline = 1000.0 / args.fps;

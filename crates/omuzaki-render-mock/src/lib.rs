@@ -162,7 +162,7 @@ impl MockRenderer {
             frame,
             render_size: drawn.render_size,
             cpu,
-            gpu: Some(GpuTimings { frame, passes: gpu }),
+            gpu: Some(GpuTimings { frame, passes: gpu, painters: None }),
             draw_calls: drawn.draw_calls,
             triangles: drawn.triangles,
         }
