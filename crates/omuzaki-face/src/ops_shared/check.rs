@@ -244,7 +244,8 @@ mod tests {
     #[test]
     fn a_default_face_has_no_problems() {
         let defaults = template().expect("the default face serialises");
-        assert!(diagnose(&defaults.profile, &defaults).is_empty());
+        let problems = diagnose(&defaults.profile, &defaults);
+        assert_eq!(problems.len(), 0, "{problems:?}");
     }
 
     #[test]
