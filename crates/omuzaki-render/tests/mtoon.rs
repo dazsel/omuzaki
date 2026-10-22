@@ -615,7 +615,7 @@ fn mtoon_spheres_evidence() {
     let mesh = r.create_mesh(&sphere(0.6)).unwrap();
     let quality = Quality { samples: 1, render_scale: 1.0, post_effects: false, ..Quality::offline() };
     // As the spec says (GI equalisation 0.9 by default), and with it off, as three-vrm draws it.
-    let mut image = None;
+    let mut images = Vec::new();
     for (gi, name) in [(None, "mtoon-omuzaki.png"), (Some(0.0), "mtoon-omuzaki-gi0.png")] {
         let mut scene = s.clone();
         let mut materials = Vec::new();
@@ -635,12 +635,41 @@ fn mtoon_spheres_evidence() {
         for id in materials {
             r.release(id.into()).unwrap();
         }
-        image.get_or_insert(drawn);
+        images.push(drawn);
     }
-    let image = image.unwrap();
-    // Every sphere is drawn: its centre isn't the background.
-    for i in 0..5 {
-        let x = 384.0 + (-2.8 + 1.4 * i as f32) * 256.0 / 2.4;
-        assert_ne!(rgb_at(&image, (x as u32, 128)), [0, 0, 0], "sphere {i}");
+    for resource in [mesh.into(), stripes.into(), matcap.into(), bumps.into(), base.into(), glow.into()] {
+        r.release(resource).unwrap();
+    }
+    compare_with_three_vrm(&images[1]);
+}
+
+/// Checks the spheres drawn with GI equalisation off against three-vrm's render of the same scene
+/// (`tests/golden/mtoon-three-vrm.png`, drawn by the page `mtoon_spheres_evidence` names). Inside each
+/// sphere, away from its silhouette (where the two rasterisers cover pixels differently), the mean difference stays
+/// under 1 level of 255 and the 99th percentile within 3.
+fn compare_with_three_vrm(image: &Image) {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/mtoon-three-vrm.png");
+    let golden = image::open(&path).expect("the three-vrm reference").to_rgb8();
+    assert_eq!(golden.dimensions(), (image.size.x, image.size.y));
+    let ours = |x: u32, y: u32| rgb_at(image, (x, y));
+    let theirs = |x: u32, y: u32| golden.get_pixel(x, y).0;
+    let covered = |x: u32, y: u32| ours(x, y) != [0, 0, 0] && theirs(x, y) != [0, 0, 0];
+    for sphere in 0..5u32 {
+        let centre = (384.0 + (-2.8 + 1.4 * sphere as f32) * 256.0 / 2.4) as u32;
+        let mut differences = Vec::new();
+        for y in 1..image.size.y - 1 {
+            for x in centre.saturating_sub(70).max(1)..(centre + 70).min(image.size.x - 1) {
+                let inside = (y - 1..=y + 1).all(|v| (x - 1..=x + 1).all(|u| covered(u, v)));
+                if inside {
+                    let (a, b) = (ours(x, y), theirs(x, y));
+                    differences.push((0..3).map(|c| a[c].abs_diff(b[c])).max().unwrap_or(0));
+                }
+            }
+        }
+        assert!(differences.len() > 10_000, "sphere {sphere} covers {} pixels", differences.len());
+        differences.sort_unstable();
+        let mean = differences.iter().map(|&d| f64::from(d)).sum::<f64>() / differences.len() as f64;
+        let p99 = differences[differences.len() * 99 / 100];
+        assert!(mean < 1.0 && p99 <= 3, "sphere {sphere}: mean difference {mean:.2}, 99th percentile {p99}");
     }
 }
