@@ -35,6 +35,7 @@ use crate::frame::face::SETTLE_DT;
 use crate::frame::rig::RigFrame;
 use crate::frame::{FrameInput, FrameOutput, StageClock};
 use crate::scene::apply::{Owed, SceneLink, reserve};
+use crate::scene::ground::StageGround;
 use crate::scene::resolve::ResolvedScene;
 
 /// An imported avatar on a renderer with everything its frame loop needs.
@@ -55,6 +56,7 @@ pub struct AvatarStage {
     input_root: Mat4,
     subject_root: Mat4,
     link: SceneLink,
+    ground: StageGround,
     submissions: u64,
     tick: Tick,
     scene: Scene,
@@ -113,6 +115,7 @@ impl AvatarStage {
             input_root: Mat4::IDENTITY,
             subject_root: Mat4::IDENTITY,
             link: SceneLink::new(),
+            ground: StageGround::default(),
             submissions: 0,
             tick: Tick { index: 0, time: Seconds(0.0), dt: 0.0 },
             scene,
@@ -185,6 +188,7 @@ impl AvatarStage {
         self.evaluator.evaluate(&input.channels, &mut self.weights, &mut self.binds);
         let uploads = self.upload.send_binds(renderer, &self.binds)?;
         self.plan.fill(&mut self.scene, self.rig.world(), &self.weights, self.root);
+        self.ground.push(&mut self.scene);
         self.submissions += 1;
         let index = if self.clock.is_live() { self.submissions } else { tick.index };
         self.scene.frame = FrameInfo { index, time: tick.time };
@@ -269,8 +273,26 @@ impl AvatarStage {
     ///
     /// # Errors
     /// [`StageError::Render`] with the first release the renderer refused.
-    pub fn release(self, renderer: &mut dyn Renderer) -> Result<(), StageError> {
-        self.upload.release(renderer)
+    pub fn release(mut self, renderer: &mut dyn Renderer) -> Result<(), StageError> {
+        let ground = self.ground.release(renderer);
+        self.upload.release(renderer).and(ground)
+    }
+
+    /// Does the renderer work the last [`set_scene`](Self::set_scene) owes for the ground and records it as done, as
+    /// [`Stage::pay_scene`](crate::frame::Stage::pay_scene). An imported avatar's materials have no skin floor, so
+    /// that part is never owed work here. Cold.
+    ///
+    /// # Errors
+    /// [`StageError::Render`] if the renderer refuses the disc; the ground stays owed.
+    pub fn pay_scene(&mut self, renderer: &mut dyn Renderer) -> Result<(), StageError> {
+        let owed = self.link.owed();
+        if let Some(ground) = owed.ground {
+            self.ground.set(renderer, &ground)?;
+        }
+        if !owed.is_empty() {
+            self.link.commit(&owed);
+        }
+        Ok(())
     }
 }
 

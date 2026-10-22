@@ -4,6 +4,7 @@
 
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
 #![allow(clippy::expect_used, clippy::unwrap_used)]
+#![allow(clippy::cast_precision_loss)]
 
 #[path = "avatar/kit.rs"]
 mod kit;
@@ -80,4 +81,53 @@ fn the_op_is_a_costed_render_job_that_undoes_nothing() {
     assert_eq!(meta.kind, omuzaki_ops_api::OpKind::Job);
     assert_eq!(meta.scope, omuzaki_ops_api::Scope::Render);
     assert!(omuzaki_ops_api::find("render.preview").is_some(), "registered, so MCP and the CLI list it");
+}
+
+/// On the GPU: both bodies, full and bust at a three-quarter yaw, framed from their own landmarks and lit by the
+/// studio rig. Each picture holds the character inside the frame; with `OMUZAKI_EVIDENCE_DIR` set they are written as
+/// PNGs for the pull request.
+#[cfg(feature = "wgpu")]
+#[test]
+#[allow(clippy::disallowed_methods, reason = "the evidence images are written beside the test, not by an op")]
+fn on_the_gpu_both_bodies_frame_inside_the_picture() {
+    use omuzaki_core::glam::UVec2;
+    use omuzaki_render::{AdapterPreference, HeadlessOptions, WgpuRenderer};
+    use omuzaki_render_api::Quality;
+    use omuzaki_stage::body::Body;
+    use omuzaki_stage::ops::render::job::{DEFAULT_LIGHT_RIG, still_light};
+    use omuzaki_stage::ops::render::still::{Shot, StillSpec, encode_png, render_body_stills};
+    use omuzaki_stage::scene::frame::frame;
+    use omuzaki_stage_api::{CameraDef, Framing};
+
+    let mut renderer =
+        WgpuRenderer::headless(&HeadlessOptions { adapter: AdapterPreference::Software }).expect("lavapipe opens");
+    let size = UVec2::new(240, 320);
+    let imported = kit::avatar_of(&kit::as_vrm(&kit::kit()));
+    let bodies = [("kit", Body::Kit(Box::new(kit::kit()))), ("imported", Body::Avatar(Box::new(imported)))];
+    for (name, body) in bodies {
+        let landmarks = body.landmarks().expect("measures");
+        let shots: Vec<Shot> = [Framing::Full, Framing::Bust]
+            .into_iter()
+            .map(|framing| {
+                let mut def = CameraDef::preset(framing);
+                def.yaw = 30.0;
+                Shot::new(frame(framing, &landmarks, &def, 0.75).expect("frames"))
+            })
+            .collect();
+        let spec = StillSpec::new(still_light(DEFAULT_LIGHT_RIG).expect("the rig"), size, Quality::offline());
+        let stills = render_body_stills(&mut renderer, body, &spec, &shots).expect("renders");
+        for (still, framing) in stills.iter().zip(["full", "bust"]) {
+            // The rig's backdrop is solid: the character is every pixel that differs from the corner's.
+            let pixels = still.image.rgba8.as_chunks::<4>().0;
+            let backdrop = pixels[0];
+            let covered = pixels.iter().filter(|p| p.iter().zip(&backdrop).any(|(a, b)| a.abs_diff(*b) > 8)).count();
+            let share = covered as f64 / f64::from(size.x * size.y);
+            assert!(share > 0.05, "{name} {framing}: the character fills {share:.3} of the picture");
+            if let Some(dir) = std::env::var_os("OMUZAKI_EVIDENCE_DIR") {
+                let png = encode_png(&still.image).expect("encodes");
+                std::fs::write(std::path::Path::new(&dir).join(format!("preview-{name}-{framing}.png")), png)
+                    .expect("writes");
+            }
+        }
+    }
 }

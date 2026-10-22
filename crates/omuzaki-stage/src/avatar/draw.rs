@@ -103,7 +103,8 @@ impl AvatarPlan {
 
     /// Grows the scene's buffers to hold this plan's frame, so [`fill`](Self::fill) never allocates. Cold.
     pub(crate) fn reserve(&self, scene: &mut Scene) {
-        scene.instances.reserve(self.draws.len().saturating_sub(scene.instances.len()));
+        // One more for the ground disc the stage adds after the avatar.
+        scene.instances.reserve((self.draws.len() + 1).saturating_sub(scene.instances.len()));
         scene.joints.reserve(self.joints.saturating_sub(scene.joints.len()));
         scene.morph_weights.reserve(self.weights.saturating_sub(scene.morph_weights.len()));
     }

@@ -55,6 +55,12 @@ pub trait FrameLoop {
     /// Records that the renderer did the work in `owed`.
     fn commit_scene(&mut self, owed: &Owed);
 
+    /// Does the renderer work the last scene owes that the stage can do itself (the ground disc) and commits it.
+    ///
+    /// # Errors
+    /// What the renderer refuses; the work stays owed.
+    fn pay_scene(&mut self, renderer: &mut dyn Renderer) -> Result<(), StageError>;
+
     /// The scene as last rendered.
     fn scene(&self) -> &Scene;
 
@@ -112,6 +118,9 @@ impl FrameLoop for Stage {
     fn commit_scene(&mut self, owed: &Owed) {
         Stage::commit_scene(self, owed);
     }
+    fn pay_scene(&mut self, renderer: &mut dyn Renderer) -> Result<(), StageError> {
+        Stage::pay_scene(self, renderer)
+    }
     fn scene(&self) -> &Scene {
         Stage::scene(self)
     }
@@ -156,6 +165,9 @@ impl FrameLoop for AvatarStage {
     }
     fn commit_scene(&mut self, owed: &Owed) {
         AvatarStage::commit_scene(self, owed);
+    }
+    fn pay_scene(&mut self, renderer: &mut dyn Renderer) -> Result<(), StageError> {
+        AvatarStage::pay_scene(self, renderer)
     }
     fn scene(&self) -> &Scene {
         AvatarStage::scene(self)
@@ -238,6 +250,9 @@ impl FrameLoop for AnyStage {
     }
     fn commit_scene(&mut self, owed: &Owed) {
         either!(self, s => FrameLoop::commit_scene(s, owed));
+    }
+    fn pay_scene(&mut self, renderer: &mut dyn Renderer) -> Result<(), StageError> {
+        either!(self, s => FrameLoop::pay_scene(s, renderer))
     }
     fn scene(&self) -> &Scene {
         either!(self, s => FrameLoop::scene(s))

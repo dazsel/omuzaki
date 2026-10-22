@@ -151,17 +151,20 @@ impl<S: FrameLoop> LiveStage<S> {
 
     /// The cold half of a display frame, which the loop runs once per iteration, after [`frame`](Self::frame) and
     /// outside its deadline (after presenting, or when idle): it moves a face variant switch along
-    /// ([`Stage::service_variants`]: building, allocating and waiting happen here, never in `frame`) and, when a swap
+    /// ([`Stage::service_variants`]: building, allocating and waiting happen here, never in `frame`), makes the ground disc
+    /// a new scene owes ([`FrameLoop::pay_scene`]) and, when a swap
     /// has replaced the character, installs its expressions for the triggers ([`refresh_expressions`](Self::refresh_expressions)),
     /// so a reload that changes the face profile reaches the triggers with nobody repairing the table by hand.
     /// Returns whether the triggers' expressions were installed. A busy performer queue keeps the old expressions and
     /// the next call tries again.
     ///
     /// # Errors
-    /// What [`Stage::service_variants`] reports. The performer carries on.
+    /// What [`Stage::service_variants`] or the ground disc reports. The performer carries on.
     pub fn service(&mut self, renderer: &mut dyn Renderer) -> Result<bool, StageError> {
         // Variant switches are staged outside the tick (`frame::face`), against the input the last frame showed.
         self.stage.service(renderer, self.frames.input())?;
+        // A scene set since the last call may owe a ground disc; it is made here, where allocating is allowed.
+        self.stage.pay_scene(renderer)?;
         Ok(self.refresh_expressions().unwrap_or(false))
     }
 

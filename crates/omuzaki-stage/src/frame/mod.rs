@@ -35,6 +35,7 @@ use self::runtimes::DynamicMeshes;
 use self::scene::ScenePlan;
 use crate::error::StageError;
 use crate::scene::apply::{Owed, SceneLink, reserve};
+use crate::scene::ground::StageGround;
 use crate::scene::resolve::ResolvedScene;
 use crate::upload::{StageCharacter, UploadOptions};
 
@@ -158,6 +159,8 @@ pub struct Stage {
     subject_root: Mat4,
     /// What the scene has committed for the renderer and still owes it ([`commit_scene`](Stage::commit_scene)).
     link: SceneLink,
+    /// The scene's ground disc on the renderer.
+    ground: StageGround,
     /// How many times a staged variant replaced the character, so a caller can tell the face profile may have changed.
     revision: u64,
     /// Renders submitted so far; numbers the frames of a live clock.
@@ -200,6 +203,7 @@ impl Stage {
                 input_root: Mat4::IDENTITY,
                 subject_root: Mat4::IDENTITY,
                 link: SceneLink::new(),
+                ground: StageGround::default(),
                 revision: 0,
                 submissions: 0,
                 built,
@@ -267,6 +271,7 @@ impl Stage {
         // Filled even when the frame can't be prepared: a variant swapped in at the top of this tick, and the scene
         // must not go on naming the character it retired (its meshes are released).
         self.plan.fill(&mut self.scene, self.rig.skin(), self.root);
+        self.ground.push(&mut self.scene);
         self.scene.frame = self.frame_info(tick);
         let uploads = prepared?;
         let report = renderer
@@ -297,6 +302,7 @@ impl Stage {
         // A solve for no time: the bones follow the restored pose without stepping the springs.
         self.rig.solve(Tick { dt: 0.0, ..pin.tick }, &pin.pose, &pin.goals);
         self.plan.fill(&mut self.scene, self.rig.skin(), pin.root);
+        self.ground.push(&mut self.scene);
         self.scene.frame = FrameInfo { index: pin.tick.index, time: pin.tick.time };
     }
 
@@ -425,6 +431,7 @@ impl Stage {
         let uploads = self.dynamic.upload(&self.built.runtimes, renderer)?;
         self.update_face(renderer, self.tick, input)?;
         self.plan.fill(&mut self.scene, self.rig.skin(), self.root);
+        self.ground.push(&mut self.scene);
         // What the last tick wrote into the scene, so a redraw before any tick doesn't render the caller's frame info.
         self.scene.frame = self.frame_info(self.tick);
         let report = renderer
@@ -467,6 +474,21 @@ impl Stage {
             // A staged variant or a retired character still holds renderer resources.
             face::discard_switch(renderer, rig);
         }
-        self.character.release(renderer)
+        let ground = self.ground.release(renderer);
+        self.character.release(renderer).and(ground)
+    }
+
+    /// Does the renderer work the last [`set_scene`](Self::set_scene) owes for the ground (a new disc, or none) and
+    /// records it as done. The skin floor stays owed: the materials don't take it yet. Cold.
+    ///
+    /// # Errors
+    /// [`StageError::Render`] if the renderer refuses the disc; the ground stays owed.
+    pub fn pay_scene(&mut self, renderer: &mut dyn Renderer) -> Result<(), StageError> {
+        let owed = self.link.owed();
+        if let Some(ground) = owed.ground {
+            self.ground.set(renderer, &ground)?;
+            self.link.commit(&Owed { ground: Some(ground), skin_floor: None });
+        }
+        Ok(())
     }
 }
