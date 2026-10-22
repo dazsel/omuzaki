@@ -533,7 +533,12 @@ fn connect_reads_the_token_from_the_secret_store_and_never_shows_it() {
 
     let secrets = Arc::new(MemorySecrets::new());
     secrets.set(&SecretLabel::new("twitch/token").unwrap(), SecretValue::new(TOKEN)).unwrap();
+    secrets.set(&SecretLabel::new("connector/openai").unwrap(), SecretValue::new("another-service-key")).unwrap();
     let services = services(Arc::clone(&twitch), Some(secrets));
+    // Another service's secret never goes to Twitch.
+    let other = call("twitch.connect", &json!({ "token": "connector/openai" }), &services, false).unwrap_err();
+    assert!(other.contains("not a Twitch secret"), "{other}");
+    assert!(twitch.status().is_none());
     let dry = call("twitch.connect", &json!({}), &services, true).unwrap();
     assert_eq!(dry["token_stored"], true);
     assert_eq!(dry["events"], json!(["redeem", "chat.message", "follow", "raid", "cheer", "sub"]));

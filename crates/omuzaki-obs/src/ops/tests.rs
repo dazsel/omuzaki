@@ -89,6 +89,31 @@ fn connect_reads_the_stored_password_and_the_port_setting() {
 }
 
 #[test]
+fn connect_reads_only_obs_secrets_and_a_remote_host_is_the_persons_call() {
+    let fake = locked();
+    let service = Arc::new(ObsService::new());
+    let services = rig(&service, fake.port(), true);
+    let other = run("obs.connect", json!({ "password": "connector/openai" }), &services, true).unwrap_err();
+    assert!(other.contains("not an OBS secret"), "{other}");
+
+    // With remote links allowed, an agent may still not aim the challenge answer at a host of its choosing.
+    let settings = services.get::<dyn Settings>().unwrap();
+    let person = Actor::Person { name: "host".into() };
+    settings.set::<crate::settings::AllowRemote>(&true, Layer::Base, omuzaki_ops_api::Mode::Apply, &person).unwrap();
+    crate::link();
+    let agent = Actor::Agent { id: "agent".into(), model: None };
+    let op = (find("obs.connect").unwrap().decode)(json!({ "host": "192.0.2.1" })).unwrap();
+    let (doc, clock) = (MemDoc::new(), FakeClock::new(Seconds(0.0)));
+    let ctx = OpCtx::new(&doc, &agent, &clock).with_services(&services).with_dry_run(true);
+    let refused = op.plan(&ctx).unwrap_err();
+    assert!(refused.message.contains("another computer"), "{}", refused.message);
+    // A person may, and so may an agent going to the host the person set up.
+    assert!(run("obs.connect", json!({ "host": "192.0.2.1" }), &services, true).is_ok());
+    let loopback = (find("obs.connect").unwrap().decode)(json!({ "host": "127.0.0.1" })).unwrap();
+    assert!(loopback.plan(&ctx).is_ok());
+}
+
+#[test]
 fn each_action_sends_its_request_and_changes_obs() {
     let fake = FakeObs::start(FakeConfig::default());
     let service = Arc::new(ObsService::new());

@@ -60,6 +60,13 @@ impl Op for Connect {
         let service = service(ctx)?;
         let label = SecretLabel::new(self.token.as_deref().unwrap_or(DEFAULT_TOKEN_LABEL))
             .map_err(|e| OpError::invalid("token", e.to_string()))?;
+        // Only Twitch's own secrets: the value goes to Twitch in a header, so another service's key never does.
+        if !label.as_str().starts_with("twitch/") {
+            return Err(OpError::invalid(
+                "token",
+                format!("{label} is not a Twitch secret; Twitch's labels start twitch/"),
+            ));
+        }
         let store = ctx.service::<dyn SecretStore>().ok();
         if ctx.dry_run {
             let stored = store.and_then(|s| s.contains(&label).ok()).unwrap_or(false);
