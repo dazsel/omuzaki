@@ -1,6 +1,6 @@
 [package]
 name = "omuzaki-stream-api"
-description = "Contract for streaming and recording: timebases, packets, encoders, muxers and the output trait (spec v3 §25, §39.1; docs/design/record.md)."
+description = "Contract for streaming and recording: timebases, packets, encoders, muxers, the output trait and the input tap with its frame stamp and tail (spec v3 §25, §39.1; docs/design/record.md)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -28,4 +28,4 @@ workspace = true
 
 [package.metadata.omuzaki]
 kind = "API"
-summary = "the recording and streaming base types (§25, §39.1; `docs/design/record.md`): `Ticks`, exact `Timebase::rescale`, `Packet` with side data, `ByteMeter`, `StreamError`, stream and encoder specs, the `Encoder`, `Muxer` and `Output` traits, and the clean output window's `WindowHost` and `PaletteSource` services with their types"
+summary = "the recording and streaming base types (§25, §39.1; `docs/design/record.md`): `Ticks`, exact `Timebase::rescale`, `Packet` with side data, `ByteMeter`, `StreamError`, stream and encoder specs, the `Encoder`, `Muxer` and `Output` traits, the input track's `InputTap` with its `FrameStamp` and tail contract (`TailMode`, `TailStep`), and the clean output window's `WindowHost` and `PaletteSource` services with their types"

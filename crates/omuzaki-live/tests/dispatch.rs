@@ -460,7 +460,9 @@ fn the_ninth_network_call_in_flight_fails_limited_at_once() {
     }
     until("the refusal", || rig.reports().len() == 1);
     assert_eq!(rig.reports()[0], json!({ "op": "net.http", "code": "limited" }));
-    assert_eq!(rig.runner.running("net.http"), 8);
+    // The eight hold their slots from dispatch; each reaches the runner on its own thread, so wait for them there.
+    until("the eight in flight", || rig.runner.running("net.http") == 8);
+    assert_eq!(rig.reports().len(), 1);
     rig.runner.release("net.http");
     until("the eight", || rig.runner.running("net.http") == 0);
     assert_eq!(rig.runner.of("net.http").len(), 8, "nothing is retried");
@@ -474,7 +476,7 @@ fn programs_are_limited_to_four_running_and_thirty_started_a_minute() {
         rig.send("exec.run", json!({ "n": n }));
     }
     until("the fifth refused", || rig.reports().len() == 1);
-    assert_eq!(rig.runner.running("exec.run"), 4);
+    until("the four running", || rig.runner.running("exec.run") == 4);
     rig.runner.release("exec.run");
     until("the four done", || rig.runner.running("exec.run") == 0);
     // 26 more make 30 started in this minute; the 31st is refused until a minute of runner time has passed.
