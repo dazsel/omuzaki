@@ -556,6 +556,16 @@ impl LiveApp {
             }
         });
         self.publish_health();
+        // The desktop character's per-pixel click-through reads the frame's alpha, a few times a second at most and
+        // only while the pointer is over it.
+        if self.output.wants_mask()
+            && let Some(view) = self.viewport.as_mut()
+        {
+            match view.snapshot() {
+                Ok(frame) => self.output.set_mask(&frame),
+                Err(error) => tracing::warn!(%error, "the program frame could not be read for click-through"),
+            }
+        }
         if let (Some(feed), Some(view)) = (self.feed.as_mut(), self.viewport.as_mut())
             && let Err(error) = feed.offer(|| view.snapshot())
         {
@@ -604,9 +614,11 @@ impl LiveApp {
 
     /// The way back from a character every click passes through: [`WAY_BACK`] in the studio lets it take its own clicks
     /// again (`output.window.set`, as the person), whatever panel is showing.
-    fn way_back(&self, ctx: &Context, you: &Actor) {
+    fn way_back(&mut self, ctx: &Context, you: &Actor) {
         let through = self.output.plan().desktop.is_some_and(|d| d.click_through == ClickThrough::Full);
-        if !through || !ctx.input_mut(|i| i.consume_shortcut(&WAY_BACK)) {
+        // In the studio as a shortcut, or anywhere on the desktop through the output window's probe.
+        let pressed = ctx.input_mut(|i| i.consume_shortcut(&WAY_BACK)) | self.output.take_way_back();
+        if !through || !pressed {
             return;
         }
         let args = crate::live::model::object(&[("click_through", "transparent".into())]);

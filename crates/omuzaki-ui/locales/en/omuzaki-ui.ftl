@@ -1829,7 +1829,7 @@ ui-live-character-section = Character
 ui-live-clicks-all = All pass through
 
 # The Live workspace: the camera, tracking, the stage, expressions and outputs.
-ui-live-clicks-all-note = Every click passes through the character: turn it back here
+ui-live-clicks-all-note = Every click passes through the character: Ctrl+Alt+M, anywhere, or this switch turns it back
 
 # The Live workspace: the camera, tracking, the stage, expressions and outputs.
 ui-live-clicks-empty = Empty pixels pass

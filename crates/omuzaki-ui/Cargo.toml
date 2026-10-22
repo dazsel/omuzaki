@@ -90,6 +90,11 @@ wgpu.workspace = true
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["process"] }
 
+# The desktop pointer and the way-back chord on X11, for a desktop character's per-pixel click-through
+# (output_window/hit_test).
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 # The webcam on Windows, for the studio's inputs (live/wiring/inputs.rs).
 omuzaki-camera-mf = { path = "../omuzaki-camera-mf" }

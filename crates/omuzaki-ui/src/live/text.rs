@@ -123,7 +123,7 @@ words! {
     ClicksOff = "ui-live-clicks-off" => "Window takes them",
     ClicksEmpty = "ui-live-clicks-empty" => "Empty pixels pass",
     ClicksAll = "ui-live-clicks-all" => "All pass through",
-    ClicksAllNote = "ui-live-clicks-all-note" => "Every click passes through the character: turn it back here",
+    ClicksAllNote = "ui-live-clicks-all-note" => "Every click passes through the character: Ctrl+Alt+M, anywhere, or this switch turns it back",
 
     HealthSection = "ui-live-health-section" => "Health",
     HealthFps = "ui-live-health-fps" => "{fps} fps",
