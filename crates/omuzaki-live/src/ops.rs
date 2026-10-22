@@ -7,11 +7,13 @@
 //!   `edit:scene` scope until the `edit:show` scope exists in the ops contract.
 //! - **Runtime ops** are live actions (`Undo::None`) on the [`Automation`] service: `automation.start` compiles the
 //!   show from the document and starts it, `automation.stop` stops it, `automation.fire` publishes a test event that
-//!   runs as the caller, and `automation.status` and `automation.values` report without waiting on the engine.
+//!   runs as the caller, `automation.pause` and `automation.resume` are the panic button, `automation.set_variable`,
+//!   `automation.switch_group` and `automation.resume_graph` change the running show, and `automation.status` and
+//!   `automation.values` report without waiting on the engine.
 
 use omuzaki_doc_api::{DocPath, Patch, Value};
 use omuzaki_live_api::graph::GraphDef;
-use omuzaki_live_api::ids::{EventKind, GraphId, ShowId};
+use omuzaki_live_api::ids::{EventKind, GraphId, GroupId, ShowId, VarName};
 use omuzaki_live_api::node::{DynNodeKind, find_node_kind};
 use omuzaki_live_api::services::AutomationControl;
 use omuzaki_live_api::show::{ShowDef, paths};
@@ -125,6 +127,50 @@ pub struct Fire {
     pub kind: EventKind,
     /// The payload, as the kind's schema describes it (`automation.event_kinds`).
     pub payload: Value,
+}
+
+/// Pause the running show, the panic button: no new automations start, and pending waits and replies are dropped
+/// and counted. Variables and group switches survive it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(extend("examples" = [{}]))]
+pub struct Pause {}
+
+/// Resume a paused show.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(extend("examples" = [{}]))]
+pub struct Resume {}
+
+/// Set a variable of the running show; its graphs see it as a `var.changed` event.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(extend("examples" = [{ "name": "bonks", "value": 0 }]))]
+pub struct SetVariable {
+    /// The variable, as the show declares it.
+    pub name: VarName,
+    /// Its new value, of the declared type.
+    pub value: Value,
+}
+
+/// Turn a group of automations on or off in the running show, until it stops.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(extend("examples" = [{ "group": "intro", "on": false }]))]
+pub struct SwitchGroup {
+    /// The group.
+    pub group: GroupId,
+    /// On or off.
+    pub on: bool,
+}
+
+/// Let a graph that the loop guard suspended run again.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(extend("examples" = [{ "graph": "brb" }]))]
+pub struct ResumeGraph {
+    /// The graph.
+    pub graph: GraphId,
 }
 
 fn service<'a>(ctx: &OpCtx<'a>) -> Result<&'a Automation, OpError> {
@@ -375,6 +421,93 @@ impl Op for Fire {
     }
 }
 
+/// A live action's dry run: what would change, and which show runs, without touching it.
+fn dry(automation: &Automation, what: serde_json::Value) -> Plan {
+    let running = automation.running().map(|r| r.show);
+    let mut answer = json!({ "applied": false, "running": running });
+    answer["would"] = what;
+    Plan::answer(answer)
+}
+
+impl Op for Pause {
+    fn meta() -> OpMeta {
+        live_action("automation.pause", "Pause the running show: nothing new starts until it resumes.", Scope::Perform)
+    }
+
+    fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        let automation = service(ctx)?;
+        if ctx.dry_run {
+            return Ok(dry(automation, json!("pause")));
+        }
+        automation.pause(ctx.actor)?;
+        Ok(Plan::answer(json!({ "paused": true })))
+    }
+}
+
+impl Op for Resume {
+    fn meta() -> OpMeta {
+        live_action("automation.resume", "Resume a paused show.", Scope::Broadcast)
+    }
+
+    fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        let automation = service(ctx)?;
+        if ctx.dry_run {
+            return Ok(dry(automation, json!("resume")));
+        }
+        automation.resume(ctx.actor)?;
+        Ok(Plan::answer(json!({ "paused": false })))
+    }
+}
+
+impl Op for SetVariable {
+    fn meta() -> OpMeta {
+        live_action("automation.set_variable", "Set a variable of the running show.", Scope::Perform)
+    }
+
+    fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        let automation = service(ctx)?;
+        if ctx.dry_run {
+            return Ok(dry(automation, json!({ "set": self.name, "to": self.value })));
+        }
+        automation.set_variable(&self.name, self.value.clone(), ctx.actor)?;
+        Ok(Plan::answer(json!({ "set": self.name, "to": self.value })))
+    }
+}
+
+impl Op for SwitchGroup {
+    fn meta() -> OpMeta {
+        live_action(
+            "automation.switch_group",
+            "Turn a group of automations on or off in the running show.",
+            Scope::Perform,
+        )
+    }
+
+    fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        let automation = service(ctx)?;
+        if ctx.dry_run {
+            return Ok(dry(automation, json!({ "group": self.group, "on": self.on })));
+        }
+        automation.switch_group(&self.group, self.on, ctx.actor)?;
+        Ok(Plan::answer(json!({ "group": self.group, "on": self.on })))
+    }
+}
+
+impl Op for ResumeGraph {
+    fn meta() -> OpMeta {
+        live_action("automation.resume_graph", "Let a graph the loop guard suspended run again.", Scope::Perform)
+    }
+
+    fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        let automation = service(ctx)?;
+        if ctx.dry_run {
+            return Ok(dry(automation, json!({ "resume": self.graph })));
+        }
+        automation.resume_graph(&self.graph, ctx.actor)?;
+        Ok(Plan::answer(json!({ "resumed": self.graph })))
+    }
+}
+
 register_op!(CreateShow);
 register_op!(AddGraph);
 register_op!(RemoveGraph);
@@ -383,3 +516,8 @@ register_op!(Stop);
 register_op!(Status);
 register_op!(Values);
 register_op!(Fire);
+register_op!(Pause);
+register_op!(Resume);
+register_op!(SetVariable);
+register_op!(SwitchGroup);
+register_op!(ResumeGraph);

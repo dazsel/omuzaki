@@ -517,3 +517,41 @@ fn values_set_on_a_running_show_reach_the_store_by_the_time_stop_returns_and_com
     });
     automation.stop(&Actor::System).unwrap();
 }
+
+#[test]
+fn the_values_snapshot_stops_refreshing_while_nobody_reads_it_and_pause_shows_in_the_status() {
+    use omuzaki_core::time::FakeClock;
+    use omuzaki_live_api::services::SystemWallClock;
+
+    let fake = Arc::new(FakeRunner::default());
+    let runner: Arc<dyn Runner> = fake.clone();
+    let clock = Arc::new(FakeClock::new(Seconds(0.0)));
+    let automation = Automation::with_clocks(clock.clone(), Arc::new(SystemWallClock));
+    automation.attach(&runner);
+    automation.start_def(&id("main"), &show(&[("bonk", redeem_and_call())])).unwrap();
+    let redeem = |n: usize| {
+        automation.publish(fixtures::redeem(&format!("Viewer{n}"), "Bonk")).unwrap();
+        // Two calls per redeem: when they are both in, the engine is past the step and its refresh check.
+        until("the calls", || fake.requests().len() == 2 * n);
+    };
+    assert!(automation.values().is_some());
+    redeem(1);
+    // Nobody reads for more than two seconds of runner time: the next steps refresh nothing.
+    clock.advance(Seconds(3.0));
+    let before = automation.values_refreshes();
+    redeem(2);
+    redeem(3);
+    assert_eq!(automation.values_refreshes(), before);
+    // A read starts the refreshes again.
+    assert!(automation.values().is_some());
+    redeem(4);
+    until("a refresh", || automation.values_refreshes() > before);
+
+    automation.pause(&Actor::System).unwrap();
+    until("paused", || automation.status().paused);
+    automation.publish(fixtures::redeem("Late", "Bonk")).unwrap();
+    until("the drop", || automation.status().dropped.paused == 1);
+    automation.resume(&Actor::System).unwrap();
+    redeem(5);
+    automation.stop(&Actor::System).unwrap();
+}

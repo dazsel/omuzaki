@@ -62,6 +62,10 @@ pub(crate) enum Control {
     SetVariable { name: VarName, value: Val },
     /// Lifts a graph's suspension.
     ResumeGraph { graph: GraphId },
+    /// The panic button (design D12): no new tokens start, and wakes and replies are dropped, all counted.
+    Pause,
+    /// Undoes [`Pause`](Self::Pause); variables and group switches survived it.
+    Resume,
 }
 
 /// How many rounds of group switches one step's close runs: a switch made by a `Start` that a switch sent lands in
@@ -158,6 +162,7 @@ pub(crate) struct Core {
     ignored: BTreeSet<CallId>,
     /// The values files of the persisted scopes (design D10).
     files: Files,
+    paused: bool,
     step_at: Seconds,
     utc: UtcMillis,
     outgoing: Vec<OpRequest>,
@@ -253,6 +258,7 @@ impl Core {
             buckets: BTreeMap::new(),
             ignored: BTreeSet::new(),
             files: Files::default(),
+            paused: false,
             step_at: at,
             utc,
             outgoing: Vec::new(),
@@ -309,6 +315,12 @@ impl Core {
                 self.record_event(&event);
                 let root = Arc::new(event);
                 let listening = self.triggers.get(&root.kind).cloned().unwrap_or_default();
+                if self.paused {
+                    let would = listening.iter().filter(|&&n| self.runs(n)).count();
+                    self.dropped.paused += u64::try_from(would).unwrap_or(u64::MAX);
+                    self.close();
+                    return;
+                }
                 // Graph order, so a bucket that runs dry refuses the later listeners of the same event.
                 for &node in &listening {
                     if !self.runs(node) {
@@ -328,6 +340,11 @@ impl Core {
             Item::Reply { call, outcome } => {
                 if self.ignored.remove(&call) {
                     self.dropped.inactive += 1;
+                } else if self.paused {
+                    if let Some((_, token)) = self.calls.remove(&call) {
+                        self.release(token);
+                        self.dropped.paused += 1;
+                    }
                 } else if let Some((node, token)) = self.calls.remove(&call) {
                     self.release(token);
                     stack.push(Activation { node, act: Act::Reply(call, outcome), token });
@@ -354,6 +371,11 @@ impl Core {
         self.wakes.remove(&key);
         self.begin(due, utc);
         self.release(wake.token);
+        if self.paused {
+            self.dropped.paused += 1;
+            self.close();
+            return true;
+        }
         self.run(vec![Activation { node: wake.node, act: Act::Wake(wake.id), token: wake.token }]);
         self.close();
         true
@@ -377,6 +399,11 @@ impl Core {
         }
         self.files.loaded(scope, values);
         refused
+    }
+
+    /// Whether the panic button is on.
+    pub(crate) fn paused(&self) -> bool {
+        self.paused
     }
 
     /// When the next values file is due to be written.
@@ -501,6 +528,8 @@ impl Core {
                     self.changed.entry(name).or_insert(old);
                 }
             }
+            Control::Pause => self.paused = true,
+            Control::Resume => self.paused = false,
             Control::ResumeGraph { graph } => {
                 let was = self.graph_active(&graph);
                 if self.suspended.remove(&graph).is_some() && !was && self.graph_active(&graph) {

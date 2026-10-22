@@ -243,6 +243,16 @@ impl ShowHarness {
         self.control(Control::ResumeGraph { graph });
     }
 
+    /// The panic button (`automation.pause`): no new tokens start, and wakes and replies are dropped.
+    pub fn pause(&mut self) {
+        self.control(Control::Pause);
+    }
+
+    /// Lets the show run again (`automation.resume`).
+    pub fn resume(&mut self) {
+        self.control(Control::Resume);
+    }
+
     /// How many steps ran after the start: an idle show runs none.
     pub fn steps(&self) -> u64 {
         self.steps

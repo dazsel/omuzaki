@@ -168,3 +168,41 @@ fn a_variable_set_from_outside_lands_as_its_own_step_and_is_typed() {
     assert_eq!(changed.value, json!(41));
     assert_eq!(changed.changed_by, None);
 }
+
+#[test]
+fn pause_drops_new_tokens_wakes_and_replies_and_keeps_variables_and_switches() {
+    let mut h = harness(show(
+        &["g"],
+        &[(
+            "w",
+            Some("g"),
+            json!({
+                "on": { "kind": "test.on", "params": { "kind": "custom.go" } },
+                "wait": { "kind": "test.wait", "params": { "seconds": 5.0 }, "in": { "in": "on.fired" } },
+                "late": { "kind": "test.call", "params": { "op": "op.late" }, "in": { "in": "wait.out" } },
+                "ask": { "kind": "test.call", "params": { "op": "op.ask" }, "in": { "in": "on.fired" } },
+                "count": { "kind": "test.count", "in": { "in": "ask.done" } },
+            }),
+        )],
+    ));
+    h.publish(custom("go", 1.0));
+    let call = h.open_calls()[0];
+    h.set_variable(VarName::new("starts").unwrap(), Val::Number(7.0));
+    h.pause();
+    // A new event, the reply and the wake are all dropped and counted.
+    h.publish(custom("go", 2.0));
+    h.reply(call, Ok(None));
+    h.advance(Seconds(10.0));
+    assert_eq!(h.dropped().paused, 3);
+    assert_eq!(ops(&h), ["op.ask"]);
+    // Changes from outside still land while paused, and survive the resume.
+    h.switch_group(GroupId::new("g").unwrap(), false);
+    h.resume();
+    assert_eq!(var(&mut h, "starts"), 7.0);
+    h.publish(custom("go", 20.0));
+    assert_eq!(ops(&h), ["op.ask"]);
+    h.switch_group(GroupId::new("g").unwrap(), true);
+    h.publish(custom("go", 21.0));
+    h.advance(Seconds(5.0));
+    assert_eq!(ops(&h), ["op.ask", "op.ask", "op.late"]);
+}

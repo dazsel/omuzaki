@@ -18,9 +18,10 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use omuzaki_core::time::{Clock, SystemClock};
+use omuzaki_core::time::{Clock, Seconds, SystemClock};
 use omuzaki_live_api::event::{EventId, EventSink, LiveEvent, PublishError, Source, check_payload, find_event_kind};
 use omuzaki_live_api::ids::{EventKind, GraphId, GroupId, ShowId, VarName};
+use omuzaki_live_api::limits::MONITOR_WATCHED_SECONDS;
 use omuzaki_live_api::services::{
     AutomationControl, Dropped, PersistScope, RunInfo, Status, SystemWallClock, ValuesSnapshot, VariableStore,
     WallClock,
@@ -58,6 +59,11 @@ struct Shared {
     status: Mutex<Status>,
     values: Mutex<Option<Arc<ValuesSnapshot>>>,
     producer_dropped: AtomicU64,
+    /// When `automation.values` was last read, on the runner clock: the snapshot is refreshed only while someone
+    /// read it in the last [`MONITOR_WATCHED_SECONDS`] (design D10), so an unwatched show pays nothing.
+    read_at: Mutex<Option<Seconds>>,
+    /// How many times the engine refreshed the snapshot.
+    refreshes: AtomicU64,
 }
 
 /// Where variable values persist: the store, and the project folder a show's own values live under (none: `show`
@@ -158,6 +164,12 @@ impl Automation {
         *lock(&self.persistence) = Some(Persistence { store, project });
     }
 
+    /// How many times the engine refreshed the values snapshot this process: it stops while nobody reads
+    /// `automation.values` (design D10).
+    pub fn values_refreshes(&self) -> u64 {
+        self.shared.refreshes.load(Ordering::Relaxed)
+    }
+
     /// What the last start found about the stored values: files it couldn't read and values of another type. None of
     /// them stops a start; the variables they name start from their defaults.
     pub fn start_findings(&self) -> Vec<Finding> {
@@ -214,6 +226,8 @@ impl Automation {
             .spawn(move || dispatcher.run(&pending))
             .map_err(|e| OpError::internal(format!("the automation dispatcher didn't start: {e}")))?;
         *lock(&self.shared.status) = Status::default().with_running(info.clone()).with_graphs(core.graphs());
+        // A first snapshot before the engine thread runs, so a read right after the start never finds the last run's.
+        *lock(&self.shared.values) = Some(Arc::new(core.values()));
         let engine = EngineThread {
             core,
             inbox: Arc::clone(&inbox),
@@ -294,10 +308,6 @@ fn not_running() -> OpError {
     OpError::conflict("no show is running").hint("start one with automation.start")
 }
 
-fn later(what: &str) -> OpError {
-    OpError::unsupported(format!("{what} isn't in this build yet"))
-}
-
 impl AutomationControl for Automation {
     fn start(&self, show: &ShowId, _by: &Actor) -> Result<RunInfo, OpError> {
         let runner = self.runner().and_then(|w| w.upgrade()).ok_or_else(|| OpError::unavailable("runner"))?;
@@ -320,11 +330,11 @@ impl AutomationControl for Automation {
     }
 
     fn pause(&self, _by: &Actor) -> Result<(), OpError> {
-        Err(later("pausing a show"))
+        self.control(|_| Ok(Control::Pause))
     }
 
     fn resume(&self, _by: &Actor) -> Result<(), OpError> {
-        Err(later("resuming a show"))
+        self.control(|_| Ok(Control::Resume))
     }
 
     fn status(&self) -> Status {
@@ -336,6 +346,7 @@ impl AutomationControl for Automation {
 
     fn values(&self) -> Option<Arc<ValuesSnapshot>> {
         self.running()?;
+        *lock(&self.shared.read_at) = Some(self.clock.now());
         lock(&self.shared.values).clone()
     }
 
@@ -439,9 +450,13 @@ impl EngineThread {
             let idle = batch.is_empty() && self.inbox.is_empty();
             if dirty && (idle || values_at.is_none_or(|t| t.elapsed() >= VALUES_INTERVAL)) {
                 self.publish_status();
-                *lock(&self.shared.values) = Some(Arc::new(self.core.values()));
-                values_at = Some(Instant::now());
-                dirty = false;
+                // The first snapshot always; later ones while someone watches.
+                if values_at.is_none() || self.watched() {
+                    *lock(&self.shared.values) = Some(Arc::new(self.core.values()));
+                    self.shared.refreshes.fetch_add(1, Ordering::Relaxed);
+                    values_at = Some(Instant::now());
+                    dirty = false;
+                }
             }
             if let Some(mut event) = self.core.pop_own() {
                 event.id = EventId(self.next_event.fetch_add(1, Ordering::Relaxed) + 1);
@@ -484,6 +499,12 @@ impl EngineThread {
         }
     }
 
+    /// Whether someone read the values in the last [`MONITOR_WATCHED_SECONDS`].
+    fn watched(&self) -> bool {
+        let now = self.clock.now();
+        lock(&self.shared.read_at).is_some_and(|at| now.0 - at.0 <= MONITOR_WATCHED_SECONDS)
+    }
+
     fn publish_status(&self) {
         let (inbox, inbox_full, duplicate) = self.inbox.dropped();
         let mut dropped: Dropped = self.core.dropped();
@@ -491,8 +512,11 @@ impl EngineThread {
         dropped.inbox_full = inbox_full;
         dropped.duplicate = duplicate;
         dropped.producer = self.shared.producer_dropped.load(Ordering::Relaxed);
-        *lock(&self.shared.status) =
-            Status::default().with_running(self.info.clone()).with_graphs(self.core.graphs()).with_dropped(dropped);
+        *lock(&self.shared.status) = Status::default()
+            .with_running(self.info.clone())
+            .with_paused(self.core.paused())
+            .with_graphs(self.core.graphs())
+            .with_dropped(dropped);
     }
 }
 
