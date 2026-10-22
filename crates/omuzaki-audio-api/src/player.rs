@@ -1,9 +1,8 @@
 //! The player source (BR-21): decoded sounds the engine holds in a bank, played by players into the buses that name
 //! them as `SourceRef::Player`, for the soundboard and music.
 //!
-//! - A [`Sound`] is planar 48 kHz PCM, one or two channels, shared as an `Arc` so the audio thread never copies it. The
-//!   engine keeps a reference on the control side until the audio thread has let go of its own, so a sound is never
-//!   freed on the audio thread.
+//! - A [`Sound`] is planar 48 kHz PCM, one or two channels, shared as an `Arc` so the audio thread never copies it.
+//!   An unloaded sound goes back from the audio thread to the control side to be freed, never on the audio thread.
 //! - A player plays up to [`VOICES`] sounds at once. One more steals the oldest, which fades out over
 //!   [`VOICE_FADE`] samples; stopping a sound fades it out the same way.
 //! - **Duck gates:** a player raises the gate with its own name ([`gate_of`]) while any of its voices that `ducks`

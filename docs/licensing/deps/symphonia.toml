@@ -1,0 +1,8 @@
+section = "rust"
+item = "symphonia"
+kind = "crate"
+used_for = "audio file decoding for the soundboard's sounds and streamed music (`omuzaki-audio-decode`): WAV, AIFF, FLAC, Ogg Vorbis, MP3 and AAC/M4A, with its codec and format crates (`symphonia-*`, all MPL-2.0); pulls `rustfft` (MIT OR Apache-2.0) for the SIMD transforms"
+status = "conditions"
+condition = "MPL-2.0 file-level: keep unmodified, ship notice; the `aac` feature needs the codec patent review before release, as the AAC encoder does (#1424); MP3's patents have expired"
+audit = "(crates.io: MPL-2.0; chosen over FFmpeg (LGPL, shared libraries to ship) and hound (WAV only), #1444)"
+crates = ["symphonia"]
