@@ -27,6 +27,7 @@ pub struct TextField<'a> {
     clearable: bool,
     disabled: Option<&'a str>,
     salt: Option<Id>,
+    password: bool,
 }
 
 impl<'a> TextField<'a> {
@@ -43,6 +44,7 @@ impl<'a> TextField<'a> {
             clearable: true,
             disabled: None,
             salt: None,
+            password: false,
         }
     }
 
@@ -73,6 +75,13 @@ impl<'a> TextField<'a> {
     /// A fixed width instead of the available width.
     pub const fn width(mut self, width: f32) -> Self {
         self.width = Some(width);
+        self
+    }
+
+    /// A secret: the text is drawn and exposed to assistive technology as dots, copy and cut are off, and no undo
+    /// history keeps what was typed.
+    pub const fn password(mut self) -> Self {
+        self.password = true;
         self
     }
 
@@ -138,6 +147,7 @@ impl Widget for TextField<'_> {
                 .margin(egui::Margin::ZERO)
                 .desired_width(inner.width())
                 .interactive(enabled)
+                .password(self.password)
                 // Esc is ours: it clears first and only then leaves, so the TextEdit must not surrender focus itself. The
                 // arrows stay too, as they do in egui's own filter: they move the caret, never the keyboard to the clear
                 // button.
@@ -154,6 +164,12 @@ impl Widget for TextField<'_> {
             edit.show(ui).response.response
         };
         ime.finish(&ctx, id, self.text);
+        if self.password
+            && let Some(mut edit) = TextEdit::load_state(&ctx, id)
+        {
+            edit.clear_undoer();
+            TextEdit::store_state(&ctx, id, edit);
+        }
 
         // Tabbing into a field selects its text, so typing replaces it (a click keeps the caret where it landed).
         if response.gained_focus()

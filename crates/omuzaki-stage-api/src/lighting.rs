@@ -446,6 +446,10 @@ pub struct Lighting {
     /// Scales outline colours; lower it in dark scenes so line art doesn't glow. `>= 0`.
     #[serde(default = "one")]
     pub outline_light: f32,
+    /// How strongly lights behind the cast edge its silhouette in their colour, `>= 0`: a stage's back light. 0 (the
+    /// default) lights with the toon ramp alone.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub back_light_rim: f32,
     /// Overrides every cast skin material's shadow floor while set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skin_floor: Option<f32>,
@@ -470,6 +474,11 @@ fn black() -> Colour {
     Colour::BLACK
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's `skip_serializing_if` passes a reference.
+fn is_zero(value: &f32) -> bool {
+    *value == 0.0
+}
+
 impl Default for Lighting {
     fn default() -> Self {
         Self {
@@ -477,6 +486,7 @@ impl Default for Lighting {
             exposure: 1.0,
             background: Colour::BLACK,
             outline_light: 1.0,
+            back_light_rim: 0.0,
             skin_floor: None,
             ambient: Ambient::default(),
             bloom: None,

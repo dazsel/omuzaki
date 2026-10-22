@@ -9,7 +9,7 @@ use omuzaki_io_api::{
     MeshData, MorphBind, MorphTarget, Node, NodeIx, PresetExpression, Primitive, Shading, UvBind,
 };
 use omuzaki_io_api::{ExportOptions, preflight};
-use omuzaki_io_mock::fixtures::{BODY_NODE, tiny_avatar};
+use omuzaki_io_mock::fixtures::vroid_like_avatar;
 use omuzaki_io_ops::prepare::arkit::{Arkit52Report, Synthesis, synthesise};
 
 fn name(n: &str) -> ExpressionName {
@@ -371,28 +371,12 @@ fn symmetric_gaze_presets_bind_both_eyes_at_half_gain() {
     }
 }
 
-/// A valid VRM scene whose body mesh carries `VRoid`-like morph targets and whose avatar has two presets bound to them.
-/// Built by a function so another test crate can reuse it.
-fn vroid_like_scene() -> IoScene {
-    let mut scene = tiny_avatar();
-    let names = ["Fcl_MTH_A", "Fcl_MTH_O", "Fcl_EYE_Close_L", "Fcl_BRW_Angry"];
-    let mesh = &mut scene.meshes[0];
-    let first = mesh.primitives[0].morph_targets[0].clone();
-    mesh.primitives[0].morph_targets = vec![first; names.len()];
-    mesh.morph_target_names = names.iter().map(|n| (*n).to_owned()).collect();
-    let expressions = &mut scene.avatar.as_mut().unwrap().expressions;
-    expressions.clear();
-    expressions.insert(ExpressionName::Preset(PresetExpression::Happy), morph_expression(BODY_NODE, 1, 1.0));
-    expressions.insert(ExpressionName::Preset(PresetExpression::LookUp), morph_expression(BODY_NODE, 2, 1.0));
-    scene
-}
-
-/// `omuzaki-io-mock`'s perfect-sync preflight stands in for the real exporter here: `omuzaki-io-ops` may not depend on
-/// `omuzaki-io-vrm` (`cargo xtask lint-deps`). The export check against the real VRM exporter is follow-up #1663, in
-/// `omuzaki-test`, after #1614.
+/// The export contract's preflight stands in for the real exporter here: `omuzaki-io-ops` may not depend on
+/// `omuzaki-io-vrm` (`cargo xtask lint-deps`). `omuzaki-test`'s `prepare_arkit_vrm.rs` makes the same check through the
+/// real VRM exporter, on the same fixture (#1663).
 #[test]
 fn the_result_exports_and_only_missing_channels_are_reported() {
-    let mut scene = vroid_like_scene();
+    let mut scene = vroid_like_avatar();
     assert!(scene.check().findings.is_empty(), "{:#?}", scene.check());
     let report = synthesise(&mut scene);
     let missing = report.channels.iter().filter(|c| c.how == Synthesis::Missing).count();

@@ -1,0 +1,8 @@
+section = "rust"
+item = "midir 0.11"
+kind = "crate"
+used_for = "MIDI controllers as binding sources: notes, controllers and program changes press bindings (`omuzaki-input`'s MIDI backend, #469); ALSA on Linux, CoreMIDI on macOS, WinMM on Windows"
+status = "yes"
+condition = "MIT: keep the notice; default features only (no JACK, no WinRT); its CoreMIDI binding `coremidi` is MIT too"
+audit = "(crates.io: MIT, 2026-10-22)"
+crates = ["midir"]

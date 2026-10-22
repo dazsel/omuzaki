@@ -226,20 +226,25 @@ fn every_library_rig_loads_validates_and_round_trips() {
 fn the_stage_rigs_spots_become_render_spots_and_scene_lights() {
     use omuzaki_stage_api::{LightRole, LightShape, REFERENCE_HEIGHT_M};
     let rig = LightRig::load("stage").expect("loads");
-    assert_eq!(rig.spots.len(), 3, "three coloured spots");
+    assert_eq!(rig.spots.len(), 6, "four coloured spots and two back lights");
     let lights = rig.to_lights().expect("lights");
     let spots: Vec<_> = lights.iter().filter(|l| matches!(l, Light::Spot { .. })).collect();
-    assert_eq!(spots.len(), 3);
+    assert_eq!(spots.len(), 6);
+    assert!(lights.len() <= omuzaki_render_api::limits::MAX_LIGHTS, "the rig fits the renderer's lights");
     for (light, spot) in spots.iter().zip(&rig.spots) {
         let Light::Spot { position, direction, cone_outer_deg, range, .. } = light else { unreachable!() };
         assert_eq!(*position, Vec3::from(spot.position));
         let aim = (Vec3::from(spot.target) - Vec3::from(spot.position)).normalize();
         assert!(direction.normalize().abs_diff_eq(aim, 1e-6), "{}: aimed at its target", spot.id);
         assert_eq!((*cone_outer_deg, *range), (spot.cone, spot.distance));
-        // Every spot points down from the truss, at the character.
-        assert!(spot.position[1] > spot.target[1] && spot.target[1] > 0.0, "{}: from above, at the body", spot.id);
+        // Every spot hangs above what it lights: the character, or the floor at its feet.
+        assert!(spot.position[1] > spot.target[1] && spot.target[1] >= 0.0, "{}: from above", spot.id);
     }
     let lighting = rig.to_lighting().expect("lighting");
+    // A dark house: the rim from the back lights, and a skin floor that lets skin fall dark.
+    assert!(lighting.back_light_rim > 0.0 && (lighting.back_light_rim - rig.back_light_rim).abs() < f32::EPSILON);
+    assert_eq!(lighting.skin_floor, rig.scene_skin_floor);
+    assert!(rig.scene_skin_floor.is_some(), "the stage rig sets the scene's skin floor");
     let h = REFERENCE_HEIGHT_M;
     for spot in &rig.spots {
         let def = &lighting.lights[&omuzaki_stage_api::LightId::new(&spot.id).unwrap()];

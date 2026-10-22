@@ -66,6 +66,8 @@ pub enum CauseKind {
     /// A plugin's entry call (ADR 0058): the cause's text is `<id>@<version> <entry>` (`example@0.1.0 init`), naming
     /// the entry and never its arguments. Its own kind because `Script` never queues and `Rule` is automation's.
     Plugin,
+    /// A key, pad, MIDI or OSC binding the person set up (PF-05): the binding dispatcher runs its op as the person.
+    Binding,
 }
 
 /// The scopes an actor holds, plus file-path grants for [`Scope::Fs`]. A person holds `fs` but no roots, so a path

@@ -105,6 +105,7 @@ impl Op for DescribeScene {
                 "exposure": def.lighting.exposure,
                 "background": def.lighting.background,
                 "outline_light": def.lighting.outline_light,
+                "back_light_rim": def.lighting.back_light_rim,
                 "skin_floor": def.lighting.skin_floor,
                 "ambient": def.lighting.ambient,
                 "bloom": def.lighting.bloom,

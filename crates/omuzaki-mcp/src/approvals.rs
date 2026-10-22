@@ -235,6 +235,8 @@ pub(crate) fn withdrawn_text(reason: &omuzaki_ops_api::EndReason) -> &'static st
         EndReason::Closed => "the session was closed",
         EndReason::Revoked { .. } => "the person revoked the session",
         EndReason::ProjectClosed => "the project was closed",
+        EndReason::Faulted { .. } => "the session's owner failed",
+        _ => "the session ended",
     }
 }
 

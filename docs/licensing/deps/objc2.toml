@@ -1,8 +1,8 @@
 section = "rust"
-item = "objc2 0.6, objc2-core-graphics, objc2-game-controller, objc2-io-kit (0.3)"
+item = "objc2 0.6, objc2-core-foundation, objc2-core-graphics, objc2-game-controller, objc2-io-kit (0.3)"
 kind = "crate"
-used_for = "macOS input (`omuzaki-input`, ADR 0060): the listen-only CGEventTap, GameController pads with background events, and the Input Monitoring check and IOHID fallback; also the Objective-C runtime bindings and main-thread marker in `spikes/mascot-window`, whose own workspace keeps it out of the main lockfile"
+used_for = "macOS input (`omuzaki-input`, ADR 0060): the listen-only CGEventTap and its run loop, GameController pads with background events, and the Input Monitoring check and IOHID fallback; also the Objective-C runtime bindings and main-thread marker in `spikes/mascot-window`, whose own workspace keeps it out of the main lockfile"
 status = "yes"
 condition = "MIT (objc2); Zlib OR Apache-2.0 OR MIT (the framework crates): keep the notices"
 audit = "(crates.io: objc2 0.6.5, MIT; the framework crates 0.3.2, Zlib OR Apache-2.0 OR MIT; 2026-10-22)"
-crates = []
+crates = ["objc2-core-foundation", "objc2-core-graphics", "objc2-io-kit"]

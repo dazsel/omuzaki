@@ -72,6 +72,9 @@ pub enum GroundKind {
     /// A shadow-catcher disc: only the cast's shadow shows.
     #[default]
     Shadow,
+    /// A lit stage floor: a disc of the ground's `colour` that the lights fall on, so spots leave pools on it and the
+    /// cast stands in its own shadow.
+    Floor,
     /// No ground.
     None,
 }
@@ -89,6 +92,15 @@ pub struct Ground {
     /// In subject units (design D4). Absent: fits the cast plus 0.83.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub radius: Option<f32>,
+    /// A `floor`'s colour. Absent: [`Ground::FLOOR`], a dark stage grey.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub colour: Option<omuzaki_render_api::Colour>,
+}
+
+impl Ground {
+    /// A floor's colour when the ground names none: a dark stage grey, which a dark house leaves near black and a spot
+    /// lights into a pool of its colour.
+    pub const FLOOR: omuzaki_render_api::Colour = omuzaki_render_api::Colour::hex(0x007a_7a7a);
 }
 
 fn default_opacity() -> f32 {
@@ -97,7 +109,7 @@ fn default_opacity() -> f32 {
 
 impl Default for Ground {
     fn default() -> Self {
-        Self { kind: GroundKind::Shadow, opacity: default_opacity(), radius: None }
+        Self { kind: GroundKind::Shadow, opacity: default_opacity(), radius: None, colour: None }
     }
 }
 

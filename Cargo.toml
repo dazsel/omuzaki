@@ -101,16 +101,18 @@ wat = "1"   # WAT text to wasm for the plugin host's test components (Apache-2.0
 wgpu = "30"
 windows = { version = "0.62", features = ["Win32_Media_MediaFoundation", "Win32_System_Com", "Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }   # Media Foundation and COM (MIT OR Apache-2.0), omuzaki-camera-mf
 windows-core = "0.62"   # the `implement` macro for the camera's COM callback (MIT OR Apache-2.0), omuzaki-camera-mf
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_UI_Input", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Input_XboxController", "Win32_Devices_HumanInterfaceDevice", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_System_Threading"] } # the Windows side of the same: reparse-point-aware opens, final-path checks; the studio's reduce-motion read; Raw Input, HID and XInput for omuzaki-input (ADR 0060)
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_UI_Input", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Input_XboxController", "Win32_Devices_HumanInterfaceDevice", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp"] } # the Windows side of the same: reparse-point-aware opens, final-path checks; the studio's reduce-motion read; Raw Input, HID, XInput and the kill switch's process list for omuzaki-input (ADR 0060)
 # The OS input backends of omuzaki-input (ADR 0060, docs/design/input-motion.md §13 DEP-0); licences in docs/licensing/deps/
 gilrs = { version = "0.11", default-features = false, features = ["xinput"] }   # gamepads on Windows (XInput, not WGI) and Linux (Apache-2.0/MIT; links the system libudev dynamically)
 x11rb = { version = "0.13", features = ["xinput"] }   # XInput2 raw events on Linux X11, pure-Rust connection; the version winit already locks (MIT OR Apache-2.0)
 evdev = "0.13"   # the opt-in evdev capture on Linux (Apache-2.0 OR MIT)
 objc2 = "0.6"   # macOS runtime bindings (MIT)
 objc2-core-graphics = "0.3"   # the listen-only CGEventTap on macOS (Zlib OR Apache-2.0 OR MIT)
+objc2-core-foundation = "0.3"   # the tap's run loop and Mach port on macOS (Zlib OR Apache-2.0 OR MIT)
 objc2-game-controller = "0.3"   # GameController pads with background events on macOS (Zlib OR Apache-2.0 OR MIT)
 objc2-io-kit = "0.3"   # the Input Monitoring check and the IOHID fallback on macOS (Zlib OR Apache-2.0 OR MIT)
 ashpd = { version = "0.13", default-features = false, features = ["tokio", "global_shortcuts"] }   # the GlobalShortcuts portal for bindings on Wayland (MIT)
+midir = "0.11"   # MIDI controllers as binding sources (#469): ALSA, CoreMIDI and WinMM input (MIT)
 url = "2"   # WHATWG URL parsing (MIT OR Apache-2.0), the xtask models gate; already in the lock
 zeroize = "1.9"   # zeroes a secret value on drop (Apache-2.0 OR MIT; already in the lock), omuzaki-secrets-api
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] } # unpacks the ONNX Runtime Windows.zip archives (MIT), omuzaki-ai-native
@@ -145,6 +147,9 @@ opt-level = 2                # the CPU rasteriser draws every mock render in the
 
 [profile.dev.package.omuzaki-char]
 opt-level = 2                # the kit's geometry: its property and fit tests and every mock preview run about 4x faster
+
+[profile.dev.package.omuzaki-face]
+opt-level = 2                # the face painter: its sweep tests paint and rasterise thousands of frames (#2289)
 
 [profile.release]
 lto = "thin"

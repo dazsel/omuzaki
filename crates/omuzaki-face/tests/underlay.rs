@@ -287,7 +287,7 @@ fn composite(layer: &UnderlayLayer, base: &[u8]) -> Result<([u8; 4], [u8; 4]), B
     scene.background = Background::Solid { colour: Colour::BLACK };
     scene.post.tonemap = Tonemap::None;
     scene.instances.push(Instance::new(mesh, material, Mat4::IDENTITY));
-    let quality = Quality { samples: 1, render_scale: 1.0, post_effects: false, ..Quality::offline() };
+    let quality = Quality { samples: 1, render_scale: 1.0, post_effects: false.into(), ..Quality::offline() };
     let image = renderer.render_image(UVec2::splat(64), AlphaEncoding::Straight, &scene, &quality)?;
     let at = |x, y| image.pixel(x, y).ok_or("pixel outside the image");
     Ok((at(32, 32)?, at(43, 32)?))

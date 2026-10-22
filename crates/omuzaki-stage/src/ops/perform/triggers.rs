@@ -239,10 +239,12 @@ struct Listing {
     triggers: Vec<TriggerInfo>,
     /// How many bindings there can be.
     max: usize,
+    /// The ids of the expressions a key can show, in order.
+    expressions: Vec<String>,
 }
 
 /// List the key triggers: each key, its expression and mode, whether it is showing and whether its expression is
-/// missing from the character.
+/// missing from the character; and the ids of the expressions a key can show.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[schemars(extend("examples" = [{}]))]
 pub struct List {}
@@ -259,7 +261,9 @@ impl Op for List {
     }
 
     fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
-        answer(Listing { triggers: host(ctx)?.triggers(), max: MAX_TRIGGERS })
+        let host = host(ctx)?;
+        let expressions = host.expressions().0.keys().map(|id| id.as_str().to_owned()).collect();
+        answer(Listing { triggers: host.triggers(), max: MAX_TRIGGERS, expressions })
     }
 }
 

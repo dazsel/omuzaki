@@ -49,6 +49,7 @@ use crate::panels::agent::review::Reviews;
 use crate::panels::agent::{self as agent, AgentFeed, Agents};
 use crate::panels::edit::EditFocus;
 use crate::settings::SettingsWindow;
+use crate::settings::connectors::Keychain;
 
 const MENU_ICON: &str = egui_phosphor::regular::LIST;
 /// How many op-log records the History panel keeps (the newest), and how many it asks the runner for at a time.
@@ -362,7 +363,9 @@ impl Shell {
 
     /// Opens the Settings window, or closes it when it is open (Ctrl+, and the menu).
     pub fn toggle_settings(&mut self) {
-        self.settings = if self.settings.is_some() { None } else { Some(SettingsWindow::new()) };
+        let keychain = self.models.get::<Keychain>().cloned();
+        self.settings =
+            if self.settings.is_some() { None } else { Some(SettingsWindow::new().with_keychain(keychain)) };
     }
 
     /// Whether the shortcut sheet is open.
