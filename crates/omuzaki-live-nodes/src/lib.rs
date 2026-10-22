@@ -6,6 +6,7 @@
 //! | Folder | Node ids |
 //! |---|---|
 //! | [`event`] | `on.event`: the trigger on any event kind, with `where` and `min` filters |
+//! | [`emit`] | `event.emit`: sends a `custom.<name>` event other automations hear |
 //! | [`op`] | `op.run`: any op allowed for automations, as an action |
 //!
 //! [`fold`] is the one case-insensitive comparison every node uses (NFKC, then lowercase), so filters and chat
@@ -15,6 +16,7 @@ omuzaki_core::define_link! {
     omuzaki_live_api::link();
 }
 
+pub mod emit;
 pub mod event;
 pub mod fold;
 mod l10n;

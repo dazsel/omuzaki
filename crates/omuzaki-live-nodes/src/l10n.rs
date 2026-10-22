@@ -37,4 +37,13 @@ omuzaki_l10n_api::messages! {
     /// Too many op calls are waiting for their answers.
     pub op_limited = "live-nodes-op-limited" (op: Id)
         => "{ $op } wasn't run: too many actions are still waiting for their answers.";
+    /// `event.emit` names a kind that isn't `custom.<name>`.
+    pub emit_not_custom = "live-nodes-emit-not-custom" (kind: Verbatim)
+        => "An automation can only send custom events: use custom.<name>, not { $kind }.";
+    /// `event.emit`'s payload isn't an object.
+    pub emit_not_object = "live-nodes-emit-not-object" (found: Verbatim)
+        => "The payload has to be an object, not { $found }.";
+    /// The engine refused the event (too many hops, too large).
+    pub emit_refused = "live-nodes-emit-refused" (reason: Verbatim)
+        => "The event wasn't sent: { $reason }";
 }
