@@ -286,6 +286,10 @@ impl Rig {
                     )))
                     .insert::<dyn PerformHost>(Arc::new(IdleHost))
                     .insert::<dyn InputHost>(Arc::new(IdleInput))
+                    // The stage's effect queue with no stage draining it: the `stage.effect.*` examples dry-run.
+                    .insert::<dyn omuzaki_stage_api::EffectService>(Arc::new(
+                        omuzaki_stage::effects::service::StageEffects::new(0),
+                    ))
                     .build(),
             )
             .with_project_dir(project);

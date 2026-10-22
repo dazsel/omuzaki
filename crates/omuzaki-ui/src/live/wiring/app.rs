@@ -28,10 +28,13 @@ use omuzaki_render::WgpuRenderer;
 use omuzaki_secrets::KeychainSecrets;
 use omuzaki_secrets_api::prelude::SecretStore;
 use omuzaki_settings_api::service::Settings;
+use omuzaki_stage::effects::log::EffectLimits;
+use omuzaki_stage::effects::service::StageEffects;
 use omuzaki_stage::frame::Stage;
 use omuzaki_stage::perform::Tracking;
 use omuzaki_stage::perform::host::{PerformError, PerformHost};
 use omuzaki_stage::perform::input::{InputHost, NoSource};
+use omuzaki_stage_api::EffectService;
 use omuzaki_store::DiskStore;
 use omuzaki_store_api::Store;
 use omuzaki_stream::feed::ProgramFeed;
@@ -112,6 +115,8 @@ pub struct LiveApp {
     input: Option<InputWiring>,
     /// The OS keychain the connectors keep their secrets in; `None` without a data folder.
     secrets: Option<Arc<dyn SecretStore>>,
+    /// The stage's particle effects: the `stage.effect.*` ops queue into it, and the viewport's stage draws it.
+    effects: Arc<StageEffects>,
 }
 
 /// The OS input hub (ADR 0060) as the app runs it: its control is in the runner's services (the `input.*` capture and
@@ -301,7 +306,13 @@ impl LiveApp {
         host.set_expressions(ExpressionSet::starter(), ChannelBuf::NEUTRAL).map_err(StartError::Perform)?;
         let window = OutputHost::new(transparency, PhysicalSize::FULL_HD);
         let input: Arc<dyn InputHost> = rig.input();
+        // A seed per session: bursts asked for without one differ from run to run, and a take records each seed.
+        let seed =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64);
+        let effects = Arc::new(StageEffects::new(seed));
+        let effect_service: Arc<dyn EffectService> = Arc::clone(&effects) as Arc<dyn EffectService>;
         let mut services = ServicesBuilder::new()
+            .insert::<dyn EffectService>(effect_service)
             .insert::<dyn PerformHost>(host)
             .insert::<dyn InputHost>(input)
             .insert::<dyn WindowHost>(Arc::new(window.clone()))
@@ -370,6 +381,7 @@ impl LiveApp {
             automation,
             approvals,
             secrets,
+            effects,
         })
     }
 
@@ -398,7 +410,7 @@ impl LiveApp {
     pub fn attach_viewport(
         &mut self,
         mut renderer: WgpuRenderer,
-        stage: Stage,
+        mut stage: Stage,
         size: UVec2,
         presenter: Box<dyn Presenter>,
     ) -> Result<(), ViewportError> {
@@ -411,6 +423,7 @@ impl LiveApp {
         if let Some(feed) = &self.feed {
             feed.service().set_program(StreamProgram { size, fps: STREAM_FPS });
         }
+        stage.attach_effects(Arc::clone(&self.effects), EffectLimits::live());
         let view =
             LiveViewport::new(renderer, stage, size, reader, presenter, self.clock.clone(), Some(self.tracker.clone()));
         self.viewport = Some(view);

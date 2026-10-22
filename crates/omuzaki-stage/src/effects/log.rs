@@ -171,6 +171,23 @@ struct Clear {
     fade_s: f32,
 }
 
+/// Everything a log holds, for a checkpoint to store and restore (D14).
+#[derive(Clone, Debug, PartialEq)]
+pub struct LogParts {
+    /// The cap.
+    pub limits: EffectLimits,
+    /// The live batches, in birth order.
+    pub batches: Vec<SpawnBatch>,
+    /// What the log knows about each batch, index for index.
+    pub meta: Vec<Meta>,
+    /// The streams by slot.
+    pub streams: [Option<StreamState>; MAX_STREAMS],
+    /// An ongoing clear: when it started and how long it fades.
+    pub clear: Option<(Seconds, f32)>,
+    /// Particles the cap has taken away so far.
+    pub thinned: u64,
+}
+
 /// The stage's spawn batches: bursts and stream segments in birth order (D12).
 #[derive(Clone, Debug, PartialEq)]
 pub struct EmissionLog {
@@ -193,6 +210,31 @@ impl EmissionLog {
             clear: None,
             thinned: 0,
         }
+    }
+
+    /// Everything the log holds. Cold: allocates.
+    pub fn parts(&self) -> LogParts {
+        LogParts {
+            limits: self.limits,
+            batches: self.batches.clone(),
+            meta: self.meta.clone(),
+            streams: self.streams,
+            clear: self.clear.map(|c| (c.from, c.fade_s)),
+            thinned: self.thinned,
+        }
+    }
+
+    /// The log `parts` describe, its ring allocated at full size as [`new`](Self::new)'s is. Batches past
+    /// `MAX_SPAWN_BATCHES`, or without their meta, are dropped. Cold.
+    pub fn from_parts(parts: &LogParts) -> Self {
+        let mut log = Self::new(parts.limits);
+        let n = parts.batches.len().min(parts.meta.len()).min(MAX_SPAWN_BATCHES);
+        log.batches.extend_from_slice(&parts.batches[..n]);
+        log.meta.extend_from_slice(&parts.meta[..n]);
+        log.streams = parts.streams;
+        log.clear = parts.clear.map(|(from, fade_s)| Clear { from, fade_s });
+        log.thinned = parts.thinned;
+        log
     }
 
     /// The limits.

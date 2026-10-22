@@ -22,6 +22,7 @@ use super::backdrop::ImagePixels;
 use super::environment::HdriPixels;
 use super::frame::frame;
 use super::landmarks::{Bounds, Landmarks};
+use crate::effects::weather::SceneEffects;
 use crate::error::StageError;
 
 /// The near plane of a free camera as a share of its distance to the target, with a floor (as in a preset's).
@@ -113,6 +114,8 @@ pub struct Changes {
     /// The backdrop's picture changed (another asset, one added or removed). Apply uploads it, so this is not a
     /// value-only change; its fit and bars are values.
     pub image: bool,
+    /// What the effects take from the scene changed: its weather, the subject's unit, the weather's floor bounds.
+    pub effects: bool,
 }
 
 impl Changes {
@@ -163,6 +166,9 @@ pub struct ResolvedScene {
     /// The picture's pixels, once loaded ([`load_backdrop`](Self::load_backdrop)); a resolve keeps them while the asset
     /// stays the same.
     pub image: Option<ImagePixels>,
+    /// What the stage's effects take from the scene: its weather in metres, the subject's unit and the floor bounds
+    /// `"auto"` weather falls over (particles.md D10).
+    pub effects: SceneEffects,
 }
 
 /// An image backdrop as the renderer takes it: the picture's asset, how it fits, and the bars' gradient.
@@ -259,6 +265,7 @@ impl ResolvedScene {
             hdri: None,
             backdrop_image: None,
             image: None,
+            effects: SceneEffects::default(),
         }
     }
 
@@ -343,7 +350,16 @@ impl ResolvedScene {
             return Err(scene_error(SceneError::new("lighting.fog", "the fog's distances aren't usable numbers")));
         }
 
+        let active_camera = active.map(|i| cameras[i]);
+        let effects = SceneEffects::resolve(
+            def,
+            figures,
+            subject_id.zip(subject),
+            active_camera.as_ref(),
+            aspect,
+        );
         let mut changes = Changes {
+            effects: replace(&mut self.effects, effects),
             backdrop: replace(&mut self.background, background),
             post: replace(&mut self.post, post),
             ground: replace(&mut self.ground, ground),

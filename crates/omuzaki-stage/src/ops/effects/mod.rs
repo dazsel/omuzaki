@@ -2,11 +2,15 @@
 //! The live actions (bursts, the live weather, clear and status) reach the stage through the
 //! [`EffectService`](omuzaki_stage_api::EffectService).
 
+pub mod burst;
+pub mod clear;
 pub mod list;
 pub mod set_weather;
+pub mod status;
+pub mod weather;
 
-use omuzaki_ops_api::OpError;
-use omuzaki_stage_api::EffectError;
+use omuzaki_ops_api::{ErrorCode, OpCtx, OpError};
+use omuzaki_stage_api::{EffectError, EffectService};
 
 /// The service's refusal as an op error: an unknown preset names the nearest ones and `stage.effect.list`.
 pub(crate) fn effect_error(error: EffectError) -> OpError {
@@ -19,8 +23,22 @@ pub(crate) fn effect_error(error: EffectError) -> OpError {
                 near => refused.hint(format!("did you mean '{}'? stage.effect.list lists the presets", near.join("', '"))),
             }
         }
-        EffectError::Limited => OpError::conflict("too many effects are waiting; try again in a moment"),
+        EffectError::Limited => OpError {
+            code: ErrorCode::Limited,
+            message: "too many effects are waiting; try again in a moment".into(),
+            field: None,
+            hint: Some("the effect queue holds 64 requests; it drains every frame".into()),
+            detail: None,
+        },
         EffectError::Invalid(why) => OpError::invalid("preset", why),
         EffectError::Unsupported => OpError::unsupported("the renderer draws no particles"),
     }
+}
+
+/// The effect service the app registered.
+///
+/// # Errors
+/// `Unavailable` when the app runs no stage effects.
+pub(crate) fn service<'a>(ctx: &OpCtx<'a>) -> Result<&'a dyn EffectService, OpError> {
+    ctx.service::<dyn EffectService>()
 }

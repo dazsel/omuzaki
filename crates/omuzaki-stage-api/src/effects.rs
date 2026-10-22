@@ -772,6 +772,28 @@ impl JsonSchema for LiveWeather {
     }
 }
 
+/// Where in a burst's emitter its particles are born, as an event records it.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BurstShape {
+    /// The emitter's origin.
+    #[default]
+    Point,
+    /// A rectangle in the emitter's XZ plane: the strip above a camera frame's top edge.
+    #[non_exhaustive]
+    Rect {
+        /// Half extents along X and Z, metres.
+        half: [f32; 2],
+    },
+}
+
+impl BurstShape {
+    /// A rectangle with half extents `half` (X, Z).
+    pub const fn rect(half: [f32; 2]) -> Self {
+        Self::Rect { half }
+    }
+}
+
 /// A burst as it happened: everything replay needs to draw the same particles (D14).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct BurstEvent {
@@ -779,6 +801,9 @@ pub struct BurstEvent {
     pub preset: Slug,
     /// The resolved emitter transform, column-major.
     pub emitter: [f32; 16],
+    /// Where in the emitter they were born.
+    #[serde(default)]
+    pub shape: BurstShape,
     /// The anchor's velocity at the burst, metres per second.
     #[serde(default)]
     pub velocity: [f32; 3],

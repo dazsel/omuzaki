@@ -76,6 +76,9 @@ record.replay_stop
 record.save_replay
 record.start
 record.stop
+stage.effect.burst
+stage.effect.clear
+stage.effect.weather
 twitch.connect
 twitch.disconnect
 vts.connect
