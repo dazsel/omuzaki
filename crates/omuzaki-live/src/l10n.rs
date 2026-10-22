@@ -7,4 +7,7 @@ omuzaki_l10n_api::messages! {
     /// A stored value whose type no longer matches its declaration.
     pub value_wrong_type = "live-value-wrong-type" (name: Id)
         => "The saved value of { $name } has another type now, so it starts from its default.";
+    /// A global another show declared with another type first.
+    pub global_type_conflict = "live-global-type-conflict" (name: Id)
+        => "The global { $name } already holds a value of another type from another show, so the nodes on it here are inert.";
 }

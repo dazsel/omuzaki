@@ -9,7 +9,8 @@
 use std::collections::BTreeMap;
 
 use omuzaki_live_api::graph::GraphDef;
-use omuzaki_live_api::ids::{EventKind, GraphId, NodeId, PortName, ShowId};
+use omuzaki_live_api::ids::{EventKind, GraphId, NodeId, PortName, ShowId, VarName};
+use omuzaki_live_api::need::Need;
 use omuzaki_live_api::node::{DynNodeKind, Node, NodeClass, Ports, find_node_kind};
 use omuzaki_live_api::services::InertReason;
 use omuzaki_live_api::show::{Finding, ShowDef};
@@ -25,6 +26,8 @@ pub(crate) struct CompiledNode {
     pub class: NodeClass,
     /// Event kinds a trigger listens to.
     pub listens: Vec<EventKind>,
+    /// The variables it reads or writes, from its needs: a global whose type another show settled makes it inert.
+    pub vars: Vec<VarName>,
     /// Each wired value input's source: (node index, output port).
     pub value_wires: BTreeMap<PortName, (usize, PortName)>,
     /// Constants for unwired value inputs.
@@ -71,11 +74,20 @@ pub(crate) fn compile(show: &ShowId, def: &ShowDef) -> Compiled {
                 let ports = DynNodeKind::ports(kind, &params).map_err(|_| InertReason::BadParams)?;
                 let listens = kind.listens(&params).map_err(|_| InertReason::BadParams)?;
                 let instance = kind.instantiate(&params).map_err(|_| InertReason::BadParams)?;
-                Ok((meta.class, ports, listens, instance))
+                let vars = kind
+                    .needs(&params)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|need| match need {
+                        Need::Variable { name, .. } => Some(name),
+                        _ => None,
+                    })
+                    .collect();
+                Ok((meta.class, ports, listens, vars, instance))
             });
-            let (class, ports, listens, instance, inert) = match built {
-                Ok((class, ports, listens, instance)) => (class, ports, listens, Some(instance), None),
-                Err(why) => (NodeClass::Active, Ports::new(), Vec::new(), None, Some(why)),
+            let (class, ports, listens, vars, instance, inert) = match built {
+                Ok((class, ports, listens, vars, instance)) => (class, ports, listens, vars, Some(instance), None),
+                Err(why) => (NodeClass::Active, Ports::new(), Vec::new(), Vec::new(), None, Some(why)),
             };
             let inert = inert.or_else(|| {
                 findings
@@ -89,6 +101,7 @@ pub(crate) fn compile(show: &ShowId, def: &ShowDef) -> Compiled {
                 ports,
                 class,
                 listens,
+                vars,
                 value_wires: BTreeMap::new(),
                 set: node.set.clone(),
                 outs: BTreeMap::new(),

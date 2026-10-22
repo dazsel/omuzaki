@@ -45,7 +45,11 @@ pub(crate) fn load(
             BTreeMap::new()
         });
         for name in core.load_values(scope, values) {
-            findings.push(Finding::note(l10n::value_wrong_type(name.as_str())));
+            findings.push(if scope == VarScope::Global {
+                Finding::inert(l10n::global_type_conflict(name.as_str()))
+            } else {
+                Finding::note(l10n::value_wrong_type(name.as_str()))
+            });
         }
         files.push((scope, persist));
     }

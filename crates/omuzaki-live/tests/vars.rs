@@ -17,10 +17,11 @@ use kinds::{custom, harness, var};
 use omuzaki_live::testing::ShowHarness;
 use omuzaki_live::vars::DiskVariables;
 use omuzaki_live_api::graph::GraphDef;
-use omuzaki_live_api::ids::{EventKind, GraphId, ShowId, VarName};
+use omuzaki_live_api::ids::{EventKind, GraphId, NodeId, ShowId, VarName};
+use omuzaki_live_api::need::Need;
 use omuzaki_live_api::node::{Category, Input, Node, NodeClass, NodeCx, NodeError, NodeKind, NodeMeta, Ports};
 use omuzaki_live_api::register_node;
-use omuzaki_live_api::services::{PersistScope, ShowKey, VariableStore};
+use omuzaki_live_api::services::{InertReason, PersistScope, ShowKey, VariableStore};
 use omuzaki_live_api::show::{ShowDef, VarScope, VarType, VariableDef};
 use omuzaki_live_api::value::Val;
 use omuzaki_live_mock::variables::MemoryVariables;
@@ -73,6 +74,38 @@ register_node!(Add);
 #[derive(Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct NoParams {}
+
+/// Adds one to the global `g` on each pulse, and says so in its needs, as the `var.*` nodes do.
+struct BumpGlobal;
+
+impl NodeKind for BumpGlobal {
+    type Params = NoParams;
+    fn meta() -> NodeMeta {
+        NodeMeta::new("test.bump_global", "Bumps g.", NodeClass::Active, Category::Variables)
+    }
+    fn ports(_: &NoParams) -> Ports {
+        Ports::new().event_in("in", "In.")
+    }
+    fn needs(_: &NoParams) -> Vec<Need> {
+        vec![Need::variable(VarName::new("g").unwrap(), VarType::Number)]
+    }
+    fn new(_: NoParams) -> Self {
+        Self
+    }
+}
+
+impl Node for BumpGlobal {
+    fn handle(&mut self, input: Input<'_>, cx: &mut NodeCx<'_>) -> Result<(), NodeError> {
+        if let Input::Event { .. } = input {
+            let g = VarName::new("g").unwrap();
+            if let Some(Val::Number(x)) = cx.var(&g) {
+                cx.set_var(&g, Val::Number(x + 1.0))?;
+            }
+        }
+        Ok(())
+    }
+}
+register_node!(BumpGlobal);
 
 /// A trigger on `var.changed` that hands the payload to `op.changed`.
 struct Seen;
@@ -203,6 +236,34 @@ fn a_stored_value_of_another_type_starts_from_the_default_with_a_finding() {
     assert_eq!(var(&mut h, "n"), 0.0);
     assert_eq!(h.findings().len(), 1);
     assert!(!h.findings()[0].inert);
+}
+
+#[test]
+fn a_global_another_show_declared_with_another_type_makes_its_nodes_inert_and_is_never_overwritten() {
+    // Another show declared `g` as text and saved it; this show declares it as a number.
+    let globals = BTreeMap::from([(name("g"), json!("hello"))]);
+    let store = Arc::new(MemoryVariables::new().with(PersistScope::Global, globals));
+    let graph = GraphDef::from_node(&json!({ "nodes": {
+        "on": { "kind": "test.on", "params": { "kind": "custom.go" } },
+        "bump": { "kind": "test.bump_global", "in": { "in": "on.fired" } },
+        "add": { "kind": "test.add", "params": { "times": 1 }, "in": { "in": "on.fired" } },
+    }}))
+    .unwrap();
+    let def = def(1).with_graph(GraphId::new("other").unwrap(), graph);
+    let mut h = harness(def).variables(Arc::clone(&store) as Arc<dyn VariableStore>, Some(PROJECT));
+    h.publish(custom("go", 1.0));
+    assert_eq!(h.findings().len(), 1);
+    assert!(h.findings()[0].inert);
+    let other = h.graphs().into_iter().find(|g| g.graph.as_str() == "other").unwrap();
+    assert_eq!(other.inert.len(), 1);
+    assert_eq!(other.inert[0].node, NodeId::new("bump").unwrap());
+    assert_eq!(other.inert[0].why, InertReason::Undeclared);
+    // The rest of the show runs: `add` bumped `n`, and a person's write to `g` is refused too.
+    assert_eq!(var(&mut h, "n"), 2.0);
+    h.set_variable(name("g"), Val::Number(9.0));
+    h.stop();
+    assert_eq!(store.stored(&PersistScope::Global)[&name("g")], json!("hello"));
+    assert_eq!(store.stored(&show_scope())[&name("n")], json!(2));
 }
 
 #[test]

@@ -154,6 +154,8 @@ pub(crate) struct Core {
     vars: BTreeMap<VarName, Variable>,
     /// Variables changed in this step: the first old value.
     changed: BTreeMap<VarName, Value>,
+    /// Globals whose saved value has another type: another show declared them first, so this run leaves them alone.
+    conflicts: BTreeSet<VarName>,
     groups: BTreeMap<GroupId, bool>,
     switches: Vec<(GroupId, bool)>,
     graph_runs: BTreeMap<GraphId, GraphRun>,
@@ -252,6 +254,7 @@ impl Core {
             next_call: 0,
             vars,
             changed: BTreeMap::new(),
+            conflicts: BTreeSet::new(),
             groups,
             switches: Vec::new(),
             graph_runs,
@@ -397,6 +400,24 @@ impl Core {
                 _ => refused.push(name.clone()),
             }
         }
+        if scope == VarScope::Global {
+            // A global is one value shared by every show; the saved one settles its type, so the nodes here that
+            // expect another are inert and the value is never overwritten (design D10).
+            for name in &refused {
+                self.conflicts.insert(name.clone());
+                for node in &mut self.nodes {
+                    if node.inert.is_some() || !node.vars.contains(name) {
+                        continue;
+                    }
+                    node.inert = Some(InertReason::Undeclared);
+                    if let Some(status) = self.base_status.iter_mut().find(|s| s.graph == node.graph) {
+                        let mut inert = status.inert.clone();
+                        inert.push(InertNode::new(node.id.clone(), InertReason::Undeclared));
+                        *status = status.clone().with_inert(inert);
+                    }
+                }
+            }
+        }
         self.files.loaded(scope, values);
         refused
     }
@@ -413,10 +434,10 @@ impl Core {
 
     /// The values files due at `now` (with `flush`, every one the run changed), each with its whole contents.
     pub(crate) fn take_saves(&mut self, now: Seconds, flush: bool) -> Vec<(VarScope, BTreeMap<VarName, Value>)> {
-        let vars = &self.vars;
+        let (vars, conflicts) = (&self.vars, &self.conflicts);
         self.files.take(now, flush, |scope| {
             vars.iter()
-                .filter(|(_, v)| v.def.scope == scope)
+                .filter(|(name, v)| v.def.scope == scope && !conflicts.contains(*name))
                 .map(|(name, v)| (name.clone(), v.value.to_json()))
                 .collect()
         })
@@ -521,6 +542,7 @@ impl Core {
                 let at = self.step_at;
                 if let Some(var) = self.vars.get_mut(&name)
                     && value.ty() == var.def.ty.port_type()
+                    && !self.conflicts.contains(&name)
                 {
                     let old = std::mem::replace(&mut var.value, value).to_json();
                     var.changed = Some((at, None));
