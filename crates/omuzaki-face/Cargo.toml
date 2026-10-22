@@ -49,6 +49,7 @@ proptest.workspace = true
 pollster.workspace = true
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-face-mock = { path = "../omuzaki-face-mock" }
+omuzaki-io-mock = { path = "../omuzaki-io-mock" }
 omuzaki-render-mock = { path = "../omuzaki-render-mock" }
 omuzaki-store-mock = { path = "../omuzaki-store-mock" }
 
