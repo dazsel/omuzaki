@@ -39,7 +39,7 @@ const DEFAULT_FILLERS: &[(&str, &[&str])] = &[
         "en",
         &[
             "please", "pls", "plz", "now", "can", "could", "would", "will", "you", "ok", "okay", "hey", "um", "uh",
-            "er", "and", "then", "also", "just", "again", "go", "ahead", "right",
+            "er", "and", "then", "also", "just", "again", "go", "ahead", "right", "a", "an", "the",
         ],
     ),
     (
@@ -444,7 +444,9 @@ struct Group {
     /// Compared on characters.
     characters: bool,
     /// The filler words, each as its tokens.
-    fillers: Vec<Vec<String>>,
+    /// The filler words, each as its tokens' characters. A token of five letters or more takes one edit per five, as
+    /// phrases do ("pleaser" is "please").
+    fillers: Vec<Vec<Vec<char>>>,
     phrases: Vec<Phrase>,
 }
 
@@ -519,13 +521,13 @@ impl Group {
         let extra =
             list.fillers.iter().filter(|(l, _)| primary(l) == lang).flat_map(|(_, w)| w.iter().map(String::as_str));
         let mut norm = String::new();
-        let mut fillers: Vec<Vec<String>> = Vec::new();
+        let mut fillers: Vec<Vec<Vec<char>>> = Vec::new();
         for word in builtin.chain(extra) {
             normalize(word, &mut norm);
-            let tokens: Vec<String> = if characters {
-                norm.chars().filter(|c| *c != ' ').map(String::from).collect()
+            let tokens: Vec<Vec<char>> = if characters {
+                norm.chars().filter(|c| *c != ' ').map(|c| vec![c]).collect()
             } else {
-                norm.split(' ').filter(|w| !w.is_empty()).map(str::to_owned).collect()
+                norm.split(' ').filter(|w| !w.is_empty()).map(|w| w.chars().collect()).collect()
             };
             if !tokens.is_empty() && !fillers.contains(&tokens) {
                 fillers.push(tokens);
@@ -576,8 +578,14 @@ impl Group {
             };
             for filler in &self.fillers {
                 let j = i + filler.len();
-                if j <= n && filler.iter().enumerate().all(|(k, f)| tokens.token(i + k) == f) {
-                    relax(j, (edits, fill + filler.len(), pieces), None);
+                if j > n {
+                    continue;
+                }
+                let fit = filler.iter().enumerate().try_fold(0, |sum, (k, f)| {
+                    bounded_distance(f, tokens.token(i + k), f.len() / LETTERS_PER_EDIT).map(|d| sum + d)
+                });
+                if let Some(fit) = fit {
+                    relax(j, (edits + fit, fill + filler.len(), pieces), None);
                 }
             }
             self.hits_at(tokens, i, |hit| {

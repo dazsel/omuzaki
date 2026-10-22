@@ -126,8 +126,23 @@ struct WhisperSession {
 }
 
 impl WhisperSession {
-    /// The text of `audio`, in `language` (`None` detects it), and the language used.
+    /// The text of `audio`, in `language` (`None` detects it), and the language used. A short line is encoded with a
+    /// short context first; if that text loops ("clip clip clip ..."), the line is read again with the full window.
     fn transcribe(&mut self, audio: &[f32], language: Option<&str>) -> Result<(String, String), WhisperError> {
+        let context = audio_ctx_for(audio.len());
+        let (text, used) = self.transcribe_with(audio, language, context)?;
+        if context < 1_500 && loops(&text) {
+            return self.transcribe_with(audio, language, 1_500);
+        }
+        Ok((text, used))
+    }
+
+    fn transcribe_with(
+        &mut self,
+        audio: &[f32],
+        language: Option<&str>,
+        context: i32,
+    ) -> Result<(String, String), WhisperError> {
         if audio.is_empty() {
             return Ok((String::new(), language.unwrap_or("").to_owned()));
         }
@@ -150,6 +165,9 @@ impl WhisperSession {
         // switched off: a live pipeline would rather show a flawed line now than a better one seconds later.
         params.set_max_tokens(max_tokens_for(audio.len()));
         params.set_temperature_inc(0.0);
+        // Whisper encodes a 30-second window whatever the utterance's length, so a two-second command costs as much
+        // as a long sentence. Encoding only the part that holds audio (and a margin) cuts that cost for short lines.
+        params.set_audio_ctx(context);
         self.state.full(params, audio)?;
         let text = self.state.as_iter().map(|s| s.to_string()).collect::<Vec<_>>().join(" ").trim().to_owned();
         let used = match language {
@@ -159,6 +177,36 @@ impl WhisperSession {
         Ok((text, used))
     }
 }
+
+/// The encoder frames Whisper reads for `samples` of 16 kHz audio: [`SHORT_CTX`] (about 10 s) for a line of at most
+/// [`SHORT_LINE_S`], else the full window (1,500 frames, 30 s). A context only a little longer than the audio makes
+/// Whisper repeat itself on long lines, so only short lines, with ample margin, get the shorter one.
+fn audio_ctx_for(samples: usize) -> i32 {
+    if samples as f32 / SAMPLE_RATE as f32 <= SHORT_LINE_S { SHORT_CTX } else { 1_500 }
+}
+
+/// Whether `text` repeats itself: one word four times in a row, or a run of two to eight words three times in a row,
+/// the way Whisper loops when it loses its place.
+fn loops(text: &str) -> bool {
+    let words: Vec<String> = text
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
+        .filter(|w| !w.is_empty())
+        .collect();
+    (1..=8).any(|n| {
+        let times = if n == 1 { 4 } else { 3 };
+        words.len() >= n * times
+            && (0..=words.len() - n * times).any(|start| {
+                let first = &words[start..start + n];
+                (1..times).all(|k| &words[start + k * n..start + (k + 1) * n] == first)
+            })
+    })
+}
+
+/// The longest line encoded with [`SHORT_CTX`], seconds.
+const SHORT_LINE_S: f32 = 6.0;
+/// The short lines' encoder context: 512 frames, 10.24 s.
+const SHORT_CTX: i32 = 512;
 
 /// Writes `text` into a `u8[any]` output.
 fn write_text(out: &mut TensorBuf, index: usize, text: &str) -> Result<(), RunError> {
@@ -205,6 +253,18 @@ pub fn max_tokens_for(samples: usize) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_looping_transcript_is_caught() {
+        assert!(loops("clip clip clip clip clip clip"));
+        assert!(loops(
+            "When he cried out for mercy and said. When he cried out for mercy and said. When he cried out for mercy and said."
+        ));
+        assert!(!loops("Clip that, please."));
+        assert!(!loops("no no no, that was close"));
+        assert!(!loops(""));
+        assert_eq!((audio_ctx_for(16_000), audio_ctx_for(16_000 * 7)), (SHORT_CTX, 1_500));
+    }
 
     #[test]
     fn token_cap_grows_with_length() {

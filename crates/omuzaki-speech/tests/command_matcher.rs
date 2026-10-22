@@ -60,6 +60,11 @@ const TABLE: &[(&str, &[&str])] = &[
     ("start the timmer", &["timer"]),
     ("bonk", &["bonk"]),
     ("he got bonked", &[]),
+    // What Whisper makes of a filler: a near filler, an article.
+    ("Wave pleaser", &["wave"]),
+    ("Clip that pleases.", &["clip"]),
+    ("the sad face", &["sad"]),
+    ("A clip that.", &["clip"]),
     // Nothing to match.
     ("", &[]),
     ("please", &[]),

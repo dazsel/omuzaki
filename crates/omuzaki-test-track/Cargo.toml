@@ -34,6 +34,8 @@ omuzaki-anim-api = { path = "../omuzaki-anim-api" }
 omuzaki-track-voice = { path = "../omuzaki-track-voice" }
 omuzaki-performer-api = { path = "../omuzaki-performer-api" }
 omuzaki-core = { path = "../omuzaki-core" }
+# The voice-command evaluation reads the listener's events through a sink of its own.
+omuzaki-live-api = { path = "../omuzaki-live-api" }
 omuzaki-speech = { path = "../omuzaki-speech" }
 omuzaki-track = { path = "../omuzaki-track" }
 
