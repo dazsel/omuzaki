@@ -5623,6 +5623,8 @@ dependencies = [
  "omuzaki-setup",
  "omuzaki-stage",
  "omuzaki-stage-api",
+ "omuzaki-store",
+ "omuzaki-store-api",
  "omuzaki-stream",
  "omuzaki-stream-api",
  "omuzaki-track",

@@ -7,7 +7,7 @@
 //! a character. If the folder can't be opened the app runs on an in-memory document, and if the live slice can't start
 //! the shell runs on a plain runner, so the window still opens; each reason is logged.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use clap::Parser;
@@ -220,8 +220,8 @@ fn core_of(live: Option<&LiveApp>, dir: Option<&PathBuf>, settings: Option<Arc<d
 }
 
 /// The shell over `core`, opened on the project's character, with the device egui draws with for the viewport and
-/// the agent sessions for the Agent panel; on the first start, in the setup flow.
-fn studio_shell(cc: &eframe::CreationContext<'_>, core: Option<Core>) -> Shell {
+/// History's pictures, and the agent sessions for the Agent panel; on the first start, in the setup flow.
+fn studio_shell(cc: &eframe::CreationContext<'_>, core: Option<Core>, dir: Option<&PathBuf>) -> Shell {
     let runner: Arc<dyn Runner> = core.as_ref().map_or_else(|| Arc::new(NullRunner) as _, |c| Arc::clone(&c.runner));
     let character = match studio::open_character(runner.as_ref()) {
         Ok(id) => Some(id),
@@ -239,6 +239,12 @@ fn studio_shell(cc: &eframe::CreationContext<'_>, core: Option<Core>) -> Shell {
         builder: Arc::new(RegistryBuilder),
         build: BuildServices::default(),
     });
+    if let (Some(core), Some(dir), Some(gpu)) = (&core, dir, cc.wgpu_render_state.as_ref()) {
+        match history_pictures(core, dir, gpu) {
+            Ok(pictures) => shell.insert_view(pictures),
+            Err(error) => tracing::warn!(%error, "History shows no pictures"),
+        }
+    }
     if let Some(core) = core {
         shell.insert_view(Agents(core.sessions));
     }
@@ -250,6 +256,17 @@ fn studio_shell(cc: &eframe::CreationContext<'_>, core: Option<Core>) -> Shell {
     first_run.open_if_new(&shell.requests());
     shell.insert_view(first_run);
     shell
+}
+
+/// History's pictures of the project in `dir`, rendered on egui's own device by a renderer of their own.
+fn history_pictures(
+    core: &Core,
+    dir: &Path,
+    gpu: &eframe::egui_wgpu::RenderState,
+) -> Result<omuzaki_ui::shell::pictures::HistoryPictures, String> {
+    let renderer =
+        WgpuRenderer::from_device(&gpu.adapter, gpu.device.clone(), gpu.queue.clone()).map_err(|e| e.to_string())?;
+    omuzaki_ui::shell::pictures::taken(Arc::clone(&core.runner), Box::new(renderer), dir)
 }
 
 fn main() -> eframe::Result {
@@ -282,7 +299,7 @@ fn main() -> eframe::Result {
             }
             let live = start_live(cc, open_document(dir.as_ref()), settings.clone());
             let core = core_of(live.as_ref(), dir.as_ref(), settings);
-            let mut shell = studio_shell(cc, core);
+            let mut shell = studio_shell(cc, core, dir.as_ref());
             if let Some(live) = live.as_ref() {
                 shell.insert_view(live.channel_feed());
             }

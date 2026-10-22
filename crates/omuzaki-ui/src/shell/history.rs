@@ -11,6 +11,8 @@
 //!   ([`Preview`]), without changing it: a "Viewing" line with **Back to now** says so, and Esc or closing the row
 //!   goes back. The past state is worked out from the log's patches: every later step that is in effect is reversed,
 //!   newest first, and every undone step up to it is applied again.
+//! - **Pictures:** when the app takes them ([`HistoryPictures`]), each row starts with the character as it looked
+//!   right after the step, loaded only for the rows on screen ([`super::pictures`]).
 //! - **Keyboard:** ↑ and ↓ move through the rows, Enter opens or closes a row's details, Esc closes them.
 //! - **Undo conflicts:** an undo the runner refuses because a later change touches the same values leaves a card
 //!   saying so at the top of the list until it is dismissed or a step goes through.
@@ -28,6 +30,7 @@ use omuzaki_ops_api::{Actor, Grants, Mode, OpRecord, Request, Runner, TxId, tool
 use omuzaki_ui_api::panel::{Panel, PanelCtx};
 use omuzaki_ui_api::registry::Region;
 
+use super::pictures::{Atlas, HistoryPictures};
 use super::requests::{ShellRequest, ShellRequests};
 use super::text::{Word, say};
 use crate::ds::icons;
@@ -196,6 +199,9 @@ pub struct History {
     /// The rows the last frame drew, and the height of the list's view.
     drawn: std::ops::Range<usize>,
     view: f32,
+    /// Where each step's picture comes from, when the app takes them, and the ones loaded.
+    pictures: Option<HistoryPictures>,
+    atlas: Atlas,
 }
 
 impl Panel for History {
@@ -206,6 +212,7 @@ impl Panel for History {
         };
         self.requests = ctx.view::<ShellRequests>().cloned();
         self.preview = ctx.view::<Preview>().cloned();
+        self.pictures = ctx.view::<HistoryPictures>().cloned();
         undo_bar(ui, self.requests.as_ref());
         conflict_card(ui, log, self.requests.as_ref());
         self.viewing_line(ui);
@@ -225,6 +232,11 @@ impl Panel for History {
 }
 
 impl History {
+    /// How many steps' pictures are loaded as textures: at most the rows drawn lately, never the whole log.
+    pub fn pictures_kept(&self) -> usize {
+        self.atlas.kept()
+    }
+
     /// Opens the details of the step `seq` (or closes them, with `None`) and shows the state after it in the viewport.
     fn set_open(&mut self, seq: Option<u64>, log: &HistoryLog, runner: &dyn Runner) {
         self.open = seq;
@@ -437,7 +449,13 @@ impl History {
                 ui.painter().rect_filled(rect, 4.0, fill);
             }
             paint::focus_ring(ui.painter(), &ds.theme, &response, rect, 4, RingPlacement::Inside);
-            let inner = rect.shrink2(vec2(8.0, 6.0));
+            let mut inner = rect.shrink2(vec2(8.0, 6.0));
+            if let Some(pictures) = &self.pictures {
+                let side = inner.height();
+                let square = egui::Rect::from_min_size(inner.min, vec2(side, side));
+                self.atlas.draw(ui, pictures, record.tx, log.seen.get(&record.seq).copied(), square);
+                inner.min.x += side + 8.0;
+            }
             let colour = if undone { ds.theme.text3 } else { ds.theme.text };
             ui.scope_builder(UiBuilder::new().max_rect(inner), |ui| {
                 ui.spacing_mut().item_spacing.y = 4.0;

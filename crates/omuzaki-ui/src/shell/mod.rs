@@ -28,6 +28,7 @@ pub mod layout;
 pub mod palette;
 pub mod panels;
 pub mod persist;
+pub mod pictures;
 pub mod registry;
 pub mod requests;
 pub mod saver;

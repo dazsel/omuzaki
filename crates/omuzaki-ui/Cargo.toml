@@ -11,7 +11,7 @@ repository.workspace = true
 [features]
 default = ["capture"]
 # Headless rendering of the gallery to PNG (and the pixel screenshots in tests) through egui_kittest's wgpu renderer.
-capture = ["dep:egui_kittest", "dep:image"]
+capture = ["dep:egui_kittest"]
 
 [dependencies]
 clap.workspace = true
@@ -20,7 +20,8 @@ egui.workspace = true
 egui-phosphor.workspace = true
 egui_tiles.workspace = true
 egui_kittest = { workspace = true, optional = true }
-image = { workspace = true, optional = true }
+# History's pictures are PNGs (shell/pictures.rs).
+image.workspace = true
 inventory.workspace = true
 regex.workspace = true
 schemars.workspace = true
@@ -62,6 +63,8 @@ omuzaki-settings-api = { path = "../omuzaki-settings-api" }
 omuzaki-setup = { path = "../omuzaki-setup" }
 omuzaki-stage = { path = "../omuzaki-stage" }
 omuzaki-stage-api = { path = "../omuzaki-stage-api" }
+omuzaki-store = { path = "../omuzaki-store" }
+omuzaki-store-api = { path = "../omuzaki-store-api" }
 omuzaki-stream = { path = "../omuzaki-stream" }
 omuzaki-stream-api = { path = "../omuzaki-stream-api" }
 # The studio's live inputs: the webcam from the install, the phone link and VMC out (live/wiring/app.rs).
