@@ -32,10 +32,12 @@
 //! | [`player`] | the expression player: fades, auto-stop, exclusive groups, layers and the default expression |
 //! | [`exaggeration`] | the exaggeration dial: presets from realistic through anime to chibi extreme |
 //! | [`bake`] | the expression bakers (`morph`, `flipbook`) |
+//! | [`atlas`] | the atlas-scale controller: the layers' density stepped with the face's GPU budget pressure |
 //!
 //! Benchmarks sit in `benches/` (one pre-declared target per hot path) and each change adds its own files under `tests/`.
 #![deny(missing_docs)]
 
+pub mod atlas;
 pub mod bake;
 pub mod exaggeration;
 pub mod layer;
