@@ -36,6 +36,9 @@ use crate::inbox::Inbox;
 const IDLE_WAIT: Duration = Duration::from_millis(250);
 /// The values monitor refreshes at most this often (design D10: four times a second).
 const VALUES_INTERVAL: Duration = Duration::from_millis(250);
+/// The most inbox items the engine thread takes per lock. Small, so the droppable queue's bound still means what it
+/// says, and large enough that the engine rarely contends with producers.
+const BATCH: usize = 64;
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
@@ -170,15 +173,12 @@ impl Automation {
     }
 
     /// Queues an event for the running show after `publish`'s checks; `Ok` with nothing done when no show runs.
-    fn enqueue(&self, mut event: LiveEvent, droppable: bool) -> Result<Option<EventId>, PublishError> {
+    fn enqueue(&self, event: LiveEvent, droppable: bool) -> Result<Option<EventId>, PublishError> {
         let run = lock(&self.run);
         let Some(running) = run.as_ref() else { return Ok(None) };
-        let id = EventId(self.next_event.fetch_add(1, Ordering::Relaxed) + 1);
-        event.id = id;
-        // The inbox stamps arrival on the engine clock: producers run on their own threads with no runner clock.
-        event.at = self.clock.now();
-        let at = event.at;
-        running.inbox.push_event(event, droppable, at).map(|()| Some(id))
+        // The inbox stamps arrival on the engine clock (producers run on their own threads with no runner clock) and
+        // numbers the event under its own lock, so ids rise in the order events are queued.
+        running.inbox.push_event(event, droppable, self.clock.now(), &self.next_event)
     }
 }
 
@@ -310,45 +310,61 @@ impl EngineThread {
     fn run(mut self) {
         self.core.start(self.clock.now(), self.wall.now());
         let mut values_at: Option<Instant> = None;
+        // Whether a step ran since the status and the values were last published: an idle engine republishes nothing,
+        // and a busy one at most every `VALUES_INTERVAL`, so producers never wait behind the monitor.
+        let mut dirty = true;
+        let mut batch = std::collections::VecDeque::with_capacity(BATCH);
         loop {
             for call in self.core.take_outgoing() {
                 // The dispatcher only goes away with this thread; a send can't fail before then.
                 let _ = self.calls.send(call);
             }
-            self.publish_status();
             if self.stop.load(Ordering::SeqCst) {
                 break;
             }
-            let idle = self.inbox.is_empty();
-            if values_at.is_none_or(|t| t.elapsed() >= VALUES_INTERVAL) || idle {
+            let idle = batch.is_empty() && self.inbox.is_empty();
+            if dirty && (idle || values_at.is_none_or(|t| t.elapsed() >= VALUES_INTERVAL)) {
+                self.publish_status();
                 *lock(&self.shared.values) = Some(Arc::new(self.core.values()));
                 values_at = Some(Instant::now());
+                dirty = false;
             }
             if let Some(mut event) = self.core.pop_own() {
                 event.id = EventId(self.next_event.fetch_add(1, Ordering::Relaxed) + 1);
                 self.core.step(self.clock.now(), self.wall.now(), Item::Event(event));
+                dirty = true;
                 continue;
             }
             let now = self.clock.now();
             if self.core.wake(now, self.wall.now()) {
+                dirty = true;
                 continue;
             }
             let wait = self.core.next_wake().map_or(IDLE_WAIT, |due| {
                 Duration::try_from_secs_f64((due.0 - now.0).max(0.0)).unwrap_or(IDLE_WAIT).min(IDLE_WAIT)
             });
-            if let Some(item) = self.inbox.pop(wait) {
+            if batch.is_empty() {
+                self.inbox.pop_batch(wait, BATCH, &mut batch);
+            }
+            if let Some(item) = batch.pop_front() {
                 self.core.step(self.clock.now(), self.wall.now(), item);
+                dirty = true;
+            } else {
+                // The producers' and the inbox's drop counts change without a step.
+                self.publish_status();
             }
         }
         self.core.stop(self.clock.now(), self.wall.now());
+        self.publish_status();
         *lock(&self.shared.values) = Some(Arc::new(self.core.values()));
     }
 
     fn publish_status(&self) {
-        let (inbox, inbox_full) = self.inbox.dropped();
+        let (inbox, inbox_full, duplicate) = self.inbox.dropped();
         let mut dropped: Dropped = self.core.dropped();
         dropped.inbox = inbox;
         dropped.inbox_full = inbox_full;
+        dropped.duplicate = duplicate;
         dropped.producer = self.shared.producer_dropped.load(Ordering::Relaxed);
         *lock(&self.shared.status) =
             Status::default().with_running(self.info.clone()).with_graphs(self.core.graphs()).with_dropped(dropped);

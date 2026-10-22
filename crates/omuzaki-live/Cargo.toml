@@ -22,6 +22,10 @@ serde_json.workspace = true
 [dev-dependencies]
 omuzaki-live-mock = { path = "../omuzaki-live-mock" }
 
+[[bench]]
+name = "inbox"
+harness = false
+
 [lints]
 workspace = true
 

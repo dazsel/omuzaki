@@ -28,7 +28,7 @@ use omuzaki_live_api::limits::{
 use omuzaki_live_api::node::{CallId, EvalCx, EvalHost, Input, Node, NodeCx, NodeError, NodeHost, WakeId, node_rng};
 use omuzaki_live_api::services::{
     Dropped, EventRow, Firing, GraphStatus, GroupRow, InertNode, InertReason, NodeRef, SuspendReason, Suspension,
-    ValuesSnapshot, VarRow,
+    ValuesSnapshot, VarRow, shown,
 };
 use omuzaki_live_api::show::VariableDef;
 use omuzaki_live_api::value::{PortType, Val, ValError};
@@ -504,7 +504,7 @@ impl Core {
     }
 
     fn record_event(&mut self, event: &LiveEvent) {
-        let row = EventRow::new(event.id, event.kind.clone(), event.source.clone(), event.at, event.kind.to_string());
+        let row = EventRow::new(event.id, event.kind.clone(), event.source.clone(), event.at, summary(event));
         self.events.push_back(row);
         if self.events.len() > MONITOR_EVENTS {
             self.events.pop_front();
@@ -751,6 +751,29 @@ impl NodeHost for Host<'_> {
             None => fallback_event(),
         }
     }
+}
+
+/// One line for the values monitor: who (the user, the raider, the gifter) and what (the text, the reward, the bits,
+/// the viewers), cut to the monitor's width. Only the fields the normalised payloads share; other kinds show their kind.
+pub(crate) fn summary(event: &LiveEvent) -> String {
+    let p = &event.payload;
+    let text = |pointer: &str| p.pointer(pointer).and_then(Value::as_str).filter(|s| !s.is_empty());
+    let number = |key: &str| p.get(key).and_then(Value::as_u64);
+    let who = text("/user/name").or_else(|| text("/from/name")).or_else(|| text("/gifter/name"));
+    let what = text("/text")
+        .map(str::to_owned)
+        .or_else(|| text("/reward/title").map(str::to_owned))
+        .or_else(|| number("bits").map(|b| format!("{b} bits")))
+        .or_else(|| number("viewers").map(|v| format!("{v} viewers")))
+        .or_else(|| text("/message").map(str::to_owned));
+    let line = match (who, what) {
+        (Some(who), Some(what)) => format!("{who}: {what}"),
+        (Some(who), None) => who.to_owned(),
+        (None, Some(what)) => what,
+        (None, None) => event.kind.to_string(),
+    };
+    // One line: a newline in chat text would break the monitor's rows.
+    shown(&Value::String(line.replace(['\n', '\r'], " ")))
 }
 
 /// A placeholder root for the unreachable case of an activation without a token.

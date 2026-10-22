@@ -313,6 +313,9 @@ pub struct Dropped {
     pub reload: u64,
     /// Tokens, wakes and replies dropped while paused.
     pub paused: u64,
+    /// Platform redeliveries dropped by the inbox: the same (platform, kind, origin id) within ten minutes.
+    #[serde(default)]
+    pub duplicate: u64,
 }
 
 /// What `automation.values` returns: the values monitor (design D10). Refreshed into a one-slot mailbox, so the
