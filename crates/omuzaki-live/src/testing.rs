@@ -9,15 +9,16 @@ use std::collections::BTreeMap;
 
 use omuzaki_core::time::Seconds;
 use omuzaki_live_api::event::{EventId, LiveEvent, UtcMillis};
-use omuzaki_live_api::ids::ShowId;
+use omuzaki_live_api::ids::{GraphId, GroupId, ShowId, VarName};
 use omuzaki_live_api::node::CallId;
 use omuzaki_live_api::services::{Dropped, GraphStatus, ValuesSnapshot};
 use omuzaki_live_api::show::{Finding, ShowDef};
+use omuzaki_live_api::value::Val;
 use omuzaki_ops_api::{Actor, OpError};
 use serde_json::{Value, json};
 
 use crate::compile::compile;
-use crate::core::{Core, Item, OpRequest};
+use crate::core::{Control, Core, Item, OpRequest};
 
 /// An answer script for an op: the reply `latency` after the call.
 type Answer = Box<dyn FnMut(&Value) -> Outcome>;
@@ -66,6 +67,8 @@ pub struct ShowHarness {
     requests: Vec<Requested>,
     /// Calls nobody answered yet, for [`reply`](Self::reply).
     open: Vec<CallId>,
+    /// Steps run after the start: events, wakes, replies and changes from outside.
+    steps: u64,
 }
 
 impl std::fmt::Debug for ShowHarness {
@@ -91,6 +94,7 @@ impl ShowHarness {
             next_event: 0,
             requests: Vec::new(),
             open: Vec::new(),
+            steps: 0,
         }
     }
 
@@ -139,6 +143,7 @@ impl ShowHarness {
         }
         self.next_event += 1;
         event.id = EventId(self.next_event);
+        self.steps += 1;
         let (now, utc) = (self.now, self.utc());
         if let Some(core) = self.core.as_mut() {
             core.step(now, utc, Item::Event(event));
@@ -162,6 +167,7 @@ impl ShowHarness {
             match (wake, reply) {
                 (Some(w), r) if r.is_none_or(|r| w.0 <= r.0) => {
                     self.now = Seconds(self.now.0.max(w.0));
+                    self.steps += 1;
                     let utc = self.utc();
                     if let Some(core) = self.core.as_mut() {
                         core.wake(w, utc);
@@ -170,6 +176,7 @@ impl ShowHarness {
                 (_, Some(r)) => {
                     self.now = Seconds(self.now.0.max(r.0));
                     let Some((_, (call, outcome))) = self.replies.pop_first() else { break };
+                    self.steps += 1;
                     let (now, utc) = (self.now, self.utc());
                     if let Some(core) = self.core.as_mut() {
                         core.step(now, utc, Item::Reply { call, outcome });
@@ -186,9 +193,41 @@ impl ShowHarness {
     pub fn reply(&mut self, call: CallId, outcome: Result<Option<Value>, OpError>) {
         self.ensure_started();
         self.open.retain(|c| *c != call);
+        self.steps += 1;
         let (now, utc) = (self.now, self.utc());
         if let Some(core) = self.core.as_mut() {
             core.step(now, utc, Item::Reply { call, outcome });
+        }
+        self.settle();
+    }
+
+    /// Switches `group` from outside the show (`automation.switch_group`), as a step of its own.
+    pub fn switch_group(&mut self, group: GroupId, on: bool) {
+        self.control(Control::SwitchGroup { group, on });
+    }
+
+    /// Sets `name` from outside the show (`automation.set_variable`), as a step of its own. The service checks the
+    /// type first; the engine ignores a value of the wrong type.
+    pub fn set_variable(&mut self, name: VarName, value: Val) {
+        self.control(Control::SetVariable { name, value });
+    }
+
+    /// Lifts `graph`'s suspension (`automation.resume_graph`), as a step of its own.
+    pub fn resume_graph(&mut self, graph: GraphId) {
+        self.control(Control::ResumeGraph { graph });
+    }
+
+    /// How many steps ran after the start: an idle show runs none.
+    pub fn steps(&self) -> u64 {
+        self.steps
+    }
+
+    fn control(&mut self, control: Control) {
+        self.ensure_started();
+        self.steps += 1;
+        let (now, utc) = (self.now, self.utc());
+        if let Some(core) = self.core.as_mut() {
+            core.step(now, utc, Item::Control(control));
         }
         self.settle();
     }
@@ -264,6 +303,8 @@ impl ShowHarness {
         core.start(self.now, self.utc());
         self.core = Some(core);
         self.settle();
+        // The start and what it queued (`show.started`) aren't counted.
+        self.steps = 0;
     }
 
     /// After a step: hands its requests to the answer scripts and runs the engine's own events, as the engine thread
@@ -277,6 +318,7 @@ impl ShowHarness {
             }
             let Some(core) = self.core.as_mut() else { return };
             let Some(mut event) = core.pop_own() else { return };
+            self.steps += 1;
             self.next_event += 1;
             event.id = EventId(self.next_event);
             let (now, utc) = (self.now, self.utc());

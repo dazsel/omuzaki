@@ -25,11 +25,12 @@ use omuzaki_live_api::services::{
     AutomationControl, Dropped, RunInfo, Status, SystemWallClock, ValuesSnapshot, WallClock,
 };
 use omuzaki_live_api::show::{ShowDef, paths};
+use omuzaki_live_api::value::Val;
 use omuzaki_ops_api::{Actor, Cause, CauseKind, Grants, Mode, OpError, Request, Runner, Scope, SessionId};
 use serde_json::Value;
 
 use crate::compile::compile;
-use crate::core::{Core, Item, OpRequest};
+use crate::core::{Control, Core, Item, OpRequest};
 use crate::inbox::Inbox;
 
 /// The longest the engine thread sleeps without looking at its stop flag.
@@ -60,6 +61,8 @@ struct Shared {
 /// A running show.
 struct Running {
     info: RunInfo,
+    /// What it was compiled from, to check a change from outside before it is queued.
+    def: ShowDef,
     inbox: Arc<Inbox>,
     stop: Arc<AtomicBool>,
     engine: Option<JoinHandle<()>>,
@@ -162,7 +165,7 @@ impl Automation {
             .name(format!("automation-{id}"))
             .spawn(move || engine.run())
             .map_err(|e| OpError::internal(format!("the automation engine didn't start: {e}")))?;
-        *run = Some(Running { info: info.clone(), inbox, stop, engine: Some(handle) });
+        *run = Some(Running { info: info.clone(), def: def.clone(), inbox, stop, engine: Some(handle) });
         Ok(info)
     }
 
@@ -170,6 +173,16 @@ impl Automation {
     #[must_use]
     pub fn running(&self) -> Option<RunInfo> {
         lock(&self.run).as_ref().filter(|r| r.engine.as_ref().is_some_and(|h| !h.is_finished())).map(|r| r.info.clone())
+    }
+
+    /// Checks `change` against the running show and queues it as a step of its own.
+    fn control(&self, change: impl FnOnce(&ShowDef) -> Result<Control, OpError>) -> Result<(), OpError> {
+        let run = lock(&self.run);
+        let running =
+            run.as_ref().filter(|r| r.engine.as_ref().is_some_and(|h| !h.is_finished())).ok_or_else(not_running)?;
+        let control = change(&running.def)?;
+        running.inbox.push_reply(Item::Control(control));
+        Ok(())
     }
 
     /// Queues an event for the running show after `publish`'s checks; `Ok` with nothing done when no show runs.
@@ -260,16 +273,37 @@ impl AutomationControl for Automation {
         lock(&self.shared.values).clone()
     }
 
-    fn set_variable(&self, _name: &VarName, _value: Value, _by: &Actor) -> Result<(), OpError> {
-        Err(later("setting a variable from outside the show"))
+    fn set_variable(&self, name: &VarName, value: Value, _by: &Actor) -> Result<(), OpError> {
+        self.control(|def| {
+            let var = def
+                .variables
+                .get(name)
+                .ok_or_else(|| OpError::not_found(format!("the show declares no variable `{name}`")))?;
+            let ty = var.ty.port_type();
+            let value = Val::from_json(&value, ty)
+                .ok()
+                .filter(|v| v.ty() == ty && v.check().is_ok())
+                .ok_or_else(|| OpError::invalid("value", format!("`{name}` holds {ty:?}")))?;
+            Ok(Control::SetVariable { name: name.clone(), value })
+        })
     }
 
-    fn switch_group(&self, _group: &GroupId, _on: bool, _by: &Actor) -> Result<(), OpError> {
-        Err(later("switching a group from outside the show"))
+    fn switch_group(&self, group: &GroupId, on: bool, _by: &Actor) -> Result<(), OpError> {
+        self.control(|def| {
+            if !def.groups.contains_key(group) {
+                return Err(OpError::not_found(format!("the show declares no group `{group}`")));
+            }
+            Ok(Control::SwitchGroup { group: group.clone(), on })
+        })
     }
 
-    fn resume_graph(&self, _graph: &GraphId, _by: &Actor) -> Result<(), OpError> {
-        Err(later("resuming a suspended graph"))
+    fn resume_graph(&self, graph: &GraphId, _by: &Actor) -> Result<(), OpError> {
+        self.control(|def| {
+            if !def.graphs.contains_key(graph) {
+                return Err(OpError::not_found(format!("the show has no graph `{graph}`")));
+            }
+            Ok(Control::ResumeGraph { graph: graph.clone() })
+        })
     }
 
     fn fire(&self, kind: EventKind, payload: Value, by: &Actor) -> Result<EventId, OpError> {

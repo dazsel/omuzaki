@@ -212,7 +212,7 @@ mod tests {
     fn event_of(item: Item) -> LiveEvent {
         match item {
             Item::Event(event) => event,
-            Item::Reply { .. } => panic!("a reply where an event was queued"),
+            Item::Reply { .. } | Item::Control(_) => panic!("a reply where an event was queued"),
         }
     }
 

@@ -10,8 +10,11 @@
 //!   defaults.
 //! - **Faults never stop the show:** a `NodeError` drops that branch and is counted; a panic makes the node faulted
 //!   (inert until the show restarts); the loop guard suspends the graph that ran away.
+//! - **Groups and rates (design D8, D12):** a graph runs while it is enabled, its group is on and it isn't suspended. A
+//!   switch lands when the step that asked closes; switching a graph off drops its wakes and ignores its replies,
+//!   switching it on sends its nodes `Start`. Each graph starts at most 500 new tokens a second (a burst of 2,000).
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
@@ -23,7 +26,7 @@ use omuzaki_live_api::event::{LiveEvent, Source, UtcMillis, check_payload};
 use omuzaki_live_api::ids::{EventKind, GraphId, GroupId, NodeId, PortName, VarName};
 use omuzaki_live_api::limits::{
     LOOP_GUARD_LAST_NODES, MAX_ACTIVATIONS_PER_STEP, MAX_CALLS_IN_FLIGHT, MAX_EMIT_HOPS, MAX_STACK_DEPTH,
-    MAX_WAKES_PER_NODE, MONITOR_EVENTS, MONITOR_FIRINGS,
+    MAX_WAKES_PER_NODE, MONITOR_EVENTS, MONITOR_FIRINGS, TOKEN_BURST_PER_GRAPH, TOKENS_PER_SECOND_PER_GRAPH,
 };
 use omuzaki_live_api::node::{CallId, EvalCx, EvalHost, Input, Node, NodeCx, NodeError, NodeHost, WakeId, node_rng};
 use omuzaki_live_api::services::{
@@ -44,7 +47,25 @@ pub(crate) enum Item {
     Event(LiveEvent),
     /// An op call came back.
     Reply { call: CallId, outcome: Result<Option<Value>, OpError> },
+    /// A change from outside the show (`automation.switch_group`, `automation.set_variable`,
+    /// `automation.resume_graph`), run as a step of its own so it lands between two steps.
+    Control(Control),
 }
+
+/// A change to a running show from outside it, checked by the service before it is queued.
+#[derive(Debug)]
+pub(crate) enum Control {
+    /// Switches a group's runtime state.
+    SwitchGroup { group: GroupId, on: bool },
+    /// Sets a variable (its type was checked).
+    SetVariable { name: VarName, value: Val },
+    /// Lifts a graph's suspension.
+    ResumeGraph { graph: GraphId },
+}
+
+/// How many rounds of group switches one step's close runs: a switch made by a `Start` that a switch sent lands in
+/// the next round, and a show that keeps toggling itself stops here.
+const SWITCH_ROUNDS: usize = 8;
 
 /// An op call a step asked for, handed to the dispatcher when the step closes (design D7).
 #[derive(Clone, Debug, PartialEq)]
@@ -97,6 +118,19 @@ struct Variable {
     changed: Option<(Seconds, Option<NodeRef>)>,
 }
 
+/// A graph's design-time switch and its group.
+struct GraphRun {
+    enabled: bool,
+    group: Option<GroupId>,
+}
+
+/// A graph's token bucket (design D8): `level` tokens at `at`, refilled on the engine clock.
+#[derive(Clone, Copy)]
+struct Bucket {
+    level: f64,
+    at: Seconds,
+}
+
 /// The running state of one show.
 pub(crate) struct Core {
     nodes: Vec<CompiledNode>,
@@ -117,6 +151,10 @@ pub(crate) struct Core {
     changed: BTreeMap<VarName, Value>,
     groups: BTreeMap<GroupId, bool>,
     switches: Vec<(GroupId, bool)>,
+    graph_runs: BTreeMap<GraphId, GraphRun>,
+    buckets: BTreeMap<GraphId, Bucket>,
+    /// Calls of a graph switched off: their replies are dropped and counted.
+    ignored: BTreeSet<CallId>,
     step_at: Seconds,
     utc: UtcMillis,
     outgoing: Vec<OpRequest>,
@@ -186,6 +224,11 @@ impl Core {
             })
             .collect();
         let groups = def.groups.iter().map(|(id, g)| (id.clone(), g.enabled)).collect();
+        let graph_runs = def
+            .graphs
+            .iter()
+            .map(|(id, g)| (id.clone(), GraphRun { enabled: g.enabled, group: g.group.clone() }))
+            .collect();
         Self {
             nodes,
             instances,
@@ -203,6 +246,9 @@ impl Core {
             changed: BTreeMap::new(),
             groups,
             switches: Vec::new(),
+            graph_runs,
+            buckets: BTreeMap::new(),
+            ignored: BTreeSet::new(),
             step_at: at,
             utc,
             outgoing: Vec::new(),
@@ -220,16 +266,11 @@ impl Core {
 
     // ── Items ──────────────────────────────────────────────────────────────────────────────────────────────────
 
-    /// Sends `Start` to every node (each in a token of its own) and queues `show.started`.
+    /// Sends `Start` to every node of an active graph (each in a token of its own) and queues `show.started`.
     pub(crate) fn start(&mut self, at: Seconds, utc: UtcMillis) {
         self.begin(at, utc);
-        let mut stack = Vec::new();
-        for node in (0..self.nodes.len()).rev() {
-            if self.instances[node].is_some() {
-                let token = self.tick_token(node);
-                stack.push(Activation { node, act: Act::Start, token });
-            }
-        }
+        let active: BTreeSet<GraphId> = self.graph_runs.keys().filter(|g| self.graph_active(g)).cloned().collect();
+        let stack = self.starts(&active);
         self.run(stack);
         let started = LiveEvent::of(&ShowLifecycle::new(self.show.clone()), Source::Engine, self.step_at);
         self.own.extend(started.ok());
@@ -264,21 +305,31 @@ impl Core {
                 self.record_event(&event);
                 let root = Arc::new(event);
                 let listening = self.triggers.get(&root.kind).cloned().unwrap_or_default();
-                for node in listening.into_iter().rev() {
+                // Graph order, so a bucket that runs dry refuses the later listeners of the same event.
+                for &node in &listening {
                     if !self.runs(node) {
                         self.dropped.inactive += 1;
+                        continue;
+                    }
+                    let graph = self.nodes[node].graph.clone();
+                    if !self.take_token(&graph) {
+                        self.dropped.rate += 1;
                         continue;
                     }
                     let token = self.new_token(Arc::clone(&root));
                     stack.push(Activation { node, act: Act::Trigger, token });
                 }
+                stack.reverse();
             }
             Item::Reply { call, outcome } => {
-                if let Some((node, token)) = self.calls.remove(&call) {
+                if self.ignored.remove(&call) {
+                    self.dropped.inactive += 1;
+                } else if let Some((node, token)) = self.calls.remove(&call) {
                     self.release(token);
                     stack.push(Activation { node, act: Act::Reply(call, outcome), token });
                 }
             }
+            Item::Control(control) => self.control(control),
         }
         self.run(stack);
         self.close();
@@ -324,10 +375,99 @@ impl Core {
         self.utc = utc;
     }
 
-    /// Whether node `i` may run now: compiled, not inert or faulted, its graph active and not suspended.
+    /// Whether node `i` may run now: compiled, not inert or faulted, and its graph active.
     fn runs(&self, i: usize) -> bool {
-        let node = &self.nodes[i];
-        node.inert.is_none() && node.active && !self.suspended.contains_key(&node.graph) && self.instances[i].is_some()
+        self.healthy(i) && self.graph_active(&self.nodes[i].graph)
+    }
+
+    /// Whether node `i` can run at all: compiled, not inert and not faulted.
+    fn healthy(&self, i: usize) -> bool {
+        self.nodes[i].inert.is_none() && self.instances[i].is_some()
+    }
+
+    /// Whether `graph` runs now (design D12): enabled, its group (if any) on, and not suspended.
+    fn graph_active(&self, graph: &GraphId) -> bool {
+        let Some(run) = self.graph_runs.get(graph) else { return false };
+        run.enabled
+            && run.group.as_ref().is_none_or(|g| self.groups.get(g).copied().unwrap_or(true))
+            && !self.suspended.contains_key(graph)
+    }
+
+    /// One new token from `graph`'s bucket, if it has one (design D8: 500 a second, a burst of 2,000, on the engine
+    /// clock).
+    fn take_token(&mut self, graph: &GraphId) -> bool {
+        let burst = f64::from(TOKEN_BURST_PER_GRAPH);
+        let now = self.step_at;
+        let bucket = self.buckets.entry(graph.clone()).or_insert(Bucket { level: burst, at: now });
+        let refill = (now.0 - bucket.at.0).max(0.0) * f64::from(TOKENS_PER_SECOND_PER_GRAPH);
+        bucket.level = (bucket.level + refill).min(burst);
+        bucket.at = now;
+        if bucket.level >= 1.0 {
+            bucket.level -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// `Start` for every node of `graphs`, in node order.
+    fn starts(&mut self, graphs: &BTreeSet<GraphId>) -> Vec<Activation> {
+        let mut stack = Vec::new();
+        for node in (0..self.nodes.len()).rev() {
+            if self.instances[node].is_some() && graphs.contains(&self.nodes[node].graph) {
+                let token = self.tick_token(node);
+                stack.push(Activation { node, act: Act::Start, token });
+            }
+        }
+        stack
+    }
+
+    /// Switching `graph` off (design D12): its pending wakes are dropped and its replies ignored, both counted.
+    fn deactivate(&mut self, graph: &GraphId) {
+        let wakes: Vec<(u64, u64)> =
+            self.wakes.iter().filter(|(_, w)| &self.nodes[w.node].graph == graph).map(|(k, _)| *k).collect();
+        for key in wakes {
+            if let Some(wake) = self.wakes.remove(&key) {
+                self.release(wake.token);
+                self.dropped.inactive += 1;
+            }
+        }
+        let calls: Vec<CallId> =
+            self.calls.iter().filter(|(_, (n, _))| &self.nodes[*n].graph == graph).map(|(c, _)| *c).collect();
+        for call in calls {
+            if let Some((_, token)) = self.calls.remove(&call) {
+                self.release(token);
+                self.ignored.insert(call);
+            }
+        }
+    }
+
+    /// A change from outside the show.
+    fn control(&mut self, control: Control) {
+        match control {
+            Control::SwitchGroup { group, on } => {
+                if self.groups.contains_key(&group) {
+                    self.switches.push((group, on));
+                }
+            }
+            Control::SetVariable { name, value } => {
+                let at = self.step_at;
+                if let Some(var) = self.vars.get_mut(&name)
+                    && value.ty() == var.def.ty.port_type()
+                {
+                    let old = std::mem::replace(&mut var.value, value).to_json();
+                    var.changed = Some((at, None));
+                    self.changed.entry(name).or_insert(old);
+                }
+            }
+            Control::ResumeGraph { graph } => {
+                let was = self.graph_active(&graph);
+                if self.suspended.remove(&graph).is_some() && !was && self.graph_active(&graph) {
+                    let stack = self.starts(&BTreeSet::from([graph]));
+                    self.run(stack);
+                }
+            }
+        }
     }
 
     fn new_token(&mut self, root: Arc<LiveEvent>) -> u64 {
@@ -373,7 +513,11 @@ impl Core {
             }
             let lifecycle = matches!(act, Act::Start | Act::Stop);
             if !lifecycle && !self.runs(node) {
-                self.dropped.inert += 1;
+                if self.healthy(node) {
+                    self.dropped.inactive += 1;
+                } else {
+                    self.dropped.inert += 1;
+                }
                 continue;
             }
             let Some(mut instance) = self.instances[node].take() else { continue };
@@ -435,9 +579,13 @@ impl Core {
 
     /// Closes a step: group switches, coalesced variable changes, tokens nothing holds any more.
     fn close(&mut self) {
-        for (group, on) in std::mem::take(&mut self.switches) {
-            self.groups.insert(group, on);
+        for _ in 0..SWITCH_ROUNDS {
+            if self.switches.is_empty() {
+                break;
+            }
+            self.apply_switches();
         }
+        self.switches.clear();
         for (name, old) in std::mem::take(&mut self.changed) {
             let Some(var) = self.vars.get(&name) else { continue };
             let new = var.value.to_json();
@@ -448,6 +596,24 @@ impl Core {
             self.own.extend(LiveEvent::of(&payload, Source::Engine, self.step_at).ok());
         }
         self.tokens.retain(|_, t| t.holds > 0);
+    }
+
+    /// Applies the queued group switches (design D12): graphs that went off are deactivated, graphs that came on get
+    /// `Start`.
+    fn apply_switches(&mut self) {
+        let before: BTreeSet<GraphId> = self.graph_runs.keys().filter(|g| self.graph_active(g)).cloned().collect();
+        for (group, on) in std::mem::take(&mut self.switches) {
+            self.groups.insert(group, on);
+        }
+        let after: BTreeSet<GraphId> = self.graph_runs.keys().filter(|g| self.graph_active(g)).cloned().collect();
+        for graph in before.difference(&after) {
+            self.deactivate(graph);
+        }
+        let on: BTreeSet<GraphId> = after.difference(&before).cloned().collect();
+        if !on.is_empty() && !self.stopping {
+            let stack = self.starts(&on);
+            self.run(stack);
+        }
     }
 
     // ── Values (design D3) ─────────────────────────────────────────────────────────────────────────────────────
@@ -525,9 +691,9 @@ impl Core {
                     status = status.with_inert(inert);
                 }
                 if let Some(suspension) = self.suspended.get(graph) {
-                    status = status.with_suspension(suspension.clone()).with_active(false);
+                    status = status.with_suspension(suspension.clone());
                 }
-                status
+                status.with_active(self.graph_active(graph))
             })
             .collect()
     }
