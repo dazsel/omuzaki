@@ -12,13 +12,13 @@ use omuzaki_core::time::Seconds;
 use omuzaki_live_api::event::{EventId, LiveEvent, UtcMillis};
 use omuzaki_live_api::ids::{GraphId, GroupId, ShowId, VarName};
 use omuzaki_live_api::node::CallId;
-use omuzaki_live_api::services::{Dropped, GraphStatus, PersistScope, ValuesSnapshot, VariableStore};
+use omuzaki_live_api::services::{Dropped, GraphStatus, PersistScope, ShowApprovals, ValuesSnapshot, VariableStore};
 use omuzaki_live_api::show::{Finding, ShowDef, VarScope};
 use omuzaki_live_api::value::Val;
 use omuzaki_ops_api::{Actor, OpError};
 use serde_json::{Value, json};
 
-use crate::compile::compile;
+use crate::compile::{Arming, FileHasher, ProgramHasher, compile_with};
 use crate::core::{Control, Core, Item, OpRequest};
 use crate::vars;
 
@@ -75,6 +75,10 @@ pub struct ShowHarness {
     store: Option<(Arc<dyn VariableStore>, Option<String>)>,
     /// The file each persisted scope writes to.
     files: Vec<(VarScope, PersistScope)>,
+    /// What this machine approved for the show (design D11).
+    approvals: ShowApprovals,
+    /// How program files are hashed for the program rule.
+    hasher: Arc<dyn ProgramHasher>,
 }
 
 impl std::fmt::Debug for ShowHarness {
@@ -103,7 +107,41 @@ impl ShowHarness {
             steps: 0,
             store: None,
             files: Vec::new(),
+            approvals: ShowApprovals::default(),
+            hasher: Arc::new(FileHasher),
         }
+    }
+
+    /// With these approvals for the show (design D11); nothing is approved otherwise.
+    #[must_use]
+    pub fn approvals(mut self, approvals: ShowApprovals) -> Self {
+        self.approvals = approvals;
+        self
+    }
+
+    /// With program files hashed by `hasher` (the real files otherwise).
+    #[must_use]
+    pub fn hasher(mut self, hasher: Arc<dyn ProgramHasher>) -> Self {
+        self.hasher = hasher;
+        self
+    }
+
+    /// Swaps in `def` (and `approvals`, when given) between two steps, as an edit to the running show does (design
+    /// D5's hot reload): unchanged nodes keep their state, changed ones start again.
+    pub fn reload(&mut self, def: ShowDef, approvals: Option<ShowApprovals>) {
+        self.ensure_started();
+        if let Some(approvals) = approvals {
+            self.approvals = approvals;
+        }
+        self.def = def;
+        let (now, utc) = (self.now, self.utc());
+        let arming = Arming { approvals: &self.approvals, hasher: self.hasher.as_ref() };
+        if let Some(core) = self.core.as_mut() {
+            let compiled = compile_with(&self.show, &self.def, arming, Some(core.compiled_nodes()));
+            self.findings.clone_from(&compiled.findings);
+            core.reload(compiled, now, utc);
+        }
+        self.settle();
     }
 
     /// With every node's random stream drawn from `seed` (design D6).
@@ -345,7 +383,8 @@ impl ShowHarness {
         if self.core.is_some() {
             return;
         }
-        let compiled = compile(&self.show, &self.def);
+        let arming = Arming { approvals: &self.approvals, hasher: self.hasher.as_ref() };
+        let compiled = compile_with(&self.show, &self.def, arming, None);
         self.findings.clone_from(&compiled.findings);
         let mut core = Core::new(compiled, self.seed, self.now, self.utc());
         if let Some((store, project)) = &self.store {

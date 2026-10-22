@@ -17,7 +17,7 @@ omuzaki_core::define_link! {
     omuzaki_live_api::link();
 }
 
-mod compile;
+pub mod compile;
 mod core;
 mod dispatch;
 mod inbox;

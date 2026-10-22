@@ -51,6 +51,9 @@ pub(crate) enum Item {
     /// A change from outside the show (`automation.switch_group`, `automation.set_variable`,
     /// `automation.resume_graph`), run as a step of its own so it lands between two steps.
     Control(Control),
+    /// The show's document changed or its approvals did: recompile and swap between two steps (design D5). The
+    /// engine thread handles it; [`Core::step`] ignores it.
+    Reload(Box<omuzaki_live_api::show::ShowDef>),
 }
 
 /// A change to a running show from outside it, checked by the service before it is queued.
@@ -89,6 +92,15 @@ struct Token {
     root: Arc<LiveEvent>,
     values: BTreeMap<(usize, PortName), Val>,
     holds: usize,
+}
+
+/// Why a call's reply is dropped when it comes back.
+#[derive(Clone, Copy, Debug)]
+enum Ignored {
+    /// Its graph was switched off (design D12).
+    Inactive,
+    /// Its node was rebuilt by a hot reload (design D5).
+    Reload,
 }
 
 /// A pending wake.
@@ -142,6 +154,8 @@ pub(crate) struct Core {
     instances: Vec<Option<Box<dyn Node>>>,
     triggers: BTreeMap<EventKind, Vec<usize>>,
     show: omuzaki_live_api::ids::ShowId,
+    /// The run's seed: a node rebuilt by a hot reload restarts its stream from it (design D6).
+    seed: u32,
     rngs: Vec<Rng>,
     latched: Vec<BTreeMap<PortName, Val>>,
     tokens: BTreeMap<u64, Token>,
@@ -160,8 +174,8 @@ pub(crate) struct Core {
     switches: Vec<(GroupId, bool)>,
     graph_runs: BTreeMap<GraphId, GraphRun>,
     buckets: BTreeMap<GraphId, Bucket>,
-    /// Calls of a graph switched off: their replies are dropped and counted.
-    ignored: BTreeSet<CallId>,
+    /// Calls whose replies are dropped and counted: their graph was switched off, or their node was rebuilt.
+    ignored: BTreeMap<CallId, Ignored>,
     /// The values files of the persisted scopes (design D10).
     files: Files,
     paused: bool,
@@ -244,6 +258,7 @@ impl Core {
             instances,
             triggers,
             show,
+            seed,
             rngs,
             latched,
             tokens: BTreeMap::new(),
@@ -259,7 +274,7 @@ impl Core {
             switches: Vec::new(),
             graph_runs,
             buckets: BTreeMap::new(),
-            ignored: BTreeSet::new(),
+            ignored: BTreeMap::new(),
             files: Files::default(),
             paused: false,
             step_at: at,
@@ -341,8 +356,11 @@ impl Core {
                 stack.reverse();
             }
             Item::Reply { call, outcome } => {
-                if self.ignored.remove(&call) {
-                    self.dropped.inactive += 1;
+                if let Some(why) = self.ignored.remove(&call) {
+                    match why {
+                        Ignored::Inactive => self.dropped.inactive += 1,
+                        Ignored::Reload => self.dropped.reload += 1,
+                    }
                 } else if self.paused {
                     if let Some((_, token)) = self.calls.remove(&call) {
                         self.release(token);
@@ -354,6 +372,8 @@ impl Core {
                 }
             }
             Item::Control(control) => self.control(control),
+            // The engine thread compiles and swaps a reload itself (it needs the approvals and the catalogue).
+            Item::Reload(_) => {}
         }
         self.run(stack);
         self.close();
@@ -403,23 +423,164 @@ impl Core {
         if scope == VarScope::Global {
             // A global is one value shared by every show; the saved one settles its type, so the nodes here that
             // expect another are inert and the value is never overwritten (design D10).
-            for name in &refused {
-                self.conflicts.insert(name.clone());
-                for node in &mut self.nodes {
-                    if node.inert.is_some() || !node.vars.contains(name) {
-                        continue;
-                    }
-                    node.inert = Some(InertReason::Undeclared);
-                    if let Some(status) = self.base_status.iter_mut().find(|s| s.graph == node.graph) {
-                        let mut inert = status.inert.clone();
-                        inert.push(InertNode::new(node.id.clone(), InertReason::Undeclared));
-                        *status = status.clone().with_inert(inert);
-                    }
-                }
-            }
+            self.conflicts.extend(refused.iter().cloned());
+            self.mark_conflicts();
         }
         self.files.loaded(scope, values);
         refused
+    }
+
+    /// Makes the nodes that need a conflicting global inert (design D10), in the nodes and their graphs' status.
+    fn mark_conflicts(&mut self) {
+        for (i, node) in self.nodes.iter_mut().enumerate() {
+            if node.inert.is_some() || !node.vars.iter().any(|v| self.conflicts.contains(v)) {
+                continue;
+            }
+            node.inert = Some(InertReason::Undeclared);
+            self.instances[i] = None;
+            if let Some(status) = self.base_status.iter_mut().find(|s| s.graph == node.graph) {
+                let mut inert = status.inert.clone();
+                inert.push(InertNode::new(node.id.clone(), InertReason::Undeclared));
+                *status = status.clone().with_inert(inert);
+            }
+        }
+    }
+
+    /// The nodes as the last compile left them: what a hot reload compiles against.
+    pub(crate) fn compiled_nodes(&self) -> &[CompiledNode] {
+        &self.nodes
+    }
+
+    /// Swaps in a recompiled show between two steps (design D5's hot reload). Each node in `compiled.keep` carries
+    /// its instance, random stream, latched outputs, parked wakes and calls across; every other node is new, starts
+    /// with `Start` when its graph runs, and the old one's parked wakes and calls are dropped and counted. Variables
+    /// keep their values while their declaration keeps its type, and groups keep their runtime switch.
+    #[allow(clippy::too_many_lines)] // One swap, field by field; split, it would hide what carries over.
+    pub(crate) fn reload(&mut self, compiled: Compiled, at: Seconds, utc: UtcMillis) {
+        self.begin(at, utc);
+        let before: BTreeSet<GraphId> = self.graph_runs.keys().filter(|g| self.graph_active(g)).cloned().collect();
+        let Compiled { def, nodes, mut instances, triggers, keep, .. } = compiled;
+        let mut moved: Vec<Option<usize>> = vec![None; self.nodes.len()];
+        for (new, old) in keep.iter().enumerate() {
+            if let Some(slot) = old.and_then(|old| moved.get_mut(old)) {
+                *slot = Some(new);
+            }
+        }
+
+        // Instances, streams and latched outputs.
+        let mut old_instances: Vec<Option<Box<dyn Node>>> = std::mem::take(&mut self.instances);
+        let mut old_rngs: Vec<Option<Rng>> = std::mem::take(&mut self.rngs).into_iter().map(Some).collect();
+        let mut old_latched: Vec<BTreeMap<PortName, Val>> = std::mem::take(&mut self.latched);
+        let mut rngs = Vec::with_capacity(nodes.len());
+        let mut latched = Vec::with_capacity(nodes.len());
+        let mut fresh = Vec::new();
+        for (new, node) in nodes.iter().enumerate() {
+            let carried = keep[new].and_then(|old| {
+                let rng = old_rngs.get_mut(old).and_then(Option::take)?;
+                Some((old_instances.get_mut(old).and_then(Option::take), rng, std::mem::take(&mut old_latched[old])))
+            });
+            if let Some((instance, rng, values)) = carried {
+                instances[new] = instance;
+                rngs.push(rng);
+                latched.push(values);
+            } else {
+                rngs.push(node_rng(self.seed, node.graph.as_str(), node.id.as_str()));
+                latched.push(BTreeMap::new());
+                fresh.push(new);
+            }
+        }
+
+        // Parked work: carried with its node, or dropped and counted.
+        let wakes = std::mem::take(&mut self.wakes);
+        for (key, mut wake) in wakes {
+            if let Some(new) = moved.get(wake.node).copied().flatten() {
+                wake.node = new;
+                self.wakes.insert(key, wake);
+            } else {
+                self.release(wake.token);
+                self.dropped.reload += 1;
+            }
+        }
+        let calls = std::mem::take(&mut self.calls);
+        for (call, (node, token)) in calls {
+            if let Some(new) = moved.get(node).copied().flatten() {
+                self.calls.insert(call, (new, token));
+            } else {
+                self.release(token);
+                self.ignored.insert(call, Ignored::Reload);
+            }
+        }
+        for token in self.tokens.values_mut() {
+            token.values = std::mem::take(&mut token.values)
+                .into_iter()
+                .filter_map(|((node, port), value)| Some(((moved.get(node).copied().flatten()?, port), value)))
+                .collect();
+        }
+
+        // Declarations and switches.
+        let mut vars = BTreeMap::new();
+        for (name, declared) in &def.variables {
+            let kept = self.vars.remove(name).filter(|v| v.def.ty == declared.ty && v.def.scope == declared.scope);
+            let var = kept.map_or_else(
+                || {
+                    let value = Val::from_json(&declared.initial(), declared.ty.port_type())
+                        .ok()
+                        .or_else(|| declared.ty.port_type().default_value())
+                        .unwrap_or(Val::Bool(false));
+                    Variable { def: declared.clone(), value, changed: None }
+                },
+                |v| Variable { def: declared.clone(), ..v },
+            );
+            vars.insert(name.clone(), var);
+        }
+        self.vars = vars;
+        self.groups =
+            def.groups.iter().map(|(id, g)| (id.clone(), self.groups.get(id).copied().unwrap_or(g.enabled))).collect();
+        self.graph_runs = def
+            .graphs
+            .iter()
+            .map(|(id, g)| (id.clone(), GraphRun { enabled: g.enabled, group: g.group.clone() }))
+            .collect();
+        let present = |g: &GraphId| def.graphs.contains_key(g);
+        self.buckets.retain(|g, _| present(g));
+        self.errors.retain(|g, _| present(g));
+        self.suspended.retain(|g, _| present(g));
+        let kept_ids: BTreeSet<(&GraphId, &NodeId)> =
+            nodes.iter().zip(&keep).filter(|(_, k)| k.is_some()).map(|(n, _)| (&n.graph, &n.id)).collect();
+        for (graph, faulted) in &mut self.faulted {
+            faulted.retain(|id| kept_ids.contains(&(graph, id)));
+        }
+        self.faulted.retain(|_, f| !f.is_empty());
+
+        self.base_status = Compiled::graph_status_of(&def, &nodes);
+        self.nodes = nodes;
+        self.instances = instances;
+        self.rngs = rngs;
+        self.latched = latched;
+        self.triggers = triggers;
+        self.mark_conflicts();
+
+        // What runs now: graphs switched off lose their parked work; graphs switched on start whole; in graphs that
+        // ran before and still do, only the new nodes start.
+        let after: BTreeSet<GraphId> = self.graph_runs.keys().filter(|g| self.graph_active(g)).cloned().collect();
+        for graph in before.difference(&after) {
+            self.deactivate(graph);
+        }
+        let on: BTreeSet<GraphId> = after.difference(&before).cloned().collect();
+        let mut stack = Vec::new();
+        for node in fresh.into_iter().rev() {
+            let graph = &self.nodes[node].graph;
+            if self.instances[node].is_some() && after.contains(graph) && !on.contains(graph) {
+                let token = self.tick_token(node);
+                stack.push(Activation { node, act: Act::Start, token });
+            }
+        }
+        let mut starts = self.starts(&on);
+        starts.extend(stack);
+        if !self.stopping {
+            self.run(starts);
+        }
+        self.close();
     }
 
     /// Whether the panic button is on.
@@ -525,7 +686,7 @@ impl Core {
         for call in calls {
             if let Some((_, token)) = self.calls.remove(&call) {
                 self.release(token);
-                self.ignored.insert(call);
+                self.ignored.insert(call, Ignored::Inactive);
             }
         }
     }

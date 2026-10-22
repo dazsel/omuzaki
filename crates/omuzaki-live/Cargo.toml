@@ -15,6 +15,7 @@ omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 omuzaki-l10n-api = { path = "../omuzaki-l10n-api" }
 omuzaki-live-api = { path = "../omuzaki-live-api" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+omuzaki-store-api = { path = "../omuzaki-store-api" }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -13,7 +13,7 @@
 //! the per-run automation session (ADR 0020) come with the leaves.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::{RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -23,20 +23,22 @@ use omuzaki_live_api::event::{EventId, EventSink, LiveEvent, PublishError, Sourc
 use omuzaki_live_api::ids::{EventKind, GraphId, GroupId, ShowId, VarName};
 use omuzaki_live_api::limits::MONITOR_WATCHED_SECONDS;
 use omuzaki_live_api::services::{
-    AutomationControl, Dropped, PersistScope, RunInfo, Status, SystemWallClock, ValuesSnapshot, VariableStore,
-    WallClock,
+    Approvals, AutomationControl, Dropped, PersistScope, RunInfo, ShowApprovals, ShowKey, Status, SystemWallClock,
+    ValuesSnapshot, VariableStore, WallClock,
 };
 use omuzaki_live_api::show::{Finding, ShowDef, VarScope, paths};
 use omuzaki_live_api::value::Val;
-use omuzaki_ops_api::{Actor, Grants, OpError, Runner, Scope, SessionId, Sessions};
+use omuzaki_ops_api::{Actor, Event, Grants, OpError, Runner, Scope, SessionId, Sessions};
 use serde_json::Value;
 
-use crate::compile::compile;
+use crate::compile::{Arming, FileHasher, ProgramHasher, compile_with};
 use crate::core::{Control, Core, Item};
 use crate::dispatch::{Dispatch, Work};
 use crate::inbox::Inbox;
 use crate::vars;
 
+/// How long the show's document must stay still before an edit reloads the running show (design D5).
+const RELOAD_SETTLE: Duration = Duration::from_millis(100);
 /// The longest the engine thread sleeps without looking at its stop flag.
 const IDLE_WAIT: Duration = Duration::from_millis(250);
 /// The values monitor refreshes at most this often (design D10: four times a second).
@@ -94,11 +96,26 @@ impl Writer {
     }
 }
 
+/// Where a run's approvals come from (design D11): read again on every reload, so an approval arms its nodes in the
+/// running show.
+#[derive(Clone)]
+struct ArmingSource {
+    approvals: Option<Arc<dyn Approvals>>,
+    key: ShowKey,
+    hasher: Arc<dyn ProgramHasher>,
+}
+
+impl ArmingSource {
+    fn approvals(&self) -> ShowApprovals {
+        self.approvals.as_ref().map(|a| a.show(&self.key)).unwrap_or_default()
+    }
+}
+
 /// A running show.
 struct Running {
     info: RunInfo,
-    /// What it was compiled from, to check a change from outside before it is queued.
-    def: ShowDef,
+    /// What it was compiled from (the last reload's), to check a change from outside before it is queued.
+    def: Arc<Mutex<ShowDef>>,
     inbox: Arc<Inbox>,
     stop: Arc<AtomicBool>,
     engine: Option<JoinHandle<()>>,
@@ -118,8 +135,13 @@ pub struct Automation {
     shared: Arc<Shared>,
     next_event: Arc<AtomicU64>,
     persistence: Mutex<Option<Persistence>>,
-    /// What the last start found: values files it couldn't read, stored values of another type.
+    /// What the last start found: values files it couldn't read, stored values of another type, and the compile's
+    /// findings (inert nodes and why).
     start_findings: Mutex<Vec<Finding>>,
+    /// What this machine approved per show (design D11); without it, nothing is.
+    approvals: Mutex<Option<Arc<dyn Approvals>>>,
+    /// How program files are hashed for the program rule.
+    hasher: Mutex<Arc<dyn ProgramHasher>>,
 }
 
 impl std::fmt::Debug for Automation {
@@ -156,6 +178,45 @@ impl Automation {
             next_event: Arc::new(AtomicU64::new(0)),
             persistence: Mutex::new(None),
             start_findings: Mutex::new(Vec::new()),
+            approvals: Mutex::new(None),
+            hasher: Mutex::new(Arc::new(FileHasher)),
+        }
+    }
+
+    /// Where approvals are read from (design D11): at every start and reload. Without a store nothing risky arms.
+    pub fn set_approvals(&self, approvals: Arc<dyn Approvals>) {
+        *lock(&self.approvals) = Some(approvals);
+    }
+
+    /// How program files are hashed for the program rule (the real files by default).
+    pub fn set_hasher(&self, hasher: Arc<dyn ProgramHasher>) {
+        *lock(&self.hasher) = hasher;
+    }
+
+    /// The approvals key and source for show `id`.
+    fn arming_source(&self, id: &ShowId) -> ArmingSource {
+        let project = lock(&self.persistence).as_ref().and_then(|p| p.project.clone()).unwrap_or_default();
+        ArmingSource {
+            approvals: lock(&self.approvals).clone(),
+            key: ShowKey::new(project, id.clone()),
+            hasher: Arc::clone(&lock(&self.hasher)),
+        }
+    }
+
+    /// Swaps `def` into the running show between two steps (design D5's hot reload); nothing when no show runs.
+    /// Edits made through the runner reload on their own; this is for a show that changes some other way.
+    pub fn reload(&self, def: ShowDef) {
+        if let Some(running) = lock(&self.run).as_ref() {
+            running.inbox.push_reply(Item::Reload(Box::new(def)));
+        }
+    }
+
+    /// Recompiles the running show against the approvals as they are now: what the UI calls after a person allows
+    /// or revokes something, so the nodes it arms start without a restart.
+    pub fn rearm(&self) {
+        let def = lock(&self.run).as_ref().map(|r| lock(&r.def).clone());
+        if let Some(def) = def {
+            self.reload(def);
         }
     }
 
@@ -243,9 +304,14 @@ impl Automation {
         let seed = def.seed.unwrap_or_else(draw_seed);
         let at = self.clock.now();
         let info = RunInfo::new(id.clone(), seed, SessionId(0), at);
-        let compiled = compile(id, def);
+        let arming = self.arming_source(id);
+        let approvals = arming.approvals();
+        let compiled = compile_with(id, def, Arming { approvals: &approvals, hasher: arming.hasher.as_ref() }, None);
+        let compiled_findings = compiled.findings.clone();
         let mut core = Core::new(compiled, seed, at, self.wall.now());
         let (writer, files) = self.load_values(id, &mut core);
+        lock(&self.start_findings).extend(compiled_findings);
+        let shared_def = Arc::new(Mutex::new(def.clone()));
         let inbox = Arc::new(Inbox::default());
         let stop = Arc::new(AtomicBool::new(false));
         let (work, pending) = channel();
@@ -269,13 +335,17 @@ impl Automation {
             info: info.clone(),
             writer,
             files,
+            arming,
+            def: Arc::clone(&shared_def),
         };
         let handle = std::thread::Builder::new()
             .name(format!("automation-{id}"))
             .spawn(move || engine.run())
             .map_err(|e| OpError::internal(format!("the automation engine didn't start: {e}")))?;
-        *run =
-            Some(Running { info: info.clone(), def: def.clone(), inbox, stop, engine: Some(handle), dispatch, work });
+        if let Some(runner) = self.runner() {
+            watch_edits(&runner, id, def, &inbox, &stop);
+        }
+        *run = Some(Running { info: info.clone(), def: shared_def, inbox, stop, engine: Some(handle), dispatch, work });
         Ok(info)
     }
 
@@ -298,7 +368,7 @@ impl Automation {
         let run = lock(&self.run);
         let running =
             run.as_ref().filter(|r| r.engine.as_ref().is_some_and(|h| !h.is_finished())).ok_or_else(not_running)?;
-        let control = change(&running.def)?;
+        let control = change(&lock(&running.def))?;
         running.inbox.push_reply(Item::Control(control));
         Ok(())
     }
@@ -311,6 +381,50 @@ impl Automation {
         // numbers the event under its own lock, so ids rise in the order events are queued.
         running.inbox.push_event(event, droppable, self.clock.now(), &self.next_event)
     }
+}
+
+/// Follows the runner's events for edits under show `id` and queues a reload once they settle for
+/// [`RELOAD_SETTLE`] (design D5). An undo or redo carries no patch, so it always rereads. The thread ends with the
+/// run, or when the runner goes away.
+fn watch_edits(runner: &Weak<dyn Runner>, id: &ShowId, def: &ShowDef, inbox: &Arc<Inbox>, stop: &Arc<AtomicBool>) {
+    let grants = Grants::of([Scope::Read]);
+    let Some(events) = runner.upgrade().and_then(|r| r.subscribe(&grants).ok()) else { return };
+    let (runner, inbox, stop) = (Weak::clone(runner), Arc::clone(inbox), Arc::clone(stop));
+    let (path, mut last) = (paths::show(id), def.clone());
+    let spawned = std::thread::Builder::new().name(format!("automation-edits-{id}")).spawn(move || {
+        let mut due: Option<Instant> = None;
+        while !stop.load(Ordering::SeqCst) {
+            let wait = due.map_or(IDLE_WAIT, |d| d.saturating_duration_since(Instant::now()).min(IDLE_WAIT));
+            match events.recv_timeout(wait) {
+                Ok(event) => {
+                    let touches = match &event {
+                        Event::OpApplied { record, .. } => {
+                            record.patch.changes.iter().any(|c| c.path.starts_with(&path) || path.starts_with(&c.path))
+                        }
+                        Event::Undone { .. } | Event::Redone { .. } | Event::TxRolledBack { .. } => true,
+                        _ => false,
+                    };
+                    if touches {
+                        due = Some(Instant::now() + RELOAD_SETTLE);
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+            if due.is_some_and(|d| Instant::now() >= d) {
+                due = None;
+                let Some(runner) = runner.upgrade() else { break };
+                // A show deleted while it runs keeps running as it was; stopping it is its own op.
+                let read = runner.get(&path, &grants).ok().flatten().and_then(|node| ShowDef::from_node(&node).ok());
+                if let Some(def) = read.filter(|def| *def != last) {
+                    last = def.clone();
+                    inbox.push_reply(Item::Reload(Box::new(def)));
+                }
+            }
+        }
+    });
+    // Without the thread the show still runs; it just doesn't follow edits until it restarts.
+    drop(spawned);
 }
 
 /// A seed for a show that pins none, from the OS clock and the process (reported in the status so a run can be
@@ -463,6 +577,10 @@ struct EngineThread {
     writer: Option<Writer>,
     /// Which file each persisted scope writes to.
     files: Vec<(VarScope, PersistScope)>,
+    /// Where the approvals a reload compiles against come from.
+    arming: ArmingSource,
+    /// The show as last compiled, shared with the service's checks.
+    def: Arc<Mutex<ShowDef>>,
 }
 
 impl EngineThread {
@@ -475,6 +593,15 @@ impl EngineThread {
                 let _ = writer.saves.send((persist.clone(), values));
             }
         }
+    }
+
+    /// Recompiles against `def` and the approvals as they are now, and swaps it in (design D5).
+    fn reload(&mut self, def: ShowDef) {
+        let approvals = self.arming.approvals();
+        let arming = Arming { approvals: &approvals, hasher: self.arming.hasher.as_ref() };
+        let compiled = compile_with(&self.info.show, &def, arming, Some(self.core.compiled_nodes()));
+        self.core.reload(compiled, self.clock.now(), self.wall.now());
+        *lock(&self.def) = def;
     }
 
     fn run(mut self) {
@@ -526,7 +653,10 @@ impl EngineThread {
                 self.inbox.pop_batch(wait, BATCH, &mut batch);
             }
             if let Some(item) = batch.pop_front() {
-                self.core.step(self.clock.now(), self.wall.now(), item);
+                match item {
+                    Item::Reload(def) => self.reload(*def),
+                    item => self.core.step(self.clock.now(), self.wall.now(), item),
+                }
                 dirty = true;
             } else {
                 // The producers' and the inbox's drop counts change without a step.
