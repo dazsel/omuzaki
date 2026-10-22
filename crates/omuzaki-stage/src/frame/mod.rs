@@ -499,16 +499,21 @@ impl Stage {
         })
     }
 
-    /// Does the renderer work the last [`set_scene`](Self::set_scene) owes for the ground (a new disc, or none) and
-    /// records it as done. The skin floor stays owed: the materials don't take it yet. Cold.
+    /// Does the renderer work the last [`set_scene`](Self::set_scene) owes and records it as done: the ground (a new
+    /// disc, or none) and the skin floor (every toon skin material updated in place to the scene's floor, or back to
+    /// its own). The floor stays on the materials through palette changes, variant swaps and look edits. Cold.
     ///
     /// # Errors
-    /// [`StageError::Render`] if the renderer refuses the disc; the ground stays owed.
+    /// [`StageError::Render`] if the renderer refuses the disc or a material; that part stays owed.
     pub fn pay_scene(&mut self, renderer: &mut dyn Renderer) -> Result<(), StageError> {
         let owed = self.link.owed();
         if let Some(ground) = owed.ground {
             self.ground.set(renderer, &ground)?;
             self.link.commit(&Owed { ground: Some(ground), skin_floor: None });
+        }
+        if let Some(floor) = owed.skin_floor {
+            self.character.set_skin_floor(renderer, &self.built, floor)?;
+            self.link.commit(&Owed { ground: None, skin_floor: Some(floor) });
         }
         Ok(())
     }
