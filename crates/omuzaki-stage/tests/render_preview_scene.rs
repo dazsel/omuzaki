@@ -151,6 +151,7 @@ fn on_the_gpu_the_default_scene_and_every_rig() {
     use omuzaki_stage::recipe::LightRig;
     use omuzaki_stage::scene::frame::frame;
     use omuzaki_stage_api::CameraDef;
+    use omuzaki_store_api::Store;
 
     const SIZE: [u32; 2] = [192, 256];
     const TEMPLATES: [&str; 4] = ["soft-sd", "mini", "standard", "tall"];
@@ -174,6 +175,7 @@ fn on_the_gpu_the_default_scene_and_every_rig() {
     };
 
     // Sheet 1: before (the rig alone, the character at the origin, no ground) and after (the default scene).
+    let clock = FakeClock::new(Seconds(0.0));
     let mut cells = Vec::new();
     for template in TEMPLATES {
         let id = template.replace('-', "_");
@@ -186,7 +188,7 @@ fn on_the_gpu_the_default_scene_and_every_rig() {
                             job.service::<omuzaki_char_api::BuildServices>()?,
                             job.service::<dyn omuzaki_store_api::Store>()?,
                             omuzaki_render_api::MtoonSupport::NONE,
-                            &FakeClock::new(Seconds(0.0)),
+                            &clock,
                         );
                         omuzaki_stage::body::load_body(
                             doc,
