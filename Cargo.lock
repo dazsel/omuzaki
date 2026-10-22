@@ -4276,6 +4276,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-input-mock"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-core",
+ "omuzaki-input-api",
+ "proptest",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "omuzaki-io-api"
 version = "0.0.0"
 dependencies = [
