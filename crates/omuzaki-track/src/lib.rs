@@ -15,6 +15,7 @@
 //! | [`geometry`] | the head-pose fit (Procrustes through a virtual camera) |
 //! | [`smoothing`] | the One-Euro landmark filter |
 //! | [`models`] | [`models::ModelDir`]: the verified model folder and its three loaded graphs |
+//! | [`provision`] | the app's face tracker: the official graphs through its verified cache and a runtime |
 //! | [`task`] | the official `face_landmarker.task`, pinned, unpacked into a TFLite model folder |
 //! | [`pipeline`] | [`FaceTracker`]: the three graphs, tracking between frames, [`Mode`] |
 //! | [`sample`] | [`FaceSample`], [`StageTimings`] and [`to_track_frame`] |
@@ -36,6 +37,7 @@ pub mod landmarks;
 pub mod metadata;
 pub mod models;
 pub mod pipeline;
+pub mod provision;
 pub mod roi;
 pub mod sample;
 pub mod smoothing;
