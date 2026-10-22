@@ -17,7 +17,7 @@ use omuzaki_face_api::{FaceLayerId, FaceProfile, FangKind, Palette, Raster};
 /// A quarter of the reference width: fast in a debug build, and the threshold scales with it.
 const WIDTH: u32 = 387;
 
-fn subject(profile: FaceProfile) -> FaceSubject {
+fn subject(profile: &FaceProfile) -> FaceSubject {
     FaceSubject {
         profile: profile
             .resolve_colours(&Palette::default())
@@ -33,7 +33,7 @@ fn options(channels: Vec<Channel>) -> SweepOptions {
 
 #[test]
 fn every_face_channel_moves_the_default_face_except_the_three_unmapped() {
-    let report = sweep(&subject(FaceProfile::default()), &options(face_channels()), &|| false).unwrap().unwrap();
+    let report = sweep(&subject(&FaceProfile::default()), &options(face_channels()), &|| false).unwrap().unwrap();
     assert_eq!(report.rows.len(), 65, "52 ARKit channels and 13 anime extras");
     assert_eq!(report.with_status(ChannelStatus::Dead), Vec::<&str>::new());
     assert_eq!(report.with_status(ChannelStatus::OffInDesign), Vec::<&str>::new(), "the default face has fangs");
@@ -52,7 +52,7 @@ fn a_sabotaged_face_is_caught_with_its_dead_controls_named() {
     broken.mapping.eyes.wide = 0.0;
     broken.mapping.cheeks.blush = 0.0;
     let channels = vec![Channel::EYE_WIDE_LEFT, Channel::EYE_WIDE_RIGHT, Channel::BLUSH, Channel::JAW_OPEN];
-    let report = sweep(&subject(broken), &options(channels), &|| false).unwrap().unwrap();
+    let report = sweep(&subject(&broken), &options(channels), &|| false).unwrap().unwrap();
     assert_eq!(report.with_status(ChannelStatus::Dead), ["eyeWideLeft", "eyeWideRight", "blush"]);
     assert_eq!(report.with_status(ChannelStatus::Moves), ["jawOpen"]);
 }
@@ -61,13 +61,13 @@ fn a_sabotaged_face_is_caught_with_its_dead_controls_named() {
 fn fangs_on_a_face_without_them_are_off_in_the_design_not_dead() {
     let mut fangless = FaceProfile::default();
     fangless.mouth.fang.kind = FangKind::None;
-    let report = sweep(&subject(fangless), &options(vec![Channel::FANGS]), &|| false).unwrap().unwrap();
+    let report = sweep(&subject(&fangless), &options(vec![Channel::FANGS]), &|| false).unwrap().unwrap();
     assert_eq!(report.with_status(ChannelStatus::OffInDesign), ["fangs"]);
 }
 
 #[test]
 fn a_cancelled_sweep_stops() {
-    let report = sweep(&subject(FaceProfile::default()), &options(face_channels()), &|| true).unwrap();
+    let report = sweep(&subject(&FaceProfile::default()), &options(face_channels()), &|| true).unwrap();
     assert!(report.is_none());
 }
 
@@ -84,7 +84,7 @@ fn changed_mask(rest: &Raster, pushed: &Raster) -> Vec<bool> {
 
 #[test]
 fn a_sided_channel_changes_the_mirror_image_of_its_other_side() {
-    let face = subject(FaceProfile::default());
+    let face = subject(&FaceProfile::default());
     let mut preview = Preview::new(face.clone(), WIDTH);
     preview.paint(&ChannelBuf::NEUTRAL).unwrap();
     let rest = preview.layer(FaceLayerId::Base).clone();
@@ -131,7 +131,7 @@ fn a_sided_channel_changes_the_mirror_image_of_its_other_side() {
 
 #[test]
 fn head_body_and_custom_channels_change_nothing_in_the_face() {
-    let face = subject(FaceProfile::default());
+    let face = subject(&FaceProfile::default());
     let mut preview = Preview::new(face, WIDTH);
     preview.paint(&ChannelBuf::NEUTRAL).unwrap();
     let rest: Vec<Raster> = FaceLayerId::ALL.iter().map(|&l| preview.layer(l).clone()).collect();

@@ -64,46 +64,54 @@ const C2: f64 = 0.0009;
 
 /// The mean SSIM of two pictures of one size, `-1..=1` (1 = the same). Pictures smaller than a window are compared as one
 /// window. Pictures of different sizes score 0.
-pub fn ssim(a: &RgbaImage, b: &RgbaImage) -> f64 {
-    if a.dimensions() != b.dimensions() {
+pub fn ssim(first: &RgbaImage, second: &RgbaImage) -> f64 {
+    if first.dimensions() != second.dimensions() {
         return 0.0;
     }
-    let (w, h) = a.dimensions();
-    let (la, lb) = (luma(a), luma(b));
-    let (win_w, win_h) = (WINDOW.min(w), WINDOW.min(h));
+    let (width, height) = first.dimensions();
+    let planes = Planes { first: luma(first), second: luma(second), width };
+    let (side_x, side_y) = (WINDOW.min(width), WINDOW.min(height));
     let mut total = 0.0;
     let mut windows = 0u32;
-    let mut y = 0;
-    while y + win_h <= h {
-        let mut x = 0;
-        while x + win_w <= w {
-            total += window_ssim(&la, &lb, w, x, y, win_w, win_h);
+    for top in (0..=height - side_y).step_by(STRIDE as usize) {
+        for left in (0..=width - side_x).step_by(STRIDE as usize) {
+            total += planes.window_ssim(left..left + side_x, top..top + side_y);
             windows += 1;
-            x += STRIDE;
         }
-        y += STRIDE;
     }
     if windows == 0 { 1.0 } else { total / f64::from(windows) }
 }
 
-/// SSIM of one window.
-fn window_ssim(a: &[f64], b: &[f64], stride: u32, x0: u32, y0: u32, w: u32, h: u32) -> f64 {
-    let n = f64::from(w * h);
-    let (mut sa, mut sb, mut saa, mut sbb, mut sab) = (0.0, 0.0, 0.0, 0.0, 0.0);
-    for y in y0..y0 + h {
-        for x in x0..x0 + w {
-            let i = (y * stride + x) as usize;
-            let (va, vb) = (a.get(i).copied().unwrap_or(0.0), b.get(i).copied().unwrap_or(0.0));
-            sa += va;
-            sb += vb;
-            saa += va * va;
-            sbb += vb * vb;
-            sab += va * vb;
+/// The luma planes of two pictures of one width.
+struct Planes {
+    first: Vec<f64>,
+    second: Vec<f64>,
+    width: u32,
+}
+
+impl Planes {
+    /// SSIM of the window over `columns` and `rows`.
+    fn window_ssim(&self, columns: std::ops::Range<u32>, rows: std::ops::Range<u32>) -> f64 {
+        let count = f64::from((columns.end - columns.start) * (rows.end - rows.start));
+        let (mut sum_p, mut sum_q, mut squares_p, mut squares_q, mut products) = (0.0, 0.0, 0.0, 0.0, 0.0);
+        for row in rows {
+            for column in columns.clone() {
+                let at = (row * self.width + column) as usize;
+                let (p, q) = (self.first.get(at).copied().unwrap_or(0.0), self.second.get(at).copied().unwrap_or(0.0));
+                sum_p += p;
+                sum_q += q;
+                squares_p += p * p;
+                squares_q += q * q;
+                products += p * q;
+            }
         }
+        let (mean_p, mean_q) = (sum_p / count, sum_q / count);
+        let var_p = squares_p / count - mean_p * mean_p;
+        let var_q = squares_q / count - mean_q * mean_q;
+        let cov = products / count - mean_p * mean_q;
+        ((2.0 * mean_p * mean_q + C1) * (2.0 * cov + C2))
+            / ((mean_p * mean_p + mean_q * mean_q + C1) * (var_p + var_q + C2))
     }
-    let (ma, mb) = (sa / n, sb / n);
-    let (va, vb, cov) = (saa / n - ma * ma, sbb / n - mb * mb, sab / n - ma * mb);
-    ((2.0 * ma * mb + C1) * (2.0 * cov + C2)) / ((ma * ma + mb * mb + C1) * (va + vb + C2))
 }
 
 /// The root mean square luma difference of two pictures of one size, `0..=1`; pictures of different sizes score 1.

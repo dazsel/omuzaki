@@ -109,7 +109,7 @@ fn the_job_reports_every_channel_and_stores_a_labelled_sheet() {
     let png = store.get(&hash).unwrap();
     let sheet = image::load_from_memory(&png).unwrap();
     // Four cells (the rest and three pushes) in one row.
-    assert_eq!(sheet.width(), answer["sheet"]["width"].as_u64().unwrap() as u32);
+    assert_eq!(u64::from(sheet.width()), answer["sheet"]["width"].as_u64().unwrap());
     assert!(sheet.width() > 4 * 160 && sheet.height() > 100);
     assert_eq!(answer["sheet"]["uri"], format!("omuzaki://render/{hash}.png"));
 }

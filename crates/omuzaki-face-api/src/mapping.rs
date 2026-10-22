@@ -337,7 +337,7 @@ pub struct MouthMap {
     pub teeth_lower_smile_start: f64,
     /// How fast the lower teeth come in above that smile.
     pub teeth_lower_smile_gain: f64,
-    /// How far `mouthFunnel` parts the lips with the jaw closed, as a jaw opening: ARKit's funnel flares the lips into an
+    /// How far `mouthFunnel` parts the lips with the jaw closed, as a jaw opening: `ARKit`'s funnel flares the lips into an
     /// O, so an "ooh" with a barely open jaw reads as a small round mouth instead of a closed line.
     pub part_funnel: f64,
     /// How far `mouthUpperUp` parts the lips with the jaw closed (the upper lip lifts off the teeth).
