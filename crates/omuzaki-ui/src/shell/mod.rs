@@ -31,6 +31,7 @@ pub mod persist;
 pub mod registry;
 pub mod requests;
 pub mod saver;
+pub mod sheet;
 pub mod stub;
 pub mod text;
 

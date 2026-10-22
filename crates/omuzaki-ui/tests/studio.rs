@@ -308,6 +308,14 @@ fn the_agent_panel_shows_a_connected_agent_and_the_person_can_pause_it() {
     assert!((width(core.runner.as_ref()) - start).abs() < 1e-9);
     h.get_by_label("Resume designer").click();
     until(&mut h, "resumed, it can be paused again", |h| h.query_by_label("Pause designer").is_some());
+
+    // Ctrl+Alt+P pauses the active agent from anywhere, and says so in the status bar.
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::ALT, Key::P);
+    until(&mut h, "the key paused it", |h| h.query_by_label("Resume designer").is_some());
+    assert!(h.query_by_label("designer is paused").is_some(), "the status bar says so");
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::ALT, Key::P);
+    until(&mut h, "and resumed it", |h| h.query_by_label("Pause designer").is_some());
+    assert!(h.query_by_label("designer is working again").is_some());
 }
 
 #[test]
@@ -368,6 +376,13 @@ fn skip_setup_ends_the_flow_from_any_step() {
     assert!(h.query_by_label("Welcome to Omuzaki").is_none());
     assert_eq!(h.state().shell.active_workspace(), Some("perform"), "skipping leaves the person where they are");
     assert!(h.query_by_label("Workspaces").is_some(), "the workspace tabs are back");
+
+    // Help, Run setup again: the flow starts over from the welcome.
+    h.get_by_label("Menu").click();
+    h.run_steps(2);
+    h.get_by_role_and_label(Role::Button, "Run setup again").click();
+    h.run_steps(4);
+    assert!(h.query_by_label("Welcome to Omuzaki").is_some(), "setup is back at the start");
 }
 
 /// The setup panel's host for the evidence: chosen probes (shared, so a render can change them) and a live-looking

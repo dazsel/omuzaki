@@ -140,6 +140,8 @@ pub struct SetupPanel {
     importing: bool,
     /// Where Go-live's button asked to go, while the flow finishes.
     exit: Option<Exit>,
+    /// The egui frame the panel was last drawn in.
+    drawn: u64,
 }
 
 impl std::fmt::Debug for SetupPanel {
@@ -249,6 +251,13 @@ impl Panel for SetupPanel {
         }
         ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(REFRESH_S));
         let probes = host.probes();
+        // Shown again after it ended and was closed (Help, Run setup again): the flow starts over.
+        let frame = ui.ctx().cumulative_frame_nr();
+        let reopened = frame > self.drawn.saturating_add(1);
+        self.drawn = frame;
+        if reopened && self.flow.as_ref().is_some_and(|flow| flow.progress().finished) {
+            (self.flow, self.probes, self.exit, self.importing) = (None, None, None, false);
+        }
         let flow = self.flow.get_or_insert_with(|| {
             let resume = ctx.view::<FirstRun>().map(FirstRun::progress).unwrap_or_default();
             SetupFlow::new(probes, resume, host.current())

@@ -20,7 +20,7 @@ use egui::{
     WidgetInfo, WidgetType,
 };
 use egui_tiles::{Tile, Tree};
-use omuzaki_ops_api::{Actor, Event, Grants, OpError, OpRecord, Runner};
+use omuzaki_ops_api::{Actor, Event, Grants, OpError, OpRecord, Runner, SessionInfo, SessionState};
 use omuzaki_ui_api::panel::{PanelCtx, ThemeKind as ApiTheme, ViewModels};
 use omuzaki_ui_api::registry::{PanelDef, PanelKind, Region, Registry, WorkspaceDef};
 
@@ -36,6 +36,7 @@ use super::persist::LayoutStore;
 use super::registry;
 use super::requests::{ShellRequest, ShellRequests};
 use super::saver::Saver;
+use super::sheet;
 use super::text::{Word, say, title};
 use crate::ds::theme::ds;
 use crate::ds::tokens::ThemeKind;
@@ -120,6 +121,8 @@ enum Note {
     NothingToUndo,
     NothingToRedo,
     Failed(String),
+    /// A sentence the shell said about something the person did (an agent paused).
+    Said(String),
 }
 
 /// The app shell.
@@ -169,6 +172,8 @@ pub struct Shell {
     requests: ShellRequests,
     /// The window title says an approval waits, because one arrived while the window was in the background.
     attention: bool,
+    /// The shortcut sheet is open.
+    sheet: bool,
 }
 
 impl Shell {
@@ -221,6 +226,7 @@ impl Shell {
             drawer: None,
             note: Note::Nothing,
             attention: false,
+            sheet: false,
             palette: Palette::default(),
             requests,
         };
@@ -297,7 +303,7 @@ impl Shell {
             self.toggle_palette(&ctx);
         }
         if let Some(action) = keys::resolve(&ctx) {
-            self.act(action);
+            self.act(&ctx, action);
         }
         if self.maximised && !ctx.text_edit_focused() && ctx.input(|i| i.key_pressed(Key::Escape)) {
             self.maximised = false;
@@ -313,7 +319,15 @@ impl Shell {
         CentralPanel::default().frame(Frame::new().fill(ds(&ctx).theme.bg1)).show(ui, |ui| self.body(ui));
         self.approval_stack(&ctx);
         self.palette_ui(&ctx);
+        if self.sheet {
+            self.sheet = sheet::show(&ctx);
+        }
         self.save_if_edited(&ctx);
+    }
+
+    /// Whether the shortcut sheet is open.
+    pub const fn sheet_open(&self) -> bool {
+        self.sheet
     }
 
     /// Whether the command palette is open.
@@ -457,7 +471,7 @@ impl Shell {
         }
     }
 
-    fn act(&mut self, action: Action) {
+    fn act(&mut self, ctx: &Context, action: Action) {
         match action {
             Action::Workspace(n) => self.select(n),
             Action::Theatre => {
@@ -470,7 +484,36 @@ impl Shell {
             Action::ToggleMaximise => self.maximised = !self.maximised && self.focus.is_some(),
             Action::NextPanel => self.cycle_focus(1),
             Action::PreviousPanel => self.cycle_focus(-1),
+            Action::ShortcutSheet => self.sheet = !self.sheet,
+            Action::PauseAgent => self.pause_agent(ctx),
         }
+    }
+
+    /// The agent the person means by "the active agent": the newest one working, else the newest one paused.
+    fn active_agent(&self) -> Option<SessionInfo> {
+        let feed = self.models.get::<AgentFeed>()?;
+        let newest = |paused: bool| {
+            feed.live().filter(|s| matches!(s.state, SessionState::Paused { .. }) == paused).last().cloned()
+        };
+        newest(false).or_else(|| newest(true))
+    }
+
+    /// Pauses the active agent, or resumes it when it is paused (Ctrl+Alt+P), and says so in the status bar.
+    fn pause_agent(&mut self, ctx: &Context) {
+        let (Some(Agents(sessions)), Some(session)) = (self.models.get::<Agents>().cloned(), self.active_agent())
+        else {
+            self.note = Note::Said(say(ctx, Word::StatusNoAgent, &[]));
+            return;
+        };
+        let name = session.client.as_str().to_owned();
+        let paused = matches!(session.state, SessionState::Paused { .. });
+        let result =
+            if paused { sessions.resume(session.id, &self.actor) } else { sessions.pause(session.id, &self.actor) };
+        self.note = match result {
+            Ok(_) if paused => Note::Said(say(ctx, Word::StatusAgentResumed, &[("name", &name)])),
+            Ok(_) => Note::Said(say(ctx, Word::StatusAgentPaused, &[("name", &name)])),
+            Err(error) => Note::Failed(error.message),
+        };
     }
 
     fn select(&mut self, index: usize) {
@@ -867,7 +910,26 @@ impl Shell {
         let name = say(&ctx, Word::MenuName, &[]);
         let button = icon_button(ui, MENU_ICON, &Tip::new(&name), true);
         Popup::menu(&button).show(|ui| {
-            ui.label(RichText::new(say(&ctx, Word::MenuView, &[])).font(ds(&ctx).text.strong.clone()));
+            let heading = |ui: &mut Ui, word: Word| {
+                ui.label(RichText::new(say(&ctx, word, &[])).font(ds(&ctx).text.strong.clone()));
+            };
+            heading(ui, Word::MenuEdit);
+            let next = self.models.get::<HistoryLog>().and_then(|log| log.next_undo(&self.actor)).map(step_label);
+            let nothing = say(&ctx, Word::MenuNothingToUndo, &[]);
+            let undo = next.as_ref().map_or_else(
+                || say(&ctx, Word::SheetUndo, &[]),
+                |label| say(&ctx, Word::MenuUndo, &[("label", label)]),
+            );
+            let button = Button::new(&undo).ghost().icon(icons::ARROW_COUNTER_CLOCKWISE).shortcut_hint("Ctrl Z");
+            if ui.add(button.disabled_if(next.is_none(), &nothing)).clicked() {
+                self.step_history(true);
+            }
+            let redo = say(&ctx, Word::MenuRedo, &[]);
+            if ui.add(Button::new(&redo).ghost().icon(icons::ARROW_CLOCKWISE).shortcut_hint("Ctrl Shift Z")).clicked() {
+                self.step_history(false);
+            }
+            ui.separator();
+            heading(ui, Word::MenuView);
             let lock = say(&ctx, Word::LockLayout, &[]);
             let glyph = if self.locked { icons::LOCK } else { icons::LOCK_OPEN };
             if ui.add(Button::new(&lock).ghost().icon(glyph).shortcut_hint("Ctrl Shift L")).clicked() {
@@ -879,15 +941,44 @@ impl Shell {
             {
                 self.reset_layout();
             }
-            ui.separator();
-            ui.label(RichText::new(say(&ctx, Word::ShowPanel, &[])).font(ds(&ctx).text.strong.clone()));
-            // Every registered panel, in the registry's order; a panel the person closed returns here.
+            // Every registered panel, in the registry's order, in a submenu so the menu stays short; a panel the
+            // person closed returns here.
             let panels: Vec<&'static PanelDef> = self.registry.panels().to_vec();
-            for def in panels {
-                let name = title(&ctx, &self.bodies.title(def)).into_owned();
-                if ui.add(Button::new(&name).ghost().icon(def.icon)).clicked() {
-                    self.show_panel(def.id);
+            let show_panel = say(&ctx, Word::ShowPanel, &[]);
+            let submenu = ui.menu_button(&show_panel, |ui| {
+                for def in panels {
+                    let name = title(&ctx, &self.bodies.title(def)).into_owned();
+                    if ui.add(Button::new(&name).ghost().icon(def.icon)).clicked() {
+                        self.show_panel(def.id);
+                    }
                 }
+            });
+            // The submenu's arrow is drawn, not read out: its name is the words.
+            submenu.response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &show_panel));
+            ui.separator();
+            heading(ui, Word::MenuAgents);
+            if ui.add(Button::new(&say(&ctx, Word::MenuConnectAgent, &[])).ghost().icon(icons::ROBOT)).clicked() {
+                self.show_panel(agent::ID);
+            }
+            if let Some(session) = self.active_agent() {
+                let name = session.client.as_str();
+                let paused = matches!(session.state, SessionState::Paused { .. });
+                let (word, glyph) =
+                    if paused { (Word::MenuResumeAgent, icons::PLAY) } else { (Word::MenuPauseAgent, icons::PAUSE) };
+                let label = say(&ctx, word, &[("name", name)]);
+                if ui.add(Button::new(&label).ghost().icon(glyph).shortcut_hint("Ctrl Alt P")).clicked() {
+                    self.pause_agent(&ctx);
+                }
+            }
+            ui.separator();
+            heading(ui, Word::MenuHelp);
+            if ui.add(Button::new(&say(&ctx, Word::MenuRunSetup, &[])).ghost().icon(icons::SPARKLE)).clicked() {
+                self.requests.push(ShellRequest::Workspace(crate::live::registration::PERFORM_WORKSPACE));
+                self.requests.push(ShellRequest::ShowPanel(crate::panels::setup::ID));
+            }
+            let shortcuts = say(&ctx, Word::MenuShortcuts, &[]);
+            if ui.add(Button::new(&shortcuts).ghost().icon(icons::KEYBOARD).shortcut_hint("Ctrl /")).clicked() {
+                self.sheet = true;
             }
         });
     }
@@ -941,7 +1032,7 @@ impl Shell {
             (Note::Undid(label), _) => say(&ctx, Word::StatusUndid, &[("label", label)]),
             (Note::Redid(label), _) => say(&ctx, Word::StatusRedid, &[("label", label)]),
             (Note::NothingToRedo, _) => say(&ctx, Word::StatusNothingToRedo, &[]),
-            (Note::Failed(why), _) => why.clone(),
+            (Note::Failed(why) | Note::Said(why), _) => why.clone(),
         };
         let selection = match self.models.get::<EditFocus>().map(|f| (f.count(), f.primary())) {
             Some((1, Some(part))) => say(&ctx, Word::StatusSelected, &[("part", part.as_str())]),

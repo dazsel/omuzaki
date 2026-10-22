@@ -718,3 +718,48 @@ fn a_focused_divider_moves_with_the_arrow_keys_and_the_arrangement_is_saved() {
     harness.run_steps(3);
     assert!((widths(&harness)[0] - after[0] + 16.0).abs() < 3.0, "and back");
 }
+
+#[test]
+fn ctrl_slash_and_the_help_menu_open_the_shortcut_sheet_and_esc_closes_it() {
+    let mut harness = plain(vec2(1366.0, 768.0));
+    press(&mut harness, Modifiers::COMMAND, Key::Slash);
+    harness.run_steps(2);
+    assert!(harness.state().sheet_open());
+    for line in [
+        "Keyboard shortcuts",
+        "Search or run anything",
+        "Pause or resume the agent",
+        "Move a focused divider (arrow keys)",
+    ] {
+        assert_shows(&harness, line);
+    }
+    press(&mut harness, Modifiers::NONE, Key::Escape);
+    harness.run_steps(2);
+    assert!(!harness.state().sheet_open(), "Esc closes it");
+    harness.get_by_label("Menu").click();
+    harness.run_steps(2);
+    for heading in ["Edit", "View", "Agents", "Help"] {
+        assert_shows(&harness, heading);
+    }
+    harness.get_by_role_and_label(Role::Button, "Keyboard shortcuts").click();
+    harness.run_steps(2);
+    assert!(harness.state().sheet_open(), "Help, Keyboard shortcuts opens it too");
+}
+
+#[test]
+fn ctrl_alt_p_with_no_agent_says_so() {
+    let mut harness = plain(vec2(1366.0, 768.0));
+    press(&mut harness, Modifiers::COMMAND | Modifiers::ALT, Key::P);
+    harness.run_steps(2);
+    assert_shows(&harness, "No agent is connected");
+}
+
+#[test]
+fn the_menus_undo_names_the_step_and_is_off_with_nothing_to_undo() {
+    use egui_kittest::kittest::NodeT as _;
+    let mut harness = plain(vec2(1366.0, 768.0));
+    harness.get_by_label("Menu").click();
+    harness.run_steps(2);
+    let undo = harness.get_by_role_and_label(Role::Button, "Undo");
+    assert!(undo.accesskit_node().is_disabled(), "nothing to undo on a fresh shell");
+}
