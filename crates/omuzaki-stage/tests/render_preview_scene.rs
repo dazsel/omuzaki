@@ -346,6 +346,7 @@ fn on_the_gpu_fog_a_sky_environment_and_a_spot_on_two_statures() {
 
 /// A synthetic 4:3 room for backdrop tests: a wall darkening upward, a window of four panes with a sky gradient, and a
 /// floor band; drawn here, so it is the project's own.
+#[cfg(feature = "wgpu")]
 fn synthetic_room() -> Vec<u8> {
     let (width, height) = (400u32, 300u32);
     let picture = image::RgbaImage::from_fn(width, height, |column, row| {
