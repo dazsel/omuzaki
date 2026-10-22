@@ -1,12 +1,18 @@
-//! Workers as threads: a closure per worker. A panic is a crash. A thread can't be killed, so a hung one is
-//! abandoned (its stop flag is set, it is counted) and replaced.
+//! Workers as threads (tests, and the interim in-process encoder of record.md D11): a closure per worker. A panic is
+//! a crash. A thread can't be killed: `kill` asks it to stop, and one that has not ended after `exit_wait` is
+//! abandoned by the supervisor (counted and replaced). That is safe only because it holds nothing exclusive: it gets
+//! its own generation's messages and objects, which no one reads any more once it is abandoned (quarantined).
 
-use std::collections::BTreeMap;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
-use super::{ExitInfo, LaunchError, WorkerHandle, WorkerLauncher};
-use crate::watchdog::policy::{HeartbeatCell, WorkerId};
+use omuzaki_stream_api::supervisor::{WorkerId, WorkerKind};
+use omuzaki_stream_api::worker::{ChannelHandle, HostMsg};
+
+use super::{ControlSend, ExitInfo, Fault, LaunchError, Peer, Start, Waker, WorkerHandle, WorkerLauncher};
+use crate::watchdog::policy::HeartbeatCell;
 
 /// The exit code of a closure that returned.
 const RETURNED: i32 = 0;
@@ -14,10 +20,12 @@ const RETURNED: i32 = 0;
 const PANICKED: i32 = 101;
 
 /// What a thread worker sees.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct ThreadWorker {
     heartbeat: HeartbeatCell,
     stop: Arc<AtomicBool>,
+    inbox: Receiver<HostMsg>,
+    generation: u32,
 }
 
 impl ThreadWorker {
@@ -26,44 +34,54 @@ impl ThreadWorker {
         self.heartbeat.beat();
     }
 
-    /// Whether the supervisor wants it to end (it was abandoned or the supervisor is stopping).
+    /// Sets the work counter.
+    pub fn set_work(&self, work: u64) {
+        self.heartbeat.set_work(work);
+    }
+
+    /// Whether the supervisor wants it to end (it was killed, abandoned, or the supervisor is stopping).
     pub fn should_stop(&self) -> bool {
         self.stop.load(Ordering::Acquire)
+    }
+
+    /// Its generation.
+    pub fn generation(&self) -> u32 {
+        self.generation
+    }
+
+    /// The next message from the host, waiting at most `timeout`; `None` on a timeout or once the host has gone.
+    pub fn recv_timeout(&self, timeout: Duration) -> Option<HostMsg> {
+        self.inbox.recv_timeout(timeout).ok()
     }
 }
 
 /// A thread worker's body.
 pub type WorkerFn = Arc<dyn Fn(&ThreadWorker) + Send + Sync>;
 
-/// Launches each worker by running its closure on a new thread.
-#[derive(Clone, Default)]
+/// Launches generations of one thread worker.
 pub struct ThreadLauncher {
-    bodies: BTreeMap<WorkerId, WorkerFn>,
-    abandoned: Arc<AtomicU64>,
+    kind: WorkerKind,
+    body: WorkerFn,
+    peer: Option<Arc<dyn Peer>>,
 }
 
 impl std::fmt::Debug for ThreadLauncher {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ThreadLauncher").field("workers", &self.bodies.len()).finish_non_exhaustive()
+        f.debug_struct("ThreadLauncher").field("kind", &self.kind).finish_non_exhaustive()
     }
 }
 
 impl ThreadLauncher {
-    /// No workers yet.
-    pub fn new() -> Self {
-        Self::default()
+    /// Runs `body` on a new thread for each generation of a worker of `kind`.
+    pub fn new(kind: WorkerKind, body: impl Fn(&ThreadWorker) + Send + Sync + 'static) -> Self {
+        Self { kind, body: Arc::new(body), peer: None }
     }
 
-    /// With worker `id` running `body`.
+    /// With each generation's `Start` made by `peer` (sent to the body as its first message).
     #[must_use]
-    pub fn with(mut self, id: WorkerId, body: impl Fn(&ThreadWorker) + Send + Sync + 'static) -> Self {
-        self.bodies.insert(id, Arc::new(body));
+    pub fn with_peer(mut self, peer: Arc<dyn Peer>) -> Self {
+        self.peer = Some(peer);
         self
-    }
-
-    /// Hung threads abandoned so far.
-    pub fn abandoned(&self) -> u64 {
-        self.abandoned.load(Ordering::Acquire)
     }
 }
 
@@ -81,58 +99,94 @@ impl Drop for Ended {
     }
 }
 
+/// A thread's inbox, as a control channel.
+struct InboxControl(Mutex<Sender<HostMsg>>);
+
+impl ControlSend for InboxControl {
+    fn send(&self, msg: &HostMsg, _handles: &[&ChannelHandle]) -> Result<(), LaunchError> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).send(msg.clone()).map_err(|_| LaunchError::Closed)
+    }
+}
+
 impl WorkerLauncher for ThreadLauncher {
-    fn spawn(&self, id: WorkerId) -> Result<Box<dyn WorkerHandle>, LaunchError> {
-        let body = Arc::clone(self.bodies.get(&id).ok_or(LaunchError::Unknown(id))?);
-        let worker = ThreadWorker { heartbeat: HeartbeatCell::new(), stop: Arc::new(AtomicBool::new(false)) };
+    fn kind(&self) -> WorkerKind {
+        self.kind
+    }
+
+    fn spawn(&self, id: WorkerId, generation: u32, _waker: Waker) -> Result<Box<dyn WorkerHandle>, LaunchError> {
+        let start = self.peer.as_ref().map(|peer| peer.prepare(generation)).transpose()?;
+        let (tx, inbox) = mpsc::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let heartbeat = HeartbeatCell::new();
+        let worker = ThreadWorker { heartbeat: heartbeat.clone(), stop: Arc::clone(&stop), inbox, generation };
         let (done, code) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicI32::new(RETURNED)));
         let ended = Ended { done: Arc::clone(&done), code: Arc::clone(&code) };
-        let inside = worker.clone();
-        std::thread::Builder::new().name(format!("worker-{}", id.0)).spawn(move || {
-            let _ended = ended;
-            body(&inside);
-        })?;
+        let body = Arc::clone(&self.body);
+        std::thread::Builder::new()
+            .name(format!("worker-{}-g{generation}", id.index()))
+            .spawn(move || {
+                let _ended = ended;
+                body(&worker);
+            })
+            .map_err(|e| LaunchError::spawn(e.to_string()))?;
         Ok(Box::new(ThreadHandle {
-            worker,
+            heartbeat,
+            stop,
             done,
             code,
-            abandoned: false,
-            launcher_abandoned: Arc::clone(&self.abandoned),
+            control: Arc::new(InboxControl(Mutex::new(tx))),
+            start,
         }))
     }
 }
 
 /// A running thread worker.
 struct ThreadHandle {
-    worker: ThreadWorker,
+    heartbeat: HeartbeatCell,
+    stop: Arc<AtomicBool>,
     done: Arc<AtomicBool>,
     code: Arc<AtomicI32>,
-    abandoned: bool,
-    launcher_abandoned: Arc<AtomicU64>,
+    control: Arc<InboxControl>,
+    start: Option<Start>,
 }
 
 impl WorkerHandle for ThreadHandle {
-    fn heartbeat(&self) -> u64 {
-        self.worker.heartbeat.read()
+    fn heartbeat(&self) -> &HeartbeatCell {
+        &self.heartbeat
     }
 
     fn try_wait(&mut self) -> Option<ExitInfo> {
-        if self.abandoned {
-            return Some(ExitInfo { code: None });
-        }
         self.done.load(Ordering::Acquire).then(|| ExitInfo { code: Some(self.code.load(Ordering::Acquire)) })
     }
 
     fn kill(&mut self) {
-        if self.abandoned || self.done.load(Ordering::Acquire) {
-            return;
+        self.stop.store(true, Ordering::Release);
+    }
+
+    fn needs_hello(&self) -> bool {
+        false
+    }
+
+    fn start(&mut self) -> Result<(), LaunchError> {
+        match self.start.take() {
+            Some(start) => self.control.send(&HostMsg::start(start.channels, start.params), &[]),
+            None => Ok(()),
         }
-        self.worker.stop.store(true, Ordering::Release);
-        self.abandoned = true;
-        self.launcher_abandoned.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn control(&self) -> Arc<dyn ControlSend> {
+        Arc::clone(&self.control) as Arc<dyn ControlSend>
     }
 
     fn pid(&self) -> Option<u32> {
+        None
+    }
+
+    fn revocable(&self) -> bool {
+        true
+    }
+
+    fn fault(&self) -> Option<Fault> {
         None
     }
 }
@@ -140,6 +194,6 @@ impl WorkerHandle for ThreadHandle {
 impl Drop for ThreadHandle {
     fn drop(&mut self) {
         // Whatever ends the handle asks the thread to end too.
-        self.worker.stop.store(true, Ordering::Release);
+        self.stop.store(true, Ordering::Release);
     }
 }

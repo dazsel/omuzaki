@@ -23,6 +23,10 @@ pub enum StreamError {
     /// The muxer failed.
     #[error("mux error: {0}")]
     Mux(String),
+    /// A worker's control channel carried something that is not the protocol: a bad magic, an over-long frame, a
+    /// message that does not decode, or descriptors that do not match it (`docs/design/supervisor.md` §4.2).
+    #[error("protocol fault: {0}")]
+    Protocol(String),
     /// A bounded queue or byte cap is full; the caller drops or retries, it is never a silent loss.
     #[error("queue full")]
     Full,

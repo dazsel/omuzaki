@@ -52,6 +52,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 inventory = "0.3"
 cpal = { version = "0.18", default-features = false }   # audio device I/O for the live engine (Apache-2.0); `asio` stays off (docs/licensing/deps/cpal.toml), omuzaki-audio-engine
 libc = "0.2"   # the Linux virtual camera's device calls (open, ioctl, write) (MIT OR Apache-2.0), omuzaki-vcam; already in the lock
+memmap2 = "0.9"   # maps the live show's shared-memory objects (MIT OR Apache-2.0), omuzaki-shm (docs/design/supervisor.md §4.3); already in the lock
 libm = "0.2"   # transcendental maths bit-identical on every platform (the CPU rasteriser's stroker, ADR 0009)
 loom = "0.7"   # model checker for the metrics seqlock (MIT), omuzaki-metrics-api dev-dependency; only built with --cfg loom
 # ONNX Runtime wrapper. `load-dynamic`: the app loads Microsoft's official MIT library from a path we choose, so Pyke's prebuilt binaries
@@ -59,6 +60,7 @@ loom = "0.7"   # model checker for the metrics seqlock (MIT), omuzaki-metrics-ap
 nalgebra = { version = "0.35", default-features = false, features = ["std"] }   # matrix and rotation maths for the head-pose fit (Apache-2.0), omuzaki-track
 ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "load-dynamic", "api-27"] }
 pollster = "1"
+postcard = { version = "1.1", default-features = false, features = ["use-std"] }   # the live-show worker protocol's frame bodies (MIT OR Apache-2.0), omuzaki-stream-api (docs/design/supervisor.md §4.2)
 proptest = "1.12"
 regex = "1.13"   # JSON Schema `pattern` checks in the studio's forms (MIT OR Apache-2.0), omuzaki-ui; already in the lock through criterion
 reqwest = { version = "0.13", default-features = false }

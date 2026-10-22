@@ -1,0 +1,8 @@
+section = "rust"
+item = "memmap2 0.9"
+kind = "crate"
+used_for = "maps the live show's shared-memory objects (memfds and unlinked POSIX objects) on Unix, `omuzaki-shm` (docs/design/supervisor.md §4.3); Windows sections are mapped with windows-sys"
+status = "yes"
+condition = "already in the lock: no new crates"
+audit = "(crates.io: MIT OR Apache-2.0)"
+crates = ["memmap2"]
