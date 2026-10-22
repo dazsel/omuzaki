@@ -23,10 +23,12 @@ use omuzaki_face_api::{BakerInput, face_baker};
 use omuzaki_face_mock::{mock_profile, mock_projection};
 use omuzaki_io_api::{
     ARKIT_52, BakeReport, BakeRequest, ExportCtx, ExportOptions, Expression, ExpressionBaker, ExpressionName,
-    ImageMime, IoScene, NoProgress, PresetExpression, Realisation, Severity, run_export,
+    ImageMime, ImportCtx, ImportInput, ImportOptions, IoScene, NoProgress, PresetExpression, Realisation, Severity,
+    run_export, run_import,
 };
 use omuzaki_io_mock::MockVrm1Exporter;
 use omuzaki_io_mock::fixtures::{BODY_NODE, tiny_avatar};
+use omuzaki_io_vrm::{Vrm1Exporter, Vrm1Importer};
 
 /// Where the synthetic head sits in bind space.
 const CENTRE: Vec3 = Vec3::new(0.0, 1.5, 0.0);
@@ -190,6 +192,23 @@ fn the_registry_finds_the_real_baker_and_its_bake_exports() {
     assert_eq!(out.report.count(Severity::Error), 0, "{:#?}", out.report);
     let inert = report.channels.iter().filter(|c| matches!(c.realisation, Realisation::Inert { .. })).count();
     assert!(out.report.count(Severity::Warning) >= inert, "each inert channel is at least one warning");
+
+    // A real VRM 1.0 file of it reads back with the targets, the patches and every expression's binds.
+    let vrm = run_export(&Vrm1Exporter, &scene, &ExportCtx::new(&options)).expect("VRM export");
+    assert_eq!(vrm.report.count(Severity::Error), 0, "{:#?}", vrm.report);
+    let import_options = ImportOptions::default();
+    let back = run_import(&Vrm1Importer, &ImportInput::new(&vrm.files[0].bytes), &ImportCtx::new(&import_options))
+        .expect("the baked file imports")
+        .scene;
+    assert_eq!(back.meshes[0].morph_target_names, scene.meshes[0].morph_target_names);
+    assert_eq!(back.meshes[0].primitives.len(), scene.meshes[0].primitives.len(), "the head and its patches");
+    let jaw = back.meshes[0].morph_target_names.iter().position(|n| n == "jawOpen").unwrap();
+    assert!(back.meshes[0].primitives[0].morph_targets[jaw].positions.iter().any(|d| d.length() > 1e-4));
+    let (before, after) = (&scene.avatar.as_ref().unwrap().expressions, &back.avatar.as_ref().unwrap().expressions);
+    assert_eq!(after.len(), before.len());
+    let blink = ExpressionName::parse("eyeBlinkLeft").unwrap();
+    assert_eq!(after[&blink].uv_binds.len(), before[&blink].uv_binds.len(), "the blink's atlas move survives");
+    assert!(after[&blink].is_binary);
 }
 
 /// What a viewer of the baked file shows on the face plane at 500 px/m when `expression` is at full weight (`None`:
