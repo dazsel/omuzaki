@@ -45,8 +45,10 @@ pub use recover::RecoveryReport;
 
 // The MCP server registers ops (`agent.connection`), the library contract and the settings store register their own
 // (the settings and session ops, `startup.reopen`), and so does first-run setup (the `setup.*` ops), so an App that
-// links the core links them through this (ADR 0015).
+// links the core links them through this (ADR 0015). The character contract's registrations come along for the
+// merge's part rules.
 omuzaki_core::define_link! {
+    omuzaki_char_api::link();
     omuzaki_mcp::link();
     omuzaki_library_api::link();
     omuzaki_settings::link();

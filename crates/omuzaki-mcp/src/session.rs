@@ -1,6 +1,7 @@
 //! One client connection: who the agent is, its open transaction, and how its calls reach the runner.
 
 use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -76,6 +77,9 @@ pub struct Session {
     in_app: bool,
     /// The `Mcp-Session-Id` of this connection over HTTP, learned from its first request after `initialize`.
     http_id: Arc<OnceLock<String>>,
+    /// Set when `branch_work` moved the connection to another lane's session: this one's end then leaves the HTTP
+    /// connection open, for the session that took over.
+    moved: Arc<AtomicBool>,
     /// When the client last asked for anything: what tells an idle drop from a disconnect.
     last_active: Mutex<Instant>,
     state: Arc<Mutex<State>>,
@@ -167,6 +171,7 @@ impl Session {
             alive: CancellationToken::new(),
             in_app: false,
             http_id: Arc::new(OnceLock::new()),
+            moved: Arc::new(AtomicBool::new(false)),
             last_active: Mutex::new(Instant::now()),
             state: Arc::new(Mutex::new(state)),
             tools_changed: Arc::new(Notify::new()),
@@ -216,6 +221,8 @@ impl Session {
     pub(crate) fn moved_to(&self, to: &crate::server::McpServer, carry: Carry) -> Self {
         let mut moved = Session::new(to.shared_arc(), Arc::clone(&self.view), to.next_serial()).with_jobs(to.jobs());
         moved.http = self.http;
+        // The same HTTP connection: the new session closes it when it ends.
+        moved.http_id = Arc::clone(&self.http_id);
         *lock(&moved.carry) = Some(carry);
         moved
     }
@@ -228,6 +235,7 @@ impl Session {
     /// Ends this session as `Closed` because its connection moved to another lane; the connection stays open.
     pub(crate) fn end_moved(&self) {
         let Some(Ok(link)) = self.link.get() else { return };
+        self.moved.store(true, Ordering::SeqCst);
         self.ended.send_replace(Some(EndReason::Closed));
         if let (Some(host), Some(id)) = (&self.shared.sessions, link.id)
             && let Err(error) = host.sessions.end(id, EndReason::Closed)
@@ -396,9 +404,11 @@ impl Session {
             self.alive.clone(),
         );
         if let Some(credential) = self.view.credential.clone() {
-            let (http_id, mut ended) = (Arc::clone(&self.http_id), self.ended.subscribe());
+            let (http_id, mut ended, moved) =
+                (Arc::clone(&self.http_id), self.ended.subscribe(), Arc::clone(&self.moved));
             tokio::spawn(async move {
                 if ended.wait_for(Option::is_some).await.is_ok()
+                    && !moved.load(Ordering::SeqCst)
                     && let Some(id) = http_id.get()
                 {
                     credential.close_session(id).await;
@@ -424,6 +434,7 @@ impl Session {
         let Ok(id) = id.to_str() else { return };
         let _ = self.http_id.set(id.to_owned());
         if self.ended.borrow().is_some()
+            && !self.moved.load(Ordering::SeqCst)
             && let Some(credential) = self.view.credential.clone()
         {
             let id = id.to_owned();

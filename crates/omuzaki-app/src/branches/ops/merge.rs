@@ -588,7 +588,13 @@ impl Op for BranchMerge {
 
         let titles: Vec<&str> =
             units.values().filter(|u| u.offers() && u.taken != "left-out").map(|u| u.unit.title.as_str()).collect();
-        let label = format!("Merge {} into {} ({})", self.from, this.name, titles.join(", "));
+        // A branch's lane can be ahead of its newest point, which is what a merge takes: say so when nothing is new.
+        let what = if titles.is_empty() {
+            "nothing new: a merge takes the branch's newest point, and it changes nothing here".to_owned()
+        } else {
+            titles.join(", ")
+        };
+        let label = format!("Merge {} into {} ({what})", self.from, this.name);
         let clean = units.values().filter(|u| u.status == "clean").count();
         let summary = if blocked.is_empty() {
             format!("{} units merge cleanly{}", clean, if full { "" } else { "; this is a pick" })
