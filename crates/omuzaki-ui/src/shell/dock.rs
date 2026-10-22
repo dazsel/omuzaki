@@ -44,6 +44,8 @@ pub struct Dock<'a> {
     /// Where each tab group's "⋯" button goes, by the panel it is for. The tab bar reserves the place before it draws
     /// its tabs; the button is drawn with the panel, after them, so Tab meets the tabs first, as the eye does.
     pub menus: Vec<(String, Rect)>,
+    /// The tabs of groups too narrow for every tab's full name, found as each group's bar starts ([`Dock::crowded`]).
+    pub crowded: Vec<TileId>,
 }
 
 /// What a panel's "⋯" menu asks of the shell: the keyboard's way to do what a drag does (`shell.md` section 4 rule 4,
@@ -96,6 +98,9 @@ impl Behavior<PanelId> for Dock<'_> {
         tabs: &egui_tiles::Tabs,
         _scroll_offset: &mut f32,
     ) {
+        if self.crowded(tiles, tabs, ui.available_width()) {
+            self.crowded.extend(&tabs.children);
+        }
         let active = tabs.active.or_else(|| tabs.children.first().copied());
         let Some(Tile::Pane(PanelId(panel))) = active.and_then(|t| tiles.get(t)) else { return };
         let Some(def) = self.registry.panel(panel).filter(|d| d.kind != PanelKind::Primary) else { return };
@@ -112,6 +117,55 @@ impl Behavior<PanelId> for Dock<'_> {
         let painter = button.ctx.layer_painter(button.layer_id);
         paint::focus_ring(&painter, &ds(self.ctx).theme, &button, button.rect, 0, RingPlacement::Inside);
         button
+    }
+
+    /// A tab as `egui_tiles` draws it, except in a crowded group: there the tabs that aren't open show their panel's icon
+    /// alone, named in full for a screen reader and on hover, so the strip never needs scroll arrows, which have no
+    /// focus ring and sit out of reading order.
+    fn tab_ui(
+        &mut self,
+        tiles: &mut Tiles<PanelId>,
+        ui: &mut Ui,
+        id: egui::Id,
+        tile_id: TileId,
+        state: &egui_tiles::TabState,
+    ) -> Response {
+        let name = self.tab_title_for_tile(tiles, tile_id);
+        let icon = match tiles.get(tile_id) {
+            Some(Tile::Pane(PanelId(panel))) => self.registry.panel(panel).map(|def| def.icon),
+            _ => None,
+        };
+        let compact = !state.active && icon.is_some() && self.crowded.contains(&tile_id);
+        let font = egui::TextStyle::Button.resolve(ui.style());
+        let (shown, font) = match icon {
+            Some(icon) if compact => (WidgetText::from(icon), ds(ui.ctx()).text.icon(font.size + 2.0, false)),
+            _ => (name.clone(), font),
+        };
+        let galley = shown.into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, font);
+        let margin = self.tab_title_spacing(ui.visuals());
+        let (_, rect) = ui.allocate_space(egui::vec2(galley.size().x + 2.0 * margin, ui.available_height()));
+        let sense = if self.is_tile_draggable(tiles, tile_id) { Sense::click_and_drag() } else { Sense::click() };
+        let mut response = ui.interact(rect, id, sense);
+        let label = name.text().to_owned();
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), state.active, &label)
+        });
+        if compact {
+            response = response.on_hover_text(&label);
+        }
+        if ui.is_rect_visible(rect) && !state.is_being_dragged {
+            let fill = self.tab_bg_color(ui.visuals(), tiles, tile_id, state);
+            let stroke = self.tab_outline_stroke(ui.visuals(), tiles, tile_id, state);
+            ui.painter().rect(rect.shrink(0.5), 0.0, fill, stroke, egui::StrokeKind::Inside);
+            if state.active {
+                // The open tab joins the panel below it.
+                ui.painter().hline(rect.x_range(), rect.bottom(), egui::Stroke::new(stroke.width + 1.0, fill));
+            }
+            let colour = self.tab_text_color(ui.visuals(), tiles, tile_id, state);
+            let at = egui::Align2::LEFT_CENTER.align_size_within_rect(galley.size(), rect.shrink(margin)).min;
+            ui.painter().galley(at, galley, colour);
+        }
+        self.on_tab_button(tiles, tile_id, response)
     }
 
     fn tab_title_for_pane(&mut self, pane: &PanelId) -> WidgetText {
@@ -143,6 +197,23 @@ impl Behavior<PanelId> for Dock<'_> {
 }
 
 impl Dock<'_> {
+    /// Whether the tabs of `tabs` need more than `width` with their full names and the "⋯" button beside them.
+    fn crowded(&mut self, tiles: &Tiles<PanelId>, tabs: &egui_tiles::Tabs, width: f32) -> bool {
+        let style = self.ctx.global_style();
+        let margin = self.tab_title_spacing(&style.visuals);
+        let font = egui::TextStyle::Button.resolve(&style);
+        let names: f32 = tabs
+            .children
+            .iter()
+            .map(|&child| {
+                let name = self.tab_title_for_tile(tiles, child).text().to_owned();
+                let width = self.ctx.fonts_mut(|f| f.layout_no_wrap(name, font.clone(), egui::Color32::WHITE).size().x);
+                width + 2.0 * margin
+            })
+            .sum();
+        names + ds(self.ctx).metrics.icon_button > width
+    }
+
     /// The "⋯" menu of the panel `def`: move it to the other side, close it, or reset the layout.
     fn panel_menu(&mut self, ui: &mut Ui, def: &PanelDef) {
         let ctx = ui.ctx().clone();

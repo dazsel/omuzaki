@@ -302,6 +302,9 @@ fn main() -> eframe::Result {
             let mut shell = studio_shell(cc, core, dir.as_ref());
             if let Some(live) = live.as_ref() {
                 shell.insert_view(live.channel_feed());
+                if let Some(approver) = live.show_approver() {
+                    shell.insert_view(approver);
+                }
                 if let Some(keychain) = live.keychain() {
                     shell.insert_view(keychain);
                 }

@@ -108,6 +108,8 @@ pub struct LiveApp {
     approvals: Option<Arc<DiskApprovals>>,
     /// The OS keychain the connectors keep their secrets in; `None` without a data folder.
     secrets: Option<Arc<dyn SecretStore>>,
+    /// The project folder's real path, which keys a show's approvals as the engine does.
+    project: String,
 }
 
 /// The frame rate the program is fed to the outputs at (spec §10's budget scene).
@@ -282,6 +284,7 @@ impl LiveApp {
         }
         let services = services.build();
         let project = document.dir().map(|dir| dir.to_string_lossy().into_owned());
+        let project_key = project.clone().unwrap_or_default();
         let core = wiring::core_on(document, services).map_err(StartError::Ops)?;
         automation.attach(&core.runner);
         if let Some(audio) = audio {
@@ -311,6 +314,7 @@ impl LiveApp {
             automation,
             approvals,
             secrets,
+            project: project_key,
         })
     }
 
@@ -324,6 +328,15 @@ impl LiveApp {
     /// a data folder, when nothing can be approved.
     pub fn approvals(&self) -> Option<&Arc<DiskApprovals>> {
         self.approvals.as_ref()
+    }
+
+    /// The approval card's "Allow on this machine" (`crate::broadcast::rules`): the approvals store and a re-arm of
+    /// the running show, as the person; `None` without a data folder, when nothing can be approved.
+    pub fn show_approver(&self) -> Option<crate::broadcast::ShowApprover> {
+        let approvals = Arc::clone(self.approvals.as_ref()?);
+        let approver =
+            crate::broadcast::DiskApprover::new(Arc::clone(&self.automation), approvals, self.project.clone());
+        Some(crate::broadcast::ShowApprover(Arc::new(approver)))
     }
 
     /// The keychain, for the Settings window's OBS password (which no op carries); `None` without a data folder.

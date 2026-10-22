@@ -1,0 +1,7 @@
+section = "rust"
+item = "egui-snarl 0.12"
+kind = "crate"
+used_for = "the automation graph editor (`omuzaki-ui::broadcast::graph`; MIT OR Apache-2.0, depends on egui 0.36, ahash, egui-scale and smallvec (MIT OR Apache-2.0) and slab (MIT))"
+status = "yes"
+audit = "B1"
+crates = ["egui-snarl"]

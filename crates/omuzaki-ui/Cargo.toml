@@ -18,6 +18,7 @@ clap.workspace = true
 eframe.workspace = true
 egui.workspace = true
 egui-phosphor.workspace = true
+egui-snarl.workspace = true
 egui_tiles.workspace = true
 egui_kittest = { workspace = true, optional = true }
 # History's pictures are PNGs (shell/pictures.rs).
@@ -104,6 +105,7 @@ omuzaki-ui-mock = { path = "../omuzaki-ui-mock" }
 omuzaki-obs = { path = "../omuzaki-obs", features = ["testing"] }
 omuzaki-secrets-mock = { path = "../omuzaki-secrets-mock" }
 omuzaki-vts = { path = "../omuzaki-vts", features = ["testing"] }
+omuzaki-live-mock = { path = "../omuzaki-live-mock" }
 tempfile.workspace = true
 
 [lints]

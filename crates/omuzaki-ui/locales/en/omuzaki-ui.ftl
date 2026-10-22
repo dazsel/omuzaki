@@ -581,6 +581,402 @@ ds-toast-dismiss = Dismiss notification
 # $count (id, never translated): "hair-b"
 ds-toast-repeated = { $message }, repeated { $count } times
 
+# Registered English the studio shows.
+ui-broadcast-add-node = Add node
+
+# Registered English the studio shows.
+ui-broadcast-allow = Allow on this machine
+
+# Registered English the studio shows.
+ui-broadcast-approval-line = Until you allow these on this computer, the rules that need them won't run.
+
+# Registered English the studio shows.
+ui-broadcast-approval-title = This show needs your OK
+
+# Registered English the studio shows.
+ui-broadcast-armed = Ready to run
+
+# Registered English the studio shows.
+# $seconds (id, never translated): "hair-b"
+ui-broadcast-changed = changed { $seconds } s ago
+
+# Registered English the studio shows.
+# $seconds (id, never translated): "hair-b"
+# $node (id, never translated): "hair-b"
+ui-broadcast-changed-by = changed { $seconds } s ago by { $node }
+
+# Registered English the studio shows.
+ui-broadcast-close = Close
+
+# Registered English the studio shows.
+ui-broadcast-connect = Connect
+
+# Registered English the studio shows.
+ui-broadcast-connect-to = Connect to…
+
+# Registered English the studio shows.
+ui-broadcast-constants = Inputs with no wire
+
+# Registered English the studio shows.
+ui-broadcast-delete-node = Delete node
+
+# Registered English the studio shows.
+ui-broadcast-done-editing = Done
+
+# Registered English the studio shows.
+# $count (id, never translated): "hair-b"
+ui-broadcast-drop-duplicate = Duplicates: { $count }
+
+# Registered English the studio shows.
+# $count (id, never translated): "hair-b"
+ui-broadcast-drop-inactive = For rules turned off: { $count }
+
+# Registered English the studio shows.
+# $count (id, never translated): "hair-b"
+ui-broadcast-drop-inbox = Inbox full: { $count }
+
+# Registered English the studio shows.
+# $count (id, never translated): "hair-b"
+ui-broadcast-drop-inert = For rules that won't run: { $count }
+
+# Registered English the studio shows.
+# $count (id, never translated): "hair-b"
+ui-broadcast-drop-paused = While paused: { $count }
+
+# Registered English the studio shows.
+# $count (id, never translated): "hair-b"
+ui-broadcast-drop-producer = At the source: { $count }
+
+# Registered English the studio shows.
+# $count (id, never translated): "hair-b"
+ui-broadcast-drop-rate = Over the rate limit: { $count }
+
+# Registered English the studio shows.
+# $count (id, never translated): "hair-b"
+ui-broadcast-drop-reload = During a reload: { $count }
+
+# Registered English the studio shows.
+ui-broadcast-dropped = Dropped
+
+# Registered English the studio shows.
+ui-broadcast-edit-inline = Edit
+
+# Registered English the studio shows.
+ui-broadcast-edit-node = Edit node
+
+# Registered English the studio shows.
+# $from (id, never translated): "hair-b"
+# $to (id, never translated): "hair-b"
+ui-broadcast-event-to-value = An event can only go to an event input, and a value to a value input ({ $from } to { $to })
+
+# Registered English the studio shows.
+ui-broadcast-events = Events
+
+# Registered English the studio shows.
+# $count (id, never translated): "hair-b"
+ui-broadcast-faulted = { $count } stopped by an error
+
+# Registered English the studio shows.
+ui-broadcast-filter-variables = Filter variables
+
+# Registered English the studio shows.
+ui-broadcast-find-node = Find a node
+
+# Registered English the studio shows.
+ui-broadcast-firings = What fired
+
+# Registered English the studio shows.
+ui-broadcast-first-show-name = Main
+
+# Registered English the studio shows.
+ui-broadcast-graph-picker = Rule
+
+# Registered English the studio shows.
+ui-broadcast-graph-suspended = This rule was suspended for looping too fast. Resume it in Values or Rules.
+
+# Registered English the studio shows.
+ui-broadcast-graph-title = Graph
+
+# Registered English the studio shows.
+ui-broadcast-graphs = Rules
+
+# Registered English the studio shows.
+# $group (id, never translated): "hair-b"
+ui-broadcast-group-on = { $group } starts on
+
+# Registered English the studio shows.
+ui-broadcast-groups = Groups
+
+# Registered English the studio shows.
+ui-broadcast-inert = Won't run
+
+# Registered English the studio shows.
+ui-broadcast-inert-bad-params = Its settings no longer pass their check
+
+# Registered English the studio shows.
+ui-broadcast-inert-bad-wiring = Its wires break a rule (edited by hand?)
+
+# Registered English the studio shows.
+ui-broadcast-inert-faulted = It stopped on an error; restart the show to retry
+
+# Registered English the studio shows.
+# $count (id, never translated): "hair-b"
+ui-broadcast-inert-nodes = { $count } won't run
+
+# Registered English the studio shows.
+ui-broadcast-inert-op-not-allowed = Its op isn't there or isn't allowed in a show
+
+# Registered English the studio shows.
+ui-broadcast-inert-other = It won't run
+
+# Registered English the studio shows.
+ui-broadcast-inert-undeclared = It names a variable or group the show doesn't declare
+
+# Registered English the studio shows.
+ui-broadcast-inert-unknown-event = It listens for an event nothing sends
+
+# Registered English the studio shows.
+ui-broadcast-inert-unknown-kind = Its kind isn't in this build (a missing plugin?)
+
+# Registered English the studio shows.
+ui-broadcast-input = Input
+
+# Registered English the studio shows.
+# $value (id, never translated): "hair-b"
+ui-broadcast-last-value = Last value: { $value }
+
+# Registered English the studio shows.
+ui-broadcast-make-show = Make a show
+
+# Registered English the studio shows.
+# $count (id, never translated): "hair-b"
+ui-broadcast-missing-approvals = { $count } still need your OK
+
+# Registered English the studio shows.
+ui-broadcast-move-nodes = Move nodes
+
+# Registered English the studio shows.
+# $path (id, never translated): "hair-b"
+ui-broadcast-need-file-read = Read the file { $path }
+
+# Registered English the studio shows.
+# $path (id, never translated): "hair-b"
+ui-broadcast-need-file-write = Write the file { $path }
+
+# Registered English the studio shows.
+# $group (id, never translated): "hair-b"
+ui-broadcast-need-group = The group { $group }
+
+# Registered English the studio shows.
+# $address (id, never translated): "hair-b"
+ui-broadcast-need-host = Send to { $address }
+
+# Registered English the studio shows.
+# $op (id, never translated): "hair-b"
+# $summary (id, never translated): "hair-b"
+ui-broadcast-need-op = Run { $op }: { $summary }
+
+# Registered English the studio shows.
+# $op (id, never translated): "hair-b"
+ui-broadcast-need-op-unknown = Run { $op }
+
+# Registered English the studio shows.
+# $name (id, never translated): "hair-b"
+ui-broadcast-need-process = See whether { $name } is running
+
+# Registered English the studio shows.
+# $command (id, never translated): "hair-b"
+# $hash (id, never translated): "hair-b"
+ui-broadcast-need-program = Run the program { $command } (this exact file, fingerprint { $hash })
+
+# Registered English the studio shows.
+# $command (id, never translated): "hair-b"
+ui-broadcast-need-program-missing = Run the program { $command } (the file isn't there yet)
+
+# Registered English the studio shows.
+# $scope (id, never translated): "hair-b"
+ui-broadcast-need-scope = Use the { $scope } permission
+
+# Registered English the studio shows.
+# $name (id, never translated): "hair-b"
+# $host (id, never translated): "hair-b"
+ui-broadcast-need-secret = Send the secret { $name }, only to { $host }
+
+# Registered English the studio shows.
+# $name (id, never translated): "hair-b"
+ui-broadcast-need-variable = The variable { $name }
+
+# Registered English the studio shows.
+ui-broadcast-needs-approval = Needs your OK
+
+# Registered English the studio shows.
+ui-broadcast-new-graph = New rule
+
+# Registered English the studio shows.
+ui-broadcast-new-graph-name = New rule
+
+# Registered English the studio shows.
+ui-broadcast-no-approver = This build can't save approvals
+
+# Registered English the studio shows.
+ui-broadcast-no-events = No events yet.
+
+# Registered English the studio shows.
+ui-broadcast-no-firings = Nothing has fired yet.
+
+# Registered English the studio shows.
+ui-broadcast-no-graphs = This show has no rules yet
+
+# Registered English the studio shows.
+ui-broadcast-no-graphs-line = Add a rule with New rule, or ask an agent to build one.
+
+# Registered English the studio shows.
+ui-broadcast-no-keychain = This build has no keychain to keep it in
+
+# Registered English the studio shows.
+ui-broadcast-no-show = No rules yet
+
+# Registered English the studio shows.
+ui-broadcast-no-show-graph-line = Make a show in Rules, then build its rules here as graphs.
+
+# Registered English the studio shows.
+ui-broadcast-no-show-line = Rules react to chat, redeems and timers: when something happens, your character does something.
+
+# Registered English the studio shows.
+ui-broadcast-no-targets = No input of another node takes this output.
+
+# Registered English the studio shows.
+ui-broadcast-no-variables = No variables match.
+
+# Registered English the studio shows.
+# $count (id, never translated): "hair-b"
+ui-broadcast-node-count = { $count } steps
+
+# Registered English the studio shows.
+ui-broadcast-node-label = Label
+
+# Registered English the studio shows.
+ui-broadcast-nodes = Nodes
+
+# Registered English the studio shows.
+ui-broadcast-not-now = Not now
+
+# Registered English the studio shows.
+ui-broadcast-not-running = The show isn't running
+
+# Registered English the studio shows.
+ui-broadcast-not-running-line = Start it in Rules to watch its variables and what fires.
+
+# Registered English the studio shows.
+ui-broadcast-nothing-selected = Select a node to edit it.
+
+# Registered English the studio shows.
+ui-broadcast-off = Off
+
+# Registered English the studio shows.
+ui-broadcast-on = On
+
+# Registered English the studio shows.
+ui-broadcast-open-editor = Open in the editor
+
+# Registered English the studio shows.
+# $show (id, never translated): "hair-b"
+ui-broadcast-other-running = The show { $show } is running: stop it first
+
+# Registered English the studio shows.
+ui-broadcast-output = Output
+
+# Registered English the studio shows.
+ui-broadcast-pause = Pause
+
+# Registered English the studio shows.
+ui-broadcast-paused = Paused
+
+# Registered English the studio shows.
+ui-broadcast-ready = Ready
+
+# Registered English the studio shows.
+# $reason (id, never translated): "hair-b"
+ui-broadcast-refused = Not done: { $reason }
+
+# Registered English the studio shows.
+ui-broadcast-resume = Resume
+
+# Registered English the studio shows.
+ui-broadcast-resume-graph = Resume
+
+# Registered English the studio shows.
+ui-broadcast-rules-title = Rules
+
+# Registered English the studio shows.
+ui-broadcast-running = Running
+
+# Registered English the studio shows.
+ui-broadcast-save-secret = Save
+
+# Registered English the studio shows.
+ui-broadcast-scope-global = Every show
+
+# Registered English the studio shows.
+ui-broadcast-scope-session = This run
+
+# Registered English the studio shows.
+ui-broadcast-scope-show = This show
+
+# Registered English the studio shows.
+# $name (id, never translated): "hair-b"
+# $host (id, never translated): "hair-b"
+ui-broadcast-secret-field = Secret { $name }, sent only to { $host }
+
+# Registered English the studio shows.
+# $reason (id, never translated): "hair-b"
+ui-broadcast-show-unreadable = The show could not be read: { $reason }
+
+# Registered English the studio shows.
+ui-broadcast-start = Start
+
+# Registered English the studio shows.
+ui-broadcast-stop = Stop
+
+# Registered English the studio shows.
+ui-broadcast-stopped = Stopped
+
+# Registered English the studio shows.
+ui-broadcast-suspended = Suspended
+
+# Registered English the studio shows.
+ui-broadcast-type-secret-first = Type the secret first
+
+# Registered English the studio shows.
+# $from (id, never translated): "hair-b"
+# $to (id, never translated): "hair-b"
+ui-broadcast-types-dont-match = A { $from } can't become a { $to }
+
+# Registered English the studio shows.
+ui-broadcast-unchanged = not changed this run
+
+# Registered English the studio shows.
+ui-broadcast-ungrouped = Not in a group
+
+# Registered English the studio shows.
+# $name (id, never translated): "hair-b"
+ui-broadcast-value-of = Value of { $name }
+
+# Registered English the studio shows.
+ui-broadcast-values-title = Values
+
+# Registered English the studio shows.
+# $reason (id, never translated): "hair-b"
+ui-broadcast-values-unreadable = The values can't be read: { $reason }
+
+# Registered English the studio shows.
+ui-broadcast-variables = Variables
+
+# Registered English the studio shows.
+# $trigger (id, never translated): "hair-b"
+# $steps (id, never translated): "hair-b"
+ui-broadcast-when = { $trigger } → { $steps }
+
 # A generated form field's own words.
 # $min (id, never translated): "hair-b"
 ui-form-at-least = Enter a whole number of at least { $min }
@@ -2950,6 +3346,9 @@ ui-shell-window-waiting = ● Omuzaki: waiting for you
 
 # The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
 ui-shell-workspace-tabs = Workspaces
+
+# A workspace's name on its tab: keep it short.
+ui-workspace-broadcast = Broadcast
 
 # A workspace's name on its tab: keep it short.
 ui-workspace-build = Build

@@ -24,6 +24,7 @@ pub fn entries() -> Vec<(String, &'static str)> {
     out.extend(crate::shell::text::Word::ALL.iter().map(|w| (w.id().to_owned(), w.english())));
     out.extend(crate::live::text::Word::ALL.iter().map(|w| (w.id().to_owned(), w.english())));
     out.extend(crate::settings::text::Word::ALL.iter().map(|w| (w.id().to_owned(), w.english())));
+    out.extend(crate::broadcast::text::Word::ALL.iter().map(|w| (w.id().to_owned(), w.english())));
     let named = |prefix: &str, table: &[(&str, &'static str)], out: &mut Vec<(String, &'static str)>| {
         out.extend(table.iter().map(|(name, english)| (format!("{prefix}-{}", kebab(name)), *english)));
     };

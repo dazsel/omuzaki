@@ -205,6 +205,7 @@ impl Shell {
         let mut models = ViewModels::new();
         models.insert(requests.clone());
         models.insert(Preview::default());
+        models.insert(crate::broadcast::ShowFocus::default());
         let mut shell = Self {
             runner,
             registry,
@@ -754,6 +755,7 @@ impl Shell {
             asks: &mut asks,
             sides: &sides,
             menus: Vec::new(),
+            crowded: Vec::new(),
         };
         view.tree.ui(&mut dock, ui);
         let moved = handles::name_handles(ui, &mut view.tree, &self.registry);
