@@ -5,7 +5,8 @@
 //!    touched, so an error leaves the target's previous frame intact);
 //! 2. upload the frame uniform, the instances and the joints, and tag every draw with the passes that want it
 //!    ([`draws`]);
-//! 3. run the passes in order ([`graph`]), bracketing each with GPU timestamps ([`timing`]);
+//! 3. run the passes in order ([`graph`]), bracketing each with GPU timestamps ([`timing`]); a supersampled frame runs
+//!    the geometry passes once per round and averages the rounds ([`supersample`]);
 //! 4. submit, and collect timings that have arrived.
 //!
 //! A pass reads the result through [`PassCx`](crate::pass::PassCx) and never rebuilds any of it.
@@ -13,6 +14,7 @@
 pub(crate) mod attachments;
 pub(crate) mod draws;
 pub(crate) mod graph;
+pub(crate) mod supersample;
 pub(crate) mod timing;
 pub(crate) mod uniform;
 
@@ -38,8 +40,10 @@ pub(crate) struct FrameView<'a> {
     pub(crate) target_size: UVec2,
     /// Hardware MSAA sample count in use (1, 2, 4 or 8).
     pub(crate) samples: u32,
-    /// Group 0 of `shader/common.wgsl`: frame uniform, instances, joints. Bind it once per pass.
-    pub(crate) bind_group: &'a wgpu::BindGroup,
+    /// Group 0 of `shader/common.wgsl` (frame uniform, instances, joints) for each round the geometry passes draw: one,
+    /// or more when the frame supersamples ([`supersample`]). A pass binds [`PassCx::frame_group`](crate::pass::PassCx::frame_group),
+    /// which picks the round being drawn.
+    pub(crate) bind_groups: &'a [wgpu::BindGroup],
     /// The scene's draws, validated and tagged with the passes that draw them ([`draws::Draws::for_pass`]).
     pub(crate) draws: &'a draws::Draws,
 }

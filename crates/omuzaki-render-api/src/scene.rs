@@ -486,7 +486,7 @@ impl Default for Post {
 /// re-rendered exactly (spec §8, principle 4).
 #[derive(Copy, Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct FrameInfo {
-    /// Frame number: seeds film grain and sample jitter. On the live path, where `omuzaki-budget`'s scheduler reads
+    /// Frame number: seeds film grain and dither (never the supersampling pattern, which is fixed). On the live path, where `omuzaki-budget`'s scheduler reads
     /// the [`FrameReport`](crate::FrameReport)s, give every submission an index at least one higher than the last
     /// (timeline position belongs in `time`): it identifies the submission in `FrameReport::frame` and
     /// `GpuTimings::frame`. Offline renders may repeat an index on purpose to re-render a frame exactly.
