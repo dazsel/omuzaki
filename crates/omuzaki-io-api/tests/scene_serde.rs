@@ -127,26 +127,62 @@ fn passthrough_with_nested_json_round_trips() {
 }
 
 #[test]
-fn encoded_image_bytes_are_a_hex_string() {
+fn encoded_image_bytes_are_padded_base64() {
     let bytes: Vec<u8> = (0..1024u32).map(|i| (i * 7 + 3) as u8).collect();
     let img = EncodedImage::new("tex", ImageMime::Png, Blob::new(bytes.clone()));
     let v: Value = serde_json::to_value(&img).expect("serialises");
-    let hex = v["bytes"].as_str().expect("bytes is a string");
-    assert_eq!(hex.len(), 2048);
-    assert!(hex.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
-    assert_eq!(&hex[..6], "030a11");
+    let text = v["bytes"].as_str().expect("bytes is a string");
+    assert_eq!(text.len(), 1368, "1 KiB is 1368 characters, not hex's 2048");
+    assert!(text.ends_with('='), "1024 bytes leave one over, padded");
+    // 0x03 0x0a 0x11 is "AwoR".
+    assert_eq!(&text[..4], "AwoR");
     let back = round_trip(&img);
     assert_eq!(back, img);
     assert_eq!(back.bytes.as_slice(), &bytes[..]);
 }
 
 #[test]
-fn blob_rejects_malformed_hex() {
-    for bad in [r#""abc""#, r#""zz""#, "12", "null"] {
+fn blob_base64_matches_rfc_4648_and_round_trips_every_length() {
+    // RFC 4648 §10's test vectors.
+    for (plain, coded) in [
+        ("", ""),
+        ("f", "Zg=="),
+        ("fo", "Zm8="),
+        ("foo", "Zm9v"),
+        ("foob", "Zm9vYg=="),
+        ("fooba", "Zm9vYmE="),
+        ("foobar", "Zm9vYmFy"),
+    ] {
+        let blob = Blob::new(plain.as_bytes().to_vec());
+        assert_eq!(serde_json::to_value(&blob).expect("serialises"), Value::from(coded), "{plain}");
+        assert_eq!(round_trip(&blob), blob, "{plain}");
+    }
+    for len in 0..70 {
+        let bytes: Vec<u8> = (0..len).map(|i: u32| (i * 37 + 250) as u8).collect();
+        let blob = Blob::new(bytes);
+        assert_eq!(round_trip(&blob), blob, "{len} bytes");
+    }
+    assert_eq!(
+        serde_json::from_str::<Blob>(r#""+/+/""#).expect("the last two letters").as_slice(),
+        &[0xfb, 0xff, 0xbf]
+    );
+}
+
+#[test]
+fn blob_rejects_malformed_base64() {
+    for bad in [
+        r#""abc""#,  // not a multiple of 4
+        r#""ab=c""#, // padding inside
+        r#""a===""#, // three '='
+        r#""Zg-=""#, // URL-safe alphabet
+        r#""Zh==""#, // bits past the last byte
+        r#""Zm 9""#, // a space
+        r#""=Zm9""#, // padding first
+        "12",
+        "null",
+    ] {
         assert!(serde_json::from_str::<Blob>(bad).is_err(), "{bad}");
     }
-    assert!(serde_json::from_str::<Blob>(r#""0A ff""#).is_err());
-    assert_eq!(serde_json::from_str::<Blob>(r#""0Aff""#).expect("upper case is read").as_slice(), &[0x0a, 0xff]);
     assert!(round_trip(&Blob::default()).is_empty());
 }
 

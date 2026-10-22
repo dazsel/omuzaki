@@ -41,53 +41,107 @@ impl Blob {
     }
 }
 
-/// Serialises as a lowercase hex string, like `ContentHash`, so JSON stays text and diffs stay readable.
+/// The standard base64 alphabet (RFC 4648 §4).
+const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// `bytes` as standard, padded base64 (RFC 4648 §4): four characters for every three bytes, what glTF `data:` URIs use.
+fn to_base64(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    let (whole, rest) = bytes.as_chunks::<3>();
+    for &[a, b, c] in whole {
+        let n = u32::from(a) << 16 | u32::from(b) << 8 | u32::from(c);
+        for shift in [18, 12, 6, 0] {
+            out.push(char::from(BASE64[(n >> shift & 63) as usize]));
+        }
+    }
+    match *rest {
+        [a] => {
+            let n = u32::from(a) << 16;
+            out.extend([BASE64[(n >> 18) as usize], BASE64[(n >> 12 & 63) as usize]].map(char::from));
+            out.push_str("==");
+        }
+        [a, b] => {
+            let n = u32::from(a) << 16 | u32::from(b) << 8;
+            let digits = [BASE64[(n >> 18) as usize], BASE64[(n >> 12 & 63) as usize], BASE64[(n >> 6 & 63) as usize]];
+            out.extend(digits.map(char::from));
+            out.push('=');
+        }
+        _ => {}
+    }
+    out
+}
+
+/// The bytes of padded standard base64, or why it isn't: a length that is not a multiple of four, a character
+/// outside the alphabet, padding anywhere but the end, or bits set past the last byte (so each byte string has one
+/// spelling).
+fn from_base64(text: &str) -> Result<Vec<u8>, String> {
+    let raw = text.as_bytes();
+    if !raw.len().is_multiple_of(4) {
+        return Err(format!("{} characters, not a multiple of 4", raw.len()));
+    }
+    let padding = raw.iter().rev().take_while(|c| **c == b'=').count();
+    if padding > 2 {
+        return Err("more than two '=' at the end".to_owned());
+    }
+    let digit = |c: u8| -> Result<u32, String> {
+        let value = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return Err(format!("{:?} is not a base64 character", char::from(c))),
+        };
+        Ok(u32::from(value))
+    };
+    let mut out = Vec::with_capacity(raw.len() / 4 * 3);
+    let quads = raw.as_chunks::<4>().0;
+    for (i, quad) in quads.iter().enumerate() {
+        let last = i + 1 == quads.len();
+        let pad = if last { padding } else { 0 };
+        let mut n = 0;
+        for &c in &quad[..4 - pad] {
+            n = n << 6 | digit(c)?;
+        }
+        n <<= 6 * pad;
+        // Four 6-bit digits are 24 bits: the low three bytes of `n`.
+        let [_, b0, b1, b2] = n.to_be_bytes();
+        let bytes = [b0, b1, b2];
+        if pad > 0 && bytes[3 - pad..].iter().any(|b| *b != 0) {
+            return Err("bits set past the last byte".to_owned());
+        }
+        out.extend_from_slice(&bytes[..3 - pad]);
+    }
+    Ok(out)
+}
+
+/// Serialises as standard, padded base64 (RFC 4648 §4, as in glTF `data:` URIs): a third larger than the bytes, where
+/// hex would double them, and JSON stays text.
 impl Serialize for Blob {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        const DIGITS: &[u8; 16] = b"0123456789abcdef";
-        let mut hex = String::with_capacity(self.0.len() * 2);
-        for &b in self.0.iter() {
-            hex.push(char::from(DIGITS[usize::from(b >> 4)]));
-            hex.push(char::from(DIGITS[usize::from(b & 15)]));
-        }
-        serializer.serialize_str(&hex)
+        serializer.serialize_str(&to_base64(&self.0))
     }
 }
 
-/// Reads the hex string back; an odd length or a non-hex character is an error.
+/// Reads the base64 back; anything [`from_base64`] refuses is an error. No stored format held a `Blob` while it was
+/// hex (an imported avatar is rebuilt from its original file), so hex is not read.
 impl<'de> Deserialize<'de> for Blob {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct HexVisitor;
+        struct Base64Visitor;
 
-        impl Visitor<'_> for HexVisitor {
+        impl Visitor<'_> for Base64Visitor {
             type Value = Blob;
 
             fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("a hex string of even length")
+                f.write_str("a padded base64 string")
             }
 
             fn visit_str<E: de::Error>(self, v: &str) -> Result<Blob, E> {
-                if !v.len().is_multiple_of(2) {
-                    return Err(E::invalid_length(v.len(), &self));
-                }
-                let nibble = |c: u8| match c {
-                    b'0'..=b'9' => Ok(c - b'0'),
-                    b'a'..=b'f' => Ok(c - b'a' + 10),
-                    b'A'..=b'F' => Ok(c - b'A' + 10),
-                    _ => Err(E::invalid_value(de::Unexpected::Char(char::from(c)), &self)),
-                };
-                let bytes = v
-                    .as_bytes()
-                    .as_chunks::<2>()
-                    .0
-                    .iter()
-                    .map(|[hi, lo]| Ok(nibble(*hi)? << 4 | nibble(*lo)?))
-                    .collect::<Result<Vec<u8>, E>>()?;
-                Ok(Blob::new(bytes))
+                from_base64(v).map(Blob::new).map_err(E::custom)
             }
         }
 
-        deserializer.deserialize_str(HexVisitor)
+        deserializer.deserialize_str(Base64Visitor)
     }
 }
 
