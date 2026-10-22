@@ -146,7 +146,8 @@ fn opaque(cx: &PassCx<'_>) -> bool {
     match cx.frame.scene.background {
         Background::Solid { colour } => colour.alpha() >= 1.0,
         Background::Environment => true,
-        Background::Transparent => false,
+        // A picture laid under the frame after the resolve: the scene itself renders over nothing.
+        Background::Transparent | Background::Gradient { .. } | Background::Texture { .. } => false,
     }
 }
 

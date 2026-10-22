@@ -1,6 +1,8 @@
 //! Scene settings (design D2): `scene.toml`: the subject, the opening camera, the backdrop, the ground, the post look.
 
+pub use omuzaki_render_api::BackdropFit;
 use omuzaki_render_api::{ColourGrade, Tonemap};
+use omuzaki_store_api::ContentHash;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +25,37 @@ pub enum Backdrop {
     /// The lighting's environment (phase 2, with LK-08): the sky behind the cast, turned and as bright as it lights
     /// them. Without an environment in the lighting it shows the lighting's `background` colour, and the check says so.
     Environment {},
+    /// A vertical gradient from `top` to `bottom` (phase 2), shown as authored: the exposure and tone curve don't touch
+    /// it.
+    Gradient {
+        /// The colour along the frame's top edge.
+        top: omuzaki_render_api::Colour,
+        /// The colour along its bottom edge.
+        bottom: omuzaki_render_api::Colour,
+    },
+    /// A picture from the asset store (phase 2): a PNG or JPEG whose provenance and licence the store keeps, shown as
+    /// authored. `fit` places it; where `contain` leaves bars, `bars` shows (the lighting's `background` colour when
+    /// left out).
+    Image {
+        /// The picture's content hash in the asset store.
+        asset: ContentHash,
+        /// How it meets a frame of another shape.
+        #[serde(default)]
+        fit: BackdropFit,
+        /// What shows in the bars `contain` leaves.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bars: Option<Bars>,
+    },
+}
+
+/// The gradient in the bars around an image backdrop; give both ends one colour for flat bars.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Bars {
+    /// The colour at the frame's top edge.
+    pub top: omuzaki_render_api::Colour,
+    /// The colour at its bottom edge.
+    pub bottom: omuzaki_render_api::Colour,
 }
 
 impl Default for Backdrop {
@@ -204,7 +237,16 @@ mod tests {
         let b: Backdrop = serde_json::from_value(json!({"kind": "colour", "colour": "#00b140"})).unwrap();
         assert!(matches!(b, Backdrop::Colour { .. }));
         assert_eq!(serde_json::to_value(Backdrop::Transparent {}).unwrap(), json!({"kind": "transparent"}));
-        assert!(serde_json::from_value::<Backdrop>(json!({"kind": "gradient"})).is_err(), "phase 2");
+        assert!(serde_json::from_value::<Backdrop>(json!({"kind": "gradient"})).is_err(), "a gradient has two ends");
+        let g: Backdrop =
+            serde_json::from_value(json!({"kind": "gradient", "top": "#102040", "bottom": "#000000"})).unwrap();
+        assert!(matches!(g, Backdrop::Gradient { .. }));
+        let hash = "ab".repeat(32);
+        let image: Backdrop = serde_json::from_value(json!({"kind": "image", "asset": hash})).unwrap();
+        assert!(matches!(image, Backdrop::Image { fit: BackdropFit::Cover, bars: None, .. }), "cover, no bars");
+        assert_eq!(serde_json::to_value(&image).unwrap(), json!({"kind": "image", "asset": hash, "fit": "cover"}));
+        let wrong = json!({"kind": "image", "asset": hash, "bars": {"top": "#000000"}});
+        assert!(serde_json::from_value::<Backdrop>(wrong).is_err(), "bars have two ends");
         assert_eq!(
             serde_json::from_value::<Backdrop>(json!({"kind": "environment"})).unwrap(),
             Backdrop::Environment {}

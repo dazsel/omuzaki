@@ -18,6 +18,7 @@ use std::sync::{Mutex, PoisonError};
 use omuzaki_render_api::Scene;
 use omuzaki_render_api::limits::MAX_LIGHTS;
 use omuzaki_stage_api::{EnvironmentSource, GroundKind};
+use omuzaki_store_api::ContentHash;
 
 use super::resolve::{ResolvedGround, ResolvedScene};
 use omuzaki_render_api::Camera;
@@ -56,6 +57,9 @@ pub struct Owed {
     /// The environment to make from now on: `Some(Some(source))` for a new sky or HDRI, `Some(None)` to release it,
     /// `None` when it is as before. Its intensity, turn and toon ramp are values and owe nothing.
     pub environment: Option<Option<EnvironmentSource>>,
+    /// The backdrop picture to upload from now on: `Some(Some(asset))` for a new one, `Some(None)` to release it,
+    /// `None` when it is as before. Its fit and bars are values and owe nothing.
+    pub image: Option<Option<ContentHash>>,
 }
 
 impl Owed {
@@ -72,6 +76,7 @@ pub struct Applier {
     ground: Option<ResolvedGround>,
     skin_floor: Option<f32>,
     environment: Option<EnvironmentSource>,
+    image: Option<ContentHash>,
 }
 
 impl Applier {
@@ -86,7 +91,7 @@ impl Applier {
     ///
     /// The ground is owed when its kind, radius or opacity differs from the last committed (a `None` ground and a
     /// missing one are the same thing), the skin floor when the override is set, changed or cleared, and the
-    /// environment when its source is added, changed or removed.
+    /// environment when its source is added, changed or removed, and the backdrop picture when its asset is.
     /// Allocation-free once [`reserve`] has run on `scene`.
     pub fn apply(&self, resolved: &ResolvedScene, scene: &mut Scene) -> Owed {
         fill(resolved, scene);
@@ -101,6 +106,10 @@ impl Applier {
         let source = resolved.environment.map(|e| e.source);
         if source != self.environment {
             owed.environment = Some(source);
+        }
+        let image = resolved.backdrop_image.map(|i| i.asset);
+        if image != self.image {
+            owed.image = Some(image);
         }
         owed
     }
@@ -117,6 +126,9 @@ impl Applier {
         if let Some(environment) = owed.environment {
             self.environment = environment;
         }
+        if let Some(image) = owed.image {
+            self.image = image;
+        }
     }
 }
 
@@ -129,8 +141,9 @@ impl Applier {
 pub(crate) struct SceneLink {
     applier: Applier,
     owed: Owed,
-    /// What the last scene wants (its ground, skin floor and environment, with an HDRI's pixels), in a resolved scene
-    /// that is never rendered, and a scene to work the debt out in. Behind a box so the stage stays small.
+    /// What the last scene wants (its ground, skin floor, environment and backdrop picture, with their pixels), in a
+    /// resolved scene that is never rendered, and a scene to work the debt out in. Behind a box so the stage stays
+    /// small.
     debt: Box<Debt>,
 }
 
@@ -162,12 +175,14 @@ impl SceneLink {
         self.debt.wanted.skin_floor = resolved.skin_floor;
         self.debt.wanted.environment = resolved.environment;
         self.debt.wanted.hdri.clone_from(&resolved.hdri);
+        self.debt.wanted.backdrop_image = resolved.backdrop_image;
+        self.debt.wanted.image.clone_from(&resolved.image);
         self.debt.set = true;
         self.owed
     }
 
-    /// What the last [`set`](Self::set) wants: its ground, skin floor, environment and HDRI pixels (nothing else of it
-    /// is kept).
+    /// What the last [`set`](Self::set) wants: its ground, skin floor, environment, backdrop picture and their pixels
+    /// (nothing else of it is kept).
     pub(crate) fn wanted(&self) -> &ResolvedScene {
         &self.debt.wanted
     }

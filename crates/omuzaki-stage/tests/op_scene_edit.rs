@@ -9,6 +9,7 @@ use omuzaki_core::time::{FakeClock, Seconds};
 use omuzaki_doc_api::{DocRead, DocWrite, Patch};
 use omuzaki_doc_mock::MemDoc;
 use omuzaki_ops_api::{Actor, ErrorCode, Op, OpCtx, OpError, Plan, Scope};
+use omuzaki_render_api::Colour;
 use omuzaki_stage::ops::scene::camera::{AddCamera, RemoveCamera, SetActiveCamera, SetCamera};
 use omuzaki_stage::ops::scene::cast::{PlaceCharacter, RemoveMember, SetMember, SetSubject};
 use omuzaki_stage::ops::scene::create::CreateScene;
@@ -456,4 +457,44 @@ fn fog_and_an_environment_are_set_and_turned_off_and_the_backdrop_shows_the_sky(
     assert_eq!((lighting.fog, lighting.environment), (None, None));
     let described = plan::<DescribeScene>(&doc, json!({})).unwrap().output.unwrap();
     assert_eq!(described["findings"][0]["kind"], "no_environment", "the backdrop has no sky to show now");
+}
+
+// ---- #930: gradient and image backdrops --------------------------------------------------------------------------
+
+#[test]
+fn a_gradient_and_an_image_backdrop_are_set_with_their_own_fields_only() {
+    let mut doc = project();
+    edit::<SetBackdrop>(&mut doc, json!({ "kind": "gradient", "top": "#1d2b4f", "bottom": "#e8a87c" }));
+    assert_eq!(
+        scene(&doc, "main").scene.backdrop,
+        Backdrop::Gradient { top: Colour::hex(0x001d_2b4f), bottom: Colour::hex(0x00e8_a87c) }
+    );
+    let half = refused::<SetBackdrop>(&doc, json!({ "kind": "gradient", "top": "#1d2b4f" }));
+    assert_eq!(half.field.as_deref(), Some("bottom"));
+
+    let asset = omuzaki_store_api::ContentHash::of(b"a picture");
+    edit::<SetBackdrop>(&mut doc, json!({ "kind": "image", "asset": asset, "fit": "contain", "top": "#000000" }));
+    assert_eq!(
+        scene(&doc, "main").scene.backdrop,
+        Backdrop::Image {
+            asset,
+            fit: omuzaki_stage_api::BackdropFit::Contain,
+            bars: Some(omuzaki_stage_api::Bars { top: Colour::BLACK, bottom: Colour::BLACK }),
+        },
+        "one bar colour is flat bars"
+    );
+    let described = plan::<DescribeScene>(&doc, json!({})).unwrap().output.unwrap();
+    assert_eq!(described["backdrop"]["kind"], "image", "{described}");
+
+    let no_asset = refused::<SetBackdrop>(&doc, json!({ "kind": "image" }));
+    assert_eq!(no_asset.field.as_deref(), Some("asset"));
+    let foreign = refused::<SetBackdrop>(
+        &doc,
+        json!({ "kind": "gradient", "top": "#000000", "bottom": "#000000", "fit": "cover" }),
+    );
+    assert_eq!(foreign.field.as_deref(), Some("fit"));
+    let foreign = refused::<SetBackdrop>(&doc, json!({ "kind": "colour", "colour": "#00b140", "asset": asset }));
+    assert_eq!(foreign.field.as_deref(), Some("asset"));
+    let foreign = refused::<SetBackdrop>(&doc, json!({ "kind": "transparent", "colour": "#00b140" }));
+    assert_eq!(foreign.field.as_deref(), Some("colour"));
 }

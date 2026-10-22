@@ -336,6 +336,12 @@ impl Op for Preview {
                     .hint("an HDRI environment names a Radiance .hdr in the asset store")
             })?;
         }
+        if staged.resolved.backdrop_image.is_some() {
+            staged.resolved.load_backdrop(job.service::<dyn Store>()?).map_err(|e| {
+                OpError::invalid("scene", e.to_string())
+                    .hint("an image backdrop names a PNG or JPEG in the asset store")
+            })?;
+        }
         if preset.is_some_and(|p| p.post == PresetPost::Off) {
             staged.resolved.post =
                 Post { bloom: None, depth_of_field: None, grain: None, grade: None, ..staged.resolved.post };

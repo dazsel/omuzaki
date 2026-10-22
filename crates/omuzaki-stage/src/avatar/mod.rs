@@ -36,6 +36,7 @@ use crate::frame::face::SETTLE_DT;
 use crate::frame::rig::RigFrame;
 use crate::frame::{FrameInput, FrameOutput, StageClock};
 use crate::scene::apply::{Owed, SceneLink, reserve};
+use crate::scene::backdrop::StageBackdrop;
 use crate::scene::environment::StageEnvironment;
 use crate::scene::ground::StageGround;
 use crate::scene::resolve::ResolvedScene;
@@ -60,6 +61,7 @@ pub struct AvatarStage {
     link: SceneLink,
     ground: StageGround,
     environment: StageEnvironment,
+    backdrop: StageBackdrop,
     submissions: u64,
     tick: Tick,
     scene: Scene,
@@ -120,6 +122,7 @@ impl AvatarStage {
             link: SceneLink::new(),
             ground: StageGround::default(),
             environment: StageEnvironment::default(),
+            backdrop: StageBackdrop::default(),
             submissions: 0,
             tick: Tick { index: 0, time: Seconds(0.0), dt: 0.0 },
             scene,
@@ -219,6 +222,9 @@ impl AvatarStage {
     pub fn set_scene(&mut self, resolved: &ResolvedScene, subject_root: Mat4) -> Owed {
         let owed = self.link.set(resolved, &mut self.scene);
         self.scene.environment = self.environment.use_for(resolved.environment.as_ref());
+        if let Some(picture) = self.backdrop.background_for(resolved.backdrop_image.as_ref()) {
+            self.scene.background = picture;
+        }
         self.set_subject_root(subject_root);
         owed
     }
@@ -284,7 +290,8 @@ impl AvatarStage {
     pub fn release(mut self, renderer: &mut dyn Renderer) -> Result<(), StageError> {
         let ground = self.ground.release(renderer);
         let environment = self.environment.release(renderer);
-        self.upload.release(renderer).and(ground).and(environment)
+        let backdrop = self.backdrop.release(renderer);
+        self.upload.release(renderer).and(ground).and(environment).and(backdrop)
     }
 
     /// Does the renderer work the last [`set_scene`](Self::set_scene) owes for the ground and the environment and
@@ -305,6 +312,14 @@ impl AvatarStage {
             self.environment.set(renderer, source, wanted.hdri.as_ref())?;
             self.scene.environment = self.environment.use_for(wanted.environment.as_ref());
             self.link.commit(&Owed { environment: Some(source), ..Owed::default() });
+        }
+        if let Some(asset) = owed.image {
+            let wanted = self.link.wanted();
+            self.backdrop.set(renderer, asset, wanted.image.as_ref())?;
+            if let Some(picture) = self.backdrop.background_for(wanted.backdrop_image.as_ref()) {
+                self.scene.background = picture;
+            }
+            self.link.commit(&Owed { image: Some(asset), ..Owed::default() });
         }
         if let Some(floor) = owed.skin_floor {
             self.link.commit(&Owed { skin_floor: Some(floor), ..Owed::default() });

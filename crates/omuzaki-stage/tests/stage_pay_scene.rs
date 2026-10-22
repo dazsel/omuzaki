@@ -12,8 +12,8 @@ use omuzaki_char_api::{
 };
 use omuzaki_core::glam::{Mat4, UVec2, Vec3};
 use omuzaki_render_api::{
-    AlphaEncoding, Background, Camera, Capabilities, Colour, EnvironmentDesc, EnvironmentId, FrameReport, Image,
-    Material, MaterialId, MeshData, MeshId, MeshOptions, Painter, Projection, Quality, RenderError, Renderer,
+    AlphaEncoding, BackdropFit, Background, Camera, Capabilities, Colour, EnvironmentDesc, EnvironmentId, FrameReport,
+    Image, Material, MaterialId, MeshData, MeshId, MeshOptions, Painter, Projection, Quality, RenderError, Renderer,
     ResourceRef, ResourceStats, Scene, Shading, TargetDesc, TargetId, TextureDesc, TextureId,
 };
 use omuzaki_render_mock::MockRenderer;
@@ -21,7 +21,7 @@ use omuzaki_stage::StageError;
 use omuzaki_stage::UploadOptions;
 use omuzaki_stage::frame::FrameInput;
 use omuzaki_stage::frame::{Stage, StageClock};
-use omuzaki_stage::scene::resolve::{ResolvedEnvironment, ResolvedScene};
+use omuzaki_stage::scene::resolve::{ResolvedEnvironment, ResolvedImage, ResolvedScene};
 use omuzaki_stage_api::{EnvironmentSource, GroundKind};
 use omuzaki_store_api::{Commercial, ContentHash, Provenance, Source, Store};
 use omuzaki_store_mock::MemStore;
@@ -325,4 +325,83 @@ fn an_hdri_is_loaded_from_the_store_off_the_render_thread_then_made() {
         "{error}"
     );
     stage.release(&mut renderer).unwrap();
+}
+
+/// A 2 x 2 PNG: red, green, blue and see-through.
+fn tiny_png() -> Vec<u8> {
+    let rgba = [255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 0, 0, 0, 0];
+    let mut bytes = Vec::new();
+    image::RgbaImage::from_raw(2, 2, rgba.to_vec())
+        .unwrap()
+        .write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
+        .unwrap();
+    bytes
+}
+
+/// A scene with no ground and the picture `asset` behind the cast, fitted by `fit`, its bars as the resolve gives them.
+fn image_scene(asset: Option<ContentHash>, fit: BackdropFit) -> ResolvedScene {
+    let mut resolved = scene(None);
+    let (top, bottom) = (Colour::hex(0x0010_2040), Colour::BLACK);
+    resolved.backdrop_image = asset.map(|asset| {
+        let mut image = ResolvedImage::new(asset);
+        (image.fit, image.top, image.bottom) = (fit, top, bottom);
+        image
+    });
+    resolved.background = Background::Gradient { top, bottom };
+    resolved
+}
+
+#[test]
+fn an_image_backdrop_is_uploaded_once_and_shown_by_every_frame() {
+    let store = MemStore::new();
+    let provenance = Provenance {
+        source: Source::Authored,
+        author: None,
+        licence: "CC0-1.0".into(),
+        attribution: None,
+        commercial: Commercial::Ok,
+        consent: None,
+        private_test: false,
+    };
+    let asset = store.put(&tiny_png(), provenance).unwrap();
+    let mut renderer = renderer();
+    let mut stage = staged(&mut renderer);
+    let textures = renderer.stats().textures;
+
+    // Not loaded: the bars show, the upload stays owed and says why.
+    let mut resolved = image_scene(Some(asset), BackdropFit::Cover);
+    let owed = stage.set_scene(&resolved, Mat4::IDENTITY);
+    assert_eq!(owed.image, Some(Some(asset)));
+    assert!(matches!(stage.scene().background, Background::Gradient { .. }), "the bars until it is up");
+    let error = stage.pay_scene(&mut renderer).unwrap_err();
+    assert!(matches!(error, StageError::Scene { ref source } if source.path == "scene.backdrop.asset"), "{error}");
+    assert!(stage.owed().image.is_some());
+
+    resolved.load_backdrop(&store).unwrap();
+    stage.set_scene(&resolved, Mat4::IDENTITY);
+    stage.pay_scene(&mut renderer).unwrap();
+    assert!(stage.owed().is_empty());
+    assert_eq!(renderer.stats().textures, textures + 1, "one texture for the picture");
+    let Background::Texture { fit, top, .. } = stage.scene().background else { panic!("the picture shows") };
+    assert_eq!((fit, top), (BackdropFit::Cover, Colour::hex(0x0010_2040)));
+    stage.tick(&mut renderer, &FrameInput::default()).expect("a frame renders over it");
+
+    // Its fit is a value: it reaches the frame at once and uploads nothing.
+    let mut contain = image_scene(Some(asset), BackdropFit::Contain);
+    contain.image.clone_from(&resolved.image);
+    assert!(stage.set_scene(&contain, Mat4::IDENTITY).is_empty());
+    assert!(matches!(stage.scene().background, Background::Texture { fit: BackdropFit::Contain, .. }));
+
+    // No picture releases it; releasing the stage releases one it holds.
+    stage.set_scene(&image_scene(None, BackdropFit::Cover), Mat4::IDENTITY);
+    stage.pay_scene(&mut renderer).unwrap();
+    assert_eq!(renderer.stats().textures, textures);
+    stage.set_scene(&resolved, Mat4::IDENTITY);
+    stage.pay_scene(&mut renderer).unwrap();
+    stage.release(&mut renderer).unwrap();
+    assert_eq!(renderer.stats().textures, 0, "releasing the stage releases the picture");
+
+    let mut missing = image_scene(Some(ContentHash::of(b"gone")), BackdropFit::Cover);
+    let error = missing.load_backdrop(&store).unwrap_err();
+    assert!(matches!(error, StageError::Scene { ref source } if source.path == "scene.backdrop.asset"), "{error}");
 }

@@ -3,6 +3,7 @@
 
 pub mod alone;
 pub mod apply;
+pub mod backdrop;
 pub mod default;
 pub mod environment;
 pub mod frame;

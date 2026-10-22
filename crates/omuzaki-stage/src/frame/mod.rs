@@ -35,6 +35,7 @@ use self::runtimes::DynamicMeshes;
 use self::scene::ScenePlan;
 use crate::error::StageError;
 use crate::scene::apply::{Owed, SceneLink, reserve};
+use crate::scene::backdrop::StageBackdrop;
 use crate::scene::environment::StageEnvironment;
 use crate::scene::ground::StageGround;
 use crate::scene::resolve::ResolvedScene;
@@ -164,6 +165,8 @@ pub struct Stage {
     ground: StageGround,
     /// The scene's environment on the renderer.
     environment: StageEnvironment,
+    /// The scene's backdrop picture on the renderer.
+    backdrop: StageBackdrop,
     /// How many times a staged variant replaced the character, so a caller can tell the face profile may have changed.
     revision: u64,
     /// Renders submitted so far; numbers the frames of a live clock.
@@ -208,6 +211,7 @@ impl Stage {
                 link: SceneLink::new(),
                 ground: StageGround::default(),
                 environment: StageEnvironment::default(),
+                backdrop: StageBackdrop::default(),
                 revision: 0,
                 submissions: 0,
                 built,
@@ -387,6 +391,9 @@ impl Stage {
     pub fn set_scene(&mut self, resolved: &ResolvedScene, subject_root: Mat4) -> Owed {
         let owed = self.link.set(resolved, &mut self.scene);
         self.scene.environment = self.environment.use_for(resolved.environment.as_ref());
+        if let Some(picture) = self.backdrop.background_for(resolved.backdrop_image.as_ref()) {
+            self.scene.background = picture;
+        }
         self.set_subject_root(subject_root);
         owed
     }
@@ -490,7 +497,8 @@ impl Stage {
         }
         let ground = self.ground.release(renderer);
         let environment = self.environment.release(renderer);
-        self.character.release(renderer).and(ground).and(environment)
+        let backdrop = self.backdrop.release(renderer);
+        self.character.release(renderer).and(ground).and(environment).and(backdrop)
     }
 
     /// Draws the character in `look` (LK-06, #714): the materials the look changes are updated on the renderer in
@@ -539,6 +547,14 @@ impl Stage {
             self.environment.set(renderer, source, wanted.hdri.as_ref())?;
             self.scene.environment = self.environment.use_for(wanted.environment.as_ref());
             self.link.commit(&Owed { environment: Some(source), ..Owed::default() });
+        }
+        if let Some(asset) = owed.image {
+            let wanted = self.link.wanted();
+            self.backdrop.set(renderer, asset, wanted.image.as_ref())?;
+            if let Some(picture) = self.backdrop.background_for(wanted.backdrop_image.as_ref()) {
+                self.scene.background = picture;
+            }
+            self.link.commit(&Owed { image: Some(asset), ..Owed::default() });
         }
         Ok(())
     }

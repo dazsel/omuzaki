@@ -11,14 +11,16 @@ use std::collections::BTreeMap;
 
 use omuzaki_char_api::{BuildOptions, BuildServices, CharId, CharacterBuilder, RegistryBuilder};
 use omuzaki_core::glam::{Affine3A, Vec3};
-use omuzaki_render_api::{Background, Bloom, Colour, ColourGrade, DepthOfField, FilmGrain, Fog, Projection, Tonemap};
+use omuzaki_render_api::{
+    BackdropFit, Background, Bloom, Colour, ColourGrade, DepthOfField, FilmGrain, Fog, Projection, Tonemap,
+};
 use omuzaki_stage::StageError;
 use omuzaki_stage::scene::landmarks::Landmarks;
 use omuzaki_stage::scene::resolve::{Changes, CheckedScene, Figure, ResolvedScene};
 use omuzaki_stage_api::{
-    Anchor, Backdrop, BloomDef, CameraDef, CameraId, CastMember, DepthOfFieldDef, EnvironmentDef, EnvironmentSource,
-    Focus, FocusSubject, FogDef, Framing, GradeDef, GroundKind, LightDef, LightId, LightShape, MemberId, SceneDef,
-    SceneSettings,
+    Anchor, Backdrop, Bars, BloomDef, CameraDef, CameraId, CastMember, DepthOfFieldDef, EnvironmentDef,
+    EnvironmentSource, Focus, FocusSubject, FogDef, Framing, GradeDef, GroundKind, LightDef, LightId, LightShape,
+    MemberId, SceneDef, SceneSettings,
 };
 
 thread_local! {
@@ -702,4 +704,46 @@ fn a_new_sky_is_not_value_only() {
     def.lighting.environment = None;
     let changes = out.resolve_into(checked(&def), &figures, ASPECT).unwrap();
     assert!(changes.sky && out.environment.is_none(), "removing it is a change of source too");
+}
+
+#[test]
+fn a_gradient_and_an_image_resolve_to_pictures_with_the_rigs_colour_in_the_bars_by_default() {
+    let (mut def, figures) = (scene(), figures([0.0, 0.0]));
+    let (top, bottom) = (Colour::hex(0x001d_2b4f), Colour::hex(0x00e8_a87c));
+    def.scene.backdrop = Backdrop::Gradient { top, bottom };
+    assert_eq!(resolved(&def, &figures).background, Background::Gradient { top, bottom });
+
+    let asset = omuzaki_store_api::ContentHash::of(b"a picture");
+    def.lighting.background = Colour::hex(0x0040_3020);
+    def.scene.backdrop = Backdrop::Image { asset, fit: BackdropFit::Contain, bars: None };
+    let out = resolved(&def, &figures);
+    let rig = Colour::hex(0x0040_3020);
+    assert_eq!(out.background, Background::Gradient { top: rig, bottom: rig }, "the bars until the stage has it");
+    let image = out.backdrop_image.unwrap();
+    assert_eq!((image.asset, image.fit, image.top, image.bottom), (asset, BackdropFit::Contain, rig, rig));
+
+    def.scene.backdrop = Backdrop::Image { asset, fit: BackdropFit::Cover, bars: Some(Bars { top, bottom }) };
+    let image = resolved(&def, &figures).backdrop_image.unwrap();
+    assert_eq!((image.fit, image.top, image.bottom), (BackdropFit::Cover, top, bottom));
+}
+
+#[test]
+fn an_images_fit_and_bars_are_values_and_its_asset_is_not() {
+    let (mut def, figures) = (scene(), figures([0.0, 0.0]));
+    let asset = omuzaki_store_api::ContentHash::of(b"a picture");
+    def.scene.backdrop = Backdrop::Image { asset, fit: BackdropFit::Cover, bars: None };
+    let mut out = resolved(&def, &figures);
+    def.scene.backdrop = Backdrop::Image { asset, fit: BackdropFit::Contain, bars: None };
+    let proof = checked(&def);
+    let (changes, allocations) = counted(|| out.resolve_into(proof, &figures, ASPECT).unwrap());
+    assert!(changes.backdrop && !changes.image && changes.value_only(), "{changes:?}");
+    assert_eq!(allocations, 0);
+
+    let other = omuzaki_store_api::ContentHash::of(b"another picture");
+    def.scene.backdrop = Backdrop::Image { asset: other, fit: BackdropFit::Contain, bars: None };
+    let changes = out.resolve_into(checked(&def), &figures, ASPECT).unwrap();
+    assert!(changes.image && !changes.value_only(), "{changes:?}");
+    def.scene.backdrop = Backdrop::Transparent {};
+    let changes = out.resolve_into(checked(&def), &figures, ASPECT).unwrap();
+    assert!(changes.image && out.backdrop_image.is_none(), "removing it is a change of picture too");
 }

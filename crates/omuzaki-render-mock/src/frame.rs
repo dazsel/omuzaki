@@ -2,8 +2,9 @@
 
 use omuzaki_core::glam::{Mat3, Mat4, UVec2, Vec2, Vec3, Vec4};
 use omuzaki_render_api::{
-    AlphaEncoding, Camera, Image, Instance, Material, Outline, OutlineWidthMode, Pass, Post, Projection, Quality,
-    RenderError, Scene, TargetDesc, Tonemap, srgb_encode, to_byte,
+    AlphaEncoding, BackdropFit, Background, Camera, Colour, ColourSpace, Image, Instance, Material, Outline,
+    OutlineWidthMode, Pass, Post, Projection, Quality, RenderError, Scene, TargetDesc, Tonemap, gradient_at,
+    srgb_encode, to_byte,
 };
 
 use crate::TextureData;
@@ -104,9 +105,13 @@ pub(crate) fn draw_frame(
         omuzaki_render_api::Background::Solid { colour } => {
             (colour.to_linear() * colour.alpha()).extend(colour.alpha())
         }
-        omuzaki_render_api::Background::Transparent => Vec4::ZERO,
+        // Pictures shown as authored are laid under the resolved frame, so the scene renders over nothing.
+        omuzaki_render_api::Background::Transparent
+        | omuzaki_render_api::Background::Gradient { .. }
+        | omuzaki_render_api::Background::Texture { .. } => Vec4::ZERO,
         omuzaki_render_api::Background::Environment => Vec4::W,
     };
+    let backdrop = Backdrop::new(scene.background, res.textures)?;
     let mut surface = Surface::new(internal, background);
     if let (omuzaki_render_api::Background::Environment, Some(environment)) = (scene.background, &environment) {
         fill_backdrop(&mut surface, environment, scene.camera.sky_rays(aspect));
@@ -185,7 +190,7 @@ pub(crate) fn draw_frame(
         });
     }
 
-    out.image = resolve(&surface, desc, factor, &scene.post);
+    out.image = resolve(&surface, desc, factor, &scene.post, backdrop.as_ref());
     Ok(out)
 }
 
@@ -372,8 +377,74 @@ fn draw_hull(
     }
 }
 
-/// Averages the supersamples, applies exposure and tone mapping, and encodes to sRGB bytes.
-fn resolve(surface: &Surface, desc: &TargetDesc, factor: u32, post: &Post) -> Image {
+/// A picture shown as authored behind the frame (`Background::Gradient` and `Background::Texture`): what it shows at
+/// each output pixel, as premultiplied sRGB-encoded colour.
+struct Backdrop<'a> {
+    top: Colour,
+    bottom: Colour,
+    texture: Option<(&'a TextureData, BackdropFit)>,
+}
+
+impl<'a> Backdrop<'a> {
+    /// The backdrop of `background`, if it is a picture.
+    ///
+    /// # Errors
+    /// [`RenderError::UnknownHandle`] for a texture that was released.
+    fn new(background: Background, textures: &'a Arena<TextureData>) -> Result<Option<Self>, RenderError> {
+        Ok(match background {
+            Background::Gradient { top, bottom } => Some(Self { top, bottom, texture: None }),
+            Background::Texture { texture, fit, top, bottom } => {
+                let data = live(textures, texture.index(), texture.generation(), "texture")?;
+                Some(Self { top, bottom, texture: Some((data, fit)) })
+            }
+            _ => None,
+        })
+    }
+
+    /// The colour at the centre `at` of an output pixel (`0..1` across a frame of aspect `frame`).
+    fn at(&self, at: Vec2, frame: f32) -> Vec4 {
+        let behind = gradient_at(self.top, self.bottom, at.y);
+        let Some((texture, fit)) = self.texture else { return behind };
+        let size = texture.desc.size.as_vec2();
+        let uv = fit.uv(at, frame, size.x / size.y);
+        if !(0.0..=1.0).contains(&uv.x) || !(0.0..=1.0).contains(&uv.y) {
+            return behind;
+        }
+        let picture = texel_bilinear(texture, uv * size - 0.5);
+        picture + behind * (1.0 - picture.w)
+    }
+}
+
+/// The texture's colour at texel coordinates `at` (texel centres at whole numbers), filtered bilinearly with the edges
+/// clamped, as premultiplied sRGB-encoded colour.
+fn texel_bilinear(texture: &TextureData, at: Vec2) -> Vec4 {
+    let size = texture.desc.size;
+    let texel = |column: f32, row: f32| {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
+        // clamped into the texture first; textures are far smaller than 2^24 texels a side
+        let (column, row) =
+            (column.clamp(0.0, (size.x - 1) as f32) as usize, row.clamp(0.0, (size.y - 1) as f32) as usize);
+        let start = (row * size.x as usize + column) * 4;
+        let [red, green, blue, alpha] = [0, 1, 2, 3].map(|i| f32::from(texture.rgba[start + i]) / 255.0);
+        let mut rgb = Vec3::new(red, green, blue);
+        if texture.desc.alpha == AlphaEncoding::Premultiplied && alpha > 0.0 {
+            rgb = (rgb / alpha).min(Vec3::ONE);
+        }
+        if texture.desc.colour_space == ColourSpace::Linear {
+            rgb = Vec3::new(srgb_encode(rgb.x), srgb_encode(rgb.y), srgb_encode(rgb.z));
+        }
+        (rgb * alpha).extend(alpha)
+    };
+    let (left, top) = (at.x.floor(), at.y.floor());
+    let (along, below) = (at.x - left, at.y - top);
+    let upper = texel(left, top).lerp(texel(left + 1.0, top), along);
+    let lower = texel(left, top + 1.0).lerp(texel(left + 1.0, top + 1.0), along);
+    upper.lerp(lower, below)
+}
+
+/// Averages the supersamples, applies exposure and tone mapping, encodes to sRGB and lays the result over `backdrop`
+/// (in encoded values, as a compositor would), then writes bytes in the target's alpha encoding.
+fn resolve(surface: &Surface, desc: &TargetDesc, factor: u32, post: &Post, backdrop: Option<&Backdrop<'_>>) -> Image {
     let (w, h) = (desc.size.x as usize, desc.size.y as usize);
     let f = factor as usize;
     #[allow(clippy::cast_precision_loss)] // factor is at most 16
@@ -392,7 +463,19 @@ fn resolve(surface: &Surface, desc: &TargetDesc, factor: u32, post: &Post) -> Im
             let straight = if alpha > 0.0 { premultiplied.truncate() / alpha } else { Vec3::ZERO };
             let display = tonemap(straight * post.exposure, post.tonemap);
             let encoded = Vec3::new(srgb_encode(display.x), srgb_encode(display.y), srgb_encode(display.z));
-            let stored = if desc.alpha == AlphaEncoding::Premultiplied { encoded * alpha } else { encoded };
+            let (stored, alpha) = match backdrop {
+                None if desc.alpha == AlphaEncoding::Premultiplied => (encoded * alpha, alpha),
+                None => (encoded, alpha),
+                Some(backdrop) => {
+                    #[allow(clippy::cast_precision_loss)] // image sizes are far below 2^24
+                    let (at, frame) =
+                        (Vec2::new((x as f32 + 0.5) / w as f32, (y as f32 + 0.5) / h as f32), w as f32 / h as f32);
+                    let over = (encoded * alpha).extend(alpha) + backdrop.at(at, frame) * (1.0 - alpha);
+                    let straight = if over.w > 0.0 { over.truncate() / over.w } else { Vec3::ZERO };
+                    let premultiplied = desc.alpha == AlphaEncoding::Premultiplied;
+                    (if premultiplied { over.truncate() } else { straight }, over.w)
+                }
+            };
             rgba8.extend([to_byte(stored.x), to_byte(stored.y), to_byte(stored.z), to_byte(alpha)]);
         }
     }

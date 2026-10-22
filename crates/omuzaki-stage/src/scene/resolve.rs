@@ -9,13 +9,16 @@
 use std::collections::BTreeMap;
 
 use omuzaki_core::glam::{Affine3A, Mat3A, Mat4, Vec3};
-use omuzaki_render_api::{Background, Bloom, Camera, DepthOfField, FilmGrain, Fog, Light, Post, Projection};
+use omuzaki_render_api::{
+    BackdropFit, Background, Bloom, Camera, Colour, DepthOfField, FilmGrain, Fog, Light, Post, Projection,
+};
 use omuzaki_stage_api::resolve::{AnchorFrame, LightBuf};
 use omuzaki_stage_api::{
-    Anchor, Backdrop, CameraDef, CameraId, CastMember, EnvironmentSource, Focus, Framing, GroundKind, MAX_CAMERAS,
-    MemberId, SceneDef, SceneError,
+    Anchor, Backdrop, Bars, CameraDef, CameraId, CastMember, EnvironmentSource, Focus, Framing, GroundKind,
+    MAX_CAMERAS, MemberId, SceneDef, SceneError,
 };
 
+use super::backdrop::ImagePixels;
 use super::environment::HdriPixels;
 use super::frame::frame;
 use super::landmarks::{Bounds, Landmarks};
@@ -107,6 +110,9 @@ pub struct Changes {
     /// The environment's source changed (a sky's colours, another HDRI, one added or removed). Apply re-creates it,
     /// so this is not a value-only change.
     pub sky: bool,
+    /// The backdrop's picture changed (another asset, one added or removed). Apply uploads it, so this is not a
+    /// value-only change; its fit and bars are values.
+    pub image: bool,
 }
 
 impl Changes {
@@ -116,9 +122,10 @@ impl Changes {
     }
 
     /// Only values changed: apply allocates nothing. A ground change is not one, because apply recreates or releases
-    /// the ground-disc mesh (#274), nor is a change of the environment's source, which apply re-creates.
+    /// the ground-disc mesh (#274), nor is a change of the environment's source or the backdrop's picture, which apply
+    /// re-creates.
     pub fn value_only(&self) -> bool {
-        !(self.structure || self.ground || self.sky)
+        !(self.structure || self.ground || self.sky || self.image)
     }
 }
 
@@ -149,6 +156,32 @@ pub struct ResolvedScene {
     /// The pixels of the environment's HDRI, once loaded ([`load_hdri`](Self::load_hdri)); a resolve keeps them while
     /// the asset stays the same.
     pub hdri: Option<HdriPixels>,
+    /// The backdrop's picture, for an image backdrop. Until its texture is up, `background` shows its bars.
+    pub backdrop_image: Option<ResolvedImage>,
+    /// The picture's pixels, once loaded ([`load_backdrop`](Self::load_backdrop)); a resolve keeps them while the asset
+    /// stays the same.
+    pub image: Option<ImagePixels>,
+}
+
+/// An image backdrop as the renderer takes it: the picture's asset, how it fits, and the bars' gradient.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct ResolvedImage {
+    /// The picture's content hash in the asset store.
+    pub asset: omuzaki_store_api::ContentHash,
+    /// How it meets the frame.
+    pub fit: BackdropFit,
+    /// The bars' colour at the frame's top edge.
+    pub top: Colour,
+    /// The bars' colour at its bottom edge.
+    pub bottom: Colour,
+}
+
+impl ResolvedImage {
+    /// `asset`, covering the frame, with black bars.
+    pub fn new(asset: omuzaki_store_api::ContentHash) -> Self {
+        Self { asset, fit: BackdropFit::Cover, top: Colour::BLACK, bottom: Colour::BLACK }
+    }
 }
 
 /// The scene's environment as the renderer takes it: where its light comes from and how a frame uses it.
@@ -213,6 +246,8 @@ impl ResolvedScene {
             fog: None,
             environment: None,
             hdri: None,
+            backdrop_image: None,
+            image: None,
         }
     }
 
@@ -288,13 +323,7 @@ impl ResolvedScene {
             rotation_deg: e.rotation,
             toon_ramp: e.toon_ramp,
         });
-        let background = match &def.scene.backdrop {
-            Backdrop::Environment {} if environment.is_some() => Background::Environment,
-            // Without an environment the check reports it and the rig's colour shows.
-            Backdrop::Lighting {} | Backdrop::Environment {} => Background::Solid { colour: def.lighting.background },
-            Backdrop::Colour { colour } => Background::Solid { colour: *colour },
-            Backdrop::Transparent {} => Background::Transparent,
-        };
+        let (background, backdrop_image) = resolve_backdrop(def, environment.is_some());
         let ground = resolve_ground(def, figures, unit);
         // Fog is in subject units from the camera (D4), so a rig fogs every stature alike.
         let fog = def.lighting.fog.map(|f| Fog { colour: f.colour, near: f.near * unit, far: f.far * unit });
@@ -312,11 +341,16 @@ impl ResolvedScene {
             fog: replace(&mut self.fog, fog),
             sky: self.environment.map(|e| e.source) != environment.map(|e| e.source),
             environment: replace(&mut self.environment, environment),
+            image: self.backdrop_image.map(|i| i.asset) != backdrop_image.map(|i| i.asset),
             ..Changes::default()
         };
+        changes.backdrop |= replace(&mut self.backdrop_image, backdrop_image);
         // Pixels of an HDRI the scene no longer uses are let go here, off the render thread.
         if self.hdri.as_ref().map(HdriPixels::asset) != self.environment.as_ref().and_then(ResolvedEnvironment::hdri) {
             self.hdri = None;
+        }
+        if self.image.as_ref().map(ImagePixels::asset) != self.backdrop_image.map(|i| i.asset) {
+            self.image = None;
         }
         if lights != self.lights {
             self.lights = lights;
@@ -560,6 +594,31 @@ fn resolve_post(
         grain: p.grain.map(|strength| FilmGrain { strength }),
         grade: p.grade.map(Into::into),
     })
+}
+
+/// What shows behind the cast, and the picture the stage lays there for an image backdrop.
+fn resolve_backdrop(def: &SceneDef, environment: bool) -> (Background, Option<ResolvedImage>) {
+    let image = match &def.scene.backdrop {
+        Backdrop::Image { asset, fit, bars } => {
+            let rig = Bars { top: def.lighting.background, bottom: def.lighting.background };
+            let Bars { top, bottom } = bars.unwrap_or(rig);
+            Some(ResolvedImage { asset: *asset, fit: *fit, top, bottom })
+        }
+        _ => None,
+    };
+    let background = match &def.scene.backdrop {
+        Backdrop::Environment {} if environment => Background::Environment,
+        // Without an environment the check reports it and the rig's colour shows.
+        Backdrop::Lighting {} | Backdrop::Environment {} => Background::Solid { colour: def.lighting.background },
+        Backdrop::Colour { colour } => Background::Solid { colour: *colour },
+        Backdrop::Transparent {} => Background::Transparent,
+        Backdrop::Gradient { top, bottom } => Background::Gradient { top: *top, bottom: *bottom },
+        // The bars until the stage has the picture up; the stage shows the picture over them from then on.
+        Backdrop::Image { .. } => {
+            image.map_or(Background::Transparent, |i| Background::Gradient { top: i.top, bottom: i.bottom })
+        }
+    };
+    (background, image)
 }
 
 /// The ground in metres: the radius in subject units, else the farthest member plus [`GROUND_MARGIN`].
