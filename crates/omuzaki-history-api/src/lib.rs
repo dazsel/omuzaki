@@ -25,7 +25,8 @@ pub use entry::{HistoryEntry, Lsn, Stack};
 pub use export::{ActorHistory, HISTORY_EXPORT_FORMAT, HistoryExport, OpenTxExport, StepExport};
 pub use sink::{JournalSink, JournalStatus, SyncError};
 pub use snapshot::{
-    Footprint, RunningJob, SnapshotError, SnapshotId, SnapshotInfo, Snapshots, Trigger, Usage, Verification, VerifyHow,
+    Footprint, Reload, RunningJob, SnapshotError, SnapshotId, SnapshotInfo, Snapshots, Trigger, Usage, Verification,
+    VerifyHow,
 };
 pub use wall::{WallClock, WallTime};
 

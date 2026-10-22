@@ -289,12 +289,50 @@ pub trait Snapshots: Service {
     /// [`SnapshotError::Invalid`] for a path outside the project, [`SnapshotError::Io`] when a file cannot be read.
     fn reload_patch(&self, paths: &[String]) -> Result<Patch, SnapshotError>;
 
+    /// What `project.reload` takes in: with no `paths`, every file changed outside Omuzaki since it was last read or
+    /// written; otherwise those files. Says which files they are and which of them the document also has unsaved
+    /// changes in (clashes, which the reload replaces and reports, never merges). The default reads
+    /// [`reload_patch`](Self::reload_patch) and names no files.
+    ///
+    /// # Errors
+    /// As [`reload_patch`](Self::reload_patch).
+    fn reload(&self, paths: &[String]) -> Result<Reload, SnapshotError> {
+        self.reload_patch(paths).map(Reload::new)
+    }
+
     /// Bytes and counts of the journal, the archive and the snapshot store.
     ///
     /// # Errors
     ///
     /// [`SnapshotError::Io`] when the folders cannot be read.
     fn usage(&self) -> Result<Usage, SnapshotError>;
+}
+
+/// What [`Snapshots::reload`] found.
+#[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
+pub struct Reload {
+    /// From the document to the files; the op fills each `before` from the document it plans against.
+    pub patch: Patch,
+    /// The files it reads, relative to the project folder.
+    pub files: Vec<String>,
+    /// Those the document also has unsaved changes in.
+    pub clashes: Vec<String>,
+}
+
+impl Reload {
+    /// A reload of `patch`, naming no files.
+    pub fn new(patch: Patch) -> Self {
+        Self { patch, ..Self::default() }
+    }
+
+    /// This reload, naming `files` and the `clashes` among them.
+    #[must_use]
+    pub fn with_files(mut self, files: Vec<String>, clashes: Vec<String>) -> Self {
+        self.files = files;
+        self.clashes = clashes;
+        self
+    }
 }
 
 #[cfg(test)]

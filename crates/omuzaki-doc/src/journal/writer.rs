@@ -45,8 +45,8 @@ use omuzaki_ops_api::OpError;
 use super::fs::{Flush, JournalFs, StdFs};
 use super::segments::{Preparer, Segment};
 use super::{JournalError, Record, SegmentHeader, SessionInfo, encode, segment_seq};
-use crate::Project;
 use crate::snapshot::{Facts, Snapshotter};
+use crate::{OutsideChanges, Project};
 
 /// The folder inside `.omuzaki/` that holds the live segments.
 pub const JOURNAL_DIR: &str = "journal";
@@ -264,6 +264,8 @@ enum KeeperMsg {
     Durable(Vec<Item>),
     /// Save the files now, then answer.
     SaveNow(Sender<Result<(), String>>),
+    /// What changed in the files outside Omuzaki, by the shadow's last-known texts.
+    Outside(Sender<Result<OutsideChanges, String>>),
     /// Take a snapshot for the service (a named version, a take, a manual one) and answer with its ref.
     Take(Trigger, Option<String>, Sender<Result<SnapshotInfo, String>>),
     /// Save, write the close snapshot with this history, answer with its id, and stop.
@@ -372,6 +374,22 @@ impl ProjectJournal {
         self.keeper.send(KeeperMsg::SaveNow(reply)).map_err(|_| self.stopped())?;
         match answer.recv_timeout(timeout) {
             Ok(Ok(())) => Ok(durable),
+            Ok(Err(reason)) => Err(SyncError::Failing { reason }),
+            Err(_) => Err(SyncError::Timeout { durable }),
+        }
+    }
+
+    /// What changed in the project's files outside Omuzaki ([`Project::outside_changes`]), after everything durable
+    /// before the call reached the files' shadow: what `project.reload` takes in.
+    ///
+    /// # Errors
+    /// As [`sync`](JournalSink::sync); [`SyncError::Failing`] with the reason when the folder can't be read.
+    pub fn outside_changes(&self, timeout: Duration) -> Result<OutsideChanges, SyncError> {
+        let durable = self.sync(timeout)?;
+        let (reply, answer) = mpsc::channel();
+        self.keeper.send(KeeperMsg::Outside(reply)).map_err(|_| self.stopped())?;
+        match answer.recv_timeout(timeout) {
+            Ok(Ok(changes)) => Ok(changes),
             Ok(Err(reason)) => Err(SyncError::Failing { reason }),
             Err(_) => Err(SyncError::Timeout { durable }),
         }
@@ -779,6 +797,9 @@ impl Keeper {
                     }
                 }
                 Ok(KeeperMsg::SaveNow(reply)) => drop(reply.send(self.save())),
+                Ok(KeeperMsg::Outside(reply)) => {
+                    drop(reply.send(self.shadow.outside_changes().map_err(|e| e.to_string())));
+                }
                 Ok(KeeperMsg::Take(trigger, name, reply)) => {
                     drop(reply.send(self.snapshot_named(trigger, name)));
                 }
@@ -882,7 +903,17 @@ impl Keeper {
                 Ok(())
             }
             Err(e) => {
-                let reason = e.to_string();
+                let changed = self.shadow.changed_on_disk();
+                let reason = if changed.is_empty() {
+                    e.to_string()
+                } else {
+                    format!(
+                        "{} changed outside Omuzaki and {} not overwritten; project.reload takes the outside version \
+                         in",
+                        changed.join(", "),
+                        if changed.len() == 1 { "was" } else { "were" }
+                    )
+                };
                 progress.save_error = Some(reason.clone());
                 // Retry later, not at once: the file may be open in an editor.
                 self.dirty_since = Some(self.clock.now());

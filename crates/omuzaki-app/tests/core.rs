@@ -386,7 +386,7 @@ fn project_reload_takes_an_outside_edit_back_in_as_one_undoable_step_and_keeps_i
     std::fs::write(&file, &theirs).unwrap();
 
     let reloaded = core.run("project.reload", json!({ "paths": ["project.toml"] })).unwrap();
-    assert_eq!(reloaded.plan.output, Some(json!({"reloaded": ["project"]})));
+    assert_eq!(reloaded.plan.output, Some(json!({"reloaded": ["project"], "files": ["project.toml"], "clashes": []})));
     assert_eq!(note(&core), Some(json!("theirs")));
     core.run("project.save", json!({})).unwrap();
     assert_eq!(std::fs::read_to_string(&file).unwrap(), theirs, "the person's text is kept, not rewritten");

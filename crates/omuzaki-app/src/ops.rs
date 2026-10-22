@@ -50,13 +50,16 @@ impl Op for ProjectSave {
 }
 register_op!(ProjectSave);
 
-/// Reads project files that were edited outside Omuzaki back into the document, as one undoable step. Undo puts the
-/// document back, and the next save then writes it over the file again.
+/// Reads project files that were changed outside Omuzaki (edited, created, deleted, or a file replaced by a folder)
+/// back into the document, as one undoable step. Undo puts the document back, and the next save then writes it over
+/// the files again. A file the document also had unsaved changes in is a clash: its outside version wins, the output
+/// lists it under `clashes`, and undo brings the unsaved changes back.
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(extend("examples" = [{}, { "paths": ["project.toml"] }]))]
 pub struct ProjectReload {
-    /// The files to read back, relative to the project (`characters/mia/face.toml`). Empty: every project file.
+    /// The files to read back, relative to the project (`characters/mia/face.toml`). Empty: every file changed outside
+    /// Omuzaki.
     #[serde(default)]
     pub paths: Vec<String>,
 }
@@ -73,19 +76,19 @@ impl Op for ProjectReload {
     }
 
     fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
-        let read = ctx.service::<dyn Snapshots>()?.reload_patch(&self.paths).map_err(snapshot_error)?;
+        let read = ctx.service::<dyn Snapshots>()?.reload(&self.paths).map_err(snapshot_error)?;
         // The service read the files; the document's current values are the `before`s, and a file that already
         // matches changes nothing.
         let mut patch = Patch::new();
         let mut changed = Vec::new();
-        for change in read.changes {
+        for change in read.patch.changes {
             let before = ctx.doc.get(&change.path).cloned();
             if before != change.after {
                 changed.push(change.path.to_string());
                 patch = patch.with(change.path, before, change.after);
             }
         }
-        let summary = json!({ "reloaded": changed });
+        let summary = json!({ "reloaded": changed, "files": read.files, "clashes": read.clashes });
         Ok(Plan { output: Some(summary), ..Plan::edit(patch) })
     }
 }

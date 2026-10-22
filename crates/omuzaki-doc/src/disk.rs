@@ -144,7 +144,7 @@ enum Kind {
     Toml,
 }
 
-fn load_folder(
+pub(crate) fn load_folder(
     source: &FileSource<'_>,
     at: &mut Segs,
     files: &mut Vec<LoadedFile>,

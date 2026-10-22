@@ -9,14 +9,18 @@ use std::time::Duration;
 
 use omuzaki_core::fsx::write_atomic_bytes;
 use omuzaki_doc_api::{DocPath, Patch, Value};
-use omuzaki_history_api::{Footprint, SnapshotError, SnapshotId, SnapshotInfo, Snapshots, SyncError, Trigger, Usage};
+use omuzaki_history_api::{
+    Footprint, Reload, SnapshotError, SnapshotId, SnapshotInfo, Snapshots, SyncError, Trigger, Usage,
+};
 
 use super::{Snapshotter, snapshot_dir};
 use crate::journal::{ProjectJournal, archive_dir, journal_dir};
-use crate::toml_read::parse_table;
 
 /// The extension of the tree's files.
 const TOML: &str = ".toml";
+
+/// How long `project.reload` waits for the files' shadow to catch up with what is durable.
+const RELOAD_WAIT: Duration = Duration::from_secs(30);
 
 /// The snapshots of one open project. Listing and loading work from the start; taking and saving go through the
 /// session's keeper, so they need [`bind`](Self::bind) first (the executor is built, and its services fixed, before
@@ -146,27 +150,16 @@ impl Snapshots for SessionSnapshots {
     }
 
     fn reload_patch(&self, paths: &[String]) -> Result<Patch, SnapshotError> {
-        let dir = self.snapshots.dir();
-        let mut every = Vec::new();
-        if paths.is_empty() {
-            crate::exact::tree_files(dir, &mut Vec::new(), &mut every).map_err(|e| SnapshotError::Io(e.to_string()))?;
-        }
-        let paths = if paths.is_empty() { every.as_slice() } else { paths };
-        let mut patch = Patch::new();
+        self.reload(paths).map(|reload| reload.patch)
+    }
+
+    fn reload(&self, paths: &[String]) -> Result<Reload, SnapshotError> {
         for rel in paths {
-            let at = tree_path(rel)?;
-            let file = dir.join(rel);
-            let after = match fs::read_to_string(&file) {
-                Ok(text) => Some(Value::Object(
-                    parse_table(&text).map_err(|e| SnapshotError::Invalid(format!("{rel} doesn't read: {e:?}")))?,
-                )),
-                Err(e) if e.kind() == io::ErrorKind::NotFound => None,
-                Err(e) => return Err(SnapshotError::Io(format!("{}: {e}", file.display()))),
-            };
-            // The op that applies this fills in each `before` from the document it plans against.
-            patch = patch.with(at, None, after);
+            tree_path(rel)?;
         }
-        Ok(patch)
+        let changes = self.journal()?.outside_changes(RELOAD_WAIT).map_err(from_sync)?;
+        let changes = if paths.is_empty() { changes } else { changes.only(paths) };
+        Ok(Reload::new(changes.patch).with_files(changes.files, changes.clashes))
     }
 
     fn usage(&self) -> Result<Usage, SnapshotError> {
