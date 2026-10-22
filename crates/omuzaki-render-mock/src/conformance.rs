@@ -59,6 +59,9 @@ macro_rules! ensure {
     };
 }
 
+mod particles;
+pub use particles::{PARTICLE_CHECKS, run_particles};
+
 /// Every check, by name.
 pub const CHECKS: &[(&str, Check)] = &[
     ("stale handles are errors", stale_handles_are_errors),
