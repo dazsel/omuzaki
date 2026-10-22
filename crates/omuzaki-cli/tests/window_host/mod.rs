@@ -11,16 +11,36 @@ use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::UVec2;
 use omuzaki_ops_api::ServicesBuilder;
 use omuzaki_stream_api::window::{
-    OutputSurface, PaletteSource, WindowCaps, WindowError, WindowHost, WindowPlan, WindowSettings, WindowState,
+    Backdrop, DesktopSettings, ModeSupport, OutputSurface, PaletteSource, WindowCaps, WindowError, WindowHost,
+    WindowMode, WindowPlan, WindowSettings, WindowState,
 };
 
-/// A 1920 by 1080 output on a display at 100%, on a host without a transparent surface (so the transparent example
-/// takes the fallback path) that can keep a window on top.
-struct IdleWindow(Mutex<WindowState>);
+/// A 1920 by 1080 output on a display at 100% that can keep a window on top. For most ops the host has no transparent
+/// surface, so the transparent example takes the fallback path; for the ops whose examples show the character on the
+/// desktop (`output.window.open` and `output.window.set`) it can, and shows desktop mode.
+struct IdleWindow {
+    state: Mutex<WindowState>,
+    desktop: bool,
+}
 
 impl WindowHost for IdleWindow {
     fn capabilities(&self) -> WindowCaps {
-        WindowCaps::new(false, true)
+        WindowCaps::new(self.desktop, true)
+    }
+
+    fn modes(&self) -> Vec<ModeSupport> {
+        let desktop = if self.desktop {
+            ModeSupport::available(WindowMode::Desktop)
+        } else {
+            ModeSupport::unavailable(WindowMode::Desktop, "the conformance rig shows no desktop window for this op")
+        };
+        vec![ModeSupport::available(WindowMode::Studio), ModeSupport::available(WindowMode::Capture), desktop]
+    }
+
+    fn set_desktop(&self, desktop: &DesktopSettings) -> Result<(), WindowError> {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        *state = state.with_desktop(*desktop);
+        Ok(())
     }
 
     fn surface(&self) -> OutputSurface {
@@ -28,16 +48,17 @@ impl WindowHost for IdleWindow {
     }
 
     fn open(&self, plan: &WindowPlan, settings: &WindowSettings) -> Result<(), WindowError> {
-        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = WindowState::open(plan.physical, settings.backdrop);
+        *self.state.lock().unwrap_or_else(PoisonError::into_inner) =
+            WindowState::open(plan.physical, settings.backdrop).with_mode(settings);
         Ok(())
     }
 
     fn close(&self) {
-        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = WindowState::Closed;
+        *self.state.lock().unwrap_or_else(PoisonError::into_inner) = WindowState::Closed;
     }
 
     fn state(&self) -> WindowState {
-        *self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        *self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -50,9 +71,18 @@ impl PaletteSource for NoCast {
     }
 }
 
-/// `services` with a closed [`IdleWindow`] and the [`NoCast`] palette added.
-pub fn with_window(services: ServicesBuilder) -> ServicesBuilder {
+/// `services` with an [`IdleWindow`] for `op` and the [`NoCast`] palette added. The window is closed, except for
+/// `output.window.set`, which changes a window already on the desktop.
+pub fn with_window(services: ServicesBuilder, op: &str) -> ServicesBuilder {
+    let desktop = matches!(op, "output.window.open" | "output.window.set");
+    let state = if op == "output.window.set" {
+        let mut settings = WindowSettings::default();
+        settings.mode = WindowMode::Desktop;
+        WindowState::open(UVec2::new(960, 540), Backdrop::Transparent).with_mode(&settings)
+    } else {
+        WindowState::Closed
+    };
     services
-        .insert::<dyn WindowHost>(Arc::new(IdleWindow(Mutex::new(WindowState::Closed))))
+        .insert::<dyn WindowHost>(Arc::new(IdleWindow { state: Mutex::new(state), desktop }))
         .insert::<dyn PaletteSource>(Arc::new(NoCast))
 }

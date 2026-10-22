@@ -800,9 +800,14 @@ fn sweep_in(steps: u16, set: impl Fn(&mut PaintParams, f32)) -> Vec<DrawList> {
         .collect()
 }
 
+/// The density a sweep's frames are rasterised at to compare their ink: a quarter of the real layer's pixels, where the
+/// smallest effect (a sparkle) still covers several pixels. Thousands of frames at the real density took CI over ten
+/// minutes in a debug build (#2289).
+const SWEEP_PX_PER_M: f32 = DEFAULT_PX_PER_M / 2.0;
+
 /// The worst step of a sweep and the median of the steps that move, in ink (each frame rasterised once).
 fn worst_and_median(frames: &[DrawList]) -> (u64, u64) {
-    let spec = FaceLayerSpec::for_layer(FaceLayerId::Base, &projection(), DEFAULT_PX_PER_M);
+    let spec = FaceLayerSpec::for_layer(FaceLayerId::Base, &projection(), SWEEP_PX_PER_M);
     let rasters: Vec<Raster> = frames
         .iter()
         .map(|list| {

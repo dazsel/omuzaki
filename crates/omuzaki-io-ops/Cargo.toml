@@ -35,6 +35,7 @@ omuzaki-render-api = { path = "../omuzaki-render-api" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
 
 [dev-dependencies]
+criterion.workspace = true
 tempfile.workspace = true
 # A tray record's connector version (`tests/import_tray.rs`).
 omuzaki-ai-api = { path = "../omuzaki-ai-api" }
@@ -43,6 +44,10 @@ omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-face-mock = { path = "../omuzaki-face-mock" }
 omuzaki-io-mock = { path = "../omuzaki-io-mock" }
 omuzaki-store-mock = { path = "../omuzaki-store-mock" }
+
+[[bench]]
+name = "fit"
+harness = false
 
 [build-dependencies]
 omuzaki-embed = { path = "../omuzaki-embed" }

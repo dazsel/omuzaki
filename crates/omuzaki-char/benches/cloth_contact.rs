@@ -1,5 +1,5 @@
 //! Benchmark: the cloth part of spec §10's `physics.step`. The budget scene's skirt, a 24 x 16 sheet (384
-//! particles, wrapped, waist pinned; a 48 x 32 one for scale) turns at the hips against eight capsules (thighs, shins,
+//! particles, wrapped, waist pinned; a 48 x 32 one for scale, and the 12 x 8 and 8 x 6 levels of detail of #706) turns at the hips against eight capsules (thighs, shins,
 //! hips, forearms) in a gusty wind, stepped as 30 fps frames (four 120 Hz physics steps, 16 sub-steps of 2 iterations).
 //! The budget is 0.5 ms a frame p95 on one E-core for springs, hair and cloth together.
 //!
@@ -135,7 +135,8 @@ fn bench_case(c: &mut Criterion, name: &str, sheet: &ClothSheet, config: SolverC
 
 fn contacts(c: &mut Criterion) {
     let live = SolverConfig::default();
-    for (rows, cols) in [(16, 24), (32, 48)] {
+    // #706's levels: the 12 x 8 level must cost at most 40% of the 24 x 16 one.
+    for (rows, cols) in [(8, 12), (6, 8), (16, 24), (32, 48)] {
         let sheet = skirt(rows, cols);
         let size = format!("skirt {cols}x{rows} ({} particles)", rows * cols);
         bench_case(c, &format!("frame 1/30 s, {size}, no colliders"), &sheet, live, false, false);

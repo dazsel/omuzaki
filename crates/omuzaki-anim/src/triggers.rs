@@ -57,7 +57,7 @@ pub struct TriggerSlot {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum TriggerError {
     /// The slot index is not below [`MAX_TRIGGERS`].
-    #[error("trigger slot {slot} is out of range (0..16)")]
+    #[error("trigger slot {slot} is out of range (0..{MAX_TRIGGERS})")]
     SlotOutOfRange {
         /// The index given.
         slot: usize,

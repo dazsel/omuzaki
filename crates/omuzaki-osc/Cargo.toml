@@ -1,0 +1,23 @@
+[package]
+name = "omuzaki-osc"
+description = "An OSC 1.0 packet reader and writer that borrows from the datagram and allocates nothing per message: the transport of VMC and of OSC bindings."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[package.metadata.omuzaki]
+kind = "Lib"
+summary = "OSC 1.0 packets (the transport VMC rides on, and OSC bindings, #469): messages and bundles nested to a fixed depth read without allocating, and a small writer for tests and VMC out; no `omuzaki-*` dependencies, so the VMC receiver and the input hub share it"
+layer = "lib"
+
+[dependencies]
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

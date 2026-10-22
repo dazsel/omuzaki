@@ -124,11 +124,20 @@ struct Agreement {
     swing: f64,
 }
 
+/// A solver with the animated pose held across a frame's sub-steps, as the spec's oracle and three-vrm run: the
+/// comparisons with them use it. Interpolation (#79) has its own comparison,
+/// `interpolated_sub_steps_match_the_spec_fed_the_same_blend`.
+fn held(set: &SpringSet, skeleton: &Skeleton) -> VrmSpringSolver {
+    let mut solver = VrmSpringSolver::new(set, skeleton).unwrap();
+    solver.set_pose_interpolation(false);
+    solver
+}
+
 /// Steps the solver and the oracle through `frames` frames of the fixture's animation and measures the worst
 /// disagreement in rotations and joint positions.
 fn compare_with_spec(fixture: &Fixture, set: &SpringSet, fps: f32, frames: u64) -> Agreement {
     let skeleton = &fixture.skeleton;
-    let mut solver = VrmSpringSolver::new(set, skeleton).unwrap();
+    let mut solver = held(set, skeleton);
     let mut oracle = Reference::new(skeleton, set, &fixture.pose_at(0));
     let swinging: Vec<usize> =
         set.chains.iter().flat_map(|c| &c.joints[..c.joints.len() - 1]).map(|j| j.bone.index()).collect();
@@ -139,7 +148,11 @@ fn compare_with_spec(fixture: &Fixture, set: &SpringSet, fps: f32, frames: u64) 
         let input = fixture.pose_at(frame);
         let mut out = input.clone();
         solver.step(Tick::at_rate(frame, fps), skeleton, &mut out);
-        for _ in 0..solver.stats().substeps {
+        let substeps = solver.stats().substeps;
+        if substeps == 0 {
+            oracle.hold(&input);
+        }
+        for _ in 0..substeps {
             oracle.substep(&input);
         }
         for &b in &swinging {
@@ -188,13 +201,66 @@ fn matches_the_spec_with_tapered_parameters() {
     assert_agrees(&compare_with_spec(&fixture, &set_of(chains, vec![]), 60.0, 300), 0.3);
 }
 
+/// Every frame rate the solver must agree with the oracle at (#1849): the common display and video rates, 50 fps
+/// (not a divisor of 120, so whole and partial sub-steps alternate) and 144 fps (shorter than a sub-step, so some
+/// frames run none and only hold).
+const FRAME_RATES: [f32; 6] = [30.0, 50.0, 60.0, 90.0, 120.0, 144.0];
+
 #[test]
-fn matches_the_spec_at_other_frame_rates() {
+fn matches_the_spec_at_every_frame_rate() {
+    let (fixture, ids) = Fixture::hair(3, 4);
+    let free = set_of(chains_of(&ids, windy()), vec![]);
+    // The hold maps the tails out of centre space and re-aims under the new pose, so it gets a centre and a collider.
+    let mut chains = chains_of(&ids, windy());
+    for chain in &mut chains {
+        chain.center = Some(fixture.hips);
+        chain.collider_groups = vec!["head".into()];
+    }
+    let head =
+        ColliderGroup { name: "head".into(), colliders: vec![ball(fixture.head, Vec3::new(0.0, -0.1, 0.0), 0.12)] };
+    let centred = set_of(chains, vec![head]);
+    for (name, set) in [("free", &free), ("centre and collider", &centred)] {
+        for fps in FRAME_RATES {
+            let agreement = compare_with_spec(&fixture, set, fps, 300);
+            println!("{name}, {fps} fps: rotation {:.1e}, position {:.1e} m", agreement.rotation, agreement.position);
+            assert_agrees(&agreement, 0.1);
+        }
+    }
+}
+
+/// #1849's cause: at 144 fps a frame is shorter than a sub-step, so one frame in six owes none. The solver holds the
+/// tails and re-aims the bones from that frame's pose; a driver that gives the oracle nothing on such a frame compares
+/// the solver with the previous frame's pose (0.03 m apart) although the two simulations never diverged.
+#[test]
+fn a_frame_with_no_sub_step_is_one_in_six_at_144_fps_and_the_oracle_holds_it_too() {
     let (fixture, ids) = Fixture::hair(1, 4);
     let set = set_of(chains_of(&ids, windy()), vec![]);
-    for fps in [30.0, 120.0] {
-        assert_agrees(&compare_with_spec(&fixture, &set, fps, 200), 0.1);
+    let mut solver = VrmSpringSolver::new(&set, &fixture.skeleton).unwrap();
+    let counts: Vec<u32> = (0..12)
+        .map(|frame| {
+            let mut pose = fixture.pose_at(frame);
+            solver.step(Tick::at_rate(frame, 144.0), &fixture.skeleton, &mut pose);
+            solver.stats().substeps
+        })
+        .collect();
+    assert_eq!(counts, [0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1]);
+
+    // Without the hold, the oracle lags a frame on exactly those frames: the comparison would fail.
+    let mut oracle = Reference::new(&fixture.skeleton, &set, &fixture.pose_at(0));
+    let mut solver = held(&set, &fixture.skeleton);
+    let tip = ids[0][3].index();
+    let mut world = Pose::default();
+    let mut lag = 0.0_f64;
+    for frame in 0..7 {
+        let mut pose = fixture.pose_at(frame);
+        solver.step(Tick::at_rate(frame, 144.0), &fixture.skeleton, &mut pose);
+        for _ in 0..solver.stats().substeps {
+            oracle.substep(&fixture.pose_at(frame));
+        }
+        fixture.skeleton.world_pose(&pose, &mut world);
+        lag = lag.max((world.local[tip].translation.as_dvec3() - oracle.world(tip).w_axis.truncate()).length());
     }
+    assert!(lag > 100.0 * TOLERANCE, "an unheld oracle should lag on frame 6, but it is only {lag} m off");
 }
 
 #[test]
@@ -1210,6 +1276,9 @@ mod three_vrm {
         pose
     }
 
+    /// A collider set of `three_vrm_golden.mjs` (its `COLLIDER_SETS`): the one group, named `"body"`, a chain uses.
+    type ColliderSet = fn(&Fixture) -> Vec<ColliderGroup>;
+
     fn chain(ids: [BoneId; 4], centre: Option<BoneId>, colliders: bool) -> SpringChain {
         let params = SpringParams {
             hit_radius: 0.02,
@@ -1226,6 +1295,35 @@ mod three_vrm {
         chain
     }
 
+    /// One collider in the group the chain names.
+    fn body(collider: omuzaki_anim_api::Collider) -> Vec<ColliderGroup> {
+        vec![ColliderGroup { name: "body".into(), colliders: vec![collider] }]
+    }
+
+    /// `'sphere_inside'`: an inside sphere on the head, 0.1 below the root `h0`.
+    fn sphere_inside(fixture: &Fixture) -> Vec<ColliderGroup> {
+        let shape = ColliderShape::SphereInside { offset: Vec3::new(0.02, -0.16, 0.01), radius: 0.12 };
+        body(omuzaki_anim_api::Collider { bone: fixture.head, shape })
+    }
+
+    /// `'capsule_inside'`: an inside capsule on the head, from the root `h0` straight down.
+    fn capsule_inside(fixture: &Fixture) -> Vec<ColliderGroup> {
+        let shape = ColliderShape::CapsuleInside {
+            offset: Vec3::new(0.02, -0.06, 0.01),
+            radius: 0.05,
+            tail: Vec3::new(0.02, -0.26, 0.01),
+        };
+        body(omuzaki_anim_api::Collider { bone: fixture.head, shape })
+    }
+
+    /// `'plane'`: a plane on the spine, just behind it, facing forward.
+    fn plane(fixture: &Fixture) -> Vec<ColliderGroup> {
+        let spine = fixture.skeleton.humanoid_bone(HumanoidBone::Spine).unwrap();
+        let shape = ColliderShape::Plane { offset: Vec3::new(0.0, 0.0, -0.02), normal: Vec3::Z };
+        body(omuzaki_anim_api::Collider { bone: spine, shape })
+    }
+
+    /// `'body'`: a sphere on the head and a capsule on the spine.
     fn colliders(fixture: &Fixture) -> Vec<ColliderGroup> {
         let spine = fixture.skeleton.humanoid_bone(HumanoidBone::Spine).unwrap();
         vec![ColliderGroup {
@@ -1245,13 +1343,13 @@ mod three_vrm {
     }
 
     /// The largest rotation-component difference between the solver and three-vrm over the scenario.
-    fn worst_difference(scenario: &str, centre: bool, with_colliders: bool) -> f32 {
+    fn worst_difference(scenario: &str, centre: bool, collider_set: Option<ColliderSet>) -> f32 {
         let (fixture, ids) = scene();
         let set = set_of(
-            vec![chain(ids, centre.then_some(fixture.hips), with_colliders)],
-            if with_colliders { colliders(&fixture) } else { vec![] },
+            vec![chain(ids, centre.then_some(fixture.hips), collider_set.is_some())],
+            collider_set.map_or_else(Vec::new, |groups| groups(&fixture)),
         );
-        let mut solver = VrmSpringSolver::new(&set, &fixture.skeleton).unwrap();
+        let mut solver = held(&set, &fixture.skeleton);
         let expected = recorded(scenario);
         assert_eq!(expected.len(), 100);
         let mut worst = 0.0_f32;
@@ -1262,35 +1360,57 @@ mod three_vrm {
                 worst = worst.max(distance(pose.local[bone.index()].rotation, *want));
             }
         }
+        println!("{scenario}: worst difference from three-vrm {worst:.1e}");
         worst
     }
 
     #[test]
     fn matches_three_vrm_on_a_free_chain() {
-        let worst = worst_difference("free", false, false);
+        let worst = worst_difference("free", false, None);
         assert!(worst < TOLERANCE as f32, "differs from three-vrm by {worst}");
     }
 
     #[test]
     fn matches_three_vrm_in_centre_space() {
-        let worst = worst_difference("centre", true, false);
+        let worst = worst_difference("centre", true, None);
         assert!(worst < TOLERANCE as f32, "differs from three-vrm by {worst}");
     }
 
     #[test]
     fn matches_three_vrm_with_a_sphere_and_a_capsule() {
-        let worst = worst_difference("colliders", false, true);
+        let worst = worst_difference("colliders", false, Some(colliders));
+        assert!(worst < TOLERANCE as f32, "differs from three-vrm by {worst}");
+    }
+
+    #[test]
+    fn matches_three_vrm_with_an_inside_sphere() {
+        let worst = worst_difference("sphere_inside", false, Some(sphere_inside));
+        assert!(worst < TOLERANCE as f32, "differs from three-vrm by {worst}");
+    }
+
+    #[test]
+    fn matches_three_vrm_with_an_inside_capsule() {
+        let worst = worst_difference("capsule_inside", false, Some(capsule_inside));
+        assert!(worst < TOLERANCE as f32, "differs from three-vrm by {worst}");
+    }
+
+    #[test]
+    fn matches_three_vrm_with_a_plane() {
+        let worst = worst_difference("plane", false, Some(plane));
         assert!(worst < TOLERANCE as f32, "differs from three-vrm by {worst}");
     }
 
     #[test]
     fn the_recorded_scenarios_differ_so_each_comparison_means_something() {
-        let (free, centre, colliders) = (recorded("free"), recorded("centre"), recorded("colliders"));
+        let free = recorded("free");
         let apart = |a: &[[Quat; 3]], b: &[[Quat; 3]]| {
             a.iter().zip(b).flat_map(|(x, y)| x.iter().zip(y)).map(|(p, q)| distance(*p, *q)).fold(0.0, f32::max)
         };
-        assert!(apart(&free, &centre) > 0.02, "the centre changes nothing");
-        assert!(apart(&free, &colliders) > 0.02, "the colliders change nothing");
+        for scenario in ["centre", "colliders", "sphere_inside", "capsule_inside", "plane"] {
+            let difference = apart(&free, &recorded(scenario));
+            println!("{scenario}: differs from free by {difference}");
+            assert!(difference > 0.02, "{scenario} changes nothing: {difference}");
+        }
     }
 }
 
@@ -1723,4 +1843,171 @@ mod limit_data {
     }
 
     const PI_OR_MORE: f32 = 3.5;
+}
+
+/// #79's two motions, in continuous time (seconds) so that every frame rate samples the same animation: the fixture's
+/// walk and sway, and a sharp head turn (a quarter turn in 0.25 s, held, and back, every second).
+fn motion(fixture: &Fixture, turn: bool, seconds: f64) -> Pose {
+    if turn {
+        let mut pose = fixture.skeleton.rest_pose();
+        let phase = (seconds % 1.0) as f32 / 0.25;
+        let a = match phase {
+            p if p < 1.0 => p,
+            p if p < 2.0 => 1.0,
+            p if p < 3.0 => 3.0 - p,
+            _ => 0.0,
+        };
+        pose.local[fixture.head.index()].rotation =
+            Quat::from_rotation_y(std::f32::consts::FRAC_PI_2 * a * a * (3.0 - 2.0 * a));
+        pose
+    } else {
+        // `pose_at` advances its animation by one unit per 60 fps frame.
+        let mut pose = fixture.pose_at(0);
+        let t = (seconds * 60.0) as f32;
+        let hips = &mut pose.local[fixture.hips.index()];
+        let rest = fixture.skeleton.bones()[fixture.hips.index()].rest.translation;
+        hips.translation = rest + Vec3::new(0.4 * (0.07 * t).sin(), 0.05 * (0.11 * t).sin(), 0.2 * (0.05 * t).cos());
+        hips.rotation = Quat::from_rotation_y(0.5 * (0.05 * t).sin());
+        pose.local[fixture.head.index()].rotation = Quat::from_euler(
+            omuzaki_core::glam::EulerRot::XYZ,
+            0.3 * (0.13 * t).sin(),
+            0.5 * (0.09 * t).sin(),
+            0.2 * (0.17 * t).sin(),
+        );
+        pose
+    }
+}
+
+/// The hair tips' positions after each frame of three seconds of `motion` at `fps`, by the solver.
+fn tip_track(fixture: &Fixture, set: &SpringSet, turn: bool, fps: f64, interpolate: bool) -> Vec<Vec<Vec3>> {
+    let tips: Vec<usize> = set.chains.iter().map(|c| c.joints[c.joints.len() - 1].bone.index()).collect();
+    let mut solver = VrmSpringSolver::new(set, &fixture.skeleton).unwrap();
+    solver.set_pose_interpolation(interpolate);
+    let mut world = Pose::default();
+    (0..=(3.0 * fps) as u64)
+        .map(|frame| {
+            let mut pose = motion(fixture, turn, frame as f64 / fps);
+            // Frame 0 only places the hair at rest, so that frame `k` has run exactly the sub-steps up to its time at
+            // every rate, and each sub-step sees the pose of the time it ends at (or a blend towards it).
+            let dt = if frame == 0 { 0.0 } else { 1.0 / fps as f32 };
+            solver.step(Tick { dt, ..Tick::at_rate(frame, fps as f32) }, &fixture.skeleton, &mut pose);
+            fixture.skeleton.world_pose(&pose, &mut world);
+            tips.iter().map(|&t| world.local[t].translation).collect()
+        })
+        .collect()
+}
+
+/// The worst and root-mean-square distance of the tips at `fps` from where a 120 fps run has them at the same times.
+fn tip_error(fixture: &Fixture, set: &SpringSet, turn: bool, fps: f64, interpolate: bool) -> (f32, f32) {
+    let truth = tip_track(fixture, set, turn, 120.0, false);
+    let every = (120.0 / fps) as usize;
+    let track = tip_track(fixture, set, turn, fps, interpolate);
+    let distances: Vec<f32> = track
+        .iter()
+        .enumerate()
+        .flat_map(|(frame, tips)| tips.iter().zip(&truth[frame * every]).map(|(a, b)| a.distance(*b)))
+        .collect();
+    let rms = (distances.iter().map(|d| d * d).sum::<f32>() / distances.len() as f32).sqrt();
+    (distances.iter().copied().fold(0.0, f32::max), rms)
+}
+
+/// #79's measurement, recorded in the module docs: interpolating the animated pose across a frame's sub-steps brings
+/// the hair of a 30 fps (or 60 fps) run close to a 120 fps run's, where holding it leaves the swing a frame behind.
+#[test]
+fn interpolating_the_pose_brings_low_frame_rates_close_to_120_fps() {
+    let (fixture, ids) = Fixture::hair(3, 4);
+    let set = set_of(chains_of(&ids, windy()), vec![]);
+    for turn in [false, true] {
+        for fps in [30.0, 60.0] {
+            let (held, held_rms) = tip_error(&fixture, &set, turn, fps, false);
+            let (lerped, lerped_rms) = tip_error(&fixture, &set, turn, fps, true);
+            println!(
+                "{} at {fps} fps: held {:.1} mm (rms {:.1}), interpolated {:.1} mm (rms {:.1})",
+                if turn { "head turn" } else { "walk and sway" },
+                held * 1e3,
+                held_rms * 1e3,
+                lerped * 1e3,
+                lerped_rms * 1e3
+            );
+            assert!(lerped * 5.0 < held, "interpolation should cut the worst error clearly: {lerped} vs {held}");
+            assert!(lerped < 2e-3, "interpolated tips are {lerped} m from the 120 fps run");
+        }
+    }
+}
+
+/// With interpolation on, the solver still computes the spec's numbers: the oracle, fed the same blended pose for
+/// each sub-step, agrees at every frame rate (60 fps and below interpolate; above, a frame has at most one sub-step).
+#[test]
+fn interpolated_sub_steps_match_the_spec_fed_the_same_blend() {
+    let (fixture, ids) = Fixture::hair(2, 4);
+    let mut chains = chains_of(&ids, windy());
+    chains[1].center = Some(fixture.hips);
+    let set = set_of(chains, vec![]);
+    let skeleton = &fixture.skeleton;
+    let blend = |from: &Pose, to: &Pose, t: f32| {
+        let mut pose = to.clone();
+        for (out, (a, b)) in pose.local.iter_mut().zip(from.local.iter().zip(&to.local)) {
+            *out = Transform {
+                translation: a.translation.lerp(b.translation, t),
+                rotation: a.rotation.slerp(b.rotation, t),
+            };
+        }
+        pose
+    };
+    for fps in [30.0, 50.0, 60.0] {
+        let mut solver = VrmSpringSolver::new(&set, skeleton).unwrap();
+        solver.set_pose_interpolation(true);
+        let mut oracle = Reference::new(skeleton, &set, &fixture.pose_at(0));
+        let (mut worst, mut world) = (0.0_f64, Pose::default());
+        let mut previous = fixture.pose_at(0);
+        for frame in 0..200 {
+            let input = fixture.pose_at(frame);
+            let mut out = input.clone();
+            solver.step(Tick::at_rate(frame, fps), skeleton, &mut out);
+            let n = solver.stats().substeps;
+            if n == 0 {
+                oracle.hold(&input);
+            }
+            for i in 1..=n {
+                let pose = if frame == 0 || n == 1 || i == n {
+                    input.clone()
+                } else {
+                    blend(&previous, &input, i as f32 / n as f32)
+                };
+                oracle.substep(&pose);
+            }
+            previous = input;
+            skeleton.world_pose(&out, &mut world);
+            for b in ids.iter().flatten() {
+                worst = worst.max(
+                    (world.local[b.index()].translation.as_dvec3() - oracle.world(b.index()).w_axis.truncate())
+                        .length(),
+                );
+            }
+        }
+        assert!(worst < TOLERANCE, "{fps} fps: joints differ from the spec by {worst} m");
+    }
+}
+
+#[test]
+fn interpolation_is_on_by_default_and_leaves_the_incoming_pose_as_given() {
+    let (fixture, ids) = Fixture::hair(1, 4);
+    let set = set_of(chains_of(&ids, windy()), vec![]);
+    let mut lerped = VrmSpringSolver::new(&set, &fixture.skeleton).unwrap();
+    assert!(lerped.pose_interpolation());
+    let mut held = held(&set, &fixture.skeleton);
+    assert!(!held.pose_interpolation());
+    let (mut a, mut b) = (Pose::default(), Pose::default());
+    for frame in 0..30 {
+        a = fixture.pose_at(frame);
+        b = a.clone();
+        held.step(Tick::at_rate(frame, 30.0), &fixture.skeleton, &mut a);
+        lerped.step(Tick::at_rate(frame, 30.0), &fixture.skeleton, &mut b);
+    }
+    let input = fixture.pose_at(29);
+    let hair: Vec<usize> = ids[0].iter().map(|b| b.index()).collect();
+    for bone in (0..fixture.skeleton.len()).filter(|i| !hair.contains(i)) {
+        assert_eq!(b.local[bone], input.local[bone], "bone {bone} is not the pose the caller gave");
+    }
+    assert!(largest_turn(&ids[0], &a, &b) > 1e-3, "interpolation changed nothing");
 }

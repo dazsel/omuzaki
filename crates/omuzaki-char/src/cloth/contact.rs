@@ -15,9 +15,28 @@
 //!
 //! **No tunnelling.** The particle's path over the sub-step, taken in the collider's moving frame, is swept against the
 //! collider inflated by that distance; a particle that enters it is put on the surface it entered through, carried to
-//! the collider's final pose. This holds at any relative speed up to the solver's [`MAX_SPEED`] clamp, but it tests
-//! particles, not triangles: a collider thinner than the particle spacing can slip between particles, so sheets
-//! should be finer than the smallest collider's diameter.
+//! the collider's final pose. This holds at any relative speed up to the solver's [`MAX_SPEED`] clamp.
+//!
+//! **Thin colliders (limit 1, #129).** The sweep tests particles, so a collider thinner than the particle spacing (a
+//! hairpin, a 3 mm strap against 2 cm cells) could pass between particles. Once the environment knows the sheet
+//! ([`ClothEnvironment::set_sheet`]), every collider whose diameter (with clearance) is under three quarters of the
+//! sheet's longest rest edge is also tested against the sheet's **triangles**: its axis, clipped to each nearby triangle's prism, must stay
+//! `radius + thickness + margin` on the side of the triangle that the same stretch of axis was on at the sub-step's
+//! start, and a triangle that is closer is moved away by that depth as a whole (its movable corners each by the depth:
+//! the barycentric triangle-point projection of position-based dynamics can fling a corner when the point under the
+//! axis sits by a pinned one). A push never exceeds what the sub-step's motion can make up. A 3 mm capsule swung at
+//! 5 m/s into a sheet of 1.9 cm cells crosses no triangle (`tests/cloth_contact.rs`; without the triangles it crosses
+//! in every frame). What remains: a collider already through the sheet stays through it, a pinned edge cannot move out
+//! of the way, and a collider that moves more than a cell in one sub-step (over 7 m/s at 1.9 cm cells and the live
+//! 1/360 s sub-step) can still pass between triangles' prisms.
+//!
+//! **Overlapping colliders (limit 2, #129).** Colliders are met one after the other, so a particle pressed into the
+//! crease between two overlapping colliders could be pushed out of the second back into the first. A particle that
+//! touched two or more colliders in a sub-step is therefore resolved again: up to three times, it is put on the crease
+//! of the two colliders it is deepest in (the circle where their inflated surfaces meet: outside both), or pushed out
+//! radially when it is inside only one. A particle squeezed between two 5 cm spheres 6 cm apart stays outside both over
+//! 10 s. What remains: three or more colliders overlapping at one point are resolved two at a time, so the particle can
+//! end up to a sub-step's travel inside the third.
 //!
 //! **Friction** is Coulomb's, in position-based form (Macklin et al., "Unified Particle Physics", 2014): the depth
 //! `d` a contact pushed the particle out is the normal impulse, and the particle's sub-step displacement relative to
@@ -51,6 +70,12 @@ use super::solver::{SheetShape, Substep, SubstepHook};
 
 /// Particles per broad-phase chunk.
 const CHUNK: usize = 8;
+
+/// A collider is thin, and meets the sheet's triangles too, when its diameter (with clearance) is under this share of
+/// the sheet's longest rest edge. A collider nearly a cell thick cannot pass between particles (they lie in its path
+/// at any angle but square-on to a cell's diagonal), and the triangle test costs a pass over the cells per collider:
+/// a garment's shell of capsules each a little thinner than the outer layer's cells would cost more than the solver.
+const THIN: f32 = 0.75;
 
 /// Why a collider, a parameter or a wind was refused.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -378,6 +403,158 @@ fn contact(pose: &Pose, friction: Friction, x0: Vec3A, x1: Vec3A, travel: f32) -
     surface - slip * share
 }
 
+/// Puts a particle at `x` outside the colliders it is inside at their end pose, two at a time (limit 2 in the
+/// [module docs](self)): on the crease of the two it is deepest in, or radially out of one.
+fn resolve_overlap(poses: &[Pose], mut x: Vec3A) -> Vec3A {
+    if !x.is_finite() {
+        return x; // the solver resets it
+    }
+    for _ in 0..3 {
+        // The two colliders `x` is deepest in, as (depth, nearest axis point, reach).
+        let mut first: Option<(f32, Vec3A, f32)> = None;
+        let mut second: Option<(f32, Vec3A, f32)> = None;
+        for pose in poses {
+            let c = pose.a1 + pose.e1 * axis_param(x, pose.a1, pose.e1, pose.len1);
+            let depth = pose.reach - x.distance(c);
+            if depth <= 1e-7 {
+                continue;
+            }
+            let entry = Some((depth, c, pose.reach));
+            if first.is_none_or(|(d, ..)| depth > d) {
+                second = first;
+                first = entry;
+            } else if second.is_none_or(|(d, ..)| depth > d) {
+                second = entry;
+            }
+        }
+        let Some((_, c1, r1)) = first else { return x };
+        let radial = |x: Vec3A, c: Vec3A, r: f32| c + fallback_normal(x - c, Vec3A::Y) * r;
+        x = match second {
+            None => radial(x, c1, r1),
+            Some((_, c2, r2)) => {
+                let axis = c2 - c1;
+                let length = axis.length();
+                if length < 1e-7 {
+                    radial(x, c1, r1.max(r2))
+                } else {
+                    // The crease: the circle where the two spheres' surfaces meet.
+                    let dir = axis / length;
+                    let along = (length * length + r1 * r1 - r2 * r2) / (2.0 * length);
+                    let rho2 = r1 * r1 - along * along;
+                    if rho2 <= 0.0 {
+                        // One sphere holds the other's whole cap: leave the larger.
+                        if r1 >= r2 { radial(x, c1, r1) } else { radial(x, c2, r2) }
+                    } else {
+                        let middle = c1 + dir * along;
+                        let q = x - middle;
+                        let out = fallback_normal(q - dir * q.dot(dir), dir);
+                        middle + out * rho2.sqrt()
+                    }
+                }
+            }
+        };
+    }
+    x
+}
+
+/// Keeps the sheet's triangles on their own side of a thin collider (limit 1 in the [module docs](self)).
+#[allow(clippy::similar_names)] // corner names
+fn triangle_contacts(
+    pose: &Pose,
+    shape: SheetShape,
+    spacing: f32,
+    positions: &mut [Vec3A],
+    previous: &[Vec3A],
+    inv_mass: &[f32],
+) {
+    let cols = shape.cols;
+    let cell_cols = if shape.wrap { cols } else { cols - 1 };
+    let at = |r: usize, c: usize| r * cols + c % cols;
+    // A push never exceeds what one sub-step can make up: the collider's reach and travel and a cell.
+    let most = pose.reach + pose.moved + spacing;
+    for r in 0..shape.rows - 1 {
+        for c in 0..cell_cols {
+            let corners = [at(r, c), at(r, c + 1), at(r + 1, c), at(r + 1, c + 1)];
+            let centre = corners.iter().map(|&i| positions[i]).sum::<Vec3A>() * 0.25;
+            let extent = corners.iter().map(|&i| positions[i].distance(centre)).fold(0.0, f32::max);
+            if centre.distance(pose.centre) > pose.bound + extent {
+                continue;
+            }
+            for [i, j, k] in [[corners[0], corners[2], corners[1]], [corners[1], corners[2], corners[3]]] {
+                push_triangle(pose, [i, j, k], most, positions, previous, inv_mass);
+            }
+        }
+    }
+}
+
+/// One triangle against one thin collider: see [`triangle_contacts`].
+fn push_triangle(
+    pose: &Pose,
+    [i, j, k]: [usize; 3],
+    most: f32,
+    positions: &mut [Vec3A],
+    previous: &[Vec3A],
+    inv_mass: &[f32],
+) {
+    let (x0, x1, x2) = (positions[i], positions[j], positions[k]);
+    let normal = (x1 - x0).cross(x2 - x0);
+    let area2 = normal.length();
+    // A corner the solver has yet to repair (non-finite) must not spread to the others.
+    if area2 < 1e-12 || !area2.is_finite() || !(previous[i] + previous[j] + previous[k]).is_finite() {
+        return;
+    }
+    let mut n = normal / area2;
+    // Clip the axis (at the end pose) to the triangle's prism.
+    let (a, e) = (pose.a1, pose.e1);
+    let (mut t0, mut t1) = (0.0_f32, 1.0_f32);
+    for (p, q, other) in [(x0, x1, x2), (x1, x2, x0), (x2, x0, x1)] {
+        let mut m = (q - p).cross(n);
+        if m.dot(other - p) < 0.0 {
+            m = -m;
+        }
+        let (f0, slope) = (m.dot(a - p), m.dot(e));
+        if slope.abs() < 1e-12 {
+            if f0 < 0.0 {
+                return;
+            }
+        } else {
+            let t = -f0 / slope;
+            if slope > 0.0 { t0 = t0.max(t) } else { t1 = t1.min(t) }
+        }
+        if t0 > t1 {
+            return;
+        }
+    }
+    // The side the collider started on: the middle of the same stretch of axis at the sub-step's start, against the
+    // triangle where it was. A triangle pushed part way into the collider's skin keeps that side and is pushed out
+    // again; one exactly through the axis has none and is left to the particle contacts.
+    let (y0, y1, y2) = (previous[i], previous[j], previous[k]);
+    let n0 = (y1 - y0).cross(y2 - y0).normalize_or(n);
+    let start = n0.dot(pose.a0 + pose.e0 * f32::midpoint(t0, t1) - y0);
+    if start.abs() < 1e-7 || !start.is_finite() {
+        return;
+    }
+    if (n.dot(n0) < 0.0) != (start < 0.0) {
+        n = -n;
+    }
+    // The axis's lowest point over the triangle, measured on the collider's side.
+    let height = |t: f32| n.dot(a + e * t - x0);
+    let t = if height(t0) <= height(t1) { t0 } else { t1 };
+    // One push moves the surface at most what the sub-step's motion can make up, so a sheet that crumples around a
+    // collider is never flung.
+    let depth = (pose.reach - height(t)).min(most);
+    if depth <= 0.0 {
+        return;
+    }
+    // The triangle moves away as a whole: each movable corner by the depth, so the point under the axis clears it
+    // exactly (less where a corner is pinned) and no corner moves further than the depth.
+    for p in [i, j, k] {
+        if inv_mass[p] > 0.0 {
+            positions[p] -= n * depth;
+        }
+    }
+}
+
 /// Wind: a steady velocity and a deterministic gust, and the aerodynamic coefficients of the cloth.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct WindParams {
@@ -540,6 +717,9 @@ pub struct ClothEnvironment {
     count: usize,
     last_fraction: f32,
     wind: Option<Wind>,
+    /// The sheet's grid and longest rest edge, for the triangle contacts of thin colliders.
+    sheet: Option<SheetShape>,
+    spacing: f32,
 }
 
 impl ClothEnvironment {
@@ -557,6 +737,8 @@ impl ClothEnvironment {
             count: 0,
             last_fraction: 0.0,
             wind: None,
+            sheet: None,
+            spacing: 0.0,
         })
     }
 
@@ -598,6 +780,14 @@ impl ClothEnvironment {
         }
         self.slots[index].to = shape;
         Ok(())
+    }
+
+    /// Tells the environment the sheet's grid and its longest rest edge (metres), which turns on the triangle contacts
+    /// for colliders thinner than that edge (see the [module docs](self)); `None` turns them off. Allocates nothing, so
+    /// a runtime switching levels of detail calls it at the switch.
+    pub fn set_sheet(&mut self, shape: Option<SheetShape>, spacing: f32) {
+        self.sheet = shape.filter(|s| s.rows >= 2 && s.cols >= 2 && spacing.is_finite() && spacing > 0.0);
+        self.spacing = if self.sheet.is_some() { spacing } else { 0.0 };
     }
 
     /// Removes the colliders from `len` on (so `truncate(0)` removes all).
@@ -648,16 +838,37 @@ impl SubstepHook for ClothEnvironment {
             let centre = sum / xs.len() as f32;
             let radius =
                 paths.iter().take(xs.len()).map(|&(mid, half)| mid.distance(centre) + half).fold(0.0, f32::max);
+            let mut hits = [0_u8; CHUNK];
             for pose in poses {
                 if centre.distance(pose.centre) > pose.bound + radius {
                     continue;
                 }
-                for (((x, &x0), &w), &(mid, half)) in xs.iter_mut().zip(x0s).zip(ws).zip(&paths) {
+                for ((((x, &x0), &w), &(mid, half)), hit) in
+                    xs.iter_mut().zip(x0s).zip(ws).zip(&paths).zip(hits.iter_mut())
+                {
                     // Outside the sphere around the swept volume, widened by the particle's own path: no contact.
                     let near = pose.bound + half;
                     if w > 0.0 && mid.distance_squared(pose.centre) <= near * near {
-                        *x = contact(pose, friction, x0, *x, 2.0 * half);
+                        let moved = contact(pose, friction, x0, *x, 2.0 * half);
+                        if moved != *x {
+                            *hit = hit.saturating_add(1);
+                            *x = moved;
+                        }
                     }
+                }
+            }
+            // Limit 2: a particle that met two or more colliders may have been pushed from one into another.
+            for (x, &hit) in xs.iter_mut().zip(&hits) {
+                if hit >= 2 {
+                    *x = resolve_overlap(poses, *x);
+                }
+            }
+        }
+        // Limit 1: colliders thinner than the particle spacing also meet the sheet's triangles.
+        if let Some(shape) = self.sheet {
+            for pose in poses {
+                if 2.0 * pose.reach < THIN * self.spacing {
+                    triangle_contacts(pose, shape, self.spacing, positions, previous, inv_mass);
                 }
             }
         }

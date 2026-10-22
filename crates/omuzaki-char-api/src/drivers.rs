@@ -21,8 +21,10 @@
 //!
 //! [`DriverPlan::compile`] is cold: it validates, sorts by bone id and resolves rest rotations. [`DriverPlan::apply`]
 //! is the per-frame call. It allocates nothing, takes no lock, and costs a few multiplies per driver
-//! (`cargo bench -p omuzaki-char-api --bench drivers`). Call it after the rig solve and the spring solve, on the local
-//! [`Pose`], before [`Skeleton::skin_matrices`](omuzaki_anim_api::Skeleton::skin_matrices).
+//! (`cargo bench -p omuzaki-char-api --bench drivers`). Call it on the local [`Pose`] after the humanoid pose, IK
+//! and node constraints and **before the springs**, where VRM puts node constraints (`omuzaki-rig`'s pre-spring
+//! stage, `FullRig::solve_and_skin_with`), so a spring chain under a driven bone follows it in the same frame; then
+//! [`Skeleton::skin_matrices`](omuzaki_anim_api::Skeleton::skin_matrices).
 //!
 //! ## Export (VRM 1.0 and glTF cannot carry a driver)
 //!

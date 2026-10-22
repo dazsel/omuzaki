@@ -2,10 +2,10 @@
 //! and a mic boom.
 //!
 //! **Build.** The band is a flat tube in the plane of the ears: its centre line stands `clearance` metres above the head's
-//! surface (the head, because the hair publishes no envelope yet: the default clears the hair of the styles on `main`
-//! by more than 2 mm) from one cup over the crown to the other, and ends inside the cups. Each cup is a rounded disc
-//! whose axis is the head's across axis, centred level with its ear and `cup_gap` outside the ear's root, where the
-//! ear anchor (`ear_l`, `ear_r`, as the head publishes them) says. A head without a side ear (animal ears, none)
+//! surface, or further where the hair the hair part published ([`HairReachFact`]) stands higher, so its underside clears
+//! the hair by [`HAIR_MARGIN`], from one cup over the crown to the other, and ends inside the cups. Each cup is a
+//! rounded disc whose axis is the head's across axis, centred level with its ear and `cup_gap` outside the ear's root
+//! (or [`HAIR_MARGIN`] outside the hair over the ear, if that is further), where the ear anchor (`ear_l`, `ear_r`, as the head publishes them) says. A head without a side ear (animal ears, none)
 //! has no such anchor, so the cup sits at `ear_height` below the head centre on the side of the head.
 //!
 //! **Both sides.** Each side is generated with its own sign `s` (`+1` the character's left, `-1` the right), so the pair
@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 
 use super::rigid::{Detail, kit_error};
 use super::shells::{Shells, Slot, closed_tube, head_frames, recolour};
+use crate::hair::reach::{HairReach, HairReachFact};
 use crate::kit::KitError;
 use crate::kit::curve::{fraction, lerp};
 use crate::kit::grid::Grid;
@@ -94,6 +95,9 @@ impl Validate for HeadphonesParams {
 const CUP_ROUNDNESS: f64 = 4.0;
 /// How far the band's ends reach into a cup, metres, so no open end shows.
 const END_INTO_CUP: f64 = 0.006;
+/// How far the band's underside and the cups stand clear of the hair the hair part publishes ([`HairReachFact`]),
+/// metres.
+const HAIR_MARGIN: f64 = 0.004;
 /// Where the cat ears stand on the band, degrees from the top, towards each side.
 const CAT_EAR_AT_DEG: f64 = 40.0;
 
@@ -129,6 +133,7 @@ impl Headphones {
     fn band_path(
         p: &HeadphonesParams,
         head: &dyn omuzaki_char_api::HeadSurface,
+        reach: Option<&HairReach>,
         cups: &[Cup; 2],
         rows: usize,
     ) -> Vec<DVec3> {
@@ -138,7 +143,10 @@ impl Headphones {
         let on_arc = |alpha: f64| -> DVec3 {
             let along = DVec3::new(alpha.sin(), alpha.cos(), 0.0);
             let dir = (along * f64::from(head.radius(Vec3::Y)) + DVec3::Z * plane_z).normalize_or_zero();
-            DVec3::from(head.point(dir.as_vec3(), p.clearance as f32))
+            // Over hair, the band's underside clears it.
+            let hair = reach.map_or(0.0, |r| f64::from(r.above(dir.as_vec3())));
+            let clearance = p.clearance.max(hair + 0.5 * p.band_thickness + HAIR_MARGIN);
+            DVec3::from(head.point(dir.as_vec3(), clearance as f32))
         };
         let top_of = |cup: &Cup| cup.centre + DVec3::Y * (0.8 * p.cup_radius);
         // The arc starts where it clears the cup's top: the side the cup is on, a little above its top.
@@ -270,16 +278,20 @@ impl PartKind for Headphones {
         let mut shells = Shells::new(&attach, &default, 3);
         let seg = detail.lathe;
         let cup_rows = detail.rows / 2;
+        let reach = ctx.published.get::<HairReachFact>().as_ref();
         let cups: [Cup; 2] = [1.0, -1.0].map(|s| {
             let ear = Self::ear(ctx, p, s, head.as_ref());
-            let centre = ear + DVec3::X * (s * (p.cup_gap + 0.5 * p.cup_depth));
+            // Over hair that covers the ear, the gap is measured from the hair.
+            let hair = reach.map_or(0.0, |r| f64::from(r.above((ear - DVec3::from(head.centre())).as_vec3())));
+            let gap = p.cup_gap.max(hair + HAIR_MARGIN);
+            let centre = ear + DVec3::X * (s * (gap + 0.5 * p.cup_depth));
             Cup { s, ear, centre }
         });
         let inside = |sw: &Sweep| {
             let centres = sw.centres.clone();
             move |i: usize, _: usize| centres[i]
         };
-        let path = Self::band_path(p, head.as_ref(), &cups, detail.rows);
+        let path = Self::band_path(p, head.as_ref(), reach, &cups, detail.rows);
         let band =
             closed_tube(&path, |_| (0.5 * p.band_width, 0.5 * p.band_thickness), seg / 2, DVec3::Z).map_err(&err)?;
         shells.bind(0, &band.grid, (false, true), &inside(&band)).map_err(&err)?;

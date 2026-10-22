@@ -4,7 +4,7 @@
 //! **The path.** Per side (`+x` first, then `-x`) there are [`CONTROL_POINTS`] control points at azimuth
 //! `side · lerp(path_from_deg, path_to_deg, t)`, `t = k / (CONTROL_POINTS - 1)`. The braid line's height at that azimuth
 //! blends from [`BraidGen::height_front`] to [`BraidGen::height_back`] as the part sweep's does
-//! ([`braid_direction`]), and each point sits on the head surface in that direction, `LIFT + RISE · smoothstep(t, 0,
+//! ([`braid_direction_with`]), and each point sits on the head surface in that direction, `LIFT + RISE · smoothstep(t, 0,
 //! 0.2)` metres out. The path is resampled to [`REST_POINTS`] by the geometry kit's Catmull-Rom.
 //!
 //! **The strands.** Per side, [`BraidGen::strands`] strands with phase `ph0 = k · 2π / strands`. At path point `i` of
@@ -15,20 +15,20 @@
 //! sideways swing is not a mirror image of the `+x` side's. Its strands are the `+x` strands mirrored in `x` with the
 //! `across` term's sign negated. The `outward` and `out` terms do mirror exactly.
 //!
-//! **Width and thickness.** A strand's width is [`BraidGen::strand_width`] along its length, narrowing to 0.4 of it over
-//! the last 8 % (a [`Taper`] with `tip_at` 0.92). The prototype also halves the root over the first 4 %; a [`Taper`]
-//! has no such stage, so the root keeps the full width until #842 lands. Its thickness is [`BraidGen::strand_thickness`]
-//! at both ends, with no swell.
+//! **Width and thickness.** A strand does not taper to a point. Its width is [`BraidGen::strand_width`] along its
+//! length, with a linear ramp up from half of it over the first 4 % and a linear ramp down to 0.4 of it over the last
+//! 8 %: a [`TaperShape::Plateau`] [`Taper`] (the prototype's `0.024 · ramp(0.5 → 1, t < 0.04) · ramp(1 → 0.4, t >
+//! 0.92)`). Its thickness is [`BraidGen::strand_thickness`] at both ends, with no swell.
 //!
 //! **Shade** falls by 0.02 per strand from 0.98. The generator draws no random numbers.
 
 use std::f64::consts::{PI, TAU};
 
-use omuzaki_char_api::{BraidGen, Bulge, HeadSurface, Taper};
+use omuzaki_char_api::{BraidGen, Bulge, HeadSurface, Taper, TaperShape};
 use omuzaki_core::glam::{DVec3, Vec3};
 
 use super::cap::smoothstep;
-use super::part_sweep::braid_direction;
+use super::part_sweep::braid_direction_with;
 use crate::hair::compile::{CompiledGroup, HairGenCtx};
 use crate::kit::catmull::spaced_points_into;
 
@@ -48,18 +48,23 @@ const STRAND_LIFT: f64 = 0.005;
 const SHADE: f64 = 0.98;
 /// Shade lost per strand.
 const SHADE_STEP: f64 = 0.02;
+/// Fraction of the strand width at the root.
+const ROOT_FRACTION: f64 = 0.5;
 /// Fraction of the strand width left at the tip.
 const TIP_FRACTION: f64 = 0.4;
-/// Where along a strand the narrowing starts.
-const TIP_AT: f64 = 0.92;
+/// Length of the root ramp, as a fraction of the strand.
+const RAMP_IN: f64 = 0.04;
+/// Length of the tip ramp, as a fraction of the strand.
+const RAMP_OUT: f64 = 0.08;
 
 /// Compiles the group: [`BraidGen::strands`] strands per side, `+x` side first.
 pub fn compile(g: &BraidGen, ctx: &mut HairGenCtx<'_>) -> CompiledGroup {
+    let g = &sanitised(g);
     let mut clumps = Vec::with_capacity(clump_count(g));
     let mut controls = [DVec3::ZERO; CONTROL_POINTS];
     let mut path = [DVec3::ZERO; REST_POINTS];
-    let width =
-        Taper { start: g.strand_width, mid: g.strand_width, tip: TIP_FRACTION * g.strand_width, tip_at: TIP_AT };
+    let width = Taper::new(ROOT_FRACTION * g.strand_width, g.strand_width, TIP_FRACTION * g.strand_width)
+        .with_shape(TaperShape::plateau(RAMP_IN, RAMP_OUT));
     let thickness = Bulge { base: g.strand_thickness, swell: 0.0 };
     for side in [1.0, -1.0] {
         control_points(g, ctx.head, side, &mut controls);
@@ -79,6 +84,26 @@ pub fn compile(g: &BraidGen, ctx: &mut HairGenCtx<'_>) -> CompiledGroup {
     CompiledGroup::tubes(clumps)
 }
 
+/// `g` with every number that is not finite replaced by its default, so a bad file draws a plain braid instead of
+/// non-finite points. The strand count is untouched, so [`clump_count`] holds.
+fn sanitised(g: &BraidGen) -> BraidGen {
+    let d = BraidGen::default();
+    let fix = |x: f64, default: f64| if x.is_finite() { x } else { default };
+    BraidGen {
+        path_from_deg: fix(g.path_from_deg, d.path_from_deg),
+        path_to_deg: fix(g.path_to_deg, d.path_to_deg),
+        height_front: fix(g.height_front, d.height_front),
+        height_back: fix(g.height_back, d.height_back),
+        strands: g.strands,
+        lobes: fix(g.lobes, d.lobes),
+        across: fix(g.across, d.across),
+        out: fix(g.out, d.out),
+        strand_width: fix(g.strand_width, d.strand_width),
+        strand_thickness: fix(g.strand_thickness, d.strand_thickness),
+        height_radius: g.height_radius.filter(|r| r.is_finite()),
+    }
+}
+
 /// How many clumps [`compile`] makes: [`BraidGen::strands`] on each side.
 pub fn clump_count(g: &BraidGen) -> usize {
     2 * usize::from(g.strands)
@@ -91,7 +116,8 @@ fn control_points(g: &BraidGen, head: &dyn HeadSurface, side: f64, out: &mut [DV
     for (k, point) in out.iter_mut().enumerate() {
         let t = k as f64 / (CONTROL_POINTS - 1) as f64;
         let phi = side * (g.path_from_deg + (g.path_to_deg - g.path_from_deg) * t).to_radians();
-        let dir = braid_direction(g.height_front, g.height_back, head, phi);
+        let crown = g.height_radius.unwrap_or_else(|| f64::from(head.radius(Vec3::Y)));
+        let dir = braid_direction_with(g.height_front, g.height_back, crown, phi);
         let offset = LIFT + RISE * smoothstep(t, RISE_REACH.0, RISE_REACH.1);
         *point = on_head(head, dir, offset);
     }

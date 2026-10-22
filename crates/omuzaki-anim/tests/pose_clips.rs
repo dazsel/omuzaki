@@ -36,8 +36,8 @@ fn builtin_clips_load() {
     let lib = ClipLibrary::builtin().unwrap();
     let ids: Vec<_> = lib.iter().map(|c| c.id.as_str()).collect();
     assert_eq!(ids, ["wave", "wave-both", "yawn", "walk"]);
-    assert_eq!(clip("yawn").length, 4.2);
-    assert!(!clip("yawn").looped && clip("walk").looped && clip("wave").looped);
+    assert_eq!(clip("yawn").length(), 4.2);
+    assert!(!clip("yawn").looped() && clip("walk").looped() && clip("wave").looped());
 }
 
 #[test]
@@ -86,10 +86,10 @@ fn the_loop_seam_is_c1() {
         // Both segments at the seam come to rest at it: a hundredth of a segment away they move at a small part of
         // their mid-segment speed.
         let (last, first) = (c.keys().last().unwrap().t, c.keys()[1].t - c.keys()[0].t);
-        let before = c.length - last;
+        let before = c.length() - last;
         let (mid_in, mid_out) = (speed(&c, last + before / 2.0), speed(&c, c.keys()[0].t + first / 2.0));
         assert!(mid_in > 0.1 && mid_out > 0.1, "{id} moves between its keys");
-        assert!(speed(&c, c.length - before * 0.01) < mid_in * 0.1, "{id} into the seam");
+        assert!(speed(&c, c.length() - before * 0.01) < mid_in * 0.1, "{id} into the seam");
         assert!(speed(&c, first * 0.01) < mid_out * 0.1, "{id} out of the seam");
     }
 }
@@ -107,9 +107,9 @@ fn the_walk_mirrored_and_shifted_by_half_a_cycle_is_the_walk() {
     let walk = clip("walk");
     let mirrored = walk.mirrored();
     for i in 0..=40 {
-        let t = i as f32 * walk.length / 40.0 + 0.0137;
+        let t = i as f32 * walk.length() / 40.0 + 0.0137;
         let a = walk.sample_posture(t).body;
-        let b = mirrored.sample_posture(t + walk.length / 2.0).body;
+        let b = mirrored.sample_posture(t + walk.length() / 2.0).body;
         assert_same(&a, &b, 1e-5);
     }
 }

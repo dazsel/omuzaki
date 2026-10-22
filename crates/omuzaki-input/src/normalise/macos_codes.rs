@@ -1,0 +1,161 @@
+//! macOS virtual key codes (the `kVK_*` of a `CGEvent`'s keycode field) to USB HID usages, for every key the zone map
+//! knows: the inverse of the table macOS reads a keyboard's HID usages through. The macOS backend hands a code here and
+//! gets a usage back, so no backend names a key. Not gated to macOS, so its coverage test runs everywhere.
+
+use super::{HidUsage, RawEvent};
+
+/// `(virtual key code, HID usage)`, sorted by code. Two keys the zone map knows have no code of their own: the ISO
+/// key beside Enter (HID 0x32) reads as backslash, and macOS has no Katakana/Hiragana key (HID 0x88). A PC keyboard's
+/// Print Screen, Scroll Lock and Pause arrive as F13, F14 and F15, and the JIS Eisu and Kana keys sit where Muhenkan
+/// and Henkan do, so they read as those.
+const CODES: [(u16, u16); 109] = [
+    (0x00, 0x04),
+    (0x01, 0x16),
+    (0x02, 0x07),
+    (0x03, 0x09),
+    (0x04, 0x0B),
+    (0x05, 0x0A),
+    (0x06, 0x1D),
+    (0x07, 0x1B),
+    (0x08, 0x06),
+    (0x09, 0x19),
+    (0x0A, 0x64),
+    (0x0B, 0x05),
+    (0x0C, 0x14),
+    (0x0D, 0x1A),
+    (0x0E, 0x08),
+    (0x0F, 0x15),
+    (0x10, 0x1C),
+    (0x11, 0x17),
+    (0x12, 0x1E),
+    (0x13, 0x1F),
+    (0x14, 0x20),
+    (0x15, 0x21),
+    (0x16, 0x23),
+    (0x17, 0x22),
+    (0x18, 0x2E),
+    (0x19, 0x26),
+    (0x1A, 0x24),
+    (0x1B, 0x2D),
+    (0x1C, 0x25),
+    (0x1D, 0x27),
+    (0x1E, 0x30),
+    (0x1F, 0x12),
+    (0x20, 0x18),
+    (0x21, 0x2F),
+    (0x22, 0x0C),
+    (0x23, 0x13),
+    (0x24, 0x28),
+    (0x25, 0x0F),
+    (0x26, 0x0D),
+    (0x27, 0x34),
+    (0x28, 0x0E),
+    (0x29, 0x33),
+    (0x2A, 0x31),
+    (0x2B, 0x36),
+    (0x2C, 0x38),
+    (0x2D, 0x11),
+    (0x2E, 0x10),
+    (0x2F, 0x37),
+    (0x30, 0x2B),
+    (0x31, 0x2C),
+    (0x32, 0x35),
+    (0x33, 0x2A),
+    (0x35, 0x29),
+    (0x36, 0xE7),
+    (0x37, 0xE3),
+    (0x38, 0xE1),
+    (0x39, 0x39),
+    (0x3A, 0xE2),
+    (0x3B, 0xE0),
+    (0x3C, 0xE5),
+    (0x3D, 0xE6),
+    (0x3E, 0xE4),
+    (0x41, 0x63),
+    (0x43, 0x55),
+    (0x45, 0x57),
+    (0x47, 0x53),
+    (0x4B, 0x54),
+    (0x4C, 0x58),
+    (0x4E, 0x56),
+    (0x52, 0x62),
+    (0x53, 0x59),
+    (0x54, 0x5A),
+    (0x55, 0x5B),
+    (0x56, 0x5C),
+    (0x57, 0x5D),
+    (0x58, 0x5E),
+    (0x59, 0x5F),
+    (0x5B, 0x60),
+    (0x5C, 0x61),
+    (0x5D, 0x89),
+    (0x5E, 0x87),
+    (0x60, 0x3E),
+    (0x61, 0x3F),
+    (0x62, 0x40),
+    (0x63, 0x3C),
+    (0x64, 0x41),
+    (0x65, 0x42),
+    (0x66, 0x8B),
+    (0x67, 0x44),
+    (0x68, 0x8A),
+    (0x69, 0x46),
+    (0x6B, 0x47),
+    (0x6D, 0x43),
+    (0x6E, 0x65),
+    (0x6F, 0x45),
+    (0x71, 0x48),
+    (0x72, 0x49),
+    (0x73, 0x4A),
+    (0x74, 0x4B),
+    (0x75, 0x4C),
+    (0x76, 0x3D),
+    (0x77, 0x4D),
+    (0x78, 0x3B),
+    (0x79, 0x4E),
+    (0x7A, 0x3A),
+    (0x7B, 0x50),
+    (0x7C, 0x4F),
+    (0x7D, 0x51),
+    (0x7E, 0x52),
+];
+
+/// The usage of virtual key code `code`, or `None` for a key the zone map does not know.
+pub(crate) fn usage(code: u16) -> Option<HidUsage> {
+    CODES.binary_search_by_key(&code, |(c, _)| *c).ok().and_then(|i| CODES.get(i)).map(|(_, u)| HidUsage(*u))
+}
+
+/// A key event from virtual key code `code` on `device`, or `None` for a key the zone map does not know (it is not read
+/// at all).
+pub(crate) fn key(device: u64, code: u16, down: bool, repeat: bool) -> Option<RawEvent> {
+    usage(code).map(|usage| RawEvent::Key { device, usage, down, repeat })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::zone_map;
+    use super::*;
+
+    #[test]
+    fn every_key_the_zone_map_knows_has_a_key_code_and_no_code_is_listed_twice() {
+        assert!(CODES.windows(2).all(|w| w[0].0 < w[1].0), "sorted, each code once");
+        assert!(CODES.iter().all(|(_, u)| zone_map::listed(HidUsage(*u))), "every usage is a known key");
+        let missing: Vec<u16> = (0..=0xFFu16)
+            .filter(|u| zone_map::listed(HidUsage(*u)) && *u != 0x32 && *u != 0x88)
+            .filter(|u| !CODES.iter().any(|(_, usage)| usage == u))
+            .collect();
+        assert!(missing.is_empty(), "{} keys have no code", missing.len());
+    }
+
+    #[test]
+    fn known_codes_land_on_their_keys() {
+        // kVK_ANSI_A, kVK_ANSI_W, kVK_F9, kVK_Control and kVK_UpArrow.
+        assert_eq!(usage(0x00), Some(HidUsage(0x04)));
+        assert_eq!(usage(0x0D), Some(HidUsage(0x1A)));
+        assert_eq!(usage(0x65), Some(HidUsage(0x42)));
+        assert_eq!(usage(0x3B), Some(HidUsage(0xE0)));
+        assert_eq!(usage(0x7E), Some(HidUsage(0x52)));
+        // kVK_Function is no key the zone map knows.
+        assert_eq!(usage(0x3F), None);
+    }
+}

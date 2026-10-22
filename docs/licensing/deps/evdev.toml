@@ -5,4 +5,4 @@ used_for = "the opt-in evdev capture on Linux, for Wayland typing and pointer mo
 status = "yes"
 condition = "Apache-2.0 OR MIT: keep the notices"
 audit = "(crates.io: Apache-2.0 OR MIT, 2026-10-22)"
-crates = []
+crates = ["evdev"]

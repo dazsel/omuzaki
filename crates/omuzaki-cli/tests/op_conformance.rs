@@ -261,7 +261,7 @@ impl Rig {
         let runner = Executor::with_registrations(Box::new(doc), Arc::new(SystemClock::new()), [reg])
             .map_err(|e| e.to_string())?
             .with_services(
-                window_host::with_window(ServicesBuilder::new())
+                window_host::with_window(ServicesBuilder::new(), (reg.meta)().name)
                     // The stream service with nothing running: the `record.*` and `output.*` examples dry-run
                     // against it as they would in the app.
                     .insert::<omuzaki_stream::service::StreamService>(Arc::new(
