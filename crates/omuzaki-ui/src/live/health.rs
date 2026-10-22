@@ -9,7 +9,7 @@
 
 use std::time::Duration;
 
-use egui::{RichText, Sense, Ui, WidgetInfo, WidgetType, vec2};
+use egui::{NumExt as _, RichText, Sense, Ui, WidgetInfo, WidgetType, vec2};
 use omuzaki_audio_api::report::{AudioStatus, GraphReport, RouteEnd};
 use omuzaki_core::time::Seconds;
 use omuzaki_metrics_api::budget::{BudgetKey, BudgetUse};
@@ -44,6 +44,8 @@ const SAMPLE_RATE: f64 = 48_000.0;
 const MIC_BUS: &str = "mic";
 /// How often the panel reads the snapshot while it is shown.
 const READ_PERIOD: Duration = Duration::from_millis(250);
+/// The room before a budget bar for its status icon.
+const BAR_ICON: f32 = 18.0;
 /// A budget bar turns amber past this share of its budget.
 const WARN_RATIO: f64 = 0.8;
 
@@ -395,7 +397,7 @@ fn budget_bar(ui: &mut Ui, row: &BudgetUse) {
     let small = ds.text.small.clone();
     let line = ui.text_style_height(&egui::TextStyle::Body);
     let (rect, response) =
-        ui.allocate_exact_size(vec2(ui.available_width(), line * 2.0 + 8.0), Sense::focusable_noninteractive());
+        ui.allocate_exact_size(vec2(ui.available_width(), line * 2.0 + 12.0), Sense::focusable_noninteractive());
     let mut spoken = format!("{name}: {detail}");
     if row.partial {
         spoken = format!("{spoken}. {}", text(&ctx, Word::HealthPartialDetail));
@@ -403,13 +405,14 @@ fn budget_bar(ui: &mut Ui, row: &BudgetUse) {
     a11y::describe(&response, || WidgetInfo::labeled(WidgetType::ProgressIndicator, true, &spoken), |_| {});
     let painter = ui.painter();
     painter.text(rect.left_top(), egui::Align2::LEFT_TOP, &name, ds.text.body.clone(), ds.theme.text);
-    let said = painter.text(rect.right_top(), egui::Align2::RIGHT_TOP, &detail, small.clone(), ds.theme.text2);
-    // A bar near or over its budget carries its status icon too, so its colour never says it alone.
-    if status != Status::Ok {
-        let at = egui::pos2(said.left() - 10.0, said.center().y);
-        crate::ds::paint::icon(painter, &ds, at, icons::status(status), 14.0, colour, true);
-    }
-    let track = egui::Rect::from_min_size(rect.left_top() + vec2(0.0, line + 2.0), vec2(rect.width(), 6.0));
+    painter.text(rect.right_top(), egui::Align2::RIGHT_TOP, &detail, small.clone(), ds.theme.text2);
+    // The bar's status icon leads it, so its colour never says how it stands alone.
+    let track = egui::Rect::from_min_size(
+        rect.left_top() + vec2(BAR_ICON, line + 6.0),
+        vec2((rect.width() - BAR_ICON).at_least(0.0), 6.0),
+    );
+    let at = egui::pos2(rect.left() + BAR_ICON / 2.0 - 2.0, track.center().y);
+    crate::ds::paint::icon(painter, &ds, at, icons::status(status), 12.0, colour, true);
     painter.rect_filled(track, 3.0, ds.theme.bg4);
     #[allow(clippy::cast_possible_truncation)] // a share of one bar
     let share = row.ratio.clamp(0.0, 1.0) as f32;

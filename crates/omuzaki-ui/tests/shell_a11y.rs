@@ -389,3 +389,37 @@ fn a_crowded_tab_strip_shows_icons_named_in_full_and_no_scroll_arrows() {
         image.save(&path).unwrap_or_else(|e| panic!("writing {path}: {e}"));
     }
 }
+
+#[test]
+fn a_tab_group_too_narrow_for_its_icons_offers_the_rest_in_its_menu_and_never_scrolls() {
+    let registry = Registry::collect();
+    // The smallest window the studio is laid out for, every right panel shown in its one group.
+    let mut h = studio(false, vec2(1366.0, 768.0));
+    let right: Vec<&str> = registry.panels().iter().filter(|d| d.region == Region::Right).map(|d| d.id).collect();
+    for id in &right {
+        h.state_mut().shell.show_panel(id);
+        h.run_steps(4);
+    }
+    // egui_tiles' own scroll arrows have no focus ring and sit out of reading order: the strip never shows them.
+    assert!(h.query_by_label("⏵").is_none() && h.query_by_label("⏴").is_none(), "the tabs scroll");
+    let last = right.last().copied().unwrap_or_else(|| panic!("a right panel"));
+    let def = registry.panel(last).unwrap_or_else(|| panic!("{last}"));
+    h.get_by_label(&format!("{} options", def.title)).click();
+    h.run_steps(2);
+    let shows: Vec<String> = h
+        .query_all_by_role(Role::Button)
+        .filter_map(|n| n.accesskit_node().label())
+        .filter(|l| l.starts_with("Show "))
+        .collect();
+    let tabs: Vec<String> = h.query_all_by_role(Role::Tab).filter_map(|n| n.accesskit_node().label()).collect();
+    assert!(!shows.is_empty(), "the menu offers the tabs that didn't fit: {tabs:?}");
+    let first = shows[0].clone();
+    h.get_by_label(&first).click();
+    h.run_steps(4);
+    let opened = registry
+        .panels()
+        .iter()
+        .find(|d| first == format!("Show {}", d.title))
+        .map_or_else(|| panic!("{first} names a panel"), |d| d.id);
+    assert_eq!(h.state().shell.focused_panel(), Some(opened), "Show opened its panel");
+}

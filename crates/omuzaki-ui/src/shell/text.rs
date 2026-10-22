@@ -45,6 +45,7 @@ words! {
     PanelMoveLeft = "ui-shell-panel-move-left" => "Move to the left",
     PanelMoveRight = "ui-shell-panel-move-right" => "Move to the right",
     PanelClose = "ui-shell-panel-close" => "Close panel",
+    PanelShow = "ui-shell-panel-show" => "Show {panel}",
     PanelLocked = "ui-shell-panel-locked" => "The layout is locked",
     MenuEdit = "ui-shell-menu-edit" => "Edit",
     MenuAgents = "ui-shell-menu-agents" => "Agents",

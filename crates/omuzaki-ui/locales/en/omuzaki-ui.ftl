@@ -4479,6 +4479,10 @@ ui-shell-panel-move-right = Move to the right
 
 # The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
 # $panel (id, never translated): "hair-b"
+ui-shell-panel-show = Show { $panel }
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+# $panel (id, never translated): "hair-b"
 ui-shell-panel-unavailable = { $panel } can't work right now
 
 # The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.

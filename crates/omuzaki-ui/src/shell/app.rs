@@ -775,6 +775,8 @@ impl Shell {
             sides: &sides,
             menus: Vec::new(),
             crowded: Vec::new(),
+            hidden: Vec::new(),
+            overflow: Vec::new(),
         };
         view.tree.ui(&mut dock, ui);
         let moved = handles::name_handles(ui, &mut view.tree, &self.registry);
@@ -795,6 +797,12 @@ impl Shell {
             PanelAsk::Close(panel) => {
                 if let Some(def) = self.registry.panel(&panel) {
                     self.close_panel(def.id);
+                }
+                return;
+            }
+            PanelAsk::Show(panel) => {
+                if let Some(def) = self.registry.panel(&panel) {
+                    self.show_panel(def.id);
                 }
                 return;
             }
