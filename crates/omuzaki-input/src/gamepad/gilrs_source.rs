@@ -8,7 +8,7 @@ use omuzaki_input_api::capture::{BackendState, CaptureCaps, Support};
 use omuzaki_input_api::event::{DeviceClass, DeviceMask};
 
 use super::{PadInput, PadSource, Polled, run_with};
-use crate::hub::{InputBackend, register_input_backend};
+use crate::hub::{Chosen, InputBackend, register_input_backend};
 use crate::normalise::RawSink;
 
 const GILRS: InputBackend = InputBackend {
@@ -16,6 +16,7 @@ const GILRS: InputBackend = InputBackend {
     classes: DeviceMask::NONE.with(DeviceClass::Gamepad),
     caps,
     run: Some(run),
+    chosen: Chosen::Always,
 };
 register_input_backend!(GILRS);
 

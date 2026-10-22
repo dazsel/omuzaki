@@ -54,6 +54,18 @@ pub(crate) struct InputBackend {
     /// says the hub is shutting down, parking with `RawSink::wait_reading` while capture is not on. `None` for a test
     /// backend fed by a `test-hooks` injector.
     pub(crate) run: Option<fn(RawSink)>,
+    /// Whether it runs with or without the person's opt-in to reading input devices directly.
+    pub(crate) chosen: Chosen,
+}
+
+/// When a registered backend runs. Reading input devices directly (Linux evdev) reads every keyboard on the machine,
+/// so it runs only when the person opted in, and the backend it stands in for (X11) steps aside (research §1.4).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code, reason = "only Linux has an opt-in backend"))]
+pub(crate) enum Chosen {
+    Always,
+    WhenOptedIn,
+    UnlessOptedIn,
 }
 
 inventory::collect!(InputBackend);
@@ -77,6 +89,7 @@ pub struct HubConfig {
     pub(crate) backends: Option<Vec<InputBackend>>,
     pub(crate) manual: bool,
     pub(crate) processes: Arc<dyn Processes>,
+    opted_in: bool,
 }
 
 impl std::fmt::Debug for HubConfig {
@@ -89,7 +102,15 @@ impl HubConfig {
     /// A hub on `clock` (the pipeline's clock: event times are on it) that keeps its binding store and protected list
     /// in `data_dir` (the machine-local data folder), or in memory only with `None`.
     pub fn new(clock: Arc<dyn Clock>, data_dir: Option<PathBuf>) -> Self {
-        Self { clock, data_dir, backends: None, manual: false, processes: Arc::new(OsProcesses) }
+        Self { clock, data_dir, backends: None, manual: false, processes: Arc::new(OsProcesses), opted_in: false }
+    }
+
+    /// Reads input devices directly, as the person opted in to (on Linux, evdev through the `input` group: the only
+    /// way to read the keyboard and mouse on Wayland). Off by default; it is the person's choice, never a fallback.
+    #[must_use]
+    pub fn with_device_access(mut self, opted_in: bool) -> Self {
+        self.opted_in = opted_in;
+        self
     }
 }
 
@@ -158,7 +179,18 @@ impl Hub {
     /// # Errors
     /// [`InputError::Store`] when the binding file exists and cannot be read.
     pub fn new(config: HubConfig) -> Result<Self, InputError> {
-        let mut specs = config.backends.unwrap_or_else(|| inventory::iter::<InputBackend>.into_iter().copied().collect());
+        let opted_in = config.opted_in;
+        let mut specs = config.backends.unwrap_or_else(|| {
+            inventory::iter::<InputBackend>
+                .into_iter()
+                .filter(|b| match b.chosen {
+                    Chosen::Always => true,
+                    Chosen::WhenOptedIn => opted_in,
+                    Chosen::UnlessOptedIn => !opted_in,
+                })
+                .copied()
+                .collect()
+        });
         specs.sort_by_key(|b| b.name);
         specs.truncate(MAX_BACKENDS);
         let slots = specs.iter().map(|_| BackendSlot::new()).collect();

@@ -12,6 +12,8 @@
 // value is clamped first.
 #![allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
 
+#[cfg(target_os = "linux")]
+pub(crate) mod linux_codes;
 pub(crate) mod zone_map;
 
 use std::sync::Arc;
@@ -21,7 +23,7 @@ use std::time::Duration;
 use omuzaki_core::time::Seconds;
 use omuzaki_input_api::binding::{BindingId, Edge, Intent};
 use omuzaki_input_api::capture::{BackendState, Detail};
-use omuzaki_input_api::event::{DeviceClass, MotionEvent, PadId, PadState, PadZones, SourceTag};
+use omuzaki_input_api::event::{DeviceClass, DeviceMask, MotionEvent, PadId, PadState, PadZones, SourceTag};
 use omuzaki_input_api::zones::{KeyZone, Side};
 use serde::{Deserialize, Serialize};
 
@@ -219,6 +221,12 @@ impl RawSink {
     pub(crate) fn epochs(&self) -> (u32, u32) {
         let backend = self.shared.backends.get(self.backend).map_or(0, |s| s.epoch.get());
         (self.shared.capture.get(), backend)
+    }
+
+    /// The classes the person asked for: a backend serving several selects only these from its OS (design §4).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code, reason = "the Windows and macOS backends (IN-4, IN-7) use it"))]
+    pub(crate) fn asked(&self) -> DeviceMask {
+        self.shared.asked()
     }
 
     /// The handles of the devices of `class` the sink knows, so a backend can tell it which left while it read nothing.

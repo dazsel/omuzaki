@@ -16,7 +16,7 @@ pub use crate::gamepad::script::PadScript;
 pub use gilrs::{Axis as PadAxis, Button as PadButton};
 
 use crate::gamepad;
-use crate::hub::{Hub, HubConfig, InputBackend, spawn_capture};
+use crate::hub::{Chosen, Hub, HubConfig, InputBackend, spawn_capture};
 use crate::kill_switch::Processes;
 use crate::matcher::{Chord, Mods};
 use crate::normalise::{HidUsage, RawEvent, RawSink, zone_map};
@@ -49,7 +49,13 @@ impl HubConfig {
         self.backends = Some(
             backends
                 .iter()
-                .map(|b| InputBackend { name: b.name, classes: b.classes, caps: all_available, run: None })
+                .map(|b| InputBackend {
+                    name: b.name,
+                    classes: b.classes,
+                    caps: all_available,
+                    run: None,
+                    chosen: Chosen::Always,
+                })
                 .collect(),
         );
         self
@@ -122,6 +128,28 @@ impl Hub {
         let (script, source) = gamepad::script::script(connected);
         let shared = Arc::clone(&self.core.shared);
         spawn_capture(shared, backend, "pads", move |sink| gamepad::run_with(sink, source)).map(|t| (script, t))
+    }
+
+    /// Runs the X11 backend's capture loop on `backend`, reading X display `display`. The returned mask mirrors the
+    /// raw events it selects on the server.
+    #[cfg(target_os = "linux")]
+    pub fn run_x11(&self, backend: usize, display: &str) -> Option<(Arc<std::sync::atomic::AtomicU32>, JoinHandle<()>)> {
+        let probe = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let (mirror, display) = (Arc::clone(&probe), display.to_owned());
+        let shared = Arc::clone(&self.core.shared);
+        spawn_capture(shared, backend, "x11", move |sink| crate::linux_x11::run_on(sink, Some(&display), Some(mirror)))
+            .map(|t| (probe, t))
+    }
+
+    /// Runs the evdev backend's capture loop on `backend`, reading only the devices named `name` (the test's virtual
+    /// ones), as an opted-in person's would.
+    #[cfg(target_os = "linux")]
+    pub fn run_evdev(&self, backend: usize, name: &str) -> Option<JoinHandle<()>> {
+        let name = name.to_owned();
+        let shared = Arc::clone(&self.core.shared);
+        spawn_capture(shared, backend, "evdev", move |sink| {
+            crate::linux_evdev::run_in(sink, std::path::Path::new("/dev/input"), Some(&name));
+        })
     }
 
     /// Fails backend `backend` as a panic on its thread would.

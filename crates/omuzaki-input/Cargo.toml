@@ -28,6 +28,11 @@ omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+evdev.workspace = true
+rustix = { workspace = true, features = ["event"] }
+x11rb.workspace = true
+
 # The build script declares the feature modules from their folders (ADR 0054 §1), so a backend is a folder.
 [build-dependencies]
 omuzaki-embed = { path = "../omuzaki-embed" }
@@ -38,6 +43,10 @@ proptest.workspace = true
 tempfile.workspace = true
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-input = { path = ".", features = ["test-hooks"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# XTest drives the X11 backend's test only; the crate itself never sends input (§3 rule 4).
+x11rb = { workspace = true, features = ["xtest"] }
 
 [[bench]]
 name = "normalise"
