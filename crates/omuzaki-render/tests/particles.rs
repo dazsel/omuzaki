@@ -254,3 +254,116 @@ fn the_report_counts_slots_and_times_the_pass() {
     r.release(id.into()).unwrap();
     r.release(target.into()).unwrap();
 }
+
+/// The design's §3 confetti, and rain and snow as the weather draws them: (name, system, batch, time).
+fn presets(r: &mut dyn Renderer) -> Vec<(&'static str, ParticleSystemId, SpawnBatch, f64)> {
+    let confetti: ParticleParams = serde_json::from_value(serde_json::json!({
+        "lifetime": [3.5, 5.0], "speed": [3.0, 5.0], "direction": [0.0, 1.0, 0.0], "spread_deg": 35.0,
+        "gravity": [0.0, -3.0, 0.0], "drag": 3.0, "wind": [0.0, 0.0, 0.0],
+        "flutter": { "amplitude_m": 0.05, "frequency_hz": 1.5 }, "size": [0.012, 0.018],
+        "size_curve": [0.4, 1.0, 1.0, 0.0], "orientation": { "kind": "tumble", "rate_deg": [360.0, 900.0] },
+        "colours": ["#ff5a7a", "#ffc94d", "#5ad1ff", "#9b7bff", "#6ee7a0", "#ffffff"], "coverage": 1.0,
+        "shading": { "kind": "toon", "shade": "#b8a8c8", "shift": 0.0, "softness": 0.1 }, "glow": 0.0, "floor": 0.0
+    }))
+    .unwrap();
+    let rain: ParticleParams = serde_json::from_value(serde_json::json!({
+        "lifetime": [0.55, 0.75], "speed": [6.5, 7.5], "direction": [0.05, -1.0, 0.0], "spread_deg": 2.0,
+        "gravity": [0.0, 0.0, 0.0], "drag": 0.0, "wind": [0.0, 0.0, 0.0], "size": [0.005, 0.007],
+        "size_curve": [1.0, 1.0, 1.0, 1.0], "orientation": { "kind": "velocity", "stretch": 0.035 },
+        "colours": ["#c8d6ec"], "coverage": 0.55, "shading": { "kind": "unlit" }, "glow": 0.0, "floor": 0.0
+    }))
+    .unwrap();
+    let snow: ParticleParams = serde_json::from_value(serde_json::json!({
+        "lifetime": [6.0, 8.0], "speed": [0.1, 0.3], "direction": [0.0, -1.0, 0.0], "spread_deg": 30.0,
+        "gravity": [0.0, -0.3, 0.0], "drag": 1.0, "wind": [0.1, 0.0, 0.0],
+        "flutter": { "amplitude_m": 0.15, "frequency_hz": 0.5 }, "size": [0.012, 0.02],
+        "size_curve": [0.6, 1.0, 1.0, 0.6], "orientation": { "kind": "billboard", "spin_deg": [-60.0, 60.0] },
+        "colours": ["#f4f8ff", "#e6eefc"], "coverage": 0.9, "shading": { "kind": "unlit" }, "floor": 0.0
+    }))
+    .unwrap();
+    let mut system = |sprite, params| r.create_particle_system(&ParticleSystemDesc { sprite, params }).unwrap();
+    let confetti = system(Sprite::Shape(SpriteShape::rect(0.6)), confetti);
+    let rain = system(Sprite::Shape(SpriteShape::Streak), rain);
+    let snow = system(Sprite::Shape(SpriteShape::Disc), snow);
+    let burst = SpawnBatch {
+        shape: omuzaki_render_api::EmitterShape::sphere(0.05),
+        count: 150,
+        seed: 21,
+        ..SpawnBatch::new(confetti, Mat4::from_translation(Vec3::new(0.0, 1.3, 0.15)))
+    };
+    // A ceiling at 2.6 m over a 3.7 m x 5.2 m area: rain at intensity 0.6 (1,830 births a second) and a steady snow.
+    let ceiling = |system, interval: f32, count| SpawnBatch {
+        shape: omuzaki_render_api::EmitterShape::rect(Vec2::new(1.85, 2.6)),
+        start: Seconds(4.0 - f64::from(interval) * f64::from(count)),
+        interval,
+        count,
+        seed: 5,
+        ..SpawnBatch::new(system, Mat4::from_translation(Vec3::new(0.0, 2.6, -1.0)))
+    };
+    vec![
+        ("confetti at 0.1 s", confetti, burst, 0.1),
+        ("confetti at 0.6 s", confetti, burst, 0.6),
+        ("confetti at 2.0 s", confetti, burst, 2.0),
+        ("rain at 4 s", rain, ceiling(rain, 1.0 / 1830.0, 1464), 4.0),
+        ("snow at 4 s", snow, ceiling(snow, 1.0 / 500.0, 4000), 4.0),
+    ]
+}
+
+/// One preset's picture.
+const PRESET: UVec2 = UVec2::new(320, 320);
+
+/// The presets side by side over `background`, from 3.2 m back: the whole confetti arc, from the launch at 1.3 m to
+/// its peak a metre above, is in frame.
+fn preset_sheet(r: &mut dyn Renderer, background: Background) -> Image {
+    let cases = presets(r);
+    let width = PRESET.x * u32::try_from(cases.len()).unwrap();
+    let mut sheet = vec![0u8; (width * PRESET.y * 4) as usize];
+    let row = (PRESET.x * 4) as usize;
+    let camera =
+        Camera::look_at(Vec3::new(0.0, 1.5, 3.2), Vec3::new(0.0, 1.5, 0.0), Vec3::Y, Camera::default().projection);
+    for (i, (_, _, batch, time)) in cases.iter().enumerate() {
+        let mut scene = Scene::new(camera);
+        scene.background = background;
+        scene.lights = particle_sheet::lights();
+        scene.post.tonemap = omuzaki_render_api::Tonemap::None;
+        scene.frame.time = Seconds(*time);
+        scene.particles.push(*batch);
+        let image = r.render_image(PRESET, AlphaEncoding::Straight, &scene, &Quality::offline()).unwrap();
+        for y in 0..PRESET.y as usize {
+            let to = (y * width as usize + i * PRESET.x as usize) * 4;
+            sheet[to..to + row].copy_from_slice(&image.rgba8[y * row..(y + 1) * row]);
+        }
+    }
+    let mut released = Vec::new();
+    for (_, system, _, _) in cases {
+        if !released.contains(&system) {
+            r.release(system.into()).unwrap();
+            released.push(system);
+        }
+    }
+    Image { size: UVec2::new(width, PRESET.y), alpha: AlphaEncoding::Straight, rgba8: sheet }
+}
+
+/// #940's goldens: the §3 confetti at 0.1, 0.6 and 2.0 s, rain and snow at 4 s, over transparent and over grey (the
+/// offline preset). The transparent render composited over grey in linear light agrees with the grey render within
+/// two levels: coverage leaves nothing for an encoding to get wrong.
+#[test]
+fn the_presets_match_their_goldens_and_composite_like_the_grey_render() {
+    let mut r = support::renderer();
+    let grey = Colour::hex(0x0080_8080);
+    let over_grey = preset_sheet(&mut r, Background::Solid { colour: grey });
+    let transparent = preset_sheet(&mut r, Background::Transparent);
+    matches_golden(&over_grey, "particles-presets-grey.png");
+    matches_golden(&transparent, "particles-presets-transparent.png");
+    let behind = grey.to_linear();
+    let mut worst = 0u8;
+    for (t, g) in transparent.rgba8.as_chunks::<4>().0.iter().zip(over_grey.rgba8.as_chunks::<4>().0) {
+        let a = f32::from(t[3]) / 255.0;
+        let mixed = Colour::rgb(t[0], t[1], t[2]).to_linear() * a + behind * (1.0 - a);
+        let c = Colour::from_linear(mixed, 1.0);
+        worst = worst.max(c.r.abs_diff(g[0])).max(c.g.abs_diff(g[1])).max(c.b.abs_diff(g[2]));
+    }
+    assert!(worst <= 2, "the transparent render over grey differs from the grey render by up to {worst} levels");
+    let covered = transparent.rgba8.as_chunks::<4>().0.iter().filter(|p| p[3] > 0).count();
+    assert!(covered > 2_000, "the presets are visible: {covered} pixels");
+}

@@ -5116,6 +5116,7 @@ dependencies = [
  "omuzaki-render-api",
  "omuzaki-render-mock",
  "pollster",
+ "serde_json",
  "tempfile",
  "wgpu",
 ]

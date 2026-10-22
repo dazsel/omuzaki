@@ -24,6 +24,7 @@ wgpu = { workspace = true, features = ["fragile-send-sync-non-atomic-wasm"] }
 
 [dev-dependencies]
 image.workspace = true
+serde_json.workspace = true
 tempfile.workspace = true
 omuzaki-char-api = { path = "../omuzaki-char-api" }
 omuzaki-char-mock = { path = "../omuzaki-char-mock" }
