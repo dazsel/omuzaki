@@ -4787,6 +4787,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-setup"
+version = "0.0.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "omuzaki-stage"
 version = "0.0.0"
 dependencies = [
