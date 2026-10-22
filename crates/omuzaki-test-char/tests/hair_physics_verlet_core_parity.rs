@@ -8,8 +8,12 @@
 //! the variant it is for:
 //!
 //! ```json
-//! { "variant": "game", "physics": { ... HairPhysics, colliders included ... } }
+//! { "variant": "game", "head_drop": 0.016, "physics": { ... HairPhysics, colliders included ... } }
 //! ```
+//!
+//! `head_drop` is how far the build lowered the head joint (the dump's `headDropApplied`, metres). The dump's normalised
+//! bones do not carry it, and the bind inverses it was skinned against predate it, so the posed head bone is lowered by
+//! it here and the rest head bone is not.
 //!
 //! The pose is rebuilt from the dump's normalised bones (rest rotations identity, so a bone's bind matrix is the
 //! translation of its rest offsets down the humanoid hierarchy) under the character group's world matrix. Particle
@@ -39,12 +43,16 @@ const YAWED_RMS: f32 = 2e-3;
 #[derive(Deserialize)]
 struct Local {
     variant: String,
+    #[serde(default)]
+    head_drop: f32,
     physics: HairPhysics,
 }
 
 /// The dump's normalised bones as a pose: skinning matrix = root x posed world x rest world inverse.
 struct DumpPose {
     root: Mat4,
+    /// How far the posed head bone is lower than the dump's normalised one, metres.
+    head_drop: f32,
     bones: BTreeMap<String, BoneState>,
 }
 
@@ -54,7 +62,11 @@ impl DumpPose {
     fn world(&self, bone: HumanoidBone, posed: bool) -> Option<Mat4> {
         let state = self.bones.get(bone.name())?;
         let rotation = if posed { state.quaternion } else { Quat::IDENTITY };
-        let local = Mat4::from_rotation_translation(rotation, state.position);
+        let mut position = state.position;
+        if posed && bone == HumanoidBone::Head {
+            position.y -= self.head_drop;
+        }
+        let local = Mat4::from_rotation_translation(rotation, position);
         let mut parent = bone.parent();
         while let Some(p) = parent {
             if self.bones.contains_key(p.name()) {
@@ -94,7 +106,7 @@ fn private() -> Option<(HairDump, DumpPose, HairPhysics)> {
         "the dump stepped at {} s, the physics at {fixed_dt} s",
         dump.sim.dt
     );
-    let pose = DumpPose { root, bones: dump.bones_settled.clone() };
+    let pose = DumpPose { root, head_drop: local.head_drop, bones: dump.bones_settled.clone() };
     Some((dump, pose, local.physics))
 }
 

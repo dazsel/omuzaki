@@ -70,6 +70,16 @@ pub enum BindingAction {
         /// Its arguments.
         args: serde_json::Value,
     },
+    /// Run an operation that takes a `down` argument (such as `trigger.press`) on the press with `down: true`, and
+    /// again on the release with `down: false` (#469), by the binding dispatcher, as the person: an expression shown
+    /// while the key, pad or button is held.
+    #[non_exhaustive]
+    Hold {
+        /// The operation's name.
+        op: String,
+        /// Its arguments, without `down`.
+        args: serde_json::Value,
+    },
     /// Press a PF-25 trigger slot (#478).
     Trigger(u8),
     /// A locomotion intent, routed to the frame thread's [`IntentFeed`](crate::feed::IntentFeed), never to the
@@ -83,11 +93,24 @@ impl BindingAction {
         Self::Op { op: op.into(), args }
     }
 
+    /// [`BindingAction::Hold`].
+    pub fn hold(op: impl Into<String>, args: serde_json::Value) -> Self {
+        Self::Hold { op: op.into(), args }
+    }
+
     /// Its intent, when it is one.
     pub const fn as_intent(&self) -> Option<Intent> {
         match self {
             Self::Intent(intent) => Some(*intent),
-            Self::Op { .. } | Self::Trigger(_) => None,
+            Self::Op { .. } | Self::Hold { .. } | Self::Trigger(_) => None,
+        }
+    }
+
+    /// The operation it runs and that operation's arguments (without `down`, for a hold), when it runs one.
+    pub fn op_call(&self) -> Option<(&str, &serde_json::Value)> {
+        match self {
+            Self::Op { op, args } | Self::Hold { op, args } => Some((op, args)),
+            Self::Trigger(_) | Self::Intent(_) => None,
         }
     }
 }

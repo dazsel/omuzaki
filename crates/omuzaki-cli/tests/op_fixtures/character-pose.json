@@ -1,0 +1,7 @@
+{
+  "about": "A pose `wave` in the kit character's own set, so there is a pose to list, replace or delete.",
+  "base": "character",
+  "steps": [
+    { "op": "pose.set", "args": { "character": "kit", "id": "wave", "from": "wave-right" } }
+  ]
+}

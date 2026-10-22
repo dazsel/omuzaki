@@ -107,11 +107,16 @@ fn sync_item(item: &mut Item, value: &Value) -> Result<(), Unstorable> {
     }
     match (&mut *item, value) {
         (Item::Table(table), Value::Object(map)) => {
+            let was_empty = table.is_empty();
             sync_table(table, map, false)?;
             // A header written only to lead to sub-tables (`[a.b]`) is implicit, and an implicit table that has
-            // lost everything would vanish from the file instead of staying as an empty `[a]`.
+            // lost everything would vanish from the file instead of staying as an empty `[a]`. An empty one that
+            // gains only sub-tables goes back to implicit, so emptying and refilling it (an undo) gives back the
+            // same text.
             if table.is_empty() {
                 table.set_implicit(false);
+            } else if was_empty && table.iter().all(|(_, i)| i.is_table() || i.is_array_of_tables()) {
+                table.set_implicit(true);
             }
             Ok(())
         }
@@ -352,6 +357,14 @@ mod tests {
         assert_eq!(Value::Object(parse_table(&after).unwrap()), json!({"v": false, "a": {}}));
         let nested = render(Some(before), &map(json!({"v": false, "a": {"a": {}}}))).unwrap();
         assert_eq!(Value::Object(parse_table(&nested).unwrap()), json!({"v": false, "a": {"a": {}}}));
+    }
+
+    #[test]
+    fn a_table_emptied_and_refilled_renders_the_text_it_started_from() {
+        let before = "v = false\n\n[a.b]\nc = 1\n";
+        let emptied = render(Some(before), &map(json!({"v": false, "a": {}}))).unwrap();
+        let refilled = render(Some(&emptied), &map(json!({"v": false, "a": {"b": {"c": 1}}}))).unwrap();
+        assert_eq!(refilled, before);
     }
 
     #[test]

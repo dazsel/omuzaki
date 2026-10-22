@@ -3,7 +3,7 @@
 use omuzaki_anim_api::{ChannelBuf, ChannelMask, LifeParams, LifeSystems, LifeTraits};
 
 use super::noise::{NoiseSeeds, Texture};
-use super::spring::{SIDE_SKEW, Substeps};
+use super::spring::{Substeps, side_skew};
 
 /// Which side of the face a channel sits on (the character's own sides, as in `ARKit`).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -49,6 +49,33 @@ impl Gate {
     }
 }
 
+/// How far each region's texture and couplings have eased in since a person last drove it: `0` while driven, rising to
+/// `1` over [`FaceParams::hand_back_s`](omuzaki_anim_api::FaceParams::hand_back_s) once free.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub(super) struct Ease {
+    pub eyes: f32,
+    pub gaze: f32,
+    pub brows: f32,
+    pub mouth: f32,
+    pub head: f32,
+}
+
+impl Ease {
+    /// Every region fully in, as a layer nobody has driven.
+    pub const FULL: Self = Self { eyes: 1.0, gaze: 1.0, brows: 1.0, mouth: 1.0, head: 1.0 };
+
+    /// One frame on: a driven region drops to `0`, a free one rises by `dt / over_s`.
+    pub fn advance(&mut self, gate: Gate, dt: f32, over_s: f32) {
+        let up = if over_s.is_finite() && over_s > 1e-3 { dt / over_s } else { 1.0 };
+        let step = |gain: &mut f32, free: bool| *gain = if free { (*gain + up).min(1.0) } else { 0.0 };
+        step(&mut self.eyes, gate.eyes);
+        step(&mut self.gaze, gate.gaze);
+        step(&mut self.brows, gate.brows);
+        step(&mut self.mouth, gate.mouth);
+        step(&mut self.head, gate.head);
+    }
+}
+
 /// Read-only context for one frame.
 pub(super) struct Frame<'a> {
     pub params: &'a LifeParams,
@@ -60,6 +87,8 @@ pub(super) struct Frame<'a> {
     /// Channels a person drives, which are never written.
     pub taken: ChannelMask,
     pub gate: Gate,
+    /// How far each region's texture and couplings have eased in (see [`Ease`]).
+    pub ease: Ease,
     /// Whether a loud laugh may close the eyes into ^^ (off when a score owns the arcs).
     pub laugh_arcs: bool,
     /// Seconds since the last frame, capped.
@@ -113,7 +142,7 @@ impl Frame<'_> {
             return 1.0;
         }
         let lead = if self.traits.left_leads { 1.0 } else { -1.0 };
-        1.0 + SIDE_SKEW * lead * side.sign()
+        1.0 + side_skew(&self.params.springs) * lead * side.sign()
     }
 }
 

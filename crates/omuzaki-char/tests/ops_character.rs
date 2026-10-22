@@ -7,8 +7,8 @@
 //! document exactly, and applying it again gives the same result as the first time.
 //!
 //! The parts come from the mock kinds (`mock-body`, `mock-head`, `mock-hair`, `mock-garment`), which take the real
-//! parameter types. `character.create` makes parts of the kinds `body`, `head` and `hair`, which are the real
-//! generators this crate registers.
+//! parameter types. `character.create` makes parts of the kinds `body`, `head`, `hair`, `shirt`, `trousers` and
+//! `boots`, which are the real generators this crate registers.
 
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
 #![allow(clippy::expect_used, clippy::unwrap_used)]
@@ -114,23 +114,42 @@ fn create_round_trips_and_builds_for_every_registered_template() {
             json!({"id": "mira", "name": " Mira ", "template": template, "seed": 7}),
         );
         assert_eq!(planned.patch.changes.len(), 2, "the first character also creates the `characters` table");
-        assert_eq!(names(&planned.output.as_ref().unwrap()["parts"]), ["body", "head", "hair"]);
+        // In build order: the garments by their layers, the shirt under the trousers and the boots over both.
+        let dressed = ["body", "head", "hair", "shirt", "trousers", "boots"];
+        assert_eq!(names(&planned.output.as_ref().unwrap()["parts"]), dressed);
 
         let def = definition(&doc, "mira");
         assert_eq!((def.name.as_str(), def.template.as_str(), def.seed), ("Mira", template, 7));
-        assert_eq!(built_parts(&doc, "mira"), ["body", "head", "hair"]);
+        assert_eq!(built_parts(&doc, "mira"), dressed);
 
-        // The body and head take the template's own numbers; the hair takes the kind's defaults.
+        // The body and head take the template's own numbers; the hair and the outfit take their kinds' defaults.
         let defaults = registered.defaults();
         let stored = |part: &str| def.parts[&part.parse().unwrap()].params.clone();
         assert_eq!(serde_json::from_value::<omuzaki_char_api::BodyParams>(stored("body")).unwrap(), defaults.body);
         assert_eq!(serde_json::from_value::<omuzaki_char_api::HeadParams>(stored("head")).unwrap(), defaults.head);
         assert_eq!(serde_json::from_value::<HairParams>(stored("hair")).unwrap(), HairParams::default());
-        assert!(find_kind("hair").is_some());
+        for part in ["shirt", "trousers", "boots"] {
+            assert_eq!(stored(part), (find_kind(part).unwrap().defaults)(), "{part}");
+        }
         assert!(!doc.root().to_string().contains("null"), "project files can't hold null: {}", doc.root());
         built_one = true;
     }
     assert!(built_one, "soft-sd is registered, so at least one template is tested");
+}
+
+#[test]
+fn every_part_kinds_defaults_are_storable_and_valid() {
+    omuzaki_char::link();
+    let mut seen = 0;
+    for kind in omuzaki_char_api::kinds().filter(|k| !(k.meta)().id.starts_with("mock-")) {
+        let id = (kind.meta)().id;
+        let defaults = (kind.defaults)();
+        // `part.add` and `character.create` store a kind's defaults as they are, and a project file has no null.
+        assert!(!defaults.to_string().contains("null"), "`{id}`'s defaults hold a null: {defaults}");
+        assert_eq!((kind.check)(&defaults).as_ref().ok(), Some(&defaults), "`{id}`'s defaults pass its own check");
+        seen += 1;
+    }
+    assert!(seen >= 10, "the kit's kinds are linked ({seen})");
 }
 
 #[test]

@@ -1,0 +1,18 @@
+# Change C3, every hair generator at prototype parity (#2183). Read by tools/ci/evidence.py; the format is documented at
+# the top of that script.
+
+[[case]]
+name = "hair-styles"
+description = "Every hair generator in a whole style on the real body, head (face painted) and hair, through the mock toon renderer: the default style, each bangs preset, and the default with its curtain swapped for a ponytail, twintails, a low and a high bun, or framing locks with a braid crown. Front, side and back side by side, on soft-sd and standard."
+env = { OMUZAKI_HAIR_STYLES_PPM = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-char", "--test", "hair_styles_sheet", "render_the_hair_styles_when_asked", "--", "--exact"] },
+]
+images = [
+    "soft-sd-default.ppm", "soft-sd-bangs-blunt.ppm", "soft-sd-bangs-side-swept.ppm", "soft-sd-bangs-curtain.ppm",
+    "soft-sd-bangs-wispy.ppm", "soft-sd-bangs-none.ppm", "soft-sd-ponytail.ppm", "soft-sd-twintails.ppm",
+    "soft-sd-low-bun.ppm", "soft-sd-high-bun.ppm", "soft-sd-braid-crown.ppm",
+    "standard-default.ppm", "standard-bangs-blunt.ppm", "standard-bangs-side-swept.ppm", "standard-bangs-curtain.ppm",
+    "standard-bangs-wispy.ppm", "standard-bangs-none.ppm", "standard-ponytail.ppm", "standard-twintails.ppm",
+    "standard-low-bun.ppm", "standard-high-bun.ppm", "standard-braid-crown.ppm",
+]

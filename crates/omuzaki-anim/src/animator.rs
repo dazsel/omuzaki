@@ -1,8 +1,8 @@
 //! The bus-driven [`Animator`]: head angles, lean, breath and body turn, layered onto the base pose.
 //!
 //! This is the real counterpart of `MockAnimator` (omuzaki-anim-mock), which stays as the test oracle. The maths is the
-//! same: the neck takes [`BusAnimatorParams::neck_share`] of each head angle and the head takes the rest, lean tips the
-//! spine, breath tips the chest, and body turn yaws the hips. Cues are ignored until the RG-06 clips exist.
+//! same except the head split: the neck takes [`BusAnimatorParams::neck_share`] of the head rotation (a slerp from the
+//! identity) and the head takes the remainder, so Neck · Head is exactly the bus rotation. Lean tips the spine, breath tips the chest, and body turn yaws the hips. Cues are ignored until the RG-06 clips exist.
 //!
 //! Benchmark: `cargo bench -p omuzaki-anim --bench animator`.
 
@@ -17,7 +17,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct BusAnimatorParams {
-    /// Share of the head angles the neck takes; the head takes the rest. Default 0.35.
+    /// Fraction of the head rotation the neck carries (a slerp from the identity); the head takes the remainder, so
+    /// Neck · Head is the bus rotation. Default 0.35.
     pub neck_share: f32,
     /// Radians the chest tips back per unit of breath away from 0.5. Default 0.008.
     pub breath_tip_rad: f32,
@@ -92,11 +93,11 @@ impl Animator for BusAnimator {
         let v = &bus.values;
         let (yaw, pitch, roll) =
             (finite(v[Channel::HEAD_YAW]), finite(v[Channel::HEAD_PITCH]), finite(v[Channel::HEAD_ROLL]));
-        let neck = self.params.neck_share;
-        let head = 1.0 - neck;
+        let whole = euler(yaw, pitch, roll);
+        let neck = Quat::IDENTITY.slerp(whole, self.params.neck_share);
         let mut delta = HumanoidPose::REST;
-        delta.set(HumanoidBone::Neck, euler(yaw * neck, pitch * neck, roll * neck));
-        delta.set(HumanoidBone::Head, euler(yaw * head, pitch * head, roll * head));
+        delta.set(HumanoidBone::Neck, neck);
+        delta.set(HumanoidBone::Head, (neck.inverse() * whole).normalize());
         delta.set(HumanoidBone::Spine, Quat::from_rotation_x(finite(v[Channel::LEAN])));
         let breath = finite(v[Channel::BREATH]);
         delta.set(HumanoidBone::Chest, Quat::from_rotation_x(-self.params.breath_tip_rad * (breath - 0.5)));

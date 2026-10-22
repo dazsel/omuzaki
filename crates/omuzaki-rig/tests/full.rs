@@ -340,7 +340,14 @@ fn a_full_frame_allocates_nothing() {
         let k = usize::try_from(i % 16).unwrap();
         full.set_goals(&goals[k]);
         let tick = Tick::at_rate(i, [30.0, 60.0, 144.0][k % 3]);
-        full.solve_and_skin(tick, &poses[k], &mut out, &mut scene.joints);
+        if i.is_multiple_of(2) {
+            full.solve_and_skin(tick, &poses[k], &mut out, &mut scene.joints);
+        } else {
+            // The pre-spring stage (bone drivers) is on the frame path too.
+            full.solve_and_skin_with(tick, &poses[k], &mut out, &mut scene.joints, |_, pose| {
+                pose.local[1].rotation = Quat::from_rotation_x(0.1);
+            });
+        }
     };
     frame(0); // warm-up: lazily sized state exists
 
@@ -355,7 +362,9 @@ fn a_full_frame_allocates_nothing() {
 }
 
 /// World translations of four bones (the root, its child, the middle and the last bone of an 87-bone rig) at four
-/// frames of the 240-frame run, recorded before the constraint stage existed. Checked within 1e-5 (ADR 0009, joint
+/// frames of the 240-frame run, recorded before the constraint stage existed and re-recorded when the springs began
+/// to interpolate the animated pose across a frame's sub-steps (#79; the hair bones moved by up to 4 mm, the
+/// animated ones not at all). Checked within 1e-5 (ADR 0009, joint
 /// transforms): libm and FMA differ across platforms, so this baseline is not bit-exact. Same-machine bit equality is
 /// covered by `the_same_inputs_give_the_same_bits_over_600_ticks`.
 const PINNED_FRAMES: [u64; 4] = [0, 60, 120, 239];
@@ -365,9 +374,9 @@ const PINNED_BONES: [usize; 4] = [0, 1, 43, 86];
 #[rustfmt::skip]
 const PINNED:[[[f32; 3]; 4]; 4] = [
     [[0.0, 1.0, 0.1], [0.0, 1.1, 0.1], [-0.099812, 1.004964, 0.084052], [-0.014463, 0.969203, 0.042957]],
-    [[-0.174315, 1.0, -0.098999], [-0.174315, 1.1, -0.098999], [-0.270631, 1.021725, -0.209813], [-0.144640, 0.965800, -0.265387]],
-    [[0.170920, 1.0, 0.096017], [0.170920, 1.1, 0.096017], [0.084921, 1.018171, -0.003902], [0.208903, 0.957913, -0.066230]],
-    [[-0.170634, 1.0, 0.081598], [-0.170634, 1.1, 0.081598], [-0.303061, 1.026121, 0.080870], [-0.276370, 0.953423, 0.024879]],
+    [[-0.174315, 1.0, -0.098999], [-0.174315, 1.1, -0.098999], [-0.270698, 1.021774, -0.209964], [-0.142570, 0.965120, -0.264870]],
+    [[0.170920, 1.0, 0.096017], [0.170920, 1.1, 0.096017], [0.085329, 1.017467, -0.002901], [0.209898, 0.958196, -0.067614]],
+    [[-0.170634, 1.0, 0.081598], [-0.170634, 1.1, 0.081598], [-0.302548, 1.025914, 0.080473], [-0.275975, 0.952389, 0.028502]],
 ];
 
 #[test]
@@ -400,4 +409,42 @@ fn the_pinned_joint_transforms_hold_within_one_hundred_thousandth() {
             );
         }
     }
+}
+
+/// The pre-spring stage (#800's bone drivers) runs before the springs: hair under a bone it turns hangs from the
+/// turned bone in the same frame. The reference turns the same bone through the animated pose instead, which runs
+/// before the springs by construction; turning it after the springs leaves the hair where the old head had it.
+#[test]
+fn a_pre_spring_stage_poses_bones_the_springs_follow_in_the_same_frame() {
+    let rig = spring_rig::hair_rig(3, 5);
+    let n = rig.skeleton.len();
+    let build = || FullRig::new(RigSkeleton::new(rig.skeleton.clone()), &rig.set).expect("valid springs");
+    let head = rig.head.index();
+    let turn = |frame: u64| Quat::from_rotation_z(0.6 * (0.1 * frame as f32).sin());
+    let (mut hooked, mut animated_head, mut after) = (build(), build(), build());
+    let (mut a, mut b, mut c) = (Pose::IDENTITY, Pose::IDENTITY, Pose::IDENTITY);
+    let mut joints = vec![Mat4::ZERO; n];
+    let mut world = Pose::IDENTITY;
+    let mut apart = 0.0_f32;
+    for frame in 0..90 {
+        let tick = Tick::at_rate(frame, FPS);
+        let mut posed = HumanoidPose::REST;
+        posed.set(HumanoidBone::Head, turn(frame));
+        animated_head.solve_and_skin(tick, &posed, &mut b, &mut joints);
+        // The head's local rotation exactly as the humanoid stage wrote it, so the two runs differ only in where it
+        // was set.
+        let head_turn = b.local[head].rotation;
+        hooked.solve_and_skin_with(tick, &HumanoidPose::REST, &mut a, &mut joints, |_, pose| {
+            pose.local[head].rotation = head_turn;
+        });
+        assert_eq!(a.local[..n], b.local[..n], "frame {frame}: the hook is not the animated pose's equal");
+
+        after.solve_and_skin(tick, &HumanoidPose::REST, &mut c, &mut joints);
+        c.local[head].rotation = head_turn;
+        rig.skeleton.world_pose(&c, &mut world);
+        let late = world.local[n - 1].translation;
+        rig.skeleton.world_pose(&a, &mut world);
+        apart = apart.max(late.distance(world.local[n - 1].translation));
+    }
+    assert!(apart > 0.01, "turning the head after the springs should leave the hair behind, but only by {apart} m");
 }

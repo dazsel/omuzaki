@@ -13,13 +13,27 @@ use omuzaki_ops_api::{
     Actor, ErrorCode, Grants, OpCtx, OpError, OpKind, Plan, Scope, Services, ServicesBuilder, Undo, find,
 };
 use omuzaki_stream_api::window::{
-    Backdrop, OutputSurface, PaletteSource, WindowCaps, WindowError, WindowHost, WindowPlan, WindowSettings,
-    WindowState,
+    Backdrop, ClickThrough, DesktopSettings, ModeSupport, OutputSurface, PaletteSource, SizePolicy, WindowCaps,
+    WindowError, WindowHost, WindowMode, WindowPlan, WindowSettings, WindowState,
 };
 use serde_json::{Value, json};
 
-const NAMES: [&str; 4] =
-    ["output.window.open", "output.window.close", "output.window.status", "output.window.suggest_key"];
+const NAMES: [&str; 5] = [
+    "output.window.open",
+    "output.window.close",
+    "output.window.status",
+    "output.window.suggest_key",
+    "output.window.set",
+];
+
+/// What `output.window.status` lists for a host that hasn't built the desktop mode (the trait's default).
+fn default_modes() -> Value {
+    json!([
+        { "mode": "studio", "available": true },
+        { "mode": "capture", "available": true },
+        { "mode": "desktop", "available": false, "reason": "This build can't show the character on the desktop yet" },
+    ])
+}
 
 struct FakeHost {
     caps: WindowCaps,
@@ -27,6 +41,9 @@ struct FakeHost {
     refuse: bool,
     state: Mutex<WindowState>,
     opens: Mutex<Vec<(WindowPlan, WindowSettings)>>,
+    /// Whether it shows the desktop mode; `None` keeps the trait's default list.
+    desktop: Option<bool>,
+    sets: Mutex<Vec<DesktopSettings>>,
 }
 
 impl FakeHost {
@@ -37,7 +54,16 @@ impl FakeHost {
             refuse: false,
             state: Mutex::new(WindowState::Closed),
             opens: Mutex::default(),
+            desktop: None,
+            sets: Mutex::default(),
         })
+    }
+
+    /// A transparent host that shows the desktop mode when `desktop`, and says why not otherwise.
+    fn with_desktop(desktop: bool) -> Arc<Self> {
+        let mut host = Arc::into_inner(Self::new(true)).unwrap();
+        host.desktop = Some(desktop);
+        Arc::new(host)
     }
 }
 
@@ -53,7 +79,7 @@ impl WindowHost for FakeHost {
             return Err(WindowError::Host("no display".into()));
         }
         self.opens.lock().unwrap().push((*plan, settings.clone()));
-        *self.state.lock().unwrap() = WindowState::open(plan.physical, settings.backdrop);
+        *self.state.lock().unwrap() = WindowState::open(plan.physical, settings.backdrop).with_mode(settings);
         Ok(())
     }
     fn close(&self) {
@@ -61,6 +87,27 @@ impl WindowHost for FakeHost {
     }
     fn state(&self) -> WindowState {
         *self.state.lock().unwrap()
+    }
+    fn modes(&self) -> Vec<ModeSupport> {
+        let Some(desktop) = self.desktop else {
+            return vec![
+                ModeSupport::available(WindowMode::Studio),
+                ModeSupport::available(WindowMode::Capture),
+                ModeSupport::unavailable(WindowMode::Desktop, "This build can't show the character on the desktop yet"),
+            ];
+        };
+        let desktop = if desktop {
+            ModeSupport::available(WindowMode::Desktop)
+        } else {
+            ModeSupport::unavailable(WindowMode::Desktop, "Click-through needs a compositor on this Linux session")
+        };
+        vec![ModeSupport::available(WindowMode::Studio), ModeSupport::available(WindowMode::Capture), desktop]
+    }
+    fn set_desktop(&self, desktop: &DesktopSettings) -> Result<(), WindowError> {
+        self.sets.lock().unwrap().push(*desktop);
+        let mut state = self.state.lock().unwrap();
+        *state = state.with_desktop(*desktop);
+        Ok(())
     }
 }
 
@@ -123,7 +170,7 @@ fn the_ops_declare_their_kind_scope_and_undo() {
 fn open_then_status_shows_the_planned_size() {
     let (host, palette) = (FakeHost::new(true), green_palette());
     let services = services(&host, &palette);
-    assert_eq!(answer(NAMES[2], json!({}), &services), json!({ "state": "closed" }));
+    assert_eq!(answer(NAMES[2], json!({}), &services), json!({ "state": "closed", "modes": default_modes() }));
 
     let opened = answer(NAMES[0], json!({}), &services);
     assert_eq!((opened["opened"].clone(), opened["fallback"].clone()), (json!(true), json!(false)));
@@ -131,7 +178,14 @@ fn open_then_status_shows_the_planned_size() {
     assert_eq!(opened["title"], "Omuzaki Output");
     assert_eq!(
         answer(NAMES[2], json!({}), &services),
-        json!({ "state": "open", "physical": [1920, 1080], "backdrop": { "key": "#00b140" }, "minimised": false })
+        json!({
+            "state": "open",
+            "physical": [1920, 1080],
+            "backdrop": { "key": "#00b140" },
+            "minimised": false,
+            "mode": "capture",
+            "modes": default_modes(),
+        })
     );
     let (planned, settings) = host.opens.lock().unwrap()[0].clone();
     assert_eq!((planned.physical, settings.hide_cursor), (UVec2::new(1920, 1080), true));
@@ -218,7 +272,7 @@ fn close_then_status_shows_closed() {
     assert_eq!(answer(NAMES[1], json!({}), &services), json!({ "closed": true, "was_open": false }));
     answer(NAMES[0], json!({}), &services);
     assert_eq!(answer(NAMES[1], json!({}), &services), json!({ "closed": true, "was_open": true }));
-    assert_eq!(answer(NAMES[2], json!({}), &services), json!({ "state": "closed" }));
+    assert_eq!(answer(NAMES[2], json!({}), &services), json!({ "state": "closed", "modes": default_modes() }));
 }
 
 #[test]
@@ -366,24 +420,164 @@ fn open_as(
 }
 
 #[test]
-fn an_agent_cannot_save_the_output_window_setting_without_a_person() {
+fn an_agent_opens_the_window_without_it_becoming_the_persons_choice() {
     use omuzaki_settings_api::service::SettingsExt as _;
     use omuzaki_stream::ops::window::{Open, OutputWindow};
     let settings = Arc::new(omuzaki_settings_mock::MemorySettings::default());
     let agent = Actor::Agent { id: "assistant".into(), model: None };
     for dry_run in [false, true] {
-        let err = open_as(&agent, None, dry_run, &settings).unwrap_err();
-        assert!(
-            matches!(err.detail.as_deref(), Some(omuzaki_ops_api::ErrorDetail::NeedsPerson { .. })),
-            "dry_run {dry_run}: {err:?}"
-        );
+        let done = open_as(&agent, None, dry_run, &settings).unwrap().output.unwrap();
+        assert_eq!((done["opened"].clone(), done["saved"].clone()), (json!(!dry_run), json!(false)), "{dry_run}");
     }
     assert_eq!(settings.get::<OutputWindow>().unwrap(), Open::default(), "nothing was saved");
 
-    // A person's confirmation lets the same request through, and a dry run still saves nothing.
+    // A person's confirmation makes it the person's choice, and a dry run still saves nothing.
     let dry = open_as(&agent, Some(&person()), true, &settings).unwrap().output.unwrap();
     assert_eq!(dry["saved"], false);
     let done = open_as(&agent, Some(&person()), false, &settings).unwrap().output.unwrap();
     assert_eq!(done["saved"], true);
     assert_eq!(settings.get::<OutputWindow>().unwrap().scale, Some(0.5));
+}
+
+fn agent() -> Actor {
+    Actor::Agent { id: "assistant".into(), model: None }
+}
+
+/// Runs `op` with `args` as `actor` over `host`.
+fn run_as(actor: &Actor, op: &str, args: Value, host: &Arc<FakeHost>, dry_run: bool) -> Result<Value, OpError> {
+    let services = services(host, &green_palette());
+    let op = (registered(op).unwrap().decode)(args)?;
+    let (doc, clock) = (MemDoc::new(), FakeClock::new(Seconds(0.0)));
+    let ctx = OpCtx::new(&doc, actor, &clock).with_dry_run(dry_run).with_services(&services);
+    op.plan(&ctx).map(|p| p.output.unwrap_or(Value::Null))
+}
+
+#[test]
+fn the_desktop_mode_opens_a_transparent_window_on_top_with_the_pointer_shown() {
+    let host = FakeHost::with_desktop(true);
+    let opened = run_as(&person(), NAMES[0], json!({ "mode": "desktop", "opacity": 0.75 }), &host, false).unwrap();
+    assert_eq!(opened["mode"], "desktop");
+    assert_eq!(opened["desktop"], json!({ "opacity": 0.75, "click_through": "transparent" }));
+    assert_eq!(opened["physical"], json!([960, 540]), "half the output unless a scale is asked for");
+    let (_, settings) = host.opens.lock().unwrap()[0].clone();
+    assert_eq!(settings.mode, WindowMode::Desktop);
+    assert_eq!(settings.backdrop, Backdrop::Transparent);
+    assert!(settings.always_on_top && !settings.hide_cursor);
+    assert_eq!(settings.size, SizePolicy::Scale(0.5));
+    assert_eq!(settings.desktop, DesktopSettings::new(0.75, ClickThrough::Transparent));
+
+    let status = run_as(&person(), NAMES[2], json!({}), &host, false).unwrap();
+    assert_eq!((status["mode"].clone(), status["desktop"]["opacity"].clone()), (json!("desktop"), json!(0.75)));
+    assert_eq!(status["modes"][2], json!({ "mode": "desktop", "available": true }));
+
+    // Asking for a key colour or a capture tool's stacking changes nothing about a desktop window.
+    let args = json!({ "mode": "desktop", "backdrop": "key", "always_on_top": false, "scale": 0.3 });
+    run_as(&person(), NAMES[0], args, &host, false).unwrap();
+    let (_, settings) = host.opens.lock().unwrap()[1].clone();
+    assert_eq!((settings.backdrop, settings.always_on_top), (Backdrop::Transparent, true));
+    assert_eq!(settings.size, SizePolicy::Scale(0.3));
+}
+
+#[test]
+fn a_mode_this_machine_cant_show_is_refused_with_its_reason() {
+    for host in [FakeHost::with_desktop(false), FakeHost::new(true)] {
+        let error = run_as(&person(), NAMES[0], json!({ "mode": "desktop" }), &host, false).unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        let reason = run_as(&person(), NAMES[2], json!({}), &host, false).unwrap()["modes"][2]["reason"].clone();
+        assert_eq!(json!(error.message), reason, "the refusal is the reason status lists");
+        assert!(host.opens.lock().unwrap().is_empty());
+    }
+    // A host that lists the mode but can't make a transparent surface on top is refused too, never a key-coloured box.
+    let mut flat = Arc::into_inner(FakeHost::with_desktop(true)).unwrap();
+    flat.caps = WindowCaps::new(false, true);
+    let flat = Arc::new(flat);
+    assert_eq!(
+        run_as(&person(), NAMES[0], json!({ "mode": "desktop" }), &flat, false).unwrap_err().code,
+        ErrorCode::Unsupported
+    );
+}
+
+#[test]
+fn the_studio_mode_closes_the_window() {
+    let host = FakeHost::with_desktop(true);
+    run_as(&person(), NAMES[0], json!({}), &host, false).unwrap();
+    let dry = run_as(&person(), NAMES[0], json!({ "mode": "studio" }), &host, true).unwrap();
+    assert_eq!((dry["closed"].clone(), dry["was_open"].clone()), (json!(false), json!(true)));
+    assert!(matches!(host.state(), WindowState::Open { .. }), "a dry run closes nothing");
+    let done = run_as(&person(), NAMES[0], json!({ "mode": "studio" }), &host, false).unwrap();
+    assert_eq!((done["mode"].clone(), done["closed"].clone()), (json!("studio"), json!(true)));
+    assert_eq!(host.state(), WindowState::Closed);
+}
+
+#[test]
+fn desktop_choices_are_refused_outside_the_desktop_mode_and_out_of_range() {
+    let host = FakeHost::with_desktop(true);
+    for args in [json!({ "opacity": 0.5 }), json!({ "mode": "capture", "click_through": "off" })] {
+        let error = run_as(&person(), NAMES[0], args.clone(), &host, false).unwrap_err();
+        assert_eq!(error.code, ErrorCode::Invalid, "{args}");
+        assert!(error.hint.unwrap_or_default().contains("desktop"), "{args}");
+    }
+    for opacity in [0.05, 1.2] {
+        let error = run_as(&person(), NAMES[0], json!({ "mode": "desktop", "opacity": opacity }), &host, false);
+        let error = error.unwrap_err();
+        assert_eq!(error.code, ErrorCode::Invalid, "{opacity}");
+        assert!(error.message.contains("0.1 to 1"), "{}", error.message);
+    }
+    assert!(host.opens.lock().unwrap().is_empty());
+}
+
+#[test]
+fn set_changes_an_open_desktop_window_live() {
+    let host = FakeHost::with_desktop(true);
+    let error = run_as(&person(), NAMES[4], json!({ "opacity": 0.5 }), &host, false).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Conflict, "no window: nothing to change");
+    run_as(&person(), NAMES[0], json!({}), &host, false).unwrap();
+    let error = run_as(&person(), NAMES[4], json!({ "opacity": 0.5 }), &host, false).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Conflict, "a capture window has no opacity");
+
+    run_as(&person(), NAMES[0], json!({ "mode": "desktop" }), &host, false).unwrap();
+    let dry = run_as(&agent(), NAMES[4], json!({ "opacity": 0.5 }), &host, true).unwrap();
+    assert_eq!(dry["applied"], false);
+    assert!(host.sets.lock().unwrap().is_empty(), "a dry run changes nothing");
+    let done = run_as(&agent(), NAMES[4], json!({ "opacity": 0.5 }), &host, false).unwrap();
+    assert_eq!(done["desktop"], json!({ "opacity": 0.5, "click_through": "transparent" }), "the rest is kept");
+    run_as(&agent(), NAMES[4], json!({ "click_through": "off" }), &host, false).unwrap();
+    assert_eq!(
+        *host.sets.lock().unwrap(),
+        [DesktopSettings::new(0.5, ClickThrough::Transparent), DesktopSettings::new(0.5, ClickThrough::Off),]
+    );
+    let status = run_as(&agent(), NAMES[2], json!({}), &host, false).unwrap();
+    assert_eq!(status["desktop"], json!({ "opacity": 0.5, "click_through": "off" }));
+    let error = run_as(&person(), NAMES[4], json!({ "opacity": 0.0 }), &host, false).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Invalid);
+}
+
+#[test]
+fn only_a_person_lets_every_click_through() {
+    let host = FakeHost::with_desktop(true);
+    let needs_person =
+        |e: &OpError| matches!(e.detail.as_deref(), Some(omuzaki_ops_api::ErrorDetail::NeedsPerson { .. }));
+    for dry_run in [true, false] {
+        let args = json!({ "mode": "desktop", "click_through": "full" });
+        let error = run_as(&agent(), NAMES[0], args, &host, dry_run).unwrap_err();
+        assert!(needs_person(&error), "{error:?}");
+    }
+    assert!(host.opens.lock().unwrap().is_empty());
+    run_as(&agent(), NAMES[0], json!({ "mode": "desktop" }), &host, false).unwrap();
+    let error = run_as(&agent(), NAMES[4], json!({ "click_through": "full" }), &host, false).unwrap_err();
+    assert!(needs_person(&error), "{error:?}");
+    assert!(host.sets.lock().unwrap().is_empty());
+    let done = run_as(&person(), NAMES[4], json!({ "click_through": "full" }), &host, false).unwrap();
+    assert_eq!(done["desktop"]["click_through"], "full");
+}
+
+#[test]
+fn the_setting_keeps_the_mode_and_the_desktop_choices() {
+    use omuzaki_settings_api::setting::Setting as _;
+    use omuzaki_stream::ops::window::{Open, OutputWindow};
+    let open = |args: Value| serde_json::from_value::<Open>(args).unwrap();
+    let kept = open(json!({ "mode": "desktop", "opacity": 0.75, "click_through": "off" }));
+    assert!(OutputWindow::check(&kept).is_ok());
+    assert_eq!(serde_json::to_value(&kept).unwrap()["mode"], "desktop");
+    assert!(OutputWindow::check(&open(json!({ "mode": "desktop", "opacity": 2.0 }))).is_err());
 }

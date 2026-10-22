@@ -59,20 +59,20 @@ fn layer(count: u8, spread_deg: f64, tip_heights: &[f64], shade: f64) -> BangLay
 fn blunt() -> BangsGen {
     let under = BangLayer { hook_deg: 0.0, ..layer(11, 46.0, &[0.02], 0.8) };
     let top = BangLayer { hook_deg: 0.0, ..layer(9, 42.0, &[0.035], 1.0) };
-    BangsGen { layers: vec![under, top], wisps: Vec::new(), sweep_deg: 0.0 }
+    BangsGen { layers: vec![under, top], wisps: Vec::new(), sweep_deg: 0.0, ..BangsGen::default() }
 }
 
 fn side_swept() -> BangsGen {
     let under = BangLayer { hook_deg: 5.0, ..layer(10, 46.0, &[0.03, 0.02, 0.01, 0.0, -0.01, -0.02], 0.8) };
     let top = BangLayer { hook_deg: 8.0, ..layer(8, 40.0, &[0.045, 0.03, 0.015, 0.0, -0.015, -0.03], 1.0) };
-    BangsGen { layers: vec![under, top], wisps: Vec::new(), sweep_deg: 24.0 }
+    BangsGen { layers: vec![under, top], wisps: Vec::new(), sweep_deg: 24.0, ..BangsGen::default() }
 }
 
 fn curtain() -> BangsGen {
     let edges = [0.05, 0.035, 0.02, 0.01, 0.01, 0.02, 0.035, 0.05];
     let under = BangLayer { hook_deg: -10.0, ..layer(10, 48.0, &edges, 0.8) };
     let top = BangLayer { hook_deg: -14.0, ..layer(8, 44.0, &edges, 1.0) };
-    BangsGen { layers: vec![under, top], wisps: Vec::new(), sweep_deg: 0.0 }
+    BangsGen { layers: vec![under, top], wisps: Vec::new(), sweep_deg: 0.0, ..BangsGen::default() }
 }
 
 fn wispy() -> BangsGen {
@@ -87,12 +87,12 @@ fn wispy() -> BangsGen {
         Wisp { phi_deg: 4.0, tip_height: -0.07, width: 0.016 },
         Wisp { phi_deg: 18.0, tip_height: -0.04, width: 0.02 },
     ];
-    BangsGen { layers, wisps, sweep_deg: 8.0 }
+    BangsGen { layers, wisps, sweep_deg: 8.0, ..BangsGen::default() }
 }
 
 fn none() -> BangsGen {
     // The generator needs one lock (`layers` is never empty), so "none" is the thinnest one (the lowest width
     // `access::check` accepts), tipped high on the head.
     let hidden = BangLayer { width: WIDTH.0, hook_deg: 0.0, ..layer(1, 5.0, &[0.4], 1.0) };
-    BangsGen { layers: vec![hidden], wisps: Vec::new(), sweep_deg: 0.0 }
+    BangsGen { layers: vec![hidden], wisps: Vec::new(), sweep_deg: 0.0, ..BangsGen::default() }
 }

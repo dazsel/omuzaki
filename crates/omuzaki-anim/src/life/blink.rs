@@ -12,17 +12,6 @@ use omuzaki_core::rng::Rng;
 use super::frame::{Frame, smoothstep};
 use super::write::Out;
 
-/// After a person lets go of the eyes, or a score's shut eyes open, wait this long before the first blink.
-const SETTLE_S: f64 = 0.3;
-/// Retry delay when the source's eyes are already shut: a base plus a random part, seconds.
-const RETRY_S: (f64, f64) = (0.3, 0.3);
-/// No extra blink within this long of the last one.
-const EXTRA_COOLDOWN_S: f64 = 0.3;
-/// Source eyes at least this blinked, or arcs this closed, count as already shut.
-const SHUT_BLINK: f32 = 0.6;
-const SHUT_ARC: f32 = 0.5;
-/// Squint at which an eye counts as shut (the prototype's "open below 0.15").
-const SHUT_SQUINT: f32 = 0.85;
 
 /// The state of the blink timer and the blink in flight.
 #[derive(Clone, Debug)]
@@ -53,13 +42,13 @@ fn lid(since: f32, close_s: f32, open_s: f32) -> f32 {
 }
 
 /// True when the source's eyes are already closed (a score's blink, a squeeze, ^^), so a life blink would be noise.
-pub(super) fn already_shut(src: &ChannelBuf, laugh_arcs: f32) -> bool {
+pub(super) fn already_shut(params: &BlinkParams, src: &ChannelBuf, laugh_arcs: f32) -> bool {
     let both = |a: Channel, b: Channel, at: f32| src[a] >= at && src[b] >= at;
     let arcs = f32::midpoint(src[Channel::EYE_ARC_LEFT], src[Channel::EYE_ARC_RIGHT]).max(laugh_arcs);
-    both(Channel::EYE_BLINK_LEFT, Channel::EYE_BLINK_RIGHT, SHUT_BLINK)
-        || both(Channel::EYE_SQUINT_LEFT, Channel::EYE_SQUINT_RIGHT, SHUT_SQUINT)
-        || src[Channel::EYES_SQUEEZE] >= SHUT_ARC
-        || arcs >= SHUT_ARC
+    both(Channel::EYE_BLINK_LEFT, Channel::EYE_BLINK_RIGHT, params.shut_blink)
+        || both(Channel::EYE_SQUINT_LEFT, Channel::EYE_SQUINT_RIGHT, params.shut_squint)
+        || src[Channel::EYES_SQUEEZE] >= params.shut_arc
+        || arcs >= params.shut_arc
 }
 
 impl Blinker {
@@ -80,10 +69,10 @@ impl Blinker {
 
     /// A person has the eyes (or blinks are switched off): forget the blink in flight and wait a beat before the
     /// next, so handing back is calm.
-    pub fn hold_off(&mut self, clock: f64) {
+    pub fn hold_off(&mut self, clock: f64, settle_s: f32) {
         self.active = false;
         self.again = f64::INFINITY;
-        self.next = self.next.max(clock + SETTLE_S);
+        self.next = self.next.max(clock + f64::from(settle_s));
     }
 
     /// Starts a blink at `at` (which may be a little in the past, when the timer fell inside the last frame).
@@ -115,7 +104,7 @@ impl Blinker {
         }
         if clock >= self.next && !self.active {
             if shut {
-                self.next = clock + RETRY_S.0 + RETRY_S.1 * f64::from(rng.next_f32());
+                self.next = clock + f64::from(params.retry_s.sample(rng.next_f32()));
             } else {
                 let at = self.next.max(clock - f64::from(frame.dt));
                 self.begin(params, rng, at, true);
@@ -126,7 +115,7 @@ impl Blinker {
 
     /// An extra blink earned by a glance or a fast head turn, if one is not already under way or just done.
     pub fn extra(&mut self, frame: &Frame<'_>, rng: &mut Rng, shut: bool) {
-        if !self.active && !shut && frame.clock - self.last > EXTRA_COOLDOWN_S {
+        if !self.active && !shut && frame.clock - self.last > f64::from(frame.params.blink.extra_cooldown_s) {
             self.begin(&frame.params.blink, rng, frame.clock, true);
             self.next = frame.clock + f64::from(frame.params.blink.gap(rng));
         }

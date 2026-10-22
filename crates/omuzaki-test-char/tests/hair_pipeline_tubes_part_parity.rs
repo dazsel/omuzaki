@@ -88,7 +88,13 @@ fn frame(f: &Fixture) -> OutwardFrame {
 
 fn build(f: &Fixture, case: &Case) -> MeshData {
     let points: Vec<Vec3> = case.points.iter().copied().map(vec3).collect();
-    let taper = Taper { start: case.taper.start, mid: case.taper.mid, tip: case.taper.tip, tip_at: case.taper.tip_at };
+    let taper = Taper {
+        start: case.taper.start,
+        mid: case.taper.mid,
+        tip: case.taper.tip,
+        tip_at: case.taper.tip_at,
+        ..Taper::default()
+    };
     let bulge = Bulge { base: case.bulge.base, swell: case.bulge.swell };
     let frame = frame(f);
     let polar = polar_angles(&points, frame.head);
