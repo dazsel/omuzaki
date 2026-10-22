@@ -16,6 +16,8 @@ use std::net::IpAddr;
 use std::time::Duration;
 
 use omuzaki_ai_api::{Body, FetchError, Fetcher};
+
+mod transport;
 use reqwest::blocking::{Client, Response};
 use reqwest::header::{ACCEPT_ENCODING, CONTENT_RANGE, RANGE};
 use reqwest::redirect::Policy;

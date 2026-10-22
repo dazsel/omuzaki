@@ -4360,8 +4360,10 @@ dependencies = [
  "hyper",
  "hyper-util",
  "omuzaki-ai-api",
+ "omuzaki-http-api",
  "reqwest",
  "rustls",
+ "serde_json",
  "tokio",
 ]
 
