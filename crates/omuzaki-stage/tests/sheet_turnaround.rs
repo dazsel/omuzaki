@@ -1072,8 +1072,8 @@ fn the_sheet_gives_back_the_callers_face() {
     let painted = Arc::new(Mutex::new(Vec::new()));
     let noted = Arc::clone(&painted);
     let rig = FaceRig::new(Box::new(move |projection, _| {
-        let painter = InputRecorder { inner: MockPainter::new(*projection), painted: Arc::clone(&noted) };
-        FaceSystem::new(Box::new(painter), Box::new(MockRasterizer))
+        let recorder = InputRecorder { inner: MockPainter::new(*projection), painted: Arc::clone(&noted) };
+        FaceSystem::new(Box::new(recorder), Box::new(MockRasterizer))
     }))
     .with_executor(Box::new(InlineExecutor));
     stage.set_face(&mut renderer, rig).expect("the face binds");
@@ -1087,8 +1087,8 @@ fn the_sheet_gives_back_the_callers_face() {
     let callers = last();
 
     render_turnaround(&mut stage, &mut renderer, &spec()).expect("the sheet renders");
-    let notes = painted.lock().expect("the notes").clone();
-    assert!(notes.iter().rev().skip(1).any(|n| *n != callers), "the sheet painted its own neutral face: {notes:?}");
+    let paints = painted.lock().expect("the notes").clone();
+    assert!(paints.iter().rev().skip(1).any(|p| *p != callers), "the sheet painted its own neutral face: {paints:?}");
     assert_eq!(last(), callers, "the caller's face is painted again, at the caller's time, after the sheet's");
     stage.release(&mut renderer).expect("released");
 }

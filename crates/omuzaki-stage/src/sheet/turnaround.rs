@@ -457,7 +457,7 @@ impl<'a> SheetScope<'a> {
         let (Some(saved), Some(pin)) = (self.saved.take(), self.pin.take()) else { return Ok(()) };
         self.stage.unpin_time(&pin);
         let face = match self.face.take() {
-            Some((channels, tick)) => self.stage.repaint_face(self.renderer, channels, tick),
+            Some((channels, tick)) => self.stage.repaint_face(self.renderer, &channels, tick),
             None => Ok(()),
         };
         let released = self.renderer.release(ResourceRef::from(self.target));

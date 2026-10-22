@@ -656,10 +656,10 @@ impl Stage {
     pub(crate) fn repaint_face(
         &mut self,
         renderer: &mut dyn Renderer,
-        channels: ChannelBuf,
+        channels: &ChannelBuf,
         tick: Tick,
     ) -> Result<(), StageError> {
-        self.update_face(renderer, tick, &FrameInput { channels, ..FrameInput::default() })
+        self.update_face(renderer, tick, &FrameInput { channels: *channels, ..FrameInput::default() })
     }
 
     /// Step 5 of [`tick`](Stage::tick): map and paint. A no-op without a rig.
