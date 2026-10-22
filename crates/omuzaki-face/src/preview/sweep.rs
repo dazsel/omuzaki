@@ -16,7 +16,8 @@ use omuzaki_anim_api::{CHANNELS, Channel, Region};
 use omuzaki_face_api::{FaceError, FaceLayerId};
 use serde::Serialize;
 
-use super::metrics::{LayerChange, layer_change};
+use super::direction::{Direction, SideChange, check, entry, expected};
+use super::metrics::{LayerChange, layer_change, side_change};
 use super::{FaceSubject, Preview};
 
 /// The channels a front-facing painted face does not draw, by contract (design doc `char-face-api.md`, Q3).
@@ -97,6 +98,11 @@ pub struct ChannelSweep {
     pub brows: LayerChange,
     /// See [`base`](Self::base).
     pub overlay: LayerChange,
+    /// Whether it moves the face the expected way and on the expected side ([`super::direction`]).
+    pub direction: Direction,
+    /// Where the painted change fell (the brows' half-density layer counts four times, as its pixels are four times
+    /// the area).
+    pub sides: SideChange,
     /// The face with the channel pushed, when [`SweepOptions::keep_pictures`] asked for it.
     #[serde(skip)]
     pub picture: Option<RgbaImage>,
@@ -124,6 +130,11 @@ impl SweepReport {
     pub fn with_status(&self, status: ChannelStatus) -> Vec<&'static str> {
         self.rows.iter().filter(|r| r.status == status).map(|r| r.channel).collect()
     }
+
+    /// The names of the channels whose direction check found `direction`, in row order.
+    pub fn with_direction(&self, direction: Direction) -> Vec<&'static str> {
+        self.rows.iter().filter(|r| r.direction == direction).map(|r| r.channel).collect()
+    }
 }
 
 /// Sweeps `options.channels` over `subject`. `cancelled` is polled between channels; `None` means it was cancelled.
@@ -136,6 +147,8 @@ pub fn sweep(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<Option<SweepReport>, FaceError> {
     let rest_buf = subject.profile.rest_buf();
+    // The table is embedded and checked by the crate's tests; were it ever broken, every row reads `Missing`.
+    let table = expected().ok();
     let mut rest = Preview::new(subject.clone(), options.width_px);
     rest.paint(&rest_buf)?;
     let rest_picture = options.keep_pictures.then(|| rest.picture());
@@ -174,8 +187,39 @@ pub fn sweep(
         } else {
             ChannelStatus::Moves
         };
+        let sides = [FaceLayerId::Base, FaceLayerId::Brows, FaceLayerId::Overlay].into_iter().fold(
+            SideChange::default(),
+            |sum, layer| {
+                let weight = if layer == FaceLayerId::Brows { 4 } else { 1 };
+                let s = side_change(rest.layer(layer), pushed.layer(layer));
+                SideChange { left: sum.left + weight * s.left, right: sum.right + weight * s.right }
+            },
+        );
+        let mapping = &subject.profile.mapping;
+        let direction = match status {
+            // A dead or switched-off control has no way to check; the status already says what is wrong.
+            ChannelStatus::Moves => check(
+                table.and_then(|t| entry(t, channel)),
+                &mapping.apply(&before),
+                &mapping.apply(&buf),
+                value > before.get(channel),
+                sides,
+            ),
+            ChannelStatus::Unmapped => Direction::Inert,
+            ChannelStatus::Dead | ChannelStatus::OffInDesign => Direction::Unchecked,
+        };
         let picture = options.keep_pictures.then(|| pushed.picture());
-        rows.push(ChannelSweep { channel: channel.name(), value, status, base, brows, overlay, picture });
+        rows.push(ChannelSweep {
+            channel: channel.name(),
+            value,
+            status,
+            base,
+            brows,
+            overlay,
+            direction,
+            sides,
+            picture,
+        });
     }
     Ok(Some(SweepReport { rows, rest: rest_picture }))
 }

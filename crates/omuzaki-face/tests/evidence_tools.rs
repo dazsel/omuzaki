@@ -9,6 +9,7 @@
 use image::imageops::{FilterType, resize};
 use omuzaki_char_api::HeadParams;
 use omuzaki_core::colour::Colour;
+use omuzaki_face::preview::direction::Direction;
 use omuzaki_face::preview::metrics::downsample;
 use omuzaki_face::preview::range::{RangeOptions, compare, paint_all};
 use omuzaki_face::preview::sheet::{Cell, compose};
@@ -47,7 +48,12 @@ fn render_the_channel_sweep_when_asked() {
         vec![Cell { picture: downsample(report.rest.as_ref().unwrap(), 160), label: "rest".into(), flagged: false }];
     for row in &report.rows {
         let picture = downsample(row.picture.as_ref().unwrap(), 160);
-        cells.push(Cell { picture, label: row.channel.to_owned(), flagged: row.status == ChannelStatus::Dead });
+        cells.push(Cell {
+            picture,
+            label: row.channel.to_owned(),
+            flagged: row.status == ChannelStatus::Dead
+                || matches!(row.direction, Direction::WrongWay | Direction::WrongSide),
+        });
     }
     compose(&cells, 10).save(dir.join("channel-sweep.png")).unwrap();
 }

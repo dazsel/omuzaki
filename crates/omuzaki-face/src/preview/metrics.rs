@@ -49,6 +49,31 @@ pub fn layer_change(a: &Raster, b: &Raster) -> LayerChange {
     LayerChange { changed_px: changed, distance }
 }
 
+/// Where the visible change between two rasters of one layer falls: pixels changed (as [`layer_change`] counts them) on
+/// the character's left half of the face (`+x`, the right half of the raster) and on its right half. The centre column
+/// of an odd width counts on neither side. Rasters of different sizes count nothing.
+pub fn side_change(a: &Raster, b: &Raster) -> super::direction::SideChange {
+    let mut sides = super::direction::SideChange::default();
+    if (a.width, a.height) != (b.width, b.height) || a.width == 0 {
+        return sides;
+    }
+    let width = a.width as usize;
+    let pixels = a.pixels.as_chunks::<4>().0.iter().zip(b.pixels.as_chunks::<4>().0);
+    for (i, (pa, pb)) in pixels.enumerate() {
+        if pa.iter().zip(pb).all(|(x, y)| x.abs_diff(*y) <= PIXEL_TOLERANCE) {
+            continue;
+        }
+        // Twice the column against the width, so the centre of an odd width lands on neither half.
+        let column = 2 * (i % width) + 1;
+        if column > width {
+            sides.left += 1;
+        } else if column < width {
+            sides.right += 1;
+        }
+    }
+    sides
+}
+
 /// Luma of every pixel, `0..=1`, row by row.
 fn luma(image: &RgbaImage) -> Vec<f64> {
     image

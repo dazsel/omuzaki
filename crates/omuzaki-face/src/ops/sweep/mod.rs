@@ -1,5 +1,6 @@
-//! `face.channel.sweep` (FE-04, FE-01): paints a character's face with each face channel pushed to its far end and
-//! reports which channels visibly change it and which are dead controls, with a contact sheet of every push.
+//! `face.channel.sweep` (FE-04, FE-01, VF-02): paints a character's face with each face channel pushed to its far end
+//! and reports which channels visibly change it and which are dead controls, which move it the wrong way or on the wrong
+//! side (the expected-effect table, [`crate::preview::direction`]), with a contact sheet of every push.
 //!
 //! It is a job: `plan` checks the arguments and that the face reads, `work` paints off the document lock (about two
 //! seconds for every channel at the default width on one core) and polls for a cancel between channels. The measure is
@@ -14,6 +15,7 @@ use serde_json::{Value, json};
 
 use crate::ops_shared::sheet::{SHEET_CELL_PX, store_sheet};
 use crate::ops_shared::subject::subject;
+use crate::preview::direction::Direction;
 use crate::preview::metrics::downsample;
 use crate::preview::sheet::{Cell, compose};
 use crate::preview::sweep::{ChannelStatus, SweepOptions, default_min_changed_px, face_channels, sweep};
@@ -93,7 +95,7 @@ impl Op for SweepChannels {
         OpMeta {
             name: "face.channel.sweep",
             summary: "Push each face channel of a character to its far end and report which ones visibly change the \
-                      face (dead controls), with a contact sheet",
+                      face (dead controls) and which move it the wrong way or on the wrong side, with a contact sheet",
             kind: OpKind::Job,
             scope: Scope::Render,
             // It changes nothing in the document (its patch is empty); its sheets go to the content-addressed store.
@@ -130,6 +132,9 @@ impl Op for SweepChannels {
                 "dead": report.with_status(ChannelStatus::Dead),
                 "unmapped": report.with_status(ChannelStatus::Unmapped),
                 "off_in_design": report.with_status(ChannelStatus::OffInDesign),
+                "wrong_way": report.with_direction(Direction::WrongWay),
+                "wrong_side": report.with_direction(Direction::WrongSide),
+                "no_expectation": report.with_direction(Direction::Missing),
             },
             "rows": report.rows,
         });
@@ -141,7 +146,8 @@ impl Op for SweepChannels {
             }
             for row in &report.rows {
                 if let Some(picture) = &row.picture {
-                    let flagged = row.status == ChannelStatus::Dead;
+                    let flagged = row.status == ChannelStatus::Dead
+                        || matches!(row.direction, Direction::WrongWay | Direction::WrongSide);
                     cells.push(Cell { picture: downsample(picture, SHEET_CELL_PX), label: row.channel.to_owned(), flagged });
                 }
             }

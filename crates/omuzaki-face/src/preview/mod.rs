@@ -18,6 +18,7 @@ use omuzaki_face_api::{
 use crate::painter::RealPainter;
 use crate::raster::SkiaRasterizer;
 
+pub mod direction;
 pub mod metrics;
 pub mod range;
 pub mod sheet;
