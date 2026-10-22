@@ -1,0 +1,8 @@
+kind = "flow.cooldown"
+pos = [220.0, 0.0]
+
+[in]
+in = "redeem.fired"
+
+[set]
+seconds = 10.0
