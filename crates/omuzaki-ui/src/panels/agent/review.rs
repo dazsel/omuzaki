@@ -73,18 +73,28 @@ pub enum ApprovalAction {
 
 /// The card for a review request, and what the reviewer did this frame.
 pub fn review_card(ui: &mut Ui, approval: &PendingApproval, evidence: &ReviewEvidence) -> Option<ApprovalAction> {
-    show(ui, approval, Some(evidence), "panel")
+    show(ui, approval, &requester(&approval.actor), Some(evidence), "panel")
+}
+
+/// Who asked, by the actor's own name.
+fn requester(actor: &Actor) -> String {
+    match actor {
+        Actor::Agent { id, .. } | Actor::Plugin { id } => id.clone(),
+        Actor::Person { name } => name.clone(),
+        Actor::System => String::new(),
+    }
 }
 
 /// The review card inside the approval list: the evidence from `desk`, the answer in the list's terms.
 pub(super) fn review_batch(
     ui: &mut Ui,
     approval: &PendingApproval,
+    asked_by: &str,
     desk: Option<&dyn ReviewDesk>,
     salt: &str,
 ) -> Option<Answer> {
     let evidence = desk.and_then(|d| d.evidence(approval));
-    Some(match show(ui, approval, evidence.as_ref(), salt)? {
+    Some(match show(ui, approval, asked_by, evidence.as_ref(), salt)? {
         ApprovalAction::Approve => Answer::Decide(vec![approval.id], omuzaki_ops_api::Decision::Approve),
         ApprovalAction::Reject { comment } => {
             Answer::Decide(vec![approval.id], omuzaki_ops_api::Decision::Reject { comment })
@@ -96,15 +106,11 @@ pub(super) fn review_batch(
 fn show(
     ui: &mut Ui,
     approval: &PendingApproval,
+    requester: &str,
     evidence: Option<&ReviewEvidence>,
     salt: &str,
 ) -> Option<ApprovalAction> {
     let ds = ds(ui.ctx());
-    let requester = match &approval.actor {
-        Actor::Agent { id, .. } | Actor::Plugin { id } => id.clone(),
-        Actor::Person { name } => name.clone(),
-        Actor::System => String::new(),
-    };
     let op = approval.request.as_ref().map_or("", |r| r.op.as_str());
     let what = say(&ds, text::REVIEW_WHAT, &[("op", op)]).into_owned();
     let mut lines = Vec::new();
@@ -150,7 +156,7 @@ fn show(
     let count = changes.len().to_string();
     let summary = say(&ds, text::APPROVAL_CHANGES, &[("count", &count)]).into_owned();
     let export = say(&ds, text::REVIEW_EXPORT, &[]);
-    let mut card = ApprovalCard::new(("review_card", salt, approval.id), &requester, &what)
+    let mut card = ApprovalCard::new(("review_card", salt, approval.id), requester, &what)
         .offers(false, false)
         .details(&refs)
         .export(&export);

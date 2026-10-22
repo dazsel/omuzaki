@@ -294,6 +294,10 @@ impl<'a> ApprovalCard<'a> {
                 for line in self.details {
                     ui.add(Label::new(RichText::new(*line).font(ds.text.small.clone()).color(t.text2)).wrap());
                 }
+                // Why Approve is off, in words where it can be read, not only in the button's tooltip.
+                if let Some(reason) = self.blocked {
+                    ui.add(Label::new(RichText::new(reason).font(ds.text.small.clone()).color(t.warn)).wrap());
+                }
                 self.risk_line(ui, &ds);
                 self.cost_row(ui, &ds);
                 self.variant_body(ui, &ds, &mut phase);

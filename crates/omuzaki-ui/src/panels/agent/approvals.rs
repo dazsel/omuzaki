@@ -83,10 +83,10 @@ pub fn card(
     salt: &str,
 ) -> Option<Answer> {
     let approval = batch.first;
-    if let Need::Review { .. } = approval.need {
-        return review_batch(ui, approval, desk, salt);
-    }
     let agent = agent_name(approval, session);
+    if let Need::Review { .. } = approval.need {
+        return review_batch(ui, approval, &agent, desk, salt);
+    }
     let what = what(ds, approval);
     let scope_name = match &approval.need {
         Need::Scope { scope } => Some(scope.name()),

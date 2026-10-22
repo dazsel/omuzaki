@@ -323,9 +323,11 @@ impl AgentPanel {
                 });
             });
         let cap = state.cap_micros();
-        let pressed_outside = ctx.input(|i| i.pointer.any_pressed())
-            && !area.response.contains_pointer()
-            && !ctx.pointer_interact_pos().is_some_and(|p| anchor.contains(p));
+        // A press outside the popover and its button closes it; the press's own position decides, not the hover.
+        let pressed_outside = ctx.input(|i| {
+            i.pointer.any_pressed()
+                && i.pointer.interact_pos().is_some_and(|p| !area.response.rect.contains(p) && !anchor.contains(p))
+        });
         if pressed_outside && self.confirm.is_none() || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.grants = None;
         }
