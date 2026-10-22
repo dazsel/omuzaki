@@ -7,9 +7,14 @@
 //! - **The executor** calls [`append`](JournalSink::append) under its lock. The entry is queued in O(1) with no I/O;
 //!   the writer is woken only if it sleeps.
 //! - **The writer thread** takes everything queued (group commit: whatever arrives during one flush goes in the next),
-//!   encodes it into frames, appends them to the current segment with one write and flushes it (`sync_data`). Then it
-//!   hands the batch to the keeper and publishes the durable LSN, which releases [`sync`](JournalSink::sync) waiters.
-//!   A failed write is retried with backoff (100 ms doubling to 5 s) and reported as `Failing` at once.
+//!   encodes it into frames, appends them to the current segment with one write and flushes it. Then it hands the
+//!   batch to the keeper and publishes the durable LSN, which releases [`sync`](JournalSink::sync) waiters. A batch a
+//!   `sync` caller waits on gets a full flush; one nobody external waits on gets a barrier, which on Apple keeps order
+//!   without emptying the drive's cache (and is a full flush everywhere else), and `sync` never returns on a barrier
+//!   alone. A failed write is retried with backoff (100 ms doubling to 5 s) and reported as `Failing` at once. All of
+//!   its file operations go through a [`JournalFs`].
+//! - **The preparer thread** keeps the next segment made ahead of time, so a commit never creates a file
+//!   ([`segments`](super::segments)).
 //! - **The keeper thread** applies each durable entry's patch to its own copy of the project (the shadow), saves the
 //!   files 250 ms after the last change or every 2 s while changes continue, and writes a snapshot when the executor
 //!   hands it a [`HistoryEntry::Mark`]. It asks for a mark every 10 minutes or 5,000 records of editing. A shadow that
@@ -21,8 +26,7 @@
 //! is what a crash does too.
 
 use std::collections::BTreeMap;
-use std::fs::{self, File, OpenOptions};
-use std::io::{Seek, SeekFrom, Write};
+use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -30,6 +34,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use omuzaki_core::time::{Clock, Seconds, SystemClock};
 use omuzaki_doc_api::{DocWrite, Patch};
 use omuzaki_history_api::{
     HistoryEntry, HistoryExport, JournalSink, JournalStatus, Lsn, RunningJob, SnapshotId, SnapshotInfo, SyncError,
@@ -37,7 +42,9 @@ use omuzaki_history_api::{
 };
 use omuzaki_ops_api::OpError;
 
-use super::{JournalError, Record, SegmentHeader, SessionInfo, encode, segment_name, segment_seq};
+use super::fs::{Flush, JournalFs, StdFs};
+use super::segments::{Preparer, Segment};
+use super::{JournalError, Record, SegmentHeader, SessionInfo, encode, segment_seq};
 use crate::Project;
 use crate::snapshot::{Facts, Snapshotter};
 
@@ -114,6 +121,15 @@ impl JournalOptions {
         self.segment_bytes = bytes;
         self
     }
+
+    /// These options with the back-pressure limits set: `Behind` at `behind` entries not yet written, refusals at
+    /// `refuse`.
+    #[must_use]
+    pub fn with_limits(mut self, behind: usize, refuse: usize) -> Self {
+        self.behind = behind;
+        self.refuse = refuse;
+        self
+    }
 }
 
 /// What a new session starts from.
@@ -133,6 +149,11 @@ pub struct SessionStart {
     pub wall: Arc<dyn WallClock>,
     /// Where the session's snapshots go.
     pub snapshots: Arc<Snapshotter>,
+    /// The file operations the writer makes: [`StdFs`] unless a test or a harness sets one.
+    pub fs: Arc<dyn JournalFs>,
+    /// The keeper's clock, for its save delays and snapshot cadence: the system's unless a test sets one (then
+    /// [`ProjectJournal::tick`] makes the keeper look at it).
+    pub clock: Arc<dyn Clock>,
 }
 
 impl SessionStart {
@@ -154,7 +175,23 @@ impl SessionStart {
             last_job: 0,
             wall,
             snapshots,
+            fs: Arc::new(StdFs),
+            clock: Arc::new(SystemClock::new()),
         }
+    }
+
+    /// This start, with the keeper timing its saves and snapshots by `clock`.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// This start, with the writer's file operations going through `fs`.
+    #[must_use]
+    pub fn with_fs(mut self, fs: Arc<dyn JournalFs>) -> Self {
+        self.fs = fs;
+        self
     }
 
     /// This start, with `last_job` the highest job id the project has started.
@@ -170,6 +207,7 @@ pub struct ProjectJournal {
     shared: Arc<Shared>,
     snapshots: Arc<Snapshotter>,
     keeper: Sender<KeeperMsg>,
+    preparer: Arc<Preparer>,
     threads: Mutex<Vec<JoinHandle<()>>>,
 }
 
@@ -179,6 +217,8 @@ enum Item {
     Entry(Lsn, HistoryEntry),
     /// The `close` record.
     Close(Lsn, SnapshotId),
+    /// [`ProjectJournal::tick`]: the keeper answers once it has looked at its clock, after everything queued before.
+    Tick(Sender<()>),
 }
 
 struct Queue {
@@ -189,11 +229,16 @@ struct Queue {
     asleep: bool,
     /// Set by close and drop: the writer finishes what is queued and exits.
     stop: bool,
+    /// The highest LSN a `sync` caller waits on: the writer flushes in full up to it.
+    full_wanted: Lsn,
 }
 
 #[derive(Default)]
 struct Progress {
+    /// Everything up to here is durable: a full flush covers it, or a barrier where a barrier is durable.
     durable: Lsn,
+    /// Everything up to here is written and ordered (a barrier or a full flush covers it): what back-pressure counts.
+    ordered: Lsn,
     /// The keeper has applied and saved everything up to here.
     saved: Lsn,
     /// The writer's last failure, while it retries.
@@ -228,7 +273,7 @@ enum KeeperMsg {
 }
 
 /// The mutex's data even if a thread panicked holding it: every critical section here leaves it consistent.
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(super) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
@@ -259,12 +304,17 @@ impl ProjectJournal {
                 .with_process(std::process::id(), host_name());
         let mut first = Vec::new();
         encode(&[(session_lsn, Record::Session(info))], &mut first)?;
-        let segment = Segment::create(&journal_dir, next_segment_seq(&journal_dir)?, session_lsn, &first)?;
+        let segment = Segment::open_first(start.fs.as_ref(), &journal_dir, session_lsn, &first)?;
+        let preparer = Preparer::new(Arc::clone(&start.fs), journal_dir.clone(), segment.seq + 1);
 
+        let queue =
+            Queue { items: Vec::new(), next: Lsn(session_lsn.0 + 1), asleep: false, stop: false, full_wanted: Lsn(0) };
+        let progress =
+            Progress { durable: session_lsn, ordered: session_lsn, saved: session_lsn, ..Progress::default() };
         let shared = Arc::new(Shared {
-            queue: Mutex::new(Queue { items: Vec::new(), next: Lsn(session_lsn.0 + 1), asleep: false, stop: false }),
+            queue: Mutex::new(queue),
             wake: Condvar::new(),
-            progress: Mutex::new(Progress { durable: session_lsn, saved: session_lsn, ..Progress::default() }),
+            progress: Mutex::new(progress),
             progressed: Condvar::new(),
             mark_wanted: AtomicBool::new(false),
             options,
@@ -281,17 +331,34 @@ impl ProjectJournal {
             published: start.base_lsn,
             wall: start.wall,
             applied: session_lsn,
+            last_snapshot: start.clock.now(),
+            clock: start.clock,
             dirty_since: None,
             last_change: None,
             records_since_snapshot: 0,
-            last_snapshot: Instant::now(),
         };
-        let writer = Writer { shared: Arc::clone(&shared), segment, keeper: keeper_tx.clone(), dir: journal_dir };
+        let writer = Writer {
+            shared: Arc::clone(&shared),
+            segment,
+            keeper: keeper_tx.clone(),
+            preparer: Arc::clone(&preparer),
+            durable_barrier: start.fs.barrier_is_durable(),
+            durable: session_lsn,
+            last_batch: 0,
+        };
+        let prep = Arc::clone(&preparer);
         let threads = vec![
             spawn("omuzaki-journal", &dir, move || writer.run())?,
             spawn("omuzaki-keeper", &dir, move || keeper.run(&keeper_rx))?,
+            spawn("omuzaki-journal-prep", &dir, move || prep.run())?,
         ];
-        Ok(Arc::new(Self { shared, snapshots: start.snapshots, keeper: keeper_tx, threads: Mutex::new(threads) }))
+        Ok(Arc::new(Self {
+            shared,
+            snapshots: start.snapshots,
+            keeper: keeper_tx,
+            preparer,
+            threads: Mutex::new(threads),
+        }))
     }
 
     /// Saves the project files now and returns once they hold everything appended before the call (`project.save`,
@@ -329,6 +396,30 @@ impl ProjectJournal {
             Ok(Err(reason)) => Err(SyncError::Failing { reason }),
             Err(_) => Err(SyncError::Timeout { durable }),
         }
+    }
+
+    /// Makes the keeper look at its clock now, after everything durable before the call, and returns once it has: a
+    /// save or a snapshot request that is due by then has happened. The keeper does this on its own at least every
+    /// second by the system's time; a test or a harness that drives the clock ([`SessionStart::with_clock`]) calls it
+    /// after moving the clock.
+    ///
+    /// # Errors
+    /// As [`sync`](JournalSink::sync).
+    pub fn tick(&self, timeout: Duration) -> Result<(), SyncError> {
+        let (reply, answer) = mpsc::channel();
+        {
+            // Through the writer's queue, so the keeper sees it behind everything appended before, marks included.
+            let mut queue = lock(&self.shared.queue);
+            queue.items.push(Item::Tick(reply));
+            if queue.asleep {
+                queue.asleep = false;
+                self.shared.wake.notify_one();
+            }
+        }
+        answer.recv_timeout(timeout).map_err(|_| match self.failure() {
+            Some(reason) => SyncError::Failing { reason },
+            None => SyncError::Timeout { durable: lock(&self.shared.progress).durable },
+        })
     }
 
     /// The session's snapshots: list, load and sweep them.
@@ -386,8 +477,9 @@ impl ProjectJournal {
             drop(writer.join());
         }
         drop(self.keeper.send(KeeperMsg::Stop));
-        for keeper in threads {
-            drop(keeper.join());
+        self.preparer.stop();
+        for thread in threads {
+            drop(thread.join());
         }
     }
 
@@ -451,7 +543,19 @@ impl JournalSink for ProjectJournal {
     }
 
     fn sync(&self, timeout: Duration) -> Result<Lsn, SyncError> {
-        let target = Lsn(lock(&self.shared.queue).next.0 - 1);
+        let target = {
+            let mut queue = lock(&self.shared.queue);
+            let target = Lsn(queue.next.0 - 1);
+            // The writer flushes in full up to here, with no new data if a barrier already covered it.
+            if target > queue.full_wanted {
+                queue.full_wanted = target;
+                if queue.asleep {
+                    queue.asleep = false;
+                    self.shared.wake.notify_one();
+                }
+            }
+            target
+        };
         let deadline = Instant::now() + timeout;
         let mut progress = lock(&self.shared.progress);
         loop {
@@ -486,11 +590,11 @@ impl JournalSink for ProjectJournal {
 }
 
 impl ProjectJournal {
-    /// Records appended and not yet durable.
+    /// Records appended and not yet written.
     fn pending(&self) -> usize {
         let last = lock(&self.shared.queue).next.0 - 1;
-        let durable = lock(&self.shared.progress).durable.0;
-        usize::try_from(last.saturating_sub(durable)).unwrap_or(usize::MAX)
+        let ordered = lock(&self.shared.progress).ordered.0;
+        usize::try_from(last.saturating_sub(ordered)).unwrap_or(usize::MAX)
     }
 }
 
@@ -502,91 +606,79 @@ impl Shared {
     }
 }
 
-/// The live segment the writer appends to.
-struct Segment {
-    file: File,
-    len: u64,
-}
-
-impl Segment {
-    /// Creates segment `seq` in `dir` starting at `first`, with `records` after its header, durable (the folder too,
-    /// on Unix) before it returns.
-    fn create(dir: &Path, seq: u64, first: Lsn, records: &[u8]) -> Result<Self, JournalError> {
-        fs::create_dir_all(dir).map_err(|source| JournalError::Io { path: dir.to_path_buf(), source })?;
-        let name = segment_name(seq)
-            .ok_or_else(|| JournalError::Unencodable { lsn: first.0, reason: format!("segment {seq} has no name") })?;
-        let path = dir.join(name);
-        let io = |source| JournalError::Io { path: path.clone(), source };
-        let mut file = OpenOptions::new().write(true).create_new(true).open(&path).map_err(io)?;
-        let mut bytes = SegmentHeader::new(first).encode().to_vec();
-        bytes.extend_from_slice(records);
-        file.write_all(&bytes).map_err(io)?;
-        file.sync_data().map_err(io)?;
-        #[cfg(unix)]
-        File::open(dir)
-            .and_then(|d| d.sync_all())
-            .map_err(|source| JournalError::Io { path: dir.to_path_buf(), source })?;
-        Ok(Self { file, len: bytes.len() as u64 })
-    }
-
-    /// Appends `bytes` at the end of the last good write and flushes them. On failure the file is cut back to that
-    /// end, so a retry never leaves a partial frame between two good ones.
-    fn append(&mut self, bytes: &[u8]) -> std::io::Result<()> {
-        let written = self
-            .file
-            .seek(SeekFrom::Start(self.len))
-            .and_then(|_| self.file.write_all(bytes))
-            .and_then(|()| self.file.sync_data());
-        match written {
-            Ok(()) => {
-                self.len += bytes.len() as u64;
-                Ok(())
-            }
-            Err(e) => {
-                // Best effort: if even this fails, the reader stops at the partial frame, which was never durable.
-                drop(self.file.set_len(self.len));
-                Err(e)
-            }
-        }
-    }
-}
-
 struct Writer {
     shared: Arc<Shared>,
     segment: Segment,
     keeper: Sender<KeeperMsg>,
-    dir: PathBuf,
+    preparer: Arc<Preparer>,
+    /// Whether a barrier makes data durable here (everywhere but Apple).
+    durable_barrier: bool,
+    /// The last LSN a durable flush covers.
+    durable: Lsn,
+    /// How many items the last batch held: the queue's next buffer is allocated that large here, off the appenders'
+    /// path, so an append never grows it from empty.
+    last_batch: usize,
+}
+
+/// One round of the writer's work.
+struct Work {
+    /// Everything queued (may be empty, for a full flush of what a barrier covered).
+    items: Vec<Item>,
+    /// Flush in full: a `sync` caller waits, or the batch holds a mark (a snapshot follows) or the close.
+    full: bool,
 }
 
 impl Writer {
     fn run(mut self) {
         let mut buffer = Vec::new();
-        while let Some(batch) = self.next_batch() {
-            if let Err(reason) = self.write(&batch, &mut buffer) {
+        while let Some(work) = self.next_work() {
+            let how = if work.full { Flush::Full } else { Flush::Barrier };
+            if let Err(reason) = self.write(&work.items, how, &mut buffer) {
                 self.shared.die(reason);
                 return;
             }
-            let last = batch.last().map(|item| match item {
-                Item::Entry(lsn, _) | Item::Close(lsn, _) => *lsn,
+            let last = work.items.iter().rev().find_map(|item| match item {
+                Item::Entry(lsn, _) | Item::Close(lsn, _) => Some(*lsn),
+                Item::Tick(_) => None,
             });
-            // To the keeper before the durable mark moves, so whoever waited for this LSN and then talks to the keeper
-            // is behind this batch.
-            drop(self.keeper.send(KeeperMsg::Durable(batch)));
             let mut progress = lock(&self.shared.progress);
             if let Some(lsn) = last {
-                progress.durable = progress.durable.max(lsn);
+                progress.ordered = progress.ordered.max(lsn);
+            }
+            if work.full || self.durable_barrier {
+                self.durable = progress.ordered;
+                progress.durable = progress.ordered;
             }
             progress.write_error = None;
+            drop(progress);
+            // To the keeper before the durable mark is published, so whoever waited for this LSN and then talks to the
+            // keeper is behind this batch.
+            if !work.items.is_empty() {
+                drop(self.keeper.send(KeeperMsg::Durable(work.items)));
+            }
             self.shared.progressed.notify_all();
         }
     }
 
-    /// Everything queued, waiting if there is nothing; `None` once stopped with nothing left.
-    fn next_batch(&self) -> Option<Vec<Item>> {
+    /// Everything queued, waiting if there is nothing and no `sync` caller waits on a barrier-only batch; `None` once
+    /// stopped with nothing left.
+    fn next_work(&mut self) -> Option<Work> {
+        let mut spare = Vec::with_capacity(self.last_batch.max(64));
         let mut queue = lock(&self.shared.queue);
         loop {
+            let full = queue.full_wanted > self.durable;
             if !queue.items.is_empty() {
-                return Some(std::mem::take(&mut queue.items));
+                let items = std::mem::replace(&mut queue.items, std::mem::take(&mut spare));
+                drop(queue);
+                self.last_batch = items.len();
+                let full = full
+                    || items
+                        .iter()
+                        .any(|item| matches!(item, Item::Close(..) | Item::Entry(_, HistoryEntry::Mark { .. })));
+                return Some(Work { items, full });
+            }
+            if full {
+                return Some(Work { items: Vec::new(), full: true });
             }
             if queue.stop {
                 return None;
@@ -596,26 +688,31 @@ impl Writer {
         }
     }
 
-    /// Encodes and writes one batch, retrying a failed write until it lands. Errors only for what a retry can't fix:
-    /// an entry that can't be encoded, a segment that can't be named.
-    fn write(&mut self, batch: &[Item], buffer: &mut Vec<u8>) -> Result<(), String> {
+    /// Encodes and writes one batch (or only flushes, for an empty one), retrying a failed write until it lands. Errors
+    /// only for what a retry can't fix: an entry that can't be encoded.
+    fn write(&mut self, batch: &[Item], how: Flush, buffer: &mut Vec<u8>) -> Result<(), String> {
         let records: Vec<(Lsn, Record)> = batch
             .iter()
             .filter_map(|item| match item {
-                Item::Entry(_, HistoryEntry::Mark { .. }) => None,
+                Item::Entry(_, HistoryEntry::Mark { .. }) | Item::Tick(_) => None,
                 Item::Entry(lsn, entry) => Some((*lsn, Record::Entry(entry.clone()))),
                 Item::Close(lsn, snapshot) => Some((*lsn, Record::Close { snapshot: *snapshot })),
             })
             .collect();
-        let Some(first) = records.first().map(|(lsn, _)| *lsn) else { return Ok(()) };
         buffer.clear();
-        encode(&records, buffer).map_err(|e| format!("a change can't be written to the journal: {e}"))?;
+        let first = records.first().map(|(lsn, _)| *lsn);
+        if first.is_some() {
+            encode(&records, buffer).map_err(|e| format!("a change can't be written to the journal: {e}"))?;
+        }
         let mut backoff = FIRST_BACKOFF;
         loop {
-            let written = if self.segment.len + buffer.len() as u64 > self.shared.options.segment_bytes {
-                self.rotate(first, buffer)
-            } else {
-                self.segment.append(buffer).map_err(|e| e.to_string())
+            let written = match first {
+                None if how == Flush::Full => self.segment.flush(how).map_err(|e| e.to_string()),
+                None => Ok(()),
+                Some(first) if self.segment.len + buffer.len() as u64 > self.shared.options.segment_bytes => {
+                    self.rotate(first, buffer, how)
+                }
+                Some(_) => self.segment.append(buffer, how).map_err(|e| e.to_string()),
             };
             match written {
                 Ok(()) => return Ok(()),
@@ -630,10 +727,10 @@ impl Writer {
         }
     }
 
-    /// Starts the next segment with this batch in it.
-    fn rotate(&mut self, first: Lsn, records: &[u8]) -> Result<(), String> {
-        let seq = next_segment_seq(&self.dir).map_err(|e| e.to_string())?;
-        self.segment = Segment::create(&self.dir, seq, first, records).map_err(|e| e.to_string())?;
+    /// Starts the next segment with this batch in it: the prepared one.
+    fn rotate(&mut self, first: Lsn, records: &[u8], how: Flush) -> Result<(), String> {
+        let prepared = self.preparer.take(self.segment.seq).map_err(|e| e.to_string())?;
+        self.segment = Segment::fill(prepared, first, records, how).map_err(|e| e.to_string())?;
         Ok(())
     }
 }
@@ -656,18 +753,20 @@ struct Keeper {
     /// The last LSN whose changes the shadow holds.
     applied: Lsn,
     /// When the shadow first differed from the files since the last save.
-    dirty_since: Option<Instant>,
-    last_change: Option<Instant>,
+    dirty_since: Option<Seconds>,
+    last_change: Option<Seconds>,
     records_since_snapshot: u64,
-    last_snapshot: Instant,
+    last_snapshot: Seconds,
+    clock: Arc<dyn Clock>,
 }
 
 impl Keeper {
     fn run(mut self, inbox: &Receiver<KeeperMsg>) {
         loop {
+            let mut ticked = Vec::new();
             match inbox.recv_timeout(self.wait()) {
                 Ok(KeeperMsg::Durable(batch)) => {
-                    if let Err(reason) = self.take(batch) {
+                    if let Err(reason) = self.take(batch, &mut ticked) {
                         self.shared.die(reason);
                         return;
                     }
@@ -689,28 +788,52 @@ impl Keeper {
                 drop(self.save());
             }
             self.ask_for_mark();
+            for reply in ticked {
+                let _ = reply.send(());
+            }
         }
+    }
+
+    /// When a save is due by the clock: the idle delay after the last change, or the most a change may wait.
+    fn save_due_at(&self) -> Option<f64> {
+        let options = &self.shared.options;
+        let (Some(since), Some(last)) = (self.dirty_since, self.last_change) else { return None };
+        Some((last.0 + options.save_idle.as_secs_f64()).min(since.0 + options.save_max.as_secs_f64()))
     }
 
     /// How long to wait for the next message: until a save is due, or the snapshot tick.
     fn wait(&self) -> Duration {
-        let options = &self.shared.options;
-        let (Some(since), Some(last)) = (self.dirty_since, self.last_change) else { return KEEPER_TICK };
-        let due = (last + options.save_idle).min(since + options.save_max);
-        due.saturating_duration_since(Instant::now()).min(KEEPER_TICK)
+        let Some(due) = self.save_due_at() else { return KEEPER_TICK };
+        Duration::try_from_secs_f64(due - self.clock.now().0).unwrap_or(Duration::ZERO).min(KEEPER_TICK)
     }
 
     fn save_due(&self) -> bool {
-        let options = &self.shared.options;
-        let (Some(since), Some(last)) = (self.dirty_since, self.last_change) else { return false };
-        let now = Instant::now();
-        now >= last + options.save_idle || now >= since + options.save_max
+        self.save_due_at().is_some_and(|due| self.clock.now().0 >= due)
     }
 
     /// Applies a durable batch to the shadow and writes the snapshots its marks ask for.
-    fn take(&mut self, batch: Vec<Item>) -> Result<(), String> {
-        for item in batch {
-            let Item::Entry(lsn, entry) = item else { continue };
+    /// A tick's answer goes into `ticked`, sent once the keeper has looked at its clock. A failure marks the journal
+    /// dead before the batch's unread ticks are dropped, so whoever waited on one sees why.
+    fn take(&mut self, batch: Vec<Item>, ticked: &mut Vec<Sender<()>>) -> Result<(), String> {
+        let mut items = batch.into_iter();
+        let taken = self.take_from(&mut items, ticked);
+        if let Err(reason) = &taken {
+            self.shared.die(reason.clone());
+        }
+        drop(items);
+        taken
+    }
+
+    fn take_from(&mut self, items: &mut std::vec::IntoIter<Item>, ticked: &mut Vec<Sender<()>>) -> Result<(), String> {
+        for item in items {
+            let (lsn, entry) = match item {
+                Item::Entry(lsn, entry) => (lsn, entry),
+                Item::Tick(reply) => {
+                    ticked.push(reply);
+                    continue;
+                }
+                Item::Close(..) => continue,
+            };
             if let HistoryEntry::Mark { history } = entry {
                 self.snapshot(Trigger::Auto, lsn, &history)?;
                 continue;
@@ -729,7 +852,7 @@ impl Keeper {
                 self.shadow.apply(patch).map_err(|e| {
                     format!("the saved copy of the project disagrees with the open one at record {}: {e}", lsn.0)
                 })?;
-                let now = Instant::now();
+                let now = self.clock.now();
                 self.dirty_since.get_or_insert(now);
                 self.last_change = Some(now);
             }
@@ -755,7 +878,7 @@ impl Keeper {
                 let reason = e.to_string();
                 progress.save_error = Some(reason.clone());
                 // Retry later, not at once: the file may be open in an editor.
-                self.dirty_since = Some(Instant::now());
+                self.dirty_since = Some(self.clock.now());
                 Err(reason)
             }
         }
@@ -792,7 +915,7 @@ impl Keeper {
             tracing::warn!(%warning, "snapshot");
         }
         self.records_since_snapshot = 0;
-        self.last_snapshot = Instant::now();
+        self.last_snapshot = self.clock.now();
         // Compaction keeps one snapshot of slack: what lies wholly before the previous snapshot moves to the archive.
         let previous = std::mem::replace(&mut self.published, lsn);
         if let Err(error) = archive_before(self.shadow.dir(), previous) {
@@ -805,7 +928,8 @@ impl Keeper {
     fn ask_for_mark(&self) {
         let options = &self.shared.options;
         let due = self.records_since_snapshot >= options.snapshot_records
-            || (self.records_since_snapshot > 0 && self.last_snapshot.elapsed() >= options.snapshot_every);
+            || (self.records_since_snapshot > 0
+                && self.clock.now().0 - self.last_snapshot.0 >= options.snapshot_every.as_secs_f64());
         if due {
             self.shared.mark_wanted.store(true, Ordering::Relaxed);
         }
@@ -889,17 +1013,6 @@ fn sync_dir(dir: &Path) -> std::io::Result<()> {
 /// The live journal folder of the project in `project_dir`.
 pub fn journal_dir(project_dir: &Path) -> PathBuf {
     project_dir.join(".omuzaki").join(JOURNAL_DIR)
-}
-
-/// One past the highest segment sequence number in `dir` (1 for an empty or missing folder).
-fn next_segment_seq(dir: &Path) -> Result<u64, JournalError> {
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(1),
-        Err(source) => return Err(JournalError::Io { path: dir.to_path_buf(), source }),
-    };
-    let last = entries.filter_map(Result::ok).filter_map(|e| segment_seq(e.file_name().to_str()?)).max();
-    Ok(last.map_or(1, |seq| seq + 1))
 }
 
 fn spawn(name: &str, dir: &Path, run: impl FnOnce() + Send + 'static) -> Result<JoinHandle<()>, JournalError> {

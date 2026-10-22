@@ -4062,6 +4062,7 @@ dependencies = [
  "crc32fast",
  "criterion",
  "inventory",
+ "libc",
  "omuzaki-assets-lock",
  "omuzaki-core",
  "omuzaki-doc-api",

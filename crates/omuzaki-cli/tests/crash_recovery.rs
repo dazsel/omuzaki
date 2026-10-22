@@ -327,13 +327,15 @@ fn fields(project: &Path, recover: &str) -> (Fields, String) {
     (fields, read.stderr)
 }
 
-/// The newest segment of the live journal.
+/// The newest segment of the live journal that holds records: the one after it, if any, is prepared and unused
+/// (first LSN 0 in its header, bytes 16 to 24).
 fn newest_segment(project: &Path) -> PathBuf {
     let dir = project.join(".omuzaki").join("journal");
     let mut segments: Vec<PathBuf> = std::fs::read_dir(&dir)
         .expect("the journal folder")
         .map(|entry| entry.expect("an entry").path())
         .filter(|path| path.extension().is_some_and(|ext| ext == "tjl"))
+        .filter(|path| std::fs::read(path).is_ok_and(|bytes| bytes.get(16..24).is_some_and(|f| f != [0; 8])))
         .collect();
     segments.sort();
     segments.pop().expect("a journal segment")

@@ -27,6 +27,9 @@ omuzaki-store-api = { path = "../omuzaki-store-api" }
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 rustix.workspace = true
 
+[target.'cfg(target_vendor = "apple")'.dependencies]
+libc.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
 
@@ -44,6 +47,10 @@ harness = false
 
 [[bench]]
 name = "open"
+harness = false
+
+[[bench]]
+name = "journal"
 harness = false
 
 [lints]

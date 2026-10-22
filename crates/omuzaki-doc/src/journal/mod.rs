@@ -10,9 +10,11 @@
 //! of the log, so [`write_frame`] refuses an empty payload.
 
 mod format;
+mod fs;
 mod open;
 mod reader;
 mod record;
+mod segments;
 mod writer;
 
 use std::path::PathBuf;
@@ -21,6 +23,7 @@ pub use format::{
     FORMAT_VERSION, FRAME_HEADER_LEN, Frame, FrameEnd, HEADER_LEN, HeaderFault, MAGIC, MAX_PAYLOAD, SKIPPABLE,
     SegmentHeader, read_frame, segment_name, segment_seq, write_frame,
 };
+pub use fs::{Flush, JournalFile, JournalFs, StdFs};
 pub use open::{Recover, Recovery, Reopened, reopen, reopen_with};
 pub use reader::{End, Position, Reader, Scan};
 pub use record::{MAX_DEPTH, Record, SessionInfo, decode, encode, kind};
