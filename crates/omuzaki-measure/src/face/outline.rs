@@ -36,6 +36,9 @@ pub const MAX_LINE: f64 = 0.10;
 /// are a leak.
 pub const JUMP: f64 = 0.08;
 
+/// An exit from the region within this distance of an eye (IOD) that the region follows is the eye's, not the edge's.
+pub const EYE_REACH: f64 = 0.35;
+
 /// How many samples beside an unpartnered jump decide whether it is a leak or a lock of hair (20°).
 const BESIDE_JUMP: usize = 8;
 
@@ -200,18 +203,41 @@ pub(crate) fn runs(pick: impl Fn(usize) -> bool) -> Vec<(f64, f64)> {
 }
 
 /// Reads one ray at `phi` from the face region's edge: the stroke's inner edge and width (ROI pixels), or `None` when
-/// the ray leaves the region of interest first.
+/// the ray leaves the region of interest still inside the region.
+///
+/// An exit within [`EYE_REACH`] of an eye, followed by the region again, is the eye and not the edge: a big eye that
+/// opens into the hair (a lash touching the bangs) is not a hole of the region, and a ray along the eye line crosses it
+/// on its way to the cheek. Anywhere else the first exit is the edge, so a gap between locks of hair beyond it is not.
 fn read_ray(roi: &Roi, seg: &Segmentation, frame: &FaceFrame, phi: f64) -> Option<Ray> {
     let skin_l = seg.skin[0];
-    // March to the first sample outside the region.
-    let mut t = RAY_START * frame.iod_px;
-    let exit = loop {
-        let i = roi.index(frame.along(phi, t))?;
+    let d = frame.iod_px;
+    let (cos, sin) = (phi.to_radians().cos(), phi.to_radians().sin());
+    let at_an_eye = |t: f64| [-0.5, 0.5_f64].iter().any(|eye| (t / d * cos - eye).hypot(t / d * sin) < EYE_REACH);
+    // March to the first sample outside the region; past an eye, on to the next.
+    let mut t = RAY_START * d;
+    let mut exit: Option<f64> = None;
+    loop {
+        let Some(i) = roi.index(frame.along(phi, t)) else {
+            // Out of the region of interest: inside the region, or past an eye with no region after it.
+            if exit.is_some() {
+                break;
+            }
+            return None;
+        };
         if !seg.filled[i] {
-            break t;
+            if exit.is_none() {
+                exit = Some(t);
+                if !at_an_eye(t) {
+                    break;
+                }
+            }
+        } else if exit.is_some() {
+            // The region again, past an eye: the exit before was the eye's.
+            exit = None;
         }
         t += STEP;
-    };
+    }
+    let exit = exit?;
     // Sample the lightness from 3 px before the exit to 0.10 IOD + 3 px after it.
     let start = exit - 3.0;
     let end = exit + MAX_LINE * frame.iod_px + 3.0;
@@ -438,7 +464,7 @@ fn mark(state: &mut [SampleState; ANGLES], measured: &[usize], from: usize, to: 
 }
 
 #[cfg(test)]
-#[allow(clippy::cast_precision_loss)] // sample indices
+#[allow(clippy::cast_precision_loss)] // sample indices and test pixels
 mod tests {
     use super::*;
 
@@ -452,6 +478,51 @@ mod tests {
         }
         assert_eq!((angle(18), angle(41)), (30.0, 87.5));
         assert_eq!(weight(17) + weight(18) + weight(66) + weight(67), 6.0);
+    }
+
+    /// A 400 × 400 ROI of flat skin with the eyes 100 px apart at (150, 200) and (250, 200), and the face region
+    /// `filled` says, for [`read_ray`].
+    fn flat(filled: impl Fn(f64, f64) -> bool) -> (Roi, Segmentation, FaceFrame) {
+        let (w, h) = (400, 400);
+        let roi = Roi {
+            width: w,
+            height: h,
+            lab: vec![[85.0, 5.0, 6.0]; w * h],
+            alpha: vec![255; w * h],
+            scale: 1,
+            offset: [0.0, 0.0],
+        };
+        let filled = (0..w * h).map(|i| filled((i % w) as f64 + 0.5, (i / w) as f64 + 0.5)).collect();
+        let seg = Segmentation {
+            skin: [85.0, 5.0, 6.0],
+            line_l: None,
+            lower_dl: -20.0,
+            skin_like: vec![true; w * h],
+            filled,
+            background: None,
+        };
+        let frame = FaceFrame::from_eyes([150.0, 200.0], [250.0, 200.0]).expect("two eyes");
+        (roi, seg, frame)
+    }
+
+    #[test]
+    fn a_ray_crosses_an_eye_that_opens_into_the_hair_but_not_a_gap_in_the_hair() {
+        // A face of radius 85 px (0.85 IOD) about the eye midpoint; the character's left eye, 30 px across, is cut out of
+        // the region and opens upward to the face's edge, as a lash touching the bangs makes it.
+        let face = |x: f64, y: f64| (x - 200.0).hypot(y - 200.0) < 85.0;
+        let eye = |x: f64, y: f64| (x - 250.0).hypot(y - 200.0) < 15.0 || ((x - 250.0).abs() < 3.0 && y < 200.0);
+        let (roi, seg, frame) = flat(|x, y| face(x, y) && !eye(x, y));
+        let ray = read_ray(&roi, &seg, &frame, 0.0).expect("the ray ends inside the ROI");
+        assert!((ray.inner / 100.0 - 0.85).abs() < 0.01, "the cheek beyond the eye: {}", ray.inner / 100.0);
+        // Far from the eyes, a band outside the region with the region beyond it (skin between locks of hair) ends the
+        // ray at the band.
+        let band = |x: f64, y: f64| ((x - 200.0).hypot(y - 200.0) - 60.0).abs() < 4.0;
+        let (roi, seg, frame) = flat(|x, y| face(x, y) && !band(x, y));
+        let ray = read_ray(&roi, &seg, &frame, 90.0).expect("the ray ends inside the ROI");
+        assert!((ray.inner / 100.0 - 0.56).abs() < 0.01, "the first exit: {}", ray.inner / 100.0);
+        // A ray that leaves the ROI inside the region is cut.
+        let (roi, seg, frame) = flat(|_, _| true);
+        assert!(read_ray(&roi, &seg, &frame, 90.0).is_none());
     }
 
     fn profile(r: &[f64; ANGLES]) -> OutlineProfile {
