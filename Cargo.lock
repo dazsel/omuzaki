@@ -5477,6 +5477,7 @@ dependencies = [
  "omuzaki-io-gltf",
  "omuzaki-io-mock",
  "omuzaki-io-ops",
+ "omuzaki-io-vrm",
  "omuzaki-link-build",
  "omuzaki-mcp",
  "omuzaki-ops",
