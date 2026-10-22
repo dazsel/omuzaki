@@ -39,6 +39,19 @@ impl RealPainter {
         }
     }
 
+    /// Changes the base layer's raster density to `base_px_per_m`; every layer keeps its rectangle and its density
+    /// ratio. The next paint draws for the new density, so the layers' specs (and textures) change size.
+    pub fn set_base_px_per_m(&mut self, base_px_per_m: f32) {
+        for spec in &mut self.layers {
+            spec.px_per_m = base_px_per_m * spec.id.density_ratio();
+        }
+    }
+
+    /// The base layer's raster density.
+    pub fn base_px_per_m(&self) -> f32 {
+        self.layers[FaceLayerId::Base as usize].px_per_m / FaceLayerId::Base.density_ratio()
+    }
+
     /// Paints one section alone into `out` (cleared first), for tools: parity tests, sweeps and contact sheets.
     ///
     /// # Errors

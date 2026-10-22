@@ -96,6 +96,16 @@ impl Resolve {
         queue.write_buffer(origin, 0, &bytes);
     }
 
+    /// As [`set_origin`](Self::set_origin), for a source that holds the rectangle somewhere else than at (0, 0): the
+    /// target pixel `p` reads the source texel `p - origin`, so an origin may be negative.
+    pub fn set_origin_signed(queue: &wgpu::Queue, origin: &wgpu::Buffer, [x, y]: [i64; 2]) {
+        let clamp = |v: i64| i32::try_from(v).unwrap_or(if v < 0 { i32::MIN } else { i32::MAX });
+        let mut bytes = [0_u8; 16];
+        bytes[..4].copy_from_slice(&clamp(x).to_le_bytes());
+        bytes[4..8].copy_from_slice(&clamp(y).to_le_bytes());
+        queue.write_buffer(origin, 0, &bytes);
+    }
+
     /// A bind group that reads `source`, which must hold the rectangle `origin` names.
     pub fn bind(&self, device: &wgpu::Device, source: &wgpu::TextureView, origin: &wgpu::Buffer) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {

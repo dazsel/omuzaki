@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use omuzaki_anim_api::ChannelBuf;
 
 use crate::check::{Check, Validate};
-use crate::expression::{ChannelValues, ExpressionSet};
+use crate::expression::{ChannelValues, ExpressionId, ExpressionKind, ExpressionSet};
 use crate::grammar::GrammarRules;
 use crate::mapping::FaceMapping;
 use crate::palette::ColourRef;
@@ -835,6 +835,10 @@ pub struct FaceProfile {
     pub rest: ChannelValues,
     /// Named expressions and visemes.
     pub expressions: ExpressionSet,
+    /// The expression the face returns to when no held expression shows (FE-03), for example a faint smile; left out,
+    /// it returns to the resting face. It must name one of `expressions` that is a mood or an accent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_expression: Option<ExpressionId>,
     /// Which anime grammar rules run for this character and how strongly (FE-05). A rule with no entry runs at its
     /// default, so a file without this section behaves as before. Variants switch single rules by path.
     pub grammar: GrammarRules,
@@ -874,6 +878,15 @@ impl Validate for FaceProfile {
             if e.deltas.0.values().any(|v| !v.is_finite()) {
                 c.fail(&format!("expressions/{id}/deltas"), "a delta is not a finite number");
             }
+            c.nested(&format!("expressions/{id}/playback"), &e.playback);
+        }
+        if let Some(id) = &self.default_expression {
+            let ok = self
+                .expressions
+                .0
+                .get(id)
+                .is_some_and(|e| matches!(e.kind, ExpressionKind::Emotion | ExpressionKind::Accent));
+            c.rule(&["default_expression"], ok, "the default expression must be one of the face's moods or accents");
         }
     }
 }

@@ -630,7 +630,7 @@ impl Scan {
     ///   |a - b| instead of the ideal a + b, a slight under-coverage notch. Skia's analytic AA does the same, so
     ///   Chrome parity holds;
     /// - overlap is found per direction, so two same-winding layers whose edges of opposite directions cross inside
-    ///   one pixel are still summed (#2170);
+    ///   one pixel are summed, not unioned (#2170). Chrome sums them too (`raster_supersample`), so parity holds;
     /// - cutting a band at the crossings of its edges costs more than linearly in the pieces that cross inside it
     ///   (400 mutually crossing slivers take 7 ms a row set); a face never has more than a few.
     ///

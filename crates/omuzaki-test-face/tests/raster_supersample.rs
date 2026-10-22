@@ -198,6 +198,25 @@ fn offset_same_winding_layers_cover_from_the_outer_edge() {
     assert_matches_chrome(&image, 40, &[(5, 8, 205), (17, 8, 204), (6, 8, 255)]);
 }
 
+/// #2170: two same-winding layers whose edges of opposite directions cross inside one pixel (the meeting of two
+/// overlapping strands) are summed there, not unioned: the geometric union of pixel (5, 4) is 0.85, but Chrome 141
+/// reads 255, as each layer alone reads 128. The CPU raster sums too, so it matches. Drawn by
+///
+/// ```js
+/// const x = [[5.2, 4], [20, 4], [20, 5], [5.8, 5]], y = [[1, 4], [5.8, 4], [5.2, 5], [1, 5]];   // 40 x 30 canvas
+/// g.beginPath();
+/// for (const pts of [x, y]) { g.moveTo(...pts[0]); for (const q of pts.slice(1)) g.lineTo(...q); g.closePath(); }
+/// g.fill('nonzero');   // getImageData(5, 4) -> 255; x alone or y alone -> 128; (4, 4) and (6, 4) -> 255
+/// ```
+#[test]
+fn opposite_edges_of_same_winding_layers_crossing_in_a_pixel_sum_as_chrome_does() {
+    let x = [[5.2, 4.0], [20.0, 4.0], [20.0, 5.0], [5.8, 5.0]];
+    let y = [[1.0, 4.0], [5.8, 4.0], [5.2, 5.0], [1.0, 5.0]];
+    assert_matches_chrome(&alpha(40, 30, &[&x, &y]), 40, &[(5, 4, 255), (4, 4, 255), (6, 4, 255)]);
+    assert_matches_chrome(&alpha(40, 30, &[&x]), 40, &[(5, 4, 128)]);
+    assert_matches_chrome(&alpha(40, 30, &[&y]), 40, &[(5, 4, 128)]);
+}
+
 /// A hole stays a hole: an outer square and an opposite-wound inner one (counter-clockwise on screen). Chrome 141 reads
 /// 102 and 26 on the hole's left and right edge pixels (the ring covers 0.4 and 0.1 of them) and 0 inside. Drawn by
 ///

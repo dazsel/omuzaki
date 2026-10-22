@@ -3,7 +3,7 @@
 //!
 //! Each probe is a 256 x 160 px image of a 0.256 x 0.160 m face-plane rect at 1000 px/m. The drawings are the same as in
 //! the Chromium probe script that saves `fixtures/raster/*.png`, command for command; change one and change the other,
-//! then regenerate the PNGs. The stroke-only probes stay in `raster_probes.rs`.
+//! then regenerate the PNGs. [`stroke_widths`] is the GPU stroke tests' own and has no Chromium twin.
 
 use image::RgbaImage;
 use omuzaki_core::glam::{Affine2, Vec2};
@@ -198,4 +198,72 @@ pub fn nested_transforms(d: &mut DrawList) {
     d.push(Cmd::PopTransform);
     let after = ellipse(d, 0.08, -0.05, 0.02, 0.012);
     fill(d, after, rgba(120, 200, 80, 255), 1.0);
+}
+
+// ---------------------------------------------------------------------------------------------- the stroke probes
+
+/// A wide round-capped stroke along a curve and a corner, a translucent second stroke over it, and a butt-capped bar.
+pub fn round_capped_stroke(d: &mut DrawList) {
+    let curve = d
+        .path()
+        .move_to(v(-0.1, -0.04))
+        .cubic_to(v(-0.06, 0.08), v(0.0, -0.08), v(0.04, 0.03))
+        .line_to(v(0.1, 0.05))
+        .finish();
+    stroke(d, curve, rgba(90, 63, 192, 255), 0.022, Cap::Round, Join::Round, 1.0);
+    let zig = polyline(d, &[[-0.09, 0.02], [0.0, -0.03], [0.09, -0.005]]);
+    stroke(d, zig, rgba(255, 255, 255, 255), 0.008, Cap::Round, Join::Round, 0.6);
+    let bar = polyline(d, &[[-0.1, 0.065], [0.1, 0.065]]);
+    stroke(d, bar, rgba(224, 122, 31, 255), 0.012, Cap::Butt, Join::Miter, 1.0);
+}
+
+/// A 25 degree corner (miter ratio 4.6: mitred under Canvas's limit of 10, bevelled under Skia's default of 4), a closed
+/// diamond and a round-joined V.
+pub fn miter_join(d: &mut DrawList) {
+    let sharp = polyline(d, &[[-0.1, -0.04], [0.09, 0.02], [-0.07, 0.0411]]);
+    stroke(d, sharp, rgba(200, 60, 40, 255), 0.01, Cap::Butt, Join::Miter, 1.0);
+    let diamond = polygon(d, &[[0.025, -0.05], [0.0, -0.025], [-0.025, -0.05], [0.0, -0.075]]);
+    stroke(d, diamond, rgba(43, 122, 93, 255), 0.008, Cap::Butt, Join::Miter, 1.0);
+    let vee = polyline(d, &[[0.06, -0.03], [0.09, -0.07], [0.12, -0.03]]);
+    stroke(d, vee, rgba(50, 70, 160, 255), 0.012, Cap::Butt, Join::Round, 1.0);
+}
+
+/// Strokes from 0.05 to 1.2 px across, diagonal, axis-aligned and curved: Skia draws them as modulated hairlines.
+pub fn hairline(d: &mut DrawList) {
+    let ink = rgba(20, 20, 20, 255);
+    for (points, width, cap, join) in [
+        ([[-0.11, 0.06], [0.11, 0.045]], 0.0003, Cap::Round, Join::Round),
+        ([[-0.11, 0.035], [0.11, 0.0]], 0.0008, Cap::Round, Join::Round),
+        ([[-0.11, -0.005], [0.11, -0.04]], 0.0012, Cap::Round, Join::Round),
+        ([[-0.11, -0.0625], [0.11, -0.0625]], 0.0005, Cap::Butt, Join::Miter),
+        ([[-0.0951, -0.07], [-0.0951, 0.07]], 0.0005, Cap::Butt, Join::Miter),
+    ] {
+        let p = polyline(d, &points);
+        stroke(d, p, ink, width, cap, join, 1.0);
+    }
+    let curve = d.path().move_to(v(-0.08, -0.06)).cubic_to(v(-0.04, 0.05), v(0.04, -0.05), v(0.08, 0.06)).finish();
+    stroke(d, curve, rgba(200, 30, 30, 255), 0.0004, Cap::Round, Join::Round, 1.0);
+    let faint = polyline(d, &[[-0.11, -0.03], [0.11, -0.05]]);
+    stroke(d, faint, ink, 0.00005, Cap::Round, Join::Round, 1.0);
+}
+
+/// Every cap and join at widths from 1 to 40 px: a zigzag per width with a sharp and a shallow corner, butt-capped and
+/// mitred on the left, round on the right, and a curve. One plane millimetre is a pixel here.
+pub fn stroke_widths(d: &mut DrawList) {
+    let ink = rgba(30, 40, 90, 255);
+    for (i, width_px) in [1.0_f32, 2.5, 6.0, 14.0, 24.0, 40.0].into_iter().enumerate() {
+        #[allow(clippy::cast_precision_loss)] // six probes
+        let y = 0.06 - 0.024 * i as f32;
+        let width = width_px / PX_PER_M;
+        let left = polyline(d, &[[-0.115, y], [-0.085, y - 0.008], [-0.06, y + 0.004], [-0.035, y]]);
+        stroke(d, left, ink, width, Cap::Butt, Join::Miter, 1.0);
+        let right = polyline(d, &[[0.0, y], [0.025, y - 0.008], [0.05, y + 0.004], [0.075, y]]);
+        stroke(d, right, ink, width, Cap::Round, Join::Round, 0.8);
+        let curve = d
+            .path()
+            .move_to(v(0.09, y - 0.006))
+            .cubic_to(v(0.1, y + 0.01), v(0.11, y - 0.01), v(0.12, y + 0.004))
+            .finish();
+        stroke(d, curve, rgba(150, 30, 60, 255), width.min(0.006), Cap::Round, Join::Round, 1.0);
+    }
 }
