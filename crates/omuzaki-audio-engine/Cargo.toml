@@ -20,11 +20,16 @@ serde_json.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+criterion.workspace = true
 omuzaki-audio-mock = { path = "../omuzaki-audio-mock" }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 
 [lints]
 workspace = true
+
+[[bench]]
+name = "mix"
+harness = false
 
 # Native only: device audio and real-time threads.
 [package.metadata.omuzaki]

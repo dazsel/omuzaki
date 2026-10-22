@@ -4067,6 +4067,7 @@ name = "omuzaki-audio-engine"
 version = "0.0.0"
 dependencies = [
  "cpal",
+ "criterion",
  "omuzaki-audio-api",
  "omuzaki-audio-mock",
  "omuzaki-core",
