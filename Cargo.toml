@@ -111,6 +111,8 @@ objc2-core-graphics = "0.3"   # the listen-only CGEventTap on macOS (Zlib OR Apa
 objc2-core-foundation = "0.3"   # the tap's run loop and Mach port on macOS (Zlib OR Apache-2.0 OR MIT)
 objc2-game-controller = "0.3"   # GameController pads with background events on macOS (Zlib OR Apache-2.0 OR MIT)
 objc2-io-kit = "0.3"   # the Input Monitoring check and the IOHID fallback on macOS (Zlib OR Apache-2.0 OR MIT)
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString"] }   # NSString for the Syphon server's name on macOS (Zlib OR Apache-2.0 OR MIT), omuzaki-stream-share; already in the lock
+objc2-metal = { version = "0.3", default-features = false, features = ["std", "MTLAllocation", "MTLDevice", "MTLTexture", "MTLResource", "MTLPixelFormat", "MTLTypes", "MTLCommandQueue", "MTLCommandBuffer"] }   # the Syphon output's Metal device and texture on macOS (Zlib OR Apache-2.0 OR MIT), omuzaki-stream-share; already in the lock
 ashpd = { version = "0.13", default-features = false, features = ["tokio", "global_shortcuts"] }   # the GlobalShortcuts portal for bindings on Wayland (MIT)
 midir = "0.11"   # MIDI controllers as binding sources (#469): ALSA, CoreMIDI and WinMM input (MIT)
 url = "2"   # WHATWG URL parsing (MIT OR Apache-2.0), the xtask models gate; already in the lock
