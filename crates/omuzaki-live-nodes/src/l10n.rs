@@ -106,4 +106,25 @@ omuzaki_l10n_api::messages! {
     /// A cooldown that isn't a number of seconds from 0 up.
     pub bad_seconds = "live-nodes-bad-seconds" ()
         => "This has to be a number of seconds, 0 or more.";
+    /// A timer period under its least.
+    pub seconds_too_short = "live-nodes-seconds-too-short" (min: Num)
+        => "This has to be at least { $min } seconds.";
+    /// A time of day that isn't `HH:MM`.
+    pub bad_time = "live-nodes-bad-time" (text: Verbatim)
+        => "{ $text } isn't a time of day; write it as HH:MM, like 21:30.";
+    /// A time zone name the database doesn't know.
+    pub unknown_time_zone = "live-nodes-unknown-time-zone" (name: Verbatim)
+        => "{ $name } isn't a time zone; use a name like Europe/London or America/New_York.";
+    /// A day list with no days.
+    pub no_days = "live-nodes-no-days" ()
+        => "Choose at least one day.";
+    /// A date that isn't `MM-DD` or `YYYY-MM-DD`.
+    pub bad_date = "live-nodes-bad-date" (text: Verbatim)
+        => "{ $text } isn't a date; write MM-DD for every year or YYYY-MM-DD for one day.";
+    /// A one-off date range that ends before it starts.
+    pub dates_backwards = "live-nodes-dates-backwards" ()
+        => "The last day is before the first.";
+    /// A date range mixing `MM-DD` and `YYYY-MM-DD`.
+    pub date_forms_differ = "live-nodes-date-forms-differ" ()
+        => "Write both dates as MM-DD, or both as YYYY-MM-DD.";
 }

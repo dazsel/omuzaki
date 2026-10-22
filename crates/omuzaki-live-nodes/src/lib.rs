@@ -14,6 +14,7 @@
 //! | [`math`] | `math.op`, `math.map_range`, `math.ease`, `math.compare`, `math.random_range` |
 //! | [`op`] | `op.run`: any op allowed for automations, as an action |
 //! | [`text`] | `text.format`, `text.to_number`, `text.contains` |
+//! | [`time`] | `timer.every`, `timer.once`, `timer.stopwatch`, `schedule.at`, `cond.time_between`, `cond.date` |
 //! | [`vars`] | `var.get`, `var.set`, `var.add`, `var.toggle`, `var.changed` |
 //!
 //! [`fold`] is the one case-insensitive comparison every node uses (NFKC, then lowercase), so filters and chat
@@ -35,4 +36,5 @@ pub mod math;
 pub mod op;
 mod schema;
 pub mod text;
+pub mod time;
 pub mod vars;
