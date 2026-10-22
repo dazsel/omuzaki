@@ -1,6 +1,13 @@
-//! The model folder `tools/models/mediapipe-face.sh` writes: the three ONNX graphs, the canonical face and a
-//! `manifest.json` of their SHA-256 hashes. [`ModelDir::open`] checks every file against the manifest, so a graph that
-//! was swapped, truncated or corrupted is refused before any runtime sees it.
+//! The face model folder: three graphs, the canonical face and a `manifest.json` of their SHA-256 hashes. Two kinds:
+//!
+//! - the ONNX folder `tools/models/mediapipe-face.sh` writes ([`ModelDir::open`], [`MODEL_FILES`]), for the `onnx`
+//!   runtime;
+//! - the TFLite graphs exactly as MediaPipe publishes them, unpacked from the official `face_landmarker.task`
+//!   ([`crate::task`], [`ModelDir::open_tflite`], [`TFLITE_FILES`]), for the `tflite` runtime: no conversion step,
+//!   and no manifest: each file is checked against its SHA-256 pinned in [`crate::task::MEMBER_SHA256`].
+//!
+//! Opening checks every file, so a graph that was swapped, truncated or corrupted is refused before any runtime sees
+//! it.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -17,6 +24,14 @@ pub const MODEL_FILES: [&str; 4] = [
     "face_detector.onnx",
     "face_landmarks_detector.onnx",
     "face_blendshapes.onnx",
+    "geometry_pipeline_metadata_landmarks.binarypb",
+];
+
+/// The files of a folder of the official TFLite graphs, in load order: the members of `face_landmarker.task`.
+pub const TFLITE_FILES: [&str; 4] = [
+    "face_detector.tflite",
+    "face_landmarks_detector.tflite",
+    "face_blendshapes.tflite",
     "geometry_pipeline_metadata_landmarks.binarypb",
 ];
 
@@ -43,11 +58,14 @@ pub enum ModelError {
     Load(String),
 }
 
-/// A verified model folder: every file in [`MODEL_FILES`] is listed in its `manifest.json` and its SHA-256 matches.
+/// A verified model folder: every file of its kind ([`MODEL_FILES`] or [`TFLITE_FILES`]) is listed in its
+/// `manifest.json` and its SHA-256 matches.
 #[derive(Debug, Clone)]
 pub struct ModelDir {
     path: PathBuf,
-    /// The verified SHA-256 and size of each file in [`MODEL_FILES`], in the same order.
+    /// The folder's file names, in load order.
+    names: &'static [&'static str; 4],
+    /// The verified SHA-256 and size of each file in `names`, in the same order.
     files: [(Sha256, u64); MODEL_FILES.len()],
 }
 
@@ -62,12 +80,39 @@ impl ModelDir {
         let manifest = std::fs::read(&manifest_path).map_err(|_| ModelError::Missing(manifest_path))?;
         let manifest: serde_json::Value =
             serde_json::from_slice(&manifest).map_err(|e| ModelError::Manifest(e.to_string()))?;
-        let mut files = [(Sha256([0; 32]), 0); MODEL_FILES.len()];
-        for (entry, name) in files.iter_mut().zip(MODEL_FILES) {
-            let listed = manifest["files"][name]["sha256"]
+        Self::open_with(dir, &MODEL_FILES, |_, name| {
+            manifest["files"][name]["sha256"]
                 .as_str()
                 .and_then(Sha256::from_hex)
-                .ok_or_else(|| ModelError::Manifest(format!("{name} has no valid sha256 entry")))?;
+                .ok_or_else(|| ModelError::Manifest(format!("{name} has no valid sha256 entry")))
+        })
+    }
+
+    /// Opens a folder of the official TFLite graphs ([`TFLITE_FILES`], as [`crate::task::unpack`] writes it) and
+    /// verifies each file against its pinned SHA-256, for the `tflite` runtime.
+    ///
+    /// # Errors
+    /// [`ModelError::Missing`] for an absent file, [`ModelError::HashMismatch`] for one that is not the published file.
+    pub fn open_tflite(dir: &Path) -> Result<Self, ModelError> {
+        Self::open_with(dir, &TFLITE_FILES, |index, _| {
+            Sha256::from_hex(crate::task::MEMBER_SHA256[index]).ok_or_else(|| ModelError::Manifest("a pin".to_owned()))
+        })
+    }
+
+    /// The folder's file names, in load order: [`MODEL_FILES`] or [`TFLITE_FILES`].
+    pub fn files(&self) -> &'static [&'static str; 4] {
+        self.names
+    }
+
+    /// Opens `dir` with `names`, checking each file against the hash `expected(index, name)` gives.
+    fn open_with(
+        dir: &Path,
+        names: &'static [&'static str; 4],
+        expected: impl Fn(usize, &str) -> Result<Sha256, ModelError>,
+    ) -> Result<Self, ModelError> {
+        let mut files = [(Sha256([0; 32]), 0); MODEL_FILES.len()];
+        for (index, (entry, &name)) in files.iter_mut().zip(names).enumerate() {
+            let listed = expected(index, name)?;
             let file = dir.join(name);
             let bytes = std::fs::read(&file).map_err(|_| ModelError::Missing(file))?;
             let actual = Sha256(Hasher::digest(&bytes).into());
@@ -76,7 +121,7 @@ impl ModelDir {
             }
             *entry = (actual, bytes.len() as u64);
         }
-        Ok(Self { path: dir.to_path_buf(), files })
+        Ok(Self { path: dir.to_path_buf(), names, files })
     }
 
     /// The canonical face metadata (`geometry_pipeline_metadata_landmarks.binarypb`).
@@ -84,7 +129,7 @@ impl ModelDir {
     /// # Errors
     /// [`ModelError::Missing`] when the file cannot be read, [`ModelError::Load`] when it does not parse.
     pub fn geometry(&self) -> Result<GeometryMetadata, ModelError> {
-        let file = self.path.join(MODEL_FILES[3]);
+        let file = self.path.join(self.names[3]);
         let bytes = std::fs::read(&file).map_err(|_| ModelError::Missing(file))?;
         GeometryMetadata::parse(&bytes).map_err(|e| ModelError::Load(e.to_string()))
     }
@@ -120,11 +165,11 @@ impl ModelDir {
         natives: &dyn FileSource,
         options: &SessionOptions,
     ) -> Result<Box<dyn Session>, ModelError> {
-        let name = MODEL_FILES[index];
+        let name = self.names[index];
         // The identity ai-api gives a model: SHA-256 of its file list, `<sha256> <size> <name>\n` per file (here one).
         let (hash, size) = self.files[index];
         let digest = Sha256(Hasher::digest(format!("{hash} {size} {name}\n")).into());
-        let stem = name.trim_end_matches(".onnx").replace('_', "-");
+        let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem).replace('_', "-");
         let id = ModelId::new(format!("mediapipe-{stem}")).map_err(|e| ModelError::Load(e.to_string()))?;
         let model =
             ModelRef { id, version: "1.0.0".parse().map_err(|_| ModelError::Load("version".to_owned()))?, digest };

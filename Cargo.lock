@@ -4516,6 +4516,7 @@ dependencies = [
  "omuzaki-track-api",
  "omuzaki-track-mock",
  "omuzaki-track-net",
+ "omuzaki-track-voice",
  "proptest",
  "schemars",
  "serde",
@@ -4735,6 +4736,7 @@ version = "0.0.0"
 dependencies = [
  "criterion",
  "omuzaki-ai-api",
+ "omuzaki-ai-litert",
  "omuzaki-ai-ort",
  "omuzaki-core",
  "omuzaki-track",
@@ -4751,6 +4753,7 @@ dependencies = [
  "nalgebra",
  "omuzaki-ai-api",
  "omuzaki-ai-mock",
+ "omuzaki-ai-native",
  "omuzaki-anim-api",
  "omuzaki-core",
  "omuzaki-pixfmt",
@@ -4761,6 +4764,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "toml",
+ "zip",
 ]
 
 [[package]]
