@@ -4946,6 +4946,7 @@ dependencies = [
 name = "omuzaki-measure"
 version = "0.0.0"
 dependencies = [
+ "criterion",
  "image",
  "inventory",
  "libm",

@@ -5,7 +5,7 @@
 //! patches; and the holes (an eye, the mouth, a blush) joined to the region. The background's colour, when the ROI's
 //! border has one, is found here too, for the outline's `beyond`.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 
 use super::frame::{FaceFrame, Roi};
 
@@ -61,7 +61,9 @@ impl Segmentation {
     #[must_use]
     pub fn is_skin_colour(&self, lab: [f64; 3]) -> bool {
         let dl = lab[0] - self.skin[0];
-        dl > self.lower_dl && dl < SKIN_ABOVE && (lab[1] - self.skin[1]).hypot(lab[2] - self.skin[2]) < SKIN_CHROMA
+        let (da, db) = (lab[1] - self.skin[1], lab[2] - self.skin[2]);
+        // Squared, so no root per pixel: the same comparison for every finite value.
+        dl > self.lower_dl && dl < SKIN_ABOVE && da * da + db * db < SKIN_CHROMA * SKIN_CHROMA
     }
 
     /// The mask of the snap: pixels inside the face region that are not skin (the marks).
@@ -231,7 +233,7 @@ pub fn segment(roi: &Roi, frame: &FaceFrame, skin: Option<[f64; 3]>) -> Result<S
 /// The 4-connected flood fill of skin-like pixels from the three patch centres. A centre that is not skin-like seeds from
 /// the skin-like pixel of its patch nearest to it instead.
 fn fill(roi: &Roi, frame: &FaceFrame, seg: &mut Segmentation) {
-    let mut queue = VecDeque::new();
+    let mut seeds = Vec::new();
     for [x, y] in PATCHES {
         let centre = frame.to_px(x, y);
         let seed = roi.index(centre).filter(|&i| seg.skin_like[i]).or_else(|| {
@@ -242,57 +244,58 @@ fn fill(roi: &Roi, frame: &FaceFrame, seg: &mut Segmentation) {
                 da.total_cmp(&db).then(a.cmp(&b))
             })
         });
-        if let Some(i) = seed
-            && !seg.filled[i]
-        {
-            seg.filled[i] = true;
-            queue.push_back(i);
-        }
+        seeds.extend(seed);
     }
-    let w = roi.width;
-    while let Some(i) = queue.pop_front() {
-        for next in neighbours(i, w, roi.height) {
-            if seg.skin_like[next] && !seg.filled[next] {
-                seg.filled[next] = true;
-                queue.push_back(next);
+    let skin_like = &seg.skin_like;
+    flood(roi.width, roi.height, seeds, |i| skin_like[i], &mut seg.filled);
+}
+
+/// The 4-connected flood fill from `seeds` through the pixels `open` accepts, marking them in `marked` (a scanline
+/// fill: each run of a row is marked at once, and only the runs above and below it are queued). It reaches exactly the
+/// pixels a breadth-first fill does, at a fraction of the cost.
+fn flood(width: usize, height: usize, seeds: Vec<usize>, open: impl Fn(usize) -> bool, marked: &mut [bool]) {
+    let mut stack = seeds;
+    while let Some(i) = stack.pop() {
+        if marked[i] || !open(i) {
+            continue;
+        }
+        let row_start = i - i % width;
+        let row_end = row_start + width;
+        let (mut left, mut right) = (i, i);
+        while left > row_start && !marked[left - 1] && open(left - 1) {
+            left -= 1;
+        }
+        while right + 1 < row_end && !marked[right + 1] && open(right + 1) {
+            right += 1;
+        }
+        marked[left..=right].fill(true);
+        let row = i / width;
+        for adjacent in [row.checked_sub(1), (row + 1 < height).then_some(row + 1)].into_iter().flatten() {
+            let shift = adjacent * width;
+            let mut in_run = false;
+            for col in left - row_start..=right - row_start {
+                let k = shift + col;
+                let can = !marked[k] && open(k);
+                if can && !in_run {
+                    stack.push(k);
+                }
+                in_run = can;
             }
         }
     }
-}
-
-/// The 4-connected neighbours of pixel `index` in a `width × height` grid.
-pub(crate) fn neighbours(index: usize, width: usize, height: usize) -> impl Iterator<Item = usize> {
-    let (col, row) = (index % width, index / width);
-    [
-        (col > 0).then(|| index - 1),
-        (col + 1 < width).then(|| index + 1),
-        (row > 0).then(|| index - width),
-        (row + 1 < height).then(|| index + width),
-    ]
-    .into_iter()
-    .flatten()
 }
 
 /// Joins every pixel that the ROI's border cannot reach through non-region pixels to the region.
 fn fill_holes(roi: &Roi, filled: &mut [bool]) {
     let (w, h) = (roi.width, roi.height);
     let mut outside = vec![false; w * h];
-    let mut queue = VecDeque::new();
-    for i in 0..w * h {
-        let (x, y) = (i % w, i / w);
-        if (x == 0 || y == 0 || x + 1 == w || y + 1 == h) && !filled[i] {
-            outside[i] = true;
-            queue.push_back(i);
-        }
-    }
-    while let Some(i) = queue.pop_front() {
-        for next in neighbours(i, w, h) {
-            if !filled[next] && !outside[next] {
-                outside[next] = true;
-                queue.push_back(next);
-            }
-        }
-    }
+    let border: Vec<usize> = if w == 0 || h == 0 {
+        Vec::new()
+    } else {
+        (0..w).chain((0..w).map(|x| (h - 1) * w + x)).chain((1..h - 1).flat_map(|y| [y * w, y * w + w - 1])).collect()
+    };
+    let seeds = border.into_iter().filter(|&i| !filled[i]).collect();
+    flood(w, h, seeds, |i| !filled[i], &mut outside);
     for (slot, out) in filled.iter_mut().zip(outside) {
         *slot = !out;
     }

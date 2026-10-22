@@ -171,6 +171,34 @@ impl Roi {
     }
 }
 
+/// A direct-mapped cache of CIELAB by sRGB colour. Drawings and renders are mostly flat fills, so most pixels repeat a
+/// colour seen just before; the conversion (three cube roots) is the ROI's main cost, and the cache gives the same
+/// values, so measurements are unchanged.
+struct LabCache {
+    slots: Vec<(u32, [f32; 3])>,
+}
+
+impl LabCache {
+    const BITS: u32 = 12;
+
+    fn new() -> Self {
+        Self { slots: vec![(u32::MAX, [0.0; 3]); 1 << Self::BITS] }
+    }
+
+    fn lab(&mut self, rgb: [u8; 3]) -> [f32; 3] {
+        let key = u32::from(rgb[0]) << 16 | u32::from(rgb[1]) << 8 | u32::from(rgb[2]);
+        // Fibonacci hashing: the top bits of the product spread neighbouring colours over the table.
+        let slot = (key.wrapping_mul(0x9E37_79B1) >> (32 - Self::BITS)) as usize;
+        let entry = &mut self.slots[slot];
+        if entry.0 != key {
+            #[allow(clippy::cast_possible_truncation)] // the design stores the ROI's CIELAB as f32 (4.1)
+            let narrow = lab(rgb).map(|v| v as f32);
+            *entry = (key, narrow);
+        }
+        entry.1
+    }
+}
+
 /// The region of interest around `frame` (in image pixels): half-side [`ROI_HALF_SIDE`] IOD, clipped to the image, and
 /// box-downscaled by `ceil(iod / 256)` when the IOD is over [`ROI_MAX_IOD`] px. A partial block at the right or bottom
 /// edge is dropped.
@@ -196,10 +224,30 @@ pub fn roi(image: &Rgba8, frame: &FaceFrame) -> Roi {
     let block = scale as usize;
     let stride = image.width as usize;
     let mut lab_px = Vec::with_capacity(width * height);
+    let mut colours = LabCache::new();
     let mut alpha = Vec::with_capacity(width * height);
     // A block's sums are at most 255 × 255 × 64² (the factor never exceeds 32 within the image limits), far below 2^52.
     #[allow(clippy::cast_precision_loss)]
     let count = (block * block) as f64;
+    if block == 1 {
+        // No downscale: each pixel composited over white on its own, in integers. `(c·a + 255·(255 - a)) / 255`
+        // rounded is what the box average below gives for a block of one.
+        for row in 0..height {
+            let start = ((top + row) * stride + left) * 4;
+            for px in image.pixels[start..start + width * 4].as_chunks::<4>().0 {
+                let a = u32::from(px[3]);
+                let over_white = |c: u8| {
+                    let v = u32::from(c) * a + 255 * (255 - a);
+                    #[allow(clippy::cast_possible_truncation)] // at most 255
+                    let byte = ((v + 127) / 255) as u8;
+                    byte
+                };
+                lab_px.push(colours.lab([over_white(px[0]), over_white(px[1]), over_white(px[2])]));
+                alpha.push(px[3]);
+            }
+        }
+        return Roi { width, height, lab: lab_px, alpha, scale, offset: [left_px, top_px] };
+    }
     for row in 0..height {
         for col in 0..width {
             // Box average in premultiplied space, so a transparent pixel adds no colour.
@@ -224,11 +272,7 @@ pub fn roi(image: &Rgba8, frame: &FaceFrame) -> Roi {
                 let byte = (premul + (255.0 - coverage)).round().clamp(0.0, 255.0) as u8;
                 byte
             });
-            lab_px.push(lab(rgb).map(|v| {
-                #[allow(clippy::cast_possible_truncation)] // the design stores the ROI's CIELAB as f32 (4.1)
-                let narrow = v as f32;
-                narrow
-            }));
+            lab_px.push(colours.lab(rgb));
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // an average of bytes
             alpha.push(coverage.round() as u8);
         }
