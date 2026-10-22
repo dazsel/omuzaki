@@ -111,7 +111,7 @@ fn the_argument_schemas_are_flat_and_closed() {
     let inspect = schema("io.inspect");
     assert!(inspect.get("required").is_none(), "path and asset are each optional: the op checks that one is given");
     let properties = inspect["properties"].as_object().unwrap();
-    assert_eq!(properties.keys().cloned().collect::<Vec<_>>(), ["asset", "format", "path", "strict"]);
+    assert_eq!(properties.keys().cloned().collect::<Vec<_>>(), ["as", "asset", "format", "path", "strict"]);
     assert_eq!(inspect["additionalProperties"], json!(false));
     assert!(!inspect.to_string().contains("$ref"), "MCP tool schemas are inlined");
 

@@ -17,21 +17,33 @@
 //!
 //! **Variants.** The character is checked as it is stored; a `variant` argument comes with `io.export`, which
 //! must resolve it the same way.
+//!
+//! **Imported avatars.** A character imported from a model (`characters/<id>/avatar`, design D5) has no parts to
+//! build: the scene it would export is its avatar rebuilt from the stored original and gathered back (D8), carrying
+//! its source row's provenance, and the model's own terms come with its meta. So the rights gate refuses to publish a
+//! model whose terms forbid sharing it, and lets the same file through for a private export.
 
+use omuzaki_avatar_api::body::BodyView;
 use omuzaki_char_api::{
-    BuildError, BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, CharacterDef, Quality,
+    BuildError, BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, CharacterDef, PartId, Quality,
     RegistryBuilder, paths,
 };
 use omuzaki_doc_api::DocPath;
 use omuzaki_io_api::{
-    ExportOptions, Finding, FormatId, PerfectSync, Purpose, Report, Severity, find_exporter, formats, preflight,
+    ExportOptions, Exporter, Finding, FormatId, PerfectSync, Purpose, Report, Severity, find_exporter, formats,
+    preflight,
 };
 use omuzaki_ops_api::{Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
+use omuzaki_store_api::{Provenance, Store};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::avatar::import::AVATAR_PART;
+use super::avatar::{read_def, rebuild};
 use super::licence::derive::load;
 use super::licence::findings::against_stored_record;
+use super::licence::source::{PartSource, source_path};
+use crate::gather::avatar_import::gather_imported;
 use crate::gather::avatar::{LicenceRecord, add_avatar, add_rights, record_path};
 use crate::gather::{GatherError, GatherOptions, GatherPurpose, gather};
 
@@ -97,6 +109,9 @@ impl CheckExport {
     /// `NotFound` for a character the document lacks; `Invalid` for a character that does not read or build, a record
     /// or a source row that does not read, and everything [`check`](Self::check) refuses.
     pub(crate) fn run(&self, ctx: &OpCtx<'_>) -> Result<ExportCheck, OpError> {
+        if ctx.doc.get(&paths::character(&self.character).join("avatar")).is_some() {
+            return self.run_imported(ctx);
+        }
         let def = read_character(ctx, &self.character)?;
         let record = read_record(ctx, &self.character)?;
         let parts = load(ctx, &self.character)?;
@@ -115,13 +130,7 @@ impl CheckExport {
     /// # Errors
     /// `Invalid` for a `format` with no exporter and for a character that cannot be gathered into a scene.
     pub fn check(&self, built: &BuiltCharacter, record: Option<&LicenceRecord>) -> Result<ExportCheck, OpError> {
-        let exporter = find_exporter(self.format.as_str()).ok_or_else(|| {
-            OpError::invalid("format", format!("no exporter is registered for format {}", self.format))
-                .hint(exportable_formats())
-        })?;
-        // Format ids are slugs (`glb`, `vrm1`, `vrm0`), and only the VRM ones have an avatar block.
-        let vrm = self.format.as_str().starts_with("vrm");
-        let options = ExportOptions::default().with_purpose(self.purpose).with_perfect_sync(PerfectSync::Off);
+        let (exporter, options, vrm) = self.exporter()?;
         let purpose = if vrm { GatherPurpose::Vrm } else { GatherPurpose::Gltf };
         let mut report = Report::new();
         match gather(built, &GatherOptions { target_height: None, purpose }) {
@@ -153,10 +162,51 @@ impl CheckExport {
             let msg = "this check can't tell whether a real person's likeness or voice is involved, so the consent rule is not applied";
             report.push(Finding::info("rights.consent_not_checked", msg));
         }
+        Ok(self.answer(report))
+    }
+
+    /// The check of an imported avatar (see the module docs): the scene its export writes, with the provenance of its
+    /// source row, through `preflight` and the exporter's own check.
+    ///
+    /// # Errors
+    /// `Invalid` for a `format` with no exporter, an avatar node or source row that does not read, and an avatar that
+    /// does not gather; `NotFound` for an original the store lacks, and no store service is an error too.
+    fn run_imported(&self, ctx: &OpCtx<'_>) -> Result<ExportCheck, OpError> {
+        let (exporter, options, _) = self.exporter()?;
+        let def = read_def(ctx.doc, &self.character)?;
+        let prepared = rebuild(ctx, def.clone())?;
+        let store = ctx.service::<dyn Store>()?;
+        let mut scene = gather_imported(&BodyView::imported(&prepared.avatar), &def, &|hash| store.get(hash).ok())
+            .map_err(|e| {
+                OpError::invalid("character", format!("character '{}' can't be written to a file: {e}", self.character))
+            })?;
+        scene.provenance = imported_provenance(ctx, &self.character)?;
+        let mut report = preflight(&scene, &options);
+        report.extend(exporter.check(&scene, &options));
+        Ok(self.answer(report))
+    }
+
+    /// The exporter of `self.format`, the options the check runs it with, and whether the format is a VRM one.
+    ///
+    /// # Errors
+    /// `Invalid` for a format with no exporter.
+    fn exporter(&self) -> Result<(Box<dyn Exporter>, ExportOptions, bool), OpError> {
+        let exporter = find_exporter(self.format.as_str()).ok_or_else(|| {
+            OpError::invalid("format", format!("no exporter is registered for format {}", self.format))
+                .hint(exportable_formats())
+        })?;
+        // Format ids are slugs (`glb`, `vrm1`, `vrm0`), and only the VRM ones have an avatar block.
+        let vrm = self.format.as_str().starts_with("vrm");
+        let options = ExportOptions::default().with_purpose(self.purpose).with_perfect_sync(PerfectSync::Off);
+        Ok((exporter, options, vrm))
+    }
+
+    /// The answer for `report`: the fix hints filled in, errors first, and the counts.
+    fn answer(&self, mut report: Report) -> ExportCheck {
         add_fix_hints(&mut report, &record_path(&self.character));
         // A stable sort: a person or agent reading the answer meets what blocks the export before the notes.
         report.findings.sort_by_key(|f| std::cmp::Reverse(f.severity));
-        Ok(ExportCheck {
+        ExportCheck {
             character: self.character.to_string(),
             format: self.format.to_string(),
             purpose: self.purpose,
@@ -164,8 +214,23 @@ impl CheckExport {
             errors: report.count(Severity::Error),
             warnings: report.count(Severity::Warning),
             report,
-        })
+        }
     }
+}
+
+/// The provenance of an imported character's model: its `sources/avatar` row's, which the import recorded from the
+/// asset; `None` when the row is missing (the rights gate then reports the missing record).
+///
+/// # Errors
+/// `Invalid` for a row that does not read.
+fn imported_provenance(ctx: &OpCtx<'_>, id: &CharId) -> Result<Option<Provenance>, OpError> {
+    let part = PartId::new(AVATAR_PART).map_err(|e| OpError::internal(format!("the avatar part id: {e}")))?;
+    let path = source_path(id, &part);
+    let row = ctx.doc.get(&path).map(PartSource::from_node).transpose().map_err(|e| {
+        OpError::invalid("sources/avatar", format!("the source row of the imported model at {path}: {e}"))
+            .hint("the row is written by io.import; import the model again")
+    })?;
+    Ok(row.map(|r| r.provenance))
 }
 
 /// "exportable formats: glb, vrm1", for hints.

@@ -132,6 +132,11 @@ impl ViewModels {
     pub fn get<T: Any>(&self) -> Option<&T> {
         self.0.get(&TypeId::of::<T>())?.downcast_ref::<T>()
     }
+
+    /// The stored value of type `T` to change in place, if any (the shell's side; panels only read).
+    pub fn get_mut<T: Any>(&mut self) -> Option<&mut T> {
+        self.0.get_mut(&TypeId::of::<T>())?.downcast_mut::<T>()
+    }
 }
 
 /// What a panel may read and run during a frame. Built by the shell (or a test host) with [`PanelCtx::new`] and the
@@ -213,6 +218,10 @@ mod tests {
         assert_eq!(views.get::<u32>(), Some(&4));
         assert_eq!(views.get::<&str>(), Some(&"selection"));
         assert_eq!(views.get::<i64>(), None);
+        if let Some(n) = views.get_mut::<u32>() {
+            *n += 1;
+        }
+        assert_eq!(views.get::<u32>(), Some(&5));
     }
 
     #[test]

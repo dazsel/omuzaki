@@ -93,7 +93,8 @@ fn vroid_names() {
         assert_eq!(outcome(&report, channel), &Synthesis::FromMorph { target: target.to_owned() }, "{channel}");
     }
     assert_eq!(expressions(&scene).len(), 4);
-    let notes: Vec<_> = report.channels.iter().filter(|c| c.note().is_some()).map(|c| c.channel).collect();
+    let notes: Vec<_> =
+        report.channels.iter().filter(|c| report.note(c.channel).is_some()).map(|c| c.channel).collect();
     assert_eq!(notes, ["browDownLeft", "browDownRight"], "only the shared sources are flagged symmetric");
 }
 
@@ -152,10 +153,8 @@ fn presets_compose() {
     // No angry or sad preset: the brows stay missing.
     assert_eq!(outcome(&report, "browInnerUp"), &Synthesis::Missing);
     assert_eq!(expressions(&scene).len(), 10 + rules.len());
-    let smile = report.channels.iter().find(|c| c.channel == "mouthSmileLeft").unwrap();
-    assert!(smile.note().is_some_and(|n| n.contains("symmetric")));
-    let blink = report.channels.iter().find(|c| c.channel == "eyeBlinkLeft").unwrap();
-    assert_eq!(blink.note(), None, "left and right blink come from different presets");
+    assert!(report.note("mouthSmileLeft").is_some_and(|n| n.contains("symmetric")));
+    assert_eq!(report.note("eyeBlinkLeft"), None, "left and right blink come from different presets");
 }
 
 #[test]
@@ -326,8 +325,9 @@ fn the_combined_blink_is_the_symmetric_fallback() {
         1.0,
         "both eyes at 1 are one blink"
     );
-    let note = report.channels.iter().find(|c| c.channel == "eyeBlinkLeft").unwrap().note();
-    assert!(note.is_some_and(|n| n.contains("symmetric")));
+    for channel in ["eyeBlinkLeft", "eyeBlinkRight"] {
+        assert!(report.note(channel).is_some_and(|n| n.contains("symmetric")), "{channel}");
+    }
 }
 
 #[test]

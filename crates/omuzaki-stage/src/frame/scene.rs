@@ -65,7 +65,8 @@ impl ScenePlan {
     /// Grows the scene's instance and joint buffers to hold this plan's frame, so [`fill`](Self::fill) never allocates
     /// with it. Cold: called when a plan is made for a character that a later frame will fill with.
     pub(crate) fn reserve(&self, scene: &mut Scene) {
-        scene.instances.reserve(self.draws.len().saturating_sub(scene.instances.len()));
+        // One more for the ground disc the stage adds after the character.
+        scene.instances.reserve((self.draws.len() + 1).saturating_sub(scene.instances.len()));
         scene.joints.reserve(self.joints.saturating_sub(scene.joints.len()));
     }
 

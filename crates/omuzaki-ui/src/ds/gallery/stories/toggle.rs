@@ -7,7 +7,7 @@ use crate::ds::gallery::layout::{caption, panel, specimen};
 use crate::ds::gallery::text::tr;
 use crate::ds::theme::ds;
 use crate::ds::widgets::{Toggle, TriState};
-use crate::register_story;
+use omuzaki_ui_api::register_story;
 
 struct State {
     /// Live preview, outlines, reduce motion, shadows.

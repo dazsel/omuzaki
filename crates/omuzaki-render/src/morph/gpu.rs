@@ -110,8 +110,12 @@ impl Pipelines {
 
 /// A mesh's morph data on the GPU, and what the CPU keeps of it.
 pub(super) struct MeshGpu {
-    blend: wgpu::BindGroup,
+    /// The targets and base of the blend; `None` for a dynamic mesh without morph targets, which only welds.
+    blend: Option<wgpu::BindGroup>,
     weld: wgpu::BindGroup,
+    /// A dynamic mesh's weld over its own streams (its vertices to its outline directions), for the base the passes
+    /// draw when no morph does. `None` for a static mesh: only morphed copies of it are welded.
+    own_weld: Option<wgpu::BindGroup>,
     /// Per target, how far it can move any vertex per unit weight on each axis: up (the largest positive delta) and
     /// down (the largest negative one, as a positive number).
     extents: Vec<Extent>,
@@ -157,11 +161,7 @@ impl MeshGpu {
         input: &MorphInput<'_>,
     ) -> Result<Self, RenderError> {
         let vertices = input.base.len();
-        let groups = u64::from(MAX_WORKGROUPS) * u64::from(WORKGROUP);
-        let vertices_u32 = u32::try_from(vertices)
-            .ok()
-            .filter(|_| vertices as u64 <= groups)
-            .ok_or(RenderError::LimitExceeded { what: "vertices in a morphed mesh", limit: groups })?;
+        let dispatched = vertices_u32(vertices)?;
 
         // Entries grouped by vertex, each vertex's in target order (the order the CPU sums in).
         let mut first = vec![0_u32; vertices + 1];
@@ -203,27 +203,7 @@ impl MeshGpu {
             shifts.push(centre_shift(input.base, target));
         }
 
-        // The weld table by point: the vertices at each, in vertex order (the order `resmooth` sums in).
-        let mut group_first = vec![0_u32; input.weld_count + 1];
-        for &point in input.welds {
-            if let Some(count) = group_first.get_mut(point + 1) {
-                *count += 1;
-            }
-        }
-        for p in 0..input.weld_count {
-            group_first[p + 1] += group_first[p];
-        }
-        let mut next = group_first.clone();
-        let mut members = vec![0_u32; vertices];
-        for (v, &point) in input.welds.iter().enumerate() {
-            if let Some(at) = next.get_mut(point) {
-                if let Some(member) = members.get_mut(*at as usize) {
-                    *member = u32::try_from(v).unwrap_or(u32::MAX);
-                }
-                *at += 1;
-            }
-        }
-        let slot_of: Vec<u32> = input.welds.iter().map(|&p| u32::try_from(p).unwrap_or(u32::MAX)).collect();
+        let (slot_of, group_first, members) = weld_table(input.welds, input.weld_count);
 
         let mut bytes = 0;
         let buffers = [
@@ -233,33 +213,142 @@ impl MeshGpu {
             upload(device, "morph group_first", &group_first, &mut bytes),
             upload(device, "morph members", &members, &mut bytes),
         ];
-        let largest = device.limits().max_storage_buffer_binding_size;
-        if let Some(too_big) = buffers.iter().map(wgpu::Buffer::size).find(|size| *size > largest) {
-            return Err(RenderError::LimitExceeded {
-                what: "bytes of morph data in one buffer",
-                limit: largest.min(too_big),
-            });
-        }
+        check_binding_sizes(device, &buffers)?;
         let [first, entries, slot_of, group_first, members] = buffers;
-        let group = |label, layout, entries: &[(u32, &wgpu::Buffer)]| {
-            let entries: Vec<_> = entries
-                .iter()
-                .map(|(binding, buffer)| wgpu::BindGroupEntry {
-                    binding: *binding,
-                    resource: buffer.as_entire_binding(),
-                })
-                .collect();
-            device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some(label), layout, entries: &entries })
-        };
         Ok(Self {
-            blend: group("morph blend data", &pipelines.blend_data, &[(0, base), (1, &first), (2, &entries)]),
-            weld: group("morph weld data", &pipelines.weld_data, &[(3, &slot_of), (4, &group_first), (5, &members)]),
+            blend: Some(group(
+                device,
+                "morph blend data",
+                &pipelines.blend_data,
+                &[(0, base), (1, &first), (2, &entries)],
+            )),
+            weld: group(
+                device,
+                "morph weld data",
+                &pipelines.weld_data,
+                &[(3, &slot_of), (4, &group_first), (5, &members)],
+            ),
+            own_weld: None,
             extents,
             shifts,
-            vertices: vertices_u32,
+            vertices: dispatched,
             bytes,
         })
     }
+
+    /// The GPU data of a dynamic mesh without morph targets: its weld table, for [`with_own_weld`](Self::with_own_weld).
+    ///
+    /// # Errors
+    /// `LimitExceeded` if the mesh is too big for one dispatch or a buffer is over the device's binding size.
+    pub(super) fn weld_only(
+        device: &wgpu::Device,
+        pipelines: &Pipelines,
+        welds: &[usize],
+        weld_count: usize,
+    ) -> Result<Self, RenderError> {
+        let vertices = vertices_u32(welds.len())?;
+        let (slot_of, group_first, members) = weld_table(welds, weld_count);
+        let mut bytes = 0;
+        let buffers = [
+            upload(device, "weld slot_of", &slot_of, &mut bytes),
+            upload(device, "weld group_first", &group_first, &mut bytes),
+            upload(device, "weld members", &members, &mut bytes),
+        ];
+        check_binding_sizes(device, &buffers)?;
+        let [slot_of, group_first, members] = buffers;
+        Ok(Self {
+            blend: None,
+            weld: group(device, "weld data", &pipelines.weld_data, &[(3, &slot_of), (4, &group_first), (5, &members)]),
+            own_weld: None,
+            extents: Vec::new(),
+            shifts: Vec::new(),
+            vertices,
+            bytes,
+        })
+    }
+
+    /// Adds the weld of the mesh's own streams: `shapes` (read) to `directions` (written), for a dynamic mesh.
+    pub(super) fn with_own_weld(
+        mut self,
+        device: &wgpu::Device,
+        pipelines: &Pipelines,
+        shapes: &wgpu::Buffer,
+        directions: &wgpu::Buffer,
+    ) -> Self {
+        // The count is all the weld reads of the params; the weights it declares after it are never indexed, but the
+        // binding must hold one (`upload`).
+        let params = upload(device, "weld params", &[self.vertices, 0, 0, 0, 0], &mut self.bytes);
+        self.own_weld = Some(group(
+            device,
+            "weld own streams",
+            &pipelines.weld_slot,
+            &[(1, &params), (2, shapes), (3, directions)],
+        ));
+        self
+    }
+}
+
+/// A bind group of `layout` over `buffers`, each at its binding.
+fn group(
+    device: &wgpu::Device,
+    label: &str,
+    layout: &wgpu::BindGroupLayout,
+    buffers: &[(u32, &wgpu::Buffer)],
+) -> wgpu::BindGroup {
+    let entries: Vec<_> = buffers
+        .iter()
+        .map(|(binding, buffer)| wgpu::BindGroupEntry { binding: *binding, resource: buffer.as_entire_binding() })
+        .collect();
+    device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some(label), layout, entries: &entries })
+}
+
+/// `vertices` as the count a dispatch spans.
+///
+/// # Errors
+/// `LimitExceeded` if it does not fit one dispatch.
+fn vertices_u32(vertices: usize) -> Result<u32, RenderError> {
+    let groups = u64::from(MAX_WORKGROUPS) * u64::from(WORKGROUP);
+    u32::try_from(vertices)
+        .ok()
+        .filter(|_| vertices as u64 <= groups)
+        .ok_or(RenderError::LimitExceeded { what: "vertices in a mesh the GPU welds or morphs", limit: groups })
+}
+
+/// Fails if any of `buffers` is over what a shader may bind.
+fn check_binding_sizes(device: &wgpu::Device, buffers: &[wgpu::Buffer]) -> Result<(), RenderError> {
+    let largest = device.limits().max_storage_buffer_binding_size;
+    match buffers.iter().map(wgpu::Buffer::size).find(|size| *size > largest) {
+        Some(too_big) => {
+            Err(RenderError::LimitExceeded { what: "bytes of morph data in one buffer", limit: largest.min(too_big) })
+        }
+        None => Ok(()),
+    }
+}
+
+/// The weld table by point: each vertex's point (`slot_of`), where each point's members start (`group_first`) and the
+/// vertices at each point in vertex order (`members`), the order `resmooth` sums in.
+fn weld_table(welds: &[usize], weld_count: usize) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
+    let mut group_first = vec![0_u32; weld_count + 1];
+    for &point in welds {
+        if let Some(count) = group_first.get_mut(point + 1) {
+            *count += 1;
+        }
+    }
+    for p in 0..weld_count {
+        group_first[p + 1] += group_first[p];
+    }
+    let mut next = group_first.clone();
+    let mut members = vec![0_u32; welds.len()];
+    for (v, &point) in welds.iter().enumerate() {
+        if let Some(at) = next.get_mut(point) {
+            if let Some(member) = members.get_mut(*at as usize) {
+                *member = u32::try_from(v).unwrap_or(u32::MAX);
+            }
+            *at += 1;
+        }
+    }
+    let slot_of = welds.iter().map(|&p| u32::try_from(p).unwrap_or(u32::MAX)).collect();
+    (slot_of, group_first, members)
 }
 
 /// How far the weights can move any vertex of the mesh on each axis, as `(down, up)`: the sums over the targets of
@@ -403,12 +492,14 @@ pub(super) struct Pending {
     pub(super) step: Step,
 }
 
-/// Records `pending` into one compute pass, in order (a weld after its blend); wgpu orders the dispatches' writes
-/// and reads. `slot_of` and `mesh_of` find the instance's and the mesh's side.
+/// Records `pending` and then `welds` into one compute pass, in order (a weld after its blend); wgpu orders the
+/// dispatches' writes and reads. `slot` and `mesh` find an instance's and a mesh's side by index; `welds` are the
+/// dynamic meshes whose own outline directions are due.
 pub(super) fn record<'a>(
     encoder: &mut wgpu::CommandEncoder,
     pipelines: &Pipelines,
     pending: &[Pending],
+    welds: impl Iterator<Item = usize>,
     slot: impl Fn(usize) -> Option<&'a SlotGpu>,
     mesh: impl Fn(usize) -> Option<&'a MeshGpu>,
 ) {
@@ -421,17 +512,28 @@ pub(super) fn record<'a>(
             continue;
         };
         let (pipeline, data, instance) = match p.step {
-            Step::Blend => (&pipelines.blend, &mesh.blend, slot.blend.as_ref()),
-            Step::Weld => (&pipelines.weld, &mesh.weld, slot.weld.as_ref()),
+            Step::Blend => (&pipelines.blend, mesh.blend.as_ref(), slot.blend.as_ref()),
+            Step::Weld => (&pipelines.weld, Some(&mesh.weld), slot.weld.as_ref()),
         };
-        let Some(instance) = instance else {
-            // `prepare` builds the bind group before it queues the dispatch.
+        let (Some(data), Some(instance)) = (data, instance) else {
+            // `prepare` builds the bind group before it queues the dispatch, and a mesh with targets has blend data.
             debug_assert!(false, "a pending morph dispatch has no bind group");
             continue;
         };
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, data, &[]);
         pass.set_bind_group(1, instance, &[]);
+        pass.dispatch_workgroups(mesh.vertices.div_ceil(WORKGROUP).max(1), 1, 1);
+    }
+    for at in welds {
+        let Some((mesh, own)) = mesh(at).and_then(|mesh| Some((mesh, mesh.own_weld.as_ref()?))) else {
+            // `queue_weld` is called for meshes that have their own weld, and a mesh is not released within a frame.
+            debug_assert!(false, "a pending outline weld lost its mesh");
+            continue;
+        };
+        pass.set_pipeline(&pipelines.weld);
+        pass.set_bind_group(0, &mesh.weld, &[]);
+        pass.set_bind_group(1, own, &[]);
         pass.dispatch_workgroups(mesh.vertices.div_ceil(WORKGROUP).max(1), 1, 1);
     }
 }

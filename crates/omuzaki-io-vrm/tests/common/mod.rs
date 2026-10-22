@@ -20,11 +20,11 @@ use omuzaki_io_api::{
     AimAxis, AlphaMode, Avatar, Blob, Collider, ColliderGroup, ColliderShape, ColorBind, ColorBindKind,
     CommercialUsage, ConstraintKind, CreditNotation, EncodedImage, ExportCtx, ExportOptions, Exporter, Expression,
     ExpressionName, Filter, FirstPerson, FirstPersonFlag, ImageMime, ImportCtx, ImportInput, ImportOptions,
-    ImportOutcome, Importer, IoError, IoScene, LookAt, LookAtKind, Material, MaterialIx, Mesh, MeshAnnotation,
-    MeshData, Modification, MorphBind, MorphTarget, Node, NodeConstraint, NodeIx, NormalTexture, OutlineMode, Override,
-    Passthrough, Pbr, PerfectSync, Primitive, RangeMap, RollAxis, Sampler, Shading, ShiftTexture, Skin, SpringChain,
-    SpringJoint, TexRef, Texture, Toon, UseTerms, UvBind, UvTransform, VRM_LICENSE_URLS, VrmMeta, Wrap, run_export,
-    run_import,
+    ImportOutcome, Importer, IoError, IoScene, JointLimit, LookAt, LookAtKind, Material, MaterialIx, Mesh,
+    MeshAnnotation, MeshData, Modification, MorphBind, MorphTarget, Node, NodeConstraint, NodeIx, NormalTexture,
+    OutlineMode, Override, Passthrough, Pbr, PerfectSync, Primitive, RangeMap, RollAxis, Sampler, Shading,
+    ShiftTexture, Skin, SpringChain, SpringJoint, TexRef, Texture, Toon, UseTerms, UvBind, UvTransform,
+    VRM_LICENSE_URLS, VrmMeta, Wrap, run_export, run_import,
 };
 use omuzaki_store_api::{Commercial, Provenance, Source};
 use serde_json::{Value, json};
@@ -886,4 +886,34 @@ pub fn vrm0_with_meta(meta: &Value) -> Vec<u8> {
 /// The `meta` object of the VRM extension `extension` (`VRM` or `VRMC_vrm`) of an exported file.
 pub fn written_meta(file: &[u8], extension: &str) -> Value {
     parts(file).0["extensions"][extension]["meta"].clone()
+}
+
+/// The avatar fixture with every extended collider shape and every joint limit kind added to its spring bones: an
+/// inside sphere, an inside capsule and a plane (colliders 3 to 5, in one new group), and a cone, a hinge and a
+/// spherical limit with non-identity rotations on the first joints of hair A (joints 0 and 1) and hair B (joint 0).
+/// The rotations are quaternions whose components are exact in `f32`, so reading them back (which normalises) is exact.
+pub fn extended_springs() -> (IoScene, Ids) {
+    let (mut scene, ids) = avatar();
+    let head = ids.node("head");
+    let sb = &mut scene.avatar.as_mut().unwrap().spring_bones;
+    let first = sb.colliders.len() as u32;
+    sb.colliders.extend(
+        [
+            ColliderShape::SphereInside { offset: Vec3::new(0.0, 0.25, 0.0), radius: 0.5 },
+            ColliderShape::CapsuleInside {
+                offset: Vec3::new(0.0, -0.25, 0.0),
+                radius: 0.125,
+                tail: Vec3::new(0.0, 0.5, 0.25),
+            },
+            ColliderShape::Plane { offset: Vec3::new(0.0, 0.5, 0.0), normal: Vec3::Y },
+        ]
+        .map(|shape| Collider { node: head, shape }),
+    );
+    sb.collider_groups.push(ColliderGroup { name: "extended".into(), colliders: vec![first, first + 1, first + 2] });
+    sb.chains[0].joints[0].limit = Some(JointLimit::Cone { angle: 0.5, rotation: Quat::from_xyzw(0.5, 0.5, 0.5, 0.5) });
+    sb.chains[0].joints[1].limit =
+        Some(JointLimit::Hinge { angle: 1.25, rotation: Quat::from_xyzw(0.5, -0.5, 0.5, 0.5) });
+    sb.chains[1].joints[0].limit =
+        Some(JointLimit::Spherical { pitch: 1.0, yaw: 0.75, rotation: Quat::from_xyzw(0.5, 0.5, -0.5, 0.5) });
+    (scene, ids)
 }

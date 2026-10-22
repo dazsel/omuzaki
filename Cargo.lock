@@ -3949,6 +3949,7 @@ dependencies = [
  "omuzaki-doc-api",
  "omuzaki-face-api",
  "omuzaki-io-api",
+ "omuzaki-io-fbx",
  "omuzaki-io-gltf",
  "omuzaki-io-ops",
  "omuzaki-io-vrm",
@@ -4263,6 +4264,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-io-fbx"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-core",
+ "omuzaki-io-api",
+ "ufbx",
+]
+
+[[package]]
 name = "omuzaki-io-gltf"
 version = "0.0.0"
 dependencies = [
@@ -4292,6 +4302,7 @@ dependencies = [
  "image",
  "inventory",
  "omuzaki-anim-api",
+ "omuzaki-avatar-api",
  "omuzaki-char-api",
  "omuzaki-char-mock",
  "omuzaki-core",
@@ -4299,8 +4310,10 @@ dependencies = [
  "omuzaki-doc-mock",
  "omuzaki-embed",
  "omuzaki-face-api",
+ "omuzaki-history-api",
  "omuzaki-io-api",
  "omuzaki-io-mock",
+ "omuzaki-l10n-api",
  "omuzaki-library-api",
  "omuzaki-ops-api",
  "omuzaki-render-api",
@@ -4340,6 +4353,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sys-locale",
+ "tempfile",
  "thiserror 2.0.21",
  "tracing",
  "unic-langid",
@@ -4355,6 +4369,7 @@ dependencies = [
  "omuzaki-core",
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
+ "omuzaki-identity-api",
  "omuzaki-io-api",
  "omuzaki-ops-api",
  "omuzaki-store-api",
@@ -4774,6 +4789,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-setup"
+version = "0.0.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "omuzaki-stage"
 version = "0.0.0"
 dependencies = [
@@ -4788,6 +4810,8 @@ dependencies = [
  "omuzaki-anim",
  "omuzaki-anim-api",
  "omuzaki-anim-mock",
+ "omuzaki-avatar",
+ "omuzaki-avatar-api",
  "omuzaki-budget",
  "omuzaki-char",
  "omuzaki-char-api",
@@ -4800,6 +4824,9 @@ dependencies = [
  "omuzaki-face-api",
  "omuzaki-face-mock",
  "omuzaki-io-api",
+ "omuzaki-io-fbx",
+ "omuzaki-io-ops",
+ "omuzaki-io-vrm",
  "omuzaki-link-build",
  "omuzaki-ops-api",
  "omuzaki-render",
@@ -5099,10 +5126,32 @@ dependencies = [
  "egui_tiles",
  "image",
  "inventory",
+ "omuzaki-anim",
+ "omuzaki-anim-api",
+ "omuzaki-anim-mock",
+ "omuzaki-char",
+ "omuzaki-char-api",
+ "omuzaki-char-mock",
  "omuzaki-core",
+ "omuzaki-doc",
  "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-face-api",
  "omuzaki-l10n-api",
+ "omuzaki-ops",
  "omuzaki-ops-api",
+ "omuzaki-ops-mock",
+ "omuzaki-render",
+ "omuzaki-render-api",
+ "omuzaki-render-mock",
+ "omuzaki-stage",
+ "omuzaki-stage-api",
+ "omuzaki-stream",
+ "omuzaki-stream-api",
+ "omuzaki-track-api",
+ "omuzaki-track-mock",
+ "omuzaki-ui-api",
+ "omuzaki-ui-mock",
  "rustix 1.1.5",
  "schemars",
  "serde",
@@ -5110,6 +5159,8 @@ dependencies = [
  "tempfile",
  "toml",
  "tracing",
+ "tracing-subscriber",
+ "wgpu",
 ]
 
 [[package]]
@@ -7156,6 +7207,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ufbx"
+version = "0.11.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "260522f1eb74139f0e78b29dd82a58e5437d728c5498024a39e5af7282694240"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "unarray"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8323,6 +8383,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "toml",
+ "url",
  "zip",
 ]
 

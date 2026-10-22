@@ -174,7 +174,14 @@ fn check_golden(name: &str, image: &Image, budget: usize) {
         .to_rgba8();
     assert_eq!(golden.dimensions(), (image.size.x, image.size.y), "{name}: golden size");
     let off = golden.as_raw().chunks(4).zip(image.rgba8.chunks(4)).filter(|(a, b)| differs(a, b, 3)).count();
-    assert!(off <= budget, "{name}: {off} pixels differ from the golden (budget {budget}); bless with OMUZAKI_BLESS=1");
+    if off > budget {
+        support::keep(&format!("{name}.png"), (image.size.x, image.size.y), &image.rgba8);
+    }
+    let diff = support::Diff::of(golden.as_raw(), &image.rgba8);
+    assert!(
+        off <= budget,
+        "{name}: {off} pixels differ from the golden (budget {budget}); {diff}; bless with OMUZAKI_BLESS=1"
+    );
 }
 
 fn differs(a: &[u8], b: &[u8], by: u8) -> bool {

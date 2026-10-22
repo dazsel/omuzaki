@@ -9,7 +9,7 @@ use std::sync::Arc;
 use egui::{Align, CentralPanel, Frame, Layout, Margin, Panel, RichText, ScrollArea, Stroke, Ui};
 
 use super::layout::raised;
-use super::story::{self, Group, Story};
+use super::story::{self, Group, Story, group_title};
 use super::text::{tr, translate};
 use crate::ds::icons;
 use crate::ds::strings::{English, Msg, PSEUDO_LOCALE, Pseudo};
@@ -46,7 +46,7 @@ impl Gallery {
         Self {
             settings,
             pseudo: false,
-            stories: story::all(),
+            stories: story::collect(),
             states: HashMap::new(),
             content_height: 0.0,
             heights: HashMap::new(),
@@ -236,7 +236,7 @@ fn card(ui: &mut Ui, ds: &Ds, story: &Story, state: &mut dyn Any) -> f32 {
                 ui.label(RichText::new(translate(ds, story.title)).font(ds.text.section.clone()).color(ds.theme.text));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.label(
-                        RichText::new(translate(ds, story.group.title()))
+                        RichText::new(translate(ds, group_title(story.group)))
                             .font(ds.text.micro.clone())
                             .color(ds.theme.text3),
                     );
