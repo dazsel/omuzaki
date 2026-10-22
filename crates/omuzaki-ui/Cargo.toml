@@ -40,6 +40,7 @@ omuzaki-ops = { path = "../omuzaki-ops" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-render = { path = "../omuzaki-render" }
 omuzaki-render-api = { path = "../omuzaki-render-api" }
+omuzaki-setup = { path = "../omuzaki-setup" }
 omuzaki-stage = { path = "../omuzaki-stage" }
 omuzaki-stage-api = { path = "../omuzaki-stage-api" }
 omuzaki-stream = { path = "../omuzaki-stream" }

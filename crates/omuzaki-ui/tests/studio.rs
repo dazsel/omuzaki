@@ -320,22 +320,23 @@ fn a_first_start_opens_setup_beside_the_stage_and_it_ends_where_the_person_choos
     assert_eq!(h.state().shell.active_workspace(), Some("perform"), "setup sits beside the live stage");
     assert!(h.query_by_label("Welcome to Omuzaki").is_some());
 
-    // This core has no camera, performer or output ops: each step says so by offering to go on without them.
-    for (button, next) in [
-        ("Start", "Choose your character"),
-        ("Use the sample", "Let the camera follow your face"),
-        (
-            "Skip for now",
-            "Look at the camera with a relaxed face and press Calibrate. Hold still for about five seconds.",
-        ),
-        ("Skip for now", "Send the character to OBS"),
-        ("Next", "You're set"),
-    ] {
-        h.get_by_role_and_label(Role::Button, button).click();
+    // This core has no camera, performer or output ops: the flow leaves out what it can't do, and Continue goes on.
+    h.get_by_role_and_label(Role::Button, "Start").click();
+    h.run_steps(3);
+    assert!(h.query_by_label("Choose your character").is_some());
+    h.get_by_role_and_label(Role::RadioButton, "Use the sample").click();
+    h.run_steps(3);
+    assert!(h.query_by_label("How will you track your face?").is_some());
+    h.get_by_role_and_label(Role::RadioButton, "Skip for now").click();
+    h.run_steps(3);
+    for _ in 0..5 {
+        if h.query_by_label("You're set").is_some() {
+            break;
+        }
+        h.get_by_role_and_label(Role::Button, "Continue").click();
         h.run_steps(3);
-        assert!(h.query_all_by_label(next).next().is_some(), "after {button}: no {next:?}");
     }
-    assert!(h.query_by_label("Back").is_none(), "the last step has nothing to go back to");
+    assert!(h.query_by_label("You're set").is_some(), "Continue reaches Go-live");
     h.get_by_role_and_label(Role::Button, "Customise the character").click();
     h.run_steps(4);
     assert!(mark.exists(), "the flow is remembered");
@@ -367,19 +368,100 @@ fn skip_setup_ends_the_flow_from_any_step() {
     assert_eq!(h.state().shell.active_workspace(), Some("perform"), "skipping leaves the person where they are");
 }
 
-/// The whole app as `main.rs` starts it on a first start, for the pull request's evidence: the live slice with the
-/// project's character on the stage, and the shell on its executor with the setup flow open beside it.
+/// The setup panel's host for the evidence: chosen probes (shared, so a render can change them) and a live-looking
+/// status, answering every request at once.
+struct EvidenceHost {
+    probes: std::rc::Rc<std::cell::RefCell<omuzaki_setup::Probes>>,
+}
+
+impl omuzaki_ui::panels::setup::SetupHost for EvidenceHost {
+    fn refresh(&mut self, _: &dyn Runner, _: &Actor) {}
+
+    fn probes(&self) -> omuzaki_setup::Probes {
+        *self.probes.borrow()
+    }
+
+    fn current(&self) -> omuzaki_setup::Current {
+        omuzaki_setup::Current::default()
+    }
+
+    fn status(&self) -> omuzaki_ui::panels::setup::HostStatus {
+        use omuzaki_stage::perform::host::CalibrationState;
+        omuzaki_ui::panels::setup::HostStatus {
+            camera: Some("Desk camera".into()),
+            cameras: vec!["Desk camera".into(), "Capture card".into()],
+            tracking: Some(omuzaki_stage::perform::Tracking::Tracking),
+            calibration: Some(CalibrationState::Done { frames: 300 }),
+            output_on: true,
+            ..omuzaki_ui::panels::setup::HostStatus::default()
+        }
+    }
+
+    fn character(
+        &self,
+        choice: omuzaki_setup::CharacterChoice,
+    ) -> Result<(), omuzaki_ui::panels::setup::Unavailable> {
+        match choice {
+            omuzaki_setup::CharacterChoice::FromSheetOrIdea => Err(omuzaki_ui::panels::setup::Unavailable::NotInBuild),
+            _ => Ok(()),
+        }
+    }
+
+    fn pick_camera(&mut self, _: &dyn Runner, _: &Actor, _: usize) {}
+
+    fn stage_import(&mut self, _: String) {}
+
+    fn apply(&mut self, _: &dyn Runner, _: &Actor, effect: &omuzaki_setup::Effect) -> Vec<omuzaki_setup::Event> {
+        use omuzaki_setup::{Effect, Event};
+        match *effect {
+            Effect::SelectInput { request, .. }
+            | Effect::ShowTestPattern { request, .. }
+            | Effect::ApplyCharacter { request, .. } => vec![Event::Applied { request }],
+            Effect::StartCalibration { request } => vec![Event::CalibrationDone { request }],
+            _ => Vec::new(),
+        }
+    }
+
+    fn poll(&mut self) -> Vec<omuzaki_setup::Event> {
+        Vec::new()
+    }
+}
+
+/// A machine with one granted camera, the tracker ready and the output window.
+fn evidence_probes() -> omuzaki_setup::Probes {
+    use omuzaki_setup::{Cameras, IPhone, LanguageOffer, OutputKind, Permission, Probes, TrackerModel};
+    Probes {
+        cameras: Cameras::One(Permission::Granted),
+        tracker: TrackerModel::Ready,
+        iphone: IPhone::NotPaired,
+        recommended_output: Some(OutputKind::WindowCapture),
+        assistant: false,
+        language: LanguageOffer::None,
+        project_open: false,
+        privacy_claim_true: true,
+    }
+}
+
+/// The first run as `main.rs` starts it, for the pull request's evidence (#1184, #989): the live slice with the
+/// project's character on the Perform stage, and the Setup panel beside it on a host with chosen probes. Welcome,
+/// Character and Go-live at 1366x768 and 1920x1080 in the three themes, in the pseudo-locale and at 200 percent; each
+/// state of Input (face found, no camera, refused, downloading), Calibrate and Output at 1366x768, dark and pseudo.
 #[test]
 #[ignore = "writes images; run by the visual evidence job"]
 fn first_run_evidence() {
     use omuzaki_render::WgpuRenderer;
+    use omuzaki_setup::{Cameras, Permission, Probes, TrackerModel};
     use omuzaki_ui::aux_window::Transparency;
+    use omuzaki_ui::ds::strings::{English, Pseudo};
+    use omuzaki_ui::ds::{Scale, Settings, ThemeKind, set_strings};
     use omuzaki_ui::live::viewport::{NativePresenter, project_stage, published};
     use omuzaki_ui::live::wiring::{LiveApp, LiveScene, NoTracker, RealClock};
+    use omuzaki_ui::panels::setup::SetupHosts;
 
     struct App {
         shell: Shell,
         live: LiveApp,
+        settings: Settings,
     }
 
     let Ok(out) = std::env::var("OMUZAKI_EVIDENCE_OUT") else { panic!("set OMUZAKI_EVIDENCE_OUT to a folder") };
@@ -408,6 +490,11 @@ fn first_run_evidence() {
         builder: Arc::new(RegistryBuilder),
         build: BuildServices::default(),
     });
+    let probes = std::rc::Rc::new(std::cell::RefCell::new(evidence_probes()));
+    let shared = std::rc::Rc::clone(&probes);
+    shell.insert_view(SetupHosts(std::rc::Rc::new(move |_: &dyn Runner, _| {
+        Box::new(EvidenceHost { probes: std::rc::Rc::clone(&shared) }) as Box<dyn omuzaki_ui::panels::setup::SetupHost>
+    })));
     let first_run = FirstRun::at(folder.path().join("setup-done"));
     first_run.open_if_new(&shell.requests());
     shell.insert_view(first_run);
@@ -417,11 +504,11 @@ fn first_run_evidence() {
         .renderer(WgpuTestRenderer::from_render_state(gpu))
         .build_ui_state(
             |ui, app: &mut App| {
-                omuzaki_ui::ds::apply_settings(ui.ctx(), omuzaki_ui::ds::Settings::default());
+                omuzaki_ui::ds::apply_settings(ui.ctx(), app.settings);
                 app.live.show(ui.ctx());
                 app.shell.ui(ui);
             },
-            App { shell, live },
+            App { shell, live, settings: Settings::default() },
         );
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
     while published(&h.ctx).is_none() && std::time::Instant::now() < deadline {
@@ -431,15 +518,68 @@ fn first_run_evidence() {
     }
     assert!(published(&h.ctx).is_some(), "the stage drew its first frame");
     h.run_steps(4);
-    for (name, button) in [("welcome", None), ("character", Some("Start"))] {
-        if let Some(button) = button {
-            h.get_by_role_and_label(Role::Button, button).click();
-            h.run_steps(4);
+
+    let shot = |h: &mut Harness<'_, App>, name: &str, w: f32, ht: f32, settings: Settings, pseudo: bool| {
+        h.set_size(vec2(w, ht));
+        h.state_mut().settings = settings;
+        if pseudo {
+            set_strings(&h.ctx, Arc::new(Pseudo(English)));
         }
+        h.run_steps(30);
         let image = h.render().unwrap_or_else(|e| panic!("{e}"));
-        let path = format!("{out}/first-run-{name}-1366x768.png");
+        let path = format!("{out}/{name}-{w}x{ht}.png");
         image.save(&path).unwrap_or_else(|e| panic!("writing {path}: {e}"));
+        if pseudo {
+            set_strings(&h.ctx, Arc::new(English));
+        }
+        h.set_size(vec2(1366.0, 768.0));
+        h.state_mut().settings = Settings::default();
+        h.run_steps(4);
+    };
+    let themes = [(ThemeKind::Dark, "dark"), (ThemeKind::Light, "light"), (ThemeKind::HighContrast, "contrast")];
+    let every_look = |h: &mut Harness<'_, App>, step: &str| {
+        for (w, ht) in [(1366.0, 768.0), (1920.0, 1080.0)] {
+            for (theme, name) in themes {
+                shot(h, &format!("setup-{step}-{name}"), w, ht, Settings { theme, ..Settings::default() }, false);
+            }
+        }
+        shot(h, &format!("setup-{step}-pseudo"), 1366.0, 768.0, Settings::default(), true);
+        let big = Settings { scale: Scale::nearest(200), ..Settings::default() };
+        shot(h, &format!("setup-{step}-200pct"), 1920.0, 1080.0, big, false);
+    };
+    let press = |h: &mut Harness<'_, App>, role: Role, label: &str| {
+        h.get_by_role_and_label(role, label).click();
+        h.run_steps(4);
+    };
+    let dark_and_pseudo = |h: &mut Harness<'_, App>, name: &str| {
+        shot(h, &format!("setup-{name}-dark"), 1366.0, 768.0, Settings::default(), false);
+        shot(h, &format!("setup-{name}-pseudo"), 1366.0, 768.0, Settings::default(), true);
+    };
+
+    every_look(&mut h, "welcome");
+    press(&mut h, Role::Button, "Start");
+    every_look(&mut h, "character");
+    press(&mut h, Role::RadioButton, "Use the sample");
+    dark_and_pseudo(&mut h, "input-face");
+    for (name, probe) in [
+        ("input-no-camera", Probes { cameras: Cameras::None, ..evidence_probes() }),
+        ("input-refused", Probes { cameras: Cameras::One(Permission::Denied), ..evidence_probes() }),
+        ("input-downloading", Probes { tracker: TrackerModel::Downloading { percent: 42 }, ..evidence_probes() }),
+    ] {
+        *probes.borrow_mut() = probe;
+        h.run_steps(4);
+        dark_and_pseudo(&mut h, name);
     }
+    *probes.borrow_mut() = evidence_probes();
+    h.run_steps(4);
+    press(&mut h, Role::RadioButton, "Webcam");
+    press(&mut h, Role::Button, "Continue");
+    dark_and_pseudo(&mut h, "calibrate");
+    press(&mut h, Role::Button, "Continue");
+    press(&mut h, Role::RadioButton, "Output window");
+    dark_and_pseudo(&mut h, "output");
+    press(&mut h, Role::Button, "Continue");
+    every_look(&mut h, "go-live");
     h.state_mut().live.shutdown().unwrap_or_else(|e| panic!("{e}"));
 }
 

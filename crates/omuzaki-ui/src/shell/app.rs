@@ -802,7 +802,11 @@ impl Shell {
                 self.menu(ui);
                 ui.label(RichText::new(say(&ctx, Word::ProjectName, &[])).font(ds.text.strong.clone()));
                 ui.separator();
-                self.workspace_tabs(ui, plan);
+                // Setup is the whole task while it shows (`shell.md` section 14): the workspace tabs come back when it
+                // ends or is skipped.
+                if !self.bodies.on_screen(&ctx, crate::panels::setup::ID) {
+                    self.workspace_tabs(ui, plan);
+                }
                 ui.with_layout(Flow::right_to_left(Align::Center), |ui| {
                     let off = say(&ctx, Word::GoLiveOff, &[]);
                     let go_live = say(&ctx, Word::GoLive, &[]);

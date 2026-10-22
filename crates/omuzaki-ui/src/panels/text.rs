@@ -326,75 +326,214 @@ pub const UNBUILT: &str = "The character doesn't build: {reason}";
 pub const READOUT: &str = "{ms} ms GPU";
 
 /// The first-run flow's panel (`shell.md` section 14): which step of how many.
-pub const SETUP_STEP: &str = "Step {n} of {of}";
+pub const SETUP_HEADER: &str = "Setup \u{b7} {n} of {of}";
 /// Leaves the flow at any step.
 pub const SETUP_SKIP: &str = "Skip setup";
-/// Goes back a step.
+/// The previous step.
 pub const SETUP_BACK: &str = "Back";
-/// Goes on to the next step.
-pub const SETUP_NEXT: &str = "Next";
-/// Step 0.
+/// Why Back is off.
+pub const SETUP_BACK_FIRST: &str = "This is the first step";
+/// The next step.
+pub const SETUP_CONTINUE: &str = "Continue";
+/// Why Continue is off on Input.
+pub const SETUP_CHOOSE_INPUT: &str = "Choose how to track your face first";
+/// How long a step takes.
+pub const SETUP_ABOUT: &str = "About {seconds} s";
+/// The project line under the footer.
+pub const SETUP_PROJECT_LINE: &str = "Sample project \u{b7} not saved yet \u{b7} Setup can be reopened from the menu";
+/// A step in the step list, as a screen reader says it.
+pub const SETUP_STEP_STATE: &str = "Step {n}, {name}: {state}";
+/// Step names in the list.
+pub const SETUP_STEP_WELCOME: &str = "Welcome";
+/// Step names in the list.
+pub const SETUP_STEP_CHARACTER: &str = "Character";
+/// Step names in the list.
+pub const SETUP_STEP_INPUT: &str = "Input";
+/// Step names in the list.
+pub const SETUP_STEP_CALIBRATE: &str = "Calibrate";
+/// Step names in the list.
+pub const SETUP_STEP_OUTPUT: &str = "Output";
+/// Step names in the list.
+pub const SETUP_STEP_GO_LIVE: &str = "Go live";
+/// A step's state in the list: the word beside the shape and colour.
+pub const SETUP_STATE_DONE: &str = "done";
+/// A step's state in the list.
+pub const SETUP_STATE_CURRENT: &str = "current";
+/// A step's state in the list.
+pub const SETUP_STATE_SKIPPED: &str = "skipped";
+/// A step's state in the list.
+pub const SETUP_STATE_NEXT: &str = "to do";
+/// Welcome's title.
 pub const SETUP_WELCOME: &str = "Welcome to Omuzaki";
-/// What step 0 promises.
+/// What Welcome promises.
 pub const SETUP_WELCOME_LINE: &str = "Your camera never leaves this computer. Telemetry is off.";
 /// What the flow does and how long it takes.
 pub const SETUP_WELCOME_HOW: &str =
     "In about two minutes: pick a character, let the camera follow your face, and send the character to OBS.";
+/// Language and theme.
+pub const SETUP_FOLLOWS_SYSTEM: &str = "Language and theme follow your system. Change them any time in Settings.";
 /// Starts the flow.
 pub const SETUP_START: &str = "Start";
-/// Step 1.
+/// Welcome's assistant offer, with an assistant configured.
+pub const SETUP_ASSISTANT: &str = "Let an assistant set this up";
+/// Welcome's assistant offer, without one.
+pub const SETUP_CONNECT: &str = "Connect an agent";
+/// Character's title.
 pub const SETUP_CHARACTER: &str = "Choose your character";
-/// The sample, already on the stage.
+/// Character's line.
+pub const SETUP_CHARACTER_HOW: &str = "You can change everything about it later.";
+/// The Keep card, on a rerun.
+pub const SETUP_KEEP: &str = "Keep this character";
+/// The Keep card's line.
+pub const SETUP_KEEP_LINE: &str = "Leaves the project as it is.";
+/// The sample card.
 pub const SETUP_SAMPLE: &str = "Use the sample";
-/// Bringing one's own model.
-pub const SETUP_VRM: &str = "Or drop a .vrm file here to use your own model";
-/// A model was taken in.
+/// The sample card's line.
+pub const SETUP_SAMPLE_LINE: &str = "Ready now. It is already on the stage.";
+/// The sheet card.
+pub const SETUP_SHEET: &str = "Create from a sheet or idea";
+/// The sheet card's line.
+pub const SETUP_SHEET_LINE: &str = "Describe a character or bring a reference sheet, and build it step by step.";
+/// The import card.
+pub const SETUP_IMPORT: &str = "Import a VRM";
+/// The import card's line.
+pub const SETUP_IMPORT_LINE: &str = "Bring your own model from VRoid Studio or another tool.";
+/// Why a card is off.
+pub const SETUP_NOT_IN_BUILD: &str = "Not in this version yet";
+/// The import card's drop zone.
+pub const SETUP_VRM: &str = "Drop a .vrm file here";
+/// The imported file.
 pub const SETUP_VRM_DONE: &str = "Using {file}";
-/// Step 2.
-pub const SETUP_INPUT: &str = "Let the camera follow your face";
-/// What step 2 does.
-pub const SETUP_INPUT_HOW: &str = "The character mirrors your face and head. The picture stays on this computer.";
-/// No camera.
-pub const SETUP_NO_CAMERA: &str =
-    "No camera found. The character keeps breathing and blinking on its own until you add one.";
-/// The camera picker.
-pub const SETUP_CAMERA: &str = "Camera";
-/// The face is tracked.
-pub const SETUP_TRACKING: &str = "Following your face";
-/// The face is not seen.
-pub const SETUP_LOOKING: &str = "Looking for your face";
+/// Input's title.
+pub const SETUP_INPUT: &str = "How will you track your face?";
+/// Input's line.
+pub const SETUP_INPUT_HOW: &str = "Your camera feed stays on this computer.";
+/// The webcam card.
+pub const SETUP_WEBCAM: &str = "Webcam";
+/// The webcam card's line.
+pub const SETUP_WEBCAM_LINE: &str = "Ready now. Good for most streams.";
+/// Why the webcam card is off.
+pub const SETUP_NO_WEBCAM: &str = "No camera to use";
+/// The face is found.
+pub const SETUP_FACE_FOUND: &str = "Face found \u{b7} {camera}";
+/// The face is not found yet.
+pub const SETUP_FACE_LOOKING: &str = "Looking for your face \u{b7} {camera}";
 /// The camera is starting.
-pub const SETUP_STARTING: &str = "Starting the camera";
-/// Skips the camera.
+pub const SETUP_FACE_STARTING: &str = "Starting the camera \u{b7} {camera}";
+/// The camera picker (more than one camera).
+pub const SETUP_CAMERA: &str = "Camera";
+/// The iPhone card.
+pub const SETUP_IPHONE: &str = "iPhone";
+/// The iPhone card's line.
+pub const SETUP_IPHONE_LINE: &str = "Best mouth and tongue detail. Free tracker app.";
+/// The iPhone card's status.
+pub const SETUP_IPHONE_PAIR: &str = "Pair in about a minute";
+/// The life-layer card.
 pub const SETUP_SKIP_FOR_NOW: &str = "Skip for now";
-/// Step 3.
-pub const SETUP_CALIBRATE: &str = "Calibrate";
-/// What step 3 does.
+/// The life-layer card's line.
+pub const SETUP_SKIP_FOR_NOW_LINE: &str = "The avatar will idle with life animation.";
+/// Why the camera prompt comes.
+pub const SETUP_PERMISSION_WHY: &str =
+    "Continue asks your system for the camera, so the avatar can follow your face. The picture stays on this computer.";
+/// The quick check's title.
+pub const SETUP_QUICK_CHECK: &str = "Quick check";
+/// The quick check.
+pub const SETUP_QUICK_CHECK_LINE: &str = "Blink, open your mouth, smile: the avatar should follow.";
+/// No camera.
+pub const SETUP_NOTE_NO_CAMERA: &str = "No camera found. Use an iPhone, or skip for now and the avatar idles.";
+/// The OS refused the camera.
+pub const SETUP_NOTE_DENIED: &str =
+    "Omuzaki can't use the camera. Allow it in your system's privacy settings, or use an iPhone, or skip for now.";
+/// The tracker is downloading.
+pub const SETUP_NOTE_DOWNLOADING: &str =
+    "Getting the face tracker: {percent}%. You can continue; the avatar idles until it is ready.";
+/// The tracker is not available.
+pub const SETUP_NOTE_TRACKER: &str =
+    "The face tracker isn't available. Continue with the avatar idling, or use an iPhone.";
+/// No iPhone paired.
+pub const SETUP_NOTE_IPHONE: &str = "No iPhone is paired yet. Pair it from the Live panel, or pick another way.";
+/// The source didn't start.
+pub const SETUP_NOTE_INPUT: &str = "That didn't start. Continue tries again.";
+/// The output didn't open.
+pub const SETUP_NOTE_OUTPUT: &str = "The output didn't open. Choose it again, or Later.";
+/// The character choice didn't work.
+pub const SETUP_NOTE_CHARACTER: &str = "That didn't work. Choose again.";
+/// Calibration didn't finish.
+pub const SETUP_NOTE_CALIBRATION: &str = "Calibration didn't finish. Continue tries again; Use defaults moves on.";
+/// No output on this system.
+pub const SETUP_NOTE_NO_OUTPUT: &str = "This system offers no output Omuzaki can use yet. Later moves on.";
+/// Calibrate's title.
+pub const SETUP_CALIBRATE: &str = "Calibrate your face";
+/// What Calibrate does.
 pub const SETUP_CALIBRATE_HOW: &str =
-    "Look at the camera with a relaxed face and press Calibrate. Hold still for about five seconds.";
-/// Starts a capture.
-pub const SETUP_CALIBRATE_GO: &str = "Calibrate";
-/// A capture is running.
+    "Look at the camera with a relaxed face and press Continue. Hold still for about five seconds.";
+/// A capture runs.
 pub const SETUP_CALIBRATING: &str = "Hold still: {frames} of {of}";
-/// A capture finished.
+/// Calibrated.
 pub const SETUP_CALIBRATED: &str = "Calibrated. Your relaxed face is the character's rest.";
-/// A capture gave up.
-pub const SETUP_CALIBRATE_FAILED: &str = "Your face was out of view. Face the camera and try again.";
-/// Calibrating needs a tracked face.
-pub const SETUP_CALIBRATE_NEEDS: &str = "Calibrating needs the camera to see your face";
-/// Step 4.
-pub const SETUP_OUTPUT: &str = "Send the character to OBS";
-/// What step 4 does.
-pub const SETUP_OUTPUT_HOW: &str = "Open the output window, then add it in OBS as a Window Capture of \"{title}\".";
-/// Opens the output window.
-pub const SETUP_OUTPUT_OPEN: &str = "Open the output window";
-/// The output window is open.
-pub const SETUP_OUTPUT_OPENED: &str = "The output window is open.";
-/// Step 5.
+/// Skips calibrating.
+pub const SETUP_USE_DEFAULTS: &str = "Use defaults";
+/// What the defaults are.
+pub const SETUP_USE_DEFAULTS_LINE: &str = "The defaults suit most faces; calibrate any time from the Live panel.";
+/// Output's title.
+pub const SETUP_OUTPUT: &str = "Send the character to your stream";
+/// Output's line.
+pub const SETUP_OUTPUT_HOW: &str =
+    "One way that works on this computer. Choosing it opens it, so you can check it in OBS.";
+/// The output is on.
+pub const SETUP_OUTPUT_ON: &str = "On: add it in OBS";
+/// The window output.
+pub const SETUP_OUT_WINDOW: &str = "Output window";
+/// The window output's line.
+pub const SETUP_OUT_WINDOW_LINE: &str = "A clean window called \"{title}\" that OBS captures, with transparency.";
+/// Spout.
+pub const SETUP_OUT_SPOUT: &str = "Spout";
+/// Spout's line.
+pub const SETUP_OUT_SPOUT_LINE: &str = "Shares the picture with OBS on Windows, with transparency.";
+/// Syphon.
+pub const SETUP_OUT_SYPHON: &str = "Syphon";
+/// Syphon's line.
+pub const SETUP_OUT_SYPHON_LINE: &str = "Shares the picture with OBS on macOS, with transparency.";
+/// NDI.
+pub const SETUP_OUT_NDI: &str = "NDI";
+/// NDI's line.
+pub const SETUP_OUT_NDI_LINE: &str = "Sends the picture over your network.";
+/// The virtual camera.
+pub const SETUP_OUT_CAMERA: &str = "Virtual camera";
+/// The virtual camera's line.
+pub const SETUP_OUT_CAMERA_LINE: &str = "Shows up as a camera in OBS, Discord or a video call.";
+/// The OBS instructions' title.
+pub const SETUP_OBS: &str = "OBS instructions";
+/// OBS, step 1.
+pub const SETUP_OBS_1: &str = "1. In OBS, under Sources, press + and choose Window Capture.";
+/// OBS, step 2.
+pub const SETUP_OBS_2: &str = "2. Pick the window \"{title}\".";
+/// OBS, step 3.
+pub const SETUP_OBS_3: &str = "3. Turn on Allow Transparency if your OBS shows it.";
+/// Skips the output.
+pub const SETUP_LATER: &str = "Later";
+/// Go-live's title.
 pub const SETUP_DONE: &str = "You're set";
 /// What now.
-pub const SETUP_DONE_HOW: &str =
-    "Perform from here, or customise the character first. Setup is in the command palette if you want it again.";
+pub const SETUP_DONE_HOW: &str = "Perform from here, or customise the character first.";
+/// The health meter.
+pub const SETUP_HEALTH: &str = "{ready} of {of} ready";
+/// Health: the character.
+pub const SETUP_CHECK_CHARACTER: &str = "Character on the stage";
+/// Health: tracking.
+pub const SETUP_CHECK_TRACKING: &str = "The camera follows your face";
+/// Health: no tracking.
+pub const SETUP_CHECK_IDLE: &str = "No tracking: the avatar idles";
+/// Health: calibrated.
+pub const SETUP_CHECK_CALIBRATED: &str = "Calibrated to your face";
+/// Health: not calibrated.
+pub const SETUP_CHECK_DEFAULTS: &str = "Calibration: the defaults";
+/// Health: an output.
+pub const SETUP_CHECK_OUTPUT: &str = "Output on";
+/// Health: no output.
+pub const SETUP_CHECK_NO_OUTPUT: &str = "No output yet";
+/// Health: the layout.
+pub const SETUP_CHECK_LAYOUT: &str = "Layout saved";
 /// Ends the flow in the Perform workspace.
 pub const SETUP_PERFORM: &str = "Open Perform";
 /// Ends the flow in the Build workspace.

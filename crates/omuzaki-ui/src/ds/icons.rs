@@ -145,6 +145,14 @@ pub const WEBCAM: &str = egui_phosphor::regular::WEBCAM;
 pub const HEARTBEAT: &str = egui_phosphor::regular::HEARTBEAT;
 /// A hotkey.
 pub const KEYBOARD: &str = egui_phosphor::regular::KEYBOARD;
+/// A phone as a tracker (iPhone face tracking).
+pub const DEVICE_MOBILE: &str = egui_phosphor::regular::DEVICE_MOBILE;
+/// A model file brought in from elsewhere.
+pub const UPLOAD: &str = egui_phosphor::regular::UPLOAD_SIMPLE;
+/// A picture sent to another program (an output).
+pub const MONITOR: &str = egui_phosphor::regular::MONITOR_PLAY;
+/// A step still to come.
+pub const CIRCLE_DASHED: &str = egui_phosphor::regular::CIRCLE_DASHED;
 
 /// The icon that goes with a status: the shape half of "icon, word and colour" (P9).
 pub const fn status(status: super::tokens::Status) -> &'static str {
