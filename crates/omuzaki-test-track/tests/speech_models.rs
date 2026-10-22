@@ -16,7 +16,7 @@ use omuzaki_speech::slots::asr::{edit_distance, words};
 use omuzaki_speech::slots::clips::{CLIPS, decode_16k};
 use omuzaki_speech::slots::{asr_slot, vad_slot};
 use omuzaki_speech::{HostConfig, Recognizer as _, SileroVad, SpeechHost, Whisper, synth};
-use speech_support::{folders, install, read_wav, registry};
+use speech_support::{folders, install, registry};
 
 fn temp(name: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("omuzaki-speech-models-{name}-{}", std::process::id()));
@@ -46,12 +46,14 @@ fn both_speech_models_install_after_passing_their_smoke_tests() {
 }
 
 /// Probabilities from the reference implementation (`omuzaki-speech/tools/vad_reference.py`: Silero's own wrapper
-/// logic in Python on the stock onnxruntime) on the first LibriVox clip. The session the registry opens must reproduce
-/// them within 1e-3: the 64-sample context and the recurrent state are carried exactly as the model expects.
+/// logic in Python on the stock onnxruntime) on the first pinned LibriVox clip, decoded as the smoke tests decode it
+/// and quantised to 16 bits as the reference read it. The session the registry opens must reproduce them within
+/// 1e-3: the 64-sample context and the recurrent state are carried exactly as the model expects.
 #[test]
 fn silero_through_the_registry_matches_the_python_reference() {
     let Some(files) = folders() else { return };
-    let clip = files.0[2].join("aesop-52-farmer-and-his-sons.wav");
+    let clip = CLIPS[0];
+    let mp3 = files.0[2].join(clip.url.rsplit('/').next().unwrap());
     let dir = temp("golden");
     let registry = registry(files, &dir);
     install(&registry, &vad_slot(), "silero-vad");
@@ -69,24 +71,26 @@ fn silero_through_the_registry_matches_the_python_reference() {
         assert!(most < 0.5, "{name}: max probability {most}");
     }
 
-    if clip.is_file() {
-        let golden = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../omuzaki-speech/tests/golden/vad_probabilities_aesop-52.txt"
-        ))
-        .unwrap();
-        let expected: Vec<f32> = golden.lines().map(|l| l.parse().unwrap()).collect();
-        let probabilities = vad.probabilities(&read_wav(&clip)).unwrap();
-        assert_eq!(probabilities.len(), expected.len());
-        let worst = probabilities.iter().zip(&expected).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
-        eprintln!("largest deviation from the Python reference over {} frames: {worst:e}", expected.len());
-        assert!(worst < 1e-3, "largest deviation from the Python reference: {worst}");
-        let mut segmenter = Segmenter::new(SegmenterConfig::default());
-        let ends = probabilities.iter().filter_map(|&p| segmenter.push(p)).filter(|e| matches!(e, Event::End(_)));
-        assert!(ends.count() > 0, "no speech found in the clip");
-    } else {
-        eprintln!("SKIPPED the golden comparison: {} not found", clip.display());
-    }
+    let golden = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../omuzaki-speech/tests/golden/vad_probabilities_aesop-55.txt"
+    ))
+    .unwrap();
+    let expected: Vec<f32> = golden.lines().map(|l| l.parse().unwrap()).collect();
+    #[allow(clippy::cast_possible_truncation)] // quantised to 16 bits, as the reference's WAV holds it
+    let audio: Vec<f32> = decode_16k(&mp3)
+        .unwrap()
+        .iter()
+        .map(|&s| (f64::from(s) * 32768.0).round().clamp(-32768.0, 32767.0) as f32 / 32768.0)
+        .collect();
+    let probabilities = vad.probabilities(&audio).unwrap();
+    assert_eq!(probabilities.len(), expected.len());
+    let worst = probabilities.iter().zip(&expected).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+    eprintln!("largest deviation from the Python reference over {} frames: {worst:e}", expected.len());
+    assert!(worst < 1e-3, "largest deviation from the Python reference: {worst}");
+    let mut segmenter = Segmenter::new(SegmenterConfig::default());
+    let ends = probabilities.iter().filter_map(|&p| segmenter.push(p)).filter(|e| matches!(e, Event::End(_)));
+    assert!(ends.count() > 0, "no speech found in the clip");
     std::fs::remove_dir_all(&dir).unwrap();
 }
 

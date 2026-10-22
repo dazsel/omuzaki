@@ -3,8 +3,8 @@
 //!
 //! - `OMUZAKI_SPEECH_MODELS`: `silero_vad.onnx` and the ggml files, under their release names;
 //! - `OMUZAKI_ORT_CACHE`: the pinned ONNX Runtime archive (`onnxruntime-linux-x64-1.28.3.tgz` on Linux);
-//! - `OMUZAKI_SPEECH_DATA`: the LibriVox MP3s the smoke tests fetch (`fables_03_05_aesop_64kb.mp3`, ...) and, for the
-//!   golden comparison, `aesop-52-farmer-and-his-sons.wav` (16 kHz mono).
+//! - `OMUZAKI_SPEECH_DATA`: the LibriVox MP3s the smoke tests and the golden comparison fetch
+//!   (`fables_03_05_aesop_64kb.mp3`, ...).
 //!
 //! A test skips with a message when one is unset. Nothing is downloaded: the source serves a pinned file only from
 //! these folders, by the last part of its URL, after checking its size and SHA-256.
@@ -91,13 +91,4 @@ pub fn install(registry: &Registry, slot: &SlotRef, id: &str) -> ModelRef {
     let model = model(registry, slot, id);
     registry.install(&model, &NoProgress).unwrap_or_else(|e| panic!("installing {id}: {e}"));
     model
-}
-
-/// A 16 kHz mono WAV as `f32`.
-pub fn read_wav(path: &Path) -> Vec<f32> {
-    let mut reader = hound::WavReader::open(path).unwrap();
-    let spec = reader.spec();
-    assert_eq!((spec.sample_rate, spec.channels), (16_000, 1), "{}", path.display());
-    let scale = 1.0 / (1u64 << (spec.bits_per_sample - 1)) as f32;
-    reader.samples::<i32>().map(|s| s.unwrap() as f32 * scale).collect()
 }
