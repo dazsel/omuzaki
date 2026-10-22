@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
 
-use bytes::Bytes;
+use bytes::BufMut;
 use omuzaki_core::glam::UVec2;
 use omuzaki_core::time::Seconds;
 use omuzaki_render_api::{AlphaEncoding, Image};
@@ -39,6 +39,7 @@ use omuzaki_update_api::hold::Hold;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::arena::Arena;
 use super::ring::{ChunkKind, MemoryPayload, Payload, Push, RollingBuffer, Selection, Stats};
 use super::segment::{SegmentStore, Slice};
 use super::settings::{Backing, ReplaySettings};
@@ -54,6 +55,8 @@ pub const QUEUE_FRAMES: usize = 4;
 pub const SAVE_QUEUE: usize = 2;
 /// The most samples read from a track at a time.
 const AUDIO_CHUNK: usize = 4096;
+/// Evicted memory payloads kept for reuse: more than a group's chunks at 120 fps with four tracks.
+const SPARES: usize = 1024;
 /// How long the encoder thread waits for a frame before it looks at its save commands again.
 const IDLE_POLL: Duration = Duration::from_millis(2);
 
@@ -75,6 +78,13 @@ impl Payload for Stored {
         match self {
             Self::Memory(m) => m.len(),
             Self::Disk(s) => s.len(),
+        }
+    }
+
+    fn retire(self) -> Option<Self> {
+        match self {
+            Self::Memory(m) => m.retire().map(Self::Memory),
+            Self::Disk(_) => None,
         }
     }
 }
@@ -192,6 +202,8 @@ struct Feed {
 /// The single-threaded replay core: the encoder, the ring and the audio feeds.
 pub struct ReplayCore {
     ring: RollingBuffer<Stored>,
+    /// Where audio chunks' bytes are cut from.
+    arena: Arena,
     store: Option<SegmentStore>,
     settings: ReplaySettings,
     encoders: Arc<dyn EncoderFactory>,
@@ -227,10 +239,13 @@ impl ReplayCore {
         encoders: Arc<dyn EncoderFactory>,
     ) -> Result<Self, StreamError> {
         settings.check().map_err(|e| StreamError::Config(e.to_string()))?;
-        let ring = RollingBuffer::new(settings.caps()).map_err(|e| StreamError::Config(e.to_string()))?;
-        let store = match settings.backing {
-            Backing::Disk => Some(SegmentStore::open(cache)?),
-            _ => None,
+        let mut ring = RollingBuffer::new(settings.caps()).map_err(|e| StreamError::Config(e.to_string()))?;
+        let store = if settings.backing == Backing::Disk {
+            Some(SegmentStore::open(cache)?)
+        } else {
+            // Warm, a memory buffer makes each payload in one it evicted (#1019).
+            ring.keep_spares(SPARES);
+            None
         };
         let encoder = encoders.create(&encode)?;
         let mut feeds = Vec::with_capacity(tracks.len());
@@ -245,6 +260,7 @@ impl ReplayCore {
         }
         Ok(Self {
             ring,
+            arena: Arena::new(),
             store,
             settings,
             encoders,
@@ -317,8 +333,16 @@ impl ReplayCore {
         let pushed = match &self.store {
             None => {
                 let len = MemoryPayload::stored_len(&packet);
+                let spare = self.ring.take_spare();
                 self.ring.push_with(kind, pts, duration, len, |charge| {
-                    Ok::<_, StreamError>(Stored::Memory(MemoryPayload::new(packet, charge)))
+                    let payload = match spare {
+                        Some(Stored::Memory(mut payload)) => match payload.refill(packet, charge) {
+                            Ok(_) => payload,
+                            Err((packet, charge)) => MemoryPayload::new(packet, charge),
+                        },
+                        _ => MemoryPayload::new(packet, charge),
+                    };
+                    Ok::<_, StreamError>(Stored::Memory(payload))
                 })?
             }
             Some(store) => {
@@ -352,15 +376,16 @@ impl ReplayCore {
                 let skip = usize::try_from(s0.saturating_sub(run.start_sample)).unwrap_or(run.len);
                 let position = run.start_sample.max(s0) - s0;
                 let samples = &feed.buf[skip..run.len];
-                let mut data = Vec::with_capacity(samples.len() * 4);
-                if run.private || run.muted {
+                let data = if run.private || run.muted {
                     // Never stored: the clip gets silence where the person was private or muted.
-                    data.resize(samples.len() * 4, 0);
+                    self.arena.zeros(samples.len() * 4)
                 } else {
-                    for s in samples {
-                        data.extend_from_slice(&s.to_le_bytes());
-                    }
-                }
+                    self.arena.cut(samples.len() * 4, |b| {
+                        for s in samples {
+                            b.put_f32_le(*s);
+                        }
+                    })
+                };
                 let (rate, channels, index) = (feed.track.rate, feed.track.channels, feed.index);
                 let per_second = f64::from(rate.max(1)) * f64::from(channels.max(1));
                 let count = samples.len() as u64;
@@ -370,7 +395,7 @@ impl ReplayCore {
                     dts: i64::try_from(position).unwrap_or(i64::MAX),
                     duration: i64::try_from(count).unwrap_or(i64::MAX),
                     keyframe: true,
-                    data: Bytes::from(data),
+                    data,
                     side_data: Vec::new(),
                 };
                 let pts = Seconds(ratio(position, per_second));
