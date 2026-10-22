@@ -79,6 +79,7 @@ fn store_error(reason: &str) -> InputError {
 
 impl Store {
     /// The store in `dir` (created on first save), or in memory only without a folder.
+    #[allow(clippy::disallowed_methods, reason = "the hub's own file in its data folder, never a path an op names; the fence is for ops")]
     pub(crate) fn open(dir: Option<&Path>) -> Result<Self, InputError> {
         let path = dir.map(|d| d.join(FILE));
         let file = match &path {
@@ -91,6 +92,7 @@ impl Store {
         Ok(Self { path, file: Mutex::new(file) })
     }
 
+    #[allow(clippy::disallowed_methods, reason = "the hub's own file in its data folder, never a path an op names; the fence is for ops")]
     fn save(&self, file: &File) -> Result<(), InputError> {
         let Some(path) = &self.path else { return Ok(()) };
         let text = toml::to_string(file).map_err(|_| store_error("the bindings could not be written"))?;
@@ -226,6 +228,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::disallowed_methods, reason = "the test reads the hub's file back; the fence is for ops")]
     fn the_store_round_trips_through_its_file_and_reports_conflicts() {
         let dir = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
         let store = Store::open(Some(dir.path())).unwrap_or_else(|_| unreachable!());

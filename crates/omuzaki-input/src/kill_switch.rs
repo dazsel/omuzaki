@@ -29,6 +29,7 @@ pub(crate) struct OsProcesses;
 
 #[cfg(target_os = "linux")]
 impl Processes for OsProcesses {
+    #[allow(clippy::disallowed_methods, reason = "the OS's own process list in /proc, never a path an op names; the fence is for ops")]
     fn names(&self, out: &mut Vec<String>) {
         out.clear();
         let Ok(entries) = std::fs::read_dir("/proc") else { return };

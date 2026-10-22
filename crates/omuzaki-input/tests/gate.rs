@@ -3,6 +3,8 @@
 //! forbidden symbols of §3 rule 4.
 // Helpers outside a #[test] unwrap too; an empty feed is asserted plainly.
 #![allow(clippy::unwrap_used, clippy::assert_is_empty)]
+// The tests read the hub's files and the crate's sources back; the file fence is for ops.
+#![allow(clippy::disallowed_methods)]
 
 mod support;
 

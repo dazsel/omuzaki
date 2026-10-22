@@ -29,6 +29,7 @@ pub(crate) struct Protected {
 
 impl Protected {
     /// The list in `dir`, or in memory only. An unreadable file is an empty list.
+    #[allow(clippy::disallowed_methods, reason = "the hub's own file in its data folder, never a path an op names; the fence is for ops")]
     pub(crate) fn open(dir: Option<&Path>) -> Self {
         let path = dir.map(|d| d.join(FILE));
         let programs = path
@@ -52,6 +53,7 @@ impl Protected {
 }
 
 impl ProtectList for Protected {
+    #[allow(clippy::disallowed_methods, reason = "the hub's own file in its data folder, never a path an op names; the fence is for ops")]
     fn set(&self, programs: &[String]) {
         let cleaned: Vec<String> =
             programs.iter().map(|p| p.trim().to_owned()).filter(|p| !p.is_empty()).collect();

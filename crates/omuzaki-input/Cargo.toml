@@ -15,12 +15,14 @@ test-hooks = []
 
 [dependencies]
 inventory.workspace = true
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 toml.workspace = true
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-input-api = { path = "../omuzaki-input-api" }
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
@@ -33,6 +35,7 @@ omuzaki-embed = { path = "../omuzaki-embed" }
 criterion.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
+omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-input = { path = ".", features = ["test-hooks"] }
 
 [[bench]]
