@@ -36,7 +36,14 @@ omuzaki-anim-api = { path = "../omuzaki-anim-api" }
 # camera (`live/wiring/app.rs`).
 omuzaki-audio-api = { path = "../omuzaki-audio-api" }
 omuzaki-audio-engine = { path = "../omuzaki-audio-engine" }
+omuzaki-live = { path = "../omuzaki-live" }
+omuzaki-live-api = { path = "../omuzaki-live-api" }
+omuzaki-live-nodes = { path = "../omuzaki-live-nodes" }
 omuzaki-obs = { path = "../omuzaki-obs" }
+omuzaki-twitch = { path = "../omuzaki-twitch" }
+omuzaki-secrets = { path = "../omuzaki-secrets" }
+omuzaki-secrets-api = { path = "../omuzaki-secrets-api" }
+omuzaki-vts = { path = "../omuzaki-vts" }
 omuzaki-vcam = { path = "../omuzaki-vcam" }
 omuzaki-char = { path = "../omuzaki-char" }
 omuzaki-char-api = { path = "../omuzaki-char-api" }
@@ -85,6 +92,7 @@ omuzaki-ops-mock = { path = "../omuzaki-ops-mock" }
 omuzaki-render-mock = { path = "../omuzaki-render-mock" }
 omuzaki-track-mock = { path = "../omuzaki-track-mock" }
 omuzaki-ui-mock = { path = "../omuzaki-ui-mock" }
+omuzaki-vts = { path = "../omuzaki-vts", features = ["testing"] }
 tempfile.workspace = true
 
 [lints]

@@ -12,10 +12,18 @@ use omuzaki_audio_engine::{CpalBackend, LiveEngine};
 use omuzaki_core::glam::UVec2;
 use omuzaki_core::time::{Clock, Seconds, SystemClock};
 use omuzaki_face_api::ExpressionSet;
+use omuzaki_http::ConnectHttp;
+use omuzaki_live::Automation;
+use omuzaki_live::approvals::DiskApprovals;
+use omuzaki_live::vars::DiskVariables;
+use omuzaki_live_api::event::EventSink;
 use omuzaki_obs::service::ObsService;
 use omuzaki_ops_api::{Actor, Runner, ServicesBuilder};
 use omuzaki_render::WgpuRenderer;
+use omuzaki_secrets::KeychainSecrets;
+use omuzaki_secrets_api::prelude::SecretStore;
 use omuzaki_stage::frame::Stage;
+use omuzaki_stage::perform::Tracking;
 use omuzaki_stage::perform::host::{PerformError, PerformHost};
 use omuzaki_stage::perform::input::{InputHost, NoSource};
 use omuzaki_stream::feed::ProgramFeed;
@@ -25,6 +33,9 @@ use omuzaki_track_api::camera::{CameraId, CameraInfo};
 use omuzaki_track_api::error::TrackError;
 use omuzaki_track_api::tracker::{LatencyStats, Tracker, TrackerConfig};
 use omuzaki_track_net::PhoneSettings;
+use omuzaki_twitch::TwitchService;
+use omuzaki_vts::client::SecretTokens;
+use omuzaki_vts::service::VtsService;
 
 use super::clock::{ClockObserver, PerformClock};
 use super::inputs::{model_registry, studio_inputs};
@@ -85,6 +96,8 @@ pub struct LiveApp {
     hotkeys: Hotkeys,
     /// Feeds the program frame to the recorder, the replay buffer and the live outputs while any of them runs.
     feed: Option<ProgramFeed>,
+    /// Runs the shows' rules (the `automation.*` and `show.*` ops reach it through the runner).
+    automation: Arc<Automation>,
 }
 
 /// The frame rate the program is fed to the outputs at (spec §10's budget scene).
@@ -149,6 +162,7 @@ impl LiveApp {
         if let Some(problem) = &inputs.webcam_problem {
             tracing::warn!(%problem, "the webcam can't track yet");
         }
+        let models_dir = models;
         let models = models.ok_or_else(|| "the app has no data folder".to_owned()).and_then(model_registry);
         let models = match models {
             Ok(registry) => Some(Arc::new(registry) as Arc<dyn ModelRegistry>),
@@ -157,14 +171,19 @@ impl LiveApp {
                 None
             }
         };
-        let extras = Extras { phone: Some(inputs.phone), pose_out: Some(inputs.pose_out), models };
+        // The app's data folder is the models folder's parent: the keychain keeps its label list's lock file there, and
+        // the shows keep what this machine approved and their variables.
+        let data = models_dir.and_then(Path::parent).map(Path::to_path_buf);
+        let secrets = data.as_ref().map(|data| Arc::new(KeychainSecrets::new(data)) as Arc<dyn SecretStore>);
+        let extras =
+            Extras { phone: Some(inputs.phone), pose_out: Some(inputs.pose_out), models, secrets, data, tap: None };
         Self::start_with(document, inputs.webcam, extras, clock, transparency, &base)
     }
 
     fn start_with(
         document: Document,
         tracker: Box<dyn Tracker>,
-        extras: Extras,
+        mut extras: Extras,
         clock: Box<dyn PerformClock>,
         transparency: Transparency,
         base: &HumanoidPose,
@@ -174,6 +193,29 @@ impl LiveApp {
         let tracker = SharedTracker::new(tracker);
         let observer = clock.observer();
         let models = extras.models.clone();
+        let secrets = extras.secrets.clone();
+        let data = extras.data.clone();
+        // The shows: the automation engine runs their rules through this app's runner, and Twitch's events reach it.
+        let automation = Arc::new(Automation::new());
+        let twitch = TwitchService::new(Arc::new(ConnectHttp::new()), Arc::clone(&automation) as Arc<dyn EventSink>);
+        // The VTube Studio bridge: the perform thread feeds it every step's channels; the `vts.*` ops connect it.
+        let vts = match VtsService::new() {
+            Ok(service) => {
+                let service = match &secrets {
+                    Some(store) => service.with_tokens(Arc::new(SecretTokens(Arc::clone(store)))),
+                    None => service,
+                };
+                let service = Arc::new(service);
+                let mut feed = service.feed();
+                let face = |t: Tracking| t == Tracking::Tracking;
+                extras.tap.get_or_insert(Box::new(move |frame| feed.push(&frame.channels, face(frame.tracking))));
+                Some(service)
+            }
+            Err(error) => {
+                tracing::warn!(%error, "the VTube Studio bridge did not start: the `vts.*` ops are unavailable");
+                None
+            }
+        };
         let (rig, reader) =
             LiveRig::start_with(Box::new(tracker.clone()), extras, TrackerConfig::default(), performer, clock)
                 .map_err(StartError::Wiring)?;
@@ -188,6 +230,13 @@ impl LiveApp {
             .insert::<ObsService>(Arc::new(ObsService::new()));
         if let Some(models) = models {
             services = services.insert::<dyn ModelRegistry>(models);
+        }
+        if let Some(secrets) = secrets {
+            services = services.insert::<dyn SecretStore>(secrets);
+        }
+        services = services.insert::<Automation>(Arc::clone(&automation)).insert::<TwitchService>(Arc::new(twitch));
+        if let Some(vts) = vts {
+            services = services.insert::<VtsService>(vts);
         }
         // Frames and the microphone count from one zero, so a take's audio lines up with its video.
         let epoch = std::time::Instant::now();
@@ -206,7 +255,16 @@ impl LiveApp {
             Err(error) => tracing::warn!(%error, "the audio engine did not start: the microphone is unavailable"),
         }
         let services = services.build();
+        let project = document.dir().map(|dir| dir.to_string_lossy().into_owned());
         let core = wiring::core_on(document, services).map_err(StartError::Ops)?;
+        automation.attach(&core.runner);
+        automation.attach_sessions(&core.sessions);
+        // What this machine approved and the shows' variables live in the app's data folder, never in the project.
+        // Without one, nothing is approved and variables last one run.
+        if let Some(data) = &data {
+            automation.set_variables(Arc::new(DiskVariables::new(data)), project);
+            automation.set_approvals(Arc::new(DiskApprovals::new(data)));
+        }
         Ok(Self {
             rig: Some(rig),
             channel_reader: reader.clone(),
@@ -219,7 +277,14 @@ impl LiveApp {
             viewport: None,
             hotkeys: Hotkeys::new(),
             feed: stream.map(ProgramFeed::new),
+            automation,
         })
+    }
+
+    /// The automation engine: the approval card allows a show's needs through its approvals store and calls
+    /// [`Automation::rearm`], which no op can do.
+    pub fn automation(&self) -> &Arc<Automation> {
+        &self.automation
     }
 
     /// Starts drawing the stage: `stage` (from [`project_stage`](crate::live::viewport::project_stage), made on

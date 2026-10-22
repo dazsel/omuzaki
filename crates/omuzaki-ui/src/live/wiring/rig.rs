@@ -1,5 +1,6 @@
 //! [`LiveRig`]: the perform thread and the tracking input, started and stopped together in the documented order.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use omuzaki_ai_api::ModelRegistry;
@@ -8,6 +9,7 @@ use omuzaki_anim::life::Life;
 use omuzaki_anim::retarget::ArkitRetarget;
 use omuzaki_anim_api::{ChannelBuf, DeviceProfile, FrameSource, HumanoidPose, LifeConfig};
 use omuzaki_ops_api::Mode;
+use omuzaki_secrets_api::prelude::SecretStore;
 use omuzaki_stage::perform::host::PerformHost;
 use omuzaki_stage::perform::input::{InputHost as _, LiveInput, NoPrompt};
 use omuzaki_stage::perform::{Performer, PerformerParts};
@@ -16,7 +18,7 @@ use omuzaki_track_api::tracker::{Tracker, TrackerConfig};
 
 use super::clock::PerformClock;
 use super::mailbox::FrameReader;
-use super::thread::{LoopReport, PerformThread, WiringError};
+use super::thread::{FrameTap, LoopReport, PerformThread, WiringError};
 
 /// The life layer's seed: fixed, so a session's idle motion is the same on every run (spec §4, deterministic).
 pub const LIFE_SEED: u64 = 7;
@@ -42,6 +44,14 @@ pub struct Extras {
     pub pose_out: Option<Box<dyn PoseOutput>>,
     /// The model registry, for the `model.*` ops (the app puts it in the runner's services; the rig ignores it).
     pub models: Option<Arc<dyn ModelRegistry>>,
+    /// The OS keychain, for the connectors' passwords and tokens (the app puts it in the runner's services; the rig
+    /// ignores it).
+    pub secrets: Option<Arc<dyn SecretStore>>,
+    /// The app's data folder, where the shows keep what this machine approved and their variables (the app uses it;
+    /// the rig ignores it).
+    pub data: Option<PathBuf>,
+    /// Handed every frame the perform thread publishes (the `VTube Studio` bridge's feed).
+    pub tap: Option<FrameTap>,
 }
 
 impl std::fmt::Debug for Extras {
@@ -50,6 +60,9 @@ impl std::fmt::Debug for Extras {
             .field("phone", &self.phone.is_some())
             .field("pose_out", &self.pose_out.is_some())
             .field("models", &self.models.is_some())
+            .field("secrets", &self.secrets.is_some())
+            .field("data", &self.data)
+            .field("tap", &self.tap.is_some())
             .finish()
     }
 }
@@ -88,7 +101,7 @@ impl LiveRig {
         performer: Performer,
         clock: Box<dyn PerformClock>,
     ) -> Result<(Self, FrameReader), WiringError> {
-        let (perform, reader) = PerformThread::spawn(performer, clock)?;
+        let (perform, reader) = PerformThread::spawn_tapped(performer, clock, extras.tap)?;
         // Desktop Windows and Linux have no camera prompt; a platform that has one brings its own permission.
         let mut input = LiveInput::new(tracker, Box::new(NoPrompt), config, perform.sources(), perform.host());
         if let Some(phone) = extras.phone {
