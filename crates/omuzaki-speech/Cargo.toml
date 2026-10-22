@@ -12,6 +12,8 @@ repository.workspace = true
 omuzaki-ai-api = { path = "../omuzaki-ai-api" }
 omuzaki-audio-api = { path = "../omuzaki-audio-api" }
 omuzaki-core = { path = "../omuzaki-core" }
+# The performer's speech seam (`Voice`, `SpeechHandle`, `VoiceLead`) the TTS host implements.
+omuzaki-performer-api = { path = "../omuzaki-performer-api" }
 # Reads the gold pronunciation lexicons (JSON) the text-to-speech G2P looks words up in.
 serde.workspace = true
 serde_json.workspace = true

@@ -17,6 +17,8 @@
 //!   per-frame probabilities into speech start and end.
 //! - [`asr`]: speech to text on an `asr@1` session.
 //! - [`host`]: [`SpeechHost`] runs both workers and owns the back-pressure policy.
+//! - [`tts`]: [`TtsHost`], the performer's voice: a synth thread and a pump writing the `ai_voice` feeds, cut at once,
+//!   resumed from a cache, pitched by the declared rate.
 //! - [`slots::tts`] and [`kokoro_runtime`]: `tts@1` (text to speech, checked by a round trip through `asr@1`) and the
 //!   `kokoro` runtime, Kokoro-82M's ONNX graph behind [`g2p`], our own GPL-free English G2P over the gold lexicons.
 //!
@@ -40,6 +42,7 @@ pub mod queue;
 pub mod segmenter;
 pub mod slots;
 pub mod synth;
+pub mod tts;
 pub mod vad;
 pub mod whisper_runtime;
 
@@ -48,6 +51,7 @@ pub use error::SpeechError;
 pub use host::{AudioInput, DEFAULT_HANGOVER_MS, HostConfig, HostStats, SpeechEvent, SpeechHost, TranscriptDemand};
 pub use kokoro_runtime::Kokoro;
 pub use segmenter::{Segment, Segmenter, SegmenterConfig};
+pub use tts::{TtsHost, TtsStats, TtsVoice};
 pub use vad::{SileroVad, VadStream, VoiceActivity};
 pub use whisper_runtime::WhisperGgml;
 

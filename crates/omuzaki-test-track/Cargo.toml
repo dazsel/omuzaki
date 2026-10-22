@@ -25,6 +25,10 @@ omuzaki-ai = { path = "../omuzaki-ai" }
 omuzaki-ai-api = { path = "../omuzaki-ai-api" }
 omuzaki-ai-litert = { path = "../omuzaki-ai-litert" }
 omuzaki-ai-ort = { path = "../omuzaki-ai-ort" }
+# Kokoro through the TTS host into a mock engine's feeds, as the performer speaks.
+omuzaki-audio-api = { path = "../omuzaki-audio-api" }
+omuzaki-audio-mock = { path = "../omuzaki-audio-mock" }
+omuzaki-performer-api = { path = "../omuzaki-performer-api" }
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-speech = { path = "../omuzaki-speech" }
 omuzaki-track = { path = "../omuzaki-track" }

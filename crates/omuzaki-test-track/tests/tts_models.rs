@@ -105,3 +105,151 @@ fn kokoro_installs_after_its_round_trip_and_speaks_in_every_voice() {
     assert!(call.speak(tts.as_mut(), &Utterance { voice: "nobody", ..Utterance::plain(LINE) }).is_err());
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// Kokoro speaking through the TTS host into a mock engine that plays in real time (5 ms blocks on a wall-clock
+/// schedule, the pump on its own thread): a turn of four chunks plays gapless with each chunk synthesised while the
+/// one before it plays, and what came out of the `ai_voice` bus is understood by Whisper.
+#[test]
+fn kokoro_speaks_a_turn_through_the_tts_host_in_real_time() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use omuzaki_audio_api::engine::AudioEngine;
+    use omuzaki_audio_api::graph::{BusSpec, Channels, GraphSpec, SourceRef};
+    use omuzaki_audio_api::ids::{BusId, DeviceRole, FeedId};
+    use omuzaki_audio_api::tap::{DropPolicy, TapFormat, TapPoint, TapRate, TapRequest};
+    use omuzaki_audio_mock::MockEngine;
+    use omuzaki_core::time::Seconds;
+    use omuzaki_performer_api::ids::VoiceId;
+    use omuzaki_performer_api::speech::{SpeakHow, SpeechState, Voice};
+    use omuzaki_speech::tts::{FEEDS, TtsHost, TtsVoice};
+
+    let Some(files) = tts_folders() else { return };
+    let dir = temp("host");
+    let registry = registry(files, &dir);
+    install(&registry, &asr_slot(), "whisper-tiny-en");
+    let kokoro = install(&registry, &tts_slot(), "kokoro-82m");
+
+    let engine = Arc::new(MockEngine::new());
+    let bus = BusSpec {
+        id: BusId::new("ai_voice").unwrap(),
+        channels: Channels::Mono,
+        sources: FEEDS[..2].iter().map(|f| SourceRef::Feed { id: FeedId::new(*f).unwrap() }).collect(),
+        chain: vec![],
+        gain_db: 0.0,
+        muted: false,
+        sends: vec![],
+        outputs: vec![DeviceRole::new("out").unwrap()],
+    };
+    engine.apply(&GraphSpec { buses: vec![bus], ..GraphSpec::default() }).unwrap();
+    let request = TapRequest {
+        point: TapPoint::BusPostFader(BusId::new("ai_voice").unwrap()),
+        format: TapFormat { rate: TapRate::Graph48k, mono: true },
+        capacity: Seconds(60.0),
+        policy: DropPolicy::DropNewest,
+        consumer: "test".into(),
+        leaves_device: false,
+    };
+    let (mut tap, _) = engine.tap_ring(&request).unwrap();
+
+    let voice = VoiceId::new("kokoro-82m/af_heart").unwrap();
+    let session = registry.open(&tts_slot(), Some(&kokoro)).unwrap();
+    let mut host =
+        TtsHost::open(engine.clone() as Arc<dyn AudioEngine>, session, TtsVoice::new(voice.clone()), None).unwrap();
+    host.spawn_pump().unwrap();
+
+    // The engine's audio thread: 5 ms blocks on the wall clock.
+    let running = Arc::new(AtomicBool::new(true));
+    let audio = {
+        let (engine, running) = (Arc::clone(&engine), Arc::clone(&running));
+        std::thread::spawn(move || {
+            let start = Instant::now();
+            let mut blocks = 0u32;
+            while running.load(Ordering::Acquire) {
+                engine.advance(240);
+                blocks += 1;
+                let due = start + std::time::Duration::from_micros(5_000 * u64::from(blocks));
+                std::thread::sleep(due.saturating_duration_since(Instant::now()));
+            }
+        })
+    };
+
+    let turn = [
+        "Hello everyone, and welcome back to the stream.",
+        "Today we are going to build a small wooden boat together.",
+        "First, we cut the planks to the same length.",
+        "Then we glue them side by side and let them dry overnight.",
+    ];
+    let started = Instant::now();
+    let handles: Vec<_> = turn.iter().map(|s| host.speak(s, &voice, &SpeakHow::default()).unwrap()).collect();
+    while !handles.iter().all(|h| h.state().is_final()) {
+        assert!(started.elapsed().as_secs() < 120, "{:?}", handles.iter().map(|h| h.state()).collect::<Vec<_>>());
+        std::thread::yield_now();
+    }
+    running.store(false, Ordering::Release);
+    audio.join().unwrap();
+
+    let states: Vec<SpeechState> = handles.iter().map(|h| h.state()).collect();
+    let mut gaps = Vec::new();
+    for pair in states.windows(2) {
+        let (SpeechState::Done { at, .. }, SpeechState::Playing { .. } | SpeechState::Done { .. }) = (pair[0], pair[1])
+        else {
+            panic!("{states:?}")
+        };
+        gaps.push(at);
+    }
+    let froms: Vec<f64> = handles
+        .iter()
+        .zip(&states)
+        .map(|(_, s)| match s {
+            SpeechState::Done { at, .. } => at.0,
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    let stats = host.stats();
+    eprintln!(
+        "kokoro turn: {} chunks synthesised, {} late, ends at {:?} s",
+        stats.synthesised,
+        stats.late_chunks,
+        froms.iter().map(|t| (t * 100.0).round() / 100.0).collect::<Vec<_>>()
+    );
+    assert_eq!(stats.synthesised, 4);
+    assert_eq!(stats.late_chunks, 0, "every chunk was synthesised while the one before it played");
+
+    let mut heard = vec![0.0f32; tap.available()];
+    let read = tap.read(&mut heard).len;
+    heard.truncate(read);
+    write_wav48(&heard);
+    let at16: Vec<f32> = resample(&heard, 48_000, 16_000);
+    let first = at16.iter().position(|s| s.abs() > 0.01).unwrap_or(0).saturating_sub(1_600);
+    let mut asr = registry.open(&asr_slot(), None).unwrap();
+    let mut call = AsrCall::new();
+    let mut text = String::new();
+    // Whisper takes at most 30 s at once: the turn is about 14 s.
+    for piece in at16[first..].chunks(16_000 * 28) {
+        text.push_str(&call.transcribe(asr.as_mut(), piece, Some("en")).unwrap().text);
+        text.push(' ');
+    }
+    let expected = spoken(&turn.join(" "));
+    let errors = edit_distance(&spoken(&text), &expected);
+    eprintln!("heard through the host: {text:?} ({errors} word errors of {})", expected.len());
+    assert!(errors <= 2, "{text:?}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+fn write_wav48(pcm: &[f32]) {
+    let Some(dir) = std::env::var_os("OMUZAKI_TTS_EVIDENCE").map(std::path::PathBuf::from) else { return };
+    std::fs::create_dir_all(&dir).unwrap();
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: 48_000,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut wav = hound::WavWriter::create(dir.join("kokoro-host-turn.wav"), spec).unwrap();
+    for &s in pcm {
+        #[allow(clippy::cast_possible_truncation)] // clamped to 16 bits
+        wav.write_sample((s * 32767.0).round().clamp(-32768.0, 32767.0) as i16).unwrap();
+    }
+    wav.finalize().unwrap();
+}
