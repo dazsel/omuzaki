@@ -132,7 +132,7 @@ pub(crate) enum Keep {
         /// The pair key of the press it ends.
         pair: u32,
     },
-    /// Never dropped while anything else can be (devices coming and going).
+    /// Never dropped (devices coming and going).
     Always,
 }
 
@@ -175,8 +175,8 @@ impl<const W: usize> Backlog<W> {
         if self.entries.is_empty() && ring.push(words) {
             return;
         }
-        if self.entries.len() >= self.capacity {
-            self.drop_one();
+        // A backlog of nothing but releases and device changes grows instead: an up is never dropped.
+        if self.entries.len() >= self.capacity && self.drop_one() {
             ring.mark_dropped();
             if let Keep::Release { pair } = keep
                 && let Some(at) = self.orphaned.iter().position(|p| *p == pair)
@@ -196,11 +196,11 @@ impl<const W: usize> Backlog<W> {
     }
 
     /// Drops one entry: the oldest cheap one, else the oldest press with its queued release, else the oldest lone
-    /// press (its release is then dropped when it comes), else the oldest entry.
-    fn drop_one(&mut self) {
+    /// press (its release is then dropped when it comes). `false` when only releases and device changes wait.
+    fn drop_one(&mut self) -> bool {
         if let Some(at) = self.entries.iter().position(|(_, k)| *k == Keep::Cheap) {
             self.entries.remove(at);
-            return;
+            return true;
         }
         let pair = self.entries.iter().enumerate().find_map(|(i, (_, k))| match k {
             Keep::Press { pair } => self
@@ -214,7 +214,7 @@ impl<const W: usize> Backlog<W> {
         if let Some((press, release)) = pair {
             self.entries.remove(release);
             self.entries.remove(press);
-            return;
+            return true;
         }
         if let Some(at) = self.entries.iter().position(|(_, k)| matches!(k, Keep::Press { .. })) {
             if let Some((_, Keep::Press { pair })) = self.entries.remove(at)
@@ -222,9 +222,9 @@ impl<const W: usize> Backlog<W> {
             {
                 self.orphaned.push(pair);
             }
-            return;
+            return true;
         }
-        self.entries.pop_front();
+        false
     }
 
     #[cfg(test)]
@@ -279,6 +279,21 @@ mod tests {
             backlog.flush(&ring);
         }
         assert_eq!(out, [0, 7, 8, 10]);
+
+        // Nothing but releases waiting: the backlog grows rather than drop an up.
+        let ring = Ring::<1>::new(1);
+        let mut backlog = Backlog::<1>::new(2);
+        for i in 0..5 {
+            backlog.push(&ring, [i], Keep::Release { pair: u32::try_from(i).unwrap_or(0) + 100 });
+        }
+        assert!(!ring.take_dropped());
+        let mut out = Vec::new();
+        while let Some(w) = ring.peek() {
+            out.push(w[0]);
+            ring.pop();
+            backlog.flush(&ring);
+        }
+        assert_eq!(out, [0, 1, 2, 3, 4], "every up arrives");
     }
 
     #[test]

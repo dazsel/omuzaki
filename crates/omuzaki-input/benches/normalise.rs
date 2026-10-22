@@ -9,7 +9,7 @@ use omuzaki_input::{Hub, HubConfig, TestBackend};
 use omuzaki_input_api::binding::{BindingAction, BindingId};
 use omuzaki_input_api::capture::IndicatorHandle;
 use omuzaki_input_api::event::{DeviceClass, DeviceMask};
-use omuzaki_input_api::feed::{IntentFrame, MotionFrame, InputHub};
+use omuzaki_input_api::feed::{InputHub, IntentFrame, MotionFrame};
 
 fn bench(c: &mut Criterion) {
     let clock = Arc::new(FakeClock::new(Seconds(1.0)));
@@ -33,7 +33,7 @@ fn bench(c: &mut Criterion) {
     injector.device_up(1, DeviceClass::Keyboard);
     let (mut motion_frame, mut intent_frame) = (MotionFrame::new(), IntentFrame::new());
     let mut usage = 0x04u16;
-    c.bench_function("normalise and match one key event", |b| {
+    c.bench_function("normalise and match a key down and up (two events)", |b| {
         b.iter(|| {
             injector.key(1, usage, true);
             injector.key(1, usage, false);

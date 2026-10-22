@@ -8,8 +8,8 @@ use omuzaki_input::{FakeProcesses, Hub, HubConfig, Injector, TestBackend};
 use omuzaki_input_api::binding::{BindingAction, BindingId, Edge, IntentEvent};
 use omuzaki_input_api::capture::{CaptureState, IndicatorHandle};
 use omuzaki_input_api::event::{DeviceClass, DeviceMask, MotionEvent, SourceMask, SourceTag};
-use omuzaki_input_api::zones::KeyZone;
 use omuzaki_input_api::feed::{BindingFeed, InputControl, InputHub, IntentFeed, IntentFrame, MotionFeed, MotionFrame};
+use omuzaki_input_api::zones::KeyZone;
 
 /// Keyboard usages the tests press.
 pub const W: u16 = 0x1A;

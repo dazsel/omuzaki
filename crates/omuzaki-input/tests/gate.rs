@@ -1,6 +1,8 @@
 //! IN-3's acceptance (design §13): the gate and the indicator, the safety loop, the epoch window, what is held across
 //! a pause, one backend leaving, single writers, frames that never drop, `test-hooks` staying private and the
 //! forbidden symbols of §3 rule 4.
+// Helpers outside a #[test] unwrap too; an empty feed is asserted plainly.
+#![allow(clippy::unwrap_used, clippy::assert_is_empty)]
 
 mod support;
 
@@ -305,7 +307,12 @@ fn one_backend_leaving_ends_only_what_its_sources_held() {
     assert!(rig.motion.pad(pad).is_none());
     let report = rig.control.report();
     assert_eq!(report.state, CaptureState::on(DESK.classes, DeviceMask::of(&[DeviceClass::Gamepad])));
-    assert!(report.backends.iter().any(|b| b.name == "b.pads" && !matches!(b.state, omuzaki_input_api::capture::BackendState::Running)));
+    assert!(
+        report
+            .backends
+            .iter()
+            .any(|b| b.name == "b.pads" && !matches!(b.state, omuzaki_input_api::capture::BackendState::Running))
+    );
 
     rig.desk.key(KEYBOARD, F9, false);
     assert_eq!(rig.hits(), [(wave, BindingAction::Trigger(6), Edge::Release)], "the key was held all along");
@@ -389,10 +396,12 @@ fn no_other_crate_enables_test_hooks() {
                 .and_then(toml::Value::as_array)
                 .is_some_and(|f| f.iter().any(|f| f.as_str() == Some("test-hooks")))
         });
-        let by_feature = doc
-            .get("features")
-            .and_then(toml::Value::as_table)
-            .is_some_and(|features| features.values().flat_map(|v| v.as_array().into_iter().flatten()).any(|f| f.as_str() == Some("omuzaki-input/test-hooks")));
+        let by_feature = doc.get("features").and_then(toml::Value::as_table).is_some_and(|features| {
+            features
+                .values()
+                .flat_map(|v| v.as_array().into_iter().flatten())
+                .any(|f| f.as_str() == Some("omuzaki-input/test-hooks"))
+        });
         if by_dependency || by_feature {
             offenders.push(name.to_owned());
         }

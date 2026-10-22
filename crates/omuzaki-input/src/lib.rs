@@ -10,6 +10,9 @@
 //! Each backend is a folder under `src/`, gated inside by `#![cfg(target_os = …)]` and registered next to its code with
 //! `register_input_backend!`; the build script declares the folders, so adding one edits nothing else.
 #![deny(missing_docs)]
+// The sink's producer side is used by the backends (IN-4 to IN-7) and the `test-hooks` injector; a build with neither
+// has no caller yet.
+#![cfg_attr(not(feature = "test-hooks"), allow(dead_code))]
 
 // The crate's modules, declared from the folder by the build script (ADR 0054 §1).
 include!(concat!(env!("OUT_DIR"), "/crate_mods.rs"));
