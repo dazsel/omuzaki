@@ -193,53 +193,90 @@ const CLEAR_WIDTHS: usize = 32;
 const CLEAR_STEPS: usize = 16;
 const CLEAR_TOLERANCE: f64 = 1e-6;
 
-/// Grows `ring` until it clears, by `offset`, `neighbour` where the ring's plane cuts it: its section whose plane passes
-/// through the ring's centre, or past its ends its cap ([`BodyFit::cap`]). The thighs rise into the pelvis, so a ring
-/// round the hips goes round the tops of the thighs, and their domes, as well as the pelvis, as cloth does. A
-/// neighbour the ring's plane doesn't cut (a ring above the thighs' domes) leaves it as it is.
+/// Grows `ring` until it clears, by `offset`, `neighbour` where the ring's plane cuts it: the neighbour's surface
+/// pushed out by `offset`, cut by the ring's plane. The thighs rise into the pelvis, so a ring round the hips goes
+/// round the tops of the thighs, and their domes, as well as the pelvis, as cloth does. The neighbour is taken in slices
+/// within `offset` of the ring's plane, each pushed out by as much as a ball of that radius reaches at its distance:
+/// its sections ([`BodyFit::section`]) along its span and its caps' slices ([`BodyFit::cap`]) past its ends, one
+/// surface, so a ring passing from the one to the other doesn't jump. A neighbour the ring's plane doesn't come within
+/// `offset` of (a ring above the thighs' domes) leaves it as it is.
 fn clear_region(fit: &dyn BodyFit, ring: &mut Ring, neighbour: BodyRegion, offset: f64) {
     #[allow(clippy::cast_possible_truncation)] // a fit is sampled in f32
     let section = |t: f64| fit.section(neighbour, t as f32).filter(|s| s.centre.is_finite() && s.axis.is_finite());
-    let height = |t: f64| section(t).map(|s| (ring.centre - s.centre.as_dvec3()).dot(s.axis.as_dvec3()));
-    let (Some(h0), Some(h1)) = (height(0.0), height(1.0)) else { return };
-    if h0.signum() == h1.signum() {
-        // Past both ends: before the start when the ring lies behind the first section's plane.
-        let end = if h0 < 0.0 { RegionEnd::Start } else { RegionEnd::End };
-        clear_cap(fit, ring, neighbour, end, offset, None);
+    let (Some(first), Some(last)) = (section(0.0), section(1.0)) else { return };
+    let height = |s: &Section| (ring.centre - s.centre.as_dvec3()).dot(s.axis.as_dvec3());
+    let length = first.centre.distance(last.centre);
+    if !(length.is_finite() && length > 0.0) {
         return;
     }
-    // A limb is near straight: the false position between the bracketing heights (Illinois: the end that stays has
-    // its height halved, so neither end sticks) lands within a hair in a few steps.
-    let ((mut lo, mut h_lo), (mut hi, mut h_hi)) = ((0.0, h0), (1.0, h1));
-    let mut t = 0.0;
-    let mut last_side = 0;
-    for _ in 0..CLEAR_STEPS {
-        t = lo + (hi - lo) * h_lo / (h_lo - h_hi);
-        let Some(h) = height(t) else { return };
-        if h.abs() < CLEAR_TOLERANCE {
-            break;
-        }
-        if h.signum() == h_lo.signum() {
-            (lo, h_lo) = (t, h);
-            if last_side == -1 {
-                h_hi /= 2.0;
+    let length = f64::from(length);
+    // Where along the neighbour the ring's plane lies: before its start or past its end by its height over that end's
+    // plane, as a share of its length.
+    let (h0, h1) = (height(&first), height(&last));
+    let at = if h0 < 0.0 {
+        h0 / length
+    } else if h1 > 0.0 {
+        1.0 + h1 / length
+    } else {
+        // A limb is near straight: the false position between the bracketing heights (Illinois: the end that stays
+        // has its height halved, so neither end sticks) lands within a hair in a few steps.
+        let ((mut lo, mut h_lo), (mut hi, mut h_hi)) = ((0.0, h0), (1.0, h1));
+        let mut t = 0.0;
+        let mut last_side = 0;
+        for _ in 0..CLEAR_STEPS {
+            t = lo + (hi - lo) * h_lo / (h_lo - h_hi);
+            let Some(h) = section(t).map(|s| height(&s)) else { return };
+            if h.abs() < CLEAR_TOLERANCE {
+                break;
             }
-            last_side = -1;
+            if h.signum() == h_lo.signum() {
+                (lo, h_lo) = (t, h);
+                if last_side == -1 {
+                    h_hi /= 2.0;
+                }
+                last_side = -1;
+            } else {
+                (hi, h_hi) = (t, h);
+                if last_side == 1 {
+                    h_lo /= 2.0;
+                }
+                last_side = 1;
+            }
+        }
+        t
+    };
+    // Within `offset` of the plane, each slice pushed out by a ball's reach at its distance.
+    let ball = (0..CAP_HEIGHTS).map(|k| {
+        let u = 2.0 * crate::kit::curve::fraction(k, CAP_HEIGHTS - 1) - 1.0;
+        (u * offset, offset * (1.0 - u * u).max(0.0).sqrt())
+    });
+    let mut points = Vec::new();
+    for (d, grow) in ball {
+        let t = at + d / length;
+        #[allow(clippy::cast_possible_truncation)] // a fit is sampled in f32
+        let slice = if t < 0.0 {
+            fit.cap(neighbour, RegionEnd::Start, (-t * length) as f32)
+        } else if t > 1.0 {
+            fit.cap(neighbour, RegionEnd::End, ((t - 1.0) * length) as f32)
         } else {
-            (hi, h_hi) = (t, h);
-            if last_side == 1 {
-                h_lo /= 2.0;
-            }
-            last_side = 1;
+            section(t)
+        };
+        if let Some(slice) = slice.filter(|s| s.centre.is_finite() && s.radii.is_finite()) {
+            points.extend(section_points(ring, neighbour, &slice, grow, None));
         }
     }
-    if let Some(s) = section(t) {
-        clear_section(ring, neighbour, &s, offset, None);
-    }
+    grow_to_hold(ring, &points);
 }
 
+
+/// Heights either side of a ring's plane at which a cap's slices are taken, to find the cap's offset surface there.
+const CAP_HEIGHTS: usize = 7;
+
 /// Grows `ring` until it clears, by `offset`, the cap of `neighbour` past `end` where the ring's plane cuts it; with
-/// `side`, only the part of it on that side of the body's midplane (`+1` the character's left, +x).
+/// `side`, only the part of it on that side of the body's midplane (`+1` the character's left, +x). What a ring must
+/// hold is the cap's surface pushed out by `offset`, cut by its plane: the slices ([`BodyFit::cap`]) within
+/// `offset` of the plane, each pushed out by as much as a ball of that radius reaches at its distance, so a ring above a
+/// dome's top clears it less and less until it clears it no more.
 fn clear_cap(
     fit: &dyn BodyFit,
     ring: &mut Ring,
@@ -257,14 +294,21 @@ fn clear_cap(
         RegionEnd::Start => -s.axis.as_dvec3(),
         RegionEnd::End => s.axis.as_dvec3(),
     };
-    // The cap is cleared `offset` lower than the ring as well as round it, so the ring above its top clears it too.
     let height = (ring.centre - s.centre.as_dvec3()).dot(outward.normalize_or_zero());
-    #[allow(clippy::cast_possible_truncation)] // a fit is sampled in f32
-    if height > 0.0
-        && let Some(cap) = fit.cap(neighbour, end, (height - offset).max(0.0) as f32)
-    {
-        clear_section(ring, neighbour, &cap, offset, side);
+    if height <= 0.0 {
+        return;
     }
+    let mut points = Vec::new();
+    for k in 0..CAP_HEIGHTS {
+        let u = 2.0 * crate::kit::curve::fraction(k, CAP_HEIGHTS - 1) - 1.0;
+        let h = height + u * offset;
+        #[allow(clippy::cast_possible_truncation)] // a fit is sampled in f32
+        let slice = if h < 0.0 { None } else { fit.cap(neighbour, end, h as f32) };
+        if let Some(slice) = slice {
+            points.extend(section_points(ring, neighbour, &slice, offset * (1.0 - u * u).max(0.0).sqrt(), side));
+        }
+    }
+    grow_to_hold(ring, &points);
 }
 
 /// Slices a root is taken in, and points round each.
@@ -277,9 +321,9 @@ const ROOT_STEPS: usize = 14;
 const CAP_SLACK: f64 = 1.0;
 const ROOT_LIMIT: f32 = 0.1;
 
-/// How far `neighbour`'s cap past its start rises ([`BodyFit::cap_slice`]), metres; 0 where it has none.
+/// How far `neighbour`'s cap past its start rises ([`BodyFit::cap`]), metres; 0 where it has none.
 fn root_top(fit: &dyn BodyFit, neighbour: BodyRegion) -> f32 {
-    let has = |h: f32| fit.cap_slice(neighbour, RegionEnd::Start, h).is_some();
+    let has = |h: f32| fit.cap(neighbour, RegionEnd::Start, h).is_some();
     if !has(0.0) {
         return 0.0;
     }
@@ -321,24 +365,40 @@ fn clear_root(fit: &dyn BodyFit, ring: &mut Ring, neighbour: BodyRegion, offset:
     let levels: Vec<Section> = std::iter::once(Some(start))
         .chain(
             (0..ROOT_LEVELS)
-                .map(|k| fit.cap_slice(neighbour, RegionEnd::Start, top * (k as f32 + 0.5) / ROOT_LEVELS as f32)),
+                .map(|k| fit.cap(neighbour, RegionEnd::Start, top * (k as f32 + 0.5) / ROOT_LEVELS as f32)),
         )
         .flatten()
         .filter(|s| s.centre.is_finite() && s.radii.is_finite())
         .collect();
     let height = |p: DVec3| (p - ring.centre).dot(ring.axis);
-    let rings: Vec<Vec<DVec3>> = levels
+    // Only the slices whose ellipses can reach the ring's plane, and those either side of where the plane passes
+    // between two of them, are taken round.
+    let near: Vec<bool> = levels
         .iter()
-        .map(|s| {
-            let (across, through) = section_basis(neighbour, s.axis);
-            let (centre, across, through) = (s.centre.as_dvec3(), across.as_dvec3(), through.as_dvec3());
-            let radii = s.radii.as_dvec2() + DVec2::splat(offset);
-            (0..ROOT_SAMPLES)
-                .map(|k| {
-                    let (sin, cos) = (TAU * crate::kit::curve::fraction(k, ROOT_SAMPLES)).sin_cos();
-                    centre + across * (radii.x * cos) + through * (radii.y * sin)
-                })
-                .collect()
+        .map(|s| height(s.centre.as_dvec3()).abs() <= f64::from(s.radii.max_element()) + offset.abs())
+        .collect();
+    let crossed = |i: usize| {
+        near[i] || near.get(i + 1).copied().unwrap_or(false) || (i > 0 && near[i - 1]) || {
+            let h = |k: usize| levels.get(k).map(|s| height(s.centre.as_dvec3()));
+            matches!((h(i), h(i + 1)), (Some(a), Some(b)) if (a < 0.0) != (b < 0.0))
+                || (i > 0 && matches!((h(i - 1), h(i)), (Some(a), Some(b)) if (a < 0.0) != (b < 0.0)))
+        }
+    };
+    let rings: Vec<Option<Vec<DVec3>>> = levels
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            crossed(i).then(|| {
+                let (across, through) = section_basis(neighbour, s.axis);
+                let (centre, across, through) = (s.centre.as_dvec3(), across.as_dvec3(), through.as_dvec3());
+                let radii = s.radii.as_dvec2() + DVec2::splat(offset);
+                (0..ROOT_SAMPLES)
+                    .map(|k| {
+                        let (sin, cos) = (TAU * crate::kit::curve::fraction(k, ROOT_SAMPLES)).sin_cos();
+                        centre + across * (radii.x * cos) + through * (radii.y * sin)
+                    })
+                    .collect()
+            })
         })
         .collect();
     let Some(last) = levels.last() else { return };
@@ -352,11 +412,13 @@ fn clear_root(fit: &dyn BodyFit, ring: &mut Ring, neighbour: BodyRegion, offset:
         }
     };
     for pair in rings.windows(2) {
-        for (a, b) in pair[0].iter().zip(&pair[1]) {
-            cross(*a, *b);
+        if let (Some(a), Some(b)) = (&pair[0], &pair[1]) {
+            for (a, b) in a.iter().zip(b) {
+                cross(*a, *b);
+            }
         }
     }
-    if let Some(last) = rings.last() {
+    if let Some(Some(last)) = rings.last() {
         for a in last {
             cross(*a, apex);
         }
@@ -364,21 +426,20 @@ fn clear_root(fit: &dyn BodyFit, ring: &mut Ring, neighbour: BodyRegion, offset:
     grow_to_hold(ring, &points);
 }
 
-/// Grows `ring` until it holds `section` of `region` with `offset` added to its radii; with `side`, only the part of
-/// the section on that side of the body's midplane.
-fn clear_section(ring: &mut Ring, region: BodyRegion, section: &Section, offset: f64, side: Option<f64>) {
+/// The points round `section` of `region`, with `offset` added to its radii, in the plane of `ring`; with `side`, only
+/// those on that side of the body's midplane.
+fn section_points(ring: &Ring, region: BodyRegion, section: &Section, offset: f64, side: Option<f64>) -> Vec<DVec2> {
     let (across, through) = section_basis(region, section.axis);
     let (centre, across, through) = (section.centre.as_dvec3(), across.as_dvec3(), through.as_dvec3());
     let radii = section.radii.as_dvec2() + DVec2::splat(offset);
-    let points: Vec<DVec2> = (0..CLEAR_SAMPLES)
+    (0..CLEAR_SAMPLES)
         .filter_map(|k| {
             let (sin, cos) = (TAU * crate::kit::curve::fraction(k, CLEAR_SAMPLES)).sin_cos();
             let p = centre + across * (radii.x * cos) + through * (radii.y * sin);
             let d = p - ring.centre;
             (!side.is_some_and(|side| p.x * side < 0.0)).then(|| DVec2::new(d.dot(ring.across), d.dot(ring.through)))
         })
-        .collect();
-    grow_to_hold(ring, &points);
+        .collect()
 }
 
 /// Grows `ring`, keeping its shape and centre, until it holds every one of `points` (in its plane): of the rings that
@@ -391,7 +452,16 @@ fn grow_to_hold(ring: &mut Ring, points: &[DVec2]) {
     let points: Vec<(DVec2, f64)> =
         points.iter().filter(|q| q.is_finite()).map(|q| (*q, level(*q, r))).filter(|(_, l)| *l > 1.0).collect();
     let Some(scale) = points.iter().map(|(_, l)| *l).reduce(f64::max) else { return };
-    let points: Vec<DVec2> = points.into_iter().map(|(q, _)| q).collect();
+    // The ring is symmetric across both its axes, and holds a point whenever it holds one further out both ways: only
+    // the points no other passes in both `|x|` and `|y|` matter.
+    let mut points: Vec<DVec2> = points.into_iter().map(|(q, _)| q.abs()).collect();
+    points.sort_unstable_by(|a, b| b.x.total_cmp(&a.x).then(b.y.total_cmp(&a.y)));
+    let mut highest = f64::NEG_INFINITY;
+    points.retain(|q| {
+        let keep = q.y > highest;
+        highest = highest.max(q.y);
+        keep
+    });
     // For each width from the ring's own to the whole scale's, the least depth that holds every point there: a point
     // needs `|q_y| / (1 - |q_x / r_x|^e)^(1/e)`, and can't be held at a width it lies beyond.
     let depth = |width: f64| {

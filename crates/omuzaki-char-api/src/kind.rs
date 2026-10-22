@@ -348,22 +348,12 @@ pub trait BodyFit: Debug + Send + Sync {
     fn section(&self, region: BodyRegion, t: f32) -> Option<Section>;
 
     /// The cap that closes `region` past one of its ends, where its mesh runs on past the sections: a thigh's dome
-    /// rising into the pelvis, the pelvis's floor between the thighs, an ankle into the foot. The cross-section
-    /// `height` metres past the plane of the end's section, along the region's axis, holding every part of the cap at
-    /// that height or further out; `None` past the cap's top, or where the region has none. A garment round a
+    /// rising into the pelvis, the pelvis's floor between the thighs, an arm's root curling into the shoulder, the hand
+    /// past the wrist. The cross-section of what lies `height` metres past the plane of the end's section, along the
+    /// region's axis, taken from a thin slab there and running smoothly from one slab to the next, so a stack of them
+    /// follows a cap that leans or curls; `None` past the cap's top, or where the region has none. A garment round a
     /// neighbouring region clears it. The default has no caps: a fit whose sections hold the whole body.
     fn cap(&self, region: BodyRegion, end: RegionEnd, height: f32) -> Option<Section> {
-        let _ = (region, end, height);
-        None
-    }
-
-    /// The same cap cut at `height`: the cross-section of only what lies there (a thin slab of it), where [`cap`]
-    /// holds everything above as well. Stacked along the axis, the slices follow a cap that leans or curls (an arm's
-    /// root rising into the shoulder), so a garment whose rings cut across them can find where they cross its plane.
-    /// `None` past the cap's top, or where the region has none; the default has none.
-    ///
-    /// [`cap`]: BodyFit::cap
-    fn cap_slice(&self, region: BodyRegion, end: RegionEnd, height: f32) -> Option<Section> {
         let _ = (region, end, height);
         None
     }

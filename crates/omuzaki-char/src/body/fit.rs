@@ -493,18 +493,16 @@ fn keep_outside(tables: &mut [Table], region: BodyRegion, mesh: &MeshData) -> Ve
 const CAP_LEVELS: usize = 16;
 
 /// The cap that closes a region past one of its ends ([`BodyFit::cap`]): its end's plane, how far the cap rises past
-/// it, and at each of [`CAP_LEVELS`] heights, the ellipse that holds every part of the cap at that height or further
-/// out.
+/// it, and for each of [`CAP_LEVELS`] slabs from the plane to the top, the ellipse that holds what of the cap lies in
+/// it. A section between two slabs' middles takes the reaches between theirs.
 #[derive(Clone, Debug)]
 struct Cap {
     row: Row,
     /// Out of the region, past the end (unit).
     outward: DVec3,
     top: f64,
-    /// Per level, from the end's plane up: how far its ellipse reaches past the end row's layout ellipse.
-    extra: Vec<Reach>,
-    /// Per level, the same for the slab from that level to the next alone ([`BodyFit::cap_slice`]).
-    slices: Vec<Reach>,
+    /// Per slab, from the end's plane up: how far its ellipse reaches past the end row's layout ellipse.
+    slabs: Vec<Reach>,
 }
 
 impl Cap {
@@ -528,62 +526,44 @@ impl Cap {
             let q = DVec2::new(d.dot(row.across), d.dot(row.through));
             q + q.normalize_or_zero() * HOLD_MARGIN
         };
-        let mut extra = Vec::with_capacity(CAP_LEVELS);
-        let mut slices = Vec::with_capacity(CAP_LEVELS);
+        let mut slabs: Vec<Reach> = Vec::with_capacity(CAP_LEVELS);
         for level in 0..CAP_LEVELS {
-            let (h, next) = (top * fraction(level, CAP_LEVELS), top * fraction(level + 1, CAP_LEVELS));
-            // The vertices this high, the ends of the edges from them (the rim, on the end's plane, among them), and
-            // where edges cross this height; the slab to the next level keeps those below it, and where edges cross
-            // it.
-            let mut points: Vec<DVec2> = Vec::new();
-            let mut slab: Vec<DVec2> = Vec::new();
-            for p in vertices {
-                let d = height(*p);
-                if d >= h {
-                    points.push(in_plane(*p));
-                    if d <= next {
-                        slab.push(in_plane(*p));
-                    }
-                }
-            }
+            let (low, high) = (top * fraction(level, CAP_LEVELS), top * fraction(level + 1, CAP_LEVELS));
+            // The vertices in the slab (the rim, on the end's plane, among them: the edges' ends there), and where
+            // edges cross its two faces.
+            let within = |d: f64| d >= low - END_SLACK && d <= high;
+            let mut points: Vec<DVec2> = vertices.iter().filter(|p| within(height(**p))).map(|p| in_plane(*p)).collect();
             for &(a, b) in segments {
-                for (p, d) in [(a, height(a)), (b, height(b))] {
-                    if d >= h - END_SLACK {
-                        points.push(in_plane(p));
-                        if d <= next {
-                            slab.push(in_plane(p));
-                        }
-                    }
-                }
                 let (ha, hb) = (height(a), height(b));
-                for cut in [h, next] {
+                points.extend([(a, ha), (b, hb)].into_iter().filter(|(_, d)| within(*d)).map(|(p, _)| in_plane(p)));
+                for cut in [low, high] {
                     if (ha < cut) != (hb < cut) {
-                        let p = in_plane(a.lerp(b, (ha - cut) / (ha - hb)));
-                        slab.push(p);
-                        if cut == h {
-                            points.push(p);
-                        }
+                        points.push(in_plane(a.lerp(b, (ha - cut) / (ha - hb))));
                     }
                 }
             }
-            if points.is_empty() {
-                break;
+            // A slab nothing lies in (a sparse mesh) takes the one below's.
+            match (points.is_empty(), slabs.last().copied()) {
+                (false, _) => slabs.push(enclose(row.radii, &points)),
+                (true, Some(below)) => slabs.push(below),
+                (true, None) => return None,
             }
-            extra.push(enclose(row.radii, &points));
-            slices.push(if slab.is_empty() { extra[extra.len() - 1] } else { enclose(row.radii, &slab) });
         }
-        (!extra.is_empty()).then_some(Self { row, outward, top, extra, slices })
+        Some(Self { row, outward, top, slabs })
     }
 
-    /// The section `height` past the end's plane, if the cap reaches that far: of everything there and further out, or
-    /// with `slice` of only the slab there.
-    fn section(&self, height: f64, slice: bool) -> Option<Section> {
+    /// The section `height` past the end's plane, if the cap reaches that far.
+    fn section(&self, height: f64) -> Option<Section> {
         if !(0.0..=self.top).contains(&height) {
             return None;
         }
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a non-negative level index
-        let level = ((height / self.top * fraction(CAP_LEVELS, 1)).floor() as usize).min(self.extra.len() - 1);
-        let reach = if slice { self.slices[level] } else { self.extra[level] };
+        // Between the middles of the two slabs either side; the first's or last's own below or above theirs.
+        let at = (height / self.top * fraction(self.slabs.len(), 1) - 0.5).max(0.0);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a non-negative slab index
+        let k = (at.floor() as usize).min(self.slabs.len() - 1);
+        let (a, b) = (self.slabs[k], self.slabs[(k + 1).min(self.slabs.len() - 1)]);
+        let s = (at - fraction(k, 1)).clamp(0.0, 1.0);
+        let reach: Reach = std::array::from_fn(|i| a[i] + (b[i] - a[i]) * s);
         let (offset, radii) = ellipse(self.row.radii, reach);
         let centre = self.row.centre + self.outward * height + self.row.across * offset.x + self.row.through * offset.y;
         Some(Section { centre: centre.as_vec3(), axis: self.row.axis.as_vec3(), radii: radii.as_vec2() })
@@ -641,11 +621,7 @@ impl BodyFit for BodyMeshFit {
     }
 
     fn cap(&self, region: BodyRegion, end: RegionEnd, height: f32) -> Option<Section> {
-        self.caps.get(&(region, end))?.section(f64::from(height), false)
-    }
-
-    fn cap_slice(&self, region: BodyRegion, end: RegionEnd, height: f32) -> Option<Section> {
-        self.caps.get(&(region, end))?.section(f64::from(height), true)
+        self.caps.get(&(region, end))?.section(f64::from(height))
     }
 
     fn joint(&self, joint: &JointRef) -> Option<Vec3> {

@@ -111,7 +111,7 @@ const HAND_STEP: f64 = 0.0005;
 const HAND_SAMPLES: usize = 24;
 
 /// The height of a cuff on `sleeve`, at most `height`, that stops short of where the hand inside it (the cap past the
-/// end of `fit`'s left arm, [`BodyFit::cap_slice`]) grows wider than the cuff's inner face: a hand that spreads to its
+/// end of `fit`'s left arm, [`BodyFit::cap`]) grows wider than the cuff's inner face: a hand that spreads to its
 /// palm and thumb close past the wrist takes a shorter cuff. `height` itself over a fit without the hand.
 pub fn clear_of_hand(fit: &dyn BodyFit, sleeve: &Sleeve, height: f64) -> f64 {
     let Some(end) = fit.section(BodyRegion::ArmL, 1.0) else { return height };
@@ -121,7 +121,7 @@ pub fn clear_of_hand(fit: &dyn BodyFit, sleeve: &Sleeve, height: f64) -> f64 {
     // face runs to the cuff's far edge, so the hand must fit inside it all the way there.
     let wider = |a: f64| -> bool {
         #[allow(clippy::cast_possible_truncation)] // a fit is sampled in f32
-        let Some(s) = fit.cap_slice(BodyRegion::ArmL, RegionEnd::End, a as f32) else { return false };
+        let Some(s) = fit.cap(BodyRegion::ArmL, RegionEnd::End, a as f32) else { return false };
         let (across, through) = section_basis(BodyRegion::ArmL, s.axis);
         let (centre, across, through) = (s.centre.as_dvec3(), across.as_dvec3(), through.as_dvec3());
         let radii = s.radii.as_dvec2();

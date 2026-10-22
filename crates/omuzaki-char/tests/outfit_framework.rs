@@ -288,6 +288,7 @@ fn two_stacked_garments_keep_their_spacing_at_100_heights() {
             let body = fits[0].clone();
             let (inner, outer) = (triangles(stack.output("shirt")), triangles(stack.output("vest")));
             let (mut least, mut most, mut nearest) = (f64::INFINITY, 0.0_f64, f64::INFINITY);
+            let (mut least_at, mut most_at) = ((0.0, 0.0), (0.0, 0.0));
             for k in 0..100 {
                 let t = 0.23 + 0.22 * f64::from(k) / 99.0;
                 let ring = ring_at(body.as_ref(), BodyRegion::Torso, t, 2.0, 0.0).unwrap();
@@ -303,30 +304,39 @@ fn two_stacked_garments_keep_their_spacing_at_100_heights() {
                             .unwrap_or_else(|| panic!("{template}/{label}: no {what} at t = {t}, phi = {phi}"))
                     };
                     let ((shirt_at, normal), (vest_at, _)) = (first(&inner, "shirt"), first(&outer, "vest"));
-                    // The separation in this height's section plane: along the shirt's normal projected into it.
+                    // How close: in this height's section plane, along the shirt's normal projected into it (a nearer
+                    // point of the shirt above or below, round the open end of the vest, is the tube's end, not its
+                    // spacing).
                     let in_plane = (normal - ring.axis * normal.dot(ring.axis)).normalize();
                     let gap = (vest_at - shirt_at) * dir.dot(in_plane).abs();
-                    least = least.min(gap);
-                    most = most.max(gap);
+                    if gap < least {
+                        (least, least_at) = (gap, (t, phi));
+                    }
+                    // How far: from the vest to the nearest point of the shirt (along the ray, or the normal laid into
+                    // the plane, it reads long where the cloth leans).
                     let p = ring.centre + dir * vest_at;
-                    let surface = inner
+                    let apart = inner
                         .iter()
                         .map(|[a, b, c]| p.distance(closest_on_triangle(p, *a, *b, *c)))
                         .fold(f64::INFINITY, f64::min);
-                    nearest = nearest.min(surface);
+                    nearest = nearest.min(apart);
+                    if apart > most {
+                        (most, most_at) = (apart, (t, phi));
+                    }
                 }
             }
             println!(
-                "{template}/{label}: vest over shirt {:.2}..{:.2} mm in each section, nearest {:.2} mm in 3D",
+                "{template}/{label}: vest over shirt {:.2}..{:.2} mm, nearest {:.2} mm in 3D",
                 least * 1e3,
                 most * 1e3,
                 nearest * 1e3
             );
-            // A little over 6 mm where the fit eases out to hold the hips: the measure runs along the shirt's normal
-            // laid into the section plane, which reads long where the cloth leans or turns over a ring of the body.
+            // A little over 6 mm just above a thigh's dome: each garment clears the thighs by its own ease all round,
+            // so the vest's 6 mm reaches a few millimetres higher over the dome's top than the shirt's 4 mm does.
             assert!(
-                least >= 0.004 && most <= 0.006 + 2.5e-4 && nearest > 0.0,
-                "{template}/{label}: the vest is {:.2}..{:.2} mm off the shirt, outside 4..6 mm",
+                least >= 0.004 && most <= 0.006 + 5e-4 && nearest > 0.0,
+                "{template}/{label}: the vest is {:.2}..{:.2} mm off the shirt (at t, phi = {least_at:.3?} and {most_at:.3?}), \
+                 outside 4..6 mm",
                 least * 1e3,
                 most * 1e3
             );
