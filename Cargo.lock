@@ -4951,6 +4951,7 @@ dependencies = [
  "libm",
  "moxcms",
  "omuzaki-core",
+ "omuzaki-doc-api",
  "omuzaki-doc-mock",
  "omuzaki-l10n-api",
  "omuzaki-ops-api",
@@ -4961,6 +4962,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "toml",
  "zune-jpeg",
 ]
 
