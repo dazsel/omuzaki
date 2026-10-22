@@ -145,11 +145,13 @@ fn parent_table(scene: &IoScene) -> Vec<Option<usize>> {
     parent
 }
 
-/// Spring data the exporter of `version` cannot write yet, as warnings: extended collider shapes (inside-out or plane)
-/// and joint limits. 1.0 writes the spec's inert fallback sphere in a shape's place (`vrm.collider_dropped`,
-/// `vrm.limit_dropped`); 0.x has neither and leaves them out (`vrm0.collider_unsupported`, `vrm0.limit_unsupported`).
-/// Here rather than in the writers so that strict mode and `Exporter::check` see them before anything is written.
+/// Spring features VRM 0.x cannot carry: inside-out and plane colliders and joint limits, which a 0.x file leaves out
+/// (`vrm0.collider_unsupported`, `vrm0.limit_unsupported`). VRM 1.0 carries them all
+/// (`VRMC_springBone_extended_collider`, `VRMC_springBone_limit`), so it warns about none; a writer that cannot write
+/// them says so in its own check. Here rather than in the writers so that strict mode and `Exporter::check` see them
+/// before anything is written.
 fn spring_losses(avatar: &Avatar, version: VrmVersion, r: &mut Report) {
+    let VrmVersion::V0 = version else { return };
     let sb = &avatar.spring_bones;
     // Counted over every collider, once each: an ungrouped one is dropped too, and a shared one is still one collider.
     let colliders = sb
@@ -158,27 +160,13 @@ fn spring_losses(avatar: &Avatar, version: VrmVersion, r: &mut Report) {
         .filter(|c| !matches!(c.shape, ColliderShape::Sphere { .. } | ColliderShape::Capsule { .. }))
         .count();
     let limits = sb.chains.iter().flat_map(|c| &c.joints).filter(|j| j.limit.is_some()).count();
-    let (collider, limit) = match version {
-        VrmVersion::V1 => (
-            (
-                "vrm.collider_dropped",
-                format!("{colliders} inside-out or plane collider(s) are not written yet; an inert sphere stands in"),
-            ),
-            ("vrm.limit_dropped", format!("{limits} spring joint limit(s) are not written yet")),
-        ),
-        VrmVersion::V0 => (
-            (
-                "vrm0.collider_unsupported",
-                format!("0.x has only outside spheres; {colliders} inside-out or plane collider(s) are dropped"),
-            ),
-            ("vrm0.limit_unsupported", format!("0.x has no joint limits; {limits} limit(s) are dropped")),
-        ),
-    };
     if colliders > 0 {
-        r.push(Finding::warning(collider.0, collider.1).at("avatar/springBone/colliders"));
+        let msg = format!("0.x has only outside spheres; {colliders} inside-out or plane collider(s) are dropped");
+        r.push(Finding::warning("vrm0.collider_unsupported", msg).at("avatar/springBone/colliders"));
     }
     if limits > 0 {
-        r.push(Finding::warning(limit.0, limit.1).at("avatar/springBone/springs"));
+        let msg = format!("0.x has no joint limits; {limits} limit(s) are dropped");
+        r.push(Finding::warning("vrm0.limit_unsupported", msg).at("avatar/springBone/springs"));
     }
 }
 

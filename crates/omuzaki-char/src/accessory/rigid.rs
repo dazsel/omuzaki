@@ -119,19 +119,19 @@ impl Validate for Pendant {
 
 /// How finely the shells are cut.
 #[derive(Copy, Clone)]
-struct Detail {
+pub(super) struct Detail {
     /// Segments round a ring's major circle.
-    ring: usize,
+    pub(super) ring: usize,
     /// Segments round a ring's wire.
-    cross: usize,
+    pub(super) cross: usize,
     /// Segments round a lathe.
-    lathe: usize,
+    pub(super) lathe: usize,
     /// Steps along a lathe's profile.
-    rows: usize,
+    pub(super) rows: usize,
 }
 
 impl Detail {
-    fn of(quality: Quality) -> Self {
+    pub(super) fn of(quality: Quality) -> Self {
         match quality {
             Quality::Live => Self { ring: 48, cross: 8, lathe: 16, rows: 20 },
             Quality::Offline => Self { ring: 96, cross: 12, lathe: 32, rows: 40 },
@@ -361,7 +361,7 @@ impl PendantSpec {
 
 // ------------------------------------------------------------------------------------------------ building blocks
 
-fn kit_error<'a>(ctx: &'a BuildCtx<'_>) -> impl Fn(KitError) -> BuildError + 'a {
+pub(super) fn kit_error<'a>(ctx: &'a BuildCtx<'_>) -> impl Fn(KitError) -> BuildError + 'a {
     move |e| ctx.fail(format!("geometry: {e}"))
 }
 
@@ -371,7 +371,7 @@ fn material_name(part: &omuzaki_char_api::PartId, slot: Slot) -> Result<Material
 }
 
 /// A toon material of `base`, its shade a darker `base`, giving off `glow` of its colour.
-fn material(base: Colour, glow: f32) -> MaterialSpec {
+pub(super) fn material(base: Colour, glow: f32) -> MaterialSpec {
     let scale = |v: u8, k: f32| -> u8 {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped to a byte
         {
@@ -434,7 +434,7 @@ fn recolour_output(
 
 /// The two spring bones and the chain of a dangling or bobbing piece, which opts into every published collider group. Bone 0 sits at the attach point and bone 1 at
 /// `tail` (local space), both resting in bind space; the chain swings bone 0 towards bone 1.
-fn spring_pair(
+pub(super) fn spring_pair(
     ctx: &BuildCtx<'_>,
     kind: &str,
     attach: &ResolvedAttach,
@@ -461,14 +461,14 @@ fn spring_pair(
 }
 
 /// How a hanging piece swings: loose, with a little gravity.
-const DANGLE: SpringParams =
+pub(super) const DANGLE: SpringParams =
     SpringParams { hit_radius: 0.0, stiffness: 0.9, gravity_power: 0.4, gravity_dir: Vec3::NEG_Y, drag_force: 0.35 };
 /// How a halo bobs: stiff, no gravity, so it tilts with the head and settles back.
 const BOB: SpringParams =
     SpringParams { hit_radius: 0.0, stiffness: 1.0, gravity_power: 0.0, gravity_dir: Vec3::NEG_Y, drag_force: 0.25 };
 
 /// The frame whose origin is `origin` and whose `+Y` is `up`.
-fn frame_up(origin: DVec3, up: DVec3) -> DMat4 {
+pub(super) fn frame_up(origin: DVec3, up: DVec3) -> DMat4 {
     DMat4::from_rotation_translation(DQuat::from_rotation_arc(DVec3::Y, up.normalize_or_zero()), origin)
 }
 

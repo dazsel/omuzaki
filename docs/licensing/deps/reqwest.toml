@@ -1,7 +1,7 @@
 section = "rust"
-item = "reqwest (no TLS, dev only)"
+item = "reqwest 0.13"
 kind = "crate"
-used_for = "HTTP client in the MCP HTTP tests (rmcp's client transport and raw requests); not in any shipped build"
+used_for = "the HTTP client: `omuzaki-http`'s `HttpFetcher` (blocking, rustls with the `ring` provider, system proxy; the shipped download path), the LLM providers of `omuzaki-llm` (async, streaming, llm-api D11) and the MCP HTTP tests"
 status = "yes"
 audit = "(crates.io: MIT OR Apache-2.0)"
 crates = ["reqwest"]

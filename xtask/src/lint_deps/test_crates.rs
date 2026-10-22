@@ -1,6 +1,6 @@
 //! The test-crate rule of `lint-deps` (ADR 0054 §6): each area test crate `omuzaki-test-<area>` depends only on its
-//! area. (The harness `omuzaki-test` still holds the tests of the areas not split out yet, so it is not held to
-//! "no implementation" until they move.)
+//! area. An area whose own crate is an App (the stage) may use that App too. (The harness `omuzaki-test` still holds
+//! the tests of the areas not split out yet, so it is not held to "no implementation" until they move.)
 //!
 //! Why: a test crate is in scope whenever anything it depends on changes. One test crate that reached every
 //! implementation put every parity test in scope for any change; per-area crates keep a face change from running the
@@ -28,7 +28,16 @@ const MEMBERS: &[(&str, &str)] = &[
     ("omuzaki-anim", "char"),
     // The glTF format library sits under the io formats.
     ("omuzaki-gltf", "io"),
+    // The stage links the face and the renderer and draws the one into the other (#151, #2074): its tests meet both.
+    ("omuzaki-face", "stage"),
+    ("omuzaki-render", "stage"),
 ];
+
+/// Crates of another area that an area test crate loads at run time, with the area whose test crate may use them. The
+/// track area's real-model tests run the graphs through the ONNX Runtime wrapper (`omuzaki-ai-ort`), which no
+/// implementation crate may depend on, so its test crate is the one place the tracker meets the runtime. Only that
+/// crate is allowed: every other area's test crate still fails on it.
+const GUESTS: &[(&str, &str)] = &[("omuzaki-ai-ort", "track")];
 
 /// The area an area test crate covers, from its name; `None` for every other crate.
 pub fn area_of(name: &str) -> Option<&str> {
@@ -39,7 +48,7 @@ pub fn area_of(name: &str) -> Option<&str> {
 fn in_area(name: &str, area: &str) -> bool {
     let named = name.strip_prefix("omuzaki-").and_then(|rest| rest.strip_prefix(area));
     matches!(named, Some(rest) if rest.is_empty() || rest.starts_with('-'))
-        || MEMBERS.iter().any(|&(member, owner)| member == name && owner == area)
+        || MEMBERS.iter().chain(GUESTS).any(|&(member, owner)| member == name && owner == area)
 }
 
 /// What the test-crate rule finds wrong with `package`'s dependency on `target`, a crate of kind `to`; `None` when it
@@ -50,13 +59,16 @@ pub fn violation(package: &Package, dependency: &Dependency, target: &Package, t
         CrateKind::Api | CrateKind::Mock => true,
         CrateKind::Lib if target.name == LINK_BUILD => dependency.kind == DepKind::Build,
         CrateKind::Implementation | CrateKind::Lib => in_area(&target.name, area),
-        CrateKind::App => target.name == HARNESS,
+        // The harness, and the area's own App (`omuzaki-stage` for the stage area).
+        CrateKind::App => target.name == HARNESS || in_area(&target.name, area),
     };
     if fine {
         return None;
     }
     let mut crates = vec![format!("omuzaki-{area}"), format!("omuzaki-{area}-*")];
-    crates.extend(MEMBERS.iter().filter(|&&(_, owner)| owner == area).map(|(member, _)| (*member).to_owned()));
+    crates.extend(
+        MEMBERS.iter().chain(GUESTS).filter(|&&(_, owner)| owner == area).map(|(member, _)| (*member).to_owned()),
+    );
     Some(Violation {
         from: package.name.clone(),
         to: dependency.name.clone(),
@@ -95,6 +107,9 @@ mod tests {
         ("omuzaki-io-gltf", &[]),
         ("omuzaki-gltf", &[]),
         ("omuzaki-stage", &[]),
+        ("omuzaki-track", &[]),
+        ("omuzaki-ai-ort", &[]),
+        ("omuzaki-ai", &[]),
     ];
 
     fn with_leaves<'a>(crates: &[(&'a str, &'a [(&'a str, DepKind)])]) -> Vec<(&'a str, &'a [(&'a str, DepKind)])> {
@@ -149,6 +164,7 @@ mod tests {
                 ],
             ),
             ("omuzaki-test-face", &[("omuzaki-test", Normal), ("omuzaki-face", Normal), ("omuzaki-core", Normal)]),
+            ("omuzaki-test-track", &[("omuzaki-track", Dev), ("omuzaki-ai-ort", Dev), ("omuzaki-core", Dev)]),
             (
                 "omuzaki-test-io",
                 &[("omuzaki-io-ops", Dev), ("omuzaki-io-gltf", Dev), ("omuzaki-gltf", Dev), ("omuzaki-char-mock", Dev)],
@@ -178,6 +194,18 @@ mod tests {
     }
 
     #[test]
+    fn only_the_track_test_crate_may_load_the_onnx_runtime_wrapper() {
+        let got = found(&with_leaves(&[
+            ("omuzaki-test-face", &[("omuzaki-face", Dev), ("omuzaki-ai-ort", Dev)]),
+            ("omuzaki-test-track", &[("omuzaki-track", Dev), ("omuzaki-ai-ort", Dev), ("omuzaki-ai", Dev)]),
+        ]));
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert!(got[0].starts_with("omuzaki-test-face → omuzaki-ai-ort: the face area test crate"), "{}", got[0]);
+        assert!(got[1].starts_with("omuzaki-test-track → omuzaki-ai:"), "{}", got[1]);
+        assert!(got[1].contains("(omuzaki-track, omuzaki-track-*, omuzaki-ai-ort)"), "{}", got[1]);
+    }
+
+    #[test]
     fn an_area_test_crate_uses_the_harness_but_no_other_app() {
         let got = found(&with_leaves(&[
             ("omuzaki-test", &[]),
@@ -187,6 +215,20 @@ mod tests {
         assert_eq!(got.len(), 2, "{got:?}");
         assert!(got[0].starts_with("omuzaki-test-face → omuzaki-stage: the face area test crate"), "{}", got[0]);
         assert!(got[1].starts_with("omuzaki-test-face → omuzaki-test-char"), "{}", got[1]);
+    }
+
+    #[test]
+    fn the_stage_area_test_crate_uses_the_stage_and_the_face_and_renderer_it_links_and_nothing_else() {
+        let fine = found(&with_leaves(&[(
+            "omuzaki-test-stage",
+            &[("omuzaki-stage", Dev), ("omuzaki-face", Dev), ("omuzaki-render", Dev), ("omuzaki-char-mock", Dev)],
+        )]));
+        assert_eq!(fine, Vec::<String>::new());
+        let got = found(&with_leaves(&[("omuzaki-test-stage", &[("omuzaki-char", Dev), ("omuzaki-io-ops", Dev)])]));
+        assert_eq!(got.len(), 2, "the character and io crates are other areas: {got:?}");
+        assert!(got[0].contains("(omuzaki-stage, omuzaki-stage-*, omuzaki-face, omuzaki-render)"), "{}", got[0]);
+        let other = found(&with_leaves(&[("omuzaki-test-face", &[("omuzaki-stage", Dev)])]));
+        assert_eq!(other.len(), 1, "another area's test crate still may not use the stage: {other:?}");
     }
 
     #[test]

@@ -1,0 +1,11 @@
+name = "Main"
+
+[groups.redeems]
+enabled = true
+name = "Redeems"
+
+[variables.bonks]
+default = 0
+scope = "show"
+summary = "How many times the bonk redeem landed."
+type = "number"

@@ -1,0 +1,6 @@
+{
+  "about": "The kit character `kit` on the standard template, with the body, head and hair `character.create` gives it: the base for ops that edit or read a character.",
+  "steps": [
+    { "op": "character.create", "args": { "id": "kit", "name": "Kit", "template": "standard" } }
+  ]
+}

@@ -3,3 +3,4 @@
 
 pub mod job;
 pub mod still;
+pub mod preview;

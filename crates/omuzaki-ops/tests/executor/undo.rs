@@ -215,7 +215,7 @@ fn a_conflicting_redo_names_the_culprit_and_drops_the_step() {
 
     let e = rig.redo().unwrap_err();
     assert_eq!(e.code, ErrorCode::Conflict);
-    assert!(e.message.contains("redo") && e.message.contains("agent claude-1"), "{e}");
+    assert!(e.message.contains("redo") && e.message.contains("agent claude#1"), "{e}");
     assert!(e.hint.as_deref().unwrap().contains("dropped"), "{e}");
     assert_eq!(rig.at("a"), Some(json!(7)));
     assert_eq!(rig.redo().unwrap(), None, "the conflicting step was dropped from the redo history");

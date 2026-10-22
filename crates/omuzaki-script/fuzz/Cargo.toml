@@ -1,0 +1,39 @@
+# Fuzz targets for omuzaki-script, run by hand with `cargo +nightly fuzz` (see README.md). This crate is outside the
+# workspace on purpose, by its empty `[workspace]` table below: the CI gate never builds it, and the tools it needs
+# (libFuzzer, a nightly toolchain) never reach the product.
+[package]
+name = "omuzaki-script-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+# What `omuzaki-script/tests/common/mod.rs` (the fake runner the `run` target shares) is written against, at the
+# versions the workspace pins.
+schemars = "1.2"
+serde_json = "1"
+omuzaki-core = { path = "../../omuzaki-core" }
+omuzaki-doc-api = { path = "../../omuzaki-doc-api" }
+omuzaki-ops-api = { path = "../../omuzaki-ops-api" }
+omuzaki-script = { path = ".." }
+
+[workspace]
+
+[[bin]]
+name = "check"
+path = "fuzz_targets/check.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "run"
+path = "fuzz_targets/run.rs"
+test = false
+doc = false
+bench = false

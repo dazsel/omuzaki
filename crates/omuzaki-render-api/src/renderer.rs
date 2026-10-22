@@ -101,8 +101,22 @@ pub trait PaintTarget {
     /// face painter's ≤ 0.5 ms budget needs this). A painter downcasts it to the concrete type its sibling renderer
     /// documents, and falls back to [`write_rgba`](PaintTarget::write_rgba) if the downcast fails. No backend type
     /// appears in this contract: the two implementation crates agree on the type out of band
-    /// (`docs/design/render-api.md`, "GPU interop").
+    /// (`docs/design/render-api.md`, "GPU interop"). For the wgpu renderer that is a tuple with the renderer's command
+    /// encoder: the painter records into it and the renderer submits it when the painter returns, so the painter's GPU
+    /// work is part of the renderer's frame and of its GPU timings.
+    ///
+    /// A painter that draws through the handle can't be followed by the renderer, so after a call the whole texture
+    /// counts as changed, unless the painter says what it changed with [`mark_damage`](PaintTarget::mark_damage).
     fn native(&mut self) -> &mut dyn Any;
+
+    /// Reports that this paint changed only `rect` of what it drew through [`native`](PaintTarget::native), so the
+    /// renderer refreshes only that part of the texture (its mip chain, say). Calls add up (the union counts); an empty
+    /// rectangle reports nothing, and a rectangle reaching outside the texture is clipped to it. Pixels written with
+    /// [`write_rgba`](PaintTarget::write_rgba) count on their own and need no call. The default ignores it: a renderer
+    /// that refreshes nothing, or always everything, has no use for it.
+    fn mark_damage(&mut self, rect: PixelRect) {
+        let _ = rect;
+    }
 }
 
 /// Something that fills a dynamic texture: the face painter (`omuzaki-face`), a video frame source, a debug overlay.
@@ -272,6 +286,25 @@ pub trait Renderer: Send {
     /// # Errors
     /// `UnknownHandle`, or `Invalid` if nothing has been rendered into the target yet.
     fn read_target(&mut self, target: TargetId) -> Result<Image, RenderError>;
+
+    /// The native GPU handles of `target`'s output, so the app's viewport and the live outputs use the rendered frame
+    /// without a copy to the CPU (the rendered-frame contract, #629). `None` from a renderer without a GPU (the mock),
+    /// whose frames reach outputs through [`read_target`](Renderer::read_target); that is the default.
+    ///
+    /// The value is the renderer's documented convention, read with `downcast_ref`, so no GPU type enters this crate.
+    /// The wgpu renderer's is `omuzaki_render::NativeTarget`, the tuple `(wgpu::Device, wgpu::Queue, wgpu::Texture)`:
+    /// the device and queue it renders with, and the output texture, sRGB-encoded RGBA8 at the target's size in the
+    /// target's alpha encoding, usable for sampling and as a copy source. This is the form `omuzaki-stream-api`'s
+    /// `Frame::gpu` names. The next [`render`](Renderer::render) into the target draws into the same texture, so a
+    /// consumer samples or copies it first (a copy submitted after one `render` and before the next sees that frame,
+    /// by queue order), and [`resize_target`](Renderer::resize_target) replaces it.
+    ///
+    /// # Errors
+    /// `UnknownHandle` for a target that is not live, from a renderer that has native handles.
+    fn target_native(&self, target: TargetId) -> Result<Option<&dyn Any>, RenderError> {
+        let _ = target;
+        Ok(None)
+    }
 }
 
 /// Conveniences built from the required methods, kept off [`Renderer`] so it stays small and every implementation

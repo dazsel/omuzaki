@@ -148,6 +148,7 @@ impl Exporter for MockVrm1Exporter {
     fn check(&self, scene: &IoScene, options: &ExportOptions) -> Report {
         let mut r = layout_check(options, "VRM");
         r.extend(vrm_profile(scene, VrmVersion::V1));
+        r.extend(crate::spring::losses(scene));
         r
     }
 

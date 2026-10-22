@@ -272,8 +272,8 @@ fn an_edit_applied_without_a_matching_dry_run_is_not_previewed() {
 }
 
 #[test]
-fn checks_not_graded_yet_are_errors_and_soft_checks_carry_a_score_but_never_fail_the_attempt() {
-    assert_eq!(outcome("[[check]]\nid='c'\nkind='doc.exists'\npath='counter'\n"), Outcome::Error);
+fn judge_is_not_graded_yet_and_soft_checks_carry_a_score_but_never_fail_the_attempt() {
+    assert_eq!(outcome("[[check]]\nid='c'\nkind='judge'\nrubric=['Is it round?']\n"), Outcome::Error);
     let soft = "[[check]]\nid='hard'\nkind='gate'\nops=['evaltest.gate']\n\
                 [[check]]\nid='soft'\nhard=false\nkind='query'\nop='evaltest.counter'\nat='/counter'\nexpect={ equals = 1 }\n";
     let report = grade(soft, Vec::new());
@@ -321,7 +321,7 @@ fn a_fixture_that_lacks_what_the_query_reads_is_an_error_not_the_agents_fail() {
 
 #[test]
 fn an_errored_check_carries_no_score_hard_or_soft() {
-    let toml = "[[check]]\nid='a'\nhard=false\nkind='doc.exists'\npath='counter'\n\
+    let toml = "[[check]]\nid='a'\nhard=false\nkind='judge'\nrubric=['Is it round?']\n\
                 [[check]]\nid='b'\nhard=false\nkind='query'\nop='evaltest.doc'\nat='/chars/fox/name'\n\
                 expect={ change = 'any' }\n\
                 [[check]]\nid='c'\nhard=false\nkind='query'\nop='evaltest.counter'\nat='/counter'\n\

@@ -9,7 +9,7 @@ use omuzaki_ops_api::OpError;
 use crate::cli::{Cli, Command};
 use crate::commands::execute;
 use crate::output::{Reply, finish_reply};
-use crate::session::{Session, open_runner_with};
+use crate::session::{Session, open_executor_with, project_root};
 use crate::store;
 
 /// Parses the command line, runs the command against the project and exits with the code for its result.
@@ -30,8 +30,10 @@ pub fn run() -> ExitCode {
 
 /// Opens the runner for `cli` with the invocation's agent connections wired in, and runs the command on it.
 fn run_with_runner(cli: &Cli) -> Result<Reply, OpError> {
-    let session = Session::from_env();
-    open_runner_with(cli, &session.connections)
-        .and_then(|runner| execute(cli, runner, &session, &mut io::stdin()))
-        .map(Reply::ok)
+    let mut session = Session::from_env();
+    let executor = open_executor_with(cli, &session.connections)?;
+    session.sessions = Some(executor.clone());
+    session.jobs = Some(executor.clone());
+    session.project = cli.project.as_deref().map(project_root).transpose()?;
+    execute(cli, executor, &session, &mut io::stdin()).map(Reply::ok)
 }

@@ -231,6 +231,7 @@ async fn the_port_also_works_on_the_ipv6_loopback() {
     };
     let token = server.issue("v6", Grants::agent_default()).unwrap();
     assert!(server.url().starts_with("http://[::1]:"), "{}", server.url());
+    common::http::install_crypto_provider();
     let raw = Raw { http: reqwest::Client::new(), url: server.url() };
     let response = raw.post(&[("authorization", &token.bearer_header())], &Raw::initialize_body()).await;
     assert_eq!(response.status(), StatusCode::OK, "the bracketed Host header is recognised as loopback");
@@ -300,7 +301,7 @@ async fn each_token_holds_its_own_grants_and_its_tools_say_so() {
     let port = Port::start().await;
     let local = port.agent_token();
     let publisher = port.server.issue("exporter", Grants::agent_default().with(Scope::Publish)).unwrap();
-    assert_eq!(local.grants(), &Grants::agent_default(), "the default is read, edit and render only");
+    assert_eq!(local.grants(), &Grants::agent_default(), "the default is read, edit, render and review only");
 
     let plain = port.connect(&local, "plain").await;
     let trusted = port.connect(&publisher, "trusted").await;

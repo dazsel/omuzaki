@@ -1,0 +1,8 @@
+{
+  "about": "The `character` fixture with two scenes: `main` (the default, casting `kit`) and `night_stream` (no cast): the base for ops that read or edit scenes.",
+  "base": "character",
+  "steps": [
+    { "op": "stage.create_scene", "args": { "id": "main" } },
+    { "op": "stage.create_scene", "args": { "id": "night_stream", "cast": [] } }
+  ]
+}

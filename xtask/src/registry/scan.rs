@@ -1,5 +1,5 @@
 //! What one source file says about self-registration: the `register_*!` macros it defines, the registrations it
-//! makes and the `cfg`s they sit under, the `mod` declarations that lead to other files, whether it defines the crate's
+//! makes (`register_*!` calls and `messages!` tables) and the `cfg`s they sit under, the `mod` declarations that lead to other files, whether it defines the crate's
 //! `link()` and which crates' `link()` it calls.
 
 use super::cfg::Cfg;
@@ -11,6 +11,11 @@ pub const MACRO_PREFIX: &str = "register_";
 /// The `omuzaki-core` macro that defines a crate's `link()` (ADR 0015).
 pub const LINK_MACRO: &str = "define_link";
 
+/// The `omuzaki-l10n-api` macro that declares a crate's message table. It registers the table without the `register_`
+/// prefix (its name is the l10n design's, `docs/design/l10n-ops.md`), recording kind `messages` named `messages`, so
+/// the scan knows it by name.
+pub const MESSAGES_MACRO: &str = "messages";
+
 /// A `cfg` predicate and the line of the attribute that states it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CfgAt {
@@ -20,7 +25,8 @@ pub struct CfgAt {
     pub line: u32,
 }
 
-/// One `register_<kind>!(<name>, ...)` call at item level: the top level of the file or of an inline `mod` block.
+/// One `register_<kind>!(<name>, ...)` call, or one `messages! { ... }` table, at item level: the top level of the
+/// file or of an inline `mod` block.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Call {
     /// The macro's name without `register_`: the registry it adds to.
@@ -46,12 +52,61 @@ pub struct ModDecl {
     pub cfgs: Vec<CfgAt>,
 }
 
+/// A module form the scan can't follow, so it can't say which files the form compiles. The gate refuses the file
+/// rather than skip it (ADR 0015).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unsupported {
+    /// A `mod` inside a function, block or macro body.
+    ModInBody,
+    /// An `include!` other than the generated `include!(concat!(env!("OUT_DIR"), "/<name>.rs"))`, which pulls in a file
+    /// the scan never reads.
+    Include,
+    /// A `#[cfg_attr(..., path = ...)]` on a `mod`: whether the attribute applies, and so which file it names, is not
+    /// known from the source.
+    CfgAttrPath,
+    /// A `#[path]` on an inline `mod { }` block, which moves the directory of the modules inside it.
+    PathOnInlineMod,
+}
+
+impl Unsupported {
+    /// What was found and what to write instead, for the error message.
+    pub fn describe(self) -> &'static str {
+        match self {
+            Self::ModInBody => {
+                "a `mod` inside a function, block or macro body; declare it at the top level of the file or in an \
+                 inline `mod` block"
+            }
+            Self::Include => {
+                "`include!` of a file the link gate doesn't read; only the generated \
+                 `include!(concat!(env!(\"OUT_DIR\"), \"/<name>.rs\"))` is allowed, so declare the modules as `mod name;`"
+            }
+            Self::CfgAttrPath => {
+                "`#[cfg_attr(..., path = ...)]` on a `mod`; write `#[cfg(p)] #[path = \"x.rs\"] mod m;` and \
+                 `#[cfg(not(p))] mod m;` as two declarations, so each build keeps its file"
+            }
+            Self::PathOnInlineMod => {
+                "`#[path]` on an inline `mod { }` block; put the `#[path]` on a `mod name;` declaration instead"
+            }
+        }
+    }
+}
+
+/// An [`Unsupported`] form and the line it starts on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnsupportedAt {
+    /// The form.
+    pub form: Unsupported,
+    /// The line: the `mod`, `include` or `path` it is written on.
+    pub line: u32,
+}
+
 /// Everything the gate needs from one file.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FileScan {
-    /// The `register_<kind>` macros the file defines, as kinds.
+    /// The registration macros the file defines, as kinds: each `register_<kind>`, and `messages` for `messages!`.
     pub defines: Vec<String>,
-    /// Calls of macros named `register_*`, whether or not the macro turns out to be a registration macro.
+    /// Calls of macros named `register_*` and of `messages!`, whether or not the macro turns out to be a registration
+    /// macro.
     pub calls: Vec<Call>,
     /// Its `mod name;` declarations.
     pub mods: Vec<ModDecl>,
@@ -61,6 +116,8 @@ pub struct FileScan {
     pub defines_link: bool,
     /// The crate in front of every `<crate>::link()` call: `omuzaki_char` for `omuzaki_char::link()`.
     pub link_calls: Vec<String>,
+    /// The module forms in the file the scan can't follow, in source order.
+    pub unsupported: Vec<UnsupportedAt>,
 }
 
 /// An open delimiter while scanning: the body of an inline `mod`, or anything else (a function body, a macro's
@@ -75,6 +132,8 @@ enum Frame {
 struct Pending {
     cfgs: Vec<CfgAt>,
     path: Option<String>,
+    /// A `#[cfg_attr(..., path = ...)]` is on the next item.
+    cfg_attr_path: bool,
 }
 
 /// Scans one file's source.
@@ -83,12 +142,17 @@ struct Pending {
 /// `mod` block, together with the `cfg`s they sit under. A call inside a function, a `const` block or another macro's
 /// arguments may not be in every build and isn't counted. If such a call does reach an App binary, the gate reports
 /// it as unexpected, so it can't hide.
+///
+/// A module form the scan can't follow is recorded in [`FileScan::unsupported`] wherever it is, and the gate refuses
+/// the file: a `mod` that is followed here could otherwise hide the registrations it compiles.
 pub fn scan(source: &str) -> FileScan {
     let toks = tokens(source);
     let mut out = FileScan::default();
     let mut frames: Vec<Frame> = Vec::new();
     let mut pending = Pending::default();
     let mut next_brace_is_mod: Option<(String, Vec<CfgAt>)> = None;
+    // Token ranges of `macro_rules!` matchers: `mod $name` there is input the macro accepts, not a module it declares.
+    let mut matchers: Vec<(usize, usize)> = Vec::new();
     let mut i = 0;
     while let Some(token) = toks.get(i) {
         let item_level = frames.iter().all(|f| matches!(f, Frame::Mod { .. }));
@@ -122,10 +186,16 @@ pub fn scan(source: &str) -> FileScan {
                 }
             }
             Tok::Ident(word) => {
+                if let Some(form) = body_form(&toks, i, item_level, &matchers) {
+                    out.unsupported.push(UnsupportedAt { form, line: token.line });
+                }
                 if word == "macro_rules" && is_punct(&toks, i + 1, '!') {
-                    if let Some(kind) = ident_at(&toks, i + 2).and_then(|name| name.strip_prefix(MACRO_PREFIX)) {
-                        out.defines.push(kind.to_owned());
+                    match ident_at(&toks, i + 2) {
+                        Some(MESSAGES_MACRO) => out.defines.push(MESSAGES_MACRO.to_owned()),
+                        Some(name) => out.defines.extend(name.strip_prefix(MACRO_PREFIX).map(str::to_owned)),
+                        None => {}
                     }
+                    matchers.extend(macro_matchers(&toks, i + 3));
                     i += 3; // past the name, so the definition is not read as a call
                     continue;
                 }
@@ -142,22 +212,26 @@ pub fn scan(source: &str) -> FileScan {
                     } else if word == "mod"
                         && let Some(name) = ident_at(&toks, i + 1)
                     {
+                        if pending.cfg_attr_path {
+                            out.unsupported.push(UnsupportedAt { form: Unsupported::CfgAttrPath, line: token.line });
+                        }
                         if is_punct(&toks, i + 2, ';') {
                             let inline = frames.iter().filter_map(mod_name).map(str::to_owned).collect();
                             let cfgs = cfgs_here(&frames, &pending);
                             out.mods.push(ModDecl { name: name.to_owned(), path: pending.path.take(), inline, cfgs });
                         } else if is_punct(&toks, i + 2, '{') {
+                            if pending.path.is_some() {
+                                out.unsupported
+                                    .push(UnsupportedAt { form: Unsupported::PathOnInlineMod, line: token.line });
+                            }
                             next_brace_is_mod = Some((name.to_owned(), std::mem::take(&mut pending.cfgs)));
                         }
                         pending = Pending::default();
                         i += 2;
                         continue;
-                    } else if let Some(kind) = word.strip_prefix(MACRO_PREFIX)
-                        && is_punct(&toks, i + 1, '!')
-                        && let Some(name) = first_argument(&toks, i + 2)
-                    {
+                    } else if let Some((kind, name)) = registration_call(&toks, i, word) {
                         let cfgs = cfgs_here(&frames, &pending);
-                        out.calls.push(Call { kind: kind.to_owned(), name, line: token.line, cfgs });
+                        out.calls.push(Call { kind, name, line: token.line, cfgs });
                         pending = Pending::default();
                     }
                 }
@@ -167,6 +241,19 @@ pub fn scan(source: &str) -> FileScan {
         i += 1;
     }
     out
+}
+
+/// The registry and name of the call that starts with the macro name `word` at token `i`: `register_<kind>!(<name>,
+/// ...)`, or `messages! { ... }`, whose table registers under one fixed name whatever it declares.
+fn registration_call(toks: &[Token], i: usize, word: &str) -> Option<(String, String)> {
+    if !is_punct(toks, i + 1, '!') {
+        return None;
+    }
+    if let Some(kind) = word.strip_prefix(MACRO_PREFIX) {
+        return Some((kind.to_owned(), first_argument(toks, i + 2)?));
+    }
+    let group = toks.get(i + 2).is_some_and(|t| matches!(t.tok, Tok::Punct('(' | '[' | '{')));
+    (word == MESSAGES_MACRO && group).then(|| (MESSAGES_MACRO.to_owned(), MESSAGES_MACRO.to_owned()))
 }
 
 fn mod_name(frame: &Frame) -> Option<&str> {
@@ -202,6 +289,9 @@ fn apply_inner(attr: &[Token], line: u32, frames: &mut [Frame], file: &mut Vec<C
 fn read_outer(attr: &[Token], line: u32, pending: &mut Pending) {
     if let Some(cfg) = cfg_of(attr) {
         pending.cfgs.push(CfgAt { cfg, line });
+    }
+    if cfg_attr_applies_path(attr) {
+        pending.cfg_attr_path = true;
     } else if attr.first().is_some_and(|t| t.is_ident("path"))
         && attr.get(1).is_some_and(|t| t.is_punct('='))
         && let Some(Tok::Literal(path)) = attr.get(2).map(|t| &t.tok)
@@ -242,6 +332,94 @@ fn closing(toks: &[Token], open: usize) -> Option<usize> {
         }
     }
     None
+}
+
+/// The unsupported form the identifier at `at` starts, if any: an `include!` that is not the generated one, or a `mod`
+/// below item level that declares a module (a name or a `$name` after it). Tokens inside the `matchers` of a
+/// `macro_rules!` are input patterns the macro accepts, not code it compiles, so they never count; a transcriber's
+/// `mod $name;` is still a module the scan can't name.
+fn body_form(toks: &[Token], at: usize, item_level: bool, matchers: &[(usize, usize)]) -> Option<Unsupported> {
+    if matchers.iter().any(|&(from, to)| (from..=to).contains(&at)) {
+        return None;
+    }
+    if toks[at].is_ident("include") && is_punct(toks, at + 1, '!') && !is_generated_include(toks, at) {
+        return Some(Unsupported::Include);
+    }
+    let named = ident_at(toks, at + 1).is_some() || is_punct(toks, at + 1, '$');
+    (toks[at].is_ident("mod") && !item_level && named).then_some(Unsupported::ModInBody)
+}
+
+/// The token ranges of the matchers in the `macro_rules!` body opening at `open`: in `{ (matcher) => { body }; ... }`
+/// the first group of each rule. A body that does not have that shape yields the rules read so far.
+fn macro_matchers(toks: &[Token], open: usize) -> Vec<(usize, usize)> {
+    let mut found = Vec::new();
+    let Some(end) = closing(toks, open) else { return found };
+    let mut at = open + 1;
+    while at < end {
+        let Some(matcher_end) = closing(toks, at) else { break };
+        found.push((at, matcher_end));
+        if !(is_punct(toks, matcher_end + 1, '=') && is_punct(toks, matcher_end + 2, '>')) {
+            break;
+        }
+        let Some(body_end) = closing(toks, matcher_end + 3) else { break };
+        at = body_end + 1;
+        if is_punct(toks, at, ';') {
+            at += 1;
+        }
+    }
+    found
+}
+
+/// Whether the `include!` at `at` is the generated `include!(concat!(env!("OUT_DIR"), "/<name>.rs"))`: the form the
+/// build scripts' module lists and link wiring use (ADR 0015, ADR 0054). The build scripts that write those files are
+/// checked by their own tests, so this is the one `include!` the scan accepts.
+fn is_generated_include(toks: &[Token], at: usize) -> bool {
+    const HEAD: [&str; 12] = ["include", "!", "(", "concat", "!", "(", "env", "!", "(", "\"OUT_DIR\"", ")", ","];
+    let head = HEAD.iter().enumerate().all(|(n, want)| toks.get(at + n).is_some_and(|t| t.text() == *want));
+    let tail = toks.get(at + HEAD.len() + 1).is_some_and(|t| t.is_punct(')'))
+        && toks.get(at + HEAD.len() + 2).is_some_and(|t| t.is_punct(')'));
+    let file = toks.get(at + HEAD.len()).and_then(|t| match &t.tok {
+        Tok::Literal(literal) => literal.strip_prefix("\"/")?.strip_suffix(".rs\""),
+        _ => None,
+    });
+    head && tail
+        && file.is_some_and(|name| !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || "_-".contains(c)))
+}
+
+/// Whether a `cfg_attr(predicate, ...)` applies a `path = ...` attribute: one of the attributes after the predicate is
+/// that meta item, possibly inside a nested `cfg_attr`. A predicate named `path` is not one.
+fn cfg_attr_applies_path(attr: &[Token]) -> bool {
+    let is_cfg_attr = attr.first().is_some_and(|t| t.is_ident("cfg_attr"))
+        && is_punct(attr, 1, '(')
+        && attr.last().is_some_and(|t| t.is_punct(')'));
+    is_cfg_attr && split_top_level(&attr[2..attr.len() - 1]).into_iter().skip(1).any(is_path_meta)
+}
+
+/// Whether one attribute is `path = ...`, or a `cfg_attr` that applies one.
+fn is_path_meta(item: &[Token]) -> bool {
+    match item {
+        [first, eq, ..] if first.is_ident("path") && eq.is_punct('=') => true,
+        [first, ..] if first.is_ident("cfg_attr") => cfg_attr_applies_path(item),
+        _ => false,
+    }
+}
+
+/// `toks` split at the commas outside any brackets.
+fn split_top_level(toks: &[Token]) -> Vec<&[Token]> {
+    let (mut parts, mut depth, mut start) = (Vec::new(), 0usize, 0usize);
+    for (at, token) in toks.iter().enumerate() {
+        match token.tok {
+            Tok::Punct('(' | '[' | '{') => depth += 1,
+            Tok::Punct(')' | ']' | '}') => depth = depth.saturating_sub(1),
+            Tok::Punct(',') if depth == 0 => {
+                parts.push(&toks[start..at]);
+                start = at + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&toks[start..]);
+    parts
 }
 
 fn is_punct(toks: &[Token], at: usize, c: char) -> bool {
@@ -374,6 +552,24 @@ macro_rules! register_op { ($ty:ty) => { $crate::submit!($ty); }; }
     }
 
     #[test]
+    fn an_item_level_message_table_registers_and_one_in_a_body_or_definition_does_not() {
+        let registers = r#"
+omuzaki_l10n_api::messages! {
+    pub saved = "app-saved" () => "Saved.";
+}
+"#;
+        assert_eq!(calls(registers), [call("messages", "messages", 2)]);
+        let does_not = r#"
+fn f() { omuzaki_l10n_api::messages! { pub a = "x-a" () => "A."; } }
+/// messages! { pub b = "x-b" () => "B."; }
+#[macro_export]
+macro_rules! messages { ($($t:tt)*) => {}; }
+"#;
+        assert_eq!(calls(does_not), []);
+        assert_eq!(scan(does_not).defines, ["messages"], "the definition makes `messages` a registration kind");
+    }
+
+    #[test]
     fn a_comma_inside_generic_arguments_is_part_of_the_name() {
         assert_eq!(calls("register_importer!(Pair<u8, i32>);"), [call("importer", "Pair<u8,i32>", 1)]);
         assert_eq!(calls("register_op!(Map<K, Vec<(u8, u16)>>, extra);"), [call("op", "Map<K,Vec<(u8,u16)>>", 1)]);
@@ -462,5 +658,96 @@ mod outer { #[cfg(feature = "x")] mod inner; }
         assert_eq!(by_macro.link_calls, ["omuzaki_face"]);
         assert!(super::scan("omuzaki_core::define_link!();").defines_link);
         assert!(!super::scan("mod m { pub fn link() {} }").defines_link, "a nested link() is not the crate's");
+    }
+
+    fn unsupported(source: &str) -> Vec<(Unsupported, u32)> {
+        scan(source).unsupported.into_iter().map(|at| (at.form, at.line)).collect()
+    }
+
+    #[test]
+    fn a_mod_in_a_body_is_refused_and_a_file_level_mod_is_followed() {
+        let source = "fn f() {\n    mod hidden;\n}\nmod shown;\nconst _: () = { mod deep {} };\n";
+        assert_eq!(unsupported(source), [(Unsupported::ModInBody, 2), (Unsupported::ModInBody, 5)]);
+        let names: Vec<String> = scan(source).mods.into_iter().map(|m| m.name).collect();
+        assert_eq!(names, ["shown"]);
+    }
+
+    #[test]
+    fn include_of_a_file_is_refused_wherever_it_is_but_the_generated_out_dir_form_and_include_str_are_not() {
+        let source = r#"include!("gen.rs");
+fn f() { include!(concat!(env!("OUT_DIR"), "/x.rs")); }
+include!(concat!(env!("OUT_DIR"), "/../x.rs"));
+include!(concat!(env!("CARGO_MANIFEST_DIR"), "/x.rs"));
+include!(concat!(env!("OUT_DIR"), "/x.rs") );
+const A: &str = include_str!("a.txt");
+const B: &[u8] = include_bytes!("b.bin");
+"#;
+        assert_eq!(
+            unsupported(source),
+            [(Unsupported::Include, 1), (Unsupported::Include, 3), (Unsupported::Include, 4)]
+        );
+    }
+
+    #[test]
+    fn a_mod_in_a_macro_matcher_is_input_not_a_declaration() {
+        let source = "macro_rules! parse {\n    (mod $name:ident;) => { struct Parsed; };\n    ($name:ident) => {\n        mod $name;\n    };\n}\n";
+        assert_eq!(unsupported(source), [(Unsupported::ModInBody, 4)], "only the transcriber's `mod` declares one");
+        let matcher_only = "macro_rules! parse { (mod $name:ident;) => { struct Parsed; } }\n";
+        assert_eq!(unsupported(matcher_only), []);
+    }
+
+    #[test]
+    fn an_include_in_a_macro_matcher_is_input_but_one_in_a_transcriber_is_refused() {
+        let source = "macro_rules! take {\n    (include!($file:literal)) => { include!($file); };\n}\n";
+        assert_eq!(unsupported(source), [(Unsupported::Include, 2)]);
+        assert_eq!(unsupported("macro_rules! take { (include!($file:literal)) => { struct A; } }\n"), []);
+    }
+
+    #[test]
+    fn a_mod_named_by_a_macro_variable_in_a_macro_body_is_refused() {
+        let source = "macro_rules! declare {\n    ($name:ident) => {\n        mod $name;\n    };\n}\n";
+        assert_eq!(unsupported(source), [(Unsupported::ModInBody, 3)]);
+    }
+
+    #[test]
+    fn a_path_meta_item_in_cfg_attr_is_refused_even_nested_but_a_predicate_named_path_is_not() {
+        let source = r#"#[cfg_attr(path, allow(dead_code))]
+mod predicate;
+#[cfg_attr(unix, cfg_attr(x, path = "n.rs"))]
+mod nested;
+#[cfg_attr(unix, path = "u.rs")]
+mod direct;
+"#;
+        assert_eq!(unsupported(source), [(Unsupported::CfgAttrPath, 4), (Unsupported::CfgAttrPath, 6)]);
+        let names: Vec<String> = scan(source).mods.into_iter().map(|m| m.name).collect();
+        assert_eq!(names, ["predicate", "nested", "direct"]);
+    }
+
+    #[test]
+    fn a_cfg_attr_path_on_a_mod_is_refused_and_a_plain_path_is_followed() {
+        let source = "#[cfg_attr(unix, path = \"unix.rs\")]\nmod os;\n#[path = \"plain.rs\"]\nmod plain;\n\
+                      #[cfg_attr(unix, allow(dead_code))]\nmod allowed;\n";
+        assert_eq!(unsupported(source), [(Unsupported::CfgAttrPath, 2)]);
+        let paths: Vec<(String, Option<String>)> = scan(source).mods.into_iter().map(|m| (m.name, m.path)).collect();
+        assert_eq!(
+            paths,
+            [("os".to_owned(), None), ("plain".to_owned(), Some("plain.rs".to_owned())), ("allowed".to_owned(), None),]
+        );
+    }
+
+    #[test]
+    fn a_cfg_attr_path_on_an_item_that_is_not_a_mod_does_not_reach_the_next_mod() {
+        assert_eq!(unsupported("#[cfg_attr(unix, path = \"a.rs\")]\nconst X: u8 = 1;\nmod m;\n"), []);
+        assert_eq!(unsupported("#[cfg_attr(unix, path = \"a.rs\")]\nfn f() {}\nmod m;\n"), []);
+    }
+
+    #[test]
+    fn a_path_on_an_inline_mod_is_refused_and_an_inline_mod_without_one_is_followed() {
+        let refused = "#[path = \"elsewhere\"]\nmod outer {\n    mod inner;\n}\n";
+        assert_eq!(unsupported(refused), [(Unsupported::PathOnInlineMod, 2)]);
+        let allowed = "mod outer {\n    #[path = \"elsewhere.rs\"]\n    mod inner;\n}\n";
+        assert_eq!(unsupported(allowed), []);
+        let inner: Vec<Vec<String>> = scan(allowed).mods.into_iter().map(|m| m.inline).collect();
+        assert_eq!(inner, [vec!["outer".to_owned()]]);
     }
 }

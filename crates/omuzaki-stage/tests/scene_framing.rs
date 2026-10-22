@@ -11,7 +11,7 @@ use omuzaki_core::glam::{Vec3, Vec4};
 use omuzaki_render_api::{Camera, Projection};
 use omuzaki_stage::StageError;
 use omuzaki_stage::scene::frame::{
-    BUST_CROWN_FROM_TOP, BUST_FILL, FACE_EYES_FROM_TOP, FACE_FILL, FULL_FILL, HANDS_FILL, frame,
+    BUST_CROWN_FROM_TOP, BUST_FILL, EYES_WITHOUT_BONES, FACE_EYES_FROM_TOP, FACE_FILL, FULL_FILL, HANDS_FILL, frame,
 };
 use omuzaki_stage::scene::landmarks::{Bounds, Landmarks};
 use omuzaki_stage_api::{CameraDef, CameraId, CastMember, Framing, MemberId, SceneDef, SceneSettings};
@@ -305,7 +305,15 @@ fn free_and_missing_landmarks_are_framing_errors() {
     let headless = without(|l| l.head = None);
     assert!(is_framing(frame(Framing::Face, &headless, &def, 1.0)), "no head");
     assert!(is_framing(frame(Framing::Bust, &headless, &def, 1.0)), "no head to give the crown");
-    assert!(is_framing(frame(Framing::Face, &without(|l| l.eyes = None), &def, 1.0)), "no eyes");
+    // No eye bones: the face shot takes the eye line at its share of the head, as if the eyes were there.
+    let head = l.head.expect("a head");
+    let estimated = without(|l| l.eyes = l.head.map(|h| h.min.y + EYES_WITHOUT_BONES * h.height()));
+    assert!(head.height() > 0.0);
+    assert_eq!(
+        frame(Framing::Face, &without(|l| l.eyes = None), &def, 1.0).expect("frames without eyes"),
+        frame(Framing::Face, &estimated, &def, 1.0).expect("frames"),
+        "no eyes"
+    );
     assert!(is_framing(frame(Framing::Bust, &without(|l| l.chest = None), &def, 1.0)), "no chest");
     assert!(is_framing(frame(Framing::Bust, &without(|l| l.bust = None), &def, 1.0)), "no bust");
     assert!(is_framing(frame(Framing::Hands, &without(|l| l.hands = None), &def, 1.0)), "no hands");
@@ -516,4 +524,29 @@ fn a_lens_too_wide_to_stand_outside_the_subject_is_refused_with_the_reason() {
         panic!("expected a framing error")
     };
     assert!(reason.contains("179.9 degree lens"), "{reason}");
+}
+
+/// #1978: the hands preset frames the hands, not the thighs or the feet, at 16:9, 9:16 and 1:1 on every template.
+#[test]
+fn the_hands_preset_centres_both_hands_at_every_aspect() {
+    for id in templates::TEMPLATES {
+        let l = landmarks(id);
+        let hands = l.hands.unwrap();
+        for aspect in [16.0 / 9.0, 9.0 / 16.0, 1.0] {
+            let camera = frame(Framing::Hands, &l, &CameraDef::preset(Framing::Hands), aspect).unwrap();
+            for corner in corners(hands.min, hands.max) {
+                let (x, y) = project(&camera, aspect, corner);
+                assert!(x.abs() <= 1.0 - (1.0 - HANDS_FILL) / 2.0 + 0.01, "{id} {aspect}: a hand corner at x = {x}");
+                assert!(
+                    y.abs() <= 0.5,
+                    "{id} {aspect}: a hand corner at y = {y}, outside the middle half of the frame"
+                );
+            }
+            let centre = project(&camera, aspect, hands.centre());
+            assert!(
+                centre.0.abs() < 0.02 && centre.1.abs() < 0.04,
+                "{id} {aspect}: the hands centre lands at {centre:?}"
+            );
+        }
+    }
 }

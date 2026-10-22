@@ -7,8 +7,13 @@
 //! the file, so the file round-trips, and the parts the contract does take are read by [`LightRig::to_lights`],
 //! [`LightRig::post`] and [`LightRig::background`].
 
+use std::collections::BTreeMap;
+
 use omuzaki_core::glam::Vec3;
 use omuzaki_render_api::{Background, Bloom, Colour, Light, Post, Tonemap};
+use omuzaki_stage_api::{
+    Ambient, Anchor, BloomDef, LightDef, LightId, LightRole, LightShape, Lighting, REFERENCE_HEIGHT_M,
+};
 use serde::{Deserialize, Serialize};
 
 use super::RecipeError;
@@ -241,6 +246,70 @@ impl LightRig {
             });
         }
         Ok(lights)
+    }
+
+    /// The rig as a scene's [`Lighting`] (design D3, D12): the values a scene stores and resolves against its cast.
+    /// Directional positions become `azimuth` and `elevation` toward the origin, at full precision; the point light
+    /// is put in subject units at [`REFERENCE_HEIGHT_M`] (position and range divided by it, intensity by its square),
+    /// so a character of the reference height is lit exactly as the rig's own numbers light it; every light hangs off
+    /// the subject. The skin floor stays the rig's (D3): a scene only overrides it when a person sets one.
+    ///
+    /// # Errors
+    /// [`RecipeError::Invalid`] if a directional light has no direction, or a light id doesn't parse.
+    pub fn to_lighting(&self) -> Result<Lighting, RecipeError> {
+        let id = |name: &str| LightId::new(name).map_err(|e| RecipeError::invalid(&self.name, e.to_string()));
+        let mut lights = BTreeMap::new();
+        for (label, role, light) in [
+            ("key", LightRole::Key, Some(&self.key)),
+            ("rim", LightRole::Rim, self.rim.as_ref()),
+            ("fill", LightRole::Fill, self.fill.as_ref()),
+        ] {
+            let Some(light) = light else { continue };
+            let to = direction(light.position)
+                .ok_or_else(|| RecipeError::invalid(&self.name, no_direction_reason(label, light.position)))?;
+            let def = LightDef {
+                role: Some(role),
+                colour: light.colour,
+                intensity: light.intensity,
+                shadow: light.shadow.is_some(),
+                anchor: Anchor::Subject,
+                shape: LightShape::Directional {
+                    azimuth: to.x.atan2(to.z).to_degrees(),
+                    elevation: to.y.clamp(-1.0, 1.0).asin().to_degrees(),
+                },
+            };
+            lights.insert(id(label)?, def);
+        }
+        if let Some(point) = &self.point {
+            let h = REFERENCE_HEIGHT_M;
+            let def = LightDef {
+                role: Some(LightRole::Practical),
+                colour: point.colour,
+                intensity: point.intensity / (h * h),
+                shadow: false,
+                anchor: Anchor::Subject,
+                shape: LightShape::Point { position: point.position.map(|c| c / h), range: point.distance / h },
+            };
+            lights.insert(id("point")?, def);
+        }
+        Ok(Lighting {
+            rig: Some(self.name.clone()),
+            exposure: self.exposure,
+            background: self.background,
+            outline_light: 1.0,
+            skin_floor: None,
+            ambient: Ambient {
+                sky: self.hemisphere.sky,
+                ground: self.hemisphere.ground,
+                intensity: self.hemisphere.intensity,
+            },
+            bloom: Some(BloomDef {
+                strength: self.bloom.strength,
+                radius: self.bloom.radius,
+                threshold: self.bloom.threshold,
+            }),
+            lights,
+        })
     }
 
     /// The look of the frame: this rig's exposure and ACES tone mapping, with bloom when the case asks for it.

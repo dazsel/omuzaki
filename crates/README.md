@@ -19,7 +19,9 @@ review; breaking changes need a decision record (§39.2 item 8).
 **Area test crates** (ADR 0054 §6). A test across crates goes in its area's test crate, `omuzaki-test-<area>` (a new
 area is a new crate), not in the harness `omuzaki-test`. An area test crate may depend on API crates, mocks, the harness
 and its own area's implementation and lib crates: `omuzaki-<area>`, `omuzaki-<area>-*`, plus the few whose names don't
-say their area (`omuzaki-rig` and `omuzaki-anim` are `char`, `omuzaki-gltf` is `io`). A change to one area then doesn't
+say their area (`omuzaki-rig` and `omuzaki-anim` are `char`, `omuzaki-gltf` is `io`). The track area's test crate
+`omuzaki-test-track` also loads the ONNX Runtime wrapper `omuzaki-ai-ort` (its real-model tests and bench), which no
+other test crate may. A change to one area then doesn't
 put the other areas' tests in scope. `lint-deps` enforces it.
 
 **Lib crates** (ADR 0011) hold code that several implementations need and that is too large to write twice, and that is
@@ -68,7 +70,6 @@ A crate whose folder uses `omuzaki_embed::modules` (ADR 0054) lists that folder 
 
 **Planned crates** (not in the workspace yet):
 
-- `omuzaki-llm` (Implementation): not in the workspace yet (design): the Anthropic Messages and OpenAI-compatible chat providers (HTTP over the workspace `reqwest` and rustls stack shared with `omuzaki-http`, SSE, retries before the first event, cancellation within 50 ms), the price data, model listing and probing, and the MCP tool and result mapping; tested against a loopback fake server, no network in CI
 - `omuzaki-agent-api` (API): not in the workspace yet: the in-app assistant's panel contract (`Assistant`, `UserMessage`, `ContextChip`, `AssistantEvent`, `HostError`) and `RationaleSource` for "Explain this"; design in `docs/design/agent-runtime.md`, ADR 0040
 - `omuzaki-agent-mock` (Mock): not in the workspace yet: `ScriptedAssistant`, which plays an event script on `FakeClock` for panel tests and the gallery
 - `omuzaki-agent` (Implementation): not in the workspace yet: `AssistantHost`, the assistant's turn loop over an in-process MCP client and `dyn LlmClient`, the context builder and compaction, the host-local tools and the conversation store; links API crates and rmcp's client only, never `omuzaki-mcp` or `omuzaki-ops`

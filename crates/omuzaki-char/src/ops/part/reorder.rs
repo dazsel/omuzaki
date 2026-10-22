@@ -17,6 +17,12 @@ use crate::ops::character::tree::{self, Problem};
 /// contradict itself: a part can't be its own ancestor, and the build order can't loop.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "part": "hair", "layer": 3}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
 pub struct PartReorder {
     /// The character the part belongs to.
     pub character: CharId,

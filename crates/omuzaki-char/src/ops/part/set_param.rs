@@ -5,7 +5,13 @@
 //! result, and the patch is the difference between the normalised parameters before and after. So the value written is
 //! always what `check` returns (defaults filled in, numbers in their canonical form), a value equal to the current one
 //! changes nothing, and a refusal changes nothing. The paths and types come from the same model `part.describe` shows
-//! ([`Params`]), so an agent that copies a path from there cannot be told it does not exist.
+//! (`Params`), so an agent that copies a path from there cannot be told it does not exist.
+//!
+//! Three edits go beyond writing a leaf. Setting the tag of a tagged enum (a hair generator's `type`) to another
+//! variant replaces the whole object with that variant's defaults, since the old fields belong to the old variant.
+//! `null` on an entry of a map (a hair group) deletes it. And `replace: true` writes an object value over the current
+//! one instead of merging into it. A part whose stored parameters fail the check is repaired with the smallest patch
+//! too: a leaf the file leaves out is not written when the result holds its default.
 
 use std::collections::BTreeSet;
 
@@ -26,9 +32,18 @@ use crate::ops::character::access;
 /// parameter and what it accepts (its range, or the allowed names) and changes nothing. Setting a value the parameter
 /// already has changes nothing. An object value sets the fields it names and leaves the others, so a whole section
 /// can be edited at once, and a new map entry (a hair group) is added by setting the map to an object holding it; a
-/// list is replaced whole. `null` removes an optional parameter (the chin of a head), and is refused for any other.
+/// list is replaced whole; `replace: true` replaces an object value as well, so it keeps nothing of the old one.
+/// Setting the tag of a tagged enum (a hair generator's `type`, whose `values` list the variants) to another variant
+/// switches it: the old variant's fields are dropped and the new one starts from its defaults. `null` removes an
+/// optional parameter (the chin of a head) or a map entry (a hair group), and is refused for any other.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "part": "hair", "path": "shading/mid", "value": "#6b4a3a"}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
 pub struct PartSetParam {
     /// The character the part belongs to.
     pub character: CharId,
@@ -39,6 +54,10 @@ pub struct PartSetParam {
     pub path: String,
     /// The new value, of the type the parameter holds. Numbers must be within the range `part.describe` gives.
     pub value: Value,
+    /// For an object value: replace the parameter with it instead of merging it into the current one (the fields it
+    /// does not name are dropped). Defaults to false.
+    #[serde(default)]
+    pub replace: bool,
 }
 
 impl Op for PartSetParam {
@@ -63,11 +82,25 @@ impl Op for PartSetParam {
 
         // A part whose stored parameters already fail the check is edited as stored, so one set can repair it.
         let mut working = params.current.as_ref().map_or_else(|_| params.stored.clone(), Clone::clone);
-        set_at(&mut working, &self.path, value)?;
-        let after = (kind.check)(&working).map_err(|errors| refusal(&params, param, &self.value, errors))?;
+        match &value {
+            Some(Value::String(name)) if param.tag && at(&working, &self.path) != value.as_ref() => {
+                switch_variant(&mut working, &self.path, name)?;
+            }
+            _ => set_at(&mut working, &self.path, value, !self.replace)?,
+        }
+        let after = (kind.check)(&working)
+            .map_err(|errors| refusal(&params, param, &self.value, self.replace, errors))?;
 
         let mut changes = Vec::new();
-        diff(ctx, &paths::part_params(&self.character, &self.part), Some(params.shown()), Some(&after), &mut changes);
+        // What the op wrote: the object a variant switch replaced, or the parameter itself.
+        let edited = if param.tag { self.path.rsplit_once('/').map_or("", |(parent, _)| parent) } else { &self.path };
+        diff(
+            ctx,
+            (&paths::part_params(&self.character, &self.part), ""),
+            edited,
+            (Some(params.shown()), Some(&after)),
+            &mut changes,
+        );
         let summary = json!({
             "character": self.character,
             "part": self.part,
@@ -82,6 +115,20 @@ impl Op for PartSetParam {
 }
 
 register_op!(PartSetParam);
+
+/// Turns the tagged enum that holds the tag at `path` into the variant `name`: the object is replaced by one that holds
+/// only the tag, so the kind's check fills in the new variant's defaults and nothing of the old variant stays.
+///
+/// # Errors
+/// `invalid` if a step of the path lands on a value that cannot hold the next.
+fn switch_variant(working: &mut Value, path: &str, name: &str) -> Result<(), OpError> {
+    if let Some((parent, tag)) = path.rsplit_once('/') {
+        set_at(working, parent, Some(json!({ tag: name })), false)
+    } else {
+        *working = json!({ path: name });
+        Ok(())
+    }
+}
 
 /// What to write for `value` at `param`: `value` itself once it has the type the parameter holds, or `None` to remove
 /// an optional parameter. A mismatch the kind's `check` would only report as "params: invalid type" (serde does not
@@ -140,7 +187,7 @@ fn given(value: &Value) -> String {
 /// that parameter accepts. A decode error (serde names no field) is blamed on the parameter that was set, the only
 /// thing the edit changed; for a number out of the width of its type (`300` for a `u8`) serde's wording is replaced
 /// by what the parameter takes. Errors the part already had come last, so the ones the edit caused read first.
-fn refusal(params: &Params, param: &Param, value: &Value, errors: ParamErrors) -> OpError {
+fn refusal(params: &Params, param: &Param, value: &Value, replace: bool, errors: ParamErrors) -> OpError {
     let known: &[ParamError] = params.current.as_ref().err().map_or(&[], |e| e.0.as_slice());
     let blame = |e: ParamError| {
         let scalar = !matches!(value, Value::Object(_) | Value::Array(_));
@@ -159,30 +206,53 @@ fn refusal(params: &Params, param: &Param, value: &Value, errors: ParamErrors) -
         }
         None => "part.describe lists every parameter with its type, range and default".to_owned(),
     };
-    OpError::invalid(field, message).hint(hint)
+    // An object that merged leaves the old fields in place, which the error may be about.
+    let merged = if matches!(value, Value::Object(_)) && !replace {
+        "; an object value merges into the current one, so the fields it had before were kept: pass `replace: true` to \
+         replace it, or set the tag of a tagged enum to switch its variant"
+    } else {
+        ""
+    };
+    OpError::invalid(field, message).hint(format!("{hint}{merged}"))
 }
 
-/// Appends the changes that turn `before` into `after` at `path`, down to the leaves that differ. Only nodes the
-/// document holds are descended into: a section the file leaves out (it has defaults) is created whole, with the
-/// values `check` returned, because a change needs its parent to exist and the section must read back as it was
-/// validated. `before` is read from the document, so undo restores exactly what the file said.
-fn diff(ctx: &OpCtx<'_>, path: &DocPath, before: Option<&Value>, after: Option<&Value>, changes: &mut Vec<Change>) {
+/// Appends the changes that turn `before` into `after` (the pair) at `path`, which is `at` below the part's parameters,
+/// down to the leaves that differ. Only nodes the document holds are descended into: a section the file leaves out (it
+/// has defaults) is created whole, with the values `check` returned, because a change needs its parent to exist and the
+/// section must read back as it was validated. `before` is read from the document, so undo restores exactly what the
+/// file said. A value the document leaves out, unless it is on `edited` (what the op wrote), above it or below it, is not written: the kind fills
+/// it in on every read, and a repair of a part that stores little must not write every default it left out.
+fn diff(
+    ctx: &OpCtx<'_>,
+    (path, at): (&DocPath, &str),
+    edited: &str,
+    (before, after): (Option<&Value>, Option<&Value>),
+    changes: &mut Vec<Change>,
+) {
     if before == after {
         return;
     }
+    let under = |outer: &str, inner: &str| outer.is_empty() || inner == outer || inner.strip_prefix(outer).is_some_and(|r| r.starts_with('/'));
+    let near_edit = under(edited, at) || under(at, edited);
+    if before.is_none() && after.is_some() && !near_edit {
+        return;
+    }
     let stored = ctx.doc.get(path);
+    let below = |name: &str| if at.is_empty() { name.to_owned() } else { format!("{at}/{name}") };
     match (before, after) {
         (Some(Value::Object(old)), Some(Value::Object(new))) if stored.is_some_and(Value::is_object) => {
             let keys: BTreeSet<&String> = old.keys().chain(new.keys()).collect();
             for key in keys {
-                diff(ctx, &path.join(key.as_str()), old.get(key), new.get(key), changes);
+                let (child, rel) = (path.join(key.as_str()), below(key));
+                diff(ctx, (&child, &rel), edited, (old.get(key), new.get(key)), changes);
             }
         }
         (Some(Value::Array(old)), Some(Value::Array(new)))
             if old.len() == new.len() && stored.and_then(Value::as_array).is_some_and(|s| s.len() == old.len()) =>
         {
             for (index, (was, now)) in old.iter().zip(new).enumerate() {
-                diff(ctx, &path.join(index.to_string()), Some(was), Some(now), changes);
+                let (child, rel) = (path.join(index.to_string()), below(&index.to_string()));
+                diff(ctx, (&child, &rel), edited, (Some(was), Some(now)), changes);
             }
         }
         _ => changes.push(access::change(ctx, path.clone(), after.cloned())),

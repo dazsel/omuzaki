@@ -18,7 +18,7 @@ use proptest::prelude::*;
 use proptest::test_runner::{Config, RngAlgorithm, TestCaseError, TestRng, TestRunner};
 use serde_json::{Value, json};
 
-use super::{agent, path, person, plugin, request, rig};
+use super::{agent, path, person, request, rig, second_agent};
 
 #[derive(Debug, Clone)]
 enum Edit {
@@ -269,7 +269,7 @@ impl World {
         let everyone = [
             (person(), Grants::person()),
             (agent(), Grants::agent_default()),
-            (plugin(), Grants::of([Scope::Read, Scope::EditCharacter])),
+            (second_agent(), Grants::of([Scope::Read, Scope::EditCharacter])),
         ];
         Self { rig, cast: everyone.into_iter().take(actors).collect(), open: Vec::new(), replay }
     }

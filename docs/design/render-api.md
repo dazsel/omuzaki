@@ -126,7 +126,9 @@ Every frame, in spec §8 order: the face system decides whether the picture chan
 
 To lower the atlas resolution under load: create a smaller texture, `update_material` to repoint the overlay, release the old texture (the renderer refuses to release it while a material still reads it, which is the order that is always safe).
 
-**GPU interop.** `PaintTarget::write_rgba` works everywhere (CPU painters, tests, the mock). The ≤ 0.5 ms budget needs the painter to draw on the GPU directly, so `PaintTarget::native()` returns `&mut dyn Any`. Convention (accepted, Q1): the wgpu renderer's `native()` is a `(wgpu::Device, wgpu::Queue, wgpu::Texture)` (all cheap `Clone` handles, the texture created with `RENDER_ATTACHMENT | TEXTURE_BINDING`); a GPU painter downcasts, draws and submits on that queue, and falls back to `write_rgba` if the downcast fails. Queue submission order makes the paint happen before the next `render`, and the renderer rebuilds mips afterwards. No wgpu type appears in either API crate; `omuzaki-render` and `omuzaki-face` both depend on the pinned `wgpu` (an external crate, which the dependency rule allows) and share the convention, verified by one integration test once both exist.
+**GPU interop.** `PaintTarget::write_rgba` works everywhere (CPU painters, tests, the mock). The ≤ 0.5 ms budget needs the painter to draw on the GPU directly, so `PaintTarget::native()` returns `&mut dyn Any`. Convention (Q1, revised by #2074): the wgpu renderer's `native()` is `omuzaki_render::NativePaintTarget`, a `(wgpu::Device, wgpu::Queue, wgpu::Texture, wgpu::CommandEncoder)`. The first three are cheap `Clone` handles; the texture is the one painters write (`Rgba8Unorm`, `STORAGE_BINDING | RENDER_ATTACHMENT | COPY_DST`, level 0 only). The encoder is the renderer's: a GPU painter downcasts, records its passes into it and may write its own buffers through the queue, but never submits. When the painter returns `Ok`, the renderer submits the encoder inside the paint's error scope, between two GPU timestamps that count towards `Pass::PaintTextures` (so `gpu.face_paint` is the renderer's own measurement, not the painter's); when it fails, the encoder is dropped unsubmitted and the texture keeps its old pixels. A painter that doesn't recognise the handle falls back to `write_rgba`. `PaintTarget::mark_damage(rect)` (default: ignored) lets a native painter say what it changed: without it the whole texture counts as changed, and the `PaintTextures` pass rebuilds the mips over the reported rectangle only. Queue submission order makes the paint happen before the next `render`. No wgpu type appears in either API crate; `omuzaki-render` and `omuzaki-face` both depend on the pinned `wgpu` (an external crate, which the dependency rule allows) and share the convention, which `crates/omuzaki-test-stage/tests/face_gpu_interop.rs` checks (#151): a drift sends the face to the CPU raster, and the test fails.
+
+Why the encoder (#2074): the face's GPU work is small (0.1 to 0.2 ms on the development PC's GPU), and what it cost was the CPU around it. `vello::Renderer` rebuilt its GPU side and submitted on every repaint (0.77 ms of CPU and 816 allocations per repaint), and the old probe's timestamps, in separate submissions, measured the GPU waiting on that CPU (5.8 ms). The face now runs Vello's stages on resources kept between repaints and records them into the renderer's encoder, and the renderer times them.
 
 ## Shading programs: the registration contract
 
@@ -173,9 +175,30 @@ Written out on `Renderer` in the API docs; in short:
 - **One thread, `&mut self`.** The render thread owns the renderer (spec §8). `Renderer: Send`.
 - **Creation limits** are guarantees (`limits`): 8 lights, 2048 joints, 4 overlays, textures up to 4096 on every renderer; `Capabilities` reports more.
 
+## The rendered frame: one texture for the viewport and the outputs (#629)
+
+The stage renders into a target; the studio's viewport and every live output (virtual camera, capture window, Spout,
+NDI, recording) read that one frame. The contract between them is `Renderer::target_native(target)`:
+
+| Who | How it gets the frame |
+|---|---|
+| The UI viewport (`omuzaki-ui`) | creates the renderer on eframe's device (`WgpuRenderer::from_device`), so the target lives on the device egui draws with; `target_native` gives the texture, which `egui_wgpu::Renderer::register_native_texture` shows with no copy. After a `resize_target` it registers the new texture. |
+| A GPU output (`omuzaki-stream`) | downcasts `target_native`'s `&dyn Any` to `(wgpu::Device, wgpu::Queue, wgpu::Texture)` (exported as `omuzaki_render::NativeTarget`, the form `omuzaki-stream-api`'s `Frame::gpu` names) and copies or shares the texture on its own thread's schedule, so the render thread never waits for an output. |
+| A CPU output, or a renderer without a GPU (the mock) | `read_target`, which waits for the GPU; `target_native` is `None` on the mock. |
+
+The texture is `Rgba8Unorm` holding sRGB-encoded bytes in the target's `AlphaEncoding` (`Straight` for a viewport and
+PNGs, `Premultiplied` for outputs that composite), at the target's size, usable for sampling and as a copy source.
+The next `render` into the target draws into the same texture: a consumer samples or copies it before then, and a copy
+submitted after one `render` sees that frame by queue order. Its timing is the `FrameReport` that `render` returned
+(the stage's `FrameOutput::report`), with the frame's index and time in `FrameReport::frame`.
+
+The stage side is `omuzaki-stage`'s `FrameLoop` (implemented by the kit's `Stage`, the imported `AvatarStage`, and
+`AnyStage`, which holds either): one `tick` per frame renders into the stage's target, so every consumer above reads
+the same frame whatever body is on stage.
+
 ## Headless rendering, the mock and goldens
 
-`render_image(size, alpha, &scene, &quality) -> Image` is create target, render, read back, release. `Image` is RGBA8, sRGB-encoded colour, rows top to bottom, with an explicit `AlphaEncoding` (`Straight` for PNGs, `Premultiplied` for OBS/Spout/NDI, BR-01). Premultiplied means the stored numbers are multiplied by alpha.
+`render_image(size, alpha, &scene, &quality) -> Image` is create target, render, read back, release. `Image` is RGBA8, sRGB-encoded colour, rows top to bottom, with an explicit `AlphaEncoding` (`Straight` for PNGs and the viewport, `Premultiplied` for compositing on the GPU). Premultiplied means the stored numbers are multiplied by alpha. Outputs do not all want the same encoding, so the stream layer converts per output (#629): NDI documents its BGRA and RGBA as straight (un-premultiply on the GPU in float before quantising); Spout carries no alpha flag and OBS's Spout2 source composites by a per-source mode the person sets (a premultiplied frame blended as straight leaves a dark halo, a straight one blended as premultiplied a bright fringe); a virtual camera has no alpha at all (flatten over a background or key colour).
 
 The mock draws with an exact integer rasteriser (1/256-pixel snapping and 64-bit edge tests, so shared edges never gap or double-hit), perspective-correct attributes, the toon ramp with tinted shade, rim, skin treatment, overlays, hull outlines, blending with sorting, exposure, ACES, and integer supersampling. It shades flat per triangle and has no shadows, bloom, depth of field, grain or grade; `Capabilities.passes` says so and `FrameReport` shows those passes absent. It never reads a clock: `set_pass_cost` makes it report chosen timings so scheduler tests can simulate an over-budget frame.
 
@@ -198,7 +221,7 @@ These are proposals for the maintainers to reconcile; nothing here depends on th
 - **`omuzaki-anim-api` / `omuzaki-rig`.** The rig produces final skinning matrices (`joint_pose * inverse_bind`, bind space to model space) and writes them into `Scene.joints`; `Instance.skin` is a range into it. The renderer needs no skeleton, no bone names. Camera and light tracks (SH-02, SH-10) fill `Camera` (`look_at`, `Projection`) and `Light`s, and `Post` for DoF focus. `Scene.frame { index, time }` comes from the timeline: `time` is the timeline position; on the live path `index` is a per-submission counter, at least one higher than the last submission's, because it identifies the submission in `FrameReport::frame` and `GpuTimings::frame` for the frame-budget scheduler (`omuzaki-budget`; a timeline index repeats while paused and jumps back on a loop, so a cached GPU result could not be told from a fresh one, and grain would freeze). Offline and export renders are not observed and may repeat an index on purpose to re-render a frame exactly.
 - **`omuzaki-io-api` / `omuzaki-io`.** Importers produce `MeshData`, texture pixels with a `TextureDesc`, and `Material` (MToon maps onto `Toon`: `shadeColorFactor` to `shade`, `shadingShiftFactor` to `shift`, `parametricRim*` to `Rim`). Exporters read the same types. PNG encode and decode of `Image` live in `omuzaki-io`, not here.
 - **Ops (`omuzaki-ops-api`).** `render.preview`, `turnaround`, `contact_sheet`, `compare` and `golden.check` (spec §11) call `RendererExt::render_image`. The look parameters (`Toon`, `Light`, `Post`, `Quality`) are the op argument types, which is why they carry JSON Schemas.
-- **`omuzaki-stream-api`.** Live outputs share the target's GPU texture (Spout, Syphon, NDI, virtual camera); the CPU path is `read_target`. The target's `AlphaEncoding` is the output's.
+- **`omuzaki-stream-api`.** Live outputs share the target's GPU texture through `target_native` (Spout, Syphon, NDI, virtual camera; see *The rendered frame*); the CPU path is `read_target`. The target's `AlphaEncoding` is the output's.
 - **Goldens (`omuzaki-test`).** The harness calls `render_image` with `Quality::offline()`, compares with a tolerance, and can run the mock where no GPU exists.
 
 ## Dynamic meshes and morph targets
@@ -285,7 +308,7 @@ What the numbers say:
 
 | # | Question | Decision |
 |---|---|---|
-| Q1 | GPU interop convention | Accepted: `native()` downcasts to `(wgpu::Device, wgpu::Queue, wgpu::Texture)`; the proving test is one integration test once both crates exist. |
+| Q1 | GPU interop convention | Accepted, revised by #2074: `native()` downcasts to `(wgpu::Device, wgpu::Queue, wgpu::Texture, wgpu::CommandEncoder)`; the painter records into the renderer's encoder, which the renderer submits and times, and reports what it changed with `PaintTarget::mark_damage`. Proved by `omuzaki-test-stage`'s `face_gpu_interop` test (#151). |
 | Q2, Q3 | Where `Colour` and `MeshData` live | Moved into `omuzaki-core` now (`omuzaki_core::colour`, `omuzaki_core::mesh`); render-api re-exports them. |
 | Q4 | Hair shading | `Shading::Program { name, params }` with a typed parameter map, programs self-registered inside `omuzaki-render` (contract above), the mock falling back to the base toon look; `MeshData.extra` named vertex attributes (1 to 4 floats). The programs are written by the features that need them. |
 | Q5 | Light units | Accepted: three.js-compatible (a white directional light of intensity 1 gives `albedo / π`). |

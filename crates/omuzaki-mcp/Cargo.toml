@@ -28,6 +28,7 @@ tracing.workspace = true
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 omuzaki-history-api = { path = "../omuzaki-history-api" }
+omuzaki-library-api = { path = "../omuzaki-library-api" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
 
@@ -35,13 +36,19 @@ omuzaki-store-api = { path = "../omuzaki-store-api" }
 # The clients the integration tests talk to the server with: in-process, and over a real loopback port.
 proptest.workspace = true
 reqwest.workspace = true
+# reqwest is built without a crypto provider (see `omuzaki-http`), so the test helper installs `ring` before any client.
+rustls.workspace = true
 # `test-util` pauses tokio's clock, which is how the timeout tests run without sleeping (see `limits.rs`).
 tokio = { workspace = true, features = ["test-util"] }
 rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+tempfile.workspace = true
 omuzaki-history-mock = { path = "../omuzaki-history-mock" }
 omuzaki-ops-mock = { path = "../omuzaki-ops-mock" }
 omuzaki-store-mock = { path = "../omuzaki-store-mock" }
+
+[build-dependencies]
+omuzaki-embed = { path = "../omuzaki-embed" }
 
 [lints]
 workspace = true
@@ -49,6 +56,6 @@ workspace = true
 # Native only: an MCP server on tokio, over stdio or a local TCP port (the web player talks to agents differently)
 [package.metadata.omuzaki]
 kind = "Implementation"
-summary = "the MCP server (§11): every registered op is a tool, served over stdio or a local Streamable HTTP port; native only, over `omuzaki-ops-api`, `omuzaki-doc-api` and `omuzaki-store-api`"
+summary = "the MCP server (§11): every registered op is a tool, served over stdio, a local Streamable HTTP port or an in-process link; every connection is a session in the executor's registry; long jobs are tasks; resources and recipes; native only, over `omuzaki-ops-api`, `omuzaki-doc-api`, `omuzaki-library-api` and `omuzaki-store-api`"
 wasm = false
 registers = true

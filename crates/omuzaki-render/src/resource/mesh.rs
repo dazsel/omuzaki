@@ -9,8 +9,13 @@
 //!
 //! A dynamic mesh finds those points once, when it is created: [`GpuMesh::update_vertices`] cannot change which
 //! vertices form a triangle, so the vertices welded at creation stay welded and the seams of the bind pose are the seams
-//! of every frame. A frame then only re-averages the normals (`resmooth`), which costs a pass over the vertices instead
-//! of a weld.
+//! of every frame. A frame then only re-averages the normals, which costs a pass over the vertices instead of a weld:
+//! on the CPU (`resmooth`), or, where the adapter runs compute, by a dispatch of `morph/gpu.rs` over the mesh's own shape
+//! stream, which is also why such a mesh keeps no CPU copy of its vertices unless it has morph targets.
+//!
+//! What an update leaves behind is brought up to date only when a frame reads it ([`GpuMesh::refresh`]): the outline
+//! directions when an outlined instance draws the mesh's own stream, the bounds when shadow fitting or the blended sort
+//! reads them. A lean mesh (no CPU copy) refits its bounds in the update instead, from the positions it is given.
 
 use bytemuck::{Pod, Zeroable};
 use omuzaki_core::glam::{Vec2, Vec3};
@@ -117,12 +122,29 @@ struct ExtraStream {
     buffer: wgpu::Buffer,
 }
 
-/// The CPU copy of a dynamic mesh's vertices, which [`GpuMesh::update_vertices`] rewrites.
+/// How a dynamic mesh's CPU state is kept, by what the adapter and the mesh allow.
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum Backing {
+    /// No compute on the adapter: the CPU keeps the vertices and the directions and welds them in a refresh.
+    Cpu,
+    /// The adapter runs compute and a dispatch welds the directions, but the mesh has morph targets, whose blend reads the
+    /// CPU's copy of the vertices, so the copy stays in step.
+    Welded,
+    /// A dispatch welds the directions and the mesh keeps no CPU copy of its vertices: an update interleaves them straight
+    /// into the upload's staging memory and refits the bounds from the new positions as it goes, which halves the memory
+    /// traffic of an update and leaves only the directions deferred.
+    Lean,
+}
+
+/// What a dynamic mesh keeps on the CPU. Where the GPU runs compute, the outline directions are welded by a dispatch
+/// ([`crate::morph`]) and a mesh without morph targets keeps no copy of its vertices ([`Backing::Lean`]); otherwise the
+/// copy and the directions are what [`GpuMesh::refresh`] works from.
 struct Shadow {
+    /// The vertices, kept in step with the GPU's. Empty for a lean mesh.
     shapes: Vec<Shape>,
     /// The skin data, for refitting the shadow bounds; empty for a rigid mesh.
     skin: Vec<Surface>,
-    /// [`GpuMesh::smooth_normals`]'s contents.
+    /// [`GpuMesh::smooth_normals`]'s contents. Empty where a dispatch welds them.
     smooth: Vec<[f32; 3]>,
     /// The weld slot of every vertex, found once from the positions the mesh was created with: vertices at one point
     /// share a slot. Updates never weld again (see the module documentation).
@@ -131,12 +153,39 @@ struct Shadow {
     weld_count: usize,
     /// The first vertex of each slot, against which [`GpuMesh::split_seam`] checks that welded vertices still meet.
     anchors: Vec<usize>,
-    /// Scratch for the per-point sums of [`resmooth`], sized once so a refresh allocates nothing.
+    /// Scratch for the per-point sums of [`resmooth`], sized once so a refresh allocates nothing. Empty where a dispatch
+    /// welds the directions.
     sums: Vec<Vec3>,
-    /// `smooth` (and its GPU buffer) lags the vertices; the outline pass is the only reader ([`GpuMesh::refresh`]).
+    /// How many vertices the mesh has: `shapes.len()`, which a lean mesh does not keep.
+    vertices: usize,
+    /// Which of the CPU's copies the mesh keeps and where its outline directions are welded.
+    backing: Backing,
+    /// The outline directions lag the vertices; the outline pass is the only reader ([`GpuMesh::refresh`]).
     smooth_stale: bool,
-    /// The mesh's shadow bounds lag the vertices; shadow fitting and the blended sort are the readers.
+    /// The mesh's shadow bounds lag the vertices; shadow fitting and the blended sort are the readers. Never set on a
+    /// lean mesh, which refits them in the update.
     bounds_stale: bool,
+}
+
+/// What a frame reads of a dynamic mesh's lagging state ([`GpuMesh::refresh`]).
+#[derive(Copy, Clone, Default)]
+pub(crate) struct Needs {
+    /// The outline pass draws the mesh's own vertex stream.
+    pub(crate) hull: bool,
+    /// Shadow fitting or the blended sort reads the mesh's bounds.
+    pub(crate) bounds: bool,
+}
+
+/// The data of a GPU weld of a dynamic mesh's outline directions ([`GpuMesh::weld_target`]).
+pub(crate) struct WeldTarget<'a> {
+    /// The weld slot of every vertex.
+    pub(crate) welds: &'a [usize],
+    /// How many slots there are.
+    pub(crate) weld_count: usize,
+    /// The mesh's shape stream, which the dispatch reads.
+    pub(crate) shapes: &'a wgpu::Buffer,
+    /// The mesh's outline directions, which it writes.
+    pub(crate) directions: &'a wgpu::Buffer,
 }
 
 /// A mesh on the GPU.
@@ -168,13 +217,14 @@ pub(crate) struct GpuMesh {
 }
 
 impl GpuMesh {
-    /// Uploads `mesh`, which the caller has validated along with `options`. `blend_on_gpu` says the renderer blends morph
-    /// targets in a compute shader, which reads the mesh's shape stream as storage.
+    /// Uploads `mesh`, which the caller has validated along with `options`. `compute` says the renderer runs the GPU
+    /// path (`morph/gpu.rs`): its compute shaders read the shape stream as storage (to blend morph targets onto it, and
+    /// to weld a dynamic mesh's outline directions) and write the outline directions.
     pub(crate) fn upload(
         gpu: &Gpu,
         mesh: &MeshData,
         options: &MeshOptions,
-        blend_on_gpu: bool,
+        compute: bool,
     ) -> Result<Self, RenderError> {
         let index_count = u32::try_from(mesh.indices.len())
             .map_err(|_| RenderError::LimitExceeded { what: "indices in a mesh", limit: u64::from(u32::MAX) })?;
@@ -202,12 +252,17 @@ impl GpuMesh {
             smooth_by_slots(&welds, weld_count, &mesh.normals).iter().map(Vec3::to_array).collect();
         // A dynamic mesh's vertex buffers are rewritten by `queue.write_buffer`; the rest never are.
         let rewritable = if dynamic { wgpu::BufferUsages::COPY_DST } else { wgpu::BufferUsages::empty() };
-        // The GPU morph blend reads the mesh's own shapes as the base its targets apply to.
-        let blendable = if blend_on_gpu && options.morphs.is_some() {
-            wgpu::BufferUsages::STORAGE
-        } else {
-            wgpu::BufferUsages::empty()
+        // The GPU morph blend reads the mesh's own shapes as the base its targets apply to, and a dynamic mesh's outline
+        // directions are welded from them by a dispatch, into the direction stream.
+        let welded_on_gpu = compute && dynamic;
+        let backing = match (welded_on_gpu, options.morphs.is_some()) {
+            (false, _) => Backing::Cpu,
+            (true, true) => Backing::Welded,
+            (true, false) => Backing::Lean,
         };
+        let storage = |wanted: bool| if wanted { wgpu::BufferUsages::STORAGE } else { wgpu::BufferUsages::empty() };
+        let blendable = storage(compute && options.morphs.is_some() || welded_on_gpu);
+        let weldable = storage(welded_on_gpu);
         let buffer = |contents: &[u8], usage| {
             gpu.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("mesh"), contents, usage })
         };
@@ -231,20 +286,22 @@ impl GpuMesh {
         });
         // A dynamic mesh rewrites its vertices, so it keeps them on the CPU; a static one keeps nothing.
         let shadow = dynamic.then(|| Shadow {
-            shapes: shapes.clone(),
+            shapes: if backing == Backing::Lean { Vec::new() } else { shapes.clone() },
             skin: if skinned { surface.clone() } else { Vec::new() },
-            smooth: smooth.clone(),
+            smooth: if welded_on_gpu { Vec::new() } else { smooth.clone() },
             anchors: anchors_of(&welds, weld_count),
             welds,
             weld_count,
-            sums: Vec::with_capacity(shapes.len()),
+            sums: Vec::with_capacity(if welded_on_gpu { 0 } else { shapes.len() }),
+            vertices: shapes.len(),
+            backing,
             smooth_stale: false,
             bounds_stale: false,
         });
         Ok(Self {
             shapes: buffer(bytemuck::cast_slice(&shapes), wgpu::BufferUsages::VERTEX | rewritable | blendable),
             surface: buffer(bytemuck::cast_slice(&surface), wgpu::BufferUsages::VERTEX),
-            smooth_normals: buffer(bytemuck::cast_slice(&smooth), wgpu::BufferUsages::VERTEX | rewritable),
+            smooth_normals: buffer(bytemuck::cast_slice(&smooth), wgpu::BufferUsages::VERTEX | rewritable | weldable),
             shadow,
             dynamic,
             indices: buffer(bytemuck::cast_slice(&mesh.indices), wgpu::BufferUsages::INDEX),
@@ -274,7 +331,7 @@ impl GpuMesh {
 
     /// How many vertices the mesh has.
     pub(crate) fn vertex_count(&self) -> usize {
-        self.shadow.as_ref().map_or(0, |s| s.shapes.len())
+        self.shadow.as_ref().map_or(0, |s| s.vertices)
     }
 
     /// What a blend of the mesh's morph targets needs, if it has targets: the vertices they apply to (the current ones,
@@ -312,15 +369,41 @@ impl GpuMesh {
     ///
     /// The shadow bounds and the outline directions follow when a frame draws the mesh ([`refresh`](Self::refresh)).
     /// The outline directions keep the welds of creation: vertices that only come together in an update stay apart.
-    pub(crate) fn update_vertices(&mut self, queue: &wgpu::Queue, positions: &[Vec3], normals: &[Vec3]) {
-        let Some(shadow) = self.shadow.as_mut() else { return };
-        for ((shape, position), normal) in shadow.shapes.iter_mut().zip(positions).zip(normals) {
-            *shape = Shape { position: position.to_array(), normal: normal.to_array() };
+    pub(crate) fn update_vertices(
+        &mut self,
+        queue: &wgpu::Queue,
+        positions: &[Vec3],
+        normals: &[Vec3],
+    ) -> Result<(), RenderError> {
+        let Some(shadow) = self.shadow.as_mut() else { return Ok(()) };
+        // Floats in and out, a chunk a vertex, so the loop is plain moves the compiler vectorises.
+        if shadow.backing == Backing::Lean {
+            let size = wgpu::BufferSize::new((shadow.vertices * size_of::<Shape>()) as u64)
+                .ok_or_else(|| RenderError::Backend("a vertex update of an empty mesh".into()))?;
+            let mut staging = queue
+                .write_buffer_with(&self.shapes, 0, size)
+                .ok_or_else(|| RenderError::Backend("the queue could not stage a vertex update".into()))?;
+            let (slots, _) = staging.slice(..).into_chunks::<{ size_of::<Shape>() }>();
+            for (slot, (position, normal)) in slots.into_iter().zip(positions.iter().zip(normals)) {
+                let [px, py, pz] = position.to_array();
+                let [nx, ny, nz] = normal.to_array();
+                slot.write(bytemuck::cast([px, py, pz, nx, ny, nz]));
+            }
+            drop(staging);
+            self.bounds.refit_points(self.joints_needed, positions, &shadow.skin);
+        } else {
+            let (to, _) = bytemuck::cast_slice_mut::<Shape, f32>(&mut shadow.shapes).as_chunks_mut::<6>();
+            let (position, _) = bytemuck::cast_slice::<Vec3, f32>(positions).as_chunks::<3>();
+            let (normal, _) = bytemuck::cast_slice::<Vec3, f32>(normals).as_chunks::<3>();
+            for ((to, [px, py, pz]), [nx, ny, nz]) in to.iter_mut().zip(position).zip(normal) {
+                *to = [*px, *py, *pz, *nx, *ny, *nz];
+            }
+            queue.write_buffer(&self.shapes, 0, bytemuck::cast_slice(&shadow.shapes));
+            shadow.bounds_stale = true;
         }
-        queue.write_buffer(&self.shapes, 0, bytemuck::cast_slice(&shadow.shapes));
         self.vertex_version += 1;
         shadow.smooth_stale = true;
-        shadow.bounds_stale = true;
+        Ok(())
     }
 
     /// The first vertex of `positions` that has moved more than [`SEAM_SLACK`] on some axis away from the vertex it was
@@ -334,20 +417,56 @@ impl GpuMesh {
         })
     }
 
-    /// Brings what an update left behind up to date: the shadow bounds, and the outline directions if `hull` (an
-    /// outline will draw the mesh).
-    pub(crate) fn refresh(&mut self, queue: &wgpu::Queue, hull: bool) {
-        let Some(shadow) = self.shadow.as_mut() else { return };
-        let Shadow { shapes, skin, smooth, welds, weld_count, sums, smooth_stale, bounds_stale, .. } = shadow;
-        if hull && *smooth_stale {
-            resmooth(welds, *weld_count, sums, shapes, smooth);
-            queue.write_buffer(&self.smooth_normals, 0, bytemuck::cast_slice(smooth));
+    /// Brings what an update left behind up to date, as far as `needs` says a frame reads it: the outline directions if
+    /// `needs.hull` (an outline will draw the mesh's own stream), the shadow bounds if `needs.bounds`. What is not
+    /// needed stays stale, so a later frame that needs it brings it up to date first.
+    ///
+    /// True if the outline directions are now owed to a dispatch ([`GpuMesh::weld_target`]): they were welded here on
+    /// the CPU otherwise.
+    pub(crate) fn refresh(&mut self, queue: &wgpu::Queue, needs: Needs) -> bool {
+        let Some(shadow) = self.shadow.as_mut() else { return false };
+        let Shadow { shapes, skin, smooth, welds, weld_count, sums, backing, smooth_stale, bounds_stale, .. } = shadow;
+        let mut dispatch = false;
+        if needs.hull && *smooth_stale {
+            if *backing == Backing::Cpu {
+                resmooth(welds, *weld_count, sums, shapes, smooth);
+                queue.write_buffer(&self.smooth_normals, 0, bytemuck::cast_slice(smooth));
+            } else {
+                dispatch = true;
+            }
             *smooth_stale = false;
         }
-        if *bounds_stale {
+        if needs.bounds && *bounds_stale {
             self.bounds.refit(self.joints_needed, shapes, skin);
             *bounds_stale = false;
         }
+        dispatch
+    }
+
+    /// Whether the outline directions and the bounds lag the vertices, for tests that count what a frame refreshed.
+    #[cfg(test)]
+    pub(crate) fn lags(&self) -> Option<(bool, bool)> {
+        self.shadow.as_ref().map(|s| (s.smooth_stale, s.bounds_stale))
+    }
+
+    /// A dispatch that welds this mesh's outline directions never ran (its frame did not reach the queue): they lag
+    /// again.
+    pub(crate) fn directions_lost(&mut self) {
+        if let Some(shadow) = self.shadow.as_mut() {
+            shadow.smooth_stale = true;
+        }
+    }
+
+    /// What the GPU weld of a dynamic mesh's outline directions needs, if the mesh is welded that way: the weld table
+    /// (a vertex's point, per vertex) with its point count, and the two streams the dispatch reads and writes.
+    pub(crate) fn weld_target(&self) -> Option<WeldTarget<'_>> {
+        let shadow = self.shadow.as_ref().filter(|s| s.backing != Backing::Cpu)?;
+        Some(WeldTarget {
+            welds: &shadow.welds,
+            weld_count: shadow.weld_count,
+            shapes: &self.shapes,
+            directions: &self.smooth_normals,
+        })
     }
 
     /// The extra stream called `name` with exactly `components` floats per vertex, if the mesh has one. A stream with
