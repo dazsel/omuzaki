@@ -46,6 +46,7 @@ src/graph/egress.rs: pub enum Egress {
 src/graph/egress.rs: pub fn egress_pairs(graph: &GraphSpec, bindings: &Bindings) -> BTreeSet<(CapturedSource, Egress)> {
 src/graph/mod.rs: pub use egress::{Bindings, CapturedSource, Egress, MicMode, egress_pairs};
 src/graph/mod.rs: pub use validate::{GraphError, KindLookup};
+src/graph/mod.rs: pub const GRAPH_DOC_PATH: [&str; 2] = ["audio", "graph"];
 src/graph/mod.rs: pub const MIC_BUS: &str = "mic";
 src/graph/mod.rs: pub const AI_VOICE_BUS: &str = "ai_voice";
 src/graph/mod.rs: pub const PROGRAM_BUS: &str = "program";
@@ -93,7 +94,7 @@ src/lib.rs: pub use engine::{AudioEngine, AudioError, BlockPlan, OfflineInput, O
 src/lib.rs: pub use graph::{
 src/lib.rs: pub use ids::{BusId, DeviceRole, FeedId, GateId, NodeId, NodeKindId, PlayerId, SoundId};
 src/lib.rs: pub use node::{BlockMut, MAX_BLOCK, Node, NodeKind, SAMPLE_RATE};
-src/lib.rs: pub use preset::FxPreset;
+src/lib.rs: pub use preset::{FxPreset, VoiceFile};
 src/lib.rs: pub use report::{AudioEvent, AudioStatus, BridgeStatus, GraphReport, LatencyEstimate, Meters, RouteLatency};
 src/lib.rs: pub use tap::{TapInfo, TapPoint, TapReader, TapRequest, TapSink};
 src/lib.rs: pub use inventory as __inventory;
@@ -139,6 +140,8 @@ src/player.rs: pub fn frames(&self) -> usize {
 src/player.rs: pub fn channel(&self, c: usize) -> &[f32] {
 src/preset.rs: pub struct FxPreset {
 src/preset.rs: pub fn keeps_shape_of(&self, current: &[NodeSpec]) -> bool {
+src/preset.rs: pub struct VoiceFile {
+src/preset.rs: pub fn get(&self, name: &str) -> Option<&FxPreset> {
 src/report.rs: pub enum RouteEnd {
 src/report.rs: pub struct RouteLatency {
 src/report.rs: pub fn graph(&self) -> Seconds {
