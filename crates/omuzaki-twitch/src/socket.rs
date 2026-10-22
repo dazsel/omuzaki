@@ -14,6 +14,7 @@ use rustls::{ClientConfig, ClientConnection, StreamOwned};
 use rustls_platform_verifier::BuilderVerifierExt;
 use tungstenite::WebSocket;
 use tungstenite::client::IntoClientRequest;
+use tungstenite::protocol::WebSocketConfig;
 
 use crate::error::TwitchError;
 
@@ -21,6 +22,9 @@ use crate::error::TwitchError;
 pub(crate) const READ_TICK: Duration = Duration::from_millis(100);
 /// How long connecting may take.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// The largest message or frame read. `EventSub` messages are a few kilobytes (a chat message is at most 500
+/// characters); the cap keeps a broken or hostile peer from making the thread buffer tungstenite's default 64 MiB.
+pub(crate) const MAX_MESSAGE: usize = 1 << 20;
 
 /// A TCP stream, encrypted or (to a loopback test server) not.
 pub(crate) enum Stream {
@@ -101,8 +105,9 @@ pub(crate) fn connect(url: &str) -> Result<WebSocket<Stream>, TwitchError> {
     } else {
         Stream::Plain(tcp)
     };
-    let (socket, _) =
-        tungstenite::client::client(request, stream).map_err(|e| net("the WebSocket handshake failed", &e))?;
+    let config = WebSocketConfig::default().max_message_size(Some(MAX_MESSAGE)).max_frame_size(Some(MAX_MESSAGE));
+    let (socket, _) = tungstenite::client::client_with_config(request, stream, Some(config))
+        .map_err(|e| net("the WebSocket handshake failed", &e))?;
     let tcp = match socket.get_ref() {
         Stream::Plain(s) => s,
         Stream::Tls(s) => s.get_ref(),

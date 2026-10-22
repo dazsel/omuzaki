@@ -155,7 +155,8 @@ pub struct FakeState {
 struct Client {
     subscriptions: EventSubscription,
     outbox: VecDeque<ObsEvent>,
-    close: bool,
+    /// Close the connection with this code at the next tick.
+    close: Option<CloseCode>,
 }
 
 struct Shared {
@@ -300,8 +301,17 @@ impl FakeObs {
 
     /// Closes every client's connection (the server stays up).
     pub fn drop_connection(&self) {
+        self.close_all(CloseCode::UnknownReason);
+    }
+
+    /// Ends every client's session as a person does in OBS's WebSocket settings: closed with `SessionInvalidated`.
+    pub fn kick(&self) {
+        self.close_all(CloseCode::SessionInvalidated);
+    }
+
+    fn close_all(&self, code: CloseCode) {
         for client in lock(&self.shared).clients.values_mut() {
-            client.close = true;
+            client.close = Some(code);
         }
     }
 
@@ -421,7 +431,7 @@ fn serve(stream: TcpStream, id: u64, shared: &Mutex<Shared>, stop: &AtomicBool, 
         return;
     }
     let subscriptions = EventSubscription(identify.event_subscriptions.unwrap_or(EventSubscription::ALL.0));
-    lock(shared).clients.insert(id, Client { subscriptions, outbox: VecDeque::new(), close: false });
+    lock(shared).clients.insert(id, Client { subscriptions, outbox: VecDeque::new(), close: None });
     if !send(&mut ws, &Message::Identified(Identified::new(1))) {
         lock(shared).clients.remove(&id);
         return;
@@ -433,10 +443,11 @@ fn serve(stream: TcpStream, id: u64, shared: &Mutex<Shared>, stop: &AtomicBool, 
         let (events, closing) = {
             let mut s = lock(shared);
             let Some(client) = s.clients.get_mut(&id) else { break };
-            (client.outbox.drain(..).collect::<Vec<_>>(), client.close || stop.load(Ordering::Acquire))
+            let closing = client.close.or_else(|| stop.load(Ordering::Acquire).then_some(CloseCode::UnknownReason));
+            (client.outbox.drain(..).collect::<Vec<_>>(), closing)
         };
-        if closing {
-            close(&mut ws, CloseCode::UnknownReason, "the server is going away");
+        if let Some(code) = closing {
+            close(&mut ws, code, "the server is going away");
             break;
         }
         let now = std::time::Instant::now();

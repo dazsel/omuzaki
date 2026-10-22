@@ -7,6 +7,10 @@
 //! or MCP call reaches them (an agent controls both sides of those surfaces, ADR 0020 §7.2). The engine reads the
 //! store through the [`Approvals`] trait.
 //!
+//! A show in a project that was never saved has no folder to key it by (its project is empty): what a person approves
+//! for it lasts this run only and is never written, so the next unsaved project's show of the same name, which may be
+//! an imported one, starts with nothing approved.
+//!
 //! [`ceiling`] turns a show's approvals into its automation session's grants: the base `read` and `perform`, the
 //! approved scopes and the approved folders as fs roots; never `native`, `input`, `edit:library` or `edit:settings`,
 //! even when a hand-edited file says so.
@@ -95,6 +99,8 @@ impl DiskApprovals {
                     let shows = file
                         .shows
                         .into_iter()
+                        // An unsaved project's entry is never written; one in a hand-edited file is ignored.
+                        .filter(|entry| !entry.project.is_empty())
                         .map(|entry| (ShowKey::new(entry.project, entry.show), entry.approvals))
                         .collect();
                     (shows, Vec::new())
@@ -212,6 +218,7 @@ impl DiskApprovals {
         let file = File {
             shows: next
                 .iter()
+                .filter(|(key, _)| !key.project.is_empty())
                 .map(|(key, approvals)| Entry {
                     project: key.project.clone(),
                     show: key.show.clone(),

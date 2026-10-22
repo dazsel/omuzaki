@@ -141,7 +141,9 @@ pub fn find() -> Result<Found, StreamError> {
         .collect();
     nodes.sort();
     for path in nodes {
-        let Ok(file) = OpenOptions::new().write(true).open(&path) else { continue };
+        // Asked read-only: a real camera is only queried, never opened for writing, and one this user may read but
+        // not write is still named rather than skipped (`Device::open` then says what to fix).
+        let Ok(file) = OpenOptions::new().read(true).open(&path) else { continue };
         if let Some(cap) = query(&file).filter(|c| text(&c.driver) == LOOPBACK_DRIVER) {
             return Ok(Found { path, card: text(&cap.card) });
         }

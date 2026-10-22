@@ -1,7 +1,8 @@
 //! [`ObsService`]: the app's one connection to OBS, shared as a service so the ops, the UI and automations use the same
 //! link. It keeps the connection up: when OBS goes away (closed, restarted, the network dropped), it reconnects after
 //! 1, 2, 4, 8 and 16 s, then every 30 s, until it's back or a person disconnects. A refused password is never retried
-//! (retrying burns OBS's attention and the person's patience): only `obs.connect` again does that.
+//! (retrying burns OBS's attention and the person's patience), and neither is a session a person ended from OBS's
+//! WebSocket settings (`SessionInvalidated`): only `obs.connect` again does that.
 //!
 //! The password is held only by the reconnecting thread, as a [`SecretValue`], for its handshakes; it never reaches a
 //! status, an error or a log.
@@ -16,7 +17,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::client::{ClientConfig, EventHub, EventStream, ObsClient, ObsError};
-use crate::limits::DEFAULT_PORT;
+use crate::limits::{CloseCode, DEFAULT_PORT};
 use crate::protocol::RequestType;
 
 /// Where OBS listens by default: this machine.
@@ -110,6 +111,9 @@ pub struct ObsService {
     hub: Arc<EventHub>,
     session: Mutex<Option<Session>>,
     unit: Duration,
+    /// Held through a whole connect or disconnect, so two at once (a panel and an agent) can't leave the reconnecting
+    /// thread of one watching the client of the other.
+    changing: Mutex<()>,
 }
 
 impl std::fmt::Debug for ObsService {
@@ -134,7 +138,13 @@ impl ObsService {
     /// A service whose reconnect waits are [`BACKOFF_STEPS`] times `unit` (tests use milliseconds).
     #[must_use]
     pub fn with_backoff_unit(unit: Duration) -> Self {
-        Self { shared: Arc::default(), hub: Arc::new(EventHub::new()), session: Mutex::new(None), unit }
+        Self {
+            shared: Arc::default(),
+            hub: Arc::new(EventHub::new()),
+            session: Mutex::new(None),
+            unit,
+            changing: Mutex::new(()),
+        }
     }
 
     /// Connects as `config` says, replacing any connection there was, and keeps the connection up from then on.
@@ -142,7 +152,8 @@ impl ObsService {
     /// # Errors
     /// As [`ObsClient::open`] for the first attempt; nothing is kept when it fails.
     pub fn connect(&self, config: ClientConfig, password: Option<SecretValue>) -> Result<Arc<ObsClient>, ObsError> {
-        self.disconnect();
+        let _changing = lock(&self.changing);
+        self.close();
         *lock(&self.shared.status) = ObsStatus::Connecting;
         let opened = ObsClient::open(&config, password.as_ref().map(SecretValue::expose), Arc::clone(&self.hub));
         let client = match opened {
@@ -174,6 +185,11 @@ impl ObsService {
 
     /// Closes the connection and stops reconnecting; `false` when there was none.
     pub fn disconnect(&self) -> bool {
+        let _changing = lock(&self.changing);
+        self.close()
+    }
+
+    fn close(&self) -> bool {
         let session = lock(&self.session).take();
         let had = session.is_some();
         drop(session);
@@ -281,6 +297,14 @@ impl Keeper {
                 let client = lock(&self.shared.client).clone();
                 match client {
                     Some(c) if c.is_connected() => {}
+                    Some(c) if c.closed_by() == Some(CloseCode::SessionInvalidated) => {
+                        *lock(&self.shared.status) = ObsStatus::Failed {
+                            reason: "a person ended this connection in OBS (Tools, WebSocket Server Settings); \
+                                     obs.connect connects again"
+                                .into(),
+                        };
+                        return;
+                    }
                     Some(c) => break c.close_reason().unwrap_or_else(|| "OBS closed the connection".into()),
                     None => return,
                 }

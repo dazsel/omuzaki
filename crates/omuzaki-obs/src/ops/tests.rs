@@ -89,6 +89,31 @@ fn connect_reads_the_stored_password_and_the_port_setting() {
 }
 
 #[test]
+fn connect_reads_only_obs_secrets_and_a_remote_host_is_the_persons_call() {
+    let fake = locked();
+    let service = Arc::new(ObsService::new());
+    let services = rig(&service, fake.port(), true);
+    let other = run("obs.connect", json!({ "password": "connector/openai" }), &services, true).unwrap_err();
+    assert!(other.contains("not an OBS secret"), "{other}");
+
+    // With remote links allowed, an agent may still not aim the challenge answer at a host of its choosing.
+    let settings = services.get::<dyn Settings>().unwrap();
+    let person = Actor::Person { name: "host".into() };
+    settings.set::<crate::settings::AllowRemote>(&true, Layer::Base, omuzaki_ops_api::Mode::Apply, &person).unwrap();
+    crate::link();
+    let agent = Actor::Agent { id: "agent".into(), model: None };
+    let op = (find("obs.connect").unwrap().decode)(json!({ "host": "192.0.2.1" })).unwrap();
+    let (doc, clock) = (MemDoc::new(), FakeClock::new(Seconds(0.0)));
+    let ctx = OpCtx::new(&doc, &agent, &clock).with_services(&services).with_dry_run(true);
+    let refused = op.plan(&ctx).unwrap_err();
+    assert!(refused.message.contains("another computer"), "{}", refused.message);
+    // A person may, and so may an agent going to the host the person set up.
+    assert!(run("obs.connect", json!({ "host": "192.0.2.1" }), &services, true).is_ok());
+    let loopback = (find("obs.connect").unwrap().decode)(json!({ "host": "127.0.0.1" })).unwrap();
+    assert!(loopback.plan(&ctx).is_ok());
+}
+
+#[test]
 fn each_action_sends_its_request_and_changes_obs() {
     let fake = FakeObs::start(FakeConfig::default());
     let service = Arc::new(ObsService::new());
@@ -197,6 +222,25 @@ fn a_restarted_obs_is_reconnected_on_the_backoff() {
         Some(ObsEvent::CurrentProgramSceneChanged { scene_name: "BRB".into() })
     );
     assert_eq!((backoff(0), backoff(5), backoff(99)), (1, 30, 30));
+}
+
+#[test]
+fn a_session_a_person_ended_in_obs_is_not_reconnected() {
+    let fake = FakeObs::start(FakeConfig::default());
+    let service = ObsService::with_backoff_unit(Duration::from_millis(5));
+    service.connect(ClientConfig::at("127.0.0.1", fake.port()), None).unwrap();
+    fake.kick();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !matches!(service.status(), ObsStatus::Failed { .. }) && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    let ObsStatus::Failed { reason } = service.status() else { panic!("{:?}", service.status()) };
+    assert!(reason.contains("obs.connect"), "{reason}");
+    assert!(service.retries().is_empty(), "no reconnect after a kick");
+    assert!(service.client().is_none());
+    // A person connects again.
+    service.connect(ClientConfig::at("127.0.0.1", fake.port()), None).unwrap();
+    assert!(matches!(service.status(), ObsStatus::Connected { .. }));
 }
 
 #[test]
