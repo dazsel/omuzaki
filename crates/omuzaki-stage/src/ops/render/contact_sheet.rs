@@ -36,6 +36,8 @@ pub const MAX_GUTTER: u32 = 256;
 pub const MAX_CELL_SIDE: u32 = 1024;
 /// The length of a stored picture's label: the start of its hash.
 const HASH_LABEL: usize = 12;
+/// The longest title a stored picture may be given.
+const MAX_TITLE: usize = 48;
 /// The resolution a labelled sheet's type is set at: a 9 pt label is 18 pixels to the em.
 const LABEL_DPI: f32 = 144.0;
 /// A rendered cell when none is given: a portrait cell.
@@ -75,6 +77,10 @@ pub struct ContactSheet {
     /// render `character` instead.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<String>,
+    /// With `images`: a title for each, in the same order, written under it instead of the start of its hash (at most
+    /// 48 characters each). Leave out to label each picture by its hash.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub titles: Vec<String>,
     /// A character, built or imported, to render one cell for each of `expressions`, `variants` or `poses`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub character: Option<CharId>,
@@ -207,6 +213,17 @@ impl ContactSheet {
                 for (i, image) in images.iter().enumerate() {
                     hash_of(&format!("images/{i}"), image)?;
                 }
+                if !self.titles.is_empty() && self.titles.len() != images.len() {
+                    let reason =
+                        format!("{} titles for {} images: give one each, or none", self.titles.len(), images.len());
+                    return Err(OpError::invalid("titles", reason));
+                }
+                if let Some((i, long)) = self.titles.iter().enumerate().find(|(_, t)| t.chars().count() > MAX_TITLE) {
+                    return Err(OpError::invalid(
+                        &format!("titles/{i}"),
+                        format!("\"{long}\" is over {MAX_TITLE} characters"),
+                    ));
+                }
             }
             Cells::Rendered { varied, .. } => {
                 self.check_render()?;
@@ -244,7 +261,11 @@ impl ContactSheet {
         ];
         let mut given = lists.iter().filter(|(given, _)| *given).map(|(_, field)| *field);
         let Some(character) = &self.character else {
-            let shared = [(self.variant.is_some(), "variant"), (self.expression.is_some(), "expression"), (self.pose.is_some(), "pose")];
+            let shared = [
+                (self.variant.is_some(), "variant"),
+                (self.expression.is_some(), "expression"),
+                (self.pose.is_some(), "pose"),
+            ];
             if given.next().is_some() || shared.iter().any(|(given, _)| *given) {
                 return Err(OpError::invalid(
                     "character",
@@ -256,16 +277,31 @@ impl ContactSheet {
         if !self.images.is_empty() {
             return Err(OpError::invalid("images", "give stored images or a character to render, not both"));
         }
+        if !self.titles.is_empty() {
+            return Err(OpError::invalid(
+                "titles",
+                "titles name stored images; a rendered cell is labelled by what it shows",
+            ));
+        }
         let Some(first) = given.next() else {
-            return Err(OpError::invalid("expressions", "give the expressions, variants or poses to render the character in")
-                .hint("for example \"expressions\": [\"happy\", \"sad\"]"));
+            return Err(OpError::invalid(
+                "expressions",
+                "give the expressions, variants or poses to render the character in",
+            )
+            .hint("for example \"expressions\": [\"happy\", \"sad\"]"));
         };
         if let Some(second) = given.next() {
-            return Err(OpError::invalid(second, format!("a sheet varies one thing: give {first} or {second}, not both")));
+            return Err(OpError::invalid(
+                second,
+                format!("a sheet varies one thing: give {first} or {second}, not both"),
+            ));
         }
         let own = |field: &str, given: bool| {
             if given {
-                Err(OpError::invalid(field, format!("each cell shows its own {field}; `{field}` goes with the other lists")))
+                Err(OpError::invalid(
+                    field,
+                    format!("each cell shows its own {field}; `{field}` goes with the other lists"),
+                ))
             } else {
                 Ok(())
             }
@@ -340,7 +376,8 @@ fn label_band(checked: &Checked<'_>, cell: UVec2, gutter: u32) -> Result<u32, Op
             .map_err(layout)?
             .type_scale();
         // A one-pixel page at the scaled resolution sets type exactly as the sheet will, without its canvas.
-        let probe = SheetLayout::new(Page::custom(1, 1, LABEL_DPI * scale).map_err(layout)?, Theme::default()).map_err(layout)?;
+        let probe = SheetLayout::new(Page::custom(1, 1, LABEL_DPI * scale).map_err(layout)?, Theme::default())
+            .map_err(layout)?;
         let tall = 4096;
         let geometry = probe.cell_geometry(Rect::new(0, 0, 64, tall), &Cell::blank().caption("Ag"));
         let next = u32::try_from(tall - geometry.image.h).unwrap_or(0);
@@ -389,7 +426,8 @@ impl Op for ContactSheet {
                 let bytes = if let Varied::Variants(variants) = varied {
                     let mut most = 0;
                     for (i, variant) in variants.iter().enumerate() {
-                        let bytes = character_bytes(ctx, character, Some(variant), self.quality).map_err(at(format!("variants/{i}")))?;
+                        let bytes = character_bytes(ctx, character, Some(variant), self.quality)
+                            .map_err(at(format!("variants/{i}")))?;
                         most = most.max(bytes);
                     }
                     most
@@ -412,7 +450,10 @@ impl Op for ContactSheet {
                     #[allow(clippy::cast_precision_loss, reason = "at most 64 pictures")]
                     job.checkpoint("reading", 0.8 * i as f32 / images.len() as f32)?;
                     pictures.push(load(job, &format!("images/{i}"), image)?);
-                    labels.push(hash_of(&format!("images/{i}"), image)?.to_string().chars().take(HASH_LABEL).collect());
+                    labels.push(match self.titles.get(i) {
+                        Some(title) => title.clone(),
+                        None => hash_of(&format!("images/{i}"), image)?.to_string().chars().take(HASH_LABEL).collect(),
+                    });
                 }
                 (pictures, labels)
             }
@@ -486,7 +527,13 @@ impl ContactSheet {
     }
 
     /// One straight-alpha picture of `body` in `pose` for each of `shots`.
-    fn render(&self, job: &JobCtx<'_>, body: Body, shots: &[Shot], pose: Option<&HumanoidPose>) -> Result<Vec<Image>, OpError> {
+    fn render(
+        &self,
+        job: &JobCtx<'_>,
+        body: Body,
+        shots: &[Shot],
+        pose: Option<&HumanoidPose>,
+    ) -> Result<Vec<Image>, OpError> {
         let size = self.check_render()?;
         let spec = StillSpec::new(still_light(&self.light_rig)?, size, self.quality.quality()).with_pose(pose.copied());
         let stills = with_renderer(job, |renderer| render_body_stills(renderer, body, &spec, shots))?;
@@ -517,7 +564,8 @@ impl ContactSheet {
                     check_expression(&body, expression).map_err(at(format!("expressions/{i}")))?;
                 }
                 let shot = self.shot(&body)?;
-                let shots: Vec<Shot> = expressions.iter().map(|e| shot.clone().with_expression(e.clone(), 1.0)).collect();
+                let shots: Vec<Shot> =
+                    expressions.iter().map(|e| shot.clone().with_expression(e.clone(), 1.0)).collect();
                 let pose = self.shared_pose(&body)?;
                 progress(0)?;
                 self.render(job, body, &shots, pose.as_ref())
@@ -589,6 +637,22 @@ mod tests {
         assert!(sheet(2, Some(MAX_COLUMNS + 1)).check().is_err());
         assert!(ContactSheet { gutter: MAX_GUTTER + 1, ..sheet(1, None) }.check().is_err());
         assert!(ContactSheet { images: vec!["not a render".into()], ..sheet(1, None) }.check().is_err());
+    }
+
+    #[test]
+    fn titles_name_stored_images_one_each() {
+        let titled = |titles: &[&str]| ContactSheet {
+            titles: titles.iter().map(|t| (*t).to_owned()).collect(),
+            ..sheet(2, None)
+        };
+        assert!(titled(&["studio", "stage"]).check().is_ok());
+        assert!(titled(&["studio"]).check().is_err(), "one short");
+        assert!(titled(&["studio", &"x".repeat(MAX_TITLE + 1)]).check().is_err(), "too long");
+        let rendered: ContactSheet = serde_json::from_value(
+            serde_json::json!({ "character": "kit", "variants": ["close-up"], "titles": ["a"] }),
+        )
+        .expect("reads");
+        assert!(rendered.check().is_err(), "a rendered cell is labelled by what it shows");
     }
 
     #[test]

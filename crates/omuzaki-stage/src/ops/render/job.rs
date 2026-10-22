@@ -276,15 +276,23 @@ pub fn cost(size: UVec2, images: u32, quality: RenderQuality, character: u64) ->
 /// `Invalid` naming `expression`.
 pub fn check_expression(body: &crate::body::Body, expression: &omuzaki_face_api::ExpressionId) -> Result<(), OpError> {
     let crate::body::Body::Kit(built) = body else {
-        return Err(OpError::invalid("expression", "an imported avatar has no face profile to take an expression from"));
+        return Err(OpError::invalid(
+            "expression",
+            "an imported avatar has no face profile to take an expression from",
+        ));
     };
     let expressions = built.face.as_ref().map(|face| &face.profile.expressions.0);
     if expressions.is_some_and(|set| set.contains_key(expression)) {
         return Ok(());
     }
     let known: Vec<String> = expressions.into_iter().flat_map(|set| set.keys().map(ToString::to_string)).collect();
-    Err(OpError::invalid("expression", format!("the character's face has no expression '{expression}'"))
-        .hint(if known.is_empty() { "the character has no expressions".to_owned() } else { format!("its expressions are {}", known.join(", ")) }))
+    Err(OpError::invalid("expression", format!("the character's face has no expression '{expression}'")).hint(
+        if known.is_empty() {
+            "the character has no expressions".to_owned()
+        } else {
+            format!("its expressions are {}", known.join(", "))
+        },
+    ))
 }
 
 /// The light rig `name` as a still's light.
@@ -297,9 +305,11 @@ pub fn still_light(name: &str) -> Result<StillLight, OpError> {
         return Err(OpError::invalid("light_rig", format!("there is no light rig '{name}'"))
             .hint(format!("the light rigs are {}", known.join(", "))));
     }
-    let rig = LightRig::load(name).map_err(|e| OpError::internal(format!("the light rig '{name}' doesn't load: {e}")))?;
-    let lights = rig.to_lights().map_err(|e| OpError::internal(format!("the light rig '{name}' has no lights: {e}")))?;
-    Ok(StillLight::new(lights, rig.background(), rig.post(true)))
+    let rig =
+        LightRig::load(name).map_err(|e| OpError::internal(format!("the light rig '{name}' doesn't load: {e}")))?;
+    let lights =
+        rig.to_lights().map_err(|e| OpError::internal(format!("the light rig '{name}' has no lights: {e}")))?;
+    Ok(StillLight::new(lights, rig.background(), rig.post(true)).with_back_light_rim(rig.back_light_rim))
 }
 
 /// Character `id` from the job's document, with `variant` applied, built by the injected builder.
@@ -323,7 +333,11 @@ pub fn build_character(
 }
 
 /// The definition of `id` with `variant` applied, read from the document.
-pub(crate) fn read_definition(doc: &dyn DocRead, id: &CharId, variant: Option<&VariantId>) -> Result<CharacterDef, OpError> {
+pub(crate) fn read_definition(
+    doc: &dyn DocRead,
+    id: &CharId,
+    variant: Option<&VariantId>,
+) -> Result<CharacterDef, OpError> {
     let node = doc.get(&paths::character(id)).ok_or_else(|| {
         OpError::not_found(format!("there is no character '{id}'"))
             .hint("check the id; characters live under characters/<id>")
@@ -404,8 +418,7 @@ pub fn render_provenance() -> Provenance {
 /// `Unavailable` when no store is injected; `Internal` when the store refuses the write.
 pub fn store_png(job: &JobCtx<'_>, png: &[u8]) -> Result<StoredRender, OpError> {
     let store = job.service::<dyn Store>()?;
-    let hash = store
-        .put(png, render_provenance())
-        .map_err(|e| OpError::internal(format!("storing the PNG failed: {e}")))?;
+    let hash =
+        store.put(png, render_provenance()).map_err(|e| OpError::internal(format!("storing the PNG failed: {e}")))?;
     Ok(StoredRender { uri: format!("omuzaki://render/{hash}.png"), hash })
 }

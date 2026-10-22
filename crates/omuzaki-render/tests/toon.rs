@@ -596,6 +596,51 @@ fn a_sphere_shows_the_ramp_pixel_by_pixel() {
     assert!(worst <= 3 && mean < 0.3, "worst {worst}, mean {mean}");
 }
 
+#[test]
+fn a_back_light_edges_the_silhouette_on_its_side_only_when_the_scene_asks() {
+    let mut renderer = support::renderer();
+    // Skin, which pulls coloured light back to its own hue: the rim is added after that, so it still reads blue.
+    let toon = Toon { skin: Some(Skin { floor: 0.42, hue_keep: 0.65 }), ..Toon::default() };
+    let lights = vec![
+        Light::Hemisphere { sky: Colour::hex(0x0030_2c3c), ground: Colour::hex(0x0010_0e14), intensity: 0.6 },
+        // From behind and to the left of the sphere, as the camera sees it.
+        Light::Directional {
+            to_light: Vec3::new(-0.8, 0.0, -0.6),
+            colour: Colour::hex(0x006f_9cff),
+            intensity: 2.0,
+            casts_shadow: false,
+        },
+    ];
+    let mesh = renderer.create_mesh(&uv_sphere(0.8, 96, 192)).unwrap();
+    let material = renderer.create_material(&toon_material(Colour::hex(0x00f9_d3c5), toon)).unwrap();
+    let rimless = renderer.create_material(&toon_material(Colour::hex(0x00f9_d3c5), quiet_rim(toon))).unwrap();
+    let mut frame = scene(lights);
+    frame.instances.push(Instance::new(mesh, material, Mat4::IDENTITY));
+    let without = draw(&mut renderer, &frame);
+    frame.back_light_rim = 1.5;
+    let with = draw(&mut renderer, &frame);
+
+    // The middle faces the camera: no edge, so nothing changes there.
+    assert_eq!(rgb_at(&with, 64, 64), rgb_at(&without, 64, 64), "the middle of the sphere");
+    // The left edge, toward the light, turns blue; the right edge, away from it, barely moves.
+    let blue_gain = |x| i32::from(rgb_at(&with, x, 64)[2]) - i32::from(rgb_at(&without, x, 64)[2]);
+    let (left, right) = (blue_gain(16), blue_gain(111));
+    println!("blue gained at the left edge {left}, at the right edge {right}");
+    assert!(left >= 40, "the left edge catches the back light: +{left}");
+    assert!(right <= left / 6, "the right edge, away from the light, stays nearly as it was: +{right} against +{left}");
+    let [red, green, blue] = rgb_at(&with, 16, 64);
+    assert!(blue > red && blue > green, "the rim reads in the light's colour on skin: {:?}", [red, green, blue]);
+
+    // A toon material with no rim of its own (a floor) takes none from the back light either.
+    frame.instances[0].material = rimless;
+    let rimless_with = draw(&mut renderer, &frame);
+    frame.back_light_rim = 0.0;
+    assert_eq!(rimless_with.rgba8, draw(&mut renderer, &frame).rgba8, "a rimless material is left as it was");
+
+    frame.back_light_rim = f32::NAN;
+    assert!(renderer.render_image(SIZE, AlphaEncoding::Straight, &frame, &plain()).is_err(), "a NaN is refused");
+}
+
 // ---- surfaces and transforms ----
 
 #[test]

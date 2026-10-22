@@ -15,9 +15,9 @@
 //! a window, so tiles of that lens meet without a seam. A perspective sub-window would need an off-axis camera, so
 //! [`Lens::Telephoto`] refuses to tile ([`TurnaroundError::TilingNeedsOrthographic`]).
 
+use omuzaki_anim_api::Tick;
 use omuzaki_anim_api::{HumanoidBone, HumanoidPose};
 use omuzaki_char_api::BuiltCharacter;
-use omuzaki_anim_api::Tick;
 use omuzaki_core::glam::{Mat4, Quat, UVec2, Vec2, Vec3};
 use omuzaki_core::time::Seconds;
 use omuzaki_render_api::{
@@ -194,7 +194,10 @@ impl TurnaroundSpec {
     /// [`TurnaroundError::Invalid`] naming the first value that is unusable.
     pub fn validate(&self) -> Result<(), TurnaroundError> {
         if self.cell.x == 0 || self.cell.y == 0 {
-            return Err(TurnaroundError::Invalid(format!("the cell is {}x{} pixels; it needs at least 1x1", self.cell.x, self.cell.y)));
+            return Err(TurnaroundError::Invalid(format!(
+                "the cell is {}x{} pixels; it needs at least 1x1",
+                self.cell.x, self.cell.y
+            )));
         }
         if cell_bytes(self.cell).is_none() {
             return Err(TurnaroundError::Invalid(format!(
@@ -235,7 +238,9 @@ pub enum TurnaroundError {
     #[error("{0}")]
     Unsupported(String),
     /// The cell needs tiles but the lens is a perspective one, whose sub-windows are off-axis.
-    #[error("a {cell}-pixel cell needs tiles of at most {tile} pixels, which only the orthographic lens can stitch without a seam")]
+    #[error(
+        "a {cell}-pixel cell needs tiles of at most {tile} pixels, which only the orthographic lens can stitch without a seam"
+    )]
     TilingNeedsOrthographic {
         /// The cell.
         cell: UVec2,
@@ -340,7 +345,11 @@ struct Extent {
 /// hair and cloth are put at rest under it (so the extent depends on the pose alone, not on earlier frames; what they
 /// settle to is the margin's to hold), and its drawn vertices are measured. The camera looks along -Z, so a point's
 /// distance across the screen is its `x`.
-fn posed_extent(stage: &mut Stage, renderer: &mut dyn Renderer, pose: &HumanoidPose) -> Result<Extent, TurnaroundError> {
+fn posed_extent(
+    stage: &mut Stage,
+    renderer: &mut dyn Renderer,
+    pose: &HumanoidPose,
+) -> Result<Extent, TurnaroundError> {
     let mut extent = Extent { sole: f32::INFINITY, crown: f32::NEG_INFINITY, half_width: 0.0 };
     for view in View::ALL {
         let root = Mat4::from_rotation_y(view.yaw_deg().to_radians());
@@ -586,6 +595,7 @@ fn restore_settings(scene: &mut Scene, saved: Scene) {
         fog,
         environment,
         outline_light,
+        back_light_rim,
         post,
     } = saved;
     scene.camera = camera;
@@ -594,6 +604,7 @@ fn restore_settings(scene: &mut Scene, saved: Scene) {
     scene.fog = fog;
     scene.environment = environment;
     scene.outline_light = outline_light;
+    scene.back_light_rim = back_light_rim;
     scene.post = post;
 }
 
@@ -615,7 +626,12 @@ struct Run<'a> {
 
 impl Run<'_> {
     /// Turns the character to `view`, settles it and draws the cell.
-    fn view(&self, stage: &mut Stage, renderer: &mut dyn Renderer, view: View) -> Result<TurnaroundView, TurnaroundError> {
+    fn view(
+        &self,
+        stage: &mut Stage,
+        renderer: &mut dyn Renderer,
+        view: View,
+    ) -> Result<TurnaroundView, TurnaroundError> {
         let root = Mat4::from_rotation_y(view.yaw_deg().to_radians());
         let input = FrameInput { pose: self.pose, root, ..FrameInput::default() };
         // The tick turns the character and sets its pose; the settle then starts from rest, so a view depends on the
@@ -650,7 +666,8 @@ impl Run<'_> {
     fn tiles(&self, stage: &mut Stage, renderer: &mut dyn Renderer) -> Result<Image, TurnaroundError> {
         let quality = Quality::offline();
         let cell = self.shot.cell;
-        let bytes = cell_bytes(cell).ok_or_else(|| TurnaroundError::Invalid(format!("the cell is more than {MAX_CELL_BYTES} bytes")))?;
+        let bytes = cell_bytes(cell)
+            .ok_or_else(|| TurnaroundError::Invalid(format!("the cell is more than {MAX_CELL_BYTES} bytes")))?;
         let mut rgba8 = vec![0_u8; bytes];
         for y0 in (0..cell.y).step_by(self.tile as usize) {
             for x0 in (0..cell.x).step_by(self.tile as usize) {
@@ -710,5 +727,8 @@ fn framing(stage: &Stage, subject: &Subject, shot: &Shot, root: Mat4, drawn: &[V
 /// The smallest box, in cell pixels, around every drawn vertex projected through the view's camera: the rows and columns
 /// the picture's geometry spans, in every lens (see [`Stage::drawn_vertices`]).
 fn pixel_bounds(drawn: &[Vec3], shot: &Shot) -> (Vec2, Vec2) {
-    drawn.iter().map(|p| shot.pixel(*p)).fold((Vec2::INFINITY, Vec2::NEG_INFINITY), |(lo, hi), px| (lo.min(px), hi.max(px)))
+    drawn
+        .iter()
+        .map(|p| shot.pixel(*p))
+        .fold((Vec2::INFINITY, Vec2::NEG_INFINITY), |(lo, hi), px| (lo.min(px), hi.max(px)))
 }

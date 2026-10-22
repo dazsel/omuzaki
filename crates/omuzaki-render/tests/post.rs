@@ -214,24 +214,28 @@ fn bloom_uses_the_threshold_on_the_scene_light_before_exposure() {
 }
 
 #[test]
-fn zero_strength_and_non_finite_numbers_draw_no_bloom_and_do_not_poison_the_frame() {
+fn zero_strength_draws_no_bloom_and_numbers_out_of_range_are_refused() {
     let mut r = support::renderer();
     let mut scene = parity_scene(&mut r);
     let off = render(&mut r, &scene, &offline());
+    scene.post.bloom = Some(Bloom { strength: 0.0, ..BLOOM });
+    assert_eq!(render(&mut r, &scene, &offline()), off, "strength 0 adds nothing");
+    // A negative or non-finite number is the scene's error (`Post::validate`), the same in every renderer: the frame is
+    // refused before the GPU is touched, never drawn with a guess.
     for bloom in [
-        Bloom { strength: 0.0, ..BLOOM },
         Bloom { strength: -1.0, ..BLOOM },
         Bloom { strength: f32::NAN, ..BLOOM },
         Bloom { strength: f32::INFINITY, ..BLOOM },
+        Bloom { radius: f32::NAN, ..BLOOM },
+        Bloom { threshold: f32::NAN, ..BLOOM },
     ] {
         scene.post.bloom = Some(bloom);
-        assert_eq!(render(&mut r, &scene, &offline()), off, "{bloom:?} adds nothing");
+        let refused = r.render_image(UVec2::splat(SIZE), AlphaEncoding::Straight, &scene, &offline());
+        assert!(
+            matches!(refused, Err(omuzaki_render_api::RenderError::Invalid { what: "post", .. })),
+            "{bloom:?}: {refused:?}"
+        );
     }
-    // A NaN elsewhere is pulled to zero, not spread over the picture.
-    scene.post.bloom = Some(Bloom { radius: f32::NAN, threshold: f32::NAN, ..BLOOM });
-    let image = render(&mut r, &scene, &offline());
-    assert!(image.rgba8.as_chunks::<4>().0.iter().all(|p| p[3] == 255), "alpha is intact");
-    assert!(luma(image.pixel(256, 256).unwrap()) > 40.0, "the panel still draws");
 }
 
 // ---- depth of field ----

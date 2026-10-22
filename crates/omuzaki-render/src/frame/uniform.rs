@@ -48,7 +48,7 @@ pub(crate) struct FrameUniform {
     lights: [LightUniform; MAX_LIGHTS],
     /// Light count, then the frame index split into low and high words (grain and jitter seeds).
     counts: [u32; 4],
-    /// `outline_light`, scene time in seconds.
+    /// `outline_light`, scene time in seconds, `back_light_rim`.
     look: [f32; 4],
     /// Fog colour in linear light (rgb) and the depth where it starts (`w`).
     fog_colour: [f32; 4],
@@ -99,7 +99,7 @@ pub(crate) fn frame_uniform(scene: &Scene, internal: UVec2, jitter: Vec2) -> Fra
         lights,
         counts: [u32::try_from(scene.lights.len().min(MAX_LIGHTS)).unwrap_or(0), frame_lo, frame_hi, 0],
         #[allow(clippy::cast_possible_truncation)] // the shader works in f32 seconds
-        look: [scene.outline_light, scene.frame.time.0 as f32, 0.0, 0.0],
+        look: [scene.outline_light, scene.frame.time.0 as f32, scene.back_light_rim, 0.0],
         fog_colour: fog.0,
         fog_far: fog.1,
     }

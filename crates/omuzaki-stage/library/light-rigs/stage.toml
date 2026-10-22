@@ -1,26 +1,34 @@
 # stage: our own design (#1165), not transcribed from anything. Lighting numbers only.
-# The look of a small concert stage seen from the floor: coloured spots hung on the truss above, a strong cool rim from
-# behind, a soft front light so the face still reads, and a near-black house. Three.js units (render-api D10), with
-# positions in metres from the feet of a character of the reference height (0.966 m).
+# The look of a small concert stage seen from the floor: tight coloured spots from the truss, each owning one part of
+# the figure so their cone edges show, a cool rim from behind that separates the silhouette from the black, and a dim
+# front light so the face still reads. Three.js units (render-api D10), with positions in metres from the feet of a
+# character of the reference height (0.966 m).
+#
+# Toon shading tints both sides of a form with every light inside its cone, and skin keeps its own hue under coloured
+# light, so the colour lands where it can: the hair, the cone edges across the body, the floor pools and the rim.
 name = "stage"
 source = "our own design: a small concert stage lit from the truss, seen from the floor"
 title = "Stage"
-summary = "Coloured spots from above, a strong cool rim and a near-black stage: a live show for performances and music streams."
+summary = "Tight magenta, cyan and amber spots, a cool rim from behind and a near-black stage: a live show for performances and music streams."
 tags = ["stage", "coloured", "performance", "dark", "stream"]
 exposure = 1.0
 background = "#08070d"
-skin_floor = 0.45
+skin_floor = 0.2
+# A dark house: skin may fall to a fifth of its colour, or every spot only makes it paler.
+scene_skin_floor = 0.2
+# The two back spots edge the silhouette in their colour (render-api `Scene::back_light_rim`).
+back_light_rim = 4.0
 
 [hemisphere]
-sky = "#3a3060"
-ground = "#0a0810"
-intensity = 0.35
+sky = "#1c1830"
+ground = "#060508"
+intensity = 0.1
 
-# A soft, slightly warm front light from the stage lip: enough for the face, never the brightest light on it.
+# A dim, slightly warm front light from the stage lip: enough for the face, never the brightest light on it.
 [key]
-colour = "#ffe8dc"
-intensity = 0.45
-position = [-0.6, 1.6, 2.4]
+colour = "#fff0e6"
+intensity = 0.18
+position = [-0.3, 3.0, 1.0]
 
 [key.shadow]
 map_size = 1024
@@ -33,48 +41,63 @@ far = 8.0
 bias = -0.0004
 normal_bias = 0.01
 
-[rim]
-colour = "#8fb0ff"
-intensity = 2.6
-position = [1.4, 2.0, -2.4]
-
-# Toon light tints both sides of a surface (the shade side shows the material's shade colour times the light), so the
-# spots keep their colours apart by where their cones fall, not by which side they light: a pool on the head, one on
-# the shoulders and chest, and a narrow amber one on the crown.
 [[spot]]
-# Magenta from high stage left, a tight pool on the head.
+# Magenta from stage left at head height: a narrow beam across the head and the near shoulder, nothing below.
 id = "spot_left"
-colour = "#ff3fa0"
-intensity = 3.2
-position = [-0.9, 1.6, 0.6]
-target = [0.0, 0.8, 0.0]
-cone = 12.0
-penumbra = 0.45
-distance = 4.0
+colour = "#ff2a9a"
+intensity = 5.0
+position = [-1.4, 1.3, 0.5]
+target = [0.0, 0.85, 0.0]
+cone = 6.0
+penumbra = 0.1
+distance = 6.0
 
 [[spot]]
-# Cyan from high stage right, on the shoulders and chest.
+# Cyan from high stage right, down across the shoulder and chest, its edge a diagonal through the figure, then a pool
+# on the floor in front of the feet.
 id = "spot_right"
-colour = "#30c8ff"
-intensity = 3.0
-position = [0.9, 1.6, 0.6]
-target = [0.0, 0.5, 0.0]
-cone = 15.0
-penumbra = 0.45
-distance = 4.0
+colour = "#19c4ff"
+intensity = 10.0
+position = [1.0, 2.4, 1.2]
+target = [0.1, 0.0, 0.4]
+cone = 8.0
+penumbra = 0.1
+distance = 6.0
 
 [[spot]]
-# Amber from the truss behind, on the crown and the hair.
+# Amber from high behind the head: a warm light on the crown and its rim, against the cool rim lower down.
 id = "spot_top"
-colour = "#ffb05a"
-intensity = 1.5
-position = [0.0, 2.0, -0.5]
-target = [0.0, 0.9, 0.0]
-cone = 10.0
-penumbra = 0.5
-distance = 4.0
+colour = "#ffa62a"
+intensity = 6.0
+position = [0.0, 2.6, -1.2]
+target = [0.0, 0.85, 0.0]
+cone = 7.0
+penumbra = 0.2
+distance = 6.0
 
+[[spot]]
+# Two cool back lights, low and wide of the figure: dim on the figure itself, they make the rim on both edges.
+id = "back_left"
+colour = "#3f6dff"
+intensity = 2.0
+position = [-1.3, 1.4, -1.6]
+target = [0.0, 0.6, 0.0]
+cone = 12.0
+penumbra = 0.2
+distance = 6.0
+
+[[spot]]
+id = "back_right"
+colour = "#4f86ff"
+intensity = 2.0
+position = [1.3, 1.4, -1.6]
+target = [0.0, 0.6, 0.0]
+cone = 12.0
+penumbra = 0.2
+distance = 6.0
+
+# A little glow on the brightest edges, kept tight so it doesn't haze the house.
 [bloom]
-strength = 0.3
-radius = 0.5
+strength = 0.25
+radius = 0.3
 threshold = 0.95

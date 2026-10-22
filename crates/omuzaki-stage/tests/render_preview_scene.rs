@@ -344,19 +344,24 @@ fn on_the_gpu_fog_a_sky_environment_and_a_spot_on_two_statures() {
     }
 }
 
-/// On lavapipe (#1165): soft-sd and standard at `full` and `bust` in a scene lit by the studio rig (before) and by the
-/// `stage` rig (after), applied with `stage.set_light_rig`. The stage is dark around the character, the magenta spot
-/// colours the hair, and no skin is clipped white. Set `OMUZAKI_EVIDENCE_DIR` to keep the sheet.
+/// On lavapipe (#1165): soft-sd and standard at `full` and `bust` under the studio rig (before) and the `stage` rig on a
+/// lit floor (after), applied with `stage.set_light_rig` and `stage.set_ground`, each row led by the design target. The
+/// house is dark, the rim lifts the figure's edge off the black, no skin is clipped white, the magenta spot leaves its
+/// colour on the head in every shot and the cyan one its pool on the floor wherever the floor is in frame. Skin keeps its
+/// own hue under coloured light, so the cyan cone across the chest shows as an edge, and the amber one as a warm crown:
+/// those are judged on the sheet. Set `OMUZAKI_EVIDENCE_DIR` to keep the sheet.
 #[cfg(feature = "wgpu")]
 #[test]
 #[allow(clippy::disallowed_methods, reason = "the evidence image is written beside the test, not by an op")]
+#[allow(clippy::too_many_lines, reason = "one sheet, measured top to bottom")]
 fn on_the_gpu_the_stage_rig_beside_the_studio_rig() {
     use omuzaki_char::ops::character::create::CharacterCreate;
     use omuzaki_render::{AdapterPreference, HeadlessOptions, WgpuRenderer};
     use omuzaki_stage::ops::render::contact_sheet::{ContactSheet, ContactSheetResult};
     use omuzaki_stage::ops::scene::create::CreateScene;
     use omuzaki_stage::ops::scene::light::SetLightRig;
-    use omuzaki_store_api::Store;
+    use omuzaki_stage::ops::scene::look::SetGround;
+    use omuzaki_store_api::{Commercial, ContentHash, Provenance, Source, Store};
 
     const SIZE: [u32; 2] = [192, 256];
     let mut doc = MemDoc::from_value(json!({}));
@@ -368,15 +373,33 @@ fn on_the_gpu_the_stage_rig_beside_the_studio_rig() {
         apply::<CreateScene>(&mut doc, json!({ "id": scene, "cast": [] }));
         apply::<SetLightRig>(&mut doc, json!({ "scene": scene, "rig": rig }));
     }
+    apply::<SetGround>(&mut doc, json!({ "scene": "show", "kind": "floor" }));
     let renderer =
         WgpuRenderer::headless(&HeadlessOptions { adapter: AdapterPreference::Software }).expect("lavapipe opens");
     let harness = Harness::on(TestDoc(doc), Box::new(renderer));
+    let target = stage_design_target(SIZE[0], SIZE[1]);
+    let provenance = Provenance {
+        source: Source::Authored,
+        author: None,
+        licence: "CC0-1.0".into(),
+        attribution: None,
+        commercial: Commercial::Ok,
+        consent: None,
+        private_test: false,
+    };
+    let target_hash = harness.store.put(&target, provenance).unwrap();
+    assert_eq!(target_hash, ContentHash::of(&target));
     let image = |hash: &str| {
         let png = harness.store.get(&hash.parse().unwrap()).unwrap();
         image::load_from_memory(&png).unwrap().to_rgba8()
     };
-    let (mut cells, mut found) = (Vec::new(), Vec::new());
-    for id in ["soft_sd", "standard"] {
+    // A light's colour where it lands: a saturated pixel, not too dark to read, whose hue is the light's. Skin under
+    // either rig is never this saturated.
+    let count = |picture: &image::RgbaImage, hues: std::ops::RangeInclusive<f32>| {
+        picture.pixels().filter(|p| saturated_hue(p.0).is_some_and(|hue| hues.contains(&hue))).count()
+    };
+    let (mut cells, mut titles, mut found) = (Vec::new(), Vec::new(), Vec::new());
+    for (id, template) in [("soft_sd", "soft-sd"), ("standard", "standard")] {
         for framing in ["full", "bust"] {
             let shot = |scene: &str| {
                 run(
@@ -386,45 +409,169 @@ fn on_the_gpu_the_stage_rig_beside_the_studio_rig() {
                 .unwrap_or_else(|e| panic!("{id} {framing} in {scene}: {e:?}"))
             };
             let (before, after) = (shot("studio"), shot("show"));
-            let picture = image(&after.hash);
+            let (picture, studio) = (image(&after.hash), image(&before.hash));
             let corner = picture.get_pixel(0, 0).0;
-            let figure: Vec<_> =
-                picture.pixels().filter(|p| p.0.iter().zip(corner).any(|(a, b)| a.abs_diff(b) > 12)).collect();
-            let clipped = figure.iter().filter(|p| p.0[..3].iter().all(|c| *c >= 250)).count();
-            // Magenta light: red and blue both above green. Skin keeps its own hue under coloured light (the toon
-            // skin's hue-keep), so the tint shows on the hair the head spot falls on; the studio rig has none.
-            let magenta = |picture: &image::RgbaImage| {
-                picture
-                    .pixels()
-                    .filter(|p| {
-                        let [red, green, blue, _] = p.0.map(i32::from);
-                        red - green > 45 && blue - green > 10
-                    })
-                    .count()
-            };
-            let (tinted, in_studio) = (magenta(&picture), magenta(&image(&before.hash)));
+            // Lit: well clear of the house, so the faint glow bloom leaves around a bright head is not counted.
+            let differs = |p: &image::Rgba<u8>| p.0.iter().zip(corner).any(|(a, b)| a.abs_diff(b) > 30);
+            let figure = picture.pixels().filter(|p| differs(p)).count();
+            let clipped = picture.pixels().filter(|p| p.0[..3].iter().all(|c| *c >= 250)).count();
+            // The rim: the mean brightness of the figure's outline above the floor, where it meets the house.
+            let (mut edge, mut edge_light) = (0_u32, 0_u32);
+            for y in 1..SIZE[1] * 3 / 4 {
+                for x in 1..SIZE[0] - 1 {
+                    let here = picture.get_pixel(x, y);
+                    let outside =
+                        [(x - 1, y), (x + 1, y), (x, y - 1)].iter().any(|&(a, b)| !differs(picture.get_pixel(a, b)));
+                    if differs(here) && outside {
+                        edge += 1;
+                        edge_light += here.0[..3].iter().map(|&c| u32::from(c)).max().unwrap_or(0);
+                    }
+                }
+            }
+            let rim = if edge == 0 { 0 } else { edge_light / edge };
+            let hues = [290.0..=345.0, 170.0..=210.0].map(|hue| (count(&picture, hue.clone()), count(&studio, hue)));
             println!(
-                "{id} {framing}: {} figure pixels, {clipped} clipped white, {tinted} magenta ({in_studio} in the studio)",
-                figure.len()
+                "{id} {framing}: {figure} lit pixels, {clipped} clipped white, rim {rim}; magenta {:?}, cyan {:?} \
+                 (stage, studio)",
+                hues[0], hues[1]
             );
-            assert_eq!(in_studio, 0, "{id} {framing}: the studio rig tints nothing magenta");
-            found.push((format!("{id} {framing}"), corner, figure.len(), clipped, tinted));
-            cells.extend([before.uri, after.uri]);
+            found.push((format!("{id} {framing}"), corner, figure, clipped, rim, hues));
+            cells.extend([target_hash.to_string(), before.uri, after.uri]);
+            titles.extend([
+                "design target".to_owned(),
+                format!("{template} {framing}: studio"),
+                format!("{template} {framing}: stage"),
+            ]);
         }
     }
-    let op: ContactSheet = serde_json::from_value(json!({ "images": cells, "columns": 4 })).unwrap();
+    let op: ContactSheet = serde_json::from_value(json!({ "images": cells, "titles": titles, "columns": 3 })).unwrap();
     let sheet: ContactSheetResult = serde_json::from_value(harness.run(&op).expect("lays out").1).unwrap();
     if let Some(dir) = std::env::var_os("OMUZAKI_EVIDENCE_DIR") {
         let png = harness.store.get(&sheet.hash.parse().unwrap()).unwrap();
         std::fs::write(std::path::Path::new(&dir).join("scene-stage-rig-sheet.png"), png).unwrap();
     }
     // Checked after the sheet is written, so a failure leaves the picture to look at.
-    for (shot, corner, figure, clipped, tinted) in found {
-        assert!(corner[..3].iter().all(|c| *c < 24), "{shot}: the stage is near black, got {corner:?}");
-        assert!(figure > (SIZE[0] * SIZE[1]) as usize / 20, "{shot}: the character shows");
-        assert!(clipped * 200 < figure, "{shot}: {clipped} pixels of skin are clipped white");
-        assert!(tinted * 200 > figure, "{shot}: the head spot colours the hair ({tinted} of {figure})");
+    for (shot, corner, figure, clipped, rim, [magenta, cyan]) in found {
+        let pixels = (SIZE[0] * SIZE[1]) as usize;
+        assert!(corner[..3].iter().all(|c| *c < 24), "{shot}: the house is near black, got {corner:?}");
+        assert!(figure > pixels / 20, "{shot}: the character shows");
+        assert!(clipped * 200 < figure, "{shot}: {clipped} pixels are clipped white");
+        assert!(rim >= 90, "{shot}: the rim lifts the outline off the black (mean {rim})");
+        assert!(
+            magenta.0 >= 5 && magenta.0 > 3 * magenta.1,
+            "{shot}: magenta on the head ({magenta:?}, stage and studio)"
+        );
+        if shot.ends_with("full") {
+            assert!(
+                cyan.0 * 20 > figure && cyan.1 == 0,
+                "{shot}: the cyan pool on the floor ({cyan:?}, stage and studio)"
+            );
+        }
     }
+}
+
+/// The hue of `pixel` in degrees when it is saturated (above 0.45) and bright enough to read (value above 0.15).
+#[cfg(feature = "wgpu")]
+fn saturated_hue(pixel: [u8; 4]) -> Option<f32> {
+    let [r, g, b] = [0, 1, 2].map(|i| f32::from(pixel[i]) / 255.0);
+    let (high, low) = (r.max(g).max(b), r.min(g).min(b));
+    let chroma = high - low;
+    if high <= 0.15 || chroma / high <= 0.45 {
+        return None;
+    }
+    let sector = if high == r {
+        ((g - b) / chroma).rem_euclid(6.0)
+    } else if high == g {
+        (b - r) / chroma + 2.0
+    } else {
+        (r - g) / chroma + 4.0
+    };
+    Some(sector * 60.0)
+}
+
+/// The stage rig's design target (#1165), drawn here so it is the project's own: a figure on a dark floor in a black
+/// house, a magenta cone onto the head from high left, a cyan one onto the shoulders and chest from high right, an amber
+/// one onto the crown from behind, the pools they leave on the floor, and a cool rim tracing the figure's edge. A sketch
+/// of the intent, not a render: what the rig is tuned towards.
+#[cfg(feature = "wgpu")]
+fn stage_design_target(width: u32, height: u32) -> Vec<u8> {
+    let (w, h) = (width as f32, height as f32);
+    let ellipse =
+        |x: f32, y: f32, cx: f32, cy: f32, rx: f32, ry: f32| ((x - cx) / rx).powi(2) + ((y - cy) / ry).powi(2);
+    let head = (0.5 * w, 0.24 * h, 0.1 * h);
+    let figure = |x: f32, y: f32| {
+        let in_head = ellipse(x, y, head.0, head.1, head.2, head.2 * 1.05) <= 1.0;
+        // Shoulders to feet: a body that narrows from the shoulders to the hem, then two legs.
+        let t = (y - 0.34 * h) / (0.58 * h);
+        let half = if t < 0.0 {
+            0.0
+        } else if t < 0.55 {
+            (0.17 - 0.06 * t) * w
+        } else {
+            0.1 * w
+        };
+        let gap = t > 0.62 && (x - 0.5 * w).abs() < 0.02 * w;
+        in_head || ((0.0..=1.0).contains(&t) && (x - 0.5 * w).abs() <= half && !gap)
+    };
+    // A cone from `lamp` to `aim`, `spread` wide at the aim: its haze, strongest along the axis.
+    let cone = |x: f32, y: f32, lamp: (f32, f32), aim: (f32, f32), spread: f32| {
+        let (dx, dy) = (aim.0 - lamp.0, aim.1 - lamp.1);
+        let length = dx.hypot(dy);
+        let along = ((x - lamp.0) * dx + (y - lamp.1) * dy) / length;
+        if along <= 0.0 {
+            return 0.0;
+        }
+        let across = ((x - lamp.0) * dy - (y - lamp.1) * dx).abs() / length;
+        let radius = spread * along / length;
+        (1.0 - across / radius).clamp(0.0, 1.0)
+    };
+    let magenta = [1.0, 0.12, 0.62];
+    let cyan = [0.0, 0.78, 1.0];
+    let amber = [1.0, 0.62, 0.12];
+    let add = |to: &mut [f32; 3], colour: [f32; 3], amount: f32| (0..3).for_each(|i| to[i] += colour[i] * amount);
+    let picture = image::RgbaImage::from_fn(width, height, |column, row| {
+        let (x, y) = (column as f32 + 0.5, row as f32 + 0.5);
+        let mut c = [0.03, 0.027, 0.05];
+        // The floor, and the pools the three spots leave on it.
+        let floor = ellipse(x, y, 0.5 * w, 0.93 * h, 0.48 * w, 0.06 * h) <= 1.0;
+        if floor {
+            add(&mut c, [0.12, 0.115, 0.14], 1.0);
+            add(&mut c, magenta, 0.5 * (1.0 - ellipse(x, y, 0.62 * w, 0.95 * h, 0.16 * w, 0.03 * h)).max(0.0));
+            add(&mut c, cyan, 0.5 * (1.0 - ellipse(x, y, 0.36 * w, 0.94 * h, 0.18 * w, 0.035 * h)).max(0.0));
+            add(&mut c, amber, 0.35 * (1.0 - ellipse(x, y, 0.5 * w, 0.91 * h, 0.2 * w, 0.025 * h)).max(0.0));
+        }
+        // The cast's own shadow, forward of its feet.
+        if ellipse(x, y, 0.47 * w, 0.935 * h, 0.12 * w, 0.02 * h) <= 1.0 {
+            c = c.map(|v| v * 0.35);
+        }
+        if figure(x, y) {
+            let mut body = [0.36, 0.34, 0.38];
+            add(
+                &mut body,
+                magenta,
+                0.55 * (1.0 - ellipse(x, y, head.0 - 0.3 * head.2, head.1, 1.2 * head.2, 1.3 * head.2)).max(0.0),
+            );
+            add(&mut body, cyan, 0.5 * (1.0 - ellipse(x, y, 0.5 * w, 0.42 * h, 0.2 * w, 0.1 * h)).max(0.0));
+            add(&mut body, amber, 0.7 * (1.0 - ellipse(x, y, head.0, head.1 - head.2, head.2, 0.35 * head.2)).max(0.0));
+            c = body;
+        } else {
+            add(&mut c, magenta, 0.1 * cone(x, y, (0.0, 0.0), (head.0, head.1), 0.12 * w));
+            add(&mut c, cyan, 0.1 * cone(x, y, (w, 0.0), (0.5 * w, 0.42 * h), 0.16 * w));
+            add(&mut c, amber, 0.08 * cone(x, y, (0.5 * w, 0.0), (head.0, head.1 - head.2), 0.1 * w));
+            // The rim: a cool line just outside the figure's edge, where the light from behind wraps it.
+            let near = [(-2.0, 0.0), (2.0, 0.0), (0.0, -2.0), (-1.5, -1.5), (1.5, -1.5)]
+                .iter()
+                .any(|(ox, oy)| figure(x + ox, y + oy));
+            if near {
+                c = [0.55, 0.7, 1.0];
+            }
+        }
+        let byte = |v: f32| (v.clamp(0.0, 1.0).powf(1.0 / 2.2) * 255.0).round() as u8;
+        image::Rgba([byte(c[0]), byte(c[1]), byte(c[2]), 255])
+    });
+    let mut png = Vec::new();
+    picture.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+    png
 }
 
 /// A synthetic 4:3 room for backdrop tests: a wall darkening upward, a window of four panes with a sky gradient, and a
