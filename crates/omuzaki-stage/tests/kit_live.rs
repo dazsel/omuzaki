@@ -41,6 +41,7 @@ use omuzaki_stage::perform::host::PerformHost;
 use omuzaki_stage::perform::input::{InputHost, LiveInput, NoPrompt, SourceKind, SourceSlot};
 use omuzaki_stage::perform::live::LiveStage;
 use omuzaki_stage::perform::{STEP_HZ, Tracking};
+use omuzaki_stage::recipe::LightRig;
 use omuzaki_stage::{StageError, UploadOptions};
 use omuzaki_track_api::camera::CameraId;
 use omuzaki_track_api::tracker::TrackerConfig;
@@ -137,12 +138,18 @@ fn scene(built: &BuiltCharacter) -> Scene {
     let height = hi.y - lo.y;
     let fov_y_deg = 30.0_f32;
     let distance = 0.62 * height / (0.5 * fov_y_deg.to_radians()).tan();
-    Scene::new(Camera::look_at(
+    let mut scene = Scene::new(Camera::look_at(
         centre + Vec3::new(0.0, 0.0, distance),
         centre,
         Vec3::Y,
         Projection::Perspective { fov_y_deg, near: 0.05, far: 20.0 },
-    ))
+    ));
+    // The studio's own viewport light, so the performance frames show the character as the studio does.
+    let rig = LightRig::load("viewer-studio").unwrap();
+    scene.lights = rig.to_lights().unwrap();
+    scene.background = rig.background();
+    scene.post = rig.post(false);
+    scene
 }
 
 fn bounds(points: impl Iterator<Item = Vec3>) -> (Vec3, Vec3) {

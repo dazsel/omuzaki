@@ -3,15 +3,15 @@
 //!
 //! **Why the pelvis is its own section.** The body's thighs are almost touching where they leave the torso, and cloth
 //! cannot make two walls between them. So the trousers are one tube round both thighs from the waist down to where the
-//! legs part ([`crotch`]); the tube's section goes from the torso's own (at the bottom of the torso region) to a
-//! rounded rectangle round the two thighs ([`PairRing`]). Where the legs part, the ring splits in two by a chord down
-//! the middle, and each half morphs into its leg's ring over a short gusset.
+//! legs part ([`crotch`]); the tube's section goes from the torso's own (at the bottom of the torso region) to the
+//! outline round the two thighs and the pelvis's floor between them ([`Hull`]). Where the legs part, the ring splits in
+//! two by a chord down the middle, and each half morphs into its leg's ring over a short gusset.
 
-use omuzaki_char_api::JointRef;
+use omuzaki_char_api::{JointRef, RegionEnd};
 use omuzaki_core::glam::{DVec2, DVec3};
 
 use super::shape::MID_GAP;
-use crate::kit::curve::{TAU, fraction, lerp, sstep, sup};
+use crate::kit::curve::{TAU, fraction, lerp, sstep};
 use crate::kit::grid::{Grid, GridOptions, MeshBuilder, Skin};
 use crate::kit::skin::{MAX_INFLUENCES, limit_influences, normalise};
 use crate::outfit::common::GarmentError;
@@ -31,11 +31,10 @@ pub const GUSSET: f64 = 0.04;
 pub const MIN_FALL: f64 = 0.08;
 /// Rows from the bottom of the torso region to the crotch.
 pub const LOWER_ROWS: usize = 8;
-/// The exponent of the rounded rectangle round both thighs.
-pub const PAIR_EXPONENT: f64 = 4.0;
-/// How far outside the two leg rings the rectangle stands, metres: a rounded rectangle cannot hug two ellipses, and the
-/// legs' own ease is only just enough at its corners.
-pub const PAIR_MARGIN: f64 = 0.0015;
+/// Points taken round each ring the pelvis's outline holds.
+pub const HULL_SAMPLES: usize = 48;
+/// How far outside the rings it holds the outline stands, metres: its straight edges cut a ring's arc between samples.
+pub const HULL_MARGIN: f64 = 0.0015;
 /// How far down from the bottom of the torso region the pelvis tube is still the torso's cylinder, as a fraction of the
 /// way to the crotch, before it turns into the thighs' ring.
 pub const CYLINDER_FRACTION: f64 = 0.7;
@@ -150,48 +149,77 @@ pub fn crotch(legs: &[Surface; 2], from: f64, ease: f64) -> Result<f64, GarmentE
 
 // ------------------------------------------------------------------------------------------------------------ pelvis
 
-/// The rounded rectangle round both thighs at one height.
-pub struct PairRing {
+/// The outline round both thighs and what lies between them at one height: the convex hull of their rings, as cloth
+/// stretched round them bridges the dip between the thighs. Each thigh's own section counts, not its garment ring, which
+/// goes round the pelvis's floor as well and would stand far out round the hips; the floor is held as itself.
+pub struct Hull {
     centre: DVec3,
     across: DVec3,
     through: DVec3,
-    radii: DVec2,
+    /// The hull's corners in the plane (`across`, `through`), counter-clockwise, pushed out by [`HULL_MARGIN`].
+    corners: Vec<DVec2>,
 }
 
-impl PairRing {
-    /// The ring round the two leg rings at `t` of the legs (each ring is its leg's body section with the ease) and
-    /// round those at `until` further down, which the legs go on to: the legs are not always narrowest where they part.
+impl Hull {
+    /// The outline round `rings` in the plane through `centre` with the leg's `across` and `through`.
     ///
     /// # Errors
-    /// The surfaces' errors.
-    pub fn at(legs: &[Surface; 2], t: f64, until: f64) -> Result<Self, GarmentError> {
-        let (left, right) = (legs[0].ring(t)?, legs[1].ring(t)?);
-        let centre = (left.centre + right.centre) / 2.0;
-        let (across, through) = (left.across, left.through);
-        let below = [legs[0].ring(until)?, legs[1].ring(until)?];
-        let rings = [left, right, below[0], below[1]];
-        let offset = |ring: &Ring| {
-            let d = ring.centre - centre;
-            DVec2::new(d.dot(across).abs(), d.dot(through).abs())
-        };
-        // Wide enough to reach the outside of the farthest leg, then deep enough that the rounded rectangle passes
-        // over the front (and back) of each leg's ellipse where it is farthest from the middle: the rectangle dips
-        // between the two thighs' fronts, so the depth of a leg is divided by how far it dips at that leg's centre.
-        let width = rings.iter().map(|r| offset(r).x + r.radii.x).fold(0.0, f64::max) + PAIR_MARGIN;
-        let depth = rings
+    /// [`GarmentError::Invalid`] if the rings don't surround `centre` (it lies outside their hull).
+    pub fn round(centre: DVec3, across: DVec3, through: DVec3, rings: &[Ring]) -> Result<Self, GarmentError> {
+        let mut points: Vec<DVec2> = rings
             .iter()
-            .map(|r| {
-                let o = offset(r);
-                let dip = (1.0 - (o.x / width).powf(PAIR_EXPONENT)).max(f64::EPSILON).powf(1.0 / PAIR_EXPONENT);
-                (o.y + r.radii.y) / dip
+            .flat_map(|ring| {
+                (0..HULL_SAMPLES).map(move |k| {
+                    let d = ring.point(TAU * fraction(k, HULL_SAMPLES)) - centre;
+                    DVec2::new(d.dot(across), d.dot(through))
+                })
             })
-            .fold(0.0, f64::max)
-            + PAIR_MARGIN;
-        Ok(Self { centre, across, through, radii: DVec2::new(width, depth) })
+            .collect();
+        let mut corners = convex_hull(&mut points);
+        // Each corner out along the bisector of its two edges' normals, so every edge stands the margin out.
+        let n = corners.len();
+        if n < 3 {
+            return Err(GarmentError::invalid("legs", "the thighs' rings have no outline round them"));
+        }
+        let normal = |a: DVec2, b: DVec2| {
+            let e = (b - a).normalize_or_zero();
+            DVec2::new(e.y, -e.x)
+        };
+        let moved: Vec<DVec2> = (0..n)
+            .map(|i| {
+                let (prev, here, next) = (corners[(i + n - 1) % n], corners[i], corners[(i + 1) % n]);
+                let (a, b) = (normal(prev, here), normal(here, next));
+                let mid = (a + b).normalize_or_zero();
+                let cos = mid.dot(a).max(0.5);
+                here + mid * (HULL_MARGIN / cos)
+            })
+            .collect();
+        corners = moved;
+        let hull = Self { centre, across, through, corners };
+        if hull.reach(DVec2::X).is_none() {
+            return Err(GarmentError::invalid("legs", "the thighs' outline doesn't surround the middle of the pelvis"));
+        }
+        Ok(hull)
     }
 
-    /// `p` pushed out along the ray from the ring's centre to the ring's edge, if it is inside it: the point of the ring
-    /// in the direction of `p`.
+    /// How far the outline lies from the centre in the plane's direction `dir` (unit): where the ray leaves the hull.
+    fn reach(&self, dir: DVec2) -> Option<f64> {
+        let n = self.corners.len();
+        (0..n).find_map(|i| {
+            let (a, b) = (self.corners[i], self.corners[(i + 1) % n]);
+            let e = b - a;
+            // The ray `dir * s` meets the edge `a + e * u`: solve `dir * s - e * u = a`.
+            let det = e.x * dir.y - e.y * dir.x;
+            if det.abs() <= f64::EPSILON {
+                return None;
+            }
+            let s = (e.x * a.y - e.y * a.x) / det;
+            let u = (dir.x * a.y - dir.y * a.x) / det;
+            (s > 0.0 && (-1e-12..=1.0 + 1e-12).contains(&u)).then_some(s)
+        })
+    }
+
+    /// `p` pushed out along the ray from the centre to the outline, if it is inside it.
     pub fn enclose(&self, p: DVec3) -> DVec3 {
         let v = p - self.centre;
         let (x, z) = (v.dot(self.across), v.dot(self.through));
@@ -199,21 +227,73 @@ impl PairRing {
         if len <= f64::EPSILON {
             return p;
         }
-        let (ux, uz) = (x / len, z / len);
-        let reach = ((ux.abs() / self.radii.x).powf(PAIR_EXPONENT) + (uz.abs() / self.radii.y).powf(PAIR_EXPONENT))
-            .powf(-1.0 / PAIR_EXPONENT);
-        if len >= reach {
-            return p;
+        let dir = DVec2::new(x, z) / len;
+        match self.reach(dir) {
+            Some(reach) if reach > len => p + (self.across * dir.x + self.through * dir.y) * (reach - len),
+            _ => p,
         }
-        p + (self.across * ux + self.through * uz) * (reach - len)
     }
 
-    /// The point at `phi`.
+    /// The point of the outline at `phi` (from the front, `phi = 0`, towards `across`).
     pub fn point(&self, phi: f64) -> DVec3 {
-        self.centre
-            + self.across * (sup(phi.sin(), PAIR_EXPONENT) * self.radii.x)
-            + self.through * (sup(phi.cos(), PAIR_EXPONENT) * self.radii.y)
+        let dir = DVec2::new(phi.sin(), phi.cos());
+        let reach = self.reach(dir).unwrap_or(0.0);
+        self.centre + (self.across * dir.x + self.through * dir.y) * reach
     }
+}
+
+/// The convex hull of `points`, counter-clockwise (Andrew's monotone chain); sorts `points`.
+fn convex_hull(points: &mut [DVec2]) -> Vec<DVec2> {
+    points.sort_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)));
+    let turns_left = |hull: &[DVec2], p: DVec2| {
+        let (o, a) = (hull[hull.len() - 2], hull[hull.len() - 1]);
+        (a - o).perp_dot(p - o) > 0.0
+    };
+    let mut hull: Vec<DVec2> = Vec::with_capacity(points.len() + 1);
+    for &p in points.iter() {
+        while hull.len() >= 2 && !turns_left(&hull, p) {
+            hull.pop();
+        }
+        hull.push(p);
+    }
+    let lower = hull.len() + 1;
+    for &p in points.iter().rev().skip(1) {
+        while hull.len() >= lower && !turns_left(&hull, p) {
+            hull.pop();
+        }
+        hull.push(p);
+    }
+    hull.pop();
+    hull
+}
+
+/// The outline of the pelvis at the plane through `centre`: round the thighs' own rings at each of `ts` along the legs
+/// (a row's own and its neighbours', so the cloth between two rows clears a thigh swelling between them),
+/// their garment rings at `until` further down if given (the legs are not always narrowest where they part), and the pelvis's
+/// floor (the torso's cap) where it reaches that plane.
+fn outline(
+    torso: &Surface,
+    legs: &[Surface; 2],
+    centre: DVec3,
+    ts: &[f64],
+    until: Option<f64>,
+) -> Result<Hull, GarmentError> {
+    let mut rings = Vec::with_capacity(2 * ts.len() + 3);
+    for &t in ts {
+        rings.extend([legs[0].body_ring(t)?, legs[1].body_ring(t)?]);
+    }
+    let Some(&first) = rings.first() else {
+        return Err(GarmentError::invalid("legs", "the pelvis's outline needs the thighs' rings"));
+    };
+    if let Some(until) = until {
+        rings.extend([legs[0].ring(until)?, legs[1].ring(until)?]);
+    }
+    let bottom = torso.ring(0.0)?;
+    let below = (bottom.centre - centre).dot(bottom.axis);
+    if let Some(floor) = torso.cap_ring(RegionEnd::Start, below)? {
+        rings.push(floor);
+    }
+    Hull::round(centre, first.across, first.through, &rings)
 }
 
 /// The angle of column `j` of the pelvis: a full turn, the last column exactly the first.
@@ -261,8 +341,8 @@ pub fn pelvis_rows(
     // How far down the torso the thighs start taking over the skin, and how far the crotch is.
     let skin_from = bottom.centre + up * (THIGH_SKIN_FROM * length);
     let until = crotch_t + GUSSET;
-    let crotch_pair = PairRing::at(legs, crotch_t, until)?;
-    let reach = (skin_from - crotch_pair.centre).dot(up).max(f64::EPSILON);
+    let crotch_centre = (legs[0].ring(crotch_t)?.centre + legs[1].ring(crotch_t)?.centre) / 2.0;
+    let reach = (skin_from - crotch_centre).dot(up).max(f64::EPSILON);
     let share = |height: DVec3| sstep(0.0, 1.0, (skin_from - height).dot(up) / reach);
     let mut rows = Vec::new();
     for &t in torso_ts {
@@ -272,9 +352,9 @@ pub fn pelvis_rows(
         // Where the legs have started (they begin above the bottom of the torso region), the cloth must also clear them:
         // on a body whose hips are narrower than its thighs the legs poke out of the torso's section.
         if let Some(at) = legs[0].project(ring.centre)? {
-            let pair = PairRing::at(legs, at.t, at.t)?;
+            let hull = outline(torso, legs, ring.centre, &[at.t], None)?;
             for p in &mut points {
-                *p = pair.enclose(*p);
+                *p = hull.enclose(*p);
             }
         }
         let weights = torso.weights().at(t);
@@ -286,7 +366,7 @@ pub fn pelvis_rows(
     let weights = torso.weights().at(0.0);
     // The rows go straight down from the bottom of the torso region to the crotch, however the legs lean: a row that
     // rose above that plane would be inside the torso.
-    let step = crotch_pair.centre - bottom.centre;
+    let step = crotch_centre - bottom.centre;
     let fall = -step.dot(up);
     if fall <= 0.0 {
         return Err(GarmentError::invalid("legs", "the legs part above the bottom of the torso"));
@@ -294,16 +374,17 @@ pub fn pelvis_rows(
     let sideways = step - up * step.dot(up);
     for r in 1..=LOWER_ROWS {
         let u = fraction(r, LOWER_ROWS);
-        let pair = PairRing::at(legs, lerp(leg_top, crotch_t, u), until)?;
         let centre = bottom.centre - up * (fall * u) + sideways * u;
+        let along = |r: usize| lerp(leg_top, crotch_t, fraction(r.min(LOWER_ROWS), LOWER_ROWS));
+        let hull = outline(torso, legs, centre, &[along(r - 1), along(r), along(r + 1)], Some(until))?;
         let blend = sstep(0.0, CYLINDER_FRACTION, u);
         let points: Vec<DVec3> = (0..=PELVIS_SEGMENTS)
             .map(|j| {
                 let c = cylinder[j];
-                let p = pair.point(pelvis_phi(j)) - pair.centre;
+                let p = hull.point(pelvis_phi(j)) - centre;
                 centre + c + (p - c) * blend
             })
-            .map(|q| pair.enclose(q))
+            .map(|q| hull.enclose(q))
             .collect();
         let thighs_share = if r == LOWER_ROWS { 1.0 } else { share(centre) };
         let skins = points.iter().map(|p| pelvis_skin(&weights, thighs, p.x, separation, thighs_share)).collect();
@@ -320,7 +401,7 @@ pub fn pelvis_rows(
 /// `side` is `+1` for the leg on the +x side and `-1` for the other.
 ///
 /// # Errors
-/// [`GarmentError::Invalid`] if the leg's ring isn't inside the pelvis ring's half (the pair ring doesn't enclose it);
+/// [`GarmentError::Invalid`] if the leg's ring isn't inside the pelvis ring's half (the thighs' outline doesn't hold it);
 /// the surfaces' errors.
 #[allow(clippy::too_many_arguments)] // the leg's whole description: its surface, side, the rows above and where it runs
 pub fn leg_rows(
@@ -377,7 +458,7 @@ pub fn leg_rows(
             return Err(GarmentError::invalid(
                 "legs",
                 format!(
-                    "the leg's ring at column {m} of the gusset is {:.2} mm outside the thighs' ring: widen the pair",
+                    "the leg's ring at column {m} of the gusset is {:.2} mm outside the thighs' outline",
                     (reach_c - reach_v) * 1e3
                 ),
             ));

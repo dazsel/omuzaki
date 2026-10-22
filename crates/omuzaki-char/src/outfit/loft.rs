@@ -147,29 +147,7 @@ pub fn ring_at(
     check_exponent(exponent)?;
     #[allow(clippy::cast_possible_truncation)] // a fit is sampled in f32
     let section = fit.section(region, t as f32).ok_or(GarmentError::NoSection { region, t })?;
-    let finite = section.centre.is_finite() && section.axis.is_finite() && section.radii.is_finite();
-    let axis = section.axis.as_dvec3().try_normalize().filter(|_| finite);
-    let Some(axis) = axis else {
-        return Err(GarmentError::invalid("section", format!("{region:?} at t = {t} is not finite or has no axis")));
-    };
-    let radii = section.radii.as_dvec2() + DVec2::splat(offset);
-    if !(radii.is_finite() && radii.min_element() >= MIN_RADIUS) {
-        return Err(GarmentError::invalid(
-            "ring",
-            format!("{region:?} at t = {t}: radii {radii} are below {MIN_RADIUS} m with offset {offset}"),
-        ));
-    }
-    let (across, through) = section_basis(region, axis.as_vec3());
-    let mut ring = Ring {
-        region,
-        t,
-        centre: section.centre.as_dvec3(),
-        axis,
-        across: across.as_dvec3(),
-        through: through.as_dvec3(),
-        radii,
-        exponent,
-    };
+    let mut ring = plain_ring(&section, region, t, exponent, offset)?;
     // A ring inside the body's sections (a negative offset) stays inside them.
     match region {
         _ if offset < 0.0 => {}
@@ -193,6 +171,33 @@ pub fn ring_at(
         _ => {}
     }
     Ok(ring)
+}
+
+/// The ring of `section` of `region` (at `t`), pushed out by `offset` and cut with `exponent`, clearing nothing.
+fn plain_ring(section: &Section, region: BodyRegion, t: f64, exponent: f64, offset: f64) -> Result<Ring, GarmentError> {
+    let finite = section.centre.is_finite() && section.axis.is_finite() && section.radii.is_finite();
+    let axis = section.axis.as_dvec3().try_normalize().filter(|_| finite);
+    let Some(axis) = axis else {
+        return Err(GarmentError::invalid("section", format!("{region:?} at t = {t} is not finite or has no axis")));
+    };
+    let radii = section.radii.as_dvec2() + DVec2::splat(offset);
+    if !(radii.is_finite() && radii.min_element() >= MIN_RADIUS) {
+        return Err(GarmentError::invalid(
+            "ring",
+            format!("{region:?} at t = {t}: radii {radii} are below {MIN_RADIUS} m with offset {offset}"),
+        ));
+    }
+    let (across, through) = section_basis(region, axis.as_vec3());
+    Ok(Ring {
+        region,
+        t,
+        centre: section.centre.as_dvec3(),
+        axis,
+        across: across.as_dvec3(),
+        through: through.as_dvec3(),
+        radii,
+        exponent,
+    })
 }
 
 /// Points taken round a neighbour's section that a ring clears.
@@ -722,6 +727,40 @@ impl Surface {
             rings.insert(t.to_bits(), ring);
         }
         Ok(ring)
+    }
+
+    /// The body's own ring at `t`: its section pushed out by the offset, without clearing the neighbours [`ring`]
+    /// clears (a thigh's ring here doesn't go round the pelvis's floor).
+    ///
+    /// [`ring`]: Self::ring
+    ///
+    /// # Errors
+    /// As [`ring_at`].
+    pub fn body_ring(&self, t: f64) -> Result<Ring, GarmentError> {
+        if !(0.0..=1.0).contains(&t) {
+            return Err(GarmentError::invalid("ring", format!("t = {t} must be in 0..=1")));
+        }
+        #[allow(clippy::cast_possible_truncation)] // a fit is sampled in f32
+        let section = self.fit.section(self.region, t as f32).ok_or(GarmentError::NoSection { region: self.region, t })?;
+        plain_ring(&section, self.region, t, self.exponent, self.offset)
+    }
+
+    /// The ring of the region's cap `height` metres past `end` ([`BodyFit::cap`]), pushed out by the offset; `None`
+    /// where the cap doesn't reach.
+    ///
+    /// # Errors
+    /// As [`ring_at`].
+    pub fn cap_ring(&self, end: RegionEnd, height: f64) -> Result<Option<Ring>, GarmentError> {
+        if !(height >= 0.0 && height.is_finite()) {
+            return Ok(None);
+        }
+        #[allow(clippy::cast_possible_truncation)] // a fit is sampled in f32
+        let Some(section) = self.fit.cap(self.region, end, height as f32) else { return Ok(None) };
+        let t = match end {
+            RegionEnd::Start => 0.0,
+            RegionEnd::End => 1.0,
+        };
+        plain_ring(&section, self.region, t, self.exponent, self.offset).map(Some)
     }
 
     /// The point at `(t, phi)`.
