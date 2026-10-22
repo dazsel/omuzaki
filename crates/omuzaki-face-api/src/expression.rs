@@ -131,6 +131,67 @@ impl IntensityCurve {
     }
 }
 
+/// The layer a shown expression plays on (FE-03 "layers").
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaybackLayer {
+    /// It stays until it is hidden or replaced: a mood the performer sets.
+    #[default]
+    Held,
+    /// It plays over the held ones, which step back while it shows and return when it ends: a wink, a sweat drop.
+    Momentary,
+}
+
+/// How an expression plays when a trigger shows it (spec FE-03: fades, auto-stop, exclusive groups, layers). The
+/// trigger runtime (PF-25) reads it; the player in `omuzaki-face` (`player`) runs it. Lip sync and scores give weights
+/// directly and don't use it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Playback {
+    /// Seconds to fade in, `0..=10`; 0 shows it at once.
+    pub fade_in_s: f64,
+    /// Seconds to fade out, `0..=10`.
+    pub fade_out_s: f64,
+    /// Hide it on its own this many seconds after it is shown, `0.05..=600`; left out, it stays until hidden.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_stop_s: Option<f64>,
+    /// Its exclusive group: showing an expression hides every other one in the same group (one mood at a time).
+    /// Lowercase letters, digits, `_` and `-`; left out, it is in no group.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// Held (stays) or momentary (plays over the held ones).
+    pub layer: PlaybackLayer,
+}
+
+impl Default for Playback {
+    fn default() -> Self {
+        Self { fade_in_s: 0.12, fade_out_s: 0.2, auto_stop_s: None, group: None, layer: PlaybackLayer::Held }
+    }
+}
+
+impl Playback {
+    /// True for the default playback, which files leave out.
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+impl crate::check::Validate for Playback {
+    fn check(&self, c: &mut crate::check::Check) {
+        c.range("fade_in_s", self.fade_in_s, 0.0, 10.0);
+        c.range("fade_out_s", self.fade_out_s, 0.0, 10.0);
+        if let Some(stop) = self.auto_stop_s {
+            c.range("auto_stop_s", stop, 0.05, 600.0);
+        }
+        if let Some(group) = &self.group {
+            let ok = !group.is_empty()
+                && group.len() <= 32
+                && group.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-');
+            c.rule(&["group"], ok, "a group is 1 to 32 lowercase letters, digits, '_' or '-'");
+        }
+    }
+}
+
 /// One named expression.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -142,6 +203,10 @@ pub struct Expression {
     /// The weight curve; linear unless a curve is given.
     #[serde(default = "linear")]
     pub curve: IntensityCurve,
+    /// How it plays when a trigger shows it; the default (fade in 0.12 s, out 0.2 s, held, no group, no auto-stop) is
+    /// left out of files.
+    #[serde(default, skip_serializing_if = "Playback::is_default")]
+    pub playback: Playback,
 }
 
 fn linear() -> IntensityCurve {
@@ -295,7 +360,10 @@ impl ExpressionSet {
             .into_iter()
             .filter_map(|(name, kind, deltas)| {
                 let deltas = deltas.iter().fold(ChannelValues::default(), |m, (c, v)| m.with(*c, *v));
-                Some((ExpressionId::new(name).ok()?, Expression { kind, deltas, curve: IntensityCurve::Linear }))
+                Some((
+                    ExpressionId::new(name).ok()?,
+                    Expression { kind, deltas, curve: IntensityCurve::Linear, playback: Playback::default() },
+                ))
             })
             .collect();
         Self(map)

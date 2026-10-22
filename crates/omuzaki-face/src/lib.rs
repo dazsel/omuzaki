@@ -29,6 +29,7 @@
 //! | [`preview`] | pictures of a face for the tools (sweep, range test): paint, compare, contact sheets |
 //! | [`underlay`] | tracing a sheet face under the painted one |
 //! | [`ops`] | the registered face ops: `style`, `mapping`, `rest`, `expression`, `exaggeration`, `sweep`, `range_test` |
+//! | [`player`] | the expression player: fades, auto-stop, exclusive groups, layers and the default expression |
 //! | [`exaggeration`] | the exaggeration dial: presets from realistic through anime to chibi extreme |
 //! | [`bake`] | the expression bakers (`morph`, `flipbook`) |
 //!
@@ -43,6 +44,7 @@ pub mod ops;
 /// every folder there `pub`, and these are crate-private.
 mod ops_shared;
 pub mod painter;
+pub mod player;
 pub mod preview;
 pub mod raster;
 pub mod system;
