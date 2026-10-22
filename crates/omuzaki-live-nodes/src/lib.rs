@@ -5,6 +5,7 @@
 //!
 //! | Folder | Node ids |
 //! |---|---|
+//! | [`chat`] | `chat.command`: a chat command, with arguments, a least role and cooldowns |
 //! | [`event`] | `on.event`: the trigger on any event kind, with `where` and `min` filters |
 //! | [`emit`] | `event.emit`: sends a `custom.<name>` event other automations hear |
 //! | [`flow`] | `flow.wait`, `flow.random`, `flow.sequence`, `flow.switch`, `flow.branch`, `flow.then`, `flow.cooldown`, `flow.gate` |
@@ -22,6 +23,7 @@ omuzaki_core::define_link! {
     omuzaki_live_api::link();
 }
 
+pub mod chat;
 pub mod emit;
 pub mod event;
 pub mod flow;

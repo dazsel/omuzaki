@@ -100,4 +100,10 @@ omuzaki_l10n_api::messages! {
     /// A group switch the show refused.
     pub group_refused = "live-nodes-group-refused" (group: Id, reason: Verbatim)
         => "{ $group } wasn't switched: { $reason }";
+    /// A chat command's name, alias or prefix with a space in it, or empty.
+    pub command_not_one_word = "live-nodes-command-not-one-word" ()
+        => "This has to be one word, with no spaces.";
+    /// A cooldown that isn't a number of seconds from 0 up.
+    pub bad_seconds = "live-nodes-bad-seconds" ()
+        => "This has to be a number of seconds, 0 or more.";
 }
