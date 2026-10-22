@@ -491,7 +491,8 @@ impl BodyFit for Envelope {
         }
         // The garment's own ring, which also clears what closes into the region (the thighs round the hips).
         let section = self.inner.section(region, t).map(|inner| {
-            let ring = super::loft::ring_at(self.inner.as_ref(), region, f64::from(t), self.exponent, f64::from(self.ease));
+            let ring =
+                super::loft::ring_at(self.inner.as_ref(), region, f64::from(t), self.exponent, f64::from(self.ease));
             let radii = ring.map_or(inner.radii + Vec2::splat(self.ease), |ring| ring.radii.as_vec2());
             Section { radii: radii * self.scale, ..inner }
         });

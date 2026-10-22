@@ -22,7 +22,9 @@ use omuzaki_char::outfit::neckwear::collar::{self, CollarParams, CollarStyle};
 use omuzaki_char::outfit::neckwear::tie::{self, TieParams};
 use omuzaki_char::outfit::shirt::frame::{Column, shirt_shell};
 use omuzaki_char::outfit::shirt::{SHIRT_EXPONENT, ShirtParams};
-use omuzaki_char_api::{BuildServices, FitFact, KindProvenance, PartCategory, PartDef, PartId, PartKindId, find_kind};
+use omuzaki_char_api::{
+    BodyRegion, BuildServices, FitFact, KindProvenance, PartCategory, PartDef, PartId, PartKindId, find_kind,
+};
 use omuzaki_core::glam::{DVec2, DVec3};
 use omuzaki_face_api::Validate;
 use omuzaki_face_mock::MockRasterizer;
@@ -199,7 +201,9 @@ fn collar_and_tie_stay_off_the_body_and_the_shirt_on_every_template_and_shape() 
             let stack = stack(template, &shape, &CollarParams::default(), &TieParams::default());
             let fits = &stack.published.get::<FitFact>().fits;
             assert_eq!(fits.len(), 2, "{case}: only the body and the shirt publish a fit");
-            let body = Column::new(fits[0].clone(), 2.0).unwrap();
+            // The body is its torso's and neck's own sections, as the conformance suite measures them: a column round the
+            // torso clears the arms' roots, which swells it at the front too.
+            let body = conformance::Tables::of(fits[0].as_ref());
             let shirt = Column::new(shirt_shell(fits[1].clone(), SHIRT_EXPONENT), SHIRT_EXPONENT).unwrap();
             // The collar's inner shell is 2 mm over the shirt at its lower edge. The tie lies on it, its knot's back sunk 0.4 mm
             // into the cloth as the prototype's is (the superellipse and the section ellipse differ a little more).
@@ -209,7 +213,12 @@ fn collar_and_tie_stay_off_the_body_and_the_shirt_on_every_template_and_shape() 
                     let point = |i: u32| g.positions[i as usize].as_dvec3();
                     let mut least = f64::INFINITY;
                     let mut check = |p: DVec3, what: &str| {
-                        let (b, s) = (outside(&body, p), outside(&shirt, p));
+                        let b = conformance::located(&body, p)
+                            .into_iter()
+                            .filter(|(region, _, _)| matches!(region, BodyRegion::Torso | BodyRegion::Neck))
+                            .map(|(_, _, d)| d)
+                            .fold(f64::INFINITY, f64::min);
+                        let s = outside(&shirt, p);
                         let on_vertex = what.starts_with("vertex");
                         if on_vertex {
                             least = least.min(s);

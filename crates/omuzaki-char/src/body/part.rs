@@ -4,8 +4,8 @@
 use std::sync::Arc;
 
 use omuzaki_char_api::{
-    BodyParams, BodyRegion, BuildCtx, BuildError, FitFact, KindProvenance, MaterialName, MaterialSpec, PartCategory, PartKind,
-    PartMesh, PartMeta, PartOutput, Publishes, StatureFact, register_part_kind,
+    BodyParams, BodyRegion, BuildCtx, BuildError, FitFact, KindProvenance, MaterialName, MaterialSpec, PartCategory,
+    PartKind, PartMesh, PartMeta, PartOutput, Publishes, StatureFact, register_part_kind,
 };
 use omuzaki_core::colour::Colour;
 use omuzaki_core::mesh::MeshData;

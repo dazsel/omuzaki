@@ -328,10 +328,8 @@ impl Table {
         for side in 0..4 {
             let peaks: Vec<(f64, f64)> = self.extra.iter().zip(&along).map(|(e, s)| (*s, e[side])).collect();
             for (extra, at) in self.extra.iter_mut().zip(&along) {
-                let eased = peaks
-                    .iter()
-                    .map(|&(s, e)| e - (at - s).powi(2) / (2.0 * radius))
-                    .fold(f64::NEG_INFINITY, f64::max);
+                let eased =
+                    peaks.iter().map(|&(s, e)| e - (at - s).powi(2) / (2.0 * radius)).fold(f64::NEG_INFINITY, f64::max);
                 extra[side] = extra[side].max(eased);
             }
         }
@@ -423,6 +421,15 @@ impl BodyMeshFit {
         for table in &mut tables {
             table.settle_all();
         }
+        // Each cap starts from its end's section as the fit publishes it.
+        for ((region, end), cap) in &mut caps {
+            if let Some(table) = tables.iter().find(|t| t.region == *region) {
+                cap.base = match end {
+                    RegionEnd::Start => table.extra[0],
+                    RegionEnd::End => table.extra[table.extra.len() - 1],
+                };
+            }
+        }
         Self { base, tables: tables.into_iter().map(|t| (t.region, t)).collect(), caps }
     }
 
@@ -503,6 +510,12 @@ struct Cap {
     top: f64,
     /// Per slab, from the end's plane up: how far its ellipse reaches past the end row's layout ellipse.
     slabs: Vec<Reach>,
+    /// How far the end's own section, as the fit publishes it, reaches past that ellipse: the cap's start.
+    base: Reach,
+    /// The radius the region's reaches are eased with ([`EASE_RADIUS`], [`TORSO_EASE_RADIUS`]).
+    radius: f64,
+    /// Whether cloth drapes off it at 45 degrees (a thigh's dome under the hips), up its slabs and on over its top.
+    drape: bool,
 }
 
 impl Cap {
@@ -532,7 +545,8 @@ impl Cap {
             // The vertices in the slab (the rim, on the end's plane, among them: the edges' ends there), and where
             // edges cross its two faces.
             let within = |d: f64| d >= low - END_SLACK && d <= high;
-            let mut points: Vec<DVec2> = vertices.iter().filter(|p| within(height(**p))).map(|p| in_plane(*p)).collect();
+            let mut points: Vec<DVec2> =
+                vertices.iter().filter(|p| within(height(**p))).map(|p| in_plane(*p)).collect();
             for &(a, b) in segments {
                 let (ha, hb) = (height(a), height(b));
                 points.extend([(a, ha), (b, hb)].into_iter().filter(|(_, d)| within(*d)).map(|(p, _)| in_plane(p)));
@@ -549,24 +563,76 @@ impl Cap {
                 (true, None) => return None,
             }
         }
-        Some(Self { row, outward, top, slabs })
+        // Cloth round the hips falls away from a thigh's dome at 45 degrees at the steepest: no side of a slab retreats
+        // from the one below by more than the slab's height. (The other caps are cleared only near their own region's
+        // end, where the cloth is the limb's own.)
+        let step = top * fraction(1, CAP_LEVELS);
+        let drape = matches!(table.region, BodyRegion::LegL | BodyRegion::LegR) && end == RegionEnd::Start;
+        for k in (1..slabs.len()).filter(|_| drape) {
+            let below = slabs[k - 1];
+            for (side, low) in slabs[k].iter_mut().zip(below) {
+                *side = side.max(low - step);
+            }
+        }
+        let radius = if table.region == BodyRegion::Torso { TORSO_EASE_RADIUS } else { EASE_RADIUS };
+        Some(Self { row, outward, top, slabs, base: [0.0; 4], radius, drape })
     }
 
-    /// The section `height` past the end's plane, if the cap reaches that far.
+    /// The section `height` past the end's plane, if the cap reaches that far. Past the top it narrows to nothing, so
+    /// a surface held clear of the cap runs on smoothly past the dome's top instead of stepping off a slab's whole
+    /// ellipse. A draped cap draws in at 45 degrees from the top slab's middle on, every side by the height climbed
+    /// (a slab's own reach would stand straight up through the top half of the slab, and cloth held clear of it would
+    /// ripple as each of its slices passed through); any other narrows over one slab's height past the top, round the
+    /// top slab's centre.
     fn section(&self, height: f64) -> Option<Section> {
-        if !(0.0..=self.top).contains(&height) {
+        if !(0.0..).contains(&height) {
             return None;
         }
-        // Between the middles of the two slabs either side; the first's or last's own below or above theirs.
-        let at = (height / self.top * fraction(self.slabs.len(), 1) - 0.5).max(0.0);
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a non-negative slab index
-        let k = (at.floor() as usize).min(self.slabs.len() - 1);
-        let (a, b) = (self.slabs[k], self.slabs[(k + 1).min(self.slabs.len() - 1)]);
-        let s = (at - fraction(k, 1)).clamp(0.0, 1.0);
-        let reach: Reach = std::array::from_fn(|i| a[i] + (b[i] - a[i]) * s);
+        if self.drape {
+            let knee = self.top * (1.0 - 0.5 * fraction(1, self.slabs.len()));
+            if height <= knee {
+                return Some(self.of_reach(height, self.reach(height), 1.0));
+            }
+            let reach = self.reach(knee).map(|side| side - (height - knee));
+            let (_, radii) = ellipse(self.row.radii, reach);
+            return (radii.min_element() > 0.0).then(|| self.of_reach(height, reach, 1.0));
+        }
+        let past = height - self.top;
+        if past <= 0.0 {
+            return Some(self.of_reach(height, self.reach(height), 1.0));
+        }
+        let taper = self.top * fraction(1, self.slabs.len());
+        (past < taper).then(|| self.of_reach(height, self.reach(self.top), 1.0 - past / taper))
+    }
+
+    /// The section `height` past the end's plane with `reach`, its radii scaled by `shrink`.
+    fn of_reach(&self, height: f64, reach: Reach, shrink: f64) -> Section {
         let (offset, radii) = ellipse(self.row.radii, reach);
+        let radii = radii * shrink;
         let centre = self.row.centre + self.outward * height + self.row.across * offset.x + self.row.through * offset.y;
-        Some(Section { centre: centre.as_vec3(), axis: self.row.axis.as_vec3(), radii: radii.as_vec2() })
+        Section { centre: centre.as_vec3(), axis: self.row.axis.as_vec3(), radii: radii.as_vec2() }
+    }
+
+    /// The cap's reach `height` (`0..=top`) past the end's plane.
+    fn reach(&self, height: f64) -> Reach {
+        // Between the middles of the two slabs either side; below the first's, from the end's own section on its plane
+        // (so a stack of slices passing from the region's sections onto its cap doesn't step), and the last's own above
+        // its middle.
+        let at = height.min(self.top) / self.top * fraction(self.slabs.len(), 1) - 0.5;
+        let slab: Reach = if at < 0.0 {
+            let s = (at + 0.5) * 2.0;
+            std::array::from_fn(|i| self.base[i] + (self.slabs[0][i] - self.base[i]) * s)
+        } else {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a non-negative slab index
+            let k = (at.floor() as usize).min(self.slabs.len() - 1);
+            let (a, b) = (self.slabs[k], self.slabs[(k + 1).min(self.slabs.len() - 1)]);
+            let s = (at - fraction(k, 1)).clamp(0.0, 1.0);
+            std::array::from_fn(|i| a[i] + (b[i] - a[i]) * s)
+        };
+        // The end's section eases on into the cap as the region's rows ease into each other: where the fit stands
+        // wider than the cap's mesh, it falls back over an arc rather than a half slab.
+        let fall = height.powi(2) / (2.0 * self.radius);
+        std::array::from_fn(|i| slab[i].max(self.base[i] - fall))
     }
 }
 

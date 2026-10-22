@@ -351,7 +351,8 @@ pub trait BodyFit: Debug + Send + Sync {
     /// rising into the pelvis, the pelvis's floor between the thighs, an arm's root curling into the shoulder, the hand
     /// past the wrist. The cross-section of what lies `height` metres past the plane of the end's section, along the
     /// region's axis, taken from a thin slab there and running smoothly from one slab to the next, so a stack of them
-    /// follows a cap that leans or curls; `None` past the cap's top, or where the region has none. A garment round a
+    /// follows a cap that leans or curls, and narrowing to nothing just past its top, so a surface held clear of it
+    /// runs on smoothly over the top; `None` beyond that, or where the region has none. A garment round a
     /// neighbouring region clears it. The default has no caps: a fit whose sections hold the whole body.
     fn cap(&self, region: BodyRegion, end: RegionEnd, height: f32) -> Option<Section> {
         let _ = (region, end, height);

@@ -19,7 +19,7 @@ use crate::outfit::loft::{Ring, Surface};
 
 /// Segments round the pelvis: even, so the front and the back of the body are columns, and half of them make each leg's
 /// outer arc.
-pub const PELVIS_SEGMENTS: usize = 48;
+pub const PELVIS_SEGMENTS: usize = 64;
 /// Intervals along the chord between the legs.
 pub const CHORD_INTERVALS: usize = 4;
 /// Rows of the gusset, from the pelvis ring's half to the leg's ring.

@@ -391,7 +391,13 @@ fn decals_sit_just_off_the_surface_and_in_front_of_the_garment_on_every_template
                 let mesh = output.meshes.iter().find(|m| m.name == name).unwrap();
                 for p in &mesh.geometry.positions {
                     let p = p.as_dvec3();
-                    let off = surface.project(p).unwrap().expect("over the torso").outside;
+                    // How far off the surface along its normal: the projection measures along the ring's ray, which
+                    // runs at a slant through cloth that leans (falling from a thigh's dome round the hips), so it is
+                    // scaled by how square that ray meets the surface.
+                    let on = surface.project(p).unwrap().expect("over the torso");
+                    let ring = surface.ring(on.t).unwrap();
+                    let ray = (p - ring.centre).reject_from(ring.axis).normalize();
+                    let off = on.outside * surface.at(on.t, on.phi).unwrap().normal.dot(ray);
                     assert!(
                         (0.0002..=0.0005).contains(&off),
                         "{template}/{label}: {name} is {:.3} mm off the surface",

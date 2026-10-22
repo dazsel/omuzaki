@@ -10,7 +10,7 @@
 //! `across` side, which is the character's left (+x) for every region.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use omuzaki_anim_api::HumanoidBone;
 use omuzaki_char_api::{BodyFit, BodyRegion, JointRef, RegionEnd, Section};
@@ -42,6 +42,16 @@ const PROJECT_SAMPLES: usize = 64;
 const PROJECT_BISECTIONS: usize = 40;
 /// The step of the finite differences that give a surface's tangents, in `t` and in radians.
 const STEP: f64 = 1e-4;
+/// The cells of [`FRAME_CELLS`]' grid in each cell of the grid whose differences give the tangent along a surface
+/// ([`Surface::at`]): 1/200 of the region, wide enough that where a ring cleared of a neighbour leaves a slight crease
+/// (as one slice of the neighbour takes over from another) the normal is the surface's over that width, not the
+/// crease's.
+const ALONG_STRIDE: usize = 20;
+
+/// Cells of the grid in `t` whose rings the frames of a surface are blended from ([`Surface::at`]): a
+/// fraction of a millimetre apart on any region, and a whole multiple of the tangent's grid ([`ALONG_STRIDE`]), so the
+/// tangent's rings are among its own.
+const FRAME_CELLS: usize = 4000;
 
 /// Checks a superellipse exponent is in [`MIN_EXPONENT`]..=[`MAX_EXPONENT`].
 ///
@@ -187,6 +197,8 @@ pub fn ring_at(
 
 /// Points taken round a neighbour's section that a ring clears.
 const CLEAR_SAMPLES: usize = 36;
+/// How far above the least area a width tried by a cleared ring still counts, as a share of the least.
+const AREA_SOFTNESS: f64 = 0.01;
 /// Widths tried between a ring's own and its whole scale when it grows to clear a neighbour.
 const CLEAR_WIDTHS: usize = 32;
 /// Steps that find a neighbour's section through a ring's centre, and how near its plane must pass, metres.
@@ -250,7 +262,7 @@ fn clear_region(fit: &dyn BodyFit, ring: &mut Ring, neighbour: BodyRegion, offse
         let u = 2.0 * crate::kit::curve::fraction(k, CAP_HEIGHTS - 1) - 1.0;
         (u * offset, offset * (1.0 - u * u).max(0.0).sqrt())
     });
-    let mut points = Vec::new();
+    let mut points = Vec::with_capacity(CAP_HEIGHTS * CLEAR_SAMPLES);
     for (d, grow) in ball {
         let t = at + d / length;
         #[allow(clippy::cast_possible_truncation)] // a fit is sampled in f32
@@ -262,12 +274,11 @@ fn clear_region(fit: &dyn BodyFit, ring: &mut Ring, neighbour: BodyRegion, offse
             section(t)
         };
         if let Some(slice) = slice.filter(|s| s.centre.is_finite() && s.radii.is_finite()) {
-            points.extend(section_points(ring, neighbour, &slice, grow, None));
+            section_points(&mut points, ring, neighbour, &slice, grow, None);
         }
     }
     grow_to_hold(ring, &points);
 }
-
 
 /// Heights either side of a ring's plane at which a cap's slices are taken, to find the cap's offset surface there.
 const CAP_HEIGHTS: usize = 7;
@@ -298,14 +309,15 @@ fn clear_cap(
     if height <= 0.0 {
         return;
     }
-    let mut points = Vec::new();
+    let mut points = Vec::with_capacity(CAP_HEIGHTS * CLEAR_SAMPLES);
     for k in 0..CAP_HEIGHTS {
         let u = 2.0 * crate::kit::curve::fraction(k, CAP_HEIGHTS - 1) - 1.0;
         let h = height + u * offset;
         #[allow(clippy::cast_possible_truncation)] // a fit is sampled in f32
         let slice = if h < 0.0 { None } else { fit.cap(neighbour, end, h as f32) };
         if let Some(slice) = slice {
-            points.extend(section_points(ring, neighbour, &slice, offset * (1.0 - u * u).max(0.0).sqrt(), side));
+            let grow = offset * (1.0 - u * u).max(0.0).sqrt();
+            section_points(&mut points, ring, neighbour, &slice, grow, side);
         }
     }
     grow_to_hold(ring, &points);
@@ -364,8 +376,7 @@ fn clear_root(fit: &dyn BodyFit, ring: &mut Ring, neighbour: BodyRegion, offset:
     #[allow(clippy::cast_precision_loss)] // small counts
     let levels: Vec<Section> = std::iter::once(Some(start))
         .chain(
-            (0..ROOT_LEVELS)
-                .map(|k| fit.cap(neighbour, RegionEnd::Start, top * (k as f32 + 0.5) / ROOT_LEVELS as f32)),
+            (0..ROOT_LEVELS).map(|k| fit.cap(neighbour, RegionEnd::Start, top * (k as f32 + 0.5) / ROOT_LEVELS as f32)),
         )
         .flatten()
         .filter(|s| s.centre.is_finite() && s.radii.is_finite())
@@ -392,11 +403,9 @@ fn clear_root(fit: &dyn BodyFit, ring: &mut Ring, neighbour: BodyRegion, offset:
                 let (across, through) = section_basis(neighbour, s.axis);
                 let (centre, across, through) = (s.centre.as_dvec3(), across.as_dvec3(), through.as_dvec3());
                 let radii = s.radii.as_dvec2() + DVec2::splat(offset);
-                (0..ROOT_SAMPLES)
-                    .map(|k| {
-                        let (sin, cos) = (TAU * crate::kit::curve::fraction(k, ROOT_SAMPLES)).sin_cos();
-                        centre + across * (radii.x * cos) + through * (radii.y * sin)
-                    })
+                ROOT_CIRCLE
+                    .iter()
+                    .map(|&(sin, cos)| centre + across * (radii.x * cos) + through * (radii.y * sin))
                     .collect()
             })
         })
@@ -426,20 +435,45 @@ fn clear_root(fit: &dyn BodyFit, ring: &mut Ring, neighbour: BodyRegion, offset:
     grow_to_hold(ring, &points);
 }
 
-/// The points round `section` of `region`, with `offset` added to its radii, in the plane of `ring`; with `side`, only
-/// those on that side of the body's midplane.
-fn section_points(ring: &Ring, region: BodyRegion, section: &Section, offset: f64, side: Option<f64>) -> Vec<DVec2> {
+/// `(sin, cos)` at `N` even steps round a turn: clearing goes round thousands of sections a garment.
+fn circle<const N: usize>() -> [(f64, f64); N] {
+    std::array::from_fn(|k| (TAU * crate::kit::curve::fraction(k, N)).sin_cos())
+}
+
+static CLEAR_CIRCLE: LazyLock<[(f64, f64); CLEAR_SAMPLES]> = LazyLock::new(circle);
+static ROOT_CIRCLE: LazyLock<[(f64, f64); ROOT_SAMPLES]> = LazyLock::new(circle);
+
+/// Adds to `points` the points round `section` of `region`, with `offset` added to its radii, in the plane of `ring`;
+/// with `side`, only those on that side of the body's midplane.
+fn section_points(
+    points: &mut Vec<DVec2>,
+    ring: &Ring,
+    region: BodyRegion,
+    section: &Section,
+    offset: f64,
+    side: Option<f64>,
+) {
     let (across, through) = section_basis(region, section.axis);
     let (centre, across, through) = (section.centre.as_dvec3(), across.as_dvec3(), through.as_dvec3());
     let radii = section.radii.as_dvec2() + DVec2::splat(offset);
-    (0..CLEAR_SAMPLES)
-        .filter_map(|k| {
-            let (sin, cos) = (TAU * crate::kit::curve::fraction(k, CLEAR_SAMPLES)).sin_cos();
-            let p = centre + across * (radii.x * cos) + through * (radii.y * sin);
-            let d = p - ring.centre;
-            (!side.is_some_and(|side| p.x * side < 0.0)).then(|| DVec2::new(d.dot(ring.across), d.dot(ring.through)))
-        })
-        .collect()
+    points.extend(CLEAR_CIRCLE.iter().filter_map(|&(sin, cos)| {
+        let p = centre + across * (radii.x * cos) + through * (radii.y * sin);
+        let d = p - ring.centre;
+        (!side.is_some_and(|side| p.x * side < 0.0)).then(|| DVec2::new(d.dot(ring.across), d.dot(ring.through)))
+    }));
+}
+
+/// `x^e` for a ring's exponent: a product for the ellipse most rings are, which clearing asks for thousands of times
+/// a ring.
+fn power(x: f64, e: f64) -> f64 {
+    #[allow(clippy::float_cmp)] // the ellipse's exponent exactly
+    if e == 2.0 { x * x } else { x.powf(e) }
+}
+
+/// The `e`-th root of `x`, as [`power`]: a square root for the ellipse.
+fn root(x: f64, e: f64) -> f64 {
+    #[allow(clippy::float_cmp)] // the ellipse's exponent exactly
+    if e == 2.0 { x.sqrt() } else { x.powf(1.0 / e) }
 }
 
 /// Grows `ring`, keeping its shape and centre, until it holds every one of `points` (in its plane): of the rings that
@@ -447,36 +481,46 @@ fn section_points(ring: &Ring, region: BodyRegion, section: &Section, offset: f6
 fn grow_to_hold(ring: &mut Ring, points: &[DVec2]) {
     let e = ring.exponent;
     let r = ring.radii;
-    let level = |q: DVec2, r: DVec2| ((q.x / r.x).abs().powf(e) + (q.y / r.y).abs().powf(e)).powf(1.0 / e);
+    let level = |q: DVec2, r: DVec2| root(power((q.x / r.x).abs(), e) + power((q.y / r.y).abs(), e), e);
     // The ring is symmetric across both its axes, and holds a point whenever it holds one further out both ways: only
     // the points no other passes in both `|x|` and `|y|` matter. And as it only grows, those it holds already it holds
     // at every size tried, so they are dropped first (a point that passes one outside the ring is outside it too, so
     // dropping them first leaves the same frontier, and most points are inside).
-    let mut points: Vec<DVec2> =
-        points.iter().filter(|q| q.is_finite()).map(|q| q.abs()).filter(|q| level(*q, r) > 1.0).collect();
-    points.sort_unstable_by(|a, b| b.x.total_cmp(&a.x).then(b.y.total_cmp(&a.y)));
-    let mut highest = f64::NEG_INFINITY;
-    points.retain(|q| {
-        let keep = q.y > highest;
-        highest = highest.max(q.y);
-        keep
-    });
+    let mut frontier: Vec<DVec2> = Vec::with_capacity(16);
+    for q in points.iter().filter(|q| q.is_finite()).map(|q| q.abs()).filter(|q| level(*q, r) > 1.0) {
+        if frontier.iter().any(|f| f.x >= q.x && f.y >= q.y) {
+            continue;
+        }
+        frontier.retain(|f| f.x > q.x || f.y > q.y);
+        frontier.push(q);
+    }
+    let points = frontier;
     let Some(scale) = points.iter().map(|q| level(*q, r)).reduce(f64::max) else { return };
     // For each width from the ring's own to the whole scale's, the least depth that holds every point there: a point
     // needs `|q_y| / (1 - |q_x / r_x|^e)^(1/e)`, and can't be held at a width it lies beyond.
     let depth = |width: f64| {
         points.iter().try_fold(r.y, |most, q| {
-            let room = 1.0 - (q.x / width).abs().powf(e);
-            (room > 0.0).then(|| most.max(q.y.abs() / room.powf(1.0 / e)))
+            let room = 1.0 - power((q.x / width).abs(), e);
+            (room > 0.0).then(|| most.max(q.y.abs() / root(room, e)))
         })
     };
-    ring.radii = (0..=CLEAR_WIDTHS)
-        .filter_map(|k| {
-            let width = r.x * (1.0 + (scale - 1.0) * crate::kit::curve::fraction(k, CLEAR_WIDTHS));
-            depth(width).map(|d| DVec2::new(width, d))
-        })
-        .min_by(|a, b| (a.x * a.y).total_cmp(&(b.x * b.y)))
-        .unwrap_or(r * scale);
+    // About the least area over the widths tried: their mean weighted by how near each comes to the least
+    // ([`AREA_SOFTNESS`]). The least itself would jump from one width to another as the points it holds change up the
+    // region, and a ring's surface would fold where it did; the weighted mean moves smoothly.
+    let width_at = |k: usize| r.x * (1.0 + (scale - 1.0) * crate::kit::curve::fraction(k, CLEAR_WIDTHS));
+    let tried: [Option<(f64, f64)>; CLEAR_WIDTHS + 1] =
+        std::array::from_fn(|k| depth(width_at(k)).map(|d| (width_at(k), width_at(k) * d)));
+    let tried = tried.iter().flatten();
+    let Some(least) = tried.clone().map(|&(_, a)| a).reduce(f64::min) else {
+        ring.radii = r * scale;
+        return;
+    };
+    let (sum, weight) = tried.fold((0.0, 0.0), |(sum, weight), &(w, a)| {
+        let k = (-(a - least) / (AREA_SOFTNESS * least)).exp();
+        (sum + k * w, weight + k)
+    });
+    let width = if weight > 0.0 { sum / weight } else { r.x * scale };
+    ring.radii = depth(width).map_or(r * scale, |d| DVec2::new(width, d));
 }
 
 // -------------------------------------------------------------------------------------------------------- weights
@@ -698,17 +742,21 @@ impl Surface {
         }
     }
 
-    /// The point at `(t, phi)` with its frame. The tangents are central differences (one-sided at `t` = 0 and 1), and
-    /// the normal is their cross product turned away from the ring's centre.
+    /// The point at `(t, phi)` with its frame, on the ring blended from the surface's grid of rings either side
+    /// ([`FRAME_CELLS`]), within a few micrometres of [`Surface::point`]'s. The tangent round the ring is a central
+    /// difference. The tangent along the region is the central difference at each of the two points of a coarser grid
+    /// in `t` ([`ALONG_STRIDE`]) either side of `t`, one-sided at 0 and 1, blended by where `t` lies between them, so it
+    /// turns smoothly along the region. The rings both read are the grids', which the surface keeps, so a trim that
+    /// asks for many frames works out few rings. The normal is the tangents' cross product turned away from the ring's
+    /// centre.
     ///
     /// # Errors
     /// As [`Surface::point`]; [`GarmentError::Invalid`] where the surface is degenerate (a tangent of no length, or
     /// two parallel tangents).
     pub fn at(&self, t: f64, phi: f64) -> Result<SurfacePoint, GarmentError> {
-        let ring = self.ring(t)?;
+        let ring = self.framed(t)?;
         let point = self.shaped(&ring, t, phi)?;
-        let (t0, t1) = ((t - STEP).max(0.0), (t + STEP).min(1.0));
-        let along = (self.point(t1, phi)? - self.point(t0, phi)?).try_normalize();
+        let along = self.along(t, phi)?.try_normalize();
         let around = (self.shaped(&ring, t, phi + STEP)? - self.shaped(&ring, t, phi - STEP)?).try_normalize();
         let (Some(along), Some(around)) = (along, around) else {
             return Err(GarmentError::invalid("surface", format!("degenerate at t = {t}, phi = {phi}")));
@@ -720,6 +768,64 @@ impl Surface {
             normal = -normal;
         }
         Ok(SurfacePoint { point, normal, along, around })
+    }
+
+    /// The ring at `t` that [`Surface::at`] places its frames on: between the two rings of a fixed grid in `t`
+    /// ([`FRAME_CELLS`]) either side, blended by where `t` lies between them. The grid's rings are kept, so a trim,
+    /// which asks for frames all over a stretch of the surface, works out each ring of the stretch once rather than one
+    /// for every frame; between rings a fraction of a millimetre apart the blend lies within a few micrometres of the
+    /// ring itself where the surface is smooth. ([`Surface::point`] takes the ring itself: a garment's rows ask for each
+    /// ring once.)
+    fn framed(&self, t: f64) -> Result<Ring, GarmentError> {
+        let cells = FRAME_CELLS;
+        #[allow(clippy::cast_precision_loss)] // a small count
+        let n = cells as f64;
+        let at = (t * n).clamp(0.0, n);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // in 0..=cells
+        let k = (at.floor() as usize).min(cells - 1);
+        let grid = |k: usize| crate::kit::curve::fraction(k, cells);
+        #[allow(clippy::cast_precision_loss)] // a small count
+        let s = at - k as f64;
+        if s <= 0.0 {
+            return Ok(Ring { t, ..self.ring(grid(k))? });
+        }
+        if s >= 1.0 {
+            return Ok(Ring { t, ..self.ring(grid(k + 1))? });
+        }
+        let (a, b) = (self.ring(grid(k))?, self.ring(grid(k + 1))?);
+        let unit = |a: DVec3, b: DVec3| a.lerp(b, s).try_normalize().unwrap_or(a);
+        Ok(Ring {
+            t,
+            centre: a.centre.lerp(b.centre, s),
+            axis: unit(a.axis, b.axis),
+            across: unit(a.across, b.across),
+            through: unit(a.through, b.through),
+            radii: a.radii.lerp(b.radii, s),
+            ..a
+        })
+    }
+
+    /// The rate of change of the point at `(t, phi)` along the region, as [`Surface::at`] takes it: the central
+    /// differences at the tangent grid's points either side of `t`, blended.
+    fn along(&self, t: f64, phi: f64) -> Result<DVec3, GarmentError> {
+        let cells = FRAME_CELLS / ALONG_STRIDE;
+        #[allow(clippy::cast_precision_loss)] // a small count
+        let n = cells as f64;
+        let at = (t * n).clamp(0.0, n);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // in 0..=cells
+        let k = (at.floor() as usize).min(cells - 1);
+        // The point at the tangent grid's `j`-th point (clamped to the region), and where that is.
+        let on = |j: usize| -> Result<(DVec3, f64), GarmentError> {
+            let u = crate::kit::curve::fraction((j * ALONG_STRIDE).min(FRAME_CELLS), FRAME_CELLS);
+            Ok((self.shaped(&self.ring(u)?, u, phi)?, u))
+        };
+        let rate = |k: usize| -> Result<DVec3, GarmentError> {
+            let ((lo, u0), (hi, u1)) = (on(k.saturating_sub(1))?, on(k + 1)?);
+            Ok((hi - lo) / (u1 - u0))
+        };
+        #[allow(clippy::cast_precision_loss)] // a small count
+        let s = at - k as f64;
+        Ok(rate(k)? * (1.0 - s) + rate(k + 1)? * s)
     }
 
     /// Where `p` lies over the surface: of the places along the region whose section plane passes through `p`, the
