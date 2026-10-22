@@ -8,6 +8,7 @@ pub mod ds;
 pub mod live;
 pub mod output_window;
 pub mod panels;
+pub mod settings;
 pub mod shell;
 pub mod studio;
 pub mod testing;

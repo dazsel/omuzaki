@@ -54,19 +54,30 @@ impl Setting for UiDensity {
 
 register_setting!(UiDensity);
 
+/// A UI scale in percent: one of [`Scale::STEPS`]. Stored as the bare number.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(transparent)]
+#[schemars(extend("enum" = [75, 90, 100, 110, 125, 150, 175, 200], "x-ui" = { "unit": "%" }))]
+pub struct ScalePercent(pub u16);
+
 /// `ui.scale`: the UI's size in percent, on top of the system's.
 pub struct UiScale;
 
 impl Setting for UiScale {
-    type Value = u16;
+    type Value = ScalePercent;
     const META: SettingMeta = taste("ui.scale", "The studio's size in percent, on top of the system's: 75 to 200");
 
-    fn default() -> u16 {
-        Settings::default().scale.percent()
+    fn default() -> ScalePercent {
+        ScalePercent(Settings::default().scale.percent())
     }
 
-    fn check(value: &u16) -> Result<(), SettingError> {
-        SettingError::range(Self::META.key, *value, 75, 200)
+    fn check(value: &ScalePercent) -> Result<(), SettingError> {
+        SettingError::range(Self::META.key, value.0, 75, 200)?;
+        if Scale::STEPS.contains(&value.0) {
+            return Ok(());
+        }
+        let steps: Vec<String> = Scale::STEPS.iter().map(u16::to_string).collect();
+        Err(SettingError::invalid(Self::META.key, format!("one of the steps {}", steps.join(", "))))
     }
 }
 
@@ -93,7 +104,7 @@ impl Settings {
         let fallback = Self::default();
         Self {
             theme: snapshot.get::<UiTheme>().unwrap_or(fallback.theme),
-            scale: snapshot.get::<UiScale>().map_or(fallback.scale, Scale::nearest),
+            scale: snapshot.get::<UiScale>().map_or(fallback.scale, |percent| Scale::nearest(percent.0)),
             density: snapshot.get::<UiDensity>().unwrap_or(fallback.density),
             reduce_motion: snapshot.get::<UiReduceMotion>().unwrap_or(fallback.reduce_motion),
         }

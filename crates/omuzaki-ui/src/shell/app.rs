@@ -48,6 +48,7 @@ use crate::panels::agent::fences::{FenceBoard, fence_chip};
 use crate::panels::agent::review::Reviews;
 use crate::panels::agent::{self as agent, AgentFeed, Agents};
 use crate::panels::edit::EditFocus;
+use crate::settings::SettingsWindow;
 
 const MENU_ICON: &str = egui_phosphor::regular::LIST;
 /// How many op-log records the History panel keeps (the newest), and how many it asks the runner for at a time.
@@ -175,6 +176,8 @@ pub struct Shell {
     attention: bool,
     /// The shortcut sheet is open.
     sheet: bool,
+    /// The Settings window, while it is open.
+    settings: Option<SettingsWindow>,
 }
 
 impl Shell {
@@ -229,6 +232,7 @@ impl Shell {
             note: Note::Nothing,
             attention: false,
             sheet: false,
+            settings: None,
             palette: Palette::default(),
             requests,
         };
@@ -343,7 +347,22 @@ impl Shell {
         if self.sheet {
             self.sheet = sheet::show(&ctx);
         }
+        if let Some(window) = self.settings.as_mut()
+            && !window.show(&ctx, self.runner.as_ref(), &self.actor)
+        {
+            self.settings = None;
+        }
         self.save_if_edited(&ctx);
+    }
+
+    /// The Settings window, while it is open.
+    pub const fn settings_window(&self) -> Option<&SettingsWindow> {
+        self.settings.as_ref()
+    }
+
+    /// Opens the Settings window, or closes it when it is open (Ctrl+, and the menu).
+    pub fn toggle_settings(&mut self) {
+        self.settings = if self.settings.is_some() { None } else { Some(SettingsWindow::new()) };
     }
 
     /// Whether the shortcut sheet is open.
@@ -506,6 +525,7 @@ impl Shell {
             Action::NextPanel => self.cycle_focus(1),
             Action::PreviousPanel => self.cycle_focus(-1),
             Action::ShortcutSheet => self.sheet = !self.sheet,
+            Action::Settings => self.toggle_settings(),
             Action::PauseAgent => self.pause_agent(ctx),
         }
     }
@@ -1056,6 +1076,11 @@ impl Shell {
                 if ui.add(Button::new(&label).ghost().icon(glyph).shortcut_hint("Ctrl Alt P")).clicked() {
                     self.pause_agent(&ctx);
                 }
+            }
+            ui.separator();
+            let settings = say(&ctx, Word::MenuSettings, &[]);
+            if ui.add(Button::new(&settings).ghost().icon(icons::GEAR).shortcut_hint("Ctrl ,")).clicked() {
+                self.toggle_settings();
             }
             ui.separator();
             heading(ui, Word::MenuHelp);

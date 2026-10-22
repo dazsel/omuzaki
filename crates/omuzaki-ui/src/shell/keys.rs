@@ -30,6 +30,8 @@ pub enum Action {
     ShortcutSheet,
     /// Ctrl+Alt+P: pause or resume the active agent.
     PauseAgent,
+    /// Ctrl+, : the Settings window.
+    Settings,
 }
 
 const NUMBERS: [Key; 9] =
@@ -49,6 +51,8 @@ pub fn resolve(ctx: &Context) -> Option<Action> {
             Some(Action::PauseAgent)
         } else if i.consume_key(cmd, Key::Slash) {
             Some(Action::ShortcutSheet)
+        } else if i.consume_key(cmd, Key::Comma) {
+            Some(Action::Settings)
         } else if i.consume_key(cmd | Modifiers::SHIFT, Key::L) {
             Some(Action::ToggleLock)
         } else if i.consume_key(cmd, Key::Z) {
@@ -103,6 +107,7 @@ mod tests {
             (shift, Key::F6, Action::PreviousPanel),
             (cmd, Key::Slash, Action::ShortcutSheet),
             (cmd | Modifiers::ALT, Key::P, Action::PauseAgent),
+            (cmd, Key::Comma, Action::Settings),
         ] {
             let mut harness = harness();
             press(&mut harness, modifiers, key);
