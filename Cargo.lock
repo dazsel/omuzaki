@@ -5131,6 +5131,7 @@ dependencies = [
  "omuzaki-track-mock",
  "omuzaki-ui-api",
  "omuzaki-ui-mock",
+ "regex",
  "rustix 1.1.5",
  "schemars",
  "serde",

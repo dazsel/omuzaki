@@ -22,6 +22,7 @@ egui_tiles.workspace = true
 egui_kittest = { workspace = true, optional = true }
 image = { workspace = true, optional = true }
 inventory.workspace = true
+regex.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
