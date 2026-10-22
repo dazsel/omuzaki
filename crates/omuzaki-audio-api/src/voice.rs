@@ -37,13 +37,24 @@ pub struct VoiceFrame {
     pub open: f32,
     /// The weight of each of [`VISEMES`], `0` to `1`, already scaled by `open`; all zero while not `active`.
     pub visemes: [f32; VISEME_COUNT],
+    /// A running count of speech onsets (a syllable or word starting), wrapping at `u32::MAX`. A reader that compares
+    /// it with the last count it saw never misses an onset between reads, whatever its tick rate (speech nods, cues).
+    pub onsets: u32,
 }
 
 impl VoiceFrame {
     /// A frame of silence at `sample` / `time`.
     #[must_use]
     pub fn silent(sample: u64, time: Seconds) -> Self {
-        Self { sample, time, active: false, level_db: f32::NEG_INFINITY, open: 0.0, visemes: [0.0; VISEME_COUNT] }
+        Self {
+            sample,
+            time,
+            active: false,
+            level_db: f32::NEG_INFINITY,
+            open: 0.0,
+            visemes: [0.0; VISEME_COUNT],
+            onsets: 0,
+        }
     }
 
     /// The weight of the viseme named `name` (a [`VISEMES`] entry), `None` for another name.

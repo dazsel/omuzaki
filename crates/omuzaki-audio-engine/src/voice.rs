@@ -40,6 +40,12 @@ const HOLD_HOPS: u32 = 15;
 const FLOOR_RISE_DB: f32 = 0.005;
 /// The level span from the activity threshold to a fully open mouth, in dB.
 const OPEN_SPAN_DB: f32 = 30.0;
+/// Onsets compare the level with the level this many hops ago (30 ms).
+const ONSET_LOOKBACK: usize = 3;
+/// How far the level must climb in that time to count as an onset, in dB.
+const ONSET_RISE_DB: f32 = 9.0;
+/// The shortest time between two onsets, in hops (120 ms: faster than syllables come).
+const ONSET_REFRACTORY_HOPS: u32 = 12;
 /// How much of the way to the new weights each hop moves: fast on the way up, slower down.
 const ATTACK: f32 = 0.6;
 const RELEASE: f32 = 0.3;
@@ -66,6 +72,8 @@ pub struct Analysis {
     pub visemes: [f32; VISEME_COUNT],
     /// The formants found (F1, F2) in Hz, when the window had two.
     pub formants: Option<(f32, f32)>,
+    /// The running count of speech onsets.
+    pub onsets: u32,
 }
 
 /// The lip-sync signal path over a 16 kHz voice.
@@ -78,6 +86,11 @@ pub struct VoiceAnalyser {
     next_index: u64,
     floor_db: f32,
     hold: u32,
+    /// The levels of the last few hops, newest last, for onset detection.
+    recent_db: [f32; ONSET_LOOKBACK],
+    /// Hops left before another onset may count.
+    refractory: u32,
+    onsets: u32,
     visemes: [f32; VISEME_COUNT],
     open: f32,
     hamming: Vec<f32>,
@@ -109,6 +122,9 @@ impl VoiceAnalyser {
             next_index: 0,
             floor_db: -70.0,
             hold: 0,
+            recent_db: [f32::NEG_INFINITY; ONSET_LOOKBACK],
+            refractory: 0,
+            onsets: 0,
             visemes: [0.0; VISEME_COUNT],
             open: 0.0,
             hamming,
@@ -163,6 +179,16 @@ impl VoiceAnalyser {
             self.hold = self.hold.saturating_sub(1);
         }
         let active = self.hold > 0;
+        // An onset: the level climbs by ONSET_RISE_DB within the lookback, above the speech threshold.
+        let oldest = self.recent_db[0];
+        self.recent_db.copy_within(1.., 0);
+        self.recent_db[ONSET_LOOKBACK - 1] = level_db;
+        self.refractory = self.refractory.saturating_sub(1);
+        let quietest = oldest.max(threshold - ACTIVITY_MARGIN_DB);
+        if self.refractory == 0 && level_db > threshold && level_db - quietest >= ONSET_RISE_DB {
+            self.onsets = self.onsets.wrapping_add(1);
+            self.refractory = ONSET_REFRACTORY_HOPS;
+        }
         let target_open = if active { ((level_db - threshold) / OPEN_SPAN_DB).clamp(0.0, 1.0) } else { 0.0 };
         let formants = if level_db > threshold { self.formants() } else { None };
         let mut shape = [0.0f32; VISEME_COUNT];
@@ -182,7 +208,7 @@ impl VoiceAnalyser {
             *w = step(*w, s * target_open);
         }
         let centre = self.next_index.saturating_sub(WINDOW as u64 / 2);
-        Analysis { centre, active, level_db, open: self.open, visemes: self.visemes, formants }
+        Analysis { centre, active, level_db, open: self.open, visemes: self.visemes, formants, onsets: self.onsets }
     }
 
     /// F1 and F2 from the window's linear-prediction envelope.
@@ -348,6 +374,7 @@ impl LipSync {
                                 level_db: a.level_db,
                                 open: a.open,
                                 visemes: a.visemes,
+                                onsets: a.onsets,
                             };
                             *lock(&out) = Some(frame);
                         }
@@ -476,6 +503,18 @@ mod tests {
         a.push(&vec![0.0; 8_000], |x| frames.push(x));
         let last = frames.last().copied().unwrap_or_else(|| panic!("frames"));
         assert!(!last.active && last.open < 0.01 && last.visemes.iter().all(|w| *w < 0.01), "{last:?}");
+    }
+
+    #[test]
+    fn each_syllable_counts_one_onset() {
+        let mut a = VoiceAnalyser::new();
+        let mut last = None;
+        // Three syllables: 150 ms of vowel, 150 ms of silence, each.
+        for _ in 0..3 {
+            a.push(&vowel(750.0, 1250.0, 2600.0, 0.15), |x| last = Some(x));
+            a.push(&vec![0.0; 2_400], |x| last = Some(x));
+        }
+        assert_eq!(last.map(|x| x.onsets), Some(3));
     }
 
     #[test]
