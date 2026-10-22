@@ -15,12 +15,12 @@ fn frame(set: &[(Channel, f32)]) -> ChannelBuf {
 fn the_builtin_map_feeds_every_table_channel_as_a_custom_parameter() {
     let map = ChannelMap::builtin().unwrap();
     let names: Vec<_> = map.params().map(|p| p.name.as_str()).collect();
-    assert_eq!(names.len(), 73, "52 ARKit, 8 head and body, 13 extras; every default off");
+    assert_eq!(names.len(), 76, "52 ARKit, 8 head and body, 16 extras; every default off");
     assert_eq!(names[0], custom_name("Omuzaki", CHANNELS[0].name));
     assert!(names.contains(&"OmuzakiJawOpen"));
     assert!(names.contains(&"OmuzakiHeadYaw"));
     assert!(!names.iter().any(|n| n.contains("Custom")), "the custom slots are not fed");
-    assert_eq!(map.creations().len(), 73);
+    assert_eq!(map.creations().len(), 76);
     let yaw = map.params().find(|p| p.name == "OmuzakiHeadYaw").unwrap();
     assert_eq!((yaw.min, yaw.max), Channel::HEAD_YAW.range());
     assert_eq!(map.defaults().count(), 17);
@@ -33,7 +33,7 @@ fn defaults_are_opt_in_and_use_their_formula() {
     map.enable_default("FaceAngleX", true).unwrap();
     assert!(matches!(map.enable_default("EyeOpenLeftt", true), Err(MapError::UnknownDefault(_))));
     let injector = Injector::new(&map);
-    assert_eq!(injector.params().len(), 75);
+    assert_eq!(injector.params().len(), 78);
     injector.push(&frame(&[(Channel::EYE_BLINK_LEFT, 0.25), (Channel::HEAD_YAW, 0.2)]), true);
     let mut snap = Snapshot::default();
     assert!(injector.read(&mut snap));
@@ -122,11 +122,11 @@ fn an_owned_default_moves_to_add_and_the_rest_stay_in_set() {
     let one = batches.requests(params, &snap);
     assert_eq!(one.len(), 1);
     assert_eq!(one[0].mode, InjectMode::Set);
-    assert_eq!(one[0].parameter_values.len(), 75);
+    assert_eq!(one[0].parameter_values.len(), 78);
     assert!(batches.owned(params, "MouthOpen is controlled by another plugin"));
     assert!(!batches.owned(params, "MouthOpen is controlled by another plugin"), "already moved");
     let two = batches.requests(params, &snap);
-    assert_eq!((two[0].mode, two[0].parameter_values.len()), (InjectMode::Set, 74));
+    assert_eq!((two[0].mode, two[0].parameter_values.len()), (InjectMode::Set, 77));
     assert_eq!((two[1].mode, two[1].parameter_values[0].id.as_str()), (InjectMode::Add, "MouthOpen"));
     assert_eq!(batches.conflicts(params), ["MouthOpen"]);
     assert!(!mentions("MouthOpenness is owned", "MouthOpen"), "whole words only");
