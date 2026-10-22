@@ -1,0 +1,29 @@
+[package]
+name = "omuzaki-audio-fx"
+description = "The voice effects (spec v3 §25 BR-24, ADR 0018): EQ, noise gate, compressor, robot, radio, the program's true-peak limiter and our own low-latency pitch and formant shifter, as registered audio node kinds."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+omuzaki-audio-api = { path = "../omuzaki-audio-api" }
+omuzaki-core = { path = "../omuzaki-core" }
+
+[dev-dependencies]
+criterion.workspace = true
+omuzaki-audio-mock = { path = "../omuzaki-audio-mock" }
+
+[lints]
+workspace = true
+
+[[bench]]
+name = "chain"
+harness = false
+
+[package.metadata.omuzaki]
+kind = "Implementation"
+summary = "the voice effects as registered audio node kinds: `fx.eq` (RBJ biquads, up to 8 bands), `fx.gate` (hysteresis, hold, side-chain high-pass), `fx.compressor` (feed-forward soft knee), `fx.robot` (ring modulator and comb), `fx.radio` (telephone and radio voices), `fx.limiter` (the program's -1 dBTP true-peak limiter) and `fx.pitch` (pitch and formant shift: TD-PSOLA on the LPC residual with an LSF formant warp, on a streaming F0 tracker and pitch marks); every node is allocation-free, block-size invariant and declares its latency exactly"
+registers = true
