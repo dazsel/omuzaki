@@ -82,7 +82,7 @@ impl TypeScale {
         }
     }
 
-    fn fonts_active(&self) -> bool {
+    pub(crate) fn fonts_active(&self) -> bool {
         self.fonts_active
     }
 

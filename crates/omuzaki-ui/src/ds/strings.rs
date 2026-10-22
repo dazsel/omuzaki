@@ -76,6 +76,8 @@ messages! {
     OwnerAi = "ds-owner-ai" => "AI",
     OwnerLifeLayer = "ds-owner-life-layer" => "life layer",
     OwnerHotkey = "ds-owner-hotkey" => "hotkey",
+    OwnerScore = "ds-owner-score" => "score",
+    OwnerRest = "ds-owner-rest" => "resting",
     MeterRaw = "ds-meter-raw" => "raw {value}",
     MeterOwner = "ds-meter-owner" => "owner {owner}",
     MeterClipping = "ds-meter-clipping" => "clipping",

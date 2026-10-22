@@ -34,7 +34,7 @@ pub const REFRESH_S: f64 = 0.25;
 
 /// The moods the hotkey table offers, in order: the first [`HOTKEY_ROWS`] always have a row, Add hotkey shows the rest.
 /// Each is an expression of the starter set (`ExpressionSet::starter`), by its id.
-const MOODS: [(&str, Word); 5] = [
+pub(super) const MOODS: [(&str, Word); 5] = [
     ("happy", Word::ExpressionHappy),
     ("surprised", Word::ExpressionSurprised),
     ("angry", Word::ExpressionAngry),

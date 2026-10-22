@@ -27,6 +27,7 @@ use super::mailbox::FrameReader;
 use super::rig::{Extras, LiveRig, live_performer};
 use super::thread::{LoopReport, WiringError};
 use crate::aux_window::{PhysicalSize, Transparency};
+use crate::live::channels::ChannelFeed;
 use crate::live::hotkeys::Hotkeys;
 use crate::live::viewport::{LiveViewport, Presenter, SharedTracker, ViewportError};
 use crate::output_window::{OutputHost, OutputPlan, OutputWindow, Program};
@@ -68,6 +69,8 @@ impl std::error::Error for StartError {
 pub struct LiveApp {
     rig: Option<LiveRig>,
     reader: Option<FrameReader>,
+    /// A reader of its own for the Channels panel, which keeps reading after the viewport takes `reader`.
+    feed: FrameReader,
     core: Core,
     output: OutputWindow,
     host: OutputHost,
@@ -179,6 +182,7 @@ impl LiveApp {
         let core = wiring::core_on(document, services).map_err(StartError::Ops)?;
         Ok(Self {
             rig: Some(rig),
+            feed: reader.clone(),
             reader: Some(reader),
             core,
             output: OutputWindow::new(OutputPlan::default(), transparency),
@@ -237,6 +241,11 @@ impl LiveApp {
     /// The newest frames from the perform thread, for the render side. `None` after [`shutdown`](Self::shutdown).
     pub fn reader_mut(&mut self) -> Option<&mut FrameReader> {
         self.reader.as_mut()
+    }
+
+    /// The perform thread's frames for the Channels panel, to put in the shell's views.
+    pub fn channel_feed(&self) -> ChannelFeed {
+        ChannelFeed::new(self.feed.clone())
     }
 
     /// The output window, which the `output.window.*` ops open and close through the runner.

@@ -231,7 +231,11 @@ fn main() -> eframe::Result {
             apply_settings(&cc.egui_ctx, Settings::default());
             let live = start_live(cc, open_document(dir.as_ref()));
             let core = core_of(live.as_ref(), dir.as_ref());
-            Ok(Box::new(App { shell: studio_shell(cc, core), live }))
+            let mut shell = studio_shell(cc, core);
+            if let Some(live) = live.as_ref() {
+                shell.insert_view(live.channel_feed());
+            }
+            Ok(Box::new(App { shell, live }))
         }),
     )
 }

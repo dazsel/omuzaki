@@ -949,16 +949,20 @@ impl Shell {
                     self.workspace_tabs(ui, plan);
                 }
                 // At the bar's right end, in reading order: Tab meets search, then the agents, then Go Live.
-                a11y::trailing(ui, "shell_top_trailing", |ui| {
-                    let search = say(&ctx, Word::SearchOrRun, &[]);
+                let search = say(&ctx, Word::SearchOrRun, &[]);
+                let (agents, waiting) = self.agent_chip_label(&ctx);
+                let off = say(&ctx, Word::GoLiveOff, &[]);
+                let go_live = say(&ctx, Word::GoLive, &[]);
+                let key = (&search, &agents, waiting, &go_live, plan.go_live_icon);
+                a11y::trailing(ui, "shell_top_trailing", key, |ui| {
                     if ui.add(Button::new(&search).icon(icons::MAGNIFYING_GLASS).shortcut_hint("Ctrl K")).clicked() {
                         self.toggle_palette(&ctx);
                     }
-                    if self.agent_chip(ui) {
+                    let button = Button::new(&agents).icon(icons::ROBOT);
+                    // Quiet while nothing waits; a raised button while a request waits for the person.
+                    if ui.add(if waiting { button } else { button.ghost() }).clicked() {
                         self.show_panel(agent::ID);
                     }
-                    let off = say(&ctx, Word::GoLiveOff, &[]);
-                    let go_live = say(&ctx, Word::GoLive, &[]);
                     if plan.go_live_icon {
                         icon_button(ui, icons::BROADCAST, &Tip::new(&go_live).detail(&off), false);
                     } else {
@@ -1070,8 +1074,9 @@ impl Shell {
 
     /// The top bar's agent chip: how many agents are connected, or how many requests wait for the person. True when
     /// it was clicked (it opens the Agent panel).
-    fn agent_chip(&self, ui: &mut Ui) -> bool {
-        let ctx = ui.ctx().clone();
+    /// The agent chip's words, and whether a request waits for the person.
+    fn agent_chip_label(&self, ctx: &egui::Context) -> (String, bool) {
+        let ctx = ctx.clone();
         let feed = self.models.get::<AgentFeed>();
         let live = feed.map_or(0, |f| f.live().count());
         let waiting = feed.map_or(0, |f| f.approvals().len());
@@ -1080,9 +1085,7 @@ impl Shell {
             (0, _) => say(&ctx, Word::AgentChip, &[]),
             (n, _) => say(&ctx, Word::AgentChipCount, &[("count", &n.to_string())]),
         };
-        // Quiet while nothing waits; a raised button while a request waits for the person.
-        let button = Button::new(&label).icon(icons::ROBOT);
-        ui.add(if waiting > 0 { button } else { button.ghost() }).clicked()
+        (label, waiting > 0)
     }
 
     fn status_bar(&mut self, ui: &mut Ui) {
