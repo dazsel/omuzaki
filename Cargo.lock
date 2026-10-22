@@ -4515,6 +4515,7 @@ dependencies = [
  "omuzaki-track",
  "omuzaki-track-api",
  "omuzaki-track-mock",
+ "omuzaki-track-net",
  "proptest",
  "schemars",
  "serde",
@@ -4796,6 +4797,18 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omuzaki-track-voice"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "omuzaki-anim-api",
+ "omuzaki-audio-api",
+ "omuzaki-core",
+ "omuzaki-face-api",
  "thiserror 2.0.21",
 ]
 

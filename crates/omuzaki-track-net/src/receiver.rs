@@ -86,8 +86,9 @@ struct Session {
     local: SocketAddr,
 }
 
-/// The network [`Tracker`] (PF-02 to PF-04): one device per [`Protocol`] (`net:ifacialmocap`, `net:vtube_studio`,
-/// `net:live_link_face`, `net:vmc`). `start` binds the protocol's UDP port on every interface and runs a receiver
+/// The network [`Tracker`] (PF-02 to PF-04). Its one device is the protocol the settings name
+/// ([`PhoneSettings::protocol`]: `net:ifacialmocap`, `net:vtube_studio`, `net:live_link_face` or `net:vmc`), so a host
+/// that starts "the phone" starts the app the person chose; `start` also takes any other protocol's id. `start` binds the protocol's UDP port on every interface and runs a receiver
 /// thread until `stop`; frames are timed on the `clock` given to [`new`](Self::new), the stage's own.
 ///
 /// Opening a port on the local network is a device choice: like a camera, only the person starts it (the
@@ -129,10 +130,8 @@ impl NetTracker {
 
 impl Tracker for NetTracker {
     fn devices(&self) -> Vec<CameraInfo> {
-        Protocol::ALL
-            .into_iter()
-            .map(|p| CameraInfo::new(CameraId(p.device_id().to_owned()), p.label(), Vec::new()))
-            .collect()
+        let protocol = self.settings.protocol;
+        vec![CameraInfo::new(CameraId(protocol.device_id().to_owned()), protocol.label(), Vec::new())]
     }
 
     fn start(&mut self, device: &CameraId, config: &TrackerConfig) -> Result<Box<dyn FrameSource>, TrackError> {

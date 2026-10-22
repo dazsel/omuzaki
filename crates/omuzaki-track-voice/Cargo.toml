@@ -1,0 +1,31 @@
+[package]
+name = "omuzaki-track-voice"
+description = "Voice-driven mouth and cues (FE-08, PF-08): microphone samples to voice activity, loudness, onsets and the five visemes, and from them the audio layer and the life layer's cues."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+omuzaki-anim-api = { path = "../omuzaki-anim-api" }
+omuzaki-audio-api = { path = "../omuzaki-audio-api" }
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-face-api = { path = "../omuzaki-face-api" }
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "analyze"
+harness = false
+
+[lints]
+workspace = true
+
+[package.metadata.omuzaki]
+kind = "Implementation"
+summary = "voice-driven mouth and cues (FE-08, PF-08): `VoiceAnalyzer` turns microphone samples at any rate into a `VoiceFrame` every 10 ms (energy voice activity over an adaptive noise floor, loudness, onsets, and the five VRM visemes from LPC formants F1 and F2 against a `VowelProfile`); a wait-free newest-wins `voice_mailbox` carries frames to the perform thread; `LipSync` turns them into anim-api's audio layer through the character's viseme expressions, with attack and release, plus the life layer's `Cues`; `VoiceListener` runs the analyser on its own thread over an audio-api tap ring. Analysis allocates nothing after construction. Tested on vowels from the deterministic formant synthesiser in `synth`"
+wasm = false

@@ -19,6 +19,9 @@ pub struct InputPhone;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[non_exhaustive]
 pub struct PhoneSettings {
+    /// The app that sends: what the iPhone source of the `input.*` ops starts.
+    #[serde(default = "default_protocol")]
+    pub protocol: Protocol,
     /// The phone's address on the local network. iFacialMocap and VTube Studio need it (this computer asks the phone
     /// for data); for every protocol, once it is set, datagrams from any other address are ignored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -37,6 +40,10 @@ pub struct PhoneSettings {
     pub vmc_port: u16,
 }
 
+/// iFacialMocap: the iPhone app most VTuber software already receives.
+const fn default_protocol() -> Protocol {
+    Protocol::Ifacialmocap
+}
 const fn ifacialmocap_port() -> u16 {
     Protocol::Ifacialmocap.default_port()
 }
@@ -53,6 +60,7 @@ const fn vmc_port() -> u16 {
 impl Default for PhoneSettings {
     fn default() -> Self {
         Self {
+            protocol: default_protocol(),
             address: None,
             ifacialmocap_port: ifacialmocap_port(),
             vtube_studio_port: vtube_studio_port(),
@@ -63,6 +71,13 @@ impl Default for PhoneSettings {
 }
 
 impl PhoneSettings {
+    /// With `protocol` as the app that sends.
+    #[must_use]
+    pub fn with_protocol(mut self, protocol: Protocol) -> Self {
+        self.protocol = protocol;
+        self
+    }
+
     /// With the phone at `address`.
     #[must_use]
     pub fn with_address(mut self, address: Option<IpAddr>) -> Self {

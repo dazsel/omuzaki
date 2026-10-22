@@ -53,9 +53,11 @@ fn target(tracker: &NetTracker) -> SocketAddr {
 }
 
 #[test]
-fn every_protocol_is_listed_as_a_device() {
-    let ids: Vec<_> = tracker(any_ports()).devices().into_iter().map(|d| d.id.0).collect();
-    assert_eq!(ids, ["net:ifacialmocap", "net:vtube_studio", "net:live_link_face", "net:vmc"]);
+fn the_chosen_protocol_is_the_one_device() {
+    for protocol in Protocol::ALL {
+        let ids: Vec<_> = tracker(any_ports().with_protocol(protocol)).devices().into_iter().map(|d| d.id.0).collect();
+        assert_eq!(ids, [protocol.device_id()]);
+    }
 }
 
 #[test]
