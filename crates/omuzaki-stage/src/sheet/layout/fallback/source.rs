@@ -168,6 +168,7 @@ impl PinnedFonts {
     ///
     /// # Errors
     /// [`FontError::Io`] when there is no cache folder to use; the message names `OMUZAKI_CACHE_DIR`.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn from_app_cache() -> Result<Self, FontError> {
         let root = omuzaki_http::app_cache_dir()
             .map_err(|e| FontError::Io { path: omuzaki_http::CACHE_DIR_ENV.to_owned(), reason: e.to_string() })?;

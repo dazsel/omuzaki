@@ -24,7 +24,6 @@ toml.workspace = true
 tracing.workspace = true
 unicode-bidi.workspace = true
 unicode-normalization.workspace = true
-omuzaki-ai = { path = "../omuzaki-ai" }
 omuzaki-ai-api = { path = "../omuzaki-ai-api" }
 omuzaki-anim-api = { path = "../omuzaki-anim-api" }
 omuzaki-avatar = { path = "../omuzaki-avatar" }
@@ -34,7 +33,6 @@ omuzaki-char-api = { path = "../omuzaki-char-api" }
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 omuzaki-face-api = { path = "../omuzaki-face-api" }
-omuzaki-http = { path = "../omuzaki-http" }
 omuzaki-io-api = { path = "../omuzaki-io-api" }
 # An imported character's avatar, rebuilt from its stored original when it goes on a stage (`body`).
 omuzaki-io-ops = { path = "../omuzaki-io-ops" }
@@ -52,6 +50,12 @@ omuzaki-face = { path = "../omuzaki-face" }
 omuzaki-rig = { path = "../omuzaki-rig" }
 # The wgpu renderer backend, linked only with the `wgpu` feature (R1).
 omuzaki-render = { path = "../omuzaki-render", optional = true }
+
+# Downloading the sheet fonts (`PinnedFonts::from_app_cache`) is native only: the HTTPS client does not build for
+# wasm32, and on the web the host hands the stage its fonts through a `FileSource`.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+omuzaki-ai = { path = "../omuzaki-ai" }
+omuzaki-http = { path = "../omuzaki-http" }
 
 [features]
 # The wgpu renderer. The stage is written against `dyn Renderer`, so nothing here needs it; the feature links the
