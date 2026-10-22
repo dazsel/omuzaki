@@ -129,6 +129,9 @@ debug = "line-tables-only"   # enough for backtraces; keeps the shared slot targ
 [profile.dev.package."*"]
 opt-level = 2                # dependencies (glam, wgpu, image codecs) optimised: debug builds stay usable for real-time tests
 
+[profile.dev.package.omuzaki-render-mock]
+opt-level = 2                # the CPU rasteriser draws every mock render in the stage and UI tests, sample by sample
+
 [profile.release]
 lto = "thin"
 codegen-units = 16
