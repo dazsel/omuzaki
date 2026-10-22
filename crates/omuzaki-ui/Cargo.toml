@@ -48,6 +48,7 @@ omuzaki-secrets = { path = "../omuzaki-secrets" }
 omuzaki-secrets-api = { path = "../omuzaki-secrets-api" }
 omuzaki-vts = { path = "../omuzaki-vts" }
 omuzaki-vcam = { path = "../omuzaki-vcam" }
+omuzaki-stream-share = { path = "../omuzaki-stream-share" }
 omuzaki-char = { path = "../omuzaki-char" }
 omuzaki-char-api = { path = "../omuzaki-char-api" }
 omuzaki-connect = { path = "../omuzaki-connect" }
