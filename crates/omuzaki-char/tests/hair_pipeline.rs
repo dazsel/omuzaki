@@ -26,7 +26,7 @@ use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::Vec3;
 use omuzaki_core::mesh::MeshData;
 use omuzaki_core::rng::Rng;
-use omuzaki_face_api::{Palette, PaletteSlot};
+use omuzaki_face_api::{FaceLayerId, Palette, PaletteSlot};
 use omuzaki_render_api::Shading;
 use serde_json::{Value, json};
 
@@ -527,11 +527,13 @@ fn the_material_is_the_hair_program_double_sided_with_the_hairs_outline_and_the_
         assert_eq!((o.colour, o.width), (expected, width as f32), "{colour}");
     }
     style = two_group_style();
-    assert_eq!(material.overlays.len(), 1, "brows through the hair");
+    let layers: Vec<FaceLayerId> = material.overlays.iter().map(|o| o.layer).collect();
+    assert_eq!(layers, [FaceLayerId::Brows, FaceLayerId::Overlay], "brows through the hair, and the face's overlay");
 
     style.shading.brows_through = false;
     let out = hair_output(&character(&style)).unwrap();
-    assert!(out.materials[0].1.overlays.is_empty());
+    let layers: Vec<FaceLayerId> = out.materials[0].1.overlays.iter().map(|o| o.layer).collect();
+    assert_eq!(layers, [FaceLayerId::Overlay]);
 }
 
 // ------------------------------------------------------------------------------------------------ recolour

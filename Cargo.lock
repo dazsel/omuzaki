@@ -4078,6 +4078,7 @@ dependencies = [
 name = "omuzaki-face"
 version = "0.0.0"
 dependencies = [
+ "ab_glyph",
  "bytemuck",
  "criterion",
  "image",
@@ -4126,6 +4127,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "toml",
 ]
 
 [[package]]

@@ -1,0 +1,10 @@
+# Render case for `tools/ci/evidence.py` (format at the top of that file): the painted face on the kit character's head.
+
+[[case]]
+name = "face-on-head"
+description = "The kit character (standard template, body, head and hair) framed on the face, wgpu on lavapipe: rest and eleven expressions of the built-in library, the sweat drop on the face's Overlay layer in front of the hair."
+env = { OMUZAKI_STAGE_PNG = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-stage", "--features", "wgpu", "--test", "face_on_head", "render_the_expressions_on_the_head_when_asked", "--", "--exact"] },
+]
+images = ["head-rest.png", "head-happy.png", "head-angry.png", "head-sad.png", "head-surprised.png", "head-smug.png", "head-shy.png", "head-wink.png", "head-blink.png", "head-aa.png", "head-hearts.png", "head-sweat.png"]
