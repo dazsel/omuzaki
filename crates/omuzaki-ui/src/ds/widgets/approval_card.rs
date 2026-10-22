@@ -60,6 +60,12 @@ pub enum Decision {
     Approve,
     /// Run it, and similar requests this session.
     ApproveForSession,
+    /// Run it, and remember the grant for this project (offered only where [`ApprovalCard::offers`] says so).
+    ApproveForProject,
+    /// Raise the budget and go on (offered only with [`ApprovalCard::raise`]).
+    RaiseBudget,
+    /// Export the request for someone to review on another machine (offered only with [`ApprovalCard::export`]).
+    Export,
     /// Run every batched similar request.
     ApproveAll,
     /// Don't run it. With a comment, the agent keeps working and reads it as the reason; without, the turn stops.
@@ -102,6 +108,14 @@ pub struct ApprovalCard<'a> {
     changes: Option<(&'a str, &'a [&'a str])>,
     similar: usize,
     variant: Variant<'a>,
+    session: bool,
+    project: bool,
+    approve: Option<&'a str>,
+    blocked: Option<&'a str>,
+    raise: Option<&'a str>,
+    export: Option<&'a str>,
+    reason: Option<&'a str>,
+    details: &'a [&'a str],
 }
 
 impl<'a> ApprovalCard<'a> {
@@ -120,7 +134,59 @@ impl<'a> ApprovalCard<'a> {
             changes: None,
             similar: 0,
             variant: Variant::Request,
+            session: true,
+            project: false,
+            approve: None,
+            blocked: None,
+            raise: None,
+            export: None,
+            reason: None,
+            details: &[],
         }
+    }
+
+    /// Which wider approvals are offered besides Approve: for the rest of the session (on by default) and for the
+    /// project (off by default: only a session with a credential can remember a grant).
+    pub const fn offers(mut self, session: bool, project: bool) -> Self {
+        self.session = session;
+        self.project = project;
+        self
+    }
+
+    /// Names the Approve button for what it does ("Pair", "Approve once").
+    pub const fn approve_label(mut self, label: &'a str) -> Self {
+        self.approve = Some(label);
+        self
+    }
+
+    /// Disables Approve, saying why ("You asked for this, so someone else reviews it"). Reject stays.
+    pub const fn approve_blocked(mut self, reason: &'a str) -> Self {
+        self.blocked = Some(reason);
+        self
+    }
+
+    /// Offers raising the budget, with this label ("Raise the budget to $2.40").
+    pub const fn raise(mut self, label: &'a str) -> Self {
+        self.raise = Some(label);
+        self
+    }
+
+    /// Offers exporting the request for a reviewer elsewhere, with this label.
+    pub const fn export(mut self, label: &'a str) -> Self {
+        self.export = Some(label);
+        self
+    }
+
+    /// Why the request needs a person, shown in full under the title (a model switch's disclaimer, where audio goes).
+    pub const fn reason(mut self, reason: &'a str) -> Self {
+        self.reason = Some(reason);
+        self
+    }
+
+    /// Lines of evidence under the title ("1 of 2 approvals: Ada", an open comment thread).
+    pub const fn details(mut self, lines: &'a [&'a str]) -> Self {
+        self.details = lines;
+        self
     }
 
     /// The scope the request needs (`render`, `edit:character`, `broadcast`…).
@@ -194,7 +260,12 @@ impl<'a> ApprovalCard<'a> {
                 }
             });
             match key {
-                Some(Key::Enter) if !dangerous && matches!(self.variant, Variant::Request | Variant::Plan(_)) => {
+                Some(Key::Enter)
+                    if !dangerous
+                        && self.session
+                        && self.blocked.is_none()
+                        && matches!(self.variant, Variant::Request | Variant::Plan(_)) =>
+                {
                     decision = Some(Decision::ApproveForSession);
                 }
                 Some(Key::Backspace) => phase.rejecting = true,
@@ -217,6 +288,12 @@ impl<'a> ApprovalCard<'a> {
                 ui.spacing_mut().item_spacing = vec2(space::S8, space::S8);
                 self.header(ui, &ds, dangerous);
                 ui.label(RichText::new(self.what).font(ds.text.strong.clone()).color(t.text));
+                if let Some(reason) = self.reason {
+                    ui.add(Label::new(RichText::new(reason).color(t.text)).wrap());
+                }
+                for line in self.details {
+                    ui.add(Label::new(RichText::new(*line).font(ds.text.small.clone()).color(t.text2)).wrap());
+                }
                 self.risk_line(ui, &ds);
                 self.cost_row(ui, &ds);
                 self.variant_body(ui, &ds, &mut phase);
@@ -517,7 +594,7 @@ impl<'a> ApprovalCard<'a> {
             (true, true, _) => ds.text(Msg::ApprovalConfirm),
             (true, false, _) => ds.text(Msg::ApprovalApproveAsk),
             (false, _, Variant::Plan(_)) => ds.text(Msg::ApprovalApprovePlan),
-            (false, _, _) => ds.text(Msg::ApprovalApprove),
+            (false, _, _) => self.approve.map_or_else(|| ds.text(Msg::ApprovalApprove), Cow::Borrowed),
         };
         let action =
             |name: &str| ds.text_with(Msg::ApprovalAction, &[("action", name), ("what", self.what), ("agent", agent)]);
@@ -526,6 +603,9 @@ impl<'a> ApprovalCard<'a> {
         let mut approve = Button::new(&label).kind(kind).accessible_label(&a11y_label);
         if !dangerous {
             approve = approve.shortcut(Key::Enter);
+        }
+        if let Some(reason) = self.blocked {
+            approve = approve.disabled(reason);
         }
         let approve = ui.add(approve);
         *focus_within |= approve.has_focus();
@@ -548,7 +628,7 @@ impl<'a> ApprovalCard<'a> {
                 }
             }
         }
-        if !dangerous {
+        if !dangerous && self.session && self.blocked.is_none() {
             let session_label = ds.text(Msg::ApprovalSession);
             let session_name = action(&session_label);
             let session = ui.add(
@@ -559,6 +639,21 @@ impl<'a> ApprovalCard<'a> {
             *focus_within |= session.has_focus();
             if session.clicked() {
                 decision = Some(Decision::ApproveForSession);
+            }
+        }
+        let extra = [
+            (self.project && self.blocked.is_none()).then(|| ds.text(Msg::ApprovalProject)),
+            self.raise.map(Cow::Borrowed),
+            self.export.map(Cow::Borrowed),
+        ];
+        let made = [Decision::ApproveForProject, Decision::RaiseBudget, Decision::Export];
+        for (label, made) in extra.into_iter().zip(made) {
+            let Some(label) = label else { continue };
+            let name = action(&label);
+            let button = ui.add(Button::new(&label).accessible_label(&name));
+            *focus_within |= button.has_focus();
+            if button.clicked() {
+                decision = Some(made);
             }
         }
         let reject_label = ds.text(Msg::ApprovalReject);

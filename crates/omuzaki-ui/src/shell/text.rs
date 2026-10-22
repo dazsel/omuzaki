@@ -65,6 +65,10 @@ words! {
     PaletteDone = "shell-palette-done" => "{op}: done. Values changed: {count}. Ctrl+Z undoes it",
     PaletteMoreLines = "shell-palette-more-lines" => "… {count} more lines",
     AgentChip = "shell-agent-chip" => "Agents",
+    AgentChipCount = "shell-agent-chip-count" => "Agents: {count}",
+    AgentChipWaiting = "shell-agent-chip-waiting" => "Waiting for you: {count}",
+    WindowTitle = "shell-window-title" => "Omuzaki",
+    WindowWaiting = "shell-window-waiting" => "\u{25cf} Omuzaki: waiting for you",
     GoLive = "shell-go-live" => "Go Live",
     GoLiveOff = "shell-go-live-off" => "No output is set up",
     OpenDrawer = "shell-open-drawer" => "Show {panel}",
@@ -76,6 +80,7 @@ words! {
     StatusRedid = "shell-status-redid" => "Redid {label}",
     StatusNothingToRedo = "shell-status-nothing-to-redo" => "Nothing to redo",
     StatusFence = "shell-status-fence" => "No agent is working",
+    StatusNoFence = "shell-status-no-fence" => "No part is held",
     StatusHealth = "shell-status-health" => "Idle",
 
 

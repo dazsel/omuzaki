@@ -40,6 +40,10 @@ use crate::ds::theme::ds;
 use crate::ds::tokens::ThemeKind;
 use crate::ds::widgets::{Button, TabBar, TabItem, Tip, TipExt as _};
 use crate::ds::{a11y, icons};
+use crate::panels::agent::approvals::{self, Answer};
+use crate::panels::agent::fences::{FenceBoard, fence_chip};
+use crate::panels::agent::review::Reviews;
+use crate::panels::agent::{self as agent, AgentFeed, Agents};
 use crate::panels::edit::EditFocus;
 
 const MENU_ICON: &str = egui_phosphor::regular::LIST;
@@ -118,6 +122,7 @@ enum Note {
 }
 
 /// The app shell.
+#[allow(clippy::struct_excessive_bools, reason = "independent switches of the shell's own state, not a mode")]
 pub struct Shell {
     runner: Arc<dyn Runner>,
     /// Everything registered when the shell started: its workspaces, the panels they dock and the View menu's list.
@@ -161,6 +166,8 @@ pub struct Shell {
     note: Note,
     palette: Palette,
     requests: ShellRequests,
+    /// The window title says an approval waits, because one arrived while the window was in the background.
+    attention: bool,
 }
 
 impl Shell {
@@ -212,6 +219,7 @@ impl Shell {
             focus: None,
             drawer: None,
             note: Note::Nothing,
+            attention: false,
             palette: Palette::default(),
             requests,
         };
@@ -302,6 +310,7 @@ impl Shell {
             self.rail(ui);
         }
         CentralPanel::default().frame(Frame::new().fill(ds(&ctx).theme.bg1)).show(ui, |ui| self.body(ui));
+        self.approval_stack(&ctx);
         self.palette_ui(&ctx);
         self.save_if_edited(&ctx);
     }
@@ -360,6 +369,62 @@ impl Shell {
             self.frame_events.append(&mut inbox);
         }
         self.follow_log();
+        self.follow_agents();
+    }
+
+    /// Keeps the studio's copy of the agent sessions and approvals current from this frame's events: loaded once from
+    /// the registry, then only followed, so every view of agent work agrees in every frame.
+    fn follow_agents(&mut self) {
+        let Some(Agents(sessions)) = self.models.get::<Agents>().cloned() else { return };
+        match self.models.get_mut::<AgentFeed>() {
+            Some(feed) => {
+                feed.follow(&self.frame_events);
+            }
+            None => {
+                self.models.insert(AgentFeed::load(sessions.as_ref()));
+            }
+        }
+    }
+
+    /// The approvals as a stack at the top right of the window while the Agent panel is not on screen, and the window
+    /// title's marker while one waits and the window is in the background.
+    fn approval_stack(&mut self, ctx: &Context) {
+        let Some(feed) = self.models.get::<AgentFeed>().cloned() else { return };
+        let waiting = !feed.approvals().is_empty();
+        let focused = ctx.input(|i| i.focused);
+        if waiting && !focused && !self.attention {
+            self.attention = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(say(ctx, Word::WindowWaiting, &[])));
+            ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational));
+        } else if self.attention && (focused || !waiting) {
+            self.attention = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(say(ctx, Word::WindowTitle, &[])));
+        }
+        if !waiting || self.bodies.on_screen(ctx, agent::ID) || self.palette.is_open() {
+            return;
+        }
+        let desk = self.models.get::<Reviews>().cloned();
+        let (answer, open_panel) = approvals::stack(ctx, TOP_BAR, &feed, desk.as_ref().map(|d| d.0.as_ref()));
+        if open_panel {
+            self.show_panel(agent::ID);
+        }
+        let Some(Agents(sessions)) = self.models.get::<Agents>().cloned() else { return };
+        let result = match answer {
+            Some(Answer::Decide(ids, decision)) => {
+                approvals::resolve_all(sessions.as_ref(), &ids, &decision, &self.actor)
+            }
+            Some(Answer::Export(id)) => {
+                let approval = feed.approvals().iter().find(|a| a.id == id);
+                match (desk, approval) {
+                    (Some(desk), Some(approval)) => desk.0.export(approval).map(drop),
+                    _ => Err(OpError::unavailable("review")),
+                }
+            }
+            None => Ok(()),
+        };
+        if let Err(error) = result {
+            self.note = Note::Failed(error.message);
+        }
     }
 
     /// Keeps History's copy of the op log current from this frame's events, so an agent's op over MCP shows up at
@@ -746,8 +811,9 @@ impl Shell {
                     } else {
                         ui.add(Button::new(&go_live).icon(icons::BROADCAST).disabled(&off));
                     }
-                    ui.label(RichText::new(icons::ROBOT).font(ds.text.icon(16.0, false)).color(ds.theme.text2));
-                    ui.label(RichText::new(say(&ctx, Word::AgentChip, &[])).color(ds.theme.text2));
+                    if self.agent_chip(ui) {
+                        self.show_panel(agent::ID);
+                    }
                     let search = say(&ctx, Word::SearchOrRun, &[]);
                     if ui.add(Button::new(&search).icon(icons::MAGNIFYING_GLASS).shortcut_hint("Ctrl K")).clicked() {
                         self.toggle_palette(&ctx);
@@ -808,7 +874,24 @@ impl Shell {
         }
     }
 
-    fn status_bar(&self, ui: &mut Ui) {
+    /// The top bar's agent chip: how many agents are connected, or how many requests wait for the person. True when
+    /// it was clicked (it opens the Agent panel).
+    fn agent_chip(&self, ui: &mut Ui) -> bool {
+        let ctx = ui.ctx().clone();
+        let feed = self.models.get::<AgentFeed>();
+        let live = feed.map_or(0, |f| f.live().count());
+        let waiting = feed.map_or(0, |f| f.approvals().len());
+        let label = match (live, waiting) {
+            (_, w) if w > 0 => say(&ctx, Word::AgentChipWaiting, &[("count", &w.to_string())]),
+            (0, _) => say(&ctx, Word::AgentChip, &[]),
+            (n, _) => say(&ctx, Word::AgentChipCount, &[("count", &n.to_string())]),
+        };
+        // Quiet while nothing waits; a raised button while a request waits for the person.
+        let button = Button::new(&label).icon(icons::ROBOT);
+        ui.add(if waiting > 0 { button } else { button.ghost() }).clicked()
+    }
+
+    fn status_bar(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         let ds = ds(&ctx);
         let frame = Frame::new().fill(ds.theme.bg2).inner_margin(Margin::symmetric(8, 0));
@@ -821,6 +904,7 @@ impl Shell {
             (Note::NothingToRedo, _) => say(&ctx, Word::StatusNothingToRedo, &[]),
             (Note::Failed(why), _) => why.clone(),
         };
+        let mut show_agent = false;
         Panel::bottom("shell_status").exact_size(STATUS_BAR).frame(frame).show(ui, |ui| {
             ui.horizontal_centered(|ui| {
                 let small = |text: String| RichText::new(text).font(ds.text.small.clone()).color(ds.theme.text2);
@@ -828,12 +912,25 @@ impl Shell {
                 ui.separator();
                 ui.label(small(undo));
                 ui.separator();
-                ui.label(small(say(&ctx, Word::StatusFence, &[])));
+                let board = self.models.get::<AgentFeed>().map(FenceBoard::from_feed).unwrap_or_default();
+                let live = self.models.get::<AgentFeed>().is_some_and(|f| f.live().next().is_some());
+                if !board.is_empty() {
+                    if fence_chip(ui, &board).clicked() {
+                        show_agent = true;
+                    }
+                } else if live {
+                    ui.label(small(say(&ctx, Word::StatusNoFence, &[])));
+                } else {
+                    ui.label(small(say(&ctx, Word::StatusFence, &[])));
+                }
                 ui.with_layout(Flow::right_to_left(Align::Center), |ui| {
                     ui.label(small(say(&ctx, Word::StatusHealth, &[])));
                 });
             });
         });
+        if show_agent {
+            self.show_panel(agent::ID);
+        }
     }
 
     /// The icon rail that stands for a collapsed left dock; a button opens the panel as a drawer over the viewport.
