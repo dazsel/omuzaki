@@ -261,6 +261,9 @@ pub struct FaceRig {
     bound: Option<Bound>,
     /// Layers whose picture changed and whose texture was not painted yet (or failed to be).
     unpainted: [bool; FaceLayerId::COUNT],
+    /// How many times each layer was painted since the rig was made: what a timing tool reads to say what a frame's face
+    /// paint did.
+    paints: [u64; FaceLayerId::COUNT],
     /// Where variant builds run.
     executor: Box<dyn SwitchExecutor>,
     /// The tick of the last frame: the build job solves a changed rig at it.
@@ -284,6 +287,7 @@ impl FaceRig {
             settle_steps: SETTLE_STEPS,
             bound: None,
             unpainted: [false; FaceLayerId::COUNT],
+            paints: [0; FaceLayerId::COUNT],
             executor: Box::new(ThreadExecutor),
             last_tick: None,
             last_channels: ChannelBuf::NEUTRAL,
@@ -474,6 +478,13 @@ fn release_retiring(renderer: &mut dyn Renderer, rig: &mut FaceRig) {
 }
 
 impl Stage {
+    /// How many times each face layer has been painted since the face was set, indexed by [`FaceLayerId`]; zeros
+    /// without a face.
+    #[must_use]
+    pub fn face_paints(&self) -> [u64; FaceLayerId::COUNT] {
+        self.face.as_ref().map_or([0; FaceLayerId::COUNT], |rig| rig.paints)
+    }
+
     /// Attaches the face system and binds it to the current character. Replaces an earlier rig: its pending variant
     /// switch is aborted on `renderer` (staged resources given back, repointed materials restored) and what its last
     /// swap retired is released.
@@ -675,7 +686,10 @@ impl Stage {
             };
             let Some(mut painter) = bound.system.layer_painter(layer) else { continue };
             match renderer.paint_texture(texture, &mut painter) {
-                Ok(()) => rig.unpainted[layer as usize] = false,
+                Ok(()) => {
+                    rig.unpainted[layer as usize] = false;
+                    rig.paints[layer as usize] += 1;
+                }
                 Err(source) => {
                     // What a GPU rasteriser recorded for this paint was dropped: its retry must redraw the layer whole.
                     bound.system.gpu_paint_failed(layer);
