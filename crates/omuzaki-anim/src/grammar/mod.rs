@@ -1,8 +1,8 @@
 //! The anime grammar stage (spec FE-05): the rules of the drawn-face language that no tracker or score supplies, such as
 //! a blink while smiling closing into a happy `^` instead of a flat lash line.
 //!
-//! [`GrammarStage`] is a `Bus -> Bus` stage that runs **after the life layer** (`docs/design/anim-api.md` section 3). The
-//! rules it runs are [`GrammarRule`]s, each registered where it is written with
+//! [`GrammarStage`] is a `Bus -> Bus` stage that runs **after the life layer** (`docs/design/anim-api.md` section 3),
+//! with the frame's audio [`Cues`]. The rules it runs are [`GrammarRule`]s, each registered where it is written with
 //! [`register_grammar_rule!`](crate::register_grammar_rule), so there is no central list to edit. Which of them run for
 //! a character, and how strongly, is the face profile's `grammar` section ([`GrammarConfig::from_profile`]).
 //!
@@ -40,7 +40,7 @@ pub mod rules;
 
 use std::collections::BTreeSet;
 
-use omuzaki_anim_api::{Bus, Tick};
+use omuzaki_anim_api::{Bus, Cues, Tick};
 use omuzaki_face_api::{FaceProfile, GrammarRules, RuleId};
 
 pub use framework::{
@@ -166,8 +166,9 @@ impl GrammarStage {
         }
     }
 
-    /// Runs the enabled rules, in order, over `bus`. Hot path: no allocation, no locking.
-    pub fn step(&mut self, tick: Tick, bus: &mut Bus) {
+    /// Runs the enabled rules, in order, over `bus`, with the frame's audio `cues` (the ones the life layer got). Hot
+    /// path: no allocation, no locking.
+    pub fn step(&mut self, tick: Tick, cues: &Cues, bus: &mut Bus) {
         // Rules never change who owns a channel, so this holds for the whole frame.
         let taken = bus.owners.human_mask();
         for slot in &mut self.slots {
@@ -179,7 +180,7 @@ impl GrammarStage {
                 continue;
             }
             slot.dirty = true;
-            slot.rule.step(&mut RuleCtx::new(&mut bus.values, taken, slot.strength, tick));
+            slot.rule.step(&mut RuleCtx::new(&mut bus.values, cues, taken, slot.strength, tick));
         }
     }
 }

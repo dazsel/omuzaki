@@ -343,3 +343,53 @@ fn switching_source_forgets_the_old_sources_held_pose() {
         assert_ne!(out.bus.owners.of(Channel::JAW_OPEN), Source::Tracker, "step {i}");
     }
 }
+
+/// FE-05 live: the performer runs the grammar after the life layer with its cues. A smiling blink closes into `^`
+/// only with the grammar; a loud open smile squints as a laugh, a quiet one doesn't (#638).
+#[test]
+fn the_performer_runs_the_grammar_after_life_with_the_audio_cues() {
+    use omuzaki_anim::grammar::{GrammarConfig, GrammarStage};
+    use omuzaki_anim_api::Cues;
+
+    struct Face(f32, f32);
+    impl FrameSource for Face {
+        fn poll(&mut self, now: Seconds) -> Option<TrackFrame> {
+            let mut frame = TrackFrame::empty(0, now, DeviceProfile::Arkit);
+            for channel in [Channel::MOUTH_SMILE_LEFT, Channel::MOUTH_SMILE_RIGHT] {
+                frame.set(channel, 0.9);
+            }
+            frame.set(Channel::EYE_BLINK_LEFT, self.0);
+            frame.set(Channel::EYE_BLINK_RIGHT, self.0);
+            frame.set(Channel::JAW_OPEN, self.1);
+            Some(frame)
+        }
+    }
+    let performer = |face: Face, grammar: bool| {
+        let parts = PerformerParts {
+            source: Box::new(face),
+            retarget: Box::new(ArkitRetarget::new(DeviceProfile::Arkit)),
+            life: Box::new(Life::new(LifeConfig::new(7))),
+            animator: Box::new(MockAnimator),
+        };
+        let p = Performer::new(parts, ChannelBuf::NEUTRAL, HumanoidPose::REST);
+        if grammar { p.with_grammar(GrammarStage::new(&GrammarConfig::default()).unwrap()) } else { p }
+    };
+    let run = |p: &mut Performer, cues: Cues| {
+        p.set_cues(cues);
+        (0..60).fold(ChannelBuf::NEUTRAL, |_, i| {
+            p.set_cues(cues);
+            p.advance(mid_step(i)).unwrap().bus.values
+        })
+    };
+    let arc = |grammar| run(&mut performer(Face(1.0, 0.0), grammar), Cues::default())[Channel::EYE_ARC_LEFT];
+    assert!(arc(true) > 0.9, "a smiling blink closes into ^: {}", arc(true));
+    assert_eq!(arc(false), 0.0, "without the grammar the lids just close");
+
+    let squint = |loudness| {
+        let cues = Cues { loudness, ..Cues::default() };
+        run(&mut performer(Face(0.0, 0.6), true), cues)[Channel::EYE_SQUINT_LEFT]
+    };
+    let (loud, quiet) = (squint(0.8), squint(0.2));
+    println!("smiling blink: eyeArc {}; open smile: eyeSquint {loud} loud, {quiet} quiet", arc(true));
+    assert!(loud >= 0.6 && quiet < 0.3, "loud {loud}, quiet {quiet}");
+}

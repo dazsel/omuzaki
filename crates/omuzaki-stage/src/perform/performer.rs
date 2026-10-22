@@ -4,6 +4,7 @@ use omuzaki_anim_api::{
     Animator, Bus, ChannelBuf, Cues, FrameSource, HumanoidPose, Layer, LayerStack, LifeLayer, Retarget, Tick,
     TrackFrame, TrackStatus,
 };
+use omuzaki_anim::grammar::GrammarStage;
 use omuzaki_core::time::Seconds;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -63,6 +64,8 @@ pub struct PerformOutput<'a> {
 /// The perform loop. Hot path: [`Performer::advance`] and [`Performer::step`] allocate and lock nothing.
 pub struct Performer {
     parts: PerformerParts,
+    /// The anime grammar (spec FE-05), after the life layer with the same cues; `None` runs none.
+    grammar: Option<GrammarStage>,
     stack: LayerStack,
     bus: Bus,
     pose: HumanoidPose,
@@ -88,6 +91,7 @@ impl Performer {
     pub fn new(parts: PerformerParts, rest: ChannelBuf, base: HumanoidPose) -> Self {
         Self {
             parts,
+            grammar: None,
             stack: LayerStack::new(rest),
             bus: Bus::default(),
             pose: base,
@@ -102,6 +106,19 @@ impl Performer {
             last_apply: None,
             tracking: Tracking::NoFrames,
         }
+    }
+
+    /// The same performer with the anime grammar rules running after the life layer, with the life layer's cues: a
+    /// smiling blink closes into `^`, a loud laugh squints, a pout puffs the cheeks (spec FE-05).
+    #[must_use]
+    pub fn with_grammar(mut self, grammar: GrammarStage) -> Self {
+        self.grammar = Some(grammar);
+        self
+    }
+
+    /// The grammar stage, to switch rules for another character ([`GrammarStage::set_config`]).
+    pub fn grammar_mut(&mut self) -> Option<&mut GrammarStage> {
+        self.grammar.as_mut()
     }
 
     /// Runs the steps due up to `now`; the first call sets the origin. At most [`MAX_STEPS_PER_ADVANCE`] per call,
@@ -199,6 +216,9 @@ impl Performer {
     pub fn reset(&mut self) {
         self.parts.retarget.reset();
         self.parts.life.reset();
+        if let Some(grammar) = self.grammar.as_mut() {
+            grammar.reset();
+        }
         self.parts.animator.reset();
         self.stack.tracker.clear();
         self.stack.audio.clear();
@@ -228,6 +248,9 @@ impl Performer {
         self.track(tick);
         self.stack.resolve(&mut self.bus);
         self.parts.life.step(tick, &self.cues, &mut self.bus);
+        if let Some(grammar) = self.grammar.as_mut() {
+            grammar.step(tick, &self.cues, &mut self.bus);
+        }
         self.cues.onset = false;
         self.bus.values.sanitize();
         self.pose = self.base;

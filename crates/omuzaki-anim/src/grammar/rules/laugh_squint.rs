@@ -3,8 +3,10 @@
 //! ## Where it comes from
 //!
 //! The detector is the prototype's laugh (`life.js`, mirrored by `life/laugh.rs`): it starts on a wide smile with an
-//! open mouth, is kept on weaker values for a short hold so a flicker cannot chatter it, and eases in and out over
-//! 0.15 s. The prototype's `loud > 0.45` gate is the one part this rule cannot have, see below.
+//! open mouth and a loud voice (`loud > 0.45`), is kept on weaker values for a short hold so a flicker cannot chatter
+//! it, and eases in and out over 0.15 s. "Loud" is the speech loudness, raised by the audio laughter probability
+//! ([`Cues::laugh`](omuzaki_anim_api::Cues)), exactly as the life layer reads it, so the two see the same laugh and
+//! smiling while talking quietly is no laugh (#638).
 //!
 //! ## Who does what: the life layer and this rule
 //!
@@ -12,22 +14,21 @@
 //!
 //! | | the life layer (`life/laugh.rs`) | this rule |
 //! |---|---|---|
-//! | sees | the smile, the jaw **and** the speech loudness or [`Cues::laugh`](omuzaki_anim_api::Cues) | the bus only: the smile and the jaw |
+//! | sees | the smile, the jaw **and** the speech loudness or [`Cues::laugh`](omuzaki_anim_api::Cues) | the same |
 //! | head | **the bob**, back and up at `laugh_bob_hz` | nothing: it never writes a head channel |
 //! | eyes | a small natural squint (`laugh_squint`, 0.2) | the anime squint, `eyeSquint*` up to [`SQUINT`] |
 //! | cheeks | the cheek push of any smile | `cheekSquint*` up to [`CHEEK`] |
 //! | `^^` | on a really loud laugh (`laugh_arcs`) | on a huge smile, `eyeArc*` |
 //!
-//! The grammar stage runs on the bus after the life layer and gets no [`Cues`](omuzaki_anim_api::Cues), so the loudness
-//! and the audio laughter probability reach this rule only through the life layer's own laugh, never directly. The rule
-//! therefore decides from the mouth alone. Everything it writes is a *raise to at least* ([`raise`]), so where the
-//! life layer already squinted the result is the larger of the two and never the sum, and a laugh the life layer closed
-//! into `^^` stays closed.
+//! The grammar stage runs on the bus after the life layer with the same [`Cues`](omuzaki_anim_api::Cues)
+//! ([`RuleCtx::cues`]). Everything this rule writes is a *raise to at least* ([`raise`]), so where the life layer already
+//! squinted the result is the larger of the two and never the sum, and a laugh the life layer closed into `^^` stays
+//! closed. The `^^` here keys on a huge smile; the life layer's own closes on a really loud laugh.
 //!
 //! ## Numbers a character may set
 //!
 //! `smile-on` (0.6) and `smile-off` (0.45) bound the smile that starts and keeps a laugh, `jaw-on` (0.3) and `jaw-off`
-//! (0.2) the jaw opening; these are the prototype's. `arc-smile` (0.85) is the smile at which a laugh closes into `^^`
+//! (0.2) the jaw opening, `loud-on` (0.45) and `loud-off` (0.3) the voice; these are the prototype's. `arc-smile` (0.85) is the smile at which a laugh closes into `^^`
 //! (kept down to 0.1 below it), `squint` (0.6) and `cheek` (0.6) the levels a full laugh raises the channels to.
 //! A release level is never above its start level, and a character that sets only a start level keeps the default gap
 //! below it for the release level.
@@ -52,6 +53,9 @@ const ARCS: Timing = LAUGH;
 const SMILE: Band = Band { on: 0.6, off: 0.45 };
 /// The jaw opening that starts and keeps a laugh (the prototype's `0.3` and `0.2`).
 const JAW: Band = Band { on: 0.3, off: 0.2 };
+/// The voice that starts and keeps a laugh: the loudness, or the laughter probability if higher (the prototype's
+/// `0.45` and `0.3`, the life layer's `start_loud` and `keep_loud`).
+const LOUD: Band = Band { on: 0.45, off: 0.3 };
 /// The smile at which a laugh closes into `^^`, and how far below it the `^^` is kept. The prototype closes on
 /// loudness (`0.85`); the bus has no loudness, so the same number is read from the smile.
 const ARC_SMILE: f32 = 0.85;
@@ -66,6 +70,7 @@ const CHEEK: f32 = 0.6;
 pub struct LaughSquint {
     smile: Band,
     jaw: Band,
+    loud: Band,
     arc_smile: Band,
     squint: f32,
     cheek: f32,
@@ -78,6 +83,7 @@ impl Default for LaughSquint {
         Self {
             smile: SMILE,
             jaw: JAW,
+            loud: LOUD,
             arc_smile: Band { on: ARC_SMILE, off: ARC_SMILE - ARC_BAND },
             squint: SQUINT,
             cheek: CHEEK,
@@ -99,11 +105,13 @@ impl GrammarRule for LaughSquint {
 
     fn step(&mut self, ctx: &mut RuleCtx<'_>) {
         let (smile, jaw) = (net_smile(ctx), ctx.get(Channel::JAW_OPEN));
+        let cues = ctx.cues();
+        let loud = unit(cues.loudness).max(unit(cues.laugh));
         let dt = ctx.dt();
         let laugh = self.laugh.step(
             dt,
-            self.smile.starts(smile) && self.jaw.starts(jaw),
-            self.smile.keeps(smile) && self.jaw.keeps(jaw),
+            self.smile.starts(smile) && self.jaw.starts(jaw) && self.loud.starts(loud),
+            self.smile.keeps(smile) && self.jaw.keeps(jaw) && self.loud.keeps(loud),
             LAUGH,
         );
         // The `^^` needs a laugh and a huge smile. It reads the laugh after this frame's update, as the prototype does.
@@ -135,11 +143,17 @@ impl GrammarRule for LaughSquint {
         let default = Self::default();
         self.smile = Band::read(params, "smile-on", "smile-off", default.smile);
         self.jaw = Band::read(params, "jaw-on", "jaw-off", default.jaw);
+        self.loud = Band::read(params, "loud-on", "loud-off", default.loud);
         let arc_on = params.number("arc-smile", ARC_SMILE, 0.0, 1.0);
         self.arc_smile = Band { on: arc_on, off: (arc_on - ARC_BAND).max(0.0) };
         self.squint = params.number("squint", SQUINT, 0.0, 1.0);
         self.cheek = params.number("cheek", CHEEK, 0.0, 1.0);
     }
+}
+
+/// A cue's value as a unit: non-finite reads as 0.
+fn unit(value: f32) -> f32 {
+    if value.is_finite() { value.clamp(0.0, 1.0) } else { 0.0 }
 }
 
 register_grammar_rule!(LaughSquint);

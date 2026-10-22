@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use omuzaki_ai_api::ModelRegistry;
 use omuzaki_anim::BusAnimator;
+use omuzaki_anim::grammar::{GrammarConfig, GrammarStage};
 use omuzaki_anim::life::Life;
 use omuzaki_anim::retarget::ArkitRetarget;
 use omuzaki_anim_api::{ChannelBuf, DeviceProfile, FrameSource, HumanoidPose, LifeConfig};
@@ -24,8 +25,9 @@ use super::thread::{FrameTap, LoopReport, PerformThread, WiringError};
 /// The life layer's seed: fixed, so a session's idle motion is the same on every run (spec §4, deterministic).
 pub const LIFE_SEED: u64 = 7;
 
-/// The app's performer: the webcam retarget, the life layer and the bus animator over `source`, showing `rest` on
-/// `base` (the character's bind pose, [`LiveScene::base_pose`](super::LiveScene::base_pose)) until tracked.
+/// The app's performer: the webcam retarget, the life layer, the anime grammar rules and the bus animator over
+/// `source`, showing `rest` on `base` (the character's bind pose, [`LiveScene::base_pose`](super::LiveScene::base_pose))
+/// until tracked.
 pub fn live_performer(source: Box<dyn FrameSource>, rest: ChannelBuf, base: HumanoidPose) -> Performer {
     let parts = PerformerParts {
         source,
@@ -33,7 +35,13 @@ pub fn live_performer(source: Box<dyn FrameSource>, rest: ChannelBuf, base: Huma
         life: Box::new(Life::new(LifeConfig::new(LIFE_SEED))),
         animator: Box::new(BusAnimator::default()),
     };
-    Performer::new(parts, rest, base)
+    let performer = Performer::new(parts, rest, base);
+    // Every registered rule at its defaults: a rule a character's face can't show (fangs on a fangless face) draws
+    // nothing. A registration error is a build's bug and leaves the grammar out rather than the performer.
+    match GrammarStage::new(&GrammarConfig::default()) {
+        Ok(grammar) => performer.with_grammar(grammar),
+        Err(_) => performer,
+    }
 }
 
 /// The inputs beside the webcam's tracker, when the App has them ([`studio_inputs`](super::inputs::studio_inputs) builds them).

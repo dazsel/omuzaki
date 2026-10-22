@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 
-use omuzaki_anim_api::{Channel, ChannelBuf, ChannelMask, Tick};
+use omuzaki_anim_api::{Channel, ChannelBuf, ChannelMask, Cues, Tick};
 use omuzaki_core::id::{Slug, SlugError};
 
 /// Registry plumbing for `register_grammar_rule!`: the macro expands in the caller's crate, so it reaches `inventory`
@@ -82,6 +82,7 @@ impl<'a> RuleParams<'a> {
 #[derive(Debug)]
 pub struct RuleCtx<'a> {
     values: &'a mut ChannelBuf,
+    cues: &'a Cues,
     taken: ChannelMask,
     strength: f32,
     tick: Tick,
@@ -90,9 +91,20 @@ pub struct RuleCtx<'a> {
 
 impl<'a> RuleCtx<'a> {
     /// A context over `values`, where the channels in `taken` belong to a person.
-    pub(super) fn new(values: &'a mut ChannelBuf, taken: ChannelMask, strength: f32, tick: Tick) -> Self {
+    pub(super) fn new(
+        values: &'a mut ChannelBuf,
+        cues: &'a Cues,
+        taken: ChannelMask,
+        strength: f32,
+        tick: Tick,
+    ) -> Self {
         let dt = if tick.dt.is_finite() { tick.dt.clamp(0.0, MAX_DT) } else { 0.0 };
-        Self { values, taken, strength, tick, dt }
+        Self { values, cues, taken, strength, tick, dt }
+    }
+
+    /// The frame's audio cues, as the life layer got them: the speech loudness and the laughter probability (#638).
+    pub fn cues(&self) -> &Cues {
+        self.cues
     }
 
     /// The frame's tick, as the pipeline gave it.
@@ -184,8 +196,11 @@ pub enum GrammarError {
 mod tests {
     use super::*;
 
+    const QUIET: Cues =
+        Cues { loudness: 0.0, onset: false, laugh: 0.0, eyes_lead_turn: false, look_shift: false };
+
     fn ctx(values: &mut ChannelBuf, taken: ChannelMask, strength: f32) -> RuleCtx<'_> {
-        RuleCtx::new(values, taken, strength, Tick::at_rate(0, 60.0))
+        RuleCtx::new(values, &QUIET, taken, strength, Tick::at_rate(0, 60.0))
     }
 
     #[test]
@@ -213,9 +228,9 @@ mod tests {
         v[Channel::BLUSH] = f32::INFINITY;
         let mut tick = Tick::at_rate(0, 60.0);
         tick.dt = 5.0;
-        let c = RuleCtx::new(&mut v, ChannelMask::EMPTY, 1.0, tick);
+        let c = RuleCtx::new(&mut v, &QUIET, ChannelMask::EMPTY, 1.0, tick);
         assert_eq!((c.get(Channel::BLUSH), c.dt()), (0.0, MAX_DT));
         tick.dt = f32::NAN;
-        assert_eq!(RuleCtx::new(&mut v, ChannelMask::EMPTY, 1.0, tick).dt(), 0.0);
+        assert_eq!(RuleCtx::new(&mut v, &QUIET, ChannelMask::EMPTY, 1.0, tick).dt(), 0.0);
     }
 }
