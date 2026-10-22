@@ -1,4 +1,4 @@
-//! A garment that paints its texture (a plaid skirt) builds with the services every surface passes by default: the
+//! A garment that paints its texture (the default character's plaid skirt) builds with the services every surface passes by default: the
 //! character build paints with the rasteriser `omuzaki-face` links (`register_rasterizer!`), so the studio, the CLI,
 //! MCP and export need no rasteriser wired in.
 
@@ -24,8 +24,6 @@ fn a_plaid_skirt_builds_with_the_default_services_painted_by_the_linked_rasteris
     assert!(omuzaki_char_api::linked_rasterizer().is_some(), "omuzaki-face registers its rasteriser");
     let mut doc = MemDoc::new();
     run(&mut doc, "character.create", json!({"id": "kit", "name": "Kit", "template": "soft-sd"}));
-    run(&mut doc, "part.remove", json!({"character": "kit", "part": "trousers"}));
-    run(&mut doc, "part.add", json!({"character": "kit", "kind": "skirt", "id": "skirt"}));
     let node = doc.get(&DocPath::parse("characters/kit").unwrap()).expect("stored").clone();
     let def = CharacterDef::from_node(&node).expect("reads back");
     let built = RegistryBuilder

@@ -1,0 +1,83 @@
+# The kit's default character: the parts `character.create` gives a new character (`parts: "defaults"`), in the order
+# they are listed, and what the starter changes of their defaults. A part starts from the template's own numbers
+# (`body`, `head`) or its kind's defaults (every other kind); the tables below are merged over those, field by field,
+# and the kind checks the result. `[face]` is merged over the template's face the same way.
+#
+# The look: a chibi with open, round eyes, five-finger hands, a warm brown bob with side-swept bangs and locks that
+# frame the face, and a cream shirt over a plaid pleated skirt, dark tights and buckled boots.
+
+[face.eyes.aperture]
+roundness = 0.6
+upper_height = 0.75
+lower_depth = 0.6
+tilt = 0.05
+
+[face.eyes.iris]
+drop = 0.0
+height = 0.9
+
+[[parts]]
+id = "body"
+kind = "body"
+params = { hands = "five_finger" }
+
+[[parts]]
+id = "head"
+kind = "head"
+
+[[parts]]
+id = "hair"
+kind = "hair"
+
+[parts.params.shading]
+root = "#6e4334"
+mid = "#8a5a44"
+tip = "#a8725a"
+shade = "#5e3a30"
+line = "#4a2c24"
+outline = "#3e241e"
+ring = "#e8b896"
+
+[parts.params.groups.a-cap.generator]
+hairline_front_deg = 75.0
+
+[parts.params.groups.b-bangs.generator]
+sweep_deg = 24.0
+layers = [
+    { count = 10, hook_deg = 5.0, root_offset = 0.046, shade = 0.8, spread_deg = 46.0, tip_heights = [0.03, 0.02, 0.01, 0.0, -0.01, -0.02], tip_offset = 0.009, width = 0.064 },
+    { count = 8, hook_deg = 8.0, root_offset = 0.046, shade = 1.0, spread_deg = 40.0, tip_heights = [0.045, 0.03, 0.015, 0.0, -0.015, -0.03], tip_offset = 0.009, width = 0.064 },
+]
+
+[parts.params.groups.c-curtain.generator]
+count = 34
+columns = 3
+length_front = 0.26
+length_back = 0.3
+root_tuck_deg = 40.0
+root_tuck_offset = 0.012
+thickness = { base = 0.009, swell = 0.008 }
+wave = { amplitude = 0.004, curl = 0.03, frequency = 1.2 }
+width = { start = 0.08, mid = 0.11, tip = 0.02 }
+
+# Locks down the temples and cheeks, framing the face.
+[parts.params.groups.d-framing]
+enabled = true
+mirror = false
+dynamics = { simulate = true, follow = "head", stiffness = { root = 1.0, tip = 0.2, from = 0.2, to = 0.8 } }
+generator = { type = "framing" }
+
+[[parts]]
+id = "shirt"
+kind = "shirt"
+
+[[parts]]
+id = "skirt"
+kind = "skirt"
+
+[[parts]]
+id = "legwear"
+kind = "legwear"
+
+[[parts]]
+id = "boots"
+kind = "boots"
