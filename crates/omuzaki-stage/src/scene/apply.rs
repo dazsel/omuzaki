@@ -43,6 +43,7 @@ pub fn fill(resolved: &ResolvedScene, scene: &mut Scene) {
     scene.fog = resolved.fog;
     scene.post = resolved.post;
     scene.outline_light = resolved.outline_light;
+    scene.back_light_rim = resolved.back_light_rim;
 }
 
 /// What a scene change owes the renderer beyond [`fill`]'s copy.
@@ -311,7 +312,8 @@ mod tests {
         let applier = Applier::new();
         let mut scene = Scene::new(omuzaki_render_api::Camera::default());
         let mut resolved = ResolvedScene::new();
-        resolved.ground = ResolvedGround { kind: GroundKind::None, opacity: 0.5, radius_m: 3.0 };
+        resolved.ground =
+            ResolvedGround { kind: GroundKind::None, opacity: 0.5, radius_m: 3.0, ..ResolvedGround::default() };
         assert!(applier.apply(&resolved, &mut scene).is_empty(), "no ground to begin with, none wanted");
     }
 }

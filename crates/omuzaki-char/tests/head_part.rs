@@ -120,6 +120,9 @@ fn the_face_material_is_flat_lit_shadowless_outlined_and_carries_the_face_overla
     assert!(ear.double_sided && ear.overlays.is_empty());
     let neck = &built.materials[&"head-skin-neck".parse().unwrap()];
     assert!(neck.outline.is_none(), "the neck has no outline");
+    let Shading::Toon(t) = &neck.shading else { panic!("toon") };
+    let skin = t.skin.expect("the neck keeps the skin's hue under coloured light, as the ears and the body do");
+    assert_eq!((skin.floor, skin.hue_keep), (0.42, 0.55));
 }
 
 #[test]

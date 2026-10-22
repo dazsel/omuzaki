@@ -88,7 +88,7 @@ fn render(edge: Edge, scale: f32) -> Image {
     scene.background = Background::Solid { colour: Colour::rgb(PAGE[0], PAGE[1], PAGE[2]) };
     scene.post.tonemap = Tonemap::None;
     scene.instances.push(Instance::new(mesh, material, Mat4::from_scale(Vec3::splat(scale))));
-    let quality = Quality { samples: 1, render_scale: 1.0, post_effects: false, ..Quality::offline() };
+    let quality = Quality { samples: 1, render_scale: 1.0, post_effects: false.into(), ..Quality::offline() };
     r.render_image(VIEW, AlphaEncoding::Straight, &scene, &quality).unwrap()
 }
 

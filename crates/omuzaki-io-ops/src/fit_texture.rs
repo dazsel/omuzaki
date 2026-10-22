@@ -16,12 +16,15 @@
 //! rest is IEEE `f64` arithmetic in a fixed order, with no maths-library call on the path, so the same input gives the
 //! same bytes on every target. The output is a PNG with fixed encoder settings.
 //!
-//! Before any pixel is decoded, the input's PNG chunks are walked from the signature to `IEND`, and each chunk's length
-//! and CRC are checked. The header's size is checked before any decoder is built.
+//! Before any pixel is decoded, a PNG's chunks are walked from the signature to `IEND`, and each chunk's length and CRC
+//! are checked; a JPEG's scans are walked to their end (baseline and progressive), because a JPEG decoder fills a scan
+//! that stops early with zeros instead of failing. The header's size is checked before any decoder is built.
 
 use image::codecs::png::{CompressionType, FilterType, PngEncoder};
 use image::{ExtendedColorType, ImageEncoder, ImageError, ImageFormat, ImageReader, Limits, RgbaImage};
 use omuzaki_io_api::{Blob, EncodedImage, ImageMime, IoError};
+
+use crate::fit_texture_jpeg_scan;
 
 /// What a texture's pixels mean, which decides how they are averaged.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -92,7 +95,8 @@ const LINEAR_TO_SRGB: [u16; 255] = [
 /// # Errors
 /// [`IoError::Limit`] if the source or the target is over 16,384 pixels a side or 64 megapixels;
 /// [`IoError::Malformed`] if the image is truncated, damaged or cannot be read; [`IoError::Unsupported`] for a zero-sized
-/// target or a format this build cannot decode (JPEG); [`IoError::Internal`] if the PNG encoder fails.
+/// target or a kind of JPEG this build cannot decode (lossless, hierarchical, arithmetic-coded, or over 8 bits per
+/// sample); [`IoError::Internal`] if the PNG encoder fails.
 pub fn resize(image: &EncodedImage, width: u32, height: u32, usage: TextureUse) -> Result<EncodedImage, IoError> {
     check_size(width, height)?;
     let size = source_size(image)?;
@@ -157,17 +161,13 @@ fn check_size(width: u32, height: u32) -> Result<(), IoError> {
     Ok(())
 }
 
-/// The size declared by the header of `image`, checked against the limits, with no decoder built. JPEG is refused here
-/// because this build has no JPEG decoder, and a decoder is the only way to read a JPEG's size.
+/// The size declared by the header of `image`, checked against the limits, with no decoder built: a PNG's IHDR chunk or
+/// a JPEG's frame header.
 fn source_size(image: &EncodedImage) -> Result<(u32, u32), IoError> {
+    let bytes = image.bytes.as_slice();
     let size = match image.mime {
-        ImageMime::Png => png_header(&image.name, image.bytes.as_slice())?,
-        ImageMime::Jpeg => {
-            return Err(IoError::Unsupported {
-                what: format!("image '{}': JPEG decoding isn't built into this release", image.name),
-                hint: Some("export the texture as PNG".to_owned()),
-            });
-        }
+        ImageMime::Png => png_header(&image.name, bytes)?,
+        ImageMime::Jpeg => fit_texture_jpeg_scan::frame_size(&image.name, bytes)?,
     };
     check_size(size.0, size.1)?;
     Ok(size)
@@ -281,13 +281,24 @@ fn malformed(name: &str, what: &str) -> IoError {
     IoError::Malformed { message: format!("image '{name}': {what}"), at: None }
 }
 
-/// Decodes `image` to 8-bit RGBA, after validating its chunks through `IEND`. Sixteen-bit samples are reduced to eight,
-/// as the image crate does. `size` is the header's size, which the decoder's allocation is bounded by.
+/// Decodes `image` to 8-bit RGBA, after validating a PNG's chunks through `IEND` or walking every scan of a JPEG to its
+/// end. Sixteen-bit samples are reduced to eight, as the image crate does. `size` is the header's size, which the
+/// decoder's allocation is bounded by.
 fn decode(image: &EncodedImage, size: (u32, u32)) -> Result<RgbaImage, IoError> {
-    validate_png(&image.name, image.bytes.as_slice())?;
+    let bytes = image.bytes.as_slice();
+    let format = match image.mime {
+        ImageMime::Png => {
+            validate_png(&image.name, bytes)?;
+            ImageFormat::Png
+        }
+        ImageMime::Jpeg => {
+            fit_texture_jpeg_scan::check_scans(&image.name, bytes, MAX_PIXELS)?;
+            ImageFormat::Jpeg
+        }
+    };
     let mut limits = Limits::default();
     limits.max_alloc = Some(MAX_DECODE_BYTES);
-    let mut reader = ImageReader::with_format(std::io::Cursor::new(image.bytes.as_slice()), ImageFormat::Png);
+    let mut reader = ImageReader::with_format(std::io::Cursor::new(bytes), format);
     reader.limits(limits);
     let decoded = reader.decode().map_err(|e| match e {
         ImageError::Limits(_) => IoError::Limit {

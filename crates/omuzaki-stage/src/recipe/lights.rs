@@ -71,6 +71,15 @@ pub struct LightRig {
     /// The shadow floor of skin under this rig, `0..=1`. The material's `Toon.skin.floor` takes it when the
     /// character's materials are built; the rig only carries the number.
     pub skin_floor: f32,
+    /// The skin floor a scene lit by this rig sets on its cast (`Lighting::skin_floor`), for a rig too dark for the
+    /// materials' own: in a near-black house skin must be allowed to fall darker than a bright studio lets it, or every
+    /// light only makes it paler. `None` (most rigs) leaves each material's floor alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene_skin_floor: Option<f32>,
+    /// How strongly the lights behind the character edge its silhouette, `>= 0` (`Scene::back_light_rim`); 0 when the
+    /// rig leaves it out.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub back_light_rim: f32,
     /// Sky-and-ground ambient light: the base of every rig.
     pub hemisphere: Hemisphere,
     /// The key light. Every rig has one.
@@ -235,6 +244,12 @@ impl LightRig {
         if !(0.0..=1.0).contains(&self.skin_floor) {
             return Err(bad(format!("skin_floor {} must be in 0..=1", self.skin_floor)));
         }
+        if let Some(floor) = self.scene_skin_floor
+            && !(0.0..=1.0).contains(&floor)
+        {
+            return Err(bad(format!("scene_skin_floor {floor} must be in 0..=1")));
+        }
+        non_negative(self.back_light_rim, "back_light_rim").map_err(bad)?;
         non_negative(self.hemisphere.intensity, "hemisphere intensity").map_err(bad)?;
         self.key.validate("key").map_err(bad)?;
         for (label, light) in [("rim", &self.rim), ("fill", &self.fill)] {
@@ -304,7 +319,8 @@ impl LightRig {
     /// Directional positions become `azimuth` and `elevation` toward the origin, at full precision; the point light
     /// and the spots are put in subject units at [`REFERENCE_HEIGHT_M`] (positions, targets and ranges divided by it,
     /// intensities by its square), so a character of the reference height is lit exactly as the rig's own numbers light
-    /// it; every light hangs off the subject. The skin floor stays the rig's (D3): a scene only overrides it when a person sets one.
+    /// it; every light hangs off the subject. The skin floor stays the rig's (D3): a scene only overrides it when a
+    /// person sets one, or when the rig asks for it (`scene_skin_floor`, a dark house's).
     ///
     /// # Errors
     /// [`RecipeError::Invalid`] if a directional light has no direction, or a light id doesn't parse.
@@ -369,7 +385,8 @@ impl LightRig {
             exposure: self.exposure,
             background: self.background,
             outline_light: 1.0,
-            skin_floor: None,
+            back_light_rim: self.back_light_rim,
+            skin_floor: self.scene_skin_floor,
             ambient: Ambient {
                 sky: self.hemisphere.sky,
                 ground: self.hemisphere.ground,
@@ -474,6 +491,11 @@ impl Shadow {
 }
 
 /// `value` if it is finite and not below zero, else a message naming `what`.
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's `skip_serializing_if` passes a reference.
+fn is_zero(value: &f32) -> bool {
+    *value == 0.0
+}
+
 fn non_negative(value: f32, what: &str) -> Result<(), String> {
     if value.is_finite() && value >= 0.0 { Ok(()) } else { Err(format!("{what} {value} must be a number >= 0")) }
 }

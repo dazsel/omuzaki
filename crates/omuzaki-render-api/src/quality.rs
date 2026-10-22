@@ -83,8 +83,78 @@ pub struct Quality {
     /// rejected by [`Quality::validate`] rather than clamped, because a silent clamp would hide a mistake in the caller's
     /// settings.
     pub shadow_interval: u8,
-    /// Whether the scene's bloom, depth of field, grain and grade run at all. Exposure and tone mapping always run.
-    pub post_effects: bool,
+    /// Which of the scene's post effects (bloom, depth of field, grain and grade) run at all, one switch each, since
+    /// they differ ten-fold in cost. Exposure and tone mapping always run. `true` or `false` in JSON still means all or
+    /// none.
+    pub post_effects: PostQuality,
+}
+
+/// Which post effects a frame may spend GPU time on (#657). They differ by about ten times in cost (at 1080p on a
+/// desktop GPU depth of field took about 0.17 ms, bloom 0.06 ms, grain and grade together 0.014 ms), so the frame-budget
+/// scheduler drops them one at a time: depth of field first, grain and grade last. What each looks like stays the
+/// author's ([`Post`](crate::Post)); this only says whether it runs.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(from = "PostQualityRepr")]
+#[non_exhaustive]
+pub struct PostQuality {
+    /// The scene's bloom, when it asks for one.
+    pub bloom: bool,
+    /// The scene's depth of field, when it asks for one.
+    pub depth_of_field: bool,
+    /// The scene's film grain and colour grade, when it asks for them: nearly free, and part of the author's look.
+    pub grain_and_grade: bool,
+}
+
+impl PostQuality {
+    /// Every effect the scene asks for runs.
+    pub const ALL: Self = Self { bloom: true, depth_of_field: true, grain_and_grade: true };
+    /// None runs: the frame is exposure and tone mapping alone.
+    pub const NONE: Self = Self { bloom: false, depth_of_field: false, grain_and_grade: false };
+
+    /// Whether any effect may run.
+    pub const fn any(self) -> bool {
+        self.bloom || self.depth_of_field || self.grain_and_grade
+    }
+}
+
+impl From<bool> for PostQuality {
+    /// `true` for [`PostQuality::ALL`], `false` for [`PostQuality::NONE`]: the single switch it once was.
+    fn from(all: bool) -> Self {
+        if all { Self::ALL } else { Self::NONE }
+    }
+}
+
+/// What [`PostQuality`] reads: one switch for every effect, or one each.
+#[derive(Deserialize, JsonSchema)]
+#[serde(untagged)]
+enum PostQualityRepr {
+    /// Every effect on (`true`) or off (`false`).
+    All(bool),
+    /// One switch per effect.
+    Each(PostEach),
+}
+
+/// One switch per effect, every one named.
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct PostEach {
+    /// The scene's bloom.
+    bloom: bool,
+    /// The scene's depth of field.
+    depth_of_field: bool,
+    /// The scene's film grain and colour grade.
+    grain_and_grade: bool,
+}
+
+impl From<PostQualityRepr> for PostQuality {
+    fn from(repr: PostQualityRepr) -> Self {
+        match repr {
+            PostQualityRepr::All(all) => all.into(),
+            PostQualityRepr::Each(PostEach { bloom, depth_of_field, grain_and_grade }) => {
+                Self { bloom, depth_of_field, grain_and_grade }
+            }
+        }
+    }
 }
 
 impl Quality {
@@ -101,7 +171,7 @@ impl Quality {
             samples: 4,
             shadows: ShadowQuality::Low,
             shadow_interval: 2,
-            post_effects: false,
+            post_effects: PostQuality::NONE,
         }
     }
 
@@ -113,7 +183,7 @@ impl Quality {
             samples: 4,
             shadows: ShadowQuality::High,
             shadow_interval: 1,
-            post_effects: true,
+            post_effects: PostQuality::ALL,
         }
     }
 
@@ -125,7 +195,7 @@ impl Quality {
             samples: MAX_SAMPLES,
             shadows: ShadowQuality::High,
             shadow_interval: 1,
-            post_effects: true,
+            post_effects: PostQuality::ALL,
         }
     }
 
@@ -167,6 +237,26 @@ mod tests {
     type Break = fn(&mut Quality);
 
     #[test]
+    fn post_effects_read_one_switch_or_one_each_and_write_one_each() {
+        let mut q: Quality = serde_json::from_value(serde_json::json!({
+            "mode": "live", "render_scale": 1.0, "samples": 4, "shadows": "low", "shadow_interval": 2,
+            "post_effects": true
+        }))
+        .unwrap();
+        assert_eq!(q.post_effects, PostQuality::ALL, "a bool is every effect, as before");
+        q.post_effects.depth_of_field = false;
+        let json = serde_json::to_value(q).unwrap();
+        assert_eq!(
+            json["post_effects"],
+            serde_json::json!({ "bloom": true, "depth_of_field": false, "grain_and_grade": true })
+        );
+        assert_eq!(serde_json::from_value::<Quality>(json).unwrap(), q, "round-trips");
+        let typo = serde_json::json!({ "bloom": true, "depth_of_field": true, "grain": true });
+        assert!(serde_json::from_value::<PostQuality>(typo).is_err(), "an unknown or missing switch is refused");
+        assert!(!PostQuality::NONE.any() && PostQuality::ALL.any());
+    }
+
+    #[test]
     fn presets_are_valid_and_ordered_by_cost() {
         for q in [Quality::live(), Quality::high(), Quality::offline()] {
             assert_eq!(q.validate(), Ok(()));
@@ -175,7 +265,7 @@ mod tests {
         assert_eq!(Quality::live().mode, QualityMode::Live);
         assert_eq!(Quality::offline().mode, QualityMode::Offline);
         assert!(Quality::live().render_scale <= Quality::high().render_scale);
-        assert!(!Quality::live().post_effects && Quality::offline().post_effects);
+        assert!(!Quality::live().post_effects.any() && Quality::offline().post_effects == PostQuality::ALL);
     }
 
     #[test]

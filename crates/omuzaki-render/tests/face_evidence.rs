@@ -81,7 +81,7 @@ fn page() -> Scene {
 }
 
 fn quality() -> Quality {
-    Quality { samples: 1, render_scale: 1.0, post_effects: false, ..Quality::offline() }
+    Quality { samples: 1, render_scale: 1.0, post_effects: false.into(), ..Quality::offline() }
 }
 
 /// The face layer as a texture: static (`dynamic = false`) or a painter target filled through `update_texture`.
