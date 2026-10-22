@@ -55,4 +55,31 @@ omuzaki_l10n_api::messages! {
     /// Weights that add up to nothing.
     pub weights_sum_zero = "live-nodes-weights-sum-zero" ()
         => "At least one weight has to be above 0.";
+    /// `math.compare` on text with an ordering.
+    pub text_compare_op = "live-nodes-text-compare-op" ()
+        => "Text compares only as equal (==) or not equal (!=).";
+    /// A negative or non-finite epsilon.
+    pub bad_epsilon = "live-nodes-bad-epsilon" ()
+        => "The tolerance has to be a number of at least 0.";
+    /// A random range whose minimum is above its maximum.
+    pub range_backwards = "live-nodes-range-backwards" (min: Num, max: Num)
+        => "The minimum { $min } is above the maximum { $max }.";
+    /// A template with more placeholders than allowed.
+    pub too_many_placeholders = "live-nodes-too-many-placeholders" (max: Int)
+        => "A template takes at most { $max } different placeholders.";
+    /// A template with `{` and no `}`.
+    pub template_unclosed = "live-nodes-template-unclosed" ()
+        => "A placeholder starts with {, but no } ends it; write {{ for a brace.";
+    /// A template with a lone `}`.
+    pub template_stray_close = "live-nodes-template-stray-close" ()
+        => "There is a } with no { before it; write }} for a brace.";
+    /// A placeholder whose name can't be an input's name.
+    pub template_bad_name = "live-nodes-template-bad-name" (name: Verbatim)
+        => "The placeholder {{{ $name }}} has to be lowercase letters, digits and _, starting with a letter.";
+    /// `text.to_number` on empty text.
+    pub not_a_number_empty = "live-nodes-not-a-number-empty" ()
+        => "The text is empty.";
+    /// `text.to_number` on text that isn't a number.
+    pub not_a_number = "live-nodes-not-a-number" (text: Verbatim)
+        => "{ $text } isn't a number.";
 }
