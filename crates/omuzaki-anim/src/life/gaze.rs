@@ -13,18 +13,12 @@ use super::noise::Texture;
 use super::spring::Spring;
 use super::write::Out;
 
-/// The first glance comes sooner than the usual gap: this fraction of a normal draw.
-const FIRST_GLANCE: f32 = 0.4;
 /// A glance is not started while the eyes lead a head turn; it is retried after this long, seconds.
 const GLANCE_RETRY_S: f64 = 0.5;
-/// A steered-back saccade aims at the centre with this much random spread, radians.
-const STEER_SPREAD: f32 = 1.2;
-/// The gaze offset never exceeds this, look units.
-const REACH: f32 = 0.8;
 /// Fixation drift: noise plus a slow sine per axis (frequency in Hz, sine amplitude as a fraction of the drift).
 /// A sine on top keeps every half second moving: noise alone parks at its extremes.
-const DRIFT_X: (f32, f32, f32) = (0.83, 0.6, 0.7);
-const DRIFT_Y: (f32, f32, f32) = (1.07, 0.5, 0.8);
+/// Noise periods of the fixation drift per axis, seconds.
+const DRIFT_PERIOD_S: [f32; 2] = [0.7, 0.8];
 
 /// Where the eyes are wandering to, and the timers that decide when they move.
 #[derive(Clone, Debug)]
@@ -56,7 +50,7 @@ impl Wander {
             glancing: false,
             glance: (0.0, 0.0),
             glance_until: 0.0,
-            next_glance: f64::from(params.glance_gap_s.sample(rng.next_f32()) * FIRST_GLANCE),
+            next_glance: f64::from(params.glance_gap_s.sample(rng.next_f32()) * params.first_glance),
             x: Spring::default(),
             y: Spring::default(),
         }
@@ -84,7 +78,8 @@ impl Wander {
             self.glancing = false;
         }
         let (dynamics, sub) = (frame.params.springs.gaze, frame.sub);
-        let reach = |v: f32| v.clamp(-REACH, REACH);
+        let reach_limit = frame.params.gaze.reach.abs();
+        let reach = |v: f32| v.clamp(-reach_limit, reach_limit);
         let offset = (
             self.x.track(reach(target.0), free, dynamics, 1.0, sub),
             self.y.track(reach(target.1), free, dynamics, 1.0, sub),
@@ -129,7 +124,7 @@ impl Wander {
         let mut next = aim(rng.next_f32() * TAU, self.rest);
         if next.0.hypot(next.1) > params.saccade_radius {
             let home = (-self.rest.1).atan2(-self.rest.0);
-            next = aim(home + (rng.next_f32() - 0.5) * STEER_SPREAD, self.rest);
+            next = aim(home + (rng.next_f32() - 0.5) * params.steer_spread_rad, self.rest);
         }
         self.rest = next;
     }
@@ -137,17 +132,19 @@ impl Wander {
     /// Adds the offset, plus fixation drift, to every `eyeLook*` channel by their signed pairs, so each eye keeps its
     /// own convergence.
     fn write(frame: &Frame<'_>, offset: (f32, f32), out: &mut Out<'_>) {
-        let drift = |texture: Texture, (hz, sine, period): (f32, f32, f32), phase: f32| {
+        let gaze = &frame.params.gaze;
+        let drift = |texture: Texture, axis: usize, phase: f32| {
             if frame.systems.gaze {
-                let wobble = frame.noise(texture, period, 0.0) + sine * frame.slow_sine(hz, phase);
-                frame.params.gaze.drift * wobble
+                let wobble =
+                    frame.noise(texture, DRIFT_PERIOD_S[axis], 0.0) + gaze.drift_sine[axis] * frame.slow_sine(gaze.drift_hz[axis], phase);
+                frame.ease.gaze * gaze.drift * wobble
             } else {
                 0.0
             }
         };
         let phase = frame.traits.drift_phase;
-        let dx = offset.0 + drift(Texture::GazeX, DRIFT_X, phase[0]);
-        let dy = offset.1 + drift(Texture::GazeY, DRIFT_Y, phase[1]);
+        let dx = offset.0 + drift(Texture::GazeX, 0, phase[0]);
+        let dy = offset.1 + drift(Texture::GazeY, 1, phase[1]);
         // Looking toward the character's left turns the left eye out and the right eye in.
         out.nudge(Channel::EYE_LOOK_OUT_LEFT, Channel::EYE_LOOK_IN_LEFT, dx);
         out.nudge(Channel::EYE_LOOK_IN_RIGHT, Channel::EYE_LOOK_OUT_RIGHT, dx);

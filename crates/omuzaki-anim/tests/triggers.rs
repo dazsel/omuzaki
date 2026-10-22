@@ -217,8 +217,8 @@ fn bad_dt_is_clamped() {
 fn set_slot_checks_its_arguments() {
     let mut t = Triggers::new(TriggerFades::default());
     let ok = slot("happy", TriggerMode::Toggle);
-    assert_eq!(t.set_slot(MAX_TRIGGERS, Some(ok)), Err(TriggerError::SlotOutOfRange { slot: 16 }));
-    assert_eq!(t.set_slot(MAX_TRIGGERS, None), Err(TriggerError::SlotOutOfRange { slot: 16 }));
+    assert_eq!(t.set_slot(MAX_TRIGGERS, Some(ok)), Err(TriggerError::SlotOutOfRange { slot: MAX_TRIGGERS }));
+    assert_eq!(t.set_slot(MAX_TRIGGERS, None), Err(TriggerError::SlotOutOfRange { slot: MAX_TRIGGERS }));
     let empty = TriggerSlot { mask: ChannelMask::EMPTY, ..ok };
     assert_eq!(t.set_slot(0, Some(empty)), Err(TriggerError::EmptyMask));
     assert_eq!(t.set_slot(15, Some(ok)), Ok(()));
@@ -311,10 +311,22 @@ fn emptying_and_refilling_a_slot_mid_fade_out_shows_the_new_value() {
 
 #[test]
 fn expression_slot_masks_the_expression_channels() {
+    let set = ExpressionSet::starter();
     let s = slot("happy", TriggerMode::Toggle);
+    let expected: ChannelMask = set.0[&id("happy")].deltas.0.keys().copied().collect();
+    // Exactly the channels the expression moves: no more (a blink would be frozen) and no fewer (a smile would be lost).
+    assert_eq!(s.mask, expected);
     assert!(s.mask.contains(Channel::MOUTH_SMILE_LEFT) && s.mask.contains(Channel::BLUSH));
-    assert!(!s.mask.contains(Channel::MOUTH_SMILE_LEFT) || s.target[Channel::MOUTH_SMILE_LEFT] > 0.0);
     assert!(!s.mask.contains(Channel::EYE_BLINK_LEFT));
+    // The target holds the expression on masked channels and the rest value everywhere else.
+    assert!(s.target[Channel::MOUTH_SMILE_LEFT] > ChannelBuf::NEUTRAL[Channel::MOUTH_SMILE_LEFT]);
+    assert_eq!(s.target[Channel::EYE_BLINK_LEFT], ChannelBuf::NEUTRAL[Channel::EYE_BLINK_LEFT]);
+}
+
+#[test]
+fn the_out_of_range_message_names_the_limit() {
+    let message = TriggerError::SlotOutOfRange { slot: MAX_TRIGGERS }.to_string();
+    assert_eq!(message, format!("trigger slot {MAX_TRIGGERS} is out of range (0..{MAX_TRIGGERS})"));
 }
 
 #[test]

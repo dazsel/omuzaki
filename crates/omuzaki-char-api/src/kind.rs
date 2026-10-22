@@ -92,6 +92,12 @@ pub trait PartKind: 'static {
         KindProvenance::External
     }
 
+    /// The layer a new part of the kind goes on ([`PartDef::layer`](crate::PartDef)), when its place among the other
+    /// garments matters (a shirt under trousers, boots over both); `None` leaves it to the kind's category.
+    fn layer() -> Option<i32> {
+        None
+    }
+
     /// Builds the part. Must be a pure function of `params` and the context: same inputs, same output, on every
     /// platform (use `ctx.rng`, never global state or the clock).
     ///
@@ -177,6 +183,8 @@ pub struct PartKindRegistration {
     pub meta: fn() -> PartMeta,
     /// Who holds the rights to what the kind builds.
     pub provenance: fn() -> KindProvenance,
+    /// The layer a new part of the kind goes on, if the kind names one ([`PartKind::layer`]).
+    pub layer: fn() -> Option<i32>,
     /// The JSON Schema of its parameters (fully inlined; this is the MCP tool schema for edits).
     pub schema: fn() -> Schema,
     /// The parameters of a new part, as stored.
@@ -196,6 +204,7 @@ impl PartKindRegistration {
         Self {
             meta: K::meta,
             provenance: K::provenance,
+            layer: K::layer,
             schema: schema_of::<K::Params>,
             defaults: defaults_of::<K::Params>,
             check: check_as::<K>,
@@ -320,6 +329,15 @@ pub enum BodyRegion {
     FootR,
 }
 
+/// One end of a [`BodyRegion`]: its start (`t = 0`) or its end (`t = 1`).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RegionEnd {
+    /// Where `t` is 0.
+    Start,
+    /// Where `t` is 1.
+    End,
+}
+
 /// An elliptical cross-section of a body region.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Section {
@@ -337,6 +355,18 @@ pub struct Section {
 pub trait BodyFit: Debug + Send + Sync {
     /// The cross-section of `region` at `t` in `0..=1` along its axis (0 at the start named in [`BodyRegion`]).
     fn section(&self, region: BodyRegion, t: f32) -> Option<Section>;
+
+    /// The cap that closes `region` past one of its ends, where its mesh runs on past the sections: a thigh's dome
+    /// rising into the pelvis, the pelvis's floor between the thighs, an arm's root curling into the shoulder, the hand
+    /// past the wrist. The cross-section of what lies `height` metres past the plane of the end's section, along the
+    /// region's axis, taken from a thin slab there and running smoothly from one slab to the next, so a stack of them
+    /// follows a cap that leans or curls, and narrowing to nothing just past its top, so a surface held clear of it
+    /// runs on smoothly over the top; `None` beyond that, or where the region has none. A garment round a
+    /// neighbouring region clears it. The default has no caps: a fit whose sections hold the whole body.
+    fn cap(&self, region: BodyRegion, end: RegionEnd, height: f32) -> Option<Section> {
+        let _ = (region, end, height);
+        None
+    }
 
     /// The bind-space position of a bone's joint.
     fn joint(&self, joint: &JointRef) -> Option<Vec3>;
@@ -1013,7 +1043,7 @@ mod tests {
     }
 
     fn step_once(runtime: &mut dyn PartRuntime) {
-        runtime.step(&StepCtx { dt: 1.0 / 60.0, time: Seconds(0.0), pose: &Rest, wind: Vec3::ZERO });
+        runtime.step(&StepCtx::new(1.0 / 60.0, Seconds(0.0), &Rest, Vec3::ZERO));
     }
 
     fn steps(runtime: Option<&dyn PartRuntime>) -> Option<u32> {

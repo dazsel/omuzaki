@@ -206,12 +206,7 @@ fn the_hair_simulation_moves_deterministically_and_resets() {
     assert_eq!((cost.vertices, cost.particles), (528, 264));
     let rest: Vec<Vec3> = a.runtimes[slot].runtime.dynamic_mesh(0).unwrap().positions.to_vec();
     let step = |built: &mut BuiltCharacter, secs: f64| {
-        let ctx = omuzaki_char_api::StepCtx {
-            dt: 1.0 / 60.0,
-            time: omuzaki_core::time::Seconds(secs),
-            pose: &RestPose,
-            wind: Vec3::ZERO,
-        };
+        let ctx = omuzaki_char_api::StepCtx::new(1.0 / 60.0, omuzaki_core::time::Seconds(secs), &RestPose, Vec3::ZERO);
         built.runtimes[0].runtime.step(&ctx);
     };
     for built in [&mut a, &mut b] {
@@ -264,12 +259,12 @@ fn sim_state(runtime: &dyn PartRuntime) -> SimState {
 
 fn windy_frames(runtime: &mut dyn PartRuntime, frames: u32) {
     for frame in 0..frames {
-        let ctx = StepCtx {
-            dt: 1.0 / 60.0,
-            time: omuzaki_core::time::Seconds(f64::from(frame) / 60.0),
-            pose: &RestPose,
-            wind: Vec3::new(1.0, 0.0, 0.5),
-        };
+        let ctx = StepCtx::new(
+            1.0 / 60.0,
+            omuzaki_core::time::Seconds(f64::from(frame) / 60.0),
+            &RestPose,
+            Vec3::new(1.0, 0.0, 0.5),
+        );
         runtime.step(&ctx);
     }
 }

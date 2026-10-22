@@ -779,7 +779,12 @@ fn a_mistyped_path_names_the_nearest_valid_key() {
             }
             let typo = &last[..last.len() - 1];
             let wrong = if parent.is_empty() { typo.to_owned() } else { format!("{parent}/{typo}") };
-            if listed(&wrong) {
+            // `edge0` and `edge1` minus their last character are the same typo: either is a fair guess.
+            let twin = |e: &Value| {
+                let other = path_of(e);
+                other != path && other.len() == path.len() && other.starts_with(&wrong)
+            };
+            if listed(&wrong) || subject.description["parameters"].as_array().unwrap().iter().any(twin) {
                 continue;
             }
             let error = set(&subject.doc, &subject.part, &wrong, &json!(0)).expect_err(&wrong);

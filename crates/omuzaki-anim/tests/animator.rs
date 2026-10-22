@@ -35,9 +35,10 @@ fn quat_gap(a: Quat, b: Quat) -> f32 {
     (a.x - b.x).abs().max((a.y - b.y).abs()).max((a.z - b.z).abs()).max((a.w - b.w).abs())
 }
 
+/// Compares every bone but Neck and Head: the mock splits the head by Euler angles, `BusAnimator` by slerp (#1875).
 fn assert_poses_close(a: &HumanoidPose, b: &HumanoidPose, what: &str) {
     assert!((a.hips_offset - b.hips_offset).length() < 1e-6, "{what}: hips offset");
-    for bone in HumanoidBone::ALL {
+    for bone in HumanoidBone::ALL.into_iter().filter(|b| !matches!(b, HumanoidBone::Neck | HumanoidBone::Head)) {
         let gap = quat_gap(a.get(bone), b.get(bone));
         assert!(gap < 1e-6, "{what}: {bone} differs by {gap}");
     }
@@ -93,6 +94,39 @@ fn bus_yaw_splits_35_percent_to_the_neck_and_the_rest_to_the_head() {
     let (neck, head) = (pose.get(HumanoidBone::Neck), pose.get(HumanoidBone::Head));
     assert!((neck.angle_between(Quat::IDENTITY) - 0.14).abs() < 1e-5);
     assert!(((neck * head).angle_between(Quat::IDENTITY) - 0.4).abs() < 1e-5);
+}
+
+#[test]
+fn neck_times_head_is_the_bus_rotation_on_a_yaw_pitch_grid_and_random_targets() {
+    let check = |yaw: f32, pitch: f32, roll: f32, share: f32| {
+        let mut bus = Bus::default();
+        bus.values[Channel::HEAD_YAW] = yaw;
+        bus.values[Channel::HEAD_PITCH] = pitch;
+        bus.values[Channel::HEAD_ROLL] = roll;
+        let mut pose = HumanoidPose::REST;
+        BusAnimator::new(BusAnimatorParams { neck_share: share, ..BusAnimatorParams::default() }).animate(
+            tick(),
+            &bus,
+            &[],
+            &mut pose,
+        );
+        let (neck, head) = (pose.get(HumanoidBone::Neck), pose.get(HumanoidBone::Head));
+        let whole = Quat::from_euler(EulerRot::YXZ, yaw, pitch, roll);
+        let err = quat_gap(neck * head, whole);
+        assert!(err < 1e-6, "yaw {yaw} pitch {pitch} roll {roll}: product off by {err}");
+        // The neck carries `share` of the angle about the same axis.
+        let want = whole.angle_between(Quat::IDENTITY) * share;
+        assert!((neck.angle_between(Quat::IDENTITY) - want).abs() < 1e-5, "neck angle");
+    };
+    for yi in -6..=6 {
+        for pi in -4..=4 {
+            check((yi as f32 * 10.0).to_radians(), (pi as f32 * 10.0).to_radians(), 0.0, 0.35);
+        }
+    }
+    let mut rng = Rng::new(0x1875);
+    for _ in 0..1_000 {
+        check(random_angle(&mut rng, 1.2), random_angle(&mut rng, 1.2), random_angle(&mut rng, 1.2), 0.35);
+    }
 }
 
 #[test]

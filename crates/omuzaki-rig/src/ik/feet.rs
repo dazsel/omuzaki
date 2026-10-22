@@ -13,7 +13,7 @@
 //!    ground. While planted the foot's target is that point, so the foot cannot slide. The target eases from the
 //!    animated ankle to the lock over [`Config::blend_time`] when a foot plants, and back when it is released.
 //! 3. **Hips.** If a planted foot is out of reach (beyond the leg's exactly reachable range, see
-//!    [`SOFT_REACH`](super::two_bone::SOFT_REACH)), the hips are lowered along world down by just enough to reach it:
+//!    [`SOFT_REACH`]), the hips are lowered along world down by just enough to reach it:
 //!    at once on the way down, then back up at no more than [`Config::hip_rise_speed`].
 //! 4. **Solve.** The legs go to their targets with [`TwoBoneIk`] (knee toward where the animation put it), then each
 //!    planted foot is turned the shortest way so its sole lies flat on the ground. While a foot is released the sole

@@ -202,6 +202,9 @@ pub struct ClipKey {
 
 /// A clip: key poses in time (see the [module](self)). Make one with [`PoseClip::parse`], or take a built-in from
 /// [`ClipLibrary::builtin`].
+///
+/// A parsed clip stays valid: the length, looping, easing and keys are private and read through accessors, so no caller
+/// can set a looped clip's length to zero (sampling would turn NaN) or change the easing past the seam check.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub struct PoseClip {
@@ -209,12 +212,12 @@ pub struct PoseClip {
     pub id: String,
     /// One line saying what the clip is.
     pub summary: String,
-    /// Seconds a play takes; a looped clip repeats with this period.
-    pub length: f32,
+    /// Seconds a play takes; a looped clip repeats with this period. See [`PoseClip::length`].
+    length: f32,
     /// Whether the clip repeats; the seam from the last key to the first is then part of the clip.
-    pub looped: bool,
+    looped: bool,
     /// How each segment is paced.
-    pub easing: Easing,
+    easing: Easing,
     /// The keys, in strictly increasing time; never empty (see [`PoseClip::keys`]).
     keys: Vec<ClipKey>,
 }
@@ -253,6 +256,21 @@ struct ClipFile {
 }
 
 impl PoseClip {
+    /// Seconds a play takes; a looped clip repeats with this period. Finite, above zero and at most [`MAX_LENGTH`].
+    pub fn length(&self) -> f32 {
+        self.length
+    }
+
+    /// Whether the clip repeats; the seam from the last key to the first is then part of the clip.
+    pub fn looped(&self) -> bool {
+        self.looped
+    }
+
+    /// How each segment is paced.
+    pub fn easing(&self) -> Easing {
+        self.easing
+    }
+
     /// Parses one clip file and checks it: a valid id and summary, a finite length above zero and at most
     /// [`MAX_LENGTH`] (3600 s), at least one key, key
     /// times finite, strictly increasing and inside `0..=length` (below `length` when looped), every pose in

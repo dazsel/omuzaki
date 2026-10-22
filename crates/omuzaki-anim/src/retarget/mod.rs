@@ -8,8 +8,9 @@
 //! jaw), then mirror if asked. Head angles, shift and lean come from the frame's head pose (see `head`) and are held to
 //! their channels' legal ranges.
 //!
-//! The built-in blink dead zone has the prototype's two windows: `0.28..0.8` for a channel still on its default
-//! (gain-derived) range, `0.25..0.85` once the performer has a fitted range for it. See [`UNCALIBRATED_BLINK`].
+//! The built-in blink dead zone has the prototype's two windows: `0.28..0.8` for a channel whose range is a
+//! default (gain-derived) one, `0.25..0.85` once a calibration has fitted it. The range says which it is
+//! ([`Calibration::source`]); see [`UNCALIBRATED_BLINK`].
 //!
 //! Everything that belongs to the *tracker's* channel (its range, response, exaggeration and filter) is applied before
 //! mirroring and travels with the value, so a calibration made on the raw tracker stays valid when the preview is
@@ -26,8 +27,8 @@ mod gains;
 mod head;
 
 use omuzaki_anim_api::{
-    ARKIT_COUNT, BlendMode, Calibration, Channel, ChannelBuf, ChannelMask, ChannelRange, DeviceProfile, EXAGGERATED,
-    EyeAngles, FAST, Fade, LOOK_FULL_RAD, Layer, OneEuroParams, Response, Retarget, RetargetConfig, TrackFrame,
+    ARKIT_COUNT, BlendMode, Calibration, Channel, ChannelBuf, ChannelMask, DeviceProfile, EXAGGERATED,
+    EyeAngles, FAST, Fade, LOOK_FULL_RAD, Layer, OneEuroParams, RangeSource, Response, Retarget, RetargetConfig, TrackFrame,
     TrackStatus,
 };
 
@@ -40,10 +41,6 @@ use head::{HeadChannels, HeadTuning};
 /// used by its gain path (a neutral map and the gain table). The window of a fitted range (`0.25..0.85`) is
 /// [`Response::built_in`]. The prototype tuned the two paths apart, so this keeps them apart.
 const UNCALIBRATED_BLINK: Response = Response { dead: 0.28, sat: 0.8, gamma: 1.0, invert: false };
-
-/// How far a range's span may be from the default span and still count as the default. "Calibrate neutral"
-/// ([`Calibration::rest_at`]) moves `lo` and recomputes `hi` from it, which costs float rounding in the span.
-const SPAN_TOLERANCE: f32 = 1e-5;
 
 /// [`RetargetConfig`] compiled into fixed per-channel tables, so a frame does table lookups instead of map searches.
 #[derive(Clone, Debug)]
@@ -69,14 +66,13 @@ impl Plan {
                 filter: OneEuroParams::for_smoothing(config.smoothing, false),
             },
         };
-        let default = default_calibration(calibration.profile);
         for info in Channel::arkit() {
             let (c, i) = (info.channel, info.channel.index());
             plan.response[i] = config
                 .responses
                 .get(&c)
                 .copied()
-                .unwrap_or_else(|| built_in_response(c, calibration.range(c), default.range(c)));
+                .unwrap_or_else(|| built_in_response(c, calibration.source(c)));
             if EXAGGERATED.contains(c) {
                 plan.boost[i] = config.exaggeration;
             }
@@ -87,16 +83,11 @@ impl Plan {
 }
 
 /// The response of `channel` when the settings give it none. Only blinks differ from the identity, and they have two
-/// windows (see [`UNCALIBRATED_BLINK`]): a range whose span is the profile's default one has not been fitted, however
-/// far "calibrate neutral" has moved its `lo`. (The contract has no flag for a fitted range, so the span is the tell.)
-fn built_in_response(channel: Channel, range: ChannelRange, default: ChannelRange) -> Response {
-    let span = |r: ChannelRange| r.hi - r.lo;
+/// windows (see [`UNCALIBRATED_BLINK`]): a range that is still a default one has not been fitted, however far
+/// "calibrate neutral" has moved its `lo`. The range's [`RangeSource`] says which.
+fn built_in_response(channel: Channel, source: RangeSource) -> Response {
     let is_blink = matches!(channel, Channel::EYE_BLINK_LEFT | Channel::EYE_BLINK_RIGHT);
-    if is_blink && (span(range) - span(default)).abs() <= SPAN_TOLERANCE {
-        UNCALIBRATED_BLINK
-    } else {
-        Response::built_in(channel)
-    }
+    if is_blink && !source.is_fitted() { UNCALIBRATED_BLINK } else { Response::built_in(channel) }
 }
 
 /// The `ARKit`-52 retarget. One per performer; it owns its filters, calibration and settings.

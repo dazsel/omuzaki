@@ -29,7 +29,7 @@ pub const RING: usize = RING_U32 as usize;
 pub const CAP_VERTICES: usize = 2 * (RING + 1);
 
 /// A smoothstep that is 0 at or below `lo`, 1 at or above `hi` (three.js `MathUtils.smoothstep`).
-fn smoothstep(x: f32, lo: f32, hi: f32) -> f32 {
+pub(crate) fn smoothstep(x: f32, lo: f32, hi: f32) -> f32 {
     let t = ((x - lo) / (hi - lo)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
 }
@@ -363,8 +363,8 @@ impl TubeMesh {
         Ok(())
     }
 
-    /// Appends a finished mesh that already carries `hair-uv` and `hair-info` (a generator's shell), with white vertex
-    /// colours. Returns `false`, appending nothing, if `other` lacks either attribute or they disagree with its vertex
+    /// Appends a finished mesh that already carries `hair-uv` and `hair-info` (a generator's shell, or the curtain's
+    /// strips), keeping its vertex colours if it has one per vertex and giving it white ones otherwise. Returns `false`, appending nothing, if `other` lacks either attribute or they disagree with its vertex
     /// count.
     pub fn append(&mut self, other: &MeshData) -> bool {
         let (Some(uv), Some(info)) = (other.extra_attribute(HAIR_UV), other.extra_attribute(HAIR_INFO)) else {
@@ -380,7 +380,11 @@ impl TubeMesh {
         self.mesh.positions.extend_from_slice(&other.positions);
         self.mesh.normals.extend_from_slice(&other.normals);
         self.mesh.uvs.extend((0..n).map(|i| other.uvs.get(i).copied().unwrap_or(Vec2::ZERO)));
-        self.mesh.colours.extend(std::iter::repeat_n(vertex_colour(None), n));
+        if other.colours.len() == n {
+            self.mesh.colours.extend_from_slice(&other.colours);
+        } else {
+            self.mesh.colours.extend(std::iter::repeat_n(vertex_colour(None), n));
+        }
         self.mesh.indices.extend(other.indices.iter().map(|i| base + i));
         true
     }

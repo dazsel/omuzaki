@@ -92,6 +92,7 @@ fn cap_extremes() -> Vec<CapGen> {
                         hairline_back_deg: back,
                         ear_notch_deg: notch,
                         thickness,
+                        ..CapGen::default()
                     });
                 }
             }

@@ -1,0 +1,55 @@
+# VRChat PC (Windows and other desktop): the Avatar Performance Ranking limits, transcribed as data (VF-07). Numbers live only here.
+#
+# Source page dated Apr 21, 2026; read 2026-10-12 (two independent reads agreed on every value).
+#
+# Each row is [Excellent, Good, Medium, Poor]: an avatar's tier is the first column its value fits in, and anything
+# above Poor is Very Poor. The page's wording: "If you go above these numbers for any category, you'll be bumped into
+# the next rank." Counts are plain numbers, bounds are metres, one [x, y, z] per tier, and texture_mib
+# is in megabytes as the page prints them (compared in MiB, 1024 * 1024 bytes). The page's boolean rows (particle
+# trails, particle collision) are written as 0 (False) and 1 (True).
+
+[limits]
+platform = "VRChat"
+version = "Avatar Performance Ranking, page dated 2026-04-21"
+source = "https://creators.vrchat.com/avatars/avatar-performance-ranking-system/"
+retrieved = "2026-10-12"
+tiers = ["Excellent", "Good", "Medium", "Poor"]
+beyond = "Very Poor"
+
+# How texture memory is estimated from pixel counts: bits per pixel for images without and with an alpha channel, and a
+# full mip chain adding a third.
+[limits.texture]
+opaque_bits = 4.0
+alpha_bits = 8.0
+mips = true
+
+[limits.stats]
+triangles = [32000, 70000, 70000, 70000]
+bounds = [[2.5, 2.5, 2.5], [4, 4, 4], [5, 6, 5], [5, 6, 5]]
+texture_mib = [40, 75, 110, 150]
+skinned_meshes = [1, 2, 8, 16]
+basic_meshes = [4, 8, 16, 24]
+material_slots = [4, 8, 16, 32]
+physbones_components = [4, 8, 16, 32]
+physbones_transforms = [16, 64, 128, 256]
+physbones_colliders = [4, 8, 16, 32]
+physbones_collision_checks = [32, 128, 256, 512]
+contacts = [8, 16, 24, 32]
+constraints = [100, 250, 300, 350]
+constraint_depth = [20, 50, 80, 100]
+animators = [1, 4, 16, 32]
+bones = [75, 150, 256, 400]
+lights = [0, 0, 0, 1]
+particle_systems = [0, 4, 8, 16]
+total_particles = [0, 300, 1000, 2500]
+mesh_particle_polys = [0, 1000, 2000, 5000]
+particle_trails = [0, 0, 1, 1]
+particle_collisions = [0, 0, 1, 1]
+trail_renderers = [1, 2, 4, 8]
+line_renderers = [1, 2, 4, 8]
+raycasts = [1, 4, 8, 15]
+cloths = [0, 1, 1, 1]
+cloth_vertices = [0, 50, 100, 200]
+physics_colliders = [0, 1, 8, 8]
+physics_rigidbodies = [0, 1, 8, 8]
+audio_sources = [1, 4, 8, 8]

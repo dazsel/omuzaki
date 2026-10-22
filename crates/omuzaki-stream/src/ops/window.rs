@@ -1,4 +1,12 @@
-//! `output.window.open`, `close`, `status` and `suggest_key`: the clean output window as ops.
+//! `output.window.open`, `close`, `set`, `status` and `suggest_key`: the output window and its modes as ops.
+//!
+//! **Modes** ([`WindowMode`]): `studio` shows the character only in the studio (no window), `capture` opens the clean
+//! window a capture tool grabs, and `desktop` puts the character alone on the desktop (transparent, on top, out of the
+//! taskbar, clicked through on its transparent pixels). They are general blocks, not use cases: a stream, a companion
+//! on the desktop and an AI co-host are the same modes mixed with who drives the character. `output.window.status`
+//! lists which modes this machine can show and why not; asking for one it can't is refused with that reason. Every
+//! click passing through (`click_through: full`) is the person's call: an agent's request waits for them, since the
+//! person could lose the character on their desktop.
 //!
 //! The ops decide with [`crate::window`] (the exact size, the key colour, the transparent fallback) and drive a
 //! [`WindowHost`] the app injects; the Live UI implements the host and builds the real window. Opening and closing are
@@ -7,10 +15,11 @@
 //!
 //! A dry run plans the window and reports what would open without calling the host.
 //!
-//! **Settings:** the Machine setting `output.window` ([`OutputWindow`]) keeps the person's last open request (backdrop,
-//! key colour, size, title, stacking). `output.window.open` writes it when the app has a settings service, so the Live
-//! workspace shows the same choices after a restart; the window itself never reopens on its own
-//! (`docs/design/settings.md`: anything that starts output is never restored).
+//! **Settings:** the Machine setting `output.window` ([`OutputWindow`]) keeps the person's last open request (mode,
+//! backdrop, key colour, size, title, stacking, opacity, click-through). `output.window.open` writes it when a person
+//! opens the window and the app has a settings service, so the Live workspace shows the same choices after a restart;
+//! an agent's request opens the window without becoming the person's choice. The window itself never reopens on its
+//! own (`docs/design/settings.md`: anything that starts output is never restored).
 
 use omuzaki_core::colour::Colour;
 use omuzaki_ops_api::{Mode, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
@@ -24,8 +33,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use omuzaki_stream_api::window::{
-    Backdrop, DEFAULT_KEY, MAX_SCALE, MIN_SCALE, PaletteSource, SizePolicy, WindowError, WindowHost, WindowSettings,
-    WindowState,
+    Backdrop, ClickThrough, DEFAULT_KEY, DESKTOP_SCALE, DesktopSettings, MAX_SCALE, MIN_SCALE, ModeSupport,
+    PaletteSource, SizePolicy, WindowError, WindowHost, WindowMode, WindowSettings, WindowState,
 };
 
 use crate::window::{check_title, pick_key, plan};
@@ -40,7 +49,7 @@ impl Setting for OutputWindow {
     type Value = Open;
     const META: SettingMeta = SettingMeta::new(
         "output.window",
-        "The clean output window's backdrop, key colour, size, title and stacking, as last opened",
+        "The output window's mode, backdrop, key colour, size, title, stacking, opacity and click-through, as last opened",
         SettingScope::Machine,
         AgentWrite::Confirm,
         InProfile::Excluded,
@@ -52,12 +61,17 @@ impl Setting for OutputWindow {
         Open::default()
     }
 
-    /// The same rules as the op's arguments: a title `check_title` accepts and a scale from [`MIN_SCALE`] to
-    /// [`MAX_SCALE`].
+    /// The same rules as the op's arguments: a title `check_title` accepts, a scale from [`MIN_SCALE`] to
+    /// [`MAX_SCALE`] and an opacity from `MIN_OPACITY` to 1.
     fn check(value: &Open) -> Result<(), SettingError> {
         let key = Self::META.key;
         if let Some(title) = &value.title {
             check_title(title).map_err(|e| SettingError::invalid(key, e.to_string()))?;
+        }
+        if let Some(opacity) = value.opacity {
+            DesktopSettings::new(opacity, ClickThrough::default())
+                .check()
+                .map_err(|e| SettingError::invalid(key, e.to_string()))?;
         }
         match value.scale {
             Some(scale) if !(MIN_SCALE..=MAX_SCALE).contains(&scale) => {
@@ -81,15 +95,30 @@ pub enum BackdropKind {
     Transparent,
 }
 
-/// Open the clean output window for a capture tool to grab.
+/// Show the character in a window: for a capture tool to grab (`capture`, the default), alone on the desktop
+/// (`desktop`), or only in the studio (`studio`, which closes the window).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(extend("examples" = [
     {},
     { "backdrop": "key", "key": "#ff00ff", "scale": 0.5, "title": "Omuzaki Output" },
     { "backdrop": "transparent", "always_on_top": true },
+    { "mode": "desktop", "scale": 0.4, "opacity": 0.9 },
+    { "mode": "studio" },
 ]))]
 pub struct Open {
+    /// `capture` (default): the clean window a capture tool grabs. `desktop`: the character alone on the desktop,
+    /// transparent, above other windows, out of the taskbar, dragged by the character. `studio`: no window; the
+    /// character stays in the studio. `output.window.status` says which this machine can show.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<WindowMode>,
+    /// `desktop` only: how opaque the character is, `0.1` to `1`. Default `1`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opacity: Option<f32>,
+    /// `desktop` only: `transparent` (default) lets clicks on empty pixels through while the character takes its own;
+    /// `off` takes every click; `full` lets every click through, and only a person may turn it on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub click_through: Option<ClickThrough>,
     /// `key` (default) or `transparent`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backdrop: Option<BackdropKind>,
@@ -112,13 +141,27 @@ pub struct Open {
     pub always_on_top: Option<bool>,
 }
 
+/// Change an open desktop window's opacity or click-through, without reopening it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(extend("examples" = [{ "opacity": 0.6 }, { "click_through": "off" }]))]
+pub struct Set {
+    /// How opaque the character is, `0.1` to `1`. Default: as it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opacity: Option<f32>,
+    /// `transparent`, `off` or `full` (a person's call). Default: as it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub click_through: Option<ClickThrough>,
+}
+
 /// Close the clean output window. Does nothing when it is closed.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(extend("examples" = [{}]))]
 pub struct Close {}
 
-/// Report whether the clean output window is open, and its size, backdrop and whether it is minimised.
+/// Report whether the output window is open, its mode, size, backdrop and whether it is minimised, and which modes this
+/// machine can show.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(extend("examples" = [{}]))]
@@ -145,10 +188,53 @@ fn window_error(field: &str, error: &WindowError) -> OpError {
     }
 }
 
+/// `desktop`, checked; an agent's full click-through waits for a person, in a dry run too.
+fn checked_desktop(ctx: &OpCtx<'_>, desktop: DesktopSettings) -> Result<DesktopSettings, OpError> {
+    desktop.check().map_err(|e| window_error("opacity", &e))?;
+    if desktop.click_through == ClickThrough::Full {
+        ctx.require_person("let every click pass through the character on the desktop")?;
+    }
+    Ok(desktop)
+}
+
+/// Refuses `mode` with the host's reason when this machine can't show it.
+fn require_mode(host: &dyn WindowHost, mode: WindowMode) -> Result<(), OpError> {
+    let support = host.modes().into_iter().find(|s| s.mode == mode);
+    match support {
+        Some(ModeSupport { available: true, .. }) => Ok(()),
+        Some(ModeSupport { reason, .. }) => {
+            let reason = reason.unwrap_or_else(|| format!("This computer can't show the character {}", where_(mode)));
+            Err(OpError::unsupported(reason).hint("output.window.status lists the modes this machine can show"))
+        }
+        None => Err(OpError::unsupported(format!("This build can't show the character {}", where_(mode)))),
+    }
+}
+
+/// Where `mode` shows the character, for a reason a person reads.
+const fn where_(mode: WindowMode) -> &'static str {
+    match mode {
+        WindowMode::Studio => "only in the studio",
+        WindowMode::Capture => "in a window for capture",
+        _ => "on the desktop",
+    }
+}
+
 impl Open {
     /// The settings this request asks for, with the defaults filled in.
     fn settings(&self) -> Result<WindowSettings, OpError> {
         let mut settings = WindowSettings::default();
+        settings.mode = self.mode.unwrap_or_default();
+        let desktop_only = |field: &str| {
+            OpError::invalid(field, format!("{field} applies to the desktop mode")).hint("add \"mode\": \"desktop\"")
+        };
+        if settings.mode != WindowMode::Desktop {
+            if self.opacity.is_some() {
+                return Err(desktop_only("opacity"));
+            }
+            if self.click_through.is_some() {
+                return Err(desktop_only("click_through"));
+            }
+        }
         if let Some(title) = &self.title {
             check_title(title).map_err(|e| window_error("title", &e))?;
             settings.title.clone_from(title);
@@ -162,6 +248,16 @@ impl Open {
             settings.size = SizePolicy::Scale(scale);
         }
         settings.always_on_top = self.always_on_top.unwrap_or(false);
+        if settings.mode == WindowMode::Desktop {
+            // The desktop mode is these, whatever else was asked: the character alone, above the person's work, with
+            // the pointer theirs.
+            settings.backdrop = Backdrop::Transparent;
+            settings.always_on_top = true;
+            settings.hide_cursor = false;
+            settings.size = SizePolicy::Scale(self.scale.unwrap_or(DESKTOP_SCALE));
+            settings.desktop =
+                DesktopSettings::new(self.opacity.unwrap_or(1.0), self.click_through.unwrap_or_default());
+        }
         Ok(settings)
     }
 }
@@ -170,7 +266,7 @@ impl Op for Open {
     fn meta() -> OpMeta {
         OpMeta {
             name: "output.window.open",
-            summary: "Open the clean output window for a capture tool: the output's exact size and a key colour backdrop by default, or a scaled size and a transparent backdrop.",
+            summary: "Show the character in a window: the clean window for a capture tool (the output's exact size and a key colour by default), alone on the desktop (transparent, on top, clicked through), or only in the studio.",
             kind: OpKind::Edit,
             scope: Scope::Perform,
             undo: Undo::None,
@@ -180,9 +276,34 @@ impl Op for Open {
     fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
         let mut settings = self.settings()?;
         let host = ctx.service::<dyn WindowHost>()?;
+        require_mode(host, settings.mode)?;
+        if settings.mode == WindowMode::Studio {
+            // The studio is the window: none to open, and the one that is open closes.
+            let saved = save(ctx, self)? && !ctx.dry_run;
+            let was_open = host.state() != WindowState::Closed;
+            if !ctx.dry_run {
+                host.close();
+            }
+            return Ok(Plan::answer(json!({
+                "mode": WindowMode::Studio,
+                "opened": false,
+                "closed": !ctx.dry_run,
+                "was_open": was_open,
+                "saved": saved,
+            })));
+        }
+        if settings.mode == WindowMode::Desktop {
+            settings.desktop = checked_desktop(ctx, settings.desktop)?;
+        }
         let surface = host.surface();
         let window = plan(surface.size, settings.size, surface.scale_factor).map_err(|e| window_error("scale", &e))?;
         let caps = host.capabilities();
+        if settings.mode == WindowMode::Desktop && !(caps.transparent && caps.always_on_top) {
+            // A key-coloured box on the desktop is no character: the host's mode list and its capabilities disagree.
+            return Err(OpError::unsupported(
+                "This computer can't make a transparent window that stays on top, which the desktop needs",
+            ));
+        }
         let fallback = settings.backdrop == Backdrop::Transparent && !caps.transparent;
         if fallback {
             settings.backdrop = Backdrop::Key(self.key.unwrap_or(DEFAULT_KEY));
@@ -195,9 +316,12 @@ impl Op for Open {
         if opened {
             host.open(&window, &settings).map_err(|e| window_error("backdrop", &e))?;
         }
+        let desktop = (settings.mode == WindowMode::Desktop).then_some(settings.desktop);
         Ok(Plan::answer(json!({
+            "mode": settings.mode,
             "opened": opened,
             "saved": saved,
+            "desktop": desktop,
             "fallback": fallback,
             "title": settings.title,
             "backdrop": settings.backdrop,
@@ -209,13 +333,15 @@ impl Op for Open {
     }
 }
 
-/// Writes `request` to the [`OutputWindow`] setting, in the run's mode, when the app has a settings service. Returns
-/// whether it was saved: `false` without a service, so the choice holds until the app closes.
+/// Writes `request` to the [`OutputWindow`] setting, in the run's mode, when a person asked (or confirmed) and the
+/// app has a settings service. Returns whether it was saved: `false` without a service, so the choice holds until the
+/// app closes, and `false` for an agent nobody confirmed, whose request opens the window without becoming the person's
+/// remembered choice (the setting is `AgentWrite::Confirm`).
 fn save(ctx: &OpCtx<'_>, request: &Open) -> Result<bool, OpError> {
     let Ok(settings) = ctx.service::<dyn Settings>() else { return Ok(false) };
-    // The `Settings` service leaves permission checks to its callers, and the setting is `AgentWrite::Confirm`: an
-    // agent's choice of what a capture tool sees waits for the person, in a dry run too (so the plan is the same).
-    ctx.require_person(format!("save the clean output window's choices as the `{}` setting", OutputWindow::META.key))?;
+    if ctx.require_person("save the output window's choices").is_err() {
+        return Ok(false);
+    }
     let mode = if ctx.dry_run { Mode::DryRun } else { Mode::Apply };
     settings
         .set::<OutputWindow>(request, Layer::Base, mode, ctx.actor)
@@ -244,11 +370,39 @@ impl Op for Close {
     }
 }
 
+impl Op for Set {
+    fn meta() -> OpMeta {
+        OpMeta {
+            name: "output.window.set",
+            summary: "Change the character's opacity or click-through on the desktop, without reopening its window.",
+            kind: OpKind::Edit,
+            scope: Scope::Perform,
+            undo: Undo::None,
+        }
+    }
+
+    fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        let host = ctx.service::<dyn WindowHost>()?;
+        let WindowState::Open { mode: WindowMode::Desktop, desktop, .. } = host.state() else {
+            return Err(OpError::conflict("no window is open on the desktop")
+                .hint("open one with output.window.open { \"mode\": \"desktop\" }"));
+        };
+        let now = desktop.unwrap_or_default();
+        let desktop =
+            DesktopSettings::new(self.opacity.unwrap_or(now.opacity), self.click_through.unwrap_or(now.click_through));
+        let desktop = checked_desktop(ctx, desktop)?;
+        if !ctx.dry_run {
+            host.set_desktop(&desktop).map_err(|e| window_error("opacity", &e))?;
+        }
+        Ok(Plan::answer(json!({ "applied": !ctx.dry_run, "desktop": desktop })))
+    }
+}
+
 impl Op for Status {
     fn meta() -> OpMeta {
         OpMeta {
             name: "output.window.status",
-            summary: "Say whether the clean output window is open, and its size, backdrop and whether it is minimised.",
+            summary: "Say whether the output window is open, its mode, size and backdrop, and which modes this machine can show and why not.",
             kind: OpKind::Query,
             scope: Scope::Read,
             undo: Undo::None,
@@ -256,10 +410,12 @@ impl Op for Status {
     }
 
     fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
-        let state = ctx.service::<dyn WindowHost>()?.state();
-        let state = serde_json::to_value(state)
+        let host = ctx.service::<dyn WindowHost>()?;
+        let mut answer = serde_json::to_value(host.state())
             .map_err(|e| OpError::internal(format!("serialising the window state failed: {e}")))?;
-        Ok(Plan::answer(state))
+        answer["modes"] = serde_json::to_value(host.modes())
+            .map_err(|e| OpError::internal(format!("serialising the window modes failed: {e}")))?;
+        Ok(Plan::answer(answer))
     }
 }
 
@@ -285,5 +441,6 @@ impl Op for SuggestKey {
 
 register_op!(Open);
 register_op!(Close);
+register_op!(Set);
 register_op!(Status);
 register_op!(SuggestKey);
