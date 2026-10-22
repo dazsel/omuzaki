@@ -17,6 +17,8 @@
 
 const PARTICLE_MIN_PIXELS: f32 = 1.5;
 const PARTICLE_DEPTH_CEILING: f32 = 0.99999904632568359375;
+// `omuzaki_render_api::particles::NEAR_FADE_M`: the eye-space depths over which a particle fades in (D5).
+const PARTICLE_NEAR_FADE: vec2<f32> = vec2<f32>(0.15, 0.6);
 
 struct ParticleOut {
     @builtin(position) @invariant clip: vec4<f32>,
@@ -28,7 +30,7 @@ struct ParticleOut {
     @location(3) @interpolate(flat) centre: vec3<f32>,
     @location(4) @interpolate(flat) normal: vec3<f32>,
     // x: the drawn quad's width over its height; y: one pixel in half heights; z: the coverage left after the 1.5-pixel
-    // minimum; w: the atlas cell.
+    // minimum and the near fade; w: the atlas cell.
     @location(5) @interpolate(flat) shape: vec4<f32>,
 }
 
@@ -55,6 +57,12 @@ fn vs_particle(@builtin(vertex_index) corner: u32, @builtin(instance_index) slot
     let centre_clip = frame.view_proj * vec4<f32>(state.position, 1.0);
     // Behind the eye or beyond the far plane: the depth clamp below must never pull such a particle into view.
     if (centre_clip.w <= 0.0 || centre_clip.z > centre_clip.w) {
+        return hidden();
+    }
+
+    // Fades in from the lens (D5): weather falling past the eye never blots out the frame.
+    let fade = smoothstep(PARTICLE_NEAR_FADE.x, PARTICLE_NEAR_FADE.y, -(frame.view * vec4<f32>(state.position, 1.0)).z);
+    if (fade <= 0.0) {
         return hidden();
     }
 
@@ -115,7 +123,7 @@ fn vs_particle(@builtin(vertex_index) corner: u32, @builtin(instance_index) slot
         normal = -normal;
     }
     out.normal = normal;
-    out.shape = vec4<f32>(aspect, 2.0 / max(height * per_metre, 1e-3), area / (width * height), f32(state.cell));
+    out.shape = vec4<f32>(aspect, 2.0 / max(height * per_metre, 1e-3), fade * area / (width * height), f32(state.cell));
     return out;
 }
 

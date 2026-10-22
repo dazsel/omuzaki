@@ -12,7 +12,7 @@
 use std::f32::consts::FRAC_1_SQRT_2;
 
 use omuzaki_core::glam::{Mat4, Vec2, Vec3, Vec4};
-use omuzaki_render_api::particles::{ParticleState, evaluate};
+use omuzaki_render_api::particles::{ParticleState, evaluate, near_fade};
 use omuzaki_render_api::{
     Camera, CellPick, Material, Orientation, ParticleShading, ParticleSystemDesc, Projection, Rim, Scene, Shading,
     Sprite, SpriteShape, Toon,
@@ -265,6 +265,10 @@ fn draw_particle(
     };
     let lit = light_triangle(&system.material, lights, normal, state.position, to_viewer);
     let depth = -view.eye_space.transform_point3(state.position).z;
+    let fade = near_fade(depth);
+    if fade <= 0.0 {
+        return;
+    }
     let glow = 1.0 + p.glow;
     let corner = |u: f32, v: f32| {
         let world = quad.centre + quad.half[0] * (2.0 * u - 1.0) + quad.half[1] * (1.0 - 2.0 * v);
@@ -304,7 +308,7 @@ fn draw_particle(
         if edge && let Some(e) = p.edge {
             colour *= e.shade * outline_light;
         }
-        Some(fog.apply(colour.extend(alpha * p.coverage * quad.coverage), depth))
+        Some(fog.apply(colour.extend(alpha * p.coverage * quad.coverage * fade), depth))
     };
     draw_triangle(surface, &[top_left, top_right, bottom_right], mode, &mut shade);
     draw_triangle(surface, &[top_left, bottom_right, bottom_left], mode, &mut shade);

@@ -843,6 +843,18 @@ pub struct ParticleState {
     pub lifetime: f32,
 }
 
+/// The depths in front of the eye, metres, over which a particle fades in (D5): its coverage is scaled by
+/// [`near_fade`] of its centre's eye-space depth, zero nearer than the first and full beyond the second. Weather falls
+/// around the camera too, and a flake a few centimetres from the lens would otherwise blot out the frame.
+pub const NEAR_FADE_M: [f32; 2] = [0.15, 0.6];
+
+/// The coverage factor of a particle whose centre is `depth` metres in front of the eye: a smoothstep over
+/// [`NEAR_FADE_M`].
+pub fn near_fade(depth: f32) -> f32 {
+    let t = ((depth - NEAR_FADE_M[0]) / (NEAR_FADE_M[1] - NEAR_FADE_M[0])).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 /// Particle `index` of `batch` at scene time `time` (D3), or `None` when it is outside the batch, unborn, dead,
 /// thinned by `density` (`0..=1`, [`Quality::particle_density`](crate::Quality::particle_density)) or below the
 /// system's floor.

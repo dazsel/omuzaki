@@ -7,7 +7,7 @@
 
 use omuzaki_core::glam::{Mat4, UVec2, Vec2, Vec3};
 use omuzaki_core::time::Seconds;
-use omuzaki_render_api::particles::evaluate;
+use omuzaki_render_api::particles::{NEAR_FADE_M, evaluate};
 use omuzaki_render_api::{
     AlphaEncoding, AlphaMode, Background, Camera, CellPick, Colour, ColourSet, EmitterShape, Fog, Image, Instance,
     Light, Material, Orientation, ParticleParams, ParticleShading, ParticleSystemDesc, ParticleSystemId, Pass,
@@ -300,6 +300,39 @@ pub(super) fn particle_depth(r: &mut dyn Renderer) -> Outcome {
     release_all(r, [id.into(), mesh.into(), wall.into()])?;
     ensure!(behind == 0, "a particle behind an opaque quad shows through (green {behind})");
     ensure!(front > 200, "a particle in front of an opaque quad is hidden (green {front})");
+    Ok(())
+}
+
+/// The summed red level of a still white disc `d` metres in front of a camera with a 1 cm near plane, sized to
+/// `0.1 d` so it covers the same pixels at any depth.
+fn red_at_depth(r: &mut dyn Renderer, id: ParticleSystemId, d: f32) -> Result<u32, Failure> {
+    let mut s = scene();
+    s.camera = Camera::look_at(
+        Vec3::new(0.0, 0.0, 5.0),
+        Vec3::ZERO,
+        Vec3::Y,
+        Projection::Perspective { fov_y_deg: 30.0, near: 0.01, far: 100.0 },
+    );
+    s.particles.push(SpawnBatch {
+        scale: 10.0 * d,
+        ..SpawnBatch::new(id, Mat4::from_translation(Vec3::new(0.0, 0.0, 5.0 - d)))
+    });
+    let image = draw_at(r, s, 1.0)?;
+    Ok(image.rgba8.as_chunks::<4>().0.iter().map(|p| u32::from(p[0])).sum())
+}
+
+pub(super) fn particle_near_fade(r: &mut dyn Renderer) -> Outcome {
+    let Some(id) = still_at(r, Colour::WHITE, 0.01)? else { return Ok(()) };
+    let [from, to] = NEAR_FADE_M;
+    let at_lens = red_at_depth(r, id, 0.5 * from)?;
+    let midway = red_at_depth(r, id, f32::midpoint(from, to))?;
+    let clear = red_at_depth(r, id, 1.0)?;
+    r.release(id.into())?;
+    ensure!(at_lens == 0, "a particle nearer than the near fade is drawn (red {at_lens})");
+    ensure!(clear > 0, "a particle 1 m from the eye isn't drawn");
+    #[allow(clippy::cast_precision_loss)] // sums of a 64 x 64 image
+    let share = midway as f32 / clear as f32;
+    ensure!((0.25..=0.75).contains(&share), "midway through the near fade a particle shows {share:.2} of itself");
     Ok(())
 }
 

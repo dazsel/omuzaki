@@ -102,6 +102,7 @@ pub const CHECKS: &[(&str, Check)] = &[
     ("particle_depth", particles::particle_depth),
     ("particle_before_blended", particles::particle_before_blended),
     ("particle_fog", particles::particle_fog),
+    ("particle_near_fade", particles::particle_near_fade),
     ("particle_toon", particles::particle_toon),
     ("particle_atlas_cell", particles::particle_atlas_cell),
     ("particle_handles", particles::particle_handles),

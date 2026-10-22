@@ -308,6 +308,12 @@ that translucency has `samples + 1` levels: five at the live preset's 4 samples.
 choosing it gets, coverage becomes a 0.5 alpha test. That is why particles fade by size, not alpha (D3). Every preset
 is opaque or nearly, with soft edges. Rain at `coverage` 0.55 reads as translucent streaks.
 
+**The near fade (#1171).** A particle's coverage is also scaled by a smoothstep of its centre's eye-space depth over
+`NEAR_FADE_M` (0.15 m to 0.6 m; `omuzaki_render_api::particles`): none nearer, all of it beyond. Weather falls around
+the camera too (its auto area includes the camera), and on renders a snowflake a few centimetres from the lens covered a
+fifth of the frame. A burst at a bust shot's subject is a metre or more away and never fades. The check is
+`particle_near_fade`.
+
 **Why a new pass, not a place inside `Transparent`.**
 1. The scheduler must see particle cost on its own to degrade particles first (D8). The pass is the frame report's unit.
 2. The budget row needs its own measured line, as face paint has.
