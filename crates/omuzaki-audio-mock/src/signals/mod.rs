@@ -32,7 +32,7 @@ pub use changer::{Changer, changer};
 pub use noise::{pink_noise, white_noise};
 pub use omuzaki_audio_api::node::SAMPLE_RATE;
 pub use tones::{Sweep, click_train, impulse, sine, sine_sweep};
-pub use voice::{FormantFrequencies, Trajectory, VoiceSpec, Vowel, voice};
+pub use voice::{FormantFrequencies, Trajectory, VoiceSpec, Vowel, voice, voice_with_closures};
 
 /// Samples in `seconds` at the graph rate, rounded to the nearest sample.
 ///

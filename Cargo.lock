@@ -4362,6 +4362,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-audio-fx"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "omuzaki-audio-api",
+ "omuzaki-audio-mock",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-ops-api",
+ "omuzaki-store-api",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "toml",
+]
+
+[[package]]
 name = "omuzaki-audio-mock"
 version = "0.0.0"
 dependencies = [
@@ -4497,6 +4516,7 @@ dependencies = [
  "omuzaki-anim-api",
  "omuzaki-audio-api",
  "omuzaki-audio-engine",
+ "omuzaki-audio-fx",
  "omuzaki-audio-mock",
  "omuzaki-char-api",
  "omuzaki-core",
@@ -5291,13 +5311,18 @@ name = "omuzaki-obs"
 version = "0.0.0"
 dependencies = [
  "base64",
+ "omuzaki-avatar-api",
+ "omuzaki-char-api",
  "omuzaki-core",
+ "omuzaki-doc-api",
  "omuzaki-doc-mock",
+ "omuzaki-io-api",
  "omuzaki-ops-api",
  "omuzaki-secrets-api",
  "omuzaki-secrets-mock",
  "omuzaki-settings-api",
  "omuzaki-settings-mock",
+ "omuzaki-stage-api",
  "schemars",
  "serde",
  "serde_json",
@@ -5803,6 +5828,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-test-audio"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-audio-api",
+ "omuzaki-audio-fx",
+ "omuzaki-audio-mock",
+ "omuzaki-test",
+]
+
+[[package]]
 name = "omuzaki-test-char"
 version = "0.0.0"
 dependencies = [
@@ -5995,6 +6030,7 @@ dependencies = [
  "omuzaki-anim-mock",
  "omuzaki-audio-api",
  "omuzaki-audio-engine",
+ "omuzaki-audio-fx",
  "omuzaki-camera-mf",
  "omuzaki-char",
  "omuzaki-char-api",

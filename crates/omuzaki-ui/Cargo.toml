@@ -36,6 +36,7 @@ omuzaki-anim-api = { path = "../omuzaki-anim-api" }
 # camera (`live/wiring/app.rs`).
 omuzaki-audio-api = { path = "../omuzaki-audio-api" }
 omuzaki-audio-engine = { path = "../omuzaki-audio-engine" }
+omuzaki-audio-fx = { path = "../omuzaki-audio-fx" }
 omuzaki-input = { path = "../omuzaki-input" }
 omuzaki-input-api = { path = "../omuzaki-input-api" }
 omuzaki-live = { path = "../omuzaki-live" }
