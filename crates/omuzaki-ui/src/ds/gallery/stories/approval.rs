@@ -7,7 +7,7 @@ use crate::ds::gallery::layout::caption;
 use crate::ds::gallery::text::{tr, translate};
 use crate::ds::theme::ds;
 use crate::ds::widgets::{ApprovalCard, ApprovalVariant, Decision, PlanStep};
-use crate::register_story;
+use omuzaki_ui_api::register_story;
 
 #[derive(Default)]
 struct State {

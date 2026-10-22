@@ -101,8 +101,14 @@ pub fn build_with(
 
     let material_name =
         MaterialName::new(format!("{}-hair", ctx.part)).map_err(|e| ctx.fail(format!("material name: {e}")))?;
+    // The brows when they show through, and the face's overlay (sweat drop, gloom hatch), which is in front of the hair.
     let overlays = || {
-        if params.shading.brows_through { Ok(vec![ctx.face_overlay(FaceLayerId::Brows)?]) } else { Ok(Vec::new()) }
+        let mut overlays = Vec::with_capacity(2);
+        if params.shading.brows_through {
+            overlays.push(ctx.face_overlay(FaceLayerId::Brows)?);
+        }
+        overlays.push(ctx.face_overlay(FaceLayerId::Overlay)?);
+        Ok(overlays)
     };
     let material = hair_material(ctx.part, params, ctx.palette, overlays)?;
     let mut out = PartOutput::new().with_materials(vec![(material_name.clone(), material)]).with_warnings(warnings);

@@ -4,9 +4,23 @@
 //! The module compiles always, with no cargo feature: `cargo xtask check` runs the workspace tests without per-crate
 //! features, so tests behind a feature would not run in the gate.
 
+mod english;
+mod messages;
+mod pseudo;
 mod registered;
+mod translations;
 
+use std::collections::BTreeSet;
+
+use fluent_syntax::ast::{CallArguments, Expression, InlineExpression, Pattern, PatternElement};
+
+use crate::Resource;
+
+pub use english::english_current;
+pub use messages::{messages, prefixes};
+pub use pseudo::{pseudo, samples};
 pub use registered::registered;
+pub use translations::translations;
 
 /// One problem a check found: which check, which id, and what to fix.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -25,6 +39,130 @@ impl Failure {
     pub fn new(check: &'static str, id: impl Into<String>, problem: impl Into<String>) -> Self {
         Self { check, id: id.into(), problem: problem.into() }
     }
+}
+
+/// Every variable a Fluent pattern references (`$name`), in placeables and selectors, at any depth.
+pub(crate) fn variables<'s>(pattern: &Pattern<&'s str>) -> BTreeSet<&'s str> {
+    let mut found = BTreeSet::new();
+    pattern_variables(pattern, &mut found);
+    found
+}
+
+fn pattern_variables<'s>(pattern: &Pattern<&'s str>, found: &mut BTreeSet<&'s str>) {
+    for element in &pattern.elements {
+        if let PatternElement::Placeable { expression } = element {
+            expression_variables(expression, found);
+        }
+    }
+}
+
+fn expression_variables<'s>(expression: &Expression<&'s str>, found: &mut BTreeSet<&'s str>) {
+    match expression {
+        Expression::Inline(inline) => inline_variables(inline, found),
+        Expression::Select { selector, variants } => {
+            inline_variables(selector, found);
+            for variant in variants {
+                pattern_variables(&variant.value, found);
+            }
+        }
+    }
+}
+
+fn inline_variables<'s>(inline: &InlineExpression<&'s str>, found: &mut BTreeSet<&'s str>) {
+    match inline {
+        InlineExpression::VariableReference { id } => {
+            found.insert(id.name);
+        }
+        InlineExpression::FunctionReference { arguments, .. }
+        | InlineExpression::TermReference { arguments: Some(arguments), .. } => call_variables(arguments, found),
+        InlineExpression::Placeable { expression } => expression_variables(expression, found),
+        InlineExpression::StringLiteral { .. }
+        | InlineExpression::NumberLiteral { .. }
+        | InlineExpression::MessageReference { .. }
+        | InlineExpression::TermReference { arguments: None, .. } => {}
+    }
+}
+
+fn call_variables<'s>(arguments: &CallArguments<&'s str>, found: &mut BTreeSet<&'s str>) {
+    for positional in &arguments.positional {
+        inline_variables(positional, found);
+    }
+    for named in &arguments.named {
+        inline_variables(&named.value, found);
+    }
+}
+
+/// The registered [`Resource`]s of `package` (from `inventory`), for `check_crate!`.
+pub fn resources(package: &str) -> Vec<Resource> {
+    inventory::iter::<Resource>.into_iter().filter(|resource| resource.package == package).copied().collect()
+}
+
+/// The l10n tests of the crate it is invoked in (design 10.1). It goes in `crates/<crate>/tests/l10n.rs`; the crate
+/// needs only `omuzaki-l10n-api` as a dev-dependency. Each test calls `<krate>::link()` first, then one check over
+/// `PackageText::registered(env!("CARGO_PKG_NAME"))`, and asserts no failures with [`report`].
+///
+/// `OMUZAKI_BLESS=1` makes the English-file test rewrite `locales/en/<crate>.ftl` and create the missing stubs
+/// instead of failing.
+///
+/// ```no_run
+/// mod my_crate {
+///     pub fn link() {}
+/// }
+/// omuzaki_l10n_api::check_crate!(my_crate);
+/// ```
+#[macro_export]
+macro_rules! check_crate {
+    ($krate:ident) => {
+        /// The registered ops and part kinds have well-formed text.
+        #[test]
+        fn l10n_registered_text() {
+            $krate::link();
+            let text = $crate::extract::PackageText::registered(env!("CARGO_PKG_NAME"));
+            let failures = $crate::check::registered(&text);
+            assert!(failures.is_empty(), "\n{}", $crate::check::report(&failures));
+        }
+
+        /// The declared messages have notes, prefixes, parsing English and matching placeables.
+        #[test]
+        fn l10n_messages() {
+            $krate::link();
+            let text = $crate::extract::PackageText::registered(env!("CARGO_PKG_NAME"));
+            let failures = $crate::check::messages(&text);
+            assert!(failures.is_empty(), "\n{}", $crate::check::report(&failures));
+        }
+
+        /// The committed English file is the generated one.
+        #[test]
+        fn l10n_english_is_current() {
+            $krate::link();
+            let text = $crate::extract::PackageText::registered(env!("CARGO_PKG_NAME"));
+            let bless = ::std::env::var("OMUZAKI_BLESS").is_ok_and(|value| value == "1");
+            let failures =
+                $crate::check::english_current(&text, ::std::path::Path::new(env!("CARGO_MANIFEST_DIR")), bless);
+            assert!(failures.is_empty(), "\n{}", $crate::check::report(&failures));
+        }
+
+        /// Every translation file parses and matches the English.
+        #[test]
+        fn l10n_translations() {
+            $krate::link();
+            let text = $crate::extract::PackageText::registered(env!("CARGO_PKG_NAME"));
+            let resources = $crate::check::resources(env!("CARGO_PKG_NAME"));
+            let failures = $crate::check::translations(&text, &resources);
+            assert!(failures.is_empty(), "\n{}", $crate::check::report(&failures));
+        }
+
+        /// Every message renders in the pseudo-locale, with no plain text and some growth.
+        #[test]
+        fn l10n_pseudo() {
+            $krate::link();
+            let text = $crate::extract::PackageText::registered(env!("CARGO_PKG_NAME"));
+            let pseudo = $crate::Catalog::new($crate::Locale::PSEUDO);
+            let english = $crate::Catalog::new($crate::Locale::EN);
+            let failures = $crate::check::pseudo(&text, &pseudo, &english);
+            assert!(failures.is_empty(), "\n{}", $crate::check::report(&failures));
+        }
+    };
 }
 
 /// The failures as one message for a test assertion: one line each (`<check> <id>: <problem>`), sorted.

@@ -4089,6 +4089,7 @@ dependencies = [
 name = "omuzaki-face"
 version = "0.0.0"
 dependencies = [
+ "ab_glyph",
  "bytemuck",
  "criterion",
  "image",
@@ -4137,6 +4138,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "toml",
 ]
 
 [[package]]
@@ -4362,6 +4364,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sys-locale",
+ "tempfile",
  "thiserror 2.0.21",
  "tracing",
  "unic-langid",
@@ -4809,6 +4812,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-setup"
+version = "0.0.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "omuzaki-stage"
 version = "0.0.0"
 dependencies = [
@@ -5172,10 +5182,32 @@ dependencies = [
  "egui_tiles",
  "image",
  "inventory",
+ "omuzaki-anim",
+ "omuzaki-anim-api",
+ "omuzaki-anim-mock",
+ "omuzaki-char",
+ "omuzaki-char-api",
+ "omuzaki-char-mock",
  "omuzaki-core",
+ "omuzaki-doc",
  "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-face-api",
  "omuzaki-l10n-api",
+ "omuzaki-ops",
  "omuzaki-ops-api",
+ "omuzaki-ops-mock",
+ "omuzaki-render",
+ "omuzaki-render-api",
+ "omuzaki-render-mock",
+ "omuzaki-stage",
+ "omuzaki-stage-api",
+ "omuzaki-stream",
+ "omuzaki-stream-api",
+ "omuzaki-track-api",
+ "omuzaki-track-mock",
+ "omuzaki-ui-api",
+ "omuzaki-ui-mock",
  "rustix 1.1.5",
  "schemars",
  "serde",
@@ -5183,6 +5215,8 @@ dependencies = [
  "tempfile",
  "toml",
  "tracing",
+ "tracing-subscriber",
+ "wgpu",
 ]
 
 [[package]]

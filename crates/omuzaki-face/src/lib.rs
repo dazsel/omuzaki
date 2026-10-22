@@ -26,9 +26,9 @@
 //! | [`layer`] | [`FaceLayerPainter`], the renderer `Painter` for one layer, and the [`GpuRasterizer`] seam |
 //! | [`painter`] | [`RealPainter`] and its sections in draw order: cheeks, marks, brows, eyes (`eyes/`), nose, mouth (`mouth/`), overlay |
 //! | [`raster`] | the CPU rasteriser (`cpu`) and the GPU one (`gpu/`) |
+//! | [`preview`] | pictures of a face for the tools (sweep, range test): paint, compare, contact sheets |
 //! | [`underlay`] | tracing a sheet face under the painted one |
 //! | [`ops`] | the registered face ops: `style`, `mapping`, `rest`, `expression`, `sweep`, `range_test` |
-//! | [`library`] | the built-in expression library |
 //! | [`exaggeration`] | exaggeration profiles |
 //! | [`bake`] | the expression bakers (`morph`, `flipbook`) |
 //!
@@ -38,12 +38,12 @@
 pub mod bake;
 pub mod exaggeration;
 pub mod layer;
-pub mod library;
 pub mod ops;
 /// The helpers the face ops share. They sit beside `ops/`, not in it, because the generated family list in `ops/` makes
 /// every folder there `pub`, and these are crate-private.
 mod ops_shared;
 pub mod painter;
+pub mod preview;
 pub mod raster;
 pub mod system;
 pub mod underlay;
