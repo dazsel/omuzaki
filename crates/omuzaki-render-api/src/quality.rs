@@ -22,6 +22,9 @@ pub mod budget {
     /// GPU budget of the face painter, reported under [`Pass::PaintTextures`](crate::Pass::PaintTextures). §10 lists it
     /// as its own line, so it is *not* part of [`LIVE_GPU`].
     pub const FACE_PAINT_GPU: Seconds = Seconds(0.0005);
+    /// GPU budget of [`Pass::Particles`](crate::Pass::Particles) with the live preset and 5,000 particles (particles.md
+    /// D8). Like face paint it is a line of its own, on top of [`LIVE_GPU`].
+    pub const PARTICLES_GPU: Seconds = Seconds(0.0002);
 }
 
 /// Whether the renderer may take shortcuts that depend on earlier frames.

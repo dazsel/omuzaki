@@ -2,7 +2,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use omuzaki_budget::scheduler::{DOWN_SAMPLES, FLAP_WINDOW, UP_SAMPLES};
+use omuzaki_budget::scheduler::{DENSITY_UP_SAMPLES, DOWN_SAMPLES, FLAP_WINDOW, UP_SAMPLES};
 use omuzaki_budget::{Change, Direction, FacePressure, Scheduler, Step};
 use omuzaki_core::glam::UVec2;
 use omuzaki_core::time::Seconds;
@@ -322,4 +322,85 @@ fn delayed_face_timings_after_a_change_are_ignored() {
     s.observe(&face(f + 1, f - 1, 0.1));
     s.observe(&face(f + 2, f, 5.0));
     assert_ne!(s.face_pressure(), FacePressure::Over, "frame {f} was submitted before the change");
+}
+
+/// A report with `frame_ms` in the opaque pass and `particles_ms` in the `Particles` pass, with 5,000 slots drawn.
+fn with_particles(frame: u64, frame_ms: f64, particles_ms: f64) -> FrameReport {
+    let mut r = report(frame, frame, frame_ms);
+    let gpu = r.gpu.as_mut().unwrap();
+    gpu.passes.set(Pass::Particles, Seconds(particles_ms / 1000.0));
+    r.particles = 5_000;
+    r
+}
+
+fn feed_particles(s: &mut Scheduler, frame: &mut u64, n: u32, frame_ms: f64, particles_ms: f64) -> Vec<Change> {
+    (0..n)
+        .filter_map(|_| {
+            *frame += 1;
+            s.observe(&with_particles(*frame, frame_ms, particles_ms))
+        })
+        .collect()
+}
+
+#[test]
+fn particles_have_their_own_line_and_are_thinned_when_it_overruns() {
+    let mut s = Scheduler::new(Quality::live(), LIVE);
+    let mut f = 0;
+    // 1 ms of frame and 0.15 ms of particles: inside both budgets. The frame's 1.15 ms would be the same either way,
+    // but 1.4 ms of frame plus 0.15 of particles is over LIVE only if particles counted.
+    assert!(feed_particles(&mut s, &mut f, 500, 1.4, 0.15).is_empty(), "particles are not part of gpu.frame");
+    assert!((s.particles_smoothed().unwrap().0 - 0.000_15).abs() < 1e-12);
+    // 0.4 ms of particles against 0.2: half, then a quarter, then nothing more to thin.
+    let changes = feed_particles(&mut s, &mut f, 2_000, 1.0, 0.4);
+    let steps: Vec<_> = changes.iter().map(|c| (c.direction, c.step, c.budget)).collect();
+    assert_eq!(
+        steps,
+        [
+            (Direction::Down, Step::ParticlesHalf, budget::PARTICLES_GPU),
+            (Direction::Down, Step::ParticlesQuarter, budget::PARTICLES_GPU)
+        ]
+    );
+    assert_eq!((s.density_rungs(), s.rungs()), (2, 0), "the ladder is never touched for the particles' own line");
+    assert!((s.quality().particle_density - 0.25).abs() < f32::EPSILON);
+}
+
+#[test]
+fn an_overrun_frame_thins_particles_before_the_ladder_and_gets_them_back_last() {
+    let mut s = Scheduler::new(Quality::live(), LIVE);
+    let mut f = 0;
+    let down = feed_particles(&mut s, &mut f, 3 * DOWN_SAMPLES, 3.0, 0.1);
+    let steps: Vec<_> = down.iter().map(|c| c.step).collect();
+    assert_eq!(steps, [Step::ParticlesHalf, Step::ParticlesQuarter, Step::RenderScaleHigh], "particles go first");
+    // Comfortable: the ladder rung comes back first, then the particles, each after its own wait.
+    let up = feed_particles(&mut s, &mut f, UP_SAMPLES + 2 * DENSITY_UP_SAMPLES, 0.5, 0.05);
+    let steps: Vec<_> = up.iter().map(|c| (c.direction, c.step)).collect();
+    assert_eq!(
+        steps,
+        [
+            (Direction::Up, Step::RenderScaleHigh),
+            (Direction::Up, Step::ParticlesQuarter),
+            (Direction::Up, Step::ParticlesHalf)
+        ]
+    );
+    assert_eq!(s.quality(), Quality::live());
+}
+
+#[test]
+fn without_particles_an_overrun_goes_straight_to_the_ladder() {
+    let mut s = Scheduler::new(Quality::live(), LIVE);
+    let mut f = 0;
+    let down = feed(&mut s, &mut f, DOWN_SAMPLES, 3.0);
+    assert_eq!(down.iter().map(|c| c.step).collect::<Vec<_>>(), [Step::RenderScaleHigh]);
+    assert_eq!(s.density_rungs(), 0, "no particles drawn, nothing to thin");
+}
+
+#[test]
+fn particles_stay_thin_while_their_pass_is_not_comfortable() {
+    let mut s = Scheduler::new(Quality::live(), LIVE);
+    let mut f = 0;
+    feed_particles(&mut s, &mut f, DOWN_SAMPLES, 1.0, 0.4);
+    assert_eq!(s.density_rungs(), 1);
+    // The frame has room, but 0.15 ms of particles is 75% of theirs: above the 60% margin, so they stay at half.
+    assert!(feed_particles(&mut s, &mut f, 10 * DENSITY_UP_SAMPLES, 0.5, 0.15).is_empty(), "held at half");
+    assert_eq!(s.density_rungs(), 1);
 }

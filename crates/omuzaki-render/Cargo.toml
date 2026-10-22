@@ -35,6 +35,10 @@ omuzaki-render-mock = { path = "../omuzaki-render-mock" }
 name = "morph"
 harness = false
 
+[[bench]]
+name = "particles"
+harness = false
+
 [lints]
 workspace = true
 
