@@ -384,13 +384,14 @@ fn budget_bar(ui: &mut Ui, row: &BudgetUse) {
     if over {
         detail = say(&ctx, Word::HealthOver, &[("line", &detail)]);
     }
-    let colour = if over {
-        ds.theme.danger
+    let status = if over {
+        Status::Danger
     } else if row.ratio > WARN_RATIO {
-        ds.theme.warn
+        Status::Warn
     } else {
-        ds.theme.ok
+        Status::Ok
     };
+    let colour = ds.theme.status(status);
     let small = ds.text.small.clone();
     let line = ui.text_style_height(&egui::TextStyle::Body);
     let (rect, response) =
@@ -402,7 +403,12 @@ fn budget_bar(ui: &mut Ui, row: &BudgetUse) {
     a11y::describe(&response, || WidgetInfo::labeled(WidgetType::ProgressIndicator, true, &spoken), |_| {});
     let painter = ui.painter();
     painter.text(rect.left_top(), egui::Align2::LEFT_TOP, &name, ds.text.body.clone(), ds.theme.text);
-    painter.text(rect.right_top(), egui::Align2::RIGHT_TOP, &detail, small.clone(), ds.theme.text2);
+    let said = painter.text(rect.right_top(), egui::Align2::RIGHT_TOP, &detail, small.clone(), ds.theme.text2);
+    // A bar near or over its budget carries its status icon too, so its colour never says it alone.
+    if status != Status::Ok {
+        let at = egui::pos2(said.left() - 10.0, said.center().y);
+        crate::ds::paint::icon(painter, &ds, at, icons::status(status), 14.0, colour, true);
+    }
     let track = egui::Rect::from_min_size(rect.left_top() + vec2(0.0, line + 2.0), vec2(rect.width(), 6.0));
     painter.rect_filled(track, 3.0, ds.theme.bg4);
     #[allow(clippy::cast_possible_truncation)] // a share of one bar
