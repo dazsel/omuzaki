@@ -89,7 +89,7 @@ windows-core = "0.62"   # the `implement` macro for the camera's COM callback (M
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_UI_Input", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Input_XboxController", "Win32_Devices_HumanInterfaceDevice", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_System_Threading"] } # the Windows side of the same: reparse-point-aware opens, final-path checks; Raw Input, HID and XInput for omuzaki-input (ADR 0060)
 # The OS input backends of omuzaki-input (ADR 0060, docs/design/input-motion.md §13 DEP-0); licences in docs/licensing/deps/
 gilrs = { version = "0.11", default-features = false, features = ["xinput"] }   # gamepads on Windows (XInput, not WGI) and Linux (Apache-2.0/MIT; links the system libudev dynamically)
-x11rb = { version = "0.14", features = ["xinput"] }   # XInput2 raw events on Linux X11, pure-Rust connection (MIT OR Apache-2.0)
+x11rb = { version = "0.13", features = ["xinput"] }   # XInput2 raw events on Linux X11, pure-Rust connection; the version winit already locks (MIT OR Apache-2.0)
 evdev = "0.13"   # the opt-in evdev capture on Linux (Apache-2.0 OR MIT)
 objc2 = "0.6"   # macOS runtime bindings (MIT)
 objc2-core-graphics = "0.3"   # the listen-only CGEventTap on macOS (Zlib OR Apache-2.0 OR MIT)
