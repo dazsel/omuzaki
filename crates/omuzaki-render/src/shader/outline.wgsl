@@ -101,18 +101,27 @@ fn mask_coverage(uv: vec2<f32>, vertex_colour: vec4<f32>) -> f32 {
 
 // The line is its colour times a light that mixes from `outline_light` (the prototype's OUTLINE_LIGHT, so a kit line
 // never glows in a dark scene) to the surface's own lit colour by the lighting mix (MToon's
-// `outlineLightingMixFactor`). It covers what is behind it completely, like every opaque surface, and fades into the
+// `outlineLightingMixFactor`). An MToon material mixes from 1 instead, as three-vrm does, and its lit colour is its MToon
+// colour at the animated UV. It covers what is behind it completely, like every opaque surface, and fades into the
 // fog like the surface it outlines. A masked material's hull is cut where its surface is, so a cut-out card's line
 // follows the visible shape (#649, as three-vrm's MToon outline keeps the cutoff).
 @fragment
 fn fs_outline(in: HullOut) -> @location(0) vec4<f32> {
-    if (material.flags.z == ALPHA_MASK && mask_coverage(in.uv, in.colour) < material.alpha.x) {
+    let uv = mtoon_uv(in.uv);
+    if (material.flags.z == ALPHA_MASK && mask_coverage(uv, in.colour) < material.alpha.x) {
         discard;
     }
     var light = vec3<f32>(frame.look.x);
     let lighting_mix = material.outline_mix.x;
-    if (lighting_mix > 0.0) {
-        var lit = surface_albedo(in.uv, in.colour, in.local).rgb;
+    if (mtoon_on()) {
+        light = vec3<f32>(1.0);
+        if (lighting_mix > 0.0) {
+            let lit = surface_albedo(uv, in.colour, in.local).rgb;
+            let n = normalize(in.world_normal);
+            light = mix(light, mtoon_colour(lit, uv, n, in.world_position, in.colour, 1.0), lighting_mix);
+        }
+    } else if (lighting_mix > 0.0) {
+        var lit = surface_albedo(uv, in.colour, in.local).rgb;
         if (material.flags.y == SHADING_TOON) {
             lit = toon_colour(lit, normalize(in.world_normal), in.world_position);
         }

@@ -56,7 +56,13 @@ impl Op for DescribeScene {
                     LightShape::Directional { azimuth, elevation } => {
                         json!({ "kind": "directional", "azimuth": azimuth, "elevation": elevation })
                     }
-                    LightShape::Point { position, range } => json!({ "kind": "point", "position": position, "range": range }),
+                    LightShape::Point { position, range } => {
+                        json!({ "kind": "point", "position": position, "range": range })
+                    }
+                    LightShape::Spot { position, target, cone, penumbra, range } => json!({
+                        "kind": "spot", "position": position, "target": target, "cone": cone, "penumbra": penumbra,
+                        "range": range
+                    }),
                 };
                 json!({ "id": light.as_str(), "role": l.role, "colour": l.colour, "intensity": l.intensity,
                         "shadow": l.shadow, "anchor": l.anchor.to_string(), "shape": shape })
@@ -102,6 +108,8 @@ impl Op for DescribeScene {
                 "skin_floor": def.lighting.skin_floor,
                 "ambient": def.lighting.ambient,
                 "bloom": def.lighting.bloom,
+                "fog": def.lighting.fog,
+                "environment": def.lighting.environment,
                 "lights": lights,
                 "limit": format!("{} of {} lights besides the ambient", def.lighting.lights.len(), MAX_LIGHTS - 1),
             },
@@ -197,7 +205,11 @@ impl Op for DuplicateScene {
         let mut copy = Value::Null;
         def.to_node(&mut copy).map_err(|e| OpError::internal(format!("writing the copy: {e}")))?;
         let patch = put(doc, &paths::scene(&self.id), copy);
-        Ok(Plan { patch, output: Some(json!({ "scene": self.id.as_str(), "name": def.scene.name })), ..Plan::default() })
+        Ok(Plan {
+            patch,
+            output: Some(json!({ "scene": self.id.as_str(), "name": def.scene.name })),
+            ..Plan::default()
+        })
     }
 }
 
@@ -240,7 +252,11 @@ impl Op for DeleteScene {
                     before: doc.get(&default_path).cloned(),
                     after: Some(json!(next)),
                 }),
-                None => patch.changes.push(Change { path: default_path.clone(), before: doc.get(&default_path).cloned(), after: None }),
+                None => patch.changes.push(Change {
+                    path: default_path.clone(),
+                    before: doc.get(&default_path).cloned(),
+                    after: None,
+                }),
             }
             default = next;
         }

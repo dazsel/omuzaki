@@ -6,11 +6,13 @@
 use omuzaki_anim_api::HumanoidPose;
 use omuzaki_avatar_api::avatar::ImportedAvatar;
 use omuzaki_char_api::{
-    BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, LookDef, MaterialName, Quality as BuildQuality,
+    BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, LookDef, MaterialName,
+    Quality as BuildQuality,
 };
 use omuzaki_char_api::{VariantId, paths as char_paths};
 use omuzaki_core::time::Clock;
 use omuzaki_doc_api::DocRead;
+use omuzaki_io_ops::ops::avatar::attach::{attach_parts, attachments};
 use omuzaki_io_ops::ops::avatar::{is_imported, load_avatar};
 use omuzaki_ops_api::OpError;
 use omuzaki_render_api::{MtoonSupport, Quality, Renderer, Scene, TargetId};
@@ -82,7 +84,10 @@ impl Body {
                     .meshes
                     .iter()
                     .map(|m| {
-                        mesh_bytes(&m.mesh.geometry, &MeshOptions { usage: MeshUsage::Static, morphs: m.morphs.clone() })
+                        mesh_bytes(
+                            &m.mesh.geometry,
+                            &MeshOptions { usage: MeshUsage::Static, morphs: m.morphs.clone() },
+                        )
                     })
                     .sum();
                 textures + avatar.materials.len() as u64 * MATERIAL_BYTES + meshes
@@ -148,7 +153,8 @@ impl std::fmt::Debug for BodyServices<'_> {
     }
 }
 
-/// Character `id` of `doc`, ready to stage: an imported character's avatar rebuilt from its original, a kit
+/// Character `id` of `doc`, ready to stage: an imported character's avatar rebuilt from its original with its
+/// attachments built on ([`attach_parts`]), a kit
 /// character built at `quality` with `variant` applied. A variant is a kit idea; asking one of an imported character
 /// is an error.
 ///
@@ -164,10 +170,14 @@ pub fn load_body(
 ) -> Result<Body, OpError> {
     if is_imported(doc, id) {
         if variant.is_some() {
-            return Err(OpError::invalid("variant", format!("'{id}' is imported, and an imported character has no variants"))
-                .hint("leave out the variant"));
+            return Err(OpError::invalid(
+                "variant",
+                format!("'{id}' is imported, and an imported character has no variants"),
+            )
+            .hint("leave out the variant"));
         }
-        let avatar = load_avatar(doc, services.store, id, services.mtoon, services.clock)?;
+        let mut avatar = load_avatar(doc, services.store, id, services.mtoon, services.clock)?;
+        attach_parts(&mut avatar, id, &attachments(doc, id)?, services.build, quality)?;
         return Ok(Body::Avatar(Box::new(avatar)));
     }
     let def = read_definition(doc, id, variant)?;
@@ -190,7 +200,8 @@ pub fn load_body(
 pub fn draw_in_look(doc: &dyn DocRead, id: &CharId, built: &mut BuiltCharacter) -> Result<Vec<MaterialName>, OpError> {
     let Some(node) = doc.get(&char_paths::look(id)) else { return Ok(Vec::new()) };
     let refused = |e: &dyn std::fmt::Display| {
-        OpError::invalid("look", format!("the look of '{id}' {e}")).hint("set it again with look.set_preset or look.set_param")
+        OpError::invalid("look", format!("the look of '{id}' {e}"))
+            .hint("set it again with look.set_preset or look.set_param")
     };
     let look = LookDef::from_node(Some(node))
         .and_then(|def| def.resolve())

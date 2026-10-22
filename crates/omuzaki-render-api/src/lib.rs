@@ -34,6 +34,7 @@ mod handle;
 mod material;
 pub mod memory;
 mod morph;
+mod mtoon;
 mod pass;
 mod quality;
 mod renderer;
@@ -48,6 +49,7 @@ pub use material::{
     Shading, Skin, Toon, UvTransform,
 };
 pub use morph::{MeshOptions, MeshUsage, MorphSet, SparseMorph};
+pub use mtoon::Mtoon;
 pub use omuzaki_core::colour::{Colour, ColourParseError, srgb_decode, srgb_encode, to_byte};
 pub use omuzaki_core::mesh::{ExtraAttribute, MeshData, MeshError};
 pub use pass::{FrameReport, GpuTimings, Pass, PassTimes};
@@ -58,6 +60,6 @@ pub use resource::{
     TextureUsage, Wrap, limits, rgba_len,
 };
 pub use scene::{
-    Background, Bloom, Camera, ColourGrade, DepthOfField, FilmGrain, Fog, FrameInfo, Instance, JointRange, Light,
-    MorphRange, Post, Projection, Scene, Tonemap,
+    BackdropFit, Background, Bloom, Camera, ColourGrade, DepthOfField, FilmGrain, Fog, FrameInfo, Instance, JointRange,
+    Light, MorphRange, Post, Projection, SKY_LENS_DEG, Scene, Tonemap, gradient_at,
 };

@@ -7,16 +7,24 @@
 //! - **Details:** a row chosen with a click, or Enter, opens a popover beside it with why it was made (the prompt or rule), every value it
 //!   changed with before and after, and its actions: **Adjust** reopens the op's form in the palette with its
 //!   arguments (Blender's Adjust Last Operation) and **Copy as MCP call** copies it as an agent would send it.
+//! - **Preview:** opening a row's details also shows the document as it was right after that step in the viewport
+//!   ([`Preview`]), without changing it: a "Viewing" line with **Back to now** says so, and Esc or closing the row
+//!   goes back. The past state is worked out from the log's patches: every later step that is in effect is reversed,
+//!   newest first, and every undone step up to it is applied again.
 //! - **Keyboard:** ↑ and ↓ move through the rows, Enter opens or closes a row's details, Esc closes them.
+//! - **Undo conflicts:** an undo the runner refuses because a later change touches the same values leaves a card
+//!   saying so at the top of the list until it is dismissed or a step goes through.
 //!
-//! Restoring a past state and named versions arrive with app core's `history.restore` and `history.name` (#443).
+//! **Restore this state** and **Name this version** run app core's `history.restore` and `history.name` (#443); a
+//! build without them shows both off, saying why.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use egui::{Id, Key, Modifiers, RichText, ScrollArea, Sense, Ui, UiBuilder, vec2};
-use omuzaki_doc_api::Value;
-use omuzaki_ops_api::{Actor, Grants, OpRecord, TxId, tool_name};
+use omuzaki_doc_api::{DocPath, PatchError, Value, apply_to};
+use omuzaki_ops_api::{Actor, Grants, Mode, OpRecord, Request, Runner, TxId, tool_name};
 use omuzaki_ui_api::panel::{Panel, PanelCtx};
 use omuzaki_ui_api::registry::Region;
 
@@ -50,6 +58,65 @@ pub struct HistoryLog {
     pub seen: HashMap<u64, Instant>,
     /// Why the log could not be read, when it could not.
     pub error: Option<String>,
+    /// Why the person's last undo or redo was refused for a conflict, until it is dismissed or a step goes through.
+    pub conflict: Option<String>,
+}
+
+/// The document as it was right after the step with `seq`, worked out from `current` and the log: every later step in
+/// effect is reversed, newest first, and every undone step up to it is applied again, oldest first.
+///
+/// # Errors
+/// A patch that does not fit the tree it is applied to: the log does not reach back to that step whole.
+pub fn state_at(mut current: Value, log: &HistoryLog, seq: u64) -> Result<Value, PatchError> {
+    for record in log.records.iter().rev().filter(|r| r.seq > seq && !log.undone.contains(&r.tx)) {
+        apply_to(&mut current, &record.patch.inverse())?;
+    }
+    for record in log.records.iter().filter(|r| r.seq <= seq && log.undone.contains(&r.tx)) {
+        apply_to(&mut current, &record.patch)?;
+    }
+    Ok(current)
+}
+
+/// A past state History shows in the viewport, by the step it follows.
+#[derive(Clone, Debug)]
+pub struct Viewing {
+    /// The step's place in the log.
+    pub seq: u64,
+    /// The step, as its row names it.
+    pub label: String,
+    /// The whole document as it was right after the step.
+    pub doc: Arc<Value>,
+}
+
+/// The past state on show, if any: shared by History, which sets it, and the viewport, which draws it in place of the
+/// document. Clones share one state. The document itself never changes.
+#[derive(Clone, Debug, Default)]
+pub struct Preview(Arc<Mutex<Option<Viewing>>>);
+
+impl Preview {
+    /// Shows `viewing` from the next frame.
+    pub fn view(&self, viewing: Viewing) {
+        *self.lock() = Some(viewing);
+    }
+
+    /// Goes back to the document as it is.
+    pub fn back(&self) {
+        *self.lock() = None;
+    }
+
+    /// The step on show, by `seq`.
+    pub fn seq(&self) -> Option<u64> {
+        self.lock().as_ref().map(|v| v.seq)
+    }
+
+    /// Calls `f` with the past state on show, if any.
+    pub fn with<R>(&self, f: impl FnOnce(Option<&Viewing>) -> R) -> R {
+        f(self.lock().as_ref())
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<Viewing>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
 }
 
 impl HistoryLog {
@@ -120,8 +187,12 @@ pub struct History {
     focus: Option<u64>,
     /// A row to give the keyboard and scroll to on the next frame, by its place in `rows`.
     move_to: Option<usize>,
-    /// The shell's request queue, for Adjust.
+    /// The shell's request queue, for Adjust, Undo and Redo.
     requests: Option<ShellRequests>,
+    /// The past state on show in the viewport.
+    preview: Option<Preview>,
+    /// Why the step last opened can't be shown, by `seq`.
+    no_preview: Option<(u64, String)>,
     /// The rows the last frame drew, and the height of the list's view.
     drawn: std::ops::Range<usize>,
     view: f32,
@@ -133,18 +204,62 @@ impl Panel for History {
         let Some(log) = log.filter(|log| !log.records.is_empty()) else {
             return empty(ui, log);
         };
-        undo_bar(ui, ctx);
+        self.requests = ctx.view::<ShellRequests>().cloned();
+        self.preview = ctx.view::<Preview>().cloned();
+        undo_bar(ui, self.requests.as_ref());
+        conflict_card(ui, log, self.requests.as_ref());
+        self.viewing_line(ui);
         self.filters(ui, log, ctx.actor());
         ui.add_space(4.0);
-        self.requests = ctx.view::<ShellRequests>().cloned();
-        ui.scope(|ui| self.list(ui, log));
+        ui.scope(|ui| self.list(ui, log, ctx.runner(), ctx.actor()));
         if self.open.is_some() && ui.ctx().input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
-            self.open = None;
+            self.set_open(None, log, ctx.runner());
+        }
+        // A step no longer in the log (a new project) takes its preview with it.
+        if let (Some(preview), Some(seq)) = (&self.preview, self.preview.as_ref().and_then(Preview::seq))
+            && !log.records.iter().any(|r| r.seq == seq)
+        {
+            preview.back();
         }
     }
 }
 
 impl History {
+    /// Opens the details of the step `seq` (or closes them, with `None`) and shows the state after it in the viewport.
+    fn set_open(&mut self, seq: Option<u64>, log: &HistoryLog, runner: &dyn Runner) {
+        self.open = seq;
+        self.no_preview = None;
+        let Some(preview) = &self.preview else { return };
+        let Some(record) = seq.and_then(|seq| log.records.iter().find(|r| r.seq == seq)) else {
+            preview.back();
+            return;
+        };
+        let current = runner.get(&DocPath::root(), &Grants::person()).map(Option::unwrap_or_default);
+        match current.map_err(|e| e.message).and_then(|doc| state_at(doc, log, record.seq).map_err(|e| e.to_string())) {
+            Ok(doc) => preview.view(Viewing { seq: record.seq, label: step_label(record), doc: Arc::new(doc) }),
+            Err(why) => {
+                preview.back();
+                self.no_preview = Some((record.seq, why));
+            }
+        }
+    }
+
+    /// While a past state is on show: what it is, and the way back.
+    fn viewing_line(&mut self, ui: &mut Ui) {
+        let Some(preview) = self.preview.clone() else { return };
+        let Some(label) = preview.with(|v| v.map(|v| v.label.clone())) else { return };
+        let ctx = ui.ctx().clone();
+        let ds = ds(&ctx);
+        ui.horizontal_wrapped(|ui| {
+            let line = say(&ctx, Word::HistoryViewing, &[("label", &label)]);
+            ui.add(egui::Label::new(RichText::new(line).color(ds.theme.text)).truncate());
+            if ui.add(Button::new(&say(&ctx, Word::HistoryBack, &[])).icon(icons::ARROW_U_UP_LEFT)).clicked() {
+                preview.back();
+                self.open = None;
+            }
+        });
+    }
+
     /// The filter row: text, who and area. Works the filtered list out again when the log or a filter changed.
     fn filters(&mut self, ui: &mut Ui, log: &HistoryLog, you: &Actor) {
         let ctx = ui.ctx().clone();
@@ -208,7 +323,7 @@ impl History {
     }
 
     /// The rows, virtualised: only the visible ones are laid out.
-    fn list(&mut self, ui: &mut Ui, log: &HistoryLog) {
+    fn list(&mut self, ui: &mut Ui, log: &HistoryLog, runner: &dyn Runner, actor: &Actor) {
         let ctx = ui.ctx().clone();
         if self.rows.is_empty() {
             let line = say(&ctx, Word::HistoryNoMatch, &[]);
@@ -233,14 +348,22 @@ impl History {
             self.drawn = range.clone();
             for place in range {
                 let Some(record) = self.rows.get(place).and_then(|&i| log.records.get(i)) else { continue };
-                self.row(ui, log, record, place);
+                self.row(ui, log, record, place, runner, actor);
             }
         });
         self.view = output.inner_rect.height();
     }
 
     /// One row: the step on top, who and when below. The row is one Tab stop; ↑ and ↓ move between rows.
-    fn row(&mut self, ui: &mut Ui, log: &HistoryLog, record: &OpRecord, place: usize) {
+    fn row(
+        &mut self,
+        ui: &mut Ui,
+        log: &HistoryLog,
+        record: &OpRecord,
+        place: usize,
+        runner: &dyn Runner,
+        actor: &Actor,
+    ) {
         let ctx = ui.ctx().clone();
         let ds = ds(&ctx);
         let id = Id::new(("history_row", record.seq));
@@ -260,6 +383,8 @@ impl History {
         response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, open, &spoken));
         if self.move_to == Some(place) {
             response.request_focus();
+            // The panel's body may scroll as a whole as well as the list: bring the row into view in both.
+            response.scroll_to_me(None);
             self.move_to = None;
         }
         if response.has_focus() {
@@ -281,19 +406,25 @@ impl History {
                 self.move_to = Some(place - 1);
             }
             if enter {
-                self.open = if open { None } else { Some(record.seq) };
+                self.set_open((!open).then_some(record.seq), log, runner);
+                // The "Viewing" line above the list pushes it down: keep the opened row, and so its details, in view.
+                self.move_to = self.move_to.or(Some(place));
             }
             if self.move_to.is_some() || enter {
                 ctx.request_repaint();
             }
         }
         if response.clicked() {
-            self.open = if open { None } else { Some(record.seq) };
-            response.request_focus();
+            self.set_open((!open).then_some(record.seq), log, runner);
+            self.move_to = Some(place);
         }
         if open && ui.is_rect_visible(rect) {
-            popover(&ctx, rect, record, log, self.requests.as_ref());
+            let no_preview =
+                self.no_preview.as_ref().filter(|(seq, _)| *seq == record.seq).map(|(_, why)| why.as_str());
+            let place = Place { requests: self.requests.as_ref(), runner, actor, no_preview };
+            popover(&ctx, rect, record, log, &place);
         }
+        let viewing = self.preview.as_ref().and_then(Preview::seq) == Some(record.seq);
         if ui.is_rect_visible(rect) {
             let fill = if open {
                 Some(ds.theme.bg3)
@@ -320,10 +451,23 @@ impl History {
                     if undone {
                         ui.label(quiet(&say(&ctx, Word::HistoryUndone, &[])));
                     }
+                    if viewing {
+                        let chip = say(&ctx, Word::HistoryViewingChip, &[]);
+                        ui.label(RichText::new(chip).font(ds.text.small.clone()).color(ds.theme.accent));
+                    }
                 });
             });
         }
     }
+}
+
+/// What a step's details need from the panel: the request queue, the runner and actor for Restore and Name, and why
+/// the step can't be shown, if it can't.
+struct Place<'a> {
+    requests: Option<&'a ShellRequests>,
+    runner: &'a dyn Runner,
+    actor: &'a Actor,
+    no_preview: Option<&'a str>,
 }
 
 /// The width of a step's details, in points.
@@ -331,13 +475,7 @@ const POPOVER: f32 = 360.0;
 
 /// A step's details in a popover beside its row (on the side with room, the left for the right dock): why, what
 /// changed, and its actions.
-fn popover(
-    ctx: &egui::Context,
-    row: egui::Rect,
-    record: &OpRecord,
-    log: &HistoryLog,
-    requests: Option<&ShellRequests>,
-) {
+fn popover(ctx: &egui::Context, row: egui::Rect, record: &OpRecord, log: &HistoryLog, place: &Place<'_>) {
     let screen = ctx.content_rect();
     let (pivot, at) = if row.left() - POPOVER - 8.0 >= screen.left() {
         (egui::Align2::RIGHT_TOP, row.left_top() - vec2(8.0, 0.0))
@@ -353,13 +491,14 @@ fn popover(
         .show(ctx, |ui| {
             egui::Frame::popup(ui.style()).fill(ds.theme.bg2).show(ui, |ui| {
                 ui.set_width(POPOVER.min(screen.width() - 32.0));
-                details_ui(ui, record, log, requests);
+                details_ui(ui, record, log, place);
             });
         });
 }
 
 /// A record's details: why, what changed, and its actions.
-fn details_ui(ui: &mut Ui, record: &OpRecord, log: &HistoryLog, requests: Option<&ShellRequests>) {
+fn details_ui(ui: &mut Ui, record: &OpRecord, log: &HistoryLog, place: &Place<'_>) {
+    let requests = place.requests;
     let ctx = ui.ctx().clone();
     let ds = ds(&ctx);
     ScrollArea::vertical().id_salt("history_details").max_height(420.0).show(ui, |ui| {
@@ -372,6 +511,9 @@ fn details_ui(ui: &mut Ui, record: &OpRecord, log: &HistoryLog, requests: Option
         ui.label(RichText::new(line).color(ds.theme.text2));
         if log.undone.contains(&record.tx) {
             ui.label(RichText::new(say(&ctx, Word::HistoryUndoneLine, &[])).color(ds.theme.text2));
+        }
+        if let Some(why) = place.no_preview {
+            ui.label(RichText::new(say(&ctx, Word::HistoryNoPreview, &[("why", why)])).color(ds.theme.text2));
         }
         ui.add_space(4.0);
         let changes = &record.patch.changes;
@@ -398,6 +540,26 @@ fn details_ui(ui: &mut Ui, record: &OpRecord, log: &HistoryLog, requests: Option
                 ctx.copy_text(serde_json::to_string_pretty(&call).unwrap_or_else(|_| call.to_string()));
             }
         });
+        ui.horizontal_wrapped(|ui| {
+            let to = serde_json::json!({"tx": record.tx});
+            let restore =
+                (OP_RESTORE, Word::HistoryRestore, icons::ARROW_COUNTER_CLOCKWISE, serde_json::json!({"to": to}));
+            let label = step_label(record);
+            let name = (OP_NAME, Word::HistoryName, icons::FLAG, serde_json::json!({"at": to, "name": label}));
+            for (op, word, icon, args) in [restore, name] {
+                let missing = (!place.runner.ops().iter().any(|info| info.name == op))
+                    .then(|| say(&ctx, Word::HistoryNotInBuild, &[("op", op)]));
+                let text = say(&ctx, word, &[]);
+                let button = Button::new(&text).icon(icon).ghost();
+                let button = match &missing {
+                    Some(why) => button.disabled(why),
+                    None => button,
+                };
+                if ui.add(button).clicked() {
+                    run(place.runner, place.actor, op, args);
+                }
+            }
+        });
     });
 }
 
@@ -416,23 +578,71 @@ fn shown(value: Option<&Value>) -> String {
     }
 }
 
-/// Undo and Redo for the person. The result reaches the list through the runner's events.
-fn undo_bar(ui: &mut Ui, ctx: &PanelCtx<'_>) {
+/// App core's op that restores a past state as one undoable step (#443).
+const OP_RESTORE: &str = "history.restore";
+/// App core's op that names a past state as a pinned version (#443).
+const OP_NAME: &str = "history.name";
+
+/// Runs `op` for the person; a refusal is logged, and its effect (or none) reaches the list through the events.
+fn run(runner: &dyn Runner, actor: &Actor, op: &str, args: Value) {
+    let request = Request {
+        op: op.to_owned(),
+        args,
+        mode: Mode::Apply,
+        actor: actor.clone(),
+        grants: Grants::person(),
+        cause: None,
+        tx: None,
+        base: None,
+    };
+    if let Err(error) = runner.run(request) {
+        tracing::warn!(%error, op, "a history action failed");
+    }
+}
+
+/// Undo and Redo for the person, through the shell, so the status bar and the conflict card hear of the result.
+fn undo_bar(ui: &mut Ui, requests: Option<&ShellRequests>) {
     let egui_ctx = ui.ctx().clone();
     ui.horizontal(|ui| {
         let (undo, redo) = (say(&egui_ctx, Word::HistoryUndo, &[]), say(&egui_ctx, Word::HistoryRedo, &[]));
-        let grants = Grants::person();
         if ui.add(Button::new(&undo).ghost().icon(icons::ARROW_COUNTER_CLOCKWISE).shortcut_hint("Ctrl Z")).clicked()
-            && let Err(error) = ctx.runner().undo(ctx.actor(), &grants)
+            && let Some(requests) = requests
         {
-            tracing::warn!(%error, "undo failed");
+            requests.push(ShellRequest::Undo);
         }
         if ui.add(Button::new(&redo).ghost().icon(icons::ARROW_CLOCKWISE).shortcut_hint("Ctrl Shift Z")).clicked()
-            && let Err(error) = ctx.runner().redo(ctx.actor(), &grants)
+            && let Some(requests) = requests
         {
-            tracing::warn!(%error, "redo failed");
+            requests.push(ShellRequest::Redo);
         }
     });
+}
+
+/// The card an undo the runner refused for a conflict leaves, until it is dismissed or a step goes through.
+fn conflict_card(ui: &mut Ui, log: &HistoryLog, requests: Option<&ShellRequests>) {
+    let Some(message) = &log.conflict else { return };
+    let ctx = ui.ctx().clone();
+    let ds = ds(&ctx);
+    egui::Frame::new()
+        .fill(ds.theme.bg2)
+        .stroke(egui::Stroke::new(1.0, ds.theme.warn))
+        .corner_radius(4.0)
+        .inner_margin(8.0)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(icons::WARNING).font(ds.text.icon(14.0, false)).color(ds.theme.warn));
+                ui.label(RichText::new(say(&ctx, Word::HistoryConflict, &[])).strong());
+            });
+            ui.label(RichText::new(say(&ctx, Word::HistoryConflictLine, &[])).color(ds.theme.text2));
+            ui.add(egui::Label::new(RichText::new(message).font(ds.text.small.clone()).color(ds.theme.text3)).wrap());
+            if ui.add(Button::new(&say(&ctx, Word::HistoryDismiss, &[])).ghost()).clicked()
+                && let Some(requests) = requests
+            {
+                requests.push(ShellRequest::DismissConflict);
+            }
+        });
+    ui.add_space(4.0);
 }
 
 /// The panel with no log: the reason it cannot be read, or the empty state.

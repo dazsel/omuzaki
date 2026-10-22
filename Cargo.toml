@@ -44,13 +44,15 @@ harfrust = "0.14"   # OpenType shaping (MIT): Arabic joining, Devanagari conjunc
 glam = { version = "0.34", features = ["serde", "bytemuck"] }
 httpdate = "1"   # `Retry-After` HTTP dates (MIT OR Apache-2.0), omuzaki-http; already in the lock through hyper
 hound = "3.5"   # WAV reading in the speech host benchmark (Apache-2.0), omuzaki-audio
+symphonia = { version = "0.6", default-features = false, features = ["opt-simd", "pcm", "adpcm", "wav", "aiff", "flac", "ogg", "vorbis", "mp3", "aac", "isomp4"] }   # audio file decoding for sounds and music (MPL-2.0, unmodified; AAC needs the patent review before release, docs/licensing/deps/symphonia.toml), omuzaki-audio-decode
 http-body-util = "0.1"
 hyper = { version = "1", default-features = false, features = ["http1", "server"] }
 hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "hdr"] }
 inventory = "0.3"
 cpal = { version = "0.18", default-features = false }   # audio device I/O for the live engine (Apache-2.0); `asio` stays off (docs/licensing/deps/cpal.toml), omuzaki-audio-engine
 libc = "0.2"   # the Linux virtual camera's device calls (open, ioctl, write) (MIT OR Apache-2.0), omuzaki-vcam; already in the lock
+memmap2 = "0.9"   # maps the live show's shared-memory objects (MIT OR Apache-2.0), omuzaki-shm (docs/design/supervisor.md §4.3); already in the lock
 libm = "0.2"   # transcendental maths bit-identical on every platform (the CPU rasteriser's stroker, ADR 0009)
 loom = "0.7"   # model checker for the metrics seqlock (MIT), omuzaki-metrics-api dev-dependency; only built with --cfg loom
 # ONNX Runtime wrapper. `load-dynamic`: the app loads Microsoft's official MIT library from a path we choose, so Pyke's prebuilt binaries
@@ -58,6 +60,7 @@ loom = "0.7"   # model checker for the metrics seqlock (MIT), omuzaki-metrics-ap
 nalgebra = { version = "0.35", default-features = false, features = ["std"] }   # matrix and rotation maths for the head-pose fit (Apache-2.0), omuzaki-track
 ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "load-dynamic", "api-27"] }
 pollster = "1"
+postcard = { version = "1.1", default-features = false, features = ["use-std"] }   # the live-show worker protocol's frame bodies (MIT OR Apache-2.0), omuzaki-stream-api (docs/design/supervisor.md §4.2)
 proptest = "1.12"
 regex = "1.13"   # JSON Schema `pattern` checks in the studio's forms (MIT OR Apache-2.0), omuzaki-ui; already in the lock through criterion
 reqwest = { version = "0.13", default-features = false }
@@ -90,7 +93,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 wgpu = "30"
 windows = { version = "0.62", features = ["Win32_Media_MediaFoundation", "Win32_System_Com", "Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }   # Media Foundation and COM (MIT OR Apache-2.0), omuzaki-camera-mf
 windows-core = "0.62"   # the `implement` macro for the camera's COM callback (MIT OR Apache-2.0), omuzaki-camera-mf
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_UI_Input", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Input_XboxController", "Win32_Devices_HumanInterfaceDevice", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp"] } # the Windows side of the same: reparse-point-aware opens, final-path checks; Raw Input, HID and XInput for omuzaki-input (ADR 0060)
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_UI_Input", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Input_XboxController", "Win32_Devices_HumanInterfaceDevice", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp"] } # the Windows side of the same: reparse-point-aware opens, final-path checks; the studio's reduce-motion read; Raw Input, HID, XInput and the kill switch's process list for omuzaki-input (ADR 0060)
 # The OS input backends of omuzaki-input (ADR 0060, docs/design/input-motion.md §13 DEP-0); licences in docs/licensing/deps/
 gilrs = { version = "0.11", default-features = false, features = ["xinput"] }   # gamepads on Windows (XInput, not WGI) and Linux (Apache-2.0/MIT; links the system libudev dynamically)
 x11rb = { version = "0.13", features = ["xinput"] }   # XInput2 raw events on Linux X11, pure-Rust connection; the version winit already locks (MIT OR Apache-2.0)
@@ -130,6 +133,12 @@ debug = "line-tables-only"   # enough for backtraces; keeps the shared slot targ
 
 [profile.dev.package."*"]
 opt-level = 2                # dependencies (glam, wgpu, image codecs) optimised: debug builds stay usable for real-time tests
+
+[profile.dev.package.omuzaki-render-mock]
+opt-level = 2                # the CPU rasteriser draws every mock render in the stage and UI tests, sample by sample
+
+[profile.dev.package.omuzaki-char]
+opt-level = 2                # the kit's geometry: its property and fit tests and every mock preview run about 4x faster
 
 [profile.release]
 lto = "thin"

@@ -17,6 +17,8 @@
 //! face's own expression of the same name (the library has `happy`, `aa`, `blink`, ...) or else from the channels (io
 //! design D6). The report says per channel what it became, and lists each atlas's layout. Extras are requested as
 //! `omuzaki_<id>`, where `id` is the extra channel's name in kebab case (`omuzaki_eyes-heart`, `omuzaki_blush`).
+//! A name of that form that is no extra but one of the face's own expressions (`omuzaki_smug`) is baked from that
+//! expression's channel deltas, as a preset is.
 //!
 //! The bake is deterministic: the same face, scene and request give the same scene, bytes included.
 
@@ -106,6 +108,33 @@ struct Baked {
 impl Baked {
     fn forms(&self, channel: &str) -> Forms {
         self.forms.get(channel).cloned().unwrap_or_default()
+    }
+
+    /// What `channels` at their weights become: [`Forms::realisation`] for one channel, and for several the kinds of
+    /// bind [`expression`](Self::expression) gives them (every morph, and the UV moves and colours at 0.5 or more).
+    fn realisation(&self, channels: &[(&str, f32)], inert: &str) -> Realisation {
+        if let [(channel, weight)] = channels
+            && *weight >= 1.0
+        {
+            return self.forms(channel).realisation(inert);
+        }
+        let mut forms = Forms::default();
+        let mut targets = 0;
+        for &(channel, weight) in channels {
+            let own = self.forms(channel);
+            if own.morph.is_some() && weight > 0.0 {
+                targets += 1;
+                forms.morph = own.morph;
+            }
+            if weight >= 0.5 {
+                forms.uv.extend(own.uv);
+                forms.colour.extend(own.colour);
+            }
+        }
+        match forms.realisation(inert) {
+            Realisation::Morph { .. } => Realisation::Morph { targets },
+            other => other,
+        }
     }
 
     /// One expression from `channels` at their weights: each morph at its weight, and the UV moves and colours of
@@ -202,19 +231,31 @@ fn preset_channels(preset: PresetExpression) -> Vec<(&'static str, f32)> {
 impl FaceBaker {
     /// The channels and weights of `preset`: the face's own expression of that name if it has one, else D6's table.
     fn preset(&self, preset: PresetExpression) -> Vec<(&'static str, f32)> {
-        let own = omuzaki_anim_api::ExpressionId::new(preset.as_str())
-            .ok()
-            .and_then(|id| self.profile.expressions.0.get(&id));
-        match own {
-            Some(expression) => expression
+        self.own(preset.as_str()).unwrap_or_else(|| preset_channels(preset))
+    }
+
+    /// The channels of the face's own expression `id`, at its deltas; `None` when the face has no such expression.
+    fn own(&self, id: &str) -> Option<Vec<(&'static str, f32)>> {
+        let expression =
+            omuzaki_anim_api::ExpressionId::new(id).ok().and_then(|id| self.profile.expressions.0.get(&id))?;
+        Some(
+            expression
                 .deltas
                 .0
                 .iter()
                 .map(|(channel, delta)| (channel.name(), omuzaki_face_api::narrow(*delta)))
                 .filter(|(_, w)| *w > 0.0)
                 .collect(),
-            None => preset_channels(preset),
+        )
+    }
+
+    /// The channels a requested name stands for: a channel or an extra (`omuzaki_eyes-heart`) at full weight, or the
+    /// face's own named expression exported as `omuzaki_<id>` (`omuzaki_smug`) at its deltas.
+    fn sources<'a>(&self, name: &'a str) -> Vec<(&'a str, f32)> {
+        if let Some(extra) = extra_channel(name) {
+            return vec![(extra, 1.0)];
         }
+        name.strip_prefix(EXTRA_PREFIX).and_then(|id| self.own(id)).unwrap_or_else(|| vec![(name, 1.0)])
     }
 
     /// Where the morph fields sit: the face window's width and the mouth's centre.
@@ -332,14 +373,13 @@ impl ExpressionBaker for FaceBaker {
         progress.checkpoint("bake", fraction(total - 1, total))?;
         let avatar = scene.avatar.get_or_insert_with(Avatar::new);
         for (name, channel) in names.iter().zip(&request.channels) {
-            let source = extra_channel(name).unwrap_or(name.as_str());
-            let forms = baked.forms(source);
-            let realisation = forms.realisation(inert_reason(name));
+            let sources = self.sources(name);
+            let realisation = baked.realisation(&sources, inert_reason(name));
             if let Realisation::Inert { reason } = &realisation {
                 report.findings.push(Finding::warning("perfect_sync.inert_channel", format!("{name}: {reason}")));
             }
             report.channels.push(ChannelBake { channel: name.clone(), realisation });
-            avatar.expressions.insert(channel.clone(), baked.expression(node, &[(source, 1.0)]));
+            avatar.expressions.insert(channel.clone(), baked.expression(node, &sources));
         }
         for preset in PresetExpression::ALL {
             let name = ExpressionName::Preset(preset);

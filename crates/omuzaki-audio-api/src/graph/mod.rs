@@ -27,6 +27,8 @@ use crate::tap::VoiceTaps;
 pub const MIC_BUS: &str = "mic";
 /// The bus the co-host's voice plays on; in `MicMode::CohostOnly` it reaches `monitor_out` only.
 pub const AI_VOICE_BUS: &str = "ai_voice";
+/// The bus that goes out to the stream: its meter adds loudness, true peak and the limiter's reduction.
+pub const PROGRAM_BUS: &str = "program";
 /// The role of the output a person monitors on.
 pub const MONITOR_OUT_ROLE: &str = "monitor_out";
 

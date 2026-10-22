@@ -272,6 +272,8 @@ fn batched_ime_events_keep_committed_text_in_order() {
         h.input_mut().events.extend(events.into_iter().map(Event::Ime));
         h.run_steps(1);
     }
+    // The preedit after the commit waits a frame for the caret the commit leaves.
+    h.run_steps(1);
     assert_eq!(h.state().text, "ab漢字!", "the committed text is the value; the new preedit is not");
     assert_eq!(shown(&h, "Search"), "ab漢字!か");
     commit(&mut h, "化");
@@ -466,6 +468,8 @@ fn preedit_only_text_never_reaches_the_value_in_any_ordering() {
     for round in 0..rounds {
         let mut h = text_field("ab");
         let mut log = Vec::new();
+        // At least the events a preedit could have carried into the next frame (see `carried_after`).
+        let mut pending: Vec<Event> = Vec::new();
         for _ in 0..8 {
             let mut events = Vec::new();
             for _ in 0..=next(3) {
@@ -514,9 +518,12 @@ fn preedit_only_text_never_reaches_the_value_in_any_ordering() {
             let last_change = events.iter().rposition(changes_caret);
             let last_preedit = events.iter().rposition(is_preedit);
             let must_be_cleared = last_change.is_some_and(|c| last_preedit.is_none_or(|p| c > p));
-            // After a reset, a frame of IME events alone (no editing) must leave every character of the new text.
-            let only_ime =
-                events.iter().all(|e| matches!(e, Event::Ime(ImeEvent::Preedit { .. } | ImeEvent::Commit(_))));
+            let carries = !carried_after(&pending, &events).is_empty();
+            // After a reset, a frame of IME events alone (no editing, and nothing carried in) must leave every character
+            // of the new text.
+            let only_ime = pending.is_empty()
+                && events.iter().all(|e| matches!(e, Event::Ime(ImeEvent::Preedit { .. } | ImeEvent::Commit(_))));
+            pending = carried_after(&pending, &events);
             h.input_mut().events.extend(events);
             h.run_steps(1);
             if reset && only_ime {
@@ -528,7 +535,8 @@ fn preedit_only_text_never_reaches_the_value_in_any_ordering() {
                     h.state().text
                 );
             }
-            if must_be_cleared {
+            // A preedit that waits for the next frame takes the events after it along.
+            if must_be_cleared && !carries {
                 let spoken = shown(&h, "Search");
                 assert!(
                     !PREEDITS.iter().any(|p| spoken.contains(p)),
@@ -542,6 +550,335 @@ fn preedit_only_text_never_reaches_the_value_in_any_ordering() {
             );
         }
     }
+}
+
+// ---- Event order (#822) -------------------------------------------------------------------------------------------
+
+#[test]
+fn a_surrounding_delete_then_a_preedit_in_one_frame_apply_in_order() {
+    let mut h = text_field("abc");
+    one_frame(
+        &mut h,
+        vec![
+            Event::Ime(ImeEvent::DeleteSurrounding { before_chars: 1, after_chars: 0 }),
+            Event::Ime(ImeEvent::Preedit { text: "か".to_owned(), active_range_chars: None }),
+        ],
+    );
+    h.run_steps(1);
+    assert_eq!(h.state().text, "ab", "the delete lands; the preedit is not in the value");
+    assert_eq!(shown(&h, "Search"), "abか", "and the preedit shows where the delete left the caret");
+    commit(&mut h, "漢");
+    assert_eq!(h.state().text, "ab漢", "the composition kept going and commits at the caret");
+}
+
+#[test]
+fn typing_then_select_all_then_a_preedit_in_one_frame_apply_in_order() {
+    let mut h = text_field("ab");
+    let select_all = Event::Key {
+        key: Key::A,
+        physical_key: Some(Key::A),
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::COMMAND,
+    };
+    one_frame(
+        &mut h,
+        vec![
+            Event::Text("x".to_owned()),
+            Event::ModifiersChanged(Modifiers::COMMAND),
+            select_all,
+            Event::Ime(ImeEvent::Preedit { text: "か".to_owned(), active_range_chars: None }),
+        ],
+    );
+    h.run_steps(1);
+    assert_eq!(h.state().text, "abx", "the letter lands and select-all replaces nothing");
+    assert_eq!(shown(&h, "Search"), "か", "the preedit stands in for the whole selection");
+    preedit(&mut h, "");
+    h.run_steps(1);
+    assert_eq!(h.state().text, "abx", "a cancel gives the selection back");
+    assert_eq!(shown(&h, "Search"), "abx");
+}
+
+/// A single-line field by the rules this file sets, event by event: the reference the widget is held to. Selection is
+/// `(anchor, caret)` in characters; a composition holds the selection it stands in for and its preedit.
+struct Model {
+    text: Vec<char>,
+    anchor: usize,
+    caret: usize,
+    composition: Option<((usize, usize), String)>,
+    focused: bool,
+    carried: Vec<Event>,
+}
+
+impl Model {
+    fn new(text: &str) -> Self {
+        let len = text.chars().count();
+        Self {
+            text: text.chars().collect(),
+            anchor: len,
+            caret: len,
+            composition: None,
+            focused: true,
+            carried: vec![],
+        }
+    }
+
+    fn value(&self) -> String {
+        self.text.iter().collect()
+    }
+
+    /// What a screen reader reads: the value with the preedit in place of what it stands in for.
+    fn shown(&self) -> String {
+        match &self.composition {
+            None => self.value(),
+            Some(((a, b), preedit)) => {
+                let (from, to) = ((*a).min(*b), (*a).max(*b));
+                self.text[..from]
+                    .iter()
+                    .chain(preedit.chars().collect::<Vec<_>>().iter())
+                    .chain(&self.text[to..])
+                    .collect()
+            }
+        }
+    }
+
+    fn sorted(&self) -> (usize, usize) {
+        (self.anchor.min(self.caret), self.anchor.max(self.caret))
+    }
+
+    fn collapse(&mut self, at: usize) {
+        (self.anchor, self.caret) = (at, at);
+    }
+
+    /// Ends the composition; one over a selection gives the selection back.
+    fn end(&mut self) {
+        if let Some(((a, b), _)) = self.composition.take() {
+            (self.anchor, self.caret) = (a, b);
+        }
+    }
+
+    fn replace_selection(&mut self, with: &str) {
+        let (from, to) = self.sorted();
+        self.text.splice(from..to, with.chars());
+        self.collapse(from + with.chars().count());
+    }
+
+    /// One frame: the events carried from the last one, then `events`.
+    fn frame(&mut self, events: Vec<Event>) {
+        let queue: Vec<Event> = std::mem::take(&mut self.carried).into_iter().chain(events).collect();
+        let (mut ime_turn, mut pushed) = (false, false);
+        for (index, event) in queue.iter().enumerate() {
+            if !self.focused {
+                return;
+            }
+            let composing = self.composition.is_some();
+            // Ending a composition over a selection after the editor acted at its caret waits a frame.
+            let over_selection = self.composition.as_ref().is_some_and(|((a, b), _)| a != b);
+            let ends = match event {
+                Event::Ime(ImeEvent::Commit(_)) | Event::Text(_) | Event::Paste(_) | Event::Cut => true,
+                Event::Ime(ImeEvent::Preedit { text, .. }) => text.is_empty(),
+                Event::Key { key, pressed: true, .. } => !matches!(key, Key::Enter | Key::Escape),
+                _ => false,
+            };
+            if pushed && over_selection && ends {
+                self.carried = queue[index..].to_vec();
+                return;
+            }
+            match event {
+                Event::Ime(ImeEvent::Preedit { text, .. }) if !text.is_empty() => {
+                    // A new composition waits for the caret the edits before it leave.
+                    if pushed && !composing {
+                        self.carried = queue[index..].to_vec();
+                        return;
+                    }
+                    let held = if let Some((held, _)) = self.composition.take() {
+                        held
+                    } else {
+                        // The selection is held aside and the caret waits at its start.
+                        let held = (self.anchor, self.caret);
+                        self.collapse(self.sorted().0);
+                        held
+                    };
+                    self.composition = Some((held, text.clone()));
+                    ime_turn = true;
+                }
+                Event::Ime(ImeEvent::Preedit { text, .. } | ImeEvent::Commit(text))
+                    if text.is_empty() && !composing => {}
+                Event::Ime(ImeEvent::Commit(text)) => {
+                    self.end();
+                    ime_turn = true;
+                    if !text.is_empty() {
+                        self.replace_selection(text);
+                        pushed = true;
+                    }
+                }
+                Event::Ime(ImeEvent::Preedit { .. }) => {
+                    self.end();
+                    ime_turn = true;
+                }
+                Event::Ime(ImeEvent::DeleteSurrounding { before_chars, after_chars }) => {
+                    // Around the caret, which a composition holds at its start.
+                    let (from, to) = self.sorted();
+                    let after = (*after_chars).min(self.text.len() - to);
+                    self.text.drain(to..to + after);
+                    let before = (*before_chars).min(from);
+                    self.text.drain(from - before..from);
+                    // egui moves both ends back by the whole count, each stopping at the start.
+                    self.anchor = self.anchor.saturating_sub(*before_chars);
+                    self.caret = self.caret.saturating_sub(*before_chars);
+                    if let Some(((a, b), _)) = self.composition.as_mut() {
+                        let (start, width) = ((*a).min(*b), (*a).max(*b) - (*a).min(*b));
+                        let (start, width) = (start.saturating_sub(*before_chars), width - (*after_chars).min(width));
+                        (*a, *b) = if a <= b { (start, start + width) } else { (start + width, start) };
+                    }
+                    pushed = true;
+                }
+                Event::Key { key: Key::Enter, pressed: true, .. } if composing || ime_turn => {}
+                Event::Key { key: Key::Enter, pressed: true, .. } => {
+                    // A single-line field gives the keyboard up on Enter, and the rest of the frame goes elsewhere.
+                    self.focused = false;
+                    return;
+                }
+                Event::Text(text) | Event::Paste(text) => {
+                    self.end();
+                    self.replace_selection(text);
+                    pushed = true;
+                }
+                Event::Cut => {
+                    self.end();
+                    let (from, to) = self.sorted();
+                    if from != to {
+                        self.replace_selection("");
+                    }
+                    pushed = true;
+                }
+                Event::Key { key, pressed: true, modifiers, .. } => {
+                    self.end();
+                    self.key(*key, *modifiers);
+                    pushed = true;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// The keys the property test presses, as egui's single-line `TextEdit` does them.
+    fn key(&mut self, key: Key, modifiers: Modifiers) {
+        let (from, to) = self.sorted();
+        let len = self.text.len();
+        match key {
+            Key::A if modifiers.command => (self.anchor, self.caret) = (0, len),
+            Key::Backspace if from != to => self.replace_selection(""),
+            Key::Backspace => {
+                if from > 0 {
+                    self.text.remove(from - 1);
+                    self.collapse(from - 1);
+                }
+            }
+            Key::ArrowLeft if modifiers.is_none() && from != to => self.collapse(from),
+            Key::ArrowRight if modifiers.is_none() && from != to => self.collapse(to),
+            Key::ArrowLeft | Key::ArrowRight | Key::Home | Key::End => {
+                self.caret = match key {
+                    Key::ArrowLeft => self.caret.saturating_sub(1),
+                    Key::ArrowRight => (self.caret + 1).min(len),
+                    Key::Home => 0,
+                    _ => len,
+                };
+                if !modifiers.shift {
+                    self.anchor = self.caret;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The field holds exactly what the reference model holds after every frame, in any order of preedits, commits,
+/// typing, platform deletions, caret moves, selection, select-all, cut, paste and Enter, batched or not (#822).
+#[test]
+fn the_value_matches_a_reference_model_in_any_ordering() {
+    const PREEDITS: [&str; 3] = ["か", "き", "く"];
+    let mut seed =
+        std::env::var("IME_PROPERTY_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(0x9e37_79b9_7f4a_7c15_u64);
+    let mut next = move |bound: usize| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        usize::try_from(seed % u64::try_from(bound).unwrap_or(1)).unwrap_or(0)
+    };
+    let key = |key: Key, modifiers: Modifiers| Event::Key {
+        key,
+        physical_key: Some(key),
+        pressed: true,
+        repeat: false,
+        modifiers,
+    };
+    let rounds = std::env::var("IME_PROPERTY_ROUNDS").ok().and_then(|v| v.parse().ok()).unwrap_or(400);
+    for round in 0..rounds {
+        let mut h = text_field("ab");
+        let mut model = Model::new("ab");
+        let mut log = Vec::new();
+        for frame in 0..=8 {
+            let mut events = Vec::new();
+            // The last frame is empty, so what a preedit carried is applied before the final comparison.
+            for _ in 0..if frame == 8 { 0 } else { next(4) + 1 } {
+                events.push(match next(13) {
+                    0 | 1 => {
+                        Event::Ime(ImeEvent::Preedit { text: PREEDITS[next(3)].to_owned(), active_range_chars: None })
+                    }
+                    2 => empty_preedit(),
+                    3 => Event::Ime(ImeEvent::Commit(["漢", "字", ""][next(3)].to_owned())),
+                    4 => Event::Text(["x", "y"][next(2)].to_owned()),
+                    5 => Event::Ime(ImeEvent::DeleteSurrounding { before_chars: next(2) + 1, after_chars: next(2) }),
+                    6 => key([Key::ArrowLeft, Key::ArrowRight, Key::Home, Key::End][next(4)], Modifiers::NONE),
+                    7 => key(Key::Backspace, Modifiers::NONE),
+                    8 => key(Key::A, Modifiers::COMMAND),
+                    9 => key([Key::ArrowLeft, Key::ArrowRight, Key::Home, Key::End][next(4)], Modifiers::SHIFT),
+                    10 => Event::Cut,
+                    11 => Event::Paste(["p", "qr"][next(2)].to_owned()),
+                    _ => key(Key::Enter, Modifiers::NONE),
+                });
+            }
+            log.push(format!("{events:?}"));
+            model.frame(events.clone());
+            h.input_mut().events.extend(events);
+            h.run_steps(1);
+            let field = h.state().text.clone();
+            assert_eq!(field, model.value(), "round {round}: the value differs from the model after {log:#?}");
+            if model.focused {
+                assert_eq!(
+                    shown(&h, "Search"),
+                    model.shown(),
+                    "round {round}: what shows differs from the model after {log:#?}"
+                );
+            }
+        }
+    }
+}
+
+/// What a frame of `events`, after `pending`, can carry into the next one: everything from the first preedit, or the
+/// first event that ends a composition, that follows an edit. Counts every key press, commit and platform delete as an
+/// edit, so it may say more is carried than is, never less.
+fn carried_after(pending: &[Event], events: &[Event]) -> Vec<Event> {
+    let queue: Vec<Event> = pending.iter().chain(events).cloned().collect();
+    let edit = |e: &Event| {
+        matches!(
+            e,
+            Event::Text(_)
+                | Event::Paste(_)
+                | Event::Cut
+                | Event::Key { pressed: true, .. }
+                | Event::Ime(ImeEvent::Commit(_) | ImeEvent::DeleteSurrounding { .. })
+        )
+    };
+    let waits = |e: &Event| {
+        matches!(e, Event::Ime(ImeEvent::Preedit { .. } | ImeEvent::Commit(_)))
+            || matches!(e, Event::Text(_) | Event::Paste(_) | Event::Cut | Event::Key { pressed: true, .. })
+    };
+    let first_edit = queue.iter().position(edit);
+    first_edit
+        .and_then(|from| queue.iter().skip(from + 1).position(waits).map(|at| from + 1 + at))
+        .map_or_else(Vec::new, |at| queue[at..].to_vec())
 }
 
 #[test]

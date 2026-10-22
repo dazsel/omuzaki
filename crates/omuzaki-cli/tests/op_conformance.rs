@@ -273,6 +273,10 @@ impl Rig {
                     ))
                     // No OBS connection: the `obs.*` examples dry-run and say they would need one.
                     .insert::<omuzaki_obs::service::ObsService>(Arc::new(omuzaki_obs::service::ObsService::new()))
+                    // No VTube Studio bridge: the `vts.*` examples dry-run and say they would need a connection.
+                    .insert::<omuzaki_vts::service::VtsService>(Arc::new(
+                        omuzaki_vts::service::VtsService::new().expect("the built-in channel map parses"),
+                    ))
                     .insert::<omuzaki_live::Automation>(Arc::new(omuzaki_live::Automation::new()))
                     // A Twitch service on a transport that answers nothing: the `twitch.*` examples dry-run and
                     // report that no token is stored.

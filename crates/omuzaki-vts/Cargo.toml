@@ -1,6 +1,6 @@
 [package]
 name = "omuzaki-vts"
-description = "The VTube Studio plugin API as data: message types, validators and limits (CN-13). No I/O; clean-room from the documented wire protocol."
+description = "The VTube Studio bridge (CN-13): the plugin API as data, the client session, parameter injection, hotkeys, the service and the vts.* ops, over loopback only; clean-room from the documented wire protocol."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,26 +10,44 @@ repository.workspace = true
 
 [features]
 # An in-process mock VTube Studio server for tests (`testing`): off in every normal build.
-testing = ["dep:tungstenite"]
+testing = []
 
 [dependencies]
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-# Sync WebSocket, the layer under tokio-tungstenite: the mock needs no async runtime. BR-19 lifts it into
-# `[workspace.dependencies]` (the root manifest is out of this task's fence) when `omuzaki-obs` needs it too.
-tungstenite = { version = "0.30", optional = true }
+toml.workspace = true
+# The client's WebSocket (and the mock's): sync, one bridge thread, no async runtime; ws:// to VTS on this computer.
+tungstenite = "0.30"
+omuzaki-anim-api = { path = "../omuzaki-anim-api" }
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-doc-api = { path = "../omuzaki-doc-api" }
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+omuzaki-secrets-api = { path = "../omuzaki-secrets-api" }
 
 [dev-dependencies]
-# The mock's tests drive it with a raw WebSocket client; they live in `src/testing/tests.rs`, not `tests/`, because an
-# integration test would need this crate as a dev-dependency of itself (`cargo xtask lint-deps` forbids that).
-tungstenite = "0.30"
+criterion.workspace = true
+omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+omuzaki-secrets-mock = { path = "../omuzaki-secrets-mock" }
+
+[[bench]]
+name = "push"
+harness = false
+
+# Against a running VTS, or with `--mock` the loopback mock: `cargo run -p omuzaki-vts --features testing --example
+# vts_latency -- --mock`.
+[[example]]
+name = "vts_latency"
+required-features = ["testing"]
 
 [lints]
 workspace = true
 
-# Native only: the later client task opens a WebSocket to a local app
+# Native only: the client opens a WebSocket to a local app
 [package.metadata.omuzaki]
 kind = "Implementation"
-summary = "the VTube Studio plugin API as data (CN-13): the message `Envelope`, `ApiError` and `ErrorKind`, every request, response and event the bridge uses, and the validators and limits (`CustomParamName`, `ParamValue`, `FadeTime`); clean-room from the documented wire protocol, no I/O, native only"
+summary = "the VTube Studio bridge (CN-13): the plugin API as data (`Envelope`, `ApiError`, every request, response and event the bridge uses, `CustomParamName`, `ParamValue`, `FadeTime`), `VtsClient` (discovery, token authentication, reconnects on a backoff, the clean degrade on revoke, `BridgeStatus`, `TokenStore` with `SecretTokens`), `inject` (`ChannelMap` from `data/channel-map.toml`, the allocation-free `Injector`, one batched message per frame with a 500 ms keep-alive, conflicts to `add`) and `hotkeys` (`VtsMapping`, `suggest`, `HotkeyLimiter`), `VtsService` with the perform loop's `VtsFeed`, and the ops `vts.connect`, `vts.disconnect`, `vts.status`, `vts.map`, `vts.suggest`, `vts.trigger`, `vts.release`; loopback only, clean-room from the documented wire protocol, native only"
 wasm = false
+# The vts.* ops register themselves (ADR 0015, `cargo xtask lint-registers`).
+registers = true

@@ -82,6 +82,8 @@ omuzaki-io-fbx = { path = "../omuzaki-io-fbx" }
 omuzaki-io-vrm = { path = "../omuzaki-io-vrm" }
 # CIELAB for the measurement rig's flatness test (`tests/measure_flat.rs`).
 omuzaki-measure = { path = "../omuzaki-measure" }
+# The executor the history thumbnails follow (`tests/history_thumbs.rs`).
+omuzaki-ops = { path = "../omuzaki-ops" }
 omuzaki-render-mock = { path = "../omuzaki-render-mock" }
 omuzaki-settings = { path = "../omuzaki-settings" }
 omuzaki-stream = { path = "../omuzaki-stream" }

@@ -1,0 +1,44 @@
+[package]
+name = "omuzaki-shm"
+description = "The live show's shared-memory channels between the output host and its workers: frame slots, the newest-wins record, the sample ring and the packet channel, with no name left behind (docs/design/supervisor.md §4.3, §15.3)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# A lib crate (ADR 0011): `omuzaki-stream`, the output host and the workers all depend on it. It holds no global state,
+# registers nothing, and is the only crate of the supervisor design with `unsafe` (mapping a shared region and viewing
+# its header as atomics), allowed in `region.rs` alone.
+[package.metadata.omuzaki]
+kind = "Lib"
+summary = "the live show's shared memory (`docs/design/supervisor.md` §4.3, §15.3): `FrameSlots` (frames with ownership hand-back), `Latest` (a bounded seqlock record), `SampleRing` (audio runs with positions, gaps and withheld flags, plus the clock mapping) and `PacketChannel` (encoded packets with side data); anonymous objects (memfd on Linux, unlinked at once on macOS, pagefile sections on Windows) handed over as `Share`; `host_now`, the clock every process reads alike"
+layer = "lib"
+
+[features]
+# `Latest::publish_torn` and `FrameSlots::write_torn`: start a write and never finish it, as a producer killed
+# mid-write would (the crash tests).
+testing = []
+
+[dependencies]
+bytes.workspace = true
+thiserror.workspace = true
+omuzaki-stream-api = { path = "../omuzaki-stream-api" }
+
+[target.'cfg(unix)'.dependencies]
+memmap2.workspace = true
+rustix = { workspace = true, features = ["fs", "shm", "time"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_System_Memory", "Win32_System_Performance"] }
+getrandom.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+getrandom.workspace = true
+
+[dev-dependencies]
+omuzaki-shm = { path = ".", features = ["testing"] }
+
+[lints]
+workspace = true

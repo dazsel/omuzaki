@@ -19,6 +19,10 @@ use omuzaki_stage::perform::{Performer, STEP_HZ};
 use super::clock::PerformClock;
 use super::mailbox::{FrameReader, FrameWriter, LiveFrame, frame_mailbox};
 
+/// A consumer of every published frame, called on the perform thread right after the frame is published (the
+/// `VTube Studio` bridge's feed). It must not block or allocate in steady state: it runs inside the 60 Hz step.
+pub type FrameTap = Box<dyn FnMut(&LiveFrame) + Send>;
+
 /// The perform thread's name, as debuggers and profilers show it.
 pub const THREAD_NAME: &str = "omuzaki-perform";
 
@@ -99,6 +103,18 @@ impl PerformThread {
     /// # Errors
     /// [`WiringError::Spawn`] if the OS refuses the thread.
     pub fn spawn(performer: Performer, clock: Box<dyn PerformClock>) -> Result<(Self, FrameReader), WiringError> {
+        Self::spawn_tapped(performer, clock, None)
+    }
+
+    /// [`spawn`](Self::spawn), with `tap` handed each frame as it is published.
+    ///
+    /// # Errors
+    /// [`WiringError::Spawn`] if the OS refuses the thread.
+    pub fn spawn_tapped(
+        performer: Performer,
+        clock: Box<dyn PerformClock>,
+        tap: Option<FrameTap>,
+    ) -> Result<(Self, FrameReader), WiringError> {
         let (handle, control) = perform_channel(&performer);
         let (writer, reader) = frame_mailbox();
         let sources = Arc::new(SourceSlot::new());
@@ -111,6 +127,7 @@ impl PerformThread {
             stats: Arc::clone(&stats),
             arrival: None,
             last: None,
+            tap,
         };
         let flag = Arc::clone(&stop);
         let thread = std::thread::Builder::new()
@@ -199,6 +216,8 @@ struct PerformLoop {
     arrival: Option<Seconds>,
     /// The last step this loop ran and the control's skip count then, to count the steps each pass runs.
     last: Option<(u64, u64)>,
+    /// Handed each published frame.
+    tap: Option<FrameTap>,
 }
 
 impl PerformLoop {
@@ -223,7 +242,11 @@ impl PerformLoop {
             if out.frame.is_some() {
                 self.arrival = Some(now);
             }
-            self.writer.publish(&LiveFrame::from_output(&out, self.arrival));
+            let frame = LiveFrame::from_output(&out, self.arrival);
+            self.writer.publish(&frame);
+            if let Some(tap) = &mut self.tap {
+                tap(&frame);
+            }
             self.stats.published.fetch_add(1, Ordering::Release);
             let (index, skipped) = (out.tick.index, self.control.skipped_steps());
             self.stats.stepped.fetch_add(steps_run(self.last, index, skipped), Ordering::Release);

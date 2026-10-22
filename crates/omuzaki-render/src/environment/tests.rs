@@ -12,6 +12,7 @@ use omuzaki_render_api::{EnvironmentDesc, EnvironmentUse};
 
 use super::{GpuEnvironment, layout};
 use crate::gpu::{AdapterPreference, Gpu, HeadlessOptions, WAIT_LIMIT};
+use crate::shared::Layouts;
 
 const KERNEL: &str = r"
 @group(0) @binding(0) var<storage, read> dirs: array<vec4<f32>>;
@@ -123,7 +124,7 @@ fn run(gpu: &Gpu, env: &GpuEnvironment, using: Option<&EnvironmentUse>, dirs: &[
 }
 
 fn create(gpu: &Gpu, desc: &EnvironmentDesc) -> GpuEnvironment {
-    GpuEnvironment::create(gpu, &layout(&gpu.device), desc).unwrap()
+    GpuEnvironment::create(gpu, &Layouts::new(&gpu.device), desc).unwrap()
 }
 
 /// An equirectangular map whose colour is `0.5 + 0.5 * direction`: smooth, and different towards every direction, so a
@@ -259,7 +260,7 @@ fn the_specular_cube_has_its_faces_where_the_bake_put_them() {
 #[test]
 fn the_stand_in_environment_lights_nothing() {
     let gpu = gpu();
-    let none = GpuEnvironment::none(&gpu, &layout(&gpu.device));
+    let none = GpuEnvironment::none(&gpu, &Layouts::new(&gpu.device));
     for probe in run(&gpu, &none, None, &DIRECTIONS) {
         assert_eq!((probe.light, probe.mirror, probe.rough), (Vec3::ZERO, Vec3::ZERO, Vec3::ZERO));
     }

@@ -1,0 +1,25 @@
+[package]
+name = "omuzaki-audio-decode"
+description = "Audio file decoding for the soundboard and music (BR-21, #1444): WAV, AIFF, FLAC, Ogg Vorbis, MP3 and AAC/M4A into 48 kHz planar f32 bank sounds, or streamed into a feed, off the audio thread."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+omuzaki-audio-api = { path = "../omuzaki-audio-api" }
+omuzaki-core = { path = "../omuzaki-core" }
+symphonia.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+
+[lints]
+workspace = true
+
+[package.metadata.omuzaki]
+kind = "Implementation"
+summary = "audio file decoding: `decode_file` and `decode_bytes` turn WAV, AIFF, FLAC, Ogg Vorbis, MP3 and AAC/M4A into a 48 kHz planar `Sound` for the player's bank (a Kaiser-windowed sinc resampler for other rates), and `stream_file` writes long music into a feed from a decoder thread"
+wasm = false

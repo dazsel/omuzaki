@@ -1,7 +1,7 @@
 section = "rust"
 item = "tokio"
 kind = "crate"
-used_for = "async runtime for MCP"
+used_for = "async runtime for MCP; the supervisor's adapter tasks (`omuzaki-stream` `TaskLauncher`)"
 status = "yes"
 audit = "(crates.io: MIT)"
 crates = ["tokio"]

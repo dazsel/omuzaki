@@ -10,14 +10,16 @@ use std::collections::BTreeMap;
 
 use omuzaki_core::glam::{Affine3A, Mat3A, Mat4, Vec3};
 use omuzaki_render_api::{
-    Background, Bloom, Camera, DepthOfField, FilmGrain, Light, Post, Projection,
+    BackdropFit, Background, Bloom, Camera, Colour, DepthOfField, FilmGrain, Fog, Light, Post, Projection,
 };
 use omuzaki_stage_api::resolve::{AnchorFrame, LightBuf};
 use omuzaki_stage_api::{
-    Anchor, Backdrop, CameraDef, CameraId, CastMember, Focus, Framing, GroundKind, MAX_CAMERAS, MemberId,
-    SceneDef, SceneError,
+    Anchor, Backdrop, Bars, CameraDef, CameraId, CastMember, EnvironmentSource, Focus, Framing, GroundKind,
+    MAX_CAMERAS, MemberId, SceneDef, SceneError,
 };
 
+use super::backdrop::ImagePixels;
+use super::environment::HdriPixels;
 use super::frame::frame;
 use super::landmarks::{Bounds, Landmarks};
 use crate::error::StageError;
@@ -47,7 +49,8 @@ impl Figure {
     /// degrees about +Y, and `height_m` is `landmarks.height_m`.
     pub fn new(member: &CastMember, landmarks: Landmarks) -> Self {
         let [x, z] = member.position;
-        let root = Affine3A::from_translation(Vec3::new(x, 0.0, z)) * Affine3A::from_rotation_y(member.yaw.to_radians());
+        let root =
+            Affine3A::from_translation(Vec3::new(x, 0.0, z)) * Affine3A::from_rotation_y(member.yaw.to_radians());
         Self { root, height_m: landmarks.height_m, landmarks }
     }
 
@@ -100,6 +103,16 @@ pub struct Changes {
     pub ground: bool,
     /// The skin-floor override, or the outline light, changed.
     pub skin_floor: bool,
+    /// The fog changed.
+    pub fog: bool,
+    /// The environment changed: its source, or how it is used (intensity, turn, toon ramp).
+    pub environment: bool,
+    /// The environment's source changed (a sky's colours, another HDRI, one added or removed). Apply re-creates it,
+    /// so this is not a value-only change.
+    pub sky: bool,
+    /// The backdrop's picture changed (another asset, one added or removed). Apply uploads it, so this is not a
+    /// value-only change; its fit and bars are values.
+    pub image: bool,
 }
 
 impl Changes {
@@ -109,9 +122,10 @@ impl Changes {
     }
 
     /// Only values changed: apply allocates nothing. A ground change is not one, because apply recreates or releases
-    /// the ground-disc mesh (#274).
+    /// the ground-disc mesh (#274), nor is a change of the environment's source or the backdrop's picture, which apply
+    /// re-creates.
     pub fn value_only(&self) -> bool {
-        !(self.structure || self.ground)
+        !(self.structure || self.ground || self.sky || self.image)
     }
 }
 
@@ -135,6 +149,68 @@ pub struct ResolvedScene {
     pub ground: ResolvedGround,
     /// Overrides every cast skin material's shadow floor while set.
     pub skin_floor: Option<f32>,
+    /// Distance fog, in metres from the camera.
+    pub fog: Option<Fog>,
+    /// Image-based light, and the backdrop's sky when the backdrop is the environment.
+    pub environment: Option<ResolvedEnvironment>,
+    /// The pixels of the environment's HDRI, once loaded ([`load_hdri`](Self::load_hdri)); a resolve keeps them while
+    /// the asset stays the same.
+    pub hdri: Option<HdriPixels>,
+    /// The backdrop's picture, for an image backdrop. Until its texture is up, `background` shows its bars.
+    pub backdrop_image: Option<ResolvedImage>,
+    /// The picture's pixels, once loaded ([`load_backdrop`](Self::load_backdrop)); a resolve keeps them while the asset
+    /// stays the same.
+    pub image: Option<ImagePixels>,
+}
+
+/// An image backdrop as the renderer takes it: the picture's asset, how it fits, and the bars' gradient.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct ResolvedImage {
+    /// The picture's content hash in the asset store.
+    pub asset: omuzaki_store_api::ContentHash,
+    /// How it meets the frame.
+    pub fit: BackdropFit,
+    /// The bars' colour at the frame's top edge.
+    pub top: Colour,
+    /// The bars' colour at its bottom edge.
+    pub bottom: Colour,
+}
+
+impl ResolvedImage {
+    /// `asset`, covering the frame, with black bars.
+    pub fn new(asset: omuzaki_store_api::ContentHash) -> Self {
+        Self { asset, fit: BackdropFit::Cover, top: Colour::BLACK, bottom: Colour::BLACK }
+    }
+}
+
+/// The scene's environment as the renderer takes it: where its light comes from and how a frame uses it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct ResolvedEnvironment {
+    /// A sky's colours or an HDRI's asset.
+    pub source: EnvironmentSource,
+    /// Brightness, `>= 0`.
+    pub intensity: f32,
+    /// The sky's turn about the vertical, in degrees.
+    pub rotation_deg: f32,
+    /// Whether its diffuse light goes through the toon ramp.
+    pub toon_ramp: bool,
+}
+
+impl ResolvedEnvironment {
+    /// `source` at full strength, unturned, through the toon ramp.
+    pub fn new(source: EnvironmentSource) -> Self {
+        Self { source, intensity: 1.0, rotation_deg: 0.0, toon_ramp: true }
+    }
+
+    /// The HDRI's asset, for an HDRI.
+    pub fn hdri(&self) -> Option<omuzaki_store_api::ContentHash> {
+        match self.source {
+            EnvironmentSource::Hdri { asset } => Some(asset),
+            EnvironmentSource::Sky { .. } => None,
+        }
+    }
 }
 
 /// The ground under the cast, in metres.
@@ -167,6 +243,11 @@ impl ResolvedScene {
             outline_light: 1.0,
             ground: ResolvedGround::default(),
             skin_floor: None,
+            fog: None,
+            environment: None,
+            hdri: None,
+            backdrop_image: None,
+            image: None,
         }
     }
 
@@ -236,13 +317,20 @@ impl ResolvedScene {
         let active = active_camera(def)?;
         let unit = subject.map_or(1.0, |f| f.height_m);
         let post = resolve_post(def, subject, unit, active.map(|i| cameras[i]))?;
-        let background = match &def.scene.backdrop {
-            Backdrop::Lighting {} => Background::Solid { colour: def.lighting.background },
-            Backdrop::Colour { colour } => Background::Solid { colour: *colour },
-            Backdrop::Transparent {} => Background::Transparent,
-        };
+        let environment = def.lighting.environment.map(|e| ResolvedEnvironment {
+            source: e.source,
+            intensity: e.intensity,
+            rotation_deg: e.rotation,
+            toon_ramp: e.toon_ramp,
+        });
+        let (background, backdrop_image) = resolve_backdrop(def, environment.is_some());
         let ground = resolve_ground(def, figures, unit);
+        // Fog is in subject units from the camera (D4), so a rig fogs every stature alike.
+        let fog = def.lighting.fog.map(|f| Fog { colour: f.colour, near: f.near * unit, far: f.far * unit });
         finite_or_error(&lights, &post, &ground)?;
+        if fog.is_some_and(|f| !(f.near.is_finite() && f.far.is_finite() && f.far > f.near)) {
+            return Err(scene_error(SceneError::new("lighting.fog", "the fog's distances aren't usable numbers")));
+        }
 
         let mut changes = Changes {
             backdrop: replace(&mut self.background, background),
@@ -250,13 +338,26 @@ impl ResolvedScene {
             ground: replace(&mut self.ground, ground),
             skin_floor: replace(&mut self.skin_floor, def.lighting.skin_floor)
                 | replace(&mut self.outline_light, def.lighting.outline_light),
+            fog: replace(&mut self.fog, fog),
+            sky: self.environment.map(|e| e.source) != environment.map(|e| e.source),
+            environment: replace(&mut self.environment, environment),
+            image: self.backdrop_image.map(|i| i.asset) != backdrop_image.map(|i| i.asset),
             ..Changes::default()
         };
+        changes.backdrop |= replace(&mut self.backdrop_image, backdrop_image);
+        // Pixels of an HDRI the scene no longer uses are let go here, off the render thread.
+        if self.hdri.as_ref().map(HdriPixels::asset) != self.environment.as_ref().and_then(ResolvedEnvironment::hdri) {
+            self.hdri = None;
+        }
+        if self.image.as_ref().map(ImagePixels::asset) != self.backdrop_image.map(|i| i.asset) {
+            self.image = None;
+        }
         if lights != self.lights {
             self.lights = lights;
             changes.lights = true;
         }
-        let same_ids = self.cameras.len() == def.cameras.len() && self.cameras.iter().zip(&def.cameras).all(|(a, (b, _))| a.0 == *b);
+        let same_ids = self.cameras.len() == def.cameras.len()
+            && self.cameras.iter().zip(&def.cameras).all(|(a, (b, _))| a.0 == *b);
         if same_ids {
             for (stored, camera) in self.cameras.iter_mut().zip(resolved) {
                 if stored.1 != *camera {
@@ -345,7 +446,8 @@ fn light_usable(light: &Light) -> bool {
 /// so the lights, the depth of field and the ground are checked finite here and the previous scene is kept if not.
 /// The cameras are checked as they are built.
 fn finite_or_error(lights: &LightBuf, post: &Post, ground: &ResolvedGround) -> Result<(), StageError> {
-    let unusable = |path: &str, what: &str| Err(scene_error(SceneError::new(path, format!("{what} isn't a finite number"))));
+    let unusable =
+        |path: &str, what: &str| Err(scene_error(SceneError::new(path, format!("{what} isn't a finite number"))));
     if !lights.as_slice().iter().all(light_usable) {
         return Err(scene_error(SceneError::new(
             "lighting.lights",
@@ -422,7 +524,8 @@ fn free_camera(
 ) -> Result<Camera, StageError> {
     let anchor = camera.anchor.as_ref().unwrap_or(&Anchor::Stage);
     let missing = |field: &str| scene_error(SceneError::new(format!("cameras.{id}.{field}"), "a free camera needs it"));
-    let (position, target) = (camera.position.ok_or_else(|| missing("position"))?, camera.target.ok_or_else(|| missing("target"))?);
+    let (position, target) =
+        (camera.position.ok_or_else(|| missing("position"))?, camera.target.ok_or_else(|| missing("target"))?);
     // Without a subject the anchor is the 1 m figure at the origin (D4), as for the lights.
     let unit_frame = (Affine3A::IDENTITY, 1.0);
     let (root, unit) = match anchor {
@@ -493,12 +596,39 @@ fn resolve_post(
     })
 }
 
+/// What shows behind the cast, and the picture the stage lays there for an image backdrop.
+fn resolve_backdrop(def: &SceneDef, environment: bool) -> (Background, Option<ResolvedImage>) {
+    let image = match &def.scene.backdrop {
+        Backdrop::Image { asset, fit, bars } => {
+            let rig = Bars { top: def.lighting.background, bottom: def.lighting.background };
+            let Bars { top, bottom } = bars.unwrap_or(rig);
+            Some(ResolvedImage { asset: *asset, fit: *fit, top, bottom })
+        }
+        _ => None,
+    };
+    let background = match &def.scene.backdrop {
+        Backdrop::Environment {} if environment => Background::Environment,
+        // Without an environment the check reports it and the rig's colour shows.
+        Backdrop::Lighting {} | Backdrop::Environment {} => Background::Solid { colour: def.lighting.background },
+        // Shown as authored, so a green screen keys at exactly its colour whatever the exposure and tone curve.
+        Backdrop::Colour { colour } => Background::Gradient { top: *colour, bottom: *colour },
+        Backdrop::Transparent {} => Background::Transparent,
+        Backdrop::Gradient { top, bottom } => Background::Gradient { top: *top, bottom: *bottom },
+        // The bars until the stage has the picture up; the stage shows the picture over them from then on.
+        Backdrop::Image { .. } => {
+            image.map_or(Background::Transparent, |i| Background::Gradient { top: i.top, bottom: i.bottom })
+        }
+    };
+    (background, image)
+}
+
 /// The ground in metres: the radius in subject units, else the farthest member plus [`GROUND_MARGIN`].
 fn resolve_ground(def: &SceneDef, figures: &BTreeMap<MemberId, Figure>, unit: f32) -> ResolvedGround {
     let g = &def.scene.ground;
     let radius_m = g.radius.map_or_else(
         || {
-            let farthest = figures.values().map(|f| f.root.translation.x.hypot(f.root.translation.z)).fold(0.0, f32::max);
+            let farthest =
+                figures.values().map(|f| f.root.translation.x.hypot(f.root.translation.z)).fold(0.0, f32::max);
             farthest + GROUND_MARGIN * unit
         },
         |r| r * unit,

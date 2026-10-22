@@ -38,10 +38,19 @@ omuzaki-audio-api = { path = "../omuzaki-audio-api" }
 omuzaki-audio-engine = { path = "../omuzaki-audio-engine" }
 omuzaki-input = { path = "../omuzaki-input" }
 omuzaki-input-api = { path = "../omuzaki-input-api" }
+omuzaki-live = { path = "../omuzaki-live" }
+omuzaki-live-api = { path = "../omuzaki-live-api" }
+omuzaki-live-nodes = { path = "../omuzaki-live-nodes" }
 omuzaki-obs = { path = "../omuzaki-obs" }
+omuzaki-twitch = { path = "../omuzaki-twitch" }
+omuzaki-secrets = { path = "../omuzaki-secrets" }
+omuzaki-secrets-api = { path = "../omuzaki-secrets-api" }
+omuzaki-vts = { path = "../omuzaki-vts" }
 omuzaki-vcam = { path = "../omuzaki-vcam" }
 omuzaki-char = { path = "../omuzaki-char" }
 omuzaki-char-api = { path = "../omuzaki-char-api" }
+omuzaki-connect = { path = "../omuzaki-connect" }
+omuzaki-connect-api = { path = "../omuzaki-connect-api" }
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc = { path = "../omuzaki-doc" }
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
@@ -52,8 +61,12 @@ omuzaki-ops = { path = "../omuzaki-ops" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-render = { path = "../omuzaki-render" }
 omuzaki-render-api = { path = "../omuzaki-render-api" }
+omuzaki-settings = { path = "../omuzaki-settings" }
+omuzaki-settings-api = { path = "../omuzaki-settings-api" }
 omuzaki-setup = { path = "../omuzaki-setup" }
 omuzaki-stage = { path = "../omuzaki-stage" }
+omuzaki-store = { path = "../omuzaki-store" }
+omuzaki-store-api = { path = "../omuzaki-store-api" }
 omuzaki-stage-api = { path = "../omuzaki-stage-api" }
 omuzaki-stream = { path = "../omuzaki-stream" }
 omuzaki-stream-api = { path = "../omuzaki-stream-api" }
@@ -74,6 +87,8 @@ rustix = { workspace = true, features = ["process"] }
 [target.'cfg(windows)'.dependencies]
 # The webcam on Windows, for the studio's inputs (live/wiring/inputs.rs).
 omuzaki-camera-mf = { path = "../omuzaki-camera-mf" }
+# The reduce-motion setting, read without starting a process (ds/os_prefs.rs).
+windows-sys.workspace = true
 
 [dev-dependencies]
 egui_kittest.workspace = true
@@ -84,8 +99,10 @@ omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-ops-mock = { path = "../omuzaki-ops-mock" }
 omuzaki-osc = { path = "../omuzaki-osc" }
 omuzaki-render-mock = { path = "../omuzaki-render-mock" }
+omuzaki-settings-mock = { path = "../omuzaki-settings-mock" }
 omuzaki-track-mock = { path = "../omuzaki-track-mock" }
 omuzaki-ui-mock = { path = "../omuzaki-ui-mock" }
+omuzaki-vts = { path = "../omuzaki-vts", features = ["testing"] }
 tempfile.workspace = true
 
 [lints]

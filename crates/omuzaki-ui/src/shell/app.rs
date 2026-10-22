@@ -20,13 +20,14 @@ use egui::{
     WidgetInfo, WidgetType,
 };
 use egui_tiles::{Tile, Tree};
-use omuzaki_ops_api::{Actor, Event, Grants, OpError, OpRecord, Runner};
+use omuzaki_ops_api::{Actor, ErrorCode, Event, Grants, OpError, OpRecord, Runner, SessionInfo, SessionState};
 use omuzaki_ui_api::panel::{PanelCtx, ThemeKind as ApiTheme, ViewModels};
 use omuzaki_ui_api::registry::{PanelDef, PanelKind, Region, Registry, WorkspaceDef};
 
 use super::class::{DockMode, Plan, RAIL, STATUS_BAR, TOP_BAR};
-use super::dock::{self, Dock};
-use super::history::{HistoryLog, step_label};
+use super::dock::{self, Dock, PanelAsk};
+use super::handles;
+use super::history::{HistoryLog, Preview, step_label};
 use super::host::Bodies;
 use super::keys::{self, Action};
 use super::layout::{Known, Layout, PanelId};
@@ -35,9 +36,11 @@ use super::persist::LayoutStore;
 use super::registry;
 use super::requests::{ShellRequest, ShellRequests};
 use super::saver::Saver;
+use super::sheet;
 use super::text::{Word, say, title};
+use crate::ds::paint::{self, RingPlacement};
 use crate::ds::theme::ds;
-use crate::ds::tokens::ThemeKind;
+use crate::ds::tokens::{ThemeKind, radius};
 use crate::ds::widgets::{Button, TabBar, TabItem, Tip, TipExt as _};
 use crate::ds::{a11y, icons};
 use crate::panels::agent::approvals::{self, Answer};
@@ -45,6 +48,7 @@ use crate::panels::agent::fences::{FenceBoard, fence_chip};
 use crate::panels::agent::review::Reviews;
 use crate::panels::agent::{self as agent, AgentFeed, Agents};
 use crate::panels::edit::EditFocus;
+use crate::settings::SettingsWindow;
 
 const MENU_ICON: &str = egui_phosphor::regular::LIST;
 /// How many op-log records the History panel keeps (the newest), and how many it asks the runner for at a time.
@@ -119,6 +123,8 @@ enum Note {
     NothingToUndo,
     NothingToRedo,
     Failed(String),
+    /// A sentence the shell said about something the person did (an agent paused).
+    Said(String),
 }
 
 /// The app shell.
@@ -168,6 +174,10 @@ pub struct Shell {
     requests: ShellRequests,
     /// The window title says an approval waits, because one arrived while the window was in the background.
     attention: bool,
+    /// The shortcut sheet is open.
+    sheet: bool,
+    /// The Settings window, while it is open.
+    settings: Option<SettingsWindow>,
 }
 
 impl Shell {
@@ -193,6 +203,7 @@ impl Shell {
         let requests = ShellRequests::default();
         let mut models = ViewModels::new();
         models.insert(requests.clone());
+        models.insert(Preview::default());
         let mut shell = Self {
             runner,
             registry,
@@ -220,6 +231,8 @@ impl Shell {
             drawer: None,
             note: Note::Nothing,
             attention: false,
+            sheet: false,
+            settings: None,
             palette: Palette::default(),
             requests,
         };
@@ -272,6 +285,25 @@ impl Shell {
         self.locked
     }
 
+    /// The whole document as History's preview holds it, while a past state is on show in the viewport.
+    pub fn previewed(&self) -> Option<omuzaki_doc_api::Value> {
+        self.models.get::<Preview>().and_then(|preview| preview.with(|v| v.map(|v| (*v.doc).clone())))
+    }
+
+    /// Where each docked panel of the active workspace was drawn last frame, by id: its body, under its tab strip. For
+    /// a test or a tool that says which panel a widget is in.
+    pub fn panel_rects(&self) -> Vec<(String, egui::Rect)> {
+        let Some(view) = self.views.get(self.active).and_then(Option::as_ref) else { return Vec::new() };
+        view.tree
+            .active_tiles()
+            .into_iter()
+            .filter_map(|tile| match view.tree.tiles.get(tile) {
+                Some(Tile::Pane(PanelId(id))) => Some((id.clone(), view.tree.tiles.rect(tile)?)),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// The panel that has the keyboard's attention, if any.
     pub fn focused_panel(&self) -> Option<&str> {
         self.focus.as_deref()
@@ -296,7 +328,7 @@ impl Shell {
             self.toggle_palette(&ctx);
         }
         if let Some(action) = keys::resolve(&ctx) {
-            self.act(action);
+            self.act(&ctx, action);
         }
         if self.maximised && !ctx.text_edit_focused() && ctx.input(|i| i.key_pressed(Key::Escape)) {
             self.maximised = false;
@@ -312,7 +344,30 @@ impl Shell {
         CentralPanel::default().frame(Frame::new().fill(ds(&ctx).theme.bg1)).show(ui, |ui| self.body(ui));
         self.approval_stack(&ctx);
         self.palette_ui(&ctx);
+        if self.sheet {
+            self.sheet = sheet::show(&ctx);
+        }
+        if let Some(window) = self.settings.as_mut()
+            && !window.show(&ctx, &self.runner, &self.actor)
+        {
+            self.settings = None;
+        }
         self.save_if_edited(&ctx);
+    }
+
+    /// The Settings window, while it is open.
+    pub const fn settings_window(&self) -> Option<&SettingsWindow> {
+        self.settings.as_ref()
+    }
+
+    /// Opens the Settings window, or closes it when it is open (Ctrl+, and the menu).
+    pub fn toggle_settings(&mut self) {
+        self.settings = if self.settings.is_some() { None } else { Some(SettingsWindow::new()) };
+    }
+
+    /// Whether the shortcut sheet is open.
+    pub const fn sheet_open(&self) -> bool {
+        self.sheet
     }
 
     /// Whether the command palette is open.
@@ -456,7 +511,7 @@ impl Shell {
         }
     }
 
-    fn act(&mut self, action: Action) {
+    fn act(&mut self, ctx: &Context, action: Action) {
         match action {
             Action::Workspace(n) => self.select(n),
             Action::Theatre => {
@@ -469,7 +524,37 @@ impl Shell {
             Action::ToggleMaximise => self.maximised = !self.maximised && self.focus.is_some(),
             Action::NextPanel => self.cycle_focus(1),
             Action::PreviousPanel => self.cycle_focus(-1),
+            Action::ShortcutSheet => self.sheet = !self.sheet,
+            Action::Settings => self.toggle_settings(),
+            Action::PauseAgent => self.pause_agent(ctx),
         }
+    }
+
+    /// The agent the person means by "the active agent": the newest one working, else the newest one paused.
+    fn active_agent(&self) -> Option<SessionInfo> {
+        let feed = self.models.get::<AgentFeed>()?;
+        let newest = |paused: bool| {
+            feed.live().filter(|s| matches!(s.state, SessionState::Paused { .. }) == paused).last().cloned()
+        };
+        newest(false).or_else(|| newest(true))
+    }
+
+    /// Pauses the active agent, or resumes it when it is paused (Ctrl+Alt+P), and says so in the status bar.
+    fn pause_agent(&mut self, ctx: &Context) {
+        let (Some(Agents(sessions)), Some(session)) = (self.models.get::<Agents>().cloned(), self.active_agent())
+        else {
+            self.note = Note::Said(say(ctx, Word::StatusNoAgent, &[]));
+            return;
+        };
+        let name = session.client.as_str().to_owned();
+        let paused = matches!(session.state, SessionState::Paused { .. });
+        let result =
+            if paused { sessions.resume(session.id, &self.actor) } else { sessions.pause(session.id, &self.actor) };
+        self.note = match result {
+            Ok(_) if paused => Note::Said(say(ctx, Word::StatusAgentResumed, &[("name", &name)])),
+            Ok(_) => Note::Said(say(ctx, Word::StatusAgentPaused, &[("name", &name)])),
+            Err(error) => Note::Failed(error.message),
+        };
     }
 
     fn select(&mut self, index: usize) {
@@ -485,6 +570,13 @@ impl Shell {
     fn step_history(&mut self, undo: bool) {
         let grants = Grants::person();
         let result = if undo { self.runner.undo(&self.actor, &grants) } else { self.runner.redo(&self.actor, &grants) };
+        // A step a later change depends on can't be undone alone: History shows why on a card until it is dismissed or
+        // a step goes through.
+        let conflict = result.as_ref().err().filter(|e| e.code == ErrorCode::Conflict).map(|e| e.message.clone());
+        self.refresh_history();
+        if let Some(log) = self.models.get_mut::<HistoryLog>() {
+            log.conflict = conflict;
+        }
         self.note = match (result, undo) {
             (Ok(Some(label)), true) => Note::Undid(label),
             (Ok(Some(label)), false) => Note::Redid(label),
@@ -492,7 +584,6 @@ impl Shell {
             (Ok(None), false) => Note::NothingToRedo,
             (Err(error), _) => Note::Failed(error.message),
         };
-        self.refresh_history();
     }
 
     /// Reads the op log again: after an undo or redo here, and when the runner says the log changed.
@@ -505,10 +596,10 @@ impl Shell {
         let old = self
             .models
             .get_mut::<HistoryLog>()
-            .map(|old| (std::mem::take(&mut old.undone), std::mem::take(&mut old.seen)));
-        let (undone, mut seen) = old.unwrap_or_default();
+            .map(|old| (std::mem::take(&mut old.undone), std::mem::take(&mut old.seen), old.conflict.take()));
+        let (undone, mut seen, conflict) = old.unwrap_or_default();
         seen.retain(|seq, _| log.records.iter().any(|r| r.seq == *seq));
-        let log = HistoryLog { undone, seen, ..log };
+        let log = HistoryLog { undone, seen, conflict, ..log };
         self.models.insert(log);
     }
 
@@ -637,6 +728,18 @@ impl Shell {
         let rect = ui.max_rect();
         dock::enforce_minimums(&mut view.tree, &self.registry);
         let pinned = dock::pinned(&view.tree, &self.registry);
+        let mut asks = Vec::new();
+        let primary = view
+            .shown
+            .panels()
+            .into_iter()
+            .find_map(|p| self.registry.panel(p).filter(|d| d.kind == PanelKind::Primary).map(|d| d.id));
+        let sides: Vec<(String, Option<bool>)> = view
+            .shown
+            .panels()
+            .into_iter()
+            .map(|p| (p.to_owned(), primary.and_then(|primary| view.shown.side_of(p, primary))))
+            .collect();
         let mut dock = Dock {
             ctx: &ctx,
             registry: &self.registry,
@@ -645,9 +748,50 @@ impl Shell {
             locked: self.locked,
             pinned: &pinned,
             focus: &mut self.focus,
+            asks: &mut asks,
+            sides: &sides,
+            menus: Vec::new(),
         };
         view.tree.ui(&mut dock, ui);
+        let moved = handles::name_handles(ui, &mut view.tree, &self.registry);
+        let moved = moved.then(|| Layout::from_tree(&view.tree).map(|l| l.without(&[]))).flatten();
         self.drawer(&ctx, rect);
+        if let Some(layout) = moved {
+            self.record(&layout);
+        }
+        for ask in asks {
+            self.panel_ask(ask);
+        }
+    }
+
+    /// Carries out what a panel's "⋯" menu asked for.
+    fn panel_ask(&mut self, ask: PanelAsk) {
+        let (panel, left) = match ask {
+            PanelAsk::Reset => return self.reset_layout(),
+            PanelAsk::Close(panel) => {
+                if let Some(def) = self.registry.panel(&panel) {
+                    self.close_panel(def.id);
+                }
+                return;
+            }
+            PanelAsk::MoveLeft(panel) => (panel, true),
+            PanelAsk::MoveRight(panel) => (panel, false),
+        };
+        let Some(view) = self.views.get_mut(self.active).and_then(Option::as_mut) else { return };
+        let primary = view
+            .shown
+            .panels()
+            .into_iter()
+            .find_map(|p| self.registry.panel(p).filter(|d| d.kind == PanelKind::Primary).map(|d| d.id));
+        let Some(primary) = primary else { return };
+        let layout = view.shown.moved(&panel, left, primary);
+        if layout == view.shown {
+            return;
+        }
+        view.tree = layout.to_tree(egui::Id::new(("shell_tree", self.workspaces[self.active].id)));
+        view.tree.make_active(|_, tile| matches!(tile, Tile::Pane(PanelId(p)) if *p == panel));
+        self.record(&layout);
+        self.focus = Some(panel);
     }
 
     /// Saves the arrangement when a drag or click ends and it differs from the one before. The full-size arrangement
@@ -789,6 +933,13 @@ impl Shell {
                     }
                 }
                 ShellRequest::ShowPanel(id) => self.show_panel(id),
+                ShellRequest::Undo => self.step_history(true),
+                ShellRequest::Redo => self.step_history(false),
+                ShellRequest::DismissConflict => {
+                    if let Some(log) = self.models.get_mut::<HistoryLog>() {
+                        log.conflict = None;
+                    }
+                }
                 ShellRequest::ClosePanel(id) => self.close_panel(id),
                 ShellRequest::Adjust { op, args } => {
                     let places = self.places();
@@ -836,20 +987,25 @@ impl Shell {
                 if !self.bodies.on_screen_before(&ctx, crate::panels::setup::ID) {
                     self.workspace_tabs(ui, plan);
                 }
-                ui.with_layout(Flow::right_to_left(Align::Center), |ui| {
-                    let off = say(&ctx, Word::GoLiveOff, &[]);
-                    let go_live = say(&ctx, Word::GoLive, &[]);
+                // At the bar's right end, in reading order: Tab meets search, then the agents, then Go Live.
+                let search = say(&ctx, Word::SearchOrRun, &[]);
+                let (agents, waiting) = self.agent_chip_label(&ctx);
+                let off = say(&ctx, Word::GoLiveOff, &[]);
+                let go_live = say(&ctx, Word::GoLive, &[]);
+                let key = (&search, &agents, waiting, &go_live, plan.go_live_icon);
+                a11y::trailing(ui, "shell_top_trailing", key, |ui| {
+                    if ui.add(Button::new(&search).icon(icons::MAGNIFYING_GLASS).shortcut_hint("Ctrl K")).clicked() {
+                        self.toggle_palette(&ctx);
+                    }
+                    let button = Button::new(&agents).icon(icons::ROBOT);
+                    // Quiet while nothing waits; a raised button while a request waits for the person.
+                    if ui.add(if waiting { button } else { button.ghost() }).clicked() {
+                        self.show_panel(agent::ID);
+                    }
                     if plan.go_live_icon {
                         icon_button(ui, icons::BROADCAST, &Tip::new(&go_live).detail(&off), false);
                     } else {
                         ui.add(Button::new(&go_live).icon(icons::BROADCAST).disabled(&off));
-                    }
-                    if self.agent_chip(ui) {
-                        self.show_panel(agent::ID);
-                    }
-                    let search = say(&ctx, Word::SearchOrRun, &[]);
-                    if ui.add(Button::new(&search).icon(icons::MAGNIFYING_GLASS).shortcut_hint("Ctrl K")).clicked() {
-                        self.toggle_palette(&ctx);
                     }
                 });
             });
@@ -861,7 +1017,26 @@ impl Shell {
         let name = say(&ctx, Word::MenuName, &[]);
         let button = icon_button(ui, MENU_ICON, &Tip::new(&name), true);
         Popup::menu(&button).show(|ui| {
-            ui.label(RichText::new(say(&ctx, Word::MenuView, &[])).font(ds(&ctx).text.strong.clone()));
+            let heading = |ui: &mut Ui, word: Word| {
+                ui.label(RichText::new(say(&ctx, word, &[])).font(ds(&ctx).text.strong.clone()));
+            };
+            heading(ui, Word::MenuEdit);
+            let next = self.models.get::<HistoryLog>().and_then(|log| log.next_undo(&self.actor)).map(step_label);
+            let nothing = say(&ctx, Word::MenuNothingToUndo, &[]);
+            let undo = next.as_ref().map_or_else(
+                || say(&ctx, Word::SheetUndo, &[]),
+                |label| say(&ctx, Word::MenuUndo, &[("label", label)]),
+            );
+            let button = Button::new(&undo).ghost().icon(icons::ARROW_COUNTER_CLOCKWISE).shortcut_hint("Ctrl Z");
+            if ui.add(button.disabled_if(next.is_none(), &nothing)).clicked() {
+                self.step_history(true);
+            }
+            let redo = say(&ctx, Word::MenuRedo, &[]);
+            if ui.add(Button::new(&redo).ghost().icon(icons::ARROW_CLOCKWISE).shortcut_hint("Ctrl Shift Z")).clicked() {
+                self.step_history(false);
+            }
+            ui.separator();
+            heading(ui, Word::MenuView);
             let lock = say(&ctx, Word::LockLayout, &[]);
             let glyph = if self.locked { icons::LOCK } else { icons::LOCK_OPEN };
             if ui.add(Button::new(&lock).ghost().icon(glyph).shortcut_hint("Ctrl Shift L")).clicked() {
@@ -873,15 +1048,49 @@ impl Shell {
             {
                 self.reset_layout();
             }
-            ui.separator();
-            ui.label(RichText::new(say(&ctx, Word::ShowPanel, &[])).font(ds(&ctx).text.strong.clone()));
-            // Every registered panel, in the registry's order; a panel the person closed returns here.
+            // Every registered panel, in the registry's order, in a submenu so the menu stays short; a panel the
+            // person closed returns here.
             let panels: Vec<&'static PanelDef> = self.registry.panels().to_vec();
-            for def in panels {
-                let name = title(&ctx, &self.bodies.title(def)).into_owned();
-                if ui.add(Button::new(&name).ghost().icon(def.icon)).clicked() {
-                    self.show_panel(def.id);
+            let show_panel = say(&ctx, Word::ShowPanel, &[]);
+            let submenu = ui.menu_button(&show_panel, |ui| {
+                for def in panels {
+                    let name = title(&ctx, &self.bodies.title(def)).into_owned();
+                    if ui.add(Button::new(&name).ghost().icon(def.icon)).clicked() {
+                        self.show_panel(def.id);
+                    }
                 }
+            });
+            // The submenu's arrow is drawn, not read out: its name is the words.
+            submenu.response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &show_panel));
+            ui.separator();
+            heading(ui, Word::MenuAgents);
+            if ui.add(Button::new(&say(&ctx, Word::MenuConnectAgent, &[])).ghost().icon(icons::ROBOT)).clicked() {
+                self.show_panel(agent::ID);
+            }
+            if let Some(session) = self.active_agent() {
+                let name = session.client.as_str();
+                let paused = matches!(session.state, SessionState::Paused { .. });
+                let (word, glyph) =
+                    if paused { (Word::MenuResumeAgent, icons::PLAY) } else { (Word::MenuPauseAgent, icons::PAUSE) };
+                let label = say(&ctx, word, &[("name", name)]);
+                if ui.add(Button::new(&label).ghost().icon(glyph).shortcut_hint("Ctrl Alt P")).clicked() {
+                    self.pause_agent(&ctx);
+                }
+            }
+            ui.separator();
+            let settings = say(&ctx, Word::MenuSettings, &[]);
+            if ui.add(Button::new(&settings).ghost().icon(icons::GEAR).shortcut_hint("Ctrl ,")).clicked() {
+                self.toggle_settings();
+            }
+            ui.separator();
+            heading(ui, Word::MenuHelp);
+            if ui.add(Button::new(&say(&ctx, Word::MenuRunSetup, &[])).ghost().icon(icons::SPARKLE)).clicked() {
+                self.requests.push(ShellRequest::Workspace(crate::live::registration::PERFORM_WORKSPACE));
+                self.requests.push(ShellRequest::ShowPanel(crate::panels::setup::ID));
+            }
+            let shortcuts = say(&ctx, Word::MenuShortcuts, &[]);
+            if ui.add(Button::new(&shortcuts).ghost().icon(icons::KEYBOARD).shortcut_hint("Ctrl /")).clicked() {
+                self.sheet = true;
             }
         });
     }
@@ -909,8 +1118,9 @@ impl Shell {
 
     /// The top bar's agent chip: how many agents are connected, or how many requests wait for the person. True when
     /// it was clicked (it opens the Agent panel).
-    fn agent_chip(&self, ui: &mut Ui) -> bool {
-        let ctx = ui.ctx().clone();
+    /// The agent chip's words, and whether a request waits for the person.
+    fn agent_chip_label(&self, ctx: &egui::Context) -> (String, bool) {
+        let ctx = ctx.clone();
         let feed = self.models.get::<AgentFeed>();
         let live = feed.map_or(0, |f| f.live().count());
         let waiting = feed.map_or(0, |f| f.approvals().len());
@@ -919,9 +1129,7 @@ impl Shell {
             (0, _) => say(&ctx, Word::AgentChip, &[]),
             (n, _) => say(&ctx, Word::AgentChipCount, &[("count", &n.to_string())]),
         };
-        // Quiet while nothing waits; a raised button while a request waits for the person.
-        let button = Button::new(&label).icon(icons::ROBOT);
-        ui.add(if waiting > 0 { button } else { button.ghost() }).clicked()
+        (label, waiting > 0)
     }
 
     fn status_bar(&mut self, ui: &mut Ui) {
@@ -935,7 +1143,7 @@ impl Shell {
             (Note::Undid(label), _) => say(&ctx, Word::StatusUndid, &[("label", label)]),
             (Note::Redid(label), _) => say(&ctx, Word::StatusRedid, &[("label", label)]),
             (Note::NothingToRedo, _) => say(&ctx, Word::StatusNothingToRedo, &[]),
-            (Note::Failed(why), _) => why.clone(),
+            (Note::Failed(why) | Note::Said(why), _) => why.clone(),
         };
         let selection = match self.models.get::<EditFocus>().map(|f| (f.count(), f.primary())) {
             Some((1, Some(part))) => say(&ctx, Word::StatusSelected, &[("part", part.as_str())]),
@@ -1012,7 +1220,7 @@ impl Shell {
 }
 
 /// An icon-only button: its tooltip is also its accessible name (`design-system.md`, Tooltips).
-fn icon_button(ui: &mut Ui, glyph: &str, tip: &Tip<'_>, enabled: bool) -> Response {
+pub(super) fn icon_button(ui: &mut Ui, glyph: &str, tip: &Tip<'_>, enabled: bool) -> Response {
     let ds = ds(ui.ctx());
     let colour = if enabled { ds.theme.text } else { ds.theme.text_disabled };
     let label = RichText::new(glyph).font(ds.text.icon(16.0, false)).color(colour);
@@ -1020,6 +1228,7 @@ fn icon_button(ui: &mut Ui, glyph: &str, tip: &Tip<'_>, enabled: bool) -> Respon
         ui.add_enabled(enabled, egui::Button::new(label).frame(false).min_size(Vec2::splat(ds.metrics.icon_button)));
     // The glyph is not a name: the tooltip's words are what a screen reader says.
     a11y::describe(&response, || WidgetInfo::labeled(WidgetType::Button, enabled, tip.name), |_| {});
+    paint::focus_ring(ui.painter(), &ds.theme, &response, response.rect, radius::CONTROL, RingPlacement::Outside);
     response.tip(*tip)
 }
 

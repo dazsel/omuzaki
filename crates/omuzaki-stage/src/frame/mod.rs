@@ -35,6 +35,8 @@ use self::runtimes::DynamicMeshes;
 use self::scene::ScenePlan;
 use crate::error::StageError;
 use crate::scene::apply::{Owed, SceneLink, reserve};
+use crate::scene::backdrop::StageBackdrop;
+use crate::scene::environment::StageEnvironment;
 use crate::scene::ground::StageGround;
 use crate::scene::resolve::ResolvedScene;
 use crate::upload::{StageCharacter, UploadOptions};
@@ -161,6 +163,10 @@ pub struct Stage {
     link: SceneLink,
     /// The scene's ground disc on the renderer.
     ground: StageGround,
+    /// The scene's environment on the renderer.
+    environment: StageEnvironment,
+    /// The scene's backdrop picture on the renderer.
+    backdrop: StageBackdrop,
     /// How many times a staged variant replaced the character, so a caller can tell the face profile may have changed.
     revision: u64,
     /// Renders submitted so far; numbers the frames of a live clock.
@@ -204,6 +210,8 @@ impl Stage {
                 subject_root: Mat4::IDENTITY,
                 link: SceneLink::new(),
                 ground: StageGround::default(),
+                environment: StageEnvironment::default(),
+                backdrop: StageBackdrop::default(),
                 revision: 0,
                 submissions: 0,
                 built,
@@ -286,7 +294,14 @@ impl Stage {
     /// on every frame, whatever the clock is and however many frames ran before. The clock itself does not move. For
     /// renders that must not depend on history: a character sheet, a still.
     pub fn pin_time(&mut self, tick: Tick) -> TimePin {
-        let pin = TimePin { pinned: self.pinned, tick: self.tick, root: self.root, input_root: self.input_root, pose: self.pose, goals: self.goals };
+        let pin = TimePin {
+            pinned: self.pinned,
+            tick: self.tick,
+            root: self.root,
+            input_root: self.input_root,
+            pose: self.pose,
+            goals: self.goals,
+        };
         self.pinned = Some(tick);
         pin
     }
@@ -375,6 +390,10 @@ impl Stage {
     /// Allocation-free for a scene the lights of which fit ([`MAX_LIGHTS`](omuzaki_render_api::limits::MAX_LIGHTS)).
     pub fn set_scene(&mut self, resolved: &ResolvedScene, subject_root: Mat4) -> Owed {
         let owed = self.link.set(resolved, &mut self.scene);
+        self.scene.environment = self.environment.use_for(resolved.environment.as_ref());
+        if let Some(picture) = self.backdrop.background_for(resolved.backdrop_image.as_ref()) {
+            self.scene.background = picture;
+        }
         self.set_subject_root(subject_root);
         owed
     }
@@ -429,15 +448,17 @@ impl Stage {
     /// or whatever the face update reports.
     pub fn redraw(&mut self, renderer: &mut dyn Renderer, input: &FrameInput) -> Result<FrameOutput, StageError> {
         let uploads = self.dynamic.upload(&self.built.runtimes, renderer)?;
-        self.update_face(renderer, self.tick, input)?;
+        // A pin set since the last tick holds here too: the face and the frame info see the pinned time.
+        let tick = self.pinned.unwrap_or(self.tick);
+        self.update_face(renderer, tick, input)?;
         self.plan.fill(&mut self.scene, self.rig.skin(), self.root);
         self.ground.push(&mut self.scene);
         // What the last tick wrote into the scene, so a redraw before any tick doesn't render the caller's frame info.
-        self.scene.frame = self.frame_info(self.tick);
+        self.scene.frame = self.frame_info(tick);
         let report = renderer
             .render(self.target, &self.scene, &self.quality)
             .map_err(|source| StageError::render("the still", source))?;
-        Ok(FrameOutput { tick: self.tick, report, uploads })
+        Ok(FrameOutput { tick, report, uploads })
     }
 
     /// The scene as last rendered.
@@ -475,7 +496,9 @@ impl Stage {
             face::discard_switch(renderer, rig);
         }
         let ground = self.ground.release(renderer);
-        self.character.release(renderer).and(ground)
+        let environment = self.environment.release(renderer);
+        let backdrop = self.backdrop.release(renderer);
+        self.character.release(renderer).and(ground).and(environment).and(backdrop)
     }
 
     /// Draws the character in `look` (LK-06, #714): the materials the look changes are updated on the renderer in
@@ -487,8 +510,10 @@ impl Stage {
     /// [`StageCharacter`]'s update refuses, after which the previous look is put back on the character and the renderer.
     pub fn apply_look(&mut self, renderer: &mut dyn Renderer, look: &LookParams) -> Result<u32, StageError> {
         let before = self.built.look().clone();
-        let changed =
-            self.built.apply_look(look).map_err(|e| StageError::Rebuild { reason: format!("the look can't be drawn: {e}") })?;
+        let changed = self
+            .built
+            .apply_look(look)
+            .map_err(|e| StageError::Rebuild { reason: format!("the look can't be drawn: {e}") })?;
         self.character.update_materials(renderer, &self.built, &changed).inspect_err(|_| {
             // The previous look was drawable a moment ago, so this restores both sides.
             if let Ok(back) = self.built.apply_look(&before)
@@ -500,20 +525,36 @@ impl Stage {
     }
 
     /// Does the renderer work the last [`set_scene`](Self::set_scene) owes and records it as done: the ground (a new
-    /// disc, or none) and the skin floor (every toon skin material updated in place to the scene's floor, or back to
-    /// its own). The floor stays on the materials through palette changes, variant swaps and look edits. Cold.
+    /// disc, or none), the skin floor (every toon skin material updated in place to the scene's floor, or back to
+    /// its own) and the environment (made from its sky or its loaded HDRI, or released). The floor stays on the
+    /// materials through palette changes, variant swaps and look edits. Cold.
     ///
     /// # Errors
-    /// [`StageError::Render`] if the renderer refuses the disc or a material; that part stays owed.
+    /// [`StageError::Render`] if the renderer refuses the disc, a material or the environment, and
+    /// [`StageError::Scene`] for an HDRI whose pixels weren't loaded; that part stays owed.
     pub fn pay_scene(&mut self, renderer: &mut dyn Renderer) -> Result<(), StageError> {
         let owed = self.link.owed();
         if let Some(ground) = owed.ground {
             self.ground.set(renderer, &ground)?;
-            self.link.commit(&Owed { ground: Some(ground), skin_floor: None });
+            self.link.commit(&Owed { ground: Some(ground), ..Owed::default() });
         }
         if let Some(floor) = owed.skin_floor {
             self.character.set_skin_floor(renderer, &self.built, floor)?;
-            self.link.commit(&Owed { ground: None, skin_floor: Some(floor) });
+            self.link.commit(&Owed { skin_floor: Some(floor), ..Owed::default() });
+        }
+        if let Some(source) = owed.environment {
+            let wanted = self.link.wanted();
+            self.environment.set(renderer, source, wanted.hdri.as_ref())?;
+            self.scene.environment = self.environment.use_for(wanted.environment.as_ref());
+            self.link.commit(&Owed { environment: Some(source), ..Owed::default() });
+        }
+        if let Some(asset) = owed.image {
+            let wanted = self.link.wanted();
+            self.backdrop.set(renderer, asset, wanted.image.as_ref())?;
+            if let Some(picture) = self.backdrop.background_for(wanted.backdrop_image.as_ref()) {
+                self.scene.background = picture;
+            }
+            self.link.commit(&Owed { image: Some(asset), ..Owed::default() });
         }
         Ok(())
     }

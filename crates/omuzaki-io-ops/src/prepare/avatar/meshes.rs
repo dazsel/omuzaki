@@ -146,7 +146,8 @@ fn runtime_mesh(
         return None;
     };
     let name = scene.nodes.get(node.index()).map_or_else(String::new, |n| n.name.clone());
-    let mesh = PartMesh { name, geometry, joint_bones, material, casts_shadow: true, render_order: 0, dynamic: false };
+    let render_order = names.order(primitive.material.map(|m| m.0));
+    let mesh = PartMesh { name, geometry, joint_bones, material, casts_shadow: true, render_order, dynamic: false };
     let mut runtime = AvatarMesh::new(mesh).with_inverse_bind(inverse_bind);
     if !primitive.morph_targets.is_empty() {
         match sparse_morphs(primitive, target_names) {

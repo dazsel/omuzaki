@@ -23,6 +23,10 @@ use omuzaki_core::time::{FakeClock, Seconds};
 use omuzaki_doc_api::Value;
 use omuzaki_doc_mock::MemDoc;
 use omuzaki_face_api::ExpressionSet;
+use omuzaki_live::approvals::DiskApprovals;
+use omuzaki_live_api::ids::ShowId;
+use omuzaki_live_api::need::Need;
+use omuzaki_live_api::services::ShowKey;
 use omuzaki_ops::Executor;
 use omuzaki_ops_api::{Actor, Grants, Mode, Request, Runner, ServicesBuilder, find};
 use omuzaki_render_api::{AlphaEncoding, Camera, Projection, Quality, Renderer, Scene, TargetDesc};
@@ -36,9 +40,12 @@ use omuzaki_track_api::tracker::{Tracker, TrackerConfig};
 use omuzaki_track_mock::{FakeCamera, FakeTracker};
 use omuzaki_ui::aux_window::Transparency;
 use omuzaki_ui::live::wiring::{
-    FrameReader, LiveApp, LiveFrame, LiveRig, LiveScene, LoopReport, NoTracker, PerformClock, PerformThread, RealClock,
-    THREAD_NAME, live_performer,
+    FrameReader, FrameTap, LiveApp, LiveFrame, LiveRig, LiveScene, LoopReport, NoTracker, PerformClock, PerformThread,
+    RealClock, THREAD_NAME, live_performer,
 };
+use omuzaki_vts::client::{BridgeStatus, ClientConfig};
+use omuzaki_vts::service::VtsService;
+use omuzaki_vts::testing::{MockConfig, MockModel, MockVts};
 
 struct Counting;
 static ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
@@ -212,7 +219,10 @@ fn fake_camera_to_scenes_at_60_hz_for_10_s_without_a_drop_storm_or_an_allocation
     // rare (no storm).
     assert!((report.stepped + report.skipped) as f64 >= expected * 0.97, "{summary}");
     assert!(report.skipped as f64 <= expected * 0.01, "{summary}");
-    assert!(report.published as f64 >= expected * 0.9, "{summary}");
+    // Passes are how often the thread was scheduled: on a shared runner it wakes late and catches up, which the step
+    // count above already holds to 60 Hz (#2284 saw 488 passes for 600 steps). The floor only rules out a loop that
+    // always runs its steps in batches.
+    assert!(report.published as f64 >= expected * 0.6, "{summary}");
     // The render side drew a new scene for nearly every step it had time for: newest-wins drops only what a slow render
     // misses. A render side faster than 60 Hz must see nearly every step; one slower than that (a debug build on a
     // loaded machine) must have found a new frame nearly every time it was free, so it never waited on the mailbox.
@@ -221,6 +231,61 @@ fn fake_camera_to_scenes_at_60_hz_for_10_s_without_a_drop_storm_or_an_allocation
     assert!(tracked as f64 >= scenes as f64 * 0.85, "the tracked face reached the scene: {summary}");
     assert!(ARMED.load(Ordering::Acquire), "the perform thread counted its allocations");
     assert_eq!(warm_allocations.map(|before| after - before), Some(0), "{summary}");
+}
+
+/// The studio's `VTube Studio` path end to end: `FakeCamera`'s tracker → the perform thread → its frame tap → the bridge's
+/// feed → one batched `InjectParameterDataRequest` per VTS frame into the loopback mock, the tracked face's channels
+/// moving the injected values, and still no allocation on the perform thread.
+#[test]
+fn the_perform_thread_feeds_vtube_studio_each_step_without_allocating() {
+    omuzaki_ui::link();
+    let model = MockModel { name: "Kit".into(), ..MockModel::default() };
+    let wall = Arc::new(omuzaki_vts::clock::SystemClock::new());
+    let mock = MockVts::start(&MockConfig { model: Some(model), clock: wall, ..MockConfig::default() }).expect("mock");
+    let vts = VtsService::new().expect("the built-in channel map parses");
+    let config = ClientConfig { port: Some(mock.port()), ..ClientConfig::default() };
+    vts.connect(config, Duration::from_secs(10)).expect("the bridge starts");
+    assert!(eventually(Duration::from_secs(10), || matches!(vts.status(), BridgeStatus::Connected(_))));
+    let injected = || mock.received().iter().filter(|r| r.message_type == "InjectParameterDataRequest").count();
+    let before_run = injected();
+
+    let mut feed = vts.feed();
+    let tap: FrameTap = Box::new(move |frame| feed.push(&frame.channels, frame.tracking == Tracking::Tracking));
+    let performer = live_performer(camera(6.0), ChannelBuf::NEUTRAL, HumanoidPose::REST);
+    let clock = CountingClock { inner: RealClock::new(), warm_up: WARM_UP_S };
+    let (perform, _reader) = PerformThread::spawn_tapped(performer, Box::new(clock), Some(tap)).expect("it starts");
+    let start = Instant::now();
+    assert!(eventually(Duration::from_secs(10), || start.elapsed().as_secs_f64() > WARM_UP_S + 0.5));
+    let (warm, injected_warm) = (ALLOCATIONS.load(Ordering::Relaxed), injected());
+    let window = Duration::from_secs(3);
+    assert!(eventually(window * 2, || start.elapsed().as_secs_f64() > WARM_UP_S + 0.5 + window.as_secs_f64()));
+    let (after, injected_after) = (ALLOCATIONS.load(Ordering::Relaxed), injected());
+    perform.stop().expect("the perform thread stops cleanly");
+
+    // VTS runs at 60 fps in the mock: about one batch per step reached it (a 500 ms keep-alive alone would be 6).
+    let per_second = (injected_after - injected_warm) as f64 / window.as_secs_f64();
+    assert!(per_second >= 60.0 * 0.8, "{per_second:.1} batches per second (before the run: {before_run})");
+    // The tracked face moved what was sent: the jaw took many values over the run.
+    let mut jaw: Vec<i64> = mock
+        .received()
+        .iter()
+        .filter(|r| r.message_type == "InjectParameterDataRequest")
+        .flat_map(|r| r.data["parameterValues"].as_array().cloned().unwrap_or_default())
+        .filter(|v| v["id"] == "OmuzakiJawOpen")
+        .filter_map(|v| v["value"].as_f64().map(|x| (x * 1000.0).round() as i64))
+        .collect();
+    jaw.sort_unstable();
+    jaw.dedup();
+    println!(
+        "VTS feed: {per_second:.1} batches per second over {} s, {} distinct jaw values, {} allocations on the perform \
+         thread after warm-up",
+        window.as_secs(),
+        jaw.len(),
+        after - warm
+    );
+    assert!(jaw.len() >= 10, "the jaw took {} distinct values", jaw.len());
+    assert!(ARMED.load(Ordering::Acquire), "the perform thread counted its allocations");
+    assert_eq!(after - warm, 0, "allocations on the perform thread with the VTS feed tapped in");
 }
 
 #[test]
@@ -446,6 +511,82 @@ fn request(op: &str, args: Value) -> Request {
 
 /// What `main.rs` starts: every linked op over the app's runner, the starter expressions on the triggers, a camera
 /// picked through the `input.*` ops reaching the performer's status, and the quit order.
+/// The studio runs shows: a rule made with the `show.*` and `automation.*` ops runs against the app's own runner when
+/// its event arrives (a Twitch redeem, sent here with `automation.fire`), and its action is in the op log with the
+/// rule as its cause. Twitch's service is in the app too, waiting for `twitch.connect`.
+#[test]
+fn a_show_rule_runs_its_action_through_the_studio_when_its_event_arrives() {
+    omuzaki_ui::link();
+    let mut app =
+        LiveApp::start(Box::new(tracker(30.0)), Box::new(RealClock::new()), Transparency::Fallback, HumanoidPose::REST)
+            .expect("it starts");
+    let runner = app.runner();
+    let run = |op: &str, args: Value| {
+        runner.run(request(op, args)).unwrap_or_else(|e| panic!("{op}: {}", e.message)).plan.output.unwrap_or_default()
+    };
+    let ops: Vec<String> = runner.ops().into_iter().map(|op| op.name.to_owned()).collect();
+    for op in ["show.create", "automation.start", "twitch.connect", "vts.connect"] {
+        assert!(ops.iter().any(|name| name == op), "{op} is linked into the app's runner");
+    }
+    let twitch = run("twitch.status", serde_json::json!({}));
+    assert_eq!(twitch["connected"], false, "{twitch}");
+
+    // The approvals store the studio keeps in its data folder (`start_studio` sets it; a bare `start` has none).
+    let data = tempfile::tempdir().expect("a data folder");
+    let approvals = Arc::new(DiskApprovals::new(data.path()));
+    app.automation().set_approvals(Arc::clone(&approvals) as Arc<dyn omuzaki_live_api::services::Approvals>);
+
+    run("trigger.bind", args(&[("key", Value::from("F1")), ("expression", Value::from("happy"))]));
+    run("show.create", serde_json::json!({ "id": "main", "name": "Main show" }));
+    let graph = serde_json::json!({
+        "id": "wave",
+        "graph": {
+            "graph": { "name": "Wave back" },
+            "nodes": {
+                "redeem": { "kind": "on.event", "params": { "kind": "redeem", "where": { "reward.title": "Wave" } } },
+                "smile": {
+                    "kind": "op.run",
+                    "params": { "op": "trigger.press", "args": { "key": "F1" } },
+                    "in": { "in": "redeem.fired" },
+                },
+            },
+        },
+    });
+    run("automation.add_graph", graph);
+    let started = run("automation.start", serde_json::json!({}));
+    let waiting = &started["graphs"][0]["inert"][0];
+    assert_eq!(waiting["why"]["kind"], "not_approved", "pressing a trigger waits for the person's approval: {started}");
+
+    // The person allows it on the approval card, which writes the app's approvals store (no op can) and rearms.
+    let key = ShowKey::new(String::new(), ShowId::new("main").expect("an id"));
+    approvals.allow(&key, &[Need::op("trigger.press")], &[], &Actor::Person { name: "performer".into() }).expect("ok");
+    app.automation().rearm();
+    assert!(
+        eventually(Duration::from_secs(10), || {
+            run("automation.status", serde_json::json!({}))["graphs"][0]["inert"].as_array().is_some_and(Vec::is_empty)
+        }),
+        "the rule arms once approved: {}",
+        run("automation.status", serde_json::json!({}))
+    );
+
+    let redeem = serde_json::json!({ "kind": "redeem", "payload": {
+        "platform": "twitch", "channel": { "id": "1", "name": "omuzaki" },
+        "user": { "id": "2", "login": "kiri", "name": "Kiri", "roles": [], "badges": [] },
+        "reward": { "id": "r1", "title": "Wave", "cost": 100 }, "redemption_id": "x1"
+    } });
+    run("automation.fire", redeem);
+    let pressed = || {
+        let log = runner.log(0, 200, &Grants::person()).expect("the op log");
+        log.into_iter().find(|r| r.op == "trigger.press")
+    };
+    assert!(eventually(Duration::from_secs(10), || pressed().is_some()), "the rule pressed F1");
+    let record = pressed().expect("found");
+    assert_eq!(record.args["key"], "F1");
+    assert_eq!(record.cause.map(|c| c.kind), Some(omuzaki_ops_api::CauseKind::Rule), "the rule is the cause");
+    run("automation.stop", serde_json::json!({}));
+    app.shutdown().expect("it stops in order");
+}
+
 #[test]
 fn the_app_starts_the_live_slice_with_its_ops_and_stops_it_in_order() {
     omuzaki_ui::link();
@@ -529,10 +670,14 @@ fn the_studio_starts_on_its_real_inputs_and_vmc_out_sends_from_the_perform_threa
     omuzaki_ui::link();
     // An install with no face models: the webcam lists what it can and says why it can't track, the rest works.
     let install = tempfile::tempdir().expect("a folder");
+    let paths = omuzaki_settings::Paths::new(install.path().join("config"), install.path().join("data"));
+    let settings: std::sync::Arc<dyn omuzaki_settings_api::service::Settings> =
+        std::sync::Arc::new(omuzaki_settings::Store::open(&paths));
     let app = LiveApp::start_studio(
         omuzaki_ui::wiring::Document::empty(),
         install.path(),
         Some(&install.path().join("models")),
+        Some(settings),
         Box::new(RealClock::new()),
         Transparency::Fallback,
         HumanoidPose::REST,
@@ -543,6 +688,9 @@ fn the_studio_starts_on_its_real_inputs_and_vmc_out_sends_from_the_perform_threa
     picked.expect("the phone link is wired in, so the iPhone source can be chosen");
     let models = runner.run(request("model.list", args(&[]))).expect("the model registry is wired in");
     assert!(models.plan.output.is_some(), "it answers");
+    let scale =
+        runner.run(request("settings.set", args(&[("key", Value::from("ui.scale")), ("value", Value::from(150))])));
+    scale.expect("the settings store is wired in, so the studio's settings can be changed through ops");
 
     let receiver = std::net::UdpSocket::bind("127.0.0.1:0").expect("a receiver");
     receiver.set_read_timeout(Some(Duration::from_secs(5))).expect("a timeout");

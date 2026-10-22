@@ -190,7 +190,7 @@ pub struct FitResult {
     pub cost_after: f64,
     /// Each view's `IoU` before and after, in the order of the targets.
     pub per_view: Vec<ViewFit>,
-    /// Candidates built and scored, at most [`MAX_EVALUATIONS`].
+    /// Candidates built and scored, at most the fit's budget ([`MAX_EVALUATIONS`] unless asked for fewer).
     pub evaluations: usize,
 }
 
@@ -220,7 +220,7 @@ pub fn fit_ordered(input: &FitInput<'_>, order: &[Param]) -> Result<FitResult, F
         return Err(FitError::BadOrder);
     }
     let objective = Objective::new(input.template, input.targets, input.fixed)?;
-    descend(&objective, FitParams::default(), order, &mut |_| true)
+    descend(&objective, FitParams::default(), order, MAX_EVALUATIONS, &mut |_| true)
 }
 
 /// Fits the body to `input` in [`PARAM_ORDER`], starting from `body`'s proportions and shape (each value clamped into
@@ -232,8 +232,9 @@ pub fn fit_ordered(input: &FitInput<'_>, order: &[Param]) -> Result<FitResult, F
 /// are drawn with the candidate's body in scoring, so the fit sees the silhouette the rebuilt character will have.
 /// `input.fixed` stays where it is.
 ///
-/// `watch` is called before every evaluation with the number made so far (at most [`MAX_EVALUATIONS`]); returning
-/// `false` stops the fit with [`FitError::Stopped`]. A job reports its progress and checks for a cancel there.
+/// It makes at most `budget` evaluations (1 to [`MAX_EVALUATIONS`]; outside that, the nearest). `watch` is called before
+/// every evaluation with the number made so far; returning `false` stops the fit with [`FitError::Stopped`]. A job
+/// reports its progress and checks for a cancel there.
 ///
 /// # Errors
 /// [`FitError::Stopped`] when `watch` stops it; otherwise as [`fit`].
@@ -241,6 +242,7 @@ pub fn fit_from(
     input: &FitInput<'_>,
     body: &BodyParams,
     follow: Option<Follow<'_>>,
+    budget: usize,
     watch: &mut dyn FnMut(usize) -> bool,
 ) -> Result<FitResult, FitError> {
     let objective = Objective::new(input.template, input.targets, input.fixed)?.with_body(body).with_follow(follow);
@@ -249,7 +251,7 @@ pub fn fit_from(
         let value = p.get(&params).clamp(p.range().0, p.range().1);
         p.set(&mut params, value);
     }
-    descend(&objective, params, &PARAM_ORDER, watch)
+    descend(&objective, params, &PARAM_ORDER, budget.clamp(1, MAX_EVALUATIONS), watch)
 }
 
 /// What a descent scores candidates with: the silhouette [`Objective`], or a test's own cost.
@@ -270,11 +272,13 @@ impl Cost for Objective<'_> {
     }
 }
 
-/// The descent itself: from `start`, in `order`, with `watch` asked before each evaluation (see [`fit_from`]).
+/// The descent itself: from `start`, in `order`, at most `budget` evaluations, with `watch` asked before each one (see
+/// [`fit_from`]).
 fn descend(
     objective: &dyn Cost,
     start: FitParams,
     order: &[Param],
+    budget: usize,
     watch: &mut dyn FnMut(usize) -> bool,
 ) -> Result<FitResult, FitError> {
     if !watch(0) {
@@ -287,6 +291,7 @@ fn descend(
         best: first.clone(),
         keep: Keep::new(first.cost),
         evaluations: 1,
+        budget,
         watch,
         probes: Vec::new(),
     };
@@ -313,7 +318,7 @@ fn descend(
         search.pattern_move(&sweep_start)?;
         let gained = before - search.best.cost >= MIN_GAIN;
         // A stalled sweep gets one more at the wide window before the fit ends: a narrow window can sit in a dip.
-        if search.evaluations >= MAX_EVALUATIONS || (!gained && stalled) {
+        if search.evaluations >= search.budget || (!gained && stalled) {
             break;
         }
         (width, stalled) = if gained { (width * SHRINK, false) } else { (WINDOW, true) };
@@ -342,6 +347,8 @@ struct Search<'a, 'w> {
     best: Score,
     keep: Keep,
     evaluations: usize,
+    /// The most evaluations it makes.
+    budget: usize,
     /// Asked before each evaluation whether the fit goes on (see [`fit_from`]).
     watch: &'w mut dyn FnMut(usize) -> bool,
     /// The probes `(t, cost)` of the current line search, for its parabolic step.
@@ -388,7 +395,7 @@ impl Search<'_, '_> {
     /// # Errors
     /// [`FitError::Stopped`] when the watch says stop; otherwise as [`Objective::evaluate`].
     fn probe(&mut self, t: f64, candidate: FitParams) -> Result<Option<f64>, FitError> {
-        if self.evaluations >= MAX_EVALUATIONS {
+        if self.evaluations >= self.budget {
             return Ok(None);
         }
         if !(self.watch)(self.evaluations) {
@@ -711,7 +718,7 @@ mod tests {
     #[test]
     fn a_parameter_that_shows_only_once_another_moves_is_searched_in_the_next_sweep() {
         let cost = Coupled::default();
-        let r = descend(&cost, FitParams::default(), &PARAM_ORDER, &mut |_| true).unwrap();
+        let r = descend(&cost, FitParams::default(), &PARAM_ORDER, MAX_EVALUATIONS, &mut |_| true).unwrap();
         let (legs, musculature) = (Param::LegLength.get(&r.params), Param::Musculature.get(&r.params));
         assert!((musculature - 0.5).abs() < 0.01, "musculature {musculature}");
         assert!((legs - 1.4).abs() < 0.01, "legs {legs}");

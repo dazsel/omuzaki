@@ -190,7 +190,8 @@ fn attachment_bytes_per_pixel(samples: u64) -> u64 {
     8 + if samples > 1 { 8 * samples } else { 0 } + DEPTH_BYTES * samples
 }
 
-/// The side, in texels, of the shadow map a shadow quality allocates (`shadow/map.rs`, `settings`). Zero when off.
+/// The side, in texels, of the shadow map a shadow quality allocates (`shadow/map.rs`, `settings`). Zero when off. The
+/// estimate counts one map, as every rig shadows one key; each further casting light at `High` adds another.
 fn shadow_side(shadows: ShadowQuality) -> u64 {
     match shadows {
         ShadowQuality::Off => 0,
@@ -266,6 +267,24 @@ pub fn cost(size: UVec2, images: u32, quality: RenderQuality, character: u64) ->
         RenderQuality::Offline => 2.0,
     };
     CostHint { seconds: Some(images as f32 * per_image), gpu_mib: Some(mib), usd: None }
+}
+
+/// Refuses `expression` for `body` unless its face profile has it, naming `expression` with the ones it has: an
+/// imported avatar has no face profile, and a kit character only the expressions of its own.
+///
+/// # Errors
+/// `Invalid` naming `expression`.
+pub fn check_expression(body: &crate::body::Body, expression: &omuzaki_face_api::ExpressionId) -> Result<(), OpError> {
+    let crate::body::Body::Kit(built) = body else {
+        return Err(OpError::invalid("expression", "an imported avatar has no face profile to take an expression from"));
+    };
+    let expressions = built.face.as_ref().map(|face| &face.profile.expressions.0);
+    if expressions.is_some_and(|set| set.contains_key(expression)) {
+        return Ok(());
+    }
+    let known: Vec<String> = expressions.into_iter().flat_map(|set| set.keys().map(ToString::to_string)).collect();
+    Err(OpError::invalid("expression", format!("the character's face has no expression '{expression}'"))
+        .hint(if known.is_empty() { "the character has no expressions".to_owned() } else { format!("its expressions are {}", known.join(", ")) }))
 }
 
 /// The light rig `name` as a still's light.

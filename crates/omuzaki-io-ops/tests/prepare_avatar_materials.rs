@@ -12,8 +12,8 @@ use omuzaki_avatar_api::def::MaterialEdit;
 use omuzaki_char_api::{MaterialName, TextureData};
 use omuzaki_core::glam::{UVec2, Vec2, Vec3, Vec4};
 use omuzaki_io_api::{
-    EncodedImage, ImageIx, Material, OutlineMode, Report, Sampler, Shading, TexRef, Texture, TextureIx, Toon,
-    UvTransform,
+    AlphaMode, EncodedImage, ImageIx, Material, NormalTexture, OutlineMode, Report, Sampler, Shading, ShiftTexture,
+    TexRef, Texture, TextureIx, Toon, UvTransform,
 };
 use omuzaki_io_ops::convert::texture::encode_png;
 use omuzaki_io_ops::prepare::avatar::to_avatar;
@@ -44,8 +44,8 @@ fn scene_with(materials: Vec<Material>, images: Vec<EncodedImage>) -> common::Fi
     f
 }
 
-/// A toon material that uses all seven `MToon` groups the renderer doesn't draw yet, and the rim lift, which is no
-/// group's.
+/// A toon material that uses the seven `MToon` groups of D7 and the lighting model (its rim lift), and a toony factor
+/// out of range, which no group covers.
 fn every_group(matcap: TextureIx) -> Material {
     let mut toon = Toon::default();
     toon.matcap_texture = Some(TexRef::of(matcap));
@@ -57,6 +57,7 @@ fn every_group(matcap: TextureIx) -> Material {
     toon.rim_lighting_mix = 0.3;
     toon.outline_lighting_mix = 0.4;
     toon.rim_lift = 0.2;
+    toon.shading_toony = 1.5;
     let mut m = Material::new("Everything", Shading::Toon(Box::new(toon)));
     m.base_color = Vec4::ONE;
     m
@@ -75,8 +76,9 @@ fn each_mtoon_group_the_renderer_cant_draw_is_one_finding() {
             .filter(|x| x.rule == "look.mtoon_not_drawn" && x.location.as_deref() == Some(&at(m)))
             .count()
     };
-    assert_eq!((groups(0), groups(1)), (7, 0), "{report:?}");
+    assert_eq!((groups(0), groups(1)), (8, 0), "{report:?}");
     for field in [
+        "rim_lift",
         "gi_equalization",
         "matcap_texture",
         "uv_animation",
@@ -91,28 +93,92 @@ fn each_mtoon_group_the_renderer_cant_draw_is_one_finding() {
             "{field} has no note of its own"
         );
     }
-    let rim_lift = report
-        .findings
-        .iter()
-        .any(|x| x.rule == "material.not_drawn" && x.location.as_deref() == Some("materials/0/shading/rim_lift"));
-    assert!(rim_lift, "a field outside the seven groups keeps its note");
+    let toony = |report: &Report| {
+        report.findings.iter().any(|x| {
+            x.rule == "material.approximated" && x.location.as_deref() == Some("materials/0/shading/shading_toony")
+        })
+    };
+    assert!(toony(&report), "a field outside every group keeps its note");
 
-    let all = [
-        MtoonSupport::MATCAP,
-        MtoonSupport::GI_EQUALISATION,
-        MtoonSupport::UV_ANIMATION,
-        MtoonSupport::RENDER_QUEUE_OFFSET,
-        MtoonSupport::OUTLINE_WIDTH_SCREEN,
-        MtoonSupport::RIM_LIGHTING_MIX,
-        MtoonSupport::OUTLINE_LIGHTING_MIX,
-        MtoonSupport::OUTLINE_WIDTH_TEXTURE,
-    ]
-    .into_iter()
-    .fold(MtoonSupport::NONE, MtoonSupport::with);
-    let (_, report) = to_avatar(&f.scene, &def(), all).expect("imports");
+    let (_, report) = to_avatar(&f.scene, &def(), MtoonSupport::ALL).expect("imports");
     assert!(!report.has_rule("look.mtoon_not_drawn"), "a renderer that draws every group reports none");
+    assert!(!report.has_rule("material.not_drawn"), "nor any field of them: {report:?}");
+    assert!(toony(&report), "the toony factor is still clamped");
     let (_, report) = to_avatar(&f.scene, &def(), MtoonSupport::MATCAP).expect("imports");
-    assert_eq!(report.findings.iter().filter(|x| x.rule == "look.mtoon_not_drawn").count(), 6, "the matcap is drawn");
+    assert_eq!(report.findings.iter().filter(|x| x.rule == "look.mtoon_not_drawn").count(), 7, "the matcap is drawn");
+}
+
+/// A toon material with every `MToon` lighting field off its default and texture `i` in each texture slot: shade 0,
+/// shift 1, matcap 2, rim 3, emissive 4, normal 5, animation mask 6 (base colour 7).
+fn lit(order: i32, zwrite: bool) -> Material {
+    let mut toon = Toon::default();
+    toon.shade_color = Vec3::new(0.2, 0.1, 0.4);
+    toon.shade_multiply_texture = Some(TexRef::of(TextureIx(0)));
+    toon.shading_shift = -0.3;
+    toon.shading_shift_texture = Some(ShiftTexture { texture: TexRef::of(TextureIx(1)), scale: 0.5 });
+    toon.shading_toony = 0.75;
+    toon.gi_equalization = 0.25;
+    toon.matcap_color = Vec3::new(0.5, 0.6, 0.7);
+    toon.matcap_texture = Some(TexRef::of(TextureIx(2)));
+    toon.rim_color = Vec3::new(0.3, 0.2, 0.1);
+    toon.rim_multiply_texture = Some(TexRef::of(TextureIx(3)));
+    toon.rim_fresnel_power = 2.5;
+    toon.rim_lift = 0.15;
+    toon.rim_lighting_mix = 0.35;
+    toon.uv_scroll_x = 0.1;
+    toon.uv_scroll_y = -0.2;
+    toon.uv_rotation = 0.3;
+    toon.uv_animation_mask = Some(TexRef::of(TextureIx(6)));
+    toon.transparent_with_zwrite = zwrite;
+    toon.render_queue_offset = order;
+    let mut m = Material::new("Lit", Shading::Toon(Box::new(toon)));
+    m.base_color_texture = Some(TexRef::of(TextureIx(7)));
+    m.emissive_texture = Some(TexRef::of(TextureIx(4)));
+    m.normal_texture = Some(NormalTexture { texture: TexRef::of(TextureIx(5)), scale: 0.8 });
+    m.alpha = AlphaMode::Blend;
+    m
+}
+
+#[test]
+fn mtoon_lighting_is_kept_as_the_file_has_it_where_the_renderer_draws_it() {
+    let images = (0..8).map(|i| png(&format!("t{i}"), 2).0).collect();
+    let f = scene_with(vec![lit(3, false), lit(-12, true)], images);
+    let (avatar, report) = to_avatar(&f.scene, &def(), MtoonSupport::ALL).expect("imports");
+    assert!(!report.has_rule("material.not_drawn") && !report.has_rule("look.mtoon_not_drawn"), "{report:?}");
+    let names: Vec<MaterialName> = avatar.materials.keys().cloned().collect();
+    let m = &avatar.mtoon[&names[0]];
+    let space = |t: &Option<omuzaki_char_api::TextureName>| avatar.textures[t.as_ref().unwrap()].desc.colour_space;
+    assert_eq!(
+        [&m.shade_texture, &m.shading_shift_texture, &m.matcap_texture, &m.rim_texture, &m.emissive_texture].map(space),
+        [ColourSpace::Srgb, ColourSpace::Linear, ColourSpace::Srgb, ColourSpace::Srgb, ColourSpace::Srgb],
+        "each texture in its slot's colour space"
+    );
+    assert_eq!([&m.normal_texture, &m.uv_animation_mask].map(space), [ColourSpace::Linear; 2]);
+    let numbers = (
+        m.shading_shift,
+        m.shading_shift_scale,
+        m.shading_toony,
+        m.gi_equalisation,
+        m.rim_fresnel_power,
+        m.rim_lift,
+        m.rim_lighting_mix,
+        m.normal_scale,
+        m.uv_scroll,
+        m.uv_rotation,
+    );
+    assert_eq!(numbers, (-0.3, 0.5, 0.75, 0.25, 2.5, 0.15, 0.35, 0.8, Vec2::new(0.1, -0.2), 0.3));
+    assert_eq!(m.shade, omuzaki_core::colour::Colour::from_linear(Vec3::new(0.2, 0.1, 0.4), 1.0));
+    assert!(!m.blend_writes_depth && avatar.mtoon[&names[1]].blend_writes_depth);
+    // three-vrm's render order: 19 without depth writes, 0 with, plus the offset clamped to -9..=9.
+    let orders: Vec<i32> = avatar.meshes.iter().map(|mesh| mesh.mesh.render_order).collect();
+    assert_eq!(orders, [22, -9]);
+
+    // A renderer without the lighting model keeps the toon approximation and says so.
+    let (avatar, report) = to_avatar(&f.scene, &def(), MtoonSupport::OUTLINE_STYLE).expect("imports");
+    assert!(avatar.mtoon.is_empty());
+    assert!(report.has_rule("look.mtoon_not_drawn"));
+    assert!(avatar.meshes.iter().all(|mesh| mesh.mesh.render_order == 0));
+    assert_eq!(avatar.textures.len(), 1, "only the base colour texture is decoded");
 }
 
 #[test]

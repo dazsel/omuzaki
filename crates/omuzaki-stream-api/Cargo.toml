@@ -19,6 +19,12 @@ omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-history-api = { path = "../omuzaki-history-api" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-render-api = { path = "../omuzaki-render-api" }
+# The worker protocol's frame bodies (docs/design/supervisor.md §4.2).
+postcard.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+# The worker protocol's descriptors: safe sendmsg and recvmsg with SCM_RIGHTS (supervisor.md §4.2).
+rustix = { workspace = true, features = ["net"] }
 
 [dev-dependencies]
 serde_json.workspace = true

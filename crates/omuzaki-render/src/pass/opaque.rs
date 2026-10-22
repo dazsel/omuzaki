@@ -5,7 +5,8 @@
 //! (`surface_albedo`), then the toon model for `Shading::Toon` (the terminator ramp with its tinted shade, the rim, the
 //! skin treatment, hemisphere, directional and point lights) or the flat surface colour for `Shading::Unlit`. Masked
 //! pixels below the cutoff are discarded. The pass always runs, because it opens the frame: it clears the background
-//! and depth even when there is nothing to draw.
+//! and depth even when there is nothing to draw, and draws the environment behind everything when the scene's background
+//! is the environment (`backdrop.rs`).
 //!
 //! The shadow map is bound at group 2 and looked up in the lighting (`shadow_visibility` in the shader).
 //! A material that names a registered shading program (`program/mod.rs`) draws with a shader module of its own: the
@@ -16,6 +17,7 @@ use std::collections::HashMap;
 
 use omuzaki_render_api::{Pass, RenderError};
 
+use super::backdrop::BackdropDraw;
 use super::{FramePass, Outcome, PassCx};
 use crate::gpu::{DEPTH_FORMAT, SCENE_FORMAT};
 use crate::program::{AttributeSpec, MAX_ATTRIBUTES, ProgramSpec, Registry, opaque_source};
@@ -46,6 +48,8 @@ pub(crate) struct Opaque {
     pipelines: HashMap<Variant, wgpu::RenderPipeline>,
     /// Sixteen bytes of zeros, bound with stride 0 to every extra stream a mesh does not supply.
     zeros: wgpu::Buffer,
+    /// The environment behind everything, when the scene's background is the environment.
+    backdrop: BackdropDraw,
 }
 
 impl Opaque {
@@ -71,6 +75,7 @@ impl Opaque {
                 immediate_size: 0,
             }),
             pipelines: HashMap::new(),
+            backdrop: BackdropDraw::new(shared),
         }
     }
 
@@ -177,9 +182,10 @@ impl FramePass for Opaque {
             }
         }
 
-        let environment = cx.environment_group();
+        let backdrop = self.backdrop.prepare(cx);
+        let (environment, frame_group) = (cx.environment_group(), cx.frame_group());
         let mut pass = cx.attachments.geometry_pass(cx.encoder, "opaque", cx.frame.clear_colour());
-        pass.set_bind_group(0, cx.frame.bind_group, &[]);
+        pass.set_bind_group(0, frame_group, &[]);
         pass.set_bind_group(2, cx.attachments.shadow.receiver_group(), &[]);
         pass.set_bind_group(3, environment, &[]);
         for draw in cx.frame.draws.for_pass(Pass::Opaque) {
@@ -202,6 +208,11 @@ impl FramePass for Opaque {
             );
             cx.stats.draw_calls += 1;
             cx.stats.triangles += mesh.triangles;
+        }
+        // After the surfaces, so the early depth test skips every covered pixel.
+        if let Some(backdrop) = &backdrop {
+            self.backdrop.draw(&mut pass, backdrop);
+            cx.stats.draw_calls += 1;
         }
         Ok(Outcome::Ran)
     }

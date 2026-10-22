@@ -1,0 +1,15 @@
+{
+  "about": "A small mixer: a mic and music sending to program, which plays on program_out, with the music ducked under the mic. For the audio.bus.* ops.",
+  "steps": [
+    { "op": "audio.bus.create", "args": { "bus": "program", "channels": "stereo", "outputs": ["program_out"] } },
+    {
+      "op": "audio.bus.create",
+      "args": { "bus": "mic", "channels": "mono", "sources": [{ "type": "device", "role": "mic" }], "sends": [{ "to": "program" }] }
+    },
+    {
+      "op": "audio.bus.create",
+      "args": { "bus": "music", "channels": "stereo", "sources": [{ "type": "device", "role": "music_in" }], "sends": [{ "to": "program" }] }
+    },
+    { "op": "audio.bus.duck", "args": { "target": "music", "trigger": { "type": "bus", "id": "mic" } } }
+  ]
+}

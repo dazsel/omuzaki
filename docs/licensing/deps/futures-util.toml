@@ -1,7 +1,7 @@
 section = "rust"
 item = "futures-util"
 kind = "crate"
-used_for = "drives the response body stream and its SSE framing (`omuzaki-llm`); already in the lock"
+used_for = "drives the response body stream and its SSE framing (`omuzaki-llm`); polls a finished adapter task (`omuzaki-stream`); already in the lock"
 status = "yes"
 condition = "MIT OR Apache-2.0 (the `license` field of futures-util 0.3.34, checked 2026-10-15): keep the notices"
 audit = "(crates.io: MIT OR Apache-2.0)"

@@ -462,6 +462,8 @@ fn bad_input_is_refused_with_the_field_at_fault() {
             "views",
             "twice",
         ),
+        (json!({ "character": "mock", "views": views(), "evaluations": 0 }), "evaluations", "not from 1 to 600"),
+        (json!({ "character": "mock", "views": views(), "evaluations": 601 }), "evaluations", "not from 1 to 600"),
     ];
     for op in ["fit.reference", "fit.apply"] {
         for (args, field, text) in &cases {
@@ -576,7 +578,8 @@ fn rows_a_png_and_a_stored_png_fit_alike() {
         })
         .collect();
     let answer_of = |views: Value| {
-        let args = json!({ "character": "mock", "views": views, "heatmaps": false });
+        // The three forms decode to one mask, so a short fit tells them apart as well as a full one.
+        let args = json!({ "character": "mock", "views": views, "heatmaps": false, "evaluations": 40 });
         answer(&run_job(&doc, &store, "fit.reference", &args).unwrap()).clone()
     };
     let from_rows = answer_of(views());
@@ -742,8 +745,9 @@ fn planning_reads_nothing_from_the_store_and_the_work_does() {
         .collect();
     let reads = || store.reads.load(Ordering::SeqCst);
     for op in ["fit.reference", "fit.apply"] {
-        let args = json!({ "character": "mock", "views": views, "heatmaps": false });
-        let args = if op == "fit.apply" { json!({ "character": "mock", "views": views }) } else { args };
+        let args = json!({ "character": "mock", "views": views, "heatmaps": false, "evaluations": 4 });
+        let args =
+            if op == "fit.apply" { json!({ "character": "mock", "views": views, "evaluations": 4 }) } else { args };
         let plan = dry_run(&doc, &store, op, args.clone()).unwrap();
         assert!(plan.patch.is_empty() && plan.output.is_some(), "{op}");
         assert_eq!(reads(), 0, "{op}: planning read the store");
@@ -779,7 +783,8 @@ fn the_reported_fit_is_what_the_rebuilt_character_draws() {
         })
         .collect();
     let doc = with_parts("soft-sd", None, head_and_hair());
-    let args = json!({ "character": "mock", "views": views, "heatmaps": false });
+    // Any candidate the fit settles on must match its rebuild, so a short fit tests it as well as a full one.
+    let args = json!({ "character": "mock", "views": views, "heatmaps": false, "evaluations": 24 });
     let out = answer(&run_job(&doc, &store, "fit.reference", &args).unwrap()).clone();
     let proposed = proposed(&out);
     // The character as the document would hold it after an apply: built again, its other parts drawn with its body.
@@ -813,8 +818,9 @@ fn parts_changed_while_the_fit_ran_refuse_the_apply() {
         edit(&mut edited);
         finish(&edited, &store, "fit.apply", args, result.clone())
     };
-    // One fit (the slow part), finished against several documents.
-    let args = json!({ "character": "mock", "views": views() });
+    // One fit (the slow part), finished against several documents; a short one, as the guard does not depend on how
+    // well it converged (#2272).
+    let args = json!({ "character": "mock", "views": views(), "evaluations": 12 });
     let result = work(&doc, &store, "fit.apply", &args, &Signal::default()).unwrap();
     let edits: [(&str, Edit); 4] = [
         ("hair edited", Box::new(|d| set(d, &format!("{HAIR}/params"), Some(json!({ "rng": "legacy_lcg" }))))),
@@ -830,7 +836,7 @@ fn parts_changed_while_the_fit_ran_refuse_the_apply() {
     let renamed = apply(&args, &result, &|d| set(d, "characters/mock/name", Some(json!("Renamed")))).unwrap();
     assert!(!renamed.patch.is_empty(), "an edit that leaves the geometry alone still applies");
     // With the body alone nothing else is drawn, so editing the other parts changes nothing the fit used.
-    let alone = json!({ "character": "mock", "views": views(), "parts": [] });
+    let alone = json!({ "character": "mock", "views": views(), "parts": [], "evaluations": 4 });
     let result = work(&doc, &store, "fit.apply", &alone, &Signal::default()).unwrap();
     let edit = |d: &mut MemDoc| set(d, &format!("{HAIR}/enabled"), Some(json!(false)));
     assert!(apply(&alone, &result, &edit).is_ok());
@@ -853,7 +859,8 @@ fn a_face_layout_changed_while_the_fit_ran_refuses_the_apply() {
     type Edit = Box<dyn Fn(&mut MemDoc)>;
     let store = Arc::new(MemStore::default());
     let doc = with_parts("soft-sd", None, head_hair_and_glasses());
-    let args = json!({ "character": "mock", "views": views() });
+    // The guard does not depend on how well the fit converged, so a few candidates are enough (#2272).
+    let args = json!({ "character": "mock", "views": views(), "evaluations": 4 });
     let result = work(&doc, &store, "fit.apply", &args, &Signal::default()).unwrap();
     let edits: [(&str, Edit); 3] = [
         ("eye spacing", Box::new(|d| set_layout(d, "eye_spacing", 0.12))),
@@ -868,7 +875,7 @@ fn a_face_layout_changed_while_the_fit_ran_refuses_the_apply() {
         assert!(e.message.contains("parts drawn with the body"), "{what}: {}", e.message);
     }
     // The body alone does not look at the face.
-    let alone = json!({ "character": "mock", "views": views(), "parts": [] });
+    let alone = json!({ "character": "mock", "views": views(), "parts": [], "evaluations": 4 });
     let result = work(&doc, &store, "fit.apply", &alone, &Signal::default()).unwrap();
     let mut edited = MemDoc::from_value(doc.root().clone());
     set_layout(&mut edited, "eye_spacing", 0.12);

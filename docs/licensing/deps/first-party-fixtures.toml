@@ -39,6 +39,7 @@ paths = [
   "crates/omuzaki-render/tests/golden/stage_live_low.png",
   "crates/omuzaki-render/tests/golden/stage_off.png",
   "crates/omuzaki-render/tests/golden/stage_offline_high.png",
+  "crates/omuzaki-render/tests/golden/stage_two_keys_high.png",
   "crates/omuzaki-render/tests/golden/three_bloom_exposure_0_9.png",
   "crates/omuzaki-render/tests/golden/three_bloom_outline_strip.png",
   "crates/omuzaki-render/tests/golden/three_bloom_prototype.png",

@@ -12,6 +12,8 @@
 //! | [`input`] | the [`InputTap`] trait, [`FrameStamp`] and the tail contract |
 //! | [`output`] | the [`Output`](output::Output) trait, its config and status, and the [`OutputKind`](output::OutputKind) registry (`register_output!`) |
 //! | [`error`] | [`StreamError`](error::StreamError) |
+//! | [`supervisor`] | the live show's supervised workers: ids, kinds, health, restart reasons, events and status rows |
+//! | [`worker`] | the worker protocol: host and worker messages, a generation's shared objects, the framing |
 //! | [`window`] | the clean output window: the [`WindowHost`](window::WindowHost) and [`PaletteSource`](window::PaletteSource) services and their types |
 
 #![deny(missing_docs)]
@@ -22,8 +24,10 @@ pub mod input;
 pub mod mux;
 pub mod output;
 pub mod packet;
+pub mod supervisor;
 pub mod time;
 pub mod window;
+pub mod worker;
 
 pub use input::{FrameStamp, InputTap, TailMode, TailStep};
 

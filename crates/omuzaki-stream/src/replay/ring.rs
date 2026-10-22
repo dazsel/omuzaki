@@ -22,9 +22,15 @@
 //!
 //! **Selection.** [`RollingBuffer::select`] starts at the newest keyframe at or before `end - length` (else the oldest),
 //! clones payload handles only, never bytes, and reports how much earlier or shorter than asked the clip is.
+//!
+//! **Spares.** A buffer told to [`keep_spares`](RollingBuffer::keep_spares) hands each payload it evicts to
+//! [`Payload::retire`], which gives its bytes back to the meter at once and returns it when nothing else holds it; up
+//! to that many retired payloads wait for [`take_spare`](RollingBuffer::take_spare), so a warm buffer's owner can make
+//! the next payloads in their allocations instead of new ones (#1019: no allocation once warm).
 
 use std::collections::VecDeque;
 
+use bytes::Bytes;
 use omuzaki_core::time::Seconds;
 use omuzaki_stream_api::packet::{ByteMeter, Packet};
 use std::sync::Arc;
@@ -48,6 +54,12 @@ pub trait Payload: Clone + Send + 'static {
     /// Whether it occupies no bytes.
     fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Called on a payload the buffer evicts while it keeps spares: give the bytes back to the meter now and return the
+    /// payload if its allocation can be reused (nothing else holds it). The default reuses nothing.
+    fn retire(self) -> Option<Self> {
+        None
     }
 }
 
@@ -141,6 +153,11 @@ impl Charge {
     pub fn absorb(&mut self, mut other: Self) {
         self.bytes += std::mem::take(&mut other.bytes);
     }
+
+    /// Gives the bytes back now; the charge then holds none.
+    pub fn release(&mut self) {
+        self.meter.sub(std::mem::take(&mut self.bytes));
+    }
 }
 
 impl Drop for Charge {
@@ -170,11 +187,32 @@ impl MemoryPayload {
     pub fn packet(&self) -> &Packet {
         &self.0.0
     }
+
+    /// Keeps `packet` under `charge` in this payload's allocation when nothing else holds it, returning the old packet;
+    /// else gives both back.
+    ///
+    /// # Errors
+    /// The packet and the charge, untouched, when a clone of this payload is still alive.
+    pub fn refill(&mut self, packet: Packet, charge: Charge) -> Result<Packet, (Packet, Charge)> {
+        match Arc::get_mut(&mut self.0) {
+            Some(inner) => Ok(std::mem::replace(inner, (packet, charge)).0),
+            None => Err((packet, charge)),
+        }
+    }
 }
 
 impl Payload for MemoryPayload {
     fn len(&self) -> u64 {
         self.0.1.bytes()
+    }
+
+    fn retire(mut self) -> Option<Self> {
+        let (packet, charge) = Arc::get_mut(&mut self.0)?;
+        // The bytes go now, not when the spare is reused: the cap counts every byte kept alive.
+        packet.data = Bytes::new();
+        packet.side_data.clear();
+        charge.release();
+        Some(self)
     }
 }
 
@@ -256,6 +294,8 @@ pub struct RollingBuffer<D: Payload> {
     /// Skipping to the next keyframe: nothing kept yet, or a refusal dropped the group in progress.
     skipping: bool,
     stats: Stats,
+    /// Retired payloads waiting to be reused; never grows past the capacity `keep_spares` gave it.
+    spares: Vec<D>,
 }
 
 impl<D: Payload> RollingBuffer<D> {
@@ -290,7 +330,27 @@ impl<D: Payload> RollingBuffer<D> {
             end: 0.0,
             skipping: true,
             stats: Stats::default(),
+            spares: Vec::new(),
         })
+    }
+
+    /// Keeps up to `n` evicted payloads for reuse (see the module docs). 0, the default, drops each one.
+    pub fn keep_spares(&mut self, n: usize) {
+        self.spares = Vec::with_capacity(n);
+    }
+
+    /// A retired payload to reuse, newest first.
+    pub fn take_spare(&mut self) -> Option<D> {
+        self.spares.pop()
+    }
+
+    /// Lets go of an evicted payload: kept as a spare when there is room and it can be reused, else dropped.
+    fn discard(&mut self, data: D) {
+        if self.spares.len() < self.spares.capacity()
+            && let Some(spare) = data.retire()
+        {
+            self.spares.push(spare);
+        }
     }
 
     /// The caps.
@@ -367,6 +427,7 @@ impl<D: Payload> RollingBuffer<D> {
             self.front_seq += 1;
             self.bytes -= chunk.data.len();
             evicted.1 += chunk.data.len();
+            self.discard(chunk.data);
         }
         evicted.0 += 1;
         self.stats.groups_evicted += 1;
@@ -378,6 +439,7 @@ impl<D: Payload> RollingBuffer<D> {
         while self.next_seq() > seq {
             let Some(chunk) = self.chunks.pop_back() else { break };
             self.bytes -= chunk.data.len();
+            self.discard(chunk.data);
         }
         if self.chunks.is_empty() {
             self.front_seq = seq;
