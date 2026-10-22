@@ -27,7 +27,7 @@ fn every_declared_message_has_a_translator_note() {
             assert!(!message.note.trim().is_empty(), "{} has no translator note", message.id);
         }
     }
-    assert_eq!(seen, 12, "the messages declared in src/messages.rs");
+    assert_eq!(seen, 22, "the messages declared in src/messages.rs");
 }
 
 #[test]

@@ -71,4 +71,43 @@ omuzaki_l10n_api::messages! {
     /// is refused rather than guessed at. The argument names what was found, such as an unreadable embedded profile.
     pub image_colour_unsupported = "measure-image-colour-unsupported" (found: Verbatim)
         => "The image's colour could not be converted to sRGB ({ $found }). Export it as sRGB and try again.";
+    /// No opaque pixel lies below the eyes, so the skin colour is unknown: the eye points are likely wrong.
+    pub no_skin = "measure-no-skin" ()
+        => "No skin was found below the eyes: check the eye points, or give the skin colour.";
+
+    /// A likeness note: the outline differs by more than its tolerance, most in one sector.
+    pub note_outline = "measure-note-outline" (difference: Num, sector: Id)
+        => "The outline differs from the reference by { $difference }% of the eye distance, most at { $sector }.";
+
+    /// A likeness note: the eye line to chin is longer than the reference's.
+    pub note_lower_face_longer = "measure-note-lower-face-longer" (difference: Num)
+        => "The lower face is { $difference }% of the eye distance longer than the reference.";
+
+    /// A likeness note: the eye line to chin is shorter than the reference's.
+    pub note_lower_face_shorter = "measure-note-lower-face-shorter" (difference: Num)
+        => "The lower face is { $difference }% of the eye distance shorter than the reference.";
+
+    /// A likeness note: the mouth sits lower than the reference's.
+    pub note_mouth_lower = "measure-note-mouth-lower" (difference: Num)
+        => "The mouth is { $difference }% of the eye distance lower than the reference.";
+
+    /// A likeness note: the mouth sits higher than the reference's.
+    pub note_mouth_higher = "measure-note-mouth-higher" (difference: Num)
+        => "The mouth is { $difference }% of the eye distance higher than the reference.";
+
+    /// A likeness note: the face is wider at the mouth than the reference.
+    pub note_wider_at_mouth = "measure-note-wider-at-mouth" (difference: Num)
+        => "The face is { $difference }% of the eye distance wider at the mouth than the reference.";
+
+    /// A likeness note: the face is narrower at the mouth than the reference.
+    pub note_narrower_at_mouth = "measure-note-narrower-at-mouth" (difference: Num)
+        => "The face is { $difference }% of the eye distance narrower at the mouth than the reference.";
+
+    /// A likeness note: the face is wider at the eye line than the reference.
+    pub note_wider_at_eyes = "measure-note-wider-at-eyes" (difference: Num)
+        => "The face is { $difference }% of the eye distance wider at the eyes than the reference.";
+
+    /// A likeness note: the face is narrower at the eye line than the reference.
+    pub note_narrower_at_eyes = "measure-note-narrower-at-eyes" (difference: Num)
+        => "The face is { $difference }% of the eye distance narrower at the eyes than the reference.";
 }

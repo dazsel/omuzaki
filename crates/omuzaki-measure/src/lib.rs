@@ -12,13 +12,19 @@
 //! | [`colour`] | `lab`: sRGB bytes to CIELAB (D65), the colour space the skin and line tests compare in |
 //! | [`messages`] | the refusals of design 7.3 and the three image refusals, declared as localised messages (ADR 0023) |
 //!
-//! Later tasks add the modules of design D9 beside these: `face::{frame, segment, snap, outline, spacing, likeness}`,
-//! and the ops that call them. The message table is a registration (the link gate counts `messages!` tables), so the
-//! crate defines its `link()` (ADR 0015).
+//! | [`face`] | the face measures of design 4: frame, segmentation, snap, outline, spacing and likeness |
+//! | [`target`] | the likeness target asset (design 6.1): its TOML, its cache and its staleness |
+//! | [`ops`] | `measure.face_outline`, `measure.feature_spacing`, `measure.likeness`, `measure.face_overlay` and the likeness targets |
+//!
+//! The message table and the ops are registrations (the link gate counts them), so the crate defines its `link()`
+//! (ADR 0015).
 #![deny(missing_docs)]
 
 omuzaki_core::define_link!();
 
 pub mod colour;
+pub mod face;
 pub mod image;
 pub mod messages;
+pub mod ops;
+pub mod target;

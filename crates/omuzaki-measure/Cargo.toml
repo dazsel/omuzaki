@@ -18,17 +18,20 @@ moxcms = "0.8"
 zune-jpeg.workspace = true
 libm.workspace = true
 omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 omuzaki-l10n-api = { path = "../omuzaki-l10n-api" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
 schemars.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+# A likeness target is a TOML document in the store (design 6.1).
+toml.workspace = true
 
 [dev-dependencies]
 inventory.workspace = true
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-store-mock = { path = "../omuzaki-store-mock" }
-serde_json.workspace = true
 tempfile.workspace = true
 
 [lints]
