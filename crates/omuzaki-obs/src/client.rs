@@ -228,6 +228,7 @@ pub struct ObsClient {
     unencrypted: bool,
     connected: Arc<AtomicBool>,
     close_reason: Arc<Mutex<Option<String>>>,
+    closed_by: Arc<Mutex<Option<CloseCode>>>,
     stop: Arc<AtomicBool>,
     next_id: AtomicU64,
     info: ServerInfo,
@@ -249,8 +250,8 @@ fn send_frame(ws: &mut Socket, msg: &Message) -> Result<(), ObsError> {
     ws.send(WsMessage::Text(Utf8Bytes::from(text))).map_err(|e| ObsError::Closed(Some(e.to_string())))
 }
 
-/// Reads the next typed message; `Ok(None)` when the read timed out.
-fn read_message(ws: &mut Socket) -> Result<Option<Message>, ObsError> {
+/// Reads the next typed message; `Ok(None)` when the read timed out. A close frame's code goes in `closed_by`.
+fn read_message(ws: &mut Socket, closed_by: &mut Option<CloseCode>) -> Result<Option<Message>, ObsError> {
     match ws.read() {
         Ok(WsMessage::Text(text)) => {
             let frame: Frame = serde_json::from_str(text.as_str())
@@ -260,6 +261,7 @@ fn read_message(ws: &mut Socket) -> Result<Option<Message>, ObsError> {
         Ok(WsMessage::Close(frame)) => {
             let reason = frame.map(|f| {
                 let code = CloseCode::from_u16(u16::from(f.code));
+                *closed_by = Some(code);
                 format!("{code:?} ({})", u16::from(f.code))
             });
             Err(close_error(reason))
@@ -326,7 +328,7 @@ impl ObsClient {
         let deadline = Instant::now() + CONNECT_TIMEOUT;
         let next = |ws: &mut Socket| -> Result<Message, ObsError> {
             loop {
-                if let Some(m) = read_message(ws)? {
+                if let Some(m) = read_message(ws, &mut None)? {
                     return Ok(m);
                 }
                 if Instant::now() > deadline {
@@ -356,6 +358,7 @@ impl ObsClient {
         let (requests, queue) = channel::<Pending>();
         let connected = Arc::new(AtomicBool::new(true));
         let close_reason = Arc::new(Mutex::new(None));
+        let closed_by = Arc::new(Mutex::new(None));
         let stop = Arc::new(AtomicBool::new(false));
         let worker = Worker {
             ws,
@@ -363,8 +366,11 @@ impl ObsClient {
             hub: Arc::clone(&hub),
             connected: Arc::clone(&connected),
             close_reason: Arc::clone(&close_reason),
+            closed_by: Arc::clone(&closed_by),
             stop: Arc::clone(&stop),
             waiting: HashMap::new(),
+            request_timeout: config.request_timeout,
+            swept: Instant::now(),
         };
         let thread = std::thread::Builder::new()
             .name("omuzaki-obs".into())
@@ -377,6 +383,7 @@ impl ObsClient {
             unencrypted: !loopback,
             connected,
             close_reason,
+            closed_by,
             stop,
             next_id: AtomicU64::new(1),
             info,
@@ -407,6 +414,12 @@ impl ObsClient {
     #[must_use]
     pub fn close_reason(&self) -> Option<String> {
         lock(&self.close_reason).clone()
+    }
+
+    /// The close code OBS ended the connection with, once it has (none when the network dropped).
+    #[must_use]
+    pub fn closed_by(&self) -> Option<CloseCode> {
+        *lock(&self.closed_by)
     }
 
     /// Whether the link crosses the network unencrypted (a remote OBS).
@@ -466,8 +479,13 @@ struct Worker {
     hub: Arc<EventHub>,
     connected: Arc<AtomicBool>,
     close_reason: Arc<Mutex<Option<String>>>,
+    closed_by: Arc<Mutex<Option<CloseCode>>>,
     stop: Arc<AtomicBool>,
-    waiting: HashMap<String, Sender<Result<ResponseMsg, ObsError>>>,
+    /// Requests sent and not yet answered: when each was sent, and where its answer goes.
+    waiting: HashMap<String, (Instant, Sender<Result<ResponseMsg, ObsError>>)>,
+    request_timeout: Duration,
+    /// When `waiting` was last swept of requests whose caller gave up.
+    swept: Instant,
 }
 
 impl Worker {
@@ -482,7 +500,13 @@ impl Worker {
             if let Err(e) = self.send_queued() {
                 break Some(e);
             }
-            match read_message(&mut self.ws) {
+            self.sweep();
+            let mut closed_by = None;
+            let read = read_message(&mut self.ws, &mut closed_by);
+            if closed_by.is_some() {
+                *lock(&self.closed_by) = closed_by;
+            }
+            match read {
                 Ok(Some(message)) => self.dispatch(message),
                 Ok(None) => {}
                 Err(e) => break Some(e),
@@ -491,7 +515,7 @@ impl Worker {
         let reason = end.map(|e| e.to_string());
         lock(&self.close_reason).clone_from(&reason);
         self.connected.store(false, Ordering::Release);
-        for (_, reply) in self.waiting.drain() {
+        for (_, (_, reply)) in self.waiting.drain() {
             let _ = reply.send(Err(ObsError::Closed(reason.clone())));
         }
         while let Ok(pending) = self.queue.try_recv() {
@@ -504,7 +528,7 @@ impl Worker {
             let id = pending.msg.request_id.clone();
             match send_frame(&mut self.ws, &Message::Request(pending.msg)) {
                 Ok(()) => {
-                    self.waiting.insert(id, pending.reply);
+                    self.waiting.insert(id, (Instant::now(), pending.reply));
                 }
                 Err(e) => {
                     let _ = pending.reply.send(Err(e.clone()));
@@ -515,10 +539,21 @@ impl Worker {
         Ok(())
     }
 
+    /// Forgets requests whose caller stopped waiting long ago, so a server that never answers some requests doesn't
+    /// grow `waiting` for the life of the connection. A late answer to one is dropped, as it would be anyway.
+    fn sweep(&mut self) {
+        if self.swept.elapsed() < self.request_timeout {
+            return;
+        }
+        self.swept = Instant::now();
+        let limit = self.request_timeout * 2;
+        self.waiting.retain(|_, (sent, _)| sent.elapsed() < limit);
+    }
+
     fn dispatch(&mut self, message: Message) {
         match message {
             Message::RequestResponse(response) => {
-                if let Some(reply) = self.waiting.remove(&response.request_id) {
+                if let Some((_, reply)) = self.waiting.remove(&response.request_id) {
                     let _ = reply.send(Ok(response));
                 }
             }

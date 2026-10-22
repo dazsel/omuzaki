@@ -200,6 +200,25 @@ fn a_restarted_obs_is_reconnected_on_the_backoff() {
 }
 
 #[test]
+fn a_session_a_person_ended_in_obs_is_not_reconnected() {
+    let fake = FakeObs::start(FakeConfig::default());
+    let service = ObsService::with_backoff_unit(Duration::from_millis(5));
+    service.connect(ClientConfig::at("127.0.0.1", fake.port()), None).unwrap();
+    fake.kick();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !matches!(service.status(), ObsStatus::Failed { .. }) && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    let ObsStatus::Failed { reason } = service.status() else { panic!("{:?}", service.status()) };
+    assert!(reason.contains("obs.connect"), "{reason}");
+    assert!(service.retries().is_empty(), "no reconnect after a kick");
+    assert!(service.client().is_none());
+    // A person connects again.
+    service.connect(ClientConfig::at("127.0.0.1", fake.port()), None).unwrap();
+    assert!(matches!(service.status(), ObsStatus::Connected { .. }));
+}
+
+#[test]
 fn a_wrong_password_is_never_retried_and_never_shown() {
     let fake = locked();
     let service = ObsService::with_backoff_unit(Duration::from_millis(5));
