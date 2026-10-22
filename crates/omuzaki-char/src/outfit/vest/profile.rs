@@ -60,11 +60,13 @@ const ARMHOLE_FLAT: f64 = 0.40;
 /// ...and climbs back to the rim over this many more.
 const ARMHOLE_RAMP: f64 = 0.20;
 
-/// The angles within this of an armhole's edge get [`ARMHOLE_SPLIT`] times the columns, so the steep climb out of an
-/// armhole is cut into many small quads (a few long skinny ones would chord across the shoulder's curve).
+/// The angles within this of an armhole's ramp get [`ARMHOLE_SPLIT`] times the columns, so the steep climb out of an
+/// armhole is cut into many small quads. Each column's rows run evenly from its hem to its rim, so where the rim climbs
+/// fast the rows of neighbouring columns are far apart in height, and a quad between them is a long sheared one whose
+/// diagonal chords across the chest's curve (into the body, on a broad chest). The flat floor needs no split.
 const ARMHOLE_ZONE: f64 = 0.1;
-/// How many columns replace each of the prototype's in the armhole's zone.
-const ARMHOLE_SPLIT: usize = 3;
+/// How many columns replace each of the prototype's on the armhole's ramp.
+const ARMHOLE_SPLIT: usize = 5;
 
 /// The least gap between the V tip and the highest hem, as a fraction of the torso: under this the panel is a sliver.
 pub const MIN_PANEL: f64 = 0.08;
@@ -120,14 +122,17 @@ impl Profile {
         hem + f * (self.top(phi) - hem)
     }
 
-    /// The angles the shell's columns are at: the prototype's [`angles`], with each interval near an armhole cut into
-    /// [`ARMHOLE_SPLIT`] when there is one. The first and last are the same point at the back.
+    /// The angles the shell's columns are at: the prototype's [`angles`], with each interval near an armhole's ramp cut
+    /// into [`ARMHOLE_SPLIT`] when there is one. The first and last are the same point at the back.
     pub fn columns(&self, n: usize) -> Vec<f64> {
         let base = angles(n);
         if self.armhole <= 0.0 {
             return base;
         }
-        let near = |phi: f64| (phi.abs() - FRAC_PI_2).abs() < ARMHOLE_FLAT + ARMHOLE_RAMP + ARMHOLE_ZONE;
+        let near = |phi: f64| {
+            let from_side = (phi.abs() - FRAC_PI_2).abs();
+            (ARMHOLE_FLAT - ARMHOLE_ZONE..ARMHOLE_FLAT + ARMHOLE_RAMP + ARMHOLE_ZONE).contains(&from_side)
+        };
         let mut out = vec![base[0]];
         for pair in base.windows(2) {
             let split = if near(f64::midpoint(pair[0], pair[1])) { ARMHOLE_SPLIT } else { 1 };
