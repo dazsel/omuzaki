@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Makes the MJPG fixtures for tests/convert.rs: a 64x48 synthetic gradient with a checker patch, saved as baseline JPEG
-(quality 90) at each chroma subsampling, plus Pillow's own decode of each as raw RGB8 (the reference).
+(quality 90) at each chroma subsampling, plus a progressive one (4:2:0) for the zune-jpeg fallback, and Pillow's own
+decode of each as raw RGB8 (the reference).
 
 Run from anywhere: `python3 make_fixtures.py` (needs Pillow). Outputs sit next to this script.
 """
@@ -11,7 +12,7 @@ from PIL import Image
 
 W, H = 64, 48
 # Pillow's `subsampling` argument: 0 = 4:4:4, 1 = 4:2:2, 2 = 4:2:0.
-SUBSAMPLINGS = {"444": 0, "422": 1, "420": 2}
+SUBSAMPLINGS = {"444": (0, False), "422": (1, False), "420": (2, False), "progressive": (2, True)}
 
 
 def synthetic() -> Image.Image:
@@ -31,9 +32,9 @@ def synthetic() -> Image.Image:
 def main() -> None:
     here = Path(__file__).resolve().parent
     img = synthetic()
-    for name, sub in SUBSAMPLINGS.items():
+    for name, (sub, progressive) in SUBSAMPLINGS.items():
         buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=90, subsampling=sub)
+        img.save(buf, format="JPEG", quality=90, subsampling=sub, progressive=progressive)
         jpeg = buf.getvalue()
         (here / f"{W}x{H}_{name}.jpg").write_bytes(jpeg)
         decoded = Image.open(io.BytesIO(jpeg)).convert("RGB")

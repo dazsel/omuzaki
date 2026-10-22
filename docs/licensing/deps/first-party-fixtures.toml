@@ -27,6 +27,8 @@ paths = [
   "crates/omuzaki-pixfmt/tests/fixtures/64x48_422.rgb",
   "crates/omuzaki-pixfmt/tests/fixtures/64x48_444.jpg",
   "crates/omuzaki-pixfmt/tests/fixtures/64x48_444.rgb",
+  "crates/omuzaki-pixfmt/tests/fixtures/64x48_progressive.jpg",
+  "crates/omuzaki-pixfmt/tests/fixtures/64x48_progressive.rgb",
   "crates/omuzaki-render/tests/golden/environment-cool-lit.png",
   "crates/omuzaki-render/tests/golden/environment-cool-toon.png",
   "crates/omuzaki-render/tests/golden/environment-warm-lit.png",
