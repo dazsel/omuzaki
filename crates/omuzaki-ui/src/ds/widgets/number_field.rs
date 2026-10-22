@@ -382,8 +382,14 @@ impl<'a> Show<'a> {
             .vertical_align(Align::Center)
             .margin(egui::Margin::symmetric(6, 0))
             .desired_width(rect.width())
-            // Esc is ours: it puts the old value back, so the TextEdit must not surrender focus itself.
-            .event_filter(EventFilter { escape: true, ..EventFilter::default() });
+            // Esc is ours: it puts the old value back, so the TextEdit must not surrender focus itself. The arrows move
+            // the caret while typing, never the keyboard to another widget.
+            .event_filter(EventFilter {
+                escape: true,
+                horizontal_arrows: true,
+                vertical_arrows: true,
+                ..EventFilter::default()
+            });
         if ime.composing() {
             field_edit = field_edit.layouter(&mut composing_layout);
         }
