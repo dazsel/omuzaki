@@ -73,6 +73,8 @@ omuzaki-anim-mock = { path = "../omuzaki-anim-mock" }
 omuzaki-char-mock = { path = "../omuzaki-char-mock" }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-face-mock = { path = "../omuzaki-face-mock" }
+# The real fetcher under the font download test (`tests/font_download.rs`).
+omuzaki-http = { path = "../omuzaki-http" }
 # A kit character exported to VRM (and written as FBX) and imported back as an avatar: the bring-your-own-model path
 # without a third-party file (`tests/avatar_stage.rs`, `tests/fbx_avatar.rs`).
 omuzaki-io-fbx = { path = "../omuzaki-io-fbx" }

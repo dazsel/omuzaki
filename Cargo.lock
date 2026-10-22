@@ -4197,12 +4197,15 @@ name = "omuzaki-http"
 version = "0.0.0"
 dependencies = [
  "bytes",
+ "directories",
  "http-body-util",
+ "httpdate",
  "hyper",
  "hyper-util",
  "omuzaki-ai-api",
  "reqwest",
  "rustls",
+ "thiserror 2.0.21",
  "tokio",
 ]
 
@@ -4824,6 +4827,7 @@ dependencies = [
  "omuzaki-face",
  "omuzaki-face-api",
  "omuzaki-face-mock",
+ "omuzaki-http",
  "omuzaki-io-api",
  "omuzaki-io-fbx",
  "omuzaki-io-ops",

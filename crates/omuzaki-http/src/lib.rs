@@ -11,13 +11,17 @@
 //! reqwest is built with `rustls-no-provider`, so any other code that builds a reqwest client in the same build, tests
 //! included, must install the `ring` provider first.
 
+mod cache_dir;
+
+pub use cache_dir::{CACHE_DIR_ENV, CacheDirError, app_cache_dir, resolve as resolve_cache_dir};
+
 use std::io::Read;
 use std::net::IpAddr;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use omuzaki_ai_api::{Body, FetchError, Fetcher};
 use reqwest::blocking::{Client, Response};
-use reqwest::header::{ACCEPT_ENCODING, CONTENT_RANGE, RANGE};
+use reqwest::header::{ACCEPT_ENCODING, CONTENT_RANGE, RANGE, RETRY_AFTER};
 use reqwest::redirect::Policy;
 use reqwest::{StatusCode, Url};
 
@@ -30,6 +34,7 @@ pub struct HttpFetcherBuilder {
     max_redirects: usize,
     retries: u32,
     backoff: Duration,
+    max_retry_after: Duration,
     allow_loopback_http: bool,
 }
 
@@ -42,6 +47,7 @@ impl Default for HttpFetcherBuilder {
             max_redirects: 5,
             retries: 3,
             backoff: Duration::from_millis(500),
+            max_retry_after: Duration::from_secs(60),
             allow_loopback_http: false,
         }
     }
@@ -91,6 +97,14 @@ impl HttpFetcherBuilder {
         self
     }
 
+    /// The longest `Retry-After` wait honoured on a 429 or 503 (default 60 s). A server that asks for more is not
+    /// waited for: `open` fails at once with the throttled status, since retrying earlier would only be refused again.
+    #[must_use]
+    pub fn max_retry_after(mut self, max: Duration) -> Self {
+        self.max_retry_after = max;
+        self
+    }
+
     /// A test aid: lets plain `http://` reach loopback hosts (`127.0.0.1`, `::1`, `localhost`) so tests can use a local
     /// server. Any other plain-http URL is still refused. It also makes the client ignore proxy settings (environment
     /// and system), so loopback is never sent through a proxy. Never set it in the app.
@@ -130,7 +144,13 @@ impl HttpFetcherBuilder {
         // of its own: construction stays infallible wherever `new` is called.
         let client = std::thread::scope(|scope| scope.spawn(|| builder.build().map_err(|e| e.to_string())).join())
             .unwrap_or_else(|_| Err("the client builder panicked".to_owned()));
-        HttpFetcher { client, tries: self.retries, backoff: self.backoff, allow_loopback_http: allow }
+        HttpFetcher {
+            client,
+            tries: self.retries,
+            backoff: self.backoff,
+            max_retry_after: self.max_retry_after,
+            allow_loopback_http: allow,
+        }
     }
 }
 
@@ -148,9 +168,10 @@ fn install_crypto_provider() {
 ///
 /// # Blocking
 ///
-/// [`Fetcher::open`] blocks the calling thread and cannot be cancelled. With the defaults it can take about 90 s
+/// [`Fetcher::open`] blocks the calling thread and cannot be cancelled. With the defaults it can take about 210 s
 /// before it returns an error: three tries, each waiting up to the 30 s read timeout for the response headers, plus
-/// the backoff between them. Call it from a worker thread, never from a UI or frame loop.
+/// the waits between them, which are the backoff or, on a 429 or 503 with a `Retry-After`, that delay (at most 60 s each,
+/// see [`HttpFetcherBuilder::max_retry_after`]). Call it from a worker thread, never from a UI or frame loop.
 ///
 /// It also must not be called from inside an async runtime: reqwest's blocking client panics there. Use
 /// `spawn_blocking` (or a plain thread) when the caller is async.
@@ -159,6 +180,7 @@ pub struct HttpFetcher {
     client: Result<Client, String>,
     tries: u32,
     backoff: Duration,
+    max_retry_after: Duration,
     allow_loopback_http: bool,
 }
 
@@ -191,16 +213,31 @@ impl Fetcher for HttpFetcher {
             return Err(net("only https addresses are allowed".to_owned()));
         }
         let mut last = String::new();
+        // The wait before the next try: the server's `Retry-After` if it sent a usable one, else the backoff.
+        let mut wait = Duration::ZERO;
         for attempt in 0..self.tries {
             if attempt > 0 {
-                std::thread::sleep(backoff_for(self.backoff, attempt));
+                std::thread::sleep(wait);
             }
             let mut request = client.get(parsed.clone()).header(ACCEPT_ENCODING, "identity");
             if from > 0 {
                 request = request.header(RANGE, format!("bytes={from}-"));
             }
+            wait = backoff_for(self.backoff, attempt + 1);
             match request.send() {
-                Ok(response) if retryable(response.status()) => last = format!("HTTP {}", response.status()),
+                Ok(response) if retryable(response.status()) => {
+                    last = format!("HTTP {}", response.status());
+                    if let Some(asked) = throttle_delay(&response, SystemTime::now()) {
+                        if asked > self.max_retry_after {
+                            return Err(net(format!(
+                                "{last}: the server asks for {} s before another request, more than the {} s limit",
+                                asked.as_secs(),
+                                self.max_retry_after.as_secs()
+                            )));
+                        }
+                        wait = asked;
+                    }
+                }
                 Ok(response) => return into_body(response, from).map_err(net),
                 Err(e) if e.is_connect() || e.is_timeout() => last = e.to_string(),
                 Err(e) => return Err(net(e.to_string())),
@@ -208,6 +245,26 @@ impl Fetcher for HttpFetcher {
         }
         Err(net(format!("{last} (gave up after {} tries)", self.tries)))
     }
+}
+
+/// The `Retry-After` delay of a 429 or 503 response, if it sent a valid one.
+fn throttle_delay(response: &Response, now: SystemTime) -> Option<Duration> {
+    if !matches!(response.status(), StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE) {
+        return None;
+    }
+    parse_retry_after(response.headers().get(RETRY_AFTER)?.to_str().ok()?, now)
+}
+
+/// A `Retry-After` value (RFC 9110 §10.2.3) as a delay from `now`: whole seconds, or an HTTP-date (a date in the
+/// past is no wait). `None` for anything else, so the caller falls back to its backoff.
+fn parse_retry_after(value: &str, now: SystemTime) -> Option<Duration> {
+    let value = value.trim();
+    if !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) {
+        // An all-digit value too long for u64 is still a (huge) number of seconds, which the cap then refuses.
+        return Some(Duration::from_secs(value.parse().unwrap_or(u64::MAX)));
+    }
+    let date = httpdate::parse_http_date(value).ok()?;
+    Some(date.duration_since(now).unwrap_or(Duration::ZERO))
 }
 
 /// The wait before try number `attempt` (counting from 1 for the second try): `base` doubled each time, saturating.
@@ -265,6 +322,20 @@ mod tests {
         assert_eq!(range_start("bytes 5-9/10"), Some(5));
         assert_eq!(range_start("bytes */10"), None);
         assert_eq!(range_start("items 5-9/10"), None);
+    }
+
+    #[test]
+    fn retry_after_reads_seconds_and_http_dates_and_refuses_the_rest() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(784_111_777); // Sun, 06 Nov 1994 08:49:37 GMT
+        let secs = Duration::from_secs;
+        assert_eq!(parse_retry_after("30", now), Some(secs(30)));
+        assert_eq!(parse_retry_after(" 0 ", now), Some(Duration::ZERO));
+        assert_eq!(parse_retry_after("Sun, 06 Nov 1994 08:50:07 GMT", now), Some(secs(30)));
+        assert_eq!(parse_retry_after("Sun, 06 Nov 1994 08:00:00 GMT", now), Some(Duration::ZERO));
+        assert_eq!(parse_retry_after("99999999999999999999999", now), Some(Duration::from_secs(u64::MAX)));
+        for bad in ["", "soon", "-5", "1.5", "30 seconds", "Sun, 99 Nov 1994 08:50:07 GMT"] {
+            assert_eq!(parse_retry_after(bad, now), None, "{bad:?}");
+        }
     }
 
     #[test]
