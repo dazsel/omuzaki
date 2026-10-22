@@ -7,13 +7,6 @@ agent.connection
 avatar.describe
 avatar.map_channel
 avatar.remap
-# Deleting a document key and undoing it re-appends the key in the TOML file (omuzaki-doc keeps a hand-edited file's order,
-# and re-adds an emptied parent table with its own header), so the file is not byte-identical after undo: these four edits
-# fail the exact-undo rule on any example. They get examples when omuzaki-doc restores a removed key to its place (#2233).
-colourway.delete
-part.remove
-rig.weights.clear
-variant.delete
 face.add_mark
 face.describe_mapping
 face.describe_style

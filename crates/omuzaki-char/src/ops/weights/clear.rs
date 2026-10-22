@@ -15,6 +15,13 @@ use crate::ops::character::access;
 /// of a part removes its list. Undo puts the brushes back in their order.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "part": "body", "index": 0},
+        {"character": "kit", "part": "body"}
+    ],
+    "x-omuzaki-fixture" = "character-brush"
+))]
 pub struct WeightsClear {
     /// The character the part belongs to.
     pub character: CharId,

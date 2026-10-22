@@ -15,6 +15,7 @@ use crate::known::Known;
 use crate::layout::{Entry, Layout, Pending, Segs, doc_path};
 use crate::migrate;
 use crate::source::FileSource;
+use crate::toml_read::parse_table;
 use crate::toml_write::{RenderError, render};
 use crate::tree::{changed_paths, check_change, set, show};
 
@@ -357,6 +358,16 @@ impl Project {
                 StoreError::Internal(format!("{}: {} (at {})", path.display(), u.reason, u.at))
             }
         })?;
+        // The table is back to what the file held a moment ago (an undo): that text, byte for byte, beats a
+        // re-rendering, which puts a restored key at the end and keeps the header of a table it had emptied (#2233).
+        let text = if base == Some(text.as_str()) {
+            text
+        } else {
+            self.known
+                .earlier(segs)
+                .find(|earlier| parse_table(earlier).is_ok_and(|parsed| parsed == *table))
+                .map_or(text, str::to_owned)
+        };
         let changed = base != Some(text.as_str());
         let hash = ContentHash::of(text.as_bytes());
         Ok(Rendered { text, hash, changed })
