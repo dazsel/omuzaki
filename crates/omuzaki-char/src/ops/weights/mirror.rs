@@ -24,6 +24,12 @@ use crate::ops::character::access;
 /// `straddling` here and in `rig.weights.report`, for information.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "part": "body"}
+    ],
+    "x-omuzaki-fixture" = "character-brush"
+))]
 pub struct WeightsMirror {
     /// The character the part belongs to.
     pub character: CharId,

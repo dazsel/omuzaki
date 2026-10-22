@@ -59,7 +59,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 /// Runs the compute shader on the target's texture through `native()`. Returns false if the painter did not get a
 /// storage-capable texture (the bind would be a validation error).
 fn paint_with_storage_texture(target: &mut dyn PaintTarget) -> Result<(), omuzaki_render_api::RenderError> {
-    let Some((device, queue, texture)) = target.native().downcast_mut::<NativePaintTarget>() else {
+    let Some((device, _queue, texture, encoder)) = target.native().downcast_mut::<NativePaintTarget>() else {
         return Err(omuzaki_render_api::RenderError::Backend("no native target".into()));
     };
     assert!(texture.usage().contains(wgpu::TextureUsages::STORAGE_BINDING), "a dynamic texture must allow storage");
@@ -85,14 +85,11 @@ fn paint_with_storage_texture(target: &mut dyn PaintTarget) -> Result<(), omuzak
         layout: &pipeline.get_bind_group_layout(0),
         entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) }],
     });
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("paint disc") });
-    {
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
-        pass.set_pipeline(&pipeline);
-        pass.set_bind_group(0, &bind, &[]);
-        pass.dispatch_workgroups(SIDE / 8, SIDE / 8, 1);
-    }
-    queue.submit([encoder.finish()]);
+    // Recorded into the renderer's encoder, which the renderer submits when the painter returns.
+    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+    pass.set_pipeline(&pipeline);
+    pass.set_bind_group(0, &bind, &[]);
+    pass.dispatch_workgroups(SIDE / 8, SIDE / 8, 1);
     Ok(())
 }
 

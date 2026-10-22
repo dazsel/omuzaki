@@ -30,6 +30,33 @@ flags = ["-c", "opt", "--repo_env=HERMETIC_PYTHON_VERSION=3.11"]
 [reference]
 tolerance = 1e-4
 
+# How many of each face graph's nodes the XNNPACK delegate takes, and in how many partitions, as measured on all three
+# platforms (design §8.2): "all", or a count `of` the graph's nodes. A change in either direction fails the check. The
+# parity gate above covers the nodes left on LiteRT's builtin kernels, since the wheel runs those the same way.
+[delegation.face_detector]
+nodes = "all"
+partitions = 1
+
+[delegation.face_landmarks_detector]
+nodes = "all"
+partitions = 1
+
+# One node stays on a builtin kernel, identical on every platform (runs 38748797856, 38933350888): the last node of the
+# graph, a STRIDED_SLICE that takes row 0 of the [1, 52] blendshape scores and so drops a dimension (`shrink_axis_mask`
+# set; its output is the graph's [52] output). XNNPACK's STRIDED_SLICE visitor refuses `shrink_axis_mask`,
+# `ellipsis_mask` and `new_axis_mask` (tflite/delegates/xnnpack/xnnpack_delegate.cc, "no shrink_axis-mask"), so that node
+# runs on LiteRT's builtin kernel. Its 3 other STRIDED_SLICE nodes keep the rank and are delegated.
+# `left_out` pins the op left out, so a different op fails even when the count is the same.
+[delegation.face_blendshapes]
+nodes = 181
+of = 182
+partitions = 1
+left_out = [45]
+
+# The ops a pinned `left_out` may name: the TfLiteBuiltinOperator numbers of tflite/builtin_ops.h at the tag above.
+[builtin_ops]
+45 = "STRIDED_SLICE"
+
 [platform.linux-x64]
 # The build runs in LiteRT's own CI image at the tag (`docker run`; its workflows pin this digest). The compiler and
 # the sysroot are not the image's: LiteRT's workspace pins a hermetic clang and a glibc 2.27 sysroot

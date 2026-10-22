@@ -7,8 +7,8 @@
 //! document exactly, and applying it again gives the same result as the first time.
 //!
 //! The parts come from the mock kinds (`mock-body`, `mock-head`, `mock-hair`, `mock-garment`), which take the real
-//! parameter types. `character.create` makes parts of the kinds `body`, `head` and `hair`, which the real generators
-//! register; until they land, [`stand_ins`] registers kinds of those names in this test binary.
+//! parameter types. `character.create` makes parts of the kinds `body`, `head` and `hair`, which are the real
+//! generators this crate registers.
 
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
 #![allow(clippy::expect_used, clippy::unwrap_used)]
@@ -244,6 +244,16 @@ fn add_refuses_bad_input_naming_the_field_and_the_fix() {
 
     let kind = refused(&doc, "part.add", add(json!({"kind": "mock-hare"})));
     assert_error(&kind, ErrorCode::Invalid, "kind", &["no part kind `mock-hare`"], &["`mock-hair`", "`mock-garment`"]);
+
+    // The hint's kind list is `part.list_kinds`' list, in the same order.
+    let listed: Vec<String> = plan(&doc, "part.list_kinds", json!({})).unwrap().output.unwrap()["kinds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| format!("`{}`", k["id"].as_str().unwrap()))
+        .collect();
+    let hint = kind.hint.as_deref().unwrap();
+    assert!(hint.ends_with(&listed.join(", ")), "{hint} should list {listed:?}");
 
     let taken = refused(&doc, "part.add", add(json!({"id": "shirt"})));
     assert_error(&taken, ErrorCode::Invalid, "id", &["`shirt` is already a part", "mock-garment"], &["part.duplicate"]);
@@ -672,48 +682,4 @@ fn add_rejects_parameters_that_are_not_an_object_naming_the_field() {
         let e = refused(&doc, "part.add", garment(&json!({"params": params})));
         assert_error(&e, ErrorCode::Invalid, "params", &["`params` must be an object", what], &["{\"ease\": 0.01}"]);
     }
-}
-
-// ------------------------------------------------------------------------------------------------ stand-in kinds
-
-/// Kinds named `head` and `hair`, which `character.create` makes parts of, built by the mock generators.
-///
-/// The real generators register these names; these stand in until they do, taking the same real
-/// parameter types, so the defaults the op writes are the real ones.
-mod stand_ins {
-    use omuzaki_char_api::{
-        BuildCtx, BuildError, HairParams, HeadParams, PartCategory, PartKind, PartMeta, PartOutput, register_part_kind,
-    };
-    use omuzaki_char_mock::{MockHair, MockHead};
-
-    struct Head;
-    struct Hair;
-
-    impl PartKind for Head {
-        type Params = HeadParams;
-        fn meta() -> PartMeta {
-            PartMeta { id: "head", summary: "Stand-in: the mock head.", category: PartCategory::Head, requires: &[] }
-        }
-        fn build(params: &HeadParams, ctx: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
-            <MockHead as PartKind>::build(params, ctx)
-        }
-    }
-
-    impl PartKind for Hair {
-        type Params = HairParams;
-        fn meta() -> PartMeta {
-            PartMeta {
-                id: "hair",
-                summary: "Stand-in: the mock hair.",
-                category: PartCategory::Hair,
-                requires: &["head"],
-            }
-        }
-        fn build(params: &HairParams, ctx: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
-            <MockHair as PartKind>::build(params, ctx)
-        }
-    }
-
-    register_part_kind!(Head);
-    register_part_kind!(Hair);
 }

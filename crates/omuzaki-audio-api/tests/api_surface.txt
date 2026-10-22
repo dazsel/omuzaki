@@ -167,6 +167,7 @@ src/ring.rs: pub fn push_gap(&mut self, count: u64) {
 src/ring.rs: pub fn set_flags(&mut self, flags: TapFlags) {
 src/ring.rs: pub fn free(&self) -> usize {
 src/ring.rs: pub fn written(&self) -> u64 {
+src/ring.rs: pub fn overwritten(&self) -> u64 {
 src/ring.rs: pub fn dropped(&self) -> u64 {
 src/ring.rs: pub fn reader_gone(&self) -> bool {
 src/ring.rs: pub fn read(&mut self, out: &mut [f32]) -> TapRead {

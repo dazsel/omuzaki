@@ -4,18 +4,32 @@
 //! - [`fixture`]: [`fixture::Fixture`], the starting project as an op script
 //! - [`provenance`]: the private list and the provenance rules for fixture and eval-set items
 //! - [`check`]: the check library that grades an attempt
-//! - [`transcript`]: the tool calls of an attempt, as the `log.*` checks read them
+//! - [`transcript`]: the record of an attempt, and its tool calls as the `log.*` checks read them
+//! - [`host`], [`script`], [`driver`]: the server an attempt talks to, the scripts that talk to it and the drivers that play them
 //! - [`lint`]: everything `omuzaki-test eval lint` fails on, as a list of findings
 //!
 //! Tasks live in `crates/<crate>/evals/**/*.toml` (never in a `fixtures/` folder), fixtures in
 //! `crates/<crate>/evals/fixtures/*.toml`, and a task's scripts beside it as `<task-stem>.<name>.{pass,fail}.jsonl`.
-//! The two files `defaults.toml` and `private.toml` at the top of an `evals/` folder are configuration, not tasks.
+//! The file `defaults.toml` at the top of an `evals/` folder is configuration, not a task. The private-material list is
+//! `docs/licensing/private-material.toml`, shared with `cargo xtask lint-seed`.
 //! Adding a task never edits another file (spec §39 rule 2).
 
+pub mod build;
 pub mod check;
+pub mod clock;
+pub mod driver;
 pub mod fixture;
+pub mod gate;
+pub mod gc;
+pub mod history;
+pub mod host;
 pub mod lint;
+mod placeholder;
 pub mod provenance;
+pub mod rate;
+pub mod run;
+pub mod script;
+pub mod sets;
 pub mod task;
 pub mod transcript;
 
@@ -30,7 +44,7 @@ use self::provenance::{EvalSet, EvalSets, PrivateList};
 use self::task::{Caps, Defaults, Task};
 
 /// Files at the top of an `evals/` folder that configure the harness instead of describing a task.
-const CONFIG_FILES: [&str; 2] = ["defaults.toml", "private.toml"];
+const CONFIG_FILES: [&str; 1] = ["defaults.toml"];
 
 /// Harness trouble: something that is not a finding about a task (the CLI exits 2).
 #[derive(Debug, thiserror::Error)]
@@ -184,23 +198,31 @@ fn relative(root: &Path, path: &Path) -> PathBuf {
     path.strip_prefix(root).unwrap_or(path).to_owned()
 }
 
-/// Scripts of the task whose file stem is `stem`, in `dir`.
-fn scripts_of(dir: &Path, stem: &str) -> Result<Vec<Script>, EvalError> {
+/// Whether the file `name` is a script of the task whose stem is `stem` (`<stem>.<name>.<pass|fail>.jsonl`), and if so
+/// whether it must pass.
+fn script_kind(name: &str, stem: &str) -> Option<bool> {
+    let rest = name.strip_prefix(stem).and_then(|r| r.strip_prefix('.'))?;
+    let (middle, expect_pass) = if let Some(m) = rest.strip_suffix(".pass.jsonl") {
+        (m, true)
+    } else {
+        (rest.strip_suffix(".fail.jsonl")?, false)
+    };
+    (!middle.is_empty()).then_some(expect_pass)
+}
+
+/// Scripts of the task whose file stem is `stem`, in `dir`. `stems` are the stems of all the tasks in `dir`: a script
+/// that is also a script of a longer stem (`foo.bar.correct.pass.jsonl` with tasks `foo` and `foo.bar`) belongs to the
+/// longer one only, so one task never replays another's oracle.
+fn scripts_of(dir: &Path, stem: &str, stems: &[String]) -> Result<Vec<Script>, EvalError> {
     let mut scripts = Vec::new();
     for path in read_dir_sorted(dir)? {
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
-        let Some(rest) = name.strip_prefix(stem).and_then(|r| r.strip_prefix('.')) else { continue };
-        let (middle, expect_pass) = if let Some(m) = rest.strip_suffix(".pass.jsonl") {
-            (m, true)
-        } else if let Some(m) = rest.strip_suffix(".fail.jsonl") {
-            (m, false)
-        } else {
+        let Some(expect_pass) = script_kind(name, stem) else { continue };
+        if stems.iter().any(|other| other.len() > stem.len() && script_kind(name, other).is_some()) {
             continue;
-        };
-        if !middle.is_empty() {
-            let bytes = fs::read(&path).map_err(io_err(&path))?;
-            scripts.push(Script { file_name: name.to_owned(), expect_pass, bytes });
         }
+        let bytes = fs::read(&path).map_err(io_err(&path))?;
+        scripts.push(Script { file_name: name.to_owned(), expect_pass, bytes });
     }
     Ok(scripts)
 }
@@ -217,18 +239,21 @@ pub fn discover(root: &Path) -> Result<Discovery, EvalError> {
         let evals = crate_dir.join("evals");
         let mut files = Vec::new();
         task_toml_files(&evals, true, &mut files)?;
-        for path in files {
-            let bytes = fs::read(&path).map_err(io_err(&path))?;
+        let stem_of = |p: &Path| p.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_owned();
+        for path in &files {
+            let bytes = fs::read(path).map_err(io_err(path))?;
             match parse::<Task>(&bytes) {
                 Ok(task) => {
-                    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
-                    let scripts = scripts_of(path.parent().unwrap_or(&evals), stem)?;
-                    let path = relative(root, &path);
+                    let dir = path.parent().unwrap_or(&evals);
+                    let stems: Vec<String> =
+                        files.iter().filter(|p| p.parent() == Some(dir)).map(|p| stem_of(p)).collect();
+                    let scripts = scripts_of(dir, &stem_of(path), &stems)?;
+                    let path = relative(root, path);
                     found.tasks.push(TaskFile { path, crate_name: crate_name.clone(), task, bytes, scripts });
                 }
                 Err(reason) => {
                     let unknown_kinds = unknown_kinds(&bytes);
-                    found.unparsed.push(Unparsed { path: relative(root, &path), reason, unknown_kinds });
+                    found.unparsed.push(Unparsed { path: relative(root, path), reason, unknown_kinds });
                 }
             }
         }
@@ -280,14 +305,25 @@ pub fn load_defaults(root: &Path) -> Result<Caps, EvalError> {
     Ok(defaults.caps)
 }
 
-/// Reads `crates/omuzaki-test/evals/private.toml`.
+/// Reads `docs/licensing/private-material.toml`, the one private-material list.
 ///
 /// # Errors
 /// [`EvalError`] when it is missing or does not parse: a missing private list must never mean "nothing is private".
 pub fn load_private(root: &Path) -> Result<PrivateList, EvalError> {
-    let path = root.join("crates/omuzaki-test/evals/private.toml");
+    let path = root.join(provenance::PRIVATE_LIST_FILE);
     let bytes = fs::read(&path).map_err(io_err(&path))?;
-    parse(&bytes).map_err(|reason| EvalError::Config { path, reason })
+    let list: PrivateList = parse(&bytes).map_err(|reason| EvalError::Config { path: path.clone(), reason })?;
+    // A category that is missing or misspelt would match nothing and let private material through: refuse it. (`hashes`
+    // may be empty until the owner supplies them.)
+    for (key, empty) in [("names", list.names.is_empty()), ("prefixes", list.prefixes.is_empty())] {
+        if empty {
+            return Err(EvalError::Config {
+                path,
+                reason: format!("`{key}` is missing or empty: the private list would match nothing"),
+            });
+        }
+    }
+    Ok(list)
 }
 
 impl Discovery {

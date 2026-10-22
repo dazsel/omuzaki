@@ -14,6 +14,12 @@ use crate::ops::character::access as character;
 /// preset; one undo restores the previous look.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "preset": "soft-sd"}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
 pub struct LookSetPreset {
     /// The character to restyle.
     pub character: CharId,

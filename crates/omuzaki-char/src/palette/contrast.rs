@@ -264,6 +264,12 @@ pub struct ContrastPair {
 /// `colour_blind_safe: false` and naming the views it still fails). `locked` slots never get a suggestion.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "pairs": [{"a": "skin", "b": "skin_shade", "kind": "mass"}, {"a": "skin_line", "b": "skin", "kind": "line"}], "background": "#ffffff"}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
 pub struct PaletteCheckContrast {
     /// The character.
     pub character: CharId,

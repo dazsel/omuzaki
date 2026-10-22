@@ -8,9 +8,13 @@
 mod templates;
 
 use omuzaki_char_api::{BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, RegistryBuilder};
-use omuzaki_core::glam::Vec3;
-use omuzaki_stage::StageError;
+use omuzaki_core::glam::{UVec2, Vec3};
+use omuzaki_render_api::{AlphaEncoding, Camera, Quality, Renderer, Scene, TargetDesc};
+use omuzaki_render_mock::MockRenderer;
+use omuzaki_stage::frame::pose::seed_base_pose;
+use omuzaki_stage::frame::{FrameInput, Stage, StageClock};
 use omuzaki_stage::scene::landmarks::{Bounds, Landmarks};
+use omuzaki_stage::{StageError, UploadOptions};
 
 fn mock() -> BuiltCharacter {
     omuzaki_stage::link();
@@ -122,4 +126,40 @@ fn a_flat_body_without_a_stature_is_a_framing_error() {
         mesh.mesh.geometry.positions.iter_mut().for_each(|p| p.y = 0.5);
     }
     assert!(matches!(Landmarks::measure(&built), Err(StageError::Framing { .. })));
+}
+
+/// The oracle: the vertices the stage itself draws when nothing animates it, in the base pose (decision 0014 §4: the
+/// character's bind pose). The landmarks must measure the character where the stage shows it.
+#[test]
+fn the_body_and_the_hands_are_measured_where_the_stage_draws_them() {
+    for id in templates::TEMPLATES {
+        let built = templates::build(id);
+        let l = Landmarks::measure(&built).unwrap();
+        let mut input = FrameInput::default();
+        seed_base_pose(&built.rig, &mut input.pose);
+        let mut renderer = MockRenderer::new();
+        let target = renderer
+            .create_target(&TargetDesc { size: UVec2::splat(16), alpha: AlphaEncoding::Straight })
+            .expect("the target is made");
+        let mut stage = Stage::new(
+            &mut renderer,
+            built,
+            UploadOptions::default(),
+            Scene::new(Camera::default()),
+            target,
+            Quality::offline(),
+            StageClock::fixed(30.0),
+        )
+        .expect("the stage starts");
+        stage.tick(&mut renderer, &input).expect("a frame renders");
+        let drawn = stage.drawn_vertices();
+        stage.release(&mut renderer).expect("the stage is released");
+        let min = drawn.iter().fold(Vec3::splat(f32::INFINITY), |m, p| m.min(*p));
+        let max = drawn.iter().fold(Vec3::splat(f32::NEG_INFINITY), |m, p| m.max(*p));
+        assert!(
+            l.body.min.abs_diff_eq(min, 1e-3) && l.body.max.abs_diff_eq(max, 1e-3),
+            "{id}: {:?} vs {min} {max}",
+            l.body
+        );
+    }
 }

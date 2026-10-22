@@ -8,8 +8,8 @@
 //! | Module | Holds |
 //! |---|---|
 //! | [`create`], [`rename`] | the two `character.*` ops |
-//! | [`access`] | reading a character from the document, building changes, and the shared error wording |
-//! | [`tree`] | what makes the parts a buildable tree, and the layer convention |
+//! | `access` | reading a character from the document, building changes, and the shared error wording |
+//! | `tree` | what makes the parts a buildable tree, and the layer convention |
 
 pub mod create;
 pub mod rename;

@@ -1,7 +1,8 @@
 section = "rust"
 item = "vello 0.11.0, vello_encoding 0.11.0, vello_shaders 0.11.0"
 kind = "crate"
-used_for = "GPU vector face painter (decided; `wgpu ^30`, the workspace's version, so one wgpu in the lockfile). Added by the spike only so far, in `spikes/face-gpu` (own lockfile) adds it to the workspace"
+used_for = "GPU vector face painter: the workspace's `omuzaki-face` GPU rasteriser (#1433, A1 adds it to the workspace; `wgpu ^30`, the workspace's version, so one wgpu in the lockfile). Since #2074 the face runs Vello's stages itself from `vello_shaders` and `vello_encoding` (direct dependencies), with resources kept between repaints"
 status = "yes"
 condition = "Apache-2.0 OR MIT (we take MIT); the licence of each crate is read from its own manifest"
 audit = "B1"
+crates = ["vello", "vello_encoding", "vello_shaders"]

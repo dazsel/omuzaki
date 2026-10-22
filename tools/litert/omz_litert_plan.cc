@@ -1,13 +1,16 @@
 // Counts the nodes of a model that Omuzaki's XNNPACK delegate takes (the check job's delegated-node count).
 //
 //   omz_litert_plan MODEL
-//       prints `delegated <nodes taken> of <nodes> in <partitions> partitions`
+//       prints `delegated <nodes taken> of <nodes> in <partitions> partitions`, then `undelegated <op>` for each node
+//       left on LiteRT's builtin kernels: the op's TfLiteBuiltinOperator number (tflite/builtin_ops.h), or
+//       `custom:<name>`
 //
 // The C API the library exports can't see an interpreter's execution plan, and LiteRT logs its own count only in
 // debug builds, so this program links the same LiteRT sources and the shim statically, built in the same Bazel run
 // with the same flags as the library, and applies the delegate exactly as the library's C API does.
 #include <cstdio>
 #include <memory>
+#include <vector>
 
 #include "tflite/c/common.h"
 #include "tflite/interpreter.h"
@@ -42,16 +45,29 @@ int main(int argc, char** argv) {
   if (!delegate) return Fail("omz_litert_xnnpack_create returned NULL");
   if (interpreter->ModifyGraphWithDelegate(delegate.get()) != kTfLiteOk) return Fail("cannot apply the delegate");
 
-  // Each partition the delegate took is one node in the plan, carrying the original nodes it replaced.
+  // Each partition the delegate took is one node in the plan, carrying the original nodes it replaced; every other node
+  // in the plan runs on a builtin kernel.
   int taken = 0;
   int partitions = 0;
+  std::vector<const TfLiteRegistration*> left;
   for (int index : interpreter->execution_plan()) {
-    const TfLiteNode& node = interpreter->node_and_registration(index)->first;
-    if (node.delegate != delegate.get()) continue;
+    const auto* node_and_registration = interpreter->node_and_registration(index);
+    const TfLiteNode& node = node_and_registration->first;
+    if (node.delegate != delegate.get()) {
+      left.push_back(&node_and_registration->second);
+      continue;
+    }
     partitions++;
     taken += static_cast<const TfLiteDelegateParams*>(node.builtin_data)->nodes_to_replace->size;
   }
   std::printf("delegated %d of %zu in %d partitions\n", taken, nodes, partitions);
+  for (const TfLiteRegistration* registration : left) {
+    if (registration->custom_name != nullptr) {
+      std::printf("undelegated custom:%s\n", registration->custom_name);
+    } else {
+      std::printf("undelegated %d\n", registration->builtin_code);
+    }
+  }
   interpreter.reset();  // before the delegate it uses
   return 0;
 }

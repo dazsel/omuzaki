@@ -6,6 +6,12 @@
 //! `conditions`, or that doesn't name the same licence. It also refuses a `register_model!` that registers a different id
 //! for the file than the manifest says. Mock crates ship test fixtures, so their `models/` folders are exempt.
 //!
+//! A shipped model's lineage (`card.lineage`: base models, training data, code, conversions) is checked too, since a
+//! model is only as clean as its chain. It must document at least one base model or training data link, and every
+//! link must name an `https://` source `url` and a licence that is exactly one entry of the allow-list ([`ALLOWED_LICENCES`], the "Allowed"
+//! section of the policy). Anything else fails, naming the model and the link: a banned licence, a non-commercial one,
+//! a made-up id, words. See "What counts as documented lineage" in `docs/licensing/policy.md`.
+//!
 //! The licence comparison is exact: the entry's `condition` must name the manifest's whole SPDX expression as
 //! whole tokens, and no non-commercial licence ships. Every `register_model!` of a crate must include one of its own
 //! `models/*.model.toml`, or the gate fails: it can't check a manifest it doesn't scan.
@@ -28,7 +34,7 @@
 //! name alone, so a file listed for one crate fails in another. Each generator emits only `mod` / `#[path]` lines into
 //! the crate's own `src/` tree (every file there is scanned), `link()` calls, or data, and never a registration macro:
 //!
-//! - `ops_mods.rs`, `crate_mods.rs`: `omuzaki_embed::modules`, one `#[path = "<abs>"] pub mod <name>;` per file or
+//! - `ops_mods.rs`, `crate_mods.rs`, `recipes_mods.rs`: `omuzaki_embed::modules`, one `#[path = "<abs>"] pub mod <name>;` per file or
 //!   folder of the crate's `src/`;
 //! - `migrations.rs`: `omuzaki-doc`'s `module_decls`, the same `#[path]` + `mod` lines for `src/migrations/`;
 //! - `link_calls.rs`: `omuzaki_link_build::emit`, one `<crate>::link();` per flagged dependency (`omuzaki-link-probe`
@@ -44,7 +50,7 @@ use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
 
-use omuzaki_ai_api::{ModelManifest, Origin};
+use omuzaki_ai_api::{Lineage, LineageKind, ModelManifest, Origin};
 use xtask::registry::lex::{Tok, Token, tokens};
 
 use crate::lint_licences::register::{self, Named};
@@ -84,6 +90,23 @@ pub fn rows(entries: &[Named]) -> Vec<Row> {
 /// Every problem with one manifest, each as one line of text (the caller prefixes the file). `text` is its TOML;
 /// `register` its rows; `sources` the `(path, text)` of the `.rs` files of its crate.
 pub fn problems(file: &str, text: &str, register: &[Row], sources: &[(String, String)]) -> Vec<String> {
+    collect_problems(file, text, register, sources).iter().map(|line| one_line(line)).collect()
+}
+
+/// `text` with every control character (a newline, an ESC) written as an escape, so a finding that quotes a manifest
+/// value stays exactly one line and can't move the terminal.
+fn one_line(text: &str) -> String {
+    escaped(text)
+}
+
+/// `value` with every character other than printable ASCII (0x20 to 0x7E) written as an escape (`\n`, `\u{1b}`). Every
+/// manifest-sourced value goes through this before it is quoted in a finding.
+fn escaped(value: &str) -> String {
+    value.chars().map(|c| if matches!(c, ' '..='~') { c.to_string() } else { c.escape_default().to_string() }).collect()
+}
+
+/// [`problems`] before its lines are made single-line.
+fn collect_problems(file: &str, text: &str, register: &[Row], sources: &[(String, String)]) -> Vec<String> {
     let manifest = match ModelManifest::from_toml(text) {
         Ok(manifest) => manifest,
         Err(error) => return vec![error.to_string()],
@@ -130,6 +153,7 @@ pub fn problems(file: &str, text: &str, register: &[Row], sources: &[(String, St
             }
         }
     }
+    out.extend(lineage_problems(&manifest));
     let file_name = base_name(file);
     for (path, source) in sources {
         for (id, include) in registrations(source).into_iter().flatten() {
@@ -143,6 +167,121 @@ pub fn problems(file: &str, text: &str, register: &[Row], sources: &[(String, St
         }
     }
     out
+}
+
+/// The licences a lineage link may carry, each a whole accepted entry from the "Allowed" section of
+/// `docs/licensing/policy.md` for code, models and data (as `deny.toml` lists whole licences for crates). A link's
+/// licence must equal one entry exactly: expressions are not parsed, so `OR`, `AND`, parentheses and bare exception
+/// ids all fail, and a dual-licensed source names the one licence we take it under. A new entry is added here with the
+/// policy page, in review.
+const ALLOWED_LICENCES: [&str; 18] = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "BSL-1.0",
+    "0BSD",
+    "Unlicense",
+    "CC0-1.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "MPL-2.0",
+    "OFL-1.1",
+    "CC-BY-3.0",
+    "CC-BY-4.0",
+    "Apache-2.0 WITH LLVM-exception",
+];
+
+/// Every problem with a shipped model's lineage: none documented, or a link without an `https://` source or with a
+/// missing or disallowed licence. Each names the model and the link.
+fn lineage_problems(manifest: &ModelManifest) -> Vec<String> {
+    let id = &manifest.id;
+    let lineage = &manifest.card.lineage;
+    let mut out = Vec::new();
+    let documents = |link: &&Lineage| {
+        matches!(link.kind, LineageKind::BaseModel | LineageKind::TrainingData) && !link.name.trim().is_empty()
+    };
+    if !lineage.iter().any(|link| documents(&link)) {
+        out.push(format!(
+            "model `{id}` has no documented lineage; `card.lineage` needs a base_model or training_data link with a name"
+        ));
+    }
+    for link in lineage {
+        let shown = escaped(&link.name);
+        let named = format!("model `{id}`: lineage link `{shown}` ({})", kind_name(link.kind));
+        if link.name.trim().is_empty() {
+            out.push(format!("model `{id}`: a {} lineage link has a blank `name`", kind_name(link.kind)));
+        } else if !link.name.chars().all(|c| matches!(c, ' '..='~')) {
+            out.push(format!("{named} has a `name` with characters other than printable ASCII"));
+        }
+        let url = link.url.as_deref().filter(|url| !url.trim().is_empty());
+        match url {
+            None => out.push(format!("{named} names no source `url`")),
+            Some(url) if !is_https_url(url) => {
+                out.push(format!(
+                    "{named} has the source `{}`, which is not an `https://` URL with a host",
+                    escaped(url)
+                ));
+            }
+            Some(_) => {}
+        }
+        let at = url.map_or(String::new(), |url| format!(" ({})", escaped(url)));
+        match link.licence.as_deref().filter(|licence| !licence.trim().is_empty()) {
+            None => out.push(format!("{named} names no licence{at}")),
+            Some(licence) if !ALLOWED_LICENCES.contains(&licence) => out.push(format!(
+                "{named} has the licence `{}`{at}; lineage licence must be one identifier from policy.md's \
+                 Allowed list (docs/licensing/policy.md)",
+                escaped(licence)
+            )),
+            Some(_) => {}
+        }
+    }
+    out
+}
+
+/// A lineage link's kind as `card.lineage` spells it in TOML.
+fn kind_name(kind: LineageKind) -> &'static str {
+    match kind {
+        LineageKind::TrainingData => "training_data",
+        LineageKind::BaseModel => "base_model",
+        LineageKind::Code => "code",
+        LineageKind::Conversion => "conversion",
+    }
+}
+
+/// Whether `url` is `https://`, then a host of two or more dot-separated labels (at most 63 characters each) of
+/// letters, digits and inner `-`, the last holding a letter (no IP-address or all-numeric host), an
+/// optional `:port` (1 to 65535), and nothing or a `/`, `?` or `#` and the rest. It may hold only printable ASCII
+/// without spaces (0x21 to 0x7E). Userinfo and IPv6 literals fail.
+fn is_https_url(url: &str) -> bool {
+    // Printable ASCII without spaces (0x21 to 0x7E), checked first: any other character anywhere fails.
+    if !url.chars().all(|c| matches!(c, '!'..='~')) {
+        return false;
+    }
+    let Some(rest) = url.strip_prefix("https://") else { return false };
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (host, port) = match rest[..end].split_once(':') {
+        Some((host, port)) => (host, Some(port)),
+        None => (&rest[..end], None),
+    };
+    let label = |label: &str| {
+        !label.is_empty()
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label.len() <= 63
+            && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    };
+    let port_ok = port.is_none_or(|port| {
+        (1..=5).contains(&port.len())
+            && port.chars().all(|c| c.is_ascii_digit())
+            && port.parse::<u32>().is_ok_and(|n| (1..=65535).contains(&n))
+    });
+    // The last label (the top-level domain) holds a letter, so a dotted-decimal or all-numeric host is refused.
+    let tld_ok = host.rsplit('.').next().is_some_and(|last| last.chars().any(|c| c.is_ascii_alphabetic()));
+    host.contains('.') && host.split('.').all(label) && tld_ok && port_ok
 }
 
 /// The last segment of a path, with `\` read as `/` (Windows paths come back with `\`).
@@ -206,7 +345,7 @@ fn is_non_commercial(spdx: &str) -> bool {
 /// `(crate, file, generator)`. The generator is the call that must appear in that crate's `build.rs`. A file allowed for
 /// one crate is not allowed for another, and nothing is allowed by file name alone. Each generator emits only `mod` /
 /// `#[path]` lines into the crate's own `src/`, `link()` calls, or data, never a registration macro.
-const GENERATED: [(&str, &str, &str); 12] = [
+const GENERATED: [(&str, &str, &str); 15] = [
     ("omuzaki-anim", "crate_mods.rs", "omuzaki_embed::modules"),
     ("omuzaki-char", "ops_mods.rs", "omuzaki_embed::modules"),
     ("omuzaki-char", "looks.rs", "looks.rs"),
@@ -215,9 +354,12 @@ const GENERATED: [(&str, &str, &str); 12] = [
     ("omuzaki-face", "ops_mods.rs", "omuzaki_embed::modules"),
     ("omuzaki-io-ops", "ops_mods.rs", "omuzaki_embed::modules"),
     ("omuzaki-link-probe", "link_calls.rs", "omuzaki_link_build::emit"),
+    ("omuzaki-mcp", "recipes_mods.rs", "omuzaki_embed::modules"),
+    ("omuzaki-script", "ops_mods.rs", "omuzaki_embed::modules"),
     ("omuzaki-stage", "crate_mods.rs", "omuzaki_embed::modules"),
     ("omuzaki-stage", "ops_mods.rs", "omuzaki_embed::modules"),
     ("omuzaki-stage", "link_calls.rs", "omuzaki_link_build::emit"),
+    ("omuzaki-test", "link_calls.rs", "omuzaki_link_build::emit"),
     ("omuzaki-test-face", "link_calls.rs", "omuzaki_link_build::emit"),
 ];
 
@@ -778,7 +920,7 @@ pub fn report(workspace: &Workspace) -> bool {
         }
     }
     for line in &found {
-        println!("{line}");
+        println!("{}", one_line(line));
     }
     if found.is_empty() {
         println!("models: ok ({checked} shipped model(s) checked, {skipped} mock fixture(s) skipped)");
@@ -863,6 +1005,12 @@ authors = "Omuzaki"
 
 [card.licence]
 spdx = "MIT OR Apache-2.0"
+
+[[card.lineage]]
+kind = "training_data"
+name = "Tiny corpus 1"
+licence = "CC0-1.0"
+url = "https://data.example/tiny-corpus"
 "#
         )
     }
@@ -878,6 +1026,194 @@ spdx = "MIT OR Apache-2.0"
 
     const HTTPS: &str = r#""https://models.example/tiny/1.0.0/tiny.fake.toml""#;
     const FILE: &str = "crates/omuzaki-tiny/models/tiny.model.toml";
+
+    #[test]
+    fn a_lineage_licence_must_equal_one_allowed_entry() {
+        let allowed = |licence: &str| ALLOWED_LICENCES.contains(&licence);
+        for ok in ["MIT", "CC-BY-4.0", "Apache-2.0 WITH LLVM-exception"] {
+            assert!(allowed(ok), "{ok}");
+        }
+        let bad = [
+            "",
+            "unknown",
+            "research only",
+            "research-only",
+            "totally-made-up",
+            "LicenseRef-custom",
+            "mit",
+            "NOASSERTION",
+            "BUSL-1.1",
+            "SSPL-1.0",
+            "FSL-1.1-MIT",
+            "CC-BY-NC-4.0",
+            "MIT WITH Apache-2.0",
+            "LLVM-exception",
+            "MIT OR Apache-2.0",
+            "MIT AND CC0-1.0",
+            "(MIT)",
+            "Apache-2.0 WITH Classpath-exception-2.0",
+        ];
+        for licence in bad {
+            assert!(!allowed(licence), "{licence}");
+        }
+    }
+
+    #[test]
+    fn expressions_and_bare_exceptions_fail_a_lineage_link() {
+        for licence in ["MIT WITH Apache-2.0", "LLVM-exception", "MIT OR Apache-2.0"] {
+            let text = manifest("tiny", HTTPS).replace("CC0-1.0", licence);
+            let found = problems(FILE, &text, &register(), &good_source("tiny"));
+            assert_eq!(found.len(), 1, "{licence}: {found:?}");
+            assert!(found[0].contains("must be one identifier from policy.md's Allowed list"), "{found:?}");
+        }
+        let text = manifest("tiny", HTTPS).replace("CC0-1.0", "Apache-2.0 WITH LLVM-exception");
+        let found = problems(FILE, &text, &register(), &good_source("tiny"));
+        assert!(found.is_empty(), "{found:?}");
+    }
+
+    /// `value` as the inside of a TOML basic string, with every character other than printable ASCII escaped, so a
+    /// control or non-ASCII character reaches the gate as a value instead of breaking the TOML.
+    fn toml_escaped(value: &str) -> String {
+        value
+            .chars()
+            .map(|c| match c {
+                ' '..='~' if c != '"' && c != '\\' => c.to_string(),
+                _ => format!("\\u{:04X}", u32::from(c)),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_lineage_url_holds_only_printable_ascii_without_spaces() {
+        let bad = [
+            " https://data.example/x",
+            "https://data.example/x ",
+            "https://data.example/x\n",
+            "https://data.example/x\u{0}",
+            "https://data.example/\u{7f}",
+            "https://data.example/é",
+            "https://dаta.example/x",
+        ];
+        for url in bad {
+            assert!(!is_https_url(url), "{url:?}");
+            let text = manifest("tiny", HTTPS).replace("https://data.example/tiny-corpus", &toml_escaped(url));
+            let found = problems(FILE, &text, &register(), &good_source("tiny"));
+            assert_eq!(found.len(), 1, "{url:?}: {found:?}");
+            assert!(found[0].contains("not an `https://` URL"), "{found:?}");
+        }
+    }
+
+    #[test]
+    fn a_lineage_name_is_printable_ascii() {
+        for name in ["Tiny\u{0}corpus", "Tiny\u{7f}", "Tiny corpus é", "Tiny\ncorpus"] {
+            let text = manifest("tiny", HTTPS).replace("Tiny corpus 1", &toml_escaped(name));
+            let found = problems(FILE, &text, &register(), &good_source("tiny"));
+            assert_eq!(found.len(), 1, "{name:?}: {found:?}");
+            assert!(found[0].contains("printable ASCII") && !found[0].contains(name), "{found:?}");
+        }
+    }
+
+    #[test]
+    fn a_blank_lineage_name_fails_and_does_not_document_the_lineage() {
+        // Both kinds that document a lineage, each unnamed, with an allowed licence and a valid url.
+        let link = |kind: &str, name: &str| {
+            format!(
+                "\n[[card.lineage]]\nkind = \"{kind}\"\nname = \"{name}\"\nlicence = \"CC0-1.0\"\n\
+                 url = \"https://data.example/x\"\n"
+            )
+        };
+        let base = manifest("tiny", HTTPS);
+        let (head, _) = base.split_once("[[card.lineage]]").unwrap();
+        let text = format!("{head}{}{}", link("base_model", ""), link("training_data", "  "));
+        let found = problems(FILE, &text, &register(), &good_source("tiny"));
+        assert_eq!(found.len(), 3, "{found:?}");
+        assert!(found.iter().any(|line| line.contains("has no documented lineage")), "{found:?}");
+        assert_eq!(found.iter().filter(|line| line.contains("blank `name`")).count(), 2, "{found:?}");
+    }
+
+    #[test]
+    fn findings_that_quote_a_manifest_value_are_one_line() {
+        let text = manifest("tiny", HTTPS)
+            .replace("CC0-1.0", &toml_escaped("MIT\n\u{1b}[2J"))
+            .replace("https://data.example/tiny-corpus", &toml_escaped("https://data.example/\n\u{1b}[2J"));
+        let found = problems(FILE, &text, &register(), &good_source("tiny"));
+        assert_eq!(found.len(), 2, "{found:?}");
+        for line in &found {
+            assert!(!line.chars().any(char::is_control), "{line:?}");
+            assert!(line.contains("\\n\\u{1b}[2J"), "{line}");
+        }
+    }
+
+    #[test]
+    fn a_rejected_url_or_licence_with_a_newline_and_esc_is_one_escaped_line() {
+        let hostile = "x\n\u{1b}[2J";
+        for (from, value, what) in [
+            ("https://data.example/tiny-corpus", format!("https://data.example/{hostile}"), "URL"),
+            ("CC0-1.0", format!("MIT{hostile}"), "licence"),
+        ] {
+            let text = manifest("tiny", HTTPS).replace(from, &toml_escaped(&value));
+            let found = problems(FILE, &text, &register(), &good_source("tiny"));
+            assert_eq!(found.len(), 1, "{what}: {found:?}");
+            assert!(!found[0].chars().any(char::is_control), "{what}: {:?}", found[0]);
+            assert!(found[0].contains("x\\n\\u{1b}[2J"), "{what}: {}", found[0]);
+        }
+        assert_eq!(escaped("a\n\u{1b}\u{202e}é~"), "a\\n\\u{1b}\\u{202e}\\u{e9}~");
+    }
+
+    #[test]
+    fn a_disallowed_lineage_licence_names_the_link_and_the_policy() {
+        for licence in ["research-only", "totally-made-up", "BUSL-1.1", "CC-BY-NC-4.0"] {
+            let text = manifest("tiny", HTTPS).replace("CC0-1.0", licence);
+            let found = problems(FILE, &text, &register(), &good_source("tiny"));
+            assert_eq!(found.len(), 1, "{licence}: {found:?}");
+            assert!(
+                found[0].contains("lineage link `Tiny corpus 1`")
+                    && found[0].contains(licence)
+                    && found[0].contains("docs/licensing/policy.md"),
+                "{found:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_lineage_url_must_be_https_with_a_host() {
+        // A 63-character label and a digit-bearing last label that still holds a letter pass.
+        assert!(is_https_url("https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example.com"));
+        assert!(is_https_url("https://1.example.co2"));
+        for url in ["https://data.example/tiny", "https://data.example:8443?q=1", "https://a-b.example.com#frag"] {
+            assert!(is_https_url(url), "{url}");
+        }
+        let bad = [
+            "http://data.example/tiny",
+            "unknown",
+            "data/tiny",
+            "https://",
+            "https:///tiny",
+            "https://data example/x",
+            "https://[not-an-ipv6]",
+            "https://[::1]/x",
+            "https://example.com:bad-port",
+            "https://example.com:99999",
+            "https://example.com:0",
+            "https://user@example.com",
+            "https://localhost",
+            "https://-a.example.com",
+            "https://a-.example.com",
+            "https://a..example.com",
+            "https://example.com:",
+            "https://999.999.999.999/",
+            "https://127.0.0.1",
+            "https://example.123",
+            "https://12345",
+            "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example.com",
+        ];
+        for url in bad {
+            let text = manifest("tiny", HTTPS).replace("https://data.example/tiny-corpus", url);
+            let found = problems(FILE, &text, &register(), &good_source("tiny"));
+            assert_eq!(found.len(), 1, "{url}: {found:?}");
+            assert!(found[0].contains("not an `https://` URL"), "{found:?}");
+        }
+    }
 
     #[test]
     fn a_good_manifest_and_row_pass() {
@@ -1524,6 +1860,10 @@ const DOC: &str = "register_model!(\"tiny\", include_str!(\"../models/tiny.model
             let other = Crate { name: "omuzaki-other", dir: "crates/omuzaki-tiny", build_script: Some(BUILD) };
             assert_eq!(unchecked_registrations(&other, &included(file)).len(), 1, "{name} {file}: other crate");
         }
+        // The MCP crate's recipe list is its own (`src/recipes/`); no other crate may include a file of that name.
+        let mcp = |name| Crate { name, dir: "crates/omuzaki-tiny", build_script: Some(BUILD) };
+        assert_eq!(unchecked_registrations(&mcp("omuzaki-mcp"), &included("recipes_mods.rs")).len(), 0);
+        assert_eq!(unchecked_registrations(&mcp("omuzaki-stage"), &included("recipes_mods.rs")).len(), 1);
         // `looks.rs` is the char crate's only; the stage crate has no such pairing.
         let stage = Crate { name: "omuzaki-stage", dir: "crates/omuzaki-tiny", build_script: Some(BUILD) };
         let found = unchecked_registrations(&stage, &included("looks.rs"));

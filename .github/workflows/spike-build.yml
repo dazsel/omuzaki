@@ -1,0 +1,185 @@
+# Builds one spike (a folder under spikes/, each its own small Cargo workspace) on one OS and uploads its release
+# binaries with a SHA256SUMS file, so the owner can take a measurement that needs hardware the cloud lacks (a GPU, a
+# hardware encoder, a kernel module) without building anything on their machine (docs/maintainers/cloud-lane.md, Lead
+# practices: real-hardware numbers come from owner runs). The lead who asked for the run files the `needs-owner` issue
+# by hand, naming the run's artifact and the one command to run; this workflow posts nothing.
+#
+# Dispatch only: a maintainer starts it from the Actions tab (or `gh workflow run spike-build.yml -f spike=<name>
+# -f os=<runner> -f target=<target>`), so it runs no pull request code and costs no pull request CI minutes. The spike is
+# built from the commit the dispatch names, with its own Cargo.lock (--locked) and the root rust-toolchain.toml.
+#
+# `target: x86_64-pc-windows-gnu` cross-compiles for Windows on ubuntu-24.04 with MinGW, as the repository's own Windows
+# build does (.cargo/config.toml); spikes written for that target (broadcast-out) build only this way.
+name: Spike build
+
+on:
+  workflow_dispatch:
+    inputs:
+      spike:
+        description: "The spike: a folder name under spikes/, for example worker-process"
+        required: true
+        type: string
+      os:
+        description: "The runner to build on"
+        required: true
+        type: choice
+        options:
+          - windows-latest
+          - macos-15
+          - ubuntu-24.04
+      target:
+        description: "host builds for the runner itself; x86_64-pc-windows-gnu cross-compiles on ubuntu-24.04"
+        required: true
+        default: host
+        type: choice
+        options:
+          - host
+          - x86_64-pc-windows-gnu
+
+permissions: {}
+
+concurrency:
+  group: spike-build-${{ inputs.spike }}-${{ inputs.os }}-${{ inputs.target }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  build:
+    name: build
+    runs-on: ${{ inputs.os }}
+    if: github.repository == 'dazsel/omuzaki'
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The inputs reach the shell only through the environment, never interpolated into a script. A spike is a plain
+      # folder name (no separator, no `..`) that matches a folder under spikes/ holding a Cargo.toml and a Cargo.lock.
+      - name: Check the inputs
+        env:
+          SPIKE: ${{ inputs.spike }}
+          TARGET: ${{ inputs.target }}
+        run: |
+          if [[ ! "$SPIKE" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
+            echo "::error::spike must be a folder name under spikes/ (lowercase letters, digits, '-' or '_'), got: $SPIKE"
+            exit 1
+          fi
+          found=""
+          for dir in spikes/*/; do
+            if [ "$(basename "$dir")" = "$SPIKE" ]; then found="$dir"; fi
+          done
+          if [ -z "$found" ] || [ ! -f "spikes/$SPIKE/Cargo.toml" ] || [ ! -f "spikes/$SPIKE/Cargo.lock" ]; then
+            echo "::error::no spike named $SPIKE: it needs spikes/$SPIKE/Cargo.toml and spikes/$SPIKE/Cargo.lock"
+            exit 1
+          fi
+          if [ "$TARGET" != host ] && [ "$RUNNER_OS" != Linux ]; then
+            echo "::error::target $TARGET cross-compiles on ubuntu-24.04 only"
+            exit 1
+          fi
+
+      # The toolchain, the system libraries and (for the Windows target) MinGW, exactly as the CI's Linux jobs set up.
+      - uses: ./.github/actions/setup-linux
+        if: runner.os == 'Linux'
+        with:
+          windows-cross: ${{ inputs.target == 'x86_64-pc-windows-gnu' }}
+
+      # A spike that builds against source it doesn't vendor fetches it with its own `tools/fetch-*.sh` (broadcast-out
+      # pins the Spout2 SDK this way). Each runs once, from the spike's folder.
+      - name: Fetch unvendored sources
+        env:
+          SPIKE: ${{ inputs.spike }}
+        run: |
+          cd "spikes/$SPIKE"
+          for script in tools/fetch-*.sh; do
+            if [ -f "$script" ]; then echo "running $script"; bash "$script"; fi
+          done
+
+      # rust-toolchain.toml at the root pins the compiler for the spike too; rustup installs it on first use.
+      - name: Build
+        env:
+          SPIKE: ${{ inputs.spike }}
+          TARGET: ${{ inputs.target }}
+        run: |
+          cd "spikes/$SPIKE"
+          if [ "$TARGET" = host ]; then
+            cargo build --release --locked
+          else
+            rustup target add "$TARGET"
+            cargo build --release --locked --target "$TARGET"
+          fi
+
+      # The top level of the release folder holds the spike's binaries and libraries; build scripts, dependency info and
+      # debug files stay behind. The licence texts that travel with them go in `notices/`: the repository's own, the
+      # spike's, those of any source a fetch script put under the spike's third_party/, and those of every crate the
+      # build resolved. The files are packed in one tarball, because an uploaded artifact loses the executable bit.
+      - name: Collect the binaries
+        env:
+          SPIKE: ${{ inputs.spike }}
+          TARGET: ${{ inputs.target }}
+        run: |
+          out="$RUNNER_TEMP/spike-out"
+          mkdir -p "$out/notices"
+          target_dir=$(cd "spikes/$SPIKE" && cargo metadata --format-version 1 --no-deps --locked | jq -r .target_directory)
+          if command -v cygpath >/dev/null; then target_dir=$(cygpath -u "$target_dir"); fi
+          if [ "$TARGET" = host ]; then release="$target_dir/release"; kind=$RUNNER_OS; else release="$target_dir/$TARGET/release"; kind=Windows; fi
+          case "$kind" in
+            Windows) find "$release" -maxdepth 1 -type f \( -name '*.exe' -o -name '*.dll' \) -exec cp {} "$out/" \; ;;
+            macOS) find "$release" -maxdepth 1 -type f \( -perm -u+x -o -name '*.dylib' \) ! -name '*.d' -exec cp {} "$out/" \; ;;
+            *) find "$release" -maxdepth 1 -type f \( -perm -u+x -o -name '*.so' \) ! -name '*.d' -exec cp {} "$out/" \; ;;
+          esac
+          if [ -z "$(find "$out" -maxdepth 1 -type f)" ]; then
+            echo "::error::spikes/$SPIKE built no binary or library in $release"
+            exit 1
+          fi
+          cp LICENSE-APACHE LICENSE-MIT "$out/notices/"
+          find "spikes/$SPIKE" -maxdepth 1 -type f \( -name 'LICENSE*' -o -name 'NOTICE*' \) -exec cp {} "$out/notices/" \;
+          for dir in "spikes/$SPIKE"/third_party/*/; do
+            [ -d "$dir" ] || continue
+            name=$(basename "$dir")
+            mkdir -p "$out/notices/$name"
+            find "$dir" -maxdepth 1 -type f \( -iname 'LICENSE*' -o -iname 'COPYING*' -o -iname 'NOTICE*' \) -exec cp {} "$out/notices/$name/" \;
+            if [ -z "$(ls -A "$out/notices/$name")" ]; then
+              echo "::error::third_party/$name has no licence file to ship with the binaries"
+              exit 1
+            fi
+          done
+          # Every crate the build resolved for this target: its licence files, and one index line (name, version,
+          # licence expression) in notices/crates/LICENSES.tsv, so a crate that ships no licence file is still named.
+          platform=$TARGET
+          if [ "$platform" = host ]; then platform=$(rustc -vV | sed -n 's/^host: //p'); fi
+          mkdir -p "$out/notices/crates"
+          (cd "spikes/$SPIKE" && cargo metadata --format-version 1 --locked --filter-platform "$platform") \
+            | jq -r '(.resolve.nodes | map({key: .id, value: true}) | from_entries) as $used
+                | .packages[] | select(.source != null and $used[.id])
+                | [.name, .version, (.license // "see files"), .manifest_path] | @tsv' \
+            | sort > "$RUNNER_TEMP/crates.tsv"
+          while IFS=$'\t' read -r name version licence manifest; do
+            printf '%s\t%s\t%s\n' "$name" "$version" "$licence" >> "$out/notices/crates/LICENSES.tsv"
+            if command -v cygpath >/dev/null; then manifest=$(cygpath -u "$manifest"); fi
+            dir="$out/notices/crates/$name-$version"
+            mkdir -p "$dir"
+            find "$(dirname "$manifest")" -maxdepth 1 -type f \( -iname 'LICENSE*' -o -iname 'LICENCE*' -o -iname 'COPYING*' -o -iname 'NOTICE*' \) -exec cp {} "$dir/" \;
+            rmdir "$dir" 2>/dev/null || true
+          done < "$RUNNER_TEMP/crates.tsv"
+          cd "$out"
+          files=$(find . -maxdepth 1 -type f ! -name SHA256SUMS | sed 's|^\./||' | sort)
+          if command -v sha256sum >/dev/null; then sha256sum -- $files > SHA256SUMS; else shasum -a 256 -- $files > SHA256SUMS; fi
+          cat SHA256SUMS
+          tar -czf "$RUNNER_TEMP/spike-$SPIKE.tar.gz" -C "$out" .
+          tar -tzvf "$RUNNER_TEMP/spike-$SPIKE.tar.gz"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: spike-${{ inputs.spike }}-${{ inputs.os }}-${{ inputs.target }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/spike-${{ inputs.spike }}.tar.gz
+          retention-days: 14
+          if-no-files-found: error

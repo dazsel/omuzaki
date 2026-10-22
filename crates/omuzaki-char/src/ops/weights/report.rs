@@ -32,6 +32,12 @@ const NORMALISED_TOLERANCE: f32 = 1e-4;
 /// image (see `rig.weights.mirror`). A disabled part is not built, so its report says so and counts nothing.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "part": "body"}
+    ],
+    "x-omuzaki-fixture" = "character-brush"
+))]
 pub struct WeightsReport {
     /// The character the part belongs to.
     pub character: CharId,
