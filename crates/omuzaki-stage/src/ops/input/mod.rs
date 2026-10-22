@@ -13,6 +13,7 @@
 //! | `input.recheck` | `perform` | as the policy says | none: it only restarts the doctor's measuring |
 //! | `input.calibrate {cancel}` | `perform` | Confirm to start (it reads the face); anyone may cancel | none: calibrating again replaces it |
 //! | `input.calibration` | `read` | free | none (a query) |
+//! | `input.health` | `read` | free | none (a query) |
 //!
 //! The two choices are Machine settings (`input.source`, `input.camera`): when the App registers a
 //! [`Settings`](omuzaki_settings_api::service::Settings) service, the ops write them there too, and their answer says
@@ -33,6 +34,7 @@ pub mod bind_camera;
 pub mod calibrate;
 pub mod calibration;
 pub mod doctor;
+pub mod health;
 pub mod preview;
 pub mod recheck;
 pub mod request_camera;

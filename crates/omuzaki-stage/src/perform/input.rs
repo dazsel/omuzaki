@@ -28,7 +28,8 @@ use omuzaki_settings_api::meta::{AgentWrite, Apply, InProfile, SettingMeta, Sett
 use omuzaki_settings_api::register_setting;
 use omuzaki_settings_api::setting::Setting;
 use omuzaki_track_api::camera::CameraId;
-use omuzaki_track_api::doctor::Diagnosis;
+use omuzaki_metrics_api::budget::{BudgetKey, BudgetUse, TRACK_FACE};
+use omuzaki_track_api::doctor::{Diagnosis, Finding};
 use omuzaki_track_api::error::TrackError;
 use omuzaki_track_api::tracker::{Tracker, TrackerConfig};
 use schemars::JsonSchema;
@@ -203,6 +204,34 @@ pub struct InputState {
     pub tracking: Tracking,
 }
 
+/// How the running capture is doing (PF-26), read by `input.health`: its rate, latency and drops, its use of the
+/// `track.face` budget, and what the doctor finds.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
+pub struct InputHealth {
+    /// Whether a capture runs. With none, every other field is empty.
+    pub running: bool,
+    /// Tracker frames per second as the performer sees them.
+    pub source_fps: f32,
+    /// Latency from the frame's arrival to its publish, median, milliseconds.
+    pub latency_ms_p50: f32,
+    /// The same, 95th percentile.
+    pub latency_ms_p95: f32,
+    /// The same, worst seen.
+    pub latency_ms_max: f32,
+    /// Frames published this session.
+    pub frames: u64,
+    /// Frames lost or skipped this session.
+    pub dropped: u64,
+    /// `dropped` as a share of all the frames that came, 0 to 1.
+    pub dropped_share: f32,
+    /// The latency's 95th percentile against the spec §10 `track.face` budget (5 ms), for the webcam: the phone
+    /// tracks on the phone, so its latency is the network's and has no budget here.
+    pub budget: Option<BudgetUse>,
+    /// What the tracking doctor finds now (`input.doctor` gives the fixes).
+    pub findings: Vec<Finding>,
+}
+
 /// Why the input could not do what it was asked.
 #[derive(Clone, Debug, PartialEq, thiserror::Error)]
 #[non_exhaustive]
@@ -304,6 +333,11 @@ pub trait InputHost: Send + Sync {
     /// Where the guided calibration stands.
     fn guided(&self) -> GuidedStatus {
         GuidedStatus::Idle
+    }
+
+    /// How the running capture is doing (PF-26).
+    fn health(&self) -> InputHealth {
+        InputHealth::default()
     }
 }
 
@@ -727,6 +761,34 @@ impl InputHost for LiveInput {
 
     fn guided(&self) -> GuidedStatus {
         self.guided.status()
+    }
+
+    #[allow(clippy::cast_precision_loss)] // frame counts as a share
+    fn health(&self) -> InputHealth {
+        let findings = self.diagnoses().into_iter().map(|d| d.finding).collect();
+        let inner = self.inner();
+        if !inner.preview.is_on() {
+            return InputHealth::default();
+        }
+        let phone = inner.phone.as_ref().filter(|_| inner.source == SourceKind::Iphone);
+        let (stats, on_phone) = (phone.map_or_else(|| inner.tracker.latency(), |phone| phone.latency()), phone.is_some());
+        drop(inner);
+        let ms = |d: std::time::Duration| d.as_secs_f32() * 1e3;
+        let came = stats.frames + stats.dropped;
+        InputHealth {
+            running: true,
+            source_fps: self.perform.status().source_fps,
+            latency_ms_p50: ms(stats.p50),
+            latency_ms_p95: ms(stats.p95),
+            latency_ms_max: ms(stats.max),
+            frames: stats.frames,
+            dropped: stats.dropped,
+            dropped_share: if came > 0 { stats.dropped as f32 / came as f32 } else { 0.0 },
+            budget: (!on_phone).then(|| {
+                BudgetUse::new(BudgetKey::TrackFace, f64::from(ms(stats.p95)), TRACK_FACE.0 * 1e3, false)
+            }),
+            findings,
+        }
     }
 }
 
