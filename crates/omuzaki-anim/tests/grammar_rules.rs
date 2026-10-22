@@ -1063,7 +1063,7 @@ fn play(seed: u64, smile: f32, loud: f32) -> Vec<Played> {
             let mut bus = if laughing { lips(smile, 0.0, 0.55, 0.0) } else { lips(0.1, 0.0, 0.0, 0.0) };
             life.step(
                 tick(i),
-                &Cues { loudness: if laughing { loud } else { 0.0 }, onset: false, laugh: 0.0 },
+                &Cues { loudness: if laughing { loud } else { 0.0 }, onset: false, laugh: 0.0, ..Cues::default() },
                 &mut bus,
             );
             let from_life = bus;
