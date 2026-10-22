@@ -4547,6 +4547,7 @@ dependencies = [
  "omuzaki-store-api",
  "omuzaki-stream",
  "omuzaki-stream-api",
+ "omuzaki-stream-share",
  "omuzaki-track-api",
  "omuzaki-twitch",
  "omuzaki-vcam",
@@ -5773,6 +5774,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-stream-share"
+version = "0.0.0"
+dependencies = [
+ "libc",
+ "objc2 0.6.5",
+ "objc2-foundation 0.3.2",
+ "objc2-metal 0.3.2",
+ "omuzaki-core",
+ "omuzaki-render-api",
+ "omuzaki-stream-api",
+ "windows",
+]
+
+[[package]]
 name = "omuzaki-take-api"
 version = "0.0.0"
 dependencies = [
@@ -6070,6 +6085,7 @@ dependencies = [
  "omuzaki-store-api",
  "omuzaki-stream",
  "omuzaki-stream-api",
+ "omuzaki-stream-share",
  "omuzaki-track",
  "omuzaki-track-api",
  "omuzaki-track-mock",
