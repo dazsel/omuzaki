@@ -252,36 +252,48 @@ fn kind_name(kind: LineageKind) -> &'static str {
     }
 }
 
-/// Whether `url` is `https://`, then a host of two or more dot-separated labels (at most 63 characters each) of
-/// letters, digits and inner `-`, the last holding a letter (no IP-address or all-numeric host), an
-/// optional `:port` (1 to 65535), and nothing or a `/`, `?` or `#` and the rest. It may hold only printable ASCII
-/// without spaces (0x21 to 0x7E). Userinfo and IPv6 literals fail.
+/// Whether `url` is an `https://` URL that WHATWG parsing ([`url::Url::parse`]) accepts, with a domain or an IP host
+/// and no userinfo. It may hold only printable ASCII without spaces (0x21 to 0x7E), so no whitespace, control or
+/// non-ASCII character reaches the parser. Beyond the parser: a domain has two or more labels of letters, digits and
+/// inner `-` (at most 63 characters each, which the parser doesn't enforce), and an IP host is written the way it is
+/// parsed (`https://12345` reads as `0.0.48.57`, and is refused; IPv6 may be spelled any valid way); an empty
+/// authority (`https:///host`), an empty port (`host:`) and port 0 fail.
 fn is_https_url(url: &str) -> bool {
-    // Printable ASCII without spaces (0x21 to 0x7E), checked first: any other character anywhere fails.
     if !url.chars().all(|c| matches!(c, '!'..='~')) {
         return false;
     }
     let Some(rest) = url.strip_prefix("https://") else { return false };
-    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    let (host, port) = match rest[..end].split_once(':') {
-        Some((host, port)) => (host, Some(port)),
-        None => (&rest[..end], None),
-    };
-    let label = |label: &str| {
-        !label.is_empty()
-            && !label.starts_with('-')
-            && !label.ends_with('-')
-            && label.len() <= 63
-            && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
-    };
-    let port_ok = port.is_none_or(|port| {
-        (1..=5).contains(&port.len())
-            && port.chars().all(|c| c.is_ascii_digit())
-            && port.parse::<u32>().is_ok_and(|n| (1..=65535).contains(&n))
-    });
-    // The last label (the top-level domain) holds a letter, so a dotted-decimal or all-numeric host is refused.
-    let tld_ok = host.rsplit('.').next().is_some_and(|last| last.chars().any(|c| c.is_ascii_alphabetic()));
-    host.contains('.') && host.split('.').all(label) && tld_ok && port_ok
+    let Ok(parsed) = url::Url::parse(url) else { return false };
+    let authority = &rest[..rest.find(['/', '?', '#', '\\']).unwrap_or(rest.len())];
+    if authority.is_empty()
+        || parsed.scheme() != "https"
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || authority.contains('@')
+        || authority.ends_with(':')
+        || parsed.port() == Some(0)
+    {
+        return false;
+    }
+    match parsed.host() {
+        Some(url::Host::Domain(domain)) => {
+            let label = |label: &str| {
+                !label.is_empty()
+                    && !label.starts_with('-')
+                    && !label.ends_with('-')
+                    && label.len() <= 63
+                    && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+            };
+            domain.contains('.') && domain.split('.').all(label)
+        }
+        // Any valid IPv6 spelling (expanded, upper case) is one address; only an IPv4 host must be spelled as it parses.
+        Some(url::Host::Ipv6(_)) => true,
+        Some(url::Host::Ipv4(_)) => {
+            let raw = authority.rsplit_once(':').map_or(authority, |(host, _)| host);
+            parsed.host_str() == Some(raw)
+        }
+        None => false,
+    }
 }
 
 /// The last segment of a path, with `\` read as `/` (Windows paths come back with `\`).
@@ -1180,6 +1192,18 @@ url = "https://data.example/tiny-corpus"
         // A 63-character label and a digit-bearing last label that still holds a letter pass.
         assert!(is_https_url("https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example.com"));
         assert!(is_https_url("https://1.example.co2"));
+        for ok in [
+            "https://127.0.0.1/x",
+            "https://8.8.8.8:8443?q=1",
+            "https://[::1]/x",
+            "https://[2001:db8::1]:443/",
+            "https://[2001:0db8::1]/source",
+            "https://[2001:0DB8:0:0:0:0:0:1]/source",
+            "https://[2001:DB8::1]:443",
+            "https://[::ffff:1.2.3.4]/x",
+        ] {
+            assert!(is_https_url(ok), "{ok}");
+        }
         for url in ["https://data.example/tiny", "https://data.example:8443?q=1", "https://a-b.example.com#frag"] {
             assert!(is_https_url(url), "{url}");
         }
@@ -1191,7 +1215,6 @@ url = "https://data.example/tiny-corpus"
             "https:///tiny",
             "https://data example/x",
             "https://[not-an-ipv6]",
-            "https://[::1]/x",
             "https://example.com:bad-port",
             "https://example.com:99999",
             "https://example.com:0",
@@ -1201,14 +1224,27 @@ url = "https://data.example/tiny-corpus"
             "https://a-.example.com",
             "https://a..example.com",
             "https://example.com:",
+            "https:///example.com:",
+            "https:///@example.com/",
+            "https:///example.com/x",
+            "https://\\example.com/x",
+            "https:\\\\example.com/x",
+            "https:\\\\\\example.com:",
+            "https://[2001:db8::1",
+            "https://[2001:db8::1]x",
             "https://999.999.999.999/",
-            "https://127.0.0.1",
+            "https://1.2.3.0x100/source",
+            "https://user:pass@host.example/",
+            "https://@host.example/",
+            "http://host.example/",
             "https://example.123",
             "https://12345",
+            "https://[::1",
+            "https://0x7f.1",
             "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example.com",
         ];
         for url in bad {
-            let text = manifest("tiny", HTTPS).replace("https://data.example/tiny-corpus", url);
+            let text = manifest("tiny", HTTPS).replace("https://data.example/tiny-corpus", &toml_escaped(url));
             let found = problems(FILE, &text, &register(), &good_source("tiny"));
             assert_eq!(found.len(), 1, "{url}: {found:?}");
             assert!(found[0].contains("not an `https://` URL"), "{found:?}");

@@ -1,7 +1,7 @@
 //! `cargo xtask dist`: the Windows zip (`omuzaki.exe`, models, notices) the owner unpacks on Windows (spec v3 §31, §40).
 //!
 //! The zip is deterministic: entries sorted by name, timestamps fixed at 1980-01-01, one permission mode, deflate level
-//! 6, so two runs over the same inputs give identical bytes. Nothing is downloaded: every input is a local path.
+//! 6, so two runs over the same inputs give identical bytes, on any host. Nothing is downloaded: every input is a local path.
 
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -13,7 +13,7 @@ use std::process::{Command, Stdio};
 use clap::{ArgGroup, Args};
 use sha2::{Digest, Sha256};
 use zip::write::SimpleFileOptions;
-use zip::{CompressionMethod, DateTime, ZipArchive, ZipWriter};
+use zip::{CompressionMethod, DateTime, System, ZipArchive, ZipWriter};
 
 /// The one target the zip supports.
 const TARGET: &str = "x86_64-pc-windows-gnu";
@@ -281,6 +281,9 @@ pub fn write_zip(inputs: &DistInputs, out: &Path) -> Result<PathBuf, DistError> 
         .compression_method(CompressionMethod::Deflated)
         .compression_level(Some(6))
         .last_modified_time(DateTime::default())
+        // Named, because the zip crate otherwise records the host's own system (DOS on Windows, Unix elsewhere), so the
+        // same inputs would give different bytes, and different permission bits on reading, depending on the host.
+        .system(System::Unix)
         .unix_permissions(0o644);
     let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
     for (name, bytes) in &entries {

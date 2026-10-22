@@ -3949,6 +3949,7 @@ dependencies = [
  "omuzaki-doc-api",
  "omuzaki-face-api",
  "omuzaki-io-api",
+ "omuzaki-io-fbx",
  "omuzaki-io-gltf",
  "omuzaki-io-ops",
  "omuzaki-io-vrm",
@@ -4264,6 +4265,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-io-fbx"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-core",
+ "omuzaki-io-api",
+ "ufbx",
+]
+
+[[package]]
 name = "omuzaki-io-gltf"
 version = "0.0.0"
 dependencies = [
@@ -4344,6 +4354,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sys-locale",
+ "tempfile",
  "thiserror 2.0.21",
  "tracing",
  "unic-langid",
@@ -4359,6 +4370,7 @@ dependencies = [
  "omuzaki-core",
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
+ "omuzaki-identity-api",
  "omuzaki-io-api",
  "omuzaki-ops-api",
  "omuzaki-store-api",
@@ -4778,6 +4790,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-setup"
+version = "0.0.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "omuzaki-stage"
 version = "0.0.0"
 dependencies = [
@@ -4807,6 +4826,7 @@ dependencies = [
  "omuzaki-face-mock",
  "omuzaki-http",
  "omuzaki-io-api",
+ "omuzaki-io-fbx",
  "omuzaki-io-ops",
  "omuzaki-io-vrm",
  "omuzaki-link-build",
@@ -7165,6 +7185,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ufbx"
+version = "0.11.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "260522f1eb74139f0e78b29dd82a58e5437d728c5498024a39e5af7282694240"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "unarray"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8332,6 +8361,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "toml",
+ "url",
  "zip",
 ]
 

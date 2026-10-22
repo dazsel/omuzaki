@@ -8,6 +8,7 @@ use serde_json::Value;
 
 use crate::migrations::{self, CURRENT_SCHEMA, SchemaError};
 use crate::publisher::Publisher;
+use crate::rights::AssetInfo;
 use crate::{IdError, ItemId, ItemKind, ItemRights, Section, Target, Version, VersionError};
 
 /// Why a manifest couldn't be read. Semantic problems are not parse errors: [`ItemManifest::check`] reports those,
@@ -341,8 +342,12 @@ fn is_true(b: &bool) -> bool {
 /// `id`, `version` and `section` are kept as written so that [`check`](Self::check) can name a bad one instead of
 /// the whole file failing to parse; [`item_id`](Self::item_id), [`item_version`](Self::item_version) and
 /// [`item_section`](Self::item_section) give the typed values once the manifest checks clean.
+///
+/// The struct is `#[non_exhaustive]` (ADR 0054): build one with [`ItemManifest::new`] and set the optional fields on
+/// the result, so a new field never breaks a caller.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct ItemManifest {
     /// The manifest format version (`1`).
     pub schema: u32,
@@ -395,6 +400,10 @@ pub struct ItemManifest {
     /// Store hashes of binaries the item needs; never in first-party items.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub assets: BTreeMap<String, ContentHash>,
+    /// What the manifest says about each asset before it is requested: its size and its own rights. When present it
+    /// has exactly the keys of `assets` ([`check`](Self::check) says which are missing or extra).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub asset_info: BTreeMap<String, AssetInfo>,
     /// The recipe, in order (`[[step]]`).
     #[serde(default, rename = "step")]
     pub steps: Vec<Step>,
@@ -423,6 +432,49 @@ fn is_default_compat(c: &Compat) -> bool {
 }
 
 impl ItemManifest {
+    /// A manifest at the current schema with the required fields; every optional field is empty and it is listed. Set
+    /// `summary` and add `steps` on the result: [`check`](Self::check) says so until you do.
+    pub fn new(
+        id: impl Into<String>,
+        version: impl Into<String>,
+        section: impl Into<String>,
+        kind: ItemKind,
+        target: Target,
+        title: impl Into<String>,
+        rights: ItemRights,
+    ) -> Self {
+        Self {
+            schema: CURRENT_SCHEMA,
+            id: id.into(),
+            version: version.into(),
+            section: section.into(),
+            kind,
+            target,
+            slot: None,
+            title: title.into(),
+            summary: String::new(),
+            tags: Vec::new(),
+            titles: BTreeMap::new(),
+            tags_i18n: BTreeMap::new(),
+            origin: None,
+            rights,
+            compat: Compat::default(),
+            creates: BTreeMap::new(),
+            target_part: Vec::new(),
+            name: None,
+            params: BTreeMap::new(),
+            assets: BTreeMap::new(),
+            asset_info: BTreeMap::new(),
+            steps: Vec::new(),
+            preview: None,
+            migrate: None,
+            listed: true,
+            deprecated: None,
+            publisher: None,
+            signature: None,
+        }
+    }
+
     /// Reads a manifest from TOML. Older schemas are migrated in memory; unknown keys are refused.
     ///
     /// # Errors

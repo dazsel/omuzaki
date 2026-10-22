@@ -261,8 +261,11 @@ pub(super) fn discard(_dir: &Dir, temp: &Temp) {
 /// Flags for one step of a walk: a folder (which needs backup semantics to be opened at all), and the link itself
 /// rather than what it points at.
 const FOLDER_LINK: FILE_FLAGS_AND_ATTRIBUTES = FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT;
-/// Flags for the file at the end: the link itself, if it is one.
-const FILE_LINK: FILE_FLAGS_AND_ATTRIBUTES = FILE_FLAG_OPEN_REPARSE_POINT;
+/// Flags for the name at the end: the link itself, if it is one. Backup semantics, because without them `CreateFileW`
+/// answers "access denied" for a folder, and the open of a folder where a file was named would be `Denied` here and
+/// `NotAFile` (`Invalid`) on Unix. With them the folder opens, and `check_file` then refuses it as `NotAFile` on every
+/// OS. The flag grants nothing by itself: it asks the OS to honour a backup privilege the process does not hold.
+const FILE_LINK: FILE_FLAGS_AND_ATTRIBUTES = FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT;
 
 /// A handle, and whether `OPEN_ALWAYS` found something already there.
 struct Opened {
