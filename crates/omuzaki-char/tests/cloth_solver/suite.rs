@@ -1068,7 +1068,11 @@ fn compliance(code: u8, exponent: f32) -> f32 {
     }
 }
 
-const FUZZ_CASES: u32 = 64;
+/// The fuzz's cases: 64 (a million steps) in the nightly run, which sets `OMUZAKI_FULL_TESTS`; 8 in the pull request
+/// gate, whose test shards have a time limit (#2300).
+fn fuzz_cases() -> u32 {
+    if std::env::var_os("OMUZAKI_FULL_TESTS").is_some() { 64 } else { 8 }
+}
 const FUZZ_STEPS: usize = 15_625;
 
 /// Checks the limiter's promise where it holds exactly, right after its pass in a frame's last sub-step: each particle is within
@@ -1098,9 +1102,9 @@ impl SubstepHook for Reach {
 }
 
 proptest! {
-    // A fixed seed: CI explores the same million steps every run, and a failure reproduces.
+    // A fixed seed: each run explores the same steps, and a failure reproduces.
     #![proptest_config(ProptestConfig {
-        cases: FUZZ_CASES,
+        cases: fuzz_cases(),
         failure_persistence: None,
         rng_seed: proptest::test_runner::RngSeed::Fixed(544),
         ..ProptestConfig::default()

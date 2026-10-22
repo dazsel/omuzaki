@@ -84,16 +84,19 @@ fn block(min: Vec3, max: Vec3) -> MeshData {
 /// off (the combination is what shows); `neck_length` is inside the torso loft and `hand_size` has no mesh yet
 /// (`hands::build` is a stub), so neither is visible and neither is asserted.
 ///
-/// All four templates are fitted, in every build: the four fits are independent, so they run side by side, and a debug
-/// build (CI's) takes about the time of one.
+/// All four templates are fitted in the nightly run (which sets `OMUZAKI_FULL_TESTS`) and the two furthest apart,
+/// soft-sd and tall, in the pull request gate, whose test shards have a time limit (#2300). The fits are independent, so
+/// they run side by side.
 #[test]
 fn recovers_a_random_character_on_each_template() {
     let truth = random_params(SEED);
     let ratio = |p: &FitParams| (p.proportions.leg_length / p.proportions.torso_length).ln();
     let fits = std::thread::scope(|s| {
         let truth = &truth;
+        let full = std::env::var_os("OMUZAKI_FULL_TESTS").is_some();
         let running: Vec<_> = TEMPLATES
             .iter()
+            .filter(|&&template| full || matches!(template, "soft-sd" | "tall"))
             .map(|&template| {
                 s.spawn(move || {
                     let tg = targets(template, truth, &[], &VIEWS, HEIGHT);
