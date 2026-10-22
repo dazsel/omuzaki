@@ -19,7 +19,7 @@ fn applying_an_op_emits_op_applied_then_tx_committed() {
     let record = rig.set("a", json!(1)).applied.unwrap();
     assert_eq!(
         drain(&rx),
-        vec![Event::op_applied(record.clone()), Event::tx_committed(record.tx, "test.set", person())]
+        vec![Event::op_applied(record.clone()), Event::tx_committed(record.tx, super::SET, person())]
     );
 }
 
@@ -54,8 +54,8 @@ fn undo_and_redo_emit_their_events() {
     assert_eq!(
         drain(&rx),
         vec![
-            Event::undone(tx, "test.set", person(), person(), DocVersion(2)),
-            Event::redone(tx, "test.set", person(), person(), DocVersion(3)),
+            Event::undone(tx, super::SET, person(), person(), DocVersion(2)),
+            Event::redone(tx, super::SET, person(), person(), DocVersion(3)),
         ]
     );
 }

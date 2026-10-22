@@ -64,6 +64,7 @@ use serde_json::{Map, Value};
 
 use crate::error::StoreError;
 use crate::layout::Segs;
+use crate::source::{EntryKind, FileSource};
 use crate::toml_read::{ReadError, parse_table};
 
 /// Extension of the files that make up the tree.
@@ -113,19 +114,33 @@ pub(crate) fn file_path(dir: &Path, segs: &[String]) -> PathBuf {
 /// and is left alone: other file types, anything whose name starts with `.` (like `.omuzaki/` and the temporary files
 /// `save` leaves behind if it is interrupted), symbolic links (so a link can never lead the store out of the
 /// project), names that aren't valid UTF-8, and folders holding no TOML.
+#[cfg(test)]
 pub(crate) fn load(
     dir: &Path,
     accept: impl FnOnce(&Map<String, Value>) -> Result<(), StoreError>,
 ) -> Result<Loaded, StoreError> {
-    let project_file = dir.join(PROJECT_FILE);
-    if !fs::symlink_metadata(&project_file).is_ok_and(|m| m.is_file()) {
-        return Err(StoreError::NotAProject { dir: dir.to_path_buf() });
-    }
-    accept(&parse_file(&project_file)?.0)?;
+    load_from(&FileSource::Folder(dir), accept)
+}
+
+/// [`load`] from any [`FileSource`]: the folder, or a snapshot's file bytes. The rules are the same code.
+pub(crate) fn load_from(
+    source: &FileSource<'_>,
+    accept: impl FnOnce(&Map<String, Value>) -> Result<(), StoreError>,
+) -> Result<Loaded, StoreError> {
+    accept(&read_project_file(source)?)?;
     // The walk below reads `project.toml` again; one small file is cheaper than special-casing it.
     let mut files = Vec::new();
-    let root = Value::Object(load_folder(dir, &mut Vec::new(), &mut files)?);
+    let root = Value::Object(load_folder(source, &mut Vec::new(), &mut files)?);
     Ok(Loaded { root, files })
+}
+
+/// The contents of `project.toml`, or [`StoreError::NotAProject`] when the folder has none.
+pub(crate) fn read_project_file(source: &FileSource<'_>) -> Result<Map<String, Value>, StoreError> {
+    let project_file = [PROJECT_FILE.to_owned()];
+    if !source.is_file(&project_file) {
+        return Err(StoreError::NotAProject { dir: source.dir().to_path_buf() });
+    }
+    Ok(parse_text(source.path(&project_file), source.read_text(&project_file)?)?.0)
 }
 
 /// What an entry of the tree is on disk. Its name is the folder's name, or the file's without `.toml`.
@@ -134,51 +149,53 @@ enum Kind {
     Toml,
 }
 
-fn load_folder(dir: &Path, at: &mut Segs, files: &mut Vec<LoadedFile>) -> Result<Map<String, Value>, StoreError> {
+pub(crate) fn load_folder(
+    source: &FileSource<'_>,
+    at: &mut Segs,
+    files: &mut Vec<LoadedFile>,
+) -> Result<Map<String, Value>, StoreError> {
     let mut map = Map::new();
-    for (name, kind) in list(dir)? {
+    let dir = source.path(at);
+    for (name, kind) in list(source, at)? {
         match kind {
             Kind::Folder => {
                 at.push(name.clone());
-                let child = load_folder(&dir.join(&name), at, files)?;
+                let child = load_folder(source, at, files)?;
                 at.pop();
                 if !child.is_empty() {
-                    insert(&mut map, dir, &name, Value::Object(child))?;
+                    insert(&mut map, &dir, &name, Value::Object(child))?;
                 }
             }
             Kind::Toml => {
-                let (table, text) = parse_file(&dir.join(format!("{name}{EXT}")))?;
+                at.push(format!("{name}{EXT}"));
+                let text = source.read_text(at);
+                let path = source.path(at);
+                at.pop();
+                let (table, text) = parse_text(path, text?)?;
                 at.push(name.clone());
                 files.push(LoadedFile { segs: at.clone(), sticky: !table.is_empty(), text });
                 at.pop();
-                insert(&mut map, dir, &name, Value::Object(table))?;
+                insert(&mut map, &dir, &name, Value::Object(table))?;
             }
         }
     }
     Ok(map)
 }
 
-/// The entries of `dir` that belong to the tree, by name.
-fn list(dir: &Path) -> Result<Vec<(String, Kind)>, StoreError> {
-    let mut found = Vec::new();
-    for entry in fs::read_dir(dir).map_err(|e| StoreError::io(dir, e))? {
-        let entry = entry.map_err(|e| StoreError::io(dir, e))?;
-        let Ok(name) = entry.file_name().into_string() else { continue };
-        if name.starts_with('.') {
-            continue;
-        }
-        let kind = entry.file_type().map_err(|e| StoreError::io(entry.path(), e))?;
-        if kind.is_dir() {
-            found.push((name, Kind::Folder));
-        } else if kind.is_file()
-            && let Some(stem) = name.strip_suffix(EXT).filter(|s| !s.is_empty())
-        {
-            found.push((stem.to_owned(), Kind::Toml));
-        }
-    }
-    // Read order is the operating system's; sorting makes which error is reported first repeatable.
-    found.sort_by(|a, b| a.0.cmp(&b.0));
-    Ok(found)
+/// The entries of the folder `at` that belong to the tree, by name. Everything [`FileSource::list`] leaves out (hidden
+/// names, names that aren't UTF-8) is out, and so are links and files that aren't `.toml`.
+fn list(source: &FileSource<'_>, at: &[String]) -> Result<Vec<(String, Kind)>, StoreError> {
+    Ok(source
+        .list(at)?
+        .into_iter()
+        .filter_map(|(name, kind)| match kind {
+            EntryKind::Folder => Some((name, Kind::Folder)),
+            EntryKind::File => {
+                name.strip_suffix(EXT).filter(|s| !s.is_empty()).map(|stem| (stem.to_owned(), Kind::Toml))
+            }
+            EntryKind::Other => None,
+        })
+        .collect())
 }
 
 fn insert(map: &mut Map<String, Value>, dir: &Path, key: &str, value: Value) -> Result<(), StoreError> {
@@ -194,11 +211,15 @@ fn insert(map: &mut Map<String, Value>, dir: &Path, key: &str, value: Value) -> 
 
 /// The table in a file, and the file's text.
 fn parse_file(path: &Path) -> Result<(Map<String, Value>, String), StoreError> {
-    let text = read_text(path)?;
+    parse_text(path.to_path_buf(), read_text(path)?)
+}
+
+/// The table in `text`, the text of the file at `path`, and the text.
+fn parse_text(path: PathBuf, text: String) -> Result<(Map<String, Value>, String), StoreError> {
     parse_table(&text).map(|table| (table, text)).map_err(|e| match e {
-        ReadError::Syntax(source) => StoreError::Syntax { path: path.to_path_buf(), source },
+        ReadError::Syntax(source) => StoreError::Syntax { path, source },
         ReadError::Unsupported { at, reason } => {
-            StoreError::Unsupported { path: path.to_path_buf(), reason: format!("{reason} (at {at})") }
+            StoreError::Unsupported { path, reason: format!("{reason} (at {at})") }
         }
     })
 }

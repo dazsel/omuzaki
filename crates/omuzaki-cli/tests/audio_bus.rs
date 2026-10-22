@@ -126,8 +126,12 @@ fn an_agent_routing_a_microphone_to_the_stream_needs_a_person() {
         "bus": "mic2", "channels": "mono",
         "sources": [{ "type": "device", "role": "mic" }], "sends": [{ "to": "program" }],
     });
-    let refused = run(&runner, &agent, "audio.bus.create", mic).expect_err("an agent can't route the mic out");
-    assert_eq!(refused.code, ErrorCode::Denied);
-    assert!(refused.message.contains("mic to program_out"), "{}", refused.message);
+    // The agent's request waits for the person's approval, and runs only if they give it.
+    let waiting = run(&runner, &agent, "audio.bus.create", mic).expect_err("an agent can't route the mic out alone");
+    assert_eq!(waiting.code, ErrorCode::Waiting);
+    let asks = matches!(waiting.detail.as_deref(), Some(omuzaki_ops_api::ErrorDetail::Queued {
+        need: omuzaki_ops_api::Need::Person { reason }, ..
+    }) if reason.contains("mic to program_out"));
+    assert!(asks, "it asks the person why: {waiting:?}");
     assert_eq!(bus_ids(&engine.graph()), ["program"], "the engine never saw it");
 }

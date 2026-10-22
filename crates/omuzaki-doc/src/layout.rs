@@ -139,6 +139,17 @@ impl Layout {
         }
     }
 
+    /// Takes the folder that replaced the file `file` on disk as that key's layout: the file's entry goes, and each of
+    /// `files` (its files, each with whether it has content) is on disk and clean.
+    pub(crate) fn adopt_folder(&mut self, file: &[String], files: impl IntoIterator<Item = (Segs, bool)>) {
+        self.files.remove(file);
+        self.deleted.remove(file);
+        for (path, sticky) in files {
+            self.deleted.remove(&path);
+            self.files.insert(path, Entry { on_disk: true, pending: Pending::Clean, sticky });
+        }
+    }
+
     /// Records that the file for `path` was deleted.
     pub(crate) fn mark_deleted(&mut self, path: &[String]) {
         self.deleted.remove(path);

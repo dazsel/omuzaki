@@ -1,7 +1,7 @@
 section = "rust"
 item = "toml, toml_edit"
 kind = "crate"
-used_for = "project files"
+used_for = "project files, and the session file (`omuzaki-settings`)"
 status = "yes"
 audit = "(crates.io: MIT OR Apache-2.0)"
 crates = ["toml", "toml_edit"]

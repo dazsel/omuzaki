@@ -24,12 +24,12 @@ fn ops_in_a_transaction_share_its_id_and_are_one_undo_step() {
 }
 
 #[test]
-fn an_op_without_a_transaction_is_its_own_one_op_step_labelled_by_its_name() {
+fn an_op_without_a_transaction_is_its_own_one_op_step_labelled_by_its_summary() {
     let rig = rig(json!({}));
     let a = rig.set("a", json!(1)).applied.unwrap();
     let b = rig.set("b", json!(2)).applied.unwrap();
     assert_ne!(a.tx, b.tx);
-    assert_eq!(rig.undo().unwrap().as_deref(), Some("test.set"));
+    assert_eq!(rig.undo().unwrap().as_deref(), Some(super::SET));
     assert_eq!((rig.at("a"), rig.at("b")), (Some(json!(1)), None));
 }
 
@@ -137,7 +137,7 @@ fn committing_an_empty_transaction_adds_no_undo_step_and_emits_the_event() {
     let rx = rig.subscribe();
     let tx = rig.exec.begin("nothing", &person());
     rig.exec.commit(tx, &person()).unwrap();
-    assert_eq!(rig.undo().unwrap().as_deref(), Some("test.set"), "the empty transaction was not a step");
+    assert_eq!(rig.undo().unwrap().as_deref(), Some(super::SET), "the empty transaction was not a step");
     assert!(matches!(drain(&rx).first(), Some(omuzaki_ops_api::Event::TxCommitted { tx: t, .. }) if *t == tx));
 }
 

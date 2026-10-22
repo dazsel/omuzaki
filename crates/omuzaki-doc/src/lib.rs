@@ -62,8 +62,10 @@
 //! [`StoreError::SchemaTooNew`].
 #![deny(missing_docs)]
 
+pub mod branch;
 mod disk;
 mod error;
+mod exact;
 pub mod journal;
 mod known;
 mod layout;
@@ -72,6 +74,8 @@ mod migrate;
 mod migrations;
 mod project;
 mod saving;
+pub mod snapshot;
+mod source;
 mod toml_read;
 mod toml_write;
 mod tree;
@@ -84,7 +88,7 @@ pub use error::StoreError;
 pub use lock::ProjectLock;
 pub use migrate::{BASE_SCHEMA, Migration, MigrationError, supported_schema};
 pub use omuzaki_assets_lock::{AssetsLock, LockError, LockRow};
-pub use project::{Project, RenderedFile, SaveReport};
+pub use project::{OutsideChanges, Project, RenderedFile, SaveReport};
 pub use saving::SavedProject;
 
 #[doc(hidden)]

@@ -1,9 +1,9 @@
 //! The tool list: one tool per registered op, plus the built-ins. Built once at startup from `Runner::ops()`, so what
 //! `tools/list` shows can't drift from what the runner can run.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use omuzaki_ops_api::{Grants, OpInfo, OpKind};
+use omuzaki_ops_api::{Grants, OpInfo, OpKind, Scope};
 use rmcp::model::{JsonObject, MetaObject, Tool};
 use serde_json::json;
 
@@ -32,6 +32,21 @@ const fn kind_name(kind: OpKind) -> &'static str {
     }
 }
 
+/// Which tools `tools/list` shows.
+///
+/// A studio has a few hundred ops, and their schemas fill a model's context before it has done anything, so a host can
+/// list a small core instead: the built-ins, plus `ops_find`, `ops_describe` and `ops_run` to reach any op, and
+/// `tools_enable` to list a whole area as tools. Every op stays callable by name in both modes.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ToolMode {
+    /// One tool per op, plus the built-ins (the default).
+    #[default]
+    All,
+    /// The built-ins and the op finder; an area's ops are listed once the session turns it on.
+    Core,
+}
+
 /// What a tool does when called.
 #[derive(Copy, Clone, Debug)]
 pub(crate) enum Route {
@@ -54,12 +69,15 @@ pub(crate) struct Entry {
     pub route: Route,
     /// A usage line for error messages, e.g. `face_set_profile(character: string, blend: number)`.
     pub signature: String,
+    /// The scope a call needs besides `read` (`read` itself for a built-in).
+    pub scope: Scope,
 }
 
 /// All tools, sorted by name.
 pub(crate) struct Catalog {
     entries: Vec<Entry>,
     index: HashMap<String, usize>,
+    mode: ToolMode,
 }
 
 impl Catalog {
@@ -73,13 +91,14 @@ impl Catalog {
         ops: &[OpInfo],
         grants: &Grants,
         guidance: &Guidance,
-        registry: bool,
+        (registry, branches): (bool, bool),
+        mode: ToolMode,
     ) -> Result<Self, ServerError> {
         let mut entries = ops.iter().map(|op| op_entry(op, grants, guidance)).collect::<Result<Vec<_>, _>>()?;
-        entries.extend(Builtin::ALL.into_iter().filter(|b| registry || !b.needs_registry()).map(|b| {
+        entries.extend(Builtin::ALL.into_iter().filter(|b| b.offered(registry, branches, mode)).map(|b| {
             let tool = b.tool();
             let signature = signature(b.name(), &tool.input_schema);
-            Entry { tool, op: b.title().to_owned(), route: Route::Builtin(b), signature }
+            Entry { tool, op: b.title().to_owned(), route: Route::Builtin(b), signature, scope: Scope::Read }
         }));
         entries.sort_by(|a, b| a.tool.name.cmp(&b.tool.name));
         let mut index = HashMap::with_capacity(entries.len());
@@ -92,7 +111,7 @@ impl Catalog {
                 });
             }
         }
-        Ok(Self { entries, index })
+        Ok(Self { entries, index, mode })
     }
 
     /// The tool called `name`. The dotted op name (`face.set_profile`, as shown in descriptions) is accepted too: an
@@ -102,13 +121,60 @@ impl Catalog {
         Some(&self.entries[*i])
     }
 
+    /// Every tool, listed or not.
     pub(crate) fn tools(&self) -> impl Iterator<Item = &Tool> {
         self.entries.iter().map(|e| &e.tool)
+    }
+
+    pub(crate) const fn mode(&self) -> ToolMode {
+        self.mode
+    }
+
+    /// The tools `tools/list` shows a session that turned on the areas in `enabled`: every tool in
+    /// [`ToolMode::All`]; the built-ins and the enabled areas' ops in [`ToolMode::Core`].
+    pub(crate) fn listed<'a>(&'a self, enabled: &'a BTreeSet<String>) -> impl Iterator<Item = &'a Tool> {
+        self.entries
+            .iter()
+            .filter(move |e| match (self.mode, e.area()) {
+                (ToolMode::All, _) | (ToolMode::Core, None) => true,
+                (ToolMode::Core, Some(area)) => enabled.contains(area),
+            })
+            .map(|e| &e.tool)
+    }
+
+    /// The op entries (no built-ins), sorted by tool name.
+    pub(crate) fn ops(&self) -> impl Iterator<Item = &Entry> {
+        self.entries.iter().filter(|e| e.area().is_some())
+    }
+
+    /// Each area (the op name up to its first dot) and how many ops it has.
+    pub(crate) fn areas(&self) -> BTreeMap<&str, usize> {
+        let mut areas = BTreeMap::new();
+        for area in self.ops().filter_map(Entry::area) {
+            *areas.entry(area).or_insert(0) += 1;
+        }
+        areas
     }
 
     /// Tool names close to a misspelt `wanted`.
     pub(crate) fn similar(&self, wanted: &str) -> Vec<&str> {
         suggest(&tool_name(wanted), self.entries.iter().map(|e| e.tool.name.as_ref()))
+    }
+}
+
+impl Entry {
+    /// The op's area: its name up to the first dot (`face` for `face.set_profile`). `None` for a built-in.
+    pub(crate) fn area(&self) -> Option<&str> {
+        match self.route {
+            Route::Op { .. } => Some(self.op.split('.').next().unwrap_or(&self.op)),
+            Route::Builtin(_) => None,
+        }
+    }
+
+    /// The op's summary: the first line of its description, without the leading `name: `.
+    pub(crate) fn summary(&self) -> &str {
+        let first = self.tool.description.as_deref().and_then(|d| d.lines().next()).unwrap_or_default();
+        first.split_once(": ").map_or(first, |(_, summary)| summary)
     }
 }
 
@@ -120,12 +186,13 @@ fn op_entry(op: &OpInfo, grants: &Grants, guidance: &Guidance) -> Result<Entry, 
         .with_title(op.name)
         .with_annotations(annotations(op))
         .with_meta(kind_meta(kind_name(op.kind)));
-    Ok(Entry { tool, op: op.name.to_owned(), route: Route::Op { kind: op.kind, unit_args: schema.unit }, signature })
+    let route = Route::Op { kind: op.kind, unit_args: schema.unit };
+    Ok(Entry { tool, op: op.name.to_owned(), route, signature, scope: op.scope })
 }
 
 #[cfg(test)]
 mod tests {
-    use omuzaki_ops_api::{OpMeta, Scope, Undo};
+    use omuzaki_ops_api::{OpMeta, Undo};
 
     use super::*;
 
@@ -137,7 +204,7 @@ mod tests {
     }
 
     fn build(ops: &[OpInfo]) -> Result<Catalog, ServerError> {
-        Catalog::build(ops, &Grants::agent_default(), &Guidance::default(), false)
+        Catalog::build(ops, &Grants::agent_default(), &Guidance::default(), (false, false), ToolMode::All)
     }
 
     #[test]
@@ -147,10 +214,13 @@ mod tests {
         assert_eq!(
             names,
             [
+                "doc_get",
                 "face_set_profile",
                 "history_log",
                 "history_redo",
                 "history_undo",
+                "ops_describe",
+                "ops_find",
                 "render_preview",
                 "tx_begin",
                 "tx_commit",

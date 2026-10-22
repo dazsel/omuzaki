@@ -82,9 +82,11 @@ pub enum PauseReason {
     Pairing,
 }
 
-/// Why a session ended.
+/// Why a session ended. `#[non_exhaustive]` (ADR 0054 §4): a `match` outside this crate needs a wildcard arm, so a
+/// new reason never breaks it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "reason", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum EndReason {
     /// The connection went away (stdio EOF, HTTP `DELETE`).
     Disconnected,
@@ -102,6 +104,22 @@ pub enum EndReason {
     },
     /// The project closed.
     ProjectClosed,
+    /// The session's owner failed: a plugin's instance trapped, passed a limit or stalled in a host call (ADR 0058).
+    /// Serialised `{"reason":"faulted","detail":"out of fuel in init"}`: the field is `detail` because the enum is
+    /// tagged by `reason`. `detail` is one plain sentence for the audit log and the person, naming the trap kind and the
+    /// entry; nobody matches on its text. Build it with [`EndReason::faulted`].
+    #[non_exhaustive]
+    Faulted {
+        /// What failed, for example "out of fuel in init".
+        detail: String,
+    },
+}
+
+impl EndReason {
+    /// A session whose owner failed, with `detail` naming what failed and where.
+    pub fn faulted(detail: impl Into<String>) -> Self {
+        Self::Faulted { detail: detail.into() }
+    }
 }
 
 /// Where a session stands. "Working", "idle" and "waiting for you" are derived from this plus
@@ -294,7 +312,8 @@ pub struct SessionUndo {
     pub skipped: Vec<KeptTx>,
     /// Open transactions that were abandoned.
     pub abandoned: Vec<TxId>,
-    /// Steps with effects outside the document ([`Undo::Explicit`](crate::Undo::Explicit)) that cannot be undone yet.
+    /// Steps with effects outside the document ([`Undo::Explicit`](crate::Undo::Explicit)) whose effects could not
+    /// be undone: they stay applied, and are in `skipped` too, with the error.
     pub outside: Vec<TxId>,
 }
 
@@ -374,10 +393,12 @@ pub trait Sessions: Send + Sync {
     fn set_budget(&self, id: SessionId, budget: Budget, by: &Actor) -> Result<SessionInfo, OpError>;
 
     /// Adds `spend` to the session's counters. Whoever pays for the model calls this (the in-app host); a charge that
-    /// crosses a cap pauses the session and queues a budget approval.
+    /// crosses a cap pauses the session and queues a budget approval. Active time is the executor's own count, so
+    /// `spend.seconds` must be 0.
     ///
     /// # Errors
-    /// `NotFound` for an unknown session; `Conflict` if it has ended.
+    /// `NotFound` for an unknown session; `Conflict` if it has ended; `Invalid` (field `seconds`) for a charge of
+    /// time.
     fn charge(&self, id: SessionId, spend: Spend) -> Result<SessionInfo, OpError>;
 
     /// Replaces the session's fence. Person only, like [`set_grants`](Self::set_grants). The fence is normalised
@@ -394,10 +415,12 @@ pub trait Sessions: Send + Sync {
         Err(OpError::unsupported("fences are not enabled by this runner"))
     }
 
-    /// Ends a session: abandons its open transactions, withdraws its approvals, drops its per-session grants.
+    /// Ends a session and its sub-agents: abandons its open transactions, withdraws its approvals, drops its
+    /// per-session grants. Ending a session that has already ended changes nothing and returns an empty [`Ended`].
     ///
     /// # Errors
-    /// `NotFound` for an unknown session; `Conflict` if it has already ended.
+    /// `NotFound` for an unknown session; `Denied` for a [`EndReason::Revoked`] whose `by` is not the session's
+    /// principal.
     fn end(&self, id: SessionId, reason: EndReason) -> Result<Ended, OpError>;
 
     /// Reverts the session's committed steps, newest first, as one step in the person's history (design §6).
@@ -409,12 +432,26 @@ pub trait Sessions: Send + Sync {
     /// The approvals waiting for a person, oldest first.
     fn approvals(&self) -> Vec<PendingApproval>;
 
+    /// Why [`Runner::begin`](crate::Runner::begin) handed back `tx` without opening it (a rate limit, a pause), while
+    /// the reason is still known: `begin` can't refuse, so a surface that sees its transaction isn't open asks here to
+    /// report the real reason (`limited` with its wait) rather than a guess. `None` when it opened, or long ago.
+    fn begin_refusal(&self, tx: TxId) -> Option<OpError> {
+        let _ = tx;
+        None
+    }
+
     /// Decides one approval, exactly once. On approval the request is re-planned and run against the current
     /// document as the agent with the need satisfied for that run.
     ///
+    /// Two decisions are recorded without resolving the approval: an approval of a [`Need::Review`](crate::Need) that
+    /// asks for more reviewers than have approved so far, and [`Decision::RaiseBudget`] on a budget approval that
+    /// carries a request (the budget is set and the session resumed, and the request still waits for `Approve` or
+    /// `Reject`). Both answer `Waiting` with [`ErrorDetail::Queued`](crate::ErrorDetail::Queued).
+    ///
     /// # Errors
     /// `NotFound` if the approval is gone (resolved or withdrawn); `Denied` if `by` is not a person, not the
-    /// session's principal, or lacks the needed scope; `Invalid` if `decision` does not fit the need.
+    /// session's principal (for a review, not a reviewer the policy allows), or lacks the needed scope; `Invalid` if
+    /// `decision` does not fit the need; `Waiting` as above.
     fn resolve(&self, id: ApprovalId, decision: Decision, by: &Actor) -> Result<Resolution, OpError>;
 
     /// Asks before running out: a session that knows it will need more money or time asks first. When `needed` fits
@@ -434,6 +471,20 @@ pub trait Sessions: Send + Sync {
     fn request_budget(&self, id: SessionId, needed: Spend) -> Result<(), OpError> {
         let _ = (id, needed);
         Err(OpError::unsupported("this executor does not support Sessions::request_budget"))
+    }
+
+    /// Holds a new session until a person pairs its credential (`agent-sessions.md` 10.2, `bridges.md` 4): under the
+    /// executor's lock, pauses it `Paused { by: <its principal>, reason: Pairing }` and queues
+    /// [`Need::Pairing`](crate::Need::Pairing) `{ client }`. Called by a transport for a connection whose credential no
+    /// person has paired yet. Only a person resolves the approval: Approve resumes the session, Reject ends it
+    /// revoked, and [`resume`](Self::resume) refuses a pairing pause.
+    ///
+    /// # Errors
+    /// `NotFound` for an unknown session; `Conflict` if it has ended or is already paused (for pairing or otherwise);
+    /// `Unsupported` from an executor without pairing (the default).
+    fn request_pairing(&self, id: SessionId) -> Result<ApprovalId, OpError> {
+        let _ = id;
+        Err(OpError::unsupported("this executor does not support Sessions::request_pairing"))
     }
 
     /// The person's Stop. Person-only: `by` must be the session's principal, as for every control. In this order,

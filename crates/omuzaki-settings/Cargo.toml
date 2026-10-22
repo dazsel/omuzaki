@@ -13,7 +13,9 @@ directories.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+toml.workspace = true
 toml_edit.workspace = true
+unicode-normalization.workspace = true
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-settings-api = { path = "../omuzaki-settings-api" }

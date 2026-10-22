@@ -35,6 +35,7 @@ pub mod meshcmp;
 pub mod migrate;
 pub mod objects;
 pub mod regioncmp;
+pub mod sim_fs;
 pub mod summary;
 pub mod verify;
 
