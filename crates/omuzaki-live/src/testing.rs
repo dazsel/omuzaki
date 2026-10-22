@@ -6,19 +6,21 @@
 //! Behind the `testing` feature (tests always see it).
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use omuzaki_core::time::Seconds;
 use omuzaki_live_api::event::{EventId, LiveEvent, UtcMillis};
 use omuzaki_live_api::ids::{GraphId, GroupId, ShowId, VarName};
 use omuzaki_live_api::node::CallId;
-use omuzaki_live_api::services::{Dropped, GraphStatus, ValuesSnapshot};
-use omuzaki_live_api::show::{Finding, ShowDef};
+use omuzaki_live_api::services::{Dropped, GraphStatus, PersistScope, ValuesSnapshot, VariableStore};
+use omuzaki_live_api::show::{Finding, ShowDef, VarScope};
 use omuzaki_live_api::value::Val;
 use omuzaki_ops_api::{Actor, OpError};
 use serde_json::{Value, json};
 
 use crate::compile::compile;
 use crate::core::{Control, Core, Item, OpRequest};
+use crate::vars;
 
 /// An answer script for an op: the reply `latency` after the call.
 type Answer = Box<dyn FnMut(&Value) -> Outcome>;
@@ -69,6 +71,10 @@ pub struct ShowHarness {
     open: Vec<CallId>,
     /// Steps run after the start: events, wakes, replies and changes from outside.
     steps: u64,
+    /// Where variable values persist, and the project folder a show's own values live under.
+    store: Option<(Arc<dyn VariableStore>, Option<String>)>,
+    /// The file each persisted scope writes to.
+    files: Vec<(VarScope, PersistScope)>,
 }
 
 impl std::fmt::Debug for ShowHarness {
@@ -95,6 +101,8 @@ impl ShowHarness {
             requests: Vec::new(),
             open: Vec::new(),
             steps: 0,
+            store: None,
+            files: Vec::new(),
         }
     }
 
@@ -102,6 +110,14 @@ impl ShowHarness {
     #[must_use]
     pub fn seed(mut self, seed: u32) -> Self {
         self.seed = seed;
+        self
+    }
+
+    /// With variable values loaded from and saved to `store` (a show's own under `project`), as the service does:
+    /// each file written one second after its first change, and every changed file again at [`stop`](Self::stop).
+    #[must_use]
+    pub fn variables(mut self, store: Arc<dyn VariableStore>, project: Option<&str>) -> Self {
+        self.store = Some((store, project.map(str::to_owned)));
         self
     }
 
@@ -164,6 +180,16 @@ impl ShowHarness {
             let wake = self.core.as_ref().and_then(Core::next_wake).filter(|due| due.0 <= at.0);
             let reply =
                 self.replies.keys().next().map(|(bits, _)| Seconds(f64::from_bits(*bits))).filter(|due| due.0 <= at.0);
+            // A values file due at `t` is written after the steps at `t`, as the engine thread looks at saves last.
+            let save = self.core.as_ref().and_then(Core::next_save).filter(|due| due.0 <= at.0);
+            if let Some(s) = save
+                && wake.is_none_or(|w| s.0 < w.0)
+                && reply.is_none_or(|r| s.0 < r.0)
+            {
+                self.now = Seconds(self.now.0.max(s.0));
+                self.save(false);
+                continue;
+            }
             match (wake, reply) {
                 (Some(w), r) if r.is_none_or(|r| w.0 <= r.0) => {
                     self.now = Seconds(self.now.0.max(w.0));
@@ -278,11 +304,23 @@ impl ShowHarness {
         log.to_string()
     }
 
-    /// Stops the show: every node gets `Stop`.
+    /// Stops the show: every node gets `Stop`, and every values file the run changed is written.
     pub fn stop(&mut self) {
         let (now, utc) = (self.now, self.utc());
         if let Some(core) = self.core.as_mut() {
             core.stop(now, utc);
+        }
+        self.save(true);
+    }
+
+    /// Writes the values files due now (with `flush`, every one the run changed).
+    fn save(&mut self, flush: bool) {
+        let (Some(core), Some((store, _))) = (self.core.as_mut(), self.store.as_ref()) else { return };
+        for (scope, values) in core.take_saves(self.now, flush) {
+            if let Some((_, persist)) = self.files.iter().find(|(s, _)| *s == scope) {
+                // A test that wants to see a failed write reads its store.
+                let _ = store.save(persist, &values);
+            }
         }
     }
 
@@ -300,6 +338,11 @@ impl ShowHarness {
         let compiled = compile(&self.show, &self.def);
         self.findings.clone_from(&compiled.findings);
         let mut core = Core::new(compiled, self.seed, self.now, self.utc());
+        if let Some((store, project)) = &self.store {
+            let (findings, files) = vars::load(&mut core, store.as_ref(), project.as_deref(), &self.show);
+            self.findings.extend(findings);
+            self.files = files;
+        }
         core.start(self.now, self.utc());
         self.core = Some(core);
         self.settle();

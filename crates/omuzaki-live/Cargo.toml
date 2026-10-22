@@ -1,6 +1,6 @@
 [package]
 name = "omuzaki-live"
-description = "The automation engine (BR-11; design docs/design/automation.md D5 to D9, D13): shows compiled from the document, an event inbox for the platform adapters, one engine thread running each event as a depth-first step with tokens, op calls dispatched to the executor, and the show and automation ops."
+description = "The automation engine (BR-11; design docs/design/automation.md D5 to D9, D13): shows compiled from the document, an event inbox for the platform adapters, one engine thread running each event as a depth-first step with tokens under the loop guard and per-graph rates, groups switched at run time, `show` and `global` variables persisted on disk, op calls dispatched to the executor, and the show and automation ops."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -18,6 +18,8 @@ omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
+toml.workspace = true
 
 [dev-dependencies]
 # Itself with the testing kit, so integration tests see `ShowHarness`.
@@ -42,7 +44,7 @@ workspace = true
 # Native only: the web player runs no shows (design D1).
 [package.metadata.omuzaki]
 kind = "Implementation"
-summary = "the automation engine: `Automation` (the `AutomationControl` and `EventSink` service: a bounded, deduplicating inbox, one engine thread per running show, tokens carrying each event's values, depth-first steps under the loop guard, wakes, op calls dispatched to the attached `Runner` in the show's name), the compile of a `ShowDef` against the node catalogue, and the ops `show.create`, `automation.add_graph`, `automation.remove_graph`, `automation.start`, `automation.stop`, `automation.status`, `automation.values` and `automation.fire`"
+summary = "the automation engine: `Automation` (the `AutomationControl` and `EventSink` service: a bounded, deduplicating inbox, one engine thread per running show, tokens carrying each event's values, depth-first steps under the loop guard and per-graph token rates, groups switched at run time, wakes, `show` and `global` variable values persisted through `DiskVariables` (debounced atomic writes, a final flush on stop), op calls dispatched to the attached `Runner` in the show's name), the compile of a `ShowDef` against the node catalogue, and the ops `show.create`, `automation.add_graph`, `automation.remove_graph`, `automation.start`, `automation.stop`, `automation.status`, `automation.values` and `automation.fire`"
 wasm = false
 # The ops register themselves (ADR 0015, `cargo xtask lint-registers`).
 registers = true

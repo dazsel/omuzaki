@@ -306,7 +306,8 @@ impl Op for Start {
         }
         let run = automation.start_def(&show, &def)?;
         let status = automation.status();
-        Ok(Plan::answer(json!({ "started": run, "graphs": status.graphs })))
+        let findings: Vec<_> = automation.start_findings().iter().map(|f| english(&f.text)).collect();
+        Ok(Plan::answer(json!({ "started": run, "graphs": status.graphs, "findings": findings })))
     }
 }
 

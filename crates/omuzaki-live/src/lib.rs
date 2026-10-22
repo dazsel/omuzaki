@@ -6,6 +6,9 @@
 //!   `automation.start`, `automation.stop`, `automation.status`, `automation.values` and `automation.fire` on the
 //!   running show.
 //!
+//! - [`vars::DiskVariables`]: the values of `show` and `global` variables on disk, written atomically; the engine
+//!   writes each file at most once a second and flushes on stop (design D10).
+//!
 //! - [`testing::ShowHarness`] (feature `testing`): a whole show on the real engine core, on fake time.
 //!
 //! The node catalogue is `omuzaki-live-nodes`; the engine finds kinds through the registry and never names one.
@@ -17,9 +20,11 @@ omuzaki_core::define_link! {
 mod compile;
 mod core;
 mod inbox;
+mod l10n;
 pub mod ops;
 mod service;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
+pub mod vars;
 
 pub use service::Automation;

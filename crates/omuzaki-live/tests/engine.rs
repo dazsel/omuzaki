@@ -480,3 +480,40 @@ fn one_show_at_a_time_and_stop_then_start_again() {
     assert_eq!(fake.requests()[0].args, json!({ "value": "Mori" }), "the event sent while stopped never ran");
     automation.stop(&Actor::System).unwrap();
 }
+
+#[test]
+fn values_set_on_a_running_show_reach_the_store_by_the_time_stop_returns_and_come_back_at_the_next_start() {
+    use omuzaki_live_api::ids::{GroupId, VarName};
+    use omuzaki_live_api::services::{PersistScope, ShowKey, VariableStore};
+    use omuzaki_live_api::show::{GroupDef, VarScope, VarType, VariableDef};
+    use omuzaki_live_mock::variables::MemoryVariables;
+
+    let (automation, _fake, _runner) = engine();
+    let store = Arc::new(MemoryVariables::new());
+    automation.set_variables(Arc::clone(&store) as Arc<dyn VariableStore>, Some("/projects/demo".to_owned()));
+    let bonks = VarName::new("bonks").unwrap();
+    let def = show(&[("bonk", redeem_and_call())])
+        .with_variable(bonks.clone(), VariableDef::new(VarType::Number, VarScope::Show).with_default(json!(0)))
+        .with_group(GroupId::new("intro").unwrap(), GroupDef::new());
+    automation.start_def(&id("main"), &def).unwrap();
+    assert_eq!(automation.start_findings().len(), 0);
+    automation.set_variable(&bonks, json!(4), &Actor::System).unwrap();
+    // Checked before it is queued: an undeclared name, a value of the wrong type, an unknown group or graph.
+    assert!(automation.set_variable(&VarName::new("nope").unwrap(), json!(1), &Actor::System).is_err());
+    assert!(automation.set_variable(&bonks, json!("four"), &Actor::System).is_err());
+    assert!(automation.switch_group(&GroupId::new("nope").unwrap(), false, &Actor::System).is_err());
+    automation.switch_group(&GroupId::new("intro").unwrap(), false, &Actor::System).unwrap();
+    assert!(automation.resume_graph(&GraphId::new("nope").unwrap(), &Actor::System).is_err());
+    until("the value", || {
+        automation.values().is_some_and(|v| v.variables.iter().any(|row| row.name == bonks && row.value == json!(4)))
+    });
+    automation.stop(&Actor::System).unwrap();
+    let scope = PersistScope::Show(ShowKey::new("/projects/demo", id("main")));
+    assert_eq!(store.stored(&scope)[&bonks], json!(4));
+
+    automation.start_def(&id("main"), &def).unwrap();
+    until("the stored value", || {
+        automation.values().is_some_and(|v| v.variables.iter().any(|row| row.name == bonks && row.value == json!(4)))
+    });
+    automation.stop(&Actor::System).unwrap();
+}

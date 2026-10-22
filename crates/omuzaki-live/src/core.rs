@@ -33,12 +33,13 @@ use omuzaki_live_api::services::{
     Dropped, EventRow, Firing, GraphStatus, GroupRow, InertNode, InertReason, NodeRef, SuspendReason, Suspension,
     ValuesSnapshot, VarRow, shown,
 };
-use omuzaki_live_api::show::VariableDef;
+use omuzaki_live_api::show::{VarScope, VariableDef};
 use omuzaki_live_api::value::{PortType, Val, ValError};
 use omuzaki_ops_api::{Actor, OpError};
 use serde_json::Value;
 
 use crate::compile::{Compiled, CompiledNode};
+use crate::vars::Files;
 
 /// What arrives at the engine from outside a step.
 #[derive(Debug)]
@@ -155,6 +156,8 @@ pub(crate) struct Core {
     buckets: BTreeMap<GraphId, Bucket>,
     /// Calls of a graph switched off: their replies are dropped and counted.
     ignored: BTreeSet<CallId>,
+    /// The values files of the persisted scopes (design D10).
+    files: Files,
     step_at: Seconds,
     utc: UtcMillis,
     outgoing: Vec<OpRequest>,
@@ -249,6 +252,7 @@ impl Core {
             graph_runs,
             buckets: BTreeMap::new(),
             ignored: BTreeSet::new(),
+            files: Files::default(),
             step_at: at,
             utc,
             outgoing: Vec::new(),
@@ -355,6 +359,42 @@ impl Core {
         true
     }
 
+    /// Takes the stored values of `scope` before the start: each declared variable of that scope with a stored value
+    /// of its type starts from it. Returns the names whose stored value had another type (they start from their
+    /// defaults, and the file keeps the old value until they change).
+    pub(crate) fn load_values(&mut self, scope: VarScope, values: BTreeMap<VarName, Value>) -> Vec<VarName> {
+        let mut refused = Vec::new();
+        for (name, var) in &mut self.vars {
+            if var.def.scope != scope {
+                continue;
+            }
+            let Some(stored) = values.get(name) else { continue };
+            let ty = var.def.ty.port_type();
+            match Val::from_json(stored, ty) {
+                Ok(value) if value.ty() == ty && value.check().is_ok() => var.value = value,
+                _ => refused.push(name.clone()),
+            }
+        }
+        self.files.loaded(scope, values);
+        refused
+    }
+
+    /// When the next values file is due to be written.
+    pub(crate) fn next_save(&self) -> Option<Seconds> {
+        self.files.next_due()
+    }
+
+    /// The values files due at `now` (with `flush`, every one the run changed), each with its whole contents.
+    pub(crate) fn take_saves(&mut self, now: Seconds, flush: bool) -> Vec<(VarScope, BTreeMap<VarName, Value>)> {
+        let vars = &self.vars;
+        self.files.take(now, flush, |scope| {
+            vars.iter()
+                .filter(|(_, v)| v.def.scope == scope)
+                .map(|(name, v)| (name.clone(), v.value.to_json()))
+                .collect()
+        })
+    }
+
     /// The engine's own next event (`show.started`, `var.changed`, `event.emit`), if any.
     pub(crate) fn pop_own(&mut self) -> Option<LiveEvent> {
         self.own.pop_front()
@@ -457,6 +497,7 @@ impl Core {
                 {
                     let old = std::mem::replace(&mut var.value, value).to_json();
                     var.changed = Some((at, None));
+                    self.files.changed(var.def.scope, at);
                     self.changed.entry(name).or_insert(old);
                 }
             }
@@ -878,6 +919,8 @@ impl NodeHost for Host<'_> {
         }
         let old = std::mem::replace(&mut var.value, value).to_json();
         var.changed = Some((at, Some(by)));
+        let scope = var.def.scope;
+        self.core.files.changed(scope, at);
         self.core.changed.entry(name.clone()).or_insert(old);
         Ok(())
     }

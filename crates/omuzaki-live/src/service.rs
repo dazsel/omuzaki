@@ -22,9 +22,10 @@ use omuzaki_core::time::{Clock, SystemClock};
 use omuzaki_live_api::event::{EventId, EventSink, LiveEvent, PublishError, Source, check_payload, find_event_kind};
 use omuzaki_live_api::ids::{EventKind, GraphId, GroupId, ShowId, VarName};
 use omuzaki_live_api::services::{
-    AutomationControl, Dropped, RunInfo, Status, SystemWallClock, ValuesSnapshot, WallClock,
+    AutomationControl, Dropped, PersistScope, RunInfo, Status, SystemWallClock, ValuesSnapshot, VariableStore,
+    WallClock,
 };
-use omuzaki_live_api::show::{ShowDef, paths};
+use omuzaki_live_api::show::{Finding, ShowDef, VarScope, paths};
 use omuzaki_live_api::value::Val;
 use omuzaki_ops_api::{Actor, Cause, CauseKind, Grants, Mode, OpError, Request, Runner, Scope, SessionId};
 use serde_json::Value;
@@ -32,6 +33,7 @@ use serde_json::Value;
 use crate::compile::compile;
 use crate::core::{Control, Core, Item, OpRequest};
 use crate::inbox::Inbox;
+use crate::vars;
 
 /// The longest the engine thread sleeps without looking at its stop flag.
 const IDLE_WAIT: Duration = Duration::from_millis(250);
@@ -58,6 +60,38 @@ struct Shared {
     producer_dropped: AtomicU64,
 }
 
+/// Where variable values persist: the store, and the project folder a show's own values live under (none: `show`
+/// values last one run, like `session` ones).
+struct Persistence {
+    store: Arc<dyn VariableStore>,
+    project: Option<String>,
+}
+
+/// One values file to write, handed to the writer thread.
+type Save = (PersistScope, std::collections::BTreeMap<VarName, Value>);
+
+/// The writer thread of one run: saves in order, off the engine thread (design D10).
+struct Writer {
+    saves: Sender<Save>,
+    thread: JoinHandle<()>,
+}
+
+impl Writer {
+    fn start(store: Arc<dyn VariableStore>, show: &ShowId) -> Option<Writer> {
+        let (saves, pending) = channel::<Save>();
+        let thread = std::thread::Builder::new()
+            .name(format!("automation-values-{show}"))
+            .spawn(move || {
+                for (scope, values) in pending {
+                    // A failed write keeps the old file (the store writes atomically); the next change tries again.
+                    let _ = store.save(&scope, &values);
+                }
+            })
+            .ok()?;
+        Some(Writer { saves, thread })
+    }
+}
+
 /// A running show.
 struct Running {
     info: RunInfo,
@@ -77,6 +111,9 @@ pub struct Automation {
     run: Mutex<Option<Running>>,
     shared: Arc<Shared>,
     next_event: Arc<AtomicU64>,
+    persistence: Mutex<Option<Persistence>>,
+    /// What the last start found: values files it couldn't read, stored values of another type.
+    start_findings: Mutex<Vec<Finding>>,
 }
 
 impl std::fmt::Debug for Automation {
@@ -110,7 +147,33 @@ impl Automation {
             run: Mutex::new(None),
             shared: Arc::new(Shared::default()),
             next_event: Arc::new(AtomicU64::new(0)),
+            persistence: Mutex::new(None),
+            start_findings: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Where `show` and `global` variable values persist from the next start on (design D10): `store`, with a show's
+    /// own values under `project` (the project folder's real path; `None` keeps them for one run only).
+    pub fn set_variables(&self, store: Arc<dyn VariableStore>, project: Option<String>) {
+        *lock(&self.persistence) = Some(Persistence { store, project });
+    }
+
+    /// What the last start found about the stored values: files it couldn't read and values of another type. None of
+    /// them stops a start; the variables they name start from their defaults.
+    pub fn start_findings(&self) -> Vec<Finding> {
+        lock(&self.start_findings).clone()
+    }
+
+    /// Loads the stored values into `core`, returning the writer and the file each persisted scope writes to.
+    fn load_values(&self, id: &ShowId, core: &mut Core) -> (Option<Writer>, Vec<(VarScope, PersistScope)>) {
+        let persistence = lock(&self.persistence);
+        let Some(persistence) = persistence.as_ref() else {
+            lock(&self.start_findings).clear();
+            return (None, Vec::new());
+        };
+        let (findings, files) = vars::load(core, persistence.store.as_ref(), persistence.project.as_deref(), id);
+        *lock(&self.start_findings) = findings;
+        (Writer::start(Arc::clone(&persistence.store), id), files)
     }
 
     /// Attaches the runner the show's op calls go through. Held weakly, so the engine (a service of the executor)
@@ -140,7 +203,8 @@ impl Automation {
         let at = self.clock.now();
         let info = RunInfo::new(id.clone(), seed, SessionId(0), at);
         let compiled = compile(id, def);
-        let core = Core::new(compiled, seed, at, self.wall.now());
+        let mut core = Core::new(compiled, seed, at, self.wall.now());
+        let (writer, files) = self.load_values(id, &mut core);
         let inbox = Arc::new(Inbox::default());
         let stop = Arc::new(AtomicBool::new(false));
         let (calls, pending) = channel();
@@ -160,6 +224,8 @@ impl Automation {
             shared: Arc::clone(&self.shared),
             next_event: Arc::clone(&self.next_event),
             info: info.clone(),
+            writer,
+            files,
         };
         let handle = std::thread::Builder::new()
             .name(format!("automation-{id}"))
@@ -338,9 +404,23 @@ struct EngineThread {
     shared: Arc<Shared>,
     next_event: Arc<AtomicU64>,
     info: RunInfo,
+    writer: Option<Writer>,
+    /// Which file each persisted scope writes to.
+    files: Vec<(VarScope, PersistScope)>,
 }
 
 impl EngineThread {
+    /// Hands the values files due now (with `flush`, every one the run changed) to the writer thread.
+    fn save(&mut self, flush: bool) {
+        let Some(writer) = &self.writer else { return };
+        for (scope, values) in self.core.take_saves(self.clock.now(), flush) {
+            if let Some((_, persist)) = self.files.iter().find(|(s, _)| *s == scope) {
+                // The writer only ends after this thread drops its sender.
+                let _ = writer.saves.send((persist.clone(), values));
+            }
+        }
+    }
+
     fn run(mut self) {
         self.core.start(self.clock.now(), self.wall.now());
         let mut values_at: Option<Instant> = None;
@@ -374,7 +454,12 @@ impl EngineThread {
                 dirty = true;
                 continue;
             }
-            let wait = self.core.next_wake().map_or(IDLE_WAIT, |due| {
+            self.save(false);
+            let next = match (self.core.next_wake(), self.core.next_save()) {
+                (Some(a), Some(b)) => Some(if a.0 <= b.0 { a } else { b }),
+                (a, b) => a.or(b),
+            };
+            let wait = next.map_or(IDLE_WAIT, |due| {
                 Duration::try_from_secs_f64((due.0 - now.0).max(0.0)).unwrap_or(IDLE_WAIT).min(IDLE_WAIT)
             });
             if batch.is_empty() {
@@ -391,6 +476,12 @@ impl EngineThread {
         self.core.stop(self.clock.now(), self.wall.now());
         self.publish_status();
         *lock(&self.shared.values) = Some(Arc::new(self.core.values()));
+        // The final flush, written before the stop returns.
+        self.save(true);
+        if let Some(Writer { saves, thread }) = self.writer.take() {
+            drop(saves);
+            let _ = thread.join();
+        }
     }
 
     fn publish_status(&self) {
