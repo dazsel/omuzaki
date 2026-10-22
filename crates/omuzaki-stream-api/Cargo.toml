@@ -10,6 +10,8 @@ repository.workspace = true
 
 [dependencies]
 bytes = { workspace = true }
+# `register_output!`: output kinds register next to their code (ADR 0054).
+inventory.workspace = true
 schemars.workspace = true
 serde.workspace = true
 thiserror.workspace = true

@@ -640,7 +640,14 @@ mod tests {
         assert_eq!(folder, "tests/goldens");
         let (_, root) = Repo::locate(tmp.path()).unwrap();
         assert_eq!(root, "");
-        let err = Repo::locate(&tmp.path().join("missing/../tests")).unwrap_err();
-        assert!(matches!(err, GoldenError::Git { .. }), "{err}");
+        // Unix keeps the `..` and cannot climb out of a folder that is not there. Windows has already folded
+        // `missing/..` away by name (`std::path::absolute`), so the path is simply `<repo>/tests`.
+        let through_a_missing_folder = Repo::locate(&tmp.path().join("missing/../tests"));
+        if cfg!(windows) {
+            assert_eq!(through_a_missing_folder.unwrap().1, "tests");
+        } else {
+            let err = through_a_missing_folder.unwrap_err();
+            assert!(matches!(err, GoldenError::Git { .. }), "{err}");
+        }
     }
 }

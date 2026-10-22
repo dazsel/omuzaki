@@ -1,1 +1,25 @@
-//! The `stage.*` scene ops (create, place, light rig, camera, backdrop...), one patch per intent; stub, not implemented yet.
+//! The `stage.*` scene ops (design D8): one op per intent, one patch per op. Each submodule is one op.
+
+pub mod create;
+pub mod list;
+pub mod set_default;
+
+use omuzaki_doc_api::{DocPath, DocRead, Patch, Value};
+
+/// The patch that sets `path` to `value`, creating the missing tables above it in the same step, so the first scene
+/// of a project (with no `scenes` or `project` table yet) is still one patch with an exact inverse.
+pub(crate) fn put(doc: &dyn DocRead, path: &DocPath, value: Value) -> Patch {
+    let mut at = path.clone();
+    let mut value = value;
+    // Climb while the parent is missing, wrapping the value in each missing table.
+    while let Some((parent, key)) = at.split_last() {
+        if parent.segments().is_empty() || doc.get(&parent).is_some() {
+            break;
+        }
+        let mut table = serde_json::Map::new();
+        table.insert(key.to_owned(), value);
+        value = Value::Object(table);
+        at = parent;
+    }
+    Patch::new().with(at.clone(), doc.get(&at).cloned(), Some(value))
+}

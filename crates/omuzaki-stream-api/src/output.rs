@@ -187,3 +187,51 @@ pub trait Output: Send {
     /// Stops the output and releases its resources; idempotent.
     fn stop(&mut self);
 }
+
+/// One kind of live output a person or an agent can start by name (`output.start { kind }`): a virtual camera, a
+/// Spout sender, an NDI source. Registered with [`register_output!`](crate::register_output) next to its code, never
+/// in a central list (ADR 0054), so a new output adds a file and not an edit here.
+#[derive(Debug)]
+pub struct OutputKind {
+    /// The name `output.start` takes and [`OutputInfo::kind`] reports (`vcam`, `spout`, `ndi`).
+    pub name: &'static str,
+    /// One line for people and agents: what it is and where it shows up.
+    pub summary: &'static str,
+    /// Whether this machine can run it now. `Err` carries [`StreamError::Unavailable`] with a hint a person can act on
+    /// (install a driver, load a module), so a missing device is reported before anything starts.
+    pub available: fn() -> Result<(), StreamError>,
+    /// Makes an idle output of this kind.
+    pub make: fn() -> Box<dyn Output>,
+}
+
+inventory::collect!(OutputKind);
+
+/// Registers an [`OutputKind`] (a `static` or a `const` expression) with the output registry.
+///
+/// ```ignore
+/// omuzaki_stream_api::register_output!(OutputKind {
+///     name: "vcam",
+///     summary: "a virtual camera other apps open like a webcam",
+///     available: probe,
+///     make: || Box::new(Vcam::default()),
+/// });
+/// ```
+#[macro_export]
+macro_rules! register_output {
+    ($kind:expr) => {
+        $crate::__inventory::submit! { $kind }
+        $crate::__record_registration!("output", $kind);
+    };
+}
+
+/// Every registered output kind, sorted by name so listings are deterministic.
+pub fn output_kinds() -> Vec<&'static OutputKind> {
+    let mut kinds: Vec<&'static OutputKind> = inventory::iter::<OutputKind>.into_iter().collect();
+    kinds.sort_by_key(|k| k.name);
+    kinds
+}
+
+/// The registered output kind called `name`, if any.
+pub fn find_output_kind(name: &str) -> Option<&'static OutputKind> {
+    inventory::iter::<OutputKind>.into_iter().find(|k| k.name == name)
+}

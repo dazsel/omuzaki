@@ -619,7 +619,8 @@ fn eval_lint(root: &Path, tools: Option<&Path>) -> Verdict {
         ops: Some(&linked.ops),
     });
     for finding in &findings {
-        println!("{}: {}", finding.file.display(), finding.message);
+        // `/` on every OS, so the report reads (and is matched) the same on Windows.
+        println!("{}: {}", finding.file.to_string_lossy().replace('\\', "/"), finding.message);
     }
     println!("{} tasks, {} fixtures, {} findings.", discovery.tasks.len(), discovery.fixtures.len(), findings.len());
     Ok(findings.is_empty())

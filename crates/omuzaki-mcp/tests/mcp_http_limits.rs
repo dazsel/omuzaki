@@ -292,8 +292,15 @@ async fn a_client_that_never_reads_its_answer_loses_its_connection_at_the_write_
         tokio::time::advance(Duration::from_secs(1)).await;
         advanced += Duration::from_secs(1);
     }
-    // The slot is given back only once the write has been blocked for the whole timeout, never earlier.
-    assert!(advanced >= Duration::from_secs(30), "the connection was cut off after only {advanced:?}");
+    // The slot is given back only once the write has been blocked for the whole timeout, never earlier. Windows is the
+    // exception, by its socket semantics and not by the server's: a non-blocking `send` there takes a whole large
+    // buffer into the kernel at once (the 13 MB answer included, whatever the client's receive buffer), so the write
+    // never blocks and the deadline never arms. The server is then done writing, and the slot comes back when the idle
+    // connection's next request headers are not sent within `header_timeout` (10 s). The blocked-write path is covered
+    // on every OS by the unit tests of `WriteDeadline`, which use a stream that does block.
+    if !cfg!(windows) {
+        assert!(advanced >= Duration::from_secs(30), "the connection was cut off after only {advanced:?}");
+    }
     assert_eq!(probe.await.unwrap(), StatusCode::OK, "the freed slot serves the next client");
     drop(stalled);
     port.server.shutdown().await;

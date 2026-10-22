@@ -9,7 +9,10 @@
 //!   (BLAKE3, keys sorted, ADR 0009 floats), [`check`](ItemManifest::check), [`check_ops`]
 //! - [`Section`], [`ItemKind`], [`Target`]: the 25 sections, what applying does, what it applies to (only the
 //!   character target is open until the scene contract)
-//! - [`ItemRights`]: the provenance fields, and the one constant every first-party item carries
+//! - [`ItemRights`]: the provenance fields, and the one constant every first-party item carries; the module [`rights`]
+//!   also holds [`rights::Attestation`] and [`rights::AssetInfo`]
+//! - [`rights_join`] (a module, ADR 0054 §2): [`join_rights`](rights_join::join_rights), the pure join of many rows of
+//!   rights into the strictest record (what `licence.derive` and the marketplace client both apply)
 //! - [`Publisher`] and [`ItemManifest::verify`]: ed25519 verification; a name is never trusted without its key
 //! - [`expand`]: bindings and parameters to concrete [`StepRequest`]s, pure
 //! - [`ApplicationRecord`]: the pin and what an application wrote, stored in the document (the records are the lock)
@@ -31,7 +34,8 @@ mod placeholder;
 mod publisher;
 mod recipe;
 mod record;
-mod rights;
+pub mod rights;
+pub mod rights_join;
 mod section;
 mod service;
 mod source;

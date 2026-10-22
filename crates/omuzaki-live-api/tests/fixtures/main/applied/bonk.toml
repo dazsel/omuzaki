@@ -1,0 +1,6 @@
+item = "omuzaki/automations/bonk"
+version = "1.0.0"
+
+[params]
+cooldown = 10
+reward = "Bonk"

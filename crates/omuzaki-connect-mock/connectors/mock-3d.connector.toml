@@ -1,0 +1,37 @@
+# A test fake (connectors design D11) that plays a hosted, paid service: it is generated in code and sends
+# nothing, but its manifest says what a real one would (a key, a price, a destination, a plan rule).
+id = "mock-3d"
+name = "Mock 3D models"
+version = "1.0.0"
+transport = "fake"
+
+[[capabilities]]
+capability = "model3d"
+inputs = ["image", "text"]
+outputs = ["mesh"]
+max_count = 1
+
+[auth]
+kind = "api_key"
+secret = "connector/mock-3d"
+deliver = { via = "header", name = "x-api-key", scheme = "" }
+
+[cost]
+model = "per_unit"
+unit = "mesh"
+usd_micros = 200000
+priced = "2026-10-13"
+
+[privacy]
+leaves_machine = true
+destinations = ["mock.invalid"]
+sends = ["prompt", "images"]
+retention = "It keeps nothing: it is a test fake."
+trains_on_inputs = "no"
+
+[licence]
+register = "Omuzaki mock connector"
+outputs = "vendor_terms"
+spdx = "LicenseRef-Omuzaki-Mock"
+commercial = "ok"
+requires_plan = ["paid"]

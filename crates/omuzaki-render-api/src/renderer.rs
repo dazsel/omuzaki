@@ -286,6 +286,25 @@ pub trait Renderer: Send {
     /// # Errors
     /// `UnknownHandle`, or `Invalid` if nothing has been rendered into the target yet.
     fn read_target(&mut self, target: TargetId) -> Result<Image, RenderError>;
+
+    /// The native GPU handles of `target`'s output, so the app's viewport and the live outputs use the rendered frame
+    /// without a copy to the CPU (the rendered-frame contract, #629). `None` from a renderer without a GPU (the mock),
+    /// whose frames reach outputs through [`read_target`](Renderer::read_target); that is the default.
+    ///
+    /// The value is the renderer's documented convention, read with `downcast_ref`, so no GPU type enters this crate.
+    /// The wgpu renderer's is `omuzaki_render::NativeTarget`, the tuple `(wgpu::Device, wgpu::Queue, wgpu::Texture)`:
+    /// the device and queue it renders with, and the output texture, sRGB-encoded RGBA8 at the target's size in the
+    /// target's alpha encoding, usable for sampling and as a copy source. This is the form `omuzaki-stream-api`'s
+    /// `Frame::gpu` names. The next [`render`](Renderer::render) into the target draws into the same texture, so a
+    /// consumer samples or copies it first (a copy submitted after one `render` and before the next sees that frame,
+    /// by queue order), and [`resize_target`](Renderer::resize_target) replaces it.
+    ///
+    /// # Errors
+    /// `UnknownHandle` for a target that is not live, from a renderer that has native handles.
+    fn target_native(&self, target: TargetId) -> Result<Option<&dyn Any>, RenderError> {
+        let _ = target;
+        Ok(None)
+    }
 }
 
 /// Conveniences built from the required methods, kept off [`Renderer`] so it stays small and every implementation

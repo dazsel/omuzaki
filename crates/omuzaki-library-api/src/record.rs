@@ -1,4 +1,4 @@
-//! The application record (design D5): the pin, what was bound and written, and the item's rights.
+//! The application record (design D5; `receipt` per `docs/design/marketplace.md`, section 5.1): the pin, what was bound and written, and the item's rights.
 //!
 //! After an apply the document holds every value the recipe wrote. The record beside it, at
 //! `characters/<id>/applied/<app>`, is the lock: `library.lock` reads these records, and `library.update` uses
@@ -109,9 +109,11 @@ pub enum RecordError {
     },
 }
 
-/// The record of one application of an item to a target.
+/// The record of one application of an item to a target. Build it with [`ApplicationRecord::new`] and set the optional
+/// fields on the result: the struct is `#[non_exhaustive]` (ADR 0054), so a new field never breaks a caller.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct ApplicationRecord {
     /// [`RECORD_SCHEMA`].
     pub schema: u32,
@@ -140,6 +142,10 @@ pub struct ApplicationRecord {
     pub deps: BTreeMap<String, Dep>,
     /// The item's rights as a source row.
     pub rights: ItemRights,
+    /// The hash of the signed receipt for the item, when it came from the marketplace. Only the hash is kept here; the
+    /// receipt itself is stored with the installed item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipt: Option<ContentHash>,
     /// The paths it created, relative to the target node.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub created: Vec<String>,
@@ -150,6 +156,26 @@ pub struct ApplicationRecord {
 }
 
 impl ApplicationRecord {
+    /// A record of `item` at `version` with manifest `hash`, resolved `from`, holding `rights`; everything else empty.
+    pub fn new(item: ItemId, version: Version, hash: ContentHash, from: Resolved, rights: ItemRights) -> Self {
+        Self {
+            schema: RECORD_SCHEMA,
+            item,
+            version,
+            hash,
+            publisher: None,
+            from,
+            slot: None,
+            bindings: RecordBindings::default(),
+            params: BTreeMap::new(),
+            deps: BTreeMap::new(),
+            rights,
+            receipt: None,
+            created: Vec::new(),
+            wrote: BTreeMap::new(),
+        }
+    }
+
     /// Reads a record from a document node. Unknown keys are refused, so a record from a newer build is not
     /// half-understood.
     ///
@@ -198,6 +224,7 @@ mod tests {
             )]
             .into(),
             rights: ItemRights::first_party(),
+            receipt: None,
             created: vec!["parts/skirt".into(), "sources/skirt".into()],
             wrote: [
                 ("parts/skirt/params/length".to_owned(), json!(0.8)),
@@ -219,6 +246,33 @@ mod tests {
         doc.apply(&Patch::new().with(path.clone(), None, Some(r.to_node().unwrap()))).unwrap();
         assert_eq!(ApplicationRecord::from_node(doc.get(&path).unwrap()).unwrap(), r);
         assert_eq!(doc.get_as::<ApplicationRecord>(&path).unwrap(), r);
+    }
+
+    #[test]
+    fn a_populated_receipt_survives_the_node_round_trip() {
+        let r = ApplicationRecord { receipt: Some(ContentHash::of(b"receipt")), ..record() };
+        let node = r.to_node().unwrap();
+        assert_eq!(node["receipt"], json!(ContentHash::of(b"receipt").to_string()));
+        assert_eq!(ApplicationRecord::from_node(&node).unwrap(), r);
+        assert_eq!(ApplicationRecord::from_node(&node).unwrap().receipt, Some(ContentHash::of(b"receipt")));
+        let mut extra = node;
+        extra["receipt_typo"] = json!(1);
+        assert!(
+            matches!(ApplicationRecord::from_node(&extra), Err(RecordError::Shape(m)) if m.contains("receipt_typo"))
+        );
+        let mut malformed = r.to_node().unwrap();
+        malformed["receipt"] = json!("not a hash");
+        assert!(ApplicationRecord::from_node(&malformed).is_err());
+    }
+
+    #[test]
+    fn an_absent_receipt_is_omitted_and_legacy_records_without_it_still_read() {
+        let node = record().to_node().unwrap();
+        assert!(node.get("receipt").is_none(), "an absent receipt is not serialised: {node}");
+        // A record written before the field existed is exactly a node without the key.
+        let legacy = ApplicationRecord::from_node(&node).unwrap();
+        assert_eq!(legacy.receipt, None);
+        assert_eq!(legacy, record());
     }
 
     #[test]

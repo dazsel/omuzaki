@@ -18,7 +18,12 @@ const EDIT: &str = "ops::face::set_profile(#{ character: \"a\" });";
 fn fails(source: &str) -> (Arc<FakeRunner>, ScriptError) {
     let (runner, result) = run(source);
     runner.assert_rolled_back();
-    (runner, result.expect_err("the run should fail"))
+    // Not `expect_err`: its message would print a run that finished with a deeply nested value, in a `Debug` that
+    // recurses once per level and overflows the test thread's stack, hiding that the run should have failed.
+    match result {
+        Err(error) => (runner, error),
+        Ok(outcome) => panic!("the run should fail, but it finished ({} calls)", outcome.calls),
+    }
 }
 
 fn assert_at(error: &ScriptError, kind: ScriptErrorKind, line: u32, column: u32) {
