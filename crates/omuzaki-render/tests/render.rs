@@ -711,16 +711,18 @@ fn painting_an_empty_rectangle_is_not_an_error() {
 #[test]
 fn a_renderer_can_be_built_on_a_device_the_caller_already_has() {
     // What the egui app does: it owns the adapter, device and queue, and hands them over.
+    // The product's backends (`support::instance`). The CPU adapter is lavapipe on Linux and WARP on Windows.
     let instance = support::instance();
     let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
     let adapter = adapters
         .into_iter()
         .find(|a| a.get_info().device_type == wgpu::DeviceType::Cpu)
-        .expect("a software Vulkan adapter");
+        .expect("a software adapter (lavapipe on Linux, WARP on Windows)");
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
 
     let mut r = WgpuRenderer::from_device(&adapter, device, queue).unwrap();
-    assert!(r.capabilities().backend.contains("llvmpipe"), "{}", r.capabilities().backend);
+    let name = adapter.get_info().name;
+    assert!(r.capabilities().backend.contains(&name), "{} should name {name}", r.capabilities().backend);
     assert!(!r.capabilities().gpu_timings, "this device was created without timestamp features");
     let s = scene(Colour::rgb(1, 2, 3));
     let image = draw(&mut r, &s, &plain());
