@@ -35,3 +35,21 @@ steps = [
     { run = ["cargo", "test", "--locked", "-p", "omuzaki-ui", "--test", "studio", "--", "--ignored", "--exact", "history_evidence"] },
 ]
 images = ["history-1920x1080.png"]
+
+[[case]]
+name = "agents"
+description = "The Agent panel over the real studio (spine/ui, #390, #420, #969): two agent sessions on the real executor, in Build at 1920x1080, dark and light, with four requests waiting (three alike, batched into one card), the head selected so the inspector shows the fence note, the outliner its lock and the status bar who holds what; the grants popover for one session; and in Perform, where no Agent panel is docked, the approval stack at the top right."
+env = { OMUZAKI_EVIDENCE_OUT = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-ui", "--test", "studio", "--", "--ignored", "--exact", "agents_evidence"] },
+]
+images = ["agents-dark-1920x1080.png", "agents-light-1920x1080.png", "agents-grants-1920x1080.png", "agents-stack-1920x1080.png"]
+
+[[case]]
+name = "review"
+description = "The review card over the real studio at 1366x768, dark and light (spine/ui, #1374): a publish a two-reviewer policy holds, one approval of two, an open comment thread and the licence check, in the Perform workspace's approval stack."
+env = { OMUZAKI_EVIDENCE_OUT = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-ui", "--test", "studio", "--", "--ignored", "--exact", "review_evidence"] },
+]
+images = ["review-dark-1366x768.png", "review-light-1366x768.png"]

@@ -141,7 +141,11 @@ fn show(
         }
         if !e.threads.is_empty() {
             let count = e.threads.len().to_string();
-            lines.push(say(&ds, text::REVIEW_THREADS, &[("count", &count)]).into_owned());
+            lines.push(if e.threads.len() == 1 {
+                say(&ds, text::REVIEW_THREAD_ONE, &[]).into_owned()
+            } else {
+                say(&ds, text::REVIEW_THREADS, &[("count", &count)]).into_owned()
+            });
             lines.extend(e.threads.iter().map(|t| say(&ds, text::REVIEW_THREAD, &[("text", t)]).into_owned()));
         }
         lines.extend(e.feedback.iter().map(|f| say(&ds, text::REVIEW_FEEDBACK, &[("text", f)]).into_owned()));
@@ -153,10 +157,10 @@ fn show(
         .map(|r| r.preview.patch.changes.iter().map(|c| c.path.to_string()).collect())
         .unwrap_or_default();
     let change_refs: Vec<&str> = changes.iter().map(String::as_str).collect();
-    let count = changes.len().to_string();
-    let summary = say(&ds, text::APPROVAL_CHANGES, &[("count", &count)]).into_owned();
+    let summary = text::changes(&ds, changes.len());
     let export = say(&ds, text::REVIEW_EXPORT, &[]);
     let mut card = ApprovalCard::new(("review_card", salt, approval.id), requester, &what)
+        .scope("")
         .offers(false, false)
         .details(&refs)
         .export(&export);

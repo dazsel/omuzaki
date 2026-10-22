@@ -99,16 +99,13 @@ pub fn card(
         .map(|p| p.patch.changes.iter().map(|c| format!("{}: {}", c.path, short(c.after.as_ref()))).collect())
         .unwrap_or_default();
     let line_refs: Vec<&str> = lines.iter().map(String::as_str).collect();
-    let count = lines.len().to_string();
-    let summary = say(ds, text::APPROVAL_CHANGES, &[("count", &count)]).into_owned();
+    let summary = text::changes(ds, lines.len());
     let cost = preview.and_then(|p| p.cost.as_ref()).map(cost_parts).unwrap_or_default();
     let cost_refs: Vec<&str> = cost.iter().map(String::as_str).collect();
     let credential = session.is_some_and(|s| has_credential(&s.transport));
 
     let mut card = ApprovalCard::new(("agent_approval", salt, approval.id), &agent, &what).similar(batch.ids.len());
-    if let Some(scope) = scope_name {
-        card = card.scope(scope);
-    }
+    card = card.scope(scope_name.unwrap_or(""));
     if let Some(meaning) = meaning.as_deref() {
         card = card.scope_meaning(meaning);
     }
@@ -169,21 +166,27 @@ pub fn stack(ctx: &Context, top: f32, feed: &AgentFeed, desk: Option<&dyn Review
         .fixed_pos(egui::pos2(screen.right() - 12.0, top + 12.0))
         .constrain(true)
         .show(ctx, |ui| {
-            ui.set_width(width);
-            ScrollArea::vertical().max_height(screen.height() * 0.7).show(ui, |ui| {
-                for batch in all.iter().take(STACK_CARDS) {
-                    let session = feed.session(batch.first.session);
-                    if let Some(a) = card(ui, &ds, batch, session, desk, "stack") {
-                        answer = Some(a);
+            // A backing behind the cards, so the panel under the stack never shows between them.
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.set_width(width);
+                // The area's room is last frame's size, so without a floor the list would never grow past the
+                // height it first had: it takes up to 70 % of the window, then scrolls.
+                let tall = screen.height() * 0.7;
+                ScrollArea::vertical().max_height(tall).min_scrolled_height(tall).show(ui, |ui| {
+                    for batch in all.iter().take(STACK_CARDS) {
+                        let session = feed.session(batch.first.session);
+                        if let Some(a) = card(ui, &ds, batch, session, desk, "stack") {
+                            answer = Some(a);
+                        }
+                        ui.add_space(6.0);
                     }
-                    ui.add_space(6.0);
+                });
+                if all.len() > STACK_CARDS {
+                    let more = (all.len() - STACK_CARDS).to_string();
+                    let label = say(&ds, text::APPROVAL_MORE, &[("count", &more)]);
+                    open_panel = ui.add(Button::new(&label).ghost()).clicked();
                 }
             });
-            if all.len() > STACK_CARDS {
-                let more = (all.len() - STACK_CARDS).to_string();
-                let label = say(&ds, text::APPROVAL_MORE, &[("count", &more)]);
-                open_panel = ui.add(Button::new(&label).ghost()).clicked();
-            }
         });
     (answer, open_panel)
 }

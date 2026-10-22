@@ -208,6 +208,8 @@ pub const APPROVAL_ONCE: &str = "Approve once";
 pub const APPROVAL_RAISE: &str = "Raise the budget to {budget}";
 /// The preview's change count.
 pub const APPROVAL_CHANGES: &str = "{count} values";
+/// The preview's change count, for one change.
+pub const APPROVAL_CHANGE: &str = "1 value";
 /// More approvals than the stack shows.
 pub const APPROVAL_MORE: &str = "{count} more in the Agent panel";
 /// The review card's title.
@@ -230,6 +232,8 @@ pub const REVIEW_PROGRESS_BY: &str = "{have} of {need} approvals: {names}";
 pub const REVIEW_LICENCE: &str = "Licence check: {result}";
 /// Open threads.
 pub const REVIEW_THREADS: &str = "{count} open comment threads";
+/// One unresolved comment thread on what the request touches.
+pub const REVIEW_THREAD_ONE: &str = "1 open comment thread";
 /// One open thread.
 pub const REVIEW_THREAD: &str = "Open thread: {text}";
 /// Imported feedback.
@@ -399,6 +403,15 @@ pub const SETUP_CUSTOMISE: &str = "Customise the character";
 pub const SETUP_CLOSE: &str = "Close";
 /// What an op the flow ran said when it failed.
 pub const SETUP_FAILED: &str = "{op} failed: {message}";
+
+/// A preview's change count in words: "1 value", "3 values".
+pub fn changes(ds: &Ds, count: usize) -> String {
+    if count == 1 {
+        say(ds, APPROVAL_CHANGE, &[]).into_owned()
+    } else {
+        say(ds, APPROVAL_CHANGES, &[("count", &count.to_string())]).into_owned()
+    }
+}
 
 /// `text` in the language the context speaks, with its `{name}` placeholders filled from `args`.
 pub fn say<'a>(ds: &Ds, text: &'a str, args: &[(&str, &str)]) -> Cow<'a, str> {

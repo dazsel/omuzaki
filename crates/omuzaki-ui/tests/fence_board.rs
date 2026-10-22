@@ -213,9 +213,7 @@ fn the_outliner_marks_held_parts_with_their_holder() {
     let held = h.state().outliner.held().clone();
     let named: Vec<(String, String)> = held.into_iter().map(|(p, n)| (p.to_string(), n)).collect();
     assert_eq!(named, [("hair".into(), "hair_bot".into()), ("head".into(), "claude_code".into())]);
-    let described = h
-        .query_all_by_role(Role::TreeItem)
-        .filter_map(|n| n.accesskit_node().description())
-        .collect::<Vec<_>>();
+    let described =
+        h.query_all_by_role(Role::TreeItem).filter_map(|n| n.accesskit_node().description()).collect::<Vec<_>>();
     assert!(described.iter().any(|d| d.contains("Locked (hair_bot)")), "{described:?}");
 }

@@ -189,7 +189,8 @@ impl<'a> ApprovalCard<'a> {
         self
     }
 
-    /// The scope the request needs (`render`, `edit:character`, `broadcast`…).
+    /// The scope the request needs (`render`, `edit:character`, `broadcast`…). An empty scope hides the badge, for a
+    /// request that needs something other than a scope (a person's say, a budget, a pairing).
     pub const fn scope(mut self, scope: &'a str) -> Self {
         self.scope = scope;
         self
@@ -232,7 +233,7 @@ impl<'a> ApprovalCard<'a> {
     }
 
     fn dangerous(&self) -> bool {
-        matches!(self.variant, Variant::Dangerous { .. }) || is_risky_scope(self.scope)
+        matches!(self.variant, Variant::Dangerous { .. }) || (!self.scope.is_empty() && is_risky_scope(self.scope))
     }
 
     /// Shows the card and returns the decision, if one was made this frame.
@@ -359,18 +360,20 @@ impl<'a> ApprovalCard<'a> {
             }
             ui.add(ActorChip::new(self.agent, ActorKind::Agent));
             ui.label(RichText::new(ds.text(Msg::ApprovalNeedsYou)).font(ds.text.small.clone()).color(t.text2));
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let badge = ui.add(ScopeBadge::new(self.scope));
-                if let Some(meaning) = self.scope_meaning {
-                    badge.on_hover_text(meaning);
-                }
-            });
+            if !self.scope.is_empty() {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let badge = ui.add(ScopeBadge::new(self.scope));
+                    if let Some(meaning) = self.scope_meaning {
+                        badge.on_hover_text(meaning);
+                    }
+                });
+            }
         });
     }
 
     /// The scope's explanation, when the scope is risky (it reaches outside the project) and the caller gave one.
     fn risk_meaning(&self) -> Option<&'a str> {
-        self.scope_meaning.filter(|_| is_risky_scope(self.scope))
+        self.scope_meaning.filter(|_| !self.scope.is_empty() && is_risky_scope(self.scope))
     }
 
     /// The explanation of a risky scope, on a line under the action title in the warning colour, the way "Can't be
