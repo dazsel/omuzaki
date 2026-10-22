@@ -28,6 +28,7 @@ mod meters;
 mod mix;
 pub mod offline;
 pub mod ops;
+mod player;
 mod swap;
 
 pub use backend::CpalBackend;

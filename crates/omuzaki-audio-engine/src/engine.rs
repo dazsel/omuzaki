@@ -21,8 +21,9 @@ use omuzaki_audio_api::clock::{ClockSnapshot, EngineClock};
 use omuzaki_audio_api::device::{Binding, DeviceId, DeviceInfo, DeviceState, Direction, ProfileStore};
 use omuzaki_audio_api::engine::{AudioEngine, AudioError};
 use omuzaki_audio_api::graph::{GraphSpec, MIC_BUS, MONITOR_OUT_ROLE, MicMode};
-use omuzaki_audio_api::ids::{BusId, DeviceRole, NodeId};
+use omuzaki_audio_api::ids::{BusId, DeviceRole, NodeId, PlayerId, SoundId};
 use omuzaki_audio_api::node::{MAX_BLOCK, ParamIndex, SAMPLE_RATE, node_kind};
+use omuzaki_audio_api::player::Sound;
 use omuzaki_audio_api::report::{
     AudioEvent, AudioEvents, AudioStatus, BridgeStatus, BusLatency, ClockSource, EventSender, GraphReport,
     LatencyEstimate, LeavingTap, MeterCell, MeterPoint, Meters, TapDrops, event_queue,
@@ -40,6 +41,7 @@ use crate::executor::{
     Bridge, BridgeWriter, Command, Executor, Feed, Garbage, MAX_ENTRIES, Shared, Tap, TapLink, lock,
 };
 use crate::mix::Mix;
+use crate::player::{BANK, MAX_PLAYERS, Player};
 
 /// The callback size the engine asks devices for (design section 3.2).
 pub const BUFFER_FRAMES: u32 = 256;
@@ -89,6 +91,21 @@ struct Control {
     taps: Vec<TapRecord>,
     entries: usize,
     changer_latency: Option<LatencyEstimate>,
+    /// Each loaded sound's bank slot.
+    sounds: BTreeMap<SoundId, usize>,
+    /// The players, in the order the executor holds them.
+    players: Vec<PlayerId>,
+}
+
+impl Control {
+    /// A bank slot no sound is loaded in and the audio thread has let go of.
+    fn free_slot(&self, held: &[AtomicBool]) -> Option<usize> {
+        (0..BANK).find(|slot| !self.sounds.values().any(|s| s == slot) && !held[*slot].load(Ordering::Acquire))
+    }
+
+    fn slot(&self, id: &SoundId) -> Result<usize, AudioError> {
+        self.sounds.get(id).copied().ok_or_else(|| AudioError::UnknownSound(id.clone()))
+    }
 }
 
 struct Inner {
@@ -177,6 +194,8 @@ impl LiveEngine {
                 taps: Vec::new(),
                 entries: 0,
                 changer_latency: None,
+                sounds: BTreeMap::new(),
+                players: Vec::new(),
             }),
             events: Mutex::new(Vec::new()),
             clock_token: Arc::new(AtomicU64::new(0)),
@@ -738,6 +757,53 @@ impl AudioEngine for LiveEngine {
         ))))?;
         control.entries += 1;
         Ok(producer)
+    }
+
+    fn load_sound(&self, id: &SoundId, sound: Arc<Sound>) -> Result<(), AudioError> {
+        let mut control = lock(&self.inner.control);
+        let held = &self.inner.shared.held;
+        let slot = control.free_slot(held).ok_or_else(|| internal("the sound bank is full: unload a sound first"))?;
+        // Held from here until the audio thread hands the sound back, so the slot isn't reused under it.
+        held[slot].store(true, Ordering::Release);
+        if let Err(error) = self.inner.send(Command::LoadSound { slot, sound }) {
+            held[slot].store(false, Ordering::Release);
+            return Err(error);
+        }
+        if let Some(old) = control.sounds.insert(id.clone(), slot) {
+            // A sound replaced under the same id: the old one fades out of its own slot.
+            self.inner.send(Command::UnloadSound { slot: old })?;
+        }
+        Ok(())
+    }
+
+    fn unload_sound(&self, id: &SoundId) -> Result<(), AudioError> {
+        let mut control = lock(&self.inner.control);
+        let slot = control.sounds.remove(id).ok_or_else(|| AudioError::UnknownSound(id.clone()))?;
+        self.inner.send(Command::UnloadSound { slot })
+    }
+
+    fn play(&self, player: &PlayerId, sound: &SoundId, gain_db: f32, ducks: bool) -> Result<(), AudioError> {
+        let mut control = lock(&self.inner.control);
+        let slot = control.slot(sound)?;
+        let at = if let Some(at) = control.players.iter().position(|p| p == player) {
+            at
+        } else {
+            if control.players.len() >= MAX_PLAYERS {
+                return Err(internal(format!("an engine runs at most {MAX_PLAYERS} players")));
+            }
+            self.inner.send(Command::AddPlayer(Box::new(Player::new(player.clone()))))?;
+            control.players.push(player.clone());
+            control.players.len() - 1
+        };
+        self.inner.send(Command::Play { player: at, slot, gain: db_to_gain(gain_db), ducks })
+    }
+
+    fn stop(&self, player: &PlayerId, sound: Option<&SoundId>) -> Result<(), AudioError> {
+        let control = lock(&self.inner.control);
+        let slot = sound.map(|id| control.slot(id)).transpose()?;
+        // A player never named has nothing to stop.
+        let Some(at) = control.players.iter().position(|p| p == player) else { return Ok(()) };
+        self.inner.send(Command::Stop { player: at, slot })
     }
 
     fn clock(&self) -> Arc<EngineClock> {

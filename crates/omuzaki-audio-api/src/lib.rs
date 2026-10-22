@@ -40,6 +40,7 @@ pub mod engine;
 pub mod graph;
 pub mod ids;
 pub mod node;
+pub mod player;
 pub mod preset;
 pub mod report;
 pub mod ring;
@@ -54,7 +55,7 @@ pub use engine::{AudioEngine, AudioError, BlockPlan, OfflineInput, OfflineOutput
 pub use graph::{
     BusSpec, Channels, DuckRule, DuckTrigger, GraphError, GraphSpec, MicMode, SendSpec, SourceRef, egress_pairs,
 };
-pub use ids::{BusId, DeviceRole, FeedId, GateId, NodeId, NodeKindId, PlayerId};
+pub use ids::{BusId, DeviceRole, FeedId, GateId, NodeId, NodeKindId, PlayerId, SoundId};
 pub use node::{BlockMut, MAX_BLOCK, Node, NodeKind, SAMPLE_RATE};
 pub use preset::FxPreset;
 pub use report::{AudioEvent, AudioStatus, BridgeStatus, GraphReport, LatencyEstimate, Meters, RouteLatency};

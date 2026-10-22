@@ -79,6 +79,7 @@ src/lib.rs: pub mod engine;
 src/lib.rs: pub mod graph;
 src/lib.rs: pub mod ids;
 src/lib.rs: pub mod node;
+src/lib.rs: pub mod player;
 src/lib.rs: pub mod preset;
 src/lib.rs: pub mod report;
 src/lib.rs: pub mod ring;
@@ -90,7 +91,7 @@ src/lib.rs: pub use clock::{ClockSnapshot, EngineClock};
 src/lib.rs: pub use device::{Binding, ChannelMap, DeviceId, DeviceInfo, DeviceState, Direction, ProfileStore};
 src/lib.rs: pub use engine::{AudioEngine, AudioError, BlockPlan, OfflineInput, OfflineOutput, OfflineRender};
 src/lib.rs: pub use graph::{
-src/lib.rs: pub use ids::{BusId, DeviceRole, FeedId, GateId, NodeId, NodeKindId, PlayerId};
+src/lib.rs: pub use ids::{BusId, DeviceRole, FeedId, GateId, NodeId, NodeKindId, PlayerId, SoundId};
 src/lib.rs: pub use node::{BlockMut, MAX_BLOCK, Node, NodeKind, SAMPLE_RATE};
 src/lib.rs: pub use preset::FxPreset;
 src/lib.rs: pub use report::{AudioEvent, AudioStatus, BridgeStatus, GraphReport, LatencyEstimate, Meters, RouteLatency};
@@ -127,6 +128,15 @@ src/node.rs: pub fn node_kinds() -> Vec<&'static dyn NodeKind> {
 src/node.rs: pub fn node_kind(id: &NodeKindId) -> Option<&'static dyn NodeKind> {
 src/node.rs: pub fn duplicate_kind_ids() -> Vec<&'static str> {
 src/node.rs: macro_rules! register_node_kind {
+src/player.rs: pub const VOICES: usize = 16;
+src/player.rs: pub const VOICE_FADE: u32 = 240;
+src/player.rs: pub const MAX_SOUND_SECONDS: u32 = 600;
+src/player.rs: pub fn gate_of(player: &PlayerId) -> GateId {
+src/player.rs: pub struct Sound {
+src/player.rs: pub fn new(channels: Vec<Vec<f32>>) -> Result<Self, AudioError> {
+src/player.rs: pub fn channel_count(&self) -> usize {
+src/player.rs: pub fn frames(&self) -> usize {
+src/player.rs: pub fn channel(&self, c: usize) -> &[f32] {
 src/preset.rs: pub struct FxPreset {
 src/preset.rs: pub fn keeps_shape_of(&self, current: &[NodeSpec]) -> bool {
 src/report.rs: pub enum RouteEnd {

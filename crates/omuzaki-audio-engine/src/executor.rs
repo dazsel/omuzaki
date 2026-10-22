@@ -21,8 +21,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use omuzaki_audio_api::clock::{ClockSnapshot, EngineClock};
 use omuzaki_audio_api::graph::{MicMode, SourceRef};
-use omuzaki_audio_api::ids::{BusId, DeviceRole, FeedId};
+use omuzaki_audio_api::ids::{BusId, DeviceRole, FeedId, GateId};
 use omuzaki_audio_api::node::{MAX_BLOCK, ParamIndex, SAMPLE_RATE};
+use omuzaki_audio_api::player::Sound;
 use omuzaki_audio_api::report::MeterCell;
 use omuzaki_audio_api::ring::{Consumer, Producer, TapFlags};
 use omuzaki_audio_api::semantics::MONO_TO_STEREO_GAIN;
@@ -32,6 +33,7 @@ use omuzaki_core::time::Seconds;
 use crate::dsp::{Decimator, Resampler};
 use crate::meters::Meter;
 use crate::mix::{Inputs, Mix, Points, Stage};
+use crate::player::{Bank, MAX_PLAYERS, Player, held_flags};
 use crate::swap::Running;
 
 /// The most taps, feeds and bridges the executor holds; their lists are allocated this large up front.
@@ -44,14 +46,27 @@ pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// Counters the control side reads.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct Shared {
+    /// Per bank slot, whether the audio thread holds a sound there.
+    pub held: Arc<[AtomicBool]>,
     /// The engine-clock index of the next frame the executor will make.
     pub sample: AtomicU64,
     /// Frames in the last block the clock delivered.
     pub block_frames: AtomicU32,
     /// Callbacks that found the executor busy and skipped a block.
     pub missed: AtomicU64,
+}
+
+impl Default for Shared {
+    fn default() -> Self {
+        Self {
+            held: held_flags(),
+            sample: AtomicU64::new(0),
+            block_frames: AtomicU32::new(0),
+            missed: AtomicU64::new(0),
+        }
+    }
 }
 
 /// A device input crossing from its own callback to the executor, one ring per channel.
@@ -133,14 +148,48 @@ pub(crate) fn voice_flags(mode: MicMode, consumer: VoiceUse) -> TapFlags {
 /// A message from the control side, applied at the next block start.
 pub(crate) enum Command {
     Swap(Box<Mix>),
-    Gain { generation: u64, bus: usize, gain: f32 },
-    Mute { generation: u64, bus: usize, muted: bool },
-    Param { generation: u64, bus: usize, node: usize, param: ParamIndex, value: f32 },
+    Gain {
+        generation: u64,
+        bus: usize,
+        gain: f32,
+    },
+    Mute {
+        generation: u64,
+        bus: usize,
+        muted: bool,
+    },
+    Param {
+        generation: u64,
+        bus: usize,
+        node: usize,
+        param: ParamIndex,
+        value: f32,
+    },
     MicMode(MicMode),
     AddTap(Box<Tap>),
     AddFeed(Box<Feed>),
     AddBridge(Box<Bridge>),
     RemoveBridge(u64),
+    /// A sound into a bank slot; the control side keeps a reference, so the audio thread never frees it.
+    LoadSound {
+        slot: usize,
+        sound: Arc<Sound>,
+    },
+    UnloadSound {
+        slot: usize,
+    },
+    /// A player the control side numbered by its position: players are only ever added.
+    AddPlayer(Box<Player>),
+    Play {
+        player: usize,
+        slot: usize,
+        gain: f32,
+        ducks: bool,
+    },
+    Stop {
+        player: usize,
+        slot: Option<usize>,
+    },
 }
 
 /// What the audio thread hands back to be freed off it.
@@ -149,6 +198,8 @@ pub(crate) enum Garbage {
     Tap(#[allow(dead_code)] Box<Tap>),
     Feed(#[allow(dead_code)] Box<Feed>),
     Bridge(#[allow(dead_code)] Box<Bridge>),
+    Player(#[allow(dead_code)] Box<Player>),
+    Sound(#[allow(dead_code)] Arc<Sound>),
 }
 
 /// The executor's state.
@@ -159,6 +210,8 @@ pub(crate) struct Executor {
     bridges: Vec<Box<Bridge>>,
     feeds: Vec<Box<Feed>>,
     taps: Vec<Box<Tap>>,
+    bank: Bank,
+    players: Vec<Box<Player>>,
     mic_mode: MicMode,
     commands: Receiver<Command>,
     garbage: SyncSender<Garbage>,
@@ -188,6 +241,8 @@ impl Executor {
             bridges: Vec::with_capacity(MAX_ENTRIES),
             feeds: Vec::with_capacity(MAX_ENTRIES),
             taps: Vec::with_capacity(MAX_ENTRIES),
+            bank: Bank::new(Arc::clone(&shared.held)),
+            players: Vec::with_capacity(MAX_PLAYERS),
             mic_mode: MicMode::Live,
             commands,
             garbage,
@@ -256,6 +311,34 @@ impl Executor {
                 Command::AddBridge(bridge) => {
                     push_bounded(&mut self.bridges, bridge, Garbage::Bridge, &mut self.held);
                 }
+                Command::LoadSound { slot, sound } => {
+                    if let Some(old) = self.bank.load(slot, sound) {
+                        self.discard(Garbage::Sound(old));
+                    }
+                }
+                Command::UnloadSound { slot } => {
+                    self.bank.unload(slot);
+                    for player in &mut self.players {
+                        player.stop(Some(slot));
+                    }
+                }
+                Command::AddPlayer(player) => {
+                    if self.players.len() < MAX_PLAYERS {
+                        self.players.push(player);
+                    } else {
+                        self.discard(Garbage::Player(player));
+                    }
+                }
+                Command::Play { player, slot, gain, ducks } => {
+                    if let Some(player) = self.players.get_mut(player) {
+                        player.play(slot, gain, ducks);
+                    }
+                }
+                Command::Stop { player, slot } => {
+                    if let Some(player) = self.players.get_mut(player) {
+                        player.stop(slot);
+                    }
+                }
                 Command::RemoveBridge(token) => {
                     if let Some(at) = self.bridges.iter().position(|b| b.token == token) {
                         let bridge = self.bridges.swap_remove(at);
@@ -316,6 +399,12 @@ impl Executor {
         for feed in &mut self.feeds {
             pull_feed(feed, n);
         }
+        for player in &mut self.players {
+            player.render(n, &self.bank);
+        }
+        while let Some(sound) = self.bank.take_released(&self.players) {
+            self.discard(Garbage::Sound(sound));
+        }
         // Input taps.
         for tap in &mut self.taps {
             if let TapPoint::Input(role) = &tap.point {
@@ -331,7 +420,7 @@ impl Executor {
         }
         let first_sample = self.sample;
         let mic_mode = self.mic_mode;
-        let inputs = LiveInputs { bridges: &self.bridges, feeds: &self.feeds };
+        let inputs = LiveInputs { bridges: &self.bridges, feeds: &self.feeds, players: &self.players };
         let mut points = LiveTaps { taps: &mut self.taps, mode: mic_mode };
         if let Some(old) = self.running.process(n, first_sample, &inputs, &mut points) {
             self.discard(Garbage::Graph(old));
@@ -378,10 +467,11 @@ fn push_bounded<T>(
     }
 }
 
-/// The bridges and feeds as the mixer's sources; a player is silent until the player source lands (#1160).
+/// The bridges, feeds and players as the mixer's sources, and the players' gates.
 struct LiveInputs<'a> {
     bridges: &'a [Box<Bridge>],
     feeds: &'a [Box<Feed>],
+    players: &'a [Box<Player>],
 }
 
 impl Inputs for LiveInputs<'_> {
@@ -396,8 +486,17 @@ impl Inputs for LiveInputs<'_> {
                 let feed = self.feeds.iter().find(|f| &f.id == id)?;
                 Some((if feed.stereo { 2 } else { 1 }, [&feed.block[0][..n], &feed.block[1][..n]]))
             }
-            SourceRef::Player { .. } => None,
+            SourceRef::Player { id } => {
+                let player = self.players.iter().find(|p| &p.id == id)?;
+                Some((2, [&player.out[0][..n], &player.out[1][..n]]))
+            }
         }
+    }
+
+    fn gate(&self, gate: &GateId, n: usize) -> Option<&[bool]> {
+        // A player raises the gate with its own name.
+        let player = self.players.iter().find(|p| p.id.as_str() == gate.as_str())?;
+        Some(&player.gate[..n])
     }
 }
 

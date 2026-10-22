@@ -31,7 +31,7 @@ use omuzaki_audio_api::engine::AudioError;
 use omuzaki_audio_api::graph::{
     AI_VOICE_BUS, BusSpec, DuckTrigger, GraphSpec, MIC_BUS, MONITOR_OUT_ROLE, MicMode, PROGRAM_BUS, SourceRef,
 };
-use omuzaki_audio_api::ids::{BusId, DeviceRole, NodeId};
+use omuzaki_audio_api::ids::{BusId, DeviceRole, GateId, NodeId};
 use omuzaki_audio_api::node::{BlockMut, MAX_BLOCK, Node, NodeError, ParamIndex, node_kind};
 use omuzaki_audio_api::report::MeterCell;
 use omuzaki_audio_api::semantics::{
@@ -176,8 +176,8 @@ fn print(value: &impl std::fmt::Debug) -> u64 {
 enum RuleTrigger {
     /// A bus's level history, compared with a threshold gain.
     Bus { bus: usize, threshold: f32 },
-    /// A gate: opened by the player (#1160); closed until then.
-    Gate,
+    /// A gate a player raises, by its position in [`Mix::gates`].
+    Gate { gate: usize },
     /// A rule the graph before this one had and this one dropped: never active, so it releases to 0 dB.
     Released,
 }
@@ -189,6 +189,12 @@ struct Rule {
     key: u64,
     /// Depth, attack, hold and release, set again on a carried envelope.
     numbers: [f32; 4],
+}
+
+/// A gate that triggers a rule: its last `HISTORY` states, indexed by sample number.
+struct GateTrack {
+    id: GateId,
+    states: Vec<bool>,
 }
 
 /// A bus that triggers a rule: its level follower and the last `HISTORY` levels, indexed by sample number.
@@ -217,6 +223,12 @@ pub(crate) trait Inputs {
     /// `n` frames of `source` for this block, as its channel count (1 or 2) and its channels (the second ignored for
     /// mono); `None` is silence.
     fn source(&self, source: &SourceRef, n: usize) -> Option<(usize, [&[f32]; 2])>;
+
+    /// The state of `gate` for each of the block's first `n` samples; `None` is down throughout.
+    fn gate(&self, gate: &GateId, n: usize) -> Option<&[bool]> {
+        let _ = (gate, n);
+        None
+    }
 }
 
 /// What sees each bus at each stage: the taps live, the capture offline.
@@ -237,6 +249,7 @@ pub(crate) struct Mix {
     pub buses: Vec<Bus>,
     rules: Vec<Rule>,
     triggers: Vec<Option<Trigger>>,
+    gates: Vec<GateTrack>,
     pub outputs: Vec<Output>,
     /// Each bus's `post` from the previous block, averaged to mono, and its length (0 before the first block): what a
     /// sidechain reads.
@@ -286,9 +299,13 @@ fn history_slot(index: u64) -> usize {
 }
 
 /// Whether a rule's trigger was above its threshold `TRIGGER_DELAY` samples before `index`.
-fn rule_active(rule: &Rule, triggers: &[Option<Trigger>], index: u64) -> bool {
+fn rule_active(rule: &Rule, triggers: &[Option<Trigger>], gates: &[GateTrack], index: u64) -> bool {
     match &rule.trigger {
-        RuleTrigger::Gate | RuleTrigger::Released => false,
+        RuleTrigger::Released => false,
+        RuleTrigger::Gate { gate } => {
+            let Some(back) = index.checked_sub(TRIGGER_DELAY as u64) else { return false };
+            gates[*gate].states[history_slot(back)]
+        }
         RuleTrigger::Bus { bus, threshold } => {
             let Some(back) = index.checked_sub(TRIGGER_DELAY as u64) else { return false };
             triggers[*bus].as_ref().is_some_and(|t| t.levels[history_slot(back)] > *threshold)
@@ -308,6 +325,7 @@ impl Mix {
             buses: Vec::new(),
             rules: Vec::new(),
             triggers: Vec::new(),
+            gates: Vec::new(),
             outputs: Vec::new(),
             previous: Vec::new(),
             mic_mode: MicMode::Live,
@@ -393,6 +411,7 @@ impl Mix {
             generation,
             previous: buses.iter().map(|_| (vec![0.0; MAX_BLOCK], 0)).collect(),
             triggers: buses.iter().map(|_| None).collect(),
+            gates: Vec::new(),
             buses,
             rules: Vec::new(),
             outputs,
@@ -427,7 +446,13 @@ impl Mix {
                         .get_or_insert_with(|| Trigger { follower: LevelFollower::new(), levels: vec![0.0; HISTORY] });
                     RuleTrigger::Bus { bus, threshold: db_to_gain(duck.threshold_db) }
                 }
-                DuckTrigger::Gate { .. } => RuleTrigger::Gate,
+                DuckTrigger::Gate { id } => {
+                    let gate = self.gates.iter().position(|g| &g.id == id).unwrap_or_else(|| {
+                        self.gates.push(GateTrack { id: id.clone(), states: vec![false; HISTORY] });
+                        self.gates.len() - 1
+                    });
+                    RuleTrigger::Gate { gate }
+                }
             };
             self.buses[target].rules.push(self.rules.len());
             self.rules.push(Rule::new(duck, trigger));
@@ -511,6 +536,12 @@ impl Mix {
             out.buf[1][start..end].fill(0.0);
         }
         let span = start..end;
+        for gate in &mut self.gates {
+            let states = inputs.gate(&gate.id, end);
+            for i in span.clone() {
+                gate.states[history_slot(first + i as u64)] = states.is_some_and(|s| s[i]);
+            }
+        }
         for at in 0..self.buses.len() {
             let (_, rest) = self.buses.split_at_mut(at);
             let Some((bus, later)) = rest.split_first_mut() else { break };
@@ -529,7 +560,17 @@ impl Mix {
                 bus.channels,
                 [&bus.buf[0][span.clone()], &bus.buf[1][span.clone()]],
             );
-            fade_and_send(bus, at, later, span.clone(), first, &mut self.rules, &mut self.triggers, &mut self.outputs);
+            fade_and_send(
+                bus,
+                at,
+                later,
+                span.clone(),
+                first,
+                &mut self.rules,
+                &mut self.triggers,
+                &self.gates,
+                &mut self.outputs,
+            );
             let reduction = bus.chain.iter().filter(|l| l.enabled).map(|l| l.node.report().gain_reduction_db).sum();
             let reading = if bus.channels == 2 {
                 bus.meter_state.measure(&[&bus.post[0][span.clone()], &bus.post[1][span.clone()]], reduction)
@@ -619,6 +660,11 @@ impl Mix {
                 std::mem::swap(mine, theirs);
             }
             std::mem::swap(&mut previous[at], &mut old.previous[from]);
+        }
+        for gate in &mut self.gates {
+            if let Some(same) = old.gates.iter_mut().find(|g| g.id == gate.id) {
+                std::mem::swap(&mut gate.states, &mut same.states);
+            }
         }
         for rule in &mut self.rules {
             if let Some(same) = old.rules.iter().find(|r| r.key == rule.key) {
@@ -735,6 +781,7 @@ fn fade_and_send(
     first: u64,
     rules: &mut [Rule],
     triggers: &mut [Option<Trigger>],
+    gates: &[GateTrack],
     outputs: &mut [Output],
 ) {
     let channels = bus.channels;
@@ -744,7 +791,7 @@ fn fade_and_send(
         let mute = bus.mute.next_gain();
         let private_out = bus.private_out.next_gain();
         let duck = duck_factor(bus.rules.iter().map(|&r| {
-            let active = rule_active(&rules[r], triggers, index);
+            let active = rule_active(&rules[r], triggers, gates, index);
             rules[r].envelope.step(active)
         }));
         let pre = [bus.buf[0][i], if channels == 2 { bus.buf[1][i] } else { 0.0 }];

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use omuzaki_audio_api::device::{Binding, ChannelMap, DeviceState};
-use omuzaki_audio_api::engine::AudioEngine;
+use omuzaki_audio_api::engine::{AudioEngine, AudioError};
 use omuzaki_audio_api::graph::{BusSpec, Channels, GraphSpec, MIC_BUS, MicMode, SourceRef};
 use omuzaki_audio_api::ids::{BusId, DeviceRole, FeedId};
 use omuzaki_audio_api::report::{AudioEvent, ClockSource};
@@ -219,4 +219,47 @@ fn the_mouth_voice_tap_carries_the_microphone_and_honours_mute() {
     backend.step(48_000);
     let muted = drain(&mut mouth);
     assert!(rms(&muted[muted.len() / 2..]) < 1e-4, "the mouth tap is silent while muted: {}", rms(&muted));
+}
+
+#[test]
+fn a_loaded_sound_plays_on_its_player_and_unloads_without_a_trace() {
+    use omuzaki_audio_api::ids::{PlayerId, SoundId};
+    use omuzaki_audio_api::player::Sound;
+
+    let (backend, engine) = engine_with_mic();
+    let board = PlayerId::new("board").unwrap();
+    let mut sfx = bus("sfx", SourceRef::Player { id: board.clone() });
+    sfx.channels = Channels::Stereo;
+    engine.apply(&GraphSpec { buses: vec![sfx], ..GraphSpec::default() }).unwrap();
+    // A new bus fades in over its first 64 samples; let it.
+    backend.step(1_024);
+    let ding = SoundId::new("ding").unwrap();
+    let sound = Arc::new(Sound::new(vec![vec![0.5f32; 12_000], vec![0.5f32; 12_000]]).unwrap());
+    engine.load_sound(&ding, Arc::clone(&sound)).unwrap();
+    let missing = SoundId::new("gong").unwrap();
+    assert!(matches!(engine.play(&board, &missing, 0.0, false), Err(AudioError::UnknownSound(_))));
+
+    let (mut tap, _) = engine.tap_ring(&request(TapPoint::BusPostFader(bus_id("sfx")), TapRate::Graph48k)).unwrap();
+    engine.play(&board, &ding, -6.0, false).unwrap();
+    backend.step(24_000);
+    let heard = drain(&mut tap);
+    // The mono tap down-mixes the stereo bus: (L + R) / sqrt(2).
+    let side = 0.5 * omuzaki_audio_api::semantics::db_to_gain(-6.0);
+    let level = 2.0 * side * omuzaki_audio_api::semantics::MONO_TO_STEREO_GAIN;
+    let loud = heard.iter().filter(|s| (**s - level).abs() < 1e-4).count();
+    assert_eq!(loud, 12_000, "every frame of the sound, at its gain");
+
+    // Unloaded, it can't be played, and the engine lets go of it: the audio thread hands it to the housekeeper,
+    // which drops it, leaving only the test's reference.
+    engine.unload_sound(&ding).unwrap();
+    assert!(matches!(engine.play(&board, &ding, 0.0, false), Err(AudioError::UnknownSound(_))));
+    backend.step(1_024);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Arc::strong_count(&sound) > 1 && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert_eq!(Arc::strong_count(&sound), 1, "nobody else holds the unloaded sound");
+    // The id loads again, into a slot the bank has freed.
+    engine.load_sound(&ding, Arc::new(Sound::new(vec![vec![0.0; 10]]).unwrap())).unwrap();
+    engine.play(&board, &ding, 0.0, false).unwrap();
 }
