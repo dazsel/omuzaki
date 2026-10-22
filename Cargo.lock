@@ -3748,6 +3748,7 @@ dependencies = [
  "omuzaki-doc-api",
  "omuzaki-face-api",
  "omuzaki-io-api",
+ "omuzaki-io-fbx",
  "omuzaki-io-gltf",
  "omuzaki-io-ops",
  "omuzaki-io-vrm",
@@ -4021,6 +4022,15 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omuzaki-io-fbx"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-core",
+ "omuzaki-io-api",
+ "ufbx",
 ]
 
 [[package]]
@@ -6789,6 +6799,15 @@ dependencies = [
  "memoffset",
  "tempfile",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "ufbx"
+version = "0.11.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "260522f1eb74139f0e78b29dd82a58e5437d728c5498024a39e5af7282694240"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
