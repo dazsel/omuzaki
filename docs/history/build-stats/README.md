@@ -11,7 +11,7 @@ pull requests, issues, CI runs and code reviews. Omuzaki is built by AI agents (
 a while) under one human owner. These files are aggregates only: counts and hours per day or per time bucket, with no
 conversation content, task descriptions or names.
 
-Snapshot taken **2026-10-22 1:52 PM PT**. Each dataset below says how far its data is complete.
+Snapshot refreshed hourly by `refresh.py` (git, GitHub and CI parts); last refresh in `summary.json`. Each dataset below says how far its data is complete.
 
 ## The short version
 
@@ -25,6 +25,21 @@ Snapshot taken **2026-10-22 1:52 PM PT**. Each dataset below says how far its da
 | Issues (this repository) | 1,918 opened, 773 closed |
 | CI runs | 8,043 (6,382 here, 1,661 in the earlier repository) |
 | Code reviews | 1,267 recorded (1,244 by Codex) |
+
+## Charts
+
+Drawn by `charts.py` (standard library only) from the CSVs; `refresh.py` redraws them, and the one-page viewer
+`index.html` (headline numbers, every chart and the story of how the project was built), on every refresh. Open
+`index.html` in a browser.
+
+![Agents working at once](charts/agents-at-once.svg)
+![Agent-hours per day](charts/agent-hours.svg)
+![Lines of code](charts/lines-of-code.svg)
+![Commits per day](charts/commits.svg)
+![Pull requests per day](charts/pull-requests.svg)
+![Issues opened and closed](charts/issues.svg)
+![Open issues and pull requests](charts/backlog.svg)
+![CI runs per day](charts/ci-runs.svg)
 
 ## Timeline
 
@@ -54,6 +69,7 @@ Snapshot taken **2026-10-22 1:52 PM PT**. Each dataset below says how far its da
 | `prs_daily.csv` | Pull requests opened and merged per day, in this repository and the earlier one | this repository 2026-10-22 1:52 PM PT; the earlier one 2026-10-22 1:46 PM PT (from 2026-10-11 8:45 PM PT) |
 | `issues_daily.csv` | Issues opened and closed per day in this repository | 2026-10-22 1:52 PM PT |
 | `ci_daily.csv` | CI runs per day and workflow: result counts and wall-clock minutes (start to last update, not billed minutes); the earlier repository's runs are one "all" row a day | this repository 2026-10-22 1:52 PM PT; the earlier one 2026-10-18 8:22 AM PT |
+| `backlog_snapshots.csv` | Open issues and open pull requests at each refresh (one row per run) | each row's own time |
 | `reviews_daily.csv` | Code reviews per day by reviewer, model and verdict, with blocking findings | **2026-10-17 6:21 PM PT**; the reviews from then until the review gate ended on 10-21 are missing |
 
 ## Coverage: what is measured and what is estimated
