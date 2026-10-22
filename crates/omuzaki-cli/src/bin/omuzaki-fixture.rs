@@ -141,5 +141,12 @@ impl Op for GetProject {
 register_op!(GetProject);
 
 fn main() -> ExitCode {
-    omuzaki_cli::app::run()
+    omuzaki_cli::app::run_with(abort_at_switch_step)
+}
+
+/// `OMUZAKI_FIXTURE_ABORT_AT=switch:marked` (or another step of a branch switch) kills the process there, with no
+/// unwinding and nothing flushed, as a crash would (`tests/branches_crash.rs`).
+fn abort_at_switch_step(options: omuzaki_app::AppOptions) -> omuzaki_app::AppOptions {
+    let Ok(step) = std::env::var("OMUZAKI_FIXTURE_ABORT_AT") else { return options };
+    options.with_switch_failpoint(move |at| if at == step { std::process::abort() } else { Ok(()) })
 }

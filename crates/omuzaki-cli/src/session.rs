@@ -110,10 +110,16 @@ pub fn open_project(cli: &Cli, dir: &Path, actor: Actor) -> Result<ProjectRunner
     ProjectRunner::open(dir, core_options(cli, actor)).map_err(|e| e.to_op_error())
 }
 
+/// What [`run_with`](crate::app::run_with) applies to every core's options.
+pub(crate) static ADJUST: std::sync::OnceLock<fn(AppOptions) -> AppOptions> = std::sync::OnceLock::new();
+
 /// The app core's options for a command-line host: headless (nobody can be asked to approve), recovering as
 /// `--recover` says, and for `mcp` with its `--grant` and `--tools`.
 pub fn core_options(cli: &Cli, actor: Actor) -> AppOptions {
     let mut options = AppOptions::headless(actor).with_recover(cli.recover.mode());
+    if let Some(adjust) = ADJUST.get() {
+        options = adjust(options);
+    }
     // The asset store and the settings are the person's, the ones the studio uses: an import here is there in the
     // studio, and `settings.set` changes the same file.
     if let Ok(paths) = omuzaki_settings::Paths::from_env() {

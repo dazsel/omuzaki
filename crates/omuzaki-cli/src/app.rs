@@ -21,6 +21,18 @@ use crate::store;
 ///
 /// Exits the process itself (via clap) on `--help`, `--version` and usage errors.
 pub fn run() -> ExitCode {
+    run_inner()
+}
+
+/// [`run`] with `adjust` applied to the app core's options of every project it opens: how a test fixture adds a
+/// hook the product doesn't have (the crash tests' kill at a branch switch step). Call it once, as the whole program.
+pub fn run_with(adjust: fn(omuzaki_app::AppOptions) -> omuzaki_app::AppOptions) -> ExitCode {
+    // The first call wins; a second one in the same process (there is none) would keep the first hook.
+    let _ = crate::session::ADJUST.set(adjust);
+    run_inner()
+}
+
+fn run_inner() -> ExitCode {
     let cli = crate::cli::parse();
     let result = match &cli.command {
         // The store is a folder the person names, not the project, so it needs no runner. Called here rather than
