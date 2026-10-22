@@ -4,8 +4,10 @@ import csv
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 DIR = Path(__file__).resolve().parent
+PT = ZoneInfo("America/Los_Angeles")
 OUT = DIR / "charts"
 OUT.mkdir(exist_ok=True)
 COLORS = ["#2a6fdb", "#e0832b", "#2e9d5b", "#a64ca6", "#c9473f", "#7a7a7a", "#1aa3b8"]
@@ -177,6 +179,30 @@ chart("cloud-tokens.svg", "Cloud project tokens, cumulative (one point per refre
       {"output": [num(r, "output_tokens") for r in cu], "input": [num(r, "input_tokens") for r in cu]}, "line",
       "Cache-read and cache-write tokens are in cloud_usage_snapshots.csv", keys=[r["snapshot_utc"] for r in cu])
 
+# Cumulative tokens of every kind (input, output, cache write and read) per day: the local sessions' logs, the cloud
+# sessions before the move (estimated) and the cloud project's own totals (its latest snapshot each day).
+tk = defaultdict(dict)
+for r in rows("tokens_daily.csv"):
+    tk[r["source"]][r["date_pt"]] = num(r, "cum_total")
+for r in cu:
+    d = datetime.fromisoformat(r["snapshot_utc"].replace("Z", "+00:00")).astimezone(PT).strftime("%Y-%m-%d")
+    tk["cloud project"][d] = sum(num(r, k) for k in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"))
+td = sorted({d for v in tk.values() for d in v})
+
+
+def carry(v):
+    run, out = 0.0, []
+    for d in td:
+        run = v.get(d, run)
+        out.append(run)
+    return out
+
+
+chart("tokens-cumulative.svg", "Tokens, cumulative (all kinds)", [d[5:] for d in td],
+      {"local sessions": carry(tk["local_measured"]), "cloud (est.)": carry(tk["cloud_estimated"]),
+       "cloud project": carry(tk["cloud project"])}, "area",
+      "Mostly cache reads; the split by kind is in tokens_daily.csv", keys=[d + "T07:00Z" for d in td])
+
 
 # ---- index.html: one self-contained page with the headline numbers, the charts and the story ---------------------
 import html
@@ -189,7 +215,7 @@ cards = [("Agent-hours", f'{s["agent_hours_total"]:,.0f}'), ("Most agents at onc
          ("Pull requests", f'{pr_["this_repo_opened"] + pr_["earlier_repo_opened"]:,}'),
          ("Issues opened", f'{iss_["opened"]:,}'), ("CI runs", f'{s["ci_runs"]:,}')]
 titles = {"agents-at-once": "Agents at once", "agent-hours": "Agent-hours per day", "lines-of-code": "Lines of code",
-          "commits": "Commits", "pull-requests": "Pull requests", "issues": "Issues", "backlog": "Backlog", "cloud-tokens": "Cloud tokens",
+          "commits": "Commits", "pull-requests": "Pull requests", "issues": "Issues", "backlog": "Backlog", "cloud-tokens": "Cloud tokens", "tokens-cumulative": "Tokens, cumulative",
           "ci-runs": "CI runs"}
 figs = "".join(f'<figure>{(OUT / (k + ".svg")).read_text()}</figure>' for k in titles if (OUT / (k + ".svg")).exists())
 story = html.escape((DIR / "README.md").read_text().split("## Timeline", 1)[1].split("## The files", 1)[0].strip())
