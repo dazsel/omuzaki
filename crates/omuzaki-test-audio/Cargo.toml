@@ -1,0 +1,27 @@
+[package]
+name = "omuzaki-test-audio"
+description = "Cross-crate tests of the audio area: the voice-effect budgets of spec §10 in the budget harness's report."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Tests only: every dependency is a dev-dependency, so the library stays empty and links nothing. Only the audio area's
+# crates (`omuzaki-audio`, `omuzaki-audio-*`) and the harness may appear here (`cargo xtask lint-deps`).
+[dev-dependencies]
+omuzaki-audio-api = { path = "../omuzaki-audio-api" }
+omuzaki-audio-fx = { path = "../omuzaki-audio-fx" }
+omuzaki-audio-mock = { path = "../omuzaki-audio-mock" }
+# The budget harness: `examples/voice_fx_budget.rs` reports `voice.fx`, `voice.fx.pitch` and `voice.fx.cpu` with it.
+omuzaki-test = { path = "../omuzaki-test" }
+
+[lints]
+workspace = true
+
+# Native only: runs on the build machine
+[package.metadata.omuzaki]
+kind = "App"
+summary = "the audio area's budget reports: the `voice_fx_budget` example puts the voice-effect chain's added latency (`voice.fx`, `voice.fx.pitch`) and its CPU share (`voice.fx.cpu`) into the budget harness's report"
+wasm = false

@@ -57,7 +57,7 @@ pub use graph::{
 };
 pub use ids::{BusId, DeviceRole, FeedId, GateId, NodeId, NodeKindId, PlayerId, SoundId};
 pub use node::{BlockMut, MAX_BLOCK, Node, NodeKind, SAMPLE_RATE};
-pub use preset::FxPreset;
+pub use preset::{FxPreset, VoiceFile};
 pub use report::{AudioEvent, AudioStatus, BridgeStatus, GraphReport, LatencyEstimate, Meters, RouteLatency};
 pub use tap::{TapInfo, TapPoint, TapReader, TapRequest, TapSink};
 

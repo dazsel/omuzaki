@@ -1,0 +1,7 @@
+{
+  "about": "The kit character with its own voice preset `Kit low`, a copy of the built-in `Deeper`: for the ops that change or remove a character's preset.",
+  "base": "character",
+  "steps": [
+    { "op": "audio.fx.preset.save", "args": { "character": "kit", "preset": "Kit low", "copy": "Deeper" } }
+  ]
+}

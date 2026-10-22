@@ -29,6 +29,7 @@ const PATIENCE: Duration = Duration::from_secs(10);
 
 fn rig() -> (Arc<Executor>, Arc<MockEngine>, Receiver<GraphSpec>, tempfile::TempDir) {
     omuzaki_audio_engine::link();
+    omuzaki_audio_fx::link();
     omuzaki_audio_mock::link();
     let engine = Arc::new(MockEngine::new());
     let services =
@@ -82,6 +83,9 @@ fn a_bus_edit_reaches_the_engine_and_undo_takes_it_back() {
     let graph = applied.recv_timeout(PATIENCE).expect("the follower applied the new graph");
     assert_eq!(bus_ids(&graph), ["program"]);
     assert_eq!(engine.graph(), graph);
+    // The -1 dBTP safety limiter is on `program` from the start (#921).
+    let kinds: Vec<&str> = graph.buses[0].chain.iter().map(|n| n.kind.as_str()).collect();
+    assert_eq!(kinds, ["fx.limiter"]);
 
     let music = json!({ "bus": "music", "channels": "stereo", "sends": [{ "to": "program" }] });
     run(&runner, &person(), "audio.bus.create", music).expect("a person creates music");
