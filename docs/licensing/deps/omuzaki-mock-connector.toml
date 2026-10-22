@@ -1,0 +1,17 @@
+section = "in-use"
+item = "Omuzaki mock connector"
+kind = "test"
+used_for = "the `mock-*` test connectors of `omuzaki-connect-mock` (connectors design D11): manifests named by `licence.register`; their outputs are generated in code from the request"
+status = "yes"
+condition = "first-party test fixtures written in this repository; nothing is shipped, no third-party material, no service is called"
+audit = "#1452"
+paths = [
+  "crates/omuzaki-connect-mock/connectors/mock-3d.connector.toml",
+  "crates/omuzaki-connect-mock/connectors/mock-dcc.connector.toml",
+  "crates/omuzaki-connect-mock/connectors/mock-image-paid.connector.toml",
+  "crates/omuzaki-connect-mock/connectors/mock-image.connector.toml",
+  "crates/omuzaki-connect-mock/connectors/mock-motion.connector.toml",
+  "crates/omuzaki-connect-mock/connectors/mock-music.connector.toml",
+  "crates/omuzaki-connect-mock/connectors/mock-texture.connector.toml",
+  "crates/omuzaki-connect-mock/connectors/mock-voice.connector.toml",
+]

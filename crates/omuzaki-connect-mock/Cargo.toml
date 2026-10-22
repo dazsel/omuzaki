@@ -1,0 +1,30 @@
+[package]
+name = "omuzaki-connect-mock"
+description = "Test doubles for connectors: FakeConnector with scripted latency, cost and failures, deterministic outputs for every capability, FakePace, MemoryInputs, MemoryConfig, RecordingMeter and the conformance suite every connector passes (connectors design D11)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+image.workspace = true
+serde_json.workspace = true
+omuzaki-ai-api = { path = "../omuzaki-ai-api" }
+omuzaki-connect-api = { path = "../omuzaki-connect-api" }
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-http-api = { path = "../omuzaki-http-api" }
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+omuzaki-store-api = { path = "../omuzaki-store-api" }
+
+[dev-dependencies]
+omuzaki-http-mock = { path = "../omuzaki-http-mock" }
+
+[lints]
+workspace = true
+
+[package.metadata.omuzaki]
+kind = "Mock"
+summary = "connector fakes (D11): `FakeConnector` with a `Script` (latency through `FakePace`, price, failure at an index) over deterministic generators for image, texture, model3d (GLB), voice and music (WAV), motion (BVH) and dcc; eight registered `mock-*` connectors; `MemoryInputs`, `MemoryConfig`, `RecordingMeter`; and `conformance::check`, the suite every connector's tests run; HTTP fakes are `omuzaki-http-mock`'s"
+registers = true

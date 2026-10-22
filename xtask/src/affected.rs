@@ -100,7 +100,7 @@ impl Scope {
     }
 }
 
-/// A [`Scope`] with the two smaller sets a pull request uses before the merge queue runs the full one.
+/// A [`Scope`] with the two smaller sets a narrower check can use; CI runs the full one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Analysis {
     /// The full scope: changed crates plus all their dependents.

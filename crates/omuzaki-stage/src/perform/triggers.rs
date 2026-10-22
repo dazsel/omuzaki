@@ -43,6 +43,44 @@ impl Rebaked {
     }
 }
 
+/// Several binds in one request: the baked slot and the generation of each slot a batch of binds took. One command
+/// carries all of them, so restoring a full set of hotkeys needs one place in the performer's queue, not one each.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct BindBatch {
+    slots: [Option<TriggerSlot>; MAX_TRIGGERS],
+    generations: [u64; MAX_TRIGGERS],
+    /// Bit `i` is set when the batch binds slot `i`.
+    bound: u32,
+}
+
+impl BindBatch {
+    /// An empty batch.
+    pub(super) fn new() -> Self {
+        Self { slots: [None; MAX_TRIGGERS], generations: [0; MAX_TRIGGERS], bound: 0 }
+    }
+
+    /// Adds the bind of slot `index` to `slot` (`None`: it shows nothing) as binding `generation`.
+    pub(super) fn set(&mut self, index: usize, slot: Option<&TriggerSlot>, generation: u64) {
+        if let (Some(entry), Some(held)) = (self.slots.get_mut(index), self.generations.get_mut(index)) {
+            *entry = slot.copied();
+            *held = generation;
+            self.bound |= 1 << index;
+        } else {
+            debug_assert!(false, "trigger slot {index} is out of range");
+        }
+    }
+
+    /// The slots the batch binds, with their values and generations.
+    pub(super) fn binds(&self) -> impl Iterator<Item = (usize, Option<&TriggerSlot>, u64)> {
+        self.slots
+            .iter()
+            .zip(&self.generations)
+            .enumerate()
+            .filter(|(index, _)| self.bound >> index & 1 == 1)
+            .map(|(index, (slot, generation))| (index, slot.as_ref(), *generation))
+    }
+}
+
 /// The perform thread's triggers: the fades ([`Triggers`]) plus the slots they were given and which slot a press
 /// wants, which `Triggers` keeps private. With them a rebake can keep a press across new values, and a reset can start
 /// the fades over and keep the bindings. Nothing here allocates.
