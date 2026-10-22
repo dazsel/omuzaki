@@ -17,7 +17,7 @@ use omuzaki_doc_mock::MemDoc;
 use omuzaki_face::preview::range::{RangeOptions, compare, eyes_region, mouth_region, paint_all};
 use omuzaki_face::preview::sheet::{Cell, compose, png};
 use omuzaki_face::preview::{FaceSubject, Preview};
-use omuzaki_face_api::{ExpressionKind, ExpressionSet, FaceProfile, FaceRect, Palette};
+use omuzaki_face_api::{ExpressionKind, ExpressionSet, FaceProfile, FaceRect, FaceView, Palette};
 use omuzaki_measure::image::decode;
 use omuzaki_measure::readability::emote::{self, STREAM_DARK};
 use omuzaki_ops_api::{Actor, OpCtx, ServicesBuilder, find};
@@ -161,4 +161,49 @@ fn the_default_face_reads_at_emote_sizes() {
     let mouth: Vec<f64> = sizes.iter().map(|s| s["mouth_contrast"].as_f64().unwrap()).collect();
     assert!(mouth[0] >= 15.0 && mouth[2] < mouth[1] && mouth[1] < mouth[0], "{mouth:?}");
     assert_eq!(out["within"], false, "the mouth line fades at 56 and 28 px");
+}
+
+/// #464: in a wide shot the mouth grows (`mouth.wide_shot_scale`), so a talking mouth still reads when the face is a few
+/// dozen pixels wide. The default face says "aa" and "oh", painted as a close-up and as a full-body shot would paint it,
+/// each seen at 28 px through `measure.readability`: the wide-shot mouth holds more contrast against the skin.
+#[test]
+fn the_talking_mouth_reads_better_in_a_wide_shot() {
+    omuzaki_measure::link();
+    let face = subject();
+    let window = face.projection.rect;
+    let rest = face.profile.rest_buf();
+    let mut preview = Preview::new(face.clone(), PAINT_PX);
+    let store = Arc::new(MemStore::new());
+    let services = ServicesBuilder::new().insert::<dyn Store>(store.clone()).build();
+    let mut cells = Vec::new();
+    let mut contrast = Vec::new();
+    for (shot, coverage) in [("close-up", None), ("full body", Some(0.1))] {
+        let view = FaceView { head_coverage: coverage, ..FaceView::default() };
+        let mut expressions = Vec::new();
+        for viseme in ["aa", "oh"] {
+            let id = face.profile.expressions.0.keys().find(|k| k.as_str() == viseme).unwrap();
+            let bus = face.profile.expressions.blend(&rest, &[(id, 1.0)]).unwrap();
+            preview.paint_in(&bus, view).unwrap();
+            let picture = preview.picture();
+            let asset = store.put(&png(&picture).unwrap(), sample_provenance(Commercial::Ok)).unwrap();
+            expressions.push(json!({ "name": viseme, "image": { "asset": asset.to_string() } }));
+            let image = decode(&png(&picture).unwrap(), omuzaki_store_api::ContentHash::of(b""), "image").unwrap();
+            let mut cell =
+                RgbaImage::from_pixel(112 + 28 + 8, 112, Rgba([STREAM_DARK[0], STREAM_DARK[1], STREAM_DARK[2], 255]));
+            imageops::replace(&mut cell, &emote::see(&image, 112, STREAM_DARK, None, None).picture, 0, 0);
+            imageops::replace(&mut cell, &emote::see(&image, 28, STREAM_DARK, None, None).picture, 120, 84);
+            cells.push(Cell { picture: cell, label: format!("{viseme}, {shot}"), flagged: false });
+        }
+        let mouth = pixels(mouth_region(&face), window, PAINT_PX);
+        let args = json!({ "expressions": expressions, "mouth": mouth, "eyes": pixels(eyes_region(&face), window, PAINT_PX), "skin": SKIN.to_string(), "sizes": [28] });
+        let op = (find("measure.readability").expect("registered").decode)(args).unwrap();
+        let (actor, clock, doc) =
+            (Actor::Agent { id: "agent".into(), model: None }, FakeClock::default(), MemDoc::from_value(json!({})));
+        let out = op.plan(&OpCtx::new(&doc, &actor, &clock).with_services(&services)).unwrap().output.unwrap();
+        let c = out["sizes"][0]["mouth_contrast"].as_f64().unwrap();
+        println!("{shot}: the open mouth (aa) at 28 px holds {c:.1} ΔL* against the skin");
+        contrast.push(c);
+    }
+    keep("lip-sync-wide-shot.png", &png(&compose(&cells, 2)).unwrap());
+    assert!(contrast[1] > contrast[0] + 3.0, "the wide-shot mouth reads better at 28 px: {contrast:?}");
 }
