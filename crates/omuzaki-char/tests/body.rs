@@ -46,8 +46,11 @@ fn body_of(layout: omuzaki_char::template::layout::BodyLayout, detail: Detail) -
 
 // ------------------------------------------------------------------------------------------------ invariants
 
-/// 200 random proportions and body shapes per template: the numbers are drawn over the whole valid range.
-const SAMPLES: usize = 200;
+/// Random proportions and body shapes per template, drawn over the whole valid range: 200 in the nightly run (which sets
+/// `OMUZAKI_FULL_TESTS`), 40 in the pull request gate, whose test shards have a time limit (#2300).
+fn samples() -> usize {
+    if std::env::var_os("OMUZAKI_FULL_TESTS").is_some() { 200 } else { 40 }
+}
 
 fn random_layout(
     t: &dyn omuzaki_char::template::Template,
@@ -124,12 +127,12 @@ fn check_region(label: &str, region: BodyRegion, m: &PartMesh) {
 
 #[test]
 fn every_region_is_a_sound_closed_surface_over_random_proportions_and_shapes() {
-    // One thread per template: 800 bodies are slow in a debug build.
+    // One thread per template: the bodies are slow in a debug build.
     std::thread::scope(|scope| {
         for t in registry::templates() {
             scope.spawn(move || {
                 let mut rng = Rng::new(0x445).fork(t.id().bytes().map(u64::from).sum());
-                for sample in 0..SAMPLES {
+                for sample in 0..samples() {
                     let layout = random_layout(t, &mut rng);
                     for (region, m) in body_of(layout, Detail::LIVE) {
                         check_region(&format!("{} #{sample}", t.id()), region, &m);
