@@ -129,6 +129,7 @@ fn picture(
     let texture: TextureId = renderer.create_texture(&desc, Some(&raster.pixels)).unwrap();
     let (head_part, hair_part) = (PartId::new("head").unwrap(), PartId::new("hair").unwrap());
     // Aim at the middle of the face window (the brows' neighbourhood), whatever the template's stature.
+    // The overlays all share the face's window; the head's skin carries them whether or not the hair does.
     let window =
         built.materials.values().flat_map(|m| m.overlays.iter()).next().expect("the head carries an overlay").window;
     let centre = ((window.min + window.max) * 0.5).extend(0.0);
@@ -156,7 +157,11 @@ fn picture(
             base: draw.base,
             base_texture: None,
             shading: Shading::Unlit,
-            overlays: draw.overlays.unwrap_or(spec.overlays),
+            // The material's own Brows overlay: the brows' raster stands in for every overlay texture here, and the
+            // hair also carries the face's Overlay layer (sweat drops), which must not show the brows.
+            overlays: draw
+                .overlays
+                .unwrap_or_else(|| spec.overlays.iter().filter(|o| o.layer == FaceLayerId::Brows).copied().collect()),
             alpha: AlphaMode::Opaque,
             vertex_colours: false,
             outline: None,
