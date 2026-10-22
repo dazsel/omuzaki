@@ -1,0 +1,5 @@
+# A render's cost hint charges the character it will draw
+
+- `omuzaki_render_api::memory` gives upper bounds for the GPU memory a renderer holds for a texture (`texture_bytes`), a mesh with its morph data (`mesh_bytes`) and a material (`MATERIAL_BYTES`), so a plan can add up a job before anything is uploaded (#2092). `omuzaki-render`'s `memory` test holds the GPU renderer and the mock to them for every kind of mesh and texture a character uploads: never above, and never more than twice, what each reports in `ResourceStats::gpu_bytes`.
+- `Body::gpu_bytes` adds up a staged character from those bounds: a kit character's textures, face layers, materials and meshes, or an imported avatar's textures, materials and morphed meshes.
+- `render.preview` and `render.turnaround` now plan with the character loaded as the job loads it (`job::character_bytes`), and `job::cost` takes its bytes in place of the fixed 64 MiB allowance, which only a plan with no builder still uses. The mock character with one 4096 mipped texture added takes 101,950,769 bytes on lavapipe and is charged 101,956,089.

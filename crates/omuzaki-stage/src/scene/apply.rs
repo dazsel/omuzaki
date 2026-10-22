@@ -2,7 +2,7 @@
 //! [`Scene`] without allocating, and what needs more than a copy is reported as work owed.
 //!
 //! Three pieces, none of which touch the renderer or the stage's character, so they can be tested and measured alone:
-//! - [`Mailbox`]: a one-slot hand-off, newest wins, so a caller on another thread gives the render thread a resolved
+//! - [`Mailbox`]: a lock-free triple buffer, newest wins, so a caller on another thread gives the render thread a resolved
 //!   scene without the render thread waiting for it.
 //! - [`fill`]: copies the active camera, the lights, the background, the post look and the outline light into the
 //!   [`Scene`] a frame renders. Hot: after [`reserve`] it allocates nothing.
@@ -10,7 +10,9 @@
 //!   scene changes. Both need renderer resources (a disc mesh, a material update), so they are [`Owed`] to whoever
 //!   owns the renderer, only when they change, and stay owed until the caller commits that the work succeeded.
 
-use std::sync::{Mutex, PoisonError, TryLockError};
+use std::cell::UnsafeCell;
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{Mutex, PoisonError};
 
 use omuzaki_render_api::Scene;
 use omuzaki_render_api::limits::MAX_LIGHTS;
@@ -161,51 +163,101 @@ impl SceneLink {
     }
 }
 
-/// A one-slot, newest-wins hand-off of resolved scenes from any thread to the render thread.
+/// A newest-wins hand-off of resolved scenes from any thread to the render thread, lock-free on the render side.
 ///
-/// The caller [`post`](Self::post)s; the render thread [`take_into`](Self::take_into)s once per frame. Taking swaps the
-/// posted scene with the render thread's own, so it neither allocates nor frees, and it never waits: a poster holding
-/// the slot makes the take report nothing new, and the next frame tries again.
-#[derive(Debug, Default)]
+/// A triple buffer: three scenes, one held by the posting side, one by the render thread and one between them, with the
+/// index of the one between and whether it is fresh in one atomic. The caller [`post`](Self::post)s (posts take turns
+/// behind a lock, off the render thread); the render thread [`take_into`](Self::take_into)s once per frame, with two
+/// atomic exchanges and a swap of two scenes: it never waits, locks, allocates or frees.
 pub struct Mailbox {
-    slot: Mutex<Posted>,
+    /// The three scenes. Each index belongs to exactly one of `poster`, `middle` and `taker` at any time, and only the
+    /// holder of an index touches its scene.
+    slots: [UnsafeCell<ResolvedScene>; 3],
+    /// The index of the scene between the two sides, with [`FRESH`] while it holds a post not taken yet.
+    middle: AtomicU8,
+    /// The posting side's index. The lock makes posts from several threads take turns; the render thread never takes it.
+    poster: Mutex<u8>,
+    /// The render thread's index, with [`TAKING`] while a take runs, so a second taker backs off instead of sharing it.
+    taker: AtomicU8,
 }
 
-#[derive(Debug, Default)]
-struct Posted {
-    scene: ResolvedScene,
-    fresh: bool,
+/// The bits of an index.
+const INDEX: u8 = 0b11;
+/// In `middle`: the scene there was posted and not taken.
+const FRESH: u8 = 0b100;
+/// In `taker`: a take is running.
+const TAKING: u8 = 0b1000;
+
+// SAFETY: every scene is touched only by the holder of its index (the poster under its lock, the taker under `TAKING`),
+// indices change hands only through `middle`'s atomic exchanges, which order each side's writes before the other side's
+// reads, and `ResolvedScene` is `Send`.
+#[allow(unsafe_code, reason = "the triple buffer shares its scenes by index; the SAFETY comment says why that is sound")]
+unsafe impl Sync for Mailbox {}
+
+impl std::fmt::Debug for Mailbox {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Mailbox").field("fresh", &self.has_posted()).finish_non_exhaustive()
+    }
+}
+
+impl Default for Mailbox {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Mailbox {
-    /// An empty mailbox.
+    /// An empty mailbox: three empty scenes, each with room for every camera, so a take never grows the render
+    /// thread's scene.
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            slots: [(); 3].map(|()| UnsafeCell::new(ResolvedScene::new())),
+            middle: AtomicU8::new(1),
+            poster: Mutex::new(0),
+            taker: AtomicU8::new(2),
+        }
     }
 
-    /// Posts `scene`, replacing one the render thread has not taken yet. Called off the render thread: it may wait for
-    /// the render thread's short take, and frees the scene it replaces.
+    /// Whether a scene is posted and not taken yet.
+    pub fn has_posted(&self) -> bool {
+        self.middle.load(Ordering::Acquire) & FRESH != 0
+    }
+
+    /// Posts `scene`, replacing one the render thread has not taken yet. Called off the render thread: it waits only
+    /// for another post, and frees the scene it replaces.
+    #[allow(unsafe_code, reason = "the triple buffer shares its scenes by index; each use says why it is sound")]
     pub fn post(&self, scene: ResolvedScene) {
-        let mut posted = self.slot.lock().unwrap_or_else(PoisonError::into_inner);
-        posted.scene = scene;
-        posted.fresh = true;
+        let mut mine = self.poster.lock().unwrap_or_else(PoisonError::into_inner);
+        let at = usize::from(*mine & INDEX);
+        // SAFETY: the poster's index is held under the lock, so nothing else touches this scene; the scene it replaces
+        // is dropped here, off the render thread.
+        unsafe { *self.slots[at].get() = scene };
+        // Release: the write above is visible to the taker that acquires this index. Acquire: the scene that comes back
+        // is no longer read by the taker that handed it over.
+        let back = self.middle.swap(*mine | FRESH, Ordering::AcqRel);
+        *mine = back & INDEX;
     }
 
-    /// Moves a newly posted scene into `mine` and returns true; false when nothing new was posted or a poster holds the
-    /// slot right now. `mine` goes back into the slot as the stale scene the next [`post`](Self::post) replaces.
-    /// Never blocks and never allocates.
+    /// Swaps a newly posted scene with `mine` and returns true; false when nothing new was posted (or another thread is
+    /// taking right now). `mine` goes back to the posting side, which drops it with its next post. Render thread:
+    /// never blocks, locks, allocates or frees.
+    #[allow(unsafe_code, reason = "the triple buffer shares its scenes by index; each use says why it is sound")]
     pub fn take_into(&self, mine: &mut ResolvedScene) -> bool {
-        let mut posted = match self.slot.try_lock() {
-            Ok(guard) => guard,
-            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
-            Err(TryLockError::WouldBlock) => return false,
-        };
-        if !posted.fresh {
+        let held = self.taker.fetch_or(TAKING, Ordering::Acquire);
+        if held & TAKING != 0 {
             return false;
         }
-        std::mem::swap(&mut posted.scene, mine);
-        posted.fresh = false;
-        true
+        let mut index = held & INDEX;
+        let taken = self.has_posted();
+        if taken {
+            // Only a take clears FRESH, and this one holds TAKING, so the scene between is still the fresh one.
+            index = self.middle.swap(index, Ordering::AcqRel) & INDEX;
+            // SAFETY: the exchange handed this index to the taker, which alone uses it while TAKING is set; the
+            // poster's writes to it happened before its release, which the exchange acquired.
+            std::mem::swap(mine, unsafe { &mut *self.slots[usize::from(index)].get() });
+        }
+        self.taker.store(index, Ordering::Release);
+        taken
     }
 }
 

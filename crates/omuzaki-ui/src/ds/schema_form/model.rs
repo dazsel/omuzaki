@@ -86,7 +86,11 @@ pub(super) enum Kind {
     Text(TextRule),
     /// A nested object: a section of fields.
     Section(Vec<Node>),
-    /// A shape no control handles. The row names the type and the value passes through untouched.
+    /// Any other shape (a union, a list, a free-form object, any value at all): a `TextField` holding the value as
+    /// JSON, checked as it is typed, so every argument an op takes can be given here as it can over MCP.
+    Json,
+    /// A shape that can't be edited safely: a reference that doesn't resolve, or a rule the form can't check (a
+    /// pattern it can't evaluate, an empty range). The row names the type and the value passes through untouched.
     ReadOnly,
 }
 
@@ -125,8 +129,12 @@ pub(super) struct Node {
     pub(super) step: Option<f64>,
     /// `x-ui.decimals`: how many decimals a number field shows (none for an integer).
     pub(super) decimals: Option<usize>,
-    /// The default as a typed value, when the schema gives one that fits the field.
+    /// The default as a typed value, when the schema gives one that fits the field. An optional field without one
+    /// defaults to [`FormValue::Absent`], so its reset takes the value back out.
     pub(super) default: Option<FormValue>,
+    /// The schema allows `null` (an `Option` in the op's arguments): the field starts unset and is left out of the
+    /// JSON until the person sets it.
+    pub(super) optional: bool,
 }
 
 /// A place in a level: one field, or a named group of fields.
@@ -214,6 +222,20 @@ impl Form {
         Self { root, essentials, advanced, demoted, pointers }
     }
 
+    /// The fields no control edits, as `(JSON Pointer, type)`: they show as read-only rows and pass their value through.
+    pub fn read_only(&self) -> Vec<(String, String)> {
+        fn walk(node: &Node, out: &mut Vec<(String, String)>) {
+            match &node.kind {
+                Kind::ReadOnly => out.push((node.path.clone(), node.type_name.clone())),
+                Kind::Section(children) => children.iter().for_each(|child| walk(child, out)),
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        walk(&self.root, &mut out);
+        out
+    }
+
     /// Where `field` is in the value, as a JSON Pointer (`/cranium/half_width`; the root is the empty string).
     pub fn pointer(&self, field: FieldId) -> Option<&str> {
         self.pointers.get(field.0).map(String::as_str)
@@ -282,6 +304,7 @@ fn find<'v>(node: &Node, value: &'v FormValue, index: usize) -> Option<&'v FormV
 fn count_invalid(node: &Node, value: &FormValue) -> usize {
     match (&node.kind, value) {
         (Kind::Text(rule), FormValue::Text(text)) => usize::from(!rule.is_valid(text)),
+        (Kind::Json, FormValue::Json(text)) => usize::from(serde_json::from_str::<Value>(text).is_err()),
         (Kind::Section(children), FormValue::Object(values)) => {
             children.iter().zip(values).map(|(child, (_, v))| count_invalid(child, v)).sum()
         }
@@ -311,6 +334,12 @@ fn layout(children: &[Node], level: Level) -> Layout {
 }
 
 fn read_node(root: &Value, schema: &Value, key: &str, parent_path: &str) -> Node {
+    if let Some(inner) = non_null(root, schema) {
+        let mut node = read_node(root, &inner, key, parent_path);
+        node.optional = true;
+        node.default = node.default.or(Some(FormValue::Absent));
+        return node;
+    }
     let path = if key.is_empty() && parent_path.is_empty() {
         String::new()
     } else {
@@ -338,6 +367,7 @@ fn read_node(root: &Value, schema: &Value, key: &str, parent_path: &str) -> Node
         step: view.ui("step").and_then(Value::as_f64).filter(|s| s.is_finite() && *s > 0.0),
         decimals: view.ui("decimals").and_then(Value::as_u64).and_then(|d| usize::try_from(d).ok()),
         default: None,
+        optional: false,
     };
     if let Kind::Int { .. } = node.kind {
         // A whole-number field moves by whole numbers and shows none of the decimals a schema may ask for.
@@ -363,11 +393,12 @@ fn read_only(key: &str, path: &str, schema: &Value, type_name: &str) -> Node {
         step: None,
         decimals: None,
         default: None,
+        optional: false,
     }
 }
 
 fn read_kind(root: &Value, view: &View<'_>, path: &str) -> (Kind, String) {
-    let unsupported = |what: String| (Kind::ReadOnly, what);
+    let unsupported = |what: String| (Kind::Json, what);
     if let Some(options) = view.get("enum").and_then(Value::as_array) {
         let opts: Vec<Opt> = options.iter().map(|v| Opt { value: v.clone(), label: option_label(v, None) }).collect();
         return if opts.is_empty() { unsupported("enum".to_owned()) } else { (Kind::Choice(opts), "enum".to_owned()) };
@@ -395,6 +426,8 @@ fn read_kind(root: &Value, view: &View<'_>, path: &str) -> (Kind, String) {
                 let children = props.iter().map(|(k, s)| read_node(root, s, k, path)).collect();
                 (Kind::Section(children), "object".to_owned())
             }
+            // An op that takes no arguments: a form with no fields.
+            _ if path.is_empty() => (Kind::Section(Vec::new()), "object".to_owned()),
             _ => unsupported("object".to_owned()),
         },
         "array" => read_array(root, view),
@@ -549,7 +582,38 @@ fn read_array(root: &Value, view: &View<'_>) -> (Kind, String) {
     if view.ui("widget").and_then(Value::as_str) == Some("curve") && item_type.as_deref() == Some("number") {
         return (Kind::Curve, name);
     }
-    (Kind::ReadOnly, name)
+    (Kind::Json, name)
+}
+
+/// The schema of a field that also allows `null` (an `Option`), without the `null`: `type: ["string", "null"]`, or an
+/// `anyOf` or `oneOf` of one schema and `{"type": "null"}`. The wrapper's own title, description, default and `x-ui`
+/// carry over to the inner schema where it lacks them. `None` when the field doesn't allow `null`.
+fn non_null(root: &Value, schema: &Value) -> Option<Value> {
+    let is_null = |arm: &Value| view(root, arm).and_then(|v| v.get("type")).and_then(Value::as_str) == Some("null");
+    if let Some(Value::Array(types)) = schema.get("type") {
+        let others: Vec<&Value> = types.iter().filter(|t| t.as_str() != Some("null")).collect();
+        if let ([only], true) = (others.as_slice(), others.len() < types.len()) {
+            let mut inner = schema.clone();
+            inner["type"] = (*only).clone();
+            return Some(inner);
+        }
+        return None;
+    }
+    for key in ["anyOf", "oneOf"] {
+        let Some(arms) = schema.get(key).and_then(Value::as_array) else { continue };
+        let others: Vec<&Value> = arms.iter().filter(|arm| !is_null(arm)).collect();
+        let ([only], true) = (others.as_slice(), others.len() < arms.len()) else { return None };
+        let mut inner = (*only).clone();
+        if let (Value::Object(inner_map), Value::Object(outer)) = (&mut inner, schema) {
+            for (k, v) in outer {
+                if k != key {
+                    inner_map.entry(k.clone()).or_insert_with(|| v.clone());
+                }
+            }
+        }
+        return Some(inner);
+    }
+    None
 }
 
 /// The options of a `oneOf` or `anyOf` whose every arm is a `const`, which is how documented enum variants are written.
@@ -588,7 +652,16 @@ fn describe_union(root: &Value, arms: &[Value]) -> String {
 impl Node {
     /// The natural value of the field when the schema names no default.
     pub(super) fn default_value(&self) -> FormValue {
-        if let Some(default) = &self.default {
+        match &self.default {
+            Some(default) => default.clone(),
+            None => self.natural_value(),
+        }
+    }
+
+    /// The value a field takes when the person first sets it: its natural value, ignoring an optional field's unset
+    /// default.
+    pub(super) fn natural_value(&self) -> FormValue {
+        if let Some(default) = self.default.as_ref().filter(|d| **d != FormValue::Absent) {
             return default.clone();
         }
         match &self.kind {
@@ -607,6 +680,10 @@ impl Node {
             Kind::Colour { .. } => FormValue::Colour(omuzaki_core::colour::Colour::BLACK),
             Kind::Curve => FormValue::Curve(Curve::linear()),
             Kind::Text(_) => FormValue::Text(String::new()),
+            // An empty list or object is a value; any other shape starts empty, so it is invalid until typed.
+            Kind::Json if self.type_name.starts_with("array") => FormValue::Json("[]".to_owned()),
+            Kind::Json if self.type_name == "object" => FormValue::Json("{}".to_owned()),
+            Kind::Json => FormValue::Json(String::new()),
             Kind::Section(children) => {
                 FormValue::Object(children.iter().map(|c| (c.key.clone(), c.default_value())).collect())
             }
@@ -628,6 +705,9 @@ impl Node {
 
     /// `json` as this field's typed value, or `None` when it does not fit (wrong type, out of range, not an option).
     fn fitted_value(&self, json: &Value) -> Option<FormValue> {
+        if self.optional && json.is_null() {
+            return Some(FormValue::Absent);
+        }
         match (&self.kind, json) {
             (Kind::Int { min, max, .. }, Value::Number(n)) => {
                 let whole = n.as_i64().map(i128::from).or_else(|| n.as_u64().map(i128::from)).or_else(|| {
@@ -652,6 +732,7 @@ impl Node {
             }
             (Kind::Curve, Value::Array(numbers)) => curve_from_json(numbers).map(FormValue::Curve),
             (Kind::Text(_), Value::String(text)) => Some(FormValue::Text(text.clone())),
+            (Kind::Json, json) => Some(FormValue::Json(json.to_string())),
             _ => None,
         }
     }

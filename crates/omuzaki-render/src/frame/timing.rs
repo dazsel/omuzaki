@@ -220,12 +220,14 @@ fn timings_from(ticks: &[u64], period_ns: f32, frame: u64, ran: [bool; Pass::COU
     for pass in Pass::ALL.into_iter().filter(|p| ran[p.index()]) {
         passes.set(pass, Seconds(seconds(ticks[2 * pass.index()], ticks[2 * pass.index() + 1])));
     }
+    let mut painters = None;
     if let Some(Seconds(own)) = passes.get(Pass::PaintTextures) {
         let base = PAINT_BASE as usize;
         let painted: f64 = (0..paints as usize).map(|i| seconds(ticks[base + 2 * i], ticks[base + 2 * i + 1])).sum();
         passes.set(Pass::PaintTextures, Seconds(own + painted));
+        painters = (paints > 0).then_some(Seconds(painted));
     }
-    GpuTimings { frame, passes }
+    GpuTimings { frame, passes, painters }
 }
 
 #[cfg(test)]
@@ -249,7 +251,7 @@ mod tests {
     }
 
     fn labelled(frame: u64) -> GpuTimings {
-        GpuTimings { frame, passes: PassTimes::default() }
+        GpuTimings { frame, passes: PassTimes::default(), painters: None }
     }
 
     #[test]
@@ -286,6 +288,8 @@ mod tests {
         ran[paint] = true;
         let t = timings_from(&ticks, 1.0, 3, ran, 2).passes.get(Pass::PaintTextures).map(|s| s.0);
         assert!(t.is_some_and(|t| (t - 750e-9).abs() < 1e-15), "the mips' 100 ticks and the two paints' 650: {t:?}");
+        let painters = timings_from(&ticks, 1.0, 3, ran, 2).painters.map(|s| s.0);
+        assert!(painters.is_some_and(|p| (p - 650e-9).abs() < 1e-15), "the painters' share alone: {painters:?}");
         ran[paint] = false;
         assert_eq!(timings_from(&ticks, 1.0, 3, ran, 2).passes.get(Pass::PaintTextures), None, "no paint, no row");
     }

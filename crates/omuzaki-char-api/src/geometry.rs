@@ -15,8 +15,8 @@ use omuzaki_core::glam::Vec3;
 use omuzaki_core::mesh::{MeshData, MeshError};
 use omuzaki_face_api::{FaceLayerId, FaceLayerSpec, FaceProjection, PlanarWindow};
 use omuzaki_render_api::{
-    AlphaEncoding, AlphaMode, ColourSpace, Mapping, Material, Outline, Overlay, Sampler, Shading, TextureDesc,
-    TextureId, TextureUsage, UvTransform,
+    AlphaEncoding, AlphaMode, ColourSpace, Mapping, Material, Outline, OutlineStyle, Overlay, Sampler, Shading,
+    TextureDesc, TextureId, TextureUsage, UvTransform,
 };
 
 use crate::ids::{JointRef, MaterialName, TextureName};
@@ -147,6 +147,7 @@ impl MaterialSpec {
             double_sided: self.double_sided,
             vertex_colours: self.vertex_colours,
             outline: self.outline,
+            outline_style: OutlineStyle::KIT,
             receives_shadows: self.receives_shadows,
             uv_transform: self.uv_transform,
         })

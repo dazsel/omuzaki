@@ -1,0 +1,35 @@
+{
+  "about": "The kit character with the licence record `licence.derive` gives it and an author added, so it can be exported or published.",
+  "base": "character",
+  "steps": [
+    {
+      "op": "licence.set",
+      "args": {
+        "character": "kit",
+        "record": {
+          "schema": 1,
+          "provenance": {
+            "source": { "kind": "authored" },
+            "licence": "LicenseRef-Omuzaki-User",
+            "commercial": "ok",
+            "private_test": false
+          },
+          "meta": {
+            "name": "Kit",
+            "authors": ["Omuzaki"],
+            "licenseUrl": "https://vrm.dev/licenses/1.0/",
+            "avatarPermission": "onlyAuthor",
+            "commercialUsage": "personalNonProfit",
+            "creditNotation": "required",
+            "modification": "prohibited",
+            "allowRedistribution": false,
+            "allowExcessivelyViolentUsage": false,
+            "allowExcessivelySexualUsage": false,
+            "allowPoliticalOrReligiousUsage": false,
+            "allowAntisocialOrHateUsage": false
+          }
+        }
+      }
+    }
+  ]
+}

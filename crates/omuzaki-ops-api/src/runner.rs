@@ -468,12 +468,26 @@ impl OpInfo {
         }
     }
 
+    /// The name an agent calls this op by over MCP: [`tool_name`] of [`name`](Self::name).
+    #[must_use]
+    pub fn tool_name(&self) -> String {
+        tool_name(self.name)
+    }
+
     /// The same info with [`coalesces`](Self::coalesces) set.
     #[must_use]
     pub fn with_coalesces(mut self, coalesces: bool) -> Self {
         self.coalesces = coalesces;
         self
     }
+}
+
+/// The MCP tool name for an op name: the dots become underscores (`face.set_profile` is the tool
+/// `face_set_profile`), because many clients only accept `^[a-zA-Z0-9_-]{1,64}$`. The MCP server names its tools with
+/// this, and the studio's "Copy as MCP call" uses it, so the two can't disagree.
+#[must_use]
+pub fn tool_name(op_name: &str) -> String {
+    op_name.replace('.', "_")
 }
 
 /// Runs ops: the one entry point every surface uses. Methods take `&self` so one runner serves the UI, several MCP

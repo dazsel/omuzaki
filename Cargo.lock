@@ -4522,6 +4522,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-input-api"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-core",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omuzaki-input-mock"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-core",
+ "omuzaki-input-api",
+ "proptest",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "omuzaki-io-api"
 version = "0.0.0"
 dependencies = [
@@ -4538,6 +4560,7 @@ dependencies = [
 name = "omuzaki-io-fbx"
 version = "0.0.0"
 dependencies = [
+ "image",
  "omuzaki-core",
  "omuzaki-io-api",
  "ufbx",
@@ -4581,6 +4604,7 @@ dependencies = [
  "omuzaki-doc-mock",
  "omuzaki-embed",
  "omuzaki-face-api",
+ "omuzaki-face-mock",
  "omuzaki-history-api",
  "omuzaki-io-api",
  "omuzaki-io-mock",
@@ -5192,6 +5216,7 @@ dependencies = [
  "omuzaki-io-ops",
  "omuzaki-io-vrm",
  "omuzaki-link-build",
+ "omuzaki-measure",
  "omuzaki-metrics-api",
  "omuzaki-ops-api",
  "omuzaki-render",
@@ -5220,6 +5245,7 @@ dependencies = [
  "tracing",
  "unicode-bidi",
  "unicode-normalization",
+ "wgpu",
  "xtask",
 ]
 
@@ -5575,6 +5601,7 @@ dependencies = [
  "omuzaki-render",
  "omuzaki-render-api",
  "omuzaki-render-mock",
+ "omuzaki-setup",
  "omuzaki-stage",
  "omuzaki-stage-api",
  "omuzaki-stream",
@@ -5585,6 +5612,7 @@ dependencies = [
  "omuzaki-track-net",
  "omuzaki-ui-api",
  "omuzaki-ui-mock",
+ "regex",
  "rustix 1.1.5",
  "schemars",
  "serde",

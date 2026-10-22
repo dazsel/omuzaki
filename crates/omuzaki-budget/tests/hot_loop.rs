@@ -46,7 +46,7 @@ fn report(frame: u64, ms: f64) -> FrameReport {
         frame,
         render_size: UVec2::new(1920, 1080),
         cpu: PassTimes::default(),
-        gpu: Some(GpuTimings { frame, passes }),
+        gpu: Some(GpuTimings { frame, passes, painters: None }),
         draw_calls: 0,
         triangles: 0,
     }

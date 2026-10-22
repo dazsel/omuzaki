@@ -2,6 +2,9 @@
 # Three.js units (render-api D10): the numbers are copied, not rescaled.
 name = "dev-warm"
 source = "prototype dev viewer, warm rig"
+title = "Warm studio"
+summary = "A warm key on mid grey, for checking skin and warm palettes."
+tags = ["warm", "grey"]
 exposure = 1.0
 background = "#8a8f99"
 skin_floor = 0.42

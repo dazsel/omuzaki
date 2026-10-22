@@ -224,6 +224,13 @@ model as authored and every pose, clip and retarget means the same as on a built
 rest (ADR 0014: its azimuth is read from the rig, never assumed), with an info finding when it is more than 10° off
 the spec's 45° between ±X and +Z. A correction above 10° is an info finding (`avatar.rest_normalised`).
 
+**A T-pose model stands at ease** (2026-10-22). "As authored" is wrong for one case: a model authored in the T-pose,
+which is every VRoid and UniVRM file, would perform live with its arms straight out. The stage's base pose (what the
+performer, the life layer and stills layer onto) is `bind` with each arm that lies within 20° of the horizontal lowered
+to hang 60° below it, as the kit's A-pose hangs, and the elbow bent 10° forward (`omuzaki-stage` `avatar::ease`). An
+arm authored hanging keeps its pose, so an A-pose model still stands exactly as authored. VSeeFace and VTube Studio
+lower such a model's arms the same way.
+
 **Inverse bind matrices are per mesh.** The converter keeps each skin's matrices with the mesh that uses it, aligned
 with its `joint_bones`; `Skinner` multiplies by them per joint run.
 
@@ -348,10 +355,17 @@ apply and the studio offers calibration later.
 The converter maps MToon onto render-api's `Toon` as io-api's interface table says, and asks the renderer what it
 draws (`Capabilities`, D2). For each material and each MToon group the renderer cannot draw, one info finding
 `look.mtoon_not_drawn` under **Not used**, naming the group: matcap, GI equalisation, UV animation, render-queue
-offset, outline width mode (screen coordinates), the rim-lighting mix, the outline-lighting mix. Today all seven
-appear when the file uses them. Each LK-07 task that draws a group sets its capability bit, and that finding disappears
-by itself on that renderer; it stays on renderers without it (the mock, a WebGL fallback). Nothing in the file is
-dropped: the avatar retains them for export (D8), so they round-trip whatever the renderer draws.
+offset, outline width mode (screen coordinates), the rim-lighting mix, the outline-lighting mix, the outline width
+texture. Each LK-07 task that draws a group sets its capability bit, and that finding disappears by itself on that
+renderer; it stays on renderers without it (a WebGL fallback). Nothing in the file is dropped: the avatar retains them
+for export (D8), so they round-trip whatever the renderer draws.
+
+The outline groups are drawn (#647, `MtoonSupport::OUTLINE_STYLE` on both renderers): the converter keeps each
+material's MToon outline in `ImportedAvatar::outlines` (the width mode and width as the file has them, the lighting mix,
+and the width texture, decoded like the base texture), and the stage sets the material's `OutlineStyle` from it. A
+world width is constant metres, not the kit's distance-scaled width; a screen width is a constant fraction of the
+target's height; the width texture's green channel scales the width per vertex; and the lighting mix moves the line's
+light from the scene's outline light toward the lit surface's colour, as three-vrm draws it.
 
 ### D8. The end-to-end EX-11 check
 

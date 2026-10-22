@@ -1,0 +1,8 @@
+section = "rust"
+item = "ashpd 0.13"
+kind = "crate"
+used_for = "the GlobalShortcuts portal, so bindings work on Wayland without reading every key (`omuzaki-input`'s portal backend, ADR 0060)"
+status = "yes"
+condition = "MIT: keep the notice; `default-features = false` with `tokio` and `global_shortcuts` only"
+audit = "(crates.io: MIT, 2026-10-22)"
+crates = []

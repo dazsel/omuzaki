@@ -609,9 +609,21 @@ fn a_string_with_a_pattern_is_a_validated_field_that_says_so_through_the_strings
 
 #[test]
 fn a_pattern_that_cannot_be_evaluated_is_read_only_rather_than_unchecked() {
-    let h = rig(&one_field(json!({"title": "Id", "type": "string", "pattern": "^(a|b)+$"})));
+    let h = rig(&one_field(json!({"title": "Id", "type": "string", "pattern": "^(?=a)b$"})));
     assert!(h.query_by_role_and_label(Role::TextInput, "Id").is_none());
     assert!(h.query_by_label_contains("Not editable here (string with an unsupported pattern)").is_some());
+}
+
+#[test]
+fn a_pattern_with_groups_and_alternation_is_checked() {
+    let colour = "^(#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?|@[a-z0-9][a-z0-9_-]{0,63})$";
+    let mut h = rig(&one_field(json!({"title": "Colour", "type": "string", "pattern": colour})));
+    assert_eq!(h.state().form.invalid_count(&h.state().value), 1, "empty is neither a colour nor a reference");
+    focus(&mut h, Role::TextInput, "Colour");
+    h.event(Event::Text("@skin".to_owned()));
+    h.run();
+    assert_eq!(h.state().form.invalid_count(&h.state().value), 0);
+    assert_eq!(json_of(&h), json!({"field": "@skin"}));
 }
 
 #[test]
@@ -645,37 +657,71 @@ fn a_nested_object_is_a_section_of_its_own_fields() {
 // ---- failing closed ----
 
 #[test]
-fn an_unknown_shape_is_a_read_only_row_naming_its_type_and_its_value_survives() {
+fn a_shape_with_no_control_of_its_own_is_edited_as_json_and_its_value_survives() {
     let schema = schema(json!({"type": "object", "properties": {
         "keep": {"title": "Keep", "type": "boolean"},
         "tags": {"title": "Tags", "type": "array", "items": {"type": "string"}},
-        "maybe": {"title": "Maybe", "type": ["string", "null"]},
         "either": {"title": "Either", "oneOf": [{"type": "string"}, {"type": "integer"}]},
         "loop": {"title": "Loop", "$ref": "#/$defs/Loop"}
     }, "$defs": {"Loop": {"$ref": "#/$defs/Loop"}}}));
     let form = Form::from_schema(&schema);
-    let given = json!({"keep": true, "tags": ["a", "b"], "maybe": null, "either": 3, "loop": 7});
+    assert_eq!(form.read_only(), vec![("/loop".to_owned(), "unresolved reference".to_owned())]);
+    let given = json!({"keep": true, "tags": ["a", "b"], "either": 3, "loop": 7});
     let value = form.value_from_json(&given);
     let mut h = harness_state(Settings::default(), vec2(420.0, 600.0), (form, value), |ui, s| {
         SchemaForm::new(&s.0, &mut s.1).show(ui);
     });
-    for named in [
-        "Not editable here (array of string)",
-        "Not editable here (string | null)",
-        "Not editable here (string | integer)",
-        "Not editable here (unresolved reference)",
-    ] {
-        assert!(h.query_by_label_contains(named).is_some(), "{named}");
-    }
+    assert!(h.query_by_role_and_label(Role::TextInput, "Tags").is_some(), "a list is typed as JSON");
+    assert!(h.query_by_role_and_label(Role::TextInput, "Either").is_some(), "so is a union");
+    assert!(h.query_by_label_contains("Not editable here (unresolved reference)").is_some());
     h.get_by_role_and_label(Role::Switch, "Keep").focus();
     h.run();
     press(&mut h, Modifiers::NONE, Key::Space);
     let after = Value::from(&h.state().1);
     assert_eq!(
         after,
-        json!({"keep": false, "tags": ["a", "b"], "maybe": null, "either": 3, "loop": 7}),
+        json!({"keep": false, "tags": ["a", "b"], "either": 3, "loop": 7}),
         "nothing is dropped or rewritten"
     );
+}
+
+#[test]
+fn a_json_field_holds_the_form_back_until_its_text_parses() {
+    let mut h = rig(&one_field(json!({"title": "Either", "oneOf": [{"type": "string"}, {"type": "integer"}]})));
+    assert_eq!(h.state().form.invalid_count(&h.state().value), 1, "empty is not JSON");
+    focus(&mut h, Role::TextInput, "Either");
+    h.event(Event::Text("\"c".to_owned()));
+    h.run();
+    assert_eq!(h.state().form.invalid_count(&h.state().value), 1, "an unclosed string is not JSON");
+    h.event(Event::Text("\"".to_owned()));
+    h.run();
+    assert_eq!(h.state().form.invalid_count(&h.state().value), 0);
+    assert_eq!(json_of(&h), json!({"field": "c"}));
+}
+
+#[test]
+fn a_nullable_field_starts_unset_is_left_out_and_set_on_request() {
+    let schema = schema(json!({"type": "object", "properties": {
+        "name": {"title": "Name", "type": ["string", "null"]},
+        "size": {"title": "Size", "anyOf": [{"type": "number", "minimum": 0, "maximum": 1}, {"type": "null"}]}
+    }}));
+    let form = Form::from_schema(&schema);
+    let value = form.value_from_json(&json!({"name": null}));
+    assert_eq!(Value::from(&value), json!({}), "an unset option is left out");
+    let mut h = harness_state(Settings::default(), vec2(420.0, 400.0), (form, value), |ui, s| {
+        SchemaForm::new(&s.0, &mut s.1).show(ui);
+    });
+    assert!(h.query_by_role_and_label(Role::TextInput, "Name").is_none(), "unset: no field yet");
+    h.get_by_role_and_label(Role::Button, "Set Name").click();
+    h.run_steps(2);
+    assert!(h.query_by_role_and_label(Role::TextInput, "Name").is_some());
+    assert_eq!(Value::from(&h.state().1), json!({"name": ""}));
+    h.get_by_role_and_label(Role::Button, "Set Size").click();
+    h.run_steps(2);
+    assert!(h.query_by_role_and_label(Role::Slider, "Size").is_some());
+    let after = Value::from(&h.state().1);
+    assert_eq!(after["name"], json!(""));
+    assert_eq!(after["size"].as_f64(), Some(0.0), "set to its lower bound");
 }
 
 #[test]
@@ -1005,7 +1051,7 @@ fn perturb(value: &mut FormValue) {
         FormValue::Number(n) => *n += 1.0,
         FormValue::Integer(n) => *n += 1,
         FormValue::Bool(on) => *on = !*on,
-        FormValue::Text(text) => text.push('x'),
+        FormValue::Text(text) | FormValue::Json(text) => text.push('x'),
         FormValue::Choice { index, value } => {
             *index = 1;
             *value = json!("q");

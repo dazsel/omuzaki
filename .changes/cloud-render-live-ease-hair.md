@@ -1,0 +1,5 @@
+# Imported avatars stand at ease live, the kit's hair keeps its colour in VRM, and a live frame-time harness
+
+- An imported avatar authored in the T-pose (every VRoid and UniVRM file) no longer performs with its arms straight out: the stage's base pose lowers each arm within 20° of the horizontal to hang 60° below it, the elbow bent 10° forward. An arm authored hanging keeps its pose (`omuzaki-stage` `avatar::ease`, `docs/design/byom.md` D4).
+- A kit character exported to VRM keeps its hair colour: the hair shading program exports as MToon in its mean strand colour with the program's own shade, terminator and rim, reported as `material.approximated` (the root-to-tip gradient, strand lines and angel ring stay in Omuzaki) (#2270).
+- `cargo run -p omuzaki-stage --features wgpu --release --example live_times` runs the studio's live path (the kit character, its VRM import, the default scene, the face, a scripted webcam, the live loop and scheduler) paced as spec §10 measures, and prints `gpu.frame`, `gpu.face_paint` and the frame thread against the budgets.
