@@ -130,6 +130,9 @@ debug = "line-tables-only"   # enough for backtraces; keeps the shared slot targ
 [profile.dev.package."*"]
 opt-level = 2                # dependencies (glam, wgpu, image codecs) optimised: debug builds stay usable for real-time tests
 
+[profile.dev.package.omuzaki-char]
+opt-level = 2                # the kit's geometry: its property and fit tests and every mock preview run about 4x faster
+
 [profile.release]
 lto = "thin"
 codegen-units = 16
