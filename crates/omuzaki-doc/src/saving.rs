@@ -2,6 +2,7 @@
 
 use omuzaki_doc_api::{DocPath, DocRead, DocVersion, DocWrite, Patch, PatchError, Value};
 
+use crate::StoreError;
 use crate::project::Project;
 
 /// A [`Project`] saved to its folder after every patch it applies, so the folder always holds what the app shows. A save
@@ -17,6 +18,14 @@ impl SavedProject {
     /// `project`, saved after every patch from now on. What it held unsaved before is saved with the first patch.
     pub const fn new(project: Project) -> Self {
         Self { project }
+    }
+
+    /// Opens the project in `dir`, saved after every patch from now on.
+    ///
+    /// # Errors
+    /// As [`Project::open`].
+    pub fn open(dir: impl AsRef<std::path::Path>) -> Result<Self, StoreError> {
+        Project::open(dir).map(Self::new)
     }
 
     /// The project.

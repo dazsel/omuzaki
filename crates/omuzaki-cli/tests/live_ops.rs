@@ -10,7 +10,7 @@ mod common;
 
 use std::sync::Arc;
 
-use omuzaki_cli::project::open_in_memory;
+use omuzaki_cli::project::SavedProject;
 use omuzaki_core::time::SystemClock;
 use omuzaki_doc_api::DocPath;
 use omuzaki_live::Automation;
@@ -29,7 +29,7 @@ fn rig() -> (Arc<Executor>, Arc<Automation>, tempfile::TempDir) {
     let automation = Arc::new(Automation::new());
     let services = ServicesBuilder::new().insert::<Automation>(Arc::clone(&automation)).build();
     let dir = common::new_project();
-    let doc = omuzaki_doc::SavedProject::new(open_in_memory(dir.path()).expect("the project opens"));
+    let doc = SavedProject::open(dir.path()).expect("the project opens");
     let runner = Arc::new(
         Executor::new(Box::new(doc), Arc::new(SystemClock::new()))
             .expect("the executor builds")

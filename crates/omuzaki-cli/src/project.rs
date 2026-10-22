@@ -110,6 +110,10 @@ impl Runner for ProjectRunner {
     }
 }
 
+/// A project folder saved after every patch, for a host or test that runs an executor straight on a project without
+/// the app core (which saves through its journal instead).
+pub use omuzaki_doc::SavedProject;
+
 /// Opens the project in `dir` as it is on disk, in memory: an executor over it reads and plans as on the real
 /// project, and nothing it applies is written. A host that saves opens a [`ProjectRunner`].
 ///

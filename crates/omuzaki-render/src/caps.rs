@@ -17,7 +17,7 @@ use omuzaki_render_api::limits::{GUARANTEED_TEXTURE_SIZE, MAX_JOINTS};
 use crate::frame::uniform::FrameUniform;
 use crate::resource::material::MaterialUniform;
 use crate::resource::mesh::MAX_VERTEX_BUFFERS;
-use crate::shared::{MATERIAL_BINDINGS, MATERIAL_TEXTURES};
+use crate::shared::{MATERIAL_BINDINGS, MATERIAL_TEXTURES, MTOON_TEXTURES};
 
 /// The environment variable that picks a profile for any program (a test, a bench, the CLI): `native`, `webgpu` or
 /// `webgl2`. Unset means [`CapabilityProfile::Native`].
@@ -173,10 +173,18 @@ pub const REQUIREMENTS: &[Requirement] = &[
     need!(max_uniform_buffer_binding_size as u64, size_of::<FrameUniform>(), "the frame uniform (camera and lights)"),
     need!(max_uniform_buffer_binding_size as u64, size_of::<MaterialUniform>(), "the material uniform"),
     need!(max_uniform_buffers_per_shader_stage, 4, "frame, material, shadow and pass parameters"),
-    need!(max_sampled_textures_per_shader_stage, MATERIAL_TEXTURES + 1, "material textures and the shadow map"),
-    need!(max_samplers_per_shader_stage, MATERIAL_TEXTURES + 1, "material samplers and the shadow comparison"),
+    need!(
+        max_sampled_textures_per_shader_stage,
+        MATERIAL_TEXTURES + MTOON_TEXTURES + 2,
+        "material and MToon textures, the shadow map and the environment cube"
+    ),
+    need!(
+        max_samplers_per_shader_stage,
+        MATERIAL_TEXTURES + MTOON_TEXTURES + 2,
+        "material and MToon samplers, the shadow comparison and the environment sampler"
+    ),
     need!(max_vertex_buffers, MAX_VERTEX_BUFFERS, "the shape and surface streams and four extra attribute streams"),
-    need!(max_bindings_per_bind_group, MATERIAL_BINDINGS, "the material group's bindings 0 to 12"),
+    need!(max_bindings_per_bind_group, MATERIAL_BINDINGS, "the material group's bindings 0 to 26"),
     need!(max_vertex_buffer_array_stride, MESH_VERTEX_STRIDE, "the widest mesh vertex stream (48 bytes)"),
     need!(max_vertex_attributes, 10, "six mesh attributes and four extra ones"),
     need!(max_texture_dimension_2d, GUARANTEED_TEXTURE_SIZE, "the texture size the render contract guarantees"),

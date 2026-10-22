@@ -8,30 +8,33 @@
 //! Per block of at most `MAX_BLOCK` frames:
 //! 1. each bridge (one per bound input) yields the block's frames, or silence on an underrun;
 //! 2. each feed yields its frames, resampled to 48 kHz at the edge;
-//! 3. each bus, in topological order: its sources and what earlier buses sent are summed (mono to stereo at
-//!    `1/sqrt(2)`, stereo to mono as `(L + R)/sqrt(2)`), the chain runs, pre-fader sends go out, the fader ramps to
-//!    `gain × mute × mic-mode cut`, post-fader sends go out, and the meters read it;
+//! 3. the mixer core ([`Mix`](crate::mix::Mix)) runs the buses: sources and sends, chains, faders, mutes, ducking and
+//!    the outputs, exactly as the offline render does;
 //! 4. every tap at a point reached copies the block out (mixed down, decimated, or silenced by the mic mode).
 //!
-//! What the spine leaves for later, on purpose: ducking rules, sidechains and the hold-over latency of a disabled node
-//! are not run (a disabled node is skipped); outputs to devices are not played; a structural graph change restarts the
-//! nodes and ramps instead of carrying their state over.
+//! What is left for later, on purpose: outputs to devices are not played; a structural graph change restarts the
+//! nodes and ramps instead of carrying their state over (#908); players are silent until the player source (#1160).
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use omuzaki_audio_api::clock::{ClockSnapshot, EngineClock};
-use omuzaki_audio_api::graph::MicMode;
-use omuzaki_audio_api::ids::{BusId, DeviceRole, FeedId};
-use omuzaki_audio_api::node::{BlockMut, MAX_BLOCK, Node, ParamIndex, SAMPLE_RATE};
+use omuzaki_audio_api::graph::{MicMode, SourceRef};
+use omuzaki_audio_api::ids::{BusId, DeviceRole, FeedId, GateId};
+use omuzaki_audio_api::node::{MAX_BLOCK, ParamIndex, SAMPLE_RATE};
+use omuzaki_audio_api::player::Sound;
 use omuzaki_audio_api::report::MeterCell;
 use omuzaki_audio_api::ring::{Consumer, Producer, TapFlags};
-use omuzaki_audio_api::semantics::{FaderRamp, MONO_TO_STEREO_GAIN};
+use omuzaki_audio_api::semantics::MONO_TO_STEREO_GAIN;
 use omuzaki_audio_api::tap::{TapClosed, TapPoint, TapSink, VoiceUse};
 use omuzaki_core::time::Seconds;
 
-use crate::dsp::{Decimator, MeterState, Resampler};
+use crate::dsp::{Decimator, Resampler};
+use crate::meters::Meter;
+use crate::mix::{Inputs, Mix, Points, Stage};
+use crate::player::{Bank, MAX_PLAYERS, Player, held_flags};
+use crate::swap::Running;
 
 /// The most taps, feeds and bridges the executor holds; their lists are allocated this large up front.
 pub const MAX_ENTRIES: usize = 64;
@@ -43,8 +46,10 @@ pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// Counters the control side reads.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct Shared {
+    /// Per bank slot, whether the audio thread holds a sound there.
+    pub held: Arc<[AtomicBool]>,
     /// The engine-clock index of the next frame the executor will make.
     pub sample: AtomicU64,
     /// Frames in the last block the clock delivered.
@@ -53,51 +58,15 @@ pub(crate) struct Shared {
     pub missed: AtomicU64,
 }
 
-/// One node in a chain.
-pub(crate) struct Link {
-    pub node: Box<dyn Node>,
-    pub enabled: bool,
-}
-
-/// One send, by its target's position.
-pub(crate) struct SendState {
-    pub to: usize,
-    pub gain: f32,
-    pub pre_fader: bool,
-    pub ramp: FaderRamp,
-}
-
-/// Where a bus source comes from.
-pub(crate) enum Source {
-    /// A device input, by role (matched against the bridges each block).
-    Device(DeviceRole),
-    /// A feed.
-    Feed(FeedId),
-    /// A player the spine does not run yet: silence.
-    Silent,
-}
-
-/// One compiled bus.
-pub(crate) struct Bus {
-    pub id: BusId,
-    pub channels: usize,
-    pub is_mic: bool,
-    pub sources: Vec<Source>,
-    pub chain: Vec<Link>,
-    pub gain: f32,
-    pub muted: bool,
-    pub ramp: FaderRamp,
-    pub sends: Vec<SendState>,
-    pub buf: [Vec<f32>; 2],
-    pub meter: Arc<MeterCell>,
-    pub meter_state: MeterState,
-}
-
-/// A compiled graph, made on the control thread.
-pub(crate) struct Compiled {
-    /// Which generation of the control side's graph this is; live setters name it.
-    pub generation: u64,
-    pub buses: Vec<Bus>,
+impl Default for Shared {
+    fn default() -> Self {
+        Self {
+            held: held_flags(),
+            sample: AtomicU64::new(0),
+            block_frames: AtomicU32::new(0),
+            missed: AtomicU64::new(0),
+        }
+    }
 }
 
 /// A device input crossing from its own callback to the executor, one ring per channel.
@@ -108,7 +77,7 @@ pub(crate) struct Bridge {
     pub block: [Vec<f32>; 2],
     pub underruns: Arc<AtomicU64>,
     pub meter: Arc<MeterCell>,
-    pub meter_state: MeterState,
+    pub meter_state: Meter,
     /// Set by the device side once it has delivered audio: before that an empty ring is not an underrun.
     pub started: Arc<AtomicBool>,
 }
@@ -178,33 +147,71 @@ pub(crate) fn voice_flags(mode: MicMode, consumer: VoiceUse) -> TapFlags {
 
 /// A message from the control side, applied at the next block start.
 pub(crate) enum Command {
-    Swap(Box<Compiled>),
-    Gain { generation: u64, bus: usize, gain: f32 },
-    Mute { generation: u64, bus: usize, muted: bool },
-    Param { generation: u64, bus: usize, node: usize, param: ParamIndex, value: f32 },
+    Swap(Box<Mix>),
+    Gain {
+        generation: u64,
+        bus: usize,
+        gain: f32,
+    },
+    Mute {
+        generation: u64,
+        bus: usize,
+        muted: bool,
+    },
+    Param {
+        generation: u64,
+        bus: usize,
+        node: usize,
+        param: ParamIndex,
+        value: f32,
+    },
     MicMode(MicMode),
     AddTap(Box<Tap>),
     AddFeed(Box<Feed>),
     AddBridge(Box<Bridge>),
     RemoveBridge(u64),
+    /// A sound into a bank slot; the control side keeps a reference, so the audio thread never frees it.
+    LoadSound {
+        slot: usize,
+        sound: Arc<Sound>,
+    },
+    UnloadSound {
+        slot: usize,
+    },
+    /// A player the control side numbered by its position: players are only ever added.
+    AddPlayer(Box<Player>),
+    Play {
+        player: usize,
+        slot: usize,
+        gain: f32,
+        ducks: bool,
+    },
+    Stop {
+        player: usize,
+        slot: Option<usize>,
+    },
 }
 
 /// What the audio thread hands back to be freed off it.
 pub(crate) enum Garbage {
-    Graph(#[allow(dead_code)] Box<Compiled>),
+    Graph(#[allow(dead_code)] Box<Mix>),
     Tap(#[allow(dead_code)] Box<Tap>),
     Feed(#[allow(dead_code)] Box<Feed>),
     Bridge(#[allow(dead_code)] Box<Bridge>),
+    Player(#[allow(dead_code)] Box<Player>),
+    Sound(#[allow(dead_code)] Arc<Sound>),
 }
 
 /// The executor's state.
 // Boxed entries move between threads as one pointer, so adding or retiring one never copies its buffers.
 #[allow(clippy::vec_box)]
 pub(crate) struct Executor {
-    graph: Box<Compiled>,
+    running: Running,
     bridges: Vec<Box<Bridge>>,
     feeds: Vec<Box<Feed>>,
     taps: Vec<Box<Tap>>,
+    bank: Bank,
+    players: Vec<Box<Player>>,
     mic_mode: MicMode,
     commands: Receiver<Command>,
     garbage: SyncSender<Garbage>,
@@ -221,24 +228,21 @@ fn zero_block(n: usize) -> [Vec<f32>; 2] {
     [vec![0.0; n], vec![0.0; n]]
 }
 
-/// A bus's buffers, sized for the largest block.
-pub(crate) fn bus_buffers() -> [Vec<f32>; 2] {
-    zero_block(MAX_BLOCK)
-}
-
 impl Executor {
     pub(crate) fn new(
-        graph: Box<Compiled>,
+        graph: Box<Mix>,
         commands: Receiver<Command>,
         garbage: SyncSender<Garbage>,
         clock: Arc<EngineClock>,
         shared: Arc<Shared>,
     ) -> Self {
         Self {
-            graph,
+            running: Running::new(graph),
             bridges: Vec::with_capacity(MAX_ENTRIES),
             feeds: Vec::with_capacity(MAX_ENTRIES),
             taps: Vec::with_capacity(MAX_ENTRIES),
+            bank: Bank::new(Arc::clone(&shared.held)),
+            players: Vec::with_capacity(MAX_PLAYERS),
             mic_mode: MicMode::Live,
             commands,
             garbage,
@@ -271,30 +275,69 @@ impl Executor {
         for _ in 0..COMMANDS_PER_BLOCK {
             let Ok(command) = self.commands.try_recv() else { return };
             match command {
-                Command::Swap(graph) => {
-                    let old = std::mem::replace(&mut self.graph, graph);
-                    self.discard(Garbage::Graph(old));
+                Command::Swap(mut graph) => {
+                    // Compiled under the mode the control side knew; a mode change since then ramps, as it would live.
+                    graph.set_mic_mode(self.mic_mode);
+                    if let Some(superseded) = self.running.offer(graph) {
+                        self.discard(Garbage::Graph(superseded));
+                    }
                 }
                 Command::Gain { generation, bus, gain } => {
-                    if let Some(b) = self.bus_mut(generation, bus) {
-                        b.gain = gain;
+                    if let Some(graph) = self.running.generation(generation) {
+                        graph.set_gain(bus, gain);
                     }
                 }
                 Command::Mute { generation, bus, muted } => {
-                    if let Some(b) = self.bus_mut(generation, bus) {
-                        b.muted = muted;
+                    if let Some(graph) = self.running.generation(generation) {
+                        graph.set_muted(bus, muted);
                     }
                 }
                 Command::Param { generation, bus, node, param, value } => {
-                    if let Some(link) = self.bus_mut(generation, bus).and_then(|b| b.chain.get_mut(node)) {
+                    if let Some(link) = self
+                        .running
+                        .generation(generation)
+                        .and_then(|g| g.buses.get_mut(bus))
+                        .and_then(|b| b.chain.get_mut(node))
+                    {
                         link.node.set_param(param, value);
                     }
                 }
-                Command::MicMode(mode) => self.mic_mode = mode,
+                Command::MicMode(mode) => {
+                    self.mic_mode = mode;
+                    self.running.set_mic_mode(mode);
+                }
                 Command::AddTap(tap) => push_bounded(&mut self.taps, tap, Garbage::Tap, &mut self.held),
                 Command::AddFeed(feed) => push_bounded(&mut self.feeds, feed, Garbage::Feed, &mut self.held),
                 Command::AddBridge(bridge) => {
                     push_bounded(&mut self.bridges, bridge, Garbage::Bridge, &mut self.held);
+                }
+                Command::LoadSound { slot, sound } => {
+                    if let Some(old) = self.bank.load(slot, sound) {
+                        self.discard(Garbage::Sound(old));
+                    }
+                }
+                Command::UnloadSound { slot } => {
+                    self.bank.unload(slot);
+                    for player in &mut self.players {
+                        player.stop(Some(slot));
+                    }
+                }
+                Command::AddPlayer(player) => {
+                    if self.players.len() < MAX_PLAYERS {
+                        self.players.push(player);
+                    } else {
+                        self.discard(Garbage::Player(player));
+                    }
+                }
+                Command::Play { player, slot, gain, ducks } => {
+                    if let Some(player) = self.players.get_mut(player) {
+                        player.play(slot, gain, ducks);
+                    }
+                }
+                Command::Stop { player, slot } => {
+                    if let Some(player) = self.players.get_mut(player) {
+                        player.stop(slot);
+                    }
                 }
                 Command::RemoveBridge(token) => {
                     if let Some(at) = self.bridges.iter().position(|b| b.token == token) {
@@ -304,13 +347,6 @@ impl Executor {
                 }
             }
         }
-    }
-
-    fn bus_mut(&mut self, generation: u64, bus: usize) -> Option<&mut Bus> {
-        if self.graph.generation != generation {
-            return None;
-        }
-        self.graph.buses.get_mut(bus)
     }
 
     /// Makes `frames` frames. `time` is the engine time of the first one as the clock device stamped it (`None` from
@@ -355,13 +391,19 @@ impl Executor {
             }
             let channels = bridge.rings.len().min(2);
             let reading = match channels {
-                2 => bridge.meter_state.measure(&[&bridge.block[0][..n], &bridge.block[1][..n]]),
-                _ => bridge.meter_state.measure(&[&bridge.block[0][..n]]),
+                2 => bridge.meter_state.measure(&[&bridge.block[0][..n], &bridge.block[1][..n]], 0.0),
+                _ => bridge.meter_state.measure(&[&bridge.block[0][..n]], 0.0),
             };
             bridge.meter.store(reading);
         }
         for feed in &mut self.feeds {
             pull_feed(feed, n);
+        }
+        for player in &mut self.players {
+            player.render(n, &self.bank);
+        }
+        while let Some(sound) = self.bank.take_released(&self.players) {
+            self.discard(Garbage::Sound(sound));
         }
         // Input taps.
         for tap in &mut self.taps {
@@ -378,90 +420,10 @@ impl Executor {
         }
         let first_sample = self.sample;
         let mic_mode = self.mic_mode;
-        let buses = &mut self.graph.buses;
-        for b in buses.iter_mut() {
-            for ch in &mut b.buf {
-                ch[..n].fill(0.0);
-            }
-        }
-        for at in 0..buses.len() {
-            let (done, rest) = buses.split_at_mut(at);
-            let _ = done;
-            let Some((bus, later)) = rest.split_first_mut() else { break };
-            // Sources (sends from earlier buses are already in `buf`).
-            for source in &bus.sources {
-                match source {
-                    Source::Device(role) => {
-                        if let Some(bridge) = self.bridges.iter().find(|br| &br.role == role) {
-                            let from = bridge.rings.len().min(2);
-                            mix_into(
-                                &mut bus.buf,
-                                bus.channels,
-                                [&bridge.block[0][..n], &bridge.block[1][..n]],
-                                from,
-                                1.0,
-                                n,
-                            );
-                        }
-                    }
-                    Source::Feed(id) => {
-                        if let Some(feed) = self.feeds.iter().find(|f| &f.id == id) {
-                            let from = if feed.stereo { 2 } else { 1 };
-                            mix_into(
-                                &mut bus.buf,
-                                bus.channels,
-                                [&feed.block[0][..n], &feed.block[1][..n]],
-                                from,
-                                1.0,
-                                n,
-                            );
-                        }
-                    }
-                    Source::Silent => {}
-                }
-            }
-            tap_point(&mut self.taps, bus, n, mic_mode, |p| matches!(p, TapPoint::BusPreChain(id) if *id == bus.id));
-            for link in bus.chain.iter_mut().filter(|l| l.enabled) {
-                let [left, right] = &mut bus.buf;
-                let mut block = if bus.channels == 2 {
-                    BlockMut::stereo(&mut left[..n], &mut right[..n], first_sample)
-                } else {
-                    BlockMut::mono(&mut left[..n], first_sample)
-                };
-                link.node.process(&mut block);
-            }
-            tap_point(&mut self.taps, bus, n, mic_mode, |p| matches!(p, TapPoint::BusPostChain(id) if *id == bus.id));
-            send(bus, later, at, n, true);
-            let cut = bus.muted || (bus.is_mic && mic_mode != MicMode::Live);
-            bus.ramp.set_target(if cut { 0.0 } else { bus.gain });
-            let [left, right] = &mut bus.buf;
-            for i in 0..n {
-                let g = bus.ramp.next_gain();
-                left[i] *= g;
-                if bus.channels == 2 {
-                    right[i] *= g;
-                }
-            }
-            send(bus, later, at, n, false);
-            let reading = if bus.channels == 2 {
-                bus.meter_state.measure(&[&bus.buf[0][..n], &bus.buf[1][..n]])
-            } else {
-                bus.meter_state.measure(&[&bus.buf[0][..n]])
-            };
-            bus.meter.store(reading);
-            tap_point(&mut self.taps, bus, n, mic_mode, |p| matches!(p, TapPoint::BusPostFader(id) if *id == bus.id));
-        }
-        // Taps on a bus this graph does not have read silence, so their positions stay contiguous.
-        for tap in &mut self.taps {
-            let missing = match &tap.point {
-                TapPoint::BusPreChain(id) | TapPoint::BusPostChain(id) | TapPoint::BusPostFader(id) => {
-                    !self.graph.buses.iter().any(|b| &b.id == id)
-                }
-                _ => false,
-            };
-            if missing {
-                feed_silence(tap, n, mic_mode);
-            }
+        let inputs = LiveInputs { bridges: &self.bridges, feeds: &self.feeds, players: &self.players };
+        let mut points = LiveTaps { taps: &mut self.taps, mode: mic_mode };
+        if let Some(old) = self.running.process(n, first_sample, &inputs, &mut points) {
+            self.discard(Garbage::Graph(old));
         }
         self.sample += n as u64;
         self.shared.sample.store(self.sample, Ordering::Relaxed);
@@ -505,69 +467,77 @@ fn push_bounded<T>(
     }
 }
 
-/// Adds `from` channels of `src` into a bus of `to` channels at `gain`.
-fn mix_into(buf: &mut [Vec<f32>; 2], to: usize, src: [&[f32]; 2], from: usize, gain: f32, n: usize) {
-    let [left, right] = buf;
-    match (from, to) {
-        (1, 2) => {
-            let g = gain * MONO_TO_STEREO_GAIN;
-            for i in 0..n {
-                left[i] += src[0][i] * g;
-                right[i] += src[0][i] * g;
+/// The bridges, feeds and players as the mixer's sources, and the players' gates.
+struct LiveInputs<'a> {
+    bridges: &'a [Box<Bridge>],
+    feeds: &'a [Box<Feed>],
+    players: &'a [Box<Player>],
+}
+
+impl Inputs for LiveInputs<'_> {
+    fn source(&self, source: &SourceRef, n: usize) -> Option<(usize, [&[f32]; 2])> {
+        match source {
+            SourceRef::Device { role } => {
+                let bridge = self.bridges.iter().find(|b| &b.role == role)?;
+                let channels = bridge.rings.len().min(2);
+                (channels > 0).then(|| (channels, [&bridge.block[0][..n], &bridge.block[1][..n]]))
             }
-        }
-        (2, 1) => {
-            let g = gain * MONO_TO_STEREO_GAIN;
-            for i in 0..n {
-                left[i] += (src[0][i] + src[1][i]) * g;
+            SourceRef::Feed { id } => {
+                let feed = self.feeds.iter().find(|f| &f.id == id)?;
+                Some((if feed.stereo { 2 } else { 1 }, [&feed.block[0][..n], &feed.block[1][..n]]))
             }
-        }
-        (2, 2) => {
-            for i in 0..n {
-                left[i] += src[0][i] * gain;
-                right[i] += src[1][i] * gain;
-            }
-        }
-        _ => {
-            for i in 0..n {
-                left[i] += src[0][i] * gain;
+            SourceRef::Player { id } => {
+                let player = self.players.iter().find(|p| &p.id == id)?;
+                Some((2, [&player.out[0][..n], &player.out[1][..n]]))
             }
         }
     }
-}
 
-/// Runs `bus`'s sends of one kind (pre- or post-fader) into the later buses.
-fn send(bus: &mut Bus, later: &mut [Bus], at: usize, n: usize, pre_fader: bool) {
-    for s in bus.sends.iter_mut().filter(|s| s.pre_fader == pre_fader) {
-        let Some(target) = s.to.checked_sub(at + 1).and_then(|i| later.get_mut(i)) else { continue };
-        s.ramp.set_target(s.gain);
-        let to = target.channels;
-        let [tl, tr] = &mut target.buf;
-        for i in 0..n {
-            let g = s.ramp.next_gain();
-            let frame = [bus.buf[0][i] * g, bus.buf[1][i] * g];
-            match (bus.channels, to) {
-                (1, 2) => {
-                    tl[i] += frame[0] * MONO_TO_STEREO_GAIN;
-                    tr[i] += frame[0] * MONO_TO_STEREO_GAIN;
-                }
-                (2, 1) => tl[i] += (frame[0] + frame[1]) * MONO_TO_STEREO_GAIN,
-                (2, 2) => {
-                    tl[i] += frame[0];
-                    tr[i] += frame[1];
-                }
-                _ => tl[i] += frame[0],
-            }
-        }
+    fn gate(&self, gate: &GateId, n: usize) -> Option<&[bool]> {
+        // A player raises the gate with its own name.
+        let player = self.players.iter().find(|p| p.id.as_str() == gate.as_str())?;
+        Some(&player.gate[..n])
     }
 }
 
-fn tap_point(taps: &mut [Box<Tap>], bus: &Bus, n: usize, mode: MicMode, at: impl Fn(&TapPoint) -> bool) {
-    for tap in taps.iter_mut().filter(|t| at(&t.point)) {
-        if bus.channels == 2 {
-            feed_tap(tap, &[&bus.buf[0][..n], &bus.buf[1][..n]], mode);
-        } else {
-            feed_tap(tap, &[&bus.buf[0][..n]], mode);
+/// The open taps as the mixer's points.
+struct LiveTaps<'a> {
+    taps: &'a mut [Box<Tap>],
+    mode: MicMode,
+}
+
+impl Points for LiveTaps<'_> {
+    /// Taps on a bus this graph does not have read silence, so their positions stay contiguous.
+    fn ran(&mut self, mix: &Mix, frames: usize) {
+        for tap in self.taps.iter_mut() {
+            let missing = match &tap.point {
+                TapPoint::BusPreChain(id) | TapPoint::BusPostChain(id) | TapPoint::BusPostFader(id) => {
+                    !mix.buses.iter().any(|b| &b.id == id)
+                }
+                _ => false,
+            };
+            if missing {
+                feed_silence(tap, frames, self.mode);
+            }
+        }
+    }
+
+    fn reached(&mut self, stage: Stage, bus: &BusId, channels: usize, block: [&[f32]; 2]) {
+        for tap in self.taps.iter_mut() {
+            let here = match (&tap.point, stage) {
+                (TapPoint::BusPreChain(id), Stage::PreChain)
+                | (TapPoint::BusPostChain(id), Stage::PostChain)
+                | (TapPoint::BusPostFader(id), Stage::PostFader) => id == bus,
+                _ => false,
+            };
+            if !here {
+                continue;
+            }
+            if channels == 2 {
+                feed_tap(tap, &block, self.mode);
+            } else {
+                feed_tap(tap, &block[..1], self.mode);
+            }
         }
     }
 }
@@ -689,7 +659,7 @@ impl Bridge {
             block: zero_block(MAX_BLOCK),
             underruns: Arc::new(AtomicU64::new(0)),
             meter: Arc::new(MeterCell::new()),
-            meter_state: MeterState::default(),
+            meter_state: Meter::plain(),
             started,
         }
     }

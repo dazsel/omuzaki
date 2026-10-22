@@ -9,10 +9,15 @@
 
 @fragment
 fn fs_blend(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
-    let albedo = surface_albedo(in.uv, in.colour, in.local);
+    let uv = mtoon_uv(in.uv);
+    let albedo = surface_albedo(uv, in.colour, in.local);
     let program = ProgramIn(array<vec4<f32>, 4>(in.extra0, in.extra1, in.extra2, in.extra3), front, in.world_position);
     var colour = albedo.rgb;
-    if (material.flags.y == SHADING_TOON) {
+    if (mtoon_on()) {
+        let facing = normalize(in.world_normal);
+        let face = select(-1.0, 1.0, front);
+        colour = mtoon_colour(albedo.rgb, uv, facing * face, in.world_position, in.colour, face);
+    } else if (material.flags.y == SHADING_TOON) {
         let facing = normalize(in.world_normal);
         let n = select(-facing, facing, front);
         colour = toon_colour(program_albedo(albedo.rgb, program), n, in.world_position);

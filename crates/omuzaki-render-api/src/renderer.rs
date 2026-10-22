@@ -38,7 +38,8 @@ pub struct Capabilities {
     pub morph_targets: bool,
     /// The most morph targets one mesh may have; 0 if `morph_targets` is false.
     pub max_morph_targets: u32,
-    /// The `MToon` groups this renderer draws: [`MtoonSupport::OUTLINE_STYLE`] on the wgpu and mock renderers.
+    /// The `MToon` groups this renderer draws: [`MtoonSupport::ALL`] on the wgpu renderer, [`MtoonSupport::OUTLINE_STYLE`]
+    /// on the mock.
     pub mtoon: MtoonSupport,
 }
 
@@ -46,7 +47,7 @@ pub struct Capabilities {
 /// the author what will look different instead of guessing. A material asking for a group the renderer lacks is
 /// drawn without it.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
-pub struct MtoonSupport(u8);
+pub struct MtoonSupport(u16);
 
 impl MtoonSupport {
     /// No `MToon` group.
@@ -67,6 +68,14 @@ impl MtoonSupport {
     pub const OUTLINE_LIGHTING_MIX: Self = Self(1 << 6);
     /// The outline width multiplier texture.
     pub const OUTLINE_WIDTH_TEXTURE: Self = Self(1 << 7);
+    /// The spec's lighting model ([`Mtoon`](crate::Mtoon)): the shade colour and texture, the shading shift and its
+    /// texture, the toony factor, the parametric rim (fresnel power, lift, texture), and the emissive and normal
+    /// textures.
+    pub const LIGHTING: Self = Self(1 << 8);
+    /// Depth writes for blended surfaces (`transparentWithZWrite`).
+    pub const BLEND_DEPTH_WRITE: Self = Self(1 << 9);
+    /// Every group: what a renderer that implements [`Mtoon`](crate::Mtoon) and the outline style draws.
+    pub const ALL: Self = Self((1 << 10) - 1);
     /// The outline groups `Material::outline_style` carries (#647): screen-space widths, the lighting mix and the width
     /// texture. Every renderer that implements the style draws all three.
     pub const OUTLINE_STYLE: Self =
