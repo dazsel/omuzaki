@@ -40,6 +40,7 @@ pub mod convert;
 mod error;
 pub mod fit_bones;
 pub mod fit_texture;
+mod fit_texture_jpeg_scan;
 pub mod gather;
 pub mod msg;
 pub mod ops;
