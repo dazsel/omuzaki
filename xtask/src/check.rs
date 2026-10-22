@@ -424,6 +424,7 @@ mod tests {
                 ("scan", "test -p omuzaki-ops-api --test fs_fence".to_owned()),
                 ("scan", "test -p omuzaki-stage --test registrations".to_owned()),
                 ("scan", "test -p omuzaki-test --test eval_lint".to_owned()),
+                ("scan", "test -p omuzaki-input --test fences".to_owned()),
                 ("scan", "test -p omuzaki-test --test gpu_instances".to_owned()),
                 ("deny", "deny --log-level error check licenses bans sources".to_owned()),
                 ("lint-deps", "<lint-deps>".to_owned()),
@@ -454,15 +455,15 @@ mod tests {
                 ("link-gate", "test -p omuzaki-cli --test registrations".to_owned()),
             ]
         );
-        // The link-only crate's gate covers its own scan; the other four scan targets still run.
-        assert_eq!(got.len(), 20, "the same trailing steps as ever, plus four scans and lint-scans: {got:?}");
+        // The link-only crate's gate covers its own scan; the other five scan targets still run.
+        assert_eq!(got.len(), 21, "the same trailing steps as ever, plus five scans and lint-scans: {got:?}");
     }
 
     #[test]
     fn an_empty_scope_still_runs_the_models_gate() {
         let names: Vec<&str> = steps_for(&crates(&[])).iter().map(|step| step.name).collect();
         // Nothing affected still runs every scan target: they read crates the change never names.
-        assert_eq!(names, ["models", "scan", "scan", "scan", "scan", "scan", "lint-scans"]);
+        assert_eq!(names, ["models", "scan", "scan", "scan", "scan", "scan", "scan", "lint-scans"]);
         assert!(steps_for(&crates(&["omuzaki-core"])).len() > 1);
     }
 
@@ -495,6 +496,7 @@ mod tests {
                 "fmt",
                 "clippy",
                 "test",
+                "scan",
                 "scan",
                 "scan",
                 "scan",

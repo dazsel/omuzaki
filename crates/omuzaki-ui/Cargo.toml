@@ -36,6 +36,8 @@ omuzaki-anim-api = { path = "../omuzaki-anim-api" }
 # camera (`live/wiring/app.rs`).
 omuzaki-audio-api = { path = "../omuzaki-audio-api" }
 omuzaki-audio-engine = { path = "../omuzaki-audio-engine" }
+omuzaki-input = { path = "../omuzaki-input" }
+omuzaki-input-api = { path = "../omuzaki-input-api" }
 omuzaki-live = { path = "../omuzaki-live" }
 omuzaki-live-api = { path = "../omuzaki-live-api" }
 omuzaki-live-nodes = { path = "../omuzaki-live-nodes" }
@@ -95,6 +97,7 @@ omuzaki-anim-mock = { path = "../omuzaki-anim-mock" }
 omuzaki-char-mock = { path = "../omuzaki-char-mock" }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-ops-mock = { path = "../omuzaki-ops-mock" }
+omuzaki-osc = { path = "../omuzaki-osc" }
 omuzaki-render-mock = { path = "../omuzaki-render-mock" }
 omuzaki-settings-mock = { path = "../omuzaki-settings-mock" }
 omuzaki-track-mock = { path = "../omuzaki-track-mock" }

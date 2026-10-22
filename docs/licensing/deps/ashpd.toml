@@ -5,4 +5,4 @@ used_for = "the GlobalShortcuts portal, so bindings work on Wayland without read
 status = "yes"
 condition = "MIT: keep the notice; `default-features = false` with `tokio` and `global_shortcuts` only"
 audit = "(crates.io: MIT, 2026-10-22)"
-crates = []
+crates = ["ashpd"]
