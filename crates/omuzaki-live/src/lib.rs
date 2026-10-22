@@ -6,6 +6,8 @@
 //!   `automation.start`, `automation.stop`, `automation.status`, `automation.values` and `automation.fire` on the
 //!   running show.
 //!
+//! - [`testing::ShowHarness`] (feature `testing`): a whole show on the real engine core, on fake time.
+//!
 //! The node catalogue is `omuzaki-live-nodes`; the engine finds kinds through the registry and never names one.
 
 omuzaki_core::define_link! {
@@ -17,5 +19,7 @@ mod core;
 mod inbox;
 pub mod ops;
 mod service;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 
 pub use service::Automation;

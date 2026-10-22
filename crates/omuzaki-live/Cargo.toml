@@ -20,7 +20,13 @@ serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+# Itself with the testing kit, so integration tests see `ShowHarness`.
+omuzaki-live = { path = ".", features = ["testing"] }
 omuzaki-live-mock = { path = "../omuzaki-live-mock" }
+
+[features]
+# `testing::ShowHarness`: a whole show on the real engine core, on fake time. Tests always see it.
+testing = []
 
 [[bench]]
 name = "inbox"
