@@ -5259,6 +5259,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-shm"
+version = "0.0.0"
+dependencies = [
+ "bytes",
+ "getrandom 0.4.3",
+ "memmap2",
+ "omuzaki-shm",
+ "omuzaki-stream-api",
+ "rustix 1.1.5",
+ "thiserror 2.0.21",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "omuzaki-stage"
 version = "0.0.0"
 dependencies = [

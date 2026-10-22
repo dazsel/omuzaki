@@ -470,7 +470,7 @@ fn frame<M: Serialize>(msg: &M) -> Result<Vec<u8>, StreamError> {
 }
 
 /// The body length a header announces.
-fn body_len(header: &[u8; HEADER]) -> Result<usize, StreamError> {
+fn body_len(header: [u8; HEADER]) -> Result<usize, StreamError> {
     if header[..4] != MAGIC {
         return Err(protocol(format!("bad magic {:02x?}", &header[..4])));
     }
@@ -511,7 +511,7 @@ pub fn read_msg<R: Read, M: DeserializeOwned>(r: &mut R, buf: &mut Vec<u8>) -> R
             Err(e) => return Err(io(&e)),
         }
     }
-    let len = body_len(&header)?;
+    let len = body_len(header)?;
     buf.clear();
     buf.resize(len, 0);
     r.read_exact(buf).map_err(|e| io(&e))?;
@@ -529,8 +529,8 @@ mod unix {
     use std::os::unix::net::UnixStream;
 
     use rustix::net::{
-        RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, ReturnFlags, SendAncillaryBuffer,
-        SendAncillaryMessage, SendFlags, recvmsg, sendmsg,
+        RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, ReturnFlags, SendAncillaryBuffer, SendAncillaryMessage,
+        SendFlags, recvmsg, sendmsg,
     };
     use serde::Serialize;
     use serde::de::DeserializeOwned;
@@ -630,7 +630,7 @@ mod unix {
         }
         let first = fds.len();
         read_exact_fds(s, &mut header[1..], &mut fds, false)?;
-        let len = body_len(&header)?;
+        let len = body_len(header)?;
         buf.clear();
         buf.resize(len, 0);
         read_exact_fds(s, buf, &mut fds, false)?;
@@ -684,7 +684,10 @@ mod tests {
     fn every_message_round_trips_through_a_frame() -> Result<(), StreamError> {
         let host = [
             HostMsg::start(
-                ChannelNames::new(3, vec![(ChannelRole::Frames, ChannelRef::fd(0)), (ChannelRole::Packets, ChannelRef::fd(1))]),
+                ChannelNames::new(
+                    3,
+                    vec![(ChannelRole::Frames, ChannelRef::fd(0)), (ChannelRole::Packets, ChannelRef::fd(1))],
+                ),
                 StartParams::encoder(config(), 120),
             ),
             HostMsg::frame(2, 121, 121),
@@ -703,8 +706,9 @@ mod tests {
             assert_eq!(read_msg::<_, HostMsg>(&mut r, &mut buf)?.as_ref(), Some(msg));
         }
         assert_eq!(read_msg::<_, HostMsg>(&mut r, &mut buf)?, None);
-        let spec = StreamSpec::video(CodecId::Vp9Alpha, "v", crate::time::Timebase { num: 1, den: 30 }, config().video)?
-            .with_extradata(bytes::Bytes::from_static(&[1, 2, 3]));
+        let spec =
+            StreamSpec::video(CodecId::Vp9Alpha, "v", crate::time::Timebase { num: 1, den: 30 }, config().video)?
+                .with_extradata(bytes::Bytes::from_static(&[1, 2, 3]));
         let worker = [WorkerMsg::hello(WorkerKind::Encoder, 3), WorkerMsg::beat(5, 4), WorkerMsg::opened(spec)];
         let mut wire = Vec::new();
         for msg in &worker {
