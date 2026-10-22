@@ -34,7 +34,7 @@ pub mod ops;
 mod recover;
 pub mod studio;
 
-pub use core::{AppCore, AppOptions, JournalFsChoice};
+pub use core::{AppCore, AppOptions, JournalFsChoice, with_resource_providers};
 pub use error::AppError;
 pub use omuzaki_doc::journal::Recover;
 pub use recover::RecoveryReport;

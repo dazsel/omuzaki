@@ -14,15 +14,18 @@ use omuzaki_doc::{Project, ProjectLock};
 use omuzaki_doc_api::{DocPath, Value};
 use omuzaki_history_api::state::HistoryView;
 use omuzaki_history_api::{HistoryLog, JournalSink, JournalStatus, Snapshots};
+use omuzaki_library_api::Library;
 use omuzaki_mcp::{
     AccessToken, Connections, HttpOptions, HttpServer, InAppLink, InAppSpec, McpOptions, McpServer, ToolMode,
 };
+use omuzaki_mcp::{LibraryProvider, MeasureProvider, MetricsProvider, MetricsSource, RenderProvider};
 use omuzaki_ops::Executor;
 use omuzaki_ops_api::{
     Actor, ConnectionService, Event, Grants, Jobs, Mode, OpError, Outcome, ProjectDir, Request, Runner, Services,
     ServicesBuilder, Sessions,
 };
-use omuzaki_store::DiskStore;
+use omuzaki_store::{DiskStore, LazyDiskStore};
+use omuzaki_store_api::Store;
 use tokio::runtime::{Handle, Runtime};
 
 use crate::AppError;
@@ -34,6 +37,8 @@ use crate::studio;
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long [`AppCore::save`] waits by default.
 const SAVE_TIMEOUT: Duration = Duration::from_secs(10);
+/// The asset store's folder inside the person's data folder (the studio's connector host uses the same).
+const ASSET_STORE: &str = "store";
 /// Worker threads of the MCP runtime: the server is I/O-bound and every call it makes runs on the executor's lock.
 const MCP_WORKERS: usize = 2;
 
@@ -62,6 +67,9 @@ pub struct AppOptions {
     pub recover: Recover,
     /// The journal writer's file operations: the real file system unless a harness sets its own.
     pub journal_fs: JournalFsChoice,
+    /// The person's local data folder: the asset store lives in its `store/` (beside the keychain's lock file, as the
+    /// studio keeps it), offered to every op as `dyn Store` unless the host's services carry one. `None` offers none.
+    pub data_dir: Option<PathBuf>,
 }
 
 /// The file operations a core's journal writer makes (see [`AppOptions::with_journal_fs`]).
@@ -87,6 +95,7 @@ impl AppOptions {
             services: Services::none(),
             recover: Recover::Restore,
             journal_fs: JournalFsChoice::default(),
+            data_dir: None,
         }
     }
 
@@ -139,6 +148,13 @@ impl AppOptions {
         self.services = services;
         self
     }
+
+    /// These options with the person's local data folder, whose `store/` is the asset store (opened on first use).
+    #[must_use]
+    pub fn with_data_dir(mut self, data: impl Into<PathBuf>) -> Self {
+        self.data_dir = Some(data.into());
+        self
+    }
 }
 
 /// One open project: the executor every surface runs ops on, its journal, and the MCP server that serves it. See the
@@ -163,6 +179,29 @@ pub struct AppCore {
     recovery: RecoveryReport,
     /// Held for as long as the project is open: one writer per folder.
     lock: Mutex<Option<ProjectLock>>,
+}
+
+/// `base` plus the MCP resource families the executor's services can serve, in this order: renders (`omuzaki://render/`,
+/// from the asset store), measures (always: they compute through the runner), live metrics (from a `MetricsSource`
+/// the host gave), the library (from a `Library`). A family whose source is missing is not registered, so it is not
+/// listed or templated and its URIs read as unknown resources.
+///
+/// The set is fixed when the server starts (`McpServer::new` consumes the options), so the server never advertises
+/// `resources.listChanged`.
+#[must_use]
+pub fn with_resource_providers(base: McpOptions, services: &Services) -> McpOptions {
+    let mut options = base;
+    if let Some(store) = services.get_arc::<dyn Store>() {
+        options = options.with_provider(Arc::new(RenderProvider::new(store)));
+    }
+    options = options.with_provider(Arc::new(MeasureProvider));
+    if let Some(source) = services.get_arc::<dyn MetricsSource>() {
+        options = options.with_provider(Arc::new(MetricsProvider::new(source)));
+    }
+    if let Some(library) = services.get_arc::<dyn Library>() {
+        options = options.with_provider(Arc::new(LibraryProvider::new(library)));
+    }
+    options
 }
 
 /// The data even if a thread panicked holding the lock: each critical section leaves it consistent.
@@ -205,7 +244,11 @@ impl AppCore {
         let history = Arc::new(ProjectHistory::new(snapshots.clone(), log.clone()));
         let history_snapshots =
             HistorySnapshots::new(session_snapshots.clone(), history.clone(), snapshots.clone(), session.clone());
-        let services = ServicesBuilder::from(options.services.clone())
+        let mut services = ServicesBuilder::from(options.services.clone());
+        if let (Some(data), None) = (&options.data_dir, options.services.get::<dyn Store>()) {
+            services = services.insert::<dyn Store>(Arc::new(LazyDiskStore::new(data.join(ASSET_STORE))));
+        }
+        let services = services
             .insert::<dyn ConnectionService>(Arc::new(connections.clone()))
             .insert::<dyn Snapshots>(Arc::new(history_snapshots))
             .insert::<dyn HistoryLog>(log.clone())
@@ -213,7 +256,7 @@ impl AppCore {
             .build();
         let executor =
             Executor::restore(Box::new(shadow.clone()), Arc::new(SystemClock::new()), wall.clone(), &reopened.history)?
-                .with_services(services)
+                .with_services(services.clone())
                 .with_project_dir(project_dir)
                 .with_approver(options.approver)
                 .with_last_job_id(reopened.last_job);
@@ -255,6 +298,7 @@ impl AppCore {
             .with_sessions(executor.clone(), options.person.clone())
             .with_journal(journal.clone())
             .with_roots(root_path, std::iter::empty::<String>());
+        let mcp_options = with_resource_providers(mcp_options, &services);
         let mcp = McpServer::new(executor.clone(), mcp_options)?.with_jobs(executor.clone());
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(MCP_WORKERS)

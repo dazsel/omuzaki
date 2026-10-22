@@ -107,6 +107,13 @@ impl Services {
         entry.handle.downcast_ref::<Arc<S>>().map(|service| &**service)
     }
 
+    /// A shared handle to the implementation of `S`, for a host that keeps it beyond one call (the MCP server serves
+    /// renders out of the store an op wrote them to).
+    pub fn get_arc<S: ?Sized + Service>(&self) -> Option<Arc<S>> {
+        let entry = self.entries.get(&TypeId::of::<S>())?;
+        entry.handle.downcast_ref::<Arc<S>>().cloned()
+    }
+
     /// How many services are registered.
     pub fn len(&self) -> usize {
         self.entries.len()
@@ -197,6 +204,9 @@ mod tests {
         assert_eq!(services.len(), 2);
         assert_eq!(services.get::<dyn Greeter>().map(Greeter::greet), Some("hello".into()));
         assert_eq!(services.get::<dyn Counter>().map(Counter::count), Some(3));
+        let shared = services.get_arc::<dyn Greeter>().map(|greeter| greeter.greet());
+        assert_eq!(shared, Some("hello".into()));
+        assert!(Services::none().get_arc::<dyn Greeter>().is_none());
     }
 
     #[test]

@@ -112,7 +112,11 @@ pub fn open_project(cli: &Cli, dir: &Path, actor: Actor) -> Result<ProjectRunner
 /// The app core's options for a command-line host: headless (nobody can be asked to approve), recovering as
 /// `--recover` says, and for `mcp` with its `--grant` and `--tools`.
 pub fn core_options(cli: &Cli, actor: Actor) -> AppOptions {
-    let options = AppOptions::headless(actor).with_recover(cli.recover.mode());
+    let mut options = AppOptions::headless(actor).with_recover(cli.recover.mode());
+    // The asset store is the person's, the one the studio uses: an import here is there in the studio.
+    if let Ok(paths) = omuzaki_settings::Paths::from_env() {
+        options = options.with_data_dir(paths.data());
+    }
     match &cli.command {
         // The person running `omuzaki mcp --grant ...` says yes in advance, since nobody is at a window to be asked.
         Command::Mcp(args) => options.with_agent_grants(args.grants()).with_mcp_tools(args.tools.mode()),

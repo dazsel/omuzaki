@@ -10,6 +10,7 @@
 #![cfg(feature = "test-fixtures")]
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
 #![allow(clippy::expect_used, clippy::unwrap_used)]
+#![allow(clippy::disallowed_methods, reason = "tests write and read their fixtures on disk; the fence is for ops")]
 
 mod common;
 
@@ -41,7 +42,13 @@ struct Done {
 
 /// Runs `bin [--project dir] args` to completion with nothing on stdin.
 fn run(bin: &str, project: Option<&Path>, args: &[&str]) -> Done {
+    run_in(bin, project, args, &[])
+}
+
+/// [`run`] with `env` set for the child.
+fn run_in(bin: &str, project: Option<&Path>, args: &[&str], env: &[(&str, &Path)]) -> Done {
     let mut command = Command::new(bin);
+    command.envs(env.iter().copied());
     if let Some(dir) = project {
         command.arg("--project").arg(dir);
     }
@@ -188,6 +195,43 @@ fn history_lists_restores_and_names_across_processes() {
         .flat_map(|t| t["names"].as_array().unwrap())
         .collect();
     assert_eq!(versions, [&json!("first look")], "{page}");
+}
+
+/// `io.import` in the product: the command line gives ops the person's asset store (the studio's), so the model's
+/// bytes land there and the project records the asset by hash.
+#[test]
+fn io_import_stores_the_model_in_the_person_s_asset_store() {
+    let project = new_project();
+    let data = tempfile::tempdir().expect("temp dir");
+    std::fs::write(project.path().join("model.glb"), omuzaki_io_mock::fixtures::tiny_glb()).expect("write the model");
+    let env = [("OMUZAKI_DATA_DIR", data.path()), ("OMUZAKI_CONFIG_DIR", data.path())];
+    let args = json!({"path": "model.glb"}).to_string();
+    let done = run_in(OMUZAKI, Some(project.path()), &["--json", "run", "io.import", "--args", &args], &env);
+    assert_eq!(done.code, Some(0), "{}\n{}", done.stdout, done.stderr);
+    let reply: Value = serde_json::from_str(&done.stdout).expect("--json output");
+    let hash =
+        reply["plan"]["output"]["asset"]["original"].as_str().or_else(|| reply["output"]["asset"]["original"].as_str());
+    let hash = hash.unwrap_or_else(|| panic!("the asset's hash: {reply}"));
+    let objects = data.path().join("store").join("objects");
+    assert!(objects.join(&hash[..2]).is_dir(), "the original is in the person's store: {hash}");
+    assert!(walk_text(project.path()).contains(hash), "the project records the asset by its hash");
+}
+
+/// Every TOML file's text under `dir`, the app's own folder left out.
+fn walk_text(dir: &Path) -> String {
+    let mut text = String::new();
+    for entry in std::fs::read_dir(dir).expect("read a folder").flatten() {
+        let path = entry.path();
+        if path.file_name().is_some_and(|name| name == ".omuzaki") {
+            continue;
+        }
+        if path.is_dir() {
+            text.push_str(&walk_text(&path));
+        } else if path.extension().is_some_and(|ext| ext == "toml") {
+            text.push_str(&std::fs::read_to_string(&path).unwrap_or_default());
+        }
+    }
+    text
 }
 
 #[test]

@@ -4619,11 +4619,14 @@ dependencies = [
  "omuzaki-doc",
  "omuzaki-doc-api",
  "omuzaki-history-api",
+ "omuzaki-library-api",
+ "omuzaki-library-mock",
  "omuzaki-mcp",
  "omuzaki-ops",
  "omuzaki-ops-api",
  "omuzaki-store",
  "omuzaki-store-api",
+ "omuzaki-store-mock",
  "proptest",
  "rmcp",
  "schemars",
@@ -4851,6 +4854,7 @@ dependencies = [
  "omuzaki-io-api",
  "omuzaki-io-fbx",
  "omuzaki-io-gltf",
+ "omuzaki-io-mock",
  "omuzaki-io-ops",
  "omuzaki-io-vrm",
  "omuzaki-link-build",
@@ -5165,6 +5169,7 @@ dependencies = [
 name = "omuzaki-http-api"
 version = "0.0.0"
 dependencies = [
+ "omuzaki-core",
  "serde_json",
  "thiserror 2.0.21",
 ]

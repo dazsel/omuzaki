@@ -83,6 +83,7 @@ omuzaki-render-api = { path = "../omuzaki-render-api" }
 omuzaki-render-mock = { path = "../omuzaki-render-mock" }
 # ...and writes it as a VRM through the io crates the binary links, reading it back.
 omuzaki-io-api = { path = "../omuzaki-io-api" }
+omuzaki-io-mock = { path = "../omuzaki-io-mock" }
 # The tests call these crates' API, not only their registrations (`design_e2e.rs` exports and renders through them,
 # `op_conformance.rs` stands in the stage's perform and input hosts), so they are dev-dependencies too: a change to one
 # of them runs every test here, while `link_only` below still describes the binary.
