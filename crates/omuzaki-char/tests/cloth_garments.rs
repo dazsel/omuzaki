@@ -1,5 +1,5 @@
-//! Cloth on garments (#387): `cloth.set` turns a garment's sheet on, the simulated garment is the skinned one at rest,
-//! settles, lags a turn and comes back, and the presets differ.
+//! Cloth on garments (#387): `cloth.set` turns a garment's sheet on; the skirt, the dress, the robe and the cloak
+//! simulated are the skinned garments at rest; the skirt settles, lags a turn and comes back, and the presets differ.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::cast_precision_loss, clippy::cast_possible_truncation)]
 
 mod common;
@@ -17,14 +17,31 @@ fn kit() -> MemDoc {
     doc
 }
 
-/// The kit with the skirt's cloth on, in `preset`.
-fn simulated(preset: &str) -> BuiltCharacter {
+/// The garments that drape: the part, and how the kit is dressed in it (the skirt is the kit's own).
+const GARMENTS: [&str; 4] = ["skirt", "dress", "robe", "cloak"];
+
+/// The kit dressed in `part` (see [`GARMENTS`]).
+fn dressed(part: &str) -> MemDoc {
     let mut doc = kit();
-    common::apply(
-        &mut doc,
-        "cloth.set",
-        json!({"character": "kit", "part": "skirt", "enabled": true, "preset": preset}),
-    );
+    let add = |doc: &mut MemDoc, kind: &str, params: serde_json::Value| {
+        common::apply(doc, "part.add", json!({"character": "kit", "kind": kind, "id": kind, "params": params}));
+    };
+    match part {
+        "dress" => {
+            common::apply(&mut doc, "part.set_enabled", json!({"character": "kit", "part": "skirt", "enabled": false}));
+            add(&mut doc, "dress", json!({"length": 0.5}));
+        }
+        "robe" => add(&mut doc, "robe", json!({"length": 0.75})),
+        "cloak" => add(&mut doc, "cloak", json!({})),
+        _ => {}
+    }
+    doc
+}
+
+/// The kit with `part`'s cloth on, in `preset`.
+fn simulated_part(part: &str, preset: &str) -> BuiltCharacter {
+    let mut doc = dressed(part);
+    common::apply(&mut doc, "cloth.set", json!({"character": "kit", "part": part, "enabled": true, "preset": preset}));
     common::build(&doc, "kit")
 }
 
@@ -48,12 +65,11 @@ impl PoseSource for Turn {
     }
 }
 
-/// The skirt's runtime and its drawn mesh index in the built character's mesh list.
-fn skirt(built: &mut BuiltCharacter) -> (&mut Box<dyn PartRuntime>, usize) {
-    let local = built.runtimes.iter().position(|r| r.part.as_str() == "skirt").expect("the skirt has a runtime");
-    let slot = &mut built.runtimes[local];
-    let mesh = slot.runtime.dynamic_mesh(0).unwrap().mesh;
-    let index = built.meshes.iter().position(|m| m.part.as_str() == "skirt" && m.local == mesh).unwrap();
+/// `part`'s runtime and its drawn mesh index in the built character's mesh list.
+fn runtime_of<'a>(built: &'a mut BuiltCharacter, part: &str) -> (&'a mut Box<dyn PartRuntime>, usize) {
+    let local = built.runtimes.iter().position(|r| r.part.as_str() == part).expect("the garment has a runtime");
+    let mesh = built.runtimes[local].runtime.dynamic_mesh(0).unwrap().mesh;
+    let index = built.meshes.iter().position(|m| m.part.as_str() == part && m.local == mesh).unwrap();
     (&mut built.runtimes[local].runtime, index)
 }
 
@@ -106,19 +122,24 @@ fn cloth_set_turns_the_skirt_into_cloth_and_undo_restores_it() {
 }
 
 #[test]
-fn at_rest_the_simulated_skirt_is_the_skinned_skirt() {
-    let still = common::build(&kit(), "kit");
-    let mut built = simulated("cotton");
-    let pose = Turn { pivot: Vec3::ZERO, angle: 0.0 };
-    let (runtime, index) = skirt(&mut built);
-    runtime.reset(&pose);
-    let drawn = runtime.dynamic_mesh(0).unwrap().positions.to_vec();
-    let mesh = &built.meshes[index].mesh;
-    assert!(mesh.dynamic && mesh.joint_bones.is_empty() && !mesh.geometry.is_skinned(), "the runtime draws it");
-    let skinned = &still.meshes.iter().find(|m| m.mesh.name == mesh.name).unwrap().mesh.geometry.positions;
-    assert_eq!(drawn.len(), skinned.len(), "the whole mesh: pleats, lining and roll");
-    let worst = drawn.iter().zip(skinned).map(|(a, b)| a.distance(*b)).fold(0.0, f32::max);
-    assert!(worst < 1e-5, "at rest the cloth is the skinned skirt to {worst} m");
+fn at_rest_every_simulated_garment_is_the_skinned_garment() {
+    for part in GARMENTS {
+        let still = common::build(&dressed(part), "kit");
+        let mut built = simulated_part(part, "cotton");
+        let pose = Turn { pivot: Vec3::ZERO, angle: 0.0 };
+        let (runtime, index) = runtime_of(&mut built, part);
+        runtime.reset(&pose);
+        let drawn = runtime.dynamic_mesh(0).unwrap().positions.to_vec();
+        let mesh = &built.meshes[index].mesh;
+        assert!(
+            mesh.dynamic && mesh.joint_bones.is_empty() && !mesh.geometry.is_skinned(),
+            "{part}: the runtime draws it"
+        );
+        let skinned = &still.meshes.iter().find(|m| m.mesh.name == mesh.name).unwrap().mesh.geometry.positions;
+        assert_eq!(drawn.len(), skinned.len(), "{part}: the whole mesh: pleats, lining and roll");
+        let worst = drawn.iter().zip(skinned).map(|(a, b)| a.distance(*b)).fold(0.0, f32::max);
+        assert!(worst < 1e-5, "{part}: at rest the cloth is the skinned garment to {worst} m");
+    }
 }
 
 /// Steps `runtime` through `frames` of 1/60 s with the pose `at(t)`, recording the front hem's angle about the
@@ -127,21 +148,27 @@ fn swing(runtime: &mut Box<dyn PartRuntime>, frames: usize, at: impl Fn(f32) -> 
     let dt = 1.0 / 60.0;
     runtime.reset(&at(0.0));
     let hem = front_hem(runtime.dynamic_mesh(0).unwrap().positions);
+    let start = runtime.dynamic_mesh(0).unwrap().positions[hem];
+    // The angle unwrapped from frame to frame, so a hem at the back (near the branch cut at pi) turns smoothly.
+    let mut angle = start.x.atan2(start.z);
     (1..=frames)
         .map(|k| {
             let t = k as f32 * dt;
             let pose = at(t);
             runtime.step(&StepCtx::new(dt, Seconds(f64::from(t)), &pose, Vec3::ZERO));
             let p = runtime.dynamic_mesh(0).unwrap().positions[hem];
-            (t, p.x.atan2(p.z), p)
+            let step = (p.x.atan2(p.z) - angle + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
+                - std::f32::consts::PI;
+            angle += step;
+            (t, angle, p)
         })
         .collect()
 }
 
 /// The time the hem settles after a still start: when it stops moving more than 0.2 mm a frame for good.
-fn settle_time(preset: &str) -> f32 {
-    let mut built = simulated(preset);
-    let (runtime, _) = skirt(&mut built);
+fn settle_time(part: &str, preset: &str) -> f32 {
+    let mut built = simulated_part(part, preset);
+    let (runtime, _) = runtime_of(&mut built, part);
     let track = swing(runtime, 120, |_| Turn { pivot: Vec3::ZERO, angle: 0.0 });
     let mut settled = 0.0;
     for w in track.windows(2) {
@@ -154,9 +181,9 @@ fn settle_time(preset: &str) -> f32 {
 
 /// The hem's lag behind a quarter turn of the body over 0.25 s: the time from the body passing half the turn to the
 /// hem passing it, and the overshoot past the turn, radians, and whether it comes back within 2 degrees.
-fn turn_lag(preset: &str) -> (f32, f32, bool) {
-    let mut built = simulated(preset);
-    let (runtime, _) = skirt(&mut built);
+fn turn_lag(part: &str, preset: &str) -> (f32, f32, bool) {
+    let mut built = simulated_part(part, preset);
+    let (runtime, _) = runtime_of(&mut built, part);
     let quarter = std::f32::consts::FRAC_PI_2;
     let turn = |t: f32| {
         let s = (t / 0.25).clamp(0.0, 1.0);
@@ -175,8 +202,8 @@ fn turn_lag(preset: &str) -> (f32, f32, bool) {
 fn the_skirt_settles_lags_a_turn_and_comes_back_and_the_presets_differ() {
     let mut rows = Vec::new();
     for preset in ["light", "cotton", "heavy", "leather"] {
-        let settle = settle_time(preset);
-        let (lag, overshoot, back) = turn_lag(preset);
+        let settle = settle_time("skirt", preset);
+        let (lag, overshoot, back) = turn_lag("skirt", preset);
         println!(
             "{preset:>8}: settles in {settle:.3} s; lags the turn {:.0} ms, overshoots {:.1} deg, back {back}",
             lag * 1e3,
