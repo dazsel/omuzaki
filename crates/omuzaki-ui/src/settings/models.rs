@@ -189,7 +189,7 @@ impl ModelsPage {
         let more: Vec<String> = model.collect();
         let name = Path::new(&path).file_name().map_or_else(|| path.clone(), |n| n.to_string_lossy().into_owned());
         // The person picked these files by dropping them, so they share them (ADR 0013). The fence opens a file through
-        // the root folder it lies in, so the root is each file's folder until roots can be single files (#281).
+        // the root folder it lies in, so the root is each file's folder until a root can be a single file.
         let grants = files
             .iter()
             .filter_map(|f| Path::new(f).parent())
