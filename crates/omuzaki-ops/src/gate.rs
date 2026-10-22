@@ -463,7 +463,10 @@ fn refusal(req: &Request, need: &Need, why: Refused) -> OpError {
         Need::Scope { scope } => {
             let hint = match why {
                 Refused::NoApprover => {
-                    format!("use a credential that grants `{scope}`, or open the project in Omuzaki Studio")
+                    format!(
+                        "nobody can be asked here: the person can grant it at launch (`omuzaki mcp --grant {scope}`) \
+                         or with a credential that grants it, or open the project in Omuzaki Studio"
+                    )
                 }
                 Refused::Script => format!("grant `{scope}` to this session before running the script"),
                 Refused::Inner => format!("grant `{scope}` to this session, then undo again"),

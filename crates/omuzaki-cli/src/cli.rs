@@ -41,6 +41,16 @@ pub struct Cli {
 /// A `omuzaki` subcommand.
 #[derive(Subcommand, Debug, PartialEq, Eq)]
 pub enum Command {
+    /// Create a new, empty project in a folder (made if needed), ready for `--project <DIR>`.
+    New {
+        /// The folder to create the project in. It must not hold a project already.
+        dir: PathBuf,
+
+        /// The project's display name; the folder's name when left out.
+        #[arg(long)]
+        name: Option<String>,
+    },
+
     /// List every op: name, kind, scope and summary.
     Ops,
 
@@ -81,7 +91,7 @@ pub enum Command {
     /// Reads JSON-RPC messages from stdin and writes only protocol messages to stdout, until the client closes stdin.
     /// The agent can read, edit, render and review, and its changes are saved to the project as it makes them. Point an
     /// MCP client at `omuzaki --project <DIR> mcp`.
-    Mcp,
+    Mcp(McpArgs),
 
     /// Print every self-registration linked into this binary (ops, part kinds, formats, ...), one per line:
     /// package, kind, name and place, tab-separated. Hidden: it is for the link gate (`tests/registrations.rs`, ADR
@@ -95,6 +105,56 @@ pub enum Command {
         #[command(subcommand)]
         action: StoreCommand,
     },
+}
+
+/// What `omuzaki mcp` gives the agent.
+#[derive(Args, Debug, Default, PartialEq, Eq)]
+pub struct McpArgs {
+    /// Scopes the agent gets on top of read, edit, render and review, comma-separated: for example
+    /// `--grant perform,broadcast` lets it drive the character live and run the outputs. Nobody is at a window to be
+    /// asked, so this is how the person running the command says yes in advance.
+    #[arg(long = "grant", value_delimiter = ',', value_parser = parse_scope, value_name = "SCOPES")]
+    pub grant: Vec<omuzaki_ops_api::Scope>,
+
+    /// Which tools the agent's client lists: `core` (the built-ins plus `ops_find`, `ops_describe` and `ops_run`,
+    /// which reach every op, so the list stays small) or `all` (one tool per op).
+    #[arg(long, value_enum, default_value_t = ToolList::Core, value_name = "LIST")]
+    pub tools: ToolList,
+}
+
+impl McpArgs {
+    /// The agent's grants: the default ones plus `--grant`.
+    pub fn grants(&self) -> omuzaki_ops_api::Grants {
+        self.grant.iter().fold(omuzaki_ops_api::Grants::agent_default(), |grants, scope| grants.with(*scope))
+    }
+}
+
+/// `--tools`: how many tools `omuzaki mcp` lists.
+#[derive(ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ToolList {
+    /// The built-ins and the op finder.
+    #[default]
+    Core,
+    /// One tool per op.
+    All,
+}
+
+impl ToolList {
+    /// The MCP server's tool mode.
+    pub fn mode(self) -> omuzaki_mcp::ToolMode {
+        match self {
+            Self::Core => omuzaki_mcp::ToolMode::Core,
+            Self::All => omuzaki_mcp::ToolMode::All,
+        }
+    }
+}
+
+/// A scope by its name (`perform`, `edit:character`).
+fn parse_scope(name: &str) -> Result<omuzaki_ops_api::Scope, String> {
+    serde_json::from_value(serde_json::Value::String(name.trim().to_owned())).map_err(|_| {
+        let names: Vec<&str> = omuzaki_ops_api::Scope::ALL.iter().map(|s| s.name()).collect();
+        format!("`{name}` is not a scope; the scopes are {}", names.join(", "))
+    })
 }
 
 /// How `--recover` opens a project that wasn't closed.
@@ -146,7 +206,10 @@ impl Command {
     /// documenting ops only needs the op registry, listing registrations only the binary, and the store commands
     /// name their own folder.
     pub fn needs_project(&self) -> bool {
-        !matches!(self, Command::Ops | Command::Help { .. } | Command::Registrations | Command::Store { .. })
+        !matches!(
+            self,
+            Command::New { .. } | Command::Ops | Command::Help { .. } | Command::Registrations | Command::Store { .. }
+        )
     }
 }
 
@@ -211,7 +274,15 @@ mod tests {
         assert_eq!(parse(&["help", "face.set_profile"]).command, Command::Help { op: Some("face.set_profile".into()) });
         assert_eq!(parse(&["undo"]).command, Command::Undo);
         assert_eq!(parse(&["redo"]).command, Command::Redo);
-        assert_eq!(parse(&["mcp"]).command, Command::Mcp);
+        assert_eq!(parse(&["mcp"]).command, Command::Mcp(McpArgs::default()));
+        assert_eq!(
+            parse(&["mcp", "--grant", "perform,broadcast", "--tools", "all"]).command,
+            Command::Mcp(McpArgs {
+                grant: vec![omuzaki_ops_api::Scope::Perform, omuzaki_ops_api::Scope::Broadcast],
+                tools: ToolList::All
+            })
+        );
+        assert!(try_parse_from(["omuzaki", "mcp", "--grant", "fly"]).is_err());
         assert_eq!(parse(&["registrations"]).command, Command::Registrations);
         assert_eq!(
             parse(&["run", "face.set_profile", "--args", "{}", "--dry-run"]).command,

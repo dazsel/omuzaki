@@ -1,10 +1,10 @@
-//! The tools that aren't ops: undo/redo, the op log and transactions. They call the `Runner` directly, so they exist whatever ops
-//! are registered, and their names are reserved.
+//! The tools that aren't ops: undo/redo, the op log, transactions, sessions, reading the document and finding ops. They
+//! call the `Runner` directly, so they exist whatever ops are registered, and their names are reserved.
 
 use rmcp::model::{JsonObject, Tool, ToolAnnotations};
 use serde_json::{Value, json};
 
-use crate::catalog::kind_meta;
+use crate::catalog::{ToolMode, kind_meta};
 
 /// The longest `cause` `tx_begin` accepts, in characters. The first line of a person's message, which is what a cause
 /// is, rarely needs more.
@@ -22,6 +22,11 @@ pub(crate) enum Builtin {
     SessionInfo,
     SessionList,
     ApprovalWait,
+    DocGet,
+    OpsFind,
+    OpsDescribe,
+    OpsRun,
+    ToolsEnable,
 }
 
 /// The longest `approval_wait` waits, in seconds, and how long it waits when no timeout is given.
@@ -29,7 +34,7 @@ pub(crate) const APPROVAL_WAIT_MAX_SECONDS: u64 = 50;
 pub(crate) const APPROVAL_WAIT_DEFAULT_SECONDS: u64 = 30;
 
 impl Builtin {
-    pub(crate) const ALL: [Builtin; 9] = [
+    pub(crate) const ALL: [Builtin; 14] = [
         Self::Undo,
         Self::Redo,
         Self::Log,
@@ -39,11 +44,28 @@ impl Builtin {
         Self::SessionInfo,
         Self::SessionList,
         Self::ApprovalWait,
+        Self::DocGet,
+        Self::OpsFind,
+        Self::OpsDescribe,
+        Self::OpsRun,
+        Self::ToolsEnable,
     ];
 
     /// Whether the tool talks to the executor's session registry, and so exists only when the host wired one.
     pub(crate) const fn needs_registry(self) -> bool {
         matches!(self, Self::SessionInfo | Self::SessionList | Self::ApprovalWait)
+    }
+
+    /// Whether the tool exists on a server with (or without) a session registry, listing tools in `mode`. `ops_run`
+    /// and `tools_enable` stand in for the op tools a core list leaves out, so only a core list has them.
+    pub(crate) fn offered(self, registry: bool, mode: ToolMode) -> bool {
+        (registry || !self.needs_registry())
+            && (mode == ToolMode::Core || !matches!(self, Self::OpsRun | Self::ToolsEnable))
+    }
+
+    /// Whether the tool keeps nothing between calls, so a request over HTTP that stands alone (no session) may call it.
+    pub(crate) const fn stateless(self) -> bool {
+        matches!(self, Self::Log | Self::DocGet | Self::OpsFind | Self::OpsDescribe)
     }
 
     /// The dotted name, shown as the tool's title and on the first line of its description.
@@ -58,6 +80,11 @@ impl Builtin {
             Self::SessionInfo => "session.info",
             Self::SessionList => "session.list",
             Self::ApprovalWait => "approval.wait",
+            Self::DocGet => "doc.get",
+            Self::OpsFind => "ops.find",
+            Self::OpsDescribe => "ops.describe",
+            Self::OpsRun => "ops.run",
+            Self::ToolsEnable => "tools.enable",
         }
     }
 
@@ -73,6 +100,11 @@ impl Builtin {
             Self::SessionInfo => "session_info",
             Self::SessionList => "session_list",
             Self::ApprovalWait => "approval_wait",
+            Self::DocGet => "doc_get",
+            Self::OpsFind => "ops_find",
+            Self::OpsDescribe => "ops_describe",
+            Self::OpsRun => "ops_run",
+            Self::ToolsEnable => "tools_enable",
         }
     }
 
@@ -145,11 +177,42 @@ impl Builtin {
                  in Omuzaki's window. Another session's approval is `not_found`.",
                 false,
             ),
+            Self::DocGet => (
+                "Read one value of the project document by its path, as a result's change lines name it (`characters/mira\
+                 /face/blend`; `\"\"` is the whole document). A large object or list comes back as an outline (each \
+                 key with its type and size) unless `full` is true, so read deeper paths instead. Needs `read`.",
+                false,
+            ),
+            Self::OpsFind => (
+                "Find ops by what they do: every op whose name or summary holds all the words of `query` (any order, \
+                 any case), with its kind, scope and summary, best matches first. Narrow it with `area`. Without either \
+                 it lists the areas and how many ops each has. Then read one op's arguments with ops_describe.",
+                false,
+            ),
+            Self::OpsDescribe => (
+                "Describe one op: its full description, its argument schema with examples, and the call to make. Pass \
+                 the op name (`face.set_profile`) or its tool name (`face_set_profile`).",
+                false,
+            ),
+            Self::OpsRun => (
+                "Run any op by name, listed as a tool or not: `op` is the op (`face.set_profile`), `args` its \
+                 arguments as ops_describe shows them, and `dry_run` previews an edit without applying it. The result \
+                 is exactly what calling the op's own tool returns, errors included. Built-in tools are called \
+                 directly, not through this.",
+                true,
+            ),
+            Self::ToolsEnable => (
+                "List the ops of one or more areas (`face`, `stage`, `output`, ...; ops_find with no query names them all) \
+                 as tools of their own, for clients that refresh their tool list (notifications/tools/list_changed). \
+                 Pass `disable: true` to take them off the list again. The ops stay callable through ops_run either way.",
+                false,
+            ),
         };
-        let annotations = ToolAnnotations::new()
-            .read_only(matches!(self, Self::Log | Self::SessionInfo | Self::SessionList | Self::ApprovalWait))
-            .destructive(destructive)
-            .open_world(false);
+        let read_only =
+            matches!(self, Self::Log | Self::SessionInfo | Self::SessionList | Self::ApprovalWait | Self::DocGet)
+                || matches!(self, Self::OpsFind | Self::OpsDescribe);
+        let annotations =
+            ToolAnnotations::new().read_only(read_only).destructive(destructive).open_world(self == Self::OpsRun);
         let description = format!("{}: {description}", self.title());
         Tool::new(self.name(), description, input_schema(self))
             .with_title(self.title())
@@ -206,6 +269,60 @@ fn input_schema(builtin: Builtin) -> JsonObject {
             "required": ["id"],
             "additionalProperties": false
         }),
+        Builtin::DocGet => json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "The value's path, `/` between keys (`characters/mira/face`); `\"\"` for the whole document."
+                },
+                "full": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Return a large object or list whole instead of its outline."
+                }
+            },
+            "required": ["path"],
+            "additionalProperties": false
+        }),
+        Builtin::OpsFind => json!({
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Words the op's name or summary holds, e.g. `virtual camera`."},
+                "area": {"type": "string", "description": "Only ops of this area, e.g. `output`."}
+            },
+            "additionalProperties": false
+        }),
+        Builtin::OpsDescribe => json!({
+            "type": "object",
+            "properties": {"op": {"type": "string", "description": "The op name (`face.set_profile`) or tool name."}},
+            "required": ["op"],
+            "additionalProperties": false
+        }),
+        Builtin::OpsRun => json!({
+            "type": "object",
+            "properties": {
+                "op": {"type": "string", "description": "The op name (`face.set_profile`) or tool name."},
+                "args": {"type": "object", "description": "The op's arguments, as ops_describe shows them. Omit for none."},
+                "dry_run": {"type": "boolean", "default": false, "description": "Preview an edit without applying it."}
+            },
+            "required": ["op"],
+            "additionalProperties": false
+        }),
+        Builtin::ToolsEnable => json!({
+            "type": "object",
+            "properties": {
+                "areas": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                    "description": "The areas to list, e.g. [\"stage\", \"output\"]."
+                },
+                "disable": {"type": "boolean", "default": false, "description": "Take these areas off the list instead."}
+            },
+            "required": ["areas"],
+            "additionalProperties": false
+        }),
         _ => json!({"type": "object", "properties": {}, "additionalProperties": false}),
     };
     match schema {
@@ -243,9 +360,9 @@ mod tests {
     }
 
     #[test]
-    fn only_rollback_is_destructive() {
+    fn only_rollback_and_the_op_gateway_are_destructive() {
         let destructive: Vec<_> =
             Builtin::ALL.into_iter().filter(|b| b.tool().annotations.is_some_and(|a| a.is_destructive())).collect();
-        assert_eq!(destructive, [Builtin::TxRollback]);
+        assert_eq!(destructive, [Builtin::TxRollback, Builtin::OpsRun], "ops_run may run an op that can't be undone");
     }
 }

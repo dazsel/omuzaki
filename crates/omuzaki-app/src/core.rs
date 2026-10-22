@@ -11,7 +11,9 @@ use omuzaki_doc::snapshot::{SessionSnapshots, Snapshotter, snapshot_dir};
 use omuzaki_doc::{Project, ProjectLock};
 use omuzaki_doc_api::{DocPath, Value};
 use omuzaki_history_api::{JournalSink, JournalStatus, Snapshots};
-use omuzaki_mcp::{AccessToken, Connections, HttpOptions, HttpServer, InAppLink, InAppSpec, McpOptions, McpServer};
+use omuzaki_mcp::{
+    AccessToken, Connections, HttpOptions, HttpServer, InAppLink, InAppSpec, McpOptions, McpServer, ToolMode,
+};
 use omuzaki_ops::Executor;
 use omuzaki_ops_api::{
     Actor, ConnectionService, Event, Grants, Jobs, Mode, OpError, Outcome, ProjectDir, Request, Runner, Services,
@@ -43,6 +45,8 @@ pub struct AppOptions {
     pub approver: bool,
     /// The grants an MCP client gets unless a token says otherwise.
     pub agent_grants: Grants,
+    /// Which tools the MCP server lists (one per op, or the core with the op finder).
+    pub mcp_tools: ToolMode,
     /// The journal's tunables.
     pub journal: JournalOptions,
     /// The version written into the journal's session records.
@@ -73,6 +77,7 @@ impl AppOptions {
             person,
             approver: true,
             agent_grants: Grants::agent_default(),
+            mcp_tools: ToolMode::All,
             journal: JournalOptions::default(),
             app_version: env!("CARGO_PKG_VERSION").to_owned(),
             services: Services::none(),
@@ -98,6 +103,13 @@ impl AppOptions {
     #[must_use]
     pub fn with_agent_grants(mut self, grants: Grants) -> Self {
         self.agent_grants = grants;
+        self
+    }
+
+    /// These options with the MCP server listing the tools `mode` says.
+    #[must_use]
+    pub fn with_mcp_tools(mut self, mode: ToolMode) -> Self {
+        self.mcp_tools = mode;
         self
     }
 
@@ -226,6 +238,7 @@ impl AppCore {
 
         let root_path = project_dir_text(dir);
         let mcp_options = McpOptions::with_grants(options.agent_grants.clone())
+            .with_tools(options.mcp_tools)
             .with_connections(connections)
             .with_sessions(executor.clone(), options.person.clone())
             .with_journal(journal.clone())

@@ -176,16 +176,22 @@ struct Mcp {
 }
 
 impl Mcp {
+    /// `omuzaki mcp` listing every op as a tool, which these tests look for by name.
     fn start(bin: &str, project: &Path) -> Self {
         Self::start_with_env(bin, project, &[])
     }
 
     fn start_with_env(bin: &str, project: &Path, env: &[(&str, &str)]) -> Self {
+        Self::start_with(bin, project, env, &["--tools", "all"])
+    }
+
+    fn start_with(bin: &str, project: &Path, env: &[(&str, &str)], args: &[&str]) -> Self {
         let mut child = Command::new(bin)
             .envs(env.iter().copied())
             .arg("--project")
             .arg(project)
             .arg("mcp")
+            .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -292,6 +298,27 @@ fn the_real_binary_answers_initialize_and_tools_list_over_stdio() {
     }
     assert!(!tools.iter().any(|name| name.starts_with("demo_")), "{tools:?}");
     assert_eq!(mcp.close(), (Some(0), String::new()), "a client that hangs up cleanly ends the server cleanly");
+}
+
+#[test]
+fn by_default_the_list_is_a_small_core_that_reaches_every_op_and_grant_adds_scopes() {
+    let project = new_project();
+    let mut mcp = Mcp::start_with(OMUZAKI, project.path(), &[], &["--grant", "perform,broadcast"]);
+    let info = mcp.handshake();
+    assert_eq!(info["capabilities"]["tools"]["listChanged"], true, "{info}");
+    let tools = mcp.tool_names();
+    for tool in BUILTIN_TOOLS.into_iter().chain(["ops_find", "ops_describe", "ops_run", "tools_enable", "doc_get"]) {
+        assert!(tools.iter().any(|name| name == tool), "the core list lacks {tool}: {tools:?}");
+    }
+    assert!(tools.len() < 25 && !tools.iter().any(|t| t == "character_create"), "{tools:?}");
+    let found = mcp.call("ops_find", &json!({"query": "create character"}));
+    assert!(found["ops"].as_array().unwrap().iter().any(|op| op["op"] == "character.create"), "{found}");
+    let preview = mcp.call("ops_run", &json!({"op": "character.create", "args": {"id": "kit", "name": "Kit", "template": "standard", "seed": 7}, "dry_run": true}));
+    assert_eq!(preview["mode"], "dry_run", "{preview}");
+    let me = mcp.call("session_info", &json!({}));
+    let scopes = me.to_string();
+    assert!(scopes.contains("\"perform\"") && scopes.contains("\"broadcast\""), "--grant reaches the session: {me}");
+    assert_eq!(mcp.close().0, Some(0));
 }
 
 #[test]

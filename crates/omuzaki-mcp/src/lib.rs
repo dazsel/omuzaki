@@ -214,6 +214,7 @@ mod connection;
 mod describe;
 mod error;
 mod events;
+mod finder;
 mod floats;
 mod gate;
 mod http;
@@ -234,6 +235,7 @@ mod signature;
 mod suggest;
 
 pub use access::{AccessToken, RECORD_VERSION, TokenId, TokenInfo, TokenRecord};
+pub use catalog::ToolMode;
 pub use connection::Connections;
 pub use error::ServerError;
 pub use http::{HttpOptions, HttpServer, PairedHook, RevokedHook};

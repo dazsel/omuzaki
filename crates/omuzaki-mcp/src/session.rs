@@ -22,7 +22,7 @@ use rmcp::model::{
 };
 use rmcp::service::{RequestContext, RoleServer, SubscriptionContext};
 use serde_json::{Value, json};
-use tokio::sync::watch;
+use tokio::sync::{Notify, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -30,9 +30,10 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::{self, Link};
 use crate::approvals::{self, ApprovalCursor, Own, OwnApprovals};
 use crate::builtin::{APPROVAL_WAIT_DEFAULT_SECONDS, APPROVAL_WAIT_MAX_SECONDS, Builtin, CAUSE_MAX_CHARS};
-use crate::catalog::{Entry, Route};
+use crate::catalog::{Entry, Route, ToolMode};
 use crate::changes::{OwnTxs, Report};
 use crate::events::{LOG_URI, Updates, lock};
+use crate::finder;
 use crate::info;
 use crate::jobs::{self, JobWatch};
 use crate::names;
@@ -78,6 +79,8 @@ pub struct Session {
     /// When the client last asked for anything: what tells an idle drop from a disconnect.
     last_active: Mutex<Instant>,
     state: Arc<Mutex<State>>,
+    /// Woken when `tools_enable` changes this session's tool list, for a `subscriptions/listen` stream to say so.
+    tools_changed: Arc<Notify>,
 }
 
 #[derive(Default)]
@@ -99,6 +102,8 @@ struct State {
     own: OwnTxs,
     /// The approvals this session asked a person for, and which decisions it has been told about.
     approvals: OwnApprovals,
+    /// The areas whose ops a core tool list shows this session (`tools_enable`).
+    enabled: BTreeSet<String>,
 }
 
 /// Stops its task when dropped (unsubscribe, or the session ending).
@@ -128,6 +133,7 @@ impl Session {
             http_id: Arc::new(OnceLock::new()),
             last_active: Mutex::new(Instant::now()),
             state: Arc::new(Mutex::new(state)),
+            tools_changed: Arc::new(Notify::new()),
         }
     }
 
@@ -431,9 +437,17 @@ impl Session {
     /// Every call lands here and always yields a tool result: failures become tool errors, never protocol errors.
     async fn dispatch(&self, request: CallToolRequestParams, context: &RequestContext<RoleServer>) -> Reply {
         let name = request.name.as_ref();
-        let Some(entry) = self.view.catalog.get(name) else {
+        let Some(mut entry) = self.view.catalog.get(name) else {
             return render::unknown_tool(name, &self.view.catalog.similar(name)).into();
         };
+        let mut args = request.arguments.unwrap_or_default();
+        if matches!(entry.route, Route::Builtin(Builtin::OpsRun)) {
+            // `ops_run` is the op's own tool by another name: from here on the call is that tool's, errors included.
+            match finder::gateway(&self.view.catalog, &args, &entry.tool.input_schema) {
+                Ok((target, call)) => (entry, args) = (target, call),
+                Err(e) => return render::failure(entry.tool.name.as_ref(), &e, Some(&entry.signature)).into(),
+            }
+        }
         let actor = match self.actor(context) {
             Ok(actor) => actor.clone(),
             Err(refusal) => {
@@ -442,7 +456,6 @@ impl Session {
                     .into();
             }
         };
-        let mut args = request.arguments.unwrap_or_default();
         // The registry's word now, not the one at connection setup: grants may have been narrowed and the session
         // paused or ended since.
         let standing = self.standing(context).map_err(|e| OpError::denied(e.message.to_string()));
@@ -457,8 +470,10 @@ impl Session {
                 Err(e) => Err(e),
             },
             Route::Builtin(builtin) => match check_args(&args, &entry.tool.input_schema) {
-                // Reading the log keeps nothing between calls, so a request that stands alone can still do it.
-                Ok(()) if builtin != Builtin::Log && self.http && stands_alone(context) => Err(needs_a_session()),
+                // Reading the log or the document, or finding ops, keeps nothing between calls, so a request that stands
+                // alone can still do it.
+                Ok(()) if !builtin.stateless() && self.http && stands_alone(context) => Err(needs_a_session()),
+                Ok(()) if builtin == Builtin::ToolsEnable => self.tools_enable(&args, context).await.map(Reply::from),
                 Ok(()) => self.run_builtin(builtin, args, actor, &standing).await,
                 Err(e) => Err(e),
             },
@@ -708,6 +723,27 @@ impl Session {
                 self.begin_tx(args, actor).await.map(Reply::from)
             }
             Builtin::TxCommit | Builtin::TxRollback => self.finish_tx(builtin == Builtin::TxCommit, actor).await,
+            Builtin::DocGet => {
+                let grants = standing.clone()?.grants;
+                if !grants.allows(Scope::Read) {
+                    return Err(OpError::denied(read_needed("reading the document")));
+                }
+                let (path, full) = finder::doc_path(&args)?;
+                let at = path.clone();
+                let value = self.blocking(move |runner| runner.get(&at, &grants)).await??;
+                finder::doc_value(&path, value, full).map(Reply::from)
+            }
+            Builtin::OpsFind => finder::find(&self.view.catalog, &args, &standing.clone()?.grants).map(Reply::from),
+            Builtin::OpsDescribe => {
+                let listed = self.listed_tools().any(|t| {
+                    args.get("op")
+                        .and_then(Value::as_str)
+                        .is_some_and(|op| t.name == op || t.title.as_deref() == Some(op))
+                });
+                finder::describe(&self.view.catalog, &args, listed).map(Reply::from)
+            }
+            // `dispatch` serves both: one becomes the op it names, the other needs the request's peer.
+            Builtin::OpsRun | Builtin::ToolsEnable => Err(OpError::internal("routed in dispatch")),
             Builtin::SessionInfo | Builtin::SessionList | Builtin::ApprovalWait => {
                 let grants = standing.clone()?.grants;
                 if !grants.allows(Scope::Read) {
@@ -720,6 +756,31 @@ impl Session {
                 }
             }
         }
+    }
+
+    /// The tools `tools/list` shows this session.
+    fn listed_tools(&self) -> impl Iterator<Item = Tool> {
+        let enabled = lock(&self.state).enabled.clone();
+        self.view.catalog.listed(&enabled).cloned().collect::<Vec<_>>().into_iter()
+    }
+
+    /// `tools_enable`: lists (or unlists) areas' ops for this session and tells the client its tool list changed.
+    async fn tools_enable(
+        &self,
+        args: &JsonObject,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, OpError> {
+        let (result, changed) = {
+            let mut state = lock(&self.state);
+            finder::enable(&self.view.catalog, &mut state.enabled, args)?
+        };
+        if changed {
+            // Before 2026-07-28 the notification goes on the connection; from then on to a `subscriptions/listen`
+            // stream that asked for it. A client that can't take it still has ops_run, which the result names.
+            let _ = context.peer.notify_tool_list_changed().await;
+            self.tools_changed.notify_one();
+        }
+        Ok(result)
     }
 
     /// The registry, which these three tools exist only for.
@@ -1370,6 +1431,12 @@ impl ServerHandler for Session {
             .enable_prompts()
             .enable_resources()
             .enable_resources_subscribe();
+        // A core list changes when the session turns an area on (`tools_enable`); a full one never does.
+        let capabilities = if self.view.catalog.mode() == ToolMode::Core {
+            capabilities.enable_tool_list_changed()
+        } else {
+            capabilities
+        };
         let capabilities = if self.jobs.is_some() { capabilities.enable_tasks() } else { capabilities }.build();
         ServerConfig::new(capabilities)
             .with_server_info(Implementation::new("omuzaki", env!("CARGO_PKG_VERSION")).with_title("Omuzaki Studio"))
@@ -1382,7 +1449,7 @@ impl ServerHandler for Session {
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
         self.name_client(&context);
-        Ok(ListToolsResult::with_all_items(self.view.catalog.tools().cloned().collect()))
+        Ok(ListToolsResult::with_all_items(self.listed_tools().collect()))
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
@@ -1615,14 +1682,12 @@ impl ServerHandler for Session {
         } else {
             Vec::new()
         };
-        Some(if accepted.is_empty() {
-            SubscriptionFilter::new()
-        } else {
-            accepted
-                .into_iter()
-                .fold(SubscriptionFilter::builder(), rmcp::model::SubscriptionFilterBuilder::resource_subscription)
-                .build()
-        })
+        // A tool list says nothing about the document, so this needs no `read`; only a core list ever changes.
+        let tools = requested.tools_list_changed == Some(true) && self.view.catalog.mode() == ToolMode::Core;
+        let builder = accepted
+            .into_iter()
+            .fold(SubscriptionFilter::builder(), rmcp::model::SubscriptionFilterBuilder::resource_subscription);
+        Some(if tools { builder.tools_list_changed() } else { builder }.build())
     }
 
     /// A ping may be a session's first request, and it carries the client's identity like any other.
@@ -1633,20 +1698,31 @@ impl ServerHandler for Session {
 
     async fn listen(&self, context: SubscriptionContext) -> Result<(), McpError> {
         self.name_client(context.request_context());
-        let wanted: BTreeSet<String> = context.accepted().resource_subscriptions.iter().flatten().cloned().collect();
+        let mut wanted: BTreeSet<String> =
+            context.accepted().resource_subscriptions.iter().flatten().cloned().collect();
+        let tools = context.accepted().tools_list_changed == Some(true);
         // `accepted_subscription_filter` already refuses everything without `read`; checking again keeps this loop safe
         // on its own. A connection without an active session, or whose session cannot read, is told nothing either.
         let may_read = self.session_grants(context.request_context()).is_ok_and(|g| g.allows(Scope::Read));
-        if !may_read || wanted.is_empty() {
+        if !may_read {
+            wanted.clear();
+        }
+        if wanted.is_empty() && !tools {
             context.cancelled().await;
             return Ok(());
         }
         let mut updates = Updates::new(&self.shared.hub, &self.shared.providers);
         let watch = self.watch(context.request_context());
+        let tools_changed = Arc::clone(&self.tools_changed);
         loop {
             tokio::select! {
                 () = context.cancelled() => return Ok(()),
-                arrived = updates.arrived() => {
+                () = tools_changed.notified(), if tools => {
+                    if context.sink().notify_tool_list_changed().await.is_err() {
+                        return Ok(());
+                    }
+                }
+                arrived = updates.arrived(), if !wanted.is_empty() => {
                     if !arrived {
                         return Ok(());
                     }

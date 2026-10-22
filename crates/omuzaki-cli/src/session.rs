@@ -14,7 +14,7 @@ use omuzaki_ops_api::{
 
 use omuzaki_app::AppOptions;
 
-use crate::cli::Cli;
+use crate::cli::{Cli, Command};
 use crate::project::{NoProject, ProjectRunner, open_in_memory};
 
 /// The actor and grants every request of one `omuzaki` invocation carries.
@@ -110,9 +110,14 @@ pub fn open_project(cli: &Cli, dir: &Path, actor: Actor) -> Result<ProjectRunner
 }
 
 /// The app core's options for a command-line host: headless (nobody can be asked to approve), recovering as
-/// `--recover` says.
+/// `--recover` says, and for `mcp` with its `--grant` and `--tools`.
 pub fn core_options(cli: &Cli, actor: Actor) -> AppOptions {
-    AppOptions::headless(actor).with_recover(cli.recover.mode())
+    let options = AppOptions::headless(actor).with_recover(cli.recover.mode());
+    match &cli.command {
+        // The person running `omuzaki mcp --grant ...` says yes in advance, since nobody is at a window to be asked.
+        Command::Mcp(args) => options.with_agent_grants(args.grants()).with_mcp_tools(args.tools.mode()),
+        _ => options,
+    }
 }
 
 /// An executor over `--project` as it is on disk, in memory (or over an empty document without one), keeping the

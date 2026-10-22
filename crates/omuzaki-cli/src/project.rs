@@ -110,6 +110,31 @@ impl Runner for ProjectRunner {
     }
 }
 
+/// Creates an empty project in `dir` (made if needed), named `name` or after the folder, and returns what to print.
+///
+/// # Errors
+/// `Conflict` if `dir` already holds a project; `Invalid` (field `name`) for a blank name; `Internal` for any other
+/// failure to write it.
+pub fn create(dir: &Path, name: Option<&str>, json: bool) -> Result<String, OpError> {
+    let folder = dir.file_name().map(|n| n.to_string_lossy().into_owned());
+    let name = name.map(str::to_owned).or(folder).unwrap_or_else(|| "Untitled".to_owned());
+    Project::create(dir, &name).map_err(|e| match e {
+        StoreError::AlreadyExists { .. } => {
+            OpError::conflict(e.to_string()).hint("open it with --project <DIR>, or pick an empty folder")
+        }
+        StoreError::EmptyName => OpError::invalid("name", e.to_string()).hint("pass a name with --name <NAME>"),
+        other => OpError::internal(other.to_string()),
+    })?;
+    let shown = dir.display();
+    if json {
+        return crate::json::pretty(&serde_json::json!({ "created": shown.to_string(), "name": name }));
+    }
+    Ok(format!(
+        "Created the project \"{name}\" in {shown}.\nNext: run ops on it with `omuzaki --project {shown} run <op>`, or \
+         point an MCP client at `omuzaki --project {shown} mcp`.\n"
+    ))
+}
+
 /// A project folder saved after every patch, for a host or test that runs an executor straight on a project without
 /// the app core (which saves through its journal instead).
 pub use omuzaki_doc::SavedProject;
@@ -154,9 +179,8 @@ fn first_path(patch: &Patch) -> DocPath {
 fn open_error(dir: &Path, error: &StoreError) -> OpError {
     let message = error.to_string();
     match error {
-        StoreError::NotAProject { .. } => {
-            OpError::not_found(message).hint("pass the folder that holds project.toml: --project <DIR>")
-        }
+        StoreError::NotAProject { .. } => OpError::not_found(message)
+            .hint("pass the folder that holds project.toml (--project <DIR>), or make one with `omuzaki new <DIR>`"),
         StoreError::Io { source, .. } if source.kind() == std::io::ErrorKind::NotFound => {
             OpError::not_found(format!("{} does not exist, or a file in it is missing", dir.display()))
                 .hint(format!("{message}; pass the project folder: --project <DIR>"))

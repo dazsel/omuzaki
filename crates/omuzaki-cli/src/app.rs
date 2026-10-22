@@ -26,6 +26,8 @@ pub fn run() -> ExitCode {
         // The store is a folder the person names, not the project, so it needs no runner. Called here rather than
         // through `execute`, which can only hand back text, so the report's exit code survives.
         Command::Store { action } => store::run(action, cli.json),
+        // A new project has no runner to open yet.
+        Command::New { dir, name } => crate::project::create(dir, name.as_deref(), cli.json).map(Reply::ok),
         // Standard input is passed unlocked: `omuzaki mcp` reads the same stream through tokio, which takes the lock for
         // each read, so a lock held here would block the server forever.
         _ => run_with_runner(&cli),
@@ -64,7 +66,7 @@ fn run_on_core(cli: &Cli, dir: &Path, mut session: Session) -> Result<Reply, OpE
     let core = match AppCore::open(dir, core_options(cli, session.actor.clone())) {
         Ok(core) => core,
         // The studio has the project: an agent's `omuzaki mcp` works in it through the bridge (agent-sessions 10.2).
-        Err(AppError::Store(StoreError::Locked { .. })) if matches!(cli.command, Command::Mcp) => {
+        Err(AppError::Store(StoreError::Locked { .. })) if matches!(cli.command, Command::Mcp(_)) => {
             return bridge_to_studio(dir);
         }
         Err(error) => return Err(error.to_op_error()),
@@ -77,7 +79,7 @@ fn run_on_core(cli: &Cli, dir: &Path, mut session: Session) -> Result<Reply, OpE
     session.jobs = Some(core.jobs());
     session.project = Some(project_root(dir)?);
     let result = match &cli.command {
-        Command::Mcp => crate::mcp::serve_core(&core).map(|()| String::new()),
+        Command::Mcp(_) => crate::mcp::serve_core(&core).map(|()| String::new()),
         _ => execute(cli, core.runner(), &session, &mut io::stdin()),
     };
     let closed = core.close().map_err(|e| e.to_op_error());

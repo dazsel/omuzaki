@@ -14,9 +14,9 @@ use rmcp::transport::IntoTransport;
 use serde_json::Value;
 
 use crate::agent::{self, Credential};
-use crate::catalog::Catalog;
+use crate::catalog::{Catalog, ToolMode};
 use crate::connection::{self, Connections};
-use crate::describe::{Guidance, instructions};
+use crate::describe::{Guidance, core_note, instructions};
 use crate::error::ServerError;
 use crate::events::EventHub;
 use crate::prompts::{PromptDef, Prompts};
@@ -52,6 +52,8 @@ pub struct McpOptions {
     sessions: Option<SessionHost>,
     /// The folders agents may reach besides the document (see [`McpOptions::with_roots`]).
     roots: Vec<String>,
+    /// Which tools `tools/list` shows (see [`McpOptions::with_tools`]).
+    tools: ToolMode,
 }
 
 /// The executor's session registry, the person every connection works for, and how long a paused session's calls are
@@ -87,7 +89,16 @@ impl McpOptions {
             journal: None,
             sessions: None,
             roots: Vec::new(),
+            tools: ToolMode::All,
         }
+    }
+
+    /// Lists the tools `mode` says (default [`ToolMode::All`]: one per op). [`ToolMode::Core`] lists the built-ins and
+    /// the op finder, and each session turns on the areas it wants with `tools_enable`; any op can be called either way.
+    #[must_use]
+    pub fn with_tools(mut self, mode: ToolMode) -> Self {
+        self.tools = mode;
+        self
     }
 
     /// Also serves the resources of `provider`: it is listed, templated and readable alongside the built-in ones.
@@ -184,6 +195,8 @@ pub(crate) struct Shared {
     pub sessions: Option<SessionHost>,
     /// The file roots agents get besides their scopes (see [`McpOptions::with_roots`]).
     pub roots: Vec<String>,
+    /// Which tools `tools/list` shows.
+    pub tools: ToolMode,
     /// When each task was created.
     pub task_times: crate::jobs::TaskTimes,
     next_session: AtomicU64,
@@ -208,8 +221,12 @@ impl View {
         credential: Option<Arc<Credential>>,
     ) -> Result<Self, ServerError> {
         let grants = with_roots(grants, &shared.roots);
-        let catalog = Catalog::build(ops, &grants, &shared.guidance, shared.sessions.is_some())?;
-        let instructions = instructions(&grants, &shared.guidance, shared.sessions.is_some());
+        let catalog = Catalog::build(ops, &grants, &shared.guidance, shared.sessions.is_some(), shared.tools)?;
+        let mut instructions = instructions(&grants, &shared.guidance, shared.sessions.is_some());
+        if catalog.mode() == ToolMode::Core {
+            instructions.push('\n');
+            instructions.push_str(&core_note(&catalog.areas()));
+        }
         Ok(Self { grants, catalog, instructions, credential })
     }
 }
@@ -258,6 +275,7 @@ impl McpServer {
             journal: options.journal.map(|journal| journal.0),
             sessions: options.sessions,
             roots: options.roots,
+            tools: options.tools,
             task_times: crate::jobs::TaskTimes::default(),
             next_session: AtomicU64::new(1),
         };

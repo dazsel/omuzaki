@@ -23,6 +23,7 @@ use crate::{args, json, mcp, render, store};
 /// Whatever the runner refuses with, or a bad `--args`, an unknown op for `help`, or an MCP server that can't run.
 pub fn execute(cli: &Cli, runner: Arc<dyn Runner>, session: &Session, stdin: &mut dyn Read) -> Result<String, OpError> {
     match &cli.command {
+        Command::New { dir, name } => crate::project::create(dir, name.as_deref(), cli.json),
         Command::Ops => ops(runner.as_ref(), cli.json),
         Command::Help { op: None } => Ok(format!("{}\n", cli::command().render_help().to_string().trim_end())),
         Command::Help { op: Some(name) } => help(runner.as_ref(), name, cli.json),
@@ -32,7 +33,7 @@ pub fn execute(cli: &Cli, runner: Arc<dyn Runner>, session: &Session, stdin: &mu
         }
         Command::Undo => report_history(&UNDO, runner.undo(&session.actor, &session.grants)?, cli.json),
         Command::Redo => report_history(&REDO, runner.redo(&session.actor, &session.grants)?, cli.json),
-        Command::Mcp => mcp::serve_stdio(runner, session).map(|()| String::new()),
+        Command::Mcp(args) => mcp::serve_stdio(runner, session, args).map(|()| String::new()),
         Command::Registrations => Ok(registrations()),
         // `app::run` calls `store::run` itself so the exit code survives; this arm keeps the match whole and serves
         // callers that only want the text.
