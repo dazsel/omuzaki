@@ -1,8 +1,11 @@
 //! `omuzaki branch …` (`docs/design/branches.md` 5 and 7): the project's branches from the shell, over the app core's
 //! [`Branches`] and the `branch.*` ops. Every subcommand prints a line for people and the whole result with `--json`.
 
+use std::fmt::Write as _;
+
 use clap::Subcommand;
 use omuzaki_app::AppCore;
+use omuzaki_history_api::WallTime;
 use omuzaki_history_api::branch::{BranchError, BranchId, BranchInfo, BranchName, Branches, NewBranch, PointId};
 use omuzaki_history_api::state::StateRef;
 use omuzaki_ops_api::{Cause, CauseKind, ErrorCode, Mode, OpError, Request, TxId};
@@ -105,10 +108,11 @@ pub enum BranchCommand {
     },
 }
 
+#[allow(clippy::needless_pass_by_value, reason = "it is the `map_err` adapter for a `BranchError`")]
 fn branch_error(error: BranchError) -> OpError {
     let message = error.to_string();
     let hint = error.hint();
-    let op = match error {
+    let op = match &error {
         BranchError::NotFound(_) | BranchError::PointNotFound(_) => OpError::not_found(message),
         BranchError::Denied(_) => OpError::denied(message),
         BranchError::InvalidName(_) => OpError::invalid("name", message),
@@ -130,19 +134,20 @@ fn by_name(core: &AppCore, text: &str) -> Result<BranchInfo, OpError> {
     core.branches().by_name(&name(text)?).map_err(branch_error)
 }
 
-fn folder(core: &AppCore) -> Result<BranchInfo, OpError> {
+/// The folder's branch; before anything branched, `main` without a ref.
+fn folder(core: &AppCore) -> BranchInfo {
     let id = core.branches().folder();
     let listed = core.branches().list().into_iter().find(|b| b.id == id);
-    Ok(listed.unwrap_or_else(|| {
+    listed.unwrap_or_else(|| {
         BranchInfo::new(
             id,
             BranchName::main(),
             PointId(omuzaki_store_api::ContentHash::of(b"")),
             0,
-            Default::default(),
+            WallTime::default(),
             core.person().clone(),
         )
-    }))
+    })
 }
 
 /// `--from`: a branch's name, a transaction number, or a state reference as JSON.
@@ -188,18 +193,18 @@ fn row(info: &BranchInfo) -> Value {
 /// The merge's units as lines: `  status  key  (title)`.
 fn unit_lines(output: &Value) -> String {
     let units = output["units"].as_array().cloned().unwrap_or_default();
-    units
-        .iter()
-        .map(|u| {
-            let note = u["note"].as_str().map(|n| format!(" ({n})")).unwrap_or_default();
-            format!(
-                "  {:<9}  {}  {}{note}\n",
-                u["status"].as_str().unwrap_or(""),
-                u["key"].as_str().unwrap_or(""),
-                u["title"].as_str().unwrap_or("")
-            )
-        })
-        .collect()
+    let mut text = String::new();
+    for u in &units {
+        let note = u["note"].as_str().map(|n| format!(" ({n})")).unwrap_or_default();
+        let _ = writeln!(
+            text,
+            "  {:<9}  {}  {}{note}",
+            u["status"].as_str().unwrap_or(""),
+            u["key"].as_str().unwrap_or(""),
+            u["title"].as_str().unwrap_or("")
+        );
+    }
+    text
 }
 
 /// Runs `command` on the project `core` holds.
@@ -216,20 +221,16 @@ pub fn run(core: &AppCore, command: &BranchCommand, session: &Session, json: boo
             let args = json!({"include_auto": all, "include_bin": all});
             let listed = answer(core, session, "branch.list", args, Mode::Apply)?;
             let rows = listed["branches"].as_array().cloned().unwrap_or_default();
-            let mut text: String = rows
-                .iter()
-                .map(|r| {
-                    let here = if matches!(r["lane"]["open"]["folder"].as_bool(), Some(true)) { "*" } else { " " };
-                    let changed = r["changed"]
-                        .as_array()
-                        .map(|c| c.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "));
-                    let changed =
-                        changed.filter(|c| !c.is_empty()).map(|c| format!("  changed: {c}")).unwrap_or_default();
-                    format!("{here} {}{changed}\n", r["name"].as_str().unwrap_or(""))
-                })
-                .collect();
+            let mut text = String::new();
+            for r in &rows {
+                let here = if matches!(r["lane"]["open"]["folder"].as_bool(), Some(true)) { "*" } else { " " };
+                let changed =
+                    r["changed"].as_array().map(|c| c.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "));
+                let changed = changed.filter(|c| !c.is_empty()).map(|c| format!("  changed: {c}")).unwrap_or_default();
+                let _ = writeln!(text, "{here} {}{changed}", r["name"].as_str().unwrap_or(""));
+            }
             if rows.is_empty() {
-                text = "* main (nothing branched yet)\n".to_owned();
+                text.push_str("* main (nothing branched yet)\n");
             }
             reply(json, &listed, text)
         }
@@ -259,7 +260,7 @@ pub fn run(core: &AppCore, command: &BranchCommand, session: &Session, json: boo
         BranchCommand::Checkpoint { branch, label, ready, note } => {
             let info = match branch {
                 Some(b) => by_name(core, b)?,
-                None => folder(core)?,
+                None => folder(core),
             };
             let ready = ready.then(|| note.clone().unwrap_or_default());
             let point = branches.checkpoint(&info.id, label, ready.clone(), by).map_err(branch_error)?;
@@ -319,7 +320,7 @@ pub fn run(core: &AppCore, command: &BranchCommand, session: &Session, json: boo
             }
         }
         BranchCommand::Diff { a, b } => {
-            let here = folder(core)?;
+            let here = folder(core);
             let state = |text: &str| -> Result<Value, OpError> {
                 let info = by_name(core, text)?;
                 Ok(if info.id == here.id { json!("now") } else { json!({"branch": info.name}) })
@@ -329,7 +330,7 @@ pub fn run(core: &AppCore, command: &BranchCommand, session: &Session, json: boo
             let units = output["units"].as_array().cloned().unwrap_or_default();
             let mut text = format!("{} changes between {a} and {b}\n", output["changes"]);
             for unit in units {
-                text.push_str(&format!("  {}\n", unit["title"].as_str().unwrap_or("")));
+                let _ = writeln!(text, "  {}", unit["title"].as_str().unwrap_or(""));
             }
             reply(json, &output, text)
         }
