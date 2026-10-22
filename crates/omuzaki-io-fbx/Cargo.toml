@@ -9,6 +9,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+# TGA and BMP textures are re-encoded as PNG (IoScene keeps PNG and JPEG only). `image` is in the licence register.
+image = { workspace = true, features = ["bmp", "tga"] }
 ufbx.workspace = true
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-io-api = { path = "../omuzaki-io-api" }

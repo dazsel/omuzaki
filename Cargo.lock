@@ -4265,6 +4265,7 @@ dependencies = [
 name = "omuzaki-io-fbx"
 version = "0.0.0"
 dependencies = [
+ "image",
  "omuzaki-core",
  "omuzaki-io-api",
  "ufbx",
