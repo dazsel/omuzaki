@@ -11,7 +11,8 @@ use omuzaki_core::id::Slug;
 use omuzaki_core::time::Seconds;
 use omuzaki_render_api::{
     AlphaEncoding, AlphaMode, Camera, Colour, Fog, Instance, JointRange, Light, Mapping, Material, MaterialId, MeshId,
-    Outline, Overlay, ParamValue, Rim, Scene, Shading, Skin, TextureDesc, TextureId, Toon, UvTransform,
+    Outline, OutlineStyle, OutlineWidthMode, Overlay, ParamValue, Rim, Scene, Shading, Skin, TextureDesc, TextureId,
+    Toon, UvTransform,
 };
 
 use super::FrameState;
@@ -29,7 +30,7 @@ const FRAME_CHUNKS: usize = 12 + 3 + 32 + 4;
 const PROGRAM_START: usize = 9 + 8;
 /// Chunks of the program parameters (`program: array<vec4<f32>, 8>`).
 const PROGRAM_CHUNKS: usize = 8;
-const MATERIAL_CHUNKS: usize = PROGRAM_START + PROGRAM_CHUNKS + 1; // the UV transform is the last vec4
+const MATERIAL_CHUNKS: usize = PROGRAM_START + PROGRAM_CHUNKS + 2; // then the UV transform and the outline mix
 const INSTANCE_CHUNKS: usize = 4 + 3 + 1;
 
 const PROBE: &str = r"
@@ -75,7 +76,8 @@ fn material_chunk(i: u32) -> vec4<u32> {
         return bits(overlay.params);
     }
     if (i < 25u) { return bits(material.program[i - 17u]); }
-    return bits(material.uv_transform);
+    if (i == 25u) { return bits(material.uv_transform); }
+    return bits(material.outline_mix);
 }
 
 fn instance_chunk(i: u32) -> vec4<u32> {
@@ -138,6 +140,11 @@ fn probe_material(face: TextureId) -> Material {
         double_sided: true,
         vertex_colours: true,
         outline: Some(Outline { colour: Colour::rgb(40, 30, 60), width: 0.0123 }),
+        outline_style: OutlineStyle {
+            width_mode: OutlineWidthMode::Screen,
+            width_texture: Some(face),
+            lighting_mix: 0.375,
+        },
         receives_shadows: false,
         uv_transform: UvTransform { scale: Vec2::new(0.5, 0.25), offset: Vec2::new(0.125, 0.75) },
     }

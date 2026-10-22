@@ -9,7 +9,9 @@ use omuzaki_char_api::{MaterialName, MaterialSpec, TextureName};
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::Vec4;
 use omuzaki_io_api::ColorBindKind;
-use omuzaki_render_api::{Material, MaterialId, MeshId, MeshOptions, MeshUsage, Renderer, Shading, TextureId};
+use omuzaki_render_api::{
+    Material, MaterialId, MeshId, MeshOptions, MeshUsage, OutlineStyle, Renderer, Shading, TextureId,
+};
 
 use crate::error::StageError;
 use crate::upload::release::release_in_order;
@@ -85,7 +87,7 @@ impl AvatarUpload {
             self.textures.insert(name.clone(), id);
         }
         for (name, spec) in &avatar.materials {
-            let material = self.material_of(name, spec)?;
+            let material = self.material_of(name, spec, avatar)?;
             let id = renderer
                 .create_material(&material)
                 .map_err(|source| StageError::render(format!("material '{name}'"), source))?;
@@ -95,7 +97,7 @@ impl AvatarUpload {
             let (id, spec) = self.materials.get(name).copied().zip(avatar.materials.get(name)).ok_or_else(|| {
                 StageError::Avatar { reason: format!("an expression binds material '{name}', which the avatar lacks") }
             })?;
-            let base = self.material_of(name, spec)?;
+            let base = self.material_of(name, spec, avatar)?;
             self.bound.push(BoundMaterial { id, sent: base.clone(), base });
         }
         for (index, avatar_mesh) in avatar.meshes.iter().enumerate() {
@@ -113,11 +115,22 @@ impl AvatarUpload {
         Ok(())
     }
 
-    /// The renderer material for `spec` with the textures uploaded so far. An imported avatar has no painted face, so a
-    /// face layer never resolves.
-    fn material_of(&self, name: &MaterialName, spec: &MaterialSpec) -> Result<Material, StageError> {
-        spec.to_material(&|texture| self.textures.get(texture).copied(), &|_| None)
-            .map_err(|source| StageError::Material { material: name.clone(), source })
+    /// The renderer material for `spec` with the textures uploaded so far, drawing the `MToon` outline the importer
+    /// kept for `name` (`avatar.outlines`, #647) in place of the kit's line. An imported avatar has no painted face, so
+    /// a face layer never resolves.
+    fn material_of(&self, name: &MaterialName, spec: &MaterialSpec, avatar: &ImportedAvatar) -> Result<Material, StageError> {
+        let mut material = spec
+            .to_material(&|texture| self.textures.get(texture).copied(), &|_| None)
+            .map_err(|source| StageError::Material { material: name.clone(), source })?;
+        if let (Some(line), Some(outline)) = (material.outline.as_mut(), avatar.outlines.get(name)) {
+            line.width = outline.width;
+            material.outline_style = OutlineStyle {
+                width_mode: outline.width_mode,
+                width_texture: outline.width_texture.as_ref().and_then(|t| self.textures.get(t).copied()),
+                lighting_mix: outline.lighting_mix,
+            };
+        }
+        Ok(material)
     }
 
     /// Every mesh, in the avatar's mesh order.

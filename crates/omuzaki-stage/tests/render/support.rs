@@ -85,7 +85,16 @@ impl Harness {
 
     /// A harness over `doc` that leaves out `missing`, if given.
     pub fn without(doc: TestDoc, missing: Option<Missing>) -> Self {
-        let renderer: Arc<Mutex<Box<dyn Renderer>>> = Arc::new(Mutex::new(Box::new(MockRenderer::new())));
+        Self::build(doc, missing, Box::new(MockRenderer::new()))
+    }
+
+    /// A harness over `doc` with every service, rendering on `renderer` (the wgpu one, for the GPU tests).
+    pub fn on(doc: TestDoc, renderer: Box<dyn Renderer>) -> Self {
+        Self::build(doc, None, renderer)
+    }
+
+    fn build(doc: TestDoc, missing: Option<Missing>, renderer: Box<dyn Renderer>) -> Self {
+        let renderer: Arc<Mutex<Box<dyn Renderer>>> = Arc::new(Mutex::new(renderer));
         let store = Arc::new(MemStore::new());
         let mut builder = ServicesBuilder::new();
         if missing != Some(Missing::Renderer) {

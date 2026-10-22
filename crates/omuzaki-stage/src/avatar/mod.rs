@@ -16,6 +16,7 @@
 //! After construction nothing in steps 1 to 5 allocates in stage-owned code; the renderer costs what it costs.
 
 mod draw;
+pub mod ease;
 mod gaze;
 pub mod upload;
 
@@ -102,7 +103,7 @@ impl AvatarStage {
         plan.reserve(&mut scene);
         Ok(Self {
             gaze: EyeGaze::of(&avatar),
-            pose: avatar.bind,
+            pose: ease::at_ease(&avatar.bind),
             avatar,
             upload,
             rig,
@@ -125,10 +126,11 @@ impl AvatarStage {
         })
     }
 
-    /// The pose the avatar's meshes were made in: what a performer or animator layers onto, so that with nothing
-    /// animating the avatar stands as its file has it (decision 0014 §4, as the kit's `seed_base_pose`).
+    /// The pose a performer or animator layers onto: the avatar's bind (decision 0014 §4, as the kit's
+    /// `seed_base_pose`) with T-pose arms lowered to hang at ease ([`ease::at_ease`]), so with nothing animating them
+    /// a model authored in the T-pose doesn't stand in it.
     pub fn base_pose(&self) -> HumanoidPose {
-        self.avatar.bind
+        ease::at_ease(&self.avatar.bind)
     }
 
     /// Runs one frame and renders it into the stage's target. Returns the frame, with
