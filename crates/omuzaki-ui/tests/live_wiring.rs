@@ -670,10 +670,14 @@ fn the_studio_starts_on_its_real_inputs_and_vmc_out_sends_from_the_perform_threa
     omuzaki_ui::link();
     // An install with no face models: the webcam lists what it can and says why it can't track, the rest works.
     let install = tempfile::tempdir().expect("a folder");
+    let paths = omuzaki_settings::Paths::new(install.path().join("config"), install.path().join("data"));
+    let settings: std::sync::Arc<dyn omuzaki_settings_api::service::Settings> =
+        std::sync::Arc::new(omuzaki_settings::Store::open(&paths));
     let app = LiveApp::start_studio(
         omuzaki_ui::wiring::Document::empty(),
         install.path(),
         Some(&install.path().join("models")),
+        Some(settings),
         Box::new(RealClock::new()),
         Transparency::Fallback,
         HumanoidPose::REST,
@@ -684,6 +688,9 @@ fn the_studio_starts_on_its_real_inputs_and_vmc_out_sends_from_the_perform_threa
     picked.expect("the phone link is wired in, so the iPhone source can be chosen");
     let models = runner.run(request("model.list", args(&[]))).expect("the model registry is wired in");
     assert!(models.plan.output.is_some(), "it answers");
+    let scale =
+        runner.run(request("settings.set", args(&[("key", Value::from("ui.scale")), ("value", Value::from(150))])));
+    scale.expect("the settings store is wired in, so the studio's settings can be changed through ops");
 
     let receiver = std::net::UdpSocket::bind("127.0.0.1:0").expect("a receiver");
     receiver.set_read_timeout(Some(Duration::from_secs(5))).expect("a timeout");

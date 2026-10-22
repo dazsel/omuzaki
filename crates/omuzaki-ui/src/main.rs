@@ -17,9 +17,10 @@ use omuzaki_anim_api::HumanoidPose;
 use omuzaki_core::glam::UVec2;
 use omuzaki_ops_api::Runner;
 use omuzaki_render::WgpuRenderer;
+use omuzaki_settings_api::service::Settings as SettingsService;
 use omuzaki_stage::frame::Stage;
 use omuzaki_ui::aux_window::{Backend, Platform, SurfaceRoute, transparency};
-use omuzaki_ui::ds::{Settings, apply_settings};
+use omuzaki_ui::ds::settings_keys::SettingsLink;
 use omuzaki_ui::live::viewport::{NativePresenter, Presenter, ViewportError, kit_stage, project_stage};
 use omuzaki_ui::live::wiring::{LiveApp, LiveScene, RealClock};
 use omuzaki_ui::panels::agent::Agents;
@@ -44,10 +45,15 @@ struct Args {
 struct App {
     shell: Shell,
     live: Option<LiveApp>,
+    /// The look follows the `ui.*` settings, whoever changes them.
+    look: Option<SettingsLink>,
 }
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        if let Some(look) = self.look.as_mut() {
+            look.sync(ui.ctx());
+        }
         // The stage first: its picture is what the stage panel and the output window draw this frame.
         if let Some(live) = self.live.as_mut() {
             live.show(ui.ctx());
@@ -77,7 +83,11 @@ const PROGRAM_SIZE: UVec2 = UVec2::new(1920, 1080);
 /// kit character when it can't be read). The webcam tracker isn't linked in yet (#378), so the performer runs on the
 /// life layer alone. If the stage can't start (no GPU state, or the character failing to build) the slice still runs
 /// without a picture, and the reason is logged.
-fn start_live(cc: &eframe::CreationContext<'_>, document: Document) -> Option<LiveApp> {
+fn start_live(
+    cc: &eframe::CreationContext<'_>,
+    document: Document,
+    settings: Option<Arc<dyn SettingsService>>,
+) -> Option<LiveApp> {
     let character = match studio::character_to_stage(&document) {
         Ok(character) => Some(character),
         Err(error) => {
@@ -102,6 +112,7 @@ fn start_live(cc: &eframe::CreationContext<'_>, document: Document) -> Option<Li
         document,
         &install_dir(),
         models_dir().as_deref(),
+        settings,
         Box::new(RealClock::new()),
         transparency,
         base,
@@ -164,13 +175,29 @@ fn open_document(dir: Option<&PathBuf>) -> Document {
     }
 }
 
+/// The studio's settings, in the OS's config and local data folders (or `OMUZAKI_CONFIG_DIR` and `OMUZAKI_DATA_DIR`);
+/// `None`, logged, when the OS gives no home folder: choices then last until the studio quits.
+fn studio_settings() -> Option<Arc<dyn SettingsService>> {
+    match omuzaki_settings::Paths::from_env() {
+        Ok(paths) => Some(Arc::new(omuzaki_settings::Store::open(&paths))),
+        Err(error) => {
+            tracing::warn!(%error, "no folder for the settings: choices last until the studio quits");
+            None
+        }
+    }
+}
+
 /// The executor the shell works through: the live slice's, or a plain one over the project when the slice did not
 /// start; `None` when not even that could start (the shell then runs on a runner with no document).
-fn core_of(live: Option<&LiveApp>, dir: Option<&PathBuf>) -> Option<Core> {
+fn core_of(live: Option<&LiveApp>, dir: Option<&PathBuf>, settings: Option<Arc<dyn SettingsService>>) -> Option<Core> {
     if let Some(live) = live {
         return Some(live.core());
     }
-    match wiring::core_on(open_document(dir), omuzaki_ops_api::Services::default()) {
+    let services = match settings {
+        Some(settings) => omuzaki_ops_api::ServicesBuilder::new().insert::<dyn SettingsService>(settings).build(),
+        None => omuzaki_ops_api::Services::default(),
+    };
+    match wiring::core_on(open_document(dir), services) {
         Ok(core) => Some(core),
         Err(error) => {
             tracing::error!(%error, "the ops did not start: the studio has no document");
@@ -228,14 +255,19 @@ fn main() -> eframe::Result {
         native,
         Box::new(move |cc| {
             // Applying before the first frame lets the bundled fonts activate on the second.
-            apply_settings(&cc.egui_ctx, Settings::default());
-            let live = start_live(cc, open_document(dir.as_ref()));
-            let core = core_of(live.as_ref(), dir.as_ref());
+            let settings = studio_settings();
+            let mut look = settings.clone().map(SettingsLink::new);
+            match look.as_mut() {
+                Some(look) => look.sync(&cc.egui_ctx),
+                None => omuzaki_ui::ds::apply_settings(&cc.egui_ctx, omuzaki_ui::ds::Settings::default()),
+            }
+            let live = start_live(cc, open_document(dir.as_ref()), settings.clone());
+            let core = core_of(live.as_ref(), dir.as_ref(), settings);
             let mut shell = studio_shell(cc, core);
             if let Some(live) = live.as_ref() {
                 shell.insert_view(live.channel_feed());
             }
-            Ok(Box::new(App { shell, live }))
+            Ok(Box::new(App { shell, live, look }))
         }),
     )
 }

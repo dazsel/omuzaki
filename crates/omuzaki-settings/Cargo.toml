@@ -10,6 +10,8 @@ repository.workspace = true
 
 [dependencies]
 directories.workspace = true
+schemars.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 toml_edit.workspace = true
 omuzaki-core = { path = "../omuzaki-core" }
@@ -18,6 +20,8 @@ omuzaki-settings-api = { path = "../omuzaki-settings-api" }
 
 [dev-dependencies]
 criterion.workspace = true
+omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+omuzaki-settings-mock = { path = "../omuzaki-settings-mock" }
 proptest.workspace = true
 tempfile.workspace = true
 
