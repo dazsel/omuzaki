@@ -5700,9 +5700,16 @@ dependencies = [
 name = "omuzaki-vts"
 version = "0.0.0"
 dependencies = [
+ "criterion",
+ "omuzaki-anim-api",
+ "omuzaki-core",
+ "omuzaki-secrets-api",
+ "omuzaki-secrets-mock",
+ "schemars",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "toml",
  "tungstenite",
 ]
 
