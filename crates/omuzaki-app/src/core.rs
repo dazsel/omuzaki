@@ -7,10 +7,10 @@ use std::time::Duration;
 
 use omuzaki_core::time::SystemClock;
 use omuzaki_doc::journal::{JournalOptions, ProjectJournal, Recover, SessionStart, SystemWall, reopen_with};
-use omuzaki_doc::snapshot::{Snapshotter, snapshot_dir};
+use omuzaki_doc::snapshot::{SessionSnapshots, Snapshotter, snapshot_dir};
 use omuzaki_doc::{Project, ProjectLock};
 use omuzaki_doc_api::{DocPath, Value};
-use omuzaki_history_api::{JournalSink, JournalStatus};
+use omuzaki_history_api::{JournalSink, JournalStatus, Snapshots};
 use omuzaki_mcp::{AccessToken, Connections, HttpOptions, HttpServer, InAppLink, InAppSpec, McpOptions, McpServer};
 use omuzaki_ops::Executor;
 use omuzaki_ops_api::{
@@ -110,6 +110,7 @@ impl AppOptions {
 /// Every method takes `&self`; share it in an `Arc` between the UI thread and whatever else drives it.
 pub struct AppCore {
     executor: Arc<Executor>,
+    snapshots: Arc<SessionSnapshots>,
     journal: Arc<ProjectJournal>,
     mcp: McpServer,
     /// Always `Some` until the drop, which shuts it down without waiting: a stdio server leaves a thread blocked on
@@ -161,8 +162,10 @@ impl AppCore {
         let mut shadow = reopened.project;
 
         let connections = Connections::default();
+        let session_snapshots = Arc::new(SessionSnapshots::new(snapshots.clone()));
         let services = ServicesBuilder::from(options.services.clone())
             .insert::<dyn ConnectionService>(Arc::new(connections.clone()))
+            .insert::<dyn Snapshots>(session_snapshots.clone())
             .build();
         let executor =
             Executor::restore(Box::new(shadow.clone()), Arc::new(SystemClock::new()), wall.clone(), &reopened.history)?
@@ -189,6 +192,7 @@ impl AppCore {
             snapshots,
         );
         let journal = ProjectJournal::start(shadow, start, options.journal)?;
+        session_snapshots.bind(journal.clone());
         let executor = Arc::new(executor.with_journal(journal.clone()));
 
         let root_path = project_dir_text(dir);
@@ -209,6 +213,7 @@ impl AppCore {
         }
         Ok(Self {
             executor,
+            snapshots: session_snapshots,
             journal,
             mcp,
             handle: runtime.handle().clone(),
@@ -231,6 +236,11 @@ impl AppCore {
     /// approvals.
     pub fn sessions(&self) -> Arc<dyn Sessions> {
         self.executor.clone()
+    }
+
+    /// The project's snapshots and files: named versions, backups, saving now (the service ops reach them through).
+    pub fn snapshots(&self) -> Arc<dyn Snapshots> {
+        self.snapshots.clone()
     }
 
     /// The job manager: long ops with progress and cancel.

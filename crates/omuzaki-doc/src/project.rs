@@ -377,15 +377,18 @@ impl Project {
             let mut late = None;
             if rendered.changed {
                 let expected = self.known.hash(&segs);
-                match placed(disk::replace_checked(
+                let outcome = placed(disk::replace_checked(
                     &self.dir,
                     &path,
                     &rendered.text,
                     expected,
                     &mut lock(&self.retention),
-                ))? {
+                ))?;
+                match outcome {
                     Placed::No => {
-                        refused.get_or_insert(disk::why_changed(path));
+                        if !self.adopt_if_same(&segs, &path) {
+                            refused.get_or_insert(disk::why_changed(path));
+                        }
                         continue;
                     }
                     Placed::Yes(error) => late = error,
@@ -422,7 +425,9 @@ impl Project {
                     }
                     // The file was changed behind our back since: it is not ours to mark as written.
                     FileState::Different => {
-                        refused.get_or_insert(disk::why_changed(path));
+                        if !self.adopt_if_same(&segs, &path) {
+                            refused.get_or_insert(disk::why_changed(path));
+                        }
                         continue;
                     }
                 }
@@ -433,6 +438,25 @@ impl Project {
             }
         }
         Ok(())
+    }
+
+    /// A file changed behind our back that already holds exactly what the document has there (it was read back in
+    /// with `project.reload`, or edited to the same values) is not a conflict: its text becomes the last-known one and
+    /// it counts as saved, so the next save edits it in place and never rewrites the person's text. Returns whether it
+    /// was adopted.
+    fn adopt_if_same(&mut self, segs: &[String], path: &Path) -> bool {
+        if disk::refuse_links(&self.dir, path).is_err() {
+            return false;
+        }
+        let Ok(text) = disk::read_text(path) else { return false };
+        let Ok(table) = crate::toml_read::parse_table(&text) else { return false };
+        if lookup(&self.root, &doc_path(segs)) != Some(&Value::Object(table)) {
+            return false;
+        }
+        let hash = ContentHash::of(text.as_bytes());
+        self.known.record(segs.to_vec(), text, hash);
+        self.layout.mark_written(segs);
+        true
     }
 
     /// Applies one change to the tree if it matches and can be stored.

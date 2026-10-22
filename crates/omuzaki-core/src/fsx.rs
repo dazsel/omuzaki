@@ -71,6 +71,15 @@ fn run_nonce() -> u64 {
 /// Returns an error if `path` has no file name, or if any step fails. An error from the folder flush on unix comes
 /// after the rename, so the new text is already in place when it is returned.
 pub fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
+    write_atomic_bytes(path, text.as_bytes())
+}
+
+/// [`write_atomic`] for bytes that need not be text (a take, an image beside the project's tree).
+///
+/// # Errors
+///
+/// As [`write_atomic`].
+pub fn write_atomic_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let name = path.file_name().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no file name"))?;
     let parent = match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
@@ -78,7 +87,7 @@ pub fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
     };
     fs::create_dir_all(parent)?;
     let (tmp, file) = create_temp(parent, name)?;
-    let staged = write_and_sync(file, text).and_then(|()| rename_over(&tmp, path));
+    let staged = write_and_sync(file, bytes).and_then(|()| rename_over(&tmp, path));
     if let Err(e) = staged {
         // Only the file this call created, so removing it cannot touch another save's work. Best effort: the original
         // error is the one worth reporting.
@@ -118,9 +127,9 @@ fn temp_name(name: &OsStr) -> OsString {
     format!(".{:016x}-{}-{:016x}-{n}.tmp", hasher.finish(), std::process::id(), run_nonce()).into()
 }
 
-/// Writes `text` into `file` and flushes it to disk. Taking the file by value closes it before the rename.
-fn write_and_sync(mut file: File, text: &str) -> io::Result<()> {
-    file.write_all(text.as_bytes())?;
+/// Writes `bytes` into `file` and flushes it to disk. Taking the file by value closes it before the rename.
+fn write_and_sync(mut file: File, bytes: &[u8]) -> io::Result<()> {
+    file.write_all(bytes)?;
     // Flushed before the rename, so the new name never points at contents that are not yet on disk.
     file.sync_all()
 }

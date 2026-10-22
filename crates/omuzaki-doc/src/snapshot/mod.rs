@@ -16,6 +16,7 @@
 //! - **Garbage collection** ([`Snapshotter::sweep`]) removes objects no ref reaches, after a grace period.
 
 mod manifest;
+mod service;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
@@ -31,6 +32,7 @@ use omuzaki_history_api::{
 use omuzaki_store_api::{Commercial, ContentHash, Provenance, Source, StoreError as ObjectError, StoreGc, SweepReport};
 
 pub use manifest::{FileRow, MANIFEST_FORMAT, Manifest};
+pub use service::SessionSnapshots;
 
 use crate::Project;
 use crate::disk::PROJECT_FILE;

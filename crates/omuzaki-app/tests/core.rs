@@ -347,3 +347,71 @@ fn without_a_studio_taking_agents_the_bridge_says_what_to_do() {
     assert_eq!(refused.code, omuzaki_ops_api::ErrorCode::Conflict, "{refused:?}");
     core.close().unwrap();
 }
+
+/// Options whose saves wait a minute, so a test sees only the saves it asks for.
+fn slow_saves() -> AppOptions {
+    options().with_journal(
+        omuzaki_doc::journal::JournalOptions::default()
+            .with_save_delays(Duration::from_secs(60), Duration::from_secs(60)),
+    )
+}
+
+#[test]
+fn project_save_makes_the_files_current_and_a_dry_run_does_not() {
+    let tmp = tempfile::tempdir().unwrap();
+    AppCore::create(tmp.path(), "demo", options()).unwrap().close().unwrap();
+    let core = AppCore::open(tmp.path(), slow_saves()).unwrap();
+    set(&core, "unsaved");
+    assert_eq!(note_on_disk(tmp.path()), None, "files trail the document");
+    let runner = core.runner();
+    runner.run(core.request("project.save", json!({}), Mode::DryRun)).unwrap();
+    assert_eq!(note_on_disk(tmp.path()), None, "a dry run saves nothing");
+    let saved = core.run("project.save", json!({})).unwrap();
+    assert_eq!(saved.plan.output, Some(json!({"saved": true})));
+    assert_eq!(note_on_disk(tmp.path()), Some(json!("unsaved")), "the files match when it returns");
+    drop(runner);
+    core.close().unwrap();
+}
+
+#[test]
+fn project_reload_takes_an_outside_edit_back_in_as_one_undoable_step_and_keeps_its_text() {
+    let tmp = tempfile::tempdir().unwrap();
+    AppCore::create(tmp.path(), "demo", options()).unwrap().close().unwrap();
+    let core = AppCore::open(tmp.path(), slow_saves()).unwrap();
+    set(&core, "ours");
+    core.run("project.save", json!({})).unwrap();
+    // Someone edits the file in a text editor, with a comment of their own.
+    let file = tmp.path().join("project.toml");
+    let theirs = std::fs::read_to_string(&file).unwrap().replace("\"ours\"", "\"theirs\" # edited by hand");
+    std::fs::write(&file, &theirs).unwrap();
+
+    let reloaded = core.run("project.reload", json!({ "paths": ["project.toml"] })).unwrap();
+    assert_eq!(reloaded.plan.output, Some(json!({"reloaded": ["project"]})));
+    assert_eq!(note(&core), Some(json!("theirs")));
+    core.run("project.save", json!({})).unwrap();
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), theirs, "the person's text is kept, not rewritten");
+
+    // Undo puts the document back, and the next save writes it over the file again.
+    core.undo().unwrap();
+    assert_eq!(note(&core), Some(json!("ours")));
+    core.run("project.save", json!({})).unwrap();
+    assert_eq!(note_on_disk(tmp.path()), Some(json!("ours")));
+    core.close().unwrap();
+}
+
+#[test]
+fn a_named_version_is_a_snapshot_whose_ref_exists_when_take_returns() {
+    let tmp = tempfile::tempdir().unwrap();
+    let core = AppCore::create(tmp.path(), "demo", options()).unwrap();
+    set(&core, "before the oval face");
+    let snapshots = core.snapshots();
+    let id = snapshots.take(omuzaki_history_api::Trigger::Named, Some("before the oval face")).unwrap();
+    let listed = snapshots.list().unwrap();
+    let named = listed.iter().find(|info| info.id == id).expect("the ref exists when take returns");
+    assert_eq!(named.name.as_deref(), Some("before the oval face"));
+    assert_eq!(snapshots.tree(&id).unwrap()["project"]["note"], json!("before the oval face"));
+    assert!(snapshots.take(omuzaki_history_api::Trigger::Named, None).is_err(), "a named version needs a name");
+    let usage = snapshots.usage().unwrap();
+    assert!(usage.snapshots.count > 0 && usage.journal.count > 0, "{usage:?}");
+    core.close().unwrap();
+}

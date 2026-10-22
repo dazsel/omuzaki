@@ -26,6 +26,8 @@ use omuzaki_cli::project::SavedProject;
 use omuzaki_core::time::SystemClock;
 use omuzaki_doc_api::{DocPath, Value};
 use omuzaki_face_api::ExpressionSet;
+use omuzaki_history_api::Snapshots;
+use omuzaki_history_mock::MemorySnapshots;
 use omuzaki_ops::Executor;
 use omuzaki_ops_api::{
     Actor, Grants, Mode, OpKind, OpRegistration, ProjectDir, Request, Runner, ServicesBuilder, Undo, registrations,
@@ -258,6 +260,12 @@ impl Rig {
                     ))
                     .insert::<dyn PerformHost>(Arc::new(IdleHost))
                     .insert::<dyn InputHost>(Arc::new(IdleInput))
+                    // Snapshots with nothing to reload: `project.save` and `project.reload` run as they would on a
+                    // project whose files match the document.
+                    .insert::<dyn Snapshots>(Arc::new(MemorySnapshots::new(
+                        Value::Null,
+                        Arc::new(omuzaki_history_mock::SystemWallClock),
+                    )))
                     .build(),
             )
             .with_project_dir(project);

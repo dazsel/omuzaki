@@ -55,6 +55,9 @@ omuzaki-store-api = { path = "../omuzaki-store-api" }
 
 [dev-dependencies]
 tempfile.workspace = true
+# The snapshots service the conformance rig stands in for the `project.*` examples (`tests/op_conformance.rs`).
+omuzaki-history-api = { path = "../omuzaki-history-api" }
+omuzaki-history-mock = { path = "../omuzaki-history-mock" }
 # The performer the conformance rig stands in for the `trigger.*` examples (`tests/op_conformance.rs`).
 omuzaki-anim-api = { path = "../omuzaki-anim-api" }
 # The end-to-end design test (tests/design_e2e.rs, #2216) builds the designed character to compare it after a reopen.

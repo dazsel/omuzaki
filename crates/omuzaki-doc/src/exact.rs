@@ -76,7 +76,7 @@ fn write_if_different(path: &Path, text: &str) -> Result<bool, StoreError> {
 }
 
 /// Every tree file under `dir/rel`, `/`-separated: regular `.toml` files with a name, in folders that aren't hidden.
-fn tree_files(dir: &Path, rel: &mut Vec<String>, out: &mut Vec<String>) -> Result<(), StoreError> {
+pub(crate) fn tree_files(dir: &Path, rel: &mut Vec<String>, out: &mut Vec<String>) -> Result<(), StoreError> {
     let mut path: PathBuf = dir.to_path_buf();
     path.extend(rel.iter());
     for entry in fs::read_dir(&path).map_err(|e| StoreError::io(&path, e))? {
