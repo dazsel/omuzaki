@@ -79,21 +79,70 @@ fn the_cost_hint_counts_every_image_the_render_allocates() {
     //
     // High 4096 by 4096 at 4 samples: internal 6144 by 6144 at 56 bytes: 2016 MiB of attachments; a 2048 shadow map at 4
     // bytes: 16 MiB; the output: 64 MiB; the read-back: 64 MiB; and the bloom cache: 352 MiB. Total 2512 MiB, and 2576 with
-    // the meshes and textures.
-    let hint = cost(UVec2::splat(4096), 1, RenderQuality::High);
+    // a character of 64 MiB.
+    const CHARACTER: u64 = 64 << 20;
+    let hint = cost(UVec2::splat(4096), 1, RenderQuality::High, CHARACTER);
     assert_eq!(hint.gpu_mib, Some(2576));
     assert_eq!(hint.seconds, Some(0.5), "a high still takes half a second");
     assert_eq!(hint.usd, None, "no money is spent");
 
     // Offline is 16 samples (200 bytes a pixel) at 1024 by 1024: 200 MiB of attachments, 16 MiB of shadow map at high
-    // shadows, 4 MiB of output, 4 MiB of read-back and 352 MiB of bloom cache: 576 MiB, and 640 with the meshes.
-    let offline = cost(UVec2::splat(1024), 1, RenderQuality::Offline);
+    // shadows, 4 MiB of output, 4 MiB of read-back and 352 MiB of bloom cache: 576 MiB, and 640 with the character.
+    let offline = cost(UVec2::splat(1024), 1, RenderQuality::Offline, CHARACTER);
     assert_eq!(offline.gpu_mib, Some(640));
     assert_eq!(offline.seconds, Some(2.0), "an offline still takes two seconds");
 
     // Live: 4 samples at 64 by 64, with the low shadow map (4 MiB): 4.25 MiB of images, and 356 with the bloom cache, which
-    // an earlier job's chains can fill whatever this preset's post effects are: 420 with the meshes and textures.
-    assert_eq!(cost(UVec2::splat(64), 1, RenderQuality::Live).gpu_mib, Some(420));
+    // an earlier job's chains can fill whatever this preset's post effects are: 420 with the character.
+    assert_eq!(cost(UVec2::splat(64), 1, RenderQuality::Live, CHARACTER).gpu_mib, Some(420));
+    assert_eq!(cost(UVec2::splat(64), 1, RenderQuality::Live, 0).gpu_mib, Some(356), "the character is what it is");
+}
+
+/// #2092: a render charges its character at least what the renderer holds for it. The mock character with one 4096 by
+/// 4096 mipped texture added (85 MiB on the GPU) is staged on the mock renderer and, with the `wgpu` feature, on
+/// lavapipe; what each holds for it is within what [`Body::gpu_bytes`] charges, and that is in the plan's hint.
+#[test]
+fn the_cost_hint_charges_at_least_what_the_character_takes_on_the_renderer() {
+    use omuzaki_char_api::{TextureData, TextureName};
+    use omuzaki_render_api::TextureDesc;
+    use omuzaki_stage::body::Body;
+    use omuzaki_stage::{StageCharacter, UploadOptions};
+
+    let harness = Harness::new(mock_doc());
+    let mut built = harness.with_job(|job| build_character(job, &mock(), None, RenderQuality::Offline)).unwrap();
+    let desc = TextureDesc::colour(UVec2::splat(4096));
+    let big = TextureData { desc, rgba8: vec![128; desc.byte_len()] };
+    built.textures.insert(TextureName::new("big").unwrap(), big);
+    let body = Body::Kit(Box::new(built));
+    let charged = body.gpu_bytes(UploadOptions::default());
+    let Body::Kit(built) = body else { panic!("a kit character") };
+
+    let mut renderers: Vec<(&str, Box<dyn Renderer>)> =
+        vec![("mock", Box::new(omuzaki_render_mock::MockRenderer::new()))];
+    #[cfg(feature = "wgpu")]
+    renderers.push((
+        "GPU",
+        Box::new(
+            omuzaki_render::WgpuRenderer::headless(&omuzaki_render::HeadlessOptions {
+                adapter: omuzaki_render::AdapterPreference::Software,
+            })
+            .expect("lavapipe opens"),
+        ),
+    ));
+    for (name, mut renderer) in renderers {
+        let before = renderer.stats().gpu_bytes;
+        let staged = StageCharacter::upload(renderer.as_mut(), &built, UploadOptions::default()).unwrap();
+        let held = renderer.stats().gpu_bytes - before;
+        println!("{name}: the character holds {held} bytes, and a render charges {charged}");
+        assert!(held > 4096 * 4096 * 4, "{name}: the 4096 texture is on the renderer ({held} bytes)");
+        assert!(held <= charged, "{name}: {held} bytes held, above the {charged} charged");
+        assert!(charged <= 2 * held, "{name}: {charged} charged, more than twice the {held} bytes held");
+        staged.release(renderer.as_mut()).unwrap();
+    }
+    let size = UVec2::splat(512);
+    let images = cost(size, 1, RenderQuality::Live, 0).gpu_mib.unwrap();
+    let hint = cost(size, 1, RenderQuality::Live, charged).gpu_mib.unwrap();
+    assert!(u64::from(hint - images) >= charged >> 20, "the hint carries the character: {images} MiB, then {hint}");
 }
 
 #[test]

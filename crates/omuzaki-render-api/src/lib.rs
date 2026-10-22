@@ -32,6 +32,7 @@ mod environment;
 mod error;
 mod handle;
 mod material;
+pub mod memory;
 mod morph;
 mod pass;
 mod quality;

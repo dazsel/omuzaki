@@ -13,7 +13,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::job::{DEFAULT_LIGHT_RIG, RenderQuality, check_size, cost, still_light, with_renderer};
+use super::job::{DEFAULT_LIGHT_RIG, RenderQuality, character_bytes, check_size, cost, still_light, with_renderer};
 use super::picture::{canvas, paste, store, straight};
 use super::still::{Shot, StillSpec, render_body_stills};
 use crate::body::{BodyServices, load_body};
@@ -119,7 +119,8 @@ impl Op for Turnaround {
             return Err(OpError::not_found(format!("there is no character '{}'", self.character))
                 .hint("check the id; characters live under characters/<id>"));
         }
-        Ok(Plan { cost: Some(cost(size, 4, self.quality)), ..Plan::default() })
+        let character = character_bytes(ctx, &self.character, self.variant.as_ref(), self.quality)?;
+        Ok(Plan { cost: Some(cost(size, 4, self.quality, character)), ..Plan::default() })
     }
 
     fn work(&self, job: &JobCtx<'_>) -> Result<Value, OpError> {

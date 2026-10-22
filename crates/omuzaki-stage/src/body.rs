@@ -55,6 +55,41 @@ impl Body {
         }
     }
 
+    /// The most GPU memory the body takes once staged with `upload` (#2092): its textures (a kit character's face layers
+    /// at `upload`'s density among them), its materials and its meshes, each at its bound in
+    /// [`omuzaki_render_api::memory`], so no renderer holds more for it. What a render job charges for the character.
+    #[must_use]
+    pub fn gpu_bytes(&self, upload: UploadOptions) -> u64 {
+        use omuzaki_render_api::memory::{MATERIAL_BYTES, mesh_bytes, texture_bytes};
+        use omuzaki_render_api::{MeshOptions, MeshUsage};
+        match self {
+            Self::Kit(built) => {
+                let textures: u64 = built.textures.values().map(|t| texture_bytes(&t.desc)).sum();
+                let layers: u64 = built.face_textures(upload.face_px_per_m).iter().map(|(_, d)| texture_bytes(d)).sum();
+                let meshes: u64 = built
+                    .meshes
+                    .iter()
+                    .map(|m| {
+                        let usage = if m.mesh.dynamic { MeshUsage::Dynamic } else { MeshUsage::Static };
+                        mesh_bytes(&m.mesh.geometry, &MeshOptions { usage, morphs: None })
+                    })
+                    .sum();
+                textures + layers + built.materials.len() as u64 * MATERIAL_BYTES + meshes
+            }
+            Self::Avatar(avatar) => {
+                let textures: u64 = avatar.textures.values().map(|t| texture_bytes(&t.desc)).sum();
+                let meshes: u64 = avatar
+                    .meshes
+                    .iter()
+                    .map(|m| {
+                        mesh_bytes(&m.mesh.geometry, &MeshOptions { usage: MeshUsage::Static, morphs: m.morphs.clone() })
+                    })
+                    .sum();
+                textures + avatar.materials.len() as u64 * MATERIAL_BYTES + meshes
+            }
+        }
+    }
+
     /// Puts the body on `renderer` with its frame loop. `upload` applies to a kit character only (an imported avatar
     /// brings its textures at their own size). Cold: uploads everything.
     ///

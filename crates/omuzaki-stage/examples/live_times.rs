@@ -1,6 +1,6 @@
 //! The live loop's frame times (spec v3 §10): `cargo run -p omuzaki-stage --features wgpu --release --example
 //! live_times -- [--character kit|vrm|both] [--size 1920x1080] [--fps 30] [--warmup 20] [--frames 3000] [--unpaced]
-//! [--steady MS] [--camera bust|full|face] [--software] [--out DIR]`.
+//! [--steady MS] [--camera bust|full|face] [--software] [--gpu-face] [--out DIR]`.
 //!
 //! It runs the studio's live path from start to finish, with nothing stood in:
 //! - a project with the kit's default character, made the way `character.create` makes it (template `standard`, seed
@@ -35,7 +35,9 @@
 //! The frame thread is timed with a stopwatch, which §10 does not accept for a gating CPU number (it asks for the OS's
 //! CPU-time counters): read it as the frame's deadline, not as `cpu.total`. Tracking (`track.face`) and the
 //! camera-to-photon latency need a real camera and are not measured here. `--software` runs on lavapipe or WARP, which
-//! proves the path runs and is never a timing machine. `--out DIR` writes each character's last frame as a PNG.
+//! proves the path runs and is never a timing machine; with `--gpu-face` it paints the face with the GPU rasteriser as a
+//! hardware adapter does, so the face path's work can be compared with the `gpu_face_timing` probe's on the same
+//! adapter. `--out DIR` writes each character's last frame as a PNG.
 //!
 //! `WGPU_ADAPTER_NAME` and `WGPU_BACKEND` pick the GPU, as for every program built on the renderer.
 
@@ -60,6 +62,7 @@ use omuzaki_core::glam::{Mat4, UVec2};
 use omuzaki_core::time::{FakeClock, Seconds};
 use omuzaki_doc_api::DocWrite;
 use omuzaki_doc_mock::MemDoc;
+use omuzaki_face::raster::gpu::VelloRasterizer;
 use omuzaki_ops_api::{Actor, Mode, Op, OpCtx};
 use omuzaki_render::{AdapterPreference, HeadlessOptions, WgpuRenderer};
 use omuzaki_render_api::{AlphaEncoding, Camera, Pass, Quality, Renderer, Scene, TargetDesc, budget};
@@ -100,6 +103,9 @@ struct Args {
     steady: Option<f64>,
     camera: String,
     software: bool,
+    /// Paint the face with the GPU rasteriser on any adapter, software ones included, so `--software` runs the same
+    /// face path as a hardware adapter (the live stage leaves a software adapter to the CPU raster).
+    gpu_face: bool,
     out: Option<PathBuf>,
 }
 
@@ -114,6 +120,7 @@ fn parse() -> Result<Args, Box<dyn Error>> {
         steady: None,
         camera: "bust".to_owned(),
         software: false,
+        gpu_face: false,
         out: None,
     };
     let mut it = std::env::args().skip(1);
@@ -140,6 +147,7 @@ fn parse() -> Result<Args, Box<dyn Error>> {
             "--steady" => args.steady = Some(value()?.parse()?),
             "--camera" => args.camera = value()?,
             "--software" => args.software = true,
+            "--gpu-face" => args.gpu_face = true,
             "--out" => args.out = Some(PathBuf::from(value()?)),
             other => return Err(format!("unknown flag {other}").into()),
         }
@@ -265,7 +273,9 @@ fn measure(
         StageClock::live(),
     )?;
     if let (AnyStage::Kit(kit), true) = (&mut stage, has_face) {
-        kit.set_face(renderer, FaceRig::standard())?;
+        let rig = FaceRig::standard();
+        let rig = if args.gpu_face { rig.with_gpu_rasterizer(Box::new(VelloRasterizer::new())) } else { rig };
+        kit.set_face(renderer, rig)?;
     }
     let sources = Arc::new(SourceSlot::new());
     let mut live = LiveStage::new(performer(&base), stage, Arc::clone(&sources), Quality::live(), budget::LIVE_GPU)?;

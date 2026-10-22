@@ -10,15 +10,17 @@ use omuzaki_char_api::{
 };
 use omuzaki_core::glam::UVec2;
 use omuzaki_doc_api::DocRead;
-use omuzaki_ops_api::{CostHint, JobCtx, OpError};
-use omuzaki_render_api::{Quality, Renderer, ShadowQuality};
+use omuzaki_ops_api::{CostHint, JobCtx, OpCtx, OpError};
+use omuzaki_render_api::{Capabilities, MtoonSupport, Quality, Renderer, ShadowQuality};
 use omuzaki_store_api::{Commercial, ContentHash, Provenance, Source, Store};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::still::StillLight;
+use crate::body::{BodyServices, load_body};
 use crate::error::StageError;
 use crate::recipe::LightRig;
+use crate::upload::UploadOptions;
 
 /// The smallest side of a render, pixels.
 pub const MIN_SIDE: u32 = 16;
@@ -133,9 +135,35 @@ pub fn max_side(quality: RenderQuality) -> u32 {
 
 /// One mebibyte, in bytes.
 const MIB: u64 = 1 << 20;
-/// MiB the character's own GPU data takes (meshes and textures), added to a render's images. An allowance, not a
-/// measurement.
-const CHARACTER_MIB: u64 = 64;
+/// What a render charges for its character when its plan has no builder to load it with ([`character_bytes`]): an
+/// allowance, not a measurement. A job without the builder cannot run, so only a bare plan sees it.
+const CHARACTER_ALLOWANCE: u64 = 64 * MIB;
+
+/// The GPU memory character `id` takes on a render's renderer, for its cost hint (#2092): the character loaded as
+/// the job will load it (`variant` applied, at `quality`'s detail) and counted at the renderer's bounds
+/// ([`Body::gpu_bytes`](crate::body::Body::gpu_bytes)), with the face layers at the stills' density. With the
+/// caching builder the load is mostly the cache's, and the job's own load after it is too.
+///
+/// [`CHARACTER_ALLOWANCE`] when `ctx` has no builder, store or build services: a bare plan.
+///
+/// # Errors
+/// What [`load_body`](crate::body::load_body) reports: a character that doesn't exist, read, build or prepare.
+pub fn character_bytes(
+    ctx: &OpCtx<'_>,
+    id: &CharId,
+    variant: Option<&VariantId>,
+    quality: RenderQuality,
+) -> Result<u64, OpError> {
+    let (Ok(builder), Ok(build), Ok(store)) =
+        (ctx.service::<dyn CharacterBuilder>(), ctx.service::<BuildServices>(), ctx.service::<dyn Store>())
+    else {
+        return Ok(CHARACTER_ALLOWANCE);
+    };
+    let mtoon = ctx.service::<Capabilities>().map_or(MtoonSupport::NONE, |c| c.mtoon);
+    let services = BodyServices::new(builder, build, store, mtoon, ctx.clock);
+    let body = load_body(ctx.doc, &services, id, variant, quality.detail())?;
+    Ok(body.gpu_bytes(UploadOptions::default()))
+}
 
 // The sizes and formats below mirror `omuzaki-render`, which the stage does not depend on. Change them together with the
 // renderer: the test `the_cost_hint_counts_every_image_the_render_allocates` pins the arithmetic.
@@ -190,8 +218,9 @@ fn bloom_bytes(target: UVec2) -> u64 {
     (bright + mips) * HALF_RGBA_BYTES
 }
 
-/// The cost hint of `images` stills of `size`: an upper bound for the GPU memory a render's images take at peak, plus
-/// [`CHARACTER_MIB`] for the character's meshes and textures. It counts, at the preset's sizes and formats:
+/// The cost hint of `images` stills of `size` of a character taking `character` bytes on the GPU
+/// ([`character_bytes`]): an upper bound for the GPU memory a render takes at peak. Besides the character, it counts
+/// the render's images, at the preset's sizes and formats:
 ///
 /// - the scene attachments at the internal size (`size` times the preset's render scale, rounded up), with the preset's
 ///   sample count, the most it asks for, so the renderer's own choice can only be lower;
@@ -203,13 +232,12 @@ fn bloom_bytes(target: UVec2) -> u64 {
 ///   every preset, and it is the cache's worst case: the job's own chain is one of its three slots.
 ///
 /// Not counted: depth of field, whose layers are cached the same way but which no still enables (`LightRig::post`);
-/// environment maps, which a still's scene never names; and the morph buffers, which are character data and so fall in
-/// the [`CHARACTER_MIB`] allowance with the meshes and textures.
+/// environment maps, which a still's scene never names. The morph buffers are the character's, in `character`.
 ///
 /// Worked: a 4096 by 4096 high still at 4 samples. Its internal size is 6144 by 6144, at 56 bytes a pixel: 2016 MiB of
 /// attachments. The shadow map is 2048 by 2048 at 4 bytes: 16 MiB. The output is 64 MiB and the read-back 64 MiB. The
-/// bloom chain of a 4096 target is 117 MiB, and three of them are 352 MiB. Together with the 64 MiB allowance, the total
-/// is 2576 MiB.
+/// bloom chain of a 4096 target is 117 MiB, and three of them are 352 MiB. With a character of 64 MiB, the total is
+/// 2576 MiB.
 ///
 /// Seconds per still: 0.2 live, 0.5 high, 2.0 offline. No money is spent. Setting `gpu_mib` puts the job on the GPU
 /// lane.
@@ -220,7 +248,7 @@ fn bloom_bytes(target: UVec2) -> u64 {
     clippy::cast_sign_loss,
     reason = "a job's image count stays far below 2^24, and a rounded-up pixel count is a non-negative whole number"
 )]
-pub fn cost(size: UVec2, images: u32, quality: RenderQuality) -> CostHint {
+pub fn cost(size: UVec2, images: u32, quality: RenderQuality, character: u64) -> CostHint {
     let preset = quality.quality();
     let internal = |side: u32| (f64::from(side) * f64::from(preset.render_scale)).ceil() as u64;
     let target = u64::from(size.x) * u64::from(size.y);
@@ -230,8 +258,8 @@ pub fn cost(size: UVec2, images: u32, quality: RenderQuality) -> CostHint {
     let readback = (u64::from(size.x) * OUTPUT_BYTES).next_multiple_of(COPY_ROW_ALIGNMENT) * u64::from(size.y);
     let largest = UVec2::splat(MAX_TARGET_SIDE);
     let bloom = BLOOM_CACHED_CHAINS * bloom_bytes(largest);
-    let bytes = attachments + shadow + output + readback + bloom;
-    let mib = u32::try_from(bytes.div_ceil(MIB) + CHARACTER_MIB).unwrap_or(u32::MAX);
+    let bytes = attachments + shadow + output + readback + bloom + character;
+    let mib = u32::try_from(bytes.div_ceil(MIB)).unwrap_or(u32::MAX);
     let per_image = match quality {
         RenderQuality::Live => 0.2,
         RenderQuality::High => 0.5,

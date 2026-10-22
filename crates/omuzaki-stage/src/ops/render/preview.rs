@@ -16,7 +16,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::job::{RenderQuality, check_size, cost, store_png, with_renderer};
+use super::job::{RenderQuality, character_bytes, check_size, cost, store_png, with_renderer};
 use super::still::{Shot, StillSpec, encode_png, render_body_stills};
 use crate::body::{BodyServices, load_body};
 use crate::recipe::LightRig;
@@ -185,7 +185,8 @@ impl Op for Preview {
         }
         self.staged(ctx.doc)?;
         let size = check_size(self.size, self.quality)?;
-        Ok(Plan { cost: Some(cost(size, 1, self.quality)), ..Plan::default() })
+        let character = character_bytes(ctx, &self.character, self.variant.as_ref(), self.quality)?;
+        Ok(Plan { cost: Some(cost(size, 1, self.quality, character)), ..Plan::default() })
     }
 
     fn work(&self, job: &JobCtx<'_>) -> Result<Value, OpError> {
