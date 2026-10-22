@@ -33,6 +33,7 @@ pub mod feed;
 pub mod i420;
 pub mod live_hold;
 pub mod ops;
+pub mod pacing;
 pub mod record;
 pub mod replay;
 pub mod service;
