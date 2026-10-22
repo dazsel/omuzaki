@@ -7,7 +7,7 @@
 
 use std::f64::consts::{FRAC_PI_2, PI};
 
-use crate::kit::curve::sstep;
+use crate::kit::curve::{fraction, lerp, sstep};
 
 /// The soft-sd torso's bottom, metres: the height `t = 0` is at on the body the placeholders were fitted to.
 const REFERENCE_BOTTOM: f64 = 0.325;
@@ -56,9 +56,15 @@ const DIP_KNEE: f64 = 0.60;
 const FRONT_BIAS: f64 = 1.5;
 
 /// The armhole's floor is flat within this many radians of the side (`phi = +-pi/2`)...
-const ARMHOLE_FLAT: f64 = 0.22;
+const ARMHOLE_FLAT: f64 = 0.40;
 /// ...and climbs back to the rim over this many more.
-const ARMHOLE_RAMP: f64 = 0.70;
+const ARMHOLE_RAMP: f64 = 0.20;
+
+/// The angles within this of an armhole's edge get [`ARMHOLE_SPLIT`] times the columns, so the steep climb out of an
+/// armhole is cut into many small quads (a few long skinny ones would chord across the shoulder's curve).
+const ARMHOLE_ZONE: f64 = 0.1;
+/// How many columns replace each of the prototype's in the armhole's zone.
+const ARMHOLE_SPLIT: usize = 3;
 
 /// The least gap between the V tip and the highest hem, as a fraction of the torso: under this the panel is a sliver.
 pub const MIN_PANEL: f64 = 0.08;
@@ -112,6 +118,22 @@ impl Profile {
     pub fn between(&self, phi: f64, f: f64) -> f64 {
         let hem = self.hem(phi);
         hem + f * (self.top(phi) - hem)
+    }
+
+    /// The angles the shell's columns are at: the prototype's [`angles`], with each interval near an armhole cut into
+    /// [`ARMHOLE_SPLIT`] when there is one. The first and last are the same point at the back.
+    pub fn columns(&self, n: usize) -> Vec<f64> {
+        let base = angles(n);
+        if self.armhole <= 0.0 {
+            return base;
+        }
+        let near = |phi: f64| (phi.abs() - FRAC_PI_2).abs() < ARMHOLE_FLAT + ARMHOLE_RAMP + ARMHOLE_ZONE;
+        let mut out = vec![base[0]];
+        for pair in base.windows(2) {
+            let split = if near(f64::midpoint(pair[0], pair[1])) { ARMHOLE_SPLIT } else { 1 };
+            out.extend((1..=split).map(|k| lerp(pair[0], pair[1], fraction(k, split))));
+        }
+        out
     }
 
     /// The least height of the rim over the highest hem: the panel's smallest extent, as a fraction of the torso.
