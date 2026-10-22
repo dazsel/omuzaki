@@ -122,7 +122,7 @@ async fn a_new_credential_waits_for_the_person_to_pair_it_once() {
     assert_eq!(spec.on_behalf_of, Studio::person());
     let card = rig.studio.approvals().remove(0);
     assert_eq!(card.need, Need::Pairing { client: "claude-code".into() });
-    assert!(rig.paired.lock().unwrap().is_empty(), "nothing is paired before the person says so");
+    assert_eq!(*rig.paired.lock().unwrap(), [], "nothing is paired before the person says so");
 
     // The person pairs it: the session goes on, and the host is told so it can remember the credential.
     rig.studio.resolve(card.id, Decision::Approve, &Studio::person()).unwrap();
@@ -138,7 +138,7 @@ async fn a_new_credential_waits_for_the_person_to_pair_it_once() {
     until("a second session opens", || rig.studio.specs().len() == 2).await;
     let second = rig.studio.sessions().into_iter().max_by_key(|s| s.id).unwrap();
     assert_eq!(second.state, SessionState::Active);
-    assert!(rig.studio.approvals().is_empty());
+    assert_eq!(rig.studio.approvals(), []);
     client.cancel().await.unwrap();
     relay.await.unwrap();
 }
