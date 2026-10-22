@@ -1,0 +1,24 @@
+{
+  "about": "The show `main` with one graph, `brb`: a redeem titled BRB switches the OBS scene. For the ops that run, inspect or remove a graph.",
+  "base": "show",
+  "steps": [
+    {
+      "op": "automation.add_graph",
+      "args": {
+        "show": "main",
+        "id": "brb",
+        "graph": {
+          "graph": { "name": "Be right back" },
+          "nodes": {
+            "redeem": { "kind": "on.event", "params": { "kind": "redeem", "where": { "reward.title": "BRB" } } },
+            "scene": {
+              "kind": "op.run",
+              "params": { "op": "obs.set_scene", "args": { "scene": "BRB" } },
+              "in": { "in": "redeem.fired" }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

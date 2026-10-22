@@ -190,6 +190,21 @@ fn refuse_broken(def: &ShowDef, graph: &GraphId) -> Result<(), OpError> {
     Ok(())
 }
 
+/// A patch that writes `value` at `path`, creating the missing parent tables on the way (the document applies a
+/// change only under a parent that exists).
+fn create(ctx: &OpCtx<'_>, path: &DocPath, value: Value) -> Patch {
+    let mut at = path.clone();
+    let mut value = value;
+    while let Some((parent, key)) = at.split_last() {
+        if parent.segments().is_empty() || ctx.doc.get(&parent).is_some() {
+            break;
+        }
+        value = json!({ key: value });
+        at = parent;
+    }
+    Patch::new().with(at, None, Some(value))
+}
+
 fn to_node(def: &ShowDef) -> Result<Value, OpError> {
     let mut node = Value::Null;
     def.to_node(&mut node).map_err(|e| OpError::internal(e.to_string()))?;
@@ -207,11 +222,11 @@ impl Op for CreateShow {
             return Err(OpError::conflict(format!("show `{}` already exists", self.id)));
         }
         let def = ShowDef::new(self.name.clone().unwrap_or_else(|| self.id.to_string()));
-        let mut patch = Patch::new().with(at, None, Some(to_node(&def)?));
+        let mut patch = create(ctx, &at, to_node(&def)?);
         let default = paths::default_show();
         let becomes_default = ctx.doc.get(&default).is_none();
         if becomes_default {
-            patch = patch.with(default, None, Some(json!(self.id.as_str())));
+            patch.extend(create(ctx, &default, json!(self.id.as_str())));
         }
         let mut plan = Plan::edit(patch);
         plan.output = Some(json!({ "show": self.id, "default": becomes_default }));
@@ -235,7 +250,7 @@ impl Op for AddGraph {
         refuse_broken(&def, &self.id)?;
         let mut node = Value::Null;
         self.graph.to_node(&mut node).map_err(|e| OpError::internal(e.to_string()))?;
-        let mut plan = Plan::edit(Patch::new().with(paths::graph(&show, &self.id), None, Some(node)));
+        let mut plan = Plan::edit(create(ctx, &paths::graph(&show, &self.id), node));
         plan.output = Some(json!({ "show": show, "graph": self.id, "nodes": self.graph.nodes.len() }));
         Ok(plan)
     }

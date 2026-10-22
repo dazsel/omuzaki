@@ -258,6 +258,13 @@ impl Rig {
                     ))
                     // No OBS connection: the `obs.*` examples dry-run and say they would need one.
                     .insert::<omuzaki_obs::service::ObsService>(Arc::new(omuzaki_obs::service::ObsService::new()))
+                    .insert::<omuzaki_live::Automation>(Arc::new(omuzaki_live::Automation::new()))
+                    // A Twitch service on a transport that answers nothing: the `twitch.*` examples dry-run and
+                    // report that no token is stored.
+                    .insert::<omuzaki_twitch::TwitchService>(Arc::new(omuzaki_twitch::TwitchService::new(
+                        Arc::new(omuzaki_http_mock::FakeHttp::new()),
+                        Arc::new(omuzaki_live::Automation::new()),
+                    )))
                     .insert::<dyn PerformHost>(Arc::new(IdleHost))
                     .insert::<dyn InputHost>(Arc::new(IdleInput))
                     .build(),

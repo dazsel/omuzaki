@@ -11,7 +11,9 @@
 //! [`fold`] is the one case-insensitive comparison every node uses (NFKC, then lowercase), so filters and chat
 //! commands agree.
 
-omuzaki_core::define_link!();
+omuzaki_core::define_link! {
+    omuzaki_live_api::link();
+}
 
 pub mod event;
 pub mod fold;

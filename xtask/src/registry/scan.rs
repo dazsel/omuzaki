@@ -8,6 +8,10 @@ use super::lex::{Tok, Token, tokens};
 /// The prefix every self-registration macro's name starts with (`register_op!`, `register_part_kind!`, ...).
 pub const MACRO_PREFIX: &str = "register_";
 
+/// The `omuzaki-l10n-api` macro that declares a crate's message table (ADR 0023). It is a registration too: the table
+/// is submitted to `inventory` and recorded as kind `messages`, name `messages`, so the scan reads a call of it as one.
+pub const MESSAGES_MACRO: &str = "messages";
+
 /// The `omuzaki-core` macro that defines a crate's `link()` (ADR 0015).
 pub const LINK_MACRO: &str = "define_link";
 
@@ -183,8 +187,11 @@ pub fn scan(source: &str) -> FileScan {
                     out.unsupported.push(UnsupportedAt { form, line: token.line });
                 }
                 if word == "macro_rules" && is_punct(&toks, i + 1, '!') {
-                    if let Some(kind) = ident_at(&toks, i + 2).and_then(|name| name.strip_prefix(MACRO_PREFIX)) {
+                    let name = ident_at(&toks, i + 2);
+                    if let Some(kind) = name.and_then(|name| name.strip_prefix(MACRO_PREFIX)) {
                         out.defines.push(kind.to_owned());
+                    } else if name == Some(MESSAGES_MACRO) {
+                        out.defines.push(MESSAGES_MACRO.to_owned());
                     }
                     matchers.extend(macro_matchers(&toks, i + 3));
                     i += 3; // past the name, so the definition is not read as a call
@@ -220,12 +227,9 @@ pub fn scan(source: &str) -> FileScan {
                         pending = Pending::default();
                         i += 2;
                         continue;
-                    } else if let Some(kind) = word.strip_prefix(MACRO_PREFIX)
-                        && is_punct(&toks, i + 1, '!')
-                        && let Some(name) = first_argument(&toks, i + 2)
-                    {
+                    } else if let Some((kind, name)) = registration_call(word, &toks, i) {
                         let cfgs = cfgs_here(&frames, &pending);
-                        out.calls.push(Call { kind: kind.to_owned(), name, line: token.line, cfgs });
+                        out.calls.push(Call { kind, name, line: token.line, cfgs });
                         pending = Pending::default();
                     }
                 }
@@ -235,6 +239,18 @@ pub fn scan(source: &str) -> FileScan {
         i += 1;
     }
     out
+}
+
+/// The registry and name of a registration call at `at`: `register_<kind>!(<name>, ...)`, or a message table
+/// (`messages! { ... }`), which records itself as kind and name `messages`.
+fn registration_call(word: &str, toks: &[Token], at: usize) -> Option<(String, String)> {
+    if !is_punct(toks, at + 1, '!') {
+        return None;
+    }
+    if word == MESSAGES_MACRO {
+        return Some((MESSAGES_MACRO.to_owned(), MESSAGES_MACRO.to_owned()));
+    }
+    Some((word.strip_prefix(MACRO_PREFIX)?.to_owned(), first_argument(toks, at + 2)?))
 }
 
 fn mod_name(frame: &Frame) -> Option<&str> {
@@ -515,6 +531,20 @@ mod inline { register_op!(InInlineMod); }
                 call("op", "InInlineMod", 10),
             ]
         );
+    }
+
+    #[test]
+    fn a_message_table_is_a_registration() {
+        let source = r#"
+macro_rules! messages { ($($t:tt)*) => {}; }
+omuzaki_l10n_api::messages! {
+    pub hello = "x-hello" () => "Hello.";
+}
+fn f() { messages! { pub inner = "x-inner" () => "Inner."; } }
+"#;
+        let scan = scan(source);
+        assert_eq!(calls(source), [call("messages", "messages", 3)]);
+        assert_eq!(scan.defines, ["messages"]);
     }
 
     #[test]

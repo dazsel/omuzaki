@@ -13,8 +13,10 @@
 //! | [`messages`] | the refusals of design 7.3 and the three image refusals, declared as localised messages (ADR 0023) |
 //!
 //! Later tasks add the modules of design D9 beside these: `face::{frame, segment, snap, outline, spacing, likeness}`,
-//! and the ops that call them. No op is registered yet, so the crate has no `define_link!` (ADR 0015).
+//! and the ops that call them. The message table is the crate's one registration so far, so it defines `link()` (ADR 0015).
 #![deny(missing_docs)]
+
+omuzaki_core::define_link!();
 
 pub mod colour;
 pub mod image;

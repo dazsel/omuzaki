@@ -8,7 +8,9 @@
 //!
 //! The node catalogue is `omuzaki-live-nodes`; the engine finds kinds through the registry and never names one.
 
-omuzaki_core::define_link!();
+omuzaki_core::define_link! {
+    omuzaki_live_api::link();
+}
 
 mod compile;
 mod core;
