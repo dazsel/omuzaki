@@ -4,7 +4,7 @@
 
 use omuzaki_core::glam::UVec2;
 use omuzaki_ops_api::{CostHint, JobCtx, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
-use omuzaki_render_api::Image;
+use omuzaki_render_api::{AlphaEncoding, Image};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -95,16 +95,18 @@ pub struct Difference {
 }
 
 impl Difference {
-    /// The difference of `a` and `b`, which have the same size; changed means over `threshold`.
+    /// The difference of `a` and `b`, which have the same size; changed means over `threshold`. Colours are compared
+    /// premultiplied by their alpha, as they composite: a colour change under zero alpha is no change.
     #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, reason = "a render's channel total is far below 2^52; the mean is at most 255")]
     pub fn of(a: &Image, b: &Image, threshold: u8) -> Self {
         let width = a.size.x as usize;
         let (mut changed, mut max, mut total) = (0_u64, 0_u8, 0_u64);
         let (mut lo, mut hi) = (UVec2::MAX, UVec2::ZERO);
         let mut per_pixel = Vec::with_capacity(a.rgba8.len() / 4);
-        for (i, (p, q)) in a.rgba8.as_chunks::<4>().0.iter().zip(b.rgba8.as_chunks::<4>().0).enumerate() {
+        for (i, (in_a, in_b)) in a.rgba8.as_chunks::<4>().0.iter().zip(b.rgba8.as_chunks::<4>().0).enumerate() {
+            let (from, to) = (premultiplied(*in_a, a.alpha), premultiplied(*in_b, b.alpha));
             let mut worst = 0;
-            for (x, y) in p.iter().zip(q) {
+            for (x, y) in from.iter().zip(&to) {
                 let d = x.abs_diff(*y);
                 worst = worst.max(d);
                 total += u64::from(d);
@@ -121,6 +123,16 @@ impl Difference {
         let mean = if a.rgba8.is_empty() { 0.0 } else { (total as f64 / a.rgba8.len() as f64) as f32 };
         Self { per_pixel, changed, bounds, max, mean }
     }
+}
+
+/// A pixel with its colour multiplied by its alpha, rounded; a premultiplied one as it is.
+fn premultiplied(pixel: [u8; 4], alpha: AlphaEncoding) -> [u8; 4] {
+    if alpha == AlphaEncoding::Premultiplied {
+        return pixel;
+    }
+    let a = u16::from(pixel[3]);
+    let times = |c: u8| u8::try_from((u16::from(c) * a + 127) / 255).unwrap_or(u8::MAX);
+    [times(pixel[0]), times(pixel[1]), times(pixel[2]), pixel[3]]
 }
 
 /// The picture `mode` draws for `a` and `b`, which have the same size.
@@ -256,6 +268,25 @@ mod tests {
         let diff = draw(CompareMode::Diff, &a, &b, &d, 8).unwrap();
         assert_eq!(&diff.rgba8[(3 * 10 + 4) * 4..(3 * 10 + 4) * 4 + 4], &[255, 0, 0, 255]);
         assert_eq!(&diff.rgba8[..4], &[12, 0, 0, 255], "small differences brightened four times");
+    }
+
+    #[test]
+    fn a_change_counts_above_the_threshold_and_only_where_it_shows() {
+        let size = UVec2::new(4, 4);
+        let a = picture(size, |x, _| if x == 3 { [10, 200, 30, 0] } else { [100, 100, 100, 255] });
+        // Row 0: exactly the threshold; row 1: one over it; row 2: one over it, but only in alpha; column 3: a new
+        // colour under zero alpha, which shows nowhere.
+        let b = picture(size, |x, y| match (x, y) {
+            (3, _) => [250, 0, 250, 0],
+            (0, 0) => [108, 100, 100, 255],
+            (0, 1) => [109, 100, 100, 255],
+            (0, 2) => [100, 100, 100, 246],
+            _ => [100, 100, 100, 255],
+        });
+        let d = Difference::of(&a, &b, 8);
+        assert_eq!(d.changed, 2, "{:?}", d.per_pixel);
+        assert_eq!(d.bounds, Some([0, 1, 1, 2]));
+        assert_eq!(d.per_pixel[3], 0, "a colour under zero alpha doesn't count");
     }
 
     #[test]

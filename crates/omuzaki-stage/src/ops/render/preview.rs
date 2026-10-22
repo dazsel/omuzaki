@@ -23,7 +23,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::job::{RenderQuality, character_bytes, check_size, cost, store_png, with_renderer};
+use super::job::{RenderQuality, character_bytes, check_expression, check_size, cost, store_png, with_renderer};
 use super::still::{Shot, StillSpec, encode_png, render_body_stills};
 use crate::body::{Body, BodyServices, load_body};
 use crate::frame::face::FacePoints;
@@ -336,6 +336,7 @@ impl Op for Preview {
         }
         let mut shot = Shot::new(camera);
         if let Some(expression) = self.expression(preset)? {
+            check_expression(&body, &expression)?;
             shot = shot.with_expression(expression, self.weight);
         }
         job.checkpoint("rendering", 0.2)?;

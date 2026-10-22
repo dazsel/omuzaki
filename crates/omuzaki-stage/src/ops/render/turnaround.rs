@@ -3,6 +3,7 @@
 //! print-quality sheet with labels and annotations is `sheet.*`'s (EX-10).
 
 use omuzaki_char_api::{BuildServices, CharId, CharacterBuilder, VariantId};
+use omuzaki_face_api::ExpressionId;
 use omuzaki_core::glam::UVec2;
 use omuzaki_core::time::SystemClock;
 use omuzaki_ops_api::{JobCtx, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
@@ -13,7 +14,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::job::{DEFAULT_LIGHT_RIG, RenderQuality, character_bytes, check_size, cost, still_light, with_renderer};
+use super::job::{
+    DEFAULT_LIGHT_RIG, RenderQuality, character_bytes, check_expression, check_size, cost, still_light, with_renderer,
+};
 use super::picture::{canvas, paste, store, straight};
 use super::still::{Shot, StillSpec, render_body_stills};
 use crate::body::{BodyServices, load_body};
@@ -22,6 +25,10 @@ use crate::sheet::turnaround::View;
 
 /// The gap between views, in pixels.
 pub const GUTTER: u32 = 8;
+/// The lowest and highest the camera may look from, degrees: below -30 the views look up the character's chin, above 60
+/// down onto the crown, and neither reads as a turnaround.
+const MIN_PITCH: f32 = -30.0;
+const MAX_PITCH: f32 = 60.0;
 /// One view's size when none is given: a portrait cell.
 const DEFAULT_SIZE: [u32; 2] = [384, 640];
 
@@ -39,7 +46,8 @@ fn default_light_rig() -> String {
 #[schemars(extend(
     "examples" = [
         {"character": "kit"},
-        {"character": "kit", "framing": "bust", "size": [256, 256], "quality": "live"}
+        {"character": "kit", "framing": "bust", "size": [256, 256], "quality": "live"},
+        {"character": "kit", "framing": "face", "pitch": 15.0, "expression": "joy"}
     ],
     "x-omuzaki-fixture" = "character"
 ))]
@@ -52,9 +60,15 @@ pub struct Turnaround {
     /// The shot of every view: `full` (the default), `bust` or `face`.
     #[serde(default)]
     pub framing: Framing,
+    /// Degrees the camera looks from above, -30 to 60 (0 by default), the same for every view.
+    #[serde(default)]
+    pub pitch: f32,
     /// The light rig, by name (`viewer-studio` by default).
     #[serde(default = "default_light_rig")]
     pub light_rig: String,
+    /// An expression of a kit character's face profile, at full weight on every view; the neutral face when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expression: Option<ExpressionId>,
     /// One view's width and height in pixels, each 16 to 4096.
     #[serde(default = "default_size")]
     pub size: [u32; 2],
@@ -94,6 +108,12 @@ impl Turnaround {
         if matches!(self.framing, Framing::Free | Framing::Hands) {
             return Err(OpError::invalid("framing", "a turnaround frames the character: full, bust or face"));
         }
+        if !(MIN_PITCH..=MAX_PITCH).contains(&self.pitch) {
+            return Err(OpError::invalid(
+                "pitch",
+                format!("a pitch of {} degrees is outside {MIN_PITCH} to {MAX_PITCH}", self.pitch),
+            ));
+        }
         still_light(&self.light_rig)?;
         Ok(size)
     }
@@ -104,7 +124,8 @@ impl Op for Turnaround {
         OpMeta {
             name: "render.turnaround",
             summary: "Render a character (built or imported) from the front, three-quarter, side and back in one row, \
-                      and store it as a PNG; returns its omuzaki://render/ URI.",
+                      optionally from above (`pitch`) and showing an expression, and store it as a PNG; returns its \
+                      omuzaki://render/ URI.",
             kind: OpKind::Job,
             scope: Scope::Render,
             // It changes nothing in the document (the PNG goes to the content store), so its empty patch is undone
@@ -140,6 +161,9 @@ impl Op for Turnaround {
             crate::body::Body::Kit(_) => "kit",
             crate::body::Body::Avatar(_) => "imported",
         };
+        if let Some(expression) = &self.expression {
+            check_expression(&body, expression)?;
+        }
         let landmarks = body.landmarks().map_err(|e| OpError::invalid("framing", e.to_string()))?;
         #[allow(clippy::cast_precision_loss, reason = "sides are at most 4096")]
         let aspect = size.x as f32 / size.y as f32;
@@ -148,8 +172,13 @@ impl Op for Turnaround {
             let mut camera = CameraDef::preset(self.framing);
             // The sheet turns the character; the camera goes the other way round it to see the same side.
             camera.yaw = if view == View::Back { 180.0 } else { -view.yaw_deg() };
+            camera.pitch = self.pitch;
             let placed = frame(self.framing, &landmarks, &camera, aspect).map_err(|e| OpError::invalid("framing", e.to_string()))?;
-            shots.push(Shot::new(placed));
+            let shot = Shot::new(placed);
+            shots.push(match &self.expression {
+                Some(expression) => shot.with_expression(expression.clone(), 1.0),
+                None => shot,
+            });
         }
         job.checkpoint("rendering", 0.2)?;
         let spec = StillSpec::new(light, size, self.quality.quality());
