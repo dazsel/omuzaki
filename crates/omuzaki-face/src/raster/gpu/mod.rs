@@ -1,7 +1,7 @@
 //! The GPU rasteriser: draws a `DrawList` through Vello. [`SceneEncoder`] is the CPU half, which turns a list into a
 //! `vello::Scene` and does no GPU work; [`VelloRasterizer`] rasterises that scene with Vello's compute stages (`engine`,
 //! on resources kept between repaints) and resolves it into the renderer's face texture, recording both into the
-//! renderer's encoder. Strokes beyond the basic mapping (hairline parity) are [`stroke`]'s.
+//! renderer's encoder. Strokes thinner than a pixel are drawn as Skia's hairlines, in `stroke`.
 
 pub mod clip;
 mod engine;
@@ -10,7 +10,7 @@ pub mod gradient;
 pub mod resolve;
 mod sections;
 mod snap;
-pub mod stroke;
+mod stroke;
 
 use std::any::Any;
 use std::future::Future;
@@ -32,6 +32,7 @@ use self::gradient::brush;
 use self::resolve::Resolve;
 use self::sections::{LayerCache, check_tiling, fingerprint};
 use self::snap::snapped_path;
+use self::stroke::hairline;
 use crate::layer::GpuRasterizer;
 use crate::painter::LayerSections;
 use crate::raster::cpu::check;
@@ -171,9 +172,29 @@ impl SceneEncoder {
                 scene.fill(Fill::NonZero, Affine::IDENTITY, &paint, Some(GRADIENT_SHIFT * to_px), &self.path);
             }
             Cmd::Stroke { path, ref paint, width, cap, join, opacity } => {
-                fill_bez(list.elements(path), &mut self.path);
+                let els = list.elements(path);
+                // A zero or negative width draws nothing on the canvas (a width that is not a number was rejected by
+                // `check`).
+                if width <= 0.0 {
+                    return Ok(());
+                }
+                let round = cap == Cap::Round;
+                if let Some(factor) = hairline(els, width, to_px, paint, opacity, &mut self.path) {
+                    if factor <= 0.0 {
+                        return Ok(());
+                    }
+                    // The line's own half width, and a round cap's half pixel past the end.
+                    self.bounds.add(&self.path, Affine::IDENTITY, 1.0);
+                    let mut style = Stroke::new(1.0);
+                    style.start_cap = if round { KCap::Round } else { KCap::Butt };
+                    style.end_cap = style.start_cap;
+                    let brush = brush(paint, opacity * factor, &mut self.stops);
+                    scene.stroke(&style, Affine::IDENTITY, &brush, Some(GRADIENT_SHIFT * to_px), &self.path);
+                    return Ok(());
+                }
+                fill_bez(els, &mut self.path);
                 let mut style = Stroke::new(f64::from(width));
-                style.start_cap = if cap == Cap::Round { KCap::Round } else { KCap::Butt };
+                style.start_cap = if round { KCap::Round } else { KCap::Butt };
                 style.end_cap = style.start_cap;
                 style.join = if join == Join::Round { KJoin::Round } else { KJoin::Miter };
                 style.miter_limit = MITER_LIMIT;
