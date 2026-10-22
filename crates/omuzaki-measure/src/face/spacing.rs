@@ -106,9 +106,19 @@ pub fn spacing(m: &FaceMeasure) -> FeatureSpacing {
         unmeasured.insert("width_at_mouth".to_owned(), "the outline is not ok on both sides at the mouth".to_owned());
     }
     #[allow(clippy::cast_precision_loss)] // 41 heights
-    let width_max = (0..WIDTH_HEIGHTS)
+    let widths: Vec<f64> = (0..WIDTH_HEIGHTS)
         .filter_map(|i| width(&right, &left, eye_to_chin * i as f64 / (WIDTH_HEIGHTS - 1) as f64))
-        .fold(0.0_f64, f64::max);
+        .collect();
+    let width_max = widths.iter().copied().fold(0.0_f64, f64::max);
+    if widths.len() < WIDTH_HEIGHTS {
+        unmeasured.insert(
+            "width_max".to_owned(),
+            format!(
+                "the largest of {} of the {WIDTH_HEIGHTS} heights; the others are not ok on both sides",
+                widths.len()
+            ),
+        );
+    }
     FeatureSpacing {
         eye_to_chin,
         eye_to_mouth,

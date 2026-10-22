@@ -206,12 +206,13 @@ pub fn segment(roi: &Roi, frame: &FaceFrame, skin: Option<[f64; 3]>) -> Result<S
         Some(given) => given,
         None => lit_skin(roi, frame).ok_or(SegmentError::NoSkin)?,
     };
-    let line_l = line_lightness(roi, frame, skin[0]);
-    if let Some(line) = line_l
-        && skin[0] - line < MIN_CONTRAST
-    {
-        return Err(SegmentError::LowContrast(skin[0] - line));
+    // No line at all down the chin is the faintest line art: nothing bounds the face (a skin-coloured shape with no
+    // drawing on it).
+    let line_l = line_lightness(roi, frame, skin[0]).ok_or(SegmentError::LowContrast(0.0))?;
+    if skin[0] - line_l < MIN_CONTRAST {
+        return Err(SegmentError::LowContrast(skin[0] - line_l));
     }
+    let line_l = Some(line_l);
     let lower_dl = -line_l.map_or(SKIN_BELOW_MAX, |line| SKIN_BELOW_MAX.min((skin[0] - line) / 2.0));
     let mut seg = Segmentation {
         skin,

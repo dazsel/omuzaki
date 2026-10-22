@@ -36,6 +36,9 @@ pub const MAX_LINE: f64 = 0.10;
 /// are a leak.
 pub const JUMP: f64 = 0.08;
 
+/// How many samples beside an unpartnered jump decide whether it is a leak or a lock of hair (20°).
+const BESIDE_JUMP: usize = 8;
+
 /// A hair sample this much (IOD) inside its mirror is a lock of hair in front of the cheek.
 pub const OCCLUSION: f64 = 0.04;
 
@@ -362,28 +365,68 @@ pub fn outline(roi: &Roi, seg: &Segmentation, frame: &FaceFrame, exclude: &[Sect
 }
 
 /// Marks the leaks: between two jumps of more than [`JUMP`] between neighbouring measured samples, the first upward.
-/// An upward jump with no downward one after it leaks to the end; a downward jump with no upward one before it leaks
-/// from the start.
+///
+/// A jump with no partner (a downward one with no upward one before it, or an upward one with nothing after it) leaks at
+/// the profile's start or end unless the short side of the jump is shorter than its mirror by more than half a jump: a
+/// fill that escapes makes one side longer than the face, while a lock of hair over one cheek that reaches the profile's
+/// end makes that side shorter, which is an occlusion, not a leak.
 fn mark_leaks(r: &[Option<f64>; ANGLES], state: &mut [SampleState; ANGLES]) {
     let measured: Vec<usize> = (0..ANGLES).filter(|&k| state[k] == SampleState::Ok && r[k].is_some()).collect();
-    let mut open: Option<usize> = None;
+    let at = |i: usize| r[measured[i]].unwrap_or(0.0);
+    // Jumps between measured[i] and measured[i + 1]: (i, upward).
+    let jumps: Vec<(usize, bool)> = (0..measured.len().saturating_sub(1))
+        .filter_map(|i| {
+            let step = at(i + 1) - at(i);
+            (step.abs() > JUMP).then_some((i, step > 0.0))
+        })
+        .collect();
+    // Whether the measured samples from position `from` to `to` are shorter than their mirrors (outside that run).
+    // Only the samples next to the jump are judged, so a lock that thins out gradually still reads as a lock.
+    let shorter_than_mirror = |from: usize, to: usize, next_to_end: bool| {
+        let (from, to) = if next_to_end {
+            (from.max((to + 1).saturating_sub(BESIDE_JUMP)), to)
+        } else {
+            (from, to.min(from + BESIDE_JUMP - 1))
+        };
+        let run = &measured[from..=to];
+        let mut excess: Vec<f64> = run
+            .iter()
+            .filter(|&&k| !run.contains(&mirror(k)) && measured.contains(&mirror(k)))
+            .filter_map(|&k| Some(r[k]? - r[mirror(k)]?))
+            .collect();
+        median(&mut excess).is_some_and(|m| m < -JUMP / 2.0)
+    };
+    let last = measured.len().saturating_sub(1);
+    let mut open: Option<(usize, usize)> = None; // (the jump's index in `jumps`, the position after it)
     let mut first_down_seen = false;
-    for pair in measured.windows(2) {
-        let (a, b) = (pair[0], pair[1]);
-        let (ra, rb) = (r[a].unwrap_or(0.0), r[b].unwrap_or(0.0));
-        if rb - ra > JUMP && open.is_none() {
-            open = Some(b);
-        } else if ra - rb > JUMP {
-            match open.take() {
-                Some(from) => mark(state, &measured, from, a),
-                None if !first_down_seen => mark(state, &measured, measured[0], a),
-                None => {}
+    let mut leaks = Vec::new();
+    for (j, &(i, up)) in jumps.iter().enumerate() {
+        if up {
+            if open.is_none() {
+                open = Some((j, i + 1));
             }
-            first_down_seen = true;
+            continue;
+        }
+        match open.take() {
+            Some((_, from)) => leaks.push((from, i)),
+            None if !first_down_seen => {
+                let short_end = jumps.get(j + 1).map_or(last, |&(next, _)| next);
+                if !shorter_than_mirror(i + 1, short_end, false) {
+                    leaks.push((0, i));
+                }
+            }
+            None => {}
+        }
+        first_down_seen = true;
+    }
+    if let Some((j, from)) = open {
+        let short_start = j.checked_sub(1).map_or(0, |prev| jumps[prev].0 + 1);
+        if !shorter_than_mirror(short_start, from - 1, true) {
+            leaks.push((from, last));
         }
     }
-    if let (Some(from), Some(&last)) = (open, measured.last()) {
-        mark(state, &measured, from, last);
+    for (from, to) in leaks {
+        mark(state, &measured, measured[from], measured[to]);
     }
 }
 
