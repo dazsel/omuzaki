@@ -20,6 +20,8 @@
 //! | [`inject`] | [`ChannelMap`](inject::ChannelMap), [`Injector`](inject::Injector), the pacer and the batches |
 //! | [`hotkeys`] | [`VtsMapping`](hotkeys::VtsMapping), [`suggest`](hotkeys::suggest) and the [`HotkeyLimiter`](hotkeys::HotkeyLimiter) |
 //! | [`clock`] | the injected [`Clock`](clock::Clock) |
+//! | [`service`] | [`VtsService`](service::VtsService), the app's one bridge, and [`VtsFeed`](service::VtsFeed), the perform loop's end |
+//! | [`ops`] | `vts.connect`, `vts.disconnect`, `vts.status`, `vts.map`, `vts.suggest`, `vts.trigger`, `vts.release` |
 //! | [`limits`] | the API limits as constants and the validated newtypes ([`CustomParamName`](limits::CustomParamName), [`ParamValue`](limits::ParamValue), [`FadeTime`](limits::FadeTime)) |
 //! | `testing` (feature `testing`, and this crate's tests) | an in-process mock `VTube Studio` server on loopback for tests of the bridge: no VTS, account or network needed; the only module that does I/O |
 #![deny(missing_docs)]
@@ -29,9 +31,13 @@ pub mod clock;
 pub mod hotkeys;
 pub mod inject;
 pub mod limits;
+pub mod ops;
 pub mod protocol;
+pub mod service;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
+
+omuzaki_core::define_link!();
 
 /// The plugin name shown in the user's permission popup (3 to 32 characters on the wire).
 ///
