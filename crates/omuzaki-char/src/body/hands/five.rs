@@ -80,7 +80,7 @@ pub(super) fn left_hand(hand: &Hand, layout: &BodyLayout) -> Result<MeshBuilder,
     add_rings(&mut builder, &thumb.grid, &|i| thumb.centres[i], &thumb_tone, &|i, _| thumb_skin(THUMB_T[i]))?;
     add_rings(&mut builder, &thumb.stem, &|i| thumb.stem_centres[i], &|_| thumb_tone(0), &|_, _| thumb_skin(0.0))?;
 
-    for bones in &FINGERS {
+    for bones in FINGERS {
         let finger = Finger::new(hand, layout, bones)?;
         let grid = Grid::from_fn(FINGER_T.len(), FINGER_SEGMENTS + 1, |k, j| finger.ring(hand, k, j))?;
         let finger_tone = |k: usize| tone(super::TIP_TONE, sstep(0.5, 1.0, FINGER_T[k]));
@@ -105,7 +105,7 @@ struct Finger {
 }
 
 impl Finger {
-    fn new(hand: &Hand, layout: &BodyLayout, bones: &[HumanoidBone; 3]) -> Result<Self, KitError> {
+    fn new(hand: &Hand, layout: &BodyLayout, bones: [HumanoidBone; 3]) -> Result<Self, KitError> {
         let joint = |b: HumanoidBone| {
             layout.joint64(b).filter(|p| p.is_finite()).ok_or(KitError::Degenerate { what: "a finger joint" })
         };
@@ -127,7 +127,7 @@ impl Finger {
         if !(at[4].is_finite() && at[4] > 0.0 && radius.0.is_finite() && radius.0 > 0.0) {
             return Err(KitError::Degenerate { what: "a finger" });
         }
-        Ok(Self { points, at, bones: *bones, radius, taper: hand.finger_taper })
+        Ok(Self { points, at, bones, radius, taper: hand.finger_taper })
     }
 
     /// The point at `t` of the path's length (0 at the root, 1 at the tip).

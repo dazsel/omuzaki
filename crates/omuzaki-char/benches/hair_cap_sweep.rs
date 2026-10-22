@@ -12,7 +12,7 @@ use std::hint::black_box;
 use criterion::{Criterion, criterion_group, criterion_main};
 use omuzaki_char::hair::compile::{Forked, GroupGeometry, HairGenCtx};
 use omuzaki_char::hair::r#gen::cap::fill_shell;
-use omuzaki_char::hair::r#gen::curtain::{self, Folds};
+use omuzaki_char::hair::r#gen::curtain;
 use omuzaki_char::hair::r#gen::part_sweep::{Lock, rebuild};
 use omuzaki_char::hair::tube::OutwardFrame;
 use omuzaki_char_api::{CapGen, CurtainGen, Dynamics, GroupId, HeadSurface, PartSweepGen, Quality};
@@ -38,7 +38,7 @@ impl HeadSurface for Egg {
 fn curtain_vertices(g: &CurtainGen, ctx: &mut HairGenCtx<'_>, frame: &OutwardFrame) -> usize {
     let group = curtain::compile(g, ctx);
     let GroupGeometry::Strip { u, columns } = &group.geometry else { return 0 };
-    curtain::group_mesh(&group.clumps, u, *columns, frame, Folds::Prototype, None).map_or(0, |m| m.positions.len())
+    curtain::group_mesh(&group.clumps, u, *columns, frame, None).map_or(0, |m| m.positions.len())
 }
 
 fn bench(c: &mut Criterion) {

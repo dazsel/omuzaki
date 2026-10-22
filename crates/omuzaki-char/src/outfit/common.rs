@@ -416,6 +416,9 @@ pub fn enclosing_scale(exponent: f64) -> f64 {
     2.0_f64.powf(0.5 - 1.0 / exponent)
 }
 
+/// Covered sections worked out, by region and `t` (its bits).
+type Known = HashMap<(BodyRegion, u32), Option<Section>>;
+
 /// The fit outside a garment: the fit inside it with `ease` added to the radii of the regions it covers (widened for a
 /// square cut by [`enclosing_scale`]). Joints, the bind pose and every other region are the inner fit's.
 #[derive(Debug, Clone)]
@@ -427,7 +430,7 @@ pub struct Envelope {
     scale: f32,
     /// The covered sections already worked out, by region and `t`: a garment's ring clears its neighbours with a search
     /// of the fit inside it, and the layers over it ask for the same sections many times.
-    known: Arc<Mutex<HashMap<(BodyRegion, u32), Option<Section>>>>,
+    known: Arc<Mutex<Known>>,
 }
 
 impl Envelope {

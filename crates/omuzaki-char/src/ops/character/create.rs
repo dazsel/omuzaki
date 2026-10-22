@@ -96,6 +96,7 @@ const STARTERS: [Starter; 6] = [
 ];
 
 /// A starting part that takes its kind's own defaults.
+#[allow(clippy::unnecessary_wraps)] // the signature every starter's parameters share
 fn kind_defaults(_: &TemplateDefaults, kind: &PartKindRegistration) -> Result<Value, serde_json::Error> {
     Ok((kind.defaults)())
 }

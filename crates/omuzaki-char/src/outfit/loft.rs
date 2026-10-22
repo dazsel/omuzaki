@@ -344,7 +344,7 @@ fn root_top(fit: &dyn BodyFit, neighbour: BodyRegion) -> f32 {
     }
     let (mut lo, mut hi) = (0.0_f32, ROOT_LIMIT);
     for _ in 0..ROOT_STEPS {
-        let mid = 0.5 * (lo + hi);
+        let mid = f32::midpoint(lo, hi);
         if has(mid) {
             lo = mid;
         } else {
@@ -777,31 +777,30 @@ impl Surface {
     /// ring itself where the surface is smooth. ([`Surface::point`] takes the ring itself: a garment's rows ask for each
     /// ring once.)
     fn framed(&self, t: f64) -> Result<Ring, GarmentError> {
-        let cells = FRAME_CELLS;
         #[allow(clippy::cast_precision_loss)] // a small count
-        let n = cells as f64;
-        let at = (t * n).clamp(0.0, n);
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // in 0..=cells
-        let k = (at.floor() as usize).min(cells - 1);
-        let grid = |k: usize| crate::kit::curve::fraction(k, cells);
+        let cells = FRAME_CELLS as f64;
+        let place = (t * cells).clamp(0.0, cells);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // in 0..=FRAME_CELLS
+        let cell = (place.floor() as usize).min(FRAME_CELLS - 1);
+        let grid = |cell: usize| crate::kit::curve::fraction(cell, FRAME_CELLS);
         #[allow(clippy::cast_precision_loss)] // a small count
-        let s = at - k as f64;
-        if s <= 0.0 {
-            return Ok(Ring { t, ..self.ring(grid(k))? });
+        let share = place - cell as f64;
+        if share <= 0.0 {
+            return Ok(Ring { t, ..self.ring(grid(cell))? });
         }
-        if s >= 1.0 {
-            return Ok(Ring { t, ..self.ring(grid(k + 1))? });
+        if share >= 1.0 {
+            return Ok(Ring { t, ..self.ring(grid(cell + 1))? });
         }
-        let (a, b) = (self.ring(grid(k))?, self.ring(grid(k + 1))?);
-        let unit = |a: DVec3, b: DVec3| a.lerp(b, s).try_normalize().unwrap_or(a);
+        let (below, above) = (self.ring(grid(cell))?, self.ring(grid(cell + 1))?);
+        let unit = |from: DVec3, to: DVec3| from.lerp(to, share).try_normalize().unwrap_or(from);
         Ok(Ring {
             t,
-            centre: a.centre.lerp(b.centre, s),
-            axis: unit(a.axis, b.axis),
-            across: unit(a.across, b.across),
-            through: unit(a.through, b.through),
-            radii: a.radii.lerp(b.radii, s),
-            ..a
+            centre: below.centre.lerp(above.centre, share),
+            axis: unit(below.axis, above.axis),
+            across: unit(below.across, above.across),
+            through: unit(below.through, above.through),
+            radii: below.radii.lerp(above.radii, share),
+            ..below
         })
     }
 
