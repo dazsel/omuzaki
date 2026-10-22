@@ -122,7 +122,9 @@ impl Op for Preview {
                       hands) and lit by a light rig, and store it as a PNG; returns its omuzaki://render/ URI.",
             kind: OpKind::Job,
             scope: Scope::Render,
-            undo: Undo::None,
+            // Its finish plans no change (the PNG goes to the content store), so its empty patch is undone exactly and
+            // nothing enters the history.
+            undo: Undo::Auto,
         }
     }
 
