@@ -347,3 +347,78 @@ async fn building_a_fetcher_inside_an_async_runtime_does_not_panic() {
     let from_builder = HttpFetcher::builder().allow_loopback_http(true).build();
     drop((from_new, from_builder));
 }
+
+fn throttled(status: u16, retry_after: &'static str) -> Reply {
+    Response::builder()
+        .status(status)
+        .header("retry-after", retry_after)
+        .body(Full::new(Bytes::new()))
+        .expect("a valid response")
+}
+
+#[test]
+fn a_503_with_retry_after_waits_that_long_before_the_next_try() {
+    let server = Server::start(|n, _| if n == 0 { throttled(503, "1") } else { reply(200, "ok") });
+    let started = std::time::Instant::now();
+    let (_, bytes) = read_all(&fetcher(), &server.url("/a"), 0).expect("fetched after waiting");
+    assert_eq!(bytes, b"ok");
+    assert!(started.elapsed() >= Duration::from_secs(1), "waited only {:?}", started.elapsed());
+    assert_eq!(server.hits(), 2);
+}
+
+#[test]
+fn a_429_with_an_http_date_in_the_past_retries_without_waiting() {
+    let server =
+        Server::start(|n, _| if n == 0 { throttled(429, "Sun, 06 Nov 1994 08:49:37 GMT") } else { reply(200, "ok") });
+    let (_, bytes) = read_all(&fetcher(), &server.url("/a"), 0).expect("fetched");
+    assert_eq!((bytes.as_slice(), server.hits()), (b"ok".as_slice(), 2));
+}
+
+#[test]
+fn a_retry_after_over_the_cap_fails_at_once_without_a_second_request() {
+    let server = Server::start(|_, _| throttled(429, "3600"));
+    let started = std::time::Instant::now();
+    let error = read_all(&fetcher(), &server.url("/a"), 0).expect_err("over the cap");
+    let text = reason(error);
+    assert!(text.contains("429") && text.contains("3600"), "{text}");
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert_eq!(server.hits(), 1);
+}
+
+#[test]
+fn the_cap_is_configurable() {
+    let server = Server::start(|n, _| if n == 0 { throttled(503, "2") } else { reply(200, "ok") });
+    let capped = HttpFetcher::builder()
+        .allow_loopback_http(true)
+        .backoff(Duration::ZERO)
+        .max_retry_after(Duration::from_secs(1))
+        .build();
+    assert!(reason(read_all(&capped, &server.url("/a"), 0).expect_err("2 s is over a 1 s cap")).contains("503"));
+    assert_eq!(server.hits(), 1);
+}
+
+#[test]
+fn a_malformed_retry_after_falls_back_to_the_backoff() {
+    let server = Server::start(|n, _| if n < 2 { throttled(503, "soon") } else { reply(200, "ok") });
+    let started = std::time::Instant::now();
+    let (_, bytes) = read_all(&fetcher(), &server.url("/a"), 0).expect("fetched");
+    assert_eq!(bytes, b"ok");
+    assert!(started.elapsed() < Duration::from_secs(1), "the zero backoff was used");
+    assert_eq!(server.hits(), 3);
+}
+
+#[test]
+fn retry_after_on_a_500_is_ignored() {
+    let server = Server::start(|n, _| if n == 0 { throttled(500, "3600") } else { reply(200, "ok") });
+    let (_, bytes) = read_all(&fetcher(), &server.url("/a"), 0).expect("retried on the backoff");
+    assert_eq!((bytes.as_slice(), server.hits()), (b"ok".as_slice(), 2));
+}
+
+#[test]
+fn a_throttled_last_try_gives_up_without_sleeping_again() {
+    let server = Server::start(|_, _| throttled(503, "1"));
+    let one_try = HttpFetcher::builder().allow_loopback_http(true).retries(1).build();
+    let started = std::time::Instant::now();
+    assert!(reason(read_all(&one_try, &server.url("/a"), 0).expect_err("gives up")).contains("gave up after 1"));
+    assert!(started.elapsed() < Duration::from_millis(900));
+}

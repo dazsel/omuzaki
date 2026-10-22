@@ -4207,12 +4207,15 @@ name = "omuzaki-http"
 version = "0.0.0"
 dependencies = [
  "bytes",
+ "directories",
  "http-body-util",
+ "httpdate",
  "hyper",
  "hyper-util",
  "omuzaki-ai-api",
  "reqwest",
  "rustls",
+ "thiserror 2.0.21",
  "tokio",
 ]
 
@@ -4657,6 +4660,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-performer-api"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-anim-api",
+ "omuzaki-char-api",
+ "omuzaki-core",
+ "omuzaki-l10n-api",
+ "omuzaki-llm-api",
+ "omuzaki-ops-api",
+ "omuzaki-stage-api",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "toml",
+]
+
+[[package]]
+name = "omuzaki-performer-mock"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-anim-api",
+ "omuzaki-core",
+ "omuzaki-l10n-api",
+ "omuzaki-llm-api",
+ "omuzaki-llm-mock",
+ "omuzaki-ops-api",
+ "omuzaki-performer-api",
+ "omuzaki-stage-api",
+]
+
+[[package]]
 name = "omuzaki-pixfmt"
 version = "0.0.0"
 dependencies = [
@@ -4846,6 +4881,7 @@ dependencies = [
  "omuzaki-face",
  "omuzaki-face-api",
  "omuzaki-face-mock",
+ "omuzaki-http",
  "omuzaki-io-api",
  "omuzaki-io-fbx",
  "omuzaki-io-ops",
