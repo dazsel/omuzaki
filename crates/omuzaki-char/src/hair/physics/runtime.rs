@@ -145,7 +145,54 @@ fn lerp3(a: Mat3, b: Mat3, t: f32) -> Mat3 {
 /// Binds every vertex of `geometry` to the nearest point of the chains' rest polylines. Vertices come in locks and
 /// strips, so the chain the last vertex bound to is tried first, and a chain whose box is further than the best point
 /// found so far is skipped.
+///
+/// Vertices at one point (within [`SAME_POINT`]) take one place on the chains, the first one's, and keep their own
+/// normals. Neighbouring curtain strips meet halfway between their guides with a copy each, which the renderer welds
+/// into one seam when it creates the mesh; bound each to its own guide, the copies would part as soon as the guides
+/// moved differently, tearing the seam.
 fn bind(chains: &ChainSet, geometry: &MeshData) -> Vec<Binding> {
+    let mut out = bind_nearest(chains, geometry);
+    for (k, first) in first_at_same_point(&geometry.positions).into_iter().enumerate() {
+        if first != k {
+            let Binding { a, t, offset, .. } = out[first];
+            out[k] = Binding { a, t, offset, normal: out[k].normal };
+        }
+    }
+    out
+}
+
+/// How close, in metres on every axis, two vertices are to count as one point: twice the renderer's weld tolerance, so
+/// every pair it welds is caught.
+const SAME_POINT: f32 = 2e-6;
+
+/// For each position, the index of the first position at the same point (itself when it is the first). Positions are
+/// hashed into cells [`SAME_POINT`] wide, so each looks only at its own and the neighbouring cells.
+#[allow(clippy::cast_possible_truncation)] // cell coordinates of a character-sized mesh fit an i64
+fn first_at_same_point(positions: &[Vec3]) -> Vec<usize> {
+    let cell = |p: Vec3| (p / SAME_POINT).floor().to_array().map(|c| c as i64);
+    let mut cells: std::collections::HashMap<[i64; 3], Vec<usize>> = std::collections::HashMap::new();
+    let mut first = Vec::with_capacity(positions.len());
+    for (k, &p) in positions.iter().enumerate() {
+        let [x, y, z] = cell(p);
+        let mut found = k;
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                for dz in -1..=1 {
+                    let near = cells.get(&[x + dx, y + dy, z + dz]).into_iter().flatten();
+                    for &j in near.filter(|&&j| (positions[j] - p).abs().max_element() <= SAME_POINT) {
+                        found = found.min(first[j]);
+                    }
+                }
+            }
+        }
+        first.push(found);
+        cells.entry([x, y, z]).or_default().push(k);
+    }
+    first
+}
+
+/// [`bind`]'s nearest point for each vertex on its own.
+fn bind_nearest(chains: &ChainSet, geometry: &MeshData) -> Vec<Binding> {
     let rest = chains.rest();
     let ranges: Vec<std::ops::Range<usize>> = chains.chains().collect();
     let boxes: Vec<(Vec3, Vec3)> = ranges
@@ -248,5 +295,63 @@ impl PartRuntime for HairRuntime {
             + self.bindings.len() * size_of::<Binding>()
             + self.frame.len() * size_of::<Mat3>()
             + 2 * self.chains.positions().len() * 4 * size_of::<f32>()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::cast_precision_loss)] // a few points and frames
+
+    use omuzaki_char_api::{Bulge, Falloff, Follow, GroupId, HairClump, HairPhysics, Taper};
+    use omuzaki_core::time::Seconds;
+
+    use super::*;
+
+    /// No bone moves: the hair moves only by its own simulation.
+    struct Still;
+
+    impl PoseSource for Still {
+        fn skin_matrix(&self, _: &JointRef) -> Option<Mat4> {
+            Some(Mat4::IDENTITY)
+        }
+
+        fn root(&self) -> Mat4 {
+            Mat4::IDENTITY
+        }
+    }
+
+    fn clump(x: f32, stiffness: f64) -> HairClump {
+        HairClump {
+            group: GroupId::new("c-curtain").unwrap_or_else(|e| panic!("{e}")),
+            rest: (0..8).map(|k| Vec3::new(x, 1.0 - 0.04 * k as f32, -0.1)).collect(),
+            width: Taper::default(),
+            thickness: Bulge::default(),
+            stiffness: Falloff { root: 1.0, tip: stiffness, from: 0.0, to: 1.0 },
+            shade: 1.0,
+            simulate: true,
+            follow: Follow::Body,
+            tint: None,
+        }
+    }
+
+    #[test]
+    fn copies_of_one_point_bound_beside_different_chains_move_as_one() {
+        // Two strips, each with its own copy of the line halfway between their guides, listed after the strip's own
+        // vertices, so each copy is nearest (by a tie) to the chain its strip lies along.
+        let (stiff, floppy) = (clump(-0.02, 0.9), clump(0.02, 0.02));
+        let line = |x: f32| (0..8).map(move |k| Vec3::new(x, 1.0 - 0.04 * k as f32, -0.1));
+        let positions: Vec<Vec3> = line(-0.03).chain(line(0.0)).chain(line(0.03)).chain(line(0.0)).collect();
+        let geometry = MeshData { normals: vec![Vec3::Z; positions.len()], positions, ..MeshData::default() };
+        let mut runtime = HairRuntime::new(&[stiff, floppy], &HairPhysics::default(), &[], 1.0, 0, &geometry)
+            .unwrap_or_else(|e| panic!("{e}"));
+        let mut parted = 0.0_f32;
+        for frame in 0..120 {
+            let t = frame as f32 / 60.0;
+            let wind = Vec3::new(3.0 * (4.0 * t).sin(), 0.0, 2.0);
+            runtime.step(&StepCtx::new(1.0 / 60.0, Seconds(f64::from(t)), &Still, wind));
+            let view = runtime.dynamic_mesh(0).unwrap_or_else(|| panic!("the mesh"));
+            parted = (0..8).map(|k| view.positions[8 + k].distance(view.positions[24 + k])).fold(parted, f32::max);
+        }
+        assert!(parted <= 1e-6, "the copies parted by {parted} m");
     }
 }
