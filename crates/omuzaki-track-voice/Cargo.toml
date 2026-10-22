@@ -10,13 +10,16 @@ repository.workspace = true
 
 [dependencies]
 thiserror.workspace = true
+omuzaki-ai-api = { path = "../omuzaki-ai-api" }
 omuzaki-anim-api = { path = "../omuzaki-anim-api" }
 omuzaki-audio-api = { path = "../omuzaki-audio-api" }
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-face-api = { path = "../omuzaki-face-api" }
+omuzaki-performer-api = { path = "../omuzaki-performer-api" }
 
 [dev-dependencies]
 criterion.workspace = true
+omuzaki-ai-mock = { path = "../omuzaki-ai-mock" }
 omuzaki-audio-mock = { path = "../omuzaki-audio-mock" }
 
 [[bench]]
@@ -28,5 +31,5 @@ workspace = true
 
 [package.metadata.omuzaki]
 kind = "Implementation"
-summary = "voice-driven mouth and cues (FE-08, PF-08): `VoiceAnalyzer` turns microphone samples at any rate into a `VoiceFrame` every 10 ms (energy voice activity over an adaptive noise floor, loudness, onsets, and the five VRM visemes from LPC formants F1 and F2 against a `VowelProfile`); a wait-free newest-wins `voice_mailbox` carries frames to the perform thread; `LipSync` turns them into anim-api's audio layer through the character's viseme expressions, with attack and release, plus the life layer's `Cues`; `VoiceListener` runs the analyser on its own thread over an audio-api tap ring; `CueExtractor` turns the `cues` tap into the life layer's speech-band loudness and syllable onsets (`OnsetDetector`: the three-band onset strength, peak-picked against a median-plus-MAD threshold), each stamped `clock.time_of(sample) - capture_offset`, with `cue_mailbox` and `CueListener`. Analysis allocates nothing after construction. Tested on vowels from the deterministic formant synthesiser in `synth`"
+summary = "voice-driven mouth and cues (FE-08, PF-08): `VoiceAnalyzer` turns microphone samples at any rate into a `VoiceFrame` every 10 ms (energy voice activity over an adaptive noise floor, loudness, onsets, and the five VRM visemes from LPC formants F1 and F2 against a `VowelProfile`); a wait-free newest-wins `voice_mailbox` carries frames to the perform thread; `LipSync` turns them into anim-api's audio layer through the character's viseme expressions, with attack and release, plus the life layer's `Cues`; `VoiceListener` runs the analyser on its own thread over an audio-api tap ring; `CueExtractor` turns the `cues` tap into the life layer's speech-band loudness and syllable onsets (`OnsetDetector`: the three-band onset strength, peak-picked against a median-plus-MAD threshold), each stamped `clock.time_of(sample) - capture_offset`, with `cue_mailbox` and `CueListener`; `ai_mouth::MouthDrive` is the AI performer's mouth (ai-performer-voice-face.md §4): the TTS lead through a `voice_to_face@1` stream into keys, 10 ms ticks released on the feed's play log and stamped `P − D`, cuts, stalls and closes as cancellable 60 ms fades, the viseme fallback for missed or late keys, private speech left clear; `MouthHandle` is the TTS host's `VoiceLead` and `MouthThread` its release thread. Analysis allocates nothing after construction. Tested on vowels from the deterministic formant synthesiser in `synth`"
 wasm = false

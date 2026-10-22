@@ -321,11 +321,66 @@ impl CutState {
     }
 }
 
+/// One engine block's consumption of a feed, on program time: one record of the feed's play log (§3.3). Feed samples
+/// `consumed .. consumed + n` started playing at `start`; the sample after them would play at `end`.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Played {
+    /// 0, 1, 2, ...: one per recorded block, never reused.
+    pub index: u64,
+    /// The feed index of the first sample consumed.
+    pub consumed: u64,
+    /// How many samples the block consumed, at least 1 (fewer than a block is an underrun inside it).
+    pub n: u32,
+    /// Program time of the first sample.
+    pub start: Seconds,
+    /// Program time just after the last sample.
+    pub end: Seconds,
+}
+
+impl Played {
+    /// Whether feed sample `sample` played in this block.
+    pub fn holds(&self, sample: u64) -> bool {
+        (self.consumed..self.consumed + u64::from(self.n)).contains(&sample)
+    }
+
+    /// The program time of feed sample `sample`, from this record alone; `None` outside it. Nothing is ever
+    /// extrapolated across records.
+    #[allow(clippy::cast_precision_loss)] // sample offsets inside one block are small
+    pub fn time_of(&self, sample: u64) -> Option<Seconds> {
+        self.holds(sample).then(|| {
+            let fraction = (sample - self.consumed) as f64 / f64::from(self.n);
+            Seconds(self.start.0 + fraction * (self.end.0 - self.start.0))
+        })
+    }
+}
+
+/// Why a play-log record can't be read.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum PlayGap {
+    /// Not published yet.
+    NotYet,
+    /// Its slot was reused before it was read.
+    Lapped,
+}
+
 /// What stands behind a [`CutProbe`]: read-only views of one feed's close flag and playhead
 /// (`omuzaki_audio_api::feed::FeedCloser` and `FeedPlayhead`, §3.3), which the speech host wraps.
 pub trait CutSource: Send + Sync {
     /// The feed's cut state now. Never blocks.
     fn state(&self) -> CutState;
+
+    /// How many play-log records were published: the next one's index. 0 for a source without a log.
+    fn head(&self) -> u64 {
+        0
+    }
+
+    /// Play-log record `index`. Never blocks.
+    ///
+    /// # Errors
+    /// [`PlayGap`] when it isn't published yet or was reused.
+    fn record(&self, _index: u64) -> Result<Played, PlayGap> {
+        Err(PlayGap::NotYet)
+    }
 }
 
 /// The drive's own, pump-independent view of one feed (§4.2): it checks this immediately before each handoff, so no
@@ -343,6 +398,24 @@ impl CutProbe {
     pub fn state(&self) -> CutState {
         self.0.state()
     }
+
+    /// Whether both probes read the same feed.
+    pub fn same(&self, other: &Self) -> bool {
+        std::ptr::addr_eq(Arc::as_ptr(&self.0), Arc::as_ptr(&other.0))
+    }
+
+    /// How many play-log records were published.
+    pub fn head(&self) -> u64 {
+        self.0.head()
+    }
+
+    /// Play-log record `index`.
+    ///
+    /// # Errors
+    /// [`PlayGap`] when it isn't published yet or was reused.
+    pub fn record(&self, index: u64) -> Result<Played, PlayGap> {
+        self.0.record(index)
+    }
 }
 
 impl fmt::Debug for CutProbe {
@@ -357,8 +430,10 @@ pub trait VoiceLead: Send {
     /// A new feed starts: the probe the drive checks before each release.
     fn attach(&mut self, probe: CutProbe);
 
-    /// `pcm` (mono, `rate` Hz) will start playing at program time `at`. Private PCM moves nothing (§4.3).
-    fn push(&mut self, at: Seconds, rate: u32, pcm: &[f32], private: bool);
+    /// `pcm` (mono, `rate` Hz), written at feed index `feed_sample` of the attached feed, is predicted to start playing
+    /// at program time `at` (a pacing hint: stamps come from the play log). Private PCM moves nothing (§4.3); it is
+    /// on another feed, so its `feed_sample` means nothing here.
+    fn push(&mut self, at: Seconds, feed_sample: u64, rate: u32, pcm: &[f32], private: bool);
 
     /// The pump saw a cut at `at`. Only tidies: the drive's release decisions come from the probe, never from this.
     fn cut(&mut self, at: Seconds);
@@ -460,5 +535,14 @@ mod tests {
         let probe = CutProbe::new(Arc::new(Flag(CutState::cut(Seconds(0.9)))));
         assert_eq!(probe.clone().state(), CutState::cut(Seconds(0.9)));
         assert!(format!("{probe:?}").contains("Cut"));
+        assert_eq!((probe.head(), probe.record(0)), (0, Err(PlayGap::NotYet)));
+    }
+
+    #[test]
+    fn a_record_places_only_its_own_samples() {
+        let r = Played { index: 3, consumed: 1_440, n: 60, start: Seconds(0.890), end: Seconds(0.8925) };
+        assert_eq!(r.time_of(1_440), Some(Seconds(0.890)));
+        assert!((r.time_of(1_470).unwrap().0 - 0.89125).abs() < 1e-12);
+        assert_eq!((r.time_of(1_439), r.time_of(1_500)), (None, None));
     }
 }

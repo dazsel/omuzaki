@@ -9,7 +9,7 @@ license.workspace = true
 repository.workspace = true
 
 # Tests only: every dependency is a dev-dependency, so the library stays empty and links nothing. Only the track area's
-# implementation crates (`omuzaki-track`, `omuzaki-speech`), the runtimes its real graphs load through (`omuzaki-ai-ort`,
+# implementation crates (`omuzaki-track`, `omuzaki-track-*`, `omuzaki-speech`), the runtimes its real graphs load through (`omuzaki-ai-ort`,
 # `omuzaki-ai-litert`) and the registry the speech models install through (`omuzaki-ai`) may appear here
 # (`cargo xtask lint-deps`).
 [dev-dependencies]
@@ -28,6 +28,10 @@ omuzaki-ai-ort = { path = "../omuzaki-ai-ort" }
 # Kokoro through the TTS host into a mock engine's feeds, as the performer speaks.
 omuzaki-audio-api = { path = "../omuzaki-audio-api" }
 omuzaki-audio-mock = { path = "../omuzaki-audio-mock" }
+# The TTS host driving the AI mouth over the mock engine's real play log.
+omuzaki-ai-mock = { path = "../omuzaki-ai-mock" }
+omuzaki-anim-api = { path = "../omuzaki-anim-api" }
+omuzaki-track-voice = { path = "../omuzaki-track-voice" }
 omuzaki-performer-api = { path = "../omuzaki-performer-api" }
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-speech = { path = "../omuzaki-speech" }

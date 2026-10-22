@@ -33,14 +33,17 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use omuzaki_ai_api::Session;
+use omuzaki_audio_api::feed::Missing;
 use omuzaki_audio_api::tap::FeedRequest;
-use omuzaki_audio_api::{AudioEngine, EngineClock, FeedCloser, FeedId, FeedPlayhead, FeedWriter};
+use omuzaki_audio_api::{AudioEngine, EngineClock, FeedCloser, FeedId, FeedPlayhead, FeedWriter, SAMPLE_RATE};
 use omuzaki_core::time::Seconds;
 use omuzaki_performer_api::ids::VoiceId;
 use omuzaki_performer_api::intent::StyleTag;
 use omuzaki_performer_api::limits::CHUNK_MAX_CHARS;
 use omuzaki_performer_api::speech::{SpeakHow, SpeechControl, SpeechHandle, SpeechState, Voice, VoiceError};
-use omuzaki_performer_api::voice::{CutProbe, CutSource, CutState, SPEED_MAX, SPEED_MIN, VoiceAssignment, VoiceLead};
+use omuzaki_performer_api::voice::{
+    CutProbe, CutSource, CutState, PlayGap, Played, SPEED_MAX, SPEED_MIN, VoiceAssignment, VoiceLead,
+};
 
 use crate::ears::EchoLog;
 use crate::slots::tts::{TTS_RATE, TtsCall, Utterance};
@@ -311,6 +314,29 @@ impl CutSource for FeedCut {
             u64::MAX => CutState::Live,
             at => CutState::cut(self.clock.time_of(at)),
         }
+    }
+
+    fn head(&self) -> u64 {
+        self.playhead.head()
+    }
+
+    fn record(&self, index: u64) -> Result<Played, PlayGap> {
+        let r = self.playhead.get(index).map_err(|missing| match missing {
+            Missing::NotYet => PlayGap::NotYet,
+            Missing::Lapped => PlayGap::Lapped,
+        })?;
+        // The engine clock's own sample length, so a record's span is exactly the engine samples it played over.
+        let clock = self.clock.read();
+        let per_feed_sample =
+            f64::from(SAMPLE_RATE) / f64::from(self.playhead.rate().max(1)) * clock.seconds_per_sample;
+        let start = clock.time_of(r.at_sample);
+        Ok(Played {
+            index: r.index,
+            consumed: r.consumed,
+            n: r.n,
+            start,
+            end: Seconds(start.0 + f64::from(r.n) * per_feed_sample),
+        })
     }
 }
 
@@ -785,7 +811,8 @@ impl Shared {
                     start: writer.written(),
                 });
             }
-            if !feed.attached {
+            // The private feed reaches no viewer, so the mouth never follows it: its PCM only clears the layer.
+            if !feed.attached && slot != PRIVATE {
                 if let Some(lead) = state.lead.as_mut() {
                     let source = FeedCut {
                         closer: writer.closer(),
@@ -806,7 +833,8 @@ impl Shared {
                 let pushed = writer.push(&pcm[from..from + take]);
                 if let Some(lead) = state.lead.as_mut() {
                     let at = predicted(&self.clock, &playhead, writer.written() - pushed as u64, consumed, self.rate);
-                    lead.push(at, self.rate, &pcm[from..from + pushed], chunk.private);
+                    let first = writer.written() - pushed as u64;
+                    lead.push(at, first, self.rate, &pcm[from..from + pushed], chunk.private);
                 }
                 inner.written += pushed;
                 room -= pushed;

@@ -5886,13 +5886,16 @@ dependencies = [
  "omuzaki-ai",
  "omuzaki-ai-api",
  "omuzaki-ai-litert",
+ "omuzaki-ai-mock",
  "omuzaki-ai-ort",
+ "omuzaki-anim-api",
  "omuzaki-audio-api",
  "omuzaki-audio-mock",
  "omuzaki-core",
  "omuzaki-performer-api",
  "omuzaki-speech",
  "omuzaki-track",
+ "omuzaki-track-voice",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
@@ -5966,10 +5969,14 @@ name = "omuzaki-track-voice"
 version = "0.0.0"
 dependencies = [
  "criterion",
+ "omuzaki-ai-api",
+ "omuzaki-ai-mock",
  "omuzaki-anim-api",
  "omuzaki-audio-api",
+ "omuzaki-audio-mock",
  "omuzaki-core",
  "omuzaki-face-api",
+ "omuzaki-performer-api",
  "thiserror 2.0.21",
 ]
 

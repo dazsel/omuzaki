@@ -73,7 +73,7 @@ impl VoiceLead for Lead {
     fn attach(&mut self, probe: CutProbe) {
         self.0.lock().unwrap().attached.push(probe);
     }
-    fn push(&mut self, at: Seconds, rate: u32, pcm: &[f32], private: bool) {
+    fn push(&mut self, at: Seconds, _feed_sample: u64, rate: u32, pcm: &[f32], private: bool) {
         self.0.lock().unwrap().pushed.push((at, rate, pcm.len(), private));
     }
     fn cut(&mut self, at: Seconds) {
