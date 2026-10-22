@@ -4,7 +4,8 @@
 //! character's own frame (feet near `y = 0`, facing +Z). The rig is not posed: the build is the bind pose
 //! (ADR 0014), so positions are read as built.
 
-use omuzaki_anim_api::HumanoidBone;
+use omuzaki_anim_api::{HumanoidBone, Pose};
+use omuzaki_avatar_api::avatar::ImportedAvatar;
 use omuzaki_char_api::{BuiltCharacter, JointRef, PartCategory, PartMesh, find_kind};
 use omuzaki_core::glam::Vec3;
 
@@ -83,72 +84,61 @@ impl Landmarks {
     /// body's extent in Y) that isn't finite and above zero, or a skinned mesh whose joint data doesn't fit its vertices.
     pub fn measure(built: &BuiltCharacter) -> Result<Self, StageError> {
         let inverse_bind = built.rig.inverse_bind();
-        let joint_height = |bone: HumanoidBone| -> Result<Option<f32>, StageError> {
-            let Some(id) = built.rig.bone(&JointRef::Humanoid(bone)) else { return Ok(None) };
-            let height = inverse_bind.get(id.index()).map(|m| m.inverse().w_axis.y);
-            match height {
-                Some(h) if h.is_finite() => Ok(Some(h)),
-                _ => Err(framing(format!("the bind height of '{bone}' is not a finite number"))),
-            }
-        };
-        let eyes = match (joint_height(HumanoidBone::LeftEye)?, joint_height(HumanoidBone::RightEye)?) {
-            (Some(left), Some(right)) => Some(f32::midpoint(left, right)),
-            (one, other) => one.or(other),
-        };
-        let chest = match joint_height(HumanoidBone::UpperChest)? {
-            Some(height) => Some(height),
-            None => joint_height(HumanoidBone::Chest)?,
+        let joint_height = |bone: HumanoidBone| {
+            let id = built.rig.bone(&JointRef::Humanoid(bone))?;
+            Some(inverse_bind.get(id.index()).map_or(f32::NAN, |m| m.inverse().w_axis.y))
         };
         let head_part = head_part(built);
+        let meshes = built.meshes.iter().map(|built_mesh| Measured {
+            mesh: &built_mesh.mesh,
+            owner: format!("part '{}'", built_mesh.part),
+            head: if head_part == Some(&built_mesh.part) && is_head_mesh(&built_mesh.mesh.name) {
+                HeadRule::Whole
+            } else {
+                HeadRule::No
+            },
+        });
+        measure_meshes(meshes, joint_height, built.stature.map(|s| s.height_m))
+    }
 
-        let (mut body, mut head, mut bust, mut hands) = (None, None, None, None);
-        for built_mesh in &built.meshes {
-            let mesh = &built_mesh.mesh;
-            let is_head = head_part == Some(&built_mesh.part) && is_head_mesh(&mesh.name);
-            let hand_joints = hand_joints(mesh);
-            let geometry = &mesh.geometry;
-            let skinned = geometry.is_skinned();
-            if skinned && (geometry.joints.len() != geometry.positions.len() || geometry.weights.len() != geometry.positions.len())
-            {
-                return Err(framing(format!(
-                    "mesh '{}' of part '{}' has {} vertices but {} joint sets and {} weight sets",
-                    mesh.name,
-                    built_mesh.part,
-                    geometry.positions.len(),
-                    geometry.joints.len(),
-                    geometry.weights.len()
-                )));
-            }
-            for (i, &position) in geometry.positions.iter().enumerate() {
-                if !position.is_finite() {
-                    return Err(framing(format!(
-                        "vertex {i} of mesh '{}' of part '{}' is not a finite position",
-                        mesh.name, built_mesh.part
-                    )));
-                }
-                Bounds::include(&mut body, position);
-                if is_head {
-                    Bounds::include(&mut head, position);
-                }
-                if chest.is_some_and(|c| position.y >= c) {
-                    Bounds::include(&mut bust, position);
-                }
-                if skinned && is_hand_vertex(&hand_joints, geometry.joints[i], geometry.weights[i])? {
-                    Bounds::include(&mut hands, position);
-                }
-            }
-        }
-        let body = body.ok_or_else(|| framing("the character has no vertex to measure".to_owned()))?;
-
-        let height_m = built.stature.map_or_else(|| body.height(), |s| s.height_m);
-        // `Stature::check`'s rule: a usable height is positive and finite. A body with no stature and no extent in Y
-        // (every vertex at one height) fails it too, which framing could not divide by.
-        if !(height_m.is_finite() && height_m > 0.0) {
-            return Err(framing(format!(
-                "the height {height_m} m, from the stature or else the body's extent, is not usable: give a finite number above zero"
-            )));
-        }
-        Ok(Self { body, head, eyes, chest, bust, hands, height_m })
+    /// Measures an imported avatar in its bind pose, the pose its meshes are stored in (`docs/design/byom.md`), so an
+    /// imported character frames like a built one.
+    ///
+    /// An avatar has no head part: its head is every vertex whose strongest joint is the `head` bone itself, which
+    /// leaves out the neck and hair on spring bones. Joint heights are read from the inverse bind of a mesh skinned
+    /// to the bone, else from the skeleton's rest. There is no stature, so the height is the body's extent.
+    ///
+    /// # Errors
+    /// As [`measure`](Self::measure).
+    pub fn measure_avatar(avatar: &ImportedAvatar) -> Result<Self, StageError> {
+        let skeleton = &avatar.skeleton;
+        let resolve = |joint: &JointRef| match joint {
+            JointRef::Humanoid(bone) => skeleton.humanoid_bone(*bone),
+            JointRef::Named(name) => skeleton.find(name.as_str()),
+        };
+        let mut rest_world = Box::new(Pose::IDENTITY);
+        skeleton.world_pose(&skeleton.rest_pose(), &mut rest_world);
+        let joint_height = |bone: HumanoidBone| {
+            let id = skeleton.humanoid_bone(bone)?;
+            let from_mesh = avatar.meshes.iter().find_map(|m| {
+                let k = m.mesh.joint_bones.iter().position(|j| resolve(j) == Some(id))?;
+                m.inverse_bind.get(k).map(|ibm| ibm.inverse().w_axis.y)
+            });
+            Some(from_mesh.unwrap_or_else(|| rest_world.local.get(id.index()).map_or(f32::NAN, |t| t.translation.y)))
+        };
+        let head = skeleton.humanoid_bone(HumanoidBone::Head);
+        let meshes = avatar.meshes.iter().map(|m| Measured {
+            mesh: &m.mesh,
+            owner: "the avatar".to_owned(),
+            head: m
+                .mesh
+                .joint_bones
+                .iter()
+                .position(|j| head.is_some() && resolve(j) == head)
+                .and_then(|k| u16::try_from(k).ok())
+                .map_or(HeadRule::No, HeadRule::Joint),
+        });
+        measure_meshes(meshes, joint_height, None)
     }
 
     /// The highest point of the character, hair and hats included.
@@ -174,6 +164,103 @@ impl Landmarks {
 
 fn framing(reason: String) -> StageError {
     StageError::Framing { reason }
+}
+
+/// Which vertices of a mesh are the head's.
+#[derive(Clone, Copy)]
+enum HeadRule {
+    /// None of them.
+    No,
+    /// All of them (a built head part's head mesh).
+    Whole,
+    /// Those whose strongest joint is this entry of the mesh's joints (an avatar's head bone).
+    Joint(u16),
+}
+
+/// One mesh to measure, with the name its errors give its owner and its head rule.
+struct Measured<'a> {
+    mesh: &'a PartMesh,
+    owner: String,
+    head: HeadRule,
+}
+
+/// The index of the strongest of a vertex's four weights; the first of equal weights wins.
+fn strongest(weights: [f32; 4]) -> usize {
+    (1..4).fold(0, |best, k| if weights[k] > weights[best] { k } else { best })
+}
+
+/// The measuring both kinds of body share: `joint_height` gives a humanoid joint's bind height (`None` for a bone the
+/// body lacks), `stature` the body's declared height.
+fn measure_meshes<'a>(
+    meshes: impl Iterator<Item = Measured<'a>>,
+    joint_height: impl Fn(HumanoidBone) -> Option<f32>,
+    stature: Option<f32>,
+) -> Result<Landmarks, StageError> {
+    let height_of = |bone: HumanoidBone| -> Result<Option<f32>, StageError> {
+        match joint_height(bone) {
+            None => Ok(None),
+            Some(h) if h.is_finite() => Ok(Some(h)),
+            Some(_) => Err(framing(format!("the bind height of '{bone}' is not a finite number"))),
+        }
+    };
+    let eyes = match (height_of(HumanoidBone::LeftEye)?, height_of(HumanoidBone::RightEye)?) {
+        (Some(left), Some(right)) => Some(f32::midpoint(left, right)),
+        (one, other) => one.or(other),
+    };
+    let chest = match height_of(HumanoidBone::UpperChest)? {
+        Some(height) => Some(height),
+        None => height_of(HumanoidBone::Chest)?,
+    };
+
+    let (mut body, mut head, mut bust, mut hands) = (None, None, None, None);
+    for Measured { mesh, owner, head: head_rule } in meshes {
+        let hand_joints = hand_joints(mesh);
+        let geometry = &mesh.geometry;
+        let skinned = geometry.is_skinned();
+        if skinned && (geometry.joints.len() != geometry.positions.len() || geometry.weights.len() != geometry.positions.len())
+        {
+            return Err(framing(format!(
+                "mesh '{}' of {owner} has {} vertices but {} joint sets and {} weight sets",
+                mesh.name,
+                geometry.positions.len(),
+                geometry.joints.len(),
+                geometry.weights.len()
+            )));
+        }
+        for (i, &position) in geometry.positions.iter().enumerate() {
+            if !position.is_finite() {
+                return Err(framing(format!("vertex {i} of mesh '{}' of {owner} is not a finite position", mesh.name)));
+            }
+            Bounds::include(&mut body, position);
+            let is_head = match head_rule {
+                HeadRule::No => false,
+                HeadRule::Whole => true,
+                HeadRule::Joint(joint) => {
+                    skinned && geometry.joints[i][strongest(geometry.weights[i])] == joint
+                }
+            };
+            if is_head {
+                Bounds::include(&mut head, position);
+            }
+            if chest.is_some_and(|c| position.y >= c) {
+                Bounds::include(&mut bust, position);
+            }
+            if skinned && is_hand_vertex(&hand_joints, geometry.joints[i], geometry.weights[i])? {
+                Bounds::include(&mut hands, position);
+            }
+        }
+    }
+    let body = body.ok_or_else(|| framing("the character has no vertex to measure".to_owned()))?;
+
+    let height_m = stature.unwrap_or_else(|| body.height());
+    // `Stature::check`'s rule: a usable height is positive and finite. A body with no stature and no extent in Y
+    // (every vertex at one height) fails it too, which framing could not divide by.
+    if !(height_m.is_finite() && height_m > 0.0) {
+        return Err(framing(format!(
+            "the height {height_m} m, from the stature or else the body's extent, is not usable: give a finite number above zero"
+        )));
+    }
+    Ok(Landmarks { body, head, eyes, chest, bust, hands, height_m })
 }
 
 /// The part that holds the head: the first enabled one, by part id, whose kind is registered as a head.
@@ -204,7 +291,7 @@ fn hand_joints(mesh: &PartMesh) -> Vec<bool> {
 /// Whether the joint with the largest weight of a vertex is a hand joint (`hand_joints` says which are). The first
 /// of equal weights wins, so the answer doesn't depend on anything but the mesh.
 fn is_hand_vertex(hand_joints: &[bool], joints: [u16; 4], weights: [f32; 4]) -> Result<bool, StageError> {
-    let strongest = (1..4).fold(0, |best, k| if weights[k] > weights[best] { k } else { best });
+    let strongest = strongest(weights);
     hand_joints.get(usize::from(joints[strongest])).copied().ok_or_else(|| {
         framing(format!("a vertex is skinned to joint {} but its mesh names {} joints", joints[strongest], hand_joints.len()))
     })

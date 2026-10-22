@@ -6,6 +6,13 @@
 //! stored, which is exactly what premultiplied data needs to avoid dark fringes. Odd sizes keep their last row and column
 //! (`shader/mips.wgsl`).
 //!
+//! **One pass per level, measured (#87).** wgpu allocates about 17 times per render pass on the CPU, so a chain of 11 levels
+//! is about 170 allocations. Recording a whole 1536 px chain (ten passes) takes 37 us of CPU on the CI rasteriser
+//! (`frame_times --paint 1536`, the `PaintTextures` pass less the painter's own 5 ms), and the rectangle carried down the
+//! chain means a small repaint records fewer levels. Building several levels per dispatch would need compute with storage
+//! textures, which an sRGB texture does not allow without decoding and encoding by hand, to save a few tens of
+//! microseconds a repaint: not worth the second code path.
+//!
 //! [`MipGenerator::refresh`] is the one entry for keeping a texture's sampled picture current: for a dynamic
 //! straight-alpha texture it first premultiplies the repainted rectangle ([`Premultiplier`]), then rebuilds the levels.
 

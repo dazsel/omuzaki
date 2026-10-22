@@ -26,6 +26,11 @@
 //! GPU path reads nothing back, so an instance's bounds are the mesh's grown by what the weights can move a vertex
 //! (conservative, never smaller than the CPU path's exact ones), and its outline directions are re-welded by a second
 //! dispatch, only when the instance re-blends.
+//!
+//! **Dynamic meshes** use the same weld dispatch for their own outline directions: a dynamic mesh on the GPU path has the
+//! weld table uploaded when it is created, and a frame that draws its own stream outlined queues a dispatch from the
+//! mesh's current vertices ([`MorphPool::queue_weld`]). A frame that never reaches the queue takes the promise back at the
+//! start of the next ([`MorphPool::take_welds`]).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -225,6 +230,12 @@ fn morphing<'a>(instance: &'a Instance, scene: &'a Scene, meshes: &'a Arena<GpuM
     Some(Morphing { instance, weights, mesh, input: mesh.morph_input()? })
 }
 
+/// Whether `instance` draws a morph stream of its own this frame rather than its mesh's: the one rule ([`morphing`]) for
+/// the passes that need to know which stream they draw.
+pub(crate) fn is_morphing(instance: &Instance, scene: &Scene, meshes: &Arena<GpuMesh>) -> bool {
+    morphing(instance, scene, meshes).is_some()
+}
+
 /// The per-instance streams of the frame being drawn.
 #[derive(Default)]
 pub(crate) struct MorphPool {
@@ -237,9 +248,16 @@ pub(crate) struct MorphPool {
     meshes_gpu: Vec<Option<(u32, gpu::MeshGpu)>>,
     /// The dispatches to record this frame, in order.
     pending: Vec<gpu::Pending>,
+    /// The dynamic meshes (index and generation) whose own outline directions are welded by this frame's dispatches: the
+    /// directions a frame draws a dynamic mesh's own stream with (see [`queue_weld`](Self::queue_weld)).
+    welds: Vec<(u32, u32)>,
     /// The frame's dispatches were submitted ([`submitted`](Self::submitted)): until then the slots' caches are only a
     /// promise, which the next [`prepare`](Self::prepare) takes back if the frame never got that far.
     submitted: AtomicBool,
+    /// The same for [`welds`](Self::welds), which a frame takes back before it queues its own: separate, because the
+    /// weld list is read when the frame starts and the slots' caches only later, in [`prepare`](Self::prepare), which a
+    /// frame can fail before.
+    welds_submitted: AtomicBool,
 }
 
 impl MorphPool {
@@ -256,17 +274,22 @@ impl MorphPool {
     /// Switches to the CPU path on an adapter that has compute: a test hook.
     ///
     /// # Errors
-    /// `Invalid` once a mesh with morph targets exists, since its data is on the GPU: the path never changes under a
-    /// live mesh.
+    /// `Invalid` once a mesh with morph targets or a dynamic mesh exists, since its data is on the GPU: the path never
+    /// changes under a live mesh.
     pub(crate) fn force_cpu(&mut self) -> Result<(), RenderError> {
         if self.meshes_gpu.iter().any(Option::is_some) {
-            return Err(RenderError::invalid("morph path", "meshes with morph targets exist; choose the path first"));
+            return Err(RenderError::invalid(
+                "morph path",
+                "meshes with morph targets or dynamic meshes exist; choose the path first",
+            ));
         }
         self.gpu = None;
         Ok(())
     }
 
-    /// Uploads the GPU path's data for the mesh just created at `index` and `generation`; nothing on the CPU path.
+    /// Uploads the GPU path's data for the mesh just created at `index` and `generation`: its targets and weld table if
+    /// it has targets, and a weld of its own streams if it is dynamic. Nothing on the CPU path, or for a static mesh
+    /// without targets.
     ///
     /// # Errors
     /// `LimitExceeded` for a mesh the GPU path cannot hold.
@@ -277,8 +300,17 @@ impl MorphPool {
         generation: u32,
         mesh: &GpuMesh,
     ) -> Result<(), RenderError> {
-        let (Some(pipelines), Some(input)) = (&self.gpu, mesh.morph_input()) else { return Ok(()) };
-        let data = gpu::MeshGpu::new(device, pipelines, mesh.shapes_buffer(), &input)?;
+        let Some(pipelines) = &self.gpu else { return Ok(()) };
+        let target = mesh.weld_target();
+        let data = match (mesh.morph_input(), &target) {
+            (Some(input), _) => gpu::MeshGpu::new(device, pipelines, mesh.shapes_buffer(), &input)?,
+            (None, Some(target)) => gpu::MeshGpu::weld_only(device, pipelines, target.welds, target.weld_count)?,
+            (None, None) => return Ok(()),
+        };
+        let data = match &target {
+            Some(target) => data.with_own_weld(device, pipelines, target.shapes, target.directions),
+            None => data,
+        };
         let at = index as usize;
         if self.meshes_gpu.len() <= at {
             self.meshes_gpu.resize_with(at + 1, || None);
@@ -289,16 +321,36 @@ impl MorphPool {
         Ok(())
     }
 
+    /// Queues the weld of the dynamic mesh at `index` and `generation`: its outline directions, from its current
+    /// vertices, by a dispatch [`record`](Self::record) writes. The mesh is on the GPU path, as
+    /// [`GpuMesh::refresh`] says when it asks for this.
+    pub(crate) fn queue_weld(&mut self, index: u32, generation: u32) {
+        self.welds.push((index, generation));
+    }
+
+    /// The meshes whose welds the last frame queued, once, as the next frame starts: `lost` says that frame never reached
+    /// the queue, so the directions it promised were not written. Clears the list.
+    pub(crate) fn take_welds(&mut self, mut lost: impl FnMut(u32, u32)) {
+        let submitted = self.welds_submitted.swap(false, Ordering::AcqRel);
+        for &(index, generation) in &self.welds {
+            if !submitted {
+                lost(index, generation);
+            }
+        }
+        self.welds.clear();
+    }
+
     /// Records this frame's dispatches into `encoder`, before the passes that draw the streams.
     pub(crate) fn record(&self, encoder: &mut wgpu::CommandEncoder) {
         let Some(pipelines) = &self.gpu else { return };
-        if self.pending.is_empty() {
+        if self.pending.is_empty() && self.welds.is_empty() {
             return;
         }
         gpu::record(
             encoder,
             pipelines,
             &self.pending,
+            self.welds.iter().map(|&(index, _)| index as usize),
             |slot| self.slots.get(slot)?.gpu.as_ref(),
             |mesh| self.meshes_gpu.get(mesh)?.as_ref().map(|(_, data)| data),
         );
@@ -328,6 +380,7 @@ impl MorphPool {
         {
             *entry = None;
         }
+        self.welds.retain(|&w| w != (index, generation));
         while self.meshes_gpu.last().is_some_and(Option::is_none) {
             self.meshes_gpu.pop();
         }
@@ -385,6 +438,7 @@ impl MorphPool {
     /// queued are done.
     pub(crate) fn submitted(&self) {
         self.submitted.store(true, Ordering::Release);
+        self.welds_submitted.store(true, Ordering::Release);
     }
 
     /// The bounds the transparent sort reads for the instance, or `None` for the mesh's own: the blended vertices'

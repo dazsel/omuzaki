@@ -17,6 +17,7 @@ png = "0.18"
 moxcms = "0.8"
 zune-jpeg.workspace = true
 libm.workspace = true
+omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-l10n-api = { path = "../omuzaki-l10n-api" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
@@ -25,7 +26,6 @@ serde.workspace = true
 
 [dev-dependencies]
 inventory.workspace = true
-omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-store-mock = { path = "../omuzaki-store-mock" }
 serde_json.workspace = true
@@ -36,4 +36,5 @@ workspace = true
 
 [package.metadata.omuzaki]
 kind = "Implementation"
+registers = true
 summary = "image measures for likeness (VF-01, ADR 0029): decodes PNG and JPEG references and renders from the store or a file under the file fence, refusing oversized images before allocating; sRGB to CIELAB (D65); the refusal messages of design 7.3; the likeness outline, spacing and score come with their tasks"
