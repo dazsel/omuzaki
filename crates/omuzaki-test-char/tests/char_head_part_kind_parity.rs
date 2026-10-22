@@ -161,7 +161,9 @@ fn the_skin_materials_equal_the_prototypes_field_by_field() {
             }
             other => panic!("{js_name}: outline {other:?}"),
         }
-        assert_eq!(spec.overlays.len(), usize::from(js_name == "skin-head"), "{js_name} overlays");
+        // The face carries the painted face's Base layer and its Overlay (the sweat drop, in front of the hair).
+        let overlays = if js_name == "skin-head" { 2 } else { 0 };
+        assert_eq!(spec.overlays.len(), overlays, "{js_name} overlays");
     }
 }
 
