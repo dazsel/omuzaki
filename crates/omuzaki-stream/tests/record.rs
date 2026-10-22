@@ -117,6 +117,7 @@ fn a_take_lands_on_disk_with_alpha_audio_and_a_manifest() {
             format: RecordFormat::PngSequence,
             tracks: vec![track],
             hold: None,
+            guard: None,
         })
         .unwrap();
     assert_eq!((started.size, started.fps), ([64, 36], [30, 1]));
@@ -185,6 +186,7 @@ fn a_track_waiting_for_the_first_frame_starts_where_that_frame_was_captured() {
         format: RecordFormat::PngSequence,
         tracks: vec![track],
         hold: None,
+        guard: None,
     };
     service.record_start(plan).unwrap();
     // The first frame is captured at 2 s.
@@ -212,6 +214,7 @@ fn skipped_slots_are_repeats_and_a_second_take_waits_for_the_first() {
         format: RecordFormat::PngSequence,
         tracks: Vec::new(),
         hold: None,
+        guard: None,
     };
     service.record_start(plan("gappy")).unwrap();
     assert!(matches!(service.record_start(plan("other")), Err(omuzaki_stream_api::error::StreamError::Busy)));

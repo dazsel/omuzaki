@@ -32,6 +32,13 @@ omuzaki-stream-api = { path = "../omuzaki-stream-api" }
 # The update hold a take or the replay buffer keeps while it runs (`docs/design/updates.md` §7).
 omuzaki-update-api = { path = "../omuzaki-update-api" }
 
+# Free space on the take's disk, so a take never fills it (`src/record/disk.rs`).
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
 [dev-dependencies]
 # Itself with the testing kit, so integration tests see it and the `fake-worker` binary is built for them.
 omuzaki-stream = { path = ".", features = ["testing"] }

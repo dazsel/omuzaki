@@ -19,9 +19,12 @@ use omuzaki_audio_api::node::SAMPLE_RATE;
 use omuzaki_audio_api::tap::{DropPolicy, TapFormat, TapPoint, TapRate, TapRequest};
 use omuzaki_core::time::Seconds;
 
+use crate::record::disk::{DiskGuard, GuardPlan, estimate_rate};
 use crate::record::runtime::{AudioTrack, RecordPlan, TrackStart};
 use crate::record::settings::{self, RecordFormat};
-use crate::record::take::{check_name, stem, unique_stem};
+use crate::record::take::{
+    DEFAULT_TEMPLATE, NameContext, check_name, check_path, date_time, file_stem, take_number, unique_stem,
+};
 use crate::service::StreamService;
 use omuzaki_update_api::hold::HoldReason;
 use omuzaki_update_api::updater::Updater;
@@ -140,9 +143,22 @@ impl Op for Start {
         let format = resolve_format(asked);
         let dir_setting = settings.and_then(|s| s.get::<settings::Dir>().ok()).unwrap_or_default();
         let dir = settings::resolve_dir(&dir_setting);
-        let stem = unique_stem(&dir, &stem(std::time::SystemTime::now(), name.as_deref()));
+        let template =
+            settings.and_then(|s| s.get::<settings::NameTemplate>().ok()).unwrap_or_else(|| DEFAULT_TEMPLATE.into());
+        let (date, time) = date_time(std::time::SystemTime::now());
+        let context =
+            NameContext { date: &date, time: &time, scene: "", take: take_number(&dir), format, name: name.as_deref() };
+        let base = file_stem(&template, &context)
+            .map_err(|e| OpError::invalid("name", e.to_string()).hint("fix the record.name_template setting"))?;
+        check_path(&dir, &base).map_err(|e| OpError::invalid("name", e.to_string()))?;
+        let stem = unique_stem(&dir, &base);
+        let min_free_mb = settings
+            .and_then(|s| s.get::<settings::MinFreeMb>().ok())
+            .unwrap_or(crate::record::disk::DEFAULT_MIN_FREE_MB);
+        let guard = GuardPlan::real(DiskGuard { min_free: min_free_mb << 20, ..DiskGuard::default() });
         if ctx.dry_run {
             let program = service.program();
+            let disk = guard.check(&dir, estimate_rate(format, program.size, program.fps));
             // A dry run reports whether the format can be written here, rather than failing on this machine.
             let available = match format {
                 RecordFormat::WebmVp9Alpha => crate::vp9::available(),
@@ -155,6 +171,7 @@ impl Op for Start {
                 "available": available.is_ok(),
                 "hint": available.err().map(|e| e.to_string()),
                 "dir": dir,
+                "disk": disk,
                 "tracks": if mic_bus(ctx).is_some() { vec!["mic"] } else { Vec::new() },
                 "size": [program.size.x, program.size.y],
                 "fps": [program.fps.0, program.fps.1],
@@ -162,7 +179,9 @@ impl Op for Start {
         }
         let tracks = mic_track(ctx)?.into_iter().collect();
         let hold = ctx.service::<dyn Updater>().ok().map(|u| u.hold(HoldReason::Recording));
-        let started = service.record_start(RecordPlan { dir, stem, format, tracks, hold }).map_err(op_error)?;
+        let started = service
+            .record_start(RecordPlan { dir, stem, format, tracks, hold, guard: Some(guard) })
+            .map_err(op_error)?;
         let mut answer = to_json(&started)?;
         answer["started"] = json!(true);
         Ok(Plan::answer(answer))

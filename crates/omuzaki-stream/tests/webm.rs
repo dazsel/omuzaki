@@ -127,6 +127,7 @@ fn a_webm_take_keeps_its_alpha_and_its_timeline() {
             format: RecordFormat::WebmVp9Alpha,
             tracks: Vec::new(),
             hold: None,
+            guard: None,
         })
         .unwrap();
     assert_eq!(started.video, dir.path().join("take.webm"));

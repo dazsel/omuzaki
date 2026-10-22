@@ -32,6 +32,7 @@ fn take(dir: &std::path::Path, updater: &MockUpdater) -> RecordPlan {
         format: RecordFormat::PngSequence,
         tracks: Vec::new(),
         hold: Some(updater.hold(HoldReason::Recording)),
+        guard: None,
     }
 }
 
