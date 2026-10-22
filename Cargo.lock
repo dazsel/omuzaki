@@ -4548,6 +4548,7 @@ dependencies = [
  "omuzaki-ops-api",
  "omuzaki-store-api",
  "proptest",
+ "schemars",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -4557,6 +4558,7 @@ dependencies = [
 name = "omuzaki-history-mock"
 version = "0.0.0"
 dependencies = [
+ "omuzaki-core",
  "omuzaki-doc-api",
  "omuzaki-history-api",
  "omuzaki-ops-api",
