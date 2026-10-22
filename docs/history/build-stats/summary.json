@@ -1,19 +1,19 @@
 {
- "generated": "2026-10-22 3:13 PM PT",
+ "generated": "2026-10-22 4:11 PM PT",
  "agent_hours": {
   "director": 113.1,
   "opus_local": 305.3,
   "sonnet_local": 297.6,
   "haiku_local": 24.5,
-  "cloud_reported": 87.2,
+  "cloud_reported": 91.1,
   "cloud_estimated": 777.5
  },
- "agent_hours_total": 1605.2,
+ "agent_hours_total": 1609.1,
  "agent_hours_by_role": {
   "director": 113.1,
   "lead": 136.6,
   "implementer": 43.9,
-  "unreported": 1311.6
+  "unreported": 1315.5
  },
  "peak_parallel_agents": {
   "all": 52,
@@ -22,50 +22,50 @@
   "cloud": 51
  },
  "loc_now": {
-  "Rust source": 452485,
-  "Rust tests and benches": 302608,
-  "Docs": 53692,
-  "Tooling and CI": 24526,
-  "Other": 77172,
-  "total": 910483
+  "Rust source": 493956,
+  "Rust tests and benches": 326616,
+  "Docs": 53907,
+  "Tooling and CI": 24771,
+  "Other": 78520,
+  "total": 977770
  },
- "commits_on_main": 997,
+ "commits_on_main": 1031,
  "prs": {
-  "this_repo_opened": 410,
-  "this_repo_merged": 384,
+  "this_repo_opened": 411,
+  "this_repo_merged": 389,
   "earlier_repo_opened": 431,
   "earlier_repo_merged": 349
  },
  "issues_this_repo": {
-  "opened": 1920,
-  "closed": 773
+  "opened": 1921,
+  "closed": 882
  },
- "ci_runs": 8097,
+ "ci_runs": 8128,
  "reviews": 1267,
  "coverage": {
   "agents": {
    "from": "2026-10-10 3:00 PM PT",
    "complete_through": "2026-10-21 3:36 PM PT",
-   "partial_through": "2026-10-22 3:00 PM PT"
+   "partial_through": "2026-10-22 4:00 PM PT"
   },
   "loc": {
    "from": "2026-10-11T19:00:00-07:00",
-   "complete_through": "2026-10-22T14:00:00-07:00"
+   "complete_through": "2026-10-22T15:00:00-07:00"
   },
   "commits": {
-   "complete_through": "2026-10-22 3:13 PM PT"
+   "complete_through": "2026-10-22 4:11 PM PT"
   },
   "prs": {
-   "this_repo_complete_through": "2026-10-22 3:13 PM PT",
+   "this_repo_complete_through": "2026-10-22 4:11 PM PT",
    "earlier_repo_complete_through": "2026-10-22 1:46 PM PT",
    "earlier_repo_from": "2026-10-11 8:45 PM PT"
   },
   "issues": {
-   "complete_through": "2026-10-22 3:13 PM PT",
+   "complete_through": "2026-10-22 4:11 PM PT",
    "note": "this repository only"
   },
   "ci": {
-   "this_repo_complete_through": "2026-10-22 3:13 PM PT",
+   "this_repo_complete_through": "2026-10-22 4:11 PM PT",
    "earlier_repo_complete_through": "2026-10-18 8:22 AM PT"
   },
   "reviews": {
