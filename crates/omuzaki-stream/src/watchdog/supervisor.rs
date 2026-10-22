@@ -129,8 +129,8 @@ struct Shared {
     status: Vec<WorkerStatus>,
     log: Vec<RestartRecord>,
     subscribers: Vec<Sender<HealthEvent>>,
-    /// Per worker: the live generation's control channel, once `Start` has gone and while it is up.
-    live: Vec<Option<Arc<dyn ControlSend>>>,
+    /// Per worker: the live generation and its control channel, once `Start` has gone and while it is up.
+    live: Vec<Option<(u32, Arc<dyn ControlSend>)>>,
     latches: Vec<Latches>,
 }
 
@@ -268,12 +268,12 @@ impl Supervisor {
                 }
             }
             _ => {
-                let control = shared.live[i].clone().ok_or(SendError::Down)?;
+                let (_, control) = shared.live[i].clone().ok_or(SendError::Down)?;
                 drop(shared);
                 return control.send(msg, &[]).map_err(|_| SendError::Down);
             }
         }
-        if let Some(control) = shared.live[i].clone() {
+        if let Some((_, control)) = shared.live[i].clone() {
             // A failure means the generation is ending; the latch reaches the next one.
             let _ = control.send(msg, &[]);
         }
@@ -302,13 +302,40 @@ impl Supervisor {
         let attaches = &mut shared.latches[i].attaches;
         attaches.retain(|(r, _, _)| *r != role);
         attaches.push((role, msg.clone(), object));
-        if let Some(control) = shared.live[i].clone()
+        if let Some((_, control)) = shared.live[i].clone()
             && let Some((_, _, handle)) = shared.latches[i].attaches.last()
             && let Ok(clone) = handle.try_clone()
         {
             let _ = control.send(&msg, &[&clone]);
         }
         Ok(())
+    }
+
+    /// The generation of worker `id` that is up and serving, if any.
+    ///
+    /// # Errors
+    /// [`UnknownWorker`] for an id that is not this supervisor's.
+    pub fn live_generation(&self, id: WorkerId) -> Result<Option<u32>, UnknownWorker> {
+        let i = self.index(id)?;
+        Ok(lock(&self.shared).live[i].as_ref().map(|(generation, _)| *generation))
+    }
+
+    /// Sends a command to `generation` of worker `id` only: a caller holding one generation's shared objects (the
+    /// remote encoder's slots) never reaches the next generation by mistake.
+    ///
+    /// # Errors
+    /// [`SendError::Unknown`] for an id that is not this supervisor's; [`SendError::Down`] when that generation is not
+    /// the live one (it has ended, or the worker is down); [`SendError::NeedsObject`] for an `Attach`.
+    pub fn send_to(&self, id: WorkerId, generation: u32, msg: &HostMsg) -> Result<(), SendError> {
+        let i = self.index(id)?;
+        if matches!(msg, HostMsg::Attach { .. }) {
+            return Err(SendError::NeedsObject);
+        }
+        let control = match &lock(&self.shared).live[i] {
+            Some((live, control)) if *live == generation => Arc::clone(control),
+            _ => return Err(SendError::Down),
+        };
+        control.send(msg, &[]).map_err(|_| SendError::Down)
     }
 
     /// A person's restart of worker `id`; it also revives a worker that gave up.
@@ -428,6 +455,7 @@ impl Runner {
     /// Sends `Start`, replays the latched state and opens the worker to commands.
     fn start_generation(&mut self, i: usize) {
         let slot = &mut self.slots[i];
+        let generation = slot.generation;
         let Some(handle) = slot.handle.as_mut() else { return };
         if slot.started {
             return;
@@ -440,7 +468,7 @@ impl Runner {
         let control = handle.control();
         let mut shared = lock(&self.shared);
         if shared.latches[i].replay(control.as_ref()).is_ok() {
-            shared.live[i] = Some(control);
+            shared.live[i] = Some((generation, control));
         }
     }
 
@@ -592,7 +620,7 @@ impl Runner {
         {
             let mut shared = lock(&self.shared);
             for live in &mut shared.live {
-                if let Some(control) = live.take() {
+                if let Some((_, control)) = live.take() {
                     let _ = control.send(&HostMsg::Stop, &[]);
                 }
             }

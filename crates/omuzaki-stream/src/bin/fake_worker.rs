@@ -9,11 +9,13 @@
 //!   protocol is untouched);
 //! - `--bad-frame`: send a malformed control frame after `Hello`;
 //! - `--gone REASON`: say `Gone { reason }` after `Start` and exit (a configuration error);
+//! - `--first-generation-only`: the crash and the hang apply to generation 1 only;
 //! - `--kind KIND`: say `Hello` as another kind (renderer, tracker, audio, encoder, adapter; default renderer);
 //! - with no role, its work counter counts the host's messages after `Start` (the latched state a generation was sent);
 //! - `--role encoder`: an encoder over the `Frames` slots and the `Packets` channel (#1224): `Opened` with the
 //!   `--extradata TEXT` bytes, one packet per announced frame (the slot's bytes, a keyframe first and on request,
-//!   `BlockAdditional` side data), `SlotFree` after each, and a flush on `Stop`.
+//!   `BlockAdditional` side data), `SlotFree` after each, and a flush on `Stop`; with `--hang-after-ms` it stops
+//!   beating and answering frames; `--extradata-per-generation` appends `-g<generation>` to the extradata.
 //!
 //! The launcher appends `--generation N --host-pid P`.
 
@@ -48,6 +50,8 @@ mod unix {
     /// The exit code of a scripted crash.
     const CRASH_CODE: i32 = 3;
 
+    // Independent switches from the command line.
+    #[allow(clippy::struct_excessive_bools)]
     #[derive(Debug, Default)]
     struct Script {
         beat: Duration,
@@ -60,6 +64,8 @@ mod unix {
         kind: Option<WorkerKind>,
         encoder: bool,
         extradata: String,
+        extradata_per_generation: bool,
+        first_only: bool,
     }
 
     fn kind(name: &str) -> Result<WorkerKind, String> {
@@ -87,6 +93,8 @@ mod unix {
                     other => return Err(format!("unknown role {other:?}")),
                 },
                 "--extradata" => script.extradata = args.next().ok_or("--extradata needs text")?,
+                "--extradata-per-generation" => script.extradata_per_generation = true,
+                "--first-generation-only" => script.first_only = true,
                 _ => {
                     let value = args.next().ok_or_else(|| format!("{flag} needs a number"))?;
                     let ms: u64 = value.parse().map_err(|_| format!("{flag}: {value} isn't a whole number"))?;
@@ -106,7 +114,10 @@ mod unix {
 
     pub(super) fn run() -> Result<(), String> {
         let args = WorkerArgs::parse(std::env::args().skip(1))?;
-        let script = script(args.rest.clone())?;
+        let mut script = script(args.rest.clone())?;
+        if script.first_only && args.generation > 1 {
+            (script.crash_after, script.hang_after) = (None, None);
+        }
         let kind = script.kind.unwrap_or(if script.encoder { WorkerKind::Encoder } else { WorkerKind::Renderer });
         let start = Instant::now();
         if script.bad_frame {
@@ -123,7 +134,7 @@ mod unix {
             spam();
         }
         if script.encoder {
-            return encoder(&script, conn, started, start);
+            return encoder(&script, conn, started, start, args.generation);
         }
         std::thread::sleep(script.startup);
         let conn = std::sync::Arc::new(conn);
@@ -169,6 +180,15 @@ mod unix {
         Ok(())
     }
 
+    /// The `Opened` extradata: the text, with the generation appended when it changes with each.
+    fn extradata(script: &Script, generation: u32) -> String {
+        if script.extradata_per_generation {
+            format!("{}-g{generation}", script.extradata)
+        } else {
+            script.extradata.clone()
+        }
+    }
+
     /// Megabytes without a newline, then garbage bytes, on stdout.
     fn spam() {
         let mut out = std::io::stdout().lock();
@@ -180,7 +200,13 @@ mod unix {
         let _ = out.flush();
     }
 
-    fn encoder(script: &Script, conn: WorkerConn, mut started: Started, start: Instant) -> Result<(), String> {
+    fn encoder(
+        script: &Script,
+        conn: WorkerConn,
+        mut started: Started,
+        start: Instant,
+        generation: u32,
+    ) -> Result<(), String> {
         let StartParams::Encoder { config, first_index, .. } = started.params.clone() else {
             return Err("an encoder needs encoder parameters".into());
         };
@@ -191,13 +217,23 @@ mod unix {
         let video = VideoSpec { size: config.video.size, fps: config.video.fps, alpha: config.video.alpha };
         let spec = StreamSpec::video(config.codec, "video", Timebase { num: video.fps.1, den: video.fps.0 }, video)
             .map_err(|e| e.to_string())?
-            .with_extradata(Bytes::from(script.extradata.clone().into_bytes()));
+            .with_extradata(Bytes::from(extradata(script, generation).into_bytes()));
         conn.send(WorkerMsg::opened(spec)).map_err(|e| e.to_string())?;
         conn.send(WorkerMsg::ready(0.0, 0.0, 0.0)).map_err(|e| e.to_string())?;
         let mut keyframe = true;
         let mut sent = 0_u64;
         let mut buf = Vec::new();
         let _ = first_index;
+        let hung = move |at: Option<Duration>| at.is_some_and(|at| start.elapsed() >= at);
+        // The main loop's beat, idle or not, until the scripted hang.
+        let cell = conn.heartbeat();
+        let hang_after = script.hang_after;
+        std::thread::spawn(move || {
+            while !hung(hang_after) {
+                cell.beat();
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        });
         loop {
             if script.crash_after.is_some_and(|at| start.elapsed() >= at) {
                 std::process::exit(CRASH_CODE);
@@ -205,6 +241,10 @@ mod unix {
             let Some((msg, _)) = conn.recv(&mut buf).map_err(|e| e.to_string())? else { return Ok(()) };
             match msg {
                 HostMsg::Keyframe => keyframe = true,
+                HostMsg::Frame { .. } if hung(script.hang_after) => {
+                    // Stops answering, and stays alive: the host must find it hung and kill it.
+                    std::thread::sleep(Duration::from_secs(30));
+                }
                 HostMsg::Frame { slot, index, pts, .. } => {
                     let bytes = slots.read(slot).map_err(|e| e.to_string())?;
                     let index_bytes = index.to_le_bytes();
@@ -226,9 +266,6 @@ mod unix {
                     }
                     sent += 1;
                     conn.set_work(sent);
-                    if script.hang_after.is_none_or(|at| start.elapsed() < at) {
-                        conn.beat();
-                    }
                     conn.send(WorkerMsg::slot_free(slot)).map_err(|e| e.to_string())?;
                 }
                 HostMsg::Stop => {
