@@ -617,4 +617,60 @@ fn cs_probe(@builtin(global_invocation_id) id: vec3<u32>) {
         let source = include_str!("../shader/particles_state.wgsl");
         assert!(source.contains(&format!("const BLOCK_BATCHES: u32 = {BLOCK_BATCHES}u;")));
     }
+
+    /// #756 (particles.md D6): the pass is one shader for the three capability profiles. Its entry points read no
+    /// storage buffer and there is no compute stage; what they do read fits WebGL2's limits, so the particles add
+    /// nothing to the list of what WebGL2 lacks (that list is the renderer's instance and joint storage buffers).
+    #[test]
+    fn the_particle_stages_read_no_storage_and_fit_webgl2() {
+        use wgpu::naga::{self, AddressSpace, ShaderStage, TypeInner};
+
+        let module = naga::front::wgsl::parse_str(&source()).unwrap();
+        let info = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
+            .validate(&module)
+            .unwrap();
+        assert!(module.entry_points.iter().all(|e| e.stage != ShaderStage::Compute), "the module has no compute stage");
+        let webgl2 = crate::caps::CapabilityProfile::WebGl2.limits();
+        let mut seen = Vec::new();
+        for (index, entry) in module.entry_points.iter().enumerate() {
+            if !entry.name.contains("particle") {
+                continue;
+            }
+            seen.push(entry.name.as_str());
+            let used = info.get_entry_point(index);
+            let (mut uniforms, mut textures, mut samplers) = (0, 0, 0);
+            for (handle, global) in module.global_variables.iter() {
+                if used[handle].is_empty() {
+                    continue;
+                }
+                let inner = &module.types[global.ty].inner;
+                match global.space {
+                    AddressSpace::Storage { .. } => {
+                        panic!("{}: reads the storage buffer {:?}", entry.name, global.name)
+                    }
+                    AddressSpace::Uniform => {
+                        uniforms += 1;
+                        let size = inner.size(module.to_ctx());
+                        assert!(
+                            size <= webgl2.max_uniform_buffer_binding_size as u32,
+                            "{}: {:?} is {size} bytes",
+                            entry.name,
+                            global.name
+                        );
+                    }
+                    AddressSpace::Handle => match inner {
+                        TypeInner::Sampler { .. } => samplers += 1,
+                        TypeInner::Image { .. } => textures += 1,
+                        _ => {}
+                    },
+                    _ => {}
+                }
+            }
+            assert!(uniforms <= webgl2.max_uniform_buffers_per_shader_stage, "{}: {uniforms} uniforms", entry.name);
+            assert!(textures <= webgl2.max_sampled_textures_per_shader_stage, "{}: {textures} textures", entry.name);
+            assert!(samplers <= webgl2.max_samplers_per_shader_stage, "{}: {samplers} samplers", entry.name);
+        }
+        seen.sort_unstable();
+        assert_eq!(seen, ["fs_particle", "fs_particle_alpha", "fs_particle_tested", "vs_particle"]);
+    }
 }
