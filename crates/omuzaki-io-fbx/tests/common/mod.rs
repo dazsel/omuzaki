@@ -22,6 +22,8 @@ impl Axis {
     pub const Y: Axis = Axis { index: 1, sign: 1 };
     /// +Z.
     pub const Z: Axis = Axis { index: 2, sign: 1 };
+    /// -X.
+    pub const NEG_X: Axis = Axis { index: 0, sign: -1 };
     /// -Y.
     pub const NEG_Y: Axis = Axis { index: 1, sign: -1 };
     /// -Z.
@@ -31,21 +33,35 @@ impl Axis {
 /// The id of FBX's implicit scene root, the target of a top-level model's connection.
 pub const SCENE_ROOT: i64 = 0;
 
-/// One model: its id, name, parent and local transform (Euler rotation in degrees).
+/// One model: its id, name, kind (`Null`, `LimbNode`, `Mesh`), parent and local transform (Euler rotation in degrees).
 struct Model {
     id: i64,
     name: String,
+    kind: &'static str,
     parent: i64,
     translation: [f64; 3],
     rotation: [f64; 3],
     scale: [f64; 3],
 }
 
-/// A mesh or a material, attached to a model.
+/// A mesh or a material, attached to a model, or any object written by the test.
 enum Extra {
-    Animation { id: i64 },
-    Mesh { id: i64, model: i64 },
-    Material { id: i64, model: i64 },
+    Animation {
+        id: i64,
+    },
+    /// An object's text and its connections (`C: "OO"` or, with a property name, `C: "OP"`).
+    Raw {
+        text: String,
+        connections: Vec<(i64, i64, Option<String>)>,
+    },
+    Mesh {
+        id: i64,
+        model: i64,
+    },
+    Material {
+        id: i64,
+        model: i64,
+    },
 }
 
 /// Builds an FBX with `GlobalSettings`, `Model` nodes and their parent links, as ASCII text or as binary.
@@ -108,7 +124,26 @@ impl FbxBuilder {
         rotation: [f64; 3],
         scale: [f64; 3],
     ) {
-        self.models.push(Model { id, name: name.to_owned(), parent, translation, rotation, scale });
+        self.models.push(Model { id, name: name.to_owned(), kind: "Null", parent, translation, rotation, scale });
+    }
+
+    /// Makes model `id` a `kind` (`LimbNode` for a bone, `Mesh` for a mesh's node).
+    pub fn kind(&mut self, id: i64, kind: &'static str) {
+        for m in self.models.iter_mut().filter(|m| m.id == id) {
+            m.kind = kind;
+        }
+    }
+
+    /// A fresh object id.
+    pub fn id(&mut self) -> i64 {
+        let id = self.next_id;
+        self.next_id += 1;
+        id
+    }
+
+    /// An object the test wrote (ASCII only), with its connections as `(child, parent, property)`.
+    pub fn raw(&mut self, text: String, connections: Vec<(i64, i64, Option<String>)>) {
+        self.extras.push(Extra::Raw { text, connections });
     }
 
     /// A one-triangle mesh drawn by `model`.
@@ -145,10 +180,18 @@ impl FbxBuilder {
         // Writing to a `String` cannot fail, but the results are still checked, never dropped.
         let mut ok = true;
         for m in &self.models {
-            let Model { id, name, parent, translation: [tx, ty, tz], rotation: [rx, ry, rz], scale: [sx, sy, sz] } = m;
+            let Model {
+                id,
+                name,
+                kind,
+                parent,
+                translation: [tx, ty, tz],
+                rotation: [rx, ry, rz],
+                scale: [sx, sy, sz],
+            } = m;
             ok &= write!(
                 objects,
-                "\tModel: {id}, \"Model::{name}\", \"Null\" {{\n\t\tVersion: 232\n\t\tProperties70:  {{\n\
+                "\tModel: {id}, \"Model::{name}\", \"{kind}\" {{\n\t\tVersion: 232\n\t\tProperties70:  {{\n\
                  \t\t\tP: \"Lcl Translation\", \"Lcl Translation\", \"\", \"A\",{tx},{ty},{tz}\n\
                  \t\t\tP: \"Lcl Rotation\", \"Lcl Rotation\", \"\", \"A\",{rx},{ry},{rz}\n\
                  \t\t\tP: \"Lcl Scaling\", \"Lcl Scaling\", \"\", \"A\",{sx},{sy},{sz}\n\t\t}}\n\t}}\n"
@@ -158,6 +201,16 @@ impl FbxBuilder {
         }
         for extra in &self.extras {
             match extra {
+                Extra::Raw { text, connections: links } => {
+                    objects.push_str(text);
+                    for (child, parent, property) in links {
+                        ok &= match property {
+                            Some(p) => writeln!(connections, "\tC: \"OP\",{child},{parent}, \"{p}\""),
+                            None => writeln!(connections, "\tC: \"OO\",{child},{parent}"),
+                        }
+                        .is_ok();
+                    }
+                }
                 Extra::Animation { id } => {
                     ok &= write!(objects, "\tAnimationStack: {id}, \"AnimStack::Take 001\", \"\" {{\n\t}}\n").is_ok();
                     ok &= writeln!(connections, "\tC: \"OO\",{id},{SCENE_ROOT}").is_ok();

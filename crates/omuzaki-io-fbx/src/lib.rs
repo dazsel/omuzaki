@@ -30,8 +30,11 @@
 //! scene, so a tight cap gets a tight allocator. Progress and cancellation go through `Progress::checkpoint`.
 #![deny(missing_docs)]
 
+mod geometry;
 mod load;
+mod materials;
 mod nodes;
+mod space;
 
 use omuzaki_io_api::{
     Confidence, FormatInfo, ImportCtx, ImportInput, ImportOutcome, Importer, IoError, LicenceEvidence,

@@ -235,25 +235,26 @@ fn a_binary_file_imports_as_the_same_scene_as_its_ascii_twin() {
 }
 
 #[test]
-fn content_this_version_does_not_read_is_reported_per_file() {
+fn content_this_version_does_not_read_is_reported_and_meshes_count_against_the_vertex_cap() {
     let mut file = maya();
     let body = file.model("Body", SCENE_ROOT, [0.0; 3], [0.0; 3]);
     file.mesh(body);
     file.material(body);
-    // Vertices are never read, so a vertex cap of 1 cannot trip on a mesh that has three.
-    let options = ImportOptions::default().with_limits(Limits { max_vertices: 1, ..Limits::default() });
-    let out = run_import(&FbxImporter, &ImportInput::new(&file.bytes()), &ImportCtx::new(&options))
-        .expect("the hierarchy imports whatever the file holds besides");
-    assert_eq!(out.scene.nodes.len(), 1);
+    file.animation();
+    let out = import(&file.bytes()).expect("a valid file");
+    assert_eq!((out.scene.nodes.len(), out.scene.meshes.len(), out.scene.materials.len()), (1, 1, 1));
     let dropped =
         out.report.findings.iter().find(|f| f.rule == "fbx.content_dropped").expect("a dropped-content finding");
     assert_eq!(dropped.severity, Severity::Warning);
-    assert!(dropped.message.contains("1 meshes") && dropped.message.contains("1 materials"), "{}", dropped.message);
-    assert_eq!(dropped.hint.as_deref(), Some("convert the model to glTF or VRM to keep its content"));
+    assert_eq!(dropped.message, "not imported: animation");
     // A strict import refuses what it would otherwise lose.
     let strict = ImportOptions::default().strict();
     let refused = run_import(&FbxImporter, &ImportInput::new(&file.bytes()), &ImportCtx::new(&strict));
     assert!(refused.is_err(), "a warning is an error in strict mode");
+    // The mesh's three vertices are read, so a cap of one trips.
+    let options = ImportOptions::default().with_limits(Limits { max_vertices: 1, ..Limits::default() });
+    let capped = run_import(&FbxImporter, &ImportInput::new(&file.bytes()), &ImportCtx::new(&options));
+    assert!(matches!(capped, Err(IoError::Limit { what: "vertex count", limit: 1, got: 3 })), "{capped:?}");
 }
 
 #[test]
@@ -311,10 +312,13 @@ fn a_limit_error_names_the_ceiling_the_load_ran_under() {
         file.model(&format!("N{i}"), SCENE_ROOT, [0.0; 3], [0.0; 3]);
     }
     let options = ImportOptions::default().with_limits(Limits { max_nodes: 2, ..Limits::default() });
-    let r = run_import(&FbxImporter, &ImportInput::new(&file.bytes()), &ImportCtx::new(&options));
+    let bytes = file.bytes();
+    let r = run_import(&FbxImporter, &ImportInput::new(&bytes), &ImportCtx::new(&options));
+    // The ceiling is the floor, two nodes' share and eight times the input.
+    let applied = (17 << 20) + 8 * bytes.len() as u64;
     match r {
         Err(IoError::Limit { what, limit, got }) if what != "node count" => {
-            assert!(limit <= 17 << 20, "{what}: the error names a limit of {limit}, not the one applied");
+            assert!(limit <= applied, "{what}: the error names a limit of {limit}, not the one applied");
             assert_eq!(got, limit + 1);
         }
         other => panic!("expected an allocator limit, got {other:?}"),

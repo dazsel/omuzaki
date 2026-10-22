@@ -1,10 +1,11 @@
-//! The node hierarchy: ufbx's nodes as `Node { name, transform, children }`, and the findings about the conversion.
+//! The node hierarchy: ufbx's nodes as `Node { name, transform, children }`, then the materials and meshes they draw
+//! ([`materials`](crate::materials), [`geometry`](crate::geometry)), and the findings about the conversion.
 
-use omuzaki_core::glam::{DMat3, DQuat, DVec3};
-use omuzaki_io_api::{Finding, ImportCtx, IoError, IoScene, Node, NodeIx, Report, Transform};
+use omuzaki_io_api::{Finding, ImportCtx, IoError, IoScene, Node, NodeIx, Report};
 use ufbx::SceneRoot;
 
 use crate::load::{TARGET_AXES, fraction};
+use crate::space::Basis;
 
 /// The longest a creator string is kept, in characters; it is from an untrusted file and only a diagnostic.
 const GENERATOR_CHARS: usize = 200;
@@ -14,44 +15,6 @@ const CHECKPOINT_EVERY: usize = 4096;
 const MAX_REPAIR_FINDINGS: usize = 20;
 /// How far a unit scale may be from one metre and still count as metres (ufbx rounds near powers of ten itself).
 const UNIT_TOLERANCE: f64 = 1e-9;
-
-/// The change of basis from the file's space to canonical space: the linear part of the root transform ufbx computes from
-/// the file's axes and unit (`SpaceConversion::TransformRoot`), a signed permutation of the axes times the unit scale.
-///
-/// Every node's local transform is conjugated by it, so a turn about the file's up axis becomes a turn about +Y at the
-/// node that has it. ufbx's own `AdjustTransforms` would adjust only the root's children and leave the rest in the file's
-/// frame.
-struct Basis {
-    /// Axes and unit scale together; maps a file position to a canonical one.
-    linear: DMat3,
-    /// The axes alone (orthogonal; its determinant is -1 for a file of the other handedness).
-    axes: DMat3,
-}
-
-impl Basis {
-    fn new(root: &ufbx::Transform) -> Self {
-        let rotation = DQuat::from_xyzw(root.rotation.x, root.rotation.y, root.rotation.z, root.rotation.w).normalize();
-        let scale = DVec3::new(root.scale.x, root.scale.y, root.scale.z);
-        let linear = DMat3::from_quat(rotation) * DMat3::from_diagonal(scale);
-        // The unit scale is uniform; dividing it out leaves the orthogonal part.
-        let unit = linear.x_axis.length();
-        Self { linear, axes: linear * (1.0 / unit) }
-    }
-
-    /// `local` in canonical space: translation scaled and turned, rotation conjugated, scale permuted.
-    fn apply(&self, local: &ufbx::Transform) -> Transform {
-        let q = DQuat::from_xyzw(local.rotation.x, local.rotation.y, local.rotation.z, local.rotation.w);
-        let turn = if q.is_finite() && q.length_squared() > f64::EPSILON { q.normalize() } else { DQuat::IDENTITY };
-        // A rotation seen through an axis permutation is a rotation (a mirror reverses its sense, which the matrix
-        // conjugation carries), so the result is always a proper one.
-        let rotation = DQuat::from_mat3(&(self.axes * DMat3::from_quat(turn) * self.axes.transpose())).normalize();
-        let scale = DVec3::new(local.scale.x, local.scale.y, local.scale.z);
-        // One non-zero entry per row of `axes`, so this permutes the scale components.
-        let abs = DMat3::from_cols(self.axes.x_axis.abs(), self.axes.y_axis.abs(), self.axes.z_axis.abs());
-        let translation = self.linear * DVec3::new(local.translation.x, local.translation.y, local.translation.z);
-        Transform { translation: translation.as_vec3(), rotation: rotation.as_quat(), scale: (abs * scale).as_vec3() }
-    }
-}
 
 /// Builds the scene's nodes and the findings from a loaded FBX.
 ///
@@ -113,7 +76,10 @@ pub(crate) fn convert(
     }
     // A cancel that came after the last periodic check still stops the import.
     ctx.progress.checkpoint("fbx.nodes", 1.0)?;
-    Ok((scene, findings(loaded, has_animation)))
+    let mut report = findings(loaded, has_animation);
+    let materials = crate::materials::convert(loaded, &mut scene, &mut report, ctx)?;
+    crate::geometry::convert(loaded, &basis, &ix, &materials, &mut scene, &mut report, ctx)?;
+    Ok((scene, report))
 }
 
 /// What the conversion to canonical space changed, what ufbx repaired, and what the file holds that is not read.
@@ -145,18 +111,13 @@ fn findings(loaded: &SceneRoot, has_animation: bool) -> Report {
     report
 }
 
-/// A warning naming the kinds of content the file has and this version does not read: it imports the node hierarchy only,
-/// so a model with meshes arrives as nodes without them, and the person is told.
+/// A warning naming the kinds of content the file has and this version does not read: lights, cameras, curves and
+/// surfaces, and animation, so the person knows what did not arrive.
 fn dropped_content(loaded: &SceneRoot, has_animation: bool) -> Option<Finding> {
     let counts = [
-        ("meshes", loaded.meshes.len()),
-        ("skins", loaded.skin_deformers.len()),
-        ("blend shapes", loaded.blend_deformers.len()),
-        ("materials", loaded.materials.len()),
-        ("textures", loaded.textures.len()),
-        ("embedded images", loaded.videos.len()),
         ("lights", loaded.lights.len()),
         ("cameras", loaded.cameras.len()),
+        ("NURBS curves and surfaces", loaded.nurbs_curves.len() + loaded.nurbs_surfaces.len()),
     ];
     let mut parts: Vec<String> = counts.iter().filter(|(_, n)| *n > 0).map(|(what, n)| format!("{n} {what}")).collect();
     // Animation is not loaded, so it has no count: the file either has it or does not.
@@ -166,11 +127,11 @@ fn dropped_content(loaded: &SceneRoot, has_animation: bool) -> Option<Finding> {
     if parts.is_empty() {
         return None;
     }
-    let message = format!("this version reads the node hierarchy only; not imported: {}", parts.join(", "));
+    let message = format!("not imported: {}", parts.join(", "));
     Some(
         Finding::warning("fbx.content_dropped", message)
             .at("Objects")
-            .hint("convert the model to glTF or VRM to keep its content"),
+            .hint("the model's nodes, meshes, skins, blend shapes and materials are imported; the rest is not"),
     )
 }
 
