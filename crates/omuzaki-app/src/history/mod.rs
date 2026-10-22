@@ -21,8 +21,8 @@ use omuzaki_doc::journal::{JournalHistory, Record, SystemWall};
 use omuzaki_doc::snapshot::{Facts, SessionSnapshots, Snapshotter};
 use omuzaki_doc_api::Patch;
 use omuzaki_doc_api::{DocPath, Value};
-use omuzaki_history_api::branch::BranchError;
-use omuzaki_history_api::state::{HistoryError, HistoryView, StateRef};
+use omuzaki_history_api::branch::{BranchError, BranchId};
+use omuzaki_history_api::state::{BranchStore, HistoryError, HistoryView, StateRef};
 use omuzaki_history_api::{
     HistoryEntry, HistoryExport, HistoryLog, Lsn, Reload, SnapshotError, SnapshotId, SnapshotInfo, Snapshots, Trigger,
     TxOutcome, Usage, WallClock,
@@ -38,12 +38,29 @@ pub struct ProjectHistory {
     snapshots: Arc<Snapshotter>,
     log: Arc<JournalHistory>,
     cache: Mutex<VecDeque<(TxId, Arc<Project>)>>,
+    /// The branch whose history this is: its snapshots are the bases its states are rebuilt from.
+    branch: BranchId,
+    /// Where points and other branches' heads are read, for `{"point": …}` and `{"branch": …}`.
+    branches: Option<Arc<dyn BranchStore>>,
 }
 
 impl ProjectHistory {
     /// The history of the project whose snapshots `snapshots` keeps and whose journal `log` reads.
     pub fn new(snapshots: Arc<Snapshotter>, log: Arc<JournalHistory>) -> Self {
-        Self { snapshots, log, cache: Mutex::new(VecDeque::new()) }
+        Self { snapshots, log, cache: Mutex::new(VecDeque::new()), branch: BranchId::main(), branches: None }
+    }
+
+    /// This history, of branch `branch`'s lane, reading points and branches from `branches`.
+    #[must_use]
+    pub fn on_branch(mut self, branch: BranchId, branches: Arc<dyn BranchStore>) -> Self {
+        self.branch = branch;
+        self.branches = Some(branches);
+        self
+    }
+
+    /// The branch whose history this is.
+    pub fn branch(&self) -> &BranchId {
+        &self.branch
     }
 
     /// The project's transactions.
@@ -71,7 +88,11 @@ impl ProjectHistory {
             .snapshots
             .refs()?
             .into_iter()
-            .filter(|info| info.lsn <= commit && !matches!(info.trigger, Trigger::PreRecovery | Trigger::PreMigration))
+            .filter(|info| {
+                info.branch == self.branch
+                    && info.lsn <= commit
+                    && !matches!(info.trigger, Trigger::PreRecovery | Trigger::PreMigration | Trigger::Point)
+            })
             .find_map(|info| Some((self.snapshots.load(&info.id).ok()?, self.snapshots.history(&info).ok()?, info)));
         let Some((mut project, history, info)) = base else {
             return Err(HistoryError::Snapshot(SnapshotError::Invalid(format!(
@@ -132,8 +153,22 @@ impl HistoryView for ProjectHistory {
         match at {
             StateRef::Tx { tx, .. } => Ok(Arc::new(self.project_at(*tx)?.0.root().clone())),
             StateRef::Snapshot { id, .. } => Ok(Arc::new(self.snapshots.load(id)?.root().clone())),
-            StateRef::Point { id, .. } => Err(HistoryError::Branch(BranchError::PointNotFound(*id))),
-            StateRef::Branch { name, .. } => Err(HistoryError::Branch(BranchError::NotFound(name.to_string()))),
+            StateRef::Point { id, .. } => match &self.branches {
+                Some(branches) => Ok(branches.tree(id)?),
+                None => Err(HistoryError::Branch(BranchError::PointNotFound(*id))),
+            },
+            StateRef::Branch { name, .. } => match &self.branches {
+                Some(branches) => {
+                    let branch = branches.branch(name)?;
+                    if branch.id == self.branch {
+                        return Err(HistoryError::Io(
+                            "this branch's own state is `now`: read it from the op's document".to_owned(),
+                        ));
+                    }
+                    Ok(branches.tree(&branch.head)?)
+                }
+                None => Err(HistoryError::Branch(BranchError::NotFound(name.to_string()))),
+            },
             _ => Err(HistoryError::Io("`now` is the op's own document: read it there".to_owned())),
         }
     }
@@ -146,6 +181,7 @@ pub struct HistorySnapshots {
     history: Arc<ProjectHistory>,
     snapshots: Arc<Snapshotter>,
     session: String,
+    branch: BranchId,
 }
 
 impl HistorySnapshots {
@@ -156,7 +192,14 @@ impl HistorySnapshots {
         snapshots: Arc<Snapshotter>,
         session: impl Into<String>,
     ) -> Self {
-        Self { inner, history, snapshots, session: session.into() }
+        Self { inner, history, snapshots, session: session.into(), branch: BranchId::main() }
+    }
+
+    /// This service, for the lane of `branch`: the versions it takes of past states name the branch.
+    #[must_use]
+    pub fn on_branch(mut self, branch: BranchId) -> Self {
+        self.branch = branch;
+        self
     }
 }
 
@@ -184,7 +227,8 @@ impl Snapshots for HistorySnapshots {
             HistoryError::Snapshot(error) => error,
             other => SnapshotError::Invalid(other.to_string()),
         })?;
-        let mut facts = Facts::new(lsn, self.session.clone(), trigger, SystemWall.now());
+        let mut facts =
+            Facts::new(lsn, self.session.clone(), trigger, SystemWall.now()).with_branch(self.branch.clone());
         facts = match (trigger, name) {
             (Trigger::Named, Some(name)) if !name.trim().is_empty() => facts.with_name(name),
             (Trigger::Take, Some(stem)) => facts.with_stem(stem),

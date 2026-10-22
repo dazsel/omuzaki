@@ -284,6 +284,21 @@ impl Executor {
         self.rewired(|env, _| lock(&env.state).sessions.set_first_id(first))
     }
 
+    /// The same executor, taking session ids from `counter` (the next id to hand out), which the other lanes of the
+    /// project share (design branches.md 5.1), so a session id never repeats across branches. The counter first moves
+    /// up to the id [`with_first_session_id`](Self::with_first_session_id) set, if that came before.
+    #[must_use]
+    pub fn with_session_counter(self, counter: Arc<std::sync::atomic::AtomicU64>) -> Self {
+        self.rewired(|env, _| lock(&env.state).sessions.share_ids(counter))
+    }
+
+    /// The same executor, numbering approvals from `counter` (the last id handed out), which the other lanes of the
+    /// project share, so the person's window resolves an approval by id whichever branch it waits on.
+    #[must_use]
+    pub fn with_approval_counter(self, counter: Arc<std::sync::atomic::AtomicU64>) -> Self {
+        self.rewired(|env, _| lock(&env.state).approvals.share_ids(counter))
+    }
+
     /// The same executor, told whether a person can be asked (default `true`: the studio's window is there). Without
     /// an approver (headless `omuzaki mcp`, design §7.6) a request that would wait for approval is refused at once:
     /// `Denied`, with what it needs as the detail and a hint that says how to grant it in advance.

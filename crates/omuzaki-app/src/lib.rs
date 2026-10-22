@@ -28,6 +28,7 @@
 //! it too; [`AppCore::abandon`] stops without closing, as a crash would, so the next open recovers.
 #![deny(missing_docs)]
 
+pub mod branches;
 pub mod bridge;
 mod core;
 mod error;
@@ -37,7 +38,7 @@ mod recover;
 pub mod startup;
 pub mod studio;
 
-pub use core::{AppCore, AppOptions, JournalFsChoice, with_resource_providers};
+pub use core::{AppCore, AppOptions, FailpointChoice, JournalFsChoice, with_resource_providers};
 pub use error::AppError;
 pub use omuzaki_doc::journal::Recover;
 pub use recover::RecoveryReport;

@@ -236,6 +236,23 @@ impl Refs {
         Ok(info)
     }
 
+    /// Removes a branch outright, ref and folder, without the bin: for one made by a step that then failed (a restore
+    /// whose op was refused), so a failed step leaves no branch behind. `main` is never removed.
+    ///
+    /// # Errors
+    /// [`BranchError::Refused`] for `main`; [`BranchError::Io`] when the folder can't be removed.
+    pub fn remove(&self, id: &BranchId) -> Result<(), BranchError> {
+        if id.is_main() {
+            return Err(BranchError::Refused("`main` can't be removed".to_owned()));
+        }
+        let _guard = self.guard();
+        let root = branch_root(&self.project_dir, id);
+        match std::fs::remove_dir_all(&root) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(io(&root, e)),
+            _ => Ok(()),
+        }
+    }
+
     /// Removes the branches that have been in the bin for [`BIN_DAYS`] by `now`: their folders (ref, journal and
     /// archive) go, and their points become collectable. Returns the ids removed.
     ///

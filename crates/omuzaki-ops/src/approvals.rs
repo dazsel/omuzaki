@@ -5,6 +5,9 @@
 //! events are the executor's (`run.rs`, `controls.rs`), under the same lock, so an approval is resolved or withdrawn
 //! exactly once even when a person and a session end race.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use omuzaki_core::time::Seconds;
 use omuzaki_ops_api::{
     Actor, ApprovalId, ApprovalRequest, Decision, Need, OpError, PendingApproval, Plan, Request, Scope, SessionId,
@@ -46,16 +49,28 @@ pub(crate) struct Ask {
 pub(crate) struct Queue {
     entries: Vec<Entry>,
     last_id: u64,
+    /// The last id handed out by any lane of the project (design branches.md 5.1), when the host shares one: the
+    /// person's window then resolves an approval by id whichever branch it waits on.
+    shared: Option<Arc<AtomicU64>>,
 }
 
 impl Queue {
     pub(crate) fn new() -> Self {
-        Self { entries: Vec::new(), last_id: 0 }
+        Self { entries: Vec::new(), last_id: 0, shared: None }
+    }
+
+    /// Takes ids from `counter` (the last id handed out), shared with the other lanes' queues.
+    pub(crate) fn share_ids(&mut self, counter: Arc<AtomicU64>) {
+        counter.fetch_max(self.last_id, Ordering::SeqCst);
+        self.shared = Some(counter);
     }
 
     /// Queues `ask` and returns its snapshot. Ids are never reused.
     pub(crate) fn push(&mut self, ask: Ask) -> PendingApproval {
-        self.last_id += 1;
+        self.last_id = match &self.shared {
+            Some(counter) => counter.fetch_add(1, Ordering::SeqCst) + 1,
+            None => self.last_id + 1,
+        };
         let id = ApprovalId(self.last_id);
         let op = ask.request.as_ref().map(|(request, _)| request.op.as_str());
         let pending = PendingApproval {

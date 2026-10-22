@@ -3,6 +3,7 @@
 use omuzaki_doc::StoreError;
 use omuzaki_doc::journal::JournalError;
 use omuzaki_history_api::SyncError;
+use omuzaki_history_api::branch::BranchError;
 use omuzaki_mcp::ServerError;
 use omuzaki_mcp::bridge::BridgeError;
 use omuzaki_ops::ExecutorError;
@@ -38,6 +39,9 @@ pub enum AppError {
     /// would otherwise repeat at every start (settings.md D9).
     #[error("the session can't record the open: {0}")]
     Session(#[source] SettingError),
+    /// A branch step failed: a ref or point can't be read or written, a switch was refused, a lane can't open.
+    #[error(transparent)]
+    Branch(#[from] BranchError),
     /// The async runtime the MCP server runs on can't start.
     #[error("the MCP runtime can't start: {0}")]
     Runtime(#[source] std::io::Error),
@@ -86,6 +90,7 @@ impl AppError {
             Self::Session(_) => OpError::unavailable("session").hint(format!(
                 "{self}; check that the local data folder exists and can be written, then open the project again"
             )),
+            Self::Branch(error) => crate::branches::ops::branch_error(error.clone()),
             _ => OpError::internal(self.to_string()).hint("this is a bug in Omuzaki: report it"),
         }
     }

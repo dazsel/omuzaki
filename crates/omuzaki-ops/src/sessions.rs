@@ -6,6 +6,7 @@
 //! returns into events.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use omuzaki_core::time::Seconds;
 use omuzaki_doc_api::{DocPath, Patch};
@@ -106,13 +107,16 @@ pub(crate) struct Registry {
     principals: Arc<dyn Principals>,
     sessions: Vec<Session>,
     next_id: u64,
+    /// The counter shared by every lane of a project (design branches.md 5.1), when the host gave one: ids then come
+    /// from it, so they stay unique across branches.
+    shared_ids: Option<Arc<AtomicU64>>,
     /// How many live sessions have a fence: with none, edits skip the fence check.
     fenced: usize,
 }
 
 impl Registry {
     pub(crate) fn new() -> Self {
-        Self { principals: Arc::new(LocalPerson), sessions: Vec::new(), next_id: 1, fenced: 0 }
+        Self { principals: Arc::new(LocalPerson), sessions: Vec::new(), next_id: 1, shared_ids: None, fenced: 0 }
     }
 
     pub(crate) fn set_principals(&mut self, principals: Arc<dyn Principals>) {
@@ -124,6 +128,13 @@ impl Registry {
         if self.sessions.is_empty() {
             self.next_id = first;
         }
+    }
+
+    /// Takes session ids from `counter` (the next id to hand out), shared with other registries. The counter moves up
+    /// to this registry's own next id first, so an id the restored history used is never handed out again.
+    pub(crate) fn share_ids(&mut self, counter: Arc<AtomicU64>) {
+        counter.fetch_max(self.next_id, Ordering::SeqCst);
+        self.shared_ids = Some(counter);
     }
 
     /// What `person` may do, from the principal source.
@@ -215,8 +226,20 @@ impl Registry {
         }
         let fence = normalize_fence(spec.fence)?;
         self.check_claim(None, spec.parent, &fence)?;
-        let id = SessionId(self.next_id);
-        self.next_id = self.next_id.checked_add(1).ok_or_else(|| OpError::internal("session ids ran out"))?;
+        let id = match &self.shared_ids {
+            Some(counter) => {
+                let id = counter.fetch_add(1, Ordering::SeqCst);
+                if id == u64::MAX {
+                    return Err(OpError::internal("session ids ran out"));
+                }
+                SessionId(id)
+            }
+            None => {
+                let id = SessionId(self.next_id);
+                self.next_id = self.next_id.checked_add(1).ok_or_else(|| OpError::internal("session ids ran out"))?;
+                id
+            }
+        };
         let client = sanitise(&spec.client);
         let info = SessionInfo {
             id,

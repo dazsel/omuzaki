@@ -1,28 +1,26 @@
 //! [`AppCore`]: one open project, its executor, its journal and its MCP server.
 
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::Receiver;
+use std::sync::atomic::AtomicU64;
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::thread::JoinHandle;
 use std::time::Duration;
 
-use omuzaki_core::time::SystemClock;
-use omuzaki_doc::journal::{
-    JournalFs, JournalHistory, JournalOptions, ProjectJournal, Recover, SessionStart, SystemWall, reopen_with,
-};
-use omuzaki_doc::snapshot::{SessionSnapshots, Snapshotter, snapshot_dir};
+use omuzaki_doc::branch::Refs;
+use omuzaki_doc::journal::{JournalFs, JournalOptions, ProjectJournal, Recover, SystemWall};
+use omuzaki_doc::snapshot::{Snapshotter, snapshot_dir};
 use omuzaki_doc::{Project, ProjectLock};
 use omuzaki_doc_api::{DocPath, Value};
-use omuzaki_history_api::state::HistoryView;
-use omuzaki_history_api::{HistoryLog, JournalSink, JournalStatus, Snapshots};
+use omuzaki_history_api::branch::{BranchError, BranchId, MAX_OPEN_LANES};
+use omuzaki_history_api::{JournalSink, JournalStatus, Snapshots};
 use omuzaki_library_api::Library;
-use omuzaki_mcp::{
-    AccessToken, Connections, HttpOptions, HttpServer, InAppLink, InAppSpec, McpOptions, McpServer, ToolMode,
-};
+use omuzaki_mcp::{AccessToken, HttpOptions, HttpServer, InAppLink, InAppSpec, McpOptions, McpServer, ToolMode};
 use omuzaki_mcp::{LibraryProvider, MeasureProvider, MetricsProvider, MetricsSource, RenderProvider};
 use omuzaki_ops::Executor;
 use omuzaki_ops_api::{
-    Actor, ConnectionService, Event, Grants, Jobs, Mode, OpError, Outcome, ProjectDir, Request, Runner, Services,
-    ServicesBuilder, Sessions,
+    Actor, Event, Grants, Jobs, Mode, OpError, Outcome, ProjectDir, Request, Runner, Services, ServicesBuilder,
+    Sessions,
 };
 use omuzaki_settings_api::service::Settings;
 use omuzaki_store::{DiskStore, LazyDiskStore};
@@ -30,12 +28,13 @@ use omuzaki_store_api::Store;
 use tokio::runtime::{Handle, Runtime};
 
 use crate::AppError;
-use crate::history::{HistorySnapshots, ProjectHistory};
-use crate::recover::{self, RecoveryReport};
+use crate::branches::routed::FolderRunner;
+use crate::branches::{Failpoint, HostBranches, IDLE_CLOSE, LaneStates, Shared};
+use crate::recover::RecoveryReport;
 use crate::studio;
 
-/// How long closing may take to make everything durable and save the files.
-const CLOSE_TIMEOUT: Duration = Duration::from_secs(30);
+/// How often idle side lanes are looked for.
+const REAP_EVERY: Duration = Duration::from_secs(5);
 /// How long [`AppCore::save`] waits by default.
 const SAVE_TIMEOUT: Duration = Duration::from_secs(10);
 /// The asset store's folder inside the person's data folder (the studio's connector host uses the same).
@@ -75,6 +74,20 @@ pub struct AppOptions {
     /// crash-loop guard is written before the load and cleared after, and the project goes to the top of Open Recent.
     /// The studio's, never a headless host's: the CLI and MCP never restore a session, so they never write one.
     pub remember: bool,
+    /// A hook at each step of a branch switch, for crash tests ([`with_switch_failpoint`](Self::with_switch_failpoint)).
+    pub failpoint: FailpointChoice,
+    /// How many lanes may be open at once (design 5.2): 8 unless a test sets fewer.
+    pub max_lanes: usize,
+}
+
+/// The hook a core calls at each step of a branch switch (see [`AppOptions::with_switch_failpoint`]).
+#[derive(Clone, Default)]
+pub struct FailpointChoice(Option<Failpoint>);
+
+impl std::fmt::Debug for FailpointChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() { "FailpointChoice(set)" } else { "FailpointChoice(none)" })
+    }
 }
 
 /// The file operations a core's journal writer makes (see [`AppOptions::with_journal_fs`]).
@@ -102,6 +115,8 @@ impl AppOptions {
             journal_fs: JournalFsChoice::default(),
             data_dir: None,
             remember: true,
+            failpoint: FailpointChoice::default(),
+            max_lanes: MAX_OPEN_LANES,
         }
     }
 
@@ -155,6 +170,24 @@ impl AppOptions {
         self
     }
 
+    /// These options with `hook` called at each step of a branch switch (`switch:marked`, `switch:old-point`,
+    /// `switch:rewritten`): an error stops the switch there, as a crash would. For crash tests.
+    #[must_use]
+    pub fn with_switch_failpoint(
+        mut self,
+        hook: impl Fn(&'static str) -> Result<(), String> + Send + Sync + 'static,
+    ) -> Self {
+        self.failpoint = FailpointChoice(Some(Arc::new(hook)));
+        self
+    }
+
+    /// These options with at most `lanes` lanes open at once (at least 1).
+    #[must_use]
+    pub fn with_max_lanes(mut self, lanes: usize) -> Self {
+        self.max_lanes = lanes.max(1);
+        self
+    }
+
     /// These options with the person's local data folder, whose `store/` is the asset store (opened on first use).
     #[must_use]
     pub fn with_data_dir(mut self, data: impl Into<PathBuf>) -> Self {
@@ -168,10 +201,12 @@ impl AppOptions {
 ///
 /// Every method takes `&self`; share it in an `Arc` between the UI thread and whatever else drives it.
 pub struct AppCore {
-    executor: Arc<Executor>,
-    snapshots: Arc<SessionSnapshots>,
-    journal: Arc<ProjectJournal>,
-    mcp: McpServer,
+    /// The lanes: one per open branch, the folder's always.
+    branches: Arc<HostBranches>,
+    /// The person's runner, session registry and job manager, routed to the lane each call is about.
+    routed: Arc<FolderRunner>,
+    /// Closes idle side lanes; stopped at close.
+    reaper: Mutex<Option<Reaper>>,
     /// Always `Some` until the drop, which shuts it down without waiting: a stdio server leaves a thread blocked on
     /// standard input, and a plain drop of the runtime would wait for it forever.
     runtime: Option<Runtime>,
@@ -245,73 +280,34 @@ impl AppCore {
         let store =
             DiskStore::open(snapshot_dir(dir)).map_err(|e| OpError::unavailable("snapshots").hint(e.to_string()))?;
         let snapshots = Arc::new(Snapshotter::new(dir, Arc::new(store)));
-        let reopened = reopen_with(dir, &snapshots, options.recover)?;
-        let wall = Arc::new(SystemWall);
-        let mut shadow = reopened.project;
-
-        let connections = Connections::default();
-        let session = session_id();
-        let session_snapshots = Arc::new(SessionSnapshots::new(snapshots.clone()));
-        let log = Arc::new(JournalHistory::new(dir, snapshots.clone()));
-        let history = Arc::new(ProjectHistory::new(snapshots.clone(), log.clone()));
-        let history_snapshots =
-            HistorySnapshots::new(session_snapshots.clone(), history.clone(), snapshots.clone(), session.clone());
         let mut services = ServicesBuilder::from(options.services.clone());
         if let (Some(data), None) = (&options.data_dir, options.services.get::<dyn Store>()) {
             services = services.insert::<dyn Store>(Arc::new(LazyDiskStore::new(data.join(ASSET_STORE))));
         }
-        let services = services
-            .insert::<dyn ConnectionService>(Arc::new(connections.clone()))
-            .insert::<dyn Snapshots>(Arc::new(history_snapshots))
-            .insert::<dyn HistoryLog>(log.clone())
-            .insert::<dyn HistoryView>(history)
-            .build();
-        let executor =
-            Executor::restore(Box::new(shadow.clone()), Arc::new(SystemClock::new()), wall.clone(), &reopened.history)?
-                .with_services(services.clone())
-                .with_project_dir(project_dir)
-                .with_approver(options.approver)
-                .with_last_job_id(reopened.last_job);
-        let mut recovery = RecoveryReport::default();
-        if let Some(found) = &reopened.recovery {
-            recovery.archived = Some(found.kept);
-            recovery.from_disk = found.mode == Recover::Disk;
-        }
-        recover::replay(&executor, &reopened.tail, reopened.recovery.map(|r| r.end), &mut recovery);
-        recover::close_open(&executor, reopened.last_lsn, &mut recovery);
-
-        // The keeper's copy starts where the executor's does: after the replay and the closed transactions.
-        let root = executor.get(&DocPath::root(), &Grants::person())?.unwrap_or_default();
-        shadow.reset_to(&root).map_err(|e| OpError::internal(format!("the recovered project can't be stored: {e}")))?;
-        let start = SessionStart::new(
-            session,
-            &options.app_version,
-            reopened.last_lsn,
-            executor.history_export(),
-            wall,
+        let shared = Shared {
+            dir: dir.to_path_buf(),
+            project_dir,
             snapshots,
-        )
-        .with_last_job(reopened.last_job);
-        let start = match options.journal_fs.0 {
-            Some(fs) => start.with_fs(fs),
-            None => start,
+            refs: Arc::new(Refs::new(dir)),
+            person: options.person.clone(),
+            approver: options.approver,
+            agent_grants: options.agent_grants.clone(),
+            mcp_tools: options.mcp_tools,
+            journal: options.journal,
+            app_version: options.app_version.clone(),
+            services: services.build(),
+            journal_fs: options.journal_fs.0.clone(),
+            session_ids: Arc::new(AtomicU64::new(1)),
+            approval_ids: Arc::new(AtomicU64::new(0)),
+            lane_states: LaneStates::default(),
+            wall: Arc::new(SystemWall),
         };
-        recover::remove_job_scratch(dir);
-        let journal = ProjectJournal::start(shadow, start, options.journal)?;
-        recover::end_interrupted(&journal, &reopened.interrupted, &mut recovery);
-        session_snapshots.bind(journal.clone());
-        log.bind(journal.clone());
-        let executor = Arc::new(executor.with_journal(journal.clone()));
-
-        let root_path = project_dir_text(dir);
-        let mcp_options = McpOptions::with_grants(options.agent_grants.clone())
-            .with_tools(options.mcp_tools)
-            .with_connections(connections)
-            .with_sessions(executor.clone(), options.person.clone())
-            .with_journal(journal.clone())
-            .with_roots(root_path, std::iter::empty::<String>());
-        let mcp_options = with_resource_providers(mcp_options, &services);
-        let mcp = McpServer::new(executor.clone(), mcp_options)?.with_jobs(executor.clone());
+        let failpoint = options.failpoint.0.clone().unwrap_or_else(|| Arc::new(|_| Ok(())));
+        let branches = HostBranches::open(shared, options.recover, failpoint, options.max_lanes)?;
+        let folder = branches.folder_lane();
+        let recovery = folder.recovery.clone();
+        let root = folder.executor.get(&DocPath::root(), &Grants::person())?.unwrap_or_default();
+        drop(folder);
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(MCP_WORKERS)
             .thread_name("omuzaki-mcp")
@@ -321,14 +317,17 @@ impl AppCore {
         if !recovery.is_empty() {
             tracing::warn!(recovery = %recovery.summary(), "opened after recovery");
         }
+        for (_, notice) in branches.recovered() {
+            tracing::warn!(%notice, "a branch was recovered");
+        }
         if let Some(settings) = &remember {
             record_opened(settings.as_ref(), dir, &root);
         }
+        let reaper = Reaper::start(&branches);
         Ok(Self {
-            executor,
-            snapshots: session_snapshots,
-            journal,
-            mcp,
+            routed: Arc::new(FolderRunner::new(branches.clone())),
+            branches,
+            reaper: Mutex::new(Some(reaper)),
             handle: runtime.handle().clone(),
             runtime: Some(runtime),
             http: Mutex::new(None),
@@ -342,33 +341,52 @@ impl AppCore {
 
     /// The runner every surface uses: the UI's panels, the command palette, scripts.
     pub fn runner(&self) -> Arc<dyn Runner> {
-        self.executor.clone()
+        self.routed.clone()
     }
 
     /// The session registry: the Agent panel lists, pauses and revokes agent sessions through it, and resolves their
     /// approvals.
     pub fn sessions(&self) -> Arc<dyn Sessions> {
-        self.executor.clone()
+        self.routed.clone()
     }
 
     /// The project's snapshots and files: named versions, backups, saving now (the service ops reach them through).
     pub fn snapshots(&self) -> Arc<dyn Snapshots> {
-        self.snapshots.clone()
+        self.branches.folder_lane().snapshots.clone()
     }
 
     /// The job manager: long ops with progress and cancel.
     pub fn jobs(&self) -> Arc<dyn Jobs> {
-        self.executor.clone()
+        self.routed.clone()
     }
 
-    /// The executor itself, for a host that needs what only it offers (its history export, job polling).
-    pub fn executor(&self) -> &Arc<Executor> {
-        &self.executor
+    /// The folder lane's executor, for a host that needs what only it offers (its history export, job polling). A
+    /// switch replaces the folder lane: hold [`runner`](Self::runner) to follow it.
+    pub fn executor(&self) -> Arc<Executor> {
+        self.branches.folder_lane().executor.clone()
     }
 
-    /// The MCP server over this core: serve it on any transport (`omuzaki mcp` serves it on stdio).
-    pub fn mcp(&self) -> &McpServer {
-        &self.mcp
+    /// The project's branches (`docs/design/branches.md`): list, create, checkpoint, switch the folder, review,
+    /// restore keeping the abandoned future, and each branch's lane.
+    pub fn branches(&self) -> &Arc<HostBranches> {
+        &self.branches
+    }
+
+    /// The MCP server over the folder lane: serve it on any transport (`omuzaki mcp` serves it on stdio). Its sessions
+    /// work on the branch that was the folder's when they opened.
+    pub fn mcp(&self) -> McpServer {
+        self.branches.folder_lane().mcp.clone()
+    }
+
+    /// The MCP server over `branch`'s lane, opening the lane if it is closed: `omuzaki mcp --branch` serves it, so an
+    /// agent works on its own branch from its first call.
+    ///
+    /// # Errors
+    /// As [`Branches::lane`](omuzaki_history_api::branch::Branches::lane).
+    pub fn mcp_on(&self, branch: &BranchId) -> Result<McpServer, AppError> {
+        omuzaki_history_api::branch::Branches::lane(self.branches.as_ref(), branch)?;
+        let lane = self.branches.open_lane(branch).ok_or_else(|| BranchError::NotFound(branch.to_string()))?;
+        Ok(lane.mcp.clone())
     }
 
     /// The runtime the MCP server runs on, for a host that serves it on a transport of its own (`block_on` from a
@@ -394,13 +412,13 @@ impl AppCore {
 
     /// The project's journal: what every change is written to before the files follow. `sync` on it returns once
     /// everything applied before the call is durable.
-    pub fn journal(&self) -> &Arc<ProjectJournal> {
-        &self.journal
+    pub fn journal(&self) -> Arc<ProjectJournal> {
+        self.branches.folder_lane().journal.clone()
     }
 
     /// Whether changes are being saved: for the status banner.
     pub fn journal_status(&self) -> JournalStatus {
-        self.journal.status()
+        self.journal().status()
     }
 
     /// Runs `op` with `args` as the person, applied. The UI's panels and the command palette call this (or
@@ -439,7 +457,7 @@ impl AppCore {
     /// # Errors
     /// As [`Runner::undo`].
     pub fn undo(&self) -> Result<Option<String>, OpError> {
-        self.executor.undo(&self.person, &Grants::person())
+        self.routed.undo(&self.person, &Grants::person())
     }
 
     /// Redoes the person's last undone step.
@@ -447,19 +465,19 @@ impl AppCore {
     /// # Errors
     /// As [`Runner::redo`].
     pub fn redo(&self) -> Result<Option<String>, OpError> {
-        self.executor.redo(&self.person, &Grants::person())
+        self.routed.redo(&self.person, &Grants::person())
     }
 
     /// Every event from now on: ops applied by anyone (the person, an agent, a script), commits, undos, sessions,
     /// approvals and jobs, in log order.
     pub fn subscribe(&self) -> Receiver<Event> {
         // The person holds `read`, which is all a subscription needs, so this can't be refused.
-        self.executor.subscribe(&Grants::person()).unwrap_or_else(|_| std::sync::mpsc::channel().1)
+        self.routed.subscribe(&Grants::person()).unwrap_or_else(|_| std::sync::mpsc::channel().1)
     }
 
     /// Reads the document at `path` (the root for everything).
     pub fn get(&self, path: &DocPath) -> Option<Value> {
-        self.executor.get(path, &Grants::person()).ok().flatten()
+        self.routed.get(path, &Grants::person()).ok().flatten()
     }
 
     /// Saves the project files now and returns once they hold every change made before the call.
@@ -467,7 +485,7 @@ impl AppCore {
     /// # Errors
     /// [`AppError::Sync`] with the reason when they can't be saved (a file changed outside Omuzaki, a full disk).
     pub fn save(&self) -> Result<(), AppError> {
-        self.journal.save_now(SAVE_TIMEOUT)?;
+        self.journal().save_now(SAVE_TIMEOUT)?;
         Ok(())
     }
 
@@ -491,7 +509,8 @@ impl AppCore {
         let options = options
             .on_paired(move |record| studio::remember_paired(&paired, record))
             .on_revoked(move |tombstone| studio::forget(&revoked, &tombstone));
-        let port = self.runtime().block_on(self.mcp.serve_http(options))?;
+        let mcp = self.mcp();
+        let port = self.runtime().block_on(mcp.serve_http(options))?;
         for record in studio::paired_records(&self.dir) {
             let label = record.label.clone();
             if let Err(error) = port.admit(record) {
@@ -524,7 +543,8 @@ impl AppCore {
     /// # Errors
     /// [`AppError::Mcp`] if the registry refuses the session (a ceiling above the person's).
     pub fn connect_in_app(&self, spec: InAppSpec) -> Result<InAppLink, AppError> {
-        Ok(self.runtime().block_on(self.mcp.connect_in_app(spec))?)
+        let mcp = self.mcp();
+        Ok(self.runtime().block_on(mcp.connect_in_app(spec))?)
     }
 
     /// Ends the session cleanly: closes the HTTP port (its sessions end), cancels jobs, saves the files and writes the
@@ -550,16 +570,52 @@ impl AppCore {
             studio::withdraw(&self.dir);
             self.runtime().block_on(port.shutdown());
         }
-        self.executor.shutdown_jobs();
+        if let Some(reaper) = lock(&self.reaper).take() {
+            reaper.stop();
+        }
+        for lane in self.branches.lanes() {
+            lane.executor.shutdown_jobs();
+        }
     }
 
     fn shut_down(&self) -> Result<(), AppError> {
         // Closed once: the lock goes with the close, so a second call (the drop after `close`) does nothing.
         let Some(folder_lock) = lock(&self.lock).take() else { return Ok(()) };
         self.stop_serving();
-        let closed = self.journal.close(self.executor.history_export(), CLOSE_TIMEOUT);
+        let closed = self.branches.close_all();
         drop(folder_lock);
-        closed.map(drop).map_err(AppError::from)
+        closed
+    }
+}
+
+/// Closes idle side lanes every [`REAP_EVERY`] (design 5.2), until stopped or the lanes are gone.
+struct Reaper {
+    stop: Sender<()>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Reaper {
+    fn start(branches: &Arc<HostBranches>) -> Self {
+        let (stop, stopped) = channel();
+        let lanes = Arc::downgrade(branches);
+        let thread = std::thread::Builder::new()
+            .name("omuzaki-lane-reaper".to_owned())
+            .spawn(move || {
+                while let Err(RecvTimeoutError::Timeout) = stopped.recv_timeout(REAP_EVERY) {
+                    let Some(branches) = lanes.upgrade() else { return };
+                    branches.close_idle(IDLE_CLOSE);
+                }
+            })
+            .inspect_err(|error| tracing::warn!(%error, "idle branches stay open until the project closes"))
+            .ok();
+        Self { stop, thread }
+    }
+
+    fn stop(mut self) {
+        self.stop.send(()).ok();
+        if let Some(thread) = self.thread.take() {
+            drop(thread.join());
+        }
     }
 }
 
@@ -585,12 +641,12 @@ fn record_opened(settings: &dyn Settings, dir: &Path, root: &Value) {
 
 /// The project folder as agents are granted it: its real path (ADR 0013), or as given when it can't be resolved.
 #[allow(clippy::disallowed_methods, reason = "the host resolving the folder it was given to open; not an op")]
-fn project_dir_text(dir: &Path) -> String {
+pub(crate) fn project_dir_text(dir: &Path) -> String {
     std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf()).display().to_string()
 }
 
 /// A new random session id: 64 random bits, as a number.
-fn session_id() -> String {
+pub(crate) fn session_id() -> String {
     let mut bytes = [0u8; 8];
     // Without OS randomness the id only has to differ from the last session's, which the process id and the time do.
     if getrandom::fill(&mut bytes).is_err() {

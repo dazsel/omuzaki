@@ -69,44 +69,44 @@ impl ProjectRunner {
 
 impl Runner for ProjectRunner {
     fn ops(&self) -> Vec<OpInfo> {
-        self.core.executor().ops()
+        self.core.runner().ops()
     }
 
     fn run(&self, req: Request) -> Result<Outcome, OpError> {
-        let outcome = self.core.executor().run(req)?;
+        let outcome = self.core.runner().run(req)?;
         if outcome.applied.is_some() { self.saved(Ok(outcome)) } else { Ok(outcome) }
     }
 
     fn begin(&self, label: &str, actor: &Actor) -> TxId {
-        self.core.executor().begin(label, actor)
+        self.core.runner().begin(label, actor)
     }
 
     fn commit(&self, tx: TxId, actor: &Actor) -> Result<(), OpError> {
-        self.saved(self.core.executor().commit(tx, actor))
+        self.saved(self.core.runner().commit(tx, actor))
     }
 
     fn rollback(&self, tx: TxId, actor: &Actor) -> Result<(), OpError> {
-        self.saved(self.core.executor().rollback(tx, actor))
+        self.saved(self.core.runner().rollback(tx, actor))
     }
 
     fn undo(&self, actor: &Actor, grants: &Grants) -> Result<Option<String>, OpError> {
-        self.saved(self.core.executor().undo(actor, grants))
+        self.saved(self.core.runner().undo(actor, grants))
     }
 
     fn redo(&self, actor: &Actor, grants: &Grants) -> Result<Option<String>, OpError> {
-        self.saved(self.core.executor().redo(actor, grants))
+        self.saved(self.core.runner().redo(actor, grants))
     }
 
     fn subscribe(&self, grants: &Grants) -> Result<Receiver<Event>, OpError> {
-        self.core.executor().subscribe(grants)
+        self.core.runner().subscribe(grants)
     }
 
     fn get(&self, path: &DocPath, grants: &Grants) -> Result<Option<Value>, OpError> {
-        self.core.executor().get(path, grants)
+        self.core.runner().get(path, grants)
     }
 
     fn log(&self, after_seq: u64, limit: usize, grants: &Grants) -> Result<Vec<OpRecord>, OpError> {
-        self.core.executor().log(after_seq, limit, grants)
+        self.core.runner().log(after_seq, limit, grants)
     }
 }
 

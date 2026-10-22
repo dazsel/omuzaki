@@ -522,6 +522,11 @@ pub struct BranchInfo {
     pub head: PointId,
     /// The head's number on the branch.
     pub seq: u64,
+    /// The highest number a point of this branch has taken, the head's or one made from an older state (which
+    /// doesn't move the head): the next point's number is one more, so numbers are never reused. 0 when only the head
+    /// has numbered.
+    #[serde(default)]
+    pub last_seq: u64,
     /// The fork point on the source branch; absent for `main`.
     #[serde(default)]
     pub from: Option<PointId>,
@@ -563,6 +568,7 @@ impl BranchInfo {
             title: None,
             head,
             seq,
+            last_seq: 0,
             from: None,
             inherits: Contains::new(),
             focus: Vec::new(),
