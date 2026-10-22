@@ -64,8 +64,9 @@ pub fn is_verbatim(id: &str) -> bool {
 }
 
 /// Registered English the UI shows and no table holds, by an id made from what registered it: each panel's title and
-/// empty state (`ui-panel-<id>`, `-reason`, `-fix`), each workspace's title (`ui-workspace-<id>`), and each setting's
-/// summary (`ui-setting-<key>`). A text a table already holds keeps the table's id.
+/// empty state (`ui-panel-<id>`, `-reason`, `-fix`), each workspace's title (`ui-workspace-<id>`), each setting's
+/// summary (`ui-setting-<key>`), and the model registry's notice (`ui-settings-models-disclaimer`). A text a table
+/// already holds keeps the table's id.
 pub fn registered() -> Vec<(String, &'static str)> {
     let registry = omuzaki_ui_api::registry::Registry::collect();
     let mut out: Vec<(String, &'static str)> = Vec::new();
@@ -79,6 +80,8 @@ pub fn registered() -> Vec<(String, &'static str)> {
     for workspace in registry.workspaces() {
         out.push((format!("ui-workspace-{}", kebab(workspace.id)), workspace.title));
     }
+    // The notice a person accepts for a model they add (ADR 0016): one text for every surface, kept by the registry.
+    out.push(("ui-settings-models-disclaimer".to_owned(), omuzaki_ai_api::DISCLAIMER));
     for setting in omuzaki_settings_api::registry::registrations() {
         out.push((format!("ui-setting-{}", kebab(&setting.meta.key.replace('.', "-"))), setting.meta.summary));
     }

@@ -2144,6 +2144,9 @@ ui-settings-models-catalogue = Update from Omuzaki
 ui-settings-models-disabled = Disabled: { $reason }
 
 # The Settings window, with its Models page.
+ui-settings-models-disclaimer = This is your model. Its licence and terms are between you and its author.
+
+# The Settings window, with its Models page.
 ui-settings-models-drop = Drop a model file here to add it to this slot
 
 # The Settings window, with its Models page.
