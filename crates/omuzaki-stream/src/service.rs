@@ -147,6 +147,8 @@ pub struct StreamService {
     pump: Mutex<Option<JoinHandle<()>>>,
     /// The take in progress (`record::runtime`).
     pub(crate) recording: Mutex<Option<ActiveTake>>,
+    /// The replay buffer while it runs (`replay::control`).
+    pub(crate) replay: Mutex<Option<crate::replay::control::ActiveReplay>>,
 }
 
 impl StreamService {
@@ -191,7 +193,7 @@ impl StreamService {
             .name("omuzaki-stream-pump".into())
             .spawn(move || pump(&pump_inner, &full_rx, &free_tx))
             .map_err(|e| StreamError::Io(format!("the stream pump thread could not start: {e}")))?;
-        Ok(Self { inner, pump: Mutex::new(Some(pump)), recording: Mutex::new(None) })
+        Ok(Self { inner, pump: Mutex::new(Some(pump)), recording: Mutex::new(None), replay: Mutex::new(None) })
     }
 
     /// The time now on the service's clock, for callers with no capture time of their own.
@@ -321,6 +323,10 @@ impl StreamService {
         // A take still recording is finished properly (its manifest written) before everything else stops.
         if lock(&self.recording).is_some() {
             let _ = self.record_stop();
+        }
+        // Saves the replay buffer was asked for complete before it stops.
+        if lock(&self.replay).is_some() {
+            let _ = self.replay_stop();
         }
         let drained: Vec<Running> = {
             let mut outputs = lock(&self.inner.outputs);

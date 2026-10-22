@@ -84,7 +84,7 @@ fn mic_bus<'a>(ctx: &OpCtx<'a>) -> Option<(&'a dyn AudioEngine, BusId)> {
 /// with the first video frame on the engine clock. `None` when no audio engine runs or its graph has no mic bus.
 ///
 /// The engine clock and the frames' capture times share the pipeline clock's zero (`StreamService::with_epoch`).
-fn mic_track(ctx: &OpCtx<'_>) -> Result<Option<AudioTrack>, OpError> {
+pub(crate) fn mic_track(ctx: &OpCtx<'_>) -> Result<Option<AudioTrack>, OpError> {
     let Some((engine, bus)) = mic_bus(ctx) else { return Ok(None) };
     let request = TapRequest {
         point: TapPoint::BusPostFader(bus),
