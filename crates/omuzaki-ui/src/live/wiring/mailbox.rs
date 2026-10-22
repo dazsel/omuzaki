@@ -9,7 +9,9 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering, fence};
 
-use omuzaki_anim_api::{CHANNEL_CAPACITY, Channel, ChannelBuf, HUMANOID_COUNT, HumanoidPose, Tick};
+use omuzaki_anim_api::{
+    CHANNEL_CAPACITY, Channel, ChannelBuf, ChannelMask, HUMANOID_COUNT, HumanoidPose, Ownership, Source, Tick,
+};
 use omuzaki_core::glam::{Quat, Vec3};
 use omuzaki_core::time::Seconds;
 use omuzaki_stage::perform::{PerformOutput, Tracking};
@@ -25,6 +27,8 @@ pub struct LiveFrame {
     pub pose: HumanoidPose,
     /// The final channels: what the face painter reads.
     pub channels: ChannelBuf,
+    /// Who owns each channel on that step (PF-23): what the Channels panel's owner chips show.
+    pub owners: Ownership,
     /// When the newest tracker frame reached the perform thread, on the perform clock; `None` before the first. It
     /// carries across steps that bring no new frame, so the render side can say how long ago the picture's data
     /// arrived (the latency the health strip shows).
@@ -34,19 +38,28 @@ pub struct LiveFrame {
 impl LiveFrame {
     /// The frame a step produced, with `arrived` as the arrival of the newest tracker frame so far.
     pub fn from_output(out: &PerformOutput<'_>, arrived: Option<Seconds>) -> Self {
-        Self { tick: out.tick, tracking: out.tracking, pose: *out.pose, channels: out.bus.values, arrived }
+        Self {
+            tick: out.tick,
+            tracking: out.tracking,
+            pose: *out.pose,
+            channels: out.bus.values,
+            owners: out.bus.owners,
+            arrived,
+        }
     }
 }
 
 // Layout: tick index (2 words), tick time (2), tick dt (1), tracking (1), hips offset (3), the rotations (4 per bone),
-// then every channel slot.
+// then every channel slot, then each owning source's channel mask (four words each).
 const TICK_WORDS: usize = 5;
 const TRACKING_WORDS: usize = 1;
 const ARRIVED_WORDS: usize = 2;
 const HIPS_WORDS: usize = 3;
 const ROTATION_WORDS: usize = 4 * HUMANOID_COUNT;
+const OWNER_WORDS: usize = 4 * Source::COUNT;
 /// Words in one encoded [`LiveFrame`].
-const WORDS: usize = TICK_WORDS + TRACKING_WORDS + ARRIVED_WORDS + HIPS_WORDS + ROTATION_WORDS + CHANNEL_CAPACITY;
+const WORDS: usize =
+    TICK_WORDS + TRACKING_WORDS + ARRIVED_WORDS + HIPS_WORDS + ROTATION_WORDS + CHANNEL_CAPACITY + OWNER_WORDS;
 
 /// The record both ends share.
 struct Shared {
@@ -211,6 +224,13 @@ fn encode(frame: &LiveFrame) -> [u32; WORDS] {
     for value in frame.channels.as_slice() {
         put(value.to_bits());
     }
+    for source in Source::ALL {
+        let bits = frame.owners.mask_of(source).bits();
+        for quarter in 0..4 {
+            #[allow(clippy::cast_possible_truncation)] // each quarter is masked to 32 bits
+            put((bits >> (32 * quarter)) as u32);
+        }
+    }
     words
 }
 
@@ -233,11 +253,20 @@ fn decode(words: &[u32; WORDS]) -> LiveFrame {
             channels.set(channel, value);
         }
     }
+    // The masks partition the channels, so claiming each source's in turn rebuilds the table exactly.
+    let mut owners = Ownership::all_rest();
+    for source in Source::ALL {
+        let bits = (0..4).fold(0_u128, |bits, quarter| bits | (u128::from(take()) << (32 * quarter)));
+        if source != Source::Rest {
+            owners.claim(source, ChannelMask::from_bits_truncate(bits));
+        }
+    }
     LiveFrame {
         tick: Tick { index, time: Seconds(time), dt },
         tracking,
         pose: HumanoidPose { hips_offset, rotations },
         channels,
+        owners,
         arrived,
     }
 }
@@ -259,7 +288,11 @@ mod tests {
         channels.set(Channel::HEAD_YAW, -0.125 * t);
         // Odd indices have an arrival and even ones none, so the round trip covers both.
         let arrived = (index % 2 == 1).then(|| Seconds(f64::from(0.5 * t)));
-        LiveFrame { tick: Tick::at_rate(index, 60.0), tracking: Tracking::Lost, pose, channels, arrived }
+        let mut owners = Ownership::all_rest();
+        owners.claim(Source::Tracker, ChannelMask::ARKIT);
+        owners.claim(Source::Life, ChannelMask::EYES);
+        owners.claim(Source::Trigger, ChannelMask::of(Channel::TONGUE_OUT));
+        LiveFrame { tick: Tick::at_rate(index, 60.0), tracking: Tracking::Lost, pose, channels, owners, arrived }
     }
 
     #[test]

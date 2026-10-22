@@ -11,6 +11,7 @@
 //! | `backend` | the private `Backend` trait and the file backend: lock, merge, atomic replace, quarantine |
 //! | `document` | reading keys out of a file and merging edits into its text without touching anything else |
 //! | `ephemeral` | session state in memory until the session file store lands |
+//! | [`ops`] | the `settings.*` ops over any `Settings` service (#767) |
 //!
 //! # Choices a reviewer may disagree with
 //!
@@ -28,6 +29,7 @@
 mod backend;
 mod document;
 mod ephemeral;
+pub mod ops;
 mod paths;
 mod store;
 #[cfg(test)]
@@ -37,6 +39,8 @@ pub use paths::{CONFIG_DIR_VAR, DATA_DIR_VAR, Paths};
 pub use store::{DEBOUNCE, MAX_DELAY, Store};
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
+
+omuzaki_core::define_link!();
 
 /// Locks `mutex`, going on after a panic elsewhere: settings state is replaced whole, never left half-written.
 pub(crate) fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
