@@ -12,7 +12,8 @@
 //! | `0..52` | the 52 `ARKit` blendshapes, in Apple's alphabetical order, so a tracker frame's `blend` array indexes straight in |
 //! | `52..60` | head and body: head angles and shift, lean, body turn, breath |
 //! | `60..73` | anime extras (spec FE-02): ^^ arcs, heart/star/gloom/shock/squeeze/spiral eyes, sparkle, tears, sweat, blush, fangs |
-//! | `73..112` | reserved for future standard channels (finger curls, more extras) |
+//! | `73..76` | signed face shapes the drawn face reads (#74): `eyeTilt` (-1 sad to 1 angry), `browArch` (-1 flat to 1 arched), `pupilSize` (1 pinpoint) |
+//! | `76..112` | reserved for future standard channels (finger curls, more extras) |
 //! | `112..128` | 16 `customNN` slots for character-specific toggles that scores and triggers can drive |
 //!
 //! Naming: camelCase, `Left`/`Right` suffix for the character's own sides (`ARKit` convention). Names are what files
@@ -41,7 +42,8 @@ pub const CUSTOM_COUNT: usize = 16;
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Unit {
-    /// A dimensionless amount, `0..1` (blendshape weights, toggles, extras).
+    /// A dimensionless amount, `0..1` (blendshape weights, toggles, extras), or `-1..1` for the signed face shapes
+    /// (`eyeTilt`, `browArch`).
     Weight,
     /// An angle in radians.
     Radians,
@@ -217,6 +219,9 @@ channels! {
     SWEAT_DROP = 70, "sweatDrop", Weight, 0.0, 1.0, Extras, [none];
     BLUSH = 71, "blush", Weight, 0.0, 1.0, Extras, [none];
     FANGS = 72, "fangs", Weight, 0.0, 1.0, Extras, [none];
+    EYE_TILT = 73, "eyeTilt", Weight, -1.0, 1.0, Eyes, [none];
+    BROW_ARCH = 74, "browArch", Weight, -1.0, 1.0, Brows, [none];
+    PUPIL_SIZE = 75, "pupilSize", Weight, 0.0, 1.0, Eyes, [none];
     CUSTOM_00 = 112, "custom00", Weight, 0.0, 1.0, Custom, [none];
     CUSTOM_01 = 113, "custom01", Weight, 0.0, 1.0, Custom, [none];
     CUSTOM_02 = 114, "custom02", Weight, 0.0, 1.0, Custom, [none];
@@ -781,7 +786,7 @@ mod tests {
     #[test]
     fn indices_names_and_slots_are_consistent() {
         assert!(CHANNELS.len() < usize::from(NO_SLOT));
-        assert_eq!(CHANNELS.len(), 52 + 8 + 13 + CUSTOM_COUNT);
+        assert_eq!(CHANNELS.len(), 52 + 8 + 13 + 3 + CUSTOM_COUNT);
         let mut seen = std::collections::HashSet::new();
         for (pos, info) in CHANNELS.iter().enumerate() {
             assert!(info.channel.index() < CHANNEL_CAPACITY);

@@ -217,6 +217,9 @@ const CHANNEL_NAMES: &[(&str, &str)] = &[
     ("sweatDrop", "Sweat drop"),
     ("blush", "Blush"),
     ("fangs", "Fangs"),
+    ("eyeTilt", "Eye tilt"),
+    ("browArch", "Brow arch"),
+    ("pupilSize", "Pupil size"),
 ];
 
 /// The name the Channels panel shows for the channel whose stable name is `stable` ("Blink L" for `eyeBlinkLeft`), in

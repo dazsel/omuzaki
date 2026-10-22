@@ -106,6 +106,11 @@ pub struct MouthParams {
     pub fangs: f32,
 }
 
+/// Lid tilt per unit of `eyeTilt` (#74): the channel's `-1..1` spans the painter's whole `-2..2`.
+pub const EYE_TILT_PER_UNIT: f32 = 2.0;
+/// How far `pupilSize` 1 shrinks the pupil: to 40% of its size, the painter's floor (pinpoint).
+pub const PINPOINT: f32 = 0.6;
+
 /// Everything a painter needs to draw one face this frame, derived from the channels by a [`FaceMapping`]. `Copy` and
 /// fixed-size (164 bytes): nothing allocates between the bus and the painter.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -525,9 +530,13 @@ impl FaceMapping {
             left_eye,
             right_eye,
             eye_tilt: (coef(rest.eye_tilt)
-                + coef(self.eyes.tilt_from_brows) * f32::midpoint(left_brow.tilt, right_brow.tilt))
+                + coef(self.eyes.tilt_from_brows) * f32::midpoint(left_brow.tilt, right_brow.tilt)
+                + EYE_TILT_PER_UNIT * g(Channel::EYE_TILT))
             .clamp(-2.0, 2.0),
-            pupil: (coef(rest.pupil) * (1.0 - coef(self.eyes.shock_pupil) * shock)).clamp(0.4, 1.6),
+            pupil: (coef(rest.pupil)
+                * (1.0 - coef(self.eyes.shock_pupil) * shock)
+                * (1.0 - PINPOINT * g(Channel::PUPIL_SIZE)))
+            .clamp(0.4, 1.6),
             gaze: Vec2::new(
                 (coef(self.gaze.x) * look_x).clamp(-1.0, 1.0),
                 (coef(self.gaze.y) * look_y).clamp(-1.0, 1.0),
@@ -547,7 +556,8 @@ impl FaceMapping {
             right_brow,
             brow_arch: (coef(rest.brow_arch)
                 + coef(self.brows.outer_up_arch) * mid(ch, Channel::BROW_OUTER_UP_LEFT, Channel::BROW_OUTER_UP_RIGHT)
-                - coef(self.brows.inner_up_arch) * g(Channel::BROW_INNER_UP))
+                - coef(self.brows.inner_up_arch) * g(Channel::BROW_INNER_UP)
+                + g(Channel::BROW_ARCH))
             .clamp(-1.0, 1.0),
             mouth: self.mouth_params(ch),
             blush: (coef(rest.blush)
@@ -775,6 +785,29 @@ mod tests {
             jaw.push((Channel::JAW_OPEN, 0.5));
             assert_eq!(m.apply(&with(&jaw)).mouth.open, m.apply(&with(&[(Channel::JAW_OPEN, 0.5)])).mouth.open);
         }
+    }
+
+    /// #74: the signed face shapes reach the painter without a stand-in: the lid tilt, the brow arch and a pinpoint
+    /// pupil, each on top of what the other channels derive and inside the painter's ranges.
+    #[test]
+    fn eye_tilt_brow_arch_and_pupil_size_drive_the_painter_directly() {
+        let m = FaceMapping::default();
+        let rest = m.rest_params();
+        let p = |pairs: &[(Channel, f32)]| m.apply(&with(pairs));
+        assert!((p(&[(Channel::EYE_TILT, 0.5)]).eye_tilt - (rest.eye_tilt + 1.0)).abs() < 1e-6, "angry");
+        assert!((p(&[(Channel::EYE_TILT, -0.5)]).eye_tilt - (rest.eye_tilt - 1.0)).abs() < 1e-6, "sad");
+        assert_eq!(p(&[(Channel::EYE_TILT, 1.0)]).eye_tilt, 2.0, "the whole range, clamped");
+        assert!((p(&[(Channel::BROW_ARCH, 0.6)]).brow_arch - (rest.brow_arch + 0.6)).abs() < 1e-6);
+        assert!((p(&[(Channel::BROW_ARCH, -0.6)]).brow_arch - (rest.brow_arch - 0.6)).abs() < 1e-6);
+        assert!((p(&[(Channel::PUPIL_SIZE, 1.0)]).pupil - 0.4 * rest.pupil).abs() < 1e-6, "pinpoint");
+        assert!((p(&[(Channel::PUPIL_SIZE, 0.5)]).pupil - 0.7 * rest.pupil).abs() < 1e-6);
+        // Combined with the derived terms: the brows still tilt the lids, and the channel adds to that.
+        let brows = [(Channel::BROW_DOWN_LEFT, 1.0), (Channel::BROW_DOWN_RIGHT, 1.0)];
+        let derived = p(&brows).eye_tilt;
+        let both = p(&[brows[0], brows[1], (Channel::EYE_TILT, 0.25)]).eye_tilt;
+        assert!((both - (derived + 0.5).clamp(-2.0, 2.0)).abs() < 1e-6, "{derived} then {both}");
+        // Out-of-range and non-finite values stay inside the ranges.
+        assert!(p(&[(Channel::EYE_TILT, f32::NAN), (Channel::PUPIL_SIZE, 9.0)]).pupil >= 0.4);
     }
 
     #[test]
