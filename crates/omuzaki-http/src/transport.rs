@@ -1,18 +1,29 @@
-//! [`HttpTransport`] on the same client as [`Fetcher`](omuzaki_ai_api::Fetcher): the one HTTP client the connector
-//! adapters, `net.http`, the LLM providers and the platform adapters share (connectors design D13).
+//! [`ConnectHttp`]: the app's [`HttpTransport`], the one HTTP client the connector adapters, `net.http`, the LLM
+//! providers and the platform adapters share (connectors design D9 and D13). Same stack as [`HttpFetcher`]
+//! (`reqwest` with rustls and the `ring` provider), different rules:
 //!
-//! The same rules as the fetcher: https only (plain http to loopback with the test aid), at most five redirects, each
-//! to https. Unlike the fetcher it never retries: a request may not be safe to send twice, so retrying is the caller's
-//! call.
+//! - **Addresses.** `https://` to any host; `http://` only to this computer (`localhost`, `127.0.0.1`, `::1`), which
+//!   local services such as `ComfyUI` speak. Anything else, and any URL with user-info, is refused before a lookup.
+//!   Loopback never goes through a proxy.
+//! - **No redirects.** A 3xx is an answer like any other: an adapter decides, so an auth header never follows a
+//!   redirect to another host. No retries either: a request may not be safe to send twice.
+//! - **Limits.** `timeout_s` (at most 600) bounds the whole call; the body stops at `max_response`; at most
+//!   [`MAX_IN_FLIGHT`] requests run in the process at once.
+//! - **Headers.** `User-Agent: Omuzaki/<version>` and nothing about the machine; a caller's `Host`, `Content-Length`
+//!   and `Transfer-Encoding` are refused. Multipart bodies are encoded here, with a random 128-bit boundary.
 //!
 //! **Cancel and timeout.** reqwest's blocking client can't be interrupted, so each request runs on a thread of its own
 //! that hands the head and the body over a short queue. The caller's thread polls that queue every [`POLL`], checking
-//! the cancel handle and the `timeout_s` deadline between polls, so a cancel is honoured within 50 ms even while the
-//! server is silent; the request thread finishes on its own when its next read ends (bounded by the same timeout).
+//! the cancel handle and the deadline between polls, so a cancel is honoured within 50 ms even while the server is
+//! silent; dropping the queue closes the connection when the request thread next wakes, which the timeout bounds.
+//!
+//! [`HttpFetcher`]: crate::HttpFetcher
 
 use std::fmt::Write as _;
 use std::io::{self, Read};
+use std::net::IpAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
 use std::time::{Duration, Instant};
 
@@ -22,8 +33,7 @@ use omuzaki_http_api::{
 use reqwest::Url;
 use reqwest::blocking::{Client, Request, Response};
 use reqwest::header::CONTENT_TYPE;
-
-use crate::{HttpFetcher, scheme_allowed};
+use reqwest::redirect::Policy;
 
 /// How often the caller's thread looks at its cancel handle and deadline while it waits.
 const POLL: Duration = Duration::from_millis(20);
@@ -31,6 +41,17 @@ const POLL: Duration = Duration::from_millis(20);
 const CHUNK: usize = 16 * 1024;
 /// Chunks the request thread may read ahead of the caller.
 const AHEAD: usize = 8;
+/// The most requests in flight in the process; one more is refused.
+pub const MAX_IN_FLIGHT: usize = 8;
+/// The longest `timeout_s` honoured.
+pub const MAX_TIMEOUT_S: u32 = 600;
+/// How long a connection may take to open, inside the call's own timeout.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Headers the transport sets itself.
+const OWN_HEADERS: [&str; 3] = ["host", "content-length", "transfer-encoding"];
+
+/// Requests in flight in this process, across every [`ConnectHttp`].
+static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 
 /// What the request thread hands the caller, in order: the head, then body chunks, then the end or a failure.
 enum Piece {
@@ -40,7 +61,43 @@ enum Piece {
     Failed(HttpError),
 }
 
-impl HttpTransport for HttpFetcher {
+/// The app's [`HttpTransport`]: blocking, safe to share between threads. See the module docs for its rules.
+#[derive(Debug)]
+pub struct ConnectHttp {
+    /// For https to other hosts, through the system proxy when there is one.
+    remote: Result<Client, String>,
+    /// For this computer, never through a proxy.
+    local: Result<Client, String>,
+}
+
+impl ConnectHttp {
+    /// The transport. Infallible: if a client can't be built, each call returns the reason.
+    #[must_use]
+    pub fn new() -> Self {
+        crate::install_crypto_provider();
+        let build = |local: bool| {
+            let mut builder = Client::builder()
+                .user_agent(concat!("Omuzaki/", env!("CARGO_PKG_VERSION")))
+                .connect_timeout(CONNECT_TIMEOUT)
+                .redirect(Policy::none());
+            if local {
+                builder = builder.no_proxy();
+            }
+            // reqwest's blocking builder panics on a thread that runs async tasks: build on a plain one.
+            std::thread::scope(|scope| scope.spawn(|| builder.build().map_err(|e| e.to_string())).join())
+                .unwrap_or_else(|_| Err("the client builder panicked".to_owned()))
+        };
+        Self { remote: build(false), local: build(true) }
+    }
+}
+
+impl Default for ConnectHttp {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HttpTransport for ConnectHttp {
     fn send(&self, req: &HttpRequest, cancel: &dyn Cancel) -> Result<HttpResponse, HttpError> {
         let incoming = self.begin(req, cancel)?;
         let (status, headers) = incoming.head(cancel)?;
@@ -64,36 +121,84 @@ impl HttpTransport for HttpFetcher {
     fn open(&self, req: &HttpRequest, cancel: Arc<dyn Cancel>) -> Result<HttpStream, HttpError> {
         let incoming = self.begin(req, cancel.as_ref())?;
         let (status, headers) = incoming.head(cancel.as_ref())?;
-        let body = Body { incoming, cancel, left: req.max_response, limit: req.max_response, held: Vec::new(), at: 0, over: false };
+        let limit = req.max_response;
+        let body = Body { incoming, cancel, left: limit, limit, held: Vec::new(), at: 0, over: false };
         Ok(HttpStream { status, headers, body: Box::new(body) })
     }
 }
 
-impl HttpFetcher {
-    /// Builds the request and starts its thread.
+impl ConnectHttp {
+    /// Checks and builds the request, takes an in-flight slot and starts the request thread.
     fn begin(&self, req: &HttpRequest, cancel: &dyn Cancel) -> Result<Incoming, HttpError> {
-        let client = self.client.as_ref().map_err(|e| HttpError::Network(format!("no HTTP client: {e}")))?;
+        let url = Url::parse(&req.url).map_err(|e| HttpError::Refused(format!("not a valid address: {e}")))?;
+        let local = check_address(&url)?;
+        if let Some((name, _)) = req.headers.iter().find(|(n, _)| OWN_HEADERS.contains(&n.to_ascii_lowercase().as_str()))
+        {
+            return Err(HttpError::Refused(format!("the {name} header is the transport's to set")));
+        }
+        let client = if local { &self.local } else { &self.remote };
+        let client = client.as_ref().map_err(|e| HttpError::Network(format!("no HTTP client: {e}")))?;
+        let slot = Slot::take().ok_or_else(|| HttpError::Refused("too many requests in flight".to_owned()))?;
         if cancel.is_cancelled() {
             return Err(HttpError::Cancelled);
         }
-        let timeout = Duration::from_secs(u64::from(req.timeout_s.max(1)));
-        let request = build(client, req, timeout, self.allow_loopback_http)?;
+        let timeout = Duration::from_secs(u64::from(req.timeout_s.clamp(1, MAX_TIMEOUT_S)));
+        let request = build(client, url, req, timeout)?;
         let (tx, rx) = sync_channel(AHEAD);
         let client = client.clone();
         std::thread::Builder::new()
             .name("omuzaki-http".to_owned())
-            .spawn(move || run(&client, request, &tx))
+            .spawn(move || {
+                let _slot = slot;
+                run(&client, request, &tx);
+            })
             .map_err(|e| HttpError::Network(format!("the request thread didn't start: {e}")))?;
         Ok(Incoming { rx, deadline: Instant::now() + timeout })
     }
 }
 
-/// The request as reqwest's, after the scheme check.
-fn build(client: &Client, req: &HttpRequest, timeout: Duration, allow_loopback: bool) -> Result<Request, HttpError> {
-    let url = Url::parse(&req.url).map_err(|e| HttpError::Refused(format!("not a valid address: {e}")))?;
-    if !scheme_allowed(&url, allow_loopback) {
-        return Err(HttpError::Refused("only https addresses are allowed".to_owned()));
+/// An in-flight slot, given back when the request thread ends.
+struct Slot;
+
+impl Slot {
+    fn take() -> Option<Self> {
+        let mut now = IN_FLIGHT.load(Ordering::Acquire);
+        while now < MAX_IN_FLIGHT {
+            match IN_FLIGHT.compare_exchange_weak(now, now + 1, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => return Some(Self),
+                Err(seen) => now = seen,
+            }
+        }
+        None
     }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        IN_FLIGHT.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// Whether `url` may be called, and whether it is this computer.
+fn check_address(url: &Url) -> Result<bool, HttpError> {
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(HttpError::Refused("an address with a user name or password in it".to_owned()));
+    }
+    let local = match url.host_str() {
+        Some("localhost") => true,
+        Some(host) => host.trim_matches(['[', ']']).parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback()),
+        None => return Err(HttpError::Refused("the address has no host".to_owned())),
+    };
+    match url.scheme() {
+        "https" => Ok(local),
+        "http" if local => Ok(true),
+        "http" => Err(HttpError::Refused("plain http is only allowed to this computer".to_owned())),
+        other => Err(HttpError::Refused(format!("{other}:// addresses aren't spoken here"))),
+    }
+}
+
+/// The request as reqwest's.
+fn build(client: &Client, url: Url, req: &HttpRequest, timeout: Duration) -> Result<Request, HttpError> {
     let method = match req.method {
         Method::Get => reqwest::Method::GET,
         Method::Post => reqwest::Method::POST,
@@ -113,11 +218,22 @@ fn build(client: &Client, req: &HttpRequest, timeout: Duration, allow_loopback: 
             builder.header(CONTENT_TYPE, "application/json").body(data)
         }
         HttpBody::Multipart(parts) => {
-            let (content_type, data) = multipart(parts);
+            let (content_type, data) = multipart(parts, &boundary()?);
             builder.header(CONTENT_TYPE, content_type).body(data)
         }
     };
     builder.build().map_err(|e| HttpError::Refused(e.without_url().to_string()))
+}
+
+/// A random 128-bit multipart boundary.
+fn boundary() -> Result<String, HttpError> {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).map_err(|e| HttpError::Network(format!("no randomness for the boundary: {e}")))?;
+    let mut text = String::from("omuzaki-");
+    for b in bytes {
+        let _ = write!(text, "{b:02x}");
+    }
+    Ok(text)
 }
 
 /// The request thread: sends, then hands over the head and the body until the end, a failure or a caller that left.
@@ -262,14 +378,8 @@ impl Read for Body {
     }
 }
 
-/// A `multipart/form-data` body: its `Content-Type` (with the boundary) and its bytes. The boundary is one no part
-/// contains.
-fn multipart(parts: &[Part]) -> (String, Vec<u8>) {
-    // Each part rules out at most one candidate, so one more candidate than there are parts always finds one.
-    let boundary = (0..=parts.len())
-        .map(|n| format!("omuzaki-form-boundary-{n:08x}"))
-        .find(|b| !parts.iter().any(|p| contains(&p.data, b.as_bytes())))
-        .unwrap_or_default();
+/// A `multipart/form-data` body with `boundary`: its `Content-Type` and its bytes.
+fn multipart(parts: &[Part], boundary: &str) -> (String, Vec<u8>) {
     let mut body = Vec::new();
     for part in parts {
         body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
@@ -295,18 +405,14 @@ fn quoted(value: &str) -> String {
     value.replace('"', "%22").replace('\r', "%0D").replace('\n', "%0A")
 }
 
-fn contains(haystack: &[u8], needle: &[u8]) -> bool {
-    !needle.is_empty() && haystack.windows(needle.len()).any(|w| w == needle)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn a_multipart_body_has_its_parts_and_a_boundary_none_contains() {
+    fn a_multipart_body_has_its_parts() {
         let parts = vec![
-            Part { name: "a\"b".into(), file_name: None, content_type: None, data: b"omuzaki-form-boundary-00000000".to_vec() },
+            Part { name: "a\"b".into(), file_name: None, content_type: None, data: b"one".to_vec() },
             Part {
                 name: "file".into(),
                 file_name: Some("x.png".into()),
@@ -314,11 +420,30 @@ mod tests {
                 data: vec![1, 2, 3],
             },
         ];
-        let (content_type, body) = multipart(&parts);
-        assert_eq!(content_type, "multipart/form-data; boundary=omuzaki-form-boundary-00000001");
+        let (content_type, body) = multipart(&parts, "B");
+        assert_eq!(content_type, "multipart/form-data; boundary=B");
         let text = String::from_utf8_lossy(&body);
-        assert!(text.starts_with("--omuzaki-form-boundary-00000001\r\nContent-Disposition: form-data; name=\"a%22b\"\r\n\r\n"));
+        assert!(text.starts_with("--B\r\nContent-Disposition: form-data; name=\"a%22b\"\r\n\r\none\r\n"));
         assert!(text.contains("name=\"file\"; filename=\"x.png\"\r\nContent-Type: image/png\r\n\r\n\u{1}\u{2}\u{3}\r\n"));
-        assert!(text.ends_with("--omuzaki-form-boundary-00000001--\r\n"));
+        assert!(text.ends_with("--B--\r\n"));
+    }
+
+    #[test]
+    fn boundaries_are_random_and_128_bits() {
+        let (a, b) = (boundary().unwrap_or_default(), boundary().unwrap_or_default());
+        assert_eq!(a.len(), "omuzaki-".len() + 32);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn only_https_and_loopback_http_without_user_info_are_called() {
+        let check = |s: &str| check_address(&Url::parse(s).unwrap_or_else(|_| unreachable!()));
+        assert_eq!(check("https://api.example.com/x"), Ok(false));
+        assert_eq!(check("https://127.0.0.1/x"), Ok(true));
+        assert_eq!(check("http://localhost:8188/x"), Ok(true));
+        assert_eq!(check("http://[::1]/x"), Ok(true));
+        for refused in ["http://192.0.2.1/", "http://example.com/", "https://u:p@example.com/", "ftp://127.0.0.1/"] {
+            assert!(matches!(check(refused), Err(HttpError::Refused(_))), "{refused}");
+        }
     }
 }

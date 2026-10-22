@@ -1,4 +1,5 @@
-//! The HTTPS client behind [`Fetcher`]: [`HttpFetcher`] over reqwest with rustls.
+//! The app's HTTP stack, over reqwest with rustls: [`HttpFetcher`], the HTTPS client behind [`Fetcher`] (model
+//! downloads), and [`ConnectHttp`], the shared [`HttpTransport`](omuzaki_http_api::HttpTransport) every adapter calls.
 //!
 //! It is https only, follows at most five redirects (each to an https target), retries transient failures inside
 //! [`Fetcher::open`], and returns the response as a stream, never buffering the body. Nothing below the app links this
@@ -18,6 +19,8 @@ use std::time::Duration;
 use omuzaki_ai_api::{Body, FetchError, Fetcher};
 
 mod transport;
+
+pub use transport::{ConnectHttp, MAX_IN_FLIGHT, MAX_TIMEOUT_S};
 use reqwest::blocking::{Client, Response};
 use reqwest::header::{ACCEPT_ENCODING, CONTENT_RANGE, RANGE};
 use reqwest::redirect::Policy;

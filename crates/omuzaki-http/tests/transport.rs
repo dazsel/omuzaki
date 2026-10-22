@@ -1,4 +1,4 @@
-//! `HttpFetcher` as the shared `HttpTransport`, against a raw HTTP/1.1 server on 127.0.0.1:0 that writes scripted
+//! `ConnectHttp`, the shared `HttpTransport`, against a raw HTTP/1.1 server on 127.0.0.1:0 that writes scripted
 //! bytes (so it can stall mid-body): the request as sent, a non-2xx answer, the size limit, a stream cut at the limit,
 //! cancelling a silent server, the timeout, and the https-only rule.
 
@@ -10,8 +10,8 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
-use omuzaki_http::HttpFetcher;
-use omuzaki_http_api::{CancelFlag, HttpBody, HttpError, HttpRequest, HttpTransport, Method, NeverCancel};
+use omuzaki_http::ConnectHttp;
+use omuzaki_http_api::{CancelFlag, HttpBody, HttpError, HttpRequest, HttpTransport, Method, NeverCancel, Part};
 use serde_json::json;
 
 /// A request as the server read it.
@@ -63,8 +63,8 @@ fn write(mut stream: TcpStream, parts: &[Option<&[u8]>]) {
     }
 }
 
-fn transport() -> HttpFetcher {
-    HttpFetcher::builder().allow_loopback_http(true).build()
+fn transport() -> ConnectHttp {
+    ConnectHttp::new()
 }
 
 fn request(method: Method, url: &str, body: HttpBody) -> HttpRequest {
@@ -152,13 +152,77 @@ fn a_silent_server_times_out() {
     req.timeout_s = 1;
     let started = Instant::now();
     assert_eq!(transport().send(&req, &NeverCancel), Err(HttpError::Timeout));
-    assert!(started.elapsed() < Duration::from_secs(3));
+    let took = started.elapsed();
+    assert!(took >= Duration::from_secs(1) && took < Duration::from_millis(1400), "{took:?}");
+}
+
+#[test]
+fn a_redirect_is_returned_not_followed() {
+    let (elsewhere, other) = server(vec![Some(OK)]);
+    let redirect: &'static [u8] = Box::leak(
+        format!("HTTP/1.1 302 Found\r\nLocation: {elsewhere}\r\nContent-Length: 0\r\n\r\n").into_bytes().into_boxed_slice(),
+    );
+    let (url, _seen) = server(vec![Some(redirect)]);
+    let answer = transport().send(&request(Method::Get, &url, HttpBody::Empty), &NeverCancel).expect("answered");
+    assert_eq!(answer.status, 302);
+    assert!(other.recv_timeout(Duration::from_millis(300)).is_err(), "the other host saw nothing");
+}
+
+#[test]
+fn the_user_agent_says_omuzaki_and_nothing_else() {
+    let (url, seen) = server(vec![Some(OK)]);
+    transport().send(&request(Method::Get, &url, HttpBody::Empty), &NeverCancel).expect("answered");
+    let head = seen.recv_timeout(Duration::from_secs(10)).unwrap().head.to_ascii_lowercase();
+    let agent = head.lines().find_map(|l| l.strip_prefix("user-agent: ")).unwrap();
+    assert_eq!(agent, concat!("omuzaki/", env!("CARGO_PKG_VERSION")));
+}
+
+#[test]
+fn a_multipart_body_reaches_the_server_with_its_parts() {
+    let (url, seen) = server(vec![Some(OK)]);
+    let parts = vec![
+        Part { name: "prompt".into(), file_name: None, content_type: None, data: b"a fox".to_vec() },
+        Part { name: "image".into(), file_name: Some("in.png".into()), content_type: Some("image/png".into()), data: vec![0, 1, 2] },
+    ];
+    transport().send(&request(Method::Post, &url, HttpBody::Multipart(parts)), &NeverCancel).expect("answered");
+    let seen = seen.recv_timeout(Duration::from_secs(10)).unwrap();
+    let head = seen.head.to_ascii_lowercase();
+    let boundary = head.lines().find_map(|l| l.split_once("boundary=").map(|(_, b)| b.trim().to_owned())).unwrap();
+    let body = String::from_utf8_lossy(&seen.body).into_owned();
+    let parts: Vec<&str> = body.split(&format!("--{boundary}")).filter(|p| !p.is_empty() && *p != "--\r\n").collect();
+    assert_eq!(parts.len(), 2);
+    assert!(parts[0].contains("name=\"prompt\"\r\n\r\na fox\r\n"));
+    assert!(parts[1].contains("name=\"image\"; filename=\"in.png\"\r\nContent-Type: image/png\r\n\r\n\u{0}\u{1}\u{2}\r\n"));
+}
+
+#[test]
+fn cancelling_a_silent_send_returns_within_250_ms() {
+    let (url, _seen) = server(vec![None]);
+    let flag = CancelFlag::new();
+    let canceller = {
+        let flag = flag.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            flag.cancel();
+        })
+    };
+    let started = Instant::now();
+    assert_eq!(transport().send(&request(Method::Get, &url, HttpBody::Empty), &flag), Err(HttpError::Cancelled));
+    assert!(started.elapsed() < Duration::from_millis(350));
+    canceller.join().unwrap();
 }
 
 #[test]
 fn plain_http_is_refused_without_sending() {
     let req = request(Method::Get, "http://example.com/x", HttpBody::Empty);
-    assert!(matches!(HttpFetcher::new().send(&req, &NeverCancel), Err(HttpError::Refused(_))));
-    let req = request(Method::Get, "not a url", HttpBody::Empty);
-    assert!(matches!(HttpFetcher::new().send(&req, &NeverCancel), Err(HttpError::Refused(_))));
+    assert!(matches!(transport().send(&req, &NeverCancel), Err(HttpError::Refused(_))));
+    for url in ["not a url", "http://192.0.2.1/", "https://user:pass@example.com/", "ftp://127.0.0.1/"] {
+        let started = Instant::now();
+        let req = request(Method::Get, url, HttpBody::Empty);
+        assert!(matches!(transport().send(&req, &NeverCancel), Err(HttpError::Refused(_))), "{url}");
+        assert!(started.elapsed() < Duration::from_millis(100));
+    }
+    let mut req = request(Method::Get, "https://example.com/", HttpBody::Empty);
+    req.headers.push(("Host".to_owned(), "elsewhere".to_owned()));
+    assert!(matches!(transport().send(&req, &NeverCancel), Err(HttpError::Refused(_))));
 }

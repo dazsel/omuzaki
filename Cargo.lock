@@ -4356,6 +4356,7 @@ name = "omuzaki-http"
 version = "0.0.0"
 dependencies = [
  "bytes",
+ "getrandom 0.4.3",
  "http-body-util",
  "hyper",
  "hyper-util",
