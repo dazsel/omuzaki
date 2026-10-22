@@ -104,7 +104,10 @@ impl FileSource<'_> {
                     .get(&rel.join("/"))
                     .ok_or_else(|| StoreError::io(&path, io::Error::from(io::ErrorKind::NotFound)))?;
                 String::from_utf8(bytes.clone()).map_err(|_| {
-                    StoreError::io(&path, io::Error::new(io::ErrorKind::InvalidData, "stream did not contain valid UTF-8"))
+                    StoreError::io(
+                        &path,
+                        io::Error::new(io::ErrorKind::InvalidData, "stream did not contain valid UTF-8"),
+                    )
                 })
             }
         }

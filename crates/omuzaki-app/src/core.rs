@@ -6,7 +6,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use omuzaki_core::time::SystemClock;
-use omuzaki_doc::journal::{JournalOptions, ProjectJournal, SessionStart, SystemWall, reopen};
+use omuzaki_doc::journal::{JournalOptions, ProjectJournal, Recover, SessionStart, SystemWall, reopen_with};
+use omuzaki_doc::snapshot::{Snapshotter, snapshot_dir};
 use omuzaki_doc::{Project, ProjectLock};
 use omuzaki_doc_api::{DocPath, Value};
 use omuzaki_history_api::{JournalSink, JournalStatus};
@@ -16,6 +17,7 @@ use omuzaki_ops_api::{
     Actor, ConnectionService, Event, Grants, Jobs, Mode, OpError, Outcome, ProjectDir, Request, Runner, Services,
     ServicesBuilder, Sessions,
 };
+use omuzaki_store::DiskStore;
 use tokio::runtime::{Handle, Runtime};
 
 use crate::AppError;
@@ -48,6 +50,8 @@ pub struct AppOptions {
     /// The host's own services (the studio's performer, camera input and windows), which the core's executor carries
     /// alongside its own connections.
     pub services: Services,
+    /// What opening after a crash does with the files: restore (the default) or open them as they are.
+    pub recover: Recover,
 }
 
 impl AppOptions {
@@ -60,6 +64,7 @@ impl AppOptions {
             journal: JournalOptions::default(),
             app_version: env!("CARGO_PKG_VERSION").to_owned(),
             services: Services::none(),
+            recover: Recover::Restore,
         }
     }
 
@@ -80,6 +85,13 @@ impl AppOptions {
     #[must_use]
     pub fn with_agent_grants(mut self, grants: Grants) -> Self {
         self.agent_grants = grants;
+        self
+    }
+
+    /// These options with what opening after a crash does with the files (`--recover disk` opens them as they are).
+    #[must_use]
+    pub fn with_recover(mut self, recover: Recover) -> Self {
+        self.recover = recover;
         self
     }
 
@@ -141,7 +153,10 @@ impl AppCore {
         let dir = dir.as_ref();
         let project_dir = ProjectDir::open(dir).map_err(|e| OpError::invalid("project", e.to_string()))?;
         let folder_lock = ProjectLock::acquire(dir)?;
-        let reopened = reopen(dir)?;
+        let store =
+            DiskStore::open(snapshot_dir(dir)).map_err(|e| OpError::unavailable("snapshots").hint(e.to_string()))?;
+        let snapshots = Arc::new(Snapshotter::new(dir, Arc::new(store)));
+        let reopened = reopen_with(dir, &snapshots, options.recover)?;
         let wall = Arc::new(SystemWall);
         let mut shadow = reopened.project;
 
@@ -155,14 +170,24 @@ impl AppCore {
                 .with_project_dir(project_dir)
                 .with_approver(options.approver);
         let mut recovery = RecoveryReport::default();
+        if let Some(found) = &reopened.recovery {
+            recovery.archived = Some(found.kept);
+            recovery.from_disk = found.mode == Recover::Disk;
+        }
         recover::replay(&executor, &reopened.tail, reopened.recovery.map(|r| r.end), &mut recovery);
         recover::close_open(&executor, reopened.last_lsn, &mut recovery);
 
         // The keeper's copy starts where the executor's does: after the replay and the closed transactions.
         let root = executor.get(&DocPath::root(), &Grants::person())?.unwrap_or_default();
         shadow.reset_to(&root).map_err(|e| OpError::internal(format!("the recovered project can't be stored: {e}")))?;
-        let start =
-            SessionStart::new(session_id(), &options.app_version, reopened.last_lsn, executor.history_export(), wall);
+        let start = SessionStart::new(
+            session_id(),
+            &options.app_version,
+            reopened.last_lsn,
+            executor.history_export(),
+            wall,
+            snapshots,
+        );
         let journal = ProjectJournal::start(shadow, start, options.journal)?;
         let executor = Arc::new(executor.with_journal(journal.clone()));
 

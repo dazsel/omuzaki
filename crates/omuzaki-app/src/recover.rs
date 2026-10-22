@@ -2,7 +2,7 @@
 //! left open, so the session starts at "the state after the last completed transaction".
 
 use omuzaki_doc::journal::End;
-use omuzaki_history_api::{HistoryEntry, Lsn};
+use omuzaki_history_api::{HistoryEntry, Lsn, SnapshotId};
 use omuzaki_ops::Executor;
 
 /// What opening a project had to do to bring it back after Omuzaki stopped without closing it. Empty after a clean
@@ -22,6 +22,10 @@ pub struct RecoveryReport {
     pub rolled_back: Vec<String>,
     /// Transactions left open that later work depended on, so they were kept as one undo step each: their labels.
     pub kept: Vec<String>,
+    /// The raw snapshot of the folder as the crash left it (pinned 30 days), where the pre-recovery state is kept.
+    pub archived: Option<SnapshotId>,
+    /// The files were opened as they are (`--recover disk`), and the journal's unsaved tail wasn't replayed.
+    pub from_disk: bool,
 }
 
 impl RecoveryReport {
@@ -33,7 +37,9 @@ impl RecoveryReport {
     /// One line for the person: what was brought back and what wasn't kept.
     pub fn summary(&self) -> String {
         let mut parts = Vec::new();
-        if self.unclean {
+        if self.unclean && self.from_disk {
+            parts.push("Omuzaki closed unexpectedly; the files were opened as they are".to_owned());
+        } else if self.unclean {
             parts.push(format!("Omuzaki closed unexpectedly; {} saved changes were brought back", self.replayed));
         }
         if !self.rolled_back.is_empty() {
@@ -47,6 +53,9 @@ impl RecoveryReport {
         }
         if self.untrusted > 0 {
             parts.push(format!("the journal was damaged; {} later changes couldn't be trusted", self.untrusted));
+        }
+        if let Some(id) = &self.archived {
+            parts.push(format!("the project as it was before recovery is kept in snapshot {id}"));
         }
         parts.join(". ")
     }

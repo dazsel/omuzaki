@@ -144,7 +144,11 @@ enum Kind {
     Toml,
 }
 
-fn load_folder(source: &FileSource<'_>, at: &mut Segs, files: &mut Vec<LoadedFile>) -> Result<Map<String, Value>, StoreError> {
+fn load_folder(
+    source: &FileSource<'_>,
+    at: &mut Segs,
+    files: &mut Vec<LoadedFile>,
+) -> Result<Map<String, Value>, StoreError> {
     let mut map = Map::new();
     let dir = source.path(at);
     for (name, kind) in list(source, at)? {
@@ -181,7 +185,9 @@ fn list(source: &FileSource<'_>, at: &[String]) -> Result<Vec<(String, Kind)>, S
         .into_iter()
         .filter_map(|(name, kind)| match kind {
             EntryKind::Folder => Some((name, Kind::Folder)),
-            EntryKind::File => name.strip_suffix(EXT).filter(|s| !s.is_empty()).map(|stem| (stem.to_owned(), Kind::Toml)),
+            EntryKind::File => {
+                name.strip_suffix(EXT).filter(|s| !s.is_empty()).map(|stem| (stem.to_owned(), Kind::Toml))
+            }
             EntryKind::Other => None,
         })
         .collect())
@@ -207,7 +213,9 @@ fn parse_file(path: &Path) -> Result<(Map<String, Value>, String), StoreError> {
 fn parse_text(path: PathBuf, text: String) -> Result<(Map<String, Value>, String), StoreError> {
     parse_table(&text).map(|table| (table, text)).map_err(|e| match e {
         ReadError::Syntax(source) => StoreError::Syntax { path, source },
-        ReadError::Unsupported { at, reason } => StoreError::Unsupported { path, reason: format!("{reason} (at {at})") },
+        ReadError::Unsupported { at, reason } => {
+            StoreError::Unsupported { path, reason: format!("{reason} (at {at})") }
+        }
     })
 }
 

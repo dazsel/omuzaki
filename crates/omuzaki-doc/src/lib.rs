@@ -64,6 +64,7 @@
 
 mod disk;
 mod error;
+mod exact;
 pub mod journal;
 mod known;
 mod layout;
@@ -71,6 +72,7 @@ mod lock;
 mod migrate;
 mod migrations;
 mod project;
+pub mod snapshot;
 mod source;
 mod toml_read;
 mod toml_write;

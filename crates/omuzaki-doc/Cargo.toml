@@ -14,7 +14,9 @@ inventory.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+toml.workspace = true
 toml_edit.workspace = true
+tracing.workspace = true
 omuzaki-assets-lock = { path = "../omuzaki-assets-lock" }
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
@@ -32,6 +34,7 @@ windows-sys.workspace = true
 criterion.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
+omuzaki-store-mock = { path = "../omuzaki-store-mock" }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-stage-api = { path = "../omuzaki-stage-api" }
 

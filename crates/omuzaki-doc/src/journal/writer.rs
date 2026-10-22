@@ -31,16 +31,20 @@ use std::time::{Duration, Instant};
 
 use omuzaki_doc_api::{DocWrite, Patch};
 use omuzaki_history_api::{
-    HistoryEntry, HistoryExport, JournalSink, JournalStatus, Lsn, SnapshotId, SyncError, Trigger, WallClock, WallTime,
+    HistoryEntry, HistoryExport, JournalSink, JournalStatus, Lsn, SnapshotId, SnapshotInfo, SyncError, Trigger,
+    WallClock, WallTime,
 };
 use omuzaki_ops_api::OpError;
 
-use super::snapshot::{self, Snapshot};
 use super::{JournalError, Record, SegmentHeader, SessionInfo, encode, segment_name, segment_seq};
 use crate::Project;
+use crate::snapshot::{Facts, Snapshotter};
 
 /// The folder inside `.omuzaki/` that holds the live segments.
 pub const JOURNAL_DIR: &str = "journal";
+
+/// The folder inside `.omuzaki/` that holds sealed segments behind a snapshot: the op log archive.
+pub const ARCHIVE_DIR: &str = "log";
 
 /// The service name a refusal to admit carries.
 const SERVICE: &str = "journal";
@@ -124,24 +128,29 @@ pub struct SessionStart {
     pub history: HistoryExport,
     /// Wall time, for the session record and snapshot times.
     pub wall: Arc<dyn WallClock>,
+    /// Where the session's snapshots go.
+    pub snapshots: Arc<Snapshotter>,
 }
 
 impl SessionStart {
-    /// A session `session` of `app_version`, after `base_lsn`, starting with `history`.
+    /// A session `session` of `app_version`, after `base_lsn`, starting with `history`, its snapshots kept by
+    /// `snapshots`.
     pub fn new(
         session: impl Into<String>,
         app_version: impl Into<String>,
         base_lsn: Lsn,
         history: HistoryExport,
         wall: Arc<dyn WallClock>,
+        snapshots: Arc<Snapshotter>,
     ) -> Self {
-        Self { session: session.into(), app_version: app_version.into(), base_lsn, history, wall }
+        Self { session: session.into(), app_version: app_version.into(), base_lsn, history, wall, snapshots }
     }
 }
 
 /// The journal of one open project: the [`JournalSink`] the executor writes to. See the [module docs](self).
 pub struct ProjectJournal {
     shared: Arc<Shared>,
+    snapshots: Arc<Snapshotter>,
     keeper: Sender<KeeperMsg>,
     threads: Mutex<Vec<JoinHandle<()>>>,
 }
@@ -192,6 +201,8 @@ enum KeeperMsg {
     Durable(Vec<Item>),
     /// Save the files now, then answer.
     SaveNow(Sender<Result<(), String>>),
+    /// Take a snapshot for the service (a named version, a take, a manual one) and answer with its ref.
+    Take(Trigger, Option<String>, Sender<Result<SnapshotInfo, String>>),
     /// Save, write the close snapshot with this history, answer with its id, and stop.
     Close(HistoryExport, Sender<Result<SnapshotId, String>>),
     /// Stop without closing (the journal was dropped): what is durable is in the journal, and the next open recovers.
@@ -213,17 +224,14 @@ impl ProjectJournal {
     /// a document or history JSON can't hold.
     pub fn start(project: Project, start: SessionStart, options: JournalOptions) -> Result<Arc<Self>, JournalError> {
         let dir = project.dir().to_path_buf();
-        let snapshots = snapshot::snapshot_dir(&dir);
         let created = start.wall.now();
-        let base = Snapshot::new(
-            start.base_lsn,
-            &start.session,
-            Trigger::Session,
-            created,
-            project.root().clone(),
-            start.history,
-        );
-        let base_id = snapshot::write(&snapshots, &base)?;
+        let base = Facts::new(start.base_lsn, &start.session, Trigger::Session, created);
+        let base_id = start
+            .snapshots
+            .take_rendered(&project, base, &start.history)
+            .map_err(|e| JournalError::Snapshot(e.to_string()))?
+            .info
+            .id;
 
         let journal_dir = journal_dir(&dir);
         let session_lsn = Lsn(start.base_lsn.0 + 1);
@@ -247,8 +255,10 @@ impl ProjectJournal {
         let keeper = Keeper {
             shared: Arc::clone(&shared),
             shadow: project,
-            snapshots,
+            snapshots: Arc::clone(&start.snapshots),
             session: start.session,
+            label: String::new(),
+            published: start.base_lsn,
             wall: start.wall,
             applied: session_lsn,
             dirty_since: None,
@@ -261,7 +271,7 @@ impl ProjectJournal {
             spawn("omuzaki-journal", &dir, move || writer.run())?,
             spawn("omuzaki-keeper", &dir, move || keeper.run(&keeper_rx))?,
         ];
-        Ok(Arc::new(Self { shared, keeper: keeper_tx, threads: Mutex::new(threads) }))
+        Ok(Arc::new(Self { shared, snapshots: start.snapshots, keeper: keeper_tx, threads: Mutex::new(threads) }))
     }
 
     /// Saves the project files now and returns once they hold everything appended before the call (`project.save`,
@@ -278,6 +288,32 @@ impl ProjectJournal {
             Ok(Err(reason)) => Err(SyncError::Failing { reason }),
             Err(_) => Err(SyncError::Timeout { durable }),
         }
+    }
+
+    /// Takes a snapshot of everything appended before the call and returns its ref once the ref exists: a named
+    /// version (`name` is the name), a take's state (`name` is the stem) or a manual one.
+    ///
+    /// # Errors
+    /// As [`sync`](JournalSink::sync); [`SyncError::Failing`] with the reason when the snapshot can't be stored.
+    pub fn take_snapshot(
+        &self,
+        trigger: Trigger,
+        name: Option<String>,
+        timeout: Duration,
+    ) -> Result<SnapshotInfo, SyncError> {
+        let durable = self.sync(timeout)?;
+        let (reply, answer) = mpsc::channel();
+        self.keeper.send(KeeperMsg::Take(trigger, name, reply)).map_err(|_| self.stopped())?;
+        match answer.recv_timeout(timeout) {
+            Ok(Ok(info)) => Ok(info),
+            Ok(Err(reason)) => Err(SyncError::Failing { reason }),
+            Err(_) => Err(SyncError::Timeout { durable }),
+        }
+    }
+
+    /// The session's snapshots: list, load and sweep them.
+    pub fn snapshots(&self) -> &Arc<Snapshotter> {
+        &self.snapshots
     }
 
     /// Ends the session cleanly: everything appended is made durable, the files are saved, a close snapshot of the
@@ -585,8 +621,13 @@ impl Writer {
 struct Keeper {
     shared: Arc<Shared>,
     shadow: Project,
-    snapshots: PathBuf,
+    snapshots: Arc<Snapshotter>,
     session: String,
+    /// The last transaction's label, for the next snapshot's ref.
+    label: String,
+    /// The LSN of the newest snapshot published in this session, the base included: compaction moves what lies
+    /// wholly before the one before the newest.
+    published: Lsn,
     wall: Arc<dyn WallClock>,
     /// The last LSN whose changes the shadow holds.
     applied: Lsn,
@@ -608,6 +649,9 @@ impl Keeper {
                     }
                 }
                 Ok(KeeperMsg::SaveNow(reply)) => drop(reply.send(self.save())),
+                Ok(KeeperMsg::Take(trigger, name, reply)) => {
+                    drop(reply.send(self.snapshot_named(trigger, name)));
+                }
                 Ok(KeeperMsg::Close(history, reply)) => {
                     let closed = self.save().and_then(|()| self.snapshot(Trigger::Close, self.applied, history));
                     drop(reply.send(closed));
@@ -647,6 +691,11 @@ impl Keeper {
                 self.snapshot(Trigger::Auto, lsn, (*history).clone())?;
                 continue;
             }
+            match &entry {
+                HistoryEntry::Begin { label, .. } => label.clone_into(&mut self.label),
+                HistoryEntry::Op { record, commits: true } => record.op.clone_into(&mut self.label),
+                _ => {}
+            }
             if let Some(patch) = patch_of(&entry) {
                 self.shadow.apply(patch).map_err(|e| {
                     format!("the saved copy of the project disagrees with the open one at record {}: {e}", lsn.0)
@@ -684,12 +733,41 @@ impl Keeper {
     }
 
     fn snapshot(&mut self, trigger: Trigger, lsn: Lsn, history: HistoryExport) -> Result<SnapshotId, String> {
-        let snapshot = Snapshot::new(lsn, &self.session, trigger, self.wall.now(), self.shadow.root().clone(), history);
-        let id =
-            snapshot::write(&self.snapshots, &snapshot).map_err(|e| format!("a snapshot can't be written: {e}"))?;
+        let facts = Facts::new(lsn, &self.session, trigger, self.wall.now()).with_label(self.label.clone());
+        self.publish(facts, &history).map(|info| info.id)
+    }
+
+    /// A snapshot asked for through the service: a named version, a take's state, a manual one. It covers what the
+    /// shadow holds, which is everything durable.
+    fn snapshot_named(&mut self, trigger: Trigger, name: Option<String>) -> Result<SnapshotInfo, String> {
+        let mut facts =
+            Facts::new(self.applied, &self.session, trigger, self.wall.now()).with_label(self.label.clone());
+        match (trigger, name) {
+            (Trigger::Take, Some(stem)) => facts = facts.with_stem(stem),
+            (_, Some(name)) => facts = facts.with_name(name),
+            (_, None) => {}
+        }
+        // The executor's undo history isn't the keeper's to know between marks; a version restores as one new step.
+        self.publish(facts, &HistoryExport::empty())
+    }
+
+    fn publish(&mut self, facts: Facts, history: &HistoryExport) -> Result<SnapshotInfo, String> {
+        let lsn = facts.lsn;
+        let taken = self
+            .snapshots
+            .take_rendered(&self.shadow, facts, history)
+            .map_err(|e| format!("a snapshot can't be written: {e}"))?;
+        for warning in &taken.warnings {
+            tracing::warn!(%warning, "snapshot");
+        }
         self.records_since_snapshot = 0;
         self.last_snapshot = Instant::now();
-        Ok(id)
+        // Compaction keeps one snapshot of slack: what lies wholly before the previous snapshot moves to the archive.
+        let previous = std::mem::replace(&mut self.published, lsn);
+        if let Err(error) = archive_before(self.shadow.dir(), previous) {
+            tracing::warn!(%error, "the journal couldn't be compacted; it is tried again at the next snapshot");
+        }
+        Ok(taken.info)
     }
 
     /// Raises `wants_mark` when a snapshot is due by the cadence.
@@ -713,6 +791,68 @@ pub(crate) fn patch_of(entry: &HistoryEntry) -> Option<&Patch> {
         | HistoryEntry::TxRevert { patch, .. } => Some(patch),
         _ => None,
     }
+}
+
+/// The archive of sealed segments (the op log) of the project in `project_dir`.
+pub fn archive_dir(project_dir: &Path) -> PathBuf {
+    project_dir.join(".omuzaki").join(ARCHIVE_DIR)
+}
+
+/// Moves into the archive the sealed segments of the project in `project_dir` whose records all have an LSN at or
+/// before `before` (journal.md 7.3). The newest segment is never moved: it is the one being written. Returns how many
+/// moved.
+///
+/// # Errors
+/// [`JournalError::Io`] if a folder can't be listed or a segment can't be moved; what moved before stays moved.
+pub fn archive_before(project_dir: &Path, before: Lsn) -> Result<usize, JournalError> {
+    let live = journal_dir(project_dir);
+    let io = |path: &Path| {
+        let path = path.to_path_buf();
+        move |source| JournalError::Io { path, source }
+    };
+    let mut segments: Vec<(u64, PathBuf)> = match fs::read_dir(&live) {
+        Ok(entries) => entries
+            .filter_map(Result::ok)
+            .filter_map(|e| Some((segment_seq(e.file_name().to_str()?)?, e.path())))
+            .collect(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(source) => return Err(JournalError::Io { path: live, source }),
+    };
+    segments.sort();
+    // The first LSN of each segment, from its header; a prepared or unreadable one ends the run (nothing after it is
+    // known to be sealed).
+    let mut firsts = Vec::with_capacity(segments.len());
+    for (_, path) in &segments {
+        let mut header = [0u8; super::HEADER_LEN];
+        let read = File::open(path).and_then(|mut f| std::io::Read::read_exact(&mut f, &mut header));
+        match read.ok().and_then(|()| SegmentHeader::decode(&header).ok()).filter(|h| !h.is_prepared()) {
+            Some(h) => firsts.push(h.first),
+            None => break,
+        }
+    }
+    let archive = archive_dir(project_dir);
+    let mut moved = 0;
+    for (i, (_, path)) in segments.iter().enumerate().take(firsts.len().saturating_sub(1)) {
+        // A segment holds the records from its first LSN up to the next one's first, exclusive.
+        if firsts[i + 1].0.saturating_sub(1) > before.0 {
+            break;
+        }
+        fs::create_dir_all(&archive).map_err(io(&archive))?;
+        let Some(name) = path.file_name() else { continue };
+        fs::rename(path, archive.join(name)).map_err(io(path))?;
+        moved += 1;
+    }
+    if moved > 0 {
+        sync_dir(&archive).map_err(io(&archive))?;
+        sync_dir(&live).map_err(io(&live))?;
+    }
+    Ok(moved)
+}
+
+/// Makes the renames in `dir` durable. Windows has no folder flush; a rename there is durable with the file system's
+/// own journal.
+fn sync_dir(dir: &Path) -> std::io::Result<()> {
+    if cfg!(unix) { File::open(dir)?.sync_all() } else { Ok(()) }
 }
 
 /// The live journal folder of the project in `project_dir`.

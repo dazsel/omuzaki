@@ -2,8 +2,9 @@
 //!
 //! This module holds the byte format (segment headers, record frames and segment file names), the records the frames
 //! carry ([`Record`], [`encode`], [`decode`]), the [`Reader`] that scans a journal folder, the [`ProjectJournal`]
-//! that writes one (the writer and the keeper, which saves the files behind it), the snapshots recovery starts from
-//! ([`snapshot`]) and [`reopen`], which decides on opening what is the truth and what has to be replayed.
+//! that writes one (the writer and the keeper, which saves the files behind it and takes the snapshots recovery starts
+//! from, [`crate::snapshot`]), [`archive_before`], which moves sealed segments into the op log archive, and [`reopen`],
+//! which decides on opening what is the truth and what has to be replayed.
 //!
 //! The invariant: every frame [`write_frame`] accepts is one [`read_frame`] reads back. A zero length marks the end
 //! of the log, so [`write_frame`] refuses an empty payload.
@@ -12,7 +13,6 @@ mod format;
 mod open;
 mod reader;
 mod record;
-pub mod snapshot;
 mod writer;
 
 use std::path::PathBuf;
@@ -21,10 +21,13 @@ pub use format::{
     FORMAT_VERSION, FRAME_HEADER_LEN, Frame, FrameEnd, HEADER_LEN, HeaderFault, MAGIC, MAX_PAYLOAD, SKIPPABLE,
     SegmentHeader, read_frame, segment_name, segment_seq, write_frame,
 };
-pub use open::{Recovery, Reopened, reopen};
+pub use open::{Recover, Recovery, Reopened, reopen, reopen_with};
 pub use reader::{End, Position, Reader, Scan};
 pub use record::{MAX_DEPTH, Record, SessionInfo, decode, encode, kind};
-pub use writer::{JOURNAL_DIR, JournalOptions, ProjectJournal, SessionStart, SystemWall, journal_dir};
+pub use writer::{
+    ARCHIVE_DIR, JOURNAL_DIR, JournalOptions, ProjectJournal, SessionStart, SystemWall, archive_before, archive_dir,
+    journal_dir,
+};
 
 /// Why the journal can't be read or written.
 #[derive(Debug, thiserror::Error)]
@@ -68,4 +71,7 @@ pub enum JournalError {
     /// The project folder itself doesn't open, or a snapshot's tree can't be stored in it.
     #[error(transparent)]
     Store(#[from] crate::StoreError),
+    /// A snapshot can't be taken or read.
+    #[error("{0}")]
+    Snapshot(String),
 }

@@ -34,6 +34,7 @@ pub mod studio;
 
 pub use core::{AppCore, AppOptions};
 pub use error::AppError;
+pub use omuzaki_doc::journal::Recover;
 pub use recover::RecoveryReport;
 
 // The MCP server registers ops (`agent.connection`), so an App that links the core links them through this (ADR 0015).
