@@ -291,3 +291,82 @@ fn speech_on_the_mic_ducks_the_music_by_the_rules_depth_after_the_trigger_delay(
     // The mic itself is never touched by its own rule.
     assert_eq!(ducked.buses[&mic], dry.buses[&mic]);
 }
+
+/// The timing of #909's acceptance case, to the sample: depth 12 dB, attack 10 ms, hold 100 ms, release 200 ms. The
+/// duck factor starts falling exactly 1,024 samples after the trigger rises and is exactly -12 dB 480 samples later;
+/// after the trigger ends it stays at -12 dB for exactly 4,800 samples and is exactly 0 dB 9,600 samples after that.
+/// The output is bit-identical under five block plans and with the bus order reversed.
+#[test]
+fn a_duck_moves_on_the_exact_samples_whatever_the_blocks_and_the_bus_order() {
+    use omuzaki_audio_api::semantics::{LevelFollower, TRIGGER_DELAY, db_to_gain};
+
+    let [mic_in, _, feed] = sources();
+    let (trigger, target) = (BusId::new("voice").unwrap(), BusId::new("bed").unwrap());
+    let bus = |id: &BusId, source: SourceRef| BusSpec {
+        id: id.clone(),
+        channels: Channels::Mono,
+        sources: vec![source],
+        chain: Vec::new(),
+        gain_db: 0.0,
+        muted: false,
+        sends: Vec::new(),
+        outputs: Vec::new(),
+    };
+    let rule = DuckRule {
+        trigger: DuckTrigger::Bus { id: trigger.clone() },
+        target: target.clone(),
+        depth_db: 12.0,
+        threshold_db: -30.0,
+        attack_ms: 10.0,
+        hold_ms: 100.0,
+        release_ms: 200.0,
+    };
+    let frames = 48_000;
+    let (rise, fall) = (6_000, 18_000);
+    let voice: Vec<f32> = (0..frames).map(|i| if (rise..fall).contains(&i) { 0.5 } else { 0.0 }).collect();
+    // The trigger is active while the follower is over the threshold: from `rise` until its 50 ms release passes -30 dB.
+    let threshold = db_to_gain(-30.0);
+    let mut follower = LevelFollower::new();
+    let last_active = (0..frames).filter(|&i| follower.step(voice[i]) > threshold).last().unwrap();
+    let input = OfflineInput {
+        frames,
+        sources: BTreeMap::from([(mic_in.clone(), vec![voice]), (feed.clone(), vec![vec![1.0; frames]])]),
+        taps: BTreeMap::new(),
+        mic_mode: MicMode::Live,
+    };
+    let render = |reversed: bool, plan| {
+        let mut buses = vec![bus(&trigger, mic_in.clone()), bus(&target, feed.clone())];
+        if reversed {
+            buses.reverse();
+        }
+        let graph = GraphSpec { buses, ducks: vec![rule.clone()], ..GraphSpec::default() };
+        OfflineMix.render(&graph, &input, plan).unwrap().buses[&target][0].clone()
+    };
+    let factor = render(false, BlockPlan::Fixed { frames: 480 });
+
+    let depth = db_to_gain(-12.0);
+    let start = rise + TRIGGER_DELAY;
+    assert!(factor[..start].iter().all(|&g| g.to_bits() == 1.0f32.to_bits()), "untouched before the trigger delay has passed");
+    assert!(factor[start] < 1.0, "falling from sample {start}");
+    assert!(factor[start + 478] > depth);
+    let held_until = last_active + TRIGGER_DELAY + 4_800;
+    assert!(factor[start + 479..=held_until].iter().all(|&g| g.to_bits() == depth.to_bits()), "exactly -12 dB from 480 samples in");
+    assert!(factor[held_until + 1] > depth, "rising after exactly 4,800 samples of hold");
+    assert!(factor[held_until + 9_599] < 1.0);
+    assert!(factor[held_until + 9_600..].iter().all(|&g| g.to_bits() == 1.0f32.to_bits()), "exactly 0 dB 9,600 samples later");
+
+    let plans = [
+        BlockPlan::Fixed { frames: 1 },
+        BlockPlan::Fixed { frames: 37 },
+        BlockPlan::Fixed { frames: 1_024 },
+        BlockPlan::Random { seed: 5, max_frames: 1_024 },
+        BlockPlan::Random { seed: 11, max_frames: 64 },
+    ];
+    for plan in plans {
+        for reversed in [false, true] {
+            let other = render(reversed, plan);
+            let same = other.iter().zip(&factor).all(|(a, b)| a.to_bits() == b.to_bits());
+            assert!(same, "{plan:?}, reversed {reversed}: not bit-identical");
+        }
+    }
+}

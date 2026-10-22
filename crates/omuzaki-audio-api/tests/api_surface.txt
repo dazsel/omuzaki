@@ -48,6 +48,7 @@ src/graph/mod.rs: pub use egress::{Bindings, CapturedSource, Egress, MicMode, eg
 src/graph/mod.rs: pub use validate::{GraphError, KindLookup};
 src/graph/mod.rs: pub const MIC_BUS: &str = "mic";
 src/graph/mod.rs: pub const AI_VOICE_BUS: &str = "ai_voice";
+src/graph/mod.rs: pub const PROGRAM_BUS: &str = "program";
 src/graph/mod.rs: pub const MONITOR_OUT_ROLE: &str = "monitor_out";
 src/graph/mod.rs: pub const MAX_GAIN_DB: f32 = 12.0;
 src/graph/mod.rs: pub enum Channels {

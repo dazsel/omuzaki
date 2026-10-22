@@ -29,7 +29,8 @@ use omuzaki_audio_api::semantics::MONO_TO_STEREO_GAIN;
 use omuzaki_audio_api::tap::{TapClosed, TapPoint, TapSink, VoiceUse};
 use omuzaki_core::time::Seconds;
 
-use crate::dsp::{Decimator, MeterState, Resampler};
+use crate::dsp::{Decimator, Resampler};
+use crate::meters::Meter;
 use crate::mix::{Inputs, Mix, Points, Stage};
 
 /// The most taps, feeds and bridges the executor holds; their lists are allocated this large up front.
@@ -60,7 +61,7 @@ pub(crate) struct Bridge {
     pub block: [Vec<f32>; 2],
     pub underruns: Arc<AtomicU64>,
     pub meter: Arc<MeterCell>,
-    pub meter_state: MeterState,
+    pub meter_state: Meter,
     /// Set by the device side once it has delivered audio: before that an empty ring is not an underrun.
     pub started: Arc<AtomicBool>,
 }
@@ -302,8 +303,8 @@ impl Executor {
             }
             let channels = bridge.rings.len().min(2);
             let reading = match channels {
-                2 => bridge.meter_state.measure(&[&bridge.block[0][..n], &bridge.block[1][..n]]),
-                _ => bridge.meter_state.measure(&[&bridge.block[0][..n]]),
+                2 => bridge.meter_state.measure(&[&bridge.block[0][..n], &bridge.block[1][..n]], 0.0),
+                _ => bridge.meter_state.measure(&[&bridge.block[0][..n]], 0.0),
             };
             bridge.meter.store(reading);
         }
@@ -549,7 +550,7 @@ impl Bridge {
             block: zero_block(MAX_BLOCK),
             underruns: Arc::new(AtomicU64::new(0)),
             meter: Arc::new(MeterCell::new()),
-            meter_state: MeterState::default(),
+            meter_state: Meter::plain(),
             started,
         }
     }

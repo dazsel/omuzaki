@@ -9,7 +9,7 @@
 
 use omuzaki_audio_api::device::{Binding, ChannelMap, DeviceId, Direction};
 use omuzaki_audio_api::engine::{AudioEngine, AudioError};
-use omuzaki_audio_api::graph::{BusSpec, Channels, GraphSpec, MIC_BUS, MicMode, SourceRef};
+use omuzaki_audio_api::graph::{BusSpec, Channels, GraphSpec, MIC_BUS, MicMode, PROGRAM_BUS, SourceRef};
 use omuzaki_audio_api::ids::{BusId, DeviceRole};
 use omuzaki_audio_api::report::MeterPoint;
 use omuzaki_ops_api::{Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
@@ -254,9 +254,6 @@ impl Op for Levels {
         Ok(Plan::answer(json!({ "meters": meters })))
     }
 }
-
-/// The bus whose meters carry loudness, true peak and limiter reduction.
-const PROGRAM_BUS: &str = "program";
 
 /// A level for JSON: silence (−∞ dBFS) as `null`.
 fn finite(db: f32) -> Option<f32> {

@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use omuzaki_audio_api::engine::AudioError;
 use omuzaki_audio_api::graph::{
-    AI_VOICE_BUS, BusSpec, DuckTrigger, GraphSpec, MIC_BUS, MONITOR_OUT_ROLE, MicMode, SourceRef,
+    AI_VOICE_BUS, BusSpec, DuckTrigger, GraphSpec, MIC_BUS, MONITOR_OUT_ROLE, MicMode, PROGRAM_BUS, SourceRef,
 };
 use omuzaki_audio_api::ids::{BusId, DeviceRole, NodeId};
 use omuzaki_audio_api::node::{BlockMut, MAX_BLOCK, Node, NodeError, node_kind};
@@ -33,7 +33,8 @@ use omuzaki_audio_api::semantics::{
     DuckEnvelope, FaderRamp, LevelFollower, MONO_TO_STEREO_GAIN, TRIGGER_DELAY, db_to_gain, duck_factor,
 };
 
-use crate::dsp::{HoldDelay, MeterState};
+use crate::dsp::HoldDelay;
+use crate::meters::Meter;
 
 /// Entries in a trigger's level history: twice the trigger delay, so a block of at most `MAX_BLOCK` samples never
 /// overwrites a level a rule still has to read, whatever order the buses run in.
@@ -85,7 +86,7 @@ pub(crate) struct Bus {
     /// The bus after its fader.
     pub post: [Vec<f32>; 2],
     pub meter: Arc<MeterCell>,
-    meter_state: MeterState,
+    meter_state: Meter,
 }
 
 /// What raises a rule.
@@ -276,7 +277,7 @@ impl Mix {
                 buf: buffers(),
                 post: buffers(),
                 meter: Arc::new(MeterCell::new()),
-                meter_state: MeterState::default(),
+                meter_state: if id.as_str() == PROGRAM_BUS { Meter::program() } else { Meter::plain() },
             });
         }
         let mut mix = Self {
@@ -377,10 +378,11 @@ impl Mix {
             run_chain(bus, n, first, &self.previous);
             points.reached(Stage::PostChain, &bus.id, bus.channels, [&bus.buf[0][..n], &bus.buf[1][..n]]);
             fade_and_send(bus, at, later, n, first, &mut self.rules, &mut self.triggers, &mut self.outputs);
+            let reduction = bus.chain.iter().filter(|l| l.enabled).map(|l| l.node.report().gain_reduction_db).sum();
             let reading = if bus.channels == 2 {
-                bus.meter_state.measure(&[&bus.post[0][..n], &bus.post[1][..n]])
+                bus.meter_state.measure(&[&bus.post[0][..n], &bus.post[1][..n]], reduction)
             } else {
-                bus.meter_state.measure(&[&bus.post[0][..n]])
+                bus.meter_state.measure(&[&bus.post[0][..n]], reduction)
             };
             bus.meter.store(reading);
             points.reached(Stage::PostFader, &bus.id, bus.channels, [&bus.post[0][..n], &bus.post[1][..n]]);
@@ -533,7 +535,9 @@ mod tests {
 
     use omuzaki_audio_api::graph::{BusSpec, Channels, DuckRule, NodeSpec, SendSpec};
     use omuzaki_audio_api::ids::{NodeId, NodeKindId};
-    use omuzaki_audio_api::node::{ConfigValue, NodeConfig};
+    use omuzaki_audio_api::node::{
+        ChannelSupport, ConfigValue, LatencyRange, NodeConfig, NodeKind, NodeKindInfo, NodeReport, ParamIndex,
+    };
     use omuzaki_audio_mock::conformance::{CountingAlloc, allocations_during};
 
     use super::*;
@@ -568,7 +572,7 @@ mod tests {
             sidechain: None,
         };
         let mic = BusId::new(MIC_BUS).unwrap();
-        let music = BusId::new("music").unwrap();
+        let music = BusId::new(PROGRAM_BUS).unwrap();
         let graph = GraphSpec {
             buses: vec![
                 BusSpec {
@@ -618,5 +622,86 @@ mod tests {
             }
         });
         assert_eq!(count, 0, "allocator calls on the audio path");
+    }
+
+    /// A node that pulls its input down by a fixed 4 dB and says so, as the program limiter will.
+    #[derive(Debug)]
+    struct SquashKind;
+
+    omuzaki_audio_api::register_node_kind!(SquashKind);
+
+    struct Squash;
+
+    impl NodeKind for SquashKind {
+        fn info(&self) -> NodeKindInfo {
+            NodeKindInfo {
+                id: "test.squash",
+                summary: "pulls the signal down 4 dB and reports it (a test node)",
+                channels: ChannelSupport::Any,
+                params: &[],
+                latency: LatencyRange { min: 0, max: 0 },
+                sidechain: false,
+            }
+        }
+
+        fn create(&self, _: &NodeConfig, _: Channels) -> Result<Box<dyn Node>, NodeError> {
+            Ok(Box::new(Squash))
+        }
+    }
+
+    impl Node for Squash {
+        fn latency(&self) -> u32 {
+            0
+        }
+
+        fn set_param(&mut self, _: ParamIndex, _: f32) {}
+
+        fn process(&mut self, block: &mut BlockMut<'_>) {
+            let gain = db_to_gain(-4.0);
+            block.for_each_channel(|samples| samples.iter_mut().for_each(|s| *s *= gain));
+        }
+
+        fn reset(&mut self) {}
+
+        fn report(&self) -> NodeReport {
+            NodeReport { gain_reduction_db: 4.0 }
+        }
+    }
+
+    #[test]
+    fn the_limiters_reduction_is_on_the_program_meter_after_the_first_block() {
+        let squash = |enabled| NodeSpec {
+            id: NodeId::new("limiter").unwrap(),
+            kind: NodeKindId::new("test.squash").unwrap(),
+            config: NodeConfig::default(),
+            params: BTreeMap::new(),
+            enabled,
+            sidechain: None,
+        };
+        let bus = |id: &str, enabled| BusSpec {
+            id: BusId::new(id).unwrap(),
+            channels: Channels::Stereo,
+            sources: vec![SourceRef::Device { role: DeviceRole::new("game_in").unwrap() }],
+            chain: vec![squash(enabled)],
+            gain_db: 0.0,
+            muted: false,
+            sends: Vec::new(),
+            outputs: Vec::new(),
+        };
+        let graph = GraphSpec { buses: vec![bus(PROGRAM_BUS, true), bus("game", true)], ..GraphSpec::default() };
+        let (mut mix, _) = Mix::compile(&graph, 1, MicMode::Live).unwrap();
+        let tone = Tone(vec![0.5; MAX_BLOCK]);
+        mix.process(64, 0, &tone, &mut Nowhere);
+        let program = mix.buses.iter().find(|b| b.id.as_str() == PROGRAM_BUS).unwrap().meter.load();
+        let game = mix.buses.iter().find(|b| b.id.as_str() == "game").unwrap().meter.load();
+        assert_eq!(program.limiter_gain_reduction_db, 4.0);
+        assert_eq!(game.limiter_gain_reduction_db, 0.0, "only program shows the limiter");
+        assert_eq!(game.short_term_lufs, f32::NEG_INFINITY);
+
+        // Switched off, it reports nothing.
+        let off = GraphSpec { buses: vec![bus(PROGRAM_BUS, false)], ..GraphSpec::default() };
+        let (mut mix, _) = Mix::compile(&off, 1, MicMode::Live).unwrap();
+        mix.process(64, 0, &tone, &mut Nowhere);
+        assert_eq!(mix.buses[0].meter.load().limiter_gain_reduction_db, 0.0);
     }
 }
