@@ -279,7 +279,7 @@ impl Fonts {
                 Some(face) => {
                     if !pen.shaped(face, run, reversed, em_px) {
                         for &c in run {
-                            self.fallback.note_missing(c, "the font failed to shape it".to_owned());
+                            self.fallback.note_missing(c, "the font failed to shape it".to_owned(), false);
                         }
                     }
                 }
@@ -315,7 +315,7 @@ impl Fonts {
                     _ if in_primary => None,
                     _ if is_default_ignorable(c) => continue,
                     _ => {
-                        self.fallback.note_missing(c, "no font has a glyph for it".to_owned());
+                        self.fallback.note_missing(c, "no font has a glyph for it".to_owned(), false);
                         None
                     }
                 }

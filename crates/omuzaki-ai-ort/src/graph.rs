@@ -20,14 +20,15 @@ fn runtime_error(error: &ort::Error) -> LoadError {
     LoadError::Runtime(error.to_string())
 }
 
-/// The element types `omuzaki-ai-api` knows. Others (`f64`, `bool`, strings, 8 and 16-bit integers, `f16` and
-/// `bfloat16`) are refused with a clear message when the model is probed, rather than failing at run time.
+/// The element types `omuzaki-ai-api` knows. Others (`f64`, `bool`, strings, 8 and 16-bit integers and `bfloat16`)
+/// are refused with a clear message when the model is probed, rather than failing at run time.
 fn dtype(port: &str, ty: TensorElementType) -> Result<DType, LoadError> {
     match ty {
         TensorElementType::Float32 => Ok(DType::F32),
         TensorElementType::Int64 => Ok(DType::I64),
         TensorElementType::Int32 => Ok(DType::I32),
         TensorElementType::Uint8 => Ok(DType::U8),
+        TensorElementType::Float16 => Ok(DType::F16),
         other => Err(LoadError::Format(format!(
             "`{port}` has element type {other:?}, which this runtime does not carry yet"
         ))),

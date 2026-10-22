@@ -1,0 +1,482 @@
+//! The command palette (`shell.md` section 8): Ctrl+K finds every registered op, panel and workspace, and runs an op
+//! with its arguments in a form generated from the op's own schema, so the palette can run anything an agent can
+//! over MCP, under the same name.
+//!
+//! - **Index.** Built when the palette opens, from `Runner::ops()` and the shell's registry, so it is never stale and
+//!   costs nothing while closed. Typing filters it in place; nothing is allocated per keystroke beyond the ranking.
+//! - **Ranking.** Exact name, then prefix, then a word prefix (after `.`, `_` or a space), then a substring, then the
+//!   letters in order (fuzzy); ties go to the shorter name, then the name. `>` narrows to ops, `/` to panels and
+//!   workspaces.
+//! - **Selection.** An op argument called `character` or `part` starts as the open character and the selected part,
+//!   so "set a parameter of this" is one Enter away.
+//! - **Running.** Enter runs (one undo step, as the person), Shift+Enter is a dry run that changes nothing and says what
+//!   would change. An op with no arguments to fill runs at once; one with arguments opens its form first. A query shows
+//!   its answer in place. Errors show the op's own message and hint, as an agent reads them.
+
+use egui::{Align2, Context, Id, Key, Modifiers, RichText, ScrollArea, Ui, vec2};
+use omuzaki_doc_api::Value;
+use omuzaki_ops_api::{Actor, Grants, Mode, OpInfo, OpKind, Request, Runner};
+
+use super::text::{Word, say, title};
+use crate::ds::icons;
+use crate::ds::schema_form::{Form, FormValue, SchemaForm};
+use crate::ds::theme::ds;
+use crate::ds::widgets::listbox::{self, ListItem, Listbox};
+use crate::ds::widgets::{Button, TextField};
+use crate::panels::edit::EditFocus;
+
+/// The palette's width, in points.
+const WIDTH: f32 = 640.0;
+/// How far below the top of the window it opens.
+const TOP: f32 = 72.0;
+/// The most lines of a query's answer shown in place.
+const ANSWER_LINES: usize = 40;
+
+/// What an entry does when chosen.
+#[derive(Clone, Debug)]
+enum Target {
+    /// Runs the op at this index of the ops list.
+    Op(usize),
+    /// Shows a registered panel.
+    Panel(&'static str),
+    /// Switches to the workspace at this index of the tab bar.
+    Workspace(usize),
+}
+
+/// One thing the palette can find.
+#[derive(Clone, Debug)]
+struct Entry {
+    /// What it is called: an op's dotted name, a panel's or workspace's title.
+    name: String,
+    /// The name in lower case, which the query matches.
+    key: String,
+    /// The quiet text after it: an op's summary, "Panel", "Workspace".
+    detail: String,
+    target: Target,
+}
+
+/// What the shell does for a chosen panel or workspace entry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Command {
+    /// Show the panel with this id.
+    ShowPanel(&'static str),
+    /// Switch to the workspace at this tab index.
+    Workspace(usize),
+}
+
+/// A panel or workspace the palette can find, as the shell lists them.
+#[derive(Clone, Copy, Debug)]
+pub struct Place {
+    /// The registered id (a panel's) or tab index (a workspace's).
+    pub target: PlaceTarget,
+    /// The registered English title.
+    pub title: &'static str,
+}
+
+/// Where a [`Place`] leads.
+#[derive(Clone, Copy, Debug)]
+pub enum PlaceTarget {
+    /// A panel, by id.
+    Panel(&'static str),
+    /// A workspace, by tab index.
+    Workspace(usize),
+}
+
+/// The op whose arguments are being filled in.
+struct Args {
+    op: usize,
+    form: Form,
+    value: FormValue,
+}
+
+/// What the last run said.
+#[derive(Clone, Debug)]
+enum Said {
+    /// It worked: a headline, and a query's answer or an edit's summary.
+    Done { headline: String, body: Option<String> },
+    /// It failed: the op's message and hint.
+    Failed { message: String, hint: Option<String> },
+}
+
+/// The command palette's state. The shell owns one and draws it over everything else while it is open.
+#[derive(Default)]
+pub struct Palette {
+    open: bool,
+    query: String,
+    ops: Vec<OpInfo>,
+    entries: Vec<Entry>,
+    /// The entries that match the query, best first, as indices into `entries`.
+    shown: Vec<usize>,
+    /// The query `shown` was ranked for.
+    ranked_for: Option<String>,
+    active: Option<usize>,
+    args: Option<Args>,
+    said: Option<Said>,
+    /// The text field takes the keyboard on the next frame.
+    focus_input: bool,
+}
+
+impl Palette {
+    /// Whether the palette is open.
+    pub const fn is_open(&self) -> bool {
+        self.open
+    }
+
+    /// Opens the palette over `runner`'s ops and the shell's `places`, with the query empty.
+    pub fn open(&mut self, runner: &dyn Runner, places: &[Place], ctx: &Context) {
+        self.ops = runner.ops();
+        self.ops.sort_by_key(|op| op.name);
+        let mut entries: Vec<Entry> = self
+            .ops
+            .iter()
+            .enumerate()
+            .map(|(i, op)| Entry {
+                name: op.name.to_owned(),
+                key: op.name.to_lowercase(),
+                detail: op.summary.to_owned(),
+                target: Target::Op(i),
+            })
+            .collect();
+        for place in places {
+            let name = title(ctx, place.title).into_owned();
+            let (detail, target) = match place.target {
+                PlaceTarget::Panel(id) => (say(ctx, Word::PalettePanel, &[]), Target::Panel(id)),
+                PlaceTarget::Workspace(n) => (say(ctx, Word::PaletteWorkspace, &[]), Target::Workspace(n)),
+            };
+            entries.push(Entry { key: name.to_lowercase(), name, detail, target });
+        }
+        *self = Self { open: true, ops: std::mem::take(&mut self.ops), entries, focus_input: true, ..Self::default() };
+    }
+
+    /// Closes the palette and forgets what was typed.
+    pub fn close(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Draws the palette when it is open, and carries out what is chosen: an op runs through `runner` as `actor`; a
+    /// panel or workspace comes back as a [`Command`] for the shell.
+    pub fn ui(
+        &mut self,
+        ctx: &Context,
+        runner: &dyn Runner,
+        actor: &Actor,
+        focus: Option<&EditFocus>,
+    ) -> Option<Command> {
+        if !self.open {
+            return None;
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+            if self.args.take().is_none() {
+                self.close();
+            }
+            self.said = None;
+            self.focus_input = true;
+            return None;
+        }
+        self.rank();
+        let mut command = None;
+        let ds = ds(ctx);
+        let width = WIDTH.min(ctx.content_rect().width() - 32.0);
+        let label = say(ctx, Word::SearchOrRun, &[]);
+        egui::Area::new(Id::new("shell_palette"))
+            .order(egui::Order::Foreground)
+            .anchor(Align2::CENTER_TOP, vec2(0.0, TOP))
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style()).fill(ds.theme.bg2).show(ui, |ui| {
+                    ui.set_width(width);
+                    if let Some(args) = self.args.take() {
+                        self.args = self.args_ui(ui, args, runner, actor);
+                    } else {
+                        command = self.search_ui(ui, &label, runner, actor, focus);
+                    }
+                    self.said_ui(ui);
+                });
+            });
+        if command.is_some() {
+            self.close();
+        }
+        command
+    }
+
+    /// Ranks the entries for the query, when it changed.
+    fn rank(&mut self) {
+        if self.ranked_for.as_deref() == Some(self.query.as_str()) {
+            return;
+        }
+        let (only, text) = match self.query.chars().next() {
+            Some('>') => (Some(true), &self.query[1..]),
+            Some('/') => (Some(false), &self.query[1..]),
+            _ => (None, self.query.as_str()),
+        };
+        let needle = text.trim().to_lowercase();
+        let mut scored: Vec<(u8, usize)> = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| only.is_none_or(|ops| matches!(e.target, Target::Op(_)) == ops))
+            .filter_map(|(i, e)| score(&e.key, &needle).map(|s| (s, i)))
+            .collect();
+        scored.sort_by(|(sa, a), (sb, b)| {
+            let (ea, eb) = (&self.entries[*a], &self.entries[*b]);
+            sa.cmp(sb).then(ea.key.len().cmp(&eb.key.len())).then(ea.key.cmp(&eb.key))
+        });
+        self.shown = scored.into_iter().map(|(_, i)| i).collect();
+        self.active = (!self.shown.is_empty()).then_some(0);
+        self.ranked_for = Some(self.query.clone());
+    }
+
+    fn search_ui(
+        &mut self,
+        ui: &mut Ui,
+        label: &str,
+        runner: &dyn Runner,
+        actor: &Actor,
+        focus: Option<&EditFocus>,
+    ) -> Option<Command> {
+        let ctx = ui.ctx().clone();
+        // The keys first, before the text field can act on them: the field keeps the keyboard, the list follows.
+        if let Some(movement) = listbox::pressed_move(&ctx, false) {
+            let rows = self.rows();
+            self.active = listbox::apply(&rows, self.active, movement);
+        }
+        let (enter, dry) = enter_keys(&ctx);
+        let hint = say(&ctx, Word::PaletteHint, &[]);
+        let field = ui.add(TextField::new(label, &mut self.query).hint(&hint).search().id_salt("shell_palette_query"));
+        if std::mem::take(&mut self.focus_input) {
+            field.request_focus();
+        }
+        ui.add_space(4.0);
+        let mut chosen = None;
+        if self.shown.is_empty() {
+            let line = say(&ctx, Word::PaletteNothing, &[("query", self.query.trim())]);
+            ui.label(RichText::new(line).color(ds(&ctx).theme.text2));
+        } else {
+            let rows = self.rows();
+            let list_label = say(&ctx, Word::PaletteResults, &[]);
+            let out = Listbox::new(Id::new("shell_palette_results"), &list_label, &rows).active(self.active).show(ui);
+            if let Some(hovered) = out.hovered {
+                self.active = Some(hovered);
+            }
+            chosen = out.clicked.map(|row| (row, Mode::Apply));
+        }
+        if enter || dry {
+            chosen = self.active.map(|row| (row, if dry { Mode::DryRun } else { Mode::Apply }));
+        }
+        let (row, mode) = chosen?;
+        let entry = self.shown.get(row).and_then(|&i| self.entries.get(i))?;
+        match entry.target {
+            Target::Panel(id) => Some(Command::ShowPanel(id)),
+            Target::Workspace(n) => Some(Command::Workspace(n)),
+            Target::Op(op) => {
+                self.choose_op(op, mode, runner, actor, focus);
+                None
+            }
+        }
+    }
+
+    /// The rows the results list shows, in ranked order.
+    fn rows(&self) -> Vec<ListItem<'_>> {
+        self.shown
+            .iter()
+            .filter_map(|&i| self.entries.get(i))
+            .map(|e| {
+                let item = ListItem::new(&e.name).detail(&e.detail);
+                if matches!(e.target, Target::Op(_)) { item.mono().icon(icons::LIGHTNING) } else { item }
+            })
+            .collect()
+    }
+
+    /// An op was chosen: run it if it has nothing to fill in, else open its form.
+    fn choose_op(&mut self, op: usize, mode: Mode, runner: &dyn Runner, actor: &Actor, focus: Option<&EditFocus>) {
+        let Some(info) = self.ops.get(op) else { return };
+        let prefilled = prefill(info, focus);
+        if required(info).iter().all(|name| prefilled.get(name.as_str()).is_some()) && optional_free(info) {
+            self.said = Some(run(runner, actor, info, prefilled, mode));
+            return;
+        }
+        let form = Form::from_schema(&info.schema);
+        let value = form.value_from_json(&prefilled);
+        self.args = Some(Args { op, form, value });
+        self.said = None;
+    }
+
+    fn args_ui(&mut self, ui: &mut Ui, mut args: Args, runner: &dyn Runner, actor: &Actor) -> Option<Args> {
+        let ctx = ui.ctx().clone();
+        let (enter, dry_key) = enter_keys(&ctx);
+        let info = self.ops.get(args.op)?;
+        ui.label(RichText::new(info.name).font(ds(&ctx).text.mono.clone()));
+        ui.label(RichText::new(info.summary).color(ds(&ctx).theme.text2));
+        ui.add_space(4.0);
+        ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+            SchemaForm::new(&args.form, &mut args.value).id_salt(("shell_palette_args", info.name)).show(ui);
+        });
+        ui.add_space(4.0);
+        let blocked = args.form.invalid_count(&args.value) > 0;
+        let mut mode = None;
+        ui.horizontal(|ui| {
+            let run_label = say(&ctx, Word::PaletteRun, &[]);
+            let dry_label = say(&ctx, Word::PaletteDryRun, &[]);
+            let fix = say(&ctx, Word::PaletteFixFields, &[]);
+            let mut run_button = Button::new(&run_label).primary().shortcut_hint("Enter");
+            let mut dry_button = Button::new(&dry_label).shortcut_hint("Shift Enter");
+            if blocked {
+                run_button = run_button.disabled(&fix);
+                dry_button = dry_button.disabled(&fix);
+            }
+            if ui.add(run_button).clicked() {
+                mode = Some(Mode::Apply);
+            }
+            if info.kind != OpKind::Query && ui.add(dry_button).clicked() {
+                mode = Some(Mode::DryRun);
+            }
+        });
+        if !blocked && (enter || dry_key) {
+            mode = Some(if dry_key { Mode::DryRun } else { Mode::Apply });
+        }
+        if let Some(mode) = mode {
+            let said = run(runner, actor, info, Value::from(&args.value), mode);
+            // An edit that worked closes the form; a query, a dry run or a failure keeps it to adjust and run again.
+            let keep = mode == Mode::DryRun || info.kind == OpKind::Query || matches!(said, Said::Failed { .. });
+            self.said = Some(said);
+            return keep.then_some(args);
+        }
+        Some(args)
+    }
+
+    fn said_ui(&self, ui: &mut Ui) {
+        let Some(said) = &self.said else { return };
+        let ds = ds(ui.ctx());
+        ui.separator();
+        match said {
+            Said::Done { headline, body } => {
+                ui.label(RichText::new(headline).color(ds.theme.text));
+                if let Some(body) = body {
+                    ScrollArea::vertical().id_salt("shell_palette_answer").max_height(200.0).show(ui, |ui| {
+                        ui.label(RichText::new(body).font(ds.text.mono.clone()).color(ds.theme.text2));
+                    });
+                }
+            }
+            Said::Failed { message, hint } => {
+                ui.label(RichText::new(message).color(ds.theme.danger));
+                if let Some(hint) = hint {
+                    ui.label(RichText::new(hint).color(ds.theme.text2));
+                }
+            }
+        }
+    }
+}
+
+/// Whether Enter (run) or Shift+Enter (dry run) was pressed this frame, consumed so nothing else acts on it.
+fn enter_keys(ctx: &Context) -> (bool, bool) {
+    ctx.input_mut(|i| {
+        let dry = i.consume_key(Modifiers::SHIFT, Key::Enter);
+        (i.consume_key(Modifiers::NONE, Key::Enter), dry)
+    })
+}
+
+/// How well `key` matches `needle`, lower is better; `None` when it does not.
+fn score(key: &str, needle: &str) -> Option<u8> {
+    if needle.is_empty() {
+        return Some(4);
+    }
+    if key == needle {
+        return Some(0);
+    }
+    if key.starts_with(needle) {
+        return Some(1);
+    }
+    let word_start = key
+        .match_indices(needle)
+        .any(|(at, _)| key[..at].chars().next_back().is_some_and(|c| matches!(c, '.' | '_' | ' ' | '-')));
+    if word_start {
+        return Some(2);
+    }
+    if key.contains(needle) {
+        return Some(3);
+    }
+    let mut letters = key.chars();
+    needle.chars().filter(|c| !c.is_whitespace()).all(|c| letters.any(|k| k == c)).then_some(5)
+}
+
+/// The names of the op's required arguments.
+fn required(info: &OpInfo) -> Vec<String> {
+    info.schema
+        .as_value()
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|names| names.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+        .unwrap_or_default()
+}
+
+/// Whether the op has no arguments besides the required ones (so it can run without its form).
+fn optional_free(info: &OpInfo) -> bool {
+    let properties = info.schema.as_value().get("properties").and_then(Value::as_object);
+    let required = required(info);
+    properties.is_none_or(|props| props.keys().all(|k| required.contains(k)))
+}
+
+/// The op's arguments as far as the selection says them: `character` and `part` when the op takes them.
+fn prefill(info: &OpInfo, focus: Option<&EditFocus>) -> Value {
+    let mut args = serde_json::Map::new();
+    let takes = |name: &str| info.schema.as_value().get("properties").and_then(|p| p.get(name)).is_some();
+    if let Some(focus) = focus {
+        if let Some(character) = focus.character().filter(|_| takes("character")) {
+            args.insert("character".into(), Value::String(character.as_str().to_owned()));
+        }
+        if let Some(part) = focus.primary().filter(|_| takes("part")) {
+            args.insert("part".into(), Value::String(part.as_str().to_owned()));
+        }
+    }
+    Value::Object(args)
+}
+
+/// Runs `info` with `args` as `actor`, and says how it went.
+fn run(runner: &dyn Runner, actor: &Actor, info: &OpInfo, args: Value, mode: Mode) -> Said {
+    let request = Request {
+        op: info.name.to_owned(),
+        args,
+        mode: if info.kind == OpKind::Query { Mode::Apply } else { mode },
+        actor: actor.clone(),
+        grants: Grants::person(),
+        cause: None,
+        tx: None,
+        base: None,
+    };
+    match runner.run(request) {
+        Ok(outcome) => {
+            let changes = outcome.plan.patch.changes.len().to_string();
+            let headline = match (info.kind, mode) {
+                (OpKind::Query, _) => info.name.to_owned(),
+                (_, Mode::DryRun) => format!("{}: would change {changes} values; nothing changed", info.name),
+                (_, Mode::Apply) => format!("{}: done, {changes} values changed; Ctrl+Z undoes it", info.name),
+            };
+            let body = outcome.plan.output.as_ref().map(|output| {
+                let text = serde_json::to_string_pretty(output).unwrap_or_else(|_| output.to_string());
+                let lines: Vec<&str> = text.lines().collect();
+                if lines.len() > ANSWER_LINES {
+                    format!("{}\n… {} more lines", lines[..ANSWER_LINES].join("\n"), lines.len() - ANSWER_LINES)
+                } else {
+                    text
+                }
+            });
+            Said::Done { headline, body }
+        }
+        Err(error) => Said::Failed { message: error.message, hint: error.hint },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exact_beats_prefix_beats_word_beats_substring_beats_fuzzy() {
+        assert_eq!(score("part.set_param", "part.set_param"), Some(0));
+        assert_eq!(score("part.set_param", "part"), Some(1));
+        assert_eq!(score("part.set_param", "set"), Some(2));
+        assert_eq!(score("part.set_param", "aram"), Some(3));
+        assert_eq!(score("part.set_param", "pspm"), Some(5));
+        assert_eq!(score("part.set_param", "zz"), None);
+        assert_eq!(score("anything", ""), Some(4));
+    }
+}

@@ -125,6 +125,7 @@ pub fn colour_popover(settings: Settings, pixels_per_point: f32) -> Result<image
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ds::gallery::group_title;
     use crate::ds::tokens::Scale;
 
     /// The largest texture every GPU takes, per side, in pixels: a longer capture is refused at render time.
@@ -151,15 +152,15 @@ mod tests {
                 // The texture is laid-out points x pixels per point x the zoom (the UI scale), as the renderer makes it.
                 let pixels = content_height(shot) * shot.pixels_per_point * shot.settings.scale.factor();
                 // A part that lays out to nothing would pass the limit for the wrong reason.
-                assert!(pixels > 0.0, "{} part {} of {parts} laid out to nothing", group.title(), index + 1);
+                assert!(pixels > 0.0, "{} part {} of {parts} laid out to nothing", group_title(group), index + 1);
                 assert!(
                     pixels <= MAX_PART_SIDE,
                     "{} part {} of {parts} is {pixels} px tall, over the {MAX_PART_SIDE} px part limit. Split the {} \
                      section into more parts: raise its count in PSEUDO_PARTS (crates/omuzaki-ui/src/ds/gallery/capture.rs) \
                      and add the new `--part` steps to gallery-pseudo in crates/omuzaki-ui/evidence.toml.",
-                    group.title(),
+                    group_title(group),
                     index + 1,
-                    group.title()
+                    group_title(group)
                 );
             }
         }

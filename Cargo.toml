@@ -42,6 +42,7 @@ keyring = "4.2"   # OS keychain: Windows Credential Manager, macOS Keychain, Lin
 intl-memoizer ="0.5"   # named for the exact-integer FluentType in omuzaki-l10n-api (Apache-2.0 OR MIT; already a fluent-bundle dependency)
 harfrust = "0.14"   # OpenType shaping (MIT): Arabic joining, Devanagari conjuncts, Thai marks in the sheet text fallback, omuzaki-stage
 glam = { version = "0.34", features = ["serde", "bytemuck"] }
+httpdate = "1"   # `Retry-After` HTTP dates (MIT OR Apache-2.0), omuzaki-http; already in the lock through hyper
 hound = "3.5"   # WAV reading in the speech host benchmark (Apache-2.0), omuzaki-audio
 http-body-util = "0.1"
 hyper = { version = "1", default-features = false, features = ["http1", "server"] }

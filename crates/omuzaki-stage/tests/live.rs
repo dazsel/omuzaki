@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use omuzaki_anim::BusAnimatorParams;
-use omuzaki_anim_api::{Channel, DeviceProfile, HeadPose, HumanoidBone, HumanoidPose, TrackFrame};
+use omuzaki_anim_api::{Channel, ChannelBuf, DeviceProfile, HeadPose, HumanoidBone, HumanoidPose, TrackFrame};
 use omuzaki_char_api::{BuildOptions, BuildServices, CharId, CharacterBuilder, RegistryBuilder};
 use omuzaki_char_api::{BuiltCharacter, JointRef};
 use omuzaki_core::glam::EulerRot;
@@ -51,6 +51,7 @@ use omuzaki_stage_api::{
 };
 use omuzaki_track_api::camera::CameraId;
 use omuzaki_track_api::tracker::TrackerConfig;
+use omuzaki_track_voice::{LipSyncConfig, VoiceFrame, voice_mailbox};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
@@ -911,4 +912,74 @@ fn the_fake_trace_renders_on_the_software_adapter() {
         let png = image::RgbaImage::from_raw(image.size.x, image.size.y, image.rgba8.clone()).expect("sized");
         png.save(std::path::Path::new(&dir).join("live-fake-trace.png")).expect("the PNG is written");
     }
+}
+
+/// A voice frame saying "a" at `aa`, with `onsets` heard so far.
+fn saying_a(seq: u64, aa: f32, onsets: u32) -> VoiceFrame {
+    VoiceFrame {
+        seq,
+        speaking: aa > 0.0,
+        voiced: aa > 0.0,
+        loudness: if aa > 0.0 { 0.8 } else { 0.0 },
+        visemes: [aa, 0.0, 0.0, 0.0, 0.0],
+        onsets,
+        formants: [800.0, 1300.0],
+    }
+}
+
+#[test]
+fn a_voice_opens_the_mouth_through_the_characters_visemes_and_withdraws_when_silent() {
+    let mut live = Live::new(MockRenderer::new(), vec![], Quality::live(), Painter::Mock);
+    live.frames(30);
+    let shut = live.bus(Channel::JAW_OPEN);
+
+    let (mut writer, reader) = voice_mailbox();
+    live.live().handle().set_voice(Some(reader), LipSyncConfig::default()).unwrap();
+    writer.publish(&saying_a(1, 0.7, 1));
+    live.frames(30);
+    let open = live.bus(Channel::JAW_OPEN);
+    // The starter `aa` opens the jaw by 0.74; 0.7 × gain 1.3 = 0.91 of it, with no tracker to share the mouth with.
+    assert!(open > shut + 0.5, "the voice opened the jaw from {shut} to only {open}");
+
+    writer.publish(&saying_a(2, 0.0, 1));
+    live.frames(60);
+    let closed = live.bus(Channel::JAW_OPEN);
+    assert!((closed - shut).abs() < 0.02, "silence closes the mouth: {closed} against {shut}");
+
+    // Detached mid-word: the layer goes with it.
+    writer.publish(&saying_a(3, 0.7, 2));
+    live.frames(30);
+    assert!(live.bus(Channel::JAW_OPEN) > shut + 0.5);
+    live.live().handle().set_voice(None, LipSyncConfig::default()).unwrap();
+    live.frames(5);
+    assert!((live.bus(Channel::JAW_OPEN) - shut).abs() < 0.02, "clearing the voice withdraws the audio layer");
+
+    // A character without visemes: the voice re-bakes with the new set and moves no mouth.
+    let (mut writer, reader) = voice_mailbox();
+    live.live().handle().set_voice(Some(reader), LipSyncConfig::default()).unwrap();
+    live.live().handle().set_expressions(ExpressionSet::default(), ChannelBuf::NEUTRAL).unwrap();
+    writer.publish(&saying_a(1, 0.7, 1));
+    live.frames(30);
+    assert!((live.bus(Channel::JAW_OPEN) - shut).abs() < 0.02, "no visemes, no mouth: {}", live.bus(Channel::JAW_OPEN));
+}
+
+#[test]
+fn a_live_frame_with_a_voice_allocates_nothing() {
+    let mut live =
+        Live::new(Quiet(Recorder::new(false)), vec![("cam", turning(30.0, sweep))], Quality::live(), Painter::None);
+    live.go_live("cam");
+    let (mut writer, reader) = voice_mailbox();
+    live.live().handle().set_voice(Some(reader), LipSyncConfig::default()).unwrap();
+    live.frames(120);
+    let (result, allocations) = allocations_in(|| {
+        for step in 0..600u64 {
+            // A word every half second, silence between.
+            let aa = if step % 30 < 15 { 0.6 } else { 0.0 };
+            writer.publish(&saying_a(step, aa, (step / 30) as u32));
+            live.try_frame()?;
+        }
+        Ok::<(), StageError>(())
+    });
+    result.unwrap();
+    assert_eq!(allocations, 0, "600 live frames with a voice allocated {allocations} times");
 }
