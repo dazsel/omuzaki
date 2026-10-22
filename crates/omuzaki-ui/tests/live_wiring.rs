@@ -207,8 +207,11 @@ fn fake_camera_to_scenes_at_60_hz_for_10_s_without_a_drop_storm_or_an_allocation
         #[allow(clippy::disallowed_methods)]
         std::fs::write(path, &summary).expect("the report writes");
     }
-    // The perform loop kept its 60 Hz: every step ran or was counted as skipped, and skips are rare (no storm).
-    assert!((report.published + report.skipped) as f64 >= expected * 0.97, "{summary}");
+    // The perform loop kept its 60 Hz: every step ran or was counted as skipped, and skips are rare (no storm). A pass
+    // runs every step that is due, catching up after a late wake-up, so on a loaded machine passes undercount the steps:
+    // the steps covered (run or skipped) are the newest frame's tick index plus one.
+    let covered = last_index.map_or(0, |index| index + 1);
+    assert!(covered as f64 >= expected * 0.97, "steps covered {covered}: {summary}");
     assert!(report.skipped as f64 <= expected * 0.01, "{summary}");
     assert!(report.published as f64 >= expected * 0.9, "{summary}");
     // The render side drew a new scene for nearly every step it had time for: newest-wins drops only what a slow render
