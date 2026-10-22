@@ -25,6 +25,7 @@ use omuzaki_doc_api::DocPath;
 use omuzaki_ops_api::{Actor, Budget, Grants, Limits, Mode, Request, Runner, Services, SessionSpec, Transport};
 use omuzaki_ui::panels::agent::Agents;
 use omuzaki_ui::panels::edit::EditFocus;
+use omuzaki_ui::panels::setup::FirstRun;
 use omuzaki_ui::panels::viewport::ViewportServices;
 use omuzaki_ui::shell::Shell;
 use omuzaki_ui::studio;
@@ -77,8 +78,22 @@ fn gpu() -> Option<egui_wgpu::RenderState> {
 /// The studio over `core` at `size`, as `main.rs` builds it: the project's character open, the viewport on `gpu`, the
 /// agent sessions in the Agent panel.
 fn studio(core: &Core, gpu: Option<egui_wgpu::RenderState>, size: egui::Vec2) -> Harness<'static, Studio> {
+    studio_with(core, gpu, size, None)
+}
+
+/// [`studio`], with the setup flow opened as `main.rs` opens it when `first_run` is given and it has not run.
+fn studio_with(
+    core: &Core,
+    gpu: Option<egui_wgpu::RenderState>,
+    size: egui::Vec2,
+    first_run: Option<FirstRun>,
+) -> Harness<'static, Studio> {
     let character = studio::open_character(core.runner.as_ref()).unwrap_or_else(|e| panic!("{e}"));
     let mut shell = Shell::new(Arc::clone(&core.runner), None);
+    if let Some(first_run) = first_run {
+        first_run.open_if_new(&shell.requests());
+        shell.insert_view(first_run);
+    }
     shell.insert_view(Agents(Arc::clone(&core.sessions)));
     shell.insert_view(EditFocus::new(character));
     shell.insert_view(ViewportServices {
@@ -263,4 +278,137 @@ fn the_agent_panel_shows_a_connected_agent_and_the_person_can_pause_it() {
     h.get_by_label("Resume").click();
     h.run_steps(2);
     assert!(h.query_by_label("Pause").is_some(), "resumed, it can be paused again");
+}
+
+#[test]
+fn a_first_start_opens_setup_beside_the_stage_and_it_ends_where_the_person_chooses() {
+    let core = core(Document::empty());
+    let folder = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    let mark = folder.path().join("setup-done");
+    let size = egui::vec2(1366.0, 768.0);
+    let mut h = studio_with(&core, None, size, Some(FirstRun::at(mark.clone())));
+    assert_eq!(h.state().shell.active_workspace(), Some("perform"), "setup sits beside the live stage");
+    assert!(h.query_by_label("Welcome to Omuzaki").is_some());
+
+    // This core has no camera, performer or output ops: each step says so by offering to go on without them.
+    for (button, next) in [
+        ("Start", "Choose your character"),
+        ("Use the sample", "Let the camera follow your face"),
+        (
+            "Skip for now",
+            "Look at the camera with a relaxed face and press Calibrate. Hold still for about five seconds.",
+        ),
+        ("Skip for now", "Send the character to OBS"),
+        ("Next", "You're set"),
+    ] {
+        h.get_by_role_and_label(Role::Button, button).click();
+        h.run_steps(3);
+        assert!(h.query_all_by_label(next).next().is_some(), "after {button}: no {next:?}");
+    }
+    assert!(h.query_by_label("Back").is_none(), "the last step has nothing to go back to");
+    h.get_by_role_and_label(Role::Button, "Customise the character").click();
+    h.run_steps(4);
+    assert!(mark.exists(), "the flow is remembered");
+    assert_eq!(h.state().shell.active_workspace(), Some("build"));
+    assert!(h.query_by_label("You're set").is_none());
+    drop(h);
+
+    // The next start opens where the studio always does, with no setup.
+    let h = studio_with(&core, None, size, Some(FirstRun::at(mark)));
+    assert_ne!(h.state().shell.active_workspace(), Some("perform"));
+    assert!(h.query_by_label("Welcome to Omuzaki").is_none());
+}
+
+#[test]
+fn skip_setup_ends_the_flow_from_any_step() {
+    let core = core(Document::empty());
+    let folder = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    let mark = folder.path().join("setup-done");
+    let mut h = studio_with(&core, None, egui::vec2(1366.0, 768.0), Some(FirstRun::at(mark.clone())));
+    h.get_by_role_and_label(Role::Button, "Start").click();
+    h.run_steps(3);
+    h.get_by_role_and_label(Role::Button, "Back").click();
+    h.run_steps(3);
+    assert!(h.query_by_label("Welcome to Omuzaki").is_some(), "Back returns to the welcome");
+    h.get_by_role_and_label(Role::Button, "Skip setup").click();
+    h.run_steps(4);
+    assert!(mark.exists());
+    assert!(h.query_by_label("Welcome to Omuzaki").is_none());
+    assert_eq!(h.state().shell.active_workspace(), Some("perform"), "skipping leaves the person where they are");
+}
+
+/// The whole app as `main.rs` starts it on a first start, for the pull request's evidence: the live slice with the
+/// project's character on the stage, and the shell on its executor with the setup flow open beside it.
+#[test]
+#[ignore = "writes images; run by the visual evidence job"]
+fn first_run_evidence() {
+    use omuzaki_render::WgpuRenderer;
+    use omuzaki_ui::aux_window::Transparency;
+    use omuzaki_ui::live::viewport::{NativePresenter, project_stage, published};
+    use omuzaki_ui::live::wiring::{LiveApp, LiveScene, NoTracker, RealClock};
+
+    struct App {
+        shell: Shell,
+        live: LiveApp,
+    }
+
+    let Ok(out) = std::env::var("OMUZAKI_EVIDENCE_OUT") else { panic!("set OMUZAKI_EVIDENCE_OUT to a folder") };
+    let Some(gpu) = gpu() else { panic!("the evidence needs a Vulkan adapter") };
+    omuzaki_ui::link();
+    let folder = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    let document = Document::project(&folder.path().join("project")).unwrap_or_else(|e| panic!("{e}"));
+    let (id, def) = studio::character_to_stage(&document).unwrap_or_else(|e| panic!("{e}"));
+    let mut renderer = WgpuRenderer::from_device(&gpu.adapter, gpu.device.clone(), gpu.queue.clone())
+        .unwrap_or_else(|e| panic!("{e}"));
+    let size = omuzaki_core::glam::UVec2::new(1920, 1080);
+    let stage = project_stage(&mut renderer, &id, &def, size).unwrap_or_else(|e| panic!("{e}"));
+    let base = LiveScene::base_pose(&stage);
+    let mut live =
+        LiveApp::start_on(document, Box::new(NoTracker), Box::new(RealClock::new()), Transparency::Fallback, base)
+            .unwrap_or_else(|e| panic!("{e}"));
+    live.attach_viewport(renderer, stage, size, Box::new(NativePresenter::new(gpu.clone())))
+        .unwrap_or_else(|e| panic!("{e}"));
+    let core = live.core();
+    let character = studio::open_character(core.runner.as_ref()).unwrap_or_else(|e| panic!("{e}"));
+    let mut shell = Shell::new(Arc::clone(&core.runner), None);
+    shell.insert_view(Agents(Arc::clone(&core.sessions)));
+    shell.insert_view(EditFocus::new(character));
+    shell.insert_view(ViewportServices {
+        gpu: Some(gpu.clone()),
+        builder: Arc::new(RegistryBuilder),
+        build: BuildServices::default(),
+    });
+    let first_run = FirstRun::at(folder.path().join("setup-done"));
+    first_run.open_if_new(&shell.requests());
+    shell.insert_view(first_run);
+    let mut h = Harness::builder()
+        .with_size(vec2(1366.0, 768.0))
+        .with_pixels_per_point(1.0)
+        .renderer(WgpuTestRenderer::from_render_state(gpu))
+        .build_ui_state(
+            |ui, app: &mut App| {
+                omuzaki_ui::ds::apply_settings(ui.ctx(), omuzaki_ui::ds::Settings::default());
+                app.live.show(ui.ctx());
+                app.shell.ui(ui);
+            },
+            App { shell, live },
+        );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while published(&h.ctx).is_none() && std::time::Instant::now() < deadline {
+        h.step();
+        // Paces the loop; what it waits for is the first published picture, not the time.
+        std::thread::sleep(std::time::Duration::from_millis(8));
+    }
+    assert!(published(&h.ctx).is_some(), "the stage drew its first frame");
+    h.run_steps(4);
+    for (name, button) in [("welcome", None), ("character", Some("Start"))] {
+        if let Some(button) = button {
+            h.get_by_role_and_label(Role::Button, button).click();
+            h.run_steps(4);
+        }
+        let image = h.render().unwrap_or_else(|e| panic!("{e}"));
+        let path = format!("{out}/first-run-{name}-1366x768.png");
+        image.save(&path).unwrap_or_else(|e| panic!("writing {path}: {e}"));
+    }
+    h.state_mut().live.shutdown().unwrap_or_else(|e| panic!("{e}"));
 }

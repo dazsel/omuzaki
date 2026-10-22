@@ -24,6 +24,7 @@ use omuzaki_ui::live::viewport::{NativePresenter, Presenter, ViewportError, kit_
 use omuzaki_ui::live::wiring::{LiveApp, LiveScene, NoTracker, RealClock};
 use omuzaki_ui::panels::agent::Agents;
 use omuzaki_ui::panels::edit::EditFocus;
+use omuzaki_ui::panels::setup::FirstRun;
 use omuzaki_ui::panels::viewport::ViewportServices;
 use omuzaki_ui::shell::persist::LayoutStore;
 use omuzaki_ui::shell::stub::NullRunner;
@@ -163,7 +164,7 @@ fn core_of(live: Option<&LiveApp>, dir: Option<&PathBuf>) -> Option<Core> {
 }
 
 /// The shell over `core`, opened on the project's character, with the device egui draws with for the viewport and
-/// the agent sessions for the Agent panel.
+/// the agent sessions for the Agent panel; on the first start, in the setup flow.
 fn studio_shell(cc: &eframe::CreationContext<'_>, core: Option<Core>) -> Shell {
     let runner: Arc<dyn Runner> = core.as_ref().map_or_else(|| Arc::new(NullRunner) as _, |c| Arc::clone(&c.runner));
     let character = match studio::open_character(runner.as_ref()) {
@@ -185,6 +186,10 @@ fn studio_shell(cc: &eframe::CreationContext<'_>, core: Option<Core>) -> Shell {
     if let Some(core) = core {
         shell.insert_view(Agents(core.sessions));
     }
+    // The first start opens the setup flow beside the stage (shell.md section 14).
+    let first_run = FirstRun::in_user_config();
+    first_run.open_if_new(&shell.requests());
+    shell.insert_view(first_run);
     shell
 }
 

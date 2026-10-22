@@ -121,6 +121,8 @@ pub const COMMAND: &str = egui_phosphor::regular::COMMAND;
 pub const CHAT_CIRCLE_TEXT: &str = egui_phosphor::regular::CHAT_CIRCLE_TEXT;
 /// Next.
 pub const ARROW_RIGHT: &str = egui_phosphor::regular::ARROW_RIGHT;
+/// Back.
+pub const ARROW_LEFT: &str = egui_phosphor::regular::ARROW_LEFT;
 /// A marker.
 pub const FLAG: &str = egui_phosphor::regular::FLAG;
 /// Delete.

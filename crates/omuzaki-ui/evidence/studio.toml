@@ -8,3 +8,12 @@ steps = [
     { run = ["cargo", "test", "--locked", "-p", "omuzaki-ui", "--test", "studio", "--", "--ignored", "--exact", "studio_evidence"] },
 ]
 images = ["studio-1920x1080.png", "studio-1366x768.png"]
+
+[[case]]
+name = "first-run"
+description = "The whole app on a first start (spine/ui): the live slice with the project's sample character on the Perform stage, and the setup flow beside it at 1366x768, on its welcome and its character step."
+env = { OMUZAKI_EVIDENCE_OUT = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-ui", "--test", "studio", "--", "--ignored", "--exact", "first_run_evidence"] },
+]
+images = ["first-run-welcome-1366x768.png", "first-run-character-1366x768.png"]

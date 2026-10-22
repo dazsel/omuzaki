@@ -132,6 +132,85 @@ pub const UNBUILT: &str = "The character doesn't build: {reason}";
 /// What the viewport's frame readout says.
 pub const READOUT: &str = "{ms} ms GPU";
 
+/// The first-run flow's panel (`shell.md` section 14): which step of how many.
+pub const SETUP_STEP: &str = "Step {n} of {of}";
+/// Leaves the flow at any step.
+pub const SETUP_SKIP: &str = "Skip setup";
+/// Goes back a step.
+pub const SETUP_BACK: &str = "Back";
+/// Goes on to the next step.
+pub const SETUP_NEXT: &str = "Next";
+/// Step 0.
+pub const SETUP_WELCOME: &str = "Welcome to Omuzaki";
+/// What step 0 promises.
+pub const SETUP_WELCOME_LINE: &str = "Your camera never leaves this computer. Telemetry is off.";
+/// What the flow does and how long it takes.
+pub const SETUP_WELCOME_HOW: &str =
+    "In about two minutes: pick a character, let the camera follow your face, and send the character to OBS.";
+/// Starts the flow.
+pub const SETUP_START: &str = "Start";
+/// Step 1.
+pub const SETUP_CHARACTER: &str = "Choose your character";
+/// The sample, already on the stage.
+pub const SETUP_SAMPLE: &str = "Use the sample";
+/// Bringing one's own model.
+pub const SETUP_VRM: &str = "Or drop a .vrm file here to use your own model";
+/// A model was taken in.
+pub const SETUP_VRM_DONE: &str = "Using {file}";
+/// Step 2.
+pub const SETUP_INPUT: &str = "Let the camera follow your face";
+/// What step 2 does.
+pub const SETUP_INPUT_HOW: &str = "The character mirrors your face and head. The picture stays on this computer.";
+/// No camera.
+pub const SETUP_NO_CAMERA: &str =
+    "No camera found. The character keeps breathing and blinking on its own until you add one.";
+/// The camera picker.
+pub const SETUP_CAMERA: &str = "Camera";
+/// The face is tracked.
+pub const SETUP_TRACKING: &str = "Following your face";
+/// The face is not seen.
+pub const SETUP_LOOKING: &str = "Looking for your face";
+/// The camera is starting.
+pub const SETUP_STARTING: &str = "Starting the camera";
+/// Skips the camera.
+pub const SETUP_SKIP_FOR_NOW: &str = "Skip for now";
+/// Step 3.
+pub const SETUP_CALIBRATE: &str = "Calibrate";
+/// What step 3 does.
+pub const SETUP_CALIBRATE_HOW: &str =
+    "Look at the camera with a relaxed face and press Calibrate. Hold still for about five seconds.";
+/// Starts a capture.
+pub const SETUP_CALIBRATE_GO: &str = "Calibrate";
+/// A capture is running.
+pub const SETUP_CALIBRATING: &str = "Hold still: {frames} of {of}";
+/// A capture finished.
+pub const SETUP_CALIBRATED: &str = "Calibrated. Your relaxed face is the character's rest.";
+/// A capture gave up.
+pub const SETUP_CALIBRATE_FAILED: &str = "Your face was out of view. Face the camera and try again.";
+/// Calibrating needs a tracked face.
+pub const SETUP_CALIBRATE_NEEDS: &str = "Calibrating needs the camera to see your face";
+/// Step 4.
+pub const SETUP_OUTPUT: &str = "Send the character to OBS";
+/// What step 4 does.
+pub const SETUP_OUTPUT_HOW: &str = "Open the output window, then add it in OBS as a Window Capture of \"{title}\".";
+/// Opens the output window.
+pub const SETUP_OUTPUT_OPEN: &str = "Open the output window";
+/// The output window is open.
+pub const SETUP_OUTPUT_OPENED: &str = "The output window is open.";
+/// Step 5.
+pub const SETUP_DONE: &str = "You're set";
+/// What now.
+pub const SETUP_DONE_HOW: &str =
+    "Perform from here, or customise the character first. Setup is in the command palette if you want it again.";
+/// Ends the flow in the Perform workspace.
+pub const SETUP_PERFORM: &str = "Open Perform";
+/// Ends the flow in the Build workspace.
+pub const SETUP_CUSTOMISE: &str = "Customise the character";
+/// Ends the flow.
+pub const SETUP_CLOSE: &str = "Close";
+/// What an op the flow ran said when it failed.
+pub const SETUP_FAILED: &str = "{op} failed: {message}";
+
 /// `text` in the language the context speaks, with its `{name}` placeholders filled from `args`.
 pub fn say<'a>(ds: &Ds, text: &'a str, args: &[(&str, &str)]) -> Cow<'a, str> {
     let text = if ds.strings.locale() == PSEUDO_LOCALE { Cow::Owned(pseudo(text)) } else { Cow::Borrowed(text) };

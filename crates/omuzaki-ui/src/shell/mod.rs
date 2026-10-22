@@ -27,6 +27,7 @@ pub mod palette;
 pub mod panels;
 pub mod persist;
 pub mod registry;
+pub mod requests;
 pub mod saver;
 pub mod stub;
 pub mod text;

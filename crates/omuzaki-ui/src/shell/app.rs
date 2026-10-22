@@ -31,6 +31,7 @@ use super::palette::{Command, Palette, Place, PlaceTarget};
 use super::panels::HistoryLog;
 use super::persist::LayoutStore;
 use super::registry;
+use super::requests::{ShellRequest, ShellRequests};
 use super::saver::Saver;
 use super::text::{Word, say, title};
 use crate::ds::theme::ds;
@@ -157,6 +158,7 @@ pub struct Shell {
     drawer: Option<String>,
     note: Note,
     palette: Palette,
+    requests: ShellRequests,
 }
 
 impl Shell {
@@ -179,11 +181,14 @@ impl Shell {
                 None
             }
         });
+        let requests = ShellRequests::default();
+        let mut models = ViewModels::new();
+        models.insert(requests.clone());
         let mut shell = Self {
             runner,
             registry,
             bodies: Bodies::default(),
-            models: ViewModels::new(),
+            models,
             actor,
             events,
             inbox: Arc::default(),
@@ -206,6 +211,7 @@ impl Shell {
             drawer: None,
             note: Note::Nothing,
             palette: Palette::default(),
+            requests,
         };
         shell.refresh_history();
         shell
@@ -216,6 +222,11 @@ impl Shell {
     /// before the first frame.
     pub fn insert_view<T: std::any::Any>(&mut self, value: T) {
         self.models.insert(value);
+    }
+
+    /// The queue panels and the app ask the shell through ([`ShellRequests`]); it is carried out each frame.
+    pub fn requests(&self) -> ShellRequests {
+        self.requests.clone()
     }
 
     /// What the shell found registered at startup, in the order it shows it: workspaces by group, then order, then id;
@@ -274,6 +285,7 @@ impl Shell {
         self.top_bar(ui, &plan);
         self.status_bar(ui);
         self.ensure_view(&plan);
+        self.carry_out(&plan);
         if self.views.get(self.active).is_some_and(|v| v.as_ref().is_some_and(|v| !v.rail.is_empty())) {
             self.rail(ui);
         }
@@ -622,6 +634,44 @@ impl Shell {
             view.tree.make_active(|_, tile| matches!(tile, Tile::Pane(PanelId(panel)) if panel == id));
         }
         self.focus = Some(id.to_owned());
+    }
+
+    /// Takes the panel registered as `id` out of the active workspace's arrangement; the rest closes up around it. A
+    /// panel the arrangement lacks, or the last one left, stays as it is.
+    pub fn close_panel(&mut self, id: &str) {
+        let Some(&workspace) = self.workspaces.get(self.active) else { return };
+        let Some(view) = self.views.get_mut(self.active).and_then(Option::as_mut) else { return };
+        if !view.shown.contains(id) {
+            return;
+        }
+        let layout = view.shown.without(&[id]);
+        if layout.contains(id) {
+            return;
+        }
+        view.tree = layout.to_tree(egui::Id::new(("shell_tree", workspace.id)));
+        self.record(&layout);
+        if self.focus.as_deref() == Some(id) {
+            self.focus = None;
+        }
+        if self.drawer.as_deref() == Some(id) {
+            self.drawer = None;
+        }
+    }
+
+    /// Carries out what panels and the app asked for since the last frame ([`ShellRequests`]).
+    fn carry_out(&mut self, plan: &Plan) {
+        for request in self.requests.take() {
+            match request {
+                ShellRequest::Workspace(id) => {
+                    if let Some(index) = self.workspaces.iter().position(|w| w.id == id) {
+                        self.select(index);
+                        self.ensure_view(plan);
+                    }
+                }
+                ShellRequest::ShowPanel(id) => self.show_panel(id),
+                ShellRequest::ClosePanel(id) => self.close_panel(id),
+            }
+        }
     }
 
     /// Drops the background saver, as when the operating system refused to start its thread.

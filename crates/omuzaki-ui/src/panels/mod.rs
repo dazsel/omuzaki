@@ -8,5 +8,6 @@ pub mod edit;
 pub mod inspector;
 pub mod io;
 pub mod outliner;
+pub mod setup;
 pub mod text;
 pub mod viewport;

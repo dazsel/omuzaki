@@ -601,7 +601,7 @@ fn cell<R>(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
 }
 
 /// A target that takes a dropped file; returns its path when one is dropped while the pointer is over it.
-fn drop_zone(ui: &mut Ui, label: &str) -> Option<String> {
+pub(crate) fn drop_zone(ui: &mut Ui, label: &str) -> Option<String> {
     let ds = ds(ui.ctx());
     let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 56.0), Sense::hover());
     let hovering = ui.ctx().input(|i| !i.raw.hovered_files.is_empty());
