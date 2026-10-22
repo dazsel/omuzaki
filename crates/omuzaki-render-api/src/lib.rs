@@ -43,7 +43,8 @@ pub use environment::{EnvironmentDesc, EnvironmentUse, sky_radiance};
 pub use error::RenderError;
 pub use handle::{EnvironmentId, MaterialId, MeshId, ResourceRef, TargetId, TextureId};
 pub use material::{
-    AlphaMode, Mapping, Material, Outline, Overlay, ParamValue, ProgramParams, Rim, Shading, Skin, Toon, UvTransform,
+    AlphaMode, Mapping, Material, Outline, OutlineStyle, OutlineWidthMode, Overlay, ParamValue, ProgramParams, Rim,
+    Shading, Skin, Toon, UvTransform,
 };
 pub use morph::{MeshOptions, MeshUsage, MorphSet, SparseMorph};
 pub use omuzaki_core::colour::{Colour, ColourParseError, srgb_decode, srgb_encode, to_byte};

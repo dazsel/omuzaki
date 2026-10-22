@@ -183,7 +183,7 @@ pub(crate) struct Textures<'a>(pub(crate) &'a Arena<TextureData>);
 impl Textures<'_> {
     /// The texel at `uv` as straight, linear RGBA.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
-    fn sample(&self, id: TextureId, uv: Vec2) -> Vec4 {
+    pub(crate) fn sample(&self, id: TextureId, uv: Vec2) -> Vec4 {
         let Some(tex) = self.0.get(id.index(), id.generation()) else {
             return Vec4::ZERO;
         };

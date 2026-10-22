@@ -1,5 +1,5 @@
-//! The Outlines pass on the software adapter: where the line goes, how wide it is at each distance, and that it agrees
-//! with the mock renderer, which draws the same hull on the CPU with an exact rasteriser. The conformance suite
+//! The Outlines pass on the software adapter: where the line goes, how wide it is at each distance and in each of
+//! `MToon`'s width modes, how its width texture and lighting mix change it, and that it agrees with the mock renderer, which draws the same hull on the CPU with an exact rasteriser. The conformance suite
 //! (`conformance.rs`) holds the contract's own outline check; these cover what is specific to the GPU implementation.
 //!
 //! Every picture is rendered twice, with the outline and without, and the *line* is the set of pixels that changed:
@@ -15,8 +15,9 @@ mod support;
 use omuzaki_core::glam::{Mat4, UVec2, Vec3};
 use omuzaki_render::WgpuRenderer;
 use omuzaki_render_api::{
-    AlphaEncoding, AlphaMode, Background, Camera, Colour, FrameReport, Image, Instance, JointRange, Material, MeshData,
-    MeshId, Outline, Pass, Projection, Quality, Renderer, RendererExt, Scene, TargetDesc, TextureDesc, Tonemap,
+    AlphaEncoding, AlphaMode, Background, Camera, Colour, ColourSpace, Filter, FrameReport, Image, Instance,
+    JointRange, Light, Material, MeshData, MeshId, Outline, OutlineStyle, OutlineWidthMode, Pass, Projection, Quality,
+    Renderer, RendererExt, Sampler, Scene, TargetDesc, TextureDesc, Tonemap,
 };
 use omuzaki_render_mock::{MockRenderer, shapes};
 
@@ -455,4 +456,148 @@ fn a_masked_materials_line_follows_its_visible_part_only() {
         "{off} of {} line pixels differ between the GPU and the mock",
         count(&mock_line)
     );
+}
+
+// ---- MToon's width modes, width texture and lighting mix (#647) ----
+
+/// The line `style` draws around a sphere of `radius` with a `width` outline, seen from `distance`, on `renderer`.
+fn styled_line(
+    mut renderer: Box<dyn Renderer>,
+    radius: f32,
+    distance: f32,
+    width: f32,
+    style: OutlineStyle,
+) -> Vec<bool> {
+    let mesh = renderer.create_mesh(&sphere(radius, 64, 32)).unwrap();
+    let mut material = Material::unlit(SURFACE);
+    material.outline = Some(outline(width));
+    material.outline_style = style;
+    line_of(renderer.as_mut(), mesh, &material, &scene(distance))
+}
+
+/// The line's width on the middle row, as `expected_ring_width` works it out, for a hull pushed out by `pushed` metres.
+fn ring_width_for_push(radius: f32, pushed: f32, distance: f32) -> f32 {
+    let focal = SIZE.y as f32 / 2.0 / (FOV_Y_DEG.to_radians() / 2.0).tan();
+    let on_screen = |reach: f32| focal * (reach / distance).asin().tan();
+    on_screen(radius + pushed) - on_screen(radius)
+}
+
+fn style(width_mode: OutlineWidthMode) -> OutlineStyle {
+    OutlineStyle { width_mode, ..OutlineStyle::KIT }
+}
+
+#[test]
+fn a_world_width_is_the_same_metres_at_every_distance() {
+    // MToon's worldCoordinates: unlike the kit's line, it does not grow with distance, so it thins on screen.
+    for distance in [1.0_f32, 2.0, 4.0, 8.0] {
+        let radius = 0.15 * distance;
+        let wanted = ring_width_for_push(radius, 0.03, distance);
+        for (name, renderer) in [("GPU", gpu()), ("mock", mock())] {
+            let line = styled_line(renderer, radius, distance, 0.03, style(OutlineWidthMode::World));
+            let measured = ring_width_right_of_centre(&line) as f32;
+            println!("{name} at {distance} m: a 3 cm world line is {measured} px, wanted {wanted:.2}");
+            assert!((measured - wanted).abs() <= 1.5, "{name} at {distance} m: {measured} px, wanted {wanted:.2}");
+        }
+    }
+}
+
+#[test]
+fn a_screen_width_is_the_same_fraction_of_the_height_at_every_distance() {
+    // MToon's screenCoordinates: 4% of a 128 px height is 5.1 px wherever the sphere is and however big it is.
+    let wanted = 0.04 * SIZE.y as f32;
+    for (distance, radius) in [(1.0_f32, 0.2), (3.0, 0.3), (9.0, 1.2)] {
+        let mut lines = Vec::new();
+        for (name, renderer) in [("GPU", gpu()), ("mock", mock())] {
+            let line = styled_line(renderer, radius, distance, 0.04, style(OutlineWidthMode::Screen));
+            let measured = ring_width_right_of_centre(&line) as f32;
+            println!("{name} at {distance} m, radius {radius}: a 4% screen line is {measured} px, wanted {wanted:.2}");
+            assert!((measured - wanted).abs() <= 1.5, "{name} at {distance} m: {measured} px, wanted {wanted:.2}");
+            lines.push(line);
+        }
+        let off = disagreement(&lines[0], &lines[1]);
+        assert!(off * 10 <= count(&lines[1]), "{off} of {} line pixels differ between GPU and mock", count(&lines[1]));
+    }
+}
+
+#[test]
+fn the_width_texture_scales_the_line_per_texel() {
+    // The width texture is black on the left half of the sphere (u < 0.5) and full green on the right: no line on the
+    // left, the whole line on the right. Without a width texture the line goes all the way round.
+    let line = |mut renderer: Box<dyn Renderer>| {
+        let mut mesh = sphere(0.3, 48, 24);
+        mesh.uvs = mesh.positions.iter().map(|p| omuzaki_core::glam::Vec2::new(p.x / 0.6 + 0.5, 0.5)).collect();
+        let mesh = renderer.create_mesh(&mesh).unwrap();
+        let desc = TextureDesc {
+            mips: false,
+            colour_space: ColourSpace::Linear,
+            sampler: Sampler { filter: Filter::Nearest, ..Sampler::default() },
+            ..TextureDesc::colour(UVec2::new(2, 1))
+        };
+        let texture = renderer.create_texture(&desc, Some(&[0, 0, 0, 255, 0, 255, 0, 255])).unwrap();
+        let mut material = Material::unlit(SURFACE);
+        material.outline = Some(outline(0.03));
+        material.outline_style.width_texture = Some(texture);
+        line_of(renderer.as_mut(), mesh, &material, &scene(2.0))
+    };
+    let whole = styled_line(gpu(), 0.3, 2.0, 0.03, OutlineStyle::KIT);
+    for (name, line) in [("GPU", line(gpu())), ("mock", line(mock()))] {
+        // The width is read per vertex, so the hull triangles that cross the cut taper over one segment.
+        println!("{name}: {} line pixels, {} left of the cut's segment", count(&line), left_of_centre(&line, 8));
+        assert_eq!(left_of_centre(&line, 8), 0, "{name}: a zero multiplier draws no line");
+        assert!(ring_width_right_of_centre(&line) >= ring_width_right_of_centre(&whole) - 1, "{name}: full width");
+    }
+}
+
+/// The mean linear red of the line's pixels in `with`.
+fn mean_line_red(with: &Image, mask: &[bool]) -> f64 {
+    let reds: Vec<f64> = with
+        .rgba8
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(mask)
+        .filter(|(_, on)| **on)
+        .map(|(p, _)| omuzaki_render_api::srgb_decode(f32::from(p[0]) / 255.0).into())
+        .collect();
+    reds.iter().sum::<f64>() / reds.len().max(1) as f64
+}
+
+#[test]
+fn the_lighting_mix_tints_the_line_toward_the_lit_surface() {
+    // A white line around a white toon sphere lit dimly from the camera: at mix 0 the line is white (outline_light 1),
+    // at 1 it is the lit surface's colour along the silhouette, and at a half it is halfway.
+    let picture = |renderer: &mut dyn Renderer, mesh: MeshId, mix: Option<f32>| {
+        let mut material = Material::toon(Colour::WHITE);
+        material.outline = mix.map(|_| Outline { colour: Colour::WHITE, width: 0.03 });
+        material.outline_style.lighting_mix = mix.unwrap_or(0.0);
+        let material = renderer.create_material(&material).unwrap();
+        let mut s = scene(2.0);
+        s.lights = vec![Light::Directional {
+            to_light: Vec3::new(0.0, 0.3, 1.0),
+            colour: Colour::WHITE,
+            intensity: 0.6,
+            casts_shadow: false,
+        }];
+        s.instances = vec![Instance::new(mesh, material, Mat4::IDENTITY)];
+        let image = draw(renderer, &s, &plain());
+        renderer.release(material.into()).unwrap();
+        image
+    };
+    let mut means = Vec::new();
+    for (name, mut renderer) in [("GPU", gpu()), ("mock", mock())] {
+        let mesh = renderer.create_mesh(&sphere(0.3, 64, 32)).unwrap();
+        let without = picture(renderer.as_mut(), mesh, None);
+        let reds: Vec<f64> = [0.0, 0.5, 1.0]
+            .map(|mix| {
+                let with = picture(renderer.as_mut(), mesh, Some(mix));
+                mean_line_red(&with, &line_mask(&with, &without))
+            })
+            .to_vec();
+        println!("{name}: the line's mean linear red at mix 0, 0.5, 1: {reds:.3?}");
+        assert!((reds[0] - 1.0).abs() < 0.01, "{name}: mix 0 is the line's own colour");
+        assert!(reds[2] < 0.6, "{name}: mix 1 is the dimly lit surface's colour");
+        assert!((reds[1] - reds[0].midpoint(reds[2])).abs() < 0.05, "{name}: mix 0.5 is halfway");
+        means.push(reds[2]);
+    }
+    assert!((means[0] - means[1]).abs() < 0.08, "GPU and mock light the line alike: {means:?}");
 }

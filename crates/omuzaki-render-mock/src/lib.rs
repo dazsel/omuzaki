@@ -115,7 +115,7 @@ impl MockRenderer {
                 dynamic_meshes: true,
                 morph_targets: true,
                 max_morph_targets: MAX_MORPH_TARGETS,
-                mtoon: MtoonSupport::NONE,
+                mtoon: MtoonSupport::OUTLINE_STYLE,
             },
             meshes: Arena::default(),
             textures: Arena::default(),

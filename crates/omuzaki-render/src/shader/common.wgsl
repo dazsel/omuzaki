@@ -25,6 +25,9 @@ const FLAG_RECEIVES_SHADOWS: u32 = 4u;
 const FLAG_SKIN: u32 = 8u;
 const FLAG_BASE_TEXTURE: u32 = 16u;
 const FLAG_OUTLINE: u32 = 32u;
+const FLAG_OUTLINE_WORLD: u32 = 64u;            // the outline width is metres at any distance
+const FLAG_OUTLINE_SCREEN: u32 = 128u;          // the outline width is a fraction of the target height
+const FLAG_OUTLINE_WIDTH_TEXTURE: u32 = 256u;   // the width is multiplied by the width texture's green channel
 
 // Material.flags.y
 const SHADING_TOON: u32 = 0u;
@@ -35,7 +38,7 @@ const ALPHA_OPAQUE: u32 = 0u;
 const ALPHA_MASK: u32 = 1u;
 const ALPHA_BLEND: u32 = 2u;
 
-// Per-slot texture flags (Material.textures.x holds four bits per slot).
+// Per-slot texture flags (Material.textures.x holds four bits per slot: base, overlays 0..3, the outline width texture).
 const TEXTURE_DECODE_SRGB: u32 = 1u;
 const TEXTURE_PREMULTIPLIED: u32 = 2u;
 
@@ -95,10 +98,11 @@ struct Material {
     toon: vec4<f32>,             // shift, softness, rim power, skin floor
     flags: vec4<u32>,            // FLAG_* bits, SHADING_*, ALPHA_*, overlay count
     alpha: vec4<f32>,            // x: mask cutoff
-    textures: vec4<u32>,         // x: four bits of TEXTURE_* flags per slot (base, overlay 0..3)
+    textures: vec4<u32>,         // x: four bits of TEXTURE_* flags per slot (base, overlay 0..3, outline width)
     overlays: array<Overlay, 4>,
     program: array<vec4<f32>, 8>, // shading program parameters (the programs task)
     uv_transform: vec4<f32>,     // xy: UV scale, zw: UV offset (applied as uv * xy + zw)
+    outline_mix: vec4<f32>,      // x: how much the lit surface tints the outline, 0..=1
 }
 
 @group(1) @binding(0) var<uniform> material: Material;
@@ -112,6 +116,9 @@ struct Material {
 @group(1) @binding(8) var overlay_sampler_1: sampler;
 @group(1) @binding(9) var overlay_sampler_2: sampler;
 @group(1) @binding(10) var overlay_sampler_3: sampler;
+// Read by the outline hull's vertex stage only.
+@group(1) @binding(11) var outline_width_texture: texture_2d<f32>;
+@group(1) @binding(12) var outline_width_sampler: sampler;
 
 // The one vertex format (resource/mesh.rs), with neutral defaults for what a mesh lacks.
 struct Vertex {

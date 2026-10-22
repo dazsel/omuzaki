@@ -116,7 +116,7 @@ impl WgpuRenderer {
             dynamic_meshes: true,
             morph_targets: true,
             max_morph_targets: morph::MAX_TARGETS,
-            mtoon: MtoonSupport::NONE,
+            mtoon: MtoonSupport::OUTLINE_STYLE,
         };
         Ok(Self {
             shared,

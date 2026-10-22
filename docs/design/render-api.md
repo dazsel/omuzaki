@@ -103,7 +103,7 @@ A suggested degrade ladder for the scheduler (its own task, not decided here): r
 | `toon({ color, shade, shift, soft, rim, rimPower, rimStrength, emissive })` | `Material.base` + `Shading::Toon(Toon { shade, shift, softness, rim: Rim, emissive, skin })`; defaults are the prototype's |
 | `SKIN_FLOOR`, `SKIN_OUT` (keep hue, lift shadow floor) | `Toon.skin: Option<Skin { floor, hue_keep }>` |
 | `side: DoubleSide`, `transparent`, `alphaTest`, `vertexColors` | `double_sided`, `AlphaMode::{Opaque, Mask, Blend}`, `vertex_colours` |
-| `outline(mesh, { color, width })`, `OUTLINE_LIGHT` | `Material.outline: Outline { colour, width }` (metres at 2 m, scaled by `clamp(d/2, 0.6, 3)` in one shared `world_width`), `Scene.outline_light` |
+| `outline(mesh, { color, width })`, `OUTLINE_LIGHT` | `Material.outline: Outline { colour, width }` (metres at 2 m, scaled by `clamp(d/2, 0.6, 3)` in one shared `world_width`), `Scene.outline_light`; `Material.outline_style: OutlineStyle { width_mode, width_texture, lighting_mix }` keeps that as `OutlineStyle::KIT` and adds MToon's constant-metre (`World`) and screen-height (`Screen`, a fraction of the target height) widths, a width texture (green channel, per vertex) and the lighting mix (#647) |
 | head `fragDiffuse` projects the face canvas by local XY | `Overlay { texture, mapping: Mapping::Planar { min, max, fade_from, fade_to }, strength }` |
 | hair `uBrow` brows through the bangs | a second `Overlay` on the hair material, same rect, hard cut at `z > 0`, strength 0.85 |
 | `castShadow` / `receiveShadow` | `Instance.casts_shadow`, `Material.receives_shadows`, `Light::Directional.casts_shadow` |

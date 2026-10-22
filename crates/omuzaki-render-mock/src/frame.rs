@@ -2,8 +2,8 @@
 
 use omuzaki_core::glam::{Mat3, Mat4, UVec2, Vec2, Vec3, Vec4};
 use omuzaki_render_api::{
-    AlphaEncoding, Camera, Image, Instance, Material, Pass, Post, Projection, Quality, RenderError, Scene, TargetDesc,
-    Tonemap, srgb_encode, to_byte,
+    AlphaEncoding, Camera, Image, Instance, Material, Outline, OutlineWidthMode, Pass, Post, Projection, Quality,
+    RenderError, Scene, TargetDesc, Tonemap, srgb_encode, to_byte,
 };
 
 use crate::TextureData;
@@ -154,11 +154,12 @@ pub(crate) fn draw_frame(
         }
     }
 
+    let hull = HullCx { scene, lights: &lights, textures: &textures, fog, view, view_proj, aspect };
     for (inst, mesh, material, posed) in &outlined {
         out.ran[Pass::Outlines.index()] = true;
         out.draw_calls += 1;
         out.triangles += mesh.data.triangle_count() as u64;
-        draw_hull(&mut surface, inst, mesh, material, &textures, posed, scene, fog, &view, &view_proj);
+        draw_hull(&mut surface, &hull, inst, mesh, material, posed);
     }
 
     // Back to front, authored order first; a stable sort keeps submission order for exact ties.
@@ -265,34 +266,94 @@ fn blend_joints(palette: &[Mat4], joints: [u16; 4], weights: [f32; 4]) -> Result
     Ok(sum)
 }
 
-/// Inverted hull: the mesh pushed out along its smooth normals, back faces only, in the outline colour.
-#[allow(clippy::too_many_arguments)] // one cohesive draw: splitting it would only move the arguments around
+/// What every hull of a frame is drawn with.
+struct HullCx<'a> {
+    scene: &'a Scene,
+    lights: &'a Lights<'a>,
+    textures: &'a Textures<'a>,
+    fog: FogLight,
+    view: Mat4,
+    view_proj: Mat4,
+    /// The target's width over its height.
+    aspect: f32,
+}
+
+/// Where a hull vertex goes in clip space: the posed vertex `p` pushed along its outline direction `dir` by the
+/// material's `width` (already multiplied by its width texture) as its `OutlineStyle` measures it (#647). `Screen` pushes
+/// in clip space along the projected direction, normalised in pixels and scaled by clip w, as `outline.wgsl` does.
+fn hull_clip(cx: &HullCx<'_>, outline: Outline, mode: OutlineWidthMode, p: Vec3, dir: Vec3) -> Vec4 {
+    let metres = match mode {
+        OutlineWidthMode::WorldByDistance => outline.world_width(-cx.view.transform_point3(p).z),
+        OutlineWidthMode::World => outline.width,
+        OutlineWidthMode::Screen => {
+            let clip = cx.view_proj * p.extend(1.0);
+            let projected = (cx.view_proj * dir.extend(0.0)).truncate().truncate();
+            let in_pixels = Vec2::new(projected.x * cx.aspect, projected.y);
+            let along = in_pixels.length();
+            if along < 1e-6 {
+                return clip;
+            }
+            let offset = Vec2::new(in_pixels.x / cx.aspect, in_pixels.y) / along * 2.0 * outline.width * clip.w;
+            return clip + offset.extend(0.0).extend(0.0);
+        }
+    };
+    cx.view_proj * (p + dir * metres).extend(1.0)
+}
+
+/// Inverted hull: the mesh pushed out along its smooth normals, back faces only, in the outline colour, tinted toward
+/// the lit surface by the style's lighting mix.
 fn draw_hull(
     surface: &mut Surface,
+    cx: &HullCx<'_>,
     inst: &Instance,
     mesh: &MeshEntry,
     material: &Material,
-    textures: &Textures<'_>,
     posed: &Posed,
-    scene: &Scene,
-    fog: FogLight,
-    view: &Mat4,
-    view_proj: &Mat4,
 ) {
     let Some(outline) = material.outline else { return };
-    let colour = (outline.colour.to_linear() * scene.outline_light).extend(1.0);
-    let pushed: Vec<Vec3> = posed
-        .world
-        .iter()
-        .zip(&posed.hull_dir)
-        .map(|(&p, &dir)| p + dir * outline.world_width(-view.transform_point3(p).z))
+    let style = material.outline_style;
+    let uv = |i: usize| mesh.data.uvs.get(i).copied().unwrap_or(Vec2::ZERO);
+    let clips: Vec<Vec4> = (0..posed.world.len())
+        .map(|i| {
+            let multiplier =
+                style.width_texture.map_or(1.0, |id| cx.textures.sample(id, material.uv_transform.apply(uv(i))).y);
+            let outline = Outline { width: outline.width * multiplier, ..outline };
+            hull_clip(cx, outline, style.width_mode, posed.world[i], posed.hull_dir[i])
+        })
         .collect();
-    let mode = Mode { cull: Cull::Front, mirrored: inst.transform.determinant() < 0.0, write: Write::Opaque };
+    let mirrored = inst.transform.determinant() < 0.0;
+    let mode = Mode { cull: Cull::Front, mirrored, write: Write::Opaque };
+    let line = outline.colour.to_linear();
     for &ids in mesh.data.indices.as_chunks::<3>().0 {
-        let verts = ids.map(|i| vertex(mesh, i as usize, pushed[i as usize], view, view_proj));
+        let verts = ids.map(|i| {
+            let i = i as usize;
+            // The fog reads the pushed vertex's depth, except a screen-space push, which leaves the depth alone.
+            let mut v = vertex(mesh, i, posed.world[i], &cx.view, &cx.view_proj);
+            v.clip = clips[i];
+            v
+        });
+        // The surface's light for the lighting mix: the triangle lit from outside, as the surface it grows from.
+        let lit = (style.lighting_mix > 0.0).then(|| {
+            let world = ids.map(|i| posed.world[i as usize]);
+            let facing = (world[1] - world[0]).cross(world[2] - world[0]).normalize_or_zero();
+            let outward = if mirrored { -facing } else { facing };
+            let centroid = (world[0] + world[1] + world[2]) / 3.0;
+            light_triangle(material, cx.lights, outward, centroid, towards_viewer(&cx.scene.camera, centroid))
+        });
         // A masked material's hull is cut like its surface: the line follows what is visible (#649).
         draw_triangle(surface, &verts, mode, &mut |v: Varying| {
-            mask_keeps(material, textures, v).then(|| fog.apply(colour, v.depth))
+            if !mask_keeps(material, cx.textures, v) {
+                return None;
+            }
+            let base = Vec3::splat(cx.scene.outline_light);
+            let light = match lit {
+                Some(lit) => {
+                    let surface = shade_pixel(material, lit, cx.textures, v).map_or(base, Vec4::truncate);
+                    base.lerp(surface, style.lighting_mix)
+                }
+                None => base,
+            };
+            Some(cx.fog.apply((line * light).extend(1.0), v.depth))
         });
     }
 }
