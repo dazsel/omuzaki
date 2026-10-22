@@ -37,6 +37,7 @@ use omuzaki_store_api::Store;
 use omuzaki_stream::feed::ProgramFeed;
 use omuzaki_stream::service::{Program as StreamProgram, StreamService};
 use omuzaki_stream_api::window::{ClickThrough, WindowHost};
+use omuzaki_theatre::TheatreBook;
 use omuzaki_track_api::camera::{CameraId, CameraInfo};
 use omuzaki_track_api::error::TrackError;
 use omuzaki_track_api::tracker::{LatencyStats, Tracker, TrackerConfig};
@@ -118,6 +119,10 @@ pub struct LiveApp {
     secrets: Option<Arc<dyn SecretStore>>,
     /// The project folder's real path, which keys a show's approvals as the engine does.
     project: String,
+    /// The Build Theatre's book: the `theatre.*` ops write it, its watcher follows the runner.
+    theatre: TheatreBook,
+    /// The store renders and connector outputs land in, for the Theatre's evidence and references.
+    renders: Option<Arc<dyn Store>>,
 }
 
 /// The OS input hub (ADR 0060) as the app runs it: its control is in the runner's services (the `input.*` capture and
@@ -309,7 +314,10 @@ impl LiveApp {
             services = services.insert::<VtsService>(vts);
         }
         services = InputWiring::serve(services, hub.as_ref());
-        services = with_connectors(services, data.as_deref(), secrets.as_ref(), settings.as_ref());
+        let (with, renders) = with_connectors(services, data.as_deref(), secrets.as_ref(), settings.as_ref());
+        // The Theatre's book is kept beside the project, so a reopened project shows its plans and cards again.
+        let theatre = document.dir().map_or_else(TheatreBook::new, TheatreBook::for_project);
+        services = with.insert::<TheatreBook>(Arc::new(theatre.clone()));
         // Frames and the microphone count from one zero, so a take's audio lines up with its video.
         let epoch = std::time::Instant::now();
         let stream = match StreamService::with_epoch(epoch) {
@@ -335,6 +343,9 @@ impl LiveApp {
             follow_project(audio, &core.runner);
         }
         automation.attach_sessions(&core.sessions);
+        if let Err(error) = theatre.attach(&core.runner, Arc::clone(&core.sessions)) {
+            tracing::warn!(%error, "the Theatre's book does not follow the runner: its steps stay empty");
+        }
         // What this machine approved and the shows' variables live in the app's data folder, never in the project.
         // Without one, nothing is approved and variables last one run.
         let approvals = data.as_ref().map(|data| {
@@ -361,6 +372,8 @@ impl LiveApp {
             approvals,
             secrets,
             project: project_key,
+            theatre,
+            renders,
         })
     }
 
@@ -383,6 +396,11 @@ impl LiveApp {
         let approver =
             crate::broadcast::DiskApprover::new(Arc::clone(&self.automation), approvals, self.project.clone());
         Some(crate::broadcast::ShowApprover(Arc::new(approver)))
+    }
+
+    /// The Theatre as the studio's panels read it: the core's book and the render store.
+    pub fn theatre(&self) -> crate::theatre::Theatre {
+        crate::theatre::Theatre::new(self.theatre.clone(), self.renders.clone())
     }
 
     /// The keychain, for the Settings window's OBS password (which no op carries); `None` without a data folder.
@@ -622,19 +640,23 @@ fn start_audio(epoch: std::time::Instant) -> Option<Arc<dyn AudioEngine>> {
     }
 }
 
-/// `services` with the connector host (as `dyn Connectors` and as itself) and the asset store, when they start.
+/// `services` with the connector host (as `dyn Connectors` and as itself) and the asset store, when they start; and
+/// the store, which the Theatre reads renders from.
 fn with_connectors(
     services: ServicesBuilder,
     data: Option<&Path>,
     secrets: Option<&Arc<dyn SecretStore>>,
     settings: Option<&Arc<dyn Settings>>,
-) -> ServicesBuilder {
+) -> (ServicesBuilder, Option<Arc<dyn Store>>) {
     match connector_host(data, secrets, settings) {
-        Some((store, host)) => services
-            .insert::<dyn Store>(store)
-            .insert::<dyn Connectors>(Arc::clone(&host) as Arc<dyn Connectors>)
-            .insert::<Host>(host),
-        None => services,
+        Some((store, host)) => (
+            services
+                .insert::<dyn Store>(Arc::clone(&store))
+                .insert::<dyn Connectors>(Arc::clone(&host) as Arc<dyn Connectors>)
+                .insert::<Host>(host),
+            Some(store),
+        ),
+        None => (services, None),
     }
 }
 

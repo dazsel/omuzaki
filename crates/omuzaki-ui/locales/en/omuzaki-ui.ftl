@@ -1564,9 +1564,6 @@ ui-live-strip-press = Show { $name } ({ $key })
 ui-live-title = Live
 
 # A panel's title (a short tab label), or what its body says while it can't work.
-ui-panel-agent = Agent
-
-# A panel's title (a short tab label), or what its body says while it can't work.
 ui-panel-history = History
 
 # A panel's title (a short tab label), or what its body says while it can't work.
@@ -1577,6 +1574,18 @@ ui-panel-live-stage = Stage
 
 # A panel's title (a short tab label), or what its body says while it can't work.
 ui-panel-setup = Setup
+
+# A panel's title (a short tab label), or what its body says while it can't work.
+ui-panel-theatre-compare = Compare
+
+# A panel's title (a short tab label), or what its body says while it can't work.
+ui-panel-theatre-plan = Plan
+
+# A panel's title (a short tab label), or what its body says while it can't work.
+ui-panel-theatre-stage = Stage
+
+# A panel's title (a short tab label), or what its body says while it can't work.
+ui-panel-theatre-steps = Steps
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
 ui-panels-add-part = Add one from the library or ask the assistant.
@@ -3388,6 +3397,279 @@ ui-shell-window-waiting = ● Omuzaki: waiting for you
 # The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
 ui-shell-workspace-tabs = Workspaces
 
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-agent = Agent
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+# $reason (id, never translated): "hair-b"
+ui-theatre-because = Why: { $reason }
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-bring-back = Bring it back
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+# $agent (id, never translated): "hair-b"
+# $label (id, never translated): "hair-b"
+ui-theatre-caption = { $agent }: { $label }
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+# $share (id, never translated): "hair-b"
+ui-theatre-changed-since = { $share } changed since the previous step
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-clear-reference = Clear reference
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-current = Current
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-discard-notes = Discard
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-done = Done
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-draw = Draw to direct
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-draw-how = Drag over the character to circle what should change.
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-ended = Ended
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-failed-gate = Gate failed
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+# $agent (id, never translated): "hair-b"
+ui-theatre-follow = Following { $agent }
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+# $agent (id, never translated): "hair-b"
+ui-theatre-follow-off = Follow { $agent }
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+# $share (id, never translated): "hair-b"
+ui-theatre-from-reference = { $share } differs from the reference
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+# $gate (id, never translated): "hair-b"
+# $message (id, never translated): "hair-b"
+ui-theatre-gate-line = { $gate }: { $message }
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+# $item (id, never translated): "hair-b"
+# $status (id, never translated): "hair-b"
+ui-theatre-item-name = { $item }, { $status }: show its steps
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-item-one-step = 1 step
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+# $count (id, never translated): "hair-b"
+ui-theatre-item-steps = { $count } steps
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-limit-minutes = Time limit, minutes (0 for none)
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-limit-money = Money limit, dollars
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-limit-tokens = Token limit (0 for none)
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-limits = Limits
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-limits-how = The agent pauses when it reaches a limit, and asks you before going on.
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-limits-save = Set limits
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-matched = Matched camera: the front view every step is pictured from
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-mode-each-item = After each plan item
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-mode-every-step = After each step
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-mode-gates = At gates only
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-mode-off = Never
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-needs-review = Needs review
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-no-book = The Theatre isn't running
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-no-book-how = This studio was started without the Theatre's book, so there is nothing to watch.
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-no-pictures = No pictures: this studio doesn't take step pictures without a GPU and a project folder.
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-no-plan = No plan yet
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-no-plan-how = An agent shows its plan here when it posts one. Its steps then nest under each item.
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-no-reason = No reason given yet. An agent gives one for each step it explains.
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-no-reference = No reference
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-no-restore = Showing the character before this step. Restoring it needs history.restore, which this build doesn't have yet.
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-no-steps = No steps yet
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-no-steps-how = Each change to the character becomes a card here, with its pictures and its reason.
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-nobody = No agent is working
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-nobody-how = Connect an agent over MCP, or start one from a prompt. Its plan, its steps and the character as it changes show here.
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-note-text = What should change here?
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+# $count (id, never translated): "hair-b"
+ui-theatre-older = Show { $count } older steps
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+# $count (id, never translated): "hair-b"
+ui-theatre-open-notes = { $count } notes waiting for an agent
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-other-steps = Other steps
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-pause = Pause
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-pause-mode = Pause when
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-paused = Paused
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-picture-loading = Not pictured yet
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+# $agent (id, never translated): "hair-b"
+ui-theatre-plan-of = { $agent }'s plan
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-planned = Planned
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-pop-out = Pop out
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-popped-out = The stage is in its own window
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-previous = Previous step
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-reference = Reference
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+# $reason (id, never translated): "hair-b"
+ui-theatre-refused = Not done: { $reason }
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-reject-send = Send to the agent
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-reject-why = What should change?
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+# $label (id, never translated): "hair-b"
+# $comment (id, never translated): "hair-b"
+ui-theatre-rejected-note = Rejected the step { $label }: { $comment }
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-resume = Resume
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-running = Running
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+# $seconds (id, never translated): "hair-b"
+ui-theatre-seconds = { $seconds } s
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-send-note = Send note
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+# $count (id, never translated): "hair-b"
+ui-theatre-send-notes = Send { $count } notes
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+# $count (id, never translated): "hair-b"
+ui-theatre-sent = Sent { $count } notes to the agents
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-show-all = Show all steps
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+# $item (id, never translated): "hair-b"
+ui-theatre-showing-item = Steps of: { $item }
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+# $spent (id, never translated): "hair-b"
+# $cap (id, never translated): "hair-b"
+ui-theatre-spent-money = { $spent } of { $cap }
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+# $spent (id, never translated): "hair-b"
+# $cap (id, never translated): "hair-b"
+ui-theatre-spent-time = { $spent } of { $cap }
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+# $spent (id, never translated): "hair-b"
+ui-theatre-spent-time-free = { $spent }
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+# $spent (id, never translated): "hair-b"
+# $cap (id, never translated): "hair-b"
+ui-theatre-spent-tokens = { $spent } of { $cap } tokens
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+# $spent (id, never translated): "hair-b"
+ui-theatre-spent-tokens-free = { $spent } tokens
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-stage-window = Omuzaki Theatre
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-step = Step
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-stop = Stop
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-undone = Undone
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-use-as-reference = Use as reference
+
+# The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).
+ui-theatre-working = Working
+
 # A workspace's name on its tab: keep it short.
 ui-workspace-broadcast = Broadcast
 
@@ -3396,3 +3678,6 @@ ui-workspace-build = Build
 
 # A workspace's name on its tab: keep it short.
 ui-workspace-perform = Perform
+
+# A workspace's name on its tab: keep it short.
+ui-workspace-theatre = Theatre

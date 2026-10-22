@@ -17,11 +17,6 @@ omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 
-[dev-dependencies]
-tempfile.workspace = true
-omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
-omuzaki-ops = { path = "../omuzaki-ops" }
-
 [lints]
 workspace = true
 

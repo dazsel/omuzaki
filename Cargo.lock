@@ -5908,13 +5908,10 @@ version = "0.0.0"
 dependencies = [
  "omuzaki-core",
  "omuzaki-doc-api",
- "omuzaki-doc-mock",
- "omuzaki-ops",
  "omuzaki-ops-api",
  "schemars",
  "serde",
  "serde_json",
- "tempfile",
  "tracing",
 ]
 
@@ -6075,6 +6072,7 @@ dependencies = [
  "omuzaki-stream",
  "omuzaki-stream-api",
  "omuzaki-test",
+ "omuzaki-theatre",
  "omuzaki-track",
  "omuzaki-track-api",
  "omuzaki-track-mock",

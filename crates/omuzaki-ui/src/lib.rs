@@ -13,6 +13,7 @@ pub mod settings;
 pub mod shell;
 pub mod studio;
 pub mod testing;
+pub mod theatre;
 pub mod wiring;
 
 // Lets `register_story!` and `register_contrast!` record each registration for the link gate (ADR 0015).
@@ -27,8 +28,8 @@ pub use omuzaki_core::__record_registration;
 // and the face tracker and the phone link their own (the phone's `input.phone` setting). The audio engine registers the
 // `audio.*` ops, the OBS client the `obs.*` ops, the VTube Studio bridge the `vts.*` ops, the automation engine and its
 // nodes the `show.*` and `automation.*` ops, Twitch the `twitch.*` ops, the settings store the `settings.*` ops, the
-// virtual camera its output kind and the OS input hub the `input.capture.*` and `input.binding.*` ops and its backends
-// (ADR 0015). The studio's own `ui.*` settings register here (`ds::settings_keys`).
+// virtual camera its output kind, the OS input hub the `input.capture.*` and `input.binding.*` ops and its backends,
+// and the Theatre's book the `theatre.*` ops (ADR 0015). The studio's own `ui.*` settings register here (`ds::settings_keys`).
 // The studio's words in every shipped language (`locales/<lang>/omuzaki-ui.ftl`, design `l10n-ops.md` section 3.3).
 omuzaki_l10n_api::register_locales!();
 
@@ -49,6 +50,7 @@ omuzaki_core::define_link! {
     omuzaki_stage::link();
     omuzaki_stage_api::link();
     omuzaki_stream::link();
+    omuzaki_theatre::link();
     omuzaki_track::link();
     omuzaki_track_net::link();
     omuzaki_twitch::link();

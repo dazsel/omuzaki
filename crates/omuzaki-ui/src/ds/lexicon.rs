@@ -30,6 +30,7 @@ pub fn entries() -> Vec<(String, &'static str)> {
     };
     named(crate::panels::text::PREFIX, crate::panels::text::ALL, &mut out);
     named(crate::ds::schema_form::text::PREFIX, crate::ds::schema_form::text::ALL, &mut out);
+    named(crate::theatre::text::PREFIX, crate::theatre::text::ALL, &mut out);
     named("ui-live-channel", crate::live::text::CHANNEL_NAMES, &mut out);
     out
 }
@@ -47,6 +48,10 @@ pub fn note_of(id: &str) -> &'static str {
         ("ui-settings-", "The Settings window, with its Models page."),
         ("ui-panels-", "The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow."),
         ("ui-form-", "A generated form field's own words."),
+        (
+            "ui-theatre-",
+            "The Build Theatre: watching and steering agents (the plan board, the stage, the compare strip, the steps).",
+        ),
         ("ui-panel-", "A panel's title (a short tab label), or what its body says while it can't work."),
         ("ui-workspace-", "A workspace's name on its tab: keep it short."),
         ("ui-setting-", "The line under a setting in the Settings window, saying what it does."),

@@ -1,6 +1,7 @@
-//! The Theatre's book over the real executor: an agent's plan with its steps nested under the running item, reasons
-//! and gate cards on the steps, the person's notes, the three pause modes pausing the agent's real session, the book
-//! saved beside the project and read back, and dry runs that change nothing.
+//! The Theatre's book (`omuzaki-theatre`) over the real executor, which only an App may link: an agent's plan with its
+//! steps nested under the running item, reasons and gate cards on the steps, the person's notes, the three pause modes
+//! pausing the agent's real session, the book saved beside the project and read back, and dry runs that change
+//! nothing.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::needless_pass_by_value)]
 
 use std::sync::Arc;
@@ -277,6 +278,11 @@ fn only_the_person_directs_and_sets_pause_modes_and_notes_reach_the_agent_as_dat
     assert!(rig.agent("theatre.take", json!({ "id": 1 })).is_err(), "a note is taken once");
     assert_eq!(answer(rig.agent("theatre.notes", json!({})).unwrap())["notes"], json!([]));
     assert_eq!(answer(rig.agent("theatre.notes", json!({ "all": true })).unwrap())["notes"][0]["taken"], json!(true));
+
+    // A rejection's comment answers a step and marks no region.
+    rig.person("theatre.direct", json!({ "text": "too dark", "step": 7 })).unwrap();
+    let open = answer(rig.agent("theatre.notes", json!({})).unwrap());
+    assert_eq!((open["notes"][0]["step"].clone(), open["notes"][0].get("region")), (json!(7), None));
 }
 
 #[test]

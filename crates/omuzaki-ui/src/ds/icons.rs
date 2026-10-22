@@ -164,3 +164,19 @@ pub const fn status(status: super::tokens::Status) -> &'static str {
         Status::Danger => X_CIRCLE,
     }
 }
+/// The Build Theatre: watching agents work.
+pub const BINOCULARS: &str = egui_phosphor::regular::BINOCULARS;
+/// Draw to direct: circling a region for the agents.
+pub const PEN: &str = egui_phosphor::regular::PEN_NIB;
+/// Step: let a paused agent take one step.
+pub const SKIP_FORWARD: &str = egui_phosphor::regular::SKIP_FORWARD;
+/// A plan: a checklist.
+pub const LIST_CHECKS: &str = egui_phosphor::regular::LIST_CHECKS;
+/// Pop a panel out into its own window.
+pub const ARROW_SQUARE_OUT: &str = egui_phosphor::regular::ARROW_SQUARE_OUT;
+/// Following: the view keeps the agent's work in sight.
+pub const CROSSHAIR: &str = egui_phosphor::regular::CROSSHAIR;
+/// Compare: pictures side by side.
+pub const COLUMNS: &str = egui_phosphor::regular::COLUMNS;
+/// Steps: a stack of cards, one per transaction.
+pub const CARDS: &str = egui_phosphor::regular::CARDS;

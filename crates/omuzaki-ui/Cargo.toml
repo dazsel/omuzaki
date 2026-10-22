@@ -67,6 +67,7 @@ omuzaki-settings = { path = "../omuzaki-settings" }
 omuzaki-settings-api = { path = "../omuzaki-settings-api" }
 omuzaki-setup = { path = "../omuzaki-setup" }
 omuzaki-stage = { path = "../omuzaki-stage" }
+omuzaki-theatre = { path = "../omuzaki-theatre" }
 omuzaki-store = { path = "../omuzaki-store" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
 omuzaki-stage-api = { path = "../omuzaki-stage-api" }

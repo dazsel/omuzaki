@@ -710,7 +710,8 @@ fn age(ctx: &egui::Context, seconds: u64) -> String {
     say(ctx, word, &[("count", &count.to_string())])
 }
 
-fn actor_kind(actor: &Actor) -> ActorKind {
+/// What kind of actor ran a step, for its chip.
+pub fn actor_kind(actor: &Actor) -> ActorKind {
     match actor {
         Actor::Person { .. } => ActorKind::Person,
         Actor::Agent { .. } => ActorKind::Agent,

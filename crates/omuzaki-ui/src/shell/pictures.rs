@@ -47,6 +47,12 @@ impl HistoryPictures {
         Self(source)
     }
 
+    /// The PNG of `tx`'s picture, once there is one, or why it can't be read: for a view that decodes it at its own
+    /// size (the Theatre's compare strip).
+    pub fn png(&self, tx: TxId) -> Option<Result<Vec<u8>, String>> {
+        self.0.png(tx)
+    }
+
     /// Waits up to `timeout` for `tx`'s picture; true once it is there. For tests and scripts: the panel never waits.
     pub fn wait_for(&self, tx: TxId, timeout: Duration) -> bool {
         self.0.wait(tx, timeout)
@@ -98,7 +104,9 @@ impl Atlas {
         self.textures.values().filter(|t| t.is_some()).count()
     }
 
-    fn texture(
+    /// `tx`'s picture as a texture, once it is there and this frame may upload it, for a widget that draws it itself
+    /// (a step card, the Theatre's compare strip); `seen` as for [`draw`](Self::draw).
+    pub fn texture(
         &mut self,
         ctx: &egui::Context,
         pictures: &HistoryPictures,

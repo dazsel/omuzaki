@@ -19,6 +19,7 @@ use omuzaki_ops_api::Runner;
 use omuzaki_render::WgpuRenderer;
 use omuzaki_settings_api::service::Settings as SettingsService;
 use omuzaki_stage::frame::Stage;
+use omuzaki_theatre::TheatreBook;
 use omuzaki_ui::aux_window::{Backend, Platform, SurfaceRoute, transparency};
 use omuzaki_ui::ds::script_fonts::ScriptFonts;
 use omuzaki_ui::ds::settings_keys::SettingsLink;
@@ -31,6 +32,7 @@ use omuzaki_ui::panels::viewport::ViewportServices;
 use omuzaki_ui::shell::persist::LayoutStore;
 use omuzaki_ui::shell::stub::NullRunner;
 use omuzaki_ui::shell::{Shell, class};
+use omuzaki_ui::theatre::Theatre;
 use omuzaki_ui::wiring::{self, Core, Document};
 use omuzaki_ui::{studio, wiring::default_project_dir};
 
@@ -200,18 +202,29 @@ fn studio_settings() -> Option<Arc<dyn SettingsService>> {
     }
 }
 
-/// The executor the shell works through: the live slice's, or a plain one over the project when the slice did not
-/// start; `None` when not even that could start (the shell then runs on a runner with no document).
-fn core_of(live: Option<&LiveApp>, dir: Option<&PathBuf>, settings: Option<Arc<dyn SettingsService>>) -> Option<Core> {
+/// The executor the shell works through and the Theatre over it: the live slice's, or a plain one over the project
+/// when the slice did not start; `None` when not even that could start (the shell then runs on a runner with no
+/// document).
+fn core_of(
+    live: Option<&LiveApp>,
+    dir: Option<&PathBuf>,
+    settings: Option<Arc<dyn SettingsService>>,
+) -> Option<(Core, Theatre)> {
     if let Some(live) = live {
-        return Some(live.core());
+        return Some((live.core(), live.theatre()));
     }
-    let services = match settings {
-        Some(settings) => omuzaki_ops_api::ServicesBuilder::new().insert::<dyn SettingsService>(settings).build(),
-        None => omuzaki_ops_api::Services::default(),
-    };
-    match wiring::core_on(open_document(dir), services) {
-        Ok(core) => Some(core),
+    let book = dir.map_or_else(TheatreBook::new, |dir| TheatreBook::for_project(dir));
+    let mut services = omuzaki_ops_api::ServicesBuilder::new().insert::<TheatreBook>(Arc::new(book.clone()));
+    if let Some(settings) = settings {
+        services = services.insert::<dyn SettingsService>(settings);
+    }
+    match wiring::core_on(open_document(dir), services.build()) {
+        Ok(core) => {
+            if let Err(error) = book.attach(&core.runner, Arc::clone(&core.sessions)) {
+                tracing::warn!(%error, "the Theatre's book does not follow the runner: its steps stay empty");
+            }
+            Some((core, Theatre::new(book, None)))
+        }
         Err(error) => {
             tracing::error!(%error, "the ops did not start: the studio has no document");
             None
@@ -298,8 +311,11 @@ fn main() -> eframe::Result {
                 None => omuzaki_ui::ds::apply_settings(&cc.egui_ctx, omuzaki_ui::ds::Settings::default()),
             }
             let live = start_live(cc, open_document(dir.as_ref()), settings.clone());
-            let core = core_of(live.as_ref(), dir.as_ref(), settings);
+            let (core, theatre) = core_of(live.as_ref(), dir.as_ref(), settings).unzip();
             let mut shell = studio_shell(cc, core, dir.as_ref());
+            if let Some(theatre) = theatre {
+                shell.insert_view(theatre);
+            }
             if let Some(live) = live.as_ref() {
                 shell.insert_view(live.channel_feed());
                 if let Some(approver) = live.show_approver() {

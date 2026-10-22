@@ -172,8 +172,12 @@ pub struct Note {
     pub by: Actor,
     /// What they want ("make this rounder").
     pub text: String,
-    /// The circled region.
-    pub region: Region,
+    /// The circled region; none for a note about a whole step (a rejection's comment).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<Region>,
+    /// The step the note answers (a rejected step).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<TxId>,
     /// The part under the region, when one is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub part: Option<String>,
@@ -217,7 +221,8 @@ pub struct Book {
     /// Each agent's pause mode, by agent id.
     #[serde(default)]
     pub modes: BTreeMap<String, PauseMode>,
-    /// The reference picture the compare strip shows first (TH-04): a render store URI or hash.
+    /// The reference picture the compare strip shows first (TH-04): an `omuzaki://render/<hash>.png` or a step's
+    /// own picture as `step:<tx>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reference: Option<String>,
 }

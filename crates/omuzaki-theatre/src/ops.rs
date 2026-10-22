@@ -221,7 +221,8 @@ impl Op for Gate {
 register_op!(Gate);
 
 /// Leave the agents a note on the character: the region circled in the viewport, what to do there, the part under it,
-/// the camera it was seen from and the step whose picture shows what the person saw. Person only.
+/// the camera it was seen from and the step whose picture shows what the person saw; or a comment on one step (a
+/// rejection's reason). Person only.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(extend("examples" = [{
@@ -232,8 +233,12 @@ register_op!(Gate);
 pub struct Direct {
     /// What to do there.
     pub text: String,
-    /// The circled region, as fractions of the viewport from its top left.
-    pub region: Region,
+    /// The circled region, as fractions of the viewport from its top left. Default: none, for a note about a step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<Region>,
+    /// The step the note answers: a step the person rejected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<TxId>,
     /// The part under the region.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub part: Option<String>,
@@ -265,7 +270,8 @@ impl Op for Direct {
             id: 0,
             by: ctx.actor.clone(),
             text: clean("text", &self.text, MAX_TEXT)?,
-            region: check_region(self.region)?,
+            region: self.region.map(check_region).transpose()?,
+            step: self.step,
             part: self.part.as_deref().map(|p| clean("part", p, MAX_NAME)).transpose()?,
             camera: self.camera,
             picture: self.picture,
@@ -398,13 +404,13 @@ impl Op for PauseModeOp {
 }
 register_op!(PauseModeOp);
 
-/// Set the reference picture the Theatre's compare strip shows first: an `omuzaki://render/<hash>.png`, or none to clear
-/// it.
+/// Set the reference picture the Theatre's compare strip shows first: an `omuzaki://render/<hash>.png` (a character
+/// sheet, a render), a step's own picture as `step:<tx>`, or none to clear it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(extend("examples" = [{ "picture": "omuzaki://render/5f2c.png" }, {}]))]
 pub struct Reference {
-    /// The picture. Default: none.
+    /// The picture: `omuzaki://render/<hash>.png` or `step:<tx>`. Default: none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub picture: Option<String>,
 }
