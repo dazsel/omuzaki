@@ -10,6 +10,7 @@
 //! of a second I420 picture, its packets carried beside the colour's in Matroska `BlockAdditional` id 1.
 #![allow(unsafe_code)] // loading libvpx and calling its C functions; each call says why it is sound
 
+pub mod alpha;
 pub mod ffi;
 
 use std::ffi::{CStr, c_int, c_uint, c_void};

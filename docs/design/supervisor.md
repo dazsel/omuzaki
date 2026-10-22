@@ -172,6 +172,17 @@ worker dies, whatever killed it; the spike measured kill to the next process cre
   decode) is a protocol fault: the host kills that worker and restarts it with the reason `Protocol` (§15.1).
 - **Shared memory travels as handles, not names, on Unix:** the host sends each object's descriptor over the
   socketpair with `SCM_RIGHTS` (rustix's safe `sendmsg` and `recvmsg`), so no name needs to exist (§4.3).
+- **A message carries its descriptors** (Unix): the send contract is `send(msg, fds)`, never a bare message.
+  `write_msg_fds` sends the frame's first byte with one `sendmsg` whose control data holds the descriptors
+  (`SCM_RIGHTS`, at most `MAX_FDS = 8` a message) and the rest of the frame with plain writes; the worker's reader uses
+  `recvmsg` with room for `MAX_FDS` descriptors on every read, so a descriptor can never arrive on a read that the
+  framing does not expect, and it attaches the descriptors received with a frame's first byte to that frame. A frame
+  whose `ChannelRef::Fd { position }` entries do not match its received descriptors one to one (a missing position,
+  an extra descriptor, `MSG_CTRUNC`) is a protocol fault (`Protocol`). `Start` carries one descriptor per entry of
+  its `ChannelNames`; `Attach` carries the peer's new object (a restarted tracker's or audio worker's fresh memfd);
+  every other message carries none, and the host's `send` refuses descriptors on them. The latched `Attach` keeps its
+  `OwnedFd`, and every replay sends a fresh `try_clone` of it, so a replay never gives away the latch's own copy. On
+  Windows the list is always empty: the object travels as its section name in the message itself.
 - **No hot loop writes the channel.** A worker's real-time and per-frame loops (the audio callback, the render loop,
   the tracker's inference loop) never do I/O on it: they bump a wait-free counter (`HeartbeatCell::beat`, one relaxed
   add) and push announcements (`Frame`, `SlotFree`) into a small wait-free queue. One **writer thread** per worker,
@@ -183,7 +194,7 @@ worker dies, whatever killed it; the spike measured kill to the next process cre
   showing progress, and the host sees a hang.
 - **Messages** (`omuzaki-stream-api::worker`, §15.2): the worker says `Hello` (kind, protocol version, pid,
   generation) and then `Beat`, `Ready`, `Frame`, `SlotFree`, `Opened`, `Gone`; the host sends `Start`, `Frame`,
-  `SlotFree`, `Keyframe`, `Scene`, `Attach`, `SourceDown`, `SourceUp`, `Stop`.
+  `SlotFree`, `Keyframe`, `Scene`, `Attach`, `Source`, `Stop`.
 - **The handshake,** for every kind: spawn; `Hello`; the host sends `Start` with the generation's shared objects and
   the kind's start parameters (`StartParams`: for an encoder its `EncodeConfig`); then it **replays the worker's
   latched state** (below); the worker attaches, opens what it drives and answers with its kind's reply (an encoder:
@@ -195,10 +206,13 @@ worker dies, whatever killed it; the spike measured kill to the next process cre
   backoff and is logged with its reason, so a config that can never work ends in `Failed` with that reason, not in an
   endless loop. A failure that cannot get better by retrying (a protocol version or generation mismatch on `Hello`,
   an executable that is not ours) is `LaunchFailed { permanent: true }` and makes the worker `Failed` at once.
-- **State messages are latched and replayed; commands are not.** `Scene`, `SourceDown`, `SourceUp` and `Attach` carry
-  state that a worker must have to be correct, so the host keeps the newest of each (per source for `SourceDown` and
-  `SourceUp`, per role for `Attach`) for every worker, whether or not it is up, and sends them all right after
-  `Start` on every spawn. An edit made while the stage is restarting therefore reaches the new stage before its first
+- **State messages are latched and replayed; commands are not.** `Scene`, `Source` and `Attach` carry state that a
+  worker must have to be correct, so the host keeps the newest of each (one current `Source { up }` per source, one
+  `Attach` per role) for every worker, whether or not it is up, and sends them all right after `Start` on every
+  spawn. A source's up or down is one latched value, never a pair of separate down and up messages: with two latches
+  a replay could send a stale `down` after a newer `up` (or keep both and leave the order to chance), and a restarted
+  stage would hold the tracker lost while it is back. With one value the replay always ends in the source's current
+  state. An edit made while the stage is restarting therefore reaches the new stage before its first
   frame. `Frame`, `SlotFree` and `Keyframe` are commands about one generation's objects: while a worker is down they
   are refused with `SendError::Down` so the caller knows (a fresh encoder starts with a keyframe anyway, §10), never
   queued for a generation that will not understand them.
@@ -393,15 +407,15 @@ falling, the life layer driving), and the tracker layer's weight reaches 0 withi
 default) plus one frame. An instant snap would break PF-23's "seamless hand-off; ease to rest".
 
 - **The restart bypasses the grace.** `LostPolicy::grace_s` (0.25 s) exists so a blink of the tracker is not a lost
-  face. A dead tracker is not a blink: on `Restarted` for a tracker, the host sends `SourceDown { source }` to the
-  stage worker, which tells the retarget to skip the grace and start the fade at the next `apply`.
+  face. A dead tracker is not a blink: on `Restarted` for a tracker, the host sends `Source { source, up: false }` to
+  the stage worker, which tells the retarget to skip the grace and start the fade at the next `apply`.
 - **That needs one new input on `Retarget`** (`omuzaki-anim-api`, the Character body area's contract):
   `fn source_lost(&mut self)`, "the source is gone: skip the grace and start the fade at the next `apply`"; the next
   frame with a found face cancels it as today. Without it the stage can only feed `Lost` frames and the hand-off
   starts after the grace, 0.25 s late. It is proposed here and needs that lead's approval as its own small contract
   change before T5 (§16).
-- **When the tracker is back** (`Recovered`), the host sends `SourceUp`; the tracker's first found frame fades its
-  layer back in as after any lost face.
+- **When the tracker is back** (`Recovered`), the host sends `Source { source, up: true }`; the tracker's first
+  found frame fades its layer back in as after any lost face.
 - **The bound #1456 checks:** life layer driving within one stage frame (33 ms at 30 fps) of `Restarting`, and the
   tracker owning the face channels again within `fade_s` + one frame of its first found frame after `Healthy`.
 
@@ -504,7 +518,25 @@ pub fn next_tick(index: u64, deadline: u64, period: FramePeriod, done: u64) -> N
 // j = max(1, ceil((done + min_gap - deadline) / period))
 //   -> { index + j, deadline + j * period, missed j - 1 }
 // so the next deadline is on the grid, after `deadline`, and at least min_gap after `done`.
+
+/// What to do on waking at `woke` for the tick due at grid point `index` (time `deadline`). Pure: no clock read.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Wake { Present, Skip(NextTick) }
+pub fn on_wake(index: u64, deadline: u64, period: FramePeriod, woke: u64) -> Wake;
+// woke < deadline + late_limit            -> Present (late_limit = nanos / 4, rounded down)
+// else j = floor((woke - deadline) / period) + 1
+//                                         -> Skip { index + j, deadline + j * period, missed j }
 ```
+
+**A late wake-up skips its tick.** `next_tick` alone keeps the *deadlines* apart, but the thread can wake late (a
+loaded machine, a slow `sleep`), and a present that starts late is followed by the next one on time: a tick
+presented 30 ms late in a 33 ms period would start 3 ms before the next. So the presenter calls `on_wake` first: a
+wake-up less than a quarter period past its deadline presents; a later one presents nothing, counts the tick (and
+every grid point it slept through) as missed, and sleeps to the next grid point after `woke`. Every present
+therefore starts within a quarter period after its own grid point, and with `next_tick`'s rule consecutive starts are
+at least three quarters of a period apart and every start is at least `min_gap` after the previous completion. A
+full period between actual starts was rejected for the same reason as a full period of gap: a wake-up 0.1 ms late
+would then skip the next grid point, and ordinary scheduler jitter would halve the rate.
 
 **Tests** (in the runtime change), with a 33 ms period (`min_gap` 16.5 ms) and `D` the current deadline:
 
@@ -517,11 +549,14 @@ pub fn next_tick(index: u64, deadline: u64, period: FramePeriod, done: u64) -> N
 | `D + 50` | `D + 99` | 2 | overran a whole period |
 
 Plus: **actual presentations**, not only deadlines: a presenter test on a `FakeClock` with scripted present
-durations (0 to 2.5 periods, 10,000 ticks, seeded) records each present's start and completion and asserts that every
-start is on the grid, every next start is at least `min_gap` after the previous completion, consecutive starts are at
-least a period apart, and with durations under `min_gap` there is no missed tick and the rate is exactly
-`num / den`; the fake output host of §14 presents through the same loop with the real clock. `from_rate` rejects
-`(0, 1)`, `(1, 0)`, `(2000, 1)` and `(1, 2)` and accepts `(30000, 1001)`.
+durations (0 to 2.5 periods) and scripted wake-up delays (0 to 1.5 periods), 10,000 ticks, seeded, records each
+present's grid point, start and completion and asserts that every start is within `late_limit` after its grid point,
+every next start is at least `min_gap` after the previous completion, consecutive starts are at least
+`period - late_limit` apart, consecutive grid points at least a period apart, every skipped tick is counted, and with
+durations under `min_gap` and wake-ups under `late_limit` there is no missed tick and the rate is exactly
+`num / den`; `on_wake` has its own table (on time, `late_limit - 1`, `late_limit`, one and two periods late); the
+fake output host of §14 presents through the same loop with the real clock. `from_rate` rejects `(0, 1)`, `(1, 0)`,
+`(2000, 1)` and `(1, 2)` and accepts `(30000, 1001)`.
 
 ## 13. The Windows half (owner run)
 
@@ -599,13 +634,19 @@ every public item live in the code; these are shapes. `Seconds` and `Clock` are 
 #[non_exhaustive]
 pub enum Scope { Host, Studio }
 
-/// A supervised worker: its supervisor and its index in that supervisor's spec list. Unique across the show, so the
-/// merged status (§11) and `supervisor.restart` never confuse the host's worker 0 with the studio's. The fields are
-/// private: an id is made by a `Monitor`, and one that arrives from outside (deserialized from the local socket or an
-/// op) is checked by every method that takes it, which returns `UnknownWorker` for a wrong scope or index.
+/// A supervised worker: its supervisor, that supervisor's instance and its index in that supervisor's spec list.
+/// Unique across the show, so the merged status (§11) and `supervisor.restart` never confuse the host's worker 0 with
+/// the studio's, and unique across monitors, so an id kept from a monitor that has since been rebuilt (the host
+/// restarted, the show went live again, the studio rebuilt its adapters) never names a worker of the new one. The
+/// fields are private: an id is made by a `Monitor`, and one that arrives from outside (deserialized from the local
+/// socket or an op) is checked by every method that takes it, which returns `UnknownWorker` for a wrong scope,
+/// instance or index.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
-pub struct WorkerId { scope: Scope, index: u16 }
-impl WorkerId { pub fn scope(self) -> Scope; pub fn index(self) -> u16; }
+pub struct WorkerId { scope: Scope, instance: u64, index: u16 }
+impl WorkerId { pub fn scope(self) -> Scope; pub fn instance(self) -> u64; pub fn index(self) -> u16; }
+// `instance` is the monitor's nonce: 64 random bits drawn from the OS at `Monitor::new` (`getrandom`), so two
+// monitors of one process, of one show or of two runs differ except by a 2^-64 chance; never 0, never a counter
+// that a rebuilt monitor would repeat. Status rows and ops show it only inside the id.
 
 /// An id that no worker of this supervisor has.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -690,8 +731,7 @@ pub enum HostMsg {                        // host → worker, on the same channe
     Keyframe,                             // encoder: the next frame is a keyframe
     Scene { rev: u64 },                   // stage: reload the snapshot of that revision (§3, §8)
     Attach { role: ChannelRole, channel: ChannelRef, generation: u32 },  // stage: a peer's new generation (§4.3)
-    SourceDown { source: WorkerId },      // stage: §9
-    SourceUp { source: WorkerId },
+    Source { source: WorkerId, up: bool },  // stage: the source's current state, one latch per source (§4.2, §9)
     Stop,                                 // encoder: flush, send the last packets, exit 0; others: exit 0
 }
 
@@ -702,20 +742,42 @@ pub enum StartParams {
     Tracker { source: String },           // the camera's stable id and the tracker config name
     Audio,
     Encoder { config: EncodeConfig, first_index: u64 },   // first_index continues the take's frame index (§10)
+    Adapter { adapter: String },          // the registered adapter's id; it reads its settings and secrets in-process
 }
+// One variant per `WorkerKind`, checked when the supervisor starts: a spec whose kind and params disagree is
+// `LaunchError::Permanent` from `Supervisor::start`, never a surprise at a respawn. Adapters are studio tasks, never
+// processes (§2), so their params reach the `TaskLauncher` as a value and are never serialized onto a channel; the
+// variant exists so that every launcher takes the same `StartParams` and the monitor treats every kind alike.
 
 /// The shared objects of one worker generation (§4.3).
 pub struct ChannelNames { pub generation: u32, pub entries: Vec<(ChannelRole, ChannelRef)> }
+/// The host's own handle to one object, kept while the generation lives and by the `Attach` latch: an `OwnedFd` on
+/// Unix (sent as a descriptor, §4.2), the section handle and its name on Windows (sent as the name).
+pub struct ChannelHandle { /* cfg(unix): OwnedFd; cfg(windows): OwnedHandle + String */ }
+impl ChannelHandle { pub fn try_clone(&self) -> std::io::Result<ChannelHandle>; }
 /// How one object travels: on Unix as a descriptor sent with the same message (`SCM_RIGHTS`; the number is its
-/// position in that message's descriptor list), on Windows as the section's random name.
+/// position in that message's descriptor list, §4.2), on Windows as the section's random name.
 #[non_exhaustive]
 pub enum ChannelRef { Fd { position: u16 }, Name { name: String } }
 #[non_exhaustive]
 pub enum ChannelRole { Frames, Preview, Tracker, VoiceCues, LiveInputs, Audio, Packets }
 
-/// Length-prefixed postcard framing over any byte stream.
+/// Length-prefixed postcard framing over any byte stream: for messages that carry no handle (every `WorkerMsg`, the
+/// Windows control pipe, the studio's local socket).
 pub fn write_msg<W: Write, M: Serialize>(w: &mut W, msg: &M) -> Result<(), StreamError>;
 pub fn read_msg<R: Read, M: DeserializeOwned>(r: &mut R, buf: &mut Vec<u8>) -> Result<Option<M>, StreamError>; // None at end of stream
+
+/// The most descriptors one message carries (§4.2): a stage's `Start` has the most, one per `ChannelRole`.
+pub const MAX_FDS: usize = 8;
+/// The same framing over a Unix socket, with the message's descriptors attached to its first byte (`SCM_RIGHTS`).
+/// # Errors
+/// `StreamError::Config` for more than `MAX_FDS` descriptors, or for descriptors with a message that carries none.
+#[cfg(unix)]
+pub fn write_msg_fds<M: Serialize>(s: &UnixStream, msg: &M, fds: &[BorrowedFd<'_>]) -> Result<(), StreamError>;
+/// Reads one message and the descriptors that came with it, in order; checks that every `ChannelRef::Fd` position
+/// names one of them and that none is left over, else `StreamError::Protocol`.
+#[cfg(unix)]
+pub fn read_msg_fds<M: DeserializeOwned>(s: &UnixStream, buf: &mut Vec<u8>) -> Result<Option<(M, Vec<OwnedFd>)>, StreamError>;
 ```
 
 ### 15.3 The channels: `omuzaki-shm` (new lib crate)
@@ -855,7 +917,9 @@ pub trait WorkerHandle: Send {
     fn heartbeat(&self) -> &HeartbeatCell;            // set by the handle's reader from `Beat`
     fn try_wait(&mut self) -> Option<ExitInfo>;       // Some once the worker has ended (crash, kill or exit)
     fn kill(&mut self);                               // SIGKILL / TerminateProcess; never waits
-    fn send(&mut self, msg: &HostMsg) -> Result<(), LaunchError>;
+    /// `fds` are the message's descriptors (§4.2): non-empty only for `Start` and `Attach`, always empty on
+    /// Windows and for thread and task handles (which pass the objects themselves).
+    fn send(&mut self, msg: &HostMsg, fds: &[BorrowedFd<'_>]) -> Result<(), LaunchError>;
     fn pid(&self) -> Option<u32>;
     fn revocable(&self) -> bool;                      // true only for thread and task handles (§5)
 }
@@ -881,10 +945,12 @@ impl Supervisor {
     pub fn status(&self) -> Vec<WorkerStatus>;
     pub fn log(&self) -> Vec<RestartRecord>;
     pub fn events(&self) -> std::sync::mpsc::Receiver<HealthEvent>;
-    /// State messages (`Scene`, `SourceDown`, `SourceUp`, `Attach`) are latched per worker and replayed after
-    /// `Start` on every spawn, and Ok even while the worker is down; commands (`Frame`, `SlotFree`, `Keyframe`) to a
-    /// worker that is down are refused with `SendError::Down` (§4.2).
+    /// State messages (`Scene`, `Source`, `Attach`) are latched per worker and replayed after `Start` on every
+    /// spawn, and Ok even while the worker is down; commands (`Frame`, `SlotFree`, `Keyframe`) to a worker that is
+    /// down are refused with `SendError::Down` (§4.2). `Attach` takes its object's handle (`ChannelHandle`: an
+    /// `OwnedFd` on Unix, the section on Windows), which the latch owns and each replay clones.
     pub fn send(&self, id: WorkerId, msg: HostMsg) -> Result<(), SendError>;
+    pub fn attach(&self, id: WorkerId, role: ChannelRole, generation: u32, object: ChannelHandle) -> Result<(), SendError>;
     pub fn restart(&self, id: WorkerId) -> Result<(), UnknownWorker>;   // a person's restart (request_restart)
     /// `Stop` to every worker, kill after `stop_wait`, then wait at most `exit_wait` more; a process still alive after
     /// that is named in the report, its handles are closed and it is left to the job object or the parent-death
@@ -936,7 +1002,27 @@ impl Encoder for RemoteEncoder {
     // A dead or hung worker surfaces as StreamError::Encode; the host makes a fresh RemoteEncoder, with fresh
     // FrameSlots and PacketChannel, for the next generation (§4.3, §10).
 }
+impl RemoteEncoder {
+    /// The frames the dead generation was given and never encoded, oldest first, copied out of its slots, for the
+    /// next generation (below). Call after the worker has ended and its PacketChannel is drained.
+    pub fn unfinished(&mut self) -> Vec<(u64, Image)>;
+}
 ```
+
+**Frames announced to a crashed encoder are requeued, not dropped.** The host wrote every slot and still maps the
+dead generation's `FrameSlots` (the worker only read them), and every packet carries the `pts` of the frame it came
+from (the tick index, §12). So once the worker has ended, the host drains the old `PacketChannel` (complete records
+only; a record the worker was writing when it died is discarded) and every frame it announced whose index has no
+packet is unfinished: encoded or not, its packet never reached the host. Those frames, oldest first, are sent to the
+next generation before the frames that waited in the queue during the gap (§10), the first of them as the forced
+keyframe, and `first_index` is the oldest of them. Nothing is encoded twice (a frame whose packet arrived is done)
+and nothing is lost by the crash. The encoder workers are configured without frame reordering (VP9 in real-time mode
+with `lag_in_frames = 0`, no B-frames), so the unfinished frames are always the newest announced; the rule itself
+does not depend on it.
+The new generation's pool has the same depth as the old one; requeued frames and gap frames that do not fit wait in
+the host's queue, and when that queue is full the newest frame is the one refused, counted under record.md D2's
+`dropped` with the reason `encoder_restart`, never silently. `encoder_restarts` and the requeued count are in the
+take's record.
 
 ### 15.6 The acceptance run (#1456): `tools/chaos`
 

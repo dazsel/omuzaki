@@ -11,14 +11,14 @@
 //! |---|---|---|
 //! | [`service`] | [`StreamService`](service::StreamService): frames from the frame loop fanned out to every output, paced on each output's grid | works |
 //! | [`alpha`] | the exact straight, premultiplied and flattened conversions of D9 | works |
-//! | [`sinks`] | [`sinks::png`] (one file per frame, crash-safe), [`sinks::wav`] (float WAV, header current each second) and [`sinks::webm`] (VP9 with alpha, crash-safe clusters) | works |
-//! | [`vp9`] | VP9 through libvpx loaded at run time, and [`i420`]: straight RGBA to the colour and alpha pictures | works |
+//! | [`sinks`] | [`sinks::png`] (one file per frame, crash-safe), [`sinks::wav`] (float WAV, header current each second) [`sinks::webm`] (VP9 with alpha, crash-safe clusters) and [`sinks::webm_mux`] (the same writer behind the `Muxer` trait) | works |
+//! | [`vp9`] | VP9 through libvpx loaded at run time, behind the `Encoder` trait with its alpha as side data ([`vp9::alpha`]), and [`i420`]: straight RGBA to the colour and alpha pictures | works |
 //! | [`record`] | [`settings`](record::settings), [`take`](record::take) naming and manifest, [`runtime`](record::runtime): the recorder output | works: `WebM` VP9 with alpha, or a PNG sequence |
-//! | [`ops`] | [`record`](ops::record) (`record.start`, `stop`, `status`), [`output`](ops::output) (`output.kinds`, `list`, `start`, `stop`), [`window`](ops::window) | works |
+//! | [`ops`] | [`record`](ops::record) (`record.start`, `stop`, `status`), [`replay`](ops::replay) (`record.replay_start`, `replay_stop`, `save_replay`, `replay_status`), [`output`](ops::output) (`output.kinds`, `list`, `start`, `stop`), [`window`](ops::window) | works |
 //! | [`timeline`] | the [`AudioSource`](timeline::AudioSource) trait recording reads audio through | works |
 //! | [`window`] | the clean window plan | works |
 //! | [`settings_keys`] | the setting keys the stream reads | stub |
-//! | [`replay`] | the replay buffer | stub |
+//! | [`replay`] | the replay buffer: the [`ring`](replay::ring), the disk [`segment`](replay::segment) store, the threaded [`runtime`](replay::runtime) that saves clips by stream copy, its [`settings`](replay::settings) and the stream service's [`control`](replay::control) | works |
 //! | `ffmpeg` (feature `ffmpeg`) | `FFmpeg` encoders | stub |
 //! | [`watchdog`] | the [`policy`](watchdog::policy) (health, deadlines, restart budget, log) and the [`supervisor`](watchdog::supervisor) running it over process and thread workers | works |
 //! | `testing` (feature `testing`, or tests) | a fake encoder, a memory muxer and a scripted audio source | works |
@@ -28,7 +28,9 @@
 #![deny(missing_docs)]
 
 pub mod alpha;
+pub mod feed;
 pub mod i420;
+pub mod live_hold;
 pub mod ops;
 pub mod record;
 pub mod replay;

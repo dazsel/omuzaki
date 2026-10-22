@@ -5218,6 +5218,7 @@ dependencies = [
  "omuzaki-link-build",
  "omuzaki-measure",
  "omuzaki-metrics-api",
+ "omuzaki-ops",
  "omuzaki-ops-api",
  "omuzaki-render",
  "omuzaki-render-api",
@@ -5314,13 +5315,17 @@ dependencies = [
  "omuzaki-settings-mock",
  "omuzaki-stream",
  "omuzaki-stream-api",
+ "omuzaki-update-api",
+ "omuzaki-update-mock",
  "proptest",
+ "rustix 1.1.5",
  "schemars",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
  "toml",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5582,6 +5587,8 @@ dependencies = [
  "omuzaki-anim",
  "omuzaki-anim-api",
  "omuzaki-anim-mock",
+ "omuzaki-audio-api",
+ "omuzaki-audio-engine",
  "omuzaki-camera-mf",
  "omuzaki-char",
  "omuzaki-char-api",
@@ -5593,6 +5600,7 @@ dependencies = [
  "omuzaki-face-api",
  "omuzaki-http",
  "omuzaki-l10n-api",
+ "omuzaki-obs",
  "omuzaki-ops",
  "omuzaki-ops-api",
  "omuzaki-ops-mock",
@@ -5610,6 +5618,7 @@ dependencies = [
  "omuzaki-track-net",
  "omuzaki-ui-api",
  "omuzaki-ui-mock",
+ "omuzaki-vcam",
  "regex",
  "rustix 1.1.5",
  "schemars",
@@ -5692,9 +5701,16 @@ dependencies = [
 name = "omuzaki-vts"
 version = "0.0.0"
 dependencies = [
+ "criterion",
+ "omuzaki-anim-api",
+ "omuzaki-core",
+ "omuzaki-secrets-api",
+ "omuzaki-secrets-mock",
+ "schemars",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "toml",
  "tungstenite",
 ]
 

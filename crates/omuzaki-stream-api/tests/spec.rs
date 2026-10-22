@@ -120,12 +120,40 @@ fn a_codec_of_the_wrong_kind_is_refused() {
         assert!(StreamSpec::data(codec, "x", TB).is_err(), "{codec:?} on data");
     }
     // A spec or config edited after construction is caught by validate().
-    let mut spec = StreamSpec::video(CodecId::H264, "x", TB, video()).unwrap();
+    let mut spec = StreamSpec::video(CodecId::Vp9Alpha, "x", TB, video()).unwrap();
     spec.codec = CodecId::Opus;
     assert!(spec.validate().is_err());
-    let mut cfg = EncodeConfig::new(video(), CodecId::H264).unwrap();
+    let mut cfg = EncodeConfig::new(video(), CodecId::Vp9Alpha).unwrap();
     cfg.codec = CodecId::PcmF32;
     assert!(cfg.validate().is_err());
+}
+
+#[test]
+fn alpha_is_refused_on_a_codec_that_cannot_carry_it() {
+    let opaque = VideoSpec { alpha: AlphaKind::None, ..video() };
+    for alpha in [AlphaKind::Straight, AlphaKind::Premultiplied] {
+        let with_alpha = VideoSpec { alpha, ..video() };
+        // H.264 is the one video codec without alpha.
+        let refused = StreamSpec::video(CodecId::H264, "x", TB, with_alpha).unwrap_err();
+        assert_eq!(
+            refused,
+            StreamError::Config(format!("H264 carries no alpha, but the stream asks for {alpha:?} alpha"))
+        );
+        assert!(matches!(EncodeConfig::new(with_alpha, CodecId::H264), Err(StreamError::Config(_))));
+        // Edited after construction, validate() catches it.
+        let mut spec = StreamSpec::video(CodecId::H264, "x", TB, opaque).unwrap();
+        spec.video = Some(with_alpha);
+        assert!(spec.validate().is_err(), "{alpha:?}");
+        let mut cfg = EncodeConfig::new(opaque, CodecId::H264).unwrap();
+        cfg.video.alpha = alpha;
+        assert!(cfg.validate().is_err(), "{alpha:?}");
+        for codec in [CodecId::ProRes4444, CodecId::Vp9Alpha, CodecId::Png] {
+            assert!(StreamSpec::video(codec, "x", TB, with_alpha).is_ok(), "{codec:?} {alpha:?}");
+            assert!(EncodeConfig::new(with_alpha, codec).is_ok_and(|c| c.validate().is_ok()), "{codec:?} {alpha:?}");
+        }
+    }
+    assert!(StreamSpec::video(CodecId::H264, "x", TB, opaque).is_ok());
+    assert!(EncodeConfig::new(opaque, CodecId::H264).is_ok());
 }
 
 /// An output that reads the GPU handles as a `u32` and remembers it.

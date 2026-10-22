@@ -4,11 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-/// A monotonic clock: the time since an arbitrary start, never going backwards.
-pub trait Clock: Send + Sync {
-    /// The time since the clock's start.
-    fn now(&self) -> Duration;
-}
+pub use crate::clock::Clock;
 
 /// A clock that moves only when a test calls [`advance`](Self::advance). Clones share one time.
 #[derive(Debug, Clone, Default)]

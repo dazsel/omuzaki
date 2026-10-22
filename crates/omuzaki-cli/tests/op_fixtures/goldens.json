@@ -1,0 +1,10 @@
+{
+  "about": "A golden manifest for `kit` with its shots set and nothing blessed yet (blessing renders, which the fixture can't): what `render.golden.check` dry-runs against.",
+  "base": "character-variant",
+  "steps": [
+    {
+      "op": "render.golden.set_scene",
+      "args": { "character": "kit", "scene": "front", "shot": { "framing": "full", "size": [128, 192] } }
+    }
+  ]
+}

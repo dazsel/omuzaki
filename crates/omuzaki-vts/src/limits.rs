@@ -97,6 +97,12 @@ impl ParamValue {
     pub fn get(self) -> f64 {
         self.0
     }
+
+    /// `value` clamped into the range, and 0 for NaN: for values computed every frame, where a refusal helps nobody.
+    #[must_use]
+    pub fn saturating(value: f64) -> Self {
+        if value.is_nan() { Self(0.0) } else { Self(value.clamp(-PARAM_VALUE_LIMIT, PARAM_VALUE_LIMIT)) }
+    }
 }
 
 impl TryFrom<f64> for ParamValue {
