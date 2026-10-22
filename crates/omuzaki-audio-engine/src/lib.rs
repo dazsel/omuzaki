@@ -7,7 +7,9 @@
 //! | [`backend`] | [`CpalBackend`](backend::CpalBackend): devices and streams through cpal |
 //! | [`engine`] | [`LiveEngine`](engine::LiveEngine): the control side, bindings, streams, taps, feeds, status |
 //! | `executor` | the real-time graph run on the clock device's callback |
-//! | [`dsp`] | the 16 kHz decimator, the edge resampler, the meters |
+//! | `mix` | the mixer core both run: buses, chains, faders, sends, ducking, outputs |
+//! | [`offline`] | [`OfflineMix`](offline::OfflineMix): the mixer core rendering offline (`OfflineRender`) |
+//! | [`dsp`] | the 16 kHz decimator, the edge resampler, the meters, the hold-over delay |
 //! | [`ops`] | `audio.devices`, `audio.mic`, `audio.status`, `audio.meters` |
 //!
 //! The executor follows the contract's real-time rules: on the audio thread nothing locks (it takes its own state with
@@ -17,9 +19,12 @@ pub mod backend;
 pub mod dsp;
 pub mod engine;
 mod executor;
+mod mix;
+pub mod offline;
 pub mod ops;
 
 pub use backend::CpalBackend;
 pub use engine::LiveEngine;
+pub use offline::OfflineMix;
 
 omuzaki_core::define_link!();

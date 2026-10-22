@@ -1,7 +1,7 @@
 //! The engine's small signal pieces: the 3:1 speech decimator, the edge resampler and the meters. All are `Copy` state
 //! or fixed buffers made on the control thread; nothing here allocates once made.
 
-use omuzaki_audio_api::node::SAMPLE_RATE;
+use omuzaki_audio_api::node::{BlockMut, SAMPLE_RATE};
 use omuzaki_audio_api::report::Meters;
 
 /// Taps of the 48 → 16 kHz decimator: odd, so its group delay is a whole number of samples (64, about 1.33 ms).
@@ -134,6 +134,46 @@ impl Resampler {
             self.position -= 1.0;
             self.last = next;
         }
+    }
+}
+
+/// A delay of a node's latency, run in its place while it is disabled, so switching a node off never shifts its bus
+/// in time. Its history is allocated on the control thread; processing allocates nothing.
+#[derive(Clone, Debug)]
+pub struct HoldDelay {
+    /// One history per channel; `history[c][position]` is the oldest sample, the next to leave.
+    history: Vec<Vec<f32>>,
+    position: usize,
+}
+
+impl HoldDelay {
+    /// A delay of `latency` samples on `channels` channels, holding silence.
+    #[must_use]
+    pub fn new(latency: u32, channels: usize) -> Self {
+        let length = usize::try_from(latency).unwrap_or(0);
+        Self { history: vec![vec![0.0; length]; channels], position: 0 }
+    }
+
+    /// Replaces each sample of `block` with the one `latency` samples before it.
+    pub fn process(&mut self, block: &mut BlockMut<'_>) {
+        let length = self.history.first().map_or(0, Vec::len);
+        if length == 0 {
+            return;
+        }
+        let start = self.position;
+        let mut channel = 0;
+        let history = &mut self.history;
+        block.for_each_channel(|samples| {
+            if let Some(history) = history.get_mut(channel) {
+                let mut at = start;
+                for sample in samples.iter_mut() {
+                    std::mem::swap(sample, &mut history[at]);
+                    at = (at + 1) % length;
+                }
+            }
+            channel += 1;
+        });
+        self.position = (start + block.frames()) % length;
     }
 }
 

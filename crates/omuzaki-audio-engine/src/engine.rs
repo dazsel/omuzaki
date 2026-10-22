@@ -20,26 +20,26 @@ use omuzaki_audio_api::backend::{AudioBackend, BackendError, DeviceStream, Strea
 use omuzaki_audio_api::clock::{ClockSnapshot, EngineClock};
 use omuzaki_audio_api::device::{Binding, DeviceId, DeviceInfo, DeviceState, Direction, ProfileStore};
 use omuzaki_audio_api::engine::{AudioEngine, AudioError};
-use omuzaki_audio_api::graph::{GraphSpec, MIC_BUS, MONITOR_OUT_ROLE, MicMode, SourceRef};
+use omuzaki_audio_api::graph::{GraphSpec, MIC_BUS, MONITOR_OUT_ROLE, MicMode};
 use omuzaki_audio_api::ids::{BusId, DeviceRole, NodeId};
-use omuzaki_audio_api::node::{MAX_BLOCK, NodeError, ParamIndex, SAMPLE_RATE, node_kind};
+use omuzaki_audio_api::node::{MAX_BLOCK, ParamIndex, SAMPLE_RATE, node_kind};
 use omuzaki_audio_api::report::{
     AudioEvent, AudioEvents, AudioStatus, BridgeStatus, BusLatency, ClockSource, EventSender, GraphReport,
     LatencyEstimate, LeavingTap, MeterCell, MeterPoint, Meters, TapDrops, event_queue,
 };
 use omuzaki_audio_api::ring::ring;
-use omuzaki_audio_api::semantics::{FaderRamp, db_to_gain};
+use omuzaki_audio_api::semantics::db_to_gain;
 use omuzaki_audio_api::tap::{
     DropPolicy, FeedRequest, FeedWriter, TapHandle, TapInfo, TapPoint, TapRate, TapReader, TapRequest, TapSink,
     VoiceRouting, VoiceSetup,
 };
 use omuzaki_core::time::Seconds;
 
-use crate::dsp::{Decimator, MeterState, Resampler};
+use crate::dsp::{Decimator, Resampler};
 use crate::executor::{
-    Bridge, BridgeWriter, Bus, Command, Compiled, Executor, Feed, Garbage, Link, MAX_ENTRIES, SendState, Shared,
-    Source, Tap, TapLink, bus_buffers, lock,
+    Bridge, BridgeWriter, Command, Executor, Feed, Garbage, MAX_ENTRIES, Shared, Tap, TapLink, lock,
 };
+use crate::mix::Mix;
 
 /// The callback size the engine asks devices for (design section 3.2).
 pub const BUFFER_FRAMES: u32 = 256;
@@ -155,7 +155,7 @@ impl LiveEngine {
         let (garbage_tx, garbage) = sync_channel(4 * MAX_ENTRIES);
         let clock = Arc::new(EngineClock::new(ClockSnapshot::nominal(SAMPLE_RATE)));
         let shared = Arc::new(Shared::default());
-        let empty = Box::new(Compiled { generation: 0, buses: Vec::new() });
+        let empty = Box::new(Mix::empty(0));
         let executor = Executor::new(empty, command_rx, garbage_tx, Arc::clone(&clock), Arc::clone(&shared));
         let inner = Arc::new(Inner {
             backend,
@@ -475,71 +475,6 @@ impl Inner {
     }
 }
 
-/// Each bus's node ids, in chain order, as compiled.
-type NodeIds = Vec<(BusId, Vec<NodeId>)>;
-
-/// Compiles `spec` for the executor: validated, buses in processing order, nodes created with every buffer they need.
-fn compile(spec: &GraphSpec, generation: u64, mic_mode: MicMode) -> Result<(Compiled, NodeIds), AudioError> {
-    spec.validate_registered()?;
-    let order = spec.bus_order()?;
-    let position: BTreeMap<&BusId, usize> = order.iter().enumerate().map(|(i, id)| (id, i)).collect();
-    let mut buses = Vec::with_capacity(order.len());
-    let mut index = Vec::with_capacity(order.len());
-    for id in &order {
-        let Some(b) = spec.bus(id) else { return Err(internal(format!("bus `{id}` vanished while compiling"))) };
-        let mut chain = Vec::with_capacity(b.chain.len());
-        for n in &b.chain {
-            let kind = node_kind(&n.kind)
-                .ok_or_else(|| AudioError::Node(NodeError::BadConfig(format!("unknown node kind `{}`", n.kind))))?;
-            let info = kind.info();
-            let mut node = kind.create(&n.config, b.channels)?;
-            for (name, value) in &n.params {
-                if let Some(param) = info.param_index(name) {
-                    node.set_param(param, *value);
-                }
-            }
-            chain.push(Link { node, enabled: n.enabled });
-        }
-        let is_mic = id.as_str() == MIC_BUS;
-        let gain = db_to_gain(b.gain_db);
-        let cut = b.muted || (is_mic && mic_mode != MicMode::Live);
-        let sends = b
-            .sends
-            .iter()
-            .filter_map(|s| {
-                let to = *position.get(&s.to)?;
-                let gain = db_to_gain(s.gain_db);
-                Some(SendState { to, gain, pre_fader: s.pre_fader, ramp: FaderRamp::new(gain) })
-            })
-            .collect();
-        let sources = b
-            .sources
-            .iter()
-            .map(|s| match s {
-                SourceRef::Device { role } => Source::Device(role.clone()),
-                SourceRef::Feed { id } => Source::Feed(id.clone()),
-                SourceRef::Player { .. } => Source::Silent,
-            })
-            .collect();
-        index.push((id.clone(), b.chain.iter().map(|n| n.id.clone()).collect()));
-        buses.push(Bus {
-            id: id.clone(),
-            channels: b.channels.count(),
-            is_mic,
-            sources,
-            chain,
-            gain,
-            muted: b.muted,
-            ramp: FaderRamp::new(if cut { 0.0 } else { gain }),
-            sends,
-            buf: bus_buffers(),
-            meter: Arc::new(MeterCell::new()),
-            meter_state: MeterState::default(),
-        });
-    }
-    Ok((Compiled { generation, buses }, index))
-}
-
 /// Where a requested tap reads, and the voice consumer when it was asked for by use.
 fn resolve_tap(
     control: &Control,
@@ -670,7 +605,7 @@ impl AudioEngine for LiveEngine {
     fn apply(&self, graph: &GraphSpec) -> Result<(), AudioError> {
         let mut control = lock(&self.inner.control);
         let generation = control.generation + 1;
-        let (compiled, order) = compile(graph, generation, control.mic_mode)?;
+        let (compiled, order) = Mix::compile(graph, generation, control.mic_mode)?;
         let meters = compiled.buses.iter().map(|b| (b.id.clone(), Arc::clone(&b.meter))).collect();
         self.inner.send(Command::Swap(Box::new(compiled)))?;
         control.generation = generation;
