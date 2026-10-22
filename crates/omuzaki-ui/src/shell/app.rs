@@ -551,6 +551,12 @@ impl Shell {
                 from_disk.then(|| self.compact.get(&key).cloned().or_else(|| self.stored(&key, &derived))).flatten();
             stored.map_or(derived, |l| l.without(&rail.iter().map(|p| p.id).collect::<Vec<_>>()))
         };
+        // The panel the person was working in stays open when the fold changes: it becomes the drawer when its dock
+        // folds into the rail, and the tab in front, focused, when it is docked again.
+        let front = self.focus.clone().or_else(|| self.drawer.clone());
+        if let Some(front) = front.as_deref().filter(|f| !shown.contains(f) && rail.iter().any(|p| p.id == *f)) {
+            self.drawer = Some(front.to_owned());
+        }
         // What was focused, maximised or open as a drawer may not be in the arrangement that is shown now.
         if self.focus.as_deref().is_some_and(|f| !shown.contains(f)) {
             self.focus = None;
@@ -559,7 +565,11 @@ impl Shell {
         if self.drawer.as_deref().is_some_and(|d| !rail.iter().any(|p| p.id == d)) {
             self.drawer = None;
         }
-        let tree = shown.to_tree(egui::Id::new(("shell_tree", workspace.id)));
+        let mut tree = shown.to_tree(egui::Id::new(("shell_tree", workspace.id)));
+        if let Some(front) = front.filter(|f| shown.contains(f)) {
+            tree.make_active(|_, tile| matches!(tile, Tile::Pane(PanelId(panel)) if *panel == front));
+            self.focus = Some(front);
+        }
         self.views[self.active] = Some(View { saved, shown, tree, fold, rail });
     }
 
@@ -719,7 +729,17 @@ impl Shell {
             let layout = view.shown.with_panel(id, anchor, def.region == Region::Left);
             let key = egui::Id::new(("shell_tree", self.workspaces[self.active].id));
             view.tree = layout.to_tree(key);
+            let folded = view.fold != Fold::NONE && !view.saved.contains(id);
+            let saved = view.saved.clone();
             self.record(&layout);
+            // A smaller window keeps its arrangement apart from the full-size one, so the panel joins that too: a resize
+            // that changes the fold builds the view again from it.
+            if folded {
+                let anchor = saved.panels().into_iter().find(|p| {
+                    self.registry.panel(p).is_some_and(|d| d.region == def.region && d.kind != PanelKind::Primary)
+                });
+                self.record_full(&saved.with_panel(id, anchor, def.region == Region::Left));
+            }
         }
         if let Some(view) = self.views.get_mut(self.active).and_then(Option::as_mut) {
             view.tree.make_active(|_, tile| matches!(tile, Tile::Pane(PanelId(panel)) if panel == id));
@@ -732,15 +752,24 @@ impl Shell {
     pub fn close_panel(&mut self, id: &str) {
         let Some(&workspace) = self.workspaces.get(self.active) else { return };
         let Some(view) = self.views.get_mut(self.active).and_then(Option::as_mut) else { return };
-        if !view.shown.contains(id) {
-            return;
+        // A smaller window's arrangement is kept apart from the full-size one (and a folded left dock shows neither),
+        // so the panel leaves both: a resize that changes the fold builds the view again from the full-size one.
+        let saved = (view.fold != Fold::NONE && view.saved.contains(id)).then(|| view.saved.without(&[id]));
+        if view.shown.contains(id) {
+            let layout = view.shown.without(&[id]);
+            if layout.contains(id) {
+                return;
+            }
+            view.tree = layout.to_tree(egui::Id::new(("shell_tree", workspace.id)));
+            self.record(&layout);
         }
-        let layout = view.shown.without(&[id]);
-        if layout.contains(id) {
-            return;
+        if let Some(saved) = saved.filter(|l| !l.contains(id)) {
+            self.record_full(&saved);
+            let rail = self.views.get(self.active).and_then(Option::as_ref).map(|v| self.rail_of(&v.saved));
+            if let (Some(rail), Some(view)) = (rail, self.views.get_mut(self.active).and_then(Option::as_mut)) {
+                view.rail = rail;
+            }
         }
-        view.tree = layout.to_tree(egui::Id::new(("shell_tree", workspace.id)));
-        self.record(&layout);
         if self.focus.as_deref() == Some(id) {
             self.focus = None;
         }
