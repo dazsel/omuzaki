@@ -32,12 +32,13 @@ pub enum Body {
 }
 
 impl Body {
-    /// The pose the body's meshes were made in: what a performer layers onto (decision 0014 §4).
+    /// The pose a performer layers onto: the bind the body's meshes were made in (decision 0014 §4), with an imported
+    /// avatar's T-pose arms lowered to hang at ease ([`AvatarStage::base_pose`](crate::avatar::AvatarStage::base_pose)).
     #[must_use]
     pub fn base_pose(&self) -> HumanoidPose {
         match self {
             Self::Kit(built) => built.rig.bind,
-            Self::Avatar(avatar) => avatar.bind,
+            Self::Avatar(avatar) => crate::avatar::ease::at_ease(&avatar.bind),
         }
     }
 

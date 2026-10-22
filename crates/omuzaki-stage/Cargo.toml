@@ -98,6 +98,11 @@ harness = false
 name = "perform"
 harness = false
 
+# The live loop's frame times on a real GPU against the spec §10 budgets: the kit character and its imported VRM.
+[[example]]
+name = "live_times"
+required-features = ["wgpu"]
+
 [lints]
 workspace = true
 

@@ -224,6 +224,13 @@ model as authored and every pose, clip and retarget means the same as on a built
 rest (ADR 0014: its azimuth is read from the rig, never assumed), with an info finding when it is more than 10° off
 the spec's 45° between ±X and +Z. A correction above 10° is an info finding (`avatar.rest_normalised`).
 
+**A T-pose model stands at ease** (2026-10-22). "As authored" is wrong for one case: a model authored in the T-pose,
+which is every VRoid and UniVRM file, would perform live with its arms straight out. The stage's base pose (what the
+performer, the life layer and stills layer onto) is `bind` with each arm that lies within 20° of the horizontal lowered
+to hang 60° below it, as the kit's A-pose hangs, and the elbow bent 10° forward (`omuzaki-stage` `avatar::ease`). An
+arm authored hanging keeps its pose, so an A-pose model still stands exactly as authored. VSeeFace and VTube Studio
+lower such a model's arms the same way.
+
 **Inverse bind matrices are per mesh.** The converter keeps each skin's matrices with the mesh that uses it, aligned
 with its `joint_bones`; `Skinner` multiplies by them per joint run.
 

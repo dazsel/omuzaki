@@ -1,0 +1,381 @@
+//! The live loop's frame times (spec v3 §10): `cargo run -p omuzaki-stage --features wgpu --release --example
+//! live_times -- [--character kit|vrm|both] [--size 1920x1080] [--fps 30] [--warmup 20] [--frames 3000] [--unpaced]
+//! [--camera bust|full|face] [--software] [--out DIR]`.
+//!
+//! It runs the studio's live path from start to finish, with nothing stood in:
+//! - a project with the kit's default character, made the way `character.create` makes it (template `standard`, seed
+//!   7: the real body, head and hair generators), and the same character exported to VRM 1.0 and imported back, which is
+//!   the bring-your-own-model path without a third-party file;
+//! - the default scene, created by `stage.create_scene` (the studio light rig, its ground and backdrop), resolved on the
+//!   body's landmarks and opened on its `bust` camera (`--camera` picks another): the face and upper body, as §10's
+//!   budget scene frames them;
+//! - the body staged with its face (the production `FaceRig::standard`), and the one live loop (`LiveStage`) fed by a
+//!   scripted webcam through `LiveInput`: the real retarget, life layer and animator, the rig and spring bones, the face
+//!   painter, the frame-budget scheduler and the renderer;
+//! - paced at `--fps` (§10 measures at 30), warmed up for `--warmup` seconds, then `--frames` recorded.
+//!
+//! Printed per character, as mean, p50, p95, p99 and maximum:
+//! - `gpu.frame`: the GPU time of every pass but face paint, from timestamp queries, against `budget::LIVE_GPU`;
+//! - `gpu.face_paint`: the `paint_textures` pass on the frames that ran it, against `budget::FACE_PAINT_GPU`;
+//! - the frame thread: the wall time of `LiveStage::frame` (performer, stage, face and the renderer's recording), split
+//!   into the renderer's recording (with a CPU face raster, when the GPU one can't run) and the rest (the performer,
+//!   the stage and any wait for the GPU), against the frame period;
+//! - the cold half (`LiveStage::service`) the loop runs after each frame, and every step the scheduler took.
+//!
+//! The frame thread is timed with a stopwatch, which §10 does not accept for a gating CPU number (it asks for the OS's
+//! CPU-time counters): read it as the frame's deadline, not as `cpu.total`. Tracking (`track.face`) and the
+//! camera-to-photon latency need a real camera and are not measured here. `--software` runs on lavapipe or WARP, which
+//! proves the path runs and is never a timing machine. `--out DIR` writes each character's last frame as a PNG.
+//!
+//! `WGPU_ADAPTER_NAME` and `WGPU_BACKEND` pick the GPU, as for every program built on the renderer.
+
+// A benchmark's statistics use small counts in float maths; the casts are exact enough.
+#![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+
+#[path = "../tests/avatar/kit.rs"]
+mod kit;
+#[path = "../tests/live/support.rs"]
+mod support;
+
+use std::collections::BTreeMap;
+use std::error::Error;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use omuzaki_avatar_api::def::{AvatarDef, AvatarSource, SourceFormat};
+use omuzaki_char::ops::character::create::CharacterCreate;
+use omuzaki_char_api::{BuildServices, CharId, Quality as BuildQuality, RegistryBuilder};
+use omuzaki_core::glam::{Mat4, UVec2};
+use omuzaki_core::time::{FakeClock, Seconds};
+use omuzaki_doc_api::DocWrite;
+use omuzaki_doc_mock::MemDoc;
+use omuzaki_ops_api::{Actor, Mode, Op, OpCtx};
+use omuzaki_render::{AdapterPreference, HeadlessOptions, WgpuRenderer};
+use omuzaki_render_api::{AlphaEncoding, Camera, Pass, Quality, Renderer, Scene, TargetDesc, budget};
+use omuzaki_stage::UploadOptions;
+use omuzaki_stage::body::{Body, BodyServices, load_body};
+use omuzaki_stage::frame::StageClock;
+use omuzaki_stage::frame::face::FaceRig;
+use omuzaki_stage::ops::scene::create::CreateScene;
+use omuzaki_stage::perform::STEP_HZ;
+use omuzaki_stage::perform::host::PerformHost;
+use omuzaki_stage::perform::input::{InputHost, LiveInput, NoPrompt, SourceKind, SourceSlot};
+use omuzaki_stage::perform::live::LiveStage;
+use omuzaki_stage::scene::default::scene_for;
+use omuzaki_stage::scene::resolve::{CheckedScene, Figure, ResolvedScene};
+use omuzaki_stage::stages::{AnyStage, FrameLoop};
+use omuzaki_store_api::Store;
+use omuzaki_store_mock::MemStore;
+use omuzaki_track_api::camera::CameraId;
+use omuzaki_track_api::tracker::TrackerConfig;
+use serde_json::json;
+
+use support::{Cameras, face_for, performer};
+
+/// The kit character's id in the project, and its imported copy's.
+const KIT: &str = "kit";
+const VRM: &str = "kit_vrm";
+
+// One flag per switch of the command line.
+#[allow(clippy::struct_excessive_bools)]
+struct Args {
+    characters: Vec<&'static str>,
+    size: UVec2,
+    fps: f64,
+    warmup: f64,
+    frames: usize,
+    paced: bool,
+    camera: String,
+    software: bool,
+    out: Option<PathBuf>,
+}
+
+fn parse() -> Result<Args, Box<dyn Error>> {
+    let mut args = Args {
+        characters: vec![KIT, VRM],
+        size: UVec2::new(1920, 1080),
+        fps: 30.0,
+        warmup: 20.0,
+        frames: 3000,
+        paced: true,
+        camera: "bust".to_owned(),
+        software: false,
+        out: None,
+    };
+    let mut it = std::env::args().skip(1);
+    while let Some(flag) = it.next() {
+        let mut value = || it.next().ok_or_else(|| format!("{flag} needs a value"));
+        match flag.as_str() {
+            "--character" => {
+                args.characters = match value()?.as_str() {
+                    "kit" => vec![KIT],
+                    "vrm" => vec![VRM],
+                    "both" => vec![KIT, VRM],
+                    other => return Err(format!("--character is kit, vrm or both, not {other}").into()),
+                }
+            }
+            "--size" => {
+                let v = value()?;
+                let (w, h) = v.split_once('x').ok_or("--size is WIDTHxHEIGHT")?;
+                args.size = UVec2::new(w.parse()?, h.parse()?);
+            }
+            "--fps" => args.fps = value()?.parse()?,
+            "--warmup" => args.warmup = value()?.parse()?,
+            "--frames" => args.frames = value()?.parse()?,
+            "--unpaced" => args.paced = false,
+            "--camera" => args.camera = value()?,
+            "--software" => args.software = true,
+            "--out" => args.out = Some(PathBuf::from(value()?)),
+            other => return Err(format!("unknown flag {other}").into()),
+        }
+    }
+    if !(args.fps > 0.0 && args.fps <= f64::from(STEP_HZ)) {
+        return Err(format!("--fps is above 0 and at most the performer's {STEP_HZ} steps a second").into());
+    }
+    Ok(args)
+}
+
+/// The project: the kit character as `character.create` makes it, the same character as an imported VRM, and the
+/// default scene as `stage.create_scene` writes it, casting the kit.
+fn project(clock: &FakeClock) -> Result<(MemDoc, MemStore), Box<dyn Error>> {
+    let mut doc = MemDoc::from_value(json!({}));
+    let actor = Actor::Person { name: "budget".to_owned() };
+    let create: CharacterCreate =
+        serde_json::from_value(json!({ "id": KIT, "name": "Kit", "template": "standard", "seed": 7 }))?;
+    let patch = create.plan(&OpCtx::new(&doc, &actor, clock))?.patch;
+    doc.apply(&patch)?;
+
+    let store = MemStore::new();
+    let build = BuildServices::default();
+    let services = BodyServices::new(&RegistryBuilder, &build, &store, omuzaki_render_api::MtoonSupport::NONE, clock);
+    let Body::Kit(character) = load_body(&doc, &services, &CharId::new(KIT)?, None, BuildQuality::Live)? else {
+        return Err("the kit character loaded as an import".into());
+    };
+    let hash = store.put(&kit::vrm_bytes(&character), kit::provenance())?;
+    let def = AvatarDef::new(AvatarSource::new(hash, SourceFormat::Vrm1, "kit.vrm"));
+    let mut root = doc.root().clone();
+    root["characters"][VRM] = json!({ "avatar": serde_json::to_value(&def)? });
+    root["project"]["default_character"] = json!(KIT);
+    let mut doc = MemDoc::from_value(root);
+
+    let scene: CreateScene = serde_json::from_value(json!({ "id": "main" }))?;
+    let patch = scene.plan(&OpCtx::new(&doc, &actor, clock))?.patch;
+    doc.apply(&patch)?;
+    Ok((doc, store))
+}
+
+/// What one character's run measured, in milliseconds per frame.
+#[derive(Default)]
+struct Samples {
+    gpu_frame: Vec<f64>,
+    gpu_paint: Vec<f64>,
+    gpu_passes: Vec<(Pass, f64)>,
+    frame: Vec<f64>,
+    recording: Vec<f64>,
+    service: Vec<f64>,
+    late: usize,
+    changes: Vec<String>,
+    draw_calls: u32,
+    triangles: u64,
+}
+
+fn ms(s: Seconds) -> f64 {
+    s.0 * 1000.0
+}
+
+fn percentile(sorted: &[f64], p: f64) -> f64 {
+    sorted.get(((sorted.len() as f64 - 1.0) * p).round() as usize).copied().unwrap_or(0.0)
+}
+
+fn summary(label: &str, mut values: Vec<f64>, budget: Option<f64>) {
+    if values.is_empty() {
+        println!("  {label:<22} no samples");
+        return;
+    }
+    values.sort_by(f64::total_cmp);
+    let mean = values.iter().sum::<f64>() / values.len() as f64;
+    let p95 = percentile(&values, 0.95);
+    let verdict =
+        budget.map_or(String::new(), |b| format!("   budget {b:.2} ms: {}", if p95 <= b { "within" } else { "OVER" }));
+    println!(
+        "  {label:<22} mean {mean:>7.3}  p50 {:>7.3}  p95 {p95:>7.3}  p99 {:>7.3}  max {:>7.3} ms  ({} samples){verdict}",
+        percentile(&values, 0.5),
+        percentile(&values, 0.99),
+        values.last().copied().unwrap_or(0.0),
+        values.len(),
+    );
+}
+
+/// Runs character `id` live and records its frames.
+// A benchmark reads top to bottom: setup, warm-up and measuring loop.
+#[allow(clippy::too_many_lines)]
+fn measure(
+    renderer: &mut WgpuRenderer,
+    doc: &MemDoc,
+    store: &MemStore,
+    clock: &FakeClock,
+    id: &str,
+    args: &Args,
+) -> Result<Samples, Box<dyn Error>> {
+    let id = CharId::new(id)?;
+    let (_, mut scene) = scene_for(doc, None)?;
+    let member = scene.cast.values_mut().next().ok_or("the default scene casts nobody")?;
+    member.character = id.clone();
+    let build = BuildServices::default();
+    let mtoon = renderer.capabilities().mtoon;
+    let services = BodyServices::new(&RegistryBuilder, &build, store, mtoon, clock);
+    let body = load_body(doc, &services, &id, None, BuildQuality::Live)?;
+    let (member, cast) = scene.cast.iter().next().ok_or("the default scene casts nobody")?;
+    let figure = Figure::new(cast, body.landmarks()?);
+    let figures = BTreeMap::from([(member.clone(), figure)]);
+    let mut resolved = ResolvedScene::new();
+    let aspect = args.size.x as f32 / args.size.y as f32;
+    resolved.resolve_into(CheckedScene::new(&scene)?, &figures, aspect)?;
+    let camera = resolved.cameras.iter().position(|(camera, _)| camera.as_str() == args.camera);
+    resolved.active = Some(camera.ok_or_else(|| format!("the default scene has no `{}` camera", args.camera))?);
+
+    let base = body.base_pose();
+    let has_face = matches!(&body, Body::Kit(character) if character.face.is_some());
+    let target = renderer.create_target(&TargetDesc { size: args.size, alpha: AlphaEncoding::Straight })?;
+    let mut stage = body.stage(
+        renderer,
+        UploadOptions::default(),
+        Scene::new(Camera::default()),
+        target,
+        Quality::live(),
+        StageClock::live(),
+    )?;
+    if let (AnyStage::Kit(kit), true) = (&mut stage, has_face) {
+        kit.set_face(renderer, FaceRig::standard())?;
+    }
+    let sources = Arc::new(SourceSlot::new());
+    let mut live = LiveStage::new(performer(&base), stage, Arc::clone(&sources), Quality::live(), budget::LIVE_GPU)?;
+    live.scenes().post(resolved);
+    live.set_subject_root(Mat4::from(figure.root));
+    let perform: Arc<dyn PerformHost> = Arc::new(live.handle().clone());
+    let total = (args.warmup * args.fps).ceil() as usize + args.frames;
+    let seconds = total as f64 / args.fps + 1.0;
+    let (tracker, _log) = Cameras::new(vec![("webcam", face_for(seconds as f32, 7))]);
+    let input = LiveInput::new(Box::new(tracker), Box::new(NoPrompt), TrackerConfig::default(), sources, perform);
+    input.select(SourceKind::Webcam, Mode::Apply)?;
+    input.bind_camera(Some(CameraId("webcam".to_owned())), Mode::Apply)?;
+    input.preview(true, Mode::Apply)?;
+
+    let mut samples = Samples::default();
+    let mut per_pass: BTreeMap<usize, Vec<f64>> = BTreeMap::new();
+    let period = 1.0 / args.fps;
+    let deadline = period * 1000.0;
+    let warm = total - args.frames;
+    let mut last_gpu = None;
+    let start = Instant::now();
+    for i in 0..total {
+        // The loop's clock: the middle of the frame's first performer step, so each frame runs its steps exactly.
+        let at = i as f64 * period;
+        if args.paced {
+            let due = Duration::from_secs_f64(at);
+            if let Some(wait) = due.checked_sub(start.elapsed()) {
+                std::thread::sleep(wait);
+            }
+        }
+        let now = Seconds(at + 0.5 / f64::from(STEP_HZ));
+        let begun = Instant::now();
+        let frame = live.frame(renderer, now)?;
+        let frame_ms = begun.elapsed().as_secs_f64() * 1000.0;
+        let begun = Instant::now();
+        live.service(renderer)?;
+        let service_ms = begun.elapsed().as_secs_f64() * 1000.0;
+        let Some(frame) = frame else { continue };
+        if let Some(change) = frame.change {
+            samples.changes.push(format!("frame {i}: {change:?}"));
+        }
+        if i < warm {
+            continue;
+        }
+        let report = frame.output.report;
+        samples.frame.push(frame_ms);
+        samples.recording.push(ms(report.cpu.total()));
+        samples.service.push(service_ms);
+        samples.late += usize::from(frame_ms > deadline);
+        samples.draw_calls = report.draw_calls;
+        samples.triangles = report.triangles;
+        // Timestamps resolve a frame or two late and repeat until the next arrive; each frame's are counted once.
+        if let Some(gpu) = report.gpu
+            && last_gpu != Some(gpu.frame)
+        {
+            last_gpu = Some(gpu.frame);
+            let paint = gpu.passes.get(Pass::PaintTextures);
+            samples.gpu_frame.push(ms(gpu.passes.total()) - paint.map_or(0.0, ms));
+            if let Some(paint) = paint {
+                samples.gpu_paint.push(ms(paint));
+            }
+            for (pass, time) in gpu.passes.iter() {
+                per_pass.entry(pass.index()).or_default().push(ms(time));
+            }
+        }
+    }
+    for pass in Pass::ALL {
+        if let Some(mut times) = per_pass.remove(&pass.index()) {
+            times.sort_by(f64::total_cmp);
+            samples.gpu_passes.push((pass, percentile(&times, 0.95)));
+        }
+    }
+
+    if let Some(dir) = &args.out {
+        let image = renderer.read_target(target)?;
+        let png = omuzaki_stage::ops::render::still::encode_png(&image)?;
+        #[allow(clippy::disallowed_methods, reason = "the evidence image is written by the benchmark, not by an op")]
+        std::fs::write(dir.join(format!("live-{id}.png")), png)?;
+    }
+    drop(input);
+    live.into_stage().release(renderer)?;
+    renderer.release(target.into())?;
+    Ok(samples)
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    omuzaki_stage::link();
+    omuzaki_io_vrm::link();
+    let args = parse()?;
+    let adapter = if args.software { AdapterPreference::Software } else { AdapterPreference::Auto };
+    let mut renderer = WgpuRenderer::headless(&HeadlessOptions { adapter })?;
+    let capabilities = renderer.capabilities();
+    println!(
+        "{}  |  {}x{} at {} fps{}  |  warm-up {} s, {} frames  |  live preset  |  gpu timings: {}",
+        capabilities.backend,
+        args.size.x,
+        args.size.y,
+        args.fps,
+        if args.paced { ", paced" } else { ", unpaced" },
+        args.warmup,
+        args.frames,
+        capabilities.gpu_timings,
+    );
+    let clock = FakeClock::new(Seconds(0.0));
+    let (doc, store) = project(&clock)?;
+    for id in &args.characters {
+        let name = if *id == KIT { "the kit character" } else { "the kit character imported from its VRM" };
+        let samples = measure(&mut renderer, &doc, &store, &clock, id, &args)?;
+        println!("\n{name} ({id}): {} draw calls, {} triangles a frame", samples.draw_calls, samples.triangles);
+        summary("gpu.frame", samples.gpu_frame, Some(ms(budget::LIVE_GPU)));
+        summary("gpu.face_paint", samples.gpu_paint, Some(ms(budget::FACE_PAINT_GPU)));
+        let rest: Vec<f64> = samples.frame.iter().zip(&samples.recording).map(|(f, r)| f - r).collect();
+        let deadline = 1000.0 / args.fps;
+        summary("frame thread (wall)", samples.frame, Some(deadline));
+        summary("  renderer recording", samples.recording, None);
+        summary("  the rest", rest, None);
+        summary("service (cold half)", samples.service, None);
+        println!("  frames over {deadline:.1} ms: {}", samples.late);
+        let passes: Vec<String> = samples.gpu_passes.iter().map(|(p, t)| format!("{} {t:.3}", p.name())).collect();
+        println!("  gpu p95 per pass (ms): {}", passes.join(", "));
+        if samples.changes.is_empty() {
+            println!("  the scheduler kept the live preset throughout");
+        } else {
+            println!("  the scheduler changed quality {} times:", samples.changes.len());
+            for change in samples.changes.iter().take(12) {
+                println!("    {change}");
+            }
+        }
+    }
+    Ok(())
+}
