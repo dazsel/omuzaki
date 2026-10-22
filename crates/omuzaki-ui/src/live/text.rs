@@ -121,6 +121,7 @@ words! {
     HealthLost = "live-health-lost" => "Face lost",
     HealthLostLine = "live-health-lost-line" => "The life layer moves your character until the camera finds you again.",
     HealthUnknown = "live-health-unknown" => "Waiting for the performer",
+    OpFailed = "live-op-failed" => "{op} did not run: {reason}",
 }
 
 /// The text of `word` with `{name}` placeholders filled from `args`, in the language the design system speaks.
