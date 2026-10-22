@@ -1,0 +1,37 @@
+[package]
+name = "omuzaki-live-api"
+description = "Contract for show automation (BR-11, BR-26): shows, graphs and nodes as documents, the node contract, the event envelope and the automation services (design docs/design/automation.md, ADR 0027)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+inventory.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_path_to_error = "0.1.20"
+thiserror.workspace = true
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-doc-api = { path = "../omuzaki-doc-api" }
+omuzaki-l10n-api = { path = "../omuzaki-l10n-api" }
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+omuzaki-store-api = { path = "../omuzaki-store-api" }
+
+[dev-dependencies]
+proptest.workspace = true
+toml.workspace = true
+omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+
+[lints]
+workspace = true
+
+# Native only: the web player runs no shows (design D1), so nothing here is built for wasm.
+[package.metadata.omuzaki]
+kind = "API"
+summary = "show automation (BR-11, BR-26): ids, `ShowDef` and `GraphDef` with document paths, keys and the structural `check`, limits; `Val` and ports; `NodeKind`, `Node`, `NodeCx` and `register_node!`; `Need`; `LiveEvent`, `register_event_kind!`, the normalised platform payloads and `EventSink`; the services `AutomationControl`, `Approvals`, `VariableStore` and `WallClock`"
+registers = true
+wasm = false
