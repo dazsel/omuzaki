@@ -13,6 +13,7 @@
 
 use std::path::{Path, PathBuf};
 
+use omuzaki_ai_api::PinnedFile;
 use omuzaki_ai_native::{ArchiveKind, Unpack};
 use sha2::{Digest, Sha256};
 
@@ -38,6 +39,14 @@ pub const MEMBER_SHA256: [&str; 4] = [
     "4f36dded049db18d76048567439b2a7f58f1daabc00d78bfe8f3ad396a2d2082",
     "bdbcda96dfcb7da883da124aaa2c55dee49770d934f0fcc71747f8c21bdc75b4",
 ];
+
+/// The bundle's pin, for build-time tools that fetch it (never the app at run time: the licence record says releases
+/// use our own copy).
+pub fn task_pin() -> PinnedFile {
+    // The constant is 64 hex digits; the tests open the published bundle against it.
+    let sha256 = omuzaki_ai_api::Sha256::from_hex(TASK_SHA256).unwrap_or(omuzaki_ai_api::Sha256([0; 32]));
+    PinnedFile::new([TASK_URL], sha256, TASK_SIZE)
+}
 
 /// Checks the bundle at `task` against the pin, unpacks its members into the folder beside it
 /// (`<task>.lib`, `omuzaki_ai_native::unpack_dir`) and opens that folder. Cold: reads and writes 3.7 MB the first time.
@@ -123,5 +132,12 @@ mod tests {
         let models = unpack(&copy).unwrap();
         assert_eq!(models.files(), &TFLITE_FILES);
         assert!(models.geometry().is_ok());
+    }
+
+    #[test]
+    fn the_pin_is_the_published_bundle() {
+        let pin = task_pin();
+        assert_eq!((pin.urls.as_slice(), pin.size), ([TASK_URL.to_owned()].as_slice(), TASK_SIZE));
+        assert_eq!(pin.sha256.to_string(), TASK_SHA256);
     }
 }

@@ -40,9 +40,11 @@ ONNX Runtime at one thread took 10 to 12 ms mean (about 19 ms p95), and TFLite w
   `R` has to be measured, not estimated. The probe `track_roi_timing` exists for exactly this run.
 - **CPU cost.** Two threads cut the mean by a quarter and use up to two cores for about 9 ms of each 33 ms camera
   frame. That is roughly half of one core on average; it counts toward `cpu.total`.
-- **The model files.** The tracker loads the published `.task` directly (`omuzaki_track::task::unpack`): it is pinned
-  by URL, SHA-256 and size, and each member is pinned too. No conversion step and no TensorFlow toolchain are needed.
-  The ONNX folder stays available for the `onnx` runtime.
+- **The model files.** The TFLite graphs are the published `.task`'s members, unchanged: a build step unpacks the
+  bundle (`omuzaki_track::task::unpack`, pinned by URL, SHA-256 and size, each member pinned too) and the release
+  ships the folder; the app opens that folder (`omuzaki_track::provision::face_models`) and never fetches the bundle
+  at run time, as the licence record requires. No conversion step and no TensorFlow toolchain are needed. The ONNX
+  folder stays available for the `onnx` runtime.
 - **One fix was needed for this.** The scan used to refuse the landmark graph because its input carries an *empty*
   quantization table, which the TFLite converter writes on float ports. The scan now refuses only a table that
   actually holds quantization (min, max, scale, zero point or details). The test in `omuzaki-ai-litert/tests/scan.rs`
@@ -51,7 +53,8 @@ ONNX Runtime at one thread took 10 to 12 ms mean (about 19 ms p95), and TFLite w
 ## Recommendation
 
 1. Make `tflite` the face tracker's default runtime, at two threads, with the graphs from the official `.task`.
-   Keep `onnx` as the fallback, for a machine where LiteRT cannot load.
+   Keep `onnx` as the fallback, for a machine where LiteRT cannot load. The release zip then ships the unchanged
+   TFLite members in `models/mediapipe-face/` beside (or instead of) the ONNX conversions.
 2. Measure on `R` (owner run): `track_roi_timing` with LiteRT at one and two threads, at a 30 fps camera. Record
    mean, p95 and CPU %.
 3. If `R` misses at two threads, the next levers, in order:

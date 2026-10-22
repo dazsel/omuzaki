@@ -104,6 +104,11 @@ impl ModelDir {
         self.names
     }
 
+    /// The folder.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     /// Opens `dir` with `names`, checking each file against the hash `expected(index, name)` gives.
     fn open_with(
         dir: &Path,

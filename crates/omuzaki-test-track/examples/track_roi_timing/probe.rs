@@ -232,6 +232,6 @@ pub fn pins(out: &mut dyn Write) -> Result<(), String> {
     let build = builds::select_here(&[]).ok_or("no pinned ONNX Runtime build for this platform")?;
     let pin = build.pin();
     say(out, &format!("asset {}\nurl {}\nsha256 {}\nsize {}", build.asset, pin.urls.join(" "), pin.sha256, pin.size))?;
-    let task = omuzaki_track::provision::task_pin();
+    let task = omuzaki_track::task::task_pin();
     say(out, &format!("\nface bundle\nurl {}\nsha256 {}\nsize {}", task.urls.join(" "), task.sha256, task.size))
 }
