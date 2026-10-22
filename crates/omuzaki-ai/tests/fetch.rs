@@ -1,5 +1,6 @@
 //! The verified cache's test list: the downloader tests ported to pinned files, and the streaming tests.
 //! Every body is in memory; nothing touches the network or sleeps.
+#![allow(clippy::disallowed_methods, reason = "tests set up their fixtures on disk; the fence is for ops")]
 #![allow(clippy::unwrap_used, clippy::expect_used)] // helper impls outside `#[test]` fns (clippy.toml only exempts tests)
 
 mod common;

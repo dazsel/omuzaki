@@ -9,8 +9,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use omuzaki_anim_api::{Channel, FrameSource, TrackFrame, TrackStatus};
-use omuzaki_core::time::{Clock, Seconds, SystemClock};
+use omuzaki_core::time::{Clock, FakeClock, Seconds, SystemClock};
 use omuzaki_track_api::camera::CameraId;
+use omuzaki_track_api::doctor::Finding;
 use omuzaki_track_api::tracker::{Tracker, TrackerConfig};
 use omuzaki_track_net::protocol::live_link::{self, VALUES};
 use omuzaki_track_net::protocol::osc::{Arg, Writer};
@@ -126,6 +127,35 @@ fn silence_publishes_one_lost_frame_and_stop_ends_the_source() {
     assert!(tracker.local_addr().is_none());
     // The port is released: binding it again succeeds.
     UdpSocket::bind(("0.0.0.0", port)).unwrap();
+}
+
+#[test]
+fn the_doctor_finds_uneven_arrivals_and_lost_frames_and_a_recheck_starts_over() {
+    // The stage clock is a fake one, set before each datagram goes out and waited on until its frame is through, so
+    // the arrival times the doctor sees are exactly these.
+    let clock = Arc::new(FakeClock::new(Seconds(10.0)));
+    let mut tracker = NetTracker::new(any_ports(), Arc::clone(&clock) as Arc<dyn Clock>);
+    let mut source = tracker.start(&device(Protocol::LiveLinkFace), &TrackerConfig::default()).unwrap();
+    assert_eq!(tracker.diagnoses(), []);
+    let phone = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let mut values = [0.0; VALUES];
+    let mut t = 10.0;
+    for i in 0..60_u16 {
+        // Bursts and stalls, as over a busy Wi-Fi network, and every other frame lost on the way.
+        t += if i % 3 == 0 { 0.06 } else { 0.005 };
+        clock.set(Seconds(t));
+        values[17] = f32::from(i) / 100.0; // jawOpen, unique per frame
+        phone.send_to(&live_link::encode("phone", "face", 2 * i32::from(i), 60, &values), target(&tracker)).unwrap();
+        wait_for(&mut *source, |f| (f.get(Channel::JAW_OPEN) - values[17]).abs() < 1e-6);
+    }
+    let found: Vec<_> = tracker.diagnoses().into_iter().map(|d| d.finding).collect();
+    assert_eq!(found, [Finding::DroppedFrames, Finding::Jitter]);
+    let jitter = tracker.diagnoses()[1];
+    assert!(jitter.measured > jitter.threshold, "{jitter:?}");
+    tracker.recheck();
+    assert_eq!(tracker.diagnoses(), [], "a recheck clears the findings until they are measured again");
+    tracker.stop();
+    assert_eq!(tracker.diagnoses(), []);
 }
 
 #[test]

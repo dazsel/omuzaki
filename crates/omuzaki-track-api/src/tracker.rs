@@ -9,6 +9,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::camera::{CameraFormatRequest, CameraId, CameraInfo};
+use crate::doctor::Diagnosis;
 use crate::error::TrackError;
 
 /// How much work the tracker does per frame, so a weak machine keeps a steady rate (PF-01). Shown in the health meter.
@@ -155,6 +156,18 @@ pub trait Tracker: Send {
     /// Latency of the current (or last) session, measured from the arrival floor to publish (see [`LatencyStats`]):
     /// the constant best-case transport delay is left out. Cheap; the UI may call it every frame.
     fn latency(&self) -> LatencyStats;
+
+    /// What the tracking doctor finds wrong with the input now (PF-28), in [`Finding::ALL`] order; empty when all is
+    /// well, when stopped, or for a tracker without a doctor. Cheap; the UI may call it every frame.
+    ///
+    /// [`Finding::ALL`]: crate::doctor::Finding::ALL
+    fn diagnoses(&self) -> Vec<Diagnosis> {
+        Vec::new()
+    }
+
+    /// Asks the doctor to forget what it measured and measure again from now (the "recheck" after a fix). A no-op for a
+    /// tracker without a doctor.
+    fn recheck(&self) {}
 }
 
 #[cfg(test)]

@@ -3649,11 +3649,21 @@ version = "0.0.0"
 dependencies = [
  "omuzaki-ai-api",
  "omuzaki-ai-mock",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-ops-api",
+ "omuzaki-store-api",
+ "omuzaki-update-api",
+ "rustix 1.1.5",
+ "schemars",
  "serde",
+ "serde_json",
  "sha2 0.10.9",
  "tempfile",
  "toml",
  "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4612,6 +4622,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-model-worker"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-ai",
+ "omuzaki-ai-api",
+ "omuzaki-ai-litert",
+ "omuzaki-ai-mock",
+ "omuzaki-ai-ort",
+ "tempfile",
+]
+
+[[package]]
 name = "omuzaki-obs"
 version = "0.0.0"
 dependencies = [
@@ -4903,6 +4925,7 @@ dependencies = [
  "omuzaki-io-ops",
  "omuzaki-io-vrm",
  "omuzaki-link-build",
+ "omuzaki-metrics-api",
  "omuzaki-ops-api",
  "omuzaki-render",
  "omuzaki-render-api",
@@ -5150,6 +5173,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+ "windows",
 ]
 
 [[package]]
@@ -5166,6 +5190,8 @@ dependencies = [
  "omuzaki-pixfmt",
  "omuzaki-track-api",
  "omuzaki-track-mock",
+ "schemars",
+ "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
@@ -5235,9 +5261,12 @@ dependencies = [
  "egui_tiles",
  "image",
  "inventory",
+ "omuzaki-ai",
+ "omuzaki-ai-api",
  "omuzaki-anim",
  "omuzaki-anim-api",
  "omuzaki-anim-mock",
+ "omuzaki-camera-mf",
  "omuzaki-char",
  "omuzaki-char-api",
  "omuzaki-char-mock",
@@ -5246,6 +5275,7 @@ dependencies = [
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
  "omuzaki-face-api",
+ "omuzaki-http",
  "omuzaki-l10n-api",
  "omuzaki-ops",
  "omuzaki-ops-api",
@@ -5257,14 +5287,17 @@ dependencies = [
  "omuzaki-stage-api",
  "omuzaki-stream",
  "omuzaki-stream-api",
+ "omuzaki-track",
  "omuzaki-track-api",
  "omuzaki-track-mock",
+ "omuzaki-track-net",
  "omuzaki-ui-api",
  "omuzaki-ui-mock",
  "rustix 1.1.5",
  "schemars",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "toml",
  "tracing",

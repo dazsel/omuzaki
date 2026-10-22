@@ -1,5 +1,5 @@
 //! The `input.*` ops (PF-01; `docs/design/first-run.md` §4, §5): choose the kind of source, bind the camera, start and
-//! stop the live mirror, ask for the camera permission and read the input's state, all through the [`InputHost`]
+//! stop the live mirror, ask for the camera permission, read the input's state and the tracking doctor (PF-28), all through the [`InputHost`]
 //! service, so the Live workspace, the setup flow, MCP and agents share one path.
 //!
 //! | Op | Scope | Agent | Undo |
@@ -9,6 +9,13 @@
 //! | `input.preview {on}` | `perform` | Confirm (it starts a capture) | the inverse `input.preview` |
 //! | `input.request_camera` | `perform` | Never (the OS dialog is the person's) | none: the OS permission is the person's to revoke |
 //! | `input.state` | `read` | free | none (a query) |
+//! | `input.doctor` | `read` | free | none (a query) |
+//! | `input.recheck` | `perform` | as the policy says | none: it only restarts the doctor's measuring |
+//! | `input.calibrate {cancel}` | `perform` | Confirm to start (it reads the face); anyone may cancel | none: calibrating again replaces it |
+//! | `input.calibration` | `read` | free | none (a query) |
+//! | `input.health` | `read` | free | none (a query) |
+//! | `input.gestures` | `read` | free | none (a query) |
+//! | `input.vmc_out {to}` | `perform` | Confirm to start (it sends the performance out); anyone may stop | the inverse `input.vmc_out` |
 //!
 //! The two choices are Machine settings (`input.source`, `input.camera`): when the App registers a
 //! [`Settings`](omuzaki_settings_api::service::Settings) service, the ops write them there too, and their answer says
@@ -26,10 +33,17 @@ use omuzaki_track_api::camera::CameraId;
 use crate::perform::input::{InputError, InputHost, SourceKind};
 
 pub mod bind_camera;
+pub mod calibrate;
+pub mod calibration;
+pub mod doctor;
+pub mod gestures;
+pub mod health;
 pub mod preview;
+pub mod recheck;
 pub mod request_camera;
 pub mod select;
 pub mod state;
+pub mod vmc_out;
 
 /// The input behind the ops, or `Unavailable` when the app did not wire one in.
 fn host<'a>(ctx: &OpCtx<'a>) -> Result<&'a dyn InputHost, OpError> {
@@ -161,6 +175,16 @@ fn op_error(error: InputError) -> OpError {
             OpError::not_found(message).hint("plug the camera in, or bind another one")
         }
         InputError::Device(_) => OpError::internal(message).hint("try again, or bind another camera"),
+        InputError::CaptureOff => {
+            OpError::conflict(message).hint("start the camera preview (`input.preview`), then calibrate")
+        }
+        InputError::CalibrationRunning => {
+            OpError::conflict(message).hint("wait for it to finish (`input.calibration`), or cancel it")
+        }
+        InputError::NoGuidedCalibration | InputError::NoPoseOutput => OpError::unsupported(message),
+        InputError::PoseOutput(_) => {
+            OpError::internal(message).hint("check the address, or pick another port if this one is taken")
+        }
     }
 }
 
@@ -187,6 +211,7 @@ mod tests {
             (InputError::Device(TrackError::Lost), ErrorCode::NotFound),
             (InputError::Device(TrackError::FormatUnsupported(CameraFormatRequest::default())), ErrorCode::Internal),
             (InputError::Device(TrackError::Backend("model".to_owned())), ErrorCode::Internal),
+            (InputError::PoseOutput("in use".to_owned()), ErrorCode::Internal),
         ];
         for (error, code) in cases {
             let mapped = op_error(error.clone());

@@ -4,6 +4,7 @@
 
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
 #![allow(clippy::expect_used, clippy::unwrap_used)]
+#![allow(clippy::disallowed_methods, reason = "tests set up their fixtures on disk; the fence is for ops")]
 
 use std::path::Path;
 use std::sync::Arc;

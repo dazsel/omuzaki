@@ -5,6 +5,7 @@
 
 // Test helpers may panic: a panic is a clear failure (clippy.toml exempts only `#[test]` functions).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::disallowed_methods, reason = "tests set up their fixtures on disk; the fence is for ops")]
 
 use std::path::Path;
 use std::time::Duration;

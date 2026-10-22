@@ -1,6 +1,11 @@
 //! Bringing the executor back after opening (journal.md 8.3): replay what a crash left, then close every transaction
 //! left open, so the session starts at "the state after the last completed transaction".
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "host code, not an op: the core's own files in the project's `.omuzaki` folder; the fence is for ops"
+)]
+
 use std::path::Path;
 
 use omuzaki_doc::journal::{End, ProjectJournal};

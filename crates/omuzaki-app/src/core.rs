@@ -491,6 +491,7 @@ impl Drop for AppCore {
 }
 
 /// The project folder as agents are granted it: its real path (ADR 0013), or as given when it can't be resolved.
+#[allow(clippy::disallowed_methods, reason = "the host resolving the folder it was given to open; not an op")]
 fn project_dir_text(dir: &Path) -> String {
     std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf()).display().to_string()
 }

@@ -7,6 +7,8 @@
 //! tracker thread is the source's job (a newest-frame-wins mailbox).
 
 pub mod frame;
+pub mod gesture;
+pub mod guided;
 pub mod host;
 pub mod input;
 pub mod live;

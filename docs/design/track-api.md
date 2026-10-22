@@ -202,6 +202,15 @@ rest and hands over to the life layer after its grace period (PF-23), so the tra
 
 `FakeTracker` implements the stall rule, so pipeline tests get the real signal with no threads.
 
+**The tracking doctor (PF-28)** says why tracking is poor before it is lost. `omuzaki_track_api::doctor` holds the
+seven findings (low light, backlight, glasses glare, the face at the edge, dropped frames, an overloaded machine,
+jitter), each with a threshold and a plain-language fix, and the `Doctor` that averages readings over about a second
+with hysteresis. A tracker's own thread owns its doctor and publishes to a `DoctorBoard` with a `try_lock`, so the hot
+path never waits; `Tracker::diagnoses` reads it and `Tracker::recheck` asks the thread to measure again. The webcam
+tracker adds the image readings (a grid of at most about 8,000 pixels, about 65 µs a frame, after the publish); the
+phone tracker reads arrival jitter and drops only, since its latency is the network's. The stage answers them through
+`InputHost::diagnoses` as the `input.doctor` op, and `input.recheck` starts over after a fix.
+
 ## 9. Budgets
 
 Spec §10 rows this contract touches, all on tier `R`:

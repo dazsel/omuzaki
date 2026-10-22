@@ -18,7 +18,9 @@ use omuzaki_ops_api::{
 use omuzaki_settings_api::service::Settings;
 use omuzaki_stage::perform::host::{PerformHost, perform_channel};
 use omuzaki_stage::perform::input::{InputHost, LiveInput, NoPrompt, SourceSlot};
+use omuzaki_track_api::doctor::{Diagnosis, Finding};
 use omuzaki_track_api::tracker::TrackerConfig;
+use omuzaki_track_net::vmc_out::VmcOut;
 use serde_json::{Value, json};
 use support::{Call, CameraLog, Cameras, MemSettings, face_for, performer};
 
@@ -35,8 +37,9 @@ impl Rig {
         let (handle, _control) = perform_channel(&performer(&HumanoidPose::REST));
         let perform: Arc<dyn PerformHost> = Arc::new(handle);
         let slot = Arc::new(SourceSlot::new());
-        let input =
-            Arc::new(LiveInput::new(Box::new(tracker), Box::new(NoPrompt), TrackerConfig::default(), slot, perform));
+        let input = LiveInput::new(Box::new(tracker), Box::new(NoPrompt), TrackerConfig::default(), slot, perform)
+            .with_pose_out(Box::new(VmcOut::default()));
+        let input = Arc::new(input);
         Self { input, log, settings: with_settings.then(|| Arc::new(MemSettings::default())) }
     }
 
@@ -84,6 +87,13 @@ fn every_op_declares_its_kind_scope_and_undo() {
         ("input.preview", OpKind::Edit, Scope::Perform, Undo::Explicit),
         ("input.request_camera", OpKind::Edit, Scope::Perform, Undo::Explicit),
         ("input.state", OpKind::Query, Scope::Read, Undo::None),
+        ("input.doctor", OpKind::Query, Scope::Read, Undo::None),
+        ("input.recheck", OpKind::Edit, Scope::Perform, Undo::Explicit),
+        ("input.calibrate", OpKind::Edit, Scope::Perform, Undo::Explicit),
+        ("input.calibration", OpKind::Query, Scope::Read, Undo::None),
+        ("input.health", OpKind::Query, Scope::Read, Undo::None),
+        ("input.vmc_out", OpKind::Edit, Scope::Perform, Undo::Explicit),
+        ("input.gestures", OpKind::Query, Scope::Read, Undo::None),
     ];
     for (name, kind, scope, undo) in cases {
         let meta = (find(name).expect("registered").meta)();
@@ -115,6 +125,14 @@ fn an_agent_is_refused_the_device_ops_and_queued_for_the_capture_ops() {
         ("input.preview", json!({ "on": true }), Some("needs_person"), None),
         ("input.preview", json!({ "on": false }), None, None),
         ("input.state", json!({}), None, None),
+        ("input.doctor", json!({}), None, None),
+        ("input.recheck", json!({}), None, None),
+        ("input.calibration", json!({}), None, None),
+        ("input.health", json!({}), None, None),
+        ("input.calibrate", json!({ "cancel": true }), None, None),
+        ("input.vmc_out", json!({ "to": "127.0.0.1:39539" }), Some("needs_person"), None),
+        ("input.vmc_out", json!({ "to": null }), None, None),
+        ("input.gestures", json!({}), None, None),
     ];
     for (op, args, as_agent, as_person) in table {
         for dry_run in [true, false] {
@@ -433,4 +451,117 @@ fn a_camera_that_will_not_open_and_an_old_one_that_will_not_restart_stop_the_pre
     assert_eq!(rig.state()["preview"], json!({ "state": "off" }), "capture stopped");
     let effect = plan.effect.expect("the preview change is recorded");
     assert_eq!((effect.undo.op.as_str(), &effect.undo.args), ("input.preview", &json!({ "on": true })));
+}
+
+#[test]
+fn the_doctor_answers_the_running_trackers_findings_and_a_recheck_clears_them() {
+    let rig = Rig::new(false);
+    rig.log.find(vec![Diagnosis::new(Finding::LowLight, 0.12, 0.25)]);
+    let healthy = json!({ "healthy": true, "findings": [] });
+    assert_eq!(rig.output("input.doctor", json!({})), healthy, "no capture runs, so nothing is measured");
+    rig.run("input.select", json!({ "source": "webcam" })).unwrap();
+    rig.run("input.bind_camera", json!({ "camera": "a" })).unwrap();
+    rig.run("input.preview", json!({ "on": true })).unwrap();
+    let doctor = rig.output("input.doctor", json!({}));
+    assert_eq!(doctor["healthy"], false);
+    let found = &doctor["findings"][0];
+    assert_eq!(found["finding"], "low_light");
+    assert!((found["measured"].as_f64().unwrap() - 0.12).abs() < 1e-6, "{found}");
+    assert!(found["fix"].as_str().unwrap().contains("lamp"), "{found}");
+    // A dry run says what it would clear and clears nothing; an agent may ask for a recheck.
+    let dry = rig.plan("input.recheck", json!({}), &agent(), true).unwrap().output.unwrap();
+    assert_eq!((dry["cleared"][0]["finding"].clone(), rig.log.rechecks()), (json!("low_light"), 0));
+    let done = rig.plan("input.recheck", json!({}), &agent(), false).unwrap().output.unwrap();
+    assert_eq!((done["cleared"].as_array().unwrap().len(), rig.log.rechecks()), (1, 1));
+    assert_eq!(rig.output("input.doctor", json!({})), healthy);
+}
+
+#[test]
+fn calibrating_needs_the_person_and_a_running_preview_and_anyone_may_cancel() {
+    let rig = Rig::new(false);
+    assert_eq!(refusal(rig.plan("input.calibrate", json!({}), &agent(), false)), Some("needs_person"));
+    let error = rig.run("input.calibrate", json!({})).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Conflict, "{error:?}");
+    assert_eq!(rig.output("input.calibration", json!({})), json!({ "state": "idle" }));
+    rig.run("input.select", json!({ "source": "webcam" })).unwrap();
+    rig.run("input.bind_camera", json!({ "camera": "a" })).unwrap();
+    rig.run("input.preview", json!({ "on": true })).unwrap();
+    let started = rig.output("input.calibrate", json!({}));
+    assert_eq!((started["started"].clone(), started["status"]["state"].clone()), (json!(true), json!("waiting")));
+    let stopped = rig.plan("input.calibrate", json!({ "cancel": true }), &agent(), false).unwrap().output.unwrap();
+    assert_eq!(stopped["cancelled"], true);
+    assert_eq!(rig.output("input.calibration", json!({})), json!({ "state": "cancelled" }));
+}
+
+#[test]
+fn health_reads_the_running_capture_against_its_budget() {
+    let rig = Rig::new(false);
+    let idle = rig.output("input.health", json!({}));
+    assert_eq!((idle["running"].clone(), idle["budget"].clone()), (json!(false), Value::Null));
+    rig.log.find(vec![Diagnosis::new(Finding::Jitter, 30.0, 15.0)]);
+    rig.run("input.select", json!({ "source": "webcam" })).unwrap();
+    rig.run("input.bind_camera", json!({ "camera": "a" })).unwrap();
+    rig.run("input.preview", json!({ "on": true })).unwrap();
+    let health = rig.output("input.health", json!({}));
+    assert_eq!(health["running"], true);
+    assert_eq!(health["budget"]["key"], "track.face");
+    assert_eq!(health["budget"]["budget"], 5.0);
+    assert_eq!(health["findings"], json!(["jitter"]));
+}
+
+#[test]
+fn vmc_out_sends_each_performed_step_to_a_receiver_and_its_undo_stops_it() {
+    use omuzaki_anim_api::{DeviceProfile, TrackFrame};
+    use omuzaki_track_net::protocol::Decoder;
+    use omuzaki_track_net::protocol::vmc::VmcDecoder;
+
+    let (tracker, log) = Cameras::new(vec![("a", face_for(5.0, 1))]);
+    let mut performer = performer(&HumanoidPose::REST);
+    let (handle, mut control) = perform_channel(&performer);
+    let perform: Arc<dyn PerformHost> = Arc::new(handle);
+    let slot = Arc::new(SourceSlot::new());
+    let input = LiveInput::new(Box::new(tracker), Box::new(NoPrompt), TrackerConfig::default(), slot, perform)
+        .with_pose_out(Box::new(VmcOut::default()));
+    let rig = Rig { input: Arc::new(input), log, settings: None };
+
+    let receiver = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    receiver.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+    let to = receiver.local_addr().unwrap().to_string();
+    let plan = rig.run("input.vmc_out", json!({ "to": to })).unwrap();
+    assert_eq!(plan.output.unwrap(), json!({ "to": to, "before": null, "dry_run": false }));
+    let effect = plan.effect.unwrap();
+    assert_eq!((effect.undo.args.clone(), effect.redo.args), (json!({ "to": null }), json!({ "to": to })));
+
+    // The perform thread takes the tap with its next requests and publishes the step it runs.
+    for i in 0..3 {
+        control.advance(&mut performer, support::mid_step(i));
+    }
+    let mut decoder = VmcDecoder::new();
+    let mut frame = TrackFrame::empty(0, Seconds(0.0), DeviceProfile::Arkit);
+    let mut buf = vec![0u8; 65_536];
+    let got = loop {
+        let n = receiver.recv(&mut buf).expect("the step reaches the receiver");
+        if decoder.decode(&buf[..n], &mut frame).unwrap().is_some() {
+            break frame;
+        }
+    };
+    let head = got.head.expect("the head bone arrives");
+    // Near rest: with no camera the life layer only sways the head a little.
+    assert!(head.yaw.abs() < 0.05 && head.pitch.abs() < 0.05, "near the rest pose: {head:?}");
+    assert_eq!(rig.input.pose_out().target, Some(receiver.local_addr().unwrap()));
+
+    rig.run("input.vmc_out", effect.undo.args).unwrap();
+    assert_eq!(rig.input.pose_out().target, None);
+}
+
+#[test]
+fn gestures_list_their_keys_and_none_shows_before_a_capture() {
+    let rig = Rig::new(false);
+    let answer = rig.output("input.gestures", json!({}));
+    let rows = answer["gestures"].as_array().unwrap();
+    assert_eq!(rows.len(), 5);
+    assert_eq!(
+        rows[0],
+        json!({ "gesture": "tongue_out", "key": "gesture:tongue_out", "expression": null, "active": false })
+    );
 }

@@ -9,6 +9,11 @@
 //! - **The bridge's side.** Each client's credential is kept in the user's local data folder, per project and client
 //!   (`bridges/<project>.json`, owner-only), so the person pairs a client once per project.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "host code, not an op: the core's own files in the project's `.omuzaki` folder; the fence is for ops"
+)]
+
 use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
