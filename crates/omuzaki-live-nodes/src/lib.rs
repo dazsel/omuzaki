@@ -5,6 +5,7 @@
 //!
 //! | Folder | Node ids |
 //! |---|---|
+//! | [`audio`] | `cond.audio_level`: when a bus or a device input gets loud, polling `audio.meters` |
 //! | [`chat`] | `chat.command`: a chat command, with arguments, a least role and cooldowns |
 //! | [`event`] | `on.event`: the trigger on any event kind, with `where` and `min` filters |
 //! | [`emit`] | `event.emit`: sends a `custom.<name>` event other automations hear |
@@ -24,6 +25,7 @@ omuzaki_core::define_link! {
     omuzaki_live_api::link();
 }
 
+pub mod audio;
 pub mod chat;
 pub mod emit;
 pub mod event;

@@ -127,4 +127,13 @@ omuzaki_l10n_api::messages! {
     /// A date range mixing `MM-DD` and `YYYY-MM-DD`.
     pub date_forms_differ = "live-nodes-date-forms-differ" ()
         => "Write both dates as MM-DD, or both as YYYY-MM-DD.";
+    /// An audio level node with no bus or input named.
+    pub audio_source_missing = "live-nodes-audio-source-missing" ()
+        => "Choose the bus or the device input to listen to.";
+    /// A level that isn't a number of dB (or a negative hysteresis).
+    pub bad_level = "live-nodes-bad-level" ()
+        => "This has to be a level in dB (the hysteresis 0 or more).";
+    /// A poll period under its least.
+    pub poll_too_fast = "live-nodes-poll-too-fast" (min: Num)
+        => "Read the level at most every { $min } milliseconds.";
 }

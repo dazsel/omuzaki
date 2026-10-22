@@ -4043,6 +4043,7 @@ dependencies = [
  "omuzaki-audio-api",
  "omuzaki-audio-mock",
  "omuzaki-core",
+ "omuzaki-doc-mock",
  "omuzaki-ops-api",
  "schemars",
  "serde",

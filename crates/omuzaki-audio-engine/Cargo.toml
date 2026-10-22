@@ -19,6 +19,7 @@ serde_json.workspace = true
 
 [dev-dependencies]
 omuzaki-audio-mock = { path = "../omuzaki-audio-mock" }
+omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 
 [lints]
 workspace = true
@@ -26,7 +27,7 @@ workspace = true
 # Native only: device audio and real-time threads.
 [package.metadata.omuzaki]
 kind = "Implementation"
-summary = "the live audio engine: `CpalBackend` (ALSA, WASAPI, CoreAudio through cpal) and `LiveEngine`, the real-time executor of the mixer graph (sources, chains of registered nodes, faders, mutes, sends, the mic mode) run on the clock device's callback, with bridges for other inputs, taps at 48 and 16 kHz, feeds, meters and the engine clock; the ops `audio.devices`, `audio.mic` and `audio.status`"
+summary = "the live audio engine: `CpalBackend` (ALSA, WASAPI, CoreAudio through cpal) and `LiveEngine`, the real-time executor of the mixer graph (sources, chains of registered nodes, faders, mutes, sends, the mic mode) run on the clock device's callback, with bridges for other inputs, taps at 48 and 16 kHz, feeds, meters and the engine clock; the ops `audio.devices`, `audio.mic`, `audio.status` and `audio.meters`"
 wasm = false
 # The audio ops register themselves (ADR 0015, `cargo xtask lint-registers`).
 registers = true

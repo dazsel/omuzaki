@@ -1,4 +1,5 @@
-//! `audio.devices`, `audio.mic` and `audio.status`: the microphone as ops (spec v3 BR-22).
+//! `audio.devices`, `audio.mic`, `audio.status` and `audio.meters`: the microphone and the levels as ops (spec v3
+//! BR-22).
 //!
 //! `audio.mic` is the one way to turn the microphone on, choose it, and mute or unmute it: it binds the `mic` role
 //! (the system default unless a device is named), adds the mic bus to the graph if the graph has none, and sets the
@@ -43,6 +44,19 @@ pub struct Mic {
 #[serde(deny_unknown_fields)]
 #[schemars(extend("examples" = [{}]))]
 pub struct Status {}
+
+/// Read the levels of the audio buses, or of one bus or one device input: numbers only, never audio.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(extend("examples" = [{}, { "bus": "mic" }, { "input": "mic" }]))]
+pub struct Levels {
+    /// One bus, by id (`mic`, `program`). Default: every bus.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bus: Option<BusId>,
+    /// One device input, by its role (`mic`), instead of a bus.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<DeviceRole>,
+}
 
 fn engine<'a>(ctx: &OpCtx<'a>) -> Result<&'a dyn AudioEngine, OpError> {
     ctx.service::<dyn AudioEngine>()
@@ -194,6 +208,56 @@ impl Op for Status {
     }
 }
 
+impl Op for Levels {
+    fn meta() -> OpMeta {
+        OpMeta {
+            name: "audio.meters",
+            summary: "Read the audio levels (peak and RMS in dBFS) of every bus, one bus or one device input.",
+            kind: OpKind::Query,
+            scope: Scope::Read,
+            undo: Undo::None,
+        }
+    }
+
+    fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        let engine = engine(ctx)?;
+        let points = match (&self.bus, &self.input) {
+            (Some(_), Some(_)) => {
+                return Err(OpError::invalid("input", "name a bus or a device input, not both"));
+            }
+            (Some(bus), None) => vec![MeterPoint::Bus(bus.clone())],
+            (None, Some(role)) => vec![MeterPoint::Input(role.clone())],
+            (None, None) => engine.graph().buses.iter().map(|b| MeterPoint::Bus(b.id.clone())).collect(),
+        };
+        let mut meters = Vec::with_capacity(points.len());
+        for point in points {
+            let Some(m) = engine.meters(&point) else {
+                let what = match &point {
+                    MeterPoint::Bus(bus) => format!("no bus {bus}"),
+                    MeterPoint::Input(role) => format!("no device input with the role {role}"),
+                };
+                return Err(OpError::not_found(what).hint("call audio.meters with no arguments to list every bus"));
+            };
+            let mut reading = match &point {
+                MeterPoint::Bus(bus) => json!({ "bus": bus }),
+                MeterPoint::Input(role) => json!({ "input": role }),
+            };
+            reading["peak_db"] = json!(finite(m.peak_db));
+            reading["rms_db"] = json!(finite(m.rms_db));
+            if matches!(&point, MeterPoint::Bus(bus) if bus.as_str() == PROGRAM_BUS) {
+                reading["short_term_lufs"] = json!(finite(m.short_term_lufs));
+                reading["true_peak_dbtp"] = json!(finite(m.true_peak_dbtp));
+                reading["limiter_gain_reduction_db"] = json!(m.limiter_gain_reduction_db);
+            }
+            meters.push(reading);
+        }
+        Ok(Plan::answer(json!({ "meters": meters })))
+    }
+}
+
+/// The bus whose meters carry loudness, true peak and limiter reduction.
+const PROGRAM_BUS: &str = "program";
+
 /// A level for JSON: silence (−∞ dBFS) as `null`.
 fn finite(db: f32) -> Option<f32> {
     db.is_finite().then_some(db)
@@ -202,10 +266,50 @@ fn finite(db: f32) -> Option<f32> {
 register_op!(Devices);
 register_op!(Mic);
 register_op!(Status);
+register_op!(Levels);
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use omuzaki_audio_mock::MockEngine;
+    use omuzaki_core::time::FakeClock;
+    use omuzaki_doc_mock::MemDoc;
+    use omuzaki_ops_api::{Actor, ErrorCode, ServicesBuilder};
+    use serde_json::Value;
+
     use super::*;
+
+    /// Plans `op` against a mock engine whose graph has the mic bus.
+    fn meters(op: &Levels) -> Result<Value, OpError> {
+        let engine = Arc::new(MockEngine::new());
+        let (role, bus) = ids()?;
+        let graph = with_mic_bus(&GraphSpec::default(), &role, &bus).ok_or_else(|| OpError::internal("no graph"))?;
+        engine.apply(&graph).map_err(audio_error)?;
+        let services = ServicesBuilder::new().insert::<dyn AudioEngine>(engine).build();
+        let (doc, actor, clock) = (MemDoc::new(), Actor::Person { name: "tester".into() }, FakeClock::default());
+        let ctx = OpCtx::new(&doc, &actor, &clock).with_services(&services);
+        op.plan(&ctx).map(|plan| plan.output.unwrap_or(Value::Null))
+    }
+
+    #[test]
+    fn meters_read_every_bus_one_bus_or_one_input_as_numbers() {
+        let all = meters(&Levels::default()).unwrap_or_else(|e| panic!("{e:?}"));
+        assert_eq!(all, json!({ "meters": [{ "bus": "mic", "peak_db": null, "rms_db": null }] }));
+        let one = Levels { bus: BusId::new("mic").ok(), input: None };
+        assert_eq!(meters(&one).unwrap_or_else(|e| panic!("{e:?}")), all);
+        let input = Levels { bus: None, input: DeviceRole::new("mic").ok() };
+        let reading = meters(&input).unwrap_or_else(|e| panic!("{e:?}"));
+        assert_eq!(reading["meters"][0]["input"], json!("mic"));
+    }
+
+    #[test]
+    fn meters_refuse_an_unknown_bus_and_both_at_once() {
+        let missing = Levels { bus: BusId::new("game").ok(), input: None };
+        assert!(matches!(meters(&missing), Err(e) if e.code == ErrorCode::NotFound));
+        let both = Levels { bus: BusId::new("mic").ok(), input: DeviceRole::new("mic").ok() };
+        assert!(matches!(meters(&both), Err(e) if e.field.as_deref() == Some("input")));
+    }
 
     #[test]
     fn the_mic_bus_is_added_once() {
