@@ -39,6 +39,8 @@ pub const CARET_UP: &str = egui_phosphor::regular::CARET_UP;
 pub const CARET_UP_DOWN: &str = egui_phosphor::regular::CARET_UP_DOWN;
 /// Reset to default.
 pub const ARROW_COUNTER_CLOCKWISE: &str = egui_phosphor::regular::ARROW_COUNTER_CLOCKWISE;
+/// Redo.
+pub const ARROW_CLOCKWISE: &str = egui_phosphor::regular::ARROW_CLOCKWISE;
 /// Search.
 pub const MAGNIFYING_GLASS: &str = egui_phosphor::regular::MAGNIFYING_GLASS;
 /// Pick a colour from the screen.
@@ -119,6 +121,8 @@ pub const COMMAND: &str = egui_phosphor::regular::COMMAND;
 pub const CHAT_CIRCLE_TEXT: &str = egui_phosphor::regular::CHAT_CIRCLE_TEXT;
 /// Next.
 pub const ARROW_RIGHT: &str = egui_phosphor::regular::ARROW_RIGHT;
+/// Back.
+pub const ARROW_LEFT: &str = egui_phosphor::regular::ARROW_LEFT;
 /// A marker.
 pub const FLAG: &str = egui_phosphor::regular::FLAG;
 /// Delete.
@@ -141,6 +145,14 @@ pub const WEBCAM: &str = egui_phosphor::regular::WEBCAM;
 pub const HEARTBEAT: &str = egui_phosphor::regular::HEARTBEAT;
 /// A hotkey.
 pub const KEYBOARD: &str = egui_phosphor::regular::KEYBOARD;
+/// A phone as a tracker (iPhone face tracking).
+pub const DEVICE_MOBILE: &str = egui_phosphor::regular::DEVICE_MOBILE;
+/// A model file brought in from elsewhere.
+pub const UPLOAD: &str = egui_phosphor::regular::UPLOAD_SIMPLE;
+/// A picture sent to another program (an output).
+pub const MONITOR: &str = egui_phosphor::regular::MONITOR_PLAY;
+/// A step still to come.
+pub const CIRCLE_DASHED: &str = egui_phosphor::regular::CIRCLE_DASHED;
 
 /// The icon that goes with a status: the shape half of "icon, word and colour" (P9).
 pub const fn status(status: super::tokens::Status) -> &'static str {

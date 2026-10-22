@@ -38,7 +38,8 @@ pub struct Capabilities {
     pub morph_targets: bool,
     /// The most morph targets one mesh may have; 0 if `morph_targets` is false.
     pub max_morph_targets: u32,
-    /// The `MToon` groups this renderer draws. [`MtoonSupport::NONE`] today.
+    /// The `MToon` groups this renderer draws: [`MtoonSupport::ALL`] on the wgpu renderer, [`MtoonSupport::OUTLINE_STYLE`]
+    /// on the mock.
     pub mtoon: MtoonSupport,
 }
 
@@ -46,7 +47,7 @@ pub struct Capabilities {
 /// the author what will look different instead of guessing. A material asking for a group the renderer lacks is
 /// drawn without it.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
-pub struct MtoonSupport(u8);
+pub struct MtoonSupport(u16);
 
 impl MtoonSupport {
     /// No `MToon` group.
@@ -65,6 +66,20 @@ impl MtoonSupport {
     pub const RIM_LIGHTING_MIX: Self = Self(1 << 5);
     /// Mixing the outline colour with the scene lighting.
     pub const OUTLINE_LIGHTING_MIX: Self = Self(1 << 6);
+    /// The outline width multiplier texture.
+    pub const OUTLINE_WIDTH_TEXTURE: Self = Self(1 << 7);
+    /// The spec's lighting model ([`Mtoon`](crate::Mtoon)): the shade colour and texture, the shading shift and its
+    /// texture, the toony factor, the parametric rim (fresnel power, lift, texture), and the emissive and normal
+    /// textures.
+    pub const LIGHTING: Self = Self(1 << 8);
+    /// Depth writes for blended surfaces (`transparentWithZWrite`).
+    pub const BLEND_DEPTH_WRITE: Self = Self(1 << 9);
+    /// Every group: what a renderer that implements [`Mtoon`](crate::Mtoon) and the outline style draws.
+    pub const ALL: Self = Self((1 << 10) - 1);
+    /// The outline groups `Material::outline_style` carries (#647): screen-space widths, the lighting mix and the width
+    /// texture. Every renderer that implements the style draws all three.
+    pub const OUTLINE_STYLE: Self =
+        Self(Self::OUTLINE_WIDTH_SCREEN.0 | Self::OUTLINE_LIGHTING_MIX.0 | Self::OUTLINE_WIDTH_TEXTURE.0);
 
     /// True if every group in `group` is drawn (so `contains(NONE)` is always true).
     pub const fn contains(self, group: Self) -> bool {
@@ -286,6 +301,25 @@ pub trait Renderer: Send {
     /// # Errors
     /// `UnknownHandle`, or `Invalid` if nothing has been rendered into the target yet.
     fn read_target(&mut self, target: TargetId) -> Result<Image, RenderError>;
+
+    /// The native GPU handles of `target`'s output, so the app's viewport and the live outputs use the rendered frame
+    /// without a copy to the CPU (the rendered-frame contract, #629). `None` from a renderer without a GPU (the mock),
+    /// whose frames reach outputs through [`read_target`](Renderer::read_target); that is the default.
+    ///
+    /// The value is the renderer's documented convention, read with `downcast_ref`, so no GPU type enters this crate.
+    /// The wgpu renderer's is `omuzaki_render::NativeTarget`, the tuple `(wgpu::Device, wgpu::Queue, wgpu::Texture)`:
+    /// the device and queue it renders with, and the output texture, sRGB-encoded RGBA8 at the target's size in the
+    /// target's alpha encoding, usable for sampling and as a copy source. This is the form `omuzaki-stream-api`'s
+    /// `Frame::gpu` names. The next [`render`](Renderer::render) into the target draws into the same texture, so a
+    /// consumer samples or copies it first (a copy submitted after one `render` and before the next sees that frame,
+    /// by queue order), and [`resize_target`](Renderer::resize_target) replaces it.
+    ///
+    /// # Errors
+    /// `UnknownHandle` for a target that is not live, from a renderer that has native handles.
+    fn target_native(&self, target: TargetId) -> Result<Option<&dyn Any>, RenderError> {
+        let _ = target;
+        Ok(None)
+    }
 }
 
 /// Conveniences built from the required methods, kept off [`Renderer`] so it stays small and every implementation

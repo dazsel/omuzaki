@@ -13,10 +13,10 @@ pub(crate) mod texture;
 
 use crate::arena::Arena;
 use crate::environment::GpuEnvironment;
-use crate::morph::MorphPool;
+use crate::morph::{MorphPath, MorphPool, is_morphing};
 use material::GpuMaterial;
-use mesh::GpuMesh;
-use omuzaki_render_api::{ResourceStats, Scene};
+use mesh::{GpuMesh, Needs};
+use omuzaki_render_api::{AlphaMode, ResourceStats, Scene};
 use target::GpuTarget;
 use texture::GpuTexture;
 
@@ -56,18 +56,40 @@ impl Resources {
         (scene, &mut self.targets)
     }
 
-    /// Brings the outline directions and shadow bounds of every dynamic mesh `scene` draws up to date. The bounds are
-    /// read by shadow fitting (casters and receivers alike) and the blended sort, the directions only by the outline
-    /// pass, so a mesh that is not outlined never pays for its directions. Handles that miss are left for
+    /// Brings what each dynamic mesh `scene` draws lags behind its vertices up to date, as far as a pass reads it: the
+    /// outline directions of the mesh's own stream when an outlined instance draws it, and the bounds when shadow
+    /// fitting (`shadows`: this frame fits a shadow map) or the blended sort reads them. An instance that draws a morph
+    /// stream instead reads neither from the mesh (`morph/mod.rs` blends its own), so a mesh that is only ever drawn
+    /// morphed pays for none of this, and what it skips stays stale for a frame that does need it. The one exception is the
+    /// bounds on the GPU morph path, which grows the mesh's. Handles that miss are left for
     /// [`FrameState::prepare`](crate::frame::FrameState::prepare) to report.
-    pub(crate) fn refresh_dynamic(&mut self, queue: &wgpu::Queue, scene: &Scene) {
+    ///
+    /// Outline directions that a dispatch welds are queued on the morph pool, which records them with the frame's other
+    /// dispatches.
+    pub(crate) fn refresh_dynamic(&mut self, queue: &wgpu::Queue, scene: &Scene, shadows: bool) {
+        let Self { meshes, materials, morphs, .. } = self;
+        // Welds the last frame queued but never submitted did not run: their meshes lag again.
+        morphs.take_welds(|index, generation| {
+            if let Some(mesh) = meshes.get_mut(index, generation) {
+                mesh.directions_lost();
+            }
+        });
+        let grows_bounds = morphs.path() == MorphPath::Gpu;
         for instance in &scene.instances {
-            let outlined = self
-                .materials
-                .get(instance.material.index(), instance.material.generation())
-                .is_some_and(GpuMaterial::draws_outline);
-            if let Some(mesh) = self.meshes.get_mut(instance.mesh.index(), instance.mesh.generation()) {
-                mesh.refresh(queue, outlined);
+            let Some(material) = materials.get(instance.material.index(), instance.material.generation()) else {
+                continue;
+            };
+            let drawn_morphed = is_morphing(instance, scene, meshes);
+            let blended = matches!(material.material.alpha, AlphaMode::Blend);
+            let shadowed = shadows && (instance.casts_shadow || material.material.receives_shadows);
+            let needs = Needs {
+                hull: material.draws_outline() && !drawn_morphed,
+                bounds: if drawn_morphed { grows_bounds } else { blended || shadowed },
+            };
+            if let Some(mesh) = meshes.get_mut(instance.mesh.index(), instance.mesh.generation())
+                && mesh.refresh(queue, needs)
+            {
+                morphs.queue_weld(instance.mesh.index(), instance.mesh.generation());
             }
         }
     }

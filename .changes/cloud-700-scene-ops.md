@@ -1,0 +1,8 @@
+# Scenes are edited through operations
+
+- Twenty `stage.*` operations edit a scene as document changes, the same from the UI, MCP, the CLI and scripts (#700 to #704, #362). Every edit is checked against the scene's rules, writes only the values that changed (a one-field edit is a one-path patch), and undoes exactly.
+- Whole scenes: `stage.describe_scene` (settings, lights against the limit, what each camera frames, the cast, and findings such as a missing character), `stage.rename_scene`, `stage.duplicate_scene` (without the library's applied records) and `stage.delete_scene` (the default moves to the next scene in the same step).
+- Lights: `stage.add_light`, `stage.set_light`, `stage.remove_light` and `stage.set_lighting`. Giving a light the shadow takes it from the old caster in the same step. Past the limit, the refusal says how many lights there are. `stage.set_light_rig` lights a scene with a library rig and reports the rig it replaced and whether that rig had been edited. `stage.light_rigs` lists the rigs with a title, a one-line summary and tags.
+- Cameras: `stage.add_camera`, `stage.set_camera`, `stage.remove_camera` and `stage.set_active_camera`. A free camera needs a position and a target. Removing the opening camera moves it to the next camera in the same step.
+- The cast: `stage.place_character` (with no position given, the character stands 0.7 m to the right of the rightmost member), `stage.set_member`, `stage.remove_member` (lights and cameras anchored to the member follow the subject instead, in the same step) and `stage.set_subject`.
+- The look around the cast: `stage.set_backdrop` (lighting, colour or transparent), `stage.set_ground` (`radius: "fit"` sizes it to the cast) and `stage.set_post` (`"off"` removes an effect).

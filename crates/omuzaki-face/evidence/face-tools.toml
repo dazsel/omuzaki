@@ -1,0 +1,28 @@
+# Render cases for `tools/ci/evidence.py` (format at the top of that file): the face spine's tools and library.
+
+[[case]]
+name = "channel-sweep"
+description = "face.channel.sweep on the default face at 387 px: the rest face, then every ARKit-52 channel and anime extra pushed to its far end (a dead control, or one that moves the wrong way or on the wrong side, has its name in red)."
+env = { OMUZAKI_FACE_EVIDENCE_DIR = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-face", "--test", "evidence_tools", "--", "--exact", "render_the_channel_sweep_when_asked"] },
+]
+images = ["channel-sweep.png"]
+
+[[case]]
+name = "expression-library"
+description = "The built-in expression library on the default face at 28, 56 and 112 px, blown up with whole pixels (an expression in a pair the range test says reads the same has its name in red)."
+env = { OMUZAKI_FACE_EVIDENCE_DIR = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-face", "--test", "evidence_tools", "--", "--exact", "render_the_expression_library_when_asked"] },
+]
+images = ["library-28px.png", "library-56px.png", "library-112px.png"]
+
+[[case]]
+name = "exaggeration"
+description = "face.set_exaggeration's presets (realistic, anime, chibi-extreme) on the default face: five expressions at full strength, at a subtle 0.3, and at 0.3 with the subtle-movement expander (knee 0.3, gain 2.5)."
+env = { OMUZAKI_FACE_EVIDENCE_DIR = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-face", "--test", "exaggeration", "--", "--exact", "render_the_exaggeration_sheet_when_asked"] },
+]
+images = ["exaggeration.png"]

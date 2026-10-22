@@ -131,6 +131,67 @@ impl IntensityCurve {
     }
 }
 
+/// The layer a shown expression plays on (FE-03 "layers").
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaybackLayer {
+    /// It stays until it is hidden or replaced: a mood the performer sets.
+    #[default]
+    Held,
+    /// It plays over the held ones, which step back while it shows and return when it ends: a wink, a sweat drop.
+    Momentary,
+}
+
+/// How an expression plays when a trigger shows it (spec FE-03: fades, auto-stop, exclusive groups, layers). The
+/// trigger runtime (PF-25) reads it; the player in `omuzaki-face` (`player`) runs it. Lip sync and scores give weights
+/// directly and don't use it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Playback {
+    /// Seconds to fade in, `0..=10`; 0 shows it at once.
+    pub fade_in_s: f64,
+    /// Seconds to fade out, `0..=10`.
+    pub fade_out_s: f64,
+    /// Hide it on its own this many seconds after it is shown, `0.05..=600`; left out, it stays until hidden.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_stop_s: Option<f64>,
+    /// Its exclusive group: showing an expression hides every other one in the same group (one mood at a time).
+    /// Lowercase letters, digits, `_` and `-`; left out, it is in no group.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// Held (stays) or momentary (plays over the held ones).
+    pub layer: PlaybackLayer,
+}
+
+impl Default for Playback {
+    fn default() -> Self {
+        Self { fade_in_s: 0.12, fade_out_s: 0.2, auto_stop_s: None, group: None, layer: PlaybackLayer::Held }
+    }
+}
+
+impl Playback {
+    /// True for the default playback, which files leave out.
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+impl crate::check::Validate for Playback {
+    fn check(&self, c: &mut crate::check::Check) {
+        c.range("fade_in_s", self.fade_in_s, 0.0, 10.0);
+        c.range("fade_out_s", self.fade_out_s, 0.0, 10.0);
+        if let Some(stop) = self.auto_stop_s {
+            c.range("auto_stop_s", stop, 0.05, 600.0);
+        }
+        if let Some(group) = &self.group {
+            let ok = !group.is_empty()
+                && group.len() <= 32
+                && group.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-');
+            c.rule(&["group"], ok, "a group is 1 to 32 lowercase letters, digits, '_' or '-'");
+        }
+    }
+}
+
 /// One named expression.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -142,6 +203,10 @@ pub struct Expression {
     /// The weight curve; linear unless a curve is given.
     #[serde(default = "linear")]
     pub curve: IntensityCurve,
+    /// How it plays when a trigger shows it; the default (fade in 0.12 s, out 0.2 s, held, no group, no auto-stop) is
+    /// left out of files.
+    #[serde(default, skip_serializing_if = "Playback::is_default")]
+    pub playback: Playback,
 }
 
 fn linear() -> IntensityCurve {
@@ -295,12 +360,28 @@ impl ExpressionSet {
             .into_iter()
             .filter_map(|(name, kind, deltas)| {
                 let deltas = deltas.iter().fold(ChannelValues::default(), |m, (c, v)| m.with(*c, *v));
-                Some((ExpressionId::new(name).ok()?, Expression { kind, deltas, curve: IntensityCurve::Linear }))
+                Some((
+                    ExpressionId::new(name).ok()?,
+                    Expression { kind, deltas, curve: IntensityCurve::Linear, playback: Playback::default() },
+                ))
             })
             .collect();
         Self(map)
     }
+
+    /// The built-in library (FE-03): the five visemes (with the [`starter`](Self::starter)'s mouth openings) and `blink`, twenty-one moods
+    /// and seven accents, each with its intensity curve, tuned with the expression range test. It is data, in
+    /// `library/expressions.toml` of this crate, compiled in. A new character's face starts with it.
+    ///
+    /// # Errors
+    /// The parse error, if the compiled-in file does not read as an expression set (a test proves it does).
+    pub fn library() -> Result<Self, String> {
+        toml::from_str(LIBRARY).map_err(|e| format!("the built-in expression library does not read: {e}"))
+    }
 }
+
+/// The built-in library's source.
+const LIBRARY: &str = include_str!("../library/expressions.toml");
 
 #[cfg(test)]
 mod tests {
@@ -378,6 +459,42 @@ mod tests {
         assert!(angry.left_brow.tilt > 0.5 && angry.eye_tilt > 0.0 && angry.mouth.smile_left < 0.0);
         assert!(p("surprised").left_eye.open > 1.6);
         assert_eq!(p("blink").left_eye.close, 1.0);
+    }
+
+    #[test]
+    fn the_library_reads_keeps_the_contract_and_stays_in_range() {
+        let library = ExpressionSet::library().unwrap();
+        let starter = ExpressionSet::starter();
+        assert_eq!(library.0[&id("blink")], starter.0[&id("blink")]);
+        let mapping = FaceMapping::default();
+        let open = |set: &ExpressionSet, name: &str| {
+            mapping.apply(&set.blend(&ChannelBuf::NEUTRAL, &[(&id(name), 1.0)]).unwrap()).mouth.open
+        };
+        for name in VISEMES {
+            assert_eq!(library.0[&id(name)].kind, ExpressionKind::Viseme);
+            assert_eq!(open(&library, name), open(&starter, name), "{name} keeps the lip-sync opening");
+        }
+        let moods = library.0.values().filter(|e| e.kind == ExpressionKind::Emotion).count();
+        let accents = library.0.values().filter(|e| e.kind == ExpressionKind::Accent).count();
+        assert!(moods >= 18, "{moods} moods");
+        assert_eq!((moods, accents), (21, 7));
+        for (name, e) in &library.0 {
+            assert!(!e.deltas.0.is_empty(), "{name} moves nothing");
+            for (c, v) in &e.deltas.0 {
+                let (lo, hi) = c.range();
+                assert!(*v != 0.0 && narrow(*v) >= lo && narrow(*v) <= hi, "{name}: {c} = {v}");
+            }
+        }
+        // Any two expressions blend inside the channel ranges (the blend clamps, so it never fails or overflows).
+        for a in library.0.keys() {
+            for b in library.0.keys() {
+                let out = library.blend(&ChannelBuf::NEUTRAL, &[(a, 1.0), (b, 1.0)]).unwrap();
+                for info in CHANNELS {
+                    let v = out.get(info.channel);
+                    assert!(v >= info.min && v <= info.max, "{a} + {b}: {} = {v}", info.name);
+                }
+            }
+        }
     }
 
     #[test]

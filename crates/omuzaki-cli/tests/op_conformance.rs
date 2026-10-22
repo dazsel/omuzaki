@@ -27,6 +27,7 @@ use omuzaki_ops_api::{
     Actor, Grants, Mode, OpKind, OpRegistration, ProjectDir, Request, Runner, ServicesBuilder, Undo, registrations,
 };
 use omuzaki_stage::perform::Tracking;
+use omuzaki_stage::perform::guided::GuidedStatus;
 use omuzaki_stage::perform::host::{
     CalibrationState, PerformError, PerformHost, PerformStatus, RetargetChange, RetargetReceipt,
 };
@@ -197,6 +198,20 @@ impl InputHost for IdleInput {
             tracking: Tracking::NoFrames,
         }
     }
+
+    // A guided calibration that "starts" without running: the `input.calibrate` examples dry-run against it.
+    fn calibrate_guided(&self, _mode: Mode) -> Result<GuidedStatus, InputError> {
+        Ok(GuidedStatus::Idle)
+    }
+
+    // A pose output that "starts" without sending: the `input.vmc_out` examples dry-run against it.
+    fn set_pose_out(
+        &self,
+        _target: Option<std::net::SocketAddr>,
+        _mode: Mode,
+    ) -> Result<omuzaki_track_api::pose_out::PoseOutStatus, InputError> {
+        Ok(omuzaki_track_api::pose_out::PoseOutStatus::default())
+    }
 }
 
 impl PerformHost for IdleHost {
@@ -247,6 +262,28 @@ impl Rig {
             .map_err(|e| e.to_string())?
             .with_services(
                 window_host::with_window(ServicesBuilder::new())
+                    // The stream service with nothing running: the `record.*` and `output.*` examples dry-run
+                    // against it as they would in the app.
+                    .insert::<omuzaki_stream::service::StreamService>(Arc::new(
+                        omuzaki_stream::service::StreamService::new().expect("the stream service starts"),
+                    ))
+                    // The mock audio engine: the `audio.*` examples bind its default microphone.
+                    .insert::<dyn omuzaki_audio_api::engine::AudioEngine>(Arc::new(
+                        omuzaki_audio_mock::MockEngine::new(),
+                    ))
+                    // No OBS connection: the `obs.*` examples dry-run and say they would need one.
+                    .insert::<omuzaki_obs::service::ObsService>(Arc::new(omuzaki_obs::service::ObsService::new()))
+                    // No VTube Studio bridge: the `vts.*` examples dry-run and say they would need a connection.
+                    .insert::<omuzaki_vts::service::VtsService>(Arc::new(
+                        omuzaki_vts::service::VtsService::new().expect("the built-in channel map parses"),
+                    ))
+                    .insert::<omuzaki_live::Automation>(Arc::new(omuzaki_live::Automation::new()))
+                    // A Twitch service on a transport that answers nothing: the `twitch.*` examples dry-run and
+                    // report that no token is stored.
+                    .insert::<omuzaki_twitch::TwitchService>(Arc::new(omuzaki_twitch::TwitchService::new(
+                        Arc::new(omuzaki_http_mock::FakeHttp::new()),
+                        Arc::new(omuzaki_live::Automation::new()),
+                    )))
                     .insert::<dyn PerformHost>(Arc::new(IdleHost))
                     .insert::<dyn InputHost>(Arc::new(IdleInput))
                     .build(),

@@ -34,7 +34,9 @@ pub const fn mix(fg: Color32, bg: Color32, percent: u32) -> Color32 {
 pub const DISABLED_ALPHA: f32 = 0.55;
 
 /// Which palette a [`Theme`] is. Dark is the design baseline (streaming rooms are dim, viewport content is bright).
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+/// Saved as the `ui.theme` setting by its [`slug`](Self::slug).
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "kebab-case")]
 pub enum ThemeKind {
     /// The baseline: warm, quiet, dark.
     Dark,
@@ -433,8 +435,12 @@ pub mod dur {
     pub const AGENT_GLOW: f32 = 0.9;
 }
 
-/// How densely controls are packed. Comfortable is the default; Touch turns on for coarse pointers.
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+/// How densely controls are packed. Comfortable is the default; Touch turns on for coarse pointers. Saved as the
+/// `ui.density` setting.
+#[derive(
+    Clone, Copy, Debug, Default, Eq, Hash, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum Density {
     /// Default.
     #[default]

@@ -9,8 +9,8 @@ license.workspace = true
 repository.workspace = true
 
 # Tests only: every dependency is a dev-dependency, so the library stays empty and links nothing. Only the track area's
-# implementation crate (`omuzaki-track`) and the ONNX Runtime wrapper its real graphs load through (`omuzaki-ai-ort`)
-# may appear here (`cargo xtask lint-deps`).
+# implementation crate (`omuzaki-track`) and the runtimes its real graphs load through (`omuzaki-ai-ort`,
+# `omuzaki-ai-litert`) may appear here (`cargo xtask lint-deps`).
 [dev-dependencies]
 criterion.workspace = true
 tempfile.workspace = true
@@ -19,9 +19,14 @@ sha2.workspace = true
 # The timing probe test writes the `manifest.json` of a stand-in model folder.
 serde_json.workspace = true
 omuzaki-ai-api = { path = "../omuzaki-ai-api" }
+omuzaki-ai-litert = { path = "../omuzaki-ai-litert" }
 omuzaki-ai-ort = { path = "../omuzaki-ai-ort" }
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-track = { path = "../omuzaki-track" }
+
+# The timing probe's CPU-per-frame column on Windows (`GetProcessTimes`).
+[target.'cfg(windows)'.dev-dependencies]
+windows.workspace = true
 
 [[bench]]
 name = "track"

@@ -1,0 +1,11 @@
+# The `measure` render preset (docs/design/likeness-measures.md D10): the look of every render a `measure.*` op reads.
+# The geometry is the character's own; only the camera, the light and the line colour are fixed, so neither the
+# palette nor shading is a confound. `render.preview {preset = "measure"}` loads it (#376).
+name = "measure"
+summary = "A flat, front, orthographic face render with a dark line, for the measure.* ops: the same light and line on every character."
+camera = { framing = "face", projection = "orthographic", yaw = 0, pitch = 0 }
+light_rig = "measure-flat"
+expression = "neutral"
+post = "off"
+outline = { colour = "#1a1a1a", min_px = 1.5 }
+min_iod_px = 160

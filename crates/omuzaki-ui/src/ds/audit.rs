@@ -216,6 +216,7 @@ pub fn plain_english<'a>(texts: impl IntoIterator<Item = &'a str>) -> Vec<String
             word.len() >= 3
                 && word.bytes().any(|b| b.is_ascii_lowercase())
                 && !IDENTIFIER_WORDS.contains(&word)
+                && !omuzaki_ops_api::Scope::ALL.iter().any(|scope| scope.name() == word)
                 && !verbatim.contains(&word)
         });
         if prose && !found.iter().any(|f| f == text) {

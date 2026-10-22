@@ -96,6 +96,14 @@ impl GpuRasterizer for Counted {
         self.count(drawn)
     }
 
+    fn begin_frame(&mut self) {
+        self.inner.begin_frame();
+    }
+
+    fn stage(&mut self, spec: &FaceLayerSpec, list: &DrawList, sections: &LayerSections) -> Result<(), FaceError> {
+        self.inner.stage(spec, list, sections)
+    }
+
     fn device_lost(&mut self) {
         self.inner.device_lost();
     }

@@ -2,6 +2,9 @@
 # Three.js units (render-api D10): the numbers are copied, not rescaled.
 name = "viewer-moonlit"
 source = "js/viewer.js LIGHTS.moonlit (the candle point light at 25%)"
+title = "Moonlit"
+summary = "Cool moonlight from above with a faint candle, on a deep blue backdrop."
+tags = ["cool", "night", "moody"]
 exposure = 1.0
 background = "#121a2e"
 skin_floor = 0.45

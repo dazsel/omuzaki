@@ -13,7 +13,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::limits::{MAX_OVERLAYS, MAX_PROGRAM_PARAMS};
-use crate::{Colour, RenderError, TextureId};
+use crate::{Colour, Mtoon, RenderError, TextureId};
 
 /// How a surface is lit.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -170,6 +170,43 @@ impl Outline {
     }
 }
 
+/// What an [`Outline`]'s `width` measures (`MToon`'s `outlineWidthMode`, #647).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum OutlineWidthMode {
+    /// Metres at [`Outline::REFERENCE_DISTANCE`], growing gently with distance ([`Outline::world_width`]): the kit's
+    /// line, which stays readable as a character steps back.
+    #[default]
+    WorldByDistance,
+    /// Metres at any distance: `MToon`'s `worldCoordinates`.
+    World,
+    /// A fraction of the target's height, the same on screen at any distance and through any lens: `MToon`'s
+    /// `screenCoordinates`.
+    Screen,
+}
+
+/// How a material's outline is drawn beyond its colour and width (#647): `MToon`'s width mode, width mask and lighting
+/// mix. The default is the kit's line: world width by distance, no mask, the colour dimmed only by
+/// `Scene::outline_light`.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct OutlineStyle {
+    /// What `Outline::width` measures.
+    pub width_mode: OutlineWidthMode,
+    /// A per-texel multiplier of the width: the green channel of this texture at the mesh's UVs (through the
+    /// material's `uv_transform`), in the texture's declared colour space (`MToon`'s `outlineWidthMultiplyTexture` is
+    /// linear data). Black draws no line there.
+    pub width_texture: Option<TextureId>,
+    /// How much the lit surface tints the line, `0..=1` (`MToon`'s `outlineLightingMixFactor`): the line's colour is
+    /// `Outline::colour` times a mix from `Scene::outline_light` (0) to the surface's own lit colour (1).
+    pub lighting_mix: f32,
+}
+
+impl OutlineStyle {
+    /// The kit's line ([`Default`]).
+    pub const KIT: Self =
+        Self { width_mode: OutlineWidthMode::WorldByDistance, width_texture: None, lighting_mix: 0.0 };
+}
+
 /// How a surface's alpha is used.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "mode", rename_all = "snake_case")]
@@ -273,10 +310,15 @@ pub struct Material {
     pub vertex_colours: bool,
     /// The outline drawn around meshes using this material, if any.
     pub outline: Option<Outline>,
+    /// How that outline is drawn beyond its colour and width (`MToon`'s modes); ignored without an outline.
+    pub outline_style: OutlineStyle,
     /// Whether shadow maps darken this surface. Faces turn it off: anime faces stay clean under hair shadows.
     pub receives_shadows: bool,
     /// Applied to the UV of every UV-addressed texture (`base_texture` and [`Mapping::Uv`] overlays).
     pub uv_transform: UvTransform,
+    /// `MToon` 1.0's own lighting, for an imported model (LK-07): with toon shading, the surface is lit by the spec's
+    /// model ([`Mtoon`]) in place of the toon ramp. Boxed, as only imported materials carry it.
+    pub mtoon: Option<Box<Mtoon>>,
 }
 
 impl Material {
@@ -291,8 +333,10 @@ impl Material {
             double_sided: false,
             vertex_colours: false,
             outline: None,
+            outline_style: OutlineStyle::KIT,
             receives_shadows: true,
             uv_transform: UvTransform::IDENTITY,
+            mtoon: None,
         }
     }
 
@@ -303,7 +347,11 @@ impl Material {
 
     /// Every texture this material reads. A renderer refuses to release one of them while the material is alive.
     pub fn textures(&self) -> impl Iterator<Item = TextureId> + '_ {
-        self.base_texture.into_iter().chain(self.overlays.iter().map(|o| o.texture))
+        self.base_texture
+            .into_iter()
+            .chain(self.overlays.iter().map(|o| o.texture))
+            .chain(self.outline_style.width_texture)
+            .chain(self.mtoon.iter().flat_map(|m| m.textures().copied()))
     }
 
     /// Checks the rules every renderer shares (ranges and counts; handles are checked by the renderer).
@@ -360,8 +408,14 @@ impl Material {
         if self.outline.is_some_and(|o| !(o.width >= 0.0 && o.width.is_finite())) {
             return bad("outline width must be >= 0");
         }
+        if !(0.0..=1.0).contains(&self.outline_style.lighting_mix) {
+            return bad("outline lighting_mix must be in 0..=1");
+        }
         if !self.uv_transform.is_finite() {
             return bad("the uv transform must be finite");
+        }
+        if let Some(mtoon) = &self.mtoon {
+            mtoon.validate()?;
         }
         Ok(())
     }

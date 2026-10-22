@@ -1,17 +1,21 @@
 //! The probe itself, in a file of its own so `tests/track_roi_probe.rs` can run it (an example's own `#[test]`s are
 //! not run). Everything it prints, to the table or as an error, is free of paths: this repository is public.
+#![allow(clippy::doc_markdown)] // LiteRT, XNNPACK and MediaPipe are product names
 
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use omuzaki_ai_api::{Provider, SessionOptions};
+use omuzaki_ai_api::{FileSource, Provider, Runtime, SessionOptions};
+use omuzaki_ai_litert::LiteRtRuntime;
 use omuzaki_ai_ort::{OrtRuntime, builds};
 use omuzaki_core::time::Seconds;
 use omuzaki_track::models::ModelDir;
-use omuzaki_track::{FaceTracker, FaceTrackerConfig, Mode, NormRect, RgbFrame};
+use omuzaki_track::{FaceTracker, FaceTrackerConfig, Mode, NormRect, RgbFrame, StageTimings};
+use sha2::Digest;
 
+use crate::cpu::process_cpu;
 use crate::percentile::nearest_rank;
 use crate::track_support::DirSource;
 
@@ -23,30 +27,61 @@ const ROI: NormRect = NormRect { x_center: 0.5, y_center: 0.5, width: 0.5, heigh
 const WARM_UP: u32 = 20;
 /// Timed calls.
 const CALLS: u32 = 1000;
-/// Intra-op threads of every session.
-const THREADS: u16 = 1;
+/// Intra-op threads each runtime runs at, one row each (#1753).
+const THREADS: [u16; 3] = [1, 2, 4];
 /// What an error shows in place of a folder the user named.
 const HIDDEN: &str = "<folder>";
 
-/// Where the models and the ONNX Runtime archive are: the two environment variables, or `None` for unset.
+/// Where the models and the runtimes are: the environment variables, or `None` for unset. Each runtime runs when its
+/// own variables are set.
+#[derive(Default)]
 pub struct Setup {
     /// `OMUZAKI_TRACK_MODELS`: the folder `tools/models/mediapipe-face.sh` writes.
     pub models: Option<OsString>,
     /// `OMUZAKI_ORT_CACHE`: the folder holding the pinned ONNX Runtime archive.
     pub cache: Option<OsString>,
+    /// `OMUZAKI_FACE_TASK`: MediaPipe's official `face_landmarker.task`, downloaded (`--pins` prints its URL).
+    pub task: Option<OsString>,
+    /// `OMUZAKI_LITERT_CACHE`: the folder holding the LiteRT archive of the CI run that built it.
+    pub litert: Option<OsString>,
+    /// `OMUZAKI_LITERT_SHA256`: that run's SHA-256 of the archive (there is no published pin yet, #1748).
+    pub litert_sha256: Option<String>,
 }
 
 impl Setup {
-    /// The places an error must not name: the two folders and the working folder.
+    /// The places an error must not name: the folders, the bundle and the working folder.
     fn hidden(&self) -> Vec<String> {
         let cwd = std::env::current_dir().ok().map(PathBuf::into_os_string);
-        [self.models.as_ref(), self.cache.as_ref(), cwd.as_ref()]
+        [self.models.as_ref(), self.cache.as_ref(), self.task.as_ref(), self.litert.as_ref(), cwd.as_ref()]
             .into_iter()
             .flatten()
             .map(|place| place.to_string_lossy().into_owned())
             .collect()
     }
 }
+
+/// One row of the tables: the runtime and its thread count, the whole call's times and each stage's, in microseconds
+/// and sorted, and the process's CPU time over the timed calls (`None` where the platform doesn't report it).
+struct Row {
+    runtime: &'static str,
+    threads: u16,
+    micros: Vec<f64>,
+    stages: [Vec<f64>; STAGES.len()],
+    cpu: Option<Duration>,
+}
+
+/// How a stage's time is read from the tracker's timings.
+type Stage = fn(&StageTimings) -> u32;
+
+/// The stages of `track_roi` the probe splits it into (#1905), with how each is read from the tracker's timings. The
+/// detector does not run: `track_roi` starts from a given region.
+const STAGES: [(&str, Stage); 5] = [
+    ("warp", |t| t.warp_us),
+    ("landmark run", |t| t.landmark_run_us),
+    ("decode", StageTimings::landmark_decode_us),
+    ("blendshapes", |t| t.blendshapes_us),
+    ("smoothing and pose", |t| t.geometry_us),
+];
 
 /// `message` with every place in `hidden` replaced by [`HIDDEN`], longest first so a folder inside another is not left
 /// half showing. A place with nothing in it to leak (empty, or only dots and separators, like `.` or `/`) is left
@@ -76,25 +111,67 @@ fn gradient() -> Vec<u8> {
     pixels
 }
 
-/// Runs the probe and writes its table to `out`. With either folder unset it says why and succeeds, as the gated
-/// tests do. Every error returned is free of paths (see [`redact`]).
+/// Runs the probe and writes its table to `out`: ONNX Runtime when its two variables are set, LiteRT when its three
+/// are. With neither set it says why and succeeds, as the gated tests do. Nothing is written unless every run
+/// succeeds, and every error returned is free of paths (see [`redact`]).
 pub fn run(setup: &Setup, out: &mut dyn Write) -> Result<(), String> {
-    let (Some(models), Some(cache)) = (&setup.models, &setup.cache) else {
+    let ort = setup.models.as_ref().zip(setup.cache.as_ref());
+    let litert = setup.task.as_ref().zip(setup.litert.as_ref()).zip(setup.litert_sha256.as_ref());
+    if ort.is_none() && litert.is_none() {
         return say(
             out,
-            "skipped: set OMUZAKI_TRACK_MODELS (the model folder) and OMUZAKI_ORT_CACHE (the ONNX Runtime archive)",
+            "skipped: set OMUZAKI_TRACK_MODELS (the model folder) and OMUZAKI_ORT_CACHE (the ONNX Runtime archive), \
+             or OMUZAKI_FACE_TASK, OMUZAKI_LITERT_CACHE and OMUZAKI_LITERT_SHA256 (LiteRT)",
         );
+    }
+    let mut rows = Vec::new();
+    let mut measured = || -> Result<(), String> {
+        if let Some((models, cache)) = ort {
+            rows.extend(measure_ort(models, cache)?);
+        }
+        if let Some(((task, cache), sha256)) = litert {
+            rows.extend(measure_litert(task, cache, sha256)?);
+        }
+        Ok(())
     };
-    measure(models, cache, out).map_err(|message| redact(&message, &setup.hidden()))
+    measured().map_err(|message| redact(&message, &setup.hidden()))?;
+    table(&rows, out)
 }
 
-/// Loads the graphs and prints the timing table. Its errors may name paths: [`run`] redacts them.
-fn measure(models: &OsStr, cache: &OsStr, out: &mut dyn Write) -> Result<(), String> {
+/// The ONNX Runtime rows, over the converted model folder. Its errors may name paths: [`run`] redacts them.
+fn measure_ort(models: &OsStr, cache: &OsStr) -> Result<Vec<Row>, String> {
     let dir = ModelDir::open(&PathBuf::from(models)).map_err(|e| format!("the model folder: {e}"))?;
-    let options = SessionOptions::new(vec![Provider::Cpu], THREADS);
-    let graphs = dir
-        .load(&OrtRuntime, &DirSource(PathBuf::from(cache)), &options)
-        .map_err(|e| format!("loading the graphs: {e}"))?;
+    let natives = DirSource(PathBuf::from(cache));
+    THREADS.into_iter().map(|threads| time("onnx", &dir, &OrtRuntime, &natives, threads)).collect()
+}
+
+/// The LiteRT rows, over the official bundle unpacked in a scratch folder. Its errors may name paths.
+fn measure_litert(task: &OsStr, cache: &OsStr, sha256: &str) -> Result<Vec<Row>, String> {
+    let build = omuzaki_ai_litert::builds::select_here().ok_or("no LiteRT build for this platform")?;
+    let archive = PathBuf::from(cache).join(build.asset);
+    let bytes = std::fs::read(&archive).map_err(|e| format!("the LiteRT archive {}: {e}", archive.display()))?;
+    if format!("{:x}", sha2::Sha256::digest(&bytes)) != sha256.trim().to_lowercase() {
+        return Err("the LiteRT archive does not match OMUZAKI_LITERT_SHA256".to_owned());
+    }
+    omuzaki_ai_litert::load_archive(&archive, sha256.trim()).map_err(|e| format!("loading LiteRT: {e}"))?;
+    let scratch = tempfile::tempdir().map_err(|e| format!("a scratch folder: {e}"))?;
+    let copy = scratch.path().join(omuzaki_track::task::TASK_FILE);
+    std::fs::copy(task, &copy).map_err(|e| format!("the face bundle: {e}"))?;
+    let dir = omuzaki_track::task::unpack(&copy).map_err(|e| format!("the face bundle: {e}"))?;
+    let natives = DirSource(scratch.path().to_path_buf());
+    THREADS.into_iter().map(|threads| time("tflite", &dir, &LiteRtRuntime, &natives, threads)).collect()
+}
+
+/// `track_roi`'s row on `dir`'s graphs through `runtime` (named `name`) at `threads` threads.
+fn time(
+    name: &'static str,
+    dir: &ModelDir,
+    runtime: &dyn Runtime,
+    natives: &dyn FileSource,
+    threads: u16,
+) -> Result<Row, String> {
+    let options = SessionOptions::new(vec![Provider::Cpu], threads);
+    let graphs = dir.load(runtime, natives, &options).map_err(|e| format!("loading the graphs: {e}"))?;
     let geometry = dir.geometry().map_err(|e| format!("the model geometry: {e}"))?;
     let config = FaceTrackerConfig { mode: Mode::Video, ..FaceTrackerConfig::default() };
     let mut tracker = FaceTracker::new(graphs, &geometry, config).map_err(|e| format!("the graphs' slots: {e}"))?;
@@ -103,22 +180,82 @@ fn measure(models: &OsStr, cache: &OsStr, out: &mut dyn Write) -> Result<(), Str
     let frame = RgbFrame { data: &pixels, width: W, height: H, stride: W as usize * 3 };
     let mut index = 0_u32;
     // A failed call would time partial work, so the first one stops the probe.
-    let mut call = |tracker: &mut FaceTracker| -> Result<f64, String> {
+    let mut call = |tracker: &mut FaceTracker| -> Result<(f64, StageTimings), String> {
         index += 1;
         let started = Instant::now();
-        let sample = tracker.track_roi(&frame, ROI, Seconds(f64::from(index) / 30.0));
+        let result = tracker.track_roi_timed(&frame, ROI, Seconds(f64::from(index) / 30.0));
         let micros = started.elapsed().as_secs_f64() * 1e6;
-        sample.map(std::hint::black_box).map_err(|e| format!("track_roi call {index} failed: {e}"))?;
-        Ok(micros)
+        let (sample, timings) = result.map_err(|e| format!("track_roi call {index} failed: {e}"))?;
+        std::hint::black_box(sample);
+        Ok((micros, timings))
     };
     for _ in 0..WARM_UP {
         call(&mut tracker)?;
     }
-    let mut micros = (0..CALLS).map(|_| call(&mut tracker)).collect::<Result<Vec<_>, _>>()?;
-    micros.sort_by(f64::total_cmp);
-    let mean = micros.iter().sum::<f64>() / f64::from(CALLS);
+    let cpu_before = process_cpu();
+    let calls = (0..CALLS).map(|_| call(&mut tracker)).collect::<Result<Vec<_>, _>>()?;
+    let cpu = process_cpu().zip(cpu_before).and_then(|(after, before)| after.checked_sub(before));
+    let sorted = |mut values: Vec<f64>| {
+        values.sort_by(f64::total_cmp);
+        values
+    };
+    let micros = sorted(calls.iter().map(|(micros, _)| *micros).collect());
+    let stages = STAGES.map(|(_, read)| sorted(calls.iter().map(|(_, t)| f64::from(read(t))).collect()));
+    Ok(Row { runtime: name, threads, micros, stages, cpu })
+}
 
-    let runtime = omuzaki_ai_ort::loaded().map_or_else(
+/// Mean, p50 and p95 of sorted microseconds, in milliseconds.
+fn summary(sorted: &[f64]) -> [f64; 3] {
+    let mean = sorted.iter().sum::<f64>() / f64::from(CALLS);
+    [mean / 1e3, nearest_rank(sorted, 50) / 1e3, nearest_rank(sorted, 95) / 1e3]
+}
+
+/// Prints the table of `rows` and the builds that ran them.
+fn table(rows: &[Row], out: &mut dyn Write) -> Result<(), String> {
+    say(out, &format!("## track_roi timing, {W}x{H}, {CALLS} calls after {WARM_UP} warm-up\n"))?;
+    say(
+        out,
+        "| runtime | threads | mean (ms) | p50 (ms) | p95 (ms) | CPU per call (ms) | cores busy |\n\
+         |---|---|---|---|---|---|---|",
+    )?;
+    for row in rows {
+        let [mean, p50, p95] = summary(&row.micros);
+        // The process's CPU time over the timed calls, per call, and as cores kept busy during them.
+        let (cpu, cores) = row.cpu.map_or_else(
+            || ("not reported".to_owned(), "not reported".to_owned()),
+            |cpu| {
+                let per_call = cpu.as_secs_f64() * 1e3 / f64::from(CALLS);
+                (format!("{per_call:.2}"), format!("{:.2}", per_call / mean))
+            },
+        );
+        say(
+            out,
+            &format!("| {} | {} | {mean:.2} | {p50:.2} | {p95:.2} | {cpu} | {cores} |", row.runtime, row.threads),
+        )?;
+    }
+    say(out, "\n### Per stage, mean / p50 / p95 (ms)\n")?;
+    let header = STAGES.map(|(name, _)| name).join(" | ");
+    say(
+        out,
+        &format!("| runtime | threads | {header} | stages / call |\n|---|---|{}---|", "---|".repeat(STAGES.len())),
+    )?;
+    for row in rows {
+        let cells = row
+            .stages
+            .iter()
+            .map(|stage| {
+                let [mean, p50, p95] = summary(stage);
+                format!("{mean:.2} / {p50:.2} / {p95:.2}")
+            })
+            .collect::<Vec<_>>()
+            .join(" | ");
+        // How much of the whole call the stages account for: the rest is the call's own bookkeeping.
+        let covered = row.stages.iter().map(|stage| stage.iter().sum::<f64>()).sum::<f64>()
+            / row.micros.iter().sum::<f64>().max(f64::MIN_POSITIVE);
+        say(out, &format!("| {} | {} | {cells} | {:.1}% |", row.runtime, row.threads, covered * 100.0))?;
+    }
+    say(out, "")?;
+    let ort = omuzaki_ai_ort::loaded().map_or_else(
         || "not reported".to_owned(),
         |l| {
             format!(
@@ -129,25 +266,30 @@ fn measure(models: &OsStr, cache: &OsStr, out: &mut dyn Write) -> Result<(), Str
             )
         },
     );
-    say(out, &format!("## track_roi timing, {W}x{H}, {THREADS} thread, {CALLS} calls after {WARM_UP} warm-up\n"))?;
-    say(out, "| stage | mean (ms) | p50 (ms) | p95 (ms) |\n|---|---|---|---|")?;
-    say(
-        out,
-        &format!(
-            "| total | {:.2} | {:.2} | {:.2} |\n",
-            mean / 1e3,
-            nearest_rank(&micros, 50) / 1e3,
-            nearest_rank(&micros, 95) / 1e3
-        ),
-    )?;
-    say(out, &format!("- ORT build: {runtime}"))?;
-    say(out, "- graph optimisation: ONNX Runtime's default (`omuzaki-ai-ort` sets no level)")?;
+    if rows.iter().any(|row| row.runtime == "onnx") {
+        say(out, &format!("- ORT build: {ort}"))?;
+        say(out, "- graph optimisation: ONNX Runtime's default (`omuzaki-ai-ort` sets no level)")?;
+    }
+    if let Some(loaded) = omuzaki_ai_litert::loaded() {
+        say(
+            out,
+            &format!(
+                "- LiteRT build: {} (LiteRT {}, XNNPACK)",
+                loaded.build.id,
+                omuzaki_ai_litert::builds::LITERT_VERSION
+            ),
+        )?;
+        say(out, "- face graphs: the official face_landmarker.task (float16, version 1)")?;
+    }
     say(out, &format!("- platform: {}-{}", std::env::consts::OS, std::env::consts::ARCH))
 }
 
-/// Prints the pinned ONNX Runtime archive for this platform: the URL, SHA-256 and size to fetch and check.
+/// Prints the pinned ONNX Runtime archive for this platform (the URL, SHA-256 and size to fetch and check), then the
+/// official face bundle for the LiteRT run.
 pub fn pins(out: &mut dyn Write) -> Result<(), String> {
     let build = builds::select_here(&[]).ok_or("no pinned ONNX Runtime build for this platform")?;
     let pin = build.pin();
-    say(out, &format!("asset {}\nurl {}\nsha256 {}\nsize {}", build.asset, pin.urls.join(" "), pin.sha256, pin.size))
+    say(out, &format!("asset {}\nurl {}\nsha256 {}\nsize {}", build.asset, pin.urls.join(" "), pin.sha256, pin.size))?;
+    let task = omuzaki_track::task::task_pin();
+    say(out, &format!("\nface bundle\nurl {}\nsha256 {}\nsize {}", task.urls.join(" "), task.sha256, task.size))
 }

@@ -12,9 +12,13 @@
 //!
 //! Head and body channels (`headYaw`, `breath`, ...) and the `customNN` slots are not expressions and have no name here.
 //! The VRM presets (`happy`, `aa`, ...) are not channels either; the face baker derives them from the channels.
+//!
+//! A character's own named expressions (`smug`, a second `happy`) export under [`named_expression`]: the VRM preset of
+//! the same name, else `omuzaki_<id>`. The VRM and VRMA exporters both name expressions through it, so a VRMA track
+//! for an expression targets the expression the VRM carries.
 
-use omuzaki_anim_api::Channel;
-use omuzaki_io_api::{ARKIT_52, EXTRA_PREFIX, ExpressionName, extra_expression};
+use omuzaki_anim_api::{Channel, ExpressionId};
+use omuzaki_io_api::{ARKIT_52, EXTRA_PREFIX, ExpressionName, PresetExpression, extra_expression};
 
 /// The anime extras and the id each is exported under (`omuzaki_<id>`). Together with the 52 `ARKit` channels these are
 /// every channel that becomes an expression.
@@ -43,6 +47,15 @@ pub fn expression_name(channel: Channel) -> Option<ExpressionName> {
     }
     let (_, id) = EXTRAS.iter().find(|(extra, _)| *extra == channel)?;
     extra_expression(id).ok()
+}
+
+/// The name a character's expression `id` is exported under: the VRM preset when `id` is a preset's name (`happy`),
+/// else `omuzaki_<id>` (`omuzaki_smug`). `None` only for an id a file can't carry as a name.
+pub fn named_expression(id: &ExpressionId) -> Option<ExpressionName> {
+    match PresetExpression::ALL.iter().find(|preset| preset.as_str() == id.as_str()) {
+        Some(preset) => Some(ExpressionName::Preset(*preset)),
+        None => extra_expression(id.as_str()).ok(),
+    }
 }
 
 /// The channel an expression named `name` carries, or `None` if it is a preset, a model's own expression or an
@@ -159,5 +172,19 @@ mod tests {
             assert_eq!(channel_for(name), None, "{name:?}");
         }
         assert!(matches!(ExpressionName::parse("happy"), Ok(ExpressionName::Preset(PresetExpression::Happy))));
+    }
+
+    #[test]
+    fn a_named_expression_is_its_preset_or_omuzaki_prefixed() {
+        let id = |s: &str| omuzaki_anim_api::ExpressionId::new(s).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(named_expression(&id("happy")), Some(ExpressionName::Preset(PresetExpression::Happy)));
+        assert_eq!(named_expression(&id("aa")), Some(ExpressionName::Preset(PresetExpression::Aa)));
+        assert_eq!(named_expression(&id("smug")).map(|n| n.to_string()), Some("omuzaki_smug".to_owned()));
+        // Every preset whose name an expression can have maps back to that preset.
+        for preset in PresetExpression::ALL {
+            if let Ok(own) = omuzaki_anim_api::ExpressionId::new(preset.as_str()) {
+                assert_eq!(named_expression(&own), Some(ExpressionName::Preset(preset)), "{preset:?}");
+            }
+        }
     }
 }

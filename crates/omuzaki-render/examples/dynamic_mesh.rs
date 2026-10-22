@@ -11,6 +11,10 @@
 //! The dynamic frame minus the unchanged render is the incremental cost of moving the mesh; the budget is 0.2 ms of it
 //! for 20 000 vertices. The two renders are timed on alternate frames so that drift and load hit both alike.
 //!
+//! Those are CPU times: the GPU's work runs after the call returns. The last row adds the wait for the queue to drain, so
+//! it is the whole frame including the GPU work (on `--software` that work is the CPU's too, on another thread), which
+//! is where the outline directions' dispatch shows up.
+//!
 //! `--render-to DIR` also renders the sheet flat and rippling, for the pull request: `before.png` and `after.png`.
 
 // A benchmark's statistics use small counts in float maths; the casts are exact enough.
@@ -70,6 +74,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let warmup = 100usize;
     let (mut update_only, mut dynamic_frame, mut unchanged_frame) =
         (Vec::with_capacity(frames), Vec::with_capacity(frames), Vec::with_capacity(frames));
+    let (mut dynamic_wall, mut unchanged_wall) = (Vec::with_capacity(frames), Vec::with_capacity(frames));
     for i in 0..frames + warmup {
         // 1. `update_vertices` alone. Its deferred work stays pending for the next draw.
         grid::wave_into(&flat, i as f32 * 0.05, &mut positions, &mut normals);
@@ -83,13 +88,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let dynamic = update + start.elapsed();
         // Each timed call starts on an idle queue, so none of them is charged for the GPU work of an earlier one.
         renderer.wait_idle()?;
+        let dynamic_to_idle = update + start.elapsed();
         // 3. The same draw with nothing changed since the last one.
         scene.frame.index = i as u64 * 2 + 1;
         let start = Instant::now();
         renderer.render(target, &scene, &quality)?;
         let unchanged = start.elapsed();
         renderer.wait_idle()?;
+        let unchanged_to_idle = start.elapsed();
         if i >= warmup {
+            dynamic_wall.push(dynamic_to_idle);
+            unchanged_wall.push(unchanged_to_idle);
             update_only.push(update);
             dynamic_frame.push(dynamic);
             unchanged_frame.push(unchanged);
@@ -103,6 +112,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     report("render, unchanged geometry", &mut unchanged_frame);
     report("update + outlined render", &mut dynamic_frame);
     report("incremental (frame - unchanged)", &mut incremental);
+    let mut incremental_wall: Vec<Duration> =
+        dynamic_wall.iter().zip(&unchanged_wall).map(|(d, u)| d.saturating_sub(*u)).collect();
+    report("incremental to idle, GPU work included", &mut incremental_wall);
 
     if let Some(dir) = render_to {
         std::fs::create_dir_all(&dir)?;

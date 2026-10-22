@@ -90,9 +90,8 @@ fn the_live_stage_paints_its_face_on_the_gpu_and_the_frame_matches_the_cpu_path(
     eprintln!("the face drawn on the GPU against the CPU path, frame {FRAMES}: {}", report.stats);
     save("stage-face", &gpu, &cpu, &report);
     assert!(report.passes(T_FACE_MIN_PSNR_DB), "the GPU face differs from the CPU path: {}", report.stats);
-    for stage in [gpu_stage, cpu_stage] {
-        stage.release(&mut renderer).unwrap();
-    }
+    gpu_stage.release(&mut renderer).unwrap();
+    cpu_stage.release(&mut renderer).unwrap();
 }
 
 #[test]
@@ -122,9 +121,8 @@ fn after_a_device_loss_the_face_is_drawn_whole_again() {
     let expected = rgba(&renderer.read_target(reference.target()).unwrap());
     let report = compare_region(&picture, &expected, Rect::full(SIZE, SIZE), T_FACE).unwrap();
     assert!(report.passes(T_FACE_MIN_PSNR_DB), "the repainted face differs from the CPU path: {}", report.stats);
-    for stage in [stage, reference] {
-        stage.release(&mut renderer).unwrap();
-    }
+    stage.release(&mut renderer).unwrap();
+    reference.release(&mut renderer).unwrap();
 }
 
 /// Ticks `stage` and `reference` through `frames` frames of one held face and compares their last frames.
@@ -159,9 +157,8 @@ fn a_face_that_outgrows_the_gpu_buffers_is_repaired_while_it_does_not_change() {
     eprintln!("{REPAIR_FRAMES} frames after the overflow, the face against the CPU path: {}", repaired.stats);
     assert!(drawn.load(Ordering::Relaxed) > layers, "nothing was painted again after the overflow");
     assert!(repaired.passes(T_FACE_MIN_PSNR_DB), "the face was not repaired: {}", repaired.stats);
-    for stage in [stage, reference] {
-        stage.release(&mut renderer).unwrap();
-    }
+    stage.release(&mut renderer).unwrap();
+    reference.release(&mut renderer).unwrap();
 }
 
 #[test]
@@ -174,9 +171,8 @@ fn a_face_that_fits_is_painted_once_while_it_does_not_change() {
     let report = held(&mut stage, &mut reference, &mut renderer, REPAIR_FRAMES + 2);
     assert_eq!(drawn.load(Ordering::Relaxed), layers, "a held face that fits Vello's buffers is never asked for again");
     assert!(report.passes(T_FACE_MIN_PSNR_DB), "the held face differs from the CPU path: {}", report.stats);
-    for stage in [stage, reference] {
-        stage.release(&mut renderer).unwrap();
-    }
+    stage.release(&mut renderer).unwrap();
+    reference.release(&mut renderer).unwrap();
 }
 
 #[test]
@@ -197,7 +193,6 @@ fn on_a_software_adapter_the_production_rig_paints_the_face_with_the_cpu_raster(
         "the production rig's GPU rasteriser is hardware-only: on lavapipe it declines and the CPU raster draws the very \
          same frame"
     );
-    for stage in [production, cpu] {
-        stage.release(&mut renderer).unwrap();
-    }
+    production.release(&mut renderer).unwrap();
+    cpu.release(&mut renderer).unwrap();
 }

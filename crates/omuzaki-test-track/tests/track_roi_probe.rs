@@ -4,6 +4,8 @@
 
 #![allow(clippy::expect_used)]
 
+#[path = "../examples/track_roi_timing/cpu.rs"]
+mod cpu;
 #[path = "../examples/track_roi_timing/percentile.rs"]
 mod percentile;
 #[path = "../examples/track_roi_timing/probe.rs"]
@@ -48,7 +50,7 @@ fn write_models(dir: &Path) {
 
 /// Runs the probe and returns (what it wrote to stdout, the error it would print on stderr).
 fn probe(models: &Path, cache: &Path) -> (String, String) {
-    let setup = Setup { models: Some(OsString::from(models)), cache: Some(OsString::from(cache)) };
+    let setup = Setup { models: Some(OsString::from(models)), cache: Some(OsString::from(cache)), ..Setup::default() };
     let mut out = Vec::new();
     let error = run(&setup, &mut out).expect_err("the setup is broken, so the probe fails");
     (String::from_utf8(out).expect("stdout is text"), error)
@@ -97,7 +99,7 @@ fn a_missing_archive_is_reported_without_the_cache_folder() {
 #[test]
 fn an_unset_folder_skips_and_names_only_the_variables() {
     let mut out = Vec::new();
-    run(&Setup { models: None, cache: None }, &mut out).expect("a skipped probe succeeds");
+    run(&Setup::default(), &mut out).expect("a skipped probe succeeds");
     let out = String::from_utf8(out).expect("text");
     assert!(out.starts_with("skipped: set OMUZAKI_TRACK_MODELS"), "{out}");
 }

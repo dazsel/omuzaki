@@ -11,7 +11,7 @@ use crate::ds::theme::ds;
 use crate::ds::tokens::radius;
 use crate::ds::widgets::Button;
 use crate::ds::widgets::keycap::Shortcut;
-use crate::register_story;
+use omuzaki_ui_api::register_story;
 
 #[derive(Default)]
 struct State {

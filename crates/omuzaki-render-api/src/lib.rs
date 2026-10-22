@@ -32,7 +32,9 @@ mod environment;
 mod error;
 mod handle;
 mod material;
+pub mod memory;
 mod morph;
+mod mtoon;
 mod pass;
 mod quality;
 mod renderer;
@@ -43,9 +45,11 @@ pub use environment::{EnvironmentDesc, EnvironmentUse, sky_radiance};
 pub use error::RenderError;
 pub use handle::{EnvironmentId, MaterialId, MeshId, ResourceRef, TargetId, TextureId};
 pub use material::{
-    AlphaMode, Mapping, Material, Outline, Overlay, ParamValue, ProgramParams, Rim, Shading, Skin, Toon, UvTransform,
+    AlphaMode, Mapping, Material, Outline, OutlineStyle, OutlineWidthMode, Overlay, ParamValue, ProgramParams, Rim,
+    Shading, Skin, Toon, UvTransform,
 };
 pub use morph::{MeshOptions, MeshUsage, MorphSet, SparseMorph};
+pub use mtoon::Mtoon;
 pub use omuzaki_core::colour::{Colour, ColourParseError, srgb_decode, srgb_encode, to_byte};
 pub use omuzaki_core::mesh::{ExtraAttribute, MeshData, MeshError};
 pub use pass::{FrameReport, GpuTimings, Pass, PassTimes};

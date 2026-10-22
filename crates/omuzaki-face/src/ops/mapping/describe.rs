@@ -127,9 +127,14 @@ const FORMULAS: &[(&str, &str)] = &[
     ("brows/inner_up_arch", "brow arch lost per unit of browInnerUp"),
     (
         "mouth/open",
-        "jaw opening per unit of jawOpen: open = this x max(0, jawOpen - close_cancel x mouthClose), clamped to 0..1.5",
+        "jaw opening per unit of jawOpen: open = this x max(jaw, lips parted), jaw = max(0, jawOpen - close_cancel x \
+         mouthClose), clamped to 0..1.5",
     ),
     ("mouth/close_cancel", "how much mouthClose cancels from jawOpen"),
+    ("mouth/part_funnel", "jaw-equivalent opening per unit of mouthFunnel when the jaw is closed (lips parted)"),
+    ("mouth/part_upper_up", "jaw-equivalent opening per unit of the mean mouthUpperUp* when the jaw is closed"),
+    ("mouth/part_lower_down", "jaw-equivalent opening per unit of the mean mouthLowerDown* when the jaw is closed"),
+    ("mouth/part_tongue", "jaw-equivalent opening per unit of tongueOut when the jaw is closed"),
     ("mouth/smile", "mouth-corner lift per unit of mouthSmile*"),
     ("mouth/frown", "mouth-corner lift lost per unit of mouthFrown*"),
     ("mouth/dimple", "mouth-corner lift added per unit of mouthDimple*"),
@@ -156,6 +161,12 @@ const FORMULAS: &[(&str, &str)] = &[
     ("cheeks/blush", "blush per unit of blush"),
     ("gaze/x", "sideways look per unit of the eye-look channels, clamped to -1..1"),
     ("gaze/y", "vertical look per unit of the eye-look channels, clamped to -1..1"),
+    (
+        "amplify/knee",
+        "subtle-movement expander: each ARKit channel below this is multiplied by amplify.gain, then runs straight to \
+         1 (0 turns it off), 0..0.5",
+    ),
+    ("amplify/gain", "the expander's boost below its knee, 1..4; knee x gain is at most 1"),
 ];
 
 #[cfg(test)]
@@ -170,6 +181,6 @@ mod tests {
             assert!(formula(path).is_some(), "{path} has no formula");
         }
         assert_eq!(listed.len(), default.len(), "the table lists a path that FaceMapping doesn't have: {listed:?}");
-        assert_eq!(default.len(), 53);
+        assert_eq!(default.len(), 59);
     }
 }

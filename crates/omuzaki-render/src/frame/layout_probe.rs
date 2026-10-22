@@ -11,7 +11,8 @@ use omuzaki_core::id::Slug;
 use omuzaki_core::time::Seconds;
 use omuzaki_render_api::{
     AlphaEncoding, AlphaMode, Camera, Colour, Fog, Instance, JointRange, Light, Mapping, Material, MaterialId, MeshId,
-    Outline, Overlay, ParamValue, Rim, Scene, Shading, Skin, TextureDesc, TextureId, Toon, UvTransform,
+    Mtoon, Outline, OutlineStyle, OutlineWidthMode, Overlay, ParamValue, Rim, Scene, Shading, Skin, TextureDesc,
+    TextureId, Toon, UvTransform,
 };
 
 use super::FrameState;
@@ -29,7 +30,8 @@ const FRAME_CHUNKS: usize = 12 + 3 + 32 + 4;
 const PROGRAM_START: usize = 9 + 8;
 /// Chunks of the program parameters (`program: array<vec4<f32>, 8>`).
 const PROGRAM_CHUNKS: usize = 8;
-const MATERIAL_CHUNKS: usize = PROGRAM_START + PROGRAM_CHUNKS + 1; // the UV transform is the last vec4
+// Then the UV transform, the outline mix and the six of MToon.
+const MATERIAL_CHUNKS: usize = PROGRAM_START + PROGRAM_CHUNKS + 2 + 6;
 const INSTANCE_CHUNKS: usize = 4 + 3 + 1;
 
 const PROBE: &str = r"
@@ -75,7 +77,14 @@ fn material_chunk(i: u32) -> vec4<u32> {
         return bits(overlay.params);
     }
     if (i < 25u) { return bits(material.program[i - 17u]); }
-    return bits(material.uv_transform);
+    if (i == 25u) { return bits(material.uv_transform); }
+    if (i == 26u) { return bits(material.outline_mix); }
+    if (i == 27u) { return material.mtoon_flags; }
+    if (i == 28u) { return bits(material.mtoon_shade); }
+    if (i == 29u) { return bits(material.mtoon_shading); }
+    if (i == 30u) { return bits(material.mtoon_rim); }
+    if (i == 31u) { return bits(material.mtoon_matcap); }
+    return bits(material.mtoon_uv);
 }
 
 fn instance_chunk(i: u32) -> vec4<u32> {
@@ -138,9 +147,43 @@ fn probe_material(face: TextureId) -> Material {
         double_sided: true,
         vertex_colours: true,
         outline: Some(Outline { colour: Colour::rgb(40, 30, 60), width: 0.0123 }),
+        outline_style: OutlineStyle {
+            width_mode: OutlineWidthMode::Screen,
+            width_texture: Some(face),
+            lighting_mix: 0.375,
+        },
         receives_shadows: false,
         uv_transform: UvTransform { scale: Vec2::new(0.5, 0.25), offset: Vec2::new(0.125, 0.75) },
+        mtoon: None,
     }
+}
+
+/// The toon probe lit by `MToon`, every `MToon` field off its default and every `MToon` texture `face`.
+fn mtoon_probe_material(face: TextureId) -> Material {
+    let mtoon = Mtoon {
+        shade: Colour::rgb(30, 60, 90),
+        shade_texture: Some(face),
+        shading_shift: -0.15,
+        shading_shift_texture: Some(face),
+        shading_shift_scale: 0.7,
+        shading_toony: 0.35,
+        gi_equalisation: 0.45,
+        matcap: Colour::rgb(210, 190, 170),
+        matcap_texture: Some(face),
+        rim: Colour::rgb(90, 80, 70),
+        rim_texture: Some(face),
+        rim_fresnel_power: 3.5,
+        rim_lift: 0.15,
+        rim_lighting_mix: 0.65,
+        emissive_texture: Some(face),
+        normal_texture: Some(face),
+        normal_scale: 0.8,
+        uv_scroll: Vec2::new(0.11, -0.22),
+        uv_rotation: 0.33,
+        uv_animation_mask: Some(face),
+        blend_writes_depth: true,
+    };
+    Material { mtoon: Some(Box::new(mtoon)), ..probe_material(face) }
 }
 
 /// A scene with one light of each kind and an instance whose normal matrix is not its model matrix.
@@ -221,7 +264,9 @@ fn the_wgsl_structs_read_the_bytes_the_rust_structs_write() {
     let (index, generation) = resources.textures.insert(GpuTexture::create(&shared.gpu, &shared.mips, &desc, None));
     let face = TextureId::from_parts(index, generation);
 
-    for (name, material) in [("toon", probe_material(face)), ("hair program", hair_probe_material())] {
+    for (name, material) in
+        [("toon", probe_material(face)), ("mtoon", mtoon_probe_material(face)), ("hair program", hair_probe_material())]
+    {
         let material_uniform = MaterialUniform::new(&material, &resources.textures);
         if name == "hair program" {
             assert!(

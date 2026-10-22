@@ -11,7 +11,7 @@ a shared file.
 | **Mock** | `*-mock` | API crates |
 | **Lib** (format libraries) | crates with `layer = "lib"` under `[package.metadata.omuzaki]` | API crates and other lib crates (mocks as dev-dependencies) |
 | **Implementation** | everything else under `crates/` | API crates and lib crates (mocks as dev-dependencies) |
-| **App** | `omuzaki-cli`, `omuzaki-ui`, `omuzaki-test`, `omuzaki-stage`, `xtask`, the area test crates `omuzaki-test-<area>` | anything: they wire implementations together (area test crates: see below) |
+| **App** | `omuzaki-cli`, `omuzaki-ui`, `omuzaki-test`, `omuzaki-stage`, `omuzaki-model-worker`, `xtask`, the area test crates `omuzaki-test-<area>` | anything: they wire implementations together (area test crates: see below) |
 
 `cargo xtask lint-deps` enforces the table (§39 rule 10). API crates change rarely and go through maintainer
 review; breaking changes need a decision record (§39.2 item 8).
@@ -73,7 +73,6 @@ A crate whose folder uses `omuzaki_embed::modules` (ADR 0054) lists that folder 
 - `omuzaki-agent-api` (API): not in the workspace yet: the in-app assistant's panel contract (`Assistant`, `UserMessage`, `ContextChip`, `AssistantEvent`, `HostError`) and `RationaleSource` for "Explain this"; design in `docs/design/agent-runtime.md`, ADR 0040
 - `omuzaki-agent-mock` (Mock): not in the workspace yet: `ScriptedAssistant`, which plays an event script on `FakeClock` for panel tests and the gallery
 - `omuzaki-agent` (Implementation): not in the workspace yet: `AssistantHost`, the assistant's turn loop over an in-process MCP client and `dyn LlmClient`, the context builder and compaction, the host-local tools and the conversation store; links API crates and rmcp's client only, never `omuzaki-mcp` or `omuzaki-ops`
-- `omuzaki-performer-api` (API): not in the workspace yet (designs): the AI performer's contract (`ai-performer.md`, ADR 0031) and its voice and face types: `VoiceAssignment`, `VoiceProvider`, `VoiceCatalog`, `VoiceLead`, `TalkState`, `MoveContext`, `StyleKnobs` and the per-frame `BigMovePlanner` (`ai-performer-voice-face.md`, ADR 0041)
 
 The other API crates (§39.1) arrive in later phases, each with its mock.
 

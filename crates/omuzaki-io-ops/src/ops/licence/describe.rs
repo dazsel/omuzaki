@@ -13,7 +13,7 @@
 //! - **A VRM file** also needs authors and the licence URL; those are warnings here (`ok_for_vrm` counts them), because
 //!   a plain glTF does not.
 
-use omuzaki_char_api::CharId;
+use omuzaki_char_api::{CharId, PartId, paths};
 use omuzaki_io_api::{Finding, Purpose, Report, Severity, VRM_LICENSE_URLS};
 use omuzaki_ops_api::{Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
 use omuzaki_store_api::licence_gate;
@@ -21,9 +21,11 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::derive::{DerivedLicence, DerivedSummary, load};
+use super::source::{PartSource, source_path};
 use super::excess::against_itself;
 use super::findings::{against_stored_record, gate_hint, gate_rule, leaves_the_machine};
 use crate::gather::avatar::{LicenceRecord, record_path};
+use crate::ops::avatar::import::AVATAR_PART;
 use crate::ops::check_export::read_record;
 
 /// Says what a character's licence record holds and what is missing for an export purpose, with a fix hint for each.
@@ -158,6 +160,9 @@ impl Op for LicenceDescribe {
         if let Some(record) = &record {
             self.record_findings(record, &mut report);
         }
+        if ctx.doc.get(&paths::character(&self.character).join("avatar")).is_some() {
+            report.findings.extend(performing(ctx, &self.character));
+        }
         // A stable sort: what blocks the purpose comes before the notes.
         report.findings.sort_by_key(|f| std::cmp::Reverse(f.severity));
         let ok = !report.has_errors();
@@ -175,6 +180,23 @@ impl Op for LicenceDescribe {
             .map_err(|e| OpError::internal(format!("serialising the description failed: {e}")))?;
         Ok(Plan::answer(output))
     }
+}
+
+/// What an imported model's own terms (its `sources/avatar` row) say about performing as it: the
+/// `rights.perform_non_profit` note when they allow non-profit use only. It never blocks (performing on your own machine
+/// is not publishing); the import and the go-live notice show the same row. Nothing when the row has no terms.
+fn performing(ctx: &OpCtx<'_>, character: &CharId) -> Vec<Finding> {
+    let Ok(part) = PartId::new(AVATAR_PART) else { return Vec::new() };
+    let path = source_path(character, &part);
+    let terms = ctx.doc.get(&path).and_then(|row| PartSource::from_node(row).ok()).and_then(|row| row.terms);
+    terms.map_or_else(Vec::new, |terms| {
+        terms
+            .perform_findings()
+            .into_iter()
+            .filter(|f| f.rule == "rights.perform_non_profit")
+            .map(|f| f.at(path.to_string()))
+            .collect()
+    })
 }
 
 register_op!(LicenceDescribe);

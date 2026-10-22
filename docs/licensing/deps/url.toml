@@ -1,0 +1,7 @@
+section = "rust"
+item = "url"
+kind = "crate"
+used_for = "parsing lineage source URLs in the models gate (xtask)"
+status = "yes"
+audit = "(crates.io: MIT OR Apache-2.0)"
+crates = ["url"]

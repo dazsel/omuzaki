@@ -31,12 +31,31 @@ pub struct FaceSample {
 pub struct StageTimings {
     /// The detector: crop, session, decode. Zero when the face was tracked from the previous frame.
     pub detect_us: u32,
-    /// The landmark model: crop, session, projection back onto the frame.
+    /// The landmark model: crop, session, projection back onto the frame. The sum of [`warp_us`](Self::warp_us),
+    /// [`landmark_run_us`](Self::landmark_run_us) and the decode that follows them.
     pub landmarks_us: u32,
+    /// Of `landmarks_us`: the crop warped into the landmark model's input tensor.
+    pub warp_us: u32,
+    /// Of `landmarks_us`: the landmark session's `run`, the inference itself.
+    pub landmark_run_us: u32,
     /// The blendshape model, including gathering its input.
     pub blendshapes_us: u32,
     /// Landmark smoothing and the head-pose fit.
     pub geometry_us: u32,
+}
+
+impl StageTimings {
+    /// Of `landmarks_us`: what follows the run, reading its outputs and projecting the landmarks onto the frame.
+    pub fn landmark_decode_us(&self) -> u32 {
+        self.landmarks_us.saturating_sub(self.warp_us).saturating_sub(self.landmark_run_us)
+    }
+
+    /// Every stage together.
+    pub fn total_us(&self) -> u32 {
+        [self.detect_us, self.landmarks_us, self.blendshapes_us, self.geometry_us]
+            .into_iter()
+            .fold(0, u32::saturating_add)
+    }
 }
 
 impl FaceSample {

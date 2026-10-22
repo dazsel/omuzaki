@@ -7,12 +7,12 @@
 
 use bytemuck::{Pod, Zeroable};
 use omuzaki_core::id::Slug;
-use omuzaki_render_api::{AlphaMode, Colour, Mapping, Material, Shading, TextureId, Toon};
+use omuzaki_render_api::{AlphaMode, Colour, Mapping, Material, Mtoon, OutlineWidthMode, Shading, TextureId, Toon};
 
 use crate::arena::Arena;
 use crate::program::{PACKED_FLOATS, Registry, Resolved};
 use crate::resource::texture::GpuTexture;
-use crate::shared::{MATERIAL_TEXTURES, Shared};
+use crate::shared::{MATERIAL_TEXTURES, MTOON_BINDING, MTOON_TEXTURES, OUTLINE_WIDTH_BINDING, Shared};
 
 /// Bits of `Material.flags.x` (`FLAG_*` in `shader/common.wgsl`).
 pub(crate) mod flag {
@@ -22,6 +22,25 @@ pub(crate) mod flag {
     pub(crate) const SKIN: u32 = 8;
     pub(crate) const BASE_TEXTURE: u32 = 16;
     pub(crate) const OUTLINE: u32 = 32;
+    /// The outline's width is metres at any distance (`OutlineWidthMode::World`).
+    pub(crate) const OUTLINE_WORLD: u32 = 64;
+    /// The outline's width is a fraction of the target's height (`OutlineWidthMode::Screen`).
+    pub(crate) const OUTLINE_SCREEN: u32 = 128;
+    /// The outline's width is multiplied by the green channel of the outline width texture.
+    pub(crate) const OUTLINE_WIDTH_TEXTURE: u32 = 256;
+}
+
+/// Bits of `Material.mtoon_flags.x` (`MTOON_*` in the shader): the material is lit by `MToon`, and which of its
+/// textures it has, in the slot order of [`mtoon_slots`].
+pub(crate) mod mtoon {
+    pub(crate) const ON: u32 = 1;
+    pub(crate) const SHADE_TEXTURE: u32 = 2;
+    pub(crate) const SHIFT_TEXTURE: u32 = 4;
+    pub(crate) const MATCAP_TEXTURE: u32 = 8;
+    pub(crate) const RIM_TEXTURE: u32 = 16;
+    pub(crate) const EMISSIVE_TEXTURE: u32 = 32;
+    pub(crate) const NORMAL_TEXTURE: u32 = 64;
+    pub(crate) const MASK_TEXTURE: u32 = 128;
 }
 
 /// Values of `Material.flags.y` (`SHADING_*` in the shader).
@@ -67,17 +86,49 @@ pub(crate) struct MaterialUniform {
     flags: [u32; 4],
     /// Mask cutoff.
     alpha: [f32; 4],
-    /// Per-slot texture flags, four bits per slot (base, overlay 0..3).
+    /// Per-slot texture flags, four bits per slot (base, overlay 0..3, the outline width texture).
     textures: [u32; 4],
     overlays: [OverlayUniform; 4],
     /// Shading program parameters, packed in the program's declared order (`program/mod.rs`).
     program: [[f32; 4]; PACKED_FLOATS / 4],
     /// The UV transform: scale in xy, offset in zw (`uv * scale + offset`, as `UvTransform::apply`).
     uv_transform: [f32; 4],
+    /// The outline's lighting mix in x (`OutlineStyle::lighting_mix`); the rest is zero.
+    outline_mix: [f32; 4],
+    /// `MToon`: the `mtoon::*` bits in x, four bits of texture flags per `MToon` slot in y.
+    mtoon_flags: [u32; 4],
+    /// `MToon`'s shade colour rgb and the shading shift texture's scale.
+    mtoon_shade: [f32; 4],
+    /// `MToon`'s shading shift, toony factor, GI equalisation and rim lighting mix.
+    mtoon_shading: [f32; 4],
+    /// `MToon`'s rim colour rgb and fresnel power.
+    mtoon_rim: [f32; 4],
+    /// `MToon`'s matcap colour rgb and the rim lift.
+    mtoon_matcap: [f32; 4],
+    /// `MToon`'s UV scroll per second (xy), rotation per second (z) and the normal map's scale (w).
+    mtoon_uv: [f32; 4],
 }
 
 /// Bytes of one material uniform, for the memory estimate.
 pub(crate) const UNIFORM_BYTES: u64 = size_of::<MaterialUniform>() as u64;
+
+/// The `MToon` parameters a material is lit by: its own when it has them and toon shading (a program or unlit wins).
+pub(crate) fn mtoon_of(material: &Material) -> Option<&Mtoon> {
+    material.mtoon.as_deref().filter(|_| matches!(material.shading, Shading::Toon(_)))
+}
+
+/// The `MToon` texture slots, in binding order (`shared::MTOON_TEXTURES`).
+pub(crate) fn mtoon_slots(m: &Mtoon) -> [Option<TextureId>; MTOON_TEXTURES as usize] {
+    [
+        m.shade_texture,
+        m.shading_shift_texture,
+        m.matcap_texture,
+        m.rim_texture,
+        m.emissive_texture,
+        m.normal_texture,
+        m.uv_animation_mask,
+    ]
+}
 
 /// A material's shading program, if it names a registered one. Parameters were checked when the material was created
 /// or updated (`WgpuRenderer::check_material`), so a failure here cannot happen; it would only mean the default toon.
@@ -117,7 +168,9 @@ impl MaterialUniform {
         let texture_flags = |id: Option<TextureId>| {
             id.and_then(|id| textures.get(id.index(), id.generation())).map_or(0, |t| t.shader_flags)
         };
-        let mut texture_bits = texture_flags(material.base_texture);
+        // The outline width texture's flags sit after the five surface slots' (slot 5).
+        let mut texture_bits =
+            texture_flags(material.base_texture) | texture_flags(material.outline_style.width_texture) << 20;
         let mut overlays = [OverlayUniform::default(); 4];
         for (i, (slot, overlay)) in overlays.iter_mut().zip(&material.overlays).enumerate() {
             texture_bits |= texture_flags(Some(overlay.texture)) << (4 * (i + 1));
@@ -142,6 +195,9 @@ impl MaterialUniform {
             (toon.skin.is_some() && kind == shading::TOON, flag::SKIN),
             (material.base_texture.is_some(), flag::BASE_TEXTURE),
             (material.outline.is_some(), flag::OUTLINE),
+            (material.outline_style.width_mode == OutlineWidthMode::World, flag::OUTLINE_WORLD),
+            (material.outline_style.width_mode == OutlineWidthMode::Screen, flag::OUTLINE_SCREEN),
+            (material.outline_style.width_texture.is_some(), flag::OUTLINE_WIDTH_TEXTURE),
         ] {
             if on {
                 bits |= bit;
@@ -167,8 +223,41 @@ impl MaterialUniform {
                 material.uv_transform.offset.x,
                 material.uv_transform.offset.y,
             ],
+            outline_mix: [material.outline_style.lighting_mix, 0.0, 0.0, 0.0],
+            ..mtoon_uniform(mtoon_of(material), texture_flags)
         }
     }
+}
+
+/// The `MToon` part of the uniform; all zeros (`MToon` off) for `None`. The rest of the uniform is left zeroed for the
+/// caller to fill.
+fn mtoon_uniform(m: Option<&Mtoon>, texture_flags: impl Fn(Option<TextureId>) -> u32) -> MaterialUniform {
+    let mut uniform = MaterialUniform::zeroed();
+    let Some(m) = m else { return uniform };
+    let mut bits = mtoon::ON;
+    let mut slot_flags = 0;
+    let present = [
+        mtoon::SHADE_TEXTURE,
+        mtoon::SHIFT_TEXTURE,
+        mtoon::MATCAP_TEXTURE,
+        mtoon::RIM_TEXTURE,
+        mtoon::EMISSIVE_TEXTURE,
+        mtoon::NORMAL_TEXTURE,
+        mtoon::MASK_TEXTURE,
+    ];
+    for ((i, id), bit) in (0u32..).zip(mtoon_slots(m)).zip(present) {
+        if id.is_some() {
+            bits |= bit;
+        }
+        slot_flags |= texture_flags(id) << (4 * i);
+    }
+    uniform.mtoon_flags = [bits, slot_flags, 0, 0];
+    uniform.mtoon_shade = rgb(m.shade, m.shading_shift_scale);
+    uniform.mtoon_shading = [m.shading_shift, m.shading_toony, m.gi_equalisation, m.rim_lighting_mix];
+    uniform.mtoon_rim = rgb(m.rim, m.rim_fresnel_power);
+    uniform.mtoon_matcap = rgb(m.matcap, m.rim_lift);
+    uniform.mtoon_uv = [m.uv_scroll.x, m.uv_scroll.y, m.uv_rotation, m.normal_scale];
+    uniform
 }
 
 /// A material on the GPU.
@@ -241,6 +330,36 @@ fn bind_group(
             resource: wgpu::BindingResource::Sampler(sampler),
         });
     }
+    // The outline width texture; without one the shader does not read the slot, which holds the white stand-in.
+    let width = material.outline_style.width_texture.and_then(|id| textures.get(id.index(), id.generation()));
+    entries.push(wgpu::BindGroupEntry {
+        binding: OUTLINE_WIDTH_BINDING,
+        resource: wgpu::BindingResource::TextureView(width.map_or(&shared.defaults.white, |t| &t.view)),
+    });
+    entries.push(wgpu::BindGroupEntry {
+        binding: OUTLINE_WIDTH_BINDING + 1,
+        resource: wgpu::BindingResource::Sampler(width.map_or(&shared.defaults.sampler, |t| &t.sampler)),
+    });
+    // The `MToon` textures; an empty slot (or a material without `MToon`) holds the white stand-in, which the shader
+    // reads only where white is the neutral value.
+    let mtoon: Vec<Option<&GpuTexture>> = mtoon_of(material)
+        .map(mtoon_slots)
+        .unwrap_or_default()
+        .iter()
+        .map(|id| id.and_then(|id| textures.get(id.index(), id.generation())))
+        .collect();
+    for (slot, texture) in (0u32..).zip(&mtoon) {
+        entries.push(wgpu::BindGroupEntry {
+            binding: MTOON_BINDING + slot,
+            resource: wgpu::BindingResource::TextureView(texture.map_or(&shared.defaults.white, |t| &t.view)),
+        });
+    }
+    for (slot, texture) in (0u32..).zip(&mtoon) {
+        entries.push(wgpu::BindGroupEntry {
+            binding: MTOON_BINDING + MTOON_TEXTURES + slot,
+            resource: wgpu::BindingResource::Sampler(texture.map_or(&shared.defaults.sampler, |t| &t.sampler)),
+        });
+    }
     shared.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("material"),
         layout: &shared.layouts.material,
@@ -254,8 +373,9 @@ mod tests {
 
     #[test]
     fn the_uniform_is_a_multiple_of_sixteen_bytes() {
-        // std140: uniform struct sizes round up to 16. 9 vec4 + 4 overlays of 2 vec4 + 8 vec4 + the UV transform = 26 vec4.
-        assert_eq!(size_of::<MaterialUniform>(), 26 * 16);
+        // std140: uniform struct sizes round up to 16. 9 vec4 + 4 overlays of 2 vec4 + 8 vec4 + the UV transform + the
+        // outline mix + 6 of MToon = 33 vec4.
+        assert_eq!(size_of::<MaterialUniform>(), 33 * 16);
         assert_eq!(size_of::<OverlayUniform>(), 32);
     }
 
@@ -269,11 +389,22 @@ mod tests {
             ("FLAG_SKIN", flag::SKIN),
             ("FLAG_BASE_TEXTURE", flag::BASE_TEXTURE),
             ("FLAG_OUTLINE", flag::OUTLINE),
+            ("FLAG_OUTLINE_WORLD", flag::OUTLINE_WORLD),
+            ("FLAG_OUTLINE_SCREEN", flag::OUTLINE_SCREEN),
+            ("FLAG_OUTLINE_WIDTH_TEXTURE", flag::OUTLINE_WIDTH_TEXTURE),
             ("SHADING_TOON", shading::TOON),
             ("SHADING_UNLIT", shading::UNLIT),
             ("ALPHA_OPAQUE", alpha::OPAQUE),
             ("ALPHA_MASK", alpha::MASK),
             ("ALPHA_BLEND", alpha::BLEND),
+            ("MTOON_ON", mtoon::ON),
+            ("MTOON_SHADE_TEXTURE", mtoon::SHADE_TEXTURE),
+            ("MTOON_SHIFT_TEXTURE", mtoon::SHIFT_TEXTURE),
+            ("MTOON_MATCAP_TEXTURE", mtoon::MATCAP_TEXTURE),
+            ("MTOON_RIM_TEXTURE", mtoon::RIM_TEXTURE),
+            ("MTOON_EMISSIVE_TEXTURE", mtoon::EMISSIVE_TEXTURE),
+            ("MTOON_NORMAL_TEXTURE", mtoon::NORMAL_TEXTURE),
+            ("MTOON_MASK_TEXTURE", mtoon::MASK_TEXTURE),
         ] {
             let line = format!("const {name}: u32 = {value}u;");
             assert!(source.contains(&line), "common.wgsl should declare `{line}`");

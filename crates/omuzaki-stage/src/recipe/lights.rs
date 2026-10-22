@@ -1,20 +1,26 @@
-//! The light-rig library: the prototype's seven rigs, as data. Each rig is one TOML file under `library/light-rigs/`,
-//! transcribed from the golden manifest's `spec.rig` blocks. Only lighting numbers are stored here; no image, mesh or
-//! likeness is.
+//! The light-rig library: the prototype's seven rigs and the measurement rig, as data. Each rig is one TOML file under
+//! `library/light-rigs/`: the seven transcribed from the golden manifest's `spec.rig` blocks, and `measure-flat` (flat
+//! frontal light for the `measure.*` ops, `docs/design/likeness-measures.md` D10). Only lighting numbers are stored
+//! here; no image, mesh or likeness is.
 //!
 //! Units are three.js's (render-api D10), so every number is copied as the prototype wrote it and never rescaled.
 //! Parts of a rig that the render contract has no field for (the key light's shadow frustum, the skin floor) stay in
 //! the file, so the file round-trips, and the parts the contract does take are read by [`LightRig::to_lights`],
 //! [`LightRig::post`] and [`LightRig::background`].
 
+use std::collections::BTreeMap;
+
 use omuzaki_core::glam::Vec3;
 use omuzaki_render_api::{Background, Bloom, Colour, Light, Post, Tonemap};
+use omuzaki_stage_api::{
+    Ambient, Anchor, BloomDef, LightDef, LightId, LightRole, LightShape, Lighting, REFERENCE_HEIGHT_M,
+};
 use serde::{Deserialize, Serialize};
 
 use super::RecipeError;
 
 /// The rigs shipped with the crate, by name. Each file is parsed on use, so a broken file fails the test that loads it.
-static LIBRARY: [(&str, &str); 7] = [
+static LIBRARY: [(&str, &str); 8] = [
     ("viewer-studio", include_str!("../../library/light-rigs/viewer-studio.toml")),
     ("viewer-candle", include_str!("../../library/light-rigs/viewer-candle.toml")),
     ("viewer-moonlit", include_str!("../../library/light-rigs/viewer-moonlit.toml")),
@@ -22,6 +28,7 @@ static LIBRARY: [(&str, &str); 7] = [
     ("dev-night", include_str!("../../library/light-rigs/dev-night.toml")),
     ("dev-warm", include_str!("../../library/light-rigs/dev-warm.toml")),
     ("perform-facecam", include_str!("../../library/light-rigs/perform-facecam.toml")),
+    ("measure-flat", include_str!("../../library/light-rigs/measure-flat.toml")),
 ];
 
 /// Directional lights shine from `position` toward this point. Three.js aims every directional light at the origin
@@ -48,6 +55,13 @@ pub struct LightRig {
     pub name: String,
     /// Where the numbers were read from, for whoever checks them next (`js/viewer.js LIGHTS.studio`).
     pub source: String,
+    /// The name people read in the library (`Studio`).
+    pub title: String,
+    /// One sentence on the mood it makes, for people and agents choosing a rig.
+    pub summary: String,
+    /// Words to find it by (`warm`, `night`, `stream`).
+    #[serde(default)]
+    pub tags: Vec<String>,
     /// Scene-light multiplier before tone mapping, `>= 0`.
     pub exposure: f32,
     /// The flat background colour.
@@ -241,6 +255,70 @@ impl LightRig {
             });
         }
         Ok(lights)
+    }
+
+    /// The rig as a scene's [`Lighting`] (design D3, D12): the values a scene stores and resolves against its cast.
+    /// Directional positions become `azimuth` and `elevation` toward the origin, at full precision; the point light
+    /// is put in subject units at [`REFERENCE_HEIGHT_M`] (position and range divided by it, intensity by its square),
+    /// so a character of the reference height is lit exactly as the rig's own numbers light it; every light hangs off
+    /// the subject. The skin floor stays the rig's (D3): a scene only overrides it when a person sets one.
+    ///
+    /// # Errors
+    /// [`RecipeError::Invalid`] if a directional light has no direction, or a light id doesn't parse.
+    pub fn to_lighting(&self) -> Result<Lighting, RecipeError> {
+        let id = |name: &str| LightId::new(name).map_err(|e| RecipeError::invalid(&self.name, e.to_string()));
+        let mut lights = BTreeMap::new();
+        for (label, role, light) in [
+            ("key", LightRole::Key, Some(&self.key)),
+            ("rim", LightRole::Rim, self.rim.as_ref()),
+            ("fill", LightRole::Fill, self.fill.as_ref()),
+        ] {
+            let Some(light) = light else { continue };
+            let to = direction(light.position)
+                .ok_or_else(|| RecipeError::invalid(&self.name, no_direction_reason(label, light.position)))?;
+            let def = LightDef {
+                role: Some(role),
+                colour: light.colour,
+                intensity: light.intensity,
+                shadow: light.shadow.is_some(),
+                anchor: Anchor::Subject,
+                shape: LightShape::Directional {
+                    azimuth: to.x.atan2(to.z).to_degrees(),
+                    elevation: to.y.clamp(-1.0, 1.0).asin().to_degrees(),
+                },
+            };
+            lights.insert(id(label)?, def);
+        }
+        if let Some(point) = &self.point {
+            let h = REFERENCE_HEIGHT_M;
+            let def = LightDef {
+                role: Some(LightRole::Practical),
+                colour: point.colour,
+                intensity: point.intensity / (h * h),
+                shadow: false,
+                anchor: Anchor::Subject,
+                shape: LightShape::Point { position: point.position.map(|c| c / h), range: point.distance / h },
+            };
+            lights.insert(id("point")?, def);
+        }
+        Ok(Lighting {
+            rig: Some(self.name.clone()),
+            exposure: self.exposure,
+            background: self.background,
+            outline_light: 1.0,
+            skin_floor: None,
+            ambient: Ambient {
+                sky: self.hemisphere.sky,
+                ground: self.hemisphere.ground,
+                intensity: self.hemisphere.intensity,
+            },
+            bloom: Some(BloomDef {
+                strength: self.bloom.strength,
+                radius: self.bloom.radius,
+                threshold: self.bloom.threshold,
+            }),
+            lights,
+        })
     }
 
     /// The look of the frame: this rig's exposure and ACES tone mapping, with bloom when the case asks for it.

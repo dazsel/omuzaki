@@ -10,11 +10,15 @@ repository.workspace = true
 
 [dependencies]
 nalgebra.workspace = true
+schemars.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 toml.workspace = true
 omuzaki-ai-api = { path = "../omuzaki-ai-api" }
+# Unpacks MediaPipe's official `face_landmarker.task` for the `tflite` runtime (src/task.rs).
+omuzaki-ai-native = { path = "../omuzaki-ai-native" }
 omuzaki-anim-api = { path = "../omuzaki-anim-api" }
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-pixfmt = { path = "../omuzaki-pixfmt" }
@@ -26,6 +30,12 @@ omuzaki-ai-mock = { path = "../omuzaki-ai-mock" }
 omuzaki-track-mock = { path = "../omuzaki-track-mock" }
 sha2.workspace = true
 tempfile.workspace = true
+# Writes stand-in `.task` bundles (src/task.rs).
+zip.workspace = true
+
+[[bench]]
+name = "doctor"
+harness = false
 
 [[bench]]
 name = "pipeline"

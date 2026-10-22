@@ -219,6 +219,12 @@ const BLENDER: [&str; 25] = [
 /// mirroring it left to right if asked. Returns the node of each slot.
 fn rig(names: &[&str], skip: &[usize], mirror: bool) -> (IoScene, Vec<Option<NodeIx>>) {
     let mut scene = IoScene::new();
+    let nodes = rig_in(&mut scene, names, skip, mirror, Vec3::ZERO);
+    (scene, nodes)
+}
+
+/// Adds the rig to `scene` as a new skin, with its hips at `origin` instead of the default height-1 standing spot.
+fn rig_in(scene: &mut IoScene, names: &[&str], skip: &[usize], mirror: bool, origin: Vec3) -> Vec<Option<NodeIx>> {
     let (mut anchor, mut carry, mut nodes) = (Vec::<Option<usize>>::new(), Vec::<Vec3>::new(), Vec::new());
     for (i, (parent, o)) in LAYOUT.iter().enumerate() {
         let mut offset = Vec3::from(*o);
@@ -226,7 +232,7 @@ fn rig(names: &[&str], skip: &[usize], mirror: bool) -> (IoScene, Vec<Option<Nod
             offset.x = -offset.x;
         }
         let (a, c) = match parent {
-            None => (None, offset),
+            None => (None, offset + origin),
             Some(p) if skip.contains(p) => (anchor[*p], carry[*p] + offset),
             Some(p) => (Some(*p), offset),
         };
@@ -246,7 +252,7 @@ fn rig(names: &[&str], skip: &[usize], mirror: bool) -> (IoScene, Vec<Option<Nod
     let joints: Vec<NodeIx> = nodes.iter().flatten().copied().collect();
     let binds = vec![Mat4::IDENTITY; joints.len()];
     scene.add_skin(Skin::new("skin", joints, binds));
-    (scene, nodes)
+    nodes
 }
 
 fn bone(name: &str) -> HumanBoneName {
@@ -506,5 +512,104 @@ fn moving_the_rig_along_x_keeps_the_sides() {
         scene.nodes[root].transform.translation.x += shift;
         let p = auto_map(&scene, &BTreeMap::new()).unwrap();
         assert!(!p.report.has_rule("humanoid.sides_overlap"), "{shift}");
+    }
+}
+
+/// The proposal's nodes for every bone in `BONES`, against the rig's nodes.
+fn assert_maps(p: &HumanoidProposal, nodes: &[Option<NodeIx>]) {
+    for (i, name) in BONES.iter().enumerate() {
+        assert_eq!(p.humanoid.node(name), nodes[i], "{name}");
+    }
+}
+
+#[test]
+fn two_humanoids_in_one_scene_are_each_mappable() {
+    let mut scene = IoScene::new();
+    let a = rig_in(&mut scene, &MIXAMO, &[], false, Vec3::ZERO);
+    let b = rig_in(&mut scene, &VROID, &[], false, Vec3::new(3.0, 0.0, 0.0));
+    // With no overrides the first skeleton (lowest hips) is the avatar and the other is reported, not mixed in.
+    let p = auto_map(&scene, &BTreeMap::new()).unwrap();
+    assert_maps(&p, &a);
+    assert!(!p.report.has_rule("humanoid.ambiguous"));
+    assert_eq!(p.report.findings.iter().filter(|f| f.rule == "humanoid.other_skeleton").count(), 1);
+    assert_eq!(p.report.count(omuzaki_io_api::Severity::Warning), 0);
+    // An override inside the second skeleton selects it.
+    let pick = BTreeMap::from([(bone("hips"), b[0].unwrap())]);
+    let q = auto_map(&scene, &pick).unwrap();
+    assert_maps(&q, &b);
+    assert!(q.report.has_rule("humanoid.other_skeleton"));
+    assert!(!q.report.has_errors());
+}
+
+#[test]
+fn an_unrelated_skinned_object_does_not_hide_the_humanoid() {
+    // The stranger comes first, with a node that reads as `Hips`: a union of candidates would take it.
+    let mut scene = IoScene::new();
+    let hips = scene.add_node(Node::new("Hips"));
+    let tail = scene.add_node(Node::new("Tail").at(Vec3::new(0.0, -0.5, 0.0)));
+    scene.attach(hips, tail);
+    scene.roots.push(hips);
+    scene.add_skin(Skin::new("prop", vec![hips, tail], vec![Mat4::IDENTITY; 2]));
+    let nodes = rig_in(&mut scene, &BLENDER, &[], false, Vec3::new(2.0, 0.0, 0.0));
+    let p = auto_map(&scene, &BTreeMap::new()).unwrap();
+    assert_maps(&p, &nodes);
+    assert!(p.report.has_rule("humanoid.other_skeleton"));
+}
+
+#[test]
+fn helper_nodes_between_joints_do_not_hide_limbs() {
+    let owned = nameless();
+    let names: Vec<&str> = owned.iter().map(String::as_str).collect();
+    let (mut scene, nodes) = rig(&names, &[], false);
+    // Wrap the spine and the left leg in plain grouping nodes that are not skin joints.
+    let hips = nodes[0].unwrap();
+    for slot in [1, 9] {
+        let child = nodes[slot].unwrap();
+        let group = scene.add_node(Node::new(format!("group_{slot}")));
+        scene.nodes[hips.index()].children.retain(|c| *c != child);
+        scene.attach(hips, group);
+        scene.attach(group, child);
+    }
+    let p = auto_map(&scene, &BTreeMap::new()).unwrap();
+    for spec in omuzaki_io_api::HUMAN_BONES.iter().filter(|b| b.required) {
+        assert_eq!(how(&p, spec.name), Some(MatchHow::Inferred), "{}", spec.name);
+    }
+    assert_eq!(p.humanoid.node("spine"), nodes[1]);
+    assert_eq!(p.humanoid.node("leftUpperLeg"), nodes[9]);
+    assert_eq!(p.humanoid.node("leftFoot"), nodes[11]);
+    assert_eq!(p.humanoid.node("head"), nodes[5]);
+}
+
+#[test]
+fn a_skirt_joint_below_the_feet_does_not_break_the_legs() {
+    let owned = nameless();
+    let names: Vec<&str> = owned.iter().map(String::as_str).collect();
+    let (mut scene, nodes) = rig(&names, &[], false);
+    let skirt = add_joint(&mut scene, nodes[0].unwrap(), "hem");
+    scene.nodes[skirt.index()].transform.translation = Vec3::new(0.0, -2.0, 0.0);
+    let p = auto_map(&scene, &BTreeMap::new()).unwrap();
+    for (slot, name) in [(10, "leftLowerLeg"), (11, "leftFoot"), (12, "leftToes")] {
+        assert_eq!(p.humanoid.node(name), nodes[slot], "{name}");
+    }
+    for (slot, name) in [(14, "rightLowerLeg"), (15, "rightFoot"), (16, "rightToes")] {
+        assert_eq!(p.humanoid.node(name), nodes[slot], "{name}");
+    }
+}
+
+#[test]
+fn legs_set_wider_of_the_hips_than_below_them_are_still_found() {
+    // VRoid's proportions: each upper leg sits further to the side of the hips than below them, so the first joint
+    // alone does not point down; the leg as a whole does.
+    let owned = nameless();
+    let names: Vec<&str> = owned.iter().map(String::as_str).collect();
+    let (mut scene, nodes) = rig(&names, &[], false);
+    for (slot, x) in [(9, 0.1f32), (13, -0.1)] {
+        scene.nodes[nodes[slot].unwrap().index()].transform.translation = Vec3::new(x, -0.05, 0.0);
+    }
+    let p = auto_map(&scene, &BTreeMap::new()).unwrap();
+    for (slot, name) in
+        [(9, "leftUpperLeg"), (10, "leftLowerLeg"), (11, "leftFoot"), (13, "rightUpperLeg"), (15, "rightFoot")]
+    {
+        assert_eq!(p.humanoid.node(name), nodes[slot], "{name}");
     }
 }

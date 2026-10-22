@@ -3,7 +3,8 @@
 //
 // Bind groups (the layouts are in shared.rs and must match):
 //   group 0  frame     b0 Frame uniform, b1 instances, b2 joint matrices
-//   group 1  material  b0 Material uniform, b1 base texture, b2..b5 overlay textures, b6..b10 their samplers
+//   group 1  material  b0 Material uniform, b1 base texture, b2..b5 overlay textures, b6..b10 their samplers,
+//                      b11 b12 the outline width texture and sampler, b13..b19 MToon textures, b20..b26 their samplers
 // A pass that needs more appends groups from 2 on.
 //
 // Colour is linear light everywhere in the scene passes; alpha is straight in `surface_albedo` and premultiplied in what
@@ -25,6 +26,19 @@ const FLAG_RECEIVES_SHADOWS: u32 = 4u;
 const FLAG_SKIN: u32 = 8u;
 const FLAG_BASE_TEXTURE: u32 = 16u;
 const FLAG_OUTLINE: u32 = 32u;
+const FLAG_OUTLINE_WORLD: u32 = 64u;            // the outline width is metres at any distance
+const FLAG_OUTLINE_SCREEN: u32 = 128u;          // the outline width is a fraction of the target height
+const FLAG_OUTLINE_WIDTH_TEXTURE: u32 = 256u;   // the width is multiplied by the width texture's green channel
+
+// Material.mtoon_flags.x: lit by MToon, and which MToon textures the material has.
+const MTOON_ON: u32 = 1u;
+const MTOON_SHADE_TEXTURE: u32 = 2u;
+const MTOON_SHIFT_TEXTURE: u32 = 4u;
+const MTOON_MATCAP_TEXTURE: u32 = 8u;
+const MTOON_RIM_TEXTURE: u32 = 16u;
+const MTOON_EMISSIVE_TEXTURE: u32 = 32u;
+const MTOON_NORMAL_TEXTURE: u32 = 64u;
+const MTOON_MASK_TEXTURE: u32 = 128u;
 
 // Material.flags.y
 const SHADING_TOON: u32 = 0u;
@@ -35,7 +49,7 @@ const ALPHA_OPAQUE: u32 = 0u;
 const ALPHA_MASK: u32 = 1u;
 const ALPHA_BLEND: u32 = 2u;
 
-// Per-slot texture flags (Material.textures.x holds four bits per slot).
+// Per-slot texture flags (Material.textures.x holds four bits per slot: base, overlays 0..3, the outline width texture).
 const TEXTURE_DECODE_SRGB: u32 = 1u;
 const TEXTURE_PREMULTIPLIED: u32 = 2u;
 
@@ -95,10 +109,17 @@ struct Material {
     toon: vec4<f32>,             // shift, softness, rim power, skin floor
     flags: vec4<u32>,            // FLAG_* bits, SHADING_*, ALPHA_*, overlay count
     alpha: vec4<f32>,            // x: mask cutoff
-    textures: vec4<u32>,         // x: four bits of TEXTURE_* flags per slot (base, overlay 0..3)
+    textures: vec4<u32>,         // x: four bits of TEXTURE_* flags per slot (base, overlay 0..3, outline width)
     overlays: array<Overlay, 4>,
     program: array<vec4<f32>, 8>, // shading program parameters (the programs task)
     uv_transform: vec4<f32>,     // xy: UV scale, zw: UV offset (applied as uv * xy + zw)
+    outline_mix: vec4<f32>,      // x: how much the lit surface tints the outline, 0..=1
+    mtoon_flags: vec4<u32>,      // x: MTOON_* bits; y: four bits of TEXTURE_* flags per MToon slot
+    mtoon_shade: vec4<f32>,      // shade rgb, shading shift texture scale
+    mtoon_shading: vec4<f32>,    // shading shift, toony, GI equalisation, rim lighting mix
+    mtoon_rim: vec4<f32>,        // rim rgb, fresnel power
+    mtoon_matcap: vec4<f32>,     // matcap rgb, rim lift
+    mtoon_uv: vec4<f32>,         // UV scroll per second xy, rotation per second, normal map scale
 }
 
 @group(1) @binding(0) var<uniform> material: Material;
@@ -112,6 +133,24 @@ struct Material {
 @group(1) @binding(8) var overlay_sampler_1: sampler;
 @group(1) @binding(9) var overlay_sampler_2: sampler;
 @group(1) @binding(10) var overlay_sampler_3: sampler;
+// Read by the outline hull's vertex stage only.
+@group(1) @binding(11) var outline_width_texture: texture_2d<f32>;
+@group(1) @binding(12) var outline_width_sampler: sampler;
+// MToon's textures (toon.wgsl), in the slot order of `MTOON_*_TEXTURE`.
+@group(1) @binding(13) var mtoon_shade_texture: texture_2d<f32>;
+@group(1) @binding(14) var mtoon_shift_texture: texture_2d<f32>;
+@group(1) @binding(15) var mtoon_matcap_texture: texture_2d<f32>;
+@group(1) @binding(16) var mtoon_rim_texture: texture_2d<f32>;
+@group(1) @binding(17) var mtoon_emissive_texture: texture_2d<f32>;
+@group(1) @binding(18) var mtoon_normal_texture: texture_2d<f32>;
+@group(1) @binding(19) var mtoon_mask_texture: texture_2d<f32>;
+@group(1) @binding(20) var mtoon_shade_sampler: sampler;
+@group(1) @binding(21) var mtoon_shift_sampler: sampler;
+@group(1) @binding(22) var mtoon_matcap_sampler: sampler;
+@group(1) @binding(23) var mtoon_rim_sampler: sampler;
+@group(1) @binding(24) var mtoon_emissive_sampler: sampler;
+@group(1) @binding(25) var mtoon_normal_sampler: sampler;
+@group(1) @binding(26) var mtoon_mask_sampler: sampler;
 
 // The one vertex format (resource/mesh.rs), with neutral defaults for what a mesh lacks.
 struct Vertex {

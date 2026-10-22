@@ -1,7 +1,7 @@
 section = "rust"
 item = "directories"
 kind = "crate"
-used_for = "the OS config and local data folders of the settings store (`omuzaki-settings`); pulls `dirs-sys` (MIT OR Apache-2.0) and `option-ext` (MPL-2.0)"
+used_for = "the OS config and local data folders of the settings store (`omuzaki-settings`) and the cache folder behind `omuzaki_http::app_cache_dir`; pulls `dirs-sys` (MIT OR Apache-2.0) and `option-ext` (MPL-2.0)"
 status = "conditions"
 condition = "`option-ext` is MPL-2.0 file-level: keep unmodified, ship notice"
 audit = "(crates.io: MIT OR Apache-2.0; option-ext MPL-2.0)"

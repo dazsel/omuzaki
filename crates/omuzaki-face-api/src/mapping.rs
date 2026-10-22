@@ -337,6 +337,15 @@ pub struct MouthMap {
     pub teeth_lower_smile_start: f64,
     /// How fast the lower teeth come in above that smile.
     pub teeth_lower_smile_gain: f64,
+    /// How far `mouthFunnel` parts the lips with the jaw closed, as a jaw opening: `ARKit`'s funnel flares the lips into an
+    /// O, so an "ooh" with a barely open jaw reads as a small round mouth instead of a closed line.
+    pub part_funnel: f64,
+    /// How far `mouthUpperUp` parts the lips with the jaw closed (the upper lip lifts off the teeth).
+    pub part_upper_up: f64,
+    /// How far `mouthLowerDown` parts the lips with the jaw closed (the lower lip drops off the teeth).
+    pub part_lower_down: f64,
+    /// How far `tongueOut` parts the lips with the jaw closed, so a tongue poked out between closed teeth shows.
+    pub part_tongue: f64,
 }
 
 impl Default for MouthMap {
@@ -365,6 +374,10 @@ impl Default for MouthMap {
             teeth_lower_gain: 2.0,
             teeth_lower_smile_start: 0.25,
             teeth_lower_smile_gain: 4.0,
+            part_funnel: 0.18,
+            part_upper_up: 0.14,
+            part_lower_down: 0.14,
+            part_tongue: 0.22,
         }
     }
 }
@@ -403,6 +416,59 @@ impl Default for GazeMap {
     }
 }
 
+/// The subtle-performance expander (spec FE-06 "amplified subtle performances"): below the knee, each `ARKit` channel
+/// is multiplied by the gain, so the small movements a webcam reads from a calm face show; above it, the curve runs
+/// straight to 1, so a full movement stays full. The anime extras are triggers, not measurements, and pass unchanged.
+///
+/// It is one curve for the whole face, a property of the character. Per-channel response curves (a performer's range on
+/// one blendshape, their dead zones) are retarget calibration (spec PF-22, `omuzaki-anim`) and run before the bus
+/// reaches the face; the expander shapes what the face does with the calibrated values.
+///
+/// The defaults (knee 0, gain 1) leave the channels untouched.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Amplify {
+    /// Where the expander stops boosting, as a channel value, `0..=0.5`. 0 turns it off.
+    pub knee: f64,
+    /// The boost below the knee, `1..=4`; `knee x gain` may not pass 1.
+    pub gain: f64,
+}
+
+impl Default for Amplify {
+    fn default() -> Self {
+        Self { knee: 0.0, gain: 1.0 }
+    }
+}
+
+impl Amplify {
+    /// True when the curve is the identity (or its numbers aren't), so [`FaceMapping::apply`] skips it.
+    pub fn is_identity(&self) -> bool {
+        !(self.knee > 0.0 && self.gain > 1.0 && self.knee.is_finite() && self.gain.is_finite())
+    }
+
+    /// The curve at `v` (a channel value, `0..=1`): `v x gain` below the knee, then a straight line from
+    /// `(knee, knee x gain)` to `(1, 1)`. Continuous, monotone, and 0 and 1 are fixed points.
+    pub fn curve(&self, v: f32) -> f32 {
+        let (knee, gain) = (coef(self.knee), coef(self.gain));
+        let top = (knee * gain).min(1.0);
+        let out = if v <= knee { v * gain } else { top + (v - knee) * (1.0 - top) / (1.0 - knee) };
+        // A mapping that was never validated can't push a channel out of its range.
+        out.clamp(0.0, 1.0)
+    }
+}
+
+impl Validate for Amplify {
+    fn check(&self, c: &mut Check) {
+        c.range("knee", self.knee, 0.0, 0.5);
+        c.range("gain", self.gain, 1.0, 4.0);
+        c.rule(
+            &["knee", "gain"],
+            self.knee * self.gain <= 1.0,
+            "knee x gain must be at most 1, or the curve would pass 1",
+        );
+    }
+}
+
 /// How one character's face reads the channels (spec FE-06 "exaggeration profiles"): a resting face and the
 /// coefficients of every formula. Stored in the face profile, so variants and ops edit single numbers.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -420,6 +486,8 @@ pub struct FaceMapping {
     pub cheeks: CheekMap,
     /// Gaze.
     pub gaze: GazeMap,
+    /// The subtle-performance expander on the `ARKit` channels, applied before every formula.
+    pub amplify: Amplify,
 }
 
 fn unit(v: f32) -> f32 {
@@ -439,6 +507,11 @@ impl FaceMapping {
     pub fn apply(&self, bus: &ChannelBuf) -> PaintParams {
         let mut sanitised = *bus;
         sanitised.sanitize();
+        if !self.amplify.is_identity() {
+            for info in Channel::arkit() {
+                sanitised.set(info.channel, self.amplify.curve(sanitised.get(info.channel)));
+            }
+        }
         let ch = &sanitised;
         let rest = &self.rest;
         let (left_eye, right_eye) = (self.eye(ch, Side::Left), self.eye(ch, Side::Right));
@@ -546,6 +619,12 @@ impl FaceMapping {
         let s_right = corner(Channel::MOUTH_SMILE_RIGHT, Channel::MOUTH_FROWN_RIGHT, Channel::MOUTH_DIMPLE_RIGHT);
         let s_avg = f32::midpoint(s_left, s_right);
         let jaw = (g(Channel::JAW_OPEN) - coef(map.close_cancel) * g(Channel::MOUTH_CLOSE)).max(0.0);
+        // The lips can part without the jaw (an "ooh", bared teeth, a tongue poked out): the strongest of those partings
+        // opens the mouth when the jaw opens it less. The kiss below still fades with the jaw alone.
+        let parted = (coef(map.part_funnel) * g(Channel::MOUTH_FUNNEL))
+            .max(coef(map.part_upper_up) * mid(ch, Channel::MOUTH_UPPER_UP_LEFT, Channel::MOUTH_UPPER_UP_RIGHT))
+            .max(coef(map.part_lower_down) * mid(ch, Channel::MOUTH_LOWER_DOWN_LEFT, Channel::MOUTH_LOWER_DOWN_RIGHT))
+            .max(coef(map.part_tongue) * g(Channel::TONGUE_OUT));
         let press = (coef(map.press) * g(Channel::MOUTH_PRESS_LEFT).max(g(Channel::MOUTH_PRESS_RIGHT))
             + coef(map.press_roll_lower) * g(Channel::MOUTH_ROLL_LOWER)
             + coef(map.press_roll_upper) * g(Channel::MOUTH_ROLL_UPPER)
@@ -554,7 +633,7 @@ impl FaceMapping {
         let pucker = g(Channel::MOUTH_PUCKER);
         let lower_down = mid(ch, Channel::MOUTH_LOWER_DOWN_LEFT, Channel::MOUTH_LOWER_DOWN_RIGHT);
         MouthParams {
-            open: (coef(map.open) * jaw).clamp(0.0, 1.5),
+            open: (coef(map.open) * jaw.max(parted)).clamp(0.0, 1.5),
             wide: (coef(rest.mouth_wide)
                 + coef(map.stretch) * mid(ch, Channel::MOUTH_STRETCH_LEFT, Channel::MOUTH_STRETCH_RIGHT)
                 + coef(map.wide_smile) * s_avg.max(0.0)
@@ -596,6 +675,7 @@ enum Side {
 impl Validate for FaceMapping {
     fn check(&self, c: &mut Check) {
         c.nested("rest", &self.rest);
+        c.nested("amplify", &self.amplify);
         let (eyes, brows, mouth, cheeks, gaze) = (&self.eyes, &self.brows, &self.mouth, &self.cheeks, &self.gaze);
         // Gains: non-negative numbers, up to a generous ceiling (a gain of 6 is already a cartoon).
         let gains = [
@@ -648,6 +728,10 @@ impl Validate for FaceMapping {
             ("mouth/teeth_start", mouth.teeth_start),
             ("mouth/teeth_lower_start", mouth.teeth_lower_start),
             ("mouth/teeth_lower_smile_start", mouth.teeth_lower_smile_start),
+            ("mouth/part_funnel", mouth.part_funnel),
+            ("mouth/part_upper_up", mouth.part_upper_up),
+            ("mouth/part_lower_down", mouth.part_lower_down),
+            ("mouth/part_tongue", mouth.part_tongue),
         ];
         for (name, value) in fractions {
             c.range(name, value, 0.0, 1.0);
@@ -672,6 +756,25 @@ mod tests {
     #[test]
     fn the_paint_parameters_are_small_and_copy() {
         assert_eq!(std::mem::size_of::<PaintParams>(), 164, "update the design doc if this changes");
+    }
+
+    #[test]
+    fn lips_part_without_the_jaw_and_add_nothing_once_the_jaw_opens_further() {
+        let m = FaceMapping::default();
+        let parted = [
+            &[(Channel::MOUTH_FUNNEL, 1.0)][..],
+            &[(Channel::MOUTH_UPPER_UP_LEFT, 1.0), (Channel::MOUTH_UPPER_UP_RIGHT, 1.0)],
+            &[(Channel::MOUTH_LOWER_DOWN_LEFT, 1.0), (Channel::MOUTH_LOWER_DOWN_RIGHT, 1.0)],
+            &[(Channel::TONGUE_OUT, 1.0)],
+        ];
+        for pairs in parted {
+            let open = m.apply(&with(pairs)).mouth.open;
+            // Past the closed line's switch (0.06), so the interior shows, and far short of a talking mouth.
+            assert!(open > 0.12 && open < 0.3, "{pairs:?}: {open}");
+            let mut jaw = pairs.to_vec();
+            jaw.push((Channel::JAW_OPEN, 0.5));
+            assert_eq!(m.apply(&with(&jaw)).mouth.open, m.apply(&with(&[(Channel::JAW_OPEN, 0.5)])).mouth.open);
+        }
     }
 
     #[test]
@@ -897,6 +1000,35 @@ mod tests {
         );
         let values = crate::expression::ChannelValues::default().with(Channel::JAW_OPEN, 0.6);
         assert_eq!(serde_json::to_string(&values).unwrap(), r#"{"jawOpen":0.6}"#);
+    }
+
+    #[test]
+    fn the_expander_lifts_small_movements_and_keeps_full_ones() {
+        let amp = Amplify { knee: 0.2, gain: 2.5 };
+        amp.clone().validate().unwrap();
+        assert!((amp.curve(0.1) - 0.25).abs() < 1e-6, "gain below the knee");
+        assert!((amp.curve(0.2) - 0.5).abs() < 1e-6, "the knee");
+        assert!((amp.curve(1.0) - 1.0).abs() < 1e-6 && amp.curve(0.0).abs() < 1e-9, "0 and 1 are fixed points");
+        let mut last = 0.0;
+        for i in 0..=100_u8 {
+            let x = f32::from(i) / 100.0;
+            let v = amp.curve(x);
+            assert!(v >= last && v >= x, "monotone and never below the input at {x}");
+            last = v;
+        }
+        let mut m = FaceMapping::default();
+        let b = with(&[(Channel::MOUTH_SMILE_LEFT, 0.1), (Channel::SWEAT_DROP, 0.1)]);
+        let calm = m.apply(&b);
+        m.amplify = amp;
+        let lifted = m.apply(&b);
+        assert!((lifted.mouth.smile_left - 2.5 * calm.mouth.smile_left).abs() < 1e-5, "an ARKit channel is lifted");
+        assert_eq!(lifted.sweat, calm.sweat, "an anime extra is a trigger and passes unchanged");
+        assert_eq!(m.rest_params(), FaceMapping::default().rest_params(), "the rest face doesn't move");
+        let mirrored = with(&[(Channel::MOUTH_SMILE_RIGHT, 0.1), (Channel::SWEAT_DROP, 0.1)]);
+        assert_eq!(m.apply(&mirrored), lifted.mirrored(), "the expander is symmetric");
+        let too_far = Amplify { knee: 0.5, gain: 3.0 };
+        assert_eq!(too_far.validate().unwrap_err().0[0].path, "knee");
+        assert!(Amplify::default().is_identity() && Amplify { knee: f64::NAN, gain: 2.0 }.is_identity());
     }
 
     #[test]

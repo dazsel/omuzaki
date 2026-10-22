@@ -3,7 +3,7 @@
 //! The record is the **join of the parts' source rows and the application records' rights** (`source.rs`), and it never guesses:
 //! - every permission is the **strictest** of the parts: the commercial status (`no`, then `unknown`, then `ok`), the
 //!   private-test flag (any part makes the character private test material) and each of the nine flags of the file's
-//!   terms (`terms::AXES`);
+//!   terms (`omuzaki_library_api::rights_join::AXES`);
 //! - the licence is every distinct licence joined with SPDX `AND` (all of them apply), and the authors and attributions
 //!   are the **union** of the parts', in part-id order;
 //! - a part with **no source row counts as the most restrictive part possible**: commercial `unknown`, the default
@@ -21,23 +21,24 @@
 
 use omuzaki_char_api::{CharId, KindProvenance, PartId, find_kind, paths};
 use omuzaki_library_api::ApplicationRecord;
+use omuzaki_library_api::rights_join::{JointConsent, RightsRow, UNKNOWN_LICENCE, join_rights};
 use omuzaki_io_api::{CreditNotation, Finding, Report, UseTerms, VRM_LICENSE_URLS, VrmMeta};
 use omuzaki_ops_api::{Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
 use omuzaki_store_api::{Commercial, Consent, Provenance, Source};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use super::source::{PartSource, source_path, sources_path};
-use super::terms::{self, commercial_rank};
 use crate::gather::avatar::{LicenceRecord, blank_rights_field};
+use crate::ops::avatar::import::AVATAR_PART;
+
+/// The kind the reserved `avatar` part of an imported character reports: the model came from outside the project.
+pub const AVATAR_KIND: &str = "External";
 
 /// The licence of a part made by one of the project's own generators. Terms stay the most restrictive: a kind says whose
 /// rights they are, not what is granted.
 const PROJECT_LICENCE: &str = "LicenseRef-Omuzaki-User";
-
-/// The licence of a part nobody has recorded a source for.
-const UNKNOWN_LICENCE: &str = "LicenseRef-Unknown";
 
 /// Works out the licence record a character's parts and application records allow: the strictest join of their rights.
 /// Writes nothing; `licence.set` stores a record.
@@ -341,60 +342,52 @@ fn non_blank(text: Option<&str>) -> Option<String> {
     text.map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned)
 }
 
-/// Each value once, in the order first met.
-fn unique(values: impl Iterator<Item = String>) -> Vec<String> {
-    let mut seen: Vec<String> = Vec::new();
-    for value in values {
-        if !seen.contains(&value) {
-            seen.push(value);
-        }
-    }
-    seen
+/// The rows the rights join runs over, one per contribution in the order they are joined. The consent of a part is its
+/// source row's and of an application its record's, named as the finding names them.
+fn rights_rows(
+    all: &[PartRow],
+    inputs: &[PartInput],
+    applications: &[ApplicationInput],
+) -> Vec<RightsRow> {
+    let consents = inputs
+        .iter()
+        .map(|input| input.source.as_ref().and_then(|s| s.provenance.consent.clone()))
+        .chain(applications.iter().map(|input| input.record.rights.consent.clone()))
+        .chain(std::iter::repeat(None));
+    all.iter()
+        .zip(consents)
+        .map(|(row, consent)| RightsRow {
+            name: row.part.clone(),
+            licence: row.licence.clone(),
+            commercial: row.commercial,
+            consent,
+            terms: row.terms.clone(),
+            private_test: row.private_test,
+            author: row.author.clone(),
+            attribution: row.attribution.clone(),
+            owned_by: row.owned_by.clone(),
+        })
+        .collect()
 }
 
-/// Every distinct licence joined with SPDX `AND`, which says that all of them apply. An expression of its own
-/// (`MIT OR Apache-2.0`) is parenthesised, because `AND` binds tighter than `OR`.
-fn join_licences(rows: &[PartRow]) -> String {
-    let mut licences: Vec<&str> = rows.iter().map(|r| r.licence.as_str()).collect();
-    licences.sort_unstable();
-    licences.dedup();
-    match licences.as_slice() {
-        [] => UNKNOWN_LICENCE.to_owned(),
-        [one] => (*one).to_owned(),
-        many => many
-            .iter()
-            .map(|l| if l.contains(char::is_whitespace) { format!("({l})") } else { (*l).to_owned() })
-            .collect::<Vec<_>>()
-            .join(" AND "),
-    }
-}
-
-/// The consent a record can hold: the one every part and application record that has a consent agrees on. Different consents cannot be one.
-fn joint_consent(inputs: &[PartInput], applications: &[ApplicationInput], report: &mut Report) -> Option<Consent> {
-    let mut consents: Vec<(String, &Consent)> = Vec::new();
-    for input in inputs {
-        if let Some(consent) = input.source.as_ref().and_then(|s| s.provenance.consent.as_ref()) {
-            consents.push((input.id.to_string(), consent));
+/// The consent a record can hold, from the rights join. Different consents cannot be one: the finding names them all.
+fn consent_of(joint: JointConsent, report: &mut Report) -> Option<Consent> {
+    match joint {
+        JointConsent::None => None,
+        JointConsent::Agreed(consent) => Some(consent),
+        JointConsent::Ambiguous(consents) => {
+            let named: Vec<String> =
+                consents.iter().map(|(part, c)| format!("`{part}`: {} ({})", c.person, c.scope)).collect();
+            report.push(
+                Finding::warning(
+                    "licence.consent_ambiguous",
+                    format!("the contributions (parts and application records) record different consents ({}), and a record holds one", named.join("; ")),
+                )
+                .hint("record the consent that covers the whole character in the record's provenance.consent"),
+            );
+            None
         }
     }
-    for input in applications {
-        if let Some(consent) = input.record.rights.consent.as_ref() {
-            consents.push((format!("applied/{}", input.app), consent));
-        }
-    }
-    let first = consents.first()?.1;
-    if consents.iter().all(|(_, c)| *c == first) {
-        return Some(first.clone());
-    }
-    let named: Vec<String> = consents.iter().map(|(part, c)| format!("`{part}`: {} ({})", c.person, c.scope)).collect();
-    report.push(
-        Finding::warning(
-            "licence.consent_ambiguous",
-            format!("the contributions (parts and application records) record different consents ({}), and a record holds one", named.join("; ")),
-        )
-        .hint("record the consent that covers the whole character in the record's provenance.consent"),
-    );
-    None
 }
 
 /// The contribution of "no parts": nothing is known, so every value is the most restrictive possible and nobody owns it.
@@ -458,23 +451,7 @@ pub(crate) fn join(
         report.push(Finding::warning("licence.part_source_missing", message).at(path.to_string()).hint(hint));
     }
 
-    let private_test = all.iter().any(|r| r.private_test);
-    let commercial =
-        all.iter().map(|r| r.commercial).min_by_key(|c| commercial_rank(*c)).unwrap_or(Commercial::Unknown);
-    let mut joined_terms = terms::join(all.iter().map(|r| &r.terms));
-    // The exporters' rule (`rights.terms_exceed_provenance`): a status that is not `ok`, and private test material, carry
-    // only the most restrictive value of every flag. The join of parts that are individually fine can still land here,
-    // for instance when one of them is unknown.
-    if commercial != Commercial::Ok || private_test {
-        joined_terms = UseTerms::default();
-    }
-    let authors = unique(all.iter().filter_map(|r| r.author.clone()));
-    let attributions = unique(all.iter().filter_map(|r| r.attribution.clone()));
-    let owners = {
-        let mut owners = unique(all.iter().filter_map(|r| r.owned_by.clone()));
-        owners.sort_unstable();
-        owners
-    };
+    let joined = join_rights(&rights_rows(&all, inputs, applications_in));
     let provenance = Provenance {
         source: all
             .iter()
@@ -485,23 +462,23 @@ pub(crate) fn join(
             })
             .cloned()
             .unwrap_or(Source::Authored),
-        author: (!authors.is_empty()).then(|| authors.join(", ")),
-        licence: join_licences(&all),
-        attribution: (!attributions.is_empty()).then(|| attributions.join("; ")),
-        commercial,
-        consent: joint_consent(inputs, applications_in, &mut report),
-        private_test,
+        author: (!joined.authors.is_empty()).then(|| joined.authors.join(", ")),
+        licence: joined.licence,
+        attribution: (!joined.attributions.is_empty()).then(|| joined.attributions.join("; ")),
+        commercial: joined.commercial,
+        consent: consent_of(joined.consent, &mut report),
+        private_test: joined.private_test,
     };
-    let mut meta = VrmMeta::new(name, authors, VRM_LICENSE_URLS[0]);
-    meta.terms = joined_terms;
+    let mut meta = VrmMeta::new(name, joined.authors, VRM_LICENSE_URLS[0]);
+    meta.terms = joined.terms;
     DerivedLicence {
         character: id.to_string(),
         complete: !rows.is_empty() && rows.iter().all(|r| r.recorded),
         record: LicenceRecord::new(provenance, meta),
-        private_test,
-        project_owned: !private_test && all.iter().all(|r| r.owned_by.is_some()),
-        owners,
-        attributions,
+        private_test: joined.private_test,
+        project_owned: !joined.private_test && all.iter().all(|r| r.owned_by.is_some()),
+        owners: joined.owners,
+        attributions: joined.attributions,
         parts: rows,
         applications,
         report,
@@ -524,14 +501,26 @@ pub(crate) fn no_such_character(id: &CharId) -> OpError {
 pub(crate) fn load(ctx: &OpCtx<'_>, id: &CharId) -> Result<DerivedLicence, OpError> {
     let node = ctx.doc.get(&paths::character(id)).ok_or_else(|| no_such_character(id))?;
     let name = node.get("name").and_then(Value::as_str).unwrap_or_default();
-    let mut table: Vec<(&String, &Value)> = match node.get("parts") {
-        Some(Value::Object(parts)) => parts.iter().collect(),
+    // An imported character's parts are the model itself (the reserved `avatar` part, row `sources/avatar`) and the
+    // attachments under `avatar.parts`; a built character's are its `parts`.
+    let imported = node.get("avatar");
+    let parts = match imported {
+        Some(avatar) => avatar.get("parts"),
+        None => node.get("parts"),
+    };
+    let mut table: Vec<(&str, &Value)> = match parts {
+        Some(Value::Object(parts)) => parts.iter().map(|(key, part)| (key.as_str(), part)).collect(),
         _ => Vec::new(),
     };
-    table.sort_unstable_by_key(|(key, _)| key.as_str());
+    let model = json!({ "kind": AVATAR_KIND });
+    if imported.is_some() {
+        table.retain(|(key, _)| *key != AVATAR_PART);
+        table.push((AVATAR_PART, &model));
+    }
+    table.sort_unstable_by_key(|(key, _)| *key);
     let mut inputs = Vec::with_capacity(table.len());
     for (key, part) in table {
-        let part_id = PartId::new(key.as_str()).map_err(|e| {
+        let part_id = PartId::new(key).map_err(|e| {
             OpError::invalid(format!("parts/{key}"), format!("`{key}` is not a part id: {e}"))
                 .hint("part ids are lowercase letters, digits, `-` and `_`; rename the part")
         })?;

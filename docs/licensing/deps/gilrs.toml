@@ -1,0 +1,8 @@
+section = "rust"
+item = "gilrs 0.11, gilrs-core 0.6"
+kind = "crate"
+used_for = "gamepads on every OS (`omuzaki-input`'s gamepad backend, ADR 0060): XInput on Windows, evdev through libudev on Linux, IOKit as the macOS fallback"
+status = "conditions"
+condition = "Apache-2.0/MIT: keep the notices; `default-features = false` with `xinput` (no `wgi`, which needs window focus); on Linux it links the system libudev dynamically (LGPL-2.1+, shared only, never bundled or static), under the policy's LGPL-shared rule; gilrs-core accepts `windows` <= 0.62, so the workspace's `windows` pin stays in that range"
+audit = "(crates.io: Apache-2.0/MIT, 2026-10-22; docs/research/2026-10-os-input-capture.md §4)"
+crates = []

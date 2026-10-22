@@ -66,6 +66,7 @@ messages! {
     ScopeInside = "ds-scope-inside" => "Scope",
     CostEstimate = "ds-cost-estimate" => "Estimated cost: {parts}",
     GateFailed = "ds-gate-failed" => "{value}, below {threshold}, gate failed",
+    GateAbove = "ds-gate-above" => "{value}, above {threshold}, gate failed",
     GatePassed = "ds-gate-passed" => "{value}, gate passed",
     GateOpens = "ds-gate-opens" => "Opens the evidence",
     /// Joins the parts of a spoken value ("0.62, default 0.50, modified"). Punctuation, left alone by the pseudo-locale.
@@ -76,6 +77,8 @@ messages! {
     OwnerAi = "ds-owner-ai" => "AI",
     OwnerLifeLayer = "ds-owner-life-layer" => "life layer",
     OwnerHotkey = "ds-owner-hotkey" => "hotkey",
+    OwnerScore = "ds-owner-score" => "score",
+    OwnerRest = "ds-owner-rest" => "resting",
     MeterRaw = "ds-meter-raw" => "raw {value}",
     MeterOwner = "ds-meter-owner" => "owner {owner}",
     MeterClipping = "ds-meter-clipping" => "clipping",
@@ -90,6 +93,10 @@ messages! {
 
     ToastDismiss = "ds-toast-dismiss" => "Dismiss notification",
     ToastRepeated = "ds-toast-repeated" => "{message}, repeated {count} times",
+    /// What a screen reader hears for a field's error: the status word, then the message.
+    FieldError = "ds-field-error" => "{status}: {message}",
+    /// The same for a disabled field, followed by why it is disabled.
+    FieldErrorDisabled = "ds-field-error-disabled" => "{status}: {message}. {reason}",
     FieldClear = "ds-field-clear" => "Clear {label}",
 
     ParamLocked = "ds-param-locked" => "Locked",
@@ -149,6 +156,7 @@ messages! {
     ApprovalApprovePlan = "ds-approval-approve-plan" => "Approve plan",
     ApprovalApprove = "ds-approval-approve" => "Approve",
     ApprovalSession = "ds-approval-session" => "Approve for this session",
+    ApprovalProject = "ds-approval-project" => "Approve for this project",
     ApprovalReject = "ds-approval-reject" => "Reject…",
     ApprovalRejectName = "ds-approval-reject-name" => "Reject",
     /// The spoken name of a button: what it does, what it is about, who asked.

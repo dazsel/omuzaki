@@ -6,7 +6,7 @@
 //!
 //! | Format id | Reads and writes | Spec files implemented |
 //! |---|---|---|
-//! | `vrm1` | `VRMC_vrm` 1.0: meta, humanoid, expressions (morph, colour and texture-transform binds), look-at, first-person; `VRMC_springBone`; `VRMC_node_constraint`; `VRMC_materials_mtoon` | `vrm-specification/specification/VRMC_vrm-1.0/*.md`, `VRMC_springBone-1.0`, `VRMC_node_constraint-1.0`, `VRMC_materials_mtoon-1.0` |
+//! | `vrm1` | `VRMC_vrm` 1.0: meta, humanoid, expressions (morph, colour and texture-transform binds), look-at, first-person; `VRMC_springBone` with `VRMC_springBone_extended_collider` and `VRMC_springBone_limit`; `VRMC_node_constraint`; `VRMC_materials_mtoon` | `vrm-specification/specification/VRMC_vrm-1.0/*.md`, `VRMC_springBone-1.0`, `VRMC_springBone_extended_collider-1.0`, `VRMC_springBone_limit-1.0`, `VRMC_node_constraint-1.0`, `VRMC_materials_mtoon-1.0` |
 //! | `vrm0` | the 0.x `VRM` extension: meta, humanoid, blend shape groups, first-person and look-at, secondary animation (spring bones), `materialProperties` (`MToon` 0.x, unlit) | `vrm-specification/specification/0.0/README.md` |
 //!
 //! Both register themselves with `omuzaki_io_api::register_importer!` / `register_exporter!`; nothing else needs to
@@ -39,7 +39,8 @@
 //!
 //! **Findings** this crate adds, by area (ids are part of the contract): `gltf.layout_unsupported` (a VRM is one
 //! binary file; the other `gltf.*` rules are `omuzaki-gltf`'s, listed in its documentation); `vrm.*` for the avatar layer (`humanoid_unknown_bone`, `expression_name_invalid`,
-//! `bind_dropped`, `bind_weight_clamped`, `collider_shapeless`, `collider_dropped`, `spring_chain_dropped`,
+//! `bind_dropped`, `bind_weight_clamped`, `collider_shapeless`, `collider_dropped`, `collider_normal_normalised`, `limit_clamped`,
+//! `limit_on_tail_ignored`, `limit_invalid`, `spring_chain_dropped`,
 //! `spring_center_dropped`, `constraint_invalid`, `constraint_dropped`, `constraint_duplicate`, `annotation_dropped`,
 //! `mtoon_invalid`, `mtoon_queue_clamped`, `meta_licence_condition`, `perfect_sync_complete`,
 //! `perfect_sync_partial`, `tpose`); `vrm0.*` for 0.x (`meta_missing`, `meta_licence`, `meta_commercial`, `meta_content_flags`,

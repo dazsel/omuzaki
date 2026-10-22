@@ -6,6 +6,13 @@ on:
   schedule:
     - cron: "0 10 * * *"   # 10:00 UTC
   workflow_dispatch:
+    inputs:
+      windows_cargo_args:
+        description: "Windows job: what `cargo test` runs (default: the whole workspace, every target). For a run on a branch that looks at one crate, such as `-p omuzaki-render --test spot_fog`."
+        default: ""
+      windows_test_args:
+        description: "Windows job: arguments for the test binaries after `--`, such as `--nocapture --test-threads=1`."
+        default: ""
 
 concurrency:
   group: nightly
@@ -81,7 +88,26 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Test (all targets)
         # --no-fail-fast: one failing test binary must not hide the others (a git_clean failure hid known_texts, 10-16).
-        run: cargo test --locked --workspace --all-targets --no-fail-fast
+        # The inputs reach the shell through the environment, never spliced into the script. Unquoted on purpose: each
+        # holds several words, and bash splits them.
+        shell: bash
+        env:
+          CARGO_ARGS: ${{ inputs.windows_cargo_args }}
+          TEST_ARGS: ${{ inputs.windows_test_args }}
+          # Golden tests keep the pictures they render here when they fail (tests/support in omuzaki-render).
+          OMUZAKI_RENDER_OUT: ${{ github.workspace }}/render-out
+        run: |
+          mkdir -p "$OMUZAKI_RENDER_OUT"
+          if [ -z "$CARGO_ARGS" ]; then CARGO_ARGS="--workspace --all-targets"; fi
+          # shellcheck disable=SC2086
+          cargo test --locked $CARGO_ARGS --no-fail-fast -- $TEST_ARGS
+      - name: Keep the rendered pictures
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-render-out
+          path: render-out
+          if-no-files-found: ignore
 
   # The GPU face rasteriser's timing probe (#1433 B1), cross-built for Windows so the owner can run it on their GPU machine
   # (#1658). No secrets, no self-hosted runner; the toolchain is the one rust-toolchain.toml pins, as in ci.yml's win-cross.
@@ -100,7 +126,7 @@ jobs:
           windows-cross: true
           free-disk: true
       - name: Cross-build the probe
-        run: cargo build --locked --release --target x86_64-pc-windows-gnu -p omuzaki-face --example gpu_face_timing
+        run: cargo build --locked --release --target x86_64-pc-windows-gnu -p omuzaki-test-face --example gpu_face_timing
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: face-gpu-timing-windows
@@ -128,11 +154,18 @@ jobs:
           mkdir track-roi-timing-windows
           cp target/x86_64-pc-windows-gnu/release/examples/track_roi_timing.exe track-roi-timing-windows/
           cat > track-roi-timing-windows/RUN.txt <<'TXT'
-          track_roi_timing.exe prints a Markdown table of the track_roi timing (640x480, 1 thread, 1,000 calls).
-          Set two folders, then run it:
+          track_roi_timing.exe prints a Markdown table of the track_roi timing (640x480, 1,000 calls) for each
+          runtime whose variables are set.
+          ONNX Runtime (1 thread):
             OMUZAKI_TRACK_MODELS  the model folder: tools/models/mediapipe-face.sh --out <dir> (checks its own SHA-256)
             OMUZAKI_ORT_CACHE     a folder holding the pinned ONNX Runtime archive under its release file name
-          track_roi_timing.exe --pins prints that archive's URL, SHA-256 and size; the probe checks them again on load.
+          LiteRT with XNNPACK (1 and 2 threads):
+            OMUZAKI_FACE_TASK     the official face_landmarker.task (--pins prints its URL, SHA-256 and size)
+            OMUZAKI_LITERT_CACHE  a folder holding omuzaki-litert-<version>-win-x64.zip, from the artifact
+                                  litert-<version>-win-x64 of the latest runtime-litert run on main
+            OMUZAKI_LITERT_SHA256 the digest in that run's artifact litert-digest-win-x64
+          track_roi_timing.exe --pins prints the ONNX Runtime archive and the face bundle; the probe checks them again
+          on load.
           TXT
           (cd track-roi-timing-windows && sha256sum track_roi_timing.exe > track_roi_timing.exe.sha256)
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

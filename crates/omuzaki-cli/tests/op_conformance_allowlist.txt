@@ -3,6 +3,11 @@
 # examples, so it never belongs here. `tests/op_conformance.rs` fails on a missing op and on a stale line.
 # The second section lists edits that still declare `Undo::None` (the rule is: queries only); it shrinks the same way.
 agent.connection
+# The imported-avatar ops need a project holding an imported model, which the conformance rig can't build until
+# `io.export` places model files (#335: it gives these ops runnable examples and deletes these lines; ruling on #2214).
+avatar.describe
+avatar.map_channel
+avatar.remap
 # Deleting a document key and undoing it re-appends the key in the TOML file (omuzaki-doc keeps a hand-edited file's order,
 # and re-adds an emptied parent table with its own header), so the file is not byte-identical after undo: these four edits
 # fail the exact-undo rule on any example. They get examples when omuzaki-doc restores a removed key to its place (#2233).
@@ -41,10 +46,41 @@ pose.list
 
 [edits with Undo::None]
 # Transitional: live actions until live-action undo lands (#139, change #2106).
+audio.mic
+automation.fire
+automation.pause
+automation.resume
+automation.resume_graph
+automation.set_variable
+automation.start
+automation.stop
+automation.switch_group
+obs.connect
+obs.disconnect
+obs.record.start
+obs.record.stop
+obs.replay.save
+obs.replay.start
+obs.replay.stop
+obs.scene.set
+obs.source.set_visible
+obs.stream.start
+obs.stream.stop
+output.start
+output.stop
 output.window.close
 output.window.open
-perform.calibrate
-perform.set_retarget
+record.replay_start
+record.replay_stop
+record.save_replay
+record.start
+record.stop
+twitch.connect
+twitch.disconnect
+vts.connect
+vts.disconnect
+vts.release
+vts.trigger
 # trigger.press is a live action, so it stays until #2106 gives live actions their rule (#2195).
 trigger.press
 # face.underlay.set: a view-state job with no document patch, so nothing to undo. #139 (change #2106) gives such ops their own

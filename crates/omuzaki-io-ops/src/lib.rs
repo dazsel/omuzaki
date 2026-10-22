@@ -12,7 +12,8 @@
 //! | Module | Holds |
 //! |---|---|
 //! | [`ops::list_formats`], [`ops::inspect`] | the `io.list_formats` and `io.inspect` queries |
-//! | [`ops::import`] | `io.import`, the store-writing job |
+//! | [`ops::import`] | `io.import`, the store-writing job (as a reference, or as an avatar) |
+//! | [`ops::avatar`] | a model as an avatar: the preparation `io.inspect` and `io.import` share, the confirm token, and the `avatar.remap`, `avatar.map_channel` and `avatar.describe` ops |
 //! | [`ops::export`] | `io.export`, the gather, bake, write job |
 //! | [`ops::check_export`] | `io.check_export`, the export preflight query |
 //! | [`ops::licence`] | `licence.set`, `licence.describe`, `licence.derive`: the character's licence record; `licence.set_source`: a part's source row |
@@ -20,12 +21,17 @@
 //! | [`convert::material`], [`convert::texture`] | toon and `MToon` materials, PNG textures |
 //! | [`gather::scene`], [`gather::skeleton`] | a built character into an `IoScene` |
 //! | [`gather::springs`], [`gather::avatar`] | the VRM avatar block and spring bones |
+//! | [`gather::avatar_import`] | an imported avatar back into an `IoScene`, from its runtime data and what it retained |
 //! | [`prepare::humanoid`] | `auto_map`, `apply`: propose the humanoid bones of a skinned skeleton, with an override table |
+//! | [`prepare::tpose`], [`prepare::cleanup`] | an imported rest turned onto the T-pose; welding, merging and dropping unused data |
+//! | [`prepare::arkit`], [`prepare::arkit_shapes`] | the `ARKit` channels a model can already express, and the rest made from its geometry |
+//! | [`prepare::avatar`] | `to_avatar`: the whole preparation of a model as an `ImportedAvatar` |
 //! | [`fit_bones`] | `reduce_bones`: cut a skin's joints to a budget, the `fit.bones` stage |
 //! | [`fit_decimate`] | `decimate`, `decimate_scene`: cut triangles to a budget, morph targets and skin weights kept consistent |
 //! | [`fit_texture`] | `resize`, `downscale_to`: the texture resampler for a platform fit, in linear light with premultiplied alpha |
 //! | [`fit_meshes`] | `merge_meshes`: join mesh nodes that no expression binds, the `fit.meshes` stage |
 //! | [`limits`] | platform limit tables as data (`data/platforms/*.toml`), their evaluation and the measured scene stats |
+//! | [`msg`], [`report_sections`] | the crate's `messages!` table (the import report's lines and fixes first) and the report's four sections by rule id |
 //! | [`ops::progress::JobProgress`] | the adapter from a job's context to the io progress trait |
 //!
 //! Ops register themselves with `omuzaki_ops_api::register_op!` next to their definition, so nothing here lists them.
@@ -41,11 +47,14 @@ pub mod fit_meshes;
 pub mod fit_texture;
 pub mod gather;
 pub mod limits;
+pub mod msg;
 pub mod ops;
 pub mod prepare;
+pub mod report_sections;
 pub mod vrchat_rank;
 
 omuzaki_core::define_link! {
+    omuzaki_avatar_api::link();
     omuzaki_char_api::link();
     omuzaki_library_api::link();
 }

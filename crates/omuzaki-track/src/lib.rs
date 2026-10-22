@@ -13,8 +13,13 @@
 //! | [`blendshapes`] | Blendshape V2: the landmark subset in, 52 scores out |
 //! | [`metadata`] | the canonical face ([`GeometryMetadata`]) and the protobuf reader for it |
 //! | [`geometry`] | the head-pose fit (Procrustes through a virtual camera) |
+//! | [`guided`] | [`guided::GuidedCalibrator`]: the guided calibration's prompts fitted into per-channel ranges (PF-20) |
 //! | [`smoothing`] | the One-Euro landmark filter |
 //! | [`models`] | [`models::ModelDir`]: the verified model folder and its three loaded graphs |
+//! | [`provision`] | the app's face tracker: the shipped model folder through the runtime it is made for |
+//! | [`task`] | the official `face_landmarker.task`, pinned, unpacked into a TFLite model folder |
+//! | [`gesture`] | face gestures (tongue out, a wink, puffed cheeks, a wide mouth) that press trigger keys (PF-25) |
+//! | [`doctor`] | the tracking doctor's image readings (light, backlight, glare, the frame edge) over track-api's `Doctor` |
 //! | [`pipeline`] | [`FaceTracker`]: the three graphs, tracking between frames, [`Mode`] |
 //! | [`sample`] | [`FaceSample`], [`StageTimings`] and [`to_track_frame`] |
 //! | [`error`] | [`FaceTrackError`] |
@@ -28,16 +33,21 @@
 pub mod blendshapes;
 pub mod calibration;
 pub mod detector;
+pub mod doctor;
 pub mod error;
 pub mod frame;
 pub mod geometry;
+pub mod gesture;
+pub mod guided;
 pub mod landmarks;
 pub mod metadata;
 pub mod models;
 pub mod pipeline;
+pub mod provision;
 pub mod roi;
 pub mod sample;
 pub mod smoothing;
+pub mod task;
 pub mod webcam;
 
 pub use blendshapes::blendshapes_signature;

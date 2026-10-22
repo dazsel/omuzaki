@@ -105,6 +105,8 @@ impl FaceUpdate {
 /// showed and its CPU raster. Nothing in [`update`](Self::update) allocates once the painter's lists have warmed up.
 pub struct FaceSystem {
     painter: Painter,
+    /// The real painter's base density at full layer scale; `None` for any other painter.
+    full_px_per_m: Option<f32>,
     cpu: Box<dyn FaceRasterizer>,
     gpu: Option<Box<dyn GpuRasterizer>>,
     clock: Box<dyn Clock>,
@@ -126,8 +128,13 @@ impl FaceSystem {
     }
 
     fn with(painter: Painter, cpu: Box<dyn FaceRasterizer>) -> Self {
+        let full_px_per_m = match &painter {
+            Painter::Real(painter) => Some(painter.base_px_per_m()),
+            Painter::Other(_) => None,
+        };
         Self {
             painter,
+            full_px_per_m,
             cpu,
             gpu: None,
             clock: Box::new(SystemClock::new()),
@@ -176,6 +183,26 @@ impl FaceSystem {
     pub fn gpu_paint_failed(&mut self, layer: FaceLayerId) {
         if let Some(gpu) = self.gpu.as_mut() {
             gpu.paint_failed(layer);
+        }
+    }
+
+    /// Scales the layers' raster density to `scale` times the density the system was made with (the atlas scale,
+    /// from [`AtlasController`](crate::atlas::AtlasController)). The next [`update`](Self::update) paints at the new
+    /// density and reports every layer changed, and [`layers`](Self::layers) gives the new sizes for the textures.
+    ///
+    /// # Errors
+    /// [`FaceError::Invalid`] if `scale` is not in `0 < scale <= 1`, or the painter isn't the real one (only the real
+    /// painter's density can change).
+    pub fn set_layer_scale(&mut self, scale: f32) -> Result<(), FaceError> {
+        if !(scale > 0.0 && scale <= 1.0) {
+            return Err(FaceError::Invalid(format!("the layer scale must be in 0 < scale <= 1, not {scale}")));
+        }
+        match (&mut self.painter, self.full_px_per_m) {
+            (Painter::Real(painter), Some(full)) => {
+                painter.set_base_px_per_m(full * scale);
+                Ok(())
+            }
+            _ => Err(FaceError::Invalid("only the real painter's layer density can change".to_owned())),
         }
     }
 
@@ -231,6 +258,14 @@ impl FaceSystem {
             if self.gpu.is_none() {
                 self.cpu.rasterize(spec, &self.drawing[spec.id], spec.px_per_m, &mut slot.raster)?;
                 slot.stale = false;
+            }
+        }
+        // A GPU rasteriser gets the changed layers before their paints, so it can draw them together.
+        if let (Some(gpu), Painter::Real(painter)) = (self.gpu.as_mut(), &self.painter) {
+            gpu.begin_frame();
+            for spec in layers.iter().filter(|spec| update.changed[spec.id as usize]) {
+                // A layer that can't be staged is encoded by its own paint, which reports what went wrong.
+                gpu.stage(spec, &self.drawing[spec.id], painter.sections().layer(spec.id)).ok();
             }
         }
         // Recorded only now that every layer succeeded: a failure above leaves all of them to be reported next time.

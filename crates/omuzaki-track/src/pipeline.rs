@@ -228,6 +228,20 @@ impl FaceTracker {
     /// (graph `"geometry"`) when the landmarks cannot be fitted a pose.
     #[doc(hidden)]
     pub fn track_roi(&mut self, frame: &RgbFrame<'_>, roi: NormRect, time: Seconds) -> Result<FaceSample> {
+        self.track_roi_timed(frame, roi, time).map(|(sample, _)| sample)
+    }
+
+    /// [`track_roi`](Self::track_roi) with each stage's time (the timing probe, #1905).
+    ///
+    /// # Errors
+    /// As [`track_roi`](Self::track_roi).
+    #[doc(hidden)]
+    pub fn track_roi_timed(
+        &mut self,
+        frame: &RgbFrame<'_>,
+        roi: NormRect,
+        time: Seconds,
+    ) -> Result<(FaceSample, StageTimings)> {
         frame.validate()?;
         self.forget_pass();
         let mut timings = StageTimings::default();
@@ -240,7 +254,7 @@ impl FaceTracker {
         if result.is_err() {
             self.lose_face();
         }
-        result
+        result.map(|sample| (sample, timings))
     }
 
     /// Landmarks, smoothing, blendshapes and pose inside `rect`. `gate` applies the presence threshold.
@@ -253,7 +267,7 @@ impl FaceTracker {
         timings: &mut StageTimings,
     ) -> Result<std::result::Result<FaceSample, Lost>> {
         let started = Instant::now();
-        let presence = self.landmarks.run(frame, &rect, &mut self.points)?;
+        let presence = self.landmarks.run(frame, &rect, &mut self.points, timings)?;
         timings.landmarks_us = micros_since(started);
         let Some(presence) = presence else { return Ok(Err(Lost::NoArea)) };
         if gate && presence < self.min_presence {

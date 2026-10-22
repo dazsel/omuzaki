@@ -365,6 +365,20 @@ fn aces_with_exposure_matches_the_three_js_curve_on_saturated_colours() {
     }
     println!("ACES on the GPU vs three.js: worst {worst:.2} levels over {} colours at 2 exposures", colours.len());
 
+    // The mock is the reference other tests compare against, so it draws the same curve (#630).
+    let mut mock = MockRenderer::new();
+    let mut worst_mock = 0.0f64;
+    for exposure in [1.0f32, 2.0] {
+        let cells = aces_cells(&mut mock, &colours, exposure);
+        for (&rgb, cell) in colours.iter().zip(&cells) {
+            let want = three_js_aces(rgb, f64::from(exposure));
+            let error = (0..3).map(|c| (f64::from(cell[c]) - want[c]).abs()).fold(0.0, f64::max);
+            assert!(error <= 1.0, "{rgb:?} at exposure {exposure}: mock {cell:?}, three.js {want:?}");
+            worst_mock = worst_mock.max(error);
+        }
+    }
+    println!("ACES in the mock vs three.js: worst {worst_mock:.2} levels");
+
     // Two values written out, so the test reads without the formula: mid grey, and a saturated green at exposure 2.
     let grey = aces_cells(&mut r, &[[128, 128, 128]], 1.0);
     assert_close(grey[0], [141, 141, 141, 255], 1, "grey 128 at exposure 1");
@@ -636,7 +650,7 @@ fn a_gpu_painters_commands_are_timed_under_paint_textures_and_a_failed_ones_are_
     // Even frames: a GPU painter's 64 clears of the whole texture. Odd frames: a GPU painter that records clears and
     // then fails, and a `write_rgba` of the whole texture, so both frames rebuild the same mips. The failed paint's
     // timestamp pair is the one the even frame's paint wrote last: counted, it would make the odd frame as long.
-    let (mut native, mut written) = (None, None);
+    let (mut native, mut written) = (Vec::new(), Vec::new());
     for frame in 0..24_u64 {
         let painter_fails = frame % 2 == 1;
         let result = r.paint_texture(face, &mut |target: &mut dyn PaintTarget| {
@@ -659,13 +673,20 @@ fn a_gpu_painters_commands_are_timed_under_paint_textures_and_a_failed_ones_are_
         if let Some(timings) = report.gpu
             && let Some(t) = timings.passes.get(Pass::PaintTextures)
         {
-            *(if timings.frame % 2 == 0 { &mut native } else { &mut written }) = Some(t.0);
+            (if timings.frame % 2 == 0 { &mut native } else { &mut written }).push(t.0);
         }
     }
-    let (native, written) = (native.expect("an even frame was timed"), written.expect("an odd frame was timed"));
-    println!("PaintTextures: {native:.6} s with the GPU painter's clears, {written:.6} s with write_rgba");
+    // The median of each kind of frame: one frame's timing on a shared CI runner can be off by half. Counted, the
+    // failed pair would make the odd frames at least as long as the even ones, so 1.5 times still tells the two apart.
+    let median = |mut times: Vec<f64>| {
+        times.sort_by(f64::total_cmp);
+        times.get(times.len() / 2).copied()
+    };
+    let (native, written) =
+        (median(native).expect("an even frame was timed"), median(written).expect("an odd frame was timed"));
+    println!("PaintTextures: {native:.6} s with the GPU painter's clears, {written:.6} s with write_rgba (medians)");
     assert!(
-        native > 2.0 * written,
+        native > 1.5 * written,
         "the painter's 64 clears are timed ({native} s), and the failed painter's pair is not ({written} s for the mips)"
     );
 }
@@ -704,16 +725,18 @@ fn painting_an_empty_rectangle_is_not_an_error() {
 #[test]
 fn a_renderer_can_be_built_on_a_device_the_caller_already_has() {
     // What the egui app does: it owns the adapter, device and queue, and hands them over.
+    // The product's backends (`support::instance`). The CPU adapter is lavapipe on Linux and WARP on Windows.
     let instance = support::instance();
     let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
     let adapter = adapters
         .into_iter()
         .find(|a| a.get_info().device_type == wgpu::DeviceType::Cpu)
-        .expect("a software Vulkan adapter");
+        .expect("a software adapter (lavapipe on Linux, WARP on Windows)");
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
 
     let mut r = WgpuRenderer::from_device(&adapter, device, queue).unwrap();
-    assert!(r.capabilities().backend.contains("llvmpipe"), "{}", r.capabilities().backend);
+    let name = adapter.get_info().name;
+    assert!(r.capabilities().backend.contains(&name), "{} should name {name}", r.capabilities().backend);
     assert!(!r.capabilities().gpu_timings, "this device was created without timestamp features");
     let s = scene(Colour::rgb(1, 2, 3));
     let image = draw(&mut r, &s, &plain());

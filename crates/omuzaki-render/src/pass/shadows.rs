@@ -61,6 +61,12 @@ fn casting_light(lights: &[Light]) -> Option<(usize, Vec3)> {
     })
 }
 
+/// Whether `scene` under `quality` fits a shadow map: a light casts and the quality has maps. A frame that does reads the
+/// bounds of every caster and receiver, and one that does not never reads them for shadows.
+pub(crate) fn fits_shadows(scene: &omuzaki_render_api::Scene, quality: &omuzaki_render_api::Quality) -> bool {
+    map::settings(quality.shadows).is_some() && casting_light(&scene.lights).is_some()
+}
+
 impl Shadows {
     pub(crate) fn new(shared: &Shared) -> Self {
         let device = &shared.gpu.device;

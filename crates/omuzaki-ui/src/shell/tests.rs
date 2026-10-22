@@ -5,28 +5,44 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 
-use egui::{Key, Modifiers, Vec2, vec2};
+use egui::accesskit::Role;
+use egui::{Key, Modifiers, Ui, Vec2, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable as _;
 use omuzaki_core::time::Seconds;
 use omuzaki_doc_api::{DocPath, DocVersion, Patch, Value};
 use omuzaki_ops_api::{Actor, Event, Grants, OpError, OpInfo, OpRecord, Outcome, Request, Runner, TxId};
 
+use omuzaki_ui_api::layout::{Dir as ApiDir, Node as ApiNode};
+use omuzaki_ui_api::panel::{Panel, PanelCtx};
+use omuzaki_ui_api::registry::{Group, Region};
+use omuzaki_ui_api::{register_panel, register_workspace};
+
+use super::Shell;
 use super::layout::{Dir, Layout, Node};
 use super::persist::LayoutStore;
-use super::registry::Group;
 use super::stub::NullRunner;
-use super::{Shell, registry};
 use crate::ds::icons;
 use crate::ds::testing::{drag, press};
-use crate::register_workspace;
 
 // A second workspace, so the numbered keys have something to switch to.
 register_workspace! { id: "probe", title: "Probe", icon: icons::EYE, order: 90, group: Group::Make,
-layout: probe_layout }
+default_layout: probe_layout }
 
-fn probe_layout() -> Layout {
-    Layout::new(Node::split(Dir::Horizontal, vec![Node::pane("viewport"), Node::pane("inspector")], &[3.0, 1.0]))
+/// A left-dock panel no layout names: the one the View menu adds where the shell shows only a rail.
+struct Extra;
+
+impl Panel for Extra {
+    fn ui(&mut self, ui: &mut Ui, _ctx: &PanelCtx<'_>) {
+        ui.label("Extra body");
+    }
+}
+
+register_panel! { id: "test.extra", title: "Extra", icon: icons::EYE, region: Region::Left, min_size: [240.0, 160.0],
+order: 900, build: |_| Box::new(Extra) }
+
+fn probe_layout() -> ApiNode {
+    ApiNode::split(ApiDir::Horizontal, vec![ApiNode::pane("viewport"), ApiNode::pane("inspector")], &[3.0, 1.0])
 }
 
 fn record(seq: u64) -> OpRecord {
@@ -128,8 +144,7 @@ fn at_1920_by_1080_every_region_is_there_with_agent_and_history_as_their_own_gro
         assert_shows(&harness, label);
     }
     // The shown tab of each group says what its panel is for; the others are tabs.
-    for headline in ["Pick a part to edit it", "Start with a character", "Select a part to edit it", "Connect an agent"]
-    {
+    for headline in ["No character is open", "Start with a character", "Select a part to edit it", "Connect an agent"] {
         assert_shows(&harness, headline);
     }
     for tab in ["Outliner", "Library", "Viewport", "Inspector", "Agent", "History"] {
@@ -153,13 +168,83 @@ fn at_1366_by_768_agent_and_history_join_the_inspector_group_and_tabs_become_ico
 #[test]
 fn at_the_smallest_window_the_left_dock_is_a_rail_whose_button_opens_a_drawer() {
     let mut harness = plain(vec2(1280.0, 720.0));
-    assert!(!shows(&harness, "Pick a part to edit it"), "the Outliner is not docked");
+    assert!(!shows(&harness, "No character is open"), "the Outliner is not docked");
     harness.get_by_label("Show Outliner").click();
     harness.run_steps(3);
-    assert_shows(&harness, "Pick a part to edit it");
+    assert_shows(&harness, "No character is open");
     press(&mut harness, Modifiers::NONE, Key::Escape);
     harness.run_steps(3);
-    assert!(!shows(&harness, "Pick a part to edit it"), "Esc closes the drawer");
+    assert!(!shows(&harness, "No character is open"), "Esc closes the drawer");
+}
+
+/// The rail's buttons, which are one per left-dock panel the rail stands for.
+fn rail_shows(harness: &Harness<'_, Shell>, panel: &str) -> bool {
+    harness.query_by_label(&format!("Show {panel}")).is_some()
+}
+
+#[test]
+fn a_left_panel_shown_while_the_dock_is_a_rail_joins_the_rail_and_is_still_there_when_the_dock_unfolds() {
+    let (_keep, store) = store();
+    let mut harness = shell_at(vec2(1280.0, 720.0), Some(store.clone()), Arc::new(NullRunner));
+    assert!(!rail_shows(&harness, "Extra"), "Build does not dock the Extra panel");
+    harness.state_mut().show_panel("test.extra");
+    harness.run_steps(3);
+    assert!(rail_shows(&harness, "Extra"), "the rail stands for it now");
+    assert_shows(&harness, "Extra body");
+    // Unfolding: the dock is back with the panel in it, in the arrangement that is saved.
+    harness.set_size(vec2(1920.0, 1080.0));
+    harness.run_steps(4);
+    assert!(harness.state().shown_layout().is_some_and(|l| l.contains("test.extra")), "it is docked at full size");
+    harness.state().flush();
+    let saved = store.load("build").expect("readable").expect("the full-size arrangement was saved");
+    assert!(saved.contains("test.extra") && saved.contains("viewport"), "{:?}", saved.panels());
+    // Folding again keeps it on the rail.
+    harness.set_size(vec2(1280.0, 720.0));
+    harness.run_steps(4);
+    assert!(rail_shows(&harness, "Extra"));
+}
+
+#[test]
+fn a_panel_shown_or_closed_in_a_folded_window_stays_so_when_the_fold_changes() {
+    // 1366 merges Agent and History into the Inspector group: a fold, but the left dock stays open.
+    let mut harness = shell_at(vec2(1366.0, 768.0), None, Arc::new(NullRunner));
+    harness.state_mut().show_panel("test.extra");
+    harness.run_steps(3);
+    assert_shows(&harness, "Extra body");
+    for size in [vec2(1280.0, 720.0), vec2(1920.0, 1080.0)] {
+        harness.set_size(size);
+        harness.run_steps(4);
+        let rail = rail_shows(&harness, "Extra");
+        let docked = harness.state().shown_layout().is_some_and(|l| l.contains("test.extra"));
+        assert!(rail || docked, "{size:?}: the panel shown at 1366 is still there");
+        // The panel the person was in stays open: docked, or as the drawer when its dock folds into the rail.
+        assert!(shows(&harness, "Extra body"), "{size:?}: the panel the person was in is open");
+    }
+    harness.set_size(vec2(1366.0, 768.0));
+    harness.run_steps(4);
+    harness.state_mut().close_panel("test.extra");
+    harness.run_steps(3);
+    for size in [vec2(1280.0, 720.0), vec2(1920.0, 1080.0)] {
+        harness.set_size(size);
+        harness.run_steps(4);
+        assert!(!rail_shows(&harness, "Extra"), "{size:?}: closed at 1366, so not on the rail");
+        assert!(!harness.state().shown_layout().is_some_and(|l| l.contains("test.extra")), "{size:?}: nor docked");
+    }
+}
+
+#[test]
+fn a_left_panel_added_to_the_rail_is_there_in_the_next_session() {
+    let (_keep, store) = store();
+    let size = vec2(1280.0, 720.0);
+    let mut first = shell_at(size, Some(store.clone()), Arc::new(NullRunner));
+    first.state_mut().show_panel("test.extra");
+    first.run_steps(3);
+    first.state().flush();
+    let second = shell_at(size, Some(store.clone()), Arc::new(NullRunner));
+    assert!(rail_shows(&second, "Extra"), "a new session at the small size still has it on the rail");
+    // And a big window finds it docked, not only a small one.
+    let big = shell_at(vec2(1920.0, 1080.0), Some(store), Arc::new(NullRunner));
+    assert!(big.state().shown_layout().is_some_and(|l| l.contains("test.extra")));
 }
 
 #[test]
@@ -177,6 +262,70 @@ fn a_layout_the_person_changes_is_saved_and_comes_back_in_the_next_session() {
     assert!(ratio(&shares(&saved)) > ratio(&default), "the right dock got wider: {saved:?}");
     let second = shell_at(size, Some(store.clone()), Arc::new(NullRunner));
     assert_eq!(second.state().shown_layout(), Some(saved), "the next session shows the saved arrangement");
+}
+
+/// A `build.toml` exactly as #70's shell wrote it: the Inspector moved to the left of the viewport, Agent and History
+/// pulled out into a group of their own, and a panel (`telemetry`) that a later version of the app no longer has.
+const SAVED_BY_70: &str = r#"version = 1
+
+[root]
+kind = "split"
+dir = "horizontal"
+shares = [360.0, 1200.0, 300.0]
+
+[[root.children]]
+kind = "split"
+dir = "vertical"
+shares = [2.0, 1.0]
+
+[[root.children.children]]
+kind = "pane"
+panel = "inspector"
+
+[[root.children.children]]
+kind = "tabs"
+active = 1
+
+[[root.children.children.children]]
+kind = "pane"
+panel = "agent"
+
+[[root.children.children.children]]
+kind = "pane"
+panel = "history"
+
+[[root.children]]
+kind = "pane"
+panel = "viewport"
+
+[[root.children]]
+kind = "tabs"
+active = 0
+
+[[root.children.children]]
+kind = "pane"
+panel = "outliner"
+
+[[root.children.children]]
+kind = "pane"
+panel = "telemetry"
+"#;
+
+#[test]
+fn a_layout_file_written_by_the_first_shell_still_loads_through_the_registry() {
+    let (_keep, store) = store();
+    std::fs::create_dir_all(store.dir()).expect("dir");
+    std::fs::write(store.dir().join("build.toml"), SAVED_BY_70).expect("write");
+    let harness = shell_at(vec2(1920.0, 1080.0), Some(store), Arc::new(NullRunner));
+    let shown = harness.state().shown_layout().expect("built");
+    // The arrangement is the saved one, less the panel nobody registers any more; the tab group left with one panel
+    // is just that panel.
+    assert_eq!(shown.panels(), ["inspector", "agent", "history", "viewport", "outliner"]);
+    let Node::Split { children, shares, .. } = &shown.root else { panic!("the root is a split") };
+    assert_eq!(shares, &[360.0, 1200.0, 300.0]);
+    assert_eq!(children[2], Node::pane("outliner"));
+    assert_shows(&harness, "No character is open");
+    assert_shows(&harness, "Select a part to edit it");
 }
 
 #[test]
@@ -227,14 +376,14 @@ fn the_numbered_keys_switch_workspaces_and_each_keeps_its_own_layout() {
     assert_eq!(harness.state().active_workspace(), Some("build"));
     press(&mut harness, Modifiers::COMMAND, Key::Num2);
     assert_eq!(harness.state().active_workspace(), Some("probe"));
-    assert!(!shows(&harness, "Pick a part to edit it"), "Probe has no Outliner");
+    assert!(!shows(&harness, "No character is open"), "Probe has no Outliner");
     press(&mut harness, Modifiers::COMMAND, Key::Num9);
     assert_eq!(harness.state().active_workspace(), Some("probe"), "there is no ninth tab");
     press(&mut harness, Modifiers::COMMAND, Key::Num1);
     assert_eq!(harness.state().active_workspace(), Some("build"));
     press(&mut harness, Modifiers::COMMAND, Key::Num0);
     assert_eq!(harness.state().active_workspace(), Some("build"), "there is no Theatre yet");
-    assert!(registry::workspace("theatre").is_none());
+    assert!(harness.state().registry().workspace("theatre").is_none());
 }
 
 #[test]
@@ -264,7 +413,7 @@ fn lock_maximise_and_panel_cycling_keys_change_what_they_say() {
     press(&mut harness, Modifiers::COMMAND, Key::Space);
     harness.run_steps(2);
     assert!(!shows(&harness, "Start with a character"), "only the focused panel (the Outliner) is shown");
-    assert_shows(&harness, "Pick a part to edit it");
+    assert_shows(&harness, "No character is open");
     press(&mut harness, Modifiers::NONE, Key::Escape);
     harness.run_steps(2);
     assert_shows(&harness, "Start with a character");
@@ -307,7 +456,7 @@ fn the_keys_still_work_after_a_click_has_focused_a_tab_or_button() {
 #[test]
 fn focus_follows_tab_presses_workspace_switches_and_f6_which_shows_the_panel_it_picks() {
     let mut harness = plain(vec2(1920.0, 1080.0));
-    harness.get_by_label("History").click();
+    harness.get_by_role_and_label(Role::Button, "History").click();
     harness.run_steps(3);
     assert_eq!(harness.state().focused_panel(), Some("history"));
     press(&mut harness, Modifiers::COMMAND, Key::Space);
@@ -329,18 +478,32 @@ fn focus_follows_tab_presses_workspace_switches_and_f6_which_shows_the_panel_it_
     harness.run_steps(2);
     assert_eq!(harness.state().focused_panel(), Some("library"));
     assert_shows(&harness, "The library is empty");
-    assert!(!shows(&harness, "Pick a part to edit it"), "the Outliner tab went to the back");
+    assert!(!shows(&harness, "No character is open"), "the Outliner tab went to the back");
+}
+
+#[test]
+fn a_maximised_panel_has_no_tab_so_its_body_names_itself_by_its_title() {
+    let mut harness = plain(vec2(1920.0, 1080.0));
+    let region = |h: &Harness<'_, Shell>, label: &str| h.query_all_by_role_and_label(Role::Region, label).count();
+    // Docked, every panel body is a region named by its title (these panels give no label of their own).
+    assert_eq!(region(&harness, "Outliner"), 1);
+    press(&mut harness, Modifiers::NONE, Key::F6);
+    press(&mut harness, Modifiers::COMMAND, Key::Space);
+    harness.run_steps(2);
+    assert_eq!(region(&harness, "Outliner"), 1, "the maximised panel is named, with no tab beside it");
+    assert!(harness.query_by_role_and_label(Role::Button, "Outliner").is_none(), "no tab is drawn");
+    assert_eq!(region(&harness, "Viewport"), 0, "the others are not drawn");
 }
 
 #[test]
 fn the_primary_panel_cannot_be_dragged_out_and_the_lock_stops_every_other_move_and_divider() {
     let mut harness = plain(vec2(1920.0, 1080.0));
     let before = harness.state().shown_layout();
-    let viewport = harness.get_by_label("Viewport").rect().center();
+    let viewport = harness.get_by_role_and_label(Role::Button, "Viewport").rect().center();
     drag(&mut harness, &[viewport, egui::pos2(1700.0, 300.0), egui::pos2(1700.0, 320.0)]);
     assert_eq!(harness.state().shown_layout(), before, "the viewport tab stays in the centre");
     // Control: another panel's tab does move when unlocked, and not when locked.
-    let history = harness.get_by_label("History").rect().center();
+    let history = harness.get_by_role_and_label(Role::Button, "History").rect().center();
     press(&mut harness, Modifiers::COMMAND | Modifiers::SHIFT, Key::L);
     drag(&mut harness, &[history, egui::pos2(150.0, 600.0), egui::pos2(150.0, 620.0)]);
     drag(&mut harness, &[egui::pos2(1552.0, 500.0), egui::pos2(1500.0, 500.0)]);
@@ -461,4 +624,166 @@ fn a_layout_reset_without_a_saver_is_still_not_read_back_from_its_file() {
     assert!(harness.state().stored("build-compact-a", &layout).is_some(), "the file is read before the reset");
     harness.state_mut().reset_layout();
     assert_eq!(harness.state().stored("build-compact-a", &layout), None, "a reset layout reads as absent");
+}
+
+#[test]
+fn the_status_bar_names_what_is_selected() {
+    use crate::panels::edit::EditFocus;
+    use omuzaki_char_api::{CharId, PartId};
+    let part = |id: &str| PartId::new(id).expect("a part id");
+    let focus = EditFocus::new(CharId::new("kit").expect("a character id"));
+    let mut harness = plain(vec2(1920.0, 1080.0));
+    harness.state_mut().insert_view(focus.clone());
+    harness.run_steps(2);
+    assert_shows(&harness, "Nothing selected");
+    focus.select(part("head"));
+    harness.run_steps(2);
+    assert_shows(&harness, "Selected: head");
+    focus.set(vec![part("head"), part("hair")]);
+    harness.run_steps(2);
+    assert_shows(&harness, "2 parts selected");
+}
+
+/// The keyboard focus, by role and name.
+fn focused(harness: &Harness<'_, Shell>) -> Option<(Role, String)> {
+    use egui_kittest::kittest::NodeT as _;
+    harness.query_all(egui_kittest::kittest::by()).find(egui_kittest::Node::is_focused).map(|n| {
+        let node = n.accesskit_node();
+        (node.role(), node.label().unwrap_or_default())
+    })
+}
+
+#[test]
+fn every_tab_stop_is_named_and_the_dividers_and_tab_strips_say_what_they_are() {
+    // #707: egui_tiles' dividers and tab strip backgrounds were unnamed stops.
+    let mut harness = plain(vec2(1920.0, 1080.0));
+    let mut stops = Vec::new();
+    for _ in 0..40 {
+        press(&mut harness, Modifiers::NONE, Key::Tab);
+        harness.run_steps(1);
+        let stop = focused(&harness).expect("Tab always lands on something");
+        if stops.contains(&stop) {
+            break;
+        }
+        stops.push(stop);
+    }
+    let unnamed: Vec<_> = stops.iter().filter(|(_, name)| name.is_empty()).collect();
+    assert!(unnamed.is_empty(), "unnamed stops {unnamed:?} in {stops:?}");
+    assert!(stops.contains(&(Role::Splitter, "Resize Inspector and Agent".to_owned())), "{stops:?}");
+    assert!(stops.iter().filter(|(role, _)| *role == Role::Splitter).count() >= 3, "{stops:?}");
+    assert!(stops.contains(&(Role::TabList, "Outliner, Library tabs".to_owned())), "{stops:?}");
+    // On a strip, Left and Right switch its tab.
+    for _ in 0..40 {
+        if focused(&harness).is_some_and(|(role, _)| role == Role::TabList) {
+            break;
+        }
+        press(&mut harness, Modifiers::NONE, Key::Tab);
+        harness.run_steps(1);
+    }
+    assert!(!shows(&harness, "The library is empty"));
+    press(&mut harness, Modifiers::NONE, Key::ArrowRight);
+    harness.run_steps(2);
+    assert_shows(&harness, "The library is empty");
+    assert_eq!(focused(&harness).map(|(role, _)| role), Some(Role::TabList), "the strip keeps the keyboard");
+}
+
+/// The root columns' widths at 1920 wide, from their shares (to a point or two: the dock area is a little narrower).
+fn widths(harness: &Harness<'_, Shell>) -> Vec<f32> {
+    let shares = shares(&harness.state().shown_layout().expect("built"));
+    let total: f32 = shares.iter().sum();
+    shares.iter().map(|s| s / total * 1920.0).collect()
+}
+
+#[test]
+fn a_focused_divider_moves_with_the_arrow_keys_and_the_arrangement_is_saved() {
+    let (_keep, store) = store();
+    let mut harness = shell_at(vec2(1920.0, 1080.0), Some(store.clone()), Arc::new(NullRunner));
+    let before = widths(&harness);
+    for _ in 0..40 {
+        press(&mut harness, Modifiers::NONE, Key::Tab);
+        harness.run_steps(1);
+        if focused(&harness).is_some_and(|(role, name)| role == Role::Splitter && name.starts_with("Resize Outliner")) {
+            break;
+        }
+    }
+    assert!(focused(&harness).is_some_and(|(role, _)| role == Role::Splitter), "Tab reaches the left divider");
+    press(&mut harness, Modifiers::NONE, Key::ArrowRight);
+    press(&mut harness, Modifiers::SHIFT, Key::ArrowRight);
+    harness.run_steps(3);
+    let after = widths(&harness);
+    assert!((after[0] - before[0] - 80.0).abs() < 3.0, "16 then 64 points wider: {before:?} {after:?}");
+    harness.state().flush();
+    assert!(store.load("build").expect("readable").is_some(), "the new arrangement is saved");
+    press(&mut harness, Modifiers::NONE, Key::ArrowLeft);
+    harness.run_steps(3);
+    assert!((widths(&harness)[0] - after[0] + 16.0).abs() < 3.0, "and back");
+}
+
+#[test]
+fn ctrl_slash_and_the_help_menu_open_the_shortcut_sheet_and_esc_closes_it() {
+    let mut harness = plain(vec2(1366.0, 768.0));
+    press(&mut harness, Modifiers::COMMAND, Key::Slash);
+    harness.run_steps(2);
+    assert!(harness.state().sheet_open());
+    for line in [
+        "Keyboard shortcuts",
+        "Search or run anything",
+        "Pause or resume the agent",
+        "Move a focused divider (arrow keys)",
+    ] {
+        assert_shows(&harness, line);
+    }
+    press(&mut harness, Modifiers::NONE, Key::Escape);
+    harness.run_steps(2);
+    assert!(!harness.state().sheet_open(), "Esc closes it");
+    harness.get_by_label("Menu").click();
+    harness.run_steps(2);
+    for heading in ["Edit", "View", "Agents", "Help"] {
+        assert_shows(&harness, heading);
+    }
+    harness.get_by_role_and_label(Role::Button, "Keyboard shortcuts").click();
+    harness.run_steps(2);
+    assert!(harness.state().sheet_open(), "Help, Keyboard shortcuts opens it too");
+}
+
+#[test]
+fn ctrl_alt_p_with_no_agent_says_so() {
+    let mut harness = plain(vec2(1366.0, 768.0));
+    press(&mut harness, Modifiers::COMMAND | Modifiers::ALT, Key::P);
+    harness.run_steps(2);
+    assert_shows(&harness, "No agent is connected");
+}
+
+#[test]
+fn the_menus_undo_names_the_step_and_is_off_with_nothing_to_undo() {
+    use egui_kittest::kittest::NodeT as _;
+    let mut harness = plain(vec2(1366.0, 768.0));
+    harness.get_by_label("Menu").click();
+    harness.run_steps(2);
+    let undo = harness.get_by_role_and_label(Role::Button, "Undo");
+    assert!(undo.accesskit_node().is_disabled(), "nothing to undo on a fresh shell");
+}
+
+#[test]
+fn a_panels_menu_moves_it_to_the_other_side_or_closes_it_without_a_drag() {
+    // shell.md section 4 rule 4 (WCAG 2.5.7): every drag has a menu equivalent.
+    let mut harness = plain(vec2(1920.0, 1080.0));
+    assert!(harness.query_by_label("Viewport options").is_none(), "the primary panel never moves, so it has no menu");
+    harness.get_by_label("Outliner options").click();
+    harness.run_steps(2);
+    assert!(harness.query_by_label("Move to the left").is_none(), "it is on the left already");
+    harness.get_by_role_and_label(Role::Button, "Move to the right").click();
+    harness.run_steps(3);
+    let layout = harness.state().shown_layout().expect("built");
+    assert_eq!(layout.panels().last().copied(), Some("history"), "{:?}", layout.panels());
+    let panels = layout.panels();
+    let at = |p: &str| panels.iter().position(|x| *x == p).expect("shown");
+    assert!(at("outliner") > at("viewport"), "the Outliner is right of the viewport: {panels:?}");
+    assert_eq!(harness.state().focused_panel(), Some("outliner"));
+    assert_shows(&harness, "No character is open");
+    harness.get_by_label("Library options").click();
+    harness.run_steps(2);
+    harness.get_by_role_and_label(Role::Button, "Close panel").click();
+    harness.run_steps(3);
+    assert!(!harness.state().shown_layout().expect("built").contains("library"));
 }

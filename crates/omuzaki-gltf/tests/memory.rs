@@ -18,7 +18,9 @@ use std::cell::Cell;
 use std::mem::size_of;
 
 use common::import_with;
-use omuzaki_gltf::schema::{Accessor, Buffer, BufferView, Image, Material, Mesh, Node, Sampler, Scene, Skin, Texture};
+use omuzaki_gltf::schema::{
+    Accessor, Buffer, BufferView, Image, Material, Mesh, Node, Primitive, Sampler, Scene, Skin, Texture,
+};
 use omuzaki_io_api::{ImportOptions, IoError, Limits, NoResolver};
 
 struct Peak;
@@ -179,4 +181,47 @@ fn the_cap_follows_the_limits() {
     assert!(large > small * 7, "8x the node limit gives about 8x the materials: {small} vs {large}");
     assert_eq!(cap(1), cap(2), "the floor keeps a tiny node limit usable");
     assert!(cap(1) >= 1000, "a file with a handful of nodes still has room for its materials");
+}
+
+/// The nested arrays (#633): one past what the limits allow of each, as empty objects or `0` indices, refused by count
+/// before anything grows with the file. Roots and children are node references, held to the node limit; primitives,
+/// morph targets and joints share the node-memory budget like the top-level arrays.
+#[test]
+fn nested_arrays_are_counted_before_anything_is_built() {
+    let options = ImportOptions::default();
+    let budget = u64::from(options.limits.max_nodes) * size_of::<Node>() as u64;
+    let cap = |element: usize| (budget / element as u64).max(4096);
+    let past = |limit: u64| usize::try_from(limit + 1).unwrap();
+    let objects = |n: usize| vec!["{}"; n].join(",");
+    let indices = |n: usize| vec!["0"; n].join(",");
+    let file = |body: String| format!(r#"{{"asset":{{"version":"2.0"}},{body}}}"#).into_bytes();
+    let nodes = u64::from(options.limits.max_nodes);
+    let targets = past(cap(size_of::<std::collections::BTreeMap<String, usize>>()));
+    for (name, bytes) in [
+        (
+            "primitive count",
+            file(format!(r#""meshes":[{{"primitives":[{}]}}]"#, objects(past(cap(size_of::<Primitive>()))))),
+        ),
+        (
+            "morph target count",
+            file(format!(r#""meshes":[{{"primitives":[{{"attributes":{{}},"targets":[{}]}}]}}]"#, objects(targets))),
+        ),
+        ("scene root count", file(format!(r#""scenes":[{{"nodes":[{}]}}],"nodes":[{{}}]"#, indices(past(nodes))))),
+        ("node child count", file(format!(r#""nodes":[{{"children":[{}]}}]"#, indices(past(nodes))))),
+        ("skin joint count", file(format!(r#""skins":[{{"joints":[{}]}}]"#, indices(past(cap(size_of::<usize>())))))),
+    ] {
+        let (result, peak) = import_peak(&bytes, &options);
+        let Err(IoError::Limit { what, limit, got }) = result else { panic!("{name}: {result:?}") };
+        assert_eq!((what, got), (name, limit + 1));
+        eprintln!("{name}: a {}-byte file refused with {peak} bytes allocated", bytes.len());
+        assert!(peak < REFUSED_PEAK, "{name}: refusing it allocated {peak} bytes");
+    }
+
+    // Under the limit, a dangling root is malformed at once, not one finding per root (114 MB for 300,000 before).
+    let dangling = file(format!(r#""scenes":[{{"nodes":[{}]}}],"nodes":[{{}}]"#, vec!["1"; 50_000].join(",")));
+    let (result, peak) = import_peak(&dangling, &options);
+    let Err(IoError::Malformed { at, .. }) = result else { panic!("dangling roots: {result:?}") };
+    assert_eq!(at.as_deref(), Some("/scenes/0/nodes/0"));
+    eprintln!("50,000 dangling roots: refused with {peak} bytes allocated");
+    assert!(peak < 4 << 20, "refusing them allocated {peak} bytes");
 }

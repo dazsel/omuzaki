@@ -4,7 +4,7 @@
 //! repaint, for a mouth-only change and for a change of the whole face. Also: no wgpu validation error over 100
 //! repaints, and the repaint time (CPU encode and record, the submit, GPU raster and resolve, waited for) over 1,000
 //! warmed repaints of each. Lavapipe is a software adapter, so the times are not a GPU timing (decision 7.3); the GPU
-//! timing is `examples/gpu_face_timing.rs`. Without an adapter the tests print why and pass.
+//! timing is `omuzaki-test-face`'s `gpu_face_timing` example. Without an adapter the tests print why and pass.
 
 // The GPU rasteriser exists on native targets only (#2207).
 #![cfg(not(target_arch = "wasm32"))]
@@ -109,6 +109,12 @@ fn setup() -> Option<Setup> {
             return None;
         }
     };
+    // Windows' only software adapter is WARP, which dies with an access violation when Vello runs on it (#2236), so
+    // these tests treat it as no adapter, like a machine with none. A real GPU on Windows still runs them.
+    if cfg!(windows) && adapter.get_info().device_type == wgpu::DeviceType::Cpu {
+        eprintln!("skipped: the only adapter is WARP (see #2236)");
+        return None;
+    }
     let descriptor = wgpu::DeviceDescriptor { required_limits: adapter.limits(), ..wgpu::DeviceDescriptor::default() };
     let (device, queue) = pollster::block_on(adapter.request_device(&descriptor)).ok()?;
 

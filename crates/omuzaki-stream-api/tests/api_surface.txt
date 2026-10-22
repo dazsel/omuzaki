@@ -1,6 +1,7 @@
 src/encoder.rs: pub enum StreamKind {
 src/encoder.rs: pub enum CodecId {
 src/encoder.rs: pub fn kind(self) -> StreamKind {
+src/encoder.rs: pub fn carries_alpha(self) -> bool {
 src/encoder.rs: pub enum AlphaKind {
 src/encoder.rs: pub struct VideoSpec {
 src/encoder.rs: pub fn validate(&self) -> Result<(), StreamError> {
@@ -41,6 +42,8 @@ src/lib.rs: pub mod packet;
 src/lib.rs: pub mod time;
 src/lib.rs: pub mod window;
 src/lib.rs: pub use input::{FrameStamp, InputTap, TailMode, TailStep};
+src/lib.rs: pub use inventory as __inventory;
+src/lib.rs: pub use omuzaki_core::__record_registration;
 src/mux.rs: pub enum Container {
 src/mux.rs: pub struct MuxReport {
 src/mux.rs: pub fn new(packets: u64, bytes: u64) -> Self {
@@ -60,6 +63,11 @@ src/output.rs: pub fn new(cpu_ms: f32, gpu_wait_ms: f32, dropped: u32) -> Self {
 src/output.rs: pub enum OutputState {
 src/output.rs: pub struct OutputStatus {
 src/output.rs: pub trait Output: Send {
+src/output.rs: pub trait ObsProbe: Send + Sync {
+src/output.rs: pub struct OutputKind {
+src/output.rs: macro_rules! register_output {
+src/output.rs: pub fn output_kinds() -> Vec<&'static OutputKind> {
+src/output.rs: pub fn find_output_kind(name: &str) -> Option<&'static OutputKind> {
 src/packet.rs: pub struct StreamId(pub u8);
 src/packet.rs: pub enum SideKind {
 src/packet.rs: pub struct SideData {

@@ -58,6 +58,14 @@ impl CodecId {
             Self::InputRecords => StreamKind::Data,
         }
     }
+
+    /// Whether the codec can carry an alpha channel; a video stream with alpha on a codec that can't is invalid.
+    pub fn carries_alpha(self) -> bool {
+        match self {
+            Self::ProRes4444 | Self::Vp9Alpha | Self::Png => true,
+            Self::H264 | Self::PcmS24 | Self::PcmF32 | Self::Opus | Self::InputRecords => false,
+        }
+    }
 }
 
 /// How alpha relates to colour in a frame or stream.
@@ -161,6 +169,7 @@ impl StreamSpec {
         video.validate()?;
         check_timebase(timebase)?;
         check_codec(codec, StreamKind::Video)?;
+        check_alpha(codec, video.alpha)?;
         Ok(Self {
             kind: StreamKind::Video,
             codec,
@@ -229,7 +238,10 @@ impl StreamSpec {
         check_timebase(self.timebase)?;
         check_codec(self.codec, self.kind)?;
         match (self.kind, &self.video, &self.audio) {
-            (StreamKind::Video, Some(v), None) => v.validate(),
+            (StreamKind::Video, Some(v), None) => {
+                v.validate()?;
+                check_alpha(self.codec, v.alpha)
+            }
             (StreamKind::Audio, None, Some(a)) => a.validate(),
             (StreamKind::Data, None, None) => Ok(()),
             _ => Err(StreamError::Config(format!("a {:?} stream has the wrong video/audio payload", self.kind))),
@@ -240,6 +252,15 @@ impl StreamSpec {
 fn check_codec(codec: CodecId, kind: StreamKind) -> Result<(), StreamError> {
     if codec.kind() != kind {
         return Err(StreamError::Config(format!("{codec:?} is a {:?} codec, not {kind:?}", codec.kind())));
+    }
+    Ok(())
+}
+
+fn check_alpha(codec: CodecId, alpha: AlphaKind) -> Result<(), StreamError> {
+    if alpha != AlphaKind::None && !codec.carries_alpha() {
+        return Err(StreamError::Config(format!(
+            "{codec:?} carries no alpha, but the stream asks for {alpha:?} alpha"
+        )));
     }
     Ok(())
 }
@@ -333,6 +354,7 @@ impl EncodeConfig {
     pub fn new(video: VideoSpec, codec: CodecId) -> Result<Self, StreamError> {
         video.validate()?;
         check_codec(codec, StreamKind::Video)?;
+        check_alpha(codec, video.alpha)?;
         let keyint = video.fps.0.div_ceil(video.fps.1).max(1);
         Ok(Self { video, codec, bitrate_kbps: None, keyint, threads: None, realtime: true })
     }
@@ -344,6 +366,7 @@ impl EncodeConfig {
     pub fn validate(&self) -> Result<(), StreamError> {
         self.video.validate()?;
         check_codec(self.codec, StreamKind::Video)?;
+        check_alpha(self.codec, self.video.alpha)?;
         if self.keyint == 0 {
             return Err(StreamError::Config("keyint is zero".into()));
         }

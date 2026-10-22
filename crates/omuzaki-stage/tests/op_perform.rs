@@ -80,6 +80,10 @@ impl PerformHost for FakeHost {
         Calibration::identity(DeviceProfile::Webcam)
     }
 
+    fn requested_retarget(&self) -> RetargetConfig {
+        self.state.lock().unwrap().requested.clone()
+    }
+
     fn status(&self) -> PerformStatus {
         self.calls.lock().unwrap().push("status".to_owned());
         let state = self.state.lock().unwrap();
@@ -122,14 +126,64 @@ fn run(host: &Arc<FakeHost>, op: &str, args: Value) -> Result<Plan, OpError> {
 #[test]
 fn the_three_ops_declare_their_kind_scope_and_undo() {
     let meta = |name: &str| (find(name).expect("registered").meta)();
-    for (name, kind, scope) in [
-        ("perform.calibrate", OpKind::Edit, Scope::Perform),
-        ("perform.set_retarget", OpKind::Edit, Scope::Perform),
-        ("perform.status", OpKind::Query, Scope::Read),
+    for (name, kind, scope, undo) in [
+        ("perform.calibrate", OpKind::Edit, Scope::Perform, Undo::Explicit),
+        ("perform.set_retarget", OpKind::Edit, Scope::Perform, Undo::Explicit),
+        ("perform.status", OpKind::Query, Scope::Read, Undo::None),
     ] {
         let m = meta(name);
-        assert_eq!((m.kind, m.scope, m.undo), (kind, scope, Undo::None), "{name}");
+        assert_eq!((m.kind, m.scope, m.undo), (kind, scope, undo), "{name}");
     }
+}
+
+/// Runs a stored undo or redo call as the history would.
+fn replay(host: &Arc<FakeHost>, call: &omuzaki_ops_api::OpCall) -> Plan {
+    run(host, &call.op, call.args.clone()).expect("the stored call runs")
+}
+
+#[test]
+fn set_retarget_records_the_calls_that_put_the_dials_back_and_again() {
+    let host = FakeHost::new(None);
+    let first = run(&host, "perform.set_retarget", json!({ "smoothing": 0.25, "exaggeration": 2.0 })).unwrap();
+    let before = host.requested_retarget();
+    let second = run(&host, "perform.set_retarget", json!({ "smoothing": 0.9, "mirror": true })).unwrap();
+    let after = host.requested_retarget();
+    assert!(first.effect.is_some() && first.patch.is_empty(), "the dials are outside the document");
+    let effect = second.effect.expect("the step can be undone");
+    // The undo sets every dial as it was requested before, not only the ones this change named.
+    assert_eq!(
+        effect.undo.args,
+        json!({ "smoothing": 0.25, "exaggeration": 2.0, "head_gain": before.head_gain, "mirror": before.mirror })
+    );
+    replay(&host, &effect.undo);
+    assert_eq!(host.requested_retarget(), before);
+    replay(&host, &effect.redo);
+    assert_eq!(host.requested_retarget(), after);
+    // A dry run changes nothing, so it has nothing to undo.
+    let dry = plan("perform.set_retarget", json!({ "smoothing": 0.5 }), &person(), Some(&services(&host)), true);
+    assert!(dry.unwrap().effect.is_none());
+}
+
+#[test]
+fn calibrate_is_undone_by_putting_the_previous_calibration_back_and_redone_by_capturing_again() {
+    let host = FakeHost::new(None);
+    let effect = run(&host, "perform.calibrate", json!({ "frames": 90 })).unwrap().effect.expect("an effect");
+    assert_eq!(effect.undo.op, "perform.calibrate");
+    assert!(effect.undo.args["restore"].is_object(), "{}", effect.undo.args);
+    assert_eq!(effect.redo.args["frames"], 90);
+    // The undo sets the calibration in use before the capture (here the identity, so no range is listed).
+    let undone = replay(&host, &effect.undo);
+    assert_eq!(undone.output.unwrap()["restored"], true);
+    assert_eq!(effect.undo.args["restore"]["ranges"], json!({}));
+    replay(&host, &effect.redo);
+    assert_eq!(host.calls(), ["calibrate 90", "set_calibration", "calibrate 90"]);
+    // A restore is itself undoable, and a channel that isn't ARKit is refused by name.
+    let restore = json!({ "restore": { "profile": "webcam", "ranges": { "jawOpen": { "lo": 0.125, "hi": 0.75 } }, "head_rest": { "yaw": 0.0, "pitch": 0.0, "roll": 0.0 } } });
+    let restored = run(&host, "perform.calibrate", restore).unwrap();
+    assert_eq!(restored.effect.unwrap().redo.args["restore"]["ranges"]["jawOpen"], json!({ "lo": 0.125, "hi": 0.75 }));
+    let bad = json!({ "restore": { "profile": "webcam", "ranges": { "tongue": { "lo": 0.0, "hi": 1.0 } }, "head_rest": { "yaw": 0.0, "pitch": 0.0, "roll": 0.0 } } });
+    let e = run(&host, "perform.calibrate", bad).unwrap_err();
+    assert_eq!((e.code, e.field.as_deref()), (ErrorCode::Invalid, Some("restore/ranges/tongue")));
 }
 
 #[test]

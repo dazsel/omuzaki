@@ -7,7 +7,7 @@ use crate::ds::gallery::layout::{caption, panel, specimen};
 use crate::ds::gallery::text::tr;
 use crate::ds::theme::ds;
 use crate::ds::widgets::{AgentTouch, OpCall, ParamEvent, ParamSlider};
-use crate::register_story;
+use omuzaki_ui_api::register_story;
 
 struct State {
     width: f64,

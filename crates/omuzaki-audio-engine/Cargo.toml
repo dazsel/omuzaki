@@ -1,0 +1,40 @@
+[package]
+name = "omuzaki-audio-engine"
+description = "The live audio engine (spec v3 §8, BR-22; ADR 0018): the cpal backend and the real-time executor behind omuzaki-audio-api's AudioEngine, which carries the microphone into taps, feeds, meters and the engine clock."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+cpal.workspace = true
+omuzaki-audio-api = { path = "../omuzaki-audio-api" }
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-doc-api = { path = "../omuzaki-doc-api" }
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+omuzaki-audio-mock = { path = "../omuzaki-audio-mock" }
+omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+
+[lints]
+workspace = true
+
+[[bench]]
+name = "mix"
+harness = false
+
+# Native only: device audio and real-time threads.
+[package.metadata.omuzaki]
+kind = "Implementation"
+summary = "the live audio engine: `CpalBackend` (ALSA, WASAPI, CoreAudio through cpal) and `LiveEngine`, the real-time executor of the mixer graph (sources, chains of registered nodes, faders, mutes, sends, the mic mode) run on the clock device's callback, with bridges for other inputs, taps at 48 and 16 kHz, feeds, meters and the engine clock; the ops `audio.devices`, `audio.mic`, `audio.status`, `audio.meters` and `audio.bus.*`, and the follower that keeps the engine on the document's graph"
+wasm = false
+# The audio ops register themselves (ADR 0015, `cargo xtask lint-registers`).
+registers = true

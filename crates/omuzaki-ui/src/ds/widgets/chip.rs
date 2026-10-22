@@ -406,7 +406,8 @@ impl Widget for StatusChip<'_> {
     }
 }
 
-/// A measured number next to what it checks: `✓ likeness 0.88` or `▲ likeness 0.81 < 0.85`. Click opens the evidence.
+/// A measured number next to what it checks: `✓ likeness 0.88`, `▲ likeness 0.81 < 0.85`, or for a ceiling
+/// `▲ wer 0.41 > 0.15`. Click opens the evidence.
 ///
 /// It caps its width at the room the layout gives and cuts a long metric with an ellipsis (the value and the limit stay whole).
 /// Its tooltip shows the whole metric on hover or keyboard focus, and its accessible name is always the whole metric. It is
@@ -417,19 +418,26 @@ pub struct GateChip<'a> {
     metric: &'a str,
     value: &'a str,
     threshold: Option<&'a str>,
+    above: bool,
 }
 
 impl<'a> GateChip<'a> {
     /// A passing gate: `metric` reads `value`.
     pub fn passed(metric: &'a str, value: &'a str) -> Self {
         a11y::require_label(metric);
-        Self { metric, value, threshold: None }
+        Self { metric, value, threshold: None, above: false }
     }
 
-    /// A failing gate: `value` is below (or above) `threshold`.
+    /// A failing gate: `value` is below `threshold`, the floor it had to reach.
     pub fn failed(metric: &'a str, value: &'a str, threshold: &'a str) -> Self {
         a11y::require_label(metric);
-        Self { metric, value, threshold: Some(threshold) }
+        Self { metric, value, threshold: Some(threshold), above: false }
+    }
+
+    /// The threshold is a ceiling (an error rate, a latency): a failing `value` is above it.
+    pub const fn above(mut self) -> Self {
+        self.above = true;
+        self
     }
 }
 
@@ -442,8 +450,9 @@ impl Widget for GateChip<'_> {
         let mono = egui::FontId::monospace(11.5);
         let metric_full = paint::text_width(&ctx, self.metric, &ds.text.small);
         let value_w = paint::text_width(&ctx, self.value, &mono);
+        let sign = if self.above { ">" } else { "<" };
         let limit_w = self.threshold.map_or(0.0, |th| {
-            space::S6 + paint::text_width(&ctx, "<", &mono) + space::S4 + paint::text_width(&ctx, th, &mono)
+            space::S6 + paint::text_width(&ctx, sign, &mono) + space::S4 + paint::text_width(&ctx, th, &mono)
         });
         // The metric is the label that gives way: the value and the limit are the numbers, and stay whole.
         let fixed = 2.0 * space::S8 + 14.0 + space::S4 + space::S6 + value_w + limit_w;
@@ -471,7 +480,7 @@ impl Widget for GateChip<'_> {
                 + space::S6;
             x = paint::text(painter, pos2(x, cy), Align2::LEFT_CENTER, self.value, &mono, colour).right();
             if let Some(th) = self.threshold {
-                x = paint::text(painter, pos2(x + space::S6, cy), Align2::LEFT_CENTER, "<", &mono, t.text2).right();
+                x = paint::text(painter, pos2(x + space::S6, cy), Align2::LEFT_CENTER, sign, &mono, t.text2).right();
                 paint::text(painter, pos2(x + space::S4, cy), Align2::LEFT_CENTER, th, &mono, t.text2);
             }
             paint::focus_ring(painter, t, &response, rect, radius::FULL, RingPlacement::Outside);
@@ -482,7 +491,8 @@ impl Widget for GateChip<'_> {
             |node| {
                 node.set_value(match self.threshold {
                     Some(threshold) => {
-                        ds.text_with(Msg::GateFailed, &[("value", self.value), ("threshold", threshold)])
+                        let msg = if self.above { Msg::GateAbove } else { Msg::GateFailed };
+                        ds.text_with(msg, &[("value", self.value), ("threshold", threshold)])
                     }
                     None => ds.text_with(Msg::GatePassed, &[("value", self.value)]),
                 });

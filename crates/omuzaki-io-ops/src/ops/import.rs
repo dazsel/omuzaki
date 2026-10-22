@@ -11,11 +11,19 @@
 //! rights (io-api D5: the conservative mapping, `Unknown` wherever the file does not settle it), and each image of the
 //! scene under that same record, so an image never carries more rights than the model it came from. The store is
 //! content addressed, so importing the same bytes again stores nothing new.
-//! An asset already recorded is never overwritten: a re-import of the same files without a character, or with the same
-//! one, changes nothing; one with a different character is a `Conflict` (several characters per asset is #1792), and so
-//! is one whose images or sidecars differ from the recorded ones (a file the model refers to changed).
-//! An object is shared with another import only under an identical record; the check runs before the first write and again
-//! after each `put`, and any difference is a `Conflict` that names both records (joining records is #1773).
+//!
+//! **Rights per reference** (`docs/design/io-api.md`, "The asset record"). The asset record keeps the model's own
+//! provenance, and that record, not the store's, is what the model's images are used under: two models that share an
+//! identical texture under different licences or credit lines both import, and each asset carries its own. The store
+//! keeps the first record it was given for a shared object (`Store::put`); nothing reads it as the rights of a reference.
+//! The original file is the exception: identical bytes derive an identical record, so an original already stored under
+//! another record is still refused.
+//! An asset already recorded is never overwritten: a re-import of the same files without a character, or for a character
+//! it already serves, changes nothing; one for another character adds that character to the record, so one asset serves
+//! several characters (`docs/design/io-api.md`, "The asset record"). A re-import whose images or sidecars differ from
+//! the recorded ones (a file the model refers to changed) is a `Conflict`.
+//! An original stored under another record is a `Conflict` naming both records; the check runs before the first write and
+//! again after the original's `put`.
 //!
 //! **Cancellation.** The import is cancellable at every checkpoint the importer reaches. The store phase is not
 //! interrupted: the last check comes before the first `put`. The guarantee:
@@ -33,17 +41,32 @@
 //! nothing the import used is lost. (Reloading such an asset through `io.inspect {asset}` needs that op to serve the
 //! stored sidecars; it does not yet.)
 //!
+//! **A stored asset** (`asset`, connectors D6 and D7). A model already in the store, a candidate from the tray for
+//! one, is imported by its hash. A generated asset is not usable until it is accepted, so the tray is checked first,
+//! in `plan` (and so on a dry run) and again when the job starts, before any byte is read from the store: a pending
+//! candidate is a `Conflict` that says to accept it in the tray first, and a rejected one a `Conflict` naming its
+//! reason. The same bytes can be stored first by a permissive run and recorded later by a stricter one, and the store
+//! keeps the first record, so the import's record is the store's joined with every tray record naming the hash,
+//! strictest wins (`tray::effective_provenance`), never the store's alone. An asset has no folder, so a model that
+//! refers to another file is `Unsupported`, as for `bytes`.
+//!
+//! **As an avatar** (`as: avatar`): the model becomes a character of its own, after the person confirmed what
+//! `io.inspect {as: avatar}` showed; [`super::avatar::import`] has the rules.
+//!
 //! **Not here.** Importing as an editable part is CB-44 and answers `Unsupported`.
 
 use std::borrow::Cow;
+use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use omuzaki_connect_api::tray::{self, TrayError};
+use omuzaki_connect_api::{CandidateState, Usable};
 use omuzaki_doc_api::{DocPath, DocRead, Patch, Value};
 use omuzaki_io_api::{
-    FormatId, ImportCtx, ImportInput, ImportOptions, Importer, IoError, NoResolver, Progress, Report, Resolver,
-    SceneSummary, find_importer, formats, run_import, sniff,
+    FormatId, ImportCtx, ImportInput, ImportOptions, Importer, IoError, IoScene, NoResolver, Progress, Report,
+    Resolver, SceneSummary, find_importer, formats, run_import, sniff,
 };
 use omuzaki_ops_api::{
     CanonicalPath, FsMode, JobCtx, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op,
@@ -52,8 +75,10 @@ use omuzaki_store_api::{ContentHash, Provenance, Source, Store, StoreError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::avatar::import as avatar;
 use super::sidecar::clean_relative;
 use crate::error::from_io;
+use omuzaki_char_api::CharId;
 
 /// The name a byte import is given when the caller names none.
 const DEFAULT_NAME: &str = "model";
@@ -70,6 +95,9 @@ pub enum ImportAs {
     Reference,
     /// An editable part of a character (CB-44, not built yet).
     Part,
+    /// A character of its own, performing as the model (`docs/design/byom.md` D6): needs `confirm` from `io.inspect`
+    /// with `as: avatar`.
+    Avatar,
 }
 
 /// Imports a model file and records it as an asset of the project.
@@ -77,14 +105,18 @@ pub enum ImportAs {
 #[serde(deny_unknown_fields)]
 pub struct Import {
     /// The model file to read. Paths outside the project folder need the `fs` grant and a root covering them.
-    /// Pass exactly one of `path` and `bytes`.
+    /// Pass exactly one of `path`, `bytes` and `asset`.
     #[serde(default)]
     pub path: Option<String>,
-    /// The file's bytes, for a caller that has no file. Pass exactly one of `path` and `bytes`.
+    /// The file's bytes, for a caller that has no file. Pass exactly one of `path`, `bytes` and `asset`.
     #[serde(default)]
     pub bytes: Option<Vec<u8>>,
+    /// An asset already in the store, by content hash, for example an accepted candidate from the tray. Pass exactly
+    /// one of `path`, `bytes` and `asset`.
+    #[serde(default)]
+    pub asset: Option<ContentHash>,
     /// The file's name, used to recognise the format and to record where the asset came from. Defaults to the name in
-    /// `path`.
+    /// `path`, or the hash of an `asset`.
     #[serde(default)]
     pub name: Option<String>,
     /// The format to read it as (see `io.list_formats`). Detected from the file's contents when omitted.
@@ -93,37 +125,68 @@ pub struct Import {
     /// The character the asset is a reference for. It must exist.
     #[serde(default)]
     pub character: Option<String>,
-    /// What the file becomes. Only `reference` is available.
+    /// What the file becomes: `reference` (the default) or `avatar`.
     #[serde(default, rename = "as")]
     pub as_: ImportAs,
+    /// The id of the character an avatar import creates; a free one from the file's name when omitted.
+    #[serde(default)]
+    pub id: Option<CharId>,
+    /// For `as: avatar`: the `confirm` token `io.inspect` with `as: avatar` returned for this file, so the import is the
+    /// one the person saw.
+    #[serde(default)]
+    pub confirm: Option<String>,
+    /// For `as: avatar`: the person acknowledges they may perform as the model, when its terms allow only its author
+    /// (or people it licenses separately). Only a person can give it.
+    #[serde(default)]
+    pub acknowledge: bool,
+    /// Treat warnings as errors, as `io.inspect` with `strict` does; an avatar import must use the setting it was
+    /// inspected with, since the confirm token covers it.
+    #[serde(default)]
+    pub strict: bool,
 }
 
 /// What the document keeps about one imported original.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct AssetRecord {
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct AssetRecord {
     /// The original file's content hash.
-    original: ContentHash,
+    pub(crate) original: ContentHash,
     /// The hashes of its images, in order, each once.
-    images: Vec<ContentHash>,
+    pub(crate) images: Vec<ContentHash>,
     /// The files the model refers to, as it names them, each with the hash of its stored bytes. Absent when none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    sidecars: Vec<SidecarRecord>,
+    pub(crate) sidecars: Vec<SidecarRecord>,
     /// The file's name.
-    file: String,
+    pub(crate) file: String,
     /// The format it was read as.
-    format: String,
-    /// The character it is a reference for, if one was named. Absent otherwise: the document cannot hold a `null`.
+    pub(crate) format: String,
+    /// The characters it serves (a reference for, or, for an avatar, the character it became), each once, in name
+    /// order. Absent when none: the document cannot hold a `null`.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub(crate) characters: BTreeSet<String>,
+    /// The model's own record, which its images are used under (rights per reference). Absent on a record written
+    /// before references kept their own; such a record gains it when it next changes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    character: Option<String>,
+    pub(crate) provenance: Option<Provenance>,
+}
+
+/// The `character` key of a record written before one asset could serve several characters: read as a set of one, and
+/// replaced by `characters` when the record next changes.
+const LEGACY_CHARACTER: &str = "character";
+
+/// The characters a recorded asset serves, from its `characters` list and an older record's single `character`.
+fn recorded_characters(fields: &serde_json::Map<String, Value>) -> BTreeSet<String> {
+    let listed = fields.get("characters").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str);
+    let legacy = fields.get(LEGACY_CHARACTER).and_then(Value::as_str);
+    listed.chain(legacy).map(str::to_owned).collect()
 }
 
 /// One file a model refers to, as the document records it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct SidecarRecord {
+pub(crate) struct SidecarRecord {
     /// The URI as the model names it (percent-decoded), relative to the model's folder.
-    uri: String,
+    pub(crate) uri: String,
     /// The content hash of the file's stored bytes.
-    hash: ContentHash,
+    pub(crate) hash: ContentHash,
 }
 
 /// What a finished import reports.
@@ -152,7 +215,7 @@ impl Imported {
 }
 
 /// Reports an import's stages to the job.
-struct JobProgress<'a, 'j>(&'a JobCtx<'j>);
+pub(crate) struct JobProgress<'a, 'j>(pub(crate) &'a JobCtx<'j>);
 
 impl Progress for JobProgress<'_, '_> {
     fn stage(&self, name: &str, fraction: f32) {
@@ -184,10 +247,13 @@ impl Import {
         store: &dyn Store,
         progress: &dyn Progress,
     ) -> Result<Imported, OpError> {
-        self.import_with(name, bytes, options, store, progress, None)
+        self.import_with(name, bytes, options, store, progress, None, None)
     }
 
-    /// The shared body; `folder` serves the model's sidecars, and is `None` when the source has no folder.
+    /// The shared body; `folder` serves the model's sidecars, and is `None` when the source has no folder. `rights` is
+    /// a stored asset's effective record ([`Import::asset_rights`]), which the import uses in place of the record the
+    /// file derives.
+    #[allow(clippy::too_many_arguments)] // the source, how to read it, and where it goes
     fn import_with(
         &self,
         name: &str,
@@ -196,6 +262,7 @@ impl Import {
         store: &dyn Store,
         progress: &dyn Progress,
         folder: Option<&FolderFiles<'_, '_>>,
+        rights: Option<Provenance>,
     ) -> Result<Imported, OpError> {
         let field = self.source_field();
         let input = ImportInput::new(bytes).named(name);
@@ -207,67 +274,27 @@ impl Import {
         let ctx = ImportCtx::new(options).with_resolver(resolver).with_progress(progress);
         let outcome = run_import(&*importer, &input, &ctx).map_err(|e| import_error(e, field, folder.is_some()))?;
         let served = folder.map(FolderFiles::served).transpose()?.unwrap_or_default();
-        // The last chance to stop: past this point the objects are written without further checks.
-        progress.checkpoint("storing", 0.9).map_err(|e| from_io(e, field))?;
-        let provenance = outcome
-            .scene
-            .provenance
-            .clone()
-            .ok_or_else(|| OpError::internal("run_import left the scene without a provenance record"))?;
-        let mut objects = vec![(ContentHash::of(bytes), bytes, provenance.clone())];
-        for (ix, image) in outcome.scene.images.iter().enumerate() {
-            let hash = ContentHash::of(image.bytes.as_slice());
-            // The same picture used twice in one model is one object, recorded by its first use.
-            if objects.iter().any(|(seen, ..)| *seen == hash) {
-                continue;
-            }
-            let record = Provenance {
-                source: Source::Imported { file: format!("{name}#image{ix}"), origin: None },
-                ..provenance.clone()
-            };
-            objects.push((hash, image.bytes.as_slice(), record));
-        }
-        let image_objects = objects.len() - 1;
-        let mut sidecars = Vec::with_capacity(served.len());
-        for (uri, file) in &served {
-            let hash = ContentHash::of(file);
-            sidecars.push(SidecarRecord { uri: uri.clone(), hash });
-            // A file the model also uses as an image is already an object, recorded by its first use.
-            if objects.iter().all(|(seen, ..)| *seen != hash) {
-                let record = Provenance {
-                    source: Source::Imported { file: format!("{name}#{uri}"), origin: None },
-                    ..provenance.clone()
-                };
-                objects.push((hash, file.as_slice(), record));
-            }
-        }
-        // Checked for every object before the first write, so a refusal stores nothing.
-        for (hash, _, record) in &objects {
-            if store.contains(hash) {
-                require_same_record(store, hash, record, name)?;
-            }
-        }
-        let mut stored = Vec::with_capacity(objects.len());
-        for (hash, bytes, record) in objects {
-            let put = store
-                .put(bytes, record.clone())
-                .map_err(|e: StoreError| OpError::internal(format!("storing {name}: {e}")))?;
-            debug_assert_eq!(put, hash, "the store names an object by the hash of its bytes");
-            // `put` keeps the first record, and another import may have stored the object since the check above.
-            require_same_record(store, &put, &record, name)?;
-            stored.push(put);
-        }
-        let original = stored.remove(0);
-        stored.truncate(image_objects);
-        let images = stored;
+        let stored_original = rights.is_some();
+        let provenance = match rights {
+            Some(rights) => rights,
+            None => outcome
+                .scene
+                .provenance
+                .clone()
+                .ok_or_else(|| OpError::internal("run_import left the scene without a provenance record"))?,
+        };
+        let stored =
+            store_files(name, bytes, &outcome.scene, &served, &provenance, stored_original, store, progress, field)?;
+        let record = Some(provenance.clone());
         Ok(Imported {
             asset: AssetRecord {
-                original,
-                images,
-                sidecars,
+                original: stored.original,
+                images: stored.images,
+                sidecars: stored.sidecars,
                 file: name.to_owned(),
                 format: importer.info().id.to_owned(),
-                character: self.character.clone(),
+                characters: self.character.iter().cloned().collect(),
+                provenance: record,
             },
             summary: outcome.scene.summary(),
             report: outcome.report,
@@ -291,23 +318,61 @@ impl Import {
             .ok_or_else(|| OpError::internal(format!("importer {} vanished after sniffing", best.format)))
     }
 
-    /// The argument the bytes came from, which errors about the file blame.
-    fn source_field(&self) -> &'static str {
-        if self.path.is_some() { "path" } else { "bytes" }
+    /// The import options this request asks for.
+    pub(crate) fn options(&self) -> ImportOptions {
+        if self.strict { ImportOptions::default().strict() } else { ImportOptions::default() }
     }
 
-    /// The file's name: `name`, else the last part of `path`, else [`DEFAULT_NAME`].
-    fn file_name(&self) -> String {
+    /// The argument the bytes came from, which errors about the file blame.
+    pub(crate) fn source_field(&self) -> &'static str {
+        match (&self.path, &self.asset) {
+            (Some(_), _) => "path",
+            (None, Some(_)) => "asset",
+            (None, None) => "bytes",
+        }
+    }
+
+    /// The file's name: `name`, else the last part of `path`, else an `asset`'s hash (as `io.inspect` names it, so an
+    /// avatar's confirm token matches), else [`DEFAULT_NAME`].
+    pub(crate) fn file_name(&self) -> String {
         let from_path = self.path.as_deref().and_then(|p| std::path::Path::new(p).file_name()?.to_str());
-        self.name.clone().or_else(|| from_path.map(str::to_owned)).unwrap_or_else(|| DEFAULT_NAME.to_owned())
+        self.name
+            .clone()
+            .or_else(|| from_path.map(str::to_owned))
+            .or_else(|| self.asset.map(|hash| hash.to_string()))
+            .unwrap_or_else(|| DEFAULT_NAME.to_owned())
+    }
+
+    /// For an `asset` source, the record its bytes are used under: the store's joined with every tray record naming
+    /// the hash, strictest wins (connectors D6). `None` for a file or bytes, whose record the file itself derives.
+    ///
+    /// # Errors
+    /// `NotFound` for an asset the store doesn't hold; `Invalid` for a tray record that doesn't read; `Internal` when
+    /// the store fails.
+    pub(crate) fn asset_rights(&self, job: &JobCtx<'_>, store: &dyn Store) -> Result<Option<Provenance>, OpError> {
+        let Some(hash) = &self.asset else { return Ok(None) };
+        let stored = store.provenance(hash).map_err(|e| store_error(hash, e))?;
+        job.read(|doc| tray::effective_provenance(doc, hash, stored.clone())).map(Some).map_err(|e| tray_unreadable(&e))
     }
 
     /// The read: `path` through the job's file access, refusing a file over the input limit before reading it. Also
     /// returns where the file really is, for a `path`, so its sidecars can be confined to its folder.
-    fn read_source(&self, job: &JobCtx<'_>, max_bytes: u64) -> Result<(Cow<'_, [u8]>, Option<CanonicalPath>), OpError> {
+    pub(crate) fn read_source(
+        &self,
+        job: &JobCtx<'_>,
+        max_bytes: u64,
+    ) -> Result<(Cow<'_, [u8]>, Option<CanonicalPath>), OpError> {
+        if let Some(hash) = &self.asset {
+            // The tray first, so a refused candidate's bytes are never read.
+            job.read(|doc| require_usable(doc, hash))?;
+            let bytes = job.service::<dyn Store>()?.get(hash).map_err(|e| store_error(hash, e))?;
+            check_size(bytes.len() as u64, max_bytes, "asset")?;
+            return Ok((Cow::Owned(bytes), None));
+        }
         let Some(path) = &self.path else {
             let bytes = self.bytes.as_deref();
-            let bytes = bytes.map(Cow::Borrowed).ok_or_else(|| OpError::internal("plan accepted an import with no source"))?;
+            let bytes =
+                bytes.map(Cow::Borrowed).ok_or_else(|| OpError::internal("plan accepted an import with no source"))?;
             return Ok((bytes, None));
         };
         let main = job.fs_access(path, FsMode::Read)?;
@@ -324,6 +389,94 @@ impl Import {
     }
 }
 
+/// What [`store_files`] stored: the original's hash, each distinct image's in scene order, and each sidecar's record.
+pub(crate) struct Stored {
+    /// The original file's content hash.
+    pub original: ContentHash,
+    /// The images' content hashes, in scene order, each once.
+    pub images: Vec<ContentHash>,
+    /// The files the model refers to, as it names them, with their hashes.
+    pub sidecars: Vec<SidecarRecord>,
+}
+
+/// Stores `bytes` (the file called `name`), every image of `scene` and every `served` sidecar, each under
+/// `provenance` (so an image never carries more rights than the model it came from). The last cancel check comes
+/// first; the original is checked against what the store already holds before the first write, and again after its
+/// `put`, unless `stored_original` says it came from the store (an `asset` import, whose `provenance` is the store's
+/// record joined with the tray's). An image or sidecar another model stored first keeps that model's record in the store; this model's own
+/// record goes on its asset record (rights per reference, see the module docs).
+///
+/// A `put` that fails part way (an I/O error) leaves the objects already put whole, and referenced by nothing, since
+/// the asset record is written only when the job finishes; garbage collection removes them, as after a cancel.
+///
+/// # Errors
+/// `Conflict` on a cancel, and when the original is already stored under a different record; `Internal` when the store
+/// fails.
+#[allow(clippy::too_many_arguments)] // the model's parts and where they go; a struct would only rename them
+pub(crate) fn store_files(
+    name: &str,
+    bytes: &[u8],
+    scene: &IoScene,
+    served: &Served,
+    provenance: &Provenance,
+    stored_original: bool,
+    store: &dyn Store,
+    progress: &dyn Progress,
+    field: &str,
+) -> Result<Stored, OpError> {
+    // The last chance to stop: past this point the objects are written without further checks.
+    progress.checkpoint("storing", 0.9).map_err(|e| from_io(e, field))?;
+    let mut objects = vec![(ContentHash::of(bytes), bytes, provenance.clone())];
+    for (ix, image) in scene.images.iter().enumerate() {
+        let hash = ContentHash::of(image.bytes.as_slice());
+        // The same picture used twice in one model is one object, recorded by its first use.
+        if objects.iter().any(|(seen, ..)| *seen == hash) {
+            continue;
+        }
+        let record = Provenance {
+            source: Source::Imported { file: format!("{name}#image{ix}"), origin: None },
+            ..provenance.clone()
+        };
+        objects.push((hash, image.bytes.as_slice(), record));
+    }
+    let image_objects = objects.len() - 1;
+    let mut sidecars = Vec::with_capacity(served.len());
+    for (uri, file) in served {
+        let hash = ContentHash::of(file);
+        sidecars.push(SidecarRecord { uri: uri.clone(), hash });
+        // A file the model also uses as an image is already an object, recorded by its first use.
+        if objects.iter().all(|(seen, ..)| *seen != hash) {
+            let record = Provenance {
+                source: Source::Imported { file: format!("{name}#{uri}"), origin: None },
+                ..provenance.clone()
+            };
+            objects.push((hash, file.as_slice(), record));
+        }
+    }
+    // The original is checked before the first write, so a refusal stores nothing.
+    if let Some((hash, _, record)) = objects.first().filter(|_| !stored_original)
+        && store.contains(hash)
+    {
+        require_same_record(store, hash, record, name)?;
+    }
+    let mut stored = Vec::with_capacity(objects.len());
+    for (i, (hash, bytes, record)) in objects.into_iter().enumerate() {
+        let put = store
+            .put(bytes, record.clone())
+            .map_err(|e: StoreError| OpError::internal(format!("storing {name}: {e}")))?;
+        debug_assert_eq!(put, hash, "the store names an object by the hash of its bytes");
+        // `put` keeps the first record, and another import may have stored the original since the check above.
+        if i == 0 && !stored_original {
+            require_same_record(store, &put, &record, name)?;
+        }
+        stored.push(put);
+    }
+    let original = stored.remove(0);
+    stored.truncate(image_objects);
+    let images = stored;
+    Ok(Stored { original, images, sidecars })
+}
+
 /// The op error for a failed import. Bytes have no folder, so a file the model refers to is a feature that source
 /// lacks, not a missing file; for a `path` (`has_folder`), an unreadable reference is an ordinary `NotFound`.
 fn import_error(error: IoError, field: &str, has_folder: bool) -> OpError {
@@ -337,7 +490,7 @@ fn import_error(error: IoError, field: &str, has_folder: bool) -> OpError {
 }
 
 /// The files read for one import, with the bytes of each, in the order the importer first asked for them.
-type Served = Vec<(String, Vec<u8>)>;
+pub(crate) type Served = Vec<(String, Vec<u8>)>;
 
 /// Serves a `.gltf`'s sidecars to the importer from the folder of the file the person named, through the job's file
 /// access, and remembers what it served so the import can store it.
@@ -345,7 +498,7 @@ type Served = Vec<(String, Vec<u8>)>;
 /// The confinement is that of `ops::sidecar::DirResolver`, which needs a plan-time `OpCtx` and so cannot run here: the
 /// URI must be a plain relative path ([`clean_relative`]), is joined onto the folder as the person typed it, goes
 /// through `fs_access` (grants, roots, no links), and must really lie inside the file's real folder.
-struct FolderFiles<'a, 'j> {
+pub(crate) struct FolderFiles<'a, 'j> {
     job: &'a JobCtx<'j>,
     /// The folder as the person typed it (empty for the project folder itself).
     folder_text: String,
@@ -359,7 +512,7 @@ struct FolderFiles<'a, 'j> {
 
 impl<'a, 'j> FolderFiles<'a, 'j> {
     /// The sidecars of `main`, which the person typed as `typed`. `file_bytes` is its size, already counted.
-    fn new(job: &'a JobCtx<'j>, main: &CanonicalPath, typed: &str, max_bytes: u64, file_bytes: u64) -> Self {
+    pub(crate) fn new(job: &'a JobCtx<'j>, main: &CanonicalPath, typed: &str, max_bytes: u64, file_bytes: u64) -> Self {
         let folder_text = Path::new(typed).parent().and_then(Path::to_str).unwrap_or("").to_owned();
         // A file always has a parent; if one ever did not, the file itself is the fallback, so no sidecar lies inside
         // it and every read is refused rather than widened.
@@ -370,7 +523,7 @@ impl<'a, 'j> FolderFiles<'a, 'j> {
 
     /// What was served, taking it from the resolver, sorted by URI: the order the importer's reads finished in must
     /// not reach the record or the choice of which equal file is stored under which name.
-    fn served(&self) -> Result<Served, OpError> {
+    pub(crate) fn served(&self) -> Result<Served, OpError> {
         let mut state = self.state.lock().map_err(|_| OpError::internal("the sidecar list was poisoned"))?;
         let mut served = std::mem::take(&mut state.0);
         served.sort_by(|(a, _), (b, _)| a.cmp(b));
@@ -417,7 +570,7 @@ impl Resolver for FolderFiles<'_, '_> {
 }
 
 /// Removes every `null` from `value`: the result is shown in history and a stored document cannot hold one.
-fn strip_nulls(value: &mut Value) {
+pub(crate) fn strip_nulls(value: &mut Value) {
     match value {
         Value::Object(map) => {
             map.retain(|_, v| !v.is_null());
@@ -442,13 +595,11 @@ fn describe_record(record: &Provenance) -> String {
     )
 }
 
-/// Requires the store to hold `hash` under exactly `wanted`. `Store::put` keeps the first record and the store offers
-/// no way to join two, so an object is shared between imports only when their records are identical; anything else
-/// (wider, stricter, another licence or credit line) fails closed. Joining records is follow-up #1773.
+/// Requires the store to hold the original `hash` under exactly `wanted`. Identical bytes derive an identical record, so
+/// an original stored under another one (wider, stricter, another licence or credit line) came from somewhere this
+/// import cannot vouch for, and the import fails closed.
 fn require_same_record(store: &dyn Store, hash: &ContentHash, wanted: &Provenance, name: &str) -> Result<(), OpError> {
-    let stored = store
-        .provenance(hash)
-        .map_err(|e| OpError::internal(format!("reading the record of {hash}: {e}")))?;
+    let stored = store.provenance(hash).map_err(|e| OpError::internal(format!("reading the record of {hash}: {e}")))?;
     if &stored == wanted {
         return Ok(());
     }
@@ -457,7 +608,58 @@ fn require_same_record(store: &dyn Store, hash: &ContentHash, wanted: &Provenanc
         describe_record(&stored),
         describe_record(wanted),
     ))
-    .hint("an object is shared between imports only under identical rights; sharing across different rights is not built yet (#1773)"))
+    .hint("the file is already in the project under other rights; find where it came from before importing it again"))
+}
+
+/// Refuses `asset` unless the tray lets an op use it (connectors D7): no record names it, or one accepted it. Reads
+/// the document only, never the store.
+///
+/// # Errors
+/// `Conflict` for a pending candidate (accept it in the tray first) or a rejected one (naming its reason); `Invalid`
+/// for a tray record that doesn't read.
+pub(crate) fn require_usable(doc: &dyn DocRead, asset: &ContentHash) -> Result<(), OpError> {
+    let refused = |message: String, hint: &str| {
+        let mut error = OpError::conflict(message).hint(hint);
+        error.field = Some("asset".to_owned());
+        error
+    };
+    match tray::usable(doc, asset).map_err(|e| tray_unreadable(&e))? {
+        Usable::Pending(id) => Err(refused(
+            format!("asset {asset} is candidate {id} in the tray, not accepted yet: accept it in the tray first"),
+            "accept the candidate in the tray, then import it",
+        )),
+        Usable::Rejected(id) => {
+            let reason = match tray::get(doc, &id).map_err(|e| tray_unreadable(&e))?.map(|c| c.state) {
+                Some(CandidateState::Rejected { reason: Some(reason), .. }) if !reason.trim().is_empty() => reason,
+                _ => "rejected, no reason given".to_owned(),
+            };
+            Err(refused(
+                format!("asset {asset} is candidate {id}, which was rejected in the tray: {reason}"),
+                "generate a new candidate, or import another asset",
+            ))
+        }
+        Usable::Yes => Ok(()),
+    }
+}
+
+/// The op error for a tray record that doesn't read.
+fn tray_unreadable(error: &TrayError) -> OpError {
+    let mut error = OpError::invalid("asset", format!("the tray can't be read: {error}"));
+    error.hint = Some("fix or remove the tray record it names".to_owned());
+    error
+}
+
+/// The op error for a store read of `hash` that failed.
+fn store_error(hash: &ContentHash, error: StoreError) -> OpError {
+    match error {
+        StoreError::Missing(_) => {
+            let mut error = OpError::not_found(format!("no asset {hash} in the store"))
+                .hint("pass the hash of an asset that was added to the project");
+            error.field = Some("asset".to_owned());
+            error
+        }
+        other => OpError::internal(format!("reading asset {hash} failed: {other}")),
+    }
 }
 
 /// `Invalid` over the input limit, the same error `run_import` gives, so a hostile file is refused before it is held.
@@ -491,10 +693,14 @@ fn require_character(doc: &dyn DocRead, id: &str) -> Result<(), OpError> {
 /// needs its parent to exist).
 ///
 /// An entry that already exists is never overwritten, so a re-import cannot drop what it recorded. Different `images` or
-/// `sidecars` than the recorded ones are a `Conflict`. Otherwise, with no `character`, or the same one, the patch is empty; a `character` on an entry that has none is added; a different `character` is a
-/// `Conflict` naming the existing one (several characters per asset is #1792).
-fn record_patch(doc: &dyn DocRead, asset: &AssetRecord) -> Result<Patch, OpError> {
-    let value = serde_json::to_value(asset).map_err(|e| OpError::internal(format!("serialising the asset: {e}")))?;
+/// `sidecars` than the recorded ones are a `Conflict`. Otherwise the patch adds the characters the import names that the
+/// entry does not serve yet (an older entry's single `character` becomes the `characters` list then), and is empty
+/// when there are none.
+pub(crate) fn record_patch(doc: &dyn DocRead, asset: &AssetRecord) -> Result<Patch, OpError> {
+    let mut value =
+        serde_json::to_value(asset).map_err(|e| OpError::internal(format!("serialising the asset: {e}")))?;
+    // A project file cannot hold a `null`, and a record's unset fields serialise as one.
+    strip_nulls(&mut value);
     let table = DocPath::root().join(ASSETS);
     let entry = table.join(asset.original.to_string());
     match doc.get(&table) {
@@ -520,7 +726,9 @@ fn keep_existing(existing: &Value, asset: &AssetRecord, entry: DocPath) -> Resul
     // The same original with other files behind it (a sidecar edited since) is not the recorded asset: keeping the old
     // record would leave the new objects referenced by nothing.
     let files = |value: Option<&Value>| value.cloned().filter(|v| v.as_array().is_none_or(|a| !a.is_empty()));
-    for (field, wanted) in [("images", serde_json::to_value(&asset.images)), ("sidecars", serde_json::to_value(&asset.sidecars))] {
+    for (field, wanted) in
+        [("images", serde_json::to_value(&asset.images)), ("sidecars", serde_json::to_value(&asset.sidecars))]
+    {
         let wanted = wanted.map_err(|e| OpError::internal(format!("serialising the asset: {e}")))?;
         if files(fields.get(field)) != files(Some(&wanted)) {
             return Err(OpError::conflict(format!(
@@ -529,20 +737,24 @@ fn keep_existing(existing: &Value, asset: &AssetRecord, entry: DocPath) -> Resul
             .hint("an asset keeps one version of the files behind it for now; restore the files as they were, or remove the recorded asset first"));
         }
     }
-    let recorded = fields.get("character").and_then(Value::as_str);
-    match (recorded, asset.character.as_deref()) {
-        (_, None) => Ok(Patch::new()),
-        (Some(have), Some(want)) if have == want => Ok(Patch::new()),
-        (Some(have), Some(want)) => Err(OpError::conflict(format!(
-            "this asset is already recorded as a reference for character {have}, so it cannot also be one for {want}"
-        ))
-        .hint("an asset belongs to one character for now (#1792); import it without a character to keep the record")),
-        (None, Some(want)) => {
-            let mut updated = fields.clone();
-            updated.insert("character".to_owned(), Value::String(want.to_owned()));
-            Ok(Patch::new().with(entry, Some(existing.clone()), Some(Value::Object(updated))))
-        }
+    let recorded = recorded_characters(fields);
+    let gains_provenance = !fields.contains_key("provenance") && asset.provenance.is_some();
+    if asset.characters.is_subset(&recorded) && !gains_provenance {
+        return Ok(Patch::new());
     }
+    let mut updated = fields.clone();
+    updated.remove(LEGACY_CHARACTER);
+    let characters: Vec<Value> = recorded.union(&asset.characters).cloned().map(Value::String).collect();
+    if !characters.is_empty() {
+        updated.insert("characters".to_owned(), Value::Array(characters));
+    }
+    if let Some(provenance) = asset.provenance.as_ref().filter(|_| gains_provenance) {
+        let mut value =
+            serde_json::to_value(provenance).map_err(|e| OpError::internal(format!("serialising the record: {e}")))?;
+        strip_nulls(&mut value);
+        updated.insert("provenance".to_owned(), value);
+    }
+    Ok(Patch::new().with(entry, Some(existing.clone()), Some(Value::Object(updated))))
 }
 
 impl Op for Import {
@@ -550,7 +762,8 @@ impl Op for Import {
         OpMeta {
             name: "io.import",
             summary: "Import a model file (glTF, VRM): store the original and its images with their licence record, \
-                      and record the asset in the project.",
+                      and record the asset in the project; with `as: avatar` and the confirm token from io.inspect, \
+                      make it a character to perform as.",
             kind: OpKind::Job,
             scope: Scope::EditCharacter,
             undo: Undo::Auto,
@@ -558,28 +771,39 @@ impl Op for Import {
     }
 
     fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        let avatar_plan = match self.as_ {
+            ImportAs::Avatar => Some(avatar::plan(self, ctx)?),
+            ImportAs::Reference | ImportAs::Part => None,
+        };
+        if self.as_ != ImportAs::Avatar && (self.id.is_some() || self.confirm.is_some() || self.acknowledge) {
+            return Err(OpError::invalid("as", "id, confirm and acknowledge are for importing as an avatar")
+                .hint("pass as: avatar, or leave them out"));
+        }
         if self.as_ == ImportAs::Part {
             return Err(OpError::unsupported("importing as an editable part is not available yet")
                 .hint("import it as a reference"));
         }
         let max_bytes = ImportOptions::default().limits.max_input_bytes;
-        match (&self.path, &self.bytes) {
-            (Some(path), None) => {
+        match (&self.path, &self.bytes, &self.asset) {
+            (Some(path), None, None) => {
                 if path.is_empty() {
                     return Err(OpError::invalid("path", "the path is empty").hint("pass the path of a model file"));
                 }
                 // Fails now, not after the job is queued, when the actor may not read the file.
                 ctx.fs_access(path, FsMode::Read)?;
             }
-            (None, Some(bytes)) => {
+            (None, Some(bytes), None) => {
                 if bytes.is_empty() {
                     return Err(OpError::invalid("bytes", "no bytes were given"));
                 }
                 check_size(bytes.len() as u64, max_bytes, "bytes")?;
             }
+            // The tray only: the store is read when the job runs, and checked again then.
+            (None, None, Some(hash)) => require_usable(ctx.doc, hash)?,
             _ => {
-                return Err(OpError::invalid("path", "pass exactly one of path or bytes")
-                    .hint("path reads a file; bytes carries the file's content"));
+                return Err(OpError::invalid("path", "pass exactly one of path, bytes or asset").hint(
+                    "path reads a file, bytes carries the file's content, and asset names a model already in the store",
+                ));
             }
         }
         if let Some(format) = &self.format
@@ -593,24 +817,29 @@ impl Op for Import {
         }
         // The store is needed by `work`; its absence is better reported here.
         ctx.service::<dyn Store>()?;
-        Ok(Plan::default())
+        Ok(avatar_plan.unwrap_or_default())
     }
 
     fn work(&self, job: &JobCtx<'_>) -> Result<Value, OpError> {
+        if self.as_ == ImportAs::Avatar {
+            return avatar::work(self, job)
+                .map_err(|e| if job.is_cancelled() { OpError::cancelled(job.id()) } else { e });
+        }
         let store = job.service::<dyn Store>()?;
-        let options = ImportOptions::default();
+        let options = self.options();
         let outcome = job.checkpoint("reading", 0.0).and_then(|()| {
             let max_bytes = options.limits.max_input_bytes;
             let (bytes, main) = self.read_source(job, max_bytes)?;
             let (name, progress) = (self.file_name(), JobProgress(job));
             let typed = self.path.as_deref().unwrap_or_default();
             let folder = main.map(|main| FolderFiles::new(job, &main, typed, max_bytes, bytes.len() as u64));
-            self.import_with(&name, &bytes, &options, store, &progress, folder.as_ref())
+            let rights = self.asset_rights(job, store)?;
+            self.import_with(&name, &bytes, &options, store, &progress, folder.as_ref(), rights)
         });
         // A cancelled import surfaces from the importer as a plain conflict; the job reports it as cancelled.
         let imported = outcome.map_err(|e| if job.is_cancelled() { OpError::cancelled(job.id()) } else { e })?;
-        let mut result = serde_json::to_value(imported)
-            .map_err(|e| OpError::internal(format!("serialising the import: {e}")))?;
+        let mut result =
+            serde_json::to_value(imported).map_err(|e| OpError::internal(format!("serialising the import: {e}")))?;
         strip_nulls(&mut result);
         // The manager applies `finish` for work that succeeded even after a cancel request, so the cancel check is the
         // last step before the result is returned: nothing may run between it and the return.
@@ -619,6 +848,9 @@ impl Op for Import {
     }
 
     fn finish(&self, ctx: &OpCtx<'_>, result: Value) -> Result<Plan, OpError> {
+        if self.as_ == ImportAs::Avatar {
+            return avatar::finish(ctx, result);
+        }
         let asset = result
             .get("asset")
             .cloned()
@@ -627,7 +859,7 @@ impl Op for Import {
             .map_err(|e| OpError::internal(format!("the import's result is malformed: {e}")))?
             .ok_or_else(|| OpError::internal("the import's result has no asset"))?;
         // The character may have been removed while the job ran.
-        if let Some(id) = &asset.character {
+        for id in &asset.characters {
             require_character(ctx.doc, id)?;
         }
         let patch = record_patch(ctx.doc, &asset)?;
@@ -678,7 +910,8 @@ mod tests {
         std::fs::write(dir.path().join("m.gltf"), [0_u8; 5]).unwrap();
         std::fs::write(dir.path().join("a.bin"), [1_u8; 10]).unwrap();
         std::fs::write(dir.path().join("b.png"), [2_u8; 10]).unwrap();
-        let (actor, signal, doc) = (Actor::Person { name: "t".into() }, Quiet(omuzaki_ops_api::CancelFlag::new()), NoDoc);
+        let (actor, signal, doc) =
+            (Actor::Person { name: "t".into() }, Quiet(omuzaki_ops_api::CancelFlag::new()), NoDoc);
         let (grants, project) = (Grants::person(), ProjectDir::open(dir.path()).unwrap());
         let job = JobCtx::new(JobId(1), &actor, &doc, &signal).with_grants(&grants).with_project_dir(&project);
         let main = job.fs_access("m.gltf", FsMode::Read).unwrap();
@@ -708,7 +941,8 @@ mod tests {
         for name in names {
             std::fs::write(dir.path().join(name), name.as_bytes()).unwrap();
         }
-        let (actor, signal, doc) = (Actor::Person { name: "t".into() }, Quiet(omuzaki_ops_api::CancelFlag::new()), NoDoc);
+        let (actor, signal, doc) =
+            (Actor::Person { name: "t".into() }, Quiet(omuzaki_ops_api::CancelFlag::new()), NoDoc);
         let (grants, project) = (Grants::person(), ProjectDir::open(dir.path()).unwrap());
         let job = JobCtx::new(JobId(1), &actor, &doc, &signal).with_grants(&grants).with_project_dir(&project);
         let main = job.fs_access("m.gltf", FsMode::Read).unwrap();
@@ -739,7 +973,8 @@ mod tests {
             sidecars: Vec::new(),
             file: "a.glb".into(),
             format: "glb".into(),
-            character: None,
+            characters: BTreeSet::new(),
+            provenance: None,
         };
         let doc = omuzaki_doc_mock::MemDoc::new();
         let first = record_patch(&doc, &asset).unwrap();

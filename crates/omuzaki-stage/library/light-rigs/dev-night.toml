@@ -2,6 +2,9 @@
 # Three.js units (render-api D10): the numbers are copied, not rescaled.
 name = "dev-night"
 source = "prototype dev viewer, night rig"
+title = "Night"
+summary = "A cool night key on deep blue, for checking how a character reads in the dark."
+tags = ["cool", "night"]
 exposure = 1.0
 background = "#1b2236"
 skin_floor = 0.42

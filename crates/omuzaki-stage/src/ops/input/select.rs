@@ -40,7 +40,8 @@ impl Op for Select {
         if self.resume_preview {
             match self.source {
                 SourceKind::LifeLayer => return Err(op_error(InputError::NothingToCapture)),
-                SourceKind::Iphone => return Err(op_error(InputError::Unsupported(SourceKind::Iphone))),
+                // The phone link has no binding to check here; starting it reports a missing link or a busy port.
+                SourceKind::Iphone => {}
                 SourceKind::Webcam => {
                     let state = host.state();
                     match state.camera {

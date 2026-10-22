@@ -28,6 +28,14 @@ stage "deny (licences, bans, sources, advisories)" cargo deny check
 stage "Windows cross-build (all targets)" cargo build --locked --workspace --all-targets --target x86_64-pc-windows-gnu
 # The Windows zip, then its smoke test under Wine (the script skips with a printed reason when Wine is absent).
 stage "Windows zip + Wine smoke" bash -c 'cargo xtask dist --target x86_64-pc-windows-gnu --no-models && tools/ci/wine-smoke.sh'
+# omuzaki-ai's tests as a Windows build under Wine: the model cache's Windows paths (flushing through a writable handle,
+# renaming onto a blob that is already there, #795) and the sandbox's Windows limits.
+if command -v wine >/dev/null 2>&1; then
+  stage "omuzaki-ai tests under Wine" env CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=wine WINEDEBUG=-all \
+    cargo test --locked -p omuzaki-ai --target x86_64-pc-windows-gnu
+else
+  skip "omuzaki-ai tests under Wine" "wine is not installed"
+fi
 
 mapfile -t wasm_crates < <(python3 -I "$CI_DIR/crates.py" wasm)
 if [[ -z ${wasm_crates[0]:-} ]]; then

@@ -11,10 +11,12 @@
 use std::collections::BTreeMap;
 
 use omuzaki_anim_api::{ChannelMask, ConstraintSet, HumanoidBone, HumanoidPose, Region, Skeleton, SpringSet};
-use omuzaki_char_api::{Anchor, AnchorId, JointRef, MaterialName, MaterialSpec, PartMesh, TextureData, TextureName};
+use omuzaki_char_api::{
+    Anchor, AnchorId, JointRef, MaterialName, MaterialSpec, PartId, PartMesh, TextureData, TextureName,
+};
 use omuzaki_core::glam::Mat4;
 use omuzaki_io_api::{ExpressionName, FirstPersonFlag, LookAtKind};
-use omuzaki_render_api::MorphSet;
+use omuzaki_render_api::{MorphSet, Mtoon, OutlineWidthMode};
 use omuzaki_store_api::ContentHash;
 
 use crate::error::AvatarError;
@@ -37,12 +39,22 @@ pub struct AvatarMesh {
     pub inverse_bind: Vec<Mat4>,
     /// Its morph targets, sparse, in the file's target order; `None` if it has none.
     pub morphs: Option<MorphSet>,
+    /// The attachment that made it (one of `avatar.parts`, built by the kit), or `None` for a mesh of the model
+    /// itself. An attachment's mesh comes from no source mesh, so export rebuilds the file without it.
+    pub part: Option<PartId>,
 }
 
 impl AvatarMesh {
     /// A mesh with no inverse bind matrices and no morphs (a rigid mesh as is).
     pub fn new(mesh: PartMesh) -> Self {
-        Self { mesh, inverse_bind: Vec::new(), morphs: None }
+        Self { mesh, inverse_bind: Vec::new(), morphs: None, part: None }
+    }
+
+    /// Marks it as a mesh of attachment `part` (builder style).
+    #[must_use]
+    pub fn with_part(mut self, part: PartId) -> Self {
+        self.part = Some(part);
+        self
     }
 
     /// Sets the inverse bind matrices (builder style).
@@ -65,6 +77,30 @@ impl AvatarMesh {
     }
 }
 
+/// How one imported material's outline is drawn, as its `MToon` block says (#647): what the kit's line in
+/// [`MaterialSpec::outline`] cannot carry. The importer fills it only with what the renderer draws (its
+/// `Capabilities::mtoon`); the rest stays the kit line's approximation, reported as `look.mtoon_not_drawn`.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct AvatarOutline {
+    /// What `width` measures: metres for `World` (`MToon`'s `worldCoordinates`), a fraction of the target's height for
+    /// `Screen`.
+    pub width_mode: OutlineWidthMode,
+    /// The file's `outlineWidthFactor`, in the unit `width_mode` says; it replaces the material's outline width.
+    pub width: f32,
+    /// The decoded `outlineWidthMultiplyTexture` (linear data), if the file has one.
+    pub width_texture: Option<TextureName>,
+    /// The file's `outlineLightingMixFactor`, `0..=1`.
+    pub lighting_mix: f32,
+}
+
+impl AvatarOutline {
+    /// An outline `width` wide as `width_mode` measures it, with no width texture and no lighting mix.
+    pub fn new(width_mode: OutlineWidthMode, width: f32) -> Self {
+        Self { width_mode, width, width_texture: None, lighting_mix: 0.0 }
+    }
+}
+
 /// An imported avatar, ready to perform.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
@@ -80,6 +116,11 @@ pub struct ImportedAvatar {
     pub meshes: Vec<AvatarMesh>,
     /// Materials by name, as the renderer draws them.
     pub materials: BTreeMap<MaterialName, MaterialSpec>,
+    /// The `MToon` outline of each material that has one beyond the kit's line, by material name (#647).
+    pub outlines: BTreeMap<MaterialName, AvatarOutline>,
+    /// The `MToon` lighting of each material the importer keeps it for (LK-07, #592), by material name, its textures
+    /// named in [`Self::textures`]. A material without an entry draws with its [`MaterialSpec`]'s toon approximation.
+    pub mtoon: BTreeMap<MaterialName, Mtoon<TextureName>>,
     /// Decoded textures by name.
     pub textures: BTreeMap<TextureName, TextureData>,
     /// The expressions, in file order, names kept.
@@ -97,8 +138,8 @@ pub struct ImportedAvatar {
     /// First-person flags by mesh, in mesh order; a mesh past the end of the list is `Auto`, the spec's default.
     /// Carried for export, not used at run time yet (D4).
     pub first_person: Vec<FirstPersonFlag>,
-    /// Attachment points: one per humanoid bone plus named ones (head top, grips). Empty until the attachments work
-    /// fills them (D1, condition 2).
+    /// Attachment points: one per humanoid bone plus the head's top and the grips, as
+    /// [`derive_anchors`](crate::anchors::derive_anchors) places them (D1, condition 2).
     pub anchors: BTreeMap<AnchorId, Anchor>,
     /// What export needs and the runtime does not use (D8).
     pub retained: Retained,
@@ -114,6 +155,8 @@ impl ImportedAvatar {
             bind: HumanoidPose::default(),
             meshes: Vec::new(),
             materials: BTreeMap::new(),
+            outlines: BTreeMap::new(),
+            mtoon: BTreeMap::new(),
             textures: BTreeMap::new(),
             expressions: Vec::new(),
             drivers: ChannelDrivers::new(),
@@ -297,7 +340,8 @@ impl ImportedAvatar {
     /// The retained source meshes, when there are any:
     /// - each instance lists one runtime mesh per primitive, at a node that draws that source mesh, and every node
     ///   that draws a source mesh is one of its instances exactly once;
-    /// - every runtime mesh comes from exactly one primitive of one instance;
+    /// - every runtime mesh of the model comes from exactly one primitive of one instance, and an attachment's
+    ///   ([`AvatarMesh::part`]) from none;
     /// - the morph targets of a source mesh follow glTF's rule, as `IoScene::check` has it, whether the mesh is drawn
     ///   (the targets of its runtime meshes) or not (the targets of its kept geometry): every primitive that has
     ///   targets has the same number, every copy of a primitive agrees, and the name table, when there is one, names
@@ -341,7 +385,8 @@ impl ImportedAvatar {
                 return Err(AvatarError::node_instances(node, drawn, instances));
             }
         }
-        match groups.iter().position(|g| *g != 1) {
+        let expected = |mesh: usize| usize::from(self.meshes.get(mesh).is_some_and(|m| m.part.is_none()));
+        match groups.iter().enumerate().position(|(mesh, g)| *g != expected(mesh)) {
             Some(mesh) => Err(AvatarError::mesh_grouping(mesh, groups[mesh])),
             None => Ok(()),
         }

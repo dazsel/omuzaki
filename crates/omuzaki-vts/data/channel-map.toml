@@ -1,0 +1,93 @@
+# What the VTube Studio bridge feeds (CN-13, #727). Read at build time by `omuzaki-vts::inject::ChannelMap::builtin`.
+#
+# Custom parameters, the default: one per channel of Omuzaki's channel table (the 52 ARKit blendshapes, the head and
+# body channels and the anime extras; not the custom slots), named `prefix` + the channel's name with its first letter
+# upper-cased (`OmuzakiJawOpen`), with the channel's range. The person maps them in VTube Studio.
+[custom]
+prefix = "Omuzaki"
+
+# VTube Studio's own input parameters, each opt-in (`enabled = false` until a person switches it on). A row's value is
+# `offset + sum(weight * channel)`, clamped to `min..=max`. The names are VTube Studio's documented default parameters;
+# the formulas are ours. Angles are degrees from the channel table's radians (57.29578 per radian).
+[[default]]
+param = "FaceAngleX"
+terms = [{ channel = "headYaw", weight = 57.29578 }]
+min = -30.0
+max = 30.0
+
+[[default]]
+param = "FaceAngleY"
+terms = [{ channel = "headPitch", weight = 57.29578 }]
+min = -30.0
+max = 30.0
+
+[[default]]
+param = "FaceAngleZ"
+terms = [{ channel = "headRoll", weight = 57.29578 }]
+min = -90.0
+max = 90.0
+
+[[default]]
+param = "MouthOpen"
+terms = [{ channel = "jawOpen", weight = 1.0 }]
+
+[[default]]
+param = "MouthSmile"
+terms = [{ channel = "mouthSmileLeft", weight = 0.5 }, { channel = "mouthSmileRight", weight = 0.5 }]
+
+[[default]]
+param = "MouthX"
+terms = [{ channel = "mouthRight", weight = 1.0 }, { channel = "mouthLeft", weight = -1.0 }]
+min = -1.0
+
+[[default]]
+param = "EyeOpenLeft"
+offset = 1.0
+terms = [{ channel = "eyeBlinkLeft", weight = -1.0 }]
+
+[[default]]
+param = "EyeOpenRight"
+offset = 1.0
+terms = [{ channel = "eyeBlinkRight", weight = -1.0 }]
+
+[[default]]
+param = "EyeLeftX"
+terms = [{ channel = "eyeLookOutLeft", weight = -1.0 }, { channel = "eyeLookInLeft", weight = 1.0 }]
+min = -1.0
+
+[[default]]
+param = "EyeLeftY"
+terms = [{ channel = "eyeLookUpLeft", weight = 1.0 }, { channel = "eyeLookDownLeft", weight = -1.0 }]
+min = -1.0
+
+[[default]]
+param = "EyeRightX"
+terms = [{ channel = "eyeLookInRight", weight = -1.0 }, { channel = "eyeLookOutRight", weight = 1.0 }]
+min = -1.0
+
+[[default]]
+param = "EyeRightY"
+terms = [{ channel = "eyeLookUpRight", weight = 1.0 }, { channel = "eyeLookDownRight", weight = -1.0 }]
+min = -1.0
+
+[[default]]
+param = "Brows"
+terms = [{ channel = "browInnerUp", weight = 1.0 }]
+
+[[default]]
+param = "BrowLeftY"
+terms = [{ channel = "browOuterUpLeft", weight = 1.0 }, { channel = "browDownLeft", weight = -1.0 }]
+min = -1.0
+
+[[default]]
+param = "BrowRightY"
+terms = [{ channel = "browOuterUpRight", weight = 1.0 }, { channel = "browDownRight", weight = -1.0 }]
+min = -1.0
+
+[[default]]
+param = "CheekPuff"
+terms = [{ channel = "cheekPuff", weight = 1.0 }]
+
+[[default]]
+param = "TongueOut"
+terms = [{ channel = "tongueOut", weight = 1.0 }]
