@@ -4367,6 +4367,7 @@ dependencies = [
  "omuzaki-core",
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
+ "omuzaki-identity-api",
  "omuzaki-io-api",
  "omuzaki-ops-api",
  "omuzaki-store-api",
@@ -8349,6 +8350,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "toml",
+ "url",
  "zip",
 ]
 
