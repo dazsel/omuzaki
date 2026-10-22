@@ -1,0 +1,31 @@
+name = "petals"
+title = "Petals"
+summary = "Cherry blossom petals drifting sideways on a light breeze, tumbling as they fall."
+tags = ["weather", "petals", "spring", "sakura"]
+version = "1.0.0"
+origin = "designed for ST-13: petals 15 to 25 mm long falling at about 0.4 m/s, carried by a 0.3 m/s breeze"
+kind = "weather"
+sprite = { shape = "petal" }
+
+[weather]
+density = 6.0
+height = 2.4
+area = "auto"
+
+[particles]
+lifetime = [7.0, 9.0]
+speed = [0.0, 0.2]
+direction = [0.0, -1.0, 0.0]
+spread_deg = 45.0
+gravity = [0.0, -0.6, 0.0]
+drag = 1.5
+wind = [0.3, 0.0, 0.0]
+flutter = { amplitude_m = 0.12, frequency_hz = 0.5 }
+size = [0.015, 0.025]
+size_curve = [0.7, 1.0, 1.0, 0.8]
+orientation = { kind = "tumble", rate_deg = [90.0, 200.0] }
+colours = ["#ffc4d6", "#ffb0c8", "#ffd8e4", "#fff0f4"]
+coverage = 1.0
+shading = { kind = "toon", shade = "#d89ab8", shift = 0.0, softness = 0.15 }
+glow = 0.0
+floor = 0.0

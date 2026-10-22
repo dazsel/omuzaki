@@ -3,3 +3,4 @@
 
 pub mod atlas;
 pub mod log;
+pub mod presets;

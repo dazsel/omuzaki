@@ -1,0 +1,29 @@
+name = "emote-rain"
+title = "Emote rain"
+summary = "The chat message's emotes falling from the top of the frame, a dozen of each."
+tags = ["chat", "emotes", "burst"]
+version = "1.0.0"
+origin = "designed for ST-13: stickers 12 to 16 cm across, dropped from just above the frame and falling at about 1.3 m/s"
+kind = "burst"
+sprite = { atlas = "chat-emotes" }
+
+[burst]
+count = 12
+at = { from = "camera", point = "top" }
+colours = "preset"
+
+[particles]
+lifetime = [4.0, 5.0]
+speed = [0.2, 0.6]
+direction = [0.0, -1.0, 0.0]
+spread_deg = 20.0
+gravity = [0.0, -2.0, 0.0]
+drag = 1.5
+wind = [0.0, 0.0, 0.0]
+size = [0.12, 0.16]
+size_curve = [0.6, 1.0, 1.0, 0.0]
+orientation = { kind = "billboard", spin_deg = [-30.0, 30.0] }
+colours = ["#ffffff"]
+coverage = 1.0
+shading = { kind = "unlit" }
+glow = 0.0
