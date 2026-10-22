@@ -55,7 +55,7 @@ fn where_folds_case_and_width() {
 fn min_passes_100_and_not_99() {
     let mut h = node("on.event", json!({ "kind": "cheer", "min": { "bits": 100 } })).unwrap();
     h.trigger(fixtures::cheer("Kiri", 99));
-    assert!(h.fired().is_empty());
+    assert_eq!(h.fired().len(), 0);
     h.trigger(fixtures::cheer("Kiri", 100));
     assert_eq!(h.fired().len(), 1);
 }
@@ -89,7 +89,7 @@ fn emit_with_a_payload_that_is_not_an_object_fails() {
     let mut h = node("event.emit", json!({ "kind": "custom.x" })).unwrap();
     h.set_input("payload", json!([1, 2]));
     h.send("in");
-    assert!(h.emitted().is_empty());
+    assert_eq!(h.emitted().len(), 0);
     assert_eq!(h.fired()[0].port.as_str(), "failed");
 }
 

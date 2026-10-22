@@ -46,4 +46,13 @@ omuzaki_l10n_api::messages! {
     /// The engine refused the event (too many hops, too large).
     pub emit_refused = "live-nodes-emit-refused" (reason: Verbatim)
         => "The event wasn't sent: { $reason }";
+    /// A list or count outside its allowed range.
+    pub count_out_of_range = "live-nodes-count-out-of-range" (count: Int, min: Int, max: Int)
+        => "Give between { $min } and { $max }, not { $count }.";
+    /// A weight that is negative or not a finite number.
+    pub bad_weight = "live-nodes-bad-weight" ()
+        => "A weight has to be a number of at least 0.";
+    /// Weights that add up to nothing.
+    pub weights_sum_zero = "live-nodes-weights-sum-zero" ()
+        => "At least one weight has to be above 0.";
 }

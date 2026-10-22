@@ -7,6 +7,8 @@
 //! |---|---|
 //! | [`event`] | `on.event`: the trigger on any event kind, with `where` and `min` filters |
 //! | [`emit`] | `event.emit`: sends a `custom.<name>` event other automations hear |
+//! | [`flow`] | `flow.wait`, `flow.random`, `flow.sequence`, `flow.switch`, `flow.branch`, `flow.then`, `flow.cooldown`, `flow.gate` |
+//! | [`logic`] | `logic.and`, `logic.or`, `logic.not` |
 //! | [`op`] | `op.run`: any op allowed for automations, as an action |
 //!
 //! [`fold`] is the one case-insensitive comparison every node uses (NFKC, then lowercase), so filters and chat
@@ -18,7 +20,9 @@ omuzaki_core::define_link! {
 
 pub mod emit;
 pub mod event;
+pub mod flow;
 pub mod fold;
 mod l10n;
+pub mod logic;
 pub mod op;
 mod schema;

@@ -165,7 +165,7 @@ fn each_pulse_runs_the_op_with_its_inputs_and_the_reply_fires_done() {
     h.send("in");
     assert_eq!(h.calls().len(), 1);
     assert_eq!(h.calls()[0].args, json!({ "text": "hello", "volume": 0.5 }));
-    assert!(h.fired().is_empty(), "nothing fires before the reply");
+    assert_eq!(h.fired().len(), 0, "nothing fires before the reply");
     h.advance(Seconds(0.25));
     let fired = h.fired();
     assert_eq!(fired.len(), 1);
@@ -192,7 +192,7 @@ fn arguments_that_dont_decode_fail_without_reaching_the_executor() {
     assert_eq!(h.ports().input("mood").unwrap().ty, PortType::Text);
     h.set_input("mood", "angry");
     h.send("in");
-    assert!(h.calls().is_empty(), "nothing is sent");
+    assert_eq!(h.calls().len(), 0, "nothing is sent");
     assert_eq!(h.fired()[0].port.as_str(), "failed");
 }
 
