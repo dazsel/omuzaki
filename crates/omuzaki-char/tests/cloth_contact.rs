@@ -8,6 +8,8 @@
 //!   side, with the particle spacing smaller than the collider.
 //! - **Wind:** a pinned flag settles within 10% of the analytic drag balance; lift and gusts act as specified.
 //! - **Rig colliders** map into the solver's space; bad shapes and parameters are refused.
+//! - **Contact limits (#129):** a 3 mm capsule swung at 5 m/s through 1.9 cm cells crosses no triangle; a sheet
+//!   pressed into the crease of two overlapping spheres stays outside both.
 //! - **Hostile input and cost:** a 1e6-step fuzz with random colliders and wind finds no NaN; replays are bit-exact;
 //!   a step with contacts and wind allocates nothing.
 //!
@@ -636,6 +638,101 @@ fn a_million_random_steps_produce_no_nan() {
 /// --test cloth_contact -- --ignored dump_contact_sequence`: `drape.txt` (a sheet dropped over a capsule and a sphere,
 /// then a capsule swung in through its hanging side) with one line per frame at 60 fps (time, then every particle's x y z), and
 /// `shapes.txt` with each frame's colliders (`a.xyz b.xyz radius` each).
+/// The sheet's height under the point `(x, z)` of the horizontal plane: the triangle covering it seen from above,
+/// interpolated; `None` where no triangle covers it.
+fn height_under(x: f32, z: f32, tris: impl Iterator<Item = [Vec3; 3]>) -> Option<f32> {
+    for [p, q, r] in tris {
+        let det = (q.z - r.z) * (p.x - r.x) + (r.x - q.x) * (p.z - r.z);
+        if det.abs() < 1e-12 {
+            continue;
+        }
+        let l1 = ((q.z - r.z) * (x - r.x) + (r.x - q.x) * (z - r.z)) / det;
+        let l2 = ((r.z - p.z) * (x - r.x) + (p.x - r.x) * (z - r.z)) / det;
+        let l3 = 1.0 - l1 - l2;
+        if l1 >= 0.0 && l2 >= 0.0 && l3 >= 0.0 {
+            return Some(l1 * p.y + l2 * q.y + l3 * r.y);
+        }
+    }
+    None
+}
+
+/// The triangles of an `n` x `n` open sheet.
+fn triangles(n: usize, x: &[Vec3]) -> impl Iterator<Item = [Vec3; 3]> + '_ {
+    (0..n - 1).flat_map(move |r| {
+        (0..n - 1).flat_map(move |c| {
+            let at = |r: usize, c: usize| x[r * n + c];
+            [[at(r, c), at(r + 1, c), at(r, c + 1)], [at(r, c + 1), at(r + 1, c), at(r + 1, c + 1)]]
+        })
+    })
+}
+
+/// #129 limit 1: a 3 mm capsule lying along a row, in the middle of a row of 1.9 cm cells and longer than the sheet,
+/// swung down at 5 m/s into a 0.6 m sheet pinned along the two edges parallel to it, and held 5 cm under its rest. Returns how many frames ended with some point of its axis under the
+/// sheet (it started above): frames in which it had crossed a triangle.
+fn thin_capsule_crossings(triangle_contacts: bool) -> usize {
+    let n = 33;
+    // Pinned along the two edges parallel to the capsule, free at the ends it passes out of.
+    let pins = move |r: usize, _| if r == 0 || r == n - 1 { 1.0 } else { 0.0 };
+    let mut rig = Rig::new(&sheet(n, 0.6, |u, v| Vec3::new(u, 0.0, v), pins), ContactParams::default(), 1);
+    let cell = 0.6 / (n - 1) as f32;
+    if triangle_contacts {
+        rig.env.set_sheet(Some(SheetShape { rows: n, cols: n, wrap: false }), cell);
+    }
+    // Half a cell off a row and a column: between particles in both directions.
+    let (z, x) = (0.5 * cell, 0.5 * cell);
+    // Longer than the sheet is wide, like a blade swung through a curtain: no end to slip off.
+    let at = |y: f32| Shape::capsule(Vec3::new(x - 0.4, y, z), Vec3::new(x + 0.4, y, z), 0.003);
+    rig.start(&[at(0.05)]);
+    let mut crossings = 0;
+    for frame in 1..=60 {
+        // 5 m/s down for 20 ms (0.1 m), then held.
+        let y = (0.05 - 5.0 * frame as f32 * FRAME).max(-0.05);
+        rig.frame(FRAME, &[at(y)]);
+        let (a, b) = at(y).axis();
+        let x = rig.positions();
+        let under = (0..=8).any(|k| {
+            let p = a.lerp(b, 0.25 + 0.5 * k as f32 / 8.0);
+            height_under(p.x, p.z, triangles(n, &x)).is_some_and(|h| h > p.y)
+        });
+        if under {
+            crossings += 1;
+        }
+    }
+    crossings
+}
+
+#[test]
+fn a_thin_capsule_swung_through_a_fine_sheet_crosses_no_triangle() {
+    let without = thin_capsule_crossings(false);
+    let with = thin_capsule_crossings(true);
+    println!(
+        "3 mm capsule at 5 m/s through 1.9 cm cells: crossed in {without} frames without triangle contacts, {with} with"
+    );
+    assert!(without > 0, "the particle sweep alone should miss a capsule between particles (the limit the fix closes)");
+    assert_eq!(with, 0);
+}
+
+/// #129 limit 2: a sheet dropped onto two overlapping 5 cm spheres 6 cm apart sinks into the crease between them;
+/// over 10 s no particle ends a frame inside either sphere.
+#[test]
+fn a_particle_squeezed_between_overlapping_spheres_stays_outside_both() {
+    let spheres = [Shape::sphere(Vec3::new(-0.03, 0.0, 0.0), 0.05), Shape::sphere(Vec3::new(0.03, 0.0, 0.0), 0.05)];
+    // A heavy 17 x 17 sheet 0.12 m wide, so gravity presses its middle row into the crease.
+    let mut rig = Rig::new(&sheet(17, 0.12, |u, v| Vec3::new(u, 0.06, v), |_, _| 0.0), ContactParams::default(), 2);
+    rig.start(&spheres);
+    let mut deepest_in = f32::MIN;
+    for _ in 0..600 {
+        rig.frame(FRAME, &spheres);
+        for p in rig.positions() {
+            for s in &spheres {
+                deepest_in = deepest_in.max(s.radius() - p.distance(s.axis().0));
+            }
+        }
+    }
+    println!("squeezed between two spheres for 10 s: deepest {:.3} mm inside (negative: outside)", deepest_in * 1e3);
+    assert!(deepest_in <= 0.0, "a particle ended {deepest_in} m inside a sphere");
+}
+
 #[test]
 #[ignore = "writes evidence files; run by hand"]
 fn dump_contact_sequence() {

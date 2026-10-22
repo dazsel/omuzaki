@@ -122,3 +122,5 @@ kind = "App"
 generated-mods = ["src", "src/ops"]
 summary = "not in the workspace yet: the character stage, which uploads a `BuiltCharacter` to the renderer and runs the rig, the runtimes and the face painter each frame. It is wiring, not an API+impl pair, because the UI, the CLI, the web player and the golden runner all link the same wiring"
 registers = true
+# Native only for now: it links the webcam tracker and the voice listener, which have no wasm32 build.
+wasm = false

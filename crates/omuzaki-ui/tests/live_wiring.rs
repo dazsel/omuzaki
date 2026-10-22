@@ -262,9 +262,11 @@ fn the_perform_thread_feeds_vtube_studio_each_step_without_allocating() {
     let (after, injected_after) = (ALLOCATIONS.load(Ordering::Relaxed), injected());
     perform.stop().expect("the perform thread stops cleanly");
 
-    // VTS runs at 60 fps in the mock: about one batch per step reached it (a 500 ms keep-alive alone would be 6).
+    // VTS runs at 60 fps in the mock: a batch per step reached it, not just the keep-alive (2 per second). The bridge
+    // thread is scheduled late on a shared runner like the perform thread is (CI saw 47 per second), so the floor
+    // rules out a keep-alive-only feed, as the perform-pass floor above does for batching.
     let per_second = (injected_after - injected_warm) as f64 / window.as_secs_f64();
-    assert!(per_second >= 60.0 * 0.8, "{per_second:.1} batches per second (before the run: {before_run})");
+    assert!(per_second >= 60.0 * 0.6, "{per_second:.1} batches per second (before the run: {before_run})");
     // The tracked face moved what was sent: the jaw took many values over the run.
     let mut jaw: Vec<i64> = mock
         .received()

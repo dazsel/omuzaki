@@ -150,10 +150,31 @@ pub struct Resolution {
 
 /// Links an applied op to the approval that allowed it, and the approver (`OpRecord.approval`). Stamped by the
 /// executor, so history proves who allowed what (VC-11).
+///
+/// `#[non_exhaustive]`: build one with [`ApprovalRef::new`] and [`with_also`](Self::with_also).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct ApprovalRef {
     /// The approval.
     pub id: ApprovalId,
-    /// The person who approved.
+    /// The person who approved, or the reviewer whose approval completed a [`Need::Review`] that asks for several.
     pub by: Actor,
+    /// The other reviewers of a [`Need::Review`] that asked for more than one, in the order they approved. Empty
+    /// otherwise, and then absent from the JSON.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub also: Vec<Actor>,
+}
+
+impl ApprovalRef {
+    /// Approval `id`, decided by `by` alone.
+    pub fn new(id: ApprovalId, by: Actor) -> Self {
+        Self { id, by, also: Vec::new() }
+    }
+
+    /// The same reference naming `also`, the reviewers who approved before `by`.
+    #[must_use]
+    pub fn with_also(mut self, also: Vec<Actor>) -> Self {
+        self.also = also;
+        self
+    }
 }

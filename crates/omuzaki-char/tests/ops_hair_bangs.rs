@@ -255,3 +255,65 @@ fn the_none_preset_uses_the_lowest_width_the_check_accepts() {
     let none = (find("none").expect("the none preset").make)();
     assert_eq!(none.layers[0].width, access::WIDTH.0);
 }
+
+fn preset(group: &str, id: &str) -> Value {
+    json!({ "character": "mock", "part": "fringe", "group": group, "preset": id })
+}
+
+#[test]
+fn each_preset_op_round_trips_and_stores_the_presets_fringe_keeping_the_group_settings() {
+    for p in PRESETS {
+        let mut doc = bangs_project();
+        let before_group = at(&doc, "characters/mock/parts/fringe/params/groups/b-bangs");
+        let planned = round_trip(&mut doc, "hair.bangs.preset", preset("b-bangs", p.id));
+        let summary = planned.output.unwrap();
+        assert_eq!((summary["preset"].as_str(), summary["changed"].as_bool()), (Some(p.id), Some(true)), "{}", p.id);
+        assert_eq!(planned.patch.changes.len(), 1, "{}: one patch", p.id);
+        assert_eq!(stored(&doc), (p.make)(), "{}: the group holds the preset's fringe", p.id);
+        // enabled, mirror and dynamics are the group's own and stay as they were.
+        let group = at(&doc, "characters/mock/parts/fringe/params/groups/b-bangs").unwrap();
+        for key in ["enabled", "mirror", "dynamics"] {
+            assert_eq!(group.get(key), before_group.as_ref().and_then(|g| g.get(key)), "{}: {key}", p.id);
+        }
+    }
+}
+
+#[test]
+fn applying_the_preset_a_group_holds_plans_nothing() {
+    let mut doc = bangs_project();
+    common::apply(&mut doc, "hair.bangs.preset", preset("b-bangs", "wispy"));
+    let again = plan(&doc, "hair.bangs.preset", preset("b-bangs", "wispy")).unwrap();
+    assert!(again.patch.is_empty());
+    assert_eq!(again.output.unwrap()["changed"], json!(false));
+}
+
+#[test]
+fn the_preset_op_refuses_bad_input_and_changes_nothing() {
+    let doc = bangs_project();
+    let before = doc.root().clone();
+    let e = refused(&doc, "hair.bangs.preset", preset("b-fringe", "blunt"));
+    assert_error(&e, ErrorCode::NotFound, "group", &["b-fringe"], &["b-bangs"]);
+    let e = refused(&doc, "hair.bangs.preset", preset("a-cap", "blunt"));
+    assert_error(&e, ErrorCode::Invalid, "group", &["a-cap", "not a bangs group"], &["b-bangs"]);
+    let e = refused(&doc, "hair.bangs.preset", preset("b-bangs", "blunnt"));
+    assert_error(&e, ErrorCode::NotFound, "preset", &["blunnt", "did you mean `blunt`"], &["hair.bangs.list_presets"]);
+    let e = refused(
+        &doc,
+        "hair.bangs.preset",
+        json!({ "character": "ghost", "part": "fringe", "group": "b-bangs", "preset": "blunt" }),
+    );
+    assert_error(&e, ErrorCode::NotFound, "character", &["ghost"], &["mock"]);
+    assert_eq!(doc.root(), &before);
+}
+
+#[test]
+fn a_tip_radius_the_fringe_pins_is_stored_and_checked() {
+    let mut doc = bangs_project();
+    let mut bangs = (find("blunt").unwrap().make)();
+    bangs.tip_radius = Some(0.186);
+    assert!(access::check(&bangs).is_ok());
+    bangs.tip_radius = Some(9.0);
+    assert!(access::check(&bangs).is_err());
+    common::apply(&mut doc, "hair.bangs.preset", preset("b-bangs", "blunt"));
+    assert_eq!(stored(&doc).tip_radius, None, "presets follow the head");
+}

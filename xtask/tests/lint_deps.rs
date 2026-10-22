@@ -135,3 +135,60 @@ fn an_unknown_layer_is_reported() {
         run.stdout
     );
 }
+
+/// Appends `text` to the manifest of the fixture crate `name`.
+fn append(fixture: Fixture, name: &str, text: &str) -> Fixture {
+    let path = fixture.root().join(format!("crates/{name}/Cargo.toml"));
+    let manifest = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(path, manifest + text).unwrap();
+    fixture
+}
+
+/// Adds `wasmtime` (from the registry; `cargo metadata --no-deps` never resolves it) to `name`'s `[dependencies]`.
+fn with_wasmtime(fixture: Fixture, name: &str) -> Fixture {
+    let path = fixture.root().join(format!("crates/{name}/Cargo.toml"));
+    let manifest = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, manifest.replace("[dependencies]\n", "[dependencies]\nwasmtime = \"49\"\n")).unwrap();
+    fixture
+}
+
+/// `fixture-web` builds for wasm; `fixture-native` opts out of it.
+fn with_a_native_crate() -> Fixture {
+    let fixture = Fixture::new()
+        .krate("omuzaki-core", &[])
+        .krate("fixture-native", &[("omuzaki-core", Normal)])
+        .krate("fixture-view-api", &[("omuzaki-core", Normal)])
+        .krate("fixture-web", &[("fixture-view-api", Normal)]);
+    append(fixture, "fixture-native", "\n[package.metadata.omuzaki]\nwasm = false\n")
+}
+
+#[test]
+fn a_wasm_crate_depending_on_a_wasm_false_crate_is_caught_with_its_path() {
+    let direct = with_a_native_crate().krate("fixture-web", &[("fixture-native", Normal)]);
+    let run = direct.xtask(&["lint-deps"]);
+    assert!(!run.success, "{}", run.stdout);
+    assert!(
+        run.stdout.contains("fixture-web → fixture-native: builds for wasm but depends on a native-only crate"),
+        "{}",
+        run.stdout
+    );
+    assert!(run.stdout.contains("through fixture-web → fixture-native;"), "{}", run.stdout);
+
+    let through = with_a_native_crate().krate("fixture-view-api", &[("fixture-native", Normal)]);
+    let run = through.xtask(&["lint-deps"]);
+    assert!(!run.success, "{}", run.stdout);
+    assert!(run.stdout.contains("through fixture-web → fixture-view-api → fixture-native;"), "{}", run.stdout);
+    assert!(run.stdout.contains("through fixture-view-api → fixture-native;"), "{}", run.stdout);
+}
+
+#[test]
+fn a_wasm_crate_may_not_depend_on_wasmtime_but_a_wasm_false_crate_may() {
+    let web = with_wasmtime(with_a_native_crate(), "fixture-web");
+    let run = web.xtask(&["lint-deps"]);
+    assert!(!run.success, "{}", run.stdout);
+    assert!(run.stdout.contains("fixture-web → wasmtime: builds for wasm"), "{}", run.stdout);
+    assert!(run.stdout.contains("(wasmtime is native only)"), "{}", run.stdout);
+
+    let run = with_wasmtime(with_a_native_crate(), "fixture-native").xtask(&["lint-deps"]);
+    assert!(run.success, "{}{}", run.stdout, run.stderr);
+}

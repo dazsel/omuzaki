@@ -67,7 +67,7 @@ use omuzaki_anim_api::{Bus, Channel, Cues, LifeConfig, LifeLayer, LifeStreams, L
 use self::blink::{Blinker, already_shut};
 use self::brows::Brows;
 use self::eyes::Eyes;
-use self::frame::{Frame, Gate};
+use self::frame::{Ease, Frame, Gate};
 use self::gaze::Wander;
 use self::head::Head;
 use self::laugh::Laugh;
@@ -96,6 +96,7 @@ pub struct Life {
     head: Head,
     blink: Blinker,
     gaze: Wander,
+    ease: Ease,
 }
 
 /// A cue value forced into `0..=1` (NaN counts as 0).
@@ -126,6 +127,7 @@ impl Life {
             head,
             blink,
             gaze,
+            ease: Ease::FULL,
         }
     }
 
@@ -148,6 +150,8 @@ impl LifeLayer for Life {
         src.sanitize();
         let taken = bus.owners.human_mask();
         let config = &self.config;
+        let free = Gate::new(taken);
+        self.ease.advance(free, dt, config.params.face.hand_back_s);
         let loud = unit(cues.loudness);
         let frame = Frame {
             params: &config.params,
@@ -156,7 +160,8 @@ impl LifeLayer for Life {
             noise: &self.noise,
             src: &src,
             taken,
-            gate: Gate::new(taken),
+            gate: free,
+            ease: self.ease,
             laugh_arcs: config.laugh_arcs,
             dt,
             clock: self.clock,
@@ -181,14 +186,14 @@ impl LifeLayer for Life {
 
         let blink = &config.params.blink;
         let blinking = frame.gate.eyes && frame.systems.blink;
-        let shut = already_shut(&src, laugh.arcs);
+        let shut = already_shut(blink, &src, laugh.arcs);
         if blinking {
             self.blink.update(&frame, &mut self.streams.blink, shut);
             if lead.started && self.streams.blink.next_f32() < blink.on_head_turn_chance {
                 self.blink.extra(&frame, &mut self.streams.blink, shut);
             }
         } else {
-            self.blink.hold_off(self.clock);
+            self.blink.hold_off(self.clock, blink.settle_s);
         }
         let gaze = self.gaze.step(&frame, &mut self.streams.gaze, lead.gaze, lead.active, &mut out);
         if blinking && gaze.glance_started && self.streams.blink.next_f32() < blink.on_glance_chance {

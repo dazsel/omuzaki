@@ -1,18 +1,37 @@
 //! The journal (journal.md 4 and 8.2): the write-ahead log of a project's history, as bytes.
 //!
-//! This module holds the byte format only: segment headers, record frames and segment file names. Writing and
-//! reading whole journals builds on it in later changes.
+//! This module holds the byte format (segment headers, record frames and segment file names), the records the frames
+//! carry ([`Record`], [`encode`], [`decode`]), the [`Reader`] that scans a journal folder, the [`ProjectJournal`]
+//! that writes one (the writer and the keeper, which saves the files behind it and takes the snapshots recovery starts
+//! from, [`crate::snapshot`]), [`archive_before`], which moves sealed segments into the op log archive, and [`reopen`],
+//! which decides on opening what is the truth and what has to be replayed.
 //!
 //! The invariant: every frame [`write_frame`] accepts is one [`read_frame`] reads back. A zero length marks the end
 //! of the log, so [`write_frame`] refuses an empty payload.
 
 mod format;
+mod fs;
+mod history;
+mod open;
+mod reader;
+mod record;
+mod segments;
+mod writer;
 
 use std::path::PathBuf;
 
 pub use format::{
     FORMAT_VERSION, FRAME_HEADER_LEN, Frame, FrameEnd, HEADER_LEN, HeaderFault, MAGIC, MAX_PAYLOAD, SKIPPABLE,
     SegmentHeader, read_frame, segment_name, segment_seq, write_frame,
+};
+pub use fs::{Flush, JournalFile, JournalFs, StdFs};
+pub use history::{JournalHistory, left_open, left_open_in, read_all, read_all_in, summarise};
+pub use open::{Recover, Recovery, Reopened, reopen, reopen_on, reopen_side, reopen_with};
+pub use reader::{End, Position, Reader, Scan};
+pub use record::{MAX_DEPTH, Record, SessionInfo, decode, encode, kind};
+pub use writer::{
+    ARCHIVE_DIR, JOURNAL_DIR, JournalOptions, ProjectJournal, SessionStart, SystemWall, archive_before,
+    archive_before_in, archive_dir, archive_dir_in, journal_dir, journal_dir_in,
 };
 
 /// Why the journal can't be read or written.
@@ -54,4 +73,10 @@ pub enum JournalError {
         /// What is wrong with the payload.
         reason: String,
     },
+    /// The project folder itself doesn't open, or a snapshot's tree can't be stored in it.
+    #[error(transparent)]
+    Store(#[from] crate::StoreError),
+    /// A snapshot can't be taken or read.
+    #[error("{0}")]
+    Snapshot(String),
 }

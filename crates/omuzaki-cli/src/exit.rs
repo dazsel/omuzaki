@@ -22,6 +22,10 @@ pub const USAGE: u8 = 2;
 /// Its number is the first unused one after [`ErrorCode::Cancelled`]'s 11, so no code means two things.
 pub const FOUND_PROBLEMS: u8 = 12;
 
+/// A merge stopped because some units need a choice (`omuzaki branch merge`): it printed them, and nothing changed.
+/// Not an [`ErrorCode`]: a conflict (6) is a document that moved, this is a decision to make.
+pub const MERGE_CHOICES: u8 = 13;
+
 /// An exit code and what it means.
 struct Row {
     code: u8,
@@ -96,6 +100,7 @@ pub fn help_text() -> String {
     rows.push((OK, "ok".to_owned(), "the command succeeded"));
     rows.push((USAGE, "usage".to_owned(), "the command line is wrong; see --help"));
     rows.push((FOUND_PROBLEMS, "problems".to_owned(), "a store check ran and found problems; its report says which"));
+    rows.push((MERGE_CHOICES, "choices".to_owned(), "a merge needs a choice for the units it lists; nothing changed"));
     rows.sort_unstable();
     let width = rows.iter().map(|(_, name, _)| name.len()).max().unwrap_or(0);
     let mut text = String::from("Exit codes:\n");
@@ -132,7 +137,7 @@ mod tests {
     #[test]
     fn exit_codes_are_unique_and_do_not_reuse_ok_or_usage() {
         let mut seen: Vec<u8> = error_codes().into_iter().map(for_error).collect();
-        seen.extend([OK, USAGE, FOUND_PROBLEMS]);
+        seen.extend([OK, USAGE, FOUND_PROBLEMS, MERGE_CHOICES]);
         let total = seen.len();
         seen.sort_unstable();
         seen.dedup();
@@ -143,6 +148,6 @@ mod tests {
     fn help_lists_the_codes_in_numeric_order() {
         let numbers: Vec<u8> =
             help_text().lines().skip(1).filter_map(|l| l.split_whitespace().next()?.parse().ok()).collect();
-        assert_eq!(numbers, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+        assert_eq!(numbers, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
     }
 }

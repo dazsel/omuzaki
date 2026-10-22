@@ -28,11 +28,13 @@ pub enum Domain {
     KeyStatement,
     /// A signed entitlement receipt (reserved).
     Entitlement,
+    /// A plugin package's publisher signature, over the package's content hash (ADR 0058, ADR 0042 amendment).
+    Plugin,
 }
 
 impl Domain {
     /// Every domain, for tests that range over all pairs.
-    pub const ALL: [Domain; 9] = [
+    pub const ALL: [Domain; 10] = [
         Domain::LibraryItem,
         Domain::LibraryIndex,
         Domain::Export,
@@ -42,6 +44,7 @@ impl Domain {
         Domain::ReviewBundle,
         Domain::KeyStatement,
         Domain::Entitlement,
+        Domain::Plugin,
     ];
 
     /// The tag bytes, `omuzaki-<use>-v<N>` and a terminating NUL, so no tag reads as a prefix of a longer one.
@@ -56,6 +59,7 @@ impl Domain {
             Domain::ReviewBundle => b"omuzaki-review-bundle-v1\0",
             Domain::KeyStatement => b"omuzaki-key-statement-v1\0",
             Domain::Entitlement => b"omuzaki-entitlement-v1\0",
+            Domain::Plugin => b"omuzaki-plugin-v1\0",
         }
     }
 }

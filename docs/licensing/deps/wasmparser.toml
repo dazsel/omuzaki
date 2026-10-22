@@ -1,0 +1,8 @@
+section = "rust"
+item = "wasmparser 0.258"
+kind = "crate"
+used_for = "reads a plugin component's canonical options before it is compiled, to refuse non-UTF-8 string encodings (`omuzaki-plugin`); pinned to the version wasmtime 49 already links, so no new code ships"
+status = "yes"
+condition = "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT (the `license` field of wasmparser 0.258.3, checked 2026-10-16; the package carries LICENSE-APACHE, LICENSE-MIT and LICENSE-Apache-2.0_WITH_LLVM-exception): its notice ships with wasmtime's"
+audit = "#1999"
+crates = ["wasmparser"]

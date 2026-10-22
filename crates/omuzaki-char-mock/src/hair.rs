@@ -78,7 +78,8 @@ fn compile(gid: &GroupId, group: &HairGroup, head: &dyn HeadSurface) -> Vec<Hair
                 let root = GuidePoint::Surface([14.0, phi, layer.root_offset]).resolve(head);
                 let tip_point = GuidePoint::Surface([theta_tip, phi, layer.tip_offset]).resolve(head);
                 let rest = (0..POINTS).map(|i| root.lerp(tip_point, util::frac_usize(i, POINTS - 1))).collect();
-                let width = Taper { start: layer.width * 0.6, mid: layer.width, tip: 0.002, tip_at: 0.5 };
+                let width =
+                    Taper { start: layer.width * 0.6, mid: layer.width, tip: 0.002, tip_at: 0.5, ..Taper::default() };
                 clump(rest, width, Bulge::default(), narrow(layer.shade))
             }
         })

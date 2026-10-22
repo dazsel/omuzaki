@@ -1,0 +1,8 @@
+section = "rust"
+item = "wit-parser 0.262"
+kind = "crate"
+used_for = "parses the plugin WIT file in `omuzaki-plugin-api`'s `tests/wit.rs`; a dev-dependency, never linked into a shipped binary"
+status = "yes"
+condition = "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT (the `license` field of wit-parser 0.262.0, checked 2026-10-15; the package carries LICENSE-APACHE, LICENSE-MIT and LICENSE-Apache-2.0_WITH_LLVM-exception, and the last one holds the LLVM exception text): dev-dependency only, so no notice ships"
+audit = "#1082"
+crates = ["wit-parser"]

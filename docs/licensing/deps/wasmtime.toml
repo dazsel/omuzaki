@@ -1,6 +1,8 @@
 section = "rust"
-item = "wasmtime, extism"
+item = "wasmtime 49.0.0 (`cranelift`, `component-model`, `runtime` and `std` only), extism"
 kind = "crate"
-used_for = "plugin host"
+used_for = "plugin host (`omuzaki-plugin`, ADR 0058): wasmtime runs plugin components under fuel, epoch deadlines and memory caps; extism is cleared but not used (no component model)"
 status = "yes"
-audit = "B3"
+condition = "Apache-2.0 WITH LLVM-exception (the `license` field of wasmtime 49.0.0, checked 2026-10-15; the package carries LICENSE with the LLVM exception text): ship the Apache-2.0 notice; the LLVM exception waives the attribution clause for compiled object code"
+audit = "B3; pinned in #1999"
+crates = ["wasmtime"]

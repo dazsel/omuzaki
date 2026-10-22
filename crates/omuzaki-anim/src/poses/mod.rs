@@ -34,11 +34,14 @@
 
 mod clip;
 mod def;
+mod hips;
 mod library;
 mod ops;
 mod posture;
+mod set;
 
 pub use clip::{ClipError, ClipKey, ClipLibrary, Easing, PoseClip};
 pub use def::{HandSlot, PoseDef, PoseError};
+pub use hips::{HipsScaleError, hips_rest_height, retarget_hips, scale_hips};
 pub use library::PoseLibrary;
 pub use posture::{BoneMix, Hand, PoseMask, Posture};

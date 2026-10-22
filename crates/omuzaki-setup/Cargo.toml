@@ -1,6 +1,6 @@
 [package]
 name = "omuzaki-setup"
-description = "The first-run setup flow (SE-01, docs/design/first-run.md): a pure state machine over steps, probes and persisted progress."
+description = "The first-run setup flow (SE-01, docs/design/first-run.md): a pure state machine over steps, probes and persisted progress, and the setup.* ops."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,11 +9,21 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+schemars.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+omuzaki-settings-api = { path = "../omuzaki-settings-api" }
+
+[dev-dependencies]
+omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+omuzaki-settings-mock = { path = "../omuzaki-settings-mock" }
 
 [lints]
 workspace = true
 
 [package.metadata.omuzaki]
 kind = "Implementation"
-summary = "the first-run setup flow (SE-01, `docs/design/first-run.md`): a pure, deterministic state machine (`SetupFlow`) that turns probes and events into the shown steps, notes and persist effects, with per-step budgets and timers; no I/O, no clock, no UI; wasm-clean"
+registers = true
+summary = "the first-run setup flow (SE-01, `docs/design/first-run.md`): a pure, deterministic state machine (`SetupFlow`) that turns probes and events into the shown steps, notes and persist effects, with per-step budgets and timers; no I/O, no clock, no UI; wasm-clean. Its `setup.*` ops read and write the progress in the session (`SessionState.setup`) through the `Settings` service"

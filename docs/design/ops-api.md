@@ -58,6 +58,9 @@ document: the op sees an API-crate contract, and the app decides what stands beh
 7. **Long work goes through the job path (section 8), not through `plan`.** Renders, imports and traces are
    `OpKind::Job`. The executor calls `plan` under its single document lock, so a slow service call belongs in the
    op's `work`, which runs without the lock, and never in `plan`, or it blocks every other actor.
+8. **An `f32` reaches JSON through `omuzaki_doc_api::f32_value`** (#69): the shortest decimal that reads back as the
+   same `f32`, so an agent that asked for `0.6` sees `0.6` in the patch, the op log and the result, not
+   `0.6000000238418579`. `json!(x)` on an `f32` widens it to the nearest `f64` and is never used for document values.
 
 ## 4. Alternatives considered
 

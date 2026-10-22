@@ -18,7 +18,7 @@ use proptest::prelude::*;
 use proptest::test_runner::{Config, RngAlgorithm, TestCaseError, TestRng, TestRunner};
 use serde_json::{Value, json};
 
-use super::{agent, path, person, request, rig, second_agent};
+use super::{path, person, request, rig};
 
 #[derive(Debug, Clone)]
 enum Edit {
@@ -266,10 +266,13 @@ impl World {
     fn new(actors: usize) -> Self {
         let rig = rig(original());
         let replay = Replay::new(rig.subscribe());
+        // The agents work for another person: alice's undo reaches her own agents' steps (#245, which
+        // `principal_undo.rs` covers), so isolation between actors is the isolation between principals.
+        let (one, two) = (rig.bobs_agent(), rig.bobs_agent());
         let everyone = [
             (person(), Grants::person()),
-            (agent(), Grants::agent_default()),
-            (second_agent(), Grants::of([Scope::Read, Scope::EditCharacter])),
+            (one, Grants::agent_default()),
+            (two, Grants::of([Scope::Read, Scope::EditCharacter])),
         ];
         Self { rig, cast: everyone.into_iter().take(actors).collect(), open: Vec::new(), replay }
     }

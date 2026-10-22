@@ -147,7 +147,9 @@ jobs:
     # Every affected crate, sharded (tools/ci/plan-outputs.py); skipped only when the change has no tests.
     if: needs.plan.outputs.has_tests == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # A shard takes about 25 minutes; the rest is headroom for a slow apt mirror (11 to 13 minutes on 2026-10-22, which
+    # cut two shards whose tests had all passed).
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.test_matrix) }}

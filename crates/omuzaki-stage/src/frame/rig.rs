@@ -1,8 +1,15 @@
-//! Pose to skeleton to skinning matrices: the rig solve for one frame (humanoid pose, then IK, then spring bones, then
-//! one forward-kinematics pass) and the [`PoseSource`] the part runtimes follow it with.
+//! Pose to skeleton to skinning matrices: the rig solve for one frame (humanoid pose, then IK, then the character's
+//! bone drivers, then spring bones, then one forward-kinematics pass) and the [`PoseSource`] the part runtimes follow
+//! it with.
+//!
+//! The bone drivers ([`DriverPlan`], #800) run before the springs, where VRM puts node constraints: a spring chain
+//! under a driven bone (feathers on a folding wing) follows it in the same frame, and an exported `Follow` driver moves
+//! in a VRM viewer as it does here.
 
-use omuzaki_anim_api::{ConstraintSet, HumanoidPose, IkGoals, IkSolver, MAX_BONES, Pose, Rig, Skeleton, SpringSet, Tick};
-use omuzaki_char_api::{CharacterRig, JointRef, PoseSource};
+use omuzaki_anim_api::{
+    ChannelBuf, ConstraintSet, HumanoidPose, IkGoals, IkSolver, MAX_BONES, Pose, Rig, Skeleton, SpringSet, Tick,
+};
+use omuzaki_char_api::{CharacterRig, DriverPlan, JointRef, PoseSource};
 use omuzaki_core::glam::Mat4;
 use omuzaki_rig::constraint::VrmConstraintSolver;
 use omuzaki_rig::full::FullRig;
@@ -41,13 +48,19 @@ pub(crate) struct RigFrame {
     local: Box<Pose>,
     /// One skinning matrix per bone, bind space to model space.
     skin: Vec<Mat4>,
+    /// The character's bone drivers, compiled once.
+    drivers: DriverPlan,
+    /// The channel values the drivers read: the last ones given to [`solve_with_channels`](Self::solve_with_channels),
+    /// so a redraw or a still poses the driven bones as the last frame did (boxed: 512 bytes, and the stage is moved by value).
+    channels: Box<ChannelBuf>,
 }
 
 impl RigFrame {
-    /// Builds the rig for `character`: skinning against its bind pose, springs from its spring set. Cold.
+    /// Builds the rig for `character`: skinning against its bind pose, springs from its spring set, its bone drivers
+    /// compiled. Cold.
     ///
     /// # Errors
-    /// [`StageError::Rig`] if the inverse bind matrices or the spring set don't fit the skeleton.
+    /// [`StageError::Rig`] if the inverse bind matrices, the spring set or the bone drivers don't fit the skeleton.
     pub(crate) fn new(character: &CharacterRig) -> Result<Self, StageError> {
         let rig_error = |reason: String| StageError::Rig { reason };
         let skeleton = RigSkeleton::with_inverse_bind(character.skeleton.clone(), character.inverse_bind())
@@ -55,8 +68,15 @@ impl RigFrame {
         let bones = skeleton.len();
         let springs =
             VrmSpringSolver::new(&character.springs, skeleton.skeleton()).map_err(|e| rig_error(e.to_string()))?;
+        let drivers = character.driver_plan().map_err(|e| rig_error(e.to_string()))?;
         let rig = FullRig::from_parts(skeleton, LimbsAndGaze::default(), Some(springs));
-        Ok(Self { rig, local: Box::new(Pose::IDENTITY), skin: vec![Mat4::IDENTITY; bones.min(MAX_BONES)] })
+        Ok(Self {
+            rig,
+            local: Box::new(Pose::IDENTITY),
+            skin: vec![Mat4::IDENTITY; bones.min(MAX_BONES)],
+            drivers,
+            channels: Box::new(ChannelBuf::NEUTRAL),
+        })
     }
 
     /// Builds the rig for a body that brings its own skeleton (an imported avatar): springs and node constraints from
@@ -84,13 +104,41 @@ impl RigFrame {
                 VrmConstraintSolver::new(constraints, skeleton.skeleton()).map_err(|e| rig_error(e.to_string()))?;
             rig = rig.with_constraints(solver);
         }
-        Ok(Self { rig, local: Box::new(Pose::IDENTITY), skin: vec![Mat4::IDENTITY; bones.min(MAX_BONES)] })
+        Ok(Self {
+            rig,
+            local: Box::new(Pose::IDENTITY),
+            skin: vec![Mat4::IDENTITY; bones.min(MAX_BONES)],
+            drivers: DriverPlan::default(),
+            channels: Box::new(ChannelBuf::NEUTRAL),
+        })
     }
 
-    /// Solves `pose` through the rig with `goals` and refreshes the skinning matrices. Hot path: no allocation.
+    /// Solves `pose` through the rig with `goals` and refreshes the skinning matrices; the bone drivers read the last
+    /// channels given. Hot path: no allocation.
     pub(crate) fn solve(&mut self, tick: Tick, pose: &HumanoidPose, goals: &IkGoals) {
-        self.rig.set_goals(goals);
-        self.rig.solve_and_skin(tick, pose, &mut self.local, &mut self.skin);
+        let Self { rig, local, skin, drivers, channels } = self;
+        rig.set_goals(goals);
+        if drivers.is_empty() {
+            rig.solve_and_skin(tick, pose, local, skin);
+        } else {
+            rig.solve_and_skin_with(tick, pose, local, skin, |_, pose| drivers.apply(channels, pose));
+        }
+    }
+
+    /// [`solve`](Self::solve) with this frame's `channels` for the bone drivers. Hot path: no allocation.
+    pub(crate) fn solve_with_channels(&mut self, tick: Tick, pose: &HumanoidPose, goals: &IkGoals, channels: &ChannelBuf) {
+        self.set_channels(channels);
+        self.solve(tick, pose, goals);
+    }
+
+    /// The channel values the bone drivers read on the next [`solve`](Self::solve).
+    pub(crate) fn channels(&self) -> &ChannelBuf {
+        &self.channels
+    }
+
+    /// Sets the channel values the bone drivers read on the next [`solve`](Self::solve), without solving.
+    pub(crate) fn set_channels(&mut self, channels: &ChannelBuf) {
+        *self.channels = *channels;
     }
 
     /// Clears what the IK solvers and the spring bones carry from earlier frames (velocities, owed time); the goals

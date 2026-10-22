@@ -200,6 +200,10 @@ register_op!(ColourwayApply);
 /// never loses a palette the user saved.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [{"character": "kit", "name": "dusk"}],
+    "x-omuzaki-fixture" = "character-colourway"
+))]
 pub struct ColourwayDelete {
     /// The character.
     pub character: CharId,

@@ -12,9 +12,10 @@
 //! The palettes also differ in their slot set (one with an extra slot, one without the slots no part names, and one
 //! without each slot a part names), and the whole comparison runs under each of the [`OPTIONS`] (both qualities, with
 //! and without `rig_export`), because a fact may depend on either; a violation names the options and the seed it showed
-//! under. The seeds ([`SEEDS`]) are swept with the base's palette against the first colour alternative only, so a fact
-//! that depends on the seed and on a slot set (or on a colour that is not the first alternative) is not caught at the
-//! other seeds: the known gap, accepted for the build cost.
+//! under. The slot-set palettes are compared under the first option set only, and the seeds ([`SEEDS`]) are swept with
+//! the base's palette against the first colour alternative only, so a fact that depends on a slot set and on the
+//! options, or on the seed and on a slot set (or on a colour that is not the first alternative), is not caught: the
+//! known gaps, accepted for the build cost.
 //!
 //! Facts are compared by [`Probes::registered`], read from the registry: a crate that adds a fact adds
 //! `register_fact_probe!` beside it, and [`Probes::unprobed_facts`] and [`Probes::probe_problems`] are what a gate test
@@ -52,6 +53,25 @@ const SEED_STEP: u32 = 0x9e37_79b9;
 /// stays `None`: variants are resolved into the definition before a build.)
 pub const OPTIONS: [(Quality, bool); 4] =
     [(Quality::Live, false), (Quality::Live, true), (Quality::Offline, false), (Quality::Offline, true)];
+/// How much of the matrix a check builds: how many seeds and which option sets. [`Sweep::FULL`] is every seed and
+/// option set ([`SEEDS`], [`OPTIONS`]), what [`check`] and [`check_all`] run; a test held to a time limit can run fewer
+/// with [`check_with`] and [`check_all_with`] and the full sweep elsewhere.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Sweep {
+    /// Seeds per base, from its own (at least 1).
+    pub seeds: usize,
+    /// The option sets compared under; the first gets the slot-set palettes too.
+    pub options: &'static [(Quality, bool)],
+}
+
+impl Sweep {
+    /// Every seed and option set.
+    pub const FULL: Self = Self { seeds: SEEDS, options: &OPTIONS };
+    /// The base's own seed, under one option set of each quality: Live without `rig_export` (which gets the slot-set
+    /// palettes) and Offline with it.
+    pub const QUICK: Self = Self { seeds: 1, options: &[(Quality::Live, false), (Quality::Offline, true)] };
+}
+
 /// The seed of the generated palettes: fixed, so a failure reproduces.
 const SEED: u64 = 0x1598_fac7;
 
@@ -287,8 +307,8 @@ fn publishes_of(
 }
 
 /// The seeds a base at `seed` is checked at: `seed`, then each one [`SEED_STEP`] on from the last.
-fn seeds_of(seed: u32) -> impl Iterator<Item = u32> {
-    std::iter::successors(Some(seed), |last| Some(last.wrapping_add(SEED_STEP))).take(SEEDS)
+fn seeds_of(seed: u32, seeds: usize) -> impl Iterator<Item = u32> {
+    std::iter::successors(Some(seed), |last| Some(last.wrapping_add(SEED_STEP))).take(seeds.max(1))
 }
 
 /// The kinds a check is asked for: `kinds`, or every registered kind.
@@ -309,6 +329,17 @@ fn wanted_kinds(kinds: Option<&[&str]>) -> Vec<String> {
 /// that needs one that isn't there is `unreached`). A kind that can't be built that way is listed in
 /// [`Report::unreached`], not skipped silently.
 pub fn check(base: &CharacterDef, kinds: Option<&[&str]>, probes: &Probes, services: &BuildServices) -> Report {
+    check_with(base, kinds, probes, services, Sweep::FULL)
+}
+
+/// [`check`] over `sweep`.
+pub fn check_with(
+    base: &CharacterDef,
+    kinds: Option<&[&str]>,
+    probes: &Probes,
+    services: &BuildServices,
+    sweep: Sweep,
+) -> Report {
     let wanted = wanted_kinds(kinds);
     let mut report = Report::default();
     // The kinds with an active part: the ones the build plan reaches (a disabled part, or one under a disabled ancestor,
@@ -349,7 +380,7 @@ pub fn check(base: &CharacterDef, kinds: Option<&[&str]>, probes: &Probes, servi
     let reports: Vec<Report> = thread::scope(|scope| {
         let handles: Vec<_> = runs
             .iter()
-            .map(|(def, run_kinds)| scope.spawn(move || check_run(def, run_kinds, probes, services)))
+            .map(|(def, run_kinds)| scope.spawn(move || check_run(def, run_kinds, probes, services, sweep)))
             .collect();
         handles
             .into_iter()
@@ -370,19 +401,25 @@ pub fn check(base: &CharacterDef, kinds: Option<&[&str]>, probes: &Probes, servi
     report
 }
 
-/// Builds `def` at each of its [`SEEDS`] under every option set and alternative palette and reports what `run_kinds`
+/// Builds `def` at each of `sweep`'s seeds under each of its option sets and alternative palette and reports what `run_kinds`
 /// published differently. A base that doesn't build stops the run: its kinds are unreached, not clean.
 ///
 /// The base seed gets every alternative. The other seeds get only the first colour alternative: a slot-set dependence
 /// does not depend on the seed, so the rest of the slot-set palettes need one seed only (the cost is in the module doc).
-fn check_run(def: &CharacterDef, run_kinds: &[String], probes: &Probes, services: &BuildServices) -> Report {
+fn check_run(
+    def: &CharacterDef,
+    run_kinds: &[String],
+    probes: &Probes,
+    services: &BuildServices,
+    sweep: Sweep,
+) -> Report {
     let mut report = Report::default();
     let alternatives = alternatives(&def.palette, &referenced_slots(def));
-    for (i, seed) in seeds_of(def.seed).enumerate() {
+    for (i, seed) in seeds_of(def.seed, sweep.seeds).enumerate() {
         let mut seeded = def.clone();
         seeded.seed = seed;
         let these = if i == 0 { &alternatives[..] } else { &alternatives[..alternatives.len().min(1)] };
-        if let Err(why) = check_seed(&seeded, run_kinds, these, probes, services, &mut report) {
+        if let Err(why) = check_seed(&seeded, run_kinds, these, (probes, services, sweep.options), &mut report) {
             report.unreached.extend(run_kinds.iter().map(|k| (k.clone(), why.clone())));
             break;
         }
@@ -391,16 +428,18 @@ fn check_run(def: &CharacterDef, run_kinds: &[String], probes: &Probes, services
 }
 
 /// Adds to `report` what `run_kinds` published differently between `def`'s own palette and each of `alternatives`, under
-/// every option set, at `def`'s seed. `Err` says why `def` itself doesn't build under some option set.
+/// each of `options` (the slot-set alternatives under the first only), at `def`'s seed. `Err` says why `def` itself doesn't build under some option set.
 fn check_seed(
     def: &CharacterDef,
     run_kinds: &[String],
     alternatives: &[Palette],
-    probes: &Probes,
-    services: &BuildServices,
+    (probes, services, options): (&Probes, &BuildServices, &[(Quality, bool)]),
     report: &mut Report,
 ) -> Result<(), String> {
-    for (quality, rig_export) in OPTIONS {
+    for (k, &(quality, rig_export)) in options.iter().enumerate() {
+        // The slot-set alternatives (after the colour ones) under the first option set only: whether a part reads the
+        // palette's slot set does not hang on the options any more than on the seed.
+        let alternatives = if k == 0 { alternatives } else { &alternatives[..alternatives.len().min(PALETTES)] };
         let options = format!("{quality:?} quality, rig_export {rig_export}, seed {}", def.seed);
         let under_own = publishes_of(def, quality, rig_export, services).map_err(|(_, e)| {
             format!("does not build ({quality:?}, rig_export {rig_export}, seed {}): {e}", def.seed)
@@ -442,6 +481,17 @@ fn check_seed(
 /// when any base reaches it. With no bases nothing can be built, so every wanted kind (`kinds`, or every registered kind)
 /// is listed in [`Report::unreached`] rather than the report coming back clean.
 pub fn check_all(bases: &[CharacterDef], kinds: Option<&[&str]>, probes: &Probes, services: &BuildServices) -> Report {
+    check_all_with(bases, kinds, probes, services, Sweep::FULL)
+}
+
+/// [`check_all`] over `sweep`.
+pub fn check_all_with(
+    bases: &[CharacterDef],
+    kinds: Option<&[&str]>,
+    probes: &Probes,
+    services: &BuildServices,
+    sweep: Sweep,
+) -> Report {
     let mut merged = Report::default();
     if bases.is_empty() {
         merged.unreached =
@@ -450,7 +500,7 @@ pub fn check_all(bases: &[CharacterDef], kinds: Option<&[&str]>, probes: &Probes
     }
     let mut unreached: Option<BTreeMap<String, String>> = None;
     for base in bases {
-        let report = check(base, kinds, probes, services);
+        let report = check_with(base, kinds, probes, services, sweep);
         merged.violations.extend(report.violations);
         merged.unprobed.extend(report.unprobed);
         let these: BTreeMap<_, _> = report.unreached.into_iter().collect();

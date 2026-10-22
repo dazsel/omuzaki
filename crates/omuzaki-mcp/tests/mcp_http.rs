@@ -23,7 +23,17 @@ use rmcp::{ClientHandler, ServiceExt};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-const BUILTINS: [&str; 6] = ["history_log", "history_redo", "history_undo", "tx_begin", "tx_commit", "tx_rollback"];
+const BUILTINS: [&str; 9] = [
+    "doc_get",
+    "history_log",
+    "history_redo",
+    "history_undo",
+    "ops_describe",
+    "ops_find",
+    "tx_begin",
+    "tx_commit",
+    "tx_rollback",
+];
 
 /// A client that introduces itself under a fixed name (the server numbers its agents `<name>#<n>`).
 struct Named(&'static str);

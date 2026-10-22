@@ -153,7 +153,8 @@ fn record_session(runner: &Executor) -> Macro {
     set(runner, "macrotest.set", "hair/colour", json!("amber"));
     set(runner, "macrotest.set", "brow/tilt", json!(3));
     set(runner, "macrotest.set", "eye/size", json!(2.5));
-    assert_eq!(runner.undo(&alice(), &Grants::person()).unwrap().as_deref(), Some("macrotest.set"));
+    // A one-op step is named by the op's summary (#1662).
+    assert_eq!(runner.undo(&alice(), &Grants::person()).unwrap().as_deref(), Some("Set the value at a path."));
     recorder.poll();
     for i in 1..=20 {
         set(runner, "macrotest.setpoint", "face/blend", json!(f64::from(i) / 20.0));

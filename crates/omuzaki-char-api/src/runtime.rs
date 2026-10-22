@@ -24,7 +24,11 @@ pub trait PoseSource: Send + Sync {
 }
 
 /// What a runtime gets each frame.
+///
+/// `#[non_exhaustive]`: other crates build one with [`StepCtx::new`] and the `with_*` methods and read its fields (all
+/// public), never a struct literal, so a field added here edits only this crate.
 #[derive(Copy, Clone)]
+#[non_exhaustive]
 pub struct StepCtx<'a> {
     /// Frame time in seconds. The runtime sub-steps to its own fixed rate (spec §8: 120 Hz, seeded, deterministic).
     pub dt: f32,
@@ -34,6 +38,26 @@ pub struct StepCtx<'a> {
     pub pose: &'a dyn PoseSource,
     /// Wind velocity in world space, metres per second.
     pub wind: Vec3,
+    /// How many pixels one metre at the character spans on screen this frame (the viewport's height over the view's
+    /// height at the character's distance); `Some(0.0)` when the character is off screen, `None` when the frame loop
+    /// does not know. A runtime multiplies it by its part's size to choose a level of detail (the cloth's particle
+    /// levels, #706); `None` keeps full detail.
+    pub pixels_per_metre: Option<f32>,
+}
+
+impl<'a> StepCtx<'a> {
+    /// A frame of `dt` seconds ending at `time`, following `pose` in `wind`, with no screen size
+    /// ([`with_pixels_per_metre`](Self::with_pixels_per_metre)).
+    pub fn new(dt: f32, time: Seconds, pose: &'a dyn PoseSource, wind: Vec3) -> Self {
+        Self { dt, time, pose, wind, pixels_per_metre: None }
+    }
+
+    /// Sets the screen scale at the character ([`StepCtx::pixels_per_metre`]).
+    #[must_use]
+    pub fn with_pixels_per_metre(mut self, pixels_per_metre: Option<f32>) -> Self {
+        self.pixels_per_metre = pixels_per_metre;
+        self
+    }
 }
 
 /// A read-only view of one mesh a runtime rewrites.

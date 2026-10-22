@@ -13,8 +13,8 @@
 //! prototype's Park-Miller stream shared by all groups (parity mode). Generators never construct their own generators.
 
 use omuzaki_char_api::{
-    Bulge, Dynamics, Generator, GroupId, GuidePoint, HairClump, HairGroup, HairParams, HairRng, HairSide, HeadSurface,
-    LegacyLcg, Quality, Taper,
+    BodyFit, Bulge, Dynamics, Generator, GroupId, GuidePoint, HairClump, HairGroup, HairParams, HairRng, HairSide,
+    HeadSurface, LegacyLcg, Quality, Taper,
 };
 use omuzaki_core::glam::Vec3;
 use omuzaki_core::mesh::MeshData;
@@ -22,6 +22,7 @@ use omuzaki_core::rng::Rng;
 use omuzaki_face_api::{Palette, narrow};
 
 use super::r#gen;
+use super::tie::Tie;
 
 /// A stream of uniform numbers in `0..1`.
 pub trait UnitStream {
@@ -71,6 +72,9 @@ pub struct HairGenCtx<'a> {
     pub palette: &'a Palette,
     /// Level of detail.
     pub quality: Quality,
+    /// The body the hair hangs over, where the build has one (a test or tool with a bare head has none). Generators
+    /// that fall past the shoulders keep clear of it ([`curtain`](super::r#gen::curtain)).
+    pub body: Option<&'a dyn BodyFit>,
     group: &'a GroupId,
     dynamics: &'a Dynamics,
     rng: &'a mut dyn UnitStream,
@@ -86,7 +90,14 @@ impl<'a> HairGenCtx<'a> {
         dynamics: &'a Dynamics,
         rng: &'a mut dyn UnitStream,
     ) -> Self {
-        Self { head, palette, quality, group, dynamics, rng }
+        Self { head, palette, quality, body: None, group, dynamics, rng }
+    }
+
+    /// The same context with the `body` the hair hangs over.
+    #[must_use]
+    pub fn with_body(mut self, body: Option<&'a dyn BodyFit>) -> Self {
+        self.body = body;
+        self
     }
 
     /// The next random number in `0..1` (the prototype's `rnd`).
@@ -136,8 +147,14 @@ impl<'a> HairGenCtx<'a> {
 pub enum GroupGeometry {
     /// A lens tube per clump ([`tube`](super::tube)).
     Tube,
+    /// Tubes and the hair ties that gather them (a tail): drawn as [`Tube`](Self::Tube), plus a band per tie in the
+    /// part's tie mesh ([`tie`](super::tie)).
+    Tied {
+        /// The bands, one per gather.
+        ties: Vec<Tie>,
+    },
     /// The curtain: each clump owns `columns` columns of one wide strip, ordered across the head by `u` (one per clump).
-    /// The strip mesh is the curtain generator's and the runtime's.
+    /// The strips are meshed by [`curtain::group_mesh`](super::r#gen::curtain::group_mesh); the runtime (#322) refills them.
     Strip {
         /// Columns across one guide.
         columns: u8,
@@ -151,7 +168,7 @@ pub enum GroupGeometry {
 impl GroupGeometry {
     /// Whether the group's clumps are drawn as tubes.
     pub fn is_tube(&self) -> bool {
-        matches!(self, Self::Tube)
+        matches!(self, Self::Tube | Self::Tied { .. })
     }
 }
 
@@ -175,7 +192,7 @@ impl CompiledGroup {
         Self { clumps: Vec::new(), geometry }
     }
 
-    /// The group followed by its mirror image across the plane `x = mid_x`: clumps (and a strip's `u`, and a shell's
+    /// The group followed by its mirror image across the plane `x = mid_x`: clumps (and a strip's `u`, a tail's ties and a shell's
     /// vertices) are reflected, and the winding of a shell is reversed so it still faces outward. No random numbers are
     /// drawn: the mirror is exact.
     #[must_use]
@@ -189,6 +206,10 @@ impl CompiledGroup {
         self.clumps.extend(mirrored);
         match &mut self.geometry {
             GroupGeometry::Tube => {}
+            GroupGeometry::Tied { ties } => {
+                let reflected: Vec<Tie> = ties.iter().map(|t| t.mirrored(mid_x)).collect();
+                ties.extend(reflected);
+            }
             GroupGeometry::Strip { u, .. } => {
                 let reflected: Vec<f32> = u.iter().map(|u| -u).collect();
                 u.extend(reflected);
@@ -260,11 +281,6 @@ impl GroupGenerator for Dispatch {
     }
 }
 
-/// Whether a generator's clumps are drawn as tubes: every kind but the cap (a shell) and the curtain (a strip).
-pub fn draws_tubes(generator: &Generator) -> bool {
-    !matches!(generator, Generator::Cap(_) | Generator::Curtain(_))
-}
-
 /// One enabled group, compiled.
 #[derive(Clone, Debug)]
 pub struct CompiledEntry {
@@ -305,10 +321,26 @@ pub fn compile_groups(
     quality: Quality,
     rng: &mut dyn UnitStream,
 ) -> Result<Vec<CompiledEntry>, CompileError> {
+    compile_groups_over(params, generators, head, None, palette, quality, rng)
+}
+
+/// [`compile_groups`] for hair that hangs over `body`.
+///
+/// # Errors
+/// As [`compile_groups`].
+pub fn compile_groups_over(
+    params: &HairParams,
+    generators: &dyn GroupGenerator,
+    head: &dyn HeadSurface,
+    body: Option<&dyn BodyFit>,
+    palette: &Palette,
+    quality: Quality,
+    rng: &mut dyn UnitStream,
+) -> Result<Vec<CompiledEntry>, CompileError> {
     let mid_x = head.centre().x;
     let mut entries = Vec::new();
     for (id, group) in enabled(params) {
-        let mut ctx = HairGenCtx::new(head, palette, quality, id, &group.dynamics, rng);
+        let mut ctx = HairGenCtx::new(head, palette, quality, id, &group.dynamics, rng).with_body(body);
         let mut compiled = generators.compile(&group.generator, &mut ctx);
         let reported = generators.clump_count(&group.generator);
         if compiled.clumps.len() != reported {

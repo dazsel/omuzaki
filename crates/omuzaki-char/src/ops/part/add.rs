@@ -147,7 +147,7 @@ impl Op for PartAdd {
         if let Some(parent) = &self.parent {
             access::part(&def, &self.character, parent, "parent")?;
         }
-        let default_layer = tree::default_layer((kind.meta)().category);
+        let default_layer = tree::layer_of(kind);
         let part = PartDef {
             kind: self.kind.clone(),
             parent: self.parent.clone(),

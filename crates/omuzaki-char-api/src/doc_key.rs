@@ -63,7 +63,7 @@ pub const BUILT_IN_NODE_KEYS: [&str; 8] =
 ///
 /// Eight are owned by other crates: `licence` by `omuzaki-io-ops`, `sources` by `omuzaki-char`, `applied` and `emotes` by
 /// `omuzaki-library-api`, `poses` by `omuzaki-anim`, `avatar` (an imported character's `AvatarDef`) by
-/// `omuzaki-avatar-api`, `voice` (the effect presets, `voice.toml`) by `omuzaki-audio-api`, and `voice-assignment`
+/// `omuzaki-avatar-api`, `voice` (the effect presets, `voice.toml`) by `omuzaki-audio-fx`, and `voice-assignment`
 /// (which voice the character speaks in) by `omuzaki-speech`. They stay in this table because no crate that parses a
 /// character links all of those owners, so they cannot register.
 pub const BUILT_IN_SIBLING_KEYS: [&str; 12] = [

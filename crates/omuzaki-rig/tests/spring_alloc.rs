@@ -72,9 +72,19 @@ fn a_spring_step_with_every_kind_of_limit_allocates_nothing() {
     allocates_nothing(&rig);
 }
 
+#[test]
+fn a_spring_step_with_the_pose_interpolated_allocates_nothing() {
+    allocates_nothing_with(&spring_rig::extended_hair_rig(30, 11), true);
+}
+
 fn allocates_nothing(rig: &spring_rig::HairRig) {
+    allocates_nothing_with(rig, false);
+}
+
+fn allocates_nothing_with(rig: &spring_rig::HairRig, interpolate: bool) {
     // Everything that allocates is built before the counter starts.
     let mut solver = VrmSpringSolver::new(&rig.set, &rig.skeleton).expect("the rig's springs are valid");
+    solver.set_pose_interpolation(interpolate);
     let mut pose = rig.skeleton.rest_pose();
     rig.animate(&mut pose, 0);
     solver.step(Tick::at_rate(0, 60.0), &rig.skeleton, &mut pose); // warm-up, so lazily sized state exists
@@ -90,6 +100,8 @@ fn allocates_nothing(rig: &spring_rig::HairRig) {
             300 => solver.set_max_substeps(2),
             600 => solver.reset(),
             900 => solver.warm_up(&rig.skeleton, &mut pose, 0.75),
+            1000 => solver.set_pose_interpolation(!interpolate),
+            1100 => solver.set_pose_interpolation(interpolate),
             _ => {}
         }
     }

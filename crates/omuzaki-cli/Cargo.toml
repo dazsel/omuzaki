@@ -35,8 +35,12 @@ serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
 tokio.workspace = true
 tracing-subscriber.workspace = true
+omuzaki-app = { path = "../omuzaki-app" }
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc = { path = "../omuzaki-doc" }
+omuzaki-history-api = { path = "../omuzaki-history-api" }
+omuzaki-settings = { path = "../omuzaki-settings" }
+omuzaki-settings-api = { path = "../omuzaki-settings-api" }
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 omuzaki-mcp = { path = "../omuzaki-mcp" }
 omuzaki-ops = { path = "../omuzaki-ops" }
@@ -49,8 +53,12 @@ omuzaki-stage = { path = "../omuzaki-stage" }
 omuzaki-stream = { path = "../omuzaki-stream" }
 # The `vcam` output kind (`output.start { kind: "vcam" }`).
 omuzaki-vcam = { path = "../omuzaki-vcam" }
+# The `spout` and `syphon` output kinds (`output.start { kind: "spout" }`).
+omuzaki-stream-share = { path = "../omuzaki-stream-share" }
 # The audio ops (`audio.devices`, `audio.mic`, `audio.status`).
 omuzaki-audio-engine = { path = "../omuzaki-audio-engine" }
+# The voice effect kinds (`fx.*`) and the voice preset ops (`audio.fx.*`).
+omuzaki-audio-fx = { path = "../omuzaki-audio-fx" }
 # The OBS remote-control ops (`obs.*`).
 omuzaki-obs = { path = "../omuzaki-obs" }
 omuzaki-vts = { path = "../omuzaki-vts" }
@@ -64,6 +72,13 @@ omuzaki-store-api = { path = "../omuzaki-store-api" }
 
 [dev-dependencies]
 tempfile.workspace = true
+toml.workspace = true
+# The snapshots service the conformance rig stands in for the `project.*` examples (`tests/op_conformance.rs`).
+omuzaki-history-api = { path = "../omuzaki-history-api" }
+omuzaki-history-mock = { path = "../omuzaki-history-mock" }
+# The settings the conformance rig gives the `settings.*` examples (`tests/op_conformance.rs`).
+omuzaki-settings-api = { path = "../omuzaki-settings-api" }
+omuzaki-settings-mock = { path = "../omuzaki-settings-mock" }
 # The performer the conformance rig stands in for the `trigger.*` examples (`tests/op_conformance.rs`).
 omuzaki-anim-api = { path = "../omuzaki-anim-api" }
 # The end-to-end design test (tests/design_e2e.rs, #2216) builds the designed character to compare it after a reopen.
@@ -75,6 +90,7 @@ omuzaki-render-api = { path = "../omuzaki-render-api" }
 omuzaki-render-mock = { path = "../omuzaki-render-mock" }
 # ...and writes it as a VRM through the io crates the binary links, reading it back.
 omuzaki-io-api = { path = "../omuzaki-io-api" }
+omuzaki-io-mock = { path = "../omuzaki-io-mock" }
 # The tests call these crates' API, not only their registrations (`design_e2e.rs` exports and renders through them,
 # `op_conformance.rs` stands in the stage's perform and input hosts), so they are dev-dependencies too: a change to one
 # of them runs every test here, while `link_only` below still describes the binary.
@@ -86,6 +102,9 @@ omuzaki-face-api = { path = "../omuzaki-face-api" }
 omuzaki-track-api = { path = "../omuzaki-track-api" }
 # The output window and palette the conformance rig gives the `output.window.*` examples (`tests/window_host/`).
 omuzaki-stream-api = { path = "../omuzaki-stream-api" }
+# `script.run` through the real executor over an in-memory document (`tests/script_run.rs`, #1220).
+omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+omuzaki-script = { path = "../omuzaki-script" }
 # The mock audio engine the conformance rig gives the `audio.*` and `record.*` examples.
 omuzaki-audio-api = { path = "../omuzaki-audio-api" }
 omuzaki-audio-mock = { path = "../omuzaki-audio-mock" }
@@ -116,4 +135,4 @@ summary = "the `omuzaki` command: ops, help, run (dry-run/JSON), undo/redo, all 
 wasm = false
 # Held only to link their registrations in (`omuzaki_cli::link`, ADR 0015); this crate's source calls none of their API.
 # A change to one of them runs just `tests/registrations.rs` here (`cargo xtask check --affected`), not every test.
-link_only = ["omuzaki-io-fbx", "omuzaki-io-gltf", "omuzaki-io-ops", "omuzaki-io-vrm", "omuzaki-stage", "omuzaki-stream", "omuzaki-vcam", "omuzaki-audio-engine", "omuzaki-obs", "omuzaki-vts", "omuzaki-live", "omuzaki-live-nodes", "omuzaki-twitch"]
+link_only = ["omuzaki-io-fbx", "omuzaki-io-gltf", "omuzaki-io-ops", "omuzaki-io-vrm", "omuzaki-stage", "omuzaki-stream", "omuzaki-stream-share", "omuzaki-vcam", "omuzaki-audio-engine", "omuzaki-audio-fx", "omuzaki-obs", "omuzaki-vts", "omuzaki-live", "omuzaki-live-nodes", "omuzaki-twitch"]

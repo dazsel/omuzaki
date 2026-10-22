@@ -81,8 +81,8 @@ fn block(min: Vec3, max: Vec3) -> MeshData {
 ///
 /// What the silhouette identifies is asserted, nothing else: `IoU`, the widths, arm length, foot size, curves, and the share of
 /// the leg against the torso. Sole and crown are aligned, so `leg_length`, `torso_length` and the `height` axis trade
-/// off (the combination is what shows); `neck_length` is inside the torso loft and `hand_size` has no mesh yet
-/// (`hands::build` is a stub), so neither is visible and neither is asserted.
+/// off (the combination is what shows); `neck_length` is inside the torso loft and `hand_size` is read only
+/// faintly (the hands hang over the hip outline), so neither is asserted.
 ///
 /// All four templates are fitted in the nightly run (which sets `OMUZAKI_FULL_TESTS`) and the two furthest apart,
 /// soft-sd and tall, in the pull request gate, whose test shards have a time limit (#2300). The fits are independent, so
@@ -162,7 +162,8 @@ fn salt_and_pepper_noise_costs_little() {
     let against_clean = iou_of(&FitInput { template: "standard", targets: &clean, fixed: &[] }, &r.params).unwrap();
     let clean_fit = run("standard", &clean, &[]);
     eprintln!("noisy fit {against_clean:.4} against the clean masks, clean fit {:.4}", clean_fit.iou_after);
-    assert!(against_clean >= 0.96, "{against_clean}");
+    // The best fit on this seed with the hands in the outline reaches 0.95; the second assertion bounds the noise.
+    assert!(against_clean >= 0.95, "{against_clean}");
     assert!(against_clean >= clean_fit.iou_after - 0.02);
 }
 

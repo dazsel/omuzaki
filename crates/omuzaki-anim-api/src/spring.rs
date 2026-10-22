@@ -560,13 +560,20 @@ pub struct SpringStats {
 
 /// Simulates a [`SpringSet`] on a skeleton. Build one with the set and skeleton (an implementation's `new`); it then
 /// owns all its state in fixed buffers, so stepping never allocates.
+///
+/// **Where it runs in a frame.** Last of the stages that write the local pose, in the order `VRMC_vrm-1.0` gives a
+/// viewer: the humanoid pose (animation or tracking), then IK and look-at, then node constraints and bone drivers
+/// ([`ConstraintSet`](crate::ConstraintSet)), then springs, then skinning. Springs therefore see every bone the stages
+/// before them moved, in the same frame.
 pub trait SpringSolver: Send {
     /// Advances the springs by `tick.dt`.
     ///
     /// Time is consumed in whole [`PHYSICS_STEP`] sub-steps, at most the current maximum per call; the fractional
     /// remainder carries to the next call, so the simulation is independent of the frame rate. `pose` holds the
     /// animated local transforms on entry (colliders and chain roots follow it) and the spring bones' solved local
-    /// rotations on exit; other bones are untouched. The result is a pure function of the inputs and prior calls.
+    /// rotations on exit; other bones are untouched. An implementation may spread the change from the previous call's
+    /// pose across the sub-steps (`omuzaki-rig`'s solver does), so the previous call's pose counts as an input. The
+    /// result is a pure function of the inputs and prior calls.
     fn step(&mut self, tick: Tick, skeleton: &Skeleton, pose: &mut Pose);
 
     /// Settles the springs against `pose` for `seconds` of simulated time without moving the character, so hair is at

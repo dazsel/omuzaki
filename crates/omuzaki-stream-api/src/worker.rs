@@ -541,6 +541,20 @@ mod unix {
     /// Room for [`MAX_FDS`] descriptors, with headroom for the alignment `align_for_cmsghdr` takes.
     const CMSG_ROOM: usize = rustix::cmsg_space!(ScmRights(MAX_FDS)) + 16;
 
+    /// Writes never raise `SIGPIPE` where the platform can say so per call. macOS has no `MSG_NOSIGNAL`; a Rust
+    /// program ignores `SIGPIPE` from startup there, so a closed peer is an `EPIPE` error either way.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    const SEND_FLAGS: SendFlags = SendFlags::NOSIGNAL;
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    const SEND_FLAGS: SendFlags = SendFlags::empty();
+
+    /// Received descriptors are close-on-exec from the start where the platform can say so per call; elsewhere
+    /// (macOS) [`read_exact_fds`] marks them right after the read.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    const RECV_FLAGS: RecvFlags = RecvFlags::CMSG_CLOEXEC;
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    const RECV_FLAGS: RecvFlags = RecvFlags::empty();
+
     /// Writes `msg` as one frame with `fds` attached to its first byte (`SCM_RIGHTS`).
     ///
     /// # Errors
@@ -560,7 +574,7 @@ mod unix {
             }
             // The first byte alone carries the descriptors; the rest is a plain write.
             let sent = loop {
-                match sendmsg(s, &[IoSlice::new(&bytes[..1])], &mut control, SendFlags::NOSIGNAL) {
+                match sendmsg(s, &[IoSlice::new(&bytes[..1])], &mut control, SEND_FLAGS) {
                     Err(rustix::io::Errno::INTR) => {}
                     other => break other,
                 }
@@ -588,14 +602,18 @@ mod unix {
             let mut space = [MaybeUninit::<u8>::uninit(); CMSG_ROOM];
             let mut control = RecvAncillaryBuffer::new(&mut space);
             let mut iov = [IoSliceMut::new(&mut out[got..])];
-            let msg = match recvmsg(s, &mut iov, &mut control, RecvFlags::CMSG_CLOEXEC) {
+            let msg = match recvmsg(s, &mut iov, &mut control, RECV_FLAGS) {
                 Ok(msg) => msg,
                 Err(rustix::io::Errno::INTR) => continue,
                 Err(e) => return Err(io(&e.into())),
             };
             for message in control.drain() {
                 if let RecvAncillaryMessage::ScmRights(received) = message {
-                    fds.extend(received);
+                    for fd in received {
+                        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+                        rustix::io::fcntl_setfd(&fd, rustix::io::FdFlags::CLOEXEC).map_err(|e| io(&e.into()))?;
+                        fds.push(fd);
+                    }
                 }
             }
             if msg.flags.contains(ReturnFlags::CTRUNC) {

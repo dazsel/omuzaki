@@ -72,7 +72,7 @@ fn calibration(config: &Value) -> Calibration {
     if let Some(ranges) = config["ranges"].as_object() {
         for (name, range) in ranges {
             let range = numbers(range);
-            cal.set_range(channel(name), ChannelRange { lo: range[0], hi: range[1] });
+            cal.set_fitted(channel(name), ChannelRange { lo: range[0], hi: range[1] }, 0);
         }
     }
     cal.head_rest = head_pose(&numbers(&config["head_rest"]));

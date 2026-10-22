@@ -29,7 +29,7 @@ use super::history::{
     self, AttemptOutcome, AttemptRecord, CheckRecord, Counts, FAMILY_TASK, HISTORY_FILE, HistoryError, Oracles,
     RUNS_FILE, RunRecord, SCHEMA, Skipped, Spend, Usage,
 };
-use super::host::{Host, open_project_runner};
+use super::host::{Host, read_project_runner};
 use super::provenance::{PrivateList, fixture_refusals};
 use super::script::Script;
 use super::task::{Caps, CheckKind};
@@ -702,8 +702,8 @@ fn play_one(
     let tools_hash = host.tools_hash().to_owned();
     host.finish().map_err(|e| e.to_string())?;
     // The checker's own runners: one on the pristine fixture, one on the result folder, reopened from disk.
-    let fixture_runner = open_project_runner(fixture_dir).map_err(|e| e.to_string())?;
-    let result_runner = open_project_runner(work).map_err(|e| e.to_string())?;
+    let fixture_runner = read_project_runner(fixture_dir).map_err(|e| e.to_string())?;
+    let result_runner = read_project_runner(work).map_err(|e| e.to_string())?;
     let checker = Checker::new(fixture_runner, result_runner, attempt.log.transcript())
         .with_exports(built.exports.clone())
         .with_tool_names(names);

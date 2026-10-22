@@ -1,0 +1,15 @@
+# Render cases for `tools/ci/evidence.py` from the garment framework (#2081); the format is documented at the top of
+# tools/ci/evidence.py.
+
+[[case]]
+name = "garment-framework"
+description = "A shirt and a vest stacked on the body, and every trim on a tube garment, front and three-quarter on standard and soft-sd through the mock toon renderer, 512 px; each patterned fabric's tile at a 2x2 repeat."
+env = { OMUZAKI_GARMENT_PPM = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-char", "--test", "outfit_framework", "render_the_garment_framework_when_asked", "--", "--exact"] },
+]
+images = [
+    "standard-pair-front.ppm", "standard-pair-three-quarter.ppm", "standard-trims-front.ppm", "standard-trims-three-quarter.ppm",
+    "soft-sd-pair-front.ppm", "soft-sd-pair-three-quarter.ppm", "soft-sd-trims-front.ppm", "soft-sd-trims-three-quarter.ppm",
+    "tile-weave.ppm", "tile-vertical-stripes.ppm", "tile-horizontal-stripes.ppm", "tile-diagonal-stripes.ppm", "tile-plaid.ppm",
+]
