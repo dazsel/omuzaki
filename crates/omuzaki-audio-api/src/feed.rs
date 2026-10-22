@@ -290,7 +290,10 @@ pub struct FeedWriter {
 
 impl std::fmt::Debug for FeedWriter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FeedWriter").field("playhead", &self.playhead).field("closer", &self.closer).finish_non_exhaustive()
+        f.debug_struct("FeedWriter")
+            .field("playhead", &self.playhead)
+            .field("closer", &self.closer)
+            .finish_non_exhaustive()
     }
 }
 
@@ -362,11 +365,8 @@ impl std::fmt::Debug for FeedSource {
 pub fn feed_channel(producer: Producer, consumer: Consumer, rate: u32, stereo: bool) -> (FeedWriter, FeedSource) {
     let log = Arc::new(Log::new(rate));
     let closer = Arc::new(AtomicBool::new(false));
-    let writer = FeedWriter {
-        producer,
-        playhead: FeedPlayhead(Arc::clone(&log)),
-        closer: FeedCloser(Arc::clone(&closer)),
-    };
+    let writer =
+        FeedWriter { producer, playhead: FeedPlayhead(Arc::clone(&log)), closer: FeedCloser(Arc::clone(&closer)) };
     let source = FeedSource {
         ring: consumer,
         stereo,
@@ -460,7 +460,12 @@ impl FeedSource {
             && let Some(at) = at
         {
             #[allow(clippy::cast_possible_truncation)] // at most a block's frames
-            let record = PlayRecord { index: self.records, consumed: first_consumed, n: consumed as u32, at_sample: block_start + at };
+            let record = PlayRecord {
+                index: self.records,
+                consumed: first_consumed,
+                n: consumed as u32,
+                at_sample: block_start + at,
+            };
             self.log.publish(record);
             self.records += 1;
         }

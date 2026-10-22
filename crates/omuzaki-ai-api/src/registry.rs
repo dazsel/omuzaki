@@ -229,6 +229,12 @@ pub trait ModelRegistry: Send + Sync {
     /// Every known model, shipped and added, optionally for one slot.
     fn models(&self, slot: Option<&SlotRef>) -> Vec<ModelEntry>;
 
+    /// The manifest of a known model, for what a slot's owner reads from it (a TTS model's `[[voices]]`). `None` for
+    /// an unknown model, or a registry that doesn't keep manifests.
+    fn manifest(&self, _model: &ModelRef) -> Option<ModelManifest> {
+        None
+    }
+
     /// A session for a request/response slot that follows it: it runs `model` if given (a character's own voice),
     /// otherwise the slot's choice, then its shipped default; a new choice is swapped in between runs; a crash or
     /// stall falls back down the same chain and is reported on the health meter. Shipped models run in this process,

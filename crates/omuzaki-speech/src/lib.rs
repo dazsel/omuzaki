@@ -17,6 +17,8 @@
 //!   per-frame probabilities into speech start and end.
 //! - [`asr`]: speech to text on an `asr@1` session.
 //! - [`host`]: [`SpeechHost`] runs both workers and owns the back-pressure policy.
+//! - [`slots::tts`] and [`kokoro_runtime`]: `tts@1` (text to speech, checked by a round trip through `asr@1`) and the
+//!   `kokoro` runtime, Kokoro-82M's ONNX graph behind [`g2p`], our own GPL-free English G2P over the gold lexicons.
 //!
 //! The host talks to its models through registry sessions and assumes nothing about CPU or GPU: a slot session follows
 //! the person's choice of model and falls back to the shipped one on its own. Models are never committed; the registry
@@ -31,7 +33,9 @@
 
 pub mod asr;
 pub mod error;
+pub mod g2p;
 pub mod host;
+pub mod kokoro_runtime;
 pub mod queue;
 pub mod segmenter;
 pub mod slots;
@@ -42,6 +46,7 @@ pub mod whisper_runtime;
 pub use asr::{AsrCall, Recognizer, Transcript, Whisper};
 pub use error::SpeechError;
 pub use host::{AudioInput, DEFAULT_HANGOVER_MS, HostConfig, HostStats, SpeechEvent, SpeechHost, TranscriptDemand};
+pub use kokoro_runtime::Kokoro;
 pub use segmenter::{Segment, Segmenter, SegmenterConfig};
 pub use vad::{SileroVad, VadStream, VoiceActivity};
 pub use whisper_runtime::WhisperGgml;
@@ -59,5 +64,6 @@ omuzaki_ai_api::register_model!(
     "whisper-large-v3-turbo-q5-0",
     include_str!("../models/whisper-large-v3-turbo-q5-0.model.toml")
 );
+omuzaki_ai_api::register_model!("kokoro-82m", include_str!("../models/kokoro-82m.model.toml"));
 
 omuzaki_core::define_link!();

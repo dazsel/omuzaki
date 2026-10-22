@@ -12,6 +12,9 @@ repository.workspace = true
 omuzaki-ai-api = { path = "../omuzaki-ai-api" }
 omuzaki-audio-api = { path = "../omuzaki-audio-api" }
 omuzaki-core = { path = "../omuzaki-core" }
+# Reads the gold pronunciation lexicons (JSON) the text-to-speech G2P looks words up in.
+serde.workspace = true
+serde_json.workspace = true
 # Decodes the public-domain speech clips the `vad@1` and `asr@1` smoke tests fetch (MP3); used unmodified.
 symphonia.workspace = true
 thiserror.workspace = true

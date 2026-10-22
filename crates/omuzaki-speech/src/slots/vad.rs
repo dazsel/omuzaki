@@ -172,8 +172,10 @@ impl Slot for VadSlot {
     ) -> Result<EvalReport, EvalError> {
         let clips: Vec<(Clip, Vec<f32>)> =
             CLIPS.iter().map(|clip| Ok((*clip, clip.load(env)?))).collect::<Result<_, EvalError>>()?;
-        let labels: Vec<Box<dyn Fn(f64) -> Option<bool>>> =
-            clips.iter().map(|(clip, _)| Box::new(move |t| clip.label(t)) as Box<dyn Fn(f64) -> Option<bool>>).collect();
+        let labels: Vec<Box<dyn Fn(f64) -> Option<bool>>> = clips
+            .iter()
+            .map(|(clip, _)| Box::new(move |t| clip.label(t)) as Box<dyn Fn(f64) -> Option<bool>>)
+            .collect();
         let real: Vec<Labelled<'_>> =
             clips.iter().zip(&labels).map(|((_, audio), label)| Labelled { audio, label: label.as_ref() }).collect();
         let accuracy = balanced_accuracy(session, &real)?;

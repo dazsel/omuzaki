@@ -64,7 +64,7 @@ pub use fetch::{Body, FetchError, Fetcher, FileSource, PinnedFile, RESUME_MIN_SI
 pub use id::{ModelId, ModelRef, ParseError, RuntimeId, Sha256, SlotId, SlotRef, Version};
 pub use manifest::{
     Licence, Lineage, LineageKind, ManifestError, ModelCard, ModelFile, ModelManifest, Origin, ShippedModel, Stage,
-    shipped_models,
+    TtsSpec, VoiceRow, shipped_models,
 };
 pub use progress::{NoProgress, Progress};
 pub use registry::{

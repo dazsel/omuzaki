@@ -4,7 +4,9 @@
 //! - `OMUZAKI_SPEECH_MODELS`: `silero_vad.onnx` and the ggml files, under their release names;
 //! - `OMUZAKI_ORT_CACHE`: the pinned ONNX Runtime archive (`onnxruntime-linux-x64-1.28.3.tgz` on Linux);
 //! - `OMUZAKI_SPEECH_DATA`: the LibriVox MP3s the smoke tests and the golden comparison fetch
-//!   (`fables_03_05_aesop_64kb.mp3`, ...).
+//!   (`fables_03_05_aesop_64kb.mp3`, ...);
+//! - `OMUZAKI_TTS_MODELS` (text-to-speech tests only): Kokoro's files under the last part of their URLs (`model.onnx`,
+//!   `tokenizer.json`, `us_gold.json`, `gb_gold.json` and the voices' `.bin`s).
 //!
 //! A test skips with a message when one is unset. Nothing is downloaded: the source serves a pinned file only from
 //! these folders, by the last part of its URL, after checking its size and SHA-256.
@@ -67,6 +69,13 @@ pub fn folders() -> Option<Folders> {
     let ort = folder("OMUZAKI_ORT_CACHE", "the folder holding the pinned ONNX Runtime archive")?;
     let data = folder("OMUZAKI_SPEECH_DATA", "the folder holding the LibriVox clips")?;
     Some(Folders(vec![models, ort, data]))
+}
+
+/// The three folders and the text-to-speech one, or `None` (the test skips).
+pub fn tts_folders() -> Option<Folders> {
+    let mut folders = folders()?;
+    folders.0.push(folder("OMUZAKI_TTS_MODELS", "the folder holding Kokoro's files")?);
+    Some(folders)
 }
 
 /// A registry over the folders in a fresh data folder, as the app builds it.

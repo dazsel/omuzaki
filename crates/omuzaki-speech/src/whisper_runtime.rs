@@ -180,7 +180,8 @@ impl Session for WhisperSession {
         let (TensorData::F32(audio), TensorData::U8(language)) = (inputs[0].data, inputs[1].data) else {
             return Err(RunError::Failed("asr@1 takes f32 audio and a UTF-8 language".into()));
         };
-        let language = std::str::from_utf8(language).map_err(|_| RunError::Failed("the language isn't UTF-8".into()))?;
+        let language =
+            std::str::from_utf8(language).map_err(|_| RunError::Failed("the language isn't UTF-8".into()))?;
         let language = (!language.is_empty()).then_some(language);
         let (text, used) = self.transcribe(audio, language).map_err(|e| RunError::Failed(e.to_string()))?;
         write_text(&mut outputs[0], 0, &text)?;

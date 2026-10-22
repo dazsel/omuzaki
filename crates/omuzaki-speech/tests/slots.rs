@@ -1,6 +1,7 @@
-//! The speech slots and shipped models (#1163): `vad@1` and `asr@1` are registered with their signatures, every
-//! shipped manifest parses and validates with the pins the old catalogue had, the `whisper-ggml` runtime is registered,
-//! and the evaluations pass a perfect fake and fail a useless one.
+//! The speech slots and shipped models (#1163, #1133): `vad@1`, `asr@1` and `tts@1` are registered with their
+//! signatures, every shipped manifest parses and validates (with the pins the old catalogue had, and Kokoro with its
+//! voices and gold lexicons only), the `whisper-ggml` and `kokoro` runtimes are registered, and the evaluations pass a
+//! perfect fake and fail a useless one.
 
 // Integration-test helpers may panic (a clear failure) and convert frame counts.
 #![allow(clippy::unwrap_used, clippy::cast_precision_loss)]
@@ -9,11 +10,12 @@ use omuzaki_ai_api::{
     DType, ModelManifest, Origin, RuntimeId, Session, SlotMode, TensorBuf, TensorRef, find_runtime, find_slot,
     shipped_models,
 };
-use omuzaki_ai_mock::FakeSession;
+use omuzaki_ai_mock::{FakeSession, FakeTts};
 use omuzaki_speech::segmenter::FRAME;
 use omuzaki_speech::slots::asr::{self, Reading, word_error_rate};
+use omuzaki_speech::slots::tts::{self, SENTENCES, TtsCall, Utterance, round_trip_error};
 use omuzaki_speech::slots::vad::{self, Labelled, balanced_accuracy, false_alarms, non_speech};
-use omuzaki_speech::slots::{asr_signature, asr_slot, vad_signature, vad_slot};
+use omuzaki_speech::slots::{asr_signature, asr_slot, tts_signature, tts_slot, vad_signature, vad_slot};
 use omuzaki_speech::synth;
 
 /// The catalogue `omuzaki_speech::catalog` pinned before the models moved into the registry: file, URL, SHA-256, size.
@@ -85,24 +87,35 @@ fn both_slots_are_registered_with_their_signatures_and_deadlines() {
     assert_eq!(asr.info().likeness, None);
     assert_eq!(vad_slot().to_string(), "vad@1");
     assert_eq!(asr_slot().to_string(), "asr@1");
+    let tts = find_slot(&tts_slot()).expect("tts@1 is registered");
+    assert_eq!(tts.signature(), tts_signature());
+    assert_eq!(tts.signature(), omuzaki_ai_mock::tts_signature(), "the fake presents the real slot");
+    assert_eq!(tts.info().mode, SlotMode::Call { stall_ms: 30_000 });
 }
 
 #[test]
-fn the_whisper_runtime_is_registered() {
-    let runtime = find_runtime(&RuntimeId::new("whisper-ggml").unwrap()).expect("whisper-ggml is registered");
-    assert_eq!(runtime.id().as_str(), "whisper-ggml");
+fn the_whisper_and_kokoro_runtimes_are_registered() {
+    for id in ["whisper-ggml", "kokoro"] {
+        let runtime = find_runtime(&RuntimeId::new(id).unwrap()).unwrap_or_else(|| panic!("{id} is registered"));
+        assert_eq!(runtime.id().as_str(), id);
+    }
 }
 
 #[test]
 fn every_shipped_manifest_validates_and_keeps_the_old_catalogue_pins() {
     let manifests = speech_manifests();
-    assert_eq!(manifests.len(), OLD_CATALOGUE.len());
+    assert_eq!(manifests.len(), OLD_CATALOGUE.len() + 1, "the old catalogue and Kokoro");
     for (file, url, sha256, size) in OLD_CATALOGUE {
         let manifest = manifests.iter().find(|m| m.files[0].name == file).unwrap_or_else(|| panic!("{file} ships"));
         manifest.validate(Origin::Shipped).unwrap_or_else(|e| panic!("{}: {e:?}", manifest.id));
         let pinned = &manifest.files[0];
         assert_eq!((pinned.urls[0].as_str(), pinned.sha256.to_string(), pinned.size), (url, sha256.to_owned(), size));
-        let (slot, runtime) = if std::path::Path::new(file).extension().is_some_and(|e| e.eq_ignore_ascii_case("onnx")) { (vad_slot(), "onnx") } else { (asr_slot(), "whisper-ggml") };
+        let (slot, runtime) = if std::path::Path::new(file).extension().is_some_and(|e| e.eq_ignore_ascii_case("onnx"))
+        {
+            (vad_slot(), "onnx")
+        } else {
+            (asr_slot(), "whisper-ggml")
+        };
         assert_eq!((&manifest.slot, manifest.runtime.as_str()), (&slot, runtime), "{}", manifest.id);
         assert_eq!(manifest.card.licence.spdx.as_deref(), Some("MIT"), "{}", manifest.id);
         // The digest that names the model's exact bytes, for the pull request.
@@ -185,7 +198,77 @@ fn sessions_are_opened_for_the_slot_signature_only() {
     let mut out = TensorBuf::for_outputs(vad.signature());
     let input = [0.0f32; 576];
     let state = [0.0f32; 256];
-    vad.run(&[TensorRef::f32(&input, &[1, 576]), TensorRef::f32(&state, &[2, 1, 128]), TensorRef::i64(&[16_000], &[])], &mut out)
-        .unwrap();
+    vad.run(
+        &[TensorRef::f32(&input, &[1, 576]), TensorRef::f32(&state, &[2, 1, 128]), TensorRef::i64(&[16_000], &[])],
+        &mut out,
+    )
+    .unwrap();
     assert_eq!(out[0].as_f32(), Some(&[0.2f32][..]));
+}
+
+#[test]
+fn kokoro_ships_its_graph_voices_and_the_gold_lexicons_only() {
+    let manifests = speech_manifests();
+    let kokoro = manifests.iter().find(|m| m.id.as_str() == "kokoro-82m").expect("Kokoro ships");
+    kokoro.validate(Origin::Shipped).unwrap();
+    assert_eq!((&kokoro.slot, kokoro.runtime.as_str()), (&tts_slot(), "kokoro"));
+    assert_eq!(kokoro.card.licence.spdx.as_deref(), Some("Apache-2.0"));
+    let files: Vec<&str> = kokoro.files.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(files[0], "model.onnx", "the graph is the main file");
+    for needed in ["tokenizer.json", "us_gold.json", "gb_gold.json"] {
+        assert!(files.contains(&needed), "{needed}");
+    }
+    // GPL-free by construction: nothing espeak-derived is ever fetched.
+    for file in &kokoro.files {
+        let name = file.name.to_lowercase();
+        assert!(!name.contains("silver") && !name.contains("espeak"), "{}", file.name);
+        assert!(file.urls.iter().all(|u| u.starts_with("https://huggingface.co/")), "{}", file.name);
+    }
+    let voices: Vec<&str> = kokoro.voices.iter().map(|v| v.id.as_str()).collect();
+    assert_eq!(voices, ["af_heart", "af_bella", "am_michael", "bf_emma"]);
+    assert!(kokoro.voices.iter().all(|v| !v.needs_consent() && !v.languages.is_empty()));
+    let spec = kokoro.tts.as_ref().expect("[tts]");
+    assert!(spec.honours("speed") && !spec.honours("expressiveness"));
+    eprintln!("{} {} {}", kokoro.id, kokoro.version, kokoro.digest_text().trim_end());
+}
+
+/// A recogniser that hears `heard` for every utterance.
+fn hears(heard: &[&str]) -> FakeSession {
+    FakeSession::scripted(asr_signature(), heard.iter().map(|h| vec![text(h), text("en")]).collect())
+}
+
+#[test]
+fn the_tts_round_trip_passes_speech_that_says_the_words_and_fails_mumbling() {
+    let mut fake = FakeTts::new();
+    let mut perfect = hears(&SENTENCES);
+    assert!(round_trip_error(&mut fake, &mut perfect, &SENTENCES).unwrap().abs() < 1e-12);
+
+    let mut slips = SENTENCES.to_vec();
+    slips[0] = "Hello everyone, and welcome back to the dream.";
+    let mut close = hears(&slips);
+    let wer = round_trip_error(&mut fake, &mut close, &SENTENCES).unwrap();
+    assert!(wer > 0.0 && wer < tts::SMOKE_CEILING, "{wer}");
+
+    let mut mumbles = hears(&["um"]);
+    let wer = round_trip_error(&mut fake, &mut mumbles, &SENTENCES).unwrap();
+    assert!(wer > tts::SMOKE_CEILING, "{wer}");
+
+    let mut wrong_slot = FakeSession::scripted(asr_signature(), vec![]);
+    let mut asr = hears(&SENTENCES);
+    assert!(round_trip_error(&mut wrong_slot, &mut asr, &SENTENCES).is_err(), "a session of another slot is refused");
+    let mut silent = FakeTts::new();
+    assert!(round_trip_error(&mut silent, &mut asr, &[""]).is_err(), "no speech is an error, not a score");
+}
+
+#[test]
+fn a_tts_call_reports_what_the_session_said_and_refuses_bad_audio() {
+    let mut fake = FakeTts::new().with_voices(&["warm"]);
+    let mut call = TtsCall::new();
+    assert_eq!(call.speak(&mut fake, &Utterance::plain("Hi chat!")).unwrap().len(), 11_520);
+    let fast = Utterance { speed: 2.0, voice: "warm", ..Utterance::plain("Hi chat!") };
+    assert_eq!(call.speak(&mut fake, &fast).unwrap().len(), 5_760);
+    assert!(call.speak(&mut fake, &Utterance { voice: "cold", ..Utterance::plain("Hi") }).is_err());
+    let nan = f32s(&[f32::NAN], &[1]);
+    let mut broken = FakeSession::scripted(tts_signature(), vec![vec![nan]]);
+    assert!(call.speak(&mut broken, &Utterance::plain("Hi")).is_err(), "NaN is not speech");
 }

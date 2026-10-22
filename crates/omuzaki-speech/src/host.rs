@@ -37,8 +37,8 @@ use std::thread::{self, JoinHandle, Thread};
 use std::time::{Duration, Instant};
 
 use omuzaki_ai_api::Session;
-use omuzaki_audio_api::ring::{self, Consumer, Producer};
 use omuzaki_audio_api::TapSink;
+use omuzaki_audio_api::ring::{self, Consumer, Producer};
 use omuzaki_audio_api::tap::DropPolicy;
 
 use crate::asr::{Recognizer, Whisper};

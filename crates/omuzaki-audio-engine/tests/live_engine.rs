@@ -283,8 +283,13 @@ fn feed_rig(block: u32, rate: u32) -> (FakeBackend, LiveEngine, omuzaki_audio_ap
             ..GraphSpec::default()
         })
         .unwrap();
-    let wanted =
-        FeedRequest { id: FeedId::new("tts").unwrap(), rate, mono: true, capacity: Seconds(1.0), consumer: "test".into() };
+    let wanted = FeedRequest {
+        id: FeedId::new("tts").unwrap(),
+        rate,
+        mono: true,
+        capacity: Seconds(1.0),
+        consumer: "test".into(),
+    };
     let feed = engine.feed(&wanted).unwrap();
     let (tap, info) = engine.tap_ring(&request(TapPoint::BusPostFader(bus_id("tts")), TapRate::Graph48k)).unwrap();
     (backend, engine, feed, tap, info.first_sample)

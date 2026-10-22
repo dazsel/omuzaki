@@ -333,13 +333,16 @@ mod tests {
     #[test]
     fn a_tone_keeps_its_level_and_pitch_through_the_resampler() {
         let tone = |rate: u32, seconds: f64| -> Vec<f32> {
-            (0..(f64::from(rate) * seconds) as usize).map(|i| (2.0 * PI * 440.0 * i as f64 / f64::from(rate)).sin() as f32).collect()
+            (0..(f64::from(rate) * seconds) as usize)
+                .map(|i| (2.0 * PI * 440.0 * i as f64 / f64::from(rate)).sin() as f32)
+                .collect()
         };
         let out = resample(&tone(44_100, 1.0), 44_100, 16_000);
         assert_eq!(out.len(), 16_000);
         let reference = tone(16_000, 1.0);
         let middle = 2_000..14_000;
-        let worst = out[middle.clone()].iter().zip(&reference[middle]).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+        let worst =
+            out[middle.clone()].iter().zip(&reference[middle]).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
         assert!(worst < 1e-3, "largest error {worst}");
     }
 

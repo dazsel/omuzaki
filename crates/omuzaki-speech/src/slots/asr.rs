@@ -95,8 +95,26 @@ pub fn words(text: &str) -> Vec<String> {
 /// `n` (under 100) in English words.
 fn number(n: u8) -> String {
     const ONES: [&str; 20] = [
-        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve",
-        "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen",
+        "zero",
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+        "ten",
+        "eleven",
+        "twelve",
+        "thirteen",
+        "fourteen",
+        "fifteen",
+        "sixteen",
+        "seventeen",
+        "eighteen",
+        "nineteen",
     ];
     const TENS: [&str; 10] = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"];
     match n {
@@ -131,7 +149,8 @@ impl Slot for AsrSlot {
         SlotInfo {
             slot: asr_slot(),
             summary: "Speech to text: what was said in one utterance from the microphone.".into(),
-            without_model: "speech isn't turned into text: live captions, AI listening and voice commands are off".into(),
+            without_model: "speech isn't turned into text: live captions, AI listening and voice commands are off"
+                .into(),
             mode: SlotMode::Call { stall_ms: 30_000 },
             threads: 4,
             likeness: None,

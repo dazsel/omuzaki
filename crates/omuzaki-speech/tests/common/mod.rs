@@ -11,10 +11,10 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use omuzaki_speech::SpeechError;
 use omuzaki_speech::asr::{Recognizer, Transcript};
 use omuzaki_speech::host::{AudioInput, SpeechEvent, SpeechHost};
 use omuzaki_speech::segmenter::FRAME;
-use omuzaki_speech::SpeechError;
 use omuzaki_speech::vad::VoiceActivity;
 
 /// Scores a frame by its energy: 0.9 above an RMS of 0.02, else 0.0. Deterministic and instant.
