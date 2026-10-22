@@ -214,6 +214,11 @@ impl StreamService {
         Ticks(i64::try_from(self.inner.epoch.elapsed().as_nanos()).unwrap_or(i64::MAX))
     }
 
+    /// Whether any output runs: [`push`](Self::push) copies nothing while none does.
+    pub fn active(&self) -> bool {
+        self.inner.active.load(Ordering::Acquire)
+    }
+
     /// The pipeline clock's zero.
     pub fn epoch(&self) -> Instant {
         self.inner.epoch
