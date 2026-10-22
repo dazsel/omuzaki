@@ -39,9 +39,9 @@ pub const MIN_LENGTH: f64 = 0.55;
 /// The least leg under the gusset, as a fraction of the leg region.
 pub const MIN_LEG: f64 = 0.03;
 /// Rows down the leg between the gusset and the hem, besides the cuff's.
-pub const LEG_ROWS: usize = 12;
+pub const LEG_ROWS: usize = 24;
 /// Rows of the torso part of the pelvis between the band and the bottom of the torso region.
-pub const TORSO_ROWS: usize = 6;
+pub const TORSO_ROWS: usize = 12;
 /// The waistband's default height, as a fraction of the torso region.
 pub const BAND_HEIGHT: f64 = 0.06;
 /// The waistband's default thickness, metres.
