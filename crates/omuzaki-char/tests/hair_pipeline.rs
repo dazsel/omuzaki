@@ -199,7 +199,11 @@ fn character(hair: &HairParams) -> CharacterDef {
 }
 
 fn hair_output(def: &CharacterDef) -> Result<PartOutput, BuildError> {
-    let (id, options, services) = (CharId::new("t").unwrap(), BuildOptions::default(), BuildServices::default());
+    hair_output_with(def, &BuildOptions::default())
+}
+
+fn hair_output_with(def: &CharacterDef, options: &BuildOptions) -> Result<PartOutput, BuildError> {
+    let (id, options, services) = (CharId::new("t").unwrap(), options.clone(), BuildServices::default());
     let mut assembler = Assembler::new(&id, def, &options);
     let mut result = None;
     for part in plan(def).unwrap() {
@@ -374,7 +378,7 @@ fn two_group_style() -> HairParams {
 }
 
 #[test]
-fn static_groups_make_one_head_skinned_mesh_and_simulated_groups_a_second_one() {
+fn static_groups_make_one_head_skinned_mesh_and_simulated_groups_a_dynamic_one() {
     let out = hair_output(&character(&two_group_style())).unwrap();
     let names: Vec<_> = out.meshes.iter().map(|m| m.name.as_str()).collect();
     assert_eq!(names, ["hair-static", "hair-dynamic"]);
@@ -384,31 +388,37 @@ fn static_groups_make_one_head_skinned_mesh_and_simulated_groups_a_second_one() 
         stat.geometry.joints.iter().all(|j| *j == [0; 4])
             && stat.geometry.weights.iter().all(|w| *w == [1.0, 0.0, 0.0, 0.0])
     );
-    assert!(!dynamic.dynamic && dynamic.joint_bones == [omuzaki_char_api::JointRef::HEAD]);
-    assert!(
-        dynamic.geometry.joints.iter().all(|j| *j == [0; 4])
-            && dynamic.geometry.weights.iter().all(|w| *w == [1.0, 0.0, 0.0, 0.0])
-    );
+    // The simulated group is the runtime's: unskinned, in character space, rewritten every step.
+    assert!(dynamic.dynamic && dynamic.joint_bones.is_empty() && !dynamic.geometry.is_skinned());
+    dynamic.validate().unwrap();
     // 4 static clumps (2 locks, mirrored), 1 dynamic, 4 rings of 8 each, and each clump's two caps.
     assert_eq!(stat.geometry.positions.len(), tube_mesh_vertices(4, 4));
     assert_eq!(dynamic.geometry.positions.len(), tube_mesh_vertices(1, 4));
     assert!(stat.casts_shadow && stat.render_order == 1);
-    assert!(out.runtime.is_none(), "the simulation is not built yet");
+    let runtime = out.runtime.as_ref().expect("the simulated group has a runtime");
+    let view = runtime.dynamic_mesh(0).unwrap();
+    assert_eq!(view.mesh, 1, "it rewrites the dynamic mesh");
+    assert_eq!(view.positions, dynamic.geometry.positions, "starting from its built shape");
 }
 
 #[test]
-fn a_simulated_group_is_skinned_to_the_head_while_the_part_has_no_runtime() {
-    // Until #322 lands, nothing moves the simulated groups, so they must follow the head: no mesh is unskinned or
-    // dynamic, and each one's weights and joints validate against the head as its only bone.
-    let out = hair_output(&character(&two_group_style())).unwrap();
-    assert!(out.runtime.is_none(), "no runtime yet");
-    assert!(out.meshes.iter().any(|m| m.name == "hair-dynamic"), "the simulated group has a mesh");
+fn built_for_export_a_simulated_group_is_skinned_to_strand_chains() {
+    // Other apps have no hair runtime: the export build skins the simulated group to spring chains of its own, which
+    // VRM writes as spring bones, and adds no runtime.
+    let options = BuildOptions { rig_export: true, ..BuildOptions::default() };
+    let out = hair_output_with(&character(&two_group_style()), &options).unwrap();
+    assert!(out.runtime.is_none(), "no runtime in an export build");
+    assert_eq!(out.rig.chains.len(), 1, "one strand chain for the one simulated lock");
     for mesh in &out.meshes {
-        assert!(!mesh.dynamic, "{} is not dynamic without a runtime", mesh.name);
+        assert!(!mesh.dynamic, "{} is not dynamic", mesh.name);
         assert!(mesh.geometry.is_skinned(), "{} is skinned", mesh.name);
-        assert_eq!(mesh.joint_bones, [omuzaki_char_api::JointRef::HEAD], "{} is rigid to the head", mesh.name);
         mesh.validate().unwrap();
     }
+    let dynamic = out.meshes.iter().find(|m| m.name == "hair-dynamic").unwrap();
+    assert_eq!(dynamic.joint_bones[0], omuzaki_char_api::JointRef::HEAD);
+    assert_eq!(dynamic.joint_bones.len(), 1 + 5, "the head, then the strand's five bones");
+    let tip = dynamic.geometry.weights.iter().zip(&dynamic.geometry.joints).any(|(w, j)| w[1] + w[2] > 0.9 && j[1] > 0);
+    assert!(tip, "the lock's far end follows the strand's bones");
 }
 
 #[test]

@@ -362,7 +362,15 @@ pub fn rig(
     colliders: &[String],
     out: &mut RigContribution,
 ) -> Result<(), SlugError> {
-    for chain in chains(g, head, prefix, mirror)? {
+    add_chains(chains(g, head, prefix, mirror)?, colliders, out);
+    Ok(())
+}
+
+/// Adds `chains` to `out` as spring chains: each bone the child of the one before, the first the child of the head
+/// bone, colliding with `colliders` (collider group names). A tail's chains and, built for export, the simulated hair's
+/// strand chains both go through here.
+pub fn add_chains(chains: Vec<Chain>, colliders: &[String], out: &mut RigContribution) {
+    for chain in chains {
         let mut ids = Vec::with_capacity(chain.bones.len());
         let mut parent = JointRef::HEAD;
         for (bone, at) in chain.bones.iter().zip(&chain.rest) {
@@ -374,7 +382,6 @@ pub fn rig(
         spring.center = Some(humanoid_id(HumanoidBone::Head));
         out.chains.push(spring);
     }
-    Ok(())
 }
 
 /// How a vertex follows a chain: the share of the head, and the rest split between bone `bone` and the next.

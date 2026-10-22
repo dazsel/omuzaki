@@ -23,7 +23,6 @@ mod support;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use omuzaki_anim::BusAnimatorParams;
 use omuzaki_anim_api::{Channel, DeviceProfile, HeadPose, HumanoidBone, HumanoidPose, TrackFrame};
 use omuzaki_avatar_api::body::Body;
 use omuzaki_char::builder::CachingBuilder;
@@ -246,11 +245,10 @@ fn head_turn(stage: &Stage) -> Quat {
     turned(parent.index()).inverse() * turned(rig.bone(&JointRef::HEAD).expect("a head").index())
 }
 
-/// What the animator turns the neck and head through for the bus's head angles.
+/// What the animator turns the neck and head through together for the bus's head angles: the whole rotation, which
+/// it splits between them so that Neck · Head is exactly this.
 fn bus_turn(yaw: f32, pitch: f32, roll: f32) -> Quat {
-    let neck = BusAnimatorParams::default().neck_share;
-    let euler = |share: f32| Quat::from_euler(EulerRot::YXZ, yaw * share, pitch * share, roll * share);
-    euler(neck) * euler(1.0 - neck)
+    Quat::from_euler(EulerRot::YXZ, yaw, pitch, roll)
 }
 
 fn angle(a: Quat, b: Quat) -> f32 {

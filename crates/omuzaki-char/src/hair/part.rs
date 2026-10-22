@@ -134,6 +134,9 @@ pub fn build_with(
     };
     let material = hair_material(ctx.part, params, ctx.palette, overlays)?;
     let mut out = PartOutput::new().with_materials(vec![(material_name.clone(), material)]).with_warnings(warnings);
+    // Built for export, the simulated groups other than tails hang on strand chains of their own.
+    let strands =
+        if ctx.rig_export { strand_chains(ctx.part, &entries, &chains).map_err(|e| ctx.fail(e))? } else { Vec::new() };
     // Static hair follows the head, except a tail's locks, which follow their chain's bones. Simulated hair is the
     // runtime's to move, unskinned in character space; an export build skins it as static hair is, for its spring
     // chains to move in other apps.
@@ -152,6 +155,10 @@ pub fn build_with(
             out.runtime = Some(Box::new(runtime));
             Vec::new()
         } else {
+            let mut runs = runs;
+            if simulated {
+                bind_to_strands(&geometry, &strands, &mut runs);
+            }
             skin_runs(&mut geometry, &runs).map_err(|e| ctx.fail(e))?
         };
         out.meshes.push(PartMesh {
@@ -178,8 +185,81 @@ pub fn build_with(
             dynamic: false,
         });
     }
+    let colliders: Vec<String> = ctx.colliders().iter().map(|group| group.name.clone()).collect();
+    tail::add_chains(strands, &colliders, &mut out.rig);
     publish_ties(params, ctx, head.as_ref(), &mut out)?;
     Ok(out)
+}
+
+/// The most strand chains an exported group gets: enough for the curtain to swing in parts, few enough for a VRM
+/// viewer's spring-bone budget.
+const STRANDS_PER_GROUP: usize = 8;
+/// Bones along each strand chain, root to tip.
+const STRAND_BONES: usize = 5;
+/// Length from a strand's root over which its locks blend from the head to the chain, metres.
+const STRAND_ROOT_BAND: f32 = 0.03;
+
+/// The strand chains of the simulated groups that are not tails (tails have their own): up to [`STRANDS_PER_GROUP`]
+/// clumps of each, evenly spread, each a chain of [`STRAND_BONES`] bones along its rest shape. Named as a tail's chains
+/// are, `hair_<part>_<group>_s<k>`.
+fn strand_chains(
+    part: &PartId,
+    entries: &[CompiledEntry],
+    tails: &BTreeMap<GroupId, Vec<Chain>>,
+) -> Result<Vec<Chain>, String> {
+    let mut out = Vec::new();
+    for entry in entries.iter().filter(|e| e.simulate && !tails.contains_key(&e.id)) {
+        let clumps: Vec<_> = entry.group.clumps.iter().filter(|c| c.simulate && c.rest.len() >= 2).collect();
+        let count = clumps.len().min(STRANDS_PER_GROUP);
+        for k in 0..count {
+            let clump = clumps[if count < 2 { 0 } else { k * (clumps.len() - 1) / (count - 1) }];
+            let name = format!("{}_s{k}", chain_prefix(part, &entry.id));
+            let last = clump.rest.len() - 1;
+            let mut bones = Vec::with_capacity(STRAND_BONES);
+            let mut rest = Vec::with_capacity(STRAND_BONES);
+            for i in 0..STRAND_BONES {
+                bones.push(
+                    omuzaki_char_api::BoneName::new(format!("{name}_{i}"))
+                        .map_err(|e| format!("a strand bone name: {e}"))?,
+                );
+                rest.push(clump.rest[i * last / (STRAND_BONES - 1)]);
+            }
+            out.push(Chain { name, bones, rest, root_band: STRAND_ROOT_BAND });
+        }
+    }
+    Ok(out)
+}
+
+/// Adds a run for every vertex of `mesh` no run holds yet, on the strand chain nearest it (none without strands).
+fn bind_to_strands<'a>(mesh: &MeshData, strands: &'a [Chain], runs: &mut Vec<Run<'a>>) {
+    if strands.is_empty() {
+        return;
+    }
+    let mut held = vec![false; mesh.positions.len()];
+    for run in runs.iter() {
+        held[run.range.clone()].iter_mut().for_each(|h| *h = true);
+    }
+    let distance = |chain: &Chain, p: Vec3| {
+        chain
+            .rest
+            .windows(2)
+            .map(|w| {
+                let d = w[1] - w[0];
+                let t = if d.length_squared() > 0.0 {
+                    ((p - w[0]).dot(d) / d.length_squared()).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                p.distance_squared(w[0] + d * t)
+            })
+            .fold(f32::INFINITY, f32::min)
+    };
+    for (v, p) in mesh.positions.iter().enumerate().filter(|(v, _)| !held[*v]) {
+        let nearest = strands.iter().min_by(|a, b| distance(a, *p).total_cmp(&distance(b, *p)));
+        if let Some(chain) = nearest {
+            runs.push(Run { range: v..v + 1, chain });
+        }
+    }
 }
 
 /// Lifts every bangs group's locks off the head, measured in `frame`, the frame the tubes are drawn in. This runs here,
