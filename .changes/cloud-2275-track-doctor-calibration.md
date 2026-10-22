@@ -13,3 +13,6 @@
   and what the doctor found.
 - VMC out: `input.vmc_out` sends the performed pose and face to another app over VMC (60 times a second, humanoid
   bones and perfect-sync blendshapes), so a game engine or another avatar app moves with the character.
+- The studio starts on its real inputs: the webcam tracker over the face models the install carries (never fetched at
+  run time), the phone link and VMC out. Without the models the webcam still lists its cameras and says what is
+  missing when it starts.

@@ -1,11 +1,13 @@
 //! [`LiveApp`]: the live slice as the app starts it. The perform thread, the op runner with the performer in its
 //! services, and the output window, started together and stopped in the quit order of [`super`].
 
+use std::path::Path;
 use std::sync::Arc;
 
 use egui::Context;
 use omuzaki_anim_api::{ChannelBuf, HumanoidPose};
 use omuzaki_core::glam::UVec2;
+use omuzaki_core::time::{Clock, Seconds, SystemClock};
 use omuzaki_face_api::ExpressionSet;
 use omuzaki_ops_api::{Actor, Runner, ServicesBuilder};
 use omuzaki_render::WgpuRenderer;
@@ -16,10 +18,12 @@ use omuzaki_stream_api::window::WindowHost;
 use omuzaki_track_api::camera::{CameraId, CameraInfo};
 use omuzaki_track_api::error::TrackError;
 use omuzaki_track_api::tracker::{LatencyStats, Tracker, TrackerConfig};
+use omuzaki_track_net::PhoneSettings;
 
 use super::clock::{ClockObserver, PerformClock};
+use super::inputs::studio_inputs;
 use super::mailbox::FrameReader;
-use super::rig::{LiveRig, live_performer};
+use super::rig::{Extras, LiveRig, live_performer};
 use super::thread::{LoopReport, WiringError};
 use crate::aux_window::{PhysicalSize, Transparency};
 use crate::live::hotkeys::Hotkeys;
@@ -103,12 +107,51 @@ impl LiveApp {
         transparency: Transparency,
         base: HumanoidPose,
     ) -> Result<Self, StartError> {
-        let performer = live_performer(Box::new(NoSource), ChannelBuf::NEUTRAL, base);
+        Self::start_with(document, tracker, Extras::default(), clock, transparency, &base)
+    }
+
+    /// [`start_on`](Self::start_on), with the studio's real inputs: the webcam tracker over the install's face models,
+    /// the phone link and VMC out ([`studio_inputs`]), timed on `clock`. When the webcam can't track (no face
+    /// models in `install`, no camera backend on this platform) it still lists its cameras and says why on start; the
+    /// reason is logged here.
+    ///
+    /// # Errors
+    /// [`StartError`]; nothing is left running then.
+    pub fn start_studio(
+        document: Document,
+        install: &Path,
+        clock: Box<dyn PerformClock>,
+        transparency: Transparency,
+        base: HumanoidPose,
+    ) -> Result<Self, StartError> {
+        // The trackers stamp frames on the perform loop's own clock, so frames and steps share one time line.
+        let tracking: Arc<dyn Clock> = match clock.observer() {
+            Some(observer) => Arc::new(ObservedClock(observer)),
+            None => Arc::new(SystemClock::new()),
+        };
+        let inputs = studio_inputs(install, tracking, PhoneSettings::default());
+        if let Some(problem) = &inputs.webcam_problem {
+            tracing::warn!(%problem, "the webcam can't track yet");
+        }
+        let extras = Extras { phone: Some(inputs.phone), pose_out: Some(inputs.pose_out) };
+        Self::start_with(document, inputs.webcam, extras, clock, transparency, &base)
+    }
+
+    fn start_with(
+        document: Document,
+        tracker: Box<dyn Tracker>,
+        extras: Extras,
+        clock: Box<dyn PerformClock>,
+        transparency: Transparency,
+        base: &HumanoidPose,
+    ) -> Result<Self, StartError> {
+        let performer = live_performer(Box::new(NoSource), ChannelBuf::NEUTRAL, *base);
         // The viewport reads the tracker's latency while the input owns the tracker: two handles to one.
         let tracker = SharedTracker::new(tracker);
         let observer = clock.observer();
-        let (rig, reader) = LiveRig::start(Box::new(tracker.clone()), TrackerConfig::default(), performer, clock)
-            .map_err(StartError::Wiring)?;
+        let (rig, reader) =
+            LiveRig::start_with(Box::new(tracker.clone()), extras, TrackerConfig::default(), performer, clock)
+                .map_err(StartError::Wiring)?;
         let host = rig.host().map_err(StartError::Wiring)?;
         host.set_expressions(ExpressionSet::starter(), ChannelBuf::NEUTRAL).map_err(StartError::Perform)?;
         let window = OutputHost::new(transparency, PhysicalSize::FULL_HD);
@@ -264,7 +307,16 @@ impl std::fmt::Debug for LiveApp {
     }
 }
 
-/// A tracker with no cameras: what the app performs with until the webcam tracker (#378) is linked in. The life layer
+/// A [`PerformClock`]'s time as the trackers' [`Clock`].
+struct ObservedClock(ClockObserver);
+
+impl Clock for ObservedClock {
+    fn now(&self) -> Seconds {
+        (self.0)()
+    }
+}
+
+/// A tracker with no cameras: what a test performs with, and the app when it has no inputs. The life layer
 /// keeps the character moving, and picking a camera says there is none.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NoTracker;

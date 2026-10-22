@@ -521,3 +521,30 @@ fn without_a_webcam_tracker_the_app_lists_no_cameras_and_says_so_on_a_pick() {
     let error = picked.expect_err("there is no such camera");
     assert_eq!(error.code, omuzaki_ops_api::ErrorCode::NotFound, "{error:?}");
 }
+
+#[test]
+fn the_studio_starts_on_its_real_inputs_and_vmc_out_sends_from_the_perform_thread() {
+    omuzaki_ui::link();
+    // An install with no face models: the webcam lists what it can and says why it can't track, the rest works.
+    let install = tempfile::tempdir().expect("a folder");
+    let app = LiveApp::start_studio(
+        omuzaki_ui::wiring::Document::empty(),
+        install.path(),
+        Box::new(RealClock::new()),
+        Transparency::Fallback,
+        HumanoidPose::REST,
+    )
+    .expect("it starts");
+    let runner = app.runner();
+    let picked = runner.run(request("input.select", args(&[("source", Value::from("iphone"))])));
+    picked.expect("the phone link is wired in, so the iPhone source can be chosen");
+
+    let receiver = std::net::UdpSocket::bind("127.0.0.1:0").expect("a receiver");
+    receiver.set_read_timeout(Some(Duration::from_secs(5))).expect("a timeout");
+    let to = receiver.local_addr().expect("its address").to_string();
+    runner.run(request("input.vmc_out", args(&[("to", Value::from(to.as_str()))]))).expect("VMC out starts");
+    let mut packet = vec![0u8; 65_536];
+    let n = receiver.recv(&mut packet).expect("the performed pose arrives");
+    assert!(packet[..n].starts_with(b"#bundle\0"), "an OSC bundle");
+    runner.run(request("input.vmc_out", args(&[("to", Value::Null)]))).expect("VMC out stops");
+}

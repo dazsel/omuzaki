@@ -21,7 +21,7 @@ use omuzaki_stage::frame::Stage;
 use omuzaki_ui::aux_window::{Backend, Platform, SurfaceRoute, transparency};
 use omuzaki_ui::ds::{Settings, apply_settings};
 use omuzaki_ui::live::viewport::{NativePresenter, Presenter, ViewportError, kit_stage, project_stage};
-use omuzaki_ui::live::wiring::{LiveApp, LiveScene, NoTracker, RealClock};
+use omuzaki_ui::live::wiring::{LiveApp, LiveScene, RealClock};
 use omuzaki_ui::panels::agent::Agents;
 use omuzaki_ui::panels::edit::EditFocus;
 use omuzaki_ui::panels::setup::FirstRun;
@@ -98,20 +98,25 @@ fn start_live(cc: &eframe::CreationContext<'_>, document: Document) -> Option<Li
         }
     });
     let base = stage.as_ref().map_or(HumanoidPose::REST, |(_, stage, _)| LiveScene::base_pose(stage));
-    let mut live =
-        match LiveApp::start_on(document, Box::new(NoTracker), Box::new(RealClock::new()), transparency, base) {
-            Ok(live) => live,
-            Err(error) => {
-                tracing::error!(%error, "the live slice did not start");
-                return None;
-            }
-        };
+    let mut live = match LiveApp::start_studio(document, &install_dir(), Box::new(RealClock::new()), transparency, base)
+    {
+        Ok(live) => live,
+        Err(error) => {
+            tracing::error!(%error, "the live slice did not start");
+            return None;
+        }
+    };
     if let (Some((renderer, stage, presenter)), Some(_)) = (stage, cc.wgpu_render_state.as_ref())
         && let Err(error) = live.attach_viewport(renderer, stage, PROGRAM_SIZE, presenter)
     {
         tracing::error!(%error, "the stage was not attached");
     }
     Some(live)
+}
+
+/// The folder the app is installed in: the executable's, where the release puts the face models and natives.
+fn install_dir() -> PathBuf {
+    std::env::current_exe().ok().and_then(|exe| exe.parent().map(PathBuf::from)).unwrap_or_default()
 }
 
 /// The renderer on eframe's own device, `character` (else the kit's) staged on it, and the presenter that shares its
