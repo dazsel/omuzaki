@@ -259,6 +259,26 @@ impl StatusWatch {
         }
     }
 
+    /// Waits up to `timeout` for a status `pred` accepts that is newer than `version` (from [`version`](Self::version)),
+    /// and returns it.
+    #[must_use]
+    pub fn wait_after(
+        &self,
+        version: u64,
+        timeout: Duration,
+        pred: impl Fn(&BridgeStatus) -> bool,
+    ) -> Option<BridgeStatus> {
+        let deadline = Instant::now() + timeout;
+        let mut state = self.lock();
+        loop {
+            if state.version > version && pred(&state.status) {
+                return Some(state.status.clone());
+            }
+            let left = deadline.checked_duration_since(Instant::now())?;
+            state = self.0.1.wait_timeout(state, left).unwrap_or_else(PoisonError::into_inner).0;
+        }
+    }
+
     /// Waits up to `timeout` until the bridge has polled `n` more times.
     #[must_use]
     pub fn wait_polls(&self, n: u64, timeout: Duration) -> bool {

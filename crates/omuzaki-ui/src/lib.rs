@@ -22,7 +22,8 @@ pub use omuzaki_core::__record_registration;
 // character and stage contracts and the renderer self-register too (part kinds and looks, the stage's facts, shading
 // programs), and the viewport draws with all three. The model registry registers the `model.*` ops,
 // and the face tracker and the phone link their own (the phone's `input.phone` setting). The audio engine registers the
-// `audio.*` ops, the OBS client the `obs.*` ops and the virtual camera its output kind (ADR 0015).
+// `audio.*` ops, the OBS client the `obs.*` ops, the VTube Studio bridge the `vts.*` ops and the virtual camera its
+// output kind (ADR 0015).
 omuzaki_core::define_link! {
     omuzaki_ai::link();
     omuzaki_anim::link();
@@ -37,4 +38,5 @@ omuzaki_core::define_link! {
     omuzaki_track::link();
     omuzaki_track_net::link();
     omuzaki_vcam::link();
+    omuzaki_vts::link();
 }

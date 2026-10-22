@@ -36,9 +36,12 @@ use omuzaki_track_api::tracker::{Tracker, TrackerConfig};
 use omuzaki_track_mock::{FakeCamera, FakeTracker};
 use omuzaki_ui::aux_window::Transparency;
 use omuzaki_ui::live::wiring::{
-    FrameReader, LiveApp, LiveFrame, LiveRig, LiveScene, LoopReport, NoTracker, PerformClock, PerformThread, RealClock,
-    THREAD_NAME, live_performer,
+    FrameReader, FrameTap, LiveApp, LiveFrame, LiveRig, LiveScene, LoopReport, NoTracker, PerformClock, PerformThread,
+    RealClock, THREAD_NAME, live_performer,
 };
+use omuzaki_vts::client::{BridgeStatus, ClientConfig};
+use omuzaki_vts::service::VtsService;
+use omuzaki_vts::testing::{MockConfig, MockModel, MockVts};
 
 struct Counting;
 static ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
@@ -221,6 +224,61 @@ fn fake_camera_to_scenes_at_60_hz_for_10_s_without_a_drop_storm_or_an_allocation
     assert!(tracked as f64 >= scenes as f64 * 0.85, "the tracked face reached the scene: {summary}");
     assert!(ARMED.load(Ordering::Acquire), "the perform thread counted its allocations");
     assert_eq!(warm_allocations.map(|before| after - before), Some(0), "{summary}");
+}
+
+/// The studio's `VTube Studio` path end to end: `FakeCamera`'s tracker → the perform thread → its frame tap → the bridge's
+/// feed → one batched `InjectParameterDataRequest` per VTS frame into the loopback mock, the tracked face's channels
+/// moving the injected values, and still no allocation on the perform thread.
+#[test]
+fn the_perform_thread_feeds_vtube_studio_each_step_without_allocating() {
+    omuzaki_ui::link();
+    let model = MockModel { name: "Kit".into(), ..MockModel::default() };
+    let wall = Arc::new(omuzaki_vts::clock::SystemClock::new());
+    let mock = MockVts::start(&MockConfig { model: Some(model), clock: wall, ..MockConfig::default() }).expect("mock");
+    let vts = VtsService::new().expect("the built-in channel map parses");
+    let config = ClientConfig { port: Some(mock.port()), ..ClientConfig::default() };
+    vts.connect(config, Duration::from_secs(10)).expect("the bridge starts");
+    assert!(eventually(Duration::from_secs(10), || matches!(vts.status(), BridgeStatus::Connected(_))));
+    let injected = || mock.received().iter().filter(|r| r.message_type == "InjectParameterDataRequest").count();
+    let before_run = injected();
+
+    let mut feed = vts.feed();
+    let tap: FrameTap = Box::new(move |frame| feed.push(&frame.channels, frame.tracking == Tracking::Tracking));
+    let performer = live_performer(camera(6.0), ChannelBuf::NEUTRAL, HumanoidPose::REST);
+    let clock = CountingClock { inner: RealClock::new(), warm_up: WARM_UP_S };
+    let (perform, _reader) = PerformThread::spawn_tapped(performer, Box::new(clock), Some(tap)).expect("it starts");
+    let start = Instant::now();
+    assert!(eventually(Duration::from_secs(10), || start.elapsed().as_secs_f64() > WARM_UP_S + 0.5));
+    let (warm, injected_warm) = (ALLOCATIONS.load(Ordering::Relaxed), injected());
+    let window = Duration::from_secs(3);
+    assert!(eventually(window * 2, || start.elapsed().as_secs_f64() > WARM_UP_S + 0.5 + window.as_secs_f64()));
+    let (after, injected_after) = (ALLOCATIONS.load(Ordering::Relaxed), injected());
+    perform.stop().expect("the perform thread stops cleanly");
+
+    // VTS runs at 60 fps in the mock: about one batch per step reached it (a 500 ms keep-alive alone would be 6).
+    let per_second = (injected_after - injected_warm) as f64 / window.as_secs_f64();
+    assert!(per_second >= 60.0 * 0.8, "{per_second:.1} batches per second (before the run: {before_run})");
+    // The tracked face moved what was sent: the jaw took many values over the run.
+    let mut jaw: Vec<i64> = mock
+        .received()
+        .iter()
+        .filter(|r| r.message_type == "InjectParameterDataRequest")
+        .flat_map(|r| r.data["parameterValues"].as_array().cloned().unwrap_or_default())
+        .filter(|v| v["id"] == "OmuzakiJawOpen")
+        .filter_map(|v| v["value"].as_f64().map(|x| (x * 1000.0).round() as i64))
+        .collect();
+    jaw.sort_unstable();
+    jaw.dedup();
+    println!(
+        "VTS feed: {per_second:.1} batches per second over {} s, {} distinct jaw values, {} allocations on the perform \
+         thread after warm-up",
+        window.as_secs(),
+        jaw.len(),
+        after - warm
+    );
+    assert!(jaw.len() >= 10, "the jaw took {} distinct values", jaw.len());
+    assert!(ARMED.load(Ordering::Acquire), "the perform thread counted its allocations");
+    assert_eq!(after - warm, 0, "allocations on the perform thread with the VTS feed tapped in");
 }
 
 #[test]
