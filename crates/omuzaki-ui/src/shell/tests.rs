@@ -597,3 +597,21 @@ fn a_layout_reset_without_a_saver_is_still_not_read_back_from_its_file() {
     harness.state_mut().reset_layout();
     assert_eq!(harness.state().stored("build-compact-a", &layout), None, "a reset layout reads as absent");
 }
+
+#[test]
+fn the_status_bar_names_what_is_selected() {
+    use crate::panels::edit::EditFocus;
+    use omuzaki_char_api::{CharId, PartId};
+    let part = |id: &str| PartId::new(id).expect("a part id");
+    let focus = EditFocus::new(CharId::new("kit").expect("a character id"));
+    let mut harness = plain(vec2(1920.0, 1080.0));
+    harness.state_mut().insert_view(focus.clone());
+    harness.run_steps(2);
+    assert_shows(&harness, "Nothing selected");
+    focus.select(part("head"));
+    harness.run_steps(2);
+    assert_shows(&harness, "Selected: head");
+    focus.set(vec![part("head"), part("hair")]);
+    harness.run_steps(2);
+    assert_shows(&harness, "2 parts selected");
+}

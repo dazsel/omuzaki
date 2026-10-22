@@ -904,11 +904,16 @@ impl Shell {
             (Note::NothingToRedo, _) => say(&ctx, Word::StatusNothingToRedo, &[]),
             (Note::Failed(why), _) => why.clone(),
         };
+        let selection = match self.models.get::<EditFocus>().map(|f| (f.count(), f.primary())) {
+            Some((1, Some(part))) => say(&ctx, Word::StatusSelected, &[("part", part.as_str())]),
+            Some((n, _)) if n > 1 => say(&ctx, Word::StatusSelectedMany, &[("count", &n.to_string())]),
+            _ => say(&ctx, Word::StatusSelection, &[]),
+        };
         let mut show_agent = false;
         Panel::bottom("shell_status").exact_size(STATUS_BAR).frame(frame).show(ui, |ui| {
             ui.horizontal_centered(|ui| {
                 let small = |text: String| RichText::new(text).font(ds.text.small.clone()).color(ds.theme.text2);
-                ui.label(small(say(&ctx, Word::StatusSelection, &[])));
+                ui.label(small(selection));
                 ui.separator();
                 ui.label(small(undo));
                 ui.separator();

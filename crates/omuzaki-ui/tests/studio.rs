@@ -715,7 +715,7 @@ fn request(
 
 /// Two agents on the real executor, three steps by one of them, four requests waiting (three alike), and the first
 /// agent holding the kit's head.
-fn staged(core: &Core) -> Arc<dyn Sessions> {
+fn staged(core: &Core, asking: bool) -> Arc<dyn Sessions> {
     // The sample character, as the studio opens it, so the agent has a head to edit.
     studio::open_character(core.runner.as_ref()).unwrap_or_else(|e| panic!("{e}"));
     let open = |client: &str, transport: Transport, model: Option<&str>| {
@@ -745,12 +745,16 @@ fn staged(core: &Core) -> Arc<dyn Sessions> {
     let switch = omuzaki_ops_api::Need::Person {
         reason: "Switching the model sends your prompts to a different provider from now on.".into(),
     };
-    let approvals = vec![
-        request(1, &designer, "io.export", publish.clone()),
-        request(2, &designer, "io.export", publish.clone()),
-        request(3, &designer, "io.export", publish),
-        request(4, &bot, "assistant.set_model", switch),
-    ];
+    let approvals = if asking {
+        vec![
+            request(1, &designer, "io.export", publish.clone()),
+            request(2, &designer, "io.export", publish.clone()),
+            request(3, &designer, "io.export", publish),
+            request(4, &bot, "assistant.set_model", switch),
+        ]
+    } else {
+        Vec::new()
+    };
     let head = DocPath::parse("characters/kit/parts/head").unwrap_or_else(|e| panic!("{e}"));
     Arc::new(Staged { inner: Arc::clone(&core.sessions), approvals, fences: vec![(designer.id, vec![head])] })
 }
@@ -773,7 +777,7 @@ fn agents_evidence() {
     for (theme, name) in [(omuzaki_ui::ds::ThemeKind::Dark, "dark"), (omuzaki_ui::ds::ThemeKind::Light, "light")] {
         let Some(gpu) = gpu() else { panic!("the evidence needs a Vulkan adapter") };
         let core = core(Document::empty());
-        let sessions = staged(&core);
+        let sessions = staged(&core, true);
         let settings = omuzaki_ui::ds::Settings { theme, ..omuzaki_ui::ds::Settings::default() };
         let mut h = studio_in(&core, Some(gpu), vec2(1920.0, 1080.0), None, settings, sessions);
         h.get_by_role_and_label(Role::Tab, "Build").click();
@@ -858,5 +862,28 @@ fn review_evidence() {
         h.get_by_role_and_label(Role::Tab, "Perform").click();
         until(&mut h, "the review card shows", |h| h.query_all_by_label_contains("1 of 2 approvals").next().is_some());
         save(&mut h, &out, &format!("review-{name}-1366x768.png"));
+    }
+}
+
+/// Who holds what at 1366x768, dark and light (#969): the agent holds the kit's head, the head is selected, and the
+/// inspector shows the note, the outliner the lock and the status bar the holder. No requests wait, so no approval
+/// stack covers the inspector at this size.
+#[test]
+#[ignore = "writes images; run by the visual evidence job"]
+fn fence_evidence() {
+    let Ok(out) = std::env::var("OMUZAKI_EVIDENCE_OUT") else { panic!("set OMUZAKI_EVIDENCE_OUT to a folder") };
+    for (theme, name) in [(omuzaki_ui::ds::ThemeKind::Dark, "dark"), (omuzaki_ui::ds::ThemeKind::Light, "light")] {
+        let Some(gpu) = gpu() else { panic!("the evidence needs a Vulkan adapter") };
+        let core = core(Document::empty());
+        let sessions = staged(&core, false);
+        let settings = omuzaki_ui::ds::Settings { theme, ..omuzaki_ui::ds::Settings::default() };
+        let mut h = studio_in(&core, Some(gpu), vec2(1366.0, 768.0), None, settings, sessions);
+        h.get_by_role_and_label(Role::Tab, "Build").click();
+        h.run_steps(3);
+        h.get_by_label("head").click();
+        until(&mut h, "the fence note shows", |h| {
+            h.query_all_by_label_contains("is working on this part").next().is_some()
+        });
+        save(&mut h, &out, &format!("fence-{name}-1366x768.png"));
     }
 }

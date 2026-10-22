@@ -75,6 +75,8 @@ words! {
 
     StatusBar = "shell-status-bar" => "Status",
     StatusSelection = "shell-status-selection" => "Nothing selected",
+    StatusSelected = "shell-status-selected" => "Selected: {part}",
+    StatusSelectedMany = "shell-status-selected-many" => "{count} parts selected",
     StatusNothingToUndo = "shell-status-nothing-to-undo" => "Nothing to undo",
     StatusUndid = "shell-status-undid" => "Undid {label}",
     StatusRedid = "shell-status-redid" => "Redid {label}",

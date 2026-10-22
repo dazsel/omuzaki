@@ -53,3 +53,12 @@ steps = [
     { run = ["cargo", "test", "--locked", "-p", "omuzaki-ui", "--test", "studio", "--", "--ignored", "--exact", "review_evidence"] },
 ]
 images = ["review-dark-1366x768.png", "review-light-1366x768.png"]
+
+[[case]]
+name = "fence"
+description = "Who holds what over the real studio at 1366x768, dark and light (spine/ui, #969): an agent session holds the kit's head; with the head selected, the inspector shows the note (the person's edit still goes through), the outliner a lock on the head's row, and the status bar \"claude_code holds head\"."
+env = { OMUZAKI_EVIDENCE_OUT = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-ui", "--test", "studio", "--", "--ignored", "--exact", "fence_evidence"] },
+]
+images = ["fence-dark-1366x768.png", "fence-light-1366x768.png"]
