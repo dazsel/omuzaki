@@ -1,0 +1,37 @@
+# A test fake (connectors design D11) that plays a hosted, paid service: it is generated in code and sends
+# nothing, but its manifest says what a real one would (a key, a price, a destination, a plan rule).
+id = "mock-image-paid"
+name = "Mock paid images"
+version = "1.0.0"
+transport = "fake"
+
+[[capabilities]]
+capability = "image"
+inputs = ["image", "text"]
+outputs = ["image"]
+max_count = 8
+
+[auth]
+kind = "api_key"
+secret = "connector/mock-image-paid"
+deliver = { via = "header", name = "x-api-key", scheme = "" }
+
+[cost]
+model = "per_unit"
+unit = "image"
+usd_micros = 40000
+priced = "2026-10-13"
+
+[privacy]
+leaves_machine = true
+destinations = ["mock.invalid"]
+sends = ["prompt", "images"]
+retention = "It keeps nothing: it is a test fake."
+trains_on_inputs = "no"
+
+[licence]
+register = "Omuzaki mock connector"
+outputs = "vendor_terms"
+spdx = "LicenseRef-Omuzaki-Mock"
+commercial = "ok"
+requires_plan = ["paid"]

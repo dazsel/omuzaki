@@ -26,6 +26,7 @@
 #![allow(clippy::doc_markdown)]
 
 pub mod blendshapes;
+pub mod calibration;
 pub mod detector;
 pub mod error;
 pub mod frame;
