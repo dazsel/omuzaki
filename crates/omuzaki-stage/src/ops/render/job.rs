@@ -190,7 +190,8 @@ fn attachment_bytes_per_pixel(samples: u64) -> u64 {
     8 + if samples > 1 { 8 * samples } else { 0 } + DEPTH_BYTES * samples
 }
 
-/// The side, in texels, of the shadow map a shadow quality allocates (`shadow/map.rs`, `settings`). Zero when off.
+/// The side, in texels, of the shadow map a shadow quality allocates (`shadow/map.rs`, `settings`). Zero when off. The
+/// estimate counts one map, as every rig shadows one key; each further casting light at `High` adds another.
 fn shadow_side(shadows: ShadowQuality) -> u64 {
     match shadows {
         ShadowQuality::Off => 0,

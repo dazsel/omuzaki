@@ -4,11 +4,12 @@
 //! Three pieces, none of which touch the renderer or the stage's character, so they can be tested and measured alone:
 //! - [`Mailbox`]: a lock-free triple buffer, newest wins, so a caller on another thread gives the render thread a resolved
 //!   scene without the render thread waiting for it.
-//! - [`fill`]: copies the active camera, the lights, the background, the post look and the outline light into the
-//!   [`Scene`] a frame renders. Hot: after [`reserve`] it allocates nothing.
-//! - [`Applier`]: remembers the ground and the skin floor last committed and says, by value, which of them the next
-//!   scene changes. Both need renderer resources (a disc mesh, a material update), so they are [`Owed`] to whoever
-//!   owns the renderer, only when they change, and stay owed until the caller commits that the work succeeded.
+//! - [`fill`]: copies the active camera, the lights, the background, the fog, the post look and the outline light into
+//!   the [`Scene`] a frame renders. Hot: after [`reserve`] it allocates nothing.
+//! - [`Applier`]: remembers the ground, the skin floor and the environment's source last committed and says, by value,
+//!   which of them the next scene changes. They need renderer resources (a disc mesh, a material update, an
+//!   environment), so they are [`Owed`] to whoever owns the renderer, only when they change, and stay owed until the
+//!   caller commits that the work succeeded.
 
 use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -16,7 +17,8 @@ use std::sync::{Mutex, PoisonError};
 
 use omuzaki_render_api::Scene;
 use omuzaki_render_api::limits::MAX_LIGHTS;
-use omuzaki_stage_api::GroundKind;
+use omuzaki_stage_api::{EnvironmentSource, GroundKind};
+use omuzaki_store_api::ContentHash;
 
 use super::resolve::{ResolvedGround, ResolvedScene};
 use omuzaki_render_api::Camera;
@@ -26,8 +28,8 @@ pub fn reserve(scene: &mut Scene) {
     scene.lights.reserve(MAX_LIGHTS.saturating_sub(scene.lights.len()));
 }
 
-/// Copies `resolved` into `scene`: the active camera, the lights, the background, the post look and the outline light.
-/// The instances, the joints, the frame info and what a scene leaves to the caller (fog, environment) stay as they are.
+/// Copies `resolved` into `scene`: the active camera, the lights, the background, the fog, the post look and the outline
+/// light. The instances, the joints, the frame info and the environment (whose handle the stage holds) stay as they are.
 ///
 /// A resolved scene without cameras leaves the camera of `scene` alone, so a scene with no camera keeps the one the
 /// stage was made with. Allocation-free once [`reserve`] has run on `scene`.
@@ -38,6 +40,7 @@ pub fn fill(resolved: &ResolvedScene, scene: &mut Scene) {
     scene.lights.clear();
     scene.lights.extend_from_slice(resolved.lights.as_slice());
     scene.background = resolved.background;
+    scene.fog = resolved.fog;
     scene.post = resolved.post;
     scene.outline_light = resolved.outline_light;
 }
@@ -51,6 +54,12 @@ pub struct Owed {
     /// The override for every skin material's shadow floor: `Some(Some(v))` to set or change it, `Some(None)` to
     /// clear it (back to each material's own floor), `None` when it is as before.
     pub skin_floor: Option<Option<f32>>,
+    /// The environment to make from now on: `Some(Some(source))` for a new sky or HDRI, `Some(None)` to release it,
+    /// `None` when it is as before. Its intensity, turn and toon ramp are values and owe nothing.
+    pub environment: Option<Option<EnvironmentSource>>,
+    /// The backdrop picture to upload from now on: `Some(Some(asset))` for a new one, `Some(None)` to release it,
+    /// `None` when it is as before. Its fit and bars are values and owe nothing.
+    pub image: Option<Option<ContentHash>>,
 }
 
 impl Owed {
@@ -60,12 +69,14 @@ impl Owed {
     }
 }
 
-/// What the render thread has applied so far. Starts at "no ground, no override", the state of a stage that has not
-/// been given a scene.
+/// What the render thread has applied so far. Starts at "no ground, no override, no environment", the state of a stage
+/// that has not been given a scene.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Applier {
     ground: Option<ResolvedGround>,
     skin_floor: Option<f32>,
+    environment: Option<EnvironmentSource>,
+    image: Option<ContentHash>,
 }
 
 impl Applier {
@@ -79,7 +90,8 @@ impl Applier {
     /// next call instead of the applier believing it was done.
     ///
     /// The ground is owed when its kind, radius or opacity differs from the last committed (a `None` ground and a
-    /// missing one are the same thing), and the skin floor when the override is set, changed or cleared.
+    /// missing one are the same thing), the skin floor when the override is set, changed or cleared, and the
+    /// environment when its source is added, changed or removed, and the backdrop picture when its asset is.
     /// Allocation-free once [`reserve`] has run on `scene`.
     pub fn apply(&self, resolved: &ResolvedScene, scene: &mut Scene) -> Owed {
         fill(resolved, scene);
@@ -90,6 +102,14 @@ impl Applier {
         }
         if resolved.skin_floor != self.skin_floor {
             owed.skin_floor = Some(resolved.skin_floor);
+        }
+        let source = resolved.environment.map(|e| e.source);
+        if source != self.environment {
+            owed.environment = Some(source);
+        }
+        let image = resolved.backdrop_image.map(|i| i.asset);
+        if image != self.image {
+            owed.image = Some(image);
         }
         owed
     }
@@ -103,6 +123,12 @@ impl Applier {
         if let Some(skin_floor) = owed.skin_floor {
             self.skin_floor = skin_floor;
         }
+        if let Some(environment) = owed.environment {
+            self.environment = environment;
+        }
+        if let Some(image) = owed.image {
+            self.image = image;
+        }
     }
 }
 
@@ -115,8 +141,9 @@ impl Applier {
 pub(crate) struct SceneLink {
     applier: Applier,
     owed: Owed,
-    /// What the last scene wants (its ground and skin floor), in a resolved scene that is never rendered, and a scene
-    /// to work the debt out in. Behind a box so the stage stays small.
+    /// What the last scene wants (its ground, skin floor, environment and backdrop picture, with their pixels), in a
+    /// resolved scene that is never rendered, and a scene to work the debt out in. Behind a box so the stage stays
+    /// small.
     debt: Box<Debt>,
 }
 
@@ -142,11 +169,22 @@ impl SceneLink {
     /// [`commit`](Self::commit). Allocation-free once [`reserve`] has run on `scene`.
     pub(crate) fn set(&mut self, resolved: &ResolvedScene, scene: &mut Scene) -> Owed {
         self.owed = self.applier.apply(resolved, scene);
-        // Only the two things a debt is made of are kept, for `commit` to compare again.
+        // Only what a debt is made of is kept, for `commit` to compare again and the stage to pay from. The pixels are
+        // shared, so keeping them costs a reference count.
         self.debt.wanted.ground = resolved.ground;
         self.debt.wanted.skin_floor = resolved.skin_floor;
+        self.debt.wanted.environment = resolved.environment;
+        self.debt.wanted.hdri.clone_from(&resolved.hdri);
+        self.debt.wanted.backdrop_image = resolved.backdrop_image;
+        self.debt.wanted.image.clone_from(&resolved.image);
         self.debt.set = true;
         self.owed
+    }
+
+    /// What the last [`set`](Self::set) wants: its ground, skin floor, environment, backdrop picture and their pixels
+    /// (nothing else of it is kept).
+    pub(crate) fn wanted(&self) -> &ResolvedScene {
+        &self.debt.wanted
     }
 
     /// What the last [`set`](Self::set) still owes the renderer.
@@ -191,7 +229,10 @@ const TAKING: u8 = 0b1000;
 // SAFETY: every scene is touched only by the holder of its index (the poster under its lock, the taker under `TAKING`),
 // indices change hands only through `middle`'s atomic exchanges, which order each side's writes before the other side's
 // reads, and `ResolvedScene` is `Send`.
-#[allow(unsafe_code, reason = "the triple buffer shares its scenes by index; the SAFETY comment says why that is sound")]
+#[allow(
+    unsafe_code,
+    reason = "the triple buffer shares its scenes by index; the SAFETY comment says why that is sound"
+)]
 unsafe impl Sync for Mailbox {}
 
 impl std::fmt::Debug for Mailbox {

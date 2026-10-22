@@ -1,0 +1,80 @@
+# stage: our own design (#1165), not transcribed from anything. Lighting numbers only.
+# The look of a small concert stage seen from the floor: coloured spots hung on the truss above, a strong cool rim from
+# behind, a soft front light so the face still reads, and a near-black house. Three.js units (render-api D10), with
+# positions in metres from the feet of a character of the reference height (0.966 m).
+name = "stage"
+source = "our own design: a small concert stage lit from the truss, seen from the floor"
+title = "Stage"
+summary = "Coloured spots from above, a strong cool rim and a near-black stage: a live show for performances and music streams."
+tags = ["stage", "coloured", "performance", "dark", "stream"]
+exposure = 1.0
+background = "#08070d"
+skin_floor = 0.45
+
+[hemisphere]
+sky = "#3a3060"
+ground = "#0a0810"
+intensity = 0.35
+
+# A soft, slightly warm front light from the stage lip: enough for the face, never the brightest light on it.
+[key]
+colour = "#ffe8dc"
+intensity = 0.45
+position = [-0.6, 1.6, 2.4]
+
+[key.shadow]
+map_size = 1024
+left = -0.8
+right = 0.8
+top = 0.8
+bottom = -0.8
+near = 0.1
+far = 8.0
+bias = -0.0004
+normal_bias = 0.01
+
+[rim]
+colour = "#8fb0ff"
+intensity = 2.6
+position = [1.4, 2.0, -2.4]
+
+# Toon light tints both sides of a surface (the shade side shows the material's shade colour times the light), so the
+# spots keep their colours apart by where their cones fall, not by which side they light: a pool on the head, one on
+# the shoulders and chest, and a narrow amber one on the crown.
+[[spot]]
+# Magenta from high stage left, a tight pool on the head.
+id = "spot_left"
+colour = "#ff3fa0"
+intensity = 3.2
+position = [-0.9, 1.6, 0.6]
+target = [0.0, 0.8, 0.0]
+cone = 12.0
+penumbra = 0.45
+distance = 4.0
+
+[[spot]]
+# Cyan from high stage right, on the shoulders and chest.
+id = "spot_right"
+colour = "#30c8ff"
+intensity = 3.0
+position = [0.9, 1.6, 0.6]
+target = [0.0, 0.5, 0.0]
+cone = 15.0
+penumbra = 0.45
+distance = 4.0
+
+[[spot]]
+# Amber from the truss behind, on the crown and the hair.
+id = "spot_top"
+colour = "#ffb05a"
+intensity = 1.5
+position = [0.0, 2.0, -0.5]
+target = [0.0, 0.9, 0.0]
+cone = 10.0
+penumbra = 0.5
+distance = 4.0
+
+[bloom]
+strength = 0.3
+radius = 0.5
+threshold = 0.95

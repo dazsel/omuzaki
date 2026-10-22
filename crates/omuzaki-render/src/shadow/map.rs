@@ -1,15 +1,21 @@
-//! The shadow map of one render target and the settings its lookup reads.
+//! The shadow maps of one render target and the settings their lookup reads.
 //!
-//! One depth texture, one uniform buffer and two bind groups over them: the *caster* group the `Shadows` pass draws
-//! with (the matrix alone, because the map is its depth target) and the *receiver* group the lit passes sample (matrix,
-//! lookup settings, the map and a comparison sampler). The map lives with the target's attachments, so a live frame
-//! that skips the redraw still finds the map it drew a frame or two ago, and two targets never share one.
+//! One layered depth texture (a layer per shadow-casting directional light, up to
+//! [`MAX_SHADOW_MAPS`](omuzaki_render_api::limits::MAX_SHADOW_MAPS)), two uniform buffers and two bind groups: the
+//! *caster* group the `Shadows` pass draws with (one map's matrix, picked by a dynamic offset, because that map's layer
+//! is its depth target) and the *receiver* group the lit passes sample (every map's matrix and lookup settings, the
+//! layers and a comparison sampler). The maps live with the target's attachments, so a live frame that skips a redraw
+//! still finds the maps it drew a frame or two ago, and two targets never share one.
 //!
-//! The receiver group exists from the target's first frame, as a one-texel map with sampling switched off, so the lit
-//! passes bind it unconditionally and a frame without shadows costs them one uniform read.
+//! Each map keeps its own state: the light it belongs to, the direction it was drawn for and the frames since, so the
+//! live interval and a turned light redraw it alone.
+//!
+//! The receiver group exists from the target's first frame, as one one-texel layer with sampling switched off, so the
+//! lit passes bind it unconditionally and a frame without shadows costs them one uniform read per directional light.
 
 use bytemuck::{Pod, Zeroable};
 use omuzaki_core::glam::Vec3;
+use omuzaki_render_api::limits::MAX_SHADOW_MAPS;
 use omuzaki_render_api::{Quality, QualityMode, ShadowQuality};
 use wgpu::util::DeviceExt;
 
@@ -40,83 +46,133 @@ pub(crate) fn settings(quality: ShadowQuality) -> Option<(u32, f32)> {
     }
 }
 
-/// What `struct Shadow` in `shader/toon.wgsl` reads (and the first member, `view_proj`, is what `shadow.wgsl` reads).
+/// One map's entry in `struct Shadows` of `shader/toon.wgsl`.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct ShadowUniform {
     view_proj: [[f32; 4]; 4],
-    /// x: the shadow-casting light's slot plus one (0: no shadow this frame), y: 1 / map size, z: depth bias in clip
-    /// depth, w: normal bias in metres.
+    /// x: the shadow-casting light's slot plus one (0: this map is off), y: 1 / map size, z: depth bias in clip depth,
+    /// w: normal bias in metres.
     params: [f32; 4],
     /// x: the spacing of the 3 x 3 comparison taps, in texels.
     kernel: [f32; 4],
 }
 
-/// Byte offset of `params` in the uniform: the part that switches sampling on and off.
+/// Byte offset of `params` in an entry: the part that switches a map on and off.
 const PARAMS_OFFSET: u64 = 64;
+/// Bytes between two entries of the receiver uniform (a WGSL uniform array's stride).
+const ENTRY_BYTES: u64 = size_of::<ShadowUniform>() as u64;
+/// Bytes between two matrices of the caster uniform: the dynamic offsets must be multiples of the device's
+/// `min_uniform_buffer_offset_alignment`, which is at most 256.
+const CASTER_STRIDE: u64 = 256;
+/// The size of one caster binding: the matrix `shadow.wgsl` reads.
+const CASTER_BYTES: u64 = 64;
 
-/// The shadow map of one target. See the module docs.
-pub(crate) struct ShadowMap {
-    size: u32,
-    depth: wgpu::TextureView,
-    uniform: wgpu::Buffer,
-    caster_group: wgpu::BindGroup,
-    receiver_group: wgpu::BindGroup,
-    /// The light direction the map was last drawn for, if it holds a drawing at all.
-    drawn_for: Option<Vec3>,
+/// What one map holds and for which light.
+#[derive(Copy, Clone, Default)]
+struct MapState {
+    /// The light slot and direction the map was last drawn for, if it holds a drawing at all.
+    drawn_for: Option<(usize, Vec3)>,
     /// Frames since the last drawing, counting the current one.
     since_drawn: u32,
-    /// Whether the uniform currently tells the lookup to sample.
+    /// Whether the uniform currently tells the lookup to sample this map.
     sampling: bool,
 }
 
-impl ShadowMap {
-    /// A map of `size` texels a side with sampling off.
-    pub(crate) fn new(shared: &Shared, size: u32) -> Self {
+/// The shadow maps of one target. See the module docs.
+pub(crate) struct ShadowMaps {
+    size: u32,
+    /// One view per layer, each the depth target of its map's drawing.
+    layers: Vec<wgpu::TextureView>,
+    uniform: wgpu::Buffer,
+    casters: wgpu::Buffer,
+    caster_group: wgpu::BindGroup,
+    receiver_group: wgpu::BindGroup,
+    maps: [MapState; MAX_SHADOW_MAPS],
+}
+
+impl ShadowMaps {
+    /// `layers` maps of `size` texels a side (at least one layer), with sampling off.
+    pub(crate) fn new(shared: &Shared, size: u32, layers: usize) -> Self {
         let device = &shared.gpu.device;
-        let depth = device
-            .create_texture(&wgpu::TextureDescriptor {
-                label: Some("shadow map"),
-                size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: DEPTH_FORMAT,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
+        #[allow(clippy::cast_possible_truncation)] // at most MAX_SHADOW_MAPS
+        let count = layers.clamp(1, MAX_SHADOW_MAPS) as u32;
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("shadow maps"),
+            size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: count },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: DEPTH_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let all = texture.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+        let layers = (0..count)
+            .map(|layer| {
+                texture.create_view(&wgpu::TextureViewDescriptor {
+                    label: Some("shadow map layer"),
+                    dimension: Some(wgpu::TextureViewDimension::D2),
+                    base_array_layer: layer,
+                    array_layer_count: Some(1),
+                    ..Default::default()
+                })
             })
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let off = ShadowUniform::zeroed();
+            .collect();
         let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("shadow uniform"),
-            contents: bytemuck::bytes_of(&off),
+            contents: bytemuck::bytes_of(&[ShadowUniform::zeroed(); MAX_SHADOW_MAPS]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let casters = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("shadow casters"),
+            size: CASTER_STRIDE * MAX_SHADOW_MAPS as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
         let caster_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("shadow caster"),
             layout: &shared.layouts.shadow_caster,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() }],
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &casters,
+                    offset: 0,
+                    size: wgpu::BufferSize::new(CASTER_BYTES),
+                }),
+            }],
         });
         let receiver_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("shadow receiver"),
             layout: &shared.layouts.shadow_receiver,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&depth) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&all) },
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: wgpu::BindingResource::Sampler(&shared.defaults.shadow_compare),
                 },
             ],
         });
-        Self { size, depth, uniform, caster_group, receiver_group, drawn_for: None, since_drawn: 0, sampling: false }
+        Self {
+            size,
+            layers,
+            uniform,
+            casters,
+            caster_group,
+            receiver_group,
+            maps: [MapState::default(); MAX_SHADOW_MAPS],
+        }
     }
 
-    /// Replaces the map with one of `size` texels if it is not that size already (the quality changed). The new map is
-    /// empty, so the next frame with a caster redraws it.
-    pub(crate) fn resize(&mut self, shared: &Shared, size: u32) {
-        if self.size != size {
-            *self = Self::new(shared, size);
+    /// Makes room for `count` maps of `size` texels, replacing the texture if it is another size or has too few layers
+    /// (the quality or the rig changed). New maps are empty, so the next frame redraws them.
+    pub(crate) fn resize(&mut self, shared: &Shared, size: u32, count: usize) {
+        if self.size != size || self.layers.len() < count {
+            *self = Self::new(shared, size, count);
         }
     }
 
@@ -125,64 +181,86 @@ impl ShadowMap {
         &self.receiver_group
     }
 
-    /// Whether this frame must redraw the map, and counts the frame. Offline frames always do (frame-exact, no history);
-    /// live frames redraw every `shadow_interval`-th frame, and at once when there is no drawing yet or the light turned.
-    pub(crate) fn due(&mut self, quality: &Quality, to_light: Vec3) -> bool {
-        self.since_drawn = self.since_drawn.saturating_add(1);
-        let current = self.drawn_for.is_some_and(|drawn| drawn.abs_diff_eq(to_light, SAME_DIRECTION));
-        quality.mode == QualityMode::Offline || !current || self.since_drawn >= u32::from(quality.shadow_interval)
+    /// Whether map `index` must be redrawn this frame for the light in `slot` toward `to_light`, and counts the frame.
+    /// Offline frames always redraw (frame-exact, no history); live frames redraw every `shadow_interval`-th frame, and
+    /// at once when the map holds no drawing yet or one for another light or direction.
+    pub(crate) fn due(&mut self, index: usize, quality: &Quality, slot: usize, to_light: Vec3) -> bool {
+        let Some(map) = self.maps.get_mut(index) else { return false };
+        map.since_drawn = map.since_drawn.saturating_add(1);
+        let current = map
+            .drawn_for
+            .is_some_and(|(drawn_slot, drawn)| drawn_slot == slot && drawn.abs_diff_eq(to_light, SAME_DIRECTION));
+        quality.mode == QualityMode::Offline || !current || map.since_drawn >= u32::from(quality.shadow_interval)
     }
 
-    /// Starts the render pass that draws casters into the map, clearing it to the far plane.
-    pub(crate) fn begin_pass<'e>(&self, encoder: &'e mut wgpu::CommandEncoder) -> wgpu::RenderPass<'e> {
-        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+    /// Starts the render pass that draws casters into map `index`, clearing it to the far plane. `None` past the
+    /// layers [`resize`](Self::resize) made room for.
+    pub(crate) fn begin_pass<'e>(
+        &self,
+        encoder: &'e mut wgpu::CommandEncoder,
+        index: usize,
+    ) -> Option<wgpu::RenderPass<'e>> {
+        let view = self.layers.get(index)?;
+        Some(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("shadow map"),
             color_attachments: &[],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &self.depth,
+                view,
                 depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
                 stencil_ops: None,
             }),
             timestamp_writes: None,
             occlusion_query_set: None,
             multiview_mask: None,
-        })
+        }))
     }
 
-    /// The caster group, for the pass that draws into the map.
-    pub(crate) fn caster_group(&self) -> &wgpu::BindGroup {
-        &self.caster_group
+    /// The caster group and the dynamic offset that picks map `index`'s matrix, for the pass that draws into it.
+    pub(crate) fn caster_group(&self, index: usize) -> (&wgpu::BindGroup, u32) {
+        #[allow(clippy::cast_possible_truncation)] // at most MAX_SHADOW_MAPS * 256
+        (&self.caster_group, (index as u64 * CASTER_STRIDE) as u32)
     }
 
-    /// Publishes the matrix and settings of the map about to be drawn (shadows on, for the light in `light_slot`).
+    /// Publishes the matrix and settings of map `index` about to be drawn for the light in `light_slot` (that map on).
     pub(crate) fn publish(
         &mut self,
         queue: &wgpu::Queue,
+        index: usize,
         fit: &Fit,
         light_slot: usize,
         tap_spacing: f32,
         to_light: Vec3,
     ) {
+        let Some(map) = self.maps.get_mut(index) else { return };
         #[allow(clippy::cast_precision_loss)] // slots and sizes are tiny
         let uniform = ShadowUniform {
             view_proj: fit.view_proj.to_cols_array_2d(),
             params: [(light_slot + 1) as f32, 1.0 / self.size as f32, DEPTH_BIAS / fit.depth_range, NORMAL_BIAS],
             kernel: [tap_spacing, 0.0, 0.0, 0.0],
         };
-        queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&uniform));
-        self.drawn_for = Some(to_light);
-        self.since_drawn = 0;
-        self.sampling = true;
+        queue.write_buffer(&self.uniform, index as u64 * ENTRY_BYTES, bytemuck::bytes_of(&uniform));
+        queue.write_buffer(&self.casters, index as u64 * CASTER_STRIDE, bytemuck::bytes_of(&uniform.view_proj));
+        *map = MapState { drawn_for: Some((light_slot, to_light)), since_drawn: 0, sampling: true };
     }
 
-    /// Switches sampling off (shadows off, or nothing left to cast), forgetting the drawing.
-    pub(crate) fn disable(&mut self, queue: &wgpu::Queue) {
-        if self.sampling {
-            queue.write_buffer(&self.uniform, PARAMS_OFFSET, bytemuck::bytes_of(&[0.0f32; 4]));
-            self.sampling = false;
+    /// Switches map `index` off (its light no longer casts, or nothing is left to cast), forgetting its drawing.
+    pub(crate) fn disable(&mut self, queue: &wgpu::Queue, index: usize) {
+        let Some(map) = self.maps.get_mut(index) else { return };
+        if map.sampling {
+            queue.write_buffer(
+                &self.uniform,
+                index as u64 * ENTRY_BYTES + PARAMS_OFFSET,
+                bytemuck::bytes_of(&[0.0f32; 4]),
+            );
         }
-        self.drawn_for = None;
-        self.since_drawn = 0;
+        *map = MapState::default();
+    }
+
+    /// Switches off every map from `first` on.
+    pub(crate) fn disable_from(&mut self, queue: &wgpu::Queue, first: usize) {
+        for index in first..MAX_SHADOW_MAPS {
+            self.disable(queue, index);
+        }
     }
 }
 
@@ -193,7 +271,15 @@ mod tests {
     #[test]
     fn the_uniform_is_what_the_shader_declares() {
         assert_eq!(size_of::<ShadowUniform>(), 64 + 16 + 16);
+        assert_eq!(ENTRY_BYTES % 16, 0, "a uniform array's stride is a multiple of 16");
         assert_eq!(std::mem::offset_of!(ShadowUniform, params) as u64, PARAMS_OFFSET);
+        const { assert!(CASTER_BYTES <= CASTER_STRIDE) };
+    }
+
+    #[test]
+    fn the_shader_holds_as_many_maps_as_the_contract_allows() {
+        let declared = format!("const SHADOW_MAPS: u32 = {MAX_SHADOW_MAPS}u;");
+        assert!(include_str!("../shader/toon.wgsl").contains(&declared), "toon.wgsl declares {declared}");
     }
 
     #[test]

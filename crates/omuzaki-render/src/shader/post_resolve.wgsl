@@ -6,6 +6,8 @@
 // colour weighted by alpha. Tone mapping before averaging is what keeps a bright edge from fizzing; it matches the
 // spike's per-fragment tone mapping. After the average come the effects that live in display space: grade, grain and a
 // whisper of dither, all on the straight colour, so alpha is never touched and a transparent pixel stays transparent.
+// Last, a backdrop shown as authored (a gradient or a texture) is laid under the result in those encoded values, as a
+// compositor lays a transparent output over a picture.
 
 struct Params {
     exposure: f32,
@@ -21,7 +23,18 @@ struct Params {
     seed: vec2<u32>,     // the frame index, low and high word
     flags: u32,          // see FLAG_*
     dither: f32,         // amplitude of the dither, display units (one output level)
+    backdrop: u32,       // 0: none, 1: the gradient, 2: the texture over the gradient
+    backdrop_flags: u32, // the backdrop texture's DECODE_SRGB (1) and PREMULTIPLIED (2), as for materials
+    uv_scale: vec2<f32>, // where the texture is read: uv = frame position (0..1) * uv_scale + uv_offset
+    top: vec4<f32>,      // the gradient's ends, premultiplied, sRGB-encoded
+    bottom: vec4<f32>,
+    uv_offset: vec2<f32>,
 }
+
+const BACKDROP_GRADIENT: u32 = 1u;
+const BACKDROP_TEXTURE: u32 = 2u;
+const DECODE_SRGB: u32 = 1u;
+const PREMULTIPLIED: u32 = 2u;
 
 const FLAG_GLOW: u32 = 1u;
 const FLAG_DEPTH_OF_FIELD: u32 = 2u;
@@ -33,6 +46,9 @@ const FLAGS_AFTER_AVERAGE: u32 = 28u; // grade, grain and dither
 @group(0) @binding(0) var colour: texture_2d<f32>;
 @group(0) @binding(1) var colour_sampler: sampler;
 @group(1) @binding(0) var<uniform> params: Params;
+// The backdrop texture, read through its own sampler and mips; a 1x1 stand-in when there is none.
+@group(1) @binding(1) var backdrop_image: texture_2d<f32>;
+@group(1) @binding(2) var backdrop_sampler: sampler;
 // Bloom's glow: linear and premultiplied, already scaled by the effect's strength.
 @group(2) @binding(0) var glow_image: texture_2d<f32>;
 @group(2) @binding(1) var glow_sampler: sampler;
@@ -177,8 +193,31 @@ fn finish(straight: vec3<f32>, pixel: vec2<f32>) -> vec3<f32> {
     return clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
+// What the backdrop shows at frame position `at` (0..1, rows top to bottom), premultiplied and sRGB-encoded, given the
+// texture's sample there (`texel`, read in uniform control flow so its mips are chosen right).
+fn backdrop_at(at: vec2<f32>, uv: vec2<f32>, texel: vec4<f32>) -> vec4<f32> {
+    let behind = mix(params.top, params.bottom, clamp(at.y, 0.0, 1.0));
+    let inside = all(uv >= vec2<f32>(0.0)) && all(uv <= vec2<f32>(1.0));
+    if (params.backdrop != BACKDROP_TEXTURE || !inside) {
+        return behind;
+    }
+    let alpha = texel.a;
+    var rgb = texel.rgb;
+    if ((params.backdrop_flags & PREMULTIPLIED) != 0u) {
+        rgb = select(vec3<f32>(0.0), rgb / alpha, alpha > 0.0);
+    }
+    if ((params.backdrop_flags & DECODE_SRGB) == 0u) {
+        // Sampled in linear light (an sRGB view decodes it, a linear texture is linear): back to display values.
+        rgb = srgb_encode(clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0)));
+    }
+    return vec4<f32>(rgb * alpha, alpha) + behind * (1.0 - alpha);
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    let at = in.clip.xy * params.ratio / params.internal;
+    let uv = at * params.uv_scale + params.uv_offset;
+    let texel = textureSample(backdrop_image, backdrop_sampler, uv);
     var sum = vec4<f32>(0.0);
     var count = 1.0;
     if (params.taps == 0u) {
@@ -202,8 +241,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let straight = select(vec3<f32>(0.0), encoded / alpha, alpha > 0.0);
         encoded = finish(straight, in.clip.xy) * alpha;
     }
-    if (params.premultiplied == 1u) {
-        return vec4<f32>(encoded, alpha);
+    var coverage = alpha;
+    if (params.backdrop != 0u) {
+        let behind = backdrop_at(at, uv, texel);
+        encoded = encoded + behind.rgb * (1.0 - alpha);
+        coverage = alpha + behind.a * (1.0 - alpha);
     }
-    return vec4<f32>(select(vec3<f32>(0.0), encoded / alpha, alpha > 0.0), alpha);
+    if (params.premultiplied == 1u) {
+        return vec4<f32>(encoded, coverage);
+    }
+    return vec4<f32>(select(vec3<f32>(0.0), encoded / coverage, coverage > 0.0), coverage);
 }
