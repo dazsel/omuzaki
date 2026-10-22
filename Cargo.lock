@@ -4523,6 +4523,7 @@ dependencies = [
  "omuzaki-secrets-api",
  "omuzaki-secrets-mock",
  "omuzaki-stage",
+ "omuzaki-stage-api",
  "omuzaki-store",
  "omuzaki-store-api",
  "omuzaki-stream",
