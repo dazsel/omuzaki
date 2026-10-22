@@ -26,8 +26,10 @@ use omuzaki_ui::aux_window::Transparency;
 use omuzaki_ui::ds::Settings;
 use omuzaki_ui::live::latency::LatencyMeter;
 use omuzaki_ui::live::panel::LivePanel;
-use omuzaki_ui::live::viewport::{ReadbackPresenter, StagePanel, kit_stage, published};
+use omuzaki_ui::live::viewport::{ReadbackPresenter, StagePanel, kit_stage, project_stage, published};
 use omuzaki_ui::live::wiring::{LiveApp, LiveScene, RealClock};
+use omuzaki_ui::studio;
+use omuzaki_ui::wiring::{Document, core_on};
 
 /// A tracker replaying `seconds` of a synthetic face at 30 fps.
 fn tracker(seconds: f32) -> FakeTracker {
@@ -129,6 +131,58 @@ fn the_kit_character_is_drawn_and_moves_before_any_camera_is_chosen() {
     assert!(changed_pixels(&first, &second) > 0, "the character moves on the life layer alone");
     assert_eq!(meter.reading(), None, "no camera frame has reached the picture, so the latency is still unknown");
     app.shutdown().expect("a clean shutdown");
+}
+
+/// The live slice over the project in `dir`, as `main.rs` starts it: the character the studio opens on, read from the
+/// document before the executor takes it, staged at `size`; and the first picture it draws.
+fn project_picture(dir: &std::path::Path, size: UVec2) -> Image {
+    omuzaki_ui::link();
+    let document = Document::project(dir).expect("the project opens");
+    let (id, def) = studio::character_to_stage(&document).expect("the character reads");
+    let mut renderer = WgpuRenderer::headless(&HeadlessOptions { adapter: AdapterPreference::Software })
+        .expect("a software adapter (install mesa-vulkan-drivers)");
+    let stage = project_stage(&mut renderer, &id, &def, size).expect("the project's stage starts");
+    let base = LiveScene::base_pose(&stage);
+    let tracker = Box::new(FakeTracker::scripted(Vec::new()));
+    let mut app = LiveApp::start_on(document, tracker, Box::new(RealClock::new()), Transparency::Fallback, base)
+        .expect("the live slice starts");
+    assert_eq!(
+        studio::open_character(app.runner().as_ref()).expect("opens"),
+        id,
+        "the stage shows what the studio opens"
+    );
+    app.attach_viewport(renderer, stage, size, Box::new(ReadbackPresenter::default())).expect("the stage attaches");
+    let ctx = egui::Context::default();
+    assert!(until(LIMIT, || app.show(&ctx), || published(&ctx).is_some()), "the stage draws its first frame");
+    let picture = app.viewport_mut().expect("attached").snapshot().expect("the picture reads back");
+    app.shutdown().expect("a clean shutdown");
+    picture
+}
+
+#[test]
+fn the_live_stage_shows_the_projects_character_as_the_person_left_it() {
+    omuzaki_ui::link();
+    let size = UVec2::new(320, 400);
+    let (plain, wide) = (tempfile::tempdir().expect("a folder"), tempfile::tempdir().expect("a folder"));
+    // One project left as made; in the other the person widened the head before quitting. The bust is framed from the
+    // head, so the wider one is framed wider too: the pictures differ all over, not in a count of pixels.
+    let core = core_on(Document::project(wide.path()).expect("opens"), omuzaki_ops_api::Services::default())
+        .expect("the ops start");
+    let id = studio::open_character(core.runner.as_ref()).expect("the sample is made");
+    let head = omuzaki_char_api::PartId::new("head").expect("an id");
+    let at = omuzaki_char_api::paths::part_params(&id, &head).join("cranium").join("half_width");
+    let width = core.runner.get(&at, &Grants::person()).expect("reads").and_then(|v| v.as_f64()).expect("a head width");
+    let wider = width * 1.5;
+    let args =
+        serde_json::json!({"character": id.as_str(), "part": "head", "path": "cranium/half_width", "value": wider});
+    core.runner.run(request("part.set_param", args)).expect("the head widens");
+    drop(core);
+
+    let (before, after) = (project_picture(plain.path(), size), project_picture(wide.path(), size));
+    let changed = changed_pixels(&before, &after);
+    let drawn = drawn_pixels(&before);
+    assert!(drawn * 20 > (size.x * size.y) as usize, "the project's character is drawn: {drawn} pixels");
+    assert!(changed * 10 > drawn, "the wider head shows on the stage: {changed} of {drawn} pixels changed");
 }
 
 /// The share of the picture's height above the first row that holds anything but the background.

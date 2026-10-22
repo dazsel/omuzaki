@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
-use omuzaki_char_api::{BuildServices, RegistryBuilder};
+use omuzaki_char_api::{BuildServices, CharId, CharacterDef, RegistryBuilder};
 
 use omuzaki_anim_api::HumanoidPose;
 use omuzaki_core::glam::UVec2;
@@ -20,7 +20,7 @@ use omuzaki_render::WgpuRenderer;
 use omuzaki_stage::frame::Stage;
 use omuzaki_ui::aux_window::{Backend, Platform, SurfaceRoute, transparency};
 use omuzaki_ui::ds::{Settings, apply_settings};
-use omuzaki_ui::live::viewport::{NativePresenter, Presenter, ViewportError, kit_stage};
+use omuzaki_ui::live::viewport::{NativePresenter, Presenter, ViewportError, kit_stage, project_stage};
 use omuzaki_ui::live::wiring::{LiveApp, LiveScene, NoTracker, RealClock};
 use omuzaki_ui::panels::agent::Agents;
 use omuzaki_ui::panels::edit::EditFocus;
@@ -71,16 +71,25 @@ impl eframe::App for App {
 /// The program frame's size: what the output window shows exactly (`output.window`, 1920 x 1080 physical pixels).
 const PROGRAM_SIZE: UVec2 = UVec2::new(1920, 1080);
 
-/// Starts the live slice for the GPU backend eframe chose, with the kit character on that same device. The webcam
-/// tracker isn't linked in yet (#378), so the performer runs on the life layer alone. If the stage can't start (no
-/// GPU state, or the kit character failing to build) the slice still runs without a picture, and the reason is logged.
+/// Starts the live slice for the GPU backend eframe chose, with the project's character on that same device (the one the
+/// studio opens on, read before the executor takes the document, since the performer is built on its bind pose; the
+/// kit character when it can't be read). The webcam tracker isn't linked in yet (#378), so the performer runs on the
+/// life layer alone. If the stage can't start (no GPU state, or the character failing to build) the slice still runs
+/// without a picture, and the reason is logged.
 fn start_live(cc: &eframe::CreationContext<'_>, document: Document) -> Option<LiveApp> {
+    let character = match studio::character_to_stage(&document) {
+        Ok(character) => Some(character),
+        Err(error) => {
+            tracing::error!(%error, "the project's character can't be staged: the stage shows the kit character");
+            None
+        }
+    };
     let backend = cc
         .wgpu_render_state
         .as_ref()
         .map_or(Backend::Unknown, |state| Backend::from_name(state.adapter.get_info().backend.to_str()));
     let transparency = transparency(Platform::current(), backend, SurfaceRoute::EguiViewport);
-    let stage = cc.wgpu_render_state.as_ref().and_then(|state| match start_stage(state) {
+    let stage = cc.wgpu_render_state.as_ref().and_then(|state| match start_stage(state, character.as_ref()) {
         Ok(stage) => Some(stage),
         Err(error) => {
             tracing::error!(%error, "the stage did not start");
@@ -104,12 +113,17 @@ fn start_live(cc: &eframe::CreationContext<'_>, document: Document) -> Option<Li
     Some(live)
 }
 
-/// The renderer on eframe's own device, the kit stage on it, and the presenter that shares its picture with egui.
+/// The renderer on eframe's own device, `character` (else the kit's) staged on it, and the presenter that shares its
+/// picture with egui.
 fn start_stage(
     gpu: &eframe::egui_wgpu::RenderState,
+    character: Option<&(CharId, CharacterDef)>,
 ) -> Result<(WgpuRenderer, Stage, Box<dyn Presenter>), ViewportError> {
     let mut renderer = WgpuRenderer::from_device(&gpu.adapter, gpu.device.clone(), gpu.queue.clone())?;
-    let stage = kit_stage(&mut renderer, PROGRAM_SIZE)?;
+    let stage = match character {
+        Some((id, def)) => project_stage(&mut renderer, id, def, PROGRAM_SIZE)?,
+        None => kit_stage(&mut renderer, PROGRAM_SIZE)?,
+    };
     Ok((renderer, stage, Box::new(NativePresenter::new(gpu.clone()))))
 }
 

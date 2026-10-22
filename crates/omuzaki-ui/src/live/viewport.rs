@@ -7,9 +7,9 @@
 //! renders twice. It also records the latency the health strip shows: the tracker's median plus the age of the frame's
 //! data when its picture was drawn ([`LatencyMeter`]).
 //!
-//! The character is the kit default ([`kit_character`]): the soft-sd body, head and hair with the starter expressions,
-//! framed from the knees up. A character from a file replaces it through the stage's own character ops; this module
-//! only gives the app something real to perform with from the first frame.
+//! The character is the open project's ([`project_stage`]), built from its definition as the document holds it, with the
+//! starter expressions on its face until it brings its own; [`kit_stage`] stages the kit default for tests and tools
+//! with no document. Either is framed as a bust.
 
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -132,13 +132,52 @@ pub fn kit_character() -> Result<BuiltCharacter, ViewportError> {
         .map_err(ViewportError::Character)
 }
 
-/// The kit character on `renderer`, rendering into a target of `size`, lit and framed for the stage view, with its
-/// face attached and the stage clock live.
+/// Character `id` as `def` describes it, built for the stage: a character with no expressions of its own performs with
+/// the starter set, as the performer's triggers do ([`LiveApp`](super::wiring::LiveApp)). The document is not changed.
+///
+/// # Errors
+/// [`ViewportError::Character`] when the definition doesn't build.
+pub fn stage_character(id: &CharId, def: &CharacterDef) -> Result<BuiltCharacter, ViewportError> {
+    let mut def = def.clone();
+    if def.face.expressions.0.is_empty() {
+        def.face.expressions = ExpressionSet::starter();
+    }
+    RegistryBuilder
+        .build(id, &def, &BuildOptions::default(), &BuildServices::default())
+        .map_err(ViewportError::Character)
+}
+
+/// The kit character on `renderer`: [`character_stage`] with [`kit_character`].
 ///
 /// # Errors
 /// [`ViewportError`]; nothing is left on the renderer then.
 pub fn kit_stage(renderer: &mut dyn Renderer, size: UVec2) -> Result<Stage, ViewportError> {
-    let built = kit_character()?;
+    character_stage(renderer, kit_character()?, size)
+}
+
+/// Character `id` of the open project, as `def`, on `renderer`: [`character_stage`] with [`stage_character`].
+///
+/// # Errors
+/// [`ViewportError`]; nothing is left on the renderer then.
+pub fn project_stage(
+    renderer: &mut dyn Renderer,
+    id: &CharId,
+    def: &CharacterDef,
+    size: UVec2,
+) -> Result<Stage, ViewportError> {
+    character_stage(renderer, stage_character(id, def)?, size)
+}
+
+/// `built` on `renderer`, rendering into a target of `size`, lit and framed for the stage view, with its face attached
+/// and the stage clock live.
+///
+/// # Errors
+/// [`ViewportError`]; nothing is left on the renderer then.
+pub fn character_stage(
+    renderer: &mut dyn Renderer,
+    built: BuiltCharacter,
+    size: UVec2,
+) -> Result<Stage, ViewportError> {
     let rig = LightRig::load(LIGHT_RIG).map_err(ViewportError::Light)?;
     let mut landmarks = Landmarks::measure(&built)?;
     // The stage's crown is the top of the head mesh, which leaves the hair out; the kit's hair stands above it, so the

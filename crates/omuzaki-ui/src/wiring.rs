@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use omuzaki_core::time::SystemClock;
-use omuzaki_doc::{Project, StoreError};
-use omuzaki_doc_api::{DocPath, DocRead, DocVersion, DocWrite, Patch, PatchError, Scratch, Value};
+use omuzaki_doc::{Project, SavedProject, StoreError};
+use omuzaki_doc_api::{DocPath, DocRead, DocVersion, Scratch, Value};
 use omuzaki_ops::Executor;
 pub use omuzaki_ops::ExecutorError;
 use omuzaki_ops_api::{Runner, Services, Sessions};
@@ -22,8 +22,14 @@ const DEFAULT_PROJECT_NAME: &str = "My character";
 
 /// The document the executor works on, opaque outside this module so nothing else can write to it.
 pub struct Document {
-    doc: Box<dyn DocWrite>,
+    doc: Tree,
     dir: Option<PathBuf>,
+}
+
+/// What a [`Document`] holds: an in-memory tree, or a project saved after every change.
+enum Tree {
+    Memory(Scratch),
+    Project(SavedProject),
 }
 
 impl fmt::Debug for Document {
@@ -35,7 +41,7 @@ impl fmt::Debug for Document {
 impl Document {
     /// An empty in-memory document at version 0: what ops change lasts until the app quits.
     pub fn empty() -> Self {
-        Self { doc: Box::new(Scratch::of(&Empty)), dir: None }
+        Self { doc: Tree::Memory(Scratch::of(&Empty)), dir: None }
     }
 
     /// The project in `dir`, made there first when the folder holds none. Every applied change is saved at once.
@@ -51,12 +57,20 @@ impl Document {
             }
             Err(error) => return Err(error),
         };
-        Ok(Self { doc: Box::new(SavedProject { project }), dir: Some(dir.to_path_buf()) })
+        Ok(Self { doc: Tree::Project(SavedProject::new(project)), dir: Some(dir.to_path_buf()) })
     }
 
     /// The project folder, when the document is one.
     pub fn dir(&self) -> Option<&Path> {
         self.dir.as_deref()
+    }
+
+    /// The value at `path`, read before an executor takes the document (the app reads what it stages first).
+    pub fn get(&self, path: &DocPath) -> Option<&Value> {
+        match &self.doc {
+            Tree::Memory(tree) => tree.get(path),
+            Tree::Project(project) => project.get(path),
+        }
     }
 }
 
@@ -111,7 +125,12 @@ impl fmt::Debug for Core {
 /// # Errors
 /// [`ExecutorError`] when two linked crates register one op name (a bug in whichever registered it).
 pub fn core_on(document: Document, services: Services) -> Result<Core, ExecutorError> {
-    let executor = Arc::new(Executor::new(document.doc, Arc::new(SystemClock::new()))?.with_services(services));
+    let clock = Arc::new(SystemClock::new());
+    let executor = match document.doc {
+        Tree::Memory(tree) => Executor::new(Box::new(tree), clock),
+        Tree::Project(project) => Executor::new(Box::new(project), clock),
+    }?;
+    let executor = Arc::new(executor.with_services(services));
     Ok(Core { runner: executor.clone(), sessions: executor })
 }
 
@@ -127,40 +146,6 @@ impl DocRead for Empty {
 
     fn version(&self) -> DocVersion {
         DocVersion(0)
-    }
-}
-
-/// A [`Project`] saved to disk after every patch it applies, so the folder always holds what the person sees. A save
-/// rewrites only the files whose part of the document changed. If a save fails the patch is taken back out, so a
-/// refused change leaves the document and the files agreeing.
-#[derive(Debug)]
-struct SavedProject {
-    project: Project,
-}
-
-impl DocRead for SavedProject {
-    fn get(&self, path: &DocPath) -> Option<&Value> {
-        self.project.get(path)
-    }
-
-    fn version(&self) -> DocVersion {
-        self.project.version()
-    }
-}
-
-impl DocWrite for SavedProject {
-    fn apply(&mut self, patch: &Patch) -> Result<DocVersion, PatchError> {
-        let version = self.project.apply(patch)?;
-        let Err(save_error) = self.project.save() else { return Ok(version) };
-        let at = patch.changes.first().map_or_else(DocPath::root, |change| change.path.clone());
-        let why = match self.project.apply(&patch.inverse()) {
-            Err(e) => format!("couldn't save the project ({save_error}) or take the change back out ({e})"),
-            Ok(_) => match self.project.save() {
-                Ok(_) => format!("couldn't save the project ({save_error}); the change was not made"),
-                Err(again) => format!("couldn't save the project ({save_error}), and the files may not match: {again}"),
-            },
-        };
-        Err(PatchError::Unreachable { path: at, reason: why })
     }
 }
 

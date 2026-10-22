@@ -132,7 +132,7 @@ impl LiveApp {
         })
     }
 
-    /// Starts drawing the stage: `stage` (the kit's, from [`kit_stage`](crate::live::viewport::kit_stage), made on
+    /// Starts drawing the stage: `stage` (from [`project_stage`](crate::live::viewport::project_stage), made on
     /// `renderer` at `size`) takes the perform thread's frames from now on, and `presenter` shows each picture to egui.
     ///
     /// # Errors
