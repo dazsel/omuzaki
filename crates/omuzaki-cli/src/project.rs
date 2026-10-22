@@ -1,80 +1,123 @@
-//! The document the executor works on: a project folder that saves itself after every change.
+//! What the executor works on: a project opened through the app core, or no project at all.
 //!
-//! [`omuzaki_doc::Project`] keeps the document in memory and writes it only when told to, and the executor owns the
-//! document it is given, so nothing outside could tell it when to. [`SavedProject`] is the CLI's answer: it wraps the
-//! project behind the [`DocWrite`] seam and saves after each applied patch, so `omuzaki run` leaves the files changed
-//! and an MCP session's edits reach the disk as the agent makes them. A file save only rewrites the files whose part
-//! of the document changed, so this costs one small write for a typical op. Saving belongs to the store, and this
-//! wrapper goes when `omuzaki-doc` can do it itself.
+//! [`ProjectRunner`] opens a project the way `omuzaki run` and `omuzaki mcp` do ([`omuzaki_app::AppCore`]): every
+//! change is journalled before it is answered, a crash is recovered on the next open, and the undo and redo history
+//! is kept with the project. On top of the core it writes the files before each change returns, so a host that reads
+//! them straight after (a test, the eval checker) sees it; the app core alone writes them within about two seconds.
 //!
 //! [`NoProject`] is the empty document for commands that only read the op registry (`ops`, `help`).
 
 use std::path::Path;
+use std::sync::mpsc::Receiver;
+use std::time::Duration;
 
+use omuzaki_app::{AppCore, AppError, AppOptions};
 use omuzaki_doc::{Project, StoreError};
 use omuzaki_doc_api::{DocPath, DocRead, DocVersion, DocWrite, Patch, PatchError, Value};
-use omuzaki_ops_api::OpError;
+use omuzaki_ops_api::{Actor, Event, Grants, OpError, OpInfo, OpRecord, Outcome, Request, Runner, TxId};
 
-/// A [`Project`] that is saved to disk after every patch it applies.
-#[derive(Debug)]
-pub struct SavedProject {
-    project: Project,
+/// How long a change waits for the files.
+const SAVE_WAIT: Duration = Duration::from_secs(30);
+
+/// A runner over a project opened through the app core, which writes the files before each change returns and
+/// closes the project cleanly when it is dropped (or [`close`](Self::close)d).
+pub struct ProjectRunner {
+    core: AppCore,
 }
 
-impl SavedProject {
-    /// Opens the project in `dir`.
+impl std::fmt::Debug for ProjectRunner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProjectRunner").field("dir", &self.core.dir()).finish_non_exhaustive()
+    }
+}
+
+impl ProjectRunner {
+    /// Opens the project in `dir` through the app core with `options`.
     ///
     /// # Errors
-    /// `NotFound` if there is no project there; `Unsupported` if it was written by a newer Omuzaki; `Invalid` (field
-    /// `project`) if its files are broken; `Internal` if the store reports a bug of its own.
-    pub fn open(dir: &Path) -> Result<Self, OpError> {
-        Project::open(dir).map(|project| Self { project }).map_err(|e| open_error(dir, &e))
+    /// As [`AppCore::open`]: not a project, open in another Omuzaki, broken files, a journal that can't be written.
+    pub fn open(dir: &Path, options: AppOptions) -> Result<Self, AppError> {
+        AppCore::open(dir, options).map(|core| Self { core })
     }
 
-    /// Takes a patch that was applied but could not be saved back out, so the document and the files agree again.
-    /// Returns the error to report: what failed, and whether the files are known to match.
-    fn undo_unsaved(&mut self, patch: &Patch, save_error: &StoreError) -> PatchError {
-        let reason = match self.project.apply(&patch.inverse()) {
-            Err(e) => format!(
-                "couldn't save the project ({save_error}) and couldn't take the change back out ({e}); \
-                 reopen the project"
-            ),
-            // The failed save may have written some of the files: write them again from the restored document.
-            Ok(_) => match self.project.save() {
-                Ok(_) => format!("couldn't save the project ({save_error}); the change was not made"),
-                Err(again) => {
-                    format!("couldn't save the project ({save_error}), and the files may not match it: {again}")
-                }
-            },
-        };
-        PatchError::Unreachable { path: first_path(patch), reason }
-    }
-}
-
-impl DocRead for SavedProject {
-    fn get(&self, path: &DocPath) -> Option<&Value> {
-        self.project.get(path)
+    /// The app core: its session registry, jobs, MCP server and what recovery did on open.
+    pub fn core(&self) -> &AppCore {
+        &self.core
     }
 
-    fn version(&self) -> DocVersion {
-        self.project.version()
-    }
-}
-
-impl DocWrite for SavedProject {
-    /// Applies `patch`, then saves. If the save fails the patch is taken back out, so a refused change leaves the
-    /// document as it was.
+    /// Closes the project: the files are written and the close snapshot taken, so the next open needs no recovery.
     ///
     /// # Errors
-    /// The project's own conflicts, and [`PatchError::Unreachable`] carrying the reason when the save fails
-    /// (`PatchError` has no variant for a failed save yet).
-    fn apply(&mut self, patch: &Patch) -> Result<DocVersion, PatchError> {
-        let version = self.project.apply(patch)?;
-        match self.project.save() {
-            Ok(_) => Ok(version),
-            Err(e) => Err(self.undo_unsaved(patch, &e)),
-        }
+    /// Saving failed or timed out. Nothing applied is lost: the next open recovers it from the journal.
+    pub fn close(self) -> Result<(), OpError> {
+        self.core.close().map_err(|e| e.to_op_error())
     }
+
+    /// Waits for the files after a change that was applied.
+    fn saved<T>(&self, result: Result<T, OpError>) -> Result<T, OpError> {
+        let value = result?;
+        self.core.snapshots().save_files(SAVE_WAIT).map_err(|e| {
+            OpError::invalid(
+                "project",
+                format!("the change was made and journalled, but the files weren't written: {e}"),
+            )
+            .hint("check the disk has space and the project folder can be written; the next open writes them")
+        })?;
+        Ok(value)
+    }
+}
+
+impl Runner for ProjectRunner {
+    fn ops(&self) -> Vec<OpInfo> {
+        self.core.executor().ops()
+    }
+
+    fn run(&self, req: Request) -> Result<Outcome, OpError> {
+        let outcome = self.core.executor().run(req)?;
+        if outcome.applied.is_some() { self.saved(Ok(outcome)) } else { Ok(outcome) }
+    }
+
+    fn begin(&self, label: &str, actor: &Actor) -> TxId {
+        self.core.executor().begin(label, actor)
+    }
+
+    fn commit(&self, tx: TxId, actor: &Actor) -> Result<(), OpError> {
+        self.saved(self.core.executor().commit(tx, actor))
+    }
+
+    fn rollback(&self, tx: TxId, actor: &Actor) -> Result<(), OpError> {
+        self.saved(self.core.executor().rollback(tx, actor))
+    }
+
+    fn undo(&self, actor: &Actor, grants: &Grants) -> Result<Option<String>, OpError> {
+        self.saved(self.core.executor().undo(actor, grants))
+    }
+
+    fn redo(&self, actor: &Actor, grants: &Grants) -> Result<Option<String>, OpError> {
+        self.saved(self.core.executor().redo(actor, grants))
+    }
+
+    fn subscribe(&self, grants: &Grants) -> Result<Receiver<Event>, OpError> {
+        self.core.executor().subscribe(grants)
+    }
+
+    fn get(&self, path: &DocPath, grants: &Grants) -> Result<Option<Value>, OpError> {
+        self.core.executor().get(path, grants)
+    }
+
+    fn log(&self, after_seq: u64, limit: usize, grants: &Grants) -> Result<Vec<OpRecord>, OpError> {
+        self.core.executor().log(after_seq, limit, grants)
+    }
+}
+
+/// Opens the project in `dir` as it is on disk, in memory: an executor over it reads and plans as on the real
+/// project, and nothing it applies is written. A host that saves opens a [`ProjectRunner`].
+///
+/// # Errors
+/// `NotFound` if there is no project there; `Unsupported` if it was written by a newer Omuzaki; `Invalid` (field
+/// `project`) if its files are broken; `Internal` if the store reports a bug of its own.
+pub fn open_in_memory(dir: &Path) -> Result<Project, OpError> {
+    Project::open(dir).map_err(|e| open_error(dir, &e))
 }
 
 /// The document of a session with no project: empty, and it refuses every change. Commands that would change or read
@@ -130,7 +173,7 @@ fn open_error(dir: &Path, error: &StoreError) -> OpError {
 #[allow(clippy::disallowed_methods, reason = "tests set up their fixtures on disk; the fence is for ops")]
 mod tests {
     use omuzaki_doc_api::DocPath;
-    use omuzaki_ops_api::ErrorCode;
+    use omuzaki_ops_api::{ErrorCode, Mode};
     use serde_json::json;
 
     use super::*;
@@ -139,69 +182,48 @@ mod tests {
         DocPath::parse(p).unwrap()
     }
 
-    fn new_project() -> (tempfile::TempDir, SavedProject) {
+    fn person() -> Actor {
+        Actor::Person { name: "tester".to_owned() }
+    }
+
+    fn create_kit(runner: &ProjectRunner) -> Outcome {
+        let args = json!({ "id": "kit", "name": "Kit", "template": "standard", "seed": 7 });
+        let request = Request {
+            op: "character.create".to_owned(),
+            args,
+            mode: Mode::Apply,
+            actor: person(),
+            grants: Grants::person(),
+            cause: None,
+            tx: None,
+            base: None,
+        };
+        runner.run(request).unwrap()
+    }
+
+    #[test]
+    fn every_applied_change_and_undo_is_on_disk_when_it_returns_and_history_outlives_the_runner() {
+        crate::link();
         let dir = tempfile::tempdir().unwrap();
         Project::create(dir.path(), "demo").unwrap();
-        let project = SavedProject::open(dir.path()).unwrap();
-        (dir, project)
-    }
+        let kit = dir.path().join("characters/kit.toml");
+        let runner = ProjectRunner::open(dir.path(), AppOptions::headless(person())).unwrap();
+        assert!(create_kit(&runner).applied.is_some());
+        assert!(kit.exists(), "the character's file is written before the run returns");
+        runner.undo(&person(), &Grants::person()).unwrap();
+        assert!(!kit.exists(), "and the undo's");
+        runner.close().unwrap();
 
-    fn set_note(project: &SavedProject, note: Option<&str>) -> Patch {
-        let at = path("project/note");
-        Patch::new().with(at.clone(), project.get(&at).cloned(), note.map(|n| json!(n)))
-    }
-
-    fn project_toml(dir: &tempfile::TempDir) -> String {
-        std::fs::read_to_string(dir.path().join("project.toml")).unwrap()
-    }
-
-    #[test]
-    fn every_applied_patch_is_on_disk_when_apply_returns() {
-        let (dir, mut project) = new_project();
-        let patch = set_note(&project, Some("hello"));
-        project.apply(&patch).unwrap();
-        assert!(project_toml(&dir).contains("note = \"hello\""), "{}", project_toml(&dir));
-
-        project.apply(&patch.inverse()).unwrap();
-        assert!(!project_toml(&dir).contains("note"), "{}", project_toml(&dir));
-        assert!(Project::open(dir.path()).unwrap().get(&path("project/note")).is_none());
-    }
-
-    #[test]
-    fn a_conflicting_patch_changes_nothing_and_writes_nothing() {
-        let (dir, mut project) = new_project();
-        let before = project_toml(&dir);
-        let stale = Patch::new().with(path("project/note"), Some(json!("not there")), Some(json!("x")));
-        assert!(matches!(project.apply(&stale), Err(PatchError::Conflict { .. })));
-        assert_eq!(project_toml(&dir), before);
-        assert!(project.get(&path("project/note")).is_none());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_failed_save_takes_the_change_back_out_and_says_why() {
-        let (dir, mut project) = new_project();
-        // The store refuses to write through or over a symbolic link.
-        let real = dir.path().join("elsewhere.toml");
-        std::fs::rename(dir.path().join("project.toml"), &real).unwrap();
-        std::os::unix::fs::symlink(&real, dir.path().join("project.toml")).unwrap();
-
-        let patch = set_note(&project, Some("hello"));
-        let Err(PatchError::Unreachable { path: at, reason }) = project.apply(&patch) else {
-            panic!("the save should have failed");
-        };
-        assert_eq!(at, path("project/note"));
-        // Through a link the store can't confirm the files match the undone document, so the reason may say they might
-        // not; what matters is that it names the link and that nothing was kept or written.
-        assert!(reason.contains("symbolic link"), "{reason}");
-        assert!(project.get(&path("project/note")).is_none(), "the document must not keep an unsaved change");
-        assert!(!std::fs::read_to_string(&real).unwrap().contains("note"));
+        let again = ProjectRunner::open(dir.path(), AppOptions::headless(person())).unwrap();
+        assert!(again.redo(&person(), &Grants::person()).unwrap().is_some(), "the redo survived the close");
+        assert!(kit.exists());
+        assert!(again.get(&path("characters/kit"), &Grants::person()).unwrap().is_some());
     }
 
     #[test]
     fn opening_failures_are_structured_errors_with_a_hint() {
         let dir = tempfile::tempdir().unwrap();
-        let code = |dir: &Path| SavedProject::open(dir).unwrap_err();
+        let code = |dir: &Path| open_in_memory(dir).unwrap_err();
 
         let empty = code(dir.path());
         assert_eq!(empty.code, ErrorCode::NotFound, "{empty:?}");

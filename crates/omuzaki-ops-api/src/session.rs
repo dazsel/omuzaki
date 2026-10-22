@@ -414,6 +414,14 @@ pub trait Sessions: Send + Sync {
     /// The approvals waiting for a person, oldest first.
     fn approvals(&self) -> Vec<PendingApproval>;
 
+    /// Why [`Runner::begin`](crate::Runner::begin) handed back `tx` without opening it (a rate limit, a pause), while
+    /// the reason is still known: `begin` can't refuse, so a surface that sees its transaction isn't open asks here to
+    /// report the real reason (`limited` with its wait) rather than a guess. `None` when it opened, or long ago.
+    fn begin_refusal(&self, tx: TxId) -> Option<OpError> {
+        let _ = tx;
+        None
+    }
+
     /// Decides one approval, exactly once. On approval the request is re-planned and run against the current
     /// document as the agent with the need satisfied for that run.
     ///

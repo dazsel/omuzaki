@@ -899,8 +899,11 @@ impl Session {
         Err(match info.state {
             SessionState::Paused { by, reason } => paused(by, reason),
             SessionState::Ended { .. } => OpError::denied("this connection's session has ended"),
-            SessionState::Active => OpError::conflict("the transaction did not open")
-                .hint("the session changed while it started: call tx_begin again"),
+            // The executor kept why it refused (a rate limit, with the wait); otherwise the session changed under it.
+            SessionState::Active => host.sessions.begin_refusal(id).unwrap_or_else(|| {
+                OpError::conflict("the transaction did not open")
+                    .hint("the session changed while it started: call tx_begin again")
+            }),
         })
     }
 

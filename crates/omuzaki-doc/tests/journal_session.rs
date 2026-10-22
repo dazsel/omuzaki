@@ -230,6 +230,6 @@ fn recover_disk_opens_the_files_as_they_are() {
     std::fs::write(tmp.path().join("project.toml"), "name = \"edited by hand\"\nschema = 1\n").unwrap();
     let reopened = reopen_with(tmp.path(), &snapshots(tmp.path()), Recover::Disk).unwrap();
     assert_eq!(reopened.recovery.unwrap().mode, Recover::Disk);
-    assert!(reopened.tail.is_empty());
+    assert_eq!(reopened.tail.len(), 0, "nothing is replayed over the files");
     assert_eq!(reopened.project.get(&path("project/name")), Some(&json!("edited by hand")));
 }

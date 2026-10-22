@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 
 use crate::exit;
 
@@ -23,9 +23,15 @@ pub struct Cli {
     pub json: bool,
 
     /// The Omuzaki project directory to act on (the folder with `project.toml`). Needed by everything but `ops` and
-    /// `help`. Changes are saved as they are applied.
+    /// `help`. Each change is journalled before the command answers, and the files are written before it exits.
     #[arg(long, global = true, value_name = "DIR")]
     pub project: Option<PathBuf>,
+
+    /// If Omuzaki stopped without closing the project (a crash, a kill, a power cut), how to open it: `restore`
+    /// brings back every change that finished, from the journal; `disk` takes the files as they are. Either way the
+    /// folder as it was found is kept in a snapshot for 30 days, and the notice on stderr says which.
+    #[arg(long, global = true, value_enum, default_value_t = RecoverFrom::Restore, value_name = "FROM")]
+    pub recover: RecoverFrom,
 
     /// What to do.
     #[command(subcommand)]
@@ -59,15 +65,15 @@ pub enum Command {
         dry_run: bool,
     },
 
-    /// Undo your most recent change in this session.
+    /// Undo your most recent change to the project.
     ///
-    /// The history lives in the running process and isn't saved between commands yet, so a separate `omuzaki undo`
-    /// finds nothing to undo. Agents on `omuzaki mcp` have undo as the `history_undo` tool.
+    /// The history is kept with the project, so this undoes what an earlier `omuzaki run` did, and the files follow
+    /// before the command exits. Agents on `omuzaki mcp` have undo as the `history_undo` tool.
     Undo,
 
-    /// Redo the change you last undid in this session.
+    /// Redo the change you last undid.
     ///
-    /// Like `undo`, it only sees the running process's history.
+    /// Like `undo`, it works across commands: the history is kept with the project.
     Redo,
 
     /// Serve the ops to an AI agent over MCP on stdin/stdout.
@@ -89,6 +95,26 @@ pub enum Command {
         #[command(subcommand)]
         action: StoreCommand,
     },
+}
+
+/// How `--recover` opens a project that wasn't closed.
+#[derive(ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RecoverFrom {
+    /// Bring back every change that finished, from the journal; unfinished transactions are rolled back.
+    #[default]
+    Restore,
+    /// Take the files as they are; the journal's changes since the last save stay only in the kept snapshot.
+    Disk,
+}
+
+impl RecoverFrom {
+    /// The app core's recovery mode.
+    pub fn mode(self) -> omuzaki_app::Recover {
+        match self {
+            Self::Restore => omuzaki_app::Recover::Restore,
+            Self::Disk => omuzaki_app::Recover::Disk,
+        }
+    }
 }
 
 /// A `omuzaki store` subcommand.
@@ -205,6 +231,14 @@ mod tests {
             assert_eq!(cli.project, Some(PathBuf::from("p")));
         }
         assert!(!parse(&["ops"]).json);
+    }
+
+    #[test]
+    fn recover_defaults_to_restore_and_takes_disk() {
+        assert_eq!(parse(&["undo"]).recover, RecoverFrom::Restore);
+        assert_eq!(parse(&["undo", "--recover", "disk"]).recover, RecoverFrom::Disk);
+        assert_eq!(parse(&["--recover", "restore", "mcp"]).recover.mode(), omuzaki_app::Recover::Restore);
+        assert!(try_parse_from(["omuzaki", "--recover", "files", "undo"]).is_err());
     }
 
     #[test]

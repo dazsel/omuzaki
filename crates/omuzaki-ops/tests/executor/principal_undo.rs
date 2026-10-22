@@ -88,3 +88,35 @@ fn a_refused_undo_of_an_agents_step_keeps_it() {
     assert_eq!(rig.at("p"), Some(json!(1)));
     assert!(rig.undo().unwrap().is_some(), "with the scope it goes");
 }
+
+/// After a restart the agent's session is gone, but its history remembers whom it worked for, so the person's undo
+/// still reaches its steps: from the exported history (a clean close) and from the journal replayed over an empty one
+/// (a crash).
+#[test]
+fn a_persons_undo_reaches_their_agents_step_after_a_restart() {
+    use omuzaki_doc_mock::MemDoc;
+    use omuzaki_history_api::{HistoryEntry, HistoryExport, Lsn, WallTime};
+    use omuzaki_history_mock::{FakeWallClock, RecordingSink};
+    use omuzaki_ops::Executor;
+
+    let restart = |doc: serde_json::Value, history: &HistoryExport| {
+        let clock = std::sync::Arc::new(omuzaki_core::time::FakeClock::new(omuzaki_core::time::Seconds(0.0)));
+        let wall = std::sync::Arc::new(FakeWallClock::new(WallTime(1)));
+        Executor::restore(Box::new(MemDoc::from_value(doc)), clock, wall, history).unwrap()
+    };
+    let sink = std::sync::Arc::new(RecordingSink::new());
+    let rig = rig(json!({"y": 0}));
+    let exec = rig.exec.with_journal(sink.clone());
+    exec.run(super::agent_request("test.set", json!({"path": "y", "value": 1}))).unwrap();
+
+    let closed = restart(json!({"y": 1}), &exec.history_export());
+    assert_eq!(closed.undo(&person(), &Grants::person()).unwrap().as_deref(), Some(SET));
+    assert_eq!(closed.get(&super::path("y"), &Grants::person()).unwrap(), Some(json!(0)));
+
+    let crashed = restart(json!({"y": 0}), &HistoryExport::empty());
+    let tail: Vec<(Lsn, HistoryEntry)> =
+        sink.entries().into_iter().enumerate().map(|(i, e)| (Lsn(i as u64 + 1), e)).collect();
+    crashed.replay(&tail).unwrap();
+    assert_eq!(crashed.undo(&person(), &Grants::person()).unwrap().as_deref(), Some(SET));
+    assert_eq!(crashed.get(&super::path("y"), &Grants::person()).unwrap(), Some(json!(0)));
+}

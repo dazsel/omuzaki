@@ -298,7 +298,7 @@ impl Snapshotter {
                 {
                     Ok(lock) => assets.extend(lock.rows.iter().map(|row| row.hash)),
                     Err(reason) => {
-                        warnings.push(format!("{ASSETS_LOCK} doesn't read, so its assets aren't listed: {reason}"))
+                        warnings.push(format!("{ASSETS_LOCK} doesn't read, so its assets aren't listed: {reason}"));
                     }
                 }
             }
@@ -306,13 +306,13 @@ impl Snapshotter {
                 warnings.push(format!("{} is {} MB; it is included in the snapshot", entry.path, size >> 20));
             }
             if size >= self.large {
-                if !self.store.contains(&hash) {
+                if self.store.contains(&hash) {
+                    written.reused += 1;
+                } else {
                     self.store.put(&entry.bytes, internal()).map_err(io_error)?;
                     new_objects.push(hash);
                     written.objects += 1;
                     written.bytes += size;
-                } else {
-                    written.reused += 1;
                 }
                 rows.push(FileRow::whole(entry.path, hash, size));
                 continue;
@@ -427,7 +427,7 @@ impl Snapshotter {
                 Err(error) => tracing::warn!(path = %path.display(), %error, "a snapshot ref doesn't read; skipped"),
             }
         }
-        refs.sort_by(|a, b| (b.lsn, b.created, b.id).cmp(&(a.lsn, a.created, a.id)));
+        refs.sort_by_key(|info| std::cmp::Reverse((info.lsn, info.created, info.id)));
         Ok(refs)
     }
 
@@ -436,15 +436,8 @@ impl Snapshotter {
     /// # Errors
     /// [`SnapshotError::NotFound`] if the store doesn't hold it, [`SnapshotError::Corrupt`] if it doesn't read.
     pub fn manifest(&self, id: &SnapshotId) -> Result<Manifest, SnapshotError> {
-        let bytes = self.store.get(&id.0).map_err(|e| self.missing(id, &e))?;
+        let bytes = self.store.get(&id.0).map_err(|e| missing(id, &e))?;
         Manifest::from_bytes(&bytes).map_err(|reason| SnapshotError::Corrupt { id: *id, reason })
-    }
-
-    fn missing(&self, id: &SnapshotId, error: &ObjectError) -> SnapshotError {
-        match error {
-            ObjectError::Missing(hash) if *hash == id.0 => SnapshotError::NotFound(*id),
-            other => SnapshotError::Corrupt { id: *id, reason: other.to_string() },
-        }
     }
 
     /// Every file of snapshot `id`, by path, each checked against its hash.
@@ -459,8 +452,8 @@ impl Snapshotter {
         for row in &manifest.files {
             let bytes = match (row.pack, row.offset) {
                 (Some(pack), Some(offset)) => {
-                    if !packs.contains_key(&pack) {
-                        packs.insert(pack, self.store.get(&pack).map_err(|e| corrupt(e.to_string()))?);
+                    if let std::collections::hash_map::Entry::Vacant(slot) = packs.entry(pack) {
+                        slot.insert(self.store.get(&pack).map_err(|e| corrupt(e.to_string()))?);
                     }
                     let start = usize::try_from(offset).map_err(|e| corrupt(e.to_string()))?;
                     let end = start + usize::try_from(row.size).map_err(|e| corrupt(e.to_string()))?;
@@ -548,9 +541,17 @@ fn ref_name(info: &SnapshotInfo) -> String {
 fn utc_name(at: WallTime) -> String {
     let ms = at.0;
     let (days, rest) = (ms / 86_400_000, ms % 86_400_000);
-    let (h, m, s, milli) = (rest / 3_600_000, rest / 60_000 % 60, rest / 1000 % 60, rest % 1000);
-    let (y, mo, d) = civil_from_days(i64::try_from(days).unwrap_or(i64::MAX));
-    format!("{y:04}{mo:02}{d:02}T{h:02}{m:02}{s:02}.{milli:03}Z")
+    let (hour, minute, second, milli) = (rest / 3_600_000, rest / 60_000 % 60, rest / 1000 % 60, rest % 1000);
+    let (year, month, day) = civil_from_days(i64::try_from(days).unwrap_or(i64::MAX));
+    format!("{year:04}{month:02}{day:02}T{hour:02}{minute:02}{second:02}.{milli:03}Z")
+}
+
+/// Why snapshot `id` can't be read: not there at all, or a part of it is missing or damaged.
+fn missing(id: &SnapshotId, error: &ObjectError) -> SnapshotError {
+    match error {
+        ObjectError::Missing(hash) if *hash == id.0 => SnapshotError::NotFound(*id),
+        other => SnapshotError::Corrupt { id: *id, reason: other.to_string() },
+    }
 }
 
 /// The proleptic Gregorian date of a day count since 1970-01-01 (Howard Hinnant's `civil_from_days`).
@@ -590,7 +591,7 @@ fn walk(
             Ok(name) if name.starts_with('.') => {}
             Ok(name) => found.push((name, entry.file_type().map_err(io_error)?)),
             Err(name) => {
-                warnings.push(format!("{} isn't kept in snapshots: its name isn't UTF-8", path.join(name).display()))
+                warnings.push(format!("{} isn't kept in snapshots: its name isn't UTF-8", path.join(name).display()));
             }
         }
     }

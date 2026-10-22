@@ -10,15 +10,13 @@
 //!
 //! # What runs behind it
 //!
-//! [`session::open_runner`] opens the `--project` folder with `omuzaki-doc` and builds the `omuzaki-ops` executor over it,
-//! so a `run` is planned, permission-checked, applied and logged exactly as an agent's call over MCP is, and saved:
+//! A command on a project opens it through the app core ([`omuzaki_app::AppCore`], via [`app::run`]), so a `run` is
+//! planned, permission-checked, applied and logged exactly as an agent's call over MCP is, and kept:
 //!
-//! - **Saved as you go.** Each applied change (and each undo and redo) is written to the project's files before the
-//!   command returns ([`project::SavedProject`]). A dry run writes nothing.
-//! - **History is per process.** The executor keeps the op log and each actor's undo and redo stacks in memory, and
-//!   nothing persists them yet, so `omuzaki undo` in a fresh process has nothing to undo. Inside one
-//!   process (an MCP session, where agents have `history_undo` and `history_redo`) undo and redo work and the files
-//!   follow.
+//! - **Journalled as you go.** Each applied change (and each undo and redo) is in the project's journal before the
+//!   command answers, and the files are written before it exits. A dry run writes nothing.
+//! - **History is kept with the project.** `omuzaki undo` in a new process undoes what the last one did, and the files
+//!   follow. A crash is recovered on the next open (`--recover` says how), and the notice goes to stderr.
 //! - **`omuzaki mcp`** serves the same runner to an AI agent on stdin and stdout ([`mcp`]).
 //! - **No project** is fine for `ops` and `help`, which only read the registry; every other command needs `--project`.
 //!

@@ -105,18 +105,19 @@ fn undo_and_redo_move_the_files_back_and_forth_and_name_the_step() {
 }
 
 #[test]
-fn a_new_process_sees_the_saved_change_but_starts_with_no_history() {
+fn a_new_process_sees_the_saved_change_and_undoes_it() {
     let project = new_project();
+    let original = project_toml(project.path());
     Process::start(project.path()).omuzaki(&SET_HELLO).unwrap();
-    let applied = project_toml(project.path());
 
+    // The history is kept with the project, so the next process undoes what the last one did, and the files follow.
     let later = Process::start(project.path());
     assert_eq!(
         later.runner.get(&DocPath::parse("project/note").unwrap(), &Grants::person()).unwrap(),
         Some(json!("hello"))
     );
-    assert_eq!(later.omuzaki(&["undo"]).unwrap(), "nothing to undo\n");
-    assert_eq!(project_toml(project.path()), applied);
+    assert_eq!(later.omuzaki(&["undo"]).unwrap(), "undid \"Set the project's note.\"\n");
+    assert_eq!(project_toml(project.path()), original);
 }
 
 #[test]

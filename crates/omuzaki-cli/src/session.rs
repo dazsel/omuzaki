@@ -12,8 +12,10 @@ use omuzaki_ops_api::{
     Actor, ConnectionService, Grants, Jobs, OpError, ProjectDir, ProjectDirError, Runner, ServicesBuilder, Sessions,
 };
 
+use omuzaki_app::AppOptions;
+
 use crate::cli::Cli;
-use crate::project::{NoProject, SavedProject};
+use crate::project::{NoProject, ProjectRunner, open_in_memory};
 
 /// The actor and grants every request of one `omuzaki` invocation carries.
 #[derive(Clone)]
@@ -65,31 +67,57 @@ impl Session {
     }
 }
 
-/// Opens the runner that executes `cli`'s command: the op executor over the `--project` folder.
+/// Opens the runner that executes `cli`'s command: with `--project`, the project through the app core
+/// ([`ProjectRunner`]), journalled and recovered as `omuzaki run` opens it, with the files written before each change
+/// returns and the project closed when the last handle drops; without one, an executor over an empty document.
 ///
 /// The executor runs every op linked into the binary, and with `--project` it knows the project folder, so ops can
-/// read project-relative files (and nothing outside it without an `fs` root). Commands that only read the op registry (`ops`, `help`) get an
-/// empty document when no project is given; the others refuse to start without one.
+/// read project-relative files (and nothing outside it without an `fs` root). Commands that only read the op registry
+/// (`ops`, `help`) get an empty document when no project is given; the others refuse to start without one.
 ///
 /// # Errors
-/// - `Invalid` (field `project`) if `--project` is a file or a filesystem root, if the command needs a project and `--project` is missing, or the project's files
-///   are broken.
-/// - `NotFound` if `--project` names no project; `Unsupported` if it was written by a newer Omuzaki.
+/// - `Invalid` (field `project`) if `--project` is a file or a filesystem root, if the command needs a project and
+///   `--project` is missing, or the project's files are broken.
+/// - `NotFound` if `--project` names no project; `Unsupported` if it was written by a newer Omuzaki; `Conflict` if
+///   another Omuzaki has it open.
 /// - `Internal` if two linked ops share a name (a bug in whichever crate registered them).
 pub fn open_runner(cli: &Cli) -> Result<Arc<dyn Runner>, OpError> {
     open_runner_with(cli, &Connections::default())
 }
 
 /// As [`open_runner`], with `connections` wired into the executor's services so `agent.connection` can read it. Give
-/// the same handle to the MCP server (`omuzaki_mcp::McpOptions::with_connections`).
+/// the same handle to the MCP server (`omuzaki_mcp::McpOptions::with_connections`). A project opened through the app
+/// core counts its agents in the core's own handle instead.
 ///
 /// # Errors
 /// As [`open_runner`].
 pub fn open_runner_with(cli: &Cli, connections: &Connections) -> Result<Arc<dyn Runner>, OpError> {
-    Ok(open_executor_with(cli, connections)?)
+    match cli.project.as_deref() {
+        Some(dir) => Ok(Arc::new(open_project(cli, dir, Session::from_env().actor)?)),
+        None => Ok(open_executor_with(cli, connections)?),
+    }
 }
 
-/// As [`open_runner_with`], keeping the executor's type so its session registry can be reached too.
+/// Opens the project in `dir` through the app core, with `cli`'s `--recover`, for `actor`: the runner
+/// [`open_runner`] returns, keeping its type so the core can be reached.
+///
+/// # Errors
+/// As [`open_runner`].
+pub fn open_project(cli: &Cli, dir: &Path, actor: Actor) -> Result<ProjectRunner, OpError> {
+    // The folder is vetted first: `ProjectDir` names the reason in its own words, which beat the document's.
+    open_project_dir(dir)?;
+    ProjectRunner::open(dir, core_options(cli, actor)).map_err(|e| e.to_op_error())
+}
+
+/// The app core's options for a command-line host: headless (nobody can be asked to approve), recovering as
+/// `--recover` says.
+pub fn core_options(cli: &Cli, actor: Actor) -> AppOptions {
+    AppOptions::headless(actor).with_recover(cli.recover.mode())
+}
+
+/// An executor over `--project` as it is on disk, in memory (or over an empty document without one), keeping the
+/// executor's type so its session registry can be reached too. Nothing it applies is written: a host that saves opens
+/// the project with [`open_runner`] or [`open_project`].
 ///
 /// The command line is headless: no window is open to ask a person, so a request of an agent session that would wait
 /// for an approval is refused at once, with a hint that says how to grant what it needs in advance (design
@@ -111,7 +139,7 @@ pub fn open_executor_unshared(cli: &Cli, connections: &Connections) -> Result<Ex
     // The folder is vetted first: `ProjectDir` names the reason in its own words, which beat the document's.
     let project_dir = cli.project.as_deref().map(open_project_dir).transpose()?;
     let doc: Box<dyn DocWrite> = match cli.project.as_deref() {
-        Some(dir) => Box::new(SavedProject::open(dir)?),
+        Some(dir) => Box::new(open_in_memory(dir)?),
         None if cli.command.needs_project() => return Err(project_required()),
         None => Box::new(NoProject),
     };

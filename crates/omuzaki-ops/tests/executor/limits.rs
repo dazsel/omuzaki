@@ -40,6 +40,9 @@ fn a_burst_passes_the_next_waits_exactly_and_runs_count_apart() {
     let tx = rig.exec.begin("t", &agent());
     assert_eq!(rig.exec.commit(tx, &agent()).unwrap_err().code, ErrorCode::Limited);
     assert!(rig.exec.session_of(&agent()).unwrap().open_tx.is_none());
+    // The begin can't say no, so the reason is kept for the surface to report: the same wait.
+    let refusal = rig.exec.begin_refusal(tx).expect("the refused begin's reason is kept");
+    assert_eq!(retry_after(&refusal).1, "edits_per_minute = 600");
 
     rig.clock.advance(Seconds(f64::from(seconds)));
     rig.exec.run(edit(&agent(), 101)).unwrap();

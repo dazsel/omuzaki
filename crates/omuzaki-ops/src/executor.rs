@@ -452,8 +452,9 @@ impl Runner for Executor {
         let entry = Entry::Call(Some(Bucket::Edits));
         self.with_state(|state| match state.sessions.admit_run(actor, &Grants::default(), at, entry) {
             Ok(_) => state.begin(label, actor, at),
-            // `begin` cannot say no: the id it hands back is never open, so every use of it is refused.
-            Err(_) => state.reserve_tx(),
+            // `begin` cannot say no: the id it hands back is never open, so every use of it is refused, and the reason
+            // is kept for `Sessions::begin_refusal`.
+            Err(error) => state.refuse_begin(error),
         })
     }
 

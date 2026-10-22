@@ -196,6 +196,9 @@ pub(crate) struct History {
     pub(crate) redo: Vec<Step>,
     /// When the actor last acted, in wall time (`WallTime(0)`: not known).
     pub(crate) last_seen: WallTime,
+    /// The person whose undo reaches these steps when no live session says (the agent's session ended, or this is a
+    /// later run of the project): learned from the session while it is live, and kept in the export.
+    pub(crate) principal: Option<Actor>,
 }
 
 impl History {
@@ -237,6 +240,7 @@ impl Histories {
                 undo: VecDeque::new(),
                 redo: Vec::new(),
                 last_seen: WallTime(0),
+                principal: None,
             });
             self.list.len() - 1
         });
@@ -340,7 +344,7 @@ impl Histories {
             .iter()
             .filter(|h| !stale(h.last_seen, before))
             .map(|h| {
-                let mut actor = ActorHistory::new(h.actor.clone(), h.last_seen);
+                let mut actor = ActorHistory::new(h.actor.clone(), h.last_seen).with_principal(h.principal.clone());
                 actor.undo = h.undo.iter().map(Step::export).collect();
                 // In the order they will be redone: the stack's last first.
                 actor.redo = h.redo.iter().rev().map(Step::export).collect();
@@ -373,7 +377,13 @@ impl Histories {
                     Step { undone: self.undos, ..Step::import(s) }
                 })
                 .collect();
-            self.list.push(History { actor: actor.actor.clone(), undo, redo, last_seen: actor.last_seen });
+            self.list.push(History {
+                actor: actor.actor.clone(),
+                undo,
+                redo,
+                last_seen: actor.last_seen,
+                principal: actor.principal.clone(),
+            });
         }
     }
 

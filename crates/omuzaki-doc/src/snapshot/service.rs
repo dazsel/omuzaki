@@ -155,13 +155,13 @@ impl Snapshots for SessionSnapshots {
         let mut patch = Patch::new();
         for rel in paths {
             let at = tree_path(rel)?;
-            let path = dir.join(rel);
-            let after = match fs::read_to_string(&path) {
+            let file = dir.join(rel);
+            let after = match fs::read_to_string(&file) {
                 Ok(text) => Some(Value::Object(
                     parse_table(&text).map_err(|e| SnapshotError::Invalid(format!("{rel} doesn't read: {e:?}")))?,
                 )),
                 Err(e) if e.kind() == io::ErrorKind::NotFound => None,
-                Err(e) => return Err(SnapshotError::Io(format!("{}: {e}", path.display()))),
+                Err(e) => return Err(SnapshotError::Io(format!("{}: {e}", file.display()))),
             };
             // The op that applies this fills in each `before` from the document it plans against.
             patch = patch.with(at, None, after);

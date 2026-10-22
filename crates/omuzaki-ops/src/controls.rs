@@ -220,6 +220,10 @@ impl Sessions for Executor {
         lock(&self.env.state).approvals.all()
     }
 
+    fn begin_refusal(&self, tx: TxId) -> Option<OpError> {
+        lock(&self.env.state).begin_refusal(tx)
+    }
+
     fn resolve(&self, id: ApprovalId, decision: Decision, by: &Actor) -> Result<Resolution, OpError> {
         let at = self.env.clock.now();
         match self.with_state(|state| self.resolve_locked(state, id, decision, by, at))? {

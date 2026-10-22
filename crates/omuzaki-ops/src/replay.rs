@@ -155,6 +155,11 @@ impl Executor {
         } else if let Some(open) = state.open_mut(record.tx) {
             absorb(&mut open.draft);
         }
+        // Live, the session said whom an agent worked for; replay has only the record. (An automation's record names
+        // its person too, so after a crash its steps since the last snapshot are its person's to undo as well.)
+        if let Some(person) = &record.on_behalf_of {
+            state.remember_principal(&record.actor, person);
+        }
         state.replayed(record.clone());
         Ok(())
     }

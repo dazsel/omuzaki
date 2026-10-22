@@ -653,7 +653,7 @@ impl Keeper {
                     drop(reply.send(self.snapshot_named(trigger, name)));
                 }
                 Ok(KeeperMsg::Close(history, reply)) => {
-                    let closed = self.save().and_then(|()| self.snapshot(Trigger::Close, self.applied, history));
+                    let closed = self.save().and_then(|()| self.snapshot(Trigger::Close, self.applied, &history));
                     drop(reply.send(closed));
                     return;
                 }
@@ -688,7 +688,7 @@ impl Keeper {
         for item in batch {
             let Item::Entry(lsn, entry) = item else { continue };
             if let HistoryEntry::Mark { history } = entry {
-                self.snapshot(Trigger::Auto, lsn, (*history).clone())?;
+                self.snapshot(Trigger::Auto, lsn, &history)?;
                 continue;
             }
             match &entry {
@@ -732,9 +732,9 @@ impl Keeper {
         }
     }
 
-    fn snapshot(&mut self, trigger: Trigger, lsn: Lsn, history: HistoryExport) -> Result<SnapshotId, String> {
+    fn snapshot(&mut self, trigger: Trigger, lsn: Lsn, history: &HistoryExport) -> Result<SnapshotId, String> {
         let facts = Facts::new(lsn, &self.session, trigger, self.wall.now()).with_label(self.label.clone());
-        self.publish(facts, &history).map(|info| info.id)
+        self.publish(facts, history).map(|info| info.id)
     }
 
     /// A snapshot asked for through the service: a named version, a take's state, a manual one. It covers what the

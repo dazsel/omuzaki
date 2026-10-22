@@ -8,13 +8,13 @@ use omuzaki_ops_api::OpError;
 
 use std::path::Path;
 
-use omuzaki_app::{AppCore, AppError, AppOptions};
+use omuzaki_app::{AppCore, AppError, RecoveryReport};
 use omuzaki_doc::StoreError;
 
 use crate::cli::{Cli, Command};
 use crate::commands::execute;
 use crate::output::{Reply, finish_reply};
-use crate::session::{Session, open_executor_with, project_root};
+use crate::session::{Session, core_options, open_executor_with, project_root};
 use crate::store;
 
 /// Parses the command line, runs the command against the project and exits with the code for its result.
@@ -61,7 +61,7 @@ fn bridge_to_studio(dir: &Path) -> Result<Reply, OpError> {
 
 /// Runs `cli`'s command on the project in `dir`, opened through the app core, and closes it.
 fn run_on_core(cli: &Cli, dir: &Path, mut session: Session) -> Result<Reply, OpError> {
-    let core = match AppCore::open(dir, AppOptions::headless(session.actor.clone())) {
+    let core = match AppCore::open(dir, core_options(cli, session.actor.clone())) {
         Ok(core) => core,
         // The studio has the project: an agent's `omuzaki mcp` works in it through the bridge (agent-sessions 10.2).
         Err(AppError::Store(StoreError::Locked { .. })) if matches!(cli.command, Command::Mcp) => {
@@ -71,7 +71,7 @@ fn run_on_core(cli: &Cli, dir: &Path, mut session: Session) -> Result<Reply, OpE
     };
     if !core.recovery().is_empty() {
         // Headless recovery restores to the last committed change and says so (journal.md 8.4); stdout is the reply.
-        eprintln!("omuzaki: {}", core.recovery().summary());
+        eprintln!("{}", recovery_notice(core.recovery(), cli.json));
     }
     session.sessions = Some(core.sessions());
     session.jobs = Some(core.jobs());
@@ -84,4 +84,42 @@ fn run_on_core(cli: &Cli, dir: &Path, mut session: Session) -> Result<Reply, OpE
     let text = result?;
     closed?;
     Ok(Reply::ok(text))
+}
+
+/// What recovery did, for stderr: one line, or with `--json` a `{"recovery": {...}}` object.
+fn recovery_notice(report: &RecoveryReport, json: bool) -> String {
+    if !json {
+        return format!("omuzaki: {}", report.summary());
+    }
+    let body = serde_json::json!({ "recovery": {
+        "summary": report.summary(),
+        "unclean": report.unclean,
+        "from_disk": report.from_disk,
+        "replayed": report.replayed,
+        "rolled_back": report.rolled_back,
+        "kept": report.kept,
+        "stopped": report.stopped,
+        "untrusted": report.untrusted,
+        "archived": report.archived.as_ref().map(ToString::to_string),
+    }});
+    crate::json::pretty(&body).map_or_else(|_| body.to_string(), |text| text.trim_end().to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_recovery_notice_is_a_line_or_a_json_object() {
+        let mut report = RecoveryReport::default();
+        report.unclean = true;
+        report.replayed = 3;
+        report.rolled_back = vec!["design".to_owned()];
+        assert!(recovery_notice(&report, false).starts_with("omuzaki: Omuzaki closed unexpectedly; 3 saved changes"));
+        let json: serde_json::Value = serde_json::from_str(&recovery_notice(&report, true)).unwrap();
+        assert_eq!(json["recovery"]["replayed"], 3);
+        assert_eq!(json["recovery"]["rolled_back"][0], "design");
+        assert_eq!(json["recovery"]["from_disk"], false);
+        assert!(json["recovery"]["archived"].is_null());
+    }
 }

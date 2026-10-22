@@ -67,6 +67,11 @@ impl AppError {
             Self::Store(StoreError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
                 OpError::not_found(self.to_string()).hint("pass the project folder: --project <DIR>")
             }
+            // The journal can't be written (a full disk, a read-only folder): the message names the file and the reason.
+            Self::Journal(JournalError::Io { .. } | JournalError::Snapshot(_)) => {
+                OpError::invalid("project", format!("Omuzaki can't keep the project's journal: {self}"))
+                    .hint("check the disk has space and the project folder can be written, then try again")
+            }
             Self::Store(_) => OpError::invalid("project", self.to_string())
                 .hint("fix the file named above (or restore it from version control), then try again"),
             Self::Bridge(BridgeError::Refused { .. }) => OpError::denied(self.to_string())

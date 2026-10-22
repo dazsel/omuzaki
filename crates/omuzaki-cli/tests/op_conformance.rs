@@ -22,9 +22,10 @@ use std::path::Path;
 use std::sync::Arc;
 
 use omuzaki_anim_api::{Calibration, DeviceProfile, RetargetConfig};
-use omuzaki_cli::project::SavedProject;
+use omuzaki_cli::project::open_in_memory;
 use omuzaki_core::time::SystemClock;
-use omuzaki_doc_api::{DocPath, Value};
+use omuzaki_doc::Project;
+use omuzaki_doc_api::{DocPath, DocRead, DocVersion, DocWrite, Patch, PatchError, Value};
 use omuzaki_face_api::ExpressionSet;
 use omuzaki_history_api::Snapshots;
 use omuzaki_history_mock::MemorySnapshots;
@@ -126,7 +127,7 @@ fn fixture_project(name: &str) -> Result<tempfile::TempDir, String> {
         return Ok(dir);
     }
     let steps = fixture_steps(name)?;
-    let doc = SavedProject::open(dir.path()).map_err(|e| format!("opening the project for fixture `{name}`: {e}"))?;
+    let doc = Saved::open(dir.path()).map_err(|e| format!("opening the project for fixture `{name}`: {e}"))?;
     let project = ProjectDir::open(dir.path()).map_err(|e| format!("opening the folder for fixture `{name}`: {e}"))?;
     let setup = Executor::new(Box::new(doc), Arc::new(SystemClock::new()))
         .map_err(|e| e.to_string())?
@@ -145,6 +146,36 @@ fn fixture_project(name: &str) -> Result<tempfile::TempDir, String> {
         setup.run(request).map_err(|e| format!("fixture `{name}` step `{op}` failed: {}", e.message))?;
     }
     Ok(dir)
+}
+
+/// The project the rig runs ops on, written to its files after every patch, so the rules on files (a dry run writes
+/// nothing, an undo leaves them byte for byte as they were) are checked the moment each run returns. The app writes
+/// files from its keeper a moment later; for these rules only the files' content counts, not when they are written.
+#[derive(Debug)]
+struct Saved(Project);
+
+impl Saved {
+    fn open(dir: &Path) -> Result<Self, String> {
+        open_in_memory(dir).map(Self).map_err(|e| e.to_string())
+    }
+}
+
+impl DocRead for Saved {
+    fn get(&self, path: &DocPath) -> Option<&Value> {
+        self.0.get(path)
+    }
+
+    fn version(&self) -> DocVersion {
+        self.0.version()
+    }
+}
+
+impl DocWrite for Saved {
+    fn apply(&mut self, patch: &Patch) -> Result<DocVersion, PatchError> {
+        let version = self.0.apply(patch)?;
+        self.0.save().map_err(|e| PatchError::Unreachable { path: DocPath::root(), reason: e.to_string() })?;
+        Ok(version)
+    }
 }
 
 /// What a run can leave behind: the document tree, every file under the project folder, and the op log's length.
@@ -247,7 +278,7 @@ struct Rig {
 impl Rig {
     fn new(reg: &'static OpRegistration, fixture: Option<&str>) -> Result<Self, String> {
         let dir = fixture_project(fixture.unwrap_or(DEFAULT_FIXTURE))?;
-        let doc = SavedProject::open(dir.path()).map_err(|e| format!("opening the fixture failed: {e}"))?;
+        let doc = Saved::open(dir.path()).map_err(|e| format!("opening the fixture failed: {e}"))?;
         let project = ProjectDir::open(dir.path()).map_err(|e| format!("opening the fixture folder failed: {e}"))?;
         let runner = Executor::with_registrations(Box::new(doc), Arc::new(SystemClock::new()), [reg])
             .map_err(|e| e.to_string())?

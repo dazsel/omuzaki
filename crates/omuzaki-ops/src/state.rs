@@ -77,7 +77,12 @@ pub(crate) struct State {
     pub(crate) changes: Index,
     pub(crate) journal: Journal,
     wall: Option<Arc<dyn WallClock>>,
+    /// Why the newest refused `begin`s were refused, by the id each handed back.
+    refused_begins: VecDeque<(TxId, OpError)>,
 }
+
+/// How many refused `begin`s keep their reason: enough for every session to ask about its own.
+const REFUSED_BEGINS_KEPT: usize = 64;
 
 impl State {
     pub(crate) fn new(doc: Box<dyn DocWrite>) -> Self {
@@ -96,6 +101,7 @@ impl State {
             changes: Index::default(),
             journal: Journal::default(),
             wall: None,
+            refused_begins: VecDeque::new(),
         }
     }
 
@@ -170,6 +176,21 @@ impl State {
         next_tx(&mut self.last_tx)
     }
 
+    /// Reserves an id that is never opened, and keeps why `begin` refused it (the newest few).
+    pub(crate) fn refuse_begin(&mut self, error: OpError) -> TxId {
+        let tx = self.reserve_tx();
+        if self.refused_begins.len() == REFUSED_BEGINS_KEPT {
+            self.refused_begins.pop_front();
+        }
+        self.refused_begins.push_back((tx, error));
+        tx
+    }
+
+    /// Why `begin` refused `tx`, if it did recently.
+    pub(crate) fn begin_refusal(&self, tx: TxId) -> Option<OpError> {
+        self.refused_begins.iter().find(|(id, _)| *id == tx).map(|(_, error)| error.clone())
+    }
+
     /// Opens a transaction owned by `actor`.
     pub(crate) fn begin(&mut self, label: &str, actor: &Actor, at: Seconds) -> TxId {
         let tx = next_tx(&mut self.last_tx);
@@ -201,6 +222,11 @@ impl State {
         self.next_seq += 1;
         if let Some(person) = self.sessions.principal_of(&record.actor) {
             record = record.with_on_behalf_of(person.clone());
+        }
+        if !matches!(record.actor, Actor::Person { .. })
+            && let Some(person) = self.principal_key(&record.actor).cloned()
+        {
+            self.histories.of(&record.actor).principal = Some(person);
         }
         if let Some(approval) = approval {
             record = record.with_approval(approval);
@@ -416,6 +442,16 @@ impl State {
                         .filter(|s| self.principal_key(&s.actor) == Some(actor))
                         .map(|s| s.actor.clone()),
                 );
+                // Agents whose session is gone (it ended, or this is a later run): their history remembers whom
+                // they worked for. A live session decides for itself, above.
+                let remembered: Vec<Actor> = self
+                    .histories
+                    .iter()
+                    .filter(|h| h.principal.as_ref() == Some(actor) && self.sessions.of_actor(&h.actor).is_none())
+                    .map(|h| h.actor.clone())
+                    .filter(|a| !group.contains(a))
+                    .collect();
+                group.extend(remembered);
                 self.histories.pick(direction, &group)
             }
             _ => self.histories.pick(direction, std::slice::from_ref(actor)),
@@ -642,6 +678,17 @@ impl State {
     /// applied, or of a commit.
     pub(crate) fn close(&mut self, tx: TxId) -> Option<OpenTx> {
         self.open.remove(&tx)
+    }
+
+    /// Notes that `actor`'s steps are `person`'s to undo, unless it is a person itself or already knows.
+    pub(crate) fn remember_principal(&mut self, actor: &Actor, person: &Actor) {
+        if matches!(actor, Actor::Person { .. }) {
+            return;
+        }
+        let history = self.histories.of(actor);
+        if history.principal.is_none() {
+            history.principal = Some(person.clone());
+        }
     }
 
     /// Notes `record`, read from the journal, as logged: ids continue after it.
