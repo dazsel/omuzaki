@@ -430,3 +430,24 @@ fn a_texture_file_is_kept_as_its_png_and_another_format_is_left_out_with_a_warni
     let dropped = out.report.findings.iter().find(|f| f.rule == "fbx.texture_dropped").expect("the TGA is reported");
     assert!(dropped.message.contains("neither PNG nor JPEG"), "{}", dropped.message);
 }
+
+#[test]
+fn an_open_surface_is_double_sided_and_a_closed_one_is_not() {
+    let mut file = maya();
+    let card = file.model("Card", SCENE_ROOT, [0.0; 3], [0.0; 3]);
+    quad().write(&mut file, card);
+    material(&mut file, card, "hair", [1.0; 3]);
+    // A tetrahedron: every edge has two triangles, and its UV seams don't open it.
+    let solid = file.model("Solid", SCENE_ROOT, [0.0; 3], [0.0; 3]);
+    Geometry {
+        points: vec![[0.0, 0.0, 0.0], [100.0, 0.0, 0.0], [0.0, 100.0, 0.0], [0.0, 0.0, 100.0]],
+        polygons: vec![vec![0, 2, 1], vec![0, 1, 3], vec![0, 3, 2], vec![1, 2, 3]],
+        uvs: Some((0..12).map(|k| [f64::from(k) / 12.0, 0.0]).collect()),
+        ..Geometry::default()
+    }
+    .write(&mut file, solid);
+    material(&mut file, solid, "skin", [1.0; 3]);
+    let out = import(&file.bytes());
+    let sided: Vec<(&str, bool)> = out.scene.materials.iter().map(|m| (m.name.as_str(), m.double_sided)).collect();
+    assert_eq!(sided, [("hair", true), ("skin", false)]);
+}

@@ -52,6 +52,7 @@ fn source_format(importer: &str) -> Option<SourceFormat> {
         "vrm1" => Some(SourceFormat::Vrm1),
         "vrm0" => Some(SourceFormat::Vrm0),
         "glb" => Some(SourceFormat::Gltf),
+        "fbx" => Some(SourceFormat::Fbx),
         _ => None,
     }
 }
@@ -257,6 +258,7 @@ fn importer_id(format: SourceFormat) -> Option<FormatId> {
         SourceFormat::Vrm1 => "vrm1",
         SourceFormat::Vrm0 => "vrm0",
         SourceFormat::Gltf => "glb",
+        SourceFormat::Fbx => "fbx",
         _ => return None,
     };
     id.parse().ok()

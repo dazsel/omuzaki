@@ -4813,6 +4813,7 @@ dependencies = [
  "omuzaki-face-api",
  "omuzaki-face-mock",
  "omuzaki-io-api",
+ "omuzaki-io-fbx",
  "omuzaki-io-ops",
  "omuzaki-io-vrm",
  "omuzaki-link-build",

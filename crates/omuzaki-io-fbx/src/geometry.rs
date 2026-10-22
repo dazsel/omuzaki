@@ -11,14 +11,20 @@
 //! four heaviest weights, renormalised. A vertex no cluster weighs is bound to the first joint (FBX would leave it where
 //! the mesh node puts it; glTF has no such vertex) and counted in a warning.
 //!
+//! **Faces seen from behind.** FBX records no culling a renderer can rely on (Maya writes `CullingOff` on every model,
+//! and tools leave the choice to the engine), so a material is made double-sided exactly when a primitive that uses it
+//! is an open surface (an edge with one triangle: hair cards, a skirt, lashes), whose back can be seen. A closed body
+//! stays single-sided, since its back faces are hidden anyway.
+//!
 //! **Blend shapes.** Each blend channel is one morph target, named after the channel, at its full-weight shape;
 //! in-between shapes are not kept (warning). Offsets are per control point, so a split vertex shares its point's offset.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use omuzaki_core::glam::{Vec2, Vec3};
 use omuzaki_io_api::{
-    Finding, ImportCtx, IoError, IoScene, Mesh, MeshData, MeshIx, MorphTarget, NodeIx, Primitive, Report, Skin, SkinIx,
+    Finding, ImportCtx, IoError, IoScene, MaterialIx, Mesh, MeshData, MeshIx, MorphTarget, NodeIx, Primitive, Report,
+    Skin, SkinIx,
 };
 use ufbx::SceneRoot;
 
@@ -43,7 +49,7 @@ pub(crate) fn convert(
     loaded: &SceneRoot,
     basis: &Basis,
     nodes: &[Option<NodeIx>],
-    materials: &[omuzaki_io_api::MaterialIx],
+    materials: &[MaterialIx],
     scene: &mut IoScene,
     report: &mut Report,
     ctx: &ImportCtx<'_>,
@@ -52,13 +58,15 @@ pub(crate) fn convert(
     let mut budget =
         Budget { left: u64::from(ctx.options.limits.max_vertices), limit: ctx.options.limits.max_vertices };
     let total = loaded.meshes.len() as u64;
+    let mut open = BTreeSet::new();
     for (k, mesh) in loaded.meshes.iter().enumerate() {
         ctx.progress.checkpoint("fbx.meshes", fraction(k as u64, total))?;
         // A mesh no node draws is not part of the model.
         if mesh.element.instances.is_empty() {
             continue;
         }
-        let mut converter = Converter { basis, nodes, materials, report: &mut *report, budget: &mut budget };
+        let mut converter =
+            Converter { basis, nodes, materials, report: &mut *report, budget: &mut budget, open: &mut open };
         let (made, skin) = converter.mesh(mesh)?;
         if made.primitives.is_empty() {
             continue;
@@ -74,6 +82,11 @@ pub(crate) fn convert(
                 n.mesh = Some(mesh_ix);
                 n.skin = skin_ix;
             }
+        }
+    }
+    for material in open {
+        if let Some(m) = scene.materials.get_mut(material.index()) {
+            m.double_sided = true;
         }
     }
     ctx.progress.checkpoint("fbx.meshes", 1.0)?;
@@ -108,9 +121,11 @@ struct Skinning {
 struct Converter<'a, 'r> {
     basis: &'a Basis,
     nodes: &'a [Option<NodeIx>],
-    materials: &'a [omuzaki_io_api::MaterialIx],
+    materials: &'a [MaterialIx],
     report: &'r mut Report,
     budget: &'r mut Budget,
+    /// The materials an open surface uses.
+    open: &'r mut BTreeSet<MaterialIx>,
 }
 
 /// One vertex's attributes, as bits, so equal corners merge.
@@ -170,6 +185,11 @@ impl Converter<'_, '_> {
                 .and_then(|m| mesh.materials.get(m as usize))
                 .and_then(|m| self.materials.get(m.element.typed_id as usize))
                 .copied();
+            if let Some(material) = primitive.material
+                && is_open(&primitive.mesh.indices, &point_of)
+            {
+                self.open.insert(material);
+            }
             primitive.morph_targets = targets
                 .iter()
                 .map(|(positions, normals)| {
@@ -382,6 +402,19 @@ impl Converter<'_, '_> {
         }
         (names, targets)
     }
+}
+
+/// True when the triangles have an edge only one of them uses: an open surface. Edges are between control points, so a
+/// UV or normal seam (which splits vertices, not points) does not open a closed mesh.
+fn is_open(indices: &[u32], point_of: &[u32]) -> bool {
+    let mut edges: HashMap<(u32, u32), u32> = HashMap::new();
+    for t in indices.as_chunks::<3>().0 {
+        let [a, b, c] = t.map(|i| point_of.get(i as usize).copied().unwrap_or(i));
+        for (p, q) in [(a, b), (b, c), (c, a)] {
+            *edges.entry((p.min(q), p.max(q))).or_insert(0) += 1;
+        }
+    }
+    edges.values().any(|&n| n == 1)
 }
 
 /// A finding's copy of a name from the file: at most 80 characters.
