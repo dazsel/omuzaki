@@ -291,11 +291,10 @@ fn the_wgsl_structs_read_the_bytes_the_rust_structs_write() {
         let internal = UVec2::new(160, 90);
         let (scene_resources, _targets) = resources.split();
         let mut frame = FrameState::new(&shared.gpu.device, &shared.layouts);
-        let (device, queue) = (&shared.gpu.device, &shared.gpu.queue);
-        frame.prepare(device, queue, &shared.layouts, &scene, scene_resources, internal).unwrap();
+        frame.prepare(&shared, &scene, scene_resources, internal, 1, 1).unwrap();
 
         // The mesh is rigid, so the instance's skin flag is off: the expected record is built the way `prepare` builds it.
-        let mut expected = chunks(&frame_uniform(&scene, internal));
+        let mut expected = chunks(&frame_uniform(&scene, internal, omuzaki_core::glam::Vec2::ZERO));
         expected.extend(chunks(&material_uniform));
         expected.extend(chunks(&instance_uniform(&scene.instances[0], false)));
         assert_eq!(size_of::<FrameUniform>(), FRAME_CHUNKS * 16);
@@ -393,7 +392,7 @@ fn run_probe(shared: &Shared, frame: &FrameState, material: &GpuMaterial, chunks
             multiview_mask: None,
         });
         pass.set_pipeline(&pipeline);
-        pass.set_bind_group(0, frame.bind_group(), &[]);
+        pass.set_bind_group(0, &frame.bind_groups(1)[0], &[]);
         pass.set_bind_group(1, &material.bind_group, &[]);
         pass.draw(0..3, 0..1);
     }

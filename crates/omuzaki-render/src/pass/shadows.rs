@@ -218,9 +218,10 @@ impl Shadows {
             }
         }
 
+        let frame_group = cx.frame_group();
         let Some(mut pass) = cx.attachments.shadow.begin_pass(cx.encoder, index) else { return };
         let (caster_group, offset) = cx.attachments.shadow.caster_group(index);
-        pass.set_bind_group(0, cx.frame.bind_group, &[]);
+        pass.set_bind_group(0, frame_group, &[]);
         pass.set_bind_group(2, caster_group, &[offset]);
         for draw in cx.frame.draws.for_pass(Pass::Shadows) {
             let (Some(mesh), Some(material)) =

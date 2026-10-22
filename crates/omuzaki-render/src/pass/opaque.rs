@@ -183,9 +183,9 @@ impl FramePass for Opaque {
         }
 
         let backdrop = self.backdrop.prepare(cx);
-        let environment = cx.environment_group();
+        let (environment, frame_group) = (cx.environment_group(), cx.frame_group());
         let mut pass = cx.attachments.geometry_pass(cx.encoder, "opaque", cx.frame.clear_colour());
-        pass.set_bind_group(0, cx.frame.bind_group, &[]);
+        pass.set_bind_group(0, frame_group, &[]);
         pass.set_bind_group(2, cx.attachments.shadow.receiver_group(), &[]);
         pass.set_bind_group(3, environment, &[]);
         for draw in cx.frame.draws.for_pass(Pass::Opaque) {

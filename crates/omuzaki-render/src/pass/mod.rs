@@ -73,9 +73,18 @@ pub(crate) struct PassCx<'a> {
     pub(crate) stats: FrameStats,
     /// CPU time the pass did outside `record` (painters ran before the frame); charged to the pass in the report.
     pub(crate) extra_cpu: Duration,
+    /// The supersampling round being drawn: 0, or up to the frame's rounds less one while the geometry passes repeat.
+    pub(crate) round: usize,
 }
 
 impl<'a> PassCx<'a> {
+    /// Group 0 for the round being drawn: the frame uniform with that round's sub-pixel offset, the instances and the
+    /// joints. Every pass that draws instances binds this.
+    pub(crate) fn frame_group(&self) -> &'a wgpu::BindGroup {
+        let groups = self.frame.bind_groups;
+        &groups[self.round.min(groups.len().saturating_sub(1))]
+    }
+
     /// Group 3 of the lit passes: the scene's environment, or the stand-in that lights nothing. It borrows the resources,
     /// not the context, so it can be fetched while a render pass holds the encoder.
     pub(crate) fn environment_group(&self) -> &'a wgpu::BindGroup {

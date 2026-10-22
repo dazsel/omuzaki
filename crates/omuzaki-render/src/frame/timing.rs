@@ -13,21 +13,63 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use omuzaki_core::time::Seconds;
 use omuzaki_render_api::{GpuTimings, Pass, PassTimes};
 
-/// Two timestamps per pass: before and after.
-#[allow(clippy::cast_possible_truncation)] // eight passes
-const PASS_QUERIES: u32 = 2 * Pass::COUNT as u32;
+/// What a pair of timestamps brackets: a pass, or the step that adds a supersampled round into the average (which the
+/// report counts towards `Resolve`, the pass that turns the average into the picture).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Span {
+    Pass(Pass),
+    Accumulate,
+}
+
+impl Span {
+    /// The pair's place in a round's block. The spans a later round repeats come first (the geometry passes, then the
+    /// accumulation), so a later round's written queries are one run from the start of its block.
+    fn slot(self) -> u32 {
+        match self {
+            Self::Pass(Pass::Opaque) => 0,
+            Self::Pass(Pass::Outlines) => 1,
+            Self::Pass(Pass::Transparent) => 2,
+            Self::Accumulate => 3,
+            Self::Pass(Pass::PaintTextures) => 4,
+            Self::Pass(Pass::Shadows) => 5,
+            Self::Pass(Pass::Bloom) => 6,
+            Self::Pass(Pass::DepthOfField) => 7,
+            Self::Pass(Pass::Resolve) => 8,
+        }
+    }
+}
+
+/// Pairs a round may write: the eight passes and the accumulation.
+const SPANS: u32 = 9;
+/// Pairs a round after the first writes: the three geometry passes and the accumulation.
+const REPEATED: u32 = 4;
+/// Queries per round's block: one 256-byte resolve boundary, since each block is resolved where it sits.
+const BLOCK: u32 = 32;
+/// Rounds of a supersampled frame that are timed: all of them (`supersample::MAX_ROUNDS`).
+const ROUNDS: u32 = super::supersample::MAX_ROUNDS;
+/// Every round's block.
+const PASS_QUERIES: u32 = BLOCK * ROUNDS;
 /// GPU paints timed per frame (a face repaints at most its three layers); paints beyond this go unmeasured.
 const PAINTS: u32 = 8;
 /// Where the paints' timestamps start, in the query set and (times 8 bytes) in the read-back: query results are resolved
 /// to 256-byte aligned offsets, so the paints' range starts on the next one after the passes'.
-const PAINT_BASE: u32 = 32;
-/// Every query: the passes', then the paints' pairs.
+const PAINT_BASE: u32 = PASS_QUERIES;
+/// Every query: the rounds' blocks, then the paints' pairs.
 const QUERIES: u32 = PAINT_BASE + 2 * PAINTS;
-// The paints' range starts past the passes' and on a resolve boundary, or `resolve` would overlap or be refused.
+// A block holds a round's pairs and starts on a resolve boundary, and so do the paints, or `resolve` would overlap or be
+// refused.
 const _: () = assert!(
-    PAINT_BASE >= PASS_QUERIES
+    2 * SPANS <= BLOCK
+        && (BLOCK as u64 * size_of::<u64>() as u64).is_multiple_of(wgpu::QUERY_RESOLVE_BUFFER_ALIGNMENT)
+        && PAINT_BASE >= PASS_QUERIES
         && (PAINT_BASE as u64 * size_of::<u64>() as u64).is_multiple_of(wgpu::QUERY_RESOLVE_BUFFER_ALIGNMENT)
 );
+
+/// The query of `span`'s timestamp in `round`: before (`end` false) or after.
+fn query(round: u32, span: Span, end: bool) -> u32 {
+    BLOCK * round + 2 * span.slot() + u32::from(end)
+}
+
 /// Read-back buffers in rotation. The GPU runs at most a couple of frames behind; if all are busy a frame goes
 /// unmeasured rather than stalling.
 const SLOTS: usize = 3;
@@ -52,6 +94,8 @@ struct Measured {
     ran: [bool; Pass::COUNT],
     /// How many paints were timed before the frame.
     paints: u32,
+    /// How many rounds the frame drew.
+    rounds: u32,
 }
 
 /// The newest measurement seen, ranked by submission order.
@@ -125,11 +169,11 @@ impl GpuTimer {
         })
     }
 
-    /// Writes the timestamp before (`end` false) or after (`end` true) `pass`.
-    pub(crate) fn write(&self, encoder: &mut wgpu::CommandEncoder, pass: Pass, end: bool) {
-        #[allow(clippy::cast_possible_truncation)] // eight passes
-        let query = 2 * pass.index() as u32 + u32::from(end);
-        encoder.write_timestamp(&self.queries, query);
+    /// Writes the timestamp before (`end` false) or after (`end` true) `span` in `round`. Every round writes its
+    /// accumulation's pair, even a frame of one round (where it brackets nothing), so each block's written queries are
+    /// one run.
+    pub(crate) fn write(&self, encoder: &mut wgpu::CommandEncoder, round: u32, span: Span, end: bool) {
+        encoder.write_timestamp(&self.queries, query(round.min(ROUNDS - 1), span, end));
     }
 
     /// Writes the timestamp before a GPU paint's commands on the encoder lent to it, and returns the query its end goes
@@ -164,17 +208,32 @@ impl GpuTimer {
 
     /// Resolves this frame's timestamps (and those of the paints since the last frame) into a free read-back slot,
     /// labelled `frame`. Returns whether it did; if every slot is still waiting on the GPU, the frame goes unmeasured.
-    pub(crate) fn resolve(&mut self, encoder: &mut wgpu::CommandEncoder, frame: u64, ran: [bool; Pass::COUNT]) -> bool {
+    ///
+    /// Only the queries this frame wrote are resolved: all of the first round's block, and the repeated spans of the
+    /// rest.
+    pub(crate) fn resolve(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: u64,
+        ran: [bool; Pass::COUNT],
+        rounds: u32,
+    ) -> bool {
         let paints = std::mem::take(&mut self.paints);
+        let rounds = rounds.clamp(1, ROUNDS);
         let Some(slot) = self.slots.iter_mut().find(|s| matches!(s.state, State::Idle)) else { return false };
-        encoder.resolve_query_set(&self.queries, 0..PASS_QUERIES, &self.resolve, 0);
+        encoder.resolve_query_set(&self.queries, 0..2 * SPANS, &self.resolve, 0);
+        for round in 1..rounds {
+            let first = BLOCK * round;
+            let offset = u64::from(first) * size_of::<u64>() as u64;
+            encoder.resolve_query_set(&self.queries, first..first + 2 * REPEATED, &self.resolve, offset);
+        }
         // Only the paints' queries written since the last frame: the others hold nothing this frame wrote.
         if paints > 0 {
             let offset = u64::from(PAINT_BASE) * size_of::<u64>() as u64;
             encoder.resolve_query_set(&self.queries, PAINT_BASE..PAINT_BASE + 2 * paints, &self.resolve, offset);
         }
         encoder.copy_buffer_to_buffer(&self.resolve, 0, &slot.buffer, 0, BYTES);
-        slot.state = State::Copied(Measured { sequence: self.submissions, frame, ran, paints });
+        slot.state = State::Copied(Measured { sequence: self.submissions, frame, ran, paints, rounds });
         self.submissions += 1;
         true
     }
@@ -195,13 +254,13 @@ impl GpuTimer {
     /// Collects every finished measurement and returns the newest one seen so far (by submission, not by frame index).
     pub(crate) fn poll(&mut self) -> Option<GpuTimings> {
         for slot in &mut self.slots {
-            let State::Mapping(Measured { sequence, frame, ran, paints }) = slot.state else { continue };
+            let State::Mapping(Measured { sequence, frame, ran, paints, rounds }) = slot.state else { continue };
             if !slot.ready.swap(false, Ordering::AcqRel) {
                 continue;
             }
             if let Ok(data) = slot.buffer.slice(..).get_mapped_range() {
                 let ticks: &[u64] = bytemuck::cast_slice(&data);
-                self.newest.offer(sequence, timings_from(ticks, self.period_ns, frame, ran, paints));
+                self.newest.offer(sequence, timings_from(ticks, self.period_ns, frame, ran, paints, rounds));
             }
             slot.buffer.unmap();
             slot.state = State::Idle;
@@ -210,15 +269,33 @@ impl GpuTimer {
     }
 }
 
-/// Turns raw tick pairs into per-pass durations; passes that did not run stay `None`. The first `paints` paint spans
+/// Turns raw tick pairs into per-pass durations; passes that did not run stay `None`. A pass that repeats in a
+/// supersampled frame adds up its `rounds`, and `Resolve` adds the rounds' accumulation. The first `paints` paint spans
 /// count towards `PaintTextures`.
-fn timings_from(ticks: &[u64], period_ns: f32, frame: u64, ran: [bool; Pass::COUNT], paints: u32) -> GpuTimings {
+fn timings_from(
+    ticks: &[u64],
+    period_ns: f32,
+    frame: u64,
+    ran: [bool; Pass::COUNT],
+    paints: u32,
+    rounds: u32,
+) -> GpuTimings {
     // Timestamps are counters of a few seconds at most, so the f64 conversion is exact.
     #[allow(clippy::cast_precision_loss)]
     let seconds = |begin: u64, end: u64| end.saturating_sub(begin) as f64 * f64::from(period_ns) * 1e-9;
+    let span = |round: u32, span: Span| {
+        let at = |end| ticks.get(query(round, span, end) as usize).copied().unwrap_or(0);
+        seconds(at(false), at(true))
+    };
+    let rounds = rounds.clamp(1, ROUNDS);
     let mut passes = PassTimes::default();
     for pass in Pass::ALL.into_iter().filter(|p| ran[p.index()]) {
-        passes.set(pass, Seconds(seconds(ticks[2 * pass.index()], ticks[2 * pass.index() + 1])));
+        let repeated = if super::supersample::repeats(pass) { rounds } else { 1 };
+        let mut total: f64 = (0..repeated).map(|round| span(round, Span::Pass(pass))).sum();
+        if pass == Pass::Resolve && rounds > 1 {
+            total += (0..rounds).map(|round| span(round, Span::Accumulate)).sum::<f64>();
+        }
+        passes.set(pass, Seconds(total));
     }
     let mut painters = None;
     if let Some(Seconds(own)) = passes.get(Pass::PaintTextures) {
@@ -237,17 +314,58 @@ mod tests {
     #[test]
     fn durations_come_from_tick_pairs_and_skip_passes_that_did_not_run() {
         let mut ticks = [0u64; QUERIES as usize];
-        let (opaque, resolve) = (Pass::Opaque.index(), Pass::Resolve.index());
-        (ticks[2 * opaque], ticks[2 * opaque + 1]) = (1_000, 3_000);
-        (ticks[2 * resolve], ticks[2 * resolve + 1]) = (3_000, 3_500);
+        set(&mut ticks, 0, Span::Pass(Pass::Opaque), (1_000, 3_000));
+        set(&mut ticks, 0, Span::Pass(Pass::Resolve), (3_000, 3_500));
         let mut ran = [false; Pass::COUNT];
-        (ran[opaque], ran[resolve]) = (true, true);
+        (ran[Pass::Opaque.index()], ran[Pass::Resolve.index()]) = (true, true);
 
-        let t = timings_from(&ticks, 2.0, 9, ran, 0);
+        let t = timings_from(&ticks, 2.0, 9, ran, 0, 1);
         assert_eq!(t.frame, 9);
         assert_eq!(t.passes.get(Pass::Opaque), Some(Seconds(4_000.0 * 1e-9)), "2000 ticks at 2 ns");
         assert_eq!(t.passes.get(Pass::Resolve), Some(Seconds(1_000.0 * 1e-9)));
         assert_eq!(t.passes.get(Pass::Bloom), None);
+    }
+
+    fn set(ticks: &mut [u64], round: u32, span: Span, (begin, end): (u64, u64)) {
+        (ticks[query(round, span, false) as usize], ticks[query(round, span, true) as usize]) = (begin, end);
+    }
+
+    #[test]
+    fn a_supersampled_frame_adds_up_its_rounds_and_resolve_takes_the_accumulation() {
+        let mut ticks = [0u64; QUERIES as usize];
+        for round in 0..4 {
+            set(&mut ticks, round, Span::Pass(Pass::Opaque), (0, 100));
+            set(&mut ticks, round, Span::Accumulate, (0, 10));
+            // Left over from an earlier frame in a block this frame did not reach: never counted.
+            set(&mut ticks, round + 4, Span::Pass(Pass::Opaque), (0, 1_000_000));
+        }
+        set(&mut ticks, 0, Span::Pass(Pass::Bloom), (0, 50));
+        // A once-per-frame pass's pair in a later block is stale: only the first round's counts.
+        set(&mut ticks, 1, Span::Pass(Pass::Bloom), (0, 1_000_000));
+        set(&mut ticks, 0, Span::Pass(Pass::Resolve), (0, 20));
+        let mut ran = [false; Pass::COUNT];
+        for pass in [Pass::Opaque, Pass::Bloom, Pass::Resolve] {
+            ran[pass.index()] = true;
+        }
+        let t = timings_from(&ticks, 1.0, 0, ran, 0, 4);
+        let ns = |pass| t.passes.get(pass).map(|s| (s.0 * 1e9).round());
+        assert_eq!(ns(Pass::Opaque), Some(400.0), "four rounds of 100");
+        assert_eq!(ns(Pass::Bloom), Some(50.0));
+        assert_eq!(ns(Pass::Resolve), Some(60.0), "its own 20 and four accumulations of 10");
+        let single = timings_from(&ticks, 1.0, 0, ran, 0, 1);
+        assert_eq!(single.passes.get(Pass::Resolve).map(|s| (s.0 * 1e9).round()), Some(20.0), "one round adds nothing");
+    }
+
+    #[test]
+    fn every_span_has_its_own_pair_and_the_repeated_ones_lead_each_block() {
+        let mut seen = std::collections::HashSet::new();
+        for span in Pass::ALL.map(Span::Pass).into_iter().chain([Span::Accumulate]) {
+            assert!(span.slot() < SPANS);
+            assert!(seen.insert(span.slot()), "{span:?} shares a slot");
+            let repeated = matches!(span, Span::Accumulate)
+                || matches!(span, Span::Pass(p) if super::super::supersample::repeats(p));
+            assert_eq!(span.slot() < REPEATED, repeated, "{span:?}");
+        }
     }
 
     fn labelled(frame: u64) -> GpuTimings {
@@ -278,7 +396,7 @@ mod tests {
     fn the_paints_timed_before_a_frame_count_towards_paint_textures() {
         let mut ticks = [0u64; QUERIES as usize];
         let paint = Pass::PaintTextures.index();
-        (ticks[2 * paint], ticks[2 * paint + 1]) = (10_000, 10_100);
+        set(&mut ticks, 0, Span::Pass(Pass::PaintTextures), (10_000, 10_100));
         let base = PAINT_BASE as usize;
         (ticks[base], ticks[base + 1]) = (1_000, 1_400);
         (ticks[base + 2], ticks[base + 3]) = (2_000, 2_250);
@@ -286,20 +404,20 @@ mod tests {
         (ticks[base + 4], ticks[base + 5]) = (0, 1_000_000);
         let mut ran = [false; Pass::COUNT];
         ran[paint] = true;
-        let t = timings_from(&ticks, 1.0, 3, ran, 2).passes.get(Pass::PaintTextures).map(|s| s.0);
+        let t = timings_from(&ticks, 1.0, 3, ran, 2, 1).passes.get(Pass::PaintTextures).map(|s| s.0);
         assert!(t.is_some_and(|t| (t - 750e-9).abs() < 1e-15), "the mips' 100 ticks and the two paints' 650: {t:?}");
-        let painters = timings_from(&ticks, 1.0, 3, ran, 2).painters.map(|s| s.0);
+        let painters = timings_from(&ticks, 1.0, 3, ran, 2, 1).painters.map(|s| s.0);
         assert!(painters.is_some_and(|p| (p - 650e-9).abs() < 1e-15), "the painters' share alone: {painters:?}");
         ran[paint] = false;
-        assert_eq!(timings_from(&ticks, 1.0, 3, ran, 2).passes.get(Pass::PaintTextures), None, "no paint, no row");
+        assert_eq!(timings_from(&ticks, 1.0, 3, ran, 2, 1).passes.get(Pass::PaintTextures), None, "no paint, no row");
     }
 
     #[test]
     fn a_counter_that_goes_backwards_reads_as_zero_not_a_huge_time() {
         let mut ticks = [0u64; QUERIES as usize];
-        (ticks[0], ticks[1]) = (500, 100);
+        set(&mut ticks, 0, Span::Pass(Pass::PaintTextures), (500, 100));
         let mut ran = [false; Pass::COUNT];
         ran[0] = true;
-        assert_eq!(timings_from(&ticks, 1.0, 0, ran, 0).passes.get(Pass::PaintTextures), Some(Seconds(0.0)));
+        assert_eq!(timings_from(&ticks, 1.0, 0, ran, 0, 1).passes.get(Pass::PaintTextures), Some(Seconds(0.0)));
     }
 }

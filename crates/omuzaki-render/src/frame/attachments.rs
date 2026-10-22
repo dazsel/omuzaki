@@ -3,10 +3,13 @@
 //! Scene passes draw HDR linear colour (premultiplied alpha) into a multisampled texture. The samples are resolved in
 //! hardware, once, by whichever pass first needs the single-sample picture ([`Attachments::resolved_colour`]), so the
 //! post passes and `Resolve` all read an ordinary texture. Each target owns one set; they are rebuilt when its internal
-//! size or the sample count changes, never per frame.
+//! size or the sample count changes, never per frame. A supersampled frame (`frame/supersample.rs`) draws its geometry
+//! in rounds and adds each round's resolved colour into one more texture, the average, which the post passes then read
+//! in its place.
 
 use omuzaki_core::glam::UVec2;
 
+use super::supersample::Accumulate;
 use crate::gpu::{DEPTH_FORMAT, SCENE_FORMAT};
 use crate::shadow::map::ShadowMaps;
 use crate::shared::Shared;
@@ -36,9 +39,14 @@ pub(crate) struct Attachments {
     depth_input: Option<wgpu::BindGroup>,
     /// Products of the post passes for this frame's `Resolve`.
     pub(crate) post: PostProducts,
-    /// The first geometry pass of the frame clears; later ones load.
+    /// The average of a supersampled frame's rounds and its bind group (`Layouts::colour_input`), made by the first frame
+    /// that supersamples.
+    average: Option<(wgpu::TextureView, wgpu::BindGroup)>,
+    /// The first geometry pass of the round clears; later ones load.
     cleared: bool,
     resolved: bool,
+    /// The rounds are added up: the post passes read the average.
+    averaged: bool,
     pub(crate) bytes: u64,
     /// The target's shadow maps and their lookup settings: drawn by `Shadows`, bound by the lit passes at group 2. They
     /// are here, not in the pass, because a live frame that skips a redraw must still find the last maps of this target.
@@ -67,6 +75,21 @@ fn texture(
         .create_view(&wgpu::TextureViewDescriptor::default())
 }
 
+/// `view` as a post pass's input (`Layouts::colour_input`).
+fn colour_input(shared: &Shared, view: &wgpu::TextureView, label: &str) -> wgpu::BindGroup {
+    shared.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some(label),
+        layout: &shared.layouts.colour_input,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(view) },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(&shared.defaults.linear_clamp),
+            },
+        ],
+    })
+}
+
 impl Attachments {
     pub(crate) fn new(shared: &Shared, size: UVec2, samples: u32) -> Self {
         let device = &shared.gpu.device;
@@ -75,17 +98,7 @@ impl Attachments {
         let pixels = u64::from(size.x) * u64::from(size.y);
         let msaa = (samples > 1).then(|| texture(device, "scene colour (msaa)", size, samples, SCENE_FORMAT, attach));
         let colour = texture(device, "scene colour", size, 1, SCENE_FORMAT, readable);
-        let colour_input = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("scene colour"),
-            layout: &shared.layouts.colour_input,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&colour) },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&shared.defaults.linear_clamp),
-                },
-            ],
-        });
+        let colour_input = colour_input(shared, &colour, "scene colour");
         Self {
             size,
             samples,
@@ -95,8 +108,10 @@ impl Attachments {
             depth: texture(device, "scene depth", size, samples, DEPTH_FORMAT, readable),
             depth_input: None,
             post: PostProducts::default(),
+            average: None,
             cleared: false,
             resolved: false,
+            averaged: false,
             shadow: ShadowMaps::new(shared, 1, 1),
             // 8 bytes of colour per sample (plus the resolved copy when multisampled), 4 of depth.
             bytes: pixels * (8 + if samples > 1 { 8 * u64::from(samples) } else { 0 } + 4 * u64::from(samples)),
@@ -108,11 +123,41 @@ impl Attachments {
         self.size == size && self.samples == samples
     }
 
-    /// Forgets the previous frame's clear and resolve.
+    /// Forgets the previous frame's clear, resolve and average.
     pub(crate) fn begin_frame(&mut self) {
+        self.begin_round();
+        self.averaged = false;
+        self.post = PostProducts::default();
+    }
+
+    /// Starts another round of a supersampled frame: its first geometry pass clears again.
+    pub(crate) fn begin_round(&mut self) {
         self.cleared = false;
         self.resolved = false;
-        self.post = PostProducts::default();
+    }
+
+    /// Adds the round just drawn into the average, weighted by `1 / rounds`; after the last round the post passes read
+    /// the average instead of the scene colour. Makes the average's texture the first time.
+    pub(crate) fn accumulate(
+        &mut self,
+        shared: &Shared,
+        encoder: &mut wgpu::CommandEncoder,
+        accumulate: &Accumulate,
+        round: u32,
+        rounds: u32,
+    ) {
+        if self.average.is_none() {
+            let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
+            let view = texture(&shared.gpu.device, "scene colour (average)", self.size, 1, SCENE_FORMAT, usage);
+            let input = colour_input(shared, &view, "scene colour (average)");
+            self.bytes += 8 * u64::from(self.size.x) * u64::from(self.size.y);
+            self.average = Some((view, input));
+        }
+        let input = self.resolved_colour(encoder).clone();
+        if let Some((sum, _)) = &self.average {
+            accumulate.record(encoder, &input, sum, round, rounds);
+        }
+        self.averaged = round + 1 >= rounds;
     }
 
     /// Starts a render pass that draws geometry into the scene colour and depth. The first one in a frame clears to
@@ -166,8 +211,13 @@ impl Attachments {
 
     /// The single-sample scene colour as a bind group for a post pass (`Layouts::colour_input`), resolving the
     /// multisampled colour first if geometry has been drawn since the last resolve. Post passes and `Resolve` call
-    /// this; the first caller pays for the resolve.
+    /// this; the first caller pays for the resolve. Once a supersampled frame's rounds are added up, it is the average.
     pub(crate) fn resolved_colour(&mut self, encoder: &mut wgpu::CommandEncoder) -> &wgpu::BindGroup {
+        if self.averaged
+            && let Some((_, average)) = &self.average
+        {
+            return average;
+        }
         if let (Some(msaa), false) = (&self.msaa, self.resolved) {
             // An otherwise empty pass: loading the samples and storing nothing but the resolve is how wgpu resolves.
             encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

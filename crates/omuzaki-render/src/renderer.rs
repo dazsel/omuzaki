@@ -472,6 +472,7 @@ impl Renderer for WgpuRenderer {
             });
         }
         let samples = shared.gpu.samples_for(quality.samples);
+        let rounds = crate::frame::supersample::rounds(quality, samples);
 
         #[cfg(test)]
         let inject_frame_failure = self.inject_frame_failure;
@@ -479,7 +480,7 @@ impl Renderer for WgpuRenderer {
         let report = gpu.scoped("a frame", || {
             // Everything that can fail on the caller's data happens before the GPU is touched, so on error the target
             // keeps its previous frame.
-            frame.prepare(&gpu.device, &gpu.queue, &shared.layouts, scene, scene_resources, internal)?;
+            frame.prepare(shared, scene, scene_resources, internal, rounds, samples)?;
             let output = entry.output_view.clone();
             let attachments: &mut Attachments = entry.attachments(shared, internal, samples);
             attachments.begin_frame();
@@ -490,7 +491,7 @@ impl Renderer for WgpuRenderer {
                 internal_size: internal,
                 target_size: desc.size,
                 samples,
-                bind_group: frame.bind_group(),
+                bind_groups: frame.bind_groups(rounds),
                 draws: &frame.draws,
             };
             let mut encoder =
@@ -521,10 +522,11 @@ impl Renderer for WgpuRenderer {
                 encoder: &mut encoder,
                 stats: FrameStats::default(),
                 extra_cpu: std::time::Duration::ZERO,
+                round: 0,
             };
-            let recorded = graph.record(&mut cx)?;
+            let recorded = graph.record(&mut cx, rounds)?;
             let stats = cx.stats;
-            graph.resolve_timings(&mut encoder, scene.frame.index, recorded.ran);
+            graph.resolve_timings(&mut encoder, scene.frame.index, recorded.ran, rounds);
             gpu.queue.submit([encoder.finish()]);
             entry.has_frame = true;
             paints.clear();
