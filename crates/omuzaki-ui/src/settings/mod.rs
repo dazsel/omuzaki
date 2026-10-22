@@ -11,7 +11,10 @@
 //! `settings.set` or `settings.reset` run as the person: one op in history, undone like any other. The schemas come from
 //! the registry, the same ones `settings.get` gives an agent, so the window and MCP cannot drift.
 
+pub mod models;
 pub mod text;
+
+use std::sync::Arc;
 
 use egui::{Context, Id, Key, RichText, ScrollArea, Ui, Window, vec2};
 use omuzaki_ops_api::{Actor, Grants, Mode, OpError, Request, Runner};
@@ -19,12 +22,13 @@ use omuzaki_settings_api::registry;
 use schemars::Schema;
 use serde_json::{Map, Value, json};
 
+use self::models::ModelsPage;
 use self::text::{Word, area_title, humanise, say, title};
 use crate::ds::icons;
 use crate::ds::schema_form::{EditPhase, Form, FormValue, SchemaForm};
 use crate::ds::theme::ds;
 use crate::ds::tokens::space;
-use crate::ds::widgets::{ActorChip, ActorKind, EmptyState, TextField};
+use crate::ds::widgets::{ActorChip, ActorKind, EmptyState, Segment, Segmented, TextField};
 
 /// Seconds between reads while the window is open.
 const REFRESH_S: f64 = 1.0;
@@ -58,9 +62,21 @@ impl Row {
     }
 }
 
+/// The window's pages.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Page {
+    /// Every registered setting.
+    #[default]
+    Settings,
+    /// The model slots and their models.
+    Models,
+}
+
 /// The Settings window's state. Make it when the window opens and drop it when it closes.
 #[derive(Default)]
 pub struct SettingsWindow {
+    page: Page,
+    models: ModelsPage,
     query: String,
     rows: Vec<Row>,
     /// When the settings were last read, on egui's clock.
@@ -88,6 +104,21 @@ impl SettingsWindow {
         Self::default()
     }
 
+    /// A window open on `page`.
+    pub fn on(page: Page) -> Self {
+        Self { page, ..Self::default() }
+    }
+
+    /// The page on show.
+    pub const fn page(&self) -> Page {
+        self.page
+    }
+
+    /// The Models page.
+    pub fn models(&mut self) -> &mut ModelsPage {
+        &mut self.models
+    }
+
     /// The keys on show, for the search, in the order drawn.
     pub fn listed(&self) -> Vec<&str> {
         let needle = self.query.trim().to_lowercase();
@@ -95,7 +126,7 @@ impl SettingsWindow {
     }
 
     /// Draws the window; false once the person closed it (its close button or Esc).
-    pub fn show(&mut self, ctx: &Context, runner: &dyn Runner, actor: &Actor) -> bool {
+    pub fn show(&mut self, ctx: &Context, runner: &Arc<dyn Runner>, actor: &Actor) -> bool {
         let now = ctx.input(|i| i.time);
         let locale = ds(ctx).strings.locale().to_owned();
         if locale != self.locale {
@@ -104,8 +135,8 @@ impl SettingsWindow {
             self.read_at = None;
             self.locale = locale;
         }
-        if self.read_at.is_none_or(|at| now - at >= REFRESH_S) {
-            self.read(ctx, runner, actor, now);
+        if self.page == Page::Settings && self.read_at.is_none_or(|at| now - at >= REFRESH_S) {
+            self.read(ctx, runner.as_ref(), actor, now);
         }
         ctx.request_repaint_after(std::time::Duration::from_secs_f64(REFRESH_S));
         let mut open = true;
@@ -117,7 +148,17 @@ impl SettingsWindow {
             .resizable(true)
             .default_size(vec2(560.0, 600.0))
             .min_size(vec2(360.0, 280.0))
-            .show(ctx, |ui| self.body(ui, runner, actor, now));
+            .show(ctx, |ui| {
+                let label = say(ctx, Word::Pages, &[]);
+                let (settings, models) = (say(ctx, Word::PageSettings, &[]), say(ctx, Word::PageModels, &[]));
+                let pages = [Segment::new(Page::Settings, &settings), Segment::new(Page::Models, &models)];
+                ui.add(Segmented::new(&label, &mut self.page, &pages).id_salt("settings.page"));
+                ui.add_space(space::S8);
+                match self.page {
+                    Page::Settings => self.body(ui, runner.as_ref(), actor, now),
+                    Page::Models => self.models.show(ui, runner, actor, now),
+                }
+            });
         let escaped = !ctx.text_edit_focused() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape));
         open && !escaped
     }

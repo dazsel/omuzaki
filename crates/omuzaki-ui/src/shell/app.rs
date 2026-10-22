@@ -348,7 +348,7 @@ impl Shell {
             self.sheet = sheet::show(&ctx);
         }
         if let Some(window) = self.settings.as_mut()
-            && !window.show(&ctx, self.runner.as_ref(), &self.actor)
+            && !window.show(&ctx, &self.runner, &self.actor)
         {
             self.settings = None;
         }

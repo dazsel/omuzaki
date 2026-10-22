@@ -114,7 +114,7 @@ fn rig(settings: Settings) -> Harness<'static, Rig> {
     let mut h = harness_state(settings, vec2(900.0, 1400.0), state, |ui, r| {
         let runner = Arc::clone(&r.core.runner);
         if let Some(window) = r.window.as_mut()
-            && !window.show(ui.ctx(), runner.as_ref(), &r.person)
+            && !window.show(ui.ctx(), &runner, &r.person)
         {
             r.window = None;
         }
@@ -302,7 +302,7 @@ fn settings_evidence() {
         let mut h = Harness::builder().with_size(vec2(900.0, 720.0)).wgpu().build_ui(move |ui| {
             apply_settings(ui.ctx(), settings);
             egui::CentralPanel::default().show(ui, |_| {});
-            window.show(ui.ctx(), core.runner.as_ref(), &person);
+            window.show(ui.ctx(), &core.runner, &person);
         });
         if pseudo {
             set_strings(&h.ctx, Arc::new(Pseudo(English)));

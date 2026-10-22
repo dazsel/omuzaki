@@ -66,6 +66,7 @@ messages! {
     ScopeInside = "ds-scope-inside" => "Scope",
     CostEstimate = "ds-cost-estimate" => "Estimated cost: {parts}",
     GateFailed = "ds-gate-failed" => "{value}, below {threshold}, gate failed",
+    GateAbove = "ds-gate-above" => "{value}, above {threshold}, gate failed",
     GatePassed = "ds-gate-passed" => "{value}, gate passed",
     GateOpens = "ds-gate-opens" => "Opens the evidence",
     /// Joins the parts of a spoken value ("0.62, default 0.50, modified"). Punctuation, left alone by the pseudo-locale.
