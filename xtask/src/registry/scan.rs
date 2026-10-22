@@ -1,5 +1,5 @@
 //! What one source file says about self-registration: the `register_*!` macros it defines, the registrations it
-//! makes and the `cfg`s they sit under, the `mod` declarations that lead to other files, whether it defines the crate's
+//! makes (`register_*!` calls and `messages!` tables) and the `cfg`s they sit under, the `mod` declarations that lead to other files, whether it defines the crate's
 //! `link()` and which crates' `link()` it calls.
 
 use super::cfg::Cfg;
@@ -8,12 +8,13 @@ use super::lex::{Tok, Token, tokens};
 /// The prefix every self-registration macro's name starts with (`register_op!`, `register_part_kind!`, ...).
 pub const MACRO_PREFIX: &str = "register_";
 
-/// The `omuzaki-l10n-api` macro that declares a crate's message table (ADR 0023). It is a registration too: the table
-/// is submitted to `inventory` and recorded as kind `messages`, name `messages`, so the scan reads a call of it as one.
-pub const MESSAGES_MACRO: &str = "messages";
-
 /// The `omuzaki-core` macro that defines a crate's `link()` (ADR 0015).
 pub const LINK_MACRO: &str = "define_link";
+
+/// The `omuzaki-l10n-api` macro that declares a crate's message table. It registers the table without the `register_`
+/// prefix (its name is the l10n design's, `docs/design/l10n-ops.md`), recording kind `messages` named `messages`, so
+/// the scan knows it by name.
+pub const MESSAGES_MACRO: &str = "messages";
 
 /// A `cfg` predicate and the line of the attribute that states it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,7 +25,8 @@ pub struct CfgAt {
     pub line: u32,
 }
 
-/// One `register_<kind>!(<name>, ...)` call at item level: the top level of the file or of an inline `mod` block.
+/// One `register_<kind>!(<name>, ...)` call, or one `messages! { ... }` table, at item level: the top level of the
+/// file or of an inline `mod` block.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Call {
     /// The macro's name without `register_`: the registry it adds to.
@@ -101,9 +103,10 @@ pub struct UnsupportedAt {
 /// Everything the gate needs from one file.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FileScan {
-    /// The `register_<kind>` macros the file defines, as kinds.
+    /// The registration macros the file defines, as kinds: each `register_<kind>`, and `messages` for `messages!`.
     pub defines: Vec<String>,
-    /// Calls of macros named `register_*`, whether or not the macro turns out to be a registration macro.
+    /// Calls of macros named `register_*` and of `messages!`, whether or not the macro turns out to be a registration
+    /// macro.
     pub calls: Vec<Call>,
     /// Its `mod name;` declarations.
     pub mods: Vec<ModDecl>,
@@ -187,11 +190,10 @@ pub fn scan(source: &str) -> FileScan {
                     out.unsupported.push(UnsupportedAt { form, line: token.line });
                 }
                 if word == "macro_rules" && is_punct(&toks, i + 1, '!') {
-                    let name = ident_at(&toks, i + 2);
-                    if let Some(kind) = name.and_then(|name| name.strip_prefix(MACRO_PREFIX)) {
-                        out.defines.push(kind.to_owned());
-                    } else if name == Some(MESSAGES_MACRO) {
-                        out.defines.push(MESSAGES_MACRO.to_owned());
+                    match ident_at(&toks, i + 2) {
+                        Some(MESSAGES_MACRO) => out.defines.push(MESSAGES_MACRO.to_owned()),
+                        Some(name) => out.defines.extend(name.strip_prefix(MACRO_PREFIX).map(str::to_owned)),
+                        None => {}
                     }
                     matchers.extend(macro_matchers(&toks, i + 3));
                     i += 3; // past the name, so the definition is not read as a call
@@ -227,7 +229,7 @@ pub fn scan(source: &str) -> FileScan {
                         pending = Pending::default();
                         i += 2;
                         continue;
-                    } else if let Some((kind, name)) = registration_call(word, &toks, i) {
+                    } else if let Some((kind, name)) = registration_call(&toks, i, word) {
                         let cfgs = cfgs_here(&frames, &pending);
                         out.calls.push(Call { kind, name, line: token.line, cfgs });
                         pending = Pending::default();
@@ -241,16 +243,17 @@ pub fn scan(source: &str) -> FileScan {
     out
 }
 
-/// The registry and name of a registration call at `at`: `register_<kind>!(<name>, ...)`, or a message table
-/// (`messages! { ... }`), which records itself as kind and name `messages`.
-fn registration_call(word: &str, toks: &[Token], at: usize) -> Option<(String, String)> {
-    if !is_punct(toks, at + 1, '!') {
+/// The registry and name of the call that starts with the macro name `word` at token `i`: `register_<kind>!(<name>,
+/// ...)`, or `messages! { ... }`, whose table registers under one fixed name whatever it declares.
+fn registration_call(toks: &[Token], i: usize, word: &str) -> Option<(String, String)> {
+    if !is_punct(toks, i + 1, '!') {
         return None;
     }
-    if word == MESSAGES_MACRO {
-        return Some((MESSAGES_MACRO.to_owned(), MESSAGES_MACRO.to_owned()));
+    if let Some(kind) = word.strip_prefix(MACRO_PREFIX) {
+        return Some((kind.to_owned(), first_argument(toks, i + 2)?));
     }
-    Some((word.strip_prefix(MACRO_PREFIX)?.to_owned(), first_argument(toks, at + 2)?))
+    let group = toks.get(i + 2).is_some_and(|t| matches!(t.tok, Tok::Punct('(' | '[' | '{')));
+    (word == MESSAGES_MACRO && group).then(|| (MESSAGES_MACRO.to_owned(), MESSAGES_MACRO.to_owned()))
 }
 
 fn mod_name(frame: &Frame) -> Option<&str> {
@@ -534,20 +537,6 @@ mod inline { register_op!(InInlineMod); }
     }
 
     #[test]
-    fn a_message_table_is_a_registration() {
-        let source = r#"
-macro_rules! messages { ($($t:tt)*) => {}; }
-omuzaki_l10n_api::messages! {
-    pub hello = "x-hello" () => "Hello.";
-}
-fn f() { messages! { pub inner = "x-inner" () => "Inner."; } }
-"#;
-        let scan = scan(source);
-        assert_eq!(calls(source), [call("messages", "messages", 3)]);
-        assert_eq!(scan.defines, ["messages"]);
-    }
-
-    #[test]
     fn calls_in_bodies_comments_strings_and_definitions_are_not_registrations() {
         let source = r#"
 /// register_op!(InDocs);
@@ -560,6 +549,24 @@ macro_rules! register_op { ($ty:ty) => { $crate::submit!($ty); }; }
         let scan = scan(source);
         assert!(scan.calls.is_empty(), "{:?}", scan.calls);
         assert_eq!(scan.defines, ["op"]);
+    }
+
+    #[test]
+    fn an_item_level_message_table_registers_and_one_in_a_body_or_definition_does_not() {
+        let registers = r#"
+omuzaki_l10n_api::messages! {
+    pub saved = "app-saved" () => "Saved.";
+}
+"#;
+        assert_eq!(calls(registers), [call("messages", "messages", 2)]);
+        let does_not = r#"
+fn f() { omuzaki_l10n_api::messages! { pub a = "x-a" () => "A."; } }
+/// messages! { pub b = "x-b" () => "B."; }
+#[macro_export]
+macro_rules! messages { ($($t:tt)*) => {}; }
+"#;
+        assert_eq!(calls(does_not), []);
+        assert_eq!(scan(does_not).defines, ["messages"], "the definition makes `messages` a registration kind");
     }
 
     #[test]

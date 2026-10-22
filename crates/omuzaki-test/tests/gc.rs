@@ -158,10 +158,17 @@ fn date(path: &Path, when: SystemTime) {
     fs::File::options().write(true).open(path).unwrap().set_modified(when).unwrap();
 }
 
-/// The hashes a gc output lists after `prefix` (`would delete: ` or `deleted: `), whatever the folder.
+/// The hashes a gc output lists after `prefix` (`would delete: ` or `deleted: `), whatever the folder. gc prints native
+/// paths, so the folder is split off at either separator (a Windows path has `\`).
 fn listed(output: &str, prefix: &str) -> BTreeSet<String> {
-    let name = |line: &str| line.rsplit('/').next().unwrap().split(".png").next().unwrap().to_owned();
+    let name = |line: &str| line.rsplit(['/', '\\']).next().unwrap().split(".png").next().unwrap().to_owned();
     output.lines().filter_map(|line| line.strip_prefix(prefix)).map(name).collect()
+}
+
+/// `text` with `/` for every `\`, so a message that quotes a path can be matched with the path written the same way on
+/// every OS (git and gc each print the separators their platform uses).
+fn slashed(text: &str) -> String {
+    text.replace('\\', "/")
 }
 
 fn names(hashes: &[ContentHash]) -> BTreeSet<String> {
@@ -638,6 +645,25 @@ fn a_remote_with_no_fetch_refspec_and_a_negative_refspec_are_both_refused() {
     assert!(why.contains("no fetch refspec"), "{why}");
 }
 
+/// Windows spells the folder for gc: `canonicalize` returns the name the file system stores, so whatever case the person
+/// typed reaches git as the real one, and gc reads the right manifests. (The refusal below is for the file systems that
+/// open a wrong spelling without correcting it, such as NTFS seen from WSL, and for a lookalike folder that exists.)
+#[cfg(windows)]
+#[test]
+fn a_manifest_folder_in_another_letter_case_is_read_by_its_real_spelling() {
+    let s = scenario();
+    let repo = s.fixture.repo();
+    let right = s.fixture.gc_at(&repo.join("tests/goldens"), &[]);
+    assert_eq!(code(&right), 0, "{}", error_of(&right));
+    for wrong in ["Tests/goldens", "tests/Goldens", "TESTS/GOLDENS"] {
+        let output = s.fixture.gc_at(&repo.join(wrong), &[]);
+        assert_eq!(code(&output), 0, "{wrong}: {}", error_of(&output));
+        let (got, want) = (text(&output.stdout), text(&right.stdout));
+        assert_eq!(listed(&got, "would delete: "), listed(&want, "would delete: "), "{wrong}: {got}");
+    }
+}
+
+#[cfg(not(windows))]
 #[test]
 fn a_manifest_folder_in_another_letter_case_is_refused_even_when_the_files_are_reachable() {
     let s = scenario();
@@ -675,7 +701,9 @@ fn a_commit_that_spells_the_manifest_folder_in_another_case_stops_gc() {
     git(&repo, &["checkout", "-q", "-b", "odd"]);
     git(&repo, &["mv", "tests", "Tests-tmp"]);
     git(&repo, &["mv", "Tests-tmp", "Tests"]);
-    git(&repo, &["mv", "Tests/goldens", "Tests/Goldens"]);
+    // Through a second name, because on a file system that folds case `Tests/goldens` and `Tests/Goldens` are one name.
+    git(&repo, &["mv", "Tests/goldens", "Tests/goldens-tmp"]);
+    git(&repo, &["mv", "Tests/goldens-tmp", "Tests/Goldens"]);
     write_manifest(&repo, "render", &[("front", other)]);
     commit(&repo, "case rename");
     git(&repo, &["checkout", "-q", "main"]);
@@ -1145,7 +1173,7 @@ fn a_last_fetch_older_than_three_days_warns_in_a_dry_run_and_stops_apply_until_t
     let (exit, would_delete, warned) = pr.verdict(&manifests);
     assert_eq!((exit, &would_delete), (0, &only_the_orphan.1), "{warned}");
     assert!(warned.starts_with("warning: the last `git fetch` was 4 days ago ("), "{warned}");
-    assert!(warned.contains("full/.git/FETCH_HEAD was written then"), "names the file: {warned}");
+    assert!(slashed(&warned).contains("full/.git/FETCH_HEAD was written then"), "names the file: {warned}");
     assert!(warned.contains("git fetch --all") && warned.contains("--apply refuses"), "{warned}");
 
     // --apply deletes nothing and says how to go on.
@@ -1161,7 +1189,7 @@ fn a_last_fetch_older_than_three_days_warns_in_a_dry_run_and_stops_apply_until_t
     git(&clone_dir, &["worktree", "add", "-q", "--detach", arg(&linked)]);
     let from_linked = fixture.gc_at(&linked.join("tests/goldens"), &["--apply"]);
     assert_eq!(code(&from_linked), 2, "{}", error_of(&from_linked));
-    assert!(error_of(&from_linked).contains("full/.git/FETCH_HEAD"), "{}", error_of(&from_linked));
+    assert!(slashed(&error_of(&from_linked)).contains("full/.git/FETCH_HEAD"), "{}", error_of(&from_linked));
 
     // With nothing to delete there is nothing to refuse.
     let orphan_file = fixture.store().join("objects").join(format!("{}.png", pr.orphan));
@@ -1202,7 +1230,8 @@ fn a_clone_that_never_fetched_and_a_fetch_record_from_the_future_both_stop_apply
     let (exit, _, warned) = pr.verdict(&manifests);
     assert_eq!(exit, 0, "{warned}");
     assert!(
-        warned.starts_with("warning: no `git fetch` is recorded (") && warned.contains("fresh/.git/FETCH_HEAD"),
+        warned.starts_with("warning: no `git fetch` is recorded (")
+            && slashed(&warned).contains("fresh/.git/FETCH_HEAD"),
         "{warned}"
     );
     let apply = fixture.gc_at(&manifests, &["--apply"]);
@@ -1279,8 +1308,12 @@ fn a_fetch_in_a_linked_worktree_counts_as_a_fetch() {
     git(&clone_dir, &["worktree", "add", "-q", "--detach", arg(&linked)]);
     let linked_manifests = linked.join("tests/goldens");
     let main_record = clone_dir.join(".git/FETCH_HEAD");
-    let linked_record = PathBuf::from(git(&linked, &["rev-parse", "--absolute-git-dir"]).trim()).join("FETCH_HEAD");
-    assert!(linked_record.starts_with(clone_dir.join(".git/worktrees")), "{}", linked_record.display());
+    let linked_git_dir = PathBuf::from(git(&linked, &["rev-parse", "--absolute-git-dir"]).trim());
+    let linked_record = linked_git_dir.join("FETCH_HEAD");
+    // Compared as real folders: git prints the long form of a Windows temp path (`runneradmin`) where the test's own
+    // spelling is the 8.3 short form (`RUNNER~1`), and the two are different text for the same place.
+    let worktrees = fs::canonicalize(clone_dir.join(".git/worktrees")).unwrap();
+    assert!(fs::canonicalize(&linked_git_dir).unwrap().starts_with(worktrees), "{}", linked_git_dir.display());
     let only_the_orphan = (0, names(&[pr.orphan]), String::new());
 
     // Nothing fetched anywhere yet.
@@ -1299,7 +1332,7 @@ fn a_fetch_in_a_linked_worktree_counts_as_a_fetch() {
     let (exit, would_delete, warned) = pr.verdict(&manifests);
     assert_eq!((exit, &would_delete), (0, &only_the_orphan.1), "{warned}");
     assert!(
-        warned.contains("4 days ago") && warned.contains("worktrees/") && warned.contains("FETCH_HEAD"),
+        warned.contains("4 days ago") && slashed(&warned).contains("worktrees/") && warned.contains("FETCH_HEAD"),
         "{warned}"
     );
 

@@ -4109,6 +4109,7 @@ dependencies = [
  "omuzaki-http-api",
  "omuzaki-http-mock",
  "omuzaki-io-api",
+ "omuzaki-io-fbx",
  "omuzaki-io-gltf",
  "omuzaki-io-ops",
  "omuzaki-io-vrm",
@@ -4432,6 +4433,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-io-fbx"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-core",
+ "omuzaki-io-api",
+ "ufbx",
+]
+
+[[package]]
 name = "omuzaki-io-gltf"
 version = "0.0.0"
 dependencies = [
@@ -4461,6 +4471,7 @@ dependencies = [
  "image",
  "inventory",
  "omuzaki-anim-api",
+ "omuzaki-avatar-api",
  "omuzaki-char-api",
  "omuzaki-char-mock",
  "omuzaki-core",
@@ -4468,8 +4479,10 @@ dependencies = [
  "omuzaki-doc-mock",
  "omuzaki-embed",
  "omuzaki-face-api",
+ "omuzaki-history-api",
  "omuzaki-io-api",
  "omuzaki-io-mock",
+ "omuzaki-l10n-api",
  "omuzaki-library-api",
  "omuzaki-ops-api",
  "omuzaki-render-api",
@@ -4524,6 +4537,7 @@ dependencies = [
  "omuzaki-core",
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
+ "omuzaki-identity-api",
  "omuzaki-io-api",
  "omuzaki-ops-api",
  "omuzaki-store-api",
@@ -4997,6 +5011,8 @@ dependencies = [
  "omuzaki-anim",
  "omuzaki-anim-api",
  "omuzaki-anim-mock",
+ "omuzaki-avatar",
+ "omuzaki-avatar-api",
  "omuzaki-budget",
  "omuzaki-char",
  "omuzaki-char-api",
@@ -5009,6 +5025,9 @@ dependencies = [
  "omuzaki-face-api",
  "omuzaki-face-mock",
  "omuzaki-io-api",
+ "omuzaki-io-fbx",
+ "omuzaki-io-ops",
+ "omuzaki-io-vrm",
  "omuzaki-link-build",
  "omuzaki-ops-api",
  "omuzaki-render",
@@ -7387,6 +7406,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ufbx"
+version = "0.11.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "260522f1eb74139f0e78b29dd82a58e5437d728c5498024a39e5af7282694240"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "unarray"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8554,6 +8582,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "toml",
+ "url",
  "zip",
 ]
 

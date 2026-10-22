@@ -1,6 +1,8 @@
 section = "rust"
-item = "ufbx, gltf"
+item = "ufbx"
 kind = "crate"
-used_for = "FBX and glTF I/O"
+used_for = "FBX import in `omuzaki-io-fbx`: the Rust bindings, and the bundled C library `ufbx.c` that `cc` compiles from the crate's vendored source (no network at build time)"
 status = "yes"
-audit = "B3"
+condition = "MIT OR Unlicense, take MIT and keep the notice: the crate declares `MIT OR Unlicense` and the upstream C library offers MIT (Copyright (c) 2020 Samuli Raivio) or the Unlicense (public domain); the published crate ships no licence file, so the MIT notice must be carried into the third-party notices when FBX ships; import-only, no non-commercial term"
+audit = "(crates.io and github.com/ufbx/ufbx LICENSE, read 2026-10-15; docs/research/2026-10-licence-audit.md B3)"
+crates = ["ufbx"]

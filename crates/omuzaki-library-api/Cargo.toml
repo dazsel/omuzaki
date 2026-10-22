@@ -19,6 +19,7 @@ toml.workspace = true
 omuzaki-char-api = { path = "../omuzaki-char-api" }
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
+omuzaki-identity-api = { path = "../omuzaki-identity-api" }
 omuzaki-io-api = { path = "../omuzaki-io-api" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }

@@ -8,15 +8,17 @@ use std::collections::BTreeMap;
 use omuzaki_gltf::to_json;
 use omuzaki_io_api::{
     AimAxis, Avatar, ColliderShape, ColorBindKind, ConstraintKind, Expression, ExpressionName, Finding,
-    FirstPersonFlag, IoScene, LookAt, LookAtKind, NodeIx, Override, RangeMap, Report, RollAxis, VrmVersion,
+    FirstPersonFlag, IoScene, JointLimit, LookAt, LookAtKind, NodeIx, Override, RangeMap, Report, RollAxis, VrmVersion,
 };
 use serde_json::Value;
 
 use super::wire::{
-    WireAim, WireAimAxis, WireAnnotation, WireCapsule, WireCollider, WireColliderGroup, WireColorBind, WireColorType,
-    WireConstraint, WireExpression, WireExpressions, WireFirstPerson, WireFirstPersonType, WireHumanoid, WireJoint,
-    WireLookAt, WireLookAtType, WireMorphBind, WireNodeConstraint, WireNodeRef, WireOverride, WireRangeMap, WireRoll,
-    WireRollAxis, WireRotation, WireShape, WireSphere, WireSpring, WireSpringBone, WireUvBind, WireVrm,
+    EXTENDED_COLLIDER, LIMIT, WireAim, WireAimAxis, WireAngleLimit, WireAnnotation, WireCapsule, WireCollider,
+    WireColliderGroup, WireColorBind, WireColorType, WireConstraint, WireExpression, WireExpressions, WireExtCapsule,
+    WireExtShape, WireExtSphere, WireExtendedCollider, WireFirstPerson, WireFirstPersonType, WireHumanoid, WireJoint,
+    WireLimit, WireLookAt, WireLookAtType, WireMorphBind, WireNodeConstraint, WireNodeRef, WireOverride, WirePlane,
+    WireRangeMap, WireRoll, WireRollAxis, WireRotation, WireShape, WireSphere, WireSphericalLimit, WireSpring,
+    WireSpringBone, WireSpringLimit, WireUvBind, WireVrm,
 };
 use super::{EXTENSION, SPRING_BONE};
 use crate::avatar::on_cycle;
@@ -80,7 +82,7 @@ pub(crate) fn root_extensions(scene: &IoScene, report: &mut Report) -> Vec<(&'st
     licence_condition(scene, report);
     let mut out = vec![(EXTENSION, body)];
     if !av.spring_bones.chains.is_empty() || !av.spring_bones.colliders.is_empty() {
-        out.push((SPRING_BONE, to_json(&spring_bones(av))));
+        out.push((SPRING_BONE, to_json(&spring_bones(av, report))));
     }
     out
 }
@@ -159,31 +161,145 @@ fn look_at(l: &LookAt) -> WireLookAt {
     }
 }
 
-/// The base shape of a collider. `VRMC_springBone_extended_collider` shapes are not written yet: each one gets the
-/// spec's own fallback for a reader without the extension, an inert sphere of radius 0 far below the model, so the
-/// collider indices in the groups stay valid. `vrm_profile` reports the loss (`vrm.collider_dropped`).
-fn base_shape(shape: ColliderShape) -> WireShape {
+/// The base shape of a collider and, for a shape the base cannot hold, its `VRMC_springBone_extended_collider`.
+///
+/// Follows `VRMC_springBone_extended_collider-1.0`, "Fallback": a reader without the extension gets an inert stand-in,
+/// so the collider indices in the groups stay valid. An inside sphere or capsule becomes a sphere of radius 0 far below
+/// the model; a plane becomes a huge sphere whose surface passes through the plane (radius 1000 is the spec's choice,
+/// accurate to about 0.1 mm in `f32`, centred at `offset - normal * radius`).
+fn collider_shapes(shape: ColliderShape, at: &str, report: &mut Report) -> (WireShape, Option<WireExtendedCollider>) {
+    let ordinary = |sphere, capsule| (WireShape { sphere, capsule }, None);
+    let extended = |fallback: WireSphere, shape: WireExtShape| {
+        let ext = WireExtendedCollider { spec_version: "1.0".to_owned(), shape: Some(shape) };
+        (WireShape { sphere: Some(fallback), capsule: None }, Some(ext))
+    };
+    let inert = || WireSphere { offset: INERT_OFFSET, radius: 0.0 };
     match shape {
         ColliderShape::Sphere { offset, radius } => {
-            WireShape { sphere: Some(WireSphere { offset: offset.to_array(), radius }), capsule: None }
+            ordinary(Some(WireSphere { offset: offset.to_array(), radius }), None)
         }
-        ColliderShape::Capsule { offset, radius, tail } => WireShape {
-            sphere: None,
-            capsule: Some(WireCapsule { offset: offset.to_array(), radius, tail: tail.to_array() }),
-        },
-        _ => WireShape { sphere: Some(WireSphere { offset: INERT_OFFSET, radius: 0.0 }), capsule: None },
+        ColliderShape::Capsule { offset, radius, tail } => {
+            ordinary(None, Some(WireCapsule { offset: offset.to_array(), radius, tail: tail.to_array() }))
+        }
+        ColliderShape::SphereInside { offset, radius } => extended(
+            inert(),
+            WireExtShape {
+                sphere: Some(WireExtSphere { offset: offset.to_array(), radius, inside: true }),
+                ..WireExtShape::default()
+            },
+        ),
+        ColliderShape::CapsuleInside { offset, radius, tail } => extended(
+            inert(),
+            WireExtShape {
+                capsule: Some(WireExtCapsule {
+                    offset: offset.to_array(),
+                    radius,
+                    tail: tail.to_array(),
+                    inside: true,
+                }),
+                ..WireExtShape::default()
+            },
+        ),
+        ColliderShape::Plane { offset, normal } => extended(
+            WireSphere { offset: (offset - normal * PLANE_FALLBACK_RADIUS).to_array(), radius: PLANE_FALLBACK_RADIUS },
+            WireExtShape {
+                plane: Some(WirePlane { offset: offset.to_array(), normal: normal.to_array() }),
+                ..WireExtShape::default()
+            },
+        ),
+        _ => {
+            // The scene type is non-exhaustive: a shape added later must get its own arm; until then the inert
+            // fallback keeps the file valid and the loss is reported.
+            report.push(
+                Finding::warning("vrm.collider_dropped", "a collider shape this writer does not know was not written")
+                    .at(at),
+            );
+            (WireShape { sphere: Some(inert()), capsule: None }, None)
+        }
     }
 }
 
 /// Where the inert fallback sphere sits (`VRMC_springBone_extended_collider-1.0`, "Fallback").
 const INERT_OFFSET: [f32; 3] = [0.0, -10_000.0, 0.0];
 
-fn spring_bones(av: &Avatar) -> WireSpringBone {
+/// Radius of the sphere that stands in for a plane (`VRMC_springBone_extended_collider-1.0`, "Fallback").
+const PLANE_FALLBACK_RADIUS: f32 = 1000.0;
+
+/// The `VRMC_springBone_limit` body of a joint limit (`VRMC_springBone_limit-1.0`).
+fn limit_body(limit: JointLimit, at: &str, report: &mut Report) -> Option<WireSpringLimit> {
+    let wire = match limit {
+        JointLimit::Cone { angle, rotation } => {
+            WireLimit { cone: Some(WireAngleLimit { angle, rotation: rotation.to_array() }), ..WireLimit::default() }
+        }
+        JointLimit::Hinge { angle, rotation } => {
+            WireLimit { hinge: Some(WireAngleLimit { angle, rotation: rotation.to_array() }), ..WireLimit::default() }
+        }
+        JointLimit::Spherical { pitch, yaw, rotation } => WireLimit {
+            spherical: Some(WireSphericalLimit { pitch, yaw, rotation: rotation.to_array() }),
+            ..WireLimit::default()
+        },
+        _ => {
+            report.push(
+                Finding::warning("vrm.limit_invalid", "a limit kind this writer does not know was not written").at(at),
+            );
+            return None;
+        }
+    };
+    Some(WireSpringLimit { spec_version: "1.0".to_owned(), limit: wire })
+}
+
+fn spring_bones(av: &Avatar, report: &mut Report) -> WireSpringBone {
     let sb = &av.spring_bones;
     let colliders = sb
         .colliders
         .iter()
-        .map(|c| WireCollider { node: c.node.index(), shape: Some(base_shape(c.shape)), extensions: BTreeMap::new() })
+        .enumerate()
+        .map(|(i, c)| {
+            let (shape, ext) = collider_shapes(c.shape, &format!("avatar/springBone/colliders/{i}"), report);
+            let mut extensions = BTreeMap::new();
+            if let Some(ext) = ext {
+                extensions.insert(EXTENDED_COLLIDER.to_owned(), to_json(&ext));
+            }
+            WireCollider { node: c.node.index(), shape: Some(shape), extensions }
+        })
+        .collect();
+    let springs = sb
+        .chains
+        .iter()
+        .enumerate()
+        .map(|(ci, c)| {
+            let last = c.joints.len().saturating_sub(1);
+            let joints = c
+                .joints
+                .iter()
+                .enumerate()
+                .map(|(ji, j)| {
+                    let mut extensions = BTreeMap::new();
+                    // `VRMC_springBone_limit-1.0`, "Last joint": exporters must not write a limit on a chain's tail.
+                    let limit = j.limit.filter(|_| ji != last);
+                    if let Some(body) = limit
+                        .and_then(|l| limit_body(l, &format!("avatar/springBone/springs/{ci}/joints/{ji}"), report))
+                    {
+                        extensions.insert(LIMIT.to_owned(), to_json(&body));
+                    }
+                    WireJoint {
+                        node: j.node.index(),
+                        hit_radius: Some(j.hit_radius),
+                        stiffness: Some(j.stiffness),
+                        gravity_power: Some(j.gravity_power),
+                        gravity_dir: Some(j.gravity_dir.to_array()),
+                        drag_force: Some(j.drag_force),
+                        extensions,
+                    }
+                })
+                .collect();
+            WireSpring {
+                name: c.name.clone(),
+                joints,
+                collider_groups: c.collider_groups.iter().map(|&g| g as usize).collect(),
+                center: c.center.map(NodeIx::index),
+            }
+        })
         .collect();
     WireSpringBone {
         spec_version: "1.0".to_owned(),
@@ -196,28 +312,7 @@ fn spring_bones(av: &Avatar) -> WireSpringBone {
                 colliders: g.colliders.iter().map(|&c| c as usize).collect(),
             })
             .collect(),
-        springs: sb
-            .chains
-            .iter()
-            .map(|c| WireSpring {
-                name: c.name.clone(),
-                joints: c
-                    .joints
-                    .iter()
-                    .map(|j| WireJoint {
-                        node: j.node.index(),
-                        hit_radius: Some(j.hit_radius),
-                        stiffness: Some(j.stiffness),
-                        gravity_power: Some(j.gravity_power),
-                        gravity_dir: Some(j.gravity_dir.to_array()),
-                        drag_force: Some(j.drag_force),
-                        extensions: BTreeMap::new(),
-                    })
-                    .collect(),
-                collider_groups: c.collider_groups.iter().map(|&g| g as usize).collect(),
-                center: c.center.map(NodeIx::index),
-            })
-            .collect(),
+        springs,
     }
 }
 

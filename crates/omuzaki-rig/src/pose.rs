@@ -147,9 +147,20 @@ mod tests {
     }
 
     /// Recorded at `origin/main` before the maths moved to `HumanoidFrames`: the move must change no bit.
+    ///
+    /// The digest is per operating system because `Quat::from_axis_angle` calls the platform's `sin` and `cos`, which
+    /// round the last bit differently in glibc and in Windows' C runtime; the maths after them is plain IEEE
+    /// arithmetic and identical everywhere. Each constant was recorded on its own platform (Windows' from the CI
+    /// runner), so on each the move still has to change no bit. Other platforms only check the digest is repeatable.
     #[test]
     fn the_conversions_are_bit_for_bit_what_they_were() {
-        assert_eq!(conversion_digest(&arbitrary_rest_rig()), 13_635_560_173_654_275_620);
+        let digest = conversion_digest(&arbitrary_rest_rig());
+        assert_eq!(digest, conversion_digest(&arbitrary_rest_rig()), "the digest is repeatable");
+        if cfg!(target_os = "linux") {
+            assert_eq!(digest, 13_635_560_173_654_275_620);
+        } else if cfg!(windows) {
+            assert_eq!(digest, 1_363_339_204_881_019_409);
+        }
     }
 
     #[test]

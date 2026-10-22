@@ -375,7 +375,14 @@ fn the_hair_program_matches_the_prototypes_shader_maths() {
     );
     println!("ring band (row of peak, FWHM px, peak luma rise): oracle {reference_band:?}, GPU {gpu_band:?}");
     assert!(parity.pixels > 12_000, "the quad covers most of the view: {}", parity.pixels);
-    assert!(parity.mean < 0.2, "mean difference {:.3} levels", parity.mean);
+    assert!(
+        parity.mean < 0.2,
+        "mean difference {:.3} levels (p99 {}, max {}, over {} px)",
+        parity.mean,
+        parity.p99,
+        parity.max,
+        parity.pixels
+    );
     assert!(parity.p99 <= 1, "99th percentile {} levels", parity.p99);
     assert!(parity.max <= 2, "worst difference {} levels", parity.max);
     assert!(parity.delta_e.1 < 1.0, "a colour difference of {:.2} dE76 in the ring band is visible", parity.delta_e.1);
@@ -618,8 +625,12 @@ fn the_mock_characters_hair_matches_its_golden() {
     }
     let golden = image::open(&path).expect("tests/golden/mock-hair.png (bless with OMUZAKI_BLESS=1)").to_rgba8();
     assert_eq!(golden.dimensions(), (after.size.x, after.size.y));
-    let worst = golden.as_raw().iter().zip(&after.rgba8).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
-    assert!(worst <= 2, "the mock hair differs from its golden by up to {worst} levels (bless with OMUZAKI_BLESS=1)");
+    let diff = support::Diff::of(golden.as_raw(), &after.rgba8);
+    assert!(
+        diff.max <= 2,
+        "the mock hair differs from its golden by up to {} levels ({diff}; bless with OMUZAKI_BLESS=1)",
+        diff.max
+    );
 }
 
 #[test]

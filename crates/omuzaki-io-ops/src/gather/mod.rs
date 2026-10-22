@@ -33,6 +33,7 @@ use crate::convert::material::MissingTexture;
 use crate::convert::texture::TextureError;
 
 pub mod avatar;
+pub mod avatar_import;
 pub mod scene;
 pub mod skeleton;
 pub mod springs;

@@ -65,14 +65,28 @@ impl MeshBounds {
     /// Recomputes the boxes from a mesh's `shapes` (after its vertices moved, or an instance's morphed copy) and its
     /// `skin` data (empty for a rigid mesh), for `joints_needed` joints. Allocates only if the joint count grew.
     pub(crate) fn refit(&mut self, joints_needed: u32, shapes: &[Shape], skin: &[Surface]) {
+        self.refit_with(joints_needed, shapes.iter().map(|shape| Vec3::from(shape.position)), skin);
+    }
+
+    /// [`refit`](Self::refit) from the vertex positions alone, for a mesh that keeps no copy of its shapes.
+    pub(crate) fn refit_points(&mut self, joints_needed: u32, positions: &[Vec3], skin: &[Surface]) {
+        self.whole = Aabb::of_points(positions);
+        self.refit_joints(joints_needed, positions.iter().copied(), skin);
+    }
+
+    fn refit_with(&mut self, joints_needed: u32, points: impl Iterator<Item = Vec3> + Clone, skin: &[Surface]) {
         self.whole = Aabb::EMPTY;
-        for shape in shapes {
-            self.whole.include(Vec3::from(shape.position));
+        for p in points.clone() {
+            self.whole.include(p);
         }
+        self.refit_joints(joints_needed, points, skin);
+    }
+
+    /// Refits the per-joint boxes of `skin` from `points`.
+    fn refit_joints(&mut self, joints_needed: u32, points: impl Iterator<Item = Vec3>, skin: &[Surface]) {
         self.joints.clear();
         self.joints.resize(joints_needed as usize, Aabb::EMPTY);
-        for (shape, skin) in shapes.iter().zip(skin) {
-            let p = Vec3::from(shape.position);
+        for (p, skin) in points.zip(skin) {
             for (&id, &weight) in skin.joints.iter().zip(&skin.weights) {
                 if weight != 0.0
                     && let Some(bounds) = self.joints.get_mut(usize::from(id))
@@ -111,6 +125,31 @@ mod tests {
         quad.joints = vec![[0, 0, 0, 0], [0, 0, 0, 0], [1, 0, 0, 0], [1, 0, 0, 0]];
         quad.weights = vec![[1.0, 0.0, 0.0, 0.0]; 4];
         quad
+    }
+
+    #[test]
+    fn refitting_from_positions_matches_refitting_from_shapes() {
+        let quad = skinned_quad();
+        let skin: Vec<Surface> = (0..4)
+            .map(|i| {
+                let mut surface: Surface = bytemuck::Zeroable::zeroed();
+                surface.joints = quad.joints[i];
+                surface.weights = quad.weights[i];
+                surface
+            })
+            .collect();
+        let shapes: Vec<Shape> = quad
+            .positions
+            .iter()
+            .zip(&quad.normals)
+            .map(|(p, n)| Shape { position: p.to_array(), normal: n.to_array() })
+            .collect();
+        let (mut from_shapes, mut from_points) = (MeshBounds::empty(), MeshBounds::empty());
+        from_shapes.refit(2, &shapes, &skin);
+        from_points.refit_points(2, &quad.positions, &skin);
+        assert_eq!(from_shapes.whole, from_points.whole);
+        assert_eq!(from_shapes.joints, from_points.joints);
+        assert_eq!(from_points.whole, MeshBounds::of(&quad, 2).whole);
     }
 
     #[test]

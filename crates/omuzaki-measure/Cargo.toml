@@ -36,6 +36,5 @@ workspace = true
 
 [package.metadata.omuzaki]
 kind = "Implementation"
-summary = "image measures for likeness (VF-01, ADR 0029): decodes PNG and JPEG references and renders from the store or a file under the file fence, refusing oversized images before allocating; sRGB to CIELAB (D65); the refusal messages of design 7.3; the likeness outline, spacing and score come with their tasks"
-# The message table registers itself (ADR 0015, `cargo xtask lint-registers`).
 registers = true
+summary = "image measures for likeness (VF-01, ADR 0029): decodes PNG and JPEG references and renders from the store or a file under the file fence, refusing oversized images before allocating; sRGB to CIELAB (D65); the refusal messages of design 7.3; the likeness outline, spacing and score come with their tasks"

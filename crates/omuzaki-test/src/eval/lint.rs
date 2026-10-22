@@ -142,7 +142,10 @@ fn duplicate_ids(d: &Discovery) -> Vec<Finding> {
         let mut seen: HashMap<&str, &std::path::Path> = HashMap::new();
         for (id, path) in entries {
             if let Some(first) = seen.insert(id, path) {
-                out.push(finding(path, format!("duplicate {what} id `{id}` (also in {})", first.display())));
+                out.push(finding(
+                    path,
+                    format!("duplicate {what} id `{id}` (also in {})", first.to_string_lossy().replace('\\', "/")),
+                ));
             }
         }
     };

@@ -125,6 +125,9 @@ impl ItemManifest {
         if id.is_fixture() {
             return PublisherCheck::Refused { reason: "test/ ids are reserved for fixtures".to_owned() };
         }
+        if let Some(why) = self.attestation_binding_fault() {
+            return PublisherCheck::Refused { reason: format!("rights.attestation.by: {why}") };
+        }
         let signed = self.check_signature();
         if id.is_first_party() {
             return match (signed, omuzaki) {
@@ -141,6 +144,30 @@ impl ItemManifest {
             }
             (Err(reason), _) => PublisherCheck::Unverified { reason },
             (Ok(_), None) => PublisherCheck::Unverified { reason: "no publisher".to_owned() },
+        }
+    }
+
+    /// What is wrong with the item-level `rights.attestation`, if anything: its `by` must be the manifest's own
+    /// `publisher.key`, the key the signature is verified against (marketplace design D7), or a creator could make
+    /// clients show that another key vouched for the rights. `None` when there is no attestation or it is bound.
+    ///
+    /// An asset's own attestation in `asset_info` is ignored by design (never joined, never shown), so it is not
+    /// checked here and a mismatch there does not make the manifest invalid.
+    pub(crate) fn attestation_binding_fault(&self) -> Option<String> {
+        let attestation = self.rights.attestation.as_ref()?;
+        let Some(publisher) = &self.publisher else {
+            return Some(
+                "an attestation must be made by the publisher key, but the manifest has no publisher".to_owned(),
+            );
+        };
+        match PublisherKey::from_hex(&publisher.key) {
+            Ok(key) if key.0 == attestation.by.0 => None,
+            Ok(_) => Some(format!(
+                "attestation `by` {} is not the publisher key {}; only the signing key can vouch for the rights",
+                attestation.by.to_hex(),
+                publisher.key
+            )),
+            Err(why) => Some(why),
         }
     }
 
@@ -282,6 +309,74 @@ mod tests {
         let mut m = item("omuzaki/hair/twintails");
         sign_for_test(&mut m, 7, "Omuzaki");
         assert!(matches!(m.verify(Origin::CompiledIn), PublisherCheck::Unverified { .. }));
+    }
+
+    fn attested(seed: u8, by: u8) -> ItemManifest {
+        use omuzaki_identity_api::key::KeyId;
+        let mut m = item("mira/hair/twintails");
+        m.rights.attestation = Some(crate::rights::Attestation { by: KeyId([by; 32]), claim: "own-work-v1".into() });
+        sign_for_test(&mut m, seed, "Mira");
+        m
+    }
+
+    #[test]
+    fn an_attestation_by_the_publisher_key_verifies_and_checks() {
+        let mut m = item("mira/hair/twintails");
+        let key = sign_for_test(&mut m, 7, "Mira");
+        m.rights.attestation = Some(crate::rights::Attestation {
+            by: omuzaki_identity_api::key::KeyId(key.0),
+            claim: "own-work-v1".into(),
+        });
+        sign_for_test(&mut m, 7, "Mira");
+        assert_eq!(m.attestation_binding_fault(), None);
+        assert!(matches!(m.verify(Origin::Installed), PublisherCheck::Verified { .. }));
+        assert!(m.check().is_empty(), "{:?}", m.check());
+    }
+
+    #[test]
+    fn an_attestation_by_another_key_is_rejected_by_check_and_verify() {
+        let m = attested(7, 9);
+        let check = m.verify(Origin::Installed);
+        assert!(
+            matches!(&check, PublisherCheck::Refused { reason } if reason.contains("rights.attestation.by")),
+            "{check:?}"
+        );
+        let problems = m.check();
+        assert!(problems.iter().any(|p| p.field == "rights/attestation/by" && p.message.contains("publisher key")));
+    }
+
+    #[test]
+    fn an_attestation_without_a_publisher_is_rejected_and_no_attestation_is_unaffected() {
+        let mut m = item("mira/hair/twintails");
+        m.rights.attestation =
+            Some(crate::rights::Attestation { by: omuzaki_identity_api::key::KeyId([7; 32]), claim: "c".into() });
+        assert!(m.check().iter().any(|p| p.field == "rights/attestation/by"));
+        let mut plain = item("mira/hair/twintails");
+        let hash = plain.hash();
+        sign_for_test(&mut plain, 7, "Mira");
+        assert_eq!(plain.attestation_binding_fault(), None);
+        assert_eq!(plain.hash(), hash, "publisher and signature are outside the hash");
+        assert!(matches!(plain.verify(Origin::Installed), PublisherCheck::Verified { .. }));
+    }
+
+    #[test]
+    fn an_asset_attestation_by_another_key_is_ignored_not_surfaced() {
+        use crate::ItemRights;
+        use crate::rights::{AssetInfo, Attestation};
+        use omuzaki_identity_api::key::KeyId;
+        use omuzaki_store_api::ContentHash;
+        let mut m = item("mira/hair/twintails");
+        let mut rights = ItemRights::first_party();
+        rights.attestation = Some(Attestation { by: KeyId([9; 32]), claim: "own-work-v1".into() });
+        m.assets.insert("tex".into(), ContentHash::of(b"tex"));
+        m.asset_info.insert("tex".into(), AssetInfo { size: 3, rights });
+        sign_for_test(&mut m, 7, "Mira");
+        assert_eq!(m.attestation_binding_fault(), None);
+        assert!(matches!(m.verify(Origin::Installed), PublisherCheck::Verified { .. }));
+        assert!(!m.check().iter().any(|p| p.field.contains("attestation")), "{:?}", m.check());
+        // The join has no attestation to carry: it is not part of what a client is shown.
+        let joined = crate::rights_join::join_rights(&[]);
+        assert!(!format!("{joined:?}").contains("attest"));
     }
 
     #[test]

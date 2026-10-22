@@ -40,6 +40,7 @@ omuzaki-doc = { path = "../omuzaki-doc" }
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 omuzaki-mcp = { path = "../omuzaki-mcp" }
 omuzaki-ops = { path = "../omuzaki-ops" }
+omuzaki-io-fbx = { path = "../omuzaki-io-fbx" }
 omuzaki-io-gltf = { path = "../omuzaki-io-gltf" }
 omuzaki-io-ops = { path = "../omuzaki-io-ops" }
 omuzaki-io-vrm = { path = "../omuzaki-io-vrm" }
@@ -114,4 +115,4 @@ summary = "the `omuzaki` command: ops, help, run (dry-run/JSON), undo/redo, all 
 wasm = false
 # Held only to link their registrations in (`omuzaki_cli::link`, ADR 0015); this crate's source calls none of their API.
 # A change to one of them runs just `tests/registrations.rs` here (`cargo xtask check --affected`), not every test.
-link_only = ["omuzaki-io-gltf", "omuzaki-io-ops", "omuzaki-io-vrm", "omuzaki-stage", "omuzaki-stream", "omuzaki-vcam", "omuzaki-audio-engine", "omuzaki-obs", "omuzaki-live", "omuzaki-live-nodes", "omuzaki-twitch"]
+link_only = ["omuzaki-io-fbx", "omuzaki-io-gltf", "omuzaki-io-ops", "omuzaki-io-vrm", "omuzaki-stage", "omuzaki-stream", "omuzaki-vcam", "omuzaki-audio-engine", "omuzaki-obs", "omuzaki-live", "omuzaki-live-nodes", "omuzaki-twitch"]

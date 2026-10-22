@@ -12,6 +12,8 @@ use omuzaki_render_api::{
 };
 use image::{ExtendedColorType, ImageEncoder, codecs::png::PngEncoder};
 
+use crate::avatar::AvatarStage;
+use crate::body::Body;
 use crate::error::StageError;
 use crate::frame::face::{FaceRig, SETTLE_STEPS};
 use crate::frame::pose::seed_base_pose;
@@ -129,6 +131,63 @@ pub fn render_stills(
     first_error(outcome, released)
 }
 
+/// [`render_stills`] for either kind of body: a kit character as there, an imported avatar staged, its spring bones
+/// settled under its base pose, and shot. An imported avatar has no face profile, so a shot with an expression is
+/// refused; its own expressions are driven by channels, which `render.*` doesn't take yet.
+///
+/// # Errors
+/// As [`render_stills`]; `StageError::Face` for an expression asked of an imported avatar.
+pub fn render_body_stills(
+    renderer: &mut dyn Renderer,
+    body: Body,
+    spec: &StillSpec,
+    shots: &[Shot],
+) -> Result<Vec<Still>, StageError> {
+    let avatar = match body {
+        Body::Kit(built) => return render_stills(renderer, *built, spec, shots),
+        Body::Avatar(avatar) => avatar,
+    };
+    check(spec, shots)?;
+    if let Some((id, _)) = shots.iter().find_map(|shot| shot.expression.as_ref()) {
+        return Err(StageError::Face {
+            reason: format!("expression '{id}' asked for, but an imported avatar has no face profile to take it from"),
+        });
+    }
+    let target = renderer
+        .create_target(&TargetDesc { size: spec.size, alpha: AlphaEncoding::Straight })
+        .map_err(|source| StageError::render("the still's target", source))?;
+    let outcome = AvatarStage::new(renderer, *avatar, still_scene(spec), target, spec.quality, StageClock::fixed(STILL_FPS))
+        .and_then(|mut stage| {
+            let base = FrameInput { pose: stage.base_pose(), ..FrameInput::default() };
+            // As the kit's stills: a frame at the base pose, the springs settled from rest under it, and every shot a
+            // redraw of that state, so a shot's pixels don't depend on the shots before it.
+            let shot = stage.tick(renderer, &base).and_then(|_| {
+                stage.settle_from_rest(SETTLE_STEPS);
+                let mut stills = Vec::with_capacity(shots.len());
+                for shot in shots {
+                    stage.scene_mut().camera = shot.camera;
+                    let frame = stage.redraw(renderer, &base)?;
+                    let image = renderer.read_target(target).map_err(|source| StageError::render("the still", source))?;
+                    stills.push(Still { image, report: frame.report });
+                }
+                Ok(stills)
+            });
+            first_error(shot, stage.release(renderer))
+        });
+    let released = renderer.release(target.into()).map_err(|source| StageError::render("the still's target", source));
+    first_error(outcome, released)
+}
+
+/// The scene every still of `spec` starts from: its light and look, and the default camera each shot replaces.
+fn still_scene(spec: &StillSpec) -> Scene {
+    let mut scene = Scene::new(Camera::default());
+    scene.lights.clone_from(&spec.light.lights);
+    scene.background = spec.light.background;
+    scene.post = spec.light.post;
+    scene.outline_light = spec.light.outline_light;
+    scene
+}
+
 /// Refuses what would render nothing, before the renderer is touched.
 fn check(spec: &StillSpec, shots: &[Shot]) -> Result<(), StageError> {
     if shots.is_empty() {
@@ -150,11 +209,7 @@ fn shoot_on(
     shots: &[Shot],
 ) -> Result<Vec<Still>, StageError> {
     // Each shot sets its own camera before it renders, so the scene starts with the default one.
-    let mut scene = Scene::new(Camera::default());
-    scene.lights.clone_from(&spec.light.lights);
-    scene.background = spec.light.background;
-    scene.post = spec.light.post;
-    scene.outline_light = spec.light.outline_light;
+    let scene = still_scene(spec);
     // Read before `built` moves into the stage.
     let has_face = built.face.is_some();
     // With nothing animating it the stage shows the character as sculpted (decision 0014 §4), which is the pose the

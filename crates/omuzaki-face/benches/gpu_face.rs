@@ -69,6 +69,12 @@ fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
             return None;
         }
     };
+    // Windows' only software adapter is WARP, which dies with an access violation when Vello runs on it (#2236), so
+    // these tests treat it as no adapter, like a machine with none. A real GPU on Windows still runs them.
+    if cfg!(windows) && adapter.get_info().device_type == wgpu::DeviceType::Cpu {
+        println!("gpu_face: the only adapter is WARP (see #2236); nothing to measure");
+        return None;
+    }
     let descriptor = wgpu::DeviceDescriptor { required_limits: adapter.limits(), ..wgpu::DeviceDescriptor::default() };
     match pollster::block_on(adapter.request_device(&descriptor)) {
         Ok(pair) => Some(pair),

@@ -40,6 +40,8 @@ pub enum SourceFormat {
     Vrm0,
     /// Plain glTF 2.0 (`.gltf` or `.glb`).
     Gltf,
+    /// FBX, binary or ASCII (`.fbx`).
+    Fbx,
 }
 
 /// The original file: what the avatar is rebuilt from.
