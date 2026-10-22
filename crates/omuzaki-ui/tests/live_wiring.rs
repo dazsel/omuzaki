@@ -212,7 +212,10 @@ fn fake_camera_to_scenes_at_60_hz_for_10_s_without_a_drop_storm_or_an_allocation
     // rare (no storm).
     assert!((report.stepped + report.skipped) as f64 >= expected * 0.97, "{summary}");
     assert!(report.skipped as f64 <= expected * 0.01, "{summary}");
-    assert!(report.published as f64 >= expected * 0.9, "{summary}");
+    // Passes are how often the thread was scheduled: on a shared runner it wakes late and catches up, which the step
+    // count above already holds to 60 Hz (#2284 saw 488 passes for 600 steps). The floor only rules out a loop that
+    // always runs its steps in batches.
+    assert!(report.published as f64 >= expected * 0.6, "{summary}");
     // The render side drew a new scene for nearly every step it had time for: newest-wins drops only what a slow render
     // misses. A render side faster than 60 Hz must see nearly every step; one slower than that (a debug build on a
     // loaded machine) must have found a new frame nearly every time it was free, so it never waited on the mailbox.
