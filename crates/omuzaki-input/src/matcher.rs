@@ -107,6 +107,7 @@ mod tests {
             .enumerate()
             .map(|(i, c)| TableEntry {
                 id: BindingId(u32::try_from(i).unwrap_or(0) + 1),
+                name: format!("binding {i}"),
                 chord: Some(*c),
                 action: BindingAction::Trigger(0),
             })

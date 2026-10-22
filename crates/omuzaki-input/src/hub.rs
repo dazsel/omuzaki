@@ -60,12 +60,14 @@ pub(crate) struct InputBackend {
 
 /// When a registered backend runs. Reading input devices directly (Linux evdev) reads every keyboard on the machine,
 /// so it runs only when the person opted in, and the backend it stands in for (X11) steps aside (research §1.4).
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug)]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code, reason = "only Linux has an opt-in backend"))]
 pub(crate) enum Chosen {
     Always,
     WhenOptedIn,
-    UnlessOptedIn,
+    /// When the session is of a kind (asked once, as the hub starts) and the person has not opted in: X11 off
+    /// Wayland, the portal on it.
+    IfUnlessOptedIn(fn() -> bool),
 }
 
 inventory::collect!(InputBackend);
@@ -186,7 +188,7 @@ impl Hub {
                 .filter(|b| match b.chosen {
                     Chosen::Always => true,
                     Chosen::WhenOptedIn => opted_in,
-                    Chosen::UnlessOptedIn => !opted_in,
+                    Chosen::IfUnlessOptedIn(session) => !opted_in && session(),
                 })
                 .copied()
                 .collect()

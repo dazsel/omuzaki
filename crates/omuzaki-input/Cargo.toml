@@ -29,8 +29,11 @@ omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 windows-sys.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+ashpd.workspace = true
 evdev.workspace = true
+futures-util.workspace = true
 rustix = { workspace = true, features = ["event"] }
+tokio = { workspace = true, features = ["time"] }
 x11rb.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]

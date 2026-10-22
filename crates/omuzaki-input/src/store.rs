@@ -118,7 +118,7 @@ impl Store {
         lock(&self.file)
             .binding
             .iter()
-            .filter_map(|b| b.action().map(|action| TableEntry { id: BindingId(b.id), chord: b.chord, action }))
+            .filter_map(|b| b.action().map(|action| TableEntry { id: BindingId(b.id), name: b.name.clone(), chord: b.chord, action }))
             .collect()
     }
 

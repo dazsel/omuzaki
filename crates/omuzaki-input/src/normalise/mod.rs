@@ -66,6 +66,10 @@ pub(crate) enum RawEvent {
     /// A pad's state now: its buttons (the backend's numbering), the zones they make, sticks in `-1..=1` (right and
     /// up positive) and triggers in `0..=1`.
     Pad { device: u64, buttons: u32, zones: PadZones, sticks: [[f32; 2]; 2], triggers: [f32; 2] },
+    /// A binding went active (`down`) or inactive by the desktop's own shortcut, with no key behind it (the Wayland
+    /// portal). Its `device` is the backend's, which is never announced: a shortcut has no motion.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code, reason = "only the Wayland portal sends shortcuts"))]
+    Shortcut { device: u64, id: BindingId, down: bool },
 }
 
 impl std::fmt::Debug for RawEvent {
@@ -109,6 +113,7 @@ struct Press {
 enum PressKey {
     Key(HidUsage),
     Pad(u32),
+    Shortcut(BindingId),
 }
 
 struct Device {
@@ -122,6 +127,8 @@ struct Device {
     /// Pad buttons and zones held across a pause: ignored until released.
     unknown_buttons: u32,
     unknown_zones: PadZones,
+    /// A shortcut source: it has no motion, so it is never announced.
+    silent: bool,
 }
 
 /// Pointer motion summed within one period.
@@ -233,6 +240,13 @@ impl RawSink {
         self.shared.asked()
     }
 
+    /// The binding table now, read again when its generation moved: the portal registers it as its shortcut list.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code, reason = "only the Wayland portal registers the table"))]
+    pub(crate) fn table(&mut self) -> Arc<Table> {
+        self.sync_table();
+        Arc::clone(&self.table)
+    }
+
     /// The handles of the devices of `class` the sink knows, so a backend can tell it which left while it read nothing.
     pub(crate) fn devices(&self, class: DeviceClass) -> Vec<u64> {
         self.devices.iter().filter(|d| d.class == class).map(|d| d.handle).collect()
@@ -276,10 +290,10 @@ impl RawSink {
         let class = match raw {
             RawEvent::DeviceUp { class, .. } | RawEvent::Buttons { class, .. } => Some(class),
             RawEvent::DeviceGone { .. } => None,
-            RawEvent::Key { .. } => Some(DeviceClass::Keyboard),
             RawEvent::Motion { .. } => Some(DeviceClass::Mouse),
             RawEvent::Pen { .. } => Some(DeviceClass::Pen),
             RawEvent::Pad { .. } => Some(DeviceClass::Gamepad),
+            RawEvent::Key { .. } | RawEvent::Shortcut { .. } => Some(DeviceClass::Keyboard),
         };
         // A class the person did not ask for is read by nobody; its devices are known but never announced.
         if class.is_some_and(|c| !self.shared.asked().contains(c)) && !matches!(raw, RawEvent::DeviceUp { .. }) {
@@ -297,6 +311,7 @@ impl RawSink {
             RawEvent::Pad { device, buttons, zones, sticks, triggers } => {
                 self.pad(device, buttons, zones, sticks, triggers);
             }
+            RawEvent::Shortcut { device, id, down } => self.shortcut(device, id, down),
         }
         !(self.out.motion.is_empty() && self.out.hits.is_empty() && self.out.free.is_empty())
     }
@@ -378,7 +393,7 @@ impl RawSink {
         let at = self.at();
         let asked = self.shared.asked();
         for i in 0..self.devices.len() {
-            if let Some(d) = self.devices.get(i).filter(|d| asked.contains(d.class)) {
+            if let Some(d) = self.devices.get(i).filter(|d| asked.contains(d.class) && !d.silent) {
                 let event = MotionEvent::source_up(d.src, d.class, d.pad, at);
                 self.emit(event, Keep::Always);
             }
@@ -447,6 +462,11 @@ impl RawSink {
     }
 
     fn device_up(&mut self, handle: u64, class: DeviceClass) {
+        self.connect(handle, class, false);
+    }
+
+    /// Connects device `handle`; a silent one is never announced.
+    fn connect(&mut self, handle: u64, class: DeviceClass, silent: bool) {
         if self.device_index(handle).is_some() {
             return;
         }
@@ -465,9 +485,10 @@ impl RawSink {
             zones: PadZones::NONE,
             unknown_buttons: 0,
             unknown_zones: PadZones::NONE,
+            silent,
         });
         self.publish_sources();
-        if self.shared.asked().contains(class) {
+        if self.shared.asked().contains(class) && !silent {
             let at = self.at();
             self.emit(MotionEvent::source_up(src, class, pad, at), Keep::Always);
         }
@@ -493,7 +514,7 @@ impl RawSink {
             self.shared.free_pad(pad);
         }
         self.write_snapshot(device.src);
-        if self.shared.asked().contains(device.class) {
+        if self.shared.asked().contains(device.class) && !device.silent {
             self.emit(MotionEvent::source_gone(device.src, at), Keep::Always);
         }
         self.publish_sources();
@@ -534,6 +555,21 @@ impl RawSink {
                 let side = info.side.unwrap_or(if info.centre[0] < 1.0 / 3.0 { Side::Left } else { Side::Right });
                 KeyZone::side_only(side)
             }
+        }
+    }
+
+    /// The desktop's shortcut for binding `id` went active or inactive: a press or a release of that binding from the
+    /// backend's silent source, matched by id (the portal hands over no key).
+    fn shortcut(&mut self, handle: u64, id: BindingId, down: bool) {
+        self.connect(handle, DeviceClass::Keyboard, true);
+        let Some(src) = self.device_index(handle).and_then(|i| self.devices.get(i)).map(|d| d.src) else { return };
+        let at = self.at();
+        let key = PressKey::Shortcut(id);
+        if !down {
+            self.end_press(src, key, at);
+        } else if self.press_of(src, key).is_none() {
+            let slot = self.table.slot_of(id);
+            self.start_press(src, key, slot, at);
         }
     }
 

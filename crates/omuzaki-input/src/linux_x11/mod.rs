@@ -35,7 +35,7 @@ const X11: InputBackend = InputBackend {
     classes: DeviceMask::NONE.with(DeviceClass::Keyboard).with(DeviceClass::Mouse),
     caps,
     run: Some(run),
-    chosen: Chosen::UnlessOptedIn,
+    chosen: Chosen::IfUnlessOptedIn(x11_session),
 };
 register_input_backend!(X11);
 
@@ -50,9 +50,14 @@ const ALL_MASTER_DEVICES: u16 = 1;
 const KEYCODE_OFFSET: u32 = 8;
 
 /// Whether this is a Wayland session, where X11 sees only X clients.
-fn wayland() -> bool {
+pub(crate) fn wayland() -> bool {
     std::env::var_os("WAYLAND_DISPLAY").is_some()
         || std::env::var("XDG_SESSION_TYPE").is_ok_and(|t| t.eq_ignore_ascii_case("wayland"))
+}
+
+/// Not a Wayland session: X11 is chosen there unless the person opted in to evdev.
+fn x11_session() -> bool {
+    !wayland()
 }
 
 fn caps() -> CaptureCaps {

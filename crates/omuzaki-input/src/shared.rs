@@ -166,6 +166,8 @@ impl PadSlot {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct TableEntry {
     pub(crate) id: BindingId,
+    /// The binding's name: what the Wayland portal shows the person for it.
+    pub(crate) name: String,
     pub(crate) chord: Option<Chord>,
     pub(crate) action: BindingAction,
 }

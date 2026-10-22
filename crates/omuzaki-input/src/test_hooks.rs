@@ -186,6 +186,15 @@ impl Hub {
         spawn_capture(shared, backend, "event-tap", crate::macos::tap::run)
     }
 
+    /// Runs the Wayland portal backend's loop on `backend`, talking to the D-Bus at `address` instead of the session
+    /// bus.
+    #[cfg(target_os = "linux")]
+    pub fn run_portal(&self, backend: usize, address: &str) -> Option<JoinHandle<()>> {
+        let address = address.to_owned();
+        let shared = Arc::clone(&self.core.shared);
+        spawn_capture(shared, backend, "portal", move |sink| crate::linux_portal::run_on(sink, Some(&address)))
+    }
+
     /// Fails backend `backend` as a panic on its thread would.
     pub fn fail_backend(&self, backend: usize) {
         self.core.fail_backend(backend);
