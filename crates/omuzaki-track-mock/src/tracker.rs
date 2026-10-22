@@ -29,13 +29,25 @@ pub struct FakeTracker {
     /// The current (or last) session's publication count. A new session gets a new counter, so a source from an
     /// earlier session, even one mid-poll when the restart happened, can never count into it.
     published: Arc<AtomicU64>,
+    /// Scripted latency and drops, reported with the real publication count.
+    timing: LatencyStats,
 }
 
 impl FakeTracker {
     /// A tracker over `script`, sorted by time (stably, so equal times keep their order).
     pub fn scripted(mut script: Vec<(Duration, TrackFrame)>) -> Self {
         script.sort_by_key(|(at, _)| *at);
-        Self { script: script.into(), running: None, published: Arc::new(AtomicU64::new(0)) }
+        let zero = Duration::ZERO;
+        let timing = LatencyStats::new(0, 0, zero, zero, zero);
+        Self { script: script.into(), running: None, published: Arc::new(AtomicU64::new(0)), timing }
+    }
+
+    /// Reports `timing`'s latencies and drops from [`latency`](Tracker::latency) (its `frames` stays the count of
+    /// frames published), as a tracker on a slow machine would.
+    #[must_use]
+    pub fn with_latency(mut self, timing: LatencyStats) -> Self {
+        self.timing = timing;
+        self
     }
 }
 
@@ -83,8 +95,8 @@ impl Tracker for FakeTracker {
     }
 
     fn latency(&self) -> LatencyStats {
-        let zero = Duration::ZERO;
-        LatencyStats::new(self.published.load(Ordering::Relaxed), 0, zero, zero, zero)
+        let t = &self.timing;
+        LatencyStats::new(self.published.load(Ordering::Relaxed), t.dropped, t.p50, t.p95, t.max)
     }
 }
 
