@@ -1,0 +1,36 @@
+[package]
+name = "omuzaki-stream-share"
+description = "Texture-sharing outputs behind the Output trait (spec v3 BR-01): the program picture with transparency for OBS and other apps on the same computer, through Spout2 on Windows and Syphon on macOS."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-render-api = { path = "../omuzaki-render-api" }
+omuzaki-stream-api = { path = "../omuzaki-stream-api" }
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = ["Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_System_Memory", "Win32_System_LibraryLoader"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc.workspace = true
+objc2.workspace = true
+objc2-foundation.workspace = true
+objc2-metal.workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+windows = { workspace = true, features = ["Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_System_Memory"] }
+
+[lints]
+workspace = true
+
+# Native only: a shared texture is an OS object.
+[package.metadata.omuzaki]
+kind = "Implementation"
+summary = "texture-sharing outputs (BR-01) behind `omuzaki-stream-api`'s `Output`, registered as the `spout` and `syphon` output kinds: the frame goes from a one-frame mailbox to its own thread, which publishes it as a Spout2 sender on Windows (the protocol written natively: shared memory, a shared D3D11 texture, the access mutex and frame count) or a Syphon server on macOS (Syphon.framework loaded at run time, a Metal texture); each kind reports itself unavailable with a hint on the other OSes"
+wasm = false
+registers = true

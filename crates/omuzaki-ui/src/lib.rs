@@ -57,6 +57,7 @@ omuzaki_core::define_link! {
     omuzaki_stage::link();
     omuzaki_stage_api::link();
     omuzaki_stream::link();
+    omuzaki_stream_share::link();
     omuzaki_theatre::link();
     omuzaki_track::link();
     omuzaki_track_net::link();
