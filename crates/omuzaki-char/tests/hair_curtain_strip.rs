@@ -57,7 +57,7 @@ fn compile(g: &CurtainGen, seed: u64, folds: Folds) -> (Vec<HairClump>, Vec<f32>
 
 fn mesh_of(g: &CurtainGen, seed: u64, folds: Folds) -> MeshData {
     let (clumps, u) = compile(g, seed, folds);
-    curtain::group_mesh(&clumps, &u, g.columns, &frame(), folds, None).unwrap()
+    curtain::group_mesh(&clumps, &u, g.columns, &frame(), None).unwrap()
 }
 
 /// Straight parallel guides 2 cm apart along x, hanging from y = 0 to -0.5 in the plane z = 0, outward +Z.
@@ -203,7 +203,7 @@ fn vertex_normals_are_the_area_weighted_face_normals() {
 
 #[test]
 fn with_wave_and_curl_off_no_treatment_folds() {
-    for folds in [Folds::Prototype, Folds::Coherent, Folds::Clamped] {
+    for folds in [Folds::Prototype, Folds::Coherent] {
         let mut g = curtain(44, 5);
         g.wave = Wave { amplitude: 0.0, curl: 0.0, ..g.wave };
         for seed in 1..=6 {
@@ -220,17 +220,14 @@ fn shares(folds: Folds) -> Vec<f32> {
 }
 
 #[test]
-fn the_prototypes_folds_exist_and_each_alternative_has_fewer() {
-    let (prototype, coherent, clamped) = (shares(Folds::Prototype), shares(Folds::Coherent), shares(Folds::Clamped));
-    eprintln!(
-        "inward-facing share over six seeds: prototype {prototype:.4?}, coherent {coherent:.4?}, clamped {clamped:.4?}"
-    );
+fn the_prototypes_folds_exist_and_the_coherent_treatment_has_fewer() {
+    let (prototype, coherent) = (shares(Folds::Prototype), shares(Folds::Coherent));
+    eprintln!("inward-facing share over six seeds: prototype {prototype:.4?}, coherent {coherent:.4?}");
     let mean = |v: &[f32]| v.iter().sum::<f32>() / v.len() as f32;
     assert!(mean(&prototype) > 0.02, "the prototype's guides cross: {prototype:?}");
     // Crossing guides are only part of the folds: the columns are sampled at different heights (the pointed clumps), so a
-    // waved band skews even where no guide crosses. The alternatives remove the crossing and no more.
+    // waved band skews even where no guide crosses. The coherent treatment removes the crossing and no more.
     assert!(mean(&coherent) < mean(&prototype), "coherent {coherent:?} vs prototype {prototype:?}");
-    assert!(mean(&clamped) < mean(&prototype), "clamped {clamped:?} vs prototype {prototype:?}");
 }
 
 #[test]
@@ -301,12 +298,12 @@ fn a_lone_guide_and_a_non_finite_guide_still_build() {
 fn the_strips_follow_u_not_the_order_of_the_clumps() {
     let g = curtain(8, 5);
     let (clumps, u) = compile(&g, 1, Folds::Prototype);
-    let straight = curtain::group_mesh(&clumps, &u, 5, &frame(), Folds::Prototype, None).unwrap();
+    let straight = curtain::group_mesh(&clumps, &u, 5, &frame(), None).unwrap();
     let reversed_clumps: Vec<_> = clumps.iter().rev().cloned().collect();
     let reversed_u: Vec<f32> = u.iter().rev().copied().collect();
-    let again = curtain::group_mesh(&reversed_clumps, &reversed_u, 5, &frame(), Folds::Prototype, None).unwrap();
+    let again = curtain::group_mesh(&reversed_clumps, &reversed_u, 5, &frame(), None).unwrap();
     assert_eq!(straight, again);
-    assert!(curtain::group_mesh(&clumps, &u[1..], 5, &frame(), Folds::Prototype, None).is_err());
+    assert!(curtain::group_mesh(&clumps, &u[1..], 5, &frame(), None).is_err());
 }
 
 #[test]
@@ -315,7 +312,7 @@ fn the_streak_tint_and_shade_of_a_clump_reach_its_strip() {
     let (mut clumps, u) = compile(&g, 1, Folds::Prototype);
     clumps[2].tint = Some(omuzaki_core::colour::Colour::hex(0x00ff_0000));
     clumps[1].shade = 0.5;
-    let mesh = curtain::group_mesh(&clumps, &u, 3, &frame(), Folds::Prototype, None).unwrap();
+    let mesh = curtain::group_mesh(&clumps, &u, 3, &frame(), None).unwrap();
     let per = 3 * GUIDE_POINTS;
     assert_eq!(mesh.colours[0], [1.0; 4]);
     assert!(mesh.colours[2 * per..3 * per].iter().all(|c| c[0] > 0.9 && c[1] < 0.1));
@@ -333,7 +330,7 @@ fn the_same_seed_gives_the_same_bytes() {
 #[test]
 fn non_finite_parameters_keep_the_clump_count_and_do_not_panic() {
     let g = CurtainGen { count: 10, spread_deg: f64::NAN, ..curtain(10, 5) };
-    for folds in [Folds::Prototype, Folds::Coherent, Folds::Clamped] {
+    for folds in [Folds::Prototype, Folds::Coherent] {
         let mesh = mesh_of(&g, 1, folds);
         assert_eq!(mesh.positions.len(), 10 * 5 * GUIDE_POINTS);
     }
@@ -343,185 +340,4 @@ fn non_finite_parameters_keep_the_clump_count_and_do_not_panic() {
 fn the_default_curtain_fits_the_hair_budget() {
     let mesh = mesh_of(&curtain(44, 5), 1, Folds::Prototype);
     assert_eq!((mesh.positions.len(), mesh.triangle_count()), (5720, 8800), "the prototype's counts");
-}
-
-// ------------------------------------------------------------------------------------------------ the fold sheet
-
-mod sheet {
-    use super::*;
-    use omuzaki_char::template::Template;
-    use omuzaki_char::template::soft_sd::SoftSd;
-    use omuzaki_char::template::standard::Standard;
-    use omuzaki_core::colour::Colour;
-    use omuzaki_core::glam::{Mat4, UVec2};
-    use omuzaki_render_api::{
-        AlphaEncoding, Background, Camera, Instance, Light, Post, Renderer, RendererExt, Scene, Tonemap,
-    };
-    use omuzaki_render_mock::MockRenderer;
-
-    /// A template's head as an ellipsoid: where evidence needs a head to hang hair on without a whole character (the
-    /// registry builds the soft-sd body only, and the standard head is out of the head part's range).
-    #[derive(Debug)]
-    struct Proxy {
-        centre: Vec3,
-        axes: Vec3,
-    }
-
-    impl HeadSurface for Proxy {
-        fn centre(&self) -> Vec3 {
-            self.centre
-        }
-        fn radius(&self, dir: Vec3) -> f32 {
-            1.0 / (dir / self.axes).length()
-        }
-    }
-
-    fn proxy_of(t: &dyn Template) -> Proxy {
-        let c = t.defaults().head.cranium;
-        let depth = 0.5 * (c.half_depth_front + c.half_depth_back);
-        let height = 0.5 * (c.half_height_up + c.half_height_down_back);
-        Proxy {
-            centre: Vec3::new(c.centre[0] as f32, c.centre[1] as f32, c.centre[2] as f32),
-            axes: Vec3::new(c.half_width as f32, height as f32, depth as f32),
-        }
-    }
-
-    /// A latitude-longitude ellipsoid mesh with outward normals.
-    fn ellipsoid(centre: Vec3, axes: Vec3) -> MeshData {
-        let (rings, segments) = (24usize, 48usize);
-        let mut m = MeshData::default();
-        for i in 0..=rings {
-            let theta = std::f32::consts::PI * i as f32 / rings as f32;
-            for j in 0..=segments {
-                let phi = std::f32::consts::TAU * j as f32 / segments as f32;
-                let d = Vec3::new(theta.sin() * phi.sin(), theta.cos(), theta.sin() * phi.cos());
-                m.positions.push(centre + d * axes);
-                m.normals.push((d / axes).normalize());
-            }
-        }
-        for i in 0..rings {
-            for j in 0..segments {
-                let a = (i * (segments + 1) + j) as u32;
-                let b = a + segments as u32 + 1;
-                m.indices.extend([a, a + 1, b, b, a + 1, b + 1]);
-            }
-        }
-        m
-    }
-
-    /// The curtain sized for a template: lengths, wave and envelope scaled by `k` and lifted by `lift`.
-    fn scaled(proxy: &Proxy, base: &Proxy) -> CurtainGen {
-        let k = proxy.axes.x / base.axes.x;
-        let mut g = curtain(44, 5);
-        let lift = proxy.centre.y / base.centre.y;
-        g.length_front *= f64::from(k);
-        g.length_back *= f64::from(k);
-        g.wave.amplitude *= f64::from(k);
-        g.envelope = g.envelope.iter().map(|[y, d]| [y * f64::from(lift), d * f64::from(k)]).collect();
-        g
-    }
-
-    fn render(meshes: &[(&MeshData, &omuzaki_char_api::MaterialSpec)], eye: Vec3, at: Vec3) -> Vec<u8> {
-        let mut renderer = MockRenderer::new();
-        let mut scene = Scene::new(Camera::look_at(eye, at, Vec3::Y, Camera::default().projection));
-        scene.background = Background::Solid { colour: Colour::hex(0x001e_1c24) };
-        scene.lights = vec![
-            Light::Hemisphere { sky: Colour::hex(0x00f1_eef8), ground: Colour::hex(0x004a_3e36), intensity: 0.75 },
-            Light::Directional {
-                to_light: Vec3::new(1.6, 3.0, 2.4),
-                colour: Colour::hex(0x00ff_f6ec),
-                intensity: 1.7,
-                casts_shadow: false,
-            },
-        ];
-        scene.post = Post { exposure: 1.0, tonemap: Tonemap::None, ..Post::default() };
-        for (geometry, spec) in meshes {
-            let mesh = renderer.create_mesh(geometry).unwrap();
-            let mut spec = (*spec).clone();
-            spec.overlays.clear();
-            let material = renderer.create_material(&spec.to_material(&|_| None, &|_| None).unwrap()).unwrap();
-            scene.instances.push(Instance::new(mesh, material, Mat4::IDENTITY));
-        }
-        let quality = omuzaki_render_api::Quality { samples: 4, ..omuzaki_render_api::Quality::offline() };
-        let image = renderer.render_image(UVec2::splat(512), AlphaEncoding::Straight, &scene, &quality).unwrap();
-        let mut ppm = format!("P6\n{} {}\n255\n", image.size.x, image.size.y).into_bytes();
-        for y in 0..image.size.y {
-            for x in 0..image.size.x {
-                let [r, g, b, _] = image.pixel(x, y).unwrap();
-                ppm.extend([r, g, b]);
-            }
-        }
-        ppm
-    }
-
-    /// Renders the three fold treatments at one seed and camera, on soft-sd's and standard's head sizes, front, side and
-    /// back, as `<template>-<treatment>-<view>.ppm` into `OMUZAKI_CURTAIN_FOLDS_DIR`, and prints each one's inward share.
-    #[test]
-    #[ignore = "writes pictures for the art director's pick; set OMUZAKI_CURTAIN_FOLDS_DIR"]
-    #[allow(clippy::disallowed_methods, reason = "test evidence, written to a folder the developer names; not an op")]
-    fn fold_sheet() {
-        let directory = std::path::PathBuf::from(std::env::var_os("OMUZAKI_CURTAIN_FOLDS_DIR").expect("the folder"));
-        std::fs::create_dir_all(&directory).unwrap();
-        let base = proxy_of(&SoftSd);
-        let (hair, skin) = materials();
-        for (name, template) in [("soft-sd", &SoftSd as &dyn Template), ("standard", &Standard)] {
-            let proxy = proxy_of(template);
-            let g = scaled(&proxy, &base);
-            let head = ellipsoid(proxy.centre, proxy.axes);
-            let (palette, id, dynamics) = (Palette::default(), GroupId::new("curtain").unwrap(), Dynamics::default());
-            for (label, folds) in
-                [("prototype", Folds::Prototype), ("coherent", Folds::Coherent), ("clamped", Folds::Clamped)]
-            {
-                let mut forked = Rng::new(7);
-                let mut stream = Forked(&mut forked);
-                let mut ctx = HairGenCtx::new(&proxy, &palette, Quality::Live, &id, &dynamics, &mut stream);
-                let group = curtain::compile_folds(&g, &mut ctx, folds);
-                let GroupGeometry::Strip { u, .. } = &group.geometry else { panic!("a strip") };
-                let body_axis = Vec2::new(proxy.centre.x, -0.03);
-                let frame = OutwardFrame { head: proxy.centre, body_axis };
-                let mesh = curtain::group_mesh(&group.clumps, u, g.columns, &frame, folds, None).unwrap();
-                eprintln!("{name} {label}: inward share {:.4}", inward_share(&mesh, &frame));
-                let target = Vec3::new(0.0, proxy.centre.y - 0.25 * proxy.axes.x / base.axes.x, 0.0);
-                let reach = 2.1 * proxy.axes.x / base.axes.x;
-                for (view, azimuth_deg) in [("front", 0.0_f32), ("side", 90.0), ("back", 180.0)] {
-                    let eye = target
-                        + Mat4::from_rotation_y(azimuth_deg.to_radians()).transform_vector3(Vec3::new(
-                            0.0,
-                            0.1 * reach,
-                            reach,
-                        ));
-                    let ppm = render(&[(&head, &skin), (&mesh, &hair)], eye, target);
-                    std::fs::write(directory.join(format!("{name}-{label}-{view}.ppm")), ppm).unwrap();
-                }
-            }
-        }
-    }
-
-    /// The hair and the skin materials the parts build for a default hairstyle on the soft-sd character.
-    fn materials() -> (omuzaki_char_api::MaterialSpec, omuzaki_char_api::MaterialSpec) {
-        use omuzaki_char_api::{BuildOptions, BuildServices, CharId, CharacterBuilder, RegistryBuilder};
-        omuzaki_char::link();
-        let mut def = omuzaki_char_mock::mock_character().unwrap();
-        def.parts.clear();
-        let part = |kind: &str, params: serde_json::Value| omuzaki_char_api::PartDef {
-            kind: omuzaki_char_api::PartKindId::new(kind).unwrap(),
-            parent: None,
-            enabled: true,
-            layer: 0,
-            attach: None,
-            params,
-        };
-        let pid = |s: &str| omuzaki_char_api::PartId::new(s).unwrap();
-        def.parts.insert(pid("body"), part("body", serde_json::json!({})));
-        def.parts.insert(pid("head"), part("head", serde_json::json!({})));
-        def.parts
-            .insert(pid("hair"), part("hair", serde_json::to_value(omuzaki_char_api::HairParams::default()).unwrap()));
-        let built = RegistryBuilder
-            .build(&CharId::new("t").unwrap(), &def, &BuildOptions::default(), &BuildServices::default())
-            .unwrap();
-        (
-            built.materials[&"hair-hair".parse().unwrap()].clone(),
-            built.materials[&"head-skin-head".parse().unwrap()].clone(),
-        )
-    }
 }

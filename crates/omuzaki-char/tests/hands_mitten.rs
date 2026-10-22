@@ -281,7 +281,7 @@ fn hands_are_deterministic_and_the_styles_differ() {
 }
 
 #[test]
-fn hand_size_scales_the_hand_and_five_finger_adds_nothing_here() {
+fn hand_size_scales_the_hand() {
     let extent = |size: f64| {
         let parts = build("soft-sd", &params(HandStyle::Mitten, HandParams::default(), size));
         let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
@@ -292,7 +292,6 @@ fn hand_size_scales_the_hand_and_five_finger_adds_nothing_here() {
     };
     let ratio = extent(2.0) / extent(1.0);
     assert!((1.5..2.1).contains(&ratio), "double hand size gives {ratio}x");
-    assert_eq!(build("soft-sd", &params(HandStyle::FiveFinger, HandParams::default(), 1.0)).len(), 0);
 }
 
 #[test]

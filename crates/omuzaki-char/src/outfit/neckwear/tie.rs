@@ -122,10 +122,10 @@ pub struct TieStripes {
 impl Default for TieStripes {
     fn default() -> Self {
         Self {
-            base: ColourRef::rgb(0x35, 0x6a, 0x52),
-            main: ColourRef::rgb(0xc9, 0xcc, 0xd3),
-            edge: ColourRef::rgb(0x27, 0x49, 0x3a),
-            thin: ColourRef::rgb(0xa8, 0xb3, 0xad),
+            base: ColourRef::rgb(0x2e, 0x3a, 0x5c),
+            main: ColourRef::rgb(0xe9, 0xe3, 0xd6),
+            edge: ColourRef::rgb(0x1f, 0x28, 0x42),
+            thin: ColourRef::rgb(0xb7, 0xa6, 0xc9),
         }
     }
 }
@@ -157,7 +157,7 @@ impl Default for TieParams {
             width: REFERENCE_WIDTH,
             stripes: TieStripes::default(),
             shade: ColourRef::rgb(0x9a, 0x9a, 0xac),
-            line: ColourRef::rgb(0x1d, 0x2b, 0x24),
+            line: ColourRef::rgb(0x1b, 0x20, 0x33),
         }
     }
 }

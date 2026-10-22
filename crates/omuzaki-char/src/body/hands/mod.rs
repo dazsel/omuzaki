@@ -1,4 +1,5 @@
-//! Hand styles for the `body` part: mitten and simple (`body.js` `handFrame`, `handBody`, `handThumb`, `buildHand`).
+//! Hand styles for the `body` part: mitten and simple (`body.js` `handFrame`, `handBody`, `handThumb`, `buildHand`), and
+//! five fingers ([`five`]), which share their palm block and thumb.
 //!
 //! Both styles are one palm-and-finger block (lofted elliptical rings along a slightly curled axis that closes into a
 //! rounded cap) plus a swept thumb; they differ only in the block's surface ([`mitten`]: smooth, with the finger-hint
@@ -121,6 +122,9 @@ struct Hand {
     palm_width: f64,
     thumb_length: f64,
     spread_deg: f64,
+    /// The five-finger hand's finger thickness and tip taper (`HandParams`), clamped as the other numbers are.
+    finger_thickness: f64,
+    finger_taper: f64,
     /// How much the wrist sleeve's open ring is narrowed from the block's first row so it lies inside the forearm,
     /// `0..=1` ([`WRIST_ROOM`]).
     taper: f64,
@@ -165,6 +169,8 @@ impl Hand {
             palm_width,
             thumb_length: slider(params.hand.thumb_length),
             spread_deg: if spread.is_finite() { clamp(spread, -30.0, 30.0) } else { 0.0 },
+            finger_thickness: slider(params.hand.finger_thickness),
+            finger_taper: slider(params.hand.taper),
             taper,
         })
     }
@@ -477,23 +483,22 @@ fn left_hand(hand: &Hand, style: &Style) -> Result<(MeshBuilder, Block), KitErro
     Ok((builder, block))
 }
 
-/// The hand meshes of `params.hands` for both hands of `layout`, using `material`: for a mitten or simple hand, the
-/// left hand, its mirror image, and (mitten) the finger-hint lines of each. Five-finger hands are built elsewhere, so
-/// they add nothing here.
+/// The hand meshes of `params.hands` for both hands of `layout`, using `material`: the left hand (a mitten, a simple
+/// hand or a five-finger hand, [`five`]), its mirror image, and for a mitten the finger-hint lines of each.
 ///
 /// # Errors
 /// [`KitError`] if a hand cannot be built.
 pub fn build(params: &BodyParams, layout: &BodyLayout, material: &MaterialName) -> Result<Vec<PartMesh>, KitError> {
-    let (style, decals) = match params.hands {
-        HandStyle::Mitten => (mitten::STYLE, true),
-        HandStyle::Simple => (simple::STYLE, false),
-        HandStyle::FiveFinger => return Ok(Vec::new()),
-    };
     let hand = Hand::new(params, layout)?;
-    let (left, block) = left_hand(&hand, &style)?;
-    let mut parts = vec![("hand-l", left)];
-    if decals {
-        parts.push(("hand-lines-l", mitten::lines(&hand, &block)?));
+    let mut parts = Vec::with_capacity(2);
+    match params.hands {
+        HandStyle::Mitten => {
+            let (left, block) = left_hand(&hand, &mitten::STYLE)?;
+            parts.push(("hand-l", left));
+            parts.push(("hand-lines-l", mitten::lines(&hand, &block)?));
+        }
+        HandStyle::Simple => parts.push(("hand-l", left_hand(&hand, &simple::STYLE)?.0)),
+        HandStyle::FiveFinger => parts.push(("hand-l", five::left_hand(&hand, layout)?)),
     }
     // The layout is symmetric about x = 0 and the hand is built from the left joints, so the right hand is the left
     // one mirrored (x negated, winding reversed, bones swapped), never built separately.

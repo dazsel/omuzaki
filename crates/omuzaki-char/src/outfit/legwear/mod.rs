@@ -108,6 +108,7 @@ pub struct LegwearParams {
     /// Tights, stockings or leggings.
     pub style: LegwearStyle,
     /// Where it ends at the top; `None` for the style's own.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub top: Option<LegTop>,
     /// How thick the cloth is, metres: the layer above sits this much farther out.
     pub thickness: f64,

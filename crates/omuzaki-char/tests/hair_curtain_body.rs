@@ -8,7 +8,7 @@
 
 use omuzaki_char::hair::compile::{Forked, GroupGeometry, HairGenCtx};
 use omuzaki_char::hair::r#gen::cap::fill_shell;
-use omuzaki_char::hair::r#gen::curtain::{self, BodyKeepOut, Folds, GUIDE_POINTS};
+use omuzaki_char::hair::r#gen::curtain::{self, BodyKeepOut, GUIDE_POINTS};
 use omuzaki_char::hair::tube::OutwardFrame;
 use omuzaki_char::template::skeleton::TemplateFit;
 use omuzaki_char_api::{
@@ -89,7 +89,7 @@ fn mesh(g: &CurtainGen, head: &Head, fit: &dyn BodyFit, seed: u64) -> (Vec<omuza
     let (clumps, u) = compile(g, head, Some(fit), seed);
     let frame = OutwardFrame { head: head.centre, body_axis: Vec2::new(head.centre.x, -0.03) };
     let keep = BodyKeepOut::new(fit);
-    let mesh = curtain::group_mesh(&clumps, &u, g.columns, &frame, Folds::Prototype, Some(&keep)).unwrap();
+    let mesh = curtain::group_mesh(&clumps, &u, g.columns, &frame, Some(&keep)).unwrap();
     (clumps, mesh)
 }
 

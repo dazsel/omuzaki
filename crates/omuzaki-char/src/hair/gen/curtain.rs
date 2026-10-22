@@ -20,10 +20,10 @@
 //! so the first step runs a little outward. That is the prototype's look, kept for parity.
 //!
 //! **Folds (#841).** The prototype gives every guide its own wave, so neighbours can cross lower down and the strip
-//! between them folds over itself. Normal builds keep that ([`Folds::Prototype`], the parity target). Two alternatives
-//! are built for the art director to choose between and are removed after the pick: [`Folds::Coherent`] smooths the
-//! wave's amplitude, frequency and phase jitter across `u` so neighbours stay in step (the draws are still all made, in
-//! the prototype's order), and [`Folds::Clamped`] stops a column being pulled past its own guide.
+//! between them folds over itself. Builds smooth the wave's amplitude, frequency and phase jitter across `u` instead, so
+//! neighbours stay in step ([`Folds::Coherent`], the art director's pick over the prototype's crossing and over clamping
+//! each column to its guide); the draws are still all made, in the prototype's order. [`Folds::Prototype`] stays for
+//! the parity tests.
 //!
 //! The group's stiffness and follow are its [`Dynamics`](omuzaki_char_api::Dynamics), applied by the context.
 
@@ -81,36 +81,28 @@ const AMPLITUDE_JITTER: f64 = 0.006 / 0.036;
 /// Where the braid line blends from the sides to the back, degrees from the front.
 const BRAID_BLEND_DEG: (f64, f64) = (70.0, 180.0);
 
-/// How the curtain treats guides that cross (#841). Everything but [`Folds::Prototype`] is for the art director's pick
-/// and goes once it is made.
+/// How the curtain treats guides that cross (#841).
 #[doc(hidden)]
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub enum Folds {
-    /// The prototype's: independent waves per guide, columns follow their neighbours wherever they go.
-    #[default]
+    /// The prototype's: independent waves per guide, columns follow their neighbours wherever they go. The parity
+    /// target only.
     Prototype,
-    /// The waves' amplitude, frequency and phase jitter are smoothed across `u`, so neighbours stay in step.
+    /// The waves' amplitude, frequency and phase jitter are smoothed across `u`, so neighbours stay in step: what builds
+    /// use.
+    #[default]
     Coherent,
-    /// A column is never pulled past its own guide.
-    Clamped,
-}
-
-impl Folds {
-    /// The column spacing rule of the strip builder.
-    fn spacing(self) -> Spacing {
-        if self == Self::Clamped { Spacing::Clamped } else { Spacing::Prototype }
-    }
 }
 
 /// [`Folds::Coherent`]'s smoothing width across the curtain, as a fraction of `u` (one standard deviation).
 const COHERENCE_SPAN: f64 = 0.12;
 
-/// Compiles the group: one clump per guide, with `u` across the back.
+/// Compiles the group: one clump per guide, with `u` across the back, the waves kept in step ([`Folds::Coherent`]).
 pub fn compile(g: &CurtainGen, ctx: &mut HairGenCtx<'_>) -> CompiledGroup {
-    compile_folds(g, ctx, Folds::Prototype)
+    compile_folds(g, ctx, Folds::Coherent)
 }
 
-/// [`compile`] with a fold treatment. Only the tests and the evidence dump choose one.
+/// [`compile`] with a fold treatment. Only the tests choose one.
 #[doc(hidden)]
 pub fn compile_folds(g: &CurtainGen, ctx: &mut HairGenCtx<'_>, folds: Folds) -> CompiledGroup {
     let count = usize::from(g.count);
@@ -158,7 +150,8 @@ fn smooth_jitter(draws: &mut [Draws]) {
 
 /// The curtain as one mesh at rest, from the compiled `clumps` and their `u` (a strip's position across the back): each
 /// guide's strip of `columns` columns, in order of `u`, every strip with vertices of its own. Each strip takes its
-/// clump's shade and streak tint. Vertices inside the body (`keep_out`) are moved out of it.
+/// clump's shade and streak tint. Vertices inside the body (`keep_out`) are moved out of it. Every treatment spaces the
+/// columns as the prototype does; they differ in the guides [`compile_folds`] makes.
 ///
 /// # Errors
 /// [`StripError`] if `u` and `clumps` differ in length or the guides cannot make a strip (fewer than two points, or not
@@ -169,7 +162,6 @@ pub fn group_mesh(
     u: &[f32],
     columns: u8,
     frame: &OutwardFrame,
-    folds: Folds,
     keep_out: Option<&BodyKeepOut>,
 ) -> Result<MeshData, StripError> {
     if u.len() != clumps.len() {
@@ -183,7 +175,7 @@ pub fn group_mesh(
         &guides,
         &looks,
         columns,
-        folds.spacing(),
+        Spacing::Prototype,
         frame.head,
         |p| frame.rest(p),
         |p| keep_out.map_or(p, |k| k.push_out(p, STRIP_BODY_MARGIN)),

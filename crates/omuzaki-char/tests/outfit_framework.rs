@@ -829,7 +829,8 @@ fn the_suite_finds_a_body_fit_blown_past_the_body() {
         let stack = conformance::build(def, &services()).expect("the body builds");
         let fit = stack.published.get::<FitFact>().fits.first().expect("a body fit").clone();
         let body = stack.output(conformance::BODY);
-        conformance::check_fit_tight(fit.as_ref(), body, &conformance::REGIONS).expect("the body's own fit keeps to it");
+        conformance::check_fit_tight(fit.as_ref(), body, &conformance::REGIONS)
+            .expect("the body's own fit keeps to it");
         let blown = Blown { fit, region: BodyRegion::LegL, by: 0.01 };
         let error = conformance::check_fit_tight(&blown, body, &conformance::REGIONS).expect_err("a blown fit fails");
         println!("{template}: {error}");

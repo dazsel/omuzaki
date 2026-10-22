@@ -16,19 +16,3 @@ images = [
     "standard-bangs-wispy.ppm", "standard-bangs-none.ppm", "standard-ponytail.ppm", "standard-twintails.ppm",
     "standard-low-bun.ppm", "standard-high-bun.ppm", "standard-braid-crown.ppm",
 ]
-
-[[case]]
-name = "curtain-folds"
-description = "The curtain's three fold treatments (#1679, #841) for the Director's pick, at one seed and camera on soft-sd's and standard's head sizes, front, side and back: as the prototype draws it, with the waves made coherent across the strip, and with each column clamped to its guide."
-env = { OMUZAKI_CURTAIN_FOLDS_DIR = "{out}" }
-steps = [
-    { run = ["cargo", "test", "--locked", "-p", "omuzaki-char", "--test", "hair_curtain_strip", "fold_sheet", "--", "--ignored"] },
-]
-images = [
-    "soft-sd-prototype-front.ppm", "soft-sd-prototype-side.ppm", "soft-sd-prototype-back.ppm",
-    "soft-sd-coherent-front.ppm", "soft-sd-coherent-side.ppm", "soft-sd-coherent-back.ppm",
-    "soft-sd-clamped-front.ppm", "soft-sd-clamped-side.ppm", "soft-sd-clamped-back.ppm",
-    "standard-prototype-front.ppm", "standard-prototype-side.ppm", "standard-prototype-back.ppm",
-    "standard-coherent-front.ppm", "standard-coherent-side.ppm", "standard-coherent-back.ppm",
-    "standard-clamped-front.ppm", "standard-clamped-side.ppm", "standard-clamped-back.ppm",
-]

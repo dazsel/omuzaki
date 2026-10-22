@@ -347,13 +347,13 @@ fn the_tie_texture_is_the_prototypes_stripes_at_128_pixels() {
         [texture.rgba8[i], texture.rgba8[i + 1], texture.rgba8[i + 2]]
     };
     // The mock rasteriser samples a pixel's centre, so the weave's one-pixel bands (which a canvas weighs by coverage)
-    // darken whole columns; the columns between them (x = 1 mod 3) are clean. Top row: the dark edging, the silver
+    // darken whole columns; the columns between them (x = 1 mod 3) are clean. Top row: the dark edging, the broad
     // stripe, the ground, the thin stripe.
     let exact = |got: [u8; 3], want: [u8; 3]| got.iter().zip(&want).all(|(a, b)| a.abs_diff(*b) <= 4);
-    assert!(exact(at(10, 0), [0xc9, 0xcc, 0xd3]), "the silver stripe {:?}", at(10, 0));
-    assert!(exact(at(4, 0), [0x27, 0x49, 0x3a]), "the edging {:?}", at(4, 0));
-    assert!(exact(at(31, 0), [0x35, 0x6a, 0x52]), "the ground {:?}", at(31, 0));
-    assert!(exact(at(37, 0), [0xa8, 0xb3, 0xad]), "the thin stripe {:?}", at(37, 0));
+    assert!(exact(at(10, 0), [0xe9, 0xe3, 0xd6]), "the broad stripe {:?}", at(10, 0));
+    assert!(exact(at(4, 0), [0x1f, 0x28, 0x42]), "the edging {:?}", at(4, 0));
+    assert!(exact(at(31, 0), [0x2e, 0x3a, 0x5c]), "the ground {:?}", at(31, 0));
+    assert!(exact(at(37, 0), [0xb7, 0xa6, 0xc9]), "the thin stripe {:?}", at(37, 0));
     // The stripes slant at 45 degrees: 21 pixels along and 21 down is the same stripe.
     assert!(exact(at(31, 21), at(10, 0)), "slanted 45 degrees");
 }

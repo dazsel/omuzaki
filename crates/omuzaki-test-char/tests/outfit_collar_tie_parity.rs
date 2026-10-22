@@ -196,7 +196,7 @@ fn the_stripe_texture_is_the_prototypes_canvas_within_four_levels() {
     let (_, texture) = built.textures.iter().find(|(n, _)| n.as_str() == "tie-stripes").expect("the tie's texture");
     assert_eq!((texture.desc.size.x as usize, texture.desc.size.y as usize), (PX, PX));
     let hex = |h: u32| [(h >> 16) & 255, (h >> 8) & 255, h & 255].map(f64::from);
-    let reference = reference(hex(0x0035_6a52), hex(0x00c9_ccd3), hex(0x0027_493a), hex(0x00a8_b3ad));
+    let reference = reference(hex(0x002e_3a5c), hex(0x00e9_e3d6), hex(0x001f_2842), hex(0x00b7_a6c9));
     let mut worst = 0;
     let mut bad = 0;
     let mut compared = 0;

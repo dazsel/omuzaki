@@ -94,8 +94,11 @@ pub fn render(stack: &Stack, framing: Framing, name: &str, directory: &Path) {
 fn view(stack: &Stack, framing: Framing, azimuth_deg: f32) -> omuzaki_render_api::Image {
     let mut renderer = MockRenderer::new();
     let eye = framing.centre
-        + Mat4::from_rotation_y(azimuth_deg.to_radians())
-            .transform_vector3(Vec3::new(0.0, 0.08 * framing.distance, framing.distance));
+        + Mat4::from_rotation_y(azimuth_deg.to_radians()).transform_vector3(Vec3::new(
+            0.0,
+            0.08 * framing.distance,
+            framing.distance,
+        ));
     let mut scene = Scene::new(Camera::look_at(eye, framing.centre, Vec3::Y, Camera::default().projection));
     scene.background = Background::Solid { colour: Colour::hex(0x001e_1c24) };
     scene.lights = vec![

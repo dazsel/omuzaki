@@ -217,10 +217,10 @@ pub struct Tartan {
 impl Default for Tartan {
     fn default() -> Self {
         Self {
-            base: ColourRef::rgb(0x24, 0x39, 0x2f),
-            band: ColourRef::rgb(0x17, 0x27, 0x20),
-            line: ColourRef::rgb(0x3e, 0x5c, 0x4a),
-            hairline: ColourRef::rgb(0x9f, 0xb0, 0xa8),
+            base: ColourRef::rgb(0x2f, 0x33, 0x46),
+            band: ColourRef::rgb(0x20, 0x23, 0x2f),
+            line: ColourRef::rgb(0x6e, 0x50, 0x68),
+            hairline: ColourRef::rgb(0xb9, 0xb3, 0xc6),
             resolution: plaid::DEFAULT_RESOLUTION,
         }
     }
@@ -250,6 +250,7 @@ pub struct SkirtParams {
     /// [`MAX_HEM`] (the knee joint is `1`).
     pub hem: f64,
     /// The envelope, as the garment's own table; `None` derives it from the body under the skirt.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub profile: Option<SkirtProfile>,
     /// How much wider than the body the derived envelope is at the hem, metres. Unused with an explicit `profile`.
     pub flare: f64,
@@ -271,6 +272,7 @@ pub struct SkirtParams {
     /// a thigh swings through it.
     pub hip_blend: [f64; 2],
     /// The plaid; `None` for the cloth of `common.fabric`.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub plaid: Option<Tartan>,
     /// The cloth's shadow side.
     pub shade: ColourRef,

@@ -148,9 +148,7 @@ fn hold(radii: DVec2, mut extra: Reach, q: DVec2) -> Reach {
             (Some(gx), Some(gy)) if gx * r.y <= gy * r.x => (x_side, gx),
             (_, Some(gy)) => (y_side, gy),
             (Some(gx), None) => (x_side, gx),
-            (None, None) if (d.x.abs() - r.x) * r.y <= (d.y.abs() - r.y) * r.x => {
-                (x_side, corner_growth(d.x, r.x))
-            }
+            (None, None) if (d.x.abs() - r.x) * r.y <= (d.y.abs() - r.y) * r.x => (x_side, corner_growth(d.x, r.x)),
             (None, None) => (y_side, corner_growth(d.y, r.y)),
         };
         extra[side] += g * (1.0 + 1e-9) + f64::EPSILON;
@@ -376,7 +374,8 @@ impl Table {
         // which a junction's widening keeps it.
         let reach = |f: fn(DVec2) -> f64, r: f64| points.iter().map(|q| f(*q) - r).fold(0.0, f64::max);
         let e = &mut self.extra[k];
-        let boxed = [reach(|q| q.x, radii.x), reach(|q| -q.x, radii.x), reach(|q| q.y, radii.y), reach(|q| -q.y, radii.y)];
+        let boxed =
+            [reach(|q| q.x, radii.x), reach(|q| -q.x, radii.x), reach(|q| q.y, radii.y), reach(|q| -q.y, radii.y)];
         for (e, b) in e.iter_mut().zip(boxed) {
             *e = e.max(b);
         }

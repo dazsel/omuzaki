@@ -308,6 +308,7 @@ pub struct BootsParams {
     /// How high the boot reaches (when it is derived from the body).
     pub height: BootHeight,
     /// The outline as explicit knots, built exactly as given; `None` derives it from the body.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub profile: Option<BootProfile>,
     /// The toe box.
     pub toe: Toe,

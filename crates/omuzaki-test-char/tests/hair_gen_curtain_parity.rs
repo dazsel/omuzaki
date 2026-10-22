@@ -87,7 +87,7 @@ fn guides(local: &Local) -> CompiledGroup {
     let palette = Default::default();
     let (id, dynamics) = (GroupId::new("c-curtain").unwrap(), Dynamics::default());
     let mut ctx = HairGenCtx::new(&local.head, &palette, Quality::Live, &id, &dynamics, &mut rng);
-    curtain::compile(&local.curtain, &mut ctx)
+    curtain::compile_folds(&local.curtain, &mut ctx, curtain::Folds::Prototype)
 }
 
 /// The largest of a run of errors, with the guide and point it is at. Every error must be finite, and the run must not be

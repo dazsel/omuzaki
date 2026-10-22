@@ -41,7 +41,7 @@ use omuzaki_render_api::{AlphaMode, Outline};
 
 use super::compile::{self, CompiledEntry, Dispatch, GroupGenerator, GroupGeometry, enabled};
 use super::r#gen::bangs;
-use super::r#gen::curtain::{self, BodyKeepOut, Folds, StripError};
+use super::r#gen::curtain::{self, BodyKeepOut, StripError};
 use super::r#gen::tail::Chain;
 use super::r#gen::{bun, tail};
 use super::tie;
@@ -311,7 +311,7 @@ fn mesh_groups<'a>(
                 warnings.push(format!("the '{}' group made no clumps", entry.id));
                 continue;
             }
-            let strips = curtain::group_mesh(&entry.group.clumps, u, *columns, frame, Folds::Prototype, keep_out)?;
+            let strips = curtain::group_mesh(&entry.group.clumps, u, *columns, frame, keep_out)?;
             if strips.indices.is_empty() {
                 warnings.push(format!(
                     "the '{}' group has {columns} columns, so there is nothing to draw between them",

@@ -65,6 +65,7 @@ tempfile.workspace = true
 omuzaki-ai = { path = "../omuzaki-ai" }
 omuzaki-ai-mock = { path = "../omuzaki-ai-mock" }
 omuzaki-anim-mock = { path = "../omuzaki-anim-mock" }
+omuzaki-avatar-api = { path = "../omuzaki-avatar-api" }
 omuzaki-char-mock = { path = "../omuzaki-char-mock" }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-face-mock = { path = "../omuzaki-face-mock" }
