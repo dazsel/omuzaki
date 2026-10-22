@@ -39,6 +39,7 @@ omuzaki-stage-api = { path = "../omuzaki-stage-api" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
 omuzaki-track = { path = "../omuzaki-track" }
 omuzaki-track-api = { path = "../omuzaki-track-api" }
+omuzaki-track-voice = { path = "../omuzaki-track-voice" }
 # Linked for their self-registrations (part kinds, retargets, ...) and for the rig, which the frame loop calls directly.
 omuzaki-anim = { path = "../omuzaki-anim" }
 omuzaki-char = { path = "../omuzaki-char" }
