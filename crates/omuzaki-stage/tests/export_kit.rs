@@ -121,7 +121,10 @@ fn the_kit_character_exports_to_vrm_and_comes_back_as_an_avatar() {
     let inert = result.report.findings.iter().filter(|f| f.rule == "perfect_sync.inert_channel").count();
     println!("inert channels reported: {inert}");
     assert!(!result.report.has_errors());
-    assert_eq!(result.bake.as_ref().map(|b| b.channels.len()), Some(52));
+    // The 52 channels, then the face's own named expressions (#771), each exported under `omuzaki_<id>`.
+    let baked: Vec<&str> = result.bake.as_ref().unwrap().channels.iter().map(|c| c.channel.as_str()).collect();
+    assert_eq!(baked[..52], ARKIT_52);
+    assert!(baked[52..].iter().all(|n| n.starts_with("omuzaki_")), "{:?}", &baked[52..]);
 
     let scene = read_vrm(&bytes);
     let avatar = scene.avatar.as_ref().unwrap();
@@ -131,6 +134,9 @@ fn the_kit_character_exports_to_vrm_and_comes_back_as_an_avatar() {
     }
     let channels = ARKIT_52.iter().filter(|c| avatar.expressions.keys().any(|e| e.as_str() == **c)).count();
     assert_eq!(channels, 52);
+    for named in &baked[52..] {
+        assert!(avatar.expressions.keys().any(|e| e.as_str() == *named), "{named} is in the file");
+    }
     assert_eq!(scene.meta.name, "Kit");
 
     // The file is a model a person could drop on the studio: it loads as an avatar and frames.

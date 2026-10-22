@@ -133,7 +133,8 @@ impl<'a> BodyView<'a> {
 pub struct MeshView<'a> {
     /// Geometry, joint list, material, shadow flag and draw order.
     pub mesh: &'a PartMesh,
-    /// The part that made it, for a built character; `None` for a mesh of an imported avatar.
+    /// The part that made it: the kit part of a built character, or the attachment an imported avatar carries; `None`
+    /// for a mesh of the imported model itself.
     pub part: Option<&'a PartId>,
     /// Its index in that part's own mesh list (what a part runtime's `DynamicMesh` refers to); its index among the
     /// avatar's meshes for an imported one.
@@ -182,7 +183,7 @@ impl<'a> Meshes<'a> {
             }),
             MeshSource::Imported(meshes) => meshes.get(index).map(|m| MeshView {
                 mesh: &m.mesh,
-                part: None,
+                part: m.part.as_ref(),
                 // Validation keeps the count within `MAX_INDEXED`, so every index fits.
                 local: u16::try_from(index).unwrap_or_else(|_| {
                     debug_assert!(false, "an imported avatar with more than MAX_INDEXED meshes was not validated");

@@ -4615,10 +4615,12 @@ version = "0.0.0"
 dependencies = [
  "image",
  "inventory",
+ "omuzaki-ai-api",
  "omuzaki-anim-api",
  "omuzaki-avatar-api",
  "omuzaki-char-api",
  "omuzaki-char-mock",
+ "omuzaki-connect-api",
  "omuzaki-core",
  "omuzaki-doc-api",
  "omuzaki-doc-mock",

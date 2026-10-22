@@ -27,10 +27,14 @@ use omuzaki_ops_api::{Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, reg
 use omuzaki_store_api::{Commercial, Consent, Provenance, Source};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use super::source::{PartSource, source_path, sources_path};
 use crate::gather::avatar::{LicenceRecord, blank_rights_field};
+use crate::ops::avatar::import::AVATAR_PART;
+
+/// The kind the reserved `avatar` part of an imported character reports: the model came from outside the project.
+pub const AVATAR_KIND: &str = "External";
 
 /// The licence of a part made by one of the project's own generators. Terms stay the most restrictive: a kind says whose
 /// rights they are, not what is granted.
@@ -497,14 +501,26 @@ pub(crate) fn no_such_character(id: &CharId) -> OpError {
 pub(crate) fn load(ctx: &OpCtx<'_>, id: &CharId) -> Result<DerivedLicence, OpError> {
     let node = ctx.doc.get(&paths::character(id)).ok_or_else(|| no_such_character(id))?;
     let name = node.get("name").and_then(Value::as_str).unwrap_or_default();
-    let mut table: Vec<(&String, &Value)> = match node.get("parts") {
-        Some(Value::Object(parts)) => parts.iter().collect(),
+    // An imported character's parts are the model itself (the reserved `avatar` part, row `sources/avatar`) and the
+    // attachments under `avatar.parts`; a built character's are its `parts`.
+    let imported = node.get("avatar");
+    let parts = match imported {
+        Some(avatar) => avatar.get("parts"),
+        None => node.get("parts"),
+    };
+    let mut table: Vec<(&str, &Value)> = match parts {
+        Some(Value::Object(parts)) => parts.iter().map(|(key, part)| (key.as_str(), part)).collect(),
         _ => Vec::new(),
     };
-    table.sort_unstable_by_key(|(key, _)| key.as_str());
+    let model = json!({ "kind": AVATAR_KIND });
+    if imported.is_some() {
+        table.retain(|(key, _)| *key != AVATAR_PART);
+        table.push((AVATAR_PART, &model));
+    }
+    table.sort_unstable_by_key(|(key, _)| *key);
     let mut inputs = Vec::with_capacity(table.len());
     for (key, part) in table {
-        let part_id = PartId::new(key.as_str()).map_err(|e| {
+        let part_id = PartId::new(key).map_err(|e| {
             OpError::invalid(format!("parts/{key}"), format!("`{key}` is not a part id: {e}"))
                 .hint("part ids are lowercase letters, digits, `-` and `_`; rename the part")
         })?;

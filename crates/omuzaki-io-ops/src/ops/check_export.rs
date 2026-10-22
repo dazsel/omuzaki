@@ -47,6 +47,7 @@ use super::licence::derive::load;
 use super::licence::findings::against_stored_record;
 use super::licence::source::{PartSource, source_path};
 use crate::gather::avatar_import::gather_imported;
+use crate::ops::avatar::attach::attach_parts;
 use crate::gather::avatar::{LicenceRecord, add_avatar, add_rights, record_path};
 use crate::gather::{GatherError, GatherOptions, GatherPurpose, Gathered, gather};
 
@@ -270,9 +271,11 @@ impl CheckExport {
         }
         let (exporter, options, _) = self.exporter()?;
         let def = read_def(ctx.doc, &self.character)?;
-        let prepared = rebuild(ctx, def.clone())?;
+        let mut avatar = rebuild(ctx, def.clone())?.avatar;
+        // Its attachments, built as the stage builds them: what a person sees on the model is what the file carries.
+        attach_parts(&mut avatar, &self.character, &def.parts, &BuildServices::default(), Quality::Offline)?;
         let store = ctx.service::<dyn Store>()?;
-        let mut scene = gather_imported(&BodyView::imported(&prepared.avatar), &def, &|hash| store.get(hash).ok())
+        let mut scene = gather_imported(&BodyView::imported(&avatar), &def, &|hash| store.get(hash).ok())
             .map_err(|e| {
                 OpError::invalid("character", format!("character '{}' can't be written to a file: {e}", self.character))
             })?;

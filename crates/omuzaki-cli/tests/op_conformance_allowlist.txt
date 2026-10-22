@@ -81,8 +81,6 @@ vts.connect
 vts.disconnect
 vts.release
 vts.trigger
-perform.calibrate
-perform.set_retarget
 # trigger.press is a live action, so it stays until #2106 gives live actions their rule (#2195).
 trigger.press
 # face.underlay.set: a view-state job with no document patch, so nothing to undo. #139 (change #2106) gives such ops their own
