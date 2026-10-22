@@ -184,7 +184,7 @@ impl Op for Render {
                       the asset store.",
             kind: OpKind::Job,
             scope: Scope::Render,
-            undo: Undo::None,
+            undo: Undo::Auto,
         }
     }
 
@@ -259,7 +259,7 @@ impl Op for Compare {
                       formant ratios, loudness and brightness differences, latency.",
             kind: OpKind::Job,
             scope: Scope::Render,
-            undo: Undo::None,
+            undo: Undo::Auto,
         }
     }
 

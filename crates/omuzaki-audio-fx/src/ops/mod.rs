@@ -68,11 +68,15 @@ fn load(doc: &dyn DocRead, character: &str) -> Result<VoiceFile, OpError> {
     )
 }
 
-/// The patch that writes `file` as the character's voice file.
+/// The patch that writes `file` as the character's voice file; one with no presets removes the file.
 fn store(doc: &dyn DocRead, character: &str, file: &VoiceFile) -> Result<Patch, OpError> {
     let path = voice_path(character);
-    let after = serde_json::to_value(file).map_err(|e| OpError::internal(format!("the voice file: {e}")))?;
-    Ok(Patch { changes: vec![Change { before: doc.get(&path).cloned(), path, after: Some(after) }] })
+    let after = if file.presets.is_empty() {
+        None
+    } else {
+        Some(serde_json::to_value(file).map_err(|e| OpError::internal(format!("the voice file: {e}")))?)
+    };
+    Ok(Patch { changes: vec![Change { before: doc.get(&path).cloned(), path, after }] })
 }
 
 /// Where a preset was found.

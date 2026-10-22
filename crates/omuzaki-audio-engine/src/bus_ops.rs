@@ -18,9 +18,9 @@
 use omuzaki_audio_api::engine::AudioEngine;
 use omuzaki_audio_api::graph::{
     Bindings, BusSpec, CapturedSource, Channels, DuckRule, DuckTrigger, Egress, GRAPH_DOC_PATH, GraphSpec, MAX_GAIN_DB,
-    MicMode, SendSpec, SourceRef, egress_pairs,
+    MicMode, NodeSpec, PROGRAM_BUS, SendSpec, SourceRef, egress_pairs,
 };
-use omuzaki_audio_api::ids::{BusId, DeviceRole};
+use omuzaki_audio_api::ids::{BusId, DeviceRole, NodeId, NodeKindId};
 use omuzaki_doc_api::{Change, DocPath, DocRead, Patch, Value};
 use omuzaki_ops_api::{Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
 use schemars::JsonSchema;
@@ -266,7 +266,7 @@ impl Op for BusCreate {
             id: self.bus.clone(),
             channels: self.channels,
             sources: self.sources.clone(),
-            chain: Vec::new(),
+            chain: default_chain(&self.bus),
             gain_db: self.gain_db,
             muted: false,
             sends: self.sends.clone(),
@@ -277,6 +277,27 @@ impl Op for BusCreate {
         after.buses.push(bus);
         edit(ctx, &before, &after, Vec::new(), summary)
     }
+}
+
+/// The kind of the program bus's safety limiter (`omuzaki-audio-fx`, #921).
+pub const PROGRAM_LIMITER: &str = "fx.limiter";
+
+/// A new bus's chain: on `program`, the -1 dBTP true-peak safety limiter, on by default (ADR 0018, review answer 6),
+/// when this build has the kind; every other bus starts empty. Turn it off with `on = 0` or remove it from the chain.
+fn default_chain(bus: &BusId) -> Vec<NodeSpec> {
+    let Ok(kind) = NodeKindId::new(PROGRAM_LIMITER) else { return Vec::new() };
+    if bus.as_str() != PROGRAM_BUS || omuzaki_audio_api::node::node_kind(&kind).is_none() {
+        return Vec::new();
+    }
+    let Ok(id) = NodeId::new("limiter") else { return Vec::new() };
+    vec![NodeSpec {
+        id,
+        kind,
+        config: omuzaki_audio_api::node::NodeConfig::default(),
+        params: std::collections::BTreeMap::new(),
+        enabled: true,
+        sidechain: None,
+    }]
 }
 
 /// Remove a bus from the audio mixer, with the sends into it and the duck rules that name it.
