@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 
 use image::RgbaImage;
 use omuzaki_face::raster::SkiaRasterizer;
-use omuzaki_face_api::{Cap, DrawList, FaceRasterizer, Join, Raster};
+use omuzaki_face_api::{DrawList, FaceRasterizer, Raster};
 use omuzaki_test::compare::Tolerance;
 use omuzaki_test::regioncmp::{Rect, RegionReport, compare_region, write_side_by_side};
 use omuzaki_test_face::probes::{

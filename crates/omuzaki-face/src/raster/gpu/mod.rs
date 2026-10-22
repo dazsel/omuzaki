@@ -350,8 +350,8 @@ impl VelloRasterizer {
 
     /// Makes the next paints write GPU timestamps around their two passes into `queries`, from index `at`: the
     /// rasterisation's begin and end (`at`, `at + 1`), then the resolve's (`at + 2`, `at + 3`). For the timing probe
-    /// (`examples/gpu_face_timing.rs`), which needs `wgpu::Features::TIMESTAMP_QUERY`; `None` stops it. A paint that
-    /// draws nothing writes none.
+    /// (`omuzaki-test-face`'s `gpu_face_timing` example), which needs `wgpu::Features::TIMESTAMP_QUERY`; `None` stops
+    /// it. A paint that draws nothing writes none.
     pub fn time_passes(&mut self, queries: Option<(wgpu::QuerySet, u32)>) {
         self.pass_timestamps = queries;
     }

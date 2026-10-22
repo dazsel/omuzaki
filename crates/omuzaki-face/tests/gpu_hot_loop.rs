@@ -4,7 +4,7 @@
 //! repaint, for a mouth-only change and for a change of the whole face. Also: no wgpu validation error over 100
 //! repaints, and the repaint time (CPU encode and record, the submit, GPU raster and resolve, waited for) over 1,000
 //! warmed repaints of each. Lavapipe is a software adapter, so the times are not a GPU timing (decision 7.3); the GPU
-//! timing is `examples/gpu_face_timing.rs`. Without an adapter the tests print why and pass.
+//! timing is `omuzaki-test-face`'s `gpu_face_timing` example. Without an adapter the tests print why and pass.
 
 // The GPU rasteriser exists on native targets only (#2207).
 #![cfg(not(target_arch = "wasm32"))]
