@@ -161,7 +161,9 @@ pub fn for_agent(core: &AppCore, name: &str, session: &Session) -> Result<Branch
     }
     let branches = core.branches();
     let taken: Vec<String> = branches.list().into_iter().map(|b| b.name.to_string()).collect();
-    let free = (1..).map(|n| format!("agent/session-{n}")).find(|n| !taken.contains(n)).unwrap_or_default();
+    // One of the first `taken.len() + 1` names is always free.
+    let free =
+        (1..=taken.len() + 1).map(|n| format!("agent/session-{n}")).find(|n| !taken.contains(n)).unwrap_or_default();
     let new = NewBranch::new(self::name(&free)?, branches.folder()).with_title("An agent's session");
     branches.create(new, &session.actor).map_err(branch_error)
 }

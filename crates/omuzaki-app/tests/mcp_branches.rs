@@ -64,7 +64,7 @@ fn connect(core: &AppCore, server: McpServer, name: &'static str) -> RunningServ
 }
 
 fn call(core: &AppCore, client: &RunningService<RoleClient, Client>, tool: &str, args: Value) -> CallToolResult {
-    let args = args.as_object().unwrap().clone();
+    let Value::Object(args) = args else { panic!("{tool}: the arguments are an object") };
     core.runtime()
         .block_on(client.call_tool(CallToolRequestParams::new(tool.to_owned()).with_arguments(args)))
         .expect("the call")

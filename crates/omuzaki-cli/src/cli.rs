@@ -368,9 +368,12 @@ mod tests {
             parse(&["mcp", "--grant", "perform,broadcast", "--tools", "all"]).command,
             Command::Mcp(McpArgs {
                 grant: vec![omuzaki_ops_api::Scope::Perform, omuzaki_ops_api::Scope::Broadcast],
-                tools: ToolList::All
+                tools: ToolList::All,
+                branch: None,
             })
         );
+        let Command::Mcp(args) = parse(&["mcp", "--branch", "new"]).command else { panic!("mcp") };
+        assert_eq!(args.branch.as_deref(), Some("new"));
         assert!(try_parse_from(["omuzaki", "mcp", "--grant", "fly"]).is_err());
         assert_eq!(parse(&["registrations"]).command, Command::Registrations);
         assert_eq!(
