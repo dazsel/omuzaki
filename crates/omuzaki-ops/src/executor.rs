@@ -308,7 +308,7 @@ impl Executor {
     /// with the history. Without it nothing is journalled and every edit is admitted.
     #[must_use]
     pub fn with_journal(self, journal: Arc<dyn JournalSink>) -> Self {
-        self.rewired(|env, _| lock(&env.state).set_journal(Journal::new(journal)))
+        self.rewired(|env, _| lock(&env.state).set_journal(Journal::new(journal), env.clock.clone()))
     }
 
     /// The same executor, keeping at most `limits.undo_depth` steps per actor and `limits.log_records` records in

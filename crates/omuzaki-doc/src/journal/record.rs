@@ -7,12 +7,15 @@
 //! Kinds 12 to 14 (`job_started`, `job_ended`, `tx_revert`) are not in the 4.4 table yet. The Runtime lead approved them
 //! on #253 as required kinds, not skippable: replay must apply a `TxRevert`, so a reader that doesn't know them stops
 //! with `TooNew` instead of skipping them.
+//!
+//! Kind 11, the audit record (#1058), is the one kind written [`SKIPPABLE`]: replay never needs it, so a reader that
+//! predates it reads past it and replays the rest the same.
 
 use omuzaki_core::time::Seconds;
 use omuzaki_history_api::{HistoryEntry, Lsn, SnapshotId, WallTime};
 use serde::{Deserialize, Serialize};
 
-use super::{FORMAT_VERSION, Frame, JournalError, write_frame};
+use super::{FORMAT_VERSION, Frame, JournalError, SKIPPABLE, write_frame};
 
 /// The record kinds (4.4).
 pub mod kind {
@@ -132,6 +135,7 @@ fn entry_kind(entry: &HistoryEntry) -> Option<u8> {
         HistoryEntry::JobStarted { .. } => kind::JOB_STARTED,
         HistoryEntry::JobEnded { .. } => kind::JOB_ENDED,
         HistoryEntry::TxRevert { .. } => kind::TX_REVERT,
+        HistoryEntry::Audit { .. } => kind::AUDIT,
         HistoryEntry::Session { .. } | HistoryEntry::Mark { .. } => return None,
     })
 }
@@ -139,7 +143,9 @@ fn entry_kind(entry: &HistoryEntry) -> Option<u8> {
 /// The runner-clock time an entry carries, which JSON would write as `null` if it were not finite.
 fn entry_time(entry: &HistoryEntry) -> Option<Seconds> {
     match entry {
-        HistoryEntry::Begin { at, .. } | HistoryEntry::JobStarted { at, .. } => Some(*at),
+        HistoryEntry::Begin { at, .. } | HistoryEntry::JobStarted { at, .. } | HistoryEntry::Audit { at, .. } => {
+            Some(*at)
+        }
         HistoryEntry::Op { record, .. } => Some(record.at),
         _ => None,
     }
@@ -202,7 +208,7 @@ fn payload_of(lsn: Lsn, record: &Record) -> Result<(u8, Vec<u8>), JournalError> 
     if depth > MAX_DEPTH {
         return Err(unencodable(format!("the payload nests {depth} levels deep, over the {MAX_DEPTH} level cap")));
     }
-    let frame = Frame { lsn, kind: k, flags: 0, payload: &payload };
+    let frame = Frame { lsn, kind: k, flags: flags_of(k), payload: &payload };
     match decode(&frame) {
         Ok(Some(back)) if back == *record => Ok((k, payload)),
         Ok(_) => Err(unencodable("the payload doesn't read back as the same record".to_string())),
@@ -210,8 +216,14 @@ fn payload_of(lsn: Lsn, record: &Record) -> Result<(u8, Vec<u8>), JournalError> 
     }
 }
 
-/// Appends `records` as frames, in order (no segment header; the writer writes that). The flags are 0 for every kind
-/// written here.
+/// The flags a record of kind `k` is written with: [`SKIPPABLE`] for the audit record, which replay never needs,
+/// and 0 for every other kind.
+fn flags_of(k: u8) -> u8 {
+    if k == kind::AUDIT { SKIPPABLE } else { 0 }
+}
+
+/// Appends `records` as frames, in order (no segment header; the writer writes that), each with [`flags_of`] its
+/// kind.
 ///
 /// # Errors
 /// [`JournalError::Unencodable`] for a `Mark` or `HistoryEntry::Session` entry, a non-finite runner-clock time
@@ -222,7 +234,7 @@ pub fn encode(records: &[(Lsn, Record)], out: &mut Vec<u8>) -> Result<(), Journa
     let start = out.len();
     let result = records.iter().try_for_each(|(lsn, record)| {
         let (kind, payload) = payload_of(*lsn, record)?;
-        write_frame(*lsn, kind, 0, &payload, out)
+        write_frame(*lsn, kind, flags_of(kind), &payload, out)
     });
     if result.is_err() {
         out.truncate(start);
@@ -230,8 +242,7 @@ pub fn encode(records: &[(Lsn, Record)], out: &mut Vec<u8>) -> Result<(), Journa
     result
 }
 
-/// The record a frame holds; `Ok(None)` for an unknown kind flagged skippable, and for kind 11 (the audit record, which
-/// is skippable until #1058 decodes it).
+/// The record a frame holds; `Ok(None)` for an unknown kind flagged skippable.
 ///
 /// # Errors
 /// [`JournalError::TooNew`] with `kind: Some(k)` for an unknown kind that isn't skippable (the reserved kind 10
@@ -264,7 +275,14 @@ pub fn decode(frame: &Frame<'_>) -> Result<Option<Record>, JournalError> {
             }
             Ok(Some(Record::Entry(entry)))
         }
-        kind::AUDIT => Ok(None),
+        // An audit record this build can't read (a fact a later build added) is skipped like an unknown kind: replay
+        // never needs one. Only a flagged one: an unflagged kind 11 frame is no record this format writes.
+        kind::AUDIT => match serde_json::from_slice::<HistoryEntry>(frame.payload) {
+            Ok(entry @ HistoryEntry::Audit { .. }) => Ok(Some(Record::Entry(entry))),
+            _ if frame.skippable() => Ok(None),
+            Ok(_) => Err(bad("the entry tag disagrees with the record kind".to_string())),
+            Err(e) => Err(bad(e.to_string())),
+        },
         _ if frame.skippable() => Ok(None),
         unknown => Err(JournalError::TooNew { version: FORMAT_VERSION, kind: Some(unknown) }),
     }

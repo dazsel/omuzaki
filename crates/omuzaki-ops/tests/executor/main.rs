@@ -9,6 +9,7 @@ mod adversarial;
 mod approvals;
 mod approvals_script;
 mod asks;
+mod audit;
 mod budget;
 mod caps;
 mod effects;

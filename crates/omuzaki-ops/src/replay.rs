@@ -90,6 +90,7 @@ impl Executor {
         match entry {
             HistoryEntry::Session { .. }
             | HistoryEntry::Mark { .. }
+            | HistoryEntry::Audit { .. }
             | HistoryEntry::JobStarted { .. }
             | HistoryEntry::JobEnded { .. } => Ok(()),
             HistoryEntry::Begin { tx, actor, label, .. } => {

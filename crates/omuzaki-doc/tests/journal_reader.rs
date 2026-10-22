@@ -308,7 +308,9 @@ fn an_unknown_skippable_kind_is_skipped_but_counts_in_the_sequence() {
     let mut bytes = segment(1, &commits(1, 1));
     write_frame(Lsn(2), 200, SKIPPABLE, b"{}", &mut bytes).unwrap();
     encode(&commits(3, 3), &mut bytes).unwrap();
-    write_frame(Lsn(4), kind::AUDIT, SKIPPABLE, b"{}", &mut bytes).unwrap();
+    // An audit record this build can't read, as a fact a later build adds would be: skipped too.
+    write_frame(Lsn(4), kind::AUDIT, SKIPPABLE, br#"{"entry":"audit","at":1.0,"fact":{"fact":"later"}}"#, &mut bytes)
+        .unwrap();
     put(dir.path(), 1, &bytes);
     let scan = Reader::scan(dir.path(), Lsn(0)).unwrap();
     assert_eq!((lsns(&scan), scan.end), (vec![1, 3], End::Clean));

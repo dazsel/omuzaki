@@ -11,6 +11,7 @@
 //! next to the code that writes them.
 #![deny(missing_docs)]
 
+mod audit;
 mod derived;
 mod entry;
 mod export;
@@ -18,6 +19,7 @@ mod sink;
 mod snapshot;
 mod wall;
 
+pub use audit::{AUDIT_TEXT_MAX, AuditDecision, AuditFact, CUT_MARKER, cut_text};
 pub use derived::{DerivedPath, derived_paths, is_derived, matches_glob};
 pub use entry::{HistoryEntry, Lsn, Stack};
 pub use export::{ActorHistory, HISTORY_EXPORT_FORMAT, HistoryExport, OpenTxExport, StepExport};

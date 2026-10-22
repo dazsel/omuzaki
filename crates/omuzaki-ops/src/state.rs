@@ -13,9 +13,9 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
-use omuzaki_core::time::Seconds;
+use omuzaki_core::time::{Clock, Seconds};
 use omuzaki_doc_api::{DocPath, DocRead, DocVersion, DocWrite, Patch, PatchError, Value};
-use omuzaki_history_api::{HISTORY_EXPORT_FORMAT, HistoryEntry, HistoryExport, Stack, WallClock, WallTime};
+use omuzaki_history_api::{AuditFact, HISTORY_EXPORT_FORMAT, HistoryEntry, HistoryExport, Stack, WallClock, WallTime};
 use omuzaki_ops_api::{
     Actor, ApprovalRef, Cause, Effect, Event, JobId, OpError, OpRecord, RevertConflict, Scope, SessionId, SessionInfo,
     SessionTx, StopStep, TxId, Undo, checks,
@@ -76,6 +76,8 @@ pub(crate) struct State {
     /// Who last changed each path: the stale-write guard and the names in conflict messages.
     pub(crate) changes: Index,
     pub(crate) journal: Journal,
+    /// The runner's clock, which stamps audit facts; set with the journal.
+    audit_clock: Option<Arc<dyn Clock>>,
     wall: Option<Arc<dyn WallClock>>,
     /// Why the newest refused `begin`s were refused, by the id each handed back.
     refused_begins: VecDeque<(TxId, OpError)>,
@@ -100,6 +102,7 @@ impl State {
             approvals: Queue::new(),
             changes: Index::default(),
             journal: Journal::default(),
+            audit_clock: None,
             wall: None,
             refused_begins: VecDeque::new(),
         }
@@ -110,8 +113,9 @@ impl State {
         self.histories.set_depth(limits.undo_depth);
     }
 
-    pub(crate) fn set_journal(&mut self, journal: Journal) {
+    pub(crate) fn set_journal(&mut self, journal: Journal, clock: Arc<dyn Clock>) {
         self.journal = journal;
+        self.audit_clock = Some(clock);
     }
 
     pub(crate) fn set_wall(&mut self, wall: Arc<dyn WallClock>) {
@@ -147,8 +151,16 @@ impl State {
         self.outbox.truncate(kept);
     }
 
-    /// Queues an event that no edit produced (a job changed state), behind everything queued so far.
+    /// Queues an event that no edit produced (a job changed state), behind everything queued so far. A session or
+    /// approval event's audit fact goes to the journal now, in the same lock hold, so journal order is the order of
+    /// effect (#1059).
     pub(crate) fn queue_event(&mut self, event: Event) {
+        if self.journal.on()
+            && let Some(fact) = AuditFact::from_event(&event)
+        {
+            let at = self.audit_clock.as_ref().map_or(Seconds(0.0), |clock| clock.now());
+            self.journal.append(|| HistoryEntry::Audit { at, fact: Arc::new(fact) });
+        }
         self.outbox.push(event);
     }
 
