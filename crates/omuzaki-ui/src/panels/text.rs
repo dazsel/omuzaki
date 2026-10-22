@@ -18,6 +18,14 @@ pub const FILTER: &str = "Filter parts";
 pub const NO_CHARACTER: &str = "No character is open";
 /// What to do about it.
 pub const OPEN_CHARACTER: &str = "Open or create a character to see its parts.";
+/// The viewport with no character open (`shell.md` section 13, "No project open").
+pub const VIEWPORT_EMPTY: &str = "Start with a character";
+/// What to do about it.
+pub const VIEWPORT_EMPTY_HOW: &str = "Open a project that has a character, or create one.";
+/// The inspector with no character open (`shell.md` section 13).
+pub const INSPECTOR_EMPTY: &str = "Select a part to edit it";
+/// Why it can't yet.
+pub const INSPECTOR_EMPTY_HOW: &str = "Its settings appear here once a character is open.";
 /// A character with no parts.
 pub const NO_PARTS: &str = "This character has no parts yet";
 /// What to do about it.

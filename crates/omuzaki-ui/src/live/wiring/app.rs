@@ -25,7 +25,7 @@ use crate::aux_window::{PhysicalSize, Transparency};
 use crate::live::hotkeys::Hotkeys;
 use crate::live::viewport::{LiveViewport, Presenter, SharedTracker, ViewportError};
 use crate::output_window::{OutputHost, OutputPlan, OutputWindow, Program};
-use crate::wiring::{self, ExecutorError};
+use crate::wiring::{self, Core, Document, ExecutorError};
 
 /// Why the live slice did not start.
 #[derive(Debug)]
@@ -63,7 +63,7 @@ impl std::error::Error for StartError {
 pub struct LiveApp {
     rig: Option<LiveRig>,
     reader: Option<FrameReader>,
-    runner: Arc<dyn Runner>,
+    core: Core,
     output: OutputWindow,
     host: OutputHost,
     clock: Option<ClockObserver>,
@@ -89,6 +89,20 @@ impl LiveApp {
         transparency: Transparency,
         base: HumanoidPose,
     ) -> Result<Self, StartError> {
+        Self::start_on(Document::empty(), tracker, clock, transparency, base)
+    }
+
+    /// [`start`](Self::start), with the runner over `document` (the open project) instead of an empty one.
+    ///
+    /// # Errors
+    /// [`StartError`]; nothing is left running then.
+    pub fn start_on(
+        document: Document,
+        tracker: Box<dyn Tracker>,
+        clock: Box<dyn PerformClock>,
+        transparency: Transparency,
+        base: HumanoidPose,
+    ) -> Result<Self, StartError> {
         let performer = live_performer(Box::new(NoSource), ChannelBuf::NEUTRAL, base);
         // The viewport reads the tracker's latency while the input owns the tracker: two handles to one.
         let tracker = SharedTracker::new(tracker);
@@ -104,11 +118,11 @@ impl LiveApp {
             .insert::<dyn InputHost>(input)
             .insert::<dyn WindowHost>(Arc::new(window.clone()))
             .build();
-        let runner = wiring::runner(services).map_err(StartError::Ops)?;
+        let core = wiring::core_on(document, services).map_err(StartError::Ops)?;
         Ok(Self {
             rig: Some(rig),
             reader: Some(reader),
-            runner,
+            core,
             output: OutputWindow::new(OutputPlan::default(), transparency),
             host: window,
             clock: observer,
@@ -149,7 +163,12 @@ impl LiveApp {
 
     /// The runner the shell and the panels call.
     pub fn runner(&self) -> Arc<dyn Runner> {
-        Arc::clone(&self.runner)
+        Arc::clone(&self.core.runner)
+    }
+
+    /// The app's executor: the runner, and the agent sessions on it.
+    pub fn core(&self) -> Core {
+        self.core.clone()
     }
 
     /// The rig: the input and the loop's counts. `None` after [`shutdown`](Self::shutdown).
@@ -198,7 +217,7 @@ impl LiveApp {
     /// frame, after the shell has drawn: the Live panel's key capture and a focused text field take their keys from the
     /// input first, so a key that binds or types never also fires.
     pub fn keys(&mut self, ctx: &Context) {
-        self.hotkeys.dispatch(ctx, &*self.runner, &Actor::Person { name: "you".to_owned() });
+        self.hotkeys.dispatch(ctx, &*self.core.runner, &Actor::Person { name: "you".to_owned() });
     }
 
     /// [`show`](Self::show) with the program frame given: for a caller that renders elsewhere (the output window's

@@ -144,8 +144,7 @@ fn at_1920_by_1080_every_region_is_there_with_agent_and_history_as_their_own_gro
         assert_shows(&harness, label);
     }
     // The shown tab of each group says what its panel is for; the others are tabs.
-    for headline in ["Pick a part to edit it", "Start with a character", "Select a part to edit it", "Connect an agent"]
-    {
+    for headline in ["No character is open", "Start with a character", "Select a part to edit it", "Connect an agent"] {
         assert_shows(&harness, headline);
     }
     for tab in ["Outliner", "Library", "Viewport", "Inspector", "Agent", "History"] {
@@ -169,13 +168,13 @@ fn at_1366_by_768_agent_and_history_join_the_inspector_group_and_tabs_become_ico
 #[test]
 fn at_the_smallest_window_the_left_dock_is_a_rail_whose_button_opens_a_drawer() {
     let mut harness = plain(vec2(1280.0, 720.0));
-    assert!(!shows(&harness, "Pick a part to edit it"), "the Outliner is not docked");
+    assert!(!shows(&harness, "No character is open"), "the Outliner is not docked");
     harness.get_by_label("Show Outliner").click();
     harness.run_steps(3);
-    assert_shows(&harness, "Pick a part to edit it");
+    assert_shows(&harness, "No character is open");
     press(&mut harness, Modifiers::NONE, Key::Escape);
     harness.run_steps(3);
-    assert!(!shows(&harness, "Pick a part to edit it"), "Esc closes the drawer");
+    assert!(!shows(&harness, "No character is open"), "Esc closes the drawer");
 }
 
 /// The rail's buttons, which are one per left-dock panel the rail stands for.
@@ -297,7 +296,7 @@ fn a_layout_file_written_by_the_first_shell_still_loads_through_the_registry() {
     let Node::Split { children, shares, .. } = &shown.root else { panic!("the root is a split") };
     assert_eq!(shares, &[360.0, 1200.0, 300.0]);
     assert_eq!(children[2], Node::pane("outliner"));
-    assert_shows(&harness, "Pick a part to edit it");
+    assert_shows(&harness, "No character is open");
     assert_shows(&harness, "Select a part to edit it");
 }
 
@@ -349,7 +348,7 @@ fn the_numbered_keys_switch_workspaces_and_each_keeps_its_own_layout() {
     assert_eq!(harness.state().active_workspace(), Some("build"));
     press(&mut harness, Modifiers::COMMAND, Key::Num2);
     assert_eq!(harness.state().active_workspace(), Some("probe"));
-    assert!(!shows(&harness, "Pick a part to edit it"), "Probe has no Outliner");
+    assert!(!shows(&harness, "No character is open"), "Probe has no Outliner");
     press(&mut harness, Modifiers::COMMAND, Key::Num9);
     assert_eq!(harness.state().active_workspace(), Some("probe"), "there is no ninth tab");
     press(&mut harness, Modifiers::COMMAND, Key::Num1);
@@ -386,7 +385,7 @@ fn lock_maximise_and_panel_cycling_keys_change_what_they_say() {
     press(&mut harness, Modifiers::COMMAND, Key::Space);
     harness.run_steps(2);
     assert!(!shows(&harness, "Start with a character"), "only the focused panel (the Outliner) is shown");
-    assert_shows(&harness, "Pick a part to edit it");
+    assert_shows(&harness, "No character is open");
     press(&mut harness, Modifiers::NONE, Key::Escape);
     harness.run_steps(2);
     assert_shows(&harness, "Start with a character");
@@ -451,7 +450,7 @@ fn focus_follows_tab_presses_workspace_switches_and_f6_which_shows_the_panel_it_
     harness.run_steps(2);
     assert_eq!(harness.state().focused_panel(), Some("library"));
     assert_shows(&harness, "The library is empty");
-    assert!(!shows(&harness, "Pick a part to edit it"), "the Outliner tab went to the back");
+    assert!(!shows(&harness, "No character is open"), "the Outliner tab went to the back");
 }
 
 #[test]

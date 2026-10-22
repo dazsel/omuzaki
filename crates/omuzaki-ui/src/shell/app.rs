@@ -27,6 +27,7 @@ use super::dock::{self, Dock};
 use super::host::Bodies;
 use super::keys::{self, Action};
 use super::layout::{Known, Layout, PanelId};
+use super::palette::{Command, Palette, Place, PlaceTarget};
 use super::panels::HistoryLog;
 use super::persist::LayoutStore;
 use super::registry;
@@ -36,6 +37,7 @@ use crate::ds::theme::ds;
 use crate::ds::tokens::ThemeKind;
 use crate::ds::widgets::{Button, TabBar, TabItem, Tip, TipExt as _};
 use crate::ds::{a11y, icons};
+use crate::panels::edit::EditFocus;
 
 const MENU_ICON: &str = egui_phosphor::regular::LIST;
 /// How many op-log records the History panel keeps (the newest), and how many it asks the runner for at a time.
@@ -154,6 +156,7 @@ pub struct Shell {
     focus: Option<String>,
     drawer: Option<String>,
     note: Note,
+    palette: Palette,
 }
 
 impl Shell {
@@ -202,9 +205,17 @@ impl Shell {
             focus: None,
             drawer: None,
             note: Note::Nothing,
+            palette: Palette::default(),
         };
         shell.refresh_history();
         shell
+    }
+
+    /// Shares `value` with every panel as a view model ([`PanelCtx::view`]), replacing one of the same type. Panels
+    /// built later read it when they are built; the app shares what its panels need (the open character, the GPU)
+    /// before the first frame.
+    pub fn insert_view<T: std::any::Any>(&mut self, value: T) {
+        self.models.insert(value);
     }
 
     /// What the shell found registered at startup, in the order it shows it: workspaces by group, then order, then id;
@@ -249,6 +260,10 @@ impl Shell {
         self.window = ctx.content_rect().size();
         self.room = ui.available_width();
         self.pump_events(&ctx);
+        // Ctrl+K works from anywhere, a text field included: it is how a person reaches every op.
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::K)) {
+            self.toggle_palette(&ctx);
+        }
         if let Some(action) = keys::resolve(&ctx) {
             self.act(action);
         }
@@ -263,7 +278,40 @@ impl Shell {
             self.rail(ui);
         }
         CentralPanel::default().frame(Frame::new().fill(ds(&ctx).theme.bg1)).show(ui, |ui| self.body(ui));
+        self.palette_ui(&ctx);
         self.save_if_edited(&ctx);
+    }
+
+    /// Whether the command palette is open.
+    pub const fn palette_open(&self) -> bool {
+        self.palette.is_open()
+    }
+
+    /// Opens the command palette, or closes it when it is open.
+    fn toggle_palette(&mut self, ctx: &Context) {
+        if self.palette.is_open() {
+            self.palette.close();
+            return;
+        }
+        let mut places: Vec<Place> = self
+            .workspaces
+            .iter()
+            .enumerate()
+            .map(|(n, w)| Place { target: PlaceTarget::Workspace(n), title: w.title })
+            .collect();
+        places
+            .extend(self.registry.panels().iter().map(|p| Place { target: PlaceTarget::Panel(p.id), title: p.title }));
+        self.palette.open(self.runner.as_ref(), &places, ctx);
+    }
+
+    /// Draws the palette over everything, and does what it chose.
+    fn palette_ui(&mut self, ctx: &Context) {
+        let focus = self.models.get::<EditFocus>().cloned();
+        match self.palette.ui(ctx, self.runner.as_ref(), &self.actor, focus.as_ref()) {
+            Some(Command::ShowPanel(id)) => self.show_panel(id),
+            Some(Command::Workspace(n)) => self.select(n),
+            None => {}
+        }
     }
 
     /// Takes what the runner sent since the last frame, once per egui frame: egui may run `ui` again in the same frame
@@ -281,6 +329,25 @@ impl Shell {
         if let Ok(mut inbox) = self.inbox.lock() {
             self.frame_events.append(&mut inbox);
         }
+        self.follow_log();
+    }
+
+    /// Keeps History's copy of the op log current from this frame's events, so an agent's op over MCP shows up at
+    /// once: an applied op is appended from its event (no read of the log), and a rollback, which takes records back
+    /// out, reads the log again.
+    fn follow_log(&mut self) {
+        if self.frame_events.iter().any(|e| matches!(e, Event::TxRolledBack { .. })) {
+            return self.refresh_history();
+        }
+        let applied = self.frame_events.iter().filter_map(|e| match e {
+            Event::OpApplied { record, .. } => Some(record),
+            _ => None,
+        });
+        let Some(log) = self.models.get_mut::<HistoryLog>() else { return };
+        let last = log.records.last().map_or(0, |r| r.seq);
+        log.records.extend(applied.filter(|r| r.seq > last).cloned());
+        let over = log.records.len().saturating_sub(HISTORY_PAGE);
+        log.records.drain(..over);
     }
 
     fn act(&mut self, action: Action) {
@@ -322,8 +389,7 @@ impl Shell {
         self.refresh_history();
     }
 
-    /// Reads the op log again. It changes only when the person undoes or redoes here; live updates from agents arrive
-    /// with the History panel's own task.
+    /// Reads the op log again: after an undo or redo here, and when the runner says the log changed.
     fn refresh_history(&mut self) {
         let log = match newest_records(self.runner.as_ref(), HISTORY_PAGE) {
             Ok(records) => HistoryLog { records, error: None },
@@ -591,8 +657,10 @@ impl Shell {
                     }
                     ui.label(RichText::new(icons::ROBOT).font(ds.text.icon(16.0, false)).color(ds.theme.text2));
                     ui.label(RichText::new(say(&ctx, Word::AgentChip, &[])).color(ds.theme.text2));
-                    let (search, off) = (say(&ctx, Word::SearchOrRun, &[]), say(&ctx, Word::SearchOff, &[]));
-                    ui.add(Button::new(&search).icon(icons::MAGNIFYING_GLASS).shortcut_hint("Ctrl K").disabled(&off));
+                    let search = say(&ctx, Word::SearchOrRun, &[]);
+                    if ui.add(Button::new(&search).icon(icons::MAGNIFYING_GLASS).shortcut_hint("Ctrl K")).clicked() {
+                        self.toggle_palette(&ctx);
+                    }
                 });
             });
         });

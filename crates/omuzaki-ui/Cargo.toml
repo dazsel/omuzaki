@@ -31,6 +31,7 @@ omuzaki-anim-api = { path = "../omuzaki-anim-api" }
 omuzaki-char = { path = "../omuzaki-char" }
 omuzaki-char-api = { path = "../omuzaki-char-api" }
 omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-doc = { path = "../omuzaki-doc" }
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 omuzaki-face-api = { path = "../omuzaki-face-api" }
 omuzaki-l10n-api = { path = "../omuzaki-l10n-api" }
@@ -45,6 +46,7 @@ omuzaki-stream-api = { path = "../omuzaki-stream-api" }
 omuzaki-track-api = { path = "../omuzaki-track-api" }
 omuzaki-ui-api = { path = "../omuzaki-ui-api" }
 tracing.workspace = true
+tracing-subscriber.workspace = true
 wgpu.workspace = true
 
 # Unix only: signal a probe's whole process group when it ends
@@ -62,7 +64,6 @@ omuzaki-render-mock = { path = "../omuzaki-render-mock" }
 omuzaki-track-mock = { path = "../omuzaki-track-mock" }
 omuzaki-ui-mock = { path = "../omuzaki-ui-mock" }
 tempfile.workspace = true
-tracing-subscriber.workspace = true
 
 [lints]
 workspace = true

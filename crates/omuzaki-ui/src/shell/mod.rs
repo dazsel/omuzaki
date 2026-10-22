@@ -23,6 +23,7 @@ pub mod dock;
 pub mod host;
 pub mod keys;
 pub mod layout;
+pub mod palette;
 pub mod panels;
 pub mod persist;
 pub mod registry;
