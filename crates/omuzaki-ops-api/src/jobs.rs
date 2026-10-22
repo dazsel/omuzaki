@@ -6,7 +6,6 @@
 //! returns the [`Plan`](crate::Plan) the executor applies, so the document changes once, at finish.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use omuzaki_core::time::Seconds;
@@ -240,48 +239,9 @@ pub trait JobDoc: Send + Sync {
     fn read(&self, f: &mut dyn FnMut(&dyn DocRead));
 }
 
-/// A cancel handle that work polls. Cancellation is cooperative: the owner flips it, the work notices.
-///
-/// The same shape as `omuzaki-http-api`'s, until `omuzaki_core::cancel` becomes the one home: these three items
-/// then turn into `pub use omuzaki_core::cancel::{Cancel, CancelFlag, NeverCancel}`, so the paths stay valid.
-pub trait Cancel: Send + Sync {
-    /// True once the work this handle guards should stop.
-    fn is_cancelled(&self) -> bool;
-}
-
-/// A handle that is never cancelled, for callers with nothing to stop.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct NeverCancel;
-
-impl Cancel for NeverCancel {
-    fn is_cancelled(&self) -> bool {
-        false
-    }
-}
-
-/// A settable flag. Clones share the one flag, so a job keeps a clone after the borrow of its [`JobCtx`] ends (a
-/// streaming body can still be cancelled).
-#[derive(Clone, Debug, Default)]
-pub struct CancelFlag(Arc<AtomicBool>);
-
-impl CancelFlag {
-    /// A flag that is not cancelled.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Cancel: every clone of this flag now reads true. It cannot be undone.
-    pub fn cancel(&self) {
-        self.0.store(true, Ordering::Release);
-    }
-}
-
-impl Cancel for CancelFlag {
-    fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::Acquire)
-    }
-}
+/// The cooperative cancel handle, the never-cancelled handle and the settable flag a job's work polls, defined once in
+/// [`omuzaki_core::cancel`]: a job's [`CancelFlag`] is the one an HTTP transport or a script run takes.
+pub use omuzaki_core::cancel::{Cancel, CancelFlag, NeverCancel};
 
 /// What the executor lets a running job report and ask.
 pub trait JobSignal: Send + Sync {
