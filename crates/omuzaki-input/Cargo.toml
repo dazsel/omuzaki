@@ -33,6 +33,11 @@ evdev.workspace = true
 rustix = { workspace = true, features = ["event"] }
 x11rb.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-foundation.workspace = true
+objc2-core-graphics.workspace = true
+objc2-io-kit.workspace = true
+
 # The build script declares the feature modules from their folders (ADR 0054 §1), so a backend is a folder.
 [build-dependencies]
 omuzaki-embed = { path = "../omuzaki-embed" }

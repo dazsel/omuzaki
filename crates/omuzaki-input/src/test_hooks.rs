@@ -179,6 +179,13 @@ impl Hub {
             .map(|t| (probe, t))
     }
 
+    /// Runs the macOS event tap backend's capture loop on `backend`.
+    #[cfg(target_os = "macos")]
+    pub fn run_event_tap(&self, backend: usize) -> Option<JoinHandle<()>> {
+        let shared = Arc::clone(&self.core.shared);
+        spawn_capture(shared, backend, "event-tap", crate::macos::tap::run)
+    }
+
     /// Fails backend `backend` as a panic on its thread would.
     pub fn fail_backend(&self, backend: usize) {
         self.core.fail_backend(backend);

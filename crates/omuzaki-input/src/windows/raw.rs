@@ -28,7 +28,7 @@ use crate::hub::{Chosen, InputBackend, register_input_backend};
 use crate::normalise::RawSink;
 
 const RAW_INPUT: InputBackend = InputBackend {
-    name: "windows.raw-input",
+    name: "windows.raw_input",
     classes: DeviceMask::NONE.with(DeviceClass::Keyboard).with(DeviceClass::Mouse),
     caps,
     run: Some(run),

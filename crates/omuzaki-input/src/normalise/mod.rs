@@ -14,6 +14,8 @@
 
 #[cfg(target_os = "linux")]
 pub(crate) mod linux_codes;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code, reason = "only the macOS backend reads key codes; its tests run everywhere"))]
+pub(crate) mod macos_codes;
 #[cfg_attr(not(windows), allow(dead_code, reason = "only the Windows backend reads scan codes; its tests run everywhere"))]
 pub(crate) mod windows_codes;
 pub(crate) mod zone_map;

@@ -97,6 +97,7 @@ x11rb = { version = "0.13", features = ["xinput"] }   # XInput2 raw events on Li
 evdev = "0.13"   # the opt-in evdev capture on Linux (Apache-2.0 OR MIT)
 objc2 = "0.6"   # macOS runtime bindings (MIT)
 objc2-core-graphics = "0.3"   # the listen-only CGEventTap on macOS (Zlib OR Apache-2.0 OR MIT)
+objc2-core-foundation = "0.3"   # the tap's run loop and Mach port on macOS (Zlib OR Apache-2.0 OR MIT)
 objc2-game-controller = "0.3"   # GameController pads with background events on macOS (Zlib OR Apache-2.0 OR MIT)
 objc2-io-kit = "0.3"   # the Input Monitoring check and the IOHID fallback on macOS (Zlib OR Apache-2.0 OR MIT)
 ashpd = { version = "0.13", default-features = false, features = ["tokio", "global_shortcuts"] }   # the GlobalShortcuts portal for bindings on Wayland (MIT)
