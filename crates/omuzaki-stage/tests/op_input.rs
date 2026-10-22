@@ -93,6 +93,7 @@ fn every_op_declares_its_kind_scope_and_undo() {
         ("input.calibration", OpKind::Query, Scope::Read, Undo::None),
         ("input.health", OpKind::Query, Scope::Read, Undo::None),
         ("input.vmc_out", OpKind::Edit, Scope::Perform, Undo::Explicit),
+        ("input.gestures", OpKind::Query, Scope::Read, Undo::None),
     ];
     for (name, kind, scope, undo) in cases {
         let meta = (find(name).expect("registered").meta)();
@@ -131,6 +132,7 @@ fn an_agent_is_refused_the_device_ops_and_queued_for_the_capture_ops() {
         ("input.calibrate", json!({ "cancel": true }), None, None),
         ("input.vmc_out", json!({ "to": "127.0.0.1:39539" }), Some("needs_person"), None),
         ("input.vmc_out", json!({ "to": null }), None, None),
+        ("input.gestures", json!({}), None, None),
     ];
     for (op, args, as_agent, as_person) in table {
         for dry_run in [true, false] {
@@ -550,4 +552,16 @@ fn vmc_out_sends_each_performed_step_to_a_receiver_and_its_undo_stops_it() {
 
     rig.run("input.vmc_out", effect.undo.args).unwrap();
     assert_eq!(rig.input.pose_out().target, None);
+}
+
+#[test]
+fn gestures_list_their_keys_and_none_shows_before_a_capture() {
+    let rig = Rig::new(false);
+    let answer = rig.output("input.gestures", json!({}));
+    let rows = answer["gestures"].as_array().unwrap();
+    assert_eq!(rows.len(), 5);
+    assert_eq!(
+        rows[0],
+        json!({ "gesture": "tongue_out", "key": "gesture:tongue_out", "expression": null, "active": false })
+    );
 }

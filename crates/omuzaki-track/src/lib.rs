@@ -18,6 +18,7 @@
 //! | [`models`] | [`models::ModelDir`]: the verified model folder and its three loaded graphs |
 //! | [`provision`] | the app's face tracker: the shipped model folder through the runtime it is made for |
 //! | [`task`] | the official `face_landmarker.task`, pinned, unpacked into a TFLite model folder |
+//! | [`gesture`] | face gestures (tongue out, a wink, puffed cheeks, a wide mouth) that press trigger keys (PF-25) |
 //! | [`doctor`] | the tracking doctor's image readings (light, backlight, glare, the frame edge) over track-api's `Doctor` |
 //! | [`pipeline`] | [`FaceTracker`]: the three graphs, tracking between frames, [`Mode`] |
 //! | [`sample`] | [`FaceSample`], [`StageTimings`] and [`to_track_frame`] |
@@ -36,6 +37,7 @@ pub mod doctor;
 pub mod error;
 pub mod frame;
 pub mod geometry;
+pub mod gesture;
 pub mod guided;
 pub mod landmarks;
 pub mod metadata;
