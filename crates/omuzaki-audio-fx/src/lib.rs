@@ -22,7 +22,7 @@ mod dsp;
 pub mod eq;
 pub mod gate;
 pub mod limiter;
-// pub mod pitch;
+pub mod pitch;
 pub mod radio;
 pub mod robot;
 

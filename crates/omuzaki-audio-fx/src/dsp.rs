@@ -102,44 +102,9 @@ impl Fade {
         self.value
     }
 
-    /// Whether it rests at 0.
-    pub(crate) fn is_off(&self) -> bool {
-        self.value == 0.0 && self.target == 0.0
-    }
-
     /// Jumps to the target.
     pub(crate) fn snap(&mut self) {
         self.value = self.target;
-    }
-}
-
-/// A fixed delay of `len` samples, preallocated.
-#[derive(Clone, Debug)]
-pub(crate) struct Delay {
-    buf: Vec<f32>,
-    at: usize,
-}
-
-impl Delay {
-    /// A delay of `len` samples holding silence.
-    pub(crate) fn new(len: usize) -> Self {
-        Self { buf: vec![0.0; len], at: 0 }
-    }
-
-    /// Pushes `x` and returns the sample `len` samples older.
-    pub(crate) fn push(&mut self, x: f32) -> f32 {
-        if self.buf.is_empty() {
-            return x;
-        }
-        let out = std::mem::replace(&mut self.buf[self.at], x);
-        self.at = (self.at + 1) % self.buf.len();
-        out
-    }
-
-    /// Back to silence.
-    pub(crate) fn reset(&mut self) {
-        self.buf.fill(0.0);
-        self.at = 0;
     }
 }
 

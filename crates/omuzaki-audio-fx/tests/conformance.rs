@@ -7,6 +7,7 @@ use omuzaki_audio_fx::compressor::CompressorKind;
 use omuzaki_audio_fx::eq::EqKind;
 use omuzaki_audio_fx::gate::GateKind;
 use omuzaki_audio_fx::limiter::LimiterKind;
+use omuzaki_audio_fx::pitch::PitchKind;
 use omuzaki_audio_fx::radio::RadioKind;
 use omuzaki_audio_fx::robot::RobotKind;
 use omuzaki_audio_api::graph::Channels;
@@ -105,11 +106,17 @@ fn limiter_conforms() {
     assert_conforms(&LimiterKind, &Config { linear: false, ..Config::default() });
 }
 
+/// The shifter's latency is defined to 1 ms (the issue's tolerance): a click lands on its grain's mark.
+#[test]
+fn pitch_conforms() {
+    assert_conforms(&PitchKind, &Config { linear: false, latency_tolerance: 48, ..Config::default() });
+}
+
 #[test]
 fn every_effect_is_registered_once() {
     omuzaki_audio_fx::link();
     let ids: Vec<&str> = node_kinds().iter().map(|k| k.info().id).filter(|id| id.starts_with("fx.")).collect();
-    for id in ["fx.compressor", "fx.eq", "fx.gate", "fx.limiter", "fx.radio", "fx.robot"] {
+    for id in ["fx.compressor", "fx.eq", "fx.gate", "fx.limiter", "fx.pitch", "fx.radio", "fx.robot"] {
         assert_eq!(ids.iter().filter(|i| **i == id).count(), 1, "{id} in {ids:?}");
     }
 }

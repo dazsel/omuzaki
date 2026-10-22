@@ -193,6 +193,17 @@ fn rosenberg(phase: f64) -> f64 {
 /// Renders `spec`.
 #[must_use]
 pub fn voice(spec: &VoiceSpec) -> Vec<f32> {
+    render(spec).0
+}
+
+/// Renders `spec` and gives the sample of every glottal closure in it (where the Rosenberg pulse closes), the ground
+/// truth a pitch-mark tracker is measured against.
+#[must_use]
+pub fn voice_with_closures(spec: &VoiceSpec) -> (Vec<f32>, Vec<usize>) {
+    render(spec)
+}
+
+fn render(spec: &VoiceSpec) -> (Vec<f32>, Vec<usize>) {
     let len = samples_in(spec.seconds);
     // The vowels may be given in any order; the formants follow them in time order.
     let mut sorted = spec.clone();
@@ -204,6 +215,7 @@ pub fn voice(spec: &VoiceSpec) -> Vec<f32> {
     let (mut phase, mut previous_pulse) = (0.0f64, 0.0f64);
     let mut period_scale = 1.0f64;
     let mut out = Vec::with_capacity(len);
+    let mut closures = Vec::new();
     for n in 0..len {
         let t = n as f64 / rate;
         if n % COEFFICIENT_INTERVAL == 0 {
@@ -212,7 +224,11 @@ pub fn voice(spec: &VoiceSpec) -> Vec<f32> {
                 resonator.tune(formants.centre[i], formants.bandwidth[i]);
             }
         }
+        let before = phase;
         phase += spec.f0.at(t).max(1.0) / rate * period_scale;
+        if before < OPEN + CLOSING && phase >= OPEN + CLOSING {
+            closures.push(n);
+        }
         if phase >= 1.0 {
             phase -= 1.0;
             // A new glottal period: draw its length error now, so the jitter is per period and not per sample.
@@ -231,7 +247,7 @@ pub fn voice(spec: &VoiceSpec) -> Vec<f32> {
         out.push(x as f32);
     }
     normalise(&mut out, spec.peak);
-    out
+    (out, closures)
 }
 
 #[cfg(test)]

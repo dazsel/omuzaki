@@ -127,3 +127,101 @@ pub fn true_peak_16x(x: &[f32]) -> f64 {
 pub fn param(kind: &dyn NodeKind, name: &str) -> ParamIndex {
     kind.info().param_index(name).expect("a parameter")
 }
+
+/// F0 per frame by an offline YIN (2,048-sample frames every 480 samples, 60 to 800 Hz, voiced under 0.15), written
+/// here so the shifter is measured by code it does not share: `None` for an unvoiced frame. Frame `i` is centred on
+/// sample `i * 480 + 1024`. It takes the first dip of the CMND within 0.05 of the deepest rather than the first under
+/// the threshold: the first-dip rule reads /a/ at 360 Hz an octave up (its second harmonic sits on F1), which made it
+/// wrong on 18% of a directly rendered 150 to 450 Hz glide.
+pub fn yin_track(x: &[f32]) -> Vec<Option<f64>> {
+    const FRAME: usize = 2048;
+    const HOP: usize = 480;
+    const WINDOW: usize = 1024;
+    let (tau_min, tau_max) = (60usize, 800usize);
+    let mut out = Vec::new();
+    let mut d = vec![0.0f64; tau_max + 2];
+    let mut start = 0;
+    while start + FRAME <= x.len() {
+        let f: Vec<f64> = x[start..start + FRAME].iter().map(|v| f64::from(*v)).collect();
+        let energy = f[..WINDOW].iter().map(|v| v * v).sum::<f64>() / WINDOW as f64;
+        let mut running = 0.0;
+        d[0] = 1.0;
+        for tau in 1..=tau_max {
+            let s: f64 = (0..WINDOW).map(|j| (f[j] - f[j + tau]).powi(2)).sum();
+            running += s;
+            d[tau] = if running > 0.0 { s * tau as f64 / running } else { 1.0 };
+        }
+        d[tau_max + 1] = f64::MAX;
+        let deepest = (tau_min..=tau_max).map(|t| d[t]).fold(f64::MAX, f64::min);
+        let mut t = (tau_min..=tau_max).find(|t| d[*t] <= deepest + 0.05).unwrap_or(tau_min);
+        while t < tau_max && d[t + 1] < d[t] {
+            t += 1;
+        }
+        let found = (d[t] < 0.15 && t > tau_min && t < tau_max).then_some(t);
+        out.push(found.filter(|_| energy > 1e-7).map(|t| {
+            let (a, b, c) = (d[t - 1], d[t], d[t + 1]);
+            let den = a - 2.0 * b + c;
+            let lag = t as f64 + if den > 0.0 { (0.5 * (a - c) / den).clamp(-0.5, 0.5) } else { 0.0 };
+            FS / lag
+        }));
+        start += HOP;
+    }
+    out
+}
+
+/// Cents from `b` to `a`.
+pub fn cents(a: f64, b: f64) -> f64 {
+    1200.0 * (a / b).log2()
+}
+
+/// The first three formants of `x`, from the average LPC envelope (order 18 on 2,048-sample Hann frames of the
+/// pre-emphasised signal, 512 apart): its first three peaks above 200 Hz.
+pub fn formants(x: &[f32]) -> [f64; 3] {
+    const ORDER: usize = 18;
+    const FRAME: usize = 2048;
+    let grid: Vec<f64> = (0..=860).map(|i| 200.0 + 5.0 * f64::from(i)).collect();
+    let mut envelope = vec![0.0f64; grid.len()];
+    let mut start = 0;
+    while start + FRAME <= x.len() {
+        let w: Vec<f64> = (0..FRAME)
+            .map(|i| {
+                let pre = f64::from(x[start + i]) - if start + i > 0 { 0.97 * f64::from(x[start + i - 1]) } else { 0.0 };
+                pre * (0.5 - 0.5 * (2.0 * PI * i as f64 / FRAME as f64).cos())
+            })
+            .collect();
+        let r: Vec<f64> = (0..=ORDER).map(|k| (k..FRAME).map(|i| w[i] * w[i - k]).sum()).collect();
+        // Levinson-Durbin.
+        let mut a = vec![0.0f64; ORDER + 1];
+        a[0] = 1.0;
+        let mut err = r[0];
+        for i in 1..=ORDER {
+            let acc: f64 = r[i] + (1..i).map(|j| a[j] * r[i - j]).sum::<f64>();
+            let k = -acc / err;
+            let prev = a.clone();
+            a[i] = k;
+            for j in 1..i {
+                a[j] = prev[j] + k * prev[i - j];
+            }
+            err *= 1.0 - k * k;
+        }
+        for (e, hz) in envelope.iter_mut().zip(&grid) {
+            let w = 2.0 * PI * hz / FS;
+            let (mut re, mut im) = (0.0, 0.0);
+            for (k, c) in a.iter().enumerate() {
+                re += c * (w * k as f64).cos();
+                im -= c * (w * k as f64).sin();
+            }
+            *e += 1.0 / (re * re + im * im);
+        }
+        start += 512;
+    }
+    let mut peaks = [0.0; 3];
+    let mut found = 0;
+    for i in 1..grid.len() - 1 {
+        if found < 3 && envelope[i] > envelope[i - 1] && envelope[i] >= envelope[i + 1] {
+            peaks[found] = grid[i];
+            found += 1;
+        }
+    }
+    peaks
+}

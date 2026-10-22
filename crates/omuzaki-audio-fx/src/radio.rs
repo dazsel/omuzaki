@@ -45,8 +45,6 @@ mod at {
     pub const DRIVE: usize = 5;
     pub const BITS: usize = 6;
     pub const RATE_DIV: usize = 7;
-    pub const NOISE_DB: usize = 8;
-    pub const MIX: usize = 9;
 }
 
 /// The parameters of `fx.radio`. The filters, the drive, the noise level and the mix move over 20 ms; the mode, the
