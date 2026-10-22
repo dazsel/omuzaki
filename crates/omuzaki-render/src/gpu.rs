@@ -177,8 +177,8 @@ impl Gpu {
     }
 
     /// The hardware sample count to draw with for a request of `requested` samples: the largest supported count that
-    /// does not exceed it. A request above the hardware maximum (the offline preset asks for 16) gets the maximum, which
-    /// is the fallback `Capabilities::max_samples` promises.
+    /// does not exceed it. A request above the hardware maximum (the offline preset asks for 16) gets the maximum; an
+    /// offline frame reaches the rest in rounds (`frame/supersample.rs`).
     pub(crate) fn samples_for(&self, requested: u8) -> u32 {
         [8u32, 4, 2, 1].into_iter().find(|&n| n <= u32::from(requested) && self.sample_counts & n != 0).unwrap_or(1)
     }

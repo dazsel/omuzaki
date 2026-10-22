@@ -13,9 +13,14 @@ pub(crate) const MATERIAL_TEXTURES: u32 = 5;
 /// The binding of a material's outline width texture, read by the outline hull's vertex stage (#647); its sampler is
 /// the next binding.
 pub(crate) const OUTLINE_WIDTH_BINDING: u32 = 1 + 2 * MATERIAL_TEXTURES;
+/// How many textures an `MToon` material binds besides its surface ones (`omuzaki_render_api::Mtoon`): shade, shading
+/// shift, matcap, rim, emissive, normal and the UV animation mask, in that order.
+pub(crate) const MTOON_TEXTURES: u32 = 7;
+/// The binding of the first `MToon` texture; their samplers follow the textures.
+pub(crate) const MTOON_BINDING: u32 = OUTLINE_WIDTH_BINDING + 2;
 /// Bindings in the material group: the uniform, the surface textures and their samplers, the outline width texture and
-/// its sampler.
-pub(crate) const MATERIAL_BINDINGS: u32 = OUTLINE_WIDTH_BINDING + 2;
+/// its sampler, the `MToon` textures and their samplers.
+pub(crate) const MATERIAL_BINDINGS: u32 = MTOON_BINDING + 2 * MTOON_TEXTURES;
 
 /// The bind group layouts of `shader/common.wgsl`. Group 0 is the frame, group 1 the material; a pass that needs more
 /// (shadow maps, a bloom input) appends its own from group 2 (lit passes: shadows at 2, the environment at 3), so passes never disturb one another's layouts.
@@ -34,6 +39,8 @@ pub(crate) struct Layouts {
     pub(crate) shadow_receiver: wgpu::BindGroupLayout,
     /// Group 3 of the scene passes that light surfaces: the environment's uniform (b0), specular cube (b1) and sampler (b2).
     pub(crate) environment: wgpu::BindGroupLayout,
+    /// Group 0 of the environment backdrop's draw: its uniform (b0), the sky's picture (b1) and its sampler (b2).
+    pub(crate) backdrop: wgpu::BindGroupLayout,
 }
 
 /// Stand-ins for texture slots a material leaves empty, so one bind group layout serves every material.
@@ -94,7 +101,7 @@ fn sampler_entry(binding: u32, visibility: wgpu::ShaderStages) -> wgpu::BindGrou
 }
 
 /// The material group: its uniform, the fragment textures and their samplers, then the outline width texture and its
-/// sampler, which the outline's vertex stage reads.
+/// sampler, which the outline's vertex stage reads, then the `MToon` textures and their samplers.
 fn material_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     let mut entries = vec![buffer_entry(0, wgpu::ShaderStages::VERTEX_FRAGMENT, wgpu::BufferBindingType::Uniform)];
     entries.extend((0..MATERIAL_TEXTURES).map(|slot| texture_entry(1 + slot, wgpu::ShaderStages::FRAGMENT)));
@@ -103,11 +110,16 @@ fn material_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     );
     entries.push(texture_entry(OUTLINE_WIDTH_BINDING, wgpu::ShaderStages::VERTEX));
     entries.push(sampler_entry(OUTLINE_WIDTH_BINDING + 1, wgpu::ShaderStages::VERTEX));
+    entries.extend((0..MTOON_TEXTURES).map(|slot| texture_entry(MTOON_BINDING + slot, wgpu::ShaderStages::FRAGMENT)));
+    entries.extend(
+        (0..MTOON_TEXTURES)
+            .map(|slot| sampler_entry(MTOON_BINDING + MTOON_TEXTURES + slot, wgpu::ShaderStages::FRAGMENT)),
+    );
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("material"), entries: &entries })
 }
 
 impl Layouts {
-    fn new(device: &wgpu::Device) -> Self {
+    pub(crate) fn new(device: &wgpu::Device) -> Self {
         let both = wgpu::ShaderStages::VERTEX_FRAGMENT;
         let storage = wgpu::BufferBindingType::Storage { read_only: true };
         let frame = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -151,9 +163,19 @@ impl Layouts {
             },
             count: None,
         };
+        // One map's matrix, picked by a dynamic offset (`shadow/map.rs`).
         let shadow_caster = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("shadow caster"),
-            entries: &[uniform(0, wgpu::ShaderStages::VERTEX)],
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: true,
+                    min_binding_size: wgpu::BufferSize::new(64),
+                },
+                count: None,
+            }],
         });
         let shadow_receiver = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("shadow receiver"),
@@ -164,7 +186,7 @@ impl Layouts {
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Depth,
-                        view_dimension: wgpu::TextureViewDimension::D2,
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
                         multisampled: false,
                     },
                     count: None,
@@ -177,7 +199,15 @@ impl Layouts {
                 },
             ],
         });
-        Self { frame, material, colour_input, shadow_caster, shadow_receiver, environment: environment::layout(device) }
+        Self {
+            frame,
+            material,
+            colour_input,
+            shadow_caster,
+            shadow_receiver,
+            environment: environment::layout(device),
+            backdrop: environment::backdrop::layout(device),
+        }
     }
 }
 
@@ -230,7 +260,7 @@ impl Shared {
     pub(crate) fn new(gpu: Gpu) -> Self {
         let layouts = Layouts::new(&gpu.device);
         Self {
-            no_environment: GpuEnvironment::none(&gpu, &layouts.environment),
+            no_environment: GpuEnvironment::none(&gpu, &layouts),
             defaults: Defaults::new(&gpu),
             mips: MipGenerator::new(&gpu.device),
             layouts,

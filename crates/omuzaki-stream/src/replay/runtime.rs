@@ -217,6 +217,10 @@ pub struct ReplayCore {
     started: bool,
     frames: u64,
     restarts: u32,
+    /// Frames the encoder had no room for (D2).
+    skipped: u64,
+    /// Frames a failed encoder gave back and the next one took.
+    requeued: u64,
 }
 
 #[allow(clippy::cast_precision_loss)] // Frame and sample counts far under 2^52.
@@ -273,6 +277,8 @@ impl ReplayCore {
             started: false,
             frames: 0,
             restarts: 0,
+            skipped: 0,
+            requeued: 0,
         })
     }
 
@@ -294,26 +300,82 @@ impl ReplayCore {
                 }
             }
         }
-        if let Err(e) = self.encoder.send(frame) {
-            // D11: a fresh encoder, a forced keyframe, the ring and the timeline kept.
-            let fresh = self.encoders.create(&self.encode).map_err(|_| e)?;
-            self.encoder = fresh;
-            self.encoder.request_keyframe();
-            self.restarts += 1;
-            self.sent.clear();
-            self.encoder.send(frame)?;
+        match self.encoder.send(frame) {
+            Ok(()) => self.sent.push_back(frame.index),
+            // D2: no room in the encoder's queue; the frame is skipped and counted, the previous one stands.
+            Err(StreamError::Full) => self.skipped += 1,
+            Err(e) => self.restart(Some(frame), e)?,
         }
-        self.sent.push_back(frame.index);
         self.frames = self.frames.max(frame.index + 1);
+        self.take_or_restart(frame.index)?;
+        self.pump_audio()
+    }
+
+    /// D11: a fresh encoder with a forced keyframe; the ring and the timeline are kept. What the old one finished is
+    /// kept, and the frames it was given but never finished go to the new one first (a remote encoder gives them back,
+    /// `docs/design/supervisor.md` §15.5), then `frame` if there is one.
+    fn restart(&mut self, frame: Option<&Frame<'_>>, error: StreamError) -> Result<(), StreamError> {
+        // The dead encoder's last packets, best effort: it has failed already.
+        let _ = self.take_packets(self.frames.saturating_sub(1));
+        let unfinished = self.encoder.unfinished();
+        self.encoder = self.encoders.create(&self.encode).map_err(|_| error)?;
+        self.encoder.request_keyframe();
+        self.restarts += 1;
+        self.sent.clear();
+        for (index, image) in &unfinished {
+            let at = frame.map_or(Ticks(0), |f| f.capture_time);
+            let again = Frame::new(image.size, *index, at).with_cpu(image);
+            match self.encoder.send(&again) {
+                Ok(()) => {
+                    self.sent.push_back(*index);
+                    self.requeued += 1;
+                }
+                Err(StreamError::Full) => self.skipped += 1,
+                Err(e) => return Err(e),
+            }
+        }
+        if let Some(frame) = frame {
+            match self.encoder.send(frame) {
+                Ok(()) => self.sent.push_back(frame.index),
+                Err(StreamError::Full) => self.skipped += 1,
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+
+    /// Pushes the packets the encoder has ready; `fallback` times one the queue can't place. `Ok(Some(_))` is the
+    /// encoder's failure (the caller restarts it); `Err` is the ring's.
+    fn take_packets(&mut self, fallback: u64) -> Result<Option<StreamError>, StreamError> {
         self.packets.clear();
-        self.encoder.receive(&mut self.packets)?;
+        let failed = self.encoder.receive(&mut self.packets).err();
         let mut packets = std::mem::take(&mut self.packets);
+        let mut pushed = Ok(());
         for packet in packets.drain(..) {
-            let index = self.sent.pop_front().unwrap_or(frame.index);
-            self.push_video(packet, index)?;
+            let index = self.sent.pop_front().unwrap_or(fallback);
+            if pushed.is_ok() {
+                pushed = self.push_video(packet, index);
+            }
         }
         self.packets = packets;
-        self.pump_audio()
+        pushed.map(|()| failed)
+    }
+
+    /// Pushes the ready packets, and restarts the encoder if it failed.
+    fn take_or_restart(&mut self, fallback: u64) -> Result<(), StreamError> {
+        match self.take_packets(fallback)? {
+            Some(error) => self.restart(None, error),
+            None => Ok(()),
+        }
+    }
+
+    /// Takes the packets the encoder has finished since the last frame, without a new one (an encoder in another
+    /// process answers a frame later), restarting a failed encoder as `push_frame` does.
+    ///
+    /// # Errors
+    /// The encoder's error when a fresh one can't be made, or a disk segment's write error.
+    pub fn drain(&mut self) -> Result<(), StreamError> {
+        self.take_or_restart(self.frames.saturating_sub(1))
     }
 
     fn push_video(&mut self, mut packet: Packet, index: u64) -> Result<(), StreamError> {
@@ -454,6 +516,16 @@ impl ReplayCore {
     /// Times the encoder was recreated.
     pub fn restarts(&self) -> u32 {
         self.restarts
+    }
+
+    /// Frames skipped because the encoder had no room for them (D2).
+    pub fn skipped(&self) -> u64 {
+        self.skipped
+    }
+
+    /// Frames a failed encoder never finished that the next one encoded (none are lost to a restart).
+    pub fn requeued(&self) -> u64 {
+        self.requeued
     }
 }
 

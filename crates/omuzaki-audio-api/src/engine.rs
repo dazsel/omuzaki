@@ -13,8 +13,9 @@ use crate::backend::BackendError;
 use crate::clock::EngineClock;
 use crate::device::{Binding, DeviceInfo, ProfileError};
 use crate::graph::{GraphError, GraphSpec, MicMode, SourceRef};
-use crate::ids::{BusId, DeviceRole, NodeId};
+use crate::ids::{BusId, DeviceRole, NodeId, PlayerId, SoundId};
 use crate::node::{MAX_BLOCK, NodeError, ParamIndex};
+use crate::player::Sound;
 use crate::report::{AudioEvents, AudioStatus, GraphReport, LatencyEstimate, MeterPoint, Meters};
 use crate::tap::{FeedRequest, FeedWriter, TapFormat, TapHandle, TapInfo, TapPoint, TapReader, TapRequest, TapSink};
 
@@ -61,6 +62,12 @@ pub enum AudioError {
     /// The tap cannot be opened (an unknown point, a format the point cannot give).
     #[error("cannot open this tap: {0}")]
     TapUnavailable(String),
+    /// No sound has this id in the player bank.
+    #[error("no sound `{0}` in the player bank")]
+    UnknownSound(SoundId),
+    /// This engine cannot do that (a mock, an engine built without a part).
+    #[error("{0}")]
+    Unsupported(String),
     /// A bug in the engine.
     #[error("internal audio engine error: {0}")]
     Internal(String),
@@ -160,6 +167,44 @@ pub trait AudioEngine: Send + Sync {
     /// [`AudioError::Internal`] when the ring cannot be made; an unknown feed id is accepted and plays once a bus names
     /// it.
     fn feed(&self, request: &FeedRequest) -> Result<FeedWriter, AudioError>;
+
+    /// Puts a decoded sound in the player bank under `id` (replacing one there), for players to play. An engine
+    /// without a player refuses.
+    ///
+    /// # Errors
+    /// [`AudioError::Unsupported`] by default; [`AudioError::Internal`] when the bank is full.
+    fn load_sound(&self, id: &SoundId, sound: Arc<Sound>) -> Result<(), AudioError> {
+        let _ = (id, sound);
+        Err(AudioError::Unsupported("this audio engine has no player".to_owned()))
+    }
+
+    /// Takes a sound out of the bank; voices playing it fade out first.
+    ///
+    /// # Errors
+    /// [`AudioError::UnknownSound`]; [`AudioError::Unsupported`] by default.
+    fn unload_sound(&self, id: &SoundId) -> Result<(), AudioError> {
+        let _ = id;
+        Err(AudioError::Unsupported("this audio engine has no player".to_owned()))
+    }
+
+    /// Plays a bank sound on `player` at `gain_db`; `ducks` raises the player's gate ([`gate_of`](crate::player::gate_of)) while it sounds.
+    /// The player is made the first time it is named.
+    ///
+    /// # Errors
+    /// [`AudioError::UnknownSound`]; [`AudioError::Unsupported`] by default.
+    fn play(&self, player: &PlayerId, sound: &SoundId, gain_db: f32, ducks: bool) -> Result<(), AudioError> {
+        let _ = (player, sound, gain_db, ducks);
+        Err(AudioError::Unsupported("this audio engine has no player".to_owned()))
+    }
+
+    /// Fades out `sound` on `player`, or every sound it plays with `None`.
+    ///
+    /// # Errors
+    /// [`AudioError::UnknownSound`]; [`AudioError::Unsupported`] by default.
+    fn stop(&self, player: &PlayerId, sound: Option<&SoundId>) -> Result<(), AudioError> {
+        let _ = (player, sound);
+        Err(AudioError::Unsupported("this audio engine has no player".to_owned()))
+    }
 
     /// The engine clock, shareable with any thread.
     fn clock(&self) -> Arc<EngineClock>;

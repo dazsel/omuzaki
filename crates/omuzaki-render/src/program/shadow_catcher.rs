@@ -1,8 +1,9 @@
 //! The `shadow-catcher` program: an invisible ground that shows only the shadows falling on it, as the prototype's three.js
 //! `ShadowMaterial` on the stage's ground disc (radius 0.8, 48 segments, opacity 0.25). Hook: `shader/program_shadow_catcher.wgsl`.
 //!
-//! The surface is black and its alpha is `opacity * (1 - shadow_visibility(world_position, up))`: nothing where the light
-//! reaches it, `opacity` black in full shadow, a soft edge between (the shadow map's own PCF). The material must be
+//! The surface is black and its alpha is `opacity * (1 - shadow_mask(world_position, up))`: nothing where the light
+//! reaches it, `opacity` black in full shadow, a soft edge between (the shadow map's own PCF). Under several shadowed
+//! lights the mask is the product of their visibilities, as three's. The material must be
 //! `AlphaMode::Blend` (the program draws in the Transparent pass) and receive shadows, and the ground **must not cast**
 //! (`Instance::casts_shadow = false`): the shadow map is fitted to the casters, so a caster ground would widen the fit
 //! and shrink every other shadow's resolution.

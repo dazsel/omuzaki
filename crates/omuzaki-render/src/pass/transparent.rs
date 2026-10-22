@@ -14,7 +14,8 @@
 //! the surface with `toon_colour` and the material's shading-program hooks and returns the albedo's alpha. A blended
 //! hair program therefore looks like the opaque one, translucent. The blend is `src * a + dst * (1 - a)` for colour and
 //! `a + dst_a * (1 - a)` for alpha, so the premultiplied scene colour stays premultiplied. Depth uses `LessEqual`
-//! with writes off: a blended surface hides behind opaque ones and never hides anything itself. Sidedness and winding
+//! with writes off: a blended surface hides behind opaque ones and never hides anything itself, unless its `MToon`
+//! asks to write depth (`transparentWithZWrite`), when it hides its own far side and what is drawn after it. Sidedness and winding
 //! follow the material and the transform exactly as in `Opaque`.
 //!
 //! **Allocation.** The sort vector is kept between frames, so a warm frame allocates nothing: the sort is in place
@@ -28,7 +29,7 @@ use omuzaki_render_api::{Pass, RenderError};
 use super::{FramePass, Outcome, PassCx};
 use crate::gpu::{DEPTH_FORMAT, SCENE_FORMAT};
 use crate::program::{AttributeSpec, MAX_ATTRIBUTES, ProgramSpec, Registry, opaque_source};
-use crate::resource::material::GpuMaterial;
+use crate::resource::material::{GpuMaterial, mtoon_of};
 use crate::resource::mesh::{GpuMesh, extra_attribute, extra_layout, vertex_layouts};
 use crate::shared::Shared;
 
@@ -46,6 +47,8 @@ struct Variant {
     program: Option<usize>,
     /// Bit `i`: the mesh supplies attribute `i` of the program.
     extras_present: u8,
+    /// The surface also writes depth (`Mtoon::blend_writes_depth`, `MToon`'s `transparentWithZWrite`).
+    writes_depth: bool,
 }
 
 /// One blended draw and what it is sorted by.
@@ -121,6 +124,7 @@ impl Transparent {
             samples,
             program: material.program,
             extras_present: mesh.extra_mask(attributes),
+            writes_depth: mtoon_of(&material.material).is_some_and(|m| m.blend_writes_depth),
         }
     }
 
@@ -169,7 +173,7 @@ impl Transparent {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: DEPTH_FORMAT,
-                depth_write_enabled: Some(false),
+                depth_write_enabled: Some(variant.writes_depth),
                 depth_compare: Some(wgpu::CompareFunction::LessEqual),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
@@ -258,9 +262,9 @@ impl FramePass for Transparent {
             }
         }
 
-        let environment = cx.environment_group();
+        let (environment, frame_group) = (cx.environment_group(), cx.frame_group());
         let mut pass = cx.attachments.geometry_pass(cx.encoder, "transparent", cx.frame.clear_colour());
-        pass.set_bind_group(0, cx.frame.bind_group, &[]);
+        pass.set_bind_group(0, frame_group, &[]);
         pass.set_bind_group(2, cx.attachments.shadow.receiver_group(), &[]);
         pass.set_bind_group(3, environment, &[]);
         for entry in &sorted {

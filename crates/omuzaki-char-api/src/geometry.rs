@@ -150,6 +150,7 @@ impl MaterialSpec {
             outline_style: OutlineStyle::KIT,
             receives_shadows: self.receives_shadows,
             uv_transform: self.uv_transform,
+            mtoon: None,
         })
     }
 }

@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use omuzaki_avatar::buffers::{BindDeltas, MaterialDelta};
 use omuzaki_avatar_api::avatar::ImportedAvatar;
-use omuzaki_char_api::{MaterialName, MaterialSpec, TextureName};
+use omuzaki_char_api::{MaterialError, MaterialName, MaterialSpec, TextureName};
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::Vec4;
 use omuzaki_io_api::ColorBindKind;
@@ -62,7 +62,11 @@ impl AvatarUpload {
     /// # Errors
     /// [`StageError::Render`] if the renderer refuses a resource, [`StageError::Material`] for a material naming a
     /// texture the avatar lacks, [`StageError::Avatar`] for a mesh or bind naming a material it lacks.
-    pub fn upload(renderer: &mut dyn Renderer, avatar: &ImportedAvatar, bound: &BindDeltas) -> Result<Self, StageError> {
+    pub fn upload(
+        renderer: &mut dyn Renderer,
+        avatar: &ImportedAvatar,
+        bound: &BindDeltas,
+    ) -> Result<Self, StageError> {
         let mut upload = Self {
             meshes: Vec::with_capacity(avatar.meshes.len()),
             materials: BTreeMap::new(),
@@ -79,7 +83,12 @@ impl AvatarUpload {
         Ok(upload)
     }
 
-    fn fill(&mut self, renderer: &mut dyn Renderer, avatar: &ImportedAvatar, bound: &BindDeltas) -> Result<(), StageError> {
+    fn fill(
+        &mut self,
+        renderer: &mut dyn Renderer,
+        avatar: &ImportedAvatar,
+        bound: &BindDeltas,
+    ) -> Result<(), StageError> {
         for (name, data) in &avatar.textures {
             let id = renderer
                 .create_texture(&data.desc, Some(&data.rgba8))
@@ -103,7 +112,10 @@ impl AvatarUpload {
         for (index, avatar_mesh) in avatar.meshes.iter().enumerate() {
             let mesh = &avatar_mesh.mesh;
             let material = *self.materials.get(&mesh.material).ok_or_else(|| StageError::Avatar {
-                reason: format!("mesh {index} ('{}') uses material '{}', which the avatar lacks", mesh.name, mesh.material),
+                reason: format!(
+                    "mesh {index} ('{}') uses material '{}', which the avatar lacks",
+                    mesh.name, mesh.material
+                ),
             })?;
             let options = MeshOptions { usage: MeshUsage::Static, morphs: avatar_mesh.morphs.clone() };
             let id = renderer
@@ -116,9 +128,14 @@ impl AvatarUpload {
     }
 
     /// The renderer material for `spec` with the textures uploaded so far, drawing the `MToon` outline the importer
-    /// kept for `name` (`avatar.outlines`, #647) in place of the kit's line. An imported avatar has no painted face, so
-    /// a face layer never resolves.
-    fn material_of(&self, name: &MaterialName, spec: &MaterialSpec, avatar: &ImportedAvatar) -> Result<Material, StageError> {
+    /// kept for `name` (`avatar.outlines`, #647) in place of the kit's line and lit by the `MToon` it kept
+    /// (`avatar.mtoon`, #592). An imported avatar has no painted face, so a face layer never resolves.
+    fn material_of(
+        &self,
+        name: &MaterialName,
+        spec: &MaterialSpec,
+        avatar: &ImportedAvatar,
+    ) -> Result<Material, StageError> {
         let mut material = spec
             .to_material(&|texture| self.textures.get(texture).copied(), &|_| None)
             .map_err(|source| StageError::Material { material: name.clone(), source })?;
@@ -129,6 +146,15 @@ impl AvatarUpload {
                 width_texture: outline.width_texture.as_ref().and_then(|t| self.textures.get(t).copied()),
                 lighting_mix: outline.lighting_mix,
             };
+        }
+        if let Some(mtoon) = avatar.mtoon.get(name) {
+            let lit = mtoon.try_map(|texture| {
+                self.textures.get(texture).copied().ok_or_else(|| StageError::Material {
+                    material: name.clone(),
+                    source: MaterialError::MissingTexture(texture.clone()),
+                })
+            })?;
+            material.mtoon = Some(Box::new(lit));
         }
         Ok(material)
     }
@@ -201,8 +227,9 @@ fn shifted(colour: Colour, delta: Vec4) -> Colour {
 }
 
 /// Writes `base` with `delta` on top into `out`, field by field, so `out` keeps its allocations (VRM 1.0
-/// `expressions.md`, material colour and texture transform binds). The matcap colour has no field on the toon material
-/// and is not drawn (`look.mtoon_not_drawn` reports it at import).
+/// `expressions.md`, material colour and texture transform binds). A material lit by `MToon` takes the shade, rim and
+/// matcap binds on its `MToon` colours; without `MToon` the matcap is not drawn (`look.mtoon_not_drawn` reports it at
+/// import).
 fn apply_delta(base: &Material, delta: &MaterialDelta, out: &mut Material) {
     out.base = shifted(base.base, delta.colour(ColorBindKind::Color));
     out.uv_transform.scale = base.uv_transform.scale + delta.uv_scale();
@@ -211,6 +238,11 @@ fn apply_delta(base: &Material, delta: &MaterialDelta, out: &mut Material) {
         to.emissive = shifted(from.emissive, delta.colour(ColorBindKind::EmissionColor));
         to.shade = shifted(from.shade, delta.colour(ColorBindKind::ShadeColor));
         to.rim.colour = shifted(from.rim.colour, delta.colour(ColorBindKind::RimColor));
+    }
+    if let (Some(from), Some(to)) = (&base.mtoon, &mut out.mtoon) {
+        to.shade = shifted(from.shade, delta.colour(ColorBindKind::ShadeColor));
+        to.rim = shifted(from.rim, delta.colour(ColorBindKind::RimColor));
+        to.matcap = shifted(from.matcap, delta.colour(ColorBindKind::MatcapColor));
     }
     if let (Some(from), Some(to)) = (&base.outline, &mut out.outline) {
         to.colour = shifted(from.colour, delta.colour(ColorBindKind::OutlineColor));

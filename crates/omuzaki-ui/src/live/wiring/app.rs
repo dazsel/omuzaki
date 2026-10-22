@@ -5,10 +5,12 @@ use std::path::Path;
 use std::sync::Arc;
 
 use egui::Context;
-use omuzaki_ai_api::ModelRegistry;
+use omuzaki_ai_api::{ModelRegistry, NoConsentRecords};
 use omuzaki_anim_api::{ChannelBuf, HumanoidPose};
 use omuzaki_audio_api::engine::AudioEngine;
 use omuzaki_audio_engine::{CpalBackend, LiveEngine};
+use omuzaki_connect::{ConnectorSet, Host, HostParts, SettingsConfig, ThreadPace};
+use omuzaki_connect_api::Connectors;
 use omuzaki_core::glam::UVec2;
 use omuzaki_core::time::{Clock, Seconds, SystemClock};
 use omuzaki_face_api::ExpressionSet;
@@ -28,6 +30,8 @@ use omuzaki_stage::frame::Stage;
 use omuzaki_stage::perform::Tracking;
 use omuzaki_stage::perform::host::{PerformError, PerformHost};
 use omuzaki_stage::perform::input::{InputHost, NoSource};
+use omuzaki_store::DiskStore;
+use omuzaki_store_api::Store;
 use omuzaki_stream::feed::ProgramFeed;
 use omuzaki_stream::service::{Program as StreamProgram, StreamService};
 use omuzaki_stream_api::window::WindowHost;
@@ -247,16 +251,17 @@ impl LiveApp {
         if let Some(models) = models {
             services = services.insert::<dyn ModelRegistry>(models);
         }
-        if let Some(secrets) = secrets {
-            services = services.insert::<dyn SecretStore>(secrets);
+        if let Some(secrets) = &secrets {
+            services = services.insert::<dyn SecretStore>(Arc::clone(secrets));
         }
-        if let Some(settings) = settings {
-            services = services.insert::<dyn Settings>(settings);
+        if let Some(settings) = &settings {
+            services = services.insert::<dyn Settings>(Arc::clone(settings));
         }
         services = services.insert::<Automation>(Arc::clone(&automation)).insert::<TwitchService>(Arc::new(twitch));
         if let Some(vts) = vts {
             services = services.insert::<VtsService>(vts);
         }
+        services = with_connectors(services, data.as_deref(), secrets.as_ref(), settings.as_ref());
         // Frames and the microphone count from one zero, so a take's audio lines up with its video.
         let epoch = std::time::Instant::now();
         let stream = match StreamService::with_epoch(epoch) {
@@ -269,14 +274,17 @@ impl LiveApp {
         if let Some(stream) = &stream {
             services = services.insert::<StreamService>(Arc::clone(stream));
         }
-        match LiveEngine::with_epoch(Arc::new(CpalBackend::new(epoch)), None, epoch) {
-            Ok(audio) => services = services.insert::<dyn AudioEngine>(Arc::new(audio)),
-            Err(error) => tracing::warn!(%error, "the audio engine did not start: the microphone is unavailable"),
+        let audio = start_audio(epoch);
+        if let Some(audio) = &audio {
+            services = services.insert::<dyn AudioEngine>(Arc::clone(audio));
         }
         let services = services.build();
         let project = document.dir().map(|dir| dir.to_string_lossy().into_owned());
         let core = wiring::core_on(document, services).map_err(StartError::Ops)?;
         automation.attach(&core.runner);
+        if let Some(audio) = audio {
+            follow_project(audio, &core.runner);
+        }
         automation.attach_sessions(&core.sessions);
         // What this machine approved and the shows' variables live in the app's data folder, never in the project.
         // Without one, nothing is approved and variables last one run.
@@ -503,5 +511,88 @@ impl Tracker for NoTracker {
 
     fn latency(&self) -> LatencyStats {
         LatencyStats::default()
+    }
+}
+
+/// The live audio engine on this machine's devices, its clock counting from `epoch`; `None` (with a warning) when it
+/// can't start.
+fn start_audio(epoch: std::time::Instant) -> Option<Arc<dyn AudioEngine>> {
+    match LiveEngine::with_epoch(Arc::new(CpalBackend::new(epoch)), None, epoch) {
+        Ok(audio) => Some(Arc::new(audio)),
+        Err(error) => {
+            tracing::warn!(%error, "the audio engine did not start: the microphone is unavailable");
+            None
+        }
+    }
+}
+
+/// `services` with the connector host (as `dyn Connectors` and as itself) and the asset store, when they start.
+fn with_connectors(
+    services: ServicesBuilder,
+    data: Option<&Path>,
+    secrets: Option<&Arc<dyn SecretStore>>,
+    settings: Option<&Arc<dyn Settings>>,
+) -> ServicesBuilder {
+    match connector_host(data, secrets, settings) {
+        Some((store, host)) => services
+            .insert::<dyn Store>(store)
+            .insert::<dyn Connectors>(Arc::clone(&host) as Arc<dyn Connectors>)
+            .insert::<Host>(host),
+        None => services,
+    }
+}
+
+/// The connector host (`connect.*`) over every linked connector, and the asset store its outputs land in: the store
+/// lives in the app's data folder, beside the keychain's lock file, so candidates outlast a project. `None` (with a
+/// warning) without a data folder, a keychain or settings: a connector needs a person's settings to be enabled and
+/// the keychain for its key.
+fn connector_host(
+    data: Option<&Path>,
+    secrets: Option<&Arc<dyn SecretStore>>,
+    settings: Option<&Arc<dyn Settings>>,
+) -> Option<(Arc<dyn Store>, Arc<Host>)> {
+    let (Some(data), Some(secrets), Some(settings)) = (data, secrets, settings) else {
+        tracing::warn!("no data folder, keychain or settings: the `connect.*` ops are unavailable");
+        return None;
+    };
+    let store: Arc<dyn Store> = match DiskStore::open(data.join("store")) {
+        Ok(store) => Arc::new(store),
+        Err(error) => {
+            tracing::warn!(%error, "the asset store did not open: the `connect.*` ops are unavailable");
+            return None;
+        }
+    };
+    let set = match ConnectorSet::from_registered() {
+        Ok(set) => set,
+        Err(errors) => {
+            for error in &errors {
+                tracing::warn!(%error, "a connector did not load");
+            }
+            return None;
+        }
+    };
+    // Connectors that need an App service (an LLM provider's settings) reach these.
+    let services = ServicesBuilder::new()
+        .insert::<dyn Settings>(Arc::clone(settings))
+        .insert::<dyn SecretStore>(Arc::clone(secrets))
+        .build();
+    let host = Host::new(HostParts {
+        set,
+        config: Arc::new(SettingsConfig::new(Arc::clone(settings))),
+        secrets: Arc::clone(secrets),
+        store: Arc::clone(&store),
+        http: Arc::new(ConnectHttp::new()),
+        pace: Arc::new(ThreadPace),
+        clock: Arc::new(SystemClock::new()),
+        consent: Arc::new(NoConsentRecords),
+        services,
+    });
+    Some((store, Arc::new(host)))
+}
+
+/// Keeps the mixer on the project's graph: the `audio.bus.*` ops edit it, undo included.
+fn follow_project(audio: Arc<dyn AudioEngine>, runner: &Arc<dyn Runner>) {
+    if let Err(error) = omuzaki_audio_engine::follow(audio, runner) {
+        tracing::warn!(error = %error.message, "the audio mixer will not follow the project");
     }
 }

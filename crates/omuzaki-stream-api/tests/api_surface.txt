@@ -39,8 +39,10 @@ src/lib.rs: pub mod input;
 src/lib.rs: pub mod mux;
 src/lib.rs: pub mod output;
 src/lib.rs: pub mod packet;
+src/lib.rs: pub mod supervisor;
 src/lib.rs: pub mod time;
 src/lib.rs: pub mod window;
+src/lib.rs: pub mod worker;
 src/lib.rs: pub use input::{FrameStamp, InputTap, TailMode, TailStep};
 src/lib.rs: pub use inventory as __inventory;
 src/lib.rs: pub use omuzaki_core::__record_registration;
@@ -77,6 +79,34 @@ src/packet.rs: pub fn new() -> Self {
 src/packet.rs: pub fn add(&self, n: u64) {
 src/packet.rs: pub fn sub(&self, n: u64) {
 src/packet.rs: pub fn get(&self) -> u64 {
+src/supervisor.rs: pub enum Scope {
+src/supervisor.rs: pub struct WorkerId {
+src/supervisor.rs: pub fn new(scope: Scope, instance: u64, index: u16) -> Self {
+src/supervisor.rs: pub fn scope(self) -> Scope {
+src/supervisor.rs: pub fn instance(self) -> u64 {
+src/supervisor.rs: pub fn index(self) -> u16 {
+src/supervisor.rs: pub struct UnknownWorker {
+src/supervisor.rs: pub enum WorkerKind {
+src/supervisor.rs: pub enum Health {
+src/supervisor.rs: pub fn restarting(attempt: u32) -> Self {
+src/supervisor.rs: pub fn backoff(attempt: u32, until: Seconds) -> Self {
+src/supervisor.rs: pub fn failed(restarts: u32) -> Self {
+src/supervisor.rs: pub enum RestartReason {
+src/supervisor.rs: pub fn crashed(exit_code: Option<i32>) -> Self {
+src/supervisor.rs: pub fn hung(silent_for: Seconds) -> Self {
+src/supervisor.rs: pub fn protocol(what: impl Into<String>) -> Self {
+src/supervisor.rs: pub fn launch_failed(what: impl Into<String>) -> Self {
+src/supervisor.rs: pub enum HealthEvent {
+src/supervisor.rs: pub fn restarted(worker: WorkerId, reason: RestartReason, attempt: u32) -> Self {
+src/supervisor.rs: pub fn recovered(worker: WorkerId, downtime: Seconds, slow: bool) -> Self {
+src/supervisor.rs: pub fn gave_up(worker: WorkerId, restarts: u32) -> Self {
+src/supervisor.rs: pub fn stuck(worker: WorkerId) -> Self {
+src/supervisor.rs: pub fn abandoned(worker: WorkerId) -> Self {
+src/supervisor.rs: pub fn worker(&self) -> WorkerId {
+src/supervisor.rs: pub struct RestartRecord {
+src/supervisor.rs: pub fn new(at: Seconds, worker: WorkerId, reason: RestartReason, attempt: u32) -> Self {
+src/supervisor.rs: pub struct WorkerStatus {
+src/supervisor.rs: pub fn new(id: WorkerId, name: impl Into<String>, kind: WorkerKind, health: Health) -> Self {
 src/time.rs: pub struct Ticks(pub i64);
 src/time.rs: pub struct Timebase {
 src/time.rs: pub fn rescale(self, value: i64, to: Timebase) -> Result<i64, StreamError> {
@@ -103,3 +133,49 @@ src/window.rs: pub const fn open(physical: UVec2, backdrop: Backdrop) -> Self {
 src/window.rs: pub const fn with_minimised(self, minimised: bool) -> Self {
 src/window.rs: pub trait WindowHost: Service {
 src/window.rs: pub trait PaletteSource: Service {
+src/worker.rs: pub const PROTOCOL_VERSION: u32 = 1;
+src/worker.rs: pub const MAX_CONTROL_MESSAGE: usize = 64 * 1024;
+src/worker.rs: pub const MAGIC: [u8; 4] = *b"OMZW";
+src/worker.rs: pub const MAX_FDS: usize = 8;
+src/worker.rs: pub enum WorkerMsg {
+src/worker.rs: pub fn hello(kind: WorkerKind, generation: u32) -> Self {
+src/worker.rs: pub fn beat(progress: u64, work: u64) -> Self {
+src/worker.rs: pub fn opened(spec: StreamSpec) -> Self {
+src/worker.rs: pub fn ready(device_ms: f32, pipelines_ms: f32, upload_ms: f32) -> Self {
+src/worker.rs: pub fn frame(slot: u32, index: u64) -> Self {
+src/worker.rs: pub fn slot_free(slot: u32) -> Self {
+src/worker.rs: pub fn gone(reason: impl Into<String>) -> Self {
+src/worker.rs: pub enum HostMsg {
+src/worker.rs: pub fn start(channels: ChannelNames, params: StartParams) -> Self {
+src/worker.rs: pub fn frame(slot: u32, index: u64, pts: i64) -> Self {
+src/worker.rs: pub fn slot_free(slot: u32) -> Self {
+src/worker.rs: pub fn scene(rev: u64) -> Self {
+src/worker.rs: pub fn attach(role: ChannelRole, channel: ChannelRef, generation: u32) -> Self {
+src/worker.rs: pub fn source(source: WorkerId, up: bool) -> Self {
+src/worker.rs: pub fn is_state(&self) -> bool {
+src/worker.rs: pub fn fd_positions(&self) -> Vec<u16> {
+src/worker.rs: pub enum StartParams {
+src/worker.rs: pub fn stage(scene_rev: u64, size: UVec2, fps: (u32, u32)) -> Self {
+src/worker.rs: pub fn tracker(source: impl Into<String>) -> Self {
+src/worker.rs: pub fn encoder(config: EncodeConfig, first_index: u64) -> Self {
+src/worker.rs: pub fn adapter(adapter: impl Into<String>) -> Self {
+src/worker.rs: pub fn kind(&self) -> WorkerKind {
+src/worker.rs: pub struct ChannelNames {
+src/worker.rs: pub fn new(generation: u32, entries: Vec<(ChannelRole, ChannelRef)>) -> Self {
+src/worker.rs: pub fn get(&self, role: ChannelRole) -> Option<&ChannelRef> {
+src/worker.rs: pub enum ChannelRef {
+src/worker.rs: pub fn fd(position: u16) -> Self {
+src/worker.rs: pub fn name(name: impl Into<String>) -> Self {
+src/worker.rs: pub enum ChannelRole {
+src/worker.rs: pub struct ChannelHandle {
+src/worker.rs: pub fn from_fd(fd: std::os::fd::OwnedFd) -> Self {
+src/worker.rs: pub fn fd(&self) -> std::os::fd::BorrowedFd<'_> {
+src/worker.rs: pub fn from_section(handle: std::os::windows::io::OwnedHandle, name: String) -> Self {
+src/worker.rs: pub fn name(&self) -> &str {
+src/worker.rs: pub fn try_clone(&self) -> std::io::Result<ChannelHandle> {
+src/worker.rs: pub fn write_msg<W: Write, M: Serialize>(w: &mut W, msg: &M) -> Result<(), StreamError> {
+src/worker.rs: pub fn read_msg<R: Read, M: DeserializeOwned>(r: &mut R, buf: &mut Vec<u8>) -> Result<Option<M>, StreamError> {
+src/worker.rs: pub use unix::{read_msg_fds, write_msg_fds};
+src/worker.rs: pub fn write_msg_fds<M: Serialize>(s: &UnixStream, msg: &M, fds: &[BorrowedFd<'_>]) -> Result<(), StreamError> {
+src/worker.rs: pub fn read_msg_fds<M: DeserializeOwned + super::FdPositions>(
+src/worker.rs: pub trait FdPositions {

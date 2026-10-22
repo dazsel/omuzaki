@@ -16,7 +16,7 @@ use omuzaki_char_api::{
 };
 use omuzaki_core::glam::Mat4;
 use omuzaki_io_api::{ExpressionName, FirstPersonFlag, LookAtKind};
-use omuzaki_render_api::{MorphSet, OutlineWidthMode};
+use omuzaki_render_api::{MorphSet, Mtoon, OutlineWidthMode};
 use omuzaki_store_api::ContentHash;
 
 use crate::error::AvatarError;
@@ -118,6 +118,9 @@ pub struct ImportedAvatar {
     pub materials: BTreeMap<MaterialName, MaterialSpec>,
     /// The `MToon` outline of each material that has one beyond the kit's line, by material name (#647).
     pub outlines: BTreeMap<MaterialName, AvatarOutline>,
+    /// The `MToon` lighting of each material the importer keeps it for (LK-07, #592), by material name, its textures
+    /// named in [`Self::textures`]. A material without an entry draws with its [`MaterialSpec`]'s toon approximation.
+    pub mtoon: BTreeMap<MaterialName, Mtoon<TextureName>>,
     /// Decoded textures by name.
     pub textures: BTreeMap<TextureName, TextureData>,
     /// The expressions, in file order, names kept.
@@ -153,6 +156,7 @@ impl ImportedAvatar {
             meshes: Vec::new(),
             materials: BTreeMap::new(),
             outlines: BTreeMap::new(),
+            mtoon: BTreeMap::new(),
             textures: BTreeMap::new(),
             expressions: Vec::new(),
             drivers: ChannelDrivers::new(),
