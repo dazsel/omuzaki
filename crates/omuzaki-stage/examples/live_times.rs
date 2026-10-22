@@ -1,6 +1,6 @@
 //! The live loop's frame times (spec v3 §10): `cargo run -p omuzaki-stage --features wgpu --release --example
 //! live_times -- [--character kit|vrm|both] [--size 1920x1080] [--fps 30] [--warmup 20] [--frames 3000] [--unpaced]
-//! [--camera bust|full|face] [--software] [--out DIR]`.
+//! [--steady MS] [--camera bust|full|face] [--software] [--out DIR]`.
 //!
 //! It runs the studio's live path from start to finish, with nothing stood in:
 //! - a project with the kit's default character, made the way `character.create` makes it (template `standard`, seed
@@ -16,11 +16,20 @@
 //!
 //! Printed per character, as mean, p50, p95, p99 and maximum:
 //! - `gpu.frame`: the GPU time of every pass but face paint, from timestamp queries, against `budget::LIVE_GPU`;
-//! - `gpu.face_paint`: the `paint_textures` pass on the frames that ran it, against `budget::FACE_PAINT_GPU`;
+//! - `gpu.face_paint`: the `paint_textures` pass on the frames that ran it (the painter's own commands and the
+//!   renderer's mip rebuild of what it painted), against `budget::FACE_PAINT_GPU`, and `gpu.frame_with_face`, the two
+//!   added on the frames that repainted;
 //! - the frame thread: the wall time of `LiveStage::frame` (performer, stage, face and the renderer's recording), split
 //!   into the renderer's recording (with a CPU face raster, when the GPU one can't run) and the rest (the performer,
 //!   the stage and any wait for the GPU), against the frame period;
 //! - the cold half (`LiveStage::service`) the loop runs after each frame, and every step the scheduler took.
+//!
+//! **Clock state.** Paced at 30 fps, the live frame is a millisecond or two of GPU work in every 33 ms, so a desktop GPU
+//! drops to its idle clock between frames and the first work of a frame (the face paint) runs at it. Spec §10 reads
+//! `gpu.face_paint` at a steady clock (the `gpu_face_timing` probe keeps the GPU busy in front of each repaint) and
+//! reports the paced reading beside it. `--steady MS` does the same here: before each frame it submits a compute load
+//! that keeps the GPU busy for about `MS` milliseconds (2 is the probe's), so the live loop's numbers are the work's and
+//! not the clock state's. Without it, the readings are the paced ones.
 //!
 //! The frame thread is timed with a stopwatch, which §10 does not accept for a gating CPU number (it asks for the OS's
 //! CPU-time counters): read it as the frame's deadline, not as `cpu.total`. Tracking (`track.face`) and the
@@ -86,6 +95,8 @@ struct Args {
     warmup: f64,
     frames: usize,
     paced: bool,
+    /// Milliseconds of GPU load submitted before each frame, to hold the GPU at a steady clock; `None` for none.
+    steady: Option<f64>,
     camera: String,
     software: bool,
     out: Option<PathBuf>,
@@ -99,6 +110,7 @@ fn parse() -> Result<Args, Box<dyn Error>> {
         warmup: 20.0,
         frames: 3000,
         paced: true,
+        steady: None,
         camera: "bust".to_owned(),
         software: false,
         out: None,
@@ -124,6 +136,7 @@ fn parse() -> Result<Args, Box<dyn Error>> {
             "--warmup" => args.warmup = value()?.parse()?,
             "--frames" => args.frames = value()?.parse()?,
             "--unpaced" => args.paced = false,
+            "--steady" => args.steady = Some(value()?.parse()?),
             "--camera" => args.camera = value()?,
             "--software" => args.software = true,
             "--out" => args.out = Some(PathBuf::from(value()?)),
@@ -170,6 +183,7 @@ fn project(clock: &FakeClock) -> Result<(MemDoc, MemStore), Box<dyn Error>> {
 struct Samples {
     gpu_frame: Vec<f64>,
     gpu_paint: Vec<f64>,
+    gpu_with_face: Vec<f64>,
     gpu_passes: Vec<(Pass, f64)>,
     frame: Vec<f64>,
     recording: Vec<f64>,
@@ -217,6 +231,7 @@ fn measure(
     clock: &FakeClock,
     id: &str,
     args: &Args,
+    load: Option<&Load>,
 ) -> Result<Samples, Box<dyn Error>> {
     let id = CharId::new(id)?;
     let (_, mut scene) = scene_for(doc, None)?;
@@ -279,6 +294,10 @@ fn measure(
             }
         }
         let now = Seconds(at + 0.5 / f64::from(STEP_HZ));
+        if let Some(load) = load {
+            let (device, queue) = renderer.device_and_queue();
+            load.submit(device, queue);
+        }
         let begun = Instant::now();
         let frame = live.frame(renderer, now)?;
         let frame_ms = begun.elapsed().as_secs_f64() * 1000.0;
@@ -308,6 +327,7 @@ fn measure(
             samples.gpu_frame.push(ms(gpu.passes.total()) - paint.map_or(0.0, ms));
             if let Some(paint) = paint {
                 samples.gpu_paint.push(ms(paint));
+                samples.gpu_with_face.push(ms(gpu.passes.total()));
             }
             for (pass, time) in gpu.passes.iter() {
                 per_pass.entry(pass.index()).or_default().push(ms(time));
@@ -339,9 +359,17 @@ fn main() -> Result<(), Box<dyn Error>> {
     let args = parse()?;
     let adapter = if args.software { AdapterPreference::Software } else { AdapterPreference::Auto };
     let mut renderer = WgpuRenderer::headless(&HeadlessOptions { adapter })?;
+    let load = match args.steady {
+        Some(ms) => {
+            let (device, queue) = renderer.device_and_queue();
+            Some(Load::new(device, queue, ms)?)
+        }
+        None => None,
+    };
     let capabilities = renderer.capabilities();
+    let steady = load.as_ref().map_or(String::new(), |l| format!(", steady clock ({:.1} ms load a frame)", l.ms));
     println!(
-        "{}  |  {}x{} at {} fps{}  |  warm-up {} s, {} frames  |  live preset  |  gpu timings: {}",
+        "{}  |  {}x{} at {} fps{}{steady}  |  warm-up {} s, {} frames  |  live preset  |  gpu timings: {}",
         capabilities.backend,
         args.size.x,
         args.size.y,
@@ -355,10 +383,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let (doc, store) = project(&clock)?;
     for id in &args.characters {
         let name = if *id == KIT { "the kit character" } else { "the kit character imported from its VRM" };
-        let samples = measure(&mut renderer, &doc, &store, &clock, id, &args)?;
+        let samples = measure(&mut renderer, &doc, &store, &clock, id, &args, load.as_ref())?;
         println!("\n{name} ({id}): {} draw calls, {} triangles a frame", samples.draw_calls, samples.triangles);
         summary("gpu.frame", samples.gpu_frame, Some(ms(budget::LIVE_GPU)));
         summary("gpu.face_paint", samples.gpu_paint, Some(ms(budget::FACE_PAINT_GPU)));
+        summary("gpu.frame_with_face", samples.gpu_with_face, None);
         let rest: Vec<f64> = samples.frame.iter().zip(&samples.recording).map(|(f, r)| f - r).collect();
         let deadline = 1000.0 / args.fps;
         summary("frame thread (wall)", samples.frame, Some(deadline));
@@ -378,4 +407,97 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
     Ok(())
+}
+
+/// A compute pass that keeps the GPU busy for about `ms` milliseconds, submitted before each frame so the frame's work
+/// runs at the clock of a busy GPU (the `gpu_face_timing` probe's load). It writes no timestamp, so it never counts in
+/// the frame's passes.
+struct Load {
+    pipeline: wgpu::ComputePipeline,
+    bind: wgpu::BindGroup,
+    /// What it was sized to, in milliseconds.
+    ms: f64,
+}
+
+/// A loop of integer work in one workgroup, as long as its uniform says.
+const LOAD_WGSL: &str = "
+@group(0) @binding(0) var<storage, read_write> sink: array<u32>;
+@group(0) @binding(1) var<uniform> n: vec4<u32>;
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+    var x = id.x;
+    for (var i = 0u; i < n.x; i++) { x = x * 1664525u + 1013904223u; }
+    sink[id.x] = x;
+}
+";
+
+impl Load {
+    /// Builds the load and sizes it to about `ms` on this GPU, by timing a trial on the wall clock with the GPU
+    /// otherwise idle (the fastest of a few runs, as the first ones also wake the GPU).
+    fn new(device: &wgpu::Device, queue: &wgpu::Queue, ms: f64) -> Result<Self, Box<dyn Error>> {
+        const TRIAL: u32 = 200_000;
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("steady-clock load"),
+            source: wgpu::ShaderSource::Wgsl(LOAD_WGSL.into()),
+        });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("steady-clock load"),
+            layout: None,
+            module: &module,
+            entry_point: Some("main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
+        let buffer = |size, usage| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("steady-clock load"),
+                size,
+                usage,
+                mapped_at_creation: false,
+            })
+        };
+        let sink = buffer(64 * 4, wgpu::BufferUsages::STORAGE);
+        let iterations = buffer(16, wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST);
+        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("steady-clock load"),
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: sink.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: iterations.as_entire_binding() },
+            ],
+        });
+        let set = |n: u32| {
+            let mut bytes = [0_u8; 16];
+            bytes[..4].copy_from_slice(&n.to_le_bytes());
+            queue.write_buffer(&iterations, 0, &bytes);
+        };
+        let mut load = Self { pipeline, bind, ms };
+        set(TRIAL);
+        let mut fastest = f64::INFINITY;
+        for _ in 0..8 {
+            let begun = Instant::now();
+            load.submit(device, queue);
+            device.poll(wgpu::PollType::wait_indefinitely())?;
+            fastest = fastest.min(begun.elapsed().as_secs_f64() * 1000.0);
+        }
+        // Thousands to millions of iterations: well inside a u32.
+        set((ms / fastest * f64::from(TRIAL)).clamp(1_000.0, 1e9) as u32);
+        load.ms = ms;
+        Ok(load)
+    }
+
+    fn submit(&self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("steady-clock load") });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("steady-clock load"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &self.bind, &[]);
+            pass.dispatch_workgroups(1, 1, 1);
+        }
+        queue.submit([encoder.finish()]);
+    }
 }

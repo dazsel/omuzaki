@@ -4894,6 +4894,7 @@ dependencies = [
  "tracing",
  "unicode-bidi",
  "unicode-normalization",
+ "wgpu",
  "xtask",
 ]
 

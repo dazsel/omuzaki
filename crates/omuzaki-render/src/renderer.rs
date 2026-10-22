@@ -162,6 +162,13 @@ impl WgpuRenderer {
             .ok_or(RenderError::UnknownHandle { what: "target" })
     }
 
+    /// The device and queue the renderer draws with, for work a caller submits beside it on the same GPU: a benchmark's
+    /// load that holds the GPU at a steady clock (spec §10, `gpu.face_paint`), or an output that copies a target.
+    /// Submitting on them never disturbs the renderer: it records and submits its own work.
+    pub fn device_and_queue(&self) -> (&wgpu::Device, &wgpu::Queue) {
+        (&self.shared.gpu.device, &self.shared.gpu.queue)
+    }
+
     /// Blocks until the GPU has finished everything submitted so far, or for two minutes at most. For tests and
     /// benchmarks; a frame loop never needs it. (A lost device ends the wait without an error here: the next call
     /// reports it.)
