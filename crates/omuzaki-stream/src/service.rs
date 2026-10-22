@@ -155,6 +155,16 @@ impl StreamService {
     /// # Errors
     /// [`StreamError::Io`] if the pump thread cannot be started.
     pub fn new() -> Result<Self, StreamError> {
+        Self::with_epoch(Instant::now())
+    }
+
+    /// As [`new`](Self::new), with the pipeline clock's zero at `epoch`. The app gives the stream service and the
+    /// audio engine the same epoch, so a frame's capture time and the engine clock's time are on one timeline and a
+    /// take's audio lines up with its video.
+    ///
+    /// # Errors
+    /// [`StreamError::Io`] if the pump thread cannot be started.
+    pub fn with_epoch(epoch: Instant) -> Result<Self, StreamError> {
         let (full_tx, full_rx) = sync_channel::<Slot>(POOL_SLOTS);
         let (free_tx, free_rx) = sync_channel::<Slot>(POOL_SLOTS);
         for _ in 0..POOL_SLOTS {
@@ -174,7 +184,7 @@ impl StreamService {
             pumped: AtomicU64::new(0),
             program: Mutex::new(Program::default()),
             key: Mutex::new(DEFAULT_KEY),
-            epoch: Instant::now(),
+            epoch,
         });
         let pump_inner = Arc::clone(&inner);
         let pump = std::thread::Builder::new()
@@ -187,6 +197,11 @@ impl StreamService {
     /// The time now on the service's clock, for callers with no capture time of their own.
     pub fn now(&self) -> Ticks {
         Ticks(i64::try_from(self.inner.epoch.elapsed().as_nanos()).unwrap_or(i64::MAX))
+    }
+
+    /// The pipeline clock's zero.
+    pub fn epoch(&self) -> Instant {
+        self.inner.epoch
     }
 
     /// Sets the program picture's format, which new outputs use unless they ask otherwise.

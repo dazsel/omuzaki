@@ -24,6 +24,7 @@
 //! | [`report`] | latency, health, events and meters |
 //! | [`engine`] | [`AudioEngine`], [`OfflineRender`] and [`AudioError`] |
 //! | [`preset`] | effect presets |
+//! | [`voice`] | voice activity and the lip-sync visemes the face hears ([`VoiceSource`](voice::VoiceSource)) |
 //!
 //! # Real-time rules
 //!
@@ -44,6 +45,7 @@ pub mod report;
 pub mod ring;
 pub mod semantics;
 pub mod tap;
+pub mod voice;
 
 pub use backend::{AudioBackend, BackendError, CallbackTime, DeviceStream, StreamConfig};
 pub use clock::{ClockSnapshot, EngineClock};

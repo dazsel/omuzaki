@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use omuzaki_ai_api::ModelRegistry;
 use omuzaki_anim::BusAnimator;
 use omuzaki_anim::life::Life;
 use omuzaki_anim::retarget::ArkitRetarget;
@@ -10,6 +11,7 @@ use omuzaki_ops_api::Mode;
 use omuzaki_stage::perform::host::PerformHost;
 use omuzaki_stage::perform::input::{InputHost as _, LiveInput, NoPrompt};
 use omuzaki_stage::perform::{Performer, PerformerParts};
+use omuzaki_track_api::pose_out::PoseOutput;
 use omuzaki_track_api::tracker::{Tracker, TrackerConfig};
 
 use super::clock::PerformClock;
@@ -29,6 +31,27 @@ pub fn live_performer(source: Box<dyn FrameSource>, rest: ChannelBuf, base: Huma
         animator: Box::new(BusAnimator::default()),
     };
     Performer::new(parts, rest, base)
+}
+
+/// The inputs beside the webcam's tracker, when the App has them ([`studio_inputs`](super::inputs::studio_inputs) builds them).
+#[derive(Default)]
+pub struct Extras {
+    /// The phone link: the iPhone source's tracker.
+    pub phone: Option<Box<dyn Tracker>>,
+    /// VMC out.
+    pub pose_out: Option<Box<dyn PoseOutput>>,
+    /// The model registry, for the `model.*` ops (the app puts it in the runner's services; the rig ignores it).
+    pub models: Option<Arc<dyn ModelRegistry>>,
+}
+
+impl std::fmt::Debug for Extras {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Extras")
+            .field("phone", &self.phone.is_some())
+            .field("pose_out", &self.pose_out.is_some())
+            .field("models", &self.models.is_some())
+            .finish()
+    }
 }
 
 /// The perform thread and the tracking input (the stage's [`LiveInput`], which owns the tracker). Dropping it runs
@@ -51,9 +74,29 @@ impl LiveRig {
         performer: Performer,
         clock: Box<dyn PerformClock>,
     ) -> Result<(Self, FrameReader), WiringError> {
+        Self::start_with(tracker, Extras::default(), config, performer, clock)
+    }
+
+    /// [`start`](Self::start), with the phone link and the pose output in `extras` handed to the input as well.
+    ///
+    /// # Errors
+    /// [`WiringError::Spawn`] if the thread can't start.
+    pub fn start_with(
+        tracker: Box<dyn Tracker>,
+        extras: Extras,
+        config: TrackerConfig,
+        performer: Performer,
+        clock: Box<dyn PerformClock>,
+    ) -> Result<(Self, FrameReader), WiringError> {
         let (perform, reader) = PerformThread::spawn(performer, clock)?;
         // Desktop Windows and Linux have no camera prompt; a platform that has one brings its own permission.
-        let input = LiveInput::new(tracker, Box::new(NoPrompt), config, perform.sources(), perform.host());
+        let mut input = LiveInput::new(tracker, Box::new(NoPrompt), config, perform.sources(), perform.host());
+        if let Some(phone) = extras.phone {
+            input = input.with_phone(phone);
+        }
+        if let Some(pose_out) = extras.pose_out {
+            input = input.with_pose_out(pose_out);
+        }
         Ok((Self { perform: Some(perform), input: Arc::new(input) }, reader))
     }
 

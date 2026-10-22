@@ -527,7 +527,7 @@ scene switch, expression, sound or AI line is an action without a node per op:
 ```toml
 kind = "op.run"
 [params]
-op = "obs.set_scene"
+op = "obs.scene.set"
 args = { scene = "$in.scene", transition_ms = 300 }
 [in]
 in = "cmd.fired"

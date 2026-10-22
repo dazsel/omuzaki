@@ -1,7 +1,8 @@
 section = "rust"
 item = "cpal"
 kind = "crate"
-used_for = "audio I/O"
+used_for = "audio device I/O: the live engine's microphone and device inputs (`omuzaki-audio-engine`)"
 status = "conditions"
-condition = "`asio` feature banned"
+condition = "`asio` feature banned; on Linux it links the system ALSA library (libasound, LGPL-2.1) dynamically, never statically"
 audit = "B4"
+crates = ["cpal"]

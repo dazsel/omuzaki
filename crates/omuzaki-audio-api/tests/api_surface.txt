@@ -83,6 +83,7 @@ src/lib.rs: pub mod report;
 src/lib.rs: pub mod ring;
 src/lib.rs: pub mod semantics;
 src/lib.rs: pub mod tap;
+src/lib.rs: pub mod voice;
 src/lib.rs: pub use backend::{AudioBackend, BackendError, CallbackTime, DeviceStream, StreamConfig};
 src/lib.rs: pub use clock::{ClockSnapshot, EngineClock};
 src/lib.rs: pub use device::{Binding, ChannelMap, DeviceId, DeviceInfo, DeviceState, Direction, ProfileStore};
@@ -234,3 +235,10 @@ src/tap.rs: pub fn is_closed(&self) -> bool {
 src/tap.rs: pub fn new() -> (Self, TapClosed) {
 src/tap.rs: pub struct TapInfo {
 src/tap.rs: pub struct FeedRequest {
+src/voice.rs: pub const VISEME_COUNT: usize = 5;
+src/voice.rs: pub const VISEMES: [&str; VISEME_COUNT] = ["aa", "ih", "ou", "ee", "oh"];
+src/voice.rs: pub const VOICE_HOP_SECONDS: f64 = 0.01;
+src/voice.rs: pub struct VoiceFrame {
+src/voice.rs: pub fn silent(sample: u64, time: Seconds) -> Self {
+src/voice.rs: pub fn weight(&self, name: &str) -> Option<f32> {
+src/voice.rs: pub trait VoiceSource: Send + Sync {

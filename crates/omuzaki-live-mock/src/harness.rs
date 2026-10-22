@@ -521,6 +521,25 @@ impl NodeHarness {
         self.step(self.now(), token, &Item::Event(port.to_owned()));
     }
 
+    /// A pulse on the event input `port` in a fresh token rooted at `event`, at its timestamp (or now, if that is
+    /// later): what a node downstream of a trigger sees, for nodes that read the root event (`cx.event()`), such as a
+    /// per-user cooldown.
+    ///
+    /// # Panics
+    /// If `port` isn't an event input.
+    pub fn send_from(&mut self, port: &str, event: LiveEvent) {
+        assert!(
+            self.host.ports.input(port).is_some_and(|p| p.ty.is_event()),
+            "{} has no event input {port}",
+            self.meta.id
+        );
+        self.ensure_started();
+        let at = if event.at.0 > self.now().0 { event.at } else { self.now() };
+        self.advance_to(at);
+        let token = self.host.token(event);
+        self.step(at, token, &Item::Event(port.to_owned()));
+    }
+
     /// `event` to a trigger at its timestamp, in a fresh token rooted at it, as the engine delivers an inbox item
     /// (design D5): a later stamp first moves the clock to it, running the wakes and replies due by then (a wake
     /// due at the same time runs first); an earlier one runs now, since time never goes backwards.
