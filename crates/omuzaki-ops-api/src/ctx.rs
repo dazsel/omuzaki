@@ -117,6 +117,14 @@ impl<'a> OpCtx<'a> {
         self.grants.allows(scope)
     }
 
+    /// Whether the request's grants include `scope`, for an op whose effect reaches past its own scope: one that
+    /// stores another op to run later must refuse an op the caller could not run itself (`input.binding.set_action`),
+    /// and one whose answer holds something only a scope may see must leave it out (`input.capture.state`). It answers
+    /// for one scope and shows nothing else of the grants. In a dry-run it answers the same.
+    pub fn allows(&self, scope: crate::Scope) -> bool {
+        self.grants_allow(scope)
+    }
+
     /// The app's implementation of the API trait `S`, for example `ctx.service::<dyn RenderService>()`.
     ///
     /// # Errors

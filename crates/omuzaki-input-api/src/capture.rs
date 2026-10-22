@@ -181,6 +181,10 @@ pub struct CaptureCaps {
     pub gamepad: Support,
     /// Keyboard bindings.
     pub bindings: Support,
+    /// MIDI controllers (bindings only).
+    pub midi: Support,
+    /// OSC messages that press bindings.
+    pub osc: Support,
 }
 
 /// Everything `input.capture.state` reports: the state, the per-backend list and the capabilities.

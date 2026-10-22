@@ -22,11 +22,16 @@ pub enum DeviceClass {
     Pen,
     /// A gamepad.
     Gamepad,
+    /// A MIDI controller: its notes, controls and program changes, for bindings only (#469).
+    Midi,
+    /// OSC messages on this machine that press bindings by id (#469): a control surface, a Stream Deck through its
+    /// OSC plugin or Companion, a script.
+    Osc,
 }
 
 impl DeviceClass {
     /// Every class, in a fixed order (their bits in [`DeviceMask`]).
-    pub const ALL: [Self; 4] = [Self::Keyboard, Self::Mouse, Self::Pen, Self::Gamepad];
+    pub const ALL: [Self; 6] = [Self::Keyboard, Self::Mouse, Self::Pen, Self::Gamepad, Self::Midi, Self::Osc];
 
     /// The class's bit in a [`DeviceMask`].
     pub const fn bit(self) -> u8 {
@@ -43,7 +48,7 @@ impl DeviceMask {
     /// No class.
     pub const NONE: Self = Self(0);
     /// Every class.
-    pub const ALL: Self = Self(0b1111);
+    pub const ALL: Self = Self(0b11_1111);
 
     /// The set holding `classes`.
     pub fn of(classes: &[DeviceClass]) -> Self {
