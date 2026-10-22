@@ -1,0 +1,1 @@
+{"turn":1,"call":"face.expression.set","args":{"character":"{main}","id":"smirk","kind":"emotion","deltas":{"mouthSmileLeft":0.7}},"applied":true}

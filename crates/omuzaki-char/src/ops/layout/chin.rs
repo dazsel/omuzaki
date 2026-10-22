@@ -12,9 +12,17 @@ const HEAD_KIND: &str = "head";
 /// The head-local height of the chin of `character`'s head.
 ///
 /// # Errors
+/// As [`head_of`].
+pub(super) fn head_chin(def: &CharacterDef, character: &CharId) -> Result<f64, OpError> {
+    head_of(def, character).map(|params| params.outline.chin_y())
+}
+
+/// The parameters of `character`'s head.
+///
+/// # Errors
 /// `Invalid` naming `character` when it has no enabled head part, or more than one (a layout needs exactly one head);
 /// `Invalid` naming `parts/<id>/params` when that head's parameters don't read as a head.
-pub(super) fn head_chin(def: &CharacterDef, character: &CharId) -> Result<f64, OpError> {
+pub(super) fn head_of(def: &CharacterDef, character: &CharId) -> Result<HeadParams, OpError> {
     let enabled: Vec<(&PartId, &PartDef)> =
         def.parts.iter().filter(|(_, part)| part.kind.as_str() == HEAD_KIND && part.enabled).collect();
     let (id, part) = match enabled.as_slice() {
@@ -41,7 +49,7 @@ pub(super) fn head_chin(def: &CharacterDef, character: &CharId) -> Result<f64, O
             .hint("disable all but one head with `part.set_enabled`"));
         }
     };
-    head_params(id, part).map(|params| params.outline.chin_y())
+    head_params(id, part)
 }
 
 /// The head's parameters as the head kind reads them. Absent keys take their defaults, as the build does.
