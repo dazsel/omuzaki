@@ -354,9 +354,15 @@ impl Pacer {
         }
     }
 
-    /// Records a send at `now`.
+    /// Records a send at `now`. A frame send that follows the last one within two gaps is booked on the 60 Hz grid,
+    /// not at `now`: the bridge looks a little after each frame arrives, and booking that lateness would push every
+    /// later send back until frames merge (a 60 Hz feed would reach VTS at 40 to 50 a second). Over any stretch the
+    /// sends still average at most one per gap.
     pub fn sent(&mut self, now: Duration) {
-        self.last = Some(now);
+        self.last = Some(match self.last {
+            Some(last) if now >= last + MIN_SEND_GAP && now < last + MIN_SEND_GAP * 2 => last + MIN_SEND_GAP,
+            _ => now,
+        });
     }
 
     /// Forgets the last send (a new session).

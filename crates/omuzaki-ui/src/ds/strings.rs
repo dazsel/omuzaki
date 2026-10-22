@@ -90,6 +90,10 @@ messages! {
 
     ToastDismiss = "ds-toast-dismiss" => "Dismiss notification",
     ToastRepeated = "ds-toast-repeated" => "{message}, repeated {count} times",
+    /// What a screen reader hears for a field's error: the status word, then the message.
+    FieldError = "ds-field-error" => "{status}: {message}",
+    /// The same for a disabled field, followed by why it is disabled.
+    FieldErrorDisabled = "ds-field-error-disabled" => "{status}: {message}. {reason}",
     FieldClear = "ds-field-clear" => "Clear {label}",
 
     ParamLocked = "ds-param-locked" => "Locked",

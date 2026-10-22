@@ -1,7 +1,7 @@
 //! Tooltips (`design-system.md` section 7.0): name, shortcut, then the op name in mono; 500 ms hover delay,
 //! immediate on keyboard focus, at most 320 pt wide, Esc dismisses.
 
-use egui::{Key, Response, RichText, Sense, Ui, vec2};
+use egui::{Key, Popup, Response, RichText, Sense, Tooltip, Ui, vec2};
 
 use super::keycap::{CapStyle, KeyCaps, Shortcut};
 use crate::ds::focus;
@@ -84,7 +84,8 @@ impl TipExt for Response {
                 self.ctx.data_mut(|d| d.insert_temp(dismissed_id, true));
             }
             if !self.ctx.data(|d| d.get_temp::<bool>(dismissed_id)).unwrap_or(false) {
-                self.show_tooltip_ui(|ui| tip.show(ui, &ds));
+                let popup = egui::Popup::from_response(&self).kind(egui::PopupKind::Tooltip);
+                still(popup).show(|ui| tip.show(ui, &ds));
             }
             return self;
         }
@@ -92,10 +93,15 @@ impl TipExt for Response {
         if self.ctx.data(|d| d.get_temp::<bool>(dismissed_id)).is_some() {
             self.ctx.data_mut(|d| d.remove::<bool>(dismissed_id));
         }
-        if self.enabled() {
-            self.on_hover_ui(|ui| tip.show(ui, &ds))
-        } else {
-            self.on_disabled_hover_ui(|ui| tip.show(ui, &ds))
-        }
+        let mut tooltip = if self.enabled() { Tooltip::for_enabled(&self) } else { Tooltip::for_disabled(&self) };
+        tooltip.popup = still(tooltip.popup);
+        tooltip.show(|ui| tip.show(ui, &ds));
+        self
     }
+}
+
+/// A tooltip that takes no input. egui's popups sense clicks by default, which makes every tooltip a clickable node
+/// with no name of its own: a screen reader would offer it as a control.
+fn still(popup: Popup<'_>) -> Popup<'_> {
+    popup.interactable(false).sense(Sense::hover())
 }

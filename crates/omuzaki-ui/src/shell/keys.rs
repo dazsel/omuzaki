@@ -26,6 +26,10 @@ pub enum Action {
     NextPanel,
     /// Shift+F6.
     PreviousPanel,
+    /// Ctrl+/: the shortcut sheet.
+    ShortcutSheet,
+    /// Ctrl+Alt+P: pause or resume the active agent.
+    PauseAgent,
 }
 
 const NUMBERS: [Key; 9] =
@@ -41,6 +45,10 @@ pub fn resolve(ctx: &Context) -> Option<Action> {
         // The more specific chords first: Ctrl+Shift+Z must not be read as Ctrl+Z.
         if i.consume_key(cmd | Modifiers::SHIFT, Key::Z) || i.consume_key(cmd, Key::Y) {
             Some(Action::Redo)
+        } else if i.consume_key(cmd | Modifiers::ALT, Key::P) {
+            Some(Action::PauseAgent)
+        } else if i.consume_key(cmd, Key::Slash) {
+            Some(Action::ShortcutSheet)
         } else if i.consume_key(cmd | Modifiers::SHIFT, Key::L) {
             Some(Action::ToggleLock)
         } else if i.consume_key(cmd, Key::Z) {
@@ -93,6 +101,8 @@ mod tests {
             (cmd, Key::Space, Action::ToggleMaximise),
             (Modifiers::NONE, Key::F6, Action::NextPanel),
             (shift, Key::F6, Action::PreviousPanel),
+            (cmd, Key::Slash, Action::ShortcutSheet),
+            (cmd | Modifiers::ALT, Key::P, Action::PauseAgent),
         ] {
             let mut harness = harness();
             press(&mut harness, modifiers, key);

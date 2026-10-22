@@ -1,19 +1,26 @@
 //! The UI scale audit (SE-02, `design-system.md` sections 3 and 10): every gallery story, drawn in its card at 75, 100,
 //! 125, 150 and 200% UI scale, must have no text clipped, no text or control outside the window, and no two pieces of
-//! text or controls drawn over one another (nesting excepted). Each failure names its story and its scale.
+//! text or controls drawn over one another (nesting excepted). Each failure names its story, its scale and its width.
+//!
+//! The audit runs twice: once with the card as wide as the window, and once at the width the story gets in the gallery,
+//! one of its columns (#140). At column width the column is the bounds: a control that runs out of its column is
+//! outside what the gallery gives it, though the window would still have room.
 //!
 //! The audit reads the frame egui produced (`ds::audit::layout_findings`) and the accessibility tree
 //! (`control_overlaps`, `control_bounds`), so a component that draws out of place is caught without anybody listing
 //! its geometry.
 
 use std::any::Any;
+use std::cell::Cell;
+use std::fmt;
+use std::rc::Rc;
 
 use egui::accesskit::{Action, Role};
 use egui::{Frame, Label, Margin, Rect, Stroke, TextWrapMode, Ui, pos2, vec2};
 use egui_kittest::kittest::NodeT as _;
 use egui_kittest::{Harness, Node};
 use omuzaki_ui::ds::audit::{Control, LayoutFinding, LayoutProblem, control_bounds, control_overlaps, layout_findings};
-use omuzaki_ui::ds::gallery::{Story, all};
+use omuzaki_ui::ds::gallery::{BODY_MARGIN, Story, all, columns};
 use omuzaki_ui::ds::tokens::radius;
 use omuzaki_ui::ds::{Scale, Settings, Theme, ThemeKind, apply_settings};
 
@@ -22,6 +29,24 @@ const SCALES: [u16; 5] = [75, 100, 125, 150, 200];
 
 /// A 1680 pt wide window (the gallery's default), tall enough that no story scrolls.
 const WINDOW: (f32, f32) = (1680.0, 4000.0);
+
+/// How wide the story's card is laid out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Width {
+    /// As wide as the window.
+    Window,
+    /// One column of the gallery in a window [`WINDOW`] wide, as `ds::gallery` divides it at this scale.
+    Column,
+}
+
+impl fmt::Display for Width {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Window => "window width",
+            Self::Column => "column width",
+        })
+    }
+}
 
 /// One known layout problem, named exactly. It is expected to appear at every scale in [`SCALES`] and nowhere else:
 /// a matching finding is allowed, any other finding fails, and an entry that no longer matches fails too, so it is
@@ -53,20 +78,37 @@ impl Expected {
 /// fix lands. Entries with the same text and overlap are one entry, since they are one defect.
 const EXPECTED_FAILURES: &[Expected] = &[];
 
-/// Draws `draw` in a gallery-style card at `scale` and returns every layout problem the frame has.
-fn audit(scale: u16, draw: impl FnMut(&mut Ui) + 'static) -> Vec<LayoutFinding> {
+/// Draws `draw` in a gallery-style card at `scale` and `width` and returns every layout problem the frame has.
+fn audit(scale: u16, width: Width, draw: impl FnMut(&mut Ui) + 'static) -> Vec<LayoutFinding> {
     let settings = Settings { scale: Scale::nearest(scale), ..Settings::default() };
     let mut draw = draw;
+    // Where the column is, for the bounds at column width.
+    let column = Rc::new(Cell::new(None::<Rect>));
+    let placed = Rc::clone(&column);
     let mut harness = Harness::builder().with_size(vec2(WINDOW.0, WINDOW.1)).build_ui(move |ui| {
         apply_settings(ui.ctx(), settings);
-        card(ui, &mut draw);
+        match width {
+            Width::Window => card(ui, &mut draw),
+            Width::Column => {
+                // The gallery's body is the window less its margins, shared between as many columns as fit.
+                let body = ui.ctx().content_rect().width() - 2.0 * f32::from(BODY_MARGIN);
+                let (_, wide) = columns(body);
+                let left = ui.cursor().min.x;
+                ui.vertical(|ui| {
+                    ui.set_width(wide);
+                    card(ui, &mut draw);
+                });
+                let window = ui.ctx().content_rect();
+                placed.set(Some(Rect::from_x_y_ranges(left..=left + wide, window.y_range())));
+            }
+        }
     });
     harness.run_steps(4);
-    let window = harness.ctx.content_rect();
+    let bounds = column.get().unwrap_or_else(|| harness.ctx.content_rect());
     let controls = controls(&harness);
-    let mut found = layout_findings(harness.output(), window);
+    let mut found = layout_findings(harness.output(), bounds);
     found.extend(control_overlaps(&controls));
-    found.extend(control_bounds(&controls, window));
+    found.extend(control_bounds(&controls, bounds));
     found
 }
 
@@ -141,12 +183,22 @@ fn operable(node: &Node<'_>) -> bool {
 
 #[test]
 fn every_gallery_story_is_clear_of_its_window_and_itself_at_every_scale() {
+    check_every_story(Width::Window);
+}
+
+#[test]
+fn every_gallery_story_is_clear_of_its_column_and_itself_at_every_scale() {
+    check_every_story(Width::Column);
+}
+
+/// Audits every story at every scale at `width`, holding the findings to [`EXPECTED_FAILURES`].
+fn check_every_story(width: Width) {
     let mut problems = Vec::new();
     // (index into EXPECTED_FAILURES, scale) for every expected entry that a finding matched.
     let mut matched: Vec<(usize, u16)> = Vec::new();
     for scale in SCALES {
         for story in all() {
-            for finding in audit_story(story, scale) {
+            for finding in audit_story(story, scale, width) {
                 let entries: Vec<usize> = EXPECTED_FAILURES
                     .iter()
                     .enumerate()
@@ -154,18 +206,18 @@ fn every_gallery_story_is_clear_of_its_window_and_itself_at_every_scale() {
                     .map(|(index, _)| index)
                     .collect();
                 if entries.is_empty() {
-                    problems.push(format!("{} @ {scale}%: {finding}", story.id));
+                    problems.push(format!("{} @ {scale}%, {width}: {finding}", story.id));
                 }
                 matched.extend(entries.into_iter().map(|index| (index, scale)));
             }
         }
     }
-    assert!(problems.is_empty(), "{} layout problems:\n{}", problems.len(), problems.join("\n"));
+    assert!(problems.is_empty(), "{} layout problems at {width}:\n{}", problems.len(), problems.join("\n"));
     for (index, expected) in EXPECTED_FAILURES.iter().enumerate() {
         for scale in SCALES {
             assert!(
                 matched.contains(&(index, scale)),
-                "{} ({}) no longer shows its expected failure at {scale}%; remove its entry",
+                "{} ({}) no longer shows its expected failure at {scale}%, {width}; remove its entry",
                 expected.story,
                 expected.defect
             );
@@ -173,10 +225,10 @@ fn every_gallery_story_is_clear_of_its_window_and_itself_at_every_scale() {
     }
 }
 
-/// One story in its card at `scale`. Its state is made fresh, as the gallery makes it.
-fn audit_story(story: &'static Story, scale: u16) -> Vec<LayoutFinding> {
+/// One story in its card at `scale` and `width`. Its state is made fresh, as the gallery makes it.
+fn audit_story(story: &'static Story, scale: u16, width: Width) -> Vec<LayoutFinding> {
     let mut state: Box<dyn Any> = (story.new_state)();
-    audit(scale, move |ui| (story.show)(ui, &mut *state))
+    audit(scale, width, move |ui| (story.show)(ui, &mut *state))
 }
 
 /// A label drawn in a fixed-width box and never wrapped. Its text is wider than the layout left at 200% (the window's
@@ -189,12 +241,29 @@ fn a_planted_fixed_width_label_that_overflows_at_200_fails_and_is_named() {
     let planted = |ui: &mut Ui| {
         ui.add_sized(vec2(900.0, 28.0), Label::new(PLANTED_TEXT).wrap_mode(TextWrapMode::Extend));
     };
-    let at_100 = audit(100, planted);
+    let at_100 = audit(100, Width::Window, planted);
     assert!(at_100.is_empty(), "the planted fixed-width label should fit at 100%: {at_100:?}");
-    let at_200 = audit(200, planted);
+    let at_200 = audit(200, Width::Window, planted);
     assert!(
         at_200.iter().any(|f| f.problem == LayoutProblem::OutsideWindow),
         "the planted fixed-width label should fail at 200% (named in the test): {at_200:?}"
+    );
+}
+
+/// A button drawn at a fixed 760 points: the window's width has room for it at 100%, one gallery column does not.
+const PLANTED_WIDTH: f32 = 760.0;
+
+#[test]
+fn a_planted_control_that_fits_only_the_full_width_is_flagged_at_column_width() {
+    let planted = |ui: &mut Ui| {
+        ui.add_sized(vec2(PLANTED_WIDTH, 28.0), egui::Button::new("Planted wide control"));
+    };
+    let wide = audit(100, Width::Window, planted);
+    assert!(wide.is_empty(), "the planted control fits the window's width: {wide:?}");
+    let narrow = audit(100, Width::Column, planted);
+    assert!(
+        narrow.iter().any(|f| f.problem == LayoutProblem::OutsideWindow && f.what == "Planted wide control"),
+        "the planted control runs out of its column and must be named: {narrow:?}"
     );
 }
 
@@ -217,7 +286,7 @@ fn a_label_after_a_box_in_a_wrapped_row_is_not_an_overlap() {
         });
     };
     for scale in SCALES {
-        let found = audit(scale, draw);
+        let found = audit(scale, Width::Window, draw);
         assert!(found.is_empty(), "the indent of a wrapped label is not painted text at {scale}%: {found:?}");
     }
 }
@@ -231,7 +300,7 @@ fn text_painted_over_a_wrapped_label_is_still_an_overlap() {
         let at = top + vec2(130.0, 0.0);
         ui.painter().text(at, egui::Align2::LEFT_TOP, "stray", egui::FontId::proportional(14.0), egui::Color32::WHITE);
     };
-    let found = audit(100, draw);
+    let found = audit(100, Width::Window, draw);
     assert!(
         found
             .iter()
@@ -262,7 +331,7 @@ fn text_touching_only_a_glyphs_left_overhang_is_still_an_overlap() {
         ui.painter().galley(origin, j, white);
         ui.painter().galley(stray_at, stray, white);
     };
-    let found = audit(100, draw);
+    let found = audit(100, Width::Window, draw);
     assert!(
         found.iter().any(|f| f.problem == LayoutProblem::Overlap),
         "text touching only the overhang of a glyph must be reported: {found:?}"

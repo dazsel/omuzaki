@@ -66,21 +66,32 @@ fn queue_key<S>(harness: &Harness<'_, S>, modifiers: Modifiers, key: Key) {
     }
 }
 
-/// Moves the pointer, presses, moves along `path`, releases: one drag gesture, one frame per step.
+/// Moves the pointer, presses, moves along `path`, releases: one drag gesture, running until idle after each step.
 pub fn drag<S>(harness: &mut Harness<'_, S>, path: &[Pos2]) {
+    drag_with(harness, path, |h| {
+        h.run();
+    });
+}
+
+/// [`drag`] with `frames` frames after each step, for a UI that never goes idle (see [`press_for`]).
+pub fn drag_for<S>(harness: &mut Harness<'_, S>, path: &[Pos2], frames: usize) {
+    drag_with(harness, path, |h| h.run_steps(frames));
+}
+
+fn drag_with<S>(harness: &mut Harness<'_, S>, path: &[Pos2], settle: impl Fn(&mut Harness<'_, S>)) {
     let Some(&start) = path.first() else { return };
     harness.hover_at(start);
-    harness.run();
+    settle(harness);
     harness.event(Event::PointerButton {
         pos: start,
         button: egui::PointerButton::Primary,
         pressed: true,
         modifiers: Modifiers::NONE,
     });
-    harness.run();
+    settle(harness);
     for &p in &path[1..] {
         harness.event(Event::PointerMoved(p));
-        harness.run();
+        settle(harness);
     }
     let end = *path.last().unwrap_or(&start);
     harness.event(Event::PointerButton {
@@ -89,7 +100,7 @@ pub fn drag<S>(harness: &mut Harness<'_, S>, path: &[Pos2]) {
         pressed: false,
         modifiers: Modifiers::NONE,
     });
-    harness.run();
+    settle(harness);
 }
 
 /// Every AccessKit node a person can operate that has no accessible name.
@@ -98,6 +109,12 @@ pub fn drag<S>(harness: &mut Harness<'_, S>, path: &[Pos2]) {
 /// without describing itself shows up as a nameless `Unknown` node, which is exactly the one a screen reader would
 /// read out as nothing. Containers that take no action (the window, groups) are not operated and need no name.
 pub fn unlabelled_interactive<S>(harness: &Harness<'_, S>) -> Vec<String> {
+    unlabelled_nodes(harness).into_iter().map(|(role, rect)| format!("{role:?} at {rect:?} has no label")).collect()
+}
+
+/// The nodes [`unlabelled_interactive`] reports, by role and where they are, for a caller that says which part of the
+/// window each is in (the shell names the panel).
+pub fn unlabelled_nodes<S>(harness: &Harness<'_, S>) -> Vec<(accesskit::Role, egui::Rect)> {
     use accesskit::{Action, Role};
     let interactive_role = |role: Role| {
         matches!(
@@ -126,7 +143,7 @@ pub fn unlabelled_interactive<S>(harness: &Harness<'_, S>) -> Vec<String> {
                 || ak.data().supports_action(Action::Click));
         let named = ak.label().is_some_and(|l| !l.trim().is_empty());
         if operated && !named {
-            bad.push(format!("{:?} at {:?} has no label", ak.role(), node.rect()));
+            bad.push((ak.role(), node.rect()));
         }
     }
     bad
@@ -174,7 +191,7 @@ pub fn tab_through<S>(harness: &mut Harness<'_, S>, limit: usize) -> Vec<TabStop
 
 /// The places where Tab does not follow the eye: a stop that is above the previous one, or to its left in the same
 /// row. Rows are told apart by the vertical distance between centres, so a taller widget beside a short one still
-/// counts as one row.
+/// counts as one row. A stop inside the previous one is in order: the group comes first, then what it holds.
 pub fn reading_order_violations(stops: &[TabStop]) -> Vec<String> {
     const SAME_ROW: f32 = 12.0;
     stops
@@ -182,6 +199,10 @@ pub fn reading_order_violations(stops: &[TabStop]) -> Vec<String> {
         .filter_map(|pair| {
             let (a, b) = (&pair[0], &pair[1]);
             if a.ordered_by_data && b.ordered_by_data {
+                return None;
+            }
+            // A group that takes the focus itself (a tab strip) comes before the items inside it.
+            if a.rect.expand(0.5).contains_rect(b.rect) {
                 return None;
             }
             let dy = b.rect.center().y - a.rect.center().y;

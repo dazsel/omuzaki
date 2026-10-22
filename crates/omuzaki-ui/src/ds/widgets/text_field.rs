@@ -13,7 +13,7 @@ use crate::ds::icons;
 use crate::ds::paint::{self, RingPlacement};
 use crate::ds::strings::Msg;
 use crate::ds::theme::{Ds, ds};
-use crate::ds::tokens::{radius, size, space};
+use crate::ds::tokens::{Status, radius, size, space};
 
 /// A single-line text input.
 #[must_use = "a text field does nothing until it is added to a Ui"]
@@ -138,8 +138,15 @@ impl Widget for TextField<'_> {
                 .margin(egui::Margin::ZERO)
                 .desired_width(inner.width())
                 .interactive(enabled)
-                // Esc is ours: it clears first and only then leaves, so the TextEdit must not surrender focus itself.
-                .event_filter(egui::EventFilter { escape: true, ..egui::EventFilter::default() });
+                // Esc is ours: it clears first and only then leaves, so the TextEdit must not surrender focus itself. The
+                // arrows stay too, as they do in egui's own filter: they move the caret, never the keyboard to the clear
+                // button.
+                .event_filter(egui::EventFilter {
+                    escape: true,
+                    horizontal_arrows: true,
+                    vertical_arrows: true,
+                    ..egui::EventFilter::default()
+                });
             if ime.composing() {
                 // The preedit is drawn by the layouter, over the place the placeholder would be.
                 edit = edit.layouter(&mut composing_layout).hint_text("");
@@ -177,28 +184,51 @@ impl Widget for TextField<'_> {
             response.request_focus();
         }
 
-        if let Some(message) = self.error {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = space::S4;
-                ui.label(egui::RichText::new(icons::WARNING).font(ds.text.icon(12.0, true)).color(t.danger));
-                ui.label(egui::RichText::new(message).font(ds.text.small.clone()).color(t.danger));
-            });
-        }
-        let (label, hint, reason) = (self.label, self.hint, self.disabled);
-        ctx.accesskit_node_builder(response.id, |node| {
-            node.set_label(label);
-            if !hint.is_empty() {
-                node.set_placeholder(hint);
-            }
-            if let Some(reason) = reason {
-                node.set_description(reason);
-            }
-        });
+        self.show_error(ui, &ds);
+        self.describe(&ctx, &ds, response.id);
         response
     }
 }
 
 impl TextField<'_> {
+    /// The error message under the field, led by the danger icon (P9), as on chips, banners and toasts.
+    fn show_error(&self, ui: &mut Ui, ds: &Ds) {
+        let Some(message) = self.error else { return };
+        let t = &ds.theme;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = space::S4;
+            let icon = icons::status(Status::Danger);
+            ui.label(egui::RichText::new(icon).font(ds.text.icon(12.0, true)).color(t.danger));
+            ui.label(egui::RichText::new(message).font(ds.text.small.clone()).color(t.danger));
+        });
+    }
+
+    /// The field's name, placeholder and description for assistive technology. An error is read as "Error: the
+    /// message", the word a screen reader says where the colour is the cue, and marks the field invalid.
+    fn describe(&self, ctx: &egui::Context, ds: &Ds, id: Id) {
+        let (label, hint, invalid) = (self.label, self.hint, self.error.is_some());
+        let status = ds.status_word(Status::Danger);
+        let description = match (self.error, self.disabled) {
+            (Some(message), Some(reason)) => Some(
+                ds.text_with(Msg::FieldErrorDisabled, &[("status", &status), ("message", message), ("reason", reason)]),
+            ),
+            (Some(message), None) => Some(ds.text_with(Msg::FieldError, &[("status", &status), ("message", message)])),
+            (None, reason) => reason.map(str::to_owned),
+        };
+        ctx.accesskit_node_builder(id, |node| {
+            node.set_label(label);
+            if !hint.is_empty() {
+                node.set_placeholder(hint);
+            }
+            if let Some(description) = description {
+                node.set_description(description);
+            }
+            if invalid {
+                node.set_invalid(egui::accesskit::Invalid::True);
+            }
+        });
+    }
+
     /// The fill, border (2 pt accent when focused, `danger` on error) and the search icon.
     fn paint_frame(&self, ui: &Ui, ds: &Ds, rect: egui::Rect, focused: bool, hover: f32) {
         let t = &ds.theme;
@@ -255,5 +285,54 @@ impl TextField<'_> {
             |_| {},
         );
         clear.clicked()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use egui::accesskit::{Invalid, Role};
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
+
+    use super::TextField;
+    use crate::ds::Settings;
+    use crate::ds::testing::{harness_state, press};
+
+    #[test]
+    fn an_error_is_read_with_its_status_word_and_marks_the_field_invalid() {
+        let h = harness_state(Settings::default(), egui::vec2(320.0, 90.0), String::from("a b"), |ui, text| {
+            ui.add(TextField::new("Name", text).error("Use letters and numbers"));
+        });
+        let field = h.get_by_role_and_label(Role::TextInput, "Name");
+        let node = field.accesskit_node();
+        assert_eq!(node.description().as_deref(), Some("Error: Use letters and numbers"));
+        assert_eq!(node.data().invalid(), Some(Invalid::True));
+    }
+
+    #[test]
+    fn the_arrow_keys_move_the_caret_and_never_the_keyboard_out_of_the_field() {
+        let mut h = harness_state(Settings::default(), egui::vec2(320.0, 60.0), String::from("ab"), |ui, text| {
+            ui.add(TextField::new("Name", text));
+        });
+        h.get_by_role_and_label(Role::TextInput, "Name").focus();
+        h.run_steps(2);
+        for key in
+            [egui::Key::End, egui::Key::ArrowRight, egui::Key::ArrowDown, egui::Key::ArrowLeft, egui::Key::ArrowUp]
+        {
+            press(&mut h, egui::Modifiers::NONE, key);
+            let field = h.get_by_role_and_label(Role::TextInput, "Name");
+            assert!(field.is_focused(), "{key:?} took the keyboard out of the field");
+        }
+        h.event(egui::Event::Text("x".to_owned()));
+        h.run_steps(2);
+        assert_eq!(h.state(), "xab", "Up went to the start, and typing lands there");
+    }
+
+    #[test]
+    fn a_field_without_an_error_is_not_invalid() {
+        let h = harness_state(Settings::default(), egui::vec2(320.0, 60.0), String::new(), |ui, text| {
+            ui.add(TextField::new("Name", text));
+        });
+        let field = h.get_by_role_and_label(Role::TextInput, "Name");
+        assert_eq!(field.accesskit_node().data().invalid(), None);
     }
 }

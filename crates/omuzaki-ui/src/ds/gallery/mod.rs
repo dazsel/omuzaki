@@ -13,7 +13,7 @@ mod stories;
 mod story;
 pub(crate) mod text;
 
-pub use app::Gallery;
+pub use app::{BODY_MARGIN, Gallery, columns};
 pub use story::{Group, Story, all, duplicates, group_title};
 
 #[cfg(test)]

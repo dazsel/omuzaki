@@ -243,7 +243,8 @@ fn the_view_menu_lists_every_registered_panel_and_shows_one_the_workspace_lacks(
     let before: Vec<usize> = titles.iter().map(|t| buttons(&harness, t)).collect();
     harness.get_by_label("Menu").click();
     harness.run_steps(3);
-    assert_shows(&harness, "Show panel");
+    harness.get_by_label("Show panel").click();
+    harness.run_steps(3);
     for (title, before) in titles.iter().zip(before) {
         assert_eq!(buttons(&harness, title), before + 1, "{title} is not in the View menu");
     }

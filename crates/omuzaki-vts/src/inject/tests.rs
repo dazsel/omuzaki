@@ -79,6 +79,38 @@ fn the_pacer_sends_each_frame_at_most_sixty_a_second_and_keeps_alive() {
 }
 
 #[test]
+fn a_late_look_does_not_push_later_sends_back() {
+    // Frames every 1/60 s; the bridge looks every 1.3 ms, so it sees each frame a little late, by a varying amount.
+    // Every frame is sent, none merges with the next.
+    let look = Duration::from_micros(1_300);
+    let mut pacer = Pacer::default();
+    let (mut sent, mut fresh, mut next_frame, mut now) = (0_u32, false, Duration::ZERO, Duration::ZERO);
+    while now < Duration::from_secs(10) {
+        if now >= next_frame {
+            fresh = true;
+            next_frame += MIN_SEND_GAP;
+        }
+        if pacer.due(now, fresh).is_some() {
+            pacer.sent(now);
+            (sent, fresh) = (sent + 1, false);
+        }
+        now += look;
+    }
+    assert!(sent >= 599, "{sent} of 600 frames sent");
+    // With a frame always waiting, the sends still average at most one per gap.
+    let mut pacer = Pacer::default();
+    let (mut sends, mut now) = (0_u32, Duration::ZERO);
+    while now < Duration::from_secs(1) {
+        if pacer.due(now, true).is_some() {
+            pacer.sent(now);
+            sends += 1;
+        }
+        now += Duration::from_micros(500);
+    }
+    assert!(sends <= 61, "{sends} sends in one second with a frame always waiting");
+}
+
+#[test]
 fn an_owned_default_moves_to_add_and_the_rest_stay_in_set() {
     let mut map = ChannelMap::builtin().unwrap();
     map.enable_default("MouthOpen", true).unwrap();
