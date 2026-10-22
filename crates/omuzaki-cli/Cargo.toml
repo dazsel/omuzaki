@@ -89,6 +89,14 @@ omuzaki-audio-api = { path = "../omuzaki-audio-api" }
 omuzaki-audio-mock = { path = "../omuzaki-audio-mock" }
 # The scripted transport the conformance rig's Twitch service stands on (it never makes a call: the examples dry-run).
 omuzaki-http-mock = { path = "../omuzaki-http-mock" }
+# The broadcast end-to-end test (`tests/live_e2e.rs`): a fake OBS, the secret store a token is read from, and a fake
+# Twitch EventSub socket.
+omuzaki-obs = { path = "../omuzaki-obs", features = ["testing"] }
+omuzaki-secrets-api = { path = "../omuzaki-secrets-api" }
+omuzaki-secrets-mock = { path = "../omuzaki-secrets-mock" }
+omuzaki-live-api = { path = "../omuzaki-live-api" }
+omuzaki-http-api = { path = "../omuzaki-http-api" }
+tungstenite = "0.30"
 # The registration scan behind the link gate (`tests/registrations.rs`, ADR 0015).
 xtask = { path = "../../xtask" }
 

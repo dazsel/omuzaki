@@ -13,7 +13,7 @@
             "redeem": { "kind": "on.event", "params": { "kind": "redeem", "where": { "reward.title": "BRB" } } },
             "scene": {
               "kind": "op.run",
-              "params": { "op": "obs.set_scene", "args": { "scene": "BRB" } },
+              "params": { "op": "obs.scene.set", "args": { "scene": "BRB" } },
               "in": { "in": "redeem.fired" }
             }
           }

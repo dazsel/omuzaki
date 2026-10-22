@@ -20,10 +20,16 @@ tungstenite = "0.30"
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-secrets-api = { path = "../omuzaki-secrets-api" }
+omuzaki-settings-api = { path = "../omuzaki-settings-api" }
+
+[features]
+# `FakeObs`, the loopback OBS for tests (`testing`): other crates' tests turn it on; off in every normal build.
+testing = []
 
 [dev-dependencies]
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-secrets-mock = { path = "../omuzaki-secrets-mock" }
+omuzaki-settings-mock = { path = "../omuzaki-settings-mock" }
 
 [lints]
 workspace = true

@@ -22,9 +22,11 @@
 //! | [`protocol`] | the [`Frame`](protocol::Frame) and [`Message`](protocol::Message), every handshake message, the supported requests with their responses, and [`ObsEvent`](protocol::ObsEvent) |
 //! | [`auth`] | the answer to the server's authentication challenge |
 //! | [`limits`] | the default port, the RPC version, [`EventSubscription`](limits::EventSubscription) and [`CloseCode`](limits::CloseCode) |
-//! | [`client`] | [`ObsClient`](client::ObsClient): one connection, requests matched by id, events to subscribers |
-//! | [`service`] | [`ObsService`](service::ObsService): the app's one connection, shared by the ops, the UI and automations |
-//! | [`ops`] | `obs.connect`, `obs.disconnect`, `obs.status`, `obs.scenes`, `obs.set_scene`, `obs.stream`, `obs.record` |
+//! | [`client`] | [`ObsClient`](client::ObsClient): one connection, requests matched by id, events to an [`EventHub`](client::EventHub) |
+//! | [`service`] | [`ObsService`](service::ObsService): the app's one connection, kept up with backoff, shared by the ops, the UI and automations |
+//! | [`settings`] | `obs.host`, `obs.port`, `obs.allow_remote`, `obs.autoconnect` |
+//! | [`ops`] | `obs.connect`, `obs.disconnect`, `obs.status`, `obs.scenes`, `obs.sources` and the nine actions: `obs.scene.set`, `obs.source.set_visible`, `obs.stream.start`/`stop`, `obs.record.start`/`stop`, `obs.replay.start`/`stop`/`save` |
+//! | `testing` | `FakeObs`, a loopback OBS for tests (`cfg(test)` or the `testing` feature) |
 #![deny(missing_docs)]
 
 pub mod auth;
@@ -33,5 +35,8 @@ pub mod limits;
 pub mod ops;
 pub mod protocol;
 pub mod service;
+pub mod settings;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 
 omuzaki_core::define_link!();

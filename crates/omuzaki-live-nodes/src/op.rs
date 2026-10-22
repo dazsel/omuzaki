@@ -51,7 +51,7 @@ const FIXED_INPUTS: [&str; 1] = ["in"];
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OpRunParams {
-    /// The op it runs, by name (`obs.set_scene`), as `omuzaki run --list` or the MCP tool list shows it.
+    /// The op it runs, by name (`obs.scene.set`), as `omuzaki run --list` or the MCP tool list shows it.
     pub op: String,
     /// The op's arguments. A string that is exactly `$in.<name>` becomes a value input `<name>`, filled in from its
     /// wire each time; a string starting `$$` writes a literal `$`.
