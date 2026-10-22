@@ -135,6 +135,9 @@ opt-level = 2                # dependencies (glam, wgpu, image codecs) optimised
 [profile.dev.package.omuzaki-render-mock]
 opt-level = 2                # the CPU rasteriser draws every mock render in the stage and UI tests, sample by sample
 
+[profile.dev.package.omuzaki-char]
+opt-level = 2                # the kit's geometry: its property and fit tests and every mock preview run about 4x faster
+
 [profile.release]
 lto = "thin"
 codegen-units = 16
