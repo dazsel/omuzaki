@@ -4560,6 +4560,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-live"
+version = "0.0.0"
+dependencies = [
+ "inventory",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-l10n-api",
+ "omuzaki-live-api",
+ "omuzaki-live-mock",
+ "omuzaki-ops-api",
+ "schemars",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "omuzaki-live-api"
 version = "0.0.0"
 dependencies = [
