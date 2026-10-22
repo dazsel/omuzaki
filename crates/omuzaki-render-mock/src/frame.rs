@@ -1,6 +1,6 @@
 //! One frame, start to finish: pose instances, draw the passes in contract order, resolve to bytes.
 
-use omuzaki_core::glam::{Mat4, UVec2, Vec2, Vec3, Vec4};
+use omuzaki_core::glam::{Mat3, Mat4, UVec2, Vec2, Vec3, Vec4};
 use omuzaki_render_api::{
     AlphaEncoding, Camera, Image, Instance, Material, Pass, Post, Projection, Quality, RenderError, Scene, TargetDesc,
     Tonemap, srgb_encode, to_byte,
@@ -12,7 +12,7 @@ use crate::environment::{EnvLight, EnvironmentData};
 use crate::morph::morph_vertices;
 use crate::raster::{Cull, Mode, Surface, Varying, Vertex, Write, draw_triangle};
 use crate::resources::{MeshEntry, weld_normals};
-use crate::shade::{FogLight, Lights, Lit, Textures, light_triangle, shade_pixel};
+use crate::shade::{FogLight, Lights, Lit, Textures, light_triangle, mask_keeps, shade_pixel};
 
 /// The internal buffer may hold at most this many pixels (a 4096x4096 frame): the mock keeps 20 bytes per pixel.
 const MAX_INTERNAL_PIXELS: u64 = 1 << 24;
@@ -158,7 +158,7 @@ pub(crate) fn draw_frame(
         out.ran[Pass::Outlines.index()] = true;
         out.draw_calls += 1;
         out.triangles += mesh.data.triangle_count() as u64;
-        draw_hull(&mut surface, inst, mesh, material, posed, scene, fog, &view, &view_proj);
+        draw_hull(&mut surface, inst, mesh, material, &textures, posed, scene, fog, &view, &view_proj);
     }
 
     // Back to front, authored order first; a stable sort keeps submission order for exact ties.
@@ -272,6 +272,7 @@ fn draw_hull(
     inst: &Instance,
     mesh: &MeshEntry,
     material: &Material,
+    textures: &Textures<'_>,
     posed: &Posed,
     scene: &Scene,
     fog: FogLight,
@@ -289,7 +290,10 @@ fn draw_hull(
     let mode = Mode { cull: Cull::Front, mirrored: inst.transform.determinant() < 0.0, write: Write::Opaque };
     for &ids in mesh.data.indices.as_chunks::<3>().0 {
         let verts = ids.map(|i| vertex(mesh, i as usize, pushed[i as usize], view, view_proj));
-        draw_triangle(surface, &verts, mode, &mut |v: Varying| Some(fog.apply(colour, v.depth)));
+        // A masked material's hull is cut like its surface: the line follows what is visible (#649).
+        draw_triangle(surface, &verts, mode, &mut |v: Varying| {
+            mask_keeps(material, textures, v).then(|| fog.apply(colour, v.depth))
+        });
     }
 }
 
@@ -323,13 +327,28 @@ fn resolve(surface: &Surface, desc: &TargetDesc, factor: u32, post: &Post) -> Im
 fn tonemap(c: Vec3, mode: Tonemap) -> Vec3 {
     match mode {
         Tonemap::None => c.clamp(Vec3::ZERO, Vec3::ONE),
-        // Narkowicz's fit of the ACES filmic curve; the GPU renderer may use the full ACES transform, so goldens
-        // compare the two with a tolerance.
-        Tonemap::Aces => {
-            let fit = |x: f32| (x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14);
-            Vec3::new(fit(c.x), fit(c.y), fit(c.z)).clamp(Vec3::ZERO, Vec3::ONE)
-        }
+        Tonemap::Aces => aces(c),
     }
+}
+
+/// three.js's `ACESFilmicToneMapping`, the curve the GPU renderer and the prototype use (#630): the `1 / 0.6`
+/// pre-scale, `ACESInputMat`, the RRT and ODT fit, `ACESOutputMat`, clamped. `c` already carries the exposure.
+fn aces(c: Vec3) -> Vec3 {
+    // three.js declares the matrices by column; these are its columns, so `INPUT * v` is its `ACESInputMat * v`.
+    const INPUT: Mat3 = Mat3::from_cols(
+        Vec3::new(0.59719, 0.07600, 0.02840),
+        Vec3::new(0.35458, 0.90834, 0.13383),
+        Vec3::new(0.04823, 0.01566, 0.83777),
+    );
+    const OUTPUT: Mat3 = Mat3::from_cols(
+        Vec3::new(1.60475, -0.10208, -0.00327),
+        Vec3::new(-0.53108, 1.10813, -0.07276),
+        Vec3::new(-0.07367, -0.00605, 1.07602),
+    );
+    let v = INPUT * (c / 0.6);
+    let a = v * (v + 0.024_578_6) - 0.000_090_537;
+    let b = v * (0.983_729 * v + 0.432_951) + 0.238_081;
+    (OUTPUT * (a / b)).clamp(Vec3::ZERO, Vec3::ONE)
 }
 
 #[cfg(test)]
@@ -384,5 +403,31 @@ mod tests {
         let bright = tonemap(Vec3::splat(8.0), Tonemap::Aces);
         assert!(bright.x > 0.95 && bright.x <= 1.0);
         assert_eq!(tonemap(Vec3::splat(2.0), Tonemap::None), Vec3::ONE);
+    }
+
+    /// three.js's own values (its shader chunk evaluated outside a renderer; the same table pins the GPU renderer in
+    /// `omuzaki-render`'s `render.rs`): `(sRGB colour, exposure, levels per channel)`.
+    #[test]
+    fn aces_matches_three_js_within_a_level() {
+        const THREE_JS: &[([u8; 3], f32, [f32; 3])] = &[
+            ([128, 128, 128], 1.0, [140.7; 3]),
+            ([128, 128, 128], 2.0, [188.4; 3]),
+            ([201, 184, 240], 1.0, [205.2, 195.3, 220.8]),
+            ([255, 255, 255], 1.0, [226.4; 3]),
+            ([60, 200, 120], 1.0, [108.7, 204.7, 142.4]),
+            ([60, 200, 120], 2.0, [173.7, 231.4, 190.8]),
+            ([240, 120, 40], 1.0, [234.0, 140.3, 50.0]),
+            // Pure cyan, where the old per-channel fit kept red at 0 and missed by 204 levels.
+            ([0, 255, 255], 1.0, [153.4, 227.4, 225.7]),
+            ([0, 255, 255], 2.0, [204.2, 242.7, 241.6]),
+        ];
+        for &(rgb, exposure, want) in THREE_JS {
+            let linear = Vec3::from(rgb.map(|c| omuzaki_core::colour::srgb_decode(f32::from(c) / 255.0)));
+            let display = tonemap(linear * exposure, Tonemap::Aces);
+            let got = [display.x, display.y, display.z].map(|c| srgb_encode(c) * 255.0);
+            for (g, w) in got.iter().zip(want) {
+                assert!((g - w).abs() <= 1.0, "{rgb:?} at {exposure}: {got:?} vs three.js {want:?}");
+            }
+        }
     }
 }

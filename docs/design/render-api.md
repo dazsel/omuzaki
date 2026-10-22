@@ -74,7 +74,7 @@ The toon materials of v1 have no specular term, so the prefiltered specular chai
 | 1 | `PaintTextures` | painters fill dynamic textures (face atlas, brow layer) | no `paint_texture` since the last frame |
 | 2 | `Shadows` | the shadow map of the first casting directional light; the renderer fits the frustum to the casters (see below) | shadows off, no caster, or `Live` between `shadow_interval` redraws |
 | 3 | `Opaque` | opaque and alpha-mask instances: toon shading into colour and depth | never |
-| 4 | `Outlines` | inverted-hull outlines, back faces only, after the model so they hide behind it | no material has an outline |
+| 4 | `Outlines` | inverted-hull outlines, back faces only, after the model so they hide behind it; a material's alpha mask cuts its hull where it cuts the surface (three-vrm's `MToon` outline), so a cut-out card is outlined along its visible shape | no material has an outline |
 | 5 | `Transparent` | blended instances, `order` then back to front, depth-tested, not writing depth | none blended |
 | 6 | `Bloom` | glow from bright areas | off in `Post`, `post_effects` false, or unsupported |
 | 7 | `DepthOfField` | blur away from the focus distance | same |

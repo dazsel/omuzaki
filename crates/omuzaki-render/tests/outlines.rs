@@ -15,8 +15,8 @@ mod support;
 use omuzaki_core::glam::{Mat4, UVec2, Vec3};
 use omuzaki_render::WgpuRenderer;
 use omuzaki_render_api::{
-    AlphaEncoding, Background, Camera, Colour, FrameReport, Image, Instance, JointRange, Material, MeshData, MeshId,
-    Outline, Pass, Projection, Quality, Renderer, RendererExt, Scene, TargetDesc, Tonemap,
+    AlphaEncoding, AlphaMode, Background, Camera, Colour, FrameReport, Image, Instance, JointRange, Material, MeshData,
+    MeshId, Outline, Pass, Projection, Quality, Renderer, RendererExt, Scene, TargetDesc, TextureDesc, Tonemap,
 };
 use omuzaki_render_mock::{MockRenderer, shapes};
 
@@ -396,4 +396,63 @@ fn a_zero_width_outline_changes_no_pixel() {
     let s = scene(2.0);
     let Line { with, without, .. } = subject.line(&s, &[Mat4::IDENTITY], Some(outline(0.0)), &plain());
     assert_eq!(with.rgba8, without.rgba8);
+}
+
+// ---- alpha masks ----
+
+/// The line `material` draws around `mesh` seen in `scene`: the pixels that change when its outline is on. The
+/// material's own outline is the one drawn.
+fn line_of(renderer: &mut dyn Renderer, mesh: MeshId, material: &Material, scene: &Scene) -> Vec<bool> {
+    let [with, without] = [material.outline, None].map(|outline| {
+        let material = renderer.create_material(&Material { outline, ..material.clone() }).unwrap();
+        let mut s = scene.clone();
+        s.instances = vec![Instance::new(mesh, material, Mat4::IDENTITY)];
+        let image = draw(renderer, &s, &plain());
+        renderer.release(material.into()).unwrap();
+        image
+    });
+    line_mask(&with, &without)
+}
+
+/// The line around a sphere whose base texture is see-through on its left half (`x < 0`), cut by a mask, or drawn
+/// opaque when `masked` is false.
+fn masked_sphere_line(mut renderer: Box<dyn Renderer>, masked: bool) -> Vec<bool> {
+    let mut mesh = sphere(0.3, 48, 24);
+    // A planar mapping along X: u is 0 at the far left and 1 at the far right, so the cut is the plane x = 0.
+    mesh.uvs = mesh.positions.iter().map(|p| omuzaki_core::glam::Vec2::new(p.x / 0.6 + 0.5, 0.5)).collect();
+    let mesh = renderer.create_mesh(&mesh).unwrap();
+    let desc = TextureDesc { mips: false, ..TextureDesc::colour(UVec2::new(2, 1)) };
+    let texture = renderer.create_texture(&desc, Some(&[255, 255, 255, 0, 255, 255, 255, 255])).unwrap();
+    let mut material = Material::unlit(SURFACE);
+    material.base_texture = Some(texture);
+    material.alpha = if masked { AlphaMode::Mask { cutoff: 0.5 } } else { AlphaMode::Opaque };
+    material.outline = Some(outline(0.03));
+    line_of(renderer.as_mut(), mesh, &material, &scene(2.0))
+}
+
+/// Line pixels left of the picture's centre column, less `margin` columns.
+fn left_of_centre(mask: &[bool], margin: u32) -> usize {
+    mask.iter().enumerate().filter(|&(i, &on)| on && (i as u32 % SIZE.x) + margin < SIZE.x / 2).count()
+}
+
+#[test]
+fn a_masked_materials_line_follows_its_visible_part_only() {
+    // Opaque: the ring all round.
+    let whole = masked_sphere_line(gpu(), false);
+    assert!(left_of_centre(&whole, 4) > 50, "an opaque sphere is outlined on its left too");
+
+    // Masked: the left half is cut from the surface and from its hull, so no line is left of the cut. Before #649 the
+    // hull drew the whole sphere's outline, the hidden half as a solid sheet in the line colour.
+    let (gpu_line, mock_line) = (masked_sphere_line(gpu(), true), masked_sphere_line(mock(), true));
+    for (name, line) in [("GPU", &gpu_line), ("mock", &mock_line)] {
+        println!("{name}: {} line pixels, {} left of the cut", count(line), left_of_centre(line, 2));
+        assert!(count(line) > 50, "{name}: the visible half keeps its line");
+        assert_eq!(left_of_centre(line, 2), 0, "{name}: no line where the surface is cut away");
+    }
+    let off = disagreement(&gpu_line, &mock_line);
+    assert!(
+        off * 10 <= count(&mock_line),
+        "{off} of {} line pixels differ between the GPU and the mock",
+        count(&mock_line)
+    );
 }

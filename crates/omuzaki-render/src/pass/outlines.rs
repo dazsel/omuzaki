@@ -8,9 +8,10 @@
 //! never glow. `shader/outline.wgsl` has the shader.
 //!
 //! The width scales with distance (`clamp(depth / 2 m, 0.6, 3)`), so a character that steps back keeps a readable
-//! line, and it is measured in world metres, so it follows the model's own scale. A material's `alpha` mask is not
-//! applied to the hull: the line follows the geometry, as in the prototype. A width of 0 draws nothing, and a frame
-//! with no outlined instance leaves the pass `Skipped` without opening a render pass.
+//! line, and it is measured in world metres, so it follows the model's own scale. A material's `alpha` mask cuts the
+//! hull where it cuts the surface (#649), as three-vrm's `MToon` outline does, so a cut-out card's line follows its
+//! visible shape instead of the whole card. A width of 0 draws nothing, and a frame with no outlined instance leaves the
+//! pass `Skipped` without opening a render pass.
 //!
 //! What the contract does not carry yet is `MToon`'s other width modes: a screen-space width, a width that does not scale
 //! with distance, and a per-texel width mask (`Outline` has only the one world width, `docs/design/render-api.md`).

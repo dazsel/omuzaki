@@ -222,6 +222,21 @@ fn skin_adjust(lit: Vec3, albedo: Vec3, skin: Skin) -> Vec3 {
     lit.lerp(keep_hue, skin.hue_keep).max(albedo * skin.floor)
 }
 
+/// Whether a material with an alpha mask keeps the pixel at `v`: its coverage (the base colour's alpha, times the vertex
+/// colour's and the base texture's, which is the albedo's alpha in [`shade_pixel`]) is at least the cutoff. Always true
+/// for a material without a mask. The outline hull asks it, so a cut-out card's line follows the visible shape (#649).
+pub(crate) fn mask_keeps(material: &Material, textures: &Textures<'_>, v: Varying) -> bool {
+    let AlphaMode::Mask { cutoff } = material.alpha else { return true };
+    let mut coverage = material.base.alpha();
+    if material.vertex_colours {
+        coverage *= v.colour.w;
+    }
+    if let Some(texture) = material.base_texture {
+        coverage *= textures.sample(texture, material.uv_transform.apply(v.uv)).w;
+    }
+    coverage >= cutoff
+}
+
 /// The pixel's final straight linear RGBA, or `None` if the material discards it.
 pub(crate) fn shade_pixel(material: &Material, lit: Lit, textures: &Textures<'_>, v: Varying) -> Option<Vec4> {
     let mut albedo = material.base.to_linear().extend(material.base.alpha());
