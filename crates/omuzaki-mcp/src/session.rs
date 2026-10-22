@@ -1112,6 +1112,35 @@ impl Reporter {
         standing(self.watch.sessions.as_ref(), self.watch.actor.as_ref(), &self.watch.ceiling).ok().map(|s| s.grants)
     }
 
+    /// Waits until the feed holds the decision on each of this session's approvals that the registry no longer holds
+    /// as pending and that `push` (or the session) hasn't been told about, at most [`FEED_LAG`]: the person's decision
+    /// is in the registry when `resolve` returns, its event a worker thread later, so without this a decision made
+    /// before a call could be missing from that call's heads-up. No result waits twice for one approval, so a feed that
+    /// lost a decision doesn't hold every later result; one that arrives late is still reported.
+    async fn catch_up_with_decisions(&self, push: Option<&PushCursor>) {
+        let Some(sessions) = self.shared.sessions.as_ref().map(|host| Arc::clone(&host.sessions)) else { return };
+        let unreported = lock(&self.state).approvals.unreported(push.map(|p| &p.approvals));
+        let hub = &self.shared.hub;
+        let mut arrivals = hub.watch();
+        let missing = |ids: &[omuzaki_ops_api::ApprovalId]| -> Vec<omuzaki_ops_api::ApprovalId> {
+            ids.iter().copied().filter(|id| approvals::resolution_of(hub, *id).is_none()).collect()
+        };
+        let mut owed = missing(&unreported);
+        if owed.is_empty() {
+            return;
+        }
+        let pending = self.blocking(move |_| sessions.approvals()).await.unwrap_or_default();
+        owed.retain(|id| !pending.iter().any(|a| a.id == *id));
+        let deadline = Instant::now() + FEED_LAG;
+        while !owed.is_empty() {
+            if tokio::time::timeout_at(deadline, arrivals.changed()).await.is_err() {
+                lock(&self.state).approvals.waited(&owed);
+                return;
+            }
+            owed = missing(&owed);
+        }
+    }
+
     async fn blocking<T: Send + 'static>(
         &self,
         work: impl FnOnce(&dyn Runner) -> T + Send + 'static,
@@ -1197,6 +1226,7 @@ impl Reporter {
         let result = if log_text || self.shared.sessions.is_none() {
             result
         } else {
+            self.catch_up_with_decisions(push.as_deref()).await;
             let mut state = lock(&self.state);
             let news = match push {
                 Some(push) => state.approvals.news_for(&self.shared.hub, &mut push.approvals),
