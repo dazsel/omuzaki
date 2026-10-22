@@ -9,6 +9,8 @@
 //! | Module | What it does |
 //! |---|---|
 //! | [`analyzer`] | [`VoiceAnalyzer`]: samples at any rate to a [`VoiceFrame`] every 10 ms |
+//! | [`onset`] | [`OnsetDetector`]: syllable onsets from the three-band onset strength, peak-picked adaptively |
+//! | [`cues`] | [`CueExtractor`]: the life layer's loudness and onset cues from the `cues` tap, in performance time; [`cue_mailbox`] and [`CueListener`] |
 //! | [`viseme`] | the five visemes and the [`VowelProfile`] that maps formants onto them |
 //! | [`mailbox`] | [`voice_mailbox`]: the wait-free newest-wins hand-off to the perform thread |
 //! | [`lipsync`] | [`LipSync`]: frames to the audio layer, through the character's viseme expressions, and the cues |
@@ -24,14 +26,18 @@
 #![allow(clippy::doc_markdown)]
 
 pub mod analyzer;
+pub mod cues;
 pub mod lipsync;
 pub mod listener;
 pub mod mailbox;
+pub mod onset;
 pub mod synth;
 pub mod viseme;
 
 pub use analyzer::{VoiceAnalyzer, VoiceError, VoiceFrame};
+pub use cues::{CueExtractor, CueFrame, CueListener, CueReader, CueWriter, cue_mailbox};
 pub use lipsync::{LipSync, LipSyncConfig};
 pub use listener::VoiceListener;
 pub use mailbox::{VoiceReader, VoiceWriter, voice_mailbox};
+pub use onset::OnsetDetector;
 pub use viseme::{Viseme, VowelProfile};

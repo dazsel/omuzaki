@@ -10,14 +10,16 @@
 //! 3. **Formants.** Linear prediction of order [`LPC_ORDER`] (autocorrelation method, Levinson-Durbin) gives the vocal
 //!    tract's spectral envelope; its first peaks in the F1 and F2 ranges are the formants, and the [`VowelProfile`]
 //!    turns them into viseme weights, scaled by how open the voice is (its loudness).
-//! 4. **Onsets.** A voiced frame [`ONSET_DB`] louder than the recent level counts as a stressed syllable (brow kicks
-//!    and nods in the life layer), at most one per [`ONSET_REFRACTORY_S`].
+//! 4. **Onsets.** The [`OnsetDetector`]'s syllable onsets (three-band onset strength, adaptive threshold, 120 ms
+//!    refractory) on the analysis signal, each reported on the first voiced frame within [`ONSET_VOICED_WITHIN_S`] of
+//!    it, so a keyboard click or a cough is not a syllable (brow kicks and nods in the life layer).
 //!
 //! Everything is allocated in [`VoiceAnalyzer::new`]; [`VoiceAnalyzer::push`] allocates nothing (`tests/no_alloc.rs`).
 //! Deterministic: the same samples give the same frames.
 
 use std::f32::consts::PI;
 
+use crate::onset::OnsetDetector;
 use crate::viseme::VowelProfile;
 
 /// The rate the analysis runs at: input is decimated by a whole factor to near it. Formants of interest are below
@@ -41,10 +43,8 @@ pub const PERIODICITY: f32 = 0.45;
 pub const HANGOVER_S: f32 = 0.25;
 /// How fast the noise floor rises while nothing voiced is heard, dB per second.
 pub const FLOOR_RISE_DB_S: f32 = 3.0;
-/// A voiced frame this much louder than the recent level is an onset, dB.
-pub const ONSET_DB: f32 = 6.0;
-/// The shortest gap between onsets, seconds.
-pub const ONSET_REFRACTORY_S: f32 = 0.15;
+/// An onset counts when a voiced frame follows it within this, seconds: voicing needs a few hops of a vowel to show.
+pub const ONSET_VOICED_WITHIN_S: f32 = 0.06;
 /// Loudness is 0 at this many dB over the floor and 1 at this plus [`LOUDNESS_SPAN_DB`].
 const LOUDNESS_FROM_DB: f32 = 6.0;
 /// See [`LOUDNESS_FROM_DB`].
@@ -115,11 +115,12 @@ pub struct VoiceAnalyzer {
     sin: Box<[f32]>,
     envelope: Box<[f32]>,
     floor_db: f32,
-    level_db: f32,
     hangover: u32,
     hangover_hops: u32,
-    refractory: u32,
-    refractory_hops: u32,
+    onset: OnsetDetector,
+    /// Hops left for a voiced frame to take the newest onset; 0 when none waits.
+    onset_waits: u32,
+    onset_hops: u32,
     floor_rise: f32,
     frame: VoiceFrame,
 }
@@ -168,11 +169,11 @@ impl VoiceAnalyzer {
             sin: sin.into(),
             envelope: vec![0.0; bins].into(),
             floor_db: SILENCE_DBFS - 10.0,
-            level_db: SILENCE_DBFS - 10.0,
             hangover: 0,
             hangover_hops: (HANGOVER_S * hops_per_s).round() as u32,
-            refractory: 0,
-            refractory_hops: (ONSET_REFRACTORY_S * hops_per_s).round() as u32,
+            onset: OnsetDetector::new(rate.round() as u32),
+            onset_waits: 0,
+            onset_hops: (ONSET_VOICED_WITHIN_S * hops_per_s).round() as u32,
             floor_rise: FLOOR_RISE_DB_S * HOP_S,
             frame: VoiceFrame::default(),
         })
@@ -202,6 +203,9 @@ impl VoiceAnalyzer {
             self.ring[self.head] = sample;
             self.head = (self.head + 1) % self.ring.len();
             self.filled = (self.filled + 1).min(self.ring.len());
+            if self.onset.step(sample).is_some() {
+                self.onset_waits = self.onset_hops + 1;
+            }
             self.since_hop += 1;
             if self.since_hop >= self.hop && self.filled == self.ring.len() {
                 self.since_hop = 0;
@@ -231,16 +235,8 @@ impl VoiceAnalyzer {
         }
         let loudness = ((db - self.floor_db - LOUDNESS_FROM_DB) / LOUDNESS_SPAN_DB).clamp(0.0, 1.0);
 
-        let mut onset = false;
-        if self.refractory > 0 {
-            self.refractory -= 1;
-        }
-        if voiced && db - self.level_db > ONSET_DB && self.refractory == 0 {
-            onset = true;
-            self.refractory = self.refractory_hops;
-        }
-        // The recent level: a 50 ms average, so a syllable's rise stands out against it.
-        self.level_db += (db - self.level_db) * (HOP_S / 0.05).min(1.0);
+        let onset = voiced && self.onset_waits > 0;
+        self.onset_waits = if onset { 0 } else { self.onset_waits.saturating_sub(1) };
 
         self.hangover = if voiced { self.hangover_hops } else { self.hangover.saturating_sub(1) };
         let (visemes, formants) = if voiced { self.vowel(loudness) } else { ([0.0; 5], [0.0; 2]) };
