@@ -4867,6 +4867,7 @@ dependencies = [
  "omuzaki-io-ops",
  "omuzaki-io-vrm",
  "omuzaki-link-build",
+ "omuzaki-measure",
  "omuzaki-ops-api",
  "omuzaki-render",
  "omuzaki-render-api",

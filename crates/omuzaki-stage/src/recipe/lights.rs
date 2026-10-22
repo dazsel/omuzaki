@@ -1,6 +1,7 @@
-//! The light-rig library: the prototype's seven rigs, as data. Each rig is one TOML file under `library/light-rigs/`,
-//! transcribed from the golden manifest's `spec.rig` blocks. Only lighting numbers are stored here; no image, mesh or
-//! likeness is.
+//! The light-rig library: the prototype's seven rigs and the measurement rig, as data. Each rig is one TOML file under
+//! `library/light-rigs/`: the seven transcribed from the golden manifest's `spec.rig` blocks, and `measure-flat` (flat
+//! frontal light for the `measure.*` ops, `docs/design/likeness-measures.md` D10). Only lighting numbers are stored
+//! here; no image, mesh or likeness is.
 //!
 //! Units are three.js's (render-api D10), so every number is copied as the prototype wrote it and never rescaled.
 //! Parts of a rig that the render contract has no field for (the key light's shadow frustum, the skin floor) stay in
@@ -19,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use super::RecipeError;
 
 /// The rigs shipped with the crate, by name. Each file is parsed on use, so a broken file fails the test that loads it.
-static LIBRARY: [(&str, &str); 7] = [
+static LIBRARY: [(&str, &str); 8] = [
     ("viewer-studio", include_str!("../../library/light-rigs/viewer-studio.toml")),
     ("viewer-candle", include_str!("../../library/light-rigs/viewer-candle.toml")),
     ("viewer-moonlit", include_str!("../../library/light-rigs/viewer-moonlit.toml")),
@@ -27,6 +28,7 @@ static LIBRARY: [(&str, &str); 7] = [
     ("dev-night", include_str!("../../library/light-rigs/dev-night.toml")),
     ("dev-warm", include_str!("../../library/light-rigs/dev-warm.toml")),
     ("perform-facecam", include_str!("../../library/light-rigs/perform-facecam.toml")),
+    ("measure-flat", include_str!("../../library/light-rigs/measure-flat.toml")),
 ];
 
 /// Directional lights shine from `position` toward this point. Three.js aims every directional light at the origin
