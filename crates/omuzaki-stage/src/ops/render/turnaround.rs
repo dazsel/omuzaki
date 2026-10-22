@@ -18,6 +18,7 @@ use super::job::{
     DEFAULT_LIGHT_RIG, RenderQuality, character_bytes, check_expression, check_size, cost, still_light, with_renderer,
 };
 use super::picture::{canvas, paste, store, straight};
+use super::pose::PoseArg;
 use super::still::{Shot, StillSpec, render_body_stills};
 use crate::body::{BodyServices, load_body};
 use crate::scene::frame::frame;
@@ -47,7 +48,8 @@ fn default_light_rig() -> String {
     "examples" = [
         {"character": "kit"},
         {"character": "kit", "framing": "bust", "size": [256, 256], "quality": "live"},
-        {"character": "kit", "framing": "face", "pitch": 15.0, "expression": "joy"}
+        {"character": "kit", "framing": "face", "pitch": 15.0, "expression": "joy"},
+        {"character": "kit", "pose": {"id": "wave-right", "blend": {"with": "wave-left", "weight": 0.5}}}
     ],
     "x-omuzaki-fixture" = "character"
 ))]
@@ -69,6 +71,10 @@ pub struct Turnaround {
     /// An expression of a kit character's face profile, at full weight on every view; the neutral face when left out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expression: Option<ExpressionId>,
+    /// A pose of the pose library (`pose.list`) on every view, mirrored or blended with another; the character as
+    /// sculpted when left out. The views are framed on the character as sculpted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pose: Option<PoseArg>,
     /// One view's width and height in pixels, each 16 to 4096.
     #[serde(default = "default_size")]
     pub size: [u32; 2],
@@ -115,6 +121,9 @@ impl Turnaround {
             ));
         }
         still_light(&self.light_rig)?;
+        if let Some(pose) = &self.pose {
+            pose.check("pose")?;
+        }
         Ok(size)
     }
 }
@@ -181,7 +190,8 @@ impl Op for Turnaround {
             });
         }
         job.checkpoint("rendering", 0.2)?;
-        let spec = StillSpec::new(light, size, self.quality.quality());
+        let pose = self.pose.as_ref().map(|pose| pose.resolve("pose", &body)).transpose()?;
+        let spec = StillSpec::new(light, size, self.quality.quality()).with_pose(pose);
         let stills = with_renderer(job, |renderer| render_body_stills(renderer, body, &spec, &shots))?;
         let views = u32::try_from(stills.len()).unwrap_or(u32::MAX);
         let mut row = canvas("size", UVec2::new(views * size.x + (views - 1) * GUTTER, size.y))?;

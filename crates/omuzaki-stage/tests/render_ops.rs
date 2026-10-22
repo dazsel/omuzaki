@@ -319,6 +319,16 @@ fn on_the_gpu_a_face_outline_edit_changes_only_the_head() {
         let faces: ContactSheetResult = run::<ContactSheet, _>(&harness, args).unwrap();
         let png = harness.store.get(&faces.hash.parse().unwrap()).unwrap();
         std::fs::write(dir.join("render-contact-expressions.png"), png).unwrap();
+        let args = json!({
+            "character": "kit", "framing": "full", "cell": [192, 320], "quality": "offline",
+            "poses": [
+                { "id": "wave-right" }, { "id": "wave-right", "mirror": true },
+                { "id": "wave-right", "blend": { "with": "wave-left", "weight": 0.5 } }
+            ]
+        });
+        let poses: ContactSheetResult = run::<ContactSheet, _>(&harness, args).unwrap();
+        let png = harness.store.get(&poses.hash.parse().unwrap()).unwrap();
+        std::fs::write(dir.join("render-contact-poses.png"), png).unwrap();
     }
     println!("changed {} pixels, {:.1}% inside the head box {lo:?}..{hi:?}", difference.changed, share * 100.0);
     assert!(share > 0.9, "{:.1}% of the changed pixels are inside the head's box", share * 100.0);

@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::job::{RenderQuality, character_bytes, check_expression, check_size, cost, store_png, with_renderer};
+use super::pose::PoseArg;
 use super::still::{Shot, StillSpec, encode_png, render_body_stills};
 use crate::body::{Body, BodyServices, load_body};
 use crate::frame::face::FacePoints;
@@ -52,7 +53,8 @@ fn one() -> f32 {
         {"character": "kit"},
         {"character": "kit", "framing": "bust", "yaw": 30.0, "size": [512, 512], "quality": "live"},
         {"character": "kit", "light_rig": "viewer-candle", "framing": "face"},
-        {"character": "kit", "preset": "measure", "size": [768, 768]}
+        {"character": "kit", "preset": "measure", "size": [768, 768]},
+        {"character": "kit", "pose": {"id": "wave-right", "mirror": true}}
     ],
     "x-omuzaki-fixture" = "character"
 ))]
@@ -91,6 +93,10 @@ pub struct Preview {
     /// The expression's weight, 0 to 1.
     #[serde(default = "one")]
     pub weight: f32,
+    /// A pose of the pose library (`pose.list`) to show, mirrored or blended with another; the character as sculpted
+    /// when left out. The shot is framed on the character as sculpted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pose: Option<PoseArg>,
     /// Width and height in pixels, each 16 to 4096.
     #[serde(default = "default_size")]
     pub size: [u32; 2],
@@ -230,6 +236,9 @@ impl Preview {
         if !(0.0..=1.0).contains(&self.weight) {
             return Err(OpError::invalid("weight", format!("weight {} is outside 0 to 1", self.weight)));
         }
+        if let Some(pose) = &self.pose {
+            pose.check("pose")?;
+        }
         self.preset()
     }
 
@@ -340,7 +349,8 @@ impl Op for Preview {
             shot = shot.with_expression(expression, self.weight);
         }
         job.checkpoint("rendering", 0.2)?;
-        let spec = StillSpec::in_scene(staged, size, self.quality.quality());
+        let pose = self.pose.as_ref().map(|pose| pose.resolve("pose", &body)).transpose()?;
+        let spec = StillSpec::in_scene(staged, size, self.quality.quality()).with_pose(pose);
         let stills = with_renderer(job, |renderer| render_body_stills(renderer, body, &spec, &[shot]))?;
         let still = stills.into_iter().next().ok_or_else(|| OpError::internal("the render gave no picture"))?;
         if let (Some(min), Some(face)) = (preset.and_then(|p| p.min_iod_px), &still.face)

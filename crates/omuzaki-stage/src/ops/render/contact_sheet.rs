@@ -3,6 +3,7 @@
 //! character rendered here in each of several expressions or variants with one camera and one light rig.
 
 use image::RgbaImage;
+use omuzaki_anim_api::HumanoidPose;
 use omuzaki_char_api::{BuildServices, CharId, CharacterBuilder, VariantId};
 use omuzaki_core::glam::UVec2;
 use omuzaki_core::time::SystemClock;
@@ -19,6 +20,7 @@ use super::job::{
     DEFAULT_LIGHT_RIG, RenderQuality, character_bytes, check_expression, check_size, cost, still_light, with_renderer,
 };
 use super::picture::{MAX_CANVAS_PIXELS, MAX_CANVAS_SIDE, canvas, hash_of, load, paste, store, straight};
+use super::pose::PoseArg;
 use super::still::{Shot, StillSpec, render_body_stills, straight_rgba};
 use crate::body::{Body, BodyServices, load_body};
 use crate::scene::frame::frame;
@@ -63,7 +65,8 @@ fn yes() -> bool {
     "examples" = [
         {"images": ["omuzaki://render/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.png", "omuzaki://render/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.png"]},
         {"character": "kit", "expressions": ["happy", "sad", "angry"], "framing": "face", "cell": [256, 256]},
-        {"character": "kit", "variants": ["close-up"], "expression": "happy", "labels": false}
+        {"character": "kit", "variants": ["close-up"], "expression": "happy", "labels": false},
+        {"character": "kit", "poses": [{"id": "wave-right"}, {"id": "wave-right", "mirror": true}, {"id": "wave-right", "blend": {"with": "wave-left", "weight": 0.5}}]}
     ],
     "x-omuzaki-fixture" = "character-variant"
 ))]
@@ -72,7 +75,7 @@ pub struct ContactSheet {
     /// render `character` instead.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<String>,
-    /// A character, built or imported, to render one cell for each of `expressions` or of `variants`.
+    /// A character, built or imported, to render one cell for each of `expressions`, `variants` or `poses`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub character: Option<CharId>,
     /// Expressions of the character's face profile, one cell each at full weight.
@@ -81,12 +84,18 @@ pub struct ContactSheet {
     /// Variants of a kit character, one cell each.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub variants: Vec<VariantId>,
-    /// With `expressions`: the variant to show them on, instead of the base.
+    /// Poses of the pose library (`pose.list`), one cell each: a pose library sheet.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub poses: Vec<PoseArg>,
+    /// With `expressions` or `poses`: the variant every cell shows, instead of the base.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variant: Option<VariantId>,
-    /// With `variants`: the expression every variant shows, instead of the neutral face.
+    /// With `variants` or `poses`: the expression every cell shows, instead of the neutral face.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expression: Option<ExpressionId>,
+    /// With `expressions` or `variants`: the library pose every cell shows, instead of the character's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pose: Option<PoseArg>,
     /// The shot of every rendered cell, from the front: `full` (the default), `bust` or `face`.
     #[serde(default)]
     pub framing: Framing,
@@ -106,8 +115,8 @@ pub struct ContactSheet {
     /// The gap between cells and around the sheet, in pixels, 0 to 256 (8 by default).
     #[serde(default = "default_gutter")]
     pub gutter: u32,
-    /// Write each cell's label under it, on a paper sheet: the expression or variant id, or the first 12 characters of
-    /// a stored picture's hash. True by default; false lays the pictures alone on a transparent sheet.
+    /// Write each cell's label under it, on a paper sheet: the expression, variant or pose, or the first 12 characters
+    /// of a stored picture's hash. True by default; false lays the pictures alone on a transparent sheet.
     #[serde(default = "yes")]
     pub labels: bool,
 }
@@ -136,10 +145,36 @@ pub struct ContactSheetResult {
 enum Cells<'a> {
     /// Stored pictures.
     Images(&'a [String]),
-    /// One character in each expression, on one variant.
-    Expressions { character: &'a CharId, variant: Option<&'a VariantId>, expressions: &'a [ExpressionId] },
-    /// One character in each variant, all in one expression.
-    Variants { character: &'a CharId, variants: &'a [VariantId], expression: Option<&'a ExpressionId> },
+    /// One character, one cell for each of something.
+    Rendered { character: &'a CharId, varied: Varied<'a> },
+}
+
+/// What a rendered sheet varies from cell to cell.
+enum Varied<'a> {
+    /// The expression.
+    Expressions(&'a [ExpressionId]),
+    /// The variant.
+    Variants(&'a [VariantId]),
+    /// The pose.
+    Poses(&'a [PoseArg]),
+}
+
+impl Varied<'_> {
+    fn len(&self) -> usize {
+        match self {
+            Self::Expressions(list) => list.len(),
+            Self::Variants(list) => list.len(),
+            Self::Poses(list) => list.len(),
+        }
+    }
+
+    fn field(&self) -> &'static str {
+        match self {
+            Self::Expressions(_) => "expressions",
+            Self::Variants(_) => "variants",
+            Self::Poses(_) => "poses",
+        }
+    }
 }
 
 /// The checked arguments.
@@ -149,28 +184,41 @@ struct Checked<'a> {
     rows: u32,
 }
 
+/// `error` naming `field`.
+fn at(field: String) -> impl FnOnce(OpError) -> OpError {
+    move |mut error| {
+        error.field = Some(field);
+        error
+    }
+}
+
 impl ContactSheet {
     fn check(&self) -> Result<Checked<'_>, OpError> {
         let cells = self.cells()?;
-        let n = match &cells {
-            Cells::Images(images) => images.len(),
-            Cells::Expressions { expressions, .. } => expressions.len(),
-            Cells::Variants { variants, .. } => variants.len(),
+        let (n, field) = match &cells {
+            Cells::Images(images) => (images.len(), "images"),
+            Cells::Rendered { varied, .. } => (varied.len(), varied.field()),
         };
         if n == 0 || n > MAX_IMAGES {
-            let field = match &cells {
-                Cells::Images(_) => "images",
-                Cells::Expressions { .. } => "expressions",
-                Cells::Variants { .. } => "variants",
-            };
             return Err(OpError::invalid(field, format!("{n} cells; a sheet takes 1 to {MAX_IMAGES}")));
         }
-        if let Cells::Images(images) = &cells {
-            for (i, image) in images.iter().enumerate() {
-                hash_of(&format!("images/{i}"), image)?;
+        match &cells {
+            Cells::Images(images) => {
+                for (i, image) in images.iter().enumerate() {
+                    hash_of(&format!("images/{i}"), image)?;
+                }
             }
-        } else {
-            self.check_render()?;
+            Cells::Rendered { varied, .. } => {
+                self.check_render()?;
+                if let Some(pose) = &self.pose {
+                    pose.check("pose")?;
+                }
+                if let Varied::Poses(poses) = varied {
+                    for (i, pose) in poses.iter().enumerate() {
+                        pose.check(&format!("poses/{i}"))?;
+                    }
+                }
+            }
         }
         if self.gutter > MAX_GUTTER {
             return Err(OpError::invalid("gutter", format!("a gutter of {} pixels is over {MAX_GUTTER}", self.gutter)));
@@ -186,36 +234,57 @@ impl ContactSheet {
         Ok(Checked { cells, columns, rows: n.div_ceil(columns) })
     }
 
-    /// Which cells the arguments ask for: exactly one of the three ways.
+    /// Which cells the arguments ask for: stored images, or a character varied in one way, with the settings that way
+    /// shares across its cells.
     fn cells(&self) -> Result<Cells<'_>, OpError> {
-        let rendered = !self.expressions.is_empty() || !self.variants.is_empty();
+        let lists = [
+            (!self.expressions.is_empty(), "expressions"),
+            (!self.variants.is_empty(), "variants"),
+            (!self.poses.is_empty(), "poses"),
+        ];
+        let mut given = lists.iter().filter(|(given, _)| *given).map(|(_, field)| *field);
         let Some(character) = &self.character else {
-            if rendered || self.variant.is_some() || self.expression.is_some() {
-                return Err(OpError::invalid("character", "expressions and variants are rendered on a character: name it"));
+            let shared = [(self.variant.is_some(), "variant"), (self.expression.is_some(), "expression"), (self.pose.is_some(), "pose")];
+            if given.next().is_some() || shared.iter().any(|(given, _)| *given) {
+                return Err(OpError::invalid(
+                    "character",
+                    "expressions, variants and poses are rendered on a character: name it",
+                ));
             }
             return Ok(Cells::Images(&self.images));
         };
         if !self.images.is_empty() {
             return Err(OpError::invalid("images", "give stored images or a character to render, not both"));
         }
-        match (self.expressions.is_empty(), self.variants.is_empty()) {
-            (true, true) => Err(OpError::invalid("expressions", "give the expressions or the variants to render the character in")
-                .hint("for example \"expressions\": [\"happy\", \"sad\"]")),
-            (false, false) => Err(OpError::invalid("variants", "a sheet varies one thing: give expressions or variants, not both")),
-            (false, true) if self.expression.is_some() => Err(OpError::invalid(
-                "expression",
-                "each cell shows its own expression; `expression` goes with `variants`",
-            )),
-            (false, true) => {
-                Ok(Cells::Expressions { character, variant: self.variant.as_ref(), expressions: &self.expressions })
-            }
-            (true, false) if self.variant.is_some() => {
-                Err(OpError::invalid("variant", "each cell shows its own variant; `variant` goes with `expressions`"))
-            }
-            (true, false) => {
-                Ok(Cells::Variants { character, variants: &self.variants, expression: self.expression.as_ref() })
-            }
+        let Some(first) = given.next() else {
+            return Err(OpError::invalid("expressions", "give the expressions, variants or poses to render the character in")
+                .hint("for example \"expressions\": [\"happy\", \"sad\"]"));
+        };
+        if let Some(second) = given.next() {
+            return Err(OpError::invalid(second, format!("a sheet varies one thing: give {first} or {second}, not both")));
         }
+        let own = |field: &str, given: bool| {
+            if given {
+                Err(OpError::invalid(field, format!("each cell shows its own {field}; `{field}` goes with the other lists")))
+            } else {
+                Ok(())
+            }
+        };
+        let varied = match first {
+            "expressions" => {
+                own("expression", self.expression.is_some())?;
+                Varied::Expressions(&self.expressions)
+            }
+            "variants" => {
+                own("variant", self.variant.is_some())?;
+                Varied::Variants(&self.variants)
+            }
+            _ => {
+                own("pose", self.pose.is_some())?;
+                Varied::Poses(&self.poses)
+            }
+        };
+        Ok(Cells::Rendered { character, varied })
     }
 
     /// The rendered cells' size, shot and light.
@@ -294,7 +363,8 @@ impl Op for ContactSheet {
         OpMeta {
             name: "render.contact_sheet",
             summary: "Lay stored renders (their omuzaki://render/ URIs), or a character rendered in each of several \
-                      expressions or variants, out in a labelled grid and store the sheet as a PNG; returns its URI.",
+                      expressions, variants or library poses, out in a labelled grid and store the sheet as a PNG; \
+                      returns its URI.",
             kind: OpKind::Job,
             scope: Scope::Render,
             // It changes nothing in the document (the PNG goes to the content store), so its empty patch is undone
@@ -313,24 +383,20 @@ impl Op for ContactSheet {
         }
         let cost = match &checked.cells {
             Cells::Images(_) => CostHint { seconds: Some(0.3), gpu_mib: Some(0), usd: None },
-            Cells::Expressions { character, variant, expressions } => {
+            Cells::Rendered { character, varied } => {
                 let size = self.check_render()?;
                 self.sheet_size(&checked, size)?;
-                let bytes = character_bytes(ctx, character, *variant, self.quality)?;
-                cost(size, u32::try_from(expressions.len()).unwrap_or(u32::MAX), self.quality, bytes)
-            }
-            Cells::Variants { character, variants, .. } => {
-                let size = self.check_render()?;
-                self.sheet_size(&checked, size)?;
-                let mut most = 0;
-                for (i, variant) in variants.iter().enumerate() {
-                    let bytes = character_bytes(ctx, character, Some(variant), self.quality).map_err(|mut e| {
-                        e.field = Some(format!("variants/{i}"));
-                        e
-                    })?;
-                    most = most.max(bytes);
-                }
-                cost(size, u32::try_from(variants.len()).unwrap_or(u32::MAX), self.quality, most)
+                let bytes = if let Varied::Variants(variants) = varied {
+                    let mut most = 0;
+                    for (i, variant) in variants.iter().enumerate() {
+                        let bytes = character_bytes(ctx, character, Some(variant), self.quality).map_err(at(format!("variants/{i}")))?;
+                        most = most.max(bytes);
+                    }
+                    most
+                } else {
+                    character_bytes(ctx, character, self.variant.as_ref(), self.quality)?
+                };
+                cost(size, u32::try_from(varied.len()).unwrap_or(u32::MAX), self.quality, bytes)
             }
         };
         Ok(Plan { cost: Some(cost), ..Plan::default() })
@@ -350,40 +416,7 @@ impl Op for ContactSheet {
                 }
                 (pictures, labels)
             }
-            Cells::Expressions { character, variant, expressions } => {
-                let body = self.body(job, character, *variant)?;
-                for (i, expression) in expressions.iter().enumerate() {
-                    check_expression(&body, expression).map_err(|mut e| {
-                        e.field = Some(format!("expressions/{i}"));
-                        e
-                    })?;
-                }
-                let shot = self.shot(&body)?;
-                let shots: Vec<Shot> = expressions.iter().map(|e| shot.clone().with_expression(e.clone(), 1.0)).collect();
-                job.checkpoint("rendering", 0.2)?;
-                (self.render(job, body, &shots)?, expressions.iter().map(ToString::to_string).collect())
-            }
-            Cells::Variants { character, variants, expression } => {
-                let mut pictures = Vec::with_capacity(variants.len());
-                for (i, variant) in variants.iter().enumerate() {
-                    #[allow(clippy::cast_precision_loss, reason = "at most 64 variants")]
-                    job.checkpoint("rendering", 0.9 * i as f32 / variants.len() as f32)?;
-                    let body = self.body(job, character, Some(variant)).map_err(|mut e| {
-                        e.field = Some(format!("variants/{i}"));
-                        e
-                    })?;
-                    let shot = self.shot(&body)?;
-                    let shot = match expression {
-                        Some(expression) => {
-                            check_expression(&body, expression)?;
-                            shot.with_expression((*expression).clone(), 1.0)
-                        }
-                        None => shot,
-                    };
-                    pictures.extend(self.render(job, body, &[shot])?);
-                }
-                (pictures, variants.iter().map(ToString::to_string).collect())
-            }
+            Cells::Rendered { character, varied } => (self.rendered(job, character, varied)?, Self::labels_of(varied)),
         };
         let cell = pictures.iter().fold(UVec2::ZERO, |most, p| most.max(p.size));
         let (size, band) = self.sheet_size(&checked, cell)?;
@@ -452,12 +485,74 @@ impl ContactSheet {
         Ok(Shot::new(camera))
     }
 
-    /// One straight-alpha picture of `body` for each of `shots`.
-    fn render(&self, job: &JobCtx<'_>, body: Body, shots: &[Shot]) -> Result<Vec<Image>, OpError> {
+    /// One straight-alpha picture of `body` in `pose` for each of `shots`.
+    fn render(&self, job: &JobCtx<'_>, body: Body, shots: &[Shot], pose: Option<&HumanoidPose>) -> Result<Vec<Image>, OpError> {
         let size = self.check_render()?;
-        let spec = StillSpec::new(still_light(&self.light_rig)?, size, self.quality.quality());
+        let spec = StillSpec::new(still_light(&self.light_rig)?, size, self.quality.quality()).with_pose(pose.copied());
         let stills = with_renderer(job, |renderer| render_body_stills(renderer, body, &spec, shots))?;
         stills.into_iter().map(|still| straight(still.image.size, straight_rgba(&still.image))).collect()
+    }
+
+    /// The front shot of `body`, showing the sheet's `expression` if it has one.
+    fn shot_with_expression(&self, body: &Body) -> Result<Shot, OpError> {
+        let shot = self.shot(body)?;
+        let Some(expression) = &self.expression else { return Ok(shot) };
+        check_expression(body, expression)?;
+        Ok(shot.with_expression(expression.clone(), 1.0))
+    }
+
+    /// The sheet's shared `pose` as `body` shows it.
+    fn shared_pose(&self, body: &Body) -> Result<Option<HumanoidPose>, OpError> {
+        self.pose.as_ref().map(|pose| pose.resolve("pose", body)).transpose()
+    }
+
+    /// The rendered cells, in order: the expressions from one staging; a staging for each variant or pose.
+    fn rendered(&self, job: &JobCtx<'_>, character: &CharId, varied: &Varied<'_>) -> Result<Vec<Image>, OpError> {
+        #[allow(clippy::cast_precision_loss, reason = "at most 64 cells")]
+        let progress = |i: usize| job.checkpoint("rendering", 0.9 * i as f32 / varied.len() as f32);
+        match varied {
+            Varied::Expressions(expressions) => {
+                let body = self.body(job, character, self.variant.as_ref())?;
+                for (i, expression) in expressions.iter().enumerate() {
+                    check_expression(&body, expression).map_err(at(format!("expressions/{i}")))?;
+                }
+                let shot = self.shot(&body)?;
+                let shots: Vec<Shot> = expressions.iter().map(|e| shot.clone().with_expression(e.clone(), 1.0)).collect();
+                let pose = self.shared_pose(&body)?;
+                progress(0)?;
+                self.render(job, body, &shots, pose.as_ref())
+            }
+            Varied::Variants(variants) => {
+                let mut pictures = Vec::with_capacity(variants.len());
+                for (i, variant) in variants.iter().enumerate() {
+                    progress(i)?;
+                    let body = self.body(job, character, Some(variant)).map_err(at(format!("variants/{i}")))?;
+                    let (shot, pose) = (self.shot_with_expression(&body)?, self.shared_pose(&body)?);
+                    pictures.extend(self.render(job, body, &[shot], pose.as_ref())?);
+                }
+                Ok(pictures)
+            }
+            Varied::Poses(poses) => {
+                let mut pictures = Vec::with_capacity(poses.len());
+                for (i, pose) in poses.iter().enumerate() {
+                    progress(i)?;
+                    let body = self.body(job, character, self.variant.as_ref())?;
+                    let shot = self.shot_with_expression(&body)?;
+                    let pose = pose.resolve(&format!("poses/{i}"), &body)?;
+                    pictures.extend(self.render(job, body, &[shot], Some(&pose))?);
+                }
+                Ok(pictures)
+            }
+        }
+    }
+
+    /// Each rendered cell's label.
+    fn labels_of(varied: &Varied<'_>) -> Vec<String> {
+        match varied {
+            Varied::Expressions(list) => list.iter().map(ToString::to_string).collect(),
+            Varied::Variants(list) => list.iter().map(ToString::to_string).collect(),
+            Varied::Poses(list) => list.iter().map(PoseArg::label).collect(),
+        }
     }
 }
 

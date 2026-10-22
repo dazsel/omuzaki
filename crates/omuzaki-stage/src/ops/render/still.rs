@@ -66,13 +66,15 @@ pub struct StillSpec {
     /// A stored scene the character stands in (its ground, backdrop, lights and post look, and where the subject
     /// stands); `None` for `light` alone, with the character at the origin.
     pub scene: Option<StagedScene>,
+    /// The pose every still shows; `None` for the body's own (as sculpted, or an imported avatar at ease).
+    pub pose: Option<HumanoidPose>,
 }
 
 impl StillSpec {
     /// A spec of `size` pixels, lit by `light`, rendered at `quality`.
     #[must_use]
     pub fn new(light: StillLight, size: UVec2, quality: Quality) -> Self {
-        Self { light, size, quality, scene: None }
+        Self { light, size, quality, scene: None, pose: None }
     }
 
     /// A spec of `size` pixels in `scene`: its light and look, its ground disc and the subject's place on the floor.
@@ -80,7 +82,14 @@ impl StillSpec {
     pub fn in_scene(scene: StagedScene, size: UVec2, quality: Quality) -> Self {
         let r = &scene.resolved;
         let light = StillLight::new(r.lights.as_slice().to_vec(), r.background, r.post).with_outline_light(r.outline_light);
-        Self { light, size, quality, scene: Some(scene) }
+        Self { light, size, quality, scene: Some(scene), pose: None }
+    }
+
+    /// The same spec with every still in `pose`, when there is one.
+    #[must_use]
+    pub fn with_pose(mut self, pose: Option<HumanoidPose>) -> Self {
+        self.pose = pose;
+        self
     }
 }
 
@@ -179,7 +188,7 @@ pub fn render_body_stills(
                     return first_error(Err(error), stage.release(renderer));
                 }
             }
-            let base = FrameInput { pose: stage.base_pose(), ..FrameInput::default() };
+            let base = FrameInput { pose: spec.pose.unwrap_or_else(|| stage.base_pose()), ..FrameInput::default() };
             // As the kit's stills: a frame at the base pose, the springs settled from rest under it, and every shot a
             // redraw of that state, so a shot's pixels don't depend on the shots before it.
             let shot = stage.tick(renderer, &base).and_then(|_| {
@@ -237,6 +246,9 @@ fn shoot_on(
     // landmarks that framing reads are measured in; the T-pose of `FrameInput::default()` would put the hands elsewhere.
     let mut base = HumanoidPose::REST;
     seed_base_pose(&built.rig, &mut base);
+    if let Some(pose) = spec.pose {
+        base = pose;
+    }
     let mut stage = Stage::new(
         renderer,
         built,
