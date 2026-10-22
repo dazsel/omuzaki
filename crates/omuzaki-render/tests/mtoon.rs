@@ -131,7 +131,7 @@ fn expected(m: &Mtoon, lit: DVec3, emissive: DVec3, s: Sampled, lights: &[Light]
                 flat += 0.5 * (sky + ground);
                 continue;
             }
-            _ => panic!("the oracle has no spot lights"),
+            Light::Spot { .. } => panic!("the oracle has no spot lights"),
         };
         let shaded = shading(m, n.dot(to_light).clamp(-1.0, 1.0), shift);
         direct += colour * shade.lerp(lit, shaded) / PI;
@@ -272,7 +272,7 @@ fn gi_equalisation_flattens_the_ambient_toward_the_mean_of_up_and_down() {
         let f = fan(&mut r, &material, lights.clone(), Vec3::X, &angles());
         check(&f, &material, Sampled::default(), &lights, &format!("gi {gi}"));
         let (up, down) = (rgb_at(&f.image, f.probes[0].0), rgb_at(&f.image, f.probes[14].0));
-        if gi == 1.0 {
+        if gi >= 1.0 {
             assert_close(up, down, "fully equalised, up and down see the same light");
         } else {
             assert!(up[0] > down[0] + 10, "gi {gi}: up {up:?} is brighter than down {down:?}");
@@ -356,7 +356,8 @@ fn the_matcap_is_read_by_the_view_space_normal_and_added_to_the_rim() {
 fn the_normal_map_turns_the_normal_along_the_uv_tangents() {
     let mut r = support::renderer();
     let lights = vec![key(Vec3::X, 2.0), key(Vec3::NEG_Y, 1.0)];
-    // A flat map, one leaning along +u (toward +x on the quad) and one along +v (toward -y: the quad's v runs down).
+    // A flat map, one leaning along +u (toward +x on the quad) and one along glTF's green, -v (toward +y: the quad's v
+    // runs down).
     for (texel, scale) in [([128, 128, 255], 1.0), ([255, 128, 128], 0.5), ([128, 255, 128], 1.0)] {
         let map = texture(&mut r, ColourSpace::Linear, (1, 1), &[texel[0], texel[1], texel[2], 255]);
         let mtoon = Mtoon { normal_texture: Some(map), normal_scale: scale, shading_toony: 0.5, ..Mtoon::default() };
@@ -367,7 +368,7 @@ fn the_normal_map_turns_the_normal_along_the_uv_tangents() {
         let map_n = DVec3::new(map_n.x * f64::from(scale), map_n.y * f64::from(scale), map_n.z);
         for (i, &(pixel, n, rotation)) in f.probes.iter().enumerate() {
             let tangent = rotation.transform_vector3(Vec3::X).as_dvec3();
-            let bitangent = rotation.transform_vector3(Vec3::NEG_Y).as_dvec3();
+            let bitangent = rotation.transform_vector3(Vec3::Y).as_dvec3();
             let mapped = (tangent * map_n.x + bitangent * map_n.y + n * map_n.z).normalize();
             let want = expected(m, DVec3::ONE, DVec3::ZERO, Sampled::default(), &lights, mapped, world_of(pixel));
             assert_close(rgb_at(&f.image, pixel), encode(want), &format!("map {texel:?}: surface {i}"));
@@ -454,4 +455,192 @@ fn a_blended_surface_that_writes_depth_hides_what_is_drawn_behind_it_later() {
     // the red one stays, half over the black background.
     assert!(without[2] > 200 && without[0] < 10, "the later blue quad covers: {without:?}");
     assert!(with[0] > 100 && with[2] < 10, "the near red quad hides the blue one: {with:?}");
+}
+
+// ---- evidence: five spheres to set beside three-vrm's render of the same scene ----
+
+/// three.js `SphereGeometry(radius, 48, 24)`: the same vertices, normals, UVs and triangles, so a texture lands where
+/// three-vrm puts it.
+fn sphere(radius: f32) -> omuzaki_render_api::MeshData {
+    let (columns, rows) = (48u32, 24u32);
+    let mut mesh = omuzaki_render_api::MeshData::default();
+    for iy in 0..=rows {
+        let v = iy as f32 / rows as f32;
+        for ix in 0..=columns {
+            let u = ix as f32 / columns as f32;
+            let (theta, phi) = (v * std::f32::consts::PI, u * std::f32::consts::TAU);
+            let p = Vec3::new(-phi.cos() * theta.sin(), theta.cos(), phi.sin() * theta.sin());
+            mesh.positions.push(p * radius);
+            mesh.normals.push(p.normalize_or(Vec3::Y));
+            mesh.uvs.push(Vec2::new(u, 1.0 - v));
+        }
+    }
+    let at = |ix: u32, iy: u32| iy * (columns + 1) + ix;
+    for iy in 0..rows {
+        for ix in 0..columns {
+            let corners = [at(ix + 1, iy), at(ix, iy), at(ix, iy + 1), at(ix + 1, iy + 1)];
+            if iy != 0 {
+                mesh.indices.extend([corners[0], corners[1], corners[3]]);
+            }
+            if iy != rows - 1 {
+                mesh.indices.extend([corners[1], corners[2], corners[3]]);
+            }
+        }
+    }
+    mesh
+}
+
+/// A 64 x 64 texture from `texel(x, y)`, saved beside the render for the three-vrm page as `<name>.png`.
+fn evidence_texture(
+    r: &mut dyn Renderer,
+    out: Option<&std::path::Path>,
+    name: &str,
+    space: ColourSpace,
+    texel: impl Fn(u32, u32) -> [u8; 4],
+) -> TextureId {
+    let rgba: Vec<u8> = (0..64 * 64).flat_map(|i| texel(i % 64, i / 64)).collect();
+    if let Some(dir) = out {
+        image::save_buffer(dir.join(format!("{name}.png")), &rgba, 64, 64, image::ColorType::Rgba8).unwrap();
+    }
+    let desc = TextureDesc {
+        colour_space: space,
+        mips: false,
+        sampler: Sampler { filter: Filter::Linear, wrap: Wrap::Repeat, ..Sampler::default() },
+        ..TextureDesc::colour(UVec2::splat(64))
+    };
+    r.create_texture(&desc, Some(&rgba)).unwrap()
+}
+
+/// Five `MToon` spheres under a key light and a hemisphere, at time 0.8 s: the shade and rim; a hard, texture-shifted
+/// terminator; the matcap; a normal map with an emissive texture; a scrolling, turning base texture. With
+/// `OMUZAKI_RENDER_OUT=<dir>` it saves `mtoon-omuzaki.png` (as the spec says), `mtoon-omuzaki-gi0.png` (GI
+/// equalisation off, as three-vrm draws) and the textures. The three-vrm page on the `evidence/render-live` branch
+/// (`592/three-vrm-page.html`) draws the same scene from the same numbers and textures.
+#[test]
+#[allow(clippy::too_many_lines, reason = "one scene, five materials, written out so they read like the three-vrm page")]
+fn mtoon_spheres_evidence() {
+    let out = std::env::var_os("OMUZAKI_RENDER_OUT").map(std::path::PathBuf::from);
+    let out = out.as_deref();
+    let mut r = support::renderer();
+    let stripes = evidence_texture(&mut r, out, "stripes", ColourSpace::Linear, |_, y| {
+        if (y / 8).is_multiple_of(2) { [255, 0, 0, 255] } else { [0, 0, 0, 255] }
+    });
+    let matcap = evidence_texture(&mut r, out, "matcap", ColourSpace::Srgb, |x, y| {
+        let d = Vec2::new(x as f32 / 63.0 - 0.35, y as f32 / 63.0 - 0.3).length();
+        let c = (1.0 - d / 0.7).clamp(0.0, 1.0);
+        [(30.0 + 225.0 * c) as u8, (30.0 + 170.0 * c) as u8, (40.0 + 100.0 * c) as u8, 255]
+    });
+    let bumps = evidence_texture(&mut r, out, "bumps", ColourSpace::Linear, |x, y| {
+        let nx = 0.5 * (std::f32::consts::TAU * x as f32 / 16.0).sin();
+        let ny = 0.5 * (std::f32::consts::TAU * y as f32 / 16.0).cos();
+        let nz = (1.0 - nx * nx - ny * ny).sqrt();
+        let byte = |v: f32| ((v * 0.5 + 0.5) * 255.0).round() as u8;
+        [byte(nx), byte(ny), byte(nz), 255]
+    });
+    let checker = |a: [u8; 4], b: [u8; 4]| move |x: u32, y: u32| if (x / 8 + y / 8).is_multiple_of(2) { a } else { b };
+    let base =
+        evidence_texture(&mut r, out, "checker", ColourSpace::Srgb, checker([230, 230, 240, 255], [60, 90, 200, 255]));
+    let glow = evidence_texture(&mut r, out, "glow", ColourSpace::Srgb, checker([255, 160, 40, 255], [0, 0, 0, 255]));
+
+    let spheres = [
+        (
+            Colour::rgb(240, 200, 185),
+            Colour::BLACK,
+            None,
+            Mtoon {
+                shade: Colour::rgb(150, 100, 140),
+                rim: Colour::rgb(170, 190, 255),
+                rim_fresnel_power: 4.0,
+                rim_lift: 0.1,
+                ..Mtoon::default()
+            },
+        ),
+        (
+            Colour::rgb(170, 210, 240),
+            Colour::BLACK,
+            None,
+            Mtoon {
+                shade: Colour::rgb(80, 110, 170),
+                shading_toony: 0.95,
+                shading_shift: 0.1,
+                shading_shift_texture: Some(stripes),
+                shading_shift_scale: -0.6,
+                ..Mtoon::default()
+            },
+        ),
+        (
+            Colour::rgb(140, 140, 150),
+            Colour::BLACK,
+            None,
+            Mtoon { matcap_texture: Some(matcap), rim_lighting_mix: 0.5, ..Mtoon::default() },
+        ),
+        (
+            Colour::rgb(200, 220, 200),
+            Colour::rgb(120, 60, 0),
+            None,
+            Mtoon {
+                shade: Colour::rgb(90, 120, 100),
+                normal_texture: Some(bumps),
+                emissive_texture: Some(glow),
+                ..Mtoon::default()
+            },
+        ),
+        (
+            Colour::WHITE,
+            Colour::BLACK,
+            Some(base),
+            Mtoon {
+                shade: Colour::rgb(140, 140, 170),
+                uv_scroll: Vec2::new(0.25, 0.0),
+                uv_rotation: 0.5,
+                ..Mtoon::default()
+            },
+        ),
+    ];
+    let camera =
+        Camera::look_at(EYE, Vec3::ZERO, Vec3::Y, Projection::Orthographic { height: 2.4, near: 0.1, far: 20.0 });
+    let mut s = Scene::new(camera);
+    s.background = Background::Solid { colour: Colour::BLACK };
+    s.post.tonemap = Tonemap::None;
+    s.frame.time = Seconds(0.8);
+    s.lights = vec![
+        Light::Directional {
+            to_light: Vec3::new(1.0, 1.0, 1.0),
+            colour: Colour::rgb(255, 250, 240),
+            intensity: 2.5,
+            casts_shadow: false,
+        },
+        Light::Hemisphere { sky: Colour::rgb(200, 210, 235), ground: Colour::rgb(110, 95, 85), intensity: 1.0 },
+    ];
+    let mesh = r.create_mesh(&sphere(0.6)).unwrap();
+    let quality = Quality { samples: 1, render_scale: 1.0, post_effects: false, ..Quality::offline() };
+    // As the spec says (GI equalisation 0.9 by default), and with it off, as three-vrm draws it.
+    let mut image = None;
+    for (gi, name) in [(None, "mtoon-omuzaki.png"), (Some(0.0), "mtoon-omuzaki-gi0.png")] {
+        let mut scene = s.clone();
+        let mut materials = Vec::new();
+        for (i, (lit, emissive, texture, mtoon)) in spheres.iter().cloned().enumerate() {
+            let gi_equalisation = gi.unwrap_or(mtoon.gi_equalisation);
+            let mut material = mtoon_material(lit, emissive, Mtoon { gi_equalisation, ..mtoon });
+            material.base_texture = texture;
+            let id = r.create_material(&material).unwrap();
+            let x = -2.8 + 1.4 * i as f32;
+            scene.instances.push(Instance::new(mesh, id, Mat4::from_translation(Vec3::new(x, 0.0, 0.0))));
+            materials.push(id);
+        }
+        let drawn = r.render_image(UVec2::new(768, 256), AlphaEncoding::Straight, &scene, &quality).unwrap();
+        if let Some(dir) = out {
+            image::save_buffer(dir.join(name), &drawn.rgba8, 768, 256, image::ColorType::Rgba8).unwrap();
+        }
+        for id in materials {
+            r.release(id.into()).unwrap();
+        }
+        image.get_or_insert(drawn);
+    }
+    let image = image.unwrap();
+    // Every sphere is drawn: its centre isn't the background.
+    for i in 0..5 {
+        let x = 384.0 + (-2.8 + 1.4 * i as f32) * 256.0 / 2.4;
+        assert_ne!(rgb_at(&image, (x as u32, 128)), [0, 0, 0], "sphere {i}");
+    }
 }

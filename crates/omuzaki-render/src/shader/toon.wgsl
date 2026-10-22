@@ -274,10 +274,13 @@ fn mtoon_shading(n_dot_l: f32, shadow: f32, shift: f32) -> f32 {
 
 // The normal map applied to unit normal `n`: three.js `getTangentFrame` (the tangents from the screen-space
 // derivatives of the position and the UV, as three-vrm does for a mesh without tangents), flipped with the face.
-// WGSL's framebuffer y runs down where GL's runs up, so both y derivatives are negated to build GL's frame.
+// WGSL's framebuffer y runs down where GL's runs up, so both y derivatives are negated to build GL's frame. That frame's
+// bitangent points along +v, and glTF's green channel points along -v (its UV origin is the top left), so the map's y is
+// negated, as three's GLTFLoader does with `normalScale.y` for derivative tangents.
 fn mtoon_normal(n: vec3<f32>, position: vec3<f32>, uv: vec2<f32>, face: f32) -> vec3<f32> {
     let sampled = texel(textureSample(mtoon_normal_texture, mtoon_normal_sampler, uv), mtoon_texture_flags(5u)).xyz;
-    let map_n = vec3<f32>((sampled.xy * 2.0 - 1.0) * material.mtoon_uv.w, sampled.z * 2.0 - 1.0);
+    let map_scale = material.mtoon_uv.w * vec2<f32>(1.0, -1.0);
+    let map_n = vec3<f32>((sampled.xy * 2.0 - 1.0) * map_scale, sampled.z * 2.0 - 1.0);
     let q0 = dpdx(position);
     let q1 = -dpdy(position);
     let st0 = dpdx(uv);
