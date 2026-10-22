@@ -1,9 +1,11 @@
 //! How different two face pictures are: pixel counts for the channel sweep, and the structural similarity (SSIM) and a
 //! luminance distance for the expression range test.
 //!
-//! SSIM is Wang et al. 2004 on luma, over 8 x 8 windows with a stride of 4 and the paper's constants, which is the usual
-//! form for small images and needs no dependency. Luma is Rec. 709 on the sRGB bytes: the face is judged by how it
-//! reads, not by its light.
+//! SSIM is Wang et al. 2004 over 8 x 8 windows with a stride of 4 and the paper's constants, which is the usual form for
+//! small images and needs no dependency. It is taken on each of the sRGB channels and the lowest wins: a face change
+//! can be colour alone (a light blue sweat drop or a blush on pale skin has nearly the skin's luma), and a luma-only
+//! SSIM would call it unchanged. The luma distance is Rec. 709 on the sRGB bytes: the face is judged by how it reads,
+//! not by its light.
 
 use image::RgbaImage;
 use omuzaki_face_api::Raster;
@@ -62,24 +64,49 @@ const STRIDE: u32 = 4;
 const C1: f64 = 0.0001;
 const C2: f64 = 0.0009;
 
-/// The mean SSIM of two pictures of one size, `-1..=1` (1 = the same). Pictures smaller than a window are compared as one
-/// window. Pictures of different sizes score 0.
+/// The mean SSIM of two pictures of one size, `-1..=1` (1 = the same): the lowest over the red, green and blue channels.
+/// Pictures smaller than a window are compared as one window. Pictures of different sizes score 0.
 pub fn ssim(first: &RgbaImage, second: &RgbaImage) -> f64 {
     if first.dimensions() != second.dimensions() {
         return 0.0;
     }
+    (0..3).map(|c| channel_ssim(first, second, c, 1.0)).fold(1.0, f64::min)
+}
+
+/// [`ssim`] over only the least similar `share` of the windows (`0 < share <= 1`): a small local change, a sweat drop
+/// on a whole face, is not averaged away by the windows that did not change.
+pub fn ssim_worst(first: &RgbaImage, second: &RgbaImage, share: f64) -> f64 {
+    if first.dimensions() != second.dimensions() {
+        return 0.0;
+    }
+    (0..3).map(|c| channel_ssim(first, second, c, share)).fold(1.0, f64::min)
+}
+
+/// One channel of an sRGB picture, `0..=1`, row by row.
+fn plane(image: &RgbaImage, channel: usize) -> Vec<f64> {
+    image.pixels().map(|p| f64::from(p[channel]) / 255.0).collect()
+}
+
+/// The mean SSIM of one channel over the least similar `share` of its windows.
+fn channel_ssim(first: &RgbaImage, second: &RgbaImage, channel: usize, share: f64) -> f64 {
     let (width, height) = first.dimensions();
-    let planes = Planes { first: luma(first), second: luma(second), width };
+    let planes = Planes { first: plane(first, channel), second: plane(second, channel), width };
     let (side_x, side_y) = (WINDOW.min(width), WINDOW.min(height));
-    let mut total = 0.0;
-    let mut windows = 0u32;
+    let mut scores = Vec::new();
     for top in (0..=height - side_y).step_by(STRIDE as usize) {
         for left in (0..=width - side_x).step_by(STRIDE as usize) {
-            total += planes.window_ssim(left..left + side_x, top..top + side_y);
-            windows += 1;
+            scores.push(planes.window_ssim(left..left + side_x, top..top + side_y));
         }
     }
-    if windows == 0 { 1.0 } else { total / f64::from(windows) }
+    if scores.is_empty() {
+        return 1.0;
+    }
+    scores.sort_by(f64::total_cmp);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)] // a window count
+    let keep = ((scores.len() as f64 * share.clamp(0.0, 1.0)).ceil() as usize).clamp(1, scores.len());
+    #[allow(clippy::cast_precision_loss)] // a window count
+    let mean = scores[..keep].iter().sum::<f64>() / keep as f64;
+    mean
 }
 
 /// The luma planes of two pictures of one width.
@@ -174,6 +201,20 @@ mod tests {
         let (s_small, s_big) = (ssim(&a, &small), ssim(&a, &big));
         assert!(s_small < 1.0 && s_big < s_small, "{s_small} {s_big}");
         assert!(luma_l2(&a, &big) > luma_l2(&a, &small));
+    }
+
+    #[test]
+    fn a_change_of_colour_alone_lowers_ssim() {
+        // Two colours of nearly one luma: a pale blue drop on pale skin.
+        let skin = RgbaImage::from_pixel(32, 32, Rgba([249, 211, 197, 255]));
+        let mut drop = skin.clone();
+        for y in 8..20 {
+            for x in 8..16 {
+                drop.put_pixel(x, y, Rgba([190, 225, 255, 255]));
+            }
+        }
+        assert!(luma_l2(&skin, &drop) < 0.02, "the luma barely moves");
+        assert!(ssim(&skin, &drop) < 0.9, "{}", ssim(&skin, &drop));
     }
 
     #[test]

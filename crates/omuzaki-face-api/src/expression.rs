@@ -300,7 +300,20 @@ impl ExpressionSet {
             .collect();
         Self(map)
     }
+
+    /// The built-in library (FE-03): the five visemes (with the [`starter`](Self::starter)'s mouth openings) and `blink`, twenty-one moods
+    /// and seven accents, each with its intensity curve, tuned with the expression range test. It is data, in
+    /// `library/expressions.toml` of this crate, compiled in. A new character's face starts with it.
+    ///
+    /// # Errors
+    /// The parse error, if the compiled-in file does not read as an expression set (a test proves it does).
+    pub fn library() -> Result<Self, String> {
+        toml::from_str(LIBRARY).map_err(|e| format!("the built-in expression library does not read: {e}"))
+    }
 }
+
+/// The built-in library's source.
+const LIBRARY: &str = include_str!("../library/expressions.toml");
 
 #[cfg(test)]
 mod tests {
@@ -378,6 +391,42 @@ mod tests {
         assert!(angry.left_brow.tilt > 0.5 && angry.eye_tilt > 0.0 && angry.mouth.smile_left < 0.0);
         assert!(p("surprised").left_eye.open > 1.6);
         assert_eq!(p("blink").left_eye.close, 1.0);
+    }
+
+    #[test]
+    fn the_library_reads_keeps_the_contract_and_stays_in_range() {
+        let library = ExpressionSet::library().unwrap();
+        let starter = ExpressionSet::starter();
+        assert_eq!(library.0[&id("blink")], starter.0[&id("blink")]);
+        let mapping = FaceMapping::default();
+        let open = |set: &ExpressionSet, name: &str| {
+            mapping.apply(&set.blend(&ChannelBuf::NEUTRAL, &[(&id(name), 1.0)]).unwrap()).mouth.open
+        };
+        for name in VISEMES {
+            assert_eq!(library.0[&id(name)].kind, ExpressionKind::Viseme);
+            assert_eq!(open(&library, name), open(&starter, name), "{name} keeps the lip-sync opening");
+        }
+        let moods = library.0.values().filter(|e| e.kind == ExpressionKind::Emotion).count();
+        let accents = library.0.values().filter(|e| e.kind == ExpressionKind::Accent).count();
+        assert!(moods >= 18, "{moods} moods");
+        assert_eq!((moods, accents), (21, 7));
+        for (name, e) in &library.0 {
+            assert!(!e.deltas.0.is_empty(), "{name} moves nothing");
+            for (c, v) in &e.deltas.0 {
+                let (lo, hi) = c.range();
+                assert!(*v != 0.0 && narrow(*v) >= lo && narrow(*v) <= hi, "{name}: {c} = {v}");
+            }
+        }
+        // Any two expressions blend inside the channel ranges (the blend clamps, so it never fails or overflows).
+        for a in library.0.keys() {
+            for b in library.0.keys() {
+                let out = library.blend(&ChannelBuf::NEUTRAL, &[(a, 1.0), (b, 1.0)]).unwrap();
+                for info in CHANNELS {
+                    let v = out.get(info.channel);
+                    assert!(v >= info.min && v <= info.max, "{a} + {b}: {} = {v}", info.name);
+                }
+            }
+        }
     }
 
     #[test]

@@ -29,7 +29,6 @@
 //! | [`preview`] | pictures of a face for the tools (sweep, range test): paint, compare, contact sheets |
 //! | [`underlay`] | tracing a sheet face under the painted one |
 //! | [`ops`] | the registered face ops: `style`, `mapping`, `rest`, `expression`, `sweep`, `range_test` |
-//! | [`library`] | the built-in expression library |
 //! | [`exaggeration`] | exaggeration profiles |
 //! | [`bake`] | the expression bakers (`morph`, `flipbook`) |
 //!
@@ -39,7 +38,6 @@
 pub mod bake;
 pub mod exaggeration;
 pub mod layer;
-pub mod library;
 pub mod ops;
 /// The helpers the face ops share. They sit beside `ops/`, not in it, because the generated family list in `ops/` makes
 /// every folder there `pub`, and these are crate-private.

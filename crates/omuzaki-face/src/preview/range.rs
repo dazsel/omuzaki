@@ -3,9 +3,10 @@
 //!
 //! Every expression is painted once, at full weight over the character's resting buffer, with the face window
 //! [`PAINT_WIDTH_PX`] wide, then cropped and scaled down so the face window would be `size` pixels wide: a 28 px emote
-//! of the head sees the features that small. A viewer reads a face by its eyes and its mouth, so two regions are
-//! compared, the eyes with the brows and the cheeks under them, and the mouth; a pair's **similarity** is the lower of
-//! the two regions' structural similarity (SSIM), so a pair that differs in either region reads as different. Comparing
+//! of the head sees the features that small. A viewer reads a face by its eyes and its mouth, so three regions are
+//! compared, the eyes with the brows and the cheeks under them, the mouth, and the whole face window (for what sits
+//! elsewhere: a sweat drop at the temple, the gloom over the forehead); a pair's **similarity** is the lowest of the
+//! regions' structural similarity (SSIM), so a pair that differs in any region reads as different. Comparing
 //! the whole face instead would let a small anime mouth vanish in the skin around it. Two expressions are **too
 //! similar** at a size when their similarity is above the threshold; an expression is **neutral** when it is too
 //! similar to the resting face at the largest size. Visemes are mouth shapes for lip sync and are compared only with
@@ -20,7 +21,7 @@ use omuzaki_anim_api::ChannelBuf;
 use omuzaki_face_api::{ExpressionKind, FaceError, FaceRect, narrow};
 use serde::Serialize;
 
-use super::metrics::{downsample, luma_l2, ssim};
+use super::metrics::{downsample, luma_l2, ssim_worst};
 use super::{FaceSubject, Preview};
 
 /// The width the face window is painted at before cropping and scaling down: twice the largest default size, so even
@@ -31,6 +32,10 @@ pub const DEFAULT_SIZES: [u32; 4] = [28, 56, 112, 512];
 /// The default similarity above which two expressions read the same, measured on the default face: a pair whose only
 /// difference is both outer brows raised by a tenth scores above it at 56 px, the starter moods score well below it.
 pub const DEFAULT_SIMILAR: f64 = 0.94;
+
+/// The share of the least similar windows the whole-window region is judged by: something small away from the eyes and
+/// the mouth (a sweat drop, a vein) changes only a few windows of the whole face.
+const WINDOW_WORST: f64 = 0.03;
 
 /// What to test.
 #[derive(Clone, Debug, PartialEq)]
@@ -59,14 +64,26 @@ pub struct Painted {
     pub eyes: Vec<RgbaImage>,
     /// The mouth.
     pub mouth: Vec<RgbaImage>,
+    /// The whole face window.
+    pub window: Vec<RgbaImage>,
 }
 
 impl Painted {
-    /// How alike `self` and `other` read at size index `s`: the lower of the eyes' and the mouth's SSIM, and the mean of
-    /// the two regions' luma distances.
+    /// How alike `self` and `other` read at size index `s`: the lowest of the regions' SSIM, and the largest of their
+    /// luma distances.
     fn likeness(&self, other: &Self, s: usize) -> Option<(f64, f64)> {
-        let (ea, eb, ma, mb) = (self.eyes.get(s)?, other.eyes.get(s)?, self.mouth.get(s)?, other.mouth.get(s)?);
-        Some((ssim(ea, eb).min(ssim(ma, mb)), f64::midpoint(luma_l2(ea, eb), luma_l2(ma, mb))))
+        let mut score = 1.0f64;
+        let mut distance = 0.0f64;
+        for (mine, theirs, share) in [
+            (&self.eyes, &other.eyes, 1.0),
+            (&self.mouth, &other.mouth, 1.0),
+            (&self.window, &other.window, WINDOW_WORST),
+        ] {
+            let (a, b) = (mine.get(s)?, theirs.get(s)?);
+            score = score.min(ssim_worst(a, b, share));
+            distance = distance.max(luma_l2(a, b));
+        }
+        Some((score, distance))
     }
 }
 
@@ -196,7 +213,14 @@ pub fn paint_all(
             let region = cropped(&picture, window, rect);
             options.sizes.iter().map(|&size| scale(&region, size)).collect()
         };
-        Ok(Painted { name, kind, crops: at_sizes(crop), eyes: at_sizes(eyes), mouth: at_sizes(mouth) })
+        Ok(Painted {
+            name,
+            kind,
+            crops: at_sizes(crop),
+            eyes: at_sizes(eyes),
+            mouth: at_sizes(mouth),
+            window: at_sizes(window),
+        })
     };
     let mut out = vec![paint("rest".to_owned(), ExpressionKind::Emotion, &rest)?];
     for (id, expression) in &subject.profile.expressions.0 {
