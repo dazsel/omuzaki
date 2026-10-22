@@ -131,15 +131,23 @@ fn applying_saves_the_project_and_the_next_process_reads_it_back() {
 }
 
 #[test]
-fn undo_and_redo_in_a_separate_process_find_no_history_and_change_nothing() {
+fn undo_and_redo_in_a_separate_process_reach_the_last_ones_history() {
     let project = new_project();
+    let original = project_toml(project.path());
     fixture(project.path(), &["run", "demo.set_note", "--args", r#"{"text": "hello"}"#]);
     let saved = project_toml(project.path());
-    for (command, nothing) in [("undo", "nothing to undo\n"), ("redo", "nothing to redo\n")] {
-        let out = fixture(project.path(), &[command]);
-        assert_eq!((out.code, out.stdout.as_str()), (Some(0), nothing), "{command}: {}", out.stderr);
-    }
+    assert_ne!(saved, original);
+
+    // The history is journalled and restored on open, so a new process undoes what the last one did.
+    let undone = fixture(project.path(), &["undo"]);
+    assert_eq!(undone.code, Some(0), "{}", undone.stderr);
+    assert!(undone.stdout.starts_with("undid "), "{}", undone.stdout);
+    assert_eq!(project_toml(project.path()), original, "the files follow the undo before the process exits");
+    let redone = fixture(project.path(), &["redo"]);
+    assert!(redone.stdout.starts_with("redid "), "{}", redone.stdout);
     assert_eq!(project_toml(project.path()), saved);
+    let nothing = fixture(project.path(), &["redo"]);
+    assert_eq!((nothing.code, nothing.stdout.as_str()), (Some(0), "nothing to redo\n"), "{}", nothing.stderr);
 }
 
 #[test]
@@ -304,18 +312,19 @@ fn an_mcp_session_dry_runs_applies_undoes_and_redoes_and_the_files_follow() {
     assert_eq!(preview["mode"], "dry_run", "{preview}");
     assert_eq!(project_toml(project.path()), original, "a dry run writes nothing");
 
+    // A change is acknowledged once the journal holds it; the files follow within the keeper's two seconds.
     let applied = mcp.call("demo_set_note", &json!({"text": "hello"}));
     assert_eq!(applied["mode"], "apply", "{applied}");
-    assert!(project_toml(project.path()).contains(&noted("hello")), "{}", project_toml(project.path()));
+    files_come_to(project.path(), |toml| toml.contains(&noted("hello")));
     assert_eq!(mcp.call("demo_get_note", &json!({}))["output"]["note"], "hello");
 
     mcp.call("history_undo", &json!({}));
-    assert_eq!(project_toml(project.path()), original, "undo took the note back out of the file");
+    files_come_to(project.path(), |toml| toml == original);
     assert!(mcp.call("demo_get_note", &json!({}))["output"]["note"].is_null());
 
     mcp.call("history_redo", &json!({}));
-    assert!(project_toml(project.path()).contains(&noted("hello")), "{}", project_toml(project.path()));
     assert_eq!(mcp.close(), (Some(0), String::new()), "a session logs nothing to stderr either");
+    assert!(project_toml(project.path()).contains(&noted("hello")), "closing saves: {}", project_toml(project.path()));
 }
 
 #[test]
@@ -337,4 +346,14 @@ fn a_client_that_leaves_before_the_handshake_ends_the_server_with_an_internal_er
     let (code, stderr) = Mcp::start(FIXTURE, project.path()).close();
     assert_eq!(code, Some(1));
     assert!(stderr.starts_with("error: internal: MCP handshake failed"), "{stderr}");
+}
+
+/// Waits until `project.toml` satisfies `done`, at most ten seconds: the keeper saves behind the journal, so the file
+/// trails an acknowledged change by up to its save interval.
+fn files_come_to(dir: &std::path::Path, done: impl Fn(&str) -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !done(&project_toml(dir)) {
+        assert!(std::time::Instant::now() < deadline, "the files never followed: {}", project_toml(dir));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
 }

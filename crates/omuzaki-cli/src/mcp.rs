@@ -9,6 +9,7 @@
 use std::io;
 use std::sync::Arc;
 
+use omuzaki_app::AppCore;
 use omuzaki_mcp::{McpOptions, McpServer, ServerError};
 use omuzaki_ops_api::{OpError, Runner};
 use tracing_subscriber::EnvFilter;
@@ -48,6 +49,17 @@ pub fn serve_stdio(runner: Arc<dyn Runner>, session: &Session) -> Result<(), OpE
     // thread is still waiting for input, and dropping the runtime would wait for it too: leave it to the exit.
     runtime.shutdown_background();
     result.map_err(|e| server_error(&e))
+}
+
+/// Serves the app core's MCP server to one MCP client on stdin/stdout: the same server, sessions, journal and project
+/// root as the core's other surfaces, with the core's headless rules (nothing waits for an approval). Returns when the
+/// client closes the connection; the caller closes the core.
+///
+/// # Errors
+/// As [`serve_stdio`].
+pub fn serve_core(core: &AppCore) -> Result<(), OpError> {
+    log_to_stderr();
+    core.runtime().block_on(core.mcp().serve_stdio()).map_err(|e| server_error(&e))
 }
 
 /// Sends `tracing` events to stderr, at `warn` unless `RUST_LOG` asks for another level.

@@ -6,6 +6,10 @@ use std::process::ExitCode;
 
 use omuzaki_ops_api::OpError;
 
+use std::path::Path;
+
+use omuzaki_app::{AppCore, AppOptions};
+
 use crate::cli::{Cli, Command};
 use crate::commands::execute;
 use crate::output::{Reply, finish_reply};
@@ -29,11 +33,38 @@ pub fn run() -> ExitCode {
 }
 
 /// Opens the runner for `cli` with the invocation's agent connections wired in, and runs the command on it.
+///
+/// A command on a project opens it through the app core ([`omuzaki_app::AppCore`]): journalled, recovered if the
+/// last session crashed, with its undo and redo history restored, and closed cleanly before the process exits, so
+/// `omuzaki undo` in a new process undoes what the last one did.
 fn run_with_runner(cli: &Cli) -> Result<Reply, OpError> {
     let mut session = Session::from_env();
+    if let (Some(dir), true) = (cli.project.as_deref(), cli.command.needs_project()) {
+        return run_on_core(cli, dir, session);
+    }
     let executor = open_executor_with(cli, &session.connections)?;
     session.sessions = Some(executor.clone());
     session.jobs = Some(executor.clone());
     session.project = cli.project.as_deref().map(project_root).transpose()?;
     execute(cli, executor, &session, &mut io::stdin()).map(Reply::ok)
+}
+
+/// Runs `cli`'s command on the project in `dir`, opened through the app core, and closes it.
+fn run_on_core(cli: &Cli, dir: &Path, mut session: Session) -> Result<Reply, OpError> {
+    let core = AppCore::open(dir, AppOptions::headless(session.actor.clone())).map_err(|e| e.to_op_error())?;
+    if !core.recovery().is_empty() {
+        // Headless recovery restores to the last committed change and says so (journal.md 8.4); stdout is the reply.
+        eprintln!("omuzaki: {}", core.recovery().summary());
+    }
+    session.sessions = Some(core.sessions());
+    session.jobs = Some(core.jobs());
+    session.project = Some(project_root(dir)?);
+    let result = match &cli.command {
+        Command::Mcp => crate::mcp::serve_core(&core).map(|()| String::new()),
+        _ => execute(cli, core.runner(), &session, &mut io::stdin()),
+    };
+    let closed = core.close().map_err(|e| e.to_op_error());
+    let text = result?;
+    closed?;
+    Ok(Reply::ok(text))
 }

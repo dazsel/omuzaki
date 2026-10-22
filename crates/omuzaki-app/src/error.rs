@@ -16,7 +16,7 @@ pub enum AppError {
     Store(#[from] StoreError),
     /// The journal can't be read or started (a newer Omuzaki wrote it, a file can't be written).
     #[error(transparent)]
-    Journal(#[from] JournalError),
+    Journal(JournalError),
     /// The executor can't be built: two ops share a name, or the history is from a newer Omuzaki.
     #[error(transparent)]
     Executor(#[from] ExecutorError),
@@ -32,6 +32,17 @@ pub enum AppError {
     /// The async runtime the MCP server runs on can't start.
     #[error("the MCP runtime can't start: {0}")]
     Runtime(#[source] std::io::Error),
+}
+
+impl From<JournalError> for AppError {
+    /// A store error met while reading the journal is reported as the store's, so a broken project file reads the same
+    /// whether or not the project has a journal.
+    fn from(error: JournalError) -> Self {
+        match error {
+            JournalError::Store(store) => Self::Store(store),
+            other => Self::Journal(other),
+        }
+    }
 }
 
 impl AppError {

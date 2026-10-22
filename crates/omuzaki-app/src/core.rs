@@ -16,7 +16,7 @@ use omuzaki_ops_api::{
     Actor, ConnectionService, Event, Grants, Jobs, Mode, OpError, Outcome, ProjectDir, Request, Runner,
     ServicesBuilder, Sessions,
 };
-use tokio::runtime::Runtime;
+use tokio::runtime::{Handle, Runtime};
 
 use crate::AppError;
 use crate::recover::{self, RecoveryReport};
@@ -87,7 +87,11 @@ pub struct AppCore {
     executor: Arc<Executor>,
     journal: Arc<ProjectJournal>,
     mcp: McpServer,
-    runtime: Runtime,
+    /// Always `Some` until the drop, which shuts it down without waiting: a stdio server leaves a thread blocked on
+    /// standard input, and a plain drop of the runtime would wait for it forever.
+    runtime: Option<Runtime>,
+    /// The runtime's handle, which every call uses.
+    handle: Handle,
     http: Mutex<Option<HttpServer>>,
     person: Actor,
     dir: PathBuf,
@@ -165,7 +169,8 @@ impl AppCore {
             executor,
             journal,
             mcp,
-            runtime,
+            handle: runtime.handle().clone(),
+            runtime: Some(runtime),
             http: Mutex::new(None),
             person: options.person,
             dir: dir.to_path_buf(),
@@ -200,9 +205,10 @@ impl AppCore {
         &self.mcp
     }
 
-    /// The runtime the MCP server runs on, for a host that serves it on a transport of its own.
-    pub fn runtime(&self) -> &Runtime {
-        &self.runtime
+    /// The runtime the MCP server runs on, for a host that serves it on a transport of its own (`block_on` from a
+    /// thread outside the runtime).
+    pub fn runtime(&self) -> &Handle {
+        &self.handle
     }
 
     /// The person this core works for.
@@ -303,7 +309,7 @@ impl AppCore {
         if let Some(port) = http.as_ref() {
             return Ok(port.url());
         }
-        let port = self.runtime.block_on(self.mcp.serve_http(options))?;
+        let port = self.runtime().block_on(self.mcp.serve_http(options))?;
         let url = port.url();
         *http = Some(port);
         Ok(url)
@@ -325,7 +331,7 @@ impl AppCore {
     /// # Errors
     /// [`AppError::Mcp`] if the registry refuses the session (a ceiling above the person's).
     pub fn connect_in_app(&self, spec: InAppSpec) -> Result<InAppLink, AppError> {
-        Ok(self.runtime.block_on(self.mcp.connect_in_app(spec))?)
+        Ok(self.runtime().block_on(self.mcp.connect_in_app(spec))?)
     }
 
     /// Ends the session cleanly: closes the HTTP port (its sessions end), cancels jobs, saves the files and writes the
@@ -348,7 +354,7 @@ impl AppCore {
 
     fn stop_serving(&self) {
         if let Some(port) = lock(&self.http).take() {
-            self.runtime.block_on(port.shutdown());
+            self.runtime().block_on(port.shutdown());
         }
         self.executor.shutdown_jobs();
     }
@@ -367,6 +373,9 @@ impl Drop for AppCore {
     fn drop(&mut self) {
         if let Err(error) = self.shut_down() {
             tracing::warn!(%error, "the project didn't close cleanly; the next open recovers it from the journal");
+        }
+        if let Some(runtime) = self.runtime.take() {
+            runtime.shutdown_background();
         }
     }
 }

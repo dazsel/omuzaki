@@ -3764,6 +3764,7 @@ version = "0.0.0"
 dependencies = [
  "clap",
  "omuzaki-anim-api",
+ "omuzaki-app",
  "omuzaki-char-api",
  "omuzaki-core",
  "omuzaki-doc",

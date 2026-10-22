@@ -33,4 +33,5 @@ workspace = true
 
 [package.metadata.omuzaki]
 kind = "App"
+registers = true
 summary = "the app core: `AppCore` opens a project through its journal (recovering after a crash, history restored), runs one executor and serves it to the studio, the CLI and MCP (HTTP port, in-app link); `close` ends the session cleanly"
