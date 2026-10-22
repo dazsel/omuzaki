@@ -1,0 +1,43 @@
+[package]
+name = "omuzaki-connect"
+description = "The connector host (connectors design D1 to D13): every registered connector, its status, the cost and privacy preview, runs with caps, seeds and provenance, the candidates tray's ops, keys attached and scrubbed, and the connectors setting."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+base64.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+zeroize.workspace = true
+omuzaki-ai-api = { path = "../omuzaki-ai-api" }
+omuzaki-connect-api = { path = "../omuzaki-connect-api" }
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-doc-api = { path = "../omuzaki-doc-api" }
+omuzaki-http-api = { path = "../omuzaki-http-api" }
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+omuzaki-secrets-api = { path = "../omuzaki-secrets-api" }
+omuzaki-settings-api = { path = "../omuzaki-settings-api" }
+omuzaki-store-api = { path = "../omuzaki-store-api" }
+
+[dev-dependencies]
+omuzaki-connect-mock = { path = "../omuzaki-connect-mock" }
+omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+omuzaki-http-mock = { path = "../omuzaki-http-mock" }
+omuzaki-secrets-mock = { path = "../omuzaki-secrets-mock" }
+omuzaki-settings-mock = { path = "../omuzaki-settings-mock" }
+omuzaki-store-mock = { path = "../omuzaki-store-mock" }
+
+[lints]
+workspace = true
+
+[package.metadata.omuzaki]
+kind = "Implementation"
+summary = "the connector host (CN-01 to CN-05; `docs/design/connectors.md`, ADR 0030): `ConnectorSet` (every `register_connector!`, parsed and validated once), `Host` (implements `Connectors`: status, the pure cost and privacy preview, runs with the widening check, caps, seeds from the run id, store with host-built provenance and pending candidates), `AuthedHttp` and `scrub_str` (the key attached by the host and scrubbed from everything that comes back), `SettingsConfig` over the `connectors.entries` setting, and the `connect.*` ops (list, describe, key_status, preview, generate, test, tray_list, accept, reject, regenerate)"
+registers = true
