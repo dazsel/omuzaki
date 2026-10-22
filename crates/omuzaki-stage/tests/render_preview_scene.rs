@@ -428,7 +428,7 @@ fn on_the_gpu_the_stage_rig_beside_the_studio_rig() {
                     }
                 }
             }
-            let rim = if edge == 0 { 0 } else { edge_light / edge };
+            let rim = edge_light.checked_div(edge).unwrap_or(0);
             let hues = [290.0..=345.0, 170.0..=210.0].map(|hue| (count(&picture, hue.clone()), count(&studio, hue)));
             println!(
                 "{id} {framing}: {figure} lit pixels, {clipped} clipped white, rim {rim}; magenta {:?}, cyan {:?} \
@@ -473,15 +473,16 @@ fn on_the_gpu_the_stage_rig_beside_the_studio_rig() {
 /// The hue of `pixel` in degrees when it is saturated (above 0.45) and bright enough to read (value above 0.15).
 #[cfg(feature = "wgpu")]
 fn saturated_hue(pixel: [u8; 4]) -> Option<f32> {
-    let [r, g, b] = [0, 1, 2].map(|i| f32::from(pixel[i]) / 255.0);
-    let (high, low) = (r.max(g).max(b), r.min(g).min(b));
-    let chroma = high - low;
-    if high <= 0.15 || chroma / high <= 0.45 {
+    let [red, green, blue] = [pixel[0], pixel[1], pixel[2]];
+    let (high, low) = (red.max(green).max(blue), red.min(green).min(blue));
+    let [r, g, b, top] = [red, green, blue, high].map(|c| f32::from(c) / 255.0);
+    let chroma = top - f32::from(low) / 255.0;
+    if top <= 0.15 || chroma / top <= 0.45 {
         return None;
     }
-    let sector = if high == r {
+    let sector = if high == red {
         ((g - b) / chroma).rem_euclid(6.0)
-    } else if high == g {
+    } else if high == green {
         (b - r) / chroma + 2.0
     } else {
         (r - g) / chroma + 4.0
@@ -494,6 +495,12 @@ fn saturated_hue(pixel: [u8; 4]) -> Option<f32> {
 /// one onto the crown from behind, the pools they leave on the floor, and a cool rim tracing the figure's edge. A sketch
 /// of the intent, not a render: what the rig is tuned towards.
 #[cfg(feature = "wgpu")]
+#[allow(
+    clippy::many_single_char_names,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "a picture drawn in pixel coordinates, each channel clamped to 0..=1 before it becomes a byte"
+)]
 fn stage_design_target(width: u32, height: u32) -> Vec<u8> {
     let (w, h) = (width as f32, height as f32);
     let ellipse =

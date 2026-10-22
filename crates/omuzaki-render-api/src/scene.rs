@@ -869,6 +869,8 @@ mod tests {
 
     #[test]
     fn post_settings_out_of_range_or_not_finite_are_refused_by_name() {
+        // The field the error names, and how to break it.
+        type Case = (&'static str, fn(&mut Post));
         let good = Post {
             exposure: 0.9,
             tonemap: Tonemap::Aces,
@@ -882,7 +884,7 @@ mod tests {
         let mut scene = Scene::new(Camera::default());
         scene.post = good;
         scene.validate().unwrap();
-        let cases: [(&str, fn(&mut Post)); 13] = [
+        let cases: [Case; 13] = [
             ("exposure", |p| p.exposure = -0.1),
             ("exposure", |p| p.exposure = f32::NAN),
             ("bloom.strength", |p| p.bloom.as_mut().unwrap().strength = f32::INFINITY),

@@ -13,9 +13,9 @@ summary = "Tight magenta, cyan and amber spots, a cool rim from behind and a nea
 tags = ["stage", "coloured", "performance", "dark", "stream"]
 exposure = 1.0
 background = "#08070d"
-skin_floor = 0.2
-# A dark house: skin may fall to a fifth of its colour, or every spot only makes it paler.
-scene_skin_floor = 0.2
+skin_floor = 0.3
+# A dark house: skin may fall to under a third of its colour, or every spot only makes it paler.
+scene_skin_floor = 0.3
 # The two back spots edge the silhouette in their colour (render-api `Scene::back_light_rim`).
 back_light_rim = 4.0
 
@@ -24,10 +24,11 @@ sky = "#1c1830"
 ground = "#060508"
 intensity = 0.1
 
-# A dim, slightly warm front light from the stage lip: enough for the face, never the brightest light on it.
+# A slightly warm front light from the stage lip: enough for the face and the eyes to read, never the brightest light
+# on it.
 [key]
 colour = "#fff0e6"
-intensity = 0.18
+intensity = 0.7
 position = [-0.3, 3.0, 1.0]
 
 [key.shadow]
@@ -57,11 +58,11 @@ distance = 6.0
 # on the floor in front of the feet.
 id = "spot_right"
 colour = "#19c4ff"
-intensity = 10.0
+intensity = 14.0
 position = [1.0, 2.4, 1.2]
 target = [0.1, 0.0, 0.4]
 cone = 8.0
-penumbra = 0.1
+penumbra = 0.05
 distance = 6.0
 
 [[spot]]
@@ -73,6 +74,17 @@ position = [0.0, 2.6, -1.2]
 target = [0.0, 0.85, 0.0]
 cone = 7.0
 penumbra = 0.2
+distance = 6.0
+
+[[spot]]
+# A second magenta lamp on the same bar, aimed at the floor: its pool beside the cyan one.
+id = "pool_left"
+colour = "#ff2a9a"
+intensity = 10.0
+position = [-0.9, 2.4, 0.9]
+target = [-0.3, 0.0, 0.3]
+cone = 7.0
+penumbra = 0.1
 distance = 6.0
 
 [[spot]]

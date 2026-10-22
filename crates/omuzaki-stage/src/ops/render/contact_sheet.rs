@@ -220,7 +220,7 @@ impl ContactSheet {
                 }
                 if let Some((i, long)) = self.titles.iter().enumerate().find(|(_, t)| t.chars().count() > MAX_TITLE) {
                     return Err(OpError::invalid(
-                        &format!("titles/{i}"),
+                        format!("titles/{i}"),
                         format!("\"{long}\" is over {MAX_TITLE} characters"),
                     ));
                 }
