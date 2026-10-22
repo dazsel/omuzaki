@@ -5,15 +5,15 @@ mod common;
 use std::time::{Duration, Instant};
 
 use common::{FakeRecognizer, cat, drain, fake_host, feed, feed_all};
-use omuzaki_speech::host::{ModelPaths, SpeechEvent};
+use omuzaki_speech::host::SpeechEvent;
 use omuzaki_speech::synth::{silence, tone};
-use omuzaki_speech::{HostConfig, SegmenterConfig, SpeechError, SpeechHost};
+use omuzaki_speech::{HostConfig, SegmenterConfig, SpeechHost};
 
 fn config() -> HostConfig {
     // The short 200 ms hangover keeps the 0.5 s gaps in these tests as separate utterances; the host default (600 ms)
     // is exercised by `the_default_hangover_merges_a_short_pause`.
     let segmenter = SegmenterConfig { min_silence_ms: 200, ..SegmenterConfig::default() };
-    HostConfig { threads: 1, segmenter, ..HostConfig::default() }
+    HostConfig { segmenter, ..HostConfig::default() }
 }
 
 fn finals(events: &[SpeechEvent]) -> Vec<(u64, f64, f64, String)> {
@@ -198,22 +198,6 @@ fn partial_transcripts_precede_the_final_of_the_same_utterance() {
 }
 
 #[test]
-fn open_reports_a_missing_model_by_name_and_does_not_panic() {
-    let paths = ModelPaths {
-        ort_library: "/nonexistent/libonnxruntime.so".into(),
-        vad_model: "/nonexistent/silero_vad.onnx".into(),
-        whisper_model: "/nonexistent/ggml-base.en.bin".into(),
-    };
-    let Err(error) = SpeechHost::open(&paths, &HostConfig::default()) else { panic!("opened without models") };
-    assert!(matches!(error, SpeechError::ModelMissing { .. }), "{error}");
-    let message = error.to_string();
-    assert!(
-        message.contains("/nonexistent/libonnxruntime.so") && message.contains("onnxruntime-linux-x64-1.28.3"),
-        "{message}"
-    );
-}
-
-#[test]
 fn dropping_a_busy_host_aborts_promptly_instead_of_draining() {
     let one = cat(&[&tone(0.4, 220.0, 0.3), &silence(0.5)]);
     let audio: Vec<f32> = (0..4).flat_map(|_| one.iter().copied()).collect();
@@ -286,27 +270,6 @@ fn a_panicking_recogniser_is_reported_and_stops_the_host() {
     );
     assert_eq!(host.stop().workers_failed, 1);
     assert!(!host.is_running());
-}
-
-#[test]
-fn a_missing_whisper_model_names_its_own_catalogue_entry() {
-    let paths = ModelPaths {
-        ort_library: "/nonexistent/lib.so".into(),
-        vad_model: "/nonexistent/silero_vad.onnx".into(),
-        whisper_model: "/nonexistent/ggml-small.en.bin".into(),
-    };
-    let dir = std::env::temp_dir();
-    let present = |name: &str| {
-        let p = dir.join(format!("omuzaki-audio-test-{}-{name}", std::process::id()));
-        std::fs::write(&p, b"x").unwrap();
-        p
-    };
-    let paths = ModelPaths { ort_library: present("lib"), vad_model: present("vad"), ..paths };
-    let error = SpeechHost::open(&paths, &HostConfig::default()).err().expect("missing model");
-    for p in [&paths.ort_library, &paths.vad_model] {
-        let _ = std::fs::remove_file(p);
-    }
-    assert!(error.to_string().contains("whisper-small.en"), "{error}");
 }
 
 /// Two 0.4 s tones with a `gap` seconds of silence between them, then a second of silence to close the last one.

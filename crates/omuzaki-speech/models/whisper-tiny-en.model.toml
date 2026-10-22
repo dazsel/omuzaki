@@ -1,0 +1,35 @@
+# Whisper tiny.en (English only) in whisper.cpp's ggml format for asr@1, on the whisper-ggml runtime. The pin is the
+# one the speech host used before the registry (the Hugging Face revision, size and SHA-256); never committed.
+id = "whisper-tiny-en"
+version = "1.0.0"
+name = "Whisper tiny.en"
+slot = "asr@1"
+runtime = "whisper-ggml"
+providers = ["cpu"]
+
+[[files]]
+name = "ggml-tiny.en.bin"
+sha256 = "921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f"
+size = 77704715
+urls = ["https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-tiny.en.bin"]
+
+[card]
+register = "Whisper weights (ggml files), whisper.cpp, whisper-rs 0.16 / whisper-rs-sys 0.15"
+authors = "OpenAI (weights); the ggml authors (conversion)"
+homepage = "https://github.com/openai/whisper"
+
+[card.licence]
+spdx = "MIT"
+url = "https://github.com/openai/whisper/blob/main/LICENSE"
+
+[[card.lineage]]
+kind = "base_model"
+name = "OpenAI Whisper tiny.en"
+licence = "MIT"
+url = "https://github.com/openai/whisper"
+
+[[card.lineage]]
+kind = "conversion"
+name = "ggml conversion of Whisper tiny.en, by whisper.cpp"
+licence = "MIT"
+url = "https://huggingface.co/ggerganov/whisper.cpp"

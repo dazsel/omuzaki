@@ -8,8 +8,8 @@
 //! ```
 //!
 //! # Threads and real-time rules
-//! - **Audio thread:** only [`AudioInput::push`]: copies into a preallocated lock-free ring and wakes the VAD thread.
-//!   No allocation, no locks, no blocking, no model work.
+//! - **Audio thread:** only [`AudioInput::push`] (also the engine's [`TapSink`] for the `listen` voice tap): copies into
+//!   a preallocated lock-free ring and wakes the VAD thread. No allocation, no locks, no blocking, no model work.
 //! - **VAD thread:** reads the ring in 512-sample frames, runs Silero VAD and the segmenter, keeps the audio of the
 //!   utterance in progress, and hands each finished utterance (one allocation per utterance) to the ASR thread.
 //! - **ASR thread:** runs Whisper, one utterance at a time. It may take longer than the speech lasted; that is what
@@ -25,23 +25,27 @@
 //! | Where | Full means | Policy | Reported as |
 //! |---|---|---|---|
 //! | audio ring (`ring_seconds`) | the VAD thread stalled | drop the newest samples | [`HostStats::samples_dropped`] |
+//! | a session's "no answer this time" | the slot is switching models | treat the frame as silence, skip the utterance | [`HostStats::vad_unavailable`], [`HostStats::asr_unavailable`] |
 //! | utterance queue (`utterance_queue`) | Whisper is slower than speech | drop the *oldest* utterance | [`SpeechEvent::UtteranceDropped`] |
 //! | event queue (`event_queue`) | the application stopped polling | drop the oldest event | [`HostStats::events_dropped`] |
 //! | partial transcripts | an older partial is still waiting | replace it | [`HostStats::partials_replaced`] |
 
 use std::collections::VecDeque;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle, Thread};
 use std::time::{Duration, Instant};
 
+use omuzaki_ai_api::Session;
+use omuzaki_audio_api::ring::{self, Consumer, Producer};
+use omuzaki_audio_api::TapSink;
+use omuzaki_audio_api::tap::DropPolicy;
+
 use crate::asr::{Recognizer, Whisper};
 use crate::queue::DropOldestQueue;
-use crate::ring::{self, Consumer, Producer};
 use crate::segmenter::{Event, FRAME, Segmenter, SegmenterConfig, ms_to_samples};
-use crate::vad::{SileroVad, VoiceActivity, load_runtime};
-use crate::{SAMPLE_RATE, SpeechError, catalog};
+use crate::vad::{SileroVad, VoiceActivity, is_unavailable};
+use crate::{SAMPLE_RATE, SpeechError};
 
 /// How the VAD thread sleeps when the ring is empty. The audio thread also unparks it, so this only bounds the wait
 /// if a wake-up is missed.
@@ -56,8 +60,6 @@ pub struct HostConfig {
     /// Whisper language code (`Some("en")` for English-only models), or `None` to detect it on multilingual models.
     /// Changeable while running with [`SpeechHost::set_language`].
     pub language: Option<String>,
-    /// CPU threads for a CPU recogniser such as [`Whisper`]; a GPU recogniser ignores it.
-    pub threads: u32,
     /// Capacity of the audio ring in seconds: how long the VAD thread may stall before samples are dropped.
     pub ring_seconds: f32,
     /// Utterances that may wait for Whisper; one more evicts the oldest.
@@ -84,24 +86,12 @@ impl Default for HostConfig {
         Self {
             segmenter: SegmenterConfig { min_silence_ms: DEFAULT_HANGOVER_MS, ..SegmenterConfig::default() },
             language: Some("en".into()),
-            threads: 4,
             ring_seconds: 10.0,
             utterance_queue: 4,
             event_queue: 256,
             partial_interval_ms: 0,
         }
     }
-}
-
-/// The three files [`SpeechHost::open`] needs. Models are never committed or bundled: see [`crate::catalog`].
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ModelPaths {
-    /// The ONNX Runtime shared library (`libonnxruntime.so`, `onnxruntime.dll`).
-    pub ort_library: PathBuf,
-    /// `silero_vad.onnx`.
-    pub vad_model: PathBuf,
-    /// A ggml Whisper model such as `ggml-base.en.bin`.
-    pub whisper_model: PathBuf,
 }
 
 /// Wall-clock timings of one final transcript. Add the segmenter's `min_silence_ms` (the end-of-speech hangover,
@@ -202,6 +192,12 @@ pub struct HostStats {
     /// Frames the VAD failed to score (each was treated as silence). Only the first error of a run is reported as an
     /// event, so a model that fails on every frame cannot flood the event queue.
     pub vad_errors: u64,
+    /// Frames the `vad@1` session had no answer for because its slot was switching models (each treated as silence,
+    /// with no event).
+    pub vad_unavailable: u64,
+    /// Utterances the `asr@1` session had no answer for because its slot was switching models (skipped, with no
+    /// event).
+    pub asr_unavailable: u64,
     /// Worker threads that panicked. Non-zero means the host has stopped; a [`SpeechEvent::Error`] said why.
     pub workers_failed: u64,
     /// Time the VAD thread spent scoring frames (the CPU cost of listening).
@@ -220,6 +216,8 @@ struct Counters {
     events_dropped: AtomicU64,
     partials_replaced: AtomicU64,
     vad_errors: AtomicU64,
+    vad_unavailable: AtomicU64,
+    asr_unavailable: AtomicU64,
     workers_failed: AtomicU64,
     vad_busy_ns: AtomicU64,
     asr_busy_ns: AtomicU64,
@@ -237,6 +235,8 @@ impl Counters {
             events_dropped: get(&self.events_dropped),
             partials_replaced: get(&self.partials_replaced),
             vad_errors: get(&self.vad_errors),
+            vad_unavailable: get(&self.vad_unavailable),
+            asr_unavailable: get(&self.asr_unavailable),
             workers_failed: get(&self.workers_failed),
             vad_busy: Duration::from_nanos(get(&self.vad_busy_ns)),
             asr_busy: Duration::from_nanos(get(&self.asr_busy_ns)),
@@ -323,7 +323,7 @@ struct Job {
 }
 
 /// The write end of the host's audio ring. Move it into the audio callback and call [`push`](Self::push) with each
-/// block of 16 kHz mono samples.
+/// block of 16 kHz mono samples, or hand it to the audio engine as the [`TapSink`] of a 16 kHz voice tap.
 pub struct AudioInput {
     producer: Producer,
     wake: Thread,
@@ -349,6 +349,12 @@ impl AudioInput {
     }
 }
 
+impl TapSink for AudioInput {
+    fn push(&mut self, samples: &[f32]) -> usize {
+        AudioInput::push(self, samples)
+    }
+}
+
 /// A running speech host. [`stop`](Self::stop) drains the workers; dropping it without that aborts them.
 pub struct SpeechHost {
     events: Arc<DropOldestQueue<SpeechEvent>>,
@@ -364,20 +370,19 @@ pub struct SpeechHost {
 }
 
 impl SpeechHost {
-    /// Loads Silero VAD and Whisper and starts the workers. Returns the host and the [`AudioInput`] for the audio
-    /// callback.
+    /// Starts the workers over a `vad@1` and an `asr@1` session (the registry's slot sessions, which follow the
+    /// person's model choice and fall back on their own). Returns the host and the [`AudioInput`] for the audio
+    /// callback. The sessions run on the host's worker threads, never on the caller's or the audio thread.
     ///
     /// # Errors
-    /// [`SpeechError::ModelMissing`] when a file in `paths` does not exist (nothing is downloaded), or the loader's
-    /// error when ONNX Runtime or a model fails to load.
-    pub fn open(paths: &ModelPaths, config: &HostConfig) -> Result<(Self, AudioInput), SpeechError> {
-        require(&paths.ort_library, "ONNX Runtime library", catalog::ORT_RUNTIME_ID)?;
-        require(&paths.vad_model, "Silero VAD model", catalog::SILERO_VAD_ID)?;
-        require(&paths.whisper_model, "Whisper model", "")?;
-        load_runtime(&paths.ort_library)?;
-        let vad = SileroVad::new(&paths.vad_model)?;
-        let whisper = Whisper::load(&paths.whisper_model, config.threads)?;
-        Self::start(config, Box::new(vad), Box::new(whisper))
+    /// [`SpeechError::Signature`] when a session presents another slot's signature, [`SpeechError::Spawn`] when a
+    /// thread cannot be started.
+    pub fn open(
+        vad: Box<dyn Session>,
+        asr: Box<dyn Session>,
+        config: &HostConfig,
+    ) -> Result<(Self, AudioInput), SpeechError> {
+        Self::start(config, Box::new(SileroVad::new(vad)?), Box::new(Whisper::new(asr)?))
     }
 
     /// Starts the workers over any VAD and recogniser; [`open`](Self::open) is this with the real ones.
@@ -390,7 +395,7 @@ impl SpeechHost {
         recognizer: Box<dyn Recognizer>,
     ) -> Result<(Self, AudioInput), SpeechError> {
         let ring_samples = (config.ring_seconds.max(0.1) * SAMPLE_RATE as f32) as usize;
-        let (producer, consumer) = ring::ring(ring_samples);
+        let (producer, consumer) = ring::ring(ring_samples, DropPolicy::DropNewest, 0);
         let counters = Arc::new(Counters::default());
         let events = Arc::new(DropOldestQueue::new(config.event_queue));
         let jobs = Arc::new(DropOldestQueue::new(config.utterance_queue));
@@ -513,22 +518,6 @@ impl Drop for SpeechHost {
     fn drop(&mut self) {
         self.shutdown(true);
     }
-}
-
-/// Checks that `path` exists. `catalog_id` names the entry to fetch; empty means "look it up by file name" (Whisper
-/// models come in several sizes, so the id depends on which file the caller asked for).
-fn require(path: &std::path::Path, what: &'static str, catalog_id: &str) -> Result<(), SpeechError> {
-    if path.is_file() {
-        return Ok(());
-    }
-    let by_name =
-        path.file_name().and_then(|n| n.to_str()).and_then(|n| catalog::CATALOG.iter().find(|s| s.file_name == n));
-    let fetch = match (catalog_id, by_name) {
-        ("", Some(spec)) => format!("fetch catalogue entry `{}`", spec.id),
-        ("", None) => "fetch one of the `Asr` catalogue entries".to_owned(),
-        (id, _) => format!("fetch catalogue entry `{id}`"),
-    };
-    Err(SpeechError::ModelMissing { what, path: path.to_path_buf(), fetch })
 }
 
 /// What a panicking worker needs to report itself and stop the host.
@@ -655,6 +644,11 @@ impl VadWorker {
             Ok(probability) => {
                 self.vad_failing = false;
                 probability
+            }
+            Err(error) if is_unavailable(&error) => {
+                // The slot is swapping models: no answer this time. Counted, not reported, and heard as silence.
+                self.counters.vad_unavailable.fetch_add(1, Ordering::Relaxed);
+                0.0
             }
             Err(error) => {
                 self.counters.vad_errors.fetch_add(1, Ordering::Relaxed);
@@ -797,6 +791,11 @@ impl AsrWorker {
                 },
                 (Ok(t), JobKind::Partial) => {
                     SpeechEvent::Partial { utterance: job.utterance, start: job.start, end: job.end, text: t.text }
+                }
+                (Err(error), _) if is_unavailable(&error) => {
+                    // The slot is swapping models: this utterance gets no text. Counted, not an error.
+                    self.counters.asr_unavailable.fetch_add(1, Ordering::Relaxed);
+                    continue;
                 }
                 (Err(error), _) => SpeechEvent::Error { utterance: Some(job.utterance), message: error.to_string() },
             };

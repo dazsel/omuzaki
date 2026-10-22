@@ -1,5 +1,6 @@
 //! The pinned ONNX Runtime builds: Microsoft's official release archives, one per platform and flavour, all at the
-//! version `omuzaki-speech` already loads (`ORT_RUNTIME_ID` in its catalogue) and `ort` is written for (`api-27`).
+//! version `ort` is written for (`api-27`). This is the only ONNX Runtime pin in the workspace: the speech host's Silero
+//! VAD runs on this runtime too (#838).
 //!
 //! Each build is a [`PinnedFile`] (an ordered URL list, Microsoft's release first; never Pyke's binaries, register row
 //! `ort`) that the app's [`FileSource`](omuzaki_ai_api::FileSource) fetches and verifies on first use. Hashes and sizes

@@ -7,10 +7,8 @@
 //! - **Once per process.** The app calls [`prefer_providers`] at start-up with the person's settings, before any probe,
 //!   because a probe wants no provider and would otherwise fix the CPU build for good. The library is unpacked next to
 //!   its verified archive and handed to `ort::init_from` once.
-//!   `ort` keeps the first library it is given for the life of the process, so if `omuzaki-speech` (which loads its own
-//!   pin of the same version for the speech host) initialised it first, that copy serves every session and ours is not
-//!   used; the flavour is fixed by whichever crate loads first. Both pin 1.28.3, so only a provider flavour (CUDA) can
-//!   differ, and an unavailable provider falls back to the CPU and is reported.
+//!   `ort` keeps the first library it is given for the life of the process; nothing else in the workspace loads one
+//!   (the speech host's VAD runs on this runtime, #838), so the flavour is the one this crate picks.
 //! - **Providers**: [`SessionOptions::providers`](omuzaki_ai_api::SessionOptions) in order, skipping what the build or
 //!   machine lacks, always ending on the CPU. [`SessionInfo::provider`](omuzaki_ai_api::SessionInfo) is the one used and
 //!   [`OrtModelSession::skipped_providers`] says why the others weren't.

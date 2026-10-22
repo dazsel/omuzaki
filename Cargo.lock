@@ -5569,8 +5569,14 @@ name = "omuzaki-speech"
 version = "0.0.0"
 dependencies = [
  "hound",
- "ort",
+ "omuzaki-ai-api",
+ "omuzaki-ai-mock",
+ "omuzaki-audio-api",
+ "omuzaki-audio-mock",
+ "omuzaki-core",
+ "symphonia",
  "thiserror 2.0.21",
+ "tracing",
  "whisper-rs",
 ]
 
@@ -5865,10 +5871,13 @@ name = "omuzaki-test-track"
 version = "0.0.0"
 dependencies = [
  "criterion",
+ "hound",
+ "omuzaki-ai",
  "omuzaki-ai-api",
  "omuzaki-ai-litert",
  "omuzaki-ai-ort",
  "omuzaki-core",
+ "omuzaki-speech",
  "omuzaki-track",
  "serde_json",
  "sha2 0.10.9",

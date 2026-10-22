@@ -1,19 +1,25 @@
 //! Real-time benchmark of the speech host: plays a 16 kHz mono WAV into the host at 1x speed, like a microphone, and
-//! reports speech-end-to-final-transcript latency, Whisper's real-time factor and the CPU the process used.
+//! reports speech-end-to-final-transcript latency, Whisper's real-time factor and the CPU the process used. The models
+//! are installed and opened through the registry, as the app does (the folders are the ones `tests/speech_support`
+//! names: `OMUZAKI_SPEECH_MODELS`, `OMUZAKI_ORT_CACHE`, `OMUZAKI_SPEECH_DATA`).
 //!
-//!     host_bench <models-dir> <clip.wav> [whisper-file (default ggml-base.en.bin)] [threads (default 4)]
-//!                [hangover-ms (default: the host's, 600)] [listen (listening only: no transcript consumer)]
+//!     speech_host_bench <clip.wav> [asr model id (default whisper-base-en)]
+//!                       [hangover-ms (default: the host's, 600)] [listen (listening only: no transcript consumer)]
 //!
-//! The ONNX Runtime library comes from `ORT_DYLIB_PATH` or `<models-dir>/onnxruntime-linux-x64-1.28.3/lib`.
-//! CPU time is read from `/proc/self/stat` (user plus system, 100 ticks per second), so this runs on Linux only.
-//! Spec v3 §10 `cpu.total` divides CPU seconds by 8 x elapsed seconds; the report prints that share.
+//! Whisper runs on the `asr@1` slot's 4 threads. CPU time is read from `/proc/self/stat` (user plus system, 100 ticks
+//! per second), so this runs on Linux only. Spec v3 §10 `cpu.total` divides CPU seconds by 8 x elapsed seconds; the
+//! report prints that share.
 
 #![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::too_many_lines)] // a measurement script: readability over cast purity
 
-use std::path::PathBuf;
+#[path = "../tests/speech_support/mod.rs"]
+mod speech_support;
+
 use std::time::{Duration, Instant};
 
-use omuzaki_speech::host::{AudioInput, ModelPaths, SpeechEvent};
+use omuzaki_ai_api::ModelRegistry;
+use omuzaki_speech::host::{AudioInput, SpeechEvent};
+use omuzaki_speech::slots::{asr_slot, vad_slot};
 use omuzaki_speech::{HostConfig, SpeechHost};
 
 const BLOCK: usize = 160; // 10 ms, a typical capture callback
@@ -42,23 +48,22 @@ fn read_wav(path: &std::path::Path) -> Result<Vec<f32>, hound::Error> {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let [models, clip, rest @ ..] = args.as_slice() else {
-        return Err("usage: host_bench <models-dir> <clip.wav> [whisper-file] [threads]".into());
+    let [clip, rest @ ..] = args.as_slice() else {
+        return Err("usage: speech_host_bench <clip.wav> [asr model id] [hangover-ms] [listen]".into());
     };
-    let models = PathBuf::from(models);
-    let whisper_file = rest.first().map_or("ggml-base.en.bin", String::as_str);
-    let threads: u32 = rest.get(1).map_or(Ok(4), |t| t.parse())?;
-    let paths = ModelPaths {
-        ort_library: std::env::var_os("ORT_DYLIB_PATH")
-            .map_or_else(|| models.join("onnxruntime-linux-x64-1.28.3/lib/libonnxruntime.so"), PathBuf::from),
-        vad_model: models.join("silero_vad.onnx"),
-        whisper_model: models.join(whisper_file),
-    };
-    let hangover_ms: Option<u32> = rest.get(2).map(|t| t.parse()).transpose()?;
-    let listen_only = rest.get(3).is_some_and(|m| m == "listen");
+    let whisper_file = rest.first().map_or("whisper-base-en", String::as_str);
+    let threads = 4;
+    let hangover_ms: Option<u32> = rest.get(1).map(|t| t.parse()).transpose()?;
+    let listen_only = rest.get(2).is_some_and(|m| m == "listen");
     let audio = read_wav(std::path::Path::new(clip))?;
     let audio_seconds = audio.len() as f64 / 16_000.0;
-    let mut config = HostConfig { threads, utterance_queue: 64, ..HostConfig::default() };
+    let files = speech_support::folders().ok_or("set the speech folders")?;
+    let data_dir = std::env::temp_dir().join(format!("omuzaki-speech-bench-{}", std::process::id()));
+    std::fs::create_dir_all(&data_dir)?;
+    let registry = speech_support::registry(files, &data_dir);
+    speech_support::install(&registry, &vad_slot(), "silero-vad");
+    let asr_model = speech_support::install(&registry, &asr_slot(), whisper_file);
+    let mut config = HostConfig { utterance_queue: 64, ..HostConfig::default() };
     if let Some(ms) = hangover_ms {
         config.segmenter.min_silence_ms = ms;
     }
@@ -66,7 +71,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let hangover = f64::from(config.segmenter.min_silence_ms) / 1000.0;
 
     let loading = Instant::now();
-    let (mut host, mut input) = SpeechHost::open(&paths, &config)?;
+    let vad = registry.open(&vad_slot(), None)?;
+    let asr = registry.open(&asr_slot(), Some(&asr_model))?;
+    let (mut host, mut input) = SpeechHost::open(vad, asr, &config)?;
     let load_s = loading.elapsed().as_secs_f64();
     // Whisper runs only while a consumer wants transcripts; `listen` measures the VAD alone.
     let _demand = (!listen_only).then(|| host.request_transcripts());
@@ -165,6 +172,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "listening only (VAD thread): {:.3} % of {SPEC_CORES} cores",
         100.0 * stats.vad_busy.as_secs_f64() / (SPEC_CORES * wall)
     );
+    std::fs::remove_dir_all(&data_dir)?;
     Ok(())
 }
 
