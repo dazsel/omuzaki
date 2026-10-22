@@ -46,12 +46,34 @@ pose.list
 
 [edits with Undo::None]
 # Transitional: live actions until live-action undo lands (#139, change #2106).
+audio.mic
+automation.fire
+automation.pause
+automation.resume
+automation.resume_graph
+automation.set_variable
+automation.start
+automation.stop
+automation.switch_group
+obs.connect
+obs.disconnect
+obs.record.start
+obs.record.stop
+obs.replay.save
+obs.replay.start
+obs.replay.stop
+obs.scene.set
+obs.source.set_visible
+obs.stream.start
+obs.stream.stop
 output.start
 output.stop
 output.window.close
 output.window.open
 record.start
 record.stop
+twitch.connect
+twitch.disconnect
 perform.calibrate
 perform.set_retarget
 # trigger.press is a live action, so it stays until #2106 gives live actions their rule (#2195).

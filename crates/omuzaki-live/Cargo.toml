@@ -1,0 +1,52 @@
+[package]
+name = "omuzaki-live"
+description = "The automation engine (BR-11; design docs/design/automation.md D5 to D9, D13): shows compiled from the document, an event inbox for the platform adapters, one engine thread running each event as a depth-first step with tokens under the loop guard and per-graph rates, groups switched at run time, `show` and `global` variables persisted on disk, op calls dispatched to the executor, and the show and automation ops."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+inventory.workspace = true
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-doc-api = { path = "../omuzaki-doc-api" }
+omuzaki-l10n-api = { path = "../omuzaki-l10n-api" }
+omuzaki-live-api = { path = "../omuzaki-live-api" }
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+omuzaki-store-api = { path = "../omuzaki-store-api" }
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+# Itself with the testing kit, so integration tests see `ShowHarness`.
+omuzaki-live = { path = ".", features = ["testing"] }
+omuzaki-live-mock = { path = "../omuzaki-live-mock" }
+
+[features]
+# `testing::ShowHarness`: a whole show on the real engine core, on fake time. Tests always see it.
+testing = []
+
+[[bench]]
+name = "inbox"
+harness = false
+
+[[bench]]
+name = "engine"
+harness = false
+
+[lints]
+workspace = true
+
+# Native only: the web player runs no shows (design D1).
+[package.metadata.omuzaki]
+kind = "Implementation"
+summary = "the automation engine: `Automation` (the `AutomationControl` and `EventSink` service: a bounded, deduplicating inbox, one engine thread per running show, tokens carrying each event's values, depth-first steps under the loop guard and per-graph token rates, groups switched at run time, wakes, `show` and `global` variable values persisted through `DiskVariables` (debounced atomic writes, a final flush on stop), op calls dispatched to the attached `Runner` in the show's name), the compile of a `ShowDef` against the node catalogue, and the ops `show.create`, `automation.add_graph`, `automation.remove_graph`, `automation.start`, `automation.stop`, `automation.status`, `automation.values` and `automation.fire`"
+wasm = false
+# The ops register themselves (ADR 0015, `cargo xtask lint-registers`).
+registers = true

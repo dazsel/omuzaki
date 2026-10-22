@@ -16,6 +16,11 @@ directories.workspace = true
 httpdate.workspace = true
 thiserror.workspace = true
 omuzaki-ai-api = { path = "../omuzaki-ai-api" }
+# The shared HTTP contract it also implements (`HttpTransport`, connectors design D13).
+omuzaki-http-api = { path = "../omuzaki-http-api" }
+serde_json.workspace = true
+# The multipart boundary.
+getrandom.workspace = true
 
 [dev-dependencies]
 bytes.workspace = true
