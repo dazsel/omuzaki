@@ -223,14 +223,14 @@ src/session.rs: impl SessionState: pub fn opened(&mut self, project: &Path, name
 src/session.rs: impl SessionState: pub fn forget(&mut self, project: &Path)
 src/session.rs: impl SessionState: pub fn restore_recent(&mut self, entry: RecentProject, index: usize, last: bool)
 src/session.rs: impl SessionState: #[must_use] pub fn setup_needed(&self) -> bool
-src/session.rs: impl SessionState: pub fn set_setup(&mut self, progress: SetupProgress)
+src/session.rs: impl SessionState: pub fn set_setup(&mut self, progress: Option<SetupProgress>)
 src/session.rs: impl SessionState: pub fn set_window(&mut self, id: &str, geometry: WindowGeometry)
 src/session.rs: impl SessionState: pub fn mark_version_seen(&mut self, version: &str)
 src/session.rs: pub trait SessionStore: Send + Sync
 src/session.rs: trait SessionStore: fn state(&self) -> SessionState
 src/session.rs: trait SessionStore: fn begin_open(&self, project: &Path) -> Result<(), SettingError>
 src/session.rs: trait SessionStore: fn opened(&self, project: &Path, name: &str) -> Result<(), SettingError>
-src/session.rs: trait SessionStore: fn set_setup(&self, progress: SetupProgress) -> Result<(), SettingError>
+src/session.rs: trait SessionStore: fn set_setup(&self, progress: Option<SetupProgress>) -> Result<(), SettingError>
 src/session.rs: trait SessionStore: fn forget(&self, project: &Path)
 src/session.rs: trait SessionStore: fn restore_recent(&self, entry: RecentProject, index: usize, last: bool)
 src/session.rs: trait SessionStore: fn set_window(&self, id: &str, geometry: WindowGeometry)
