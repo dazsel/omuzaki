@@ -26,7 +26,7 @@ mod resolve;
 pub mod underlay;
 
 pub use baker::{BakerInput, FaceBakerConflict, FaceBakerFactory, FaceBakerRegistration, face_baker};
-pub use check::{Check, FieldRange, ParamError, ParamErrors, Validate};
+pub use check::{Check, FieldRange, ParamError, ParamErrors, Problem, Refusal, Validate, refuse_introduced};
 pub use expression::{
     ChannelValues, Expression, ExpressionId, ExpressionKind, ExpressionSet, IntensityCurve, Playback, PlaybackLayer,
     UnknownExpression, VISEMES, Weight,

@@ -1,12 +1,10 @@
 //! What a face edit may introduce. A face is read section by section, and everything wrong with it is listed as a
 //! [`Problem`] with its path: a value of the wrong kind, a key the default doesn't have, a section or mark that won't
 //! read, and every out-of-range field the validator reports. An edit is refused only for the problems it adds, compared
-//! with the stored face by path and message, as `omuzaki-char`'s `check_edit` does. A face that is already damaged
+//! with the stored face by path and message, with the comparison `omuzaki-char`'s layout ops use too (`omuzaki_face_api::refuse_introduced`). A face that is already damaged
 //! elsewhere therefore still takes unrelated edits.
 
-use std::fmt;
-
-use omuzaki_face_api::{FaceMark, FaceProfile, Validate};
+use omuzaki_face_api::{FaceMark, FaceProfile, Problem, Validate, refuse_introduced};
 use omuzaki_ops_api::OpError;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
@@ -17,36 +15,9 @@ use super::path::{Template, channel, kind_of, unknown_key};
 /// The fix for a field whose problem names none of its own.
 const GENERIC_HINT: &str = "give each named field a value of the type it holds, inside the range its message gives";
 
-/// One thing wrong with a face: where it is, what is wrong, and a fix when the problem names one.
-#[derive(Clone, Debug)]
-pub(crate) struct Problem {
-    /// The path, for example `face/eyes/iris/width`.
-    pub(crate) path: String,
-    /// What is wrong, in a sentence.
-    pub(crate) message: String,
-    /// The fix, when the problem has one of its own (a nearby key).
-    pub(crate) hint: Option<String>,
-}
-
-impl Problem {
-    fn at(path: &str, message: impl Into<String>) -> Self {
-        Self { path: path.to_owned(), message: message.into(), hint: None }
-    }
-
-    fn from_error(error: OpError) -> Self {
-        Self { path: error.field.unwrap_or_default(), message: error.message, hint: error.hint }
-    }
-
-    /// Two problems are the same when they name the same path with the same message.
-    fn is_same(&self, other: &Problem) -> bool {
-        self.path == other.path && self.message == other.message
-    }
-}
-
-impl fmt::Display for Problem {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: {}", self.path, self.message)
-    }
+/// A problem found in a face, from an op's own refusal (its field, message and hint).
+fn from_error(error: OpError) -> Problem {
+    Problem { path: error.field.unwrap_or_default(), message: error.message, hint: error.hint }
 }
 
 /// Refuses an edit that introduces a problem. The problems the stored face already has are not blamed on the edit, so
@@ -58,15 +29,10 @@ impl fmt::Display for Problem {
 pub(crate) fn check_edit(stored: Option<&Value>, working: &Value, defaults: &Template) -> Result<(), OpError> {
     let empty = Value::Object(Map::new());
     let before = diagnose(stored.unwrap_or(&empty), defaults);
-    let introduced = added(&before, diagnose(working, defaults));
-    let Some(first) = introduced.first() else {
+    let Some(refusal) = refuse_introduced(&before, diagnose(working, defaults)) else {
         return Ok(());
     };
-    let count = introduced.len();
-    let noun = if count == 1 { "field is" } else { "fields are" };
-    let list = introduced.iter().map(ToString::to_string).collect::<Vec<_>>().join("; ");
-    Err(OpError::invalid(first.path.clone(), format!("{count} {noun} invalid: {list}"))
-        .hint(first.hint.clone().unwrap_or_else(|| GENERIC_HINT.to_owned())))
+    Err(OpError::invalid(refusal.field, refusal.message).hint(refusal.hint.unwrap_or_else(|| GENERIC_HINT.to_owned())))
 }
 
 /// Every problem in `face`, read against the defaults. Nothing stops at the first one: each section is read on its own,
@@ -85,14 +51,9 @@ pub(crate) fn diagnose(face: &Value, defaults: &Template) -> Vec<Problem> {
     };
     rest(face, &mut problems);
     if let Err(errors) = profile.validate() {
-        problems.extend(errors.0.into_iter().map(|e| Problem::at(&format!("face/{}", e.path), e.message)));
+        problems.extend(errors.0.into_iter().map(|e| Problem::new(format!("face/{}", e.path), e.message)));
     }
     problems
-}
-
-/// The problems in `after` that are not in `before`.
-fn added(before: &[Problem], after: Vec<Problem>) -> Vec<Problem> {
-    after.into_iter().filter(|p| !before.iter().any(|b| b.is_same(p))).collect()
 }
 
 /// One of the five sections that are a single struct, read from its part of the face.
@@ -125,7 +86,7 @@ fn read<T: DeserializeOwned + Default>(mut value: Value, template: &Value, at: &
         let leaf = steps
             .as_ref()
             .map_or_else(|| at.to_owned(), |steps| steps.iter().fold(at.to_owned(), |p, s| format!("{p}/{s}")));
-        problems.push(Problem::at(&leaf, error.inner().to_string()));
+        problems.push(Problem::new(leaf, error.inner().to_string()));
         let restored = steps.is_some_and(|steps| restore_default(&mut value, template, &steps));
         if !restored {
             return T::default();
@@ -186,7 +147,7 @@ fn rest(face: &Value, problems: &mut Vec<Problem>) {
         return;
     };
     let Value::Object(given) = value else {
-        problems.push(Problem::at("face/rest", format!("expected a map of channels, found {}", kind_of(value))));
+        problems.push(Problem::new("face/rest", format!("expected a map of channels, found {}", kind_of(value))));
         return;
     };
     for (name, child) in given {
@@ -194,16 +155,16 @@ fn rest(face: &Value, problems: &mut Vec<Problem>) {
         let found = match channel(name) {
             Ok(found) => found,
             Err(error) => {
-                problems.push(Problem::from_error(error));
+                problems.push(from_error(error));
                 continue;
             }
         };
         match child.as_f64() {
-            None => problems.push(Problem::at(&at, format!("expected a number, found {}", kind_of(child)))),
+            None => problems.push(Problem::new(at, format!("expected a number, found {}", kind_of(child)))),
             Some(number) => {
                 let (lo, hi) = found.range();
                 if !(number.is_finite() && (f64::from(lo)..=f64::from(hi)).contains(&number)) {
-                    problems.push(Problem::at(
+                    problems.push(Problem::new(
                         &at,
                         format!("{name} = {number} is out of range: use a number from {lo} to {hi}"),
                     ));
@@ -219,7 +180,7 @@ fn marks(face: &Value, defaults: &Template, problems: &mut Vec<Problem>) -> Vec<
         return Vec::new();
     };
     let Value::Array(items) = value else {
-        problems.push(Problem::at("face/marks", format!("expected a list, found {}", kind_of(value))));
+        problems.push(Problem::new("face/marks", format!("expected a list, found {}", kind_of(value))));
         return Vec::new();
     };
     items
@@ -245,7 +206,7 @@ fn repair(value: &Value, template: &Value, at: &str, problems: &mut Vec<Problem>
                         let repaired = repair(child, default, &format!("{at}/{key}"), problems);
                         kept.insert(key.clone(), repaired);
                     }
-                    None => problems.push(Problem::from_error(unknown_key(at, key, defaults.keys()))),
+                    None => problems.push(from_error(unknown_key(at, key, defaults.keys()))),
                 }
             }
             Value::Object(kept)
@@ -259,7 +220,7 @@ fn repair(value: &Value, template: &Value, at: &str, problems: &mut Vec<Problem>
                 .collect(),
         ),
         (Value::Array(defaults), Value::Array(given)) => {
-            problems.push(Problem::at(at, format!("expected {} items, found {}", defaults.len(), given.len())));
+            problems.push(Problem::new(at, format!("expected {} items, found {}", defaults.len(), given.len())));
             template.clone()
         }
         // A scalar of the kind the default holds is kept as it is.
@@ -268,7 +229,7 @@ fn repair(value: &Value, template: &Value, at: &str, problems: &mut Vec<Problem>
         | (Value::String(_), Value::String(_))
         | (Value::Bool(_), Value::Bool(_)) => value.clone(),
         _ => {
-            problems.push(Problem::at(at, format!("expected {}, found {}", kind_of(template), kind_of(value))));
+            problems.push(Problem::new(at, format!("expected {}, found {}", kind_of(template), kind_of(value))));
             template.clone()
         }
     }

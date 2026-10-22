@@ -162,6 +162,66 @@ pub trait Validate {
     }
 }
 
+/// One problem found in an edited value, for the "refuse only the problems an edit introduces" check that the face and
+/// layout ops share: where it is (the full path an agent edits, such as `face/eyes/iris/width`), what is wrong, and a fix
+/// when the problem names one of its own (a nearby key).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Problem {
+    /// The path, for example `face/layout/eye_y`.
+    pub path: String,
+    /// What is wrong, in a sentence.
+    pub message: String,
+    /// The fix, when the problem has one of its own.
+    pub hint: Option<String>,
+}
+
+impl Problem {
+    /// A problem at `path` with no fix of its own.
+    pub fn new(path: impl Into<String>, message: impl Into<String>) -> Self {
+        Self { path: path.into(), message: message.into(), hint: None }
+    }
+
+    /// Two problems are the same when they name the same path with the same message: a fix of its own doesn't make a
+    /// problem new.
+    fn is_same(&self, other: &Problem) -> bool {
+        self.path == other.path && self.message == other.message
+    }
+}
+
+impl fmt::Display for Problem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.path, self.message)
+    }
+}
+
+/// What an op says when it refuses an edit: the field to name, the message listing every problem the edit introduces,
+/// and the first one's own fix, when it has one (the op supplies its general hint otherwise).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Refusal {
+    /// The path of the first problem the edit introduces.
+    pub field: String,
+    /// `"<n> fields are invalid: <path>: <message>; …"`.
+    pub message: String,
+    /// The first problem's own fix.
+    pub hint: Option<String>,
+}
+
+/// The refusal for an edit whose value has the problems `after`, when the value before it had `before`; `None` when the
+/// edit introduces none. Problems the value already had are not blamed on the edit, so a value damaged elsewhere still
+/// takes an unrelated change, and a damaged field the edit leaves damaged is refused only if it is wrong in a new way.
+pub fn refuse_introduced(before: &[Problem], after: Vec<Problem>) -> Option<Refusal> {
+    let introduced: Vec<Problem> = after.into_iter().filter(|p| !before.iter().any(|b| b.is_same(p))).collect();
+    let first = introduced.first()?;
+    let count = introduced.len();
+    let noun = if count == 1 { "field is" } else { "fields are" };
+    let list = introduced.iter().map(ToString::to_string).collect::<Vec<_>>().join("; ");
+    Some(Refusal {
+        field: first.path.clone(),
+        message: format!("{count} {noun} invalid: {list}"),
+        hint: first.hint.clone(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,5 +264,23 @@ mod tests {
         assert!(Outer(Inner(0.5)).validate().is_err(), "size is still invalid");
         assert!(Inner(f64::NAN).validate().is_err(), "NaN is never in range");
         assert!(Inner(0.5).validate().is_ok());
+    }
+
+    #[test]
+    fn only_the_problems_an_edit_introduces_are_refused() {
+        let old = Problem::new("face/layout/eye_y", "too low");
+        let before = vec![old.clone()];
+        assert_eq!(refuse_introduced(&before, vec![old.clone()]), None, "an existing problem is not the edit's");
+        let new = Problem { hint: Some("try 0.4".into()), ..Problem::new("face/layout/mouth_y", "above the eyes") };
+        let other = Problem::new("face/layout/nose_y", "out of range");
+        let refusal = refuse_introduced(&before, vec![old, new, other]).expect("two new problems");
+        assert_eq!(refusal.field, "face/layout/mouth_y");
+        assert_eq!(
+            refusal.message,
+            "2 fields are invalid: face/layout/mouth_y: above the eyes; face/layout/nose_y: out of range"
+        );
+        assert_eq!(refusal.hint.as_deref(), Some("try 0.4"));
+        let one = refuse_introduced(&[], vec![Problem::new("a", "b")]).expect("one new problem");
+        assert_eq!((one.message.as_str(), one.hint), ("1 field is invalid: a: b", None));
     }
 }

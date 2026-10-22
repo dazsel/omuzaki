@@ -7,7 +7,7 @@
 
 use omuzaki_char_api::{CharId, paths};
 use omuzaki_doc_api::{Change, DocPath};
-use omuzaki_face_api::{FaceLayout, ParamError, ParamErrors, Validate};
+use omuzaki_face_api::{FaceLayout, ParamError, ParamErrors, Problem, Validate, refuse_introduced};
 use omuzaki_ops_api::{OpCtx, OpError};
 use serde_json::{Map, Value, json};
 
@@ -46,11 +46,13 @@ pub(super) fn with_field(current: &FaceLayout, field: &str, value: f64) -> Resul
         .map_err(|e| OpError::internal(format!("a layout field did not read back as a layout: {e}")))
 }
 
-/// Every problem in `layout`, as the path it names in the face (`face/layout/eye_y`) and its message.
-fn problems(layout: &FaceLayout) -> Vec<(String, String)> {
+/// Every problem in `layout`, at the path it names in the face (`face/layout/eye_y`).
+fn problems(layout: &FaceLayout) -> Vec<Problem> {
     match layout.validate() {
         Ok(()) => Vec::new(),
-        Err(ParamErrors(errors)) => errors.into_iter().map(|e| named("face/layout", &e)).collect(),
+        Err(ParamErrors(errors)) => {
+            errors.iter().map(|e| named("face/layout", e)).map(|(path, message)| Problem::new(path, message)).collect()
+        }
     }
 }
 
@@ -65,15 +67,10 @@ fn named(prefix: &str, error: &ParamError) -> (String, String) {
 /// # Errors
 /// `Invalid`, naming the first problem the edit introduces and listing all of them.
 pub(super) fn refuse_new_problems(current: &FaceLayout, after: &FaceLayout) -> Result<(), OpError> {
-    let before = problems(current);
-    let introduced: Vec<(String, String)> = problems(after).into_iter().filter(|p| !before.contains(p)).collect();
-    let Some((first, _)) = introduced.first() else {
+    let Some(refusal) = refuse_introduced(&problems(current), problems(after)) else {
         return Ok(());
     };
-    let count = introduced.len();
-    let noun = if count == 1 { "field is" } else { "fields are" };
-    let list = introduced.iter().map(|(path, message)| format!("{path}: {message}")).collect::<Vec<_>>().join("; ");
-    Err(OpError::invalid(first.clone(), format!("{count} {noun} invalid: {list}")).hint(RANGE_HINT))
+    Err(OpError::invalid(refusal.field, refusal.message).hint(RANGE_HINT))
 }
 
 /// Refuses ratios that fail their own checks, naming each field as `<prefix>/<field>` with the range it accepts.
