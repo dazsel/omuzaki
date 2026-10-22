@@ -15,7 +15,7 @@ use crate::vad::{CONTEXT, VadStream};
 use crate::{SAMPLE_RATE, synth};
 
 /// The smallest balanced frame accuracy a model must reach on the LibriVox clips. Their labels are Silero VAD 6.2.3's own
-/// segments away from the edges, so it scores about 1.0 and the number measures agreement with it; the floor leaves room
+/// segments away from the edges, so it scores 0.988 and the number measures agreement with it; the floor leaves room
 /// for a model that draws its edges differently.
 pub const SMOKE_FLOOR: f64 = 0.90;
 

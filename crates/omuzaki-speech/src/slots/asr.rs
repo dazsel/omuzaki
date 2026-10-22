@@ -12,9 +12,9 @@ use crate::SpeechError;
 use crate::asr::AsrCall;
 use crate::slots::clips::CLIPS;
 
-/// The largest word error rate a model may have on the smoke set. Whisper `tiny.en`, the smallest shipped model, scores
-/// 0.051 and `base.en` 0.026 on these clips (the LibriVox preambles included); the ceiling leaves room for a smaller
-/// or quantised model while refusing one that misses one word in six.
+/// The largest word error rate a model may have on the smoke set (254 words). Whisper `tiny.en`, the smallest shipped
+/// model, scores 0.028 and `base.en` 0.024 on it; the ceiling leaves room for a smaller or quantised model while
+/// refusing one that misses one word in seven.
 pub const SMOKE_CEILING: f64 = 0.15;
 
 /// The longest utterance the slot takes, in seconds.

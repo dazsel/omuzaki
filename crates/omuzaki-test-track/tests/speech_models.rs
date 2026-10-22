@@ -3,7 +3,7 @@
 //! host. Silero through the `onnx` runtime matches the Python reference within 1e-3, and a real reading comes back as
 //! text. Needs `OMUZAKI_SPEECH_MODELS`, `OMUZAKI_ORT_CACHE` and `OMUZAKI_SPEECH_DATA` (see `speech_support`); skips
 //! with a message otherwise.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::cast_precision_loss)] // a panic is a test failure
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::cast_precision_loss, clippy::doc_markdown)] // a panic is a test failure
 
 mod speech_support;
 
@@ -123,7 +123,7 @@ fn the_host_transcribes_a_real_reading_on_registry_sessions() {
     let config = HostConfig { utterance_queue: 64, ..HostConfig::default() };
     let (mut host, mut input) = SpeechHost::open(vad, asr, &config).unwrap();
     host.request_transcripts().keep();
-    for block in audio.chunks(160) {
+    for block in clip.story_audio(&audio).chunks(160) {
         while input.free() < block.len() {
             std::thread::park_timeout(Duration::from_millis(1));
         }

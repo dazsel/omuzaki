@@ -7,6 +7,10 @@
 //! 16 kHz mono. The speech segments are Silero VAD 6.2.3's (threshold 0.5, gaps under 300 ms closed, bursts under
 //! 250 ms dropped), checked against the reading; an evaluation scores frames more than [`GUARD`] seconds from a segment
 //! edge only, so a model is never marked down for where exactly a word fades.
+//!
+//! Every section opens with the LibriVox preamble, read in each volunteer's own words. The voice evaluation scores all
+//! of it; the transcription evaluation starts at the fable's title ([`Clip::story`]), so its reference text is only
+//! the fable and its close, which the book fixes.
 
 use std::f64::consts::PI;
 use std::fs::File;
@@ -36,10 +40,13 @@ pub struct Clip {
     pub sha256: &'static str,
     /// Its exact size in bytes.
     pub size: u64,
-    /// The words read, as printed (normalised before scoring).
+    /// The words read from the fable's title on, as printed (normalised before scoring).
     pub text: &'static str,
     /// The speech, as `(start, end)` seconds, in order.
     pub speech: &'static [(f64, f64)],
+    /// The index in [`speech`](Self::speech) of the segment the fable's title is read in: what comes before is the
+    /// preamble.
+    pub story: usize,
 }
 
 /// The LibriVox item every clip is from.
@@ -49,21 +56,10 @@ macro_rules! librivox {
     };
 }
 
-/// The LibriVox preamble and close every section is read with.
-macro_rules! section {
-    ($n:literal, $title:literal, $body:literal) => {
-        concat!(
-            "Section ",
-            $n,
-            " of Aesop's Fables, Volume 3. This is a LibriVox recording. All LibriVox recordings are in the public \
-             domain. For more information or to volunteer, please visit librivox.org. ",
-            $title,
-            ". ",
-            $body,
-            " End of section ",
-            $n,
-            "."
-        )
+/// A fable as read: its title, the text, and the reader's close.
+macro_rules! fable {
+    ($title:literal, $body:literal) => {
+        concat!($title, ". ", $body, " End of ", $title, ".")
     };
 }
 
@@ -74,8 +70,7 @@ pub const CLIPS: [Clip; 3] = [
         url: librivox!("fables_03_05_aesop_64kb.mp3"),
         sha256: "12bf43a277d1da9314ab460999e9117339018b72d58f710d33eaaf92dc7f567b",
         size: 375_663,
-        text: section!(
-            "5",
+        text: fable!(
             "The Thieves and the Cock",
             "Some Thieves broke into a house, and found nothing worth taking except a Cock, which they seized and \
              carried off with them. When they were preparing their supper, one of them caught up the Cock, and was \
@@ -99,14 +94,14 @@ pub const CLIPS: [Clip; 3] = [
             (37.44, 42.69),
             (43.26, 44.74),
         ],
+        story: 3,
     },
     Clip {
         name: "aesop-68",
         url: librivox!("fables_03_18_aesop_64kb.mp3"),
         sha256: "2c905d57f55905272aea02d028bb4e26a3362b3979b79d309afe23058dfc95ba",
         size: 353_984,
-        text: section!(
-            "18",
+        text: fable!(
             "The Boy and the Nettles",
             "A Boy was gathering berries from a hedge when his hand was stung by a Nettle. Smarting with the pain, he \
              ran to tell his mother, and said to her between his sobs, \"I only touched it ever so lightly, mother.\" \
@@ -128,14 +123,14 @@ pub const CLIPS: [Clip; 3] = [
             (34.72, 36.22),
             (37.09, 39.20),
         ],
+        story: 5,
     },
     Clip {
         name: "aesop-73",
         url: librivox!("fables_03_23_aesop_64kb.mp3"),
         sha256: "a9fa7b93a90486fdfc6ef9668a980cbdff15c6190f4d9023ddb941365ab8b95f",
         size: 400_113,
-        text: section!(
-            "23",
+        text: fable!(
             "The Two Bags",
             "Every man carries Two Bags about with him, one in front and one behind, and both are packed full of \
              faults. The Bag in front contains his neighbours' faults, the one behind his own. Hence it is that men do \
@@ -157,6 +152,7 @@ pub const CLIPS: [Clip; 3] = [
             (39.01, 40.35),
             (41.25, 42.91),
         ],
+        story: 5,
     },
 ];
 
@@ -184,11 +180,19 @@ impl Clip {
         label(self.speech, seconds)
     }
 
-    /// The audio cut into pieces of at most `max_seconds` at pauses: each piece runs from a segment's start to the end
-    /// of the last segment that still fits, with [`GUARD`] seconds of padding.
+    /// The fable's audio (from its title on) cut into pieces of at most `max_seconds` at pauses: each piece runs from
+    /// a segment's start to the end of the last segment that still fits, with [`GUARD`] seconds of padding.
     #[must_use]
     pub fn utterances<'a>(&self, audio: &'a [f32], max_seconds: f64) -> Vec<&'a [f32]> {
-        utterances(self.speech, audio, max_seconds)
+        utterances(&self.speech[self.story..], audio, max_seconds)
+    }
+
+    /// The audio from half a second before the fable's title to the end, for a test that plays the fable through a
+    /// listener as one stream.
+    #[must_use]
+    pub fn story_audio<'a>(&self, audio: &'a [f32]) -> &'a [f32] {
+        let start = ((self.speech[self.story].0 - 0.5).max(0.0) * f64::from(SAMPLE_RATE)) as usize;
+        &audio[start.min(audio.len())..]
     }
 }
 
@@ -345,6 +349,7 @@ mod tests {
             assert_eq!(clip.pin().size, clip.size, "{}", clip.name);
             assert!(clip.speech.windows(2).all(|w| w[0].1 < w[1].0), "{}", clip.name);
             assert!(clip.speech.iter().all(|&(a, b)| a < b), "{}", clip.name);
+            assert!(clip.story < clip.speech.len(), "{}", clip.name);
         }
     }
 }

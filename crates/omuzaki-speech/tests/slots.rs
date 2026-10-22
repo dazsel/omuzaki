@@ -102,7 +102,7 @@ fn every_shipped_manifest_validates_and_keeps_the_old_catalogue_pins() {
         manifest.validate(Origin::Shipped).unwrap_or_else(|e| panic!("{}: {e:?}", manifest.id));
         let pinned = &manifest.files[0];
         assert_eq!((pinned.urls[0].as_str(), pinned.sha256.to_string(), pinned.size), (url, sha256.to_owned(), size));
-        let (slot, runtime) = if file.ends_with(".onnx") { (vad_slot(), "onnx") } else { (asr_slot(), "whisper-ggml") };
+        let (slot, runtime) = if std::path::Path::new(file).extension().is_some_and(|e| e.eq_ignore_ascii_case("onnx")) { (vad_slot(), "onnx") } else { (asr_slot(), "whisper-ggml") };
         assert_eq!((&manifest.slot, manifest.runtime.as_str()), (&slot, runtime), "{}", manifest.id);
         assert_eq!(manifest.card.licence.spdx.as_deref(), Some("MIT"), "{}", manifest.id);
         // The digest that names the model's exact bytes, for the pull request.

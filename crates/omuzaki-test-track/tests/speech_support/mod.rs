@@ -8,7 +8,7 @@
 //!
 //! A test skips with a message when one is unset. Nothing is downloaded: the source serves a pinned file only from
 //! these folders, by the last part of its URL, after checking its size and SHA-256.
-#![allow(dead_code, clippy::unwrap_used, clippy::expect_used)] // shared by test binaries; a panic is a failure
+#![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::doc_markdown)] // shared by test binaries; a panic is a failure
 
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
