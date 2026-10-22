@@ -1,0 +1,11 @@
+section = "in-use"
+item = "Assistant conversation export golden: two placeholder images"
+kind = "asset"
+used_for = "the images beside the exported Markdown transcript in `crates/omuzaki-agent/tests/goldens/store/`: 19-byte placeholder PNG headers written by the test itself, standing in for two renders of design section 4"
+status = "yes"
+condition = "made by Dazsel from code in this repository (the golden-update flow of `store_export`); no third-party material, so no notice is owed"
+audit = "(Dazsel, 2026-10-15)"
+paths = [
+  "crates/omuzaki-agent/tests/goldens/store/322033a83eab197bf22093db52c3584d7431bc130e71ee2164db3b3f29b8d7e7.png",
+  "crates/omuzaki-agent/tests/goldens/store/cba2d89ecd4da07a6c1d84d912e185b52db5f93887a0f1ff1d80241cc05f3e9e.png",
+]
