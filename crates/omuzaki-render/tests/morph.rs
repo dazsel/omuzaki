@@ -129,7 +129,13 @@ use omuzaki_render_api::{AlphaMode, Image, Light, Outline, ShadowQuality, Sparse
 use omuzaki_render_mock::morph_vertices;
 
 fn plain() -> Quality {
-    Quality { samples: 1, render_scale: 1.0, post_effects: false.into(), shadows: ShadowQuality::Low, ..Quality::offline() }
+    Quality {
+        samples: 1,
+        render_scale: 1.0,
+        post_effects: false.into(),
+        shadows: ShadowQuality::Low,
+        ..Quality::offline()
+    }
 }
 
 /// How many pixels differ by more than `tolerance` in some channel.
