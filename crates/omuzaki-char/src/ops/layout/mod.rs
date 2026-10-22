@@ -17,5 +17,5 @@ mod ratios;
 mod set;
 
 pub use measure::MeasureLayout;
-pub use ratios::LayoutRatios;
+pub use ratios::{LayoutRatios, PartialLayoutRatios};
 pub use set::{SetLayout, SetLayoutRatios};

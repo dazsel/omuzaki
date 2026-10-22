@@ -94,6 +94,94 @@ impl LayoutRatios {
     }
 }
 
+/// Reference ratios that may hold only some of the fields: what an image measure gives (`measure.feature_spacing`'s
+/// `layout_ratios` has `drop_to_iod`, `mouth` and `nose` when it saw them). The comparison covers the fields present;
+/// a full set reads exactly as [`LayoutRatios`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PartialLayoutRatios {
+    /// The eyes' size: half an eye's width over the eye distance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eye_width_to_iod: Option<f64>,
+    /// The eye line to the chin, over the eye distance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drop_to_iod: Option<f64>,
+    /// The nose's height as a fraction of the eye-to-chin drop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nose: Option<f64>,
+    /// The mouth line's height as a fraction of the eye-to-chin drop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mouth: Option<f64>,
+    /// The blush's height as a fraction of the eye-to-chin drop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blush: Option<f64>,
+    /// The distance between the blush centres over the eye distance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blush_spacing_to_iod: Option<f64>,
+}
+
+impl PartialLayoutRatios {
+    /// Whether no field is given.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// `ratios - self` for the fields present, and the plain-language note of each, in field order.
+    #[must_use]
+    pub fn compare(&self, ratios: &LayoutRatios) -> (Self, Vec<String>) {
+        let full = LayoutRatios {
+            eye_width_to_iod: self.eye_width_to_iod.unwrap_or(ratios.eye_width_to_iod),
+            drop_to_iod: self.drop_to_iod.unwrap_or(ratios.drop_to_iod),
+            nose: self.nose.unwrap_or(ratios.nose),
+            mouth: self.mouth.unwrap_or(ratios.mouth),
+            blush: self.blush.unwrap_or(ratios.blush),
+            blush_spacing_to_iod: self.blush_spacing_to_iod.unwrap_or(ratios.blush_spacing_to_iod),
+        };
+        let d = ratios.minus(&full);
+        let present = [
+            self.eye_width_to_iod.is_some(),
+            self.drop_to_iod.is_some(),
+            self.nose.is_some(),
+            self.mouth.is_some(),
+            self.blush.is_some(),
+            self.blush_spacing_to_iod.is_some(),
+        ];
+        let notes = LayoutRatios::notes(&d).into_iter().zip(present).filter_map(|(n, p)| p.then_some(n)).collect();
+        let keep = |given: Option<f64>, diff: f64| given.map(|_| diff);
+        let difference = Self {
+            eye_width_to_iod: keep(self.eye_width_to_iod, d.eye_width_to_iod),
+            drop_to_iod: keep(self.drop_to_iod, d.drop_to_iod),
+            nose: keep(self.nose, d.nose),
+            mouth: keep(self.mouth, d.mouth),
+            blush: keep(self.blush, d.blush),
+            blush_spacing_to_iod: keep(self.blush_spacing_to_iod, d.blush_spacing_to_iod),
+        };
+        (difference, notes)
+    }
+}
+
+impl Validate for PartialLayoutRatios {
+    fn check(&self, c: &mut Check) {
+        if let Some(v) = self.eye_width_to_iod {
+            c.positive("eye_width_to_iod", v);
+        }
+        if let Some(v) = self.drop_to_iod {
+            c.positive("drop_to_iod", v);
+        }
+        for (name, value) in [("nose", self.nose), ("mouth", self.mouth), ("blush", self.blush)] {
+            if let Some(v) = value {
+                c.range(name, v, 0.0, 1.0);
+            }
+        }
+        if let Some(v) = self.blush_spacing_to_iod
+            && !(v.is_finite() && v >= 0.0)
+        {
+            c.fail("blush_spacing_to_iod", format!("{v} must be 0 or more"));
+        }
+    }
+}
+
 /// One note: how far `diff` is from the reference, in the words for its direction.
 fn note(feature: &str, diff: f64, more: &str, less: &str, unit: &str) -> String {
     let shown = format!("{:.2}", diff.abs());

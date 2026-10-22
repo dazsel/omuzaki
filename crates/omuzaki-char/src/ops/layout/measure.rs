@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use super::chin::{chin_not_below_eye, head_chin};
 use super::edit::refuse_bad_ratios;
-use super::ratios::LayoutRatios;
+use super::ratios::{LayoutRatios, PartialLayoutRatios};
 use crate::ops::character::access;
 
 /// Measures a character's feature layout as ratios, the CB-12 overlay: the eyes' size and the eye-to-chin drop, the nose,
@@ -26,9 +26,11 @@ use crate::ops::character::access;
 pub struct MeasureLayout {
     /// The character whose layout is measured.
     pub character: CharId,
-    /// Reference ratios to compare with, in the same units. Left out, the answer has the character's ratios alone.
+    /// Reference ratios to compare with, in the same units: all six, or only some (the `layout_ratios` that
+    /// `measure.feature_spacing` reads from a reference image), and the comparison covers the ones given. Left out, the
+    /// answer has the character's ratios alone.
     #[serde(default)]
-    pub reference: Option<LayoutRatios>,
+    pub reference: Option<PartialLayoutRatios>,
 }
 
 impl Op for MeasureLayout {
@@ -51,12 +53,16 @@ impl Op for MeasureLayout {
 
         let mut answer = json!({ "character": self.character.to_string(), "chin_y": chin, "ratios": ratios });
         if let Some(reference) = &self.reference {
+            if reference.is_empty() {
+                return Err(OpError::invalid("reference", "the reference gives no ratio to compare with")
+                    .hint("give at least one ratio, such as {\"drop_to_iod\": 1.6}, or leave the reference out"));
+            }
             refuse_bad_ratios(reference, "reference")?;
-            let difference = ratios.minus(reference);
+            let (difference, notes) = reference.compare(&ratios);
             let fields = answer.as_object_mut().ok_or_else(|| OpError::internal("the answer is an object"))?;
             fields.insert("reference".to_owned(), json!(reference));
             fields.insert("difference".to_owned(), json!(difference));
-            fields.insert("notes".to_owned(), Value::from(LayoutRatios::notes(&difference)));
+            fields.insert("notes".to_owned(), Value::from(notes));
         }
         Ok(Plan::answer(answer))
     }
