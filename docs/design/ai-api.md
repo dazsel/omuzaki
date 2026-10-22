@@ -184,6 +184,10 @@ set = { id = "aesop-52-frames-1", kind = "real" }
   - The trait is in this crate because the registry consumes it. The records live with the licence records in the
     project document, and the app implements the lookup over them.
   - Until then the registry runs with `NoConsentRecords`, so every imitating model stays unusable, the safe default.
+    The app wires its lookup with `Registry::set_consent`, and calls it again when the records may have changed: open
+    slot sessions look at their models again, as after any change.
+  - Every surface that lists an imitating model shows `omuzaki_ai::IMPERSONATION_WARNING`; `ModelEntry::imitates`
+    names the person, and `model.list` adds the warning.
   - What an imitating model makes carries the consent record in its licence record.
 
 ## 6. Evaluation: smoke tests and the eval suite
@@ -239,6 +243,15 @@ Callers hold one session for as long as they need the slot and never re-implemen
 **People choose and agents ask** (ADR 0016 rule 5). `select(slot, model, by)` refuses an agent's switch to an
 unacknowledged user model (`NeedsPerson`). `acknowledge` is called only by surfaces where a person acts, and its op
 refuses agents. `select(slot, None, _)` goes back to the shipped default, so it is always one call away.
+- A person's `select` doesn't accept the notice for them either: an unacknowledged model is `NotUsable` until
+  `acknowledge` (or `AddModel::acknowledged_by`) records it. Anything else that isn't `Ready` is `NotUsable`, with
+  the reason.
+- An acknowledgement is per digest and records the person, `DISCLAIMER_VERSION` and the time, from a calendar clock the
+  app can set (`Registry::set_clock`). Changed bytes are another digest, so they ask again. `remove` forgets a user
+  model with its acknowledgement and deletes its cached files unless another model uses the same bytes.
+- A `Ready` user model joins the chain as an explicit model or a selection, never as a default. `open` with an explicit
+  model that waits for the person (`NeedsAcknowledgement` or `NeedsConsent`) is `NotUsable` with the reason, not a
+  quiet fallback.
 
 ## 8. Download on demand, verification and rollback
 
@@ -311,6 +324,24 @@ CPU path is mandatory for shipped models.
 - **A run past the slot's deadline is a stall:** the worker is killed, and the slot session falls back and says so.
 - **On the web player** (no processes), user models are not offered.
 
+How it is built (`omuzaki_ai::sandbox`):
+- **One worker per session,** plus one for each probe. `add` probes the model and runs the slot's smoke test through a
+  sandboxed session, so a model that crashes there is `Disabled` with the reason.
+- **The pipe:** frames of `[kind][length][payload]`. Probing, loading and errors are JSON; a run is a binary `Run`
+  frame and raw little-endian tensor frames, and its answer is `Ran` and the outputs. The caller's side of a run
+  allocates nothing once its buffers have grown.
+- **Native libraries:** a runtime's pinned library (ONNX Runtime) is asked for over the pipe and fetched by the registry
+  through its verified cache, so the worker has no network.
+- **Deadlines:** a watchdog thread per worker kills it past the deadline: a slot's `stall_ms` per run, 30 s to start,
+  120 s to probe or load (not counting the registry's downloads). Streaming slots get 2 s per block until the stream
+  host sets its own block deadline.
+- **Limits:** on Linux and macOS the worker caps its own memory (`RLIMIT_AS`, `RLIMIT_DATA` on macOS), lowers its
+  priority and exits when its parent goes. On Windows the registry holds a Job Object (memory cap, below-normal
+  priority, killed when the registry's handle closes). The cap is 8 GiB unless the app sets another.
+- **Measured** (release, Linux, a fake identity model; the pipe's cost per run): a 640×480 RGB frame as `f32` takes
+  about 8 ms (p95 9 ms) against 0.3 ms in process; a 20 ms audio block (960 samples) about 40 µs (p95 54 µs). Frames are
+  where shared memory would pay; audio blocks don't need it.
+
 ## 10. Streaming slots (ML-14, streaming speech to text, ML-05)
 
 Some models are fed from a real-time thread one block at a time, and that thread must never wait for them:
@@ -372,12 +403,19 @@ Scopes for the `model.*` ops, decided on review and aligned with `library.instal
 
 | Op | Scope |
 |---|---|
-| `model.list` | `read` |
+| `model.list`, `model.status` | `read` |
 | `model.select`, `model.rollback` | `perform` |
 | `model.add` | `edit:library` + `fs` (with the root) |
 | `model.install` | `edit:library` + `net` |
 | `model.remove` | `edit:library` |
 | `model.acknowledge` | person only |
+
+The ops name a model by the `key` `model.list` gives it, `id@version#digest` (the id alone, or `id@version`, when that
+is unambiguous), and suggest the nearest slot or model id when a name is wrong. `model.status {slot}` answers `ready`,
+`downloading { percent }` (the slot's install, from `ModelRegistry::downloading`) or `unavailable` with the reason.
+`model.add` reads each file through the person's roots (`fs`), and only a person may accept the notice while adding
+(`accept_notice`). The ops reach the registry as the `dyn ModelRegistry` service, so an app that wants them links
+`omuzaki-ai` and wires the service.
 
 ## 12. What existing code becomes
 

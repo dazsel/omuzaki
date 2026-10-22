@@ -1,8 +1,9 @@
 //! The `track_roi` timing probe for the reference machine (#1515 part B, #903): `track_roi` on a synthetic 640x480
-//! frame with the real graphs, 20 warm-up calls and then 1,000 timed ones per runtime. It prints a Markdown table of
-//! the mean, p50 and p95 of the whole call for each runtime it can run, and the builds that ran them:
-//! - ONNX Runtime at one intra-op thread, over the converted model folder;
-//! - LiteRT with XNNPACK at one and two threads, over MediaPipe's official `face_landmarker.task`.
+//! frame with the real graphs, 20 warm-up calls and then 1,000 timed ones per runtime and thread count (1, 2 and 4).
+//! It prints Markdown tables of the whole call (mean, p50, p95, and the process's CPU time per call) and of each
+//! stage (warp, landmark run, decode, blendshapes, smoothing and pose; #1905), and the builds that ran them:
+//! - ONNX Runtime, over the converted model folder;
+//! - LiteRT with XNNPACK, over MediaPipe's official `face_landmarker.task`.
 //!
 //! ```text
 //! track_roi_timing            # ONNX Runtime: OMUZAKI_TRACK_MODELS (the folder tools/models/mediapipe-face.sh writes)
@@ -22,6 +23,7 @@ use std::process::ExitCode;
 
 use probe::Setup;
 
+mod cpu;
 mod percentile;
 mod probe;
 

@@ -1,11 +1,14 @@
 //! The face-mesh model: crop the ROI to 256x256, predict 478 landmarks, project them back onto the frame, and derive
 //! the ROI for the next frame so the detector can be skipped while the face keeps being found.
 
+use std::time::Instant;
+
 use omuzaki_ai_api::{DType, Dim, Session, Signature, TensorBuf, TensorRef, TensorSpec};
 
 use crate::error::{FaceTrackError, Result};
 use crate::frame::{Border, ImageSpec, RgbFrame, warp_to_tensor};
 use crate::roi::{BBox, Letterbox, NormRect, pad_to_aspect, roi_to_frame, rotation_from_points};
+use crate::sample::StageTimings;
 
 /// Model input side in pixels.
 const INPUT: usize = 256;
@@ -66,18 +69,23 @@ impl LandmarkModel {
         frame: &RgbFrame<'_>,
         rect: &NormRect,
         points: &mut [Landmark; NUM_LANDMARKS],
+        timings: &mut StageTimings,
     ) -> Result<Option<f32>> {
         let (fw, fh) = (frame.width as f32, frame.height as f32);
         let roi = rect.to_pixels(fw, fh);
         let mut padded = roi;
         let Some(letterbox) = pad_to_aspect(&mut padded, INPUT, INPUT) else { return Ok(None) };
+        let started = Instant::now();
         warp_to_tensor(
             frame,
             &padded,
             ImageSpec { width: INPUT, height: INPUT, range: (0.0, 1.0), border: Border::Replicate },
             &mut self.input,
         )?;
+        let warped = Instant::now();
+        timings.warp_us = micros_between(started, warped);
         self.session.run(&[TensorRef::f32(&self.input, &[1, INPUT, INPUT, 3])], &mut self.outputs)?;
+        timings.landmark_run_us = micros_between(warped, Instant::now());
         let (Some(raw), Some(presence_logit)) = (self.outputs[0].as_f32(), self.outputs[1].as_f32()) else {
             return Err(FaceTrackError::Shape { graph: "landmarks" });
         };
@@ -122,6 +130,11 @@ pub fn next_frame_rect(points: &[Landmark], frame_w: usize, frame_h: usize) -> O
     let (left, right) = (points.get(EYE_LANDMARKS.0)?, points.get(EYE_LANDMARKS.1)?);
     let rotation = rotation_from_points((left[0], left[1]), (right[0], right[1]), fw, fh);
     Some(bbox.to_rect(rotation).expanded(fw, fh, NEXT_ROI_SCALE, true))
+}
+
+/// Microseconds from `from` to `to`, saturating at `u32::MAX`.
+fn micros_between(from: Instant, to: Instant) -> u32 {
+    u32::try_from(to.saturating_duration_since(from).as_micros()).unwrap_or(u32::MAX)
 }
 
 #[cfg(test)]

@@ -26,6 +26,7 @@ use omuzaki_settings_api::service::{Layer, ListFilter, Resolved, Settings, Snaps
 use omuzaki_settings_api::session::SessionStore;
 use omuzaki_stage::perform::{Performer, PerformerParts};
 use omuzaki_track_api::camera::{CameraFormat, CameraId, CameraInfo, PixelFormat};
+use omuzaki_track_api::doctor::Diagnosis;
 use omuzaki_track_api::error::TrackError;
 use omuzaki_track_api::tracker::{LatencyStats, Tracker, TrackerConfig};
 use omuzaki_track_mock::{FakeCamera, FakeTracker};
@@ -53,6 +54,9 @@ pub struct CameraLog {
     calls: Arc<Mutex<Vec<Call>>>,
     unplugged: Arc<Mutex<Vec<String>>>,
     refused: Arc<Mutex<Vec<String>>>,
+    /// What the tracker's doctor finds while a capture runs, and how many rechecks it was asked for.
+    findings: Arc<Mutex<Vec<Diagnosis>>>,
+    rechecks: Arc<Mutex<u32>>,
 }
 
 impl CameraLog {
@@ -69,6 +73,16 @@ impl CameraLog {
     /// Makes opening `camera` fail while it stays in the device list (the OS refuses it).
     pub fn refuse(&self, camera: &str) {
         self.refused.lock().unwrap().push(camera.to_owned());
+    }
+
+    /// Makes the tracker's doctor find `findings` while a capture runs, until a recheck clears them.
+    pub fn find(&self, findings: Vec<Diagnosis>) {
+        *self.findings.lock().unwrap() = findings;
+    }
+
+    /// How many rechecks the tracker was asked for.
+    pub fn rechecks(&self) -> u32 {
+        *self.rechecks.lock().unwrap()
     }
 
     /// Takes `camera` out of the device list (its running session keeps going until its frames stop).
@@ -128,6 +142,16 @@ impl Tracker for Cameras {
 
     fn latency(&self) -> LatencyStats {
         LatencyStats::default()
+    }
+
+    fn diagnoses(&self) -> Vec<Diagnosis> {
+        let running = matches!(self.log.calls().last(), Some(Call::Start(_)));
+        if running { self.log.findings.lock().unwrap().clone() } else { Vec::new() }
+    }
+
+    fn recheck(&self) {
+        *self.log.rechecks.lock().unwrap() += 1;
+        self.log.findings.lock().unwrap().clear();
     }
 }
 
