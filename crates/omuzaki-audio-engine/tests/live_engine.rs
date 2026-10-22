@@ -200,3 +200,33 @@ fn a_vanished_microphone_is_lost_then_reconnected() {
     assert!(wait_for(&events, |e| matches!(e, AudioEvent::Reconnected { .. })), "the engine reopens the mic");
     assert_eq!(engine.status().clock_source, ClockSource::Device);
 }
+
+#[test]
+fn lip_sync_hears_the_microphone_and_stops_when_muted() {
+    use omuzaki_audio_api::voice::VoiceSource;
+    use omuzaki_audio_engine::voice::LipSync;
+
+    let (backend, engine) = engine_with_mic();
+    engine.apply(&mic_graph()).unwrap();
+    let lips = LipSync::start(&engine).unwrap();
+    assert!(lips.latest().is_none(), "nothing heard yet");
+    backend.step(24_000);
+    // The worker reads on its own thread: wait on what it publishes, with a deadline.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let frame = loop {
+        if let Some(f) = lips.latest().filter(|f| f.active && f.open > 0.3) {
+            break f;
+        }
+        assert!(Instant::now() < deadline, "lip sync never heard the tone: {:?}", lips.latest());
+        std::thread::yield_now();
+    };
+    assert!(frame.level_db > -15.0, "{frame:?}");
+
+    engine.set_mic_mode(MicMode::Muted).unwrap();
+    backend.step(24_000);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while lips.latest().is_some_and(|f| f.active || f.open > 0.01) {
+        assert!(Instant::now() < deadline, "the mouth stays open while muted: {:?}", lips.latest());
+        std::thread::yield_now();
+    }
+}

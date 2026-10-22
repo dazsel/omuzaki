@@ -369,7 +369,7 @@ impl Executor {
                 let found = self.bridges.iter().find(|b| &b.role == role);
                 match found {
                     Some(b) if b.rings.len() >= 2 => {
-                        feed_tap(tap, &[&b.block[0][..n], &b.block[1][..n]], self.mic_mode)
+                        feed_tap(tap, &[&b.block[0][..n], &b.block[1][..n]], self.mic_mode);
                     }
                     Some(b) => feed_tap(tap, &[&b.block[0][..n]], self.mic_mode),
                     None => feed_silence(tap, n, self.mic_mode),
