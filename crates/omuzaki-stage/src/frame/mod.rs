@@ -27,14 +27,14 @@ use omuzaki_anim_api::{ChannelBuf, HumanoidPose, IkGoals, Tick};
 use omuzaki_char_api::{BuiltCharacter, StepCtx};
 use omuzaki_core::glam::{Mat4, Vec3};
 use omuzaki_core::time::Seconds;
-use omuzaki_render_api::{Camera, FrameInfo, FrameReport, Quality, Renderer, Scene, TargetId};
+use omuzaki_render_api::{FrameInfo, FrameReport, Quality, Renderer, Scene, TargetId};
 
 use self::face::FaceRig;
 use self::rig::{RigFrame, SkinPose};
 use self::runtimes::DynamicMeshes;
 use self::scene::ScenePlan;
 use crate::error::StageError;
-use crate::scene::apply::{Applier, Owed, reserve};
+use crate::scene::apply::{Owed, SceneLink, reserve};
 use crate::scene::resolve::ResolvedScene;
 use crate::upload::{StageCharacter, UploadOptions};
 
@@ -62,13 +62,13 @@ impl StageClock {
     }
 
     /// Whether this is the measured clock of [`live`](Self::live).
-    fn is_live(&self) -> bool {
+    pub(crate) fn is_live(&self) -> bool {
         self.fps.is_none()
     }
 
     /// The next frame's tick. A fixed clock ignores `measured_dt` and `time`; a live one takes the frame's time from
     /// `time` when the caller knows it (the performer's step time), else from the dts it has summed.
-    fn next(&mut self, measured_dt: f32, time: Option<Seconds>) -> Tick {
+    pub(crate) fn next(&mut self, measured_dt: f32, time: Option<Seconds>) -> Tick {
         let tick = match self.fps {
             Some(fps) => Tick::at_rate(self.index, fps),
             None => Tick {
@@ -141,16 +141,6 @@ pub struct TimePin {
     goals: IkGoals,
 }
 
-/// The bookkeeping behind [`Stage::commit_scene`]: the ground and skin floor the last scene wants, in a resolved scene
-/// that is never rendered, and a scene to work the debt out in. Sized when the stage is made, so setting a scene
-/// allocates nothing, the first one included.
-struct Debt {
-    wanted: ResolvedScene,
-    scratch: Scene,
-    /// Whether a scene was ever set: until then nothing is wanted.
-    set: bool,
-}
-
 /// A character on a renderer with everything its frame loop needs.
 pub struct Stage {
     built: BuiltCharacter,
@@ -166,13 +156,8 @@ pub struct Stage {
     input_root: Mat4,
     /// The scene's transform of the subject member, applied above every frame's root ([`set_scene`](Stage::set_scene)).
     subject_root: Mat4,
-    /// What the scene has committed for the renderer ([`commit_scene`](Stage::commit_scene)).
-    applier: Applier,
-    /// What the last scene still owes the renderer, against what the renderer is known to have done.
-    owed: Owed,
-    /// What [`commit_scene`](Stage::commit_scene) works the debt out from, made once at construction and behind a box
-    /// so the stage stays small.
-    debt: Box<Debt>,
+    /// What the scene has committed for the renderer and still owes it ([`commit_scene`](Stage::commit_scene)).
+    link: SceneLink,
     /// How many times a staged variant replaced the character, so a caller can tell the face profile may have changed.
     revision: u64,
     /// Renders submitted so far; numbers the frames of a live clock.
@@ -214,9 +199,7 @@ impl Stage {
             Ok((rig, dynamic, plan)) => Ok(Self {
                 input_root: Mat4::IDENTITY,
                 subject_root: Mat4::IDENTITY,
-                applier: Applier::new(),
-                owed: Owed::default(),
-                debt: Box::new(Debt { wanted: ResolvedScene::new(), scratch: Scene::new(Camera::default()), set: false }),
+                link: SceneLink::new(),
                 revision: 0,
                 submissions: 0,
                 built,
@@ -385,13 +368,9 @@ impl Stage {
     ///
     /// Allocation-free for a scene the lights of which fit ([`MAX_LIGHTS`](omuzaki_render_api::limits::MAX_LIGHTS)).
     pub fn set_scene(&mut self, resolved: &ResolvedScene, subject_root: Mat4) -> Owed {
-        self.owed = self.applier.apply(resolved, &mut self.scene);
-        // Only the two things a debt is made of are kept, for `commit_scene` to compare again.
-        self.debt.wanted.ground = resolved.ground;
-        self.debt.wanted.skin_floor = resolved.skin_floor;
-        self.debt.set = true;
+        let owed = self.link.set(resolved, &mut self.scene);
         self.set_subject_root(subject_root);
-        self.owed
+        owed
     }
 
     /// Moves the subject member alone: the scene's camera, lights and look stay as they are. Takes effect from the next
@@ -406,7 +385,7 @@ impl Stage {
 
     /// What the last [`set_scene`](Self::set_scene) still owes the renderer: nothing once everything was committed.
     pub fn owed(&self) -> Owed {
-        self.owed
+        self.link.owed()
     }
 
     /// Records that the renderer did the work in `owed` (from some earlier [`set_scene`](Self::set_scene)), and works
@@ -414,10 +393,7 @@ impl Stage {
     /// been replaced is recorded as done all the same, because the renderer did it: if scene A added a ground, scene B
     /// removed it and A's work finishes late, the debt becomes the removal.
     pub fn commit_scene(&mut self, owed: &Owed) {
-        self.applier.commit(owed);
-        if self.debt.set {
-            self.owed = self.applier.apply(&self.debt.wanted, &mut self.debt.scratch);
-        }
+        self.link.commit(owed);
     }
 
     /// How many times a variant swap replaced the character: changes when its face profile (and so its expressions) may

@@ -33,6 +33,7 @@ use crate::error::StageError;
 use crate::frame::{FrameInput, FrameOutput, Stage};
 use crate::scene::apply::{Mailbox, Owed};
 use crate::scene::resolve::ResolvedScene;
+use crate::stages::FrameLoop;
 
 /// What one live frame produced.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -45,11 +46,11 @@ pub struct LiveFrame {
 }
 
 /// The live loop's state: the performer and its control, the stage, the input's source slot and the scheduler.
-pub struct LiveStage {
+pub struct LiveStage<S: FrameLoop = Stage> {
     performer: Performer,
     control: PerformControl,
     handle: PerformHandle,
-    stage: Stage,
+    stage: S,
     frames: PerformFrame,
     sources: Arc<SourceSlot>,
     scheduler: Scheduler,
@@ -68,7 +69,7 @@ pub struct LiveStage {
     expressions_for: u64,
 }
 
-impl LiveStage {
+impl<S: FrameLoop> LiveStage<S> {
     /// The loop over `performer` and `stage`, reading sources from `sources` and keeping the frame within `budget`
     /// (for example [`budget::LIVE_GPU`](omuzaki_render_api::budget::LIVE_GPU)) at no more than `quality`. Make the
     /// stage with [`StageClock::live`](crate::frame::StageClock::live), so its time is the performer's.
@@ -80,7 +81,7 @@ impl LiveStage {
     /// What [`install_expressions`](Self::install_expressions) reports.
     pub fn new(
         performer: Performer,
-        stage: Stage,
+        stage: S,
         sources: Arc<SourceSlot>,
         quality: Quality,
         budget: Seconds,
@@ -117,7 +118,7 @@ impl LiveStage {
     /// # Errors
     /// [`PerformError::QueueFull`] when the performer has too many requests waiting; nothing changes then.
     pub fn install_expressions(&self) -> Result<(), PerformError> {
-        let expressions = self.stage.built().face.as_ref().map(|face| face.profile.expressions.clone()).unwrap_or_default();
+        let expressions = self.stage.trigger_expressions();
         self.handle.set_expressions(expressions, *self.performer.rest())
     }
 
@@ -160,7 +161,7 @@ impl LiveStage {
     /// What [`Stage::service_variants`] reports. The performer carries on.
     pub fn service(&mut self, renderer: &mut dyn Renderer) -> Result<bool, StageError> {
         // Variant switches are staged outside the tick (`frame::face`), against the input the last frame showed.
-        self.stage.service_variants(renderer, self.frames.input())?;
+        self.stage.service(renderer, self.frames.input())?;
         Ok(self.refresh_expressions().unwrap_or(false))
     }
 
@@ -257,12 +258,12 @@ impl LiveStage {
     }
 
     /// The stage.
-    pub fn stage(&self) -> &Stage {
+    pub fn stage(&self) -> &S {
         &self.stage
     }
 
     /// The stage, to change its scene or face between frames.
-    pub fn stage_mut(&mut self) -> &mut Stage {
+    pub fn stage_mut(&mut self) -> &mut S {
         &mut self.stage
     }
 
@@ -272,12 +273,12 @@ impl LiveStage {
     }
 
     /// Takes the stage back, to release it from the renderer.
-    pub fn into_stage(self) -> Stage {
+    pub fn into_stage(self) -> S {
         self.stage
     }
 }
 
-impl std::fmt::Debug for LiveStage {
+impl<S: FrameLoop> std::fmt::Debug for LiveStage<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LiveStage").field("paused", &self.paused).finish_non_exhaustive()
     }

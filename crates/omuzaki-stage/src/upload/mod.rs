@@ -13,7 +13,7 @@ use self::release::{discard_textures, release_in_order};
 use crate::error::StageError;
 
 // Private: the release order is an upload detail, so it lives here and not in the crate's public module list.
-mod release;
+pub(crate) mod release;
 
 /// How to upload.
 #[derive(Copy, Clone, Debug, PartialEq)]

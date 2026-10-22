@@ -382,7 +382,7 @@ impl Renderer for WgpuRenderer {
     fn create_target(&mut self, desc: &TargetDesc) -> Result<TargetId, RenderError> {
         self.check_size(desc.size, "target size")?;
         let gpu = &self.shared.gpu;
-        let target = gpu.scoped("a render target", || Ok(GpuTarget::new(&gpu.device, *desc)))?;
+        let target = gpu.scoped("a render target", || Ok(GpuTarget::new(gpu, *desc)))?;
         let (index, generation) = self.resources.targets.insert(target);
         Ok(TargetId::from_parts(index, generation))
     }
@@ -396,7 +396,7 @@ impl Renderer for WgpuRenderer {
             .get_mut(target.index(), target.generation())
             .ok_or(RenderError::UnknownHandle { what: "target" })?;
         let desc = TargetDesc { size, alpha: entry.desc.alpha };
-        *entry = gpu.scoped("a render target", || Ok(GpuTarget::new(&gpu.device, desc)))?;
+        *entry = gpu.scoped("a render target", || Ok(GpuTarget::new(gpu, desc)))?;
         Ok(())
     }
 
@@ -553,6 +553,17 @@ impl Renderer for WgpuRenderer {
             return Err(RenderError::invalid("target", "nothing has been rendered into it yet"));
         }
         gpu.scoped("a read-back", || readback::read_rgba8(gpu, &entry.output, 0, entry.desc.size, entry.desc.alpha))
+    }
+
+    /// The target's [`NativeTarget`](crate::NativeTarget): this renderer's device and queue and the target's output
+    /// texture. Cheap: three reference-counted handles, cloned when the target was made.
+    fn target_native(&self, target: TargetId) -> Result<Option<&dyn std::any::Any>, RenderError> {
+        let entry = self
+            .resources
+            .targets
+            .get(target.index(), target.generation())
+            .ok_or(RenderError::UnknownHandle { what: "target" })?;
+        Ok(Some(&entry.native))
     }
 }
 
