@@ -610,7 +610,8 @@ fn resolve_backdrop(def: &SceneDef, environment: bool) -> (Background, Option<Re
         Backdrop::Environment {} if environment => Background::Environment,
         // Without an environment the check reports it and the rig's colour shows.
         Backdrop::Lighting {} | Backdrop::Environment {} => Background::Solid { colour: def.lighting.background },
-        Backdrop::Colour { colour } => Background::Solid { colour: *colour },
+        // Shown as authored, so a green screen keys at exactly its colour whatever the exposure and tone curve.
+        Backdrop::Colour { colour } => Background::Gradient { top: *colour, bottom: *colour },
         Backdrop::Transparent {} => Background::Transparent,
         Backdrop::Gradient { top, bottom } => Background::Gradient { top: *top, bottom: *bottom },
         // The bars until the stage has the picture up; the stage shows the picture over them from then on.

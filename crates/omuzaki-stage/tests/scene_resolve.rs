@@ -279,7 +279,8 @@ fn each_row_of_the_mapping() {
     def.scene.ground.radius = Some(2.0);
     def.scene.ground.opacity = 0.5;
     let out = resolved(&def, &figures);
-    assert_eq!(out.background, Background::Solid { colour: Colour::rgb(0, 177, 64) });
+    let green = Colour::rgb(0, 177, 64);
+    assert_eq!(out.background, Background::Gradient { top: green, bottom: green }, "shown as authored");
     assert_eq!(out.post.exposure, 1.5);
     assert_eq!(out.post.tonemap, Tonemap::None);
     assert_eq!(out.post.bloom, Some(Bloom { strength: 0.4, radius: 0.3, threshold: 0.8 }));

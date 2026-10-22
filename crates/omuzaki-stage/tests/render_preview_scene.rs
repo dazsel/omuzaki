@@ -431,6 +431,11 @@ fn on_the_gpu_gradient_and_image_backdrops_at_two_aspects() {
             let got = image(&shot.hash);
             let corner = got.get_pixel(1, 1).0;
             match look {
+                // A colour is shown as authored, so it keys exactly: #2b2d42 under ACES at the rig's exposure.
+                "colour" => assert!(
+                    corner[..3].iter().zip([0x2b_u8, 0x2d, 0x42]).all(|(a, b)| a.abs_diff(b) <= 1),
+                    "{size:?}: the colour is {corner:?}"
+                ),
                 // The gradient's top row is its top colour, exactly as authored: #1d2b4f.
                 "gradient" => assert!(
                     corner[..3].iter().zip([0x1d_u8, 0x2b, 0x4f]).all(|(a, b)| a.abs_diff(b) <= 3),

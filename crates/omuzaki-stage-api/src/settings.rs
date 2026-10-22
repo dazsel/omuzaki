@@ -15,7 +15,8 @@ pub enum Backdrop {
     /// The lighting's `background` colour, so a rig brings its own mood.
     // Struct variants (not unit ones) so `deny_unknown_fields` also refuses a stray `colour` on `lighting`.
     Lighting {},
-    /// A colour of the scene's own (a green screen is `#00b140` with the ground off).
+    /// A colour of the scene's own (a green screen is `#00b140` with the ground off), shown as authored: the exposure
+    /// and tone curve don't touch it, so a key matches it exactly.
     Colour {
         /// The colour.
         colour: omuzaki_render_api::Colour,
