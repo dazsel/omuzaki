@@ -17,7 +17,7 @@
 //! | [`models`] | [`models::ModelDir`]: the verified model folder and its three loaded graphs |
 //! | [`provision`] | the app's face tracker: the shipped model folder through the runtime it is made for |
 //! | [`task`] | the official `face_landmarker.task`, pinned, unpacked into a TFLite model folder |
-//! | [`doctor`] | [`doctor::Doctor`]: what is hurting tracking (light, glare, the frame edge, drops, load, jitter) and the fix |
+//! | [`doctor`] | the tracking doctor's image readings (light, backlight, glare, the frame edge) over track-api's `Doctor` |
 //! | [`pipeline`] | [`FaceTracker`]: the three graphs, tracking between frames, [`Mode`] |
 //! | [`sample`] | [`FaceSample`], [`StageTimings`] and [`to_track_frame`] |
 //! | [`error`] | [`FaceTrackError`] |

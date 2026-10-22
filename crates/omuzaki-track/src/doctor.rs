@@ -1,37 +1,16 @@
-//! The tracking doctor (spec v3 PF-28): says, live, what is hurting tracking and how to fix it.
+//! The tracking doctor's image readings (spec v3 PF-28): light, backlight, glasses glare and the face's place in the
+//! picture, read from the webcam's frames. The findings, the averaging and hysteresis, and the readings that need no
+//! pixels (drops, latency, jitter) are the contract's, in [`omuzaki_track_api::doctor`], and re-exported here; this
+//! module adds [`ObserveFrame::observe_frame`], which feeds a frame's readings to a [`Doctor`].
 //!
-//! Each [`Finding`] has a measured detector, a threshold and a plain-language fix:
-//!
-//! | Finding | Measured | On when |
-//! |---|---|---|
-//! | [`LowLight`](Finding::LowLight) | the face's mean luma (the whole frame's with no face) | under 0.25 |
-//! | [`Backlight`](Finding::Backlight) | how much brighter the background is than the face | over 0.25 |
-//! | [`GlassesGlare`](Finding::GlassesGlare) | the share of near-white pixels around the eyes | over 3% |
-//! | [`FaceNearEdge`](Finding::FaceNearEdge) | the face's distance from the frame's nearest edge | under 2% of the frame |
-//! | [`DroppedFrames`](Finding::DroppedFrames) | the share of frames that never arrived or were skipped | over 5% |
-//! | [`Overloaded`](Finding::Overloaded) | the tracker's latency, p95 | over the frame interval |
-//! | [`Jitter`](Finding::Jitter) | the spread of the gaps between frames (a phone over Wi-Fi) | over 15 ms |
-//!
-//! Readings are averaged over about a second ([`AVERAGE_SECS`]) and each finding has hysteresis (it clears only
-//! once the reading is back past [`RELEASE`] of its threshold), so a flicker of light or one late packet does not
-//! make a diagnosis blink. [`Doctor::recheck`] forgets everything, for the "recheck" button after a fix.
-//!
-//! **Cost.** [`Doctor::observe_frame`] reads a grid of at most about [`MAX_SAMPLES`] pixels, whatever the frame's
-//! size, and allocates nothing: well under PF-28's 0.2 ms per frame. It runs on the tracker's thread, never the UI's,
-//! and works the same on a recorded take's frames.
+//! **Cost.** [`ObserveFrame::observe_frame`] reads a grid of at most about [`MAX_SAMPLES`] pixels, whatever the
+//! frame's size, and allocates nothing: well under PF-28's 0.2 ms per frame. It runs on the tracker's thread, never the
+//! UI's, and works the same on a recorded take's frames.
 
-use std::time::Duration;
-
-use omuzaki_track_api::tracker::LatencyStats;
+pub use omuzaki_track_api::doctor::{AVERAGE_SECS, Diagnosis, Doctor, DoctorBoard, DoctorConfig, Finding, RELEASE};
 
 use crate::frame::RgbFrame;
 use crate::landmarks::{Landmark, NUM_LANDMARKS};
-
-/// How long readings are averaged over, in seconds.
-pub const AVERAGE_SECS: f32 = 1.0;
-
-/// A finding clears once its reading is back past this share of its threshold (hysteresis).
-pub const RELEASE: f32 = 0.8;
 
 /// The most pixels one frame's image readings sample.
 pub const MAX_SAMPLES: u32 = 8_192;
@@ -46,153 +25,26 @@ const EYE_MARGIN: f32 = 0.6;
 /// A pixel this bright (luma, 0 to 1) is a highlight, not skin or iris.
 const GLARE_LUMA: f32 = 0.96;
 
-/// What the doctor can find.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[non_exhaustive]
-pub enum Finding {
-    /// The face is too dark for the landmarks to hold.
-    LowLight,
-    /// A bright window or lamp behind the person leaves the face in shadow.
-    Backlight,
-    /// Light reflected on glasses hides the eyes.
-    GlassesGlare,
-    /// The face is at the edge of the picture or partly out of it.
-    FaceNearEdge,
-    /// Frames are lost before they reach the tracker.
-    DroppedFrames,
-    /// The machine cannot keep up: tracking takes longer than a frame.
-    Overloaded,
-    /// Frames arrive unevenly: a phone over a busy Wi-Fi network.
-    Jitter,
+/// Feeds a frame's image readings to a [`Doctor`].
+pub trait ObserveFrame {
+    /// Reads a frame `dt` seconds after the last one: light, backlight, glare and the face's place in the picture.
+    /// `landmarks` is the face found in it, if any. Hot path: allocates nothing.
+    fn observe_frame(&mut self, frame: &RgbFrame<'_>, landmarks: Option<&[Landmark; NUM_LANDMARKS]>, dt: f32);
 }
 
-impl Finding {
-    /// Every finding, in report order.
-    pub const ALL: [Self; 7] = [
-        Self::LowLight,
-        Self::Backlight,
-        Self::GlassesGlare,
-        Self::FaceNearEdge,
-        Self::DroppedFrames,
-        Self::Overloaded,
-        Self::Jitter,
-    ];
-
-    /// Its stable id, for ops and settings (`low_light` …).
-    pub const fn id(self) -> &'static str {
-        match self {
-            Self::LowLight => "low_light",
-            Self::Backlight => "backlight",
-            Self::GlassesGlare => "glasses_glare",
-            Self::FaceNearEdge => "face_near_edge",
-            Self::DroppedFrames => "dropped_frames",
-            Self::Overloaded => "overloaded",
-            Self::Jitter => "jitter",
+impl ObserveFrame for Doctor {
+    fn observe_frame(&mut self, frame: &RgbFrame<'_>, landmarks: Option<&[Landmark; NUM_LANDMARKS]>, dt: f32) {
+        let Some(reading) = read_image(frame, landmarks) else { return };
+        self.record(Finding::LowLight, reading.face_luma, dt);
+        if let Some(background) = reading.background_luma {
+            self.record(Finding::Backlight, background - reading.face_luma, dt);
         }
-    }
-
-    /// The finding with this [`id`](Self::id).
-    pub fn from_id(id: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|f| f.id() == id)
-    }
-
-    /// What to do about it, in plain words.
-    pub const fn fix(self) -> &'static str {
-        match self {
-            Self::LowLight => "Your face is too dark. Turn on a lamp in front of you, or raise the camera's exposure.",
-            Self::Backlight => {
-                "A bright light is behind you. Close the curtain or move the lamp in front of you, facing you."
-            }
-            Self::GlassesGlare => {
-                "Light is reflecting off your glasses. Move the lamp or screen higher or to the side, or tilt your \
-                 glasses down a little."
-            }
-            Self::FaceNearEdge => "Your face is at the edge of the picture. Move to the middle, or turn the camera.",
-            Self::DroppedFrames => {
-                "Frames are being lost. Close other apps using the camera, use a USB port on the computer itself, or \
-                 pick a lower resolution."
-            }
-            Self::Overloaded => {
-                "Your computer can't keep up with tracking. Switch to a lighter tracking quality, or close other \
-                 heavy apps."
-            }
-            Self::Jitter => {
-                "The phone's frames arrive unevenly. Move closer to the Wi-Fi router, use 5 GHz Wi-Fi, or connect \
-                 the computer by cable."
-            }
+        if let Some(glare) = reading.eye_glare {
+            self.record(Finding::GlassesGlare, glare, dt);
         }
-    }
-
-    /// Whether a high reading is the bad side (otherwise a low one is).
-    const fn high_is_bad(self) -> bool {
-        !matches!(self, Self::LowLight | Self::FaceNearEdge)
-    }
-
-    const fn index(self) -> usize {
-        self as usize
-    }
-}
-
-/// One thing the doctor found: what, how bad it measured and where the line is.
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct Diagnosis {
-    /// What is wrong.
-    pub finding: Finding,
-    /// The averaged reading, in the finding's unit (a 0 to 1 share or luma, or milliseconds).
-    pub measured: f32,
-    /// The threshold it crossed, in the same unit.
-    pub threshold: f32,
-}
-
-impl Diagnosis {
-    /// What to do about it.
-    pub const fn fix(&self) -> &'static str {
-        self.finding.fix()
-    }
-}
-
-/// The thresholds, in each finding's unit (see the module table).
-#[derive(Copy, Clone, Debug, PartialEq)]
-#[non_exhaustive]
-pub struct DoctorConfig {
-    /// Thresholds in [`Finding::ALL`] order.
-    pub thresholds: [f32; Finding::ALL.len()],
-}
-
-impl Default for DoctorConfig {
-    fn default() -> Self {
-        Self { thresholds: [0.25, 0.25, 0.03, 0.02, 0.05, 33.3, 15.0] }
-    }
-}
-
-impl DoctorConfig {
-    /// The threshold of `finding`.
-    pub const fn threshold(&self, finding: Finding) -> f32 {
-        self.thresholds[finding.index()]
-    }
-
-    /// With `finding`'s threshold set to `value`.
-    #[must_use]
-    pub const fn with_threshold(mut self, finding: Finding, value: f32) -> Self {
-        self.thresholds[finding.index()] = value;
-        self
-    }
-}
-
-/// A reading averaged over [`AVERAGE_SECS`]: the first sample sets it, later ones move it by their share of time.
-#[derive(Copy, Clone, Debug, Default)]
-struct Average(Option<f32>);
-
-impl Average {
-    fn add(&mut self, value: f32, dt: f32) {
-        if !value.is_finite() {
-            return;
+        if let Some(margin) = reading.edge_margin {
+            self.record(Finding::FaceNearEdge, margin, dt);
         }
-        let dt = if dt.is_finite() { dt.clamp(0.0, AVERAGE_SECS) } else { 0.0 };
-        self.0 = Some(match self.0 {
-            None => value,
-            Some(old) => old + (value - old) * (1.0 - (-dt / AVERAGE_SECS).exp()),
-        });
     }
 }
 
@@ -330,129 +182,6 @@ impl Rect {
     }
 }
 
-/// The doctor: feed it frames, the tracker's latency and frame arrivals; read its [`diagnoses`](Self::diagnoses).
-#[derive(Clone, Debug)]
-pub struct Doctor {
-    config: DoctorConfig,
-    readings: [Average; Finding::ALL.len()],
-    active: [bool; Finding::ALL.len()],
-    /// The last latency counters seen, to turn the totals into a rate.
-    counters: Option<(u64, u64)>,
-    /// The last frame arrival, and the averaged gap and squared deviation between arrivals, in seconds.
-    arrival: Option<f64>,
-    gap: Average,
-    gap_variance: Average,
-}
-
-impl Default for Doctor {
-    fn default() -> Self {
-        Self::new(DoctorConfig::default())
-    }
-}
-
-impl Doctor {
-    /// A doctor with these thresholds, having seen nothing.
-    pub fn new(config: DoctorConfig) -> Self {
-        Self {
-            config,
-            readings: [Average::default(); Finding::ALL.len()],
-            active: [false; Finding::ALL.len()],
-            counters: None,
-            arrival: None,
-            gap: Average::default(),
-            gap_variance: Average::default(),
-        }
-    }
-
-    /// Reads a frame `dt` seconds after the last one: light, backlight, glare and the face's place in the picture.
-    /// `landmarks` is the face found in it, if any. Hot path: allocates nothing.
-    pub fn observe_frame(&mut self, frame: &RgbFrame<'_>, landmarks: Option<&[Landmark; NUM_LANDMARKS]>, dt: f32) {
-        let Some(reading) = read_image(frame, landmarks) else { return };
-        self.record(Finding::LowLight, reading.face_luma, dt);
-        if let Some(background) = reading.background_luma {
-            self.record(Finding::Backlight, background - reading.face_luma, dt);
-        }
-        if let Some(glare) = reading.eye_glare {
-            self.record(Finding::GlassesGlare, glare, dt);
-        }
-        if let Some(margin) = reading.edge_margin {
-            self.record(Finding::FaceNearEdge, margin, dt);
-        }
-    }
-
-    /// Reads the tracker's counters, `dt` seconds after the last time: the share of frames dropped since then, and its
-    /// p95 against `frame_interval` (the camera's, or the frame rate the stage asks for).
-    #[allow(clippy::cast_precision_loss)] // frame counts between two reads are small
-    pub fn observe_latency(&mut self, stats: &LatencyStats, frame_interval: Duration, dt: f32) {
-        if let Some((frames, dropped)) = self.counters {
-            let (new_frames, new_dropped) =
-                (stats.frames.saturating_sub(frames), stats.dropped.saturating_sub(dropped));
-            let total = new_frames + new_dropped;
-            if total > 0 {
-                self.record(Finding::DroppedFrames, new_dropped as f32 / total as f32, dt);
-            }
-        }
-        self.counters = Some((stats.frames, stats.dropped));
-        // The threshold follows the frame interval, so a 60 fps camera is held to 16.7 ms.
-        let interval_ms = frame_interval.as_secs_f32() * 1e3;
-        if interval_ms > 0.0 {
-            self.config.thresholds[Finding::Overloaded.index()] = interval_ms;
-        }
-        self.record(Finding::Overloaded, stats.p95.as_secs_f32() * 1e3, dt);
-    }
-
-    /// Notes a frame arriving at `time` seconds (any clock, increasing): the spread of the gaps is the jitter.
-    #[allow(clippy::cast_possible_truncation)] // gaps between frames are far inside f32
-    pub fn observe_arrival(&mut self, time: f64) {
-        if let Some(last) = self.arrival.replace(time) {
-            let gap = (time - last) as f32;
-            if gap <= 0.0 || !gap.is_finite() {
-                return;
-            }
-            let mean = self.gap.0.unwrap_or(gap);
-            self.gap.add(gap, gap);
-            self.gap_variance.add((gap - mean) * (gap - mean), gap);
-            let jitter_ms = self.gap_variance.0.unwrap_or(0.0).sqrt() * 1e3;
-            self.record(Finding::Jitter, jitter_ms, gap);
-        }
-    }
-
-    fn record(&mut self, finding: Finding, value: f32, dt: f32) {
-        let i = finding.index();
-        self.readings[i].add(value, dt);
-        let Some(reading) = self.readings[i].0 else { return };
-        let threshold = self.config.thresholds[i];
-        let (on, off) = if finding.high_is_bad() {
-            (reading > threshold, reading < threshold * RELEASE)
-        } else {
-            (reading < threshold, reading > threshold / RELEASE)
-        };
-        if on {
-            self.active[i] = true;
-        } else if off {
-            self.active[i] = false;
-        }
-    }
-
-    /// What it finds now, in [`Finding::ALL`] order.
-    pub fn diagnoses(&self) -> impl Iterator<Item = Diagnosis> + '_ {
-        Finding::ALL.into_iter().filter(|f| self.active[f.index()]).filter_map(|finding| {
-            let measured = self.readings[finding.index()].0?;
-            Some(Diagnosis { finding, measured, threshold: self.config.threshold(finding) })
-        })
-    }
-
-    /// The averaged reading of `finding`, found or not; `None` before anything was measured for it.
-    pub fn reading(&self, finding: Finding) -> Option<f32> {
-        self.readings[finding.index()].0
-    }
-
-    /// Forgets every reading and finding, to measure again from now (the "recheck" after a fix).
-    pub fn recheck(&mut self) {
-        *self = Self::new(self.config);
-    }
-}
-
 #[cfg(test)]
 #[allow(clippy::cast_precision_loss, clippy::manual_midpoint)] // test fixtures: small pixel coordinates
 mod tests {
@@ -565,43 +294,6 @@ mod tests {
     }
 
     #[test]
-    fn dropped_frames_and_a_slow_tracker_come_from_the_counters() {
-        let mut doctor = Doctor::default();
-        let interval = Duration::from_secs_f32(1.0 / 30.0);
-        let ms = Duration::from_millis;
-        doctor.observe_latency(&LatencyStats::new(0, 0, ms(8), ms(12), ms(20)), interval, 1.0);
-        doctor.observe_latency(&LatencyStats::new(30, 0, ms(8), ms(12), ms(20)), interval, 1.0);
-        assert_eq!(found(&doctor), []);
-        // A second of drops and slow frames, twice: the average needs more than one bad reading.
-        doctor.observe_latency(&LatencyStats::new(50, 10, ms(30), ms(45), ms(60)), interval, 1.0);
-        doctor.observe_latency(&LatencyStats::new(70, 20, ms(30), ms(45), ms(60)), interval, 1.0);
-        assert_eq!(found(&doctor), [Finding::DroppedFrames, Finding::Overloaded]);
-        // A 60 fps camera is held to its own frame interval.
-        let mut doctor = Doctor::default();
-        doctor.observe_latency(
-            &LatencyStats::new(0, 0, ms(15), ms(20), ms(25)),
-            Duration::from_secs_f32(1.0 / 60.0),
-            1.0,
-        );
-        assert_eq!(found(&doctor), [Finding::Overloaded]);
-    }
-
-    #[test]
-    fn uneven_arrivals_are_jitter_and_even_ones_are_not() {
-        let mut steady = Doctor::default();
-        let mut uneven = Doctor::default();
-        let mut t = 0.0;
-        for i in 0..120 {
-            steady.observe_arrival(f64::from(i) / 60.0);
-            t += if i % 3 == 0 { 0.06 } else { 0.005 };
-            uneven.observe_arrival(t);
-        }
-        assert_eq!(found(&steady), []);
-        assert_eq!(found(&uneven), [Finding::Jitter]);
-        assert!(uneven.reading(Finding::Jitter).unwrap() > 15.0);
-    }
-
-    #[test]
     fn recheck_forgets_and_no_face_reads_the_whole_frame() {
         let dark = frame(20, None);
         let mut doctor = Doctor::default();
@@ -610,14 +302,6 @@ mod tests {
         doctor.recheck();
         assert_eq!(found(&doctor), []);
         assert_eq!(doctor.reading(Finding::LowLight), None);
-    }
-
-    #[test]
-    fn ids_round_trip_and_every_finding_has_a_fix() {
-        for f in Finding::ALL {
-            assert_eq!(Finding::from_id(f.id()), Some(f));
-            assert!(f.fix().ends_with('.'));
-        }
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! The tracking doctor's cost per frame (spec PF-28: at most 0.2 ms, off the main thread): `Doctor::observe_frame` on
+//! The tracking doctor's cost per frame (spec PF-28: at most 0.2 ms, off the main thread): `observe_frame` on
 //! a 1280x720 and a 1920x1080 frame with a face, so the face, background and eye readings all run.
 
 // A bench builds synthetic data; its casts are tiny.
@@ -6,7 +6,7 @@
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use omuzaki_track::RgbFrame;
-use omuzaki_track::doctor::Doctor;
+use omuzaki_track::doctor::{Doctor, ObserveFrame};
 use omuzaki_track::landmarks::NUM_LANDMARKS;
 
 /// Landmarks spread over the middle of the frame, the way a face fills it.

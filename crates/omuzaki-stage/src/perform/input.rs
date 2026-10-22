@@ -28,6 +28,7 @@ use omuzaki_settings_api::meta::{AgentWrite, Apply, InProfile, SettingMeta, Sett
 use omuzaki_settings_api::register_setting;
 use omuzaki_settings_api::setting::Setting;
 use omuzaki_track_api::camera::CameraId;
+use omuzaki_track_api::doctor::Diagnosis;
 use omuzaki_track_api::error::TrackError;
 use omuzaki_track_api::tracker::{Tracker, TrackerConfig};
 use schemars::JsonSchema;
@@ -265,6 +266,15 @@ pub trait InputHost: Send + Sync {
 
     /// What the input is doing.
     fn state(&self) -> InputState;
+
+    /// What the running tracker's doctor finds wrong with the input now (PF-28); empty with no capture running, or for
+    /// a host without one.
+    fn diagnoses(&self) -> Vec<Diagnosis> {
+        Vec::new()
+    }
+
+    /// Makes the running tracker's doctor measure again from now. A no-op with no capture running.
+    fn recheck(&self) {}
 }
 
 /// A source that never delivers a frame: what the performer reads with no capture running (the life layer moves the
@@ -634,6 +644,24 @@ impl InputHost for LiveInput {
             permission: inner.permission(),
             cameras,
             tracking: self.perform.status().tracking,
+        }
+    }
+
+    fn diagnoses(&self) -> Vec<Diagnosis> {
+        // A stopped tracker finds nothing, so the running one, if any, is the one that answers.
+        let inner = self.inner();
+        let mut found = inner.tracker.diagnoses();
+        if let Some(phone) = &inner.phone {
+            found.extend(phone.diagnoses());
+        }
+        found
+    }
+
+    fn recheck(&self) {
+        let inner = self.inner();
+        inner.tracker.recheck();
+        if let Some(phone) = &inner.phone {
+            phone.recheck();
         }
     }
 }

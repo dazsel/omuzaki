@@ -1,5 +1,5 @@
 //! The `input.*` ops (PF-01; `docs/design/first-run.md` §4, §5): choose the kind of source, bind the camera, start and
-//! stop the live mirror, ask for the camera permission and read the input's state, all through the [`InputHost`]
+//! stop the live mirror, ask for the camera permission, read the input's state and the tracking doctor (PF-28), all through the [`InputHost`]
 //! service, so the Live workspace, the setup flow, MCP and agents share one path.
 //!
 //! | Op | Scope | Agent | Undo |
@@ -9,6 +9,8 @@
 //! | `input.preview {on}` | `perform` | Confirm (it starts a capture) | the inverse `input.preview` |
 //! | `input.request_camera` | `perform` | Never (the OS dialog is the person's) | none: the OS permission is the person's to revoke |
 //! | `input.state` | `read` | free | none (a query) |
+//! | `input.doctor` | `read` | free | none (a query) |
+//! | `input.recheck` | `perform` | as the policy says | none: it only restarts the doctor's measuring |
 //!
 //! The two choices are Machine settings (`input.source`, `input.camera`): when the App registers a
 //! [`Settings`](omuzaki_settings_api::service::Settings) service, the ops write them there too, and their answer says
@@ -26,7 +28,9 @@ use omuzaki_track_api::camera::CameraId;
 use crate::perform::input::{InputError, InputHost, SourceKind};
 
 pub mod bind_camera;
+pub mod doctor;
 pub mod preview;
+pub mod recheck;
 pub mod request_camera;
 pub mod select;
 pub mod state;

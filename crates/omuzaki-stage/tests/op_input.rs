@@ -18,6 +18,7 @@ use omuzaki_ops_api::{
 use omuzaki_settings_api::service::Settings;
 use omuzaki_stage::perform::host::{PerformHost, perform_channel};
 use omuzaki_stage::perform::input::{InputHost, LiveInput, NoPrompt, SourceSlot};
+use omuzaki_track_api::doctor::{Diagnosis, Finding};
 use omuzaki_track_api::tracker::TrackerConfig;
 use serde_json::{Value, json};
 use support::{Call, CameraLog, Cameras, MemSettings, face_for, performer};
@@ -84,6 +85,8 @@ fn every_op_declares_its_kind_scope_and_undo() {
         ("input.preview", OpKind::Edit, Scope::Perform, Undo::Explicit),
         ("input.request_camera", OpKind::Edit, Scope::Perform, Undo::Explicit),
         ("input.state", OpKind::Query, Scope::Read, Undo::None),
+        ("input.doctor", OpKind::Query, Scope::Read, Undo::None),
+        ("input.recheck", OpKind::Edit, Scope::Perform, Undo::Explicit),
     ];
     for (name, kind, scope, undo) in cases {
         let meta = (find(name).expect("registered").meta)();
@@ -115,6 +118,8 @@ fn an_agent_is_refused_the_device_ops_and_queued_for_the_capture_ops() {
         ("input.preview", json!({ "on": true }), Some("needs_person"), None),
         ("input.preview", json!({ "on": false }), None, None),
         ("input.state", json!({}), None, None),
+        ("input.doctor", json!({}), None, None),
+        ("input.recheck", json!({}), None, None),
     ];
     for (op, args, as_agent, as_person) in table {
         for dry_run in [true, false] {
@@ -433,4 +438,27 @@ fn a_camera_that_will_not_open_and_an_old_one_that_will_not_restart_stop_the_pre
     assert_eq!(rig.state()["preview"], json!({ "state": "off" }), "capture stopped");
     let effect = plan.effect.expect("the preview change is recorded");
     assert_eq!((effect.undo.op.as_str(), &effect.undo.args), ("input.preview", &json!({ "on": true })));
+}
+
+#[test]
+fn the_doctor_answers_the_running_trackers_findings_and_a_recheck_clears_them() {
+    let rig = Rig::new(false);
+    rig.log.find(vec![Diagnosis::new(Finding::LowLight, 0.12, 0.25)]);
+    let healthy = json!({ "healthy": true, "findings": [] });
+    assert_eq!(rig.output("input.doctor", json!({})), healthy, "no capture runs, so nothing is measured");
+    rig.run("input.select", json!({ "source": "webcam" })).unwrap();
+    rig.run("input.bind_camera", json!({ "camera": "a" })).unwrap();
+    rig.run("input.preview", json!({ "on": true })).unwrap();
+    let doctor = rig.output("input.doctor", json!({}));
+    assert_eq!(doctor["healthy"], false);
+    let found = &doctor["findings"][0];
+    assert_eq!(found["finding"], "low_light");
+    assert!((found["measured"].as_f64().unwrap() - 0.12).abs() < 1e-6, "{found}");
+    assert!(found["fix"].as_str().unwrap().contains("lamp"), "{found}");
+    // A dry run says what it would clear and clears nothing; an agent may ask for a recheck.
+    let dry = rig.plan("input.recheck", json!({}), &agent(), true).unwrap().output.unwrap();
+    assert_eq!((dry["cleared"][0]["finding"].clone(), rig.log.rechecks()), (json!("low_light"), 0));
+    let done = rig.plan("input.recheck", json!({}), &agent(), false).unwrap().output.unwrap();
+    assert_eq!((done["cleared"].as_array().unwrap().len(), rig.log.rechecks()), (1, 1));
+    assert_eq!(rig.output("input.doctor", json!({})), healthy);
 }

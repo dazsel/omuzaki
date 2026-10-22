@@ -35,6 +35,7 @@ use std::time::{Duration, Instant};
 use omuzaki_anim_api::{FrameSource, TrackFrame};
 use omuzaki_core::time::{Clock, Seconds};
 use omuzaki_track_api::camera::{Camera, CameraFormatRequest, CameraId, CameraInfo, CameraStream, PixelFormat};
+use omuzaki_track_api::doctor::{Diagnosis, DoctorBoard};
 use omuzaki_track_api::error::TrackError;
 use omuzaki_track_api::mailbox::{MailboxReader, mailbox};
 use omuzaki_track_api::tracker::{LatencyStats, QualityTier, Tracker, TrackerConfig};
@@ -238,6 +239,9 @@ impl FrameSource for Source {
 /// a short grace period and reported through [`error`](Self::error); the tracker is lost, as it is if its thread
 /// panics, and every later `start` says so. A failure to open the camera or to start a thread, by contrast, hands the
 /// tracker back, so `start` can be retried.
+///
+/// The tracking doctor (PF-28) runs on the camera thread after each publish: it reads every frame's arrival, each
+/// tracked frame's pixels and face, and the latency counters, and [`diagnoses`](Tracker::diagnoses) shows what it found.
 pub struct WebcamTracker {
     camera: Box<dyn Camera>,
     /// `None` while a session runs, or for good if the camera thread panicked.
@@ -247,6 +251,8 @@ pub struct WebcamTracker {
     clock: Arc<dyn Clock>,
     stats: Arc<Stats>,
     error: Arc<Mutex<Option<TrackError>>>,
+    /// The running (or last) session's tracking doctor.
+    doctor: Arc<DoctorBoard>,
     next_seq: u64,
     session: Option<Session>,
     /// Test seam: how many of the next thread spawns to fail.
@@ -272,6 +278,7 @@ impl WebcamTracker {
             preview: Arc::new(PreviewTap::default()),
             stats: Arc::new(Stats::new()),
             error: Arc::default(),
+            doctor: Arc::default(),
             next_seq: 0,
             session: None,
             spawn_plan: std::collections::VecDeque::new(),
@@ -384,6 +391,7 @@ impl Tracker for WebcamTracker {
         // The new session's numbers are installed only once both threads are running, so a start that fails leaves the
         // last session's counters and error where they were.
         let (stats, error) = (Arc::new(Stats::new()), Arc::<Mutex<Option<TrackError>>>::default());
+        let doctor = Arc::new(DoctorBoard::default());
         // Inference gets a thread of its own, so that the camera thread, which publishes, keeps time while the tracker
         // works, and can say so if it takes longer than `lost_after` or never returns.
         let worker = match Worker::start(tracker, |body| self.spawn("omuzaki-webcam-track", body)) {
@@ -410,6 +418,7 @@ impl Tracker for WebcamTracker {
             preview: Arc::clone(&self.preview),
             stats: Arc::clone(&stats),
             error: Arc::clone(&error),
+            board: Arc::clone(&doctor),
             worker,
             handoff: Arc::clone(&handoff),
         })));
@@ -426,7 +435,7 @@ impl Tracker for WebcamTracker {
                 return Err(TrackError::Backend(format!("camera thread: {e}")));
             }
         };
-        (self.stats, self.error) = (stats, error);
+        (self.stats, self.error, self.doctor) = (stats, error, doctor);
         self.session = Some(Session { camera, handoff, stop, live: Arc::clone(&live) });
         Ok(Box::new(Source { reader, live }))
     }
@@ -468,6 +477,14 @@ impl Tracker for WebcamTracker {
 
     fn latency(&self) -> LatencyStats {
         self.stats.snapshot()
+    }
+
+    fn diagnoses(&self) -> Vec<Diagnosis> {
+        if self.session.is_some() { self.doctor.diagnoses() } else { Vec::new() }
+    }
+
+    fn recheck(&self) {
+        self.doctor.request_recheck();
     }
 }
 

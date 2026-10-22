@@ -1,6 +1,7 @@
 //! Contract for live trackers (spec v3 §8, §22 PF-01): the camera seam, the [`Tracker`] device trait, the mapping
 //! from a device clock onto the stage clock, and the newest-wins [`mailbox`](mod@mailbox) that a tracker publishes into and the
-//! pipeline polls through [`FrameSource`](omuzaki_anim_api::FrameSource).
+//! pipeline polls through [`FrameSource`](omuzaki_anim_api::FrameSource). The tracking [`doctor`](mod@doctor) (PF-28)
+//! is the contract for what a tracker finds wrong with its input.
 //!
 //! The frame types live in `omuzaki-anim-api` ([`TrackFrame`](omuzaki_anim_api::TrackFrame),
 //! [`FrameSource`](omuzaki_anim_api::FrameSource), [`DeviceProfile`](omuzaki_anim_api::DeviceProfile)); this crate
@@ -49,6 +50,7 @@
 
 pub mod camera;
 pub mod clock;
+pub mod doctor;
 pub mod error;
 pub mod mailbox;
 pub mod tracker;
