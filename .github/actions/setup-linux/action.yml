@@ -51,7 +51,8 @@ runs:
         # update (a 403, as on 2026-10-22) the whole job failed for nothing.
         sudo find /etc/apt/sources.list.d -name '*microsoft*' -delete
         sudo apt-get update
-        sudo apt-get install -y --no-install-recommends "${packages[@]}"
+        sudo apt-get install -y --no-install-recommends -o Acquire::Retries=3 -o Acquire::http::Timeout=30 \
+          "${packages[@]}"
 
     # wgpu finds a Vulkan driver through the loader's ICD list. Name lavapipe's file explicitly (its file name differs
     # between Mesa packagings), set both variable spellings the loader has used, and fail here, with a clear message,
