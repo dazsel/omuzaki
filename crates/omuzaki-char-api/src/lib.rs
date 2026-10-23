@@ -98,7 +98,7 @@ pub use runtime::{DynamicMesh, PartRuntime, PoseSource, RuntimeCost, StepCtx};
 pub use services::{
     AssetError, AssetSource, BuildServices, PartColours, RasterizerFactory, RasterizerRegistration, linked_rasterizer,
 };
-pub use shape::{PRESET_IDS, ShapeProfile};
+pub use shape::{CraniumScale, PRESET_IDS, ShapeProfile};
 pub use skin::{BrushFalloff, WeightBrush, apply_brushes, influence_cut};
 pub use stature::{Stature, scale_output};
 pub use variant::{

@@ -90,7 +90,11 @@ fn parse(file: &'static str, source: &str) -> Result<ShapePreset, ShapeProfileEr
     }
     p.outline.validate().map_err(|e| fail(e.to_string()))?;
     p.layout.validate().map_err(|e| fail(e.to_string()))?;
-    Ok(ShapePreset { id: p.id, summary: p.summary, profile: ShapeProfile { outline: p.outline, layout: p.layout } })
+    Ok(ShapePreset {
+        id: p.id,
+        summary: p.summary,
+        profile: ShapeProfile { outline: p.outline, layout: p.layout, cranium: None },
+    })
 }
 
 /// The face-shape preset library.
