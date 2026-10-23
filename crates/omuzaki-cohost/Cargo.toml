@@ -1,0 +1,35 @@
+[package]
+name = "omuzaki-cohost"
+description = "The AI co-host on stage: the performer's turn loop over the perform host, its emotes through the character's expression triggers and its voice through the same lip sync and life cues as the person's microphone."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+omuzaki-anim = { path = "../omuzaki-anim" }
+omuzaki-anim-api = { path = "../omuzaki-anim-api" }
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-face-api = { path = "../omuzaki-face-api" }
+omuzaki-performer = { path = "../omuzaki-performer" }
+omuzaki-performer-api = { path = "../omuzaki-performer-api" }
+omuzaki-stage = { path = "../omuzaki-stage" }
+omuzaki-stage-api = { path = "../omuzaki-stage-api" }
+omuzaki-track-voice = { path = "../omuzaki-track-voice" }
+
+[dev-dependencies]
+omuzaki-llm-api = { path = "../omuzaki-llm-api" }
+omuzaki-llm-mock = { path = "../omuzaki-llm-mock" }
+omuzaki-performer-mock = { path = "../omuzaki-performer-mock" }
+
+[lints]
+workspace = true
+
+[package.metadata.omuzaki]
+kind = "App"
+registers = true
+# The perform host and the voice analysis are native.
+wasm = false
+summary = "the AI co-host on stage: `PerformStage` (the performer's `Stage` over a `PerformHost`: emotes as held expression triggers, the inventory from the character's emotions and accents), `attach_voice` (the TTS lead through `LeadAnalysis` into the host's lip sync and life cues), and `Cohost`, the step and thread that run the turn loop, the stage and the voice together"

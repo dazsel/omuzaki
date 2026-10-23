@@ -130,6 +130,9 @@ pub enum Refusal {
     UnknownMember,
     /// No such prop in the scene.
     UnknownProp,
+    /// The stage can't act this out yet (a look or a walk on a stage with no gaze or placement drive), or has no room
+    /// for it now.
+    Unsupported,
 }
 
 impl fmt::Display for Refusal {
@@ -141,6 +144,7 @@ impl fmt::Display for Refusal {
             Self::ClipTooLong => "clip too long",
             Self::UnknownMember => "unknown member",
             Self::UnknownProp => "unknown prop",
+            Self::Unsupported => "not supported by this stage",
         })
     }
 }
