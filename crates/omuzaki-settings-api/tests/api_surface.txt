@@ -183,6 +183,7 @@ src/service.rs: trait Settings: fn changes(&self, limit: usize) -> Vec<SettingCh
 src/service.rs: trait Settings: fn findings(&self) -> Vec<SettingFinding>
 src/service.rs: trait Settings: fn subscribe(&self) -> Subscription<SettingsEvent>
 src/service.rs: trait Settings: fn session(&self) -> &dyn SessionStore
+src/service.rs: trait Settings: fn flush(&self) -> Result<(), SettingError>
 src/service.rs: pub trait SettingsExt: Settings
 src/service.rs: trait SettingsExt: fn get<S: Setting>(&self) -> Result<S::Value, SettingError>
 src/service.rs: trait SettingsExt: fn set<S: Setting>(&self, value: &S::Value, layer: Layer, mode: Mode, by: &Actor) -> Result<Change, SettingError>

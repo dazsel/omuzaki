@@ -367,6 +367,9 @@ struct Hooks<'a> {
     links_off: Cell<bool>,
     /// Pretend the system can't swap two names atomically (tests only).
     exchange_off: Cell<bool>,
+    /// Let this many swaps through, then make this many fail with an ordinary I/O error, having moved nothing (tests
+    /// only).
+    exchange_fails: Cell<(u32, u32)>,
     /// Pretend the system has no rename that refuses to replace (tests only).
     no_replace_off: Cell<bool>,
     /// Pretend the volume has no POSIX-semantics rename over a file (Windows; tests only).
@@ -526,6 +529,7 @@ impl Default for Hooks<'_> {
             stat_done: &noop,
             links_off: Cell::new(faults::links_off()),
             exchange_off: Cell::new(false),
+            exchange_fails: Cell::new((0, 0)),
             no_replace_off: Cell::new(false),
             posix_rename_off: Cell::new(false),
             sync_off: Cell::new(faults::sync_off()),
@@ -548,6 +552,14 @@ impl Hooks<'_> {
 
     /// [`exchange`], unless a test turned it off.
     fn exchange(&self, a: &Path, b: &Path) -> io::Result<()> {
+        match self.exchange_fails.get() {
+            (0, 0) => {}
+            (0, fails) => {
+                self.exchange_fails.set((0, fails - 1));
+                return Err(io::Error::new(io::ErrorKind::PermissionDenied, "the file is in use (forced by a test)"));
+            }
+            (passes, fails) => self.exchange_fails.set((passes - 1, fails)),
+        }
         if self.exchange_off.get() { Err(io::ErrorKind::Unsupported.into()) } else { exchange(a, b) }
     }
 
@@ -642,13 +654,19 @@ fn replace_checked_with(
         }
         Backup::Mismatch => Ok(Replace::Refused),
         Backup::Held(held) => {
-            let mut committed = false;
-            let mut outcome = replace_held(dir, path, &tmp, &held, &mut committed, hooks);
+            let (mut committed, mut moved) = (false, false);
+            let mut outcome = replace_held(dir, path, &tmp, &held, &mut committed, &mut moved, hooks);
             // Once our file is committed at the target the backup is the kept entry (step 5), even if a later step
             // failed: it may already be the original itself. Otherwise the target is as it was (or the editor's) and
             // any displaced file is kept separately by `preserve`, so the backup can go.
             if !committed {
                 tidy(&mut outcome, &held.path);
+            }
+            // A swap that failed before moving anything (a sharing violation, a transient I/O error) leaves the
+            // staged file ours and never exposed, like a refusal: it goes now, rather than staying for the next save
+            // to keep as a `.displaced` copy that is never pruned.
+            if !moved && outcome.is_err() {
+                tidy(&mut outcome, &tmp);
             }
             outcome
         }
@@ -681,18 +699,20 @@ fn tidy(outcome: &mut Result<Replace, StoreError>, file: &Path) {
 }
 
 /// Steps 4 and 5 for a target that has a backup.
-/// Sets `committed` once our file is at the target for good, after which the backup must be kept whatever happens.
+/// Sets `committed` once our file is at the target for good, after which the backup must be kept whatever happens,
+/// and `moved` once any name has moved: until then a failure left the staged file ours and unexposed.
 fn replace_held(
     dir: &Path,
     path: &Path,
     tmp: &Path,
     held: &Held,
     committed: &mut bool,
+    moved: &mut bool,
     hooks: &Hooks<'_>,
 ) -> Result<Replace, StoreError> {
     (hooks.backed_up)();
     match hooks.exchange(tmp, path) {
-        Ok(()) => {}
+        Ok(()) => *moved = true,
         // Windows has no swap: with a linked backup, one atomic rename over the target (see the module's table).
         // Nothing has moved if it fails. Tests can take this path on any system.
         Err(e)
@@ -702,7 +722,7 @@ fn replace_held(
         {
             hooks.rename_over_posix(tmp, path).map_err(|e| capability_error(path, NO_POSIX_RENAME, e))?;
             // Our file is at the target: the linked backup is the kept entry.
-            *committed = true;
+            (*moved, *committed) = (true, true);
             return Ok(Replace::Placed);
         }
         // Without a swap nothing has moved yet, and nothing will: see the module's table.
@@ -729,10 +749,22 @@ fn replace_held(
         }
         return Ok(Replace::Placed);
     }
-    // Someone replaced or edited the target: put their file back.
-    if let Err(e) = hooks.exchange(tmp, path) {
-        preserve(dir, tmp, hooks)?;
-        return Err(capability_error(path, NO_EXCHANGE, e));
+    // Someone replaced or edited the target: put their file back. A swap that fails moves nothing, so a transient
+    // failure (a sharing violation, an interrupted call) gets one more try.
+    if hooks.exchange(tmp, path).is_err()
+        && let Err(e) = hooks.exchange(tmp, path)
+    {
+        if fs::symlink_metadata(path).is_err() {
+            // The target is gone (the swap back needs both names): nothing of ours is there. Theirs is kept.
+            preserve(dir, tmp, hooks)?;
+            return Err(capability_error(path, NO_EXCHANGE, e));
+        }
+        // Our text stays at the target and theirs at `tmp`. That is a committed, late failure: the project records our
+        // bytes as the baseline, so the next save carries on instead of seeing its own bytes as an outside change
+        // (#1787), and the error still reaches the caller. Their file is kept beside the target's backup.
+        *committed = true;
+        preserve(dir, tmp, hooks).map_err(not_durable)?;
+        return Err(StoreError::NotDurable { path: path.to_path_buf(), source: e });
     }
     (hooks.undone)();
     // Our file was visible at the target between the swap and the undo, so an editor may have it open and write into
@@ -1858,6 +1890,49 @@ mod tests {
         let items = kept(dir);
         assert_eq!(texts(&items), ["theirs = 2\n"]);
         assert!(items[0].0.ends_with(".displaced"), "{items:?}");
+    }
+
+    /// A swap that fails with an ordinary I/O error before moving anything (a sharing violation, #1853) returns the
+    /// error and leaves nothing of ours behind: no staged file, so no `.displaced` copy at the next save.
+    #[test]
+    fn a_swap_that_fails_before_moving_anything_leaves_no_staged_file() {
+        let tmp = TempDir::new().unwrap();
+        let (dir, (path, expected)) = (tmp.path(), with_file(tmp.path()));
+        let hooks = Hooks { exchange_fails: (0, 1).into(), ..Hooks::default() };
+        let error = replace_with(dir, expected, &hooks).unwrap_err();
+        assert!(error.to_string().contains("in use"), "{error}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), MINE, "the target is untouched");
+        assert!(no_temporary_file(dir));
+        assert_eq!(kept(dir), [], "the backup went too");
+        // The next save finds nothing to keep aside.
+        assert_eq!(replace_checked(dir, &path, "ours = 3\n", expected).unwrap(), Replace::Placed);
+        assert!(kept(dir).iter().all(|(name, _)| !name.ends_with(".displaced")), "{:?}", kept(dir));
+    }
+
+    /// An editor's save before the swap, then an undo swap that fails: tried once more, and when that fails too our
+    /// text is at the target, so the failure is a committed one (`NotDurable`) and the editor's file is kept (#1787).
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn an_undo_swap_that_fails_twice_is_a_committed_failure_and_keeps_their_file() {
+        let tmp = TempDir::new().unwrap();
+        let (dir, (path, expected)) = (tmp.path(), with_file(tmp.path()));
+        let save = || atomic_save(dir, "theirs = 2\n");
+        let hooks = Hooks { backed_up: &save, exchange_fails: (1, 2).into(), ..Hooks::default() };
+        let error = replace_with(dir, expected, &hooks).unwrap_err();
+        assert!(matches!(error, StoreError::NotDurable { .. }), "{error}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "ours = 3\n", "our text is what the target holds");
+        let items = kept(dir);
+        assert!(items.iter().any(|(n, t)| n.ends_with(".displaced") && t == "theirs = 2\n"), "{items:?}");
+        assert!(items.iter().any(|(n, t)| n.ends_with(KEPT) && t == MINE), "the backup is the kept entry: {items:?}");
+        assert!(no_temporary_file(dir));
+
+        // One failure is retried: the undo goes through, their file is back at the target and the save refused.
+        let tmp = TempDir::new().unwrap();
+        let (dir, (path, expected)) = (tmp.path(), with_file(tmp.path()));
+        let save = || atomic_save(dir, "theirs = 2\n");
+        let hooks = Hooks { backed_up: &save, exchange_fails: (1, 1).into(), ..Hooks::default() };
+        assert_eq!(replace_with(dir, expected, &hooks).unwrap(), Replace::Refused);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "theirs = 2\n");
     }
 
     #[test]

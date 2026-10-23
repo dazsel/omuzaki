@@ -15,7 +15,9 @@ use std::sync::Arc;
 
 use omuzaki_core::time::{Clock, Seconds};
 use omuzaki_doc_api::{DocPath, DocRead, DocVersion, DocWrite, Patch, PatchError, Value};
-use omuzaki_history_api::{AuditFact, HISTORY_EXPORT_FORMAT, HistoryEntry, HistoryExport, Stack, WallClock, WallTime};
+use omuzaki_history_api::{
+    AuditFact, HISTORY_EXPORT_FORMAT, HistoryEntry, HistoryExport, Stack, TxEnd, WallClock, WallTime,
+};
 use omuzaki_ops_api::{
     Actor, ApprovalRef, Cause, Effect, Event, JobId, OpError, OpRecord, RevertConflict, Scope, SessionId, SessionInfo,
     SessionTx, StopStep, TxId, Undo, checks,
@@ -283,9 +285,14 @@ impl State {
 
     /// Commits an open transaction as one undo step in its owner's history.
     pub(crate) fn commit(&mut self, tx: TxId, actor: &Actor) -> Result<(), OpError> {
+        self.commit_ended(tx, actor, TxEnd::Finished)
+    }
+
+    /// [`commit`](Self::commit), journalling how the transaction ended, so replay labels the step as it was.
+    fn commit_ended(&mut self, tx: TxId, actor: &Actor, end: TxEnd) -> Result<(), OpError> {
         self.check_tx(tx, actor)?;
         let open = self.open.remove(&tx).ok_or_else(|| error::tx_not_open(tx))?;
-        self.journal.append(|| HistoryEntry::Commit { tx });
+        self.journal.append(|| HistoryEntry::Commit { tx, end });
         // Driver jobs' inner edits reach subscribers now, in order, before the commit.
         self.outbox.extend(open.held);
         self.finish(actor, tx, open.label, open.draft);
@@ -419,13 +426,13 @@ impl State {
         owned
     }
 
-    /// Commits open transaction `tx` as it is, with `suffix` added to its label (" (unfinished)" when an end could
-    /// not revert it). Returns its new label.
-    pub(crate) fn commit_as_is(&mut self, tx: TxId, actor: &Actor, suffix: &str) -> Result<String, OpError> {
+    /// Commits open transaction `tx` as it is, with the suffix of `end` added to its label (" (unfinished)" when an
+    /// end could not revert it). Returns its new label.
+    pub(crate) fn commit_as_is(&mut self, tx: TxId, actor: &Actor, end: TxEnd) -> Result<String, OpError> {
         let open = Self::open_tx(&mut self.open, tx, actor)?;
-        open.label.push_str(suffix);
+        open.label.push_str(end.suffix());
         let label = open.label.clone();
-        self.commit(tx, actor)?;
+        self.commit_ended(tx, actor, end)?;
         Ok(label)
     }
 
@@ -437,7 +444,7 @@ impl State {
             self.commit(tx, actor)?;
             return Ok(StopStep::None);
         }
-        self.commit_as_is(tx, actor, " (stopped)")?;
+        self.commit_as_is(tx, actor, TxEnd::Stopped)?;
         Ok(StopStep::Committed(tx))
     }
 
@@ -577,7 +584,7 @@ impl State {
             OpRecord::new(self.next_seq, SESSION_UNDO_OP, args, by.clone(), tx, at, draft.patch.clone(), version);
         self.next_seq += 1;
         self.log_record(record, false, false);
-        self.journal.append(|| HistoryEntry::Commit { tx });
+        self.journal.append(|| HistoryEntry::commit(tx));
         self.finish(by, tx, label, draft);
         Ok(())
     }

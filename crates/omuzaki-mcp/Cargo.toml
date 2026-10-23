@@ -33,6 +33,7 @@ omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 omuzaki-history-api = { path = "../omuzaki-history-api" }
 omuzaki-library-api = { path = "../omuzaki-library-api" }
+omuzaki-metrics-api = { path = "../omuzaki-metrics-api" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
 

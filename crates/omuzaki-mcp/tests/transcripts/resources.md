@@ -160,7 +160,7 @@ Each block is one JSON-RPC message as it crossed an in-memory stream.
     "contents": [
       {
         "mimeType": "application/json",
-        "text": "{\n  \"metrics\": {\n    \"fps\": 59.9,\n    \"frame_ms\": 6.1,\n    \"latency_ms\": 41.0\n  },\n  \"note\": \"A snapshot taken when you read it. The names and units are the studio's; nothing is pushed for this resource.\"\n}",
+        "text": "{\n  \"metrics\": {\n    \"fps\": 59.9,\n    \"frame_ms\": 6.1,\n    \"latency_ms\": 41.0\n  },\n  \"note\": \"A snapshot taken when you read it. The names and units are the studio's; nothing is pushed for this resource.\",\n  \"running\": true\n}",
         "uri": "omuzaki://metrics/live"
       }
     ]

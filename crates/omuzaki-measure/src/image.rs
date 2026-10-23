@@ -114,9 +114,15 @@ fn source(ctx: &OpCtx<'_>, image: &ImageRef, field: &str) -> Result<(Vec<u8>, Co
     }
 }
 
-/// The bytes of a stored asset. The store checks them against the hash before handing them over.
+/// The bytes of a stored asset. Its stored size is checked against [`MAX_FILE_BYTES`] first, so a hash that names a
+/// large video or model is refused without being read; the store checks the bytes against the hash as it hands them
+/// over.
 fn fetch(ctx: &OpCtx<'_>, hash: &ContentHash, field: &str) -> Result<Vec<u8>, OpError> {
     let store = ctx.service::<dyn Store>()?;
+    let size = store.size(hash).map_err(|error| at(field, store_error(hash, error)))?;
+    if size > MAX_FILE_BYTES {
+        return Err(refuse_unreadable(field, format!("the asset is larger than {} MiB", MAX_FILE_BYTES >> 20)));
+    }
     store.get(hash).map_err(|error| at(field, store_error(hash, error)))
 }
 

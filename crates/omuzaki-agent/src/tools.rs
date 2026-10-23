@@ -202,15 +202,19 @@ impl Worker {
                 self.shared.lock().question = None;
                 return Err(Flow::Revoked(reason));
             }
+            // The reply is taken and the question closed under one lock, so a second answer can't land in between.
             let taken = {
                 let mut ctl = self.shared.lock();
-                match ctl.question.as_mut() {
+                let taken = match ctl.question.as_mut() {
                     Some(open) if open.id == id => open.reply.take(),
                     _ => None,
+                };
+                if taken.is_some() {
+                    ctl.question = None;
                 }
+                taken
             };
             if let Some(reply) = taken {
-                self.shared.lock().question = None;
                 self.shared.record(Entry::answer(id, reply.clone()));
                 break reply;
             }

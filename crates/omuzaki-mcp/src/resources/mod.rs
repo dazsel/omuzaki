@@ -22,7 +22,7 @@ use serde_json::json;
 
 pub use library::LibraryProvider;
 pub use measure::MeasureProvider;
-pub use metrics::{MetricsProvider, MetricsSource};
+pub use metrics::{MetricsProvider, MetricsSource, ReaderSource};
 pub use renders::RenderProvider;
 
 /// A family of readable `omuzaki://` resources.

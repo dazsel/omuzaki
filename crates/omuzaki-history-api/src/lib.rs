@@ -29,7 +29,7 @@ mod wall;
 
 pub use audit::{AUDIT_TEXT_MAX, AuditDecision, AuditFact, CUT_MARKER, cut_text};
 pub use derived::{DerivedPath, derived_paths, is_derived, matches_glob};
-pub use entry::{HistoryEntry, Lsn, Stack};
+pub use entry::{HistoryEntry, Lsn, Stack, TxEnd};
 pub use export::{ActorHistory, HISTORY_EXPORT_FORMAT, HistoryExport, OpenTxExport, StepExport};
 pub use log::{HistoryLog, HistoryPage, HistoryQuery, MAX_PAGE, TxOutcome, TxSummary};
 pub use sink::{JournalSink, JournalStatus, SyncError};

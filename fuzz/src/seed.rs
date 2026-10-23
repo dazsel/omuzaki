@@ -93,6 +93,11 @@ const PATH_SEEDS: &[&str] = &[
     r"\\?\C:\a/b",
     r"\\?\GLOBALROOT\Device\x",
     r"\\.\pipe\x",
+    // #2246: a verbatim network path whose server starts with a dot, and its neighbours.
+    r"\\?\UNC\.Qv^saerha\H\b",
+    r"\\?\UNC\.\share\a",
+    r"\\?\UNC\srv.\share",
+    r"\\?\UNC\con\share",
     "//?/C:/x",
     "CON",
     "nul.txt",
