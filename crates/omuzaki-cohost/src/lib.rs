@@ -13,17 +13,27 @@
 //! - [`attach_voice`]: connects the AI's voice to the host's lip sync, so its mouth and speech nods follow its words.
 //! - [`Cohost`]: one step of the loop, the stage and the voice; [`CohostThread`] runs it every few milliseconds on the
 //!   program clock, and hands out the transcript.
+//! - [`service::CohostService`]: the running co-host behind the `performer.*` ops ([`ops`]), built by a
+//!   [`service::CohostFactory`]; [`local::LocalFactory`] builds it from the app's own models, microphone and the
+//!   `performer.llm` setting ([`settings`]), and [`local::MicMouth`] gives the mouth to the microphone whenever the
+//!   co-host is not speaking.
 #![deny(missing_docs)]
 
 omuzaki_core::define_link! {
     omuzaki_anim::link();
+    omuzaki_llm::link();
     omuzaki_performer::link();
     omuzaki_performer_api::link();
+    omuzaki_speech::link();
     omuzaki_stage::link();
     omuzaki_stage_api::link();
     omuzaki_track_voice::link();
 }
 
+pub mod local;
+pub mod ops;
+pub mod service;
+pub mod settings;
 pub mod stage;
 
 use std::sync::atomic::{AtomicBool, Ordering};

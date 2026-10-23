@@ -66,7 +66,7 @@ pub const BUILT_IN_NODE_KEYS: [&str; 8] =
 /// `omuzaki-avatar-api`, `voice` (the effect presets, `voice.toml`) by `omuzaki-audio-fx`, and `voice-assignment`
 /// (which voice the character speaks in) by `omuzaki-speech`. They stay in this table because no crate that parses a
 /// character links all of those owners, so they cannot register.
-pub const BUILT_IN_SIBLING_KEYS: [&str; 12] = [
+pub const BUILT_IN_SIBLING_KEYS: [&str; 13] = [
     "variants",
     "colourways",
     "rig",
@@ -79,6 +79,7 @@ pub const BUILT_IN_SIBLING_KEYS: [&str; 12] = [
     "avatar",
     "voice",
     "voice-assignment",
+    "persona",
 ];
 
 /// Registers a sibling document key next to the file of the character that owns it (ADR 0054 §5). The key is the last
@@ -126,6 +127,7 @@ register_doc_key!("emotes", @built_in);
 register_doc_key!("avatar", @built_in);
 register_doc_key!("voice", @built_in);
 register_doc_key!("voice-assignment", @built_in);
+register_doc_key!("persona", @built_in);
 
 /// The registered keys, resolved once: the usable ones, and the refused ones with the reason for each.
 struct Resolved {

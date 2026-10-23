@@ -4968,12 +4968,18 @@ dependencies = [
  "omuzaki-render",
  "omuzaki-render-api",
  "omuzaki-render-mock",
+ "omuzaki-secrets-api",
+ "omuzaki-settings-api",
  "omuzaki-speech",
  "omuzaki-stage",
  "omuzaki-stage-api",
  "omuzaki-track-voice",
+ "schemars",
+ "serde",
  "serde_json",
  "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "tracing",
 ]
 
 [[package]]

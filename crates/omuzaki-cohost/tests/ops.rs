@@ -1,0 +1,418 @@
+//! The `performer.*` ops over a co-host built from fakes: start, say, intent, respond, status, transcript and stop as
+//! a person and an agent call them; the persona read and written with the character; a hosted LLM needing a person;
+//! and the local factory's checks and voice buses.
+// Test helpers may unwrap: a panic there is a clear test failure.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use omuzaki_anim_api::{Calibration, DeviceProfile, RetargetConfig};
+use omuzaki_audio_api::engine::AudioEngine;
+use omuzaki_audio_api::graph::AI_VOICE_BUS;
+use omuzaki_audio_api::ids::BusId;
+use omuzaki_audio_mock::MockEngine;
+use omuzaki_cohost::local::{AI_VOICE_PRIVATE_BUS, LocalFactory, LocalParts, ensure_voice_buses};
+use omuzaki_cohost::service::{Booking, Built, CohostFactory, CohostService, StartError};
+use omuzaki_cohost::stage::PerformStage;
+use omuzaki_cohost::{Cohost, attach_voice};
+use omuzaki_core::time::{Clock, FakeClock, Seconds};
+use omuzaki_doc_api::{DocWrite, Value};
+use omuzaki_doc_mock::MemDoc;
+use omuzaki_face_api::ExpressionSet;
+use omuzaki_llm_api::LlmClient;
+use omuzaki_llm_api::stream::{LlmEvent, StopReason};
+use omuzaki_llm_mock::{FakeLlm, Script, ScriptTurn};
+use omuzaki_ops_api::{Actor, ErrorCode, OpCtx, OpKind, Plan, Scope, Services, ServicesBuilder, Undo, find};
+use omuzaki_performer::brain::LlmBrain;
+use omuzaki_performer::show::{Parts, Show, ShowConfig};
+use omuzaki_performer_api::ears::Heard;
+use omuzaki_performer_api::ids::VoiceId;
+use omuzaki_performer_api::stage::Stage;
+use omuzaki_performer_mock::{FakeVoice, ScriptedEars};
+use omuzaki_stage::perform::Tracking;
+use omuzaki_stage::perform::host::{
+    CalibrationState, PerformError, PerformHost, PerformStatus, RetargetChange, RetargetReceipt,
+};
+use omuzaki_stage::perform::triggers::{BindOutcome, TriggerBinding};
+use omuzaki_track_voice::{LipSyncConfig, VoiceReader};
+use serde_json::json;
+
+/// Records binds, presses and whether a voice is attached.
+#[derive(Default)]
+struct Host {
+    calls: Mutex<Vec<String>>,
+    voice: Mutex<Option<VoiceReader>>,
+}
+
+impl Host {
+    fn calls(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+impl PerformHost for Host {
+    fn calibrate(&self, _: usize) -> Result<(), PerformError> {
+        Ok(())
+    }
+
+    fn set_retarget(&self, _: RetargetChange) -> Result<RetargetReceipt, PerformError> {
+        Err(PerformError::Unsupported)
+    }
+
+    fn set_calibration(&self, _: Calibration) -> Result<(), PerformError> {
+        Ok(())
+    }
+
+    fn calibration(&self) -> Calibration {
+        Calibration::identity(DeviceProfile::Webcam)
+    }
+
+    fn status(&self) -> PerformStatus {
+        PerformStatus {
+            tracking: Tracking::Tracking,
+            calibration: CalibrationState::Capturing { frames: 0, of: 1 },
+            retarget: RetargetConfig::default(),
+            retarget_seq: 0,
+            source_fps: 30.0,
+        }
+    }
+
+    fn set_voice(&self, voice: Option<VoiceReader>, _: LipSyncConfig) -> Result<(), PerformError> {
+        *self.voice.lock().unwrap() = voice;
+        Ok(())
+    }
+
+    fn bind_trigger_checked(&self, binding: TriggerBinding) -> Result<BindOutcome, PerformError> {
+        if !self.expressions().0.contains_key(&binding.expression) {
+            return Err(PerformError::UnknownExpression);
+        }
+        self.calls.lock().unwrap().push(format!("bind {} {}", binding.key, binding.expression));
+        Ok(BindOutcome { slot: 0, replaced: false })
+    }
+
+    fn unbind_trigger(&self, key: &str) -> Result<bool, PerformError> {
+        self.calls.lock().unwrap().push(format!("unbind {key}"));
+        Ok(true)
+    }
+
+    fn press(&self, key: &str, down: bool) -> Result<bool, PerformError> {
+        self.calls.lock().unwrap().push(format!("{} {key}", if down { "down" } else { "up" }));
+        Ok(true)
+    }
+
+    fn expressions(&self) -> ExpressionSet {
+        ExpressionSet::starter()
+    }
+}
+
+fn reply(text: &str) -> ScriptTurn {
+    ScriptTurn::new(vec![
+        LlmEvent::start("fake"),
+        LlmEvent::TextDelta(text.into()),
+        LlmEvent::Stop(StopReason::EndTurn),
+    ])
+}
+
+/// Builds a co-host from fakes on a clock the test moves; remembers what it was booked with.
+struct Fakes {
+    host: Arc<Host>,
+    clock: Arc<FakeClock>,
+    booked: Mutex<Vec<Booking>>,
+    stopped: Arc<Mutex<u32>>,
+    sends_to: Option<String>,
+}
+
+impl Fakes {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            host: Arc::new(Host::default()),
+            clock: Arc::new(FakeClock::default()),
+            booked: Mutex::default(),
+            stopped: Arc::default(),
+            sends_to: None,
+        })
+    }
+}
+
+impl CohostFactory for Fakes {
+    fn sends_to(&self) -> Option<String> {
+        self.sends_to.clone()
+    }
+
+    fn build(&self, booking: &Booking) -> Result<Built, StartError> {
+        self.booked.lock().unwrap().push(booking.clone());
+        let stage = Arc::new(PerformStage::new(Arc::clone(&self.host) as Arc<dyn PerformHost>, booking.member.clone()));
+        let llm = FakeLlm::new(Script::new("fake").with_turn(reply("[emote happy 0.8 hold 1s] Hi chat, welcome in!")));
+        let brain = LlmBrain::new(Arc::new(llm) as Arc<dyn LlmClient>, booking.persona.clone());
+        let ears = vec![(Seconds(0.5), Heard::final_text(0, "Mochi, say hello", Seconds(0.0), Seconds(0.5)))];
+        let parts = Parts::new(
+            Box::new(brain),
+            Box::new(ScriptedEars::new(Arc::clone(&self.clock), ears)),
+            Box::new(FakeVoice::new(Arc::clone(&self.clock), Seconds(0.2))),
+            Arc::clone(&stage) as Arc<dyn Stage>,
+        );
+        let config = ShowConfig::new(booking.member.clone(), VoiceId::new("kokoro-82m/af_heart").unwrap())
+            .respond(booking.respond);
+        let show = Show::new(&booking.persona, parts, config);
+        let voice = attach_voice(self.host.as_ref(), LipSyncConfig::default()).map_err(StartError::failed)?;
+        let stopped = Arc::clone(&self.stopped);
+        Ok(Built::new(Cohost::new(show, stage, Some(voice)), Arc::clone(&self.clock) as Arc<dyn Clock>)
+            .about(json!({ "llm": "fake" }))
+            .on_stop(move || *stopped.lock().unwrap() += 1))
+    }
+}
+
+fn person() -> Actor {
+    Actor::Person { name: "host".into() }
+}
+
+fn agent() -> Actor {
+    Actor::Agent { id: "agent-1".into(), model: None }
+}
+
+fn services(service: &Arc<CohostService>) -> Services {
+    ServicesBuilder::new().insert::<CohostService>(Arc::clone(service)).build()
+}
+
+fn project() -> MemDoc {
+    MemDoc::from_value(json!({ "characters": { "mochi": { "name": "Mochi", "template": "soft-sd" } } }))
+}
+
+fn plan(
+    name: &str,
+    args: Value,
+    doc: &MemDoc,
+    services: &Services,
+    actor: &Actor,
+    dry_run: bool,
+) -> Result<Plan, (ErrorCode, String)> {
+    omuzaki_cohost::link();
+    let op = (find(name).unwrap().decode)(args).map_err(|e| (e.code, e.message))?;
+    let clock = FakeClock::new(Seconds(0.0));
+    let ctx = OpCtx::new(doc, actor, &clock).with_services(services).with_dry_run(dry_run);
+    op.plan(&ctx).map_err(|e| (e.code, format!("{} ({})", e.message, e.hint.unwrap_or_default())))
+}
+
+fn call(name: &str, args: Value, doc: &MemDoc, services: &Services) -> Result<Value, (ErrorCode, String)> {
+    plan(name, args, doc, services, &person(), false).map(|p| p.output.unwrap_or(Value::Null))
+}
+
+/// Moves the fake clock in 20 ms steps until the transcript holds a line that `done` accepts, at most 10 s of
+/// program time; the co-host thread steps on its own and reads the clock.
+fn run_until(fakes: &Fakes, service: &Arc<CohostService>, done: impl Fn(&Value) -> bool) -> Vec<Value> {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut t = fakes.clock.now().0;
+    loop {
+        let lines = service.transcript(0, 512)["lines"].as_array().cloned().unwrap_or_default();
+        if lines.iter().any(&done) {
+            return lines;
+        }
+        assert!(Instant::now() < deadline && t < 10.0, "the co-host never got there: {lines:#?}");
+        t += 0.02;
+        fakes.clock.set(Seconds(t));
+        // Long enough for the co-host thread (it steps every 5 ms) to see each step.
+        std::thread::sleep(Duration::from_millis(6));
+    }
+}
+
+#[test]
+fn every_performer_op_is_registered_with_honest_metadata() {
+    omuzaki_cohost::link();
+    let expect = [
+        ("performer.start", OpKind::Edit, Scope::Perform, Undo::None),
+        ("performer.stop", OpKind::Edit, Scope::Perform, Undo::None),
+        ("performer.say", OpKind::Edit, Scope::Perform, Undo::None),
+        ("performer.intent", OpKind::Edit, Scope::Perform, Undo::None),
+        ("performer.respond", OpKind::Edit, Scope::Perform, Undo::None),
+        ("performer.status", OpKind::Query, Scope::Perform, Undo::None),
+        ("performer.transcript", OpKind::Query, Scope::Perform, Undo::None),
+        ("performer.persona.get", OpKind::Query, Scope::Read, Undo::None),
+        ("performer.persona.set", OpKind::Edit, Scope::EditCharacter, Undo::Auto),
+    ];
+    for (name, kind, scope, undo) in expect {
+        let registration = find(name).unwrap_or_else(|| panic!("{name} is not registered"));
+        let meta = (registration.meta)();
+        assert_eq!((meta.kind, meta.scope, meta.undo), (kind, scope, undo), "{name}");
+        let examples = registration.examples();
+        assert!(!examples.is_empty(), "{name} has no examples");
+        for example in examples {
+            assert!((registration.decode)(example.clone()).is_ok(), "{name}: {example} does not decode");
+        }
+    }
+}
+
+#[test]
+fn a_person_starts_steers_and_stops_the_cohost_through_ops() {
+    let fakes = Fakes::new();
+    let service = Arc::new(CohostService::new(Arc::clone(&fakes) as Arc<dyn CohostFactory>));
+    let (doc, services) = (project(), services(&service));
+
+    // A dry run says what would start, and starts nothing.
+    let dry = plan("performer.start", json!({}), &doc, &services, &person(), true).unwrap().output.unwrap();
+    assert_eq!((dry["applied"].as_bool(), dry["ready"].as_bool()), (Some(false), Some(true)));
+    assert_eq!((dry["character"].as_str(), dry["persona"].as_str()), (Some("mochi"), Some("Mochi")));
+    assert!(!service.is_running() && fakes.booked.lock().unwrap().is_empty());
+
+    // Started: the project's only character, its default persona, answering when named.
+    let started = call("performer.start", json!({}), &doc, &services).unwrap();
+    assert_eq!(started["running"], true);
+    assert_eq!((started["member"].as_str(), started["respond"].as_str()), (Some("mochi"), Some("addressed")));
+    assert_eq!(started["runs_on"], json!({ "llm": "fake" }));
+    assert!(fakes.host.voice.lock().unwrap().is_some(), "the co-host's voice has the mouth");
+
+    // It hears "Mochi, say hello" and answers with a face.
+    let lines = run_until(&fakes, &service, |l| {
+        l["ev"] == "speaking" && l["text"].as_str().is_some_and(|t| t.contains("welcome in"))
+    });
+    assert!(lines.iter().any(|l| l["ev"] == "heard" && l["text"] == "Mochi, say hello"), "{lines:#?}");
+    assert!(fakes.host.calls().contains(&"down ai:happy".to_owned()), "{:?}", fakes.host.calls());
+
+    // A line and an expression on demand.
+    let said = call("performer.say", json!({ "text": "[emote surprised] Oh, a raid!" }), &doc, &services).unwrap();
+    assert_eq!(said["applied"], true);
+    run_until(&fakes, &service, |l| l["ev"] == "speaking" && l["text"].as_str().is_some_and(|t| t.contains("a raid")));
+    assert!(fakes.host.calls().contains(&"down ai:surprised".to_owned()), "{:?}", fakes.host.calls());
+    let intent = json!({ "intent": { "emote": { "expression": "sad", "intensity": 0.5, "hold_s": 1.0 } } });
+    assert_eq!(call("performer.intent", intent, &doc, &services).unwrap()["applied"], true);
+    // The stage presses it on the co-host's next step.
+    run_until(&fakes, &service, |_| fakes.host.calls().contains(&"down ai:sad".to_owned()));
+    assert_eq!(
+        call("performer.respond", json!({ "respond": "always" }), &doc, &services).unwrap()["respond"],
+        "always"
+    );
+
+    // Status and the transcript, read in pages by sequence number.
+    let status = call("performer.status", json!({}), &doc, &services).unwrap();
+    assert_eq!((status["running"].as_bool(), status["respond"].as_str()), (Some(true), Some("always")));
+    assert!(status["status"]["turns"].as_u64().unwrap() >= 2, "{status}");
+    let first = call("performer.transcript", json!({ "limit": 2 }), &doc, &services).unwrap();
+    let page: Vec<u64> = first["lines"].as_array().unwrap().iter().map(|l| l["seq"].as_u64().unwrap()).collect();
+    assert_eq!(page, [1, 2]);
+    let rest = call("performer.transcript", json!({ "after": first["next"] }), &doc, &services).unwrap();
+    assert_eq!(rest["lines"][0]["seq"], 3);
+
+    // Stopped: the face is let go of, the parts are stopped once, and the transcript is still there to read.
+    let stopped = call("performer.stop", json!({}), &doc, &services).unwrap();
+    assert_eq!(stopped["was_running"], true);
+    assert!(fakes.host.calls().iter().any(|c| c.starts_with("unbind ai:")), "{:?}", fakes.host.calls());
+    assert_eq!(*fakes.stopped.lock().unwrap(), 1);
+    assert_eq!(call("performer.status", json!({}), &doc, &services).unwrap()["running"], false);
+    let kept = call("performer.transcript", json!({}), &doc, &services).unwrap();
+    assert_ne!(kept["lines"], json!([]), "the transcript outlives the co-host");
+    assert_eq!(call("performer.stop", json!({}), &doc, &services).unwrap()["was_running"], false);
+}
+
+#[test]
+fn steering_a_cohost_that_is_not_running_says_how_to_start_it() {
+    let fakes = Fakes::new();
+    let service = Arc::new(CohostService::new(fakes));
+    let (doc, services) = (project(), services(&service));
+    for (name, args) in [
+        ("performer.say", json!({ "text": "hi" })),
+        ("performer.respond", json!({ "respond": "always" })),
+        (
+            "performer.intent",
+            json!({ "intent": { "emote": { "expression": "happy", "intensity": 1.0, "hold_s": 1.0 } } }),
+        ),
+    ] {
+        let (code, message) = call(name, args, &doc, &services).unwrap_err();
+        assert_eq!(code, ErrorCode::Conflict, "{name}");
+        assert!(message.contains("performer.start"), "{name}: {message}");
+    }
+    let (code, _) = call("performer.say", json!({ "text": "  " }), &doc, &services).unwrap_err();
+    assert_eq!(code, ErrorCode::Invalid);
+    let speak = json!({ "intent": { "speak": { "text": "hi", "tags": [] } } });
+    let (code, message) = call("performer.intent", speak, &doc, &services).unwrap_err();
+    assert!(code == ErrorCode::Invalid && message.contains("performer.say"), "{message}");
+}
+
+#[test]
+fn the_persona_lives_with_the_character_and_undoes() {
+    let fakes = Fakes::new();
+    let service = Arc::new(CohostService::new(Arc::clone(&fakes) as Arc<dyn CohostFactory>));
+    let (mut doc, services) = (project(), services(&service));
+
+    let default = call("performer.persona.get", json!({ "character": "mochi" }), &doc, &services).unwrap();
+    assert_eq!((default["stored"].as_bool(), default["persona"]["name"].as_str()), (Some(false), Some("Mochi")));
+
+    let persona = json!({ "name": "Mochi-chan", "aliases": ["Mochie"], "personality": "Bubbly.", "style": "Short." });
+    let set = plan(
+        "performer.persona.set",
+        json!({ "character": "mochi", "persona": persona }),
+        &doc,
+        &services,
+        &person(),
+        false,
+    )
+    .unwrap();
+    assert_eq!(set.patch.changes.len(), 1);
+    assert_eq!(set.patch.changes[0].path.segments(), ["characters", "mochi", "persona"]);
+    doc.apply(&set.patch).unwrap();
+    let stored = call("performer.persona.get", json!({ "character": "mochi" }), &doc, &services).unwrap();
+    assert_eq!((stored["stored"].as_bool(), stored["persona"]["name"].as_str()), (Some(true), Some("Mochi-chan")));
+    assert!(stored["toml"].as_str().unwrap().contains("name = \"Mochi-chan\""));
+    // The character still reads as a character with its persona beside it.
+    let node = doc.root()["characters"]["mochi"].clone();
+    assert!(omuzaki_char_api::CharacterDef::from_node(&node).is_ok(), "{node}");
+
+    // The co-host takes it at its next start; a persona passed to start wins for that run only.
+    call("performer.start", json!({ "character": "mochi" }), &doc, &services).unwrap();
+    call("performer.start", json!({ "persona": { "name": "Guest" } }), &doc, &services).unwrap();
+    let names: Vec<String> = fakes.booked.lock().unwrap().iter().map(|b| b.persona.name.clone()).collect();
+    assert_eq!(names, ["Mochi-chan", "Guest"]);
+    call("performer.stop", json!({}), &doc, &services).unwrap();
+
+    // Undo is the patch's inverse.
+    doc.apply(&set.patch.inverse()).unwrap();
+    assert!(doc.root()["characters"]["mochi"].get("persona").is_none());
+
+    // Bad input names its field.
+    let (code, message) =
+        call("performer.persona.set", json!({ "character": "mochi", "persona": { "name": " " } }), &doc, &services)
+            .unwrap_err();
+    assert!(code == ErrorCode::Invalid && message.contains("name"), "{message}");
+    let (code, message) = call("performer.persona.get", json!({ "character": "kiri" }), &doc, &services).unwrap_err();
+    assert!(code == ErrorCode::NotFound && message.contains("mochi"), "{message}");
+}
+
+#[test]
+fn a_cohost_that_sends_speech_off_this_machine_needs_a_person() {
+    let fakes = Arc::new(Fakes {
+        host: Arc::new(Host::default()),
+        clock: Arc::new(FakeClock::default()),
+        booked: Mutex::default(),
+        stopped: Arc::default(),
+        sends_to: Some("llm.example.com".into()),
+    });
+    let service = Arc::new(CohostService::new(Arc::clone(&fakes) as Arc<dyn CohostFactory>));
+    let (doc, services) = (project(), services(&service));
+    let (code, message) = plan("performer.start", json!({}), &doc, &services, &agent(), false).unwrap_err();
+    assert!(code == ErrorCode::Denied && message.contains("llm.example.com"), "{message}");
+    assert!(!service.is_running());
+    // A person may start it.
+    plan("performer.start", json!({}), &doc, &services, &person(), false).unwrap();
+    assert!(service.is_running());
+    service.stop();
+}
+
+#[test]
+fn the_local_factory_says_what_is_missing_and_stays_local_by_default() {
+    let host: Arc<dyn PerformHost> = Arc::new(Host::default());
+    let factory = LocalFactory::new(LocalParts::new(host));
+    assert_eq!(factory.sends_to(), None, "the default LLM is on this machine");
+    let Err(StartError::NotReady { what, fix }) = factory.check() else { panic!("ready without an audio engine") };
+    assert!(what.contains("audio engine") && fix.contains("Settings"), "{what} / {fix}");
+}
+
+#[test]
+fn the_cohost_voice_buses_are_added_once() {
+    let engine = MockEngine::new();
+    ensure_voice_buses(&engine).unwrap();
+    let graph = engine.graph();
+    for bus in [AI_VOICE_BUS, AI_VOICE_PRIVATE_BUS] {
+        assert!(graph.bus(&BusId::new(bus).unwrap()).is_some(), "{bus}");
+    }
+    ensure_voice_buses(&engine).unwrap();
+    assert_eq!(engine.graph().buses.len(), 2);
+}
