@@ -16,9 +16,7 @@ pub struct InputUiPanel(InputPanel);
 impl Panel for InputUiPanel {
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &PanelCtx<'_>) {
         egui::ScrollArea::vertical().id_salt("input.scroll").auto_shrink([false, false]).show(ui, |ui| {
-            egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 6)).show(ui, |ui| {
-                self.0.ui(ui, ctx.view::<InputSurface>(), ctx.runner(), ctx.actor());
-            });
+            self.0.ui(ui, ctx.view::<InputSurface>(), ctx.runner(), ctx.actor());
         });
     }
 }

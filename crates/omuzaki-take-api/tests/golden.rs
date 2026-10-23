@@ -41,14 +41,14 @@ fn take_header_round_trips() {
 #[test]
 fn state_full_round_trips() {
     let state: StateRecord = round_trip(include_str!("golden/state_full.json"));
-    assert_eq!((state.cast.len(), state.omitted_more, state.overflow), (1, 3, false));
+    assert_eq!((state.cast.len(), state.omitted_more, state.overflow()), (1, 3, false));
     assert_eq!(state.withheld[0].to, None);
 }
 
 #[test]
 fn state_minimal_round_trips() {
     let state: StateRecord = round_trip(include_str!("golden/state_minimal.json"));
-    assert!(state.overflow && state.cast.is_empty() && state.live.is_empty());
+    assert!(state.overflow() && state.cast.is_empty() && state.live.is_empty());
 }
 
 #[test]
@@ -56,13 +56,13 @@ fn a_state_with_only_the_required_fields_reads() {
     // Later minors may add fields and an older writer may omit optional ones: the defaults must hold.
     let state: StateRecord =
         serde_json::from_str(r#"{"doc_version":1,"project":"p","after_lsn":0,"withheld":[]}"#).expect("reads");
-    assert!(state.cast.is_empty() && !state.overflow && state.delay_s == 0.0);
+    assert!(state.cast.is_empty() && !state.overflow() && state.delay_s == 0.0);
 }
 
 #[test]
 fn event_full_round_trips_with_the_cause_text_cleared() {
     let event: EventRecord = round_trip(include_str!("golden/event_full.json"));
-    assert!(matches!(event.entry, TakeEntry::Full(HistoryEntry::Op { .. })));
+    assert!(matches!(event.entry, TakeEntry::Full(full) if matches!(full.entry(), HistoryEntry::Op { .. })));
 }
 
 #[test]
@@ -76,7 +76,7 @@ fn the_minimal_state_as_t2_writes_it_reads() {
     // The overflow fallback writes only these four fields; it must stay readable, not become a JSON error.
     let state: StateRecord =
         serde_json::from_str(r#"{"doc_version":17,"after_lsn":41,"withheld":[],"overflow":true}"#).expect("reads");
-    assert!(state.overflow && state.project.is_none() && state.cast.is_empty());
+    assert!(state.overflow() && state.project().is_none() && state.cast.is_empty());
 }
 
 #[test]
@@ -84,7 +84,7 @@ fn unknown_state_fields_are_ignored() {
     let state: StateRecord =
         serde_json::from_str(r#"{"doc_version":1,"project":"p","after_lsn":0,"withheld":[],"future":true}"#)
             .expect("a newer minor's extra field is ignored");
-    assert_eq!(state.project.as_ref().map(ProjectName::as_str), Some("p"));
+    assert_eq!(state.project().map(ProjectName::as_str), Some("p"));
 }
 
 #[test]

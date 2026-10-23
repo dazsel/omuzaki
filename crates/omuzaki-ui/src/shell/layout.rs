@@ -310,9 +310,10 @@ impl Layout {
     }
 
     /// This layout with the root split's children sized in points: a child whose first panel `wanted` gives a width for
-    /// takes it, and the others share what is left of `total` equally. A layout whose root is not a split is unchanged.
+    /// takes it, and the others share what is left of `total` equally, after the `gap` between each two children. A
+    /// layout whose root is not a split is unchanged.
     #[must_use]
-    pub fn with_root_widths(mut self, wanted: &dyn Fn(&str) -> Option<f32>, total: f32) -> Self {
+    pub fn with_root_widths(mut self, wanted: &dyn Fn(&str) -> Option<f32>, total: f32, gap: f32) -> Self {
         if let Node::Split { children, shares, .. } = &mut self.root {
             let fixed: Vec<Option<f32>> = children
                 .iter()
@@ -323,7 +324,9 @@ impl Layout {
                 })
                 .collect();
             let flexible = fixed.iter().filter(|w| w.is_none()).count().max(1);
-            let rest = (total - fixed.iter().flatten().sum::<f32>()).max(1.0) / flexible as f32;
+            #[allow(clippy::cast_precision_loss, reason = "a handful of children")]
+            let gaps = gap * children.len().saturating_sub(1) as f32;
+            let rest = (total - gaps - fixed.iter().flatten().sum::<f32>()).max(1.0) / flexible as f32;
             *shares = fixed.iter().map(|w| w.unwrap_or(rest)).collect();
         }
         self
@@ -574,11 +577,11 @@ mod tests {
             "inspector" => Some(300.0),
             _ => None,
         };
-        let sized = build().with_root_widths(&wanted, 1366.0);
+        let sized = build().with_root_widths(&wanted, 1366.0, 6.0);
         let Node::Split { shares, .. } = &sized.root else { panic!("root is a split") };
-        assert_eq!(shares, &[240.0, 826.0, 300.0]);
+        assert_eq!(shares, &[240.0, 814.0, 300.0], "the two gaps come out of the middle");
         let one = Layout::new(Node::pane("viewport"));
-        assert_eq!(one.clone().with_root_widths(&wanted, 1366.0), one);
+        assert_eq!(one.clone().with_root_widths(&wanted, 1366.0, 0.0), one);
     }
 
     #[test]

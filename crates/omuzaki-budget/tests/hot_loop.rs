@@ -1,4 +1,4 @@
-//! Proves `observe` allocates nothing: it runs on every frame (spec §8, "no allocation in the hot loop"). The
+//! Proves `observe` and `observe_output` allocate nothing: it runs on every frame (spec §8, "no allocation in the hot loop"). The
 //! allocator counts only allocations made on the measuring thread, as in `omuzaki-render-api`'s hot-loop test.
 
 // A counting allocator is the only way to *prove* "no allocation"; the workspace denies unsafe code by default.
@@ -66,4 +66,19 @@ fn observe_never_allocates_including_when_it_changes_quality() {
     MEASURING.with(|m| m.set(false));
     assert!(changes >= 8, "the run exercised both directions ({changes} changes)");
     assert_eq!(ALLOCATIONS.load(Ordering::Relaxed), 0, "observe allocated");
+}
+
+#[test]
+fn observe_output_never_allocates_including_when_it_changes_quality() {
+    let mut scheduler = Scheduler::new(Quality::high(), budget::HIGH_GPU);
+    MEASURING.with(|m| m.set(true));
+    let mut changes = 0;
+    // A saturated encoder, then an idle one: down the ladder and back up.
+    for sample in 1..=4000u32 {
+        let load = if sample <= 1000 { 1.2 } else { 0.2 };
+        changes += usize::from(scheduler.observe_output(load).is_some());
+    }
+    MEASURING.with(|m| m.set(false));
+    assert!(changes >= 8, "the run exercised both directions ({changes} changes)");
+    assert_eq!(ALLOCATIONS.load(Ordering::Relaxed), 0, "observe_output allocated");
 }

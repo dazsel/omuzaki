@@ -11,7 +11,8 @@ use omuzaki_ops_api::{ErrorCode, OpError};
 const SHOWN_FINDINGS: usize = 5;
 
 /// The op error for `error`. `field` names the argument at fault for the errors that blame the input (`path`).
-pub(crate) fn from_io(error: IoError, field: &str) -> OpError {
+#[must_use]
+pub fn from_io(error: IoError, field: &str) -> OpError {
     match error {
         IoError::Malformed { message, at } => {
             let place = at.map(|at| format!(" (at {at})")).unwrap_or_default();

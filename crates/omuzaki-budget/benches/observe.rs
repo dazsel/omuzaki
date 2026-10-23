@@ -1,4 +1,5 @@
-//! `Scheduler::observe` runs once per frame next to a 1.5 ms GPU budget (spec §10): it must cost nanoseconds.
+//! `Scheduler::observe` runs once per frame, and `observe_output` once per encoder sample, next to a 1.5 ms GPU budget
+//! (spec §10): they must cost nanoseconds.
 
 use std::hint::black_box;
 
@@ -46,6 +47,18 @@ fn observe_benches(c: &mut Criterion) {
         b.iter_batched_ref(
             || primed.clone(),
             |scheduler| black_box(scheduler.observe(black_box(&tipping))),
+            BatchSize::SmallInput,
+        );
+    });
+    // An encoder's load sample at the tipping point: the output pressure that walks the ladder (#877).
+    c.bench_function("observe_output_transition", |b| {
+        let mut primed = Scheduler::new(Quality::high(), budget::HIGH_GPU);
+        for _ in 1..DOWN_SAMPLES {
+            primed.observe_output(0.95);
+        }
+        b.iter_batched_ref(
+            || primed.clone(),
+            |scheduler| black_box(scheduler.observe_output(black_box(0.95))),
             BatchSize::SmallInput,
         );
     });

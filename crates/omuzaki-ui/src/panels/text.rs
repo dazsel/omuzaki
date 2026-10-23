@@ -36,6 +36,8 @@ crate::ds::strings::lines! {
         "Agents work through the same ops you do, and you approve what they ask for. Connect one over MCP to see it here.";
     /// A session's step count.
     pub const AGENT_STEPS: &str = "{steps} steps";
+    /// A session's single step.
+    pub const AGENT_ONE_STEP: &str = "1 step";
     /// A session that made a call in the last minute.
     pub const AGENT_WORKING: &str = "Working";
     /// A session quiet for a minute or more.
@@ -78,6 +80,8 @@ crate::ds::strings::lines! {
     pub const AGENT_STOP: &str = "Stop";
     /// Undo every step a session made, as one step.
     pub const AGENT_UNDO_ALL: &str = "Undo its {steps} steps\u{2026}";
+    /// Undo a session's single step.
+    pub const AGENT_UNDO_ONE: &str = "Undo its step\u{2026}";
     /// End a session for good.
     pub const AGENT_REVOKE: &str = "Revoke\u{2026}";
     /// MCP over stdio.
@@ -109,10 +113,16 @@ crate::ds::strings::lines! {
     /// What it does.
     pub const UNDO_BODY: &str =
         "Its {steps} steps are reverted, newest first, as one step in your history, so Ctrl+Z brings them back.";
+    /// What it does, for a single step.
+    pub const UNDO_BODY_ONE: &str = "Its step is reverted as one step in your history, so Ctrl+Z brings it back.";
     /// The undo button.
     pub const UNDO_PRIMARY: &str = "Undo {steps} steps";
+    /// The undo button, for a single step.
+    pub const UNDO_PRIMARY_ONE: &str = "Undo 1 step";
     /// Its armed second step.
     pub const UNDO_CONFIRM: &str = "Confirm: undo {steps} steps";
+    /// Its armed second step, for a single step.
+    pub const UNDO_CONFIRM_ONE: &str = "Confirm: undo 1 step";
     /// The confirm for a scope that reaches outside the project.
     pub const GRANT_TITLE: &str = "Let {name} use {scope}?";
     /// Its button.

@@ -184,7 +184,7 @@ impl Panel for ScriptsPanel {
     fn ui(&mut self, ui: &mut Ui, ctx: &PanelCtx<'_>) {
         match ctx.view::<Scripting>() {
             Some(scripting) => {
-                super::padded(ui, |ui| self.0.ui(ui, scripting, ctx.actor(), ctx.view::<ShellRequests>()));
+                self.0.ui(ui, scripting, ctx.actor(), ctx.view::<ShellRequests>());
             }
             None => no_scripting(ui),
         }

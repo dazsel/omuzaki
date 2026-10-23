@@ -2447,6 +2447,9 @@ ui-panels-agent-none = Connect an agent
 ui-panels-agent-none-how = Agents work through the same ops you do, and you approve what they ask for. Connect one over MCP to see it here.
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+ui-panels-agent-one-step = 1 step
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
 # $label (id, never translated): "hair-b"
 ui-panels-agent-open-tx = In progress: { $label }
 
@@ -2494,6 +2497,9 @@ ui-panels-agent-tokens = { $count } tokens
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
 # $steps (id, never translated): "hair-b"
 ui-panels-agent-undo-all = Undo its { $steps } steps…
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+ui-panels-agent-undo-one = Undo its step…
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
 ui-panels-agent-waiting = Waiting for you
@@ -3226,12 +3232,21 @@ ui-panels-undescribed = This part can't be described: { $reason }
 ui-panels-undo-body = Its { $steps } steps are reverted, newest first, as one step in your history, so Ctrl+Z brings them back.
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+ui-panels-undo-body-one = Its step is reverted as one step in your history, so Ctrl+Z brings it back.
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
 # $steps (id, never translated): "hair-b"
 ui-panels-undo-confirm = Confirm: undo { $steps } steps
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+ui-panels-undo-confirm-one = Confirm: undo 1 step
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
 # $steps (id, never translated): "hair-b"
 ui-panels-undo-primary = Undo { $steps } steps
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+ui-panels-undo-primary-one = Undo 1 step
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
 # $name (id, never translated): "hair-b"
@@ -4166,7 +4181,7 @@ ui-shell-dock-tabs = { $panels } tabs
 ui-shell-go-live = Go Live
 
 # The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
-ui-shell-go-live-off = No output is set up
+ui-shell-go-live-off = No output is set up yet: opens Live, where you set one up
 
 # The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
 ui-shell-history-adjust = Adjust

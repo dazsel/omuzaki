@@ -25,6 +25,8 @@ const COLOUR_PATTERNS: [(&str, bool); 2] = [("^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$
 /// Integers up to here are exact as floats, so an integer slider or number field (which edit a float) loses nothing;
 /// an integer field that can hold more is typed as text and parsed exactly.
 pub(super) const EXACT: i128 = 1 << 53;
+/// The widest whole-number range a slider stands for: past it one pixel skips values, so a port or a seed is typed.
+const SLIDER_SPAN: i128 = 1000;
 
 /// Where a field is listed (`x-ui.level`).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -511,8 +513,9 @@ fn read_int(view: &View<'_>) -> Kind {
         let opts = (lo..=hi).map(|n| Opt { value: integer(n), label: n.to_string() }).collect();
         return Kind::Choice(opts);
     }
-    // A slider only for a range the schema states: the range of a bare `uint32` is no parameter's.
-    let stated = limit(true).is_some() && limit(false).is_some();
+    // A slider only for a range the schema states, and narrow enough to hit each value: the range of a bare `uint32`
+    // is no parameter's, and a port from 1024 to 65535 is a number a person types.
+    let stated = limit(true).is_some() && limit(false).is_some() && hi - lo <= SLIDER_SPAN;
     Kind::Int { min, max, control: if control == IntControl::Number && stated { IntControl::Slider } else { control } }
 }
 

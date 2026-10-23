@@ -91,6 +91,14 @@ impl<'a, T: Copy + PartialEq> Segmented<'a, T> {
     }
 }
 
+/// Whether `segments` show every label whole within `width`: a form picks a dropdown instead of a segmented control
+/// whose labels would end in an ellipsis.
+pub fn fits<T>(ctx: &egui::Context, segments: &[Segment<'_, T>], width: f32) -> bool {
+    #[allow(clippy::cast_precision_loss, reason = "at most five segments")]
+    let wanted = natural_width(ctx, &ds(ctx), segments) * segments.len() as f32;
+    wanted <= width
+}
+
 /// What a segmented control's salt is namespaced by (see [`ids`]).
 const KIND: &str = "ds.segmented";
 

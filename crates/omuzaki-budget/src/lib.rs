@@ -14,6 +14,9 @@
 //! - *Up:* the smoothed time under [`scheduler::UP_MARGIN`] of the budget for [`scheduler::UP_SAMPLES`] in a row.
 //! - *No oscillation:* the up threshold is below the down threshold (a dead band), and a step up that is undone within
 //!   [`scheduler::FLAP_WINDOW`] frames doubles the wait for the next one (up to [`scheduler::MAX_HOLD`] times).
+//! - *Output pressure:* the highest encoder load ([`Scheduler::observe_output`]) over
+//!   [`scheduler::OUTPUT_LOAD_LIMIT`] steps down the same way, freeing CPU the encoder shares; an output's size and rate
+//!   never change.
 //! - *Ladder:* [`Step::LADDER`], the order in `docs/design/render-api.md`. The scheduler only caps `Quality` knobs and
 //!   never touches the author's look.
 //!
