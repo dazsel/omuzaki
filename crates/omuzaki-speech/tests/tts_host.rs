@@ -404,11 +404,7 @@ fn a_realtime_reply_plays_gaplessly_through_the_same_feeds_cut_and_lead() {
     let end = rig.heard.iter().rposition(|s| s.abs() > 1e-3).unwrap();
     let sounding = (end - first) as f64 / RATE;
     assert!((sounding - 0.3).abs() < 0.01, "{sounding} s of sound");
-    let longest_hush = rig.heard[first..end]
-        .split(|s| s.abs() > 1e-3)
-        .map(<[f32]>::len)
-        .max()
-        .unwrap_or(0);
+    let longest_hush = rig.heard[first..end].split(|s| s.abs() > 1e-3).map(<[f32]>::len).max().unwrap_or(0);
     assert!(longest_hush < 48, "a gap of {longest_hush} samples inside the reply");
     // The mouth drive got all of it, ahead of playback.
     let pushed: usize = rig.seen.lock().unwrap().pushed.iter().map(|p| p.2).sum();
