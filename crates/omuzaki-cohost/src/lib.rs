@@ -21,6 +21,7 @@
 
 omuzaki_core::define_link! {
     omuzaki_anim::link();
+    omuzaki_char_api::link();
     omuzaki_llm::link();
     omuzaki_performer::link();
     omuzaki_performer_api::link();

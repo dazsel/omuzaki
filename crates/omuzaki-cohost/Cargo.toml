@@ -79,4 +79,4 @@ kind = "App"
 registers = true
 # The perform host and the voice analysis are native.
 wasm = false
-summary = "the AI co-host on stage: `PerformStage` (the performer's `Stage` over a `PerformHost`: emotes as held expression triggers, the inventory from the character's emotions and accents), `attach_voice` (the TTS lead through `LeadAnalysis` into the host's lip sync and life cues), and `Cohost`, the step and thread that run the turn loop, the stage and the voice together"
+summary = "the AI co-host on stage: the `performer.*` ops over `CohostService` (start, stop, say, intent, respond, status, transcript, the persona with the character), `LocalFactory` (the co-host from the app's speech models, microphone, mixer and the `performer.llm` setting, local by default), `MicMouth` (the microphone's lip sync while the co-host is quiet), `PerformStage` and `attach_voice` (its emotes and voice through the perform host), and `CohostThread`, which runs the turn loop, the stage and the voice together"
