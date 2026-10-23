@@ -9,12 +9,12 @@ use std::time::{Duration, Instant};
 
 use omuzaki_anim_api::{Calibration, DeviceProfile, RetargetConfig};
 use omuzaki_audio_api::engine::AudioEngine;
-use omuzaki_audio_api::graph::AI_VOICE_BUS;
+use omuzaki_audio_api::graph::{AI_VOICE_BUS, BusSpec, Channels, GraphSpec, MIC_BUS, SourceRef};
 use omuzaki_audio_api::ids::BusId;
 use omuzaki_audio_mock::MockEngine;
 use omuzaki_cohost::local::{AI_VOICE_PRIVATE_BUS, LocalFactory, LocalParts, ensure_voice_buses};
 use omuzaki_cohost::service::{Booking, Built, CohostFactory, CohostService, StartError};
-use omuzaki_cohost::settings::{DeciderChoice, LlmChoice, PerformerDecider};
+use omuzaki_cohost::settings::{DeciderChoice, LlmChoice, PerformerDecider, PerformerRealtime, RealtimeChoice};
 use omuzaki_cohost::stage::PerformStage;
 use omuzaki_cohost::{Cohost, attach_voice};
 use omuzaki_core::time::{Clock, FakeClock, Seconds};
@@ -465,6 +465,15 @@ impl FakeSystemOne {
 }
 
 fn factory_with(decider: serde_json::Value, keys: &[(&str, &str)]) -> LocalFactory {
+    factory_full(decider, json!({}), keys, None)
+}
+
+fn factory_full(
+    decider: serde_json::Value,
+    realtime: serde_json::Value,
+    keys: &[(&str, &str)],
+    engine: Option<Arc<dyn AudioEngine>>,
+) -> LocalFactory {
     use omuzaki_secrets_api::prelude::{SecretLabel, SecretStore, SecretValue};
     use omuzaki_settings_api::service::{Layer, Settings, SettingsExt as _};
     omuzaki_cohost::link();
@@ -472,12 +481,18 @@ fn factory_with(decider: serde_json::Value, keys: &[(&str, &str)]) -> LocalFacto
     let choice: DeciderChoice = serde_json::from_value(decider).unwrap();
     let person = Actor::Person { name: "host".into() };
     settings.set::<PerformerDecider>(&choice, Layer::Base, omuzaki_ops_api::Mode::Apply, &person).unwrap();
+    let realtime: RealtimeChoice = serde_json::from_value(realtime).unwrap();
+    settings.set::<PerformerRealtime>(&realtime, Layer::Base, omuzaki_ops_api::Mode::Apply, &person).unwrap();
     let secrets = Arc::new(omuzaki_secrets_mock::MemorySecrets::new());
     for (label, value) in keys {
         secrets.set(&SecretLabel::new(*label).unwrap(), SecretValue::new(*value)).unwrap();
     }
     let host: Arc<dyn PerformHost> = Arc::new(Host::default());
-    LocalFactory::new(LocalParts::new(host).settings(settings as Arc<dyn Settings>).secrets(secrets))
+    let mut parts = LocalParts::new(host).settings(settings as Arc<dyn Settings>).secrets(secrets);
+    if let Some(engine) = engine {
+        parts = parts.engine(engine);
+    }
+    LocalFactory::new(parts)
 }
 
 fn talking() -> Arc<dyn LlmClient> {
@@ -571,4 +586,177 @@ fn a_hosted_decider_needs_a_key_permission_and_a_person() {
         panic!("a remote host without allow_remote")
     };
     assert!(fix.contains("allow_remote"), "{fix}");
+}
+
+#[test]
+fn a_realtime_model_needs_a_key_and_permission_and_says_what_it_costs() {
+    let engine: Arc<dyn AudioEngine> = Arc::new(MockEngine::new());
+    let factory = factory_full(json!({}), json!({ "kind": "openai" }), &[], Some(Arc::clone(&engine)));
+    // The provider's host is where the co-host's hearing goes; the local LLM isn't asked.
+    assert_eq!(factory.sends_to().as_deref(), Some("api.openai.com"));
+    let Err(StartError::NotReady { fix, .. }) = factory.check() else { panic!("a hosted model without allow_remote") };
+    assert!(fix.contains("allow_remote"), "{fix}");
+
+    let factory =
+        factory_full(json!({}), json!({ "kind": "openai", "allow_remote": true }), &[], Some(Arc::clone(&engine)));
+    let Err(StartError::NotReady { what, .. }) = factory.check() else { panic!("a hosted model without a key") };
+    assert!(what.contains("no key"), "{what}");
+
+    let realtime = json!({ "kind": "openai", "allow_remote": true, "key": "openai", "cap_cents": 250 });
+    let factory = factory_full(json!({}), realtime, &[("openai", "sk-test-key")], Some(engine));
+    factory.check().unwrap();
+    // A minute heard is 600 audio tokens at $32 per million; a minute spoken, 1200 at $64.
+    let costs = factory.costs().unwrap();
+    assert_eq!(costs["listening_usd_per_minute"], 0.0192);
+    assert_eq!(costs["speaking_usd_per_minute"], 0.0768);
+    assert_eq!(costs["cap_usd"], 2.5);
+    assert_eq!(costs["prices_known"], true);
+    // Off by default: nothing is billed.
+    assert!(factory_with(json!({}), &[]).costs().is_none());
+}
+
+/// A provider on this machine for one realtime session: it checks the key and the session, waits for the
+/// microphone's audio, hears `heard`, and answers the first `response.create` with `reply` (100 ms of audio per
+/// delta) and its bill.
+fn fake_realtime(
+    heard: &'static str,
+    reply: &'static str,
+    deltas: usize,
+) -> (String, std::thread::JoinHandle<Vec<String>>) {
+    use base64::Engine as _;
+    use tungstenite::Message;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("ws://{}/v1/realtime", listener.local_addr().unwrap());
+    let handle = std::thread::spawn(move || {
+        let (tcp, _) = listener.accept().unwrap();
+        tcp.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let mut seen = Vec::new();
+        #[allow(clippy::result_large_err)] // tungstenite's own callback signature
+        let callback = |req: &tungstenite::handshake::server::Request,
+                        res: tungstenite::handshake::server::Response|
+         -> Result<
+            tungstenite::handshake::server::Response,
+            tungstenite::handshake::server::ErrorResponse,
+        > {
+            seen.push(format!(
+                "auth {}",
+                req.headers().get("authorization").and_then(|v| v.to_str().ok()).unwrap_or("")
+            ));
+            Ok(res)
+        };
+        let mut ws = tungstenite::accept_hdr(tcp, callback).unwrap();
+        let next = |ws: &mut tungstenite::WebSocket<std::net::TcpStream>, kind: &str| loop {
+            match ws.read() {
+                Ok(Message::Text(t)) => {
+                    let v: serde_json::Value = serde_json::from_str(t.as_str()).unwrap();
+                    if v["type"] == kind {
+                        break Some(v);
+                    }
+                }
+                Ok(Message::Close(_)) | Err(_) => break None,
+                Ok(_) => {}
+            }
+        };
+        let update = next(&mut ws, "session.update").unwrap();
+        seen.push(format!("instructions {}", update["session"]["instructions"]));
+        seen.push(format!("voice {}", update["session"]["audio"]["output"]["voice"]));
+        next(&mut ws, "input_audio_buffer.append").unwrap();
+        seen.push("heard the microphone".into());
+        let say = |ws: &mut tungstenite::WebSocket<std::net::TcpStream>, v: serde_json::Value| {
+            ws.send(Message::text(v.to_string())).unwrap();
+        };
+        say(&mut ws, json!({"type": "input_audio_buffer.speech_started", "item_id": "u1"}));
+        say(&mut ws, json!({"type": "input_audio_buffer.speech_stopped", "item_id": "u1"}));
+        say(
+            &mut ws,
+            json!({"type": "conversation.item.input_audio_transcription.completed", "item_id": "u1", "transcript": heard}),
+        );
+        next(&mut ws, "response.create").unwrap();
+        seen.push("asked for a reply".into());
+        say(&mut ws, json!({"type": "response.created", "response": {"id": "r1"}}));
+        say(&mut ws, json!({"type": "response.output_audio_transcript.delta", "response_id": "r1", "delta": reply}));
+        let tone: Vec<u8> = (0..2_400u16)
+            .flat_map(|i| i16::try_from((i32::from(i % 100) - 50) * 100).unwrap_or(0).to_le_bytes())
+            .collect();
+        let audio = base64::engine::general_purpose::STANDARD.encode(tone);
+        for _ in 0..deltas {
+            say(
+                &mut ws,
+                json!({"type": "response.output_audio.delta", "response_id": "r1", "item_id": "i1", "delta": audio}),
+            );
+        }
+        say(
+            &mut ws,
+            json!({"type": "response.done", "response": {"id": "r1", "status": "completed", "usage": {
+            "input_token_details": {"audio_tokens": 40, "text_tokens": 500, "cached_tokens": 0},
+            "output_token_details": {"audio_tokens": 20, "text_tokens": 6}}}}),
+        );
+        while next(&mut ws, "never").is_some() {}
+        seen
+    });
+    (url, handle)
+}
+
+#[test]
+fn the_cohost_answers_through_a_realtime_model_with_the_persons_key() {
+    use omuzaki_performer_api::event::PerformerEvent;
+    let (url, provider) = fake_realtime("Mochi, say hi to chat!", "Hi everyone! ", 10);
+    let mock = Arc::new(MockEngine::new());
+    let mic = BusSpec {
+        id: BusId::new(MIC_BUS).unwrap(),
+        channels: Channels::Mono,
+        sources: vec![SourceRef::Device { role: omuzaki_audio_api::ids::DeviceRole::new("mic").unwrap() }],
+        chain: vec![],
+        gain_db: 0.0,
+        muted: false,
+        sends: vec![],
+        outputs: vec![],
+    };
+    mock.apply(&GraphSpec { buses: vec![mic], ..GraphSpec::default() }).unwrap();
+    let engine: Arc<dyn AudioEngine> = Arc::clone(&mock) as _;
+    let realtime = json!({ "kind": "openai", "endpoint": url, "key": "openai", "voice": "marin" });
+    let factory = factory_full(json!({}), realtime, &[("openai", "sk-test-realtime-key")], Some(engine));
+    assert_eq!(factory.sends_to(), None, "a provider on this machine needs no confirmation");
+    let member = omuzaki_stage_api::ids::MemberId::new("mochi").unwrap();
+    let Built { mut cohost, clock, about, on_stop, .. } =
+        factory.build(&Booking::new(member, omuzaki_performer::persona::Persona::named("Mochi"))).unwrap();
+    assert_eq!(about["realtime"]["model"], "gpt-realtime");
+    assert_eq!(about["realtime"]["local"], true);
+    assert!(!about.to_string().contains("sk-test"), "never a key");
+
+    let mut lines = Vec::new();
+    let started = Instant::now();
+    let done = |lines: &[PerformerEvent], cohost: &mut Cohost| {
+        lines.iter().any(|e| matches!(e, PerformerEvent::Speaking { .. }))
+            && cohost.show().status(clock.now()).turn.is_none()
+    };
+    while !done(&lines, &mut cohost) && started.elapsed() < Duration::from_secs(20) {
+        // 10 ms of the engine: the microphone's audio goes out, the reply's plays.
+        mock.advance(480);
+        cohost.step(clock.now());
+        lines.extend(cohost.show().drain().into_iter().map(|l| l.event));
+        std::thread::yield_now();
+    }
+    let status = cohost.show().status(clock.now());
+    cohost.stop(clock.now());
+    drop(cohost);
+    if let Some(stop) = on_stop {
+        stop();
+    }
+    let seen = provider.join().unwrap();
+
+    assert_eq!(seen[0], "auth Bearer sk-test-realtime-key");
+    assert!(seen[1].contains("Your name is Mochi") && !seen[1].contains("[emote"), "{}", seen[1]);
+    assert_eq!(seen[2], "voice \"marin\"");
+    assert_eq!(&seen[3..], ["heard the microphone", "asked for a reply"]);
+    assert!(lines.iter().any(|e| matches!(e, PerformerEvent::Heard { text: Some(t), .. } if t.contains("say hi"))));
+    assert!(
+        lines.iter().any(|e| matches!(e, PerformerEvent::Speaking { text: Some(t), .. } if t == "Hi everyone!")),
+        "{lines:?}"
+    );
+    // The reply's bill: 40 audio and 500 text tokens in, 20 audio and 6 text out.
+    let (prices, _) = omuzaki_llm_realtime::prices("gpt-realtime");
+    let bill = prices.cost(&omuzaki_performer_api::duplex::DuplexUsage::new(40, 500, 0, 20, 6));
+    assert_eq!(status.spent_micro_usd, bill.0);
+    assert_eq!(status.turns, 1);
 }

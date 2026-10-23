@@ -133,6 +133,12 @@ pub trait CohostFactory: Send + Sync {
         None
     }
 
+    /// What it would cost to run, when it bills by use (a hosted realtime model): per minute heard and spoken, and
+    /// the show's cap. `None` when it costs nothing.
+    fn costs(&self) -> Option<Value> {
+        None
+    }
+
     /// Whether it could start now, and if not, what is missing; asked by a dry run, so it starts nothing.
     ///
     /// # Errors

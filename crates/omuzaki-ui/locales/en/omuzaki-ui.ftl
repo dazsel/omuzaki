@@ -3705,6 +3705,9 @@ ui-setting-performer-decider = What chooses the AI co-host's faces and gestures 
 ui-setting-performer-llm = The LLM the AI co-host answers with: a server on this machine by default, or a hosted one with your own key
 
 # The line under a setting in the Settings window, saying what it does.
+ui-setting-performer-realtime = A hosted speech-to-speech model that hears and answers for the AI co-host with your own key, billed per minute up to a cap; off by default, so the co-host runs on this machine
+
+# The line under a setting in the Settings window, saying what it does.
 ui-setting-record-dir = The folder recordings are written into; unset means the Omuzaki folder in your videos folder
 
 # The line under a setting in the Settings window, saying what it does.

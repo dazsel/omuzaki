@@ -199,6 +199,9 @@ impl Op for Start {
                 answer["missing"] = json!(what);
                 answer["hint"] = json!(fix);
             }
+            if let Some(costs) = service.factory().costs() {
+                answer["costs"] = costs;
+            }
             return Ok(Plan::answer(answer));
         }
         let mut answer = service.start(booking).map_err(start_error)?;

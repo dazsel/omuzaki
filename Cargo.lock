@@ -4947,6 +4947,7 @@ dependencies = [
 name = "omuzaki-cohost"
 version = "0.0.0"
 dependencies = [
+ "base64",
  "hound",
  "omuzaki-ai",
  "omuzaki-ai-api",
@@ -4964,6 +4965,7 @@ dependencies = [
  "omuzaki-llm",
  "omuzaki-llm-api",
  "omuzaki-llm-mock",
+ "omuzaki-llm-realtime",
  "omuzaki-ops-api",
  "omuzaki-performer",
  "omuzaki-performer-api",
@@ -4985,6 +4987,7 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 2.0.21",
  "tracing",
+ "tungstenite",
 ]
 
 [[package]]
@@ -5684,6 +5687,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-llm-realtime"
+version = "0.0.0"
+dependencies = [
+ "base64",
+ "omuzaki-audio-api",
+ "omuzaki-core",
+ "omuzaki-performer-api",
+ "omuzaki-secrets-api",
+ "rustls",
+ "rustls-platform-verifier",
+ "serde_json",
+ "tungstenite",
+]
+
+[[package]]
 name = "omuzaki-mcp"
 version = "0.0.0"
 dependencies = [
@@ -5866,6 +5884,7 @@ dependencies = [
  "omuzaki-core",
  "omuzaki-llm-api",
  "omuzaki-llm-mock",
+ "omuzaki-ops-api",
  "omuzaki-performer-api",
  "omuzaki-performer-mock",
  "omuzaki-stage-api",

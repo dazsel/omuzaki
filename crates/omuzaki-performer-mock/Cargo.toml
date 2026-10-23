@@ -25,4 +25,4 @@ workspace = true
 
 [package.metadata.omuzaki]
 kind = "Mock"
-summary = "the AI performer's fake harness (`ai-performer.md` §9): `ScriptedEars`, `FakeVoice` (instant synthesis, 60 ms of audio per char, chunks back to back), `RecordingStage`, `ScriptedBrain`, `FakePerception`, `FakeCatalog`, `FakeWallet`, `RecordingLead` and `FakeCut` on one `FakeClock`, and the golden-transcript `Transcript` writer and differ; passes the contract's conformance checks, and `FakeLlm` drives the §10 five-turn golden"
+summary = "the AI performer's fake harness (`ai-performer.md` §9): `ScriptedEars`, `FakeVoice` (instant synthesis, 60 ms of audio per char, chunks back to back), `RecordingStage`, `ScriptedBrain`, `FakePerception`, `FakeCatalog`, `FakeWallet`, `RecordingLead`, `FakeCut`, and the realtime `FakeDuplex` and `FakePcmVoice` on one `FakeClock`, and the golden-transcript `Transcript` writer and differ; passes the contract's conformance checks, and `FakeLlm` drives the §10 five-turn golden"

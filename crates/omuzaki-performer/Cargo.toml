@@ -18,6 +18,7 @@ toml.workspace = true
 omuzaki-anim-api = { path = "../omuzaki-anim-api" }
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-llm-api = { path = "../omuzaki-llm-api" }
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-performer-api = { path = "../omuzaki-performer-api" }
 omuzaki-stage-api = { path = "../omuzaki-stage-api" }
 
