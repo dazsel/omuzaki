@@ -44,7 +44,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use omuzaki_core::time::{Clock, Seconds};
-use omuzaki_performer::show::Show;
+use omuzaki_performer::show::Performer;
 use omuzaki_performer_api::event::TranscriptLine;
 use omuzaki_stage::perform::host::{PerformError, PerformHost};
 use omuzaki_track_voice::{LeadAnalysis, LipSyncConfig, VowelProfile, voice_mailbox};
@@ -67,16 +67,16 @@ pub fn attach_voice(host: &dyn PerformHost, config: LipSyncConfig) -> Result<Lea
 
 /// The co-host: the turn loop, its stage and its voice, stepped together.
 pub struct Cohost {
-    show: Show,
+    show: Box<dyn Performer>,
     stage: Arc<PerformStage>,
     voice: Option<LeadAnalysis>,
 }
 
 impl Cohost {
-    /// A co-host of `show` acting through `stage` (the same one the show's parts hold) and moving its mouth through
-    /// `voice`.
-    pub fn new(show: Show, stage: Arc<PerformStage>, voice: Option<LeadAnalysis>) -> Self {
-        Self { show, stage, voice }
+    /// A co-host of `show` (the cascaded `Show` or the realtime loop) acting through `stage` (the same one the
+    /// show's parts hold) and moving its mouth through `voice`.
+    pub fn new(show: impl Performer + 'static, stage: Arc<PerformStage>, voice: Option<LeadAnalysis>) -> Self {
+        Self { show: Box::new(show), stage, voice }
     }
 
     /// One step at program time `now`.
@@ -89,8 +89,8 @@ impl Cohost {
     }
 
     /// The loop, for `say`, `intent`, `stop`, `status` and settings.
-    pub fn show(&mut self) -> &mut Show {
-        &mut self.show
+    pub fn show(&mut self) -> &mut dyn Performer {
+        self.show.as_mut()
     }
 
     /// Stops the turn and frees the stage's trigger keys.

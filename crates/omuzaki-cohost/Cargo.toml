@@ -19,6 +19,7 @@ omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 omuzaki-face-api = { path = "../omuzaki-face-api" }
 omuzaki-llm = { path = "../omuzaki-llm" }
 omuzaki-llm-api = { path = "../omuzaki-llm-api" }
+omuzaki-llm-realtime = { path = "../omuzaki-llm-realtime" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-performer = { path = "../omuzaki-performer" }
 omuzaki-performer-api = { path = "../omuzaki-performer-api" }

@@ -30,13 +30,19 @@ use omuzaki_llm_api::provider::{
     ProviderConfig, ProviderEnv, RuntimeHandle, SecretLabel, SecretRef, SecretStore, SecretValue, endpoint_host,
     is_loopback_endpoint, provider,
 };
+use omuzaki_llm_api::usage::MicroUsd;
+use omuzaki_llm_realtime::{OpenAiRealtime, RealtimeConfig, TurnDetection};
+use omuzaki_ops_api::Spend;
 use omuzaki_performer::brain::LlmBrain;
 use omuzaki_performer::decide::LlmDecider;
 use omuzaki_performer::persona::Persona;
+use omuzaki_performer::prompt::realtime_instructions;
+use omuzaki_performer::realtime::{RealtimeParts, RealtimeShow};
 use omuzaki_performer::show::{Parts, Show, ShowConfig};
 use omuzaki_performer::systemone::{self, JsonTransport, SystemOneDecider};
 use omuzaki_performer_api::decide::{DecideError, Decider};
 use omuzaki_performer_api::ids::VoiceId;
+use omuzaki_performer_api::spend::{SpendError, SpendGate, Wallet};
 use omuzaki_settings_api::service::Settings;
 use omuzaki_speech::slots::{asr_slot, tts_slot, vad_slot};
 use omuzaki_speech::tts::FEEDS;
@@ -48,7 +54,7 @@ use serde_json::{Value, json};
 use crate::service::{Booking, Built, CohostFactory, StartError};
 use crate::settings::{
     DECIDER_LLM, DECIDER_RULES, DECIDER_SYSTEM_ONE, DeciderChoice, LlmChoice, OPENAI_COMPATIBLE, PerformerDecider,
-    PerformerLlm,
+    PerformerLlm, PerformerRealtime, REALTIME_OPENAI, RealtimeChoice,
 };
 use crate::stage::PerformStage;
 use crate::{Cohost, attach_voice};
@@ -96,6 +102,24 @@ impl JsonTransport for SystemOneHttp {
             LlmError::Auth => DecideError::NotConfigured("the provider refused the key".into()),
             other => DecideError::provider(other.to_string()),
         })
+    }
+}
+
+/// One show's purse for a realtime model: the cap from `performer.realtime`, and what it has been charged.
+struct ShowWallet {
+    cap: MicroUsd,
+    spent: Mutex<u64>,
+}
+
+impl Wallet for ShowWallet {
+    fn remaining(&self) -> Result<MicroUsd, SpendError> {
+        Ok(MicroUsd(self.cap.0.saturating_sub(*lock(&self.spent))))
+    }
+
+    fn charge(&self, spend: Spend) -> Result<(), SpendError> {
+        let mut spent = lock(&self.spent);
+        *spent = spent.saturating_add(spend.usd_micros);
+        Ok(())
     }
 }
 
@@ -243,6 +267,14 @@ impl LocalFactory {
             .unwrap_or_default()
     }
 
+    fn realtime_choice(&self) -> RealtimeChoice {
+        self.parts
+            .settings
+            .as_ref()
+            .and_then(|settings| settings.snapshot().get::<PerformerRealtime>().ok())
+            .unwrap_or_default()
+    }
+
     fn decider_choice(&self) -> DeciderChoice {
         self.parts
             .settings
@@ -269,12 +301,22 @@ impl LocalFactory {
         llm: &LlmChoice,
         talking: &Arc<dyn LlmClient>,
     ) -> Result<Option<Box<dyn Decider>>, StartError> {
+        self.decider_with(choice, llm, || Ok(Arc::clone(talking)))
+    }
+
+    /// [`decider`](Self::decider), building the co-host's own LLM client only if the decider shares it.
+    fn decider_with(
+        &self,
+        choice: &DeciderChoice,
+        llm: &LlmChoice,
+        talking: impl FnOnce() -> Result<Arc<dyn LlmClient>, StartError>,
+    ) -> Result<Option<Box<dyn Decider>>, StartError> {
         let fix = "set performer.decider in Settings > Co-host, or its kind to `rules`";
         match choice.kind.as_str() {
             DECIDER_RULES => Ok(None),
             DECIDER_LLM => {
                 let (client, model) = match &choice.endpoint {
-                    None => (Arc::clone(talking), llm.model.clone()),
+                    None => (talking()?, llm.model.clone()),
                     Some(endpoint) => {
                         let own = LlmChoice {
                             kind: OPENAI_COMPATIBLE.to_owned(),
@@ -320,6 +362,172 @@ impl LocalFactory {
                 Ok(Some(Box::new(SystemOneDecider::new(Arc::new(SystemOneHttp(client)), model))))
             }
             other => Err(StartError::not_ready(format!("performer.decider has an unknown kind `{other}`"), fix)),
+        }
+    }
+
+    /// The key `performer.realtime` names, checked against its address: `None` for a server on this machine that
+    /// needs none.
+    ///
+    /// # Errors
+    /// [`StartError::NotReady`]: a hosted address without `allow_remote`, no key, or a key not in the keychain.
+    fn realtime_key(
+        &self,
+        choice: &RealtimeChoice,
+    ) -> Result<Option<omuzaki_secrets_api::prelude::SecretValue>, StartError> {
+        let fix = "set performer.realtime in Settings > Co-host, or its kind to `off`";
+        if choice.kind != REALTIME_OPENAI {
+            return Err(StartError::not_ready(
+                format!("performer.realtime has an unknown kind `{}`", choice.kind),
+                fix,
+            ));
+        }
+        let endpoint = choice.endpoint().unwrap_or(omuzaki_llm_realtime::DEFAULT_ENDPOINT);
+        let (host, local) = omuzaki_llm_realtime::endpoint_host(endpoint)
+            .ok_or_else(|| StartError::not_ready("performer.realtime's endpoint is not a WebSocket address", fix))?;
+        if !local && !choice.allow_remote {
+            return Err(StartError::not_ready(
+                format!("performer.realtime would send what the co-host hears to {host}"),
+                "set performer.realtime's `allow_remote` to use a hosted model",
+            ));
+        }
+        let Some(label) = &choice.key else {
+            return if local {
+                Ok(None)
+            } else {
+                Err(StartError::not_ready(
+                    "performer.realtime is on but names no key",
+                    "add your OpenAI key to the keychain and set performer.realtime's `key` to its label",
+                ))
+            };
+        };
+        let missing = || {
+            StartError::not_ready(
+                format!("performer.realtime's key `{label}` is not in the keychain"),
+                "add your OpenAI key to the keychain under that label",
+            )
+        };
+        let secrets = self.parts.secrets.as_ref().ok_or_else(missing)?;
+        let label = omuzaki_secrets_api::prelude::SecretLabel::new(label.as_str()).map_err(|_| missing())?;
+        secrets.get(&label).ok().flatten().map(Some).ok_or_else(missing)
+    }
+
+    /// The co-host over a realtime model: it hears the microphone (48 kHz, sent as it is captured), answers in the
+    /// model's own voice through the TTS host's feeds and lip sync, gets its face from the decision layer, and bills
+    /// every reply against the show's cap.
+    #[allow(clippy::too_many_lines)] // The parts assembled in the order they depend on each other, undone on failure.
+    fn build_realtime(&self, booking: &Booking, choice: &RealtimeChoice) -> Result<Built, StartError> {
+        let engine = Arc::clone(self.engine()?);
+        let key = self.realtime_key(choice)?;
+        let llm = self.choice();
+        let deciding = self.decider_choice();
+        let decider = self.decider_with(&deciding, &llm, || self.client(&llm))?;
+        ensure_voice_buses(engine.as_ref())?;
+        let host = Arc::clone(&self.parts.host);
+        let stage = Arc::new(PerformStage::new(Arc::clone(&host), booking.member.clone()));
+        if let Some(mouth) = &self.mouth {
+            mouth.detach();
+        }
+        let restore = self.mouth.clone();
+        let give_back = move || {
+            if let Some(mouth) = &restore
+                && let Err(error) = mouth.attach()
+            {
+                tracing::warn!(%error, "the microphone did not get the mouth back");
+            }
+        };
+        let lead = match attach_voice(host.as_ref(), LipSyncConfig::default()) {
+            Ok(lead) => lead,
+            Err(error) => {
+                give_back();
+                return Err(StartError::failed(format!("the character can't take the co-host's voice: {error}")));
+            }
+        };
+        let built = (|| {
+            let voice_name = choice.voice.as_deref().unwrap_or(omuzaki_llm_realtime::DEFAULT_VOICE);
+            let voice_id = format!("openai/{voice_name}");
+            let voice = VoiceId::new(&voice_id).map_err(|e| StartError::failed(format!("voice `{voice_id}`: {e}")))?;
+            let mut tts =
+                TtsHost::open_streamed(Arc::clone(&engine), TtsVoice::new(voice.clone()), Some(Box::new(lead.clone())))
+                    .map_err(StartError::failed)?;
+            tts.spawn_pump().map_err(StartError::failed)?;
+            let endpoint = choice.endpoint().unwrap_or(omuzaki_llm_realtime::DEFAULT_ENDPOINT);
+            let (endpoint_host, local) = omuzaki_llm_realtime::endpoint_host(endpoint).unwrap_or_default();
+            let request = TapRequest {
+                point: TapPoint::Voice(VoiceUse::Listen),
+                format: TapFormat { rate: TapRate::Graph48k, mono: true },
+                capacity: Seconds(2.0),
+                policy: DropPolicy::DropNewest,
+                consumer: "co-host realtime ears".into(),
+                leaves_device: !local,
+            };
+            let (mic, info) = engine.tap_ring(&request).map_err(|error| {
+                StartError::not_ready(
+                    format!("the co-host can't hear the microphone: {error}"),
+                    "choose a microphone in Settings > Audio",
+                )
+            })?;
+            if info.rate != omuzaki_llm_realtime::MIC_RATE {
+                return Err(StartError::failed(format!("the microphone tap runs at {} Hz, not 48 kHz", info.rate)));
+            }
+            let turns = match choice.turns.as_deref() {
+                Some("silence") => TurnDetection::Silence,
+                _ => TurnDetection::Semantic,
+            };
+            let config = RealtimeConfig::new(realtime_instructions(&booking.persona))
+                .endpoint(endpoint)
+                .model(choice.model())
+                .voice(voice_name)
+                .turns(turns);
+            let duplex = OpenAiRealtime::connect(&config, key.as_ref(), Some(mic)).map_err(|e| {
+                StartError::not_ready(
+                    format!("the realtime model can't be used: {e}"),
+                    "check performer.realtime's key and address in Settings > Co-host",
+                )
+            })?;
+            let cap = MicroUsd(choice.cap_cents().saturating_mul(10_000));
+            let wallet = ShowWallet { cap, spent: Mutex::new(0) };
+            let mut parts = RealtimeParts::new(
+                Box::new(duplex),
+                Box::new(tts),
+                Arc::clone(&stage) as Arc<dyn omuzaki_performer_api::stage::Stage>,
+            )
+            .spend(SpendGate::new(Arc::new(wallet)));
+            if let Some(decider) = decider {
+                parts = parts.decider(decider);
+            }
+            let config = ShowConfig::new(booking.member.clone(), voice.clone()).respond(booking.respond);
+            let show = RealtimeShow::new(&booking.persona, parts, config);
+            let (prices, known) = omuzaki_llm_realtime::prices(choice.model());
+            let about = json!({
+                "realtime": {
+                    "kind": omuzaki_llm_realtime::KIND,
+                    "endpoint_host": endpoint_host,
+                    "model": choice.model(),
+                    "local": local,
+                    "listening_usd_per_minute": usd(prices.listening_per_minute()),
+                    "speaking_usd_per_minute": usd(prices.speaking_per_minute()),
+                    "cap_usd": cents_usd(choice.cap_cents()),
+                    "prices_known": known,
+                },
+                "decider": {
+                    "kind": deciding.kind,
+                    "endpoint_host": deciding.endpoint().and_then(endpoint_host_of),
+                    "model": deciding.model,
+                },
+                "voice": voice.to_string(),
+                "hearing": { "rate": info.rate },
+            });
+            Ok((show, about, engine.clock()))
+        })();
+        match built {
+            Ok((show, about, clock)) => {
+                let cohost = Cohost::new(show, stage, Some(lead));
+                Ok(Built::new(cohost, Arc::new(EngineTime(clock))).about(about).on_stop(give_back))
+            }
+            Err(error) => {
+                give_back();
+                Err(error)
+            }
         }
     }
 
@@ -424,6 +632,24 @@ pub fn ensure_voice_buses(engine: &dyn AudioEngine) -> Result<(), StartError> {
     engine.apply(&next).map_err(|e| StartError::failed(format!("the mixer refused the co-host's voice: {e}")))
 }
 
+/// Micro-dollars as dollars, for a person to read.
+fn usd(amount: MicroUsd) -> f64 {
+    // Amounts far below 2^52 micro-dollars.
+    #[allow(clippy::cast_precision_loss)]
+    let dollars = amount.0 as f64 / 1_000_000.0;
+    dollars
+}
+
+/// Cents as dollars.
+fn cents_usd(cents: u64) -> f64 {
+    usd(MicroUsd(cents.saturating_mul(10_000)))
+}
+
+/// [`endpoint_host`] for an `&str`, as an owned name.
+fn endpoint_host_of(endpoint: &str) -> Option<String> {
+    endpoint_host(endpoint).map(str::to_owned)
+}
+
 /// The persona's own words for a reasoning model that should answer at once: Qwen3's soft switch. Other models take
 /// no switch in the prompt; a server-side setting turns their reasoning off.
 fn no_think(persona: &Persona, choice: &LlmChoice) -> Persona {
@@ -439,18 +665,50 @@ impl CohostFactory for LocalFactory {
     fn sends_to(&self) -> Option<String> {
         let llm = self.choice();
         let decider = self.decider_choice();
-        let mut hosts: Vec<&str> = Vec::new();
-        for endpoint in [Some(llm.endpoint.as_str()), decider.endpoint()].into_iter().flatten() {
-            let host = endpoint_host(endpoint).unwrap_or(endpoint);
-            if !is_loopback_endpoint(endpoint) && !hosts.contains(&host) {
+        let realtime = self.realtime_choice();
+        let mut hosts: Vec<String> = Vec::new();
+        let mut add = |host: String| {
+            if !hosts.contains(&host) {
                 hosts.push(host);
             }
+        };
+        // With a realtime model, the local LLM isn't asked.
+        let talking = (!realtime.on()).then_some(llm.endpoint.as_str());
+        for endpoint in [talking, decider.endpoint()].into_iter().flatten() {
+            if !is_loopback_endpoint(endpoint) {
+                add(endpoint_host(endpoint).unwrap_or(endpoint).to_owned());
+            }
+        }
+        if let Some((host, local)) = realtime.endpoint().and_then(omuzaki_llm_realtime::endpoint_host)
+            && !local
+        {
+            add(host);
         }
         (!hosts.is_empty()).then(|| hosts.join(", "))
     }
 
+    fn costs(&self) -> Option<Value> {
+        let realtime = self.realtime_choice();
+        realtime.on().then(|| {
+            let (prices, known) = omuzaki_llm_realtime::prices(realtime.model());
+            json!({
+                "provider": omuzaki_llm_realtime::KIND,
+                "model": realtime.model(),
+                "listening_usd_per_minute": usd(prices.listening_per_minute()),
+                "speaking_usd_per_minute": usd(prices.speaking_per_minute()),
+                "cap_usd": cents_usd(realtime.cap_cents()),
+                "prices_known": known,
+            })
+        })
+    }
+
     fn check(&self) -> Result<(), StartError> {
         self.engine()?;
+        let realtime = self.realtime_choice();
+        if realtime.on() {
+            // The model hears and speaks itself: only its key and address need to be right.
+            return self.realtime_key(&realtime).map(drop);
+        }
         let models = self.models()?;
         Self::slot_ready(models.as_ref(), &vad_slot(), "voice activity")?;
         Self::slot_ready(models.as_ref(), &asr_slot(), "speech recognition")?;
@@ -460,6 +718,10 @@ impl CohostFactory for LocalFactory {
 
     #[allow(clippy::too_many_lines)] // The parts assembled in the order they depend on each other, undone on failure.
     fn build(&self, booking: &Booking) -> Result<Built, StartError> {
+        let realtime = self.realtime_choice();
+        if realtime.on() {
+            return self.build_realtime(booking, &realtime);
+        }
         self.check()?;
         let (engine, models) = (Arc::clone(self.engine()?), Arc::clone(self.models()?));
         let choice = self.choice();
