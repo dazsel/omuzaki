@@ -5860,6 +5860,7 @@ dependencies = [
  "omuzaki-core",
  "omuzaki-llm-api",
  "omuzaki-llm-mock",
+ "omuzaki-ops-api",
  "omuzaki-performer-api",
  "omuzaki-performer-mock",
  "omuzaki-stage-api",

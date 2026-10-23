@@ -29,6 +29,8 @@ pub enum DuplexEvent {
     Heard {
         /// The words.
         text: String,
+        /// Some of it was spoken in `CohostOnly` (the microphone tap's `private` flag): the reply is private.
+        private: bool,
     },
     /// A reply began.
     #[non_exhaustive]
@@ -79,7 +81,12 @@ pub enum DuplexEvent {
 impl DuplexEvent {
     /// [`DuplexEvent::Heard`].
     pub fn heard(text: impl Into<String>) -> Self {
-        Self::Heard { text: text.into() }
+        Self::Heard { text: text.into(), private: false }
+    }
+
+    /// A private [`DuplexEvent::Heard`].
+    pub fn heard_private(text: impl Into<String>) -> Self {
+        Self::Heard { text: text.into(), private: true }
     }
 
     /// [`DuplexEvent::ReplyStarted`].
