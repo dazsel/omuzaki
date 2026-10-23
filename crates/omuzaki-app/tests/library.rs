@@ -201,6 +201,12 @@ fn a_hairstyle_item_creates_a_real_hair_part_that_builds_and_can_replace_the_kit
     }
     let node = core.get(&DocPath::parse("characters/mia").unwrap()).unwrap();
     assert_eq!(node["sources"]["hair"]["provenance"]["source"]["item"], "omuzaki/hair/twintails@1.0.0");
+    // The licence derives from the rows: the item's part is recorded, so the character's record is complete (D8).
+    omuzaki_io_ops::link();
+    let derived = run(&core, "licence.derive", json!({"character": "mia"}));
+    assert_eq!(derived["complete"], true, "every part has a row: {}", derived["report"]);
+    let hair = derived["parts"].as_array().unwrap().iter().find(|p| p["part"] == "hair").expect("the hair row");
+    assert_eq!(hair["recorded"], true, "{hair}");
     let def = CharacterDef::from_node(&node).unwrap();
     let built = RegistryBuilder
         .build(&CharId::new("mia").unwrap(), &def, &BuildOptions::default(), &BuildServices::default())
