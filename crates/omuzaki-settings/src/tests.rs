@@ -1063,3 +1063,27 @@ fn a_rename_whose_old_name_is_an_ancestor_of_the_new_one_moves_set_resets_and_re
         assert_eq!(get::<Deeper>(&rig.open()), 0, "reset and reopened");
     }
 }
+
+#[test]
+fn the_contracts_flush_writes_the_values_and_the_session_at_once_and_reports_a_failed_write() {
+    let rig = Rig::new();
+    let store = rig.open();
+    set::<Scale>(&store, &140);
+    store.session().mark_version_seen("1.4.0");
+    // Through the contract, as an app's clean exit calls it: inside the debounce, nothing is on disk yet.
+    let settings: &dyn Settings = &store;
+    settings.flush().unwrap();
+    assert!(rig.user_text().contains("scale = 140"), "{}", rig.user_text());
+    let session = fs::read_to_string(rig.paths.data().join(crate::session::SESSION_FILE)).unwrap();
+    assert!(session.contains("1.4.0"), "{session}");
+
+    // A folder where the settings file should be: the write fails, and the failure reaches the caller.
+    let rig = Rig::new();
+    fs::create_dir_all(rig.user_file()).unwrap();
+    let store = rig.open();
+    set::<Scale>(&store, &150);
+    let settings: &dyn Settings = &store;
+    let error = settings.flush().unwrap_err();
+    assert!(matches!(error.kind, SettingErrorKind::Storage { .. }), "{error}");
+    assert_eq!(get::<Scale>(&store), 150, "the value stays in effect");
+}

@@ -579,8 +579,10 @@ fn trait_methods(file: &str, trait_name: &str) -> Vec<(String, String)> {
 
 #[test]
 fn every_mutating_settings_method_takes_a_mode_and_an_actor() {
-    // The methods that only read. A new method is mutating until it is added here on purpose.
-    const READS: [&str; 8] = ["snapshot", "resolve", "list", "profiles", "changes", "findings", "subscribe", "session"];
+    // The methods that change no value (they read, or `flush` writes what is already in effect). A new method is
+    // mutating until it is added here on purpose.
+    const READS: [&str; 9] =
+        ["snapshot", "resolve", "list", "profiles", "changes", "findings", "subscribe", "session", "flush"];
     let methods = trait_methods("src/service.rs", "Settings");
     assert!(methods.len() >= 15, "the scan found only {} methods: {methods:?}", methods.len());
     for (name, sig) in &methods {

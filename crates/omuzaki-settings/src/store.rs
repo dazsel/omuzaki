@@ -963,6 +963,13 @@ impl Settings for Store {
     fn session(&self) -> &dyn SessionStore {
         &*self.inner.session
     }
+
+    fn flush(&self) -> Result<(), SettingError> {
+        // Both, even when the values fail: the session's write doesn't depend on theirs.
+        let values = self.inner.flush();
+        let session = self.inner.session.flush();
+        values.and(session)
+    }
 }
 
 #[cfg(test)]
