@@ -9,7 +9,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use omuzaki_ops_api::{Actor, EndReason, ErrorCode, ErrorDetail, Event, OpError, SessionId, SessionState, Sessions};
+use omuzaki_ops_api::{
+    Actor, EndReason, ErrorCode, ErrorDetail, Event, OpError, PauseReason, SessionId, SessionState, Sessions,
+};
 use rmcp::transport::streamable_http_server::SessionManager;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use tokio::sync::watch;
@@ -40,6 +42,8 @@ pub(crate) struct Credential {
     revoke: Option<Box<dyn Fn() + Send + Sync>>,
     /// The table of this token's HTTP sessions, which is how one of them is closed from the inside.
     sessions: OnceLock<Arc<LocalSessionManager>>,
+    /// For a bridge credential: tells the port a person paired it. `None` for every other credential.
+    pair: Option<Box<dyn Fn() + Send + Sync>>,
 }
 
 impl Credential {
@@ -58,6 +62,28 @@ impl Credential {
             ending: Mutex::new(None),
             revoke,
             sessions: OnceLock::new(),
+            pair: None,
+        }
+    }
+
+    /// Makes this a bridge credential: its sessions are stdio sessions that wait to be paired, and `pair` tells the
+    /// port when a person has paired it.
+    pub(crate) fn bridge(mut self, pair: Box<dyn Fn() + Send + Sync>) -> Self {
+        self.pair = Some(pair);
+        self
+    }
+
+    pub(crate) fn is_bridge(&self) -> bool {
+        self.pair.is_some()
+    }
+
+    /// A person paired this bridge credential (on its session's card): it is paired from now on, and the port is told
+    /// so the host can remember it.
+    pub(crate) fn paired_by_person(&self) {
+        if !self.paired.swap(true, Ordering::AcqRel)
+            && let Some(pair) = &self.pair
+        {
+            pair();
         }
     }
 
@@ -187,6 +213,32 @@ pub(crate) fn watch_end(
                 return;
             }
             // The handler is gone (its connection ended and it ended the session itself): nothing left to follow.
+            tokio::select! {
+                () = alive.cancelled() => return,
+                changed = arrivals.changed() => if changed.is_err() { return },
+            }
+        }
+    });
+}
+
+/// Follows a bridge session held for pairing until it leaves the pairing pause: active again means a person paired
+/// its credential on the card (nothing else lifts a pairing pause), so the credential is marked paired. Ended (Refuse,
+/// or the connection went) leaves it unpaired.
+pub(crate) fn watch_pairing(
+    hub: Arc<EventHub>,
+    sessions: Arc<dyn Sessions>,
+    id: SessionId,
+    credential: Arc<Credential>,
+    alive: CancellationToken,
+) {
+    tokio::spawn(async move {
+        let mut arrivals = hub.watch();
+        loop {
+            match sessions.session(id).map(|info| info.state) {
+                Some(SessionState::Paused { reason: PauseReason::Pairing, .. }) => {}
+                Some(SessionState::Active) => return credential.paired_by_person(),
+                _ => return,
+            }
             tokio::select! {
                 () = alive.cancelled() => return,
                 changed = arrivals.changed() => if changed.is_err() { return },

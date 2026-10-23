@@ -50,7 +50,8 @@ pub fn run_script(
         params: options.params.clone(),
         dry_run: options.dry_run,
     };
-    let outcome = host.run(request, &calls, &NeverCancelled).map_err(|error| error.to_op_error())?;
+    // A command line never cancels a run: Ctrl+C ends the process.
+    let outcome = host.run(request, &calls, &crate::NeverCancel).map_err(|error| error.to_op_error())?;
     if options.json { pretty(&outcome) } else { Ok(outcome_text(&outcome)) }
 }
 
@@ -88,15 +89,6 @@ pub fn check_script(runner: &dyn Runner, source: &str, json: bool) -> CheckOutpu
         });
     }
     CheckOutput { text, failure }
-}
-
-/// A command line never cancels a run: Ctrl+C ends the process.
-struct NeverCancelled;
-
-impl crate::Cancel for NeverCancelled {
-    fn is_cancelled(&self) -> bool {
-        false
-    }
 }
 
 fn pretty<T: Serialize>(value: &T) -> Result<String, OpError> {

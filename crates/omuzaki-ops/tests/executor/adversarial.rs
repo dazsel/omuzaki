@@ -53,8 +53,9 @@ fn conflict_messages_quote_values_only_for_actors_with_read() {
 #[test]
 fn undo_and_rollback_conflicts_never_quote_document_values() {
     let rig = rig(json!({"secret": "hunter2"}));
+    let other = rig.bobs_agent();
     rig.set("secret", json!("swordfish"));
-    rig.agent_set("secret", json!("opensesame"));
+    rig.set_as(&other, "secret", json!("opensesame"));
     let e = rig.undo().unwrap_err();
     assert_eq!(e.code, ErrorCode::Conflict);
     let shown = format!("{e:?}");
@@ -78,43 +79,53 @@ fn undo_and_rollback_conflicts_never_quote_document_values() {
 }
 
 /// T applies `x` first but commits last, with an edit to `x` by someone else in between. With one global stack this
-/// wedged undo for good; per actor, both can always be undone.
+/// wedged undo for good; per actor, both can always be undone. T is an agent of another person, so alice's undo never
+/// reaches it.
 #[test]
 fn undo_is_not_wedged_by_a_transaction_that_commits_after_a_later_edit_to_the_same_path() {
     let build = || {
         let rig = rig(json!({"x": 0}));
-        let tx = rig.exec.begin("long agent job", &agent());
-        rig.exec.run(Request { tx: Some(tx), ..agent_request("test.set", json!({"path": "x", "value": 1})) }).unwrap();
+        let other = rig.bobs_agent();
+        let tx = rig.exec.begin("long agent job", &other);
+        let req = Request {
+            tx: Some(tx),
+            actor: other.clone(),
+            ..agent_request("test.set", json!({"path": "x", "value": 1}))
+        };
+        rig.exec.run(req).unwrap();
         rig.set("x", json!(2)); // the person edits the same field meanwhile
-        rig.exec.commit(tx, &agent()).unwrap();
-        rig
+        rig.exec.commit(tx, &other).unwrap();
+        (rig, other)
     };
+    let undo = |rig: &super::Rig, actor: &omuzaki_ops_api::Actor| rig.exec.undo(actor, &Grants::agent_default());
 
     // Person first, then the agent: both succeed and the original value is reachable.
-    let rig = build();
+    let (rig, other) = build();
     assert!(rig.undo().unwrap().is_some());
-    assert!(rig.agent_undo().unwrap().is_some());
+    assert!(undo(&rig, &other).unwrap().is_some());
     assert_eq!(rig.at("x"), Some(json!(0)), "undoing everything reaches the original value");
 
     // Agent first: its step conflicts and is dropped, which frees the rest of its history; nothing is stuck.
-    let rig = build();
-    assert_eq!(rig.agent_undo().unwrap_err().code, ErrorCode::Conflict);
-    assert_eq!(rig.agent_undo().unwrap(), None);
+    let (rig, other) = build();
+    assert_eq!(undo(&rig, &other).unwrap_err().code, ErrorCode::Conflict);
+    assert_eq!(undo(&rig, &other).unwrap(), None);
     assert!(rig.undo().unwrap().is_some());
     assert_eq!(rig.at("x"), Some(json!(1)));
     assert_eq!(rig.undo().unwrap(), None);
 }
 
-/// Undo never reaches across actors, in either direction.
+/// Undo never reaches across principals, in either direction: an agent never undoes a person's step, and a person
+/// never undoes the step of an agent that works for someone else.
 #[test]
 fn undo_never_reverts_another_actors_step() {
     let rig = rig(json!({"x": 0}));
     rig.set("x", json!(1)); // by the person
     assert_eq!(rig.agent_undo().unwrap(), None, "an agent must not undo a person's edit");
     assert_eq!(rig.at("x"), Some(json!(1)));
-    rig.agent_set("y", json!(1));
-    assert_eq!(rig.undo().unwrap().as_deref(), Some("test.set"));
-    assert_eq!(rig.at("y"), Some(json!(1)), "the person's undo left the agent's edit alone");
+    let other = rig.bobs_agent();
+    rig.set_as(&other, "y", json!(1));
+    assert_eq!(rig.undo().unwrap().as_deref(), Some(super::SET));
+    assert_eq!(rig.at("y"), Some(json!(1)), "the person's undo left the other agent's edit alone");
 }
 
 /// Churn subscribers (subscribe, drop, never read) while four threads run ops, transactions, undo and redo.

@@ -6,6 +6,8 @@
 //! |---|---|
 //! | [`read`] | `settings.get`, `settings.list`, `settings.changes` (queries, scope `read`) |
 //! | [`write`] | `settings.set`, `settings.reset`, `settings.reload` (edits, scope `edit:settings`, undone explicitly) |
+//! | [`profile`] | `settings.profile.list` (query); `.save`, `.rename`, `.delete`, `.switch` (edits, a person's or confirmed) |
+//! | [`session`] | `session.recent`, `session.get` (queries); `session.forget` and its undo `session.restore_recent` (a person's) |
 //!
 //! Every op reaches the app's `dyn Settings` service, so they work over this crate's [`Store`](crate::Store) and over
 //! the in-memory mock alike. A write applies the key's [`AgentWrite`] rule before the service is called, in a dry run
@@ -13,7 +15,9 @@
 //! The service is called in the run's mode, so a dry run validates the value and returns `before` and `after` but
 //! writes nothing.
 
+pub mod profile;
 pub mod read;
+pub mod session;
 pub mod write;
 
 #[cfg(test)]

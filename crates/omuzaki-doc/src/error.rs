@@ -36,7 +36,7 @@ pub enum StoreError {
         reason: String,
     },
     /// The folder has no `project.toml`.
-    #[error("{} isn't a Omuzaki project: it has no project.toml", dir.display())]
+    #[error("{} isn't an Omuzaki project: it has no project.toml", dir.display())]
     NotAProject {
         /// The folder.
         dir: PathBuf,

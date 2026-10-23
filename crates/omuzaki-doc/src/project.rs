@@ -14,8 +14,52 @@ use crate::error::StoreError;
 use crate::known::Known;
 use crate::layout::{Entry, Layout, Pending, Segs, doc_path};
 use crate::migrate;
+use crate::source::FileSource;
+use crate::toml_read::parse_table;
 use crate::toml_write::{RenderError, render};
 use crate::tree::{changed_paths, check_change, set, show};
+
+/// What changed in a project's files outside Omuzaki ([`Project::outside_changes`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
+pub struct OutsideChanges {
+    /// The files, relative to the project folder (`characters/mock.toml`), sorted.
+    pub files: Vec<String>,
+    /// Those of them the document also has unsaved changes in, which taking the files in would replace.
+    pub clashes: Vec<String>,
+    /// From the document to what the folder holds at the changed keys; `before` is the project's own value.
+    pub patch: Patch,
+}
+
+impl OutsideChanges {
+    /// Only what is in `files` (paths relative to the project folder) or under a folder named there.
+    #[must_use]
+    pub fn only(self, files: &[String]) -> Self {
+        let wanted = |file: &String| {
+            files.iter().any(|f| f == file || file.starts_with(&format!("{}/", f.trim_end_matches(".toml"))))
+        };
+        let keys: Vec<DocPath> = files
+            .iter()
+            .filter_map(|f| {
+                let stem = f.strip_suffix(".toml").unwrap_or(f);
+                DocPath::parse(stem).ok()
+            })
+            .collect();
+        let patch = Patch {
+            changes: self
+                .patch
+                .changes
+                .into_iter()
+                .filter(|c| keys.iter().any(|key| c.path.starts_with(key) || key.starts_with(&c.path)))
+                .collect(),
+        };
+        Self {
+            files: self.files.into_iter().filter(|f| wanted(f)).collect(),
+            clashes: self.clashes.into_iter().filter(|f| wanted(f)).collect(),
+            patch,
+        }
+    }
+}
 
 /// What [`Project::save`] did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -71,6 +115,8 @@ pub struct Project {
     upgraded_from: Option<u32>,
     /// The replaced folder's entries and their ages, for pruning (see `disk::Retention`), shared with every clone.
     retention: Arc<Mutex<Retention>>,
+    /// The files the last save left alone because they changed outside Omuzaki, by key path.
+    changed: Vec<Segs>,
 }
 
 /// The shared retention, even if a thread panicked while holding it: it only lists files, and a pass that stopped
@@ -88,14 +134,49 @@ impl Project {
     /// The folder isn't a project, a file can't be read or parsed, two entries claim one name, the schema is newer
     /// than this build understands, or a migration fails.
     pub fn open(dir: impl AsRef<Path>) -> Result<Self, StoreError> {
-        let dir = dir.as_ref();
+        Self::open_source(&FileSource::Folder(dir.as_ref()))
+    }
+
+    /// Judges the folder's `project.toml` alone, as [`open`](Self::open) judges it first, and returns its schema: a
+    /// cheap check that a project can be opened, for the startup plan's "this project can't be reopened" cards. It
+    /// reads one file and writes nothing; the rest of the tree is only read by opening.
+    ///
+    /// # Errors
+    /// [`StoreError::NotAProject`] when there is no `project.toml` (or no folder), an I/O or parse error naming the
+    /// file, [`StoreError::BadSchema`], or [`StoreError::SchemaTooNew`] for a project saved by a newer Omuzaki.
+    pub fn check(dir: impl AsRef<Path>) -> Result<u32, StoreError> {
+        let project = disk::read_project_file(&FileSource::Folder(dir.as_ref()))?;
+        let supported = migrate::supported_schema();
+        match migrate::schema_of_project(&project)? {
+            found if found > supported => Err(StoreError::SchemaTooNew { found, supported }),
+            found => Ok(found),
+        }
+    }
+
+    /// Opens a project from its files' bytes, as a snapshot holds them, by exactly the rules of [`open`](Self::open):
+    /// `project.toml` is judged first, hidden names and files that aren't `.toml` are left out of the tree, and older
+    /// projects are upgraded in memory. Paths are `/`-separated and relative to the project; `dir` is where it saves.
+    /// Nothing is read from or written to `dir`.
+    ///
+    /// # Errors
+    /// As [`open`](Self::open), with errors naming the files under `dir`.
+    pub fn open_files(
+        dir: impl AsRef<Path>,
+        files: impl IntoIterator<Item = (String, Vec<u8>)>,
+    ) -> Result<Self, StoreError> {
+        let files: BTreeMap<String, Vec<u8>> = files.into_iter().collect();
+        Self::open_source(&FileSource::Files { dir: dir.as_ref(), files: &files })
+    }
+
+    fn open_source(source: &FileSource<'_>) -> Result<Self, StoreError> {
+        let dir = source.dir();
         let migrations = migrate::registered();
         let supported = migrate::latest(&migrations);
         let too_new = |project: &Map<String, Value>| match migrate::schema_of_project(project)? {
             found if found > supported => Err(StoreError::SchemaTooNew { found, supported }),
             _ => Ok(()),
         };
-        let Loaded { mut root, files } = disk::load(dir, too_new)?;
+        let Loaded { mut root, files } = disk::load_from(source, too_new)?;
         let mut known = Known::default();
         let mut layout_files = Vec::with_capacity(files.len());
         for file in files {
@@ -122,6 +203,7 @@ impl Project {
             known,
             upgraded_from,
             retention: Arc::default(),
+            changed: Vec::new(),
         })
     }
 
@@ -151,9 +233,40 @@ impl Project {
             known: Known::default(),
             upgraded_from: None,
             retention: Arc::default(),
+            changed: Vec::new(),
         };
         project.save()?;
         Ok(project)
+    }
+
+    /// Changes the document to `root` in one patch of its top-level entries (the root itself can't be replaced), so
+    /// the layout rules apply as for any edit and the next [`save`](Self::save) writes exactly the files that differ.
+    /// Recovery uses it to bring the files' project to a snapshot's tree. Returns the patch it applied, empty when the
+    /// trees were already equal.
+    ///
+    /// # Errors
+    /// `root` is not an object, or the store can't hold it (the same refusals as [`DocWrite::apply`]).
+    pub fn reset_to(&mut self, root: &Value) -> Result<Patch, PatchError> {
+        let (Value::Object(now), Value::Object(target)) = (&self.root, root) else {
+            return Err(PatchError::Unreachable {
+                path: DocPath::root(),
+                reason: "a project's tree is an object".into(),
+            });
+        };
+        let mut keys: Vec<&String> = now.keys().chain(target.keys()).collect();
+        keys.sort();
+        keys.dedup();
+        let mut patch = Patch::new();
+        for key in keys {
+            let (before, after) = (now.get(key), target.get(key));
+            if before != after {
+                patch = patch.with(DocPath::root().join(key), before.cloned(), after.cloned());
+            }
+        }
+        if !patch.changes.is_empty() {
+            self.apply(&patch)?;
+        }
+        Ok(patch)
     }
 
     /// The project folder.
@@ -245,12 +358,70 @@ impl Project {
         saved
     }
 
+    /// The files the last [`save`](Self::save) left alone because they changed outside Omuzaki (edited, deleted,
+    /// created where the document wants one, or replaced by a folder or a link), as paths relative to the project
+    /// folder (`characters/mock.toml`), sorted. Empty after a save that refused nothing.
+    pub fn changed_on_disk(&self) -> Vec<String> {
+        let mut files: Vec<String> = self.changed.iter().map(|segs| format!("{}.toml", segs.join("/"))).collect();
+        files.sort();
+        files.dedup();
+        files
+    }
+
+    /// What changed in the project's files outside Omuzaki since this project last read or wrote them: each file
+    /// whose bytes aren't the last-known ones (edited, deleted, created, or a file replaced by a folder of the same
+    /// name), and the patch that takes the document to what the folder holds now at those keys. The folder is read
+    /// as [`open`](Self::open) reads it. A file the document also has unsaved changes in is a clash: the patch would
+    /// replace those changes, so it is listed for the person to see, never merged.
+    ///
+    /// # Errors
+    /// The folder can't be read as a project now (a file that doesn't parse, a file and a folder claiming one key).
+    pub fn outside_changes(&self) -> Result<OutsideChanges, StoreError> {
+        let disk = Self::open(&self.dir)?;
+        let ours: BTreeMap<&Segs, ContentHash> = self.known.hashes().collect();
+        let theirs: BTreeMap<&Segs, ContentHash> = disk.known.hashes().collect();
+        let mut changed: Vec<Segs> = ours
+            .iter()
+            .filter(|(segs, hash)| theirs.get(*segs) != Some(*hash))
+            .map(|(segs, _)| (*segs).clone())
+            .chain(theirs.keys().filter(|segs| !ours.contains_key(*segs)).map(|segs| (*segs).clone()))
+            .chain(self.changed.iter().cloned())
+            .collect();
+        changed.sort();
+        changed.dedup();
+        let unsaved: Vec<&Segs> =
+            self.layout.entries().filter(|(_, entry)| entry.pending != Pending::Clean).map(|(segs, _)| segs).collect();
+        let deleted = self.layout.deleted();
+        let file = |segs: &Segs| format!("{}.toml", segs.join("/"));
+        let clashes =
+            changed.iter().filter(|segs| unsaved.contains(segs) || deleted.contains(segs)).map(&file).collect();
+        // One change per key, the outermost: a file replaced by a folder is its key, not the files under it.
+        let mut keys: Vec<&Segs> = Vec::new();
+        for segs in &changed {
+            if !keys.iter().any(|key| segs.starts_with(key)) {
+                keys.retain(|key| !key.starts_with(segs));
+                keys.push(segs);
+            }
+        }
+        let mut patch = Patch::new();
+        for key in keys {
+            let at = doc_path(key);
+            let after = lookup(&disk.root, &at).cloned();
+            let before = lookup(&self.root, &at).cloned();
+            if before != after {
+                patch = patch.with(at, before, after);
+            }
+        }
+        Ok(OutsideChanges { files: changed.iter().map(&file).collect(), clashes, patch })
+    }
+
     /// The writes and deletions of [`save`](Self::save).
     fn save_files(&mut self) -> Result<SaveReport, StoreError> {
         let (project, others): (Vec<_>, Vec<_>) =
             self.layout.pending().into_iter().partition(|(segs, _)| segs.as_slice() == [PROJECT_KEY]);
         let mut report = SaveReport::default();
         let mut refused = None;
+        self.changed.clear();
         self.write_files(others, &mut report, &mut refused)?;
         // Deleting before the last write means an interrupted save never leaves a hole where a file's replacement
         // should be, and never leaves files the new schema has no place for.
@@ -265,6 +436,7 @@ impl Project {
                 };
             if !removed {
                 refused.get_or_insert(disk::why_changed(disk::file_path(&self.dir, &segs)));
+                self.changed.push(segs);
                 continue;
             }
             self.layout.mark_deleted(&segs);
@@ -307,6 +479,16 @@ impl Project {
                 StoreError::Internal(format!("{}: {} (at {})", path.display(), u.reason, u.at))
             }
         })?;
+        // The table is back to what the file held a moment ago (an undo): that text, byte for byte, beats a
+        // re-rendering, which puts a restored key at the end and keeps the header of a table it had emptied (#2233).
+        let text = if base == Some(text.as_str()) {
+            text
+        } else {
+            self.known
+                .earlier(segs)
+                .find(|earlier| parse_table(earlier).is_ok_and(|parsed| parsed == *table))
+                .map_or(text, str::to_owned)
+        };
         let changed = base != Some(text.as_str());
         let hash = ContentHash::of(text.as_bytes());
         Ok(Rendered { text, hash, changed })
@@ -321,21 +503,28 @@ impl Project {
         refused: &mut Option<StoreError>,
     ) -> Result<(), StoreError> {
         for (segs, entry) in files {
+            if self.adopt_folder_if_same(&segs) {
+                continue;
+            }
             let rendered = self.render_file(&segs, entry)?;
             let path = disk::file_path(&self.dir, &segs);
             // An error after our text is committed at the target: the baseline is recorded first, then it is returned.
             let mut late = None;
             if rendered.changed {
                 let expected = self.known.hash(&segs);
-                match placed(disk::replace_checked(
+                let outcome = placed(disk::replace_checked(
                     &self.dir,
                     &path,
                     &rendered.text,
                     expected,
                     &mut lock(&self.retention),
-                ))? {
+                ))?;
+                match outcome {
                     Placed::No => {
-                        refused.get_or_insert(disk::why_changed(path));
+                        if !self.adopt_if_same(&segs, &path) {
+                            refused.get_or_insert(disk::why_changed(path));
+                            self.changed.push(segs);
+                        }
                         continue;
                     }
                     Placed::Yes(error) => late = error,
@@ -348,6 +537,7 @@ impl Project {
                 // followed (the same check `replace_checked` makes): it is an external change and the edit stays owed.
                 if let Err(e) = disk::refuse_links(&self.dir, &path) {
                     refused.get_or_insert(e);
+                    self.changed.push(segs);
                     continue;
                 }
                 match disk::file_state(&path, self.known.hash(&segs))? {
@@ -364,6 +554,7 @@ impl Project {
                         ))? {
                             Placed::No => {
                                 refused.get_or_insert(disk::why_changed(path));
+                                self.changed.push(segs);
                                 continue;
                             }
                             Placed::Yes(error) => late = error,
@@ -372,7 +563,10 @@ impl Project {
                     }
                     // The file was changed behind our back since: it is not ours to mark as written.
                     FileState::Different => {
-                        refused.get_or_insert(disk::why_changed(path));
+                        if !self.adopt_if_same(&segs, &path) {
+                            refused.get_or_insert(disk::why_changed(path));
+                            self.changed.push(segs);
+                        }
                         continue;
                     }
                 }
@@ -383,6 +577,57 @@ impl Project {
             }
         }
         Ok(())
+    }
+
+    /// A file changed behind our back that already holds exactly what the document has there (it was read back in
+    /// with `project.reload`, or edited to the same values) is not a conflict: its text becomes the last-known one and
+    /// it counts as saved, so the next save edits it in place and never rewrites the person's text. Returns whether it
+    /// was adopted.
+    fn adopt_if_same(&mut self, segs: &[String], path: &Path) -> bool {
+        if disk::refuse_links(&self.dir, path).is_err() {
+            return false;
+        }
+        let Ok(text) = disk::read_text(path) else { return false };
+        let Ok(table) = crate::toml_read::parse_table(&text) else { return false };
+        if lookup(&self.root, &doc_path(segs)) != Some(&Value::Object(table)) {
+            return false;
+        }
+        let hash = ContentHash::of(text.as_bytes());
+        self.known.record(segs.to_vec(), text, hash);
+        self.layout.mark_written(segs);
+        true
+    }
+
+    /// A file whose key is now a folder on disk (replaced outside Omuzaki) that holds exactly what the document has
+    /// there (it was read back in with `project.reload`): the folder becomes the key's layout, its files' texts the
+    /// last-known ones, so the save neither writes the file back beside the folder nor rewrites the folder. Returns
+    /// whether it was adopted.
+    fn adopt_folder_if_same(&mut self, segs: &[String]) -> bool {
+        let folder = {
+            let mut path = self.dir.clone();
+            path.extend(segs);
+            path
+        };
+        if disk::file_path(&self.dir, segs).symlink_metadata().is_ok()
+            || !folder.symlink_metadata().is_ok_and(|m| m.is_dir())
+            || disk::refuse_links(&self.dir, &folder).is_err()
+        {
+            return false;
+        }
+        let mut files = Vec::new();
+        let Ok(table) = disk::load_folder(&FileSource::Folder(&self.dir), &mut segs.to_vec(), &mut files) else {
+            return false;
+        };
+        if lookup(&self.root, &doc_path(segs)) != Some(&Value::Object(table)) {
+            return false;
+        }
+        self.layout.adopt_folder(segs, files.iter().map(|file| (file.segs.clone(), file.sticky)));
+        self.known.forget(segs);
+        for file in files {
+            let hash = ContentHash::of(file.text.as_bytes());
+            self.known.record(file.segs, file.text, hash);
+        }
+        true
     }
 
     /// Applies one change to the tree if it matches and can be stored.

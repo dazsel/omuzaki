@@ -54,6 +54,7 @@ pub use macros::{
     FileError, Macro, MacroRecorder, Overflowed, PlayError, PlayReport, RecordedCall, from_jsonl, play, play_within,
     to_jsonl,
 };
+pub use omuzaki_core::cancel::{CancelFlag, NeverCancel};
 pub use registered::{registered_host, registered_ops};
 pub use saved::{MAX_MACRO_BYTES, MAX_NAME_CHARS, Place, content_hash};
 pub use store::{MemScriptStore, ScriptKind, ScriptStore, StoredScript};

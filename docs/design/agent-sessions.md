@@ -459,8 +459,9 @@ open, there would be two writers and two documents. So:
   port, and the studio opens a `Stdio` session for it on behalf of the studio's person, with
   `Grants::agent_default()` plus the project root.
 - **Pairing.** The first connection of a new credential needs one click in Omuzaki's window. The bridge connects with
-  its own credential if it has one (stored per project and client in the user's config folder, owner-only), or asks
-  for a new one. A new or unknown credential opens its session `Paused { reason: Pairing }` and queues a
+  its own credential if it has one (stored per project and client in the user's local data folder, owner-only), or
+  asks for a new one: the studio publishes its port and a pairing key in the project's private `.omuzaki/studio.json`
+  (owner-only), and the bridge presents the key at `POST <path>/pair` to get an unpaired credential. A new or unknown credential opens its session `Paused { reason: Pairing }` and queues a
   `Pairing { client }` approval. The card ("Claude Code wants to work on this project") offers Pair or Refuse.
   - Pair resumes the session and marks the credential paired, so later connections with it need no click.
   - Refuse ends the session as revoked.
