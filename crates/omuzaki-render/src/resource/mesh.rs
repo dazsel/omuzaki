@@ -274,7 +274,7 @@ impl GpuMesh {
         let smooth: Vec<[f32; 3]> =
             smooth_by_slots(&welds, weld_count, &mesh.normals).iter().map(Vec3::to_array).collect();
         let rims: Vec<[f32; 3]> = outline_rims(mesh).iter().map(Vec3::to_array).collect();
-        let open = rims.iter().any(|r| *r != [0.0; 3]);
+        let open = rims.iter().any(|r| r.iter().any(|c| c.abs() > 0.0));
         // A dynamic mesh's vertex buffers are rewritten by `queue.write_buffer`, and so is the surface stream of a mesh
         // with vertex colours (`update_colours`); the rest never are.
         let rewritable = if dynamic { wgpu::BufferUsages::COPY_DST } else { wgpu::BufferUsages::empty() };

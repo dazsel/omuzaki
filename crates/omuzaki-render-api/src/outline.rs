@@ -105,6 +105,7 @@ pub fn outline_rims(mesh: &MeshData) -> Vec<Vec3> {
 }
 
 #[cfg(test)]
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::field_reassign_with_default)]
 mod tests {
     use omuzaki_core::glam::Vec2;
 
