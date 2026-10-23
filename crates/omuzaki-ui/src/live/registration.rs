@@ -46,9 +46,7 @@ pub struct HealthUiPanel(HealthPanel);
 impl Panel for HealthUiPanel {
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &PanelCtx<'_>) {
         egui::ScrollArea::vertical().id_salt("live.health").auto_shrink([false, false]).show(ui, |ui| {
-            egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 6)).show(ui, |ui| {
-                self.0.ui(ui, ctx.view::<MetricsReader>());
-            });
+            self.0.ui(ui, ctx.view::<MetricsReader>());
         });
     }
 }

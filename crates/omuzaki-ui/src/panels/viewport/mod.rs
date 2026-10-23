@@ -267,6 +267,8 @@ impl Viewport {
                     self.camera.look_from(view);
                 }
             }
+            // The views, then the framing: two groups, so the eye finds each.
+            ui.separator();
             if ui.add(Button::new(&say(ds, text::FRAME_SELECTION, &[])).ghost().shortcut_hint(Key::F)).clicked() {
                 self.frame_selection();
             }

@@ -1,7 +1,10 @@
 //! How the docking widget draws and constrains the panels: what may be dragged or resized, the minimum size of each
 //! panel, and which panel a tab press focuses (`shell.md` section 4).
 
-use egui::{Align, Context, Layout, Popup, Rect, Response, Sense, Ui, UiBuilder, Vec2, WidgetText};
+use egui::{
+    Align, Color32, Context, CornerRadius, Layout, Margin, Mesh, Popup, Pos2, Rect, Response, Sense, Shape, Stroke, Ui,
+    UiBuilder, Vec2, WidgetText, pos2, vec2,
+};
 use egui_tiles::{Behavior, Container, LinearDir, SimplificationOptions, Tile, TileId, Tiles, Tree, UiResponse};
 
 use omuzaki_ui_api::panel::PanelCtx;
@@ -13,13 +16,17 @@ use super::text::{Word, say, title};
 use crate::ds::icons;
 use crate::ds::paint::{self, RingPlacement};
 use crate::ds::theme::ds;
-use crate::ds::tokens::size;
+use crate::ds::tokens::{Theme, radius, size, space, stroke};
 use crate::ds::widgets::{Button, Tip};
 
 /// The shortest any docked panel gets, whatever its registration says.
 const MIN_TILE: f32 = 160.0;
 /// Shares are kept this far above their minimum, in points, before a clamp is worth doing.
 const SLACK: f32 = 0.5;
+/// The gap between two panels, and around the dock: each panel is a card on the window's background.
+pub const GAP: f32 = space::S6;
+/// The room inside a panel's card around its body; a primary panel (the viewport, the stage) runs to the card's edge.
+const BODY: Margin = Margin::symmetric(8, 6);
 
 /// The docking widget's view of a frame.
 pub struct Dock<'a> {
@@ -50,6 +57,8 @@ pub struct Dock<'a> {
     pub hidden: Vec<TileId>,
     /// The panels of those tabs, by the open panel of their group, whose "⋯" menu offers them.
     pub overflow: Vec<(String, Vec<String>)>,
+    /// Each panel's card this frame, its tab bar included ([`cards_under`], [`cards_over`]).
+    pub cards: Vec<Rect>,
 }
 
 /// What a panel's "⋯" menu asks of the shell: the keyboard's way to do what a drag does (`shell.md` section 4 rule 4,
@@ -85,7 +94,15 @@ impl Behavior<PanelId> for Dock<'_> {
                 header.set_clip_rect(place.expand(4.0));
                 self.panel_menu(&mut header, def);
             }
-            self.bodies.draw(ui, def, self.panel_ctx);
+            self.cards.push(Rect::from_min_max(pos2(rect.left(), rect.top() - size::DOCK_TAB), rect.max));
+            if def.kind == PanelKind::Primary {
+                self.bodies.draw(ui, def, self.panel_ctx);
+            } else {
+                egui::Frame::new().inner_margin(BODY).show(ui, |ui| {
+                    ui.set_min_size(ui.available_size());
+                    self.bodies.draw(ui, def, self.panel_ctx);
+                });
+            }
             if self.focus.as_deref() == Some(def.id) {
                 let accent = ds(self.ctx).theme.accent;
                 ui.painter().hline(rect.x_range(), rect.top(), egui::Stroke::new(2.0, accent));
@@ -178,9 +195,14 @@ impl Behavior<PanelId> for Dock<'_> {
             response = response.on_hover_text(&label);
         }
         if ui.is_rect_visible(rect) && !state.is_being_dragged {
-            let fill = self.tab_bg_color(ui.visuals(), tiles, tile_id, state);
+            let mut fill = self.tab_bg_color(ui.visuals(), tiles, tile_id, state);
+            if response.hovered() && !state.active {
+                // A closed tab answers the pointer, as every control does.
+                fill = ds(ui.ctx()).theme.bg3;
+            }
             let stroke = self.tab_outline_stroke(ui.visuals(), tiles, tile_id, state);
-            ui.painter().rect(rect.shrink(0.5), 0.0, fill, stroke, egui::StrokeKind::Inside);
+            let top = CornerRadius { nw: radius::CARD, ne: radius::CARD, sw: 0, se: 0 };
+            ui.painter().rect(rect.shrink(0.5), top, fill, stroke, egui::StrokeKind::Inside);
             if state.active {
                 // The open tab joins the panel below it.
                 ui.painter().hline(rect.x_range(), rect.bottom(), egui::Stroke::new(stroke.width + 1.0, fill));
@@ -208,6 +230,15 @@ impl Behavior<PanelId> for Dock<'_> {
 
     fn tab_bar_height(&self, _style: &egui::Style) -> f32 {
         size::DOCK_TAB
+    }
+
+    /// The bar is part of the panel's card, painted with it ([`cards_under`]).
+    fn tab_bar_color(&self, _visuals: &egui::Visuals) -> Color32 {
+        Color32::TRANSPARENT
+    }
+
+    fn gap_width(&self, _style: &egui::Style) -> f32 {
+        GAP
     }
 
     fn min_size(&self) -> f32 {
@@ -398,6 +429,61 @@ pub fn enforce_minimums(tree: &mut Tree<PanelId>, registry: &Registry) {
                 linear.shares.set_share(*child, share);
             }
         }
+    }
+}
+
+/// The panels' cards under their content: the body on `bg1` and the tab bar on `bg2`, rounded.
+pub fn cards_under(theme: &Theme, cards: &[Rect]) -> Vec<Shape> {
+    let top = CornerRadius { nw: radius::CARD, ne: radius::CARD, sw: 0, se: 0 };
+    cards
+        .iter()
+        .flat_map(|card| {
+            let bar = Rect::from_min_size(card.min, vec2(card.width(), size::DOCK_TAB));
+            [Shape::rect_filled(*card, radius::CARD, theme.bg1), Shape::rect_filled(bar, top, theme.bg2)]
+        })
+        .collect()
+}
+
+/// Over their content: each card's corners rounded off against the window's background (a body that fills its rect,
+/// like the viewport, would otherwise square them) and its outline.
+pub fn cards_over(theme: &Theme, cards: &[Rect]) -> Vec<Shape> {
+    let r = f32::from(radius::CARD);
+    let mut shapes = Vec::with_capacity(cards.len() * 2);
+    for card in cards {
+        let mut mesh = Mesh::default();
+        let corners = [
+            (card.left_top(), pos2(card.left() + r, card.top() + r), std::f32::consts::PI),
+            (card.right_top(), pos2(card.right() - r, card.top() + r), -std::f32::consts::FRAC_PI_2),
+            (card.right_bottom(), pos2(card.right() - r, card.bottom() - r), 0.0),
+            (card.left_bottom(), pos2(card.left() + r, card.bottom() - r), std::f32::consts::FRAC_PI_2),
+        ];
+        for (corner, centre, from) in corners {
+            corner_mask(&mut mesh, corner, centre, r, from, theme.bg0);
+        }
+        shapes.push(Shape::mesh(mesh));
+        shapes.push(Shape::rect_stroke(
+            *card,
+            radius::CARD,
+            Stroke::new(stroke::HAIRLINE, theme.line),
+            egui::StrokeKind::Inside,
+        ));
+    }
+    shapes
+}
+
+/// The sliver between a square corner and its rounding: a fan from the corner over a quarter arc of `r` about `centre`,
+/// starting at angle `from` (radians, y down).
+fn corner_mask(mesh: &mut Mesh, corner: Pos2, centre: Pos2, r: f32, from: f32, colour: Color32) {
+    const STEPS: u32 = 6;
+    let base = u32::try_from(mesh.vertices.len()).unwrap_or(u32::MAX);
+    mesh.colored_vertex(corner, colour);
+    for step in 0..=STEPS {
+        #[allow(clippy::cast_precision_loss)] // a handful of steps
+        let angle = from + std::f32::consts::FRAC_PI_2 * step as f32 / STEPS as f32;
+        mesh.colored_vertex(centre + r * Vec2::angled(angle), colour);
+    }
+    for step in 0..STEPS {
+        mesh.add_triangle(base, base + 1 + step, base + 2 + step);
     }
 }
 

@@ -24,6 +24,8 @@ Every screen has the same seven regions.
 | **Status bar** | 24 pt | selection, **undo label**, fence note, health meter, agent budget |
 | **Overlays** | n/a | command palette, approval stack, toasts, notification log, dialogs |
 
+Each docked panel is a card (radius 6, a hairline `line` outline, its tab bar on `bg2` and its body on `bg1`) on the window's `bg0`, 6 pt from the next card and from the window's edges, so every pane reads as its own place. A panel's body sits 8 pt in from its card's sides and 6 pt from its top and bottom; the primary panel (the viewport, the stage) runs to the card's edge.
+
 Supported window sizes run from **1280×720** (minimum, enforced) to 4K. The wireframes show **1920×1080** and **1366×768**, the two sizes every panel is reviewed at. Sizes are in egui points, so they hold at any OS scale.
 
 
@@ -45,8 +47,8 @@ Every item is an op or a registered action, so it is also in the palette (P8).
 |---|---|---|
 | XL | ≥ 1920 | as drawn in `build-1920.svg` |
 | L | 1600 to 1919 | as XL |
-| M | 1366 to 1599 | docks 240 and 300 pt; Library becomes a tab beside the Outliner; inactive workspace tabs show only an icon (the active one keeps its label) |
-| S | 1280 to 1365 | left dock collapses to a 48 pt icon rail that opens as an overlay drawer; inspector 288 pt; Go Live becomes an icon with a tooltip |
+| M | 1366 to 1599 | docks 240 and 300 pt; Library becomes a tab beside the Outliner; every workspace tab keeps its label (S shows the inactive ones as icons) |
+| S | 1280 to 1365 | left dock collapses to a 48 pt icon rail that opens as an overlay drawer; inspector 288 pt; inactive workspace tabs show only an icon; Go Live becomes an icon with a tooltip |
 
 If the window is shorter than 800 pt, Agent and History merge into the Inspector's tab group (Inspector | Agent | History). Collapse order when space runs out: bottom dock, then Library, then Agent/History into a tab, then the left dock to a rail, then the right dock to a rail. The viewport never goes below 480×320 pt; the Inspector is the last panel to collapse.
 
@@ -73,7 +75,7 @@ If the window is shorter than 800 pt, Agent and History merge into the Inspector
 
 ![Build workspace, 1366 by 768](wireframes/build-1366.svg)
 
-Same regions, width class M. The Library moved into a tab beside the Outliner, inactive workspace tabs are icons, the search field is a button showing "K", and the inspector is 300 pt wide. The slider row still fits (section 7) because its label column shrinks first.
+Same regions, width class M. The Library moved into a tab beside the Outliner, the workspace tabs keep their labels, the search field is a button showing "K", and the inspector is 300 pt wide. The slider row still fits (section 7) because its label column shrinks first.
 
 ## 3. Workspaces and panels
 

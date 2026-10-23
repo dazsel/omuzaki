@@ -902,7 +902,7 @@ pub struct ConsolePanel(pub Console);
 impl Panel for ConsolePanel {
     fn ui(&mut self, ui: &mut Ui, ctx: &PanelCtx<'_>) {
         match ctx.view::<Scripting>() {
-            Some(scripting) => super::padded(ui, |ui| self.0.ui(ui, scripting, ctx.actor(), Some(ctx))),
+            Some(scripting) => self.0.ui(ui, scripting, ctx.actor(), Some(ctx)),
             None => no_scripting(ui),
         }
     }

@@ -346,7 +346,9 @@ impl Shell {
         if self.views.get(self.active).is_some_and(|v| v.as_ref().is_some_and(|v| !v.rail.is_empty())) {
             self.rail(ui);
         }
-        CentralPanel::default().frame(Frame::new().fill(ds(&ctx).theme.bg1)).show(ui, |ui| self.body(ui));
+        // The panels are cards on the window's background, a gap apart and a gap in from its edges.
+        let backdrop = Frame::new().fill(ds(&ctx).theme.bg0).inner_margin(dock::GAP);
+        CentralPanel::default().frame(backdrop).show(ui, |ui| self.body(ui));
         self.approval_stack(&ctx);
         self.palette_ui(&ctx);
         if self.sheet {
@@ -777,8 +779,13 @@ impl Shell {
             crowded: Vec::new(),
             hidden: Vec::new(),
             overflow: Vec::new(),
+            cards: Vec::new(),
         };
+        let under = ui.painter().add(egui::Shape::Noop);
         view.tree.ui(&mut dock, ui);
+        let theme = ds(&ctx).theme;
+        ui.painter().set(under, dock::cards_under(&theme, &dock.cards));
+        ui.painter().extend(dock::cards_over(&theme, &dock.cards));
         let moved = handles::name_handles(ui, &mut view.tree, &self.registry);
         let moved = moved.then(|| Layout::from_tree(&view.tree).map(|l| l.without(&[]))).flatten();
         self.drawer(&ctx, rect);
