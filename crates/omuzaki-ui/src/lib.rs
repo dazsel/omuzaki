@@ -52,6 +52,7 @@ omuzaki_core::define_link! {
     omuzaki_live::link();
     omuzaki_live_api::link();
     omuzaki_live_nodes::link();
+    omuzaki_mcp::link();
     omuzaki_obs::link();
     omuzaki_render::link();
     omuzaki_script::link();

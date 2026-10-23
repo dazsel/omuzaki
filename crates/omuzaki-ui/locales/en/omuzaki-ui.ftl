@@ -2447,6 +2447,10 @@ ui-panels-agent-none = Connect an agent
 ui-panels-agent-none-how = Agents work through the same ops you do, and you approve what they ask for. Connect one over MCP to see it here.
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+# $url (id, never translated): "hair-b"
+ui-panels-agent-none-where = Point an MCP client at { $url }, or run omuzaki mcp in the project's folder.
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
 ui-panels-agent-one-step = 1 step
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
