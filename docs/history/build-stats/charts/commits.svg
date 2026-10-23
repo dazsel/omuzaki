@@ -17,7 +17,7 @@
 <rect x="353.5" y="247.5" width="108.0" height="52.5" fill="#2a6fdb"/>
 <rect x="488.5" y="286.5" width="108.0" height="13.5" fill="#2a6fdb"/>
 <rect x="623.5" y="200.5" width="108.0" height="99.5" fill="#2a6fdb"/>
-<rect x="758.5" y="223.5" width="108.0" height="76.5" fill="#2a6fdb"/>
+<rect x="758.5" y="210.5" width="108.0" height="89.5" fill="#2a6fdb"/>
 <line x1="340.0" x2="340.0" y1="50" y2="300" stroke="#444" stroke-dasharray="4 3"/>
 <text x="344.0" y="62" text-anchor="start" font-size="11" fill="#222" stroke="#fff" stroke-width="3" paint-order="stroke">Peak: 52 agents at once</text>
 <line x1="610.0" x2="610.0" y1="50" y2="300" stroke="#444" stroke-dasharray="4 3"/>
