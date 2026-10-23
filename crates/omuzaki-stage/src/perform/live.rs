@@ -172,9 +172,12 @@ impl<S: FrameLoop> LiveStage<S> {
         let output = if self.paused {
             self.stage.redraw(renderer, self.frames.input())?
         } else {
-            // The members step first, on the same clock, so a frame shows every member at the same step.
+            // The members step first, on the same clock, so a frame shows every member at the same step; a stage
+            // that draws the cast takes each member's input for this frame.
             for member in &mut self.members {
-                member.frames.advance(&mut member.control, &mut member.performer, now);
+                if member.frames.advance(&mut member.control, &mut member.performer, now) {
+                    self.stage.set_member_input(&member.id, member.frames.input());
+                }
             }
             match self.frames.run(&mut self.control, &mut self.performer, &mut self.stage, renderer, now)? {
                 Some(output) => output,
@@ -299,9 +302,9 @@ impl<S: FrameLoop> LiveStage<S> {
     }
 
     /// Adds `member` performing beside the subject, with `performer`, and returns its handle for the ops (also in the
-    /// [cast](Self::cast)). A member of the same id is replaced; the subject's id is
-    /// refused. Install its character's expressions through the handle
-    /// ([`PerformHost::set_expressions`]). Cold: allocates.
+    /// [cast](Self::cast)). A member of the same id is replaced; the subject's id is refused. When the stage draws the
+    /// member ([`CastStage`](crate::cast::CastStage)), its frames reach it and its character's expressions go to its
+    /// triggers; otherwise install them through the handle ([`PerformHost::set_expressions`]). Cold: allocates.
     ///
     /// # Errors
     /// [`PerformError::Unsupported`] for the subject's own id.
@@ -310,6 +313,9 @@ impl<S: FrameLoop> LiveStage<S> {
             return Err(PerformError::Unsupported);
         }
         let (handle, control) = perform_channel(&performer);
+        if let Some(expressions) = self.stage.trigger_expressions_of(&member) {
+            handle.set_expressions(expressions, *performer.rest())?;
+        }
         let input = FrameInput { pose: *performer.base(), ..FrameInput::default() };
         let entry = LiveMember { id: member.clone(), performer, control, handle: handle.clone(), frames: PerformFrame::new(input) };
         match self.members.iter_mut().find(|m| m.id == member) {

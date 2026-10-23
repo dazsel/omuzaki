@@ -86,9 +86,11 @@ webcam gated off the head leaves it to an agent's `act.look`, or to the life lay
 
 **One performer per member.** `LiveStage` runs the subject's performer, which drives the stage, and a performer for each
 member added with `add_member`: its own source (or none), triggers, voice, live score and drive map, stepped on the same
-clock in the same frame. A member's pose and channels are kept as its next frame's input (`member_input`), which the
-stage draws once it holds every member: Render is building `StageMember` and `Stage::tick_members`, and the loop moves
-to it in one call. `CastBook` (`LiveCast`) names every performing member's host, the subject first, for the ops.
+clock in the same frame. Each step's pose and channels become the member's next frame's input (`member_input`), and the
+loop hands it to the stage (`FrameLoop::set_member_input`): Render's `CastStage` draws every member in one frame with
+its own input, and a member's performer bakes its triggers against that member's own expressions
+(`FrameLoop::trigger_expressions_of`). A single-body stage draws no other member and ignores both. `CastBook`
+(`LiveCast`) names every performing member's host, the subject first, for the ops.
 
 The studio today runs one performer and serves it as `PerformHost` with no cast; the ops treat it as the subject, so
 every `act.*` works in the studio and over MCP now.
@@ -125,12 +127,13 @@ undo; the saved map is what it starts from.
 - `PerformHost` gains `act`, `release_act`, `acts`, `set_drive` and `drive`, each with a default that refuses
   (`Unsupported`), so every other implementation keeps compiling; `PerformError` gains `UnknownClip`.
 - `Performer` gains `score_mut`, `set_drive`, `drive` and `base`; `PerformFrame` gains `advance`; `LiveStage` gains the
-  member calls and `cast`. Nothing changes for a caller that uses none of them.
+  member calls and `cast`; `FrameLoop` gains `set_member_input` and `trigger_expressions_of`, defaulted for a single
+  body and implemented by `CastStage`. Nothing changes for a caller that uses none of them.
 
 ## 7. Next
 
-- **The stage draws every member** (Render's `tick_members`); then the studio's live slice runs `LiveStage`'s members
-  and serves `CastBook`, and a member starts from its saved drive map.
+- **The studio runs the cast**: its live slice builds a `CastStage` from the scene's visible cast, adds a performer per
+  member and serves `CastBook`, and each member starts from its saved drive map.
 - **`act.speak`** on Tracking's voice services, per member (today `performer.say` speaks for the co-host).
 - **Clips from the project's library** beside the built-in ones, and each character's own hand rest for its clips.
 - **Recorded takes as a score driver**, and the **conversation driver** (listen, any LLM or outside brain, speak and
