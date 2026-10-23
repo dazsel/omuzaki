@@ -76,9 +76,46 @@ pub fn definitions() -> FontDefinitions {
     fonts
 }
 
+/// [`definitions`] with `faces` (a key and the font's data each) in every family's chain right after its bundled face,
+/// in the order given: a character the bundled face lacks (Japanese, Korean, Chinese) is drawn in them, and every
+/// other character stays in the bundled face. The icon families are left alone.
+pub fn with_fallbacks(faces: &[(String, Arc<FontData>)]) -> FontDefinitions {
+    let mut fonts = definitions();
+    for (key, data) in faces {
+        fonts.font_data.insert(key.clone(), Arc::clone(data));
+    }
+    let families = [
+        FontFamily::Proportional,
+        FontFamily::Monospace,
+        FontFamily::Name(SANS_MEDIUM.into()),
+        FontFamily::Name(SANS_SEMIBOLD.into()),
+        FontFamily::Name(DISPLAY.into()),
+    ];
+    for family in families {
+        if let Some(chain) = fonts.families.get_mut(&family) {
+            let at = chain.len().min(1);
+            for (offset, (key, _)) in faces.iter().enumerate() {
+                chain.insert(at + offset, key.clone());
+            }
+        }
+    }
+    fonts
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_fetched_face_follows_each_bundled_face_and_leaves_the_icons_alone() {
+        let face = Arc::new(FontData::from_static(JETBRAINS_MONO));
+        let fonts = with_fallbacks(&[("Noto-Jp".to_owned(), face)]);
+        assert!(fonts.font_data.contains_key("Noto-Jp"));
+        for family in [FontFamily::Proportional, FontFamily::Monospace, FontFamily::Name(SANS_SEMIBOLD.into())] {
+            assert_eq!(fonts.families[&family][1], "Noto-Jp", "{family:?}");
+        }
+        assert!(!fonts.families[&FontFamily::Name(ICONS.into())].iter().any(|k| k == "Noto-Jp"));
+    }
 
     #[test]
     fn every_family_the_text_styles_use_is_bound() {

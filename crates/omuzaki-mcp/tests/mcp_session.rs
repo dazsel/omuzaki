@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::{FakeRunner, FakeRunnerExt, data, fake_runner, text, tool};
-use omuzaki_mcp::{McpOptions, McpServer, ServerError};
+use omuzaki_mcp::{McpOptions, McpServer, ServerError, ToolMode};
 use omuzaki_ops_api::{
     Actor, ApprovalId, Budget, Cause, CauseKind, Decision, EndReason, Ended, Grants, OpError, OpKind, PauseReason,
     PendingApproval, Resolution, Scope, SessionId, SessionInfo, SessionSpec, SessionState, SessionUndo, Sessions,
@@ -27,12 +27,24 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-const BUILTINS: [&str; 6] = ["history_log", "history_redo", "history_undo", "tx_begin", "tx_commit", "tx_rollback"];
+const BUILTINS: [&str; 9] = [
+    "doc_get",
+    "history_log",
+    "history_redo",
+    "history_undo",
+    "ops_describe",
+    "ops_find",
+    "tx_begin",
+    "tx_commit",
+    "tx_rollback",
+];
 
 /// A client that records resource-update notifications.
 struct TestClient {
     protocol: ProtocolVersion,
     updates: mpsc::UnboundedSender<String>,
+    /// Told of each `notifications/tools/list_changed`, when a test listens.
+    lists: Option<mpsc::UnboundedSender<()>>,
 }
 
 impl ClientHandler for TestClient {
@@ -47,6 +59,13 @@ impl ClientHandler for TestClient {
         _context: NotificationContext<RoleClient>,
     ) {
         let _ = self.updates.send(params.uri);
+    }
+
+    fn on_tool_list_changed(&self, _context: NotificationContext<RoleClient>) -> impl Future<Output = ()> + Send + '_ {
+        if let Some(lists) = &self.lists {
+            let _ = lists.send(());
+        }
+        std::future::ready(())
     }
 }
 
@@ -79,6 +98,7 @@ struct Harness {
     runner: Arc<FakeRunner>,
     client: RunningService<RoleClient, TestClient>,
     updates: mpsc::UnboundedReceiver<String>,
+    lists: mpsc::UnboundedReceiver<()>,
     server: JoinHandle<Result<(), ServerError>>,
     /// The same server the client talks to, for awaiting its event log.
     mcp: McpServer,
@@ -97,11 +117,12 @@ impl Harness {
         let serving = mcp.clone();
         let server = tokio::spawn(async move { serving.serve(server_io).await });
         let (updates_tx, updates) = mpsc::unbounded_channel();
-        let client = TestClient { protocol: lifecycle.protocol(), updates: updates_tx }
+        let (lists_tx, lists) = mpsc::unbounded_channel();
+        let client = TestClient { protocol: lifecycle.protocol(), updates: updates_tx, lists: Some(lists_tx) }
             .serve_with_lifecycle(client_io, lifecycle.mode())
             .await
             .expect("client connects");
-        Self { runner, client, updates, server, mcp }
+        Self { runner, client, updates, lists, server, mcp }
     }
 
     async fn call(&self, tool: &str, args: Value) -> CallToolResult {
@@ -120,6 +141,45 @@ impl Harness {
 }
 
 // ---- tool list -----------------------------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_core_list_reaches_every_op_through_the_finder_and_lists_an_area_on_request() {
+    let mut h = Harness::connect_with(McpOptions::default().with_tools(ToolMode::Core), Lifecycle::Initialize).await;
+    let names = |tools: Vec<rmcp::model::Tool>| tools.into_iter().map(|t| t.name.to_string()).collect::<Vec<_>>();
+    let listed = names(h.client.list_all_tools().await.unwrap());
+    assert!(listed.contains(&"ops_run".to_owned()) && listed.contains(&"ops_find".to_owned()), "{listed:?}");
+    assert!(!listed.iter().any(|n| n.starts_with("face_")), "a core list leaves the ops out: {listed:?}");
+    let info = h.client.peer_info().unwrap();
+    assert_eq!(info.capabilities.tools.as_ref().and_then(|t| t.list_changed), Some(true));
+    assert!(info.instructions.as_deref().unwrap().contains("face (1)"), "the guide names the areas");
+
+    let found = h.call("ops_find", json!({"query": "face profile"})).await;
+    assert_eq!(data(&found)["ops"][0]["op"], "face.set_blend", "{}", text(&found));
+    let described = h.call("ops_describe", json!({"op": "face.set_blend"})).await;
+    assert!(text(&described).contains("ops_run {\"op\": \"face.set_blend\""), "{}", text(&described));
+
+    let preview = h
+        .call("ops_run", json!({"op": "face.set_blend", "args": {"character": "mira", "blend": 0.5}, "dry_run": true}))
+        .await;
+    assert_eq!(data(&preview)["mode"], "dry_run", "{}", text(&preview));
+    assert_eq!(h.runner.blend(), None);
+    let applied = h.call("ops_run", json!({"op": "face.set_blend", "args": {"character": "mira", "blend": 0.5}})).await;
+    assert_eq!(data(&applied)["applied"], true, "{}", text(&applied));
+    assert_eq!(h.runner.blend(), Some(json!(0.5)));
+    let wrong = h.call("ops_run", json!({"op": "face.set_blend", "args": {"character": "mira", "blnd": 0.5}})).await;
+    assert!(text(&wrong).contains("face_set_blend("), "an op's error shows the op's own call: {}", text(&wrong));
+
+    let read = h.call("doc_get", json!({"path": "characters/mira/face/blend"})).await;
+    assert_eq!(data(&read)["value"], json!(0.5), "{}", text(&read));
+
+    let enabled = h.call("tools_enable", json!({"areas": ["face"]})).await;
+    assert_eq!(data(&enabled)["changed"], true, "{}", text(&enabled));
+    tokio::time::timeout(Duration::from_secs(5), h.lists.recv()).await.expect("list_changed in time").expect("open");
+    let listed = names(h.client.list_all_tools().await.unwrap());
+    assert!(listed.contains(&"face_set_blend".to_owned()), "{listed:?}");
+    assert!(!listed.iter().any(|n| n.starts_with("render_")), "only the area asked for: {listed:?}");
+    h.disconnect().await;
+}
 
 #[tokio::test]
 async fn the_tool_list_matches_the_runner_ops_exactly() {
@@ -854,7 +914,7 @@ async fn attach(server: &McpServer) -> RunningService<RoleClient, TestClient> {
     let server = server.clone();
     tokio::spawn(async move { server.serve(server_io).await });
     let (updates, _) = mpsc::unbounded_channel();
-    TestClient { protocol: Lifecycle::Initialize.protocol(), updates }
+    TestClient { protocol: Lifecycle::Initialize.protocol(), updates, lists: None }
         .serve_with_lifecycle(client_io, Lifecycle::Initialize.mode())
         .await
         .unwrap()

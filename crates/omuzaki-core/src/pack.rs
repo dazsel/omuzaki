@@ -5,10 +5,9 @@
 //! only on the set of items, never on the order they arrive in: items are placed largest first, ties broken by `id`,
 //! so a caller can shuffle its inputs without the atlas changing.
 //!
-//! The bin is the bounding box of the first trial square, grown from the padded area, that holds everything. Only when the square reaches
-//! `max_side` does placement stop at the first item that no longer fits. Items are placed in a fixed order, and the
-//! ones left out are the ones packed last, so a full atlas drops the smallest sprites rather than an arbitrary middle
-//! slice.
+//! The bin is the bounding box of the first trial square, grown from the padded area, that holds everything. Once the
+//! square reaches `max_side`, an item that fits nowhere is left out and the later, smaller items are still tried, so a
+//! full atlas leaves out only what truly does not fit, and a multi-page caller needs no more pages than it must.
 
 /// One rectangle to place. `id` is the caller's key and the tie-break, so the ids in one call should be unique.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,8 +53,8 @@ pub struct Packing {
     pub height: u32,
     /// The placed items, in input order.
     pub placements: Vec<Placement>,
-    /// The ids left out, in the order they were considered: items too large for `max_side`, and the items that did not
-    /// fit once the bin reached `max_side`.
+    /// The ids left out, in the order they were considered: items too large for `max_side`, and the items that fit
+    /// nowhere once the bin reached `max_side`.
     pub unplaced: Vec<u32>,
 }
 
@@ -72,7 +71,8 @@ const GROWTH_DIVISOR: u32 = 64;
 ///
 /// Items are considered largest first (longest side, then height, then width, all descending; then `id` ascending).
 /// An item that cannot fit within `max_side` once padded is left out and does not count against the bin. At `max_side`,
-/// the first item that fits nowhere ends the packing, and every later item is left out too.
+/// an item that fits nowhere is left out and every later item is still tried in the same order, so only the items that
+/// fit nowhere are left out.
 ///
 /// The function is pure: no randomness, no global state, and no panics. Zero items give a `0` by `0` packing.
 #[must_use]
@@ -83,7 +83,7 @@ pub fn pack(items: &[PackItem], options: &PackOptions) -> Packing {
     let order = packing_order(items);
     let mut side = first_trial_side(&padded, max_side);
     loop {
-        let attempt = try_side(items, &order, &padded, options.padding, side);
+        let attempt = try_side(items, &order, &padded, options.padding, side, side >= max_side);
         if attempt.complete || side >= max_side {
             return attempt.into_packing(items, options);
         }
@@ -116,8 +116,16 @@ struct Attempt {
     complete: bool,
 }
 
-/// Runs `MaxRects` over a `side` by `side` square, in packing order, and stops at the first item that fits nowhere.
-fn try_side(items: &[PackItem], order: &[usize], padded: &[Option<(u32, u32)>], padding: u32, side: u32) -> Attempt {
+/// Runs `MaxRects` over a `side` by `side` square, in packing order. At the last side (`last`) an item that fits nowhere
+/// is skipped and the rest are still tried; before it, the first miss ends the attempt, since a bigger square follows.
+fn try_side(
+    items: &[PackItem],
+    order: &[usize],
+    padded: &[Option<(u32, u32)>],
+    padding: u32,
+    side: u32,
+    last: bool,
+) -> Attempt {
     let mut packer = MaxRects::new(side);
     let mut attempt =
         Attempt { corners: vec![None; items.len()], extent: (0, 0), unplaced: Vec::new(), complete: true };
@@ -127,7 +135,7 @@ fn try_side(items: &[PackItem], order: &[usize], padded: &[Option<(u32, u32)>], 
             attempt.unplaced.push(item.id);
             continue;
         };
-        let slot = if attempt.complete { packer.insert(pw, ph) } else { None };
+        let slot = if attempt.complete || last { packer.insert(pw, ph) } else { None };
         if let Some(rect) = slot {
             attempt.corners[index] = Some((rect.x + padding, rect.y + padding));
             attempt.extent = (attempt.extent.0.max(rect.x + rect.w), attempt.extent.1.max(rect.y + rect.h));

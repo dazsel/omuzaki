@@ -1,0 +1,40 @@
+[package]
+name = "omuzaki-agent"
+description = "The in-app assistant's host (AG-01, ADR 0040): AssistantHost and its turn loop over an in-process MCP client and a dyn LlmClient, the context builder, the host-local tools and the conversation store."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+base64.workspace = true
+blake3.workspace = true
+rmcp = { workspace = true, features = ["client"] }
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util", "time"] }
+omuzaki-agent-api = { path = "../omuzaki-agent-api" }
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-doc-api = { path = "../omuzaki-doc-api" }
+omuzaki-llm-api = { path = "../omuzaki-llm-api" }
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+omuzaki-settings-api = { path = "../omuzaki-settings-api" }
+
+[dev-dependencies]
+tempfile.workspace = true
+toml.workspace = true
+omuzaki-llm-mock = { path = "../omuzaki-llm-mock" }
+
+[lints]
+workspace = true
+
+# Native only: the host thread blocks on an rmcp client that runs on tokio.
+[package.metadata.omuzaki]
+kind = "Implementation"
+summary = "the in-app assistant's host (AG-01, ADR 0040): `AssistantHost`, the turn loop over an in-process rmcp client and a `dyn LlmClient`, Stop, the context builder and compaction, the host-local tools and the conversation store; links API crates and rmcp's client only, never `omuzaki-mcp`, `omuzaki-ops` or `omuzaki-llm`"
+wasm = false
+registers = true

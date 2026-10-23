@@ -1,0 +1,580 @@
+//! [`McpClientLink`]: the host's one MCP client, over an in-process duplex (D1).
+//!
+//! The host thread is a plain thread, so every call here starts the request on the app's tokio runtime and hands back a
+//! [`Pending`] the thread polls. Nothing here blocks on its own, which is what lets Stop abandon a call in flight.
+
+use std::future::Future;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::channel;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
+
+use omuzaki_agent_api::error::HostError;
+use omuzaki_llm_api::message::ImageMime;
+use omuzaki_llm_api::provider::RuntimeHandle;
+use omuzaki_llm_api::stream::Cancel;
+use rmcp::model::{
+    CallToolRequest, CallToolRequestParams, ClientCapabilities, ClientConfig, ClientRequest, ContentBlock,
+    CustomNotification, GetPromptRequestParams, Implementation, JsonObject, ProtocolVersion, ReadResourceRequestParams,
+    ResourceContents, ServerResult,
+};
+use rmcp::service::{NotificationContext, PeerRequestOptions, RoleClient, RunningService, ServiceError};
+use rmcp::{ClientHandler, ClientLifecycleMode, ClientServiceExt};
+use serde_json::{Value, json};
+
+/// The `_meta` key `omuzaki-mcp` puts on each tool to name what a call will do (D2.5).
+const KIND_KEY: &str = "omuzaki/kind";
+/// How long a call abandoned by Stop is still awaited, so a late result can be recorded.
+const LATE_WAIT: Duration = Duration::from_secs(60);
+/// How often an in-flight request looks at its cancel flag.
+const CANCEL_POLL: Duration = Duration::from_millis(2);
+
+/// What a tool does when called, from the server's `_meta` (D2.5).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ToolKind {
+    /// Changes the document: joins the answer's transaction.
+    Edit,
+    /// Reads only.
+    Query,
+    /// A job that finishes as its own step.
+    Job,
+    /// A driver job, which joins the transaction and never commits it.
+    DriverJob,
+    /// A server built-in (undo, redo, log, transactions).
+    Builtin,
+    /// The server named no kind (an older server).
+    Unknown,
+}
+
+/// One tool of the server's `tools/list`.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ToolInfo {
+    pub name: String,
+    pub title: Option<String>,
+    pub description: String,
+    pub input_schema: Value,
+    pub kind: ToolKind,
+    pub read_only: bool,
+}
+
+/// One block of a tool result as the host sees it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum ReplyBlock {
+    Text(String),
+    Image {
+        mime: ImageMime,
+        bytes: Vec<u8>,
+    },
+    /// A block the model cannot take (audio, an unreadable blob), as a note.
+    Note(String),
+}
+
+/// A finished `tools/call`.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ToolReply {
+    pub blocks: Vec<ReplyBlock>,
+    pub is_error: bool,
+    pub structured: Option<Value>,
+}
+
+/// Why a request to the server did not produce a result.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum LinkError {
+    /// The server refused at protocol level; the text is its own, hint included.
+    Protocol(String),
+    /// The caller cancelled the request.
+    Cancelled,
+    /// The link is down.
+    Closed,
+}
+
+impl From<LinkError> for HostError {
+    fn from(error: LinkError) -> Self {
+        match error {
+            LinkError::Protocol(text) => HostError::Mcp(text),
+            LinkError::Cancelled => HostError::Mcp("cancelled".into()),
+            LinkError::Closed => HostError::SessionEnded,
+        }
+    }
+}
+
+fn link_error(error: &ServiceError) -> LinkError {
+    match error {
+        ServiceError::McpError(data) => LinkError::Protocol(data.message.to_string()),
+        ServiceError::TransportClosed => LinkError::Closed,
+        other => LinkError::Protocol(other.to_string()),
+    }
+}
+
+/// Where a request's result is handed over. The task fills it, the host thread takes it; whichever side finds the other
+/// gone deals with the result, under this lock, so one that is sent and not yet taken is never dropped unseen.
+struct Slot<T> {
+    value: Option<T>,
+    /// The `Pending` was dropped: nobody will take the result.
+    abandoned: bool,
+    /// The task ended, with or without a result.
+    finished: bool,
+}
+
+struct Cell<T> {
+    slot: Mutex<Slot<T>>,
+    ready: Condvar,
+    /// What to do with a result nobody took.
+    handoff: Mutex<Option<Handoff<T>>>,
+}
+
+impl<T> Cell<T> {
+    fn lock(&self) -> MutexGuard<'_, Slot<T>> {
+        self.slot.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn hand_off(&self, value: T) {
+        let handoff = self.handoff.lock().unwrap_or_else(PoisonError::into_inner).take();
+        if let Some(handoff) = handoff {
+            handoff(value);
+        }
+    }
+}
+
+/// What to do with a result that came after its `Pending` was dropped.
+type Handoff<T> = Box<dyn FnOnce(T) + Send>;
+
+/// The task's end of a [`Pending`].
+struct Resolver<T> {
+    cell: Arc<Cell<T>>,
+}
+
+impl<T> Resolver<T> {
+    /// Hands the result to the host thread, or, if that thread already gave up, to the handoff.
+    fn resolve(self, value: T) {
+        let mut slot = self.cell.lock();
+        slot.finished = true;
+        if slot.abandoned {
+            drop(slot);
+            self.cell.hand_off(value);
+        } else {
+            slot.value = Some(value);
+            drop(slot);
+            self.cell.ready.notify_all();
+        }
+    }
+}
+
+impl<T> Drop for Resolver<T> {
+    fn drop(&mut self) {
+        // The task ended without a result (the runtime shut down): the waiting side must not wait for ever.
+        self.cell.lock().finished = true;
+        self.cell.ready.notify_all();
+    }
+}
+
+/// A request in flight on the runtime.
+pub(crate) struct Pending<T> {
+    cell: Arc<Cell<T>>,
+}
+
+impl<T> Pending<T> {
+    fn new(handoff: Option<Handoff<T>>) -> (Self, Resolver<T>) {
+        let cell = Arc::new(Cell {
+            slot: Mutex::new(Slot { value: None, abandoned: false, finished: false }),
+            ready: Condvar::new(),
+            handoff: Mutex::new(handoff),
+        });
+        (Self { cell: Arc::clone(&cell) }, Resolver { cell })
+    }
+
+    /// The result if it has arrived, waiting at most `wait` (real time).
+    pub(crate) fn poll(&self, wait: Duration) -> Option<Result<T, LinkError>> {
+        let slot = self.cell.lock();
+        let (mut slot, _) = self
+            .cell
+            .ready
+            .wait_timeout_while(slot, wait, |slot| slot.value.is_none() && !slot.finished)
+            .unwrap_or_else(PoisonError::into_inner);
+        match slot.value.take() {
+            Some(value) => Some(Ok(value)),
+            None if slot.finished => Some(Err(LinkError::Closed)),
+            None => None,
+        }
+    }
+}
+
+impl<T> Drop for Pending<T> {
+    fn drop(&mut self) {
+        // A result already sent and never taken goes where an unwanted result goes, instead of vanishing with us.
+        let undelivered = {
+            let mut slot = self.cell.lock();
+            slot.abandoned = true;
+            slot.value.take()
+        };
+        if let Some(value) = undelivered {
+            self.cell.hand_off(value);
+        }
+    }
+}
+
+/// Takes the late callback, once.
+fn take_late(late: &Mutex<Option<LateFn>>) -> Option<LateFn> {
+    late.lock().unwrap_or_else(PoisonError::into_inner).take()
+}
+
+/// Called with a result that arrived after its call was cancelled (Stop, D4).
+pub(crate) type LateFn = Box<dyn FnOnce(Result<ToolReply, LinkError>) + Send>;
+
+/// What the server told the client changed.
+#[derive(Default)]
+struct Changes {
+    prompts: AtomicBool,
+}
+
+struct Handler {
+    changes: Arc<Changes>,
+}
+
+impl ClientHandler for Handler {
+    fn get_info(&self) -> ClientConfig {
+        ClientConfig::new(ClientCapabilities::default(), Implementation::new("omuzaki-assistant", "1.0"))
+            .with_protocol_version(ProtocolVersion::LATEST_WITH_INITIALIZE)
+    }
+
+    async fn on_prompt_list_changed(&self, _context: NotificationContext<RoleClient>) {
+        self.changes.prompts.store(true, Ordering::Release);
+    }
+}
+
+struct Inner {
+    rt: tokio::runtime::Handle,
+    service: Mutex<Option<RunningService<RoleClient, Handler>>>,
+    peer: rmcp::service::Peer<RoleClient>,
+    changes: Arc<Changes>,
+    instructions: Option<String>,
+}
+
+/// The client half of the in-process MCP link. Clones share one connection.
+#[derive(Clone)]
+pub struct McpClientLink {
+    inner: Arc<Inner>,
+}
+
+impl McpClientLink {
+    /// Connects an rmcp client over `io`, the client end of the in-process duplex the app built.
+    ///
+    /// # Errors
+    /// [`HostError::Mcp`] if `rt` is not a tokio runtime handle or the handshake fails.
+    pub fn connect(io: tokio::io::DuplexStream, rt: &RuntimeHandle) -> Result<Self, HostError> {
+        let rt = rt
+            .downcast_ref::<tokio::runtime::Handle>()
+            .ok_or_else(|| HostError::Mcp("the runtime handle is not a tokio handle".into()))?
+            .clone();
+        let changes = Arc::new(Changes::default());
+        let handler = Handler { changes: Arc::clone(&changes) };
+        let (tx, rx) = channel();
+        rt.spawn(async move {
+            let service = handler.serve_with_lifecycle(io, ClientLifecycleMode::Initialize).await;
+            // The receiver may be gone if `connect` was abandoned; nothing to tell then.
+            let _ = tx.send(service);
+        });
+        let service = rx
+            .recv()
+            .map_err(|_| HostError::Mcp("the runtime stopped during the handshake".into()))?
+            .map_err(|e| HostError::Mcp(format!("the MCP handshake failed: {e}")))?;
+        let instructions = service.peer_info().and_then(|info| info.instructions.clone());
+        let peer = service.peer().clone();
+        Ok(Self { inner: Arc::new(Inner { rt, service: Mutex::new(Some(service)), peer, changes, instructions }) })
+    }
+
+    /// The server's `instructions` (System 2 of the request).
+    pub(crate) fn instructions(&self) -> Option<&str> {
+        self.inner.instructions.as_deref()
+    }
+
+    /// True once if the server said its prompt list changed since the last call.
+    pub(crate) fn take_prompts_changed(&self) -> bool {
+        self.inner.changes.prompts.swap(false, Ordering::AcqRel)
+    }
+
+    fn spawn<T: Send + 'static>(&self, work: impl Future<Output = T> + Send + 'static) -> Pending<T> {
+        let (pending, resolver) = Pending::new(None);
+        self.inner.rt.spawn(async move {
+            resolver.resolve(work.await);
+        });
+        pending
+    }
+
+    /// `tools/list`.
+    pub(crate) fn list_tools(&self) -> Pending<Result<Vec<ToolInfo>, LinkError>> {
+        let peer = self.inner.peer.clone();
+        self.spawn(async move {
+            let tools = peer.list_all_tools().await.map_err(|e| link_error(&e))?;
+            Ok(tools.iter().map(tool_info).collect())
+        })
+    }
+
+    /// `tools/call`. `cancel` abandons the request: the client sends `notifications/cancelled`, and a result that still
+    /// arrives within a minute goes to `late`.
+    pub(crate) fn call_tool(
+        &self,
+        name: &str,
+        arguments: Option<JsonObject>,
+        cancel: Cancel,
+        late: Option<LateFn>,
+    ) -> Pending<Result<ToolReply, LinkError>> {
+        let peer = self.inner.peer.clone();
+        let mut params = CallToolRequestParams::new(name.to_owned());
+        params.arguments = arguments;
+        // `late` is shared by the two places that can end up holding a result nobody is waiting for: the task, when the
+        // call was cancelled, and the `Pending`, when it is dropped with a result already sent.
+        let late = Arc::new(Mutex::new(late));
+        let unclaimed: Handoff<Result<ToolReply, LinkError>> = {
+            let late = Arc::clone(&late);
+            Box::new(move |result| {
+                if let (Ok(reply), Some(late)) = (result, take_late(&late)) {
+                    late(Ok(reply));
+                }
+            })
+        };
+        let (pending, resolver) = Pending::new(Some(unclaimed));
+        self.inner.rt.spawn(async move {
+            let result = Self::call_and_wait(&peer, params, &cancel, &late).await;
+            resolver.resolve(result);
+        });
+        pending
+    }
+
+    async fn call_and_wait(
+        peer: &rmcp::service::Peer<RoleClient>,
+        params: CallToolRequestParams,
+        cancel: &Cancel,
+        late: &Mutex<Option<LateFn>>,
+    ) -> Result<ToolReply, LinkError> {
+        let request = ClientRequest::CallToolRequest(CallToolRequest::new(params));
+        let mut handle = peer
+            .send_cancellable_request(request, PeerRequestOptions::no_options())
+            .await
+            .map_err(|e| link_error(&e))?;
+        let mut poll = tokio::time::interval(CANCEL_POLL);
+        let answer = loop {
+            tokio::select! {
+                answer = &mut handle.rx => break answer,
+                _ = poll.tick() => {
+                    if cancel.is_cancelled() {
+                        // Sent as the plain notification it is on the wire: rmcp's typed `CancelledNotification` also
+                        // drops the local responder, and a result that still arrives must reach `late`.
+                        let note = CustomNotification::new(
+                            "notifications/cancelled",
+                            Some(json!({"requestId": handle.id, "reason": "stopped by the person"})),
+                        );
+                        // The server may already have finished; a failed notification changes nothing for us.
+                        let _ = peer.send_notification(note.into()).await;
+                        if let Some(late) = take_late(late) {
+                            let waited = tokio::time::timeout(LATE_WAIT, &mut handle.rx).await;
+                            if let Ok(answer) = waited {
+                                late(reply_of(answer));
+                            }
+                        }
+                        return Err(LinkError::Cancelled);
+                    }
+                }
+            }
+        };
+        reply_of(answer)
+    }
+
+    /// `resources/read`, as blocks.
+    pub(crate) fn read_resource(&self, uri: &str) -> Pending<Result<Vec<ReplyBlock>, LinkError>> {
+        let peer = self.inner.peer.clone();
+        let params = ReadResourceRequestParams::new(uri.to_owned());
+        self.spawn(async move {
+            let result = peer.read_resource(params).await.map_err(|e| link_error(&e))?;
+            Ok(result.contents.into_iter().map(resource_block).collect())
+        })
+    }
+
+    /// `prompts/list`, mapped to the panel's type and sorted by name.
+    pub(crate) fn list_prompts(&self) -> Pending<Result<Vec<omuzaki_agent_api::prompts::PromptInfo>, LinkError>> {
+        let peer = self.inner.peer.clone();
+        self.spawn(async move {
+            let prompts = peer.list_all_prompts().await.map_err(|e| link_error(&e))?;
+            let mut out: Vec<_> = prompts.into_iter().map(prompt_info).collect();
+            out.sort_by(|a, b| a.name.cmp(&b.name));
+            Ok(out)
+        })
+    }
+
+    /// `prompts/get`: the text of the first message.
+    pub(crate) fn get_prompt(&self, name: &str, arguments: JsonObject) -> Pending<Result<String, LinkError>> {
+        let peer = self.inner.peer.clone();
+        let mut params = GetPromptRequestParams::new(name.to_owned());
+        params.arguments = Some(arguments);
+        self.spawn(async move {
+            let result = peer.get_prompt(params).await.map_err(|e| link_error(&e))?;
+            let first = result.messages.into_iter().next();
+            Ok(first.map(|m| content_text(&m.content)).unwrap_or_default())
+        })
+    }
+
+    /// Closes the connection. Idempotent.
+    pub(crate) fn close(&self) {
+        let service = self.inner.service.lock().unwrap_or_else(PoisonError::into_inner).take();
+        if let Some(mut service) = service {
+            let (tx, rx) = channel();
+            self.inner.rt.spawn(async move {
+                let _ = service.close().await;
+                let _ = tx.send(());
+            });
+            // Bounded: a runtime that is shutting down never answers.
+            let _ = rx.recv_timeout(Duration::from_millis(500));
+        }
+    }
+}
+
+fn reply_of(
+    answer: Result<Result<ServerResult, ServiceError>, tokio::sync::oneshot::error::RecvError>,
+) -> Result<ToolReply, LinkError> {
+    match answer {
+        Ok(Ok(ServerResult::CallToolResult(result))) => Ok(ToolReply {
+            is_error: result.is_error == Some(true),
+            structured: result.structured_content,
+            blocks: result.content.iter().map(block_of).collect(),
+        }),
+        Ok(Ok(_)) => Err(LinkError::Protocol("the server answered tools/call with something else".into())),
+        Ok(Err(e)) => Err(link_error(&e)),
+        Err(_) => Err(LinkError::Closed),
+    }
+}
+
+fn tool_info(tool: &rmcp::model::Tool) -> ToolInfo {
+    let kind = tool.meta.as_ref().and_then(|m| m.get(KIND_KEY)).and_then(Value::as_str).map_or(
+        ToolKind::Unknown,
+        |k| match k {
+            "edit" => ToolKind::Edit,
+            "query" => ToolKind::Query,
+            "job" => ToolKind::Job,
+            "driver_job" => ToolKind::DriverJob,
+            "builtin" => ToolKind::Builtin,
+            _ => ToolKind::Unknown,
+        },
+    );
+    ToolInfo {
+        name: tool.name.to_string(),
+        title: tool.title.clone(),
+        description: tool.description.as_deref().unwrap_or_default().to_owned(),
+        input_schema: Value::Object((*tool.input_schema).clone()),
+        kind,
+        read_only: tool.annotations.as_ref().and_then(|a| a.read_only_hint) == Some(true),
+    }
+}
+
+fn prompt_info(prompt: rmcp::model::Prompt) -> omuzaki_agent_api::prompts::PromptInfo {
+    use omuzaki_agent_api::prompts::{PromptArgInfo, PromptInfo};
+    let arguments = prompt
+        .arguments
+        .unwrap_or_default()
+        .into_iter()
+        .map(|a| PromptArgInfo::new(a.name, a.description.unwrap_or_default(), a.required == Some(true)))
+        .collect();
+    PromptInfo::new(prompt.name.clone())
+        .with_title(prompt.title.unwrap_or(prompt.name))
+        .with_description(prompt.description.unwrap_or_default())
+        .with_arguments(arguments)
+}
+
+fn image_mime(mime: &str) -> Option<ImageMime> {
+    match mime {
+        "image/png" => Some(ImageMime::Png),
+        "image/jpeg" | "image/jpg" => Some(ImageMime::Jpeg),
+        "image/webp" => Some(ImageMime::Webp),
+        "image/gif" => Some(ImageMime::Gif),
+        _ => None,
+    }
+}
+
+fn decode_image(data: &str, mime: &str) -> ReplyBlock {
+    use base64::Engine;
+    match (image_mime(mime), base64::engine::general_purpose::STANDARD.decode(data)) {
+        (Some(mime), Ok(bytes)) => ReplyBlock::Image { mime, bytes },
+        _ => ReplyBlock::Note("[image omitted: not a readable image]".to_owned()),
+    }
+}
+
+fn resource_block(contents: ResourceContents) -> ReplyBlock {
+    match contents {
+        ResourceContents::TextResourceContents { text, .. } => ReplyBlock::Text(text),
+        ResourceContents::BlobResourceContents { blob, mime_type, .. } => {
+            decode_image(&blob, mime_type.as_deref().unwrap_or_default())
+        }
+        _ => ReplyBlock::Note("[resource omitted]".into()),
+    }
+}
+
+fn block_of(block: &ContentBlock) -> ReplyBlock {
+    match block {
+        ContentBlock::Text(t) => ReplyBlock::Text(t.text.clone()),
+        ContentBlock::Image(i) => decode_image(&i.data, &i.mime_type),
+        ContentBlock::Audio(_) => ReplyBlock::Note("[audio omitted]".into()),
+        ContentBlock::Resource(r) => resource_block(r.resource.clone()),
+        ContentBlock::ResourceLink(link) => ReplyBlock::Text(format!("[resource: {}]", link.uri)),
+        _ => ReplyBlock::Note("[content omitted]".into()),
+    }
+}
+
+fn content_text(block: &ContentBlock) -> String {
+    match block_of(block) {
+        ReplyBlock::Text(t) | ReplyBlock::Note(t) => t,
+        ReplyBlock::Image { .. } => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+
+    use super::*;
+
+    fn counting() -> (Handoff<u32>, mpsc::Receiver<u32>) {
+        let (tx, rx) = mpsc::channel();
+        (
+            Box::new(move |v| {
+                let _ = tx.send(v);
+            }),
+            rx,
+        )
+    }
+
+    #[test]
+    fn a_result_sent_and_never_taken_goes_to_the_handoff_when_the_pending_is_dropped() {
+        let (handoff, got) = counting();
+        let (pending, resolver) = Pending::new(Some(handoff));
+        resolver.resolve(7);
+        assert!(got.try_recv().is_err(), "still waiting to be taken");
+        drop(pending);
+        assert_eq!(got.try_recv(), Ok(7));
+    }
+
+    #[test]
+    fn a_result_that_comes_after_the_pending_was_dropped_goes_to_the_handoff() {
+        let (handoff, got) = counting();
+        let (pending, resolver) = Pending::new(Some(handoff));
+        drop(pending);
+        resolver.resolve(8);
+        assert_eq!(got.try_recv(), Ok(8));
+    }
+
+    #[test]
+    fn a_result_that_was_taken_is_not_handed_off() {
+        let (handoff, got) = counting();
+        let (pending, resolver) = Pending::new(Some(handoff));
+        resolver.resolve(9);
+        assert!(matches!(pending.poll(Duration::from_millis(1)), Some(Ok(9))));
+        drop(pending);
+        assert!(got.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_task_that_ends_without_a_result_reads_as_closed_and_a_slow_one_as_not_yet() {
+        let (pending, resolver) = Pending::<u32>::new(None);
+        assert!(pending.poll(Duration::from_millis(1)).is_none());
+        drop(resolver);
+        assert!(matches!(pending.poll(Duration::from_millis(1)), Some(Err(LinkError::Closed))));
+    }
+}

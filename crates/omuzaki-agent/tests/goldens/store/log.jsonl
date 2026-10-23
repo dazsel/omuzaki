@@ -1,0 +1,28 @@
+{"format":1,"project":"0123456789abcdef0123456789abcdef","created":"2026-10-14T10:00:00Z","model":"claude-haiku-5-5"}
+{"at":"2026-10-14T10:00:01Z","kind":"session","id":1,"note":"Opened"}
+{"at":"2026-10-14T10:00:02Z","kind":"user","text":"make her face more oval","chips":[{"Selection":["characters/main/parts/head"]}]}
+{"at":"2026-10-14T10:00:03Z","kind":"approval","id":7,"need":{"need":"budget","needed":{"usd_micros":4293,"tokens":0,"seconds":0},"left":{"usd_micros":0,"tokens":0,"seconds":0}},"resolution":null}
+{"at":"2026-10-14T10:00:04Z","kind":"assistant","blocks":[{"Text":"Let me look at her face from the front."},{"ToolUse":{"id":"c1","name":"render_preview","input":{"size":512,"view":"front"}}}]}
+{"at":"2026-10-14T10:00:05Z","kind":"tool_call","id":"c1","tool":"render_preview","summary":"Preview: front"}
+{"at":"2026-10-14T10:00:06Z","kind":"tool_result","id":"c1","ok":true,"blocks":[{"Image":{"mime":"Png","blob":"cba2d89ecd4da07a6c1d84d912e185b52db5f93887a0f1ff1d80241cc05f3e9e"}}]}
+{"at":"2026-10-14T10:00:07Z","kind":"charge","usage":{"input":4,"output":61,"cache_read":0,"cache_write":6262},"usd_micros":814}
+{"at":"2026-10-14T10:00:08Z","kind":"assistant","blocks":[{"ToolUse":{"id":"c2","name":"face_set_profile","input":{"amount":0.5,"profile":"egg-oval"}}}]}
+{"at":"2026-10-14T10:00:09Z","kind":"tool_call","id":"c2","tool":"face_set_profile","summary":"Face profile: egg-oval"}
+{"at":"2026-10-14T10:00:10Z","kind":"tool_result","id":"c2","ok":false,"blocks":[{"Text":"Conflict: /characters/main/parts/head/params/width changed by the person (version 43)"}]}
+{"at":"2026-10-14T10:00:11Z","kind":"charge","usage":{"input":4,"output":48,"cache_read":6262,"cache_write":447},"usd_micros":143}
+{"at":"2026-10-14T10:00:12Z","kind":"assistant","blocks":[{"ToolUse":{"id":"c3","name":"read_resource","input":{"uri":"omuzaki://character/main"}}}]}
+{"at":"2026-10-14T10:00:13Z","kind":"tool_call","id":"c3","tool":"read_resource","summary":"Read the character"}
+{"at":"2026-10-14T10:00:14Z","kind":"tool_result","id":"c3","ok":true,"blocks":[{"Text":"character main, version 43"}]}
+{"at":"2026-10-14T10:00:15Z","kind":"charge","usage":{"input":4,"output":41,"cache_read":6709,"cache_write":118},"usd_micros":103}
+{"at":"2026-10-14T10:00:16Z","kind":"assistant","blocks":[{"Text":"You widened the head while I worked; I'll keep your width."},{"ToolUse":{"id":"c4","name":"face_set_profile","input":{"amount":0.5,"profile":"egg-oval"}}}]}
+{"at":"2026-10-14T10:00:17Z","kind":"tool_call","id":"c4","tool":"face_set_profile","summary":"Face profile: egg-oval"}
+{"at":"2026-10-14T10:00:18Z","kind":"tool_result","id":"c4","ok":true,"blocks":[{"Text":"applied (version 44)"}]}
+{"at":"2026-10-14T10:00:19Z","kind":"charge","usage":{"input":4,"output":96,"cache_read":6827,"cache_write":1891},"usd_micros":354}
+{"at":"2026-10-14T10:00:20Z","kind":"assistant","blocks":[{"ToolUse":{"id":"c5","name":"render_preview","input":{"size":512,"view":"front"}}}]}
+{"at":"2026-10-14T10:00:21Z","kind":"tool_call","id":"c5","tool":"render_preview","summary":"Preview: front"}
+{"at":"2026-10-14T10:00:22Z","kind":"tool_result","id":"c5","ok":true,"blocks":[{"Image":{"mime":"Png","blob":"322033a83eab197bf22093db52c3584d7431bc130e71ee2164db3b3f29b8d7e7"}}]}
+{"at":"2026-10-14T10:00:23Z","kind":"charge","usage":{"input":4,"output":40,"cache_read":8718,"cache_write":141},"usd_micros":126}
+{"at":"2026-10-14T10:00:24Z","kind":"assistant","blocks":[{"Text":"Here she is: the jaw is narrower and…"}]}
+{"at":"2026-10-14T10:00:25Z","kind":"stopped"}
+{"at":"2026-10-14T10:00:26Z","kind":"charge","usage":{"input":4,"output":18,"cache_read":8859,"cache_write":426},"usd_micros":152}
+{"at":"2026-10-14T10:00:27Z","kind":"step","tx":31,"label":"Assistant: make her face more oval (stopped)","rationale":"Let me look at her face from the front.\n\nYou widened the head while I worked; I'll keep your width.\n\nHere she is: the jaw is narrower and…"}

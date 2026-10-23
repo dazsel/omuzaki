@@ -10,8 +10,8 @@ use omuzaki_core::time::{FakeClock, Seconds};
 use omuzaki_doc_mock::MemDoc;
 use omuzaki_ops::Executor;
 use omuzaki_ops_api::{
-    Actor, Budget, ErrorCode, ErrorDetail, Event, Grants, PauseReason, Principals, Request, Runner, Scope,
-    SessionChange, SessionId, SessionState, Sessions, Spend,
+    Actor, Budget, EndReason, ErrorCode, ErrorDetail, Event, Grants, PauseReason, Principals, Request, Runner, Scope,
+    SessionChange, SessionId, SessionSpec, SessionState, Sessions,
 };
 use serde_json::json;
 
@@ -56,8 +56,8 @@ fn a_session_is_named_by_the_executor_and_stamps_its_principal_on_every_record()
 fn a_client_cannot_spell_another_sessions_actor() {
     let rig = rig(json!({}));
     let info = rig.exec.open(session_spec("claude#1 ")).unwrap();
-    assert_eq!(info.client, "claude-1-");
-    assert_eq!(info.actor, Actor::Agent { id: "claude-1-#3".into(), model: None });
+    assert_eq!(info.client, "claude-1");
+    assert_eq!(info.actor, Actor::Agent { id: "claude-1#3".into(), model: None });
 }
 
 #[test]
@@ -156,14 +156,11 @@ fn a_sub_agent_holds_at_most_what_its_parent_holds_and_works_for_the_same_person
 }
 
 #[test]
-fn a_session_works_for_a_person_and_claims_no_fence() {
+fn a_session_works_for_a_person() {
     let rig = rig(json!({}));
     let mut spec = session_spec("claude");
     spec.on_behalf_of = agent();
     assert_eq!(rig.exec.open(spec).unwrap_err().code, ErrorCode::Invalid);
-    let mut spec = session_spec("claude");
-    spec.fence = vec![super::path("a")];
-    assert_eq!(rig.exec.open(spec).unwrap_err().code, ErrorCode::Unsupported, "fences are not enforced yet");
 }
 
 #[test]
@@ -317,16 +314,6 @@ fn pausing_a_parent_pauses_its_children_and_resuming_resumes_them() {
     assert_eq!(rig.exec.session(child.id).unwrap().state, SessionState::Active);
 }
 
-#[test]
-fn what_the_executor_does_not_do_yet_is_unsupported() {
-    let rig = rig(json!({}));
-    let ended = rig.exec.end(SessionId(1), omuzaki_ops_api::EndReason::Closed).unwrap_err();
-    assert_eq!(ended.code, ErrorCode::Unsupported);
-    assert_eq!(rig.exec.undo_session(SessionId(1), &person()).unwrap_err().code, ErrorCode::Unsupported);
-    assert_eq!(rig.exec.charge(SessionId(1), Spend::default()).unwrap_err().code, ErrorCode::Unsupported);
-    assert_eq!(rig.exec.approvals().len(), 0);
-}
-
 // ---- the check and the change are one hold of the lock ------------------------------------------------------------
 
 /// A principal source that narrows its person to `read` after `full` more questions.
@@ -478,4 +465,105 @@ fn narrowing_a_parent_emits_a_change_for_each_sub_agent_whose_grants_moved() {
     assert_eq!((changed[0].0, &changed[0].1), (parent.id, &by));
     assert_eq!((changed[1].0, &changed[1].1), (child.id, &by));
     assert_eq!(changed[1].2, Grants::of([Scope::Read]), "the snapshot carries the narrowed effective grants");
+}
+
+// ---- ending a session (#149) and the client name (#208) --------------------------------------------------------------
+
+/// The design's required test: revoke in the middle of a transaction.
+#[test]
+fn revoking_mid_transaction_reverts_its_edits_and_refuses_the_agent_after() {
+    let rig = rig(json!({"a": 0, "b": 0, "p": 0}));
+    rig.run("test.set", json!({"path": "p", "value": 1})).unwrap();
+    let tx = rig.exec.begin("agent work", &agent());
+    for at in ["a", "b"] {
+        rig.exec.run(Request { tx: Some(tx), ..agent_request("test.set", json!({"path": at, "value": 2})) }).unwrap();
+    }
+    let rx = rig.subscribe();
+    let ended = rig.exec.end(SessionId(1), EndReason::Revoked { by: person(), credential: true }).unwrap();
+    assert_eq!((ended.abandoned, ended.kept.len(), ended.withdrawn.len()), (vec![tx], 0, 0));
+    assert_eq!((rig.at("a"), rig.at("b")), (Some(json!(0)), Some(json!(0))));
+    let events = drain(&rx);
+    let rolled = events.iter().position(|e| matches!(e, Event::TxRolledBack { tx: t, .. } if *t == tx)).unwrap();
+    let gone = events.iter().position(|e| matches!(e, Event::SessionEnded { .. })).unwrap();
+    assert!(rolled < gone, "{events:?}");
+    let Event::SessionEnded { session, .. } = &events[gone] else { unreachable!() };
+    assert!(matches!(&session.state, SessionState::Ended { reason: EndReason::Revoked { .. }, .. }));
+    assert_eq!(session.grants, Grants::default(), "a revoke drops the ceiling");
+
+    let next = rig.exec.run(agent_request("test.set", json!({"path": "a", "value": 3}))).unwrap_err();
+    assert_eq!(next.code, ErrorCode::Denied);
+    assert!(matches!(next.detail.as_deref(), Some(ErrorDetail::Ended { .. })), "{next:?}");
+    assert_eq!(
+        (rig.undo().unwrap().as_deref(), rig.at("p")),
+        (Some(super::SET), Some(json!(0))),
+        "the person's history"
+    );
+}
+
+#[test]
+fn a_transaction_whose_revert_conflicts_is_kept_unfinished_and_others_are_untouched() {
+    let rig = rig(json!({"a": 0, "b": 0, "c": 0}));
+    let clean = rig.exec.begin("clean", &agent());
+    rig.exec.run(Request { tx: Some(clean), ..agent_request("test.set", json!({"path": "a", "value": 1})) }).unwrap();
+    let clash = rig.exec.begin("clash", &agent());
+    rig.exec.run(Request { tx: Some(clash), ..agent_request("test.set", json!({"path": "b", "value": 1})) }).unwrap();
+    rig.run("test.set", json!({"path": "b", "value": 9})).unwrap();
+    let other = rig.exec.begin("other", &second_agent());
+    let theirs = Request {
+        actor: second_agent(),
+        tx: Some(other),
+        ..agent_request("test.set", json!({"path": "c", "value": 1}))
+    };
+    rig.exec.run(theirs).unwrap();
+
+    let ended = rig.exec.end(SessionId(1), EndReason::Disconnected).unwrap();
+    assert_eq!(ended.abandoned, vec![clean]);
+    assert_eq!(ended.kept.len(), 1);
+    let kept = &ended.kept[0];
+    assert_eq!((kept.tx, kept.label.as_str()), (clash, "clash (unfinished)"));
+    assert!(kept.error.code == ErrorCode::Conflict && kept.error.message.contains("person alice"), "{:?}", kept.error);
+    assert_eq!((rig.at("a"), rig.at("b"), rig.at("c")), (Some(json!(0)), Some(json!(9)), Some(json!(1))));
+    assert_eq!(rig.exec.session(SessionId(2)).unwrap().open_tx.unwrap().tx, other, "another agent's is untouched");
+    // The kept step is in the agent's history, where undoing the session tries it again.
+    let undone = rig.exec.undo_session(SessionId(1), &person()).unwrap();
+    assert_eq!(undone.skipped.iter().map(|k| k.tx).collect::<Vec<_>>(), vec![clash]);
+}
+
+#[test]
+fn only_the_sessions_person_revokes_it_and_ending_twice_changes_nothing() {
+    let rig = rig(json!({}));
+    for by in [agent(), bob()] {
+        let e = rig.exec.end(SessionId(1), EndReason::Revoked { by, credential: false }).unwrap_err();
+        assert_eq!(e.code, ErrorCode::Denied);
+    }
+    assert_eq!(rig.exec.session(SessionId(1)).unwrap().state, SessionState::Active);
+    rig.exec.end(SessionId(1), EndReason::Closed).unwrap();
+    let rx = rig.subscribe();
+    let again = rig.exec.end(SessionId(1), EndReason::Disconnected).unwrap();
+    assert!(again.abandoned.is_empty() && again.kept.is_empty() && again.withdrawn.is_empty());
+    assert_eq!(drain(&rx).len(), 0, "no event the second time");
+    assert_eq!(rig.exec.end(SessionId(99), EndReason::Closed).unwrap_err().code, ErrorCode::NotFound);
+}
+
+#[test]
+fn ending_a_parent_ends_its_children() {
+    let rig = rig(json!({}));
+    let child = rig.exec.open(SessionSpec { parent: Some(SessionId(1)), ..session_spec("helper") }).unwrap();
+    rig.exec.end(SessionId(1), EndReason::IdleTimeout).unwrap();
+    assert!(matches!(
+        rig.exec.session(child.id).unwrap().state,
+        SessionState::Ended { reason: EndReason::IdleTimeout, .. }
+    ));
+}
+
+#[test]
+fn a_hostile_client_name_becomes_one_short_printable_line() {
+    let rig = rig(json!({}));
+    let hostile = format!("evil\nname\u{1b}[31m\u{202E}gnp.exe{}{}", "\u{E0041}\u{E0042}", "x".repeat(200));
+    let info = rig.exec.open(session_spec(&hostile)).unwrap();
+    let Actor::Agent { id, .. } = &info.actor else { panic!("{:?}", info.actor) };
+    assert!(id.ends_with(&format!("#{}", info.id.0)), "{id}");
+    assert!(id.len() <= 32 + 1 + 20 && id.chars().all(|c| c.is_ascii_graphic()), "{id:?}");
+    let empty = rig.exec.open(session_spec("\u{200B}\n")).unwrap();
+    assert_eq!(empty.actor, Actor::Agent { id: format!("mcp-client#{}", empty.id.0), model: None });
 }

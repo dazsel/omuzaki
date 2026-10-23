@@ -5,7 +5,8 @@
 #![allow(clippy::expect_used)]
 
 use omuzaki_ops_api::Actor;
-use omuzaki_ui::live::registration::{CHANNELS_PANEL, LIVE_PANEL, PERFORM_WORKSPACE, STAGE_PANEL};
+use omuzaki_ui::input::registration::INPUT_PANEL;
+use omuzaki_ui::live::registration::{CHANNELS_PANEL, HEALTH_PANEL, LIVE_PANEL, PERFORM_WORKSPACE, STAGE_PANEL};
 use omuzaki_ui::live::story::StoryRunner;
 use omuzaki_ui::shell::stub::NullRunner;
 use omuzaki_ui_api::panel::PanelCtx;
@@ -48,7 +49,10 @@ fn the_perform_workspace_shows_the_live_panel_the_stage_and_the_channels_and_the
     let registry = host.registry();
     let perform = registry.workspace(PERFORM_WORKSPACE).expect("registered");
     assert_eq!((perform.title, perform.group), ("Perform", Group::Run));
-    assert_eq!((perform.default_layout)().panels(), [LIVE_PANEL, STAGE_PANEL, CHANNELS_PANEL]);
+    assert_eq!(
+        (perform.default_layout)().panels(),
+        [LIVE_PANEL, STAGE_PANEL, CHANNELS_PANEL, HEALTH_PANEL, INPUT_PANEL]
+    );
     assert!(registry.stories().iter().any(|story| story.id == "live-workspace"));
     assert!(registry.duplicates().is_empty(), "{:?}", registry.duplicates());
 }

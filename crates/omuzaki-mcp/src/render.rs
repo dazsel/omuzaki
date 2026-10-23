@@ -15,10 +15,15 @@ use crate::builtin::Builtin;
 use crate::changes::{Report, actor_label, plain};
 use crate::floats;
 
-/// Change lines listed in the first text block. A longer patch is listed in full in a second block.
-const MAX_CHANGE_LINES: usize = 100;
-/// Longest before/after value shown on a change line, in characters; the second block carries the full value.
-const MAX_VALUE_CHARS: usize = 200;
+/// Change lines listed in the text. The rest are counted and grouped by where they are; `doc_get` reads any of them.
+const MAX_CHANGE_LINES: usize = 40;
+/// Changes listed in the structured result, which a client may hand the model too.
+const MAX_STRUCTURED_CHANGES: usize = 200;
+/// Longest before/after value shown, in characters, in the text and the structured result alike: a whole character's
+/// mesh or texture in a result buries what the agent needs to read. `doc_get` reads the value in full.
+const MAX_VALUE_CHARS: usize = 160;
+/// Places named for the changes beyond the listed ones.
+const MAX_MORE_PLACES: usize = 8;
 /// An output larger than this is announced in the first line (it is still included in full).
 const LARGE_OUTPUT_BYTES: usize = 100_000;
 
@@ -70,7 +75,8 @@ pub(crate) fn success(call: &Call<'_>, outcome: &Outcome) -> CallToolResult {
     }
     let fields = [
         ("output", shown_output.clone()),
-        ("changes", (!changes.is_empty()).then(|| value_of(changes))),
+        ("changes", (!changes.is_empty()).then(|| structured_changes(changes))),
+        ("changes_total", (changes.len() > MAX_STRUCTURED_CHANGES).then(|| json!(changes.len()))),
         ("cost", plan.cost.as_ref().map(value_of)),
         ("log", outcome.applied.as_ref().map(|r| json!({"seq": r.seq, "tx": r.tx.0, "version": r.version.0}))),
     ];
@@ -88,16 +94,37 @@ pub(crate) fn success(call: &Call<'_>, outcome: &Outcome) -> CallToolResult {
     }
     let listing = change_lines(changes);
     text.extend(listing.lines);
+    if listing.shortened {
+        text.push(format!(
+            "Long values are shortened; read one in full with doc_get {{\"path\": \"{}\"}}.",
+            listing.first_shortened.unwrap_or_default()
+        ));
+    }
     text.extend(plan.cost.as_ref().and_then(cost_line));
     text.extend(next_steps(call, applied));
     if let Some(output) = output {
         text.push(format!("Output:\n{output}"));
     }
-    let mut blocks = vec![text.join("\n")];
-    if !listing.complete {
-        blocks.push(format!("Full changes (the list above is shortened):\n{}", pretty(&value_of(changes))));
-    }
-    result(blocks, data, false)
+    result(vec![text.join("\n")], data, false)
+}
+
+/// The changes as the structured result lists them: at most [`MAX_STRUCTURED_CHANGES`], each long value replaced by
+/// `{"$shortened": {"chars": n}}`. An absent value is `null`, as in a [`Change`].
+fn structured_changes(changes: &[Change]) -> Value {
+    let short = |v: &Option<Value>| match v {
+        None => Value::Null,
+        Some(v) => {
+            let text = v.to_string();
+            let chars = text.chars().count();
+            if chars > MAX_VALUE_CHARS { json!({"$shortened": {"chars": chars}}) } else { v.clone() }
+        }
+    };
+    let listed: Vec<Value> = changes
+        .iter()
+        .take(MAX_STRUCTURED_CHANGES)
+        .map(|c| json!({"path": c.path.to_string(), "before": short(&c.before), "after": short(&c.after)}))
+        .collect();
+    Value::Array(listed)
 }
 
 fn headline(call: &Call<'_>, outcome: &Outcome) -> String {
@@ -121,31 +148,66 @@ fn headline(call: &Call<'_>, outcome: &Outcome) -> String {
     }
 }
 
-/// The change lines for the first text block, and whether they show every change in full.
+/// The change lines for the text, and whether a value on them was shortened (and the first such path).
 struct Listing {
     lines: Vec<String>,
-    complete: bool,
+    shortened: bool,
+    first_shortened: Option<String>,
 }
 
 fn change_lines(changes: &[Change]) -> Listing {
-    let mut complete = changes.len() <= MAX_CHANGE_LINES;
-    let mut show = |v: &Option<Value>| match v {
-        None => "absent".to_owned(),
-        Some(v) => {
-            let (text, cut) = shorten(&v.to_string(), MAX_VALUE_CHARS);
-            complete &= !cut;
-            text
-        }
-    };
+    let mut first_shortened = None;
     let mut lines: Vec<String> = changes
         .iter()
         .take(MAX_CHANGE_LINES)
-        .map(|c| format!("  {}: {} -> {}", c.path, show(&c.before), show(&c.after)))
+        .map(|c| {
+            let mut show = |v: &Option<Value>| match v {
+                None => "absent".to_owned(),
+                Some(v) => {
+                    let (text, cut) = shorten(&v.to_string(), MAX_VALUE_CHARS);
+                    if cut && first_shortened.is_none() {
+                        first_shortened = Some(c.path.to_string());
+                    }
+                    text
+                }
+            };
+            let (before, after) = (show(&c.before), show(&c.after));
+            format!("  {}: {before} -> {after}", c.path)
+        })
         .collect();
     if changes.len() > MAX_CHANGE_LINES {
-        lines.push(format!("  ... and {} more changes (listed in full below)", changes.len() - MAX_CHANGE_LINES));
+        lines.push(format!(
+            "  ... and {} more changes, {}",
+            changes.len() - MAX_CHANGE_LINES,
+            more_places(&changes[MAX_CHANGE_LINES..])
+        ));
     }
-    Listing { lines, complete }
+    Listing { lines, shortened: first_shortened.is_some(), first_shortened }
+}
+
+/// Where the unlisted changes are: their paths' first two keys (or first key, when two give too many places), the most
+/// common first.
+fn more_places(rest: &[Change]) -> String {
+    let group = |depth: usize| {
+        let mut places: Vec<(String, usize)> = Vec::new();
+        for change in rest {
+            let path = change.path.to_string();
+            let place = path.splitn(depth + 1, '/').take(depth).collect::<Vec<_>>().join("/");
+            match places.iter_mut().find(|(p, _)| *p == place) {
+                Some((_, n)) => *n += 1,
+                None => places.push((place, 1)),
+            }
+        }
+        places
+    };
+    let mut places = group(2);
+    if places.len() > MAX_MORE_PLACES {
+        places = group(1);
+    }
+    places.sort_by_key(|place| std::cmp::Reverse(place.1));
+    let named: Vec<String> = places.iter().take(MAX_MORE_PLACES).map(|(p, n)| format!("{p} ({n})")).collect();
+    let others = if places.len() > MAX_MORE_PLACES { " and elsewhere" } else { "" };
+    format!("under {}{others}: read them with doc_get", named.join(", "))
 }
 
 fn cost_line(cost: &CostHint) -> Option<String> {
@@ -401,7 +463,7 @@ pub(crate) fn confirmation(text: String, data: Value) -> CallToolResult {
 /// The tool name wasn't found.
 pub(crate) fn unknown_tool(name: &str, similar: &[&str]) -> CallToolResult {
     let hint = if similar.is_empty() {
-        "list the available tools with tools/list".to_owned()
+        "find an op with ops_find, or list the tools with tools/list".to_owned()
     } else {
         format!("did you mean `{}`? (all tools: tools/list)", similar.join("`, `"))
     };
@@ -570,21 +632,33 @@ mod tests {
     }
 
     #[test]
-    fn a_patch_is_listed_in_full_and_oversized_values_get_a_full_second_block() {
+    fn a_small_patch_is_listed_in_full_and_a_large_one_is_shortened_and_points_at_doc_get() {
         let result = success(&call(Mode::DryRun), &Outcome::new(Plan::edit(patch(30))));
-        assert_eq!(result.content.len(), 1, "a short, small patch needs no second block");
+        assert_eq!(result.content.len(), 1);
         assert!(text(&result).contains("  a/29: 29 -> 30"));
+        assert!(!text(&result).contains("doc_get"), "nothing was shortened");
 
-        let big = Patch::new().with(DocPath::parse("x").unwrap(), None, Some(json!("y".repeat(500))));
+        let big = Patch::new().with(DocPath::parse("x/mesh").unwrap(), None, Some(json!("y".repeat(500))));
         let result = success(&call(Mode::DryRun), &Outcome::new(Plan::edit(big)));
+        assert_eq!(result.content.len(), 1, "the full value is never repeated");
         assert!(text(&result).contains("... (502 chars)"));
-        let full = result.content[1].as_text().unwrap().text.clone();
-        assert!(full.starts_with("Full changes (the list above is shortened):") && full.contains(&"y".repeat(500)));
+        assert!(text(&result).contains("doc_get {\"path\": \"x/mesh\"}"), "{}", text(&result));
+        let data = result.structured_content.unwrap();
+        assert_eq!(
+            data["changes"][0],
+            json!({"path": "x/mesh", "before": null, "after": {"$shortened": {"chars": 502}}})
+        );
 
-        let long = success(&call(Mode::DryRun), &Outcome::new(Plan::edit(patch(130))));
-        assert!(text(&long).contains("... and 30 more changes (listed in full below)"));
-        assert!(long.content[1].as_text().unwrap().text.contains("a/129"));
-        assert_eq!(long.structured_content.unwrap()["changes"].as_array().unwrap().len(), 130);
+        let long = success(&call(Mode::DryRun), &Outcome::new(Plan::edit(patch(250))));
+        assert!(
+            text(&long).contains("... and 210 more changes, under a (210): read them with doc_get"),
+            "{}",
+            text(&long)
+        );
+        assert!(text(&long).len() < 4_000, "{} bytes", text(&long).len());
+        let data = long.structured_content.unwrap();
+        assert_eq!(data["changes"].as_array().unwrap().len(), MAX_STRUCTURED_CHANGES);
+        assert_eq!(data["changes_total"], 250);
     }
 
     #[test]

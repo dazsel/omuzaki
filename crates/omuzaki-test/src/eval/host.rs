@@ -1,8 +1,9 @@
 //! The host an attempt talks to (design 6.1): the same runner and MCP server `omuzaki mcp` builds, reached by an MCP
 //! client, so an eval cannot drift from the product.
 //!
-//! - [`Host::in_process`] opens the attempt's project copy with `omuzaki_cli::session::open_runner`, the constructor
-//!   `omuzaki mcp` uses, and serves it with [`omuzaki_mcp::McpServer`] over an in-memory pipe.
+//! - [`Host::in_process`] opens the attempt's project copy through the app core with `omuzaki_cli::session::open_project`,
+//!   as `omuzaki mcp` opens it, and serves it with [`omuzaki_mcp::McpServer`] over an in-memory pipe. The project is
+//!   closed (its files written) when the host finishes.
 //! - [`Host::with_runner`] does the same for any runner (the tests serve a mock one).
 //! - [`Host::binary`] runs `omuzaki mcp --project <copy>` as a child process over stdio, with a scrubbed environment, and
 //!   kills it by its process id when the attempt ends. `omuzaki mcp` always grants the agent default, so a task that
@@ -119,7 +120,7 @@ impl Host {
     /// [`HostError::Open`] when the project cannot be opened; otherwise as [`Host::with_runner`].
     pub fn in_process(project: &Path, grants: Grants) -> Result<Self, HostError> {
         let connections = Connections::default();
-        let (runner, sessions) = open_executor(project, &connections)?;
+        let (runner, sessions) = open_core(project)?;
         // As `omuzaki mcp` does: the agent's session is opened in the executor's registry, for the person at the
         // command line, and the executor refuses an agent that has none.
         let host = SessionHost { sessions, person: Session::from_env().actor };
@@ -355,13 +356,26 @@ fn cli_for(project: &Path) -> Result<Cli, HostError> {
     cli::try_parse_from(args).map_err(|e| HostError::Open(e.to_string()))
 }
 
-/// Opens the runner `omuzaki mcp --project <dir>` would serve, with the ops linked into this binary: the fixture builder
-/// and the checker open projects through it as well, so every runner in an eval is built by the product's constructor.
+/// Opens the runner `omuzaki mcp --project <dir>` would serve, through the app core, with the ops linked into this
+/// binary: the fixture builder opens projects through it, so every runner in an eval is built by the product's
+/// constructor. Each change is in the files when it returns, and the project closes when the runner drops.
+///
+/// # Errors
+/// [`HostError::Open`] when the folder is not a project this build can open, or another Omuzaki has it open.
+pub fn open_project_runner(project: &Path) -> Result<Arc<dyn Runner>, HostError> {
+    Ok(open_core(project)?.0)
+}
+
+/// Reads the project in `dir` as its files are, in memory, without opening it: what the checker compares, and what the
+/// binary host reads while `omuzaki mcp` has the project open. Nothing applied through it is written.
 ///
 /// # Errors
 /// [`HostError::Open`] when the folder is not a project this build can open.
-pub fn open_project_runner(project: &Path) -> Result<Arc<dyn Runner>, HostError> {
-    open_runner(project, &Connections::default())
+pub fn read_project_runner(project: &Path) -> Result<Arc<dyn Runner>, HostError> {
+    omuzaki_cli::link();
+    let executor = omuzaki_cli::session::open_executor_with(&cli_for(project)?, &Connections::default())
+        .map_err(|e| HostError::Open(e.to_string()))?;
+    Ok(executor)
 }
 
 /// The session registry of a project's executor, and the person its agents work for.
@@ -370,27 +384,24 @@ struct SessionHost {
     person: Actor,
 }
 
-fn open_runner(project: &Path, connections: &Connections) -> Result<Arc<dyn Runner>, HostError> {
-    Ok(open_executor(project, connections)?.0)
-}
-
-/// A project's executor, as the runner and as the session registry.
+/// A project's runner, and its session registry.
 type Opened = (Arc<dyn Runner>, Arc<dyn Sessions>);
 
-/// The executor of `project`, as the runner it is and as the session registry it holds.
-fn open_executor(project: &Path, connections: &Connections) -> Result<Opened, HostError> {
+/// The project in `project` opened through the app core, as the runner and as the session registry it holds.
+fn open_core(project: &Path) -> Result<Opened, HostError> {
     // The ops are linked into the binary that calls this; `link()` keeps the linker from dropping them (ADR 0015).
     omuzaki_cli::link();
-    let executor = omuzaki_cli::session::open_executor_with(&cli_for(project)?, connections)
+    let opened = omuzaki_cli::session::open_project(&cli_for(project)?, project, Session::from_env().actor)
         .map_err(|e| HostError::Open(e.to_string()))?;
-    Ok((executor.clone(), executor))
+    let sessions = opened.core().sessions();
+    Ok((Arc::new(opened), sessions))
 }
 
 fn read_document(reader: &Reader) -> Result<Value, HostError> {
     let document_error = |e: &dyn std::fmt::Display| HostError::Document(e.to_string());
     let runner = match reader {
         Reader::Runner(runner) => runner.clone(),
-        Reader::Project(dir) => open_project_runner(dir)?,
+        Reader::Project(dir) => read_project_runner(dir)?,
     };
     let doc = runner.get(&DocPath::root(), &Grants::of([Scope::Read])).map_err(|e| document_error(&e))?;
     Ok(doc.unwrap_or(Value::Null))

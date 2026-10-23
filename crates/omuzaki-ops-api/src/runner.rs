@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::approval::{ApprovalRef, PendingApproval, Resolution};
 use crate::session::{Ended, SessionChange, SessionId, SessionInfo, SessionUndo};
-use crate::{Actor, Cause, Effect, Grants, JobId, JobInfo, OpError, OpKind, OpMeta, Plan, Scope, Undo};
+use crate::{Actor, Cause, Effect, Grants, JobId, JobInfo, JobShape, OpError, OpKind, OpMeta, Plan, Scope, Undo};
 
 /// Plan only, or plan and apply.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -434,7 +434,10 @@ pub enum ClashKind {
 }
 
 /// Everything a surface needs to present one op: generated from the registry, never written by hand.
+///
+/// `#[non_exhaustive]`: build one with [`OpInfo::new`] and the `with_*` methods.
 #[derive(Clone, Debug, PartialEq, Serialize)]
+#[non_exhaustive]
 pub struct OpInfo {
     /// Dotted name.
     pub name: &'static str,
@@ -452,6 +455,16 @@ pub struct OpInfo {
     /// ([`Op::coalesces`](crate::Op::coalesces)). Omitted from the JSON when false.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub coalesces: bool,
+    /// For a job, whether `work` computes a result ([`Plain`](JobShape::Plain)) or edits the document through inner
+    /// calls ([`Driver`](JobShape::Driver), one undo step that may join the caller's transaction). `Plain` for every
+    /// other op, and then absent from the JSON.
+    #[serde(skip_serializing_if = "is_plain")]
+    pub job_shape: JobShape,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // the signature `skip_serializing_if` requires
+fn is_plain(shape: &JobShape) -> bool {
+    *shape == JobShape::Plain
 }
 
 impl OpInfo {
@@ -465,6 +478,7 @@ impl OpInfo {
             undo: meta.undo,
             schema,
             coalesces: false,
+            job_shape: JobShape::Plain,
         }
     }
 
@@ -478,6 +492,13 @@ impl OpInfo {
     #[must_use]
     pub fn with_coalesces(mut self, coalesces: bool) -> Self {
         self.coalesces = coalesces;
+        self
+    }
+
+    /// The same info with [`job_shape`](Self::job_shape) set.
+    #[must_use]
+    pub fn with_job_shape(mut self, shape: JobShape) -> Self {
+        self.job_shape = shape;
         self
     }
 }
@@ -527,19 +548,25 @@ pub trait Runner: Send + Sync {
     /// ways the revert can't apply.
     fn rollback(&self, tx: TxId, actor: &Actor) -> Result<(), OpError>;
 
-    /// Undoes `actor`'s own most recent committed transaction (undo is per actor, as in collaborative editors: an
-    /// agent never undoes a person's edit by accident). Returns its label, or `None` if there's nothing to undo.
+    /// Undoes `actor`'s most recent committed transaction (undo is per actor, as in collaborative editors: an agent
+    /// never undoes a person's edit by accident). Returns its label, or `None` if there's nothing to undo.
     ///
-    /// If later changes by others make that step impossible to undo, the step is dropped from the actor's history
-    /// and a `Conflict` says so (naming the path and who changed it), so history never wedges. Reverting another
-    /// actor's transaction is a separate, explicit op.
+    /// **Per principal for a person** (design `agent-sessions.md` §5.4): a person's undo takes the newest step among
+    /// their own history and the histories of the agent sessions that work for them (automation sessions excepted),
+    /// and pauses a running session whose step it takes, so the agent cannot keep committing on top. An agent's undo
+    /// reaches only its own steps.
+    ///
+    /// If later changes by others make that step impossible to undo, the step is dropped from its history and a
+    /// `Conflict` says so (naming the path and who changed it), so history never wedges. Reverting another person's
+    /// transaction is a separate, explicit op.
     ///
     /// # Errors
     /// `Conflict` as above; `Denied` if `grants` can't edit what the step touched.
     fn undo(&self, actor: &Actor, grants: &Grants) -> Result<Option<String>, OpError>;
 
-    /// Redoes `actor`'s most recently undone transaction; returns its label, or `None`. A new commit by the same
-    /// actor clears its redo history.
+    /// Redoes `actor`'s most recently undone transaction (for a person, the most recently undone among their own and
+    /// their agents' steps, as [`undo`](Self::undo) takes them); returns its label, or `None`. A new commit by the
+    /// same actor, or for a person by them or any of their agents, clears that redo history.
     ///
     /// # Errors
     /// As [`Runner::undo`].

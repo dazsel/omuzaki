@@ -1,8 +1,8 @@
 //! The state machine (design section 3). It decides which step is showing and what the host must do next.
 
-use crate::ops::{Ids, Op, Reply};
 use crate::probe::{Cameras, IPhone, LanguageOffer, OutputKind, Permission, Probes, TrackerModel};
 use crate::progress::{Progress, Step, Timers};
+use crate::request::{Ids, Op, Reply};
 use std::collections::BTreeSet;
 
 /// What the person picked on Character.

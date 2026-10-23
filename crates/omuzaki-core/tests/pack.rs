@@ -93,6 +93,17 @@ fn item_too_big_once_padded_is_unplaced_and_does_not_stop_the_rest() {
 }
 
 #[test]
+fn smaller_items_after_a_miss_at_max_side_are_still_placed() {
+    // At 64 the 48 by 48 square takes a corner and the second one fits nowhere; the small squares still fit beside them.
+    let items = [item(1, 48, 48), item(2, 48, 48), item(3, 8, 8), item(4, 8, 8), item(5, 8, 8)];
+    let packing = pack(&items, &options(64, 0, false));
+    assert_eq!(packing.unplaced, [2], "only the square that fits nowhere is left out");
+    let mut placed: Vec<u32> = packing.placements.iter().map(|p| p.id).collect();
+    placed.sort_unstable();
+    assert_eq!(placed, [1, 3, 4, 5]);
+}
+
+#[test]
 fn placements_come_back_in_input_order() {
     let items = [item(9, 8, 8), item(3, 64, 64), item(5, 16, 16)];
     let ids: Vec<u32> = pack(&items, &options(1024, 0, false)).placements.iter().map(|p| p.id).collect();
@@ -206,7 +217,7 @@ proptest! {
     }
 
     #[test]
-    fn unplaced_holds_the_oversize_items_and_the_last_packed(
+    fn every_item_is_placed_or_unplaced_once_and_oversize_items_are_unplaced(
         items in items_strategy(),
         max_side in 16_u32..=256,
         padding in 0_u32..=3,
@@ -215,15 +226,16 @@ proptest! {
         for item in items.iter().filter(|item| oversize(item, padding, max_side)) {
             prop_assert!(packing.unplaced.contains(&item.id));
         }
-
-        // Items that do fit are placed in packing order, so the placed ones are exactly a prefix of that order.
-        let mut fitting: Vec<PackItem> = items.iter().copied().filter(|item| !oversize(item, padding, max_side)).collect();
-        fitting.sort_by_key(order_key);
-        let mut placed: Vec<u32> = packing.placements.iter().map(|p| p.id).collect();
-        placed.sort_unstable();
-        let mut prefix: Vec<u32> = fitting.iter().take(placed.len()).map(|item| item.id).collect();
-        prefix.sort_unstable();
-        prop_assert_eq!(placed, prefix);
+        // Each item is either placed or left out, never both and never neither.
+        let mut seen: Vec<u32> = packing.placements.iter().map(|p| p.id).chain(packing.unplaced.iter().copied()).collect();
+        seen.sort_unstable();
+        let mut ids: Vec<u32> = items.iter().map(|item| item.id).collect();
+        ids.sort_unstable();
+        prop_assert_eq!(seen, ids);
+        // Left out in packing order.
+        let mut ordered = packing.unplaced.clone();
+        ordered.sort_by_key(|id| order_key(items.iter().find(|item| item.id == *id).unwrap_or(&items[0])));
+        prop_assert_eq!(&ordered, &packing.unplaced);
     }
 
     #[test]

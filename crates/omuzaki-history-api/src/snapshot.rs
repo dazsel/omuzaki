@@ -8,13 +8,16 @@ use std::time::Duration;
 use omuzaki_doc_api::{Patch, Value};
 use omuzaki_ops_api::Service;
 use omuzaki_store_api::{ContentHash, HashParseError};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::branch::BranchId;
+use crate::state::StateRef;
 use crate::{Lsn, WallTime};
 
 /// The id of a snapshot: the BLAKE3 hash of its manifest, so identical content always has the same id. Several refs
 /// may share one id.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
 pub struct SnapshotId(pub ContentHash);
 
@@ -60,6 +63,9 @@ pub enum Trigger {
     /// The state a recording or replay save pins (ADR 0052). Takes its stem through `Snapshots::take`, which stores it
     /// in [`SnapshotInfo::stem`].
     Take,
+    /// A point on a branch (VC-02): the state a fork, checkpoint, review request, switch or lane close records. The
+    /// snapshot's ref names the branch ([`SnapshotInfo::branch`]).
+    Point,
 }
 
 /// How a snapshot was checked.
@@ -125,6 +131,39 @@ pub struct SnapshotInfo {
     /// The latest check, if it has been checked.
     #[serde(default)]
     pub verified: Option<Verification>,
+    /// The highest job id the journal had recorded at `lsn`, so a reopen numbers new jobs after it and never reuses
+    /// an id (ADR 0036 decision 10). 0: none, or a ref written before jobs were counted.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub last_job: u64,
+    /// The jobs that had started and not ended at `lsn`. A reopen marks those that end nowhere in the journal after it
+    /// as interrupted (journal.md 8.3): a job is never re-run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub running_jobs: Vec<RunningJob>,
+    /// The branch whose lane took the snapshot (VC-02). Refs written before branches existed read as `main`.
+    #[serde(default)]
+    pub branch: BranchId,
+}
+
+/// A job that was running when a snapshot was taken.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct RunningJob {
+    /// The job's id.
+    pub job: u64,
+    /// The op it runs.
+    pub op: String,
+}
+
+impl RunningJob {
+    /// Job `job`, running `op`.
+    pub fn new(job: u64, op: impl Into<String>) -> Self {
+        Self { job, op: op.into() }
+    }
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref, reason = "serde's skip_serializing_if passes a reference")]
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 impl SnapshotInfo {
@@ -143,6 +182,9 @@ impl SnapshotInfo {
             stem: None,
             keep_until: None,
             verified: None,
+            last_job: 0,
+            running_jobs: Vec::new(),
+            branch: BranchId::main(),
         }
     }
 }
@@ -229,6 +271,24 @@ pub trait Snapshots: Service {
     /// [`SnapshotError::Io`] when storing fails.
     fn take(&self, trigger: Trigger, name: Option<&str>) -> Result<SnapshotId, SnapshotError>;
 
+    /// Takes a snapshot of any `state` of this lane's branch, not only the current one (named versions of past
+    /// transactions, branching from history; design 9), and returns its id. `trigger` and `name` follow
+    /// [`take`](Self::take).
+    ///
+    /// The default refuses, so services written before branches keep compiling; `take(trigger, name)` is
+    /// `take_at(&StateRef::Now, trigger, name)` for those that implement it.
+    ///
+    /// # Errors
+    /// [`SnapshotError::Invalid`] for a name or trigger that does not fit, or a state this service cannot resolve;
+    /// [`SnapshotError::NotFound`] or [`SnapshotError::Corrupt`] when what `state` names is missing or damaged;
+    /// [`SnapshotError::Io`] when storing fails.
+    fn take_at(&self, state: &StateRef, trigger: Trigger, name: Option<&str>) -> Result<SnapshotId, SnapshotError> {
+        let _ = (state, trigger, name);
+        Err(SnapshotError::Invalid(
+            "this snapshot service cannot snapshot a state other than the current one".to_owned(),
+        ))
+    }
+
     /// The document as of snapshot `id`.
     ///
     /// # Errors
@@ -257,12 +317,50 @@ pub trait Snapshots: Service {
     /// [`SnapshotError::Invalid`] for a path outside the project, [`SnapshotError::Io`] when a file cannot be read.
     fn reload_patch(&self, paths: &[String]) -> Result<Patch, SnapshotError>;
 
+    /// What `project.reload` takes in: with no `paths`, every file changed outside Omuzaki since it was last read or
+    /// written; otherwise those files. Says which files they are and which of them the document also has unsaved
+    /// changes in (clashes, which the reload replaces and reports, never merges). The default reads
+    /// [`reload_patch`](Self::reload_patch) and names no files.
+    ///
+    /// # Errors
+    /// As [`reload_patch`](Self::reload_patch).
+    fn reload(&self, paths: &[String]) -> Result<Reload, SnapshotError> {
+        self.reload_patch(paths).map(Reload::new)
+    }
+
     /// Bytes and counts of the journal, the archive and the snapshot store.
     ///
     /// # Errors
     ///
     /// [`SnapshotError::Io`] when the folders cannot be read.
     fn usage(&self) -> Result<Usage, SnapshotError>;
+}
+
+/// What [`Snapshots::reload`] found.
+#[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
+pub struct Reload {
+    /// From the document to the files; the op fills each `before` from the document it plans against.
+    pub patch: Patch,
+    /// The files it reads, relative to the project folder.
+    pub files: Vec<String>,
+    /// Those the document also has unsaved changes in.
+    pub clashes: Vec<String>,
+}
+
+impl Reload {
+    /// A reload of `patch`, naming no files.
+    pub fn new(patch: Patch) -> Self {
+        Self { patch, ..Self::default() }
+    }
+
+    /// This reload, naming `files` and the `clashes` among them.
+    #[must_use]
+    pub fn with_files(mut self, files: Vec<String>, clashes: Vec<String>) -> Self {
+        self.files = files;
+        self.clashes = clashes;
+        self
+    }
 }
 
 #[cfg(test)]
@@ -291,13 +389,61 @@ mod tests {
     fn a_ref_missing_optional_facts_still_reads() {
         let info = SnapshotInfo::new(id(), Lsn(5), "s", WallTime(1_760_279_525_000), Trigger::Auto);
         let mut json = serde_json::to_value(&info).unwrap_or_default();
-        for key in ["label", "history", "thumbnail", "name", "stem", "keep_until", "verified"] {
+        for key in ["label", "history", "thumbnail", "name", "stem", "keep_until", "verified", "branch"] {
             if let Some(map) = json.as_object_mut() {
                 map.remove(key);
             }
         }
         let back: Result<SnapshotInfo, _> = serde_json::from_value(json);
         assert_eq!(back.ok(), Some(info));
+    }
+
+    #[test]
+    fn a_ref_from_before_branches_reads_as_main_and_the_point_trigger_is_kebab_case() {
+        let info = SnapshotInfo::new(id(), Lsn(5), "s", WallTime(1), Trigger::Point);
+        assert!(info.branch.is_main());
+        let text = serde_json::to_string(&info.trigger).unwrap_or_default();
+        assert_eq!(text, "\"point\"");
+        let mut json = serde_json::to_value(&info).unwrap_or_default();
+        assert_eq!(json["branch"], "main");
+        if let Some(map) = json.as_object_mut() {
+            map.remove("branch");
+        }
+        let back: Result<SnapshotInfo, _> = serde_json::from_value(json);
+        assert_eq!(back.ok(), Some(info));
+    }
+
+    /// A service written before branches: it implements only what the trait required then.
+    struct Old;
+
+    impl Snapshots for Old {
+        fn list(&self) -> Result<Vec<SnapshotInfo>, SnapshotError> {
+            Ok(Vec::new())
+        }
+        fn take(&self, _: Trigger, _: Option<&str>) -> Result<SnapshotId, SnapshotError> {
+            Ok(id())
+        }
+        fn tree(&self, _: &SnapshotId) -> Result<Value, SnapshotError> {
+            Ok(Value::Null)
+        }
+        fn restore_outside_tree(&self, _: &SnapshotId) -> Result<(), SnapshotError> {
+            Ok(())
+        }
+        fn save_files(&self, _: Duration) -> Result<(), SnapshotError> {
+            Ok(())
+        }
+        fn reload_patch(&self, _: &[String]) -> Result<Patch, SnapshotError> {
+            Ok(Patch::default())
+        }
+        fn usage(&self) -> Result<Usage, SnapshotError> {
+            Ok(Usage::default())
+        }
+    }
+
+    #[test]
+    fn take_at_refuses_by_default_so_older_services_keep_compiling() {
+        let refused = Old.take_at(&StateRef::Now, Trigger::Point, None);
+        assert!(matches!(refused, Err(SnapshotError::Invalid(_))), "{refused:?}");
     }
 
     #[test]

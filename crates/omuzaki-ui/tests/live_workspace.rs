@@ -43,7 +43,7 @@ use omuzaki_ui::ds::testing::{
 use omuzaki_ui::ds::{Settings, set_strings};
 use omuzaki_ui::live::model::{
     CALIBRATE_FRAMES, HOTKEY_ROWS, LiveModel, OP_IMPORT, OP_INPUT_BIND_CAMERA, OP_INPUT_PREVIEW,
-    OP_INPUT_REQUEST_CAMERA, OP_INPUT_SELECT, OP_INPUT_STATE, Ops,
+    OP_INPUT_REQUEST_CAMERA, OP_INPUT_SELECT, OP_INPUT_STATE, Ops, Place,
 };
 use omuzaki_ui::live::panel::LivePanel;
 use omuzaki_ui::live::story::{LiveState, StoryRunner};
@@ -212,15 +212,20 @@ struct Recording {
 impl Recording {
     /// The perform, trigger and output window ops, without the `input.*` ops: a build that lacks them.
     fn new(host: Arc<FakeHost>) -> Self {
-        Self::build(host, None)
+        Self::build(host, None, Transparency::Fallback)
+    }
+
+    /// The same, on a machine whose transparent surface is verified, so the desktop mode is offered.
+    fn verified(host: Arc<FakeHost>) -> Self {
+        Self::build(host, None, Transparency::Verified)
     }
 
     /// The same, with the stage's `input.*` ops over `input`.
     fn with_input(host: Arc<FakeHost>, input: &Arc<FakeInput>) -> Self {
-        Self::build(host, Some(input))
+        Self::build(host, Some(input), Transparency::Fallback)
     }
 
-    fn build(host: Arc<FakeHost>, input: Option<&Arc<FakeInput>>) -> Self {
+    fn build(host: Arc<FakeHost>, input: Option<&Arc<FakeInput>>, transparency: Transparency) -> Self {
         omuzaki_ui::link();
         let mut names = vec![
             "perform.calibrate",
@@ -232,6 +237,7 @@ impl Recording {
             "output.window.open",
             "output.window.close",
             "output.window.status",
+            "output.window.set",
         ];
         if input.is_some() {
             names.extend([
@@ -243,7 +249,7 @@ impl Recording {
             ]);
         }
         let ops: Vec<_> = names.into_iter().map(|op| find(op).expect("linked")).collect();
-        let window = OutputHost::new(Transparency::Fallback, PhysicalSize::FULL_HD);
+        let window = OutputHost::new(transparency, PhysicalSize::FULL_HD);
         let mut services =
             ServicesBuilder::new().insert::<dyn PerformHost>(host).insert::<dyn WindowHost>(Arc::new(window.clone()));
         if let Some(input) = input {
@@ -512,7 +518,8 @@ fn the_output_switch_opens_and_closes_the_window_through_its_ops() {
     named(&h, Role::Switch, "Output window").click();
     h.run_steps(2);
     let args = h.state().runner.last("output.window.open").expect("the switch ran the op");
-    assert_eq!(args, object(&[("backdrop", Value::from("key")), ("always_on_top", Value::from(false))]));
+    let capture = [("mode", "capture".into()), ("backdrop", "key".into()), ("always_on_top", Value::from(false))];
+    assert_eq!(args, object(&capture));
     assert!((find("output.window.open").expect("registered").decode)(args).is_ok(), "the op decodes what the UI sends");
     // The app's UI thread opens it on its next frame; the panel's next read shows it.
     h.state().runner.ui_frame(&mut window);
@@ -559,6 +566,69 @@ fn backdrop_and_keep_on_top_reopen_an_open_window_and_a_fallback_says_so() {
     assert_eq!(h.state().runner.last("output.window.open").expect("re-opened")["always_on_top"], true);
     h.state().runner.ui_frame(&mut window);
     assert!(window.plan().always_on_top, "the setting reached the window");
+}
+
+#[test]
+fn on_the_desktop_opens_the_desktop_window_and_its_clicks_change_in_place() {
+    let host = Arc::new(FakeHost::default());
+    let mut h = live_on(Recording::verified(Arc::clone(&host)));
+    let mut window = OutputWindow::new(OutputPlan::default(), Transparency::Verified);
+    named(&h, Role::Switch, "Output window").click();
+    h.run_steps(2);
+    h.state().runner.ui_frame(&mut window);
+    reread(&mut h);
+    h.run_steps(2);
+
+    named(&h, Role::RadioButton, "On the desktop").click();
+    h.run_steps(2);
+    let args = h.state().runner.last("output.window.open").expect("re-opened on the desktop");
+    let desktop = [("mode", "desktop".into()), ("opacity", Value::from(1.0)), ("click_through", "transparent".into())];
+    assert_eq!(args, object(&desktop));
+    h.state().runner.ui_frame(&mut window);
+    assert!(
+        window.plan().desktop.is_some() && window.plan().drags(),
+        "the window is on the desktop, dragged by the character"
+    );
+    reread(&mut h);
+    h.run_steps(2);
+    assert!(all_strings(&h).iter().any(|s| s == "960 × 540 px on the desktop at 100%"), "{:?}", all_strings(&h));
+
+    let opens = |h: &Harness<'_, World<Recording>>| {
+        h.state().runner.ops_run().iter().filter(|op| *op == "output.window.open").count()
+    };
+    let before = opens(&h);
+    named(&h, Role::RadioButton, "All pass through").click();
+    h.run_steps(2);
+    let set = h.state().runner.last("output.window.set").expect("changed in place");
+    assert_eq!(set, object(&[("opacity", Value::from(1.0)), ("click_through", "full".into())]));
+    assert_eq!(opens(&h), before, "no reopen for the clicks");
+    h.state().runner.ui_frame(&mut window);
+    assert!(!window.plan().drags(), "every click passes through");
+    assert!(all_strings(&h).iter().any(|s| s.starts_with("Every click passes through")), "the way back is named");
+    if let Ok(out) = std::env::var("OMUZAKI_EVIDENCE_OUT") {
+        let image = h.render().expect("renders");
+        let path = format!("{out}/live-desktop-1366x1600.png");
+        image.save(&path).unwrap_or_else(|e| panic!("writing {path}: {e}"));
+    }
+
+    named(&h, Role::RadioButton, "Window takes them").click();
+    h.run_steps(2);
+    assert_eq!(h.state().runner.last("output.window.set").expect("set")["click_through"], "off");
+}
+
+#[test]
+fn a_machine_without_a_verified_transparent_surface_says_why_it_cannot_show_the_desktop() {
+    let host = Arc::new(FakeHost::default());
+    let mut h = live(&host);
+    let reason = |h: &Harness<'_, World<Recording>>| {
+        all_strings(h).into_iter().find(|s| s == "This computer can't show the character on the desktop yet")
+    };
+    assert!(reason(&h).is_some(), "{:?}", all_strings(&h));
+    named(&h, Role::RadioButton, "On the desktop").click();
+    h.run_steps(2);
+    assert_eq!(h.state().panel.model().window_choice().place, Place::Capture, "it stays a capture window");
+    assert!(h.state().runner.last("output.window.open").is_none(), "nothing was opened");
+    assert!(h.state().panel.model().failure().is_some_and(|f| f.message.contains("transparent window")));
 }
 
 #[test]

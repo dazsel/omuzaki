@@ -10,8 +10,11 @@
 //! | `store` | [`Store`]: load, snapshot, events, the change log and the debounced writer thread |
 //! | `backend` | the private `Backend` trait and the file backend: lock, merge, atomic replace, quarantine |
 //! | `document` | reading keys out of a file and merging edits into its text without touching anything else |
-//! | `ephemeral` | session state in memory until the session file store lands |
-//! | [`ops`] | the `settings.*` ops over any `Settings` service (#767) |
+//! | [`session`] | [`SessionFile`]: `session.toml` in the local data folder, the opening guard written at once (D9) |
+//! | `profiles` | the profile files in `profiles/` beside `settings.toml`: read forgivingly, edited in place |
+//! | [`startup`] | [`startup_plan`](startup::startup_plan): recover, setup, open or Welcome at start, and `startup.reopen` |
+//! | `ephemeral` | session state in memory, for a store over a test backend (tests only) |
+//! | [`ops`] | the `settings.*` and `session.*` ops over any `Settings` service (#767, #770) |
 //!
 //! # Choices a reviewer may disagree with
 //!
@@ -24,18 +27,26 @@
 //! - **Stale temporary files are removed by age**, and only those named for the file being written, not by asking
 //!   whether the owning process is alive, which std cannot do portably. Holding the file lock already proves no live
 //!   writer of this file exists; another file's writer in the folder may only be slow.
-//! - **Profiles and session state are not stored here yet.** No profile exists and `session()` is in memory.
+//! - **A profile holds only `User` keys that are `InProfile::Member`.** Machine keys and the privacy, language and
+//!   startup keys stay in the base, so switching a profile never moves a port or turns telemetry on.
+//! - **Session state is not settings.** It lives in `session.toml` in the data folder (`SessionFile`), never roams,
+//!   and has no undo history beyond `session.forget`'s.
 
 mod backend;
 mod document;
+#[cfg(test)]
 mod ephemeral;
 pub mod ops;
 mod paths;
+mod profiles;
+pub mod session;
+pub mod startup;
 mod store;
 #[cfg(test)]
 mod tests;
 
 pub use paths::{CONFIG_DIR_VAR, DATA_DIR_VAR, Paths};
+pub use session::SessionFile;
 pub use store::{DEBOUNCE, MAX_DELAY, Store};
 
 use std::sync::{Mutex, MutexGuard, PoisonError};

@@ -89,8 +89,10 @@ impl Rig {
 
     fn with(limits: Limits) -> Self {
         let server = McpServer::new(Arc::new(NoOps), McpOptions::default()).unwrap();
-        let (revocations, _) = tokio::sync::mpsc::unbounded_channel();
-        let registry = Arc::new(Registry::new(server, Vec::new(), limits, CancellationToken::new(), revocations));
+        let ((revocations, _), (pairings, _)) =
+            (tokio::sync::mpsc::unbounded_channel(), tokio::sync::mpsc::unbounded_channel());
+        let registry =
+            Arc::new(Registry::new(server, Vec::new(), limits, CancellationToken::new(), revocations, pairings));
         let recorder = Recorder::default();
         let gate = Gate::with_sink(Arc::clone(&registry), "/mcp".to_owned(), Arc::new(recorder.clone()));
         Self { gate, registry, recorder }

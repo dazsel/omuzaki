@@ -1,0 +1,8 @@
+section = "rust"
+item = "caseless 0.2"
+kind = "crate"
+used_for = "Unicode full case folding of package paths, so two names that differ only in case collide (`omuzaki-plugin`)"
+status = "yes"
+condition = "MIT (the `license` field of caseless 0.2.2, checked 2026-10-16; the package carries LICENSE): its notice ships with the app's third-party notices"
+audit = "#1999"
+crates = ["caseless"]

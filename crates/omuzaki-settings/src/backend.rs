@@ -79,6 +79,9 @@ pub(crate) trait Backend: Send + Sync {
 
     /// The file's name, for messages.
     fn file_name(&self, scope: SettingScope) -> &'static str;
+
+    /// The folder of the profile files (`profiles/` in the config folder).
+    fn profile_dir(&self) -> PathBuf;
 }
 
 /// The real files: `settings.toml` in the config folder, `machine.toml` in the local data folder.
@@ -126,47 +129,58 @@ impl FileBackend {
 
     /// Takes the exclusive lock, trying for at most `lock_wait`.
     fn lock(&self, path: &Path) -> Result<File, SettingError> {
-        let mut name = path.as_os_str().to_owned();
-        name.push(".lock");
-        let lock_path = PathBuf::from(name);
-        if let Some(parent) = lock_path.parent() {
-            fs::create_dir_all(parent).map_err(|e| storage(&lock_path, "create the folder", &e))?;
-        }
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&lock_path)
-            .map_err(|e| storage(&lock_path, "open the lock file", &e))?;
-        let deadline = Instant::now() + self.lock_wait;
-        loop {
-            match file.try_lock() {
-                Ok(()) => return Ok(file),
-                Err(TryLockError::WouldBlock) if Instant::now() < deadline => thread::sleep(LOCK_POLL),
-                Err(TryLockError::WouldBlock) => {
-                    let reason = format!("another process holds {} (waited {:?})", lock_path.display(), self.lock_wait);
-                    return Err(SettingError::new("", SettingErrorKind::Storage { reason }));
-                }
-                Err(TryLockError::Error(e)) => return Err(storage(&lock_path, "lock", &e)),
+        lock_beside(path, self.lock_wait)
+    }
+}
+
+/// Takes the exclusive OS lock on `<path>.lock`, trying for at most `wait`. The session store shares it with the
+/// settings files' writes.
+pub(crate) fn lock_beside(path: &Path, wait: Duration) -> Result<File, SettingError> {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".lock");
+    let lock_path = PathBuf::from(name);
+    if let Some(parent) = lock_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| storage(&lock_path, "create the folder", &e))?;
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|e| storage(&lock_path, "open the lock file", &e))?;
+    let deadline = Instant::now() + wait;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(TryLockError::WouldBlock) if Instant::now() < deadline => thread::sleep(LOCK_POLL),
+            Err(TryLockError::WouldBlock) => {
+                let reason = format!("another process holds {} (waited {wait:?})", lock_path.display());
+                return Err(SettingError::new("", SettingErrorKind::Storage { reason }));
             }
+            Err(TryLockError::Error(e)) => return Err(storage(&lock_path, "lock", &e)),
         }
     }
+}
+
+/// Renames `path` to `<name>.broken-<utc>` (with `-<n>` when that is taken) and returns the new name.
+pub(crate) fn move_aside_path(path: &Path) -> Result<String, SettingError> {
+    let file = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+    let stamp = utc_stamp(SystemTime::now());
+    let mut name = format!("{file}.broken-{stamp}");
+    let mut n = 1;
+    while path.with_file_name(&name).exists() {
+        name = format!("{file}.broken-{stamp}-{n}");
+        n += 1;
+    }
+    fs::rename(path, path.with_file_name(&name)).map_err(|e| storage(path, "move aside", &e))?;
+    Ok(name)
 }
 
 impl FileBackend {
     /// Renames the file to `<name>.broken-<utc>`; the caller holds the file's lock.
     fn move_aside(&self, scope: SettingScope) -> Result<String, SettingError> {
-        let path = self.path(scope);
-        let stamp = utc_stamp(SystemTime::now());
-        let mut name = format!("{}.broken-{stamp}", self.file_name(scope));
-        let mut n = 1;
-        while path.with_file_name(&name).exists() {
-            name = format!("{}.broken-{stamp}-{n}", self.file_name(scope));
-            n += 1;
-        }
-        fs::rename(&path, path.with_file_name(&name)).map_err(|e| storage(&path, "move aside", &e))?;
-        Ok(name)
+        move_aside_path(&self.path(scope))
     }
 
     fn update_locked(
@@ -265,9 +279,13 @@ impl Backend for FileBackend {
             SettingScope::Machine => "machine.toml",
         }
     }
+
+    fn profile_dir(&self) -> PathBuf {
+        self.paths.config().join("profiles")
+    }
 }
 
-fn storage(path: &Path, doing: &str, e: &io::Error) -> SettingError {
+pub(crate) fn storage(path: &Path, doing: &str, e: &io::Error) -> SettingError {
     let reason = format!("could not {doing} {}: {e}", path.display());
     SettingError::new("", SettingErrorKind::Storage { reason })
 }

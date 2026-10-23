@@ -84,8 +84,7 @@ impl ConnectHttp {
                 builder = builder.no_proxy();
             }
             // reqwest's blocking builder panics on a thread that runs async tasks: build on a plain one.
-            std::thread::scope(|scope| scope.spawn(|| builder.build().map_err(|e| e.to_string())).join())
-                .unwrap_or_else(|_| Err("the client builder panicked".to_owned()))
+            crate::on_plain_thread(|| builder.build().map_err(|e| e.to_string()))
         };
         Self { remote: build(false), local: build(true) }
     }

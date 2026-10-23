@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 
 use crate::exit;
 
@@ -23,9 +23,15 @@ pub struct Cli {
     pub json: bool,
 
     /// The Omuzaki project directory to act on (the folder with `project.toml`). Needed by everything but `ops` and
-    /// `help`. Changes are saved as they are applied.
+    /// `help`. Each change is journalled before the command answers, and the files are written before it exits.
     #[arg(long, global = true, value_name = "DIR")]
     pub project: Option<PathBuf>,
+
+    /// If Omuzaki stopped without closing the project (a crash, a kill, a power cut), how to open it: `restore`
+    /// brings back every change that finished, from the journal; `disk` takes the files as they are. Either way the
+    /// folder as it was found is kept in a snapshot for 30 days, and the notice on stderr says which.
+    #[arg(long, global = true, value_enum, default_value_t = RecoverFrom::Restore, value_name = "FROM")]
+    pub recover: RecoverFrom,
 
     /// What to do.
     #[command(subcommand)]
@@ -35,6 +41,16 @@ pub struct Cli {
 /// A `omuzaki` subcommand.
 #[derive(Subcommand, Debug, PartialEq, Eq)]
 pub enum Command {
+    /// Create a new, empty project in a folder (made if needed), ready for `--project <DIR>`.
+    New {
+        /// The folder to create the project in. It must not hold a project already.
+        dir: PathBuf,
+
+        /// The project's display name; the folder's name when left out.
+        #[arg(long)]
+        name: Option<String>,
+    },
+
     /// List every op: name, kind, scope and summary.
     Ops,
 
@@ -59,23 +75,41 @@ pub enum Command {
         dry_run: bool,
     },
 
-    /// Undo your most recent change in this session.
+    /// Undo your most recent change to the project.
     ///
-    /// The history lives in the running process and isn't saved between commands yet, so a separate `omuzaki undo`
-    /// finds nothing to undo. Agents on `omuzaki mcp` have undo as the `history_undo` tool.
+    /// The history is kept with the project, so this undoes what an earlier `omuzaki run` did, and the files follow
+    /// before the command exits. Agents on `omuzaki mcp` have undo as the `history_undo` tool.
     Undo,
 
-    /// Redo the change you last undid in this session.
+    /// Redo the change you last undid.
     ///
-    /// Like `undo`, it only sees the running process's history.
+    /// Like `undo`, it works across commands: the history is kept with the project.
     Redo,
+
+    /// List, compare, restore or name the project's past states (the `history.*` ops, shortened for the shell).
+    ///
+    /// The history is read from the project's journal, so it covers every session, and a restore is one undoable
+    /// step: `omuzaki undo` takes it back.
+    History {
+        /// What to do with the history.
+        #[command(subcommand)]
+        action: HistoryCommand,
+    },
+
+    /// List, make, switch, check point, merge and compare the project's branches: whole-project variants with their
+    /// own history, one of which is in the project folder.
+    Branch {
+        /// What to do with the branches.
+        #[command(subcommand)]
+        action: crate::branch::BranchCommand,
+    },
 
     /// Serve the ops to an AI agent over MCP on stdin/stdout.
     ///
     /// Reads JSON-RPC messages from stdin and writes only protocol messages to stdout, until the client closes stdin.
     /// The agent can read, edit, render and review, and its changes are saved to the project as it makes them. Point an
     /// MCP client at `omuzaki --project <DIR> mcp`.
-    Mcp,
+    Mcp(McpArgs),
 
     /// Print every self-registration linked into this binary (ops, part kinds, formats, ...), one per line:
     /// package, kind, name and place, tab-separated. Hidden: it is for the link gate (`tests/registrations.rs`, ADR
@@ -89,6 +123,147 @@ pub enum Command {
         #[command(subcommand)]
         action: StoreCommand,
     },
+}
+
+/// A `omuzaki history` subcommand: each is one `history.*` op.
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+pub enum HistoryCommand {
+    /// The project's changes, newest first, with who made each and when (`history.list`).
+    List {
+        /// At most this many.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Only changes older than this transaction (the `next` the last page printed).
+        #[arg(long, value_name = "TX")]
+        before: Option<u64>,
+    },
+    /// What differs between the state after transaction `from` and now, or transaction `--to` (`history.diff`).
+    Diff {
+        /// The earlier transaction.
+        from: u64,
+        /// The later transaction; now when left out.
+        #[arg(long, value_name = "TX")]
+        to: Option<u64>,
+    },
+    /// Put the project back as it was after transaction `tx`, as one undoable step (`history.restore`).
+    Restore {
+        /// The transaction to go back to.
+        tx: u64,
+        /// Show what would change, without changing anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Name the project's current state, or the state after transaction `--at`, as a version (`history.name`).
+    Name {
+        /// The version's name.
+        name: String,
+        /// The transaction to name; now when left out.
+        #[arg(long, value_name = "TX")]
+        at: Option<u64>,
+    },
+}
+
+impl HistoryCommand {
+    /// The op this runs, its arguments, and whether it is a dry run.
+    pub fn op(&self) -> (&'static str, serde_json::Value, bool) {
+        use serde_json::json;
+        let tx = |n: u64| json!({ "tx": n });
+        match self {
+            Self::List { limit, before } => {
+                let mut args = serde_json::Map::new();
+                if let Some(limit) = limit {
+                    args.insert("limit".into(), json!(limit));
+                }
+                if let Some(before) = before {
+                    args.insert("before".into(), json!(before));
+                }
+                ("history.list", serde_json::Value::Object(args), false)
+            }
+            Self::Diff { from, to } => {
+                ("history.diff", json!({ "from": tx(*from), "to": to.map_or(json!("now"), tx) }), false)
+            }
+            Self::Restore { tx: at, dry_run } => ("history.restore", json!({ "to": tx(*at) }), *dry_run),
+            Self::Name { name, at } => {
+                ("history.name", json!({ "name": name, "at": at.map_or(json!("now"), tx) }), false)
+            }
+        }
+    }
+}
+
+/// What `omuzaki mcp` gives the agent.
+#[derive(Args, Debug, Default, PartialEq, Eq)]
+pub struct McpArgs {
+    /// Scopes the agent gets on top of read, edit, render and review, comma-separated: for example
+    /// `--grant perform,broadcast` lets it drive the character live and run the outputs. Nobody is at a window to be
+    /// asked, so this is how the person running the command says yes in advance.
+    #[arg(long = "grant", value_delimiter = ',', value_parser = parse_scope, value_name = "SCOPES")]
+    pub grant: Vec<omuzaki_ops_api::Scope>,
+
+    /// Which tools the agent's client lists: `core` (the built-ins plus `ops_find`, `ops_describe` and `ops_run`,
+    /// which reach every op, so the list stays small) or `all` (one tool per op).
+    #[arg(long, value_enum, default_value_t = ToolList::Core, value_name = "LIST")]
+    pub tools: ToolList,
+
+    /// The branch the agent works on from its first call: a branch's name, or `new` for a new branch from the
+    /// folder's as it is now (`agent/session-<n>`). The person's version stays untouched; without it the agent works
+    /// on the folder's branch, and can still move with `branch_work`.
+    #[arg(long, value_name = "NAME|new")]
+    pub branch: Option<String>,
+}
+
+impl McpArgs {
+    /// The agent's grants: the default ones plus `--grant`.
+    pub fn grants(&self) -> omuzaki_ops_api::Grants {
+        self.grant.iter().fold(omuzaki_ops_api::Grants::agent_default(), |grants, scope| grants.with(*scope))
+    }
+}
+
+/// `--tools`: how many tools `omuzaki mcp` lists.
+#[derive(ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ToolList {
+    /// The built-ins and the op finder.
+    #[default]
+    Core,
+    /// One tool per op.
+    All,
+}
+
+impl ToolList {
+    /// The MCP server's tool mode.
+    pub fn mode(self) -> omuzaki_mcp::ToolMode {
+        match self {
+            Self::Core => omuzaki_mcp::ToolMode::Core,
+            Self::All => omuzaki_mcp::ToolMode::All,
+        }
+    }
+}
+
+/// A scope by its name (`perform`, `edit:character`).
+fn parse_scope(name: &str) -> Result<omuzaki_ops_api::Scope, String> {
+    serde_json::from_value(serde_json::Value::String(name.trim().to_owned())).map_err(|_| {
+        let names: Vec<&str> = omuzaki_ops_api::Scope::ALL.iter().map(|s| s.name()).collect();
+        format!("`{name}` is not a scope; the scopes are {}", names.join(", "))
+    })
+}
+
+/// How `--recover` opens a project that wasn't closed.
+#[derive(ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RecoverFrom {
+    /// Bring back every change that finished, from the journal; unfinished transactions are rolled back.
+    #[default]
+    Restore,
+    /// Take the files as they are; the journal's changes since the last save stay only in the kept snapshot.
+    Disk,
+}
+
+impl RecoverFrom {
+    /// The app core's recovery mode.
+    pub fn mode(self) -> omuzaki_app::Recover {
+        match self {
+            Self::Restore => omuzaki_app::Recover::Restore,
+            Self::Disk => omuzaki_app::Recover::Disk,
+        }
+    }
 }
 
 /// A `omuzaki store` subcommand.
@@ -120,7 +295,10 @@ impl Command {
     /// documenting ops only needs the op registry, listing registrations only the binary, and the store commands
     /// name their own folder.
     pub fn needs_project(&self) -> bool {
-        !matches!(self, Command::Ops | Command::Help { .. } | Command::Registrations | Command::Store { .. })
+        !matches!(
+            self,
+            Command::New { .. } | Command::Ops | Command::Help { .. } | Command::Registrations | Command::Store { .. }
+        )
     }
 }
 
@@ -185,8 +363,27 @@ mod tests {
         assert_eq!(parse(&["help", "face.set_profile"]).command, Command::Help { op: Some("face.set_profile".into()) });
         assert_eq!(parse(&["undo"]).command, Command::Undo);
         assert_eq!(parse(&["redo"]).command, Command::Redo);
-        assert_eq!(parse(&["mcp"]).command, Command::Mcp);
+        assert_eq!(parse(&["mcp"]).command, Command::Mcp(McpArgs::default()));
+        assert_eq!(
+            parse(&["mcp", "--grant", "perform,broadcast", "--tools", "all"]).command,
+            Command::Mcp(McpArgs {
+                grant: vec![omuzaki_ops_api::Scope::Perform, omuzaki_ops_api::Scope::Broadcast],
+                tools: ToolList::All,
+                branch: None,
+            })
+        );
+        let Command::Mcp(args) = parse(&["mcp", "--branch", "new"]).command else { panic!("mcp") };
+        assert_eq!(args.branch.as_deref(), Some("new"));
+        assert!(try_parse_from(["omuzaki", "mcp", "--grant", "fly"]).is_err());
         assert_eq!(parse(&["registrations"]).command, Command::Registrations);
+        assert_eq!(
+            parse(&["history", "restore", "7", "--dry-run"]).command,
+            Command::History { action: HistoryCommand::Restore { tx: 7, dry_run: true } }
+        );
+        let Command::History { action } = parse(&["history", "name", "first look", "--at", "3"]).command else {
+            panic!("not history");
+        };
+        assert_eq!(action.op(), ("history.name", serde_json::json!({"name": "first look", "at": {"tx": 3}}), false));
         assert_eq!(
             parse(&["run", "face.set_profile", "--args", "{}", "--dry-run"]).command,
             Command::Run { op: "face.set_profile".into(), args: Some("{}".into()), dry_run: true }
@@ -205,6 +402,14 @@ mod tests {
             assert_eq!(cli.project, Some(PathBuf::from("p")));
         }
         assert!(!parse(&["ops"]).json);
+    }
+
+    #[test]
+    fn recover_defaults_to_restore_and_takes_disk() {
+        assert_eq!(parse(&["undo"]).recover, RecoverFrom::Restore);
+        assert_eq!(parse(&["undo", "--recover", "disk"]).recover, RecoverFrom::Disk);
+        assert_eq!(parse(&["--recover", "restore", "mcp"]).recover.mode(), omuzaki_app::Recover::Restore);
+        assert!(try_parse_from(["omuzaki", "--recover", "files", "undo"]).is_err());
     }
 
     #[test]

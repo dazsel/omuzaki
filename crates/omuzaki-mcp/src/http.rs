@@ -86,6 +86,20 @@ pub struct HttpOptions {
     /// stored record can't re-admit the token at the next start (design `agent-sessions.md` §6). Without it the
     /// revocation lasts only until the port restarts.
     pub on_revoked: Option<RevokedHook>,
+    /// Told when a person pairs a bridge credential (see [`HttpServer::enable_pairing`]), with its record as it now
+    /// stands, so the host stores it and the bridge needs no click next time. Without it the pairing lasts only until
+    /// the port restarts.
+    pub on_paired: Option<PairedHook>,
+}
+
+/// The host's callback for a bridge credential a person paired (see [`HttpOptions::on_paired`]).
+#[derive(Clone)]
+pub struct PairedHook(Arc<dyn Fn(TokenRecord) + Send + Sync>);
+
+impl std::fmt::Debug for PairedHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PairedHook")
+    }
 }
 
 /// The host's callback for a token the registry revoked (see [`HttpOptions::on_revoked`]).
@@ -112,6 +126,7 @@ impl Default for HttpOptions {
             body_timeout: Duration::from_secs(30),
             write_timeout: Duration::from_secs(30),
             on_revoked: None,
+            on_paired: None,
         }
     }
 }
@@ -200,6 +215,13 @@ impl HttpOptions {
         self
     }
 
+    /// Calls `hook` with the record of each bridge credential a person pairs, so the host can store it.
+    #[must_use]
+    pub fn on_paired(mut self, hook: impl Fn(TokenRecord) + Send + Sync + 'static) -> Self {
+        self.on_paired = Some(PairedHook(Arc::new(hook)));
+        self
+    }
+
     fn check(&self) -> Result<(), ServerError> {
         // A zero here would not be a strict limit but a port that refuses every client, so it is an error to say so.
         let zero = |name: &'static str, value: String| {
@@ -276,11 +298,19 @@ impl McpServer {
             body_timeout: options.body_timeout,
         };
         let (revocations, revoked) = mpsc::unbounded_channel();
-        let registry =
-            Arc::new(Registry::new(self.clone(), options.allowed_origins, limits, cancel.clone(), revocations));
+        let (pairings, paired) = mpsc::unbounded_channel();
+        let registry = Arc::new(Registry::new(
+            self.clone(),
+            options.allowed_origins,
+            limits,
+            cancel.clone(),
+            revocations,
+            pairings,
+        ));
         // A session whose credential the registry revoked asks for the token to be revoked: the token stops working and
         // its other sessions end. Weak, so the port can still be dropped; the task ends with the port.
         tokio::spawn(revoke_on_request(Arc::downgrade(&registry), revoked, cancel.clone(), options.on_revoked.clone()));
+        tokio::spawn(record_pairings(Arc::downgrade(&registry), paired, cancel.clone(), options.on_paired.clone()));
         let gate = Arc::new(Gate::new(Arc::clone(&registry), options.path.clone()));
         let connections = Arc::new(Semaphore::new(options.max_connections.clamp(1, Semaphore::MAX_PERMITS)));
         let acceptor = Acceptor {
@@ -339,6 +369,26 @@ impl HttpServer {
         let token = self.registry.issue_for(label.into(), grants, issuer)?;
         tracing::info!(token = %token.id(), label = token.label(), "access token issued");
         Ok(token)
+    }
+
+    /// Lets a local `omuzaki mcp` bridge ask for its own credential (`agent-sessions.md` 10.2): it presents the returned
+    /// key as `Authorization: Bearer <key>` in a `POST` to [`pair_url`](Self::pair_url) with `{"client": "<name>"}`,
+    /// and gets `{"token": "<secret>"}`. Sessions opened with that credential hold `grants` on behalf of `issuer`, are
+    /// stdio sessions, and wait paused on a [`Need::Pairing`](omuzaki_ops_api::Need::Pairing) card until a person
+    /// pairs it, after which it needs no click again ([`HttpOptions::on_paired`] stores that). Give the key only to
+    /// processes of the person's own account (the studio writes it in the project's private folder). Calling it again
+    /// replaces the key.
+    ///
+    /// # Errors
+    /// [`ServerError::Entropy`] if the OS can't provide random bytes.
+    pub fn enable_pairing(&self, grants: Grants, issuer: Actor) -> Result<String, ServerError> {
+        self.registry.enable_pairing(grants, issuer)
+    }
+
+    /// Where a bridge asks for its credential (see [`enable_pairing`](Self::enable_pairing)), e.g.
+    /// `http://127.0.0.1:7437/mcp/pair`.
+    pub fn pair_url(&self) -> String {
+        format!("http://{}{}", self.addr, crate::gate::pair_path(&self.path))
     }
 
     /// Registers a stored token (from [`AccessToken::record`]) so the client's existing secret works again, without
@@ -429,6 +479,34 @@ async fn revoke_on_request(
             } else {
                 tracing::warn!(token = %id, "no host hook: the revocation lasts only until the port restarts");
             }
+        }
+    }
+}
+
+/// Marks each bridge credential a person paired as paired in the registry, and tells the host, until the port stops.
+async fn record_pairings(
+    registry: Weak<Registry>,
+    mut paired: mpsc::UnboundedReceiver<TokenId>,
+    cancel: CancellationToken,
+    hook: Option<PairedHook>,
+) {
+    loop {
+        let id = tokio::select! {
+            () = cancel.cancelled() => return,
+            next = paired.recv() => match next {
+                Some(id) => id,
+                None => return,
+            },
+        };
+        let Some(registry) = registry.upgrade() else { return };
+        if !registry.set_paired(id, true) {
+            continue; // revoked meanwhile
+        }
+        tracing::info!(token = %id, "bridge credential paired");
+        match (&hook, registry.record(id)) {
+            (Some(PairedHook(hook)), Some(record)) => hook(record),
+            (None, _) => tracing::warn!(token = %id, "no host hook: the pairing lasts only until the port restarts"),
+            (_, None) => {}
         }
     }
 }

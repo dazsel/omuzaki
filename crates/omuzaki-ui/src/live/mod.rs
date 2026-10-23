@@ -3,6 +3,7 @@
 //! | Module | Holds |
 //! |---|---|
 //! | [`channels`] | [`ChannelsPanel`](channels::ChannelsPanel): every channel's meter and owner, from the perform thread |
+//! | [`health`] | [`HealthPanel`](health::HealthPanel): the live-metrics snapshot, and the publisher the frame loop writes it with |
 //! | [`hotkeys`] | [`Hotkeys`](hotkeys::Hotkeys): the keyboard's presses and releases, sent to the bound triggers |
 //! | [`model`] | [`LiveModel`](model::LiveModel): the status it reads and the ops it runs, apart from drawing |
 //! | [`panel`] | [`LivePanel`](panel::LivePanel): the workspace's controls, top to bottom in Tab order |
@@ -14,6 +15,7 @@
 //! | [`wiring`] | the perform thread, the newest-wins hand-off, the render side and the quit order |
 
 pub mod channels;
+pub mod health;
 pub mod hotkeys;
 pub mod latency;
 pub mod model;

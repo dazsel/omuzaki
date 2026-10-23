@@ -17,7 +17,11 @@ getrandom.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
-rmcp.workspace = true
+# The stdio bridge's client for the studio's loopback port (`bridge`); `rustls` only so a client can be built when
+# another crate in the binary turns on reqwest's rustls without a provider.
+reqwest.workspace = true
+rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
+rustls.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -35,12 +39,9 @@ omuzaki-store-api = { path = "../omuzaki-store-api" }
 [dev-dependencies]
 # The clients the integration tests talk to the server with: in-process, and over a real loopback port.
 proptest.workspace = true
-reqwest.workspace = true
-# reqwest is built without a crypto provider (see `omuzaki-http`), so the test helper installs `ring` before any client.
-rustls.workspace = true
+# reqwest (a normal dependency) is built without a crypto provider; the test helper installs `ring` before any client.
 # `test-util` pauses tokio's clock, which is how the timeout tests run without sleeping (see `limits.rs`).
 tokio = { workspace = true, features = ["test-util"] }
-rmcp = { workspace = true, features = ["client", "transport-streamable-http-client-reqwest"] }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 tempfile.workspace = true
 omuzaki-history-mock = { path = "../omuzaki-history-mock" }
