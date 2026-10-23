@@ -740,8 +740,8 @@ fn ankle_table() {
 
 /// The mesh twin of `shoulder_rise` in `tests/junctions.rs`, read from the `detail` mesh: how far the front-view top of
 /// the torso and the left arm climbs again after the outline has started down from the neck, as a fraction of the
-/// torso's greatest half-width. The layout's rise is the reference. The rise is reported here and asserted by #799,
-/// which fixes the mesher's torso corner; until then the mesh shows no climb and this reads (about) zero.
+/// torso's greatest half-width. The layout's rise is the reference. The rise is asserted under
+/// [`SHOULDER_RISE_LIMIT`] by `the_mesh_shoulder_never_climbs_five_percent_past_the_neck`.
 fn mesh_shoulder_rise(template: &str, shape: &BodyShape, detail: Detail) -> f64 {
     let layout = registry::find(template).unwrap().layout(&Proportions::default(), shape, &HandParams::default());
     let unit = layout.head_base().unwrap().y / 0.56;
@@ -797,6 +797,99 @@ fn worst_rise<'a>(template: &str, detail: Detail, shapes: &'a [(String, BodyShap
         .iter()
         .map(|(name, s)| (mesh_shoulder_rise(template, s, detail), name.as_str()))
         .fold((0.0_f64, ""), |w, v| if v.0 > w.0 { v } else { w })
+}
+
+/// The most the mesh's shoulder may climb again past the neck, as a fraction of the torso's half-width (#799). The worst
+/// measured is 4.3 % (`standard`, `corner26`), so the bound is not vacuous: at 4 % this test fails.
+const SHOULDER_RISE_LIMIT: f64 = 0.05;
+
+/// The front outline of the torso and arm never climbs again past the neck by [`SHOULDER_RISE_LIMIT`] (#799): on every
+/// template, on its own shape, the ten presets and the 32 corners of the shape cube, offline and live.
+#[test]
+fn the_mesh_shoulder_never_climbs_five_percent_past_the_neck() {
+    let shapes: Vec<(String, BodyShape)> = std::iter::once(("own".to_string(), BodyShape::default()))
+        .chain(shape::presets().unwrap().iter().map(|p| (p.id.as_str().to_string(), p.shape.clone())))
+        .chain(shape_cube_corners())
+        .collect();
+    let mut worst = (0.0_f64, String::new());
+    for template in registry::templates() {
+        for (detail, label) in [(Detail::OFFLINE, "offline"), (Detail::LIVE, "live")] {
+            let (rise, name) = worst_rise(template.id(), detail, &shapes);
+            assert!(
+                rise < SHOULDER_RISE_LIMIT,
+                "{} {name} {label}: the shoulder climbs {:.1} % of the torso's half-width past the neck",
+                template.id(),
+                rise * 100.0
+            );
+            if rise > worst.0 {
+                worst = (rise, format!("{} {name} {label}", template.id()));
+            }
+        }
+    }
+    eprintln!("worst mesh shoulder rise {:.1} % ({})", worst.0 * 100.0, worst.1);
+}
+
+/// The worst shoulder of #799 with the arm up: `standard` on `corner26`, the left arm raised 110 degrees about the
+/// shoulder joint (linear blend skinning over the mesh's own weights), written as an OBJ for the evidence case
+/// `raised-arm-shoulder`, which renders it from the front and three-quarters. The rise can't see a kink in the torso's
+/// own corner; the picture can.
+#[test]
+#[ignore = "writes the raised-arm mesh to $OMUZAKI_SHEET_DIR"]
+#[allow(clippy::disallowed_methods, reason = "a developer tool writing to a directory the person named, not an op")]
+fn dump_raised_arm() {
+    use omuzaki_char_api::JointRef;
+    use omuzaki_core::glam::Quat;
+    let dir = PathBuf::from(std::env::var("OMUZAKI_SHEET_DIR").expect("set OMUZAKI_SHEET_DIR to a directory"));
+    fs::create_dir_all(&dir).unwrap();
+    let shape = shape_cube_corners().into_iter().find(|(n, _)| n == "corner26").unwrap().1;
+    let layout = registry::find("standard").unwrap().layout(&Proportions::default(), &shape, &HandParams::default());
+    let shoulder = layout.joint64(HumanoidBone::LeftUpperArm).unwrap().as_vec3();
+    let raise = Quat::from_rotation_z(110.0_f32.to_radians());
+    // Whether a joint moves with the left upper arm: the arm itself and everything under it.
+    let moves = |joint: &JointRef| match joint {
+        JointRef::Humanoid(bone) => {
+            std::iter::successors(Some(*bone), |b| b.parent()).any(|b| b == HumanoidBone::LeftUpperArm)
+        }
+        JointRef::Named(_) => false,
+    };
+    let mut obj = String::new();
+    for (bone, name) in [(HumanoidBone::LeftUpperArm, "shoulder"), (HumanoidBone::Neck, "neck")] {
+        let p = layout.joint64(bone).unwrap();
+        writeln!(obj, "# joint {name} {} {} {}", p.x, p.y, p.z).unwrap();
+    }
+    let head = layout.head_base().unwrap();
+    writeln!(obj, "# joint head {} {} {}", head.x, head.y, head.z).unwrap();
+    let mut base = 1_usize;
+    for (region, m) in body("standard", &shape, Detail::OFFLINE) {
+        let g = &m.geometry;
+        writeln!(obj, "g {region:?}").unwrap();
+        let share = |i: usize| -> f32 {
+            g.joints.get(i).zip(g.weights.get(i)).map_or(0.0, |(joints, weights)| {
+                joints
+                    .iter()
+                    .zip(weights)
+                    .filter(|(j, _)| m.joint_bones.get(usize::from(**j)).is_some_and(moves))
+                    .map(|(_, w)| *w)
+                    .sum()
+            })
+        };
+        for (i, p) in g.positions.iter().enumerate() {
+            let w = share(i);
+            let q = *p * (1.0 - w) + (shoulder + raise * (*p - shoulder)) * w;
+            writeln!(obj, "v {} {} {}", q.x, q.y, q.z).unwrap();
+        }
+        for (i, n) in g.normals.iter().enumerate() {
+            let w = share(i);
+            let q: Vec3 = (*n * (1.0 - w) + (raise * *n) * w).normalize_or_zero();
+            writeln!(obj, "vn {} {} {}", q.x, q.y, q.z).unwrap();
+        }
+        for t in g.indices.chunks(3) {
+            let [a, b, c] = [t[0], t[1], t[2]].map(|i| i as usize + base);
+            writeln!(obj, "f {a}//{a} {b}//{b} {c}//{c}").unwrap();
+        }
+        base += g.positions.len();
+    }
+    fs::write(dir.join("standard-corner26-raised.obj"), obj).unwrap();
 }
 
 /// Prints each template's mesh shoulder rise as a percentage of its torso's half-width, offline then live: on its own
