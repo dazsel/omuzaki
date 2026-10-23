@@ -24,7 +24,7 @@
 //! No allocation per frame; the cost is a few capsule tests and at most a handful of two-bone solves per arm.
 
 use omuzaki_anim_api::{BoneId, HumanoidBone, Pose, Skeleton, Transform};
-use omuzaki_core::glam::Vec3;
+use omuzaki_core::glam::{Mat4, Vec3};
 
 use super::targets::{Hand, HandTarget, bone_world, closest_points, inverse};
 
@@ -196,6 +196,79 @@ impl BodyProxy {
         // Without hand vertices the hand is the wrist, as thick as the forearm.
         let hand_radius = quantile(&mut hand_radii, LIMB_QUANTILE).unwrap_or(forearm_radius);
         Some(Self { body, forearm_radius, hands, hand_radius })
+    }
+}
+
+/// The least share of its fitted radius a capsule keeps when [`BodyProxy::clear_of`] shrinks it.
+const MIN_SHRINK: f32 = 0.5;
+
+impl BodyProxy {
+    /// The smallest gap between either arm (forearm and hand) and `proxy` in `pose`.
+    fn arm_gap(&self, skeleton: &Skeleton, pose: &Pose, proxy: &Proxy) -> f32 {
+        let (a, b) = (proxy.a.at(skeleton, pose), proxy.b.at(skeleton, pose));
+        let mut gap = f32::INFINITY;
+        for (i, hand) in [Hand::Left, Hand::Right].into_iter().enumerate() {
+            let Some([_, lower, wrist]) = hand.ids(skeleton) else { continue };
+            let elbow = bone_world(skeleton, pose, lower).translation;
+            let wrist = bone_world(skeleton, pose, wrist);
+            let palm = point(wrist, self.hands[i]);
+            for (p, q, radius) in [(elbow, wrist.translation, self.forearm_radius), (palm, palm, self.hand_radius)] {
+                let (s, t) = closest_points(p, q, a, b);
+                gap = gap.min((p + (q - p) * s).distance(a + (b - a) * t) - radius - proxy.radius);
+            }
+        }
+        gap
+    }
+
+    /// Shrinks every capsule the arms touch in `pose` until they clear it by `margin`, keeping at least half its fitted
+    /// radius: the body as built is never in collision with itself. A quantile fit takes in the soft flesh and clothes an
+    /// arm hangs against (a chibi's arms rest on its hips), so call this with the character's own bind pose, or the
+    /// guard would push its resting arms away. Cold.
+    pub fn clear_of(&mut self, skeleton: &Skeleton, pose: &Pose, margin: f32) {
+        for k in 0..self.body.len() {
+            let gap = self.arm_gap(skeleton, pose, &self.body[k]);
+            if gap < margin {
+                let proxy = &mut self.body[k];
+                proxy.radius = (proxy.radius - (margin - gap)).max(proxy.radius * MIN_SHRINK);
+            }
+        }
+    }
+}
+
+/// One skinned mesh, as [`BodyProxy::gather`] reads it: positions in its bind space, four joints and weights per vertex,
+/// and the bone each joint index means (`None` for a joint the skeleton lacks).
+#[derive(Copy, Clone, Debug)]
+pub struct SkinnedMesh<'a> {
+    /// Vertex positions, bind space.
+    pub positions: &'a [Vec3],
+    /// Four joint indices per vertex.
+    pub joints: &'a [[u16; 4]],
+    /// Four weights per vertex.
+    pub weights: &'a [[f32; 4]],
+    /// The bone of each joint index.
+    pub bones: &'a [Option<BoneId>],
+}
+
+impl BodyProxy {
+    /// Adds `mesh`'s vertices to `out` in the skeleton's rest pose, each with the bone that carries most of its weight:
+    /// `unbind(joint, bone)` is the joint's inverse bind matrix (bind space to the bone's space; `None` drops the
+    /// vertex), and the bone's rest transform takes it on to the rest pose. `rest` is the skeleton's rest pose in root
+    /// space ([`Skeleton::world_pose`] of [`Skeleton::rest_pose`]). For [`fit`](Self::fit) with the rest pose. Cold.
+    pub fn gather(
+        rest: &Pose,
+        mesh: SkinnedMesh<'_>,
+        unbind: impl Fn(usize, BoneId) -> Option<Mat4>,
+        out: &mut Vec<(Vec3, BoneId)>,
+    ) {
+        for ((p, joints), weights) in mesh.positions.iter().zip(mesh.joints).zip(mesh.weights) {
+            let Some(k) = (0..4).max_by(|&a, &b| weights[a].total_cmp(&weights[b])) else { continue };
+            let joint = usize::from(joints[k]);
+            let Some(bone) = mesh.bones.get(joint).copied().flatten() else { continue };
+            let Some(unbind) = unbind(joint, bone) else { continue };
+            let t = rest.local[bone.index()];
+            let to_rest = Mat4::from_rotation_translation(t.rotation, t.translation) * unbind;
+            out.push((to_rest.transform_point3(*p), bone));
+        }
     }
 }
 

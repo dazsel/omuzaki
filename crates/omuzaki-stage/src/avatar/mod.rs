@@ -92,6 +92,7 @@ impl AvatarStage {
         let binds = evaluator.bind_deltas();
         let upload = AvatarUpload::upload(renderer, &avatar, &binds)?;
         let prepared = RigFrame::for_skeleton(&avatar.skeleton, &avatar.springs, &avatar.constraints)
+            .map(|rig| rig.guarding(&avatar))
             .and_then(|rig| AvatarPlan::new(&avatar, &upload, &weights).map(|plan| (rig, plan)));
         let (rig, plan) = match prepared {
             Ok(parts) => parts,

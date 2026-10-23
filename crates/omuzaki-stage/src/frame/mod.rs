@@ -254,7 +254,7 @@ impl Stage {
         built: &BuiltCharacter,
         character: &StageCharacter,
     ) -> Result<(RigFrame, DynamicMeshes, ScenePlan), StageError> {
-        Ok((RigFrame::new(&built.rig)?, DynamicMeshes::new(built, character)?, ScenePlan::new(built, character)?))
+        Ok((RigFrame::for_character(built)?, DynamicMeshes::new(built, character)?, ScenePlan::new(built, character)?))
     }
 
     /// Runs one frame and renders it into the stage's target.
