@@ -173,10 +173,8 @@ fn the_inventory_is_the_characters_moods() {
 
 #[test]
 fn an_emote_holds_its_trigger_at_its_word_and_lets_go_after_its_hold() {
-    let ears = vec![
-        (secs(0), Heard::onset(secs(0))),
-        (secs(0), Heard::final_text(0, "Mochi, hello", secs(0), secs(0))),
-    ];
+    let ears =
+        vec![(secs(0), Heard::onset(secs(0))), (secs(0), Heard::final_text(0, "Mochi, hello", secs(0), secs(0)))];
     let mut rig =
         Rig::new(ears, Script::new("fake").with_turn(reply("Hi chat! [emote happy 0.8 hold 1s] Welcome in!")));
     rig.run_to(3_000);
