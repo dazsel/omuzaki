@@ -10,6 +10,10 @@
 //! [`poll`](Duplex::poll). A line heard while the microphone is in `CohostOnly` is marked private. Plain `ws://` reaches
 //! only this machine (a test server).
 
+omuzaki_core::define_link! {
+    omuzaki_performer_api::link();
+}
+
 mod protocol;
 mod session;
 mod socket;

@@ -4944,6 +4944,7 @@ dependencies = [
 name = "omuzaki-cohost"
 version = "0.0.0"
 dependencies = [
+ "base64",
  "hound",
  "omuzaki-ai",
  "omuzaki-ai-api",
@@ -4983,6 +4984,7 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 2.0.21",
  "tracing",
+ "tungstenite",
 ]
 
 [[package]]
@@ -5687,6 +5689,7 @@ version = "0.0.0"
 dependencies = [
  "base64",
  "omuzaki-audio-api",
+ "omuzaki-core",
  "omuzaki-performer-api",
  "omuzaki-secrets-api",
  "rustls",

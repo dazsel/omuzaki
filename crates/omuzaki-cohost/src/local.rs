@@ -117,8 +117,8 @@ impl Wallet for ShowWallet {
     }
 
     fn charge(&self, spend: Spend) -> Result<(), SpendError> {
-        let mut spent = lock(&self.spent);
-        *spent = spent.saturating_add(spend.usd_micros);
+        let mut total = lock(&self.spent);
+        *total = total.saturating_add(spend.usd_micros);
         Ok(())
     }
 }

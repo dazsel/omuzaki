@@ -67,12 +67,15 @@ name = "cohost_live"
 required-features = ["demo"]
 
 [dev-dependencies]
+base64.workspace = true
 omuzaki-audio-mock = { path = "../omuzaki-audio-mock" }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-llm-mock = { path = "../omuzaki-llm-mock" }
 omuzaki-performer-mock = { path = "../omuzaki-performer-mock" }
 omuzaki-secrets-mock = { path = "../omuzaki-secrets-mock" }
 omuzaki-settings-mock = { path = "../omuzaki-settings-mock" }
+# The realtime tests' fake provider.
+tungstenite = "0.30"
 
 [lints]
 workspace = true

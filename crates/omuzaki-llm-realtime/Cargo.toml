@@ -11,6 +11,7 @@ repository.workspace = true
 [dependencies]
 base64.workspace = true
 omuzaki-audio-api = { path = "../omuzaki-audio-api" }
+omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-performer-api = { path = "../omuzaki-performer-api" }
 omuzaki-secrets-api = { path = "../omuzaki-secrets-api" }
 rustls.workspace = true
