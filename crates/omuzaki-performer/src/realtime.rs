@@ -41,12 +41,13 @@ use crate::decide::{RuleFloor, questions_listening, questions_speaking, with_flo
 use crate::parser::parse_reply;
 use crate::persona::Persona;
 use crate::show::{
-    CONTEXT_LINES, Decisions, EST_S_PER_CHAR, Limiter, Performer, Phase, ShowConfig, Source, Status,
-    ms, tag_text,
+    CONTEXT_LINES, Decisions, EST_S_PER_CHAR, Limiter, Performer, Phase, ShowConfig, Source, Status, ms, tag_text,
 };
 
 /// Input tokens a reply's bound assumes when no bill has come yet: a minute of the person's speech.
 const FIRST_CONTEXT_TOKENS: u64 = 600;
+/// Ended replies whose bill hasn't come yet, kept to settle; an older one is charged its full bound.
+const SETTLING_KEPT: usize = 4;
 
 /// The parts the realtime loop runs over.
 #[non_exhaustive]
@@ -144,9 +145,10 @@ pub struct RealtimeShow {
     /// The id of the last reply cut or refused: its late audio and text are dropped.
     dropped: Option<String>,
     pending: Option<Pending>,
+    /// Replies cut before their bill came: settled when it does.
+    settling: VecDeque<(String, Reservation)>,
     decisions: Decisions,
     limiter: Limiter,
-    talking: bool,
     /// The next reply goes to the private feed.
     private_next: bool,
     last_reply: Option<(Seconds, u64)>,
@@ -185,9 +187,9 @@ impl RealtimeShow {
             reply: None,
             dropped: None,
             pending: None,
+            settling: VecDeque::new(),
             decisions,
             limiter: Limiter::default(),
-            talking: false,
             private_next: false,
             last_reply: None,
             context: VecDeque::new(),
@@ -226,14 +228,10 @@ impl RealtimeShow {
 
     fn take(&mut self, now: Seconds, event: DuplexEvent) {
         match event {
-            DuplexEvent::SpeechStarted => {
-                self.talking = true;
-                self.barge_in(now);
-            }
-            DuplexEvent::SpeechStopped => self.talking = false,
+            DuplexEvent::SpeechStarted => self.barge_in(now),
             DuplexEvent::Heard { text, private, .. } => self.heard(now, &text, private),
             DuplexEvent::ReplyStarted { reply, .. } => self.begin(now, reply),
-            DuplexEvent::ReplyAudio { reply, item, pcm, rate, .. } => self.audio(now, &reply, item, pcm, rate),
+            DuplexEvent::ReplyAudio { reply, item, pcm, rate, .. } => self.audio(now, &reply, item, &pcm, rate),
             DuplexEvent::ReplyText { reply, delta, .. } => self.text(now, &reply, &delta),
             DuplexEvent::ReplyDone { reply, cancelled, usage, .. } => self.done(now, &reply, cancelled, usage),
             DuplexEvent::Error { message, fatal, .. } => {
@@ -284,16 +282,18 @@ impl RealtimeShow {
             self.ask(now, Moment::Listening, text.to_owned());
         }
         // The provider answers by itself in `always`; otherwise this loop asks once it knows who was addressed.
-        if addressed && !auto && self.reply.is_none() {
-            if let Err(e) = self.parts.duplex.reply(None) {
-                self.push(now, PerformerEvent::error(None, e.to_string()));
-            }
+        if addressed
+            && !auto
+            && self.reply.is_none()
+            && let Err(e) = self.parts.duplex.reply(None)
+        {
+            self.push(now, PerformerEvent::error(None, e.to_string()));
         }
     }
 
     fn barge_in(&mut self, now: Seconds) {
         let Some(reply) = self.reply.as_mut() else { return };
-        if reply.cut || !reply.playing() {
+        if reply.cut || (reply.finished && !reply.playing()) {
             return;
         }
         let played = reply.played_ms(now);
@@ -376,7 +376,7 @@ impl RealtimeShow {
         });
     }
 
-    fn audio(&mut self, now: Seconds, id: &str, item: String, pcm: Vec<f32>, rate: u32) {
+    fn audio(&mut self, now: Seconds, id: &str, item: String, pcm: &[f32], rate: u32) {
         if self.dropped.as_deref() == Some(id) || pcm.is_empty() {
             return;
         }
@@ -390,7 +390,7 @@ impl RealtimeShow {
             return;
         }
         reply.item = Some(item);
-        let pcm = resample(&pcm, rate, voice_rate);
+        let pcm = resample(pcm, rate, voice_rate);
         // Sample counts of one delta.
         #[allow(clippy::cast_precision_loss)]
         let seconds = pcm.len() as f64 / f64::from(voice_rate.max(1));
@@ -426,23 +426,25 @@ impl RealtimeShow {
         reply.text.push_str(delta);
         let chunks = reply.chunker.push(delta);
         for chunk in chunks {
-            self.sentence(now, chunk.text);
+            self.sentence(now, &chunk.text);
         }
     }
 
     /// One sentence of the reply's transcript: its `speaking` line and a face for it.
-    fn sentence(&mut self, now: Seconds, text: String) {
+    fn sentence(&mut self, now: Seconds, text: &str) {
         let Some(reply) = self.reply.as_mut() else { return };
         let (number, chunk, private) = (reply.number, reply.chunks, reply.private);
         reply.chunks += 1;
         // An estimate: the provider sends text and audio separately.
+        // A sentence's character count.
+        #[allow(clippy::cast_precision_loss)]
         let estimate = ms(Seconds(text.chars().count() as f64 * EST_S_PER_CHAR));
         if private {
             self.push(now, PerformerEvent::speaking_private(number, chunk));
             return;
         }
-        self.push(now, PerformerEvent::speaking(number, chunk, text.clone(), estimate));
-        self.ask(now, Moment::Speaking, text.clone());
+        self.push(now, PerformerEvent::speaking(number, chunk, text.to_owned(), estimate));
+        self.ask(now, Moment::Speaking, text.to_owned());
         self.remember(format!("{}: {text}", self.persona_name));
     }
 
@@ -453,8 +455,14 @@ impl RealtimeShow {
         let ours = self.reply.as_ref().is_some_and(|r| r.id == id);
         if !ours {
             // A cut or refused reply's bill still counts.
-            if let Some(usage) = usage {
-                self.spent = MicroUsd(self.spent.0.saturating_add(self.parts.duplex.prices().cost(&usage).0));
+            let reservation = self.settling.iter().position(|(r, _)| r == id).and_then(|i| self.settling.remove(i));
+            match reservation {
+                Some((_, reservation)) => self.settle(now, None, reservation, usage),
+                None => {
+                    if let Some(usage) = usage {
+                        self.spent = MicroUsd(self.spent.0.saturating_add(self.parts.duplex.prices().cost(&usage).0));
+                    }
+                }
             }
             return;
         }
@@ -463,29 +471,37 @@ impl RealtimeShow {
         // It is over once its audio has played; until then it still holds the floor.
         reply.finished = true;
         if let Some(reservation) = reservation {
-            let settled = match usage {
-                Some(usage) => {
-                    let cost = self.parts.duplex.prices().cost(&usage);
-                    self.spent = MicroUsd(self.spent.0.saturating_add(cost.0));
-                    reservation.settle(Spend { usd_micros: cost.0, tokens: usage.tokens(), seconds: 0 })
-                }
-                None => {
-                    self.spent = MicroUsd(self.spent.0.saturating_add(reservation.bound().0));
-                    reservation.forfeit()
-                }
-            };
-            if let Err(e) = settled {
-                self.push(now, PerformerEvent::error(Some(number), e.to_string()));
-            }
+            self.settle(now, Some(number), reservation, usage);
         }
         if !cancelled {
             for chunk in rest {
-                self.sentence(now, chunk.text);
+                self.sentence(now, &chunk.text);
             }
         }
     }
 
-    /// Ends the reply: its audio is cut when `cut`, its speech counted, and the floor freed.
+    /// Bills a reply: its usage when the provider said, else its whole bound.
+    fn settle(&mut self, now: Seconds, turn: Option<u64>, reservation: Reservation, usage: Option<DuplexUsage>) {
+        let settled = match usage {
+            Some(usage) => {
+                let cost = self.parts.duplex.prices().cost(&usage);
+                self.spent = MicroUsd(self.spent.0.saturating_add(cost.0));
+                reservation.settle(Spend { usd_micros: cost.0, tokens: usage.tokens(), seconds: 0 })
+            }
+            None => self.forfeit(reservation),
+        };
+        if let Err(e) = settled {
+            self.push(now, PerformerEvent::error(turn, e.to_string()));
+        }
+    }
+
+    fn forfeit(&mut self, reservation: Reservation) -> Result<(), omuzaki_performer_api::spend::SpendError> {
+        self.spent = MicroUsd(self.spent.0.saturating_add(reservation.bound().0));
+        reservation.forfeit()
+    }
+
+    /// Ends the reply: its audio is cut when `cut`, its speech counted, and the floor freed. Its bill, if it hasn't
+    /// come, settles when it does.
     fn end_reply(&mut self, now: Seconds, cut: bool) {
         let Some(reply) = self.reply.take() else { return };
         if cut {
@@ -497,8 +513,12 @@ impl RealtimeShow {
             self.spoken.push_back((from.0, now.0.min(from.0 + reply.audio_s)));
         }
         if let Some(reservation) = reply.reservation {
-            self.spent = MicroUsd(self.spent.0.saturating_add(reservation.bound().0));
-            let _ = reservation.forfeit();
+            self.settling.push_back((reply.id, reservation));
+            while self.settling.len() > SETTLING_KEPT {
+                if let Some((_, old)) = self.settling.pop_front() {
+                    let _ = self.forfeit(old);
+                }
+            }
         }
         self.last_reply = Some((now, reply.number));
     }
@@ -694,6 +714,10 @@ impl Performer for RealtimeShow {
         }
         self.end_reply(now, true);
         self.pending = None;
+        // The session closes: no bill will come for what is outstanding.
+        while let Some((_, reservation)) = self.settling.pop_front() {
+            let _ = self.forfeit(reservation);
+        }
         let _ = self.parts.duplex.auto_reply(false);
         self.auto = Some(false);
         self.parts.duplex.close();
@@ -739,7 +763,7 @@ mod tests {
 
     #[test]
     fn resampling_keeps_the_duration() {
-        let pcm: Vec<f32> = (0..2_400).map(|i| (i as f32 * 0.01).sin()).collect();
+        let pcm: Vec<f32> = (0..2_400u16).map(|i| (f32::from(i) * 0.01).sin()).collect();
         assert_eq!(resample(&pcm, 24_000, 24_000).len(), 2_400);
         assert_eq!(resample(&pcm, 24_000, 48_000).len(), 4_800);
         assert_eq!(resample(&pcm, 24_000, 16_000).len(), 1_600);

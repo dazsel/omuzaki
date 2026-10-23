@@ -175,7 +175,15 @@ impl DuplexPrices {
         input_tokens_per_s: f64,
         output_tokens_per_s: f64,
     ) -> Self {
-        Self { input_audio, input_text, cached_input, output_audio, output_text, input_tokens_per_s, output_tokens_per_s }
+        Self {
+            input_audio,
+            input_text,
+            cached_input,
+            output_audio,
+            output_text,
+            input_tokens_per_s,
+            output_tokens_per_s,
+        }
     }
 
     /// What `usage` costs, rounded up.
