@@ -70,6 +70,8 @@ omuzaki-audio-mock = { path = "../omuzaki-audio-mock" }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-llm-mock = { path = "../omuzaki-llm-mock" }
 omuzaki-performer-mock = { path = "../omuzaki-performer-mock" }
+omuzaki-secrets-mock = { path = "../omuzaki-secrets-mock" }
+omuzaki-settings-mock = { path = "../omuzaki-settings-mock" }
 
 [lints]
 workspace = true

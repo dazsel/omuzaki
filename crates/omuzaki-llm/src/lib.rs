@@ -4,6 +4,7 @@
 //! - **[`anthropic`]**: `POST /v1/messages`, the hosted API.
 //! - **[`openai`]**: `POST /v1/chat/completions` for Ollama, llama.cpp, LM Studio, vLLM and any compatible host.
 //! - **[`runtime`]**: the runtime handle a provider is built with.
+//! - **[`json`]**: one JSON request to a structured-answer service, under the same rules.
 //! - **[`prices`]**: the shipped model table.
 //!
 //! Every request goes through the private `http` module, the one place that touches `reqwest`. Providers register
@@ -16,6 +17,7 @@ mod chan;
 mod common;
 mod engine;
 mod http;
+pub mod json;
 pub mod openai;
 pub mod prices;
 mod retry;

@@ -4,7 +4,9 @@ use std::any::Any;
 use std::collections::HashMap;
 
 use omuzaki_core::glam::Vec3;
-use omuzaki_render_api::{MeshData, MeshUsage, MorphSet, PaintTarget, PixelRect, RenderError, TextureDesc};
+use omuzaki_render_api::{
+    MeshData, MeshUsage, MorphSet, PaintTarget, PixelRect, RenderError, TextureDesc, outline_rims,
+};
 
 /// A mesh plus the smooth normals the outline pass pushes vertices along.
 pub(crate) struct MeshEntry {
@@ -12,6 +14,11 @@ pub(crate) struct MeshEntry {
     /// Normals averaged over vertices that share a position, so a hard-edged mesh (a cube has three normals per
     /// corner) expands into a closed hull instead of splitting apart at its edges.
     pub(crate) smooth_normals: Vec<Vec3>,
+    /// Where the mesh is open, from the positions it was created with (`outline_rims`): a double-sided material's hulls
+    /// widen there. Like the GPU renderer's, they are not found again when the vertices are replaced or morphed.
+    pub(crate) rims: Vec<Vec3>,
+    /// Whether any vertex has a rim: only an open mesh gets a double-sided material's second hull.
+    pub(crate) open: bool,
     /// Whether [`MeshEntry::replace_vertices`] is allowed.
     pub(crate) usage: MeshUsage,
     /// The sparse morph targets, if the mesh was created with any.
@@ -21,7 +28,9 @@ pub(crate) struct MeshEntry {
 impl MeshEntry {
     pub(crate) fn new(data: MeshData, usage: MeshUsage, morphs: Option<MorphSet>) -> Self {
         let smooth_normals = weld_normals(&data.positions, &data.normals);
-        Self { data, smooth_normals, usage, morphs }
+        let rims = outline_rims(&data);
+        let open = rims.iter().any(|r| *r != Vec3::ZERO);
+        Self { data, smooth_normals, rims, open, usage, morphs }
     }
 
     /// Swaps in new positions and normals (the caller has checked lengths and finiteness) and re-welds the outline

@@ -1,0 +1,139 @@
+# Held-out moments for the decision layer (#2348): the same format and character as `moments.toml`, written before
+# the rule floor's vocabulary was widened against that set, and never used to tune it. Agreement here is the honest
+# number for the floor; agreement on `moments.toml` flatters it.
+
+[[moment]]
+moment = "speaking"
+state = "person: good evening mochi\nmochi: Good evening! Hello hello, come on in."
+face = ["happy"]
+gesture = "wave"
+
+[[moment]]
+moment = "speaking"
+state = "person: we have to go\nmochi: Already? Okay, goodbye, take care out there!"
+face = ["happy", "sad"]
+gesture = "wave"
+
+[[moment]]
+moment = "speaking"
+state = "person: show us the dance\nmochi: Alright, let's do the dance, everybody clap along!"
+face = ["happy"]
+gesture = "dance"
+
+[[moment]]
+moment = "speaking"
+state = "person: do a bow\nmochi: I don't bow for anyone. Not even you."
+face = ["smug", "angry"]
+gesture = "none"
+
+[[moment]]
+moment = "speaking"
+state = "person: what's your favourite move?\nmochi: Probably the backflip, but I only do it on birthdays."
+face = ["happy", "smug", "thinking"]
+gesture = "none"
+
+[[moment]]
+moment = "speaking"
+state = "person: my exam got cancelled\nmochi: Cancelled? After all that studying? That stings."
+face = ["sad", "surprised"]
+gesture = "none"
+
+[[moment]]
+moment = "speaking"
+state = "person: I won the raffle\nmochi: No way, you actually won? That's fantastic!"
+face = ["happy", "surprised"]
+gesture = "none"
+
+[[moment]]
+moment = "speaking"
+state = "person: chat keeps spamming\nmochi: Okay, enough. Mods, please clean that up."
+face = ["angry"]
+gesture = "none"
+
+[[moment]]
+moment = "speaking"
+state = "person: can you beat this level?\nmochi: Beat it? I could do it with my eyes closed."
+face = ["smug"]
+gesture = "none"
+
+[[moment]]
+moment = "speaking"
+state = "person: how many stars are there?\nmochi: That's a tough one. I'd have to look it up."
+face = ["thinking"]
+gesture = "none"
+
+[[moment]]
+moment = "speaking"
+state = "person: my hamster died\nmochi: Oh, I'm so sorry. Losing a pet really hurts."
+face = ["sad"]
+gesture = "none"
+
+[[moment]]
+moment = "speaking"
+state = "person: the stream starts when?\nmochi: Tomorrow at noon, same place as always."
+face = ["none", "happy"]
+gesture = "none"
+
+[[moment]]
+moment = "speaking"
+state = "person: thanks for the advice\nmochi: Anytime! I'm glad it helped, now let me show you my thank-you bow."
+face = ["happy"]
+gesture = "bow"
+
+[[moment]]
+moment = "speaking"
+state = "person: a spider is on your desk\nmochi: A spider?! Where? Get it away from me!"
+face = ["surprised"]
+gesture = "none"
+
+[[moment]]
+moment = "speaking"
+state = "person: they raised the ticket prices again\nmochi: Again? That's ridiculous, they keep doing this."
+face = ["angry"]
+gesture = "none"
+
+[[moment]]
+moment = "speaking"
+state = "person: will you wave at my friend?\nmochi: Sure, here goes, a big wave for your friend!"
+face = ["happy"]
+gesture = "wave"
+
+[[moment]]
+moment = "listening"
+state = "person: I just got engaged!"
+face = ["happy", "surprised"]
+
+[[moment]]
+moment = "listening"
+state = "person: my phone fell in the lake"
+face = ["sad", "surprised"]
+
+[[moment]]
+moment = "listening"
+state = "person: which game should we play tonight?"
+face = ["thinking"]
+
+[[moment]]
+moment = "listening"
+state = "person: my coworker took credit for my project"
+face = ["angry"]
+
+[[moment]]
+moment = "listening"
+state = "person: I've been feeling lonely lately"
+face = ["sad"]
+
+[[moment]]
+moment = "listening"
+state = "person: guess who just got promoted"
+face = ["happy", "surprised"]
+
+[[moment]]
+moment = "listening"
+state = "person: hello again, I'm back"
+face = ["happy"]
+
+[[moment]]
+moment = "listening"
+state = "person: I bet I can beat you at chess"
+face = ["smug"]
