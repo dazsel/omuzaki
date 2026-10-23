@@ -43,9 +43,13 @@ pub fn validate_commit_paths<P: AsRef<Path>>(paths: &[P]) -> Result<(), GitError
 
 /// The argument that makes git read `path` as a name: `:(literal)` and the path with `/` separators. Call it on a path
 /// [`validate_commit_paths`] accepted, and pass the result after `--`.
+///
+/// Only Windows separates with `\\`; elsewhere a backslash is a legal character in a file name, so `a\\b.txt` stays
+/// that one file rather than becoming `a/b.txt` (#1622).
 #[must_use]
 pub fn literal_pathspec(path: &Path) -> String {
-    let text = path.to_string_lossy().replace('\\', "/");
+    let text = path.to_string_lossy();
+    let text = if cfg!(windows) { text.replace('\\', "/") } else { text.into_owned() };
     format!(":(literal){text}")
 }
 
@@ -59,8 +63,9 @@ pub const PROJECT_PATHSPEC: &str = ":(literal).";
 
 /// The pathspecs that select the project's files and nothing else: the project folder, without any private `.omuzaki`
 /// file. Git must be run in the project folder (`git -C <dir>`) and given these after `--`. [`Git::log`],
-/// [`Git::status`], [`Git::show`] and [`Git::tree_at`] use them, so a project inside a larger repository never reports
-/// another project's commits or files, and private state never leaves the folder in a result.
+/// [`Git::status`] and [`Git::show`] use them, so a project inside a larger repository never reports another project's
+/// commits or files, and private state never leaves the folder in a result. `git ls-tree` refuses the excludes' magic,
+/// so [`Git::tree_at`] uses [`tree_pathspecs`] and [`is_private`] instead.
 ///
 /// [`Git::log`]: crate::git::Git::log
 /// [`Git::status`]: crate::git::Git::status
@@ -69,6 +74,21 @@ pub const PROJECT_PATHSPEC: &str = ":(literal).";
 #[must_use]
 pub fn project_pathspecs() -> Vec<String> {
     std::iter::once(PROJECT_PATHSPEC).chain(PRIVATE_EXCLUDES).map(str::to_owned).collect()
+}
+
+/// The pathspecs [`Git::tree_at`](crate::git::Git::tree_at) gives `git ls-tree` after `--`: the project folder only.
+/// `ls-tree` supports no `glob`, `icase` or `exclude` magic (git 2.43 exits 128 on [`PRIVATE_EXCLUDES`]), so the
+/// private entries are dropped after listing, with [`is_private`] (#1939).
+#[must_use]
+pub fn tree_pathspecs() -> Vec<String> {
+    vec![PROJECT_PATHSPEC.to_owned()]
+}
+
+/// Whether `path` (relative, `/`-separated, as git lists it) is private state: it has a `.omuzaki` component at any
+/// depth, in any case. What [`PRIVATE_EXCLUDES`] leaves out, for the commands that take no exclude magic.
+#[must_use]
+pub fn is_private(path: &str) -> bool {
+    path.split('/').any(|part| part.eq_ignore_ascii_case(".omuzaki"))
 }
 
 /// The pathspecs [`Git::commit`](crate::git::Git::commit) gives git after `--`, for both `git add` and `git commit`:

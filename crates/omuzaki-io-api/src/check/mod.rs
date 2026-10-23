@@ -3,12 +3,15 @@
 //! else runs for every export through [`preflight`], which [`run_export`](crate::run_export) calls first.
 
 mod graph;
+mod motion;
 mod rights;
 mod structure;
 mod vrm;
 
 use crate::{ARKIT_52, ExportOptions, Finding, IoScene, PerfectSync, Report};
 
+pub(crate) use motion::animation_rights;
+pub use motion::licence_forbids_derivatives;
 pub use vrm::vrm_profile;
 
 impl IoScene {

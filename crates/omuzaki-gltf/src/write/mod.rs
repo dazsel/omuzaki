@@ -191,6 +191,21 @@ pub fn export(scene: &IoScene, ctx: &ExportCtx<'_>, hooks: &mut dyn ExportHooks)
     write_scene(scene, ctx, hooks)?.into_outcome()
 }
 
+/// Moves `pack` into `document` as its one buffer (the GLB's BIN chunk) and serialises both as one GLB, for a format
+/// that builds its document itself (VRM Animation). `extensionsUsed` is kept as the caller set it.
+///
+/// # Errors
+/// [`IoError::Unsupported`] past 4 GiB, [`IoError::Internal`] if the JSON can't be written.
+pub fn glb(mut document: Document, pack: Packer) -> Result<Vec<u8>, IoError> {
+    let Packer { bin, views, accessors } = pack;
+    document.accessors = accessors;
+    document.buffer_views = views;
+    document.buffers =
+        if bin.is_empty() { Vec::new() } else { vec![Buffer { byte_length: bin.len(), ..Buffer::default() }] };
+    let json = serde_json::to_vec(&document).map_err(|e| json_error(&e))?;
+    container::join(&json, &bin)
+}
+
 fn json_error(e: &serde_json::Error) -> IoError {
     IoError::Internal(format!("couldn't serialise the glTF JSON: {e}"))
 }

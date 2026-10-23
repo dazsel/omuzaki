@@ -279,6 +279,41 @@ fn studio_evidence() {
     }
 }
 
+/// Every workspace of the studio as a person first opens it, for a look at the whole (`evidence/studio.toml`): the
+/// kit sample open, an agent's edit in History, each workspace by its Ctrl+number shortcut.
+#[test]
+#[ignore = "writes images; run by the visual evidence job"]
+fn tour_evidence() {
+    let Ok(out) = std::env::var("OMUZAKI_EVIDENCE_OUT") else { panic!("set OMUZAKI_EVIDENCE_OUT to a folder") };
+    let keys = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9];
+    let workspaces = omuzaki_ui_api::registry::Registry::collect().workspaces().len();
+    let dark = omuzaki_ui::ds::Settings::default();
+    let light = omuzaki_ui::ds::Settings { theme: omuzaki_ui::ds::ThemeKind::Light, ..dark };
+    for (w, ht, settings, theme) in
+        [(1366.0, 768.0, dark, "dark"), (1920.0, 1080.0, dark, "dark"), (1366.0, 768.0, light, "light")]
+    {
+        let Some(gpu) = gpu() else { panic!("the evidence needs a Vulkan adapter") };
+        let core = core(Document::empty());
+        let runner = Arc::clone(&core.runner);
+        let sessions = Arc::clone(&core.sessions);
+        let mut h = studio_in(&core, Some(gpu), vec2(w, ht), None, settings, sessions);
+        let scripting = omuzaki_ui::script::Scripting::new(
+            Arc::clone(&runner),
+            None,
+            "tour",
+            omuzaki_ui::script::consent::ConsentBook::in_memory(),
+        );
+        h.state_mut().shell.insert_view(scripting);
+        set_width(runner.as_ref(), connect_agent(&core), width(runner.as_ref()) * 1.08);
+        for (index, key) in keys.iter().enumerate().take(workspaces) {
+            h.key_press_modifiers(Modifiers::COMMAND, *key);
+            h.run_steps(6);
+            let id = h.state().shell.active_workspace().unwrap_or("none");
+            save(&mut h, &out, &format!("tour-{}-{id}-{theme}-{w}x{ht}.png", index + 1));
+        }
+    }
+}
+
 #[test]
 fn the_agent_panel_shows_a_connected_agent_and_the_person_can_pause_it() {
     let core = core(Document::empty());

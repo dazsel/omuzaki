@@ -6,7 +6,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use omuzaki_git_api::error::GitError;
-use omuzaki_git_api::paths::{PRIVATE_EXCLUDES, PROJECT_PATHSPEC, commit_pathspecs, project_pathspecs};
+use omuzaki_git_api::paths::{
+    PRIVATE_EXCLUDES, PROJECT_PATHSPEC, commit_pathspecs, is_private, literal_pathspec, project_pathspecs,
+    tree_pathspecs,
+};
 
 #[test]
 fn the_whole_project_selection_excludes_private_files() {
@@ -120,4 +123,49 @@ fn the_log_of_a_subfolder_project_holds_only_its_own_commits() {
     let specs = project_pathspecs();
     let scoped = git(&project, &args(&["log", "--format=%s"], &specs));
     assert_eq!(scoped.lines().collect::<Vec<_>>(), ["mine"]);
+}
+
+#[test]
+fn a_tree_is_listed_without_magic_and_its_private_entries_are_dropped_after() {
+    let Some(repo) = Repo::new("tree") else { return };
+    for rel in ["proj/a.txt", "proj/sub/.OMUZAKI/x", "proj/.omuzaki/state.json", "proj/sub/b.txt", "other/c.txt"] {
+        repo.write(rel);
+    }
+    git(&repo.0, &["add", "-f", "-A"]);
+    git(&repo.0, &["commit", "-q", "-m", "seed"]);
+    let project = repo.0.join("proj");
+    // The exclude magic the other reads use is refused by ls-tree (#1939): exit 128, so the import would fail.
+    let refused = Command::new("git")
+        .current_dir(&project)
+        .args(args(&["ls-tree", "-r", "--name-only", "HEAD"], &project_pathspecs()))
+        .output()
+        .expect("git runs");
+    assert!(!refused.status.success(), "ls-tree took the exclude magic; tree_pathspecs is no longer needed");
+    let listed = git(&project, &args(&["ls-tree", "-r", "--name-only", "--full-name", "HEAD"], &tree_pathspecs()));
+    let mut kept: Vec<&str> = listed.lines().filter(|path| !is_private(path)).collect();
+    kept.sort_unstable();
+    assert_eq!(kept, ["proj/a.txt", "proj/sub/b.txt"], "listed:\n{listed}");
+}
+
+#[test]
+fn private_paths_are_named_at_any_depth_in_any_case() {
+    for path in [".omuzaki", ".omuzaki/state.json", "sub/.OMUZAKI/x", "a/b/.Omuzaki"] {
+        assert!(is_private(path), "{path}");
+    }
+    for path in ["a.txt", "omuzaki/x", "sub/.omuzaki-old/x", "x.omuzaki"] {
+        assert!(!is_private(path), "{path}");
+    }
+}
+
+#[cfg(not(windows))]
+#[test]
+fn a_backslash_is_part_of_a_file_name_off_windows() {
+    assert_eq!(literal_pathspec(Path::new("a\\b.txt")), ":(literal)a\\b.txt");
+    let Some(repo) = Repo::new("backslash") else { return };
+    repo.write("a\\b.txt");
+    repo.write("a/b.txt");
+    let specs = commit_pathspecs(&["a\\b.txt"]).expect("allowed");
+    git(&repo.0, &args(&["add"], &specs));
+    let staged = git(&repo.0, &["diff", "--cached", "--name-only", "-z"]);
+    assert_eq!(staged, "a\\b.txt\0", "only the file named with a backslash is staged");
 }

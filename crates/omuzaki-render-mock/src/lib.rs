@@ -261,6 +261,26 @@ impl Renderer for MockRenderer {
         Ok(())
     }
 
+    fn update_colours(&mut self, mesh: MeshId, colours: &[[f32; 4]]) -> Result<(), RenderError> {
+        let entry =
+            self.meshes.get_mut(mesh.index(), mesh.generation()).ok_or(RenderError::UnknownHandle { what: "mesh" })?;
+        let count = entry.data.colours.len();
+        if count == 0 {
+            return Err(RenderError::invalid("colour update", "the mesh was created without vertex colours"));
+        }
+        if colours.len() != count {
+            return Err(RenderError::invalid(
+                "colour update",
+                format!("{} colours for {count} vertices", colours.len()),
+            ));
+        }
+        if colours.iter().flatten().any(|c| !c.is_finite()) {
+            return Err(RenderError::invalid("colour update", "colours must be finite"));
+        }
+        entry.data.colours.copy_from_slice(colours);
+        Ok(())
+    }
+
     fn create_texture(&mut self, desc: &TextureDesc, rgba: Option<&[u8]>) -> Result<TextureId, RenderError> {
         desc.validate()?;
         self.check_size(desc.size, "texture size")?;

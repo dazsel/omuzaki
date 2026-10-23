@@ -5,7 +5,6 @@
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, LazyLock, Mutex};
-use std::time::{Duration, Instant};
 
 use omuzaki_core::time::{FakeClock, Seconds};
 use omuzaki_doc_mock::MemDoc;
@@ -268,9 +267,10 @@ fn the_lock_is_not_held_across_a_run() {
     let pause = Pause::new("l");
     let info = rig.exec.start(drive("l", &[("a", 1), ("b", 1)], json!({"pause_after": 1}))).unwrap();
     pause.entered.recv().unwrap();
-    let began = Instant::now();
+    // The driver holds its pause until the edit is in, so an edit that waited on the driver would never return; a
+    // wall-clock bound here only measured the machine's load.
     rig.set_as(&other, "c", json!(7));
-    assert!(began.elapsed() < Duration::from_millis(5), "another actor's edit waited on the driver");
+    assert_eq!(rig.at("c"), Some(json!(7)), "another actor's edit landed while the driver paused");
     pause.release.send(()).unwrap();
     rig.exec.wait(info.id, None).unwrap();
     assert_eq!((rig.at("a"), rig.at("b"), rig.at("c")), (Some(json!(1)), Some(json!(1)), Some(json!(7))));

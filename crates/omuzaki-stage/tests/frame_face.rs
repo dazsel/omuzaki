@@ -125,6 +125,8 @@ struct Spy {
     materials: HashMap<MaterialId, Material>,
     /// Every `update_vertices` call so far.
     update_calls: u32,
+    /// Every `update_colours` call so far.
+    colour_updates: u32,
     /// The `update_vertices` call (1-based, counted from `update_calls`) that fails once, then the switch resets.
     fail_update_call: Option<u32>,
     /// Makes the next `release` call fail (the resource stays), then resets.
@@ -143,6 +145,7 @@ impl Spy {
             textures: HashMap::new(),
             materials: HashMap::new(),
             update_calls: 0,
+            colour_updates: 0,
             fail_update_call: None,
             fail_next_release: false,
             quiet: false,
@@ -172,6 +175,10 @@ impl Renderer for Spy {
             return Err(RenderError::invalid("update_vertices", "the upload was told to fail once"));
         }
         quiet(self.quiet, || self.inner.update_vertices(mesh, p, n))
+    }
+    fn update_colours(&mut self, mesh: MeshId, colours: &[[f32; 4]]) -> Result<(), RenderError> {
+        self.colour_updates += 1;
+        quiet(self.quiet, || self.inner.update_colours(mesh, colours))
     }
     fn create_texture(&mut self, desc: &TextureDesc, rgba: Option<&[u8]>) -> Result<TextureId, RenderError> {
         quiet(self.quiet, || {
@@ -1028,11 +1035,27 @@ fn streaked_base() -> CharacterDef {
     base
 }
 
+/// A stage of the streaked character on a drawing renderer, framed on the hair.
+fn streaked_stage(renderer: &mut Spy, base: CharacterDef) -> Stage {
+    let mut stage = stage_from(renderer, 96, true, mock_rig(), fixture_from(base, mock_variants().unwrap()));
+    stage.scene_mut().camera = camera_for(&stage, 0.5);
+    stage
+}
+
+/// How many pixels of two shots of one size differ.
+fn differing(a: &[u8], b: &[u8]) -> usize {
+    a.as_chunks::<4>().0.iter().zip(b.as_chunks::<4>().0).filter(|(a, b)| a != b).count()
+}
+
+fn shot(stage: &mut Stage, renderer: &mut Spy) -> Vec<u8> {
+    stage.tick(renderer, &FrameInput::default()).expect("frame");
+    renderer.read_target(stage.target()).expect("pixels").rgba8
+}
+
 #[test]
-fn a_palette_change_creates_exactly_the_meshes_whose_baked_tint_moved() {
-    let mut renderer = Spy::new(false);
-    let fixture = fixture_from(streaked_base(), mock_variants().unwrap());
-    let mut stage = stage_from(&mut renderer, 32, true, mock_rig(), fixture);
+fn a_palette_change_recolours_baked_tints_in_place_and_creates_no_mesh() {
+    let mut renderer = Spy::new(true);
+    let mut stage = streaked_stage(&mut renderer, streaked_base());
 
     // A slot no vertex colour reads: materials only, no mesh.
     let palette = palette_with_outfit(&stage, Colour::hex(0x0020_a060));
@@ -1041,11 +1064,12 @@ fn a_palette_change_creates_exactly_the_meshes_whose_baked_tint_moved() {
     assert_eq!(renderer.mesh_creates, creates, "a palette change that touches no baked tint creates no mesh");
     assert_eq!(report.meshes_created, 0);
 
-    // The streak slot is baked into the hair: those meshes are recreated (will update their vertices instead).
+    // The streak slot is baked into the hair's vertex colours: those meshes are recoloured in place.
     let old = stage.built().meshes.clone();
     let mut palette = stage.built().palette.clone();
     palette.0.insert(PaletteSlot::new("streak").unwrap(), Colour::rgb(20, 220, 90));
-    let creates = renderer.mesh_creates;
+    let (creates, recolours) = (renderer.mesh_creates, renderer.colour_updates);
+    let before = shot(&mut stage, &mut renderer);
     let report = stage.apply_palette(&mut renderer, &palette).expect("applies");
     let affected = stage
         .built()
@@ -1055,8 +1079,22 @@ fn a_palette_change_creates_exactly_the_meshes_whose_baked_tint_moved() {
         .count();
     assert!(affected > 0, "the streaks reach some hair mesh");
     assert!(affected < stage.built().meshes.len(), "and not every mesh");
-    assert_eq!((renderer.mesh_creates - creates) as usize, affected, "exactly the affected meshes are created");
-    assert_eq!(report.meshes_created as usize, affected);
+    assert_eq!(renderer.mesh_creates, creates, "no create_mesh call, baked tints included");
+    assert_eq!(report.meshes_created, 0);
+    assert_eq!(report.meshes_recoloured as usize, affected, "exactly the affected meshes are recoloured");
+    assert_eq!((renderer.colour_updates - recolours) as usize, affected);
+    let recoloured = shot(&mut stage, &mut renderer);
+    assert!(differing(&recoloured, &before) > 20, "the streaks changed colour on screen");
+
+    // The same pixels as a character built with that palette from the start, on a renderer of its own.
+    let mut base = streaked_base();
+    base.palette = palette;
+    let mut fresh_renderer = Spy::new(true);
+    let mut fresh = streaked_stage(&mut fresh_renderer, base);
+    shot(&mut fresh, &mut fresh_renderer);
+    let built = shot(&mut fresh, &mut fresh_renderer);
+    assert_eq!(differing(&built, &recoloured), 0, "a recoloured mesh draws as a fresh build");
+    fresh.release(&mut fresh_renderer).expect("released");
     stage.release(&mut renderer).expect("released");
 }
 

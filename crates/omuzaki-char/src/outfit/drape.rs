@@ -13,6 +13,10 @@
 //!
 //! **Presets.** The fabric is one of four presets (`library/cloth-presets/*.toml`, data files): `light` (chiffon),
 //! `cotton`, `heavy` (wool) and `leather`, each a full set of the solver's numbers, with a few overrides on top.
+//!
+//! **Drag by length.** A garment that hangs further below its pins than the kit's skirt takes extra air drag
+//! ([`hang_drag`]), so a dress, a robe or a cloak settles as fast as the skirt does (0.8 s, #387) instead of creeping
+//! for up to 2 s, while the swing after a turn stays. A damping override is taken as given.
 
 use std::sync::OnceLock;
 
@@ -32,6 +36,14 @@ use crate::cloth::solver::ClothParams;
 pub const BAKE_BONES: usize = 48;
 /// How close two vertices must be to count as one point (a seam's twin), metres.
 const SAME_POINT: f32 = 1e-6;
+/// The hang below which a garment takes no extra drag: about the kit skirt's (14 cm), which settles in time unaided.
+const DRAG_FROM_M: f32 = 0.14;
+/// How much further a garment hangs before it takes the whole of [`DRAG_MAX`].
+const DRAG_OVER_M: f32 = 0.16;
+/// The most extra drag, 1/s. Measured on the kit (`tests/cloth_garments.rs`): with it every garment in every preset
+/// settles in 0.75 s or less and comes back after a turn. Twice it leaves a chiffon robe hanging behind the turn, and a
+/// chiffon cloak creeping for a second.
+const DRAG_MAX: f32 = 10.0;
 /// The sheets a garment is simulated on, finest first, before they are cut to its grid.
 const LEVELS: [SheetSize; 3] = [SheetSize::new(24, 16), SheetSize::new(12, 8), SheetSize::new(8, 6)];
 
@@ -245,7 +257,10 @@ pub fn simulate(spec: &ClothSpec, drape: &Drape, ctx: &BuildCtx<'_>, out: &mut P
     let fail = |m: String| ctx.fail(format!("cloth: {m}"));
     let mesh = out.meshes.get(drape.mesh).ok_or_else(|| fail("the garment has no such mesh".to_owned()))?;
     let (grid, layout) = grid_of(drape, &mesh.geometry, &mesh.joint_bones).map_err(fail)?;
-    let (params, contact, density, shape) = spec.params();
+    let (mut params, contact, density, shape) = spec.params();
+    if spec.overrides.damping.is_none() {
+        params.damping += hang_drag(hang_of(&grid));
+    }
     let fit = ctx.fit()?;
     let mut colliders = ColliderSet::new();
     colliders.add_body(fit.as_ref());
@@ -313,6 +328,20 @@ pub fn simulate(spec: &ClothSpec, drape: &Drape, ctx: &BuildCtx<'_>, out: &mut P
         out.runtime = Some(Box::new(rt));
     }
     Ok(())
+}
+
+/// How far `grid` hangs, metres: from the highest point of its pinned row to its lowest point.
+fn hang_of(grid: &ClothGrid) -> f32 {
+    let top = grid.positions.iter().take(grid.cols).map(|p| p.y).fold(f32::MIN, f32::max);
+    let bottom = grid.positions.iter().map(|p| p.y).fold(f32::MAX, f32::min);
+    (top - bottom).max(0.0)
+}
+
+/// The extra air drag, 1/s, of a garment that hangs `hang` metres: none up to [`DRAG_FROM_M`], rising evenly to
+/// [`DRAG_MAX`] over [`DRAG_OVER_M`] more. A long sheet held only at its top edge creeps toward its hang slowly; the
+/// drag lets it get there in the time a skirt does.
+pub fn hang_drag(hang: f32) -> f32 {
+    DRAG_MAX * ((hang - DRAG_FROM_M) / DRAG_OVER_M).clamp(0.0, 1.0)
 }
 
 /// The sheet levels for a grid of `rows x cols` (a wrapped grid's columns without the twin): [`LEVELS`] cut to the grid,
@@ -510,6 +539,13 @@ mod tests {
         assert_eq!(levels(12, 144), vec![SheetSize::new(24, 12), SheetSize::new(12, 8), SheetSize::new(8, 6)]);
         assert_eq!(levels(5, 10), vec![SheetSize::new(10, 5), SheetSize::new(8, 5)]);
         assert_eq!(lod(2).level_px.len(), 1);
+    }
+
+    #[test]
+    fn the_drag_grows_with_the_hang_and_stops_growing() {
+        assert!(hang_drag(0.1).abs() < f32::EPSILON && hang_drag(DRAG_FROM_M).abs() < f32::EPSILON);
+        assert!((hang_drag(DRAG_FROM_M + DRAG_OVER_M / 2.0) - DRAG_MAX / 2.0).abs() < 1e-4);
+        assert!((hang_drag(1.0) - DRAG_MAX).abs() < f32::EPSILON);
     }
 
     #[test]

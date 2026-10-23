@@ -348,11 +348,6 @@ pub enum Body {
     Macro(Macro),
 }
 
-/// Draws a panel's body with the Script workspace's inner margin (the dock puts panels edge to edge).
-pub(crate) fn padded(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
-    egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 6)).show(ui, add);
-}
-
 /// Runs `op` as `actor` and returns its answer.
 ///
 /// # Errors

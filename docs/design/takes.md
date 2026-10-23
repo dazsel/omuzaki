@@ -321,14 +321,16 @@ pub struct ChunkFlags(pub u16);   // GROUP_START, HAS_WITHHELD, TAIL; MUST_UNDER
     pub snapshot_at: SnapshotAt /* Start | End */, pub doc_version: DocVersion,
     pub video: Option<String>, pub audio: BTreeMap<String, String> }   // TakeHeader::new(..) + with_snapshot, with_video, with_audio
 pub struct ProjectName(/* private */ String);   // ProjectName::new(..) -> Option<Self>: None if empty or blank; the one rule for constructors and the reader
-#[non_exhaustive] pub struct StateRecord { pub doc_version: DocVersion, pub project: Option<ProjectName> /* None only when overflow */, pub scene: Option<SceneId>,
+#[non_exhaustive] pub struct StateRecord { pub doc_version: DocVersion, project: Option<ProjectName> /* private: project(); None only when overflow */, pub scene: Option<SceneId>,
     pub camera: Option<String>, pub cast: Vec<CastEntry>, pub sources: Vec<SourceEntry>, pub voices: Vec<VoiceEntry>,
     pub models: BTreeMap<String, String>, pub delay_s: f32, pub after_lsn: Lsn, pub withheld: Vec<Withheld>,
-    pub omitted: Vec<String>, pub omitted_more: u32, pub overflow: bool, pub live: BTreeMap<String, Value> }
+    pub omitted: Vec<String>, pub omitted_more: u32, overflow: bool /* private: overflow() */, pub live: BTreeMap<String, Value> }
 // StateRecord::new(doc_version, ProjectName, after_lsn, withheld) + with_*; StateRecord::minimal(doc_version, after_lsn, withheld) (the overflow State, no project).
 // Reading refuses a State without a project unless overflow is true. CastEntry, SourceEntry and VoiceEntry are #[non_exhaustive] with new(..).
 #[non_exhaustive] pub struct EventRecord { pub lsn: Lsn, pub applied_frame: i64, pub entry: TakeEntry }
-#[non_exhaustive] pub enum TakeEntry { Full(HistoryEntry) /* Op's cause text cleared; never Mark or Session */, Placeholder { kind: String }, Unknown /* a newer form */ }
+#[non_exhaustive] pub enum TakeEntry { Full(FullEntry), Placeholder { kind: String }, Unknown /* a newer form */ }
+// TakeEntry::from_history(entry): Mark and Session become placeholders, an Op's cause text is cleared. FullEntry (entry(), into_entry())
+// is built only there and by reading, which drops cause text and refuses Mark or Session in full.
 #[non_exhaustive] pub struct Incomplete { pub from_lsn: Lsn, pub cause: String }
 #[non_exhaustive] pub struct Withheld { pub voice: u8, pub cause: WithheldCause /* #[non_exhaustive]: Muted | Private | CohostOnly | Unknown */, pub from: Seconds, pub to: Option<Seconds> }
 #[non_exhaustive] pub enum Record<'a> { Track(TrackFrame, u8), Voice { voice: u8, perf_time: Seconds, layer: Layer }, Cue { voice: u8,
@@ -339,8 +341,9 @@ pub trait TakeSource { fn header(&self) -> &TakeHeader; fn seek(&mut self, frame
     fn next_chunk(&mut self) -> Result<Option<ChunkView<'_>>, TakeError>; fn report(&self) -> &TakeReport; }
 #[non_exhaustive] pub struct TakeReport { pub chunks: u64, pub truncated_at: Option<u64>, pub skipped: BTreeMap<u8, u64>,
     pub withheld: Vec<Withheld> /* clamped to the window */, pub event_refs: u64, pub deferred: u64,
-    pub omitted: BTreeMap<String, u64>, pub state_overflow: u64, pub incomplete: Vec<Incomplete>,
+    pub omitted: BTreeMap<String, u64>, pub unknown_live: BTreeMap<String, u64>, pub state_overflow: u64, pub incomplete: Vec<Incomplete>,
     pub max_defer_frames: u32, pub incomplete_tail: bool, pub indexed: bool }   // TakeReport::new() + with_*
+// report.note_state(&state, is_state_provider): omitted, unknown_live (live state no linked provider reads) and state_overflow
 #[non_exhaustive] pub enum TakeError { Newer { found: (u16, u16) /* the file header holds u16; a chunk's u8 pair widens */, supported: (u8, u8), hint: String }, BadMagic,
     Crc { offset: u64 }, Truncated { offset: u64 }, StateGap { from_lsn: Lsn }, WrongSnapshotSide, Json(String), Io(String) }
 #[non_exhaustive] pub struct StateProvider { pub name: &'static str, pub capture: fn() -> Value }   // StateProvider::new(..), built by the macro

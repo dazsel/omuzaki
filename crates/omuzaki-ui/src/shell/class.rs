@@ -126,7 +126,7 @@ impl Plan {
             bottom,
             library_as_tab: matches!(class, WidthClass::M | WidthClass::S),
             agent_history_merged: size.y < TALL_ENOUGH,
-            icon_tabs: matches!(class, WidthClass::M | WidthClass::S),
+            icon_tabs: class == WidthClass::S,
             go_live_icon: class == WidthClass::S,
         }
     }
@@ -165,7 +165,7 @@ mod tests {
         assert!(!xl.library_as_tab && !xl.icon_tabs && !xl.go_live_icon && !xl.agent_history_merged);
         let m = Plan::for_window(Vec2::new(1366.0, 768.0), 0.0);
         assert_eq!((m.left, m.right), (DockMode::Open(240.0), DockMode::Open(300.0)));
-        assert!(m.library_as_tab && m.icon_tabs && !m.go_live_icon);
+        assert!(m.library_as_tab && !m.icon_tabs && !m.go_live_icon, "1366 has room to name every workspace");
         assert!(m.agent_history_merged, "768 is shorter than 800");
     }
 

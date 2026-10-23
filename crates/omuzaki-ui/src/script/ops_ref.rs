@@ -79,7 +79,7 @@ pub struct OpsPanel(pub OpsReference);
 impl Panel for OpsPanel {
     fn ui(&mut self, ui: &mut Ui, ctx: &PanelCtx<'_>) {
         match ctx.view::<Scripting>() {
-            Some(scripting) => super::padded(ui, |ui| self.0.ui(ui, scripting, ctx.view::<ShellRequests>())),
+            Some(scripting) => self.0.ui(ui, scripting, ctx.view::<ShellRequests>()),
             None => no_scripting(ui),
         }
     }

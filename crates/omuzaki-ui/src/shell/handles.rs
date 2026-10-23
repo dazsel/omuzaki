@@ -65,9 +65,9 @@ fn unnamed(ctx: &Context) -> Vec<Found> {
     })
 }
 
-/// The widget at `rect`, give or take half a point.
+/// The widget at `rect`, give or take a pixel's rounding.
 fn at(found: &[Found], rect: Rect) -> Option<Found> {
-    found.iter().copied().find(|f| (f.rect.min - rect.min).length() < 0.5 && (f.rect.max - rect.max).length() < 0.5)
+    found.iter().copied().find(|f| (f.rect.min - rect.min).length() <= 1.0 && (f.rect.max - rect.max).length() <= 1.0)
 }
 
 /// The name of what `tile` shows: its active panel's title, or the first panel inside it.
@@ -191,12 +191,13 @@ fn strip(ui: &Ui, ctx: &Context, tree: &mut Tree<PanelId>, container: TileId, fo
     let children = tabs.children.clone();
     let Some(rect) = tree.tiles.rect(container) else { return };
     let tab_ids: Vec<Id> = children.iter().map(|c| c.egui_id(tree.id())).collect();
-    // The strip's background spans the top of the group, under its tabs; the tabs themselves are named already.
+    // The strip's background spans the top of the group, under its tabs; the tabs themselves are named already. The
+    // tree rounds its widgets to whole pixels while the gaps between groups leave their edges on half points.
     let Some(background) = found.iter().copied().find(|f| {
         !tab_ids.contains(&f.id)
-            && (f.rect.top() - rect.top()).abs() < 0.5
-            && f.rect.height() <= size::DOCK_TAB + 0.5
-            && rect.expand(0.5).contains_rect(f.rect)
+            && (f.rect.top() - rect.top()).abs() <= 1.0
+            && f.rect.height() <= size::DOCK_TAB + 1.0
+            && rect.expand(1.0).contains_rect(f.rect)
             && f.rect.width() >= rect.width() / 2.0
     }) else {
         return;

@@ -2,7 +2,8 @@
 //! it (`omuzaki_ui::live::wiring`): the perform thread, the op runner with the performer in its services, and the
 //! output window.
 //!
-//! The shell is wired to the live slice's runner over the project folder (`--project`, or the app's own), opened on
+//! The shell is wired to the live slice's runner over the project folder (`--project`, or the app's own), opened through
+//! the app core (journal, recovery, undo across restarts) with its MCP port open for agents, and opened on
 //! its character (`omuzaki_ui::studio`): the sample is made when the project has none, so the first thing on screen is
 //! a character. If the folder can't be opened the app runs on an in-memory document, and if the live slice can't start
 //! the shell runs on a plain runner, so the window still opens; each reason is logged.
@@ -53,6 +54,8 @@ struct Args {
 struct App {
     shell: Shell,
     live: Option<LiveApp>,
+    /// The app core the shell works through, saved as the studio quits.
+    core: Option<Core>,
     /// The look follows the `ui.*` settings, whoever changes them.
     look: Option<SettingsLink>,
 }
@@ -79,6 +82,10 @@ impl eframe::App for App {
             && let Err(error) = live.shutdown()
         {
             tracing::warn!(%error, "the live slice stopped badly");
+        }
+        // The journal already holds every change; this brings the files up to date before the core closes.
+        if let Some(core) = &self.core {
+            core.save();
         }
     }
 }
@@ -187,7 +194,10 @@ fn open_document(dir: Option<&PathBuf>) -> Document {
         return Document::empty();
     };
     match Document::project(dir) {
-        Ok(document) => document,
+        Ok(document) => match models_dir().as_deref().and_then(Path::parent) {
+            Some(data) => document.with_data_dir(data),
+            None => document,
+        },
         Err(error) => {
             tracing::error!(%error, dir = %dir.display(), "the project did not open: changes last until the studio quits");
             Document::empty()
@@ -331,6 +341,9 @@ fn main() -> eframe::Result {
                 None => DirScriptStore::in_user_config().map(|store| Arc::new(store) as Arc<dyn ScriptStore>),
             };
             let (core, theatre) = core_of(live.as_ref(), dir.as_ref(), settings, mine.clone()).unzip();
+            // Agents connect to this same core: `omuzaki mcp` in the project folder bridges in, other apps use the URL.
+            let endpoint = core.as_ref().and_then(|core| core.serve_mcp(wiring::HttpOptions::default()));
+            let kept = core.clone();
             let scripting = core.as_ref().map(|core| {
                 let agreed = omuzaki_ui::shell::persist::user_config_dir()
                     .map_or_else(ConsentBook::in_memory, |config| {
@@ -350,6 +363,9 @@ fn main() -> eframe::Result {
             if let Some(scripting) = scripting {
                 shell.insert_view(scripting);
             }
+            if let Some(url) = endpoint {
+                shell.insert_view(omuzaki_ui::panels::agent::McpEndpoint(url));
+            }
             if let Some(theatre) = theatre {
                 shell.insert_view(theatre);
             }
@@ -366,7 +382,7 @@ fn main() -> eframe::Result {
                     shell.insert_view(keychain);
                 }
             }
-            Ok(Box::new(App { shell, live, look }))
+            Ok(Box::new(App { shell, live, core: kept, look }))
         }),
     )
 }

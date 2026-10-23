@@ -258,8 +258,12 @@ fn bake_face(
     Ok((wanted, Some(report), None))
 }
 
-/// Writes `file` at `path`: a temporary file in its folder, renamed over the old one once it is all on the disk.
-fn write(job: &JobCtx<'_>, path: &str, file: &OutputFile) -> Result<WrittenFile, OpError> {
+/// Writes `file` at `path`: a temporary file in its folder, renamed over the old one once it is all on the disk. Shared
+/// with `io.export_animation`, so every exported file is written the same way.
+///
+/// # Errors
+/// What [`JobCtx::fs_access`] refuses; `Invalid` (field `path`) when the disk refuses the bytes.
+pub fn write(job: &JobCtx<'_>, path: &str, file: &OutputFile) -> Result<WrittenFile, OpError> {
     let target = job.fs_access(path, FsMode::Write)?;
     if let Some(folder) = target.parent() {
         folder.create_dir_all()?;

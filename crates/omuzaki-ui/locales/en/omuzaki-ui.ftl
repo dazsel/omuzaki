@@ -2456,6 +2456,13 @@ ui-panels-agent-none = Connect an agent
 ui-panels-agent-none-how = Agents work through the same ops you do, and you approve what they ask for. Connect one over MCP to see it here.
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+# $url (id, never translated): "hair-b"
+ui-panels-agent-none-where = Point an MCP client at { $url }, or run omuzaki mcp in the project's folder.
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+ui-panels-agent-one-step = 1 step
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
 # $label (id, never translated): "hair-b"
 ui-panels-agent-open-tx = In progress: { $label }
 
@@ -2503,6 +2510,9 @@ ui-panels-agent-tokens = { $count } tokens
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
 # $steps (id, never translated): "hair-b"
 ui-panels-agent-undo-all = Undo its { $steps } steps…
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+ui-panels-agent-undo-one = Undo its step…
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
 ui-panels-agent-waiting = Waiting for you
@@ -3235,12 +3245,21 @@ ui-panels-undescribed = This part can't be described: { $reason }
 ui-panels-undo-body = Its { $steps } steps are reverted, newest first, as one step in your history, so Ctrl+Z brings them back.
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+ui-panels-undo-body-one = Its step is reverted as one step in your history, so Ctrl+Z brings it back.
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
 # $steps (id, never translated): "hair-b"
 ui-panels-undo-confirm = Confirm: undo { $steps } steps
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+ui-panels-undo-confirm-one = Confirm: undo 1 step
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
 # $steps (id, never translated): "hair-b"
 ui-panels-undo-primary = Undo { $steps } steps
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+ui-panels-undo-primary-one = Undo 1 step
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
 # $name (id, never translated): "hair-b"
@@ -3652,6 +3671,12 @@ ui-setting-perform-retarget = How the face is smoothed, exaggerated and mirrored
 ui-setting-perform-triggers = The keys that show face expressions
 
 # The line under a setting in the Settings window, saying what it does.
+ui-setting-performer-decider = What chooses the AI co-host's faces and gestures as it talks and listens: built-in rules by default, a local model, or a hosted provider with your own key
+
+# The line under a setting in the Settings window, saying what it does.
+ui-setting-performer-llm = The LLM the AI co-host answers with: a server on this machine by default, or a hosted one with your own key
+
+# The line under a setting in the Settings window, saying what it does.
 ui-setting-record-dir = The folder recordings are written into; unset means the Omuzaki folder in your videos folder
 
 # The line under a setting in the Settings window, saying what it does.
@@ -3701,6 +3726,12 @@ ui-setting-ui-scale = The studio's size in percent, on top of the system's: 75 t
 
 # The line under a setting in the Settings window, saying what it does.
 ui-setting-ui-theme = The studio's colours: dark, light or high contrast
+
+# The line under a setting in the Settings window, saying what it does.
+ui-setting-voice-commands-enabled = Listen for voice commands on your microphone
+
+# The line under a setting in the Settings window, saying what it does.
+ui-setting-voice-commands-phrases = What you say for each voice command, per language
 
 # The Settings window, with its Models page.
 ui-settings-area-input = Input
@@ -4175,7 +4206,7 @@ ui-shell-dock-tabs = { $panels } tabs
 ui-shell-go-live = Go Live
 
 # The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
-ui-shell-go-live-off = No output is set up
+ui-shell-go-live-off = No output is set up yet: opens Live, where you set one up
 
 # The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
 ui-shell-history-adjust = Adjust

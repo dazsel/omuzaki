@@ -4,7 +4,9 @@
 //!
 //! The loop here is a small reference driver, just enough to play §10 (addressing by name, `@name` and the
 //! follow-up window; tags parsed whole; sentence chunks; intents timed by their offset; barge-in on `Held`; a private
-//! turn). The performer core (#2061) replaces it with the real loop and must reproduce the same golden.
+//! turn). The real loop is `omuzaki-performer`'s `Show`, which plays the same exchange by voice against its own golden
+//! (`crates/omuzaki-performer/goldens/four-turns.jsonl`): it streams, so `thinking` carries no script, and the decision
+//! layer's reactions add their own lines.
 // Test helpers may unwrap: a panic there is a clear test failure.
 #![allow(clippy::unwrap_used)]
 

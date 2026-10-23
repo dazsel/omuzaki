@@ -59,15 +59,16 @@ pub const BUILT_IN_NODE_KEYS: [&str; 8] =
     ["name", "template", "seed", "palette", "skin_tone", "parts", "face", "weight_brushes"];
 
 /// The built-in sibling keys: the roots of the other files of the character. They are `variants`, `colourways`, `rig`,
-/// `look`, `licence`, `sources`, `applied`, `poses`, `emotes`, `avatar`, `voice`, `voice-assignment` and `likeness`.
+/// `look`, `licence`, `sources`, `applied`, `poses`, `emotes`, `avatar`, `voice`, `voice-assignment`, `persona` and
+/// `likeness`.
 ///
-/// Nine are owned by other crates: `licence` by `omuzaki-io-ops`, `sources` by `omuzaki-char`, `applied` and `emotes`
+/// Ten are owned by other crates: `licence` by `omuzaki-io-ops`, `sources` by `omuzaki-char`, `applied` and `emotes`
 /// by `omuzaki-library-api`, `poses` by `omuzaki-anim`, `avatar` (an imported character's `AvatarDef`) by
 /// `omuzaki-avatar-api`, `voice` (the effect presets, `voice.toml`) by `omuzaki-audio-fx`, `voice-assignment` (which
-/// voice the character speaks in) by `omuzaki-speech`, and `likeness` (the character's likeness targets, linked by
-/// hash) by `omuzaki-measure`. They stay in this table because no crate that parses a character links all of those
-/// owners, so they cannot register.
-pub const BUILT_IN_SIBLING_KEYS: [&str; 13] = [
+/// voice the character speaks in) by `omuzaki-speech`, `persona` (the co-host's persona) by `omuzaki-cohost`, and
+/// `likeness` (the character's likeness targets, linked by hash) by `omuzaki-measure`. They stay in this table because
+/// no crate that parses a character links all of those owners, so they cannot register.
+pub const BUILT_IN_SIBLING_KEYS: [&str; 14] = [
     "variants",
     "colourways",
     "rig",
@@ -80,6 +81,7 @@ pub const BUILT_IN_SIBLING_KEYS: [&str; 13] = [
     "avatar",
     "voice",
     "voice-assignment",
+    "persona",
     "likeness",
 ];
 
@@ -128,6 +130,7 @@ register_doc_key!("emotes", @built_in);
 register_doc_key!("avatar", @built_in);
 register_doc_key!("voice", @built_in);
 register_doc_key!("voice-assignment", @built_in);
+register_doc_key!("persona", @built_in);
 register_doc_key!("likeness", @built_in);
 
 /// The registered keys, resolved once: the usable ones, and the refused ones with the reason for each.

@@ -16,6 +16,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-std", "io-util", "net", "time"] }
 tracing.workspace = true
+url.workspace = true
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc = { path = "../omuzaki-doc" }
 omuzaki-char-api = { path = "../omuzaki-char-api" }

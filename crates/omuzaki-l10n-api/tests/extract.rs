@@ -310,7 +310,7 @@ fn the_comment_renders_each_constraint() {
             json!({"allOf": [{"$ref": "#/$defs/n"}], "$defs": {"n": {"type": "integer", "minimum": 0}}}),
             "constraints not shown",
         ),
-        (json!({"allOf": [{"type": "integer", "minimum": 0}, {"anyOf": [{"type": "null"}]}]}), "integer, at least 0"),
+        (json!({"allOf": [{"type": "integer", "minimum": 0}, {"anyOf": [{"type": "null"}]}]}), "no value fits"),
         (json!({"type": "integer", "minimum": 0, "not": {"const": 3}}), "integer, at least 0, constraints not shown"),
         (json!({"type": "string", "pattern": "^a+$"}), "string, pattern \"^a+$\""),
         (json!({"type": "string", "format": "uri"}), "string, format \"uri\""),
@@ -342,6 +342,33 @@ fn the_comment_renders_each_constraint() {
             "integer, at least 0.5",
         ),
     ];
+    assert_renders(rows);
+}
+
+/// The combinators never describe a schema as more permissive than it is (#1896).
+#[test]
+fn the_comment_never_reads_wider_than_the_schema() {
+    let rows = vec![
+        // A union emptied of its `null` branches admits no non-null value, which is not the same as no union (#1896).
+        (json!({"allOf": [{"type": "integer"}, {"anyOf": [{"type": "null"}, false]}]}), "no value fits"),
+        // Boolean subschemas: `false` admits nothing, `true` changes nothing, a `true` branch admits anything.
+        (json!({"type": "integer", "allOf": [false]}), "no value fits"),
+        (json!({"type": "integer", "minimum": 0, "allOf": [true]}), "integer, at least 0"),
+        (json!({"anyOf": [{"type": "integer"}, true]}), "constraints not shown"),
+        // `oneOf` is exclusive: branches a value could match at once fail closed, apart ones read as a union.
+        (json!({"oneOf": [{"type": "number"}, {"type": "integer"}]}), "constraints not shown"),
+        (json!({"oneOf": [{"const": "a"}, {"const": "a"}]}), "constraints not shown"),
+        (json!({"oneOf": [{"type": "integer"}, {"type": "string"}]}), "integer or string"),
+        (json!({"oneOf": [{"type": "string", "const": "a"}, {"type": "string", "const": "b"}]}), "one of \"a\", \"b\""),
+        (
+            json!({"oneOf": [{"type": "object", "minProperties": 1}, {"type": "object"}]}),
+            "object, at least 1 properties or object",
+        ),
+    ];
+    assert_renders(rows);
+}
+
+fn assert_renders(rows: Vec<(serde_json::Value, &str)>) {
     let mut misses = Vec::new();
     for (node, expected) in rows {
         let schema = Schema::try_from(json!({"type": "object", "properties": {"arg": node}}))

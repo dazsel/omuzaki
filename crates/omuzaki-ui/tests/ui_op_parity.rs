@@ -66,7 +66,9 @@ impl Panel for Planted {
 register_panel! { id: "test.back_door", title: "Back door", icon: icons::EYE, region: Region::Right,
 min_size: [240.0, 160.0], order: 991, build: |_| Box::new(Planted) }
 
-const WINDOW: egui::Vec2 = vec2(1920.0, 1080.0);
+/// Tall enough that the inspector shows its first sections whole inside the cards' padding, so the audit reaches more
+/// than a screenful of its sliders without scrolling.
+const WINDOW: egui::Vec2 = vec2(1920.0, 1200.0);
 
 /// The kit character's part the inspector is audited on.
 const INSPECTED: &str = "head";
@@ -155,7 +157,9 @@ fn operate(h: &mut Harness<'_, Studio>, control: &Control) -> bool {
         Role::Slider | Role::SpinButton => {
             node.focus();
             h.run_steps(2);
-            press_for(h, Modifiers::NONE, Key::ArrowRight, 4);
+            // A slider steps on Right, a number field on Up.
+            let key = if control.role == Role::Slider { Key::ArrowRight } else { Key::ArrowUp };
+            press_for(h, Modifiers::NONE, key, 4);
             drag_for(h, &[rect.center(), rect.center() + vec2(12.0, 0.0), rect.center() + vec2(24.0, 0.0)], 2);
         }
         Role::TextInput => {
@@ -187,6 +191,14 @@ fn operate(h: &mut Harness<'_, Studio>, control: &Control) -> bool {
             {
                 again.click();
             }
+        }
+        Role::ComboBox => {
+            // Opened and moved to the next option, as a person picking another one does.
+            node.focus();
+            h.run_steps(2);
+            press_for(h, Modifiers::NONE, Key::Enter, 3);
+            press_for(h, Modifiers::NONE, Key::ArrowDown, 2);
+            press_for(h, Modifiers::NONE, Key::Enter, 3);
         }
         _ => node.click(),
     }

@@ -55,6 +55,11 @@ pub trait CredentialGrants {
     fn remember(&self, session: &SessionInfo, grants: &Grants) -> Result<(), OpError>;
 }
 
+/// Where agents connect to this studio: the app core's loopback MCP address, shared with panels as a view model once
+/// the port is open. The connect card names it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct McpEndpoint(pub String);
+
 /// The credential store, shared with panels as a view model.
 #[derive(Clone)]
 pub struct Credentials(pub Arc<dyn CredentialGrants>);
@@ -96,7 +101,7 @@ impl Panel for AgentPanel {
     fn ui(&mut self, ui: &mut Ui, ctx: &PanelCtx<'_>) {
         let ds = ds(ui.ctx());
         let Some(Agents(sessions)) = ctx.view::<Agents>() else {
-            return connect(ui, &ds);
+            return connect(ui, &ds, ctx.view::<McpEndpoint>());
         };
         let shared = ctx.view::<AgentFeed>();
         if shared.is_none() {
@@ -115,7 +120,7 @@ impl Panel for AgentPanel {
         }
         let live: Vec<&SessionInfo> = feed.live().collect();
         if live.is_empty() && feed.approvals().is_empty() {
-            return connect(ui, &ds);
+            return connect(ui, &ds, ctx.view::<McpEndpoint>());
         }
         let person = ctx.actor();
         let desk = ctx.view::<Reviews>().map(|r| r.0.as_ref());
@@ -225,7 +230,8 @@ impl AgentPanel {
                 let (tone, word) = status_words(ds, status);
                 ui.add(StatusChip::new(tone, &word));
                 let steps = session.steps.to_string();
-                ui.label(RichText::new(say(ds, text::AGENT_STEPS, &[("steps", &steps)])).color(t.text2));
+                let word = one_or_many(session.steps, text::AGENT_ONE_STEP, text::AGENT_STEPS);
+                ui.label(RichText::new(say(ds, word, &[("steps", &steps)])).color(t.text2));
                 let spend = spend(ds, session);
                 if !spend.is_empty() {
                     ui.label(RichText::new(spend).color(t.text2));
@@ -274,7 +280,8 @@ impl AgentPanel {
         }
         if session.steps > 0 {
             let steps = session.steps.to_string();
-            let undo = say(ds, text::AGENT_UNDO_ALL, &[("steps", &steps)]);
+            let word = one_or_many(session.steps, text::AGENT_UNDO_ONE, text::AGENT_UNDO_ALL);
+            let undo = say(ds, word, &[("steps", &steps)]);
             let name = named(&undo);
             let button = Button::new(&undo).ghost().icon(icons::ARROW_COUNTER_CLOCKWISE).accessible_label(&name);
             if ui.add(button).clicked() {
@@ -375,9 +382,9 @@ impl AgentPanel {
             ),
             Confirm::Undo { .. } => (
                 say(ds, text::UNDO_TITLE, &[("name", name)]),
-                say(ds, text::UNDO_PRIMARY, &[("steps", &steps)]),
-                say(ds, text::UNDO_CONFIRM, &[("steps", &steps)]),
-                say(ds, text::UNDO_BODY, &[("steps", &steps)]),
+                say(ds, one_or_many(session.steps, text::UNDO_PRIMARY_ONE, text::UNDO_PRIMARY), &[("steps", &steps)]),
+                say(ds, one_or_many(session.steps, text::UNDO_CONFIRM_ONE, text::UNDO_CONFIRM), &[("steps", &steps)]),
+                say(ds, one_or_many(session.steps, text::UNDO_BODY_ONE, text::UNDO_BODY), &[("steps", &steps)]),
             ),
             Confirm::Grant { scope, .. } => (
                 say(ds, text::GRANT_TITLE, &[("name", name), ("scope", scope.name())]),
@@ -479,9 +486,14 @@ fn spend(ds: &Ds, session: &SessionInfo) -> String {
     parts.join(" \u{b7} ")
 }
 
-/// No agent is connected: how to connect one.
-fn connect(ui: &mut Ui, ds: &Ds) {
-    let (headline, line) = (say(ds, text::AGENT_NONE, &[]), say(ds, text::AGENT_NONE_HOW, &[]));
+/// No agent is connected: how to connect one, and where when the studio's MCP port is open.
+fn connect(ui: &mut Ui, ds: &Ds, endpoint: Option<&McpEndpoint>) {
+    let headline = say(ds, text::AGENT_NONE, &[]);
+    let mut line = say(ds, text::AGENT_NONE_HOW, &[]).into_owned();
+    if let Some(McpEndpoint(url)) = endpoint {
+        line.push(' ');
+        line.push_str(&say(ds, text::AGENT_NONE_WHERE, &[("url", url)]));
+    }
     ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
         EmptyState::new(icons::ROBOT, &headline, &line).show(ui);
     });
@@ -491,4 +503,9 @@ omuzaki_ui_api::register_panel! {
     id: "agent", title: "Agent", icon: icons::ROBOT, region: omuzaki_ui_api::registry::Region::Right,
     min_size: [288.0, 160.0], order: 20,
     build: |_| Box::new(AgentPanel::default()),
+}
+
+/// The words for a count: `one` for exactly one, else `many` (English plurals until the catalog selects them itself).
+fn one_or_many(count: u32, one: &'static str, many: &'static str) -> &'static str {
+    if count == 1 { one } else { many }
 }

@@ -6,13 +6,16 @@
 //! One file in this directory and one `mod` line below. The file declares a [`ProgramSpec`] and registers it:
 //!
 //! ```ignore
-//! register_shading_program!(ProgramSpec {
-//!     name: "my-look",
-//!     params: &[ParamSpec::float("strength", 0.5, 0.0, 1.0)],
-//!     attributes: &[AttributeSpec { name: "my-uv", components: 2 }],
-//!     toon: |_| Toon::default(),
-//!     wgsl: include_str!("my_look.wgsl"),
-//! });
+//! register_shading_program!(
+//!     "my-look",
+//!     ProgramSpec {
+//!         name: "my-look",
+//!         params: &[ParamSpec::float("strength", 0.5, 0.0, 1.0)],
+//!         attributes: &[AttributeSpec { name: "my-uv", components: 2 }],
+//!         toon: |_| Toon::default(),
+//!         wgsl: include_str!("my_look.wgsl"),
+//!     }
+//! );
 //! ```
 //!
 //! Nothing else is edited: no central list, no enum, no change to the renderer. The registry is what the linker
@@ -124,15 +127,37 @@ pub(crate) struct ProgramSpec {
 
 inventory::collect!(ProgramSpec);
 
-/// Registers a [`ProgramSpec`] from the file that declares it (spec §39 rule 2).
+/// Registers a [`ProgramSpec`] under its name from the file that declares it (spec §39 rule 2). The name comes first
+/// so the registration is recorded, and listed by `omuzaki registrations`, as `"hair"` rather than as the whole spec
+/// literal (#1638); the build fails if it differs from the spec's own `name`.
 macro_rules! register_shading_program {
-    ($spec:expr) => {
+    ($name:literal, $spec:expr) => {
+        const _: () = ::core::assert!(
+            $crate::program::same_name($name, $spec.name),
+            ::core::concat!("register_shading_program!(", $name, ", ..) names a spec of another name")
+        );
         ::inventory::submit! { $spec }
         // The link gate (ADR 0015) compares this record with the registration the scan reads from the source.
-        ::omuzaki_core::__record_registration!("shading_program", $spec);
+        ::omuzaki_core::__record_registration!("shading_program", $name);
     };
 }
 use register_shading_program;
+
+/// Whether a registration's name is its spec's name, at compile time.
+pub(crate) const fn same_name(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
 
 /// A material's parameters with defaults filled in, in declaration order.
 pub(crate) struct Values {

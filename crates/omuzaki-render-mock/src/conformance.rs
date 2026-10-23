@@ -72,6 +72,7 @@ pub const CHECKS: &[(&str, Check)] = &[
     ("background and alpha encoding", background_and_alpha_encoding),
     ("painted textures show through overlays", painted_textures_show_through_overlays),
     ("outlines hug the silhouette", outlines_hug_the_silhouette),
+    ("an open double-sided sheet is outlined from both sides", open_sheets_are_outlined_from_both_sides),
     ("blended instances sort back to front", blended_instances_sort_back_to_front),
     ("skinned instances follow their joints", skinned_instances_follow_their_joints),
     ("mirrored instances render like the original", mirrored_instances_render_like_the_original),
@@ -109,11 +110,13 @@ pub const CHECKS: &[(&str, Check)] = &[
     ("particle_limits", particles::particle_limits),
 ];
 
-/// The checks for dynamic meshes: a renderer whose [`Capabilities::dynamic_meshes`] is true must pass them.
-/// [`run_capable`] runs them when it is.
+/// The checks for meshes rewritten in place: a renderer whose [`Capabilities::dynamic_meshes`] is true must pass them,
+/// recolouring (`update_colours`, static meshes included) among them. [`run_capable`] runs them when it is.
 pub const DYNAMIC_CHECKS: &[(&str, Check)] = &[
     ("updating vertices matches a fresh mesh", updating_vertices_matches_a_fresh_mesh),
     ("updating a static mesh is invalid", updating_a_static_mesh_is_invalid),
+    ("recolouring matches a fresh mesh", recolouring_matches_a_fresh_mesh),
+    ("recolouring input is validated", recolouring_input_is_validated),
 ];
 
 /// The checks for sparse morph targets: a renderer whose [`Capabilities::morph_targets`] is true must pass them.
@@ -558,6 +561,54 @@ fn outlines_hug_the_silhouette(r: &mut dyn Renderer) -> Outcome {
     s.outline_light = 0.0;
     let dark = draw(r, &s, &plain())?;
     expect_pixel(&dark, ring, Colour::BLACK, tol, "outline_light 0 removes the line's light")?;
+    for resource in [mesh.into(), material.into()] {
+        r.release(resource)?;
+    }
+    Ok(())
+}
+
+/// A single-layer card (a hair ribbon, #819) seen face on, from the front and from behind: the line runs round its
+/// edge on both sides, outside the card and never over it.
+fn open_sheets_are_outlined_from_both_sides(r: &mut dyn Renderer) -> Outcome {
+    let tol = tolerance(r).max(1);
+    let mesh = r.create_mesh(&shapes::quad(Vec2::splat(0.4)))?;
+    let line = Colour::rgb(255, 0, 0);
+    let mut material = Material::unlit(Colour::rgb(0, 255, 0));
+    material.double_sided = true;
+    material.outline = Some(Outline { colour: line, width: 0.1 });
+    let material = r.create_material(&material)?;
+
+    // The card's edge is at world x = 0.4 (pixel 44.8) and y = 0.4; 0.44 (pixel 46) is inside the line, 0.9 is not.
+    let probes = [
+        ((CENTRE.0 + 14, CENTRE.1), "the line beyond the right edge"),
+        ((CENTRE.0 - 15, CENTRE.1), "the line beyond the left edge"),
+        ((CENTRE.0, CENTRE.1 - 15), "the line beyond the top edge"),
+        ((CENTRE.0 + 15, CENTRE.1 + 14), "the line round a corner"),
+    ];
+    for (turn, side) in [(0.0, "front"), (std::f32::consts::PI, "back")] {
+        let mut s = scene(Colour::BLACK);
+        s.instances.push(Instance::new(mesh, material, Mat4::from_rotation_y(turn)));
+        let img = draw(r, &s, &plain())?;
+        let seen = format!("seen from the {side}");
+        expect_pixel(
+            &img,
+            CENTRE,
+            Colour::rgb(0, 255, 0),
+            tol,
+            &format!("the card stays in front of its line, {seen}"),
+        )?;
+        expect_pixel(
+            &img,
+            (CENTRE.0 + 11, CENTRE.1),
+            Colour::rgb(0, 255, 0),
+            tol,
+            &format!("inside the edge, {seen}"),
+        )?;
+        for (probe, what) in probes {
+            expect_pixel(&img, probe, line, tol, &format!("{what}, {seen}"))?;
+        }
+        expect_pixel(&img, (CENTRE.0 + 29, CENTRE.1), Colour::BLACK, tol, &format!("far from the card, {seen}"))?;
+    }
     for resource in [mesh.into(), material.into()] {
         r.release(resource)?;
     }
@@ -1337,6 +1388,50 @@ fn updating_a_static_mesh_is_invalid(r: &mut dyn Renderer) -> Outcome {
     r.release(dynamic.into())?;
     expect_err(r.update_vertices(dynamic, &quad.positions, &quad.normals), "a released mesh", is_unknown)?;
     r.release(fixed.into())?;
+    Ok(())
+}
+
+/// The small quad with every vertex coloured `colour`.
+fn coloured_quad(colour: [f32; 4]) -> MeshData {
+    let mut quad = small_quad();
+    quad.colours = vec![colour; quad.positions.len()];
+    quad
+}
+
+fn recolouring_matches_a_fresh_mesh(r: &mut dyn Renderer) -> Outcome {
+    let tol = tolerance(r).max(1);
+    let (red, green) = ([1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]);
+    // A static mesh: a palette change recolours meshes no runtime rewrites.
+    let mesh = r.create_mesh(&coloured_quad(red))?;
+    let fresh = r.create_mesh(&coloured_quad(green))?;
+    let material = r.create_material(&Material { vertex_colours: true, ..Material::unlit(Colour::WHITE) })?;
+
+    let before = draw_one(r, mesh, material, &[], |_, _| {})?;
+    expect_pixel(&before, CENTRE, Colour::rgb(255, 0, 0), tol, "the quad before recolouring")?;
+    r.update_colours(mesh, &coloured_quad(green).colours)?;
+    let recoloured = draw_one(r, mesh, material, &[], |_, _| {})?;
+    let expected = draw_one(r, fresh, material, &[], |_, _| {})?;
+    expect_pixel(&recoloured, CENTRE, Colour::rgb(0, 255, 0), tol, "the quad after recolouring")?;
+    same_image(&recoloured, &expected, tol, "a recoloured mesh against a freshly created one")?;
+    for resource in [mesh.into(), fresh.into(), material.into()] {
+        r.release(resource)?;
+    }
+    Ok(())
+}
+
+fn recolouring_input_is_validated(r: &mut dyn Renderer) -> Outcome {
+    let quad = coloured_quad([0.5; 4]);
+    let plain = r.create_mesh(&small_quad())?;
+    expect_err(r.update_colours(plain, &quad.colours), "a mesh created without colours", is_invalid)?;
+    let mesh = r.create_mesh(&quad)?;
+    expect_err(r.update_colours(mesh, &quad.colours[..3]), "too few colours", is_invalid)?;
+    let mut nan = quad.colours.clone();
+    nan[1][2] = f32::NAN;
+    expect_err(r.update_colours(mesh, &nan), "a non-finite colour", is_invalid)?;
+    r.update_colours(mesh, &quad.colours)?;
+    r.release(mesh.into())?;
+    expect_err(r.update_colours(mesh, &quad.colours), "a released mesh", is_unknown)?;
+    r.release(plain.into())?;
     Ok(())
 }
 

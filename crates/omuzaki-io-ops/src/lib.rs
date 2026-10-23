@@ -40,7 +40,7 @@
 
 // How a failed import or export reaches a caller. Private: the ops use it, the public API does not show it.
 pub mod convert;
-mod error;
+pub mod error;
 pub mod fit_bones;
 pub mod fit_decimate;
 pub mod fit_meshes;
