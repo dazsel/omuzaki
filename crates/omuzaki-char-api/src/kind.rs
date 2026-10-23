@@ -655,11 +655,15 @@ impl Published {
             // A silent part changes nothing, so it copies nothing.
             return Ok(());
         }
-        let mut next = self.merged.clone();
+        // Only the facts this part publishes are staged (a copy of each one's merged value so far); the rest are not
+        // touched, so a part costs what it publishes, not what every part before it did (#1579). The staged copies go
+        // back in only when every one merged, so a refused value leaves nothing absorbed.
+        let mut staged: BTreeMap<&'static str, Merged> =
+            p.slots.keys().filter_map(|name| self.merged.get(name).map(|merged| (*name, merged.clone()))).collect();
         for slot in p.slots.into_values() {
-            slot.merge_into(&mut next, part).map_err(|message| BuildError::Part { part: part.clone(), message })?;
+            slot.merge_into(&mut staged, part).map_err(|message| BuildError::Part { part: part.clone(), message })?;
         }
-        self.merged = next;
+        self.merged.extend(staged);
         Ok(())
     }
 
