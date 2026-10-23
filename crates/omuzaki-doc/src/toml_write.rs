@@ -108,14 +108,25 @@ fn sync_item(item: &mut Item, value: &Value) -> Result<(), Unstorable> {
     match (&mut *item, value) {
         (Item::Table(table), Value::Object(map)) => {
             let was_empty = table.is_empty();
+            let had_values = !only_sub_tables(table);
+            let kept = table.iter().filter(|(k, _)| map.contains_key(*k)).count();
+            let reshaped = kept < table.len() && kept * 2 < map.len();
             sync_table(table, map, false)?;
+            // A table that lost keys and keeps fewer than half of the new ones has been replaced by one of another
+            // shape (a generator of another kind): it takes the order a new file gives it, so putting the old one back
+            // (an undo) gives back the same text rather than the kept keys first and the returning ones after. A small
+            // edit (a key renamed, one added) keeps the file's own order.
+            if reshaped {
+                let at = |key: &toml_edit::Key| map.keys().position(|k| k == key.get()).unwrap_or(usize::MAX);
+                table.sort_values_by(|a, _, b, _| at(a).cmp(&at(b)));
+            }
             // A header written only to lead to sub-tables (`[a.b]`) is implicit, and an implicit table that has
             // lost everything would vanish from the file instead of staying as an empty `[a]`. An empty one that
-            // gains only sub-tables goes back to implicit, so emptying and refilling it (an undo) gives back the
-            // same text.
+            // gains only sub-tables goes back to implicit, and so does one that loses the last of its own values,
+            // so emptying and refilling it, or adding a value and taking it away (an undo), gives back the same text.
             if table.is_empty() {
                 table.set_implicit(false);
-            } else if was_empty && table.iter().all(|(_, i)| i.is_table() || i.is_array_of_tables()) {
+            } else if (was_empty || had_values) && only_sub_tables(table) {
                 table.set_implicit(true);
             }
             Ok(())
@@ -129,6 +140,11 @@ fn sync_item(item: &mut Item, value: &Value) -> Result<(), Unstorable> {
             Ok(())
         }
     }
+}
+
+/// Whether every entry of `table` is a sub-table (or an array of them): it holds no values of its own.
+fn only_sub_tables(table: &Table) -> bool {
+    table.iter().all(|(_, i)| i.is_table() || i.is_array_of_tables())
 }
 
 fn sync_value(current: &mut toml_edit::Value, value: &Value) -> Result<(), Unstorable> {
@@ -365,6 +381,28 @@ mod tests {
         let emptied = render(Some(before), &map(json!({"v": false, "a": {}}))).unwrap();
         let refilled = render(Some(&emptied), &map(json!({"v": false, "a": {"b": {"c": 1}}}))).unwrap();
         assert_eq!(refilled, before);
+    }
+
+    #[test]
+    fn a_value_added_to_a_table_of_sub_tables_and_taken_away_renders_the_text_it_started_from() {
+        let before = "v = false\n\n[a.b]\nc = 1\n\n[a.d]\ne = 2\n";
+        let added =
+            render(Some(before), &map(json!({"v": false, "a": {"x": 1, "b": {"c": 1}, "d": {"e": 2}}}))).unwrap();
+        assert!(added.contains("[a]\nx = 1"), "{added}");
+        let removed = render(Some(&added), &map(json!({"v": false, "a": {"b": {"c": 1}, "d": {"e": 2}}}))).unwrap();
+        assert_eq!(removed, before);
+    }
+
+    #[test]
+    fn a_table_replaced_by_another_shape_and_put_back_renders_the_text_it_started_from() {
+        let original = json!({"v": 1, "g": {"on": true, "gen": {"count": 3, "edge": [1, 2], "type": "framing",
+            "width": {"mid": 0.5, "tip": 0.1}}, "z": {"k": 1}}, "w": {"q": 2}});
+        let before = fresh(original.clone());
+        let replaced = json!({"v": 1, "g": {"on": true, "gen": {"type": "guides", "clumps": [{"points": [[1, 2]]}]},
+            "z": {"k": 1}}, "w": {"q": 2}});
+        let after = render(Some(&before), &map(replaced)).unwrap();
+        let back = render(Some(&after), &map(original)).unwrap();
+        assert_eq!(back, before, "before:\n{before}\nafter:\n{after}");
     }
 
     #[test]

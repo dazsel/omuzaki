@@ -164,7 +164,7 @@ register_op!(HairStreakAdd);
     "examples" = [
         {"character": "kit", "part": "hair", "index": 0, "field": "fraction", "value": 0.3}
     ],
-    "x-omuzaki-fixture" = "character"
+    "x-omuzaki-fixture" = "hair-streaks"
 ))]
 pub struct HairStreakSet {
     /// The character the hair belongs to.
@@ -219,7 +219,7 @@ register_op!(HairStreakSet);
     "examples" = [
         {"character": "kit", "part": "hair", "index": 0}
     ],
-    "x-omuzaki-fixture" = "character"
+    "x-omuzaki-fixture" = "hair-streaks"
 ))]
 pub struct HairStreakRemove {
     /// The character the hair belongs to.
