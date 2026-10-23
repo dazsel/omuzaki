@@ -139,7 +139,8 @@ impl Widget for TextField<'_> {
                 .font(ds.text.body.clone())
                 .text_color(paint::ink(t, self.disabled.is_none(), t.text))
                 .hint_text(
-                    egui::RichText::new(self.hint)
+                    // A search field with no hint of its own shows its name, so an empty box still says what it finds.
+                    egui::RichText::new(if self.hint.is_empty() && self.search { self.label } else { self.hint })
                         .color(paint::ink(t, self.disabled.is_none(), t.text3))
                         .font(ds.text.body.clone()),
                 )

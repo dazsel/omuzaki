@@ -77,3 +77,28 @@ steps = [
     { run = ["cargo", "test", "--locked", "-p", "omuzaki-ui", "--test", "studio", "--", "--ignored", "--exact", "fence_evidence"] },
 ]
 images = ["fence-dark-1366x768.png", "fence-light-1366x768.png"]
+
+[[case]]
+name = "tour"
+description = "Every workspace of the studio (spine/ui), each docked panel a rounded card 6 pt from its neighbours: Build, Script, Perform, Broadcast and Theatre at 1366x768 and 1920x1080 in the dark palette and at 1366x768 in the light one, with the kit sample character and an agent's edit."
+env = { OMUZAKI_EVIDENCE_OUT = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-ui", "--test", "studio", "--", "--ignored", "--exact", "tour_evidence"] },
+]
+images = [
+    "tour-1-build-dark-1366x768.png",
+    "tour-1-build-dark-1920x1080.png",
+    "tour-1-build-light-1366x768.png",
+    "tour-2-script-dark-1366x768.png",
+    "tour-2-script-dark-1920x1080.png",
+    "tour-2-script-light-1366x768.png",
+    "tour-3-perform-dark-1366x768.png",
+    "tour-3-perform-dark-1920x1080.png",
+    "tour-3-perform-light-1366x768.png",
+    "tour-4-broadcast-dark-1366x768.png",
+    "tour-4-broadcast-dark-1920x1080.png",
+    "tour-4-broadcast-light-1366x768.png",
+    "tour-5-theatre-dark-1366x768.png",
+    "tour-5-theatre-dark-1920x1080.png",
+    "tour-5-theatre-light-1366x768.png",
+]
