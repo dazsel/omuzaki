@@ -63,10 +63,14 @@ pub trait Git: Send + Sync {
     ///
     /// `rev` goes to git after `--end-of-options`, never as an option; if it does not resolve, [`GitError::BadRev`].
     fn show(&self, dir: &Path, rev: &str, cancel: &dyn Cancel) -> Result<CommitDetail, GitError>;
-    /// The files of a commit, to import as a point: those selected by [`project_pathspecs`], with paths relative to
-    /// the folder, so another project's files and private `.omuzaki` files are never imported.
+    /// The files of a commit, to import as a point: the project folder's, with paths relative to it, so another
+    /// project's files are never imported, and without private `.omuzaki` files. `git ls-tree` refuses the exclude
+    /// magic of [`project_pathspecs`], so it is given [`tree_pathspecs`] (the folder alone) and every entry
+    /// [`is_private`] names is dropped after listing.
     ///
     /// [`project_pathspecs`]: crate::paths::project_pathspecs
+    /// [`tree_pathspecs`]: crate::paths::tree_pathspecs
+    /// [`is_private`]: crate::paths::is_private
     ///
     /// `rev` goes to git after `--end-of-options`, never as an option; if it does not resolve, [`GitError::BadRev`].
     fn tree_at(&self, dir: &Path, rev: &str, cancel: &dyn Cancel) -> Result<CommitTree, GitError>;
@@ -100,6 +104,9 @@ pub trait Git: Send + Sync {
     /// `remote` goes to git after `--end-of-options`, never as an option.
     fn pull(&self, dir: &Path, remote: &str, cancel: &dyn Cancel) -> Result<PullOutcome, GitError>;
     /// The path of git's index lock for this folder, resolved through git (it differs for worktrees and
-    /// submodules), so the keeper can tell a git operation is running (design §7, §8).
+    /// submodules), so the keeper can tell a git operation is running (design §7, §8). A local read: bounded by
+    /// [`READ_TIMEOUT`] and ends with [`GitError::Timeout`].
+    ///
+    /// [`READ_TIMEOUT`]: crate::error::READ_TIMEOUT
     fn index_lock_path(&self, dir: &Path, cancel: &dyn Cancel) -> Result<PathBuf, GitError>;
 }

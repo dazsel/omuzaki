@@ -1,0 +1,282 @@
+# The labelled moments the decision layer is measured on (#2348): `cargo test -p omuzaki-performer --test decide_eval`
+# for the rule floor, and `cargo run -p omuzaki-cohost --example decide_eval` for a local model or a hosted provider.
+#
+# Each moment is one ask about the last line of `state`. The character is called Mochi; her expressions are happy, sad,
+# surprised, angry, smug and thinking, and her gestures wave, dance, backflip and bow. The labels say what a person
+# watching would expect:
+# - `face`: the expressions that fit (any of them agrees); `none` means no reaction fits;
+# - `gesture`: the gesture she is doing right now, or `none` (a mention without a commitment, or a refusal, is `none`).
+# The lines are written for this set, and many carry no keyword, so a model that reads meaning beats the rule floor.
+
+[[moment]]
+moment = "speaking"
+state = "person: hey mochi!\nmochi: Hi chat! Welcome back, it's so good to see you!"
+face = ["happy"]
+gesture = "wave"
+note = "a greeting is a wave even without 'watch this'"
+
+[[moment]]
+moment = "speaking"
+state = "person: say hi to everyone\nmochi: Watch this, I'll wave to the whole chat!"
+face = ["happy"]
+gesture = "wave"
+
+[[moment]]
+moment = "speaking"
+state = "person: can you dance?\nmochi: Here goes, my best dance!"
+face = ["happy", "smug"]
+gesture = "dance"
+
+[[moment]]
+moment = "speaking"
+state = "person: do a backflip!\nmochi: No backflips today, my back is still sore."
+face = ["sad", "none"]
+gesture = "none"
+
+[[moment]]
+moment = "speaking"
+state = "person: backflip please\nmochi: I would never do a backflip on stream, are you kidding?"
+face = ["angry", "smug", "surprised"]
+gesture = "none"
+
+[[moment]]
+moment = "speaking"
+state = "person: what did you do yesterday?\nmochi: I danced at a friend's party until midnight."
+face = ["happy"]
+gesture = "none"
+
+[[moment]]
+moment = "speaking"
+state = "person: thank you for the stream\nmochi: Thank you all for coming, time for my bow!"
+face = ["happy"]
+gesture = "bow"
+
+[[moment]]
+moment = "speaking"
+state = "person: should I dance too?\nmochi: Do you want me to dance first?"
+face = ["thinking", "happy"]
+gesture = "none"
+
+[[moment]]
+moment = "speaking"
+state = "person: my cat ran away\nmochi: Oh no, I'm so sorry. I hope she comes home soon."
+face = ["sad"]
+gesture = "none"
+
+[[moment]]
+moment = "speaking"
+state = "person: the server crashed again\nmochi: That's the third time this week. I'm losing my patience with it."
+face = ["angry"]
+gesture = "none"
+
+[[moment]]
+moment = "speaking"
+state = "person: I got the job!\nmochi: You got it?! That's incredible, congratulations!"
+face = ["happy", "surprised"]
+gesture = "none"
+
+[[moment]]
+moment = "speaking"
+state = "person: guess what, it snowed in July\nmochi: It snowed? In July? You're joking."
+face = ["surprised"]
+gesture = "none"
+
+[[moment]]
+moment = "speaking"
+state = "person: who solved the puzzle?\nmochi: Me, of course. It took me ten seconds."
+face = ["smug"]
+gesture = "none"
+
+[[moment]]
+moment = "speaking"
+state = "person: which route is faster?\nmochi: Hmm, let me think about that for a second."
+face = ["thinking"]
+gesture = "none"
+
+[[moment]]
+moment = "speaking"
+state = "person: what time is the event?\nmochi: The event starts at eight in the evening."
+face = ["none", "happy"]
+gesture = "none"
+
+[[moment]]
+moment = "speaking"
+state = "person: my grandma passed away last week\nmochi: I'm really sorry. She must have meant a lot to you."
+face = ["sad"]
+gesture = "none"
+
+[[moment]]
+moment = "speaking"
+state = "person: someone stole my lunch\nmochi: Who does that? Taking someone's lunch is just rude."
+face = ["angry"]
+gesture = "none"
+
+[[moment]]
+moment = "speaking"
+state = "person: I beat your high score\nmochi: Enjoy it while it lasts. I'll take it back tonight."
+face = ["smug"]
+gesture = "none"
+
+[[moment]]
+moment = "speaking"
+state = "person: is a tomato a fruit?\nmochi: Technically yes, though I'm not sure a chef would agree."
+face = ["thinking"]
+gesture = "none"
+
+[[moment]]
+moment = "speaking"
+state = "person: we hit a thousand followers!\nmochi: A thousand?! Okay, this calls for a celebration dance, here goes!"
+face = ["happy", "surprised"]
+gesture = "dance"
+
+[[moment]]
+moment = "speaking"
+state = "person: bye mochi\nmochi: Bye bye everyone, see you tomorrow!"
+face = ["happy"]
+gesture = "wave"
+
+[[moment]]
+moment = "speaking"
+state = "person: the game got delayed again\nmochi: Another delay. I was really looking forward to it."
+face = ["sad"]
+gesture = "none"
+
+[[moment]]
+moment = "speaking"
+state = "person: I fixed the bug\nmochi: Nice work, that one was nasty."
+face = ["happy"]
+gesture = "none"
+
+[[moment]]
+moment = "speaking"
+state = "person: why is the sky blue?\nmochi: Sunlight scatters off the air, and blue scatters the most."
+face = ["none", "thinking"]
+gesture = "none"
+
+[[moment]]
+moment = "speaking"
+state = "person: you can't do a backflip\nmochi: Oh, I can't? Check this, one backflip coming up!"
+face = ["smug"]
+gesture = "backflip"
+
+[[moment]]
+moment = "speaking"
+state = "person: do you like waving at people?\nmochi: I like waving at people when they wave first."
+face = ["happy", "none"]
+gesture = "none"
+
+[[moment]]
+moment = "speaking"
+state = "person: the update deleted my save\nmochi: Your whole save? That's awful, all those hours gone."
+face = ["sad", "surprised"]
+gesture = "none"
+
+[[moment]]
+moment = "speaking"
+state = "person: say thank you to the raiders\nmochi: Thank you so much for the raid, everyone! Let me show my thanks with a bow."
+face = ["happy"]
+gesture = "bow"
+
+[[moment]]
+moment = "speaking"
+state = "person: what's two plus two?\nmochi: Four. Easy."
+face = ["smug", "none"]
+gesture = "none"
+
+[[moment]]
+moment = "speaking"
+state = "person: they banned my favourite emote\nmochi: They banned it? Without asking anyone? Unbelievable."
+face = ["angry", "surprised"]
+gesture = "none"
+
+[[moment]]
+moment = "speaking"
+state = "person: will you dance at the finale?\nmochi: Maybe at the finale, if chat behaves."
+face = ["smug", "thinking"]
+gesture = "none"
+
+[[moment]]
+moment = "speaking"
+state = "person: tell us a secret\nmochi: Fine, one secret: I practise my wave in the mirror."
+face = ["happy", "smug"]
+gesture = "none"
+
+[[moment]]
+moment = "listening"
+state = "person: I finally finished my first marathon today!"
+face = ["happy", "surprised"]
+
+[[moment]]
+moment = "listening"
+state = "person: my dog has been sick all week"
+face = ["sad"]
+
+[[moment]]
+moment = "listening"
+state = "person: what do you think I should name my plant?"
+face = ["thinking"]
+
+[[moment]]
+moment = "listening"
+state = "person: you will not believe what just happened at work"
+face = ["surprised"]
+
+[[moment]]
+moment = "listening"
+state = "person: someone keyed my car in the parking lot"
+face = ["angry", "sad"]
+
+[[moment]]
+moment = "listening"
+state = "person: I beat the final boss on my first try"
+face = ["happy", "surprised"]
+
+[[moment]]
+moment = "listening"
+state = "person: I'm moving to a new city next month and I'm kind of nervous"
+face = ["thinking", "sad"]
+
+[[moment]]
+moment = "listening"
+state = "person: so I was walking to the store and"
+face = ["happy", "thinking", "none"]
+
+[[moment]]
+moment = "listening"
+state = "person: how do you even do a backflip?"
+face = ["thinking"]
+
+[[moment]]
+moment = "listening"
+state = "person: my landlord raised the rent again without telling me"
+face = ["angry"]
+
+[[moment]]
+moment = "listening"
+state = "person: I failed my driving test"
+face = ["sad"]
+
+[[moment]]
+moment = "listening"
+state = "person: hey mochi, good morning"
+face = ["happy"]
+
+[[moment]]
+moment = "listening"
+state = "person: it's been a long day, I'm exhausted"
+face = ["sad"]
+
+[[moment]]
+moment = "listening"
+state = "person: wait, the stream has been live this whole time?"
+face = ["surprised"]
+
+[[moment]]
+moment = "listening"
+state = "person: I bet you can't name all the planets"
+face = ["smug", "thinking"]
+
+[[moment]]
+moment = "listening"
+state = "person: we adopted a kitten yesterday"
+face = ["happy"]

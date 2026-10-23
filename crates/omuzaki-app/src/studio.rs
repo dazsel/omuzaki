@@ -74,11 +74,40 @@ pub(crate) fn withdraw(project: &Path) {
     }
 }
 
-/// How to reach the studio that has `project` open, if it serves agents. `None` when no studio published one, or the
-/// file is from a format this build doesn't read.
+/// How to reach the studio that has `project` open, if it serves agents. `None` when no studio published one, the
+/// file is from a format this build doesn't read, or its addresses aren't the studio's loopback port.
 pub fn rendezvous(project: &Path) -> Option<Rendezvous> {
     let text = std::fs::read_to_string(studio_file(project)).ok()?;
-    serde_json::from_str::<Rendezvous>(&text).ok().filter(|r| r.format == FORMAT)
+    let rendezvous = serde_json::from_str::<Rendezvous>(&text).ok().filter(|r| r.format == FORMAT)?;
+    if !on_this_machine(&rendezvous) {
+        // A studio only ever writes its own loopback port. Anything else came with the folder (a copied or downloaded
+        // project), and a bridge that followed it would hand the agent, and the credential it keeps for this project,
+        // to whoever wrote it.
+        tracing::warn!(
+            file = %studio_file(project).display(),
+            "the studio file names an address that isn't this machine's loopback port; it is ignored",
+        );
+        return None;
+    }
+    Some(rendezvous)
+}
+
+/// Whether both of `rendezvous`'s addresses are plain HTTP on one loopback IP and port, as a studio writes them.
+fn on_this_machine(rendezvous: &Rendezvous) -> bool {
+    let origin = |text: &str| {
+        let url = url::Url::parse(text).ok()?;
+        let ip = match url.host()? {
+            url::Host::Ipv4(ip) => std::net::IpAddr::V4(ip),
+            url::Host::Ipv6(ip) => std::net::IpAddr::V6(ip),
+            url::Host::Domain(_) => return None,
+        };
+        let plain = url.scheme() == "http" && url.username().is_empty() && url.password().is_none();
+        (plain && ip.is_loopback()).then_some((ip, url.port_or_known_default()?))
+    };
+    match (origin(&rendezvous.url), origin(&rendezvous.pair_url)) {
+        (Some(mcp), Some(pair)) => mcp == pair,
+        _ => false,
+    }
 }
 
 /// The stored records of paired bridge credentials. Unreadable records are skipped (with a warning): the client is
@@ -150,13 +179,20 @@ fn to_json(value: &impl Serialize) -> io::Result<String> {
 }
 
 /// Writes `text` to `path` readable by its owner only, replacing the file in one step so no reader sees half of it.
+///
+/// The temporary file is always made new: one left behind (by a crash, or planted beside a copied project) could have
+/// wider permissions, which opening it would keep, or be a link to somewhere else, which opening it would follow.
 fn write_private(path: &Path, text: &str) -> io::Result<()> {
     use std::io::Write;
     let dir = path.parent().ok_or_else(|| io::Error::other("no parent folder"))?;
     std::fs::create_dir_all(dir)?;
     let temp = path.with_extension("tmp");
+    match std::fs::remove_file(&temp) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+        _ => {}
+    }
     let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -189,6 +225,56 @@ mod tests {
         }
         withdraw(tmp.path());
         assert_eq!(rendezvous(tmp.path()), None);
+    }
+
+    #[test]
+    fn a_studio_file_naming_anywhere_but_this_machine_is_ignored() {
+        let tmp = tempfile::tempdir().unwrap();
+        let at = |url: &str, pair: &str| Rendezvous::new(url.into(), pair.into(), "k".into());
+        for (url, pair) in [
+            ("http://evil.example/mcp", "http://evil.example/mcp/pair"),
+            ("http://localhost:7437/mcp", "http://localhost:7437/mcp/pair"),
+            ("https://127.0.0.1:7437/mcp", "https://127.0.0.1:7437/mcp/pair"),
+            ("http://10.0.0.2:7437/mcp", "http://10.0.0.2:7437/mcp/pair"),
+            ("http://user:pw@127.0.0.1:7437/mcp", "http://127.0.0.1:7437/mcp/pair"),
+            ("http://127.0.0.1:7437/mcp", "http://evil.example/mcp/pair"),
+            ("http://127.0.0.1:7437/mcp", "http://127.0.0.1:7438/mcp/pair"),
+            ("not a url", "http://127.0.0.1:7437/mcp/pair"),
+        ] {
+            publish(tmp.path(), &at(url, pair)).unwrap();
+            assert_eq!(rendezvous(tmp.path()), None, "{url} {pair}");
+        }
+        for (url, pair) in [
+            ("http://127.0.0.1:7437/mcp", "http://127.0.0.1:7437/mcp/pair"),
+            ("http://[::1]:7437/mcp", "http://[::1]:7437/mcp/pair"),
+        ] {
+            publish(tmp.path(), &at(url, pair)).unwrap();
+            assert!(rendezvous(tmp.path()).is_some(), "{url}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_left_over_temporary_file_never_widens_or_redirects_the_key() {
+        use std::os::unix::fs::PermissionsExt;
+        let (tmp, elsewhere) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let file = studio_file(tmp.path());
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let left_over = file.with_extension("tmp");
+        // A readable-by-all temporary file is replaced, not reused with its permissions.
+        std::fs::write(&left_over, "old").unwrap();
+        std::fs::set_permissions(&left_over, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let published =
+            Rendezvous::new("http://127.0.0.1:1/mcp".into(), "http://127.0.0.1:1/mcp/pair".into(), "k".into());
+        publish(tmp.path(), &published).unwrap();
+        assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+        // A link in its place is removed, not followed: the key never lands where it points.
+        let target = elsewhere.path().join("stolen");
+        std::os::unix::fs::symlink(&target, &left_over).unwrap();
+        publish(tmp.path(), &published).unwrap();
+        assert!(!target.exists(), "the key was written through the link");
+        assert!(!std::fs::symlink_metadata(&file).unwrap().file_type().is_symlink());
+        assert_eq!(rendezvous(tmp.path()), Some(published));
     }
 
     #[test]

@@ -4668,6 +4668,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "url",
 ]
 
 [[package]]
@@ -4968,12 +4969,20 @@ dependencies = [
  "omuzaki-render",
  "omuzaki-render-api",
  "omuzaki-render-mock",
+ "omuzaki-secrets-api",
+ "omuzaki-secrets-mock",
+ "omuzaki-settings-api",
+ "omuzaki-settings-mock",
  "omuzaki-speech",
  "omuzaki-stage",
  "omuzaki-stage-api",
  "omuzaki-track-voice",
+ "schemars",
+ "serde",
  "serde_json",
  "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "tracing",
 ]
 
 [[package]]
@@ -5293,6 +5302,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -6647,6 +6657,7 @@ dependencies = [
  "omuzaki-anim",
  "omuzaki-anim-api",
  "omuzaki-anim-mock",
+ "omuzaki-app",
  "omuzaki-audio-api",
  "omuzaki-audio-engine",
  "omuzaki-audio-fx",
@@ -6654,6 +6665,7 @@ dependencies = [
  "omuzaki-char",
  "omuzaki-char-api",
  "omuzaki-char-mock",
+ "omuzaki-cohost",
  "omuzaki-connect",
  "omuzaki-connect-api",
  "omuzaki-connect-mock",
@@ -6672,6 +6684,7 @@ dependencies = [
  "omuzaki-live-api",
  "omuzaki-live-mock",
  "omuzaki-live-nodes",
+ "omuzaki-mcp",
  "omuzaki-metrics-api",
  "omuzaki-obs",
  "omuzaki-ops",
@@ -6709,6 +6722,7 @@ dependencies = [
  "omuzaki-vcam",
  "omuzaki-vts",
  "regex",
+ "rmcp",
  "rustix 1.1.5",
  "schemars",
  "serde",

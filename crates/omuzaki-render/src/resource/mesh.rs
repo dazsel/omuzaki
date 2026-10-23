@@ -13,6 +13,12 @@
 //! on the CPU (`resmooth`), or, where the adapter runs compute, by a dispatch of `morph/gpu.rs` over the mesh's own shape
 //! stream, which is also why such a mesh keeps no CPU copy of its vertices unless it has morph targets.
 //!
+//! An open mesh has a third stream holding each vertex's *rim* (`omuzaki_render_api::outline_rims`): zero inside the
+//! mesh, and on an open edge the outward direction in the surface's plane, which a double-sided material's hulls widen
+//! by so a single-layer sheet is outlined seen face on (#819). It is found once from the positions the mesh is created
+//! with, like the welds, and skinned with the vertex in the shader; updates and morphs leave it as it was. A closed mesh
+//! has no rims and keeps no stream for them.
+//!
 //! What an update leaves behind is brought up to date only when a frame reads it ([`GpuMesh::refresh`]): the outline
 //! directions when an outlined instance draws the mesh's own stream, the bounds when shadow fitting or the blended sort
 //! reads them. A lean mesh (no CPU copy) refits its bounds in the update instead, from the positions it is given.
@@ -20,7 +26,7 @@
 use bytemuck::{Pod, Zeroable};
 use omuzaki_core::glam::{Vec2, Vec3};
 use omuzaki_core::id::Slug;
-use omuzaki_render_api::{MeshData, MeshOptions, MeshUsage, RenderError};
+use omuzaki_render_api::{MeshData, MeshOptions, MeshUsage, RenderError, outline_rims};
 use wgpu::util::DeviceExt;
 
 use crate::gpu::Gpu;
@@ -72,6 +78,17 @@ pub(crate) fn smooth_normal_layout() -> wgpu::VertexBufferLayout<'static> {
         array_stride: size_of::<[f32; 3]>() as wgpu::BufferAddress,
         step_mode: wgpu::VertexStepMode::Vertex,
         attributes: &SMOOTH_NORMAL_ATTRIBUTES,
+    }
+}
+
+const RIM_ATTRIBUTES: [wgpu::VertexAttribute; 1] = wgpu::vertex_attr_array![7 => Float32x3];
+
+/// The layout of the rim stream (vertex buffer slot 3, shader location 7). Only the outline pass binds it.
+pub(crate) fn rim_layout() -> wgpu::VertexBufferLayout<'static> {
+    wgpu::VertexBufferLayout {
+        array_stride: size_of::<[f32; 3]>() as wgpu::BufferAddress,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &RIM_ATTRIBUTES,
     }
 }
 
@@ -194,6 +211,8 @@ pub(crate) struct GpuMesh {
     surface: wgpu::Buffer,
     /// One unit vector per vertex, in the order of `shapes` ([`smooth_by_slots`]).
     smooth_normals: wgpu::Buffer,
+    /// One rim per vertex ([`outline_rims`]), in the order of `shapes`; only an open mesh (one with a rim) has them.
+    rims: Option<wgpu::Buffer>,
     shadow: Option<Shadow>,
     /// Created with [`MeshUsage::Dynamic`].
     dynamic: bool,
@@ -253,6 +272,9 @@ impl GpuMesh {
         let weld_count = welder.weld(mesh.positions.iter().copied(), &mut welds);
         let smooth: Vec<[f32; 3]> =
             smooth_by_slots(&welds, weld_count, &mesh.normals).iter().map(Vec3::to_array).collect();
+        let rims: Vec<[f32; 3]> = outline_rims(mesh).iter().map(Vec3::to_array).collect();
+        let open = rims.iter().any(|r| r.iter().any(|c| c.abs() > 0.0));
+        let rim_bytes = if open { rims.len() * size_of::<[f32; 3]>() } else { 0 };
         // A dynamic mesh's vertex buffers are rewritten by `queue.write_buffer`, and so is the surface stream of a mesh
         // with vertex colours (`update_colours`); the rest never are.
         let rewritable = if dynamic { wgpu::BufferUsages::COPY_DST } else { wgpu::BufferUsages::empty() };
@@ -308,6 +330,7 @@ impl GpuMesh {
             shapes: buffer(bytemuck::cast_slice(&shapes), wgpu::BufferUsages::VERTEX | rewritable | blendable),
             surface: buffer(bytemuck::cast_slice(&surface), wgpu::BufferUsages::VERTEX | recolourable),
             smooth_normals: buffer(bytemuck::cast_slice(&smooth), wgpu::BufferUsages::VERTEX | rewritable | weldable),
+            rims: open.then(|| buffer(bytemuck::cast_slice(&rims), wgpu::BufferUsages::VERTEX)),
             shadow,
             dynamic,
             indices: buffer(bytemuck::cast_slice(&mesh.indices), wgpu::BufferUsages::INDEX),
@@ -318,6 +341,7 @@ impl GpuMesh {
             bounds: MeshBounds::of(mesh, joints_needed),
             triangles: mesh.triangle_count() as u64,
             bytes: (shapes.len() * (size_of::<Shape>() + size_of::<Surface>() + size_of::<[f32; 3]>())
+                + rim_bytes
                 + mesh.indices.len() * size_of::<u32>()
                 + extra_bytes) as u64,
             morphs,
@@ -532,8 +556,15 @@ impl GpuMesh {
         self.draw_indexed(pass, instance);
     }
 
-    /// Like [`draw`](Self::draw), with the smooth-normal stream bound to vertex buffer slot 1: the mesh's own, or
-    /// `morphed`'s `(shapes, smooth normals)` for an instance that morphs.
+    /// Whether the mesh is open (has rims): only then does a double-sided material get a second hull, and only then
+    /// does its hull read the rim stream.
+    pub(crate) fn open(&self) -> bool {
+        self.rims.is_some()
+    }
+
+    /// Like [`draw`](Self::draw), with the smooth-normal stream bound to vertex buffer slot 2 (the mesh's own, or
+    /// `morphed`'s `(shapes, smooth normals)` for an instance that morphs) and the rim stream to slot 3. A closed mesh
+    /// binds its smooth normals there instead, which a hull that doesn't widen by rims never reads.
     pub(crate) fn draw_with_smooth_normals(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
@@ -542,6 +573,7 @@ impl GpuMesh {
     ) {
         self.bind_vertices(pass, morphed.map(|(shapes, _)| shapes));
         pass.set_vertex_buffer(FIRST_FREE_SLOT, morphed.map_or(self.smooth_normals.slice(..), |(_, smooth)| smooth));
+        pass.set_vertex_buffer(FIRST_FREE_SLOT + 1, self.rims.as_ref().unwrap_or(&self.smooth_normals).slice(..));
         self.draw_indexed(pass, instance);
     }
 

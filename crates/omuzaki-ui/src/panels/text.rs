@@ -34,6 +34,8 @@ crate::ds::strings::lines! {
     /// How.
     pub const AGENT_NONE_HOW: &str =
         "Agents work through the same ops you do, and you approve what they ask for. Connect one over MCP to see it here.";
+    /// Where an agent connects to this studio: its MCP address.
+    pub const AGENT_NONE_WHERE: &str = "Point an MCP client at {url}, or run omuzaki mcp in the project's folder.";
     /// A session's step count.
     pub const AGENT_STEPS: &str = "{steps} steps";
     /// A session's single step.

@@ -52,8 +52,10 @@ omuzaki-secrets-api = { path = "../omuzaki-secrets-api" }
 omuzaki-vts = { path = "../omuzaki-vts" }
 omuzaki-vcam = { path = "../omuzaki-vcam" }
 omuzaki-stream-share = { path = "../omuzaki-stream-share" }
+omuzaki-app = { path = "../omuzaki-app" }
 omuzaki-char = { path = "../omuzaki-char" }
 omuzaki-char-api = { path = "../omuzaki-char-api" }
+omuzaki-cohost = { path = "../omuzaki-cohost" }
 omuzaki-connect = { path = "../omuzaki-connect" }
 omuzaki-connect-api = { path = "../omuzaki-connect-api" }
 omuzaki-core = { path = "../omuzaki-core" }
@@ -62,6 +64,7 @@ omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 omuzaki-face-api = { path = "../omuzaki-face-api" }
 omuzaki-http = { path = "../omuzaki-http" }
 omuzaki-l10n-api = { path = "../omuzaki-l10n-api" }
+omuzaki-mcp = { path = "../omuzaki-mcp" }
 omuzaki-ops = { path = "../omuzaki-ops" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-render = { path = "../omuzaki-render" }
@@ -123,6 +126,8 @@ omuzaki-obs = { path = "../omuzaki-obs", features = ["testing"] }
 omuzaki-secrets-mock = { path = "../omuzaki-secrets-mock" }
 omuzaki-vts = { path = "../omuzaki-vts", features = ["testing"] }
 omuzaki-live-mock = { path = "../omuzaki-live-mock" }
+# The agent's side of `tests/studio_core.rs`: an MCP client on the studio's own core.
+rmcp = { workspace = true, features = ["client"] }
 tempfile.workspace = true
 
 [lints]

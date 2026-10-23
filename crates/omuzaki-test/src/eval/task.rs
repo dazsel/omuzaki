@@ -147,7 +147,11 @@ fn hard_by_default() -> bool {
 impl<'de> Deserialize<'de> for Check {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         use serde::de::Error;
-        let mut table = Map::<String, Value>::deserialize(deserializer)?;
+        // Read through a JSON value, which would turn TOML's `inf` and `nan` into `null` and so a threshold into "none"
+        // (#1857): every number is checked finite on the way in, and the error names the field.
+        let Value::Object(mut table) = FiniteValue::deserialize(deserializer)?.0 else {
+            return Err(D::Error::custom("a check is a table"));
+        };
         let Some(Value::String(id)) = table.remove("id") else {
             return Err(D::Error::custom("a check needs a string `id`"));
         };
@@ -158,6 +162,90 @@ impl<'de> Deserialize<'de> for Check {
         };
         let kind = serde_json::from_value(Value::Object(table)).map_err(D::Error::custom)?;
         Ok(Self { id, hard, kind })
+    }
+}
+
+/// A JSON value read from any format, refusing a number that is not finite (`inf`, `-inf`, `nan`) with the path of
+/// keys that leads to it.
+struct FiniteValue(Value);
+
+impl<'de> Deserialize<'de> for FiniteValue {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(FiniteVisitor).map(FiniteValue)
+    }
+}
+
+struct FiniteVisitor;
+
+impl<'de> serde::de::Visitor<'de> for FiniteVisitor {
+    type Value = Value;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a value")
+    }
+
+    fn visit_bool<E>(self, v: bool) -> Result<Value, E> {
+        Ok(Value::Bool(v))
+    }
+
+    fn visit_i64<E>(self, v: i64) -> Result<Value, E> {
+        Ok(Value::from(v))
+    }
+
+    fn visit_u64<E>(self, v: u64) -> Result<Value, E> {
+        Ok(Value::from(v))
+    }
+
+    fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<Value, E> {
+        serde_json::Number::from_f64(v)
+            .map(Value::Number)
+            .ok_or_else(|| E::custom(format!("{v} is not a finite number; a check needs a finite one")))
+    }
+
+    fn visit_str<E>(self, v: &str) -> Result<Value, E> {
+        Ok(Value::String(v.to_owned()))
+    }
+
+    fn visit_string<E>(self, v: String) -> Result<Value, E> {
+        Ok(Value::String(v))
+    }
+
+    fn visit_unit<E>(self) -> Result<Value, E> {
+        Ok(Value::Null)
+    }
+
+    fn visit_none<E>(self) -> Result<Value, E> {
+        Ok(Value::Null)
+    }
+
+    fn visit_some<D: Deserializer<'de>>(self, deserializer: D) -> Result<Value, D::Error> {
+        FiniteValue::deserialize(deserializer).map(|v| v.0)
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Value, A::Error> {
+        use serde::de::Error;
+        let mut items = Vec::new();
+        loop {
+            match seq.next_element::<FiniteValue>() {
+                Ok(Some(item)) => items.push(item.0),
+                Ok(None) => return Ok(Value::Array(items)),
+                Err(error) => return Err(A::Error::custom(format!("[{}]: {error}", items.len()))),
+            }
+        }
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
+        use serde::de::Error;
+        let mut table = Map::new();
+        while let Some(key) = map.next_key::<String>()? {
+            match map.next_value::<FiniteValue>() {
+                Ok(value) => {
+                    table.insert(key, value.0);
+                }
+                Err(error) => return Err(A::Error::custom(format!("`{key}`: {error}"))),
+            }
+        }
+        Ok(Value::Object(table))
     }
 }
 
@@ -415,6 +503,23 @@ mod tests {
     #[test]
     fn unknown_keys_inside_a_check_are_refused() {
         assert!(toml::from_str::<Check>("id = 'c'\nkind = 'doc.exists'\npath = 'a'\npth = 'b'").is_err());
+    }
+
+    #[test]
+    fn a_number_that_is_not_finite_is_refused_with_its_field() {
+        let cases = [
+            ("id = 'c'\nkind = 'doc.change'\npath = 'a'\nchange = 'up'\nat_least = inf", "`at_least`"),
+            ("id = 'c'\nkind = 'doc.range'\npath = 'a'\nmin = 0.0\nmax = -inf", "`max`"),
+            ("id = 'c'\nkind = 'doc.equals'\npath = 'a'\nvalue = nan", "`value`"),
+            ("id = 'c'\nkind = 'doc.equals'\npath = 'a'\nvalue = { b = [1.0, nan] }", "`value`: `b`: [1]"),
+        ];
+        for (text, field) in cases {
+            let message = toml::from_str::<Check>(text).err().map(|e| e.to_string()).unwrap_or_default();
+            assert!(message.contains(field) && message.contains("not a finite number"), "{text:?}: {message}");
+        }
+        let finite = "id = 'c'\nkind = 'doc.range'\npath = 'a'\nmin = -1.5\nmax = 2.0";
+        let Check { kind, .. } = toml::from_str::<Check>(finite).unwrap();
+        assert_eq!(kind, CheckKind::DocRange { path: "a".into(), min: Some(-1.5), max: Some(2.0) });
     }
 
     #[test]

@@ -1,0 +1,7 @@
+section = "models"
+item = "TypeSafe Jev (System One API)"
+kind = "service"
+used_for = "#2348 hosted decision provider (performer.decider = systemone): bring your own key, off by default, never shipped or called without the person's key and confirmation"
+status = "unverified"
+condition = "only the site terms were read (https://typesafe.ai/terms, checked 2026-10-23: they govern the website, defer to a separate agreement for the API, and say nothing on output ownership or training on inputs); API terms, data use and price unread. The person's own account and its terms govern every call; Omuzaki ships no key and sends nothing until the person sets a key and allow_remote and confirms performer.start"
+audit = "#2348"
