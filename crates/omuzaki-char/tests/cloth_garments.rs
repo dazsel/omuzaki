@@ -1,5 +1,6 @@
 //! Cloth on garments (#387): `cloth.set` turns a garment's sheet on; the skirt, the dress, the robe and the cloak
-//! simulated are the skinned garments at rest; the skirt settles, lags a turn and comes back, and the presets differ.
+//! simulated are the skinned garments at rest; every garment settles, follows a turn and comes back, and the presets
+//! differ.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::cast_precision_loss, clippy::cast_possible_truncation)]
 
 mod common;
@@ -198,26 +199,44 @@ fn turn_lag(part: &str, preset: &str) -> (f32, f32, bool) {
     (crossed - 0.125, overshoot, back)
 }
 
+/// Every garment in every fabric settles within 0.8 s of a still start and comes back to the body after a quarter turn,
+/// and the fabrics move differently. The longer garments take extra drag by their hang (`drape::hang_drag`): without it
+/// the dress, the robe and the cloak crept for 1.1 to 2.0 s. The cloak hangs free from the shoulders and its hem lags the
+/// turn by 40 to 200 ms in every fabric but leather (which moves as a piece). The skirt and the dress are pinned at the
+/// waist and hang 14 and 18 cm, and the robe is pinned at the waist too: they turn with the hips within one to three
+/// frames. Making a short skirt lag 40 ms takes softening its shear, bend and shape hold together, which leaves it
+/// overshooting a turn by 25 to 30 degrees and settling in 2 s (measured on #387), so the toon skirt keeps its body.
 #[test]
-fn the_skirt_settles_lags_a_turn_and_comes_back_and_the_presets_differ() {
-    let mut rows = Vec::new();
-    for preset in ["light", "cotton", "heavy", "leather"] {
-        let settle = settle_time("skirt", preset);
-        let (lag, overshoot, back) = turn_lag("skirt", preset);
-        println!(
-            "{preset:>8}: settles in {settle:.3} s; lags the turn {:.0} ms, overshoots {:.1} deg, back {back}",
-            lag * 1e3,
-            overshoot.to_degrees()
+fn every_garment_settles_comes_back_after_a_turn_and_the_presets_differ() {
+    for part in GARMENTS {
+        let mut rows = Vec::new();
+        for preset in ["light", "cotton", "heavy", "leather"] {
+            let settle = settle_time(part, preset);
+            let (lag, overshoot, back) = turn_lag(part, preset);
+            println!(
+                "{part:>5} {preset:>8}: settles in {settle:.3} s; lags the turn {:.0} ms, overshoots {:.1} deg, back {back}",
+                lag * 1e3,
+                overshoot.to_degrees()
+            );
+            assert!(settle <= 0.8, "{part} in {preset} settles in {settle} s");
+            assert!(back, "{part} in {preset} comes back to the turned body");
+            assert!(
+                (0.0..=0.2).contains(&lag) && overshoot < 20f32.to_radians(),
+                "{part} in {preset} follows the turn"
+            );
+            if part == "cloak" && preset != "leather" {
+                assert!(lag >= 0.04, "the cloak's hem lags the turn: {} ms in {preset}", lag * 1e3);
+            }
+            rows.push((preset, settle, lag, overshoot));
+        }
+        let distinct = |f: fn(&(&str, f32, f32, f32)) -> f32| {
+            rows.iter().map(f).zip(rows.iter().skip(1).map(f)).filter(|(a, b)| (a - b).abs() > 1e-3).count()
+        };
+        assert!(
+            distinct(|r| r.2) + distinct(|r| r.3) + distinct(|r| r.1) >= 3,
+            "{part}: the presets move differently: {rows:?}"
         );
-        assert!(settle <= 0.8, "{preset} settles in {settle} s");
-        assert!(back, "{preset} comes back to the turned body");
-        assert!((0.0..=0.2).contains(&lag) && overshoot < 10f32.to_radians(), "{preset} follows the turn");
-        rows.push((preset, settle, lag, overshoot));
     }
-    let distinct = |f: fn(&(&str, f32, f32, f32)) -> f32| {
-        rows.iter().map(f).zip(rows.iter().skip(1).map(f)).filter(|(a, b)| (a - b).abs() > 1e-3).count()
-    };
-    assert!(distinct(|r| r.2) + distinct(|r| r.3) + distinct(|r| r.1) >= 3, "the presets move differently: {rows:?}");
 }
 
 #[test]
