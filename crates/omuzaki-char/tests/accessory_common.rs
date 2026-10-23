@@ -23,6 +23,12 @@ use omuzaki_char_mock::mock_character;
 use omuzaki_core::glam::{Mat4, Quat, Vec3};
 use serde_json::{Value, json};
 
+/// Takes the address of `omuzaki_char::link`, so every test binary that includes this links the kit's kinds (the body,
+/// head, hair and accessories it builds): their registrations are `inventory` entries, which the linker drops from a
+/// binary that references nothing of their crate (ADR 0015).
+#[used]
+static LINKED: fn() = omuzaki_char::link;
+
 /// The four built-in templates.
 pub const TEMPLATES: [&str; 4] = ["soft-sd", "mini", "standard", "tall"];
 

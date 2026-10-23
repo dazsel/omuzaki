@@ -5,7 +5,10 @@
 //! [module](super) docs) rewards with a far closer value than another golden step would. A sweep goes through every
 //! parameter once; its brackets are a window round the current value, `WINDOW` of the parameter's range wide in the
 //! first sweep and `SHRINK` times the last one's after each sweep that gained. A sweep that gains nothing is run once
-//! more at the wide window. A last move along the sweep's net displacement follows each sweep. Every sweep searches
+//! more at the wide window. When other parts are rebuilt with every candidate (a head on the neck, hair over the
+//! shoulders), the first sweep scans each parameter's whole range at `SCAN` points before its line search, which then
+//! starts round the best of them, so a cost with more than one dip along a parameter does not trap the fit in the one
+//! nearest the start. A last move along the sweep's net displacement follows each sweep. Every sweep searches
 //! every parameter: whether one shows depends on the others, which keep moving. The result depends only on the inputs
 //! and [`PARAM_ORDER`]: no threads, no randomness, and a tie keeps the lower parameter value within a line search and
 //! the earlier line's value across them, so a parameter the views cannot see stays where the fit started.
@@ -43,6 +46,8 @@ const FLAT: f64 = 1e-12;
 const PATTERN_REACH: f64 = 3.0;
 /// A parabolic step closer than this fraction of its three probes' span to one of them is not worth an evaluation.
 const PARABOLA_GAP: f64 = 0.02;
+/// Values the first sweep probes across each parameter's whole range before its line search.
+const SCAN: usize = 5;
 /// The golden ratio's reciprocal.
 const INV_PHI: f64 = 0.618_033_988_749_894_9;
 
@@ -261,6 +266,11 @@ trait Cost {
     fn score(&self, params: &FitParams) -> Result<Score, FitError>;
     /// The views the scores' `per_view` are in.
     fn view_list(&self) -> Vec<FitView>;
+    /// Whether parts are rebuilt and drawn with every candidate: the first sweep then scans each parameter's whole
+    /// range ([`Search::scan`]).
+    fn follows(&self) -> bool {
+        false
+    }
 }
 
 impl Cost for Objective<'_> {
@@ -270,6 +280,10 @@ impl Cost for Objective<'_> {
 
     fn view_list(&self) -> Vec<FitView> {
         self.views().collect()
+    }
+
+    fn follows(&self) -> bool {
+        Objective::follows(self)
     }
 }
 
@@ -298,24 +312,33 @@ fn descend(
     };
     let mut width = WINDOW;
     let mut stalled = false;
+    let mut opening = objective.follows();
     loop {
         let before = search.best.cost;
         let sweep_start = search.params.clone();
         for &p in order {
             let (lo, hi) = p.range();
-            let at = p.get(&search.params);
-            let half = (width * (hi - lo)) / 2.0;
-            let bracket = ((at - half).max(lo), (at + half).min(hi));
             let base = search.params.clone();
             let along = |v: f64| {
                 let mut c = base.clone();
                 p.set(&mut c, v);
                 c
             };
+            // With parts rebuilt on every candidate, the first sweep looks over each parameter's whole range before
+            // it narrows in: a head that rides the neck and hair that hides the shoulders give a parameter's cost
+            // two dips (narrow shoulders and short arms tucked under the hair, or the real ones past it), and the
+            // scan starts the line search in the deeper one.
+            if opening && !search.scan(&along, (lo, hi))? {
+                break;
+            }
+            let at = p.get(&search.params);
+            let half = (width * (hi - lo)) / 2.0;
+            let bracket = ((at - half).max(lo), (at + half).min(hi));
             if !search.line(&along, bracket)? {
                 break;
             }
         }
+        opening = false;
         search.pattern_move(&sweep_start)?;
         let gained = before - search.best.cost >= MIN_GAIN;
         // A stalled sweep gets one more at the wide window before the fit ends: a narrow window can sit in a dip.
@@ -411,6 +434,21 @@ impl Search<'_, '_> {
             self.best = score;
         }
         Ok(Some(cost))
+    }
+
+    /// Probes [`SCAN`] evenly spaced values over `(lo, hi)`, ends included, keeping the best per [`Keep`]; `false` when
+    /// the budget ran out.
+    fn scan(&mut self, at: &dyn Fn(f64) -> FitParams, (lo, hi): (f64, f64)) -> Result<bool, FitError> {
+        self.keep.new_line();
+        self.probes.clear();
+        for k in 0..SCAN {
+            #[allow(clippy::cast_precision_loss)] // a handful of samples
+            let t = lo + (hi - lo) * (k as f64) / ((SCAN - 1) as f64);
+            if self.probe(t, at(t))?.is_none() {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// A move along the sweep's net displacement `start -> params`, which a ridge of coupled parameters needs and
