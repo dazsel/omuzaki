@@ -6661,6 +6661,7 @@ dependencies = [
  "omuzaki-char",
  "omuzaki-char-api",
  "omuzaki-char-mock",
+ "omuzaki-cohost",
  "omuzaki-connect",
  "omuzaki-connect-api",
  "omuzaki-connect-mock",

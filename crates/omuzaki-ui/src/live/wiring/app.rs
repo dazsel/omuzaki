@@ -9,6 +9,8 @@ use omuzaki_ai_api::{ModelRegistry, NoConsentRecords};
 use omuzaki_anim_api::{ChannelBuf, HumanoidPose};
 use omuzaki_audio_api::engine::AudioEngine;
 use omuzaki_audio_engine::{CpalBackend, LiveEngine};
+use omuzaki_cohost::local::{LocalFactory, LocalParts};
+use omuzaki_cohost::service::CohostService;
 use omuzaki_connect::{ConnectorSet, Host, HostParts, SettingsConfig, ThreadPace};
 use omuzaki_connect_api::Connectors;
 use omuzaki_core::glam::UVec2;
@@ -338,9 +340,6 @@ impl LiveApp {
             .insert::<dyn InputHost>(input)
             .insert::<dyn WindowHost>(Arc::new(window.clone()))
             .insert::<ObsService>(Arc::new(ObsService::new()));
-        if let Some(models) = models {
-            services = services.insert::<dyn ModelRegistry>(models);
-        }
         if let Some(secrets) = &secrets {
             services = services.insert::<dyn SecretStore>(Arc::clone(secrets));
         }
@@ -366,9 +365,7 @@ impl LiveApp {
             services = services.insert::<StreamService>(Arc::clone(stream));
         }
         let audio = start_audio(epoch);
-        if let Some(audio) = &audio {
-            services = services.insert::<dyn AudioEngine>(Arc::clone(audio));
-        }
+        services = with_audio(services, &perform, audio.as_ref(), models, settings.as_ref(), secrets.as_ref());
         let services = services.build();
         let project = document.dir().map(|dir| dir.to_string_lossy().into_owned());
         let project_key = project.clone().unwrap_or_default();
@@ -754,6 +751,35 @@ fn start_audio(epoch: std::time::Instant) -> Option<Arc<dyn AudioEngine>> {
             None
         }
     }
+}
+
+/// `services` with the audio engine, the model registry and the AI co-host behind the `performer.*` ops, built from
+/// this app's perform host, microphone, models, settings and keychain. With an audio engine, the microphone moves the
+/// character's mouth from now on, except while the co-host speaks.
+fn with_audio(
+    mut services: ServicesBuilder,
+    perform: &Arc<dyn PerformHost>,
+    audio: Option<&Arc<dyn AudioEngine>>,
+    models: Option<Arc<dyn ModelRegistry>>,
+    settings: Option<&Arc<dyn Settings>>,
+    secrets: Option<&Arc<dyn SecretStore>>,
+) -> ServicesBuilder {
+    let mut parts = LocalParts::new(Arc::clone(perform));
+    if let Some(audio) = audio {
+        services = services.insert::<dyn AudioEngine>(Arc::clone(audio));
+        parts = parts.engine(Arc::clone(audio));
+    }
+    if let Some(models) = models {
+        services = services.insert::<dyn ModelRegistry>(Arc::clone(&models));
+        parts = parts.models(models);
+    }
+    if let Some(settings) = settings {
+        parts = parts.settings(Arc::clone(settings));
+    }
+    if let Some(secrets) = secrets {
+        parts = parts.secrets(Arc::clone(secrets));
+    }
+    services.insert::<CohostService>(Arc::new(CohostService::new(Arc::new(LocalFactory::new(parts)))))
 }
 
 /// `services` with the connector host (as `dyn Connectors` and as itself) and the asset store, when they start; and
