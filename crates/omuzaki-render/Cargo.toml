@@ -39,6 +39,10 @@ harness = false
 name = "particles"
 harness = false
 
+[[bench]]
+name = "uv_transform"
+harness = false
+
 [lints]
 workspace = true
 

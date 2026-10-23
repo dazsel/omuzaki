@@ -69,6 +69,6 @@ pub use resource::{
     TextureUsage, Wrap, limits, rgba_len,
 };
 pub use scene::{
-    BackdropFit, Background, Bloom, Camera, ColourGrade, DepthOfField, FilmGrain, Fog, FrameInfo, Instance, JointRange,
-    Light, MorphRange, Post, Projection, SKY_LENS_DEG, Scene, Tonemap, gradient_at,
+    BackdropFit, Background, Bloom, Camera, ColourGrade, DepthOfField, EdgeLines, FilmGrain, Fog, FrameInfo, Instance,
+    JointRange, Light, MorphRange, Post, Projection, SKY_LENS_DEG, Scene, Tonemap, gradient_at,
 };
