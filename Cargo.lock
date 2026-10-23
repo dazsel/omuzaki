@@ -5428,6 +5428,7 @@ dependencies = [
  "omuzaki-ops-api",
  "omuzaki-ops-mock",
  "omuzaki-store-api",
+ "omuzaki-store-mock",
  "schemars",
  "serde",
  "serde_json",

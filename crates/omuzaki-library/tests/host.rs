@@ -145,13 +145,13 @@ fn a_hand_made_part_of_the_same_id_is_kept_and_named_unless_replaced() {
 }
 
 #[test]
-fn applying_the_same_slotted_item_twice_points_at_update() {
+fn applying_the_same_slotted_item_again_is_an_update_that_changes_nothing() {
     let mut studio = Studio::new(loaded());
     apply(&mut studio, "test/hair/ribbon", None);
-    let err = studio.run("library.apply", json!({ "item": "test/hair/ribbon", "character": character() })).unwrap_err();
-    assert!(
-        err.to_string().contains("library.update") || err.hint.as_deref().is_some_and(|h| h.contains("library.update"))
-    );
+    let before = studio.snapshot();
+    let out = apply(&mut studio, "test/hair/ribbon", None);
+    assert_eq!((out["updated"].clone(), out["changes"].clone()), (json!(true), json!([])), "{out}");
+    assert_eq!(studio.snapshot(), before);
 }
 
 #[test]
@@ -266,9 +266,9 @@ fn install_writes_the_persons_library_folder_and_uninstall_removes_it_and_an_age
     );
 
     let out = studio.run("library.install", json!({ "manifest": manifest })).unwrap();
-    assert_eq!(out["new"], true);
+    assert_eq!(out["installed"][0]["new"], true);
     let again = studio.run("library.install", json!({ "manifest": manifest })).unwrap();
-    assert_eq!(again["new"], false, "installing the same item twice is a no-op");
+    assert_eq!(again["installed"][0]["new"], false, "installing the same item twice is a no-op");
 
     let reopened = HostLibrary::open(Some(folder.path()));
     let mine = reopened.list(None, Some(&ItemScope::Mine), 0, 100).unwrap();

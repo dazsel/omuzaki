@@ -17,6 +17,7 @@
 //! (D10, [`omuzaki_doc_api::merge::merge3`]): the person's edits win unless they ask for the item's.
 #![deny(missing_docs)]
 
+mod acks;
 mod apply;
 mod common;
 mod host;
@@ -24,6 +25,7 @@ pub mod ops;
 mod records;
 mod text;
 
+pub use acks::Acknowledgement;
 pub use host::HostLibrary;
 
 omuzaki_core::define_link! {

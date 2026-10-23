@@ -14,6 +14,7 @@ use omuzaki_ops_api::OpError;
 use omuzaki_store_api::{ContentHash, licence_gate};
 use serde_json::Value;
 
+use crate::Acknowledgement;
 use crate::apply::{MAX_DEPTH, Visitor, check_step, creates_keys, walk};
 use crate::text::{Indexed, Query as TextQuery};
 
@@ -56,6 +57,9 @@ struct Entry {
 #[derive(Default)]
 struct Registry {
     entries: Vec<Entry>,
+    /// Per (id, scope, publisher), the indices of the versions search may show (listed, not deprecated), newest
+    /// first. Built by `reindex`, so a query never regroups the registry.
+    shown: Vec<Vec<usize>>,
 }
 
 /// The library of one running app: every first-party source linked into the binary and the person's own library
@@ -122,6 +126,24 @@ impl HostLibrary {
         Ok(())
     }
 
+    /// Adds many items at once and indexes once, as a host loading a team cache does: one by one, each
+    /// [`insert`](Self::insert) re-checks every item. Returns the ones refused, by id, with why.
+    pub fn insert_all(
+        &self,
+        items: impl IntoIterator<Item = (ItemManifest, ItemScope)>,
+    ) -> Vec<(String, LibraryError)> {
+        let mut registry = self.write();
+        let mut refused = Vec::new();
+        for (manifest, scope) in items {
+            let id = manifest.id.clone();
+            if let Err(error) = registry.insert(manifest, scope) {
+                refused.push((id, error));
+            }
+        }
+        registry.reindex();
+        refused
+    }
+
     /// Installs `manifest` in the person's library (design D9, D11): checks it as [`insert`](Self::insert) does,
     /// writes `items/<publisher>/<name…>/<version>.toml` and indexes it. Returns whether it was new.
     ///
@@ -183,7 +205,40 @@ impl HostLibrary {
         let id = manifest.item_id().map_err(|e| LibraryError::Storage(e.to_string()))?;
         let version = manifest.item_version().map_err(|e| LibraryError::Storage(e.to_string()))?;
         let dir = id.as_str().split('/').fold(folder.join(ITEMS), |p, s| p.join(s));
-        Ok(dir.join(format!("{version}.toml")))
+        // Two publishers may hold one id and version (design D2): a signed item's file carries its key.
+        Ok(match &manifest.publisher {
+            Some(publisher) => {
+                // The key is the manifest's own text: only its hex digits reach the file name.
+                let key: String = publisher.key.chars().filter(char::is_ascii_hexdigit).take(16).collect();
+                dir.join(format!("{version}.{key}.toml"))
+            }
+            None => dir.join(format!("{version}.toml")),
+        })
+    }
+
+    /// Records that the person accepted the disclaimer for an item (design D8): once per publisher key and item hash,
+    /// in `acks.toml` in the library folder. Returns whether it was new.
+    ///
+    /// # Errors
+    /// [`LibraryError::Storage`] when there is no library folder or the file can't be read or written.
+    pub fn acknowledge(&self, ack: Acknowledgement) -> Result<bool, LibraryError> {
+        let _writing = self.write();
+        crate::acks::add(&self.acks_path()?, ack)
+    }
+
+    /// Every acknowledgement on record, sorted.
+    ///
+    /// # Errors
+    /// As [`acknowledge`](Self::acknowledge).
+    pub fn acknowledgements(&self) -> Result<Vec<Acknowledgement>, LibraryError> {
+        crate::acks::read(&self.acks_path()?)
+    }
+
+    fn acks_path(&self) -> Result<PathBuf, LibraryError> {
+        let folder = self.folder.as_ref().ok_or_else(|| {
+            LibraryError::Storage("this app has no data folder, so it has no library of your own".to_owned())
+        })?;
+        Ok(folder.join(crate::acks::ACKS))
     }
 }
 
@@ -294,6 +349,21 @@ impl Registry {
             entry.unavailable = unavailable;
             entry.publish_blocker = blocker;
         }
+        let mut groups: BTreeMap<(&ItemId, &ItemScope, Option<&str>), Vec<usize>> = BTreeMap::new();
+        for (at, e) in self.entries.iter().enumerate() {
+            if e.item.manifest.listed && e.item.manifest.deprecated.is_none() {
+                let key = (&e.id, &e.scope, e.item.manifest.publisher.as_ref().map(|p| p.key.as_str()));
+                groups.entry(key).or_default().push(at);
+            }
+        }
+        let entries = &self.entries;
+        self.shown = groups
+            .into_values()
+            .map(|mut group| {
+                group.sort_by(|a, b| entries[*b].version.cmp(&entries[*a].version));
+                group
+            })
+            .collect();
     }
 
     fn resolver(&self) -> impl Fn(&ItemId, &VersionReq) -> Result<ResolvedItem, LibraryError> + '_ {
@@ -405,29 +475,22 @@ impl Registry {
 
     /// Per (id, scope, publisher), the newest version search may show: listed, not deprecated and, given a
     /// character, not incompatible with it.
-    fn rows(&self, facts: Option<&CharacterFacts>) -> Vec<&Entry> {
-        let mut groups: BTreeMap<(&ItemId, &ItemScope, Option<&str>), Vec<&Entry>> = BTreeMap::new();
-        for e in &self.entries {
-            let key = (&e.id, &e.scope, e.item.manifest.publisher.as_ref().map(|p| p.key.as_str()));
-            groups.entry(key).or_default().push(e);
-        }
-        groups
-            .into_values()
-            .filter_map(|group| {
-                group
-                    .into_iter()
-                    .filter(|e| e.item.manifest.listed && e.item.manifest.deprecated.is_none())
-                    .filter(|e| !matches!(Self::compat(e, facts), CompatStatus::Incompatible { .. }))
-                    .max_by(|a, b| a.version.cmp(&b.version))
-            })
-            .collect()
+    fn rows(&self, facts: Option<&CharacterFacts>) -> impl Iterator<Item = &Entry> {
+        self.shown.iter().filter_map(move |group| {
+            group
+                .iter()
+                .map(|at| &self.entries[*at])
+                .find(|e| !matches!(Self::compat(e, facts), CompatStatus::Incompatible { .. }))
+        })
     }
 
     fn page(mut rows: Vec<(u8, &Entry)>, facts: Option<&CharacterFacts>, offset: usize, limit: usize) -> SearchPage {
         // The same id@version, hash and publisher in several scopes is one entry, under its first scope (D11).
-        rows.sort_by(|a, b| a.1.scope.cmp(&b.1.scope));
-        let mut seen = BTreeSet::new();
-        rows.retain(|(_, e)| seen.insert((e.id.clone(), e.version, e.item.hash.0, key_of(&e.item.manifest))));
+        fn same(e: &Entry) -> (Version, [u8; 32], Option<&str>) {
+            (e.version, e.item.hash.0, e.item.manifest.publisher.as_ref().map(|p| p.key.as_str()))
+        }
+        rows.sort_by(|(_, a), (_, b)| a.id.cmp(&b.id).then(same(a).cmp(&same(b))).then(a.scope.cmp(&b.scope)));
+        rows.dedup_by(|(_, later), (_, kept)| later.id == kept.id && same(later) == same(kept));
         rows.sort_by(|(sa, a), (sb, b)| {
             sb.cmp(sa)
                 .then(a.section.cmp(&b.section))
@@ -436,14 +499,16 @@ impl Registry {
                 .then(a.item.hash.0.cmp(&b.item.hash.0))
         });
         let mut counts = Facets::default();
+        let mut tags: BTreeMap<&str, usize> = BTreeMap::new();
         for (_, e) in &rows {
             *counts.sections.entry(e.section).or_default() += 1;
             *counts.kinds.entry(e.item.manifest.kind).or_default() += 1;
             for tag in &e.item.manifest.tags {
-                *counts.tags.entry(tag.clone()).or_default() += 1;
+                *tags.entry(tag.as_str()).or_default() += 1;
             }
             *counts.scopes.entry(e.scope.clone()).or_default() += 1;
         }
+        counts.tags = tags.into_iter().map(|(tag, n)| (tag.to_owned(), n)).collect();
         let limit = if limit == 0 { MAX_LIMIT } else { limit.min(MAX_LIMIT) };
         let items = rows.iter().skip(offset).take(limit).map(|(_, e)| Self::info(e, facts)).collect();
         SearchPage { total: rows.len(), items, facets: counts }
@@ -539,7 +604,7 @@ impl Library for HostLibrary {
     ) -> Result<SearchPage, LibraryError> {
         let registry = self.read();
         let q = Query { section, scope: scope.cloned(), ..Query::default() };
-        let rows = registry.rows(None).into_iter().filter_map(|e| rank(&q, None, e).map(|_| (0, e))).collect();
+        let rows = registry.rows(None).filter_map(|e| rank(&q, None, e).map(|_| (0, e))).collect();
         Ok(Registry::page(rows, None, offset, limit))
     }
 
@@ -560,7 +625,6 @@ impl Library for HostLibrary {
         let registry = self.read();
         let rows = registry
             .rows(facts)
-            .into_iter()
             .filter(|e| query.usable_for != Some(Usage::Publish) || e.publish_blocker.is_none())
             // A style mismatch stays, but ranks below an equally good text match that fits.
             .filter_map(|e| {

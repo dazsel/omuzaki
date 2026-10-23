@@ -448,6 +448,11 @@ pub(crate) fn apply(
 
     // The application's key: the slot, or the item's last segment, numbered when taken.
     let held = records::of_character(&work.scratch, character);
+    // A member is named (`$name`): two applications may not add the same name (design D6).
+    let name = request.name.clone().or_else(|| manifest.name.clone());
+    if let Some(name) = &name {
+        name_free(&held, character, name)?;
+    }
     let base = manifest.slot.clone().unwrap_or_else(|| id.last_segment().to_owned());
     let app = (1..=held.len() + 1)
         .map(|n| if n == 1 { base.clone() } else { format!("{base}-{n}") })
@@ -474,7 +479,7 @@ pub(crate) fn apply(
         character: Some((*character).clone()),
         parts: parts.clone(),
         target: request.target.clone(),
-        name: request.name.clone().or_else(|| manifest.name.clone()),
+        name,
         template: Some(template),
     };
 
@@ -512,6 +517,18 @@ pub(crate) fn apply(
     write_rows(work, character, &app, &record)?;
     let created = parts.into_iter().filter(|(_, p)| record.created.contains(&format!("parts/{p}"))).collect();
     Ok(Applied { app, record, created, replaced, warnings })
+}
+
+/// Refuses a member name another application on the character already added.
+fn name_free(held: &[(String, ApplicationRecord)], character: &CharId, name: &str) -> Result<(), OpError> {
+    match held.iter().find(|(_, r)| r.bindings.name.as_deref() == Some(name)) {
+        Some((app, old)) => Err(OpError::invalid(
+            "as",
+            format!("{character} already has a `{name}` from {} (application `{app}`)", old.item),
+        )
+        .hint(format!("pass `as` to name this one differently, e.g. {{\"as\": \"{name}-2\"}}"))),
+        None => Ok(()),
+    }
 }
 
 /// Sets `relative` (a `/`-joined path) in `root` to `value`, creating the tables on the way.

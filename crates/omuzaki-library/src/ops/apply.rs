@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use omuzaki_char_api::{CharId, PartId};
 use omuzaki_library_api::{CompatStatus, LibraryError, ResolvedItem, VersionReq};
+use omuzaki_store_api::Store;
 use omuzaki_ops_api::{Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -11,6 +12,7 @@ use serde_json::{Value, json};
 
 use crate::apply::{Request, Work, apply};
 use crate::common::{facts, item_id, library, rights_note, version};
+use crate::ops::update::{LibraryUpdate, Prefer};
 use crate::records;
 
 /// Applies a library item to a character (design D4 to D8): plans every step of its recipe on a scratch copy and
@@ -83,6 +85,25 @@ impl Op for LibraryApply {
             CompatStatus::StyleMismatch { reason } => warnings.push(reason),
             CompatStatus::Compatible => {}
         }
+        // D6: the same item again in its slot is an update to the new parameters, at the pinned version unless one
+        // is given (design D10).
+        let again = records::of_character(ctx.doc, &self.character)
+            .into_iter()
+            .find(|(_, r)| r.item == id && r.slot.is_some() && r.slot == item.manifest.slot);
+        if let Some((app, record)) = again {
+            let update = LibraryUpdate {
+                character: self.character.clone(),
+                application: app,
+                to_version: Some(self.version.clone().unwrap_or_else(|| record.version.to_string())),
+                params: self.params.clone(),
+                prefer: Prefer::Mine,
+            };
+            let mut plan = update.plan(ctx)?;
+            if let Some(Value::Object(output)) = &mut plan.output {
+                output.insert("updated".to_owned(), json!(true));
+            }
+            return Ok(plan);
+        }
         let detail = library.describe(&id, Some(&item.manifest.item_version().map_err(|e| OpError::internal(e.to_string()))?));
         let publish_ok = detail.as_ref().is_ok_and(|d| d.info.rights.publish_ok);
         if let Ok(Some(why)) = detail.as_ref().map(|d| d.info.unavailable.clone()) {
@@ -102,6 +123,16 @@ impl Op for LibraryApply {
         let applied = apply(ctx, &resolve, &mut work, &request)?;
         warnings.extend(applied.warnings);
         let record = &applied.record;
+        // The project keeps the exact manifest it pinned, so it still resolves after the item leaves the library
+        // (design D5). Content-addressed, so applying again stores nothing new.
+        if !ctx.dry_run
+            && let Ok(store) = ctx.service::<dyn Store>()
+        {
+            let provenance = item.manifest.rights.to_provenance(&record.item, &record.version);
+            if let Err(e) = store.put(&item.manifest.canonical_bytes(), provenance) {
+                warnings.push(format!("the project's copy of {id} wasn't stored: {e}"));
+            }
+        }
         let output = json!({
             "item": record.item,
             "version": record.version.to_string(),

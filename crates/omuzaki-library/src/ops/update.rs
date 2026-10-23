@@ -3,14 +3,14 @@
 use std::collections::BTreeMap;
 
 use omuzaki_char_api::CharId;
-use omuzaki_library_api::{LibraryError, ResolvedItem, VersionReq};
+use omuzaki_library_api::{CompatStatus, LibraryError, ResolvedItem, VersionReq};
 use omuzaki_ops_api::{Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::apply::{UpdateRequest, Work, library_error, update};
-use crate::common::{library, version};
+use crate::common::{facts, library, version};
 use crate::records;
 
 /// Whose value wins where both the person and the new version changed something.
@@ -74,6 +74,18 @@ impl Op for LibraryUpdate {
             None => VersionReq::parse(&format!("^{}", old.version)).unwrap_or(VersionReq::Exact(old.version)),
         };
         let item = library.resolve(&old.item, &req).map_err(|e| library_error("to_version", &e))?;
+        let mut warnings = Vec::new();
+        match facts(ctx, &self.character)?.status(&item.manifest.compat) {
+            CompatStatus::Incompatible { reason } => {
+                return Err(OpError::invalid(
+                    "to_version",
+                    format!("{}@{} doesn't fit {}: {reason}", old.item, item.manifest.version, self.character),
+                )
+                .hint("keep the version you have, or pin one that fits with `to_version`"));
+            }
+            CompatStatus::StyleMismatch { reason } => warnings.push(reason),
+            CompatStatus::Compatible => {}
+        }
         let resolve = |id: &_, req: &_| -> Result<ResolvedItem, LibraryError> { library.resolve(id, req) };
         let mut work = Work::of(ctx.doc);
         let request = UpdateRequest {
@@ -97,6 +109,7 @@ impl Op for LibraryUpdate {
             "dropped_params": updated.dropped,
             "licence": updated.record.rights.licence,
             "licence_changed": updated.record.rights.licence != old.rights.licence,
+            "warnings": warnings,
         });
         Ok(Plan { patch: work.combined, output: Some(output), ..Plan::default() })
     }

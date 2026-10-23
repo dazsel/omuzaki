@@ -14,8 +14,11 @@ use omuzaki_doc_mock::MemDoc;
 use omuzaki_library::HostLibrary;
 use omuzaki_library_api::Library;
 use omuzaki_ops_api::{
-    Actor, Grants, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Services, ServicesBuilder, Undo, find, register_op,
+    Actor, Grants, Op, OpCtx, OpError, OpKind, OpMeta, Plan, ProjectDir, Scope, Services, ServicesBuilder, Undo, find,
+    register_op,
 };
+use omuzaki_store_api::Store;
+use omuzaki_store_mock::MemStore;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -27,34 +30,59 @@ pub fn character() -> CharId {
 pub struct Studio {
     pub doc: MemDoc,
     pub library: Arc<HostLibrary>,
+    pub store: Option<Arc<MemStore>>,
+    /// The project folder fs paths resolve against.
+    pub project: tempfile::TempDir,
+    project_dir: ProjectDir,
     services: Services,
     clock: FakeClock,
     undo: Vec<Patch>,
+    /// Grants in place of the actor's defaults.
+    pub grants: Option<Grants>,
 }
 
 impl Studio {
+    /// A studio over `library`, with no asset store.
     pub fn new(library: HostLibrary) -> Self {
+        Self::build(Arc::new(library), None)
+    }
+
+    /// A studio over `library` and an in-memory asset store, which apply keeps the project's copies in.
+    pub fn with_store(library: Arc<HostLibrary>, store: Arc<MemStore>) -> Self {
+        Self::build(library, Some(store))
+    }
+
+    fn build(library: Arc<HostLibrary>, store: Option<Arc<MemStore>>) -> Self {
         let def: Value = serde_json::from_str(omuzaki_char_mock::CHARACTER_JSON).unwrap();
-        let library = Arc::new(library);
-        let services = ServicesBuilder::new()
-            .insert::<dyn Library>(library.clone())
-            .insert::<HostLibrary>(library.clone())
-            .build();
+        let mut services =
+            ServicesBuilder::new().insert::<dyn Library>(library.clone()).insert::<HostLibrary>(library.clone());
+        if let Some(store) = &store {
+            services = services.insert::<dyn Store>(store.clone());
+        }
+        let project = tempfile::tempdir().unwrap();
+        let project_dir = ProjectDir::open(project.path()).unwrap();
         Self {
             doc: MemDoc::from_value(json!({ "characters": { "mira": def } })),
             library,
-            services,
+            store,
+            project,
+            project_dir,
+            services: services.build(),
             clock: FakeClock::new(Seconds(0.0)),
             undo: Vec::new(),
+            grants: None,
         }
     }
 
     fn plan_as(&self, actor: &Actor, op: &str, args: Value, dry_run: bool) -> Result<Plan, OpError> {
         let registration = find(op).unwrap_or_else(|| panic!("{op} is not registered"));
         let op = (registration.decode)(args)?;
-        let grants = if matches!(actor, Actor::Person { .. }) { Grants::person() } else { Grants::agent_default() };
+        let grants = self.grants.clone().unwrap_or_else(|| {
+            if matches!(actor, Actor::Person { .. }) { Grants::person() } else { Grants::agent_default() }
+        });
         let ctx = OpCtx::new(&self.doc, actor, &self.clock)
             .with_services(&self.services)
+            .with_project_dir(&self.project_dir)
             .with_grants(&grants)
             .with_dry_run(dry_run);
         op.plan(&ctx)
@@ -173,6 +201,42 @@ impl Op for SetStyle {
     }
 }
 
+/// An op that needs `edit:scene`, which a recipe may call only under grants that hold it.
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct SceneMark {
+    character: CharId,
+}
+
+impl Op for SceneMark {
+    fn meta() -> OpMeta {
+        OpMeta { scope: Scope::EditScene, ..meta("mock.scene_mark") }
+    }
+
+    fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        Ok(set(ctx, &paths::character(&self.character).join("staged"), json!(true)))
+    }
+}
+
+/// An op that ignores its `character` argument and writes into another character: what containment must catch.
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct Stray {
+    character: CharId,
+}
+
+impl Op for Stray {
+    fn meta() -> OpMeta {
+        meta("mock.stray")
+    }
+
+    fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        Ok(set(ctx, &paths::character(&CharId::new("other").unwrap()).join("mark"), json!(true)))
+    }
+}
+
+register_op!(Stray);
+register_op!(SceneMark);
 register_op!(PartAdd);
 register_op!(PaletteSet);
 register_op!(SetStyle);

@@ -28,6 +28,7 @@ omuzaki-char-mock = { path = "../omuzaki-char-mock" }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-library-mock = { path = "../omuzaki-library-mock" }
 omuzaki-ops-mock = { path = "../omuzaki-ops-mock" }
+omuzaki-store-mock = { path = "../omuzaki-store-mock" }
 
 [build-dependencies]
 omuzaki-embed = { path = "../omuzaki-embed" }

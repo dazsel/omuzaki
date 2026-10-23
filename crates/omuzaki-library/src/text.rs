@@ -55,6 +55,11 @@ pub(crate) fn tokens(folded: &str) -> Vec<String> {
 
 /// Whether `a` and `b` differ by at most one insertion, deletion or substitution.
 fn within_one_edit(a: &str, b: &str) -> bool {
+    // A char is one to four bytes, so byte lengths further apart than four per char can't be one edit apart; most
+    // words are rejected here without collecting.
+    if a.len().abs_diff(b.len()) > 4 {
+        return false;
+    }
     let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
     if a.len().abs_diff(b.len()) > 1 {
         return false;
