@@ -164,7 +164,9 @@ jobs:
         with:
           cache-key: test
           gpu: true
-          free-disk: ${{ needs.plan.outputs.mode == 'workspace' }}
+          # Always: a crates-mode shard that holds the studio and the app (a change to a contract crate rebuilds them)
+          # filled the runner's disk on 2026-10-23 (#2387).
+          free-disk: true
           tools: cargo-nextest
       # Render and UI tests open a software Vulkan adapter (lavapipe). The setup step above installs it, so they run
       # for real here instead of being skipped. nextest runs the tests of every binary in parallel (.config/nextest.toml
