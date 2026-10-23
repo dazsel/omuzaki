@@ -33,6 +33,7 @@ omuzaki-setup = { path = "../omuzaki-setup" }
 
 [dev-dependencies]
 omuzaki-char = { path = "../omuzaki-char" }
+omuzaki-face-mock = { path = "../omuzaki-face-mock" }
 omuzaki-library-mock = { path = "../omuzaki-library-mock" }
 omuzaki-settings-mock = { path = "../omuzaki-settings-mock" }
 omuzaki-store-mock = { path = "../omuzaki-store-mock" }
