@@ -16,6 +16,12 @@
 //! surface (#649), as three-vrm's `MToon` outline does, so a cut-out card's line follows its visible shape instead of
 //! the whole card. A width of 0 draws nothing, and a frame with no outlined instance leaves the pass `Skipped` without
 //! opening a render pass.
+//!
+//! An open, double-sided sheet (a single-layer hair ribbon) has no silhouette for a normal push to widen when seen face
+//! on, so a double-sided material's hull also moves each open edge outward in the sheet's plane by its rim
+//! (`omuzaki_render_api::outline_rims`, the mesh's third stream), and an open mesh with such a material gets a second
+//! hull pushed against the normals that keeps the faces turned toward the camera. Whichever side the camera is on, the
+//! copy behind the sheet shows as a band round its edge (#819). The mock draws the same two hulls.
 
 use std::collections::HashMap;
 
@@ -27,7 +33,7 @@ use crate::gpu::{DEPTH_FORMAT, SCENE_FORMAT};
 use crate::program::opaque_source;
 use crate::resource::SceneResources;
 use crate::resource::material::GpuMaterial;
-use crate::resource::mesh::{GpuMesh, smooth_normal_layout, vertex_layouts};
+use crate::resource::mesh::{GpuMesh, rim_layout, smooth_normal_layout, vertex_layouts};
 use crate::shared::Shared;
 
 /// The Opaque pass's toon shader with no program (which the lighting mix lights the surface with), then the hull's.
@@ -35,13 +41,25 @@ fn source() -> String {
     format!("{}\n{}", opaque_source(None), include_str!("../shader/outline.wgsl"))
 }
 
-/// What distinguishes one pipeline from another: the state that varies per draw. The hull always culls the front
-/// faces, whatever the material's sidedness: a double-sided sheet is outlined by its back faces too.
+/// What distinguishes one pipeline from another: the state that varies per draw.
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 struct Variant {
     /// The transform flips winding, so the front face is clockwise.
     mirrored: bool,
     samples: u32,
+    side: Side,
+    /// The material is double-sided, so the hull widens by the rims.
+    rims: bool,
+}
+
+/// Which way a hull is pushed.
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+enum Side {
+    /// Along the smooth normals, culling the front faces: every outlined instance's hull, whatever the material's
+    /// sidedness (a double-sided sheet is outlined by its back faces too).
+    Out,
+    /// Against them, culling the back faces: an open double-sided sheet's second hull.
+    In,
 }
 
 /// One hull to draw: an instance with a mesh and a material whose outline has a width.
@@ -52,20 +70,26 @@ struct Hull<'a> {
     variant: Variant,
 }
 
-/// The outlined instances of the frame, in scene order. Instances whose outline is 0 wide are left out: a hull of no
-/// thickness would still leave a hairline where its back faces meet the front ones at the silhouette.
+/// The hulls of the frame's outlined instances, in scene order: one each, and a second for an open mesh with a
+/// double-sided material. Instances whose outline is 0 wide are left out: a hull of no thickness would still leave a
+/// hairline where its back faces meet the front ones at the silhouette.
 fn hulls<'a>(frame: &'a FrameView<'_>, resources: SceneResources<'a>) -> impl Iterator<Item = Hull<'a>> {
-    frame.draws.for_pass(Pass::Outlines).filter_map(move |draw| {
-        let mesh = resources.meshes.at(draw.mesh)?;
-        let material = resources.materials.at(draw.material)?;
-        if !material.draws_outline() {
-            return None;
-        }
-        Some(Hull {
-            instance: draw.instance,
-            mesh,
-            material,
-            variant: Variant { mirrored: draw.mirrored, samples: frame.samples },
+    frame.draws.for_pass(Pass::Outlines).flat_map(move |draw| {
+        let found = resources.meshes.at(draw.mesh).zip(resources.materials.at(draw.material));
+        let found = found.filter(|(_, material)| material.draws_outline());
+        let rims = found.is_some_and(|(_, material)| material.material.double_sided);
+        let sides = match found {
+            None => [None, None],
+            Some((mesh, _)) => [Some(Side::Out), (rims && mesh.open).then_some(Side::In)],
+        };
+        sides.into_iter().flatten().filter_map(move |side| {
+            let (mesh, material) = found?;
+            Some(Hull {
+                instance: draw.instance,
+                mesh,
+                material,
+                variant: Variant { mirrored: draw.mirrored, samples: frame.samples, side, rims },
+            })
         })
     })
 }
@@ -107,22 +131,28 @@ fn build_pipeline(
     layout: &wgpu::PipelineLayout,
     variant: Variant,
 ) -> wgpu::RenderPipeline {
+    let (normal, cull) = match variant.side {
+        Side::Out => (1.0, wgpu::Face::Front),
+        Side::In => (-1.0, wgpu::Face::Back),
+    };
+    let constants = [("hull_normal", normal), ("hull_rim", if variant.rims { 1.0 } else { 0.0 })];
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("outlines"),
         layout: Some(layout),
         vertex: wgpu::VertexState {
             module,
             entry_point: Some("vs_outline"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            compilation_options: wgpu::PipelineCompilationOptions { constants: &constants, ..Default::default() },
             buffers: &{
                 let [shape, surface] = vertex_layouts();
-                [shape, surface, Some(smooth_normal_layout())]
+                [shape, surface, Some(smooth_normal_layout()), Some(rim_layout())]
             },
         },
         primitive: wgpu::PrimitiveState {
             front_face: if variant.mirrored { wgpu::FrontFace::Cw } else { wgpu::FrontFace::Ccw },
-            // The hull is the model's back faces: the front ones are the model itself.
-            cull_mode: Some(wgpu::Face::Front),
+            // The hull pushed out is the model's back faces: the front ones are the model itself. The one pushed in is
+            // its front faces, which lie behind the sheet.
+            cull_mode: Some(cull),
             ..Default::default()
         },
         // Writes depth like any opaque surface, so later passes (blending, depth of field) see the line where it is. No

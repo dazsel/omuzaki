@@ -3,6 +3,10 @@
 // everywhere else. A pass's shader is the Opaque pass's toon shader (`program::opaque_source(None)`), which lights the
 // surface for the lighting mix, followed by this file.
 //
+// A double-sided material's hull also widens by each vertex's rim (location 7, zero inside the mesh, the outward
+// in-plane direction on an open edge), and an open sheet is drawn a second time pushed against its normals with the
+// back faces culled, so a single-layer ribbon is outlined face on from either side (#819, pass/outlines.rs).
+//
 // The width follows the material's `OutlineStyle` (#647, MToon's outline): `Outline::world_width` of the contract by
 // default (the material's width in metres at the reference distance, scaled by the distance of the surface from the
 // camera plane and clamped), metres at any distance, or a fraction of the target's height pushed in clip space; and it
@@ -15,18 +19,24 @@ const OUTLINE_MAX_SCALE: f32 = 3.0;
 // The nearest distance the scale is computed at, so a surface level with or behind the camera still gets a sane width.
 const OUTLINE_MIN_DEPTH: f32 = 0.1;
 
+// 1 for the hull pushed along the smooth normals, -1 for an open sheet's second hull, pushed against them.
+override hull_normal: f32 = 1.0;
+// 1 when the material is double-sided and the hull widens by the rims, else 0.
+override hull_rim: f32 = 0.0;
+
 // `Outline::world_width`: metres.
 fn outline_width(width: f32, view_depth: f32) -> f32 {
     let scale = max(view_depth, OUTLINE_MIN_DEPTH) / OUTLINE_REFERENCE_DISTANCE;
     return width * clamp(scale, OUTLINE_MIN_SCALE, OUTLINE_MAX_SCALE);
 }
 
-// MToon's `screenCoordinates`: the posed vertex pushed in clip space along its projected normal by `width` of the
-// target's height, so the line is the same on screen at any distance and through any lens. The push is normalised in
-// pixels (as wide across as down) and scaled by clip w, so the perspective divide leaves it a fixed size in NDC.
-fn outline_screen(posed: Posed, width: f32) -> vec4<f32> {
-    let clip = frame.view_proj * vec4<f32>(posed.world_position, 1.0);
-    let projected = (frame.view_proj * vec4<f32>(posed.world_normal, 0.0)).xy;
+// MToon's `screenCoordinates`: the posed vertex pushed in clip space along its projected outline direction by `width`
+// of the target's height, so the line is the same on screen at any distance and through any lens. The push is
+// normalised in pixels (as wide across as down) and scaled by clip w, so the perspective divide leaves it a fixed size
+// in NDC.
+fn outline_screen(world_position: vec3<f32>, direction: vec3<f32>, width: f32) -> vec4<f32> {
+    let clip = frame.view_proj * vec4<f32>(world_position, 1.0);
+    let projected = (frame.view_proj * vec4<f32>(direction, 0.0)).xy;
     let aspect = frame.target_size.x * frame.target_size.w;
     let in_pixels = vec2<f32>(projected.x * aspect, projected.y);
     let along = length(in_pixels);
@@ -38,8 +48,27 @@ fn outline_screen(posed: Posed, width: f32) -> vec4<f32> {
     return vec4<f32>(clip.xy + offset, clip.zw);
 }
 
-// The hull vertex: posed like the surface it grows from (skinned, then placed), then moved along its smooth normal.
-// The shading normal in `Vertex` is not used, the smooth one (vertex buffer slot 1) takes its place in `pose`.
+// A rim in world space: skinned and placed like a direction in the surface (not a normal), its length kept.
+fn pose_rim(rim: vec3<f32>, v: Vertex, inst: Instance) -> vec3<f32> {
+    let length_in_mesh = length(rim);
+    if (hull_rim == 0.0 || length_in_mesh == 0.0) {
+        return vec3<f32>(0.0);
+    }
+    var direction = rim;
+    if ((inst.skin.y & INSTANCE_SKINNED) != 0u) {
+        direction = (skin_matrix(inst.skin.x, v.joints, v.weights) * vec4<f32>(direction, 0.0)).xyz;
+    }
+    let world = (inst.model * vec4<f32>(direction, 0.0)).xyz;
+    let length_in_world = length(world);
+    if (length_in_world == 0.0) {
+        return vec3<f32>(0.0);
+    }
+    return world * (length_in_mesh / length_in_world);
+}
+
+// The hull vertex: posed like the surface it grows from (skinned, then placed), then moved along its smooth normal
+// (against it for an open sheet's second hull) and out by its rim. The shading normal in `Vertex` is not used, the
+// smooth one (vertex buffer slot 2) takes its place in `pose`.
 struct HullOut {
     @builtin(position) clip: vec4<f32>,
     // The pushed vertex (the surface's, for a screen-space width), for the fog and the lighting mix.
@@ -56,11 +85,13 @@ struct HullOut {
 fn vs_outline(
     v: Vertex,
     @location(6) smooth_normal: vec3<f32>,
+    @location(7) rim: vec3<f32>,
     @builtin(instance_index) instance: u32,
 ) -> HullOut {
     var hull = v;
     hull.normal = smooth_normal;
     let posed = pose(hull, instances[instance]);
+    let direction = posed.world_normal * hull_normal + pose_rim(rim, v, instances[instance]);
     var width = material.outline.w;
     if ((material.flags.x & FLAG_OUTLINE_WIDTH_TEXTURE) != 0u) {
         let sampled = textureSampleLevel(outline_width_texture, outline_width_sampler, material_uv(v.uv), 0.0);
@@ -68,14 +99,14 @@ fn vs_outline(
     }
     var out: HullOut;
     if ((material.flags.x & FLAG_OUTLINE_SCREEN) != 0u) {
-        out.clip = outline_screen(posed, width);
+        out.clip = outline_screen(posed.world_position, direction, width);
         out.world_position = posed.world_position;
     } else {
         var metres = width;
         if ((material.flags.x & FLAG_OUTLINE_WORLD) == 0u) {
             metres = outline_width(width, -(frame.view * vec4<f32>(posed.world_position, 1.0)).z);
         }
-        let pushed = posed.world_position + posed.world_normal * metres;
+        let pushed = posed.world_position + direction * metres;
         out.clip = frame.view_proj * vec4<f32>(pushed, 1.0);
         out.world_position = pushed;
     }
