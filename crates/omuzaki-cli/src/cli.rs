@@ -109,7 +109,21 @@ pub enum Command {
     /// Reads JSON-RPC messages from stdin and writes only protocol messages to stdout, until the client closes stdin.
     /// The agent can read, edit, render and review, and its changes are saved to the project as it makes them. Point an
     /// MCP client at `omuzaki --project <DIR> mcp`.
+    ///
+    /// Two modes. While Omuzaki Studio has the project open, this relays the agent into the studio: it works in front
+    /// of you, and you pair it there once. Otherwise it runs headless, with nobody to ask: whatever would need your
+    /// approval is refused. Say yes in advance with `--grant` and `--spend-cap`, or hand it a credential you issued
+    /// with `omuzaki credential issue` (in OMUZAKI_MCP_TOKEN or `--token-file`), which carries its own grants and
+    /// budget.
     Mcp(McpArgs),
+
+    /// Issue, list and revoke the credentials headless agents run from (`omuzaki mcp` with no studio): each carries
+    /// the grants and the budget you give it, for a script or a CI job.
+    Credential {
+        /// What to do with the credentials.
+        #[command(subcommand)]
+        action: CredentialCommand,
+    },
 
     /// Print every self-registration linked into this binary (ops, part kinds, formats, ...), one per line:
     /// package, kind, name and place, tab-separated. Hidden: it is for the link gate (`tests/registrations.rs`, ADR
@@ -209,13 +223,74 @@ pub struct McpArgs {
     /// on the folder's branch, and can still move with `branch_work`.
     #[arg(long, value_name = "NAME|new")]
     pub branch: Option<String>,
+
+    /// The most the agent may spend, in US dollars (for example `2.50`), on ops that cost money (paid generation).
+    /// It also grants `spend`; without it the agent can spend nothing.
+    #[arg(long, value_parser = parse_usd, value_name = "USD")]
+    pub spend_cap: Option<u64>,
+
+    /// A file holding a credential's secret (from `omuzaki credential issue`): the agent gets that credential's grants
+    /// and budget. The secret can also come from the OMUZAKI_MCP_TOKEN environment variable; never pass it as a flag.
+    #[arg(long, value_name = "PATH")]
+    pub token_file: Option<PathBuf>,
 }
 
 impl McpArgs {
-    /// The agent's grants: the default ones plus `--grant`.
+    /// The agent's grants: the default ones plus `--grant`, plus `spend` with `--spend-cap`.
     pub fn grants(&self) -> omuzaki_ops_api::Grants {
-        self.grant.iter().fold(omuzaki_ops_api::Grants::agent_default(), |grants, scope| grants.with(*scope))
+        let grants =
+            self.grant.iter().fold(omuzaki_ops_api::Grants::agent_default(), |grants, scope| grants.with(*scope));
+        if self.spend_cap.is_some() { grants.with(omuzaki_ops_api::Scope::Spend) } else { grants }
     }
+
+    /// The agent's budget: `--spend-cap` in money, and no token or time cap.
+    pub fn budget(&self) -> omuzaki_ops_api::Budget {
+        omuzaki_ops_api::Budget { usd_micros: self.spend_cap.unwrap_or(0), ..omuzaki_ops_api::Budget::default() }
+    }
+}
+
+/// An `omuzaki credential` subcommand.
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+pub enum CredentialCommand {
+    /// Issue a credential and print its secret, once. Give it to the script or CI job (in OMUZAKI_MCP_TOKEN, or a file
+    /// for `--token-file`); the project keeps only a hash of it.
+    Issue {
+        /// What to call it, for example `nightly render`. Each label is used once, so `revoke` can name it.
+        #[arg(long)]
+        label: String,
+        /// Scopes it gets on top of read, edit, render and review, comma-separated (as `omuzaki mcp --grant`).
+        #[arg(long = "grant", value_delimiter = ',', value_parser = parse_scope, value_name = "SCOPES")]
+        grant: Vec<omuzaki_ops_api::Scope>,
+        /// The most each of its sessions may spend, in US dollars; it also grants `spend`.
+        #[arg(long, value_parser = parse_usd, value_name = "USD")]
+        spend_cap: Option<u64>,
+    },
+    /// List the project's credentials: label, grants and budget. Secrets are never shown again.
+    List,
+    /// Revoke a credential: its secret is refused from now on.
+    Revoke {
+        /// Its label.
+        label: String,
+    },
+}
+
+/// Reads a sum of US dollars (`2`, `2.5`, `0.25`) as micro-dollars. At most six decimals, so the sum is exact, and at
+/// most a million dollars, so a slip of the keyboard can't hand out an unlimited budget.
+fn parse_usd(text: &str) -> Result<u64, String> {
+    const MAX_USD: u64 = 1_000_000;
+    let text = text.trim().trim_start_matches('$');
+    let refuse = || format!("`{text}` is not a sum of dollars; write it like 2 or 2.50");
+    let (whole, fraction) = text.split_once('.').unwrap_or((text, ""));
+    let digits = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
+    if whole.is_empty() && fraction.is_empty() || !digits(whole) || !digits(fraction) || fraction.len() > 6 {
+        return Err(refuse());
+    }
+    let whole: u64 = if whole.is_empty() { 0 } else { whole.parse().map_err(|_| refuse())? };
+    if whole >= MAX_USD && !(whole == MAX_USD && fraction.bytes().all(|b| b == b'0')) {
+        return Err(format!("at most {MAX_USD} dollars"));
+    }
+    let micros: u64 = format!("{fraction:0<6}").parse().map_err(|_| refuse())?;
+    Ok(whole * 1_000_000 + micros)
 }
 
 /// `--tools`: how many tools `omuzaki mcp` lists.
@@ -297,7 +372,12 @@ impl Command {
     pub fn needs_project(&self) -> bool {
         !matches!(
             self,
-            Command::New { .. } | Command::Ops | Command::Help { .. } | Command::Registrations | Command::Store { .. }
+            Command::New { .. }
+                | Command::Ops
+                | Command::Help { .. }
+                | Command::Registrations
+                | Command::Store { .. }
+                | Command::Credential { .. }
         )
     }
 }
@@ -370,11 +450,29 @@ mod tests {
                 grant: vec![omuzaki_ops_api::Scope::Perform, omuzaki_ops_api::Scope::Broadcast],
                 tools: ToolList::All,
                 branch: None,
+                spend_cap: None,
+                token_file: None,
             })
         );
         let Command::Mcp(args) = parse(&["mcp", "--branch", "new"]).command else { panic!("mcp") };
         assert_eq!(args.branch.as_deref(), Some("new"));
         assert!(try_parse_from(["omuzaki", "mcp", "--grant", "fly"]).is_err());
+        let Command::Mcp(args) = parse(&["mcp", "--spend-cap", "2.5"]).command else { panic!("mcp") };
+        assert_eq!(args.budget().usd_micros, 2_500_000);
+        assert!(args.grants().allows(omuzaki_ops_api::Scope::Spend), "a cap grants spend");
+        assert!(!McpArgs::default().grants().allows(omuzaki_ops_api::Scope::Spend), "and nothing else does");
+        assert_eq!(McpArgs::default().budget().usd_micros, 0);
+        assert_eq!(
+            parse(&["credential", "issue", "--label", "ci", "--grant", "publish", "--spend-cap", "1"]).command,
+            Command::Credential {
+                action: CredentialCommand::Issue {
+                    label: "ci".into(),
+                    grant: vec![omuzaki_ops_api::Scope::Publish],
+                    spend_cap: Some(1_000_000)
+                }
+            }
+        );
+        assert!(!parse(&["credential", "list"]).command.needs_project(), "it works while the studio has the project");
         assert_eq!(parse(&["registrations"]).command, Command::Registrations);
         assert_eq!(
             parse(&["history", "restore", "7", "--dry-run"]).command,
@@ -436,6 +534,23 @@ mod tests {
                 })
             }
         );
+    }
+
+    #[test]
+    fn a_spend_cap_is_dollars_read_exactly_to_the_micro_dollar() {
+        for (text, micros) in [
+            ("2", 2_000_000),
+            ("2.5", 2_500_000),
+            ("$0.25", 250_000),
+            (".75", 750_000),
+            ("0.000001", 1),
+            ("1000000", 1_000_000_000_000),
+        ] {
+            assert_eq!(parse_usd(text), Ok(micros), "{text}");
+        }
+        for text in ["", ".", "-1", "1e3", "2,50", "0.0000001", "1000000.01", "99999999999999999999", "two"] {
+            assert!(parse_usd(text).is_err(), "{text}");
+        }
     }
 
     #[test]

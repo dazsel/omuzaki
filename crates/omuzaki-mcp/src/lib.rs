@@ -236,7 +236,7 @@ mod session;
 mod signature;
 mod suggest;
 
-pub use access::{AccessToken, RECORD_VERSION, TokenId, TokenInfo, TokenRecord};
+pub use access::{AccessToken, IssuedCredential, RECORD_VERSION, TokenId, TokenInfo, TokenRecord};
 pub use branches::{BranchHost, LaneServers};
 pub use catalog::ToolMode;
 pub use connection::Connections;

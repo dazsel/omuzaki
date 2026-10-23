@@ -348,7 +348,8 @@ impl Session {
             model: None,
             on_behalf_of: person,
             grants: self.view.grants.clone(),
-            budget: Budget::default(),
+            // A credential's sessions start from no money; the host's budget is for its own connections.
+            budget: if self.view.credential.is_some() { Budget::default() } else { host.budget },
             limits: Limits::default(),
             parent: None,
             role: None,

@@ -310,6 +310,10 @@ impl Env {
         at: Seconds,
     ) -> OpError {
         let (req, sent, allow) = run;
+        // With nobody to ask, the only way is to say yes in advance, whoever could have granted it here.
+        if !self.approver {
+            return refusal(req, &asked.need, Refused::NoApprover);
+        }
         if let Need::Scope { scope } = asked.need {
             if !state.sessions.may_grant(index, scope, sent) {
                 return refusal(req, &asked.need, Refused::NoOneCanGrant);
@@ -321,9 +325,6 @@ impl Env {
                     required: requirement.approvals,
                 };
             }
-        }
-        if !self.approver {
-            return refusal(req, &asked.need, Refused::NoApprover);
         }
         if allow.effect_call {
             return refusal(req, &asked.need, Refused::Inner);
@@ -462,6 +463,12 @@ fn refusal(req: &Request, need: &Need, why: Refused) -> OpError {
     match need {
         Need::Scope { scope } => {
             let hint = match why {
+                Refused::NoApprover if *scope == Scope::Spend => {
+                    "nobody can be asked here: the person can let it spend \
+                     at launch (`omuzaki mcp --spend-cap <USD>`) or with a credential whose budget covers it, or open \
+                     the project in Omuzaki Studio"
+                        .to_owned()
+                }
                 Refused::NoApprover => {
                     format!(
                         "nobody can be asked here: the person can grant it at launch (`omuzaki mcp --grant {scope}`) \
@@ -491,7 +498,12 @@ fn refusal(req: &Request, need: &Need, why: Refused) -> OpError {
             budget::dollars(needed.usd_micros),
             budget::dollars(left.usd_micros),
         ))
-        .hint(format!("raise the session's budget {before}")),
+        .hint(match why {
+            Refused::NoApprover => "nobody can be asked here: start the agent with a higher `--spend-cap`, or with a \
+                                    credential whose budget covers it"
+                .to_owned(),
+            _ => format!("raise the session's budget {before}"),
+        }),
         Need::Review { policy } => OpError::denied(format!("{} waits for a review under the policy {policy}", req.op))
             .hint(format!("have a reviewer approve it in Omuzaki Studio {before}")),
         Need::Pairing { .. } => OpError::denied("this session waits to be paired").hint("pair it in Omuzaki Studio"),

@@ -365,6 +365,13 @@ history) opens its session with that credential's grants and budget as the ceili
 anything beyond them is refused, never queued. Without a credential it gets `Grants::agent_default()` plus the
 person-typed `--grant` and `--spend-cap`, like ADR 0013's typed paths.
 
+As built (2026-10-23): `omuzaki credential issue --label <NAME> [--grant <SCOPES>] [--spend-cap <USD>]` prints the
+secret once and stores the record (version 3, with its `budget`) in the project's owner-only
+`.omuzaki/credentials.json`; `credential list` and `credential revoke <NAME>` read and remove them, and work while the
+studio holds the project. `omuzaki mcp` reads the secret from `OMUZAKI_MCP_TOKEN` or `--token-file`, refuses it
+beside `--grant` or `--spend-cap` (the credential decides), and names the credential on stderr. `--spend-cap` also
+grants `spend`. The HTTP port refuses a record with a budget until its sessions can hold one.
+
 ## 8. Budgets and rate limits
 
 ### 8.1 Budget (TH-10, AG-06)

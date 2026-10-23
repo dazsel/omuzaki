@@ -18,7 +18,9 @@ use omuzaki_history_api::state::{BranchStore, HistoryView};
 use omuzaki_history_api::{HistoryExport, HistoryLog, Snapshots, WallClock};
 use omuzaki_mcp::{BranchHost, Connections, LaneServers, McpOptions, McpServer, ToolMode};
 use omuzaki_ops::Executor;
-use omuzaki_ops_api::{Actor, ConnectionService, Grants, ProjectDir, Runner, Services, ServicesBuilder, SessionState};
+use omuzaki_ops_api::{
+    Actor, Budget, ConnectionService, Grants, ProjectDir, Runner, Services, ServicesBuilder, SessionState,
+};
 
 use crate::AppError;
 use crate::core::with_resource_providers;
@@ -38,6 +40,8 @@ pub(crate) struct Shared {
     pub person: Actor,
     pub approver: bool,
     pub agent_grants: Grants,
+    /// The budget an MCP client's session starts with.
+    pub agent_budget: Budget,
     pub mcp_tools: ToolMode,
     pub journal: JournalOptions,
     pub app_version: String,
@@ -214,6 +218,7 @@ pub(crate) fn open(
         .with_tools(shared.mcp_tools)
         .with_connections(connections)
         .with_sessions(executor.clone(), shared.person.clone())
+        .with_budget(shared.agent_budget)
         .with_journal(journal.clone())
         .with_roots(crate::core::project_dir_text(&shared.dir), std::iter::empty::<String>())
         .with_branches(BranchHost::new(
