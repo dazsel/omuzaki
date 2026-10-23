@@ -658,8 +658,8 @@ fn a_plain_string_and_an_unbounded_number_get_a_text_field_and_a_number_field() 
         "name": {"type": "string"},
         "count": {"type": "number", "minimum": 0}
     }})));
-    assert!(h.query_by_role_and_label(Role::TextInput, "name").is_some());
-    focus(&mut h, Role::SpinButton, "count");
+    assert!(h.query_by_role_and_label(Role::TextInput, "Name").is_some(), "an untitled field reads its key in words");
+    focus(&mut h, Role::SpinButton, "Count");
     press(&mut h, Modifiers::NONE, Key::ArrowUp);
     assert_eq!(json_of(&h), json!({"name": "", "count": 1}));
 }
