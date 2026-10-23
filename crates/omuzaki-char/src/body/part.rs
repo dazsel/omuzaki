@@ -20,7 +20,7 @@ use crate::template::skeleton::TemplateFit;
 
 /// The name of the body's skin material.
 const SKIN_MATERIAL: &str = "body-skin";
-/// The name of the hands' material: the skin, with the vertex colours on for the warmer tint towards the fingertips.
+/// The name of the hands' material: the skin, whose vertex colours carry the warmer tint towards the fingertips.
 const HAND_MATERIAL: &str = "body-hands";
 /// The skin's outline, metres at the renderer's reference distance (`body.js` `skin-hand`).
 const OUTLINE_WIDTH: f32 = 0.0016;
@@ -114,8 +114,8 @@ fn joined(a: &MeshData, b: &MeshData) -> MeshData {
 }
 
 /// The skin: the prototype's `skin-hand` toon (a low terminator shift, a soft edge, a thin warm rim) with the skin
-/// treatment and a coloured outline, from the palette slots in `params.skin`. The body takes no vertex colours; the hands'
-/// copy turns them on.
+/// treatment and a coloured outline, from the palette slots in `params.skin`, with the vertex colours on: the legs' soft
+/// ambient darkening ([`mesh`]'s module docs).
 fn skin_material(
     params: &BodyParams,
     colour: impl Fn(&ColourRef) -> Result<Colour, BuildError>,
@@ -134,20 +134,20 @@ fn skin_material(
         overlays: Vec::new(),
         alpha: omuzaki_render_api::AlphaMode::Opaque,
         double_sided: false,
-        vertex_colours: false,
+        vertex_colours: true,
         outline: Some(Outline { colour: colour(&params.skin.line)?, width: OUTLINE_WIDTH }),
         receives_shadows: true,
         uv_transform: omuzaki_render_api::UvTransform::IDENTITY,
     })
 }
 
-/// The body's two materials from its colours: the skin, and the hands' (the skin with the vertex colours that shade the
-/// fingers). The build and the recolour both make them here, so the two cannot drift apart.
+/// The body's two materials from its colours: the skin, and the hands' (the same skin, under its own name so a hand can
+/// be told apart in the outliner and the export). The build and the recolour both make them here, so the two cannot drift apart.
 fn skin_materials(
     params: &BodyParams,
     colour: impl Fn(&ColourRef) -> Result<Colour, BuildError>,
 ) -> Result<(MaterialSpec, MaterialSpec), BuildError> {
     let skin = skin_material(params, colour)?;
-    let hand = MaterialSpec { vertex_colours: true, ..skin.clone() };
+    let hand = skin.clone();
     Ok((skin, hand))
 }

@@ -222,8 +222,9 @@ fn the_kind_is_registered_project_owned_and_builds_a_rigged_body_on_every_templa
             t.id()
         );
         assert_eq!(material.base, omuzaki_core::colour::Colour::rgb(0xf9, 0xd3, 0xc5));
-        // The hands have their own copy with the vertex colours on (the fingertip tint); the body's skin has them off.
-        assert!(!material.vertex_colours, "{}", t.id());
+        // The skin multiplies in its vertex colours (the legs' shading); the hands have their own copy of it (the
+        // fingertip tint), and every mesh but the hands' lines carries one colour per vertex.
+        assert!(material.vertex_colours, "{}", t.id());
         let hand_id = MaterialName::new("body-hands").unwrap();
         let hand_material = &built.materials[&hand_id];
         assert!(hand_material.vertex_colours, "{}", t.id());
@@ -232,7 +233,8 @@ fn the_kind_is_registered_project_owned_and_builds_a_rigged_body_on_every_templa
             let hand = m.mesh.name.starts_with("hand-");
             assert_eq!(m.mesh.material == hand_id, hand, "{}: {}", t.id(), m.mesh.name);
             let lines = m.mesh.name.starts_with("hand-lines");
-            assert!(!hand || lines || !m.mesh.geometry.colours.is_empty(), "{}: {} has no tint", t.id(), m.mesh.name);
+            let g = &m.mesh.geometry;
+            assert!(lines || g.colours.len() == g.positions.len(), "{}: {} has no tint", t.id(), m.mesh.name);
         }
         // Every skinned bone exists in the rig the template published, and the body is bound in the template's pose.
         for m in &built.meshes {
@@ -553,6 +555,143 @@ fn the_front_silhouette_has_no_step_at_any_junction_on_any_template_or_preset() 
                     preset.id.as_str()
                 );
             }
+        }
+    }
+}
+
+/// The legs' soft ambient darkening (#710), on every template and preset: the inner thigh 10% darker where it faces the
+/// other leg, the hollow behind the knee 5% (no less than 3% on the nearest ring), never both at once, nothing on the outer side
+/// (short of the back), on the front of the shin or above the crotch (where a seam with the pelvis would show), the
+/// torso, arms and feet white, and the two legs mirror images.
+#[test]
+#[allow(clippy::float_cmp)] // white is written as exactly 1.0
+fn the_legs_are_shaded_on_the_inner_thigh_and_behind_the_knee_and_nothing_else_is() {
+    for template in registry::templates() {
+        for preset in shape::presets().unwrap() {
+            let layout = template.layout(&Proportions::default(), &preset.shape, &HandParams::default());
+            let knee = layout.joint64(HumanoidBone::LeftLowerLeg).unwrap();
+            let hip = layout.joint64(HumanoidBone::LeftUpperLeg).unwrap();
+            let thigh = (hip.y - knee.y) as f32;
+            let id = format!("{} {}", template.id(), preset.id.as_str());
+            let meshes = body(template.id(), &preset.shape, Detail::OFFLINE);
+            let mesh = |r: BodyRegion| &meshes.iter().find(|(k, _)| *k == r).unwrap().1.geometry;
+            for region in [BodyRegion::Torso, BodyRegion::ArmL, BodyRegion::ArmR, BodyRegion::FootL] {
+                assert!(mesh(region).colours.iter().all(|c| *c == [1.0; 4]), "{id}: {region:?} is shaded");
+            }
+            // Nothing above the crotch, where the thighs meet the pelvis.
+            let crotch = mesh(BodyRegion::Torso).positions.iter().map(|p| p.y).fold(f32::MAX, f32::min);
+            let leg = mesh(BodyRegion::LegL);
+            assert_eq!(leg.colours.len(), leg.positions.len(), "{id}");
+            let darkest = |keep: &dyn Fn(Vec3, Vec3) -> bool| {
+                leg.positions
+                    .iter()
+                    .zip(&leg.normals)
+                    .zip(&leg.colours)
+                    .filter(|((p, n), _)| keep(**p, **n))
+                    .map(|(_, c)| 1.0 - c[0])
+                    .fold(0.0_f32, f32::max)
+            };
+            let knee_y = knee.y as f32;
+            let inner = darkest(&|_, n| n.x < -0.97);
+            // The hollow is darkest at the knee's own height; the mesh's rings land within a tenth of the thigh of it.
+            let hollow = darkest(&|p, n| n.z < -0.9 && (p.y - knee_y).abs() < 0.1 * thigh);
+            let any = darkest(&|_, _| true);
+            let outer = darkest(&|_, n| n.x > 0.2 && n.z > -0.1);
+            let seam = darkest(&|p, _| p.y >= crotch);
+            let shin = darkest(&|p, n| n.z > 0.2 && p.y < knee_y);
+            assert!((0.09..=0.101).contains(&inner), "{id}: inner thigh {inner}");
+            assert!((0.03..=0.051).contains(&hollow), "{id}: behind the knee {hollow}");
+            assert!(any <= 0.101, "{id}: the leg is {any} dark somewhere");
+            assert_eq!((outer, shin, seam), (0.0, 0.0, 0.0), "{id}: the outer side, the shin or the crotch is shaded");
+            // The right leg is the left's mirror image, colour for colour.
+            let right = mesh(BodyRegion::LegR);
+            for (p, c) in leg.positions.iter().zip(&leg.colours) {
+                let image = Vec3::new(-p.x, p.y, p.z);
+                let (k, gap) = right
+                    .positions
+                    .iter()
+                    .enumerate()
+                    .map(|(k, q)| (k, q.distance(image)))
+                    .min_by(|a, b| a.1.total_cmp(&b.1))
+                    .unwrap();
+                if gap < 1e-4 {
+                    assert!((right.colours[k][0] - c[0]).abs() < 1e-4, "{id}: the legs are shaded differently");
+                }
+            }
+        }
+    }
+}
+
+/// Renders the bare legs of standard, from the front and from behind, with the shading (#710) and without it, as PPMs
+/// into the directory named by `OMUZAKI_LEGS_PPM` (`crates/omuzaki-char/evidence/leg-shading.toml`). Does nothing when
+/// the variable is unset.
+#[test]
+#[allow(clippy::disallowed_methods, reason = "test evidence, written to a folder the developer names; not an op")]
+fn render_the_legs_when_asked() {
+    use omuzaki_core::colour::Colour;
+    use omuzaki_core::glam::{Mat4, UVec2};
+    use omuzaki_render_api::{
+        AlphaEncoding, Background, Camera, Instance, Light, Post, Quality, Renderer, RendererExt, Scene, Tonemap,
+    };
+    use omuzaki_render_mock::MockRenderer;
+
+    let Some(directory) = std::env::var_os("OMUZAKI_LEGS_PPM") else { return };
+    let directory = PathBuf::from(directory);
+    fs::create_dir_all(&directory).unwrap();
+    let node = serde_json::json!({
+        "name": "Legs",
+        "template": "standard",
+        "seed": 3,
+        "palette": { "skin": "#f9d3c5", "skin_shade": "#f2b4ab", "skin_line": "#c98a80" },
+        "parts": { "body": { "kind": "body", "params": {} } }
+    });
+    let def = CharacterDef::from_node(&node).unwrap();
+    let built = RegistryBuilder
+        .build(&CharId::new("t").unwrap(), &def, &BuildOptions::default(), &BuildServices::default())
+        .unwrap();
+    let legs: Vec<_> = built.meshes.iter().filter(|m| m.mesh.name.starts_with("leg.")).collect();
+    let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+    for p in legs.iter().flat_map(|m| &m.mesh.geometry.positions) {
+        (lo, hi) = (lo.min(*p), hi.max(*p));
+    }
+    // From the hips to below the knees: where the shading is.
+    let centre = Vec3::new(0.0, hi.y - 0.4 * (hi.y - lo.y), 0.0);
+    let size = 1.1 * (hi.y - lo.y);
+    for (view, azimuth_deg) in [("front", 0.0_f32), ("back", 180.0)] {
+        for (label, shaded) in [("shaded", true), ("flat", false)] {
+            let mut renderer = MockRenderer::new();
+            let eye = centre
+                + Mat4::from_rotation_y(azimuth_deg.to_radians()).transform_vector3(Vec3::new(0.0, 0.0, 2.2 * size));
+            let mut scene = Scene::new(Camera::look_at(eye, centre, Vec3::Y, Camera::default().projection));
+            scene.background = Background::Solid { colour: Colour::hex(0x001e_1c24) };
+            scene.lights = vec![
+                Light::Hemisphere { sky: Colour::hex(0x00f1_eef8), ground: Colour::hex(0x004a_3e36), intensity: 0.75 },
+                Light::Directional {
+                    to_light: Vec3::new(1.6, 3.0, 2.4),
+                    colour: Colour::hex(0x00ff_f6ec),
+                    intensity: 1.7,
+                    casts_shadow: false,
+                },
+            ];
+            scene.post = Post { exposure: 1.0, tonemap: Tonemap::None, ..Post::default() };
+            for built_mesh in &built.meshes {
+                let mesh = renderer.create_mesh(&built_mesh.mesh.geometry).unwrap();
+                let mut spec = built.materials[&built_mesh.mesh.material].clone();
+                spec.overlays.clear();
+                spec.vertex_colours = shaded;
+                let material = renderer.create_material(&spec.to_material(&|_| None, &|_| None).unwrap()).unwrap();
+                scene.instances.push(Instance::new(mesh, material, Mat4::IDENTITY));
+            }
+            let quality = Quality { samples: 4, ..Quality::offline() };
+            let image = renderer.render_image(UVec2::splat(512), AlphaEncoding::Straight, &scene, &quality).unwrap();
+            let mut ppm = format!("P6\n{} {}\n255\n", image.size.x, image.size.y).into_bytes();
+            for y in 0..image.size.y {
+                for x in 0..image.size.x {
+                    let [r, g, b, _] = image.pixel(x, y).unwrap();
+                    ppm.extend([r, g, b]);
+                }
+            }
+            fs::write(directory.join(format!("{view}-{label}.ppm")), ppm).unwrap();
         }
     }
 }
