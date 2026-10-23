@@ -5803,6 +5803,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-performer"
+version = "0.0.0"
+dependencies = [
+ "blake3",
+ "omuzaki-anim-api",
+ "omuzaki-core",
+ "omuzaki-llm-api",
+ "omuzaki-llm-mock",
+ "omuzaki-performer-api",
+ "omuzaki-performer-mock",
+ "omuzaki-stage-api",
+ "proptest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "toml",
+]
+
+[[package]]
 name = "omuzaki-performer-api"
 version = "0.0.0"
 dependencies = [
