@@ -22,6 +22,7 @@ struct OpenCall {
 }
 
 /// Decodes one attempt's body.
+#[allow(clippy::struct_excessive_bools)] // independent facts about one stream, not a state
 pub(crate) struct OpenAiDecoder {
     /// The model to report when a chunk names none.
     model: String,

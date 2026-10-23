@@ -18,6 +18,55 @@ omuzaki-performer-api = { path = "../omuzaki-performer-api" }
 omuzaki-stage = { path = "../omuzaki-stage" }
 omuzaki-stage-api = { path = "../omuzaki-stage-api" }
 omuzaki-track-voice = { path = "../omuzaki-track-voice" }
+# The `cohost_live` example's: the speech models through the registry, Kokoro on the mock engine, a local LLM, the kit
+# character, and the software adapter for its pictures. Behind `demo`, so the tests never build them.
+hound = { workspace = true, optional = true }
+omuzaki-ai = { path = "../omuzaki-ai", optional = true }
+omuzaki-ai-api = { path = "../omuzaki-ai-api", optional = true }
+omuzaki-ai-ort = { path = "../omuzaki-ai-ort", optional = true }
+omuzaki-audio-api = { path = "../omuzaki-audio-api", optional = true }
+omuzaki-audio-mock = { path = "../omuzaki-audio-mock", optional = true }
+omuzaki-char = { path = "../omuzaki-char", optional = true }
+omuzaki-char-api = { path = "../omuzaki-char-api", optional = true }
+omuzaki-doc-api = { path = "../omuzaki-doc-api", optional = true }
+omuzaki-doc-mock = { path = "../omuzaki-doc-mock", optional = true }
+omuzaki-llm = { path = "../omuzaki-llm", optional = true }
+omuzaki-llm-api = { path = "../omuzaki-llm-api", optional = true }
+omuzaki-ops-api = { path = "../omuzaki-ops-api", optional = true }
+omuzaki-render = { path = "../omuzaki-render", optional = true }
+omuzaki-render-api = { path = "../omuzaki-render-api", optional = true }
+omuzaki-render-mock = { path = "../omuzaki-render-mock", optional = true }
+omuzaki-speech = { path = "../omuzaki-speech", optional = true }
+serde_json = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+
+[features]
+# The end-to-end run on this machine's models (`examples/cohost_live.rs`).
+demo = [
+    "dep:hound",
+    "omuzaki-ai",
+    "omuzaki-ai-api",
+    "omuzaki-ai-ort",
+    "omuzaki-audio-api",
+    "omuzaki-audio-mock",
+    "omuzaki-char",
+    "omuzaki-char-api",
+    "omuzaki-doc-api",
+    "omuzaki-doc-mock",
+    "omuzaki-llm",
+    "omuzaki-llm-api",
+    "omuzaki-ops-api",
+    "omuzaki-render",
+    "omuzaki-render-api",
+    "omuzaki-render-mock",
+    "omuzaki-speech",
+    "dep:serde_json",
+    "dep:sha2",
+]
+
+[[example]]
+name = "cohost_live"
+required-features = ["demo"]
 
 [dev-dependencies]
 omuzaki-llm-api = { path = "../omuzaki-llm-api" }
