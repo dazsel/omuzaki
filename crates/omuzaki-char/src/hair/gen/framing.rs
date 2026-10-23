@@ -9,7 +9,8 @@
 //! S-waves. A path is resampled by [`spaced_points`] to [`TUCKED_POINTS`] (tucked) or [`HANGING_POINTS`] points.
 //!
 //! **Scale.** When [`FramingGen::outline_radius`] is set (the default) and no lock heights are given, the outline and
-//! `spread` are scaled to the head the hair is built on (its half-width over that radius), and the default tail is made
+//! `spread` are scaled to the head the hair is built on (widths by its half-width, heights by its crown, over that
+//! radius), and the default tail is made
 //! of surface-anchored points, so the default locks frame the face on any head: down the temple and cheek in front of the
 //! ear, then round the jaw to under the chin. A file without the field is taken in metres, as before.
 //!
@@ -75,7 +76,7 @@ const FALLBACK_LENGTH: f64 = 0.3;
 
 /// Compiles the group: `count` locks for each side asked for, left first.
 pub fn compile(g: &FramingGen, ctx: &mut HairGenCtx<'_>) -> CompiledGroup {
-    let scaled = scaled_to_head(g, f64::from(ctx.head.radius(Vec3::X)));
+    let scaled = scaled_to_head(g, f64::from(ctx.head.radius(Vec3::X)), f64::from(ctx.head.radius(Vec3::Y)));
     let g = &scaled;
     let rh =
         g.locks.as_ref().and_then(|l| l.front_radius).unwrap_or_else(|| f64::from(ctx.head.radius(Vec3::X))).max(1e-3);
@@ -92,20 +93,24 @@ pub fn compile(g: &FramingGen, ctx: &mut HairGenCtx<'_>) -> CompiledGroup {
     CompiledGroup::tubes(clumps)
 }
 
-/// `g` with its outline and spread scaled to a head of half-width `half_width`, when it says what half-width they were
-/// drawn for ([`FramingGen::outline_radius`]) and gives no lock heights of its own (those are the prototype's metres).
-/// A non-finite or zero half-width leaves `g` as it is.
-fn scaled_to_head(g: &FramingGen, half_width: f64) -> FramingGen {
+/// `g` with its outline and spread scaled to a head of half-width `half_width` and crown height `crown`, when it says
+/// what size they were drawn for ([`FramingGen::outline_radius`], a round head's radius) and gives no lock heights of
+/// its own (those are the prototype's metres). The outline's widths and the spread follow the half-width and its
+/// heights the crown, so a head widened alone keeps the locks at their heights and carries them out with its sides
+/// (#2262); on a round head, as every template's is, both are the one scale. A non-finite or zero size leaves `g` as
+/// it is.
+fn scaled_to_head(g: &FramingGen, half_width: f64, crown: f64) -> FramingGen {
     let mut out = g.clone();
     let Some(drawn_for) = g.outline_radius.filter(|r| r.is_finite() && *r > 0.0) else { return out };
-    if g.locks.is_some() || !half_width.is_finite() || half_width <= 0.0 {
+    let sane = |r: f64| r.is_finite() && r > 0.0;
+    if g.locks.is_some() || !sane(half_width) || !sane(crown) {
         return out;
     }
-    let scale = half_width / drawn_for;
+    let (across, up) = (half_width / drawn_for, crown / drawn_for);
     for row in &mut out.edge {
-        *row = [row[0] * scale, row[1] * scale];
+        *row = [row[0] * up, row[1] * across];
     }
-    out.spread *= scale;
+    out.spread *= across;
     out
 }
 

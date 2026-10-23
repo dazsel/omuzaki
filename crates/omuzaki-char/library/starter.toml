@@ -40,6 +40,7 @@ ring = "#e8b896"
 
 [parts.params.groups.a-cap.generator]
 hairline_front_deg = 75.0
+front_blend = [-0.2, 0.95]
 
 [parts.params.groups.b-bangs.generator]
 sweep_deg = 24.0
@@ -64,7 +65,7 @@ width = { start = 0.08, mid = 0.11, tip = 0.02 }
 enabled = true
 mirror = false
 dynamics = { simulate = true, follow = "head", stiffness = { root = 1.0, tip = 0.2, from = 0.2, to = 0.8 } }
-generator = { type = "framing" }
+generator = { type = "framing", outline_radius = 0.19 }
 
 [[parts]]
 id = "shirt"
