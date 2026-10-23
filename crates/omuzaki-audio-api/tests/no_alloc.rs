@@ -124,3 +124,25 @@ fn clock_meters_and_blocks_do_not_allocate() {
     });
     assert_eq!(n, 0);
 }
+
+#[test]
+fn a_feed_pull_with_its_playhead_and_close_fade_does_not_allocate() {
+    use omuzaki_audio_api::feed::feed_channel;
+    for rate in [48_000, 30_238, 24_000] {
+        let (producer, consumer) = ring(96_000, DropPolicy::DropNewest, 0);
+        let (mut writer, mut source) = feed_channel(producer, consumer, rate, false);
+        let closer = writer.closer();
+        writer.push(&vec![0.5; 20_000]);
+        let (mut left, mut right) = (vec![0.0f32; 1024], vec![0.0f32; 1024]);
+        let n = allocations(|| {
+            for block in 0..40u64 {
+                if block == 30 {
+                    closer.close();
+                }
+                source.pull(&mut left, &mut right, 256, block * 256);
+            }
+        });
+        assert_eq!(n, 0, "{rate} Hz");
+        assert!(source.is_cut());
+    }
+}

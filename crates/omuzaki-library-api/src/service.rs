@@ -10,7 +10,7 @@ use omuzaki_store_api::{Commercial, ContentHash};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{ItemId, ItemKind, ItemManifest, PublisherCheck, Section, Version, VersionReq};
+use crate::{CharacterFacts, ItemId, ItemKind, ItemManifest, PublisherCheck, Section, Version, VersionReq};
 
 /// Where an item lives (design D11).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
@@ -255,6 +255,17 @@ pub trait Library: Send + Sync {
     /// # Errors
     /// [`LibraryError::Unsupported`] for `image` and `like` until LB-05; [`LibraryError::Storage`].
     fn search(&self, query: &Query) -> Result<SearchPage, LibraryError>;
+
+    /// [`search`](Self::search) with the facts of the character `compatible_with` names, read from the document by
+    /// the caller ([`CharacterFacts::read`]): a library holds no document, so this is how the real one answers the
+    /// filter. A library that keeps its own facts (the mock) may ignore them; that is the default.
+    ///
+    /// # Errors
+    /// As [`search`](Self::search).
+    fn search_for(&self, query: &Query, character: Option<&CharacterFacts>) -> Result<SearchPage, LibraryError> {
+        let _ = character;
+        self.search(query)
+    }
 
     /// One item in full. Without a version, the newest.
     ///

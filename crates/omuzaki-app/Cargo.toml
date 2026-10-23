@@ -25,6 +25,7 @@ omuzaki-mcp = { path = "../omuzaki-mcp" }
 omuzaki-ops = { path = "../omuzaki-ops" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-store = { path = "../omuzaki-store" }
+omuzaki-library = { path = "../omuzaki-library" }
 omuzaki-library-api = { path = "../omuzaki-library-api" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
 omuzaki-settings = { path = "../omuzaki-settings" }
@@ -34,6 +35,8 @@ omuzaki-setup = { path = "../omuzaki-setup" }
 [dev-dependencies]
 omuzaki-char = { path = "../omuzaki-char" }
 omuzaki-face-mock = { path = "../omuzaki-face-mock" }
+# `licence.derive` over the parts a library item made (`tests/library.rs`).
+omuzaki-io-ops = { path = "../omuzaki-io-ops" }
 omuzaki-library-mock = { path = "../omuzaki-library-mock" }
 omuzaki-settings-mock = { path = "../omuzaki-settings-mock" }
 omuzaki-store-mock = { path = "../omuzaki-store-mock" }

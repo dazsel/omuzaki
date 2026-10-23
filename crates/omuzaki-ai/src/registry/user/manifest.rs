@@ -68,6 +68,8 @@ pub(super) fn written(id: ModelId, slot: &SlotRef, runtime: RuntimeId, files: &[
         stages: Vec::new(),
         io: BTreeMap::new(),
         stream: None,
+        tts: None,
+        voices: Vec::new(),
         card: ModelCard::default(),
     }
 }

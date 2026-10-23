@@ -111,7 +111,7 @@ fn the_character_alone_composites_over_the_key_within_two_levels_with_soft_edges
             |ui, app: &mut LiveApp| {
                 app.show(ui.ctx());
                 let program = published(ui.ctx());
-                paint_output(ui.painter(), ui.ctx().content_rect(), KEY, program);
+                let _ = paint_output(ui.painter(), ui.ctx().content_rect(), KEY, program, 1.0);
             },
             app,
         );

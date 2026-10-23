@@ -32,6 +32,8 @@ pub enum Action {
     PauseAgent,
     /// Ctrl+, : the Settings window.
     Settings,
+    /// Ctrl+Shift+M: start or stop recording a macro, from anywhere, a text field included.
+    RecordMacro,
 }
 
 const NUMBERS: [Key; 9] =
@@ -39,6 +41,10 @@ const NUMBERS: [Key; 9] =
 
 /// The action the keys pressed this frame ask for, consuming them. At most one per frame.
 pub fn resolve(ctx: &Context) -> Option<Action> {
+    // No text field uses Ctrl+Shift+M, so recording toggles even while one is being edited.
+    if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::M)) {
+        return Some(Action::RecordMacro);
+    }
     if ctx.text_edit_focused() {
         return None;
     }
@@ -108,6 +114,7 @@ mod tests {
             (cmd, Key::Slash, Action::ShortcutSheet),
             (cmd | Modifiers::ALT, Key::P, Action::PauseAgent),
             (cmd, Key::Comma, Action::Settings),
+            (cmd | shift, Key::M, Action::RecordMacro),
         ] {
             let mut harness = harness();
             press(&mut harness, modifiers, key);

@@ -1,0 +1,88 @@
+# Public figures whose voices are widely imitated (`ai-performer-voice-face.md` §3.5). A voice id, a voice's name or a
+# character's name that matches one is a warning on `voice.assign` and on the start card, never a block.
+#
+# A name or alias matches as whole words, ignoring case, accents and punctuation ("Morgan Freeman", "morgan_freeman"
+# and "MorganFreeman" all match). One-word aliases are only for words that name nobody else. Add entries freely.
+
+[[figures]]
+name = "Joe Biden"
+
+[[figures]]
+name = "Donald Trump"
+
+[[figures]]
+name = "Barack Obama"
+
+[[figures]]
+name = "Kamala Harris"
+
+[[figures]]
+name = "Keir Starmer"
+
+[[figures]]
+name = "Rishi Sunak"
+
+[[figures]]
+name = "Boris Johnson"
+
+[[figures]]
+name = "Emmanuel Macron"
+
+[[figures]]
+name = "Olaf Scholz"
+
+[[figures]]
+name = "Vladimir Putin"
+
+[[figures]]
+name = "Volodymyr Zelenskyy"
+aliases = ["Zelensky", "Zelenskiy", "Zelenskyy"]
+
+[[figures]]
+name = "Xi Jinping"
+
+[[figures]]
+name = "Narendra Modi"
+
+[[figures]]
+name = "Justin Trudeau"
+
+[[figures]]
+name = "Fumio Kishida"
+
+[[figures]]
+name = "King Charles III"
+aliases = ["King Charles"]
+
+[[figures]]
+name = "Elon Musk"
+
+[[figures]]
+name = "Mark Zuckerberg"
+
+[[figures]]
+name = "Taylor Swift"
+
+[[figures]]
+name = "Beyonce"
+
+[[figures]]
+name = "Morgan Freeman"
+
+[[figures]]
+name = "David Attenborough"
+
+[[figures]]
+name = "Scarlett Johansson"
+
+[[figures]]
+name = "Oprah Winfrey"
+
+[[figures]]
+name = "Tom Hanks"
+
+[[figures]]
+name = "Keanu Reeves"
+
+[[figures]]
+name = "Snoop Dogg"

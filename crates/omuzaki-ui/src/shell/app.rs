@@ -205,6 +205,7 @@ impl Shell {
         let mut models = ViewModels::new();
         models.insert(requests.clone());
         models.insert(Preview::default());
+        models.insert(crate::broadcast::ShowFocus::default());
         let mut shell = Self {
             runner,
             registry,
@@ -330,6 +331,9 @@ impl Shell {
         }
         if let Some(action) = keys::resolve(&ctx) {
             self.act(&ctx, action);
+        }
+        if let Some(scripting) = self.models.get::<crate::script::Scripting>() {
+            scripting.poll();
         }
         if self.maximised && !ctx.text_edit_focused() && ctx.input(|i| i.key_pressed(Key::Escape)) {
             self.maximised = false;
@@ -530,7 +534,23 @@ impl Shell {
             Action::ShortcutSheet => self.sheet = !self.sheet,
             Action::Settings => self.toggle_settings(),
             Action::PauseAgent => self.pause_agent(ctx),
+            Action::RecordMacro => self.record_macro(ctx),
         }
+    }
+
+    /// Starts or stops recording a macro (Ctrl+Shift+M); a stopped recording waits in the Macros panel to be saved.
+    fn record_macro(&mut self, ctx: &Context) {
+        let Some(scripting) = self.models.get::<crate::script::Scripting>().cloned() else { return };
+        let ds = ds(ctx);
+        let was = scripting.recording();
+        let name = crate::panels::text::say(&ds, crate::script::text::NEW_MACRO, &[]).into_owned();
+        self.note = match scripting.toggle_recording(&self.actor, &name) {
+            Ok(()) if was => {
+                Note::Said(crate::panels::text::say(&ds, crate::script::text::REC_STOPPED, &[]).into_owned())
+            }
+            Ok(()) => Note::Said(crate::panels::text::say(&ds, crate::script::text::REC_STARTED, &[]).into_owned()),
+            Err(error) => Note::Failed(error.message),
+        };
     }
 
     /// The agent the person means by "the active agent": the newest one working, else the newest one paused.
@@ -754,6 +774,9 @@ impl Shell {
             asks: &mut asks,
             sides: &sides,
             menus: Vec::new(),
+            crowded: Vec::new(),
+            hidden: Vec::new(),
+            overflow: Vec::new(),
         };
         view.tree.ui(&mut dock, ui);
         let moved = handles::name_handles(ui, &mut view.tree, &self.registry);
@@ -774,6 +797,12 @@ impl Shell {
             PanelAsk::Close(panel) => {
                 if let Some(def) = self.registry.panel(&panel) {
                     self.close_panel(def.id);
+                }
+                return;
+            }
+            PanelAsk::Show(panel) => {
+                if let Some(def) = self.registry.panel(&panel) {
+                    self.show_panel(def.id);
                 }
                 return;
             }
@@ -944,6 +973,14 @@ impl Shell {
                     }
                 }
                 ShellRequest::ClosePanel(id) => self.close_panel(id),
+                ShellRequest::Settings(page, connector) => {
+                    let keychain = self.models.get::<Keychain>().cloned();
+                    let mut window = SettingsWindow::on(page).with_keychain(keychain);
+                    if let Some(connector) = connector {
+                        window.connectors().show_connector(connector);
+                    }
+                    self.settings = Some(window);
+                }
                 ShellRequest::Adjust { op, args } => {
                     let places = self.places();
                     self.palette.adjust(self.runner.as_ref(), &places, ctx, &op, &args);
@@ -1172,8 +1209,19 @@ impl Shell {
                 } else {
                     ui.label(small(say(&ctx, Word::StatusFence, &[])));
                 }
+                // The OS input capture indicator: drawn in every state while the hub runs, and its heartbeat.
+                if let Some(surface) = self.models.get::<crate::input::InputSurface>() {
+                    ui.separator();
+                    crate::input::indicator::badge(ui, surface, self.runner.as_ref(), &self.actor);
+                }
                 ui.with_layout(Flow::right_to_left(Align::Center), |ui| {
                     ui.label(small(say(&ctx, Word::StatusHealth, &[])));
+                    if self.models.get::<crate::script::Scripting>().is_some_and(crate::script::Scripting::recording) {
+                        let rec = crate::panels::text::say(&ds, crate::script::text::REC, &[]);
+                        let chip = ui.add(crate::ds::widgets::StatusChip::new(crate::ds::tokens::Status::Danger, &rec));
+                        let how = crate::panels::text::say(&ds, crate::script::text::REC_HOW_TO_STOP, &[]);
+                        chip.on_hover_text(how.as_ref());
+                    }
                 });
             });
         });

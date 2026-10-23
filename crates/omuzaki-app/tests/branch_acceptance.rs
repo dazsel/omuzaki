@@ -450,8 +450,9 @@ fn a_refused_restore_leaves_no_branch_and_quick_restores_get_distinct_names() {
 }
 
 /// #441 and #433: what a checkpoint and a switch cost on a 500-file project with 10 changed files. The design's budgets
-/// (release build, local SSD): a checkpoint 50 ms; a switch to an open lane 16 ms on the calling thread, to a closed
-/// branch 150 ms. The ceilings here are wide enough for a debug build on a shared CI runner; the medians go in the PR.
+/// (release build, local SSD): a checkpoint 50 ms; a switch to an open lane 16 ms on the calling thread (#2323: the
+/// folder is rewritten on the switcher thread), to a closed branch 150 ms. The ceilings here are wide enough for a
+/// debug build on a shared CI runner; the medians go in the PR.
 #[test]
 fn checkpoint_and_switch_cost_on_a_500_file_project() {
     let tmp = tempfile::tempdir().unwrap();
@@ -467,7 +468,7 @@ fn checkpoint_and_switch_cost_on_a_500_file_project() {
         checkpoints.push(started.elapsed());
     }
 
-    let (mut to_closed, mut to_open) = (Vec::new(), Vec::new());
+    let (mut to_closed, mut to_open, mut open_settled) = (Vec::new(), Vec::new(), Vec::new());
     for round in 0..5 {
         let lane_of_side = lane(&core, &side);
         ten_changes(lane_of_side.runner.as_ref(), 100 + round);
@@ -477,18 +478,25 @@ fn checkpoint_and_switch_cost_on_a_500_file_project() {
         // A session keeps main's lane open as a side lane, so the way back is a switch to an open lane.
         let held = core.branches().lane(&BranchId::main()).unwrap();
         let session = agent_session(&held, "keeps main open").id;
+        // To a closed branch, counted until the folder is written.
         let started = Instant::now();
         core.branches().switch(&side.id, &person()).unwrap();
+        core.branches().settled().unwrap();
         to_closed.push(started.elapsed());
+        // To an open lane: what the calling thread waits for (the budget), then until the folder is written.
         let started = Instant::now();
         core.branches().switch(&BranchId::main(), &person()).unwrap();
         to_open.push(started.elapsed());
+        core.branches().settled().unwrap();
+        open_settled.push(started.elapsed());
         held.sessions.end(session, omuzaki_ops_api::EndReason::Closed).unwrap();
         drop(held);
     }
     let (checkpoint, closed, open) = (median(checkpoints), median(to_closed), median(to_open));
+    let written = median(open_settled);
     println!(
-        "500 files, 10 changed: checkpoint {checkpoint:?}, switch to a closed branch {closed:?}, to an open lane {open:?}"
+        "500 files, 10 changed: checkpoint {checkpoint:?}, switch to a closed branch {closed:?}, to an open lane \
+         {open:?} on the calling thread ({written:?} until the folder is written)"
     );
     assert!(checkpoint < Duration::from_millis(1_000), "checkpoint {checkpoint:?}");
     assert!(closed < Duration::from_millis(3_000), "switch to a closed branch {closed:?}");

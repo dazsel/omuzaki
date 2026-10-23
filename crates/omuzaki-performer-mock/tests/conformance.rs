@@ -287,7 +287,7 @@ fn fake_perception_and_lead_record_what_they_get() {
     let cut = FakeCut::new();
     let mut lead = RecordingLead::new();
     lead.attach(cut.probe());
-    lead.push(s(0.9), 24_000, &[0.0; 240], true);
+    lead.push(s(0.9), 0, 24_000, &[0.0; 240], true);
     cut.set(CutState::cut(s(1.0)));
     lead.cut(s(1.0));
     assert_eq!(

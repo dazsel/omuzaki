@@ -19,12 +19,10 @@ use crate::{
 };
 
 /// The words shown, unchanged, when a person adds a model (ADR 0016 rule 2). One text for every surface.
-pub const DISCLAIMER: &str = "This model isn't made or distributed by Omuzaki. You chose it; its licence and terms are \
-between you and its author. Omuzaki checks that it runs safely and records it in your project, but doesn't vouch for \
-its quality, safety or licence.";
+pub const DISCLAIMER: &str = "This is your model. Its licence and terms are between you and its author.";
 
 /// Bumped whenever [`DISCLAIMER`] changes, so an acknowledgement records which words were accepted.
-pub const DISCLAIMER_VERSION: u32 = 1;
+pub const DISCLAIMER_VERSION: u32 = 2;
 
 /// Where a model stands. When several apply, the first in this order wins.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -228,6 +226,12 @@ pub trait ModelRegistry: Send + Sync {
 
     /// Every known model, shipped and added, optionally for one slot.
     fn models(&self, slot: Option<&SlotRef>) -> Vec<ModelEntry>;
+
+    /// The manifest of a known model, for what a slot's owner reads from it (a TTS model's `[[voices]]`). `None` for
+    /// an unknown model, or a registry that doesn't keep manifests.
+    fn manifest(&self, _model: &ModelRef) -> Option<ModelManifest> {
+        None
+    }
 
     /// A session for a request/response slot that follows it: it runs `model` if given (a character's own voice),
     /// otherwise the slot's choice, then its shipped default; a new choice is swapped in between runs; a crash or

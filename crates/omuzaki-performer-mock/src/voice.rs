@@ -199,7 +199,7 @@ impl VoiceLead for RecordingLead {
         lock(&self.0).push(LeadCall::Attach(probe.state()));
     }
 
-    fn push(&mut self, at: Seconds, rate: u32, pcm: &[f32], private: bool) {
+    fn push(&mut self, at: Seconds, _feed_sample: u64, rate: u32, pcm: &[f32], private: bool) {
         lock(&self.0).push(LeadCall::Push { at, rate, len: pcm.len(), private });
     }
 

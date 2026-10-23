@@ -99,7 +99,7 @@
 mod model;
 mod pattern;
 mod show;
-mod text;
+pub(crate) mod text;
 mod value;
 
 pub use model::{Form, Level, MAX_ESSENTIALS, MAX_SEGMENTS};

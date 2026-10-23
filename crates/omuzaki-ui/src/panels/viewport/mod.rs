@@ -70,6 +70,8 @@ pub struct Viewport {
     preview: Option<Preview>,
     /// The step whose state the last build showed, by `seq`; `None` for the document as it is.
     built_preview: Option<u64>,
+    /// Where the render was drawn last frame, for what a host draws over it (the Theatre's highlight and notes).
+    rect: Option<Rect>,
 }
 
 impl std::fmt::Debug for Viewport {
@@ -94,7 +96,28 @@ impl Viewport {
             problem: None,
             preview: None,
             built_preview: None,
+            rect: None,
         }
+    }
+
+    /// Where the render was drawn on the last frame.
+    pub const fn rect(&self) -> Option<Rect> {
+        self.rect
+    }
+
+    /// Part `part`'s box from the last build (bind pose), if it has a mesh.
+    pub fn part_bounds(&self, part: &PartId) -> Option<Bounds> {
+        self.parts.get(part).copied()
+    }
+
+    /// Every part's box from the last build.
+    pub fn parts(&self) -> impl Iterator<Item = (&PartId, Bounds)> {
+        self.parts.iter().map(|(id, b)| (id, *b))
+    }
+
+    /// Centres `bounds` and fits it, keeping the angles: the Theatre's follow mode.
+    pub fn frame(&mut self, bounds: Bounds) {
+        self.camera.frame(bounds);
     }
 
     /// Whether the panel can work: there is a GPU and a character is open.
@@ -146,6 +169,7 @@ impl Viewport {
         self.viewing_line(ui, &ds);
         // What is left of the panel, and only what shows of it: the render is the size of what is seen.
         let rect = ui.available_rect_before_wrap().intersect(ui.clip_rect());
+        self.rect = Some(rect);
         let response = ui.allocate_rect(rect, Sense::click_and_drag());
         let name = say(&ds, text::VIEWPORT, &[]);
         a11y::describe(&response, || WidgetInfo::labeled(WidgetType::Other, true, name.as_ref()), |_| {});

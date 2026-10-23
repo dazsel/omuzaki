@@ -163,7 +163,7 @@ impl SettingsWindow {
             .open(&mut open)
             .collapsible(false)
             .resizable(true)
-            .default_size(vec2(560.0, 600.0))
+            .default_size(vec2(720.0, 640.0))
             .min_size(vec2(360.0, 280.0))
             .show(ctx, |ui| {
                 let label = say(ctx, Word::Pages, &[]);

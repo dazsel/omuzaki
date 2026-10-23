@@ -37,6 +37,38 @@ src/engine.rs: pub fn sizes(self, total: usize) -> Vec<usize> {
 src/engine.rs: pub struct OfflineInput {
 src/engine.rs: pub struct OfflineOutput {
 src/engine.rs: pub trait OfflineRender {
+src/feed.rs: pub const CLOSE_FADE: usize = 120;
+src/feed.rs: pub const PLAYHEAD_RECORDS: usize = 2048;
+src/feed.rs: pub struct PlayRecord {
+src/feed.rs: pub fn holds(&self, sample: u64) -> bool {
+src/feed.rs: pub fn place(&self, sample: u64, rate: u32) -> Option<u64> {
+src/feed.rs: pub enum Missing {
+src/feed.rs: pub struct FeedPlayhead(Arc<Log>);
+src/feed.rs: pub fn head(&self) -> u64 {
+src/feed.rs: pub fn rate(&self) -> u32 {
+src/feed.rs: pub fn get(&self, index: u64) -> Result<PlayRecord, Missing> {
+src/feed.rs: pub fn latest(&self) -> Option<PlayRecord> {
+src/feed.rs: pub fn records_since(&self, cursor: u64) -> Records<'_> {
+src/feed.rs: pub fn cut_at_sample(&self) -> u64 {
+src/feed.rs: pub fn place(&self, sample: u64, cursor: u64) -> Option<u64> {
+src/feed.rs: pub struct Records<'a> {
+src/feed.rs: pub fn lost(&self) -> u64 {
+src/feed.rs: pub fn cursor(&self) -> u64 {
+src/feed.rs: pub struct FeedCloser(Arc<AtomicBool>);
+src/feed.rs: pub fn close(&self) {
+src/feed.rs: pub fn is_raised(&self) -> bool {
+src/feed.rs: pub struct FeedWriter {
+src/feed.rs: pub fn playhead(&self) -> FeedPlayhead {
+src/feed.rs: pub fn closer(&self) -> FeedCloser {
+src/feed.rs: pub fn rate(&self) -> u32 {
+src/feed.rs: pub struct FeedSource {
+src/feed.rs: pub fn feed_channel(producer: Producer, consumer: Consumer, rate: u32, stereo: bool) -> (FeedWriter, FeedSource) {
+src/feed.rs: pub fn rate(&self) -> u32 {
+src/feed.rs: pub fn stereo(&self) -> bool {
+src/feed.rs: pub fn is_cut(&self) -> bool {
+src/feed.rs: pub fn underruns(&self) -> u64 {
+src/feed.rs: pub fn is_finished(&self) -> bool {
+src/feed.rs: pub fn pull(&mut self, left: &mut [f32], right: &mut [f32], n: usize, block_start: u64) -> usize {
 src/graph/egress.rs: pub enum MicMode {
 src/graph/egress.rs: pub const fn after_leaving_cohost(self) -> Self {
 src/graph/egress.rs: pub const fn restored(self) -> Self {
@@ -77,6 +109,7 @@ src/lib.rs: pub mod backend;
 src/lib.rs: pub mod clock;
 src/lib.rs: pub mod device;
 src/lib.rs: pub mod engine;
+src/lib.rs: pub mod feed;
 src/lib.rs: pub mod graph;
 src/lib.rs: pub mod ids;
 src/lib.rs: pub mod node;
@@ -91,6 +124,7 @@ src/lib.rs: pub use backend::{AudioBackend, BackendError, CallbackTime, DeviceSt
 src/lib.rs: pub use clock::{ClockSnapshot, EngineClock};
 src/lib.rs: pub use device::{Binding, ChannelMap, DeviceId, DeviceInfo, DeviceState, Direction, ProfileStore};
 src/lib.rs: pub use engine::{AudioEngine, AudioError, BlockPlan, OfflineInput, OfflineOutput, OfflineRender};
+src/lib.rs: pub use feed::{FeedCloser, FeedPlayhead, FeedWriter, PlayRecord};
 src/lib.rs: pub use graph::{
 src/lib.rs: pub use ids::{BusId, DeviceRole, FeedId, GateId, NodeId, NodeKindId, PlayerId, SoundId};
 src/lib.rs: pub use node::{BlockMut, MAX_BLOCK, Node, NodeKind, SAMPLE_RATE};
@@ -218,7 +252,7 @@ src/semantics.rs: pub fn retire(&mut self) {
 src/semantics.rs: pub fn is_idle(&self) -> bool {
 src/semantics.rs: pub fn duck_factor(gains_db: impl IntoIterator<Item = f32>) -> f32 {
 src/tap.rs: pub type TapReader = crate::ring::Consumer;
-src/tap.rs: pub type FeedWriter = crate::ring::Producer;
+src/tap.rs: pub use crate::feed::FeedWriter;
 src/tap.rs: pub enum DropPolicy {
 src/tap.rs: pub enum VoiceUse {
 src/tap.rs: pub enum VoiceSignal {

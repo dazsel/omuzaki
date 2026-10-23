@@ -1,11 +1,15 @@
 //! [`OutputWindow`]: the clean window itself, an egui viewport that shows the program frame and nothing else.
 
+use std::cell::OnceCell;
 use std::time::Instant;
 
 use egui::{
     Color32, Context, CursorIcon, Key, Pos2, Rect, TextureId, Ui, ViewportBuilder, ViewportCommand, ViewportId,
 };
 
+use omuzaki_stream_api::window::ClickThrough;
+
+use super::hit_test::{AlphaMask, DesktopProbe, PixelHits, os_probe};
 use super::plan::{OutputPlan, Shown};
 use crate::aux_window::{Arrangement, PhysicalSize, PlacementBook, Transparency, fit_commands};
 
@@ -51,6 +55,13 @@ pub struct OutputWindow {
     /// The scale the viewport's size and bounds were last planned at: the main viewport's when the window opened, then
     /// the output viewport's own once it has drawn. The two differ when the window sits on another monitor.
     planned_at: Option<f32>,
+    /// Per-pixel click-through on the desktop.
+    hits: PixelHits,
+    /// The desktop pointer and keys: opened the first time a desktop character needs it (`None` inside once tried and
+    /// unavailable).
+    probe: OnceCell<Option<Box<dyn DesktopProbe>>>,
+    /// Whether the way-back chord went down since the app last asked.
+    way_back: bool,
 }
 
 impl OutputWindow {
@@ -63,7 +74,44 @@ impl OutputWindow {
             status: OutputStatus::default(),
             fps_window: None,
             planned_at: None,
+            hits: PixelHits::default(),
+            probe: OnceCell::new(),
+            way_back: false,
         }
+    }
+
+    /// The window reading the desktop through `probe` instead of the OS's (tests).
+    #[must_use]
+    pub fn with_probe(mut self, probe: Box<dyn DesktopProbe>) -> Self {
+        self.probe = OnceCell::from(Some(probe));
+        self
+    }
+
+    /// Whether the way-back chord was pressed anywhere on the desktop since the last call, while every click passes
+    /// through the character.
+    pub fn take_way_back(&mut self) -> bool {
+        std::mem::take(&mut self.way_back)
+    }
+
+    /// Whether the per-pixel click-through wants a fresh mask of the program frame now: the pointer is over a desktop
+    /// character and the last mask is a quarter of a second old.
+    pub fn wants_mask(&self) -> bool {
+        self.status.open && self.per_pixel() && self.hits.wants_mask(Instant::now())
+    }
+
+    /// Takes the alpha of the program frame just presented, for the per-pixel click-through.
+    pub fn set_mask(&mut self, frame: &omuzaki_render_api::Image) {
+        if let Some(mask) = AlphaMask::from_image(frame) {
+            self.hits.set_mask(mask, Instant::now());
+        }
+    }
+
+    fn per_pixel(&self) -> bool {
+        self.plan.desktop.is_some_and(|d| d.click_through == ClickThrough::Transparent)
+    }
+
+    fn probe(&self) -> Option<&dyn DesktopProbe> {
+        self.probe.get_or_init(os_probe).as_deref()
     }
 
     /// The plan.
@@ -109,6 +157,11 @@ impl OutputWindow {
     pub fn show(&mut self, ctx: &Context, program: Option<Program>) {
         if !self.status.open {
             return;
+        }
+        // The way back from full click-through: the window takes no keys then, so the chord is read from the desktop.
+        if self.plan.desktop.is_some_and(|d| d.click_through == ClickThrough::Full) {
+            let held = self.probe().is_some_and(DesktopProbe::way_back_held);
+            self.way_back |= self.hits.way_back(held);
         }
         if ctx.embed_viewports() {
             // A backend without OS windows (a test harness, the web) would draw it as a panel inside the editor, which
@@ -173,15 +226,39 @@ impl OutputWindow {
             self.placement.remember(Arrangement::new(PhysicalSize::of_points(monitor, ppp), ppp), x, y);
         }
         let shown = self.shown();
+        let (opacity, drags) = (self.plan.opacity(), self.plan.drags());
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(shown.fill)).show(ui, |ui| {
             let area = ui.max_rect();
-            paint_output(ui.painter(), area, shown.fill, program);
+            let character = paint_output(ui.painter(), area, shown.fill, program, opacity);
             if self.plan.hide_cursor && ui.rect_contains_pointer(area) {
                 ctx.set_cursor_icon(CursorIcon::None);
+            }
+            // On the desktop the character is the handle: a press on it moves the window.
+            let pressed = ctx.input(|i| i.pointer.primary_pressed().then(|| i.pointer.interact_pos()).flatten());
+            if drags && pressed.is_some_and(|at| character.unwrap_or(area).contains(at)) {
+                ctx.send_viewport_cmd(ViewportCommand::StartDrag);
+            }
+            if let Some(passing) = self.hit_test(rect, character, ppp) {
+                ctx.send_viewport_cmd(ViewportCommand::MousePassthrough(passing));
             }
         });
         self.presented();
         ctx.request_repaint_after(self.plan.frame_interval());
+    }
+
+    /// This frame's per-pixel click-through, for the window at `inner` (desktop points) with the frame drawn at
+    /// `character` (window points): whether the window must pass clicks through from now, when that changes. Outside
+    /// per-pixel mode it puts back the plan's whole-window state if the window was left in another one.
+    fn hit_test(&mut self, inner: Option<Rect>, character: Option<Rect>, ppp: f32) -> Option<bool> {
+        if !self.per_pixel() {
+            let full = self.plan.desktop.is_some_and(|d| d.click_through == ClickThrough::Full);
+            return self.hits.settle(full);
+        }
+        let inner = inner?;
+        let cursor = self.probe()?.cursor();
+        let window = Rect::from_min_size((inner.min.to_vec2() * ppp).to_pos2(), inner.size() * ppp);
+        let frame = character.map(|c| Rect::from_min_size(window.min + c.min.to_vec2() * ppp, c.size() * ppp));
+        self.hits.update(cursor, window, frame)
     }
 
     fn presented(&mut self) {
@@ -203,20 +280,29 @@ fn physical_to_points(x: i32, y: i32, ppp: f32) -> Pos2 {
     Pos2::new(x as f32 / ppp, y as f32 / ppp)
 }
 
-/// Paints the output: `fill` (the key, or transparent) over `area`, and the program frame over it, fitted and
-/// centred. Nothing else, ever: no editor chrome, overlay or cursor is drawn into the output.
-pub fn paint_output(painter: &egui::Painter, area: Rect, fill: Color32, program: Option<Program>) {
+/// Paints the output: `fill` (the key, or transparent) over `area`, and the program frame over it at `opacity`
+/// (0 to 1), fitted and centred; returns where the frame went. Nothing else, ever: no editor chrome, overlay or cursor
+/// is drawn into the output.
+pub fn paint_output(
+    painter: &egui::Painter,
+    area: Rect,
+    fill: Color32,
+    program: Option<Program>,
+    opacity: f32,
+) -> Option<Rect> {
     painter.rect_filled(area, 0.0, fill);
-    let Some(program) = program else { return };
+    let program = program?;
     #[allow(clippy::cast_precision_loss)] // texture sides are far below 2^24
     let size = egui::vec2(program.size.width as f32, program.size.height as f32);
     if size.x <= 0.0 || size.y <= 0.0 {
-        return;
+        return None;
     }
     let scale = (area.width() / size.x).min(area.height() / size.y);
     let shown = Rect::from_center_size(area.center(), size * scale);
     let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
-    painter.image(program.texture, shown, uv, Color32::WHITE);
+    // The frame is premultiplied, so a white tint of this alpha fades colour and coverage together.
+    painter.image(program.texture, shown, uv, Color32::WHITE.gamma_multiply(opacity.clamp(0.0, 1.0)));
+    Some(shown)
 }
 
 #[cfg(test)]

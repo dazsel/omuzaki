@@ -13,7 +13,8 @@ use egui::Color32;
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::UVec2;
 use omuzaki_stream_api::window::{
-    Backdrop, OutputSurface, WindowCaps, WindowError, WindowHost, WindowPlan, WindowSettings, WindowState,
+    Backdrop, DesktopSettings, ModeSupport, OutputSurface, WindowCaps, WindowError, WindowHost, WindowMode, WindowPlan,
+    WindowSettings, WindowState,
 };
 
 use super::plan::{DEFAULT_FPS, DEFAULT_KEY, OutputBackdrop, OutputPlan};
@@ -23,7 +24,13 @@ use crate::aux_window::{PhysicalSize, Transparency};
 enum Request {
     Open(OutputPlan),
     Close,
+    /// A desktop window's opacity and click-through, changed in place.
+    Desktop(DesktopSettings),
 }
+
+/// Why the desktop mode is unavailable where a transparent surface isn't verified (`crate::aux_window::surface`). The
+/// ops hand it to agents as it is, so it is the English of the Live workspace's word.
+const NO_DESKTOP: &str = crate::live::text::Word::OutputDesktopUnverified.english();
 
 struct Shared {
     pending: Option<Request>,
@@ -61,6 +68,13 @@ impl OutputHost {
                 window.set_open(true);
             }
             Some(Request::Close) => window.set_open(false),
+            Some(Request::Desktop(desktop)) => {
+                let mut plan = window.plan().clone();
+                if plan.desktop.is_some() {
+                    plan.desktop = Some(desktop);
+                    window.set_plan(plan);
+                }
+            }
             None => {}
         }
     }
@@ -72,8 +86,15 @@ impl OutputHost {
         let state = if status.open {
             let plan = window.plan();
             let physical = status.measured.unwrap_or(plan.size);
-            WindowState::open(UVec2::new(physical.width, physical.height), backdrop_of(plan.backdrop))
+            let mut settings = WindowSettings::default();
+            if let Some(desktop) = plan.desktop {
+                settings.mode = WindowMode::Desktop;
+                settings.desktop = desktop;
+            }
+            let backdrop = if plan.desktop.is_some() { Backdrop::Transparent } else { backdrop_of(plan.backdrop) };
+            WindowState::open(UVec2::new(physical.width, physical.height), backdrop)
                 .with_minimised(status.minimised)
+                .with_mode(&settings)
         } else {
             WindowState::Closed
         };
@@ -113,6 +134,32 @@ impl WindowHost for OutputHost {
     fn state(&self) -> WindowState {
         self.lock().state
     }
+
+    fn modes(&self) -> Vec<ModeSupport> {
+        let desktop = if self.caps.transparent {
+            ModeSupport::available(WindowMode::Desktop)
+        } else {
+            ModeSupport::unavailable(WindowMode::Desktop, NO_DESKTOP)
+        };
+        vec![ModeSupport::available(WindowMode::Studio), ModeSupport::available(WindowMode::Capture), desktop]
+    }
+
+    fn set_desktop(&self, desktop: &DesktopSettings) -> Result<(), WindowError> {
+        let mut shared = self.lock();
+        let desktop_open = matches!(shared.state, WindowState::Open { mode: WindowMode::Desktop, .. });
+        let desktop_opening = matches!(&shared.pending, Some(Request::Open(plan)) if plan.desktop.is_some());
+        if desktop_opening && let Some(Request::Open(plan)) = shared.pending.as_mut() {
+            // Not drawn yet: the open it is waiting on carries the new settings.
+            plan.desktop = Some(*desktop);
+        } else if desktop_open {
+            shared.pending = Some(Request::Desktop(*desktop));
+        } else {
+            return Err(WindowError::Unsupported("no desktop window is open".into()));
+        }
+        // Read back at once, as the op's answer and the next status expect; the frame then draws it.
+        shared.state = shared.state.with_desktop(*desktop);
+        Ok(())
+    }
 }
 
 impl std::fmt::Debug for OutputHost {
@@ -139,6 +186,7 @@ fn output_plan(size: PhysicalSize, settings: &WindowSettings) -> Result<OutputPl
         hide_cursor: settings.hide_cursor,
         always_on_top: settings.always_on_top,
         fps: DEFAULT_FPS,
+        desktop: (settings.mode == WindowMode::Desktop).then_some(settings.desktop),
     })
 }
 
@@ -157,7 +205,7 @@ fn colour32(colour: Colour) -> Color32 {
 
 #[cfg(test)]
 mod tests {
-    use omuzaki_stream_api::window::DEFAULT_TITLE;
+    use omuzaki_stream_api::window::{ClickThrough, DEFAULT_TITLE};
 
     use super::*;
 
@@ -208,6 +256,41 @@ mod tests {
         host.publish(&window, 1.0);
         assert_eq!(host.state(), WindowState::Closed);
         assert!(!window.status().open);
+    }
+
+    #[test]
+    fn the_desktop_is_listed_only_where_transparency_is_verified_and_its_settings_change_in_place() {
+        let (fallback, _) = host();
+        let desktop = |host: &OutputHost| host.modes().into_iter().find(|m| m.mode == WindowMode::Desktop);
+        let refused = desktop(&fallback).expect("listed");
+        assert!(!refused.available && refused.reason.is_some(), "{refused:?}");
+        assert!(fallback.set_desktop(&DesktopSettings::default()).is_err(), "no desktop window to change");
+
+        let host = OutputHost::new(Transparency::Verified, PhysicalSize::FULL_HD);
+        let mut window = OutputWindow::new(OutputPlan::default(), Transparency::Verified);
+        assert!(desktop(&host).is_some_and(|m| m.available));
+        let mut settings = WindowSettings::default();
+        settings.mode = WindowMode::Desktop;
+        settings.backdrop = Backdrop::Transparent;
+        host.open(&plan(960, 540), &settings).expect("queued");
+        // Changed before the window has drawn: the waiting open carries it.
+        let faint = DesktopSettings::new(0.4, ClickThrough::Transparent);
+        host.set_desktop(&faint).expect("the open is waiting");
+        host.take_requests(&mut window);
+        host.publish(&window, 1.0);
+        let WindowState::Open { mode, desktop: Some(shown), backdrop, .. } = host.state() else {
+            panic!("open on the desktop: {:?}", host.state())
+        };
+        assert_eq!((mode, shown, backdrop), (WindowMode::Desktop, faint, Backdrop::Transparent));
+        assert!(window.plan().drags() && (window.plan().opacity() - 0.4).abs() < f32::EPSILON);
+
+        // Changed while open: reported at once, drawn on the next frame, without reopening.
+        let through = DesktopSettings::new(1.0, ClickThrough::Full);
+        host.set_desktop(&through).expect("open");
+        assert!(matches!(host.state(), WindowState::Open { desktop: Some(d), .. } if d == through));
+        host.take_requests(&mut window);
+        assert_eq!(window.plan().desktop, Some(through));
+        assert!(!window.plan().drags());
     }
 
     #[test]

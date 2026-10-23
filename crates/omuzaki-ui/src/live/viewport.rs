@@ -35,6 +35,7 @@ use omuzaki_stage::{StageError, UploadOptions};
 use omuzaki_stage_api::{CameraDef, Framing};
 use omuzaki_track_api::tracker::{LatencyStats, Tracker};
 
+use super::health::Rendered;
 use super::latency::LatencyMeter;
 use super::text::{Word, text};
 use super::wiring::clock::ClockObserver;
@@ -398,6 +399,8 @@ pub struct LiveViewport {
     meter: Arc<LatencyMeter>,
     /// The tracker's frames seen at the last sample: a camera that restarted starts its numbers over.
     last_frames: u64,
+    /// The frame drawn since the publisher last took one.
+    rendered: Option<Rendered>,
 }
 
 impl LiveViewport {
@@ -426,7 +429,13 @@ impl LiveViewport {
             tracker,
             meter: LatencyMeter::shared(),
             last_frames: 0,
+            rendered: None,
         }
+    }
+
+    /// The frame drawn since the last call, for the health publisher; `None` when none was.
+    pub fn take_rendered(&mut self) -> Option<Rendered> {
+        self.rendered.take()
     }
 
     /// Records its latency in `meter` instead of the shared one (tests).
@@ -450,29 +459,32 @@ impl LiveViewport {
     /// # Errors
     /// [`ViewportError`]; the previous picture stays on screen and the next call tries again.
     pub fn frame(&mut self, ctx: &Context, dt: f32) -> Result<Option<Program>, ViewportError> {
-        if self.scene.frame(&mut self.renderer, dt)?.is_some() {
+        if let Some(out) = self.scene.frame(&mut self.renderer, dt)? {
             let texture = self.presenter.present(ctx, &mut self.renderer, self.scene.stage().target())?;
             self.program = Some(Program { texture, size: self.size });
-            self.measure();
+            let track_to_submit = self.measure();
+            self.rendered = Some(Rendered { report: out.report, track_to_submit });
         }
         publish(ctx, self.program);
         Ok(self.program)
     }
 
-    /// One latency sample for the frame just drawn, when its data came from a tracked face.
-    fn measure(&mut self) {
-        let Some(frame) = self.scene.last_frame() else { return };
+    /// One latency sample for the frame just drawn, when its data came from a tracked face; returns it.
+    fn measure(&mut self) -> Option<Duration> {
+        let frame = self.scene.last_frame()?;
         if frame.tracking != omuzaki_stage::perform::Tracking::Tracking {
-            return;
+            return None;
         }
-        let (Some(arrived), Some(clock)) = (frame.arrived, self.clock.as_ref()) else { return };
+        let (Some(arrived), Some(clock)) = (frame.arrived, self.clock.as_ref()) else { return None };
         let age = (clock().0 - arrived.0).max(0.0);
         let stats = self.tracker.as_ref().map(Tracker::latency).unwrap_or_default();
         if stats.frames < self.last_frames {
             self.meter.reset();
         }
         self.last_frames = stats.frames;
-        self.meter.record(stats.p50 + Duration::from_secs_f64(age));
+        let latency = stats.p50 + Duration::from_secs_f64(age);
+        self.meter.record(latency);
+        Some(latency)
     }
 
     /// The program frame's pixels, as last drawn: a thumbnail, or a test looking at what the streamer sees.
@@ -548,11 +560,12 @@ impl StagePanel {
             );
             return;
         };
-        crate::output_window::paint_output(
+        let _ = crate::output_window::paint_output(
             &ui.painter().with_clip_rect(rect),
             rect,
             egui::Color32::TRANSPARENT,
             Some(program),
+            1.0,
         );
     }
 }

@@ -17,15 +17,15 @@ Snapshot refreshed hourly by `refresh.py` (git, GitHub and CI parts); last refre
 
 | | |
 |---|---|
-| Agent-hours | 1,615 (113 Director, 627 local subagents, 875 cloud sessions); see "Coverage" for what is estimated |
+| Agent-hours | 1,620 (113 Director, 627 local subagents, 879 cloud sessions); see "Coverage" for what is estimated |
 | Most agents at once | 52, at 7:25 PM PT on 2026-10-15 (23 local, 51 cloud at their own peak) |
-| Lines in the repository | 977,943 (Rust source 493,956; Rust tests and benches 326,616; docs 54,080; tooling and CI 24,771; other 78,520) |
-| Commits on `main` | 1,034 (not counting merge commits) |
-| Pull requests | 846 opened and 741 merged (415 and 392 here; 431 and 349 in the earlier repository before the move) |
-| Issues (this repository) | 1,921 opened, 882 closed |
-| CI runs | 8,160 (6,499 here, 1,661 in the earlier repository) |
+| Lines in the repository | 1,003,528 (Rust source 509,744; Rust tests and benches 331,112; docs 54,249; tooling and CI 24,771; other 83,652) |
+| Commits on `main` | 1,061 (not counting merge commits) |
+| Pull requests | 848 opened and 744 merged (417 and 395 here; 431 and 349 in the earlier repository before the move) |
+| Issues (this repository) | 1,921 opened, 904 closed |
+| CI runs | 8,196 (6,535 here, 1,661 in the earlier repository) |
 | Code reviews | 1,267 recorded (1,244 by Codex) |
-| Tokens, cumulative | about 30 billion of every kind, mostly cache reads: 15.6 B in local sessions (measured), 9.5 B in cloud sessions before 10-21 (estimated) and 4.7 B in the cloud project since (measured, `cloud_usage_snapshots.csv`) |
+| Tokens, cumulative | about 30 billion of every kind, mostly cache reads: 15.6 B in local sessions (measured), 9.5 B in cloud sessions before 10-21 (estimated) and 4.9 B in the cloud project since (measured, `cloud_usage_snapshots.csv`) |
 
 ## Charts
 
@@ -67,11 +67,11 @@ Drawn by `charts.py` (standard library only) from the CSVs; `refresh.py` redraws
 | `summary.json` | The totals above, plus the coverage of each dataset | (snapshot) |
 | `agents_15min.csv` | Average number of agents working in each 15-minute bucket (UTC), by kind | **complete to 2026-10-21 3:36 PM PT, partial after** (see below) |
 | `agent_hours_daily.csv` | Agent-hours per day (Pacific), by kind | same as above |
-| `loc_hourly.csv` | Lines in the repository at the end of each hour with commits, by category | 2026-10-22 4:00 PM PT |
-| `commits_daily.csv` | Commits on `main` per day: count, lines added and deleted, and the `Agent-Lane` and `Agent-Model` trailers | 2026-10-22 5:43 PM PT |
-| `prs_daily.csv` | Pull requests opened and merged per day, in this repository and the earlier one | this repository 2026-10-22 5:43 PM PT; the earlier one 2026-10-22 1:46 PM PT (from 2026-10-11 8:45 PM PT) |
-| `issues_daily.csv` | Issues opened and closed per day in this repository | 2026-10-22 5:43 PM PT |
-| `ci_daily.csv` | CI runs per day and workflow: result counts and wall-clock minutes (start to last update, not billed minutes); the earlier repository's runs are one "all" row a day | this repository 2026-10-22 5:43 PM PT; the earlier one 2026-10-18 8:22 AM PT |
+| `loc_hourly.csv` | Lines in the repository at the end of each hour with commits, by category | 2026-10-22 6:00 PM PT |
+| `commits_daily.csv` | Commits on `main` per day: count, lines added and deleted, and the `Agent-Lane` and `Agent-Model` trailers | 2026-10-22 7:43 PM PT |
+| `prs_daily.csv` | Pull requests opened and merged per day, in this repository and the earlier one | this repository 2026-10-22 7:43 PM PT; the earlier one 2026-10-22 1:46 PM PT (from 2026-10-11 8:45 PM PT) |
+| `issues_daily.csv` | Issues opened and closed per day in this repository | 2026-10-22 7:43 PM PT |
+| `ci_daily.csv` | CI runs per day and workflow: result counts and wall-clock minutes (start to last update, not billed minutes); the earlier repository's runs are one "all" row a day | this repository 2026-10-22 7:43 PM PT; the earlier one 2026-10-18 8:22 AM PT |
 | `backlog_snapshots.csv` | Open issues and open pull requests at each refresh (one row per run) | each row's own time |
 | `events.csv` | The milestones drawn as dashed lines on the charts (the first commit, the move to this repository, the peak, the pause, the switch to spine-first work) | kept by hand; add a row when something changes how the work runs |
 | `tokens_daily.csv` | Tokens per day and cumulative, by source and kind (input, output, cache write, cache read); totals only, no cost. `local_measured` is every local session (the Director and its subagents) from its own logs; `cloud_estimated` is the cloud sessions before the move, at the local agents' tokens per agent-hour times their estimated hours | local 2026-10-22 4:39 PM PT; cloud estimates stop at the move (2026-10-21 3:36 PM PT), and the cloud project's measured totals after it are in `cloud_usage_snapshots.csv`. Not refreshed hourly: it needs the local logs |
@@ -91,7 +91,7 @@ Drawn by `charts.py` (standard library only) from the CSVs; `refresh.py` redraws
   and activity markers in pull-request comments.
 - **After 3:36 PM PT on 2026-10-21 the agent numbers are partial.** The area agents in the cloud project commit under
   the project's identity and report through trailers, so their time comes from those trailers and, since the hourly
-  refresh started, from the cloud project's session list (each session counts from its start to its last activity; 97
+  refresh started, from the cloud project's session list (each session counts from its start to its last activity; 101
   hours to the snapshot, under `cloud_reported`). That is an undercount: the cloud project's own usage records are the
   full source for this period.
 - **Lines of code** are counted at the last commit of each hour on `main`, and before the move on the earlier

@@ -164,3 +164,39 @@ pub const fn status(status: super::tokens::Status) -> &'static str {
         Status::Danger => X_CIRCLE,
     }
 }
+/// The Build Theatre: watching agents work.
+pub const BINOCULARS: &str = egui_phosphor::regular::BINOCULARS;
+/// Draw to direct: circling a region for the agents.
+pub const PEN: &str = egui_phosphor::regular::PEN_NIB;
+/// Step: let a paused agent take one step.
+pub const SKIP_FORWARD: &str = egui_phosphor::regular::SKIP_FORWARD;
+/// A plan: a checklist.
+pub const LIST_CHECKS: &str = egui_phosphor::regular::LIST_CHECKS;
+/// Pop a panel out into its own window.
+pub const ARROW_SQUARE_OUT: &str = egui_phosphor::regular::ARROW_SQUARE_OUT;
+/// Following: the view keeps the agent's work in sight.
+pub const CROSSHAIR: &str = egui_phosphor::regular::CROSSHAIR;
+/// Compare: pictures side by side.
+pub const COLUMNS: &str = egui_phosphor::regular::COLUMNS;
+/// Steps: a stack of cards, one per transaction.
+pub const CARDS: &str = egui_phosphor::regular::CARDS;
+/// A file of no particular kind.
+pub const FILE: &str = egui_phosphor::regular::FILE;
+/// Motion data.
+pub const PERSON_SIMPLE_RUN: &str = egui_phosphor::regular::PERSON_SIMPLE_RUN;
+/// Not allowed: the rights badge of a file that can't be published.
+pub const PROHIBIT: &str = egui_phosphor::regular::PROHIBIT;
+/// Code: the Script workspace and its empty states.
+pub const CODE: &str = egui_phosphor::regular::CODE;
+/// The Console: where a script is written and run.
+pub const TERMINAL_WINDOW: &str = egui_phosphor::regular::TERMINAL_WINDOW;
+/// Save.
+pub const FLOPPY: &str = egui_phosphor::regular::FLOPPY_DISK;
+/// The Ops reference: a call's braces.
+pub const BRACKETS_CURLY: &str = egui_phosphor::regular::BRACKETS_CURLY;
+/// A saved script.
+pub const FILE_CODE: &str = egui_phosphor::regular::FILE_CODE;
+/// Select: pick a part from another view.
+pub const CURSOR: &str = egui_phosphor::regular::CURSOR_CLICK;
+/// Compare two states: a diff.
+pub const GIT_DIFF: &str = egui_phosphor::regular::GIT_DIFF;
