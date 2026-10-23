@@ -62,7 +62,7 @@ impl Hand {
     }
 
     /// The bone ids `[upper arm, lower arm, hand]`, if the skeleton has all three.
-    fn ids(self, skeleton: &Skeleton) -> Option<[BoneId; 3]> {
+    pub(super) fn ids(self, skeleton: &Skeleton) -> Option<[BoneId; 3]> {
         let map = skeleton.humanoid_map()?;
         let [a, b, c] = self.bones();
         Some([map.get(a)?, map.get(b)?, map.get(c)?])
@@ -79,14 +79,14 @@ fn unit_rotation(q: Quat) -> Option<Quat> {
 }
 
 /// The inverse of a rigid transform.
-fn inverse(t: Transform) -> Transform {
+pub(super) fn inverse(t: Transform) -> Transform {
     let rotation = t.rotation.inverse();
     Transform { translation: rotation * -t.translation, rotation }
 }
 
 /// A bone's transform in the skeleton's root space, found by multiplying up its chain (a handful of multiplies, so the
 /// arm code never runs forward kinematics over the whole skeleton).
-fn bone_world(skeleton: &Skeleton, pose: &Pose, bone: BoneId) -> Transform {
+pub(super) fn bone_world(skeleton: &Skeleton, pose: &Pose, bone: BoneId) -> Transform {
     let mut world = pose.local[bone.index()];
     let mut at = skeleton.bones()[bone.index()].parent;
     while let Some(parent) = at {
@@ -225,13 +225,19 @@ impl Capsule {
     }
 }
 
-#[allow(clippy::many_single_char_names)] // the closest-points derivation names its terms a, b, c, e, f, s, t
-/// The shortest distance between the segments `p1`-`q1` and `p2`-`q2` (closest points of two segments, clamped to both).
+/// The shortest distance between the segments `p1`-`q1` and `p2`-`q2`.
 fn segment_distance(p1: Vec3, q1: Vec3, p2: Vec3, q2: Vec3) -> f32 {
+    let (s, t) = closest_points(p1, q1, p2, q2);
+    (p1 + (q1 - p1) * s).distance(p2 + (q2 - p2) * t)
+}
+
+#[allow(clippy::many_single_char_names)] // the closest-points derivation names its terms a, b, c, e, f, s, t
+/// Where the segments `p1`-`q1` and `p2`-`q2` come closest: `(s, t)`, the fractions along each (clamped to both).
+pub(super) fn closest_points(p1: Vec3, q1: Vec3, p2: Vec3, q2: Vec3) -> (f32, f32) {
     const TINY: f32 = 1e-12;
     let (d1, d2, r) = (q1 - p1, q2 - p2, p1 - p2);
     let (a, e, f) = (d1.length_squared(), d2.length_squared(), d2.dot(r));
-    let (s, t) = if a <= TINY && e <= TINY {
+    if a <= TINY && e <= TINY {
         (0.0, 0.0)
     } else if a <= TINY {
         (0.0, (f / e).clamp(0.0, 1.0))
@@ -252,8 +258,7 @@ fn segment_distance(p1: Vec3, q1: Vec3, p2: Vec3, q2: Vec3) -> f32 {
                 (s, t)
             }
         }
-    };
-    (p1 + d1 * s).distance(p2 + d2 * t)
+    }
 }
 
 /// What the clearance pass of [`CrossedArms`] settled on.
