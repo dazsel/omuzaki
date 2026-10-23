@@ -13,6 +13,7 @@ use omuzaki_core::mesh::MeshData;
 
 use super::KitError;
 use super::curve::fraction;
+use super::skin;
 
 /// A rectangular grid of points, `rows x cols`, stored row by row. Row `i` and column `j` are the surface's two
 /// parameters. The shape is checked on construction (at least 2 x 2, all points finite), so the functions that take a
@@ -318,28 +319,17 @@ impl MeshBuilder {
         Ok(index)
     }
 
-    /// Keeps the four largest positive weights (ties keep their given order), merges repeated joints, normalises them to
-    /// sum to 1 and indexes them. No usable weight means all on the hips.
-    #[allow(clippy::cast_possible_truncation)] // weights are in 0..=1; f32 is the mesh's precision
+    /// The skin of one vertex by the kit's one rule ([`skin::limit_influences`] to four, then [`skin::normalise`]):
+    /// repeats merged, the four heaviest positive weights kept (a tie at the cut drops the tied group, so a mirrored
+    /// skin stays mirrored), normalised to sum to 1 and indexed. No usable weight means all on the hips.
     fn influences(&mut self, blend: &[(JointRef, f32)]) -> Result<Influences, KitError> {
-        let mut acc: Vec<(&JointRef, f64)> = Vec::with_capacity(blend.len());
-        for (joint, w) in blend.iter().filter(|(_, w)| w.is_finite() && *w > 0.0) {
-            match acc.iter_mut().find(|(k, _)| *k == joint) {
-                Some(entry) => entry.1 += f64::from(*w),
-                None => acc.push((joint, f64::from(*w))),
-            }
-        }
-        let hips = JointRef::HIPS;
-        if acc.is_empty() {
-            acc.push((&hips, 1.0));
-        }
-        acc.sort_by(|a, b| b.1.total_cmp(&a.1));
-        acc.truncate(4);
-        let total: f64 = acc.iter().map(|(_, w)| w).sum();
+        let mut kept = blend.to_vec();
+        skin::limit_influences(&mut kept, 4);
+        skin::normalise(&mut kept);
         let (mut joints, mut weights) = ([0_u16; 4], [0.0_f32; 4]);
-        for (slot, (joint, w)) in acc.into_iter().enumerate() {
+        for (slot, (joint, w)) in kept.iter().enumerate() {
             joints[slot] = self.joint_index(joint)?;
-            weights[slot] = (w / total) as f32;
+            weights[slot] = *w;
         }
         Ok((joints, weights))
     }
