@@ -52,8 +52,8 @@ fn sync_call(scene: &SceneId, member: &MemberId, drive: &DriveMap) -> Result<OpC
 #[serde(deny_unknown_fields)]
 #[schemars(extend(
     "examples" = [
-        {"member": "kit", "group": "gaze", "driver": "tracker", "weight": 0.0},
-        {"scene": "main", "member": "kit", "group": "head", "driver": "tracker", "weight": 0.5}
+        {"member": "main", "group": "gaze", "driver": "tracker", "weight": 0.0},
+        {"scene": "main", "member": "main", "group": "head", "driver": "tracker", "weight": 0.5}
     ],
     "x-omuzaki-fixture" = "scenes"
 ))]
@@ -126,7 +126,7 @@ register_op!(Set);
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(extend(
-    "examples" = [{"member": "kit", "drive": {"gaze": {"tracker": 0.0}}}],
+    "examples" = [{"member": "main", "drive": {"gaze": {"tracker": 0.0}}}],
     "x-omuzaki-fixture" = "scenes"
 ))]
 pub struct Sync {
@@ -174,7 +174,7 @@ register_op!(Sync);
 /// and the map its performer uses when it is performing.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(extend("examples" = [{}, {"member": "kit"}], "x-omuzaki-fixture" = "scenes"))]
+#[schemars(extend("examples" = [{}, {"member": "main"}], "x-omuzaki-fixture" = "scenes"))]
 pub struct List {
     /// The scene; the one the project opens in when left out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
