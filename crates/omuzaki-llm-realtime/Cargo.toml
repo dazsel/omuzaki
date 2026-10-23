@@ -1,0 +1,29 @@
+[package]
+name = "omuzaki-llm-realtime"
+description = "A realtime speech-to-speech provider for the AI performer (#2347): the OpenAI Realtime API over a WebSocket, as a bring-your-own-key Duplex."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+base64.workspace = true
+omuzaki-audio-api = { path = "../omuzaki-audio-api" }
+omuzaki-performer-api = { path = "../omuzaki-performer-api" }
+omuzaki-secrets-api = { path = "../omuzaki-secrets-api" }
+rustls.workspace = true
+rustls-platform-verifier.workspace = true
+serde_json.workspace = true
+# The session's socket: sync, one connection thread, no async runtime; TLS through rustls and the OS trust store.
+tungstenite = "0.30"
+
+[lints]
+workspace = true
+
+[package.metadata.omuzaki]
+kind = "Implementation"
+summary = "a realtime speech-to-speech provider for the AI performer (#2347): `OpenAiRealtime`, the OpenAI Realtime API (GA and beta event names) over a sync WebSocket with rustls and the OS trust store, as a bring-your-own-key `Duplex`: the microphone tap resampled to 24 kHz PCM16 and appended as it is captured, server-side turn detection with automatic replies on or off, reply audio and transcript streamed back, cancel with truncation to what was heard, each reply's usage, and the model's prices; plain `ws://` only to this machine; native only"
+# Native only: a socket to the provider.
+wasm = false

@@ -5681,6 +5681,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-llm-realtime"
+version = "0.0.0"
+dependencies = [
+ "base64",
+ "omuzaki-audio-api",
+ "omuzaki-performer-api",
+ "omuzaki-secrets-api",
+ "rustls",
+ "rustls-platform-verifier",
+ "serde_json",
+ "tungstenite",
+]
+
+[[package]]
 name = "omuzaki-mcp"
 version = "0.0.0"
 dependencies = [
