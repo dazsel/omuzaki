@@ -157,7 +157,9 @@ fn operate(h: &mut Harness<'_, Studio>, control: &Control) -> bool {
         Role::Slider | Role::SpinButton => {
             node.focus();
             h.run_steps(2);
-            press_for(h, Modifiers::NONE, Key::ArrowRight, 4);
+            // A slider steps on Right, a number field on Up.
+            let key = if control.role == Role::Slider { Key::ArrowRight } else { Key::ArrowUp };
+            press_for(h, Modifiers::NONE, key, 4);
             drag_for(h, &[rect.center(), rect.center() + vec2(12.0, 0.0), rect.center() + vec2(24.0, 0.0)], 2);
         }
         Role::TextInput => {
@@ -189,6 +191,14 @@ fn operate(h: &mut Harness<'_, Studio>, control: &Control) -> bool {
             {
                 again.click();
             }
+        }
+        Role::ComboBox => {
+            // Opened and moved to the next option, as a person picking another one does.
+            node.focus();
+            h.run_steps(2);
+            press_for(h, Modifiers::NONE, Key::Enter, 3);
+            press_for(h, Modifiers::NONE, Key::ArrowDown, 2);
+            press_for(h, Modifiers::NONE, Key::Enter, 3);
         }
         _ => node.click(),
     }

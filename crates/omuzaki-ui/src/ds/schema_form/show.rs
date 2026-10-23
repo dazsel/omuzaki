@@ -13,7 +13,7 @@ use crate::ds::theme::{Ds, ds};
 use crate::ds::tokens::{radius, size, space};
 use crate::ds::widgets::{
     Button, Choice, ColourEvent, ColourField, CurveEditor, CurveEvent, Dropdown, FormRow, NumberField, ParamEvent,
-    ParamSlider, Section, Segment, Segmented, TextField, Toggle,
+    ParamSlider, Section, Segment, Segmented, TextField, Toggle, segmented,
 };
 
 /// Options a dropdown holds without allocating; a longer list costs one `Vec` per frame.
@@ -696,7 +696,8 @@ fn say_length<'b>(buf: &'b mut String, ds: &Ds, rule: &TextRule) -> &'b str {
     buf
 }
 
-/// A segmented control for two to five options, a dropdown for the rest. True when the choice changed.
+/// A segmented control for two to five options whose labels fit whole, a dropdown for the rest. True when the choice
+/// changed.
 fn choice(ui: &mut Ui, name: &str, node: &Node, opts: &[Opt], index: &mut usize) -> bool {
     let len = opts.len();
     if (2..=MAX_SEGMENTS).contains(&len) {
@@ -704,7 +705,10 @@ fn choice(ui: &mut Ui, name: &str, node: &Node, opts: &[Opt], index: &mut usize)
             let at = i.min(len - 1);
             Segment::new(at, opts.get(at).map_or("", |o| o.label.as_str()))
         });
-        return ui.add(Segmented::new(name, index, &segments[..len]).id_salt(&node.path)).changed();
+        // Cut labels ("n…", "h…") make a person hover each one to read it: a dropdown names them all.
+        if segmented::fits(ui.ctx(), &segments[..len], ui.available_width()) {
+            return ui.add(Segmented::new(name, index, &segments[..len]).id_salt(&node.path)).changed();
+        }
     }
     if len <= INLINE_CHOICES {
         let choices: [Choice<'_, usize>; INLINE_CHOICES] = std::array::from_fn(|i| {
