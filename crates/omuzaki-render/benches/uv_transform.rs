@@ -14,8 +14,8 @@ use std::time::Instant;
 use omuzaki_core::glam::{Mat4, UVec2, Vec2, Vec3};
 use omuzaki_render::{AdapterPreference, HeadlessOptions, WgpuRenderer};
 use omuzaki_render_api::{
-    AlphaEncoding, Camera, Colour, Instance, Mapping, Material, Overlay, Projection, Quality, Renderer,
-    Scene, TargetDesc, TextureDesc, UvTransform,
+    AlphaEncoding, Camera, Colour, Instance, Mapping, Material, Overlay, Projection, Quality, Renderer, Scene,
+    TargetDesc, TextureDesc, UvTransform,
 };
 use omuzaki_render_mock::shapes;
 

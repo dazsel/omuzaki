@@ -554,8 +554,10 @@ impl FramePass for DepthOfField {
         shared.gpu.queue.write_buffer(&layers.params, 0, bytemuck::bytes_of(&params));
 
         let scene = cx.attachments.resolved_colour(cx.encoder).clone();
-        let depth =
-            cx.attachments.depth_input(&shared.gpu.device, &shared.layouts.depth_input[usize::from(multisampled)]).clone();
+        let depth = cx
+            .attachments
+            .depth_input(&shared.gpu.device, &shared.layouts.depth_input[usize::from(multisampled)])
+            .clone();
         let mut pass = begin(cx.encoder, "dof prepass", &[Some(clear_to(&layers.colour)), Some(clear_to(&layers.coc))]);
         pass.set_pipeline(prepass);
         pass.set_bind_group(0, &scene, &[]);

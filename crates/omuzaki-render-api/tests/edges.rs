@@ -36,7 +36,7 @@ fn a_silhouette_against_the_background_is_a_jump_and_the_picture_edge_is_not() {
 fn a_steep_slope_continues_itself_and_draws_nothing() {
     let lines = EdgeLines::new(Colour::BLACK, 2.0);
     // 10 cm deeper per pixel: far more than 2% of the depth, but a plane.
-    let row: Vec<f32> = (0..W).map(|x| 1.0 + 0.1 * x as f32).collect();
+    let row: Vec<f32> = (0..W).map(|x| 1.0 + 0.1 * f32::from(u8::try_from(x).unwrap_or(0))).collect();
     assert!(coverage(&lines, &row, 1.0).iter().all(|c| *c == 0.0));
     // A small jump below the step draws nothing either.
     let row: Vec<f32> = (0..W).map(|x| if x < 6 { 1.0 } else { 1.01 }).collect();
@@ -49,4 +49,16 @@ fn a_supersampled_picture_draws_the_same_width_in_output_pixels() {
     let row: Vec<f32> = (0..W).map(|x| if x < 6 { 1.0 } else { 1.5 }).collect();
     let got = coverage(&lines, &row, 2.0);
     assert_eq!(&got[3..7], &[0.0, 1.0, 1.0, 0.0], "two internal pixels make one output pixel: {got:?}");
+}
+
+#[test]
+fn a_steep_chin_over_a_flat_neck_is_a_jump() {
+    let lines = EdgeLines::new(Colour::BLACK, 1.0);
+    // The chin turns away 4 cm a pixel towards its edge at 1 m, the neck behind it is flat at 1.03 m: continuing the
+    // chin's slope would reach past the neck, but the neck's own slope leaves a 3 cm step.
+    let row: Vec<f32> =
+        (0..W).map(|x| if x < 6 { 0.8 + 0.04 * f32::from(u8::try_from(x).unwrap_or(0)) } else { 1.03 }).collect();
+    let got = coverage(&lines, &row, 1.0);
+    assert!((got[5] - 1.0).abs() < 1e-6, "the chin's last pixel is covered: {got:?}");
+    assert!(got[6..].iter().all(|c| *c == 0.0), "the neck draws nothing: {got:?}");
 }

@@ -5,7 +5,7 @@
 //! reads and checks the files, so a broken file fails the test that loads it.
 
 use omuzaki_face_api::ExpressionId;
-use omuzaki_render_api::Colour;
+use omuzaki_render_api::{Colour, EdgeLines};
 use omuzaki_stage_api::Framing;
 use serde::Deserialize;
 
@@ -96,6 +96,11 @@ pub struct PresetOutline {
     pub colour: Colour,
     /// The thinnest the line may be in the picture, in pixels: a thinner line is widened to this, a wider one stays.
     pub min_px: f32,
+    /// When set, a line `min_px` wide is also drawn wherever the depth jumps by more than this share of the depth (the
+    /// render-api `EdgeLines` step): under the chin, at the ears and along the hair, where a hull line hides behind
+    /// the part in front.
+    #[serde(default)]
+    pub edge_step: Option<f32>,
 }
 
 impl RenderPreset {
@@ -159,6 +164,20 @@ impl RenderPreset {
             && !(line.min_px.is_finite() && line.min_px > 0.0)
         {
             return Err(bad(format!("outline.min_px {} must be above 0", line.min_px)));
+        }
+        if let Some(line) = &self.outline
+            && let Some(step) = line.edge_step
+        {
+            if !(step.is_finite() && step > 0.0) {
+                return Err(bad(format!("outline.edge_step {step} must be above 0")));
+            }
+            if line.min_px > EdgeLines::MAX_WIDTH_PX {
+                return Err(bad(format!(
+                    "outline.min_px {} must be at most {} when the line also draws at depth edges",
+                    line.min_px,
+                    EdgeLines::MAX_WIDTH_PX
+                )));
+            }
         }
         if let Some(iod) = self.min_iod_px
             && !(iod.is_finite() && iod > 0.0)

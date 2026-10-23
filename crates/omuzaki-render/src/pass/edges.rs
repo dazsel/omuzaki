@@ -77,8 +77,10 @@ impl Edges {
         }
         let Some((_, pipeline)) = slot.as_ref() else { return false };
         shared.gpu.queue.write_buffer(&self.params, 0, bytemuck::bytes_of(&params(cx, &edges)));
-        let depth =
-            cx.attachments.depth_input(&shared.gpu.device, &shared.layouts.depth_input[usize::from(multisampled)]).clone();
+        let depth = cx
+            .attachments
+            .depth_input(&shared.gpu.device, &shared.layouts.depth_input[usize::from(multisampled)])
+            .clone();
         let Some(mut pass) = cx.attachments.overlay_pass(cx.encoder, "edge lines") else { return false };
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &self.params_group, &[]);

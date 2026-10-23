@@ -247,7 +247,7 @@ then, by a reviewed API change. The crate is the home for the other image measur
   can be as little as about 19 L* below the lit skin, and a key light adds shade of the same depth. In the prototype, an
   outline that faint made the fill leak (refused) with the fixed skin window, and measured with up to 4% of IOD error
   with the adaptive one (§9.5). A dark line and flat light take the palette out of the measurement.
-- **Size:** at least 160 px of IOD (a 768 px face framing gives about 250). The prototype refused render-like faces
+- **Size:** at least 160 px of IOD (a 1024 px face framing, which holds the hair, gives about 200). The prototype refused render-like faces
   below 96 px of IOD (the outline became thinner than a pixel and the fill leaked) and measured them from 96 px.
 
 ### D11. Front views only, with a pose check

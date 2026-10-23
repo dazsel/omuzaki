@@ -16,7 +16,7 @@ use omuzaki_core::time::SystemClock;
 use omuzaki_doc_api::DocRead;
 use omuzaki_face_api::ExpressionId;
 use omuzaki_ops_api::{JobCtx, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
-use omuzaki_render_api::{Camera, Capabilities, MtoonSupport, Outline, Post, Projection};
+use omuzaki_render_api::{Camera, Capabilities, EdgeLines, MtoonSupport, Outline, Post, Projection};
 use omuzaki_stage_api::{CameraId, Framing, Lighting, MemberId, SceneDef, SceneError, SceneId};
 use omuzaki_store_api::Store;
 use schemars::JsonSchema;
@@ -53,7 +53,7 @@ fn one() -> f32 {
         {"character": "kit"},
         {"character": "kit", "framing": "bust", "yaw": 30.0, "size": [512, 512], "quality": "live"},
         {"character": "kit", "light_rig": "viewer-candle", "framing": "face"},
-        {"character": "kit", "preset": "measure", "size": [768, 768]},
+        {"character": "kit", "preset": "measure", "size": [1024, 1024]},
         {"character": "kit", "pose": {"id": "wave-right", "mirror": true}}
     ],
     "x-omuzaki-fixture" = "character"
@@ -105,8 +105,8 @@ pub struct Preview {
     pub quality: RenderQuality,
     /// A named render preset (`measure`) that fixes part of the picture; the arguments it fixes are left out.
     /// `measure`: the face framing through an orthographic camera from the front, the `measure-flat` rig, the neutral
-    /// face, no post effects, and every line `#1a1a1a` and at least 1.5 px wide; it asks for at least 160 px between
-    /// the eyes (a 768 px square gives about 250).
+    /// face, no post effects, and every line `#1a1a1a` and at least 1.5 px wide, drawn at depth jumps too; it asks for
+    /// at least 160 px between the eyes (a 1024 px square gives about 200).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preset: Option<String>,
 }
@@ -363,7 +363,12 @@ impl Op for Preview {
         }
         job.checkpoint("rendering", 0.2)?;
         let pose = self.pose.as_ref().map(|pose| pose.resolve("pose", &body)).transpose()?;
-        let spec = StillSpec::in_scene(staged, size, self.quality.quality()).with_pose(pose);
+        let mut spec = StillSpec::in_scene(staged, size, self.quality.quality()).with_pose(pose);
+        if let Some(line) = preset.and_then(|p| p.outline)
+            && let Some(step) = line.edge_step
+        {
+            spec.light.edges = Some(EdgeLines::new(line.colour, line.min_px).with_step(step));
+        }
         let stills = with_renderer(job, |renderer| render_body_stills(renderer, body, &spec, &[shot]))?;
         let still = stills.into_iter().next().ok_or_else(|| OpError::internal("the render gave no picture"))?;
         if let (Some(min), Some(face)) = (preset.and_then(|p| p.min_iod_px), &still.face)
@@ -377,7 +382,7 @@ impl Op for Preview {
                     face.iod()
                 ),
             )
-            .hint("give a larger size: a 768 px square gives about 250 px between the eyes"));
+            .hint("give a larger size: a 1024 px square gives about 200 px between the eyes"));
         }
         let png = encode_png(&still.image).map_err(|e| OpError::internal(e.to_string()))?;
         let stored = store_png(job, &png)?;

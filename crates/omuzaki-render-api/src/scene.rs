@@ -328,8 +328,10 @@ impl EdgeLines {
     /// wide at any scale.
     ///
     /// A pixel is covered when it lies on a surface and a jump is within the band's width of it along a direction
-    /// whose pixels from it up to the jump are all on a surface: the band is the near side's. The picture's own edge
-    /// is not a jump.
+    /// whose pixels from it up to the jump are all on a surface: the band is the near side's. A jump is a step from
+    /// one pixel to the next of more than `step` times the depth, beyond what the gentler of the two sides' slopes
+    /// explains, so a surface seen edge-on draws no line and a steep chin over a flat neck does. The picture's own
+    /// edge is not a jump.
     pub fn coverage(&self, depth: impl Fn(i32, i32) -> Option<f32>, x: i32, y: i32, scale: f32) -> f32 {
         const DIRECTIONS: [(i32, i32); 8] = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)];
         let surface = |d: Option<f32>| d.filter(|d| d.is_finite());
@@ -355,7 +357,13 @@ impl EdgeLines {
                 if share <= covered {
                     break;
                 }
-                let off = b - before.map_or(a, |c| 2.0 * a - c);
+                // The gap between the two surfaces, less what the gentler of their slopes explains: a slope continued
+                // from either side (a steep chin's or a flat neck's) is not a jump, but one side's steepness alone
+                // can't hide the other surface's step. A side whose slope can't be told (the background or the picture's
+                // edge beyond it) leaves it to the other.
+                let near = before.map(|c| a - c);
+                let far = surface(depth(x + (k + 1) * dx, y + (k + 1) * dy)).filter(|_| b.is_finite()).map(|d| d - b);
+                let off = b - a - gentler(near, far);
                 if off > self.step * a {
                     covered = share;
                     break;
@@ -368,6 +376,22 @@ impl EdgeLines {
             }
         }
         covered
+    }
+}
+
+/// Of two slopes, the one nearer zero, and zero when they disagree in sign; the one that is known when the other isn't.
+fn gentler(near: Option<f32>, far: Option<f32>) -> f32 {
+    match (near, far) {
+        (Some(near), Some(far)) if near * far <= 0.0 => 0.0,
+        (Some(near), Some(far)) => {
+            if near.abs() < far.abs() {
+                near
+            } else {
+                far
+            }
+        }
+        (Some(one), None) | (None, Some(one)) => one,
+        (None, None) => 0.0,
     }
 }
 

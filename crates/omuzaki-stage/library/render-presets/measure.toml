@@ -7,5 +7,7 @@ camera = { framing = "face", projection = "orthographic", yaw = 0, pitch = 0 }
 light_rig = "measure-flat"
 expression = "neutral"
 post = "off"
-outline = { colour = "#1a1a1a", min_px = 1.5 }
+# The line also draws at every depth jump of 0.2% (#2319): a kit head meets its neck within millimetres under the chin,
+# where the hull line hides, and the measure needs the face's outline closed.
+outline = { colour = "#1a1a1a", min_px = 1.5, edge_step = 0.002 }
 min_iod_px = 160

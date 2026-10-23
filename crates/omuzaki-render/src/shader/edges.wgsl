@@ -42,6 +42,14 @@ fn on_surface(d: f32) -> bool {
     return d >= 0.0 && d < BACKGROUND;
 }
 
+// Of two slopes, the one nearer zero; zero when they disagree in sign.
+fn gentler(near: f32, far: f32) -> f32 {
+    if (near * far <= 0.0) {
+        return 0.0;
+    }
+    return select(far, near, abs(near) < abs(far));
+}
+
 @fragment
 fn fs_edges(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     let p = vec2<i32>(position.xy);
@@ -80,8 +88,22 @@ fn fs_edges(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
                 break;
             }
             let a = here;
-            let continued = select(2.0 * a - before, a, !on_surface(before));
-            let off = b - continued;
+            // The gap less what the gentler of the two sides' slopes explains (`EdgeLines::coverage`); a side whose
+            // slope can't be told leaves it to the other.
+            let d = distance_at(p + (k + 1) * dir);
+            let near_known = on_surface(before);
+            let far_known = on_surface(d) && on_surface(b);
+            let near = a - before;
+            let far = d - b;
+            var slope = 0.0;
+            if (near_known && far_known) {
+                slope = gentler(near, far);
+            } else if (near_known) {
+                slope = near;
+            } else if (far_known) {
+                slope = far;
+            }
+            let off = b - a - slope;
             if (off > step * a) {
                 covered = share;
                 break;
