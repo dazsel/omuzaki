@@ -10,6 +10,7 @@
 //! - [`decide`]: the decision layer (#2348): the rule floor, the gates and a local-model decider.
 //! - [`systemone`]: the System One provider (Jev, by `TypeSafe`), a bring-your-own-key option.
 //! - [`eval`]: the decision layer's measure: latency and agreement with a labelled set of moments.
+//! - [`realtime`]: [`realtime::RealtimeShow`], the turn loop over a realtime speech-to-speech provider (#2347).
 //! - [`show`]: [`show::Show`], the turn loop (§5): the floor, barge-in, private turns, talk limits, intent timing.
 //!
 //! Callers import by module path (ADR 0054 §2).
@@ -28,5 +29,6 @@ pub mod eval;
 pub mod parser;
 pub mod persona;
 pub mod prompt;
+pub mod realtime;
 pub mod show;
 pub mod systemone;

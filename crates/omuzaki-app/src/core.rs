@@ -21,7 +21,7 @@ use omuzaki_mcp::{LibraryProvider, MeasureProvider, MetricsProvider, MetricsSour
 use omuzaki_metrics_api::MetricsReader;
 use omuzaki_ops::Executor;
 use omuzaki_ops_api::{
-    Actor, Event, Grants, Jobs, Mode, OpError, Outcome, ProjectDir, Request, Runner, Services, ServicesBuilder,
+    Actor, Budget, Event, Grants, Jobs, Mode, OpError, Outcome, ProjectDir, Request, Runner, Services, ServicesBuilder,
     Sessions,
 };
 use omuzaki_settings_api::service::Settings;
@@ -59,6 +59,8 @@ pub struct AppOptions {
     pub approver: bool,
     /// The grants an MCP client gets unless a token says otherwise.
     pub agent_grants: Grants,
+    /// The budget an MCP client's session starts with (default: no money; design `agent-sessions.md` 8.1).
+    pub agent_budget: Budget,
     /// Which tools the MCP server lists (one per op, or the core with the op finder).
     pub mcp_tools: ToolMode,
     /// The journal's tunables.
@@ -112,6 +114,7 @@ impl AppOptions {
             person,
             approver: true,
             agent_grants: Grants::agent_default(),
+            agent_budget: Budget::default(),
             mcp_tools: ToolMode::All,
             journal: JournalOptions::default(),
             app_version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -142,6 +145,14 @@ impl AppOptions {
     #[must_use]
     pub fn with_agent_grants(mut self, grants: Grants) -> Self {
         self.agent_grants = grants;
+        self
+    }
+
+    /// These options with the budget MCP clients' sessions start with: what `omuzaki mcp --spend-cap` or a headless
+    /// credential sets.
+    #[must_use]
+    pub fn with_agent_budget(mut self, budget: Budget) -> Self {
+        self.agent_budget = budget;
         self
     }
 
@@ -313,6 +324,7 @@ impl AppCore {
             person: options.person.clone(),
             approver: options.approver,
             agent_grants: options.agent_grants.clone(),
+            agent_budget: options.agent_budget,
             mcp_tools: options.mcp_tools,
             journal: options.journal,
             app_version: options.app_version.clone(),

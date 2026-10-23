@@ -14,7 +14,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use constant_time_eq::constant_time_eq;
 use hyper::HeaderMap;
 use hyper::header::AUTHORIZATION;
-use omuzaki_ops_api::{Actor, EndReason, Grants};
+use omuzaki_ops_api::{Actor, Budget, EndReason, Grants};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{SessionManager, StreamableHttpServerConfig, StreamableHttpService};
 use serde::{Deserialize, Serialize};
@@ -128,10 +128,52 @@ impl fmt::Debug for AccessToken {
     }
 }
 
+/// A credential made for a host to store, without a server: the secret, shown to the person once, and the record that
+/// holds its hash, its grants and its budget (design `agent-sessions.md` 7.6). A headless `omuzaki mcp` given the secret
+/// finds the record with [`TokenRecord::is_presented_by`] and opens its session with the record's grants and budget.
+#[derive(Clone)]
+pub struct IssuedCredential {
+    secret: String,
+    record: TokenRecord,
+}
+
+impl IssuedCredential {
+    /// A new credential labelled `label`, issued by `issuer`, whose sessions hold `grants` and start from `budget`.
+    ///
+    /// # Errors
+    /// [`ServerError::Entropy`] if the system's random source fails.
+    pub fn new(label: impl Into<String>, grants: Grants, issuer: Actor, budget: Budget) -> Result<Self, ServerError> {
+        let secret = new_secret()?;
+        let record =
+            TokenRecord { version: 3, budget: Some(budget), ..TokenRecord::new(label.into(), grants, issuer, &secret) };
+        Ok(Self { secret, record })
+    }
+
+    /// The secret, for the person to hand to the script or CI job. Anyone holding it has the credential's grants.
+    pub fn secret(&self) -> &str {
+        &self.secret
+    }
+
+    /// The record to store: no secret, only its hash.
+    pub fn record(&self) -> &TokenRecord {
+        &self.record
+    }
+}
+
+/// Never prints the secret.
+impl fmt::Debug for IssuedCredential {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("IssuedCredential")
+            .field("label", &self.record.label)
+            .field("secret", &"<redacted>")
+            .finish_non_exhaustive()
+    }
+}
+
 /// The newest [`TokenRecord::version`] this build reads. A bridge credential's record is version 2, so a build that
-/// doesn't know [`TokenRecord::bridge`] refuses it rather than admit it without its pairing; other records stay
-/// version 1.
-pub const RECORD_VERSION: u32 = 2;
+/// doesn't know [`TokenRecord::bridge`] refuses it rather than admit it without its pairing; a credential with a
+/// [`budget`](TokenRecord::budget) is version 3, for the same reason; other records stay version 1.
+pub const RECORD_VERSION: u32 = 3;
 
 /// How many bridge credentials may wait to be paired at once. A bridge stores its credential before it connects, so
 /// one client needs one; more than this is something requesting credentials in a loop.
@@ -172,6 +214,11 @@ pub struct TokenRecord {
     /// in Omuzaki's window until it is [`paired`](Self::paired). Version 2.
     #[serde(default)]
     pub bridge: bool,
+    /// The budget every session opened with this credential starts from, when the person set one: a credential issued
+    /// for headless use (`omuzaki mcp` with no studio, design `agent-sessions.md` 7.6). Version 3. The HTTP port
+    /// refuses a record that has one, rather than admit it without the budget.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<Budget>,
     /// The keyed BLAKE3 hash of the secret, 64 lowercase hex digits.
     pub hash: String,
 }
@@ -183,7 +230,12 @@ const fn first_version() -> u32 {
 impl TokenRecord {
     fn new(label: String, grants: Grants, issuer: Actor, secret: &str) -> Self {
         let hash = to_hex(&hash_secret(secret));
-        Self { version: 1, label, grants, issuer, paired: false, revoked: false, bridge: false, hash }
+        Self { version: 1, label, grants, issuer, paired: false, revoked: false, bridge: false, budget: None, hash }
+    }
+
+    /// Whether `secret` is this credential's and the credential is not revoked. Compares in constant time.
+    pub fn is_presented_by(&self, secret: &str) -> bool {
+        !self.revoked && from_hex(&self.hash).is_some_and(|hash| constant_time_eq(&hash, &hash_secret(secret)))
     }
 
     fn new_bridge(client: String, grants: Grants, issuer: Actor, secret: &str) -> Self {
@@ -198,6 +250,11 @@ impl TokenRecord {
         }
         if self.revoked {
             return Err(ServerError::TokenRevoked(self.label.clone()));
+        }
+        if self.budget.is_some() {
+            return Err(bad(
+                "it carries a budget, which this port's sessions can't hold yet; use it with `omuzaki mcp`",
+            ));
         }
         from_hex(&self.hash).ok_or_else(|| bad("its hash isn't 64 hexadecimal digits"))
     }
@@ -709,11 +766,28 @@ mod tests {
         let back: TokenRecord = serde_json::from_str(&serde_json::to_string(&record()).unwrap()).unwrap();
         assert_eq!(back, record());
         let mut value = serde_json::to_value(record()).unwrap();
-        for field in ["version", "paired", "revoked", "bridge"] {
+        for field in ["version", "paired", "revoked", "bridge", "budget"] {
             value.as_object_mut().unwrap().remove(field);
         }
         let old: TokenRecord = serde_json::from_value(value).unwrap();
         assert_eq!((old.version, old.paired, old.revoked), (1, false, false));
+    }
+
+    #[test]
+    fn an_issued_credential_is_found_by_its_secret_alone_and_carries_its_budget() {
+        let budget = Budget { usd_micros: 2_000_000, tokens: None, seconds: Some(600) };
+        let issued = IssuedCredential::new("ci", Grants::agent_default(), Actor::System, budget).unwrap();
+        assert!(!format!("{issued:?}").contains(issued.secret()), "the secret stays out of debug output");
+        let stored: TokenRecord = serde_json::from_str(&serde_json::to_string(issued.record()).unwrap()).unwrap();
+        assert!(!serde_json::to_string(&stored).unwrap().contains(issued.secret()));
+        assert_eq!((stored.version, stored.budget), (3, Some(budget)));
+        assert!(stored.is_presented_by(issued.secret()));
+        assert!(!stored.is_presented_by("omuzaki_mcp_other"));
+        assert!(!TokenRecord { revoked: true, ..stored.clone() }.is_presented_by(issued.secret()), "revoked");
+        assert!(
+            matches!(stored.admissible_hash(), Err(ServerError::BadTokenRecord { .. })),
+            "the HTTP port can't hold its budget, so it refuses the record rather than drop the budget"
+        );
     }
 
     #[test]

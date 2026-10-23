@@ -12,6 +12,14 @@ CI_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=lib.sh source-path=SCRIPTDIR
 source "$CI_DIR/lib.sh"
 
+# The hosted runner's disk holds one profile's whole-workspace build at a time (the debug test build alone is about
+# 50 GB): each profile goes once its last stage has run, or the next one fills the disk and the runner dies without a
+# log (2026-10-22 and 2026-10-23). Later stages that need a few crates again rebuild just those.
+free_profile() {
+  rm -rf "target/$1"
+  echo "freed target/$1: $(df -h / | tail -n 1)"
+}
+
 # Tests that cut their case counts to fit the pull request gate's time limit run them in full here (#2300).
 export OMUZAKI_FULL_TESTS=1
 
@@ -30,8 +38,10 @@ stage "crash recovery (20 seeds)" env OMUZAKI_CRASH_SEEDS=20 cargo test --locked
 # A branch switch killed at each step and in the folder's rewrite (#449): twenty seeds; pull requests run four.
 stage "branch switch crashes (20 seeds)" env OMUZAKI_BRANCH_CRASH_SEEDS=20 cargo test --locked -p omuzaki-cli \
   --features test-fixtures --test branches_crash
+free_profile debug
 # The link gate in release too (ADR 0015): every App's tests/registrations.rs. The PR gate runs it in dev with the tests.
 stage "link gate (release)" cargo test --locked --release --workspace --test registrations
+free_profile release
 # The full check includes `advisories`, which fetches the RustSec database; PRs skip it so they stay offline-fast.
 stage "deny (licences, bans, sources, advisories)" cargo deny check
 stage "Windows cross-build (all targets)" cargo build --locked --workspace --all-targets --target x86_64-pc-windows-gnu

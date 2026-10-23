@@ -49,6 +49,10 @@ pub fn execute(cli: &Cli, runner: Arc<dyn Runner>, session: &Session, stdin: &mu
         // `app::run` calls `store::run` itself so the exit code survives; this arm keeps the match whole and serves
         // callers that only want the text.
         Command::Store { action } => store::run(action, cli.json).map(|reply| reply.text),
+        // `app::run` runs it on the project's files; this arm keeps the match whole.
+        Command::Credential { action } => {
+            crate::credential::run(cli.project.as_deref(), action, session.actor.clone(), cli.json)
+        }
     }
 }
 

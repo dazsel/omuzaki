@@ -38,6 +38,11 @@ fn run_inner() -> ExitCode {
         // The store is a folder the person names, not the project, so it needs no runner. Called here rather than
         // through `execute`, which can only hand back text, so the report's exit code survives.
         Command::Store { action } => store::run(action, cli.json),
+        // The credentials are the project's private files, not its document: no runner, so the studio may hold it.
+        Command::Credential { action } => {
+            let person = crate::session::Session::from_env().actor;
+            crate::credential::run(cli.project.as_deref(), action, person, cli.json).map(Reply::ok)
+        }
         // A new project has no runner to open yet.
         Command::New { dir, name } => crate::project::create(dir, name.as_deref(), cli.json).map(Reply::ok),
         // Standard input is passed unlocked: `omuzaki mcp` reads the same stream through tokio, which takes the lock for
@@ -75,7 +80,7 @@ fn bridge_to_studio(dir: &Path) -> Result<Reply, OpError> {
 
 /// Runs `cli`'s command on the project in `dir`, opened through the app core, and closes it.
 fn run_on_core(cli: &Cli, dir: &Path, mut session: Session) -> Result<Reply, OpError> {
-    let core = match AppCore::open(dir, core_options(cli, session.actor.clone())) {
+    let core = match AppCore::open(dir, core_options(cli, session.actor.clone())?) {
         Ok(core) => core,
         // The studio has the project: an agent's `omuzaki mcp` works in it through the bridge (agent-sessions 10.2).
         Err(AppError::Store(StoreError::Locked { .. })) if matches!(cli.command, Command::Mcp(_)) => {

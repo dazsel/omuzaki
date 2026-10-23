@@ -13,6 +13,8 @@
 //! - [`perception`]: opt-in [`perception::Glance`]s.
 //! - [`decide`]: the decision layer's [`decide::Decider`]: typed questions over the live transcript, answered with
 //!   probabilities, so the character reacts even when the LLM is slow or absent (#2348).
+//! - [`duplex`]: [`duplex::Duplex`], a realtime speech-to-speech provider (bring your own key, #2347), and
+//!   [`duplex::PcmVoice`], the voice that plays its audio.
 //! - [`intent`]: the vocabulary, with [`intent::GazeTarget`], [`intent::PlaceId`] and the closed
 //!   [`intent::StyleTag`] set.
 //! - [`event`]: [`event::PerformerEvent`], the JSON Lines [`event::TranscriptLine`] and [`event::AiLine`].
@@ -34,6 +36,7 @@ omuzaki_core::define_link! {
 pub mod brain;
 pub mod conformance;
 pub mod decide;
+pub mod duplex;
 pub mod ears;
 pub mod event;
 pub mod ids;

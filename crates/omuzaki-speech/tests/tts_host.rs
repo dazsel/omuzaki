@@ -20,6 +20,7 @@ use omuzaki_audio_api::tap::{DropPolicy, TapFormat, TapPoint, TapRate, TapReader
 use omuzaki_audio_mock::MockEngine;
 use omuzaki_core::time::Seconds;
 use omuzaki_performer_api::conformance::{self, VoiceRig};
+use omuzaki_performer_api::duplex::PcmVoice;
 use omuzaki_performer_api::ids::VoiceId;
 use omuzaki_performer_api::intent::StyleTag;
 use omuzaki_performer_api::speech::{SpeakHow, SpeechHandle, SpeechState, Voice};
@@ -99,6 +100,15 @@ impl Rig {
     }
 
     fn with(tts: FakeTts, voice: TtsVoice) -> Self {
+        Self::build(Some(tts), voice)
+    }
+
+    /// A host handed its audio (a realtime model's), with no synthesis.
+    fn streamed() -> Self {
+        Self::build(None, TtsVoice::new(voice_id()))
+    }
+
+    fn build(tts: Option<FakeTts>, voice: TtsVoice) -> Self {
         let engine = Arc::new(MockEngine::new());
         let graph = GraphSpec {
             buses: vec![bus("ai_voice", &FEEDS[..2]), bus("ai_voice_private", &FEEDS[2..])],
@@ -107,10 +117,16 @@ impl Rig {
         engine.apply(&graph).unwrap();
         let public = tap(&engine, "ai_voice");
         let private = tap(&engine, "ai_voice_private");
-        let calls = tts.calls();
         let seen = Arc::new(Mutex::new(Seen::default()));
         let lead: Box<dyn VoiceLead> = Box::new(Lead(Arc::clone(&seen)));
-        let host = TtsHost::open(engine.clone() as Arc<dyn AudioEngine>, Box::new(tts), voice, Some(lead)).unwrap();
+        let as_engine = engine.clone() as Arc<dyn AudioEngine>;
+        let (host, calls) = match tts {
+            Some(tts) => {
+                let calls = tts.calls();
+                (TtsHost::open(as_engine, Box::new(tts), voice, Some(lead)).unwrap(), calls)
+            }
+            None => (TtsHost::open_streamed(as_engine, voice, Some(lead)).unwrap(), Arc::default()),
+        };
         Self { engine, host, calls, public, private, heard: Vec::new(), heard_private: Vec::new(), seen }
     }
 
@@ -369,4 +385,41 @@ fn trimming_keeps_40_ms_around_the_speech_and_pads_follow_punctuation() {
     assert_eq!(pad_after("Really?! "), Seconds(0.18));
     assert_eq!(pad_after("First,"), Seconds(0.08));
     assert_eq!(pad_after("and then"), Seconds(0.0));
+}
+
+#[test]
+fn a_realtime_reply_plays_gaplessly_through_the_same_feeds_cut_and_lead() {
+    let mut rig = Rig::streamed();
+    assert_eq!(PcmVoice::rate(&rig.host), 24_000);
+    // A host handed its audio can't synthesise.
+    assert!(rig.host.speak("Hi chat!", &voice_id(), &SpeakHow::default()).is_err());
+    rig.run(0.05);
+    // Three 100 ms pieces of a reply, as a realtime model streams them.
+    let piece = || (0..2_400).map(|i| 0.25 * (i as f32 * 0.05).sin()).collect::<Vec<f32>>();
+    let handles: Vec<SpeechHandle> = (0..3).map(|_| rig.host.play(piece(), false).unwrap()).collect();
+    let last = rig.run_until(&handles[2], SpeechState::is_final);
+    assert!(matches!(last, SpeechState::Done { .. }), "{last:?}");
+    // Gapless: 300 ms of sound from the first sample on, give or take the feed's resampling edge.
+    let first = rig.heard.iter().position(|s| s.abs() > 1e-3).unwrap();
+    let end = rig.heard.iter().rposition(|s| s.abs() > 1e-3).unwrap();
+    let sounding = (end - first) as f64 / RATE;
+    assert!((sounding - 0.3).abs() < 0.01, "{sounding} s of sound");
+    let longest_hush = rig.heard[first..end].split(|s| s.abs() > 1e-3).map(<[f32]>::len).max().unwrap_or(0);
+    assert!(longest_hush < 48, "a gap of {longest_hush} samples inside the reply");
+    // The mouth drive got all of it, ahead of playback.
+    let pushed: usize = rig.seen.lock().unwrap().pushed.iter().map(|p| p.2).sum();
+    assert_eq!(pushed, 3 * 2_400);
+
+    // Barge-in: a long reply cut mid-way goes silent within a block and the fade.
+    let long: Vec<SpeechHandle> = (0..10).map(|_| rig.host.play(piece(), false).unwrap()).collect();
+    rig.run_until(&long[1], |s| matches!(s, SpeechState::Playing { .. }));
+    let cut_at = rig.now();
+    for h in &long {
+        h.cut();
+    }
+    rig.run(0.1);
+    let after = &rig.heard[cut_at + BLOCK + 2 * 120..];
+    assert!(after.iter().all(|s| s.abs() < 1e-4), "sound after the cut");
+    assert!(long.iter().all(|h| h.state().is_final()));
+    assert!(matches!(long[9].state(), SpeechState::Cut { spoken_chars: 0, .. }));
 }

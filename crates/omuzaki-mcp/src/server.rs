@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use omuzaki_history_api::JournalSink;
-use omuzaki_ops_api::{Actor, EndReason, Grants, Jobs, OpInfo, Runner, Sessions};
+use omuzaki_ops_api::{Actor, Budget, EndReason, Grants, Jobs, OpInfo, Runner, Sessions};
 use rmcp::ServiceExt;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::Tool;
@@ -69,6 +69,8 @@ pub(crate) struct SessionHost {
     pub sessions: Arc<dyn Sessions>,
     pub person: Actor,
     pub pause_hold: Duration,
+    /// What a connection's session starts with when no credential sets it (see [`McpOptions::with_budget`]).
+    pub budget: Budget,
 }
 
 impl std::fmt::Debug for SessionHost {
@@ -153,7 +155,19 @@ impl McpOptions {
     ///   is held (see [`McpOptions::with_pause_hold`]).
     #[must_use]
     pub fn with_sessions(mut self, sessions: Arc<dyn Sessions>, person: Actor) -> Self {
-        self.sessions = Some(SessionHost { sessions, person, pause_hold: agent::PAUSE_HOLD });
+        self.sessions =
+            Some(SessionHost { sessions, person, pause_hold: agent::PAUSE_HOLD, budget: Budget::default() });
+        self
+    }
+
+    /// The budget each connection's session starts with (default: no money, no token or time cap; design
+    /// `agent-sessions.md` 8.1): what `omuzaki mcp --spend-cap` or a headless credential sets. Applies only with
+    /// [`McpOptions::with_sessions`], after it.
+    #[must_use]
+    pub fn with_budget(mut self, budget: Budget) -> Self {
+        if let Some(host) = &mut self.sessions {
+            host.budget = budget;
+        }
         self
     }
 

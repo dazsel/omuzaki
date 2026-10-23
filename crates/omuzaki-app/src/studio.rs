@@ -23,7 +23,7 @@ use omuzaki_store_api::ContentHash;
 use serde::{Deserialize, Serialize};
 
 /// The project's private folder (the one `ProjectLock` keeps).
-const PRIVATE_DIR: &str = ".omuzaki";
+pub(crate) const PRIVATE_DIR: &str = ".omuzaki";
 /// Where a running studio says how to reach it.
 const STUDIO_FILE: &str = "studio.json";
 /// The records of bridge credentials the person paired.
@@ -174,7 +174,7 @@ impl Credentials {
     }
 }
 
-fn to_json(value: &impl Serialize) -> io::Result<String> {
+pub(crate) fn to_json(value: &impl Serialize) -> io::Result<String> {
     serde_json::to_string_pretty(value).map_err(io::Error::other)
 }
 
@@ -182,7 +182,7 @@ fn to_json(value: &impl Serialize) -> io::Result<String> {
 ///
 /// The temporary file is always made new: one left behind (by a crash, or planted beside a copied project) could have
 /// wider permissions, which opening it would keep, or be a link to somewhere else, which opening it would follow.
-fn write_private(path: &Path, text: &str) -> io::Result<()> {
+pub(crate) fn write_private(path: &Path, text: &str) -> io::Result<()> {
     use std::io::Write;
     let dir = path.parent().ok_or_else(|| io::Error::other("no parent folder"))?;
     std::fs::create_dir_all(dir)?;

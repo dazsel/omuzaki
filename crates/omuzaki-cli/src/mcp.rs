@@ -18,7 +18,7 @@ use crate::cli::McpArgs;
 use crate::session::Session;
 
 /// Serves `runner` to one MCP client on stdin/stdout, with the default agent grants (read, edit, render and review) plus
-/// `--grant`, listing the tools `--tools` says. Returns when
+/// `--grant` and the `--spend-cap` budget, listing the tools `--tools` says. Returns when
 /// the client closes the connection. `connections` is the handle the runner's services hold (see
 /// [`open_runner_with`](crate::session::open_runner_with)), which is what makes `agent.connection` listed and
 /// answerable. Warnings and errors are logged to stderr; set `RUST_LOG` (for example `RUST_LOG=debug`) for more.
@@ -28,12 +28,14 @@ use crate::session::Session;
 /// connection fails: the client sent something that isn't MCP, or went away before the handshake finished.
 pub fn serve_stdio(runner: Arc<dyn Runner>, session: &Session, args: &McpArgs) -> Result<(), OpError> {
     log_to_stderr();
-    let mut options = McpOptions::with_grants(args.grants())
+    // With no project there is no credential to run from: `--grant` and `--spend-cap` alone.
+    let ceiling = crate::session::ceiling(args, None, std::env::var(crate::session::TOKEN_VAR).ok())?;
+    let mut options = McpOptions::with_grants(ceiling.grants)
         .with_tools(args.tools.mode())
         .with_connections(session.connections.clone());
     if let Some(sessions) = &session.sessions {
         // The agent works for the person running the command.
-        options = options.with_sessions(Arc::clone(sessions), session.actor.clone());
+        options = options.with_sessions(Arc::clone(sessions), session.actor.clone()).with_budget(ceiling.budget);
     }
     if let Some(project) = &session.project {
         // The project folder, and no folder the person did not share with agents (ADR 0013): the command line shares none.

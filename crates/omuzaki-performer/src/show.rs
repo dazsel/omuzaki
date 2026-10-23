@@ -46,11 +46,11 @@ use crate::persona::Persona;
 const EVENTS_PER_STEP: usize = 512;
 /// Seconds of audio a character is assumed to take before the voice reports the real length (a little slower than
 /// most voices, so the 20 s cap errs short).
-const EST_S_PER_CHAR: f64 = 0.07;
+pub(crate) const EST_S_PER_CHAR: f64 = 0.07;
 /// Lines of public conversation the decision layer sees.
-const CONTEXT_LINES: usize = 6;
+pub(crate) const CONTEXT_LINES: usize = 6;
 /// The performer's own speech is remembered this long for echo checks.
-const ECHO_MEMORY_S: f64 = 30.0;
+pub(crate) const ECHO_MEMORY_S: f64 = 30.0;
 
 /// How the show is set up: who it plays, in which voice, and when it answers.
 #[derive(Clone, Debug)]
@@ -169,6 +169,8 @@ pub struct Status {
     pub muted: bool,
     /// How the decision layer is doing.
     pub decisions: DecisionStats,
+    /// What this run has spent on a hosted provider, in micro-dollars (0 when everything runs on this machine).
+    pub spent_micro_usd: u64,
 }
 
 /// How the decision layer has done this run: how often its provider answered in time, and how fast as the loop saw
@@ -199,13 +201,13 @@ pub const LATENCY_KEPT: usize = 128;
 
 /// The running counts behind [`DecisionStats`].
 #[derive(Default)]
-struct Decisions {
-    stats: DecisionStats,
+pub(crate) struct Decisions {
+    pub(crate) stats: DecisionStats,
     latencies: VecDeque<f64>,
 }
 
 impl Decisions {
-    fn answered(&mut self, ms: f64) {
+    pub(crate) fn answered(&mut self, ms: f64) {
         self.stats.answered += 1;
         if self.latencies.len() == LATENCY_KEPT {
             self.latencies.pop_front();
@@ -213,7 +215,7 @@ impl Decisions {
         self.latencies.push_back(ms);
     }
 
-    fn report(&self) -> DecisionStats {
+    pub(crate) fn report(&self) -> DecisionStats {
         let mut sorted: Vec<f64> = self.latencies.iter().copied().collect();
         sorted.sort_by(f64::total_cmp);
         let at = |p: f64| {
@@ -325,7 +327,7 @@ struct Pending {
 /// Who asked for an intent: the same-emote cooldown is kept per source, so a quick reaction never blocks the
 /// model's own tag on the next word.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-enum Source {
+pub(crate) enum Source {
     /// The model's tags, `performer.say` and `performer.intent`.
     Model,
     /// The decision layer.
@@ -334,7 +336,7 @@ enum Source {
 
 /// Rate limits on intents (§7.1).
 #[derive(Default)]
-struct Limiter {
+pub(crate) struct Limiter {
     last_emote: HashMap<(Source, ExpressionId), f64>,
     last_move: Option<f64>,
     tokens: f64,
@@ -343,7 +345,7 @@ struct Limiter {
 
 impl Limiter {
     /// Whether `intent` may run at `at`, spending a token if so; the refusal's reason if not.
-    fn admit(&mut self, intent: &Intent, source: Source, at: f64) -> Result<(), &'static str> {
+    pub(crate) fn admit(&mut self, intent: &Intent, source: Source, at: f64) -> Result<(), &'static str> {
         match intent {
             Intent::Emote { expression, .. }
                 if self
@@ -376,6 +378,55 @@ impl Limiter {
             _ => {}
         }
         Ok(())
+    }
+}
+
+/// What the co-host steps and steers: the cascaded [`Show`], or the realtime one
+/// ([`RealtimeShow`](crate::realtime::RealtimeShow)).
+pub trait Performer: Send + std::fmt::Debug {
+    /// One step at program time `now`.
+    fn step(&mut self, now: Seconds);
+    /// Says `text` now (`performer.say`); inline tags act at once.
+    fn say(&mut self, now: Seconds, text: &str);
+    /// Applies one intent now (`performer.intent`), checked, clamped and limited.
+    fn intent(&mut self, now: Seconds, intent: &Intent);
+    /// When it answers.
+    fn set_respond(&mut self, respond: Respond);
+    /// Cuts what it is saying and drops what waits (`performer.stop`).
+    fn stop(&mut self, now: Seconds);
+    /// Where it is.
+    fn status(&self, now: Seconds) -> Status;
+    /// The transcript lines since the last drain.
+    fn drain(&mut self) -> Vec<TranscriptLine>;
+}
+
+impl Performer for Show {
+    fn step(&mut self, now: Seconds) {
+        Show::step(self, now);
+    }
+
+    fn say(&mut self, now: Seconds, text: &str) {
+        Show::say(self, now, text);
+    }
+
+    fn intent(&mut self, now: Seconds, intent: &Intent) {
+        Show::intent(self, now, intent);
+    }
+
+    fn set_respond(&mut self, respond: Respond) {
+        Show::set_respond(self, respond);
+    }
+
+    fn stop(&mut self, now: Seconds) {
+        Show::stop(self, now);
+    }
+
+    fn status(&self, now: Seconds) -> Status {
+        Show::status(self, now)
+    }
+
+    fn drain(&mut self) -> Vec<TranscriptLine> {
+        Show::drain(self)
     }
 }
 
@@ -481,6 +532,7 @@ impl Show {
             share: self.share(now),
             muted: self.muted,
             decisions: self.decisions.report(),
+            spent_micro_usd: 0,
         }
     }
 

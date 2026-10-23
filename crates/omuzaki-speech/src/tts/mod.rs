@@ -37,6 +37,7 @@ use omuzaki_audio_api::feed::Missing;
 use omuzaki_audio_api::tap::FeedRequest;
 use omuzaki_audio_api::{AudioEngine, EngineClock, FeedCloser, FeedId, FeedPlayhead, FeedWriter, SAMPLE_RATE};
 use omuzaki_core::time::Seconds;
+use omuzaki_performer_api::duplex::PcmVoice;
 use omuzaki_performer_api::ids::VoiceId;
 use omuzaki_performer_api::intent::StyleTag;
 use omuzaki_performer_api::limits::CHUNK_MAX_CHARS;
@@ -397,6 +398,34 @@ impl TtsHost {
         voice: TtsVoice,
         lead: Option<Box<dyn VoiceLead>>,
     ) -> Result<Self, VoiceError> {
+        let shared = Self::shared(engine, voice, lead)?;
+        let worker = Arc::clone(&shared);
+        let synth = std::thread::Builder::new()
+            .name("tts synth".into())
+            .spawn(move || worker.synthesise(session))
+            .map_err(|e| VoiceError::Provider(format!("can't start the synth thread: {e}")))?;
+        Ok(Self { shared, synth: Some(synth), pump: None })
+    }
+
+    /// Opens the three feeds for a voice that is handed its audio ([`PcmVoice`]): a realtime model's reply (#2347).
+    /// There is no synth thread, so [`Voice::speak`] is refused; everything else (the feeds, the cut, the lead, the
+    /// pump) is the same.
+    ///
+    /// # Errors
+    /// [`VoiceError::Provider`] when a feed can't be opened.
+    pub fn open_streamed(
+        engine: Arc<dyn AudioEngine>,
+        voice: TtsVoice,
+        lead: Option<Box<dyn VoiceLead>>,
+    ) -> Result<Self, VoiceError> {
+        Ok(Self { shared: Self::shared(engine, voice, lead)?, synth: None, pump: None })
+    }
+
+    fn shared(
+        engine: Arc<dyn AudioEngine>,
+        voice: TtsVoice,
+        lead: Option<Box<dyn VoiceLead>>,
+    ) -> Result<Arc<Shared>, VoiceError> {
         let rate = voice.feed_rate();
         let feeds = FEEDS.map(|id| Feed {
             id: FeedId::new(id).unwrap_or_else(|_| unreachable!("a literal feed id")),
@@ -431,12 +460,7 @@ impl TtsHost {
                 shared.open_feed(&mut state, slot)?;
             }
         }
-        let worker = Arc::clone(&shared);
-        let synth = std::thread::Builder::new()
-            .name("tts synth".into())
-            .spawn(move || worker.synthesise(session))
-            .map_err(|e| VoiceError::Provider(format!("can't start the synth thread: {e}")))?;
-        Ok(Self { shared, synth: Some(synth), pump: None })
+        Ok(shared)
     }
 
     /// Starts the pump thread: [`TtsHost::pump`] every 10 ms until the host is dropped.
@@ -523,8 +547,47 @@ impl Drop for TtsHost {
     }
 }
 
+impl PcmVoice for TtsHost {
+    fn rate(&self) -> u32 {
+        self.shared.rate
+    }
+
+    fn play(&mut self, pcm: Vec<f32>, private: bool) -> Result<SpeechHandle, VoiceError> {
+        if pcm.is_empty() {
+            return Err(VoiceError::Provider("no audio to play".into()));
+        }
+        let shared = &self.shared;
+        let duration = Seconds(pcm.len() as f64 / f64::from(shared.rate));
+        let chunk = Arc::new(Chunk {
+            text: String::new(),
+            key: String::new(),
+            private,
+            controls: StyleControls::of(&[]),
+            model_speed: 1.0,
+            pad: 0,
+            rate: shared.rate,
+            clock: Arc::clone(&shared.clock),
+            inner: Mutex::new(ChunkInner {
+                state: SpeechState::ready(duration),
+                pcm: Some(Arc::new(pcm)),
+                feed: None,
+                written: 0,
+                pad_written: 0,
+                cut: false,
+                settled: false,
+                late: false,
+            }),
+        });
+        lock(&shared.state).queue.push_back(Arc::clone(&chunk));
+        Ok(SpeechHandle::new(Arc::new(Handle(chunk))))
+    }
+}
+
 impl Voice for TtsHost {
     fn speak(&mut self, sentence: &str, voice: &VoiceId, how: &SpeakHow) -> Result<SpeechHandle, VoiceError> {
+        if self.synth.is_none() {
+            return Err(VoiceError::Provider("this voice plays a realtime model's audio and can't synthesise".into()));
+        }
         let chars = sentence.chars().count();
         if sentence.trim().is_empty() || chars > CHUNK_MAX_CHARS {
             return Err(VoiceError::bad_chunk(chars));
