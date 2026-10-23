@@ -227,6 +227,9 @@ pub struct SetupFlow {
     character: Option<CharacterChoice>,
     /// The host's side of carrying that card out.
     character_op: Op<CharacterChoice>,
+    /// Keep was chosen while a card's request was outstanding: Character moves on once the host has answered it, so
+    /// a late success can't replace the project after the step was left.
+    keep_after: bool,
     /// The person asked for a calibration run (Continue on Calibrate) and has not given up on it.
     calibration_wanted: bool,
     /// The host's side of the calibration: a stored result of this sitting is "applied", a run is "in flight".
@@ -268,6 +271,7 @@ impl SetupFlow {
             output_then: None,
             character: None,
             character_op: Op::new(None),
+            keep_after: false,
             calibration_wanted: false,
             calibration_op: Op::new(None),
             permission_requested: false,
@@ -592,6 +596,21 @@ impl SetupFlow {
             }
         } else if self.character_op.owns(request) {
             let reply = self.character_op.reply(ok, self.character);
+            if std::mem::take(&mut self.keep_after) {
+                // The person chose Keep while this was outstanding. A refusal changed nothing: the open project is
+                // kept and no other card is wanted. A success did replace it (the host carried it out), so the state
+                // says so before Character moves on with the project that is open now.
+                if reply == Some(Reply::Applied) {
+                    self.project_changed();
+                } else {
+                    self.character = None;
+                    self.character_op.cancel();
+                }
+                if self.step == Step::Character {
+                    self.advance(fx);
+                }
+                return;
+            }
             if reply == Some(Reply::Failed) {
                 return;
             }
@@ -696,9 +715,20 @@ impl SetupFlow {
         }
         match choice {
             CharacterChoice::Keep if !self.probes.project_open => {}
+            // A card's request is outstanding: Keep waits for its answer (see `keep_after`), never racing it.
+            CharacterChoice::Keep if self.character_op.pending() => self.keep_after = true,
             // Keeping the open project writes nothing, so there is nothing to wait for.
             CharacterChoice::Keep => self.advance(fx),
             _ => {
+                self.keep_after = false;
+                // Importing or creating again is a new request (another file, another idea), even when the host holds
+                // the last one; only the sample is the same whenever it is made.
+                if choice != CharacterChoice::Sample
+                    && !self.character_op.pending()
+                    && self.character_op.applied() == Some(choice)
+                {
+                    self.character_op.forget();
+                }
                 self.character = Some(choice);
                 self.pump_character(fx);
                 if self.character_op.settled(self.character) {

@@ -370,7 +370,8 @@ fn undoing_a_removal_restores_the_file_byte_for_byte() {
 #[test]
 fn a_deletion_in_a_refused_save_comes_back_byte_for_byte_when_undone() {
     let tmp = folder();
-    let rig = "# the rig, by hand\ntemplate = \"humanoid\"  # keep this one\n\n[spring]\nstiffness = 0.25\nchains = 3\n";
+    let rig =
+        "# the rig, by hand\ntemplate = \"humanoid\"  # keep this one\n\n[spring]\nstiffness = 0.25\nchains = 3\n";
     write(tmp.path(), "characters/mia/rig.toml", rig);
     let mut project = Project::open(tmp.path()).unwrap();
     let mut patch = change("characters/mia/rig", project.get(&p("characters/mia/rig")).cloned(), None);
