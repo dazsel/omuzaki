@@ -280,7 +280,7 @@ the same engine serves both and never holds a borrow across a job. `run` is a me
 | Op | Kind | Scope | What it does |
 |---|---|---|---|
 | `script.check {source}` | Query | `read` | Parses and resolves, without running: the ops named with line and column; unknown ops; for argument maps written as literals, unknown and missing fields against each op's schema; the scopes the script needs; the effective ceiling; parse errors. The console runs it as you type |
-| `script.run {source \| id, params?, dry_run?, seconds?}` | Job (driver) | `script` | Runs a script (section 4). Source capped at 64 KiB; refused if `script.check` finds errors. Returns `ScriptOutcome` or the `ScriptError` as an `OpError` with code `invalid` and a `detail` carrying line and column |
+| `script.run {source \| id, params?, rehearse?, seconds?}` | Job (driver) | `script` | Runs a script (section 4). Source capped at 64 KiB; refused if `script.check` finds errors. Returns `ScriptOutcome` or the `ScriptError` as an `OpError` with code `invalid` and a `detail` carrying line and column |
 | `script.save {id, name, source \| steps}` / `script.delete {id}` | Edit | `script` | Write or remove the document node `scripts/<id>` in the project: a real patch (`Undo::Auto`), so it is journalled, branchable and undone with Ctrl+Z, and a script may call them |
 | `script.save_mine {id, name, source \| steps}` / `script.delete_mine {id}` | Edit | `script` | Write or remove an item in My scripts through a `ScriptStore` service (`Undo::Explicit`, empty patch, like the settings ops) (section 7); a script cannot call them, because a rollback could not undo the write |
 | `script.list {}` | Query | `read` | Project scripts and macros, with last author and content hash |
