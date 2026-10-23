@@ -3,7 +3,7 @@
 //! Rendering a save against this text (and not against a fresh read of the disk) makes rendering a pure function of
 //! memory, and the hash is what a save compares with the file on disk to notice that someone else changed it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 use omuzaki_store_api::ContentHash;
 
@@ -16,21 +16,43 @@ struct KnownFile {
     hash: ContentHash,
 }
 
-/// The last-known text and hash of every file, by document path.
+/// How many earlier texts of each file are kept, for [`Known::earlier`].
+const EARLIER_KEPT: usize = 4;
+
+/// The last-known text and hash of every file, by document path, and the few texts each had before.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Known {
     files: BTreeMap<Segs, KnownFile>,
+    /// Earlier texts of each file, newest first: a save that brings a file's table back to one of these (an undo)
+    /// writes that text again, byte for byte, instead of a re-rendering that may order things differently (#2233).
+    earlier: BTreeMap<Segs, VecDeque<String>>,
 }
 
 impl Known {
     /// Records `text` (whose bytes hash to `hash`) as the content of the file for `segs`, replacing what was known.
     pub(crate) fn record(&mut self, segs: Segs, text: String, hash: ContentHash) {
-        self.files.insert(segs, KnownFile { text, hash });
+        if let Some(old) = self.files.insert(segs.clone(), KnownFile { text, hash }) {
+            self.keep_earlier(segs, old.text);
+        }
     }
 
-    /// Forgets the file for `segs` (it was deleted).
+    /// Forgets the file for `segs` (it was deleted); its text is kept among the earlier ones.
     pub(crate) fn forget(&mut self, segs: &[String]) {
-        self.files.remove(segs);
+        if let Some(old) = self.files.remove(segs) {
+            self.keep_earlier(segs.to_vec(), old.text);
+        }
+    }
+
+    fn keep_earlier(&mut self, segs: Segs, text: String) {
+        let kept = self.earlier.entry(segs).or_default();
+        kept.retain(|t| *t != text);
+        kept.push_front(text);
+        kept.truncate(EARLIER_KEPT);
+    }
+
+    /// Texts the file had before its last-known one (or before it was deleted), newest first.
+    pub(crate) fn earlier(&self, segs: &[String]) -> impl Iterator<Item = &str> {
+        self.earlier.get(segs).into_iter().flatten().map(String::as_str)
     }
 
     /// The exact text the file last had.

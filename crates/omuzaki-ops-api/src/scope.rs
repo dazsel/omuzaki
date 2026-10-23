@@ -36,7 +36,9 @@ pub enum Scope {
     /// Export or upload anything outside the machine.
     #[serde(rename = "publish")]
     Publish,
-    /// Use paid connectors, within a budget.
+    /// Use paid connectors, within a budget. The executor requires it for any applied plan that costs money
+    /// ([`Plan::cost`](crate::Plan::cost) with `usd` above zero), whatever the op's own scope; agents get it only by a
+    /// per-session grant.
     #[serde(rename = "spend")]
     Spend,
     /// Network access.

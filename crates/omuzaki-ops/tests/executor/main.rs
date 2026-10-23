@@ -6,17 +6,37 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::needless_pass_by_value)]
 
 mod adversarial;
+mod approvals;
+mod approvals_script;
+mod asks;
+mod audit;
+mod budget;
+mod caps;
+mod effects;
 mod events;
-mod explicit;
+mod fence;
 mod file_access;
+mod guard;
 mod jobs;
+mod jobs_driver;
+mod jobs_sessions;
+mod journal;
+mod limits;
+mod live_actions;
 mod ops;
+mod plugin_approvals;
+mod principal_undo;
 mod props;
+mod races;
+mod replay;
+mod review;
 mod run;
 mod services;
 mod sessions;
+mod spend_scope;
 mod transactions;
 mod undo;
+mod undo_session;
 
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
@@ -61,6 +81,14 @@ pub(crate) fn agent() -> Actor {
 pub(crate) fn second_agent() -> Actor {
     Actor::Agent { id: "claude#2".into(), model: None }
 }
+
+/// Another person. Alice's undo never reaches bob's steps, nor those of bob's agents.
+pub(crate) fn bob() -> Actor {
+    Actor::Person { name: "bob".into() }
+}
+
+/// The label of a one-op step of `test.set`: the op's summary (#1662).
+pub(crate) const SET: &str = "Set the value at a path.";
 
 /// What a transport asks for: an agent of `client` working for alice, with a ceiling as wide as hers. Requests narrow
 /// it with their own grants.
@@ -133,6 +161,17 @@ impl Rig {
     /// The whole op log, as a person.
     pub(crate) fn log(&self) -> Vec<OpRecord> {
         self.exec.log(0, usize::MAX, &Grants::person()).unwrap()
+    }
+
+    /// Opens a session for bob and returns its agent: a different principal from alice's agents.
+    pub(crate) fn bobs_agent(&self) -> Actor {
+        self.exec.open(SessionSpec { on_behalf_of: bob(), ..session_spec("helper") }).unwrap().actor
+    }
+
+    /// `test.set` as `actor` (an agent with the default grants), outside any transaction.
+    pub(crate) fn set_as(&self, actor: &Actor, at: &str, value: Value) -> Outcome {
+        let req = Request { actor: actor.clone(), ..agent_request("test.set", json!({"path": at, "value": value})) };
+        self.exec.run(req).unwrap()
     }
 
     pub(crate) fn agent_undo(&self) -> Result<Option<String>, OpError> {

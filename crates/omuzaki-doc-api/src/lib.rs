@@ -11,6 +11,7 @@
 //! Subsystems keep typed views (serde structs) over their part of the tree; see [`DocReadExt::get_as`].
 #![deny(missing_docs)]
 
+pub mod diff;
 pub mod merge;
 mod scratch;
 
@@ -257,8 +258,36 @@ pub fn lookup<'a>(root: &'a Value, path: &DocPath) -> Option<&'a Value> {
     })
 }
 
+/// An `f32` as the JSON number a person reads: the shortest decimal that gives the same `f32` back (`0.6`, not
+/// `0.6000000238418579`). Build document values, patches and op results from `f32` fields with it, never with
+/// `json!(x)` or `Value::from(x)`, which widen to the nearest `f64` and spread the noise into the op log, diffs and every
+/// result an agent reads (and copies back). A value that is not finite has no JSON number and is `null`.
+pub fn f32_value(x: f32) -> Value {
+    if !x.is_finite() {
+        return Value::Null;
+    }
+    // `Display` writes the shortest text that parses back to the same `f32`; as an `f64` it is the decimal itself.
+    format!("{x}").parse::<f64>().ok().and_then(serde_json::Number::from_f64).map_or(Value::Null, Value::Number)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[allow(clippy::cast_possible_truncation, reason = "reading the JSON number back as the f32 it was")]
+    fn an_f32_reaches_json_as_the_decimal_a_person_wrote() {
+        assert_eq!(super::f32_value(0.6).to_string(), "0.6");
+        assert_eq!(serde_json::json!(0.6_f32).to_string(), "0.6000000238418579", "the noise the helper avoids");
+        assert_eq!(super::f32_value(-1.25).to_string(), "-1.25");
+        assert_eq!(super::f32_value(1.0e-7).as_f64(), Some(1.0e-7));
+        assert_eq!(super::f32_value(3.0).to_string(), "3.0");
+        assert!(super::f32_value(f32::NAN).is_null() && super::f32_value(f32::INFINITY).is_null());
+        // It round-trips: the JSON number read back as an `f32` is the same `f32`.
+        for x in [0.1_f32, 0.6, 1.0 / 3.0, 123_456.79, f32::MIN_POSITIVE, f32::MAX] {
+            let back = super::f32_value(x).as_f64().map(|v| v as f32);
+            assert_eq!(back, Some(x), "{x}");
+        }
+    }
+
     use super::*;
     use serde_json::json;
 

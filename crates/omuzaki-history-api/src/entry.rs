@@ -7,7 +7,7 @@ use omuzaki_doc_api::{Patch, Value};
 use omuzaki_ops_api::{Actor, JobId, JobState, OpRecord, TxId};
 use serde::{Deserialize, Serialize};
 
-use crate::{HistoryExport, OpenTxExport, WallTime};
+use crate::{AuditFact, HistoryExport, OpenTxExport, WallTime};
 
 /// A log sequence number: the position of one entry in a project's journal. Starts at 1, grows by one per entry,
 /// continues across sessions and is never reused. `Lsn(0)` means "nothing yet".
@@ -145,6 +145,14 @@ pub enum HistoryEntry {
         patch: Patch,
         /// `tx` after the records left: the state replay installs.
         remaining: OpenTxExport,
+    },
+    /// A fact about a session, a grant or an approval ([`AuditFact`]), in order with the ops: the audit trail.
+    /// Replay ignores it; the journal writes it skippable, so a reader that predates it reads past it.
+    Audit {
+        /// When, in seconds on the runner's session clock (see [`HistoryEntry::Session`]); always finite.
+        at: Seconds,
+        /// What happened. Shared, so an entry stays small however large the fact is.
+        fact: Arc<AuditFact>,
     },
     /// The executor's whole history right now (cheap: steps are shared), so a snapshot can carry it. Appended when
     /// [`JournalSink::wants_mark`](crate::JournalSink::wants_mark) is true; never written to the journal file.

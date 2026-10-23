@@ -19,6 +19,7 @@
 
 pub mod app;
 pub mod class;
+pub mod compare;
 pub mod dock;
 pub mod handles;
 pub mod history;
@@ -28,6 +29,7 @@ pub mod layout;
 pub mod palette;
 pub mod panels;
 pub mod persist;
+pub mod pictures;
 pub mod registry;
 pub mod requests;
 pub mod saver;

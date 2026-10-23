@@ -45,8 +45,11 @@ pub(crate) fn tool_schema(op: &str, kind: OpKind, schema: &schemars::Schema) -> 
             ("additionalProperties".to_owned(), json!(false)),
         ]);
     }
-    // The root `title` is the op's Rust type name: noise for an agent.
+    // The root `title` is the op's Rust type name, `$schema` the dialect every tool shares and `x-omuzaki-*` the
+    // registry's own marks (the conformance fixture): noise for an agent, repeated in every tool.
     input.remove("title");
+    input.remove("$schema");
+    input.retain(|key, _| !key.starts_with("x-omuzaki"));
     let Value::Object(properties) = input.entry("properties").or_insert_with(|| json!({})) else {
         return Err(unusable("its `properties` is not an object"));
     };

@@ -1,0 +1,48 @@
+date_pt,repo,workflow,runs,success,failure,cancelled,other,wall_minutes
+2026-10-11,earlier,all,80,69,5,6,0,213.0
+2026-10-12,earlier,all,500,373,42,85,0,5789.4
+2026-10-13,earlier,all,998,213,22,146,617,6832.1
+2026-10-14,earlier,all,79,11,3,7,58,2092.2
+2026-10-14,this,CI,538,451,25,62,0,4586.8
+2026-10-14,this,Cache warm,60,45,1,14,0,329.1
+2026-10-14,this,Close external pull requests,114,1,0,0,113,4.4
+2026-10-14,this,Nightly,2,0,2,0,0,124.3
+2026-10-14,this,Visual evidence,442,4,0,25,413,56.3
+2026-10-14,this,"github_actions in /., /.github/actions/setup-linux - Update #1626358120",1,1,0,0,0,0.8
+2026-10-15,earlier,all,1,0,0,1,0,1454.8
+2026-10-15,this,CI,1478,1094,224,160,0,15694.9
+2026-10-15,this,Cache warm,97,56,2,39,0,593.1
+2026-10-15,this,Close external pull requests,224,0,0,0,224,10.5
+2026-10-15,this,Graph Update: pip in /tools/litert #1629574306,1,1,0,0,0,0.6
+2026-10-15,this,Nightly,13,0,9,4,0,1040.8
+2026-10-15,this,Runtime LiteRT,13,4,3,6,0,195.2
+2026-10-15,this,Visual evidence,1624,42,0,42,1540,552.0
+2026-10-16,earlier,all,2,0,0,0,2,0.0
+2026-10-16,this,CI,277,162,108,7,0,1534.2
+2026-10-16,this,Cache warm,25,22,1,2,0,190.2
+2026-10-16,this,Close external pull requests,16,0,0,0,16,0.5
+2026-10-16,this,Graph Update: pip in /tools/litert #1631674591,1,1,0,0,0,0.7
+2026-10-16,this,Nightly,10,0,8,2,0,1282.0
+2026-10-16,this,Runtime LiteRT,5,2,2,1,0,107.8
+2026-10-16,this,Visual evidence,297,30,0,8,259,657.6
+2026-10-17,this,CI,133,52,76,5,0,1028.0
+2026-10-17,this,Cache warm,11,11,0,0,0,102.0
+2026-10-17,this,Close external pull requests,2,0,0,0,2,0.0
+2026-10-17,this,Nightly,2,0,2,0,0,321.7
+2026-10-17,this,Visual evidence,112,6,0,6,100,257.6
+2026-10-18,earlier,all,1,0,1,0,0,0.1
+2026-10-18,this,Nightly,1,0,1,0,0,180.2
+2026-10-18,this,macOS weekly,1,1,0,0,0,6.0
+2026-10-19,this,Nightly,1,0,1,0,0,180.4
+2026-10-20,this,Nightly,1,0,1,0,0,180.4
+2026-10-21,this,CI,215,92,21,102,0,2841.4
+2026-10-21,this,Cache warm,34,15,0,19,0,244.4
+2026-10-21,this,Close external pull requests,26,0,0,0,26,1.5
+2026-10-21,this,Nightly,2,0,2,0,0,360.9
+2026-10-21,this,Visual evidence,185,0,0,8,177,179.4
+2026-10-21,this,"github_actions in /., /.github/actions/setup-linux - Update #1642014790",1,1,0,0,0,1.2
+2026-10-22,this,CI,266,119,32,114,1,3869.3
+2026-10-22,this,Cache warm,37,15,4,18,0,714.7
+2026-10-22,this,Close external pull requests,36,0,0,0,36,24.0
+2026-10-22,this,Nightly,1,0,1,0,0,180.4
+2026-10-22,this,Visual evidence,230,0,0,12,218,521.5

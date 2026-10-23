@@ -382,8 +382,7 @@ fn the_numbered_keys_switch_workspaces_and_each_keeps_its_own_layout() {
     press(&mut harness, Modifiers::COMMAND, Key::Num1);
     assert_eq!(harness.state().active_workspace(), Some("build"));
     press(&mut harness, Modifiers::COMMAND, Key::Num0);
-    assert_eq!(harness.state().active_workspace(), Some("build"), "there is no Theatre yet");
-    assert!(harness.state().registry().workspace("theatre").is_none());
+    assert_eq!(harness.state().active_workspace(), Some("theatre"), "Ctrl+0 opens the Theatre");
 }
 
 #[test]
@@ -671,7 +670,7 @@ fn every_tab_stop_is_named_and_the_dividers_and_tab_strips_say_what_they_are() {
     assert!(unnamed.is_empty(), "unnamed stops {unnamed:?} in {stops:?}");
     assert!(stops.contains(&(Role::Splitter, "Resize Inspector and Agent".to_owned())), "{stops:?}");
     assert!(stops.iter().filter(|(role, _)| *role == Role::Splitter).count() >= 3, "{stops:?}");
-    assert!(stops.contains(&(Role::TabList, "Outliner, Library tabs".to_owned())), "{stops:?}");
+    assert!(stops.contains(&(Role::TabList, "Outliner, Library, Generated tabs".to_owned())), "{stops:?}");
     // On a strip, Left and Right switch its tab.
     for _ in 0..40 {
         if focused(&harness).is_some_and(|(role, _)| role == Role::TabList) {

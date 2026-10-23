@@ -200,7 +200,9 @@ impl std::fmt::Debug for PerformThread {
 /// the steps since, less the ones dropped since. A reset (a new source) starts the timeline and its skip count again.
 fn steps_run(last: Option<(u64, u64)>, index: u64, skipped: u64) -> u64 {
     match last {
-        Some((before, dropped)) if index > before && skipped >= dropped => (index - before) - (skipped - dropped),
+        Some((before, dropped)) if index > before && skipped >= dropped => {
+            (index - before).saturating_sub(skipped - dropped)
+        }
         _ => (index + 1).saturating_sub(skipped),
     }
 }

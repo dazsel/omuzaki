@@ -40,7 +40,8 @@ use omuzaki_store::DiskStore;
 use omuzaki_store_api::Store;
 use omuzaki_stream::feed::ProgramFeed;
 use omuzaki_stream::service::{Program as StreamProgram, StreamService};
-use omuzaki_stream_api::window::WindowHost;
+use omuzaki_stream_api::window::{ClickThrough, WindowHost};
+use omuzaki_theatre::TheatreBook;
 use omuzaki_track_api::camera::{CameraId, CameraInfo};
 use omuzaki_track_api::error::TrackError;
 use omuzaki_track_api::tracker::{LatencyStats, Tracker, TrackerConfig};
@@ -49,6 +50,8 @@ use omuzaki_twitch::TwitchService;
 use omuzaki_vts::client::SecretTokens;
 use omuzaki_vts::service::VtsService;
 
+use omuzaki_metrics_api::MetricsReader;
+
 use super::clock::{ClockObserver, PerformClock};
 use super::inputs::{model_registry, studio_inputs};
 use super::mailbox::FrameReader;
@@ -56,10 +59,15 @@ use super::rig::{Extras, LiveRig, live_performer};
 use super::thread::{LoopReport, WiringError};
 use crate::aux_window::{PhysicalSize, Transparency};
 use crate::live::channels::ChannelFeed;
+use crate::live::health::HealthPublisher;
 use crate::live::hotkeys::Hotkeys;
 use crate::live::viewport::{LiveViewport, Presenter, SharedTracker, ViewportError};
 use crate::output_window::{OutputHost, OutputPlan, OutputWindow, Program};
 use crate::wiring::{self, Core, Document, ExecutorError};
+
+/// The studio's shortcut that turns a desktop character's full click-through off.
+pub const WAY_BACK: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::CTRL.plus(egui::Modifiers::ALT), egui::Key::M);
 
 /// Why the live slice did not start.
 #[derive(Debug)]
@@ -118,6 +126,35 @@ pub struct LiveApp {
     secrets: Option<Arc<dyn SecretStore>>,
     /// The stage's particle effects: the `stage.effect.*` ops queue into it, and the viewport's stage draws it.
     effects: Arc<StageEffects>,
+    /// The project folder's real path, which keys a show's approvals as the engine does.
+    project: String,
+    /// The Build Theatre's book: the `theatre.*` ops write it, its watcher follows the runner.
+    theatre: TheatreBook,
+    /// The store renders and connector outputs land in, for the Theatre's evidence and references.
+    renders: Option<Arc<dyn Store>>,
+    /// My scripts.
+    scripts: Option<Arc<dyn omuzaki_script::ScriptStore>>,
+    /// Writes the live-metrics snapshot the Health panel reads (#1348).
+    health: LiveHealth,
+}
+
+/// The live-metrics snapshot's writer, its reader, and the parts it samples that only the app holds.
+struct LiveHealth {
+    publisher: HealthPublisher,
+    reader: MetricsReader,
+    /// The snapshot's clock: seconds since the slice started.
+    started: std::time::Instant,
+    /// The performer, for its status.
+    perform: Arc<dyn PerformHost>,
+    /// The audio engine, for its health.
+    audio: Option<Arc<dyn AudioEngine>>,
+}
+
+impl LiveHealth {
+    fn new(perform: Arc<dyn PerformHost>, audio: Option<Arc<dyn AudioEngine>>) -> Self {
+        let (publisher, reader) = HealthPublisher::with_reader();
+        Self { publisher, reader, started: std::time::Instant::now(), perform, audio }
+    }
 }
 
 /// The OS input hub (ADR 0060) as the app runs it: its control is in the runner's services (the `input.*` capture and
@@ -258,6 +295,8 @@ impl LiveApp {
             data,
             tap: None,
             settings,
+            scripts: crate::script::store::DirScriptStore::in_user_config()
+                .map(|store| Arc::new(store) as Arc<dyn omuzaki_script::ScriptStore>),
         };
         Self::start_with(document, inputs.webcam, extras, clock, transparency, &base)
     }
@@ -278,32 +317,17 @@ impl LiveApp {
         let models = extras.models.clone();
         let secrets = extras.secrets.clone();
         let settings = extras.settings.clone();
+        let scripts = extras.scripts.clone();
         let data = extras.data.clone();
         // The shows: the automation engine runs their rules through this app's runner, and Twitch's events reach it.
         let automation = Arc::new(Automation::new());
         let twitch = TwitchService::new(Arc::new(ConnectHttp::new()), Arc::clone(&automation) as Arc<dyn EventSink>);
-        // The VTube Studio bridge: the perform thread feeds it every step's channels; the `vts.*` ops connect it.
-        let vts = match VtsService::new() {
-            Ok(service) => {
-                let service = match &secrets {
-                    Some(store) => service.with_tokens(Arc::new(SecretTokens(Arc::clone(store)))),
-                    None => service,
-                };
-                let service = Arc::new(service);
-                let mut feed = service.feed();
-                let face = |t: Tracking| t == Tracking::Tracking;
-                extras.tap.get_or_insert(Box::new(move |frame| feed.push(&frame.channels, face(frame.tracking))));
-                Some(service)
-            }
-            Err(error) => {
-                tracing::warn!(%error, "the VTube Studio bridge did not start: the `vts.*` ops are unavailable");
-                None
-            }
-        };
+        let vts = vts_bridge(secrets.as_ref(), &mut extras);
         let (rig, reader) =
             LiveRig::start_with(Box::new(tracker.clone()), extras, TrackerConfig::default(), performer, clock)
                 .map_err(StartError::Wiring)?;
         let host = rig.host().map_err(StartError::Wiring)?;
+        let perform = Arc::clone(&host);
         host.set_expressions(ExpressionSet::starter(), ChannelBuf::NEUTRAL).map_err(StartError::Perform)?;
         let window = OutputHost::new(transparency, PhysicalSize::FULL_HD);
         let input: Arc<dyn InputHost> = rig.input();
@@ -323,12 +347,18 @@ impl LiveApp {
         if let Some(settings) = &settings {
             services = services.insert::<dyn Settings>(Arc::clone(settings));
         }
+        if let Some(scripts) = &scripts {
+            services = services.insert::<dyn omuzaki_script::ScriptStore>(Arc::clone(scripts));
+        }
         services = services.insert::<Automation>(Arc::clone(&automation)).insert::<TwitchService>(Arc::new(twitch));
         if let Some(vts) = vts {
             services = services.insert::<VtsService>(vts);
         }
         services = InputWiring::serve(services, hub.as_ref());
-        services = with_connectors(services, data.as_deref(), secrets.as_ref(), settings.as_ref());
+        let (with, renders) = with_connectors(services, data.as_deref(), secrets.as_ref(), settings.as_ref());
+        // The Theatre's book is kept beside the project, so a reopened project shows its plans and cards again.
+        let theatre = document.dir().map_or_else(TheatreBook::new, TheatreBook::for_project);
+        services = with.insert::<TheatreBook>(Arc::new(theatre.clone()));
         // Frames and the microphone count from one zero, so a take's audio lines up with its video.
         let epoch = std::time::Instant::now();
         let stream = start_stream(epoch);
@@ -341,12 +371,16 @@ impl LiveApp {
         }
         let services = services.build();
         let project = document.dir().map(|dir| dir.to_string_lossy().into_owned());
+        let project_key = project.clone().unwrap_or_default();
         let core = wiring::core_on(document, services).map_err(StartError::Ops)?;
         automation.attach(&core.runner);
-        if let Some(audio) = audio {
-            follow_project(audio, &core.runner);
+        if let Some(audio) = &audio {
+            follow_project(Arc::clone(audio), &core.runner);
         }
         automation.attach_sessions(&core.sessions);
+        if let Err(error) = theatre.attach(&core.runner, Arc::clone(&core.sessions)) {
+            tracing::warn!(%error, "the Theatre's book does not follow the runner: its steps stay empty");
+        }
         // What this machine approved and the shows' variables live in the app's data folder, never in the project.
         // Without one, nothing is approved and variables last one run.
         let approvals = data.as_ref().map(|data| {
@@ -373,6 +407,11 @@ impl LiveApp {
             approvals,
             secrets,
             effects,
+            project: project_key,
+            theatre,
+            renders,
+            scripts,
+            health: LiveHealth::new(perform, audio),
         })
     }
 
@@ -386,6 +425,30 @@ impl LiveApp {
     /// a data folder, when nothing can be approved.
     pub fn approvals(&self) -> Option<&Arc<DiskApprovals>> {
         self.approvals.as_ref()
+    }
+
+    /// The approval card's "Allow on this machine" (`crate::broadcast::rules`): the approvals store and a re-arm of
+    /// the running show, as the person; `None` without a data folder, when nothing can be approved.
+    pub fn show_approver(&self) -> Option<crate::broadcast::ShowApprover> {
+        let approvals = Arc::clone(self.approvals.as_ref()?);
+        let approver =
+            crate::broadcast::DiskApprover::new(Arc::clone(&self.automation), approvals, self.project.clone());
+        Some(crate::broadcast::ShowApprover(Arc::new(approver)))
+    }
+
+    /// The Theatre as the studio's panels read it: the core's book and the render store.
+    pub fn theatre(&self) -> crate::theatre::Theatre {
+        crate::theatre::Theatre::new(self.theatre.clone(), self.renders.clone())
+    }
+
+    /// My scripts, for the Script workspace; `None` when the OS gives no config folder.
+    pub fn script_store(&self) -> Option<Arc<dyn omuzaki_script::ScriptStore>> {
+        self.scripts.clone()
+    }
+
+    /// The store generated files land in, for the Generated tray; `None` without a connector host.
+    pub fn generated_store(&self) -> Option<Arc<dyn Store>> {
+        self.renders.clone()
     }
 
     /// The keychain, for the Settings window's OBS password (which no op carries); `None` without a data folder.
@@ -496,6 +559,17 @@ impl LiveApp {
                 }
             }
         });
+        self.publish_health();
+        // The desktop character's per-pixel click-through reads the frame's alpha, a few times a second at most and
+        // only while the pointer is over it.
+        if self.output.wants_mask()
+            && let Some(view) = self.viewport.as_mut()
+        {
+            match view.snapshot() {
+                Ok(frame) => self.output.set_mask(&frame),
+                Err(error) => tracing::warn!(%error, "the program frame could not be read for click-through"),
+            }
+        }
         if let (Some(feed), Some(view)) = (self.feed.as_mut(), self.viewport.as_mut())
             && let Err(error) = feed.offer(|| view.snapshot())
         {
@@ -508,11 +582,53 @@ impl LiveApp {
         self.show_program(ctx, program);
     }
 
+    /// The live-metrics snapshot the Health panel and the health strip read.
+    pub fn metrics(&self) -> MetricsReader {
+        self.health.reader.clone()
+    }
+
+    /// Writes this frame into the snapshot: the stage's frame every call, the performer, the tracker and the audio at
+    /// 10 Hz. A part that is not running publishes nothing, so it reads as absent rather than zero.
+    fn publish_health(&mut self) {
+        let health = &mut self.health;
+        let now = health.started.elapsed().as_secs_f64();
+        if let Some(view) = self.viewport.as_mut() {
+            health.publisher.frame(now, view.take_rendered());
+        }
+        if !health.publisher.slow_due(now) {
+            return;
+        }
+        if let Some(rig) = &self.rig {
+            health.publisher.perform(now, &health.perform.status(), rig.report().skipped);
+            health.publisher.tracker(now, &self.tracker.latency());
+        }
+        if let Some(audio) = &health.audio {
+            health.publisher.audio(now, &audio.status(), &audio.report());
+        }
+    }
+
     /// Sends this frame's key presses and releases to the triggers they are bound to (`trigger.press`). Call it once per
     /// frame, after the shell has drawn: the Live panel's key capture and a focused text field take their keys from the
     /// input first, so a key that binds or types never also fires.
     pub fn keys(&mut self, ctx: &Context) {
-        self.hotkeys.dispatch(ctx, &*self.core.runner, &Actor::Person { name: "you".to_owned() });
+        let you = Actor::Person { name: "you".to_owned() };
+        self.way_back(ctx, &you);
+        self.hotkeys.dispatch(ctx, &*self.core.runner, &you);
+    }
+
+    /// The way back from a character every click passes through: [`WAY_BACK`] in the studio lets it take its own clicks
+    /// again (`output.window.set`, as the person), whatever panel is showing.
+    fn way_back(&mut self, ctx: &Context, you: &Actor) {
+        let through = self.output.plan().desktop.is_some_and(|d| d.click_through == ClickThrough::Full);
+        // In the studio as a shortcut, or anywhere on the desktop through the output window's probe.
+        let pressed = ctx.input_mut(|i| i.consume_shortcut(&WAY_BACK)) | self.output.take_way_back();
+        if !through || !pressed {
+            return;
+        }
+        let args = crate::live::model::object(&[("click_through", "transparent".into())]);
+        if let Err(error) = crate::live::model::run(&*self.core.runner, you, "output.window.set", args) {
+            tracing::warn!(%error, "the character could not take its clicks back");
+        }
     }
 
     /// [`show`](Self::show) with the program frame given: for a caller that renders elsewhere (the output window's
@@ -640,19 +756,23 @@ fn start_audio(epoch: std::time::Instant) -> Option<Arc<dyn AudioEngine>> {
     }
 }
 
-/// `services` with the connector host (as `dyn Connectors` and as itself) and the asset store, when they start.
+/// `services` with the connector host (as `dyn Connectors` and as itself) and the asset store, when they start; and
+/// the store, which the Theatre reads renders from.
 fn with_connectors(
     services: ServicesBuilder,
     data: Option<&Path>,
     secrets: Option<&Arc<dyn SecretStore>>,
     settings: Option<&Arc<dyn Settings>>,
-) -> ServicesBuilder {
+) -> (ServicesBuilder, Option<Arc<dyn Store>>) {
     match connector_host(data, secrets, settings) {
-        Some((store, host)) => services
-            .insert::<dyn Store>(store)
-            .insert::<dyn Connectors>(Arc::clone(&host) as Arc<dyn Connectors>)
-            .insert::<Host>(host),
-        None => services,
+        Some((store, host)) => (
+            services
+                .insert::<dyn Store>(Arc::clone(&store))
+                .insert::<dyn Connectors>(Arc::clone(&host) as Arc<dyn Connectors>)
+                .insert::<Host>(host),
+            Some(store),
+        ),
+        None => (services, None),
     }
 }
 
@@ -702,6 +822,28 @@ fn connector_host(
         services,
     });
     Some((store, Arc::new(host)))
+}
+
+/// The `VTube Studio` bridge: the perform thread feeds it every step's channels through `extras`' tap; the `vts.*` ops
+/// connect it. `None`, with a warning, when it can't start.
+fn vts_bridge(secrets: Option<&Arc<dyn SecretStore>>, extras: &mut Extras) -> Option<Arc<VtsService>> {
+    match VtsService::new() {
+        Ok(service) => {
+            let service = match secrets {
+                Some(store) => service.with_tokens(Arc::new(SecretTokens(Arc::clone(store)))),
+                None => service,
+            };
+            let service = Arc::new(service);
+            let mut feed = service.feed();
+            let face = |t: Tracking| t == Tracking::Tracking;
+            extras.tap.get_or_insert(Box::new(move |frame| feed.push(&frame.channels, face(frame.tracking))));
+            Some(service)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "the VTube Studio bridge did not start: the `vts.*` ops are unavailable");
+            None
+        }
+    }
 }
 
 /// Keeps the mixer on the project's graph: the `audio.bus.*` ops edit it, undo included.

@@ -1,0 +1,10 @@
+# The Health panel (spine/ui, #1348): its own case file, so no other change edits it (tools/ci/evidence.py).
+
+[[case]]
+name = "live-health"
+description = "The Health panel's gallery story over the live-metrics snapshot (spine/ui, #1348): idle, over budget and tracking lost side by side. Every reading from MetricsReader, an absent section read as not reporting, dropped frames n/a until an output reports, and every budget row marked live and coloured by its share of the budget. At 1366x768 and 1920x1080."
+env = { OMUZAKI_EVIDENCE_OUT = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-ui", "--test", "live_health", "--", "--ignored", "--exact", "live_health_evidence"] },
+]
+images = ["live-health-1366x768.png", "live-health-1920x1080.png"]

@@ -17,6 +17,10 @@ use crate::ops::character::access::list;
 /// the head's size on screen), so there is nothing else to check.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [{"character": "kit", "variant": "close-up"}],
+    "x-omuzaki-fixture" = "character-variant"
+))]
 pub struct VariantDelete {
     /// The character the variant belongs to.
     pub character: CharId,

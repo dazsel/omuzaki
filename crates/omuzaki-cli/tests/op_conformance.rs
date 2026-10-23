@@ -5,6 +5,10 @@
 //! Examples are declared on the args type (`OpRegistration::examples`). Ops with none are listed in
 //! `op_conformance_allowlist.txt`, which may only shrink: an op that is missing from it and has no examples fails, and
 //! so does a line for an op that now has examples. The suite prints the list's size.
+//!
+//! An edit or job with `Undo::None` is a live action (`automation.md` D7): it changes live state, never the document.
+//! The executor refuses one whose plan changes the document (`checks::check_plan`), so its examples' dry-runs fail if
+//! it does; it is applied by nothing here, since a live action has no inverse to check.
 
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
 #![allow(clippy::expect_used, clippy::unwrap_used)]
@@ -18,10 +22,13 @@ use std::path::Path;
 use std::sync::Arc;
 
 use omuzaki_anim_api::{Calibration, DeviceProfile, RetargetConfig};
-use omuzaki_cli::project::SavedProject;
+use omuzaki_cli::project::open_in_memory;
 use omuzaki_core::time::SystemClock;
-use omuzaki_doc_api::{DocPath, Value};
+use omuzaki_doc::Project;
+use omuzaki_doc_api::{DocPath, DocRead, DocVersion, DocWrite, Patch, PatchError, Value};
 use omuzaki_face_api::ExpressionSet;
+use omuzaki_history_api::Snapshots;
+use omuzaki_history_mock::MemorySnapshots;
 use omuzaki_ops::Executor;
 use omuzaki_ops_api::{
     Actor, Grants, Mode, OpKind, OpRegistration, ProjectDir, Request, Runner, ServicesBuilder, Undo, registrations,
@@ -121,7 +128,7 @@ fn fixture_project(name: &str) -> Result<tempfile::TempDir, String> {
         return Ok(dir);
     }
     let steps = fixture_steps(name)?;
-    let doc = SavedProject::open(dir.path()).map_err(|e| format!("opening the project for fixture `{name}`: {e}"))?;
+    let doc = Saved::open(dir.path()).map_err(|e| format!("opening the project for fixture `{name}`: {e}"))?;
     let project = ProjectDir::open(dir.path()).map_err(|e| format!("opening the folder for fixture `{name}`: {e}"))?;
     let setup = Executor::new(Box::new(doc), Arc::new(SystemClock::new()))
         .map_err(|e| e.to_string())?
@@ -142,12 +149,80 @@ fn fixture_project(name: &str) -> Result<tempfile::TempDir, String> {
     Ok(dir)
 }
 
+/// The project the rig runs ops on, written to its files after every patch, so the rules on files (a dry run writes
+/// nothing, an undo leaves them byte for byte as they were) are checked the moment each run returns. The app writes
+/// files from its keeper a moment later; for these rules only the files' content counts, not when they are written.
+#[derive(Debug)]
+struct Saved(Project);
+
+impl Saved {
+    fn open(dir: &Path) -> Result<Self, String> {
+        open_in_memory(dir).map(Self).map_err(|e| e.to_string())
+    }
+}
+
+impl DocRead for Saved {
+    fn get(&self, path: &DocPath) -> Option<&Value> {
+        self.0.get(path)
+    }
+
+    fn version(&self) -> DocVersion {
+        self.0.version()
+    }
+}
+
+impl DocWrite for Saved {
+    fn apply(&mut self, patch: &Patch) -> Result<DocVersion, PatchError> {
+        let version = self.0.apply(patch)?;
+        self.0.save().map_err(|e| PatchError::Unreachable { path: DocPath::root(), reason: e.to_string() })?;
+        Ok(version)
+    }
+}
+
 /// What a run can leave behind: the document tree, every file under the project folder, and the op log's length.
 #[derive(PartialEq, Debug)]
 struct State {
     tree: Option<Value>,
     files: BTreeMap<String, Vec<u8>>,
     log: usize,
+}
+
+/// Stand-ins for the studio's `ui.scale` and `ui.theme` (declared in `omuzaki-ui`, which the CLI doesn't link), the
+/// keys the `settings.*` examples name, declared as the studio does: taste, free for an agent, applied at once.
+mod ui_settings {
+    use omuzaki_settings_api::meta::{AgentWrite, Apply, InProfile, SettingMeta, SettingScope};
+    use omuzaki_settings_api::register_setting;
+    use omuzaki_settings_api::setting::Setting;
+
+    const fn taste(key: &'static str) -> SettingMeta {
+        SettingMeta::new(key, "a stand-in", SettingScope::User, AgentWrite::Free, InProfile::Member, Apply::Live, 1)
+    }
+
+    pub struct UiScale;
+
+    impl Setting for UiScale {
+        type Value = u16;
+        const META: SettingMeta = taste("ui.scale");
+
+        fn default() -> u16 {
+            100
+        }
+    }
+
+    register_setting!(UiScale);
+
+    pub struct UiTheme;
+
+    impl Setting for UiTheme {
+        type Value = String;
+        const META: SettingMeta = taste("ui.theme");
+
+        fn default() -> String {
+            "dark".to_owned()
+        }
+    }
+
+    register_setting!(UiTheme);
 }
 
 /// The performer an op's example runs against: none. It lists no triggers and refuses every request, which is all a
@@ -246,6 +321,39 @@ impl PerformHost for IdleHost {
     }
 }
 
+/// The branches the `branch.*` examples read: `main` at `now`, and `aria/oval` forked from it with the project's
+/// note set.
+fn branches_at(now: &Value) -> Arc<omuzaki_history_mock::branch::MemoryBranchStore> {
+    use omuzaki_history_api::branch::{
+        BranchId, BranchInfo, BranchName, Contains, LaneState, Point, PointKind, Version,
+    };
+    use omuzaki_history_api::{Lsn, SnapshotId, WallTime};
+    let store = Arc::new(omuzaki_history_mock::branch::MemoryBranchStore::new());
+    let snapshot = SnapshotId(omuzaki_store_api::ContentHash::of(b"conformance"));
+    let main_point =
+        Point::new(BranchId::main(), 1, snapshot, Lsn(1), PointKind::Checkpoint, Actor::System, WallTime(1));
+    let main_head = store.put_point(main_point, now.clone()).expect("a point encodes");
+    let mut main = BranchInfo::new(BranchId::main(), BranchName::main(), main_head, 1, WallTime(1), Actor::System);
+    main.lane = LaneState::open(true, 0);
+    store.put_branch(main);
+    let oval_id = BranchId::new("9c41d07a5e2b1f30").expect("a branch id");
+    let mut theirs = now.clone();
+    if let Some(project) = theirs.get_mut("project").and_then(Value::as_object_mut) {
+        project.insert("note".to_owned(), Value::from("from aria/oval"));
+    }
+    let from_main = Contains::new().with(BranchId::main(), Version::new(1, main_head));
+    let oval_point =
+        Point::new(oval_id.clone(), 1, snapshot, Lsn(2), PointKind::Checkpoint, Actor::System, WallTime(2))
+            .with_parents(vec![main_head])
+            .with_contains(from_main.clone());
+    let oval_head = store.put_point(oval_point, theirs).expect("a point encodes");
+    let name = BranchName::new("aria/oval").expect("a branch name");
+    let mut oval = BranchInfo::new(oval_id, name, oval_head, 1, WallTime(2), Actor::System);
+    oval.inherits = from_main;
+    store.put_branch(oval);
+    store
+}
+
 struct Rig {
     runner: Executor,
     dir: tempfile::TempDir,
@@ -256,7 +364,22 @@ struct Rig {
 impl Rig {
     fn new(reg: &'static OpRegistration, fixture: Option<&str>) -> Result<Self, String> {
         let dir = fixture_project(fixture.unwrap_or(DEFAULT_FIXTURE))?;
-        let doc = SavedProject::open(dir.path()).map_err(|e| format!("opening the fixture failed: {e}"))?;
+        let doc = Saved::open(dir.path()).map_err(|e| format!("opening the fixture failed: {e}"))?;
+        // History with transactions 7 and 9 at the fixture's own state, so the `history.*` examples resolve.
+        let now = doc.get(&DocPath::root()).cloned().unwrap_or(Value::Null);
+        let branches = branches_at(&now);
+        let view = omuzaki_history_mock::branch::MemoryHistoryView::new(Arc::clone(&branches), now.clone());
+        let log = omuzaki_history_mock::MemoryHistoryLog::default();
+        for tx in [7, 9, 41] {
+            view.record_tx(omuzaki_ops_api::TxId(tx), now.clone());
+            log.push(omuzaki_history_api::TxSummary::new(
+                omuzaki_ops_api::TxId(tx),
+                "conformance",
+                "test",
+                Actor::System,
+                omuzaki_history_api::Lsn(tx),
+            ));
+        }
         let project = ProjectDir::open(dir.path()).map_err(|e| format!("opening the fixture folder failed: {e}"))?;
         let runner = Executor::with_registrations(Box::new(doc), Arc::new(SystemClock::new()), [reg])
             .map_err(|e| e.to_string())?
@@ -284,12 +407,26 @@ impl Rig {
                         Arc::new(omuzaki_http_mock::FakeHttp::new()),
                         Arc::new(omuzaki_live::Automation::new()),
                     )))
+                    // Settings in memory: the `settings.*` examples read and write them as they would in the app,
+                    // with the profile `stream-0001` the `settings.profile.*` examples name.
+                    .insert::<dyn omuzaki_settings_api::service::Settings>(settings_with_a_profile())
                     .insert::<dyn PerformHost>(Arc::new(IdleHost))
                     .insert::<dyn InputHost>(Arc::new(IdleInput))
                     // The stage's effect queue with no stage draining it: the `stage.effect.*` examples dry-run.
                     .insert::<dyn omuzaki_stage_api::EffectService>(Arc::new(
                         omuzaki_stage::effects::service::StageEffects::new(0),
                     ))
+                    // Snapshots with nothing to reload: `project.save` and `project.reload` run as they would on a
+                    // project whose files match the document.
+                    .insert::<dyn omuzaki_history_api::state::HistoryView>(Arc::new(view))
+                    // `main` (the folder branch, at the fixture's state) and `aria/oval`, forked from it with the note
+                    // changed: the `branch.*` examples merge, list and compare them.
+                    .insert::<dyn omuzaki_history_api::state::BranchStore>(branches)
+                    .insert::<dyn omuzaki_history_api::HistoryLog>(Arc::new(log))
+                    .insert::<dyn Snapshots>(Arc::new(MemorySnapshots::new(
+                        Value::Null,
+                        Arc::new(omuzaki_history_mock::SystemWallClock),
+                    )))
                     .build(),
             )
             .with_project_dir(project);
@@ -350,9 +487,6 @@ fn problems(reg: &'static OpRegistration) -> Vec<String> {
     let mut found = Vec::new();
     let mut flag = |what: String| found.push(format!("{name}: {what}"));
 
-    if meta.undo == Undo::None && meta.kind != OpKind::Query && !allowlist().1.contains(name) {
-        flag(format!("is a {:?} op with `Undo::None`; only queries have nothing to undo", meta.kind));
-    }
     let schema = serde_json::to_value((reg.schema)()).expect("a schema serialises");
     if schema.get("type") != Some(&Value::from("object")) {
         flag("its schema is not an object schema".to_owned());
@@ -423,22 +557,9 @@ fn first_text_difference(before: &BTreeMap<String, Vec<u8>>, after: &BTreeMap<St
     String::new()
 }
 
-/// The section of the allowlist file for edits that still declare `Undo::None`; the lines above it are ops without
-/// examples.
-const UNDO_NONE_SECTION: &str = "[edits with Undo::None]";
-
-/// The allowlist's two sections: ops without examples, and edits that still declare `Undo::None`.
-fn allowlist() -> (BTreeSet<&'static str>, BTreeSet<&'static str>) {
-    let (mut no_examples, mut undo_none) = (BTreeSet::new(), BTreeSet::new());
-    let mut section = &mut no_examples;
-    for line in ALLOWLIST.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#')) {
-        if line == UNDO_NONE_SECTION {
-            section = &mut undo_none;
-        } else {
-            section.insert(line);
-        }
-    }
-    (no_examples, undo_none)
+/// The allowlist: ops without examples.
+fn allowlist() -> BTreeSet<&'static str> {
+    ALLOWLIST.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#')).collect()
 }
 
 /// Everything wrong with `registered` against `allowed`: ops with no examples that aren't listed, and listed names that
@@ -461,15 +582,6 @@ fn allowlist_problems(registered: &BTreeMap<&'static str, bool>, allowed: &BTree
     found
 }
 
-/// Lines of the `Undo::None` section that no longer name an edit with `Undo::None`.
-fn stale_undo_none(violating: &BTreeMap<&'static str, bool>, listed: &BTreeSet<&str>) -> Vec<String> {
-    listed
-        .iter()
-        .filter(|name| !violating.get(*name).copied().unwrap_or(false))
-        .map(|name| format!("{name}: no longer an edit with `Undo::None`; delete it from the allowlist"))
-        .collect()
-}
-
 /// Every fixture file reads and builds, whether or not an op names it yet, so a broken fixture fails here by name
 /// rather than as some op's example.
 #[test]
@@ -485,16 +597,13 @@ fn every_fixture_file_builds() {
 fn every_registered_op_conforms() {
     omuzaki_cli::link();
     let mut registered = BTreeMap::new();
-    let mut registered_kinds = BTreeMap::new();
     let mut found = Vec::new();
     for reg in registrations() {
         let meta = (reg.meta)();
         registered.insert(meta.name, !reg.examples().is_empty());
-        registered_kinds.insert(meta.name, meta.undo == Undo::None && meta.kind != OpKind::Query);
         found.extend(problems(reg));
     }
-    let (allowed, undo_none) = allowlist();
-    found.extend(stale_undo_none(&registered_kinds, &undo_none));
+    let allowed = allowlist();
     found.extend(allowlist_problems(&registered, &allowed));
     println!(
         "op conformance: {} ops registered, {} with examples, {} on the allowlist",
@@ -633,17 +742,35 @@ mod planted {
         }
     }
 
-    /// An edit that says there is nothing to undo.
+    /// A live action: an edit with nothing to undo, which changes live state and never the document.
     #[derive(Serialize, Deserialize, JsonSchema)]
-    pub struct EditWithoutUndo {}
+    #[schemars(extend("examples" = [{}]))]
+    pub struct LiveAction {}
+
+    impl Op for LiveAction {
+        fn meta() -> OpMeta {
+            meta("planted.live_action", Undo::None)
+        }
+
+        fn plan(&self, _ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+            Ok(Plan::answer(json!({ "played": true })))
+        }
+    }
+
+    /// Says there is nothing to undo, and changes the document.
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    #[schemars(extend("examples" = [{ "text": "hello" }]))]
+    pub struct EditWithoutUndo {
+        text: String,
+    }
 
     impl Op for EditWithoutUndo {
         fn meta() -> OpMeta {
             meta("planted.edit_without_undo", Undo::None)
         }
 
-        fn plan(&self, _ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
-            Ok(Plan::default())
+        fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+            Ok(set_note(ctx, &self.text))
         }
     }
 
@@ -709,20 +836,14 @@ fn failures_are_reported_in_name_order() {
 }
 
 #[test]
-fn undo_none_on_an_edit_fails() {
-    assert_flagged(planted_reg!(planted::EditWithoutUndo), "only queries have nothing to undo");
+fn a_live_action_conforms_and_an_edit_without_undo_that_changes_the_document_fails() {
+    assert_eq!(problems(planted_reg!(planted::LiveAction)), Vec::<String>::new());
+    assert_flagged(planted_reg!(planted::EditWithoutUndo), "is a live action (`Undo::None`) but planned a change");
 }
 
 #[test]
 fn an_example_that_does_not_decode_fails() {
     assert_flagged(planted_reg!(planted::BadExample), "doesn't decode");
-}
-
-#[test]
-fn the_undo_none_section_may_only_shrink() {
-    let violating = BTreeMap::from([("a.bad", true), ("a.fixed", false)]);
-    let found = stale_undo_none(&violating, &BTreeSet::from(["a.bad", "a.fixed", "a.gone"]));
-    assert_eq!(found.len(), 2, "{found:?}");
 }
 
 #[test]
@@ -744,4 +865,18 @@ fn the_snapshot_leaves_out_the_apps_own_folder_only() {
     std::fs::write(dir.path().join("marker.txt"), b"stray").expect("write a stray file");
     let files: Vec<String> = files_under(dir.path()).into_keys().collect();
     assert_eq!(files, vec!["marker.txt".to_string()]);
+}
+
+/// Settings in memory holding one profile, "Stream" (`stream-0001`, the mock's first id).
+/// The settings mock with the profile "Stream" saved (the profile ops' examples name it) and first-run setup on its
+/// Go-live check (where `setup.finish` is honoured).
+fn settings_with_a_profile() -> Arc<dyn omuzaki_settings_api::service::Settings> {
+    use omuzaki_settings_api::service::Settings as _;
+    let settings = omuzaki_settings_mock::MemorySettings::default();
+    let person = Actor::Person { name: "conformance".into() };
+    let current = omuzaki_settings_api::profile::ProfileSource::Current;
+    settings.save_profile("Stream", current, false, Mode::Apply, &person).expect("the mock saves a profile");
+    let go_live = omuzaki_settings_api::session::SetupProgress::new("go_live", Vec::new(), false);
+    settings.session().set_setup(Some(go_live)).expect("the mock records setup");
+    Arc::new(settings)
 }

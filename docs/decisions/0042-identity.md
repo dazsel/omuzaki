@@ -8,6 +8,8 @@ area: decisions
 
 **Status:** proposed. It adds a new API crate (`omuzaki-identity-api`) and an additive change to `omuzaki-library-api`. **Context:** SE-07, LB-07, LB-08, VC-10, VC-11, VC-12, CN-05, EX-05; spec v3 §7, §27, §28, §29, §31, §37; ADR 0009 (canonical form), ADR 0026 (settings); the secret store; the Omuzaki key; watermarking research. Design: `docs/design/identity.md`.
 
+**Amendment (2026-10-15, approved by the Director, #1745):** a tenth domain, `Plugin` (tag `omuzaki-plugin-v1\0`), for a plugin package's publisher signature over its content hash (ADR 0058). Decision 2's "nine closed domains" reads as ten.
+
 ## Context
 
 Five features need "who signed this", and so far only the library verifies a signature (`omuzaki-library-api`: ed25519, the tag `omuzaki-library-item-v1\0`, no signing). `Actor::Person` carries a name and no key. Exports are deterministic (io-api D3), and signing must keep them so. Without one shared answer, each feature would invent its own key, message format and notion of trust, and a signature made for one use could be replayed as another.

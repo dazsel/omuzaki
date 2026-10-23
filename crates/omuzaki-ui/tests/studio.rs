@@ -758,13 +758,15 @@ fn an_undo_a_later_change_conflicts_with_leaves_a_card_until_it_is_dismissed() {
     h.run_steps(2);
     let start = width(runner.as_ref());
     set_width(runner.as_ref(), you(), start * 1.1);
-    let agent = connect_agent(&core);
-    set_width(runner.as_ref(), agent, start * 1.2);
+    // Another person's later change: an agent's would be undone first, since a person's undo reaches the steps of the
+    // agents working for them (agent-sessions §5.4).
+    let other = Actor::Person { name: "Sam".into() };
+    set_width(runner.as_ref(), other, start * 1.2);
     until(&mut h, "both steps listed", |h| h.query_all_by_label_contains(": part.set_param").count() == 2);
     h.get_by_role_and_label(Role::Button, "Undo").click();
     h.run_steps(3);
     assert!(h.query_by_label("Couldn't undo").is_some(), "the refused undo leaves a card");
-    assert!((width(runner.as_ref()) - start * 1.2).abs() < 1e-9, "and the agent's later change stands");
+    assert!((width(runner.as_ref()) - start * 1.2).abs() < 1e-9, "and the other person's later change stands");
     h.get_by_role_and_label(Role::Button, "Dismiss").click();
     h.run_steps(3);
     assert!(h.query_by_label("Couldn't undo").is_none(), "Dismiss puts it away");

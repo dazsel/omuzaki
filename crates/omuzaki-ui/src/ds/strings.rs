@@ -5,20 +5,24 @@
 //! reset button, "needs you" on an approval card. Those are messages in a table, never literals in the drawing code.
 //!
 //! The table is a [`Strings`] value kept in the egui context beside the theme ([`Ds`](super::theme::Ds)); a widget
-//! reads it with [`Ds::text`](super::theme::Ds::text) and [`Ds::text_with`](super::theme::Ds::text_with). English is
-//! the default. Message ids follow Fluent conventions (`ds-toast-dismiss`, placeholders `{name}`), so a Fluent-backed
-//! table can replace [`English`] without touching a component: only [`Strings::pattern`] needs an implementation, and
-//! plurals, gender and locale-aware numbers arrive with the Fluent integration task. Until then the few messages
-//! that carry a count are only used for counts of two or more, which every one of the six launch languages writes in
-//! the same plural form.
+//! reads it with [`Ds::text`](super::theme::Ds::text) and [`Ds::text_with`](super::theme::Ds::text_with). Every area's
+//! words go through the same table by their ids ([`Strings::translate`]), and the drawing code's English constants
+//! and registered titles find theirs in the [lexicon](super::lexicon). [`English`] is the default; [`CatalogStrings`]
+//! speaks any shipped language from the Fluent files in `locales/` (design `l10n-ops.md`), falling back to English
+//! for a word not translated yet, and the `ui.language` setting picks it ([`settings_keys`](super::settings_keys)).
+//! Placeholders stay `{name}` and are filled by [`fill`] after the translation, so a value is never translated or
+//! mangled. Plurals and locale-aware numbers in arguments are the next step: today a count is filled in as text.
 //!
 //! [`Pseudo`] wraps any table and turns each message into an accented, 40% longer version of itself. Running the
 //! gallery in it is how CI proves no English is hard-coded: a string that still reads as plain ASCII did not come
 //! from a table.
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::fmt::Debug;
+use std::sync::{Arc, PoisonError, RwLock};
 
+use omuzaki_l10n_api::{Arg, Catalog, Text};
 pub use omuzaki_l10n_api::{accent, pseudo};
 
 /// The locale tag of the pseudo-locale (the conventional "English with accents" tag).
@@ -255,13 +259,37 @@ impl Msg {
     }
 }
 
+/// Declares a table of words as `&str` constants holding their English, which the drawing code passes to its `say`,
+/// and two more constants for the [lexicon](super::lexicon): `ALL`, each constant's name beside its English, and
+/// `PREFIX`, which an id starts with (`ui-panels-outliner` for `OUTLINER`).
+macro_rules! lines {
+    (prefix = $prefix:literal; $($(#[$meta:meta])* $vis:vis const $name:ident: &str = $text:expr;)+) => {
+        $($(#[$meta])* $vis const $name: &str = $text;)+
+
+        /// Every word of the table, by its constant's name, for the lexicon.
+        pub(crate) const ALL: &[(&str, &str)] = &[$((stringify!($name), $name)),+];
+
+        /// What the ids of this table's words start with.
+        pub(crate) const PREFIX: &str = $prefix;
+    };
+}
+pub(crate) use lines;
+
 /// The message table of one language.
 pub trait Strings: Debug + Send + Sync {
     /// The BCP 47 tag of the language ("en", "ja", [`PSEUDO_LOCALE`]).
     fn locale(&self) -> &str;
 
-    /// The pattern of `msg` with its `{name}` placeholders in place.
-    fn pattern(&self, msg: Msg) -> Cow<'_, str>;
+    /// The text of the message `id`, whose English is `english`, in this language, with its `{name}` placeholders in
+    /// place for [`fill`]. Every message the studio says goes through here: the components' [`Msg`]s, each area's
+    /// words, and registered English such as a panel's title ([`lexicon`](super::lexicon) gives those their ids).
+    fn translate<'a>(&'a self, id: &str, english: &'a str) -> Cow<'a, str>;
+
+    /// The pattern of `msg` with its `{name}` placeholders in place. A [`verbatim`](Msg::is_verbatim) message is the
+    /// same in every language.
+    fn pattern(&self, msg: Msg) -> Cow<'_, str> {
+        if msg.is_verbatim() { Cow::Borrowed(msg.english()) } else { self.translate(msg.id(), msg.english()) }
+    }
 }
 
 /// The English table, and the default.
@@ -273,8 +301,8 @@ impl Strings for English {
         "en"
     }
 
-    fn pattern(&self, msg: Msg) -> Cow<'_, str> {
-        Cow::Borrowed(msg.english())
+    fn translate<'a>(&'a self, _: &str, english: &'a str) -> Cow<'a, str> {
+        Cow::Borrowed(english)
     }
 }
 
@@ -288,10 +316,84 @@ impl<S: Strings> Strings for Pseudo<S> {
         PSEUDO_LOCALE
     }
 
-    fn pattern(&self, msg: Msg) -> Cow<'_, str> {
-        let inner = self.0.pattern(msg);
-        if msg.is_verbatim() { inner } else { Cow::Owned(pseudo(&inner)) }
+    fn translate<'a>(&'a self, id: &str, english: &'a str) -> Cow<'a, str> {
+        Cow::Owned(pseudo(&self.0.translate(id, english)))
     }
+}
+
+/// A language's table over its Fluent catalog (`omuzaki-l10n-api`, design `l10n-ops.md`): the translation when the
+/// language has one, else the English. Each message's pattern is formatted once, with every placeholder given back
+/// as itself, and kept, so drawing a frame looks a message up without formatting anything.
+pub struct CatalogStrings {
+    catalog: Catalog,
+    tag: String,
+    patterns: RwLock<HashMap<String, Arc<str>>>,
+}
+
+impl CatalogStrings {
+    /// The table of `catalog`'s language.
+    pub fn new(catalog: Catalog) -> Self {
+        let tag = catalog.locale().as_str().to_owned();
+        Self { catalog, tag, patterns: RwLock::new(HashMap::new()) }
+    }
+
+    /// The catalog it reads, for its report of missing text.
+    pub const fn catalog(&self) -> &Catalog {
+        &self.catalog
+    }
+}
+
+impl Debug for CatalogStrings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CatalogStrings").field("locale", &self.tag).finish_non_exhaustive()
+    }
+}
+
+impl Strings for CatalogStrings {
+    fn locale(&self) -> &str {
+        &self.tag
+    }
+
+    fn translate<'a>(&'a self, id: &str, english: &'a str) -> Cow<'a, str> {
+        if let Some(pattern) = self.patterns.read().unwrap_or_else(PoisonError::into_inner).get(id) {
+            return Cow::Owned(pattern.to_string());
+        }
+        // Each placeholder renders as itself, so the result is a pattern that `fill` completes like the English one.
+        let args =
+            placeholders(english).map(|name| (Cow::Owned(name.to_owned()), Arg::Verbatim(format!("{{{name}}}"))));
+        let text = Text { id: Cow::Owned(id.to_owned()), args: args.collect() };
+        let pattern: Arc<str> = self.catalog.render_stored(&text, english).into();
+        let mut patterns = self.patterns.write().unwrap_or_else(PoisonError::into_inner);
+        let pattern = Arc::clone(patterns.entry(id.to_owned()).or_insert(pattern));
+        Cow::Owned(pattern.to_string())
+    }
+}
+
+/// `english`, whose message id is `id`, in `strings`' language: borrowed when that is the English itself.
+pub fn translated<'a>(strings: &dyn Strings, id: &str, english: &'a str) -> Cow<'a, str> {
+    match strings.translate(id, english) {
+        Cow::Borrowed(text) if std::ptr::eq(text, english) => Cow::Borrowed(english),
+        other => Cow::Owned(other.into_owned()),
+    }
+}
+
+/// English the drawing code holds (a table's constant, a registered title) in `strings`' language, found by its id in
+/// the [lexicon](super::lexicon).
+pub fn local<'a>(strings: &dyn Strings, english: &'a str) -> Cow<'a, str> {
+    if strings.locale() == "en" {
+        return Cow::Borrowed(english);
+    }
+    translated(strings, &super::lexicon::id_of(english), english)
+}
+
+/// The names of the `{name}` placeholders of `pattern`, in order.
+pub fn placeholders(pattern: &str) -> impl Iterator<Item = &str> {
+    pattern.split('{').skip(1).filter_map(|part| {
+        let name = part.split_once('}')?.0;
+        let ident = name.starts_with(|c: char| c.is_ascii_alphabetic())
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+        ident.then_some(name)
+    })
 }
 
 /// Fills the `{name}` placeholders of `pattern` from `args`. A placeholder with no argument stays as written, which

@@ -7,23 +7,35 @@
 //! restart. Ops reach snapshots through the [`Snapshots`] service. This crate holds only the types and traits:
 //! `omuzaki-history-mock` has in-memory stand-ins.
 //!
+//! Branches (VC-02, ADR 0025) are in the public modules [`branch`] (branches, points, the `Branches` lane manager) and
+//! [`state`] (state references, `BranchStore`, `HistoryView`), and [`merge_base`] (the base of a merge from version
+//! vectors); import them by path.
+//!
 //! Projects keep regenerable caches and renders out of snapshots by declaring them with [`register_derived_path!`]
 //! next to the code that writes them.
 #![deny(missing_docs)]
 
+mod audit;
+pub mod branch;
 mod derived;
 mod entry;
 mod export;
+mod log;
+pub mod merge_base;
 mod sink;
 mod snapshot;
+pub mod state;
 mod wall;
 
+pub use audit::{AUDIT_TEXT_MAX, AuditDecision, AuditFact, CUT_MARKER, cut_text};
 pub use derived::{DerivedPath, derived_paths, is_derived, matches_glob};
 pub use entry::{HistoryEntry, Lsn, Stack};
 pub use export::{ActorHistory, HISTORY_EXPORT_FORMAT, HistoryExport, OpenTxExport, StepExport};
+pub use log::{HistoryLog, HistoryPage, HistoryQuery, MAX_PAGE, TxOutcome, TxSummary};
 pub use sink::{JournalSink, JournalStatus, SyncError};
 pub use snapshot::{
-    Footprint, SnapshotError, SnapshotId, SnapshotInfo, Snapshots, Trigger, Usage, Verification, VerifyHow,
+    Footprint, Reload, RunningJob, SnapshotError, SnapshotId, SnapshotInfo, Snapshots, Trigger, Usage, Verification,
+    VerifyHow,
 };
 pub use wall::{WallClock, WallTime};
 

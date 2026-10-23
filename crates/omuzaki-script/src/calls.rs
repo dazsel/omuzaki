@@ -7,11 +7,9 @@ use omuzaki_doc_api::{DocPath, Value};
 use omuzaki_ops_api::{Actor, Cause, CauseKind, Grants, Mode, OpError, OpKind, Outcome, Plan, Request, Runner, TxId};
 use serde::Serialize;
 
-/// Polled by the host in `on_progress` (every Rhai operation) and before every inner call.
-pub trait Cancel: Send + Sync {
-    /// Whether the run should stop and roll back.
-    fn is_cancelled(&self) -> bool;
-}
+/// Polled by the host in `on_progress` (every Rhai operation) and before every inner call: true means the run stops
+/// and rolls back. The one cancel handle every crate shares (`omuzaki_core::cancel`).
+pub use omuzaki_core::cancel::Cancel;
 
 /// One call a dry run planned instead of applying.
 #[derive(Clone, Debug, PartialEq, Serialize)]

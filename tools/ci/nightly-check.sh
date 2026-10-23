@@ -24,6 +24,12 @@ stage "fmt" cargo fmt --all --check
 stage "clippy (all targets)" cargo clippy --locked --workspace --all-targets -- -D warnings
 stage "test (all targets)" cargo test --locked --workspace --all-targets
 stage "doctests" cargo test --locked --workspace --doc
+# Crash recovery over `omuzaki mcp` (#235): twenty seeded sessions killed and relaunched; pull requests run three.
+stage "crash recovery (20 seeds)" env OMUZAKI_CRASH_SEEDS=20 cargo test --locked -p omuzaki-cli --features test-fixtures \
+  --test crash_recovery
+# A branch switch killed at each step and in the folder's rewrite (#449): twenty seeds; pull requests run four.
+stage "branch switch crashes (20 seeds)" env OMUZAKI_BRANCH_CRASH_SEEDS=20 cargo test --locked -p omuzaki-cli \
+  --features test-fixtures --test branches_crash
 # The link gate in release too (ADR 0015): every App's tests/registrations.rs. The PR gate runs it in dev with the tests.
 stage "link gate (release)" cargo test --locked --release --workspace --test registrations
 # The full check includes `advisories`, which fetches the RustSec database; PRs skip it so they stay offline-fast.

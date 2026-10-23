@@ -11,17 +11,28 @@ repository.workspace = true
 [dependencies]
 crc32fast.workspace = true
 inventory.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+toml.workspace = true
 toml_edit.workspace = true
+tracing.workspace = true
 omuzaki-assets-lock = { path = "../omuzaki-assets-lock" }
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 omuzaki-history-api = { path = "../omuzaki-history-api" }
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
+
+# Random branch ids. Not on wasm, where getrandom would need a JavaScript backend and the time serves instead.
+[target.'cfg(any(unix, windows))'.dependencies]
+getrandom.workspace = true
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 rustix.workspace = true
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+libc.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
@@ -30,6 +41,7 @@ windows-sys.workspace = true
 criterion.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
+omuzaki-store-mock = { path = "../omuzaki-store-mock" }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-stage-api = { path = "../omuzaki-stage-api" }
 
@@ -39,6 +51,10 @@ harness = false
 
 [[bench]]
 name = "open"
+harness = false
+
+[[bench]]
+name = "journal"
 harness = false
 
 [lints]

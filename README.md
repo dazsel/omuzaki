@@ -72,6 +72,16 @@ operations, part kinds and formats register themselves, so adding one never edit
 Start with [`crates/README.md`](crates/README.md) for the layout and [`docs/README.md`](docs/README.md) for the docs.
 The full plan is the [spec](docs/product/02-studio-spec-v3.md): a plan, not a list of working features.
 
+## How this project was created
+
+Omuzaki is built by AI agents (Claude Code) under one human owner. The numbers behind it are kept in
+[`docs/history/build-stats`](docs/history/build-stats/README.md), refreshed hourly: agent-hours, how many agents worked at
+once, lines of code, commits, pull requests, issues and CI runs. Open its [`index.html`](docs/history/build-stats/index.html)
+for the one-page view.
+
+![Agents working at once](docs/history/build-stats/charts/agents-at-once.svg)
+![Lines of code](docs/history/build-stats/charts/lines-of-code.svg)
+
 ## Contributing
 
 Bug reports and ideas are welcome: open an [issue](https://github.com/dazsel/omuzaki/issues/new/choose) for a bug, or

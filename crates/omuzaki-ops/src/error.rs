@@ -6,6 +6,7 @@ use omuzaki_ops_api::{Actor, OpError, TxId};
 
 /// Why an [`Executor`](crate::Executor) couldn't be built.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum ExecutorError {
     /// Two op types registered under one name. Names are the MCP tool name and the CLI path, so they must be unique.
     /// Both registrations are named by summary, since their names are identical.
@@ -17,6 +18,16 @@ pub enum ExecutorError {
         first: &'static str,
         /// The summary of the registration seen second.
         second: &'static str,
+    },
+    /// The history to restore was written by a newer Omuzaki, in a layout this one cannot read.
+    #[error(
+        "the history is in format {found}, newer than the {supported} this build reads; open it with a newer Omuzaki"
+    )]
+    HistoryFormat {
+        /// The export's format.
+        found: u32,
+        /// The newest format this build reads.
+        supported: u32,
     },
 }
 
@@ -54,10 +65,15 @@ pub(crate) fn patch_error_path(error: &PatchError) -> &DocPath {
 /// Applying an inverse (or redo) patch failed because others changed the document since. Whatever the exact cause
 /// (a different value, a vanished parent), it's a conflict.
 ///
-/// The message names the path and, when the op log knows, who changed it last, but never document *values*: the
-/// callers of undo, redo and rollback aren't required to hold `read`, so values would leak.
+/// The message names the path and who changed it last (or that it changed before this session), but never document
+/// *values*: the callers of undo, redo and rollback aren't required to hold `read`, so values would leak.
 pub(crate) fn revert_failed(what: &str, error: &PatchError, changed_by: Option<&Actor>, hint: &str) -> OpError {
-    let by = changed_by.map(|actor| format!(" (last by {})", who(actor))).unwrap_or_default();
+    // The executor knows every change since it started; one it can't name came before (a restored history, a file
+    // edited while the project was closed), which the journal's archive keeps.
+    let by = changed_by.map_or_else(
+        || " (before this session: see the history for who)".to_owned(),
+        |actor| format!(" (last by {})", who(actor)),
+    );
     OpError::conflict(format!("can't {what}: {} was changed since{by}", patch_error_path(error))).hint(hint)
 }
 

@@ -517,3 +517,25 @@ fn a_done_state_carries_its_outcome_in_memory_only() {
     assert_eq!(JobState::Running.with_outcome(outcome).outcome(), None);
     assert_eq!(JobState::done(TxId(3), None).outcome(), None);
 }
+
+#[test]
+fn grants_are_the_ones_given_or_none() {
+    let actor = person();
+    let doc = Doc(MemDoc::new());
+    let signal = Signal::default();
+    assert_eq!(JobCtx::new(JobId(1), &actor, &doc, &signal).grants(), &Grants::default());
+    let grants = Grants::of([Scope::Read, Scope::Render]);
+    let ctx = JobCtx::new(JobId(1), &actor, &doc, &signal).with_grants(&grants);
+    assert_eq!(ctx.grants(), &grants);
+}
+
+#[test]
+fn cause_is_none_until_one_is_given() {
+    let actor = person();
+    let doc = Doc(MemDoc::new());
+    let signal = Signal::default();
+    assert_eq!(JobCtx::new(JobId(1), &actor, &doc, &signal).cause(), None);
+    let cause = Cause { kind: CauseKind::Script, text: Some("bonk".into()) };
+    let ctx = JobCtx::new(JobId(1), &actor, &doc, &signal).with_cause(&cause);
+    assert_eq!(ctx.cause(), Some(&cause));
+}
