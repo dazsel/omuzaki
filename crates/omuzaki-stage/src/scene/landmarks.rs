@@ -57,7 +57,9 @@ impl Bounds {
 pub struct Landmarks {
     /// Every vertex of every mesh, hair and hats included. `top` is `body.max.y`, `bottom` is `body.min.y`.
     pub body: Bounds,
-    /// The head part's head mesh. `crown` is `max.y`, `chin` is `min.y`. `None` without a head part.
+    /// The head as a viewer sees it (#2244): the head part's head mesh (an avatar's head-bone vertices), grown by
+    /// everything that stands above its chin over its footprint (hair, hats, horns, ears; see [`HEAD_REACH`]). `crown`
+    /// is `max.y`, the top of the hair or the hat; `chin` is `min.y`, the head mesh's own. `None` without a head part.
     pub head: Option<Bounds>,
     /// The eye line: the mean bind height of the `leftEye` and `rightEye` joints (one of them if only one exists).
     pub eyes: Option<f32>,
@@ -151,16 +153,21 @@ impl Landmarks {
         self.body.min.y
     }
 
-    /// The top of the head mesh; `None` without a head part.
+    /// The top of the head as it is seen (hair and hats included); `None` without a head part.
     pub fn crown(&self) -> Option<f32> {
         self.head.map(|h| h.max.y)
     }
 
-    /// The bottom of the head mesh; `None` without a head part.
+    /// The bottom of the head mesh: the chin; `None` without a head part.
     pub fn chin(&self) -> Option<f32> {
         self.head.map(|h| h.min.y)
     }
 }
+
+/// How far beside the head mesh, as a share of its width (and depth), something above the chin still counts as the
+/// head's: hair that stands out from the skull, a hat's brim, ears and horns. Shoulders and raised arms of a bind pose
+/// sit lower or further out.
+pub const HEAD_REACH: f32 = 0.5;
 
 fn framing(reason: String) -> StageError {
     StageError::Framing { reason }
@@ -212,8 +219,9 @@ fn measure_meshes<'a>(
         None => height_of(HumanoidBone::Chest)?,
     };
 
+    let meshes: Vec<Measured<'a>> = meshes.collect();
     let (mut body, mut head, mut bust, mut hands) = (None, None, None, None);
-    for Measured { mesh, owner, head: head_rule } in meshes {
+    for Measured { mesh, owner, head: head_rule } in &meshes {
         let hand_joints = hand_joints(mesh);
         let geometry = &mesh.geometry;
         let skinned = geometry.is_skinned();
@@ -232,7 +240,7 @@ fn measure_meshes<'a>(
                 return Err(framing(format!("vertex {i} of mesh '{}' of {owner} is not a finite position", mesh.name)));
             }
             Bounds::include(&mut body, position);
-            let is_head = match head_rule {
+            let is_head = match *head_rule {
                 HeadRule::No => false,
                 HeadRule::Whole => true,
                 HeadRule::Joint(joint) => {
@@ -251,6 +259,7 @@ fn measure_meshes<'a>(
         }
     }
     let body = body.ok_or_else(|| framing("the character has no vertex to measure".to_owned()))?;
+    let head = head.map(|mesh| visual_head(mesh, &meshes));
 
     let height_m = stature.unwrap_or_else(|| body.height());
     // `Stature::check`'s rule: a usable height is positive and finite. A body with no stature and no extent in Y
@@ -261,6 +270,22 @@ fn measure_meshes<'a>(
         )));
     }
     Ok(Landmarks { body, head, eyes, chest, bust, hands, height_m })
+}
+
+/// `mesh` (the head mesh's bounds) grown by every vertex above its chin whose X and Z lie within [`HEAD_REACH`] of
+/// its footprint: the head as it is seen, hair and hat included.
+fn visual_head(mesh: Bounds, meshes: &[Measured<'_>]) -> Bounds {
+    let reach = (mesh.max - mesh.min) * HEAD_REACH;
+    let (lo, hi) = (mesh.min - reach, mesh.max + reach);
+    let mut head = Some(mesh);
+    for measured in meshes {
+        for &p in &measured.mesh.geometry.positions {
+            if p.y > mesh.min.y && p.x >= lo.x && p.x <= hi.x && p.z >= lo.z && p.z <= hi.z {
+                Bounds::include(&mut head, p);
+            }
+        }
+    }
+    head.unwrap_or(mesh)
 }
 
 /// The part that holds the head: the first enabled one, by part id, whose kind is registered as a head.

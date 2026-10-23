@@ -550,3 +550,45 @@ fn the_hands_preset_centres_both_hands_at_every_aspect() {
         }
     }
 }
+
+/// The highest point of the head as seen (`crown`) lies inside every head-aimed shot (#2244): the kit's hair, and a
+/// tall hat added on top, are not cropped, and something above the chin far to the side is not the head's.
+#[test]
+fn hair_and_hats_stay_inside_the_face_and_bust_shots() {
+    let inside = |camera: &Camera, aspect: f32, p: Vec3| {
+        let (x, y) = project(camera, aspect, p);
+        x.abs() <= 1.0 + 1e-3 && y.abs() <= 1.0 + 1e-3
+    };
+    for id in templates::TEMPLATES {
+        let mut built = templates::build(id);
+        let plain = Landmarks::measure(&built).unwrap();
+        let head = plain.head.unwrap();
+        assert!(plain.crown().unwrap() >= plain.top() - 1e-4, "{id}: the hair is the head's, and it is the top");
+
+        // A hat 0.3 m above the hair, and a prop at head height a metre to the side.
+        let mut hat = built.meshes[0].clone();
+        let (c, top) = (head.centre(), plain.top());
+        hat.mesh.geometry.positions.iter_mut().enumerate().for_each(|(i, p)| {
+            *p = match i % 3 {
+                0 => Vec3::new(c.x - 0.1, top, c.z),
+                1 => Vec3::new(c.x + 0.1, top, c.z),
+                _ => Vec3::new(c.x, top + 0.3, c.z),
+            };
+        });
+        let mut prop = built.meshes[0].clone();
+        prop.mesh.geometry.positions.iter_mut().for_each(|p| *p = Vec3::new(c.x + 1.0, c.y, c.z));
+        built.meshes.extend([hat, prop]);
+        let l = Landmarks::measure(&built).unwrap();
+        let crown = l.crown().unwrap();
+        assert!((crown - (top + 0.3)).abs() < 1e-4, "{id}: the hat's top is the crown ({crown})");
+        assert!(l.head.unwrap().max.x < c.x + 0.9, "{id}: the prop beside the head is not the head's");
+        assert_eq!(l.chin(), plain.chin(), "{id}: the chin is the head mesh's");
+        for aspect in ASPECTS {
+            for framing in [Framing::Face, Framing::Bust] {
+                let camera = frame(framing, &l, &CameraDef::preset(framing), aspect).unwrap();
+                let at = Vec3::new(c.x, crown, c.z);
+                assert!(inside(&camera, aspect, at), "{id} {aspect} {framing:?}: the hat's top is cropped");
+            }
+        }
+    }
+}
