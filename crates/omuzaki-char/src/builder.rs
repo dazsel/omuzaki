@@ -22,7 +22,9 @@
 //! kind that broke them:
 //! 1. A part reads palette colours only through the colour references in its own parameters, as
 //!    [`BuildCtx::colour`](omuzaki_char_api::BuildCtx::colour) is documented to be used. A kind that looked a fixed slot
-//!    up behind the parameters' back would keep a stale colour.
+//!    up behind the parameters' back would keep a stale colour. [`conformance::check_colours_through_parameters`]
+//!    rebuilds each part with every slot its parameters don't name changed and names a part whose output moved;
+//!    `tests/palette_independence.rs` runs it over the kit characters.
 //! 2. What a part publishes (surfaces, fits, anchors, colliders) is geometry and doesn't depend on palette colours
 //!    (decision Q6). The chain therefore uses the key *without* the colours: a skin colour change rebuilds the body and
 //!    head, which name the skin slots, but not the garments after them, which only see the body's shape.

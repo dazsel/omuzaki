@@ -101,6 +101,17 @@ pub trait PartKind: 'static {
     /// Builds the part. Must be a pure function of `params` and the context: same inputs, same output, on every
     /// platform (use `ctx.rng`, never global state or the clock).
     ///
+    /// Two palette contracts hold for every kind, because a caching builder keys a part on them (`omuzaki-char`'s
+    /// `builder` module) and a kind that broke one would be served stale, not refused:
+    /// 1. **Colours only through the parameters.** Read palette colours only through the [`ColourRef`]s in `params`
+    ///    ([`BuildCtx::colour`]), never a fixed slot behind their back (`ctx.palette.0.get("skin")`): a part is rebuilt
+    ///    when a slot its parameters name changes, and only then.
+    /// 2. **What a part publishes is colour independent.** Nothing in [`PartOutput::publishes`] may depend on palette
+    ///    colours (decision Q6: geometry doesn't depend on colour), so a skin change rebuilds the body but not the
+    ///    garments that only see its shape.
+    ///
+    /// `omuzaki_char::builder::conformance` checks both over every linked kind.
+    ///
     /// # Errors
     /// A [`BuildError`] naming the part, for example [`BuildError::Missing`] when a required surface wasn't published.
     fn build(params: &Self::Params, ctx: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError>;
@@ -402,6 +413,9 @@ pub struct Anchor {
 /// What one part makes available to the parts after it: a [`Fact`] value per [`Publishes::put`]. The facts of this
 /// crate are [`HeadFact`], [`FaceFact`], [`FitFact`], [`AnchorsFact`], [`CollidersFact`] and [`StatureFact`]; any crate
 /// may define more ([`fact!`](crate::fact!)).
+///
+/// What a part publishes must not depend on palette colours ([`PartKind::build`], contract 2): the parts after it are
+/// keyed on the publisher's geometry, not its colours.
 #[derive(Clone, Default)]
 pub struct Publishes {
     /// By fact name, so the merge order is deterministic.
@@ -717,7 +731,8 @@ pub struct BuildCtx<'a> {
     /// from it, and no other part needs it (everything else reads what the body published).
     pub template: &'a BodyTemplateId,
     /// The character's colours. Resolve a part's [`ColourRef`]s with [`BuildCtx::colour`]
-    /// when building materials (the renderer's material types hold plain colours). A palette change doesn't rebuild the
+    /// when building materials (the renderer's material types hold plain colours). Read only the slots the part's
+    /// parameters name, and publish nothing that depends on them ([`PartKind::build`] states both contracts). A palette change doesn't rebuild the
     /// part if its kind implements [`PartKind::recolour`].
     pub palette: &'a Palette,
     /// The character's face design (the head part reads the layout; hair reads the brows style).

@@ -10,7 +10,9 @@
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use omuzaki_char::builder::conformance::{Probes, Sweep, check, check_all, check_all_with, check_with};
+use omuzaki_char::builder::conformance::{
+    Probes, Sweep, check, check_all, check_all_with, check_colours_through_parameters, check_with,
+};
 use omuzaki_char::outfit::common::LAYER_SHIRT;
 use omuzaki_char::outfit::skirt::LAYER_SKIRT;
 use omuzaki_char_api::fact::FactProbe;
@@ -230,4 +232,15 @@ fn probe_problems_come_back_sorted_by_fact_whatever_order_the_probes_come_in() {
     assert_eq!(forward, backward);
     assert_eq!(forward.len(), 2, "{forward:?}");
     assert!(forward[0].contains("'head'") && forward[1].contains("'test-registered-probe'"), "{forward:?}");
+}
+
+/// The first palette contract (#645): every part of the kit characters, the dressed one included, builds the same
+/// when only palette slots its parameters don't name change. The facts' half is the sweep above.
+#[test]
+fn every_kit_part_reads_colours_only_through_its_parameters() {
+    for def in kit_characters().into_iter().chain([dressed()]) {
+        let parts: Vec<String> = def.parts.keys().map(ToString::to_string).collect();
+        let violations = check_colours_through_parameters(&def, &services()).unwrap();
+        assert!(violations.is_empty(), "parts {parts:?}: {violations:#?}");
+    }
 }

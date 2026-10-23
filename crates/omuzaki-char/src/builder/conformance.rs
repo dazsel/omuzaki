@@ -567,3 +567,78 @@ fn compare(
         }
     }
 }
+
+// ---------------------------------------------------------------------------------- colours only through the parameters
+
+/// The first palette contract (`PartKind::build`, contract 1): a part reads palette colours only through the slots its
+/// own parameters name. For each part of `base` under each of the [`OPTIONS`], the part is built again against what
+/// the parts before it published, with every slot its normalised parameters don't name [`flipped`] and one extra slot
+/// added; its meshes, materials, material classes, textures and warnings must come out the same. A kind that looked a
+/// fixed slot up behind its parameters' back changes there, and the caching builder, which keys a part on the slots
+/// its parameters name, would serve it stale.
+///
+/// Returns one line per part and option set whose output changed, naming the part, its kind and what differed.
+///
+/// # Errors
+/// The first build of `base` that fails, with the part and the reason: a base that doesn't build checks nothing.
+pub fn check_colours_through_parameters(base: &CharacterDef, services: &BuildServices) -> Result<Vec<String>, String> {
+    let order = plan(base).map_err(|e| e.to_string())?;
+    let mut violations = Vec::new();
+    for (quality, rig_export) in OPTIONS {
+        let options = BuildOptions { quality, rig_export, ..BuildOptions::default() };
+        let mut published = Published::default();
+        for part in &order {
+            let output = build_part(base, part, &options, services, &published).map_err(|e| format!("{part}: {e}"))?;
+            let other = unnamed_flipped(base, part);
+            let again = build_part(&other, part, &options, services, &published)
+                .map_err(|e| format!("{part} with its unnamed slots changed: {e}"))?;
+            let differs: Vec<&str> = [
+                ("meshes", output.meshes != again.meshes),
+                ("materials", output.materials != again.materials),
+                ("material classes", output.material_classes != again.material_classes),
+                ("textures", output.textures != again.textures),
+                ("warnings", output.warnings != again.warnings),
+            ]
+            .into_iter()
+            .filter_map(|(what, differs)| differs.then_some(what))
+            .collect();
+            if !differs.is_empty() {
+                let kind = base.parts.get(part).map_or("?", |p| p.kind.as_str());
+                violations.push(format!(
+                    "part `{part}` (kind `{kind}`, {quality:?}, rig_export {rig_export}): its {} changed when only \
+                     palette slots its parameters don't name changed",
+                    differs.join(", ")
+                ));
+            }
+            published.absorb(part, output.publishes).map_err(|e| format!("{part}: {e}"))?;
+        }
+    }
+    Ok(violations)
+}
+
+/// `def` with every palette slot that `part`'s normalised parameters don't name changed in every channel, and one more
+/// slot no part names.
+fn unnamed_flipped(def: &CharacterDef, part: &PartId) -> CharacterDef {
+    let mut named = BTreeSet::new();
+    let params = def.parts.get(part).map(|p| {
+        find_kind(p.kind.as_str()).and_then(|r| (r.check)(&p.params).ok()).unwrap_or_else(|| p.params.clone())
+    });
+    if let Some(params) = &params {
+        named_slots(params, &mut named);
+    }
+    let named: BTreeSet<&str> = named.into_iter().map(|s| s.trim_start_matches('@')).collect();
+    let flip = flipped(&def.palette);
+    let mut other = def.clone();
+    for (slot, colour) in &mut other.palette.0 {
+        if !named.contains(slot.as_str())
+            && let Some(changed) = flip.0.get(slot)
+        {
+            *colour = *changed;
+        }
+    }
+    let free = unused_name(EXTRA_SLOT, '_', |n| named.contains(n) || other.palette.0.keys().any(|s| s.as_str() == n));
+    if let Ok(slot) = PaletteSlot::new(&free) {
+        other.palette.0.insert(slot, Colour::rgb(1, 2, 3));
+    }
+    other
+}
