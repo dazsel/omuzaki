@@ -49,13 +49,26 @@ pub fn expression_name(channel: Channel) -> Option<ExpressionName> {
     extra_expression(id).ok()
 }
 
-/// The name a character's expression `id` is exported under: the VRM preset when `id` is a preset's name (`happy`),
-/// else `omuzaki_<id>` (`omuzaki_smug`). `None` only for an id a file can't carry as a name.
+/// The name a character's expression `id` is exported under: the VRM preset when `id` is a preset's name in an id's
+/// kebab case (`happy`, `blink-left` for `blinkLeft`), else `omuzaki_<id>` (`omuzaki_smug`). `None` only for an id a
+/// file can't carry as a name.
 pub fn named_expression(id: &ExpressionId) -> Option<ExpressionName> {
-    match PresetExpression::ALL.iter().find(|preset| preset.as_str() == id.as_str()) {
+    match PresetExpression::ALL.iter().find(|preset| kebab_eq(preset.as_str(), id.as_str())) {
         Some(preset) => Some(ExpressionName::Preset(*preset)),
         None => extra_expression(id.as_str()).ok(),
     }
+}
+
+/// Whether the camelCase `camel` is `kebab` in kebab case.
+fn kebab_eq(camel: &str, kebab: &str) -> bool {
+    let mut rest = kebab.chars();
+    camel.chars().all(|c| {
+        if c.is_ascii_uppercase() {
+            rest.next() == Some('-') && rest.next() == Some(c.to_ascii_lowercase())
+        } else {
+            rest.next() == Some(c)
+        }
+    }) && rest.next().is_none()
 }
 
 /// The channel an expression named `name` carries, or `None` if it is a preset, a model's own expression or an
@@ -180,6 +193,8 @@ mod tests {
         assert_eq!(named_expression(&id("happy")), Some(ExpressionName::Preset(PresetExpression::Happy)));
         assert_eq!(named_expression(&id("aa")), Some(ExpressionName::Preset(PresetExpression::Aa)));
         assert_eq!(named_expression(&id("smug")).map(|n| n.to_string()), Some("omuzaki_smug".to_owned()));
+        assert_eq!(named_expression(&id("blink-left")), Some(ExpressionName::Preset(PresetExpression::BlinkLeft)));
+        assert_eq!(named_expression(&id("blinkleft")).map(|n| n.to_string()), Some("omuzaki_blinkleft".to_owned()));
         // Every preset whose name an expression can have maps back to that preset.
         for preset in PresetExpression::ALL {
             if let Ok(own) = omuzaki_anim_api::ExpressionId::new(preset.as_str()) {

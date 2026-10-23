@@ -306,6 +306,32 @@ impl Renderer for WgpuRenderer {
         gpu.scoped("a vertex update", || entry.update_vertices(&gpu.queue, positions, normals))
     }
 
+    fn update_colours(&mut self, mesh: MeshId, colours: &[[f32; 4]]) -> Result<(), RenderError> {
+        let gpu = &self.shared.gpu;
+        gpu.check_alive()?;
+        let entry = self
+            .resources
+            .meshes
+            .get_mut(mesh.index(), mesh.generation())
+            .ok_or(RenderError::UnknownHandle { what: "mesh" })?;
+        let Some(count) = entry.colour_count() else {
+            return Err(RenderError::invalid("colour update", "the mesh was created without vertex colours"));
+        };
+        if colours.len() != count {
+            return Err(RenderError::invalid(
+                "colour update",
+                format!("{} colours for {count} vertices", colours.len()),
+            ));
+        }
+        if colours.iter().flatten().any(|c| !c.is_finite()) {
+            return Err(RenderError::invalid("colour update", "colours must be finite"));
+        }
+        gpu.scoped("a colour update", || {
+            entry.update_colours(&gpu.queue, colours);
+            Ok(())
+        })
+    }
+
     fn create_texture(&mut self, desc: &TextureDesc, rgba: Option<&[u8]>) -> Result<TextureId, RenderError> {
         desc.validate()?;
         self.check_size(desc.size, "texture size")?;

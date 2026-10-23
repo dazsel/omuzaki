@@ -59,8 +59,8 @@ fn registrations() -> String {
 }
 
 /// One registration's line, newline included. The name loses its whitespace, which the gate ignores when it compares
-/// names: a macro whose first argument spans lines (`register_shading_program!(ProgramSpec { ... })`) would otherwise
-/// split its record over several lines.
+/// names: a macro whose first argument spans lines (a struct literal) would otherwise split its record over several
+/// lines.
 fn registration_line(r: &omuzaki_core::link::Registered) -> String {
     let name: String = r.name.split_whitespace().collect();
     format!("{}\t{}\t{}\t{}:{}\n", r.package, r.kind, name, r.file, r.line)

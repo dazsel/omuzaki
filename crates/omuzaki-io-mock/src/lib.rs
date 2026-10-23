@@ -10,6 +10,8 @@
 //! what it drops. That is enough to exercise every part of the contract: registration and sniffing, limits,
 //! invariants, preflight rules, determinism, round trips, and perfect-sync baking through [`MockBaker`].
 //!
+//! It also writes and reads a tiny VRM Animation ([`MockVrmaExporter`], [`read_vrma`]) for the animation contract.
+//!
 //! The rule-by-rule tests for `omuzaki-io-api` live in this crate's `tests/` because they need a full avatar fixture
 //! ([`fixtures::tiny_avatar`]), and an API crate must not depend on its own mock.
 #![deny(missing_docs)]
@@ -22,9 +24,11 @@ mod json;
 mod read;
 mod spring;
 mod vrm;
+mod vrma;
 mod write;
 
 pub use baker::MockBaker;
 pub use formats::{MockGlbExporter, MockGlbImporter, MockVrm1Exporter, MockVrm1Importer};
+pub use vrma::{MockVrmaExporter, read_vrma};
 
 omuzaki_core::define_link!();

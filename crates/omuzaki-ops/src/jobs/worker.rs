@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::ThreadId;
 
 use omuzaki_doc_api::{DocRead, Value};
+use omuzaki_history_api::TxEnd;
 use omuzaki_ops_api::{
     CancelFlag, CancelReason, Cause, CauseKind, ErrorCode, ErrorDetail, JobCalls, JobCtx, JobDoc, JobId, JobSignal,
     JobState, Mode, OpError, OpKind, Outcome, Request,
@@ -188,7 +189,7 @@ pub(super) fn undo_driver(
         match env.rollback_tx(&mut state, driver.tx, actor, &grants) {
             Ok(()) => Ok(()),
             // Kept, not lost: nobody could ever close it otherwise.
-            Err(_) => state.commit_as_is(driver.tx, actor, " (unfinished)").map(drop),
+            Err(_) => state.commit_as_is(driver.tx, actor, TxEnd::Unfinished).map(drop),
         }
     };
     drop(state);

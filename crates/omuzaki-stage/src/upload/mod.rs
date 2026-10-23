@@ -5,9 +5,12 @@
 
 use std::collections::BTreeMap;
 
-use omuzaki_char_api::{BuiltCharacter, BuiltMesh, MaterialName, MaterialSpec, PartId, TextureName};
+use omuzaki_char_api::{BuiltCharacter, BuiltMesh, MaterialName, MaterialSpec, PartId, PartMesh, TextureName};
 use omuzaki_face_api::{DEFAULT_PX_PER_M, FaceLayerId, FaceLayerSpec};
-use omuzaki_render_api::{Material, MaterialId, MeshId, MeshOptions, MeshUsage, Renderer, Shading, TextureId};
+use omuzaki_core::mesh::MeshData;
+use omuzaki_render_api::{
+    Material, MaterialId, MeshId, MeshOptions, MeshUsage, RenderError, Renderer, Shading, TextureId,
+};
 
 use self::release::{discard_textures, release_in_order};
 use crate::error::StageError;
@@ -397,6 +400,9 @@ pub struct SyncReport {
     pub meshes_created: u32,
     /// Meshes the old character had that the new one has too, unchanged: nothing was sent for them.
     pub meshes_kept: u32,
+    /// Meshes whose vertex colours alone changed (a palette slot baked into hair), rewritten in place with
+    /// `update_colours`: no mesh was created for them.
+    pub meshes_recoloured: u32,
     /// Old meshes released.
     pub meshes_released: u32,
     /// Materials created.
@@ -413,10 +419,17 @@ struct Created {
     textures: Vec<TextureId>,
     materials: Vec<MaterialId>,
     meshes: Vec<MeshId>,
+    /// Meshes recoloured in place, with the colours to put back.
+    recoloured: Vec<(MeshId, Vec<[f32; 4]>)>,
 }
 
 impl Created {
     fn discard(self, renderer: &mut dyn Renderer) {
+        for (mesh, colours) in &self.recoloured {
+            if let Err(error) = renderer.update_colours(*mesh, colours) {
+                tracing::warn!(%error, "restoring a mesh's colours after an abandoned sync failed");
+            }
+        }
         if let Err(error) = release_in_order(renderer, self.materials, self.textures, self.meshes) {
             tracing::warn!(%error, "releasing what an abandoned sync created failed");
         }
@@ -523,8 +536,8 @@ impl StageCharacter {
     /// last, in the renderer's safe order.
     ///
     /// A changed mesh, texture or face layer gets a fresh handle (the renderer can't change a static mesh or a texture's
-    /// size in place), so a palette change that only recolours materials makes no `create_mesh` call, while one that
-    /// changes a baked vertex colour recreates that mesh.
+    /// size in place). A mesh whose vertex colours alone changed (a palette slot baked into hair) is recoloured in place
+    /// with `update_colours`, so a palette change makes no `create_mesh` call.
     ///
     /// All or nothing: if the renderer refuses a call, what was created is released and the materials are restored.
     ///
@@ -745,8 +758,26 @@ impl StageCharacter {
                 meshes.push(up.clone());
                 continue;
             }
-            // A changed mesh is recreated, which includes a hair mesh whose baked tint a palette change moved. That is
-            // a V0 exception: #895 moves it to `update_vertices` so a palette change creates no mesh at all.
+            // A mesh whose baked vertex colours alone changed (a palette slot in hair streaks) is recoloured in place,
+            // so a palette change creates no mesh. A renderer without colour updates gets a new mesh instead.
+            let before = was.get(&(part, built_mesh.local));
+            let recolour = before
+                .filter(|before| only_colours_differ(&before.mesh, mesh))
+                .and_then(|before| Some((before, self.mesh(part, built_mesh.local)?)));
+            if let Some((before, up)) = recolour {
+                match renderer.update_colours(up.mesh, &mesh.geometry.colours) {
+                    Ok(()) => {
+                        created.recoloured.push((up.mesh, before.mesh.geometry.colours.clone()));
+                        report.meshes_recoloured += 1;
+                        meshes.push(up.clone());
+                        continue;
+                    }
+                    Err(RenderError::Unsupported(_)) => {}
+                    Err(source) => {
+                        return Err(StageError::render(format!("recolouring mesh '{}' of part '{part}'", mesh.name), source));
+                    }
+                }
+            }
             let usage = if mesh.dynamic { MeshUsage::Dynamic } else { MeshUsage::Static };
             let id = renderer
                 .create_mesh_with(&mesh.geometry, &MeshOptions { usage, morphs: None })
@@ -763,4 +794,21 @@ impl StageCharacter {
         }
         Ok(meshes)
     }
+}
+
+/// Whether `new` is `old` with other vertex colours and nothing else: the change [`Renderer::update_colours`] makes in
+/// place. Both must have colours, as many as vertices. The patterns name every field, so a field added to either type
+/// must be considered here before this compiles.
+fn only_colours_differ(old: &PartMesh, new: &PartMesh) -> bool {
+    let PartMesh { name, geometry, joint_bones, material, casts_shadow, render_order, dynamic } = old;
+    let MeshData { positions, normals, uvs, colours, joints, weights, extra, indices } = geometry;
+    let g = &new.geometry;
+    colours != &g.colours
+        && !colours.is_empty()
+        && colours.len() == g.colours.len()
+        && colours.len() == positions.len()
+        && (name, joint_bones, material, casts_shadow, render_order, dynamic)
+            == (&new.name, &new.joint_bones, &new.material, &new.casts_shadow, &new.render_order, &new.dynamic)
+        && (positions, normals, uvs, joints, weights, extra, indices)
+            == (&g.positions, &g.normals, &g.uvs, &g.joints, &g.weights, &g.extra, &g.indices)
 }

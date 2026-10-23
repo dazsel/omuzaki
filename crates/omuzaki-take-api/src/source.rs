@@ -6,7 +6,7 @@ use crate::chunk::ChunkHeader;
 use crate::error::TakeError;
 use crate::header::TakeHeader;
 use crate::record::Incomplete;
-use crate::state::Withheld;
+use crate::state::{StateRecord, Withheld};
 
 /// One chunk read from a take: its header and its payload of records, borrowed from the reader's buffer.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -45,6 +45,9 @@ pub struct TakeReport {
     pub deferred: u64,
     /// Providers left out by the size cap, by name and number of States.
     pub omitted: BTreeMap<String, u64>,
+    /// Live state skipped because this reader registers no provider of that name (a newer or another build's
+    /// provider), by name and number of States. Never in `omitted`: the writer did not drop them.
+    pub unknown_live: BTreeMap<String, u64>,
     /// States that overflowed to the minimal form.
     pub state_overflow: u64,
     /// Holes in the event stream.
@@ -103,6 +106,26 @@ impl TakeReport {
     #[must_use]
     pub fn with_omitted(self, omitted: BTreeMap<String, u64>) -> Self {
         Self { omitted, ..self }
+    }
+
+    /// The same report with the live state skipped for want of a provider, by name.
+    #[must_use]
+    pub fn with_unknown_live(self, unknown_live: BTreeMap<String, u64>) -> Self {
+        Self { unknown_live, ..self }
+    }
+
+    /// Counts what one State read says about its providers: those the size cap left out (`omitted`), live state
+    /// under a name `known` does not accept (`unknown_live`) and the overflow fallback (`state_overflow`). Every
+    /// reader calls it per State, with [`is_state_provider`](crate::state::is_state_provider) as `known` unless it
+    /// reads for someone else's registry.
+    pub fn note_state(&mut self, state: &StateRecord, known: impl Fn(&str) -> bool) {
+        for name in &state.omitted {
+            *self.omitted.entry(name.clone()).or_default() += 1;
+        }
+        for name in state.live.keys().filter(|name| !known(name)) {
+            *self.unknown_live.entry(name.clone()).or_default() += 1;
+        }
+        self.state_overflow += u64::from(state.overflow());
     }
 
     /// The same report with the States that overflowed to the minimal form.

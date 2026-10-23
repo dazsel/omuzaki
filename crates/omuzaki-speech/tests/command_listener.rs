@@ -309,8 +309,18 @@ fn on_a_host_whisper_runs_only_while_commands_are_on_and_the_ears_still_hear() {
     until("the listener to claim transcripts", || host.transcripts_wanted());
     common::feed_all(&mut input, &utterance());
     let at = arrived.recv_timeout(Duration::from_secs(10)).unwrap();
-    let finals = common::drain(&host);
-    assert!(finals.iter().any(|e| matches!(e, SpeechEvent::Final { text, .. } if text == "wave please")));
+    // The listener's copy and the host's own queue are fed separately, so the command can arrive first: the final
+    // is waited for on the host's queue rather than drained once.
+    let heard = |events: &[SpeechEvent]| {
+        events.iter().any(|e| matches!(e, SpeechEvent::Final { text, .. } if text == "wave please"))
+    };
+    let mut finals = common::drain(&host);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !heard(&finals) {
+        assert!(Instant::now() < deadline, "timed out waiting for the final on the host's queue: {finals:?}");
+        std::thread::yield_now();
+        finals.extend(common::drain(&host));
+    }
     assert!(at.elapsed() < Duration::from_secs(1));
     assert_eq!(inbox.commands().len(), 1);
     assert_eq!(inbox.commands()[0].0, "wave");

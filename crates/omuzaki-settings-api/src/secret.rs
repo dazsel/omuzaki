@@ -23,8 +23,9 @@ impl SecretRef {
     pub const MAX_LEN: usize = 128;
 
     /// Validates `label`: 1 to [`MAX_LEN`](Self::MAX_LEN) characters of `a-z`, `0-9`, `-`, `_`, `.` and `/`, with no
-    /// empty segment and no `..`. The shape keeps a label from being mistaken for a key, since keys never contain `/`
-    /// and secrets never contain spaces.
+    /// empty segment and no segment that is exactly `.` or `..`: `a/../b` is refused, and `a..b` is a label. The
+    /// shape keeps a label from being mistaken for a key, since keys never contain `/` and secrets never contain
+    /// spaces.
     ///
     /// # Errors
     /// [`SettingErrorKind::BadSecretRef`] (the key is empty: the caller knows which setting it was for).
@@ -106,6 +107,13 @@ mod tests {
             assert!(SecretRef::new(bad).is_err(), "{bad}");
         }
         assert!(SecretRef::new("x".repeat(SecretRef::MAX_LEN + 1)).is_err());
+        // Only a whole `.` or `..` segment is refused, as the docs say: dots inside a segment are fine.
+        for good in ["a..b", "a/b..c", "v1.2"] {
+            assert_eq!(SecretRef::new(good).unwrap().label(), good);
+        }
+        for bad in ["a/./b", "..", "a/.."] {
+            assert!(SecretRef::new(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

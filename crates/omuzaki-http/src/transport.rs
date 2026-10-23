@@ -53,6 +53,12 @@ const OWN_HEADERS: [&str; 3] = ["host", "content-length", "transfer-encoding"];
 /// Requests in flight in this process, across every [`ConnectHttp`].
 static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 
+/// Requests in flight in this process now, across every [`ConnectHttp`]; at most [`MAX_IN_FLIGHT`].
+#[must_use]
+pub fn in_flight() -> usize {
+    IN_FLIGHT.load(Ordering::Acquire)
+}
+
 /// What the request thread hands the caller, in order: the head, then body chunks, then the end or a failure.
 enum Piece {
     Head { status: u16, headers: Vec<(String, String)> },
@@ -138,10 +144,11 @@ impl ConnectHttp {
         }
         let client = if local { &self.local } else { &self.remote };
         let client = client.as_ref().map_err(|e| HttpError::Network(format!("no HTTP client: {e}")))?;
-        let slot = Slot::take().ok_or_else(|| HttpError::Refused("too many requests in flight".to_owned()))?;
+        // Checked before the slot, so a cancelled request never holds one, even for a moment.
         if cancel.is_cancelled() {
             return Err(HttpError::Cancelled);
         }
+        let slot = Slot::take().ok_or_else(|| HttpError::Refused("too many requests in flight".to_owned()))?;
         let timeout = Duration::from_secs(u64::from(req.timeout_s.clamp(1, MAX_TIMEOUT_S)));
         let request = build(client, url, req, timeout)?;
         let (tx, rx) = sync_channel(AHEAD);

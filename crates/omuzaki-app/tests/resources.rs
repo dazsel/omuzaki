@@ -96,9 +96,13 @@ fn each_family_is_registered_when_its_source_is_there_in_a_fixed_order() {
         ["RenderProvider", "MeasureProvider", "MetricsProvider", "LibraryProvider"]
     );
     let store_only = ServicesBuilder::new().insert::<dyn Store>(Arc::new(MemStore::new())).build();
-    assert_eq!(providers(&with_resource_providers(base(), &store_only)), ["RenderProvider", "MeasureProvider"]);
+    assert_eq!(
+        providers(&with_resource_providers(base(), &store_only)),
+        ["RenderProvider", "MeasureProvider", "MetricsProvider"]
+    );
+    // The live metrics are always there: with no source they say no studio is running.
     let none = with_resource_providers(base(), &Services::none());
-    assert_eq!(providers(&none), ["MeasureProvider"]);
+    assert_eq!(providers(&none), ["MeasureProvider", "MetricsProvider"]);
     // The base's grants are kept.
     assert_eq!(none.grants, grants);
 }
@@ -155,5 +159,59 @@ fn a_store_the_host_brings_wins_over_the_data_folder() {
     core.run("test.store_render", json!({})).unwrap();
     assert_eq!(host.len(), 1);
     assert!(!data.join("store").exists());
+    core.close().unwrap();
+}
+
+/// Reads `omuzaki://metrics/live` through an agent connected to `core`.
+fn live_metrics(core: &AppCore) -> Value {
+    let link = core.connect_in_app(InAppSpec::assistant(Actor::Person { name: "pat".into() }, None)).unwrap();
+    let client = core
+        .runtime()
+        .block_on(Client.serve_with_lifecycle(link.client_io, ClientLifecycleMode::Initialize))
+        .expect("the assistant connects");
+    let listed = core.runtime().block_on(client.list_all_resources()).unwrap();
+    let live = listed.iter().find(|r| r.uri == "omuzaki://metrics/live").expect("listed");
+    assert_eq!(live.mime_type.as_deref(), Some("application/json"));
+    let read = core
+        .runtime()
+        .block_on(client.read_resource(ReadResourceRequestParams::new("omuzaki://metrics/live")))
+        .unwrap();
+    let ResourceContents::TextResourceContents { text, .. } = &read.contents[0] else {
+        panic!("expected text, got {:?}", read.contents[0])
+    };
+    core.runtime().block_on(client.cancel()).unwrap();
+    serde_json::from_str(text).unwrap()
+}
+
+/// A headless core (`omuzaki mcp`: no studio, no frame loop) answers that no studio is running (#1315).
+#[test]
+fn a_headless_core_says_no_studio_is_running() {
+    let tmp = tempfile::tempdir().unwrap();
+    let core = AppCore::create(tmp.path(), "demo", options()).unwrap();
+    let body = live_metrics(&core);
+    assert_eq!(body, json!({"running": false, "note": "no studio is running; start one to see live numbers"}));
+    core.close().unwrap();
+}
+
+/// A studio hands the core its metrics hub's reader: an agent reads what a subsystem published, and a section nobody
+/// has published yet is `null`, never made up (#1257, #1315).
+#[test]
+fn a_studio_core_serves_what_its_subsystems_published() {
+    let (mut writers, reader) = omuzaki_metrics_api::metrics();
+    let services = ServicesBuilder::new().insert::<omuzaki_metrics_api::MetricsReader>(Arc::new(reader)).build();
+    let tmp = tempfile::tempdir().unwrap();
+    let core = AppCore::create(tmp.path(), "demo", options().with_services(services)).unwrap();
+    let body = live_metrics(&core);
+    assert_eq!(body["running"], true);
+    assert_eq!(body["metrics"]["frame"], Value::Null, "nothing published yet: {body}");
+
+    let mut frame = omuzaki_metrics_api::sections::FrameMetrics::new(omuzaki_core::time::Seconds(3.0));
+    frame.fps = 59.5;
+    frame.late_frames = 2;
+    writers.frame.publish(&frame);
+    let body = live_metrics(&core);
+    assert_eq!(body["metrics"]["frame"]["fps"], 59.5, "{body}");
+    assert_eq!(body["metrics"]["frame"]["late_frames"], 2);
+    assert_eq!(body["metrics"]["tracker"], Value::Null, "an unwritten section stays null");
     core.close().unwrap();
 }

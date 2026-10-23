@@ -298,6 +298,17 @@ pub trait Settings: Send + Sync {
 
     /// Session state: recent projects, window geometry, the crash-loop guard.
     fn session(&self) -> &dyn SessionStore;
+
+    /// Writes every pending setting and the session now (settings.md D5). The app calls it on a clean exit: a change
+    /// made inside the write debounce, or a write that failed and stayed pending, is otherwise lost without a word,
+    /// because a drop can't return the storage error. A store with no files, or nothing pending, returns `Ok`.
+    ///
+    /// # Errors
+    /// [`SettingErrorKind::Storage`](crate::error::SettingErrorKind::Storage) when a file can't be written; the
+    /// values stay pending and in effect, and a later write retries them.
+    fn flush(&self) -> Result<(), SettingError> {
+        self.session().flush()
+    }
 }
 
 /// Typed access, for any [`Settings`] including `dyn Settings`: `settings.get::<UiScale>()`.

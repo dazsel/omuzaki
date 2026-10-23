@@ -101,3 +101,62 @@ fn a_tampered_entry_stops_replay_at_its_lsn() {
     assert_eq!(document(&b), json!({"a": 1}), "the entries before it stay replayed");
     assert!(stopped.lsn > Lsn(0) && applied(&entries[1].1).is_some());
 }
+
+/// A step kept as it stood when its session ended (its revert conflicted) is labelled "(unfinished)", and a replay of
+/// the journal keeps that label instead of showing the step as finished (#2241).
+#[test]
+fn a_step_kept_unfinished_keeps_its_label_through_replay() {
+    use omuzaki_ops_api::{EndReason, Request, Sessions};
+
+    let (a, sink) = journalled(json!({"b": 0}));
+    super::open_agents(&a);
+    let clash = a.begin("clash", &super::agent());
+    a.run(Request { tx: Some(clash), ..super::agent_request("test.set", json!({"path": "b", "value": 1})) }).unwrap();
+    a.run(super::request("test.set", json!({"path": "b", "value": 9}))).unwrap();
+    let ended = a.end(omuzaki_ops_api::SessionId(1), EndReason::Disconnected).unwrap();
+    assert_eq!(ended.kept[0].label, "clash (unfinished)");
+    a.flush_history();
+    assert!(
+        sink.entries()
+            .iter()
+            .any(|e| matches!(e, HistoryEntry::Commit { tx, end } if *tx == clash && !end.is_finished())),
+        "the journal says how it ended"
+    );
+
+    let b = restored(json!({"b": 0}), &HistoryExport::empty());
+    b.replay(&sink.numbered()).unwrap();
+    assert_eq!(labels(&b), labels(&a));
+    assert!(labels(&b).values().any(|(undo, _)| undo.contains(&"clash (unfinished)".to_owned())), "{:?}", labels(&b));
+}
+
+/// Three actors commit in an order their transaction ids don't follow (an agent's transaction opened first and
+/// committed last). After an export and a restore, the person's undo still takes their steps newest commit first:
+/// the export keeps the commit order across actors, not each actor's own (#2241).
+#[test]
+fn an_export_keeps_the_commit_order_across_actors() {
+    use omuzaki_ops_api::Request;
+
+    let (a, _sink) = journalled(json!({"a": 0, "b": 0, "c": 0, "d": 0}));
+    super::open_agents(&a);
+    let long = a.begin("long", &super::agent());
+    a.run(Request { tx: Some(long), ..super::agent_request("test.set", json!({"path": "a", "value": 1})) }).unwrap();
+    let second =
+        Request { actor: super::second_agent(), ..super::agent_request("test.set", json!({"path": "b", "value": 1})) };
+    a.run(second).unwrap();
+    a.run(super::request("test.set", json!({"path": "c", "value": 1}))).unwrap();
+    a.commit(long, &super::agent()).unwrap();
+    a.run(Request {
+        actor: super::second_agent(),
+        ..super::agent_request("test.set", json!({"path": "d", "value": 1}))
+    })
+    .unwrap();
+
+    let b = restored(document(&a), &a.history_export());
+    let order = |exec: &Executor| -> Vec<Option<String>> {
+        (0..5).map(|_| exec.undo(&person(), &Grants::person()).unwrap()).collect()
+    };
+    let (first, again) = (order(&a), order(&b));
+    assert_eq!(first, again, "the restored executor undoes in the same order");
+    assert_eq!(first[..2], [Some(super::SET.to_owned()), Some("long".to_owned())], "{first:?}");
+    assert_eq!(document(&b), document(&a));
+}

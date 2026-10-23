@@ -21,7 +21,7 @@ pub struct Watermark {
     pub sequence: u64,
 }
 
-/// Why `state.toml` could not be read.
+/// Why `state.toml` could not be read, or a state could not be written as it.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 #[error("state.toml: {0}")]
 pub struct StateError(pub String);
@@ -104,9 +104,13 @@ impl State {
     /// A known key always wins over an unknown one at the same place. Unknown keys inside a `watermarks` entry belong to
     /// that feed: removing the feed from [`State::watermarks`] removes them too, so a saved file never holds a feed
     /// without its `epoch` and `sequence`. Every other unknown key is kept.
-    #[must_use]
-    pub fn to_toml(&self) -> String {
-        let mut table = self.known_table().unwrap_or_default();
+    ///
+    /// # Errors
+    /// A state TOML can't represent. No field today can fail (every number fits TOML's integers once the sequences
+    /// are strings), but a failure is returned rather than written short: a file missing `current`, written atomically
+    /// over `state.toml`, would leave the next launch unable to read its state.
+    pub fn to_toml(&self) -> Result<String, StateError> {
+        let mut table = self.known_table()?;
         let mut unknown = self.unknown.clone();
         if let Some(toml::Value::Table(marks)) = unknown.get_mut("watermarks") {
             marks.retain(|feed, _| self.watermarks.contains_key(feed));
@@ -115,7 +119,7 @@ impl State {
             }
         }
         merge_missing(&mut table, &unknown);
-        table.to_string()
+        Ok(table.to_string())
     }
 
     fn known_table(&self) -> Result<toml::Table, StateError> {

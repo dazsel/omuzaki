@@ -116,6 +116,10 @@ impl Store for MemStore {
     fn contains(&self, hash: &ContentHash) -> bool {
         self.lock().contains_key(hash)
     }
+
+    fn size(&self, hash: &ContentHash) -> Result<u64, StoreError> {
+        self.lock().get(hash).map(|e| e.bytes.len() as u64).ok_or(StoreError::Missing(*hash))
+    }
 }
 
 impl StoreGc for MemStore {

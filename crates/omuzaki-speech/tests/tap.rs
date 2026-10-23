@@ -33,10 +33,13 @@ fn utterances(rate: u32) -> Vec<f32> {
     [silence(0.5), tone(0.4), silence(0.6), tone(0.8), silence(0.7), tone(0.3), silence(1.0)].concat()
 }
 
-/// What happened, and when to the nearest VAD frame (32 ms).
+/// What happened, and when to the nearest VAD frame (32 ms), in time order. A `Final` comes from the recogniser's own
+/// thread, so where it arrives among the next utterance's events depends on scheduling (#2346); ordered by when each
+/// event happened, an utterance's end and its final sit together.
 fn summary(events: &[SpeechEvent]) -> Vec<(&'static str, i64)> {
     let frame = |t: f64| (t / 0.032).round() as i64;
-    events
+    let rank = |kind: &str| ["started", "held", "ended", "final", "rejected"].iter().position(|k| *k == kind);
+    let mut summary: Vec<_> = events
         .iter()
         .map(|e| match e {
             SpeechEvent::SpeechStarted { at } => ("started", frame(*at)),
@@ -46,7 +49,9 @@ fn summary(events: &[SpeechEvent]) -> Vec<(&'static str, i64)> {
             SpeechEvent::SpeechRejected { end, .. } => ("rejected", frame(*end)),
             other => panic!("unexpected {other:?}"),
         })
-        .collect()
+        .collect();
+    summary.sort_by_key(|&(kind, at)| (at, rank(kind)));
+    summary
 }
 
 #[test]
@@ -96,9 +101,16 @@ fn the_tap_and_a_direct_push_give_the_same_events() {
     drop(handle);
     let stats = tapped.stop();
     let got = summary(&drain(&tapped));
-    assert_eq!(got.len(), expected.len(), "{got:?} vs {expected:?}");
-    for (g, e) in got.iter().zip(&expected) {
-        assert!(g.0 == e.0 && (g.1 - e.1).abs() <= 1, "{got:?} vs {expected:?}");
+    // The voice-activity events come in frame order, and so do the finals among themselves; where a final falls
+    // against the next utterance's start is the recogniser thread's timing (#2343), so each stream is compared alone.
+    let streams =
+        |events: &[(&'static str, i64)]| -> (Vec<_>, Vec<_>) { events.iter().copied().partition(|e| e.0 != "final") };
+    let ((got_vad, got_finals), (expected_vad, expected_finals)) = (streams(&got), streams(&expected));
+    for (got, expected) in [(got_vad, expected_vad), (got_finals, expected_finals)] {
+        assert_eq!(got.len(), expected.len(), "{got:?} vs {expected:?}");
+        for (g, e) in got.iter().zip(&expected) {
+            assert!(g.0 == e.0 && (g.1 - e.1).abs() <= 1, "{got:?} vs {expected:?}");
+        }
     }
     assert_eq!(stats.samples_dropped, 0);
     assert_eq!(got.iter().filter(|e| e.0 == "final").count(), 3, "{got:?}");

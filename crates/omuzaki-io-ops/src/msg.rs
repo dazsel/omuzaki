@@ -522,4 +522,82 @@ omuzaki_l10n_api::messages! {
     /// The fix for the `rights.no_license_info` rule, shown under its report line.
     pub rights_no_license_info_hint = "io-ops-rights-no-license-info-hint" ()
         => "Ask the author what you may do with it before you use it.";
+    /// The report line for the `anim_export.bone_not_in_rest` rule: what the export found.
+    pub anim_export_bone_not_in_rest = "io-ops-anim-export-bone-not-in-rest" ()
+        => "A bone moves in the clip but the character has no such bone, so its motion was left out.";
+    /// The fix for the `anim_export.bone_not_in_rest` rule, shown under its report line.
+    pub anim_export_bone_not_in_rest_hint = "io-ops-anim-export-bone-not-in-rest-hint" ()
+        => "Give the character that bone, or accept the export without it.";
+    /// The report line for the `anim_export.eyes_to_look_at` rule: what the export found.
+    pub anim_export_eyes_to_look_at = "io-ops-anim-export-eyes-to-look-at" ()
+        => "The eye motion was turned into one gaze direction, the way a VRM Animation carries it.";
+    /// The fix for the `anim_export.eyes_to_look_at` rule, shown under its report line.
+    pub anim_export_eyes_to_look_at_hint = "io-ops-anim-export-eyes-to-look-at-hint" ()
+        => "Nothing to do; a player turns the eyes from the gaze.";
+    /// The report line for the `anim_export.eye_asymmetry` rule: what the export found.
+    pub anim_export_eye_asymmetry = "io-ops-anim-export-eye-asymmetry" ()
+        => "The eyes look in different directions in places, and one gaze can only show where they look on average.";
+    /// The fix for the `anim_export.eye_asymmetry` rule, shown under its report line.
+    pub anim_export_eye_asymmetry_hint = "io-ops-anim-export-eye-asymmetry-hint" ()
+        => "Keep both eyes looking the same way if the difference matters.";
+    /// The report line for the `anim_export.sampling_error` rule: what the export found.
+    pub anim_export_sampling_error = "io-ops-anim-export-sampling-error" ()
+        => "The motion was sampled and simplified, so it plays back a tiny bit differently from the original.";
+    /// The fix for the `anim_export.sampling_error` rule, shown under its report line.
+    pub anim_export_sampling_error_hint = "io-ops-anim-export-sampling-error-hint" ()
+        => "Raise the frame rate if fast moves look softer than before.";
+    /// The report line for the `anim_export.expression_reserved` rule: what the export found.
+    pub anim_export_expression_reserved = "io-ops-anim-export-expression-reserved" ()
+        => "A look expression was left out, because a VRM Animation moves the eyes through the gaze instead.";
+    /// The fix for the `anim_export.expression_reserved` rule, shown under its report line.
+    pub anim_export_expression_reserved_hint = "io-ops-anim-export-expression-reserved-hint" ()
+        => "Use the gaze for where the character looks.";
+    /// The report line for the `anim_export.expression_custom` rule: what the export found.
+    pub anim_export_expression_custom = "io-ops-anim-export-expression-custom" ()
+        => "An expression of your own was saved under the character's own name for it, which only models made here know.";
+    /// The fix for the `anim_export.expression_custom` rule, shown under its report line.
+    pub anim_export_expression_custom_hint = "io-ops-anim-export-expression-custom-hint" ()
+        => "Export the model as well, so a player has that expression.";
+    /// The report line for the `anim_export.step_unrepresentable` rule: what the export found.
+    pub anim_export_step_unrepresentable = "io-ops-anim-export-step-unrepresentable" ()
+        => "Some jumps in the motion are too close together to keep as instant jumps, so they blend over a moment.";
+    /// The fix for the `anim_export.step_unrepresentable` rule, shown under its report line.
+    pub anim_export_step_unrepresentable_hint = "io-ops-anim-export-step-unrepresentable-hint" ()
+        => "Space the jumps further apart if they must be instant.";
+    /// The report line for the `vrma.look_at_without_head` rule: what the export found.
+    pub vrma_look_at_without_head = "io-ops-vrma-look-at-without-head" ()
+        => "The gaze was saved without a head bone, so a player may not know where it starts.";
+    /// The fix for the `vrma.look_at_without_head` rule, shown under its report line.
+    pub vrma_look_at_without_head_hint = "io-ops-vrma-look-at-without-head-hint" ()
+        => "Give the character a head bone.";
+    /// The report line for the `vrma.layout_ignored` rule: what the export found.
+    pub vrma_layout_ignored = "io-ops-vrma-layout-ignored" ()
+        => "A VRM Animation is always one file, so the file layout you chose was not used.";
+    /// The fix for the `vrma.layout_ignored` rule, shown under its report line.
+    pub vrma_layout_ignored_hint = "io-ops-vrma-layout-ignored-hint" ()
+        => "Nothing to do; share the single .vrma file.";
+    /// The report line for the `rights.private_test_export` rule: what the export found.
+    pub rights_private_test_export = "io-ops-rights-private-test-export" ()
+        => "This is a private test export, so it carries no rights to share it.";
+    /// The fix for the `rights.private_test_export` rule, shown under its report line.
+    pub rights_private_test_export_hint = "io-ops-rights-private-test-export-hint" ()
+        => "Keep the file to yourself, or set the motion's licence before you publish it.";
+    /// The report line for the `rights.nd_private_export` rule: what the export found.
+    pub rights_nd_private_export = "io-ops-rights-nd-private-export" ()
+        => "The motion's licence forbids changed copies, so this export is only for your own use.";
+    /// The fix for the `rights.nd_private_export` rule, shown under its report line.
+    pub rights_nd_private_export_hint = "io-ops-rights-nd-private-export-hint" ()
+        => "Keep it private, or ask the author for permission to share changes.";
+    /// The report line for the `rights.licence_forbids_derivatives` rule: what the export found.
+    pub rights_licence_forbids_derivatives = "io-ops-rights-licence-forbids-derivatives" ()
+        => "The motion's licence forbids changed copies, so it cannot be published from here.";
+    /// The fix for the `rights.licence_forbids_derivatives` rule, shown under its report line.
+    pub rights_licence_forbids_derivatives_hint = "io-ops-rights-licence-forbids-derivatives-hint" ()
+        => "Ask the author for permission, or export it privately.";
+    /// The report line for the `rights.provenance_missing` rule: what the export found.
+    pub rights_provenance_missing = "io-ops-rights-provenance-missing" ()
+        => "This motion has no record of where it came from or what its licence is.";
+    /// The fix for the `rights.provenance_missing` rule, shown under its report line.
+    pub rights_provenance_missing_hint = "io-ops-rights-provenance-missing-hint" ()
+        => "Set its source and licence before you share it.";
 }

@@ -15,14 +15,17 @@ use omuzaki_render_api::Toon;
 
 use super::{ParamSpec, ProgramSpec, register_shading_program};
 
-register_shading_program!(ProgramSpec {
-    name: "sheen",
-    params: &[
-        ParamSpec::colour("colour", 0x0045_3a38),
-        ParamSpec::float("edge0", 0.62, 0.0, 1.0),
-        ParamSpec::float("edge1", 0.96, 0.0, 1.0),
-    ],
-    attributes: &[],
-    toon: |_| Toon::default(),
-    wgsl: include_str!("../shader/program_sheen.wgsl"),
-});
+register_shading_program!(
+    "sheen",
+    ProgramSpec {
+        name: "sheen",
+        params: &[
+            ParamSpec::colour("colour", 0x0045_3a38),
+            ParamSpec::float("edge0", 0.62, 0.0, 1.0),
+            ParamSpec::float("edge1", 0.96, 0.0, 1.0),
+        ],
+        attributes: &[],
+        toon: |_| Toon::default(),
+        wgsl: include_str!("../shader/program_sheen.wgsl"),
+    }
+);

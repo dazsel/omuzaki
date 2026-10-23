@@ -52,6 +52,10 @@ impl Store for LazyDiskStore {
     fn contains(&self, hash: &ContentHash) -> bool {
         self.open().is_ok_and(|store| store.contains(hash))
     }
+
+    fn size(&self, hash: &ContentHash) -> Result<u64, StoreError> {
+        self.open()?.size(hash)
+    }
 }
 
 #[cfg(test)]
