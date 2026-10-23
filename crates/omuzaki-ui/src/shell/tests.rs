@@ -254,7 +254,7 @@ fn a_layout_the_person_changes_is_saved_and_comes_back_in_the_next_session() {
     let mut first = shell_at(size, Some(store.clone()), Arc::new(NullRunner));
     assert!(store.load("build").expect("readable").is_none(), "nothing is written until the person changes something");
     // Drag the divider between the viewport and the right dock 100 points to the left.
-    drag(&mut first, &[egui::pos2(1552.0, 500.0), egui::pos2(1510.0, 500.0), egui::pos2(1460.0, 500.0)]);
+    drag(&mut first, &[egui::pos2(1543.0, 500.0), egui::pos2(1510.0, 500.0), egui::pos2(1460.0, 500.0)]);
     first.state().flush();
     let saved = store.load("build").expect("readable").expect("saved when the drag ended");
     let default = shares(&plain(size).state().shown_layout().expect("built"));
@@ -332,13 +332,13 @@ fn a_layout_file_written_by_the_first_shell_still_loads_through_the_registry() {
 fn a_small_window_keeps_its_own_layout_and_never_overwrites_the_one_made_on_a_big_one() {
     let (_keep, store) = store();
     let mut big = shell_at(vec2(1920.0, 1080.0), Some(store.clone()), Arc::new(NullRunner));
-    drag(&mut big, &[egui::pos2(1552.0, 500.0), egui::pos2(1500.0, 500.0)]);
+    drag(&mut big, &[egui::pos2(1543.0, 500.0), egui::pos2(1500.0, 500.0)]);
     big.state().flush();
     let on_disk = std::fs::read_to_string(store.dir().join("build.toml")).expect("saved");
     big.state().flush();
     let size = vec2(1366.0, 768.0);
     let mut small = shell_at(size, Some(store.clone()), Arc::new(NullRunner));
-    drag(&mut small, &[egui::pos2(1058.0, 500.0), egui::pos2(1000.0, 500.0)]);
+    drag(&mut small, &[egui::pos2(1049.0, 500.0), egui::pos2(1000.0, 500.0)]);
     small.state().flush();
     assert_eq!(std::fs::read_to_string(store.dir().join("build.toml")).expect("still there"), on_disk);
     // What was done in the small window is kept under its own name and comes back at that size.
@@ -352,7 +352,7 @@ fn a_small_window_keeps_its_own_layout_and_never_overwrites_the_one_made_on_a_bi
 fn reset_layout_forgets_the_saved_one_and_a_corrupt_file_falls_back_to_the_default() {
     let (_keep, store) = store();
     let mut harness = shell_at(vec2(1920.0, 1080.0), Some(store.clone()), Arc::new(NullRunner));
-    drag(&mut harness, &[egui::pos2(1552.0, 500.0), egui::pos2(1500.0, 500.0)]);
+    drag(&mut harness, &[egui::pos2(1543.0, 500.0), egui::pos2(1500.0, 500.0)]);
     harness.state().flush();
     assert!(store.dir().join("build.toml").exists());
     harness.state_mut().reset_layout();
@@ -505,7 +505,7 @@ fn the_primary_panel_cannot_be_dragged_out_and_the_lock_stops_every_other_move_a
     let history = harness.get_by_role_and_label(Role::Button, "History").rect().center();
     press(&mut harness, Modifiers::COMMAND | Modifiers::SHIFT, Key::L);
     drag(&mut harness, &[history, egui::pos2(150.0, 600.0), egui::pos2(150.0, 620.0)]);
-    drag(&mut harness, &[egui::pos2(1552.0, 500.0), egui::pos2(1500.0, 500.0)]);
+    drag(&mut harness, &[egui::pos2(1543.0, 500.0), egui::pos2(1500.0, 500.0)]);
     assert_eq!(harness.state().shown_layout(), before, "locked: nothing moves and no divider drags");
     press(&mut harness, Modifiers::COMMAND | Modifiers::SHIFT, Key::L);
     drag(&mut harness, &[history, egui::pos2(150.0, 600.0), egui::pos2(150.0, 620.0)]);
@@ -520,10 +520,10 @@ fn a_divider_cannot_take_a_panel_below_its_registered_minimum() {
         let total: f32 = shares.iter().sum();
         shares.iter().map(|s| s / total * 1920.0).collect::<Vec<_>>()
     };
-    drag(&mut harness, &[egui::pos2(308.0, 500.0), egui::pos2(150.0, 500.0), egui::pos2(40.0, 500.0)]);
+    drag(&mut harness, &[egui::pos2(317.0, 500.0), egui::pos2(150.0, 500.0), egui::pos2(40.0, 500.0)]);
     harness.run_steps(3);
     assert!(widths(&harness)[0] >= 238.0, "the left dock keeps its 240: {:?}", widths(&harness));
-    drag(&mut harness, &[egui::pos2(1552.0, 500.0), egui::pos2(1800.0, 500.0), egui::pos2(1900.0, 500.0)]);
+    drag(&mut harness, &[egui::pos2(1543.0, 500.0), egui::pos2(1800.0, 500.0), egui::pos2(1900.0, 500.0)]);
     harness.run_steps(3);
     assert!(widths(&harness)[2] >= 286.0, "the inspector keeps its 288: {:?}", widths(&harness));
 }
@@ -533,7 +533,9 @@ fn folded_docks_are_sized_again_so_the_inspector_is_288_wide_at_1280() {
     let harness = plain(vec2(1280.0, 720.0));
     let shares = shares(&harness.state().shown_layout().expect("built"));
     assert_eq!(shares.len(), 2, "the rail's panels are gone");
-    let right = shares[1] / (shares[0] + shares[1]) * (1264.0 - 48.0);
+    // The rail, the margin round the dock and the gap between its two groups leave the rest to share.
+    let gap = super::dock::GAP;
+    let right = shares[1] / (shares[0] + shares[1]) * (1264.0 - 48.0 - 3.0 * gap);
     assert!((right - 288.0).abs() < 1.0, "{right} {shares:?}");
 }
 
@@ -563,7 +565,7 @@ fn a_compact_layout_survives_a_resize_even_when_its_save_has_not_landed() {
     std::fs::write(&blocked, "a file where the folder should be").expect("write");
     let mut harness = shell_at(vec2(1366.0, 768.0), Some(LayoutStore::new(blocked)), Arc::new(NullRunner));
     let default = harness.state().shown_layout();
-    drag(&mut harness, &[egui::pos2(1058.0, 500.0), egui::pos2(1000.0, 500.0)]);
+    drag(&mut harness, &[egui::pos2(1049.0, 500.0), egui::pos2(1000.0, 500.0)]);
     let edited = harness.state().shown_layout();
     assert_ne!(edited, default, "the drag changed the compact layout");
     harness.set_size(vec2(1280.0, 720.0));
@@ -582,7 +584,7 @@ fn reset_removes_every_compact_layout_of_the_workspace_and_the_ones_held_in_memo
         store.save(key, &layout).expect("saves");
     }
     let mut harness = shell_at(vec2(1366.0, 768.0), Some(store.clone()), Arc::new(NullRunner));
-    drag(&mut harness, &[egui::pos2(1058.0, 500.0), egui::pos2(1000.0, 500.0)]);
+    drag(&mut harness, &[egui::pos2(1049.0, 500.0), egui::pos2(1000.0, 500.0)]);
     harness.state_mut().reset_layout();
     harness.run_steps(3);
     harness.state().flush();

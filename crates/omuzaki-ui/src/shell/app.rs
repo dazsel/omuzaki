@@ -697,7 +697,11 @@ impl Shell {
 
     /// The layout of `workspace` at full size: the saved one made safe, or the default sized for this window.
     fn full_layout(&self, workspace: usize, plan: &Plan, from_disk: bool) -> Layout {
-        let default = self.defaults[workspace].clone().with_root_widths(&dock_widths(plan, &self.registry), self.room);
+        let default = self.defaults[workspace].clone().with_root_widths(
+            &dock_widths(plan, &self.registry),
+            self.room - 2.0 * dock::GAP,
+            dock::GAP,
+        );
         let saved = from_disk.then(|| self.stored(self.workspaces[workspace].id, &default)).flatten();
         saved.unwrap_or(default)
     }
@@ -714,7 +718,11 @@ impl Shell {
         let hidden: Vec<&str> = rail.iter().map(|p| p.id).collect();
         let rail_width = if hidden.is_empty() { 0.0 } else { RAIL };
         // Panels removed with the rail leave their shares behind, so the others are sized again.
-        shown.without(&hidden).with_root_widths(&dock_widths(plan, &self.registry), self.room - rail_width)
+        shown.without(&hidden).with_root_widths(
+            &dock_widths(plan, &self.registry),
+            self.room - rail_width - 2.0 * dock::GAP,
+            dock::GAP,
+        )
     }
 
     /// The layout saved under `key`, repaired against the registry; `None` when there is none or it is unreadable.
