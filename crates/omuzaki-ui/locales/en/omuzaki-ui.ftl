@@ -3658,6 +3658,9 @@ ui-setting-perform-retarget = How the face is smoothed, exaggerated and mirrored
 ui-setting-perform-triggers = The keys that show face expressions
 
 # The line under a setting in the Settings window, saying what it does.
+ui-setting-performer-llm = The LLM the AI co-host answers with: a server on this machine by default, or a hosted one with your own key
+
+# The line under a setting in the Settings window, saying what it does.
 ui-setting-record-dir = The folder recordings are written into; unset means the Omuzaki folder in your videos folder
 
 # The line under a setting in the Settings window, saying what it does.
@@ -3707,6 +3710,12 @@ ui-setting-ui-scale = The studio's size in percent, on top of the system's: 75 t
 
 # The line under a setting in the Settings window, saying what it does.
 ui-setting-ui-theme = The studio's colours: dark, light or high contrast
+
+# The line under a setting in the Settings window, saying what it does.
+ui-setting-voice-commands-enabled = Listen for voice commands on your microphone
+
+# The line under a setting in the Settings window, saying what it does.
+ui-setting-voice-commands-phrases = What you say for each voice command, per language
 
 # The Settings window, with its Models page.
 ui-settings-area-input = Input
