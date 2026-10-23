@@ -20,6 +20,10 @@ use crate::ops::character::tree;
 /// from and its rights, `licence.set_source`) go with it, and undo brings them back.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [{"character": "kit", "part": "hair"}],
+    "x-omuzaki-fixture" = "character"
+))]
 pub struct PartRemove {
     /// The character the part belongs to.
     pub character: CharId,

@@ -14,10 +14,11 @@ use bytes::Bytes;
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Body;
-use hyper::header::{CONNECTION, CONTENT_TYPE, HeaderValue, WWW_AUTHENTICATE};
+use hyper::header::{CONNECTION, CONTENT_TYPE, HeaderValue, ORIGIN, WWW_AUTHENTICATE};
 use hyper::{Method, Request, Response, StatusCode};
 
-use crate::access::{Denied, Registry};
+use crate::access::{Denied, MAX_UNPAIRED_BRIDGES, Registry};
+use crate::changes::plain;
 use crate::limits::{
     BodyRefusal, Limits, REFUSAL_WARN_INTERVAL, RefusalLog, SessionsFull, may_open_session, read_body,
 };
@@ -90,6 +91,9 @@ impl Gate {
         B: Body + Send + 'static,
         B::Error: Display,
     {
+        if request.uri().path() == pair_path(&self.path) {
+            return self.pair(request).await;
+        }
         if request.uri().path() != self.path {
             return text(StatusCode::NOT_FOUND, format!("Not Found: the MCP endpoint is {}", self.path));
         }
@@ -126,6 +130,65 @@ impl Gate {
         endpoint.service().handle(Request::from_parts(parts, Full::new(body))).await
     }
 }
+
+impl Gate {
+    /// `POST <path>/pair` with the pairing key and `{"client": "<name>"}`: a new bridge credential for that client, as
+    /// `{"token": "<secret>"}`. Only a process that can read the key (the studio writes it in the project's private
+    /// folder) gets one, and its sessions still wait for a person to pair it. Browsers are refused outright.
+    async fn pair<B>(&self, request: Request<B>) -> Response<ResponseBody>
+    where
+        B: Body + Send + 'static,
+        B::Error: Display,
+    {
+        if request.method() != Method::POST {
+            return text(StatusCode::METHOD_NOT_ALLOWED, "Method Not Allowed: POST {\"client\": <name>}".to_owned());
+        }
+        if request.headers().contains_key(ORIGIN) {
+            return text(StatusCode::FORBIDDEN, "Forbidden: web pages can't ask for a bridge credential".to_owned());
+        }
+        if let Err(denied) = self.registry.authorize_pairing(request.headers()) {
+            self.sink.token_refused(self.token_refusals.warn_now(), denied, request.method());
+            return unauthorized(denied);
+        }
+        let limits = self.registry.limits();
+        let bytes = match read_body(request.into_body(), limits.max_body_bytes, limits.body_timeout).await {
+            Ok(bytes) => bytes,
+            Err(refusal) => return refuse_body(&refusal, limits, &self.body_refusals, self.sink.as_ref()),
+        };
+        let Some(client) = serde_json::from_slice::<serde_json::Value>(&bytes)
+            .ok()
+            .and_then(|v| v.get("client").and_then(serde_json::Value::as_str).map(|c| plain(c, CLIENT_CHARS)))
+            .filter(|c| !c.trim().is_empty())
+        else {
+            return text(StatusCode::BAD_REQUEST, "Bad Request: send {\"client\": <the client's name>}".to_owned());
+        };
+        match self.registry.issue_bridge(client) {
+            Ok(Some(token)) => {
+                tracing::info!(token = %token.id(), label = token.label(), "bridge credential issued, waiting to be paired");
+                let body = serde_json::json!({ "token": token.secret() }).to_string();
+                let mut response = Response::new(Full::new(Bytes::from(body)).boxed());
+                response.headers_mut().insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+                response
+            }
+            Ok(None) => text(
+                StatusCode::TOO_MANY_REQUESTS,
+                format!(
+                    "Too Many Requests: {MAX_UNPAIRED_BRIDGES} bridge credentials already wait to be paired. Pair or \
+                     refuse them in Omuzaki's window"
+                ),
+            ),
+            Err(error) => text(StatusCode::INTERNAL_SERVER_ERROR, format!("Internal Server Error: {error}")),
+        }
+    }
+}
+
+/// Where a bridge asks for its credential: beside the MCP endpoint.
+pub(crate) fn pair_path(path: &str) -> String {
+    format!("{}/pair", path.trim_end_matches('/'))
+}
+
+/// The longest client name a bridge credential keeps.
+const CLIENT_CHARS: usize = 64;
 
 /// 401 with the `WWW-Authenticate` challenge RFC 6750 asks for.
 fn unauthorized(denied: Denied) -> Response<ResponseBody> {

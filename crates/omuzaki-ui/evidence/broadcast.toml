@@ -1,0 +1,25 @@
+# The Broadcast workspace's automation panels (spine/ui): its own case file, so no other change edits it
+# (tools/ci/evidence.py).
+
+[[case]]
+name = "broadcast"
+description = "The Broadcast workspace over the real automation engine (spine/ui, #739, #782, #1279, #1324): a show with two rules, the graph editor with its node list and inspector, the Rules table and the values monitor, at 1366x768 and 1920x1080; first stopped, with the approval card listing what the show needs, then running after Allow, with a variable changed by a firing and the firings listed."
+env = { OMUZAKI_EVIDENCE_OUT = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-ui", "--test", "broadcast", "--", "--ignored", "--exact", "broadcast_evidence"] },
+]
+images = [
+    "broadcast-needs-approval-1366x768.png",
+    "broadcast-needs-approval-1920x1080.png",
+    "broadcast-running-1366x768.png",
+    "broadcast-running-1920x1080.png",
+]
+
+[[case]]
+name = "dock-crowded"
+description = "A crowded dock tab strip at 1366x768 (spine/ui): the closed tabs show their panel's icon, each named in full for a screen reader and on hover, and the strip never needs scroll arrows."
+env = { OMUZAKI_EVIDENCE_OUT = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-ui", "--test", "shell_a11y", "--", "--exact", "a_crowded_tab_strip_shows_icons_named_in_full_and_no_scroll_arrows"] },
+]
+images = ["dock-crowded-1366x768.png"]

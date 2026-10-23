@@ -44,6 +44,11 @@ pub struct ActorHistory {
     /// When the actor last acted, in wall time; snapshots drop the history of actors not seen for a long
     /// time (design section 9).
     pub last_seen: WallTime,
+    /// The person whose undo reaches these steps, for an agent working for them: kept with the history, so after a
+    /// restart the person can still undo what their agent did once its session is gone. `None` for a person (their
+    /// own undo reaches it), an automation and the system.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub principal: Option<Actor>,
 }
 
 /// A transaction that was still open when the export was made.
@@ -98,7 +103,14 @@ impl StepExport {
 impl ActorHistory {
     /// An actor with empty stacks, last seen at `last_seen`; fill `undo` and `redo` afterwards.
     pub fn new(actor: Actor, last_seen: WallTime) -> Self {
-        Self { actor, undo: Vec::new(), redo: Vec::new(), last_seen }
+        Self { actor, undo: Vec::new(), redo: Vec::new(), last_seen, principal: None }
+    }
+
+    /// This history with the person whose undo reaches it.
+    #[must_use]
+    pub fn with_principal(mut self, principal: Option<Actor>) -> Self {
+        self.principal = principal;
+        self
     }
 }
 

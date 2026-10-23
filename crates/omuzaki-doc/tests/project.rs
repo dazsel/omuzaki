@@ -461,3 +461,16 @@ fn a_two_hundred_file_project_opens_quickly() {
     // only catches gross regressions, because CI shares a loaded machine.
     assert!(fastest < std::time::Duration::from_millis(500), "opening took {fastest:?}");
 }
+
+#[test]
+fn check_judges_project_toml_alone_as_open_would() {
+    let (tmp, project) = new_project();
+    assert_eq!(Project::check(project.dir()).unwrap(), 1);
+    assert!(matches!(Project::check(tmp.path().join("gone")), Err(StoreError::NotAProject { .. })));
+    write(project.dir(), "project.toml", "name = \"Show\"\nschema = 999\n");
+    assert!(matches!(Project::check(project.dir()), Err(StoreError::SchemaTooNew { found: 999, .. })));
+    write(project.dir(), "project.toml", "name = \"Show\"\n");
+    assert!(matches!(Project::check(project.dir()), Err(StoreError::BadSchema(_))));
+    write(project.dir(), "project.toml", "name = ");
+    assert!(Project::check(project.dir()).is_err(), "a file that doesn't parse can't be reopened");
+}

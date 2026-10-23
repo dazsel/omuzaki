@@ -19,9 +19,10 @@ use std::time::Duration;
 
 use omuzaki_core::time::Seconds;
 use omuzaki_doc_api::Value;
+use omuzaki_history_api::HistoryEntry;
 use omuzaki_ops_api::{
     Actor, CancelFlag, CancelReason, Cause, CostHint, DynOp, ErrorCode, ErrorDetail, Event, Grants, JobId, JobInfo,
-    JobState, OpError, OpMeta, Outcome, Plan, Request,
+    JobShape, JobState, Lane, OpError, OpMeta, Outcome, Plan, Request, SessionId, TxId,
 };
 
 use self::lanes::{Lanes, Refusal};
@@ -35,8 +36,13 @@ const GRACE_SECS: f64 = 10.0;
 const PROGRESS_INTERVAL: f64 = 0.1;
 /// Ended jobs `jobs()` still lists.
 const KEEP_ENDED: usize = 100;
+/// Jobs one agent session may run at once, and have waiting (ADR 0036 decision 6).
+const SESSION_RUNNING: usize = 4;
+const SESSION_QUEUED: usize = 16;
 /// How often the supervisor thread checks deadlines against the clock, and a timed `wait` re-reads it, in wall time.
 const SUPERVISOR_TICK: Duration = Duration::from_millis(50);
+/// How long a job's start waits for its `JobStarted` record to be durable before the start is refused.
+const START_SYNC: Duration = Duration::from_secs(10);
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 enum Phase {
@@ -84,10 +90,24 @@ struct Job {
     /// Callers blocked on this job (or, for `Runner::run`, registered at start): the entry outlives the bounded
     /// history of ended jobs until the last of them has read it.
     waiters: usize,
+    /// A driver job's transaction (#1092).
+    driver: Option<DriverTx>,
+    /// Its end was journalled with its finish, under the document lock, so [`Manager::end`] does not again.
+    end_journalled: bool,
+}
+
+/// A driver job's transaction: its own, begun at start and committed after its finish, or the caller's, which it
+/// joined and never begins, commits nor rolls back (ADR 0036 decision 10).
+#[derive(Copy, Clone, Debug)]
+pub(crate) struct DriverTx {
+    pub(crate) tx: TxId,
+    pub(crate) joined: bool,
 }
 
 /// What a worker thread needs to run a job, copied out so no lock is held while it runs.
 pub(super) struct Task {
+    pub(super) info: JobInfo,
+    pub(super) driver: Option<DriverTx>,
     pub(super) op: Arc<dyn DynOp>,
     pub(super) meta: OpMeta,
     pub(super) actor: Actor,
@@ -124,7 +144,8 @@ impl Manager {
         let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
         let inner = Inner {
             jobs: BTreeMap::new(),
-            next_id: 0,
+            // Ids continue after the highest one the journal recorded (#1602): `JobId` is never reused.
+            next_id: env.last_job_id,
             lanes: Lanes::new(cores),
             ledger: Ledger::new(budget_usd_micros),
             ended: VecDeque::new(),
@@ -147,7 +168,7 @@ impl Manager {
     /// history), and once it is shut down a fresh manager would quietly take new jobs again.
     pub(crate) fn committed(&self) -> bool {
         let inner = lock(&self.inner);
-        inner.next_id > 0 || inner.closed
+        inner.next_id > self.env.last_job_id || inner.closed
     }
 
     /// Queues `JobChanged` for `job`'s current snapshot and wakes waiters. Called with the manager lock held.
@@ -156,7 +177,8 @@ impl Manager {
         self.changed.notify_all();
     }
 
-    /// Admits a planned job: reserves its money, queues it and starts it if its lane has room. An `awaited` job is
+    /// Admits a planned job: checks its session's job caps and budget, reserves its money, opens a driver job's
+    /// transaction (or joins the caller's), queues it and starts it if its lane has room. An `awaited` job is
     /// registered for [`outcome`](Self::outcome) from the start, so its result is kept however many jobs end first.
     pub(crate) fn start(
         self: &Arc<Self>,
@@ -164,55 +186,57 @@ impl Manager {
         req: Request,
         plan: Plan,
         awaited: bool,
+        over_budget: bool,
     ) -> Result<JobInfo, OpError> {
         let meta = op.meta();
-        // Whose job this is, and whether that session may still start one. The lock order (manager, then document) is
-        // the one `announce` takes.
-        let owner = {
-            let state = lock(&self.env.state);
-            state.sessions.check_active(&req.actor)?;
-            state.sessions.session_ref(&req.actor)
-        };
-        let (session, on_behalf_of) = owner.map_or((None, None), |(id, person)| (Some(id), Some(person)));
-        let lane = lanes::lane_of(&meta, plan.cost.as_ref());
+        let driving = op.job_shape() == JobShape::Driver;
+        // Driver jobs edit through inner calls on the CPU lane (ADR 0036 decision 10).
+        let lane = if driving { Lane::Cpu } else { lanes::lane_of(&meta, plan.cost.as_ref()) };
         let reserved = reserve_micros(plan.cost.as_ref());
-        let info = {
+        let started = {
             let mut inner = lock(&self.inner);
             if inner.closed {
                 return Err(unavailable("the job manager is shut down", "start the job after the project reopens"));
             }
+            // Whose job this is, and whether that session may still start one, under both locks (manager, then
+            // document, the order `announce` takes), so two starts cannot both pass a session check only one fits.
+            let mut state = lock(&self.env.state);
+            state.sessions.check_active(&req.actor)?;
+            let owner = state.sessions.session_ref(&req.actor);
+            let (session, on_behalf_of) = owner.map_or((None, None), |(id, person)| (Some(id), Some(person)));
+            if let Some(session) = session {
+                Self::session_caps(&inner, session)?;
+                let held = inner
+                    .jobs
+                    .values()
+                    .filter(|j| j.info.session == Some(session) && !j.settled)
+                    .map(|j| j.reserved)
+                    .sum();
+                let index = state.sessions.index(session)?;
+                let refused =
+                    (!over_budget).then(|| self.env.job_budget(&mut state, index, &*op, &req, (reserved, held)));
+                if let Some(refusal) = refused.flatten() {
+                    drop(state);
+                    drop(inner);
+                    self.env.publish();
+                    return Err(refusal);
+                }
+            }
             let id = JobId(inner.next_id + 1);
-            match inner.lanes.admit(lane, id) {
-                Ok(()) => {}
-                Err(Refusal::QueueFull) => {
-                    return Err(limited(
-                        "256 jobs are already queued",
-                        "wait for a job to start, then retry",
-                        "queued_jobs=256",
-                    ));
-                }
-                Err(Refusal::LaneExhausted) => {
-                    return Err(unavailable(
-                        "the job lane has no thread to spare: cancelled jobs are still running",
-                        "retry once a cancelled job has returned",
-                    ));
-                }
-            }
-            if !inner.ledger.reserve(reserved) {
-                inner.lanes.unqueue(lane, id);
-                return Err(limited(
-                    "the job's estimated cost does not fit the money left",
-                    "wait for running jobs to settle, or run a cheaper job",
-                    "job_budget",
-                ));
-            }
+            Self::admit(&mut inner, lane, id, reserved)?;
             inner.next_id += 1;
             let now = self.now();
+            let label = if driving { meta.summary.to_owned() } else { meta.name.to_owned() };
+            let driver = driving.then(|| match req.tx {
+                Some(tx) => DriverTx { tx, joined: true },
+                None => DriverTx { tx: state.begin(&label, &req.actor, Seconds(now)), joined: false },
+            });
+            drop(state);
             let job = Job {
                 info: JobInfo {
                     id,
                     op: meta.name.to_owned(),
-                    label: meta.name.to_owned(),
+                    label,
                     actor: req.actor.clone(),
                     on_behalf_of,
                     session,
@@ -246,6 +270,8 @@ impl Manager {
                 detached: None,
                 outcome: None,
                 waiters: usize::from(awaited),
+                driver,
+                end_journalled: false,
             };
             // Admission is recorded before anyone sees the job, so an acknowledged start, queued or running, is
             // durable. A refused record fails the job before it can run.
@@ -264,39 +290,113 @@ impl Manager {
         };
         self.env.publish();
         self.ensure_supervisor();
-        info.ok_or_else(|| OpError::internal("a started job vanished"))
+        started.ok_or_else(|| OpError::internal("a started job vanished"))
     }
 
-    /// Starts every queued job whose lane has a free slot.
+    /// Takes a place for job `id` in `lane` and reserves its estimated money (`reserved` micro-dollars) from the
+    /// executor's job ledger, or refuses it with nothing taken.
+    fn admit(inner: &mut Inner, lane: Lane, id: JobId, reserved: u64) -> Result<(), OpError> {
+        match inner.lanes.admit(lane, id) {
+            Ok(()) => {}
+            Err(Refusal::QueueFull) => {
+                return Err(limited(
+                    "256 jobs are already queued",
+                    "wait for a job to start, then retry",
+                    "queued_jobs=256",
+                ));
+            }
+            Err(Refusal::LaneExhausted) => {
+                return Err(unavailable(
+                    "the job lane has no thread to spare: cancelled jobs are still running",
+                    "retry once a cancelled job has returned",
+                ));
+            }
+        }
+        if !inner.ledger.reserve(reserved) {
+            inner.lanes.unqueue(lane, id);
+            return Err(limited(
+                "the job's estimated cost does not fit the money left",
+                "wait for running jobs to settle, or run a cheaper job",
+                "job_budget",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Refuses a job of `session` past the session's caps: 4 running at once, 16 waiting (ADR 0036 decision 6).
+    fn session_caps(inner: &Inner, session: SessionId) -> Result<(), OpError> {
+        let mine = || inner.jobs.values().filter(|j| j.info.session == Some(session));
+        let running = mine().filter(|j| matches!(j.phase, Phase::Working | Phase::Finishing)).count();
+        let queued = mine().filter(|j| j.phase == Phase::Queued).count();
+        if running >= SESSION_RUNNING {
+            return Err(limited(
+                &format!("this session already runs {SESSION_RUNNING} jobs"),
+                "wait for one to end, then retry",
+                &format!("session_running_jobs = {SESSION_RUNNING}"),
+            ));
+        }
+        if queued >= SESSION_QUEUED {
+            return Err(limited(
+                &format!("this session already has {SESSION_QUEUED} jobs waiting"),
+                "wait for one to start, then retry",
+                &format!("session_queued_jobs = {SESSION_QUEUED}"),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Starts every queued job whose lane has a free slot. A job whose session is paused does not start, nor one whose
+    /// session already runs [`SESSION_RUNNING`] jobs: it stays at the head of its queue until that changes.
     fn dispatch(self: &Arc<Self>, inner: &mut Inner) {
+        let mut waiting = Vec::new();
         while let Some((lane, id)) = inner.lanes.next_ready() {
             let now = self.now();
+            let Some(session) = inner.jobs.get(&id).map(|job| job.info.session) else {
+                inner.lanes.finished(lane);
+                continue;
+            };
+            let full = session.is_some_and(|s| {
+                inner.jobs.values().filter(|j| j.info.session == Some(s) && j.phase == Phase::Working).count()
+                    >= SESSION_RUNNING
+            });
             // The session is re-admitted and the job marked running under one hold of the state lock, so a pause lands
-            // either before (the job never starts and `work` has no effect) or after (a running job, whose `finish`
-            // is refused). The grants are narrowed again: roots revoked while the job waited are not readable by `work`.
+            // either before (the job waits and `work` has no effect) or after (a running job, whose finish is held).
+            // The grants are narrowed again: roots revoked while the job waited are not readable by `work`.
             let started = {
                 let mut state = lock(&self.env.state);
                 let Some(job) = inner.jobs.get_mut(&id) else {
                     inner.lanes.finished(lane);
                     continue;
                 };
-                // The lane slot `next_ready` handed out is given back by `fail_start`, as for a failed spawn.
-                job.phase = Phase::Working;
                 match state.sessions.admit(&job.info.actor, &job.grants, Seconds(now)) {
+                    Err(error) if error.code == ErrorCode::Waiting => None,
+                    Ok(_) if full => None,
+                    // The lane slot `next_ready` handed out is given back by `fail_start`, as for a failed spawn.
+                    Err(error) => Some(Err(error)),
                     Ok(grants) => {
+                        job.phase = Phase::Working;
                         job.grants = grants;
                         job.thread_live = true;
                         job.info.state = JobState::Running;
                         job.info.started_at = Some(Seconds(now));
                         job.deadline = now + job.cap_secs;
-                        Ok(())
+                        Some(Ok(()))
                     }
-                    Err(error) => Err(error),
                 }
             };
-            if let Err(error) = started {
-                self.fail_start(inner, id, error);
-                continue;
+            match started {
+                None => {
+                    waiting.push((lane, id));
+                    continue;
+                }
+                Some(Err(error)) => {
+                    if let Some(job) = inner.jobs.get_mut(&id) {
+                        job.phase = Phase::Working;
+                    }
+                    self.fail_start(inner, id, error);
+                    continue;
+                }
+                Some(Ok(())) => {}
             }
             let Some(job) = inner.jobs.get(&id) else { continue };
             self.announce(job);
@@ -307,13 +407,40 @@ impl Manager {
                 self.fail_start(inner, id, OpError::internal(format!("could not start a job thread: {e}")));
             }
         }
+        // Back at the head of their queues, in their order.
+        for (lane, id) in waiting.into_iter().rev() {
+            inner.lanes.hold_back(lane, id);
+        }
     }
 
-    /// Calls the start journal for `job`. A panic in it is a refusal like an error: it must not strand the job.
+    /// Records that `job` started (ADR 0036 decision 7): the host's start journal if it set one, else a `JobStarted`
+    /// entry for the journal sink. A panic in the hook is a refusal like an error: it must not strand the job.
     fn record_start(&self, job: &Job) -> Result<(), OpError> {
-        let Some(record) = &self.env.job_started else { return Ok(()) };
-        catch_unwind(AssertUnwindSafe(|| record(&job.info, &job.args)))
-            .unwrap_or_else(|_| Err(OpError::internal("the job journal panicked")))
+        if let Some(record) = &self.env.job_started {
+            return catch_unwind(AssertUnwindSafe(|| record(&job.info, &job.args)))
+                .unwrap_or_else(|_| Err(OpError::internal("the job journal panicked")));
+        }
+        let journal = {
+            let state = lock(&self.env.state);
+            state.journal.append(|| HistoryEntry::JobStarted {
+                job: job.info.id,
+                op: job.info.op.clone(),
+                args: job.args.clone(),
+                actor: job.info.actor.clone(),
+                on_behalf_of: job.info.on_behalf_of.clone(),
+                at: job.info.queued_at,
+            });
+            state.journal.clone()
+        };
+        // Durable before `work` can begin and before the start is acknowledged, so no paid call or written file ever
+        // lacks its record (ADR 0036 decision 7). Off the document lock: edits go on while it syncs.
+        journal.sync(START_SYNC)
+    }
+
+    /// Records that a job ended (#1602), with the state it ended in, once.
+    fn record_end(&self, info: &JobInfo) {
+        let state = lock(&self.env.state);
+        journal_end(&self.env, &state, info);
     }
 
     /// Fails a job whose `work` never ran: its queue place or lane slot and its whole reservation are given back.
@@ -330,7 +457,8 @@ impl Manager {
         self.end(inner, id, JobState::Failed { error: error.clone() }, Err(error));
     }
 
-    /// Moves a job to its final state, keeping the outcome for whoever waits on it.
+    /// Moves a job to its final state, keeping the outcome for whoever waits on it, and journals the end unless its
+    /// finish already did, under the lock that applied it.
     fn end(&self, inner: &mut Inner, id: JobId, state: JobState, outcome: Result<Outcome, OpError>) {
         let now = self.now();
         let Some(job) = inner.jobs.get_mut(&id) else { return };
@@ -338,9 +466,34 @@ impl Manager {
         job.info.state = state;
         job.info.ended_at = Some(Seconds(now));
         job.outcome = Some(outcome);
+        if !job.end_journalled {
+            job.end_journalled = true;
+            self.record_end(&job.info);
+        }
         self.announce(job);
+        self.finish_stop(inner, id);
         inner.ended.push_back(id);
         trim(inner);
+    }
+
+    /// Step c of a person's Stop (agent-runtime D4): once the last driver job joined to a stopped session's open
+    /// transaction has ended (and reverted what it could), that transaction is committed as it stands, labelled
+    /// "(stopped)", in any session state.
+    fn finish_stop(&self, inner: &Inner, id: JobId) {
+        let Some(job) = inner.jobs.get(&id) else { return };
+        let (Some(session), Some(DriverTx { tx, joined: true })) = (job.info.session, job.driver) else { return };
+        let others = inner.jobs.values().any(|other| {
+            other.info.id != id && other.phase != Phase::Ended && other.driver.is_some_and(|d| d.joined && d.tx == tx)
+        });
+        if others {
+            return;
+        }
+        let mut state = lock(&self.env.state);
+        let stopping = state.sessions.index(session).is_ok_and(|index| state.sessions.is_stopping(index));
+        if stopping {
+            // The transaction may be gone already (its owner closed it): nothing is left to close then.
+            drop(state.stop_tx(tx, &job.info.actor));
+        }
     }
 
     /// Asks a job to stop. A queued job ends at once; a running one is told through its flag and ends when `work`
@@ -363,7 +516,11 @@ impl Manager {
             // overrides an earlier reason (`Requested`, `Timeout`, `Budget`): shutdown promises every live job ends
             // cancelled for shutdown, and the snapshot must agree with the error the run returns. The earlier grace
             // deadline stands, so an upgrade never buys the work more time.
-            Phase::Working | Phase::Finishing if reason == CancelReason::Shutdown => {
+            // Shutdown, a stop and a session end reach a job already in `finish` too (one held for a paused session,
+            // say), so its result is discarded and it ends `Cancelled`.
+            Phase::Working | Phase::Finishing
+                if matches!(reason, CancelReason::Shutdown | CancelReason::Stop | CancelReason::SessionEnded) =>
+            {
                 job.cancel.cancel();
                 let grace_until = job.cancelling.as_ref().map_or(now + GRACE_SECS, |c| c.grace_until);
                 job.cancelling = Some(Cancelling { by, reason, grace_until });
@@ -390,18 +547,27 @@ impl Manager {
                     Some(_) | None => {}
                 }
             }
-            // A timed `wait` measures the executor's clock, which may just have moved.
+            // A queued job whose session resumed (or ran fewer jobs) since the last look starts now.
+            self.dispatch(&mut inner);
+            // A timed `wait` measures the executor's clock, which may just have moved, and a held finish rechecks
+            // its session.
             self.changed.notify_all();
         }
         self.env.publish();
     }
 
     /// Ends a job whose work ignored its cancellation, and gives up its thread. The reservation stays held until the
-    /// thread returns.
+    /// thread returns. A driver's edits are undone now: the thread's later inner calls are refused.
     fn detach(self: &Arc<Self>, inner: &mut Inner, id: JobId, c: Cancelling) {
         let Some(job) = inner.jobs.get_mut(&id) else { return };
         let lent = inner.lanes.detach(job.info.lane);
         job.detached = Some(lent);
+        if let Some(driver) = job.driver {
+            // The job ends cancelled whatever the undo says; an `Unreverted` conflict is in the caller's transaction for
+            // them to see.
+            let undone = worker::undo_driver(&self.env, &job.info.actor, id, driver, cancelled(id, c.reason));
+            drop(undone);
+        }
         self.end(inner, id, JobState::Cancelled { by: c.by, reason: c.reason }, Err(cancelled(id, c.reason)));
         if lent {
             self.dispatch(inner);
@@ -412,6 +578,8 @@ impl Manager {
         let inner = lock(&self.inner);
         let job = inner.jobs.get(&id)?;
         Some(Task {
+            info: job.info.clone(),
+            driver: job.driver,
             op: Arc::clone(&job.op),
             meta: job.meta,
             actor: job.info.actor.clone(),
@@ -446,23 +614,33 @@ impl Manager {
         false
     }
 
-    /// `finish` ended: the job's final state follows from its result.
-    pub(super) fn complete(self: &Arc<Self>, id: JobId, result: Result<Outcome, OpError>) {
+    /// `finish` ended: the job's final state follows from its result. `journalled`: the finish already journalled
+    /// the end, in the lock hold that applied it.
+    pub(super) fn complete(self: &Arc<Self>, id: JobId, result: Result<Outcome, OpError>, journalled: bool) {
         let mut inner = lock(&self.inner);
+        if let Some(job) = inner.jobs.get_mut(&id) {
+            job.end_journalled |= journalled;
+        }
         let Some(job) = inner.jobs.get(&id) else { return };
-        let (lane, cancelling) = (job.info.lane, job.cancelling.clone());
+        let (lane, cancelling, driver) = (job.info.lane, job.cancelling.clone(), job.driver);
         inner.lanes.finished(lane);
-        let done =
-            result.as_ref().ok().and_then(|outcome| outcome.applied.as_ref().map(|record| (outcome, record))).map(
-                |(outcome, record)| JobState::done(record.tx, Some(record.seq)).with_outcome(Arc::new(outcome.clone())),
-            );
+        // A driver's run is its transaction, whether or not its finish added a record to it. The state keeps the
+        // outcome, so a client that polls renders what one that waited does.
+        let done = result.as_ref().ok().and_then(|outcome| {
+            let state = match outcome.applied.as_ref() {
+                Some(record) => JobState::done(record.tx, Some(record.seq)),
+                None => JobState::done(driver?.tx, None),
+            };
+            Some(state.with_outcome(Arc::new(outcome.clone())))
+        });
         let (state, outcome) = match (done, result, cancelling) {
             // The edit is in. Under shutdown too: `finish` holds the shutdown flag through its apply, so the apply
             // came before the shutdown began, and the job's state must not deny an edit the log holds.
             (Some(state), result, _) => (state, result),
-            // Shutdown promises every job ends cancelled with its result discarded: whatever `work` or `finish`
-            // returned instead, an error or a panic, gives way to it.
-            (None, _, Some(c)) if c.reason == CancelReason::Shutdown => {
+            // Shutdown, a stop and a session end promise the job ends cancelled with its result discarded: whatever
+            // `work` or `finish` returned instead (an error, a panic, a finish refused for the ended session) gives
+            // way to it.
+            (None, _, Some(c)) if worker::discards(c.reason) => {
                 (JobState::Cancelled { by: c.by, reason: c.reason }, Err(cancelled(id, c.reason)))
             }
             (None, Ok(_), _) => {
@@ -514,6 +692,17 @@ impl Manager {
             if let Some(total) = job.spent.checked_add(usd_micros).filter(|total| *total <= job.reserved) {
                 job.spent = total;
                 job.info.spent_usd_micros = total;
+                // A session's job spends the session's money too, and it stays spent whatever becomes of the job.
+                if let Some(session) = job.info.session {
+                    let at = Seconds(self.now());
+                    let mut state = lock(&self.env.state);
+                    if let Ok(index) = state.sessions.index(session) {
+                        state.sessions.add_spend(index, usd_micros, 0, at);
+                        if let Some(snapshot) = state.session(session) {
+                            state.queue_event(Event::session_changed(snapshot, omuzaki_ops_api::SessionChange::Spent));
+                        }
+                    }
+                }
                 Ok(())
             } else {
                 let (spent, cap) = (job.spent, job.reserved);
@@ -533,11 +722,92 @@ impl Manager {
         lock(&self.inner).jobs.get(&id).map(|job| job.info.clone())
     }
 
-    /// The live jobs, then the last ended ones.
+    /// The live jobs, then the last [`KEEP_ENDED`] ended ones (#1603). Ended jobs a waiter still pins stay kept for
+    /// that waiter, but are not listed past the limit.
     pub(crate) fn list(&self) -> Vec<JobInfo> {
         let inner = lock(&self.inner);
-        let (ended, live): (Vec<_>, Vec<_>) = inner.jobs.values().partition(|job| job.phase == Phase::Ended);
-        live.into_iter().chain(ended).map(|job| job.info.clone()).collect()
+        let recent: std::collections::BTreeSet<JobId> = inner.ended.iter().rev().take(KEEP_ENDED).copied().collect();
+        let live = inner.jobs.values().filter(|job| job.phase != Phase::Ended);
+        let ended = inner.jobs.values().filter(|job| job.phase == Phase::Ended && recent.contains(&job.info.id));
+        live.chain(ended).map(|job| job.info.clone()).collect()
+    }
+
+    /// Cancels every live job of `session` for `reason`, returning their ids: the one path a stop, an end, a revoke and
+    /// a person's or agent's `cancel_session` take.
+    pub(crate) fn cancel_session(&self, session: SessionId, by: Option<&Actor>, reason: CancelReason) -> Vec<JobId> {
+        let ids = {
+            let mut inner = lock(&self.inner);
+            Self::cancel_of(self, &mut inner, session, by, reason)
+        };
+        self.env.publish();
+        ids
+    }
+
+    fn cancel_of(&self, inner: &mut Inner, session: SessionId, by: Option<&Actor>, reason: CancelReason) -> Vec<JobId> {
+        let live: Vec<JobId> = inner
+            .jobs
+            .values()
+            .filter(|job| job.info.session == Some(session) && job.phase != Phase::Ended)
+            .map(|job| job.info.id)
+            .collect();
+        for id in &live {
+            self.cancel_job(inner, *id, by.cloned(), reason);
+        }
+        live
+    }
+
+    /// A person's Stop, step a (agent-runtime D4): under the manager's lock and then the document's, `pause` runs and
+    /// every live job of `session` is cancelled for `Stop`, atomically.
+    pub(crate) fn stop<T>(
+        &self,
+        session: SessionId,
+        by: &Actor,
+        pause: impl FnOnce(&mut crate::state::State) -> Result<T, OpError>,
+    ) -> Result<(T, Vec<JobId>), OpError> {
+        let done = {
+            let mut inner = lock(&self.inner);
+            let paused = pause(&mut lock(&self.env.state))?;
+            let cancelled = self.cancel_of(&mut inner, session, Some(by), CancelReason::Stop);
+            (paused, cancelled)
+        };
+        self.env.publish();
+        Ok(done)
+    }
+
+    /// Whether a live driver job of `session` still runs in transaction `tx` (one joined to it): a stop commits the
+    /// transaction only once none does.
+    pub(crate) fn joins(&self, session: SessionId, tx: TxId) -> bool {
+        lock(&self.inner).jobs.values().any(|job| {
+            job.info.session == Some(session)
+                && job.phase != Phase::Ended
+                && job.driver.is_some_and(|d| d.joined && d.tx == tx)
+        })
+    }
+
+    /// Marks a job whose finish waits for its paused session (`Held`).
+    pub(super) fn hold(&self, id: JobId) {
+        {
+            let mut inner = lock(&self.inner);
+            if let Some(job) = inner.jobs.get_mut(&id)
+                && job.info.state != JobState::Held
+            {
+                job.info.state = JobState::Held;
+                self.announce(job);
+            }
+        }
+        self.env.publish();
+    }
+
+    /// Waits one supervisor tick (or until something changes): how a held finish and a paused driver's inner call
+    /// wait for their session, without holding any lock.
+    pub(super) fn wait_tick(&self) {
+        let inner = lock(&self.inner);
+        drop(self.changed.wait_timeout(inner, SUPERVISOR_TICK).unwrap_or_else(PoisonError::into_inner));
+    }
+
+    /// The reason a cancelled job was cancelled for, if it was.
+    pub(super) fn cancelled_for(&self, id: JobId) -> Option<CancelReason> {
+        lock(&self.inner).jobs.get(&id).and_then(|job| job.cancelling.as_ref().map(|c| c.reason))
     }
 
     /// Cancels `id` for `by`: its own actor or a person (or the system) may.
@@ -677,6 +947,21 @@ impl Manager {
     fn idle_after_shutdown(&self) -> bool {
         let inner = lock(&self.inner);
         inner.closed && inner.jobs.values().all(|job| job.phase != Phase::Working)
+    }
+}
+
+/// Journals that the job `info` describes ended, under the document lock the caller holds: the host's end journal if
+/// it set one, else a `JobEnded` entry for the journal sink. A failing or panicking hook is logged and never strands
+/// the job: the job still ends and its money is still settled.
+fn journal_end(env: &Env, state: &crate::state::State, info: &JobInfo) {
+    match &env.job_ended {
+        Some(record) => {
+            // The job has ended either way: a journal that cannot take the entry reports it through its own health
+            // (`JournalStatus::Failing`), and recovery gives a job with no end entry an `Interrupted` one.
+            let recorded = catch_unwind(AssertUnwindSafe(|| record(info)));
+            drop(recorded);
+        }
+        None => state.journal.append(|| HistoryEntry::JobEnded { job: info.id, state: info.state.clone() }),
     }
 }
 

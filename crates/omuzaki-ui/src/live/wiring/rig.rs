@@ -64,6 +64,9 @@ pub struct Extras {
     /// The app's settings, for the `settings.*` ops and every op that saves a choice (the app puts it in the runner's
     /// services; the rig ignores it).
     pub settings: Option<Arc<dyn Settings>>,
+    /// My scripts, for the `script.*_mine` ops and the Script workspace (the app puts it in the runner's services;
+    /// the rig ignores it).
+    pub scripts: Option<Arc<dyn omuzaki_script::ScriptStore>>,
 }
 
 impl std::fmt::Debug for Extras {
@@ -76,6 +79,7 @@ impl std::fmt::Debug for Extras {
             .field("data", &self.data)
             .field("tap", &self.tap.is_some())
             .field("settings", &self.settings.is_some())
+            .field("scripts", &self.scripts.is_some())
             .finish()
     }
 }

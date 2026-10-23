@@ -17,6 +17,12 @@
 <rect x="353.5" y="247.5" width="108.0" height="52.5" fill="#2a6fdb"/>
 <rect x="488.5" y="286.5" width="108.0" height="13.5" fill="#2a6fdb"/>
 <rect x="623.5" y="200.5" width="108.0" height="99.5" fill="#2a6fdb"/>
-<rect x="758.5" y="244.5" width="108.0" height="55.5" fill="#2a6fdb"/>
+<rect x="758.5" y="210.5" width="108.0" height="89.5" fill="#2a6fdb"/>
+<line x1="340.0" x2="340.0" y1="50" y2="300" stroke="#444" stroke-dasharray="4 3"/>
+<text x="344.0" y="62" text-anchor="start" font-size="11" fill="#222" stroke="#fff" stroke-width="3" paint-order="stroke">Peak: 52 agents at once</text>
+<line x1="610.0" x2="610.0" y1="50" y2="300" stroke="#444" stroke-dasharray="4 3"/>
+<text x="614.0" y="76" text-anchor="start" font-size="11" fill="#222" stroke="#fff" stroke-width="3" paint-order="stroke">Pause: no agents or merges</text>
+<line x1="745.0" x2="745.0" y1="50" y2="300" stroke="#444" stroke-dasharray="4 3"/>
+<text x="741.0" y="90" text-anchor="end" font-size="11" fill="#222" stroke="#fff" stroke-width="3" paint-order="stroke">Spine first in the cloud project</text>
 <rect x="70" y="338" width="12" height="12" fill="#2a6fdb"/><text x="88" y="348" fill="#333">commits</text>
 </svg>

@@ -24,6 +24,7 @@ mod file_access;
 mod jobs;
 mod nested;
 mod registry;
+mod review;
 mod runner;
 mod scope;
 mod services;
@@ -44,6 +45,7 @@ pub use jobs::{
     Lane, NeverCancel,
 };
 pub use registry::{OpRegistration, find, registrations};
+pub use review::{ReviewPolicies, ReviewRequirement};
 pub use runner::{ClashKind, Event, Mode, OpInfo, OpRecord, Outcome, Request, Runner, TxId, tool_name};
 pub use scope::Scope;
 pub use services::{ConnectionService, Service, Services, ServicesBuilder};
@@ -140,7 +142,10 @@ pub struct Plan {
     pub patch: Patch,
     /// The answer for queries, or a summary for edits (shown in history and to agents).
     pub output: Option<Value>,
-    /// Cost estimate, when it isn't trivial.
+    /// Cost estimate, when it isn't trivial. On an applied run the executor charges `usd` to the acting session
+    /// (rounded up to the micro-dollar), and a plan whose `usd` is above zero needs [`Scope::Spend`]: an agent session
+    /// without it waits for a person to grant it, like any scope a person could grant. A dry-run never needs `spend`,
+    /// so the cost is what a preview shows. A NaN, infinite or negative `usd` is refused as a bug in the op.
     pub cost: Option<CostHint>,
     /// What an [`Undo::Explicit`] op changed outside the document. Absent from the JSON when empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]

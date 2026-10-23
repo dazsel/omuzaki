@@ -185,6 +185,20 @@ pub(crate) fn instructions(grants: &Grants, guidance: &Guidance, registry: bool)
     lines.join("\n")
 }
 
+/// The guide's part for a core tool list ([`ToolMode::Core`](crate::catalog::ToolMode)): what is left out, the areas
+/// it comes in, and how to reach it.
+pub(crate) fn core_note(areas: &std::collections::BTreeMap<&str, usize>) -> String {
+    let listed: Vec<String> = areas.iter().map(|(area, n)| format!("{area} ({n})")).collect();
+    format!(
+        "The tool list is a small core. The project's {} ops are grouped in areas: {}. To use one: ops_find with \
+         words for what you want (ops_find {{\"query\": \"virtual camera\"}}), ops_describe for its arguments, then \
+         ops_run {{\"op\": ..., \"args\": ...}}, which works exactly like the op's own tool (dry_run included). If your \
+         client refreshes its tool list, tools_enable {{\"areas\": [...]}} lists an area's ops as tools of their own.",
+        areas.values().sum::<usize>(),
+        listed.join(", ")
+    )
+}
+
 /// The line for a session that has a fence (design §5.3), or says there is none: appended to the guide an agent reads
 /// when it connects, because a fence belongs to the session and not to the server.
 pub(crate) fn fence_note(fence: &[DocPath]) -> String {

@@ -11,16 +11,18 @@ repository.workspace = true
 [features]
 default = ["capture"]
 # Headless rendering of the gallery to PNG (and the pixel screenshots in tests) through egui_kittest's wgpu renderer.
-capture = ["dep:egui_kittest", "dep:image"]
+capture = ["dep:egui_kittest"]
 
 [dependencies]
 clap.workspace = true
 eframe.workspace = true
 egui.workspace = true
 egui-phosphor.workspace = true
+egui-snarl.workspace = true
 egui_tiles.workspace = true
 egui_kittest = { workspace = true, optional = true }
-image = { workspace = true, optional = true }
+# History's pictures are PNGs (shell/pictures.rs).
+image.workspace = true
 inventory.workspace = true
 regex.workspace = true
 schemars.workspace = true
@@ -42,6 +44,7 @@ omuzaki-input-api = { path = "../omuzaki-input-api" }
 omuzaki-live = { path = "../omuzaki-live" }
 omuzaki-live-api = { path = "../omuzaki-live-api" }
 omuzaki-live-nodes = { path = "../omuzaki-live-nodes" }
+omuzaki-metrics-api = { path = "../omuzaki-metrics-api" }
 omuzaki-obs = { path = "../omuzaki-obs" }
 omuzaki-twitch = { path = "../omuzaki-twitch" }
 omuzaki-secrets = { path = "../omuzaki-secrets" }
@@ -63,10 +66,12 @@ omuzaki-ops = { path = "../omuzaki-ops" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-render = { path = "../omuzaki-render" }
 omuzaki-render-api = { path = "../omuzaki-render-api" }
+omuzaki-script = { path = "../omuzaki-script" }
 omuzaki-settings = { path = "../omuzaki-settings" }
 omuzaki-settings-api = { path = "../omuzaki-settings-api" }
 omuzaki-setup = { path = "../omuzaki-setup" }
 omuzaki-stage = { path = "../omuzaki-stage" }
+omuzaki-theatre = { path = "../omuzaki-theatre" }
 omuzaki-store = { path = "../omuzaki-store" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
 omuzaki-stage-api = { path = "../omuzaki-stage-api" }
@@ -86,6 +91,11 @@ wgpu.workspace = true
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["process"] }
 
+# The desktop pointer and the way-back chord on X11, for a desktop character's per-pixel click-through
+# (output_window/hit_test).
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 # The webcam on Windows, for the studio's inputs (live/wiring/inputs.rs).
 omuzaki-camera-mf = { path = "../omuzaki-camera-mf" }
@@ -97,16 +107,22 @@ egui_kittest.workspace = true
 image.workspace = true
 omuzaki-anim-mock = { path = "../omuzaki-anim-mock" }
 omuzaki-char-mock = { path = "../omuzaki-char-mock" }
+omuzaki-connect-mock = { path = "../omuzaki-connect-mock" }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+omuzaki-http-mock = { path = "../omuzaki-http-mock" }
 omuzaki-ops-mock = { path = "../omuzaki-ops-mock" }
 omuzaki-osc = { path = "../omuzaki-osc" }
 omuzaki-render-mock = { path = "../omuzaki-render-mock" }
 omuzaki-settings-mock = { path = "../omuzaki-settings-mock" }
+omuzaki-store-mock = { path = "../omuzaki-store-mock" }
+omuzaki-test = { path = "../omuzaki-test" }
 omuzaki-track-mock = { path = "../omuzaki-track-mock" }
+omuzaki-input-mock = { path = "../omuzaki-input-mock" }
 omuzaki-ui-mock = { path = "../omuzaki-ui-mock" }
 omuzaki-obs = { path = "../omuzaki-obs", features = ["testing"] }
 omuzaki-secrets-mock = { path = "../omuzaki-secrets-mock" }
 omuzaki-vts = { path = "../omuzaki-vts", features = ["testing"] }
+omuzaki-live-mock = { path = "../omuzaki-live-mock" }
 tempfile.workspace = true
 
 [lints]
