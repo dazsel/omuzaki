@@ -122,7 +122,8 @@ fn a_form_renders_for_every_registered_part_kind() {
         h.run_steps(3);
         let fields = h.state().inspector.fields();
         assert!(fields > 0, "{kind}: the form has no fields");
-        assert!(h.query_by_label_contains(kind).is_some(), "{kind}: the header names the kind");
+        // The header's kind line, whole: the kind's bare name can be inside the part's (`robe` in `probe`).
+        assert!(h.query_by_label(&format!("Kind: {kind}")).is_some(), "{kind}: the header names the kind");
         assert!(unlabelled_interactive(&h).is_empty(), "{kind}: {:?}", unlabelled_interactive(&h));
         let editable =
             [Role::Slider, Role::SpinButton, Role::Switch, Role::ComboBox, Role::RadioGroup, Role::TextInput]

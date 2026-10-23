@@ -1,6 +1,6 @@
 //! The frame graph and its timings.
 //!
-//! The graph is **fixed and linear** on purpose: eight named passes in one documented order. It is not a
+//! The graph is **fixed and linear** on purpose: nine named passes in one documented order. It is not a
 //! programmable render graph. A fixed order is what makes frames reproducible, lets the scheduler reason about cost
 //! per pass, and keeps every renderer (GPU, mock, web) interchangeable. An implementation may fuse or reorder work
 //! internally as long as the *observable* order holds and it reports each logical pass.
@@ -21,6 +21,11 @@ pub enum Pass {
     Opaque,
     /// Inverted-hull outlines of every instance whose material has one. After `Opaque`, so they hide behind it.
     Outlines,
+    /// Particles (particles.md D4): alpha-to-coverage sprites that test and write depth, so they need no sorting.
+    /// After `Opaque` and `Outlines` so they hide behind the characters and their lines, before `Transparent` so blended
+    /// surfaces test against them, and before `Bloom` and `DepthOfField` so glowing particles bloom and blur. Skipped
+    /// when the scene has no spawn batches.
+    Particles,
     /// Blended instances, sorted back to front (`Instance::order`, then distance), depth-tested, not writing depth.
     Transparent,
     /// Bloom. Needs the lit colour, so it follows all geometry.
@@ -33,7 +38,7 @@ pub enum Pass {
 
 impl Pass {
     /// How many passes there are.
-    pub const COUNT: usize = 8;
+    pub const COUNT: usize = 9;
 
     /// Every pass in the order a frame runs them.
     pub const ALL: [Self; Self::COUNT] = [
@@ -41,6 +46,7 @@ impl Pass {
         Self::Shadows,
         Self::Opaque,
         Self::Outlines,
+        Self::Particles,
         Self::Transparent,
         Self::Bloom,
         Self::DepthOfField,
@@ -59,6 +65,7 @@ impl Pass {
             Self::Shadows => "shadows",
             Self::Opaque => "opaque",
             Self::Outlines => "outlines",
+            Self::Particles => "particles",
             Self::Transparent => "transparent",
             Self::Bloom => "bloom",
             Self::DepthOfField => "depth_of_field",
@@ -125,6 +132,9 @@ pub struct FrameReport {
     pub draw_calls: u32,
     /// Triangles submitted.
     pub triangles: u64,
+    /// Particle slots submitted: the sum of the drawn spawn batches' `count` (an upper bound on the particles drawn), so
+    /// tests and the scheduler see the load.
+    pub particles: u32,
 }
 
 #[cfg(test)]
@@ -149,6 +159,10 @@ mod tests {
         assert!(before(Pass::Shadows, Pass::Opaque), "shadow maps exist before lit shading reads them");
         assert!(before(Pass::Opaque, Pass::Outlines), "outlines hide behind the model");
         assert!(before(Pass::Outlines, Pass::Transparent) && before(Pass::Transparent, Pass::Bloom));
+        assert!(before(Pass::Opaque, Pass::Particles), "particles depth-test against the characters");
+        assert!(before(Pass::Outlines, Pass::Particles), "and against their lines");
+        assert!(before(Pass::Particles, Pass::Transparent), "blended surfaces depth-test against particles");
+        assert!(before(Pass::Particles, Pass::Bloom) && before(Pass::Particles, Pass::DepthOfField), "glow and blur");
         assert_eq!(Pass::ALL.last(), Some(&Pass::Resolve));
     }
 

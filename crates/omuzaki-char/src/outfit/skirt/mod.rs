@@ -435,6 +435,8 @@ impl PartKind for Skirt {
         if let Some(texture) = cloth.texture {
             output.textures.push(texture);
         }
+        let drape = self::cloth::drape(skins.outer.rows(), skins.outer.cols());
+        super::drape::simulate(&p.common.cloth, &drape, ctx, &mut output)?;
         Ok(output)
     }
 }

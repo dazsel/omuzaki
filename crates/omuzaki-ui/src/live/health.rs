@@ -602,8 +602,15 @@ mod tests {
             passes.set(Pass::Opaque, Seconds(ms / 1000.0));
             GpuTimings { frame: 1, passes, painters: None }
         });
-        let report =
-            FrameReport { frame: 1, render_size: UVec2::new(640, 360), cpu, gpu, draw_calls: 9, triangles: 900 };
+        let report = FrameReport {
+            frame: 1,
+            render_size: UVec2::new(640, 360),
+            cpu,
+            gpu,
+            draw_calls: 9,
+            triangles: 900,
+            particles: 0,
+        };
         Rendered { report, track_to_submit: None }
     }
 

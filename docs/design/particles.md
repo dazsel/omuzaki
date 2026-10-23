@@ -308,6 +308,12 @@ that translucency has `samples + 1` levels: five at the live preset's 4 samples.
 choosing it gets, coverage becomes a 0.5 alpha test. That is why particles fade by size, not alpha (D3). Every preset
 is opaque or nearly, with soft edges. Rain at `coverage` 0.55 reads as translucent streaks.
 
+**The near fade (#1171).** A particle's coverage is also scaled by a smoothstep of its centre's eye-space depth over
+`NEAR_FADE_M` (0.15 m to 0.6 m; `omuzaki_render_api::particles`): none nearer, all of it beyond. Weather falls around
+the camera too (its auto area includes the camera), and on renders a snowflake a few centimetres from the lens covered a
+fifth of the frame. A burst at a bust shot's subject is a metre or more away and never fades. The check is
+`particle_near_fade`.
+
 **Why a new pass, not a place inside `Transparent`.**
 1. The scheduler must see particle cost on its own to degrade particles first (D8). The pass is the frame report's unit.
 2. The budget row needs its own measured line, as face paint has.
@@ -351,9 +357,9 @@ Render-api D2 stands: the graph is still fixed and linear, with one more named p
   pixels: at coverage 0.5 with four samples the pixel is `(c/2, 1/2)`, at coverage 1 it is `(c, 1)`, and at coverage 0
   the target is unchanged. They repeat it over a grey target, with the particle at the far plane (depth 1), and with a
   translucent lens in front of and behind the particle, on lavapipe and the mock. Perspective cases use cameras with
-  `w < 1` and `w > 1` at the particle (a far plane at 0.5 m, and the default camera): a zero-coverage particle at the far
-  plane leaves the target unchanged, and a particle beyond the far plane draws nothing and never occludes nearer
-  geometry.
+  `w < 1` and `w > 1` at the particle (a far plane at 0.8 m, beyond the near fade, and the default camera): a
+  zero-coverage particle at the far plane leaves the target unchanged, and a particle beyond the far plane draws
+  nothing and never occludes nearer geometry.
 - **Tiny particles don't shimmer.** A quad smaller than 1.5 pixels is drawn at 1.5 pixels, with its coverage scaled by
   the area ratio, so far rain doesn't crawl as it crosses sample positions.
 - **Premultiplied alpha, no fringes (BR-01).** Alpha comes only from coverage. Covered samples hold an opaque colour

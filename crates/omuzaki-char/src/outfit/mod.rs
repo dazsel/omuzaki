@@ -28,12 +28,17 @@
 //! borders), and its test runs the conformance suite (`omuzaki-test-char/tests/support/outfit_conformance.rs`) on it,
 //! which builds it on every template and body shape.
 
+pub mod apron;
 pub mod blazer;
 pub mod boots;
 pub mod cloak;
+pub mod coat;
 pub mod common;
+pub mod drape;
 pub mod dress;
 pub mod hood;
+pub mod hoodie;
+pub mod kimono;
 pub mod legwear;
 pub mod loft;
 pub mod neckwear;

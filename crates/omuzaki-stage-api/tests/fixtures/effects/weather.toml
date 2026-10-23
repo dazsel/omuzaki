@@ -1,0 +1,23 @@
+preset = "rain"          # informational: the values below came from this preset
+intensity = 0.6
+area = "auto"            # around the cast and the active camera
+density = 160.0          # births per m² per second at intensity 1
+height = 2.6             # subject units above the floor
+sprite = { shape = "streak" }
+
+[particles]
+lifetime = [0.55, 0.75]
+speed = [6.5, 7.5]
+direction = [0.05, -1.0, 0.0]
+spread_deg = 2.0
+gravity = [0.0, 0.0, 0.0]
+drag = 0.0
+wind = [0.0, 0.0, 0.0]
+size = [0.005, 0.007]
+size_curve = [1.0, 1.0, 1.0, 1.0]
+orientation = { kind = "velocity", stretch = 0.035 }
+colours = ["#c8d6ec"]
+coverage = 0.55
+shading = { kind = "unlit" }
+glow = 0.0
+floor = 0.0

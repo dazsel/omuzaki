@@ -3625,6 +3625,9 @@ ui-script-untitled = Untitled script
 ui-setting-connectors-entries = Each connector's settings: enabled, endpoint, plan tier, command line, declared model licences
 
 # The line under a setting in the Settings window, saying what it does.
+ui-setting-effects-chat-emotes = Show chat emotes' pictures in emote effects (fetched from the chat platform's servers)
+
+# The line under a setting in the Settings window, saying what it does.
 ui-setting-input-camera = The camera the webcam source reads
 
 # The line under a setting in the Settings window, saying what it does.

@@ -259,11 +259,83 @@ pub struct Ears {
     pub flare_deg: f64,
     /// How far it tilts back, degrees.
     pub tilt_deg: f64,
+    /// What an [`EarKind::Animal`] ear is: the animal, where it stands and its colours. Ignored by the other kinds, so
+    /// a form shows it folded.
+    #[serde(skip_serializing_if = "AnimalEars::is_default")]
+    #[schemars(extend("x-ui" = {"level": "advanced"}))]
+    pub animal: AnimalEars,
 }
 
 impl Default for Ears {
     fn default() -> Self {
-        Self { kind: EarKind::Human, size: 1.0, position: [0.184, -0.066, -0.012], flare_deg: 42.0, tilt_deg: 7.0 }
+        Self {
+            kind: EarKind::Human,
+            size: 1.0,
+            position: [0.184, -0.066, -0.012],
+            flare_deg: 42.0,
+            tilt_deg: 7.0,
+            animal: AnimalEars::default(),
+        }
+    }
+}
+
+/// The animal an [`EarKind::Animal`] ear is drawn from (CB-14).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum EarSpecies {
+    /// Pointed and upright, a little wider than tall.
+    #[default]
+    Cat,
+    /// Tall and pointed.
+    Fox,
+    /// Long, narrow and rounded at the top; it sways on a short spring chain.
+    Rabbit,
+    /// Broad at the base, pointed.
+    Wolf,
+}
+
+impl EarSpecies {
+    /// Every species, in declaration order.
+    pub const ALL: [Self; 4] = [Self::Cat, Self::Fox, Self::Rabbit, Self::Wolf];
+}
+
+/// Animal ears on top of the head: which animal, where they stand, and their colours. `Ears::size` scales them, and
+/// `Ears::flare_deg` and `Ears::tilt_deg` turn them from the species' own stance by their difference from the defaults
+/// (42 and 7 degrees), so the defaults give each species its natural stance.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct AnimalEars {
+    /// The animal.
+    pub species: EarSpecies,
+    /// How far down from the top of the head the left ear stands, degrees; `None` for the species' own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from_top_deg: Option<f64>,
+    /// How far round from the front toward the left the left ear stands, degrees (the right mirrors it); `None` for
+    /// the species' own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub round_deg: Option<f64>,
+    /// The fur outside: the hair's mid colour by default, so the ears match the hair.
+    pub fur: ColourRef,
+    /// The inner panel.
+    pub inner: ColourRef,
+}
+
+impl Default for AnimalEars {
+    fn default() -> Self {
+        Self {
+            species: EarSpecies::Cat,
+            from_top_deg: None,
+            round_deg: None,
+            fur: ColourRef::slot_or("hair_mid", ColourRef::rgb(0x8a, 0x5a, 0x44)),
+            inner: ColourRef::slot_or("ear_inner", ColourRef::rgb(0xf0, 0xa8, 0xa8)),
+        }
+    }
+}
+
+impl AnimalEars {
+    /// Whether these are the defaults (a file leaves them out).
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
     }
 }
 
@@ -362,6 +434,12 @@ impl Validate for HeadParams {
             }
         }
         c.range("ears/size", self.ears.size, 0.2, 3.0);
+        if let Some(deg) = self.ears.animal.from_top_deg {
+            c.range("ears/animal/from_top_deg", deg, 0.0, 80.0);
+        }
+        if let Some(deg) = self.ears.animal.round_deg {
+            c.range("ears/animal/round_deg", deg, 0.0, 120.0);
+        }
         c.range("neck/height", self.neck.height, 0.0, 0.5);
         c.range("neck/radius_top", self.neck.radius_top, 0.005, 0.2);
         c.range("neck/radius_bottom", self.neck.radius_bottom, 0.005, 0.2);

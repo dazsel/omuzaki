@@ -1,0 +1,11 @@
+# Leather: stiff and heavy, it moves as a piece and barely stretches.
+density = 0.8
+stretch = 2.0e-5
+shear = 2.0e-4
+bend = 5.0e2
+damping = 2.5
+thickness = 0.004
+max_stretch = 0.02
+friction = [0.8, 0.6]
+# The soft hold toward the designed shape (a soft pin's weight on every free particle).
+shape = 4e-5

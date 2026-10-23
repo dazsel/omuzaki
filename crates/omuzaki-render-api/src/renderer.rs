@@ -7,8 +7,8 @@ use omuzaki_core::id::Slug;
 
 use crate::{
     AlphaEncoding, EnvironmentDesc, EnvironmentId, FrameReport, Image, Material, MaterialId, MeshData, MeshId,
-    MeshOptions, Pass, PixelRect, Quality, RenderError, ResourceRef, ResourceStats, Scene, TargetDesc, TargetId,
-    TextureDesc, TextureId,
+    MeshOptions, ParticleSystemDesc, ParticleSystemId, Pass, PixelRect, Quality, RenderError, ResourceRef,
+    ResourceStats, Scene, TargetDesc, TargetId, TextureDesc, TextureId,
 };
 
 /// What a renderer can do, so callers adapt instead of guessing.
@@ -269,6 +269,32 @@ pub trait Renderer: Send {
         Err(RenderError::Unsupported("environments"))
     }
 
+    /// Creates a particle system (particles.md D2) for [`Scene::particles`]: how its particles look and move. About 256
+    /// bytes of uniforms; a particle itself holds no memory anywhere.
+    ///
+    /// The default says [`RenderError::Unsupported`], so a renderer without particles still compiles; check
+    /// [`Capabilities::supports`]`(`[`Pass::Particles`]`)` first.
+    ///
+    /// # Errors
+    /// `Invalid` (see [`ParticleSystemDesc::validate`]), `UnknownHandle` for a dead atlas texture, `Unsupported`, or
+    /// `DeviceLost`.
+    fn create_particle_system(&mut self, desc: &ParticleSystemDesc) -> Result<ParticleSystemId, RenderError> {
+        let _ = desc;
+        Err(RenderError::Unsupported("particles"))
+    }
+
+    /// Replaces a particle system's description in place, sprite included; live particles take the new values at once
+    /// (a person tuning a preset live).
+    ///
+    /// The default says [`RenderError::Unsupported`].
+    ///
+    /// # Errors
+    /// As [`create_particle_system`](Renderer::create_particle_system), plus `UnknownHandle` for `id`.
+    fn update_particle_system(&mut self, id: ParticleSystemId, desc: &ParticleSystemDesc) -> Result<(), RenderError> {
+        let _ = (id, desc);
+        Err(RenderError::Unsupported("particles"))
+    }
+
     /// Creates a render target. A renderer can have several (editor viewport, stream output, thumbnails) sharing all
     /// the same meshes, textures and materials.
     ///
@@ -286,7 +312,7 @@ pub trait Renderer: Send {
     ///
     /// # Errors
     /// `UnknownHandle` if it is already released (a double release is an error, not a no-op), `InUse` for a texture
-    /// some live material still reads.
+    /// some live material or particle system still reads.
     fn release(&mut self, resource: ResourceRef) -> Result<(), RenderError>;
 
     /// Draws `scene` into `target`, running the passes of [`Pass::ALL`] in order, and says how long each took.

@@ -20,7 +20,7 @@ use omuzaki_char_api::{
 };
 use omuzaki_core::text::nearest;
 use omuzaki_doc_api::Change;
-use omuzaki_face_api::Validate;
+use omuzaki_face_api::{DrawList, FaceError, FaceLayerSpec, FaceRasterizer, Raster, Validate};
 use omuzaki_ops_api::{OpCtx, OpError};
 
 use crate::kit::skin::brush_mirrored;
@@ -48,15 +48,31 @@ pub(crate) fn check_brush(brush: &WeightBrush) -> Result<(), OpError> {
     })
 }
 
-/// Builds the character as `def` stands, for the ops that need its skeleton or its skin.
+/// Builds the character as `def` stands, for the ops that need its skeleton, its skin or its simulation: the geometry
+/// only, its painted textures (a face, a plaid, a decal) left blank, so a part that paints builds without the app's
+/// rasteriser.
 ///
 /// # Errors
 /// `invalid` (field `character`) naming the build error when the character does not build.
 pub(crate) fn build_character(id: &CharId, def: &CharacterDef) -> Result<BuiltCharacter, OpError> {
-    RegistryBuilder.build(id, def, &BuildOptions::default(), &BuildServices::default()).map_err(|e: BuildError| {
+    let services = BuildServices::default().with_rasterizer(|| Box::new(Blank));
+    RegistryBuilder.build(id, def, &BuildOptions::default(), &services).map_err(|e: BuildError| {
         OpError::invalid("character", format!("character `{id}` doesn't build: {e}"))
             .hint("fix the part the message names (a brush's joint or radius can cause it), then try again")
     })
+}
+
+/// A rasteriser that paints nothing: every texture comes out transparent at its size, for builds that only read
+/// geometry.
+#[derive(Debug)]
+struct Blank;
+
+impl FaceRasterizer for Blank {
+    fn rasterize(&mut self, spec: &FaceLayerSpec, _: &DrawList, px_per_m: f32, out: &mut Raster) -> Result<(), FaceError> {
+        let (w, h) = spec.rect.size_px(px_per_m);
+        *out = Raster::new(w, h);
+        Ok(())
+    }
 }
 
 /// Refuses a brush joint the character's skeleton does not have, with the field `joint` and the nearest bone name.

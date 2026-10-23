@@ -30,9 +30,7 @@ use omuzaki_render_api::{Quality, Scene};
 pub(crate) struct FrameView<'a> {
     pub(crate) scene: &'a Scene,
     /// The quality the caller asked for. `samples` and `render_scale` are already applied (below); the rest (shadow
-    /// quality and interval, post effects, live or offline) is for the passes that honour it.
-    #[allow(dead_code)]
-    // Read by the shadow and post passes, which are not written yet; here so they need no edit.
+    /// quality and interval, post effects, live or offline, particle density) is for the passes that honour it.
     pub(crate) quality: &'a Quality,
     /// The internal resolution: the target's size times `render_scale`.
     pub(crate) internal_size: UVec2,
@@ -44,6 +42,8 @@ pub(crate) struct FrameView<'a> {
     /// or more when the frame supersamples ([`supersample`]). A pass binds [`PassCx::frame_group`](crate::pass::PassCx::frame_group),
     /// which picks the round being drawn.
     pub(crate) bind_groups: &'a [wgpu::BindGroup],
+    /// The frame uniforms behind those groups, one per round, for a pass that binds them in a group of its own.
+    pub(crate) uniforms: &'a draws::FrameUniforms,
     /// The scene's draws, validated and tagged with the passes that draw them ([`draws::Draws::for_pass`]).
     pub(crate) draws: &'a draws::Draws,
 }

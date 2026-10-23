@@ -52,6 +52,13 @@ impl SkiaRasterizer {
     }
 }
 
+/// A fresh CPU rasteriser: what a character build paints garment textures with when the app injects none.
+fn make_rasterizer() -> Box<dyn FaceRasterizer> {
+    Box::new(SkiaRasterizer::new())
+}
+
+omuzaki_char_api::register_rasterizer!(make_rasterizer);
+
 impl FaceRasterizer for SkiaRasterizer {
     fn rasterize(
         &mut self,

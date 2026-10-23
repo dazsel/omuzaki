@@ -2,7 +2,7 @@
 //!
 //! [`MockRenderer`] implements [`omuzaki_render_api::Renderer`] with a small exact rasteriser: z-buffered triangles,
 //! the toon ramp with a tinted shade, rim light, skin treatment, texture overlays (so the face painter's output shows
-//! up), inverted-hull outlines, alpha blending, exposure and tone mapping, and integer supersampling. It does not do
+//! up), inverted-hull outlines, particles drawn with ordered coverage (the reference for `particles::evaluate`), alpha blending, exposure and tone mapping, and integer supersampling. It does not do
 //! shadows, bloom, depth of field, grain or grade (its [`Capabilities`] say so, and
 //! `FrameReport` shows those passes never ran), and it shades flat per triangle.
 //!
@@ -41,6 +41,8 @@ pub mod counting;
 mod environment;
 mod frame;
 mod morph;
+pub mod particle_sheet;
+mod particles;
 mod raster;
 mod resources;
 mod shade;
@@ -50,14 +52,16 @@ use omuzaki_core::glam::{UVec2, Vec3};
 use omuzaki_core::time::Seconds;
 use omuzaki_render_api::{
     Capabilities, EnvironmentDesc, EnvironmentId, FrameReport, GpuTimings, Image, Material, MaterialId, MeshData,
-    MeshId, MeshOptions, MeshUsage, MtoonSupport, Painter, Pass, PassTimes, Quality, RenderError, Renderer,
-    ResourceRef, ResourceStats, Scene, TargetDesc, TargetId, TextureDesc, TextureId, TextureUsage, limits,
+    MeshId, MeshOptions, MeshUsage, MtoonSupport, Painter, ParticleSystemDesc, ParticleSystemId, Pass, PassTimes,
+    Quality, RenderError, Renderer, ResourceRef, ResourceStats, Scene, TargetDesc, TargetId, TextureDesc, TextureId,
+    TextureUsage, limits,
 };
 
 use crate::arena::Arena;
 use crate::environment::EnvironmentData;
 use crate::frame::{Drawn, Resources, draw_frame};
 pub use crate::morph::morph_vertices;
+use crate::particles::SystemEntry;
 pub use crate::resources::MockNative;
 use crate::resources::{MeshEntry, MockPaintTarget, TextureData};
 
@@ -66,6 +70,9 @@ const MAX_TEXTURE_SIZE: u32 = 8192;
 
 /// The most morph targets one mesh may have in the mock (the 52 face-tracking shapes of a VRM avatar plus the extras avatars add).
 const MAX_MORPH_TARGETS: u32 = 256;
+
+/// What a particle system holds on a GPU: one uniform block of its parameters (particles.md D2).
+const PARTICLE_SYSTEM_BYTES: u64 = 256;
 
 /// A render target: its description and the last frame drawn into it.
 struct TargetEntry {
@@ -89,6 +96,7 @@ pub struct MockRenderer {
     materials: Arena<Material>,
     targets: Arena<TargetEntry>,
     environments: Arena<EnvironmentData>,
+    particle_systems: Arena<SystemEntry>,
     costs: [PassCost; Pass::COUNT],
     /// Set by a successful paint, cleared by the next frame: that frame reports `Pass::PaintTextures`.
     painted_since_frame: bool,
@@ -108,7 +116,14 @@ impl MockRenderer {
                 backend: "mock-cpu".to_owned(),
                 max_texture_size: MAX_TEXTURE_SIZE,
                 max_samples: limits::MAX_SAMPLES,
-                passes: vec![Pass::PaintTextures, Pass::Opaque, Pass::Outlines, Pass::Transparent, Pass::Resolve],
+                passes: vec![
+                    Pass::PaintTextures,
+                    Pass::Opaque,
+                    Pass::Outlines,
+                    Pass::Particles,
+                    Pass::Transparent,
+                    Pass::Resolve,
+                ],
                 shading_programs: Vec::new(),
                 gpu_timings: true,
                 bit_exact: true,
@@ -122,6 +137,7 @@ impl MockRenderer {
             materials: Arena::default(),
             targets: Arena::default(),
             environments: Arena::default(),
+            particle_systems: Arena::default(),
             costs: [PassCost::default(); Pass::COUNT],
             painted_since_frame: false,
         }
@@ -151,6 +167,17 @@ impl MockRenderer {
         })
     }
 
+    /// The description's own rules, and a live atlas texture.
+    fn check_particle_system(&self, desc: &ParticleSystemDesc) -> Result<(), RenderError> {
+        desc.validate()?;
+        match desc.sprite.texture() {
+            Some(t) if self.textures.get(t.index(), t.generation()).is_none() => {
+                Err(RenderError::UnknownHandle { what: "texture" })
+            }
+            _ => Ok(()),
+        }
+    }
+
     fn report(&self, frame: u64, drawn: &Drawn) -> FrameReport {
         let (mut cpu, mut gpu) = (PassTimes::default(), PassTimes::default());
         for pass in Pass::ALL.into_iter().filter(|p| drawn.ran[p.index()]) {
@@ -165,6 +192,7 @@ impl MockRenderer {
             gpu: Some(GpuTimings { frame, passes: gpu, painters: None }),
             draw_calls: drawn.draw_calls,
             triangles: drawn.triangles,
+            particles: drawn.particles,
         }
     }
 }
@@ -179,7 +207,8 @@ impl Renderer for MockRenderer {
         let gpu_bytes = self.meshes.iter().map(MeshEntry::gpu_bytes).sum::<u64>()
             + self.textures.iter().map(|t| mips(&t.desc)).sum::<u64>()
             + self.targets.iter().map(|t| u64::from(t.desc.size.x) * u64::from(t.desc.size.y) * 8).sum::<u64>()
-            + self.environments.iter().map(|e| e.gpu_bytes).sum::<u64>();
+            + self.environments.iter().map(|e| e.gpu_bytes).sum::<u64>()
+            + self.particle_systems.len() as u64 * PARTICLE_SYSTEM_BYTES;
         // Counts are bounded by memory long before they reach u32::MAX.
         #[allow(clippy::cast_possible_truncation)]
         ResourceStats {
@@ -188,6 +217,7 @@ impl Renderer for MockRenderer {
             materials: self.materials.len() as u32,
             targets: self.targets.len() as u32,
             environments: self.environments.len() as u32,
+            particle_systems: self.particle_systems.len() as u32,
             gpu_bytes,
         }
     }
@@ -294,6 +324,22 @@ impl Renderer for MockRenderer {
         Ok(EnvironmentId::from_parts(index, generation))
     }
 
+    fn create_particle_system(&mut self, desc: &ParticleSystemDesc) -> Result<ParticleSystemId, RenderError> {
+        self.check_particle_system(desc)?;
+        let (index, generation) = self.particle_systems.insert(SystemEntry::new(desc.clone()));
+        Ok(ParticleSystemId::from_parts(index, generation))
+    }
+
+    fn update_particle_system(&mut self, id: ParticleSystemId, desc: &ParticleSystemDesc) -> Result<(), RenderError> {
+        self.check_particle_system(desc)?;
+        let slot = self
+            .particle_systems
+            .get_mut(id.index(), id.generation())
+            .ok_or(RenderError::UnknownHandle { what: "particle system" })?;
+        *slot = SystemEntry::new(desc.clone());
+        Ok(())
+    }
+
     fn create_target(&mut self, desc: &TargetDesc) -> Result<TargetId, RenderError> {
         self.check_size(desc.size, "target size")?;
         let (index, generation) = self.targets.insert(TargetEntry { desc: *desc, last: None });
@@ -322,12 +368,18 @@ impl Renderer for MockRenderer {
             ResourceRef::Environment(id) => {
                 self.environments.remove(id.index(), id.generation()).map(drop).ok_or_else(unknown)
             }
+            ResourceRef::ParticleSystem(id) => {
+                self.particle_systems.remove(id.index(), id.generation()).map(drop).ok_or_else(unknown)
+            }
             ResourceRef::Texture(id) => {
                 if self.textures.get(id.index(), id.generation()).is_none() {
                     return Err(unknown());
                 }
                 if self.materials.iter().any(|m| m.textures().any(|t| t == id)) {
                     return Err(RenderError::InUse { what: "texture", by: "material" });
+                }
+                if self.particle_systems.iter().any(|s| s.desc.sprite.texture() == Some(id)) {
+                    return Err(RenderError::InUse { what: "texture", by: "particle system" });
                 }
                 self.textures.remove(id.index(), id.generation()).map(drop).ok_or_else(unknown)
             }
@@ -347,6 +399,7 @@ impl Renderer for MockRenderer {
             textures: &self.textures,
             materials: &self.materials,
             environments: &self.environments,
+            particle_systems: &self.particle_systems,
         };
         let drawn = draw_frame(&resources, &desc, scene, quality, self.painted_since_frame)?;
         let report = self.report(scene.frame.index, &drawn);

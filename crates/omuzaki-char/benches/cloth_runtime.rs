@@ -75,6 +75,7 @@ fn tube(y0: f32, r0: f32, y1: f32, r1: f32) -> ClothGrid {
         positions,
         skin,
         joints: JOINTS.iter().map(|&b| JointRef::Humanoid(b)).collect(),
+        mesh: Vec::new(),
     }
 }
 
