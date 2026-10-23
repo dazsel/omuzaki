@@ -167,6 +167,63 @@ pub struct Status {
     pub share: f32,
     /// The mic is muted.
     pub muted: bool,
+    /// How the decision layer is doing.
+    pub decisions: DecisionStats,
+}
+
+/// How the decision layer has done this run: how often its provider answered in time, and how fast as the loop saw
+/// it (to the loop's step).
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, schemars::JsonSchema)]
+#[non_exhaustive]
+pub struct DecisionStats {
+    /// The provider asked first (`rules` when the rule floor answers alone).
+    pub provider: String,
+    /// Asks made.
+    pub asked: u64,
+    /// Asks the provider answered in time.
+    pub answered: u64,
+    /// Asks it answered too late: the rule floor answered.
+    pub timeouts: u64,
+    /// Asks it failed: the rule floor answered.
+    pub errors: u64,
+    /// Why the last one failed.
+    pub last_error: Option<String>,
+    /// The median time to an answer in time, in milliseconds, over the last [`LATENCY_KEPT`] answers.
+    pub p50_ms: Option<f64>,
+    /// The 90th percentile of the same.
+    pub p90_ms: Option<f64>,
+}
+
+/// How many answer times [`DecisionStats`] keeps.
+pub const LATENCY_KEPT: usize = 128;
+
+/// The running counts behind [`DecisionStats`].
+#[derive(Default)]
+struct Decisions {
+    stats: DecisionStats,
+    latencies: VecDeque<f64>,
+}
+
+impl Decisions {
+    fn answered(&mut self, ms: f64) {
+        self.stats.answered += 1;
+        if self.latencies.len() == LATENCY_KEPT {
+            self.latencies.pop_front();
+        }
+        self.latencies.push_back(ms);
+    }
+
+    fn report(&self) -> DecisionStats {
+        let mut sorted: Vec<f64> = self.latencies.iter().copied().collect();
+        sorted.sort_by(f64::total_cmp);
+        let at = |p: f64| {
+            // Small counts; the rank is in range.
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
+            let rank = ((p * sorted.len() as f64).ceil() as usize).max(1);
+            sorted.get(rank - 1).copied()
+        };
+        DecisionStats { p50_ms: at(0.5), p90_ms: at(0.9), ..self.stats.clone() }
+    }
 }
 
 /// One chunk handed to the voice.
@@ -336,6 +393,7 @@ pub struct Show {
     turn: Option<Turn>,
     scheduled: Vec<Scheduled>,
     pending: Option<Pending>,
+    decisions: Decisions,
     limiter: Limiter,
     /// The person is talking since then (`Onset` to `Final` or `Rejected`).
     talking_since: Option<Seconds>,
@@ -360,6 +418,8 @@ impl Show {
     /// A show of `persona` over `parts`.
     pub fn new(persona: &Persona, parts: Parts, config: ShowConfig) -> Self {
         let inventory = parts.stage.inventory(&config.member).unwrap_or_default();
+        let mut decisions = Decisions::default();
+        decisions.stats.provider = parts.decider.as_ref().map_or("rules", |d| d.kind()).to_owned();
         Self {
             parts,
             config,
@@ -373,6 +433,7 @@ impl Show {
             turn: None,
             scheduled: Vec::new(),
             pending: None,
+            decisions,
             limiter: Limiter::default(),
             talking_since: None,
             muted: false,
@@ -419,6 +480,7 @@ impl Show {
             echoes: self.echoes,
             share: self.share(now),
             muted: self.muted,
+            decisions: self.decisions.report(),
         }
     }
 
@@ -831,6 +893,7 @@ impl Show {
             Some(d) => d.ask(ask.clone()),
             None => DecisionTicket::ready(Ok(self.floor.answer(&ask))),
         };
+        self.decisions.stats.asked += 1;
         let turn = self.turn.as_ref().map_or(self.next_turn, |t| t.number);
         self.pending = Some(Pending { ticket, ask, line, turn, asked_at: now, chunk_start });
     }
@@ -840,11 +903,22 @@ impl Show {
     fn decide(&mut self, now: Seconds) {
         let Some(pending) = self.pending.as_ref() else { return };
         let floor = self.floor.answer(&pending.ask);
+        let waited = now.0 - pending.asked_at.0;
         let decision = match pending.ticket.poll() {
-            Some(Ok(d)) => with_floor(&pending.ask, d, &floor),
-            Some(Err(_)) => floor,
+            Some(Ok(d)) => {
+                self.decisions.answered(waited.max(0.0) * 1000.0);
+                with_floor(&pending.ask, d, &floor)
+            }
+            Some(Err(e)) => {
+                self.decisions.stats.errors += 1;
+                self.decisions.stats.last_error = Some(e.to_string());
+                floor
+            }
             // A hair under the timeout, so float rounding of step times never adds a step.
-            None if now.0 - pending.asked_at.0 >= DECISION_TIMEOUT.as_secs_f64() - 1e-6 => floor,
+            None if waited >= DECISION_TIMEOUT.as_secs_f64() - 1e-6 => {
+                self.decisions.stats.timeouts += 1;
+                floor
+            }
             None => return,
         };
         let Some(pending) = self.pending.take() else { return };

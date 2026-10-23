@@ -341,16 +341,29 @@ pub struct LlmDecider {
     client: Arc<dyn LlmClient>,
     kind: String,
     idle: Duration,
+    note: Option<String>,
 }
 
 impl LlmDecider {
     /// A decider over `client`, named `kind` in decisions (`local`).
     pub fn new(client: Arc<dyn LlmClient>, kind: impl Into<String>) -> Self {
-        Self { client, kind: kind.into(), idle: Duration::from_secs(2) }
+        Self { client, kind: kind.into(), idle: Duration::from_secs(2), note: None }
+    }
+
+    /// The same, with `note` added to the system prompt (a model's own switch, such as Qwen3's `/no_think`).
+    #[must_use]
+    pub fn with_note(mut self, note: impl Into<String>) -> Self {
+        self.note = Some(note.into());
+        self
     }
 
     /// The request for `ask`.
     pub fn request(ask: &Ask) -> TurnRequest {
+        Self::request_with(ask, None)
+    }
+
+    /// The request for `ask`, with `note` after the system prompt.
+    pub fn request_with(ask: &Ask, note: Option<&str>) -> TurnRequest {
         let mut prompt = String::from("Answer each question about the conversation with one option from its list.\n");
         prompt.push_str("Reply with only a JSON object mapping each question id to the chosen option.\n\n");
         prompt.push_str("<conversation>\n");
@@ -367,8 +380,12 @@ impl LlmDecider {
             };
             let _ = writeln!(prompt, "{}: {} Options: {options}", q.id, q.prompt);
         }
+        let system = match note {
+            Some(note) => format!("You label conversations. Output JSON only. {note}"),
+            None => "You label conversations. Output JSON only.".to_owned(),
+        };
         TurnRequest::new(vec![Message::new(Role::User, vec![ContentBlock::Text(prompt)])], 120)
-            .with_system(vec![SystemBlock::new("You label conversations. Output JSON only.")])
+            .with_system(vec![SystemBlock::new(system)])
     }
 
     /// Reads a model's reply: the first JSON object in it, each value matched to an option.
@@ -424,9 +441,10 @@ impl Decider for LlmDecider {
         let client = Arc::clone(&self.client);
         let kind = self.kind.clone();
         let idle = self.idle;
+        let note = self.note.clone();
         let spawned = std::thread::Builder::new().name("performer-decide".into()).spawn(move || {
             let result = client
-                .stream(Self::request(&ask), &Cancel::new())
+                .stream(Self::request_with(&ask, note.as_deref()), &Cancel::new())
                 .and_then(|mut stream| stream.collect(idle))
                 .map_err(|e| DecideError::provider(e.to_string()))
                 .and_then(|turn| {

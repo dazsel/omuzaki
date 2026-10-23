@@ -3658,6 +3658,9 @@ ui-setting-perform-retarget = How the face is smoothed, exaggerated and mirrored
 ui-setting-perform-triggers = The keys that show face expressions
 
 # The line under a setting in the Settings window, saying what it does.
+ui-setting-performer-decider = What chooses the AI co-host's faces and gestures as it talks and listens: built-in rules by default, a local model, or a hosted provider with your own key
+
+# The line under a setting in the Settings window, saying what it does.
 ui-setting-performer-llm = The LLM the AI co-host answers with: a server on this machine by default, or a hosted one with your own key
 
 # The line under a setting in the Settings window, saying what it does.

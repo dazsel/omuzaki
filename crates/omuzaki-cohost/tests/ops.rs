@@ -14,6 +14,7 @@ use omuzaki_audio_api::ids::BusId;
 use omuzaki_audio_mock::MockEngine;
 use omuzaki_cohost::local::{AI_VOICE_PRIVATE_BUS, LocalFactory, LocalParts, ensure_voice_buses};
 use omuzaki_cohost::service::{Booking, Built, CohostFactory, CohostService, StartError};
+use omuzaki_cohost::settings::{DeciderChoice, LlmChoice, PerformerDecider};
 use omuzaki_cohost::stage::PerformStage;
 use omuzaki_cohost::{Cohost, attach_voice};
 use omuzaki_core::time::{Clock, FakeClock, Seconds};
@@ -415,4 +416,159 @@ fn the_cohost_voice_buses_are_added_once() {
     }
     ensure_voice_buses(&engine).unwrap();
     assert_eq!(engine.graph().buses.len(), 2);
+}
+
+/// A one-route HTTP server on loopback for the decision provider: answers every request with `answer` and keeps what
+/// it was sent (the head lower-cased, then the body).
+struct FakeSystemOne {
+    url: String,
+    seen: Arc<Mutex<Vec<(String, serde_json::Value)>>>,
+}
+
+impl FakeSystemOne {
+    fn start(answer: serde_json::Value) -> Self {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let kept = Arc::clone(&seen);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut head = String::new();
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                        break;
+                    }
+                    head.push_str(&line.to_ascii_lowercase());
+                }
+                let length = head
+                    .lines()
+                    .find_map(|l| l.strip_prefix("content-length:"))
+                    .and_then(|v| v.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                let mut body = vec![0; length];
+                reader.read_exact(&mut body).unwrap();
+                kept.lock().unwrap().push((head, serde_json::from_slice(&body).unwrap()));
+                let text = answer.to_string();
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{text}",
+                    text.len()
+                );
+                stream.write_all(reply.as_bytes()).unwrap();
+            }
+        });
+        Self { url, seen }
+    }
+}
+
+fn factory_with(decider: serde_json::Value, keys: &[(&str, &str)]) -> LocalFactory {
+    use omuzaki_secrets_api::prelude::{SecretLabel, SecretStore, SecretValue};
+    use omuzaki_settings_api::service::{Layer, Settings, SettingsExt as _};
+    omuzaki_cohost::link();
+    let settings = Arc::new(omuzaki_settings_mock::MemorySettings::default());
+    let choice: DeciderChoice = serde_json::from_value(decider).unwrap();
+    let person = Actor::Person { name: "host".into() };
+    settings.set::<PerformerDecider>(&choice, Layer::Base, omuzaki_ops_api::Mode::Apply, &person).unwrap();
+    let secrets = Arc::new(omuzaki_secrets_mock::MemorySecrets::new());
+    for (label, value) in keys {
+        secrets.set(&SecretLabel::new(*label).unwrap(), SecretValue::new(*value)).unwrap();
+    }
+    let host: Arc<dyn PerformHost> = Arc::new(Host::default());
+    LocalFactory::new(LocalParts::new(host).settings(settings as Arc<dyn Settings>).secrets(secrets))
+}
+
+fn talking() -> Arc<dyn LlmClient> {
+    Arc::new(FakeLlm::new(Script::new("fake")))
+}
+
+#[test]
+fn the_decider_is_the_rule_floor_unless_the_person_picks_a_model() {
+    let factory = factory_with(json!({}), &[]);
+    let llm = LlmChoice::default();
+    assert!(factory.decider(&DeciderChoice::default(), &llm, &talking()).unwrap().is_none());
+    // `llm` with no endpoint shares the co-host's own model.
+    let shared = factory.decider(&serde_json::from_value(json!({ "kind": "llm" })).unwrap(), &llm, &talking());
+    assert_eq!(shared.unwrap().map(|d| d.kind().to_owned()), Some("llm".into()));
+    assert_eq!(factory.sends_to(), None);
+}
+
+#[test]
+fn jev_is_asked_with_the_persons_own_key_through_the_systemone_api() {
+    use omuzaki_performer::decide::{COMMIT, REACTION};
+    use omuzaki_performer_api::decide::{Answer, Ask, Moment};
+
+    let server = FakeSystemOne::start(json!({
+        "model": "jev-1.13.0",
+        "answers": {
+            "reaction": { "type": "choice", "choice": "happy", "confidence": 0.9,
+                          "probabilities": { "happy": 0.9, "sad": 0.1 } },
+            "commit": { "type": "noul", "noul": 0.05 }
+        },
+        "usage": { "input_tokens": 80, "output_tokens": 0 }
+    }));
+    let decider = json!({ "kind": "systemone", "endpoint": server.url, "key": "typesafe", "model": "jev-latest" });
+    let factory = factory_with(decider.clone(), &[("typesafe", "ts-test-key-0123")]);
+    let choice: DeciderChoice = serde_json::from_value(decider).unwrap();
+    let mut jev = factory.decider(&choice, &LlmChoice::default(), &talking()).unwrap().unwrap();
+    assert_eq!(jev.kind(), "systemone");
+
+    let inventory = omuzaki_performer::eval::inventory();
+    let ask = Ask::new(
+        Moment::Speaking,
+        "person: hi\nmochi: Hi chat!",
+        omuzaki_performer::decide::questions_speaking(&inventory),
+    );
+    let ticket = jev.ask(ask);
+    let started = Instant::now();
+    let decision = loop {
+        if let Some(result) = ticket.poll() {
+            break result.unwrap();
+        }
+        assert!(started.elapsed() < Duration::from_secs(10), "no answer from the fake server");
+        std::thread::yield_now();
+    };
+    assert_eq!(decision.provider, "systemone");
+    assert_eq!(decision.answer(REACTION).and_then(Answer::best).map(|b| b.0), Some(0));
+    assert!(decision.answer(COMMIT).is_some_and(|a| a.yes() < 0.1));
+
+    let seen = server.seen.lock().unwrap();
+    let (head, body) = &seen[0];
+    assert!(head.starts_with("post /v1/systemone "), "{head}");
+    assert!(head.contains("authorization: bearer ts-test-key-0123"));
+    assert_eq!(body["model"], "jev-latest");
+    assert_eq!(body["questions"]["commit"]["type"], "noul");
+}
+
+#[test]
+fn a_hosted_decider_needs_a_key_permission_and_a_person() {
+    let llm = LlmChoice::default();
+    // TypeSafe's own endpoint, with no key named.
+    let factory = factory_with(json!({ "kind": "systemone", "allow_remote": true }), &[]);
+    let choice: DeciderChoice = serde_json::from_value(json!({ "kind": "systemone", "allow_remote": true })).unwrap();
+    let Err(StartError::NotReady { what, .. }) = factory.decider(&choice, &llm, &talking()) else {
+        panic!("a hosted decider without a key")
+    };
+    assert!(what.contains("no key"), "{what}");
+    // Its host is where `performer.start` says the transcript goes, so a person must confirm.
+    assert_eq!(factory.sends_to().as_deref(), Some("api.typesafe.ai"));
+
+    // A key named but missing from the keychain.
+    let named = json!({ "kind": "systemone", "allow_remote": true, "key": "typesafe" });
+    let Err(StartError::NotReady { what, .. }) =
+        factory.decider(&serde_json::from_value(named).unwrap(), &llm, &talking())
+    else {
+        panic!("a key that isn't there")
+    };
+    assert!(what.contains("not in the keychain"), "{what}");
+
+    // A key, but sending off this machine not allowed.
+    let factory = factory_with(json!({ "kind": "systemone", "key": "typesafe" }), &[("typesafe", "ts-test")]);
+    let choice: DeciderChoice = serde_json::from_value(json!({ "kind": "systemone", "key": "typesafe" })).unwrap();
+    let Err(StartError::NotReady { fix, .. }) = factory.decider(&choice, &llm, &talking()) else {
+        panic!("a remote host without allow_remote")
+    };
+    assert!(fix.contains("allow_remote"), "{fix}");
 }

@@ -1,6 +1,7 @@
 //! The co-host as the studio builds it, from the app's own services: the speech models the person chose in the
 //! model registry (Silero VAD, Whisper, Kokoro), the microphone and the mixer of the audio engine, the LLM of the
-//! `performer.llm` setting, and the perform host that moves the character. [`MicMouth`] gives the character's mouth
+//! `performer.llm` setting, the decider of the `performer.decider` setting (the rule floor unless the person chose a
+//! model), and the perform host that moves the character. [`MicMouth`] gives the character's mouth
 //! to the person's microphone whenever the co-host is not speaking through it.
 //!
 //! ```text
@@ -13,6 +14,7 @@
 //! ```
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
 
 use omuzaki_ai_api::{ModelRegistry, SlotRef};
 use omuzaki_audio_api::clock::EngineClock;
@@ -21,14 +23,19 @@ use omuzaki_audio_api::graph::{AI_VOICE_BUS, BusSpec, Channels, GraphSpec, Sourc
 use omuzaki_audio_api::ids::{BusId, FeedId};
 use omuzaki_audio_api::tap::{DropPolicy, TapFormat, TapPoint, TapRate, TapRequest, VoiceUse};
 use omuzaki_core::time::{Clock, Seconds};
+use omuzaki_llm::json::JsonClient;
 use omuzaki_llm_api::LlmClient;
+use omuzaki_llm_api::error::LlmError;
 use omuzaki_llm_api::provider::{
     ProviderConfig, ProviderEnv, RuntimeHandle, SecretLabel, SecretRef, SecretStore, SecretValue, endpoint_host,
     is_loopback_endpoint, provider,
 };
 use omuzaki_performer::brain::LlmBrain;
+use omuzaki_performer::decide::LlmDecider;
 use omuzaki_performer::persona::Persona;
 use omuzaki_performer::show::{Parts, Show, ShowConfig};
+use omuzaki_performer::systemone::{self, JsonTransport, SystemOneDecider};
+use omuzaki_performer_api::decide::{DecideError, Decider};
 use omuzaki_performer_api::ids::VoiceId;
 use omuzaki_settings_api::service::Settings;
 use omuzaki_speech::slots::{asr_slot, tts_slot, vad_slot};
@@ -36,10 +43,13 @@ use omuzaki_speech::tts::FEEDS;
 use omuzaki_speech::{EchoLog, HostConfig, SpeechHost, TtsHost, TtsVoice};
 use omuzaki_stage::perform::host::PerformHost;
 use omuzaki_track_voice::{LipSyncConfig, VoiceAnalyzer, VoiceListener, VowelProfile, voice_mailbox};
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::service::{Booking, Built, CohostFactory, StartError};
-use crate::settings::{LlmChoice, PerformerLlm};
+use crate::settings::{
+    DECIDER_LLM, DECIDER_RULES, DECIDER_SYSTEM_ONE, DeciderChoice, LlmChoice, OPENAI_COMPATIBLE, PerformerDecider,
+    PerformerLlm,
+};
 use crate::stage::PerformStage;
 use crate::{Cohost, attach_voice};
 
@@ -49,6 +59,9 @@ pub const DEFAULT_VOICE: &str = "kokoro-82m/af_heart";
 pub const AI_VOICE_PRIVATE_BUS: &str = "ai_voice_private";
 /// The engine's graph rate.
 const GRAPH_RATE: u32 = 48_000;
+/// How long a hosted decision request may take before it is dropped. The show stops waiting much sooner (the rule
+/// floor answers after 400 ms); this only bounds the provider's own thread.
+const DECISION_REQUEST_LIMIT: Duration = Duration::from_secs(3);
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -71,6 +84,18 @@ impl SecretStore for Keychain {
         let label = omuzaki_secrets_api::prelude::SecretLabel::new(label.0.as_str()).ok()?;
         let value = self.0.get(&label).ok().flatten()?;
         Some(SecretValue::new(value.expose()))
+    }
+}
+
+/// The System One API over `omuzaki-llm`'s JSON client.
+struct SystemOneHttp(JsonClient);
+
+impl JsonTransport for SystemOneHttp {
+    fn post(&self, body: &Value) -> Result<Value, DecideError> {
+        self.0.post(systemone::PATH, body).map_err(|e| match e {
+            LlmError::Auth => DecideError::NotConfigured("the provider refused the key".into()),
+            other => DecideError::provider(other.to_string()),
+        })
     }
 }
 
@@ -218,6 +243,86 @@ impl LocalFactory {
             .unwrap_or_default()
     }
 
+    fn decider_choice(&self) -> DeciderChoice {
+        self.parts
+            .settings
+            .as_ref()
+            .and_then(|settings| settings.snapshot().get::<PerformerDecider>().ok())
+            .unwrap_or_default()
+    }
+
+    fn keys(&self) -> Arc<dyn SecretStore> {
+        match &self.parts.secrets {
+            Some(secrets) => Arc::new(Keychain(Arc::clone(secrets))),
+            None => Arc::new(NoKeys),
+        }
+    }
+
+    /// The decider `choice` names, given the co-host's own LLM: `None` for the rule floor alone.
+    ///
+    /// # Errors
+    /// [`StartError::NotReady`] for a provider that can't be reached as set: no key, a remote host not allowed, a bad
+    /// endpoint.
+    pub fn decider(
+        &self,
+        choice: &DeciderChoice,
+        llm: &LlmChoice,
+        talking: &Arc<dyn LlmClient>,
+    ) -> Result<Option<Box<dyn Decider>>, StartError> {
+        let fix = "set performer.decider in Settings > Co-host, or its kind to `rules`";
+        match choice.kind.as_str() {
+            DECIDER_RULES => Ok(None),
+            DECIDER_LLM => {
+                let (client, model) = match &choice.endpoint {
+                    None => (Arc::clone(talking), llm.model.clone()),
+                    Some(endpoint) => {
+                        let own = LlmChoice {
+                            kind: OPENAI_COMPATIBLE.to_owned(),
+                            endpoint: endpoint.clone(),
+                            model: choice.model.clone(),
+                            key: choice.key.clone(),
+                            allow_remote: choice.allow_remote,
+                            reasoning: false,
+                        };
+                        (self.client(&own)?, choice.model.clone())
+                    }
+                };
+                let decider = LlmDecider::new(client, DECIDER_LLM);
+                let qwen3 = model.unwrap_or_default().to_ascii_lowercase().starts_with("qwen3");
+                Ok(Some(Box::new(if qwen3 { decider.with_note("/no_think") } else { decider })))
+            }
+            DECIDER_SYSTEM_ONE => {
+                let endpoint = choice.endpoint().unwrap_or(systemone::DEFAULT_ENDPOINT);
+                let key = match &choice.key {
+                    Some(label) => Some(self.keys().get(&SecretLabel(label.clone())).ok_or_else(|| {
+                        StartError::not_ready(
+                            format!("performer.decider's key `{label}` is not in the keychain"),
+                            "add your TypeSafe key to the keychain under that label",
+                        )
+                    })?),
+                    None if is_loopback_endpoint(endpoint) => None,
+                    None => {
+                        return Err(StartError::not_ready(
+                            "performer.decider is `systemone` but names no key",
+                            "add your TypeSafe key to the keychain and set performer.decider's `key` to its label",
+                        ));
+                    }
+                };
+                let client =
+                    JsonClient::new(endpoint, key, choice.allow_remote, &self.runtime()?, DECISION_REQUEST_LIMIT)
+                        .map_err(|e| {
+                            StartError::not_ready(
+                                format!("the decision provider can't be used: {e}"),
+                                "set performer.decider's `allow_remote` to send the transcript to a hosted provider",
+                            )
+                        })?;
+                let model = choice.model.as_deref().unwrap_or(systemone::DEFAULT_MODEL);
+                Ok(Some(Box::new(SystemOneDecider::new(Arc::new(SystemOneHttp(client)), model))))
+            }
+            other => Err(StartError::not_ready(format!("performer.decider has an unknown kind `{other}`"), fix)),
+        }
+    }
+
     fn engine(&self) -> Result<&Arc<dyn AudioEngine>, StartError> {
         self.parts.engine.as_ref().ok_or_else(|| {
             StartError::not_ready(
@@ -262,11 +367,7 @@ impl LocalFactory {
                 "set performer.llm's `kind` to `openai-compatible` in Settings > Co-host",
             )
         })?;
-        let secrets: Arc<dyn SecretStore> = match &self.parts.secrets {
-            Some(secrets) => Arc::new(Keychain(Arc::clone(secrets))),
-            None => Arc::new(NoKeys),
-        };
-        let env = ProviderEnv::new(secrets, self.runtime()?);
+        let env = ProviderEnv::new(self.keys(), self.runtime()?);
         let client = (kind.build)(&Self::provider_config(choice), &env).map_err(|e| {
             StartError::not_ready(
                 format!("the co-host's LLM at {} can't be used: {e}", choice.endpoint),
@@ -336,12 +437,16 @@ fn no_think(persona: &Persona, choice: &LlmChoice) -> Persona {
 
 impl CohostFactory for LocalFactory {
     fn sends_to(&self) -> Option<String> {
-        let choice = self.choice();
-        if is_loopback_endpoint(&choice.endpoint) {
-            None
-        } else {
-            Some(endpoint_host(&choice.endpoint).unwrap_or(choice.endpoint.as_str()).to_owned())
+        let llm = self.choice();
+        let decider = self.decider_choice();
+        let mut hosts: Vec<&str> = Vec::new();
+        for endpoint in [Some(llm.endpoint.as_str()), decider.endpoint()].into_iter().flatten() {
+            let host = endpoint_host(endpoint).unwrap_or(endpoint);
+            if !is_loopback_endpoint(endpoint) && !hosts.contains(&host) {
+                hosts.push(host);
+            }
         }
+        (!hosts.is_empty()).then(|| hosts.join(", "))
     }
 
     fn check(&self) -> Result<(), StartError> {
@@ -359,6 +464,8 @@ impl CohostFactory for LocalFactory {
         let (engine, models) = (Arc::clone(self.engine()?), Arc::clone(self.models()?));
         let choice = self.choice();
         let client = self.client(&choice)?;
+        let deciding = self.decider_choice();
+        let decider = self.decider(&deciding, &choice, &client)?;
         ensure_voice_buses(engine.as_ref())?;
         let open = |slot: &SlotRef| models.open(slot, None).map_err(StartError::failed);
 
@@ -423,12 +530,15 @@ impl CohostFactory for LocalFactory {
             let ears = speech.ears(origin, echo);
             let persona = no_think(&booking.persona, &choice);
             let brain = LlmBrain::new(client, persona.clone());
-            let parts = Parts::new(
+            let mut parts = Parts::new(
                 Box::new(brain),
                 Box::new(ears),
                 Box::new(tts),
                 Arc::clone(&stage) as Arc<dyn omuzaki_performer_api::stage::Stage>,
             );
+            if let Some(decider) = decider {
+                parts = parts.decider(decider);
+            }
             let config = ShowConfig::new(booking.member.clone(), voice.clone()).respond(booking.respond);
             let show = Show::new(&booking.persona, parts, config);
             let about = json!({
@@ -437,6 +547,15 @@ impl CohostFactory for LocalFactory {
                     "endpoint_host": endpoint_host(&choice.endpoint),
                     "model": choice.model,
                     "local": is_loopback_endpoint(&choice.endpoint),
+                },
+                "decider": {
+                    "kind": deciding.kind,
+                    "endpoint_host": deciding.endpoint().and_then(endpoint_host),
+                    "model": deciding.model,
+                    "local": match deciding.endpoint() {
+                        Some(endpoint) => is_loopback_endpoint(endpoint),
+                        None => deciding.kind == DECIDER_RULES || is_loopback_endpoint(&choice.endpoint),
+                    },
                 },
                 "voice": voice.to_string(),
                 "hearing": { "rate": info.rate },
