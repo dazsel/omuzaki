@@ -20,7 +20,7 @@
 use std::f64::consts::PI;
 
 use omuzaki_char::head::mesh::Resolution;
-use omuzaki_char::head::outline::MAX_BAND;
+use omuzaki_char::head::outline::{MAX_BAND, OutlineCurve};
 use omuzaki_char_api::{HeadOutline, HeadParams};
 use omuzaki_core::glam::{DVec2, DVec3};
 use omuzaki_core::mesh::MeshData;
@@ -35,8 +35,9 @@ const SLICE: f64 = 0.000_25;
 /// Pixel of the chin-tip raster, m.
 const TIP_PIXEL: f64 = 0.000_2;
 
-/// The outline the lower face should follow: a superellipse from `top`, where it is `half_width` wide, closing at
-/// `chin`. For a head with a chin this is the outline stretched down to the chin, as the chin stretch stretches the face.
+/// The outline the lower face should follow: the outline's curve (`outline::OutlineCurve`) from `top`, where it is
+/// `half_width` wide, closing at `chin`. For a head with a chin this is the outline stretched down to the chin, as the
+/// chin stretch stretches the face.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Target {
     /// Half-width at the top, m.
@@ -45,42 +46,33 @@ pub struct Target {
     pub top: f64,
     /// Head-local height of the chin, where the outline closes, m.
     pub chin: f64,
-    /// Superellipse exponent.
-    pub exponent: f64,
+    curve: OutlineCurve,
 }
 
 impl Target {
     /// The target an outline asks for.
     pub fn of(outline: &HeadOutline) -> Self {
-        Self { half_width: outline.half_width, top: outline.top, chin: outline.chin_y(), exponent: outline.exponent }
+        Self { half_width: outline.half_width, top: outline.top, chin: outline.chin_y(), curve: OutlineCurve::of(outline) }
     }
 
     /// Half-width at head-local height `y` (full above the top, 0 below the chin).
     pub fn half_width_at(&self, y: f64) -> f64 {
-        let length = self.top - self.chin;
-        if length <= 0.0 {
-            return if y >= self.top { self.half_width } else { 0.0 };
-        }
-        let t = ((self.top - y) / length).clamp(0.0, 1.0);
-        self.half_width * (1.0 - t.powf(self.exponent)).max(0.0).powf(1.0 / self.exponent)
+        self.curve.at(y)
     }
 
-    /// Dense points of the right half from the top to the chin: uniform in height, plus uniform in width where the
-    /// curve runs nearly flat into the chin, so no stretch of it is sparse.
+    /// Dense points of the right half from the top to the chin, about [`SLICE`] apart along the curve (it runs nearly
+    /// flat into the chin, so steps in height alone would leave that stretch sparse).
     fn points(&self) -> Vec<DVec2> {
         let length = (self.top - self.chin).max(0.0);
-        let mut out: Vec<DVec2> = (0..=steps(length, SLICE))
-            .map(|i| {
-                let y = self.top - length * fraction(i, steps(length, SLICE));
-                DVec2::new(self.half_width_at(y), y)
-            })
-            .collect();
-        let p = self.exponent;
-        out.extend((0..=steps(self.half_width, SLICE)).map(|i| {
-            let x = self.half_width * fraction(i, steps(self.half_width, SLICE));
-            let t = (1.0 - (x / self.half_width).powf(p)).max(0.0).powf(1.0 / p);
-            DVec2::new(x, self.top - length * t)
-        }));
+        let fine = steps(length, SLICE / 64.0);
+        let mut out = vec![DVec2::new(self.half_width_at(self.top), self.top)];
+        for i in 1..=fine {
+            let y = self.top - length * fraction(i, fine);
+            let point = DVec2::new(self.half_width_at(y), y);
+            if i == fine || out.last().is_some_and(|last| last.distance(point) >= SLICE) {
+                out.push(point);
+            }
+        }
         out
     }
 }

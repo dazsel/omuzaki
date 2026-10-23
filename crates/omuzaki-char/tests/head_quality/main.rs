@@ -424,3 +424,66 @@ fn dump() {
     }
     std::fs::write(dir.join("index.json"), serde_json::to_string(&index).unwrap()).unwrap();
 }
+
+// ------------------------------------------------------------------------------------------------ the corners
+
+/// The exponents the corner grid sweeps: the floor of the plausible space (`EXPONENT_RANGE`) and the band above it that
+/// creased before the outline's start was rounded (#1687).
+const CORNER_EXPONENTS: [f64; 3] = [1.4, 1.475, 1.55];
+
+/// Every corner of the plausible space (the width, the eye line, the chin and the stretch line each at either end, so
+/// `plausible` clamps them to its limits) at each exponent of [`CORNER_EXPONENTS`], with and without a lower exponent at
+/// the floor, on the default cranium and on crania 10% smaller and larger: `(label, head)`.
+fn corners() -> Vec<(String, HeadParams)> {
+    let base = Cranium::default();
+    let scaled = |k: f64| Cranium {
+        half_width: base.half_width * k,
+        half_depth_front: base.half_depth_front * k,
+        half_depth_back: base.half_depth_back * k,
+        half_height_up: base.half_height_up * k,
+        half_height_down_back: base.half_height_down_back * k,
+        half_height_down_front: base.half_height_down_front * k,
+        ..base.clone()
+    };
+    let mut out = Vec::new();
+    for (name, cranium) in [("default", base.clone()), ("small", scaled(0.9)), ("large", scaled(1.1))] {
+        for exponent in CORNER_EXPONENTS {
+            for lower in [None, Some(CORNER_EXPONENTS[0])] {
+                for corner in 0..16_u8 {
+                    let pick = |bit: u8, (a, b): (f64, f64)| if corner & (1 << bit) == 0 { a } else { b };
+                    let y = pick(2, (-0.5, -0.001));
+                    let outline = HeadOutline {
+                        half_width: pick(0, (0.05, 0.4)),
+                        top: pick(1, (-0.3, 0.2)),
+                        height: 0.1,
+                        exponent,
+                        exponent_lower: lower,
+                        chin: Some(Chin { y, stretch_top: pick(3, ((y + 0.001).max(-0.4), 0.2)), min_ratio: 0.6 }),
+                        cheek_puff: 0.0,
+                    };
+                    let label = format!("{name} cranium, exponent {exponent}, lower {lower:?}, corner {corner:04b}");
+                    out.push((label, HeadParams { cranium: cranium.clone(), outline, ..HeadParams::default() }));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The eye-line seam keeps the crease within its limit (never raised) at every corner of the plausible space, down to
+/// the lowest exponent, with and without a lower exponent (#1687); the other limits hold there too.
+#[test]
+fn every_corner_of_the_plausible_space_is_plausible_down_to_the_lowest_exponent() {
+    let mut worst: Vec<(f64, f64)> = CORNER_EXPONENTS.iter().map(|e| (*e, 0.0)).collect();
+    let mut failed = Vec::new();
+    for (name, params) in corners() {
+        let q = quality(&params);
+        let slot = worst.iter_mut().find(|(e, _)| (*e - params.outline.exponent).abs() < 1e-9).unwrap();
+        slot.1 = slot.1.max(q.crease);
+        if !passes(&q).iter().all(|ok| *ok) {
+            failed.push(format!("{name}: {}", row("", &q)));
+        }
+    }
+    eprintln!("worst crease by exponent over the corners: {worst:?}");
+    assert!(failed.is_empty(), "{} corners fail:\n{}", failed.len(), failed.join("\n"));
+}
