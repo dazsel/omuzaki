@@ -373,6 +373,11 @@ impl TriggerBook {
         &self.expressions
     }
 
+    /// The rest face the table blends onto: what the live score's acts move away from too.
+    pub(super) fn rest(&self) -> &ChannelBuf {
+        &self.rest
+    }
+
     /// Whether the set has `expression`.
     pub(super) fn has_expression(&self, expression: &ExpressionId) -> bool {
         self.expressions.0.contains_key(expression)

@@ -56,11 +56,11 @@ fn setup(template: &str, shape: &BodyShape) -> (TemplateFit, Head) {
     let body = BodyParams::default();
     let find = |name: &str| omuzaki_char::template::registry::find(name).unwrap();
     let layout = find(template).layout(&body.proportions, shape, &body.hand);
-    let rise = layout.head_base().unwrap().y
-        - find("soft-sd").layout(&body.proportions, &body.shape, &body.hand).head_base().unwrap().y;
     let c = HeadParams::default().cranium;
+    // Where the head part seats the default head on this body.
+    let [x, y, z] = omuzaki_char::head::part::seat(&c, layout.head_base().unwrap().y);
     let head = Head {
-        centre: Vec3::new(c.centre[0] as f32, (c.centre[1] + rise) as f32, c.centre[2] as f32),
+        centre: Vec3::new(x as f32, y as f32, z as f32),
         axes: Vec3::new(
             c.half_width as f32,
             c.half_height_up.midpoint(c.half_height_down_back) as f32,

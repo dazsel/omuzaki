@@ -298,6 +298,45 @@ fn the_live_loop_runs_a_cast() {
     alone.release(&mut renderer).unwrap();
 }
 
+/// The guest's joint palette after `steps` live frames of a cast whose guest performs on its own, waving when `wave`.
+fn guest_skin_after(steps: u64, wave: bool) -> Vec<Mat4> {
+    use omuzaki_stage::perform::host::{ActRequest, PerformHost};
+    use omuzaki_stage::perform::score::Envelope;
+
+    let mut renderer = Recorder::new(false);
+    let mut base = HumanoidPose::REST;
+    seed_base_pose(&built().rig, &mut base);
+    let sources = Arc::new(SourceSlot::new());
+    let mut live =
+        LiveStage::new(performer(&base), pair(&mut renderer), sources, Quality::live(), budget::LIVE_GPU).unwrap();
+    live.set_subject_member(id("lead"));
+    let guest = live.add_member(id("guest"), performer(&base)).unwrap();
+    if wave {
+        guest.act(ActRequest::Clip { clip: "wave".into(), weight: 1.0 }, Envelope::new(0.0, None)).unwrap();
+    }
+    for step in 0..steps {
+        live.frame(&mut renderer, mid_step(step)).unwrap();
+    }
+    let cast = live.into_stage();
+    let skin = cast.member(&id("guest")).unwrap().skin().to_vec();
+    FrameLoop::release(cast, &mut renderer).unwrap();
+    skin
+}
+
+#[test]
+fn each_members_own_performer_drives_it_on_the_cast_stage() {
+    // The live loop hands every member's frame to the cast: the guest's own act moves the guest's body, drawn by the
+    // cast, and without it the guest stands as the same performer leaves it.
+    let (still, waving) = (guest_skin_after(30, false), guest_skin_after(30, true));
+    let moved = still
+        .iter()
+        .zip(&waving)
+        .map(|(a, b)| a.to_cols_array().iter().zip(b.to_cols_array()).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max))
+        .fold(0.0, f32::max);
+    assert!(moved > 0.05, "the guest's wave reached the cast's guest: {moved}");
+    assert_eq!(guest_skin_after(30, false), still, "a still guest is the same each run");
+}
+
 // ------------------------------------------------------------------------------------------------ evidence
 
 /// The kit's default character from `template`, made by `character.create` as a person would.

@@ -181,7 +181,7 @@ fn tab_to(h: &mut Harness<'_, Rig>, role: Role, label: &str) {
 
 /// Types `part` into the form's part field, reached with Tab alone.
 fn fill_part(h: &mut Harness<'_, Rig>, part: &str) {
-    tab_to(h, Role::TextInput, "part");
+    tab_to(h, Role::TextInput, "Part");
     h.event(Event::Text(part.to_owned()));
     h.run_steps(2);
 }
@@ -202,7 +202,7 @@ fn each_of_fifty_generated_ops_is_found_filled_from_its_schema_and_run_from_the_
         assert_eq!((ran.as_str(), mode), (name, Mode::Apply));
         assert_eq!(args, defaults(i, "hair"), "{name} sends its schema's defaults");
         let query = op(i).kind == OpKind::Query;
-        assert_eq!(h.query_by_role_and_label(Role::TextInput, "part").is_some(), query, "only a query keeps its form");
+        assert_eq!(h.query_by_role_and_label(Role::TextInput, "Part").is_some(), query, "only a query keeps its form");
         if query {
             press(&mut h, Modifiers::NONE, Key::Escape);
         }
@@ -230,7 +230,7 @@ fn an_edit_previews_itself_with_a_dry_run_and_shift_enter_is_a_dry_run() {
     assert!(h.query_by_label_contains("Values it would change: 1").is_some());
 
     // Arrow keys move the slider; the preview follows the new value.
-    tab_to(&mut h, Role::Slider, "value");
+    tab_to(&mut h, Role::Slider, "Value");
     press(&mut h, Modifiers::NONE, Key::ArrowRight);
     h.run_steps(30);
     let (_, args, mode) = runner.last().unwrap_or_else(|| panic!("a preview"));

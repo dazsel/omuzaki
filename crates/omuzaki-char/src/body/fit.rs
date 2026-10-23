@@ -23,7 +23,7 @@
 //! again until all are). It reaches no further across the body than it must, and takes what it must hold in front and
 //! behind.
 //!
-//! Then each reach is eased along its region with arcs of radius [`EASE_RADIUS`] ([`TORSO_EASE_RADIUS`] on the torso), so the fit has no corner for a
+//! Then each reach is eased along its region with arcs of radius `EASE_RADIUS` (`TORSO_EASE_RADIUS` on the torso), so the fit has no corner for a
 //! garment's facets to cut through. The joints and the bind pose are the template's, unchanged.
 
 use std::collections::BTreeMap;

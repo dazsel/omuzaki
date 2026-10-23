@@ -492,3 +492,64 @@ proptest::proptest! {
         proptest::prop_assert!(least >= CLEARANCE - F32_SLACK, "{least} m from the head");
     }
 }
+
+/// The highest point of `ears` (an elf ear) on the left of the default head.
+fn elf_tip(ears: &Ears) -> Vec3 {
+    let (_, root) = head_and_root(&HeadParams { ears: ears.clone(), ..HeadParams::default() });
+    let ear = build(ears, Side::Left, root).unwrap().unwrap();
+    ear.positions.iter().copied().max_by(|a, b| a.y.total_cmp(&b.y)).unwrap()
+}
+
+#[test]
+fn an_elf_ears_own_tip_length_and_lean_move_the_tip_as_asked() {
+    let base = Ears { kind: EarKind::Elf, ..Ears::default() };
+    // Unset, the length is the one the size gives, so a saved ear is unchanged.
+    assert_eq!(elf::tip_length_of(&base), elf::tip_length(base.size));
+    assert_eq!(elf_tip(&Ears { tip_length: Some(elf::tip_length(1.0)), ..base.clone() }), elf_tip(&base));
+
+    let (short, long) =
+        (Ears { tip_length: Some(0.04), ..base.clone() }, Ears { tip_length: Some(0.14), ..base.clone() });
+    let (short_tip, long_tip) = (elf_tip(&short), elf_tip(&long));
+    // The tip rises by about the extra length (less the lean back and out).
+    let rise = long_tip.y - short_tip.y;
+    assert!(rise > 0.5 * 0.10 && rise < 1.05 * 0.10, "rise {rise} for 10 cm more tip");
+
+    let (upright, swept) = (Ears { tip_angle_deg: 0.0, ..long.clone() }, Ears { tip_angle_deg: 45.0, ..long.clone() });
+    let (upright_tip, swept_tip) = (elf_tip(&upright), elf_tip(&swept));
+    assert!(swept_tip.z < upright_tip.z - 0.02, "leaning back moves the tip back: {swept_tip} vs {upright_tip}");
+    assert!(swept_tip.y < upright_tip.y, "and lowers it: {swept_tip} vs {upright_tip}");
+}
+
+#[test]
+fn an_elf_tip_out_of_range_fails_validation_naming_the_field_and_the_defaults_are_not_written() {
+    use omuzaki_face_api::Validate;
+    let at = |ears: Ears| HeadParams { ears, ..HeadParams::default() }.validate().unwrap_err().0[0].path.clone();
+    assert_eq!(at(Ears { tip_length: Some(0.2), ..Ears::default() }), "ears/tip_length");
+    assert_eq!(at(Ears { tip_angle_deg: 60.0, ..Ears::default() }), "ears/tip_angle_deg");
+    assert!(HeadParams::default().validate().is_ok());
+
+    let written = serde_json::to_value(Ears::default()).unwrap();
+    assert!(written.get("tip_length").is_none() && written.get("tip_angle_deg").is_none(), "{written}");
+    let set = Ears { tip_length: Some(0.1), tip_angle_deg: 30.0, ..Ears::default() };
+    assert_eq!(serde_json::from_value::<Ears>(serde_json::to_value(&set).unwrap()).unwrap(), set);
+}
+
+proptest::proptest! {
+    /// An elf ear's own tip, at any length and lean, still clears the head.
+    #[test]
+    fn an_elf_ear_with_its_own_tip_clears_the_head(
+        left in proptest::bool::ANY,
+        size in 0.2_f64..=3.0,
+        flare in -10.0_f64..=90.0,
+        tilt in -30.0_f64..=45.0,
+        length in 0.04_f64..=0.14,
+        lean in 0.0_f64..=45.0,
+    ) {
+        let ears = Ears {
+            kind: EarKind::Elf, size, flare_deg: flare, tilt_deg: tilt, tip_length: Some(length), tip_angle_deg: lean,
+            ..Ears::default()
+        };
+        let least = least_clearance(&head_with(ears, 0.186), if left { Side::Left } else { Side::Right });
+        proptest::prop_assert!(least >= CLEARANCE - F32_SLACK, "{least} m from the head");
+    }
+}

@@ -9,7 +9,9 @@
 //! 3. the constraint stage ([`VrmConstraintSolver`]), only when one was set with [`FullRig::with_constraints`];
 //! 4. the caller's own pre-spring stage, only through [`FullRig::solve_and_skin_with`]: whatever else poses bones the
 //!    springs must follow in the same frame (a character's bone drivers, #800);
-//! 5. the spring stage ([`SpringSolver`], by default [`VrmSpringSolver`]) for hair, cloth and accessory chains,
+//! 5. the arm guard ([`ArmGuard`]), only when one was set with [`FullRig::with_guard`]: last before the springs, so
+//!    whatever posed the arms above, the forearms and hands end the frame out of the body (#2353);
+//! 6. the spring stage ([`SpringSolver`], by default [`VrmSpringSolver`]) for hair, cloth and accessory chains,
 //!    stepped by the `dt` of the [`Tick`].
 //!
 //! The order is what makes the stages compose: constraints read their sources as IK left them (a bone constrained to
@@ -47,6 +49,7 @@ use omuzaki_core::glam::Mat4;
 
 use crate::constraint::VrmConstraintSolver;
 use crate::ik::TwoBoneIk;
+use crate::ik::guard::{ArmGuard, GuardReport};
 use crate::pose::HumanoidRig;
 use crate::skeleton::RigSkeleton;
 use crate::skin::Skinner;
@@ -62,6 +65,8 @@ pub struct FullRig<I = TwoBoneIk, S = VrmSpringSolver> {
     springs: Option<S>,
     /// `None` for a character without node constraints: the stage is skipped, as for the springs.
     constraints: Option<VrmConstraintSolver>,
+    guard: Option<ArmGuard>,
+    guarded: GuardReport,
     goals: IkGoals,
     skinner: Skinner,
     /// Root-relative transforms of the last [`solve_and_skin`](Self::solve_and_skin) (boxed: 16 KiB).
@@ -94,6 +99,8 @@ impl<I: IkSolver, S: SpringSolver> FullRig<I, S> {
             ik,
             springs,
             constraints: None,
+            guard: None,
+            guarded: GuardReport::default(),
             goals: IkGoals::NONE,
             world: Box::new(Pose::IDENTITY),
         }
@@ -107,6 +114,29 @@ impl<I: IkSolver, S: SpringSolver> FullRig<I, S> {
     pub fn with_constraints(mut self, solver: VrmConstraintSolver) -> Self {
         self.constraints = Some(solver);
         self
+    }
+
+    /// Adds the arm guard, run last before the springs ([`ArmGuard`]).
+    #[must_use]
+    pub fn with_guard(mut self, guard: ArmGuard) -> Self {
+        self.guard = Some(guard);
+        self
+    }
+
+    /// Sets or removes the arm guard ([`with_guard`](Self::with_guard) for a rig being built).
+    pub fn set_guard(&mut self, guard: Option<ArmGuard>) {
+        self.guard = guard;
+        self.guarded = GuardReport::default();
+    }
+
+    /// The arm guard, if one was set.
+    pub fn guard(&self) -> Option<&ArmGuard> {
+        self.guard.as_ref()
+    }
+
+    /// What the arm guard did in the last solve (all zero without a guard).
+    pub fn guard_report(&self) -> GuardReport {
+        self.guarded
     }
 
     /// The node-constraint stage, if one was set with [`with_constraints`](Self::with_constraints).
@@ -180,6 +210,9 @@ impl<I: IkSolver, S: SpringSolver> FullRig<I, S> {
             constraints.apply(skeleton, out);
         }
         before_springs(skeleton, out);
+        if let Some(guard) = &mut self.guard {
+            self.guarded = guard.apply(skeleton, out, tick.dt);
+        }
         if let Some(springs) = &mut self.springs {
             springs.step(tick, skeleton, out);
         }
@@ -199,6 +232,9 @@ impl<I: IkSolver, S: SpringSolver> Rig for FullRig<I, S> {
     /// has nothing to clear.
     fn reset(&mut self) {
         self.ik.reset();
+        if let Some(guard) = &mut self.guard {
+            guard.reset();
+        }
         if let Some(springs) = &mut self.springs {
             springs.reset();
         }

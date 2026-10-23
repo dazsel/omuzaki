@@ -274,6 +274,85 @@ impl RecolourCtx<'_> {
     }
 }
 
+/// What a part's colours are made from: the palette, the part's id and the painter, in a build ([`BuildCtx`]) or in a
+/// recolour ([`RecolourCtx`]). A kind that makes its materials and textures in one function generic over this calls it
+/// from both [`PartKind::build`](crate::PartKind::build) and [`PartKind::recolour`](crate::PartKind::recolour), so the
+/// two cannot drift apart: the recolour contract (a recoloured output equals a build under the new palette) then holds
+/// by construction.
+pub trait PartColours {
+    /// The part being built or recoloured.
+    fn part(&self) -> &PartId;
+
+    /// The colour `r` names, through the palette of this build or recolour.
+    ///
+    /// # Errors
+    /// [`BuildError::Colour`] if `r` is a slot the palette doesn't define.
+    fn colour(&self, r: &omuzaki_face_api::ColourRef) -> Result<omuzaki_core::colour::Colour, BuildError>;
+
+    /// A [`BuildError::Part`] for this part.
+    fn fail(&self, message: impl Into<String>) -> BuildError;
+
+    /// Paints a texture, as [`BuildCtx::paint_texture`].
+    ///
+    /// # Errors
+    /// As [`BuildCtx::paint_texture`].
+    fn paint_texture(
+        &self,
+        size_px: UVec2,
+        rect: FaceRect,
+        list: &DrawList,
+        desc: TextureDesc,
+    ) -> Result<TextureData, BuildError>;
+}
+
+impl PartColours for BuildCtx<'_> {
+    fn part(&self) -> &PartId {
+        self.part
+    }
+
+    fn colour(&self, r: &omuzaki_face_api::ColourRef) -> Result<omuzaki_core::colour::Colour, BuildError> {
+        BuildCtx::colour(self, r)
+    }
+
+    fn fail(&self, message: impl Into<String>) -> BuildError {
+        BuildCtx::fail(self, message)
+    }
+
+    fn paint_texture(
+        &self,
+        size_px: UVec2,
+        rect: FaceRect,
+        list: &DrawList,
+        desc: TextureDesc,
+    ) -> Result<TextureData, BuildError> {
+        BuildCtx::paint_texture(self, size_px, rect, list, desc)
+    }
+}
+
+impl PartColours for RecolourCtx<'_> {
+    fn part(&self) -> &PartId {
+        self.part
+    }
+
+    fn colour(&self, r: &omuzaki_face_api::ColourRef) -> Result<omuzaki_core::colour::Colour, BuildError> {
+        RecolourCtx::colour(self, r)
+    }
+
+    fn fail(&self, message: impl Into<String>) -> BuildError {
+        RecolourCtx::fail(self, message)
+    }
+
+    fn paint_texture(
+        &self,
+        size_px: UVec2,
+        rect: FaceRect,
+        list: &DrawList,
+        desc: TextureDesc,
+    ) -> Result<TextureData, BuildError> {
+        RecolourCtx::paint_texture(self, size_px, rect, list, desc)
+    }
+}
+
 /// Premultiplied to straight alpha, in integers (round to nearest), so the result is identical on every platform.
 fn unpremultiply(rgba8: &mut [u8]) {
     for [r, g, b, a] in rgba8.as_chunks_mut::<4>().0 {

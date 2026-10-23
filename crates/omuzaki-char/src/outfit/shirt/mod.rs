@@ -1,9 +1,9 @@
 //! The `shirt` garment: a body, two sleeves and two cuffs over the torso and arms of whatever lies beneath it (CB-40;
 //! the prototype's `uniform.js` 58-147).
 //!
-//! The shirt is the first layer of clothing ([`LAYER_SHIRT`]) and needs a body. It lofts its body from the hem to the
+//! The shirt is the first layer of clothing (`LAYER_SHIRT`) and needs a body. It lofts its body from the hem to the
 //! neck opening over the fit beneath it, runs a sleeve along each arm to a rolled cuff with a fold seam and a pearl
-//! button, and publishes two things for the parts after it: its [`Envelope`](crate::outfit::common::Envelope), so a
+//! button, and publishes two things for the parts after it: its [`Envelope`], so a
 //! vest fits over the shirt, and the `collar_ring` anchor, the centre of its neck opening, which the collar and the tie
 //! hang on ([`neckwear`](crate::outfit::neckwear)).
 //!
@@ -14,7 +14,7 @@
 //! | the cuffs' fold seams | `<part>-lines` | [`cuff`] |
 //! | the buttons' thread holes | `<part>-holes` | [`cuff`] |
 //!
-//! Everything is fitted to the [`BodyFit`](omuzaki_char_api::BodyFit) the shirt is given: heights are fractions of the
+//! Everything is fitted to the [`BodyFit`] the shirt is given: heights are fractions of the
 //! torso's length, the sleeve follows the arm's joints and sections, and the cuff closes round the sleeve's end. Where
 //! the prototype's numbers were fitted to its own body they appear here as the fractions and offsets of the same shirt
 //! on the soft-sd template, named once.
@@ -29,7 +29,7 @@ use std::sync::Arc;
 
 use omuzaki_char_api::{
     Anchor, AnchorId, AnchorsFact, BodyFit, BodyRegion, BuildCtx, BuildError, FitFact, JointRef, MaterialSpec,
-    PartCategory, PartKind, PartMeta, PartOutput,
+    PartCategory, PartColours, PartKind, PartMeta, PartOutput, RecolourCtx, Recoloured,
 };
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::{DVec2, DVec3, Quat};
@@ -39,7 +39,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use self::frame::Column;
-use super::common::{DEFAULT_EASE, Envelope, Garment, GarmentCommon, GarmentError, GarmentOutput};
+use super::common::{
+    DEFAULT_EASE, Envelope, Garment, GarmentCommon, GarmentError, GarmentOutput, fabric_look, recolour_named,
+};
 use super::loft::{RegionWeights, Ring};
 use crate::kit::grid::{Grid, MeshBuilder};
 
@@ -318,26 +320,13 @@ impl PartKind for Shirt {
 
         out.surface(ctx, "shirt", shirt)?;
         if let Some(lining) = body.lining {
-            let colour = ctx.colour(&p.colours.lining)?;
-            let shade = ctx.colour(&p.colours.lining_shade)?;
-            let mut spec = MaterialSpec::toon(colour);
-            spec.shading = Shading::Toon(Toon {
-                shade,
-                shift: 0.0,
-                softness: LINING_SOFTNESS,
-                rim: Rim { strength: 0.0, ..Rim::default() },
-                ..Toon::default()
-            });
-            spec.vertex_colours = true;
-            let material = out.material(ctx, "lining", spec)?;
+            let material = out.material(ctx, "lining", lining_material(p, ctx)?)?;
             out.mesh(ctx, "lining", lining, material)?;
         }
-        let line = ctx.colour(&p.colours.line)?;
+        let ink = ink_material(p, ctx)?;
         for (name, mesh) in [("lines", lines), ("holes", holes)] {
             if mesh.triangle_count() > 0 {
-                let mut spec = MaterialSpec::toon(line);
-                spec.shading = Shading::Unlit;
-                let material = out.material(ctx, name, spec)?;
+                let material = out.material(ctx, name, ink.clone())?;
                 out.mesh(ctx, name, mesh, material)?;
             }
         }
@@ -360,6 +349,44 @@ impl PartKind for Shirt {
             .put::<AnchorsFact>((anchor, Anchor { bone: JointRef::NECK, position: centre, rotation: Quat::IDENTITY }));
         Ok(output)
     }
+
+    fn recolour(p: &ShirtParams, output: &mut PartOutput, ctx: &RecolourCtx<'_>) -> Result<Recoloured, BuildError> {
+        recolour_shirt(p, output, ctx)
+    }
+}
+
+/// The tucked hem's lining: the lining colour, softly shaded, with the vertex colours that shade it.
+fn lining_material<C: PartColours>(p: &ShirtParams, cx: &C) -> Result<MaterialSpec, BuildError> {
+    let mut spec = MaterialSpec::toon(cx.colour(&p.colours.lining)?);
+    spec.shading = Shading::Toon(Toon {
+        shade: cx.colour(&p.colours.lining_shade)?,
+        shift: 0.0,
+        softness: LINING_SOFTNESS,
+        rim: Rim { strength: 0.0, ..Rim::default() },
+        ..Toon::default()
+    });
+    spec.vertex_colours = true;
+    Ok(spec)
+}
+
+/// The fold seams and thread holes: unlit ink in the line colour.
+fn ink_material<C: PartColours>(p: &ShirtParams, cx: &C) -> Result<MaterialSpec, BuildError> {
+    let mut spec = MaterialSpec::toon(cx.colour(&p.colours.line)?);
+    spec.shading = Shading::Unlit;
+    Ok(spec)
+}
+
+/// The shirt's materials and texture through `cx`'s palette, by name after the part: the fabric with the cloth look,
+/// the lining and the ink. The recolour remakes them here; the build makes each with the same functions.
+fn recolour_shirt(p: &ShirtParams, output: &mut PartOutput, cx: &RecolourCtx<'_>) -> Result<Recoloured, BuildError> {
+    let look = fabric_look(cx, &p.common)?;
+    let mut fabric = look.material;
+    cloth_look(&mut fabric, cx.colour(&p.colours.shade)?, cx.colour(&p.colours.line)?);
+    let ink = ink_material(p, cx)?;
+    let materials =
+        vec![("fabric", fabric), ("lining", lining_material(p, cx)?), ("lines", ink.clone()), ("holes", ink)];
+    let textures = look.texture.map(|t| ("fabric", t)).into_iter().collect();
+    Ok(recolour_named(output, cx.part, materials, textures))
 }
 
 impl Garment for Shirt {
@@ -430,8 +457,7 @@ fn both_sides(mut mesh: MeshBuilder) -> Result<MeshBuilder, crate::kit::KitError
 /// Gives the fabric material the shirt's look and the thin meshes their shadowless draw.
 fn tune_cloth(output: &mut PartOutput, ctx: &BuildCtx<'_>, p: &ShirtParams) -> Result<(), BuildError> {
     let name = format!("{}-fabric", ctx.part);
-    let shade = ctx.colour(&p.colours.shade)?;
-    let line = ctx.colour(&p.colours.line)?;
+    let (shade, line) = (ctx.colour(&p.colours.shade)?, ctx.colour(&p.colours.line)?);
     let spec = output
         .materials
         .iter_mut()

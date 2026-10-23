@@ -5,23 +5,29 @@ id = "long"
 summary = "A long face with a stretched chin."
 
 [outline]
-half_width = 0.1570
-top = -0.0820
-height = 0.1267
+half_width = 0.1451
+top = -0.0823
+height = 0.1457
 exponent = 1.650
+exponent_lower = 1.560
 cheek_puff = 0.0000
 
 [outline.chin]
-y = -0.2087
-stretch_top = -0.0820
+y = -0.2280
+stretch_top = -0.0823
 min_ratio = 0.60
+
+# A taller, narrower head than the default cranium's (#1690).
+[cranium]
+width = 0.9
+height = 1.1
 
 [layout]
 eye_y = -0.0820
 eye_spacing = 0.0820
 eye_width = 0.0426
 brow_gap = 0.0800
-nose_y = -0.1225
-mouth_y = -0.1631
-blush_y = -0.1276
+nose_y = -0.1287
+mouth_y = -0.1754
+blush_y = -0.1346
 blush_spacing = 0.0984

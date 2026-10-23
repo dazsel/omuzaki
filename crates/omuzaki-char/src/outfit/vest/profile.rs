@@ -123,7 +123,7 @@ impl Profile {
     }
 
     /// The angles the shell's columns are at: the prototype's [`angles`], with each interval near an armhole's ramp cut
-    /// into [`ARMHOLE_SPLIT`] when there is one. The first and last are the same point at the back.
+    /// into `ARMHOLE_SPLIT` when there is one. The first and last are the same point at the back.
     pub fn columns(&self, n: usize) -> Vec<f64> {
         let base = angles(n);
         if self.armhole <= 0.0 {

@@ -8,7 +8,7 @@
 //! average of the faces around each vertex (what three.js's `computeVertexNormals` does); the copies of a vertex on the
 //! phi seam share one normal, and each pole has the normal straight up or down, so the lighting is seamless.
 //!
-//! The mesh is in bind space (the head-local points plus `cranium.centre`), unskinned and without UVs: the head part
+//! The mesh is in bind space (the head-local points plus `cranium.centre()`), unskinned and without UVs: the head part
 //! weights it to the head and neck bones, and the painted face is projected from `HeadParams::face_projection`.
 //!
 //! [`build_head`] also returns the surface of the head as built, a [`HeadSurface`] that what sits on the head (hair
@@ -140,7 +140,7 @@ fn build_parts(
     let radius = |dir: DVec3| radius_traced(&params.cranium, dir, trace);
     let face = reshape(&mut points, &radius, &plausible(&params.outline, &params.cranium));
 
-    let centre = DVec3::from_array(params.cranium.centre);
+    let centre = DVec3::from_array(params.cranium.centre());
     // Rounded to f32 once, here, like the prototype's Float32BufferAttribute: the normals come from what the mesh holds.
     let positions: Vec<Vec3> = points.iter().map(|p| (*p + centre).as_vec3()).collect();
     let indices = grid_indices(resolution);

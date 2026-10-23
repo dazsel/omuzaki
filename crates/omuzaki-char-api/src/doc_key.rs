@@ -4,7 +4,7 @@
 //! A character's node holds the keys of its own definition (node keys: exactly the fields of
 //! [`CharacterDef`](crate::CharacterDef), read into it) and the roots of its other files (sibling keys, each a
 //! sub-tree with its own contract). A new file of the character is a new sibling key in the file that owns it, plus
-//! [`register_doc_key!`]; nobody edits a central list. A sibling key's path is `characters/<id>/<key>`, so the key is
+//! [`register_doc_key!`](crate::register_doc_key!); nobody edits a central list. A sibling key's path is `characters/<id>/<key>`, so the key is
 //! also the name of a file or folder in the project, and must be a slug.
 //! [`CharacterDef::from_node`](crate::CharacterDef::from_node) and [`to_node`](crate::CharacterDef::to_node) leave
 //! sibling keys alone and read [`sibling_keys`] to accept them.
@@ -29,7 +29,7 @@ use omuzaki_doc_api::DocPath;
 use crate::ids::CharId;
 use crate::paths;
 
-/// One registered document key, collected by [`register_doc_key!`]. A registration that is not refused is a sibling key.
+/// One registered document key, collected by [`register_doc_key!`](crate::register_doc_key!). A registration that is not refused is a sibling key.
 pub struct DocKeyRegistration {
     /// The key, as it is spelt in the project and in saved files. Its path is `characters/<id>/<key>`.
     pub key: &'static str,
@@ -202,7 +202,7 @@ pub fn check(key: &str) -> Result<(), DocKeyError> {
 /// The path of the registered key `key` for character `id`: `characters/<id>/<key>`. `None` if no crate registered it.
 /// A built-in name with a colliding registration is refused here, so it gets the error, not a path. A built-in name with
 /// no registration gives `None`, like any other unregistered key; the built-in keys have their own functions in
-/// [`paths`](crate::paths).
+/// [`paths`].
 ///
 /// # Errors
 /// The [`DocKeyError`] if the key is refused.

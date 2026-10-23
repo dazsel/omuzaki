@@ -180,7 +180,7 @@ pub fn private() -> Option<Vec<(&'static str, HeadParams)>> {
             _ => None,
         };
         Some(HeadParams {
-            cranium: Cranium { centre: PROTOTYPE_CENTRE, ..Cranium::default() },
+            cranium: Cranium { centre: Some(PROTOTYPE_CENTRE), ..Cranium::default() },
             outline: HeadOutline {
                 half_width: c.half_width,
                 top: c.top - y0,

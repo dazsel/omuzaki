@@ -23,6 +23,7 @@ mod fence;
 mod file_access;
 mod jobs;
 mod nested;
+mod problems;
 mod registry;
 mod review;
 mod runner;
@@ -44,6 +45,7 @@ pub use jobs::{
     Cancel, CancelFlag, CancelReason, JobCalls, JobCtx, JobDoc, JobId, JobInfo, JobShape, JobSignal, JobState, Jobs,
     Lane, NeverCancel,
 };
+pub use problems::{FieldProblem, refuse_new_problems};
 pub use registry::{OpRegistration, find, registrations};
 pub use review::{ReviewPolicies, ReviewRequirement};
 pub use runner::{ClashKind, Event, Mode, OpInfo, OpRecord, Outcome, Request, Runner, TxId, tool_name};

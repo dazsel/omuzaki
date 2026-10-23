@@ -17,6 +17,14 @@
 //! The performer's handle ([`PerformHandle`]) and the input ([`LiveInput`](super::input::LiveInput)) are the ops'
 //! side; the frame thread never waits on them. Nothing in `frame` allocates in steady state beyond what the renderer
 //! and the part runtimes cost (`tests/live.rs` counts).
+//!
+//! # One performer per member
+//!
+//! The subject's performer drives the stage. Every other performing cast member ([`add_member`](LiveStage::add_member))
+//! has a performer of its own, stepped on the same clock in the same frame, with its own handle for the ops: its own
+//! tracker or none, voice, triggers, live score and drive map (`docs/design/drivers.md`). Its pose and channels are
+//! kept as the next frame's input for that member ([`member_input`](LiveStage::member_input)), which the stage draws
+//! once it holds every member. The [`CastBook`] names them all, the subject first, for the ops ([`LiveCast`]).
 
 use std::sync::Arc;
 
@@ -25,6 +33,9 @@ use omuzaki_core::glam::Mat4;
 use omuzaki_core::time::Seconds;
 use omuzaki_render_api::{Quality, Renderer};
 
+use omuzaki_stage_api::ids::MemberId;
+
+use super::cast::{CastBook, LiveCast};
 use super::frame::PerformFrame;
 use super::host::{PerformControl, PerformError, PerformHandle, PerformHost, perform_channel};
 use super::input::SourceSlot;
@@ -32,6 +43,7 @@ use super::Performer;
 use crate::error::StageError;
 use crate::frame::{FrameInput, FrameOutput, Stage};
 use crate::scene::apply::{Mailbox, Owed};
+use crate::scene::default::DEFAULT_MEMBER;
 use crate::scene::resolve::ResolvedScene;
 use crate::stages::FrameLoop;
 
@@ -43,6 +55,16 @@ pub struct LiveFrame {
     /// The change of quality the scheduler decided on this frame's report, for the app to show the person (§8). It
     /// applies from the next frame.
     pub change: Option<Change>,
+}
+
+/// A cast member performing beside the subject: its performer, the two ends of its channel, and the input of its next
+/// frame.
+struct LiveMember {
+    id: MemberId,
+    performer: Performer,
+    control: PerformControl,
+    handle: PerformHandle,
+    frames: PerformFrame,
 }
 
 /// The live loop's state: the performer and its control, the stage, the input's source slot and the scheduler.
@@ -67,6 +89,12 @@ pub struct LiveStage<S: FrameLoop = Stage> {
     resumed: bool,
     /// The stage's [`revision`](Stage::revision) the triggers' expressions were installed for.
     expressions_for: u64,
+    /// The subject's member id.
+    subject: MemberId,
+    /// The members performing beside the subject.
+    members: Vec<LiveMember>,
+    /// Every performing member's host, the subject first, for the ops.
+    cast: Arc<CastBook>,
 }
 
 impl<S: FrameLoop> LiveStage<S> {
@@ -106,7 +134,11 @@ impl<S: FrameLoop> LiveStage<S> {
             subject_dirty: false,
             resumed: false,
             expressions_for: 0,
+            subject: MemberId::new(DEFAULT_MEMBER).map_err(|_| PerformError::Unsupported)?,
+            members: Vec::new(),
+            cast: Arc::new(CastBook::new()),
         };
+        live.cast.insert(live.subject.clone(), Arc::new(live.handle.clone()));
         live.install_expressions()?;
         Ok(live)
     }
@@ -131,12 +163,22 @@ impl<S: FrameLoop> LiveStage<S> {
         if std::mem::take(&mut self.resumed) {
             // The performer carries on from its last step: the paused time is not caught up.
             self.control.rebase(now);
+            for member in &mut self.members {
+                member.control.rebase(now);
+            }
         }
         self.sources.swap_into(&mut self.performer);
         self.take_scene();
         let output = if self.paused {
             self.stage.redraw(renderer, self.frames.input())?
         } else {
+            // The members step first, on the same clock, so a frame shows every member at the same step; a stage
+            // that draws the cast takes each member's input for this frame.
+            for member in &mut self.members {
+                if member.frames.advance(&mut member.control, &mut member.performer, now) {
+                    self.stage.set_member_input(&member.id, member.frames.input());
+                }
+            }
             match self.frames.run(&mut self.control, &mut self.performer, &mut self.stage, renderer, now)? {
                 Some(output) => output,
                 None => return Ok(None),
@@ -242,6 +284,83 @@ impl<S: FrameLoop> LiveStage<S> {
     pub fn restart(&mut self) {
         self.control.reset(&mut self.performer);
         self.frames.restart();
+        for member in &mut self.members {
+            member.control.reset(&mut member.performer);
+            member.frames.restart();
+        }
+    }
+
+    /// Makes `member` the subject's id in the [cast](Self::cast) (the scene's subject member; `main` until set).
+    pub fn set_subject_member(&mut self, member: MemberId) {
+        if member == self.subject {
+            return;
+        }
+        self.cast.remove(&self.subject);
+        self.cast.insert(member.clone(), Arc::new(self.handle.clone()));
+        self.cast.set_subject(&member);
+        self.subject = member;
+    }
+
+    /// Adds `member` performing beside the subject, with `performer`, and returns its handle for the ops (also in the
+    /// [cast](Self::cast)). A member of the same id is replaced; the subject's id is refused. When the stage draws the
+    /// member ([`CastStage`](crate::cast::CastStage)), its frames reach it and its character's expressions go to its
+    /// triggers; otherwise install them through the handle ([`PerformHost::set_expressions`]). Cold: allocates.
+    ///
+    /// # Errors
+    /// [`PerformError::Unsupported`] for the subject's own id.
+    pub fn add_member(&mut self, member: MemberId, performer: Performer) -> Result<PerformHandle, PerformError> {
+        if member == self.subject {
+            return Err(PerformError::Unsupported);
+        }
+        let (handle, control) = perform_channel(&performer);
+        if let Some(expressions) = self.stage.trigger_expressions_of(&member) {
+            handle.set_expressions(expressions, *performer.rest())?;
+        }
+        let input = FrameInput { pose: *performer.base(), ..FrameInput::default() };
+        let entry = LiveMember { id: member.clone(), performer, control, handle: handle.clone(), frames: PerformFrame::new(input) };
+        match self.members.iter_mut().find(|m| m.id == member) {
+            Some(slot) => *slot = entry,
+            None => self.members.push(entry),
+        }
+        self.cast.insert(member, Arc::new(handle.clone()));
+        Ok(handle)
+    }
+
+    /// Stops `member` performing and gives its performer back. Cold.
+    pub fn remove_member(&mut self, member: &MemberId) -> Option<Performer> {
+        let at = self.members.iter().position(|m| &m.id == member)?;
+        self.cast.remove(member);
+        Some(self.members.remove(at).performer)
+    }
+
+    /// The input `member`'s next frame shows: its performer's pose and channels at the last step. The subject's is
+    /// [`input`](Self::input).
+    pub fn member_input(&self, member: &MemberId) -> Option<&FrameInput> {
+        if member == &self.subject {
+            return Some(self.frames.input());
+        }
+        self.members.iter().find(|m| &m.id == member).map(|m| m.frames.input())
+    }
+
+    /// The input of `member`'s next frame, to set its root, wind or goals.
+    pub fn member_input_mut(&mut self, member: &MemberId) -> Option<&mut FrameInput> {
+        if member == &self.subject {
+            return Some(self.frames.input_mut());
+        }
+        self.members.iter_mut().find(|m| &m.id == member).map(|m| m.frames.input_mut())
+    }
+
+    /// The handle of `member`'s performer, the subject's included.
+    pub fn member_handle(&self, member: &MemberId) -> Option<&PerformHandle> {
+        if member == &self.subject {
+            return Some(&self.handle);
+        }
+        self.members.iter().find(|m| &m.id == member).map(|m| &m.handle)
+    }
+
+    /// Every performing member's host, the subject first: inject it into the ops' services as `Arc<dyn LiveCast>`.
+    pub fn cast(&self) -> Arc<dyn LiveCast> {
+        Arc::clone(&self.cast) as Arc<dyn LiveCast>
     }
 
     /// The input the last frame was ticked with: the performer's pose and channels, and the caller's root, wind and

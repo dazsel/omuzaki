@@ -50,6 +50,25 @@ fn a_preset_reshapes_head_and_layout_in_one_patch_and_undoes_exactly() {
 }
 
 #[test]
+fn a_preset_with_cranium_proportions_reshapes_the_cranium_and_leaving_it_restores_the_default() {
+    let mut doc = kit();
+    let default = head(&doc).cranium;
+    let planned = round_trip(&mut doc, "face.set_profile", json!({"character": "kit", "profile": "long"}));
+    let paths: Vec<String> = planned.patch.changes.iter().map(|c| c.path.to_string()).collect();
+    assert!(paths.iter().any(|p| p.ends_with("params/cranium")), "the cranium is in the patch: {paths:?}");
+    // Long's head is 10% narrower and 10% taller than the default; its depth and its seat are the default's.
+    let long = head(&doc).cranium;
+    assert!((long.half_width - 0.9 * default.half_width).abs() < 1e-12);
+    assert!((long.half_height_up - 1.1 * default.half_height_up).abs() < 1e-12);
+    assert_eq!((long.half_depth_front, long.centre), (default.half_depth_front, default.centre));
+    // Half way to the heart (which has none) the cranium is half way back; all the way, it is the default again.
+    round_trip(&mut doc, "face.set_profile", json!({"character": "kit", "profile": "heart", "blend": 0.5}));
+    assert!((head(&doc).cranium.half_width - 0.95 * default.half_width).abs() < 1e-12);
+    round_trip(&mut doc, "face.set_profile", json!({"character": "kit", "profile": "heart"}));
+    assert_eq!(head(&doc).cranium, default);
+}
+
+#[test]
 fn a_dry_run_changes_nothing_and_blend_zero_is_a_no_op() {
     let doc = kit();
     let original = doc.root().clone();
@@ -96,7 +115,7 @@ fn the_reshape_is_in_the_face_not_the_cranium() {
     apply(&mut doc, "face.set_profile", json!({"character": "kit", "profile": "egg-oval", "blend": 0.5}));
     let after = build(&head(&doc), Resolution::LIVE, None).unwrap();
     let layout = definition(&doc, "kit").face.layout;
-    let centre = head(&doc).cranium.centre[1];
+    let centre = head(&doc).cranium.centre()[1];
     assert_eq!(before.positions.len(), after.positions.len());
     let (mut below, mut total, mut above_brows) = (0.0f64, 0.0f64, 0.0f64);
     for (a, b) in before.positions.iter().zip(&after.positions) {

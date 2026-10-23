@@ -44,6 +44,16 @@ steps = [
 images = ["lineup.png"]
 
 [[case]]
+name = "head-placement"
+description = "The default head on each template's neck, before (soft-sd's centre everywhere) and after the head part seats it (#825): whole figures and neck crops, front and side (tools/head-placement-sheet.py)."
+env = { OMUZAKI_SHEET_DIR = "{out}/obj" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-char", "--test", "head_placement", "--", "--ignored", "--exact", "dump"] },
+    { run = ["python3", "-I", "tools/head-placement-sheet.py", "{out}/obj", "{out}"] },
+]
+images = ["figures.png", "necks.png"]
+
+[[case]]
 name = "head-join"
 description = "The eye-line join of the five head presets, front, three-quarter and side, 384 px, fixed camera per view. The head surface only: the ears are left out."
 env = { OMUZAKI_HEAD_JOIN_PPM = "{out}" }

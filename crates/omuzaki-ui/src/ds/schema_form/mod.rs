@@ -28,7 +28,7 @@
 //! | `object` with `properties` | a `Section` |
 //! | anything else (`null`-able types, unions, arrays, a `pattern` this matcher cannot evaluate, a string with another `format` or a `contentEncoding`, `multipleOf`) | a read-only row naming the type |
 //!
-//! `$ref` and `$defs` are followed. A field's label is its `title`, else its property name.
+//! `$ref` and `$defs` are followed. A field's label is its `title`, else its property name in words (`vmc_port` reads "Vmc port").
 //!
 //! # `x-ui.*`
 //!

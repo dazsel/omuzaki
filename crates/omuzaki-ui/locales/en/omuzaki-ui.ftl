@@ -2082,6 +2082,24 @@ ui-live-expression-sad = Sad
 ui-live-expression-surprised = Surprised
 
 # The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-failed-calibrate = Calibration
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-failed-camera = The camera
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-failed-hotkeys = The hotkeys
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-failed-import = The import
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-failed-performer = The performer
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-failed-window = The output window
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
 # $name (id, never translated): "hair-b"
 ui-live-health-budget-live = { $name } · live
 
@@ -2275,9 +2293,19 @@ ui-live-no-op = Not available: this build has no { $op } op
 ui-live-no-performer = The performer is not running
 
 # The Live workspace: the camera, tracking, the stage, expressions and outputs.
-# $op (id, never translated): "hair-b"
+# $what (id, never translated): "hair-b"
 # $reason (id, never translated): "hair-b"
-ui-live-op-failed = { $op } did not run: { $reason }
+ui-live-op-failed = { $what } didn't work: { $reason }
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+# $what (id, never translated): "hair-b"
+# $reason (id, never translated): "hair-b"
+# $hint (id, never translated): "hair-b"
+ui-live-op-failed-hint = { $what } didn't work: { $reason }. { $hint }
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+# $what (id, never translated): "hair-b"
+ui-live-op-missing = { $what } isn't available in this version of the studio on this computer
 
 # The Live workspace: the camera, tracking, the stage, expressions and outputs.
 ui-live-output-backdrop = Backdrop

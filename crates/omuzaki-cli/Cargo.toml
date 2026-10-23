@@ -123,6 +123,10 @@ omuzaki-secrets-mock = { path = "../omuzaki-secrets-mock" }
 omuzaki-live-api = { path = "../omuzaki-live-api" }
 omuzaki-http-api = { path = "../omuzaki-http-api" }
 tungstenite = "0.30"
+# The palette gate beside the link gate (`tests/palette_gate.rs`, #1635): the check over every linked part kind, and the
+# mock face painter its builds paint with.
+omuzaki-char = { path = "../omuzaki-char" }
+omuzaki-face-mock = { path = "../omuzaki-face-mock" }
 # The registration scan behind the link gate (`tests/registrations.rs`, ADR 0015).
 xtask = { path = "../../xtask" }
 

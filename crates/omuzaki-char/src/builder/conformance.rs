@@ -222,7 +222,7 @@ fn unused_name(base: &str, sep: char, taken: impl Fn(&str) -> bool) -> String {
 /// in every channel of every entry (the [`PALETTES`] colour alternatives). Then the slot-set ones, all with the colours
 /// of `palette`, so a fact that depends on the slot set is caught: one with an extra slot no part references; one
 /// without the slots no part names (when `palette` has any); and one per slot a part names, without only that slot.
-/// Only the palettes that remove slots may fail to build (see [`check_seed`]). The same for the same input.
+/// Only the palettes that remove slots may fail to build (see `check_seed`). The same for the same input.
 pub fn alternatives(palette: &Palette, referenced: &BTreeSet<String>) -> Vec<Palette> {
     let mut rng = Rng::new(SEED);
     let mut all = vec![flipped(palette)];
@@ -566,4 +566,199 @@ fn compare(
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------------- colours only through the parameters
+
+/// The first palette contract (`PartKind::build`, contract 1): a part reads palette colours only through the slots its
+/// own parameters name. For each part of `base` under each of the [`OPTIONS`], the part is built again against what
+/// the parts before it published, with every slot its normalised parameters don't name [`flipped`] and one extra slot
+/// added; its meshes, materials, material classes, textures and warnings must come out the same. A kind that looked a
+/// fixed slot up behind its parameters' back changes there, and the caching builder, which keys a part on the slots
+/// its parameters name, would serve it stale.
+///
+/// Returns one line per part and option set whose output changed, naming the part, its kind and what differed.
+///
+/// # Errors
+/// The first build of `base` that fails, with the part and the reason: a base that doesn't build checks nothing.
+pub fn check_colours_through_parameters(base: &CharacterDef, services: &BuildServices) -> Result<Vec<String>, String> {
+    let order = plan(base).map_err(|e| e.to_string())?;
+    let mut violations = Vec::new();
+    for (quality, rig_export) in OPTIONS {
+        let options = BuildOptions { quality, rig_export, ..BuildOptions::default() };
+        let mut published = Published::default();
+        for part in &order {
+            let output = build_part(base, part, &options, services, &published).map_err(|e| format!("{part}: {e}"))?;
+            let other = unnamed_flipped(base, part);
+            let again = build_part(&other, part, &options, services, &published)
+                .map_err(|e| format!("{part} with its unnamed slots changed: {e}"))?;
+            let differs: Vec<&str> = [
+                ("meshes", output.meshes != again.meshes),
+                ("materials", output.materials != again.materials),
+                ("material classes", output.material_classes != again.material_classes),
+                ("textures", output.textures != again.textures),
+                ("warnings", output.warnings != again.warnings),
+            ]
+            .into_iter()
+            .filter_map(|(what, differs)| differs.then_some(what))
+            .collect();
+            if !differs.is_empty() {
+                let kind = base.parts.get(part).map_or("?", |p| p.kind.as_str());
+                violations.push(format!(
+                    "part `{part}` (kind `{kind}`, {quality:?}, rig_export {rig_export}): its {} changed when only \
+                     palette slots its parameters don't name changed",
+                    differs.join(", ")
+                ));
+            }
+            published.absorb(part, output.publishes).map_err(|e| format!("{part}: {e}"))?;
+        }
+    }
+    Ok(violations)
+}
+
+/// `def` with every palette slot that `part`'s normalised parameters don't name changed in every channel, and one more
+/// slot no part names.
+fn unnamed_flipped(def: &CharacterDef, part: &PartId) -> CharacterDef {
+    let mut named = BTreeSet::new();
+    let params = def.parts.get(part).map(|p| {
+        find_kind(p.kind.as_str()).and_then(|r| (r.check)(&p.params).ok()).unwrap_or_else(|| p.params.clone())
+    });
+    if let Some(params) = &params {
+        named_slots(params, &mut named);
+    }
+    let named: BTreeSet<&str> = named.into_iter().map(|s| s.trim_start_matches('@')).collect();
+    let flip = flipped(&def.palette);
+    let mut other = def.clone();
+    for (slot, colour) in &mut other.palette.0 {
+        if !named.contains(slot.as_str())
+            && let Some(changed) = flip.0.get(slot)
+        {
+            *colour = *changed;
+        }
+    }
+    let free = unused_name(EXTRA_SLOT, '_', |n| named.contains(n) || other.palette.0.keys().any(|s| s.as_str() == n));
+    if let Ok(slot) = PaletteSlot::new(&free) {
+        other.palette.0.insert(slot, Colour::rgb(1, 2, 3));
+    }
+    other
+}
+
+// ------------------------------------------------------------------------------------------------------- recolouring
+
+/// What [`check_recolour`] found.
+#[derive(Debug, Default)]
+pub struct RecolourReport {
+    /// One line per part and option set whose recoloured output differs from a fresh build under the new palette.
+    pub violations: Vec<String>,
+    /// The kinds that recoloured (answered [`Recoloured::Done`](omuzaki_char_api::Recoloured::Done)) at least once.
+    pub recoloured: BTreeSet<String>,
+    /// The kinds that declined, and so are rebuilt on a palette change.
+    pub declined: BTreeSet<String>,
+}
+
+/// The third contract (`PartKind::recolour`): recolouring a part's output to a new palette gives exactly what a build
+/// under that palette gives. For each part of `base` under each of the [`OPTIONS`], the part is built under the
+/// character's palette and recoloured to the [`flipped`] one, then built under the flipped one; a kind that answers
+/// `Done` must match the fresh build in meshes, materials, material classes, textures and warnings.
+///
+/// # Errors
+/// The first build of `base` (under either palette) that fails, with the part and the reason.
+pub fn check_recolour(base: &CharacterDef, services: &BuildServices) -> Result<RecolourReport, String> {
+    let order = plan(base).map_err(|e| e.to_string())?;
+    let mut other = base.clone();
+    other.palette = flipped(&base.palette);
+    let mut report = RecolourReport::default();
+    for (quality, rig_export) in OPTIONS {
+        let options = BuildOptions { quality, rig_export, ..BuildOptions::default() };
+        let mut published = Published::default();
+        for part in &order {
+            let kind = base.parts.get(part).map_or_else(String::new, |p| p.kind.to_string());
+            let mut output =
+                build_part(base, part, &options, services, &published).map_err(|e| format!("{part}: {e}"))?;
+            let fresh = build_part(&other, part, &options, services, &published)
+                .map_err(|e| format!("{part} under the flipped palette: {e}"))?;
+            let facts = output.publishes.clone();
+            match omuzaki_char_api::recolour_part(&other, part, services, &mut output) {
+                Ok(omuzaki_char_api::Recoloured::Done) => {
+                    report.recoloured.insert(kind.clone());
+                    let differs: Vec<&str> = [
+                        ("meshes", output.meshes != fresh.meshes),
+                        ("materials", output.materials != fresh.materials),
+                        ("material classes", output.material_classes != fresh.material_classes),
+                        ("textures", output.textures != fresh.textures),
+                        ("warnings", output.warnings != fresh.warnings),
+                        ("runtime", output.runtime.is_some() != fresh.runtime.is_some()),
+                    ]
+                    .into_iter()
+                    .filter_map(|(what, differs)| differs.then_some(what))
+                    .collect();
+                    if !differs.is_empty() {
+                        report.violations.push(format!(
+                            "part `{part}` (kind `{kind}`, {quality:?}, rig_export {rig_export}): recoloured, its {} \
+                             differ from a build under the new palette",
+                            differs.join(", ")
+                        ));
+                    }
+                }
+                Ok(_) => {
+                    report.declined.insert(kind.clone());
+                }
+                Err(e) => report.violations.push(format!(
+                    "part `{part}` (kind `{kind}`, {quality:?}, rig_export {rig_export}): recolour failed: {e}"
+                )),
+            }
+            published.absorb(part, facts).map_err(|e| format!("{part}: {e}"))?;
+        }
+    }
+    report.declined.retain(|kind| !report.recoloured.contains(kind));
+    Ok(report)
+}
+
+// ------------------------------------------------------------------------------------------------- an App's gate test
+
+/// The characters [`check_linked`] builds every kind in: the kit's default character (body, head, hair, shirt, skirt,
+/// legwear and boots, on the `soft-sd` template), and the same with a collar and a tie on the shirt's collar ring, for
+/// the kinds that hang on a shirt. Real kinds only, so an App that links no mock checks what it ships.
+///
+/// # Errors
+/// The default character doesn't read (a broken built-in starter or template).
+pub fn kit_bases() -> Result<Vec<CharacterDef>, String> {
+    let template = omuzaki_char_api::BodyTemplateId::new("soft-sd").map_err(|e| e.to_string())?;
+    let default = crate::ops::character::create::default_character(&template).map_err(|e| e.to_string())?;
+    let mut dressed = default.clone();
+    let on_collar: omuzaki_char_api::Attach =
+        serde_json::from_value(serde_json::json!({ "to": "anchor", "part": "shirt", "anchor": "collar_ring" }))
+            .map_err(|e| e.to_string())?;
+    for (id, layer) in
+        [("collar", crate::outfit::common::LAYER_SHIRT + 1), ("tie", crate::outfit::common::LAYER_SHIRT + 2)]
+    {
+        let part = PartDef {
+            kind: PartKindId::new(id).map_err(|e| e.to_string())?,
+            parent: None,
+            enabled: true,
+            layer,
+            attach: Some(on_collar.clone()),
+            params: Value::Object(serde_json::Map::new()),
+        };
+        dressed.parts.insert(PartId::new(id).map_err(|e| e.to_string())?, part);
+    }
+    Ok(vec![default, dressed])
+}
+
+/// The palette-independence check over every part kind linked into the running binary (#1635), against
+/// [`kit_bases`], with the registered probes: what each App's gate test runs beside its link gate (ADR 0015), so a kind
+/// from any crate whose published facts depend on the palette fails that App's test, named with its fact. The two
+/// palette contracts of the build ([`check_colours_through_parameters`]) and the recolour contract
+/// ([`check_recolour`]) are checked over the same characters; their findings join [`Report::violations`].
+///
+/// # Errors
+/// The bases don't read or don't build.
+pub fn check_linked(services: &BuildServices, sweep: Sweep) -> Result<Report, String> {
+    let bases = kit_bases()?;
+    let mut report = check_all_with(&bases, None, &Probes::registered(), services, sweep);
+    for base in &bases {
+        report.violations.extend(check_colours_through_parameters(base, services)?);
+        report.violations.extend(check_recolour(base, services)?.violations);
+    }
+    Ok(report)
 }

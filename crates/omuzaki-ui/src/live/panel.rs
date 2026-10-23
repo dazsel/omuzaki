@@ -27,8 +27,8 @@ use crate::ds::paint;
 use crate::ds::theme::ds;
 use crate::ds::tokens::{Status, space};
 use crate::ds::widgets::{
-    Button, Choice, Dropdown, EmptyState, OpCall, ParamEvent, ParamSlider, Section, Segment, Segmented, StatusChip,
-    Tip, TipExt as _, Toggle,
+    Banner, Button, Choice, Dropdown, EmptyState, OpCall, ParamEvent, ParamSlider, Section, Segment, Segmented,
+    StatusChip, Tip, TipExt as _, Toggle,
 };
 use omuzaki_stage::perform::input::{InputState, Permission};
 
@@ -482,8 +482,17 @@ impl LivePanel {
 
     fn failure(&self, ui: &mut Ui) {
         if let Some(failure) = self.model.failure() {
-            let line = say(ui.ctx(), Word::OpFailed, &[("op", failure.op), ("reason", &failure.message)]);
-            ui.add(StatusChip::new(Status::Danger, &line));
+            // Named by what it is to the person, never by the op's id; the reason and the fix are the op's words.
+            let what = text(ui.ctx(), failed_part(failure.op));
+            let reason = failure.message.trim_end_matches('.');
+            let line = match &failure.hint {
+                // A part the app lacks: its sentence is written for whoever wires the app, not for the person.
+                _ if failure.missing => say(ui.ctx(), Word::OpMissing, &[("what", &what)]),
+                Some(hint) => say(ui.ctx(), Word::OpFailedHint, &[("what", &what), ("reason", reason), ("hint", hint)]),
+                None => say(ui.ctx(), Word::OpFailed, &[("what", &what), ("reason", reason)]),
+            };
+            // A banner wraps: a reason is a sentence, and a chip cut to the dock's width hid how to fix it.
+            let _ = Banner::new(Status::Danger, &line).show(ui);
         }
     }
 }
@@ -737,5 +746,17 @@ fn calibration_line(ctx: &egui::Context, state: Option<CalibrationState>) -> (St
         Some(CalibrationState::Failed { got, need }) => {
             (Status::Warn, say(ctx, Word::CalibrateFailed, &[("got", &got.to_string()), ("need", &need.to_string())]))
         }
+    }
+}
+
+/// The part of the Live panel an op belongs to, as a person names it.
+fn failed_part(op: &str) -> Word {
+    match op.split('.').next() {
+        Some("output") => Word::FailedWindow,
+        Some("io") => Word::FailedImport,
+        Some("trigger") => Word::FailedHotkeys,
+        Some("input") => Word::FailedCamera,
+        _ if op == super::model::OP_CALIBRATE => Word::FailedCalibrate,
+        _ => Word::FailedPerformer,
     }
 }
