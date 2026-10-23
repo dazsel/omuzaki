@@ -226,3 +226,15 @@ fn a_recoloured_hair_slot_recolours_the_fur() {
     // The lit fur is the hair's mid colour (#6a5a8a) lifted an eighth toward white, as the hair is drawn.
     assert_eq!(after, omuzaki_core::colour::Colour::rgb(124, 110, 152), "the fur follows the hair's mid colour");
 }
+
+#[test]
+fn part_describe_marks_the_animal_section_advanced_so_a_form_keeps_it_folded() {
+    let (doc, _) = kit_with("cat");
+    let answer = common::plan(&doc, "part.describe", json!({"character": "kit", "part": "head"})).unwrap();
+    let parameters = answer.output.unwrap()["parameters"].as_array().unwrap().clone();
+    let level = |path: &str| {
+        parameters.iter().find(|p| p["path"] == path).unwrap_or_else(|| panic!("no {path}")).get("level").cloned()
+    };
+    assert_eq!(level("ears/animal"), Some(json!("advanced")));
+    assert_eq!(level("ears"), None, "the ears' own settings stay in view");
+}

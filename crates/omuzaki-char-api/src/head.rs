@@ -259,8 +259,10 @@ pub struct Ears {
     pub flare_deg: f64,
     /// How far it tilts back, degrees.
     pub tilt_deg: f64,
-    /// What an [`EarKind::Animal`] ear is: the animal, where it stands and its colours. Ignored by the other kinds.
+    /// What an [`EarKind::Animal`] ear is: the animal, where it stands and its colours. Ignored by the other kinds, so
+    /// a form shows it folded.
     #[serde(skip_serializing_if = "AnimalEars::is_default")]
+    #[schemars(extend("x-ui" = {"level": "advanced"}))]
     pub animal: AnimalEars,
 }
 
