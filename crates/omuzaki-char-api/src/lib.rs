@@ -72,7 +72,10 @@ pub use hair::{
     HairRng, HairShading, HairShadingError, HairSide, LegacyLcg, PartSweepGen, SphereCollider, Streak, StreakBlend,
     TailGen, Taper, TaperShape, Wave, Wisp,
 };
-pub use head::{Chin, Cranium, EarKind, Ears, FaceWindow, HeadOutline, HeadParams, Neck, SkinColours, TracedHead};
+pub use head::{
+    AnimalEars, Chin, Cranium, EarKind, EarSpecies, Ears, FaceWindow, HeadOutline, HeadParams, Neck, SkinColours,
+    TracedHead,
+};
 pub use ids::{
     AnchorId, BodyShapeId, BodyTemplateId, BoneName, CharId, ColourwayId, GroupId, JointRef, LookPresetId,
     MaterialName, PartId, PartKindId, ProfileId, SkinToneId, TextureName, VariantId,
@@ -92,7 +95,9 @@ pub use rig::{
     BindError, CharacterRig, ExtraBone, JointFit, RigContribution, extra_id, humanoid_id, humanoid_of, rest_skeleton,
 };
 pub use runtime::{DynamicMesh, PartRuntime, PoseSource, RuntimeCost, StepCtx};
-pub use services::{AssetError, AssetSource, BuildServices, RasterizerFactory};
+pub use services::{
+    AssetError, AssetSource, BuildServices, RasterizerFactory, RasterizerRegistration, linked_rasterizer,
+};
 pub use shape::{PRESET_IDS, ShapeProfile};
 pub use skin::{BrushFalloff, WeightBrush, apply_brushes, influence_cut};
 pub use stature::{Stature, scale_output};

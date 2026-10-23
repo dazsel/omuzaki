@@ -1,0 +1,7 @@
+{
+  "about": "The kit character with one violet streak through a fifth of its hair: the base for the ops that edit or remove a streak.",
+  "base": "character",
+  "steps": [
+    { "op": "hair.streak.add", "args": { "character": "kit", "part": "hair", "streak": { "fraction": 0.2, "colour": "#9b6ed6" } } }
+  ]
+}

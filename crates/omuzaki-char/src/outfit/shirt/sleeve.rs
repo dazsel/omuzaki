@@ -48,6 +48,8 @@ pub const SHADE_SPAN: f64 = 0.1;
 /// How far the arm the shirt's body is trimmed against starts behind the arm's start, metres: the body's vertices on
 /// the start's plane are inside it, and the sleeve there is still all but its whole width.
 pub const TUBE_LEAD: f64 = 0.004;
+/// The vertex shade of a sleeve's lining.
+const LINING_SHADE: f32 = 0.85;
 /// How far either side of the elbow the extra ease at the elbow reaches, metres.
 pub const ELBOW_REACH: f64 = 0.05;
 
@@ -71,6 +73,17 @@ impl SleeveSpec {
     }
 }
 
+/// How a sleeve differs from the shirt's: a coat's wider, belled, longer or lined sleeve.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct SleeveShape {
+    /// How much wider the sleeve is at its end than the arm under it, growing from the elbow, metres (a bell).
+    pub flare: f64,
+    /// How far past the wrist a full sleeve runs, metres, on along the forearm.
+    pub past: f64,
+    /// How thick the cloth is, metres: a lining that far inside the sleeve; 0 for none.
+    pub lining: f64,
+}
+
 /// The left sleeve.
 #[derive(Debug)]
 pub struct Sleeve {
@@ -84,8 +97,10 @@ pub struct Sleeve {
     pub forearm: DVec3,
     /// The sleeve's radius at its end, metres: what the cuff closes round.
     pub end_radius: f64,
-    /// Its rows of [`SEGMENTS`] + 1 vertices each.
+    /// Its rows of [`SEGMENTS`] + 1 vertices each (the lining has as many again).
     pub rows: usize,
+    /// The ring at its end, and the lining's when it has one: where a rolled cuff goes.
+    pub end: (Vec<DVec3>, Option<Vec<DVec3>>),
 }
 
 /// The stations along the sleeve, as distances from the shoulder: eight easing out of the shoulder, then one every
@@ -123,11 +138,7 @@ fn arm(fit: &dyn BodyFit) -> Result<[DVec3; 3], GarmentError> {
 /// The point `a` metres along the arm from the shoulder, walking `shoulder`, `elbow`, `end` (`upper` is the length of the
 /// first bone). Before the shoulder the line goes on straight back along the upper arm.
 fn walk([shoulder, elbow, end]: [DVec3; 3], upper: f64, a: f64) -> DVec3 {
-    if a <= upper {
-        shoulder.lerp(elbow, a / upper)
-    } else {
-        elbow.lerp(end, ((a - upper) / elbow.distance(end)).min(1.0))
-    }
+    if a <= upper { shoulder.lerp(elbow, a / upper) } else { elbow.lerp(end, (a - upper) / elbow.distance(end)) }
 }
 
 /// How round the sleeve's shoulder dome is at the prototype's distance `s` from its tip: a quarter circle over the first
@@ -145,6 +156,20 @@ fn dome(s: f64) -> f64 {
 /// [`GarmentError`] if the fit has no left arm or elbow, or a station's frame is degenerate.
 #[allow(clippy::many_single_char_names, clippy::cast_possible_truncation)] // see above; shades are in 0..=1
 pub fn build(fit: &dyn BodyFit, spec: &SleeveSpec, tile: Option<f64>) -> Result<Sleeve, GarmentError> {
+    build_shaped(fit, spec, &SleeveShape::default(), tile)
+}
+
+/// Builds the left sleeve over the arm of `fit`, shaped by `shape`.
+///
+/// # Errors
+/// As [`build`].
+#[allow(clippy::many_single_char_names, clippy::cast_possible_truncation, clippy::too_many_lines)] // as `build`
+pub fn build_shaped(
+    fit: &dyn BodyFit,
+    spec: &SleeveSpec,
+    shape: &SleeveShape,
+    tile: Option<f64>,
+) -> Result<Sleeve, GarmentError> {
     let [shoulder, elbow, wrist] = arm(fit)?;
     let forearm = (wrist - elbow)
         .try_normalize()
@@ -152,7 +177,7 @@ pub fn build(fit: &dyn BodyFit, spec: &SleeveSpec, tile: Option<f64>) -> Result<
     let past_wrist = wrist + forearm * WRIST_OVERLAP;
     let upper = shoulder.distance(elbow);
     let arm_length = upper + elbow.distance(wrist);
-    let end = if spec.full() { upper + elbow.distance(past_wrist) } else { spec.length * arm_length };
+    let end = if spec.full() { upper + elbow.distance(past_wrist) + shape.past } else { spec.length * arm_length };
     // The prototype's stations, measured from the dome's tip; the arm's start is `SHOULDER_SPAN` along.
     let s = stations(end + SHOULDER_SPAN);
     let a: Vec<f64> = s.iter().map(|s| s - SHOULDER_SPAN).collect();
@@ -182,7 +207,8 @@ pub fn build(fit: &dyn BodyFit, spec: &SleeveSpec, tile: Option<f64>) -> Result<
         .zip(&arm_radii)
         .map(|((&a, &s), &arm)| {
             let bump = spec.ease_at_elbow * (1.0 - sstep(0.0, ELBOW_REACH, (a - upper).abs()));
-            (arm + spec.ease + spec.width + bump) * dome(s)
+            let bell = shape.flare * sstep(upper - ELBOW_REACH, end - SHOULDER_SPAN, a).powf(1.5);
+            (arm + spec.ease + spec.width + bump + bell) * dome(s)
         })
         .collect();
     let rows = points.len();
@@ -231,6 +257,21 @@ pub fn build(fit: &dyn BodyFit, spec: &SleeveSpec, tile: Option<f64>) -> Result<
     };
     let mut mesh = MeshBuilder::with_colours();
     mesh.add_grid(&grid, &options)?;
+    let end_ring: Vec<DVec3> = (0..=SEGMENTS).map(|j| grid.at(rows - 1, j)).collect();
+    let mut lining_end = None;
+    if shape.lining > 0.0 {
+        // The lining: every ring pulled in toward its centre by the cloth's thickness (never past half its radius),
+        // facing in.
+        let inner = Grid::from_fn(rows, SEGMENTS + 1, |i, j| {
+            let p = grid.at(i, j);
+            let d = p - points[i];
+            p - d.normalize_or_zero() * shape.lining.min(d.length() / 2.0)
+        })?;
+        let lining_colour = |_: usize, _: usize, _: DVec3| [LINING_SHADE, LINING_SHADE, LINING_SHADE, 1.0];
+        let lining = GridOptions { invert: true, colour: Some(&lining_colour), ..options.clone() };
+        mesh.add_grid(&inner, &lining)?;
+        lining_end = Some((0..=SEGMENTS).map(|j| inner.at(rows - 1, j)).collect());
+    }
     // The arm the body is trimmed against: from just behind the arm's exact start (the smoothing moved the stations
     // along the line), with the shirt's ease on the arm's own radius.
     let first = a.iter().position(|&a| a > 0.0).unwrap_or(rows - 1);
@@ -240,5 +281,5 @@ pub fn build(fit: &dyn BodyFit, spec: &SleeveSpec, tile: Option<f64>) -> Result<
     tube_radii.extend(arm_radii[first..].iter().map(|r| r + spec.ease));
     let arm = Tube::new(tube_points, tube_radii)?;
     let end_radius = radii.last().copied().unwrap_or_default();
-    Ok(Sleeve { mesh, arm, wrist, forearm, end_radius, rows })
+    Ok(Sleeve { mesh, arm, wrist, forearm, end_radius, rows, end: (end_ring, lining_end) })
 }

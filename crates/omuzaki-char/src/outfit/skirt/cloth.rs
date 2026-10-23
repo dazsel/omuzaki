@@ -1,22 +1,14 @@
-//! The skirt's cloth hook: the sheet a cloth simulation of the skirt would run on.
+//! The skirt's cloth: the sheet it drapes on when [`ClothSpec::enabled`](crate::outfit::common::ClothSpec) is on.
 //!
-//! A stub, until the skirt's cloth task fills it (the skirt is skinned to the skeleton while
-//! [`ClothSpec::enabled`](crate::outfit::common::ClothSpec) is `false`, which its `check` insists on).
+//! The pleats' outer skin is the grid, the waist row pinned; the inner skin and the rolled hem ride on it
+//! ([`drape`](crate::outfit::drape)).
 
-use omuzaki_char_api::BodyFit;
+use crate::outfit::drape::Drape;
 
-use super::SkirtParams;
+/// Grid rows from the waist that stay on the hips: the waistband.
+pub const PIN_ROWS: usize = 1;
 
-/// What a simulated skirt needs to start from: the cloth task adds its fields.
-#[derive(Clone, Debug, PartialEq)]
-#[non_exhaustive]
-pub struct ClothSheetSpec {
-    /// How many rows at the waist are pinned to the hips.
-    pub pinned_rows: usize,
-}
-
-/// The sheet to simulate `params` over `fit`, or `None` while the skirt is skinned.
-pub fn cloth_sheet(params: &SkirtParams, fit: &dyn BodyFit) -> Option<ClothSheetSpec> {
-    let _ = (params, fit);
-    None
+/// Where the sheet lies in the skirt's cloth mesh (mesh 0): its outer skin, `rows x cols` from the waist down.
+pub fn drape(rows: usize, cols: usize) -> Drape {
+    Drape { mesh: 0, start: 0, rows, cols, pinned_first: true, pin_rows: PIN_ROWS }
 }

@@ -56,7 +56,8 @@ const RANGES_NOTE: &str = "found by trying values against the kind's own validat
 /// and what it accepts. Numbers carry their legal range (`minimum` / `maximum`, or `exclusiveMinimum` /
 /// `exclusiveMaximum` when the edge itself is refused; a missing bound means none), names carry their allowed
 /// `values`, text may carry a `pattern`, and a `unit` appears when the kind declares one. Sections and lists you can
-/// descend into are listed as entries without values, followed by their members. `schema` is the kind's JSON Schema,
+/// descend into are listed as entries without values, followed by their members; a section that only matters in some
+/// setups (an animal ear's details) says `level: advanced`. `schema` is the kind's JSON Schema,
 /// `defaults` are what a new part starts from and `current` is what the part holds now (defaults filled in). Give a
 /// parameter's `path` to `part.set_param`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -185,8 +186,10 @@ pub(crate) struct Param {
     pub(crate) ty: Ty,
     /// The doc comment of the field.
     description: Option<String>,
-    /// The unit, when the kind declares one (`x-ui.unit` in the field's schema, see [`unit_of`]).
+    /// The unit, when the kind declares one (`x-ui.unit` in the field's schema, see [`ui_text`]).
     unit: Option<String>,
+    /// `advanced` when the kind marks the node as one a form keeps folded (`x-ui.level`).
+    level: Option<String>,
     /// The pattern text must match.
     pattern: Option<String>,
     /// Whether the value can be removed: the schema allows `null` (which here means "not set"), or it is an entry of a
@@ -607,7 +610,12 @@ impl Params {
         let mut entry = Map::new();
         entry.insert("path".to_owned(), json!(param.path));
         entry.insert("type".to_owned(), json!(param.ty.name()));
-        for (key, text) in [("description", &param.description), ("unit", &param.unit), ("pattern", &param.pattern)] {
+        for (key, text) in [
+            ("description", &param.description),
+            ("unit", &param.unit),
+            ("level", &param.level),
+            ("pattern", &param.pattern),
+        ] {
             if let Some(text) = text {
                 entry.insert(key.to_owned(), json!(text));
             }
@@ -772,7 +780,8 @@ fn node(schema: &Value, current: Option<&Value>, path: &str, described: Option<&
         path: path.to_owned(),
         ty: ty_of(chosen.or_else(|| alternatives.first().copied()), choices(&alternatives)),
         description,
-        unit: unit_of(schema),
+        unit: ui_text(schema, "unit"),
+        level: ui_text(schema, "level"),
         pattern: text(schema, "pattern"),
         optional: nullable(schema),
         tag: false,
@@ -809,6 +818,7 @@ fn tag_param(path: &str, key: String, names: Vec<String>) -> Param {
             "Which variant this is; setting it switches to that variant, which starts from its own defaults.".to_owned(),
         ),
         unit: None,
+        level: None,
         pattern: None,
         optional: false,
         tag: true,
@@ -936,10 +946,11 @@ fn nullable(schema: &Value) -> bool {
     null_type || ["oneOf", "anyOf"].iter().filter_map(|key| schema.get(key)?.as_array()).flatten().any(nullable)
 }
 
-/// The unit a parameter declares: `x-ui.unit` in its schema, the key the schema annotations use. No parameter
-/// type declares one yet (the doc comments say "in metres" in prose); once one does, it appears in the answer.
-fn unit_of(schema: &Value) -> Option<String> {
-    schema.get("x-ui")?.get("unit")?.as_str().map(str::to_owned)
+/// A form hint a parameter declares: `x-ui.<key>` in its schema, the key the schema annotations use. `unit`: no
+/// parameter type declares one yet (the doc comments say "in metres" in prose); once one does, it appears in the
+/// answer. `level`: `advanced` on a section a form keeps folded.
+fn ui_text(schema: &Value, key: &str) -> Option<String> {
+    schema.get("x-ui")?.get(key)?.as_str().map(str::to_owned)
 }
 
 /// The text at `key` of `schema`.
