@@ -236,7 +236,7 @@ mod tests {
     #[test]
     fn a_default_face_has_no_problems() {
         let defaults = template().expect("the default face serialises");
-        assert!(diagnose(&defaults.profile, &defaults).is_empty());
+        assert_eq!(diagnose(&defaults.profile, &defaults), Vec::new());
     }
 
     #[test]
