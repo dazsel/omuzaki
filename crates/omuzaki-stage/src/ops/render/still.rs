@@ -8,7 +8,7 @@ use omuzaki_char_api::BuiltCharacter;
 use omuzaki_core::glam::UVec2;
 use omuzaki_face_api::ExpressionId;
 use omuzaki_render_api::{
-    AlphaEncoding, Background, Camera, FrameReport, Image, Light, Post, Quality, RenderError, Renderer, Scene,
+    AlphaEncoding, Background, Camera, EdgeLines, FrameReport, Image, Light, Post, Quality, RenderError, Renderer, Scene,
     TargetDesc, TargetId,
 };
 
@@ -38,19 +38,28 @@ pub struct StillLight {
     pub outline_light: f32,
     /// How strongly lights behind the character edge its silhouette; `0.0` is the scene default.
     pub back_light_rim: f32,
+    /// Lines where the depth jumps, if any.
+    pub edges: Option<EdgeLines>,
 }
 
 impl StillLight {
     /// A light with the scene's default outline light (`1.0`, as `Scene::new` sets it).
     #[must_use]
     pub fn new(lights: Vec<Light>, background: Background, post: Post) -> Self {
-        Self { lights, background, post, outline_light: 1.0, back_light_rim: 0.0 }
+        Self { lights, background, post, outline_light: 1.0, back_light_rim: 0.0, edges: None }
     }
 
     /// The same light with `outline_light` set.
     #[must_use]
     pub fn with_outline_light(mut self, outline_light: f32) -> Self {
         self.outline_light = outline_light;
+        self
+    }
+
+    /// The same light with lines where the depth jumps.
+    #[must_use]
+    pub fn with_edges(mut self, edges: Option<EdgeLines>) -> Self {
+        self.edges = edges;
         self
     }
 
@@ -229,6 +238,7 @@ fn still_scene(spec: &StillSpec) -> Scene {
     scene.post = spec.light.post;
     scene.outline_light = spec.light.outline_light;
     scene.back_light_rim = spec.light.back_light_rim;
+    scene.edges = spec.light.edges;
     scene
 }
 

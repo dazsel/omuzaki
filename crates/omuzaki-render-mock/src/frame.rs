@@ -203,6 +203,13 @@ pub(crate) fn draw_frame(
         }
     }
 
+    // Lines where the depth jumps, on the opaque picture and its hulls (#2319), counted with the outlines.
+    if let Some(edges) = scene.edges {
+        out.ran[Pass::Outlines.index()] = true;
+        #[allow(clippy::cast_precision_loss)] // the factor is a handful
+        draw_edges(&mut surface, &edges, &scene.camera.projection_matrix(aspect), factor as f32);
+    }
+
     // Particles test and write depth after the outlines and before the blended instances (D4).
     if !scene.particles.is_empty() {
         out.ran[Pass::Particles.index()] = true;
@@ -235,6 +242,35 @@ pub(crate) fn draw_frame(
 
     out.image = resolve(&surface, desc, factor, &scene.post, backdrop.as_ref());
     Ok(out)
+}
+
+/// Blends `edges`' colour over every pixel by [`EdgeLines::coverage`], reading the depth the scene left: `scale`
+/// internal pixels make one output pixel.
+#[allow(clippy::cast_sign_loss)] // indices are checked inside the picture first
+fn draw_edges(surface: &mut Surface, edges: &omuzaki_render_api::EdgeLines, projection: &Mat4, scale: f32) {
+    // The depth buffer's value to a distance along the view direction, for any projection (as the GPU's passes do).
+    let [m33, m23, m32, m22] = [projection.w_axis.w, projection.w_axis.z, projection.z_axis.w, projection.z_axis.z];
+    let size = surface.size.as_ivec2();
+    let distances: Vec<f32> = surface
+        .depth
+        .iter()
+        .map(|&d| if d >= 1.0 { f32::INFINITY } else { (d * m33 - m23) / (d * m32 - m22) })
+        .collect();
+    let depth = |x: i32, y: i32| {
+        ((0..size.x).contains(&x) && (0..size.y).contains(&y)).then(|| distances[(y * size.x + x) as usize])
+    };
+    // Premultiplied, like the surface: over-blended by the share each pixel is covered.
+    let alpha = edges.colour.alpha();
+    let line = (edges.colour.to_linear() * alpha).extend(alpha);
+    for y in 0..size.y {
+        for x in 0..size.x {
+            let cover = edges.coverage(depth, x, y, scale);
+            if cover > 0.0 {
+                let pixel = &mut surface.colour[(y * size.x + x) as usize];
+                *pixel = *pixel * (1.0 - cover * alpha) + line * cover;
+            }
+        }
+    }
 }
 
 fn live<'a, T>(arena: &'a Arena<T>, index: u32, generation: u32, what: &'static str) -> Result<&'a T, RenderError> {

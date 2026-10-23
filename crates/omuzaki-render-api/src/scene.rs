@@ -272,6 +272,129 @@ impl Fog {
     }
 }
 
+/// Lines drawn where the depth of the picture jumps (#2319): a dark band of `width_px` on the near side of every
+/// silhouette and every place one surface passes in front of another, the chin over the neck and an ear over the head
+/// behind it included. The inverted-hull outline misses those: its band is hidden wherever geometry sits close behind
+/// the silhouette.
+///
+/// A jump is found between two neighbouring pixels `a` and `b` along one of the eight directions, with `c` the pixel
+/// before `a`: `b` lies beyond where the surface through `c` and `a` would continue, by more than `step` of `a`'s depth
+/// (`z(b) - (2 z(a) - z(c)) > step * z(a)`). A slope, however steep, continues itself, so it draws no line. Depths are
+/// distances along the view direction; the background is infinitely far. [`coverage`](Self::coverage) is the one
+/// definition both renderers use: the share of a pixel the band covers.
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct EdgeLines {
+    /// The line colour (its alpha scales the line).
+    pub colour: Colour,
+    /// The band's width in output pixels, `> 0` and at most [`EdgeLines::MAX_WIDTH_PX`].
+    pub width_px: f32,
+    /// The smallest jump that draws, as a share of the near surface's depth, `> 0`.
+    pub step: f32,
+}
+
+impl EdgeLines {
+    /// The widest band a renderer draws, in output pixels.
+    pub const MAX_WIDTH_PX: f32 = 4.0;
+    /// A jump of 2% of the depth: 2 cm at a metre, well under a chin over its neck and over any slope's continuation.
+    pub const DEFAULT_STEP: f32 = 0.02;
+
+    /// Lines of `colour`, `width_px` wide, at the default step.
+    pub fn new(colour: Colour, width_px: f32) -> Self {
+        Self { colour, width_px, step: Self::DEFAULT_STEP }
+    }
+
+    /// The same lines with the smallest jump that draws set to `step`.
+    #[must_use]
+    pub fn with_step(mut self, step: f32) -> Self {
+        self.step = step;
+        self
+    }
+
+    fn validate(&self) -> Result<(), RenderError> {
+        let width = self.width_px.is_finite() && self.width_px > 0.0 && self.width_px <= Self::MAX_WIDTH_PX;
+        if width && self.step.is_finite() && self.step > 0.0 {
+            return Ok(());
+        }
+        Err(RenderError::invalid(
+            "edges",
+            format!("needs 0 < width_px <= {} and a finite step > 0, got {self:?}", Self::MAX_WIDTH_PX),
+        ))
+    }
+
+    /// The share of the pixel at `(x, y)` the band covers, `0..=1`. `depth` gives a pixel's distance along the view
+    /// direction, [`f32::INFINITY`] for the background and `None` outside the picture; `scale` is how many of
+    /// `depth`'s pixels make one output pixel (a supersampled picture's factor), so the band is `width_px` output pixels
+    /// wide at any scale.
+    ///
+    /// A pixel is covered when it lies on a surface and a jump is within the band's width of it along a direction
+    /// whose pixels from it up to the jump are all on a surface: the band is the near side's. A jump is a step from
+    /// one pixel to the next of more than `step` times the depth, beyond what the gentler of the two sides' slopes
+    /// explains, so a surface seen edge-on draws no line and a steep chin over a flat neck does. The picture's own
+    /// edge is not a jump.
+    pub fn coverage(&self, depth: impl Fn(i32, i32) -> Option<f32>, x: i32, y: i32, scale: f32) -> f32 {
+        const DIRECTIONS: [(i32, i32); 8] = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)];
+        let surface = |d: Option<f32>| d.filter(|d| d.is_finite());
+        if surface(depth(x, y)).is_none() {
+            return 0.0;
+        }
+        let width = self.width_px * scale;
+        // A pixel k steps out is (k - 0.5) steps from the boundary between `a` and `b`: the furthest that can still
+        // touch the band.
+        #[allow(clippy::cast_possible_truncation)] // at most MAX_WIDTH_PX times a supersampling factor
+        let reach = (width + 0.5).ceil() as i32;
+        let mut covered: f32 = 0.0;
+        for (dx, dy) in DIRECTIONS {
+            let length = if dx != 0 && dy != 0 { std::f32::consts::SQRT_2 } else { 1.0 };
+            // Behind the pixel: the surface's slope, none against the background, and no line at all at the picture's
+            // edge, where the slope can't be told.
+            let Some(behind) = depth(x - dx, y - dy) else { continue };
+            let (mut before, mut here) = (surface(Some(behind)), depth(x, y));
+            for k in 1..=reach {
+                #[allow(clippy::cast_precision_loss)] // k is a handful of pixels
+                let share = (width - ((k as f32 - 0.5) * length - 0.5)).clamp(0.0, 1.0);
+                let (Some(a), Some(b)) = (surface(here), depth(x + k * dx, y + k * dy)) else { break };
+                if share <= covered {
+                    break;
+                }
+                // The gap between the two surfaces, less what the gentler of their slopes explains: a slope continued
+                // from either side (a steep chin's or a flat neck's) is not a jump, but one side's steepness alone
+                // can't hide the other surface's step. A side whose slope can't be told (the background or the picture's
+                // edge beyond it) leaves it to the other.
+                let near = before.map(|c| a - c);
+                let far = surface(depth(x + (k + 1) * dx, y + (k + 1) * dy)).filter(|_| b.is_finite()).map(|d| d - b);
+                let off = b - a - gentler(near, far);
+                if off > self.step * a {
+                    covered = share;
+                    break;
+                }
+                // A jump towards the camera: the band beyond belongs to the nearer surface, not to this one.
+                if off < -self.step * a {
+                    break;
+                }
+                (before, here) = (Some(a), Some(b));
+            }
+        }
+        covered
+    }
+}
+
+/// Of two slopes, the one nearer zero, and zero when they disagree in sign; the one that is known when the other isn't.
+fn gentler(near: Option<f32>, far: Option<f32>) -> f32 {
+    match (near, far) {
+        (Some(near), Some(far)) if near * far <= 0.0 => 0.0,
+        (Some(near), Some(far)) => {
+            if near.abs() < far.abs() {
+                near
+            } else {
+                far
+            }
+        }
+        (Some(one), None) | (None, Some(one)) => one,
+        (None, None) => 0.0,
+    }
+}
+
 /// A run of [`Scene::joints`] that skins one instance.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct JointRange {
@@ -580,6 +703,8 @@ pub struct Scene {
     /// above 0 each light also adds its colour on the lit surfaces' fresnel edge, scaled by how far behind the surface
     /// it sits as the camera sees it. 0 (the default) leaves the shading as it was.
     pub back_light_rim: f32,
+    /// Lines where the depth jumps, if wanted (#2319). [`Scene::clear`] leaves them as they are.
+    pub edges: Option<EdgeLines>,
     /// The frame's post-processing look.
     pub post: Post,
 }
@@ -600,6 +725,7 @@ impl Scene {
             environment: None,
             outline_light: 1.0,
             back_light_rim: 0.0,
+            edges: None,
             post: Post::default(),
         }
     }
@@ -608,7 +734,7 @@ impl Scene {
     /// for the next frame.
     ///
     /// Everything else stays as it was: `camera`, `frame`, `background`, `fog`, `environment`, `outline_light`,
-    /// `back_light_rim` and `post`. Lights do go, so a scene that wants the same lights every frame must push them
+    /// `back_light_rim`, `edges` and `post`. Lights do go, so a scene that wants the same lights every frame must push them
     /// again after each `clear`. To keep lights across frames, leave them out of the reset and clear only what changes:
     ///
     /// ```ignore
@@ -651,6 +777,7 @@ impl Scene {
         }
         self.lights.iter().try_for_each(Light::validate)?;
         self.fog.iter().try_for_each(Fog::validate)?;
+        self.edges.iter().try_for_each(EdgeLines::validate)?;
         self.post.validate()?;
         self.environment.iter().try_for_each(EnvironmentUse::validate)?;
         for (i, inst) in self.instances.iter().enumerate() {

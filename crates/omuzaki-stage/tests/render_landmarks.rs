@@ -69,7 +69,7 @@ fn front_face(result: &PreviewResult, character: &str) -> RenderedFace {
 fn the_measure_preset_reports_a_front_face_large_enough_to_measure_and_the_same_bytes_every_run() {
     let harness = Harness::new(TestDoc(kit_doc()));
     for character in TEMPLATES {
-        let args = json!({ "character": character, "preset": "measure", "size": [768, 768] });
+        let args = json!({ "character": character, "preset": "measure", "size": [1024, 1024] });
         let first = run(&harness, args.clone()).unwrap_or_else(|e| panic!("{character}: {e}"));
         let face = front_face(&first, character);
         println!("{character}: {face:?}, IOD {:.1} px", iod(&face));
@@ -126,7 +126,7 @@ fn blending_round_u_toward_egg_oval_moves_the_rendered_drop_one_way() {
         let harness = Harness::new(TestDoc(MemDoc::from_value(root)));
         let result = run(
             &harness,
-            json!({ "character": "standard", "preset": "measure", "size": [768, 768], "quality": "live" }),
+            json!({ "character": "standard", "preset": "measure", "size": [1024, 1024], "quality": "live" }),
         )
         .unwrap();
         let face = front_face(&result, "standard");
@@ -140,7 +140,7 @@ fn blending_round_u_toward_egg_oval_moves_the_rendered_drop_one_way() {
     );
 }
 
-/// On lavapipe, for both templates under the `measure` preset at 768 px: the eye points are on the painted eyes (far
+/// On lavapipe, for both templates under the `measure` preset at 1024 px: the eye points are on the painted eyes (far
 /// from the skin between them), the mouth point is on the mouth line, and the chin point is at the bottom of the dark
 /// line the preset draws around the jaw. Set `OMUZAKI_EVIDENCE_DIR` to keep the renders with the points marked.
 #[cfg(feature = "wgpu")]
@@ -151,7 +151,7 @@ fn on_the_gpu_the_points_land_on_the_painted_face() {
     use omuzaki_render::{AdapterPreference, HeadlessOptions, WgpuRenderer};
     use omuzaki_store_api::Store;
 
-    const SIDE: u32 = 768;
+    const SIDE: u32 = 1024;
     let renderer =
         WgpuRenderer::headless(&HeadlessOptions { adapter: AdapterPreference::Software }).expect("lavapipe opens");
     let harness = Harness::on(TestDoc(kit_doc()), Box::new(renderer));

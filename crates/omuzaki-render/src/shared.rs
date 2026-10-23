@@ -41,6 +41,9 @@ pub(crate) struct Layouts {
     pub(crate) environment: wgpu::BindGroupLayout,
     /// Group 0 of the environment backdrop's draw: its uniform (b0), the sky's picture (b1) and its sampler (b2).
     pub(crate) backdrop: wgpu::BindGroupLayout,
+    /// The scene depth as a pass reads it (b0, fragment stage): `[single sample, multisampled]`. One pair for every
+    /// pass that reads depth (depth of field, edge lines), so the attachments' one cached bind group fits them all.
+    pub(crate) depth_input: [wgpu::BindGroupLayout; 2],
 }
 
 /// Stand-ins for texture slots a material leaves empty, so one bind group layout serves every material.
@@ -207,8 +210,26 @@ impl Layouts {
             shadow_receiver,
             environment: environment::layout(device),
             backdrop: environment::backdrop::layout(device),
+            depth_input: [false, true].map(|multisampled| depth_layout(device, multisampled)),
         }
     }
+}
+
+/// The scene depth as a fragment input, single-sampled or multisampled.
+fn depth_layout(device: &wgpu::Device, multisampled: bool) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("scene depth"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Depth,
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled,
+            },
+            count: None,
+        }],
+    })
 }
 
 impl Defaults {

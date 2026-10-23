@@ -11,11 +11,11 @@ use std::fmt;
 use omuzaki_core::glam::{Mat4, UVec2, Vec2, Vec3};
 use omuzaki_core::id::{Slug, SlugError};
 use omuzaki_render_api::{
-    AlphaEncoding, AlphaMode, BackdropFit, Background, Camera, Colour, EnvironmentDesc, EnvironmentUse, ExtraAttribute,
-    Filter, Fog, FrameReport, Image, Instance, JointRange, Light, Mapping, Material, MaterialId, MeshData, MeshId,
-    MeshOptions, MeshUsage, MorphRange, MorphSet, Outline, Overlay, PaintTarget, ParamValue, PixelRect, ProgramParams,
-    Projection, Quality, RenderError, Renderer, RendererExt, Rim, Sampler, Scene, Shading, TargetDesc, TextureDesc,
-    Tonemap, Toon, UvTransform, gradient_at, limits,
+    AlphaEncoding, AlphaMode, BackdropFit, Background, Camera, Colour, EdgeLines, EnvironmentDesc, EnvironmentUse,
+    ExtraAttribute, Filter, Fog, FrameReport, Image, Instance, JointRange, Light, Mapping, Material, MaterialId,
+    MeshData, MeshId, MeshOptions, MeshUsage, MorphRange, MorphSet, Outline, Overlay, PaintTarget, ParamValue,
+    PixelRect, ProgramParams, Projection, Quality, RenderError, Renderer, RendererExt, Rim, Sampler, Scene, Shading,
+    TargetDesc, TextureDesc, Tonemap, Toon, UvTransform, gradient_at, limits,
 };
 
 use crate::shapes;
@@ -73,6 +73,7 @@ pub const CHECKS: &[(&str, Check)] = &[
     ("painted textures show through overlays", painted_textures_show_through_overlays),
     ("outlines hug the silhouette", outlines_hug_the_silhouette),
     ("an open double-sided sheet is outlined from both sides", open_sheets_are_outlined_from_both_sides),
+    ("edge lines draw on the near side of every depth jump", edge_lines_draw_on_the_near_side_of_depth_jumps),
     ("blended instances sort back to front", blended_instances_sort_back_to_front),
     ("skinned instances follow their joints", skinned_instances_follow_their_joints),
     ("mirrored instances render like the original", mirrored_instances_render_like_the_original),
@@ -610,6 +611,42 @@ fn open_sheets_are_outlined_from_both_sides(r: &mut dyn Renderer) -> Outcome {
         expect_pixel(&img, (CENTRE.0 + 29, CENTRE.1), Colour::BLACK, tol, &format!("far from the card, {seen}"))?;
     }
     for resource in [mesh.into(), material.into()] {
+        r.release(resource)?;
+    }
+    Ok(())
+}
+
+fn edge_lines_draw_on_the_near_side_of_depth_jumps(r: &mut dyn Renderer) -> Outcome {
+    let tol = tolerance(r).max(1);
+    // A white card a metre in front of a grey one, on black: the near card's edge is at pixel 40.32, the far one's at
+    // 56.32, so pixels 24..=39 and 8..=55 are covered along the middle row.
+    let near = r.create_mesh(&shapes::quad(Vec2::splat(0.26)))?;
+    let far = r.create_mesh(&shapes::quad(Vec2::splat(0.76)))?;
+    let white = r.create_material(&Material::unlit(Colour::WHITE))?;
+    let grey = r.create_material(&Material::unlit(Colour::rgb(128, 128, 128)))?;
+    let line = Colour::rgb(255, 0, 0);
+    let mut s = scene(Colour::BLACK);
+    s.instances.push(Instance::new(far, grey, Mat4::from_translation(Vec3::new(0.0, 0.0, -0.5))));
+    s.instances.push(Instance::new(near, white, Mat4::from_translation(Vec3::new(0.0, 0.0, 0.5))));
+    let plain_image = draw(r, &s, &plain())?;
+    expect_pixel(&plain_image, (39, 32), Colour::WHITE, tol, "no lines unless the scene asks")?;
+    s.edges = Some(EdgeLines::new(line, 2.0));
+    let img = draw(r, &s, &plain())?;
+    let row = |x: u32| (x, CENTRE.1);
+    for (x, colour, what) in [
+        (39, line, "the near card's last pixel before the far one"),
+        (38, line, "the band is two pixels wide"),
+        (36, Colour::WHITE, "inside the near card, past the band"),
+        (41, Colour::rgb(128, 128, 128), "the far side of the jump draws no line"),
+        (55, line, "the far card's silhouette against the background"),
+        (54, line, "two pixels there too"),
+        (52, Colour::rgb(128, 128, 128), "the far card, past its band"),
+        (57, Colour::BLACK, "the background draws no line"),
+    ] {
+        expect_pixel(&img, row(x), colour, tol, what)?;
+    }
+    expect_pixel(&img, CENTRE, Colour::WHITE, tol, "a flat card has no line inside it")?;
+    for resource in [near.into(), far.into(), white.into(), grey.into()] {
         r.release(resource)?;
     }
     Ok(())

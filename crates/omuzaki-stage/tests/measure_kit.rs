@@ -4,9 +4,10 @@
 //! render's, and blending the head from `round-u` toward `egg-oval` moves `aspect` and the outline distance one way at
 //! every step. Set `OMUZAKI_EVIDENCE_DIR` to keep the renders.
 //!
-//! Both wait on #2319 (run them with `--ignored`): the `measure` render loses its line under the chin of `standard`,
-//! where the neck sits behind it, and at the root of one ear of `mini`, and the measure refuses a face its fill escapes
-//! from. Closing that line by hand in the same render measures cleanly.
+//! Both wait on #2386 (run them with `--include-ignored`). The `measure` render's line is closed now, under the chin
+//! too (#2319: edge lines at every depth jump), and `standard` measures; but its eyes don't snap where the bangs cross
+//! the lids, and a quarter of the way to `egg-oval` the profile leaks at both ends of the eye line, where hair hangs in
+//! front of the temples.
 
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
 #![allow(clippy::expect_used, clippy::unwrap_used)]
@@ -31,7 +32,7 @@ use omuzaki_store_api::Store;
 use serde_json::{Value, json};
 use support::{Harness, TestDoc};
 
-const SIDE: u32 = 768;
+const SIDE: u32 = 1024;
 
 fn kit_doc() -> MemDoc {
     let clock = FakeClock::new(Seconds(0.0));
@@ -110,7 +111,7 @@ fn keep(name: &str, png: &[u8]) {
 }
 
 #[test]
-#[ignore = "#2319: the render's line vanishes under the chin and at the ears, so the measure refuses (measure-leak)"]
+#[ignore = "#2386: the eyes don't snap where the bangs cross the lids"]
 fn kit_renders_measure_and_the_snap_agrees_with_the_rendered_points() {
     let harness = lavapipe(kit_doc());
     for character in ["standard", "mini"] {
@@ -151,7 +152,7 @@ fn kit_renders_measure_and_the_snap_agrees_with_the_rendered_points() {
 /// Design 11.2: `face.set_profile` between `round-u` and `egg-oval` moves `aspect` and `O` monotonically with the
 /// blend.
 #[test]
-#[ignore = "#2319: the render's line vanishes under the chin and at the ears, so the measure refuses (measure-leak)"]
+#[ignore = "#2386: a quarter of the way to egg-oval the profile leaks at the temples"]
 fn blending_round_u_toward_egg_oval_moves_aspect_and_the_outline_one_way() {
     let mut measured = Vec::new();
     for step in 0..5 {

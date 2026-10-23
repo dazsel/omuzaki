@@ -22,11 +22,15 @@
 //! (`omuzaki_render_api::outline_rims`, the mesh's third stream), and an open mesh with such a material gets a second
 //! hull pushed against the normals that keeps the faces turned toward the camera. Whichever side the camera is on, the
 //! copy behind the sheet shows as a band round its edge (#819). The mock draws the same two hulls.
+//!
+//! After the hulls the pass draws the scene's edge lines, if it asks for them ([`Edges`], #2319): a band where the
+//! depth jumps, which the hulls miss where geometry sits close behind a silhouette.
 
 use std::collections::HashMap;
 
 use omuzaki_render_api::{Pass, RenderError};
 
+use super::edges::Edges;
 use super::{FramePass, Outcome, PassCx};
 use crate::frame::FrameView;
 use crate::gpu::{DEPTH_FORMAT, SCENE_FORMAT};
@@ -101,6 +105,7 @@ pub(crate) struct Outlines {
     layout: wgpu::PipelineLayout,
     /// Compiled on first use (a scene's first frame with outlines) and kept.
     pipelines: HashMap<Variant, wgpu::RenderPipeline>,
+    edges: Edges,
 }
 
 impl Outlines {
@@ -122,6 +127,7 @@ impl Outlines {
                 immediate_size: 0,
             }),
             pipelines: HashMap::new(),
+            edges: Edges::new(shared),
         }
     }
 }
@@ -200,7 +206,7 @@ impl FramePass for Outlines {
                 .or_insert_with(|| build_pipeline(device, &self.module, &self.layout, hull.variant));
         }
         if !any {
-            return Ok(Outcome::Skipped);
+            return Ok(if self.edges.record(cx) { Outcome::Ran } else { Outcome::Skipped });
         }
 
         let (environment, frame_group) = (cx.environment_group(), cx.frame_group());
@@ -220,6 +226,8 @@ impl FramePass for Outlines {
             cx.stats.draw_calls += 1;
             cx.stats.triangles += hull.mesh.triangles;
         }
+        drop(pass);
+        self.edges.record(cx);
         Ok(Outcome::Ran)
     }
 }
