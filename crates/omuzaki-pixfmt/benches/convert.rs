@@ -1,16 +1,20 @@
 //! 1280x720 conversion speed on one thread. Budgets (PF-01): NV12 and YUY2 <= 2.5 ms, BGRA <= 1.5 ms, MJPG <= 8 ms.
 //!
-//! MJPG needs a 1280x720 JPEG, which is too big to commit: set `OMUZAKI_PIXFMT_JPEG` to one (for example a 1280x720
-//! Pillow save at quality 90) and the MJPG case runs, with the allocations per decode printed. Without it the case is skipped.
+//! The MJPG frame is a synthetic 4:2:2 one without Huffman tables, as webcams send, made by the test encoder; the
+//! allocations per decode after the first are printed. `benches/mjpg.rs` compares sizes and decoders.
 
 // The counting allocator behind the MJPG allocation report; the workspace denies unsafe code by default.
 #![allow(unsafe_code, clippy::unwrap_used, clippy::expect_used, clippy::cast_possible_truncation)]
+
+#[path = "../tests/support/jpeg_encoder.rs"]
+mod jpeg_encoder;
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::hint::black_box;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use criterion::{Criterion, criterion_group, criterion_main};
+use jpeg_encoder::{Options, encode, picture};
 use omuzaki_pixfmt::{MjpgDecoder, Plane, RgbOut, Yuv, bgra_to_rgb, nv12_to_rgb, yuy2_to_rgb};
 
 struct Counting;
@@ -62,22 +66,19 @@ fn convert(c: &mut Criterion) {
             black_box(&out.data[0]);
         });
     });
-    if let Ok(path) = std::env::var("OMUZAKI_PIXFMT_JPEG") {
-        let jpeg = std::fs::read(path).unwrap();
-        let mut dec = MjpgDecoder::new();
-        let before = ALLOCATIONS.load(Ordering::Relaxed);
-        dec.decode(&jpeg, &mut RgbOut { data: &mut buf, width: W, height: H }).unwrap();
-        println!("mjpg: {} allocations per decode", ALLOCATIONS.load(Ordering::Relaxed) - before);
-        group.bench_function("mjpg", |b| {
-            b.iter(|| {
-                let mut out = RgbOut { data: &mut buf, width: W, height: H };
-                dec.decode(&jpeg, &mut out).unwrap();
-                black_box(&out.data[0]);
-            });
+    let jpeg = encode(&picture(w, h, 1), w, h, Options::default());
+    let mut dec = MjpgDecoder::new();
+    dec.decode(&jpeg, &mut RgbOut { data: &mut buf, width: W, height: H }).unwrap();
+    let before = ALLOCATIONS.load(Ordering::Relaxed);
+    dec.decode(&jpeg, &mut RgbOut { data: &mut buf, width: W, height: H }).unwrap();
+    println!("mjpg: {} allocations per decode after the first", ALLOCATIONS.load(Ordering::Relaxed) - before);
+    group.bench_function("mjpg", |b| {
+        b.iter(|| {
+            let mut out = RgbOut { data: &mut buf, width: W, height: H };
+            dec.decode(&jpeg, &mut out).unwrap();
+            black_box(&out.data[0]);
         });
-    } else {
-        println!("mjpg: skipped (set OMUZAKI_PIXFMT_JPEG to a 1280x720 JPEG)");
-    }
+    });
     group.finish();
 }
 

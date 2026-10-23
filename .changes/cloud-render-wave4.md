@@ -10,4 +10,3 @@
   take, and live state with no linked provider is reported apart from what the writer left out.
 - Shading programs register by name: `omuzaki registrations` lists `"hair"`, not the spec literal.
 - io-api: a material blob serialises as base64; the passthrough finding is summarised per kind.
-- Research: MJPG decode allocations measured (`docs/research/2026-10-mjpg-decode-allocation.md`); zune-jpeg stays.

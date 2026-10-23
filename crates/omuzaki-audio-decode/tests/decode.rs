@@ -4,6 +4,7 @@
 
 use std::f64::consts::TAU;
 
+use omuzaki_audio_api::feed::feed_channel;
 use omuzaki_audio_api::ring::ring;
 use omuzaki_audio_api::tap::DropPolicy;
 use omuzaki_audio_decode::{DecodeError, decode_bytes, decode_file, stream_file};
@@ -383,16 +384,19 @@ fn a_stream_writes_the_same_audio_as_a_whole_decode_and_waits_for_room() {
     std::fs::write(&path, flac(44_100, &tones(44_100, 2, 3 * 44_100))).unwrap();
     let whole = decode_file(&path).unwrap();
 
-    // A ring far smaller than the song: the decoder must wait for the reader, never drop.
-    let (producer, mut consumer) = ring(4_800, DropPolicy::DropNewest, 0);
-    let stream = stream_file(&path, producer).unwrap();
+    // A ring far smaller than the song: the decoder must wait for the reader, never drop. The feed is read the way an
+    // engine reads it, at 48 kHz so the samples come through untouched.
+    let (producer, consumer) = ring(4_800, DropPolicy::DropNewest, 0);
+    let (writer, mut source) = feed_channel(producer, consumer, 48_000, true);
+    let stream = stream_file(&path, writer).unwrap();
     let mut heard = Vec::new();
-    let mut block = vec![0.0f32; 1_024];
-    loop {
-        let read = consumer.pop_into(&mut block);
-        heard.extend_from_slice(&block[..read]);
-        if read == 0 && consumer.writer_gone() && consumer.available() == 0 {
-            break;
+    let (mut left, mut right) = (vec![0.0f32; 512], vec![0.0f32; 512]);
+    let mut at = 0;
+    while !source.is_finished() {
+        let got = source.pull(&mut left, &mut right, 512, at);
+        at += 512;
+        for i in 0..got {
+            heard.extend_from_slice(&[left[i], right[i]]);
         }
         std::thread::yield_now();
     }
@@ -400,8 +404,7 @@ fn a_stream_writes_the_same_audio_as_a_whole_decode_and_waits_for_room() {
     std::fs::remove_dir_all(&dir).unwrap();
     assert!(!end.stopped);
     assert_eq!(end.frames as usize, whole.frames());
-    assert_eq!(consumer.dropped(), 0, "nothing refused");
-    assert_eq!(heard.len(), 2 * whole.frames());
+    assert_eq!(heard.len(), 2 * whole.frames(), "nothing refused");
     for (i, pair) in heard.chunks(2).enumerate() {
         assert_eq!(pair[0].to_bits(), whole.channel(0)[i].to_bits(), "left, frame {i}");
         assert_eq!(pair[1].to_bits(), whole.channel(1)[i].to_bits(), "right, frame {i}");
@@ -416,14 +419,16 @@ fn a_stream_stops_when_asked_or_when_its_reader_goes() {
     std::fs::write(&path, wav(48_000, &tones(48_000, 2, 10 * 48_000), Pcm::S16)).unwrap();
 
     let (producer, consumer) = ring(4_800, DropPolicy::DropNewest, 0);
-    let stream = stream_file(&path, producer).unwrap();
+    let (writer, consumer) = feed_channel(producer, consumer, 48_000, true);
+    let stream = stream_file(&path, writer).unwrap();
     stream.stop();
     let end = stream.join().unwrap();
     assert!(end.stopped && (end.frames as usize) < 10 * 48_000);
     drop(consumer);
 
     let (producer, consumer) = ring(4_800, DropPolicy::DropNewest, 0);
-    let stream = stream_file(&path, producer).unwrap();
+    let (writer, consumer) = feed_channel(producer, consumer, 48_000, true);
+    let stream = stream_file(&path, writer).unwrap();
     drop(consumer);
     let end = stream.join().unwrap();
     std::fs::remove_dir_all(&dir).unwrap();

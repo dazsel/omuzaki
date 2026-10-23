@@ -273,6 +273,8 @@ pub fn run(core: &AppCore, command: &BranchCommand, session: &Session, json: boo
         BranchCommand::Switch { name: to } => {
             let target = by_name(core, to)?;
             let switched = branches.switch(&target.id, by).map_err(branch_error)?;
+            // The command returns with the folder's files written for the branch.
+            branches.settled().map_err(branch_error)?;
             reply(json, &json!({"from": switched.from, "to": switched.to}), format!("switched to {}\n", target.name))
         }
         BranchCommand::Checkpoint { branch, label, ready, note } => {

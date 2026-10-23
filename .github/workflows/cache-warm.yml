@@ -82,8 +82,27 @@ jobs:
           save-cache: true
           gpu: true
           free-disk: true
+      # Shard by shard, as ci.yml's test jobs build them (the same package sets, so the same dependency builds), with
+      # each shard's linked test binaries deleted before the next: rust-cache saves only the dependencies, and the whole
+      # workspace's test binaries at once no longer fit the runner's disk (No space left, run 39873427331).
       - name: Build every test binary (not run)
-        run: cargo test --locked --workspace --features omuzaki-cli/test-fixtures --no-run
+        run: |
+          set -euo pipefail
+          cargo run --locked --quiet -p xtask -- check --all --format json --shards 6 >"$RUNNER_TEMP/report.json"
+          mapfile -t shards < <(python3 -I -c '
+          import json, sys
+          for items in json.load(open(sys.argv[1]))["shards_full"]:
+              print(" ".join(sorted({item.split("@")[0] for item in items})))
+          ' "$RUNNER_TEMP/report.json")
+          for shard in "${shards[@]}"; do
+            echo "== $shard"
+            packages=(); for name in $shard; do packages+=(-p "$name"); done
+            features=(); [[ " $shard " == *" omuzaki-cli "* ]] && features=(--features omuzaki-cli/test-fixtures)
+            cargo test --locked "${packages[@]}" "${features[@]}" --no-run
+            # Test and app executables have no extension; proc-macro libraries (.so) and rlibs stay for the cache.
+            find target/debug/deps target/debug -maxdepth 1 -type f -executable ! -name '*.*' -delete
+            df -h / | tail -n 1
+          done
 
   win-cross:
     name: windows build

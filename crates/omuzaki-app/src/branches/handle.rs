@@ -62,6 +62,10 @@ impl Branches for BranchesHandle {
         self.get()?.switch(to, by)
     }
 
+    fn settled(&self) -> Result<(), BranchError> {
+        self.get()?.settled()
+    }
+
     fn rename(
         &self,
         branch: &BranchId,

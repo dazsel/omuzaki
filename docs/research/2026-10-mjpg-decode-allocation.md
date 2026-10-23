@@ -1,81 +1,135 @@
 ---
-title: "MJPG decode allocations: measured, and why zune-jpeg stays"
-summary: "zune-jpeg allocates 4 blocks (31 to 91 KiB) per MJPG decode, about 0.5 us of a 2 to 13 ms decode; the tail comes from the decode itself, so the decoder stays and no pooled adapter is needed"
+title: "MJPG decode without per-frame allocation (2026-10-22)"
+summary: "Which JPEG decoder the webcam path should use for MJPG: zune-jpeg, jpeg-decoder or our own baseline decoder, measured for time, p99 and allocations at 480p, 720p and 1080p; we use our own, now in omuzaki-pixfmt."
 area: research
 ---
 
-# MJPG decode allocations (#886)
+# MJPG decode without per-frame allocation (2026-10-22)
 
-**Recommendation.** Keep zune-jpeg and keep `MjpgDecoder` as it is. A decode makes **4 allocations** (31 KiB at
-640x480, 61 KiB at 720p, 91 KiB at 1080p), not about 17 as #886 assumed. Made and freed on their own they cost
-**0.3 to 0.6 us**, under 0.01 % of a decode that takes 1.9 to 12.7 ms. The p99 tail (1.5 times the median) is the
-decode's own variance on a shared machine, not the allocator. A buffer-reusing decoder could not move either number
-in a way capture can see, so no follow-up task is filed. Revisit only if a profile on a reference machine shows
-allocator time in the capture thread, or if zune-jpeg ships a scratch-reuse API in a stable release (none in 0.5.15).
+> Research for #886, done together with #1851 (PF-01, spec v3 §10: no allocation in real-time loops). Measured on
+> synthetic frames only, made by the repository's test encoder; no camera clip was used.
 
-**Bench:** `crates/omuzaki-pixfmt/benches/mjpg_jitter.rs`
-(`cargo bench -p omuzaki-pixfmt --bench mjpg_jitter`).
-**Machine:** one 4-core cloud VM, Linux, release build, nothing else running in the session. Not a reference machine:
-read the times as relative, the allocation counts as exact.
+## Recommendation
 
-## What was measured
+Use our own baseline decoder for webcam MJPG, and keep zune-jpeg for every other JPEG. This has landed in
+`omuzaki-pixfmt` (`MjpgDecoder`):
 
-The bench encodes one synthetic frame per size with the `image` crate's JPEG encoder at quality 90. The frame is a
-smooth light falloff with rings and fine grain, so it has both the flat regions and the detail of a face in a room. It
-is never a camera clip. `MjpgDecoder` (strict mode, RGB out, straight into the caller's buffer) then decodes it:
+- **No allocations.** It allocates nothing per frame once it has seen a frame size: 0 per decode at 480p, 720p and
+  1080p, where zune-jpeg makes 17 and jpeg-decoder thousands.
+- **As fast as zune-jpeg.** It is level with zune-jpeg and about twice as fast as jpeg-decoder.
+- **Matches libjpeg-turbo.** Its pixels match libjpeg-turbo's bit for bit (libjpeg's integer IDCT, fancy upsampling
+  and colour maths).
+- **Decodes what webcams send.** It decodes frames with no Huffman tables, as webcams send them. Neither library
+  decodes those frames.
+- **Licence and scope.** It adds no dependency. Its scope is narrow: 8-bit baseline, grey or YCbCr, at 4:4:4, 4:2:2
+  or 4:2:0.
 
-- 20 warm-up decodes, then 400 timed ones, each timed alone;
-- every allocation during the timed loop counted by a global counting allocator (the zero-allocation tests use the same
-  one), with the timing buffer reserved beforehand, so every count is the decoder's;
-- "their cost": the same number of blocks of the same total size, allocated zeroed and freed, 2000 rounds. This is an
-  upper bound on what reusing scratch buffers could save.
+No follow-up task is needed. MJPG stays last in the webcam's format preference. It no longer allocates, but a 720p
+decode still costs about 1.7 times an NV12 conversion, and it carries the camera's compression.
 
-## Numbers
+## 1. Candidates
 
-| size | JPEG | p50 | p99 | worst | allocations per decode | bytes per decode | their cost |
-|---|---|---|---|---|---|---|---|
-| 640x480 | 86 KiB | 1.91 ms | 2.97 ms | 3.61 ms | 4.0 | 31 KiB | 0.3 us |
-| 1280x720 | 250 KiB | 5.63 ms | 8.36 ms | 10.54 ms | 4.0 | 61 KiB | 0.5 us |
-| 1920x1080 | 552 KiB | 12.67 ms | 18.15 ms | 36.88 ms | 4.0 | 91 KiB | 0.6 us |
-
-A second run gave the same counts and medians within 0.2 ms (1.77 / 5.49 / 12.70 ms). The worst single decodes moved
-between runs (20.6 ms and 36.9 ms at 1080p), as preemption on a shared VM does; neither the allocator nor the decoder
-explains a 3x outlier.
-
-What the numbers say:
-
-- **Allocation is not the jitter.** At 720p the allocations cost 0.5 us and the p99 sits 2.7 ms above the median. Even if
-  every allocation landed in the tail, it would explain 0.02 % of it.
-- **The counts are flat.** Four blocks per decode at every size, and their total grows with the width (31, 61, 91 KiB
-  for 640, 1280, 1920 pixels across), not the area: row-sized scratch, not a frame. The pixels go straight into `out`.
-- **The blocks stay under glibc's mmap threshold** (128 KiB by default), so they come from the heap's free lists, not
-  from fresh pages: the cheap case, and the one this bench measured.
-- **The budget.** PF-01 gives MJPG 8 ms at 720p. The median (5.6 ms) is inside it on this machine; the p99 (8.4 ms)
-  is just over, on a VM without a dedicated core. A reference-machine run decides that, not this note.
-
-## Candidates
-
-| decoder | licence | reuses buffers between frames | SIMD | maintenance | verdict |
+| Decoder | Licence | Reuses buffers between frames | SIMD | Maintenance | Table-less MJPG |
 |---|---|---|---|---|---|
-| zune-jpeg 0.5.15 (current) | MIT OR Apache-2.0 OR Zlib | no API for it; 4 small allocations per decode | yes (runtime-detected x86 paths) | active; a 0.5.16 release candidate is published | **keep** |
-| jpeg-decoder 0.3.2 | MIT OR Apache-2.0 | no; `decode()` returns a fresh `Vec` per image, so it allocates the whole frame each time | limited | slower moving since the `image` crate moved its JPEG decoding to zune-jpeg | worse on the very axis #886 asks about |
-| A pooled-buffer adapter over zune-jpeg | ours | would need zune-jpeg's internals; its public API (`new_with_options`, `decode_headers`, `decode_into`) takes no scratch | as zune-jpeg | ours to keep | nothing to save (0.5 us) |
-| libjpeg-turbo through a binding crate | libjpeg-turbo itself is BSD-style (IJG, BSD-3, zlib); each binding has its own | a decompressor handle is reusable | yes | active | not worth a C dependency and a cross-compile step for 0.5 us |
+| zune-jpeg 0.5.15 (current dependency) | MIT OR Apache-2.0 OR Zlib | No | AVX2 IDCT and colour (runtime detection) | Active: 0.5.16-rc3 published 2026-10-19 | No |
+| zune-jpeg 0.5.16-rc3 | same | No | same | release candidate | not tested |
+| jpeg-decoder 0.3.2 | MIT OR Apache-2.0 | No | SSSE3 paths on x86 | Last release 2025-06; `image` now decodes through zune-jpeg | No |
+| Our baseline decoder (`omuzaki-pixfmt/src/mjpg/`) | the project's own | Yes: tables, planes and row buffers persist | SSE2 IDCT, upsampling and colour (x86-64 baseline, so no runtime detection); scalar elsewhere | ours | Yes |
 
-Licences above are as each project declares them; every candidate allows commercial use, and a binding crate's own
-licence would get its check if one were ever proposed. Nothing here is added, so no
-licence-register row is needed.
+**zune-jpeg 0.5.15:**
+- `JpegDecoder::new` takes the stream by value, so every image builds a new decoder: its tables, its MCU row buffers
+  and its component state.
+- The 17 allocations per decode come from there. The pixels themselves go straight into our buffer through
+  `decode_into`.
 
-## Why not switch anyway
+**zune-jpeg 0.5.16-rc3:**
+- It adds incremental decoding (`decode_next_imcu_row`, `set_incremental_mode`) and plane output
+  (`decode_into_planes`).
+- `into_inner` gives the stream back, but a decoder still can't take a new image, so the per-image allocations stay.
 
-The zero-allocation rule (spec §10) is about the hot loops whose frames must not stall: the tracker and the renderer.
-MJPG decode runs on the capture thread, once per camera frame, and costs milliseconds; four heap blocks per frame
-cannot stall it measurably, and the tracker's own zero-allocation test already excludes it (`MjpgDecoder` documents
-the exception). A switch would trade a maintained pure-Rust decoder for either a slower allocating one or C code,
-to save half a microsecond.
+**Frames without Huffman tables:**
+- A UVC camera's MJPG frames usually carry no DHT segment. The decoder is expected to use the T.81 Annex K tables.
+- Both libraries return an error on such a frame, at least without an `AVI1` APP0 marker.
+- Ours fills table slots 0 and 1 with the Annex K tables whenever a frame leaves them out.
+  `huffman::tests::the_standard_tables_are_the_ones_libjpeg_writes` checks those constants against the tables
+  libjpeg-turbo writes.
 
-## If this is revisited
+**Our decoder:**
+- **Header parsing.** It parses SOF0 and SOF1, DQT (8 and 16 bit), DHT, DRI and SOS. It handles restart markers.
+- **Decoding:**
+  - The bit reader adds eight bytes at once when none of them is 0xFF.
+  - One table read decodes most AC coefficients, run and value together.
+  - All-DC blocks skip the transform.
+- **SSE2 paths.** The IDCT follows libjpeg-turbo's `jidctint-sse2`: 16-bit rows and `pmaddwd` rotations. The
+  upsampling and the colour conversion split each 17-bit constant into a shift and a 16-bit multiply. Tests hold each
+  SSE2 path to its scalar reference exactly:
+  - 20,000 random blocks;
+  - every Cb and Cr value at nine luma levels;
+  - every row length.
+- **Unsafe code.** The SSE2 code needs one `unsafe` call per entry point, for the `#[target_feature]` boundary. A
+  compile-time assertion that SSE2 is enabled guards each one. SSE2 is part of the x86-64 baseline.
+- **Fallbacks.** Anything outside its scope goes to zune-jpeg, and so does any frame it rejects. `fallbacks()` counts
+  them.
 
-- Re-run the bench on a reference machine with a real 720p MJPG camera stream; keep frames synthetic in the repository.
-- Check zune-jpeg's next stable release for a scratch-reuse or `reset`-style API; if one lands, `MjpgDecoder` already
-  owns a decoder per camera and can hold the scratch without an API change.
+## 2. Measurements
+
+**Bench:** `cargo bench -p omuzaki-pixfmt --bench mjpg` (`crates/omuzaki-pixfmt/benches/mjpg.rs`). Each case decodes
+four different frames in turn, 100 rounds after a warm-up pass. It counts allocations with a counting global
+allocator, as the crate's zero-allocation tests do.
+
+**Machine:** one thread of a 4-core cloud VM. Its timings are noisy: max and p99 move by a few milliseconds from run to
+run, and p50 is the steady figure.
+
+**Frames:**
+- Synthetic, at quality 85: gradients, a soft disc, fine stripes and ±8 noise.
+- About 54 KB a frame at 480p, 157 KB at 720p and 348 KB at 1080p, for 4:2:2.
+- Our decoder gets the frames without Huffman tables. zune-jpeg and jpeg-decoder get the same frames with the tables
+  written out, which decode to the same coefficients.
+
+| Size and sampling | Our decoder: p50 / p99 | zune-jpeg 0.5.15: p50 / p99 | Allocations per decode (ours / zune-jpeg) |
+|---|---|---|---|
+| 640x480, 4:2:2 | 1.49 / 3.59 ms | 1.58 / 2.33 ms | 0 / 17 |
+| 640x480, 4:2:0 | 1.36 / 1.84 ms | 1.38 / 1.69 ms | 0 / 17 |
+| 1280x720, 4:2:2 | **4.32** / 5.13 ms | 4.57 / 5.45 ms | 0 / 17 |
+| 1280x720, 4:2:0 | 4.02 / 6.65 ms | 4.13 / 6.42 ms | 0 / 17 |
+| 1920x1080, 4:2:2 | 10.49 / 16.94 ms | 10.50 / 20.85 ms | 0 / 17 |
+| 1920x1080, 4:2:0 | 9.30 / 15.74 ms | 9.31 / 13.99 ms | 0 / 17 |
+
+**jpeg-decoder 0.3.2:**
+- It was measured on the same frames in a scratch crate outside the repository, since it is not a dependency here. That
+  scratch crate is the same harness with `jpeg-decoder = { version = "=0.3.2", default-features = false }`.
+- In the same run, our decoder took 4.34 ms (p50) at 720p and 10.52 ms at 1080p.
+
+| Size, 4:2:2 | jpeg-decoder: p50 / p99 | Allocations per decode |
+|---|---|---|
+| 640x480 | 4.17 / 6.36 ms | 2,207 |
+| 1280x720 | 9.10 / 16.23 ms | 3,257 |
+| 1920x1080 | 17.39 / 27.26 ms | 4,838 |
+
+**Before and after:**
+- **Our decoder's first version** was scalar, with planes for the whole frame. It took 8.3 ms p50 at 720p 4:2:2.
+- **The SSE2 IDCT** cut its cost per block from about 110 ns to about 45 ns, measured by `idct::tests::speed`.
+- **SSE2 colour conversion and upsampling, the word-at-a-time bit reader and the fused AC lookup** brought the decode
+  to 4.3 ms.
+- **The PF-01 budget** for MJPG is 8 ms at 720p (`benches/convert.rs`). The decoder is inside it at p50 and at p99.
+
+**What else the tests prove:**
+- **No allocations.** `tests/alloc.rs` decodes 720p and 1080p frames in 4:2:2 without tables and in 4:2:0 with
+  restart markers. Two different pictures alternate. It counts 0 allocations after the first frame of each size, and
+  0 when switching between the sizes. `omuzaki-track`'s `tests/webcam.rs` proves the same through `FrameConverter`.
+- **Accuracy.** `tests/convert.rs` matches Pillow (libjpeg-turbo) exactly on the 4:4:4, 4:2:2 and 4:2:0 fixtures. The
+  old path was within 3 levels.
+- **Coverage.** `tests/mjpg.rs` covers:
+  - every sampling at odd sizes from 1x1 to 320x240;
+  - restart intervals of 1 and 3, with and without tables;
+  - a progressive fixture that goes to zune-jpeg;
+  - a frame cut at a restart marker, which is an error;
+  - 256 corrupted frames that never panic and leave the decoder working.
+
+## 3. What was not done
+
+- **AVX2.** Running the IDCT and the colour conversion with AVX2 (with runtime detection) would cut a further third or
+  so. It is not needed inside the budget.
+- **Multi-buffer MJPG capture.** The Media Foundation camera's gather buffer is sized for multi-buffer MJPG samples at
+  two bytes per pixel, which a valid frame can exceed (#1804, raised again on #1851). That code belongs to the Render
+  area and is filed separately as #2333, so this note doesn't cover it.

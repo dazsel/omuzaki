@@ -19,6 +19,10 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+#[path = "../../omuzaki-pixfmt/tests/support/jpeg_encoder.rs"]
+mod jpeg_encoder;
+
+use jpeg_encoder::{Options, Sampling, encode};
 use omuzaki_anim_api::{ARKIT_COUNT, ChannelMask, FrameSource, TrackFrame, TrackStatus};
 use omuzaki_core::time::{Clock, FakeClock, Seconds};
 use omuzaki_track::webcam::{
@@ -858,24 +862,30 @@ fn reading_the_latency_allocates_nothing() {
 }
 
 #[test]
-fn mjpg_allocates_nothing_frame_sized() {
-    let jpeg = std::fs::read(format!("{}/../omuzaki-pixfmt/tests/fixtures/64x48_420.jpg", env!("CARGO_MANIFEST_DIR")))
-        .unwrap();
-    let frame = CameraFrame::new(&jpeg, 64, 48, 0, PixelFormat::Mjpg, DeviceTime(0), 0);
-    let mut converter = FrameConverter::with_size(64, 48);
-    converter.convert(&frame).unwrap();
-    MEASURING.with(|m| m.set(true));
-    let (calls, bytes) = (THREAD_ALLOCS.with(Cell::get), THREAD_BYTES.with(Cell::get));
-    THREAD_LARGEST.with(|c| c.set(0));
-    for _ in 0..100 {
-        converter.convert(&frame).unwrap();
+fn mjpg_at_720p_and_1080p_allocates_nothing_after_the_first_frame() {
+    // Webcam-like frames from the pixfmt test encoder: 4:2:2 without Huffman tables (what UVC cameras send) and
+    // 4:2:0 with restart markers.
+    let configs = [
+        Options { sampling: Sampling::S422, ..Options::default() },
+        Options { sampling: Sampling::S420, restart: 8, dht: true, quality: 90 },
+    ];
+    for (w, h) in [(1280_u32, 720_u32), (1920, 1080)] {
+        let mut converter = FrameConverter::with_size(w, h);
+        for o in configs {
+            let jpegs = [1, 2]
+                .map(|seed| encode(&jpeg_encoder::picture(w as usize, h as usize, seed), w as usize, h as usize, o));
+            let frames = jpegs.each_ref().map(|j| CameraFrame::new(j, w, h, 0, PixelFormat::Mjpg, DeviceTime(0), 0));
+            converter.convert(&frames[0]).unwrap();
+            MEASURING.with(|m| m.set(true));
+            let calls = THREAD_ALLOCS.with(Cell::get);
+            for i in 0..10 {
+                converter.convert(&frames[i % 2]).unwrap();
+            }
+            let calls = THREAD_ALLOCS.with(Cell::get) - calls;
+            MEASURING.with(|m| m.set(false));
+            assert_eq!(calls, 0, "{w}x{h} {o:?}: {calls} allocations in 10 frames");
+        }
     }
-    let (calls, bytes) = (THREAD_ALLOCS.with(Cell::get) - calls, THREAD_BYTES.with(Cell::get) - bytes);
-    MEASURING.with(|m| m.set(false));
-    let largest = THREAD_LARGEST.with(Cell::get);
-    eprintln!("mjpg 64x48: {} allocations and {} bytes per frame, largest {largest} bytes", calls / 100, bytes / 100);
-    // The pixels go into the converter's own buffer: nothing the size of a frame (9216 bytes here) is allocated.
-    assert!(largest < 64 * 48 * 3, "largest allocation {largest} bytes");
 }
 
 #[test]

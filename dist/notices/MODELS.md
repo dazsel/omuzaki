@@ -22,3 +22,14 @@ licence text is in `Apache-2.0.txt` next to this file.
 - **Licence of the conversions:** the same as the weights they come from, Apache-2.0.
 - **Integrity:** `models/mediapipe-face/manifest.json` lists the SHA-256 of every file; the packager refuses to build a
   zip whose files do not match it.
+- **Licence record:** Google states the Apache-2.0 licence on the three networks' model cards; the bundle itself has no
+  licence file. The cards as read, published at `https://storage.googleapis.com/mediapipe-assets/`:
+
+| Card | Network | SHA-256 | Bytes | Object generation |
+|---|---|---|---|---|
+| `MediaPipe BlazeFace Model Card (Short Range).pdf` | BlazeFace short range | `cd335c06fc0de7807cd815a0777a697932598bcdb28fa98adaaabf847485f758` | 434,425 | 1683223301065412 |
+| `Model Card MediaPipe Face Mesh V2.pdf` | Face Mesh V2 | `c6add060f4ebfb37b2690136b6c711c7e5fcb7038baa2649ae3338b83979565a` | 3,476,420 | 1683910257859728 |
+| `Model Card Blendshape V2.pdf` | Blendshape V2 | `c8e9cf60a39998f4b341740623917590e050d1c97004e2de4568d84e026445ae` | 2,324,099 | 1683910254913832 |
+
+- **The app never contacts Google:** the models come in this folder; nothing is downloaded from Google at run time,
+  and no MediaPipe library (and so none of its telemetry) is part of the app.

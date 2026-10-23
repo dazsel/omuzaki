@@ -10,7 +10,8 @@
 //! - device inputs are silent: audio enters only through feeds (a `SourceRef::Feed` source);
 //! - `apply` rebuilds the mixer, so node state and ramps start fresh, and the live setters are applied to the running
 //!   mixer as ramps;
-//! - a feed is 48 kHz only (no resampling at the edge), and a closed feed goes silent from the next block with no fade;
+//! - feeds are pulled exactly as the real engine pulls them (`omuzaki_audio_api::feed::FeedSource`): any rate, the
+//!   playhead and the close fade included;
 //! - a tap that is not mixed down is refused for a stereo point (one scalar ring cannot carry two channels with
 //!   frame-true positions);
 //! - meters are the peak and RMS of the **last block** (not 300 ms), and the program-only fields keep their neutral
@@ -24,6 +25,7 @@ use omuzaki_audio_api::backend::BackendError;
 use omuzaki_audio_api::clock::{ClockSnapshot, EngineClock};
 use omuzaki_audio_api::device::{Binding, DeviceId, DeviceInfo, DeviceState, Direction};
 use omuzaki_audio_api::engine::{AudioEngine, AudioError, Planar};
+use omuzaki_audio_api::feed::{FeedSource, feed_channel};
 use omuzaki_audio_api::graph::{AecMode, Channels, GraphSpec, MONITOR_OUT_ROLE, MicMode, SourceRef};
 use omuzaki_audio_api::ids::{BusId, DeviceRole, FeedId, NodeId};
 use omuzaki_audio_api::node::{MAX_BLOCK, NodeKind, ParamIndex, SAMPLE_RATE, node_kind};
@@ -31,7 +33,7 @@ use omuzaki_audio_api::report::{
     AudioEvent, AudioEvents, AudioStatus, ClockSource, EventSender, GraphReport, LatencyEstimate, LeavingTap,
     MeterPoint, Meters, RouteEnd, TapDrops, event_queue,
 };
-use omuzaki_audio_api::ring::{Consumer, Producer, TapFlags, ring};
+use omuzaki_audio_api::ring::{Producer, TapFlags, ring};
 use omuzaki_audio_api::tap::{
     DropPolicy, FeedRequest, FeedWriter, TapClosed, TapHandle, TapInfo, TapPoint, TapRate, TapReader, TapRequest,
     TapSink,
@@ -119,11 +121,9 @@ struct OpenTap {
     capture_offset: Seconds,
 }
 
-/// A feed: the reading end of its ring, and how many samples it has been short of.
+/// A feed: the engine's end, which both engines pull the same way.
 struct OpenFeed {
-    reader: Consumer,
-    channels: usize,
-    underrun_samples: u64,
+    source: FeedSource,
 }
 
 struct State {
@@ -219,7 +219,7 @@ impl MockEngine {
     /// the feed `id`; `None` for a feed that is not open.
     #[must_use]
     pub fn feed_underruns(&self, id: &FeedId) -> Option<u64> {
-        self.state().feeds.get(id).map(|f| f.underrun_samples)
+        self.state().feeds.get(id).map(|f| f.source.underruns())
     }
 
     /// The changer latency last stored with `set_changer_latency`.
@@ -238,7 +238,7 @@ impl State {
     }
 
     fn block(&mut self, frames: usize) {
-        self.feeds.retain(|_, feed| !feed.reader.writer_gone());
+        self.feeds.retain(|_, feed| !feed.source.is_finished());
         let sources = self.read_feeds(frames);
         self.taps.retain(|tap| !tap.link.is_closed());
         let want: BTreeSet<_> = self.taps.iter().map(|t| t.processor.plan().point.clone()).collect();
@@ -266,12 +266,9 @@ impl State {
     fn read_feeds(&mut self, frames: usize) -> BTreeMap<SourceRef, Planar> {
         let mut sources = BTreeMap::new();
         for (id, feed) in &mut self.feeds {
-            let wanted = frames * feed.channels;
-            let mut interleaved = vec![0.0; wanted];
-            let got = feed.reader.pop_into(&mut interleaved);
-            feed.underrun_samples += (wanted - got) as u64;
-            let planar: Planar =
-                (0..feed.channels).map(|c| (0..frames).map(|n| interleaved[n * feed.channels + c]).collect()).collect();
+            let (mut left, mut right) = (vec![0.0; frames], vec![0.0; frames]);
+            feed.source.pull(&mut left, &mut right, frames, self.sample);
+            let planar: Planar = if feed.source.stereo() { vec![left, right] } else { vec![left] };
             sources.insert(SourceRef::Feed { id: id.clone() }, planar);
         }
         sources
@@ -493,16 +490,15 @@ impl AudioEngine for MockEngine {
     }
 
     fn feed(&self, request: &FeedRequest) -> Result<FeedWriter, AudioError> {
-        if request.rate != SAMPLE_RATE {
-            return Err(AudioError::Internal(format!(
-                "the mock engine takes feeds at {SAMPLE_RATE} Hz only, not {} Hz",
-                request.rate
-            )));
+        if request.rate == 0 {
+            return Err(AudioError::Internal("a feed needs a rate above zero".into()));
         }
         let channels: usize = if request.mono { 1 } else { 2 };
         let capacity = ring_samples(request.capacity, request.rate)?.saturating_mul(channels);
-        let (writer, reader) = ring(capacity, DropPolicy::DropNewest, 0);
-        self.state().feeds.insert(request.id.clone(), OpenFeed { reader, channels, underrun_samples: 0 });
+        let (producer, reader) = ring(capacity, DropPolicy::DropNewest, 0);
+        let (writer, source) = feed_channel(producer, reader, request.rate, !request.mono);
+        // A feed under an id still open replaces it.
+        self.state().feeds.insert(request.id.clone(), OpenFeed { source });
         Ok(writer)
     }
 

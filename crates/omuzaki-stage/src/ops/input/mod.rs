@@ -9,6 +9,7 @@
 //! | `input.preview {on}` | `perform` | Confirm (it starts a capture) | the inverse `input.preview` |
 //! | `input.request_camera` | `perform` | Never (the OS dialog is the person's) | none: the OS permission is the person's to revoke |
 //! | `input.state` | `read` | free | none (a query) |
+//! | `input.cameras` | `read` | free | none (a query; it opens no camera) |
 //! | `input.doctor` | `read` | free | none (a query) |
 //! | `input.recheck` | `perform` | as the policy says | none: it only restarts the doctor's measuring |
 //! | `input.calibrate {cancel}` | `perform` | Confirm to start (it reads the face); anyone may cancel | none: calibrating again replaces it |
@@ -35,6 +36,7 @@ use crate::perform::input::{InputError, InputHost, SourceKind};
 pub mod bind_camera;
 pub mod calibrate;
 pub mod calibration;
+pub mod cameras;
 pub mod doctor;
 pub mod gestures;
 pub mod health;

@@ -23,8 +23,8 @@ pub mod seed;
 mod text;
 
 pub use apply::{apply_for_test, apply_with_library};
-pub use facts::CharacterFacts;
 pub use library::MockLibrary;
+pub use omuzaki_library_api::CharacterFacts;
 
 omuzaki_core::define_link! {
     omuzaki_char_api::link();
