@@ -56,7 +56,10 @@ fn every_species_stands_flush_on_the_head_and_never_sinks() {
             assert!(gap < 0.001, "{species:?} x{size}: the base ring stands {gap} m off the head");
             assert!(sink < 0.002, "{species:?} x{size}: the shell sinks {sink} m into the head");
             let height = off(head, left.tip);
-            assert!(height > 0.04 * omuzaki_face_api::narrow(size), "{species:?} x{size}: the tip is only {height} m above the head");
+            assert!(
+                height > 0.04 * omuzaki_face_api::narrow(size),
+                "{species:?} x{size}: the tip is only {height} m above the head"
+            );
         }
     }
 }
