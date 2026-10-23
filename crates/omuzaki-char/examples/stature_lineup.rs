@@ -36,7 +36,11 @@ fn describe(t: &dyn Template) -> Value {
     let layout = t.layout(&Proportions::default(), &BodyShape::default(), &HandParams::default());
     let stature = t.stature(&layout).expect("the template has a stature");
     let scale = f64::from(stature.scale);
-    let c = defaults.head.cranium;
+    let c = &defaults.head.cranium;
+    // Where the head part puts the cranium: seated on the template's head joint, then lowered by the neck's drop.
+    let joint = layout.head_base().expect("the template has a head joint");
+    let [x, y, _] = omuzaki_char::head::part::seat(c, joint.y);
+    let centre = [x, y - defaults.head.neck.drop];
     json!({
         "id": t.id(),
         "heads_tall": t.heads_tall(),
@@ -45,7 +49,7 @@ fn describe(t: &dyn Template) -> Value {
         "scale": scale,
         "height_m": stature.height_m,
         "head": {
-            "centre": [c.centre[0] * scale, c.centre[1] * scale],
+            "centre": [centre[0] * scale, centre[1] * scale],
             "half_width": c.half_width * scale,
             "half_up": c.half_height_up * scale,
             "half_down": c.half_height_down_front * scale,

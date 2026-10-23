@@ -3,7 +3,7 @@
 //!
 //! A garment carries its trims as [`TrimSpec`] values in its parameters, and adds each one with [`add_trim`] after its
 //! own surfaces. Each generator is a pure function of the surface and the spec that returns
-//! [`MeshBuilder`](crate::kit::grid::MeshBuilder) pieces, skinned like the surface under them (a [`Rail`] carries the
+//! [`MeshBuilder`] pieces, skinned like the surface under them (a [`Rail`] carries the
 //! surface's weights at each of its points); [`add_trim`] gives the pieces their materials and names them after the part.
 //!
 //! **Placing.** A trim is placed in the surface's own coordinates: `[t, phi]`, `t` along the region from 0 to 1 and
@@ -688,7 +688,7 @@ const MAX_MITRE: f64 = std::f64::consts::SQRT_2;
 /// The flat `outline` (local x, y; counter-clockwise) extruded along local z from 0 to `depth`, its edges bevelled as
 /// three.js's `ExtrudeGeometry` does: the faces are the outline at `-bevel.thickness` and `depth + bevel.thickness`, and
 /// between them the outline grows by up to `bevel.size` (each edge moved out by that much, corners mitred, a mitre
-/// never longer than [`MAX_MITRE`] sizes). The faces
+/// never longer than `MAX_MITRE` sizes). The faces
 /// are filled as the convex pieces `faces` lists (index lists into `outline`), so a concave outline closes too.
 ///
 /// # Errors

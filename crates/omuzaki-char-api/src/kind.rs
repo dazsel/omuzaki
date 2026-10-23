@@ -1,6 +1,6 @@
 //! Part kinds: how generators plug in (spec §18, §39 rule 2).
 //!
-//! A part kind is a generator with a typed parameter struct. It **registers itself** with [`register_part_kind!`], the
+//! A part kind is a generator with a typed parameter struct. It **registers itself** with [`register_part_kind!`](crate::register_part_kind!), the
 //! same way ops do, so adding a garment generator means adding one file and nothing edits a central list. The
 //! parameter struct is the single source of truth: its serde form is what the project file stores, its JSON Schema is
 //! what ops, the MCP server and the UI sliders read, and [`Validate`] is what rejects bad edits.
@@ -101,6 +101,17 @@ pub trait PartKind: 'static {
     /// Builds the part. Must be a pure function of `params` and the context: same inputs, same output, on every
     /// platform (use `ctx.rng`, never global state or the clock).
     ///
+    /// Two palette contracts hold for every kind, because a caching builder keys a part on them (`omuzaki-char`'s
+    /// `builder` module) and a kind that broke one would be served stale, not refused:
+    /// 1. **Colours only through the parameters.** Read palette colours only through the [`ColourRef`]s in `params`
+    ///    ([`BuildCtx::colour`]), never a fixed slot behind their back (`ctx.palette.0.get("skin")`): a part is rebuilt
+    ///    when a slot its parameters name changes, and only then.
+    /// 2. **What a part publishes is colour independent.** Nothing in [`PartOutput::publishes`] may depend on palette
+    ///    colours (decision Q6: geometry doesn't depend on colour), so a skin change rebuilds the body but not the
+    ///    garments that only see its shape.
+    ///
+    /// `omuzaki_char::builder::conformance` checks both over every linked kind.
+    ///
     /// # Errors
     /// A [`BuildError`] naming the part, for example [`BuildError::Missing`] when a required surface wasn't published.
     fn build(params: &Self::Params, ctx: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError>;
@@ -199,7 +210,7 @@ pub struct PartKindRegistration {
 }
 
 impl PartKindRegistration {
-    /// The registration for kind `K`; `const` so [`register_part_kind!`] works at link time.
+    /// The registration for kind `K`; `const` so [`register_part_kind!`](crate::register_part_kind!) works at link time.
     pub const fn of<K: PartKind>() -> Self {
         Self {
             meta: K::meta,
@@ -401,7 +412,10 @@ pub struct Anchor {
 
 /// What one part makes available to the parts after it: a [`Fact`] value per [`Publishes::put`]. The facts of this
 /// crate are [`HeadFact`], [`FaceFact`], [`FitFact`], [`AnchorsFact`], [`CollidersFact`] and [`StatureFact`]; any crate
-/// may define more ([`fact!`](crate::fact)).
+/// may define more ([`fact!`](crate::fact!)).
+///
+/// What a part publishes must not depend on palette colours ([`PartKind::build`], contract 2): the parts after it are
+/// keyed on the publisher's geometry, not its colours.
 #[derive(Clone, Default)]
 pub struct Publishes {
     /// By fact name, so the merge order is deterministic.
@@ -641,11 +655,15 @@ impl Published {
             // A silent part changes nothing, so it copies nothing.
             return Ok(());
         }
-        let mut next = self.merged.clone();
+        // Only the facts this part publishes are staged (a copy of each one's merged value so far); the rest are not
+        // touched, so a part costs what it publishes, not what every part before it did (#1579). The staged copies go
+        // back in only when every one merged, so a refused value leaves nothing absorbed.
+        let mut staged: BTreeMap<&'static str, Merged> =
+            p.slots.keys().filter_map(|name| self.merged.get(name).map(|merged| (*name, merged.clone()))).collect();
         for slot in p.slots.into_values() {
-            slot.merge_into(&mut next, part).map_err(|message| BuildError::Part { part: part.clone(), message })?;
+            slot.merge_into(&mut staged, part).map_err(|message| BuildError::Part { part: part.clone(), message })?;
         }
-        self.merged = next;
+        self.merged.extend(staged);
         Ok(())
     }
 
@@ -716,8 +734,9 @@ pub struct BuildCtx<'a> {
     /// The character's body template ([`CharacterDef::template`](crate::CharacterDef)): the body part lofts its mesh
     /// from it, and no other part needs it (everything else reads what the body published).
     pub template: &'a BodyTemplateId,
-    /// The character's colours. Resolve a part's [`ColourRef`](omuzaki_face_api::ColourRef)s with [`BuildCtx::colour`]
-    /// when building materials (the renderer's material types hold plain colours). A palette change doesn't rebuild the
+    /// The character's colours. Resolve a part's [`ColourRef`]s with [`BuildCtx::colour`]
+    /// when building materials (the renderer's material types hold plain colours). Read only the slots the part's
+    /// parameters name, and publish nothing that depends on them ([`PartKind::build`] states both contracts). A palette change doesn't rebuild the
     /// part if its kind implements [`PartKind::recolour`].
     pub palette: &'a Palette,
     /// The character's face design (the head part reads the layout; hair reads the brows style).

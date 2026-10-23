@@ -1,5 +1,5 @@
 //! Curtain generator: the long hair, `count` guides round the back with an S-wave and a tip curl (port of
-//! `parts/hair.js` 291 to 326), drawn as a strip of columns per guide ([`strip`], `shellFill`, 421 to 494). This file
+//! `parts/hair.js` 291 to 326), drawn as a strip of columns per guide (`strip`, `shellFill`, 421 to 494). This file
 //! makes the clumps and their position `u` across the back, and meshes them ([`group_mesh`]).
 //!
 //! **A guide.** Guide `i` of `count` stands at `u = i / (count - 1)` across the back, at azimuth
@@ -16,7 +16,7 @@
 //! wave frequency, wave phase, curl size, curl sign.
 //!
 //! **Axis.** Like the prototype, a guide is measured from the body axis at `x` of the head centre and
-//! `z = `[`BODY_AXIS_Z`], but its fall starts from the root's distance from the axis in `x` and from the origin in `z`,
+//! `z = ``BODY_AXIS_Z`, but its fall starts from the root's distance from the axis in `x` and from the origin in `z`,
 //! so the first step runs a little outward. That is the prototype's look, kept for parity.
 //!
 //! **Folds (#841).** The prototype gives every guide its own wave, so neighbours can cross lower down and the strip

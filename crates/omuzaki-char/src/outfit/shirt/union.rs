@@ -121,7 +121,7 @@ pub struct Welded {
 ///
 /// # Errors
 /// [`GarmentError::Invalid`] if the geometry has extra attributes (which would have to be thinned too), a cut's vertices
-/// are not all in the mesh, or pinched vertices survive [`MAX_ROUNDS`] rounds of removal.
+/// are not all in the mesh, or pinched vertices survive `MAX_ROUNDS` rounds of removal.
 pub fn weld(geometry: &mut MeshData, cuts: &[Cut<'_>]) -> Result<Welded, GarmentError> {
     let n = geometry.positions.len();
     if !geometry.extra.is_empty() {

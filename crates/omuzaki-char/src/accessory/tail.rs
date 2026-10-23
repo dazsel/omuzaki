@@ -9,7 +9,7 @@
 //! instead, because it sits on them.
 //!
 //! **Rig.** `bones` bones lie along the curve, the first at the tailbone and the last at the tip, each the child of the one
-//! before; the first hangs from the attach joint. A spring chain over them ([`SpringChain::tapered`]) runs from
+//! before; the first hangs from the attach joint. A spring chain over them (`SpringChain::tapered`) runs from
 //! `stiffness` at the root to `stiffness_tip` at the tip, so the root follows the hips and the tip trails and settles.
 //! Every vertex is skinned to the two bones either side of it, so the tube bends smoothly. The chain is simulated in
 //! world space, not in the hips' space: a turn of the hips is exactly what makes the tail lag. It declares the colliders

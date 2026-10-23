@@ -3,7 +3,7 @@
 //! curl every finger.
 //!
 //! The palm is the mitten's block (the same section curves, rows and wrist sleeve) up to the knuckle row, closed over the
-//! knuckles by a short rounded cap ([`KNUCKLE_CAP`]). The thumb is the mitten's, which is already free. Each finger runs
+//! knuckles by a short rounded cap (`KNUCKLE_CAP`). The thumb is the mitten's, which is already free. Each finger runs
 //! along the joints the layout placed for it (the proximal joint is the knuckle), so it follows `HandParams` exactly as
 //! the skeleton does: its length and the hand size move the joints, and `finger_thickness` and `taper` shape the tube.
 //! The tube starts a radius behind the knuckle, inside the palm's cap, so its open end never shows, and closes at the tip

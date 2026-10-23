@@ -15,7 +15,7 @@
 //!
 //! **No tunnelling.** The particle's path over the sub-step, taken in the collider's moving frame, is swept against the
 //! collider inflated by that distance; a particle that enters it is put on the surface it entered through, carried to
-//! the collider's final pose. This holds at any relative speed up to the solver's [`MAX_SPEED`] clamp.
+//! the collider's final pose. This holds at any relative speed up to the solver's `MAX_SPEED` clamp.
 //!
 //! **Thin colliders (limit 1, #129).** The sweep tests particles, so a collider thinner than the particle spacing (a
 //! hairpin, a 3 mm strap against 2 cm cells) could pass between particles. Once the environment knows the sheet

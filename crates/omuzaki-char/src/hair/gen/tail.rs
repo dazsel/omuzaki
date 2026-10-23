@@ -18,7 +18,7 @@
 //! one mass. A clump's length is [`TailGen::length`] shortened by up to [`LENGTH_JITTER`] on a fixed pattern, so the
 //! tips are ragged.
 //!
-//! **Sway.** The [`Wave`](omuzaki_char_api::Wave) makes a gentle S: sideways along the frame's `u` and, at [`DEPTH_SWAY`]
+//! **Sway.** The [`Wave`] makes a gentle S: sideways along the frame's `u` and, at [`DEPTH_SWAY`]
 //! of the amplitude and a quarter turn later, front to back along `v` (what the side view shows). It is
 //! `amplitude * grow(s) * sin(2 pi frequency s + phase + i * PHASE_STEP)`, growing in over `growth`, and `curl` bends the
 //! tip (squared smoothstep over the last [`CURL_FROM`]..1).
@@ -30,7 +30,7 @@
 //! **The tie.** One [`Tie`] torus round the gather at the tie, hiding where the locks start; the part draws it in its own
 //! material.
 //!
-//! **Clearance.** Every rest point stands at least [`CLEARANCE`] off the head ([`Root::keep_outside`]).
+//! **Clearance.** Every rest point stands at least `CLEARANCE` off the head ([`Root::keep_outside`]).
 //!
 //! **Anchors, rig and skin.** [`anchors`] gives the tail's root frame for [`AnchorsFact`](omuzaki_char_api::AnchorsFact)
 //! and [`rig`] its spring chain; the hair part publishes both and skins the locks to the chain's bones ([`skin`]): by arc

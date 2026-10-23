@@ -222,6 +222,22 @@ impl CharacterCreate {
     }
 }
 
+/// The kit's default character on `template` (what `character.create` with the default parts stores), for checks that
+/// need a real, dressed character to build every kind in (`builder::conformance::check_linked`).
+///
+/// # Errors
+/// The op's error for an unknown template or a built-in starter that doesn't read.
+pub fn default_character(template: &BodyTemplateId) -> Result<CharacterDef, OpError> {
+    let create = CharacterCreate {
+        id: built_in("character id", "kit", CharId::new("kit"))?,
+        name: "Kit".to_owned(),
+        template: template.clone(),
+        seed: 0,
+        parts: StartingParts::Defaults,
+    };
+    create.definition(find_template(template)?)
+}
+
 impl Op for CharacterCreate {
     fn meta() -> OpMeta {
         OpMeta {

@@ -8,7 +8,7 @@
 //! | `hair.streak.remove` | removes a streak |
 //! | `hair.recolour` | the root, mid and tip colours at once, through the palette's `hair_root`, `hair_mid` and `hair_tip` slots by default, so a colourway swap recolours the hair too |
 //!
-//! Each writes the part's `shading` back as one change ([`part::changes`]), so undo restores it exactly. Colours reach
+//! Each writes the part's `shading` back as one change (`part::changes`), so undo restores it exactly. Colours reach
 //! the materials as resolved colours: a palette change recolours the hair without rebuilding its geometry.
 
 use omuzaki_char_api::{CharId, HairShading, PartId, Streak};

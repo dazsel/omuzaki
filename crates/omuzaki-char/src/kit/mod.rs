@@ -11,6 +11,10 @@
 //! | [`grid`] | the point [`grid::Grid`], smooth grid normals and offsets, the [`grid::MeshBuilder`] |
 //! | [`loft`] | grids from a Y-axis loft or a lathe around any axis |
 //! | [`js_names`] | the prototype's bone names as `JointRef`s, for parity tests |
+//! | [`catmull`] | Catmull-Rom arc-length points, as three.js computes them |
+//! | [`resample`] | polyline resampling by arc length |
+//! | [`sweep`] | frames and elliptical sweeps along a polyline, tubes, the placement matrix |
+//! | [`skin`] | skin weights: capsule weighting from a body's fit, the top-four rule, brushes, smoothing and mirroring |
 
 use omuzaki_core::mesh::MeshError;
 

@@ -1,4 +1,4 @@
-//! The `hair` part kind: a hairstyle's groups compiled to clumps ([`compile`](super::compile)) and drawn as lens tubes
+//! The `hair` part kind: a hairstyle's groups compiled to clumps ([`compile`]) and drawn as lens tubes
 //! ([`tube`](super::tube)) with the hair shading program.
 //!
 //! **Meshes.** Static groups (not simulated) go into one mesh, `<part>-static`, skinned wholly to the head joint.
@@ -9,7 +9,7 @@
 //! generator-made shells (the cap) after them, so a mesh can be walked clump by clump from the front
 //! ([`recolour`](Hair::recolour) does).
 //!
-//! **Material.** One double-sided `hair` material per part: the `hair` shading program ([`HairShading::shading`]), vertex
+//! **Material.** One double-sided `hair` material per part: the `hair` shading program (`HairShading::shading`), vertex
 //! colours for streak tints, the outline in the hair's outline colour, and the brows overlay when `brows_through`. A palette
 //! change re-resolves the colours without compiling a clump ([`Hair::recolour`]).
 //!
@@ -17,7 +17,7 @@
 //! a back face from every side (a flat ribbon wound outward gets no outline from outside).
 //!
 //! **The curtain.** A group that compiles to a strip (the curtain) is meshed by
-//! [`curtain::group_mesh`](super::r#gen::curtain::group_mesh): each guide's strip of columns, vertices of its own, in
+//! `curtain::group_mesh`: each guide's strip of columns, vertices of its own, in
 //! order of `u`. A mesh holds its tubes first, then the strips, then the shells; the strips carry their clump's streak
 //! tint like a tube, so [`recolour`](Hair::recolour) finds every clump.
 //!
@@ -32,7 +32,7 @@ use std::ops::Range;
 use omuzaki_char_api::{
     AnchorsFact, BodyRegion, BuildCtx, BuildError, FaceOverlay, Generator, GroupId, HAIR_UV, HairParams, HeadSurface,
     JointRef, KindProvenance, MaterialName, MaterialSpec, PartCategory, PartId, PartKind, PartMesh, PartMeta,
-    PartOutput, RecolourCtx, Recoloured,
+    PartOutput, RecolourCtx, Recoloured, StatureFact,
 };
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::{Vec2, Vec3};
@@ -161,7 +161,11 @@ pub fn build_with(
             let clumps: Vec<_> =
                 entries.iter().filter(|e| e.simulate).flat_map(|e| e.group.clumps.iter().cloned()).collect();
             let colliders = physics::colliders::from_character(head.as_ref(), body.as_deref());
-            let runtime = HairRuntime::new(&clumps, &params.physics, &colliders, head.centre().y, mesh, &geometry)
+            // The head is the template's, scaled to the character's stature: that scale is its size against the
+            // prototype's, whose head the chest-to-head band was set under (#898).
+            let head_scale = ctx.published.get::<StatureFact>().map_or(1.0, |s| s.scale);
+            let head_y = head.centre().y;
+            let runtime = HairRuntime::new(&clumps, &params.physics, &colliders, head_y, head_scale, mesh, &geometry)
                 .map_err(|e| ctx.fail(format!("hair physics: {e}")))?;
             out.runtime = Some(Box::new(runtime));
             Vec::new()

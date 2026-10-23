@@ -1,6 +1,6 @@
 //! What the tail and bun generators share: a root on the head surface, and keeping hair off the head.
 //!
-//! **The root.** A `[theta_deg, phi_deg, offset]` triple is the contract's surface point ([`GuidePoint::Surface`]).
+//! **The root.** A `[theta_deg, phi_deg, offset]` triple is the contract's surface point (`GuidePoint::Surface`).
 //! The generators need the point and the direction the head surface faces there (`outward`, from the head centre), and
 //! they read the triple as typed, so [`Root::new`] clamps it to the contract's ranges and replaces a non-finite value
 //! with the default's: a slider can never change a clump count or make a rest point non-finite.

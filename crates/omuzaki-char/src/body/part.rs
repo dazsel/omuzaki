@@ -5,10 +5,11 @@ use std::sync::Arc;
 
 use omuzaki_char_api::{
     BodyParams, BodyRegion, BuildCtx, BuildError, FitFact, KindProvenance, MaterialName, MaterialSpec, PartCategory,
-    PartKind, PartMesh, PartMeta, PartOutput, Publishes, StatureFact, register_part_kind,
+    PartKind, PartMesh, PartMeta, PartOutput, Publishes, RecolourCtx, Recoloured, StatureFact, register_part_kind,
 };
 use omuzaki_core::colour::Colour;
 use omuzaki_core::mesh::MeshData;
+use omuzaki_face_api::ColourRef;
 use omuzaki_render_api::{Outline, Rim, Shading, Skin, Toon};
 
 use super::fit::BodyMeshFit;
@@ -19,7 +20,7 @@ use crate::template::skeleton::TemplateFit;
 
 /// The name of the body's skin material.
 const SKIN_MATERIAL: &str = "body-skin";
-/// The name of the hands' material: the skin, with the vertex colours on for the warmer tint towards the fingertips.
+/// The name of the hands' material: the skin, whose vertex colours carry the warmer tint towards the fingertips.
 const HAND_MATERIAL: &str = "body-hands";
 /// The skin's outline, metres at the renderer's reference distance (`body.js` `skin-hand`).
 const OUTLINE_WIDTH: f32 = 0.0016;
@@ -75,8 +76,7 @@ impl PartKind for Body {
         let body_fit = Arc::new(BodyMeshFit::new(fit, geometry.iter().map(|(region, m)| (*region, m))));
         let mut meshes: Vec<PartMesh> = regions.into_iter().map(|(_, m)| m).collect();
         meshes.extend(hand_meshes);
-        let skin = skin_material(params, ctx)?;
-        let hand = MaterialSpec { vertex_colours: true, ..skin.clone() };
+        let (skin, hand) = skin_materials(params, |c| ctx.colour(c))?;
         let mut publishes = Publishes::default().with::<FitFact>(body_fit);
         if let Some(stature) = stature {
             publishes.put::<StatureFact>(stature);
@@ -85,6 +85,19 @@ impl PartKind for Body {
             .with_meshes(meshes)
             .with_materials(vec![(material_id, skin), (hand_id, hand)])
             .with_publishes(publishes))
+    }
+
+    /// The body's colours are its two materials; the meshes (the hands' vertex colours included) don't depend on them.
+    fn recolour(params: &BodyParams, output: &mut PartOutput, ctx: &RecolourCtx<'_>) -> Result<Recoloured, BuildError> {
+        let (skin, hand) = skin_materials(params, |c| ctx.colour(c))?;
+        for (name, spec) in &mut output.materials {
+            *spec = match name.as_str() {
+                SKIN_MATERIAL => skin.clone(),
+                HAND_MATERIAL => hand.clone(),
+                _ => return Ok(Recoloured::NeedsRebuild),
+            };
+        }
+        Ok(Recoloured::Done)
     }
 }
 
@@ -101,26 +114,40 @@ fn joined(a: &MeshData, b: &MeshData) -> MeshData {
 }
 
 /// The skin: the prototype's `skin-hand` toon (a low terminator shift, a soft edge, a thin warm rim) with the skin
-/// treatment and a coloured outline, from the palette slots in `params.skin`. The body takes no vertex colours; the hands'
-/// copy turns them on.
-fn skin_material(params: &BodyParams, ctx: &BuildCtx<'_>) -> Result<MaterialSpec, BuildError> {
+/// treatment and a coloured outline, from the palette slots in `params.skin`, with the vertex colours on: the legs' soft
+/// ambient darkening ([`mesh`]'s module docs).
+fn skin_material(
+    params: &BodyParams,
+    colour: impl Fn(&ColourRef) -> Result<Colour, BuildError>,
+) -> Result<MaterialSpec, BuildError> {
     Ok(MaterialSpec {
-        base: ctx.colour(&params.skin.base)?,
+        base: colour(&params.skin.base)?,
         base_texture: None,
         shading: Shading::Toon(Toon {
-            shade: ctx.colour(&params.skin.shade)?,
+            shade: colour(&params.skin.shade)?,
             shift: -0.02,
             softness: 0.22,
-            rim: Rim { colour: ctx.colour(&params.skin.rim)?, power: 3.0, strength: 0.12 },
+            rim: Rim { colour: colour(&params.skin.rim)?, power: 3.0, strength: 0.12 },
             emissive: Colour::BLACK,
             skin: Some(Skin { floor: 0.66, hue_keep: 0.55 }),
         }),
         overlays: Vec::new(),
         alpha: omuzaki_render_api::AlphaMode::Opaque,
         double_sided: false,
-        vertex_colours: false,
-        outline: Some(Outline { colour: ctx.colour(&params.skin.line)?, width: OUTLINE_WIDTH }),
+        vertex_colours: true,
+        outline: Some(Outline { colour: colour(&params.skin.line)?, width: OUTLINE_WIDTH }),
         receives_shadows: true,
         uv_transform: omuzaki_render_api::UvTransform::IDENTITY,
     })
+}
+
+/// The body's two materials from its colours: the skin, and the hands' (the same skin, under its own name so a hand can
+/// be told apart in the outliner and the export). The build and the recolour both make them here, so the two cannot drift apart.
+fn skin_materials(
+    params: &BodyParams,
+    colour: impl Fn(&ColourRef) -> Result<Colour, BuildError>,
+) -> Result<(MaterialSpec, MaterialSpec), BuildError> {
+    let skin = skin_material(params, colour)?;
+    let hand = skin.clone();
+    Ok((skin, hand))
 }

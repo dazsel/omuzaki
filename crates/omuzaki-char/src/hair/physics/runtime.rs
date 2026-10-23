@@ -53,8 +53,8 @@ pub struct HairRuntime {
 
 impl HairRuntime {
     /// The runtime of `geometry`, the part's `mesh`th mesh, carried by chains for the simulated `clumps`.
-    /// `rig_colliders` are used when `physics` has none of its own; `head_y` is the head centre's bind-space height
-    /// ([`ChainSet::set_head_height`]).
+    /// `rig_colliders` are used when `physics` has none of its own; `head_y` is the head centre's bind-space height and
+    /// `head_scale` the head's size against the prototype's ([`ChainSet::set_head`]).
     ///
     /// # Errors
     /// [`VerletError`] when the chains can't be built, or [`VerletError::BadClump`] when no clump is simulated.
@@ -63,11 +63,12 @@ impl HairRuntime {
         physics: &HairPhysics,
         rig_colliders: &[SphereCollider],
         head_y: f32,
+        head_scale: f32,
         mesh: u16,
         geometry: &MeshData,
     ) -> Result<Self, VerletError> {
         let mut chains = ChainSet::from_clumps(clumps, physics, rig_colliders)?;
-        chains.set_head_height(head_y);
+        chains.set_head(head_y, head_scale);
         if chains.positions().is_empty() {
             return Err(VerletError::BadClump { clump: 0 });
         }
@@ -342,7 +343,7 @@ mod tests {
         let line = |x: f32| (0..8).map(move |k| Vec3::new(x, 1.0 - 0.04 * k as f32, -0.1));
         let positions: Vec<Vec3> = line(-0.03).chain(line(0.0)).chain(line(0.03)).chain(line(0.0)).collect();
         let geometry = MeshData { normals: vec![Vec3::Z; positions.len()], positions, ..MeshData::default() };
-        let mut runtime = HairRuntime::new(&[stiff, floppy], &HairPhysics::default(), &[], 1.0, 0, &geometry)
+        let mut runtime = HairRuntime::new(&[stiff, floppy], &HairPhysics::default(), &[], 1.0, 1.0, 0, &geometry)
             .unwrap_or_else(|e| panic!("{e}"));
         let mut parted = 0.0_f32;
         for frame in 0..120 {

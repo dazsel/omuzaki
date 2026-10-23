@@ -150,6 +150,31 @@ impl PartKind for Prop {
 }
 omuzaki_char_api::register_part_kind!(Prop);
 
+/// A kind that breaks the first palette contract (#645): its material takes the `trim` slot straight from the palette,
+/// whatever its parameters name, so a caching builder keyed on its parameters' slots would serve it stale.
+struct Peeker;
+
+impl PartKind for Peeker {
+    type Params = PropParams;
+
+    fn meta() -> PartMeta {
+        PartMeta {
+            id: "t-peeker",
+            summary: "Reads a slot behind its parameters.",
+            category: PartCategory::Accessory,
+            requires: &[],
+        }
+    }
+
+    fn build(params: &PropParams, ctx: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
+        let id = material_name(ctx, "t-peeker")?;
+        let mesh = grid_mesh("peeker", &id, params.rings, &mut ctx.rng);
+        let colour = ctx.palette.0.get(&slot("trim")).copied().unwrap_or(Colour::rgb(9, 9, 9));
+        Ok(PartOutput::new().with_meshes(vec![mesh]).with_materials(vec![(id, MaterialSpec::toon(colour))]))
+    }
+}
+omuzaki_char_api::register_part_kind!(Peeker);
+
 /// A second kind with the same parameter type and a different mesh: swapping a part from one to the other keeps its
 /// parameters (and so everything but the kind) identical. It doesn't recolour, so a palette change rebuilds it.
 struct PropB;
@@ -844,6 +869,23 @@ fn noted(from_palette: bool) -> CharacterDef {
     add(&mut def, "noter", "t-noter", 10, json!({ "from_palette": from_palette }));
     add(&mut def, "reader", "t-note-reader", 40, json!({ "publish": false }));
     def
+}
+
+/// The first palette contract (#645): the test kinds read colours only through their parameters, and a kind that
+/// reads a slot behind them is named, with what changed.
+#[test]
+fn the_colour_contract_check_passes_the_test_kinds_and_names_a_kind_that_reads_a_slot_behind_its_parameters() {
+    let clean = conformance::check_colours_through_parameters(&dressed(), &painting()).unwrap();
+    assert!(clean.is_empty(), "{clean:#?}");
+
+    let mut def = dressed();
+    add(&mut def, "peek", "t-peeker", 30, json!({ "tint": "@hair_root" }));
+    let violations = conformance::check_colours_through_parameters(&def, &painting()).unwrap();
+    assert_eq!(violations.len(), 4, "one per option set: {violations:#?}");
+    assert!(
+        violations.iter().all(|v| v.contains("part `peek` (kind `t-peeker`") && v.contains("materials")),
+        "{violations:#?}"
+    );
 }
 
 #[test]

@@ -1,6 +1,6 @@
 //! Bangs generator: the close-up fringe (port of `parts/hair.js`, lines 330 to 355).
 //!
-//! **One lock** ([`control_points`]) is a pointed clump of 11 control points resampled to [`REST_POINTS`] by the geometry
+//! **One lock** (`control_points`) is a pointed clump of 11 control points resampled to [`REST_POINTS`] by the geometry
 //! kit's Catmull-Rom. Its root sits [`ROOT_THETA_DEG`] from the top of the head; the polar angle falls to the tip angle
 //! `acos(tip height / crown radius)` as `t^FALL_EXPONENT` (the crown radius is the head's radius straight up, as
 //! [`part_sweep`](super::part_sweep) uses it, so a style keeps its shape when the head is scaled; the prototype uses one
@@ -111,8 +111,8 @@ const PROBE_SEGMENTS: usize = 96;
 /// a circle of latitude is tighter than the surface it lies on, which would fail a smooth head. Meridians, which are
 /// the surface's own curvature, are probed everywhere.
 const PROBE_MIN_SIN_THETA: f64 = 0.5;
-/// The sharpest head ([`min_curvature_radius`] times [`CURVATURE_SAFETY`]) a fringe is built on, metres. Under this the
-/// sampling would need more than [`MAX_STEPS`] samples along a triangle of an ordinary lock; the build fails instead of
+/// The sharpest head (`min_curvature_radius` times `CURVATURE_SAFETY`) a fringe is built on, metres. Under this the
+/// sampling would need more than `MAX_STEPS` samples along a triangle of an ordinary lock; the build fails instead of
 /// checking loosely. A cranium of the proportions `Cranium::check` allows (0.05 to 0.4 m semi-axes, crown radius of
 /// curvature 6 mm at worst) is above it.
 pub const MIN_CURVATURE_RADIUS: f64 = 0.003;
@@ -349,8 +349,8 @@ fn circumradius(a: DVec3, b: DVec3, c: DVec3) -> f64 {
 }
 
 /// The spacing of the clearance samples for `head`, metres: the coarsest ([`SAMPLE_SPACING`]) at which a flat triangle
-/// sags under the head by no more than [`SAG_BUDGET`], given the head's smallest curvature radius `R` (estimated once
-/// here, see [`min_curvature_radius`], and halved by [`CURVATURE_SAFETY`]): `sqrt(8 R SAG_BUDGET)`. For a ball of 50 mm
+/// sags under the head by no more than `SAG_BUDGET`, given the head's smallest curvature radius `R` (estimated once
+/// here, see `min_curvature_radius`, and halved by `CURVATURE_SAFETY`): `sqrt(8 R SAG_BUDGET)`. For a ball of 50 mm
 /// that is 12 mm.
 ///
 /// # Errors
@@ -370,11 +370,11 @@ pub fn sample_spacing(head: &dyn HeadSurface) -> Result<f64, ClearanceError> {
 /// samples by at most `s^2 / (8 R)` (`s` the spacing, `R` the head's curvature radius), which the spacing keeps under
 /// the clearance, so a tube clear at the samples is clear everywhere. The cross-section's inward reach (it is not along
 /// the radius where the lock turns) and the head's curve between rings are both included. A ring that is already clear is
-/// not moved, so the points keep their order. Runs [`CLEARANCE_PASSES`] times at most: a push changes the frames of its
+/// not moved, so the points keep their order. Runs `CLEARANCE_PASSES` times at most: a push changes the frames of its
 /// neighbours, so the passes converge on a clear tube rather than reach it in one step.
 ///
 /// # Errors
-/// [`ClearanceError`] if the head is too sharp to sample, a triangle needs more than [`MAX_STEPS`] steps, a lock is
+/// [`ClearanceError`] if the head is too sharp to sample, a triangle needs more than `MAX_STEPS` steps, a lock is
 /// still inside after the passes, or a clump is not a lock.
 pub fn keep_clear(
     head: &dyn HeadSurface,

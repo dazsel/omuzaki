@@ -45,7 +45,7 @@ pub fn rest_curve(clump: &GuideClump, head: &dyn HeadSurface) -> Vec<Vec3> {
 }
 
 /// The resampled Catmull-Rom curve through `points` (see the module docs). Fewer than two distinct points give a
-/// [`DEGENERATE`] lock hanging from the first; no points give none.
+/// `DEGENERATE` lock hanging from the first; no points give none.
 pub fn through(points: &[Vec3]) -> Vec<Vec3> {
     let Some(&first) = points.first() else { return Vec::new() };
     let length: f32 = points.windows(2).map(|w| w[0].distance(w[1])).sum();

@@ -39,7 +39,7 @@
 //!
 //! # Cost
 //!
-//! Built once per garment (bind-space shapes fixed; [`ColliderSet::place`] only transforms them). The count is in the
+//! Built once per garment (bind-space shapes fixed; `ColliderSet::place` only transforms them). The count is in the
 //! runtime's [`RuntimeCost::colliders`](omuzaki_char_api::RuntimeCost) and, by kind, in [`ColliderSet::counts`].
 //!
 //! [`BuildCtx::colliders`]: omuzaki_char_api::BuildCtx::colliders

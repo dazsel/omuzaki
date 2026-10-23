@@ -108,7 +108,7 @@ impl Cranial {
         let mix = mix_of(params);
         Self {
             cranium: params.cranium.clone(),
-            centre: DVec3::from_array(params.cranium.centre).as_vec3(),
+            centre: DVec3::from_array(params.cranium.centre()).as_vec3(),
             trace: trace.map(|map| (map, mix)),
         }
     }

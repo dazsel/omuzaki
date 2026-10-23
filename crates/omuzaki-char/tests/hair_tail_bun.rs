@@ -526,18 +526,6 @@ fn part(kind: &str, layer: i32, attach: Option<Attach>, params: Value) -> PartDe
     PartDef { kind: PartKindId::new(kind).unwrap(), parent: None, enabled: true, layer, attach, params }
 }
 
-/// The head parameters that seat the head on `template`'s neck (see `accessory_rigid.rs`).
-fn head_params(template: &str) -> Value {
-    let body = omuzaki_char_api::BodyParams::default();
-    let layout =
-        omuzaki_char::template::registry::find(template).unwrap().layout(&body.proportions, &body.shape, &body.hand);
-    let soft_sd =
-        omuzaki_char::template::registry::find("soft-sd").unwrap().layout(&body.proportions, &body.shape, &body.hand);
-    let rise = layout.head_base().unwrap().y - soft_sd.head_base().unwrap().y;
-    let default = omuzaki_char_api::HeadParams::default().cranium.centre;
-    json!({ "cranium": { "centre": [default[0], default[1] + rise, default[2]] } })
-}
-
 /// The four presets as hair parameters: `(name, params)`.
 fn presets() -> Vec<(&'static str, HairParams)> {
     vec![
@@ -553,7 +541,7 @@ fn character(template: &str, hair: &HairParams, extra: Option<(&str, Attach)>) -
     def.template = template.parse().unwrap();
     def.parts.clear();
     def.parts.insert(pid("body"), part("body", 0, None, json!({})));
-    def.parts.insert(pid("head"), part("head", 0, None, head_params(template)));
+    def.parts.insert(pid("head"), part("head", 0, None, json!({})));
     def.parts.insert(pid("collider"), part("test-tail-head-collider", 10, None, json!({})));
     def.parts.insert(pid("hair"), part("hair", 20, None, serde_json::to_value(hair).unwrap()));
     def.parts.insert(pid("probe"), part("test-tail-probe", 30, None, serde_json::to_value(hair).unwrap()));
