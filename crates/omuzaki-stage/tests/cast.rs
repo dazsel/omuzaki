@@ -402,3 +402,75 @@ fn render_the_cast_when_asked() {
     FrameLoop::release(cast, &mut renderer).unwrap();
     renderer.release(spare.into()).unwrap();
 }
+
+#[test]
+fn the_scenes_skin_floor_reaches_every_member() {
+    use omuzaki_stage::scene::resolve::ResolvedScene;
+    use omuzaki_stage_api::GroundKind;
+
+    let mut renderer = MockRenderer::new();
+    let mut cast = pair(&mut renderer);
+    let floor_of = |cast: &CastStage<Stage>, who: &str| cast.member(&id(who)).unwrap().character().skin_floor();
+    let mut resolved = ResolvedScene::new();
+    resolved.ground.kind = GroundKind::None;
+    resolved.skin_floor = Some(0.3);
+    let owed = FrameLoop::set_scene(&mut cast, &resolved, left());
+    assert_eq!(owed.skin_floor, Some(Some(0.3)), "the floor is owed");
+    FrameLoop::pay_scene(&mut cast, &mut renderer).unwrap();
+    assert!(FrameLoop::owed(&cast).is_empty(), "the lead and the guest were both paid");
+    assert_eq!((floor_of(&cast, "lead"), floor_of(&cast, "guest")), (Some(0.3), Some(0.3)));
+
+    // A member added later owes the floor until the next pay.
+    let late = stage(&mut renderer, built());
+    assert!(cast.add_member(id("late"), late, Mat4::IDENTITY).is_none());
+    assert_eq!(FrameLoop::owed(&cast).skin_floor, Some(Some(0.3)));
+    FrameLoop::pay_scene(&mut cast, &mut renderer).unwrap();
+    assert_eq!(floor_of(&cast, "late"), Some(0.3));
+    assert!(FrameLoop::owed(&cast).is_empty());
+
+    // Clearing the floor gives every member its own back.
+    resolved.skin_floor = None;
+    FrameLoop::set_scene(&mut cast, &resolved, left());
+    FrameLoop::pay_scene(&mut cast, &mut renderer).unwrap();
+    assert!(cast.ids().all(|who| cast.member(who).unwrap().character().skin_floor().is_none()));
+    FrameLoop::release(cast, &mut renderer).unwrap();
+}
+
+#[test]
+fn a_two_member_frame_fits_the_60_fps_budget() {
+    let mut renderer = Recorder::new(false);
+    let mut alone = stage(&mut renderer, built());
+    let mut cast = pair(&mut renderer);
+    let frames: Vec<FrameInput> = (0..1320).map(|i| input(f64::from(i) / 60.0)).collect();
+    let time = |run: &mut dyn FnMut(&FrameInput)| {
+        for frame in &frames[..120] {
+            run(frame);
+        }
+        let mut times: Vec<std::time::Duration> = frames[120..]
+            .iter()
+            .map(|frame| {
+                let start = std::time::Instant::now();
+                run(frame);
+                start.elapsed()
+            })
+            .collect();
+        times.sort_unstable();
+        (times[times.len() / 2], times[times.len() * 99 / 100])
+    };
+    let one = time(&mut |frame| {
+        alone.tick(&mut renderer, frame).unwrap();
+    });
+    let two = time(&mut |frame| {
+        FrameLoop::tick(&mut cast, &mut renderer, frame).unwrap();
+    });
+    eprintln!(
+        "one member: p50 {:?}, p99 {:?}; two members: p50 {:?}, p99 {:?} (stage only, no drawing)",
+        one.0, one.1, two.0, two.1
+    );
+    // The frame budget is 1/60 s; the optimised build is what runs live, so only it is held to it.
+    if !cfg!(debug_assertions) {
+        assert!(two.1 < std::time::Duration::from_secs_f32(1.0 / 60.0), "p99 {:?} is over a 60 fps frame", two.1);
+    }
+    FrameLoop::release(cast, &mut renderer).unwrap();
+    alone.release(&mut renderer).unwrap();
+}

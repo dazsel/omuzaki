@@ -15,6 +15,9 @@
 //! - **One frame loop.** [`CastStage`] is a [`FrameLoop`], so [`LiveStage`](crate::perform::live::LiveStage) runs a
 //!   cast as it runs one body: the subject's performer drives the lead through `tick`.
 //!
+//! The scene's skin floor reaches every member's skin materials when the cast pays the scene
+//! ([`FrameLoop::pay_scene`]), as it reaches the lead's.
+//!
 //! The lead's own stage never sees the members: before every frame its scene is cut back to what the lead itself put
 //! there, so its own invariants (a kit stage's empty morph weights, its particles) hold. Nothing here allocates in
 //! steady state; adding a member is cold.
@@ -55,6 +58,13 @@ pub trait StageMember: FrameLoop + sealed::Sealed {
     /// As [`FrameLoop::redraw`], short of the render.
     fn prepare_redraw(&mut self, renderer: &mut dyn Renderer, input: &FrameInput) -> Result<Prepared, StageError>;
 
+    /// Puts the scene's skin floor on the body's skin materials, or each back to its own for `None`: what a member, which
+    /// has no scene of its own, takes from the lead's. Cold. A body without a skin floor (an imported avatar) ignores it.
+    ///
+    /// # Errors
+    /// [`StageError::Render`] if the renderer refuses a material.
+    fn set_skin_floor(&mut self, renderer: &mut dyn Renderer, floor: Option<f32>) -> Result<(), StageError>;
+
     /// Renders the scene a prepare left into the stage's target.
     ///
     /// # Errors
@@ -74,6 +84,9 @@ impl StageMember for Stage {
     fn prepare_redraw(&mut self, renderer: &mut dyn Renderer, input: &FrameInput) -> Result<Prepared, StageError> {
         Stage::prepare_redraw(self, renderer, input)
     }
+    fn set_skin_floor(&mut self, renderer: &mut dyn Renderer, floor: Option<f32>) -> Result<(), StageError> {
+        Stage::set_skin_floor(self, renderer, floor)
+    }
     fn submit(
         &mut self,
         renderer: &mut dyn Renderer,
@@ -90,6 +103,10 @@ impl StageMember for AvatarStage {
     }
     fn prepare_redraw(&mut self, renderer: &mut dyn Renderer, input: &FrameInput) -> Result<Prepared, StageError> {
         AvatarStage::prepare_redraw(self, renderer, input)
+    }
+    fn set_skin_floor(&mut self, _renderer: &mut dyn Renderer, _floor: Option<f32>) -> Result<(), StageError> {
+        // An imported avatar's materials keep their own shading, as its own scene's floor does (`pay_scene`).
+        Ok(())
     }
     fn submit(
         &mut self,
@@ -114,6 +131,12 @@ impl StageMember for AnyStage {
             Self::Avatar(stage) => StageMember::prepare_redraw(stage, renderer, input),
         }
     }
+    fn set_skin_floor(&mut self, renderer: &mut dyn Renderer, floor: Option<f32>) -> Result<(), StageError> {
+        match self {
+            Self::Kit(stage) => StageMember::set_skin_floor(stage, renderer, floor),
+            Self::Avatar(stage) => StageMember::set_skin_floor(stage, renderer, floor),
+        }
+    }
     fn submit(
         &mut self,
         renderer: &mut dyn Renderer,
@@ -127,11 +150,13 @@ impl StageMember for AnyStage {
     }
 }
 
-/// One member besides the lead: its body, the last input its performer gave it, and where it stands.
+/// One member besides the lead: its body, the last input its performer gave it, and the skin floor its materials have.
 struct Member<M> {
     id: MemberId,
     stage: M,
     input: FrameInput,
+    /// The floor on its skin materials: `None` (their own) until the cast pays the scene's.
+    floor: Option<f32>,
 }
 
 /// How far the lead's scene lists reach before the members are appended: what the lead itself put there.
@@ -178,6 +203,8 @@ pub struct CastStage<M: StageMember = AnyStage> {
     members: Vec<Member<M>>,
     /// What the lead's scene held before the members were appended last frame.
     own: Own,
+    /// The skin floor the last scene wants on every member, as on the lead.
+    floor: Option<f32>,
 }
 
 impl<M: StageMember> std::fmt::Debug for CastStage<M> {
@@ -194,7 +221,7 @@ impl<M: StageMember> CastStage<M> {
     /// whole cast renders with.
     pub fn new(lead_id: MemberId, lead: M) -> Self {
         let own = Own::of(lead.scene());
-        Self { lead_id, lead, lead_input: FrameInput::default(), members: Vec::new(), own }
+        Self { lead_id, lead, lead_input: FrameInput::default(), members: Vec::new(), own, floor: None }
     }
 
     /// The lead's member id.
@@ -236,9 +263,10 @@ impl<M: StageMember> CastStage<M> {
         scene.morph_weights.reserve(weights);
         scene.particles.reserve(particles);
         if let Some(slot) = self.members.iter_mut().find(|m| m.id == id) {
+            slot.floor = None;
             return Some(std::mem::replace(&mut slot.stage, stage));
         }
-        self.members.push(Member { id, stage, input: FrameInput::default() });
+        self.members.push(Member { id, stage, input: FrameInput::default(), floor: None });
         None
     }
 
@@ -374,6 +402,13 @@ impl<M: StageMember> CastStage<M> {
     }
 }
 
+impl<M: StageMember> CastStage<M> {
+    /// Whether some member's skin materials don't have the floor the scene wants.
+    fn members_owe_floor(&self) -> bool {
+        self.members.iter().any(|m| m.floor != self.floor)
+    }
+}
+
 /// Appends `member`'s draws to `scene`, moving its skin and morph ranges past what `scene` already holds. The member's
 /// ground disc, if it has one, comes along: a member's stage is never given a scene, so it has none.
 fn append(scene: &mut Scene, member: &Scene) {
@@ -429,16 +464,27 @@ impl<M: StageMember> FrameLoop for CastStage<M> {
         self.lead.quality()
     }
 
+    /// The lead takes the scene; every member takes its skin floor at the next [`pay_scene`](FrameLoop::pay_scene).
     fn set_scene(&mut self, resolved: &ResolvedScene, subject_root: Mat4) -> Owed {
-        self.lead.set_scene(resolved, subject_root)
+        self.floor = resolved.skin_floor;
+        let mut owed = self.lead.set_scene(resolved, subject_root);
+        if self.members_owe_floor() {
+            owed.skin_floor = Some(self.floor);
+        }
+        owed
     }
 
     fn set_subject_root(&mut self, subject_root: Mat4) {
         self.lead.set_subject_root(subject_root);
     }
 
+    /// The lead's debt, and the skin floor while a member doesn't have it yet.
     fn owed(&self) -> Owed {
-        self.lead.owed()
+        let mut owed = self.lead.owed();
+        if owed.skin_floor.is_none() && self.members_owe_floor() {
+            owed.skin_floor = Some(self.floor);
+        }
+        owed
     }
 
     fn commit_scene(&mut self, owed: &Owed) {
@@ -446,7 +492,16 @@ impl<M: StageMember> FrameLoop for CastStage<M> {
     }
 
     fn pay_scene(&mut self, renderer: &mut dyn Renderer) -> Result<(), StageError> {
-        self.lead.pay_scene(renderer)
+        let lead = self.lead.pay_scene(renderer);
+        let mut members = Ok(());
+        for member in self.members.iter_mut().filter(|m| m.floor != self.floor) {
+            match member.stage.set_skin_floor(renderer, self.floor) {
+                Ok(()) => member.floor = self.floor,
+                Err(error) if members.is_ok() => members = Err(error),
+                Err(_) => {}
+            }
+        }
+        lead.and(members)
     }
 
     fn scene(&self) -> &Scene {
