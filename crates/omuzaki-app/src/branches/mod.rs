@@ -3,6 +3,12 @@
 //! [`OpenLane`]), makes points of a lane's committed state, creates, renames, deletes and reviews branches, switches
 //! the folder between lanes crash-safely, and keeps the abandoned future of a restore on an automatic branch.
 //!
+//! **Switching** (design 5.5) is split so the calling (UI) thread waits only for what can refuse and for the rebind:
+//! the marker, the old keeper's stop and `state.folder`. A switcher thread then makes the old branch's switch point,
+//! has the new keeper rewrite the folder exactly, marks the switch done and closes the old lane. A second switch,
+//! [`close_all`](HostBranches::close_all) and [`Branches::settled`] wait for it, always before taking the
+//! manager's lock, which the switcher takes for its own steps.
+//!
 //! **Locks.** The manager holds its own lock while it calls into a lane, never the other way round: ops run under
 //! their lane's lock and read other branches only through points (immutable objects in the store) and the lane
 //! states, a leaf lock nothing else is taken under. So no lane waits on another, and no op waits on the manager.
@@ -21,6 +27,7 @@ pub mod routed;
 use std::collections::BTreeMap;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use omuzaki_doc::branch::{
@@ -74,6 +81,8 @@ pub struct HostBranches {
     subscribers: Mutex<Vec<Sender<BranchEvent>>>,
     max_lanes: usize,
     failpoint: Failpoint,
+    /// The last switch's steps off the calling thread, until something waits for them. Taken before `state`.
+    switcher: Mutex<Option<JoinHandle<Result<(), BranchError>>>>,
     me: Weak<HostBranches>,
 }
 
@@ -171,6 +180,7 @@ impl HostBranches {
             subscribers: Mutex::new(Vec::new()),
             max_lanes,
             failpoint,
+            switcher: Mutex::new(None),
             me: me.clone(),
         });
         this.shared.handle.bind(&this);
@@ -260,8 +270,9 @@ impl HostBranches {
     /// # Errors
     /// The first lane that didn't close; the others are closed all the same.
     pub fn close_all(&self) -> Result<(), AppError> {
+        let mut switcher = lock(&self.switcher);
+        let mut first = Self::join(switcher.take()).err();
         let mut state = lock(&self.state);
-        let mut first = None;
         let mut ids: Vec<BranchId> = state.lanes.keys().cloned().collect();
         // The folder lane last, so its files are the last thing written.
         ids.sort_by_key(|id| *id == state.folder);
@@ -270,7 +281,57 @@ impl HostBranches {
                 first.get_or_insert(error);
             }
         }
+        drop(switcher);
         first.map_or(Ok(()), |error| Err(AppError::Branch(error)))
+    }
+
+    fn join(switcher: Option<JoinHandle<Result<(), BranchError>>>) -> Result<(), BranchError> {
+        switcher.map_or(Ok(()), |thread| {
+            thread.join().unwrap_or_else(|_| Err(BranchError::Io("the switch stopped part way".to_owned())))
+        })
+    }
+
+    /// A switch's steps after the rebind (design 5.5 steps 4 to 6), on the switcher thread: the old branch's switch
+    /// point, the new keeper's exact rewrite of the folder, the marker, and the old lane's close if nothing works on
+    /// it or holds it. A failure is reported as a notice on the new folder branch; the marker stays `switching`, so
+    /// the next open finishes the switch.
+    fn finish_switch(
+        &self,
+        from: &BranchId,
+        to: &BranchId,
+        old: &OpenLane,
+        target: &OpenLane,
+        by: &Actor,
+    ) -> Result<(), BranchError> {
+        let fail = |step: &'static str| (self.failpoint)(step).map_err(BranchError::Io);
+        let steps = || -> Result<(), BranchError> {
+            {
+                // Under the manager's lock, as every point is, so its number can't race another point of the branch.
+                let _state = lock(&self.state);
+                let old_info = self.live(from)?;
+                let made = Made { kind: PointKind::Switch, label: "Switched away", by, advance: true };
+                self.point_if_changed(old, &old_info, &made)?;
+            }
+            fail("switch:old-point")?;
+            // 5. The target's keeper rewrites the folder exactly and saves from there.
+            target.journal.set_folder(true, LANE_WAIT).map_err(io)?;
+            fail("switch:rewritten")?;
+            // 6. Done.
+            FolderMarker::finish_switch(&self.shared.dir, to)?;
+            let mut state = lock(&self.state);
+            if state.folder != *from && old.sessions() == 0 && !old.held() {
+                self.close_lane(&mut state, from)?;
+            }
+            self.sync_states(&state);
+            Ok(())
+        };
+        let finished = steps();
+        if let Err(error) = &finished {
+            let notice = format!("the switch didn't finish ({error}); it finishes when the project next opens");
+            tracing::warn!(branch = %to, %notice, "switch");
+            self.emit(&BranchEvent::lane_recovered(to.clone(), notice));
+        }
+        finished
     }
 
     // ----- inside the manager's lock -----
@@ -768,6 +829,12 @@ impl Branches for HostBranches {
                 "switching the folder is for a person: use branch_work to move your session".to_owned(),
             ));
         }
+        // The last switch finishes first; a step of it that failed is reported, and the next open finishes it.
+        let mut switcher = lock(&self.switcher);
+        if let Err(error) = Self::join(switcher.take()) {
+            tracing::warn!(%error, "the previous switch didn't finish");
+        }
+        let me = self.me.upgrade().ok_or_else(|| BranchError::Io("the project is closing".to_owned()))?;
         let mut state = lock(&self.state);
         self.ensure_main(&mut state)?;
         let target = self.live(to)?;
@@ -776,7 +843,7 @@ impl Branches for HostBranches {
         if from == *to {
             return Ok(Switched::new(from, to.clone()));
         }
-        let old_info = self.live(&from)?;
+        self.live(&from)?;
         let old = self.lane_locked(&mut state, &from)?;
         // 1. Everything that can refuse comes first, so a refused switch changes nothing.
         let export = old.executor.history_export();
@@ -800,22 +867,26 @@ impl Branches for HostBranches {
         // 3. The marker, flushed.
         FolderMarker::begin_switch(&self.shared.dir, &from, to)?;
         fail("switch:marked")?;
-        // 4. The old folder lane stops saving and records where it was.
+        // 4. The old folder lane stops saving; from here the new branch is the folder's, and the person's edits go to
+        // its lane, whose keeper takes them after the rewrite.
         old.journal.set_folder(false, LANE_WAIT).map_err(io)?;
-        let made = Made { kind: PointKind::Switch, label: "Switched away", by, advance: true };
-        self.point_if_changed(&old, &old_info, &made)?;
-        fail("switch:old-point")?;
-        // 5. The target's keeper rewrites the folder exactly and saves from there.
-        target_lane.journal.set_folder(true, LANE_WAIT).map_err(io)?;
-        fail("switch:rewritten")?;
-        // 6. Done.
-        FolderMarker::finish_switch(&self.shared.dir, to)?;
         state.folder = to.clone();
-        if old.sessions() == 0 {
-            self.close_lane(&mut state, &from)?;
-        }
         self.sync_states(&state);
         self.emit(&BranchEvent::switched(from.clone(), to.clone()));
+        drop(state);
+        // The rest (its switch point, the rewrite, the marker and the close) on the switcher thread.
+        let spawned = std::thread::Builder::new().name("omuzaki-branch-switch".to_owned()).spawn({
+            let (from, to, by) = (from.clone(), to.clone(), by.clone());
+            move || me.finish_switch(&from, &to, &old, &target_lane, &by)
+        });
+        match spawned {
+            Ok(thread) => *switcher = Some(thread),
+            Err(error) => {
+                let notice = format!("the switch didn't finish ({error}); it finishes when the project next opens");
+                self.emit(&BranchEvent::lane_recovered(to.clone(), notice));
+                return Err(io(error));
+            }
+        }
         Ok(Switched::new(from, to.clone()))
     }
 
@@ -928,6 +999,11 @@ impl Branches for HostBranches {
         let backup = self.filled(backup);
         self.emit(&BranchEvent::created(backup.clone()));
         Ok(Restored::new(backup, to))
+    }
+
+    fn settled(&self) -> Result<(), BranchError> {
+        let mut switcher = lock(&self.switcher);
+        Self::join(switcher.take())
     }
 
     fn lane(&self, branch: &BranchId) -> Result<Lane, BranchError> {

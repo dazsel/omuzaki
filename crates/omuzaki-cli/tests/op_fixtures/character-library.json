@@ -1,0 +1,11 @@
+{
+  "about": "Two library items applied to `kit`: the `twintails` hairstyle (application `hairstyle`, in place of the kit's hair) and the `night-iris` colourway (application `colourway`), whose colours the person then changed by hand, so its record is stale: for `library.update`, `library.detach` and `library.lock`.",
+  "base": "character-palette",
+  "steps": [
+    { "op": "library.apply", "args": { "item": "omuzaki/hair/twintails", "character": "kit", "replace": ["hair"] } },
+    { "op": "library.apply", "args": { "item": "omuzaki/colourways/night-iris", "character": "kit" } },
+    { "op": "palette.set", "args": { "character": "kit", "slot": "hair_root", "colour": "#101010" } },
+    { "op": "palette.set", "args": { "character": "kit", "slot": "hair_mid", "colour": "#202020" } },
+    { "op": "palette.set", "args": { "character": "kit", "slot": "outfit_a", "colour": "#303030" } }
+  ]
+}

@@ -12,8 +12,9 @@ use omuzaki_ops_api::{OpError, find};
 use omuzaki_store_api::{ContentHash, Provenance, licence_gate};
 use serde_json::Value;
 
+use crate::CharacterFacts;
 use crate::apply::{MAX_DEPTH, OpVisitor, check_step, fresh_part_id, walk};
-use crate::facts::{CharacterFacts, status};
+use crate::facts::status;
 
 /// The most rows a page returns, and the page size when `limit` is 0.
 const MAX_LIMIT: usize = 100;

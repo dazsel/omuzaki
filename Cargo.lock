@@ -4643,6 +4643,8 @@ dependencies = [
  "omuzaki-doc",
  "omuzaki-doc-api",
  "omuzaki-history-api",
+ "omuzaki-io-ops",
+ "omuzaki-library",
  "omuzaki-library-api",
  "omuzaki-library-mock",
  "omuzaki-mcp",
@@ -4895,6 +4897,8 @@ dependencies = [
  "omuzaki-io-mock",
  "omuzaki-io-ops",
  "omuzaki-io-vrm",
+ "omuzaki-library",
+ "omuzaki-library-api",
  "omuzaki-link-build",
  "omuzaki-live",
  "omuzaki-live-api",
@@ -5422,6 +5426,31 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "unic-langid",
+]
+
+[[package]]
+name = "omuzaki-library"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-char-api",
+ "omuzaki-char-mock",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-embed",
+ "omuzaki-library-api",
+ "omuzaki-library-mock",
+ "omuzaki-ops-api",
+ "omuzaki-ops-mock",
+ "omuzaki-store-api",
+ "omuzaki-store-mock",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+ "tracing",
+ "unicode-normalization",
 ]
 
 [[package]]

@@ -962,8 +962,21 @@ pub trait Branches: Send + Sync {
     /// [`BranchError::NotFound`], [`BranchError::Busy`] for an open transaction or a changed file,
     /// [`BranchError::LaneLimit`], [`BranchError::Denied`] for an agent or a plugin, or
     /// [`BranchError::PointNotFound`] when the head of the folder branch or of `to` is not in the store. Everything
-    /// that can fail is checked before anything changes, so a failed switch changes nothing.
+    /// that can refuse is checked before anything changes, so a refused switch changes nothing. A host may finish the
+    /// switch off the calling thread (the old branch's switch point, the folder's files, closing the old lane):
+    /// [`settled`](Self::settled) waits for that.
     fn switch(&self, to: &BranchId, by: &Actor) -> Result<Switched, BranchError>;
+
+    /// Waits until the last [`switch`](Self::switch) has finished off the calling thread (design 5.5): the old folder
+    /// branch's switch point is made, the folder's files are rewritten for the new branch, and the old lane is closed
+    /// if nothing works on it. A caller that needs the files (a command line, a test) waits here; a host that finishes
+    /// every switch on the calling thread returns at once.
+    ///
+    /// # Errors
+    /// [`BranchError::Io`] naming the step that failed; the project's next open finishes the switch.
+    fn settled(&self) -> Result<(), BranchError> {
+        Ok(())
+    }
 
     /// Renames a branch and sets its title. A person may rename any branch; an agent only one made for its session
     /// (design 5.6, 8.2). `main` keeps its name.
