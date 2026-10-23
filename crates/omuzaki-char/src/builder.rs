@@ -657,7 +657,13 @@ impl CachingBuilder {
             let Fetch { source, took, result } = fetch;
             let Ready { output, keep } = result?;
             let silent = is_silent(&output.publishes);
-            assembler.add(part, output)?;
+            // A cached output's meshes passed `add`'s check when they were built (an entry is stored only once its part
+            // was added), so they aren't checked again. A recoloured one is: a recolour may rewrite baked vertex tints.
+            if source == PartSource::Cached {
+                assembler.add_validated(part, output)?;
+            } else {
+                assembler.add(part, output)?;
+            }
             if let Some(stored) = keep {
                 lock(&self.store).insert(*keys, stored, self.max_parts, self.max_bytes);
             }

@@ -593,6 +593,24 @@ impl<'a> Assembler<'a> {
     /// [`BuildError::Mesh`] for a broken mesh; [`BuildError::Duplicate`] for a material or texture id another part
     /// defined.
     pub fn add(&mut self, part: &PartId, output: PartOutput) -> Result<(), BuildError> {
+        self.merge(part, output, true)
+    }
+
+    /// [`add`](Self::add) for an output whose meshes already passed `add`'s mesh check and are unchanged since: a
+    /// cached part. (A recoloured one goes through `add`: a recolour may rewrite baked vertex tints.)
+    /// Everything else is done as `add` does it, the textures' check and the weight brushes included; only the meshes'
+    /// validation, about a quarter of an all-cached rebuild, is skipped (#646).
+    ///
+    /// The caller guarantees the meshes are those of an output an earlier `add` (or `add_validated`) accepted: a mesh
+    /// that never passed the check reaches the renderer unchecked.
+    ///
+    /// # Errors
+    /// As [`add`](Self::add), except [`BuildError::Mesh`].
+    pub fn add_validated(&mut self, part: &PartId, output: PartOutput) -> Result<(), BuildError> {
+        self.merge(part, output, false)
+    }
+
+    fn merge(&mut self, part: &PartId, output: PartOutput, check_meshes: bool) -> Result<(), BuildError> {
         let kind = self.def.parts.get(part).ok_or_else(|| no_such_part(part))?.kind.clone();
         if self.rigs.iter().any(|(added, _)| added == part) {
             return Err(BuildError::Part {
@@ -601,7 +619,7 @@ impl<'a> Assembler<'a> {
             });
         }
         self.check_stature_order(part, &kind, output.publishes.values::<StatureFact>().next().is_some())?;
-        let counts = self.add_meshes(part, output.meshes)?;
+        let counts = self.add_meshes(part, output.meshes, check_meshes)?;
         self.add_materials(part, &kind, output.materials, &output.material_classes)?;
         self.add_textures(part, output.textures)?;
         if let Some(runtime) = output.runtime {
@@ -652,12 +670,14 @@ impl<'a> Assembler<'a> {
     }
 
     /// Validates `meshes`, applies the part's weight brushes and collects them.
-    fn add_meshes(&mut self, part: &PartId, meshes: Vec<PartMesh>) -> Result<MeshCounts, BuildError> {
+    fn add_meshes(&mut self, part: &PartId, meshes: Vec<PartMesh>, check: bool) -> Result<MeshCounts, BuildError> {
         let brushes = self.def.weight_brushes.get(part).map_or(&[][..], Vec::as_slice);
         let mut counts = MeshCounts { meshes: 0, vertices: 0, triangles: 0 };
         for (local, mut mesh) in meshes.into_iter().enumerate() {
-            let bad = |source| BuildError::Mesh { part: part.clone(), mesh: mesh.name.clone(), source };
-            mesh.validate().map_err(bad)?;
+            if check {
+                let bad = |source| BuildError::Mesh { part: part.clone(), mesh: mesh.name.clone(), source };
+                mesh.validate().map_err(bad)?;
+            }
             apply_brushes(&mut mesh, brushes);
             counts.meshes += 1;
             counts.vertices += mesh.geometry.positions.len();
