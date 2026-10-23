@@ -1,0 +1,35 @@
+# Whisper large-v3-turbo (multilingual) in whisper.cpp's ggml format for asr@1, on the whisper-ggml runtime. The pin is the
+# one the speech host used before the registry (the Hugging Face revision, size and SHA-256); never committed.
+id = "whisper-large-v3-turbo-q5-0"
+version = "1.0.0"
+name = "Whisper large-v3 turbo (5-bit)"
+slot = "asr@1"
+runtime = "whisper-ggml"
+providers = ["cpu"]
+
+[[files]]
+name = "ggml-large-v3-turbo-q5_0.bin"
+sha256 = "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2"
+size = 574041195
+urls = ["https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-large-v3-turbo-q5_0.bin"]
+
+[card]
+register = "Whisper weights (ggml files), whisper.cpp, whisper-rs 0.16 / whisper-rs-sys 0.15"
+authors = "OpenAI (weights); the ggml authors (conversion)"
+homepage = "https://github.com/openai/whisper"
+
+[card.licence]
+spdx = "MIT"
+url = "https://github.com/openai/whisper/blob/main/LICENSE"
+
+[[card.lineage]]
+kind = "base_model"
+name = "OpenAI Whisper large-v3-turbo"
+licence = "MIT"
+url = "https://github.com/openai/whisper"
+
+[[card.lineage]]
+kind = "conversion"
+name = "ggml conversion of Whisper large-v3-turbo, quantised to q5_0, by whisper.cpp"
+licence = "MIT"
+url = "https://huggingface.co/ggerganov/whisper.cpp"

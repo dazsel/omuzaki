@@ -211,7 +211,10 @@ fn a_switch_rewrites_the_folder_and_the_next_open_is_on_that_branch() {
 
     let held = core.runner();
     core.branches().switch(&oval.id, &person()).unwrap();
+    // The calling thread returns once the folder is rebound; the files are written off it (#2323).
     assert_eq!(core.branches().folder(), oval.id);
+    assert_eq!(note_of(held.as_ref()), Some(json!("on oval")), "the folder branch is the new one at once");
+    core.branches().settled().unwrap();
     assert_eq!(note_on_disk(tmp.path()), Some(json!("on oval")), "the folder holds the branch");
     assert_eq!(note_of(held.as_ref()), Some(json!("on oval")), "a held runner follows the folder");
     assert!(core.branches().open_lane(&BranchId::main()).is_none(), "main's lane closed with nothing on it");
@@ -228,6 +231,7 @@ fn a_switch_rewrites_the_folder_and_the_next_open_is_on_that_branch() {
     assert!(core.undo().unwrap().is_some(), "undo reaches across the restart on the branch");
     assert_eq!(note_of(core.runner().as_ref()), Some(json!("on oval")));
     core.branches().switch(&BranchId::main(), &person()).unwrap();
+    core.branches().settled().unwrap();
     assert_eq!(note_on_disk(tmp.path()), Some(json!("on main")));
     core.close().unwrap();
 }
@@ -260,7 +264,8 @@ fn a_switch_cut_short_at_any_step_is_finished_by_the_next_open() {
         let crashing =
             options().with_switch_failpoint(move |at| if at == step { Err(format!("cut at {at}")) } else { Ok(()) });
         let core = AppCore::open(tmp.path(), crashing).unwrap();
-        let cut = core.branches().switch(&oval.id, &person()).unwrap_err();
+        // A cut on the calling thread fails the switch; one on the switcher thread comes back from `settled`.
+        let cut = core.branches().switch(&oval.id, &person()).and_then(|_| core.branches().settled()).unwrap_err();
         assert!(cut.to_string().contains(step), "{step}: {cut}");
         core.abandon();
         assert_eq!(FolderMarker::read(tmp.path()).unwrap().state, FolderState::Switching, "{step}");

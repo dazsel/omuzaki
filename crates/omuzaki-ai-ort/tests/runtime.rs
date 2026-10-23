@@ -234,3 +234,30 @@ fn a_rejected_call_leaves_every_output_buffer_as_it_was() {
         assert_eq!(out, before, "nothing is written when any output is rejected");
     }
 }
+
+#[test]
+fn an_output_sized_by_the_data_is_right_on_every_call_at_one_input_shape() {
+    let Some(natives) = cache("an_output_sized_by_the_data_is_right_on_every_call_at_one_input_shape") else { return };
+    let path = fixture("nonzero.onnx");
+    let files = [local("model.onnx", &path)];
+    let slot = Signature {
+        inputs: vec![spec("x", &[Dim::ANY])],
+        outputs: vec![TensorSpec::new("i", DType::I64, vec![Dim::Fixed(1), Dim::ANY])],
+    };
+    let mut session =
+        with_source(&files, &[], &natives, |s| OrtRuntime.load(s, &slot, &io(), &SessionOptions::default())).unwrap();
+    let mut out = TensorBuf::for_outputs(session.signature());
+    // The same input shape every time, a different output size each time (as a TTS model's waveform for two texts of
+    // one token count): after the first refused prepared run the session sizes outputs per call.
+    for (x, expected) in [
+        ([1.0f32, 0.0, 2.0, 0.0], vec![0i64, 2]),
+        ([1.0, 1.0, 1.0, 0.0], vec![0, 1, 2]),
+        ([0.0, 0.0, 0.0, 3.0], vec![3]),
+        ([1.0, 0.0, 2.0, 0.0], vec![0, 2]),
+    ] {
+        session.run(&[TensorRef::f32(&x, &[4])], &mut out).unwrap();
+        assert_eq!(out[0].shape(), [1, expected.len()]);
+        let omuzaki_ai_api::TensorData::I64(got) = out[0].data() else { panic!("int64 out") };
+        assert_eq!(got, expected.as_slice());
+    }
+}

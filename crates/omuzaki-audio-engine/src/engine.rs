@@ -20,6 +20,7 @@ use omuzaki_audio_api::backend::{AudioBackend, BackendError, DeviceStream, Strea
 use omuzaki_audio_api::clock::{ClockSnapshot, EngineClock};
 use omuzaki_audio_api::device::{Binding, DeviceId, DeviceInfo, DeviceState, Direction, ProfileStore};
 use omuzaki_audio_api::engine::{AudioEngine, AudioError};
+use omuzaki_audio_api::feed::feed_channel;
 use omuzaki_audio_api::graph::{GraphSpec, MIC_BUS, MONITOR_OUT_ROLE, MicMode};
 use omuzaki_audio_api::ids::{BusId, DeviceRole, NodeId, PlayerId, SoundId};
 use omuzaki_audio_api::node::{MAX_BLOCK, ParamIndex, SAMPLE_RATE, node_kind};
@@ -749,14 +750,10 @@ impl AudioEngine for LiveEngine {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Ring sizes: seconds of audio.
         let capacity = ((request.capacity.0.max(0.05) * f64::from(request.rate)) as usize).max(MAX_BLOCK) * channels;
         let (producer, consumer) = ring(capacity, DropPolicy::DropNewest, 0);
-        self.inner.send(Command::AddFeed(Box::new(Feed::new(
-            request.id.clone(),
-            consumer,
-            !request.mono,
-            request.rate,
-        ))))?;
+        let (writer, source) = feed_channel(producer, consumer, request.rate, !request.mono);
+        self.inner.send(Command::AddFeed(Box::new(Feed::new(request.id.clone(), source))))?;
         control.entries += 1;
-        Ok(producer)
+        Ok(writer)
     }
 
     fn load_sound(&self, id: &SoundId, sound: Arc<Sound>) -> Result<(), AudioError> {

@@ -161,7 +161,10 @@ pub trait AudioEngine: Send + Sync {
     fn tap_ring(&self, request: &TapRequest) -> Result<(TapReader, TapInfo), AudioError>;
 
     /// Opens a feed into a bus (a `SourceRef::Feed` names it) and returns its writing end. Dropping the [`FeedWriter`]
-    /// closes the feed, and its source plays silence.
+    /// ends the feed once its ring is empty, and its source plays silence. The writer's
+    /// [`playhead`](FeedWriter::playhead) logs where every block's samples play, and its
+    /// [`closer`](FeedWriter::closer) fades the feed out within one block plus 2.5 ms (`crate::feed`). Opening a feed
+    /// under an id that is still open replaces the old one, which ends at once.
     ///
     /// # Errors
     /// [`AudioError::Internal`] when the ring cannot be made; an unknown feed id is accepted and plays once a bus names

@@ -263,3 +263,79 @@ fn a_loaded_sound_plays_on_its_player_and_unloads_without_a_trace() {
     engine.load_sound(&ding, Arc::new(Sound::new(vec![vec![0.0; 10]]).unwrap())).unwrap();
     engine.play(&board, &ding, 0.0, false).unwrap();
 }
+
+/// The engine on a host whose callbacks are `block` frames, with a mono bus `tts` fed by the feed `tts`, a 48 kHz tap
+/// on that bus, and the feed opened at `rate` Hz.
+fn feed_rig(block: u32, rate: u32) -> (FakeBackend, LiveEngine, omuzaki_audio_api::tap::FeedWriter, TapReader, u64) {
+    let mic = FakeDevice::input("mic", "Test microphone", 1)
+        .default_device()
+        .with_callback_frames(block)
+        .with_input(InputSource::Function(Arc::new(tone)));
+    let backend = FakeBackend::new(vec![mic], Script::new());
+    let engine = LiveEngine::new(Arc::new(backend.clone()), None).unwrap();
+    let binding =
+        Binding::Fixed { id: fake_id("mic"), label: "mic".into(), channels: ChannelMap::mono(0), speakers: false };
+    engine.bind(&role("mic"), binding).unwrap();
+    let tts = bus("tts", SourceRef::Feed { id: FeedId::new("tts").unwrap() });
+    engine
+        .apply(&GraphSpec {
+            buses: vec![bus(MIC_BUS, SourceRef::Device { role: role("mic") }), tts],
+            ..GraphSpec::default()
+        })
+        .unwrap();
+    let wanted = FeedRequest {
+        id: FeedId::new("tts").unwrap(),
+        rate,
+        mono: true,
+        capacity: Seconds(1.0),
+        consumer: "test".into(),
+    };
+    let feed = engine.feed(&wanted).unwrap();
+    let (tap, info) = engine.tap_ring(&request(TapPoint::BusPostFader(bus_id("tts")), TapRate::Graph48k)).unwrap();
+    (backend, engine, feed, tap, info.first_sample)
+}
+
+/// #1248: the playhead says on which engine sample every feed sample played, exactly, at the block sizes a host uses
+/// and at a TTS voice's 24 kHz as well as 48 kHz.
+#[test]
+fn the_feed_playhead_places_every_sample_exactly_at_any_block_size() {
+    for block in [64u32, 256, 1024] {
+        for rate in [48_000u32, 24_000, 30_238] {
+            let (backend, _engine, mut feed, mut tap, first) = feed_rig(block, rate);
+            let mut pcm = vec![0.0f32; 6_000];
+            pcm[4_321] = 1.0;
+            assert_eq!(feed.push(&pcm), pcm.len());
+            backend.step(48_000);
+            let heard = drain(&mut tap);
+            let peak = heard.iter().enumerate().fold((0, 0.0f32), |m, (i, &s)| if s > m.1 { (i, s) } else { m }).0;
+            let placed = feed.playhead().place(4_321, 0).unwrap();
+            assert_eq!(placed, first + peak as u64, "block {block}, {rate} Hz");
+        }
+    }
+}
+
+/// #1248: a close from another thread silences the feed within one block plus the 120-sample fade, with no sample
+/// above the fade's envelope, and the playhead says where the silence began.
+#[test]
+fn a_closed_feed_is_silent_within_one_block_plus_the_fade() {
+    for block in [64u32, 256, 1024] {
+        let (backend, _engine, mut feed, mut tap, first) = feed_rig(block, 24_000);
+        assert_eq!(feed.push(&vec![0.5f32; 20_000]), 20_000);
+        backend.step(4_800);
+        let closer = feed.closer();
+        std::thread::spawn(move || closer.close()).join().unwrap();
+        let raised_at = first + drain(&mut tap).len() as u64;
+        backend.step(4_800);
+        let after = drain(&mut tap);
+        let cut = feed.playhead().cut_at_sample();
+        assert!(cut != u64::MAX, "block {block}: the feed was cut");
+        let within = cut - raised_at;
+        assert!(within <= u64::from(block) + 120, "block {block}: silent {within} samples after the close");
+        let fade_start = cut - 120 - raised_at;
+        for (k, &s) in after[fade_start as usize..(cut - raised_at) as usize].iter().enumerate() {
+            let envelope = 0.5 * (1.0 - (k as f32 + 1.0) / 120.0);
+            assert!(s <= envelope + 1e-6, "block {block}: fade sample {k} is {s}, above {envelope}");
+        }
+        assert!(after[(cut - raised_at) as usize..].iter().all(|&s| s == 0.0), "block {block}: silent after the cut");
+    }
+}

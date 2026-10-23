@@ -24,8 +24,8 @@ use crate::ring::TapFlags;
 
 /// The reading end of a tap's ring.
 pub type TapReader = crate::ring::Consumer;
-/// The writing end of a feed's ring.
-pub type FeedWriter = crate::ring::Producer;
+/// The writing end of a feed: its ring, playhead and closer.
+pub use crate::feed::FeedWriter;
 
 /// What a ring does when its reader falls behind.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
