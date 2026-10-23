@@ -14,18 +14,20 @@ use omuzaki_core::mesh::MeshData;
 use omuzaki_face_api::FaceRect;
 use omuzaki_io_api::{Mesh, MorphTarget, Primitive};
 
-/// The head-local frame the face plane is measured in: the head centre in bind space, and the head-local `z` the front
-/// starts at (the projection's `front_fade[0]`).
+/// The head-local frame the face plane is measured in: the head centre in bind space, bind-space metres per head-local
+/// unit (the character's stature against its template's), and the head-local `z` the front starts at (the projection's
+/// `front_fade[0]`).
 #[derive(Copy, Clone, Debug)]
 pub(super) struct HeadFrame {
     pub centre: Vec3,
+    pub scale: f32,
     pub front_from: f32,
 }
 
 impl HeadFrame {
     /// `p` (bind space) in the head-local frame.
     pub fn local(&self, p: Vec3) -> Vec3 {
-        p - self.centre
+        (p - self.centre) / self.scale
     }
 }
 

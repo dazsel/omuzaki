@@ -13,6 +13,9 @@
 //! other region, and [`junction`] shapes the rings so the outline runs through the joint without a step.
 //!
 //! Skin weights come from the capsule kit ([`SegmentSet::skin_mesh`]) over the bones that can move each region.
+//!
+//! Every region carries vertex colours, multiplied into the skin: the legs' soft ambient darkening ([`shade`], the
+//! prototype's tights), white everywhere else.
 
 use omuzaki_char_api::{BodyRegion, JointRef, MaterialName, PartMesh};
 use omuzaki_core::glam::{DVec2, DVec3, Vec2, Vec3};
@@ -20,7 +23,7 @@ use omuzaki_core::mesh::MeshData;
 
 use super::junction;
 use crate::kit::KitError;
-use crate::kit::curve::{TAU, fraction};
+use crate::kit::curve::{TAU, fraction, sstep};
 use crate::kit::grid::{Grid, GridOptions, grid_normals};
 use crate::kit::skin::{CapsuleParams, SegmentSet, smooth};
 use crate::template::layout::{BodyLayout, section_basis};
@@ -106,7 +109,7 @@ pub struct Cap {
 const HIDDEN_CAP: f64 = 0.75;
 const SHOWN_CAP: f64 = 0.45;
 
-/// The rings of `region` at `rows` fractions from its start to its end, crowded towards the ends ([`clustered`]).
+/// The rings of `region` at `rows` fractions from its start to its end, crowded towards the ends (`clustered`).
 ///
 /// # Errors
 /// [`KitError`] if the layout has no such region or `rows < 2`.
@@ -228,8 +231,8 @@ fn unit_f32(k: usize, n: usize) -> f32 {
 }
 
 /// A region's mesh from its point grid: smooth normals oriented away from the row centres, the collapsed first and last
-/// rows replaced by single pole vertices with a triangle fan around them, UVs (`u` round, `v` along), and vertex
-/// colours from `shade` when given. Unskinned: [`skin_region`] weights it.
+/// rows replaced by single pole vertices with a triangle fan around them and UVs (`u` round, `v` along). Unskinned:
+/// [`skin_region`] weights it; [`build_regions`] colours it.
 ///
 /// # Errors
 /// [`KitError`] from the normals (a grid wrapped round with fewer than 3 columns).
@@ -454,12 +457,27 @@ pub fn build_regions(
         .map(|&region| sample_rings(layout, region, detail.rows(region)).map(|r| (region, r)))
         .collect::<Result<Vec<_>, _>>()?;
     junction::shape(&mut rings, (detail.arm_rows / 3).max(3), (detail.leg_rows / 3).max(6));
+    // The lowest point of the torso, between the thighs: where the legs' inner shading begins.
+    let crotch = rings.iter().find(|(region, _)| *region == BodyRegion::Torso).and_then(|(region, rings)| {
+        let (start, end) = caps_of(*region, rings, detail.cap_rings);
+        let (grid, _) = ring_grid(rings, start, end, detail.around).ok()?;
+        let rows = 0..grid.rows();
+        Some(
+            rows.flat_map(|i| (0..grid.cols()).map(move |j| (i, j)))
+                .map(|(i, j)| grid.at(i, j).y)
+                .fold(f64::MAX, f64::min),
+        )
+    });
     let mut built = rings
         .into_iter()
         .map(|(region, rings)| {
             let (start, end) = caps_of(region, &rings, detail.cap_rings);
             let (grid, centres) = ring_grid(&rings, start, end, detail.around)?;
-            let geometry = surface(&grid, &centres)?;
+            let mut geometry = surface(&grid, &centres)?;
+            geometry.colours = vec![[1.0; 4]; geometry.positions.len()];
+            if let Some(crotch) = crotch {
+                shade(layout, region, crotch, &mut geometry);
+            }
             let mut mesh = PartMesh {
                 name: name_of(region).to_owned(),
                 geometry,
@@ -484,6 +502,57 @@ pub fn build_regions(
         (built[l].1, built[r].1) = pair;
     }
     Ok(built)
+}
+
+/// How much the inner thigh is darkened where it faces the other leg squarely: the prototype's tights (`body.js`
+/// `buildLeg` `rgb`).
+const INNER_THIGH_SHADE: f64 = 0.10;
+/// The inward turn (the cosine between the surface's normal and the direction to the other leg) at which the inner
+/// shading starts: a surface turned further to the front or the back stays white.
+const INNER_FROM: f64 = 0.45;
+/// How much the hollow behind the knee is darkened, at the knee's height on the back of the leg.
+const KNEE_SHADE: f64 = 0.05;
+/// How far above and below the knee joint the hollow's shading reaches, as a fraction of the thigh's length.
+const KNEE_REACH: f64 = 0.22;
+/// How far under the crotch the inner shading takes to fade in, as a fraction of the way from the crotch to the knee.
+const CROTCH_FADE: f64 = 0.25;
+
+/// Writes the soft ambient darkening of a leg into `mesh`'s vertex colours, so the legs read as round volumes where the
+/// toon shading alone leaves them flat: where the thighs face each other below the `crotch` (the torso's lowest point),
+/// fading in over the first quarter of the way to the knee and out over the lower half, and in the hollow behind the
+/// knee.
+/// Both fade with the surface's turn away from the other leg or from behind, so there is no edge to see. Above the
+/// crotch the thighs meet the pelvis, whose surface is turned another way: shading there would draw the seam. Heights
+/// come from the layout's hip and knee joints, so the shading follows every template and shape. Other regions stay
+/// white.
+fn shade(layout: &BodyLayout, region: BodyRegion, crotch: f64, mesh: &mut MeshData) {
+    use omuzaki_anim_api::HumanoidBone as B;
+    let side = match region {
+        BodyRegion::LegL => 1.0,
+        BodyRegion::LegR => -1.0,
+        _ => return,
+    };
+    let (Some(hip), Some(knee)) = (layout.joint64(B::LeftUpperLeg), layout.joint64(B::LeftLowerLeg)) else {
+        return;
+    };
+    let (thigh, span) = (hip.y - knee.y, crotch - knee.y);
+    if thigh <= 0.0 || span <= 0.0 {
+        return;
+    }
+    // Towards the body's midline: the other leg.
+    let inward = DVec3::new(-side * hip.x.signum(), 0.0, 0.0);
+    // Full from a quarter of the way down from the crotch to half way to the knee.
+    let (under, half) = (crotch - CROTCH_FADE * span, knee.y + 0.5 * span);
+    for ((p, n), colour) in mesh.positions.iter().zip(&mesh.normals).zip(&mut mesh.colours) {
+        let (p, n) = (p.as_dvec3(), n.as_dvec3());
+        let inner = sstep(INNER_FROM, 0.95, n.dot(inward)) * sstep(knee.y, half, p.y) * sstep(crotch, under, p.y);
+        let hollow = sstep(0.1, 0.9, -n.z) * sstep(KNEE_REACH * thigh, 0.0, (p.y - knee.y).abs());
+        // Where the two meet (a short thigh), the darker one holds: the shadings do not stack.
+        let keep = 1.0 - (INNER_THIGH_SHADE * inner).max(KNEE_SHADE * hollow);
+        #[allow(clippy::cast_possible_truncation)] // a factor in 0.85..=1
+        let keep = keep as f32;
+        *colour = [keep, keep, keep, 1.0];
+    }
 }
 
 /// How far, in metres, a vertex of one arm may lie from the reflection of a vertex of the other and still be its image.

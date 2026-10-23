@@ -540,6 +540,11 @@ impl<'a> Objective<'a> {
         self
     }
 
+    /// Whether parts are rebuilt with every candidate ([`with_follow`](Self::with_follow)).
+    pub(crate) fn follows(&self) -> bool {
+        self.follow.is_some()
+    }
+
     /// The meshes of a candidate: its body, then the parts that follow it.
     fn candidate(&self, params: &FitParams) -> Result<Vec<MeshData>, FitError> {
         let mut meshes = body_geometry(self.template, &self.base, params)?;

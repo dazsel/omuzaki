@@ -1,5 +1,6 @@
 //! What a character can look at, and how the stage turns it into a world position.
 
+use omuzaki_anim_api::LookTarget;
 use omuzaki_core::glam::Vec3;
 
 /// Identifies an entity in the stage's scene (another character, a prop). The stage owns the numbering.
@@ -46,6 +47,17 @@ pub trait GazeScene {
 }
 
 impl GazeTarget {
+    /// The target a `Look` cue names, with `entity` finding a named entity in the scene. A name the scene doesn't have,
+    /// and [`LookTarget::Ahead`], look nowhere: the eyes and the head go back to rest.
+    pub fn from_look(target: &LookTarget, entity: impl Fn(&str) -> Option<EntityId>) -> Self {
+        match target {
+            LookTarget::Camera => GazeTarget::Camera,
+            LookTarget::Point { position, .. } => GazeTarget::Point(Vec3::from_array(*position)),
+            LookTarget::Entity { name, .. } => entity(name).map_or(GazeTarget::Off, GazeTarget::Entity),
+            _ => GazeTarget::Off,
+        }
+    }
+
     /// The world position to look at, or `None` for [`GazeTarget::Off`] and for a camera or entity the scene doesn't
     /// have. [`GazeSolver::step`](super::GazeSolver::step) treats `None` as no gaze: it leaves the bus alone and
     /// restarts its easing from centre.
@@ -82,6 +94,16 @@ mod tests {
         assert_eq!(point, Some((Vec3::Y, GazeKind::Driven)));
         let entity = GazeTarget::Entity(EntityId(7)).resolve(&Scene).map(|r| r.position);
         assert_eq!(entity, Some(Vec3::X));
+    }
+
+    #[test]
+    fn a_look_cue_names_its_target() {
+        let entity = |name: &str| (name == "chat").then_some(EntityId(7));
+        assert_eq!(GazeTarget::from_look(&LookTarget::Camera, entity), GazeTarget::Camera);
+        assert_eq!(GazeTarget::from_look(&LookTarget::point([1.0, 2.0, 3.0]), entity), GazeTarget::Point(Vec3::new(1.0, 2.0, 3.0)));
+        assert_eq!(GazeTarget::from_look(&LookTarget::entity("chat"), entity), GazeTarget::Entity(EntityId(7)));
+        assert_eq!(GazeTarget::from_look(&LookTarget::entity("nobody"), entity), GazeTarget::Off);
+        assert_eq!(GazeTarget::from_look(&LookTarget::Ahead, entity), GazeTarget::Off);
     }
 
     #[test]

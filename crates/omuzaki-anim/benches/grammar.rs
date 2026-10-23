@@ -8,10 +8,13 @@ use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use omuzaki_anim::grammar::{GrammarConfig, GrammarStage};
-use omuzaki_anim_api::{Bus, Channel, ChannelMask, Source, Tick};
+use omuzaki_anim_api::{Bus, Channel, ChannelMask, Cues, Source, Tick};
 use omuzaki_face_api::{GrammarRules, RuleConfig, RuleId};
 
 /// A face with both mouth corners at `smile` and `frown`, the jaw at `jaw` and the lips puckered by `pucker`.
+/// Speech loud enough for a laugh, so the laugh's whole path is measured.
+const LOUD: Cues = Cues { loudness: 0.8, onset: false, laugh: 0.0, eyes_lead_turn: false, look_shift: false };
+
 fn mouth(smile: f32, frown: f32, jaw: f32, pucker: f32) -> Bus {
     let mut bus = Bus::default();
     for channel in [Channel::MOUTH_SMILE_LEFT, Channel::MOUTH_SMILE_RIGHT] {
@@ -53,7 +56,7 @@ fn grammar_frame(c: &mut Criterion) {
     c.bench_function("grammar: one frame, smile-blink-arc writes the arcs", |b| {
         b.iter(|| {
             let mut bus = black_box(blinking_smile());
-            on.step(tick, &mut bus);
+            on.step(tick, &LOUD, &mut bus);
             black_box(bus);
         });
     });
@@ -70,7 +73,7 @@ fn grammar_frame(c: &mut Criterion) {
         c.bench_function(&format!("grammar: one frame, {name}"), |b| {
             b.iter(|| {
                 let mut bus = black_box(face);
-                all.step(tick, &mut bus);
+                all.step(tick, &LOUD, &mut bus);
                 black_box(bus);
             });
         });
@@ -80,7 +83,7 @@ fn grammar_frame(c: &mut Criterion) {
     c.bench_function("grammar: one frame, nothing to do (no smile)", |b| {
         b.iter(|| {
             let mut bus = black_box(Bus::default());
-            resting.step(tick, &mut bus);
+            resting.step(tick, &LOUD, &mut bus);
             black_box(bus);
         });
     });
@@ -91,7 +94,7 @@ fn grammar_frame(c: &mut Criterion) {
     c.bench_function("grammar: one frame, the rule is switched off", |b| {
         b.iter(|| {
             let mut bus = black_box(blinking_smile());
-            disabled.step(tick, &mut bus);
+            disabled.step(tick, &LOUD, &mut bus);
             black_box(bus);
         });
     });
@@ -101,7 +104,7 @@ fn grammar_frame(c: &mut Criterion) {
         b.iter(|| {
             let mut bus = black_box(blinking_smile());
             bus.owners.claim(Source::Tracker, ChannelMask::EYES);
-            person.step(tick, &mut bus);
+            person.step(tick, &LOUD, &mut bus);
             black_box(bus);
         });
     });

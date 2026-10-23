@@ -37,7 +37,7 @@ fn bench_eyes(c: &mut Criterion) {
     let mut params = face(1.0, 0.0);
     params.gaze = Vec2::new(0.6, -0.3);
     params.effects.sparkle = 0.8;
-    let view = FaceView { highlight_shift: Vec2::new(0.2, 0.1) };
+    let view = FaceView { highlight_shift: Vec2::new(0.2, 0.1), head_coverage: None };
     let mut t = 0.0;
     group.bench_function("open_shimmer_heart_slit", |b| {
         b.iter(|| {

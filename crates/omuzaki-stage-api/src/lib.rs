@@ -7,6 +7,7 @@
 //! - [`settings`]: [`SceneSettings`], [`Backdrop`], [`Ground`], [`PostDef`]
 //! - [`lighting`]: [`Lighting`], [`LightDef`], [`Ambient`], [`FogDef`], [`EnvironmentDef`]
 //! - [`camera`], [`cast`]: [`CameraDef`], [`Framing`], [`CastMember`]
+//! - [`drive`]: which drivers move a member's channels ([`DriveMap`], `docs/design/drivers.md`)
 //! - [`anchor`]: the [`Anchor`] a light or camera is measured against
 //! - [`check`]: [`SceneDef::check`], the one validator (design D13), with [`SceneError`] and [`Finding`]
 //! - [`effects`]: effect presets, the scene's [`WeatherDef`], live bursts and weather, and the [`EffectService`]
@@ -24,6 +25,7 @@ pub mod anchor;
 pub mod camera;
 pub mod cast;
 pub mod check;
+pub mod drive;
 pub mod effects;
 pub mod error;
 pub mod ids;
@@ -35,6 +37,7 @@ pub mod settings;
 pub use anchor::Anchor;
 pub use camera::{CameraDef, Framing};
 pub use cast::CastMember;
+pub use drive::{DriveGroup, DriveMap, DriverKind};
 pub use effects::{
     BurstAccepted, BurstRequest, ChatEmoteRef, EffectAt, EffectError, EffectEvent, EffectEventKind, EffectKind,
     EffectOrigin, EffectPreset, EffectService, EffectStatus, LiveWeather, PresetInfo, SpriteDef, WeatherArea,

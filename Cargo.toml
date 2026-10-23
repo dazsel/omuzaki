@@ -154,6 +154,9 @@ opt-level = 2                # the kit's geometry: its property and fit tests an
 [profile.dev.package.omuzaki-face]
 opt-level = 2                # the face painter: its sweep tests paint and rasterise thousands of frames (#2289)
 
+[profile.dev.package.omuzaki-measure]
+opt-level = 2                # the likeness measures: their ladder and repeatability tests draw and measure hundreds of faces
+
 [profile.release]
 lto = "thin"
 codegen-units = 16

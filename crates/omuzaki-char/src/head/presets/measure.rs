@@ -24,7 +24,7 @@ const STEP: f64 = 0.0005;
 /// `outline::plausible` measure it, so the three agree.
 const TIP_SCALE: f64 = 0.25;
 
-/// A head's front silhouette: the half-width at every [`STEP`] from the lowest point up.
+/// A head's front silhouette: the half-width at every `STEP` from the lowest point up.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Silhouette {
     /// Head-local height of the lowest point.

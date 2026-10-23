@@ -18,7 +18,7 @@ fn busy_bus() -> Bus {
 }
 
 fn life_frame(c: &mut Criterion) {
-    let talking = Cues { loudness: 0.6, onset: false, laugh: 0.0 };
+    let talking = Cues { loudness: 0.6, onset: false, laugh: 0.0, ..Cues::default() };
     let mut life = Life::new(LifeConfig::new(1));
     let mut index = 0_u64;
     c.bench_function("life: one frame at 60 fps, talking", |b| {

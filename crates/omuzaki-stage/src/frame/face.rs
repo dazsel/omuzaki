@@ -153,7 +153,7 @@ impl WarmJob {
         let solved = if built.rig == self.old_rig {
             None
         } else {
-            let mut frame = RigFrame::new(&built.rig).map_err(|e| e.to_string())?;
+            let mut frame = RigFrame::for_character(&built).map_err(|e| e.to_string())?;
             frame.solve_with_channels(self.tick, &self.pose, &self.goals, &self.channels);
             Some(frame.skin().to_vec())
         };
@@ -419,7 +419,7 @@ fn warm_face(
     channels: &ChannelBuf,
     time: Seconds,
 ) -> Result<(), StageError> {
-    let view = FaceView { highlight_shift: Vec2::ZERO };
+    let view = FaceView { highlight_shift: Vec2::ZERO, head_coverage: None };
     system.update(channels, profile, time, view).map(|_| ()).map_err(face_error)
 }
 
@@ -688,9 +688,13 @@ impl Stage {
     ) -> Result<(), StageError> {
         rig.last_tick = Some(tick);
         rig.last_channels = input.channels;
+        let head = rig.bound.as_ref().and_then(|b| b.head.as_ref());
+        let highlight_shift = head.map_or(Vec2::ZERO, |h| self.highlight(h));
+        // A share of the frame, well inside f32.
+        #[allow(clippy::cast_possible_truncation)]
+        let head_coverage = head.and_then(|h| self.head_coverage(h)).map(|c| c as f32);
         let Some(bound) = rig.bound.as_mut() else { return Ok(()) };
-        // The gaze module's pure highlight shift is not available yet: no shift.
-        let view = FaceView { highlight_shift: Vec2::ZERO };
+        let view = FaceView { highlight_shift, head_coverage };
         let update = bound.system.update(&input.channels, &bound.profile, tick.time, view).map_err(face_error)?;
         for layer in update.changed_layers() {
             rig.unpainted[layer as usize] = true;
@@ -736,6 +740,20 @@ impl Stage {
         let coverage = self.head_coverage(rig.bound.as_ref()?.head.as_ref()?)?;
         let pick = select_variant(&source.variants, coverage, self.built.variant.as_ref())?;
         (self.built.variant.as_ref() != Some(pick)).then(|| pick.clone())
+    }
+
+    /// Where the eyes' highlights slide for the scene's camera and the head of the last solve
+    /// ([`highlight_shift`](omuzaki_anim::gaze::highlight_shift)): the camera seen from the head, in the head's bind
+    /// space, which faces `+z` with the character's left at `+x`.
+    fn highlight(&self, head: &Head) -> Vec2 {
+        let Some(skin) = self.rig.skin().get(head.bone) else { return Vec2::ZERO };
+        let to_head = (self.root * *skin).inverse();
+        let camera = &self.scene.camera;
+        let seen_from = match camera.projection {
+            Projection::Perspective { .. } => to_head.transform_point3(camera.position()) - head.bind_position,
+            Projection::Orthographic { .. } => to_head.transform_vector3(camera.transform.z_axis.truncate()),
+        };
+        omuzaki_anim::gaze::highlight_shift(seen_from)
     }
 
     /// The head's height over the frame's height at the head, from the camera and the head bone of the last solve.
@@ -849,7 +867,7 @@ impl Stage {
         tick: Tick,
     ) -> Result<Staged, StageError> {
         let Warmed { built: new, expressions } = warmed;
-        let mut new_rig = (new.rig != self.built.rig).then(|| RigFrame::new(&new.rig)).transpose()?;
+        let mut new_rig = (new.rig != self.built.rig).then(|| RigFrame::for_character(&new)).transpose()?;
         if let Some(frame) = new_rig.as_mut() {
             // A first solve off the frame path; the swapping frame solves it again with its own input.
             frame.solve_with_channels(tick, &input.pose, &input.goals, &input.channels);
@@ -965,7 +983,7 @@ impl Stage {
         rig: &mut FaceRig,
         mut new: BuiltCharacter,
     ) -> Result<(SyncReport, Result<(), StageError>), StageError> {
-        let mut new_rig = (new.rig != self.built.rig).then(|| RigFrame::new(&new.rig)).transpose()?;
+        let mut new_rig = (new.rig != self.built.rig).then(|| RigFrame::for_character(&new)).transpose()?;
         if let Some(frame) = new_rig.as_mut() {
             // The bone drivers go on reading the last frame's channels, as the live rig's do.
             frame.set_channels(self.rig.channels());

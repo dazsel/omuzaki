@@ -34,7 +34,7 @@ use self::upload::AvatarUpload;
 use crate::error::StageError;
 use crate::frame::face::SETTLE_DT;
 use crate::frame::rig::RigFrame;
-use crate::frame::{FrameInput, FrameOutput, StageClock};
+use crate::frame::{FrameInput, FrameOutput, Prepared, StageClock};
 use crate::scene::apply::{Owed, SceneLink, reserve};
 use crate::scene::backdrop::StageBackdrop;
 use crate::scene::environment::StageEnvironment;
@@ -92,6 +92,7 @@ impl AvatarStage {
         let binds = evaluator.bind_deltas();
         let upload = AvatarUpload::upload(renderer, &avatar, &binds)?;
         let prepared = RigFrame::for_skeleton(&avatar.skeleton, &avatar.springs, &avatar.constraints)
+            .map(|rig| rig.guarding(&avatar))
             .and_then(|rig| AvatarPlan::new(&avatar, &upload, &weights).map(|plan| (rig, plan)));
         let (rig, plan) = match prepared {
             Ok(parts) => parts,
@@ -146,6 +147,16 @@ impl AvatarStage {
     /// [`StageError::Render`] if the renderer refuses a material update or the frame. The rig has already stepped; the
     /// next call carries on from there.
     pub fn tick(&mut self, renderer: &mut dyn Renderer, input: &FrameInput) -> Result<FrameOutput, StageError> {
+        let prepared = self.prepare_tick(renderer, input)?;
+        self.submit(renderer, prepared, "the frame")
+    }
+
+    /// Everything [`tick`](Self::tick) does before the render.
+    pub(crate) fn prepare_tick(
+        &mut self,
+        renderer: &mut dyn Renderer,
+        input: &FrameInput,
+    ) -> Result<Prepared, StageError> {
         let tick = self.clock.next(input.dt, input.time);
         self.tick = tick;
         self.input_root = input.root;
@@ -156,7 +167,16 @@ impl AvatarStage {
         }
         self.goals = input.goals;
         self.rig.solve(tick, &self.pose, &self.goals);
-        self.draw(renderer, input, tick, "the frame")
+        self.prepare_draw(renderer, input, tick)
+    }
+
+    /// Everything [`redraw`](Self::redraw) does before the render.
+    pub(crate) fn prepare_redraw(
+        &mut self,
+        renderer: &mut dyn Renderer,
+        input: &FrameInput,
+    ) -> Result<Prepared, StageError> {
+        self.prepare_draw(renderer, input, self.tick)
     }
 
     /// Renders the pose the last [`tick`](Self::tick) left with `input`'s channels, for a still that differs from the
@@ -165,7 +185,8 @@ impl AvatarStage {
     /// # Errors
     /// As [`tick`](Self::tick).
     pub fn redraw(&mut self, renderer: &mut dyn Renderer, input: &FrameInput) -> Result<FrameOutput, StageError> {
-        self.draw(renderer, input, self.tick, "the still")
+        let prepared = self.prepare_draw(renderer, input, self.tick)?;
+        self.submit(renderer, prepared, "the still")
     }
 
     /// Steps the spring bones `steps` times at [`SETTLE_DT`] under the last frame's pose, goals and root, as the kit
@@ -185,14 +206,13 @@ impl AvatarStage {
         self.settle(steps);
     }
 
-    /// Steps 4 and 5: expressions, the scene, the render.
-    fn draw(
+    /// Step 4: expressions and the scene, ready to render.
+    fn prepare_draw(
         &mut self,
         renderer: &mut dyn Renderer,
         input: &FrameInput,
         tick: Tick,
-        what: &'static str,
-    ) -> Result<FrameOutput, StageError> {
+    ) -> Result<Prepared, StageError> {
         self.evaluator.evaluate(&input.channels, &mut self.weights, &mut self.binds);
         let uploads = self.upload.send_binds(renderer, &self.binds)?;
         self.plan.fill(&mut self.scene, self.rig.world(), &self.weights, self.root);
@@ -200,10 +220,20 @@ impl AvatarStage {
         self.submissions += 1;
         let index = if self.clock.is_live() { self.submissions } else { tick.index };
         self.scene.frame = FrameInfo { index, time: tick.time };
+        Ok(Prepared { tick, uploads })
+    }
+
+    /// Step 5: renders the scene a prepare left.
+    pub(crate) fn submit(
+        &mut self,
+        renderer: &mut dyn Renderer,
+        prepared: Prepared,
+        what: &'static str,
+    ) -> Result<FrameOutput, StageError> {
         let report = renderer
             .render(self.target, &self.scene, &self.quality)
             .map_err(|source| StageError::render(what, source))?;
-        Ok(FrameOutput { tick, report, uploads })
+        Ok(FrameOutput { tick: prepared.tick, report, uploads: prepared.uploads })
     }
 
     /// Makes the renderer quality of the following frames `quality`.

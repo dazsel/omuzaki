@@ -1,0 +1,2 @@
+{"turn":1,"call":"face.set_layout","args":{"character":"{main}","field":"eye_width","value":0.045},"applied":true}
+{"turn":2,"call":"palette.set","args":{"character":"{main}","slot":"skin","colour":"#e8b8a0"},"applied":true}

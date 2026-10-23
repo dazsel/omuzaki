@@ -3,7 +3,7 @@
 //!
 //! Built on the left foot and mirrored for the right, skinned to the lower leg (shaft), foot, and toes (toe cap), blended
 //! at the ankle. The prototype's `boots.js` is the reference; this module owns its upper, sole and cuff, and the pieces
-//! the details are made of ([`strap`], [`buckle`], [`stitch`], [`tab`]) are used by plain boots and by the shoes alike.
+//! the details are made of (`strap`, `buckle`, `stitch`, `tab`) are used by plain boots and by the shoes alike.
 //!
 //! | Module | Builds |
 //! |---|---|
@@ -35,7 +35,7 @@ mod upper;
 
 use omuzaki_char_api::{
     BodyRegion, BuildCtx, BuildError, KindProvenance, MaterialClass, MaterialName, MaterialSpec, PartCategory,
-    PartKind, PartMeta, PartOutput, Quality,
+    PartColours, PartKind, PartMeta, PartOutput, Quality, RecolourCtx, Recoloured,
 };
 use omuzaki_core::colour::Colour;
 use omuzaki_face_api::{Check, ColourRef, Validate};
@@ -45,7 +45,7 @@ use serde::{Deserialize, Serialize};
 
 pub use profile::{BOOT_TOP, Boot, BootProfile};
 
-use super::common::{FabricStyle, Garment, GarmentCommon, GarmentError, publish_envelope};
+use super::common::{FabricStyle, Garment, GarmentCommon, GarmentError, publish_envelope, recolour_named};
 use super::trim::{Finish, MetalStyle};
 use crate::kit::curve::lerp;
 use crate::kit::grid::MeshBuilder;
@@ -568,15 +568,13 @@ impl PartKind for Boots {
 
     fn build(p: &BootsParams, ctx: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
         p.validate().map_err(|e| ctx.fail(format!("the parameters are invalid: {e}")))?;
-        let FabricStyle::Plain { colour: leather } = &p.common.fabric else {
-            return Err(ctx.fail("boots are leather: use a plain colour"));
-        };
         let fail = |e: GarmentError| ctx.fail(e.to_string());
         let fit = ctx.fit()?;
         let boot = Boot::new(p, fit.as_ref()).map_err(fail)?;
         let tess = Tess::of(ctx.quality);
         let b = build_left(&boot, &tess, p).and_then(Builders::with_mirror).map_err(fail)?;
 
+        let looks = materials(p, ctx)?;
         let mut out = PartOutput::new();
         let part = ctx.part.as_str().to_owned();
         let mut add = |name: &str, builder: MeshBuilder, spec: MaterialSpec, shadow: bool| -> Result<(), BuildError> {
@@ -594,41 +592,19 @@ impl PartKind for Boots {
             Ok(())
         };
 
-        let leather_spec = MaterialSpec {
-            vertex_colours: true,
-            outline: Some(outline(ctx.colour(&p.leather.line)?, 0.0018)),
-            ..toon(ctx.colour(leather)?, ctx.colour(&p.leather.shade)?, -0.10, 0.16, (Colour::hex(0x00b8_8a6a), 0.12))
-        };
-        add("leather", b.leather, leather_spec, true)?;
-        let sole_spec = MaterialSpec {
-            outline: Some(outline(ctx.colour(&p.sole.line)?, 0.0014)),
-            ..toon(
-                ctx.colour(&p.sole.colour)?,
-                ctx.colour(&p.sole.shade)?,
-                -0.05,
-                0.14,
-                (Colour::hex(0x009a_8070), 0.10),
-            )
-        };
-        add("sole", b.sole, sole_spec, true)?;
-        let brass_base = ctx.colour(&p.buckle.finish.colour)?;
-        let brass_spec = match &p.buckle.finish.metal {
-            Some(metal) => {
-                let spec =
-                    metal.material(brass_base, ctx.colour(&metal.highlight)?).map_err(|e| ctx.fail(e.to_string()))?;
-                MaterialSpec { outline: Some(outline(Colour::hex(0x005a_4020), 0.0008)), ..spec }
-            }
-            None => MaterialSpec {
-                outline: Some(outline(Colour::hex(0x005a_4020), 0.0008)),
-                ..MaterialSpec::toon(brass_base)
-            },
-        };
         let metal = p.buckle.finish.metal.is_some();
-        add("brass", b.brass, brass_spec, true)?;
-        let thread = ctx.colour(&p.stitching.colour)?;
-        add("stitches", b.thread, toon(thread, Colour::hex(0x00a8_907c), -0.1, 0.2, (Colour::hex(0), 0.0)), false)?;
-        add("holes", b.holes, unlit(ctx.colour(&p.stitching.hole)?), false)?;
-        add("seams", b.seams, unlit(ctx.colour(&p.stitching.seam)?), false)?;
+        for (name, builder, shadow) in [
+            ("leather", b.leather, true),
+            ("sole", b.sole, true),
+            ("brass", b.brass, true),
+            ("stitches", b.thread, false),
+            ("holes", b.holes, false),
+            ("seams", b.seams, false),
+        ] {
+            let spec = looks.iter().find(|(n, _)| *n == name).map(|(_, spec)| spec.clone());
+            let spec = spec.ok_or_else(|| ctx.fail(format!("the boots have no `{name}` material")))?;
+            add(name, builder, spec, shadow)?;
+        }
 
         if metal && let Some((brass, _)) = out.materials.iter().find(|(m, _)| m.as_str().ends_with("-brass")) {
             out.material_classes.push((brass.clone(), MaterialClass::Metal));
@@ -636,6 +612,49 @@ impl PartKind for Boots {
         out.publishes = publish_envelope(ctx, &Self::regions(p), p.common.ease, 2.0)?;
         Ok(out)
     }
+
+    /// The boots' colours are their materials, made by the build's own function; the leather's vertex colours are
+    /// tones.
+    fn recolour(p: &BootsParams, output: &mut PartOutput, ctx: &RecolourCtx<'_>) -> Result<Recoloured, BuildError> {
+        Ok(recolour_named(output, ctx.part, materials(p, ctx)?, Vec::new()))
+    }
+}
+
+/// Every material the boots can have, by name after the part: the leather, the sole, the buckles' brass, and the
+/// stitching's thread, holes and seams. The build takes those it has a mesh for; the recolour remakes them here.
+fn materials<C: PartColours>(p: &BootsParams, ctx: &C) -> Result<Vec<(&'static str, MaterialSpec)>, BuildError> {
+    let FabricStyle::Plain { colour: leather } = &p.common.fabric else {
+        return Err(ctx.fail("boots are leather: use a plain colour"));
+    };
+    let leather_spec = MaterialSpec {
+        vertex_colours: true,
+        outline: Some(outline(ctx.colour(&p.leather.line)?, 0.0018)),
+        ..toon(ctx.colour(leather)?, ctx.colour(&p.leather.shade)?, -0.10, 0.16, (Colour::hex(0x00b8_8a6a), 0.12))
+    };
+    let sole_spec = MaterialSpec {
+        outline: Some(outline(ctx.colour(&p.sole.line)?, 0.0014)),
+        ..toon(ctx.colour(&p.sole.colour)?, ctx.colour(&p.sole.shade)?, -0.05, 0.14, (Colour::hex(0x009a_8070), 0.10))
+    };
+    let brass_base = ctx.colour(&p.buckle.finish.colour)?;
+    let brass_spec = match &p.buckle.finish.metal {
+        Some(metal) => {
+            let spec =
+                metal.material(brass_base, ctx.colour(&metal.highlight)?).map_err(|e| ctx.fail(e.to_string()))?;
+            MaterialSpec { outline: Some(outline(Colour::hex(0x005a_4020), 0.0008)), ..spec }
+        }
+        None => {
+            MaterialSpec { outline: Some(outline(Colour::hex(0x005a_4020), 0.0008)), ..MaterialSpec::toon(brass_base) }
+        }
+    };
+    let thread = ctx.colour(&p.stitching.colour)?;
+    Ok(vec![
+        ("leather", leather_spec),
+        ("sole", sole_spec),
+        ("brass", brass_spec),
+        ("stitches", toon(thread, Colour::hex(0x00a8_907c), -0.1, 0.2, (Colour::hex(0), 0.0))),
+        ("holes", unlit(ctx.colour(&p.stitching.hole)?)),
+        ("seams", unlit(ctx.colour(&p.stitching.seam)?)),
+    ])
 }
 
 omuzaki_char_api::register_part_kind!(Boots);

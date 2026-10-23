@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::template::registry;
 use omuzaki_char_api::{
-    BodyTemplateId, BuildError, BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, CharacterDef,
+    BodyTemplateId, BuildError, BuildOptions, BuiltCharacter, CharId, CharacterBuilder, CharacterDef,
     PartId, RegistryBuilder, paths,
 };
 use omuzaki_core::glam::Vec3;
@@ -94,13 +94,14 @@ impl Op for SetTemplate {
 
 register_op!(SetTemplate);
 
-/// Builds `def` and gathers every part's vertices.
+/// Builds `def` (its geometry: painted textures are left blank, so a painted garment builds without the app's
+/// rasteriser) and gathers every part's vertices.
 ///
 /// # Errors
 /// `invalid` naming the template when the character does not build with it, with the builder's reason.
 fn silhouette(character: &CharId, def: &CharacterDef) -> Result<Silhouette, OpError> {
     let built: BuiltCharacter = RegistryBuilder
-        .build(character, def, &BuildOptions::default(), &BuildServices::default())
+        .build(character, def, &BuildOptions::default(), &crate::ops::weights::geometry_services())
         .map_err(|e| build_refusal(def, &e))?;
     Ok(gather(&built))
 }

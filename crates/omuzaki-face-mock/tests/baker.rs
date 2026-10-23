@@ -17,7 +17,12 @@ fn the_registry_finds_the_mock_baker_and_its_bake_exports() {
     let factory = face_baker().expect("no priority conflict").expect("the mock face baker is registered");
     let profile = mock_profile();
     let baker = factory
-        .create(BakerInput { profile: &profile, projection: mock_projection(), head_centre: Vec3::new(0.0, 0.5, 0.0) })
+        .create(BakerInput {
+            profile: &profile,
+            projection: mock_projection(),
+            head_centre: Vec3::new(0.0, 0.5, 0.0),
+            scale: 1.0,
+        })
         .expect("the mock factory always creates a baker");
 
     // The fixture minus its own expressions and morph targets, so the baker owns every channel.

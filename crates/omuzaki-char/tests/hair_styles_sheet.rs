@@ -94,26 +94,11 @@ fn character(template: &str, hair: &HairParams) -> CharacterDef {
     def.template = BodyTemplateId::new(template).unwrap();
     def.parts = BTreeMap::new();
     def.parts.insert(PartId::new("body").unwrap(), part("body", json!({})));
-    def.parts.insert(PartId::new("head").unwrap(), part("head", head_params(template)));
+    def.parts.insert(PartId::new("head").unwrap(), part("head", json!({})));
     let mut hair = hair.clone();
     brown(&mut hair.shading);
     def.parts.insert(PartId::new("hair").unwrap(), part("hair", serde_json::to_value(hair).unwrap()));
     def
-}
-
-/// The head's parameters on `template`: its default cranium raised by the template's head-base rise over soft-sd's, so
-/// the head sits on the neck. The default head is placed for soft-sd until #825 places it from the template; the
-/// accessory and tail tests use the same lift.
-fn head_params(template: &str) -> Value {
-    let body = omuzaki_char_api::BodyParams::default();
-    let base = |name: &str| {
-        let layout =
-            omuzaki_char::template::registry::find(name).unwrap().layout(&body.proportions, &body.shape, &body.hand);
-        layout.head_base().unwrap().y
-    };
-    let rise = base(template) - base("soft-sd");
-    let default = omuzaki_char_api::HeadParams::default().cranium.centre;
-    json!({ "cranium": { "centre": [default[0], default[1] + rise, default[2]] } })
 }
 
 /// The sheet's hair colour: a mid brown, so the clumps, outlines and the tie read against the skin (the default hair

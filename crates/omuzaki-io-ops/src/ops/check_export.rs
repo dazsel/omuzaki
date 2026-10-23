@@ -25,7 +25,7 @@
 
 use omuzaki_avatar_api::body::BodyView;
 use omuzaki_char_api::{
-    BuildError, BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, CharacterDef, JointRef,
+    BuildError, BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, CharacterDef,
     LookDef, PartCategory, PartId, Quality, RegistryBuilder, VariantError, VariantId, VariantSet, find_kind, paths,
     resolve_variant,
 };
@@ -91,14 +91,16 @@ pub(crate) struct FaceToBake {
     pub profile: FaceProfile,
     /// Where the painted layers land on the head.
     pub projection: FaceProjection,
-    /// The head bone's bind position, in the scene's (scaled) units.
+    /// The head centre the face is placed from, in the scene's (scaled) units.
     pub head_centre: Vec3,
+    /// The scene's metres per head-local unit of the projection.
+    pub scale: f32,
     /// The node whose mesh receives the face's morph targets.
     pub target: NodeIx,
 }
 
-/// The face `built` would bake into `gathered`: its face binding, the head bone and the node of its head part's head
-/// mesh (`<part>.<mesh>`, the mesh named `head` or `*-head`, as the stage frames the head). `None` when any is missing.
+/// The face `built` would bake into `gathered`: its face binding, where its head material places it, and the node of
+/// its head part's head mesh (`<part>.<mesh>`, the mesh named `head` or `*-head`, as the stage frames the head). `None` when any is missing.
 fn face_to_bake(built: &BuiltCharacter, gathered: &Gathered) -> Option<FaceToBake> {
     let binding = built.face.as_ref()?;
     let profile = binding.profile.resolve_colours(&built.palette).ok()?;
@@ -111,12 +113,16 @@ fn face_to_bake(built: &BuiltCharacter, gathered: &Gathered) -> Option<FaceToBak
     })?;
     let name = format!("{}.{}", mesh.part, mesh.mesh.name);
     let node = gathered.scene.nodes.iter().position(|n| n.name == name && n.mesh.is_some())?;
-    let bone = built.rig.bone(&JointRef::HEAD)?.index();
-    let head = built.rig.inverse_bind().get(bone)?.inverse().w_axis.truncate();
+    // The face sits where the renderer draws it: the head material's overlay window, which places the projection (in
+    // the painter's head-local units) on the head at the character's stature. The head bone is the head's base, not
+    // its centre, and the stature scales the window.
+    let overlay = built.materials.get(&mesh.mesh.material)?.overlays.first()?;
+    let (centre, scale) = binding.projection.placed(overlay.layer, &overlay.window)?;
     Some(FaceToBake {
         profile,
         projection: binding.projection,
-        head_centre: head * gathered.scale,
+        head_centre: centre * gathered.scale,
+        scale: scale * gathered.scale,
         target: NodeIx(u32::try_from(node).ok()?),
     })
 }

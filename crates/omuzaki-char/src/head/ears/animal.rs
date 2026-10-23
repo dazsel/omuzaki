@@ -5,7 +5,7 @@
 //! ear is the left one mirrored across the head's centre, so the pair is symmetric to float precision.
 //!
 //! **The frame** ([`frame`]). The ear rises between the head's outward direction at the root and straight up
-//! ([`UPRIGHT`]), leaning back by the species' lean plus `Ears::tilt_deg`'s difference from its default; its opening
+//! (`UPRIGHT`), leaning back by the species' lean plus `Ears::tilt_deg`'s difference from its default; its opening
 //! faces the front, turned outward by the species' turn plus `Ears::flare_deg`'s difference from its default.
 //!
 //! **The shell.** Rings of [`AROUND`] points from the base (`v = 0`) to just under the tip, then one tip vertex. At
@@ -15,8 +15,8 @@
 //! edges. The ear curves back a little as it rises. The base ring is laid onto the head's surface, so no gap shows at
 //! the root, and a fan from the root closes it: the shell is watertight. No vertex above the base is inside the head.
 //!
-//! **The panel** is an open sheet just in front of the cup, [`PANEL_WIDTH`] of the outline wide, from [`PANEL_FROM`] to
-//! [`PANEL_TO`] of the height, narrowing to a point; the head part draws it in the `ear_inner` colour.
+//! **The panel** is an open sheet just in front of the cup, `PANEL_WIDTH` of the outline wide, from `PANEL_FROM` to
+//! `PANEL_TO` of the height, narrowing to a point; the head part draws it in the `ear_inner` colour.
 //!
 //! **Rabbit ears sway**: [`AnimalEar::chain`] lists three bone positions up the ear's middle, which the head part turns
 //! into a soft spring chain; every vertex carries how far up the ear it is ([`AnimalEar::shell_along`]), for its weights.

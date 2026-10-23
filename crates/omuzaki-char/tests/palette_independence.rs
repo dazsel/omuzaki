@@ -10,8 +10,13 @@
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use omuzaki_char::builder::conformance::{Probes, Sweep, check, check_all, check_all_with, check_with};
+use omuzaki_char::builder::conformance::{
+    Probes, Sweep, check, check_all, check_all_with, check_colours_through_parameters, check_linked, check_recolour,
+    check_with,
+};
+use omuzaki_char::outfit::boots::LAYER_FOOTWEAR;
 use omuzaki_char::outfit::common::LAYER_SHIRT;
+use omuzaki_char::outfit::legwear::LAYER_LEGWEAR;
 use omuzaki_char::outfit::skirt::LAYER_SKIRT;
 use omuzaki_char_api::fact::FactProbe;
 use omuzaki_char_api::{BuildServices, CharacterDef, PartDef, PartId, PartKindId};
@@ -38,8 +43,8 @@ fn kit_characters() -> Vec<CharacterDef> {
     vec![mock_character().unwrap(), real]
 }
 
-/// The real kit character dressed: a shirt with a collar and a tie on its collar ring, and a skirt (the kinds that hang
-/// on a shirt or go round the legs, which the plain characters can't build).
+/// The real kit character dressed: a shirt with a collar and a tie on its collar ring, a skirt, legwear and boots (the
+/// kinds that hang on a shirt or go round the legs, which the plain characters can't build).
 fn dressed() -> CharacterDef {
     let mut def = kit_characters().pop().unwrap();
     let on_collar = json!({ "to": "anchor", "part": "shirt", "anchor": "collar_ring" });
@@ -48,6 +53,8 @@ fn dressed() -> CharacterDef {
         ("collar", LAYER_SHIRT + 1, Some(on_collar.clone())),
         ("tie", LAYER_SHIRT + 2, Some(on_collar)),
         ("skirt", LAYER_SKIRT, None),
+        ("legwear", LAYER_LEGWEAR, None),
+        ("boots", LAYER_FOOTWEAR, None),
     ] {
         let part = PartDef {
             kind: PartKindId::new(id).unwrap(),
@@ -230,4 +237,43 @@ fn probe_problems_come_back_sorted_by_fact_whatever_order_the_probes_come_in() {
     assert_eq!(forward, backward);
     assert_eq!(forward.len(), 2, "{forward:?}");
     assert!(forward[0].contains("'head'") && forward[1].contains("'test-registered-probe'"), "{forward:?}");
+}
+
+/// The first palette contract (#645): every part of the kit characters, the dressed one included, builds the same
+/// when only palette slots its parameters don't name change. The facts' half is the sweep above.
+#[test]
+fn every_kit_part_reads_colours_only_through_its_parameters() {
+    for def in kit_characters().into_iter().chain([dressed()]) {
+        let parts: Vec<String> = def.parts.keys().map(ToString::to_string).collect();
+        let violations = check_colours_through_parameters(&def, &services()).unwrap();
+        assert!(violations.is_empty(), "parts {parts:?}: {violations:#?}");
+    }
+}
+
+/// The recolour contract (#644): every kit part whose kind recolours gives, recoloured, exactly what a build under the
+/// new palette gives.
+#[test]
+fn every_kit_part_that_recolours_matches_a_fresh_build() {
+    let mut recoloured = std::collections::BTreeSet::new();
+    let mut declined = std::collections::BTreeSet::new();
+    for def in kit_characters().into_iter().chain([dressed()]) {
+        let report = check_recolour(&def, &services()).unwrap();
+        assert!(report.violations.is_empty(), "{:#?}", report.violations);
+        recoloured.extend(report.recoloured);
+        declined.extend(report.declined);
+    }
+    eprintln!("recoloured: {recoloured:?}\ndeclined: {declined:?}");
+}
+
+/// What every App's gate test runs (#1635): the check over every linked kind, on the real kit characters. This binary
+/// also links the mock kinds, which the kit characters can't build (they stand in for the body and head), so only they
+/// may be unreached here.
+#[test]
+fn the_app_gate_check_passes_over_every_real_kind() {
+    omuzaki_char::link();
+    let report = check_linked(&services(), Sweep::QUICK).unwrap();
+    assert!(report.violations.is_empty(), "{:#?}", report.violations);
+    assert!(report.unprobed.is_empty(), "{:?}", report.unprobed);
+    let real: Vec<_> = report.unreached.iter().filter(|(kind, _)| !kind.starts_with("mock-")).collect();
+    assert!(real.is_empty(), "real kinds the check cannot build: {real:#?}");
 }

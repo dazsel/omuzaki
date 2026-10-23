@@ -10,10 +10,10 @@
 //!
 //! # The axes
 //!
-//! Every response is a smooth bump on a landmark, scaled by [`swell`] of the axis value, so `0` is exactly the template
+//! Every response is a smooth bump on a landmark, scaled by `swell` of the axis value, so `0` is exactly the template
 //! and `-1` and `+1` need not be mirror images (a body has more room to get fuller than to get thinner). Gains are
 //! factors, and the axes **multiply**: the order they are applied in does not matter, and a corner of the cube is the
-//! product of its single-axis bodies. Only where several pile onto the same place does [`limit`] bend the product over,
+//! product of its single-axis bodies. Only where several pile onto the same place does `limit` bend the product over,
 //! so a corner stays a body, not a balloon.
 //!
 //! | Axis | What it does at `+1` (the figures are the soft-sd template's) |
@@ -108,9 +108,9 @@ const NECK_BASE_SHARE: f64 = 0.6;
 /// How far down the neck its own gain is fully in force, as a fraction of the neck's length.
 const NECK_RAMP: f64 = 0.35;
 /// The range of the factors on where the limbs' roots sit across the body ([`Shape::arm_spacing`],
-/// [`Shape::leg_spacing`]). The proportion sliders scale the same offsets by `0.5..=2`, and a lateral root bone must stay
-/// within `0.4..=2.8` times its default length at every setting of both (`conformance::LATERAL_ROOT_MAX_RATIO`); the
-/// factors here keep to `0.85..=1.35` of that.
+/// [`Shape::leg_spacing`]). The proportion sliders scale the same offsets by `0.5..=2`; the layout eases the product of
+/// the two toward 2.4, so a lateral root bone stays within the `0.4..=2.5` times its default length every bone keeps to
+/// (`conformance::BONE_LENGTH_RATIO`, #640).
 const SPACING: (f64, f64) = (0.85, 1.35);
 /// The most the legs' girth grows across the body: what `build = 1` alone gives.
 const LEG_GIRTH_MAX: f64 = 1.26;
@@ -298,7 +298,7 @@ impl Shape {
     }
 
     /// The factor on the arms' x offset from the body's axis: the torso's width at the shoulder line, so the arms stay
-    /// where the shoulders put them, within [`SPACING`] (an arm a little off a very narrow or very wide shoulder is
+    /// where the shoulders put them, within `SPACING` (an arm a little off a very narrow or very wide shoulder is
     /// covered by its own girth).
     pub fn arm_spacing(&self, marks: &Marks) -> f64 {
         self.torso(marks.arm_root, marks).outer.clamp(SPACING.0, SPACING.1)
@@ -321,7 +321,7 @@ impl Shape {
     }
 
     /// The factor on the legs' x offset from the body's axis: the widest the legs' own girth gets (at most
-    /// [`LEG_GIRTH_MAX`]), and a little more where they grow. A leg's gap to the midline scales with it (and was open in the template), so legs never
+    /// `LEG_GIRTH_MAX`), and a little more where they grow. A leg's gap to the midline scales with it (and was open in the template), so legs never
     /// overlap; swellings that only reach outward (muscle, hip flare) leave it alone.
     pub fn leg_spacing(&self, marks: &Marks) -> f64 {
         let girth = sampled_max(|v| self.leg_girth(v, marks));

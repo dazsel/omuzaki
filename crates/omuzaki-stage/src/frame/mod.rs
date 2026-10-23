@@ -138,6 +138,16 @@ pub struct FrameOutput {
     pub uploads: u32,
 }
 
+/// A frame made ready to render: the stage's scene holds it and nothing has been drawn
+/// ([`StageMember`](crate::cast::StageMember)).
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Prepared {
+    /// The frame's tick.
+    pub(crate) tick: Tick,
+    /// How many dynamic meshes (or materials) were re-sent for it.
+    pub(crate) uploads: u32,
+}
+
 /// What [`Stage::pin_time`] took from the stage, to give back with [`Stage::unpin_time`]: the state of the last frame.
 #[derive(Clone, Debug)]
 pub struct TimePin {
@@ -254,7 +264,7 @@ impl Stage {
         built: &BuiltCharacter,
         character: &StageCharacter,
     ) -> Result<(RigFrame, DynamicMeshes, ScenePlan), StageError> {
-        Ok((RigFrame::new(&built.rig)?, DynamicMeshes::new(built, character)?, ScenePlan::new(built, character)?))
+        Ok((RigFrame::for_character(built)?, DynamicMeshes::new(built, character)?, ScenePlan::new(built, character)?))
     }
 
     /// Runs one frame and renders it into the stage's target.
@@ -266,6 +276,17 @@ impl Stage {
     /// staged variant whose vertex refresh the renderer refuses fails the call before anything steps: the variant is
     /// abandoned and the live character stays.
     pub fn tick(&mut self, renderer: &mut dyn Renderer, input: &FrameInput) -> Result<FrameOutput, StageError> {
+        let prepared = self.prepare_tick(renderer, input)?;
+        self.submit(renderer, prepared, "the frame")
+    }
+
+    /// Everything [`tick`](Self::tick) does before the render: the scene names this frame's character and nothing has
+    /// been drawn. A cast adds its other members' instances to the scene before [`submit`](Self::submit).
+    pub(crate) fn prepare_tick(
+        &mut self,
+        renderer: &mut dyn Renderer,
+        input: &FrameInput,
+    ) -> Result<Prepared, StageError> {
         // A swap replaces the character's mesh table (the old one is retired, not freed, so the two differ for as long
         // as this compares them).
         let table = self.built.meshes.as_ptr();
@@ -308,10 +329,20 @@ impl Stage {
         }
         self.scene.frame = self.frame_info(tick);
         let uploads = prepared?;
+        Ok(Prepared { tick, uploads })
+    }
+
+    /// Renders the scene a [`prepare_tick`](Self::prepare_tick) or [`prepare_redraw`](Self::prepare_redraw) left.
+    pub(crate) fn submit(
+        &mut self,
+        renderer: &mut dyn Renderer,
+        prepared: Prepared,
+        what: &'static str,
+    ) -> Result<FrameOutput, StageError> {
         let report = renderer
             .render(self.target, &self.scene, &self.quality)
-            .map_err(|source| StageError::render("the frame", source))?;
-        Ok(FrameOutput { tick, report, uploads })
+            .map_err(|source| StageError::render(what, source))?;
+        Ok(FrameOutput { tick: prepared.tick, report, uploads: prepared.uploads })
     }
 
     /// Makes every [`tick`](Stage::tick) and [`redraw`](Stage::redraw) run at `tick` (its index and time, and the `dt`
@@ -498,6 +529,16 @@ impl Stage {
     /// As [`tick`](Stage::tick) for the face and the render: [`StageError::Render`] if the renderer refuses the frame,
     /// or whatever the face update reports.
     pub fn redraw(&mut self, renderer: &mut dyn Renderer, input: &FrameInput) -> Result<FrameOutput, StageError> {
+        let prepared = self.prepare_redraw(renderer, input)?;
+        self.submit(renderer, prepared, "the still")
+    }
+
+    /// Everything [`redraw`](Self::redraw) does before the render.
+    pub(crate) fn prepare_redraw(
+        &mut self,
+        renderer: &mut dyn Renderer,
+        input: &FrameInput,
+    ) -> Result<Prepared, StageError> {
         let uploads = self.dynamic.upload(&self.built.runtimes, renderer)?;
         // A pin set since the last tick holds here too: the face and the frame info see the pinned time.
         let tick = self.pinned.unwrap_or(self.tick);
@@ -506,10 +547,7 @@ impl Stage {
         self.ground.push(&mut self.scene);
         // What the last tick wrote into the scene, so a redraw before any tick doesn't render the caller's frame info.
         self.scene.frame = self.frame_info(tick);
-        let report = renderer
-            .render(self.target, &self.scene, &self.quality)
-            .map_err(|source| StageError::render("the still", source))?;
-        Ok(FrameOutput { tick, report, uploads })
+        Ok(Prepared { tick, uploads })
     }
 
     /// The scene as last rendered.
@@ -585,6 +623,15 @@ impl Stage {
                 tracing::warn!(%error, "restoring the previous look after a refused look edit failed too");
             }
         })
+    }
+
+    /// Puts `floor` on every toon skin material of the character (or each back to its own, for `None`), outside any
+    /// scene: what a [`CastStage`](crate::cast::CastStage) does for a member, which has no scene of its own. Cold.
+    ///
+    /// # Errors
+    /// [`StageError::Render`] if the renderer refuses a material.
+    pub(crate) fn set_skin_floor(&mut self, renderer: &mut dyn Renderer, floor: Option<f32>) -> Result<(), StageError> {
+        self.character.set_skin_floor(renderer, &self.built, floor).map(drop)
     }
 
     /// Does the renderer work the last [`set_scene`](Self::set_scene) owes and records it as done: the ground (a new

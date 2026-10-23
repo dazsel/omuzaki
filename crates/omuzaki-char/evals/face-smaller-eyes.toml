@@ -1,0 +1,23 @@
+# Starter face task (#430): a bounded size change that touches nothing else. The fixture's eyes are 0.284 of the eye
+# distance wide; 5% to 25% smaller is 0.213 to 0.270.
+id = "face.smaller-eyes"
+feature = "CB-12"
+title = "Make the eyes a little smaller"
+prompt = "Her eyes are too big. Make them a little smaller and don't change anything else."
+fixture = "face-mini"
+scopes = ["read", "edit:character"]
+tags = ["starter"]
+version = 1
+
+[[check]]
+id = "a-little-smaller"
+kind = "query"
+op = "face.layout.measure"
+args = { character = "{main}" }
+at = "/ratios/eye_width_to_iod"
+expect = { range = [0.2131, 0.2699] }
+
+[[check]]
+id = "nothing-else"
+kind = "doc.changed_only"
+paths = ["characters/{main}/face/layout/eye_width", "characters/{main}/face/eyes/**"]

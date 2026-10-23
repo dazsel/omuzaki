@@ -45,6 +45,8 @@ struct Posed {
     world: Vec<Vec3>,
     /// Unit directions the outline pushes each vertex along.
     hull_dir: Vec<Vec3>,
+    /// Each vertex's rim (`outline_rims`) in world space, its length kept: zero inside the mesh.
+    rim: Vec<Vec3>,
 }
 
 /// A blended triangle waiting for the transparent pass.
@@ -192,7 +194,13 @@ pub(crate) fn draw_frame(
         out.ran[Pass::Outlines.index()] = true;
         out.draw_calls += 1;
         out.triangles += mesh.data.triangle_count() as u64;
-        draw_hull(&mut surface, &hull, inst, mesh, material, posed);
+        draw_hull(&mut surface, &hull, inst, mesh, material, posed, HullSide::Out);
+        // An open double-sided sheet is outlined from behind as well: its second hull is pushed the other way (#819).
+        if material.double_sided && mesh.open {
+            out.draw_calls += 1;
+            out.triangles += mesh.data.triangle_count() as u64;
+            draw_hull(&mut surface, &hull, inst, mesh, material, posed, HullSide::In);
+        }
     }
 
     // Particles test and write depth after the outlines and before the blended instances (D4).
@@ -288,8 +296,8 @@ fn pose(mesh: &MeshEntry, inst: &Instance, scene: &Scene) -> Result<Posed, Rende
     let rest = morph_rest(mesh, inst, &scene.morph_weights)?;
     let palette =
         inst.skin.filter(|_| d.is_skinned()).map(|r| &scene.joints[r.start as usize..(r.start + r.len) as usize]);
-    let mut posed =
-        Posed { world: Vec::with_capacity(d.positions.len()), hull_dir: Vec::with_capacity(d.positions.len()) };
+    let n = d.positions.len();
+    let mut posed = Posed { world: Vec::with_capacity(n), hull_dir: Vec::with_capacity(n), rim: Vec::with_capacity(n) };
     for (i, (&position, &normal)) in rest.positions.iter().zip(&rest.hull_dir).enumerate() {
         let model = match palette {
             None => inst.transform,
@@ -297,6 +305,8 @@ fn pose(mesh: &MeshEntry, inst: &Instance, scene: &Scene) -> Result<Posed, Rende
         };
         posed.world.push(model.transform_point3(position));
         posed.hull_dir.push(model.transform_vector3(normal).normalize_or_zero());
+        let rim = mesh.rims[i];
+        posed.rim.push(model.transform_vector3(rim).normalize_or_zero() * rim.length());
     }
     Ok(posed)
 }
@@ -354,8 +364,19 @@ fn hull_clip(cx: &HullCx<'_>, outline: Outline, mode: OutlineWidthMode, p: Vec3,
     cx.view_proj * (p + dir * metres).extend(1.0)
 }
 
-/// Inverted hull: the mesh pushed out along its smooth normals, back faces only, in the outline colour, tinted toward
-/// the lit surface by the style's lighting mix.
+/// Which way a hull is pushed (`omuzaki_render_api::outline_rims` has the design).
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum HullSide {
+    /// Along the smooth normals, keeping the faces turned away from the camera: every outlined mesh's hull.
+    Out,
+    /// Against them, keeping the faces turned toward the camera: an open double-sided sheet's second hull.
+    In,
+}
+
+/// Inverted hull: the mesh pushed out along its smooth normals (against them for [`HullSide::In`]), back faces only (front
+/// faces for `In`), in the outline colour, tinted toward the lit surface by the style's lighting mix. A double-sided
+/// material's hull also widens by each vertex's rim, so an open sheet's edge is outlined seen face on.
+#[allow(clippy::too_many_arguments)]
 fn draw_hull(
     surface: &mut Surface,
     cx: &HullCx<'_>,
@@ -363,6 +384,7 @@ fn draw_hull(
     mesh: &MeshEntry,
     material: &Material,
     posed: &Posed,
+    side: HullSide,
 ) {
     let Some(outline) = material.outline else { return };
     let style = material.outline_style;
@@ -372,11 +394,14 @@ fn draw_hull(
             let multiplier =
                 style.width_texture.map_or(1.0, |id| cx.textures.sample(id, material.uv_transform.apply(uv(i))).y);
             let outline = Outline { width: outline.width * multiplier, ..outline };
-            hull_clip(cx, outline, style.width_mode, posed.world[i], posed.hull_dir[i])
+            let normal = if side == HullSide::Out { posed.hull_dir[i] } else { -posed.hull_dir[i] };
+            let dir = if material.double_sided { normal + posed.rim[i] } else { normal };
+            hull_clip(cx, outline, style.width_mode, posed.world[i], dir)
         })
         .collect();
     let mirrored = inst.transform.determinant() < 0.0;
-    let mode = Mode { cull: Cull::Front, mirrored, write: Write::Opaque };
+    let cull = if side == HullSide::Out { Cull::Front } else { Cull::Back };
+    let mode = Mode { cull, mirrored, write: Write::Opaque };
     let line = outline.colour.to_linear();
     for &ids in mesh.data.indices.as_chunks::<3>().0 {
         let verts = ids.map(|i| {

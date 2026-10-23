@@ -1,0 +1,19 @@
+# Starter face task (#430): try an edit, then put it back, by undo or by the inverse edit. The before-and-after picture
+# (`render.compare`) joins the checks once the eval host has a renderer.
+id = "face.try-and-revert"
+feature = "CB-10"
+title = "Try a rounder face, then put it back"
+prompt = "Try a rounder face, show me a before and after, then put it back the way it was."
+fixture = "face-mini"
+scopes = ["read", "edit:character"]
+tags = ["starter"]
+version = 1
+
+[[check]]
+id = "put-back"
+kind = "doc.unchanged"
+
+[[check]]
+id = "tried-it"
+kind = "log.applied"
+op = "part.set_param"

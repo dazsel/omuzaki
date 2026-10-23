@@ -61,7 +61,7 @@ use std::time::{Duration, Instant};
 mod gpu_instance;
 
 use omuzaki_core::time::Seconds;
-use omuzaki_face::raster::gpu::VelloRasterizer;
+use omuzaki_face::raster::gpu::{VelloEngines, VelloRasterizer};
 use omuzaki_face::{GpuRasterizer, LayerSections, RealPainter};
 use omuzaki_face_api::{
     DEFAULT_PX_PER_M, FaceDrawing, FaceInput, FaceLayerId, FaceLayerSpec, FaceMapping, FacePainter, FaceView,
@@ -202,6 +202,7 @@ fn main() -> ExitCode {
 }
 
 /// The command line.
+#[allow(clippy::struct_excessive_bools, reason = "each is a command-line switch")]
 struct Arguments {
     frames: usize,
     probe: bool,
@@ -214,6 +215,8 @@ struct Arguments {
     paced: Option<u32>,
     /// Paint each layer on its own (no staging, one Vello run per layer).
     alone: bool,
+    /// Measure what each new rasteriser costs to set up on the device instead of timing repaints (#894).
+    setup: bool,
 }
 
 /// The command line, from `std::env::args`.
@@ -227,6 +230,7 @@ fn arguments() -> Result<Arguments, String> {
         strict: false,
         paced: None,
         alone: false,
+        setup: false,
     };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -235,6 +239,7 @@ fn arguments() -> Result<Arguments, String> {
             "--probe" => parsed.probe = true,
             "--strict" => parsed.strict = true,
             "--alone" => parsed.alone = true,
+            "--setup" => parsed.setup = true,
             "--report" => parsed.report = Some(PathBuf::from(value()?)),
             "--previous" => parsed.previous = Some(PathBuf::from(value()?)),
             "--class" => parsed.class = Class::parse(&value()?).map_err(|e| e.to_string())?,
@@ -256,7 +261,7 @@ fn arguments() -> Result<Arguments, String> {
             other => {
                 return Err(format!(
                     "unknown argument {other:?}; use --frames N, --probe, --report DIR, --class CLASS, --previous FILE \
-                     --strict, --paced FPS and --alone"
+                     --strict, --paced FPS, --alone and --setup"
                 ));
             }
         }
@@ -727,6 +732,9 @@ fn run() -> Result<(), String> {
     }
     let mut painter = RealPainter::new(mock_projection(), DEFAULT_PX_PER_M);
     let neutral = frame(&mut painter, |_| {})?;
+    if args.setup {
+        return setup(&device, &queue, &mut painter, &neutral, args.probe, backend, software);
+    }
     let stamps = Stamps::new(&device, &queue);
     let load = Load::new(&device);
     load.calibrate(&device, &queue, &stamps)?;
@@ -800,6 +808,71 @@ fn run() -> Result<(), String> {
         if !failures.is_empty() {
             return Err(format!("over budget: {}", failures.join("; ")));
         }
+    }
+    Ok(())
+}
+
+/// The `--setup` reading (#894): what each new rasteriser costs on the device, the cost one shared renderer per device
+/// would pay once. Four rasterisers are made one after another on the same device; each paints the worst case twice.
+/// The first paint's wall time includes compiling Vello's stages and making its buffers; the second is a repaint.
+fn setup(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    painter: &mut RealPainter,
+    neutral: &Frame,
+    probe: bool,
+    backend: wgpu::Backend,
+    software: bool,
+) -> Result<(), String> {
+    let changed = frame(painter, worst)?;
+    let specs = specs(&FaceLayerId::ALL, probe);
+    let encoder = || device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    println!(
+        "Graphics backend: {backend:?}{}. Each row is a new rasteriser on the same device painting the worst case \
+         (all three layers); wall times in ms, from the paint to the GPU finishing it.",
+        if software { " (a software adapter: not a timing)" } else { "" }
+    );
+    println!();
+    println!(
+        "| rasteriser | first paint (set-up + paint) | repaint | set-up | its engine's memory, shared on the device (MiB) |"
+    );
+    println!("|---:|---:|---:|---:|---:|");
+    // One group, as a renderer's owner gives the face rigs of the characters it draws (#894): the first rasteriser
+    // makes the device's engine, the others draw with it. Row 1 is what each would cost on its own.
+    let engines = VelloEngines::new();
+    let mut rasterizers = Vec::new();
+    for n in 1..=4 {
+        let mut natives: Vec<Native> = specs
+            .iter()
+            .map(|spec| (device.clone(), queue.clone(), face_texture(device, spec.size_px()), encoder()))
+            .collect();
+        let mut rasterizer = VelloRasterizer::new().sharing(&engines);
+        let mut paint = |frame: &Frame| -> Result<f64, String> {
+            let start = Instant::now();
+            rasterizer.begin_frame();
+            for spec in &specs {
+                let (list, sections) = (&frame.drawing[spec.id], &frame.sections[spec.id as usize]);
+                rasterizer.stage(spec, list, sections).map_err(|e| e.to_string())?;
+            }
+            for (spec, native) in specs.iter().zip(&mut natives) {
+                let (list, sections) = (&frame.drawing[spec.id], &frame.sections[spec.id as usize]);
+                if !rasterizer.rasterize_native_sections(spec, list, sections, native).map_err(|e| e.to_string())? {
+                    return Err("the rasteriser declined the device".to_owned());
+                }
+            }
+            queue.submit(natives.iter_mut().map(|n| std::mem::replace(&mut n.3, encoder()).finish()));
+            device.poll(wgpu::PollType::wait_indefinitely()).map_err(|e| format!("the device did not finish: {e}"))?;
+            Ok(start.elapsed().as_secs_f64() * 1e3)
+        };
+        let first = paint(&changed)?;
+        let again = paint(neutral)?;
+        // The memory read after the paints, when the scratch buffers have their working size.
+        drop(paint);
+        #[allow(clippy::cast_precision_loss)] // a few MiB
+        let mib = rasterizer.shared_bytes().unwrap_or(0) as f64 / f64::from(1_u32 << 20);
+        println!("| {n} | {first:.1} | {again:.1} | {:.1} | {mib:.2} |", first - again);
+        // Kept alive, as several characters' face systems would be.
+        rasterizers.push((rasterizer, natives));
     }
     Ok(())
 }

@@ -8,8 +8,8 @@
 use crate::{AlphaEncoding, MeshData, MeshOptions, MeshUsage, TextureDesc, TextureUsage};
 
 /// Bytes a vertex of an uploaded mesh takes at most: its position and normal (24), its UV, colour, joints and weights
-/// (48), and the smoothed normal the outline is pushed along (12).
-const VERTEX_BYTES: u64 = 84;
+/// (48), the smoothed normal the outline is pushed along (12), and on an open mesh its rim (12, `outline_rims`).
+const VERTEX_BYTES: u64 = 96;
 /// Bytes of an index.
 const INDEX_BYTES: u64 = 4;
 /// Bytes of one moved vertex of one morph target, regrouped by vertex for the GPU blend: the target, whether it moves

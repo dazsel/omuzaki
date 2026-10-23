@@ -783,9 +783,9 @@ impl Surface {
     }
 
     /// The point at `(t, phi)` with its frame, on the ring blended from the surface's grid of rings either side
-    /// ([`FRAME_CELLS`]), within a few micrometres of [`Surface::point`]'s. The tangent round the ring is a central
+    /// (`FRAME_CELLS`), within a few micrometres of [`Surface::point`]'s. The tangent round the ring is a central
     /// difference. The tangent along the region is the central difference at each of the two points of a coarser grid
-    /// in `t` ([`ALONG_STRIDE`]) either side of `t`, one-sided at 0 and 1, blended by where `t` lies between them, so it
+    /// in `t` (`ALONG_STRIDE`) either side of `t`, one-sided at 0 and 1, blended by where `t` lies between them, so it
     /// turns smoothly along the region. The rings both read are the grids', which the surface keeps, so a trim that
     /// asks for many frames works out few rings. The normal is the tangents' cross product turned away from the ring's
     /// centre.

@@ -236,7 +236,7 @@ impl SegmentSet {
     /// The finished weights of `p`: the four heaviest of [`capsule_weights`](Self::capsule_weights), normalised (all on
     /// the hips if nothing pulls). Ready for a `Skin::Per` closure.
     ///
-    /// Selection uses the same [`Top4`] over the same f64 pulls as [`skin_mesh`](Self::skin_mesh), so the two paths
+    /// Selection uses the same `Top4` over the same f64 pulls as [`skin_mesh`](Self::skin_mesh), so the two paths
     /// keep the same bones even when candidates tie once rounded to f32. Only the kept weights are cast to f32.
     pub fn weights_at(&self, p: DVec3, bones: &[JointRef], params: CapsuleParams) -> Vec<(JointRef, f32)> {
         let pulls = self.capsule_weights(p, bones, params);

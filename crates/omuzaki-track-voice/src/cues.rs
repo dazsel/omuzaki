@@ -67,7 +67,7 @@ impl CueFrame {
     /// The life layer's cues for this frame, given the onset count a reader last saw: `onset` is set when there is a
     /// newer one.
     pub fn cues(&self, seen_onsets: u32) -> Cues {
-        Cues { loudness: self.loudness, onset: self.onsets != seen_onsets, laugh: 0.0 }
+        Cues { loudness: self.loudness, onset: self.onsets != seen_onsets, laugh: 0.0, ..Cues::default() }
     }
 }
 

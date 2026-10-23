@@ -6,8 +6,8 @@
 #   `eye_open.<side>` (the aperture: openness, less a blink or an arc), `lower_lid.<side>`, `brow_height.<side>`,
 #   `brow_inner` (both brows' inner ends), `gaze_y`, `pupil_x.<side>` (+ toward the character's left),
 #   `mouth_open`, `mouth_wide`, `mouth_round`, `mouth_press`, `mouth_pucker`, `mouth_shift` (+ toward the character's
-#   left), `corner.<side>` (mouth-corner lift), `teeth_upper`, `tongue`, `fangs`, `blush`, `cheek_puff`, `sweat`, and
-#   `effect.<name>` for the eye effects.
+#   left), `corner.<side>` (mouth-corner lift), `teeth_upper`, `tongue`, `fangs`, `eye_tilt`, `brow_arch`, `pupil`,
+#   `blush`, `cheek_puff`, `sweat`, and `effect.<name>` for the eye effects.
 # - `sign`: +1 when raising the channel raises the measure, -1 when it lowers it.
 # - `side`: `left` or `right` (the character's) when the painted change must fall mostly on that half of the face.
 #   Left out when the change is central or shared by both sides (the gaze, the mouth's width).
@@ -296,3 +296,16 @@ sign = 1
 [fangs]
 measure = "fangs"
 sign = 1
+
+# The signed face shapes (#74): both eyes' lid tilt (positive angry), both brows' arch, the pupil's size.
+[eyeTilt]
+measure = "eye_tilt"
+sign = 1
+
+[browArch]
+measure = "brow_arch"
+sign = 1
+
+[pupilSize]
+measure = "pupil"
+sign = -1

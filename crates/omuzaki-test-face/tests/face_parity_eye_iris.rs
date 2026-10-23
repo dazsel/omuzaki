@@ -318,7 +318,7 @@ fn eye_cell(
     const WIDTH: u32 = 1536;
     #[allow(clippy::cast_precision_loss)]
     let px_per_m = WIDTH as f32 / setup.projection.rect.width();
-    let view = omuzaki_face_api::FaceView { highlight_shift: shift };
+    let view = omuzaki_face_api::FaceView { highlight_shift: shift, head_coverage: None };
     let input = FaceInput { profile, params, time: omuzaki_core::time::Seconds(time), view };
     let mut painter = RealPainter::new(setup.projection, px_per_m);
     let mut drawing = FaceDrawing::new();

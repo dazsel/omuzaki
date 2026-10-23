@@ -157,7 +157,11 @@ escape into the neck. The **leak guard** in §4.2 catches it, and a leaked measu
 ### D5. The outline is a radial profile about the eye midpoint, at the outline stroke's centre
 
 `r(φ_k)` for `φ_k = -15° + 2.5°·k`, `k = 0..=84` (85 samples), in IOD. Each ray starts at `0.30·d` (outside the eyes)
-and finds where it leaves the filled region, then measures the outline stroke there (§4.2). **The value is the centre of
+and finds where it leaves the filled region, then measures the outline stroke there (§4.2). An exit within 0.35·d of an
+eye that the region follows again is the eye's, and the ray goes on to the next exit: a kit character's eyes reach
+inside 0.30·d of the midpoint, and where a lash touches the bangs the eye is not a hole of the region, so without this
+rule the eye-line rays stopped at the eye (found on the kit renders, §11.2). Anywhere else the first exit is the edge,
+so skin seen between locks of hair beyond it never lengthens a sample. **The value is the centre of
 the stroke**: its inner edge plus half the image's median stroke width. Where no stroke exists (a silhouette straight
 against the background), it is the region's edge.
 

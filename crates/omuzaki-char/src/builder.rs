@@ -14,7 +14,7 @@
 //! - the character seed, the quality, `rig_export` and the whole face profile (every part reads them);
 //! - the value in the palette of every slot the parameters name (`@slot`);
 //! - what the parts before it published, as a chain over the keys of the earlier parts that published anything.
-//!   Parts see each other only through [`Published`](omuzaki_char_api::Published), so this is exact: a part rebuilds
+//!   Parts see each other only through [`Published`], so this is exact: a part rebuilds
 //!   when, and only when, a publisher before it changed. Editing a part that publishes nothing (hair, most accessories)
 //!   rebuilds that part alone; editing the body rebuilds every part after it that follows a publisher.
 //!
@@ -22,7 +22,9 @@
 //! kind that broke them:
 //! 1. A part reads palette colours only through the colour references in its own parameters, as
 //!    [`BuildCtx::colour`](omuzaki_char_api::BuildCtx::colour) is documented to be used. A kind that looked a fixed slot
-//!    up behind the parameters' back would keep a stale colour.
+//!    up behind the parameters' back would keep a stale colour. [`conformance::check_colours_through_parameters`]
+//!    rebuilds each part with every slot its parameters don't name changed and names a part whose output moved;
+//!    `tests/palette_independence.rs` runs it over the kit characters.
 //! 2. What a part publishes (surfaces, fits, anchors, colliders) is geometry and doesn't depend on palette colours
 //!    (decision Q6). The chain therefore uses the key *without* the colours: a skin colour change rebuilds the body and
 //!    head, which name the skin slots, but not the garments after them, which only see the body's shape.
@@ -655,7 +657,13 @@ impl CachingBuilder {
             let Fetch { source, took, result } = fetch;
             let Ready { output, keep } = result?;
             let silent = is_silent(&output.publishes);
-            assembler.add(part, output)?;
+            // A cached output's meshes passed `add`'s check when they were built (an entry is stored only once its part
+            // was added), so they aren't checked again. A recoloured one is: a recolour may rewrite baked vertex tints.
+            if source == PartSource::Cached {
+                assembler.add_validated(part, output)?;
+            } else {
+                assembler.add(part, output)?;
+            }
             if let Some(stored) = keep {
                 lock(&self.store).insert(*keys, stored, self.max_parts, self.max_bytes);
             }

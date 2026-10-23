@@ -171,7 +171,15 @@ words! {
     BudgetCpu = "ui-live-budget-cpu" => "CPU",
     BudgetRam = "ui-live-budget-ram" => "Memory",
     BudgetOther = "ui-live-budget-other" => "Budget",
-    OpFailed = "ui-live-op-failed" => "{op} did not run: {reason}",
+    OpFailed = "ui-live-op-failed" => "{what} didn't work: {reason}",
+    OpFailedHint = "ui-live-op-failed-hint" => "{what} didn't work: {reason}. {hint}",
+    OpMissing = "ui-live-op-missing" => "{what} isn't available in this version of the studio on this computer",
+    FailedWindow = "ui-live-failed-window" => "The output window",
+    FailedCalibrate = "ui-live-failed-calibrate" => "Calibration",
+    FailedPerformer = "ui-live-failed-performer" => "The performer",
+    FailedImport = "ui-live-failed-import" => "The import",
+    FailedHotkeys = "ui-live-failed-hotkeys" => "The hotkeys",
+    FailedCamera = "ui-live-failed-camera" => "The camera",
 
     ChannelsTitle = "ui-live-channels-title" => "Channels",
     ChannelsFace = "ui-live-channels-face" => "Face",
@@ -267,6 +275,9 @@ pub(crate) const CHANNEL_NAMES: &[(&str, &str)] = &[
     ("sweatDrop", "Sweat drop"),
     ("blush", "Blush"),
     ("fangs", "Fangs"),
+    ("eyeTilt", "Eye tilt"),
+    ("browArch", "Brow arch"),
+    ("pupilSize", "Pupil size"),
 ];
 
 /// The name the Channels panel shows for the channel whose stable name is `stable` ("Blink L" for `eyeBlinkLeft`), in

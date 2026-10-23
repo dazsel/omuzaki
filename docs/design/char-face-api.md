@@ -101,6 +101,9 @@ Every ARKit channel and every anime extra reaches at least one paint parameter, 
 | `browInnerUp`, `browOuterUp*`, `browDown*`, `noseSneer*` | `*_brow.height`, `*_brow.tilt`, `brow_arch` | `brows.*` (9 numbers); bases `rest.brow_*` |
 | brows (derived) | `eye_tilt` | `eyes.tilt_from_brows` (0 turns it off) |
 | `eyesShock` | `effects.shock`, shrinks `pupil` | `eyes.shock_pupil`; base `rest.pupil` |
+| `eyeTilt` (signed) | adds to `eye_tilt`: `-1..=1` spans the painter's `-2..=2` | none (`EYE_TILT_PER_UNIT`) |
+| `browArch` (signed) | adds to `brow_arch` | none |
+| `pupilSize` | shrinks `pupil`, to 40% at 1 (pinpoint) | none (`PINPOINT`); multiplies with the `eyesShock` shrink |
 | `eyesHeart`, `eyesStar`, `eyesGloom`, `eyesSqueeze`, `eyesSpiral`, `sparkle`, `tears` | `effects.*` | none |
 | `jawOpen`, `mouthClose` | `mouth.open` | `mouth.open`, `mouth.close_cancel` |
 | `mouthSmile*`, `mouthFrown*`, `mouthDimple*` | `mouth.smile_left`, `mouth.smile_right`; also widen the mouth and gate lower teeth | `mouth.smile`, `mouth.frown`, `mouth.dimple`, `mouth.wide_smile`; base `rest.mouth_smile` |
@@ -120,17 +123,13 @@ Every ARKit channel and every anime extra reaches at least one paint parameter, 
 
 The formulas are the prototype's (`arkit.js` lines 140 to 190), moved from the retargeter to here. The default coefficients reproduce them exactly: a one-sided `mouthSmileLeft = 0.8` gives `smile_left = 1.35 × 0.8`; `mouthClose` cancels 35% of itself from the jaw; a kiss fades as the jaw opens. Tests hold these, plus: **mirroring the bus mirrors the result** (`PaintParams::mirrored`), and outputs stay in range even for wild input.
 
-### Channels wanted from anim-api
+### The signed face shapes (#74)
 
-Everything the prototype's painter did is reachable from the table as it stands. Three optional additions would make a lossless port of the prototype's expression library possible; none blocks this contract:
-
-| Channel | Why | Interim |
-|---|---|---|
-| `eyeTilt` (signed, `-1..=1`) | The prototype's lid tilt (angry slants, sad droops) is set by expressions and scores; no ARKit channel carries it. | Derived from the mean brow angle (`eyes.tilt_from_brows`). |
-| `browArch` (signed) | Same: `browArch` is set by expressions (surprised arches, sad flattens). | Derived from `browOuterUp` and `browInnerUp` (`brows.outer_up_arch`, `brows.inner_up_arch`). |
-| `pupilSize` | The prototype shrinks pupils for surprise. | Derived from `eyesShock` (`eyes.shock_pupil`). |
-
-The first two need a signed range (`-1..=1`); the table's weights are all `0..=1` today.
+Three prototype parameters are set only by expressions and scores, with no ARKit counterpart: the lid tilt, the brow
+arch and the pupil size. `omuzaki-anim-api` gives them channels 73 to 75, `eyeTilt` and `browArch` signed (`-1..=1`)
+and `pupilSize` `0..=1`, so the prototype's expression library ports without loss. Each adds to what the mapping
+derives from the other channels (the brows still tilt the lids, `eyesShock` still shrinks the pupil), inside the
+painter's ranges.
 
 ### Paint parameters
 
@@ -202,6 +201,14 @@ impl Painter for FaceLayerPainter<'_> {
 `face_texture_desc(&spec)` (char-api) gives the dynamic, premultiplied, sRGB, mip-mapped, anisotropy-8 texture each layer needs, and `BuiltCharacter::face_textures(px_per_m)` lists exactly the layers some material composites. The head material then carries `FaceOverlay::of(&projection, head_centre, Base)`, which `to_overlay(texture)` turns into the renderer's `Overlay { Mapping::Planar { min, max, fade_from, fade_to }, strength }` field for field.
 
 **Palette and the painter.** A face profile may name colours by palette slot (`@eyes`), but a painter never sees a slot. `FaceInput::profile` and `FaceBinding::profile` are slot-free: the stage calls `FaceProfile::resolve_colours(&palette)` before painting and again whenever the palette changes, so every painter, the GPU one included, reads plain colours. `resolve_colours` walks the profile's JSON and replaces each `@slot` by its colour, so a colour field added later is resolved with no change to the resolver. An unknown slot is an error that names its JSON path (`eyes/iris/top`). `FaceProfile::slots_used()` lists the slots a profile names, for the contrast checker and the palette UI.
+
+**The view.** `FaceView` carries what depends on the camera, which the stage works out each frame: `highlight_shift`
+(the eyes' reflections slide opposite the direction the camera sees the face from, #174) and `head_coverage` (the
+head's height over the frame's height at the head). The mouth reads `head_coverage` (#464): in a wide shot, at most
+`WIDE_SHOT` (0.12) of the frame, it grows by `mouth.wide_shot_scale` (default 1.4: width, opening and the line's weight
+by its square root), so lip sync still reads when the head is a few dozen pixels tall; it eases back to its own size by
+`CLOSE_SHOT` (0.3, a bust shot) with a smoothstep, so a dolly never jumps. An unknown coverage (a preview, a bake)
+draws the mouth at its own size.
 
 ### The face baker (G13)
 
@@ -289,7 +296,7 @@ The mock registers `mock-head`, `mock-hair`, `mock-body` and `mock-garment` (the
 |---|---|
 | `plan(def) -> Result<Vec<PartId>, BuildError>` | Before any part builds: validates the face profile and the weight brushes, then orders the active parts (`CharacterDef::build_order`). Build the parts of the result, in order, and no others. It does not look kinds up, so an unregistered kind is reported when its part's turn comes. |
 | `build_part(def, part, options, services, published) -> Result<PartOutput, BuildError>` | Builds one part through its registered kind: normalises the stored parameters and calls the generator with the `BuildCtx` described above. `published` is what the parts before it published (`Assembler::published`). Pure in its arguments, so the same inputs may be answered from a cache. |
-| `Assembler::new(id, def, options)`, `Assembler::published()`, `Assembler::add(part, output)`, `Assembler::finish()` | The merge. `add` takes the parts' outputs in `plan` order and does everything that follows a build, in one fixed order (so errors have one precedence): validate meshes and apply the weight brushes, collect materials and textures (ids unique across parts), keep the runtime, add the report row, check what the part publishes (`check_published_joints`, `check_published_colliders` in the rig module), record its rig contribution, absorb what it publishes. `finish` checks every mesh names a defined material, assembles the `CharacterRig` and checks every skinned bone. After an error the assembler is dropped (all or nothing). |
+| `Assembler::new(id, def, options)`, `Assembler::published()`, `Assembler::add(part, output)`, `Assembler::add_validated(part, output)`, `Assembler::finish()` | The merge. `add` takes the parts' outputs in `plan` order and does everything that follows a build, in one fixed order (so errors have one precedence): validate meshes and apply the weight brushes, collect materials and textures (ids unique across parts), keep the runtime, add the report row, check what the part publishes (`check_published_joints`, `check_published_colliders` in the rig module), record its rig contribution, absorb what it publishes. `add_validated` is `add` without the mesh check, for a cached output whose meshes an earlier `add` accepted (#646). `finish` checks every mesh names a defined material, assembles the `CharacterRig` and checks every skinned bone. After an error the assembler is dropped (all or nothing). |
 
 **A part's random stream is part of the contract.** `part_rng(seed, part)` is the `BuildCtx::rng` of a part, and every builder must hand a part exactly this stream, so a cached build and an uncached one are bit-identical. It is `Rng::new(u64::from(seed)).fork(stream)`: a fresh `SplitMix64` seeded with the character's `seed`, forked once with `stream` = the 64-bit FNV-1a hash (offset basis `0xcbf29ce484222325`, prime `0x100000001b3`) of the UTF-8 bytes of the part's id. It depends on the seed and the part's id and on nothing else (not on the other parts, the build order, the quality or any cache), so adding a part never shifts another part's numbers; renaming a part or changing the seed does change them. A part must draw only from `ctx.rng` for a rebuild to repeat. A test pins the first values of four streams; changing the derivation reshuffles every procedural part.
 
@@ -389,9 +396,9 @@ A `GuidePoint` is `Surface([theta, phi, offset])`, `Head([x, y, z])` (head-local
 
 ### Head, shape profiles and variants
 
-`HeadParams`: `cranium` (ellipsoid radii, cheek fullness, face flatten), `outline` (CB-10: superellipse half width, top, height, exponent, optional `chin`, cheek puff), `window` (the face rectangle: half width, top, margin below the chin, front fade), an optional `traced` radius map, `ears`, `neck`, `skin` (palette slots). `face_projection()` follows the chin, so a longer chin gives a taller face window. The **traced radius map** (CB-11) is about 100 KB in the prototype, so it is a store asset: `TracedHead { asset: ContentHash, theta_steps, phi_steps, mix }`, little-endian `f32`s, all radii then all weights.
+`HeadParams`: `cranium` (ellipsoid radii, cheek fullness, face flatten), `outline` (CB-10: superellipse half width, top, height, exponent, optional `exponent_lower`, optional `chin`, cheek puff; `exponent_lower` shapes the outline below the cheek line, half way from the eye line to the chin, as a second superellipse joined to the upper one with the same width and slope; unset, the whole outline uses `exponent`; it blends by its reciprocal, so the chin moves about evenly through a blend, and when only one side of a blend sets it the other counts as its `exponent`; `plausible` holds it within 1.0 to 2.4 and raises it until the chin tip is no sharper than 135 degrees, #1688), `window` (the face rectangle: half width, top, margin below the chin, front fade), an optional `traced` radius map, `ears`, `neck`, `skin` (palette slots). `face_projection()` follows the chin, so a longer chin gives a taller face window. The **traced radius map** (CB-11) is about 100 KB in the prototype, so it is a store asset: `TracedHead { asset: ContentHash, theta_steps, phi_steps, mix }`, little-endian `f32`s, all radii then all weights.
 
-**Shape profiles** bundle a head outline and a face layout (`ShapeProfile`, with `lerp`). The reserved preset ids are `round-u`, `egg-oval`, `mochi`, `heart`, `long` (CB-10); data lives in the library (§28). `egg-oval` is the close-up profile the prototype named after a real creator: **no creator's name appears in any id or default here** (a follow-up re-derives it from our own design target; an earlier proposal used `oval-long`, and the spec's own word is `egg-oval`, Q11).
+**Shape profiles** bundle a head outline and a face layout (`ShapeProfile`, with `lerp`), and optionally the cranium's proportions (`cranium: CraniumScale { width, height }`, factors of the default cranium within 0.85 to 1.15, the width at most 1.2 times the height; a blend counts a missing one as 1 x 1, and `face.set_profile` writes it into the head's cranium). `mochi` (1.07 x 1) and `long` (0.9 x 1.1) carry one, for whole-head proportions of W/H 1.10 and H/W 1.30 (#1690). The reserved preset ids are `round-u`, `egg-oval`, `mochi`, `heart`, `long` (CB-10); data lives in the library (§28). `egg-oval` is the close-up profile the prototype named after a real creator: **no creator's name appears in any id or default here** (a follow-up re-derives it from our own design target; an earlier proposal used `oval-long`, and the spec's own word is `egg-oval`, Q11).
 
 **Variants** (CB-13, SH-10) are files of path overrides:
 
@@ -460,7 +467,7 @@ Body types (CB-04) and five-finger hands (RG-09) are P0, so the body kind's para
 | `face.js` `winkL`, `winkR`, `smileEye`, `winkArc` | `eyeBlinkLeft/Right`, `eyeArcLeft/Right` → `EyeParams.close`, `.arc` (the grammar stage sets arcs from smile and blink) |
 | `open`, `openL/R` | `eyeWide − eyeSquint` per side; base `mapping.rest.eye_open` |
 | `lowLid`, `lowLidL/R` | `eyeSquint`, `cheekSquint`; base `rest.lower_lid` |
-| `tilt`, `pupil` | `eye_tilt` (derived), `pupil` (from `eyesShock`) |
+| `tilt`, `pupil` | `eye_tilt` (from the brows and `eyeTilt`), `pupil` (from `eyesShock` and `pupilSize`) |
 | `browY*`, `browTilt*`, `browArch` | brow channels → `BrowParams`, `brow_arch` |
 | `mOpen`, `mWide`, `mSmile`, `mSmileL/R`, `mRound`, `pucker`, `mPress`, `mX` | `MouthParams.{open, wide, smile_left/right, round, pucker, press, shift}` |
 | `teeth`, `teethLow`, `tongue`, `fang` | `mouth.{teeth_upper, teeth_lower, tongue, fangs}` |

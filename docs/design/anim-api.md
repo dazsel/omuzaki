@@ -73,7 +73,8 @@ tracks, scores and golden renders valid across versions.
 | 0 to 51 | the 52 ARKit blendshapes, in Apple's alphabetical order (`browDownLeft` to `tongueOut`) | 52 |
 | 52 to 59 | `headYaw`, `headPitch`, `headRoll`, `headShiftX`, `headShiftY`, `lean`, `bodyTurn`, `breath` | 8 |
 | 60 to 72 | anime extras (FE-02): `eyeArcLeft`, `eyeArcRight`, `eyesHeart`, `eyesStar`, `eyesGloom`, `eyesShock`, `eyesSqueeze`, `eyesSpiral`, `sparkle`, `tears`, `sweatDrop`, `blush`, `fangs` | 13 |
-| 73 to 111 | reserved (finger curls, more extras) | 39 |
+| 73 to 75 | the signed face shapes (#74): `eyeTilt` (`-1..=1`, sad to angry), `browArch` (`-1..=1`, flat to arched), `pupilSize` (`0..=1`, pinpoint at 1) | 3 |
+| 76 to 111 | reserved (finger curls, more extras) | 36 |
 | 112 to 127 | `custom00` to `custom15`: character-specific toggles that scores and triggers can drive | 16 |
 
 - **Names** are camelCase with `Left`/`Right` suffixes for the character's own sides (ARKit's convention). Files and

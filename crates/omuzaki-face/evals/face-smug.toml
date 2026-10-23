@@ -1,0 +1,24 @@
+# Starter face task (#430): a new named expression that visibly moves the face.
+id = "face.smug"
+feature = "FE-03"
+title = "Add a smug expression"
+prompt = "Add an expression called smug."
+fixture = "face-mini"
+scopes = ["read", "edit:character"]
+tags = ["starter"]
+version = 1
+
+[[check]]
+id = "exists"
+kind = "doc.exists"
+path = "characters/{main}/face/expressions/smug"
+
+[[check]]
+id = "moves-the-face"
+kind = "doc.exists"
+path = "characters/{main}/face/expressions/smug/deltas/*"
+
+[[check]]
+id = "only-the-expression"
+kind = "doc.changed_only"
+paths = ["characters/{main}/face/expressions/smug/**"]

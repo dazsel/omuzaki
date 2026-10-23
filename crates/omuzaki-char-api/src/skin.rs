@@ -84,7 +84,7 @@ const TIE: f64 = 1e-6;
 /// How many of `sorted` (heaviest first, `weight` reads an item's weight) survive a cut to `max` influences. It reads the
 /// items in place, so it allocates nothing.
 ///
-/// Normally the first `max`. But when the last one kept and the first one dropped tie (within [`TIE`], relative), the
+/// Normally the first `max`. But when the last one kept and the first one dropped tie (within `TIE`, relative), the
 /// whole tied group goes: keeping one of two equal weights would pick a side by joint index and break a symmetric skin.
 /// The kept weights are then fewer than `max`, and the caller renormalises.
 ///

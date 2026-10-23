@@ -194,7 +194,10 @@ fn open_document(dir: Option<&PathBuf>) -> Document {
         return Document::empty();
     };
     match Document::project(dir) {
-        Ok(document) => document,
+        Ok(document) => match models_dir().as_deref().and_then(Path::parent) {
+            Some(data) => document.with_data_dir(data),
+            None => document,
+        },
         Err(error) => {
             tracing::error!(%error, dir = %dir.display(), "the project did not open: changes last until the studio quits");
             Document::empty()

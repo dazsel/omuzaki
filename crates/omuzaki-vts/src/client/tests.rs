@@ -119,7 +119,7 @@ fn approval_connects_with_the_model_and_the_next_session_reuses_the_token() {
     assert_eq!(connected.model, Some(ModelInfo { id: "Kit".into(), name: "Kit".into() }));
     assert_eq!(connected.fps, 60);
     assert_eq!(connected.hotkeys.len(), 2);
-    assert_eq!(rig.count("ParameterCreationRequest"), 73, "one custom parameter per channel");
+    assert_eq!(rig.count("ParameterCreationRequest"), 76, "one custom parameter per channel");
     assert!(rig.tokens.get("default").is_some(), "the token is stored");
     assert_eq!(rig.mock.setup_failures(), Vec::<String>::new());
     // A new bridge with the stored token connects on its own, with no popup.
@@ -235,7 +235,7 @@ fn frames_at_sixty_hertz_send_one_batched_message_each() {
         rig.mock.received().into_iter().filter(|r| r.message_type == "InjectParameterDataRequest").collect();
     assert!((600..=601).contains(&injects.len()), "{} messages for 600 frames", injects.len());
     for inject in &injects {
-        assert_eq!(inject.data["parameterValues"].as_array().unwrap().len(), 73, "every mapped parameter");
+        assert_eq!(inject.data["parameterValues"].as_array().unwrap().len(), 76, "every mapped parameter");
         assert_eq!(inject.data["mode"], "set");
         assert_eq!(inject.data["faceFound"], true);
     }

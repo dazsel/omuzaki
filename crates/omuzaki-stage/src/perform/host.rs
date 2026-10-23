@@ -44,15 +44,19 @@ use std::time::Duration;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
+use omuzaki_anim::hands::HandRest;
+use omuzaki_anim::poses::ClipLibrary;
 use omuzaki_anim::{
     MAX_NEUTRAL_FRAMES, MAX_TRIGGERS, MIN_NEUTRAL_FRAMES, NeutralCapture, NeutralError, TriggerFades, TriggerSlot,
 };
 use omuzaki_anim_api::{
-    ARKIT_COUNT, Calibration, Channel, ChannelBuf, Cues, DeviceProfile, HeadPose, RetargetConfig, Tick, TrackStatus,
+    ARKIT_COUNT, BoneMask, Calibration, Channel, ChannelBuf, ChannelMask, Cues, DeviceProfile, HeadPose,
+    RetargetConfig, Tick, TrackStatus,
 };
 use omuzaki_core::glam::Vec3;
 use omuzaki_core::time::Seconds;
-use omuzaki_face_api::ExpressionSet;
+use omuzaki_face_api::{ExpressionId, ExpressionSet};
+use omuzaki_stage_api::drive::DriveMap;
 use omuzaki_track_api::pose_out::PoseTap;
 use omuzaki_track_voice::{LipSync, LipSyncConfig, VoiceReader};
 use schemars::JsonSchema;
@@ -61,6 +65,8 @@ use serde::{Deserialize, Serialize};
 use super::triggers::{
     BindBatch, BindOutcome, Bound, MAX_KEY_CHARS, Rebaked, TriggerBinding, TriggerBook, TriggerInfo, TriggerLayer, check_key,
 };
+use super::drive::DriveGate;
+use super::score::{Act, Envelope, Lane, LiveScore, MAX_ACTS, Motion};
 use super::{MAX_STEPS_PER_ADVANCE, PerformOutput, Performer, STEP_HZ, Tracking};
 
 /// Commands the queue holds before [`PerformError::QueueFull`].
@@ -80,6 +86,12 @@ const BOUNDARY_EPS: f64 = 1e-9;
 const FPS_SMOOTHING: f32 = 0.1;
 /// One step, in seconds: the time the trigger fades advance by each step.
 const STEP_SECS: f32 = 1.0 / STEP_HZ;
+/// Radians the head turns, side to side, for a full look with the head following all the way (`head = 1`).
+pub const LOOK_HEAD_YAW_RAD: f32 = 0.6;
+/// Radians the head tips, up and down, for a full look with the head following all the way.
+pub const LOOK_HEAD_PITCH_RAD: f32 = 0.35;
+/// Acts [`PerformHost::acts`] remembers beyond the ones playing: the ones still queued.
+const ACT_BOOK_LEN: usize = MAX_ACTS + COMMAND_QUEUE_LEN;
 
 /// What the ops (and the UI) can ask of the live performer. Requests are queued for the perform thread. For
 /// [`calibrate`](Self::calibrate) and [`set_calibration`](Self::set_calibration) a reply means "accepted", not
@@ -216,6 +228,44 @@ pub trait PerformHost: Send + Sync {
         Vec::new()
     }
 
+    /// Plays `act` on the score layer from the next step, coming and going as `envelope` says, and returns its id.
+    /// It takes over from the earlier acts of its kind that move the same channels or bones (a second expression
+    /// replaces the first). It is baked against the character's expressions and rest face as they are now.
+    ///
+    /// # Errors
+    /// [`PerformError::UnknownExpression`] or [`PerformError::UnknownClip`] for a name the character or the clip
+    /// library lacks, or [`PerformError::QueueFull`] or [`PerformError::Disconnected`]; nothing plays then.
+    fn act(&self, _act: ActRequest, _envelope: Envelope) -> Result<u64, PerformError> {
+        Err(PerformError::Unsupported)
+    }
+
+    /// Releases act `id`, or every act with `None`: each fades out over its own fade-out from where it is. An id that
+    /// has ended already releases nothing.
+    ///
+    /// # Errors
+    /// [`PerformError::QueueFull`] or [`PerformError::Disconnected`].
+    fn release_act(&self, _id: Option<u64>) -> Result<(), PerformError> {
+        Err(PerformError::Unsupported)
+    }
+
+    /// The acts playing or about to, oldest first.
+    fn acts(&self) -> Vec<ActInfo> {
+        Vec::new()
+    }
+
+    /// Which drivers move which channels from the next step (the member's drive map, `docs/design/drivers.md`).
+    ///
+    /// # Errors
+    /// [`PerformError::QueueFull`] or [`PerformError::Disconnected`]; nothing changes then.
+    fn set_drive(&self, _drive: DriveMap) -> Result<(), PerformError> {
+        Err(PerformError::Unsupported)
+    }
+
+    /// The drive map last set: every driver at full strength until one is.
+    fn drive(&self) -> DriveMap {
+        DriveMap::open()
+    }
+
     /// The expression library the triggers bake against (empty until [`set_expressions`](Self::set_expressions)).
     fn expressions(&self) -> ExpressionSet {
         ExpressionSet::default()
@@ -251,6 +301,53 @@ impl RetargetChange {
             config.mirror = v;
         }
     }
+}
+
+/// What an act shows, as the ops ask for it ([`PerformHost::act`]). The handle bakes it against the character's
+/// expressions and rest face before it is queued, so the perform thread only blends.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "act", rename_all = "snake_case")]
+pub enum ActRequest {
+    /// One of the character's expressions.
+    Expression {
+        /// The expression.
+        expression: ExpressionId,
+        /// Strength, `0..=1`.
+        intensity: f32,
+    },
+    /// Where the eyes point, in look units (`x` toward the character's left, `y` up, `1` a full look), with the head
+    /// following by `head` (`0` the eyes alone, `1` the head turns [`LOOK_HEAD_YAW_RAD`] for a full look).
+    Look {
+        /// Toward the character's left, `-1..=1`.
+        x: f32,
+        /// Up, `-1..=1`.
+        y: f32,
+        /// How much the head follows, `0..=1`.
+        head: f32,
+    },
+    /// Channels to values (each held to its channel's range).
+    Channels {
+        /// The channels and their values.
+        values: Vec<(Channel, f32)>,
+    },
+    /// A body clip from the clip library, from its start.
+    Clip {
+        /// The clip's id.
+        clip: String,
+        /// How strongly it moves the body, `0..=1`.
+        weight: f32,
+    },
+}
+
+/// An act playing or about to ([`PerformHost::acts`]).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ActInfo {
+    /// Its id, for [`PerformHost::release_act`].
+    pub id: u64,
+    /// What it shows.
+    pub act: ActRequest,
+    /// How it comes and goes, as it plays (a one-shot clip holds for its own length).
+    pub envelope: Envelope,
 }
 
 /// Where the neutral capture stands.
@@ -328,6 +425,9 @@ pub enum PerformError {
     /// The expression is not in the character's expression set.
     #[error("no such expression on this character")]
     UnknownExpression,
+    /// The clip is not in the clip library.
+    #[error("no such clip in the clip library")]
+    UnknownClip,
     /// A neutral capture is already running.
     #[error("a calibration is already running")]
     CalibrationRunning,
@@ -370,6 +470,12 @@ enum Command {
     Press { index: usize, down: bool },
     /// Where to publish each step's pose, or `None` to stop, from [`PerformHost::set_pose_tap`].
     PoseTap(Option<Arc<dyn PoseTap>>),
+    /// An act for the live score, baked on the handle side, from [`PerformHost::act`].
+    Act { id: u64, act: Act },
+    /// Releases one act, or all with `None`, from [`PerformHost::release_act`].
+    Release(Option<u64>),
+    /// The drive gate, from [`PerformHost::set_drive`].
+    Drive(DriveGate),
 }
 
 /// An attached voice, as the control holds it: the analyser's mailbox and the lip sync over the character's visemes.
@@ -430,6 +536,16 @@ struct Shared {
     triggers: Mutex<TriggerBook>,
     /// The attached voice's settings, or `None` with no voice. Handle side only; taken after `triggers`.
     voice: Mutex<Option<LipSyncConfig>>,
+    /// The ids of the acts playing, oldest first, `0` past the last: published by the control each step.
+    active_acts: [AtomicU64; MAX_ACTS],
+    /// The newest act id the control has taken from the queue.
+    acts_taken: AtomicU64,
+    /// The last act id handed out.
+    last_act: AtomicU64,
+    /// The acts asked for that may still play, oldest first. Handle side only; taken after `triggers`.
+    act_book: Mutex<VecDeque<ActInfo>>,
+    /// The drive map last set. Handle side only.
+    drive: Mutex<DriveMap>,
 }
 
 /// Locks `m`; a panic elsewhere cannot leave these plain records half-written, so a poisoned lock is still good.
@@ -636,6 +752,11 @@ pub fn perform_channel(performer: &Performer) -> (PerformHandle, PerformControl)
         }),
         triggers: Mutex::new(TriggerBook::new()),
         voice: Mutex::new(None),
+        active_acts: std::array::from_fn(|_| AtomicU64::new(0)),
+        acts_taken: AtomicU64::new(0),
+        last_act: AtomicU64::new(0),
+        act_book: Mutex::new(VecDeque::with_capacity(ACT_BOOK_LEN + 1)),
+        drive: Mutex::new(DriveMap::open()),
     });
     let control = PerformControl {
         commands: commands_rx,
@@ -653,6 +774,7 @@ pub fn perform_channel(performer: &Performer) -> (PerformHandle, PerformControl)
         voice: None,
         head_rest: HeadRest::Waiting,
         pose_tap: None,
+        score: Box::new(LiveScore::new()),
     };
     (PerformHandle { commands: commands_tx, shared }, control)
 }
@@ -879,6 +1001,127 @@ impl PerformHost for PerformHandle {
     fn expressions(&self) -> ExpressionSet {
         lock(&self.shared.triggers).expressions()
     }
+
+    fn act(&self, request: ActRequest, envelope: Envelope) -> Result<u64, PerformError> {
+        let act = {
+            let book = lock(&self.shared.triggers);
+            bake_act(&request, envelope, book.expression_set(), book.rest())?
+        };
+        let mut acts = lock(&self.shared.act_book);
+        // Held across the send, so ids reach the performer in the order they are handed out.
+        let id = self.shared.last_act.load(Ordering::Acquire) + 1;
+        self.send(Command::Act { id, act })?;
+        self.shared.last_act.store(id, Ordering::Release);
+        let playing = self.playing_acts();
+        let taken = self.shared.acts_taken.load(Ordering::Acquire);
+        acts.retain(|info| info.id > taken || playing.contains(&info.id));
+        if acts.len() >= ACT_BOOK_LEN {
+            acts.pop_front();
+        }
+        acts.push_back(ActInfo { id, act: request, envelope: act.envelope });
+        Ok(id)
+    }
+
+    fn release_act(&self, id: Option<u64>) -> Result<(), PerformError> {
+        self.send(Command::Release(id))
+    }
+
+    fn acts(&self) -> Vec<ActInfo> {
+        let acts = lock(&self.shared.act_book);
+        let playing = self.playing_acts();
+        let taken = self.shared.acts_taken.load(Ordering::Acquire);
+        acts.iter().filter(|info| info.id > taken || playing.contains(&info.id)).cloned().collect()
+    }
+
+    fn set_drive(&self, drive: DriveMap) -> Result<(), PerformError> {
+        let mut held = lock(&self.shared.drive);
+        self.send(Command::Drive(DriveGate::of(&drive)))?;
+        *held = drive;
+        Ok(())
+    }
+
+    fn drive(&self) -> DriveMap {
+        lock(&self.shared.drive).clone()
+    }
+}
+
+impl PerformHandle {
+    /// The ids of the acts the performer published as playing.
+    fn playing_acts(&self) -> [u64; MAX_ACTS] {
+        std::array::from_fn(|i| self.shared.active_acts[i].load(Ordering::Acquire))
+    }
+}
+
+/// `request` as the live score plays it, over `rest` and the character's `expressions`.
+fn bake_act(
+    request: &ActRequest,
+    envelope: Envelope,
+    expressions: &ExpressionSet,
+    rest: &ChannelBuf,
+) -> Result<Act, PerformError> {
+    let envelope = envelope.clamped();
+    let channels = |target: ChannelBuf, mask: ChannelMask| Motion::Channels { target, mask };
+    let (motion, lane, envelope) = match request {
+        ActRequest::Expression { expression, intensity } => {
+            let intensity = unit(*intensity);
+            let target = expressions
+                .blend(rest, &[(expression, intensity)])
+                .map_err(|_| PerformError::UnknownExpression)?;
+            let mask = expressions.0.get(expression).map_or(ChannelMask::EMPTY, |e| e.deltas.0.keys().copied().collect());
+            (channels(target, mask), Lane::Face, envelope)
+        }
+        ActRequest::Look { x, y, head } => {
+            let (x, y, head) = (signed(*x), signed(*y), unit(*head));
+            let mut target = *rest;
+            target.set_gaze(x, y);
+            let mut mask = ChannelMask::GAZE;
+            if head > 0.0 {
+                // Positive yaw turns toward the character's left, as positive x looks; positive pitch tips the face
+                // down, so looking up tips it the other way.
+                target[Channel::HEAD_YAW] = x * head * LOOK_HEAD_YAW_RAD;
+                target[Channel::HEAD_PITCH] = -y * head * LOOK_HEAD_PITCH_RAD;
+                mask.insert(Channel::HEAD_YAW);
+                mask.insert(Channel::HEAD_PITCH);
+            }
+            (channels(target, mask), Lane::Look, envelope)
+        }
+        ActRequest::Channels { values } => {
+            let mut target = *rest;
+            let mut mask = ChannelMask::EMPTY;
+            for (channel, value) in values {
+                let (lo, hi) = channel.range();
+                target[*channel] = if value.is_finite() { value.clamp(lo, hi) } else { rest[*channel] };
+                mask.insert(*channel);
+            }
+            (channels(target, mask), Lane::Channels, envelope)
+        }
+        ActRequest::Clip { clip, weight } => {
+            let library = ClipLibrary::builtin().map_err(|_| PerformError::UnknownClip)?;
+            let clip = library.get(clip).ok_or(PerformError::UnknownClip)?;
+            // A clip that plays once ends with itself, unless the caller holds it for longer or less.
+            let envelope = match envelope.hold {
+                None if !clip.looped() => Envelope {
+                    hold: Some((clip.length() - envelope.fade_in - envelope.fade_out).max(0.0)),
+                    ..envelope
+                },
+                _ => envelope,
+            };
+            let motion =
+                Motion::Clip { clip, hands: HandRest::nominal(), bones: BoneMask::ALL, weight: unit(*weight) };
+            (motion, Lane::Body, envelope)
+        }
+    };
+    Ok(Act { motion, envelope, lane })
+}
+
+/// `v` held to `0..=1`; not a number is 0.
+fn unit(v: f32) -> f32 {
+    if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 }
+}
+
+/// `v` held to `-1..=1`; not a number is 0.
+fn signed(v: f32) -> f32 {
+    if v.is_finite() { v.clamp(-1.0, 1.0) } else { 0.0 }
 }
 
 /// A capture in progress.
@@ -942,6 +1185,9 @@ pub struct PerformControl {
     head_rest: HeadRest,
     /// Where each advance's last step is published for an output (PF-04), if one runs.
     pose_tap: Option<Arc<dyn PoseTap>>,
+    /// The acts playing, written into the performer's score layer before each of its steps. Boxed once, with the
+    /// channel: it holds [`MAX_ACTS`] acts of a few hundred bytes each.
+    score: Box<LiveScore>,
 }
 
 /// Where the first-frame head rest stands (#542). A calibration whose head rest has no position (none saved, or one
@@ -997,6 +1243,9 @@ impl PerformControl {
     /// resolves.
     fn step_performer<'p>(&mut self, performer: &'p mut Performer, tick: Tick) -> PerformOutput<'p> {
         self.triggers.step(STEP_SECS, performer.trigger_layer_mut());
+        let rest = *performer.rest();
+        let (score, pose) = performer.score_mut();
+        self.score.step(tick.time, &rest, score, pose);
         if let Some(voice) = self.voice.as_deref_mut() {
             if let Some(frame) = voice.reader.poll() {
                 voice.lips.take(&frame);
@@ -1037,12 +1286,18 @@ impl PerformControl {
         // At most the queue's length: a producer that keeps refilling it cannot hold the reset.
         for _ in 0..COMMAND_QUEUE_LEN {
             let Ok(command) = self.commands.try_recv() else { break };
-            if !matches!(command, Command::Press { .. }) {
-                self.run(command, performer);
+            match command {
+                Command::Press { .. } | Command::Release(_) => {}
+                // An act asked for before the reset belongs to the timeline that ended: it never plays.
+                Command::Act { id, .. } => {
+                    self.shared.acts_taken.fetch_max(id, Ordering::AcqRel);
+                }
+                other => self.run(other, performer),
             }
         }
         performer.reset();
         self.triggers.reset();
+        self.score.clear();
         // The first-frame head rest belongs to the timeline that ended: the next tracked frame takes it again.
         let set = self.shared.calibration.read();
         if set.head_rest.position.is_none() {
@@ -1127,6 +1382,14 @@ impl PerformControl {
             }
             // The caller holds the tap too (see `set_pose_tap`), so the one replaced here is not freed here.
             Command::PoseTap(tap) => self.pose_tap = tap,
+            Command::Act { id, act } => {
+                self.score.start(id, act);
+                self.shared.acts_taken.fetch_max(id, Ordering::AcqRel);
+            }
+            Command::Release(id) => {
+                self.score.release(id);
+            }
+            Command::Drive(gate) => performer.set_drive(gate),
         }
     }
 
@@ -1240,6 +1503,9 @@ impl PerformControl {
         self.shared.live.store(self.live.pack(), Ordering::Release);
         for (published, generation) in self.shared.active_triggers.iter().zip(self.triggers.active_generations()) {
             published.store(generation, Ordering::Release);
+        }
+        for (published, id) in self.shared.active_acts.iter().zip(self.score.ids()) {
+            published.store(id, Ordering::Release);
         }
     }
 }

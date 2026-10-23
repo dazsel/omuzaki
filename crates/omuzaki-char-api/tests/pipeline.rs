@@ -292,6 +292,31 @@ fn the_assembler_validates_what_it_is_given_in_the_registry_builders_order() {
     assert!(matches!(new().finish().unwrap_err(), BuildError::Skeleton(_)));
 }
 
+/// `add_validated` (#646) skips only the meshes' check, for a cached output an earlier `add` accepted: a broken mesh
+/// gets through it (which is why only the caching builder's hits use it), while everything else `add` checks still
+/// is.
+#[test]
+fn add_validated_skips_only_the_mesh_check() {
+    let def = character(1, &[("a", 10), ("b", 20)]);
+    let (cid, options) = (char_id(), BuildOptions::default());
+    let new = || Assembler::new(&cid, &def, &options);
+    let broken = || {
+        let mut mesh = triangle("oops", "m");
+        mesh.geometry.normals.pop();
+        PartOutput::new().with_meshes(vec![mesh]).with_materials(vec![material("m")])
+    };
+    assert!(matches!(new().add(&id("a"), broken()).unwrap_err(), BuildError::Mesh { .. }));
+    new().add_validated(&id("a"), broken()).unwrap();
+
+    let mut assembler = new();
+    let define = || PartOutput::new().with_materials(vec![material("shared")]);
+    assembler.add_validated(&id("a"), define()).unwrap();
+    let err = assembler.add_validated(&id("b"), define()).unwrap_err();
+    assert!(matches!(err, BuildError::Duplicate { what: "material", ref id } if id == "shared"), "{err}");
+    let err = assembler.add_validated(&id("a"), PartOutput::default()).unwrap_err();
+    assert!(matches!(err, BuildError::Part { ref message, .. } if message.contains("twice")), "{err}");
+}
+
 #[test]
 fn the_assembler_records_what_parts_publish_for_the_next_part() {
     let def = character(1, &[("a", 10)]);

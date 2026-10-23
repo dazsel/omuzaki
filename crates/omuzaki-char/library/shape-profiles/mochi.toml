@@ -5,7 +5,7 @@ id = "mochi"
 summary = "Soft and wide like a rice cake: a very short lower face, no chin point, low-set features."
 
 [outline]
-half_width = 0.1679
+half_width = 0.1792
 top = -0.0750
 height = 0.1005
 exponent = 2.400
@@ -15,6 +15,11 @@ cheek_puff = 0.0100
 y = -0.1755
 stretch_top = -0.0750
 min_ratio = 0.75
+
+# A wider head than the default cranium's (#1690).
+[cranium]
+width = 1.07
+height = 1.0
 
 [layout]
 eye_y = -0.0930

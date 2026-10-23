@@ -654,7 +654,7 @@ fn rename_in_palette(h: &mut Harness<'_, Studio>, name: &str) {
     h.run_steps(2);
     h.key_press(Key::Tab);
     h.run_steps(2);
-    tab_to_text(h, "name");
+    tab_to_text(h, "Name");
     h.event(egui::Event::Text(name.to_owned()));
     // The preview waits for the arguments to settle (120 ms), then dry-runs them.
     h.run_steps(20);
@@ -736,7 +736,7 @@ fn history_shows_a_steps_details_and_adjust_reopens_it_in_the_palette() {
     h.run_steps(3);
     assert!(h.state().shell.palette_open(), "Adjust opens the palette");
     assert!(h.query_by_label_contains("Same as MCP tool part_set_param").is_some(), "on the step's own op");
-    let shown: Vec<String> = h.query_all_by_label("value").filter_map(|n| n.accesskit_node().value()).collect();
+    let shown: Vec<String> = h.query_all_by_label("Value").filter_map(|n| n.accesskit_node().value()).collect();
     let expected = format!("{:.2}", start * 1.2);
     assert!(shown.iter().any(|v| v.starts_with(&expected)), "filled with the step's arguments: {shown:?}, {expected}");
 }

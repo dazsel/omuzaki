@@ -4668,6 +4668,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "url",
 ]
 
 [[package]]
@@ -4883,12 +4884,14 @@ dependencies = [
  "omuzaki-audio-engine",
  "omuzaki-audio-fx",
  "omuzaki-audio-mock",
+ "omuzaki-char",
  "omuzaki-char-api",
  "omuzaki-core",
  "omuzaki-doc",
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
  "omuzaki-face-api",
+ "omuzaki-face-mock",
  "omuzaki-history-api",
  "omuzaki-history-mock",
  "omuzaki-http-api",
@@ -5740,11 +5743,13 @@ dependencies = [
 name = "omuzaki-measure"
 version = "0.0.0"
 dependencies = [
+ "criterion",
  "image",
  "inventory",
  "libm",
  "moxcms",
  "omuzaki-core",
+ "omuzaki-doc-api",
  "omuzaki-doc-mock",
  "omuzaki-l10n-api",
  "omuzaki-ops-api",
@@ -5755,6 +5760,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "toml",
  "zune-jpeg",
 ]
 
@@ -6420,6 +6426,8 @@ dependencies = [
  "omuzaki-doc",
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
+ "omuzaki-face",
+ "omuzaki-face-api",
  "omuzaki-history-api",
  "omuzaki-io-api",
  "omuzaki-io-gltf",
@@ -6428,6 +6436,7 @@ dependencies = [
  "omuzaki-io-vrm",
  "omuzaki-link-build",
  "omuzaki-mcp",
+ "omuzaki-measure",
  "omuzaki-ops",
  "omuzaki-ops-api",
  "omuzaki-ops-mock",

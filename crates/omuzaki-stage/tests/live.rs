@@ -552,6 +552,70 @@ fn a_steady_live_frame_allocates_nothing() {
 }
 
 #[test]
+fn a_second_member_performs_beside_the_subject_on_the_same_clock() {
+    use omuzaki_stage::perform::host::ActRequest;
+    use omuzaki_stage::perform::score::Envelope;
+
+    let mut live = Live::new(MockRenderer::new(), vec![], Quality::live(), Painter::Mock);
+    let cohost = MemberId::new("cohost").unwrap();
+    let stage = live.inner.as_mut().unwrap();
+    let handle = stage.add_member(cohost.clone(), performer(&HumanoidPose::REST)).unwrap();
+    handle.set_expressions(ExpressionSet::starter(), ChannelBuf::NEUTRAL).unwrap();
+    let puff = ActRequest::Channels { values: vec![(Channel::CHEEK_PUFF, 0.6)] };
+    handle.act(puff, Envelope::new(0.0, None)).unwrap();
+    live.frames(30);
+    let (subject, member) = (live.live().input(), live.live().member_input(&cohost).unwrap());
+    assert!(
+        member.channels[Channel::CHEEK_PUFF] > 0.45,
+        "the member's own act: {}",
+        member.channels[Channel::CHEEK_PUFF]
+    );
+    assert!(subject.channels[Channel::CHEEK_PUFF] < 0.15, "and not the subject's");
+    assert_eq!(member.time, subject.time, "both at the same step");
+    let main = MemberId::new("main").unwrap();
+    assert_eq!(live.live().cast().members(), [main.clone(), cohost.clone()]);
+
+    let stage = live.inner.as_mut().unwrap();
+    let kit = MemberId::new("kit").unwrap();
+    stage.set_subject_member(kit.clone());
+    assert_eq!(stage.cast().members(), [kit.clone(), cohost.clone()], "the subject is named as the scene names it");
+    assert!(
+        stage.add_member(kit.clone(), performer(&HumanoidPose::REST)).is_err(),
+        "the subject is not a member twice"
+    );
+    assert!(stage.remove_member(&cohost).is_some());
+    assert_eq!(stage.cast().members(), [kit]);
+    live.frames(2);
+}
+
+#[test]
+fn a_steady_live_frame_with_a_second_member_and_acts_playing_allocates_nothing() {
+    use omuzaki_stage::perform::host::ActRequest;
+    use omuzaki_stage::perform::score::Envelope;
+
+    let mut live =
+        Live::new(Quiet(Recorder::new(false)), vec![("cam", turning(30.0, sweep))], Quality::live(), Painter::None);
+    let stage = live.inner.as_mut().unwrap();
+    let cohost = stage.add_member(MemberId::new("cohost").unwrap(), performer(&HumanoidPose::REST)).unwrap();
+    cohost.set_expressions(ExpressionSet::starter(), ChannelBuf::NEUTRAL).unwrap();
+    let subject = stage.handle().clone();
+    live.go_live("cam");
+    for host in [&subject, &cohost] {
+        host.act(ActRequest::Look { x: -0.4, y: 0.1, head: 0.5 }, Envelope::new(0.2, None)).unwrap();
+        host.act(ActRequest::Clip { clip: "wave".into(), weight: 1.0 }, Envelope::new(0.2, None)).unwrap();
+    }
+    live.frames(120);
+    let (result, allocations) = allocations_in(|| {
+        for _ in 0..600 {
+            live.try_frame()?;
+        }
+        Ok::<(), StageError>(())
+    });
+    result.unwrap();
+    assert_eq!(allocations, 0, "600 live frames with two members allocated {allocations} times");
+}
+
+#[test]
 fn live_frames_fit_the_60_fps_budget() {
     let mut live = Live::new(Recorder::new(false), vec![("cam", turning(30.0, sweep))], Quality::live(), Painter::None);
     live.go_live("cam");

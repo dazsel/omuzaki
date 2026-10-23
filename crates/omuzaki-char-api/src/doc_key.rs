@@ -4,7 +4,7 @@
 //! A character's node holds the keys of its own definition (node keys: exactly the fields of
 //! [`CharacterDef`](crate::CharacterDef), read into it) and the roots of its other files (sibling keys, each a
 //! sub-tree with its own contract). A new file of the character is a new sibling key in the file that owns it, plus
-//! [`register_doc_key!`]; nobody edits a central list. A sibling key's path is `characters/<id>/<key>`, so the key is
+//! [`register_doc_key!`](crate::register_doc_key!); nobody edits a central list. A sibling key's path is `characters/<id>/<key>`, so the key is
 //! also the name of a file or folder in the project, and must be a slug.
 //! [`CharacterDef::from_node`](crate::CharacterDef::from_node) and [`to_node`](crate::CharacterDef::to_node) leave
 //! sibling keys alone and read [`sibling_keys`] to accept them.
@@ -29,7 +29,7 @@ use omuzaki_doc_api::DocPath;
 use crate::ids::CharId;
 use crate::paths;
 
-/// One registered document key, collected by [`register_doc_key!`]. A registration that is not refused is a sibling key.
+/// One registered document key, collected by [`register_doc_key!`](crate::register_doc_key!). A registration that is not refused is a sibling key.
 pub struct DocKeyRegistration {
     /// The key, as it is spelt in the project and in saved files. Its path is `characters/<id>/<key>`.
     pub key: &'static str,
@@ -59,14 +59,16 @@ pub const BUILT_IN_NODE_KEYS: [&str; 8] =
     ["name", "template", "seed", "palette", "skin_tone", "parts", "face", "weight_brushes"];
 
 /// The built-in sibling keys: the roots of the other files of the character. They are `variants`, `colourways`, `rig`,
-/// `look`, `licence`, `sources`, `applied`, `poses`, `emotes`, `avatar`, `voice` and `voice-assignment`.
+/// `look`, `licence`, `sources`, `applied`, `poses`, `emotes`, `avatar`, `voice`, `voice-assignment`, `persona` and
+/// `likeness`.
 ///
-/// Eight are owned by other crates: `licence` by `omuzaki-io-ops`, `sources` by `omuzaki-char`, `applied` and `emotes` by
-/// `omuzaki-library-api`, `poses` by `omuzaki-anim`, `avatar` (an imported character's `AvatarDef`) by
-/// `omuzaki-avatar-api`, `voice` (the effect presets, `voice.toml`) by `omuzaki-audio-fx`, and `voice-assignment`
-/// (which voice the character speaks in) by `omuzaki-speech`. They stay in this table because no crate that parses a
-/// character links all of those owners, so they cannot register.
-pub const BUILT_IN_SIBLING_KEYS: [&str; 13] = [
+/// Ten are owned by other crates: `licence` by `omuzaki-io-ops`, `sources` by `omuzaki-char`, `applied` and `emotes`
+/// by `omuzaki-library-api`, `poses` by `omuzaki-anim`, `avatar` (an imported character's `AvatarDef`) by
+/// `omuzaki-avatar-api`, `voice` (the effect presets, `voice.toml`) by `omuzaki-audio-fx`, `voice-assignment` (which
+/// voice the character speaks in) by `omuzaki-speech`, `persona` (the co-host's persona) by `omuzaki-cohost`, and
+/// `likeness` (the character's likeness targets, linked by hash) by `omuzaki-measure`. They stay in this table because
+/// no crate that parses a character links all of those owners, so they cannot register.
+pub const BUILT_IN_SIBLING_KEYS: [&str; 14] = [
     "variants",
     "colourways",
     "rig",
@@ -80,6 +82,7 @@ pub const BUILT_IN_SIBLING_KEYS: [&str; 13] = [
     "voice",
     "voice-assignment",
     "persona",
+    "likeness",
 ];
 
 /// Registers a sibling document key next to the file of the character that owns it (ADR 0054 §5). The key is the last
@@ -128,6 +131,7 @@ register_doc_key!("avatar", @built_in);
 register_doc_key!("voice", @built_in);
 register_doc_key!("voice-assignment", @built_in);
 register_doc_key!("persona", @built_in);
+register_doc_key!("likeness", @built_in);
 
 /// The registered keys, resolved once: the usable ones, and the refused ones with the reason for each.
 struct Resolved {
@@ -202,7 +206,7 @@ pub fn check(key: &str) -> Result<(), DocKeyError> {
 /// The path of the registered key `key` for character `id`: `characters/<id>/<key>`. `None` if no crate registered it.
 /// A built-in name with a colliding registration is refused here, so it gets the error, not a path. A built-in name with
 /// no registration gives `None`, like any other unregistered key; the built-in keys have their own functions in
-/// [`paths`](crate::paths).
+/// [`paths`].
 ///
 /// # Errors
 /// The [`DocKeyError`] if the key is refused.

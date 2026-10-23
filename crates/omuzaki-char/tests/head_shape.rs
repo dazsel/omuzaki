@@ -32,7 +32,7 @@ fn arb_cranium() -> impl Strategy<Value = Cranium> {
         (0.0..0.05_f64, 0.0..0.2_f64),
     )
         .prop_map(|((y, z), (w, df, db, up, dnb, dnf), (cheek, flatten))| Cranium {
-            centre: [0.0, y, z],
+            centre: Some([0.0, y, z]),
             half_width: w,
             half_depth_front: df,
             half_depth_back: db,
@@ -96,7 +96,7 @@ fn live(params: &HeadParams) -> MeshData {
 }
 
 fn lowest_local(mesh: &MeshData, params: &HeadParams) -> f64 {
-    f64::from(mesh.positions.iter().map(|p| p.y).fold(f32::INFINITY, f32::min)) - params.cranium.centre[1]
+    f64::from(mesh.positions.iter().map(|p| p.y).fold(f32::INFINITY, f32::min)) - params.cranium.centre()[1]
 }
 
 /// Deterministic unless `PROPTEST_RNG_SEED` is set, and without regression files: a failure found by exploring
@@ -152,7 +152,7 @@ fn assert_closed_and_wound_outward(mesh: &MeshData) {
 /// Every vertex normal points away from the head centre: the reshaped lower face has no ledge, fold or overhang that
 /// faces back toward the centre.
 fn assert_normals_point_outward(mesh: &MeshData, params: &HeadParams) {
-    let centre = DVec3::from_array(params.cranium.centre);
+    let centre = DVec3::from_array(params.cranium.centre());
     for (i, (p, n)) in mesh.positions.iter().zip(&mesh.normals).enumerate() {
         let outward = n.as_dvec3().dot(p.as_dvec3() - centre);
         assert!(outward > 0.0, "vertex {i}: normal {n:?} at {p:?} points inward ({outward:e})");
