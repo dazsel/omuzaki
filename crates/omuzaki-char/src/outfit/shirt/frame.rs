@@ -60,7 +60,7 @@ impl Span {
 }
 
 /// The torso and neck of a fit as one column, cut with one superellipse exponent.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Column {
     fit: Arc<dyn BodyFit>,
     torso: Span,
@@ -69,6 +69,19 @@ pub struct Column {
     /// The rings already worked out, by height and offset: clearing the thighs searches the fit, and a garment asks for
     /// the same rings row after row.
     rings: Arc<Mutex<HashMap<(u64, u64), Ring>>>,
+}
+
+// The ring cache is left out: its order changes run to run, and a fit's Debug text is how the conformance probes
+// compare it.
+impl std::fmt::Debug for Column {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Column")
+            .field("fit", &self.fit)
+            .field("torso", &self.torso)
+            .field("neck", &self.neck)
+            .field("exponent", &self.exponent)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Column {

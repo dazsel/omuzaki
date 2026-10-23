@@ -713,3 +713,52 @@ pub fn check_recolour(base: &CharacterDef, services: &BuildServices) -> Result<R
     report.declined.retain(|kind| !report.recoloured.contains(kind));
     Ok(report)
 }
+
+// ------------------------------------------------------------------------------------------------- an App's gate test
+
+/// The characters [`check_linked`] builds every kind in: the kit's default character (body, head, hair, shirt, skirt,
+/// legwear and boots, on the `soft-sd` template), and the same with a collar and a tie on the shirt's collar ring, for
+/// the kinds that hang on a shirt. Real kinds only, so an App that links no mock checks what it ships.
+///
+/// # Errors
+/// The default character doesn't read (a broken built-in starter or template).
+pub fn kit_bases() -> Result<Vec<CharacterDef>, String> {
+    let template = omuzaki_char_api::BodyTemplateId::new("soft-sd").map_err(|e| e.to_string())?;
+    let default = crate::ops::character::create::default_character(&template).map_err(|e| e.to_string())?;
+    let mut dressed = default.clone();
+    let on_collar: omuzaki_char_api::Attach =
+        serde_json::from_value(serde_json::json!({ "to": "anchor", "part": "shirt", "anchor": "collar_ring" }))
+            .map_err(|e| e.to_string())?;
+    for (id, layer) in
+        [("collar", crate::outfit::common::LAYER_SHIRT + 1), ("tie", crate::outfit::common::LAYER_SHIRT + 2)]
+    {
+        let part = PartDef {
+            kind: PartKindId::new(id).map_err(|e| e.to_string())?,
+            parent: None,
+            enabled: true,
+            layer,
+            attach: Some(on_collar.clone()),
+            params: Value::Object(serde_json::Map::new()),
+        };
+        dressed.parts.insert(PartId::new(id).map_err(|e| e.to_string())?, part);
+    }
+    Ok(vec![default, dressed])
+}
+
+/// The palette-independence check over every part kind linked into the running binary (#1635), against
+/// [`kit_bases`], with the registered probes: what each App's gate test runs beside its link gate (ADR 0015), so a kind
+/// from any crate whose published facts depend on the palette fails that App's test, named with its fact. The two
+/// palette contracts of the build ([`check_colours_through_parameters`]) and the recolour contract
+/// ([`check_recolour`]) are checked over the same characters; their findings join [`Report::violations`].
+///
+/// # Errors
+/// The bases don't read or don't build.
+pub fn check_linked(services: &BuildServices, sweep: Sweep) -> Result<Report, String> {
+    let bases = kit_bases()?;
+    let mut report = check_all_with(&bases, None, &Probes::registered(), services, sweep);
+    for base in &bases {
+        report.violations.extend(check_colours_through_parameters(base, services)?);
+        report.violations.extend(check_recolour(base, services)?.violations);
+    }
+    Ok(report)
+}

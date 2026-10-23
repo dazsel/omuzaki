@@ -539,7 +539,7 @@ type Known = HashMap<(BodyRegion, u32), Option<Section>>;
 
 /// The fit outside a garment: the fit inside it with `ease` added to the radii of the regions it covers (widened for a
 /// square cut by [`enclosing_scale`]). Joints, the bind pose and every other region are the inner fit's.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Envelope {
     inner: Arc<dyn BodyFit>,
     regions: Vec<BodyRegion>,
@@ -552,6 +552,20 @@ pub struct Envelope {
     /// Where the garment ends partway down a region it covers ([`Envelope::ending`]): the region, the `t` of its edge,
     /// and how far below that, in `t`, the envelope has eased back onto the fit inside it.
     end: Option<(BodyRegion, f32, f32)>,
+}
+
+// The cache is left out: its order changes run to run, and a fit's Debug text is how the conformance probes compare it.
+impl std::fmt::Debug for Envelope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Envelope")
+            .field("inner", &self.inner)
+            .field("regions", &self.regions)
+            .field("ease", &self.ease)
+            .field("exponent", &self.exponent)
+            .field("scale", &self.scale)
+            .field("end", &self.end)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Envelope {

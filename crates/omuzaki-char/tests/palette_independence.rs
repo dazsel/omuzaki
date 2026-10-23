@@ -11,7 +11,8 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use omuzaki_char::builder::conformance::{
-    Probes, Sweep, check, check_all, check_all_with, check_colours_through_parameters, check_recolour, check_with,
+    Probes, Sweep, check, check_all, check_all_with, check_colours_through_parameters, check_linked, check_recolour,
+    check_with,
 };
 use omuzaki_char::outfit::boots::LAYER_FOOTWEAR;
 use omuzaki_char::outfit::common::LAYER_SHIRT;
@@ -262,4 +263,17 @@ fn every_kit_part_that_recolours_matches_a_fresh_build() {
         declined.extend(report.declined);
     }
     eprintln!("recoloured: {recoloured:?}\ndeclined: {declined:?}");
+}
+
+/// What every App's gate test runs (#1635): the check over every linked kind, on the real kit characters. This binary
+/// also links the mock kinds, which the kit characters can't build (they stand in for the body and head), so only they
+/// may be unreached here.
+#[test]
+fn the_app_gate_check_passes_over_every_real_kind() {
+    omuzaki_char::link();
+    let report = check_linked(&services(), Sweep::QUICK).unwrap();
+    assert!(report.violations.is_empty(), "{:#?}", report.violations);
+    assert!(report.unprobed.is_empty(), "{:?}", report.unprobed);
+    let real: Vec<_> = report.unreached.iter().filter(|(kind, _)| !kind.starts_with("mock-")).collect();
+    assert!(real.is_empty(), "real kinds the check cannot build: {real:#?}");
 }
