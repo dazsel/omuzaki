@@ -8,7 +8,7 @@
 //! overrides laid over them, the person's settings always beating the preset's ([`LookParams::layered_over`]).
 //!
 //! Presets are data ([`LookPreset`]). A crate ships them as files and registers them once, with
-//! [`register_look_presets!`] (no central list: adding a preset is adding a file). [`look_presets`] lists every
+//! [`register_look_presets!`](crate::register_look_presets!) (no central list: adding a preset is adding a file). [`look_presets`] lists every
 //! registered preset and [`find_look_preset`] finds one, naming the nearest id when one is misspelt.
 //!
 //! # What a look changes, and what it never does
@@ -819,7 +819,7 @@ impl LookDef {
 
 // ------------------------------------------------------------------------------------------------ the registry
 
-/// A crate's look presets: one registration per crate ([`register_look_presets!`]), whatever the number of files.
+/// A crate's look presets: one registration per crate ([`register_look_presets!`](crate::register_look_presets!)), whatever the number of files.
 pub struct LookPresetSource {
     /// Every preset the crate ships, parsed. An error names the file that doesn't load.
     pub load: fn() -> Result<Vec<LookPreset>, String>,

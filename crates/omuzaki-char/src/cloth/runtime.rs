@@ -299,7 +299,7 @@ pub struct ClothSpec {
     /// Wind coefficients; the velocity comes from [`StepCtx::wind`] each frame.
     pub wind: WindParams,
     /// Live (the live solver preset, the sheets as given) or Offline (twice the rows and columns, 4 sub-steps of 8
-    /// sweeps; see [`quality`](super::quality)).
+    /// sweeps; see [`quality`]).
     pub quality: Quality,
     /// Level-of-detail thresholds.
     pub lod: LodPolicy,

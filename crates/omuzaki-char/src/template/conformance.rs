@@ -29,21 +29,6 @@ pub const SEED: u64 = 0x5eed_0442;
 pub const SYMMETRY_TOLERANCE: f64 = 1e-6;
 /// The range a bone's length may take, as a multiple of its length in the template's default body.
 pub const BONE_LENGTH_RATIO: (f32, f32) = (0.4, 2.5);
-/// The upper limit for the lateral roots (hips to upper leg, chest to shoulder, shoulder to upper arm) instead of
-/// [`BONE_LENGTH_RATIO`]'s. They are 3.5 to 6.7 cm long at soft-sd's defaults and widen with the product of three
-/// independent numbers (the slider, the shape's shoulder/hip balance and `build`: up to 2.76 times), which is a wider
-/// body, not a degenerate bone. Every other bone keeps 2.5: a bone that grows more than that with its own slider is
-/// the failure the rule exists to catch.
-pub const LATERAL_ROOT_MAX_RATIO: f32 = 2.8;
-/// The lateral roots, both sides.
-const LATERAL_ROOTS: [HumanoidBone; 6] = [
-    HumanoidBone::LeftUpperLeg,
-    HumanoidBone::RightUpperLeg,
-    HumanoidBone::LeftShoulder,
-    HumanoidBone::RightShoulder,
-    HumanoidBone::LeftUpperArm,
-    HumanoidBone::RightUpperArm,
-];
 /// The most a joint may be off the layout when the skeleton is posed at its bind pose, and the most an arm bone may
 /// leave the horizontal at rest, in metres.
 pub const BIND_TOLERANCE: f32 = 1e-6;
@@ -341,10 +326,7 @@ fn check_bone_lengths(layout: &BodyLayout, reference: Option<&[(HumanoidBone, f3
         if *default <= 0.0 {
             return Err(format!("{bone} has no length in the default body"));
         }
-        let (lo, hi) = (
-            BONE_LENGTH_RATIO.0,
-            if LATERAL_ROOTS.contains(&bone) { LATERAL_ROOT_MAX_RATIO } else { BONE_LENGTH_RATIO.1 },
-        );
+        let (lo, hi) = BONE_LENGTH_RATIO;
         let (shortest, longest) = (lo * default, hi * default);
         if !(shortest..=longest).contains(&length) {
             return Err(format!(

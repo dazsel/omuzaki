@@ -7,15 +7,15 @@
 //! runs from the neck down the root's upper edge and round into the arm, with no corner where the arm used to start.
 //! The extra rings lie inside the torso and (the cap closing them) are hidden by it.
 //!
-//! **Ankle.** The shin keeps going into the foot and widens to the foot's width ([`grow_ankle`]), and the front outline
-//! of its lowest rings is then dilated over the foot's dome ([`fill_ankle`]), so the shin runs into the foot as one arc,
+//! **Ankle.** The shin keeps going into the foot and widens to the foot's width (`grow_ankle`), and the front outline
+//! of its lowest rings is then dilated over the foot's dome (`fill_ankle`), so the shin runs into the foot as one arc,
 //! not a stub sitting on a dome with a waist between. The shin's width is measured to the outer edge, so it lands on
 //! the dome's widest point whether or not the leg's and foot's centres share an x; a step there reads as a notch on the
 //! Live mesh, whose end cap is a coarse bevel. The rings therefore go on down the dome's lower outline past its widest
 //! point, so the cap starts inside the foot and never cuts across the dome.
 //!
 //! **Hip.** Between the pelvis and the thighs the template's outline can dip (a thigh narrower at its top than the pelvis
-//! above it). [`fill_hip`] bridges the dip with a smooth arc, so the silhouette runs from the pelvis into the thigh.
+//! above it). `fill_hip` bridges the dip with a smooth arc, so the silhouette runs from the pelvis into the thigh.
 
 use omuzaki_char_api::BodyRegion;
 use omuzaki_core::glam::{DVec2, DVec3};

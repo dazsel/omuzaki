@@ -1,0 +1,40 @@
+# The worst shoulder of #799 with the arm up: `standard` on `corner26`, the left arm raised, from the front and from
+# three-quarters. The renderer is the body-kind sheet's (tools/body-kind-sheet.py), loaded by path, so the same step runs
+# at the PR's base, where the dump test is missing and the case draws nothing.
+
+[[case]]
+name = "raised-arm-shoulder"
+description = "standard on corner26 (the shape with the largest mesh shoulder rise, 4.3 %) with the left arm raised 110 degrees about the shoulder, front and three-quarter views: a kink in the torso's own corner shows here, which the rise cannot measure (#799)."
+env = { OMUZAKI_SHEET_DIR = "{out}/obj" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-char", "--test", "body", "--", "--ignored", "--exact", "dump_raised_arm"] },
+    { run = ["python3", "-I", "-c", '''
+import importlib.util, sys
+from pathlib import Path
+from PIL import Image, ImageDraw
+out = Path(sys.argv[1])
+obj = out / "obj" / "standard-corner26-raised.obj"
+if not obj.exists():
+    sys.exit(0)
+spec = importlib.util.spec_from_file_location("sheet", "tools/body-kind-sheet.py")
+sheet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sheet)
+mesh = sheet.load(obj)
+v = mesh[0]
+top, half = v[:, 1].max() + 0.05, max(abs(v[:, 0]).max(), abs(v[:, 2]).max()) + 0.05
+ppm = 900 / top
+views = [sheet.render(mesh, view, (-half, half, -0.005, top), ppm) for view in ("front", "three-quarter")]
+img = Image.new("RGB", (sum(i.width for i in views) + 30, views[0].height + 50), sheet.PAPER)
+x = 10
+for name, im in zip(("front", "three-quarter"), views):
+    img.paste(im, (x, 40))
+    ImageDraw.Draw(img).text((x + 8, 10), f"standard corner26, left arm raised: {name}", fill=sheet.INK, font=sheet.font(18))
+    x += im.width + 10
+img.save(out / "raised-arm.png")
+# A close crop of the left shoulder from the front.
+s = mesh[3]["shoulder"]
+crop = sheet.render(mesh, "front", (s[0] - 0.18, s[0] + 0.12, s[1] - 0.15, s[1] + 0.2), 2400)
+crop.save(out / "raised-arm-shoulder.png")
+''', "{out}"] },
+]
+images = ["raised-arm.png", "raised-arm-shoulder.png"]

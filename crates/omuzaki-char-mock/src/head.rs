@@ -25,7 +25,7 @@ pub struct EllipsoidHead {
 impl EllipsoidHead {
     /// The surface of `cranium`.
     pub fn new(cranium: &Cranium) -> Self {
-        let [x, y, z] = cranium.centre.map(narrow);
+        let [x, y, z] = cranium.centre().map(narrow);
         Self {
             centre: Vec3::new(x, y, z),
             radii: [

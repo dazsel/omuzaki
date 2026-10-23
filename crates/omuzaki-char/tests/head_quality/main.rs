@@ -28,8 +28,9 @@ use std::path::PathBuf;
 use metrics::{Quality, Target, measure};
 use omuzaki_char::head::cranium;
 use omuzaki_char::head::mesh::{Resolution, build, build_head};
-use omuzaki_char::head::outline::plausible;
-use omuzaki_char_api::{Chin, Cranium, HeadOutline, HeadParams, HeadSurface};
+use omuzaki_char::head::outline::{EXPONENT_RANGE, LOWER_EXPONENT_RANGE, plausible};
+use omuzaki_char::head::presets::ShapeProfiles;
+use omuzaki_char_api::{Chin, Cranium, CraniumScale, HeadOutline, HeadParams, HeadSurface};
 use omuzaki_core::glam::{DVec3, Vec3};
 use omuzaki_core::mesh::MeshData;
 use omuzaki_face_api::Validate;
@@ -384,7 +385,7 @@ fn json_mesh(name: &str, params: &HeadParams) -> serde_json::Value {
         .collect();
     serde_json::json!({
         "name": name,
-        "centre": params.cranium.centre,
+        "centre": params.cranium.centre(),
         "cranium": params.cranium,
         "outline": params.outline,
         "target": { "top": target.top, "chin": target.chin, "half_width": target.half_width, "curve": outline },
@@ -423,4 +424,116 @@ fn dump() {
         std::fs::write(dir.join(format!("head{k:02}.json")), json_mesh(name, params).to_string()).unwrap();
     }
     std::fs::write(dir.join("index.json"), serde_json::to_string(&index).unwrap()).unwrap();
+}
+
+// ------------------------------------------------------------------------------------------------ the corners
+
+/// The exponents the corner grid sweeps: the floor of the plausible space (`EXPONENT_RANGE`) and the band above it that
+/// creased before the outline's start was rounded (#1687).
+const CORNER_EXPONENTS: [f64; 3] = [1.4, 1.475, 1.55];
+
+/// Every corner of the plausible space (the width, the eye line, the chin and the stretch line each at either end, so
+/// `plausible` clamps them to its limits) at each exponent of [`CORNER_EXPONENTS`], without a lower exponent and with one
+/// at the exponent's floor and at its own, on the default cranium and on crania 10% smaller and larger: `(label, head)`.
+fn corners() -> Vec<(String, HeadParams)> {
+    let base = Cranium::default();
+    let scaled = |k: f64| Cranium {
+        half_width: base.half_width * k,
+        half_depth_front: base.half_depth_front * k,
+        half_depth_back: base.half_depth_back * k,
+        half_height_up: base.half_height_up * k,
+        half_height_down_back: base.half_height_down_back * k,
+        half_height_down_front: base.half_height_down_front * k,
+        ..base.clone()
+    };
+    let mut out = Vec::new();
+    for (name, cranium) in [("default", base.clone()), ("small", scaled(0.9)), ("large", scaled(1.1))] {
+        for exponent in CORNER_EXPONENTS {
+            for lower in [None, Some(CORNER_EXPONENTS[0]), Some(LOWER_EXPONENT_RANGE.0)] {
+                for corner in 0..16_u8 {
+                    let outline = corner_outline(corner, exponent, lower);
+                    let label = format!("{name} cranium, exponent {exponent}, lower {lower:?}, corner {corner:04b}");
+                    out.push((label, HeadParams { cranium: cranium.clone(), outline, ..HeadParams::default() }));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The eye-line seam keeps the crease within its limit (never raised) at every corner of the plausible space, down to
+/// the lowest exponent, with and without a lower exponent (#1687); the other limits hold there too.
+/// Corner `corner` (four bits) of the plausible space: the width, the eye line, the chin and the stretch line each at
+/// either end of what the contract accepts, so `plausible` clamps them to its limits.
+fn corner_outline(corner: u8, exponent: f64, lower: Option<f64>) -> HeadOutline {
+    let pick = |bit: u8, (a, b): (f64, f64)| if corner & (1 << bit) == 0 { a } else { b };
+    let y = pick(2, (-0.5, -0.001));
+    HeadOutline {
+        half_width: pick(0, (0.05, 0.4)),
+        top: pick(1, (-0.3, 0.2)),
+        height: 0.1,
+        exponent,
+        exponent_lower: lower,
+        chin: Some(Chin { y, stretch_top: pick(3, ((y + 0.001).max(-0.4), 0.2)), min_ratio: 0.6 }),
+        cheek_puff: 0.0,
+    }
+}
+
+/// The face-shape presets' cranium proportions (#1690) reach a cranium up to [`CraniumScale::RANGE`] wider or taller
+/// than the default, which the proptest's 10% does not cover. On the corners of that range (each factor at either end
+/// or at 1, and the widest flattest cranium [`CraniumScale::MAX_ASPECT`] allows), every preset's outline and every
+/// corner of the plausible space, at the lowest exponent with and without the lowest lower exponent, gives a head
+/// within every limit, unchanged.
+#[test]
+fn the_extended_cranium_space_is_plausible() {
+    let (low, high) = CraniumScale::RANGE;
+    let mut scales: Vec<(f64, f64)> =
+        [low, 1.0, high].into_iter().flat_map(|w| [low, 1.0, high].map(|h| (w, h))).collect();
+    scales.retain(|&(w, h)| w <= CraniumScale::MAX_ASPECT * h);
+    scales.extend([(high, high / CraniumScale::MAX_ASPECT), (CraniumScale::MAX_ASPECT * low, low)]);
+    let mut failed = Vec::new();
+    let mut heads = 0;
+    for (width, height) in scales {
+        let scale = CraniumScale::new(width, height);
+        scale.validate().unwrap();
+        let mut cranium = Cranium::default();
+        scale.apply(&mut cranium);
+        let mut outlines: Vec<(String, HeadOutline)> = ShapeProfiles::list()
+            .unwrap()
+            .iter()
+            .map(|p| (format!("preset {}", p.id.as_str()), p.profile.outline))
+            .collect();
+        for lower in [None, Some(LOWER_EXPONENT_RANGE.0)] {
+            for corner in 0..16_u8 {
+                let label = format!("lower {lower:?}, corner {corner:04b}");
+                outlines.push((label, corner_outline(corner, EXPONENT_RANGE.0, lower)));
+            }
+        }
+        for (label, outline) in outlines {
+            let params = HeadParams { cranium: cranium.clone(), outline, ..HeadParams::default() };
+            let q = quality(&params);
+            heads += 1;
+            if !passes(&q).iter().all(|ok| *ok) {
+                failed.push(format!("cranium {width} x {height}, {label}: {}", row("", &q)));
+            }
+        }
+    }
+    eprintln!("{heads} heads over the extended cranium space");
+    assert!(failed.is_empty(), "{} heads fail:\n{}", failed.len(), failed.join("\n"));
+}
+
+#[test]
+fn every_corner_of_the_plausible_space_is_plausible_down_to_the_lowest_exponent() {
+    let mut worst: Vec<(f64, f64)> = CORNER_EXPONENTS.iter().map(|e| (*e, 0.0)).collect();
+    let mut failed = Vec::new();
+    for (name, params) in corners() {
+        let q = quality(&params);
+        let slot = worst.iter_mut().find(|(e, _)| (*e - params.outline.exponent).abs() < 1e-9).unwrap();
+        slot.1 = slot.1.max(q.crease);
+        if !passes(&q).iter().all(|ok| *ok) {
+            failed.push(format!("{name}: {}", row("", &q)));
+        }
+    }
+    eprintln!("worst crease by exponent over the corners: {worst:?}");
+    assert!(failed.is_empty(), "{} corners fail:\n{}", failed.len(), failed.join("\n"));
 }

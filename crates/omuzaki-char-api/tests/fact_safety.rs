@@ -135,6 +135,66 @@ impl Fact for CountedFact {
     }
 }
 
+/// The clones of [`Tallied`], counted apart from [`CLONES`] so the two tests can run at once.
+static TALLIED_CLONES: AtomicUsize = AtomicUsize::new(0);
+
+/// A merged value that counts its clones in [`TALLIED_CLONES`].
+#[derive(Default)]
+struct Tallied(Vec<u32>);
+
+impl Clone for Tallied {
+    fn clone(&self) -> Self {
+        TALLIED_CLONES.fetch_add(1, Ordering::SeqCst);
+        Self(self.0.clone())
+    }
+}
+
+struct TalliedFact;
+
+impl Fact for TalliedFact {
+    const NAME: &'static str = "test-tallied";
+    type Value = u32;
+    type Merged = Tallied;
+
+    fn merge(merged: &mut Tallied, _: &PartId, value: u32) -> Result<(), String> {
+        merged.0.push(value);
+        Ok(())
+    }
+}
+
+/// A second fact, unrelated to [`TalliedFact`].
+struct OtherFact;
+
+impl Fact for OtherFact {
+    const NAME: &'static str = "test-other";
+    type Value = u32;
+    type Merged = Vec<u32>;
+
+    fn merge(merged: &mut Vec<u32>, _: &PartId, value: u32) -> Result<(), String> {
+        merged.push(value);
+        Ok(())
+    }
+}
+
+/// #1579: absorbing a part stages only the facts it publishes, so a part that publishes another fact copies no merged
+/// value of [`TalliedFact`], however many parts published it before.
+#[test]
+fn absorbing_a_part_clones_only_the_facts_it_publishes() {
+    let mut published = Published::default();
+    for (i, part) in ["a", "b", "c"].into_iter().enumerate() {
+        published.absorb(&pid(part), Publishes::default().with::<TalliedFact>(u32::try_from(i).unwrap())).unwrap();
+    }
+    let before = TALLIED_CLONES.load(Ordering::SeqCst);
+    for (i, part) in ["d", "e", "f"].into_iter().enumerate() {
+        published.absorb(&pid(part), Publishes::default().with::<OtherFact>(u32::try_from(i).unwrap())).unwrap();
+    }
+    assert_eq!(TALLIED_CLONES.load(Ordering::SeqCst), before, "a part publishing another fact copies no tallied value");
+    published.absorb(&pid("g"), Publishes::default().with::<TalliedFact>(3)).unwrap();
+    assert_eq!(TALLIED_CLONES.load(Ordering::SeqCst), before + 1, "a part publishing it copies it once");
+    assert_eq!(published.get::<TalliedFact>().0, [0, 1, 2, 3]);
+    assert_eq!(*published.get::<OtherFact>(), [0, 1, 2]);
+}
+
 #[test]
 fn absorbing_a_part_that_publishes_nothing_clones_nothing() {
     let mut published = Published::default();

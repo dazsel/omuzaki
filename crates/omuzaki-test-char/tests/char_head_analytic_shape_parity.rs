@@ -88,7 +88,7 @@ fn fixture() -> Fixture {
 /// so a drifting default cannot hide), on the prototype's head centre.
 fn prototype_cranium() -> Cranium {
     Cranium {
-        centre: CENTRE,
+        centre: Some(CENTRE),
         half_width: 0.186,
         half_depth_front: 0.184,
         half_depth_back: 0.181,
@@ -163,7 +163,7 @@ fn reshaped_below(params: &HeadParams) -> f64 {
 /// vertices it compared and the largest position error.
 fn assert_cranium_matches(name: &str, actual: &MeshData, expected: &MeshData, params: &HeadParams) -> (usize, f32) {
     assert_eq!(actual.indices, expected.indices, "{name}: the triangle list is the prototype's");
-    let limit = (params.cranium.centre[1] + reshaped_below(params)) as f32;
+    let limit = (params.cranium.centre()[1] + reshaped_below(params)) as f32;
     let tolerance = MeshTolerance::T_GEOM;
     let (mut compared, mut worst) = (0, 0.0_f32);
     for (i, (a, e)) in actual.positions.iter().zip(&expected.positions).enumerate() {
@@ -325,7 +325,7 @@ fn the_close_up_profile_stays_within_a_millimetre_of_the_prototype() {
     let actual = mesh::build(&params, Resolution::LIVE, None).unwrap();
     let dump = js.geometry("close-up-trace0").unwrap();
     let expected = &dump.mesh("head").unwrap().mesh;
-    let top = plausible(&params.outline, &params.cranium).top + params.cranium.centre[1];
+    let top = plausible(&params.outline, &params.cranium).top + params.cranium.centre()[1];
     let in_band = |p: Vec3| f64::from(p.y) > top && f64::from(p.y) <= top + MAX_BAND;
     let (band, distances): (Vec<_>, Vec<_>) = surface_distances(&actual, expected)
         .into_iter()

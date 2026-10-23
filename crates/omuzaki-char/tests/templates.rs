@@ -128,10 +128,11 @@ struct Heights {
 fn heights(t: &dyn Template, l: &BodyLayout) -> Heights {
     let c: Cranium = t.defaults().head.cranium;
     let foot = l.section64(BodyRegion::FootL, 0.5).unwrap();
+    let centre = omuzaki_char::head::part::seat(&c, l.head_base().unwrap().y);
     Heights {
         sole: foot.centre.y - foot.radii.y,
-        chin: c.centre[1] - c.half_height_down_front,
-        crown: c.centre[1] + c.half_height_up,
+        chin: centre[1] - c.half_height_down_front,
+        crown: centre[1] + c.half_height_up,
     }
 }
 
@@ -274,11 +275,10 @@ fn the_defaults_start_from_neutral_sliders_and_a_neck_that_meets_the_body() {
 
 #[test]
 fn the_default_head_validates_wherever_the_head_sits() {
-    // `Cranium::centre` is validated to +-2 m, which the standard (2.1 m) and tall (2.7 m) heads exceed: check
-    // everything else, with the head moved down to where soft-sd's is.
-    for t in [&Mini as &dyn Template, &Standard, &Tall] {
-        let mut head = t.defaults().head;
-        head.cranium.centre = SoftSd.defaults().head.cranium.centre;
+    // A template's default head leaves its centre unset, so the head part seats it on the template's neck (#825).
+    for t in [&SoftSd as &dyn Template, &Mini, &Standard, &Tall] {
+        let head = t.defaults().head;
+        assert_eq!(head.cranium.centre, None, "{}", t.id());
         head.validate().unwrap_or_else(|e| panic!("{}: {e}", t.id()));
     }
 }

@@ -227,10 +227,7 @@ impl Template for Mini {
     }
 
     fn defaults(&self) -> TemplateDefaults {
-        defaults(
-            JOINTS.head_base.y,
-            Neck { radius_top: h(0.092), radius_bottom: h(0.115), height: h(0.25), drop: 0.016 },
-        )
+        defaults(Neck { radius_top: h(0.092), radius_bottom: h(0.115), height: h(0.25), drop: 0.016 })
     }
 }
 

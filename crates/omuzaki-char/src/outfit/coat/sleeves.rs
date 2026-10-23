@@ -1,4 +1,4 @@
-//! A coat's sleeves: the shirt's sleeve ([`sleeve`](crate::outfit::shirt::sleeve)) cut a thickness wider, belled,
+//! A coat's sleeves: the shirt's sleeve ([`sleeve`]) cut a thickness wider, belled,
 //! lengthened or lined as the kind asks, with a rolled cuff, and welded to the bodice the way the shirt's are.
 
 use std::ops::Range;
@@ -415,7 +415,7 @@ const CREASE_STEPS: usize = 100;
 /// The step of the numerical gradients that find the way out of the crease, metres.
 const GRADIENT_STEP: f64 = 1e-4;
 
-/// Moves the vertices of `<part>-sleeves` below the armhole ([`floor`]) out from the torso's axis until they clear it: on
+/// Moves the vertices of `<part>-sleeves` below the armhole (`floor`) out from the torso's axis until they clear it: on
 /// a body whose arms hang against its sides a sleeve, round the arm with its ease, would come nearer the torso than the
 /// cloth is allowed to (round the armhole the bodice is welded to it instead). The lining keeps half the ease and a margin off
 /// the torso, the outside a cloth's thickness more. `ranges` are the lining's vertices; the weld keeps the order, so

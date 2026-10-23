@@ -3,7 +3,7 @@
 //!
 //! **Build.** The band is a flat tube along an arc over the head in a plane tilted forward of the ears by `forward` of
 //! the head's radius: its centre line stands `clearance` metres above the head's surface, or further where the hair the
-//! hair part published ([`HairReachFact`]) stands higher, so its underside clears the hair by [`HAIR_MARGIN`]. The frill
+//! hair part published ([`HairReachFact`]) stands higher, so its underside clears the hair by `HAIR_MARGIN`. The frill
 //! is a thin sheet standing up out of the band, gathered: its middle line runs along the band's top, swung forward and
 //! back `gathers` times, so the sheet ruffles. Both are closed tubes cut square to the arc, so the pair of sides is an
 //! exact mirror image.

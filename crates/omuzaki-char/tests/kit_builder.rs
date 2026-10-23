@@ -9,6 +9,7 @@ use omuzaki_char::kit::KitError;
 use omuzaki_char::kit::curve::{TAU, range};
 use omuzaki_char::kit::grid::{Grid, GridOptions, MeshBuilder, Skin, grid_normals, grid_offset, mirror_joint};
 use omuzaki_char::kit::loft::loft_y;
+use omuzaki_char::kit::skin;
 use omuzaki_char_api::{BoneName, JointRef, MaterialName};
 use omuzaki_core::glam::{DVec2, DVec3, Vec2, Vec3};
 use omuzaki_core::mesh::MeshData;
@@ -252,6 +253,34 @@ fn skin_weights_keep_the_four_largest_merge_repeats_drop_junk_and_sum_to_one() {
         assert!((f64::from(*got) - want).abs() < 1e-6);
     }
     assert!((m.weights[0].iter().sum::<f32>() - 1.0).abs() < 1e-6);
+}
+
+/// The builder follows the kit's one top-four rule (`kit::skin::limit_influences`, #642): a left and a right weight
+/// tied at the cut both go, rather than one side kept by order, so a mirrored part stays mirrored.
+#[test]
+fn a_tie_at_the_fourth_influence_drops_both_sides_like_the_kit_skin_rule() {
+    let bones: Vec<JointRef> = ["b0", "b1", "b2", "b3_l", "b3_r"].map(joint).to_vec();
+    let blend = vec![
+        (bones[0].clone(), 0.4),
+        (bones[1].clone(), 0.3),
+        (bones[2].clone(), 0.2),
+        (bones[3].clone(), 0.05),
+        (bones[4].clone(), 0.05),
+    ];
+    let mut kit = blend.clone();
+    skin::limit_influences(&mut kit, 4);
+    skin::normalise(&mut kit);
+    let mut mb = MeshBuilder::new();
+    mb.add_grid(&flat_grid(2, 2), &GridOptions { skin: Skin::Blend(blend), ..GridOptions::default() }).unwrap();
+    let m = mb.mesh();
+    let got: Vec<(JointRef, f32)> = m.joints[0]
+        .iter()
+        .zip(m.weights[0])
+        .filter(|(_, w)| *w > 0.0)
+        .map(|(&j, w)| (mb.bones()[usize::from(j)].clone(), w))
+        .collect();
+    assert_eq!(got, kit, "the builder's skin is the kit rule's");
+    assert_eq!(got.len(), 3, "both arms tie at the cut and both go");
 }
 
 #[test]

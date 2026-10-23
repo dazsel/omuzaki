@@ -55,11 +55,16 @@ pub(crate) fn check_brush(brush: &WeightBrush) -> Result<(), OpError> {
 /// # Errors
 /// `invalid` (field `character`) naming the build error when the character does not build.
 pub(crate) fn build_character(id: &CharId, def: &CharacterDef) -> Result<BuiltCharacter, OpError> {
-    let services = BuildServices::default().with_rasterizer(|| Box::new(Blank));
-    RegistryBuilder.build(id, def, &BuildOptions::default(), &services).map_err(|e: BuildError| {
+    RegistryBuilder.build(id, def, &BuildOptions::default(), &geometry_services()).map_err(|e: BuildError| {
         OpError::invalid("character", format!("character `{id}` doesn't build: {e}"))
             .hint("fix the part the message names (a brush's joint or radius can cause it), then try again")
     })
+}
+
+/// The services of a build that reads only geometry: a rasteriser that leaves every painted texture blank, so a part
+/// that paints (a face, a plaid, a decal) builds without the app's.
+pub(crate) fn geometry_services() -> BuildServices {
+    BuildServices::default().with_rasterizer(|| Box::new(Blank))
 }
 
 /// A rasteriser that paints nothing: every texture comes out transparent at its size, for builds that only read

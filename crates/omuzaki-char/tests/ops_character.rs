@@ -706,3 +706,34 @@ fn add_rejects_parameters_that_are_not_an_object_naming_the_field() {
         assert_error(&e, ErrorCode::Invalid, "params", &["`params` must be an object", what], &["{\"ease\": 0.01}"]);
     }
 }
+
+// ------------------------------------------------------------------------------------------------ body.set_template
+
+/// `body.set_template` on the kit's own character (#681), whose real body reads the template: switching between
+/// templates of different heights reports the garments that sit on the body (the tights and the shirt every time), never
+/// the body itself, and never the head or the hair, which keep the sizes stored in their own parameters; switching to
+/// the template the character already has reports nothing and changes nothing. The starter's skirt paints a plaid, so
+/// the op builds with painting left blank, as the other ops that read geometry do.
+#[test]
+fn set_template_on_the_starter_reports_the_garments_whose_fit_moved() {
+    for (from, to) in [("soft-sd", "tall"), ("standard", "tall"), ("tall", "standard"), ("mini", "soft-sd")] {
+        let mut doc = MemDoc::new();
+        apply(&mut doc, "character.create", json!({"id": "mira", "name": "Mira", "template": from, "seed": 7}));
+        let planned = plan(&doc, "body.set_template", json!({"character": "mira", "template": to})).unwrap();
+        let output = planned.output.unwrap();
+        let moved: Vec<&str> = output["fit_changed"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+        eprintln!("{from} -> {to}: {moved:?}");
+        for part in ["legwear", "shirt"] {
+            assert!(moved.contains(&part), "{from} -> {to}: {part} is not reported: {moved:?}");
+        }
+        for part in &moved {
+            assert!(
+                ["legwear", "shirt", "skirt", "boots"].contains(part),
+                "{from} -> {to}: {part} reported: {moved:?}"
+            );
+        }
+        let same = plan(&doc, "body.set_template", json!({"character": "mira", "template": from})).unwrap();
+        assert!(same.patch.is_empty(), "{from}");
+        assert_eq!(same.output.unwrap()["fit_changed"], json!([]), "{from}");
+    }
+}
