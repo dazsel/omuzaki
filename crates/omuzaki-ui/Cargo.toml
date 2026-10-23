@@ -54,6 +54,7 @@ omuzaki-vcam = { path = "../omuzaki-vcam" }
 omuzaki-stream-share = { path = "../omuzaki-stream-share" }
 omuzaki-char = { path = "../omuzaki-char" }
 omuzaki-char-api = { path = "../omuzaki-char-api" }
+omuzaki-cohost = { path = "../omuzaki-cohost" }
 omuzaki-connect = { path = "../omuzaki-connect" }
 omuzaki-connect-api = { path = "../omuzaki-connect-api" }
 omuzaki-core = { path = "../omuzaki-core" }

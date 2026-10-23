@@ -45,6 +45,7 @@ omuzaki_core::define_link! {
     omuzaki_audio_fx::link();
     omuzaki_char::link();
     omuzaki_char_api::link();
+    omuzaki_cohost::link();
     omuzaki_connect::link();
     omuzaki_input::link();
     omuzaki_live::link();
