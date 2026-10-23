@@ -22,6 +22,7 @@ struct OpenCall {
 }
 
 /// Decodes one attempt's body.
+#[allow(clippy::struct_excessive_bools)] // independent facts about one stream, not a state
 pub(crate) struct OpenAiDecoder {
     /// The model to report when a chunk names none.
     model: String,
@@ -34,6 +35,10 @@ pub(crate) struct OpenAiDecoder {
     usage: Option<Usage>,
     /// Redacted from the messages of an error chunk.
     secret: Option<SecretValue>,
+    /// The server is on this machine (see [`on_loopback`](Self::on_loopback)).
+    loopback: bool,
+    /// Characters of text and tool input streamed, for the estimate a loopback server without usage gets.
+    streamed: u64,
 }
 
 impl OpenAiDecoder {
@@ -48,7 +53,16 @@ impl OpenAiDecoder {
             finish: None,
             usage: None,
             secret,
+            loopback: false,
+            streamed: 0,
         }
+    }
+
+    /// Marks the server as one on this machine: a turn it reports no usage for (llama-cpp-python ignores
+    /// `include_usage`) costs nothing, so it ends with an estimate instead of an error.
+    pub(crate) fn on_loopback(mut self, loopback: bool) -> Self {
+        self.loopback = loopback;
+        self
     }
 
     /// Hands on every held call as a complete start, input, end sequence.
@@ -79,6 +93,7 @@ impl OpenAiDecoder {
             self.called = true;
             self.calls.len() - 1
         };
+        self.streamed += arguments.chars().count() as u64;
         self.calls[at].arguments.push_str(arguments);
         // Calls are held whole until they close, so what a server sends is bounded here.
         let held: usize = self.calls.iter().map(|c| c.arguments.len()).sum();
@@ -118,11 +133,13 @@ impl OpenAiDecoder {
         if let Some(refusal) = delta.get("refusal").and_then(Value::as_str).filter(|r| !r.is_empty()) {
             self.refused = true;
             self.close_call(&mut events);
+            self.streamed += refusal.chars().count() as u64;
             events.push(LlmEvent::TextDelta(refusal.to_owned()));
         }
         // `reasoning_content` and `reasoning` are dropped: there are no opaque blocks on this provider.
         if let Some(text) = delta.get("content").and_then(Value::as_str).filter(|t| !t.is_empty()) {
             self.close_call(&mut events);
+            self.streamed += text.chars().count() as u64;
             events.push(LlmEvent::TextDelta(text.to_owned()));
         }
         for tc in delta.get("tool_calls").and_then(Value::as_array).into_iter().flatten() {
@@ -155,7 +172,13 @@ impl OpenAiDecoder {
             }
         };
         // A server that ignores `include_usage` reports nothing, and a turn with no usage would bypass the token and
-        // spending accounting, so it is an error and never a free turn.
+        // spending accounting, so it is an error and never a free turn; except on this machine, where a turn costs
+        // nothing and the token caps count an estimate of what was produced (four characters a token).
+        if self.usage.is_none() && self.loopback {
+            let estimate = Usage::new(0, self.streamed.div_ceil(4));
+            self.usage = Some(estimate);
+            events.push(LlmEvent::Usage(estimate));
+        }
         if self.usage.is_none() {
             return Err(Fail::Fatal(LlmError::Malformed(
                 "the server reported no token usage; it must honour stream_options.include_usage".into(),
@@ -431,6 +454,14 @@ mod tests {
         feed(&mut d, r#"{"choices":[{"delta":{"content":"x"},"finish_reason":"stop"}]}"#);
         let end = d.event(SseEvent { event: None, data: "[DONE]".into() });
         assert!(matches!(end, Err(Fail::Fatal(LlmError::Malformed(m))) if m.contains("usage")));
+    }
+
+    #[test]
+    fn a_loopback_server_without_a_usage_report_ends_with_an_estimate() {
+        let mut d = decoder().on_loopback(true);
+        feed(&mut d, r#"{"choices":[{"delta":{"content":"Hi chat!"},"finish_reason":"stop"}]}"#);
+        let end = d.event(SseEvent { event: None, data: "[DONE]".into() }).unwrap_or_else(|e| panic!("{e:?}"));
+        assert_eq!(end, [LlmEvent::Usage(Usage::new(0, 2)), LlmEvent::Stop(StopReason::EndTurn)]);
     }
 
     #[test]

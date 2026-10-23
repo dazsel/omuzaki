@@ -1,0 +1,35 @@
+[package]
+name = "omuzaki-performer"
+description = "The AI performer's core (ai-performer.md, ADR 0031): the streaming tag parser and sentence chunker, persona and prompt rendering, LlmBrain over any LlmClient, the turn loop with the floor, barge-in and private turns, and the decision layer's rule floor, gates and pacer."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+blake3.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+omuzaki-anim-api = { path = "../omuzaki-anim-api" }
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-llm-api = { path = "../omuzaki-llm-api" }
+omuzaki-performer-api = { path = "../omuzaki-performer-api" }
+omuzaki-stage-api = { path = "../omuzaki-stage-api" }
+
+[dev-dependencies]
+proptest.workspace = true
+omuzaki-llm-mock = { path = "../omuzaki-llm-mock" }
+omuzaki-performer-mock = { path = "../omuzaki-performer-mock" }
+
+[lints]
+workspace = true
+
+[package.metadata.omuzaki]
+kind = "Implementation"
+registers = true
+summary = "the AI performer's core (`ai-performer.md`): the streaming inline-tag parser (§6.2) and sentence chunker (§5.2), `Persona` with its limits, revision and prompt block (§4), prompt rendering (§6.3), `LlmBrain` over any `LlmClient`, addressing and the follow-up window, and the turn loop `Show` (§5): the floor, barge-in with one resume, private turns, talk-time limits, echo rejection, intent timing at the word, cooldowns; plus the decision layer (#2348): the deterministic rule floor, the confidence, commitment and veto gates, the pacer, and a local-model `LlmDecider`"

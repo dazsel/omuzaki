@@ -380,6 +380,15 @@ fn a_probe_that_says_nothing_is_an_error_and_is_not_cached() {
 }
 
 #[test]
+fn a_template_that_cannot_render_the_image_probe_means_no_vision() {
+    // llama-cpp-python answers a chat template's failure on image parts with a 500.
+    let rig = Rig::plain(vec![accepts(), Reply::status(500, "{}")]);
+    let client = OpenAiClient::new(&rig.config("text-only"), &rig.env()).unwrap();
+    let info = client.info();
+    assert!(info.tools && !info.vision, "{info:?}");
+}
+
+#[test]
 fn a_refused_key_while_probing_is_auth() {
     let rig = Rig::plain(vec![Reply::status(401, r#"{"error":{"message":"bad key","code":401}}"#)]);
     assert!(matches!(OpenAiClient::new(&rig.config("locked"), &rig.env()), Err(LlmError::Auth)));
@@ -635,14 +644,17 @@ fn a_retry_after_on_a_5xx_or_overload_sets_the_wait() {
 }
 
 #[test]
-fn a_turn_with_no_usage_report_is_an_error_not_a_free_turn() {
+fn a_local_turn_with_no_usage_report_ends_with_an_estimate() {
+    // llama-cpp-python ignores `include_usage`. A server on this machine costs nothing, so the turn completes with an
+    // estimate the token caps count; a remote one without usage is an error (the decoder's own test).
     let finish = "data: {\"id\":\"c\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
     let wire = format!("{CHUNK}{finish}data: [DONE]\n\n");
     let rig = Rig::probed(vec![Reply::sse_text(&wire)]);
     let client = OpenAiClient::new(&rig.config("llama3.2"), &rig.env()).unwrap().with_timeouts(quick());
     let (events, error) = drain(&mut client.stream(Rig::request(), &Cancel::new()).unwrap());
-    assert!(matches!(error, Some(LlmError::Malformed(ref m)) if m.contains("usage")), "{error:?}");
-    assert!(!events.iter().any(|e| matches!(e, LlmEvent::Stop(_))), "{events:?}");
+    assert!(error.is_none(), "{error:?}");
+    assert!(matches!(events[events.len() - 2], LlmEvent::Usage(u) if u.input == 0 && u.output > 0), "{events:?}");
+    assert!(matches!(events.last(), Some(LlmEvent::Stop(StopReason::EndTurn))), "{events:?}");
 }
 
 #[test]
