@@ -31,6 +31,7 @@
 pub mod branches;
 pub mod bridge;
 mod core;
+pub mod credentials;
 mod error;
 pub mod history;
 pub mod ops;

@@ -29,6 +29,7 @@ pub mod args;
 pub mod branch;
 pub mod cli;
 pub mod commands;
+pub mod credential;
 pub mod exit;
 pub mod json;
 pub mod mcp;

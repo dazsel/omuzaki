@@ -82,7 +82,10 @@ fn ops_lists_the_linked_ops_and_help_documents_their_arguments() {
     let rows: Value = serde_json::from_str(&json.stdout).expect("ops --json is JSON");
     let names: Vec<&str> = rows.as_array().unwrap().iter().map(|r| r["name"].as_str().unwrap()).collect();
     let demo: Vec<&str> = names.iter().copied().filter(|name| name.starts_with("demo.")).collect();
-    assert_eq!(demo, ["demo.get_note", "demo.get_project", "demo.set_field", "demo.set_note"]);
+    assert_eq!(
+        demo,
+        ["demo.get_note", "demo.get_project", "demo.paid_note", "demo.publish_note", "demo.set_field", "demo.set_note"]
+    );
 
     let help = run(FIXTURE, None, &["help", "demo.set_note"]);
     assert_eq!(help.code, Some(0), "{}", help.stderr);

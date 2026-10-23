@@ -9,13 +9,14 @@ use omuzaki_doc_api::DocWrite;
 use omuzaki_mcp::Connections;
 use omuzaki_ops::Executor;
 use omuzaki_ops_api::{
-    Actor, ConnectionService, Grants, Jobs, OpError, ProjectDir, ProjectDirError, Runner, ServicesBuilder, Sessions,
+    Actor, Budget, ConnectionService, Grants, Jobs, OpError, ProjectDir, ProjectDirError, Runner, ServicesBuilder,
+    Sessions,
 };
 use omuzaki_settings_api::service::Settings;
 
 use omuzaki_app::AppOptions;
 
-use crate::cli::{Cli, Command};
+use crate::cli::{Cli, Command, McpArgs};
 use crate::project::{NoProject, ProjectRunner, open_in_memory};
 
 /// The actor and grants every request of one `omuzaki` invocation carries.
@@ -107,15 +108,65 @@ pub fn open_runner_with(cli: &Cli, connections: &Connections) -> Result<Arc<dyn 
 pub fn open_project(cli: &Cli, dir: &Path, actor: Actor) -> Result<ProjectRunner, OpError> {
     // The folder is vetted first: `ProjectDir` names the reason in its own words, which beat the document's.
     open_project_dir(dir)?;
-    ProjectRunner::open(dir, core_options(cli, actor)).map_err(|e| e.to_op_error())
+    ProjectRunner::open(dir, core_options(cli, actor)?).map_err(|e| e.to_op_error())
 }
 
 /// What [`run_with`](crate::app::run_with) applies to every core's options.
 pub(crate) static ADJUST: std::sync::OnceLock<fn(AppOptions) -> AppOptions> = std::sync::OnceLock::new();
 
+/// Where a headless agent's credential secret comes from when `--token-file` doesn't say.
+pub const TOKEN_VAR: &str = "OMUZAKI_MCP_TOKEN";
+
+/// What a headless `omuzaki mcp` agent may do and spend (design `agent-sessions.md` 7.6).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ceiling {
+    /// Its grants.
+    pub grants: Grants,
+    /// The budget its session starts with.
+    pub budget: Budget,
+    /// The label of the credential it runs from, if it runs from one.
+    pub credential: Option<String>,
+}
+
+/// The ceiling of `args`' agent on `project`: the credential the secret in `--token-file` or [`TOKEN_VAR`] presents
+/// (its grants and budget, set when the person issued it), or else the default grants plus `--grant` and
+/// `--spend-cap`. `token` is the environment variable's value.
+///
+/// # Errors
+/// `invalid` for a secret with no project, or with `--grant` or `--spend-cap` beside it (the credential decides);
+/// `denied` for a secret no credential of the project matches (wrong, or revoked); `invalid` when `--token-file`
+/// can't be read.
+#[allow(clippy::disallowed_methods, reason = "the CLI reads the `--token-file` the person typed; it is not an op")]
+pub fn ceiling(args: &McpArgs, project: Option<&Path>, token: Option<String>) -> Result<Ceiling, OpError> {
+    let secret = match &args.token_file {
+        Some(file) => Some(std::fs::read_to_string(file).map_err(|e| {
+            OpError::invalid("token-file", format!("the credential file {} can't be read: {e}", file.display()))
+        })?),
+        None => token,
+    };
+    let Some(secret) = secret.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()) else {
+        return Ok(Ceiling { grants: args.grants(), budget: args.budget(), credential: None });
+    };
+    if !args.grant.is_empty() || args.spend_cap.is_some() {
+        return Err(OpError::invalid("grant", "a credential carries its own grants and budget")
+            .hint("drop --grant and --spend-cap, or issue a credential with what the agent needs"));
+    }
+    let Some(project) = project else {
+        return Err(OpError::invalid("project", "a credential belongs to a project").hint("pass --project <DIR>"));
+    };
+    let record = omuzaki_app::credentials::find(project, &secret)?.ok_or_else(|| {
+        OpError::denied("this credential isn't one the project issued, or it was revoked")
+            .hint("issue one with `omuzaki --project <DIR> credential issue --label <NAME>`")
+    })?;
+    Ok(Ceiling { grants: record.grants, budget: record.budget.unwrap_or_default(), credential: Some(record.label) })
+}
+
 /// The app core's options for a command-line host: headless (nobody can be asked to approve), recovering as
-/// `--recover` says, and for `mcp` with its `--grant` and `--tools`.
-pub fn core_options(cli: &Cli, actor: Actor) -> AppOptions {
+/// `--recover` says, and for `mcp` with its [`Ceiling`] and `--tools`.
+///
+/// # Errors
+/// As [`ceiling`], for `mcp`.
+pub fn core_options(cli: &Cli, actor: Actor) -> Result<AppOptions, OpError> {
     let mut options = AppOptions::headless(actor).with_recover(cli.recover.mode());
     if let Some(adjust) = ADJUST.get() {
         options = adjust(options);
@@ -128,11 +179,21 @@ pub fn core_options(cli: &Cli, actor: Actor) -> AppOptions {
             .with_data_dir(paths.data())
             .with_services(ServicesBuilder::new().insert::<dyn Settings>(settings).build());
     }
-    match &cli.command {
-        // The person running `omuzaki mcp --grant ...` says yes in advance, since nobody is at a window to be asked.
-        Command::Mcp(args) => options.with_agent_grants(args.grants()).with_mcp_tools(args.tools.mode()),
+    Ok(match &cli.command {
+        // The person running `omuzaki mcp --grant ...`, or who issued its credential, says yes in advance, since nobody
+        // is at a window to be asked.
+        Command::Mcp(args) => {
+            let ceiling = ceiling(args, cli.project.as_deref(), std::env::var(TOKEN_VAR).ok())?;
+            if let Some(label) = &ceiling.credential {
+                eprintln!("omuzaki: the agent runs from the credential \"{label}\"");
+            }
+            options
+                .with_agent_grants(ceiling.grants)
+                .with_agent_budget(ceiling.budget)
+                .with_mcp_tools(args.tools.mode())
+        }
         _ => options,
-    }
+    })
 }
 
 /// An executor over `--project` as it is on disk, in memory (or over an empty document without one), keeping the
