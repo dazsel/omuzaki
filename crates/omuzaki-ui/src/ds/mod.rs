@@ -20,9 +20,11 @@ pub mod fonts;
 pub mod gallery;
 pub mod icons;
 pub mod input;
+pub mod lexicon;
 pub mod os_prefs;
 pub mod paint;
 pub mod schema_form;
+pub mod script_fonts;
 pub mod settings_keys;
 pub mod strings;
 #[cfg(any(test, feature = "capture"))]

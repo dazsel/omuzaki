@@ -7,7 +7,7 @@
 //! a character. If the folder can't be opened the app runs on an in-memory document, and if the live slice can't start
 //! the shell runs on a plain runner, so the window still opens; each reason is logged.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use clap::Parser;
@@ -17,19 +17,27 @@ use omuzaki_anim_api::HumanoidPose;
 use omuzaki_core::glam::UVec2;
 use omuzaki_ops_api::Runner;
 use omuzaki_render::WgpuRenderer;
+use omuzaki_script::ScriptStore;
 use omuzaki_settings_api::service::Settings as SettingsService;
 use omuzaki_stage::frame::Stage;
+use omuzaki_theatre::TheatreBook;
 use omuzaki_ui::aux_window::{Backend, Platform, SurfaceRoute, transparency};
+use omuzaki_ui::ds::script_fonts::ScriptFonts;
 use omuzaki_ui::ds::settings_keys::SettingsLink;
+use omuzaki_ui::generate::Generation;
 use omuzaki_ui::live::viewport::{NativePresenter, Presenter, ViewportError, kit_stage, project_stage};
 use omuzaki_ui::live::wiring::{LiveApp, LiveScene, RealClock};
 use omuzaki_ui::panels::agent::Agents;
 use omuzaki_ui::panels::edit::EditFocus;
 use omuzaki_ui::panels::setup::FirstRun;
 use omuzaki_ui::panels::viewport::ViewportServices;
+use omuzaki_ui::script::Scripting;
+use omuzaki_ui::script::consent::ConsentBook;
+use omuzaki_ui::script::store::DirScriptStore;
 use omuzaki_ui::shell::persist::LayoutStore;
 use omuzaki_ui::shell::stub::NullRunner;
 use omuzaki_ui::shell::{Shell, class};
+use omuzaki_ui::theatre::Theatre;
 use omuzaki_ui::wiring::{self, Core, Document};
 use omuzaki_ui::{studio, wiring::default_project_dir};
 
@@ -136,6 +144,18 @@ fn install_dir() -> PathBuf {
     std::env::current_exe().ok().and_then(|exe| exe.parent().map(PathBuf::from)).unwrap_or_default()
 }
 
+/// The faces Japanese, Korean and Chinese text needs, from the stage's pinned list through the download cache models
+/// share (#205); `None` when this machine has no cache folder, and such text then falls back to egui's own faces.
+fn script_fonts() -> Option<ScriptFonts> {
+    let dir = omuzaki_http::app_cache_dir()
+        .map_err(
+            |error| tracing::warn!(%error, "no download cache: Japanese, Korean and Chinese faces can't be fetched"),
+        )
+        .ok()?;
+    let cache = Arc::new(omuzaki_ai::VerifiedCache::new(dir, omuzaki_http::HttpFetcher::new()));
+    Some(ScriptFonts::new(Arc::new(omuzaki_stage::sheet::layout::PinnedFonts::new(cache))))
+}
+
 /// Where the model registry keeps its state: `models` beside the studio's own project folder.
 fn models_dir() -> Option<PathBuf> {
     default_project_dir()?.parent().map(|data| data.join("models"))
@@ -187,18 +207,33 @@ fn studio_settings() -> Option<Arc<dyn SettingsService>> {
     }
 }
 
-/// The executor the shell works through: the live slice's, or a plain one over the project when the slice did not
-/// start; `None` when not even that could start (the shell then runs on a runner with no document).
-fn core_of(live: Option<&LiveApp>, dir: Option<&PathBuf>, settings: Option<Arc<dyn SettingsService>>) -> Option<Core> {
+/// The executor the shell works through and the Theatre over it: the live slice's, or a plain one over the project
+/// when the slice did not start; `None` when not even that could start (the shell then runs on a runner with no
+/// document).
+fn core_of(
+    live: Option<&LiveApp>,
+    dir: Option<&PathBuf>,
+    settings: Option<Arc<dyn SettingsService>>,
+    scripts: Option<Arc<dyn ScriptStore>>,
+) -> Option<(Core, Theatre)> {
     if let Some(live) = live {
-        return Some(live.core());
+        return Some((live.core(), live.theatre()));
     }
-    let services = match settings {
-        Some(settings) => omuzaki_ops_api::ServicesBuilder::new().insert::<dyn SettingsService>(settings).build(),
-        None => omuzaki_ops_api::Services::default(),
-    };
-    match wiring::core_on(open_document(dir), services) {
-        Ok(core) => Some(core),
+    let book = dir.map_or_else(TheatreBook::new, |dir| TheatreBook::for_project(dir));
+    let mut services = omuzaki_ops_api::ServicesBuilder::new().insert::<TheatreBook>(Arc::new(book.clone()));
+    if let Some(settings) = settings {
+        services = services.insert::<dyn SettingsService>(settings);
+    }
+    if let Some(scripts) = scripts {
+        services = services.insert::<dyn ScriptStore>(scripts);
+    }
+    match wiring::core_on(open_document(dir), services.build()) {
+        Ok(core) => {
+            if let Err(error) = book.attach(&core.runner, Arc::clone(&core.sessions)) {
+                tracing::warn!(%error, "the Theatre's book does not follow the runner: its steps stay empty");
+            }
+            Some((core, Theatre::new(book, None)))
+        }
         Err(error) => {
             tracing::error!(%error, "the ops did not start: the studio has no document");
             None
@@ -207,8 +242,8 @@ fn core_of(live: Option<&LiveApp>, dir: Option<&PathBuf>, settings: Option<Arc<d
 }
 
 /// The shell over `core`, opened on the project's character, with the device egui draws with for the viewport and
-/// the agent sessions for the Agent panel; on the first start, in the setup flow.
-fn studio_shell(cc: &eframe::CreationContext<'_>, core: Option<Core>) -> Shell {
+/// History's pictures, and the agent sessions for the Agent panel; on the first start, in the setup flow.
+fn studio_shell(cc: &eframe::CreationContext<'_>, core: Option<Core>, dir: Option<&PathBuf>) -> Shell {
     let runner: Arc<dyn Runner> = core.as_ref().map_or_else(|| Arc::new(NullRunner) as _, |c| Arc::clone(&c.runner));
     let character = match studio::open_character(runner.as_ref()) {
         Ok(id) => Some(id),
@@ -226,6 +261,12 @@ fn studio_shell(cc: &eframe::CreationContext<'_>, core: Option<Core>) -> Shell {
         builder: Arc::new(RegistryBuilder),
         build: BuildServices::default(),
     });
+    if let (Some(core), Some(dir), Some(gpu)) = (&core, dir, cc.wgpu_render_state.as_ref()) {
+        match history_pictures(core, dir, gpu) {
+            Ok(pictures) => shell.insert_view(pictures),
+            Err(error) => tracing::warn!(%error, "History shows no pictures"),
+        }
+    }
     if let Some(core) = core {
         shell.insert_view(Agents(core.sessions));
     }
@@ -238,6 +279,22 @@ fn studio_shell(cc: &eframe::CreationContext<'_>, core: Option<Core>) -> Shell {
     shell.insert_view(first_run);
     shell
 }
+
+/// History's pictures of the project in `dir`, rendered on egui's own device by a renderer of their own.
+fn history_pictures(
+    core: &Core,
+    dir: &Path,
+    gpu: &eframe::egui_wgpu::RenderState,
+) -> Result<omuzaki_ui::shell::pictures::HistoryPictures, String> {
+    let renderer =
+        WgpuRenderer::from_device(&gpu.adapter, gpu.device.clone(), gpu.queue.clone()).map_err(|e| e.to_string())?;
+    omuzaki_ui::shell::pictures::taken(Arc::clone(&core.runner), Box::new(renderer), dir)
+}
+
+/// Every allocation goes through the scripts' memory budget, so a script run can be held to its memory limit (a run
+/// refuses to start without it).
+#[global_allocator]
+static ALLOCATOR: omuzaki_script::MemoryBudget = omuzaki_script::MemoryBudget::system();
 
 fn main() -> eframe::Result {
     tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).init();
@@ -256,16 +313,55 @@ fn main() -> eframe::Result {
         Box::new(move |cc| {
             // Applying before the first frame lets the bundled fonts activate on the second.
             let settings = studio_settings();
-            let mut look = settings.clone().map(SettingsLink::new);
+            let mut look = settings.clone().map(|store| {
+                let link = SettingsLink::new(store);
+                match script_fonts() {
+                    Some(fonts) => link.with_fonts(fonts),
+                    None => link,
+                }
+            });
             match look.as_mut() {
                 Some(look) => look.sync(&cc.egui_ctx),
                 None => omuzaki_ui::ds::apply_settings(&cc.egui_ctx, omuzaki_ui::ds::Settings::default()),
             }
             let live = start_live(cc, open_document(dir.as_ref()), settings.clone());
-            let core = core_of(live.as_ref(), dir.as_ref(), settings);
-            let mut shell = studio_shell(cc, core);
+            // My scripts: the live slice's, or a folder of their own when it did not start.
+            let mine = match live.as_ref() {
+                Some(live) => live.script_store(),
+                None => DirScriptStore::in_user_config().map(|store| Arc::new(store) as Arc<dyn ScriptStore>),
+            };
+            let (core, theatre) = core_of(live.as_ref(), dir.as_ref(), settings, mine.clone()).unzip();
+            let scripting = core.as_ref().map(|core| {
+                let agreed = omuzaki_ui::shell::persist::user_config_dir()
+                    .map_or_else(ConsentBook::in_memory, |config| {
+                        ConsentBook::in_file(config.join("scripts-agreed.json"))
+                    });
+                let project = dir.as_ref().map(|dir| dir.to_string_lossy().into_owned()).unwrap_or_default();
+                Scripting::new(Arc::clone(&core.runner), mine, project, agreed)
+            });
+            let generation = core.as_ref().map(|core| Generation {
+                runner: Arc::clone(&core.runner),
+                store: live.as_ref().and_then(LiveApp::generated_store),
+            });
+            let mut shell = studio_shell(cc, core, dir.as_ref());
+            if let Some(generation) = generation {
+                shell.insert_view(generation);
+            }
+            if let Some(scripting) = scripting {
+                shell.insert_view(scripting);
+            }
+            if let Some(theatre) = theatre {
+                shell.insert_view(theatre);
+            }
             if let Some(live) = live.as_ref() {
                 shell.insert_view(live.channel_feed());
+                shell.insert_view(live.metrics());
+                if let Some(hub) = live.input_hub() {
+                    shell.insert_view(omuzaki_ui::input::InputSurface::install(hub));
+                }
+                if let Some(approver) = live.show_approver() {
+                    shell.insert_view(approver);
+                }
                 if let Some(keychain) = live.keychain() {
                     shell.insert_view(keychain);
                 }

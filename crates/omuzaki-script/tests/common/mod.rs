@@ -105,6 +105,7 @@ impl Runner for FakeRunner {
     fn ops(&self) -> Vec<OpInfo> {
         vec![
             info("face.fail", OpKind::Edit),
+            info("audio.bus.mute", OpKind::Edit),
             info_schema(
                 "face.set_profile",
                 OpKind::Edit,

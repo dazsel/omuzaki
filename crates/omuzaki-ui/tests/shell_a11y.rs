@@ -16,7 +16,7 @@ use std::sync::Arc;
 use egui::accesskit::Role;
 use egui::{Key, Modifiers, Rect, Ui, vec2};
 use egui_kittest::Harness;
-use egui_kittest::kittest::NodeT as _;
+use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use omuzaki_char_api::{BuildServices, RegistryBuilder};
 use omuzaki_ops_api::{Grants, Runner, Services};
 use omuzaki_ui::ds::icons;
@@ -363,4 +363,63 @@ fn the_outliner_the_inspector_and_undo_work_from_the_keyboard_alone() {
     key(&mut h, Modifiers::COMMAND, Key::Z);
     h.run_steps(4);
     assert_eq!(focused(&h).and_then(|(_, _, value)| value), before, "{slider} is back where it was");
+}
+
+/// A tab group too narrow for every name shows its closed tabs as their icons, each still named in full, and never
+/// the tab strip's scroll arrows, which have no focus ring and come before the tabs in Tab order.
+#[test]
+fn a_crowded_tab_strip_shows_icons_named_in_full_and_no_scroll_arrows() {
+    let mut h = studio(false, vec2(1366.0, 768.0));
+    for id in ["live", "live-channels", "history", "agent", "test.planted"] {
+        h.state_mut().shell.show_panel(id);
+        h.run_steps(4);
+    }
+    for arrow in ["⏴", "⏵"] {
+        assert!(h.query_all_by_label(arrow).next().is_none(), "no scroll arrow {arrow}");
+    }
+    for name in ["Inspector", "History", "Agent", "Planted"] {
+        assert!(
+            h.query_all_by_role(Role::Button).any(|n| n.accesskit_node().label().as_deref() == Some(name)),
+            "the {name} tab is named in full"
+        );
+    }
+    if let Ok(out) = std::env::var("OMUZAKI_EVIDENCE_OUT") {
+        let image = h.render().unwrap_or_else(|e| panic!("{e}"));
+        let path = format!("{out}/dock-crowded-1366x768.png");
+        image.save(&path).unwrap_or_else(|e| panic!("writing {path}: {e}"));
+    }
+}
+
+#[test]
+fn a_tab_group_too_narrow_for_its_icons_offers_the_rest_in_its_menu_and_never_scrolls() {
+    let registry = Registry::collect();
+    // The smallest window the studio is laid out for, every right panel shown in its one group.
+    let mut h = studio(false, vec2(1366.0, 768.0));
+    let right: Vec<&str> = registry.panels().iter().filter(|d| d.region == Region::Right).map(|d| d.id).collect();
+    for id in &right {
+        h.state_mut().shell.show_panel(id);
+        h.run_steps(4);
+    }
+    // egui_tiles' own scroll arrows have no focus ring and sit out of reading order: the strip never shows them.
+    assert!(h.query_by_label("⏵").is_none() && h.query_by_label("⏴").is_none(), "the tabs scroll");
+    let last = right.last().copied().unwrap_or_else(|| panic!("a right panel"));
+    let def = registry.panel(last).unwrap_or_else(|| panic!("{last}"));
+    h.get_by_label(&format!("{} options", def.title)).click();
+    h.run_steps(2);
+    let shows: Vec<String> = h
+        .query_all_by_role(Role::Button)
+        .filter_map(|n| n.accesskit_node().label())
+        .filter(|l| l.starts_with("Show "))
+        .collect();
+    let tabs: Vec<String> = h.query_all_by_role(Role::Tab).filter_map(|n| n.accesskit_node().label()).collect();
+    assert!(!shows.is_empty(), "the menu offers the tabs that didn't fit: {tabs:?}");
+    let first = shows[0].clone();
+    h.get_by_label(&first).click();
+    h.run_steps(4);
+    let opened = registry
+        .panels()
+        .iter()
+        .find(|d| first == format!("Show {}", d.title))
+        .map_or_else(|| panic!("{first} names a panel"), |d| d.id);
+    assert_eq!(h.state().shell.focused_panel(), Some(opened), "Show opened its panel");
 }

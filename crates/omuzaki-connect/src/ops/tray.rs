@@ -4,6 +4,7 @@
 use omuzaki_connect_api::{Candidate, CandidateId, CandidateState, Capability, ConnectorId, MediaKind, tray};
 use omuzaki_core::time::Seconds;
 use omuzaki_ops_api::{Actor, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
+use omuzaki_store_api::{Commercial, ContentHash, Source};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -63,13 +64,45 @@ pub struct TrayRow {
     pub regenerated_from: Option<CandidateId>,
     /// Its prompt.
     pub prompt: Option<String>,
+    /// The file, by hash in the asset store.
+    pub asset: ContentHash,
+    /// Its media type.
+    pub media_type: String,
+    /// The model that made it, as the connector names it.
+    pub model: Option<String>,
+    /// The plan tier on record when it was made.
+    pub plan: Option<String>,
+    /// The licence on record (SPDX or `LicenseRef-...`).
+    pub licence: String,
+    /// Whether it may be used commercially, on record.
+    pub commercial: Commercial,
+    /// Private test material: never publishable, whatever else its record says.
+    pub private_test: bool,
+    /// Why it was rejected, if the person said.
+    pub reason: Option<String>,
 }
 
 impl TrayRow {
     fn of(c: Candidate) -> Self {
+        let (model, plan) = match &c.provenance.source {
+            Source::Generated { model, plan, .. } => (Some(model.clone()), plan.clone()),
+            _ => (None, None),
+        };
+        let reason = match &c.state {
+            CandidateState::Rejected { reason, .. } => reason.clone(),
+            _ => None,
+        };
         Self {
             state: TrayState::of(&c.state),
             prompt: c.request.prompt_text().map(str::to_owned),
+            asset: c.asset,
+            media_type: c.media_type,
+            model,
+            plan,
+            licence: c.provenance.licence,
+            commercial: c.provenance.commercial,
+            private_test: c.provenance.private_test,
+            reason,
             id: c.id,
             connector: c.connector,
             kind: c.kind,

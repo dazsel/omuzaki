@@ -18,14 +18,14 @@ min_size: [240.0, 160.0], order: 20, build: |_| placeholder(icons::FOLDER, Word:
 omuzaki_ui_api::register_workspace! { id: "build", title: "Build", icon: icons::CUBE, order: 20, group: Group::Make,
 default_layout: build_layout }
 
-/// The Build workspace's default layout (`wireframes/build-1920.svg`): Outliner and Library on the left, the viewport,
-/// and the Inspector over Agent and History on the right. The shares are the dock widths of the widest class; the shell
+/// The Build workspace's default layout (`wireframes/build-1920.svg`): Outliner, Library and Generated on the left, the
+/// viewport, and the Inspector over Agent and History on the right. The shares are the dock widths of the widest class; the shell
 /// narrows them for smaller windows before the first frame.
 fn build_layout() -> Node {
     Node::split(
         Dir::Horizontal,
         vec![
-            Node::tabs(&["outliner", "library"]),
+            Node::tabs(&["outliner", "library", "generated"]),
             Node::pane("viewport"),
             Node::split(Dir::Vertical, vec![Node::pane("inspector"), Node::tabs(&["agent", "history"])], &[2.0, 1.0]),
         ],

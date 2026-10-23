@@ -156,6 +156,15 @@ fn a_keyword_area_is_written_with_a_trailing_underscore() {
 }
 
 #[test]
+fn a_verb_of_several_words_is_written_with_underscores() {
+    // A function name has no dots, so `audio.bus.mute` is `ops::audio::bus_mute`.
+    // The fake runner has no such op to apply; what matters is the request the call sent.
+    let (runner, _) = run("ops::audio::bus_mute(#{ bus: \"voice\" })");
+    assert_eq!(runner.requests()[0].op, "audio.bus.mute");
+    assert_eq!(omuzaki_script::script_call("audio.bus.mute").as_deref(), Some("ops::audio::bus_mute"));
+}
+
+#[test]
 fn the_same_source_sends_the_same_requests_twice() {
     let source = "for c in [\"a\", \"b\", \"c\"] { try_op(|| ops::face::set_profile(#{ character: c })); }";
     let (first, _) = run(source);
