@@ -105,7 +105,7 @@ words! {
     WindowTitle = "ui-shell-window-title" => "Omuzaki",
     WindowWaiting = "ui-shell-window-waiting" => "\u{25cf} Omuzaki: waiting for you",
     GoLive = "ui-shell-go-live" => "Go Live",
-    GoLiveOff = "ui-shell-go-live-off" => "No output is set up",
+    GoLiveOff = "ui-shell-go-live-off" => "No output is set up yet: opens Live, where you set one up",
     OpenDrawer = "ui-shell-open-drawer" => "Show {panel}",
 
     StatusBar = "ui-shell-status-bar" => "Status",

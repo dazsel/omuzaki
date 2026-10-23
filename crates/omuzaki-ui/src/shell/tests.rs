@@ -788,3 +788,13 @@ fn a_panels_menu_moves_it_to_the_other_side_or_closes_it_without_a_drag() {
     harness.run_steps(3);
     assert!(!harness.state().shown_layout().expect("built").contains("library"));
 }
+
+#[test]
+fn go_live_with_no_output_set_up_takes_the_person_to_the_live_panel() {
+    let mut harness = plain(vec2(1920.0, 1080.0));
+    assert_eq!(harness.state().active_workspace(), Some("build"));
+    harness.get_by_role_and_label(Role::Button, "Go Live").click();
+    harness.run_steps(4);
+    assert_eq!(harness.state().active_workspace(), Some("perform"), "Go Live is never a dead end");
+    assert_eq!(harness.state().focused_panel(), Some(crate::live::registration::LIVE_PANEL), "where output is set up");
+}

@@ -1,4 +1,4 @@
-{"request":{"body":{"max_tokens":256,"messages":[{"content":[{"text":"hello","type":"text"}],"role":"user"}],"model":"llama3.2","reasoning_effort":"medium","stream":true,"stream_options":{"include_usage":true}},"method":"POST","path":"/v1/chat/completions"}}
+{"request":{"body":{"max_tokens":256,"messages":[{"content":"hello","role":"user"}],"model":"llama3.2","reasoning_effort":"medium","stream":true,"stream_options":{"include_usage":true}},"method":"POST","path":"/v1/chat/completions"}}
 {"Start":{"model":"llama3.2:3b"}}
 {"TextDelta":"Here"}
 {"TextDelta":" is the render."}

@@ -4941,6 +4941,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-cohost"
+version = "0.0.0"
+dependencies = [
+ "hound",
+ "omuzaki-ai",
+ "omuzaki-ai-api",
+ "omuzaki-ai-ort",
+ "omuzaki-anim",
+ "omuzaki-anim-api",
+ "omuzaki-audio-api",
+ "omuzaki-audio-mock",
+ "omuzaki-char",
+ "omuzaki-char-api",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-face-api",
+ "omuzaki-llm",
+ "omuzaki-llm-api",
+ "omuzaki-llm-mock",
+ "omuzaki-ops-api",
+ "omuzaki-performer",
+ "omuzaki-performer-api",
+ "omuzaki-performer-mock",
+ "omuzaki-render",
+ "omuzaki-render-api",
+ "omuzaki-render-mock",
+ "omuzaki-speech",
+ "omuzaki-stage",
+ "omuzaki-stage-api",
+ "omuzaki-track-voice",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "omuzaki-connect"
 version = "0.0.0"
 dependencies = [
@@ -5805,6 +5841,26 @@ version = "0.0.0"
 dependencies = [
  "proptest",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omuzaki-performer"
+version = "0.0.0"
+dependencies = [
+ "blake3",
+ "omuzaki-anim-api",
+ "omuzaki-core",
+ "omuzaki-llm-api",
+ "omuzaki-llm-mock",
+ "omuzaki-performer-api",
+ "omuzaki-performer-mock",
+ "omuzaki-stage-api",
+ "proptest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "toml",
 ]
 
 [[package]]

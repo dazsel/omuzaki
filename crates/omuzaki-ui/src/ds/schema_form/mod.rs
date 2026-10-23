@@ -15,8 +15,8 @@
 //!
 //! | Schema | Control |
 //! |---|---|
-//! | `number`/`integer` with two different bounds (an integer's within ±2^53) | `ParamSlider` |
-//! | `integer` with five or fewer values; `enum`, or `oneOf` of `const`s, with two to five options | `Segmented` |
+//! | `number` with two different bounds; `integer` with two bounds at most 1000 apart | `ParamSlider` |
+//! | `integer` with five or fewer values; `enum`, or `oneOf` of `const`s, with two to five options whose labels fit whole | `Segmented` |
 //! | an enum with one option or more than five; an integer with one value | `Dropdown` |
 //! | `boolean` | `Toggle` |
 //! | `string` with `x-ui.widget` or `format` `"colour"` (or `"color"`), or the pattern `Colour` publishes | `ColourField` (alpha when the pattern allows it) |

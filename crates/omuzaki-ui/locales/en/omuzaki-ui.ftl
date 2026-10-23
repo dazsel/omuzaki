@@ -4181,7 +4181,7 @@ ui-shell-dock-tabs = { $panels } tabs
 ui-shell-go-live = Go Live
 
 # The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
-ui-shell-go-live-off = No output is set up
+ui-shell-go-live-off = No output is set up yet: opens Live, where you set one up
 
 # The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
 ui-shell-history-adjust = Adjust

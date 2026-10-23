@@ -43,10 +43,14 @@ fn schema(json: Value) -> Schema {
 }
 
 fn rig(schema: &Schema) -> Harness<'static, Rig> {
+    rig_sized(schema, vec2(420.0, 1400.0))
+}
+
+fn rig_sized(schema: &Schema, size: egui::Vec2) -> Harness<'static, Rig> {
     let form = Form::from_schema(schema);
     let value = form.default_value();
     let rig = Rig { form, value, changes: 0, edits: Vec::new(), frames: Vec::new() };
-    harness_state(Settings::default(), vec2(420.0, 1400.0), rig, |ui, r| {
+    harness_state(Settings::default(), size, rig, |ui, r| {
         let out = SchemaForm::new(&r.form, &mut r.value).id_salt("test").show(ui);
         if out.changed {
             r.changes += 1;
@@ -105,6 +109,28 @@ fn a_wide_integer_is_a_slider_that_keeps_whole_numbers() {
     focus(&mut h, Role::Slider, "Locks");
     press(&mut h, Modifiers::NONE, Key::ArrowRight);
     assert_eq!(json_of(&h), json!({"field": 1}));
+}
+
+#[test]
+fn a_port_is_a_number_field_since_no_slider_can_hit_each_of_its_values() {
+    let mut h = rig(&one_field(json!({"title": "Port", "type": "integer", "minimum": 1024, "maximum": 65535})));
+    assert!(h.query_by_role_and_label(Role::Slider, "Port").is_none(), "64,000 values are not a slider's");
+    focus(&mut h, Role::SpinButton, "Port");
+    press(&mut h, Modifiers::NONE, Key::ArrowUp);
+    assert_eq!(json_of(&h), json!({"field": 1025}));
+}
+
+#[test]
+fn options_whose_labels_would_be_cut_are_a_dropdown() {
+    let long = ["none at all", "a human ear", "an elf's ear", "an animal ear"];
+    let wide = rig_sized(&one_field(json!({"title": "Ears", "enum": long})), vec2(1200.0, 400.0));
+    assert!(wide.query_by_role_and_label(Role::RadioGroup, "Ears").is_some(), "they fit a wide form");
+    let mut narrow = rig(&one_field(json!({"title": "Ears", "enum": long})));
+    assert!(
+        narrow.query_by_role_and_label(Role::RadioGroup, "Ears").is_none(),
+        "four long labels in a dock-wide form would read as \"n…\", \"a…\""
+    );
+    focus(&mut narrow, Role::ComboBox, "Ears");
 }
 
 #[test]
