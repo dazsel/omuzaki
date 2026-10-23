@@ -59,14 +59,27 @@ pub const BUILT_IN_NODE_KEYS: [&str; 8] =
     ["name", "template", "seed", "palette", "skin_tone", "parts", "face", "weight_brushes"];
 
 /// The built-in sibling keys: the roots of the other files of the character. They are `variants`, `colourways`, `rig`,
-/// `look`, `licence`, `sources`, `applied`, `poses`, `emotes`, `avatar` and `voice`.
+/// `look`, `licence`, `sources`, `applied`, `poses`, `emotes`, `avatar`, `voice` and `voice-assignment`.
 ///
-/// Seven are owned by other crates: `licence` by `omuzaki-io-ops`, `sources` by `omuzaki-char`, `applied` and `emotes` by
+/// Eight are owned by other crates: `licence` by `omuzaki-io-ops`, `sources` by `omuzaki-char`, `applied` and `emotes` by
 /// `omuzaki-library-api`, `poses` by `omuzaki-anim`, `avatar` (an imported character's `AvatarDef`) by
-/// `omuzaki-avatar-api`, and `voice` (the voice-effect presets, `voice.toml`) by `omuzaki-audio-fx`. They stay in this table because no crate that parses a character links all of those owners, so
-/// they cannot register.
-pub const BUILT_IN_SIBLING_KEYS: [&str; 11] =
-    ["variants", "colourways", "rig", "look", "licence", "sources", "applied", "poses", "emotes", "avatar", "voice"];
+/// `omuzaki-avatar-api`, `voice` (the effect presets, `voice.toml`) by `omuzaki-audio-fx`, and `voice-assignment`
+/// (which voice the character speaks in) by `omuzaki-speech`. They stay in this table because no crate that parses a
+/// character links all of those owners, so they cannot register.
+pub const BUILT_IN_SIBLING_KEYS: [&str; 12] = [
+    "variants",
+    "colourways",
+    "rig",
+    "look",
+    "licence",
+    "sources",
+    "applied",
+    "poses",
+    "emotes",
+    "avatar",
+    "voice",
+    "voice-assignment",
+];
 
 /// Registers a sibling document key next to the file of the character that owns it (ADR 0054 §5). The key is the last
 /// segment of the path, `characters/<id>/<key>`, so it must be a slug.
@@ -112,6 +125,7 @@ register_doc_key!("poses", @built_in);
 register_doc_key!("emotes", @built_in);
 register_doc_key!("avatar", @built_in);
 register_doc_key!("voice", @built_in);
+register_doc_key!("voice-assignment", @built_in);
 
 /// The registered keys, resolved once: the usable ones, and the refused ones with the reason for each.
 struct Resolved {

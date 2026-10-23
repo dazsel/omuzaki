@@ -1,0 +1,35 @@
+# Whisper base.en (English only) in whisper.cpp's ggml format for asr@1, on the whisper-ggml runtime. The pin is the
+# one the speech host used before the registry (the Hugging Face revision, size and SHA-256); never committed.
+id = "whisper-base-en-q5-1"
+version = "1.0.0"
+name = "Whisper base.en (5-bit)"
+slot = "asr@1"
+runtime = "whisper-ggml"
+providers = ["cpu"]
+
+[[files]]
+name = "ggml-base.en-q5_1.bin"
+sha256 = "4baf70dd0d7c4247ba2b81fafd9c01005ac77c2f9ef064e00dcf195d0e2fdd2f"
+size = 59721011
+urls = ["https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-base.en-q5_1.bin"]
+
+[card]
+register = "Whisper weights (ggml files), whisper.cpp, whisper-rs 0.16 / whisper-rs-sys 0.15"
+authors = "OpenAI (weights); the ggml authors (conversion)"
+homepage = "https://github.com/openai/whisper"
+
+[card.licence]
+spdx = "MIT"
+url = "https://github.com/openai/whisper/blob/main/LICENSE"
+
+[[card.lineage]]
+kind = "base_model"
+name = "OpenAI Whisper base.en"
+licence = "MIT"
+url = "https://github.com/openai/whisper"
+
+[[card.lineage]]
+kind = "conversion"
+name = "ggml conversion of Whisper base.en, quantised to q5_1, by whisper.cpp"
+licence = "MIT"
+url = "https://huggingface.co/ggerganov/whisper.cpp"

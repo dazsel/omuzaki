@@ -3,16 +3,20 @@
 //! (`benches/pipeline.rs`). The budget is 3 ms at p95 (issue #378) for the glue; the criterion mean is printed with the
 //! measured p95 and worst case below it. The glue cases time the work inline on one thread; `worker_path` runs the real
 //! `WebcamTracker`, whose camera thread hands each frame to the tracker's thread and waits for the answer, and reports
-//! the tracker's own capture-to-publish latency, so the hand-off is in the number. A last case times an MJPG decode,
-//! whose library allocates per frame.
+//! the tracker's own capture-to-publish latency, so the hand-off is in the number. A last case times a 720p MJPG
+//! decode.
 
 // A bench that cannot run its frames should stop loudly; the casts only build synthetic data and times.
 #![allow(clippy::expect_used, clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+
+#[path = "../../omuzaki-pixfmt/tests/support/jpeg_encoder.rs"]
+mod jpeg_encoder;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use criterion::{Criterion, criterion_group, criterion_main};
+use jpeg_encoder::{Options, encode, picture};
 use omuzaki_anim_api::{ARKIT_COUNT, ChannelMask};
 use omuzaki_core::time::{Seconds, SystemClock};
 use omuzaki_track::webcam::{FrameConverter, FrameTracker, PreviewFrame, WebcamConfig, WebcamTracker};
@@ -91,19 +95,18 @@ fn bench_glue(c: &mut Criterion) {
         println!("{name}: p95 {p95:?}, max {max:?} over 300 frames");
     }
 
-    // MJPG: the 64x48 fixture of `omuzaki-pixfmt`, the only JPEG in the repository. zune-jpeg builds a decoder per
-    // image, so this is the per-frame cost of that, not of a 720p frame.
-    let jpeg = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../omuzaki-pixfmt/tests/fixtures/64x48_420.jpg"))
-        .expect("the pixfmt fixture is in the repository");
-    let mut mjpg = FrameConverter::with_size(64, 48);
-    let frame = CameraFrame::new(&jpeg, 64, 48, 0, PixelFormat::Mjpg, DeviceTime(0), 0);
-    c.bench_function("convert_mjpg_64x48", |b| {
-        b.iter(|| mjpg.convert(&frame).expect("the fixture decodes").data.len());
+    // MJPG: a 1280x720 4:2:2 frame without Huffman tables, as webcams send it, from the pixfmt test encoder.
+    let (w, h) = (1280, 720);
+    let jpeg = encode(&picture(w, h, 1), w, h, Options::default());
+    let mut mjpg = FrameConverter::with_size(1280, 720);
+    let frame = CameraFrame::new(&jpeg, 1280, 720, 0, PixelFormat::Mjpg, DeviceTime(0), 0);
+    c.bench_function("convert_mjpg_720p", |b| {
+        b.iter(|| mjpg.convert(&frame).expect("the frame decodes").data.len());
     });
-    let (p95, max) = percentiles(1000, || {
-        mjpg.convert(&frame).expect("the fixture decodes");
+    let (p95, max) = percentiles(300, || {
+        mjpg.convert(&frame).expect("the frame decodes");
     });
-    println!("convert_mjpg_64x48: p95 {p95:?}, max {max:?} over 1000 frames");
+    println!("convert_mjpg_720p: p95 {p95:?}, max {max:?} over 300 frames");
 }
 
 /// Frames the worker-path case runs: enough for a stable p95 at the histogram's 0.1 ms resolution.

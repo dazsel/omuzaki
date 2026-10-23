@@ -20,6 +20,7 @@ use std::sync::mpsc::{Receiver, SyncSender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use omuzaki_audio_api::clock::{ClockSnapshot, EngineClock};
+use omuzaki_audio_api::feed::FeedSource;
 use omuzaki_audio_api::graph::{MicMode, SourceRef};
 use omuzaki_audio_api::ids::{BusId, DeviceRole, FeedId, GateId};
 use omuzaki_audio_api::node::{MAX_BLOCK, ParamIndex, SAMPLE_RATE};
@@ -82,24 +83,11 @@ pub(crate) struct Bridge {
     pub started: Arc<AtomicBool>,
 }
 
-/// A feed into a bus.
+/// A feed into a bus: its id, the source the shared pull reads (`omuzaki_audio_api::feed`), and its last block.
 pub(crate) struct Feed {
     pub id: FeedId,
-    pub ring: Consumer,
-    pub stereo: bool,
-    pub rate: u32,
+    pub source: FeedSource,
     pub block: [Vec<f32>; 2],
-    /// Pull resampling state: the last two input frames and the position between them.
-    pub pull: PullState,
-    pub staging: Vec<f32>,
-}
-
-/// Linear pull resampling of a feed, both channels on one position.
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct PullState {
-    last: [f32; 2],
-    next: [f32; 2],
-    position: f64,
 }
 
 /// Where a tap's samples go.
@@ -307,7 +295,14 @@ impl Executor {
                     self.running.set_mic_mode(mode);
                 }
                 Command::AddTap(tap) => push_bounded(&mut self.taps, tap, Garbage::Tap, &mut self.held),
-                Command::AddFeed(feed) => push_bounded(&mut self.feeds, feed, Garbage::Feed, &mut self.held),
+                Command::AddFeed(feed) => {
+                    // A feed opened under an id still open replaces it: the old one ends here.
+                    if let Some(i) = self.feeds.iter().position(|f| f.id == feed.id) {
+                        let old = self.feeds.swap_remove(i);
+                        self.discard(Garbage::Feed(old));
+                    }
+                    push_bounded(&mut self.feeds, feed, Garbage::Feed, &mut self.held);
+                }
                 Command::AddBridge(bridge) => {
                     push_bounded(&mut self.bridges, bridge, Garbage::Bridge, &mut self.held);
                 }
@@ -396,8 +391,10 @@ impl Executor {
             };
             bridge.meter.store(reading);
         }
+        let block_start = self.sample;
         for feed in &mut self.feeds {
-            pull_feed(feed, n);
+            let [left, right] = &mut feed.block;
+            feed.source.pull(left, right, n, block_start);
         }
         for player in &mut self.players {
             player.render(n, &self.bank);
@@ -430,7 +427,7 @@ impl Executor {
         self.prune();
     }
 
-    /// Hands closed taps, feeds whose writer is gone, and nothing else back to the control side.
+    /// Hands closed taps, cut feeds and feeds whose writer is gone, and nothing else back to the control side.
     fn prune(&mut self) {
         let mut i = 0;
         while i < self.taps.len() {
@@ -443,7 +440,7 @@ impl Executor {
         }
         let mut i = 0;
         while i < self.feeds.len() {
-            if self.feeds[i].ring.writer_gone() && self.feeds[i].ring.available() == 0 {
+            if self.feeds[i].source.is_finished() {
                 let feed = self.feeds.swap_remove(i);
                 self.discard(Garbage::Feed(feed));
             } else {
@@ -484,7 +481,7 @@ impl Inputs for LiveInputs<'_> {
             }
             SourceRef::Feed { id } => {
                 let feed = self.feeds.iter().find(|f| &f.id == id)?;
-                Some((if feed.stereo { 2 } else { 1 }, [&feed.block[0][..n], &feed.block[1][..n]]))
+                Some((if feed.source.stereo() { 2 } else { 1 }, [&feed.block[0][..n], &feed.block[1][..n]]))
             }
             SourceRef::Player { id } => {
                 let player = self.players.iter().find(|p| &p.id == id)?;
@@ -598,55 +595,9 @@ fn feed_tap(tap: &mut Tap, channels: &[&[f32]], mode: MicMode) {
     }
 }
 
-/// Fills a feed's block with `n` frames at 48 kHz, resampling from its rate; a short ring plays silence.
-fn pull_feed(feed: &mut Feed, n: usize) {
-    let channels = if feed.stereo { 2 } else { 1 };
-    if feed.rate == SAMPLE_RATE {
-        if channels == 1 {
-            let got = feed.ring.pop_into(&mut feed.block[0][..n]);
-            feed.block[0][got..n].fill(0.0);
-        } else {
-            let want = 2 * n;
-            let got = feed.ring.pop_into(&mut feed.staging[..want]);
-            feed.staging[got..want].fill(0.0);
-            for i in 0..n {
-                feed.block[0][i] = feed.staging[2 * i];
-                feed.block[1][i] = feed.staging[2 * i + 1];
-            }
-        }
-        return;
-    }
-    let step = f64::from(feed.rate) / f64::from(SAMPLE_RATE);
-    for i in 0..n {
-        while feed.pull.position >= 1.0 {
-            feed.pull.position -= 1.0;
-            let mut frame = [0.0f32; 2];
-            if feed.ring.pop_into(&mut frame[..channels]) < channels {
-                frame = [0.0; 2];
-            }
-            feed.pull.last = feed.pull.next;
-            feed.pull.next = frame;
-        }
-        #[allow(clippy::cast_possible_truncation)] // A fraction in [0, 1).
-        let t = feed.pull.position as f32;
-        for ch in 0..channels {
-            feed.block[ch][i] = feed.pull.last[ch] + (feed.pull.next[ch] - feed.pull.last[ch]) * t;
-        }
-        feed.pull.position += step;
-    }
-}
-
 impl Feed {
-    pub(crate) fn new(id: FeedId, ring: Consumer, stereo: bool, rate: u32) -> Self {
-        Self {
-            id,
-            ring,
-            stereo,
-            rate,
-            block: zero_block(MAX_BLOCK),
-            pull: PullState { position: 1.0, ..PullState::default() },
-            staging: vec![0.0; 2 * MAX_BLOCK],
-        }
+    pub(crate) fn new(id: FeedId, source: FeedSource) -> Self {
+        Self { id, source, block: zero_block(MAX_BLOCK) }
     }
 }
 

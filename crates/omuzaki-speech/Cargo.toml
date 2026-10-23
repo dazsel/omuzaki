@@ -1,0 +1,64 @@
+[package]
+name = "omuzaki-speech"
+description = "The speech host (spec v3 ML-03): the vad@1 and asr@1 slots, the whisper-ggml runtime, and streaming voice activity, an utterance segmenter and speech recognition on registry sessions, fed lock-free from the audio callback."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+omuzaki-ai-api = { path = "../omuzaki-ai-api" }
+omuzaki-audio-api = { path = "../omuzaki-audio-api" }
+# A character's voice lives next to it: `characters/<id>/voice-assignment.toml` (the `voice.*` ops).
+omuzaki-char-api = { path = "../omuzaki-char-api" }
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-doc-api = { path = "../omuzaki-doc-api" }
+# Voice commands publish `voice.command` events into the show's inbox.
+omuzaki-live-api = { path = "../omuzaki-live-api" }
+# Voice languages in the catalog.
+omuzaki-l10n-api = { path = "../omuzaki-l10n-api" }
+# The `voice.*` ops.
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+# The performer's speech seam (`Voice`, `SpeechHandle`, `VoiceLead`) the TTS host implements.
+omuzaki-performer-api = { path = "../omuzaki-performer-api" }
+# The person's voice-command phrases and on/off are their own settings.
+omuzaki-settings-api = { path = "../omuzaki-settings-api" }
+schemars.workspace = true
+# Reads the gold pronunciation lexicons (JSON) the text-to-speech G2P looks words up in.
+serde.workspace = true
+serde_json.workspace = true
+# Decodes the public-domain speech clips the `vad@1` and `asr@1` smoke tests fetch (MP3); used unmodified.
+symphonia.workspace = true
+thiserror.workspace = true
+# Reads the shipped public-figure list (`src/voices/public-figures.toml`).
+toml.workspace = true
+tracing.workspace = true
+# NFKC before voice-command phrases are compared, so full-width and half-width forms match.
+unicode-normalization.workspace = true
+# Only the `whisper-ggml` runtime (`whisper_runtime.rs`) uses it; the host reaches models through sessions.
+whisper-rs.workspace = true
+
+[dev-dependencies]
+hound.workspace = true
+omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+omuzaki-store-api = { path = "../omuzaki-store-api" }
+omuzaki-ai-mock = { path = "../omuzaki-ai-mock" }
+omuzaki-audio-mock = { path = "../omuzaki-audio-mock" }
+omuzaki-settings-mock = { path = "../omuzaki-settings-mock" }
+criterion.workspace = true
+
+[[bench]]
+name = "commands"
+harness = false
+
+[lints]
+workspace = true
+
+# Native only: whisper.cpp builds from source with CMake and ONNX Runtime has no wasm32 build
+[package.metadata.omuzaki]
+kind = "Implementation"
+registers = true
+summary = "the speech host (ML-03) and slots (ML-01): `vad@1` and `asr@1` with smoke tests on pinned public-domain LibriVox fables, the `whisper-ggml` runtime (whisper.cpp through `whisper-rs`), Silero VAD and six Whisper models as shipped `model.toml`s; `SpeechHost::open` takes a `vad@1` and an `asr@1` registry session, reads 16 kHz mono samples through the audio API's lock-free ring (`AudioInput` is also a voice-tap `TapSink`; `push` never allocates), runs the VAD and a streaming segmenter on a VAD thread and transcribes utterances on an ASR thread; bounded drop-oldest queues, events (speech start/end, partial and final transcripts, drops, errors), a slot swapping models counted rather than reported, a configurable language; voice commands (AP-10): a tolerant whole-phrase matcher (NFKC, word windows or character windows for Japanese, Chinese and Korean, one edit per five letters, `alone` phrases with filler words), the `CommandListener` turning raw-mic transcripts into `voice.command` events (`Source::Voice`, no transcript text), `VoiceCommands` with its status watch, the `voice_commands.*` ops and the `voice_commands.enabled` and `voice_commands.phrases` settings"
+wasm = false

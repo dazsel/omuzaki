@@ -1,0 +1,7 @@
+section = "models"
+item = "misaki gold lexicons (`us_gold.json`, `gb_gold.json`)"
+kind = "data"
+used_for = "TTS pronunciation (`omuzaki-speech::g2p`, Kokoro's G2P)"
+status = "conditions"
+condition = "Apache-2.0 from the publisher (hexgrad/misaki; Hugging Face dataset `hexgrad/misaki`, licence tag `apache-2.0`, revision `7a6093fd...`), shipped with that notice; provenance pointer: misaki #107 (Director ruling). Only the gold files are fetched, pinned by URL, size and sha256 in `omuzaki-speech/models/kokoro-82m.model.toml`, never committed. The silver lexicons and the PeterReid BART fallback are espeak-derived: never ship them; do not install the Python package"
+audit = "B5"
