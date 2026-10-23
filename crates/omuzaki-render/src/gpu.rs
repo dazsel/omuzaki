@@ -344,7 +344,7 @@ mod tests {
 
     fn candidates() -> Vec<Candidate> {
         vec![
-            Candidate { name: "NVIDIA GeForce RTX 4090".into(), kind: wgpu::DeviceType::DiscreteGpu },
+            Candidate { name: "Example Discrete GPU 1000".into(), kind: wgpu::DeviceType::DiscreteGpu },
             Candidate { name: "llvmpipe (LLVM 15.0.7, 256 bits)".into(), kind: wgpu::DeviceType::Cpu },
         ]
     }
@@ -380,7 +380,7 @@ mod tests {
     #[test]
     fn software_means_the_cpu_adapter_and_a_name_matches_any_part_case_insensitively() {
         assert_eq!(pick(&candidates(), None), Ok(1));
-        assert_eq!(pick(&candidates(), Some("RTX")), Ok(0));
+        assert_eq!(pick(&candidates(), Some("discrete")), Ok(0));
         assert_eq!(pick(&candidates(), Some("LLVMPIPE")), Ok(1));
     }
 
@@ -390,7 +390,7 @@ mod tests {
         assert!(is_lavapipe(Cpu, "llvmpipe (LLVM 15.0.7, 256 bits)", "llvmpipe"));
         assert!(is_lavapipe(Cpu, "Lavapipe", ""));
         assert!(!is_lavapipe(Cpu, "Microsoft Basic Render Driver", "D3D12 (WARP)"));
-        assert!(!is_lavapipe(DiscreteGpu, "NVIDIA GeForce RTX 4090", "NVIDIA"));
+        assert!(!is_lavapipe(DiscreteGpu, "Example Discrete GPU 1000", "Example"));
     }
 
     #[test]
@@ -406,7 +406,7 @@ mod tests {
     fn a_missing_adapter_is_an_error_that_lists_what_exists() {
         let message = pick(&candidates(), Some("radeon")).unwrap_err();
         assert!(
-            message.contains("\"radeon\"") && message.contains("RTX 4090") && message.contains("llvmpipe"),
+            message.contains("\"radeon\"") && message.contains("Discrete GPU 1000") && message.contains("llvmpipe"),
             "{message}"
         );
         let message = pick(&candidates()[..1], None).unwrap_err();

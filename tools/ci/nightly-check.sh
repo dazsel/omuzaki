@@ -46,6 +46,13 @@ else
   skip "omuzaki-ai tests under Wine" "wine is not installed"
 fi
 
+# Our .vrma files play in three-vrm as Omuzaki reads them (#1277): headless Chromium, so it needs node.
+if command -v node >/dev/null 2>&1; then
+  stage "VRMA plays in three-vrm" tests/interop/vrma/run.sh
+else
+  skip "VRMA plays in three-vrm" "node is not installed"
+fi
+
 mapfile -t wasm_crates < <(python3 -I "$CI_DIR/crates.py" wasm)
 if [[ -z ${wasm_crates[0]:-} ]]; then
   skip "WebAssembly check" "no crate targets wasm"

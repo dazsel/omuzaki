@@ -225,7 +225,8 @@ impl AgentPanel {
                 let (tone, word) = status_words(ds, status);
                 ui.add(StatusChip::new(tone, &word));
                 let steps = session.steps.to_string();
-                ui.label(RichText::new(say(ds, text::AGENT_STEPS, &[("steps", &steps)])).color(t.text2));
+                let word = one_or_many(session.steps, text::AGENT_ONE_STEP, text::AGENT_STEPS);
+                ui.label(RichText::new(say(ds, word, &[("steps", &steps)])).color(t.text2));
                 let spend = spend(ds, session);
                 if !spend.is_empty() {
                     ui.label(RichText::new(spend).color(t.text2));
@@ -274,7 +275,8 @@ impl AgentPanel {
         }
         if session.steps > 0 {
             let steps = session.steps.to_string();
-            let undo = say(ds, text::AGENT_UNDO_ALL, &[("steps", &steps)]);
+            let word = one_or_many(session.steps, text::AGENT_UNDO_ONE, text::AGENT_UNDO_ALL);
+            let undo = say(ds, word, &[("steps", &steps)]);
             let name = named(&undo);
             let button = Button::new(&undo).ghost().icon(icons::ARROW_COUNTER_CLOCKWISE).accessible_label(&name);
             if ui.add(button).clicked() {
@@ -375,9 +377,9 @@ impl AgentPanel {
             ),
             Confirm::Undo { .. } => (
                 say(ds, text::UNDO_TITLE, &[("name", name)]),
-                say(ds, text::UNDO_PRIMARY, &[("steps", &steps)]),
-                say(ds, text::UNDO_CONFIRM, &[("steps", &steps)]),
-                say(ds, text::UNDO_BODY, &[("steps", &steps)]),
+                say(ds, one_or_many(session.steps, text::UNDO_PRIMARY_ONE, text::UNDO_PRIMARY), &[("steps", &steps)]),
+                say(ds, one_or_many(session.steps, text::UNDO_CONFIRM_ONE, text::UNDO_CONFIRM), &[("steps", &steps)]),
+                say(ds, one_or_many(session.steps, text::UNDO_BODY_ONE, text::UNDO_BODY), &[("steps", &steps)]),
             ),
             Confirm::Grant { scope, .. } => (
                 say(ds, text::GRANT_TITLE, &[("name", name), ("scope", scope.name())]),
@@ -491,4 +493,9 @@ omuzaki_ui_api::register_panel! {
     id: "agent", title: "Agent", icon: icons::ROBOT, region: omuzaki_ui_api::registry::Region::Right,
     min_size: [288.0, 160.0], order: 20,
     build: |_| Box::new(AgentPanel::default()),
+}
+
+/// The words for a count: `one` for exactly one, else `many` (English plurals until the catalog selects them itself).
+fn one_or_many(count: u32, one: &'static str, many: &'static str) -> &'static str {
+    if count == 1 { one } else { many }
 }

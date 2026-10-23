@@ -194,4 +194,15 @@ impl Store for DiskStore {
     fn contains(&self, hash: &ContentHash) -> bool {
         self.paths(hash).data.is_file()
     }
+
+    /// The data file's length, from its metadata.
+    fn size(&self, hash: &ContentHash) -> Result<u64, StoreError> {
+        let path = self.paths(hash).data;
+        match fs::metadata(&path) {
+            Ok(meta) if meta.is_file() => Ok(meta.len()),
+            Ok(_) => Err(StoreError::Missing(*hash)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Err(StoreError::Missing(*hash)),
+            Err(e) => Err(io_error("inspect", &path)(e)),
+        }
+    }
 }

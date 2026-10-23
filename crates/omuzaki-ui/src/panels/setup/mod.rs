@@ -19,7 +19,7 @@ use std::cell::Cell;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 
-use egui::{Frame, Key, Margin, Modifiers, ScrollArea, Ui};
+use egui::{Key, Modifiers, ScrollArea, Ui};
 use omuzaki_setup::{Effect, Event, Probes, Progress, SetupFlow, Step};
 use omuzaki_ui_api::panel::{Panel, PanelCtx};
 
@@ -279,7 +279,8 @@ impl Panel for SetupPanel {
             skipped: &skipped,
             importing: self.importing,
         };
-        Frame::new().inner_margin(Margin::same(12)).show(ui, |ui| {
+        // The dock pads the panel's card; the flow adds no margin of its own.
+        ui.scope(|ui| {
             ui.spacing_mut().item_spacing.y = space::S8;
             asks.extend(draw::header(ui, &page));
             draw::stepper(ui, &page);

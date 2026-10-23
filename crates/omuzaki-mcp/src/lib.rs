@@ -246,7 +246,7 @@ pub use http::{HttpOptions, HttpServer, PairedHook, RevokedHook};
 pub use in_app::{InAppEnd, InAppLink, InAppSpec};
 pub use prompts::{PromptArg, PromptDef};
 pub use resources::{
-    LibraryProvider, MeasureProvider, MetricsProvider, MetricsSource, RenderProvider, ResourceProvider,
+    LibraryProvider, MeasureProvider, MetricsProvider, MetricsSource, ReaderSource, RenderProvider, ResourceProvider,
 };
 pub use server::{McpOptions, McpServer};
 pub use session::Session;

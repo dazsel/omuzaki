@@ -36,21 +36,27 @@ fn toon(values: &Values) -> Toon {
     }
 }
 
-register_shading_program!(ProgramSpec {
-    name: "hair",
-    params: &[
-        ParamSpec::colour("root", 0x00c8_b09a),
-        ParamSpec::colour("mid", 0x00e6_d2be),
-        ParamSpec::colour("tip", 0x00dc_c4b0),
-        ParamSpec::colour("shade", 0x00b0_8e88),
-        ParamSpec::colour("line", 0x008c_685c),
-        ParamSpec::colour("ring", 0x00ff_f4e8),
-        ParamSpec::float("ring-strength", 0.22, 0.0, 1.0),
-        ParamSpec::float("strand-lines", 0.10, 0.0, 1.0),
-        ParamSpec::float("edge-darkening", 0.14, 0.0, 1.0),
-        ParamSpec::float("keep-identity", 0.36, 0.0, 1.0),
-    ],
-    attributes: &[AttributeSpec { name: "hair-uv", components: 2 }, AttributeSpec { name: "hair-info", components: 3 }],
-    toon,
-    wgsl: include_str!("hair.wgsl"),
-});
+register_shading_program!(
+    "hair",
+    ProgramSpec {
+        name: "hair",
+        params: &[
+            ParamSpec::colour("root", 0x00c8_b09a),
+            ParamSpec::colour("mid", 0x00e6_d2be),
+            ParamSpec::colour("tip", 0x00dc_c4b0),
+            ParamSpec::colour("shade", 0x00b0_8e88),
+            ParamSpec::colour("line", 0x008c_685c),
+            ParamSpec::colour("ring", 0x00ff_f4e8),
+            ParamSpec::float("ring-strength", 0.22, 0.0, 1.0),
+            ParamSpec::float("strand-lines", 0.10, 0.0, 1.0),
+            ParamSpec::float("edge-darkening", 0.14, 0.0, 1.0),
+            ParamSpec::float("keep-identity", 0.36, 0.0, 1.0),
+        ],
+        attributes: &[
+            AttributeSpec { name: "hair-uv", components: 2 },
+            AttributeSpec { name: "hair-info", components: 3 }
+        ],
+        toon,
+        wgsl: include_str!("hair.wgsl"),
+    }
+);

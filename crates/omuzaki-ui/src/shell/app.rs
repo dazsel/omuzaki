@@ -346,7 +346,9 @@ impl Shell {
         if self.views.get(self.active).is_some_and(|v| v.as_ref().is_some_and(|v| !v.rail.is_empty())) {
             self.rail(ui);
         }
-        CentralPanel::default().frame(Frame::new().fill(ds(&ctx).theme.bg1)).show(ui, |ui| self.body(ui));
+        // The panels are cards on the window's background, a gap apart and a gap in from its edges.
+        let backdrop = Frame::new().fill(ds(&ctx).theme.bg0).inner_margin(dock::GAP);
+        CentralPanel::default().frame(backdrop).show(ui, |ui| self.body(ui));
         self.approval_stack(&ctx);
         self.palette_ui(&ctx);
         if self.sheet {
@@ -695,7 +697,11 @@ impl Shell {
 
     /// The layout of `workspace` at full size: the saved one made safe, or the default sized for this window.
     fn full_layout(&self, workspace: usize, plan: &Plan, from_disk: bool) -> Layout {
-        let default = self.defaults[workspace].clone().with_root_widths(&dock_widths(plan, &self.registry), self.room);
+        let default = self.defaults[workspace].clone().with_root_widths(
+            &dock_widths(plan, &self.registry),
+            self.room - 2.0 * dock::GAP,
+            dock::GAP,
+        );
         let saved = from_disk.then(|| self.stored(self.workspaces[workspace].id, &default)).flatten();
         saved.unwrap_or(default)
     }
@@ -712,7 +718,11 @@ impl Shell {
         let hidden: Vec<&str> = rail.iter().map(|p| p.id).collect();
         let rail_width = if hidden.is_empty() { 0.0 } else { RAIL };
         // Panels removed with the rail leave their shares behind, so the others are sized again.
-        shown.without(&hidden).with_root_widths(&dock_widths(plan, &self.registry), self.room - rail_width)
+        shown.without(&hidden).with_root_widths(
+            &dock_widths(plan, &self.registry),
+            self.room - rail_width - 2.0 * dock::GAP,
+            dock::GAP,
+        )
     }
 
     /// The layout saved under `key`, repaired against the registry; `None` when there is none or it is unreadable.
@@ -777,8 +787,13 @@ impl Shell {
             crowded: Vec::new(),
             hidden: Vec::new(),
             overflow: Vec::new(),
+            cards: Vec::new(),
         };
+        let under = ui.painter().add(egui::Shape::Noop);
         view.tree.ui(&mut dock, ui);
+        let theme = ds(&ctx).theme;
+        ui.painter().set(under, dock::cards_under(&theme, &dock.cards));
+        ui.painter().extend(dock::cards_over(&theme, &dock.cards));
         let moved = handles::name_handles(ui, &mut view.tree, &self.registry);
         let moved = moved.then(|| Layout::from_tree(&view.tree).map(|l| l.without(&[]))).flatten();
         self.drawer(&ctx, rect);

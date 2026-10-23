@@ -51,6 +51,11 @@ impl<T: Copy + PartialEq> Op<T> {
         self.flight.map(|(id, _)| id)
     }
 
+    /// Whether a request is outstanding.
+    pub(crate) fn pending(&self) -> bool {
+        self.flight.is_some()
+    }
+
     /// Whether `request` is this operation's outstanding one.
     pub(crate) fn owns(&self, request: u32) -> bool {
         self.flight.is_some_and(|(id, _)| id == request)

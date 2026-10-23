@@ -233,22 +233,20 @@ impl IoScene {
         Some(NodeIx(u32::try_from(found).unwrap_or(u32::MAX)))
     }
 
-    /// An info finding (`gltf.passthrough`) listing every unknown extension and extras blob being carried, or `None`
+    /// An info finding (`gltf.passthrough`) saying which unknown extensions and extras blobs are carried, or `None`
     /// if there are none. Reported on import and again in the export preflight.
+    ///
+    /// Summarised per kind, so a model whose 85 nodes all carry `extras` says so in one line rather than 85: the
+    /// scene's own bag, then each distinct description with how many nodes (or materials) carry it and the first
+    /// [`PASSTHROUGH_INDICES_SHOWN`] of their indices (`85 nodes (0, 1, 2, 3, 4, ...): extras`). One node reads as
+    /// before (`node 0: extras`).
     pub fn passthrough_finding(&self) -> Option<Finding> {
         let mut parts = Vec::new();
-        let mut add = |place: String, p: &Passthrough| {
-            if !p.is_empty() {
-                parts.push(format!("{place}: {}", p.describe()));
-            }
-        };
-        add("scene".to_owned(), &self.passthrough);
-        for (i, n) in self.nodes.iter().enumerate() {
-            add(format!("node {i}"), &n.passthrough);
+        if !self.passthrough.is_empty() {
+            parts.push(format!("scene: {}", self.passthrough.describe()));
         }
-        for (i, m) in self.materials.iter().enumerate() {
-            add(format!("material {i}"), &m.passthrough);
-        }
+        parts.extend(summarise("node", self.nodes.iter().map(|n| &n.passthrough)));
+        parts.extend(summarise("material", self.materials.iter().map(|m| &m.passthrough)));
         if parts.is_empty() {
             return None;
         }
@@ -280,6 +278,35 @@ impl IoScene {
             colliders: count(self.avatar.as_ref().map_or(0, |a| a.spring_bones.colliders.len())),
         }
     }
+}
+
+/// How many indices a summarised `gltf.passthrough` line names before it says "...".
+pub const PASSTHROUGH_INDICES_SHOWN: usize = 5;
+
+/// One line per distinct description among `bags` that are not empty, in order of first appearance: `node 3: extras`
+/// for one, `12 nodes (0, 1, 2, 3, 4, ...): extras` for several.
+fn summarise<'a>(kind: &str, bags: impl Iterator<Item = &'a Passthrough>) -> Vec<String> {
+    let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
+    for (i, bag) in bags.enumerate().filter(|(_, b)| !b.is_empty()) {
+        let described = bag.describe();
+        match groups.iter_mut().find(|(d, _)| *d == described) {
+            Some((_, indices)) => indices.push(i),
+            None => groups.push((described, vec![i])),
+        }
+    }
+    groups
+        .into_iter()
+        .map(|(described, indices)| {
+            if let [only] = indices.as_slice() {
+                return format!("{kind} {only}: {described}");
+            }
+            let mut shown: Vec<String> = indices.iter().take(PASSTHROUGH_INDICES_SHOWN).map(usize::to_string).collect();
+            if indices.len() > PASSTHROUGH_INDICES_SHOWN {
+                shown.push("...".to_owned());
+            }
+            format!("{} {kind}s ({}): {described}", indices.len(), shown.join(", "))
+        })
+        .collect()
 }
 
 /// Counts describing an [`IoScene`], returned by import ops and `io.inspect`.
@@ -355,5 +382,31 @@ mod tests {
         s.add_mesh(mesh);
         let sum = s.summary();
         assert_eq!((sum.primitives, sum.vertices, sum.triangles), (2, 7, 3));
+    }
+
+    #[test]
+    fn the_passthrough_finding_summarises_many_bags_per_kind_and_description() {
+        let mut s = IoScene::default();
+        assert!(s.passthrough_finding().is_none(), "nothing carried, nothing said");
+        let extras = Passthrough { extras: Some(serde_json::json!({ "rig": "hand" })), ..Passthrough::default() };
+        for i in 0..85 {
+            let mut node = Node::new(format!("n{i}"));
+            if i != 40 {
+                node.passthrough = extras.clone();
+            }
+            s.add_node(node);
+        }
+        s.nodes[40].passthrough.extensions.insert("EXT_x".into(), serde_json::json!({}));
+        let finding = s.passthrough_finding().unwrap_or_else(|| Finding::info("none", ""));
+        assert_eq!(finding.rule, "gltf.passthrough");
+        assert!(
+            finding.message.ends_with("84 nodes (0, 1, 2, 3, 4, ...): extras; node 40: extensions EXT_x"),
+            "{}",
+            finding.message
+        );
+        assert!(finding.message.len() < 160, "one line, not one entry per node: {}", finding.message.len());
+        s.nodes.truncate(3);
+        let finding = s.passthrough_finding().unwrap_or_else(|| Finding::info("none", ""));
+        assert!(finding.message.ends_with(": 3 nodes (0, 1, 2): extras"), "{}", finding.message);
     }
 }

@@ -17,7 +17,8 @@ use omuzaki_history_api::{JournalSink, JournalStatus, Snapshots};
 use omuzaki_library::HostLibrary;
 use omuzaki_library_api::Library;
 use omuzaki_mcp::{AccessToken, HttpOptions, HttpServer, InAppLink, InAppSpec, McpOptions, McpServer, ToolMode};
-use omuzaki_mcp::{LibraryProvider, MeasureProvider, MetricsProvider, MetricsSource, RenderProvider};
+use omuzaki_mcp::{LibraryProvider, MeasureProvider, MetricsProvider, MetricsSource, ReaderSource, RenderProvider};
+use omuzaki_metrics_api::MetricsReader;
 use omuzaki_ops::Executor;
 use omuzaki_ops_api::{
     Actor, Event, Grants, Jobs, Mode, OpError, Outcome, ProjectDir, Request, Runner, Services, ServicesBuilder,
@@ -229,8 +230,8 @@ pub struct AppCore {
 }
 
 /// `base` plus the MCP resource families the executor's services can serve, in this order: renders (`omuzaki://render/`,
-/// from the asset store), measures (always: they compute through the runner), live metrics (from a `MetricsSource`
-/// the host gave), the library (from a `Library`). A family whose source is missing is not registered, so it is not
+/// from the asset store), measures (always: they compute through the runner), live metrics (always: from the
+/// `MetricsReader` or `MetricsSource` the host gave, or else "no studio is running"), the library (from a `Library`). A family whose source is missing is not registered, so it is not
 /// listed or templated and its URIs read as unknown resources.
 ///
 /// The set is fixed when the server starts (`McpServer::new` consumes the options), so the server never advertises
@@ -242,9 +243,14 @@ pub fn with_resource_providers(base: McpOptions, services: &Services) -> McpOpti
         options = options.with_provider(Arc::new(RenderProvider::new(store)));
     }
     options = options.with_provider(Arc::new(MeasureProvider));
-    if let Some(source) = services.get_arc::<dyn MetricsSource>() {
-        options = options.with_provider(Arc::new(MetricsProvider::new(source)));
-    }
+    // A studio gives its live numbers as the hub reader its subsystems publish into, or as a source of its own; a
+    // host with neither (headless `omuzaki mcp`) answers that no studio is running.
+    let metrics = match (services.get_arc::<dyn MetricsSource>(), services.get_arc::<MetricsReader>()) {
+        (Some(source), _) => MetricsProvider::studio(source),
+        (None, Some(reader)) => MetricsProvider::studio(Arc::new(ReaderSource(MetricsReader::clone(&reader)))),
+        (None, None) => MetricsProvider::headless(),
+    };
+    options = options.with_provider(Arc::new(metrics));
     if let Some(library) = services.get_arc::<dyn Library>() {
         options = options.with_provider(Arc::new(LibraryProvider::new(library)));
     }

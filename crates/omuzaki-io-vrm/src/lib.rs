@@ -7,6 +7,7 @@
 //! | Format id | Reads and writes | Spec files implemented |
 //! |---|---|---|
 //! | `vrm1` | `VRMC_vrm` 1.0: meta, humanoid, expressions (morph, colour and texture-transform binds), look-at, first-person; `VRMC_springBone` with `VRMC_springBone_extended_collider` and `VRMC_springBone_limit`; `VRMC_node_constraint`; `VRMC_materials_mtoon` | `vrm-specification/specification/VRMC_vrm-1.0/*.md`, `VRMC_springBone-1.0`, `VRMC_springBone_extended_collider-1.0`, `VRMC_springBone_limit-1.0`, `VRMC_node_constraint-1.0`, `VRMC_materials_mtoon-1.0` |
+//! | `vrma` (export) | `VRMC_vrm_animation` 1.0: the rest node tree, bone rotations, the hips translation, expression weights and the gaze, through `omuzaki_io_api::register_animation_exporter!` (see [`vrma`]) | `vrm-specification/specification/VRMC_vrm_animation-1.0/README.md` |
 //! | `vrm0` | the 0.x `VRM` extension: meta, humanoid, blend shape groups, first-person and look-at, secondary animation (spring bones), `materialProperties` (`MToon` 0.x, unlit) | `vrm-specification/specification/0.0/README.md` |
 //!
 //! Both register themselves with `omuzaki_io_api::register_importer!` / `register_exporter!`; nothing else needs to
@@ -61,8 +62,10 @@ pub mod orientation;
 mod pose;
 mod vrm0;
 mod vrm1;
+pub mod vrma;
 
 pub use formats::{Vrm0Exporter, Vrm0Importer, Vrm1Exporter, Vrm1Importer};
+pub use vrma::{VrmaExporter, read_vrma};
 
 /// A file index as the scene's `u32`. An index past `u32::MAX` can't be real; saturating makes it fail the scene's
 /// range check instead of wrapping onto a valid one.

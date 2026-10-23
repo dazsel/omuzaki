@@ -45,7 +45,7 @@ fn every_kind() -> Vec<Record> {
         Record::Session(session()),
         Record::Entry(HistoryEntry::Begin { tx: TxId(1), actor: actor(), label: "edit".into(), at: Seconds(1.5) }),
         Record::Entry(HistoryEntry::Op { record: Arc::new(op_record(Seconds(2.0))), commits: false }),
-        Record::Entry(HistoryEntry::Commit { tx: TxId(1) }),
+        Record::Entry(HistoryEntry::commit(TxId(1))),
         Record::Entry(HistoryEntry::Rollback { tx: TxId(2), patch: patch() }),
         Record::Entry(HistoryEntry::Undo { actor: actor(), tx: TxId(1), patch: patch() }),
         Record::Entry(HistoryEntry::Redo { actor: actor(), tx: TxId(1), patch: patch() }),
@@ -154,7 +154,7 @@ fn a_non_finite_time_is_refused_and_out_is_unchanged() {
     };
     let bad = [begin(f64::NAN), op(f64::INFINITY), job(f64::NEG_INFINITY)];
     for entry in bad {
-        let good = (Lsn(1), Record::Entry(HistoryEntry::Commit { tx: TxId(1) }));
+        let good = (Lsn(1), Record::Entry(HistoryEntry::commit(TxId(1))));
         let records = [good, (Lsn(2), Record::Entry(entry))];
         let mut out = b"before".to_vec();
         let err = encode(&records, &mut out).unwrap_err();
@@ -189,7 +189,7 @@ fn an_unknown_required_kind_is_too_new() {
 
 #[test]
 fn a_tag_that_disagrees_with_its_kind_is_a_bad_payload() {
-    let commit = Record::Entry(HistoryEntry::Commit { tx: TxId(1) });
+    let commit = Record::Entry(HistoryEntry::commit(TxId(1)));
     let mut out = Vec::new();
     encode(&[(Lsn(1), commit)], &mut out).unwrap();
     let payload = read_frame(&out).unwrap().payload.to_vec();

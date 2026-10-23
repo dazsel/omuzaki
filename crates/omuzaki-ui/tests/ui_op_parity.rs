@@ -66,7 +66,9 @@ impl Panel for Planted {
 register_panel! { id: "test.back_door", title: "Back door", icon: icons::EYE, region: Region::Right,
 min_size: [240.0, 160.0], order: 991, build: |_| Box::new(Planted) }
 
-const WINDOW: egui::Vec2 = vec2(1920.0, 1080.0);
+/// Tall enough that the inspector shows its first sections whole inside the cards' padding, so the audit reaches more
+/// than a screenful of its sliders without scrolling.
+const WINDOW: egui::Vec2 = vec2(1920.0, 1200.0);
 
 /// The kit character's part the inspector is audited on.
 const INSPECTED: &str = "head";

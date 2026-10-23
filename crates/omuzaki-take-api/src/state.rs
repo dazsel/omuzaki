@@ -163,10 +163,10 @@ impl<'de> Deserialize<'de> for ProjectName {
 pub struct StateRecord {
     /// The document version.
     pub doc_version: DocVersion,
-    /// The project's name. `None` only in the minimal State, which leaves it out (T2): every constructor but
-    /// [`StateRecord::minimal`] sets it, and the reader refuses a full State without one.
+    /// The project's name; [`StateRecord::project`]. Private with `overflow`, so no State can be built or changed
+    /// into the shape the reader refuses (a full State without a project).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub project: Option<ProjectName>,
+    project: Option<ProjectName>,
     /// The active scene.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scene: Option<SceneId>,
@@ -198,9 +198,9 @@ pub struct StateRecord {
     /// How many more were left out beyond the names listed.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub omitted_more: u32,
-    /// True for the minimal State: the cast and live state are unknown for this group.
+    /// True for the minimal State; [`StateRecord::overflow`].
     #[serde(default)]
-    pub overflow: bool,
+    overflow: bool,
     /// Live state by provider name (see [`register_take_state!`](crate::register_take_state!)). A reader skips a name
     /// it does not know and reports it.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -290,6 +290,17 @@ impl StateRecord {
     /// `overflow` set and nothing else. Readers treat the cast and live state as unknown for that group.
     pub fn minimal(doc_version: DocVersion, after_lsn: Lsn, withheld: Vec<Withheld>) -> Self {
         Self { overflow: true, ..Self::base(doc_version, None, after_lsn, withheld) }
+    }
+
+    /// The project's name. `None` only in the minimal State, which leaves it out (T2): every constructor but
+    /// [`StateRecord::minimal`] sets it, and the reader refuses a full State without one.
+    pub fn project(&self) -> Option<&ProjectName> {
+        self.project.as_ref()
+    }
+
+    /// True for the minimal State: the cast and live state are unknown for this group.
+    pub fn overflow(&self) -> bool {
+        self.overflow
     }
 
     fn base(doc_version: DocVersion, project: Option<ProjectName>, after_lsn: Lsn, withheld: Vec<Withheld>) -> Self {
@@ -392,6 +403,12 @@ pub fn state_providers() -> Vec<StateProvider> {
     let mut all: Vec<StateProvider> = inventory::iter::<StateProvider>.into_iter().copied().collect();
     all.sort_by_key(|p| p.name);
     all
+}
+
+/// Whether a live-state provider named `name` is linked into this binary: a reader reports the State's other
+/// providers as unknown ([`TakeReport::note_state`](crate::source::TakeReport::note_state)).
+pub fn is_state_provider(name: &str) -> bool {
+    inventory::iter::<StateProvider>.into_iter().any(|p| p.name == name)
 }
 
 /// Registers a live-state provider: `register_take_state!("expressions", capture_fn);`, where `capture_fn` is a

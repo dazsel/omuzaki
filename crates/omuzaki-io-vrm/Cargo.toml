@@ -14,9 +14,10 @@ serde_json.workspace = true
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-gltf = { path = "../omuzaki-gltf" }
 omuzaki-io-api = { path = "../omuzaki-io-api" }
+# The motion's provenance record, written as the VRMA's credit line (`vrma`).
+omuzaki-store-api = { path = "../omuzaki-store-api" }
 
 [dev-dependencies]
-omuzaki-store-api = { path = "../omuzaki-store-api" }
 
 [lints]
 workspace = true

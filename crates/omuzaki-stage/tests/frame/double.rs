@@ -62,6 +62,10 @@ impl Renderer for Recorder {
         if self.draw { self.inner.update_vertices(mesh, positions, normals) } else { Ok(()) }
     }
 
+    fn update_colours(&mut self, mesh: MeshId, colours: &[[f32; 4]]) -> Result<(), RenderError> {
+        self.inner.update_colours(mesh, colours)
+    }
+
     fn create_texture(&mut self, desc: &TextureDesc, rgba: Option<&[u8]>) -> Result<TextureId, RenderError> {
         self.inner.create_texture(desc, rgba)
     }

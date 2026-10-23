@@ -117,9 +117,9 @@ mod tests {
     #[test]
     fn entries_keep_their_order_and_get_consecutive_lsns() {
         let sink = RecordingSink::new();
-        assert_eq!(sink.append(HistoryEntry::Commit { tx: TxId(1) }), Lsn(1));
-        assert_eq!(sink.append(HistoryEntry::Commit { tx: TxId(2) }), Lsn(2));
-        assert_eq!(sink.entries(), vec![HistoryEntry::Commit { tx: TxId(1) }, HistoryEntry::Commit { tx: TxId(2) }]);
+        assert_eq!(sink.append(HistoryEntry::commit(TxId(1))), Lsn(1));
+        assert_eq!(sink.append(HistoryEntry::commit(TxId(2))), Lsn(2));
+        assert_eq!(sink.entries(), vec![HistoryEntry::commit(TxId(1)), HistoryEntry::commit(TxId(2))]);
         assert_eq!(sink.sync(Duration::ZERO), Ok(Lsn(2)));
     }
 
@@ -128,7 +128,7 @@ mod tests {
         let sink = RecordingSink::new();
         assert!(!sink.wants_mark());
         sink.request_mark();
-        sink.append(HistoryEntry::Commit { tx: TxId(1) });
+        sink.append(HistoryEntry::commit(TxId(1)));
         assert!(sink.wants_mark());
         sink.append(HistoryEntry::Mark { history: Arc::new(HistoryExport::empty()) });
         assert!(!sink.wants_mark());

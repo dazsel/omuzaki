@@ -16,6 +16,8 @@
 //!   [`preflight`] refuses a published export of an imported model whose own terms forbid sharing it.
 //! - **Perfect-sync baking**: the 52 `ARKit` names, the [`PerfectSync`] option, the [`ExpressionBaker`] seam the face
 //!   side implements, and completeness checks (see [`perfect_sync`]).
+//! - **[`IoAnimation`] and [`AnimationExporter`]**, a humanoid motion and the second, small registry that writes it
+//!   (VRM Animation, EX-16), run through [`run_export_animation`] (D11).
 //! - **[`Report`]**: findings with stable rule ids, locations and hints, for import warnings, export preflight and
 //!   lossy-conversion notes.
 //!
@@ -23,6 +25,8 @@
 //! contracts are in `docs/design/io-api.md`.
 #![deny(missing_docs)]
 
+pub mod animation;
+mod animation_format;
 mod check;
 mod error;
 mod format;
@@ -33,7 +37,12 @@ pub mod perfect_sync;
 mod report;
 pub mod scene;
 
-pub use check::{preflight, vrm_profile};
+pub use animation::{AnimationSummary, Interpolation, IoAnimation, Keys, RestBone, RestHumanoid, Track, TrackTarget};
+pub use animation_format::{
+    AnimationExporter, AnimationExporterRegistration, animation_exporters, animation_formats, find_animation_exporter,
+    preflight_animation, run_export_animation,
+};
+pub use check::{licence_forbids_derivatives, preflight, vrm_profile};
 pub use error::IoError;
 pub use format::{
     Confidence, Detection, ExporterRegistration, FormatId, FormatInfo, FormatSupport, ImporterRegistration, exporters,

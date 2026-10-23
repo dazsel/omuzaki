@@ -14,7 +14,7 @@ use omuzaki_ops_api::TxId;
 use proptest::prelude::*;
 
 fn commit(lsn: u64) -> (Lsn, Record) {
-    (Lsn(lsn), Record::Entry(HistoryEntry::Commit { tx: TxId(lsn) }))
+    (Lsn(lsn), Record::Entry(HistoryEntry::commit(TxId(lsn))))
 }
 
 fn frame_len(record: &(Lsn, Record)) -> usize {

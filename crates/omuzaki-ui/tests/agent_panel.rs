@@ -75,7 +75,7 @@ fn rows_follow_the_session_events_without_asking_the_registry() {
     let actor = Actor::Agent { id: "late_bot#4".into(), model: None };
     h.state().fake.emit(Event::tx_committed(omuzaki_ops_api::TxId(7), "Bigger eyes", actor));
     h.run_steps(3);
-    assert!(shows(&h, "1 steps") && shows(&h, "Working"), "{:?}", all_strings(&h));
+    assert!(shows(&h, "1 step") && shows(&h, "Working"), "{:?}", all_strings(&h));
 }
 
 #[test]

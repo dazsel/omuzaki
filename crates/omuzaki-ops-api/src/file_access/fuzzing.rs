@@ -63,4 +63,24 @@ mod tests {
             assert_eq!(check_path(raw), Ok(()), "{raw:?}");
         }
     }
+
+    /// Every short server and share over an alphabet of the characters that change a Windows path's meaning, in the
+    /// verbatim and the plain network forms: the promises hold for each (#2246 found a dot-led server).
+    #[test]
+    fn every_short_network_path_over_the_tricky_characters_keeps_its_promises() {
+        const ALPHABET: [&str; 10] = ["", ".", "?", " ", "a", "~", "$", "^", "con", "C:"];
+        let names: Vec<String> =
+            ALPHABET.iter().flat_map(|a| ALPHABET.iter().map(move |b| format!("{a}{b}"))).collect();
+        let mut checked = 0;
+        for server in &names {
+            for share in ["s", ".", "..", "s.", ".s", "nul"] {
+                for form in [r"\\?\UNC\", r"\\", "//", r"\\.\UNC\"] {
+                    let raw = format!(r"{form}{server}\{share}\x");
+                    assert_eq!(check_path(&raw), Ok(()), "{raw:?}");
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(checked, names.len() * 6 * 4);
+    }
 }

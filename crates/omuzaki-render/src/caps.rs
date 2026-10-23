@@ -1,7 +1,7 @@
 //! Capability profiles: the named limit sets the renderer opens its device with, and the list of what it needs from them.
 //!
-//! The renderer never asks an adapter what it can do and then asks for all of it (`Adapter::limits`): on the dev
-//! machine's 4090 that lets any use of a feature a laptop lacks pass silently. It asks for a *named* set instead,
+//! The renderer never asks an adapter what it can do and then asks for all of it (`Adapter::limits`): on a desktop
+//! GPU that lets any use of a feature a laptop lacks pass silently. It asks for a *named* set instead,
 //! so a feature the profile does not grant fails on the dev machine too, and CI proves a profile by opening it on
 //! lavapipe.
 //!
@@ -67,7 +67,7 @@ impl CapabilityProfile {
     pub const fn features(self) -> wgpu::Features {
         match self {
             // The adapter-specific format features let the device use the sample counts the adapter offers beyond
-            // the WebGPU guarantee (8x on a 4090); without them, `gpu.rs` offers only 1 and 4.
+            // the WebGPU guarantee (8x on a desktop GPU); without them, `gpu.rs` offers only 1 and 4.
             Self::Native => wgpu::Features::TIMESTAMP_QUERY
                 .union(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)
                 .union(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES),

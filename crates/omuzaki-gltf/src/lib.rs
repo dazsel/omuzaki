@@ -15,6 +15,8 @@
 //!   checked arithmetic *before* anything is allocated, and readers never index, so a lie in a file is an error.
 //! - **[`parse`] and [`probe`]**: open a file (checking sizes, the version and `extensionsRequired`), or recognise one
 //!   cheaply for `Importer::sniff`.
+//! - **[`animation`]**: typed animations (samplers, channels, accessors), read on request and written
+//!   deterministically; the document itself keeps them as raw JSON.
 //! - **[`pack`]**: the writer's side of accessors: aligned views, bounds, 16-bit indices when they fit, sparse morph
 //!   targets when smaller.
 //!
@@ -83,6 +85,7 @@
 #![deny(missing_docs)]
 
 pub mod accessor;
+pub mod animation;
 pub mod buffers;
 pub mod container;
 pub mod hooks;
@@ -101,7 +104,7 @@ pub use parse::{BUFFER_BOUND_EXTENSIONS, MODELLED_EXTENSIONS, Parsed, Probe, par
 pub use read::{Imported, TextureMap, import, read_scene};
 pub use schema::Document;
 pub use tally::Tally;
-pub use write::{Written, check, export, split_emissive, texture_info, write_scene};
+pub use write::{Written, check, export, glb, split_emissive, texture_info, write_scene};
 
 /// `i` out of `n` as a progress fraction.
 #[allow(clippy::cast_precision_loss)] // progress only needs a few digits

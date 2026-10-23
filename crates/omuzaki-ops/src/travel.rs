@@ -6,6 +6,7 @@
 //! undo or redo has changed nothing anywhere.
 
 use omuzaki_core::time::Seconds;
+use omuzaki_history_api::TxEnd;
 use omuzaki_ops_api::{Actor, Grants, KeptTx, OpError, PauseReason, SessionChange, SessionId, SessionUndo, TxId};
 
 use crate::effects::{EffectFailure, inverted};
@@ -169,7 +170,7 @@ impl Env {
                         "it is kept as an unfinished step in the agent's history; undoing the session tries again"
                             .into(),
                     );
-                    let label = state.commit_as_is(tx, actor, " (unfinished)")?;
+                    let label = state.commit_as_is(tx, actor, TxEnd::Unfinished)?;
                     kept.push(KeptTx { tx, label, error });
                 }
             }

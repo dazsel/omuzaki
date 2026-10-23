@@ -109,11 +109,13 @@ pub const CHECKS: &[(&str, Check)] = &[
     ("particle_limits", particles::particle_limits),
 ];
 
-/// The checks for dynamic meshes: a renderer whose [`Capabilities::dynamic_meshes`] is true must pass them.
-/// [`run_capable`] runs them when it is.
+/// The checks for meshes rewritten in place: a renderer whose [`Capabilities::dynamic_meshes`] is true must pass them,
+/// recolouring (`update_colours`, static meshes included) among them. [`run_capable`] runs them when it is.
 pub const DYNAMIC_CHECKS: &[(&str, Check)] = &[
     ("updating vertices matches a fresh mesh", updating_vertices_matches_a_fresh_mesh),
     ("updating a static mesh is invalid", updating_a_static_mesh_is_invalid),
+    ("recolouring matches a fresh mesh", recolouring_matches_a_fresh_mesh),
+    ("recolouring input is validated", recolouring_input_is_validated),
 ];
 
 /// The checks for sparse morph targets: a renderer whose [`Capabilities::morph_targets`] is true must pass them.
@@ -1337,6 +1339,50 @@ fn updating_a_static_mesh_is_invalid(r: &mut dyn Renderer) -> Outcome {
     r.release(dynamic.into())?;
     expect_err(r.update_vertices(dynamic, &quad.positions, &quad.normals), "a released mesh", is_unknown)?;
     r.release(fixed.into())?;
+    Ok(())
+}
+
+/// The small quad with every vertex coloured `colour`.
+fn coloured_quad(colour: [f32; 4]) -> MeshData {
+    let mut quad = small_quad();
+    quad.colours = vec![colour; quad.positions.len()];
+    quad
+}
+
+fn recolouring_matches_a_fresh_mesh(r: &mut dyn Renderer) -> Outcome {
+    let tol = tolerance(r).max(1);
+    let (red, green) = ([1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]);
+    // A static mesh: a palette change recolours meshes no runtime rewrites.
+    let mesh = r.create_mesh(&coloured_quad(red))?;
+    let fresh = r.create_mesh(&coloured_quad(green))?;
+    let material = r.create_material(&Material { vertex_colours: true, ..Material::unlit(Colour::WHITE) })?;
+
+    let before = draw_one(r, mesh, material, &[], |_, _| {})?;
+    expect_pixel(&before, CENTRE, Colour::rgb(255, 0, 0), tol, "the quad before recolouring")?;
+    r.update_colours(mesh, &coloured_quad(green).colours)?;
+    let recoloured = draw_one(r, mesh, material, &[], |_, _| {})?;
+    let expected = draw_one(r, fresh, material, &[], |_, _| {})?;
+    expect_pixel(&recoloured, CENTRE, Colour::rgb(0, 255, 0), tol, "the quad after recolouring")?;
+    same_image(&recoloured, &expected, tol, "a recoloured mesh against a freshly created one")?;
+    for resource in [mesh.into(), fresh.into(), material.into()] {
+        r.release(resource)?;
+    }
+    Ok(())
+}
+
+fn recolouring_input_is_validated(r: &mut dyn Renderer) -> Outcome {
+    let quad = coloured_quad([0.5; 4]);
+    let plain = r.create_mesh(&small_quad())?;
+    expect_err(r.update_colours(plain, &quad.colours), "a mesh created without colours", is_invalid)?;
+    let mesh = r.create_mesh(&quad)?;
+    expect_err(r.update_colours(mesh, &quad.colours[..3]), "too few colours", is_invalid)?;
+    let mut nan = quad.colours.clone();
+    nan[1][2] = f32::NAN;
+    expect_err(r.update_colours(mesh, &nan), "a non-finite colour", is_invalid)?;
+    r.update_colours(mesh, &quad.colours)?;
+    r.release(mesh.into())?;
+    expect_err(r.update_colours(mesh, &quad.colours), "a released mesh", is_unknown)?;
+    r.release(plain.into())?;
     Ok(())
 }
 

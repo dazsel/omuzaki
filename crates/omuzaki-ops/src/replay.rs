@@ -101,9 +101,11 @@ impl Executor {
                 Ok(())
             }
             HistoryEntry::Op { record, commits } => self.replay_op(state, record, *commits),
-            HistoryEntry::Commit { tx } => {
+            HistoryEntry::Commit { tx, end } => {
                 let open = state.close(*tx).ok_or_else(|| format!("transaction {} isn't open", tx.0))?;
-                state.finish(&open.owner, *tx, open.label, open.draft);
+                // A step kept as it stood says so after a replay as it did when it was committed.
+                let label = open.label + end.suffix();
+                state.finish(&open.owner, *tx, label, open.draft);
                 Ok(())
             }
             HistoryEntry::Rollback { tx, patch } => {
