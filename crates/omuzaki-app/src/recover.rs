@@ -102,7 +102,7 @@ pub(crate) fn close_open(executor: &Executor, at: Lsn, report: &mut RecoveryRepo
             report.rolled_back.push(tx.label);
         } else {
             // A commit only closes the transaction, so it can't fail for one the executor holds open.
-            let committed = executor.replay(&[(at, HistoryEntry::Commit { tx: tx.tx })]);
+            let committed = executor.replay(&[(at, HistoryEntry::commit(tx.tx))]);
             debug_assert!(committed.is_ok(), "committing open transaction {} failed: {committed:?}", tx.tx.0);
             report.kept.push(tx.label);
         }

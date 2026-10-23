@@ -28,7 +28,7 @@ use reqwest::blocking::{Client, Response};
 use reqwest::header::{ACCEPT_ENCODING, CONTENT_RANGE, RANGE, RETRY_AFTER};
 use reqwest::redirect::Policy;
 use reqwest::{StatusCode, Url};
-pub use transport::{ConnectHttp, MAX_IN_FLIGHT, MAX_TIMEOUT_S};
+pub use transport::{ConnectHttp, MAX_IN_FLIGHT, MAX_TIMEOUT_S, in_flight};
 
 /// The settings behind [`HttpFetcher`]; see [`HttpFetcher::builder`].
 #[derive(Clone, Debug)]

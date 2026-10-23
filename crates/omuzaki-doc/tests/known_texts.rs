@@ -363,3 +363,28 @@ fn undoing_a_removal_restores_the_file_byte_for_byte() {
         assert_eq!(read(tmp.path(), "characters/kit.toml"), original, "undoing the removal of {at}");
     }
 }
+
+/// A patch that deletes one file and edits another that changed on disk: the save deletes the first and refuses the
+/// second. Undoing the patch brings the deleted file back from its last-known text, byte for byte, with its comments
+/// and order, not rendered from scratch (#1858); the refused file is left as the person wrote it.
+#[test]
+fn a_deletion_in_a_refused_save_comes_back_byte_for_byte_when_undone() {
+    let tmp = folder();
+    let rig =
+        "# the rig, by hand\ntemplate = \"humanoid\"  # keep this one\n\n[spring]\nstiffness = 0.25\nchains = 3\n";
+    write(tmp.path(), "characters/mia/rig.toml", rig);
+    let mut project = Project::open(tmp.path()).unwrap();
+    let mut patch = change("characters/mia/rig", project.get(&p("characters/mia/rig")).cloned(), None);
+    patch = patch.with(p("characters/mia/face/blend"), Some(json!(0.5)), Some(json!(0.9)));
+    project.apply(&patch).unwrap();
+    write(tmp.path(), "characters/mia/face.toml", "profile = \"edited by hand\"\n");
+    let err = project.save().unwrap_err();
+    assert!(matches!(&err, StoreError::ChangedOnDisk { path } if path.ends_with("face.toml")), "{err}");
+    assert!(!tmp.path().join("characters/mia/rig.toml").exists(), "the deletion went through");
+
+    project.apply(&patch.inverse()).unwrap();
+    let err = project.save().unwrap_err();
+    assert!(matches!(&err, StoreError::ChangedOnDisk { path } if path.ends_with("face.toml")), "{err}");
+    assert_eq!(read(tmp.path(), "characters/mia/rig.toml"), rig, "comments, order and layout come back");
+    assert_eq!(read(tmp.path(), "characters/mia/face.toml"), "profile = \"edited by hand\"\n");
+}

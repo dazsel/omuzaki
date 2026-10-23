@@ -316,12 +316,38 @@ fn guide(
         let head = ctx.head;
         (k, head.centre().y - head.radius(Vec3::NEG_Y), HANG_OVER * head.radius(Vec3::X))
     });
-    let fall = drape((1..=SEGMENTS).map(|k| at(along(k, SEGMENTS))), keep_out, hang);
+    let head = ctx.head;
+    let fall = drape((1..=SEGMENTS).map(|k| clear_of_head(head, at(along(k, SEGMENTS)))), keep_out, hang);
     let path: Vec<DVec3> = tuck.into_iter().chain(std::iter::once(root)).chain(fall).collect();
     spaced_points(&path, GUIDE_POINTS).map_or_else(
         |_| straight_fall(root, length),
-        |pts| pts.into_iter().map(|p| clear_of_body(keep_out, p).as_vec3()).collect(),
+        |pts| {
+            pts.into_iter()
+                .map(|p| {
+                    // The fall only: the tuck above the root stands under the cap on purpose.
+                    let p = if p.y < root.y { clear_of_head(head, p) } else { p };
+                    clear_of_body(keep_out, p).as_vec3()
+                })
+                .collect()
+        },
     )
+}
+
+/// How far the fall keeps off the head, metres: a wide or deep head would otherwise have the curtain, which narrows
+/// toward the body as it falls, cut into its sides (#2262).
+const HEAD_MARGIN: f64 = 0.012;
+
+/// `p` pushed straight out from the head's centre until it stands [`HEAD_MARGIN`] off the head, if it is closer.
+fn clear_of_head(head: &dyn HeadSurface, p: DVec3) -> DVec3 {
+    let centre = head.centre().as_dvec3();
+    let from = p - centre;
+    let distance = from.length();
+    if !(distance.is_finite() && distance > 0.0) {
+        return p;
+    }
+    let dir = from / distance;
+    let need = f64::from(head.radius(dir.as_vec3())) + HEAD_MARGIN;
+    if need.is_finite() && distance < need { centre + dir * need } else { p }
 }
 
 /// How far below the head's lowest point (in head half-widths) the hair has finished moving behind the arms.

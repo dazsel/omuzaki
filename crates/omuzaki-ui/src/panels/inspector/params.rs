@@ -78,7 +78,7 @@ fn object_schema(title: Option<&str>) -> Value {
     schema
 }
 
-/// The section schema for `parents`, made on the way down. Each section's description comes from its own entry.
+/// The section schema for `parents`, made on the way down. Each section's description and level come from its own entry.
 fn section_at<'a>(schema: &'a mut Value, parents: &[&str], entries: &[Value]) -> Option<&'a mut Map<String, Value>> {
     let mut at = schema;
     let mut path = String::new();
@@ -95,6 +95,10 @@ fn section_at<'a>(schema: &'a mut Value, parents: &[&str], entries: &[Value]) ->
                 (described.and_then(|e| e.get("description")), section.as_object_mut())
             {
                 map.insert("description".to_owned(), description.clone());
+            }
+            // A section the kind marks advanced starts folded.
+            if let (Some(level), Some(map)) = (described.and_then(|e| e.get("level")), section.as_object_mut()) {
+                map.insert("x-ui".to_owned(), json!({"level": level}));
             }
             section
         });
@@ -181,7 +185,7 @@ mod tests {
             {"path": "cranium/centre", "type": "list"},
             {"path": "cranium/centre/0", "type": "number", "minimum": -4.0, "maximum": 4.0, "current": 0.0},
             {"path": "groups", "type": "map"},
-            {"path": "groups/a-cap", "type": "section"},
+            {"path": "groups/a-cap", "type": "section", "level": "advanced"},
             {"path": "groups/a-cap/dynamics/follow", "type": "choice", "values": ["head", "body"], "current": "head"},
             {"path": "groups/a-cap/enabled", "type": "boolean", "current": true, "default": true},
             {"path": "tags", "type": "list", "current": ["a"]}
@@ -203,6 +207,9 @@ mod tests {
         assert_eq!(first["title"], json!("Centre 1"), "and named by its list and its place");
         assert_eq!(params.value["groups"]["a-cap"]["dynamics"]["follow"], json!("head"));
         assert_eq!(params.schema["properties"]["tags"]["type"], json!("array"), "a list set whole is shown");
+        let cap = &params.schema["properties"]["groups"]["properties"]["a-cap"];
+        assert_eq!(cap["x-ui"]["level"], json!("advanced"), "a section the kind marks advanced says so");
+        assert!(params.schema["properties"]["cranium"].get("x-ui").is_none());
     }
 
     #[test]

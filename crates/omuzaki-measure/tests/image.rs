@@ -236,6 +236,43 @@ fn an_asset_without_a_store_is_unavailable() {
     assert_eq!(error.code, ErrorCode::Unavailable);
 }
 
+/// A store that holds one object it says is 300 MiB, and counts the reads: an asset over the cap must be refused from
+/// its size, never fetched.
+struct Huge {
+    hash: ContentHash,
+    reads: std::sync::atomic::AtomicUsize,
+}
+
+impl Store for Huge {
+    fn put(&self, _: &[u8], _: omuzaki_store_api::Provenance) -> Result<ContentHash, omuzaki_store_api::StoreError> {
+        Ok(self.hash)
+    }
+    fn get(&self, _: &ContentHash) -> Result<Vec<u8>, omuzaki_store_api::StoreError> {
+        self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(Vec::new())
+    }
+    fn provenance(&self, _: &ContentHash) -> Result<omuzaki_store_api::Provenance, omuzaki_store_api::StoreError> {
+        Ok(sample_provenance(Commercial::Ok))
+    }
+    fn contains(&self, hash: &ContentHash) -> bool {
+        *hash == self.hash
+    }
+    fn size(&self, _: &ContentHash) -> Result<u64, omuzaki_store_api::StoreError> {
+        Ok(300 << 20)
+    }
+}
+
+#[test]
+fn an_asset_over_the_file_cap_is_refused_from_its_size_without_being_read() {
+    let hash = ContentHash::of(b"a video, mistaken for a picture");
+    let store = Arc::new(Huge { hash, reads: std::sync::atomic::AtomicUsize::new(0) });
+    let services = ServicesBuilder::new().insert::<dyn Store>(store.clone()).build();
+    let error = load_err(&services, &Grants::of([]), None, &ImageRef::Asset { asset: hash });
+    assert_eq!(error.code, ErrorCode::Invalid, "{error:?}");
+    assert!(format!("{error:?}").contains("larger than"), "{error:?}");
+    assert_eq!(store.reads.load(std::sync::atomic::Ordering::SeqCst), 0, "the bytes were never fetched");
+}
+
 #[test]
 fn an_asset_the_store_cannot_verify_is_internal() {
     let (store, hash, services) = stored(&png(1, 1, ExtendedColorType::Rgb8, &[1, 2, 3]));

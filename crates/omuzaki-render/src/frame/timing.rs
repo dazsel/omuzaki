@@ -28,21 +28,22 @@ impl Span {
         match self {
             Self::Pass(Pass::Opaque) => 0,
             Self::Pass(Pass::Outlines) => 1,
-            Self::Pass(Pass::Transparent) => 2,
-            Self::Accumulate => 3,
-            Self::Pass(Pass::PaintTextures) => 4,
-            Self::Pass(Pass::Shadows) => 5,
-            Self::Pass(Pass::Bloom) => 6,
-            Self::Pass(Pass::DepthOfField) => 7,
-            Self::Pass(Pass::Resolve) => 8,
+            Self::Pass(Pass::Particles) => 2,
+            Self::Pass(Pass::Transparent) => 3,
+            Self::Accumulate => 4,
+            Self::Pass(Pass::PaintTextures) => 5,
+            Self::Pass(Pass::Shadows) => 6,
+            Self::Pass(Pass::Bloom) => 7,
+            Self::Pass(Pass::DepthOfField) => 8,
+            Self::Pass(Pass::Resolve) => 9,
         }
     }
 }
 
-/// Pairs a round may write: the eight passes and the accumulation.
-const SPANS: u32 = 9;
-/// Pairs a round after the first writes: the three geometry passes and the accumulation.
-const REPEATED: u32 = 4;
+/// Pairs a round may write: the nine passes and the accumulation.
+const SPANS: u32 = 10;
+/// Pairs a round after the first writes: the four geometry passes and the accumulation.
+const REPEATED: u32 = 5;
 /// Queries per round's block: one 256-byte resolve boundary, since each block is resolved where it sits.
 const BLOCK: u32 = 32;
 /// Rounds of a supersampled frame that are timed: all of them (`supersample::MAX_ROUNDS`).

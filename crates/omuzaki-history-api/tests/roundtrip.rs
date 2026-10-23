@@ -1,11 +1,13 @@
 //! Serde round-trips for every journal entry and for the history export (the journal writes them as JSON).
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use omuzaki_core::time::Seconds;
 use omuzaki_doc_api::{Change, DocPath, DocVersion, Patch, Value};
 use omuzaki_history_api::{
-    ActorHistory, HISTORY_EXPORT_FORMAT, HistoryEntry, HistoryExport, Lsn, OpenTxExport, Stack, StepExport, WallTime,
+    ActorHistory, HISTORY_EXPORT_FORMAT, HistoryEntry, HistoryExport, Lsn, OpenTxExport, Stack, StepExport, TxEnd,
+    WallTime,
 };
 use omuzaki_ops_api::{
     Actor, ApprovalId, ApprovalRef, CancelReason, Cause, CauseKind, Effect, JobId, JobState, OpCall, OpError, OpRecord,
@@ -166,7 +168,8 @@ fn entry() -> impl Strategy<Value = HistoryEntry> {
         (record(), any::<bool>()).prop_map(|(r, commits)| HistoryEntry::Op { record: Arc::new(r), commits }),
         ("[a-f0-9]{8}", any::<u64>())
             .prop_map(|(session, ms)| HistoryEntry::Session { session, started: WallTime(ms) }),
-        tx().prop_map(|tx| HistoryEntry::Commit { tx }),
+        (tx(), prop_oneof![Just(TxEnd::Finished), Just(TxEnd::Unfinished), Just(TxEnd::Stopped)])
+            .prop_map(|(tx, end)| HistoryEntry::Commit { tx, end }),
         (tx(), patch()).prop_map(|(tx, patch)| HistoryEntry::Rollback { tx, patch }),
         (actor(), tx(), patch()).prop_map(|(actor, tx, patch)| HistoryEntry::Undo { actor, tx, patch }),
         (actor(), tx(), patch()).prop_map(|(actor, tx, patch)| HistoryEntry::Redo { actor, tx, patch }),
@@ -219,8 +222,37 @@ fn an_empty_export_names_its_format_and_starts_ids_at_one() {
 
 #[test]
 fn entries_are_tagged_by_kind() {
-    let json = serde_json::to_value(HistoryEntry::Commit { tx: TxId(7) }).unwrap();
+    let json = serde_json::to_value(HistoryEntry::commit(TxId(7))).unwrap();
     assert_eq!(json, serde_json::json!({"entry": "commit", "tx": 7}));
+}
+
+/// A finished commit is written as before (so the golden segments hold), and an older journal's commit reads as
+/// finished; a commit kept as it stood says how it ended.
+#[test]
+fn a_commit_says_how_it_ended_only_when_it_was_not_finished() {
+    let stopped = HistoryEntry::Commit { tx: TxId(7), end: TxEnd::Stopped };
+    let json = serde_json::to_value(&stopped).unwrap();
+    assert_eq!(json, serde_json::json!({"entry": "commit", "tx": 7, "end": "stopped"}));
+    assert_eq!(serde_json::from_value::<HistoryEntry>(json).unwrap(), stopped);
+    let old: HistoryEntry = serde_json::from_value(serde_json::json!({"entry": "commit", "tx": 7})).unwrap();
+    assert_eq!(old, HistoryEntry::commit(TxId(7)));
+    assert_eq!(
+        [TxEnd::Finished, TxEnd::Unfinished, TxEnd::Stopped].map(TxEnd::suffix),
+        ["", " (unfinished)", " (stopped)"]
+    );
+}
+
+/// A step's commit and undo numbers survive an export, and an export without them reads them as 0.
+#[test]
+fn a_steps_order_round_trips_and_defaults_to_zero() {
+    let step = StepExport::new(TxId(3), "x", Arc::new(Patch::new()), BTreeSet::new()).with_order(12, 4);
+    let json = serde_json::to_value(&step).unwrap();
+    assert_eq!((json["order"].as_u64(), json["undone"].as_u64()), (Some(12), Some(4)));
+    assert_eq!(serde_json::from_value::<StepExport>(json).unwrap(), step);
+    let plain = serde_json::to_value(StepExport::new(TxId(3), "x", Arc::new(Patch::new()), BTreeSet::new())).unwrap();
+    assert!(plain.get("order").is_none() && plain.get("undone").is_none(), "{plain}");
+    let read: StepExport = serde_json::from_value(plain).unwrap();
+    assert_eq!((read.order, read.undone), (0, 0));
 }
 
 #[test]

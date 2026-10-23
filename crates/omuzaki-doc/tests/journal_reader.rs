@@ -16,7 +16,7 @@ use omuzaki_ops_api::TxId;
 
 /// A commit record: the smallest real record, whose tx is its LSN.
 fn commit(lsn: u64) -> (Lsn, Record) {
-    (Lsn(lsn), Record::Entry(HistoryEntry::Commit { tx: TxId(lsn) }))
+    (Lsn(lsn), Record::Entry(HistoryEntry::commit(TxId(lsn))))
 }
 
 fn session(lsn: u64) -> (Lsn, Record) {

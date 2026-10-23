@@ -3,7 +3,8 @@
 //! `session_info` says about the branch, and the review outcomes a later result opens with.
 
 use std::fmt;
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::mpsc::Receiver;
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use omuzaki_history_api::branch::{
     BranchError, BranchEvent, BranchId, BranchInfo, BranchName, Branches, NewBranch, ReviewState,
@@ -72,16 +73,14 @@ impl BranchHost {
 
     /// The review outcomes for this lane's branch since `seen`, and the new mark.
     pub(crate) fn reviews_since(&self, seen: usize) -> (Vec<String>, usize) {
-        self.reviews.start(&self.branches);
-        let notes = lock(&self.reviews.notes);
+        let notes = self.reviews.caught_up(&self.branches);
         let mine = notes.iter().skip(seen).filter(|n| n.branch == self.branch).map(|n| n.text.clone()).collect();
         (mine, notes.len())
     }
 
     /// How many review outcomes the feed holds now: where a new session starts reading.
     pub(crate) fn reviews_now(&self) -> usize {
-        self.reviews.start(&self.branches);
-        lock(&self.reviews.notes).len()
+        self.reviews.caught_up(&self.branches).len()
     }
 }
 
@@ -196,7 +195,7 @@ pub(crate) fn with_reviews(mut result: CallToolResult, notes: &[String]) -> Call
 #[derive(Default)]
 struct ReviewFeed {
     notes: Mutex<Vec<Note>>,
-    started: OnceLock<()>,
+    events: OnceLock<Mutex<Receiver<BranchEvent>>>,
 }
 
 struct Note {
@@ -205,25 +204,20 @@ struct Note {
 }
 
 impl ReviewFeed {
-    /// Starts following the host's events, once. Lazily: a lane's server is built before the host's branches can
-    /// answer, and the first session is after.
-    fn start(self: &Arc<Self>, branches: &Arc<dyn Branches>) {
-        self.started.get_or_init(|| {
-            let events = branches.subscribe();
-            let (feed, branches): (Weak<Self>, Weak<dyn Branches>) = (Arc::downgrade(self), Arc::downgrade(branches));
-            let spawned = std::thread::Builder::new().name("omuzaki-mcp-reviews".to_owned()).spawn(move || {
-                while let Ok(event) = events.recv() {
-                    let BranchEvent::Reviewed { branch, state, .. } = event else { continue };
-                    let (Some(feed), Some(branches)) = (feed.upgrade(), branches.upgrade()) else { return };
-                    if let Some(text) = describe(branches.as_ref(), &branch, state) {
-                        lock(&feed.notes).push(Note { branch, text });
-                    }
-                }
-            });
-            if let Err(error) = spawned {
-                tracing::warn!(%error, "review outcomes won't reach agents' results");
+    /// The notes, with every outcome the host has announced so far read in. The events are read on the caller's
+    /// thread, so a review that returned before a call is in that call's result. Following starts lazily: a lane's
+    /// server is built before the host's branches can answer, and the first session is after.
+    fn caught_up(&self, branches: &Arc<dyn Branches>) -> MutexGuard<'_, Vec<Note>> {
+        let events = self.events.get_or_init(|| Mutex::new(branches.subscribe()));
+        let mut notes = lock(&self.notes);
+        let events = lock(events);
+        while let Ok(event) = events.try_recv() {
+            let BranchEvent::Reviewed { branch, state, .. } = event else { continue };
+            if let Some(text) = describe(branches.as_ref(), &branch, state) {
+                notes.push(Note { branch, text });
             }
-        });
+        }
+        notes
     }
 }
 

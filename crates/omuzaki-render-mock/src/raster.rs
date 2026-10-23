@@ -84,6 +84,12 @@ pub(crate) enum Write {
     Opaque,
     /// Blend over the colour with the shader's alpha; depth is tested but not written.
     Blend,
+    /// Alpha to coverage (particles, particles.md D4): the pixel is covered when the shader's alpha is above its
+    /// ordered threshold in the `grid` x `grid` supersampling cell, and then takes the opaque colour and writes depth.
+    Coverage {
+        /// The supersampling grid's side.
+        grid: u32,
+    },
 }
 
 /// Per-draw state.
@@ -230,6 +236,12 @@ fn raster(surface: &mut Surface, v: &[Vertex; 3], mode: Mode, shade: &mut dyn Fn
                 Write::Blend => {
                     let behind = surface.colour[idx];
                     surface.colour[idx] = (rgba.truncate() * rgba.w).extend(rgba.w) + behind * (1.0 - rgba.w);
+                }
+                Write::Coverage { grid } => {
+                    if rgba.w > crate::particles::bayer(px as u32, py as u32, grid) {
+                        surface.colour[idx] = rgba.truncate().extend(1.0);
+                        surface.depth[idx] = depth;
+                    }
                 }
             }
         }

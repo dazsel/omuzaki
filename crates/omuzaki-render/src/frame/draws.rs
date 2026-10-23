@@ -10,25 +10,27 @@
 //! module. Adding a pass's draws therefore never edits this file, and two passes never edit the same list.
 
 use omuzaki_core::glam::{Mat4, UVec2};
-use omuzaki_render_api::{AlphaMode, Instance, Material, Pass, RenderError, Scene};
+use omuzaki_render_api::{AlphaMode, Instance, Material, Pass, RenderError, Scene, Sprite};
 
 use super::supersample::{self, MAX_ROUNDS};
 use super::uniform::{self, FrameUniform, InstanceUniform};
 use crate::resource::SceneResources;
 use crate::shared::{Layouts, Shared};
 
-/// A set of passes, one bit per [`Pass`]. Eight passes fit a byte.
+/// A set of passes, one bit per [`Pass`]. Nine passes fit sixteen bits.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct PassSet(u8);
+pub(crate) struct PassSet(u16);
+
+const _: () = assert!(Pass::COUNT <= 16, "PassSet holds one bit per pass");
 
 impl PassSet {
-    /// The set plus `pass`. (`Pass::COUNT` is 8, so the shift never leaves the byte.)
+    /// The set plus `pass`.
     fn with(self, pass: Pass) -> Self {
-        Self(self.0 | (1u8 << pass.index()))
+        Self(self.0 | (1u16 << pass.index()))
     }
 
     fn contains(self, pass: Pass) -> bool {
-        self.0 & (1u8 << pass.index()) != 0
+        self.0 & (1u16 << pass.index()) != 0
     }
 }
 
@@ -68,6 +70,8 @@ pub(crate) struct Draws {
     all: Vec<Draw>,
     /// Slot of the environment the scene is lit with, if it names one (checked live in `prepare`).
     pub(crate) environment: Option<u32>,
+    /// The particle slots the scene's spawn batches submit (the sum of their `count`); every batch names a live system.
+    pub(crate) particle_slots: u32,
 }
 
 impl Draws {
@@ -78,12 +82,9 @@ impl Draws {
     }
 }
 
-/// The GPU buffers behind group 0, sized for the largest frame so far and replaced (with the bind groups) only when a
+/// The storage buffers behind group 0, sized for the largest frame so far and replaced (with the bind groups) only when a
 /// frame needs more.
 struct FrameBuffers {
-    /// One frame uniform per supersampling round, `stride` bytes apart; a frame that does not supersample uses the first.
-    frame: wgpu::Buffer,
-    stride: u64,
     instances: wgpu::Buffer,
     instance_capacity: usize,
     joints: wgpu::Buffer,
@@ -102,38 +103,70 @@ fn storage_buffer(device: &wgpu::Device, label: &str, capacity: usize, element: 
 }
 
 impl FrameBuffers {
-    fn new(device: &wgpu::Device, layouts: &Layouts, instance_capacity: usize, joint_capacity: usize) -> Self {
-        let size = size_of::<FrameUniform>() as u64;
-        let stride = size.next_multiple_of(u64::from(device.limits().min_uniform_buffer_offset_alignment));
-        let frame = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("frame uniform"),
-            size: stride * u64::from(MAX_ROUNDS),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+    fn new(
+        device: &wgpu::Device,
+        layouts: &Layouts,
+        uniform: &FrameUniforms,
+        instance_capacity: usize,
+        joint_capacity: usize,
+    ) -> Self {
         let instances = storage_buffer(device, "instances", instance_capacity, size_of::<InstanceUniform>());
         let joints = storage_buffer(device, "joints", joint_capacity, size_of::<Mat4>());
         let bind_groups = (0..u64::from(MAX_ROUNDS))
             .map(|round| {
-                let uniform =
-                    wgpu::BufferBinding { buffer: &frame, offset: round * stride, size: wgpu::BufferSize::new(size) };
                 device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("frame"),
                     layout: &layouts.frame,
                     entries: &[
-                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Buffer(uniform) },
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::Buffer(uniform.round(round)),
+                        },
                         wgpu::BindGroupEntry { binding: 1, resource: instances.as_entire_binding() },
                         wgpu::BindGroupEntry { binding: 2, resource: joints.as_entire_binding() },
                     ],
                 })
             })
             .collect();
-        Self { frame, stride, instances, instance_capacity, joints, joint_capacity, bind_groups }
+        Self { instances, instance_capacity, joints, joint_capacity, bind_groups }
+    }
+}
+
+/// One frame uniform per supersampling round, `stride` bytes apart; a frame that does not supersample uses the first.
+/// Made once with the renderer and never replaced, so a pass may keep a bind group of its own over it (`Particles` binds
+/// it with a dynamic offset beside its own blocks).
+pub(crate) struct FrameUniforms {
+    pub(crate) buffer: wgpu::Buffer,
+    pub(crate) stride: u64,
+}
+
+impl FrameUniforms {
+    /// Bytes of one round's uniform.
+    pub(crate) const SIZE: u64 = size_of::<FrameUniform>() as u64;
+
+    fn new(device: &wgpu::Device) -> Self {
+        let stride = Self::SIZE.next_multiple_of(u64::from(device.limits().min_uniform_buffer_offset_alignment));
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("frame uniform"),
+            size: stride * u64::from(MAX_ROUNDS),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        Self { buffer, stride }
+    }
+
+    fn round(&self, round: u64) -> wgpu::BufferBinding<'_> {
+        wgpu::BufferBinding {
+            buffer: &self.buffer,
+            offset: round * self.stride,
+            size: wgpu::BufferSize::new(Self::SIZE),
+        }
     }
 }
 
 /// Everything about the current frame that outlives a single pass and is reused across frames.
 pub(crate) struct FrameState {
+    pub(crate) uniforms: FrameUniforms,
     buffers: FrameBuffers,
     pub(crate) draws: Draws,
     /// Instance records, built on the CPU first so validation finishes before any GPU write.
@@ -142,7 +175,9 @@ pub(crate) struct FrameState {
 
 impl FrameState {
     pub(crate) fn new(device: &wgpu::Device, layouts: &Layouts) -> Self {
-        Self { buffers: FrameBuffers::new(device, layouts, 1, 1), draws: Draws::default(), instances: Vec::new() }
+        let uniforms = FrameUniforms::new(device);
+        let buffers = FrameBuffers::new(device, layouts, &uniforms, 1, 1);
+        Self { uniforms, buffers, draws: Draws::default(), instances: Vec::new() }
     }
 
     /// Group 0 for each round of this frame (one unless it supersamples); valid once [`prepare`](Self::prepare) has
@@ -156,8 +191,9 @@ impl FrameState {
     /// round, each with its round's sub-pixel offset ([`supersample::jitter`]) for a GPU drawing `hardware` samples.
     ///
     /// # Errors
-    /// `UnknownHandle` for a released mesh, material or environment; `Invalid` when an instance's joint range is too short for its
-    /// mesh. Nothing has been written to the GPU when this returns an error.
+    /// `UnknownHandle` for a released mesh, material, environment or particle system; `Invalid` when an instance's joint
+    /// range is too short for its mesh or a spawn batch lists a cell outside its system's atlas. Nothing has been written
+    /// to the GPU when this returns an error.
     pub(crate) fn prepare(
         &mut self,
         shared: &Shared,
@@ -170,6 +206,7 @@ impl FrameState {
         self.draws.all.clear();
         self.instances.clear();
         self.draws.environment = None;
+        self.draws.particle_slots = 0;
         if let Some(using) = &scene.environment {
             resources
                 .environments
@@ -182,6 +219,19 @@ impl FrameState {
                 .textures
                 .get(texture.index(), texture.generation())
                 .ok_or(RenderError::UnknownHandle { what: "texture" })?;
+        }
+        for batch in &scene.particles {
+            let system = resources
+                .particles
+                .get(batch.system.index(), batch.system.generation())
+                .ok_or(RenderError::UnknownHandle { what: "particle system" })?;
+            if matches!(system.desc.sprite, Sprite::Atlas { .. })
+                && batch.cells.as_slice().iter().any(|&cell| u32::from(cell) >= system.desc.cells())
+            {
+                return Err(RenderError::invalid("spawn batch", "a listed cell is outside its system's atlas"));
+            }
+            // At most `MAX_PARTICLES` in a valid scene.
+            self.draws.particle_slots = self.draws.particle_slots.saturating_add(batch.count);
         }
         for (index, instance) in (0u32..).zip(&scene.instances) {
             let (mesh_slot, material_slot) = (instance.mesh.index(), instance.material.index());
@@ -221,8 +271,8 @@ impl FrameState {
             let jitter = supersample::jitter(round, rounds, hardware);
             let packed = uniform::frame_uniform(scene, internal_size, jitter);
             queue.write_buffer(
-                &self.buffers.frame,
-                u64::from(round) * self.buffers.stride,
+                &self.uniforms.buffer,
+                u64::from(round) * self.uniforms.stride,
                 bytemuck::bytes_of(&packed),
             );
         }
@@ -240,14 +290,15 @@ impl FrameState {
         Ok(())
     }
 
-    /// Grows the buffers (and rebuilds the bind group) if a frame needs more than they hold. Sizes round up to a power
-    /// of two so a scene that grows one instance at a time reallocates a handful of times, not every frame.
+    /// Grows the storage buffers (and rebuilds the bind groups) if a frame needs more than they hold. Sizes round up to a
+    /// power of two so a scene that grows one instance at a time reallocates a handful of times, not every frame.
     fn reserve(&mut self, device: &wgpu::Device, layouts: &Layouts, instances: usize, joints: usize) {
         let b = &self.buffers;
         if instances > b.instance_capacity || joints > b.joint_capacity {
             self.buffers = FrameBuffers::new(
                 device,
                 layouts,
+                &self.uniforms,
                 instances.max(b.instance_capacity).next_power_of_two(),
                 joints.max(b.joint_capacity).next_power_of_two(),
             );
@@ -328,6 +379,7 @@ mod tests {
                 draw(3, Pass::Outlines),
             ],
             environment: None,
+            particle_slots: 0,
         };
         let of = |pass| draws.for_pass(pass).map(|d| d.instance).collect::<Vec<_>>();
         assert_eq!(

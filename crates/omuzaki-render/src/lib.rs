@@ -11,7 +11,7 @@
 //!    the GPU is touched;
 //! 2. makes sure the target has colour and depth attachments for this internal size and sample count
 //!    (`frame/attachments.rs`);
-//! 3. runs the eight passes of the fixed frame graph in order (`frame/graph.rs`), each bracketed by a GPU timestamp and
+//! 3. runs the nine passes of the fixed frame graph in order (`frame/graph.rs`), each bracketed by a GPU timestamp and
 //!    timed on the CPU. A pass that has nothing to do returns `Skipped` and shows as `None` in the report;
 //! 4. submits, and collects GPU timings of earlier frames, which arrive a frame or two late.
 //!

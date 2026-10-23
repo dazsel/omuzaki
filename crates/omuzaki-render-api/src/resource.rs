@@ -29,6 +29,14 @@ pub mod limits {
     pub const MAX_PROGRAM_PARAMS: usize = 32;
     /// The most samples per pixel [`Quality::samples`](crate::Quality::samples) may ask for.
     pub const MAX_SAMPLES: u8 = 16;
+    /// Particle slots in one [`Scene`](crate::Scene): the sum of its spawn batches' `count` (particles.md D2).
+    pub const MAX_PARTICLES: u32 = 20_000;
+    /// Spawn batches in one [`Scene`](crate::Scene).
+    pub const MAX_SPAWN_BATCHES: usize = 1_024;
+    /// The longest a particle lives, in seconds.
+    pub const MAX_PARTICLE_LIFETIME_S: f32 = 20.0;
+    /// Cells in one particle atlas.
+    pub const MAX_ATLAS_CELLS: u32 = 4_096;
 }
 
 /// How colour channels relate to alpha in stored pixels (textures, readbacks).
@@ -273,6 +281,9 @@ pub struct ResourceStats {
     pub targets: u32,
     /// Live environments.
     pub environments: u32,
+    /// Live particle systems.
+    #[serde(default)]
+    pub particle_systems: u32,
     /// Estimated GPU memory held by all of the above, in bytes. Released resources leave the counts at once but may
     /// stay in this figure until the frames still using them finish.
     pub gpu_bytes: u64,

@@ -2,7 +2,7 @@
 
 use egui::{Id, Rect, RichText, Sense, Ui, WidgetInfo, WidgetType, vec2};
 
-use super::model::{Entry, Form, IntControl, Kind, Layout, MAX_SEGMENTS, Node, OPEN, Opt, TextRule};
+use super::model::{Entry, Form, IntControl, Kind, Layout, Level, MAX_SEGMENTS, Node, OPEN, Opt, TextRule};
 use super::text;
 use super::value::FormValue;
 use crate::ds::a11y;
@@ -339,7 +339,10 @@ fn field(ui: &mut Ui, cx: &mut Cx<'_>, node: &Node, value: &mut FormValue) {
         }
         (Kind::Json, FormValue::Json(json)) => json_field(ui, cx, node, json, modified, &mut out),
         (Kind::Section(children), FormValue::Object(values)) => {
-            Section::new(&node.label).default_open(true).id_salt(&node.path).show(ui, |ui| {
+            // A nested object the schema marks advanced starts folded; a top-level one is already under Advanced.
+            let nested = node.path.matches('/').count() > 1;
+            let open = !nested || node.level == Level::Essentials;
+            Section::new(&node.label).default_open(open).id_salt(&node.path).show(ui, |ui| {
                 for i in 0..children.len() {
                     field_at(ui, cx, children, values, i);
                 }

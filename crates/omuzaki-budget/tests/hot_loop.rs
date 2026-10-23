@@ -49,6 +49,7 @@ fn report(frame: u64, ms: f64) -> FrameReport {
         gpu: Some(GpuTimings { frame, passes, painters: None }),
         draw_calls: 0,
         triangles: 0,
+        particles: 0,
     }
 }
 

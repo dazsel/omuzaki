@@ -59,7 +59,7 @@ const SOLE_INSIDE_HEIGHT: f64 = 0.006;
 const HEEL_INSIDE: (f64, f64) = (0.008, 0.025);
 
 /// Adds the sole to `builder`: a closed slab.
-pub(super) fn add_sole(boot: &Boot, tess: &Tess, sole: &Sole, builder: &mut MeshBuilder) -> Result<(), KitError> {
+pub(crate) fn add_sole(boot: &Boot, tess: &Tess, sole: &Sole, builder: &mut MeshBuilder) -> Result<(), KitError> {
     let (scale_y, scale_d) = (sole.thickness / SOLE_THICKNESS, sole.welt / WELT);
     let seg = tess.sole_seg;
     let space = boot.space();
@@ -73,12 +73,14 @@ pub(super) fn add_sole(boot: &Boot, tess: &Tess, sole: &Sole, builder: &mut Mesh
     add_slab(boot, &grid, inside, builder)
 }
 
-/// Adds the heel block to `builder`: a second closed slab, D-shaped, its front cut off.
-pub(super) fn add_heel(
+/// Adds the heel block to `builder`: a second closed slab, D-shaped, its front cut off, narrowing toward the floor by
+/// `taper` (0 for a block as wide at the floor as under the sole, toward 1 for a slender heel).
+pub(crate) fn add_heel(
     boot: &Boot,
     tess: &Tess,
     sole: &Sole,
     heel: &Heel,
+    taper: f64,
     builder: &mut MeshBuilder,
 ) -> Result<(), KitError> {
     let (scale_y, scale_d) = (heel.height / HEEL_HEIGHT, sole.welt / WELT);
@@ -93,6 +95,7 @@ pub(super) fn add_heel(
         let p = boot.plan(sole.thickness, fraction(j, seg) * TAU, d * scale_d).p;
         let limit = zcut - HEEL_BREAST_CURVE * ((p.x - ctr.cx) / HEEL_BREAST_WIDTH).powi(2);
         let z = p.z.min(limit);
+        let sc = sc * (1.0 - taper * (1.0 - y / HEEL_HEIGHT));
         DVec3::new(hx + (p.x - hx) * sc, space.heel(y * scale_y), hz + (z - hz) * sc)
     })?;
     let inside = DVec3::new(ctr.cx, space.heel(HEEL_INSIDE.0), zcut - HEEL_INSIDE.1);
@@ -126,7 +129,7 @@ mod tests {
         let mut b = MeshBuilder::new();
         add_sole(&boot, &tess, &Sole::default(), &mut b).unwrap();
         assert_eq!(b.triangle_count(), 1848);
-        add_heel(&boot, &tess, &Sole::default(), &Heel::default(), &mut b).unwrap();
+        add_heel(&boot, &tess, &Sole::default(), &Heel::default(), 0.0, &mut b).unwrap();
         assert_eq!(b.triangle_count(), 2 * 1848);
         let ys = b.mesh().positions.iter().map(|p| p.y);
         assert!(ys.clone().fold(f32::INFINITY, f32::min).abs() < 1e-7, "on the floor");
@@ -138,7 +141,7 @@ mod tests {
         let (boot, tess) = (boot(), Tess::OFFLINE);
         let heel = Heel { length: 0.03, height: 0.02 };
         let mut b = MeshBuilder::new();
-        add_heel(&boot, &tess, &Sole::default(), &heel, &mut b).unwrap();
+        add_heel(&boot, &tess, &Sole::default(), &heel, 0.0, &mut b).unwrap();
         let front = b.mesh().positions.iter().map(|p| p.z).fold(f32::NEG_INFINITY, f32::max);
         assert!(f64::from(front) <= -0.04 + heel.length + 0.003, "the block stops {front} m forward");
     }

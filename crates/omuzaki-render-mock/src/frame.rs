@@ -11,6 +11,7 @@ use crate::TextureData;
 use crate::arena::Arena;
 use crate::environment::{EnvLight, EnvironmentData};
 use crate::morph::morph_vertices;
+use crate::particles::{self, SystemEntry};
 use crate::raster::{Cull, Mode, Surface, Varying, Vertex, Write, draw_triangle};
 use crate::resources::{MeshEntry, weld_normals};
 use crate::shade::{FogLight, Lights, Lit, Textures, light_triangle, mask_keeps, shade_pixel};
@@ -24,6 +25,7 @@ pub(crate) struct Resources<'a> {
     pub(crate) textures: &'a Arena<TextureData>,
     pub(crate) materials: &'a Arena<Material>,
     pub(crate) environments: &'a Arena<EnvironmentData>,
+    pub(crate) particle_systems: &'a Arena<SystemEntry>,
 }
 
 /// What a frame produced.
@@ -32,6 +34,8 @@ pub(crate) struct Drawn {
     pub(crate) render_size: UVec2,
     pub(crate) draw_calls: u32,
     pub(crate) triangles: u64,
+    /// Particle slots submitted.
+    pub(crate) particles: u32,
     /// Which passes had work, indexed like `Pass::ALL`.
     pub(crate) ran: [bool; Pass::COUNT],
 }
@@ -74,6 +78,8 @@ fn fill_backdrop(surface: &mut Surface, environment: &EnvLight<'_>, rays: Mat3) 
 /// Draws `scene` for a target of `desc`.
 ///
 /// `painted` says a painter ran since the last frame, so the `PaintTextures` pass is reported.
+// One frame in contract order, pass after pass, reads best as one function.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn draw_frame(
     res: &Resources<'_>,
     desc: &TargetDesc,
@@ -112,6 +118,13 @@ pub(crate) fn draw_frame(
         omuzaki_render_api::Background::Environment => Vec4::W,
     };
     let backdrop = Backdrop::new(scene.background, res.textures)?;
+    // Every batch names a live system and cells inside its atlas, checked before anything is drawn (D2).
+    for batch in &scene.particles {
+        let system = live(res.particle_systems, batch.system.index(), batch.system.generation(), "particle system")?;
+        if !particles::cells_fit(&system.desc, batch.cells) {
+            return Err(RenderError::invalid("spawn batch", "a listed cell is outside its system's atlas"));
+        }
+    }
     let mut surface = Surface::new(internal, background);
     if let (omuzaki_render_api::Background::Environment, Some(environment)) = (scene.background, &environment) {
         fill_backdrop(&mut surface, environment, scene.camera.sky_rays(aspect));
@@ -124,6 +137,7 @@ pub(crate) fn draw_frame(
         render_size: internal,
         draw_calls: 0,
         triangles: 0,
+        particles: 0,
         ran: [false; Pass::COUNT],
     };
     out.ran[Pass::PaintTextures.index()] = painted;
@@ -179,6 +193,27 @@ pub(crate) fn draw_frame(
         out.draw_calls += 1;
         out.triangles += mesh.data.triangle_count() as u64;
         draw_hull(&mut surface, &hull, inst, mesh, material, posed);
+    }
+
+    // Particles test and write depth after the outlines and before the blended instances (D4).
+    if !scene.particles.is_empty() {
+        out.ran[Pass::Particles.index()] = true;
+        out.draw_calls += 1;
+        #[allow(clippy::cast_precision_loss)] // image sizes are far below 2^24
+        let height = desc.size.y as f32;
+        out.particles = particles::draw(
+            &mut surface,
+            scene,
+            res.particle_systems,
+            &lights,
+            fog,
+            &textures,
+            quality.particle_density,
+            grid_for(quality.samples),
+            view_proj,
+            height,
+            aspect,
+        );
     }
 
     // Back to front, authored order first; a stable sort keeps submission order for exact ties.

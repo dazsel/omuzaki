@@ -77,7 +77,7 @@ pub fn run_all(store: &dyn Store) {
     concurrent_puts_agree(store);
 }
 
-/// `put` then `get`/`contains`/`provenance` give back what went in, for empty, tiny and multi-MiB inputs, and the
+/// `put` then `get`/`contains`/`provenance`/`size` give back what went in, for empty, tiny and multi-MiB inputs, and the
 /// hash is BLAKE3.
 ///
 /// # Panics
@@ -86,6 +86,7 @@ pub fn round_trip(store: &dyn Store) {
     let empty = store.put(&[], sample_provenance(Commercial::Ok)).unwrap();
     assert_eq!(empty.to_string(), EMPTY_BLAKE3, "the hash must be BLAKE3");
     assert_eq!(store.get(&empty).unwrap(), Vec::<u8>::new());
+    assert_eq!(store.size(&empty).unwrap(), 0);
 
     for (label, len) in [("tiny", 1), ("small", 4096), ("multi-MiB", (1 << 20) + 1)] {
         let bytes = payload(label, len);
@@ -94,11 +95,12 @@ pub fn round_trip(store: &dyn Store) {
         assert_eq!(hash, ContentHash::of(&bytes), "{label}: hash is BLAKE3 of the bytes");
         assert!(store.contains(&hash), "{label}: contains after put");
         assert_eq!(store.get(&hash).unwrap(), bytes, "{label}: bytes round trip");
+        assert_eq!(store.size(&hash).unwrap(), len as u64, "{label}: size is the stored length");
         assert_eq!(store.provenance(&hash).unwrap(), provenance, "{label}: provenance round trips");
     }
 }
 
-/// A hash nobody stored is reported as [`StoreError::Missing`] by `get` and `provenance`, and `contains` is false.
+/// A hash nobody stored is reported as [`StoreError::Missing`] by `get`, `provenance` and `size`, and `contains` is false.
 ///
 /// # Panics
 /// If any expectation is violated.
@@ -107,6 +109,7 @@ pub fn unknown_hash_is_missing(store: &dyn Store) {
     assert!(!store.contains(&unknown));
     assert_eq!(store.get(&unknown), Err(StoreError::Missing(unknown)));
     assert_eq!(store.provenance(&unknown), Err(StoreError::Missing(unknown)));
+    assert_eq!(store.size(&unknown), Err(StoreError::Missing(unknown)));
 }
 
 /// Storing the same bytes again returns the same hash and keeps the first provenance, whatever the second says.

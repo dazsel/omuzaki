@@ -1,8 +1,8 @@
 //! The kit's own character, made as a person or an agent makes it and performing live: the character spine's
 //! exists-when test (CLAUDE.md, spine map §3).
 //!
-//! `character.create` with its default parts (a body with hands, a head, hair, and an outfit of a shirt, trousers and
-//! boots) is planned and applied on an in-memory project as the executor does, built by the caching builder the app
+//! `character.create` with its default parts (the kit's default character: a body with five-finger hands, a head, hair,
+//! and an outfit of a shirt, a pleated skirt, tights and boots) is planned and applied on an in-memory project as the executor does, built by the caching builder the app
 //! uses, and checked to be complete and rigged on the VRM humanoid skeleton. Then it performs: a scripted camera,
 //! through `LiveInput`, the real retarget, life layer and animator, the rig and its spring chains, and the part runtimes
 //! (hair, cloth), stepped at 60 Hz to the scene the renderer draws. Everything must hold: the head follows the tracked
@@ -53,7 +53,7 @@ use support::{Cameras, mid_step, performer};
 const TEMPLATES: [&str; 2] = ["soft-sd", "standard"];
 
 /// The parts `character.create` gives a new character, in build order.
-const DEFAULT_PARTS: [&str; 6] = ["body", "head", "hair", "shirt", "trousers", "boots"];
+const DEFAULT_PARTS: [&str; 7] = ["body", "head", "hair", "legwear", "shirt", "skirt", "boots"];
 
 /// The live loop's rate: the performer steps at it, and so do the springs and runtimes.
 const HZ: u64 = STEP_HZ as u64;

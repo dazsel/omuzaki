@@ -284,6 +284,10 @@ impl<S: Store> Store for SteppedStore<S> {
     fn contains(&self, hash: &ContentHash) -> bool {
         self.inner.contains(hash)
     }
+
+    fn size(&self, hash: &ContentHash) -> Result<u64, StoreError> {
+        self.inner.size(hash)
+    }
 }
 
 impl<S: StoreGc> StoreGc for SteppedStore<S> {

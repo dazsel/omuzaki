@@ -12,7 +12,10 @@ use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use omuzaki_core::glam::{Mat4, Vec3};
-use omuzaki_render_api::{Camera, Colour, Instance, JointRange, Light, MaterialId, MeshId, Scene};
+use omuzaki_core::time::Seconds;
+use omuzaki_render_api::{
+    Camera, Colour, EmitterShape, Instance, JointRange, Light, MaterialId, MeshId, ParticleSystemId, Scene, SpawnBatch,
+};
 
 struct Counting;
 
@@ -40,7 +43,8 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static GLOBAL: Counting = Counting;
 
-/// A busy frame: a skinned character (one 128-joint skeleton) plus 200 props and a full light rig.
+/// A busy frame: a skinned character (one 128-joint skeleton) plus 200 props, a full light rig and the most spawn
+/// batches a scene may hold (1,024, particles.md D2).
 fn fill(scene: &mut Scene, frame: u64) {
     scene.frame.index = frame;
     let (mesh, material) = (MeshId::from_parts(0, 1), MaterialId::from_parts(0, 1));
@@ -62,6 +66,14 @@ fn fill(scene: &mut Scene, frame: u64) {
         }
         scene.instances.push(instance);
     }
+    let system = ParticleSystemId::from_parts(0, 1);
+    scene.particles.extend((0..1024u16).map(|i| SpawnBatch {
+        shape: EmitterShape::sphere(0.1),
+        start: Seconds(f64::from(i) * 0.01),
+        count: 19,
+        seed: u32::from(i),
+        ..SpawnBatch::new(system, Mat4::from_translation(Vec3::splat(f32::from(i))))
+    }));
 }
 
 #[test]

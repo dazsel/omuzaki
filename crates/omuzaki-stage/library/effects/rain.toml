@@ -1,0 +1,30 @@
+name = "rain"
+title = "Rain"
+summary = "Steady rain: thin streaks falling fast over the scene and stopping at the floor."
+tags = ["weather", "rain", "moody"]
+version = "1.0.0"
+origin = "designed for ST-13: drops 1 to 2 mm at terminal speed 6.5 to 7.5 m/s, drawn as streaks of the motion blur a 30 fps shutter gives"
+kind = "weather"
+sprite = { shape = "streak" }
+
+[weather]
+density = 160.0
+height = 2.6
+area = "auto"
+
+[particles]
+lifetime = [0.55, 0.75]
+speed = [6.5, 7.5]
+direction = [0.05, -1.0, 0.0]
+spread_deg = 2.0
+gravity = [0.0, 0.0, 0.0]
+drag = 0.0
+wind = [0.0, 0.0, 0.0]
+size = [0.005, 0.007]
+size_curve = [1.0, 1.0, 1.0, 1.0]
+orientation = { kind = "velocity", stretch = 0.035 }
+colours = ["#c8d6ec"]
+coverage = 0.55
+shading = { kind = "unlit" }
+glow = 0.0
+floor = 0.0

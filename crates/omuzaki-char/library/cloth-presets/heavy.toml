@@ -1,0 +1,11 @@
+# Heavy: wool and felt. Twice cotton's weight and five times its bending stiffness: it hangs straight and swings slowly.
+density = 0.45
+stretch = 5.0e-5
+shear = 5.0e-4
+bend = 4.0e3
+damping = 1.5
+thickness = 0.003
+max_stretch = 0.04
+friction = [0.7, 0.5]
+# The soft hold toward the designed shape (a soft pin's weight on every free particle).
+shape = 1e-5

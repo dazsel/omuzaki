@@ -97,6 +97,20 @@ fn a_truncated_object_is_reported_as_corrupt() {
     let hash = store.put(&payload("truncated", 5000), sample_provenance(Commercial::Ok)).unwrap();
     fs::write(store.paths(&hash).data, b"short").unwrap();
     assert_eq!(store.get(&hash), Err(StoreError::Corrupt(hash)));
+    // `size` reads the file's metadata, not its bytes: it reports what is stored, where `get` would refuse it.
+    assert_eq!(store.size(&hash), Ok(5));
+}
+
+#[test]
+fn size_answers_from_the_metadata_without_reading_the_object() {
+    let (_dir, store) = open();
+    let hash = store.put(&payload("sized", 70_000), sample_provenance(Commercial::Ok)).unwrap();
+    assert_eq!(store.size(&hash), Ok(70_000));
+    // An object whose data can't be read (here it is a folder) has no size, and isn't read to find out.
+    let data = store.paths(&hash).data;
+    fs::remove_file(&data).unwrap();
+    fs::create_dir(&data).unwrap();
+    assert_eq!(store.size(&hash), Err(StoreError::Missing(hash)));
 }
 
 #[test]
