@@ -2304,6 +2304,10 @@ ui-live-op-failed = { $what } didn't work: { $reason }
 ui-live-op-failed-hint = { $what } didn't work: { $reason }. { $hint }
 
 # The Live workspace: the camera, tracking, the stage, expressions and outputs.
+# $what (id, never translated): "hair-b"
+ui-live-op-missing = { $what } isn't available in this version of the studio on this computer
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
 ui-live-output-backdrop = Backdrop
 
 # The Live workspace: the camera, tracking, the stage, expressions and outputs.

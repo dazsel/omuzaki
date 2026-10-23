@@ -636,6 +636,17 @@ fn a_machine_without_a_verified_transparent_surface_says_why_it_cannot_show_the_
 }
 
 #[test]
+fn a_part_the_app_lacks_is_told_apart_from_a_refusal() {
+    let mut model = LiveModel::with_ops(Ops { status: true, ..Ops::default() });
+    model.refresh(&NoOps, &person());
+    let failure = model.failure().cloned().unwrap_or_else(|| panic!("a runner without the service fails the status"));
+    assert!(failure.missing, "an unavailable service is a part this app lacks: {failure:?}");
+    let mut refused = LiveModel::with_ops(Ops { status: true, ..Ops::default() });
+    refused.refresh(&Recorder::default(), &person());
+    assert!(refused.failure().is_some_and(|f| !f.missing), "an answer it could not read is not a missing part");
+}
+
+#[test]
 fn a_minimised_window_says_it_cannot_be_captured() {
     let h = workspace(
         StoryRunner(LiveState::TrackingLost),

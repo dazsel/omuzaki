@@ -173,6 +173,7 @@ words! {
     BudgetOther = "ui-live-budget-other" => "Budget",
     OpFailed = "ui-live-op-failed" => "{what} didn't work: {reason}",
     OpFailedHint = "ui-live-op-failed-hint" => "{what} didn't work: {reason}. {hint}",
+    OpMissing = "ui-live-op-missing" => "{what} isn't available in this version of the studio on this computer",
     FailedWindow = "ui-live-failed-window" => "The output window",
     FailedCalibrate = "ui-live-failed-calibrate" => "Calibration",
     FailedPerformer = "ui-live-failed-performer" => "The performer",

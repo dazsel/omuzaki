@@ -486,6 +486,8 @@ impl LivePanel {
             let what = text(ui.ctx(), failed_part(failure.op));
             let reason = failure.message.trim_end_matches('.');
             let line = match &failure.hint {
+                // A part the app lacks: its sentence is written for whoever wires the app, not for the person.
+                _ if failure.missing => say(ui.ctx(), Word::OpMissing, &[("what", &what)]),
                 Some(hint) => say(ui.ctx(), Word::OpFailedHint, &[("what", &what), ("reason", reason), ("hint", hint)]),
                 None => say(ui.ctx(), Word::OpFailed, &[("what", &what), ("reason", reason)]),
             };

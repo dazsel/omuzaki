@@ -5,7 +5,7 @@
 //! not on main yet is drawn disabled ([`Control`]) and never calls a guessed name.
 
 use omuzaki_doc_api::Value;
-use omuzaki_ops_api::{Actor, Grants, Mode, OpError, Request, Runner};
+use omuzaki_ops_api::{Actor, ErrorCode, Grants, Mode, OpError, Request, Runner};
 use omuzaki_stage::perform::Tracking;
 use omuzaki_stage::perform::host::{CalibrationState, PerformStatus};
 use omuzaki_stage::perform::input::{InputState, SourceKind};
@@ -297,6 +297,9 @@ pub struct Failure {
     pub message: String,
     /// How to fix it, when the op said.
     pub hint: Option<String>,
+    /// The part is missing from this app (the op's service is not wired in), rather than refusing what was asked: the
+    /// runner's sentence then names code, not anything a person can act on.
+    pub missing: bool,
 }
 
 /// The Live workspace's state.
@@ -692,7 +695,8 @@ impl LiveModel {
     }
 
     fn fail(&mut self, op: &'static str, error: &OpError) {
-        self.failure = Some(Failure { op, message: error.message.clone(), hint: error.hint.clone() });
+        let missing = error.code == ErrorCode::Unavailable;
+        self.failure = Some(Failure { op, message: error.message.clone(), hint: error.hint.clone(), missing });
     }
 }
 
