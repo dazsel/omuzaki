@@ -96,9 +96,16 @@ fn the_tap_and_a_direct_push_give_the_same_events() {
     drop(handle);
     let stats = tapped.stop();
     let got = summary(&drain(&tapped));
-    assert_eq!(got.len(), expected.len(), "{got:?} vs {expected:?}");
-    for (g, e) in got.iter().zip(&expected) {
-        assert!(g.0 == e.0 && (g.1 - e.1).abs() <= 1, "{got:?} vs {expected:?}");
+    // The voice-activity events come in frame order, and so do the finals among themselves; where a final falls
+    // against the next utterance's start is the recogniser thread's timing (#2343), so each stream is compared alone.
+    let streams =
+        |events: &[(&'static str, i64)]| -> (Vec<_>, Vec<_>) { events.iter().copied().partition(|e| e.0 != "final") };
+    let ((got_vad, got_finals), (expected_vad, expected_finals)) = (streams(&got), streams(&expected));
+    for (got, expected) in [(got_vad, expected_vad), (got_finals, expected_finals)] {
+        assert_eq!(got.len(), expected.len(), "{got:?} vs {expected:?}");
+        for (g, e) in got.iter().zip(&expected) {
+            assert!(g.0 == e.0 && (g.1 - e.1).abs() <= 1, "{got:?} vs {expected:?}");
+        }
     }
     assert_eq!(stats.samples_dropped, 0);
     assert_eq!(got.iter().filter(|e| e.0 == "final").count(), 3, "{got:?}");
