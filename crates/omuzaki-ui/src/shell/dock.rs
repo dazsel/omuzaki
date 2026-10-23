@@ -26,7 +26,7 @@ const SLACK: f32 = 0.5;
 /// The gap between two panels, and around the dock: each panel is a card on the window's background.
 pub const GAP: f32 = space::S6;
 /// The room inside a panel's card around its body; a primary panel (the viewport, the stage) runs to the card's edge.
-const BODY: Margin = Margin::symmetric(8, 6);
+const BODY: Margin = Margin::symmetric(12, 10);
 
 /// The docking widget's view of a frame.
 pub struct Dock<'a> {

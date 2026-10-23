@@ -24,7 +24,7 @@ Every screen has the same seven regions.
 | **Status bar** | 24 pt | selection, **undo label**, fence note, health meter, agent budget |
 | **Overlays** | n/a | command palette, approval stack, toasts, notification log, dialogs |
 
-Each docked panel is a card (radius 6, a hairline `line` outline, its tab bar on `bg2` and its body on `bg1`) on the window's `bg0`, 6 pt from the next card and from the window's edges, so every pane reads as its own place. A panel's body sits 8 pt in from its card's sides and 6 pt from its top and bottom; the primary panel (the viewport, the stage) runs to the card's edge.
+Each docked panel is a card (radius 6, a hairline `line` outline, its tab bar on `bg2` and its body on `bg1`) on the window's `bg0`, 6 pt from the next card and from the window's edges, so every pane reads as its own place. A panel's body sits 12 pt in from its card's sides and 10 pt from its top and bottom, so nothing touches the card's edge; the primary panel (the viewport, the stage) runs to the card's edge.
 
 Supported window sizes run from **1280×720** (minimum, enforced) to 4K. The wireframes show **1920×1080** and **1366×768**, the two sizes every panel is reviewed at. Sizes are in egui points, so they hold at any OS scale.
 
