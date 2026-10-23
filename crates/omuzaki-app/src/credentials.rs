@@ -6,6 +6,11 @@
 //! hash of its secret, never the secret: whoever reads the folder can't connect. The secret is shown once, when it is
 //! issued. Labels are unique, so a credential is revoked by its label.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "host code, not an op: the core's own files in the project's `.omuzaki` folder; the fence is for ops"
+)]
+
 use std::path::{Path, PathBuf};
 
 use omuzaki_mcp::{IssuedCredential, TokenRecord};
@@ -44,10 +49,11 @@ pub fn issue(
         return Err(OpError::invalid("label", format!("a credential is already labelled \"{label}\""))
             .hint("pick another label, or revoke that credential first"));
     }
-    let issued = IssuedCredential::new(label, grants, issuer, budget).map_err(|e| OpError::internal(e.to_string()))?;
-    records.push(issued.record().clone());
+    let credential =
+        IssuedCredential::new(label, grants, issuer, budget).map_err(|e| OpError::internal(e.to_string()))?;
+    records.push(credential.record().clone());
     store(project, &records)?;
-    Ok(issued)
+    Ok(credential)
 }
 
 /// The records of every credential issued for `project`, oldest first.

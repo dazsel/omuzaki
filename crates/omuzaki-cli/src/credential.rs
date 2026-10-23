@@ -2,11 +2,12 @@
 //! writes the project's private credential records directly, without opening the project, so it works while the
 //! studio has the project open.
 
+use std::fmt::Write as _;
 use std::path::Path;
 
 use omuzaki_app::credentials;
 use omuzaki_mcp::TokenRecord;
-use omuzaki_ops_api::{Actor, Budget, Grants, OpError};
+use omuzaki_ops_api::{Actor, Budget, Grants, OpError, Scope};
 use serde_json::{Value, json};
 
 use crate::cli::CredentialCommand;
@@ -17,6 +18,7 @@ use crate::session::TOKEN_VAR;
 ///
 /// # Errors
 /// What [`credentials`] reports: a label already used, a record that can't be read or stored.
+#[allow(clippy::disallowed_methods, reason = "the CLI checks the project folder the person typed; it is not an op")]
 pub fn run(project: Option<&Path>, action: &CredentialCommand, person: Actor, json: bool) -> Result<String, OpError> {
     let project = project.ok_or_else(|| {
         OpError::invalid("project", "a credential belongs to a project")
@@ -28,7 +30,7 @@ pub fn run(project: Option<&Path>, action: &CredentialCommand, person: Actor, js
     match action {
         CredentialCommand::Issue { label, grant, spend_cap } => {
             let grants = grant.iter().fold(Grants::agent_default(), |grants, scope| grants.with(*scope));
-            let grants = if spend_cap.is_some() { grants.with(omuzaki_ops_api::Scope::Spend) } else { grants };
+            let grants = if spend_cap.is_some() { grants.with(Scope::Spend) } else { grants };
             let budget = Budget { usd_micros: spend_cap.unwrap_or(0), ..Budget::default() };
             let issued = credentials::issue(project, label, grants, budget, person)?;
             if json {
@@ -55,7 +57,10 @@ pub fn run(project: Option<&Path>, action: &CredentialCommand, person: Actor, js
             if records.is_empty() {
                 return Ok("No credentials. Issue one with `omuzaki credential issue --label <NAME>`.\n".to_owned());
             }
-            Ok(records.iter().map(|r| format!("{}\t{}\n", r.label, summary(r))).collect())
+            Ok(records.iter().fold(String::new(), |mut text, r| {
+                let _ = writeln!(text, "{}\t{}", r.label, summary(r));
+                text
+            }))
         }
         CredentialCommand::Revoke { label } => {
             if !credentials::revoke(project, label)? {
@@ -73,6 +78,27 @@ pub fn run(project: Option<&Path>, action: &CredentialCommand, person: Actor, js
             Ok(format!("Revoked the credential \"{label}\": its secret is refused from now on.\n"))
         }
     }
+}
+
+/// A record as `--json` shows it: never the hash.
+fn described(record: &TokenRecord) -> Value {
+    let scopes: Vec<&str> = record.grants.scopes().map(Scope::name).collect();
+    let usd = record.budget.map_or(0, |b| b.usd_micros);
+    json!({ "label": record.label, "grants": scopes, "spend_cap_usd_micros": usd })
+}
+
+/// `grants read, edit, ...; spends up to $2.50` for the text output.
+fn summary(record: &TokenRecord) -> String {
+    let scopes: Vec<&str> = record.grants.scopes().map(Scope::name).collect();
+    let usd = record.budget.map_or(0, |b| b.usd_micros);
+    let spend = if usd == 0 {
+        "spends nothing".to_owned()
+    } else {
+        let cents = format!("{:06}", usd % 1_000_000);
+        let cents = cents.trim_end_matches('0');
+        format!("spends up to ${}.{cents:0<2}", usd / 1_000_000)
+    };
+    format!("grants {}; {spend}", scopes.join(", "))
 }
 
 #[cfg(test)]
@@ -95,25 +121,4 @@ mod tests {
         assert!(summary(issued(999_999).record()).ends_with("; spends up to $0.999999"));
         assert!(summary(issued(3_000_000).record()).starts_with("grants read, edit"));
     }
-}
-
-/// A record as `--json` shows it: never the hash.
-fn described(record: &TokenRecord) -> Value {
-    let scopes: Vec<&str> = record.grants.scopes().map(|s| s.name()).collect();
-    let usd = record.budget.map_or(0, |b| b.usd_micros);
-    json!({ "label": record.label, "grants": scopes, "spend_cap_usd_micros": usd })
-}
-
-/// `grants read, edit, ...; spends up to $2.50` for the text output.
-fn summary(record: &TokenRecord) -> String {
-    let scopes: Vec<&str> = record.grants.scopes().map(|s| s.name()).collect();
-    let usd = record.budget.map_or(0, |b| b.usd_micros);
-    let spend = if usd == 0 {
-        "spends nothing".to_owned()
-    } else {
-        let cents = format!("{:06}", usd % 1_000_000);
-        let cents = cents.trim_end_matches('0');
-        format!("spends up to ${}.{cents:0<2}", usd / 1_000_000)
-    };
-    format!("grants {}; {spend}", scopes.join(", "))
 }

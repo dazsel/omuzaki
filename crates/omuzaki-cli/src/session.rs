@@ -136,6 +136,7 @@ pub struct Ceiling {
 /// `invalid` for a secret with no project, or with `--grant` or `--spend-cap` beside it (the credential decides);
 /// `denied` for a secret no credential of the project matches (wrong, or revoked); `invalid` when `--token-file`
 /// can't be read.
+#[allow(clippy::disallowed_methods, reason = "the CLI reads the `--token-file` the person typed; it is not an op")]
 pub fn ceiling(args: &McpArgs, project: Option<&Path>, token: Option<String>) -> Result<Ceiling, OpError> {
     let secret = match &args.token_file {
         Some(file) => Some(std::fs::read_to_string(file).map_err(|e| {

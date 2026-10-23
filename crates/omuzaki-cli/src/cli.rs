@@ -113,7 +113,7 @@ pub enum Command {
     /// Two modes. While Omuzaki Studio has the project open, this relays the agent into the studio: it works in front
     /// of you, and you pair it there once. Otherwise it runs headless, with nobody to ask: whatever would need your
     /// approval is refused. Say yes in advance with `--grant` and `--spend-cap`, or hand it a credential you issued
-    /// with `omuzaki credential issue` (in OMUZAKI_MCP_TOKEN or `--token-file`), which carries its own grants and
+    /// with `omuzaki credential issue` (in `OMUZAKI_MCP_TOKEN` or `--token-file`), which carries its own grants and
     /// budget.
     Mcp(McpArgs),
 
@@ -230,7 +230,7 @@ pub struct McpArgs {
     pub spend_cap: Option<u64>,
 
     /// A file holding a credential's secret (from `omuzaki credential issue`): the agent gets that credential's grants
-    /// and budget. The secret can also come from the OMUZAKI_MCP_TOKEN environment variable; never pass it as a flag.
+    /// and budget. The secret can also come from the `OMUZAKI_MCP_TOKEN` environment variable; never pass it as a flag.
     #[arg(long, value_name = "PATH")]
     pub token_file: Option<PathBuf>,
 }
@@ -252,7 +252,7 @@ impl McpArgs {
 /// An `omuzaki credential` subcommand.
 #[derive(Subcommand, Debug, PartialEq, Eq)]
 pub enum CredentialCommand {
-    /// Issue a credential and print its secret, once. Give it to the script or CI job (in OMUZAKI_MCP_TOKEN, or a file
+    /// Issue a credential and print its secret, once. Give it to the script or CI job (in `OMUZAKI_MCP_TOKEN`, or a file
     /// for `--token-file`); the project keeps only a hash of it.
     Issue {
         /// What to call it, for example `nightly render`. Each label is used once, so `revoke` can name it.
