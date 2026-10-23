@@ -82,9 +82,18 @@ fn user_message(message: &Message, out: &mut Vec<Value>) {
         }
     }
     out.extend(images_after);
-    if !parts.is_empty() {
-        out.push(json!({"role": "user", "content": parts}));
+    if parts.is_empty() {
+        return;
     }
+    // Text alone goes as a plain string, which every server takes: the chat templates of many local ones
+    // (llama-cpp-python's Jinja templates among them) render only string content and fail on parts. Parts carry images.
+    let content = if parts.iter().all(|p| p["type"] == "text") {
+        let texts: Vec<&str> = parts.iter().filter_map(|p| p["text"].as_str()).collect();
+        Value::String(texts.join("\n"))
+    } else {
+        Value::Array(parts)
+    };
+    out.push(json!({"role": "user", "content": content}));
 }
 
 fn assistant_message(message: &Message, out: &mut Vec<Value>) {
@@ -205,7 +214,7 @@ mod tests {
             parsed(&req),
             json!({"model": "llama3.2", "max_tokens": 64, "stream": true, "stream_options": {"include_usage": true},
                    "messages": [{"role": "system", "content": "a\n\nb"},
-                                {"role": "user", "content": [{"type": "text", "text": "hi"}]}]})
+                                {"role": "user", "content": "hi"}]})
         );
     }
 

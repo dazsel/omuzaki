@@ -58,6 +58,8 @@ jobs:
       cli_in_scope: ${{ steps.outputs.outputs.cli_in_scope }}
       cross_crates: ${{ steps.outputs.outputs.cross_crates }}
       has_cross: ${{ steps.outputs.outputs.has_cross }}
+      scan_tests: ${{ steps.outputs.outputs.scan_tests }}
+      has_scans: ${{ steps.outputs.outputs.has_scans }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -122,6 +124,7 @@ jobs:
           cargo xtask lint-crate-table
           cargo xtask lint-mods
           cargo xtask lint-docs-index
+          cargo xtask lint-scans
           cargo xtask lint-seed --base "$BASE"
       # On wasm a `registers` crate keeps its registrations only through the App's generated `link()` call (ADR 0015),
       # which no native gate can show. Build the test-only App for wasm32, run it in the runner's preinstalled node and
@@ -244,6 +247,30 @@ jobs:
             f=omuzaki-stage/wgpu; OMUZAKI_LINK_FEATURES=$f cargo test --locked -p omuzaki-cli --features $f --test registrations
           fi
 
+  # The tests that read every crate (xtask/src/scans.rs) on every change, whichever crates it touches: a change in one
+  # crate can break them without touching theirs, so the affected-crate scope alone would never run them (#2139).
+  scans:
+    name: workspace scans
+    needs: plan
+    if: needs.plan.outputs.has_scans == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SCAN_TESTS: ${{ needs.plan.outputs.scan_tests }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-linux
+        with:
+          cache-key: test
+          gpu: true
+      - name: Workspace scan tests
+        env:
+          RUST_BACKTRACE: "1"
+        run: |
+          set -e
+          # Each item is <package>:<test target>.
+          for item in $SCAN_TESTS; do cargo test --locked -p "${item%%:*}" --test "${item#*:}"; done
+
   # Pushes to main only: pull requests don't pay for the Windows toolchain. Native Windows tests run nightly.
   win-cross:
     name: windows build
@@ -267,7 +294,7 @@ jobs:
 
   gate:
     name: gate
-    needs: [plan, lint, test, link-gate, win-cross]
+    needs: [plan, lint, test, link-gate, scans, win-cross]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

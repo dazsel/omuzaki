@@ -818,7 +818,13 @@ impl Session {
                 let result = render::history(builtin, label.as_deref());
                 Ok(if changed { self.confirm_saved(result).await } else { result.into() })
             }
-            Builtin::Log => self.history_log(&args, &standing.clone()?.grants).map(Reply::from),
+            Builtin::Log => {
+                // The log is the result, so `finish` adds no heads-up and catches up with nothing: an op that
+                // returned before this call must be in the log it shows (#2360).
+                let grants = standing.clone()?.grants;
+                log_caught_up(&self.shared, &grants).await;
+                self.history_log(&args, &grants).map(Reply::from)
+            }
             Builtin::TxBegin => {
                 // `Executor::begin` cannot refuse, and for a paused session it hands back a transaction that was never
                 // opened; so the refusal is made here, before it runs, and `begin_tx` checks again afterwards, because
@@ -1280,6 +1286,44 @@ impl PushCursor {
     }
 }
 
+/// Runs `work` against the runner on a blocking thread, off the server's async workers.
+async fn off_runner<T: Send + 'static>(
+    shared: &Shared,
+    work: impl FnOnce(&dyn Runner) -> T + Send + 'static,
+) -> Result<T, OpError> {
+    let runner = Arc::clone(&shared.runner);
+    jobs::off_thread(move || work(runner.as_ref())).await
+}
+
+/// Waits until the event feed has delivered every op the runner's log holds, up to [`FEED_LAG`]. The feed fills from a
+/// worker thread, so without this a change that committed before a call could be missing from that call's heads-up,
+/// or from the log a call reads (#2360). The log is the authority on what committed: it holds a record before any
+/// event for it exists, so a record past the feed's position means events are still on their way.
+async fn log_caught_up(shared: &Arc<Shared>, grants: &Grants) {
+    if !grants.allows(Scope::Read) || !shared.hub.is_fed() {
+        return;
+    }
+    let deadline = Instant::now() + FEED_LAG;
+    let mut arrivals = shared.hub.watch();
+    // Is the feed behind the log at all? Usually not, and that is the one cheap question every result asks.
+    let (grants_now, delivered) = (grants.clone(), shared.hub.log_seq());
+    let behind = off_runner(shared, move |runner| runner.log(delivered, 1, &grants_now)).await;
+    if !matches!(behind, Ok(Ok(records)) if !records.is_empty()) {
+        return;
+    }
+    // The log's end now: the feed owes us exactly that much, however much more is committed while we wait.
+    let grants = grants.clone();
+    let Ok(target) = off_runner(shared, move |runner| crate::events::latest_log_seq(runner, &grants)).await else {
+        return;
+    };
+    // The deadline is checked on every pass: a feed that keeps delivering must not keep the result waiting.
+    while shared.hub.log_seq() < target && Instant::now() < deadline {
+        if tokio::time::timeout_at(deadline, arrivals.changed()).await.is_err() {
+            return;
+        }
+    }
+}
+
 /// Everything a result gets after the call itself: the wait for the event feed, the heads-up about what others changed,
 /// the decisions on this session's approvals, and the save warning. One place for blocking calls, `tasks/get` and the
 /// task-status pushes, so a task client is told exactly what a blocking caller is.
@@ -1333,34 +1377,10 @@ impl Reporter {
         let runner = Arc::clone(&self.shared.runner);
         jobs::off_thread(move || work(runner.as_ref())).await
     }
-    /// Waits until the event feed has delivered every op the runner's log holds, up to [`FEED_LAG`]. The feed fills from a
-    /// worker thread, so without this a change that committed before a call could be missing from that call's
-    /// heads-up. The log is the authority on what committed: it holds a record before any event for it exists, so a
-    /// record past the feed's position means events are still on their way.
+    /// Waits until the event feed has delivered every op the runner's log holds, up to [`FEED_LAG`]
+    /// ([`log_caught_up`]).
     async fn catch_up_with_log(&self, grants: &Grants) {
-        if !grants.allows(Scope::Read) || !self.shared.hub.is_fed() {
-            return;
-        }
-        let deadline = Instant::now() + FEED_LAG;
-        let mut arrivals = self.shared.hub.watch();
-        // Is the feed behind the log at all? Usually not, and that is the one cheap question every result asks.
-        let grants_now = grants.clone();
-        let delivered = self.shared.hub.log_seq();
-        let behind = self.blocking(move |runner| runner.log(delivered, 1, &grants_now)).await;
-        if !matches!(behind, Ok(Ok(records)) if !records.is_empty()) {
-            return;
-        }
-        // The log's end now: the feed owes us exactly that much, however much more is committed while we wait.
-        let grants = grants.clone();
-        let Ok(target) = self.blocking(move |runner| crate::events::latest_log_seq(runner, &grants)).await else {
-            return;
-        };
-        // The deadline is checked on every pass: a feed that keeps delivering must not keep the result waiting.
-        while self.shared.hub.log_seq() < target && Instant::now() < deadline {
-            if tokio::time::timeout_at(deadline, arrivals.changed()).await.is_err() {
-                return;
-            }
-        }
+        log_caught_up(&self.shared, grants).await;
     }
 
     /// What other actors changed since this session was last told, if anything, moving its position forward so each
@@ -1717,6 +1737,8 @@ impl ServerHandler for Session {
         self.name_client(&context);
         let grants = self.session_grants(&context)?;
         if request.uri == LOG_URI {
+            // An op that returned before this read is in the log it shows (#2360).
+            log_caught_up(&self.shared, &grants).await;
             return self.read_log(&grants);
         }
         let Some(provider) = self.shared.providers.serving(&request.uri) else {

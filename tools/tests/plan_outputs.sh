@@ -73,5 +73,25 @@ J
 out=$(python3 -I "$PLAN" "$work/cli-link-only.json")
 expect cli_in_scope true "the CLI reached only through a link-only dependency runs it too"
 
+# The workspace scans run on every change: one that touches a single unrelated crate, and an empty one (#2163).
+cat >"$work/scans.json" <<'J'
+{"mode":"crates","trigger":null,"empty":false,"changed":["a-api"],"direct":["a-api"],"full":["a-api"],"link_only":[],
+ "shards_changed":[["a-api"]],"shards_full":[["a-api"]],
+ "scans":[{"krate":"omuzaki-ops-api","test":"fs_fence"},{"krate":"omuzaki-cli","test":"registrations"}]}
+J
+out=$(python3 -I "$PLAN" "$work/scans.json")
+expect scan_tests 'omuzaki-ops-api:fs_fence omuzaki-cli:registrations' "an unrelated change runs every workspace scan"
+expect has_scans true "an unrelated change has a scan job"
+cat >"$work/scans-empty.json" <<'J'
+{"mode":"crates","trigger":null,"empty":true,"changed":[],"direct":[],"full":[],"link_only":[],
+ "shards_changed":[],"shards_full":[],"scans":[{"krate":"omuzaki-ops-api","test":"fs_fence"}]}
+J
+out=$(python3 -I "$PLAN" "$work/scans-empty.json")
+expect scan_tests 'omuzaki-ops-api:fs_fence' "an empty scope still runs the workspace scans"
+expect has_tests false "an empty scope still has no shard tests"
+out=$(python3 -I "$PLAN" "$work/docs.json")
+expect scan_tests '' "a report without the field has no scans"
+expect has_scans false "a report without the field has no scan job"
+
 python3 -I "$PLAN" >/dev/null 2>&1 && fail "missing arguments should be an error" || pass "missing arguments are an error"
 exit $((failures > 0))

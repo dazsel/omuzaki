@@ -75,6 +75,9 @@ enum Command {
     LintCrateTable,
     /// Fail on a crate that lists a folder under `generated-mods` but declares its modules by hand there, or not at all.
     LintMods,
+    /// Fail on a test that reads the whole workspace without being listed as a workspace scan (`scans.rs`), or a listed
+    /// scan whose test target is gone.
+    LintScans,
     /// Print the crate table (Markdown), generated from each crate's manifest.
     CrateTable,
     /// Fail on a doc under docs/ without `title`, `summary` and `area` front matter, or an index list in docs/README.md.
@@ -128,6 +131,12 @@ fn run(cli: &Cli) -> Result<ExitCode> {
         Command::LintSeed(args) => lint_seed::run(&workspace, args),
         Command::LintCrateTable => crate_table::lint(&workspace),
         Command::LintMods => lint_mods::lint(&workspace),
+        Command::LintScans => Ok(if scans::report(&workspace) {
+            println!("lint-scans: ok ({} workspace scans)", scans::SCANS.len());
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        }),
         Command::CrateTable => crate_table::print(&workspace),
         Command::LintDocsIndex => docs_index::lint(&workspace),
         Command::DocsIndex => docs_index::print(&workspace),

@@ -11,6 +11,8 @@
 //! - [`ears`]: [`ears::Ears`] reports [`ears::Heard`], including the early `Held` that drives barge-in.
 //! - [`stage`]: [`stage::Stage`] applies intents and reports the member's [`stage::Inventory`].
 //! - [`perception`]: opt-in [`perception::Glance`]s.
+//! - [`decide`]: the decision layer's [`decide::Decider`]: typed questions over the live transcript, answered with
+//!   probabilities, so the character reacts even when the LLM is slow or absent (#2348).
 //! - [`intent`]: the vocabulary, with [`intent::GazeTarget`], [`intent::PlaceId`] and the closed
 //!   [`intent::StyleTag`] set.
 //! - [`event`]: [`event::PerformerEvent`], the JSON Lines [`event::TranscriptLine`] and [`event::AiLine`].
@@ -31,6 +33,7 @@ omuzaki_core::define_link! {
 
 pub mod brain;
 pub mod conformance;
+pub mod decide;
 pub mod ears;
 pub mod event;
 pub mod ids;

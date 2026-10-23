@@ -5,7 +5,8 @@ use std::time::Duration;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// How long a local read (status, log, show, tree, merge-base) may run before [`GitError::Timeout`].
+/// How long a local read (status, log, show, tree, merge-base, the index lock's path) may run before
+/// [`GitError::Timeout`].
 pub const READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long a push or pull may run before [`GitError::Timeout`].
 pub const NETWORK_TIMEOUT: Duration = Duration::from_secs(600);
