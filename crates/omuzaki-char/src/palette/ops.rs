@@ -8,10 +8,10 @@
 //! The refusals are the ones that would leave a dangling `@slot`: removing a slot something still names (the error
 //! lists where), and renaming into a name that something already names without the palette defining it.
 //!
-//! Limits. The references these ops see are the ones stored in the parts' params and the face. A colour a
-//! part takes from its own default, which the file leaves out (the head's and body's skin), and a variant's
-//! override that names a slot, are not seen. So removing or renaming a slot can leave one of them naming a slot
-//! that no longer exists. Both are filed; check a character's defaults and variants before you remove or rename.
+//! The references these ops see are every place a slot reaches a build: the references stored in the parts' params and
+//! the face, the ones a part takes from its kind's defaults because the file leaves them out (the head's and body's skin
+//! in a hand-written file, #650), and the ones in a variant's overrides (#651). A rename stores a default it rewrites
+//! (the smallest missing piece of the part's params, as the kind fills it in) and rewrites a variant's overrides table.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -97,6 +97,117 @@ fn part_references(ctx: &OpCtx<'_>, character: &CharId, def: &CharacterDef) -> V
     found
 }
 
+/// A reference a part takes from its kind's defaults: the file leaves it out, so the part's normalised params name it.
+struct Defaulted {
+    /// The slot it names.
+    slot: PaletteSlot,
+    /// Where it would be stored.
+    at: DocPath,
+    /// The smallest piece of the params the document lacks around it: a rename stores that piece.
+    missing: DocPath,
+    /// That piece as the kind fills it in.
+    filled: Value,
+}
+
+/// The references the parts take from their kinds' defaults (#650): each part's stored params normalised by its kind
+/// (`PartKindRegistration::check`), less the references stored. A part whose params don't check, or whose kind isn't
+/// linked, has none here: the build refuses it anyway.
+fn default_references(ctx: &OpCtx<'_>, character: &CharId, def: &CharacterDef) -> Vec<Defaulted> {
+    let mut found = Vec::new();
+    for (id, part) in &def.parts {
+        let Some(kind) = omuzaki_char_api::find_kind(part.kind.as_str()) else { continue };
+        let at = paths::part_params(character, id);
+        let stored = ctx.doc.get(&at).cloned().unwrap_or_else(|| Value::Object(Map::new()));
+        let Ok(normalised) = (kind.check)(&stored) else { continue };
+        let mut named = Vec::new();
+        references_in(&normalised, &at, &mut named);
+        for (slot, path) in named {
+            if ctx.doc.get(&path).is_some() {
+                continue;
+            }
+            let Some((missing, filled)) = first_missing(ctx, &at, &path, &normalised) else { continue };
+            found.push(Defaulted { slot, at: path, missing, filled });
+        }
+    }
+    found
+}
+
+/// The shortest prefix of `path` (under the params at `root`, whose normalised value is `normalised`) that the document
+/// lacks, with the normalised value there.
+fn first_missing(ctx: &OpCtx<'_>, root: &DocPath, path: &DocPath, normalised: &Value) -> Option<(DocPath, Value)> {
+    let below = path.segments().get(root.segments().len()..)?;
+    let mut at = root.clone();
+    let mut value = normalised;
+    if ctx.doc.get(&at).is_none() {
+        return Some((at, value.clone()));
+    }
+    for segment in below {
+        at = at.join(segment.as_str());
+        value = match value {
+            Value::Object(fields) => fields.get(segment)?,
+            Value::Array(items) => items.get(segment.parse::<usize>().ok()?)?,
+            _ => return None,
+        };
+        if ctx.doc.get(&at).is_none() {
+            return Some((at, value.clone()));
+        }
+    }
+    None
+}
+
+/// A reference in a variant's overrides (#651): the slot, where it is shown (the override's path under the variant's
+/// overrides) and the variant's overrides table, which an edit replaces whole (its keys are whole paths). An override
+/// of the slot's own colour (`palette/<slot>`) counts too: removing the slot would leave the variant overriding
+/// nothing, and a rename moves it.
+fn variant_references(ctx: &OpCtx<'_>, character: &CharId) -> Vec<(PaletteSlot, DocPath, DocPath)> {
+    let mut found = Vec::new();
+    let Some(Value::Object(variants)) = ctx.doc.get(&paths::variants(character)) else { return found };
+    for name in variants.keys() {
+        let table = paths::variants(character).join(name.as_str()).join("overrides");
+        let Some(Value::Object(overrides)) = ctx.doc.get(&table) else { continue };
+        for (key, value) in overrides {
+            let shown = table.join(key.as_str());
+            if let Some(slot) = key.strip_prefix("palette/").and_then(|slot| PaletteSlot::new(slot).ok()) {
+                found.push((slot, shown.clone(), table.clone()));
+            }
+            let mut named = Vec::new();
+            references_in(value, &shown, &mut named);
+            found.extend(named.into_iter().map(|(slot, at)| (slot, at, table.clone())));
+        }
+    }
+    found
+}
+
+/// `value` with every `@from` reference under it pointing at `@to`.
+fn renamed(value: &Value, from: &PaletteSlot, to: &PaletteSlot) -> Value {
+    match value {
+        Value::String(text) => match ColourRef::parse(text) {
+            Ok(ColourRef::Slot(slot)) if slot == *from => json!(format!("@{to}")),
+            _ => value.clone(),
+        },
+        Value::Array(items) => Value::Array(items.iter().map(|item| renamed(item, from, to)).collect()),
+        Value::Object(fields) => {
+            Value::Object(fields.iter().map(|(key, item)| (key.clone(), renamed(item, from, to))).collect())
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => value.clone(),
+    }
+}
+
+/// The overrides table at `table` with `@from` renamed in every value and an override of `palette/<from>` moved to
+/// `palette/<to>`.
+fn renamed_overrides(ctx: &OpCtx<'_>, table: &DocPath, from: &PaletteSlot, to: &PaletteSlot) -> Value {
+    let Some(Value::Object(overrides)) = ctx.doc.get(table) else { return Value::Object(Map::new()) };
+    let own = format!("palette/{from}");
+    let moved = overrides
+        .iter()
+        .map(|(key, value)| {
+            let key = if *key == own { format!("palette/{to}") } else { key.clone() };
+            (key, renamed(value, from, to))
+        })
+        .collect();
+    Value::Object(moved)
+}
+
 /// The references in the stored face, leaf by leaf.
 fn face_references(ctx: &OpCtx<'_>, character: &CharId) -> Vec<(PaletteSlot, DocPath)> {
     let at = paths::face(character);
@@ -107,14 +218,27 @@ fn face_references(ctx: &OpCtx<'_>, character: &CharId) -> Vec<(PaletteSlot, Doc
     found
 }
 
-/// Where each palette slot is named: at each reference in the parts, and at the exact field of each face leaf that
-/// names it. A slot the face reports through `FaceProfile::slots_used` but the stored leaves do not name (a default the
-/// file leaves out) is listed at the face root, so that use is never hidden.
+/// Every reference that names a slot, with its path: stored in the parts and the face, taken from a kind's defaults,
+/// and in a variant's overrides.
+fn all_references(ctx: &OpCtx<'_>, character: &CharId, def: &CharacterDef) -> Vec<(PaletteSlot, DocPath)> {
+    let defaults = default_references(ctx, character, def).into_iter().map(|d| (d.slot, d.at));
+    let variants = variant_references(ctx, character).into_iter().map(|(slot, at, _)| (slot, at));
+    part_references(ctx, character, def)
+        .into_iter()
+        .chain(face_references(ctx, character))
+        .chain(defaults)
+        .chain(variants)
+        .collect()
+}
+
+/// Where each palette slot is named: at each reference in the parts (stored or defaulted), the variants' overrides,
+/// and at the exact field of each face leaf that names it. A slot the face reports through `FaceProfile::slots_used`
+/// but the stored leaves do not name (a default the file leaves out) is listed at the face root, so that use is never
+/// hidden.
 fn usage(ctx: &OpCtx<'_>, character: &CharId, def: &CharacterDef) -> Uses {
-    let face = face_references(ctx, character);
-    let in_face: BTreeSet<PaletteSlot> = face.iter().map(|(slot, _)| slot.clone()).collect();
+    let in_face: BTreeSet<PaletteSlot> = face_references(ctx, character).into_iter().map(|(slot, _)| slot).collect();
     let mut uses = Uses::new();
-    for (slot, path) in part_references(ctx, character, def).into_iter().chain(face) {
+    for (slot, path) in all_references(ctx, character, def) {
         uses.entry(slot).or_default().push(path);
     }
     for slot in def.face.slots_used() {
@@ -239,9 +363,8 @@ register_op!(PaletteAddSlot);
 /// Removes a palette slot. Refused while a part or the face still names it: the error lists where, and the slot can go
 /// once nothing refers to it. Undo brings the slot back with its colour.
 ///
-/// Limits: the uses it sees are the references stored in the parts' params and the face. A colour a part
-/// takes from its own default (the head's skin when the file leaves it out) and a variant's override are
-/// not seen, so removing the slot can strand one of them.
+/// The uses it counts are every reference that reaches a build: stored in the parts and the face, taken from a part
+/// kind's defaults (the head's skin when the file leaves it out) and in a variant's overrides.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(extend(
@@ -278,9 +401,8 @@ impl Op for PaletteRemoveSlot {
                 format!("can't remove palette slot `{}`: it is used by {}", self.slot, list(texts(&used))),
             )
             .hint(
-                "point those uses at a fixed colour or another slot first, by editing the part or the face; \
-                   palette.rename_slot only moves them to a new name. Defaults and variant overrides are not \
-                   listed",
+                "point those uses at a fixed colour or another slot first, by editing the part, the face or the \
+                   variant; palette.rename_slot only moves them to a new name",
             ));
         }
         let changes = vec![access::change(ctx, slot_path(&self.character, &self.slot), None)];
@@ -295,8 +417,9 @@ register_op!(PaletteRemoveSlot);
 /// `@from`, and the same key in each saved colourway. The renamed character builds exactly as it did.
 ///
 /// The new name must be free, and nothing may already name it: a reference to a slot the palette lacks would silently
-/// start resolving to this slot's colour. Limits: as for `palette.remove_slot`, a default or a variant
-/// override that names `@from` is not rewritten.
+/// start resolving to this slot's colour. A reference a part takes from its kind's defaults is stored with the new name
+/// (the smallest missing piece of the part's params, as the kind fills it in), and a variant's overrides table is
+/// rewritten whole, an override of the slot's own colour moving with it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(extend(
@@ -336,10 +459,7 @@ impl Op for PaletteRenameSlot {
             )
             .hint("choose a name the palette doesn't use yet, or remove that slot first"));
         }
-        let named: Vec<(PaletteSlot, DocPath)> = part_references(ctx, &self.character, &def)
-            .into_iter()
-            .chain(face_references(ctx, &self.character))
-            .collect();
+        let named = all_references(ctx, &self.character, &def);
         let naming_to: Vec<DocPath> =
             named.iter().filter(|(slot, _)| *slot == self.to).map(|(_, path)| path.clone()).collect();
         if !naming_to.is_empty() {
@@ -373,11 +493,34 @@ impl Op for PaletteRenameSlot {
             }
         }
 
-        let mut references = Vec::new();
-        for (_, path) in named.into_iter().filter(|(slot, _)| *slot == self.from) {
-            changes.push(access::change(ctx, path.clone(), Some(json!(format!("@{}", self.to)))));
-            references.push(path);
+        let mut references: Vec<DocPath> =
+            named.into_iter().filter(|(slot, _)| *slot == self.from).map(|(_, at)| at).collect();
+        for (slot, path) in
+            part_references(ctx, &self.character, &def).into_iter().chain(face_references(ctx, &self.character))
+        {
+            if slot == self.from {
+                changes.push(access::change(ctx, path, Some(json!(format!("@{}", self.to)))));
+            }
         }
+        let mut stored_defaults = BTreeSet::new();
+        for defaulted in default_references(ctx, &self.character, &def) {
+            if defaulted.slot == self.from && stored_defaults.insert(defaulted.missing.clone()) {
+                let value = renamed(&defaulted.filled, &self.from, &self.to);
+                changes.push(access::change(ctx, defaulted.missing, Some(value)));
+            }
+        }
+        let mut tables = BTreeSet::new();
+        for (slot, _, table) in variant_references(ctx, &self.character) {
+            if slot == self.from && tables.insert(table.clone()) {
+                changes.push(access::change(
+                    ctx,
+                    table.clone(),
+                    Some(renamed_overrides(ctx, &table, &self.from, &self.to)),
+                ));
+            }
+        }
+        references.sort();
+        references.dedup();
 
         let renamed_in: Vec<&String> = saved
             .iter()
@@ -398,8 +541,8 @@ impl Op for PaletteRenameSlot {
 register_op!(PaletteRenameSlot);
 
 /// Lists every palette slot with its colour and the places that name it, so a recolour or a removal can be judged.
-/// A reference to a slot the palette lacks is listed under `undefined`. Defaults a file leaves out and variant
-/// overrides are not listed.
+/// A reference to a slot the palette lacks is listed under `undefined`. The uses include the references a part takes
+/// from its kind's defaults and the ones in a variant's overrides.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(extend(
