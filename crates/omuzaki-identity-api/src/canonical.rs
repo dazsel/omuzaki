@@ -539,7 +539,10 @@ mod tests {
             none: None,
         };
         assert_eq!(to_json_value(&body).unwrap(), serde_json::to_value(&body).unwrap());
-        assert_eq!(canonical_hash(&body).unwrap(), ContentHash::of(&canonical_json(&serde_json::to_value(&body).unwrap())));
+        assert_eq!(
+            canonical_hash(&body).unwrap(),
+            ContentHash::of(&canonical_json(&serde_json::to_value(&body).unwrap()))
+        );
         assert!(to_json_value(&u128::MAX).is_err(), "out of range, as serde_json says");
     }
 }
