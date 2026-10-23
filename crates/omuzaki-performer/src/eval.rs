@@ -1,9 +1,9 @@
 //! The decision layer's measure (#2348): how fast a provider answers (p50 and p90) and how often its answers agree
 //! with a labelled set of transcript moments, through the same gates and rule floor the show uses.
 //!
-//! [`MOMENTS`] is the shipped set (`data/moments.toml`). [`run`] asks a [`Decider`] about each moment, waits up to a
-//! timeout as the show does, fills what it missed from the [`RuleFloor`], and scores what would have reached the
-//! character: the face it makes and the gesture it does.
+//! [`MOMENTS`] is the shipped set (`data/moments.toml`) and [`HOLDOUT`] a second set never used to tune the rule
+//! floor. [`run`] asks a [`Decider`] about each moment, waits up to a timeout as the show does, fills what it missed
+//! from the [`RuleFloor`], and scores what would have reached the character: the face it makes and the gesture it does.
 
 use std::time::{Duration, Instant};
 
@@ -17,6 +17,8 @@ use crate::decide::{Gates, NONE, RuleFloor, questions_listening, questions_speak
 
 /// The shipped labelled set.
 pub const MOMENTS: &str = include_str!("../data/moments.toml");
+/// Held-out moments, never used to tune the rule floor.
+pub const HOLDOUT: &str = include_str!("../data/holdout.toml");
 /// The expressions the set's character has.
 pub const EXPRESSIONS: [&str; 6] = ["happy", "sad", "surprised", "angry", "smug", "thinking"];
 /// Its gestures.
@@ -236,7 +238,9 @@ mod tests {
     fn the_shipped_set_parses_and_names_only_what_the_character_has() {
         let set = parse(MOMENTS).unwrap();
         assert!(set.len() >= 40);
-        for m in &set {
+        let holdout = parse(HOLDOUT).unwrap();
+        assert!(holdout.len() >= 20);
+        for m in set.iter().chain(&holdout) {
             assert!(m.face.iter().all(|f| f == NONE || EXPRESSIONS.contains(&f.as_str())), "{m:?}");
             assert!(m.gesture == NONE || GESTURES.contains(&m.gesture.as_str()), "{m:?}");
             assert!(m.moment == Moment::Speaking || m.gesture == NONE, "{m:?}");

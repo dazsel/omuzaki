@@ -38,7 +38,8 @@ pub const LISTENING: &str = "listening";
 /// Energy levels.
 pub const ENERGY_LEVELS: u8 = 5;
 
-/// Moods the rule floor knows, each with the expression names that show it and the words that call for it.
+/// Moods the rule floor knows, each with the expression names that show it and the words that call for it. The
+/// vocabulary is general, not fitted to any one line: the floor is the answer whenever a model misses.
 const MOODS: [(&[&str], &[&str]); 6] = [
     (
         &["happy", "joy", "smile", "fun", "glad", "excited"],
@@ -57,6 +58,7 @@ const MOODS: [(&[&str], &[&str]); 6] = [
             "cool",
             "hi",
             "hello",
+            "hey",
             "welcome",
             "amazing",
             "wonderful",
@@ -64,25 +66,163 @@ const MOODS: [(&[&str], &[&str]); 6] = [
             "good",
             "best",
             "cute",
+            "congratulations",
+            "congrats",
+            "incredible",
+            "celebrate",
+            "celebration",
+            "win",
+            "excellent",
+            "perfect",
+            "lovely",
+            "enjoy",
+            "beautiful",
+            "delighted",
+            "excited",
+            "exciting",
+            "finally",
+            "bye",
+            "goodbye",
+            "see you",
+            "take care",
+            "adopted",
+            "happy",
         ],
     ),
     (
         &["sad", "sorrow", "cry", "sorry"],
-        &["sad", "unfortunately", "miss", "lost", "lose", "cry", "oh no", "bad", "tired", "hurt"],
+        &[
+            "sad",
+            "unfortunately",
+            "miss",
+            "missed",
+            "lost",
+            "lose",
+            "cry",
+            "oh no",
+            "bad",
+            "tired",
+            "hurt",
+            "sick",
+            "ill",
+            "dead",
+            "passed away",
+            "i'm sorry",
+            "so sorry",
+            "really sorry",
+            "sorry to hear",
+            "sorry about",
+            "failed",
+            "fail",
+            "delay",
+            "delayed",
+            "exhausted",
+            "awful",
+            "terrible",
+            "gone",
+            "broken",
+            "worst",
+            "worried",
+            "nervous",
+            "anxious",
+            "disappointed",
+            "heartbroken",
+            "looking forward",
+        ],
     ),
     (
         &["surprised", "surprise", "shock", "shocked", "wow"],
-        &["wow", "whoa", "no way", "really", "seriously", "omg", "wait", "huh"],
+        &[
+            "wow",
+            "whoa",
+            "no way",
+            "really",
+            "seriously",
+            "omg",
+            "wait",
+            "huh",
+            "can't believe",
+            "cannot believe",
+            "not believe",
+            "you're joking",
+            "you're kidding",
+            "unbelievable",
+            "what?!",
+        ],
     ),
-    (&["angry", "mad", "annoyed", "grumpy"], &["angry", "hate", "ugh", "annoying", "stop it", "rude", "mad"]),
+    (
+        &["angry", "mad", "annoyed", "grumpy"],
+        &[
+            "angry",
+            "hate",
+            "ugh",
+            "annoying",
+            "stop it",
+            "rude",
+            "mad",
+            "furious",
+            "patience",
+            "stole",
+            "stolen",
+            "keyed",
+            "unfair",
+            "how dare",
+            "who does that",
+            "without asking",
+            "without telling",
+        ],
+    ),
     (
         &["smug", "proud", "confident"],
-        &["obviously", "of course", "told you", "easy", "clearly", "naturally", "genius"],
+        &[
+            "obviously",
+            "of course",
+            "told you",
+            "easy",
+            "clearly",
+            "naturally",
+            "genius",
+            "bet you",
+            "while it lasts",
+            "watch and learn",
+            "too easy",
+        ],
     ),
     (
         &["thinking", "think", "curious", "confused", "neutral", "relaxed"],
-        &["hmm", "let me think", "wonder", "maybe", "perhaps", "not sure", "guess", "how", "why", "what", "should"],
+        &[
+            "hmm",
+            "let me think",
+            "wonder",
+            "maybe",
+            "perhaps",
+            "not sure",
+            "guess",
+            "how",
+            "why",
+            "what",
+            "should",
+            "which",
+            "technically",
+            "depends",
+            "i think",
+        ],
     ),
+];
+/// Words that greet or take leave, which earn a wave without a spoken commitment.
+const GREETINGS: [&str; 12] = [
+    "hi",
+    "hello",
+    "hey",
+    "welcome",
+    "bye",
+    "goodbye",
+    "see you",
+    "good morning",
+    "good evening",
+    "good night",
+    "goodnight",
+    "take care",
 ];
 /// Phrases that commit to an action ("watch this").
 const COMMITMENTS: [&str; 10] = [
@@ -150,14 +290,21 @@ impl RuleFloor {
     /// Answers `ask` at once.
     pub fn answer(&self, ask: &Ask) -> Decision {
         let line = last_line(&ask.state).to_lowercase();
+        // A greeting earns a wave, when there is one, without a spoken commitment.
+        let wave = match ask.question(CLIP).map(|q| &q.kind) {
+            Some(QuestionKind::Choice { options, .. }) if ask.moment == Moment::Speaking && greets(&line) => {
+                options.iter().position(|o| o.contains("wave"))
+            }
+            _ => None,
+        };
         let answers = ask
             .questions
             .iter()
             .map(|q| match (&q.kind, q.id.as_str()) {
-                (QuestionKind::Choice { options, .. }, CLIP) => clip_answer(&q.id, options, &line),
+                (QuestionKind::Choice { options, .. }, CLIP) => clip_answer(&q.id, options, &line, wave),
                 (QuestionKind::Choice { options, .. }, id) => mood_answer(id, options, &line, ask.moment),
                 (QuestionKind::YesNo, _) => {
-                    let yes = COMMITMENTS.iter().any(|c| line.contains(c));
+                    let yes = COMMITMENTS.iter().any(|c| line.contains(c)) || wave.is_some();
                     Answer::pick(&q.id, 2, usize::from(yes), 0.8)
                 }
                 (QuestionKind::Score { levels, .. }, _) => {
@@ -187,6 +334,18 @@ fn last_line(state: &str) -> &str {
     line.split_once(": ").map_or(line, |(_, text)| text)
 }
 
+/// Whether `line` greets or takes leave: a greeting in its first two words, or a farewell anywhere.
+pub fn greets(line: &str) -> bool {
+    let line = line.to_lowercase();
+    let words: Vec<&str> =
+        line.split(|c: char| !(c.is_alphanumeric() || c == '\'')).filter(|w| !w.is_empty()).collect();
+    GREETINGS.iter().any(|g| match g.split_once(' ') {
+        Some(_) => line.contains(g),
+        None if matches!(*g, "bye" | "goodbye") => words.contains(g),
+        None => words.iter().take(2).any(|w| w == g),
+    })
+}
+
 fn has_word(line: &str, cue: &str) -> bool {
     if cue.contains(' ') {
         return line.contains(cue);
@@ -210,7 +369,8 @@ fn mood_answer(id: &str, options: &[String], line: &str, moment: Moment) -> Answ
         }
     }
     let none = options.iter().position(|o| o == NONE);
-    let best = scores.iter().copied().enumerate().max_by(|a, b| a.1.total_cmp(&b.1));
+    // On a tie the mood listed first wins (`max_by` keeps the last of equals, so the scan runs backwards).
+    let best = scores.iter().copied().enumerate().rev().max_by(|a, b| a.1.total_cmp(&b.1));
     match best {
         Some((i, s)) if s > 0.0 => Answer::pick(id, options.len(), i, (0.55 + 0.1 * s).min(0.9)),
         // Listening with nothing to go on: a friend's small, warm face, when there is one.
@@ -222,6 +382,15 @@ fn mood_answer(id: &str, options: &[String], line: &str, moment: Moment) -> Answ
             let warm = MOODS[0].0.iter().find_map(|n| options.iter().position(|o| o == n));
             warm.map_or_else(|| none_answer(id, options.len(), none), |i| Answer::pick(id, options.len(), i, 0.55))
         }
+        // Speaking with nothing to go on: a question shows on the face.
+        _ if line.contains("?!") || line.matches('?').count() >= 2 => {
+            let surprised = MOODS[2].0.iter().find_map(|n| options.iter().position(|o| o == n));
+            surprised.map_or_else(|| none_answer(id, options.len(), none), |i| Answer::pick(id, options.len(), i, 0.6))
+        }
+        _ if line.contains('?') => {
+            let curious = MOODS[5].0.iter().find_map(|n| options.iter().position(|o| o == n));
+            curious.map_or_else(|| none_answer(id, options.len(), none), |i| Answer::pick(id, options.len(), i, 0.55))
+        }
         _ => none_answer(id, options.len(), none),
     }
 }
@@ -230,8 +399,8 @@ fn none_answer(id: &str, arity: usize, none: Option<usize>) -> Answer {
     none.map_or_else(|| Answer::new(id, vec![1.0; arity]), |i| Answer::pick(id, arity, i, 0.8))
 }
 
-fn clip_answer(id: &str, options: &[String], line: &str) -> Answer {
-    let named = options.iter().position(|o| o != NONE && mentions(line, o));
+fn clip_answer(id: &str, options: &[String], line: &str, wave: Option<usize>) -> Answer {
+    let named = options.iter().position(|o| o != NONE && mentions(line, o)).or(wave);
     let none = options.iter().position(|o| o == NONE);
     match named {
         Some(i) => Answer::pick(id, options.len(), i, 0.8),
@@ -313,6 +482,8 @@ impl Gates {
             && p >= self.clip
             && commit.yes() >= self.commit
             && !vetoed(line, name)
+            // Code keeps control: whatever a model says, the line itself names the gesture, or greets for a wave.
+            && (mentions(&line.to_lowercase(), name) || (name.contains("wave") && greets(line)))
             && let Ok(clip) = ClipId::new(name.as_str())
         {
             out.push(Intent::gesture(clip, 1.0));
@@ -393,13 +564,18 @@ impl LlmDecider {
     /// # Errors
     /// [`DecideError::Provider`] when there is no JSON object.
     pub fn parse(ask: &Ask, reply: &str, kind: &str) -> Result<Decision, DecideError> {
-        let start = reply.find('{').ok_or_else(|| DecideError::provider("no JSON object in the reply"))?;
-        let end = reply
-            .rfind('}')
-            .filter(|e| *e > start)
+        // The first object that parses, from any `{`: a small model may wrap it in words, repeat it, or open a brace in
+        // its preamble.
+        let value = reply
+            .match_indices('{')
+            .find_map(|(start, _)| {
+                serde_json::Deserializer::from_str(&reply[start..])
+                    .into_iter::<serde_json::Value>()
+                    .next()
+                    .and_then(Result::ok)
+                    .filter(serde_json::Value::is_object)
+            })
             .ok_or_else(|| DecideError::provider("no JSON object in the reply"))?;
-        let value: serde_json::Value =
-            serde_json::from_str(&reply[start..=end]).map_err(|e| DecideError::provider(e.to_string()))?;
         let mut answers = Vec::new();
         for q in &ask.questions {
             let Some(v) = value.get(&q.id) else { continue };
@@ -508,7 +684,9 @@ mod tests {
 
     #[test]
     fn the_rule_floor_reads_the_mood_of_a_line() {
-        assert_eq!(verbs(&decide(&speaking("Hi chat! Welcome, this is great!"))), ["emote happy"]);
+        // A greeting waves too, without a spoken commitment.
+        assert_eq!(verbs(&decide(&speaking("Hi chat! Welcome, this is great!"))), ["emote happy", "gesture wave"]);
+        assert_eq!(verbs(&decide(&speaking("I said hi to them, and it was great."))), ["emote happy"]);
         assert_eq!(verbs(&decide(&speaking("Oh no, I'm so sorry about that."))), ["emote sad"]);
         assert_eq!(verbs(&decide(&speaking("Wow, no way!"))), ["emote surprised"]);
         assert_eq!(verbs(&decide(&speaking("The crane, obviously."))), ["emote smug"]);
@@ -517,6 +695,14 @@ mod tests {
 
     #[test]
     fn an_action_needs_a_commitment_and_no_refusal() {
+        // A model that commits to a gesture the line never names is held back.
+        let ask = speaking("Nice work, that one was nasty.");
+        let eager = Decision::new(
+            "local",
+            vec![Answer::pick(COMMIT, 2, 1, 0.95), Answer::pick(CLIP, 3, 0, 0.95), Answer::pick(REACTION, 6, 0, 0.9)],
+        );
+        let intents = Gates::default().intents(&ask, &with_floor(&ask, eager, &RuleFloor.answer(&ask)), "Nice work.");
+        assert!(verbs(&intents).iter().all(|v| !v.starts_with("gesture")), "{:?}", verbs(&intents));
         assert_eq!(verbs(&decide(&speaking("Watch this, I'll wave!"))), ["gesture wave"]);
         assert!(verbs(&decide(&speaking("I like to wave."))).iter().all(|v| !v.starts_with("gesture")));
         assert!(verbs(&decide(&speaking("Watch this: no backflips today!"))).iter().all(|v| !v.starts_with("gesture")));
@@ -571,5 +757,11 @@ mod tests {
         assert_eq!(decision.answer(ENERGY).and_then(Answer::best).map(|b| b.0), Some(3));
         assert!(decision.answer(COMMIT).is_some_and(|a| a.yes() < 0.5));
         assert!(LlmDecider::parse(&ask, "no json here", "local").is_err());
+        // Two objects, or a stray brace first: the first whole object counts.
+        let twice = "{\"reaction\": \"sad\"}\n{\"reaction\": \"happy\"}";
+        let first = LlmDecider::parse(&ask, twice, "local").unwrap();
+        assert_eq!(first.answer(REACTION).and_then(Answer::best).map(|b| b.0), Some(1));
+        let stray = LlmDecider::parse(&ask, "Okay { here: {\"energy\": 2}", "local").unwrap();
+        assert_eq!(stray.answer(ENERGY).and_then(Answer::best).map(|b| b.0), Some(2));
     }
 }

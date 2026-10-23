@@ -8,7 +8,7 @@
 //! - [`prompt`]: the request for one turn (§6.3).
 //! - [`brain`]: [`brain::LlmBrain`], the brain over any LLM client.
 //! - [`decide`]: the decision layer (#2348): the rule floor, the gates and a local-model decider.
-//! - [`systemone`]: the System One provider (TypeSafe's Jev), a bring-your-own-key option.
+//! - [`systemone`]: the System One provider (Jev, by `TypeSafe`), a bring-your-own-key option.
 //! - [`eval`]: the decision layer's measure: latency and agreement with a labelled set of moments.
 //! - [`show`]: [`show::Show`], the turn loop (§5): the floor, barge-in, private turns, talk limits, intent timing.
 //!

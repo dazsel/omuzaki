@@ -419,7 +419,7 @@ impl Show {
     pub fn new(persona: &Persona, parts: Parts, config: ShowConfig) -> Self {
         let inventory = parts.stage.inventory(&config.member).unwrap_or_default();
         let mut decisions = Decisions::default();
-        decisions.stats.provider = parts.decider.as_ref().map_or("rules", |d| d.kind()).to_owned();
+        parts.decider.as_ref().map_or("rules", |d| d.kind()).clone_into(&mut decisions.stats.provider);
         Self {
             parts,
             config,

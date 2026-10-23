@@ -1,4 +1,4 @@
-//! A hosted decision provider (#2348): the System One API of TypeSafe's Jev, as a bring-your-own-key option and never
+//! A hosted decision provider (#2348): the System One API of Jev (by `TypeSafe`), as a bring-your-own-key option and never
 //! the default.
 //!
 //! One `POST /v1/systemone` carries the state and the ask's questions, keyed by their ids: a
@@ -21,9 +21,9 @@ use crate::decide::NONE;
 pub const KIND: &str = "systemone";
 /// The path of the one request.
 pub const PATH: &str = "/v1/systemone";
-/// TypeSafe's endpoint.
+/// Jev's hosted endpoint.
 pub const DEFAULT_ENDPOINT: &str = "https://api.typesafe.ai";
-/// The model TypeSafe's examples ask for.
+/// The model the System One examples ask for.
 pub const DEFAULT_MODEL: &str = "jev-latest";
 /// The confidence a bare `choice` or `score` answer gets when the reply carries no probabilities.
 const BARE_CONFIDENCE: f32 = 0.75;
@@ -266,7 +266,7 @@ mod tests {
 
         let odd = json!({ "answers": { "reaction": { "type": "choice", "choice": "backflip" },
                                        "commit": { "type": "noul", "noul": "maybe" } } });
-        assert!(SystemOneDecider::parse(&ask(), &odd).unwrap().answers.is_empty());
+        assert_eq!(SystemOneDecider::parse(&ask(), &odd).unwrap().answers, Vec::<Answer>::new());
         assert!(SystemOneDecider::parse(&ask(), &json!({ "error": "nope" })).is_err());
     }
 

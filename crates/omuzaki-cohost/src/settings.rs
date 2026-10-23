@@ -7,7 +7,7 @@
 //! the person before it sends anything there. No agent may change this key: it decides where the person's words go
 //! and what they pay.
 //!
-//! The decider's default is the rule floor, which needs nothing. A local model (`llm`) or TypeSafe's Jev (`systemone`,
+//! The decider's default is the rule floor, which needs nothing. A local model (`llm`) or Jev (`systemone`,
 //! the person's own key) can answer first; whatever they miss, the rules answer, so the character never freezes.
 
 use omuzaki_settings_api::error::SettingError;
@@ -100,7 +100,7 @@ register_setting!(PerformerLlm);
 pub const DECIDER_RULES: &str = "rules";
 /// A model through an OpenAI-compatible server: the co-host's own LLM, or another server.
 pub const DECIDER_LLM: &str = "llm";
-/// TypeSafe's System One API (Jev), with the person's own key.
+/// Jev's System One API, with the person's own key.
 pub const DECIDER_SYSTEM_ONE: &str = omuzaki_performer::systemone::KIND;
 
 fn rules() -> String {
@@ -112,11 +112,11 @@ fn rules() -> String {
 #[serde(deny_unknown_fields)]
 pub struct DeciderChoice {
     /// `rules` (the default: the rule floor alone), `llm` (a model through an OpenAI-compatible server) or
-    /// `systemone` (TypeSafe's Jev, with your own key). The rule floor answers whatever a model misses.
+    /// `systemone` (Jev, by `TypeSafe`, with your own key). The rule floor answers whatever a model misses.
     #[serde(default = "rules")]
     pub kind: String,
     /// Where it is. For `llm`, leave it out to use the co-host's own LLM (`performer.llm`); for `systemone` it
-    /// defaults to TypeSafe's endpoint.
+    /// defaults to Jev's hosted endpoint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
     /// The model to ask for (`jev-latest` for `systemone`).
@@ -137,7 +137,7 @@ impl Default for DeciderChoice {
 }
 
 impl DeciderChoice {
-    /// The endpoint requests go to, if any: its own, TypeSafe's for `systemone`, or `None` (the rule floor, or the
+    /// The endpoint requests go to, if any: its own, Jev's for `systemone`, or `None` (the rule floor, or the
     /// co-host's own LLM).
     pub fn endpoint(&self) -> Option<&str> {
         match (self.kind.as_str(), self.endpoint.as_deref()) {
