@@ -27,6 +27,7 @@ omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-store = { path = "../omuzaki-store" }
 omuzaki-library = { path = "../omuzaki-library" }
 omuzaki-library-api = { path = "../omuzaki-library-api" }
+omuzaki-metrics-api = { path = "../omuzaki-metrics-api" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
 omuzaki-settings = { path = "../omuzaki-settings" }
 omuzaki-settings-api = { path = "../omuzaki-settings-api" }

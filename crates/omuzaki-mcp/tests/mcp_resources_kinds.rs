@@ -14,7 +14,7 @@ use omuzaki_library_api::{
     CompatStatus, ItemDetail, ItemId, ItemInfo, ItemKind, ItemManifest, ItemScope, Library, LibraryError,
     PublisherCheck, Query, ResolvedItem, RightsBadge, SearchPage, Section, Version, VersionReq,
 };
-use omuzaki_mcp::{LibraryProvider, McpOptions, McpServer, MetricsProvider, MetricsSource};
+use omuzaki_mcp::{LibraryProvider, McpOptions, McpServer, MetricsProvider, MetricsSource, ReaderSource};
 use omuzaki_ops_api::{Grants, OpError, Scope};
 use omuzaki_store_api::{Commercial, ContentHash};
 use rmcp::model::{
@@ -131,6 +131,42 @@ async fn metrics_need_the_read_scope() {
     let client = connect(options).await;
     let error = read(&client, "omuzaki://metrics/live").await.unwrap_err();
     assert!(error.to_string().contains("needs the `read` scope"), "{error}");
+}
+
+/// A headless server (no studio, no frame loop) lists the same URI and answers that no studio is running, under the
+/// `read` scope like any resource (#1257).
+#[tokio::test]
+async fn a_headless_server_says_no_studio_is_running() {
+    let client = connect(McpOptions::default().with_provider(Arc::new(MetricsProvider::headless()))).await;
+    assert!(uris(&client).await.contains(&"omuzaki://metrics/live".to_owned()));
+    let body = read(&client, "omuzaki://metrics/live").await.unwrap();
+    assert_eq!(body, json!({"running": false, "note": "no studio is running; start one to see live numbers"}));
+    let options = McpOptions::with_grants(Grants::of([Scope::EditCharacter]))
+        .with_provider(Arc::new(MetricsProvider::headless()));
+    let error = read(&connect(options).await, "omuzaki://metrics/live").await.unwrap_err();
+    assert!(error.to_string().contains("needs the `read` scope"), "{error}");
+}
+
+/// A studio over the typed hub: a running studio whose subsystems haven't published says `running: true` with every
+/// section `null`, and a published section is read back as it was written.
+#[tokio::test]
+async fn the_hub_reader_serves_each_section_once_published() {
+    let (mut writers, reader) = omuzaki_metrics_api::metrics();
+    let provider = MetricsProvider::studio(Arc::new(ReaderSource(reader)));
+    let client = connect(McpOptions::default().with_provider(Arc::new(provider))).await;
+    let body = read(&client, "omuzaki://metrics/live").await.unwrap();
+    assert_eq!(body["running"], true);
+    for section in ["frame", "perform", "tracker", "audio"] {
+        assert_eq!(body["metrics"][section], Value::Null, "{section}: {body}");
+    }
+    let mut frame = omuzaki_metrics_api::sections::FrameMetrics::new(omuzaki_core::time::Seconds(1.5));
+    frame.fps = 60.0;
+    frame.draw_calls = 12;
+    writers.frame.publish(&frame);
+    let body = read(&client, "omuzaki://metrics/live").await.unwrap();
+    assert_eq!(body["metrics"]["frame"]["fps"], 60.0, "{body}");
+    assert_eq!(body["metrics"]["frame"]["draw_calls"], 12);
+    assert_eq!(body["metrics"]["tracker"], Value::Null);
 }
 
 // ---- library ------------------------------------------------------------------------------------------------
