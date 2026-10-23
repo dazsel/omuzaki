@@ -1,13 +1,14 @@
 //! One client connection: who the agent is, its open transaction, and how its calls reach the runner.
 
 use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use omuzaki_history_api::{JournalSink, JournalStatus};
 use omuzaki_ops_api::{
     Actor, Budget, Cause, CauseKind, EndReason, ErrorCode, ErrorDetail, Grants, Jobs, Limits, Mode, OpError, OpKind,
-    PauseReason, Request, Runner, Scope, SessionSpec, SessionState, Sessions, Transport,
+    PauseReason, Request, Runner, Scope, SessionInfo, SessionSpec, SessionState, Sessions, Transport,
 };
 use rmcp::ErrorData as McpError;
 use rmcp::handler::server::ServerHandler;
@@ -22,7 +23,7 @@ use rmcp::model::{
 };
 use rmcp::service::{RequestContext, RoleServer, SubscriptionContext};
 use serde_json::{Value, json};
-use tokio::sync::watch;
+use tokio::sync::{Notify, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -30,9 +31,10 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::{self, Link};
 use crate::approvals::{self, ApprovalCursor, Own, OwnApprovals};
 use crate::builtin::{APPROVAL_WAIT_DEFAULT_SECONDS, APPROVAL_WAIT_MAX_SECONDS, Builtin, CAUSE_MAX_CHARS};
-use crate::catalog::{Entry, Route};
+use crate::catalog::{Entry, Route, ToolMode};
 use crate::changes::{OwnTxs, Report};
 use crate::events::{LOG_URI, Updates, lock};
+use crate::finder;
 use crate::info;
 use crate::jobs::{self, JobWatch};
 use crate::names;
@@ -75,9 +77,47 @@ pub struct Session {
     in_app: bool,
     /// The `Mcp-Session-Id` of this connection over HTTP, learned from its first request after `initialize`.
     http_id: Arc<OnceLock<String>>,
+    /// Set when `branch_work` moved the connection to another lane's session: this one's end then leaves the HTTP
+    /// connection open, for the session that took over.
+    moved: Arc<AtomicBool>,
     /// When the client last asked for anything: what tells an idle drop from a disconnect.
     last_active: Mutex<Instant>,
     state: Arc<Mutex<State>>,
+    /// Woken when `tools_enable` changes this session's tool list, for a `subscriptions/listen` stream to say so.
+    tools_changed: Arc<Notify>,
+    /// What a session moved here by `branch_work` takes over from the one it replaces; used by the admission.
+    carry: Mutex<Option<Carry>>,
+}
+
+/// What `branch_work` carries from the session it ends to the one it opens on another lane (design branches.md 8.1).
+/// The ended session is not made the new one's `parent`: to the registry a parent is a live session whose sub-agent
+/// holds at most what it holds, and the one moved from is ended by then. The reply names it instead.
+pub(crate) struct Carry {
+    pub grants: Grants,
+    pub budget: Budget,
+    pub limits: Limits,
+    pub fence: Vec<omuzaki_doc_api::DocPath>,
+    pub role: Option<String>,
+    pub model: Option<String>,
+}
+
+impl Carry {
+    /// What `from` holds now: its grants, the budget it has left, its limits, fence, role and model.
+    pub(crate) fn of(from: &SessionInfo) -> Self {
+        let (budget, spent) = (from.budget, from.spent);
+        Self {
+            grants: from.grants.clone(),
+            budget: Budget {
+                usd_micros: budget.usd_micros.saturating_sub(spent.usd_micros),
+                tokens: budget.tokens.map(|t| t.saturating_sub(spent.tokens)),
+                seconds: budget.seconds.map(|t| t.saturating_sub(spent.seconds)),
+            },
+            limits: from.limits,
+            fence: from.fence.clone(),
+            role: from.role.clone(),
+            model: from.model.clone(),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -99,6 +139,10 @@ struct State {
     own: OwnTxs,
     /// The approvals this session asked a person for, and which decisions it has been told about.
     approvals: OwnApprovals,
+    /// How many of the branch review outcomes this session has been told about (or were before it started).
+    reviews: usize,
+    /// The areas whose ops a core tool list shows this session (`tools_enable`).
+    enabled: BTreeSet<String>,
 }
 
 /// Stops its task when dropped (unsubscribe, or the session ending).
@@ -114,7 +158,8 @@ impl Session {
     pub(crate) fn new(shared: Arc<Shared>, view: Arc<View>, serial: u64) -> Self {
         shared.connections.open(serial);
         let latest = shared.hub.latest();
-        let state = State { seen: latest, approvals: OwnApprovals::new(latest), ..State::default() };
+        let reviews = shared.branches.as_ref().map_or(0, crate::branches::BranchHost::reviews_now);
+        let state = State { seen: latest, approvals: OwnApprovals::new(latest), reviews, ..State::default() };
         Self {
             shared,
             view,
@@ -126,8 +171,11 @@ impl Session {
             alive: CancellationToken::new(),
             in_app: false,
             http_id: Arc::new(OnceLock::new()),
+            moved: Arc::new(AtomicBool::new(false)),
             last_active: Mutex::new(Instant::now()),
             state: Arc::new(Mutex::new(state)),
+            tools_changed: Arc::new(Notify::new()),
+            carry: Mutex::new(None),
         }
     }
 
@@ -150,6 +198,59 @@ impl Session {
     /// Wakes when this session ends, with the reason (see [`Session::ended`]).
     pub(crate) fn ended(&self) -> watch::Receiver<Option<EndReason>> {
         self.ended.subscribe()
+    }
+
+    /// The host's branches as this session's lane sees them, if the host wired them.
+    pub(crate) fn branch_host(&self) -> Result<&crate::branches::BranchHost, OpError> {
+        self.shared.branches.as_ref().ok_or_else(|| OpError::unsupported("this server has no branches"))
+    }
+
+    /// Whether `tool` (its name or its dotted alias) is `branch_work`.
+    pub(crate) fn is_branch_work(&self, tool: &str) -> bool {
+        self.view.catalog.get(tool).is_some_and(|entry| matches!(entry.route, Route::Builtin(Builtin::BranchWork)))
+    }
+
+    /// This connection's session, opened now if no call has yet.
+    pub(crate) fn linked(&self, context: &RequestContext<RoleServer>) -> Result<Link, OpError> {
+        self.name_client(context);
+        self.link(context).cloned().map_err(Clone::clone)
+    }
+
+    /// A handler for the same connection on another lane's server (`branch_work`): the same view (grants, credential
+    /// and tool list) over `to`'s runner, taking over `carry` when it is admitted.
+    pub(crate) fn moved_to(&self, to: &crate::server::McpServer, carry: Carry) -> Self {
+        let mut moved = Session::new(to.shared_arc(), Arc::clone(&self.view), to.next_serial()).with_jobs(to.jobs());
+        moved.http = self.http;
+        // The same HTTP connection: the new session closes it when it ends.
+        moved.http_id = Arc::clone(&self.http_id);
+        *lock(&moved.carry) = Some(carry);
+        moved
+    }
+
+    /// The label of this session's open transaction, which stops it from moving.
+    pub(crate) fn open_tx_label(&self) -> Option<String> {
+        lock(&self.state).tx.as_ref().map(|tx| tx.label.clone())
+    }
+
+    /// Ends this session as `Closed` because its connection moved to another lane; the connection stays open.
+    pub(crate) fn end_moved(&self) {
+        let Some(Ok(link)) = self.link.get() else { return };
+        self.moved.store(true, Ordering::SeqCst);
+        self.ended.send_replace(Some(EndReason::Closed));
+        if let (Some(host), Some(id)) = (&self.shared.sessions, link.id)
+            && let Err(error) = host.sessions.end(id, EndReason::Closed)
+        {
+            tracing::warn!(%error, "the session a connection moved away from didn't end");
+        }
+    }
+
+    /// `result` opening with the review outcomes for this lane's branch that this session hasn't been told about.
+    fn with_reviews(&self, result: CallToolResult) -> CallToolResult {
+        let Some(host) = &self.shared.branches else { return result };
+        let seen = lock(&self.state).reviews;
+        let (notes, now) = host.reviews_since(seen);
+        lock(&self.state).reviews = now;
+        crate::branches::with_reviews(result, &notes)
     }
 
     /// Gives this handler the host's job manager (see [`McpServer::with_jobs`](crate::McpServer::with_jobs)).
@@ -230,12 +331,18 @@ impl Session {
                 // The person who issued the token, unless the host issued it as itself.
                 let issuer = credential.issuer();
                 let person = if matches!(issuer, Actor::Person { .. }) { issuer.clone() } else { host.person.clone() };
-                (Transport::Http { token: credential.label().to_owned() }, person)
+                // A bridge relays a stdio client: the session is that client's, and says so (design 10.3).
+                let transport = if credential.is_bridge() {
+                    Transport::Stdio
+                } else {
+                    Transport::Http { token: credential.label().to_owned() }
+                };
+                (transport, person)
             }
             None if self.http => (Transport::Http { token: "mcp".to_owned() }, host.person.clone()),
             None => (Transport::Stdio, host.person.clone()),
         };
-        let spec = SessionSpec {
+        let mut spec = SessionSpec {
             transport,
             client,
             model: None,
@@ -247,6 +354,14 @@ impl Session {
             role: None,
             fence: Vec::new(),
         };
+        if let Some(carry) = lock(&self.carry).take() {
+            spec.grants = carry.grants;
+            spec.budget = carry.budget;
+            spec.limits = carry.limits;
+            spec.fence = carry.fence;
+            spec.role = carry.role;
+            spec.model = carry.model;
+        }
         // Before the open, so an end that follows at once is not missed.
         let after = self.shared.hub.latest();
         let info = host
@@ -255,6 +370,24 @@ impl Session {
             .inspect_err(|e| tracing::warn!(error = %e, "couldn't open a session for a connection"))?;
         let link = Link { id: Some(info.id), actor: info.actor };
         self.watch_registry(host, &link, after);
+        // A bridge credential no person has paired yet: the session waits, paused, on a pairing card (design 10.2).
+        if let Some(credential) = self.view.credential.as_ref().filter(|c| c.is_bridge() && !c.paired()) {
+            match host.sessions.request_pairing(info.id) {
+                Ok(_) => agent::watch_pairing(
+                    Arc::clone(&self.shared.hub),
+                    Arc::clone(&host.sessions),
+                    info.id,
+                    Arc::clone(credential),
+                    self.alive.clone(),
+                ),
+                Err(error) => {
+                    // Unpaired, the credential must not act: end the session rather than let it run unpaired.
+                    tracing::warn!(%error, "couldn't hold a bridge session for pairing; ending it");
+                    let _ = host.sessions.end(info.id, EndReason::Closed);
+                    return Err(error);
+                }
+            }
+        }
         Ok(link)
     }
 
@@ -271,9 +404,11 @@ impl Session {
             self.alive.clone(),
         );
         if let Some(credential) = self.view.credential.clone() {
-            let (http_id, mut ended) = (Arc::clone(&self.http_id), self.ended.subscribe());
+            let (http_id, mut ended, moved) =
+                (Arc::clone(&self.http_id), self.ended.subscribe(), Arc::clone(&self.moved));
             tokio::spawn(async move {
                 if ended.wait_for(Option::is_some).await.is_ok()
+                    && !moved.load(Ordering::SeqCst)
                     && let Some(id) = http_id.get()
                 {
                     credential.close_session(id).await;
@@ -299,6 +434,7 @@ impl Session {
         let Ok(id) = id.to_str() else { return };
         let _ = self.http_id.set(id.to_owned());
         if self.ended.borrow().is_some()
+            && !self.moved.load(Ordering::SeqCst)
             && let Some(credential) = self.view.credential.clone()
         {
             let id = id.to_owned();
@@ -407,9 +543,17 @@ impl Session {
     /// Every call lands here and always yields a tool result: failures become tool errors, never protocol errors.
     async fn dispatch(&self, request: CallToolRequestParams, context: &RequestContext<RoleServer>) -> Reply {
         let name = request.name.as_ref();
-        let Some(entry) = self.view.catalog.get(name) else {
+        let Some(mut entry) = self.view.catalog.get(name) else {
             return render::unknown_tool(name, &self.view.catalog.similar(name)).into();
         };
+        let mut args = request.arguments.unwrap_or_default();
+        if matches!(entry.route, Route::Builtin(Builtin::OpsRun)) {
+            // `ops_run` is the op's own tool by another name: from here on the call is that tool's, errors included.
+            match finder::gateway(&self.view.catalog, &args, &entry.tool.input_schema) {
+                Ok((target, call)) => (entry, args) = (target, call),
+                Err(e) => return render::failure(entry.tool.name.as_ref(), &e, Some(&entry.signature)).into(),
+            }
+        }
         let actor = match self.actor(context) {
             Ok(actor) => actor.clone(),
             Err(refusal) => {
@@ -418,7 +562,6 @@ impl Session {
                     .into();
             }
         };
-        let mut args = request.arguments.unwrap_or_default();
         // The registry's word now, not the one at connection setup: grants may have been narrowed and the session
         // paused or ended since.
         let standing = self.standing(context).map_err(|e| OpError::denied(e.message.to_string()));
@@ -433,8 +576,10 @@ impl Session {
                 Err(e) => Err(e),
             },
             Route::Builtin(builtin) => match check_args(&args, &entry.tool.input_schema) {
-                // Reading the log keeps nothing between calls, so a request that stands alone can still do it.
-                Ok(()) if builtin != Builtin::Log && self.http && stands_alone(context) => Err(needs_a_session()),
+                // Reading the log or the document, or finding ops, keeps nothing between calls, so a request that stands
+                // alone can still do it.
+                Ok(()) if !builtin.stateless() && self.http && stands_alone(context) => Err(needs_a_session()),
+                Ok(()) if builtin == Builtin::ToolsEnable => self.tools_enable(&args, context).await.map(Reply::from),
                 Ok(()) => self.run_builtin(builtin, args, actor, &standing).await,
                 Err(e) => Err(e),
             },
@@ -684,6 +829,41 @@ impl Session {
                 self.begin_tx(args, actor).await.map(Reply::from)
             }
             Builtin::TxCommit | Builtin::TxRollback => self.finish_tx(builtin == Builtin::TxCommit, actor).await,
+            Builtin::DocGet => {
+                let grants = standing.clone()?.grants;
+                if !grants.allows(Scope::Read) {
+                    return Err(OpError::denied(read_needed("reading the document")));
+                }
+                let (path, full) = finder::doc_path(&args)?;
+                let at = path.clone();
+                let value = self.blocking(move |runner| runner.get(&at, &grants)).await??;
+                finder::doc_value(&path, value, full).map(Reply::from)
+            }
+            Builtin::OpsFind => finder::find(&self.view.catalog, &args, &standing.clone()?.grants).map(Reply::from),
+            Builtin::OpsDescribe => {
+                let listed = self.listed_tools().any(|t| {
+                    args.get("op")
+                        .and_then(Value::as_str)
+                        .is_some_and(|op| t.name == op || t.title.as_deref() == Some(op))
+                });
+                finder::describe(&self.view.catalog, &args, listed).map(Reply::from)
+            }
+            // `dispatch` serves both: one becomes the op it names, the other needs the request's peer.
+            Builtin::OpsRun | Builtin::ToolsEnable => Err(OpError::internal("routed in dispatch")),
+            Builtin::BranchCreate | Builtin::BranchCheckpoint | Builtin::BranchSwitch => {
+                let host = self.branch_host()?.clone();
+                let session = self.registry()?.session_of(&actor).map(|me| me.id);
+                let result = tokio::task::spawn_blocking(move || match builtin {
+                    Builtin::BranchCreate => crate::branches::create(&host, &args, &actor, session),
+                    Builtin::BranchCheckpoint => crate::branches::checkpoint(&host, &args, &actor),
+                    _ => crate::branches::switch(&host, &args, &actor),
+                })
+                .await
+                .map_err(|e| OpError::internal(format!("the branch call stopped: {e}")))??;
+                Ok(result.into())
+            }
+            Builtin::BranchWork => Err(OpError::unsupported("this connection can't move to another branch")
+                .hint("connect with `omuzaki mcp --branch <name>` to work on a branch")),
             Builtin::SessionInfo | Builtin::SessionList | Builtin::ApprovalWait => {
                 let grants = standing.clone()?.grants;
                 if !grants.allows(Scope::Read) {
@@ -698,8 +878,33 @@ impl Session {
         }
     }
 
+    /// The tools `tools/list` shows this session.
+    fn listed_tools(&self) -> impl Iterator<Item = Tool> {
+        let enabled = lock(&self.state).enabled.clone();
+        self.view.catalog.listed(&enabled).cloned().collect::<Vec<_>>().into_iter()
+    }
+
+    /// `tools_enable`: lists (or unlists) areas' ops for this session and tells the client its tool list changed.
+    async fn tools_enable(
+        &self,
+        args: &JsonObject,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, OpError> {
+        let (result, changed) = {
+            let mut state = lock(&self.state);
+            finder::enable(&self.view.catalog, &mut state.enabled, args)?
+        };
+        if changed {
+            // Before 2026-07-28 the notification goes on the connection; from then on to a `subscriptions/listen`
+            // stream that asked for it. A client that can't take it still has ops_run, which the result names.
+            let _ = context.peer.notify_tool_list_changed().await;
+            self.tools_changed.notify_one();
+        }
+        Ok(result)
+    }
+
     /// The registry, which these three tools exist only for.
-    fn registry(&self) -> Result<&Arc<dyn Sessions>, OpError> {
+    pub(crate) fn registry(&self) -> Result<&Arc<dyn Sessions>, OpError> {
         self.shared
             .sessions
             .as_ref()
@@ -720,7 +925,11 @@ impl Session {
                 state.approvals.remember(approval.id, self.own_approval(approval));
             }
         }
-        Ok(info::session_info(&me, &pending, self.view.credential.as_deref()))
+        let result = info::session_info(&me, &pending, self.view.credential.as_deref());
+        Ok(match &self.shared.branches {
+            Some(host) => crate::branches::with_branch(result, &host.name()),
+            None => result,
+        })
     }
 
     /// `session_list`: every live session, this one marked.
@@ -875,8 +1084,11 @@ impl Session {
         Err(match info.state {
             SessionState::Paused { by, reason } => paused(by, reason),
             SessionState::Ended { .. } => OpError::denied("this connection's session has ended"),
-            SessionState::Active => OpError::conflict("the transaction did not open")
-                .hint("the session changed while it started: call tx_begin again"),
+            // The executor kept why it refused (a rate limit, with the wait); otherwise the session changed under it.
+            SessionState::Active => host.sessions.begin_refusal(id).unwrap_or_else(|| {
+                OpError::conflict("the transaction did not open")
+                    .hint("the session changed while it started: call tx_begin again")
+            }),
         })
     }
 
@@ -1085,6 +1297,35 @@ impl Reporter {
         standing(self.watch.sessions.as_ref(), self.watch.actor.as_ref(), &self.watch.ceiling).ok().map(|s| s.grants)
     }
 
+    /// Waits until the feed holds the decision on each of this session's approvals that the registry no longer holds
+    /// as pending and that `push` (or the session) hasn't been told about, at most [`FEED_LAG`]: the person's decision
+    /// is in the registry when `resolve` returns, its event a worker thread later, so without this a decision made
+    /// before a call could be missing from that call's heads-up. No result waits twice for one approval, so a feed that
+    /// lost a decision doesn't hold every later result; one that arrives late is still reported.
+    async fn catch_up_with_decisions(&self, push: Option<&PushCursor>) {
+        let Some(sessions) = self.shared.sessions.as_ref().map(|host| Arc::clone(&host.sessions)) else { return };
+        let unreported = lock(&self.state).approvals.unreported(push.map(|p| &p.approvals));
+        let hub = &self.shared.hub;
+        let mut arrivals = hub.watch();
+        let missing = |ids: &[omuzaki_ops_api::ApprovalId]| -> Vec<omuzaki_ops_api::ApprovalId> {
+            ids.iter().copied().filter(|id| approvals::resolution_of(hub, *id).is_none()).collect()
+        };
+        let mut owed = missing(&unreported);
+        if owed.is_empty() {
+            return;
+        }
+        let pending = self.blocking(move |_| sessions.approvals()).await.unwrap_or_default();
+        owed.retain(|id| !pending.iter().any(|a| a.id == *id));
+        let deadline = Instant::now() + FEED_LAG;
+        while !owed.is_empty() {
+            if tokio::time::timeout_at(deadline, arrivals.changed()).await.is_err() {
+                lock(&self.state).approvals.waited(&owed);
+                return;
+            }
+            owed = missing(&owed);
+        }
+    }
+
     async fn blocking<T: Send + 'static>(
         &self,
         work: impl FnOnce(&dyn Runner) -> T + Send + 'static,
@@ -1170,6 +1411,7 @@ impl Reporter {
         let result = if log_text || self.shared.sessions.is_none() {
             result
         } else {
+            self.catch_up_with_decisions(push.as_deref()).await;
             let mut state = lock(&self.state);
             let news = match push {
                 Some(push) => state.approvals.news_for(&self.shared.hub, &mut push.approvals),
@@ -1313,6 +1555,12 @@ impl ServerHandler for Session {
             .enable_prompts()
             .enable_resources()
             .enable_resources_subscribe();
+        // A core list changes when the session turns an area on (`tools_enable`); a full one never does.
+        let capabilities = if self.view.catalog.mode() == ToolMode::Core {
+            capabilities.enable_tool_list_changed()
+        } else {
+            capabilities
+        };
         let capabilities = if self.jobs.is_some() { capabilities.enable_tasks() } else { capabilities }.build();
         ServerConfig::new(capabilities)
             .with_server_info(Implementation::new("omuzaki", env!("CARGO_PKG_VERSION")).with_title("Omuzaki Studio"))
@@ -1325,7 +1573,7 @@ impl ServerHandler for Session {
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
         self.name_client(&context);
-        Ok(ListToolsResult::with_all_items(self.view.catalog.tools().cloned().collect()))
+        Ok(ListToolsResult::with_all_items(self.listed_tools().collect()))
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
@@ -1358,6 +1606,7 @@ impl ServerHandler for Session {
                 None => result,
             },
         };
+        let result = if log_text { result } else { self.with_reviews(result) };
         Ok(result.into())
     }
 
@@ -1558,14 +1807,12 @@ impl ServerHandler for Session {
         } else {
             Vec::new()
         };
-        Some(if accepted.is_empty() {
-            SubscriptionFilter::new()
-        } else {
-            accepted
-                .into_iter()
-                .fold(SubscriptionFilter::builder(), rmcp::model::SubscriptionFilterBuilder::resource_subscription)
-                .build()
-        })
+        // A tool list says nothing about the document, so this needs no `read`; only a core list ever changes.
+        let tools = requested.tools_list_changed == Some(true) && self.view.catalog.mode() == ToolMode::Core;
+        let builder = accepted
+            .into_iter()
+            .fold(SubscriptionFilter::builder(), rmcp::model::SubscriptionFilterBuilder::resource_subscription);
+        Some(if tools { builder.tools_list_changed() } else { builder }.build())
     }
 
     /// A ping may be a session's first request, and it carries the client's identity like any other.
@@ -1576,20 +1823,31 @@ impl ServerHandler for Session {
 
     async fn listen(&self, context: SubscriptionContext) -> Result<(), McpError> {
         self.name_client(context.request_context());
-        let wanted: BTreeSet<String> = context.accepted().resource_subscriptions.iter().flatten().cloned().collect();
+        let mut wanted: BTreeSet<String> =
+            context.accepted().resource_subscriptions.iter().flatten().cloned().collect();
+        let tools = context.accepted().tools_list_changed == Some(true);
         // `accepted_subscription_filter` already refuses everything without `read`; checking again keeps this loop safe
         // on its own. A connection without an active session, or whose session cannot read, is told nothing either.
         let may_read = self.session_grants(context.request_context()).is_ok_and(|g| g.allows(Scope::Read));
-        if !may_read || wanted.is_empty() {
+        if !may_read {
+            wanted.clear();
+        }
+        if wanted.is_empty() && !tools {
             context.cancelled().await;
             return Ok(());
         }
         let mut updates = Updates::new(&self.shared.hub, &self.shared.providers);
         let watch = self.watch(context.request_context());
+        let tools_changed = Arc::clone(&self.tools_changed);
         loop {
             tokio::select! {
                 () = context.cancelled() => return Ok(()),
-                arrived = updates.arrived() => {
+                () = tools_changed.notified(), if tools => {
+                    if context.sink().notify_tool_list_changed().await.is_err() {
+                        return Ok(());
+                    }
+                }
+                arrived = updates.arrived(), if !wanted.is_empty() => {
                     if !arrived {
                         return Ok(());
                     }

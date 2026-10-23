@@ -166,9 +166,8 @@ fn args_are_read_from_a_pipe_with_at_dash() {
 }
 
 #[test]
-fn history_commands_start_empty_in_every_process_and_leave_the_project_alone() {
-    // The op log and the undo stacks live in the executor's memory (see the crate docs), so a fresh `omuzaki undo` has
-    // nothing to undo. When they persist, this test is the one to change.
+fn history_commands_on_a_project_with_no_changes_find_nothing_and_leave_it_alone() {
+    // The history is kept with the project (`e2e.rs` undoes across processes); a new project has none.
     let project = new_project();
     let before = project_toml(project.path());
     for (command, nothing) in [("undo", "nothing to undo\n"), ("redo", "nothing to redo\n")] {

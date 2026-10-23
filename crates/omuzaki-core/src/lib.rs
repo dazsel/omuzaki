@@ -16,6 +16,7 @@
 #![deny(missing_docs)]
 
 pub mod assets;
+pub mod cancel;
 pub mod colour;
 pub mod fsx;
 pub mod id;

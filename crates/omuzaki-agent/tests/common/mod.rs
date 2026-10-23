@@ -1,0 +1,1446 @@
+//! Test rig for the host: a scripted rmcp server over `tokio::io::duplex`, a recording fake `Sessions`, a recording
+//! `EntrySink` and `FakeLlm`. Nothing here touches the network or the real `omuzaki-mcp`.
+
+// Each test file uses some of the rig; the rest is dead code to that file.
+#![allow(dead_code, clippy::unwrap_used, clippy::expect_used)]
+
+use std::collections::BTreeMap;
+use std::fmt::Write as _;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
+
+use omuzaki_agent::sink::EntrySink;
+use omuzaki_agent::{AssistantHost, Caps, HostConfig, McpClientLink};
+use omuzaki_agent_api::Assistant;
+use omuzaki_agent_api::entry::{Entry, StoredBlock};
+use omuzaki_agent_api::error::HostError;
+use omuzaki_agent_api::event::AssistantEvent;
+use omuzaki_agent_api::hub::EventReceiver;
+use omuzaki_agent_api::message::UserMessage;
+use omuzaki_core::time::{Clock, FakeClock, Seconds};
+use omuzaki_llm_api::LlmClient;
+use omuzaki_llm_api::error::LlmError;
+use omuzaki_llm_api::message::{ImageMime, TurnRequest};
+use omuzaki_llm_api::provider::RuntimeHandle;
+use omuzaki_llm_api::stream::{Cancel, EventSource, LlmEvent, Next, StopReason, TurnStream};
+use omuzaki_llm_api::usage::ModelInfo;
+use omuzaki_llm_api::usage::{PriceTable, PriceTier, Rates, Usage};
+use omuzaki_llm_mock::{FakeLlm, Script, ScriptTurn};
+use omuzaki_ops_api::{
+    Actor, ApprovalId, Budget, EndReason, ErrorCode, ErrorDetail, Grants, Limits, Need, OpError, PauseReason,
+    PendingApproval, SessionId, SessionInfo, SessionSpec, SessionState, SessionTx, Sessions, Spend, StopStep, Stopped,
+    TxId,
+};
+use rmcp::ErrorData as McpError;
+use rmcp::ServiceExt;
+use rmcp::handler::server::ServerHandler;
+use rmcp::model::{
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, GetPromptRequestParams, GetPromptResponse,
+    GetPromptResult, JsonObject, ListPromptsResult, ListToolsResult, MetaObject, PaginatedRequestParams, Prompt,
+    PromptMessage, ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, ResourceContents, Role,
+    ServerCapabilities, ServerConfig, Tool, ToolAnnotations,
+};
+use rmcp::service::{RequestContext, RoleServer};
+use serde_json::{Value, json};
+
+// ----- the scripted server -------------------------------------------------------------------------------------
+
+/// What a scripted tool does when called: its result, and optionally a gate it waits on first.
+#[derive(Clone)]
+pub struct Outcome {
+    pub result: CallToolResult,
+    pub gate: Option<Arc<tokio::sync::Notify>>,
+    /// The server has moved the session's position and written the heads-up before the gate holds the reply, as when
+    /// the reply is ready but not yet taken: a cancel then loses the heads-up.
+    pub heads_up_first: bool,
+}
+
+impl Outcome {
+    pub fn text(text: &str) -> Self {
+        Self { result: CallToolResult::success(vec![ContentBlock::text(text)]), gate: None, heads_up_first: false }
+    }
+
+    pub fn failure(text: &str) -> Self {
+        Self { result: CallToolResult::error(vec![ContentBlock::text(text)]), gate: None, heads_up_first: false }
+    }
+
+    /// An error as `omuzaki-mcp` renders it: `structuredContent { ok: false, code, message, hint, detail }`.
+    pub fn refusal(code: &str, detail: &ErrorDetail) -> Self {
+        let data =
+            json!({"ok": false, "op": "x", "code": code, "message": format!("{code}!"), "hint": "h", "detail": detail});
+        let mut result = CallToolResult::error(vec![ContentBlock::text(format!("x failed [{code}]"))]);
+        result.structured_content = Some(data);
+        Self { result, gate: None, heads_up_first: false }
+    }
+
+    pub fn image(png: &[u8]) -> Self {
+        use base64::Engine;
+        let data = base64::engine::general_purpose::STANDARD.encode(png);
+        Self {
+            result: CallToolResult::success(vec![ContentBlock::image(data, "image/png")]),
+            gate: None,
+            heads_up_first: false,
+        }
+    }
+
+    pub fn held(mut self, gate: &Arc<tokio::sync::Notify>) -> Self {
+        self.gate = Some(Arc::clone(gate));
+        self
+    }
+
+    /// Held, with the heads-up already written (see `heads_up_first`).
+    pub fn held_after_heads_up(mut self, gate: &Arc<tokio::sync::Notify>) -> Self {
+        self.heads_up_first = true;
+        self.held(gate)
+    }
+}
+
+/// Called with the name and arguments of every tool call, before it is answered.
+pub type CallHook = Arc<dyn Fn(&str, &JsonObject) + Send + Sync>;
+
+type Behaviour = Arc<dyn Fn(&JsonObject, usize) -> Outcome + Send + Sync>;
+
+/// One tool of the scripted server.
+pub struct ToolSpec {
+    pub tool: Tool,
+    pub behaviour: Behaviour,
+}
+
+pub fn tool(name: &str, title: &str, kind: &str, read_only: bool) -> Tool {
+    let schema = json!({"type": "object", "additionalProperties": true});
+    let meta = MetaObject::from(JsonObject::from_iter([("omuzaki/kind".to_owned(), json!(kind))]));
+    let mut tool =
+        Tool::new(name.to_owned(), format!("{name} does its work."), schema.as_object().cloned().unwrap_or_default())
+            .with_title(title)
+            .with_meta(meta);
+    if read_only {
+        tool = tool.with_annotations(ToolAnnotations::new().read_only(true));
+    }
+    tool
+}
+
+/// A tool with no `_meta` kind, as an older server lists it.
+pub fn kindless(name: &str, read_only: bool) -> Tool {
+    let schema = json!({"type": "object", "additionalProperties": true});
+    let mut tool = Tool::new(name.to_owned(), "an old tool", schema.as_object().cloned().unwrap_or_default());
+    if read_only {
+        tool = tool.with_annotations(ToolAnnotations::new().read_only(true));
+    }
+    tool
+}
+
+#[derive(Default)]
+pub struct ServerLog {
+    /// Every call, in arrival order: the tool and its arguments.
+    pub calls: Vec<(String, Value)>,
+    /// The host's own reads of the op log: one per answer to learn the log's head, and Stop's.
+    pub host_log_reads: usize,
+    pub in_flight: usize,
+    pub max_in_flight: usize,
+    pub cancelled: usize,
+    pub prompt_lists: usize,
+    pub prompt_gets: Vec<(String, Value)>,
+}
+
+#[derive(Clone)]
+pub struct ScriptedServer {
+    pub tools: Arc<Mutex<Vec<ToolSpec>>>,
+    pub log: Arc<Mutex<ServerLog>>,
+    pub prompts: Arc<Mutex<Vec<(Prompt, String)>>>,
+    pub prompt_failure: Arc<Mutex<Option<String>>>,
+    pub prompt_gate: Arc<Mutex<Option<Arc<tokio::sync::Notify>>>>,
+    pub resources: Arc<Mutex<BTreeMap<String, ResourceContents>>>,
+    pub instructions: String,
+    pub on_call: Arc<Mutex<Option<CallHook>>>,
+    counts: Arc<Mutex<BTreeMap<String, usize>>>,
+    /// The fake executor whose op log the results' heads-ups come from, as `omuzaki-mcp` adds them.
+    pub log_of: Arc<Mutex<Option<Arc<FakeSessions>>>>,
+    /// A resource read to hold (once), after somebody else's edit and, for the log, after the read caught the session up.
+    pub held_resource: Arc<Mutex<Option<HeldResource>>>,
+}
+
+/// A resource read the server holds: `op` is applied by somebody else first; reading `omuzaki://log` then moves the
+/// session's position past it, as `omuzaki-mcp` does; `held` is set, and the reply waits on `gate`.
+pub struct HeldResource {
+    pub uri: String,
+    pub op: String,
+    pub held: Arc<std::sync::atomic::AtomicBool>,
+    pub gate: Arc<tokio::sync::Notify>,
+}
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+impl ScriptedServer {
+    pub fn new() -> Self {
+        Self {
+            tools: Arc::default(),
+            log: Arc::default(),
+            prompts: Arc::default(),
+            prompt_failure: Arc::default(),
+            prompt_gate: Arc::default(),
+            resources: Arc::default(),
+            instructions: "Server instructions.".to_owned(),
+            on_call: Arc::default(),
+            counts: Arc::default(),
+            log_of: Arc::default(),
+            held_resource: Arc::default(),
+        }
+    }
+
+    /// Sets a hook called with every tool call before it is answered.
+    pub fn on_call(&self, hook: impl Fn(&str, &JsonObject) + Send + Sync + 'static) {
+        *lock(&self.on_call) = Some(Arc::new(hook));
+    }
+
+    pub fn add(&self, tool: Tool, behaviour: impl Fn(&JsonObject, usize) -> Outcome + Send + Sync + 'static) {
+        let mut tools = lock(&self.tools);
+        // A tool added again replaces the earlier one of its name.
+        tools.retain(|t| t.tool.name != tool.name);
+        tools.push(ToolSpec { tool, behaviour: Arc::new(behaviour) });
+    }
+
+    pub fn add_fixed(&self, tool: Tool, outcome: Outcome) {
+        self.add(tool, move |_, _| outcome.clone());
+    }
+
+    pub fn calls(&self) -> Vec<(String, Value)> {
+        lock(&self.log).calls.clone()
+    }
+
+    /// How many times the host itself read the op log.
+    pub fn host_log_reads(&self) -> usize {
+        lock(&self.log).host_log_reads
+    }
+
+    /// How many `notifications/cancelled` the client sent: calls it abandoned instead of waiting for.
+    pub fn cancelled(&self) -> usize {
+        lock(&self.log).cancelled
+    }
+
+    pub fn called(&self, name: &str) -> usize {
+        lock(&self.log).calls.iter().filter(|(n, _)| n == name).count()
+    }
+}
+
+// rmcp's trait methods are async; this scripted server has nothing to await in most of them.
+#[allow(clippy::unused_async_trait_impl)]
+impl ServerHandler for ScriptedServer {
+    fn get_info(&self) -> ServerConfig {
+        let capabilities = ServerCapabilities::builder().enable_tools().enable_prompts().enable_resources().build();
+        ServerConfig::new(capabilities).with_instructions(self.instructions.clone())
+    }
+
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, McpError> {
+        Ok(ListToolsResult::with_all_items(lock(&self.tools).iter().map(|t| t.tool.clone()).collect()))
+    }
+
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, McpError> {
+        let name = request.name.to_string();
+        let args = request.arguments.unwrap_or_default();
+        let (behaviour, index) = {
+            let tools = lock(&self.tools);
+            let spec = tools
+                .iter()
+                .find(|t| t.tool.name == name.as_str())
+                .ok_or_else(|| McpError::invalid_params(format!("unknown tool {name}"), None))?;
+            let mut counts = lock(&self.counts);
+            let index = *counts.entry(name.clone()).and_modify(|n| *n += 1).or_insert(0);
+            (Arc::clone(&spec.behaviour), index)
+        };
+        {
+            let mut log = lock(&self.log);
+            // The host's own bookkeeping read of the op log (it always names `after_n`, the model's tool results never
+            // do here) is counted on its own, so `calls` stays what the model's work called.
+            if name == "history_log" && args.contains_key("after_n") {
+                log.host_log_reads += 1;
+            } else {
+                log.calls.push((name.clone(), Value::Object(args.clone())));
+            }
+            log.in_flight += 1;
+            log.max_in_flight = log.max_in_flight.max(log.in_flight);
+        }
+        let hook = lock(&self.on_call).clone();
+        if let Some(hook) = hook {
+            hook(&name, &args);
+        }
+        let outcome = behaviour(&args, index);
+        let mut result = outcome.result;
+        // As `omuzaki-mcp` does, after the call: every result but a successful log read moves the session's position to
+        // the log's head and carries what others did since. A call cancelled at the gate never gets here, unless the
+        // heads-up was written first.
+        let reads_log = name == "history_log" && result.is_error != Some(true);
+        let sessions = lock(&self.log_of).clone().filter(|_| !reads_log);
+        let early = if outcome.heads_up_first { sessions.as_ref().and_then(|s| s.heads_up()) } else { None };
+        if let Some(gate) = &outcome.gate {
+            gate.notified().await;
+        }
+        lock(&self.log).in_flight -= 1;
+        let late = if outcome.heads_up_first { early } else { sessions.and_then(|s| s.heads_up()) };
+        if let Some((text, data)) = late {
+            match result.content.first_mut().and_then(|c| c.as_text().map(|t| t.text.clone())) {
+                Some(first) => result.content[0] = ContentBlock::text(format!("{text}\n\n{first}")),
+                None => result.content.insert(0, ContentBlock::text(text)),
+            }
+            let mut structured = result.structured_content.take().unwrap_or_else(|| json!({}));
+            structured["since_your_last_call"] = data;
+            result.structured_content = Some(structured);
+        }
+        Ok(result.into())
+    }
+
+    async fn on_cancelled(
+        &self,
+        _notification: rmcp::model::CancelledNotificationParam,
+        _context: rmcp::service::NotificationContext<RoleServer>,
+    ) {
+        lock(&self.log).cancelled += 1;
+    }
+
+    async fn list_prompts(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListPromptsResult, McpError> {
+        lock(&self.log).prompt_lists += 1;
+        if let Some(why) = lock(&self.prompt_failure).clone() {
+            return Err(McpError::internal_error(why, None));
+        }
+        Ok(ListPromptsResult::with_all_items(lock(&self.prompts).iter().map(|(p, _)| p.clone()).collect()))
+    }
+
+    async fn get_prompt(
+        &self,
+        request: GetPromptRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<GetPromptResponse, McpError> {
+        lock(&self.log)
+            .prompt_gets
+            .push((request.name.clone(), Value::Object(request.arguments.clone().unwrap_or_default())));
+        let gate = lock(&self.prompt_gate).clone();
+        if let Some(gate) = gate {
+            gate.notified().await;
+        }
+        let text = lock(&self.prompts)
+            .iter()
+            .find(|(p, _)| p.name == request.name)
+            .map(|(_, text)| text.clone())
+            .ok_or_else(|| McpError::invalid_params(format!("unknown prompt {}", request.name), None))?;
+        Ok(GetPromptResult::new(vec![PromptMessage::new_text(Role::User, text)]).into())
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResponse, McpError> {
+        let sessions = lock(&self.log_of).clone();
+        let held = {
+            let mut slot = lock(&self.held_resource);
+            if slot.as_ref().is_some_and(|h| h.uri == request.uri) { slot.take() } else { None }
+        };
+        if let Some(held) = held {
+            if let Some(sessions) = &sessions {
+                sessions.other_change(&held.op);
+                if request.uri == "omuzaki://log" {
+                    let _ = sessions.read_log(0);
+                }
+            }
+            held.held.store(true, Ordering::SeqCst);
+            held.gate.notified().await;
+        }
+        if request.uri == "omuzaki://log"
+            && let Some(sessions) = sessions
+        {
+            let (events, latest) = sessions.read_log(0);
+            let body = json!({"latest": latest, "events": events}).to_string();
+            return Ok(ReadResourceResult::new(vec![ResourceContents::text(body, "omuzaki://log")]).into());
+        }
+        let contents = lock(&self.resources)
+            .get(&request.uri)
+            .cloned()
+            .ok_or_else(|| McpError::invalid_params(format!("unknown resource {}", request.uri), None))?;
+        Ok(ReadResourceResult::new(vec![contents]).into())
+    }
+}
+
+/// A minimal JSON-RPC MCP server: it holds `render_preview` until the client cancels it, then answers anyway.
+async fn late_server(io: tokio::io::DuplexStream) {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let (read, mut write) = tokio::io::split(io);
+    let mut lines = BufReader::new(read).lines();
+    let tools = json!([{
+        "name": "render_preview",
+        "description": "renders",
+        "inputSchema": {"type": "object"},
+        "annotations": {"readOnlyHint": true},
+        "_meta": {"omuzaki/kind": "query"}
+    }]);
+    let mut held: Option<Value> = None;
+    while let Ok(Some(line)) = lines.next_line().await {
+        let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
+        let id = msg.get("id").cloned();
+        let reply = |result: Value| json!({"jsonrpc": "2.0", "id": id, "result": result});
+        let answer = match msg["method"].as_str() {
+            Some("initialize") => Some(reply(json!({
+                "protocolVersion": msg["params"]["protocolVersion"],
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "late", "version": "1"}
+            }))),
+            Some("tools/list") => Some(reply(json!({"tools": tools}))),
+            // Only `render_preview` is held; anything else (the host's read of the log) is a tool this server lacks.
+            Some("tools/call") if msg["params"]["name"] == "render_preview" => {
+                held = id.clone();
+                None
+            }
+            Some("tools/call") => Some(reply(json!({"content": [{"type": "text", "text": "unknown tool"}], "isError": true}))),
+            // The late answer carries a heads-up, as any `omuzaki-mcp` result does when others changed something.
+            Some("notifications/cancelled") => held.take().map(|held_id| {
+                let heads_up = json!({"total": 1, "after_n": 0, "up_to_n": 1,
+                    "changes": [{"who": "Sam", "action": "applied", "what": "late.change"}]});
+                json!({"jsonrpc": "2.0", "id": held_id, "result": {
+                    "content": [{"type": "text", "text": "Heads-up: since your last call, others changed the project (1 change; the log is now at n=1).\n- Sam applied late.change (n=1)\n\nrendered"}],
+                    "structuredContent": {"since_your_last_call": heads_up}}})
+            }),
+            Some(_) if id.is_some() => Some(json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": "no such method"}})),
+            _ => None,
+        };
+        if let Some(answer) = answer
+            && write.write_all(format!("{answer}\n").as_bytes()).await.is_err()
+        {
+            return;
+        }
+    }
+}
+
+// ----- the fake sessions ---------------------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug)]
+pub enum StopBehaviour {
+    /// Returns `Committed(tx)` after the hold.
+    Committed,
+    /// Returns `Pending`; the open transaction closes `close_after` seconds of clock time later.
+    Pending { close_after: f64 },
+    /// Refuses the Stop and leaves the transaction open.
+    Refused,
+}
+
+struct SessionsState {
+    info: SessionInfo,
+    /// Micro-dollars the budget still allows; `None` is unlimited.
+    left: Option<u64>,
+    next_approval: u64,
+    approvals: Vec<PendingApproval>,
+    charges: Vec<Spend>,
+    budget_requests: Vec<Spend>,
+    stop_calls: Vec<Actor>,
+    resume_calls: Vec<Actor>,
+    pause_calls: usize,
+    end_calls: Vec<EndReason>,
+    stop_behaviour: StopBehaviour,
+    stop_hold: f64,
+    close_open_tx_at: Option<f64>,
+    /// A pending stop reverts every edit, so closing it makes no step.
+    pending_reverts: bool,
+    /// The ids of the transactions committed so far, as the server's history shows them.
+    committed: Vec<u64>,
+    session_polls: usize,
+    /// The id the next `tx_begin` gets.
+    next_tx: u64,
+    /// The op log as the server numbers it, oldest first: `(n, event)`.
+    log: Vec<(u64, Value)>,
+    /// The session's position in it (the server's *seen*): the newest event it has been told of.
+    seen: u64,
+    /// While set, the executor's transaction events wait in `lagged`, as the server's worker moves events into the log a
+    /// moment after the fact.
+    lag: bool,
+    lagged: Vec<Value>,
+}
+
+/// A recording `Sessions`: one session, a settable budget, a settable state.
+pub struct FakeSessions {
+    state: Mutex<SessionsState>,
+    clock: Arc<dyn Clock>,
+}
+
+pub fn person() -> Actor {
+    Actor::Person { name: "sam".into() }
+}
+
+impl FakeSessions {
+    pub fn new(clock: Arc<dyn Clock>) -> Arc<Self> {
+        let info = SessionInfo {
+            id: SessionId(1),
+            actor: Actor::Agent { id: "assistant-1".into(), model: None },
+            on_behalf_of: person(),
+            transport: omuzaki_ops_api::Transport::InApp,
+            client: "assistant".into(),
+            model: None,
+            parent: None,
+            role: Some("assistant".into()),
+            grants: Grants::agent_default(),
+            fence: Vec::new(),
+            budget: Budget { usd_micros: 1_000_000, tokens: None, seconds: None },
+            spent: Spend::default(),
+            limits: Limits::default(),
+            state: SessionState::Active,
+            open_tx: None,
+            pending: Vec::new(),
+            steps: 0,
+            started_at: Seconds(0.0),
+            last_active_at: Seconds(0.0),
+        };
+        let state = SessionsState {
+            info,
+            left: None,
+            next_approval: 7,
+            approvals: Vec::new(),
+            charges: Vec::new(),
+            budget_requests: Vec::new(),
+            stop_calls: Vec::new(),
+            resume_calls: Vec::new(),
+            pause_calls: 0,
+            end_calls: Vec::new(),
+            stop_behaviour: StopBehaviour::Committed,
+            stop_hold: 0.0,
+            close_open_tx_at: None,
+            pending_reverts: false,
+            committed: Vec::new(),
+            session_polls: 0,
+            next_tx: 31,
+            log: Vec::new(),
+            seen: 0,
+            lag: false,
+            lagged: Vec::new(),
+        };
+        Arc::new(Self { state: Mutex::new(state), clock })
+    }
+
+    fn st(&self) -> std::sync::MutexGuard<'_, SessionsState> {
+        lock(&self.state)
+    }
+
+    // ----- the op log, as `omuzaki-mcp` keeps it for this session
+
+    fn me(st: &SessionsState) -> Value {
+        serde_json::to_value(&st.info.actor).unwrap()
+    }
+
+    fn push_event(st: &mut SessionsState, event: Value) {
+        let n = st.log.last().map_or(1, |(n, _)| n + 1);
+        st.log.push((n, event));
+    }
+
+    /// A commit or rollback by the executor: into the log, or held back while the log lags.
+    fn tx_event(st: &mut SessionsState, kind: &str, tx: u64) {
+        let event = json!({"event": kind, "tx": tx, "label": "l", "actor": Self::me(st), "version": 0});
+        if st.lag {
+            st.lagged.push(event);
+        } else {
+            Self::push_event(st, event);
+        }
+    }
+
+    /// Somebody else (the person, at the UI) applies `op`.
+    pub fn other_change(&self, op: &str) {
+        let mut st = self.st();
+        let actor = serde_json::to_value(Actor::Person { name: "Sam".into() }).unwrap();
+        Self::push_event(&mut st, json!({"event": "op_applied", "record": {"op": op, "actor": actor}}));
+    }
+
+    /// The session applies `op` (an edit of the model's).
+    pub fn own_change(&self, op: &str) {
+        let mut st = self.st();
+        let actor = Self::me(&st);
+        Self::push_event(&mut st, json!({"event": "op_applied", "record": {"op": op, "actor": actor}}));
+    }
+
+    /// The session opens here: it is caught up with everything already in the log.
+    pub fn open_caught_up(&self) {
+        let mut st = self.st();
+        st.seen = st.log.last().map_or(0, |(n, _)| *n);
+    }
+
+    /// Holds the executor's transaction events back (`true`) or lets them through.
+    pub fn set_log_lag(&self, lag: bool) {
+        self.st().lag = lag;
+    }
+
+    /// The server's worker catches up: the held-back events enter the log, numbered now.
+    pub fn release_log(&self) {
+        let mut st = self.st();
+        st.lag = false;
+        for event in std::mem::take(&mut st.lagged) {
+            Self::push_event(&mut st, event);
+        }
+    }
+
+    /// `history_log`: the events numbered above `after`, and the newest number. Reading the log catches the session up.
+    pub fn read_log(&self, after: u64) -> (Vec<Value>, u64) {
+        let mut st = self.st();
+        let latest = st.log.last().map_or(0, |(n, _)| *n);
+        st.seen = st.seen.max(latest);
+        let events = st.log.iter().filter(|(n, _)| *n > after).map(|(n, e)| json!({"n": n, "event": e})).collect();
+        (events, latest)
+    }
+
+    /// What others changed since the session was last told, as a heads-up's text and structured form; the session is
+    /// told up to the log's head either way.
+    pub fn heads_up(&self) -> Option<(String, Value)> {
+        let mut st = self.st();
+        let latest = st.log.last().map_or(0, |(n, _)| *n);
+        let (after, me) = (st.seen, Self::me(&st));
+        st.seen = latest;
+        let changes: Vec<(u64, String)> = st
+            .log
+            .iter()
+            .filter(|(n, _)| *n > after)
+            .filter(|(_, e)| e["event"] == "op_applied" && e["record"]["actor"] != me)
+            .map(|(n, e)| (*n, e["record"]["op"].as_str().unwrap_or("").to_owned()))
+            .collect();
+        if changes.is_empty() {
+            return None;
+        }
+        let mut text = format!(
+            "Heads-up: since your last call, others changed the project ({} changes; the log is now at n={latest}).",
+            changes.len()
+        );
+        for (n, op) in &changes {
+            let _ = write!(text, "\n- Sam applied {op} (n={n})");
+        }
+        let listed: Vec<Value> = changes
+            .iter()
+            .map(|(n, op)| json!({"who": "Sam", "action": "applied", "what": op, "first_n": n}))
+            .collect();
+        let data = json!({"total": changes.len(), "after_n": after, "up_to_n": latest, "changes": listed,
+            "not_listed": 0, "missed": 0});
+        Some((text, data))
+    }
+
+    /// The whole log, for assertions.
+    pub fn log_events(&self) -> Vec<(u64, Value)> {
+        self.st().log.clone()
+    }
+
+    // ----- what tests set
+    pub fn set_left(&self, left: Option<u64>) {
+        self.st().left = left;
+    }
+
+    pub fn set_state(&self, state: SessionState) {
+        self.st().info.state = state;
+    }
+
+    pub fn set_stop(&self, behaviour: StopBehaviour, hold: f64) {
+        let mut st = self.st();
+        st.stop_behaviour = behaviour;
+        st.stop_hold = hold;
+    }
+
+    /// A pending stop will revert all of the transaction's edits, so no undo step results.
+    pub fn set_pending_stop_reverts(&self) {
+        self.st().pending_reverts = true;
+    }
+
+    /// The open transaction, if any.
+    pub fn open_tx(&self) -> Option<SessionTx> {
+        self.st().info.open_tx.clone()
+    }
+
+    /// An open transaction closed by a commit: one more step, and its event.
+    pub fn commit_open_tx(&self) {
+        let mut st = self.st();
+        if let Some(tx) = st.info.open_tx.take() {
+            st.info.steps += 1;
+            st.committed.push(tx.tx.0);
+            Self::tx_event(&mut st, "tx_committed", tx.tx.0);
+        }
+    }
+
+    /// An open transaction rolled back, and its event.
+    pub fn rollback_open_tx(&self) {
+        let mut st = self.st();
+        if let Some(tx) = st.info.open_tx.take() {
+            Self::tx_event(&mut st, "tx_rolled_back", tx.tx.0);
+        }
+    }
+
+    /// `tx_begin`: a new transaction with the next id.
+    pub fn begin_tx(&self, label: String) {
+        let mut st = self.st();
+        let tx = TxId(st.next_tx);
+        st.next_tx += 1;
+        st.info.open_tx = Some(SessionTx { tx, label });
+    }
+
+    /// A step that is not the answer's transaction (a person granted an approval the session had retained).
+    pub fn bump_steps(&self) {
+        self.st().info.steps += 1;
+    }
+
+    /// The ids of the committed transactions.
+    pub fn committed(&self) -> Vec<u64> {
+        self.st().committed.clone()
+    }
+
+    pub fn set_open_tx(&self, tx: Option<SessionTx>) {
+        self.st().info.open_tx = tx;
+    }
+
+    pub fn revoke(&self) {
+        let reason = EndReason::Revoked { by: person(), credential: true };
+        self.st().info.state = SessionState::Ended { reason, at: Seconds(0.0) };
+    }
+
+    /// The person raises the budget on the pending approval: it resolves and the session runs again.
+    pub fn raise_budget(&self) {
+        let mut st = self.st();
+        st.approvals.clear();
+        st.left = None;
+        st.info.state = SessionState::Active;
+    }
+
+    pub fn reject_budget(&self) {
+        self.st().approvals.clear();
+    }
+
+    /// An approval the person has not decided yet, for `approval_wait` to wait on.
+    pub fn queue_approval(&self, id: u64) {
+        let mut st = self.st();
+        let actor = st.info.actor.clone();
+        st.approvals.push(PendingApproval {
+            id: ApprovalId(id),
+            session: SessionId(1),
+            actor,
+            request: None,
+            need: Need::Person { reason: "r".into() },
+            batch: "b".into(),
+            requested_at: Seconds(0.0),
+        });
+    }
+
+    /// The person decides every pending approval.
+    pub fn resolve_approvals(&self) {
+        self.st().approvals.clear();
+    }
+
+    // ----- what tests read
+    pub fn charges(&self) -> Vec<Spend> {
+        self.st().charges.clone()
+    }
+
+    pub fn budget_requests(&self) -> Vec<Spend> {
+        self.st().budget_requests.clone()
+    }
+
+    pub fn session_polls(&self) -> usize {
+        self.st().session_polls
+    }
+
+    pub fn stop_calls(&self) -> usize {
+        self.st().stop_calls.len()
+    }
+
+    pub fn stop_principals(&self) -> Vec<Actor> {
+        self.st().stop_calls.clone()
+    }
+
+    pub fn resume_calls(&self) -> Vec<Actor> {
+        self.st().resume_calls.clone()
+    }
+
+    pub fn pause_calls(&self) -> usize {
+        self.st().pause_calls
+    }
+
+    pub fn end_calls(&self) -> Vec<EndReason> {
+        self.st().end_calls.clone()
+    }
+
+    fn unsupported<T>() -> Result<T, OpError> {
+        Err(OpError::unsupported("not in the fake"))
+    }
+}
+
+impl Sessions for FakeSessions {
+    fn open(&self, _spec: SessionSpec) -> Result<SessionInfo, OpError> {
+        Self::unsupported()
+    }
+
+    fn sessions(&self) -> Vec<SessionInfo> {
+        vec![self.st().info.clone()]
+    }
+
+    fn session(&self, id: SessionId) -> Option<SessionInfo> {
+        let mut st = self.st();
+        st.session_polls += 1;
+        if id != st.info.id {
+            return None;
+        }
+        // A transaction a stopping executor is still closing.
+        if let Some(at) = st.close_open_tx_at
+            && self.clock.now().0 >= at
+        {
+            let closed = st.info.open_tx.take();
+            st.close_open_tx_at = None;
+            if let Some(tx) = closed {
+                if st.pending_reverts {
+                    Self::tx_event(&mut st, "tx_rolled_back", tx.tx.0);
+                } else {
+                    st.info.steps += 1;
+                    st.committed.push(tx.tx.0);
+                    Self::tx_event(&mut st, "tx_committed", tx.tx.0);
+                }
+            }
+        }
+        Some(st.info.clone())
+    }
+
+    fn session_of(&self, _actor: &Actor) -> Option<SessionInfo> {
+        Some(self.st().info.clone())
+    }
+
+    fn pause(&self, _id: SessionId, _by: &Actor) -> Result<SessionInfo, OpError> {
+        let mut st = self.st();
+        st.pause_calls += 1;
+        Ok(st.info.clone())
+    }
+
+    fn resume(&self, _id: SessionId, by: &Actor) -> Result<SessionInfo, OpError> {
+        let mut st = self.st();
+        st.resume_calls.push(by.clone());
+        st.info.state = SessionState::Active;
+        Ok(st.info.clone())
+    }
+
+    fn set_grants(&self, _id: SessionId, _grants: Grants, _by: &Actor) -> Result<SessionInfo, OpError> {
+        Self::unsupported()
+    }
+
+    fn set_budget(&self, _id: SessionId, _budget: Budget, _by: &Actor) -> Result<SessionInfo, OpError> {
+        Self::unsupported()
+    }
+
+    fn charge(&self, _id: SessionId, spend: Spend) -> Result<SessionInfo, OpError> {
+        let mut st = self.st();
+        if matches!(st.info.state, SessionState::Ended { .. }) {
+            return Err(OpError {
+                code: ErrorCode::Conflict,
+                message: "the session has ended".into(),
+                field: None,
+                hint: None,
+                detail: None,
+            });
+        }
+        st.charges.push(spend);
+        st.info.spent.usd_micros += spend.usd_micros;
+        st.info.spent.tokens += spend.tokens;
+        if let Some(left) = st.left.as_mut() {
+            *left = left.saturating_sub(spend.usd_micros);
+        }
+        Ok(st.info.clone())
+    }
+
+    fn end(&self, _id: SessionId, reason: EndReason) -> Result<omuzaki_ops_api::Ended, OpError> {
+        let mut st = self.st();
+        st.end_calls.push(reason.clone());
+        st.info.state = SessionState::Ended { reason, at: Seconds(0.0) };
+        Ok(omuzaki_ops_api::Ended { abandoned: vec![], kept: vec![], withdrawn: vec![], cancelled: vec![] })
+    }
+
+    fn undo_session(&self, _id: SessionId, _by: &Actor) -> Result<omuzaki_ops_api::SessionUndo, OpError> {
+        Self::unsupported()
+    }
+
+    fn approvals(&self) -> Vec<PendingApproval> {
+        self.st().approvals.clone()
+    }
+
+    fn resolve(
+        &self,
+        _id: ApprovalId,
+        _decision: omuzaki_ops_api::Decision,
+        _by: &Actor,
+    ) -> Result<omuzaki_ops_api::Resolution, OpError> {
+        Self::unsupported()
+    }
+
+    fn request_budget(&self, id: SessionId, needed: Spend) -> Result<(), OpError> {
+        let mut st = self.st();
+        st.budget_requests.push(needed);
+        let fits = st.left.is_none_or(|left| needed.usd_micros <= left);
+        if fits {
+            return Ok(());
+        }
+        let approval = ApprovalId(st.next_approval);
+        st.next_approval += 1;
+        let need = Need::Budget { needed, left: Spend { usd_micros: st.left.unwrap_or(0), tokens: 0, seconds: 0 } };
+        let actor = st.info.actor.clone();
+        st.approvals.push(PendingApproval {
+            id: approval,
+            session: id,
+            actor,
+            request: None,
+            need: need.clone(),
+            batch: "budget".into(),
+            requested_at: Seconds(0.0),
+        });
+        let by = st.info.actor.clone();
+        st.info.state = SessionState::Paused { by, reason: PauseReason::Budget };
+        Err(OpError {
+            code: ErrorCode::Waiting,
+            message: "waiting".into(),
+            field: None,
+            hint: None,
+            detail: Some(Box::new(ErrorDetail::Queued { approval, need })),
+        })
+    }
+
+    fn stop(&self, _id: SessionId, by: &Actor) -> Result<Stopped, OpError> {
+        let (hold, behaviour) = {
+            let mut st = self.st();
+            st.stop_calls.push(by.clone());
+            if !matches!(st.info.state, SessionState::Paused { .. }) {
+                st.info.state = SessionState::Paused { by: by.clone(), reason: PauseReason::Person };
+            }
+            (st.stop_hold, st.stop_behaviour)
+        };
+        // An op holding the executor's lock delays the control; the test moves the clock.
+        let until = self.clock.now().0 + hold;
+        while self.clock.now().0 < until {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let mut st = self.st();
+        if matches!(behaviour, StopBehaviour::Refused) {
+            return Err(OpError::conflict("the executor is busy"));
+        }
+        let had_tx = st.info.open_tx.take();
+        match behaviour {
+            StopBehaviour::Committed => {
+                if let Some(tx) = &had_tx {
+                    st.info.steps += 1;
+                    st.committed.push(tx.tx.0);
+                    Self::tx_event(&mut st, "tx_committed", tx.tx.0);
+                }
+                let step = had_tx.map_or(StopStep::None, |t| StopStep::Committed(t.tx));
+                Ok(Stopped { step, jobs: vec![] })
+            }
+            StopBehaviour::Refused => unreachable!("returned above"),
+            StopBehaviour::Pending { close_after } => {
+                st.info.open_tx = had_tx;
+                st.close_open_tx_at = Some(self.clock.now().0 + close_after);
+                Ok(Stopped { step: StopStep::Pending, jobs: vec![] })
+            }
+        }
+    }
+}
+
+// ----- the recording sink --------------------------------------------------------------------------------------
+
+#[derive(Default)]
+pub struct RecordingSink {
+    entries: Mutex<Vec<Entry>>,
+    /// Makes `put_blob` fail, as a full disk would.
+    pub fail_blobs: std::sync::atomic::AtomicBool,
+    /// Makes `put_blob` wait (and say so in `blob_waiting`) until this is cleared, so a test can act mid-store.
+    pub hold_blobs: std::sync::atomic::AtomicBool,
+    pub blob_waiting: std::sync::atomic::AtomicBool,
+    /// How many `put_blob` calls have been made, and how many pass before `hold_blobs` holds the next.
+    pub blob_calls: std::sync::atomic::AtomicUsize,
+    pub hold_blobs_after: std::sync::atomic::AtomicUsize,
+    /// Makes the append of a `Step` wait (and say so in `step_waiting`) until this is cleared.
+    pub hold_steps: std::sync::atomic::AtomicBool,
+    /// The same for the `Compacted` entry.
+    pub hold_compacted: std::sync::atomic::AtomicBool,
+    pub compacted_waiting: std::sync::atomic::AtomicBool,
+    pub step_waiting: std::sync::atomic::AtomicBool,
+}
+
+impl RecordingSink {
+    pub fn entries(&self) -> Vec<Entry> {
+        lock(&self.entries).clone()
+    }
+}
+
+impl EntrySink for RecordingSink {
+    fn append(&self, entry: &Entry) -> Result<(), HostError> {
+        if matches!(entry, Entry::Compacted { .. }) {
+            while self.hold_compacted.load(std::sync::atomic::Ordering::SeqCst) {
+                self.compacted_waiting.store(true, std::sync::atomic::Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+        if matches!(entry, Entry::Step { .. }) {
+            while self.hold_steps.load(std::sync::atomic::Ordering::SeqCst) {
+                self.step_waiting.store(true, std::sync::atomic::Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+        lock(&self.entries).push(entry.clone());
+        Ok(())
+    }
+
+    fn put_blob(&self, bytes: &[u8], mime: ImageMime) -> Result<StoredBlock, HostError> {
+        let call = self.blob_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        while self.hold_blobs.load(std::sync::atomic::Ordering::SeqCst)
+            && call >= self.hold_blobs_after.load(std::sync::atomic::Ordering::SeqCst)
+        {
+            self.blob_waiting.store(true, std::sync::atomic::Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        if self.fail_blobs.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(HostError::Store("the disk is full".into()));
+        }
+        Ok(StoredBlock::image(mime, format!("{:x}", bytes.len())))
+    }
+}
+
+// ----- the rig -------------------------------------------------------------------------------------------------
+
+/// The design's section 4 prices for `claude-haiku-5-5`, µ$ per million tokens.
+pub fn haiku_prices() -> PriceTable {
+    let rates = Rates::new(100_000, 500_000).with_cache_read(10_000).with_cache_write(125_000);
+    PriceTable::new("2026-10-01", "design section 4", vec![PriceTier::new(None, rates)])
+}
+
+pub fn free_prices() -> PriceTable {
+    PriceTable::new("2026-10-01", "local", vec![PriceTier::new(None, Rates::new(0, 0))])
+}
+
+// ----- a stream that can be held mid-turn --------------------------------------------------------------------------
+
+/// Holds every turn of the wrapped client after `after` events until [`Gate::open`] is called, so a test can act while
+/// a stream is in flight.
+pub struct Gate {
+    open: std::sync::atomic::AtomicBool,
+    pub delivered: AtomicUsize,
+    /// The host asked for an event while the stream was held: everything delivered has been handled.
+    pub parked: std::sync::atomic::AtomicBool,
+    after: usize,
+}
+
+impl Gate {
+    pub fn open(&self) {
+        self.parked.store(false, Ordering::Release);
+        self.open.store(true, Ordering::Release);
+    }
+}
+
+/// The clock the host sees: the rig's [`FakeClock`], counting how often the host reads it. A wait on the clock reads it
+/// every millisecond, so a new read after an advance shows the host has looked at the new time.
+pub struct WatchedClock {
+    inner: Arc<FakeClock>,
+    pub reads: AtomicUsize,
+}
+
+impl Clock for WatchedClock {
+    fn now(&self) -> Seconds {
+        self.reads.fetch_add(1, Ordering::AcqRel);
+        self.inner.now()
+    }
+}
+
+pub struct GatedLlm {
+    inner: Arc<FakeLlm>,
+    gate: Arc<Gate>,
+    info: ModelInfo,
+}
+
+struct Held {
+    stream: TurnStream,
+    gate: Arc<Gate>,
+}
+
+impl EventSource for Held {
+    fn poll(&mut self, wait: Duration) -> Result<Next, LlmError> {
+        let held =
+            !self.gate.open.load(Ordering::Acquire) && self.gate.delivered.load(Ordering::Acquire) >= self.gate.after;
+        if held {
+            self.gate.parked.store(true, Ordering::Release);
+            std::thread::sleep(Duration::from_millis(1));
+            return Ok(Next::Wait);
+        }
+        let next = self.stream.next_timeout(wait)?;
+        if matches!(next, Next::Event(_)) {
+            self.gate.delivered.fetch_add(1, Ordering::AcqRel);
+        }
+        Ok(next)
+    }
+}
+
+impl LlmClient for GatedLlm {
+    fn info(&self) -> &ModelInfo {
+        &self.info
+    }
+
+    fn stream(&self, req: TurnRequest, cancel: &Cancel) -> Result<TurnStream, LlmError> {
+        let stream = self.inner.stream(req, cancel)?;
+        Ok(TurnStream::new(Box::new(Held { stream, gate: Arc::clone(&self.gate) }), cancel))
+    }
+}
+
+// Fields drop in this order: the host first, so it closes its session while the runtime and the server still run.
+pub struct Rig {
+    pub host: AssistantHost,
+    pub rx: EventReceiver,
+    pub rt: tokio::runtime::Runtime,
+    pub server: ScriptedServer,
+    pub sessions: Arc<FakeSessions>,
+    pub sink: Arc<RecordingSink>,
+    pub llm: Arc<FakeLlm>,
+    pub clock: Arc<FakeClock>,
+    /// The clock as the host reads it.
+    pub host_clock: Arc<WatchedClock>,
+    pub gate: Arc<Gate>,
+    pub server_peer: Arc<Mutex<Option<rmcp::service::Peer<RoleServer>>>>,
+}
+
+pub struct RigOptions {
+    pub caps: Caps,
+    pub prices: PriceTable,
+    pub history: Vec<Entry>,
+    pub person_reply: Option<String>,
+    pub max_output: u32,
+    /// Hold each stream after this many events until `rig.gate.open()`.
+    pub hold_after: Option<usize>,
+    /// The model's context window, when a test needs a small one.
+    pub window: Option<u64>,
+    /// The reply language.
+    pub language: Option<omuzaki_agent::Language>,
+    /// Serve a hand-written JSON-RPC server that answers `render_preview` even after the call was cancelled, as a
+    /// server that finished the work first does. rmcp's own server never does.
+    pub late_server: bool,
+    /// The sink refuses to keep images.
+    pub fail_blobs: bool,
+    /// The sink holds `put_blob` until `rig.sink.hold_blobs` is cleared, from the call after `hold_blobs_after` ones.
+    pub hold_blobs: bool,
+    pub hold_blobs_after: usize,
+    /// The executor (and its op log) of an earlier rig, for a host reopened on the same server.
+    pub sessions: Option<Arc<FakeSessions>>,
+}
+
+impl Default for RigOptions {
+    fn default() -> Self {
+        Self {
+            caps: Caps::default(),
+            prices: haiku_prices(),
+            history: Vec::new(),
+            person_reply: None,
+            max_output: 2_048,
+            hold_after: None,
+            window: None,
+            language: None,
+            late_server: false,
+            fail_blobs: false,
+            hold_blobs: false,
+            hold_blobs_after: 0,
+            sessions: None,
+        }
+    }
+}
+
+/// The usual tools: a query, an edit, a job and the transaction built-ins, with `tx_begin` and `tx_commit` keeping the
+/// fake session's open transaction in step like the executor does.
+pub fn standard_server(sessions: &Arc<FakeSessions>) -> ScriptedServer {
+    let server = ScriptedServer::new();
+    *lock(&server.log_of) = Some(Arc::clone(sessions));
+    server.add_fixed(tool("render_preview", "Render preview", "query", true), Outcome::text("rendered"));
+    let edits = Arc::clone(sessions);
+    server.add(tool("face_set_profile", "Face profile", "edit", false), move |_, _| {
+        edits.own_change("face.set_profile");
+        Outcome::text("applied")
+    });
+    server.add_fixed(tool("export_video", "Export video", "job", false), Outcome::text("job done"));
+    server.add_fixed(tool("script_run", "Run script", "driver_job", false), Outcome::text("script done"));
+    server.add_fixed(tool("history_undo", "history.undo", "builtin", false), Outcome::text("Undid it."));
+    server.add_fixed(tool("history_redo", "history.redo", "builtin", false), Outcome::text("Redid it."));
+    server.add(tool("approval_wait", "approval.wait", "builtin", false), |_, _| {
+        // The real tool holds the call for up to 20 s; a short real pause keeps the host's loop from spinning.
+        std::thread::sleep(Duration::from_millis(5));
+        Outcome::text("approval applied")
+    });
+    // `history_log`, as `omuzaki-mcp` answers it: the log as JSON in a text block, and no `structuredContent`.
+    let log = Arc::clone(sessions);
+    server.add(tool("history_log", "history.log", "builtin", true), move |args, _| {
+        let after = args.get("after_n").and_then(Value::as_u64).unwrap_or(0);
+        let (events, latest) = log.read_log(after);
+        Outcome::text(&json!({"latest": latest, "events": events, "note": "the log"}).to_string())
+    });
+    // The transaction tools change the fake session only when they succeed, so a test that replaces one with a refusal
+    // leaves the transaction open, like the executor does.
+    let begin = Arc::clone(sessions);
+    server.add(tool("tx_begin", "tx.begin", "builtin", false), move |args, _| {
+        let label = args.get("label").and_then(Value::as_str).unwrap_or("").to_owned();
+        begin.begin_tx(label);
+        Outcome::text("tx started")
+    });
+    let commit = Arc::clone(sessions);
+    server.add(tool("tx_commit", "tx.commit", "builtin", false), move |_, _| {
+        commit.commit_open_tx();
+        Outcome::text("tx committed")
+    });
+    let rollback = Arc::clone(sessions);
+    server.add(tool("tx_rollback", "tx.rollback", "builtin", false), move |_, _| {
+        rollback.rollback_open_tx();
+        Outcome::text("tx rolled back")
+    });
+    server
+}
+
+impl Rig {
+    pub fn new(script: Script) -> Self {
+        Self::with(script, RigOptions::default(), standard_server)
+    }
+
+    pub fn with(
+        script: Script,
+        options: RigOptions,
+        make_server: impl FnOnce(&Arc<FakeSessions>) -> ScriptedServer,
+    ) -> Self {
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().expect("runtime");
+        let llm = Arc::new(FakeLlm::new(script));
+        let clock = llm.clock();
+        let sessions = options.sessions.clone().unwrap_or_else(|| FakeSessions::new(clock.clone()));
+        let server = make_server(&sessions);
+        let sink = Arc::new(RecordingSink::default());
+        sink.fail_blobs.store(options.fail_blobs, std::sync::atomic::Ordering::SeqCst);
+        sink.hold_blobs_after.store(options.hold_blobs_after, std::sync::atomic::Ordering::SeqCst);
+        sink.hold_blobs.store(options.hold_blobs, std::sync::atomic::Ordering::SeqCst);
+        let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+        let serving = server.clone();
+        // `serve` returns only once the client has shaken hands, so it runs on the runtime while the client connects.
+        let server_peer: Arc<Mutex<Option<rmcp::service::Peer<RoleServer>>>> = Arc::default();
+        let peer_slot = Arc::clone(&server_peer);
+        if options.late_server {
+            rt.spawn(late_server(server_io));
+        } else {
+            rt.spawn(async move {
+                if let Ok(service) = serving.serve(server_io).await {
+                    *lock(&peer_slot) = Some(service.peer().clone());
+                    let _ = service.waiting().await;
+                }
+            });
+        }
+        let link =
+            McpClientLink::connect(client_io, &RuntimeHandle::new(rt.handle().clone())).expect("client connects");
+        let watched = Arc::new(WatchedClock { inner: clock.clone(), reads: AtomicUsize::new(0) });
+        let mut cfg = HostConfig::new(person(), sink.clone(), watched.clone(), options.prices)
+            .with_caps(options.caps)
+            .with_history(options.history)
+            .with_max_output(options.max_output);
+        if let Some(language) = options.language {
+            cfg = cfg.with_language(language);
+        }
+        if let Some(reply) = options.person_reply {
+            cfg = cfg.with_person_reply(reply);
+        }
+        let gate = Arc::new(Gate {
+            open: std::sync::atomic::AtomicBool::new(options.hold_after.is_none()),
+            delivered: AtomicUsize::new(0),
+            parked: std::sync::atomic::AtomicBool::new(false),
+            after: options.hold_after.unwrap_or(0),
+        });
+        let mut info = llm.info().clone();
+        if let Some(window) = options.window {
+            info.context_window = window;
+        }
+        let client: Arc<dyn LlmClient> = Arc::new(GatedLlm { inner: llm.clone(), gate: Arc::clone(&gate), info });
+        let host = AssistantHost::start(link, client, sessions.clone(), SessionId(1), cfg);
+        let rx = host.events();
+        Self { rt, server, sessions, sink, llm, clock, host_clock: watched, host, rx, gate, server_peer }
+    }
+
+    /// Sends `text` and returns every event up to `Done`, advancing the fake clock by `tick` seconds per millisecond of
+    /// real time while it waits, so waits that run on the clock finish.
+    pub fn say(&self, text: &str, tick: f64) -> Vec<AssistantEvent> {
+        self.host.send(UserMessage::new(text)).expect("accepted");
+        self.until_done(tick)
+    }
+
+    /// Every event up to the answer's end (`Done` or `Unclosed`), advancing the fake clock by `tick` per millisecond.
+    pub fn until_done(&self, tick: f64) -> Vec<AssistantEvent> {
+        let mut events = Vec::new();
+        let started = Instant::now();
+        loop {
+            while let Some(event) = self.rx.try_recv() {
+                let done = event.ends_answer();
+                events.push(event);
+                if done {
+                    return events;
+                }
+            }
+            assert!(started.elapsed() < Duration::from_secs(20), "no end within 20 s; events so far: {events:?}");
+            if tick > 0.0 {
+                self.clock.advance(Seconds(tick));
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// Waits until the stream is held and the host has handled every event it delivered, so what the test does next
+    /// meets the host at rest. (`RigOptions::hold_after` holds it.)
+    pub fn wait_parked(&self) {
+        Self::wait_for("the host to be parked at the held stream", || {
+            self.gate.parked.load(std::sync::atomic::Ordering::Acquire)
+        });
+    }
+
+    /// Moves the host's clock forward `step` seconds at a time, each step only after the host has read the clock again
+    /// since the last one, until `done` holds. The time the host waited is then fixed by the steps, not by how fast the
+    /// machine ran.
+    pub fn advance_while_host_waits(&self, step: f64, done: impl Fn() -> bool) {
+        while !done() {
+            let reads = self.host_clock.reads.load(Ordering::Acquire);
+            self.clock.advance(Seconds(step));
+            Self::wait_for("the host to look at the new time", || {
+                done() || self.host_clock.reads.load(Ordering::Acquire) > reads
+            });
+        }
+    }
+
+    /// The undo steps recorded so far: transaction, label and rationale.
+    pub fn steps(&self) -> Vec<(u64, String, String)> {
+        self.sink
+            .entries()
+            .into_iter()
+            .filter_map(|e| {
+                if let Entry::Step { tx, label, rationale, .. } = e { Some((tx.0, label, rationale)) } else { None }
+            })
+            .collect()
+    }
+
+    /// Waits until `n` steps are recorded, moving the host's clock while it is idle so its reads of the log for
+    /// retained outcomes come due (each step only after the host has looked at the new time).
+    pub fn settle_steps(&self, n: usize) {
+        self.advance_while_host_waits(0.05, || self.steps().len() >= n);
+    }
+
+    /// Waits (real time) until `check` is true.
+    pub fn wait_for(what: &str, mut check: impl FnMut() -> bool) {
+        let started = Instant::now();
+        while !check() {
+            assert!(started.elapsed() < Duration::from_secs(10), "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+}
+
+// ----- script helpers ------------------------------------------------------------------------------------------
+
+pub static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+pub fn usage(input: u64, output: u64) -> LlmEvent {
+    LlmEvent::Usage(Usage::new(input, output))
+}
+
+/// A turn that says `text` and ends.
+pub fn say_turn(text: &str) -> ScriptTurn {
+    ScriptTurn::new(vec![
+        LlmEvent::start("m"),
+        LlmEvent::TextDelta(text.into()),
+        usage(10, 5),
+        LlmEvent::Stop(StopReason::EndTurn),
+    ])
+}
+
+/// A turn of `n` text events of twenty milliseconds each.
+pub fn long_text(n: usize) -> ScriptTurn {
+    let mut events = vec![LlmEvent::start("m")];
+    events.extend((0..n).map(|i| LlmEvent::TextDelta(format!("w{i} "))));
+    events.push(usage(5, 5));
+    events.push(LlmEvent::Stop(StopReason::EndTurn));
+    ScriptTurn::new(events).with_delay_ms(20)
+}
+
+/// A turn that calls tools: `(id, name, json arguments)`.
+pub fn call_turn(text: &str, calls: &[(&str, &str, &str)]) -> ScriptTurn {
+    let mut events = vec![LlmEvent::start("m")];
+    if !text.is_empty() {
+        events.push(LlmEvent::TextDelta(text.into()));
+    }
+    for (id, name, args) in calls {
+        events.push(LlmEvent::tool_use_start(*id, *name));
+        events.push(LlmEvent::ToolUseInput((*args).into()));
+        events.push(LlmEvent::tool_use_end(*id));
+    }
+    events.push(usage(10, 5));
+    events.push(LlmEvent::Stop(StopReason::ToolUse));
+    ScriptTurn::new(events)
+}
+
+pub fn script(turns: Vec<ScriptTurn>) -> Script {
+    turns.into_iter().fold(Script::new("m"), Script::with_turn)
+}
+
+/// The texts of every `TextDelta` in `events`, joined.
+pub fn text_of(events: &[AssistantEvent]) -> String {
+    events.iter().filter_map(|e| if let AssistantEvent::TextDelta(t) = e { Some(t.as_str()) } else { None }).collect()
+}
+
+pub fn count(events: &[AssistantEvent], pick: impl Fn(&AssistantEvent) -> bool) -> usize {
+    events.iter().filter(|e| pick(e)).count()
+}
+
+/// Every text block of `request`'s messages, joined by newlines: what the model was given.
+pub fn request_text(request: &TurnRequest) -> String {
+    request
+        .messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .filter_map(|b| match b {
+            omuzaki_llm_api::message::ContentBlock::Text(t) => Some(t.clone()),
+            omuzaki_llm_api::message::ContentBlock::ToolResult { blocks, .. } => Some(
+                blocks
+                    .iter()
+                    .filter_map(|b| {
+                        if let omuzaki_llm_api::message::ContentBlock::Text(t) = b { Some(t.as_str()) } else { None }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The assistant text of `entries`, joined.
+pub fn assistant_text(entries: &[Entry]) -> String {
+    entries
+        .iter()
+        .filter_map(|e| if let Entry::Assistant { blocks, .. } = e { Some(blocks) } else { None })
+        .flatten()
+        .filter_map(|b| if let omuzaki_llm_api::message::ContentBlock::Text(t) = b { Some(t.as_str()) } else { None })
+        .collect()
+}
+
+/// `entries` written to a real conversation store and read back the three ways a person meets them again: the panel's
+/// resume (entries with Stop's cutoffs applied, and whether it was interrupted), and the Markdown export.
+pub fn store_replay(entries: &[Entry]) -> (omuzaki_agent_api::conversations::Resumed, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let store = omuzaki_agent::store::ConversationStore::open(
+        dir.path(),
+        "0123456789abcdef0123456789abcdef",
+        Arc::new(FakeClock::default()),
+    );
+    let id = store.create("m").unwrap();
+    let sink = store.sink(id);
+    for entry in entries {
+        sink.append(entry).unwrap();
+    }
+    let resumed = store.resume(id).unwrap();
+    let out = dir.path().join("export");
+    store.export(id, &out).unwrap();
+    let markdown = std::fs::read_to_string(out.join(format!("conversation-{}.md", id.0))).unwrap();
+    (resumed, markdown)
+}

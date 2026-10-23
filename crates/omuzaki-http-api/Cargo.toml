@@ -9,6 +9,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+omuzaki-core = { path = "../omuzaki-core" }
 serde_json.workspace = true
 thiserror.workspace = true
 

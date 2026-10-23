@@ -6,6 +6,8 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, dead_code)]
 #![allow(clippy::disallowed_methods, reason = "tests set up their fixtures on disk; the fence is for ops")]
 
+pub mod mcp;
+
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};

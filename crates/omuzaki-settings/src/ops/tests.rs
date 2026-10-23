@@ -224,3 +224,186 @@ fn the_ops_work_over_the_mock_service_too() {
     let listed = plan(&services, &agent(), "settings.list", json!({}), false).unwrap_or_else(|e| panic!("{e}"));
     assert!(listed.output.is_some_and(|o| o["settings"].is_array()));
 }
+
+/// Two recent projects, `b` the newer and the last one open.
+fn with_recent(rig: &Rig) {
+    let session = rig.store.session();
+    for (path, name) in [("/shows/a", "A"), ("/shows/b", "B")] {
+        session.begin_open(std::path::Path::new(path)).unwrap_or_else(|e| panic!("{e}"));
+        session.opened(std::path::Path::new(path), name).unwrap_or_else(|e| panic!("{e}"));
+    }
+}
+
+#[test]
+fn the_session_ops_list_recent_newest_first_and_read_the_whole_state() {
+    let rig = rig();
+    with_recent(&rig);
+    let recent = run(&rig, &agent(), "session.recent", json!({})).unwrap_or_else(|e| panic!("{e}"));
+    let names: Vec<&str> =
+        recent["recent"].as_array().into_iter().flatten().filter_map(|r| r["name"].as_str()).collect();
+    assert_eq!(names, ["B", "A"]);
+    assert_eq!(recent["last_project"], json!("/shows/b"));
+    let state = run(&rig, &agent(), "session.get", json!({})).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(state["opening"], Value::Null, "an open that finished leaves no guard");
+    assert_eq!(state["recent"].as_array().map(Vec::len), Some(2));
+}
+
+#[test]
+fn forgetting_a_recent_project_is_a_persons_call_that_its_undo_puts_back_in_place() {
+    let rig = rig();
+    with_recent(&rig);
+    let refused = run(&rig, &agent(), "session.forget", json!({"path": "/shows/b"}));
+    assert_eq!(refused.err().map(|e| e.code), Some(ErrorCode::Denied));
+
+    let dry = plan(&rig.services, &person(), "session.forget", json!({"path": "/shows/b"}), true)
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert!(dry.effect.is_some());
+    assert_eq!(rig.store.session().state().recent.len(), 2, "a dry run forgets nothing");
+
+    let done = plan(&rig.services, &person(), "session.forget", json!({"path": "/shows/b"}), false)
+        .unwrap_or_else(|e| panic!("{e}"));
+    let state = rig.store.session().state();
+    assert_eq!(state.recent.len(), 1);
+    assert_eq!(state.last_project, None, "it was the last project");
+    let undo = done.effect.unwrap_or_else(|| panic!("an undo")).undo;
+    assert_eq!(undo.op, "session.restore_recent");
+    run(&rig, &person(), &undo.op, undo.args).unwrap_or_else(|e| panic!("{e}"));
+    let back = rig.store.session().state();
+    assert_eq!(back.recent[0].name, "B", "back at the top");
+    assert_eq!(back.last_project.as_deref(), Some(std::path::Path::new("/shows/b")));
+
+    let unknown =
+        run(&rig, &person(), "session.forget", json!({"path": "/shows/none"})).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(unknown["forgotten"], json!(false));
+}
+
+#[test]
+fn the_store_keeps_the_session_in_the_data_folder_across_a_restart() {
+    let folder = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    let paths = Paths::new(folder.path().join("config"), folder.path().join("data"));
+    let store = Store::open_with(&paths, [&THEME]);
+    store.session().opened(std::path::Path::new("/shows/a"), "A").unwrap_or_else(|e| panic!("{e}"));
+    drop(store);
+    #[allow(clippy::disallowed_methods, reason = "the test checks the store's own file")]
+    let kept = folder.path().join("data").join("session.toml").is_file();
+    assert!(kept);
+    let again = Store::open_with(&paths, [&THEME]);
+    assert_eq!(again.session().state().recent[0].name, "A");
+}
+
+fn profile_id(rig: &Rig, name: &str) -> String {
+    let listed = run(rig, &agent(), "settings.profile.list", json!({})).unwrap_or_else(|e| panic!("{e}"));
+    listed["profiles"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|p| p["name"] == name)
+        .and_then(|p| p["id"].as_str())
+        .unwrap_or_else(|| panic!("no profile {name}: {listed}"))
+        .to_owned()
+}
+
+#[test]
+fn a_profile_saves_what_differs_switches_in_one_event_and_takes_the_tweaks_made_under_it() {
+    let rig = rig();
+    run(&rig, &person(), "settings.set", json!({"key": "ui.theme", "value": "light"}))
+        .unwrap_or_else(|e| panic!("{e}"));
+    // Saved from the base: nothing differs from what the base gives, so the profile starts empty.
+    run(&rig, &person(), "settings.profile.save", json!({"name": "Stream"})).unwrap_or_else(|e| panic!("{e}"));
+    let stream = profile_id(&rig, "Stream");
+    assert!(stream.starts_with("stream-") && stream.len() == "stream-".len() + 4, "{stream}");
+
+    let events = rig.store.subscribe();
+    let switched = plan(&rig.services, &person(), "settings.profile.switch", json!({"profile": stream}), false)
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(switched.output.as_ref().map(|o| o["changed"].clone()), Some(json!(0)));
+    assert_eq!(events.drain().len(), 1, "a switch is one event, even when no value changes");
+
+    // Under the profile a tweak goes into it; the base keeps its value.
+    run(&rig, &person(), "settings.set", json!({"key": "ui.scale", "value": 150})).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(value(&rig, "ui.scale"), json!(150));
+    let resolved = rig.store.resolve("ui.scale").unwrap_or_else(|e| panic!("{e}"));
+    assert!(matches!(resolved.source, omuzaki_settings_api::service::Source::Profile(_)), "{:?}", resolved.source);
+
+    drop(events.drain());
+    // Switching back to none puts the base in effect, in one event listing only what changed; its undo switches back.
+    let off = plan(&rig.services, &person(), "settings.profile.switch", json!({"profile": null}), false)
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(value(&rig, "ui.scale"), json!(100));
+    let batch = events.drain();
+    assert_eq!(batch.len(), 1);
+    assert_eq!(batch[0].changes.iter().map(|c| c.key.as_str()).collect::<Vec<_>>(), ["ui.scale"]);
+    let undo = off.effect.unwrap_or_else(|| panic!("a switch is undoable")).undo;
+    run(&rig, &person(), &undo.op, undo.args).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(value(&rig, "ui.scale"), json!(150));
+
+    // A reset under the profile removes its override: the key falls back to the base.
+    run(&rig, &person(), "settings.reset", json!({"key": "ui.scale"})).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(value(&rig, "ui.scale"), json!(100));
+}
+
+#[test]
+fn saving_current_captures_an_override_equal_to_the_default_when_the_base_differs() {
+    let rig = rig();
+    run(&rig, &person(), "settings.set", json!({"key": "ui.scale", "value": 125})).unwrap_or_else(|e| panic!("{e}"));
+    run(&rig, &person(), "settings.profile.save", json!({"name": "Base"})).unwrap_or_else(|e| panic!("{e}"));
+    let base = profile_id(&rig, "Base");
+    run(&rig, &person(), "settings.profile.switch", json!({"profile": base})).unwrap_or_else(|e| panic!("{e}"));
+    run(&rig, &person(), "settings.set", json!({"key": "ui.scale", "value": 100})).unwrap_or_else(|e| panic!("{e}"));
+    // Default 100, base 125, override 100: saving current keeps `scale = 100`.
+    run(&rig, &person(), "settings.profile.save", json!({"name": "Small"})).unwrap_or_else(|e| panic!("{e}"));
+    let small = rig.store.profiles().into_iter().find(|p| p.name == "Small").unwrap_or_else(|| panic!("saved"));
+    assert_eq!(small.keys, 1);
+    let taken = run(&rig, &person(), "settings.profile.save", json!({"name": "Small"}));
+    assert_eq!(taken.err().map(|e| e.code), Some(ErrorCode::Conflict));
+    run(&rig, &person(), "settings.profile.save", json!({"name": "Small", "overwrite": true}))
+        .unwrap_or_else(|e| panic!("{e}"));
+}
+
+#[test]
+fn an_agents_profile_change_waits_for_a_person_and_a_dry_run_changes_nothing() {
+    let rig = rig();
+    run(&rig, &person(), "settings.profile.save", json!({"name": "Stream"})).unwrap_or_else(|e| panic!("{e}"));
+    let stream = profile_id(&rig, "Stream");
+    let waits = run(&rig, &agent(), "settings.profile.switch", json!({"profile": stream}));
+    let error = waits.err().unwrap_or_else(|| panic!("an agent's switch waits"));
+    assert!(matches!(detail(&error), Some(ErrorDetail::NeedsPerson { .. })), "{error:?}");
+    plan(&rig.services, &person(), "settings.profile.switch", json!({"profile": stream}), true)
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert!(rig.store.profiles().iter().all(|p| !p.active), "a dry run switches nothing");
+    let unknown = run(&rig, &person(), "settings.profile.switch", json!({"profile": "nope-0000"}));
+    assert_eq!(unknown.err().map(|e| e.code), Some(ErrorCode::NotFound));
+}
+
+#[test]
+fn profiles_and_the_active_one_survive_a_restart_and_deleting_the_active_one_switches_to_none() {
+    let folder = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    let paths = Paths::new(folder.path().join("config"), folder.path().join("data"));
+    let open = || {
+        let store = Arc::new(Store::open_with(&paths, [&THEME, &SCALE, &WINDOW, &TELEMETRY]));
+        let services = ServicesBuilder::new().insert::<dyn Settings>(Arc::clone(&store) as Arc<dyn Settings>).build();
+        (store, services)
+    };
+    let (store, services) = open();
+    let r = Rig { store, services, _folder: tempfile::tempdir().unwrap_or_else(|e| panic!("{e}")) };
+    run(&r, &person(), "settings.profile.save", json!({"name": "Stream"})).unwrap_or_else(|e| panic!("{e}"));
+    let stream = profile_id(&r, "Stream");
+    run(&r, &person(), "settings.profile.switch", json!({"profile": stream})).unwrap_or_else(|e| panic!("{e}"));
+    run(&r, &person(), "settings.set", json!({"key": "ui.scale", "value": 175})).unwrap_or_else(|e| panic!("{e}"));
+    run(&r, &person(), "settings.profile.rename", json!({"profile": stream, "name": "配信"}))
+        .unwrap_or_else(|e| panic!("{e}"));
+    drop(r);
+
+    #[allow(clippy::disallowed_methods, reason = "the test reads the store's own profile file")]
+    let file = std::fs::read_to_string(folder.path().join("config/profiles").join(format!("{stream}.toml")))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert!(file.contains("配信") && file.contains("scale = 175"), "{file}");
+    let (store, services) = open();
+    let r = Rig { store, services, _folder: tempfile::tempdir().unwrap_or_else(|e| panic!("{e}")) };
+    assert_eq!(value(&r, "ui.scale"), json!(175), "the active profile is still active");
+    let deleted =
+        run(&r, &person(), "settings.profile.delete", json!({"profile": stream})).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(deleted["changed"], json!(1));
+    assert_eq!(value(&r, "ui.scale"), json!(100));
+    assert_eq!(r.store.profiles().len(), 0);
+}

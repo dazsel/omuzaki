@@ -6,7 +6,6 @@
 //! returns the [`Plan`](crate::Plan) the executor applies, so the document changes once, at finish.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use omuzaki_core::time::Seconds;
@@ -240,48 +239,9 @@ pub trait JobDoc: Send + Sync {
     fn read(&self, f: &mut dyn FnMut(&dyn DocRead));
 }
 
-/// A cancel handle that work polls. Cancellation is cooperative: the owner flips it, the work notices.
-///
-/// The same shape as `omuzaki-http-api`'s, until `omuzaki_core::cancel` becomes the one home: these three items
-/// then turn into `pub use omuzaki_core::cancel::{Cancel, CancelFlag, NeverCancel}`, so the paths stay valid.
-pub trait Cancel: Send + Sync {
-    /// True once the work this handle guards should stop.
-    fn is_cancelled(&self) -> bool;
-}
-
-/// A handle that is never cancelled, for callers with nothing to stop.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct NeverCancel;
-
-impl Cancel for NeverCancel {
-    fn is_cancelled(&self) -> bool {
-        false
-    }
-}
-
-/// A settable flag. Clones share the one flag, so a job keeps a clone after the borrow of its [`JobCtx`] ends (a
-/// streaming body can still be cancelled).
-#[derive(Clone, Debug, Default)]
-pub struct CancelFlag(Arc<AtomicBool>);
-
-impl CancelFlag {
-    /// A flag that is not cancelled.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Cancel: every clone of this flag now reads true. It cannot be undone.
-    pub fn cancel(&self) {
-        self.0.store(true, Ordering::Release);
-    }
-}
-
-impl Cancel for CancelFlag {
-    fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::Acquire)
-    }
-}
+/// The cooperative cancel handle, the never-cancelled handle and the settable flag a job's work polls, defined once in
+/// [`omuzaki_core::cancel`]: a job's [`CancelFlag`] is the one an HTTP transport or a script run takes.
+pub use omuzaki_core::cancel::{Cancel, CancelFlag, NeverCancel};
 
 /// What the executor lets a running job report and ask.
 pub trait JobSignal: Send + Sync {
@@ -309,6 +269,7 @@ pub struct JobCtx<'a> {
     signal: &'a dyn JobSignal,
     services: &'a Services,
     grants: &'a Grants,
+    cause: Option<&'a Cause>,
     project_dir: Option<&'a ProjectDir>,
     calls: Option<&'a dyn JobCalls>,
     plan_output: Option<&'a Value>,
@@ -325,6 +286,7 @@ impl<'a> JobCtx<'a> {
             signal,
             services: &NO_SERVICES,
             grants: &NO_GRANTS,
+            cause: None,
             project_dir: None,
             calls: None,
             plan_output: None,
@@ -343,6 +305,14 @@ impl<'a> JobCtx<'a> {
     #[must_use]
     pub fn with_grants(mut self, grants: &'a Grants) -> Self {
         self.grants = grants;
+        self
+    }
+
+    /// The same context carrying the request's `cause`, so work that calls on someone else's behalf (a plugin command,
+    /// ADR 0058) can label what it does with why it ran.
+    #[must_use]
+    pub fn with_cause(mut self, cause: &'a Cause) -> Self {
+        self.cause = Some(cause);
         self
     }
 
@@ -382,6 +352,17 @@ impl<'a> JobCtx<'a> {
     /// Who started the job.
     pub fn actor(&self) -> &'a Actor {
         self.actor
+    }
+
+    /// The grants the context acts with: those given to [`with_grants`](Self::with_grants), or none.
+    pub fn grants(&self) -> &'a Grants {
+        self.grants
+    }
+
+    /// The request's cause, when [`with_cause`](Self::with_cause) set one. An `Option` because a request's cause is
+    /// optional too ([`Request`](crate::Request)'s `cause`).
+    pub fn cause(&self) -> Option<&'a Cause> {
+        self.cause
     }
 
     /// Reads the document. The lock is held only while `f` runs, so keep it short and copy out what `work` needs.

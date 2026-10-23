@@ -16,7 +16,7 @@ mod cache_dir;
 
 pub use cache_dir::{CACHE_DIR_ENV, CacheDirError, app_cache_dir, resolve as resolve_cache_dir};
 
-use std::io::Read;
+use std::io::{self, Read};
 use std::net::IpAddr;
 use std::time::{Duration, SystemTime};
 
@@ -147,8 +147,7 @@ impl HttpFetcherBuilder {
         }
         // reqwest's blocking builder panics on a thread that runs async tasks, so it builds on a short-lived plain thread
         // of its own: construction stays infallible wherever `new` is called.
-        let client = std::thread::scope(|scope| scope.spawn(|| builder.build().map_err(|e| e.to_string())).join())
-            .unwrap_or_else(|_| Err("the client builder panicked".to_owned()));
+        let client = on_plain_thread(|| builder.build().map_err(|e| e.to_string()));
         HttpFetcher {
             client,
             tries: self.retries,
@@ -318,9 +317,38 @@ fn range_start(value: &str) -> Option<u64> {
     value.strip_prefix("bytes ")?.split('-').next()?.trim().parse().ok()
 }
 
+/// Runs `build` on a short-lived plain thread of its own (reqwest's blocking builder panics on a thread that runs async
+/// tasks) and returns what it built. A thread the OS refuses, or a build that panics, is an error, never a panic, so
+/// building a client stays infallible wherever it is called.
+pub(crate) fn on_plain_thread<T: Send>(build: impl FnOnce() -> Result<T, String> + Send) -> Result<T, String> {
+    std::thread::scope(|scope| {
+        let spawned = std::thread::Builder::new().name("omuzaki-http-build".to_owned()).spawn_scoped(scope, build);
+        joined(spawned.map(std::thread::ScopedJoinHandle::join))
+    })
+}
+
+/// What the build thread gave: its result, or why there is none.
+fn joined<T>(spawned: io::Result<std::thread::Result<Result<T, String>>>) -> Result<T, String> {
+    match spawned {
+        Ok(Ok(built)) => built,
+        Ok(Err(_)) => Err("the client builder panicked".to_owned()),
+        Err(e) => Err(format!("the client builder's thread didn't start: {e}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_build_thread_that_does_not_start_or_panics_is_an_error() {
+        let refused = joined::<()>(Err(io::Error::new(io::ErrorKind::WouldBlock, "at the thread limit")));
+        assert!(refused.unwrap_err().contains("didn't start: at the thread limit"));
+        let panicked = joined::<()>(Ok(Err(Box::new("boom"))));
+        assert_eq!(panicked.unwrap_err(), "the client builder panicked");
+        assert_eq!(on_plain_thread(|| Ok(7)), Ok(7));
+        assert_eq!(on_plain_thread::<()>(|| Err("no".into())), Err("no".to_owned()));
+    }
 
     #[test]
     fn content_range_start_is_parsed() {

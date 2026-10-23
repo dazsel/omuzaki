@@ -3,11 +3,14 @@
 //! tests can make the journal slow, full or failing.
 #![deny(missing_docs)]
 
+pub mod branch;
 mod clock;
+mod log;
 mod sink;
 mod snapshots;
 
 pub use clock::{FakeWallClock, SystemWallClock};
+pub use log::MemoryHistoryLog;
 pub use sink::RecordingSink;
 pub use snapshots::MemorySnapshots;
 

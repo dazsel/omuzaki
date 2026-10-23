@@ -1,7 +1,7 @@
 section = "rust"
 item = "Spout2 (leadedge/Spout2 6b68a5b, \"Version 2.007.018\")"
 kind = "native"
-used_for = "Windows texture sharing; the broadcast spike's `spout-out` crate"
+used_for = "Windows texture sharing: the `spout` output in `omuzaki-stream-share` speaks the sender side of the protocol, written natively in Rust from its documented layout (shared-memory names, the 280-byte info block, the access mutex and frame-count semaphore, a legacy-shared D3D11 texture) with no SDK code compiled in; the broadcast spike's `spout-out` crate links the SDK itself"
 status = "yes"
 condition = "BSD-2-Clause: keep the notice with every shipped binary. The pin is unmodified, built with mingw-w64 10, two compatibility headers and `-mssse3`, and statically linked. The SDK source is fetched by `spikes/broadcast-out/tools/fetch-spout2.sh`, not vendored. OBS's Spout2 plugin (Off-World-Live/obs-spout2-plugin, GPL-2.0) was read for behaviour only; nothing was copied"
 audit = "(repo LICENSE at 6b68a5b: BSD-2-Clause, Copyright (c) 2020 Lynn Jarvis; OBS plugin LICENSE: https://raw.githubusercontent.com/Off-World-Live/obs-spout2-plugin/master/LICENSE, GPL version 2)"

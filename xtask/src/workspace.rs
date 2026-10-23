@@ -58,7 +58,13 @@ pub struct Package {
     /// A change to one of them can break this crate's link, not its behaviour, so `check --affected` runs only this
     /// crate's link gate for it. Empty for nearly every crate.
     pub link_only: Vec<String>,
+    /// Whether the crate builds for `wasm32-unknown-unknown`: true unless its manifest opts out with `wasm = false` under
+    /// `[package.metadata.omuzaki]` (the rule `tools/ci/crates.py` applies), or it is `xtask`, which is host-only tooling.
+    pub wasm: bool,
 }
+
+/// The crates that never build for wasm whatever their manifest says (`HOST_ONLY` in `tools/ci/crates.py`).
+const HOST_ONLY: [&str; 1] = ["xtask"];
 
 /// All members of a Cargo workspace, sorted by name so every report is stable.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,7 +111,11 @@ impl Workspace {
                     .and_then(|metadata| metadata.get("omuzaki")?.get("link_only")?.as_array())
                     .map(|names| names.iter().filter_map(|name| name.as_str().map(str::to_owned)).collect())
                     .unwrap_or_default();
-                Package { name: package.name, dir, dependencies, layer, link_only }
+                let opted_out =
+                    package.metadata.as_ref().and_then(|metadata| metadata.get("omuzaki")?.get("wasm")?.as_bool())
+                        == Some(false);
+                let wasm = !opted_out && !HOST_ONLY.contains(&package.name.as_str());
+                Package { name: package.name, dir, dependencies, layer, link_only, wasm }
             })
             .collect();
         packages.sort_by(|a, b| a.name.cmp(&b.name));
@@ -169,6 +179,7 @@ pub mod testing {
                     .collect(),
                 layer: None,
                 link_only: Vec::new(),
+                wasm: *name != "xtask",
             })
             .collect();
         packages.sort_by(|a, b| a.name.cmp(&b.name));
@@ -179,6 +190,14 @@ pub mod testing {
     pub fn with_layer(mut workspace: Workspace, name: &str, layer: &str) -> Workspace {
         if let Some(package) = workspace.packages.iter_mut().find(|package| package.name == name) {
             package.layer = Some(layer.to_owned());
+        }
+        workspace
+    }
+
+    /// `workspace` with `[package.metadata.omuzaki] wasm = false` on the member `name`.
+    pub fn without_wasm(mut workspace: Workspace, name: &str) -> Workspace {
+        if let Some(package) = workspace.packages.iter_mut().find(|package| package.name == name) {
+            package.wasm = false;
         }
         workspace
     }
@@ -237,6 +256,25 @@ mod tests {
         assert!(ws.package("serde").is_none());
         assert_eq!(ws.package("omuzaki-a").unwrap().layer.as_deref(), Some("lib"));
         assert_eq!(b.layer, None, "no metadata means no layer");
+        assert!(b.wasm && ws.package("omuzaki-a").unwrap().wasm, "no `wasm = false` means it builds for wasm");
+    }
+
+    #[test]
+    fn reads_the_wasm_opt_out_and_treats_xtask_as_host_only() {
+        let json = br#"{
+            "workspace_root": "/ws",
+            "packages": [
+                {"name": "a", "manifest_path": "/ws/crates/a/Cargo.toml", "dependencies": [],
+                    "metadata": {"omuzaki": {"wasm": false}}},
+                {"name": "b", "manifest_path": "/ws/crates/b/Cargo.toml", "dependencies": [],
+                    "metadata": {"omuzaki": {"wasm": "no"}}},
+                {"name": "xtask", "manifest_path": "/ws/xtask/Cargo.toml", "dependencies": []}
+            ]
+        }"#;
+        let ws = Workspace::parse(json).unwrap();
+        assert!(!ws.package("a").unwrap().wasm);
+        assert!(ws.package("b").unwrap().wasm, "only a literal `false` opts out, as in crates.py");
+        assert!(!ws.package("xtask").unwrap().wasm);
     }
 
     #[test]

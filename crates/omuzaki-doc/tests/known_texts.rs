@@ -8,9 +8,9 @@ mod common;
 
 use std::path::PathBuf;
 
-use common::{change, read, snapshot, write};
+use common::{change, p, read, snapshot, write};
 use omuzaki_doc::{Project, StoreError};
-use omuzaki_doc_api::DocWrite;
+use omuzaki_doc_api::{DocRead, DocWrite};
 use omuzaki_store_api::ContentHash;
 use serde_json::json;
 use tempfile::TempDir;
@@ -341,4 +341,25 @@ fn an_edit_undone_before_saving_does_not_hide_an_external_change() {
     assert!(matches!(&err, StoreError::ChangedOnDisk { path } if path.ends_with("face.toml")), "{err}");
     assert_eq!(read(tmp.path(), "characters/mia/face.toml"), "profile = \"edited by hand\"\n");
     assert!(project.is_dirty());
+}
+
+/// Removing a table and undoing it puts the file back byte for byte (#2233): the restored table goes back where it
+/// was, not after the others, and a parent table it emptied doesn't come back as a bare header.
+#[test]
+fn undoing_a_removal_restores_the_file_byte_for_byte() {
+    let tmp = tempfile::tempdir().unwrap();
+    write(tmp.path(), "project.toml", "name = \"Show\"\nschema = 1\n");
+    let original = "name = \"Kit\"\n\n[parts.hair]\nkind = \"bob\"\n\n[parts.head]\nkind = \"round\"\n\n[colourways.dusk]\nskin = \"#d9a58f\"\n";
+    write(tmp.path(), "characters/kit.toml", original);
+    let mut project = Project::open(tmp.path()).unwrap();
+    for at in ["characters/kit/parts/hair", "characters/kit/colourways/dusk", "characters/kit/colourways"] {
+        let before = project.get(&p(at)).cloned();
+        let removal = change(at, before, None);
+        project.apply(&removal).unwrap();
+        project.save().unwrap();
+        assert_ne!(read(tmp.path(), "characters/kit.toml"), original, "{at} was removed from the file");
+        project.apply(&removal.inverse()).unwrap();
+        project.save().unwrap();
+        assert_eq!(read(tmp.path(), "characters/kit.toml"), original, "undoing the removal of {at}");
+    }
 }

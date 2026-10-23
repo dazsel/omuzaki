@@ -32,6 +32,9 @@ pub(crate) struct OwnApprovals {
     known: BTreeMap<ApprovalId, Own>,
     /// What the session's own results (blocking calls, `tasks/get`, `approval_wait`) have delivered.
     cursor: ApprovalCursor,
+    /// Approvals a result already waited for the feed to bring the decision of, and gave up: no result waits on one
+    /// twice, though its decision is still reported when it arrives.
+    waited: BTreeSet<ApprovalId>,
 }
 
 /// How far one consumer has been told about decisions: the newest event looked at, and the approvals whose outcome it
@@ -91,6 +94,18 @@ impl OwnApprovals {
         {
             self.remember(*approval, from.clone());
         }
+    }
+
+    /// This session's approvals that `cursor` (or, with none, the session's own) has not been told the outcome of,
+    /// and that no result has waited for yet.
+    pub(crate) fn unreported(&self, cursor: Option<&ApprovalCursor>) -> Vec<ApprovalId> {
+        let cursor = cursor.unwrap_or(&self.cursor);
+        self.known.keys().filter(|id| !cursor.reported.contains(id) && !self.waited.contains(id)).copied().collect()
+    }
+
+    /// Records that a result waited for the decisions on `ids` and they didn't come in time.
+    pub(crate) fn waited(&mut self, ids: &[ApprovalId]) {
+        self.waited.extend(ids.iter().copied());
     }
 
     /// The decisions on this session's approvals that the session's own results have not delivered, oldest first,
@@ -220,6 +235,8 @@ pub(crate) fn withdrawn_text(reason: &omuzaki_ops_api::EndReason) -> &'static st
         EndReason::Closed => "the session was closed",
         EndReason::Revoked { .. } => "the person revoked the session",
         EndReason::ProjectClosed => "the project was closed",
+        EndReason::Faulted { .. } => "the session's owner failed",
+        _ => "the session ended",
     }
 }
 

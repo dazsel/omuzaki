@@ -21,9 +21,12 @@ use toml_edit::DocumentMut;
 
 use crate::backend::{Backend, Edited, FileBackend, Quarantined, Updated};
 use crate::document::{self, ApplyError, Edit};
+#[cfg(test)]
 use crate::ephemeral::Ephemeral;
 use crate::locked;
 use crate::paths::Paths;
+use crate::profiles::{self, Profile, ProfileFiles, clean_name, member, name_edit, value_edit, whole};
+use crate::session::SessionFile;
 
 /// How long after the last change the writer waits before it writes (D5).
 pub const DEBOUNCE: Duration = Duration::from_millis(250);
@@ -32,6 +35,9 @@ pub const DEBOUNCE: Duration = Duration::from_millis(250);
 pub const MAX_DELAY: Duration = Duration::from_secs(2);
 
 const SCOPES: [SettingScope; 2] = [SettingScope::User, SettingScope::Machine];
+
+/// The key in `machine.toml` that names the active profile (profiles roam; which one this computer is in does not).
+const ACTIVE_KEY: &str = "profiles.active";
 
 /// How often a file that keeps changing under a quarantine is read again before it is left in place.
 const QUARANTINE_ATTEMPTS: u32 = 3;
@@ -69,6 +75,12 @@ struct State {
     last_change: Instant,
     not_before: Instant,
     closing: bool,
+    /// Every profile, by id (D7).
+    profiles: BTreeMap<ProfileId, Profile>,
+    /// The active profile, if one is.
+    active: Option<ProfileId>,
+    /// How many profile ids this store has made: varies the next one's suffix.
+    ids_made: u64,
 }
 
 impl State {
@@ -94,6 +106,8 @@ struct Loaded {
     /// Renamed keys: the new key is written and the old one removed by the next write.
     moved: BTreeMap<String, Dirty>,
     migrated: Vec<SettingScope>,
+    /// The active profile's id as `machine.toml` names it.
+    active: Option<String>,
 }
 
 struct Inner {
@@ -106,8 +120,9 @@ struct Inner {
     hub: Publisher<SettingsEvent>,
     /// Serialises flushes, so the writer thread and an explicit [`Store::flush`] never write one file at once.
     flush_gate: Mutex<()>,
-    session: Ephemeral,
+    session: Box<dyn SessionStore>,
     clock: SystemClock,
+    profile_files: ProfileFiles,
 }
 
 /// The settings service over `settings.toml` (`User` keys) and `machine.toml` (`Machine` keys).
@@ -115,7 +130,7 @@ struct Inner {
 /// Opening never blocks and never fails: a file that cannot be read or parsed is reported by
 /// [`findings`](Settings::findings) and its keys read as their defaults. Changes are written by a background thread
 /// 250 ms after the last one (at most 2 s under a burst); dropping the store flushes what is left. Profiles are not
-/// stored yet: no profile exists, and the session state is kept in memory.
+/// stored yet: no profile exists. The session state is `session.toml` in the local data folder ([`SessionFile`]).
 pub struct Store {
     inner: Arc<Inner>,
     writer: Option<JoinHandle<()>>,
@@ -131,17 +146,28 @@ impl Store {
     /// A store over the given settings only: tests and benchmarks pass their own.
     #[must_use]
     pub fn open_with(paths: &Paths, registrations: impl IntoIterator<Item = &'static SettingRegistration>) -> Self {
-        Self::with_backend(Box::new(FileBackend::new(paths.clone())), registrations)
+        let session = Box::new(SessionFile::open(paths.data()));
+        Self::with_parts(Box::new(FileBackend::new(paths.clone())), session, registrations)
     }
 
+    #[cfg(test)]
     pub(crate) fn with_backend(
         backend: Box<dyn Backend>,
+        registrations: impl IntoIterator<Item = &'static SettingRegistration>,
+    ) -> Self {
+        Self::with_parts(backend, Box::new(Ephemeral::default()), registrations)
+    }
+
+    fn with_parts(
+        backend: Box<dyn Backend>,
+        session: Box<dyn SessionStore>,
         registrations: impl IntoIterator<Item = &'static SettingRegistration>,
     ) -> Self {
         let mut keys: Vec<Key> =
             registrations.into_iter().map(|reg| Key { reg, default: reg.default_json() }).collect();
         keys.sort_by_key(|k| k.reg.meta.key);
         let now = Instant::now();
+        let backend_profile_dir = backend.profile_dir();
         let inner = Arc::new(Inner {
             backend,
             keys,
@@ -158,13 +184,17 @@ impl Store {
                 last_change: now,
                 not_before: now,
                 closing: false,
+                profiles: BTreeMap::new(),
+                active: None,
+                ids_made: 0,
             }),
             wake: Condvar::new(),
             snapshot: RwLock::new(Arc::new(Snapshot::new(BTreeMap::new()))),
             hub: Publisher::default(),
             flush_gate: Mutex::new(()),
-            session: Ephemeral::default(),
+            session,
             clock: SystemClock::new(),
+            profile_files: ProfileFiles::new(backend_profile_dir),
         });
         inner.start();
         let worker = Arc::clone(&inner);
@@ -221,10 +251,15 @@ impl Inner {
             findings: vec![SettingFinding::new(e, Value::Null, "")],
             ..Loaded::default()
         });
+        let regs: Vec<&'static SettingRegistration> = self.keys.iter().map(|k| k.reg).collect();
+        let (profiles, profile_findings) = self.profile_files.load(&regs);
         let mut st = locked(&self.state);
         st.stored = loaded.stored;
         st.findings = loaded.findings;
+        st.findings.extend(profile_findings);
         st.needs_backup = loaded.migrated;
+        st.active = loaded.active.and_then(|id| ProfileId::new(id).ok()).filter(|id| profiles.contains_key(id));
+        st.profiles = profiles;
         self.adopt_moves(&mut st, loaded.moved);
         self.rebuild(&st);
     }
@@ -257,7 +292,12 @@ impl Inner {
                 }
             };
             match document::parse(&text) {
-                Ok(doc) => self.load_scope(scope, &doc, &mut out),
+                Ok(doc) => {
+                    if scope == SettingScope::Machine {
+                        out.active = document::lookup(&doc, ACTIVE_KEY).and_then(|v| v.as_str().map(str::to_owned));
+                    }
+                    self.load_scope(scope, &doc, &mut out);
+                }
                 Err(error) => broken.push((scope, text, error)),
             }
         }
@@ -301,10 +341,47 @@ impl Inner {
     }
 
     fn effective(st: &State, key: &Key) -> (Value, Source) {
+        Self::effective_under(st, st.active.as_ref(), key)
+    }
+
+    /// The effective value with `active` as the active profile: its value for a key it may hold, else the base, else
+    /// the default.
+    fn effective_under(st: &State, active: Option<&ProfileId>, key: &Key) -> (Value, Source) {
+        let name = key.reg.meta.key;
+        if let Some(id) = active.filter(|_| member(key.reg))
+            && let Some(value) = st.profiles.get(id).and_then(|p| p.values.get(name))
+        {
+            return (value.clone(), Source::Profile(id.clone()));
+        }
+        Self::base(st, key)
+    }
+
+    /// The value with no profile: the base, else the default.
+    fn base(st: &State, key: &Key) -> (Value, Source) {
         match st.stored.get(key.reg.meta.key) {
             Some(v) => (v.clone(), Source::Base),
             None => (key.default.clone(), Source::Default),
         }
+    }
+
+    /// The changes from the effective values under the active profile to those under `to`.
+    fn changes_to(&self, st: &State, to: Option<&ProfileId>) -> Vec<Change> {
+        self.keys
+            .iter()
+            .filter_map(|k| {
+                let (before, _) = Self::effective(st, k);
+                let (after, _) = Self::effective_under(st, to, k);
+                (before != after).then(|| Change::new(k.reg.meta.key, before, after, k.reg.meta.apply))
+            })
+            .collect()
+    }
+
+    /// Records the active profile for `machine.toml`; the writer writes it with the next flush.
+    fn mark_active(&self, st: &mut State) {
+        let value = st.active.as_ref().map(|id| Value::String(id.to_string()));
+        st.dirty.insert(ACTIVE_KEY.to_owned(), Dirty { scope: SettingScope::Machine, value, version: 1, needs: None });
+        st.touch();
+        self.wake.notify_all();
     }
 
     /// Builds the effective values and swaps them in as a whole.
@@ -343,6 +420,24 @@ impl Inner {
             st.log.push_back(SettingChange::new(change.clone(), by.clone(), at));
         }
         self.hub.publish(&SettingsEvent::new(cause, changes));
+    }
+
+    /// Logs a profile switch and tells the subscribers with one event, even when no value changed: the active profile
+    /// did.
+    fn switched(
+        &self,
+        st: &mut State,
+        from: Option<ProfileId>,
+        to: Option<ProfileId>,
+        changes: Vec<Change>,
+        by: &Actor,
+    ) {
+        let cause = ChangeCause::ProfileSwitched { from, to };
+        if changes.is_empty() {
+            self.hub.publish(&SettingsEvent::new(cause, changes));
+        } else {
+            self.announce(st, cause, changes, by);
+        }
     }
 
     fn flush(&self) -> Result<(), SettingError> {
@@ -526,6 +621,30 @@ fn unknown_profile(id: &ProfileId) -> SettingError {
     SettingError::new("", SettingErrorKind::UnknownProfile { id: id.as_str().to_owned() })
 }
 
+fn info(st: &State, id: &ProfileId) -> Option<ProfileInfo> {
+    let profile = st.profiles.get(id)?;
+    let keys = u32::try_from(profile.values.len()).unwrap_or(u32::MAX);
+    Some(ProfileInfo::new(id.clone(), profile.name.clone(), keys, st.active.as_ref() == Some(id)))
+}
+
+fn report(changes: &[Change]) -> SwitchReport {
+    let pending = changes.iter().filter(|c| c.apply == Apply::NextStart).map(|c| c.key.clone()).collect();
+    SwitchReport::new(u32::try_from(changes.len()).unwrap_or(u32::MAX), pending)
+}
+
+/// The changes from `shown` (the effective values in key order, taken earlier) to the effective values now.
+fn changed_since(inner: &Inner, st: &State, shown: &[Value]) -> Vec<Change> {
+    inner
+        .keys
+        .iter()
+        .zip(shown)
+        .filter_map(|(k, before)| {
+            let (after, _) = Inner::effective(st, k);
+            (*before != after).then(|| Change::new(k.reg.meta.key, before.clone(), after, k.reg.meta.apply))
+        })
+        .collect()
+}
+
 impl Settings for Store {
     fn snapshot(&self) -> Arc<Snapshot> {
         Arc::clone(&self.inner.snapshot.read().unwrap_or_else(PoisonError::into_inner))
@@ -551,14 +670,32 @@ impl Settings for Store {
             .collect()
     }
 
-    fn set_raw(&self, key: &str, value: Value, _layer: Layer, mode: Mode, by: &Actor) -> Result<Change, SettingError> {
+    fn set_raw(&self, key: &str, value: Value, layer: Layer, mode: Mode, by: &Actor) -> Result<Change, SettingError> {
         let inner = &*self.inner;
         let k = inner.key(key)?;
         k.reg.validate(&value)?;
         document::json_to_toml(&value).map_err(|e| SettingError::invalid(key, e))?;
         let mut st = locked(&inner.state);
-        let (before, _) = Inner::effective(&st, k);
-        let change = Change::new(key, before, value.clone(), k.reg.meta.apply);
+        let (before, source) = Inner::effective(&st, k);
+        // Under a profile, a key it may hold is written into it (D7), so a tweak made under "Stream" stays there.
+        if let Some(id) = st.active.clone().filter(|_| layer == Layer::Auto && member(k.reg)) {
+            let change = Change::new(key, before, value.clone(), k.reg.meta.apply);
+            let held = st.profiles.get(&id).and_then(|p| p.values.get(key));
+            if mode == Mode::Apply && held != Some(&value) {
+                inner.profile_files.write(&id, &[value_edit(key, Some(&value))])?;
+                if let Some(profile) = st.profiles.get_mut(&id) {
+                    profile.values.insert(key.to_owned(), value);
+                }
+                inner.rebuild(&st);
+                if change.before != change.after {
+                    inner.announce(&mut st, ChangeCause::Set, vec![change.clone()], by);
+                }
+            }
+            return Ok(change);
+        }
+        // A base write under a profile that holds the key changes the base, not what is in effect.
+        let after = if matches!(source, Source::Profile(_)) { before.clone() } else { value.clone() };
+        let change = Change::new(key, before, after, k.reg.meta.apply);
         if mode == Mode::Apply {
             st.findings.retain(|f| f.error.key != key);
             if st.stored.get(key) != Some(&value) {
@@ -573,10 +710,31 @@ impl Settings for Store {
         Ok(change)
     }
 
-    fn reset(&self, key: &str, _layer: Layer, mode: Mode, by: &Actor) -> Result<Option<Change>, SettingError> {
+    fn reset(&self, key: &str, layer: Layer, mode: Mode, by: &Actor) -> Result<Option<Change>, SettingError> {
         let inner = &*self.inner;
         let k = inner.key(key)?;
         let mut st = locked(&inner.state);
+        let (shown, source) = Inner::effective(&st, k);
+        // Under a profile, a reset removes the profile's override: the key falls back to the base (D7).
+        if let Some(id) = st.active.clone().filter(|_| layer == Layer::Auto && member(k.reg)) {
+            if !st.profiles.get(&id).is_some_and(|p| p.values.contains_key(key)) {
+                return Ok(None);
+            }
+            let (after, _) = Inner::base(&st, k);
+            let change = Change::new(key, shown, after, k.reg.meta.apply);
+            if mode == Mode::Apply {
+                inner.profile_files.write(&id, &[value_edit(key, None)])?;
+                if let Some(profile) = st.profiles.get_mut(&id) {
+                    profile.values.remove(key);
+                }
+                inner.rebuild(&st);
+                if change.before != change.after {
+                    inner.announce(&mut st, ChangeCause::Reset, vec![change.clone()], by);
+                }
+            }
+            return Ok(Some(change));
+        }
+        let masked = matches!(source, Source::Profile(_));
         let unusable = st.findings.iter().any(|f| f.error.key == key);
         let Some(before) = st.stored.get(key).cloned() else {
             // A value the file holds but the key cannot use is removed too, so the finding goes away.
@@ -586,7 +744,12 @@ impl Settings for Store {
             }
             return Ok(None);
         };
-        let change = Change::new(key, before, k.default.clone(), k.reg.meta.apply);
+        // A base reset under a profile that holds the key changes the base, not what is in effect.
+        let change = if masked {
+            Change::new(key, shown.clone(), shown, k.reg.meta.apply)
+        } else {
+            Change::new(key, before, k.default.clone(), k.reg.meta.apply)
+        };
         if mode == Mode::Apply {
             st.stored.remove(key);
             st.findings.retain(|f| f.error.key != key);
@@ -600,31 +763,136 @@ impl Settings for Store {
     }
 
     fn profiles(&self) -> Vec<ProfileInfo> {
-        Vec::new()
+        let st = locked(&self.inner.state);
+        st.profiles.keys().filter_map(|id| info(&st, id)).collect()
     }
 
     fn save_profile(
         &self,
-        _: &str,
-        _: ProfileSource,
-        _: bool,
-        _: Mode,
-        _: &Actor,
+        name: &str,
+        from: ProfileSource,
+        overwrite: bool,
+        mode: Mode,
+        by: &Actor,
     ) -> Result<ProfileInfo, SettingError> {
-        let reason = "profiles are not stored yet (docs/design/settings.md D7)".to_owned();
-        Err(SettingError::new("", SettingErrorKind::Storage { reason }))
+        let inner = &*self.inner;
+        let name = clean_name(name)?;
+        let mut st = locked(&inner.state);
+        let values = match from {
+            ProfileSource::Profile(id) => st.profiles.get(&id).ok_or_else(|| unknown_profile(&id))?.values.clone(),
+            // Every key a profile may hold whose value now differs from what the base would give (D7), so the
+            // profile reproduces today's setup exactly, an override equal to the default included.
+            _ => inner
+                .keys
+                .iter()
+                .filter(|k| member(k.reg))
+                .filter_map(|k| {
+                    let (now, base) = (Inner::effective(&st, k).0, Inner::base(&st, k).0);
+                    (now != base).then(|| (k.reg.meta.key.to_owned(), now))
+                })
+                .collect(),
+        };
+        let existing = st.profiles.iter().find(|(_, p)| p.name == name).map(|(id, _)| id.clone());
+        let id = match existing {
+            Some(_) if !overwrite => {
+                return Err(SettingError::new("", SettingErrorKind::ProfileExists { name }));
+            }
+            Some(id) => id,
+            None => {
+                let mut tries = st.ids_made;
+                loop {
+                    tries += 1;
+                    let id = ProfileId::from_name(&name, &profiles::suffix(tries))?;
+                    if !st.profiles.contains_key(&id) {
+                        if mode == Mode::Apply {
+                            st.ids_made = tries;
+                        }
+                        break id;
+                    }
+                }
+            }
+        };
+        let profile = Profile { name, values };
+        let active = st.active.as_ref() == Some(&id);
+        let keys = u32::try_from(profile.values.len()).unwrap_or(u32::MAX);
+        let saved = ProfileInfo::new(id.clone(), profile.name.clone(), keys, active);
+        if mode == Mode::Apply {
+            let before = st.profiles.get(&id).cloned();
+            inner.profile_files.write(&id, &whole(&profile, before.as_ref()))?;
+            let shown: Vec<Value> = inner.keys.iter().map(|k| Inner::effective(&st, k).0).collect();
+            st.profiles.insert(id, profile);
+            if active {
+                // Saving over the active profile changes what is in effect: that is a reload (the cause's docs).
+                let changes = changed_since(inner, &st, &shown);
+                inner.rebuild(&st);
+                inner.announce(&mut st, ChangeCause::Reloaded, changes, by);
+            }
+        }
+        Ok(saved)
     }
 
-    fn rename_profile(&self, id: &ProfileId, _: &str, _: Mode, _: &Actor) -> Result<ProfileInfo, SettingError> {
-        Err(unknown_profile(id))
+    fn rename_profile(&self, id: &ProfileId, name: &str, mode: Mode, _: &Actor) -> Result<ProfileInfo, SettingError> {
+        let inner = &*self.inner;
+        let name = clean_name(name)?;
+        let mut st = locked(&inner.state);
+        if !st.profiles.contains_key(id) {
+            return Err(unknown_profile(id));
+        }
+        if st.profiles.iter().any(|(other, p)| other != id && p.name == name) {
+            return Err(SettingError::new("", SettingErrorKind::ProfileExists { name }));
+        }
+        if mode == Mode::Apply {
+            inner.profile_files.write(id, &[name_edit(&name)])?;
+            if let Some(profile) = st.profiles.get_mut(id) {
+                profile.name.clone_from(&name);
+            }
+        }
+        let mut renamed = info(&st, id).ok_or_else(|| unknown_profile(id))?;
+        renamed.name = name;
+        Ok(renamed)
     }
 
-    fn delete_profile(&self, id: &ProfileId, _: Mode, _: &Actor) -> Result<SwitchReport, SettingError> {
-        Err(unknown_profile(id))
+    fn delete_profile(&self, id: &ProfileId, mode: Mode, by: &Actor) -> Result<SwitchReport, SettingError> {
+        let inner = &*self.inner;
+        let mut st = locked(&inner.state);
+        if !st.profiles.contains_key(id) {
+            return Err(unknown_profile(id));
+        }
+        let was_active = st.active.as_ref() == Some(id);
+        let changes = if was_active { inner.changes_to(&st, None) } else { Vec::new() };
+        let report = report(&changes);
+        if mode == Mode::Apply {
+            inner.profile_files.remove(id)?;
+            st.profiles.remove(id);
+            if was_active {
+                // Deleting the active profile switches to none first, in the same step (D7).
+                st.active = None;
+                inner.mark_active(&mut st);
+                inner.rebuild(&st);
+                inner.switched(&mut st, Some(id.clone()), None, changes, by);
+            }
+        }
+        Ok(report)
     }
 
-    fn switch_profile(&self, to: Option<&ProfileId>, _: Mode, _: &Actor) -> Result<SwitchReport, SettingError> {
-        to.map_or_else(|| Ok(SwitchReport::new(0, Vec::new())), |id| Err(unknown_profile(id)))
+    fn switch_profile(&self, to: Option<&ProfileId>, mode: Mode, by: &Actor) -> Result<SwitchReport, SettingError> {
+        let inner = &*self.inner;
+        let mut st = locked(&inner.state);
+        if let Some(id) = to.filter(|id| !st.profiles.contains_key(*id)) {
+            return Err(unknown_profile(id));
+        }
+        if st.active.as_ref() == to {
+            return Ok(report(&[]));
+        }
+        let changes = inner.changes_to(&st, to);
+        let report = report(&changes);
+        if mode == Mode::Apply {
+            let from = std::mem::replace(&mut st.active, to.cloned());
+            inner.mark_active(&mut st);
+            inner.rebuild(&st);
+            inner.switched(&mut st, from, to.cloned(), changes, by);
+        }
+        Ok(report)
     }
 
     fn reload(&self, mode: Mode, by: &Actor) -> Result<SwitchReport, SettingError> {
@@ -693,7 +961,7 @@ impl Settings for Store {
     }
 
     fn session(&self) -> &dyn SessionStore {
-        &self.inner.session
+        &*self.inner.session
     }
 }
 
@@ -716,6 +984,9 @@ mod tests {
             last_change: now,
             not_before: now,
             closing: false,
+            profiles: BTreeMap::new(),
+            active: None,
+            ids_made: 0,
         };
         assert_eq!(st.due(), now + DEBOUNCE);
         st.last_change = now + Duration::from_secs(10);

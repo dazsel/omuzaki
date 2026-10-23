@@ -16,12 +16,14 @@
 //!
 //! History: an applied op adds [`step_scope`] to its undo step, the step belongs in history only if
 //! [`in_history`] says so, undo and redo need every recorded scope ([`require_step_scopes`]), and a step holding an
-//! [`Undo::Explicit`] op is refused with [`explicit_refused`].
+//! [`Undo::Explicit`] op is refused with [`explicit_refused`]. A live action (an edit with [`Undo::None`], which
+//! [`check_plan`] holds to an empty patch) adds nothing to a step, so it never enters history nor clears redo.
 
 use omuzaki_doc_api::{DocVersion, DocWrite, Patch, PatchError, Value};
 
 use crate::{
-    Actor, DynOp, Grants, Mode, OpCtx, OpError, OpInfo, OpKind, OpMeta, OpRegistration, Plan, Request, Scope, Undo,
+    Actor, DynOp, ErrorDetail, Grants, Mode, OpCtx, OpError, OpInfo, OpKind, OpMeta, OpRegistration, Plan, Request,
+    Scope, Undo,
 };
 
 /// A human-readable name for an actor, for refusals.
@@ -34,10 +36,12 @@ fn who(actor: &Actor) -> String {
     }
 }
 
-/// `Denied`: `actor` lacks `scope` for `doing` (for example `run face.set_profile`). The hint names the scope to grant.
+/// `Denied`: `actor` lacks `scope` for `doing` (for example `run face.set_profile`). The hint names the scope to grant,
+/// and the detail is [`ErrorDetail::MissingScope`], so agents can branch on it.
 pub fn denied(actor: &Actor, doing: &str, scope: Scope) -> OpError {
     OpError::denied(format!("{} may not {doing}: it needs the `{scope}` scope", who(actor)))
         .hint(format!("grant the `{scope}` scope for this session, then retry"))
+        .with_detail(ErrorDetail::MissingScope { scope })
 }
 
 /// `actor` needs `scope` to run the op called `op`. The refusal's text is built only when it refuses.
@@ -77,10 +81,12 @@ pub fn authorize(grants: &Grants, actor: &Actor, meta: OpMeta, mode: Mode) -> Re
 
 /// Refuses a plan its op may not return. A query that planned a patch would change the document through an
 /// interface everyone assumes is read-only. A job changes the document once, at finish: a plan that already carries a
-/// patch would apply twice or not at all, so it is refused in the dry-run too.
+/// patch would apply twice or not at all, so it is refused in the dry-run too. An edit with [`Undo::None`] is a **live
+/// action** (an expression, a scene switch, a sound: live state, not the document), so it may not plan a patch
+/// either: a change with nothing to undo it would be a change undo silently skips.
 ///
 /// # Errors
-/// `Internal`, naming the op, for either.
+/// `Internal`, naming the op, for any of them.
 pub fn check_plan(meta: OpMeta, plan: &Plan) -> Result<(), OpError> {
     if plan.patch.changes.is_empty() {
         return Ok(());
@@ -92,6 +98,11 @@ pub fn check_plan(meta: OpMeta, plan: &Plan) -> Result<(), OpError> {
         }
         OpKind::Job => Err(OpError::internal(format!("{} is a job but planned a change to the document", meta.name))
             .hint("this is a bug in the op: a job's plan returns no patch; its `finish` returns the change")),
+        OpKind::Edit if meta.undo == Undo::None => Err(OpError::internal(format!(
+            "{} is a live action (`Undo::None`) but planned a change to the document",
+            meta.name
+        ))
+        .hint("this is a bug in the op: an op that changes the document says `Undo::Auto`")),
         OpKind::Edit => Ok(()),
     }
 }
@@ -135,9 +146,11 @@ pub fn apply_patch<D: DocWrite + ?Sized>(doc: &mut D, patch: &Patch) -> Result<D
     if patch.changes.is_empty() { Ok(doc.version()) } else { doc.apply(patch) }
 }
 
-/// What a surface lists for a registered op, `coalesces` included.
+/// What a surface lists for a registered op, `coalesces` and `job_shape` included.
 pub fn op_info(registration: &OpRegistration) -> OpInfo {
-    OpInfo::new((registration.meta)(), (registration.schema)()).with_coalesces((registration.coalesces)())
+    OpInfo::new((registration.meta)(), (registration.schema)())
+        .with_coalesces((registration.coalesces)())
+        .with_job_shape((registration.job_shape)())
 }
 
 /// The scope an applied op adds to its undo step (its own `scope`, given its `undo` mode), which undo and redo then

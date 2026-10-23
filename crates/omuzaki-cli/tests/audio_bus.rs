@@ -29,6 +29,7 @@ const PATIENCE: Duration = Duration::from_secs(10);
 
 fn rig() -> (Arc<Executor>, Arc<MockEngine>, Receiver<GraphSpec>, tempfile::TempDir) {
     omuzaki_audio_engine::link();
+    omuzaki_audio_fx::link();
     omuzaki_audio_mock::link();
     let engine = Arc::new(MockEngine::new());
     let services =
@@ -82,6 +83,9 @@ fn a_bus_edit_reaches_the_engine_and_undo_takes_it_back() {
     let graph = applied.recv_timeout(PATIENCE).expect("the follower applied the new graph");
     assert_eq!(bus_ids(&graph), ["program"]);
     assert_eq!(engine.graph(), graph);
+    // The -1 dBTP safety limiter is on `program` from the start (#921).
+    let kinds: Vec<&str> = graph.buses[0].chain.iter().map(|n| n.kind.as_str()).collect();
+    assert_eq!(kinds, ["fx.limiter"]);
 
     let music = json!({ "bus": "music", "channels": "stereo", "sends": [{ "to": "program" }] });
     run(&runner, &person(), "audio.bus.create", music).expect("a person creates music");
@@ -122,8 +126,12 @@ fn an_agent_routing_a_microphone_to_the_stream_needs_a_person() {
         "bus": "mic2", "channels": "mono",
         "sources": [{ "type": "device", "role": "mic" }], "sends": [{ "to": "program" }],
     });
-    let refused = run(&runner, &agent, "audio.bus.create", mic).expect_err("an agent can't route the mic out");
-    assert_eq!(refused.code, ErrorCode::Denied);
-    assert!(refused.message.contains("mic to program_out"), "{}", refused.message);
+    // The agent's request waits for the person's approval, and runs only if they give it.
+    let waiting = run(&runner, &agent, "audio.bus.create", mic).expect_err("an agent can't route the mic out alone");
+    assert_eq!(waiting.code, ErrorCode::Waiting);
+    let asks = matches!(waiting.detail.as_deref(), Some(omuzaki_ops_api::ErrorDetail::Queued {
+        need: omuzaki_ops_api::Need::Person { reason }, ..
+    }) if reason.contains("mic to program_out"));
+    assert!(asks, "it asks the person why: {waiting:?}");
     assert_eq!(bus_ids(&engine.graph()), ["program"], "the engine never saw it");
 }

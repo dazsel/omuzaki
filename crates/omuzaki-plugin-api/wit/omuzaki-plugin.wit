@@ -1,0 +1,88 @@
+package omuzaki:plugin@0.1.0;
+
+interface types {
+    /// How loud a log line is.
+    enum level { trace, debug, info, warn, error }
+
+    /// The class of an op failure; `ErrorCode` of the op contract, one to one.
+    enum error-code { invalid, not-found, denied, conflict, unsupported, unavailable, internal, waiting, limited, cancelled }
+
+    /// `OpError` one to one: `detail` is `ErrorDetail` as JSON, `hint` the localised hint.
+    record op-error { code: error-code, message: string, detail: option<string>, hint: option<string> }
+}
+
+interface ops {
+    use types.{op-error};
+
+    /// Runs an op (`Mode::Apply`). `args` and the result are JSON; the result is the op's output.
+    call: func(op: string, args: string) -> result<string, op-error>;
+
+    /// Dry-runs an op (`Mode::DryRun`): the `Plan` as JSON (patch, output, cost). Needs `read` only.
+    plan: func(op: string, args: string) -> result<string, op-error>;
+
+    /// The op's argument schema (JSON Schema), or none if no such op is registered.
+    describe: func(op: string) -> option<string>;
+
+    /// The names of the ops this plugin's grants could ever allow, sorted.
+    %list: func() -> list<string>;
+}
+
+interface host {
+    use types.{level};
+
+    /// Writes one line to the plugin's log.
+    log: func(level: level, message: string);
+
+    /// Seconds on the runner's clock (`FakeClock` in tests), so a plugin's timing is deterministic under test.
+    monotonic-seconds: func() -> f64;
+}
+
+interface data {
+    /// Reads a file from the plugin's own folder: flat names `[a-z0-9._-]{1,64}`, no paths. Refused unless the
+    /// manifest says `data = true`.
+    read: func(name: string) -> option<list<u8>>;
+
+    /// Writes a file to the plugin's own folder; the error is "over quota" past the byte or file quota.
+    write: func(name: string, bytes: list<u8>) -> result<_, string>;
+
+    /// Removes a file from the plugin's own folder; false if there was none.
+    remove: func(name: string) -> bool;
+
+    /// The names in the plugin's own folder, at most 4,096.
+    %list: func() -> list<string>;
+}
+
+interface http {
+    /// An outgoing request.
+    record request { method: string, url: string, headers: list<tuple<string, string>>, body: list<u8> }
+
+    /// The answer to a request.
+    record response { status: u16, headers: list<tuple<string, string>>, body: list<u8> }
+
+    /// Sends a request, only to approved hosts. Errors: "host not approved", "timeout", "too large", or the
+    /// transport's message.
+    fetch: func(req: request) -> result<response, string>;
+}
+
+interface lifecycle {
+    use types.{op-error};
+
+    /// Called once per instance, with the plugin's settings as JSON. An error faults the plugin with that text.
+    init: func(config: string) -> result<_, string>;
+
+    /// A queued request was decided: the op's output, or why it did not run.
+    approval-resolved: func(approval: u64, outcome: result<string, op-error>);
+
+    /// Called after the session has ended, with every effectful import denied.
+    shutdown: func();
+}
+
+world plugin {
+    import ops;
+    import host;
+    /// Linked to refusals unless the manifest asks for `data`.
+    import data;
+    /// Linked to refusals unless the manifest asks for `net`.
+    import http;
+    export lifecycle;
+}

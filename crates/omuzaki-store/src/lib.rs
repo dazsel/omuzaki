@@ -30,10 +30,12 @@
 
 mod atomic;
 mod gc;
+mod lazy;
 #[cfg(test)]
 mod tests;
 mod verify;
 
+pub use lazy::LazyDiskStore;
 pub use verify::{DEFAULT_STALE_AFTER, Problem, Quarantined, RepairReport, VerifyReport};
 
 use std::fs;
