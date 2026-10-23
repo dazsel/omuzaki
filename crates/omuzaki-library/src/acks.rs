@@ -39,6 +39,10 @@ fn storage(path: &Path, e: &dyn std::fmt::Display) -> LibraryError {
 }
 
 /// Every acknowledgement in `path`, sorted; none when the file isn't there.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the library folder is the app's own data folder, given by the host; no op caller names a path in it"
+)]
 pub(crate) fn read(path: &Path) -> Result<Vec<Acknowledgement>, LibraryError> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
@@ -52,6 +56,10 @@ pub(crate) fn read(path: &Path) -> Result<Vec<Acknowledgement>, LibraryError> {
 
 /// Adds `ack` unless the same publisher and hash are acknowledged already; returns whether it was new. The file is
 /// written sorted, through a temporary file, so the same set always writes the same bytes.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the library folder is the app's own data folder, given by the host; no op caller names a path in it"
+)]
 pub(crate) fn add(path: &Path, ack: Acknowledgement) -> Result<bool, LibraryError> {
     let mut acks = read(path)?;
     if acks.iter().any(|a| a.publisher == ack.publisher && a.hash == ack.hash) {

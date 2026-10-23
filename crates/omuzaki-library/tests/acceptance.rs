@@ -3,6 +3,7 @@
 //! update, update's compatibility and majors, and search at scale.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
+#![allow(clippy::disallowed_methods, reason = "tests set up their fixtures on disk; the fence is for ops")]
 
 mod support;
 

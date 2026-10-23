@@ -19,7 +19,7 @@ use crate::records;
 /// The records are the lock: a project never changes until someone runs `library.update`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(extend("examples" = [{}, { "character": "mia" }]))]
+#[schemars(extend("x-omuzaki-fixture" = "character-library", "examples" = [{}, { "character": "kit" }]))]
 pub struct LibraryLock {
     /// Only this character.
     #[serde(default)]

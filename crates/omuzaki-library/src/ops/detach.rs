@@ -14,7 +14,7 @@ use crate::records;
 /// the paths; remove or replace what the item made first.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(extend("examples" = [{ "character": "mia", "application": "colourway" }]))]
+#[schemars(extend("x-omuzaki-fixture" = "character-library", "examples" = [{ "character": "kit", "application": "colourway" }]))]
 pub struct LibraryDetach {
     /// The character.
     pub character: CharId,

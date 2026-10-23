@@ -4885,6 +4885,8 @@ dependencies = [
  "omuzaki-io-mock",
  "omuzaki-io-ops",
  "omuzaki-io-vrm",
+ "omuzaki-library",
+ "omuzaki-library-api",
  "omuzaki-link-build",
  "omuzaki-live",
  "omuzaki-live-api",

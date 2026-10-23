@@ -45,6 +45,56 @@ use omuzaki_track_api::camera::CameraId;
 
 const ALLOWLIST: &str = include_str!("op_conformance_allowlist.txt");
 
+/// A first-party item for the `library.*` examples.
+fn library_item(text: &str) -> omuzaki_library_api::ItemManifest {
+    let head = "schema = 1\nversion = \"1.0.0\"\ntarget = \"character\"\norigin = \"op conformance\"\ntags = [\"conformance\"]\n";
+    let rights = "[rights]\nauthor = \"Omuzaki\"\nlicence = \"CC0-1.0\"\ncommercial = \"ok\"\nowned = true\n";
+    let text = format!("{head}{text}\n{rights}");
+    omuzaki_library_api::ItemManifest::parse(&text).unwrap_or_else(|e| panic!("{e}\n{text}"))
+}
+
+/// The library the `library.*` examples and fixtures use, with the person's own items in `folder`: the colourway
+/// `night-iris` and the hairstyle `twintails` (first-party), and the person's `anon/hair/ribbon-bow`.
+fn library_services(builder: ServicesBuilder, folder: &Path) -> ServicesBuilder {
+    use omuzaki_library::HostLibrary;
+    use omuzaki_library_api::{ItemScope, Library};
+
+    let palette = |slot: &str, colour: &str| {
+        format!(
+            "[[step]]\nop = \"palette.set\"\n[step.args]\ncharacter = \"$character\"\nslot = \"{slot}\"\ncolour = \"{colour}\"\n"
+        )
+    };
+    let night_iris = library_item(&format!(
+        "id = \"omuzaki/colourways/night-iris\"\nsection = \"colourways\"\nkind = \"setting\"\nslot = \"colourway\"\n\
+         title = \"Night iris\"\nsummary = \"Deep violet and ink blue.\"\n\
+         params.hair = {{ type = \"colour\", default = \"#2a2346\", summary = \"The hair root\" }}\n{}{}{}",
+        palette("hair_root", "$params.hair"),
+        palette("hair_mid", "#463a78"),
+        palette("outfit_a", "#1d2a4a"),
+    ));
+    let twintails = library_item(
+        "id = \"omuzaki/hair/twintails\"\nsection = \"hair\"\nkind = \"part\"\nslot = \"hairstyle\"\n\
+         title = \"Twintails\"\nsummary = \"Two high tails.\"\ncreates.hair = { kind = \"hair\", id = \"hair\", layer = 5 }\n\
+         [[step]]\nop = \"part.add\"\n[step.args]\ncharacter = \"$character\"\nkind = \"hair\"\nid = \"$parts.hair\"\nlayer = 5\n",
+    );
+    let bow = omuzaki_library_api::ItemManifest::parse(
+        "schema = 1\nid = \"anon/hair/ribbon-bow\"\nversion = \"1.0.0\"\nsection = \"hair\"\nkind = \"part\"\n\
+         target = \"character\"\ntitle = \"Ribbon bow\"\nsummary = \"A ribbon tied in a bow.\"\n\
+         creates.bow = { kind = \"hairpin\", id = \"bow\", layer = 40 }\n[rights]\nauthor = \"Anon\"\nlicence = \"CC-BY-4.0\"\n\
+         commercial = \"ok\"\n\n[[step]]\nop = \"part.add\"\n[step.args]\ncharacter = \"$character\"\nkind = \"hairpin\"\n\
+         id = \"$parts.bow\"\n",
+    )
+    .expect("the ribbon bow parses");
+    let library = Arc::new(HostLibrary::open(Some(folder)));
+    let refused = library.insert_all([
+        (night_iris, ItemScope::FirstParty),
+        (twintails, ItemScope::FirstParty),
+        (bow, ItemScope::Mine),
+    ]);
+    assert!(refused.is_empty(), "the conformance items load: {refused:?}");
+    builder.insert::<dyn Library>(Arc::clone(&library) as Arc<dyn Library>).insert(library)
+}
+
 /// The default fixture project: an empty project named `demo`.
 const DEFAULT_FIXTURE: &str = "demo";
 
@@ -130,8 +180,10 @@ fn fixture_project(name: &str) -> Result<tempfile::TempDir, String> {
     let steps = fixture_steps(name)?;
     let doc = Saved::open(dir.path()).map_err(|e| format!("opening the project for fixture `{name}`: {e}"))?;
     let project = ProjectDir::open(dir.path()).map_err(|e| format!("opening the folder for fixture `{name}`: {e}"))?;
+    let library = tempfile::tempdir().map_err(|e| e.to_string())?;
     let setup = Executor::new(Box::new(doc), Arc::new(SystemClock::new()))
         .map_err(|e| e.to_string())?
+        .with_services(library_services(ServicesBuilder::new(), library.path()).build())
         .with_project_dir(project);
     for FixtureStep { op, args } in steps {
         let request = Request {
@@ -357,6 +409,8 @@ fn branches_at(now: &Value) -> Arc<omuzaki_history_mock::branch::MemoryBranchSto
 struct Rig {
     runner: Executor,
     dir: tempfile::TempDir,
+    /// The person's library folder for the `library.*` examples.
+    _library: tempfile::TempDir,
     actor: Actor,
     grants: Grants,
 }
@@ -381,10 +435,11 @@ impl Rig {
             ));
         }
         let project = ProjectDir::open(dir.path()).map_err(|e| format!("opening the fixture folder failed: {e}"))?;
+        let library = tempfile::tempdir().map_err(|e| e.to_string())?;
         let runner = Executor::with_registrations(Box::new(doc), Arc::new(SystemClock::new()), [reg])
             .map_err(|e| e.to_string())?
             .with_services(
-                window_host::with_window(ServicesBuilder::new(), (reg.meta)().name)
+                library_services(window_host::with_window(ServicesBuilder::new(), (reg.meta)().name), library.path())
                     // The stream service with nothing running: the `record.*` and `output.*` examples dry-run
                     // against it as they would in the app.
                     .insert::<omuzaki_stream::service::StreamService>(Arc::new(
@@ -427,7 +482,7 @@ impl Rig {
             )
             .with_project_dir(project);
         let actor = Actor::Person { name: "conformance".to_owned() };
-        Ok(Self { runner, dir, actor, grants: Grants::person() })
+        Ok(Self { runner, dir, _library: library, actor, grants: Grants::person() })
     }
 
     fn state(&self) -> State {

@@ -26,7 +26,7 @@ pub struct Pinned {
 /// agent's call asks the person first. Undo installs them again.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(extend("examples" = [{ "item": "signer/hair/ribbon-bow", "version": "1.0.0" }]))]
+#[schemars(extend("examples" = [{ "item": "anon/hair/ribbon-bow", "version": "1.0.0" }]))]
 pub struct LibraryUninstall {
     /// The item id.
     #[serde(default)]

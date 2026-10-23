@@ -27,7 +27,7 @@ const DISCLAIMER: &str = "The publisher, not Omuzaki, declares this item's licen
 /// call asks the person, and the disclaimer is acknowledged once per publisher and item. Undo uninstalls them.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(extend("examples" = [{ "from": "downloads/ribbon-bow.toml" }, { "from": "downloads/ribbon-pack" }]))]
+#[schemars(extend("examples" = [{ "manifest": "schema = 1\nid = \"anon/hair/ribbon-bow\"\nversion = \"1.1.0\"\nsection = \"hair\"\nkind = \"part\"\ntarget = \"character\"\ntitle = \"Ribbon bow\"\nsummary = \"A ribbon tied in a bow.\"\ncreates.bow = { kind = \"hairpin\", id = \"bow\", layer = 40 }\n\n[rights]\nauthor = \"Anon\"\nlicence = \"CC-BY-4.0\"\ncommercial = \"ok\"\n\n[[step]]\nop = \"part.add\"\n[step.args]\ncharacter = \"$character\"\nkind = \"hairpin\"\nid = \"$parts.bow\"\n" }]))]
 pub struct LibraryInstall {
     /// A manifest file (`.toml`) or a folder of them, absolute or relative to the project.
     #[serde(default)]

@@ -178,6 +178,10 @@ impl HostLibrary {
     /// # Errors
     /// [`LibraryError::NotFound`] when the person's library doesn't hold it; [`LibraryError::Storage`] when the file
     /// can't be removed.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the library folder is the app's own data folder, given by the host; no op caller names a path in it"
+    )]
     pub fn uninstall(&self, item: &ItemId, version: &Version) -> Result<ItemManifest, LibraryError> {
         let mut registry = self.write();
         let at = registry
@@ -243,6 +247,10 @@ impl HostLibrary {
 }
 
 /// Every `*.toml` under `dir` that parses as a manifest; the others are named in a warning and left out.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the library folder is the app's own data folder, given by the host; no op caller names a path in it"
+)]
 fn read_folder(dir: &Path) -> Vec<(PathBuf, ItemManifest)> {
     let mut found = Vec::new();
     let mut pending = vec![dir.to_path_buf()];
@@ -268,6 +276,10 @@ fn read_folder(dir: &Path) -> Vec<(PathBuf, ItemManifest)> {
 }
 
 /// Writes `manifest` at `path` through a temporary file, so a crash leaves the old file or the new one.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the library folder is the app's own data folder, given by the host; no op caller names a path in it"
+)]
 fn write_item(path: &Path, manifest: &ItemManifest) -> Result<(), LibraryError> {
     let storage = |e: &dyn std::fmt::Display| LibraryError::Storage(format!("{}: {e}", path.display()));
     let text = toml::to_string(manifest).map_err(|e| storage(&e))?;

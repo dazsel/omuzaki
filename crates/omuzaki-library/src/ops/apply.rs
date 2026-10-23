@@ -26,9 +26,9 @@ use crate::records;
 /// rights, and any warning.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(extend("examples" = [
-    { "item": "omuzaki/colourways/night-iris", "character": "mia" },
-    { "item": "omuzaki/hair/twintails", "character": "mia", "params": { "tail_length": 2.6 }, "replace": ["hair"] }
+#[schemars(extend("x-omuzaki-fixture" = "character-palette", "examples" = [
+    { "item": "omuzaki/colourways/night-iris", "character": "kit", "params": { "hair": "#30285a" } },
+    { "item": "omuzaki/hair/twintails", "character": "kit", "replace": ["hair"] }
 ]))]
 pub struct LibraryApply {
     /// The item id, `publisher/name`.

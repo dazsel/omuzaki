@@ -32,9 +32,9 @@ pub enum Prefer {
 /// before, after and why.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(extend("examples" = [
-    { "character": "mia", "application": "hairstyle" },
-    { "character": "mia", "application": "hairstyle", "params": { "tail_length": 3.0 } }
+#[schemars(extend("x-omuzaki-fixture" = "character-library", "examples" = [
+    { "character": "kit", "application": "hairstyle" },
+    { "character": "kit", "application": "colourway", "params": { "hair": "#30285a" }, "prefer": "item" }
 ]))]
 pub struct LibraryUpdate {
     /// The character.

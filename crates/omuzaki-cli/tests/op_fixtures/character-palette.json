@@ -1,0 +1,9 @@
+{
+  "about": "The kit character with the hair and outfit palette slots a colourway recolours (`hair_root`, `hair_mid`, `outfit_a`): the base for applying library colourways.",
+  "base": "character",
+  "steps": [
+    { "op": "palette.add_slot", "args": { "character": "kit", "slot": "hair_root", "colour": "#5a3b2e" } },
+    { "op": "palette.add_slot", "args": { "character": "kit", "slot": "hair_mid", "colour": "#7a5240" } },
+    { "op": "palette.add_slot", "args": { "character": "kit", "slot": "outfit_a", "colour": "#e8e2d4" } }
+  ]
+}
