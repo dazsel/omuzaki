@@ -15,12 +15,13 @@
 
 use std::sync::Arc;
 
-use omuzaki_anim_api::HumanoidBone;
+use omuzaki_anim_api::{HumanoidBone, SpringChain, SpringParams, Transform};
 use omuzaki_char_api::{
-    Anchor, AnchorId, AnchorsFact, BuildCtx, BuildError, FaceFact, FitFact, HeadFact, HeadParams, HeadSurface,
-    JointFit, JointRef, KindProvenance, PartCategory, PartKind, PartMesh, PartMeta, PartOutput, Publishes,
+    Anchor, AnchorId, AnchorsFact, BoneName, BuildCtx, BuildError, EarKind, ExtraBone, FaceFact, FitFact, HeadFact,
+    HeadParams, HeadSurface, JointFit, JointRef, KindProvenance, PartCategory, PartKind, PartMesh, PartMeta,
+    PartOutput, Publishes, RigContribution,
 };
-use omuzaki_core::glam::{Quat, Vec3};
+use omuzaki_core::glam::{Mat3, Quat, Vec3};
 use omuzaki_core::mesh::MeshData;
 use omuzaki_face_api::narrow;
 
@@ -90,14 +91,21 @@ impl PartKind for Head {
             meshes.push(part_mesh(ctx, "neck", neck_mesh, bones, "skin-neck")?);
         }
 
-        let (ear_meshes, ear_anchors, ear_covers) = ears(ctx, &placed, surface.as_ref())?;
+        let (ear_meshes, mut ear_anchors, ear_covers) = ears(ctx, &placed, surface.as_ref())?;
         meshes.extend(ear_meshes);
-
-        let materials = vec![
+        let mut rig = RigContribution::default();
+        let mut materials = vec![
             (material::name(ctx, "skin-head")?, material::skin_head(ctx, &placed, surface.centre())?),
             (material::name(ctx, "skin-ear")?, material::skin_ear(ctx, &placed)?),
             (material::name(ctx, "skin-neck")?, material::skin_neck(ctx, &placed)?),
         ];
+        if placed.ears.kind == EarKind::Animal {
+            let (animal_meshes, tips) = animal_ears(ctx, &placed, surface.as_ref(), &mut rig)?;
+            meshes.extend(animal_meshes);
+            ear_anchors.extend(tips);
+            materials.push((material::name(ctx, "fur-ear")?, material::fur_ear(ctx, &placed)?));
+            materials.push((material::name(ctx, "ear-inner")?, material::ear_inner(ctx, &placed)?));
+        }
 
         let top = Anchor {
             bone: JointRef::HEAD,
@@ -126,6 +134,7 @@ impl PartKind for Head {
             .with_meshes(meshes)
             .with_materials(materials)
             .with_publishes(publishes)
+            .with_rig(rig)
             .with_warnings(warnings))
     }
 }
@@ -166,6 +175,87 @@ fn ears(ctx: &BuildCtx<'_>, placed: &HeadParams, surface: &dyn HeadSurface) -> R
         }
     }
     Ok((meshes, anchors, covers))
+}
+
+/// The soft springs of a rabbit's ear: it sways and settles, and gravity tips it back a little.
+const EAR_ROOT_SPRING: SpringParams =
+    SpringParams { hit_radius: 0.0, stiffness: 0.7, gravity_power: 0.08, gravity_dir: Vec3::NEG_Y, drag_force: 0.45 };
+const EAR_TIP_SPRING: SpringParams = SpringParams { stiffness: 0.4, ..EAR_ROOT_SPRING };
+
+/// What the animal ears add to the part: their meshes and their `ear_top_l` and `ear_top_r` anchors.
+type AnimalParts = (Vec<PartMesh>, Vec<(AnchorId, Anchor)>);
+
+/// The animal ears (`kind = "animal"`): each side's fur shell and inner panel, the `ear_top_l` and `ear_top_r` anchors at
+/// their tips, and, for a species that sways, a three-bone spring chain from the head bone up the ear (added to `rig`),
+/// the ear's vertices blended along it. Rigid ears ride the head bone.
+fn animal_ears(
+    ctx: &BuildCtx<'_>,
+    placed: &HeadParams,
+    surface: &dyn HeadSurface,
+    rig: &mut RigContribution,
+) -> Result<AnimalParts, BuildError> {
+    let left_root = ears::root(&placed.ears, surface);
+    let (mut meshes, mut anchors) = (vec![], vec![]);
+    for side in Side::BOTH {
+        let ear = ears::animal::build(&placed.ears, side, left_root, surface)
+            .map_err(|e| ctx.fail(format!("animal ear: {e}")))?;
+        let tag = match side {
+            Side::Left => "l",
+            Side::Right => "r",
+        };
+        let mut bones = vec![JointRef::HEAD];
+        if !ear.chain.is_empty() {
+            let mut ids = Vec::with_capacity(ear.chain.len());
+            for (i, point) in ear.chain.iter().enumerate() {
+                let name = BoneName::new(format!("ear_{}_{tag}_{i}", ctx.part))
+                    .map_err(|e| ctx.fail(format!("ear bone name: {e}")))?;
+                let parent = bones.last().cloned().unwrap_or(JointRef::HEAD);
+                ids.push(rig.add_bone(ExtraBone {
+                    name: name.clone(),
+                    parent,
+                    rest: Transform::from_translation(*point),
+                }));
+                bones.push(JointRef::Named(name));
+            }
+            let mut chain =
+                SpringChain::tapered(format!("ear_{}_{tag}", ctx.part), &ids, EAR_ROOT_SPRING, EAR_TIP_SPRING);
+            chain.collider_groups = ctx.colliders().iter().map(|group| group.name.clone()).collect();
+            rig.chains.push(chain);
+        }
+        let (mut shell, mut panel) = (ear.shell, ear.panel);
+        (shell.joints, shell.weights) = ear.shell_along.iter().map(|v| along_chain(*v, bones.len())).unzip();
+        (panel.joints, panel.weights) = ear.panel_along.iter().map(|v| along_chain(*v, bones.len())).unzip();
+        meshes.push(part_mesh(ctx, &format!("ear-{tag}"), shell, bones.clone(), "fur-ear")?);
+        meshes.push(part_mesh(ctx, &format!("ear-{tag}-inner"), panel, bones, "ear-inner")?);
+        let rotation = Quat::from_mat3(&Mat3::from_cols(
+            ear.frame.across.as_vec3(),
+            ear.frame.up.as_vec3(),
+            ear.frame.facing.as_vec3(),
+        ));
+        let name = format!("ear_top_{tag}");
+        let id = name.parse().map_err(|e| ctx.fail(format!("anchor '{name}': {e}")))?;
+        anchors.push((id, Anchor { bone: JointRef::HEAD, position: ear.tip, rotation }));
+    }
+    Ok((meshes, anchors))
+}
+
+/// The skin of a vertex `v` of the way up an ear over `bones` joints (the head, then the chain's bones, if any): all
+/// head for a rigid ear, else a blend of the two chain bones either side of it ([`ears::animal::CHAIN_AT`]).
+#[allow(clippy::cast_possible_truncation)] // joint indices into a list of four
+fn along_chain(v: f32, bones: usize) -> ([u16; 4], [f32; 4]) {
+    let knots = ears::animal::CHAIN_AT;
+    if bones <= 1 {
+        return ([0; 4], [1.0, 0.0, 0.0, 0.0]);
+    }
+    let v = f64::from(v);
+    let above = knots.iter().position(|&k| k >= v).unwrap_or(knots.len() - 1);
+    if above == 0 || v >= knots[knots.len() - 1] {
+        let at = if above == 0 { 1 } else { knots.len() as u16 };
+        return ([at, 0, 0, 0], [1.0, 0.0, 0.0, 0.0]);
+    }
+    let t = narrow((v - knots[above - 1]) / (knots[above] - knots[above - 1]));
+    let (below, above) = (above as u16, above as u16 + 1);
+    ([below, above, 0, 0], [1.0 - t, t, 0.0, 0.0])
 }
 
 /// `params` with the whole head lowered by the neck's drop.

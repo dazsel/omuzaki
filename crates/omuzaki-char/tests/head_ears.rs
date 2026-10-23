@@ -275,7 +275,7 @@ fn the_right_ear_is_the_left_ears_mirror_image() {
 }
 
 #[test]
-fn no_ear_and_animal_ears_build_nothing_and_publish_nothing() {
+fn no_ear_and_animal_ears_build_no_side_ear() {
     let root = Vec3::new(0.18, 0.7, 0.0);
     for kind in [EarKind::None, EarKind::Animal] {
         let ears = ears_of(kind, 1.0);
@@ -284,9 +284,12 @@ fn no_ear_and_animal_ears_build_nothing_and_publish_nothing() {
             assert!(ears::anchor(&ears, side, root).is_none() && ears::cover(&ears, side, root).is_none());
         }
         let built = built_with(&HeadParams { ears, ..HeadParams::default() });
-        assert!(built.meshes.iter().all(|m| !m.mesh.name.contains("ear")), "{kind:?}");
-        assert!(built.anchors.keys().all(|(_, a)| !a.as_str().starts_with("ear")), "{kind:?}");
+        assert!(built.anchors.keys().all(|(_, a)| a.as_str() != "ear_l" && a.as_str() != "ear_r"), "{kind:?}");
     }
+    // No ear builds nothing at all; animal ears stand on top of the head (`head_ears_animal.rs`).
+    let built = built_with(&HeadParams { ears: ears_of(EarKind::None, 1.0), ..HeadParams::default() });
+    assert!(built.meshes.iter().all(|m| !m.mesh.name.contains("ear")));
+    assert!(built.anchors.keys().all(|(_, a)| !a.as_str().starts_with("ear")));
 }
 
 #[test]
@@ -452,7 +455,8 @@ fn every_vertex_clears_the_head_at_the_extremes_of_size_shape_and_orientation() 
                 for tilt in [-30.0, 7.0, 45.0] {
                     for position in [[0.15, -0.12, -0.06], [0.2, 0.05, 0.04], [0.184, -0.066, -0.012]] {
                         for half_width in [0.15, 0.186, 0.22] {
-                            let ears = Ears { kind, size, position, flare_deg: flare, tilt_deg: tilt };
+                            let ears =
+                                Ears { kind, size, position, flare_deg: flare, tilt_deg: tilt, ..Ears::default() };
                             for side in Side::BOTH {
                                 least = least.min(least_clearance(&head_with(ears.clone(), half_width), side));
                             }
@@ -482,7 +486,7 @@ proptest::proptest! {
     ) {
         let ears = Ears {
             kind: if elf { EarKind::Elf } else { EarKind::Human },
-            size, position: [x, y, z], flare_deg: flare, tilt_deg: tilt,
+            size, position: [x, y, z], flare_deg: flare, tilt_deg: tilt, ..Ears::default()
         };
         let least = least_clearance(&head_with(ears, half_width), if left { Side::Left } else { Side::Right });
         proptest::prop_assert!(least >= CLEARANCE - F32_SLACK, "{least} m from the head");

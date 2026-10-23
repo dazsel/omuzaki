@@ -295,14 +295,18 @@ fn fixture(name: &str) -> Vec<u8> {
 }
 
 #[test]
-fn mjpg_fixtures_match_pillow_within_three_levels() {
+fn mjpg_fixtures_match_pillow_exactly() {
+    // The baseline path uses libjpeg's IDCT, upsampling and colour maths, so it gives libjpeg-turbo's pixels.
     for name in ["444", "422", "420"] {
         let jpeg = fixture(&format!("64x48_{name}.jpg"));
         let want = fixture(&format!("64x48_{name}.rgb"));
         let mut got = vec![0u8; 64 * 48 * 3];
-        MjpgDecoder::new().decode(&jpeg, &mut RgbOut { data: &mut got, width: 64, height: 48 }).unwrap();
+        let mut dec = MjpgDecoder::new();
+        dec.decode(&jpeg, &mut RgbOut { data: &mut got, width: 64, height: 48 }).unwrap();
+        assert_eq!(dec.fallbacks(), 0, "{name} took the zune-jpeg path");
         let worst = got.iter().zip(&want).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
-        assert!(worst <= 3, "{name}: max abs diff {worst}");
+        let differ = got.iter().zip(&want).filter(|(a, b)| a != b).count();
+        assert_eq!((worst, differ), (0, 0), "{name}: max abs diff {worst} over {differ} samples");
     }
 }
 

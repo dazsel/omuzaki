@@ -8,7 +8,10 @@
 //!
 //! | Module | What it does |
 //! |---|---|
+//! | [`ai_mouth`] | [`MouthDrive`]: the AI performer's mouth from its TTS lead through `voice_to_face@1`, released on the play log |
 //! | [`analyzer`] | [`VoiceAnalyzer`]: samples at any rate to a [`VoiceFrame`] every 10 ms |
+//! | [`onset`] | [`OnsetDetector`]: syllable onsets from the three-band onset strength, peak-picked adaptively |
+//! | [`cues`] | [`CueExtractor`]: the life layer's loudness and onset cues from the `cues` tap, in performance time; [`cue_mailbox`] and [`CueListener`] |
 //! | [`viseme`] | the five visemes and the [`VowelProfile`] that maps formants onto them |
 //! | [`mailbox`] | [`voice_mailbox`]: the wait-free newest-wins hand-off to the perform thread |
 //! | [`lipsync`] | [`LipSync`]: frames to the audio layer, through the character's viseme expressions, and the cues |
@@ -23,15 +26,25 @@
 // Product names (uLipSync, Rhubarb, VRM) are prose here, not code.
 #![allow(clippy::doc_markdown)]
 
+pub mod ai_mouth;
 pub mod analyzer;
+pub mod cues;
 pub mod lipsync;
 pub mod listener;
 pub mod mailbox;
+pub mod onset;
 pub mod synth;
 pub mod viseme;
 
+pub use ai_mouth::{MouthConfig, MouthDrive, MouthHandle, MouthStats, MouthThread};
 pub use analyzer::{VoiceAnalyzer, VoiceError, VoiceFrame};
+pub use cues::{CueExtractor, CueFrame, CueListener, CueReader, CueWriter, cue_mailbox};
 pub use lipsync::{LipSync, LipSyncConfig};
 pub use listener::VoiceListener;
 pub use mailbox::{VoiceReader, VoiceWriter, voice_mailbox};
+pub use onset::OnsetDetector;
 pub use viseme::{Viseme, VowelProfile};
+
+omuzaki_core::define_link! {
+    omuzaki_performer_api::link();
+}

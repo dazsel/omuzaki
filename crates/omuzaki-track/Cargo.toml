@@ -21,6 +21,8 @@ omuzaki-ai-api = { path = "../omuzaki-ai-api" }
 omuzaki-ai-native = { path = "../omuzaki-ai-native" }
 omuzaki-anim-api = { path = "../omuzaki-anim-api" }
 omuzaki-core = { path = "../omuzaki-core" }
+# The tracker section of the live metrics (`src/metrics.rs`).
+omuzaki-metrics-api = { path = "../omuzaki-metrics-api" }
 omuzaki-pixfmt = { path = "../omuzaki-pixfmt" }
 omuzaki-track-api = { path = "../omuzaki-track-api" }
 

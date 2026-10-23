@@ -75,14 +75,15 @@ The toon materials of v1 have no specular term, so the prefiltered specular chai
 | 2 | `Shadows` | the shadow map of the first casting directional light; the renderer fits the frustum to the casters (see below) | shadows off, no caster, or `Live` between `shadow_interval` redraws |
 | 3 | `Opaque` | opaque and alpha-mask instances: toon shading into colour and depth | never |
 | 4 | `Outlines` | inverted-hull outlines, back faces only, after the model so they hide behind it; a material's alpha mask cuts its hull where it cuts the surface (three-vrm's `MToon` outline), so a cut-out card is outlined along its visible shape | no material has an outline |
-| 5 | `Transparent` | blended instances, `order` then back to front, depth-tested, not writing depth | none blended |
-| 6 | `Bloom` | glow from bright areas | off in `Post`, `post_effects.bloom` false, or unsupported |
-| 7 | `DepthOfField` | blur away from the focus distance | off in `Post`, `post_effects.depth_of_field` false, or unsupported |
-| 8 | `Resolve` | sample resolve, exposure, tone map, grade, grain, output transform to the target's alpha encoding | never |
+| 5 | `Particles` | stateless particles evaluated in the vertex stage, two instanced draws per block of batches: colour with alpha-to-coverage and depth, then alpha (particles.md D4 to D6) | no spawn batch |
+| 6 | `Transparent` | blended instances, `order` then back to front, depth-tested, not writing depth | none blended |
+| 7 | `Bloom` | glow from bright areas | off in `Post`, `post_effects.bloom` false, or unsupported |
+| 8 | `DepthOfField` | blur away from the focus distance | off in `Post`, `post_effects.depth_of_field` false, or unsupported |
+| 9 | `Resolve` | sample resolve, exposure, tone map, grade, grain, output transform to the target's alpha encoding | never |
 
 ## Quality: live, high, offline
 
-`Quality { mode, render_scale, samples, shadows, shadow_interval, post_effects }`, with presets:
+`Quality { mode, render_scale, samples, shadows, shadow_interval, post_effects, particle_density }`, with presets:
 
 | Preset | Mode | Scale | Samples | Shadows | Interval | Post | For |
 |---|---|---|---|---|---|---|---|
@@ -304,7 +305,7 @@ What the numbers say:
 - `Quality::live()` unchanged: post off, scale 1, 4 samples. It is the R1 path: 0.084 ms at 1080p in the final run (0.088 in an earlier one, 0.087 in R1; the card's clocks drift by that much).
 - `Quality::high()`: **keep `render_scale` 1.5.** Scene cost follows the pixels (x2.25 at 1.5, x1.56 at 1.25) while bloom, grain and grade work at the target's size and do not follow it, so 1.25 would save about 1.4 ms (central) on the reference laptop, but I have not measured 1.25 on the 4090 nor its image difference on the face case (a real face needs the character kit, not the stand-ins here), so the numbers do not yet justify changing it. Bloom, grain and grade at 1.5 estimate at 4.7 ms (central) against the 4 ms budget, before the passes that do not exist yet: the ladder below applies. Depth of field, when the shot asks for one, needs its own decision: at about 3 ms (central) it does not fit, so the scheduler should drop it first.
 - `Quality::offline()` unchanged (16 samples requested, hardware maximum drawn, `render_scale` 1). Offline depth of field costs 0.46 ms at 1080p on the 4090 and is irrelevant to the budgets.
-- Degrade ladder (cost per unit of look): depth of field, bloom, `render_scale`, shadow settings, and grain and grade last. Since #657 each effect has its own switch and its own rung.
+- Degrade ladder (cost per unit of look): depth of field, bloom, `render_scale`, shadow settings, and grain and grade last. Since #657 each effect has its own switch and its own rung. Particles come before all of it while they are drawn (particles.md D8): `particle_density` 1, 0.5, 0.25, taken when the `Particles` pass's smoothed time is over `budget::PARTICLES_GPU` (0.2 ms) or the frame is over budget, and given back only after the ladder, when both have stayed under 60 % of their budgets for 2 s. The frame time held against the budget leaves out `PaintTextures` and `Particles`, which have lines of their own.
 
 ## Decisions taken on review
 
@@ -314,6 +315,6 @@ What the numbers say:
 | Q2, Q3 | Where `Colour` and `MeshData` live | Moved into `omuzaki-core` now (`omuzaki_core::colour`, `omuzaki_core::mesh`); render-api re-exports them. |
 | Q4 | Hair shading | `Shading::Program { name, params }` with a typed parameter map, programs self-registered inside `omuzaki-render` (contract above), the mock falling back to the base toon look; `MeshData.extra` named vertex attributes (1 to 4 floats). The programs are written by the features that need them. |
 | Q5 | Light units | Accepted: three.js-compatible (a white directional light of intensity 1 gives `albedo / π`). |
-| Q6 | Face paint budget | A separate 0.5 ms (`budget::FACE_PAINT_GPU`), not part of the 1.5 ms GPU frame. |
+| Q6 | Face paint budget | A separate 0.5 ms (`budget::FACE_PAINT_GPU`), not part of the 1.5 ms GPU frame. Particles likewise: 0.2 ms (`budget::PARTICLES_GPU`, particles.md D8). |
 | Q7 | Resource release | Explicit release, not RAII. |
 | Q8 | `Quality` preset numbers | Placeholders until measures them. |

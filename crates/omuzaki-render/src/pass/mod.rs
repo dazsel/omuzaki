@@ -1,6 +1,6 @@
 //! The frame graph's passes, one module each.
 //!
-//! The graph is fixed by the contract: eight passes in the order of [`Pass::ALL`]. Each is a type in its own file
+//! The graph is fixed by the contract: nine passes in the order of [`Pass::ALL`]. Each is a type in its own file
 //! implementing [`FramePass`]; [`build`] lists them in order, one constructor per line, all with the same
 //! `new(&Shared)` signature, so a task that fills in a pass edits that pass's file and nothing here.
 //!
@@ -10,6 +10,7 @@
 //! | `Shadows` | `shadows.rs` | done: a fitted, texel-snapped directional map per casting light (up to the quality's `max_maps`), each redrawn every `shadow_interval`-th live frame; the lookup is in `shader/toon.wgsl` |
 //! | `Opaque` | `opaque.rs` | done: toon shading (ramp, tinted shade, rim, skin, lights) over base colour, vertex colours, textures, overlays and skinning |
 //! | `Outlines` | `outlines.rs` | done: inverted hull on welded smooth normals, width by distance; `MToon`'s other width modes are not implemented yet |
+//! | `Particles` | `particles.rs` | done: the scene's spawn batches as sprites evaluated in the vertex stage, packed into uniform blocks by system, drawn with alpha-to-coverage and a second alpha-only draw so the output stays premultiplied without sorting |
 //! | `Transparent` | `transparent.rs` | done: blended instances sorted by `Instance::order`, then back to front, depth-tested without writing depth; the opaque shader and program hooks with a blend state |
 //! | `Bloom` | `bloom.rs` | done: the prototype's `UnrealBloomPass`, 12 small passes publishing a glow image |
 //! | `DepthOfField` | `dof.rs` | done: prepass, foreground search and gather on half-size images |
@@ -27,6 +28,7 @@ mod dof;
 mod opaque;
 mod outlines;
 mod paint_textures;
+mod particles;
 mod resolve;
 pub(crate) mod shadows;
 mod transparent;
@@ -116,13 +118,14 @@ pub(crate) trait FramePass: Send {
     fn record(&mut self, cx: &mut PassCx<'_>) -> Result<Outcome, RenderError>;
 }
 
-/// The eight passes, in frame order.
+/// The nine passes, in frame order.
 pub(crate) fn build(shared: &Shared) -> [Box<dyn FramePass>; Pass::COUNT] {
     [
         Box::new(paint_textures::PaintTextures::new(shared)),
         Box::new(shadows::Shadows::new(shared)),
         Box::new(opaque::Opaque::new(shared)),
         Box::new(outlines::Outlines::new(shared)),
+        Box::new(particles::Particles::new(shared)),
         Box::new(transparent::Transparent::new(shared)),
         Box::new(bloom::Bloom::new(shared)),
         Box::new(dof::DepthOfField::new(shared)),

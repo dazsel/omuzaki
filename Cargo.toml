@@ -46,8 +46,8 @@ intl-memoizer ="0.5"   # named for the exact-integer FluentType in omuzaki-l10n-
 harfrust = "0.14"   # OpenType shaping (MIT): Arabic joining, Devanagari conjuncts, Thai marks in the sheet text fallback, omuzaki-stage
 glam = { version = "0.34", features = ["serde", "bytemuck"] }
 httpdate = "1"   # `Retry-After` HTTP dates (MIT OR Apache-2.0), omuzaki-http; already in the lock through hyper
-hound = "3.5"   # WAV reading in the speech host benchmark (Apache-2.0), omuzaki-audio
-symphonia = { version = "0.6", default-features = false, features = ["opt-simd", "pcm", "adpcm", "wav", "aiff", "flac", "ogg", "vorbis", "mp3", "aac", "isomp4"] }   # audio file decoding for sounds and music (MPL-2.0, unmodified; AAC needs the patent review before release, docs/licensing/deps/symphonia.toml), omuzaki-audio-decode
+hound = "3.5"   # WAV reading in the speech host benchmark (Apache-2.0), omuzaki-speech
+symphonia = { version = "0.6", default-features = false, features = ["opt-simd", "pcm", "adpcm", "wav", "aiff", "flac", "ogg", "vorbis", "mp3", "aac", "isomp4"] }   # audio file decoding for sounds and music (MPL-2.0, unmodified; AAC needs the patent review before release, docs/licensing/deps/symphonia.toml), omuzaki-audio-decode; omuzaki-speech (the speech smoke clips)
 http-body-util = "0.1"
 hyper = { version = "1", default-features = false, features = ["http1", "server"] }
 hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
@@ -59,7 +59,7 @@ memmap2 = "0.9"   # maps the live show's shared-memory objects (MIT OR Apache-2.
 libm = "0.2"   # transcendental maths bit-identical on every platform (the CPU rasteriser's stroker, ADR 0009)
 loom = "0.7"   # model checker for the metrics seqlock (MIT), omuzaki-metrics-api dev-dependency; only built with --cfg loom
 # ONNX Runtime wrapper. `load-dynamic`: the app loads Microsoft's official MIT library from a path we choose, so Pyke's prebuilt binaries
-# (and the TLS stack `download-binaries` drags in) never enter the build (register: ort). omuzaki-audio.
+# (and the TLS stack `download-binaries` drags in) never enter the build (register: ort). omuzaki-ai-ort.
 nalgebra = { version = "0.35", default-features = false, features = ["std"] }   # matrix and rotation maths for the head-pose fit (Apache-2.0), omuzaki-track
 ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "load-dynamic", "api-27"] }
 pollster = "1"
@@ -122,7 +122,7 @@ zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 vello = { version = "=0.11.0", default-features = false, features = ["wgpu"] }   # GPU vector face painter (Apache-2.0 OR MIT), omuzaki-face's GPU rasteriser (#1433)
 vello_encoding = "=0.11.0"   # Vello's scene packing and buffer sizing, for omuzaki-face's own run of Vello's stages (Apache-2.0 OR MIT, #2074)
 vello_shaders = { version = "=0.11.0", default-features = false, features = ["wgsl"] }   # Vello's compute shaders as WGSL, run by omuzaki-face with persistent resources (Apache-2.0 OR MIT, #2074)
-whisper-rs = "0.16"   # whisper.cpp built from source (Unlicense crate, MIT library); omuzaki-audio
+whisper-rs = "0.16"   # whisper.cpp built from source (Unlicense crate, MIT library); omuzaki-speech
 zune-jpeg = "0.5"   # pure-Rust JPEG decoder (MIT OR Apache-2.0 OR Zlib), MJPG webcam frames, omuzaki-pixfmt
 
 [workspace.lints.rust]

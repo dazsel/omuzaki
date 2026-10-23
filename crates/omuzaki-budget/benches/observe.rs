@@ -21,6 +21,7 @@ fn report(frame: u64, ms: f64) -> FrameReport {
         gpu: Some(GpuTimings { frame, passes, painters: None }),
         draw_calls: 100,
         triangles: 100_000,
+        particles: 0,
     }
 }
 

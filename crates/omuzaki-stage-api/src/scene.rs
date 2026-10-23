@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::camera::CameraDef;
 use crate::cast::CastMember;
+use crate::effects::WeatherDef;
 use crate::error::did_you_mean;
 use crate::ids::{CameraId, MemberId, PropId};
 use crate::lighting::Lighting;
@@ -55,6 +56,12 @@ pub mod paths {
     #[must_use]
     pub fn light(id: &SceneId, light: &LightId) -> DocPath {
         lighting(id).join("lights").join(light.as_str())
+    }
+
+    /// `scenes/<id>/weather`: the [`WeatherDef`](crate::effects::WeatherDef) (`weather.toml`), absent for none.
+    #[must_use]
+    pub fn weather(id: &SceneId) -> DocPath {
+        scene(id).join("weather")
     }
 
     /// `scenes/<id>/cameras/<camera>`: one [`CameraDef`](crate::CameraDef).
@@ -107,11 +114,14 @@ pub struct SceneDef {
     /// a scene that has props loses none of them and the count limit holds.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub props: BTreeMap<PropId, Value>,
+    /// The weather (`weather.toml`, particles D10): materialised preset values, absent for none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weather: Option<WeatherDef>,
 }
 
 impl SceneDef {
     /// The keys of `scenes/<id>` that make up a [`SceneDef`].
-    pub const NODE_KEYS: [&'static str; 5] = ["scene", "lighting", "cameras", "cast", "props"];
+    pub const NODE_KEYS: [&'static str; 6] = ["scene", "lighting", "cameras", "cast", "props", "weather"];
 
     /// The other keys of `scenes/<id>`: files with their own contracts (the library's `applied` records). They are not
     /// part of the definition; [`from_node`](Self::from_node) skips them and [`to_node`](Self::to_node) leaves them
@@ -127,6 +137,7 @@ impl SceneDef {
             cameras: BTreeMap::new(),
             cast: BTreeMap::new(),
             props: BTreeMap::new(),
+            weather: None,
         }
     }
 
@@ -306,6 +317,7 @@ mod tests {
         assert_eq!(s(paths::camera(&id, &CameraId::new("full").unwrap())), "scenes/desk/cameras/full");
         assert_eq!(s(paths::member(&id, &MemberId::new("kiri").unwrap())), "scenes/desk/cast/kiri");
         assert_eq!(s(paths::prop(&id, &PropId::new("mug").unwrap())), "scenes/desk/props/mug");
+        assert_eq!(s(paths::weather(&id)), "scenes/desk/weather");
         let app = omuzaki_core::id::Slug::new("light-rig").unwrap();
         assert_eq!(s(paths::applied(&id, &app)), "scenes/desk/applied/light-rig");
         assert_eq!(s(paths::default_scene()), "project/default_scene");

@@ -12,17 +12,17 @@ const HEAD_KIND: &str = "head";
 /// The head-local height of the chin of `character`'s head.
 ///
 /// # Errors
-/// As [`head_of`].
-pub(super) fn head_chin(def: &CharacterDef, character: &CharId) -> Result<f64, OpError> {
-    head_of(def, character).map(|params| params.outline.chin_y())
-}
-
-/// The parameters of `character`'s head.
-///
-/// # Errors
 /// `Invalid` naming `character` when it has no enabled head part, or more than one (a layout needs exactly one head);
 /// `Invalid` naming `parts/<id>/params` when that head's parameters don't read as a head.
-pub(super) fn head_of(def: &CharacterDef, character: &CharId) -> Result<HeadParams, OpError> {
+pub(super) fn head_chin(def: &CharacterDef, character: &CharId) -> Result<f64, OpError> {
+    head_part(def, character).map(|(_, params)| params.outline.chin_y())
+}
+
+/// `character`'s one enabled head part and its parameters.
+///
+/// # Errors
+/// As [`head_chin`].
+pub(crate) fn head_part<'a>(def: &'a CharacterDef, character: &CharId) -> Result<(&'a PartId, HeadParams), OpError> {
     let enabled: Vec<(&PartId, &PartDef)> =
         def.parts.iter().filter(|(_, part)| part.kind.as_str() == HEAD_KIND && part.enabled).collect();
     let (id, part) = match enabled.as_slice() {
@@ -49,11 +49,11 @@ pub(super) fn head_of(def: &CharacterDef, character: &CharId) -> Result<HeadPara
             .hint("disable all but one head with `part.set_enabled`"));
         }
     };
-    head_params(id, part)
+    head_params(id, part).map(|params| (id, params))
 }
 
 /// The head's parameters as the head kind reads them. Absent keys take their defaults, as the build does.
-fn head_params(id: &PartId, part: &PartDef) -> Result<HeadParams, OpError> {
+pub(crate) fn head_params(id: &PartId, part: &PartDef) -> Result<HeadParams, OpError> {
     serde_json::from_value(part.params.clone()).map_err(|e| {
         OpError::invalid(
             format!("parts/{id}/params"),

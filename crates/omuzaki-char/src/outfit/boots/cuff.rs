@@ -19,7 +19,7 @@ const CUFF_UNDERSIDE: f64 = 0.12;
 
 /// A closed band round the boot: a rounded-rectangle cross-section swept once round the outline.
 #[derive(Copy, Clone, Debug)]
-pub(super) struct Band {
+pub(crate) struct Band {
     /// Boot-space height of the band's centre.
     pub yc: f64,
     /// Half its height, metres.

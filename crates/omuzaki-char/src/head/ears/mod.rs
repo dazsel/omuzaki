@@ -7,7 +7,11 @@
 //! **Human and elf** ([`human`], [`elf`]) are one shell, the port of the prototype's `buildEar` (`head.js` 142 to 175):
 //! a 40 x 8 grid on a C-shaped outline with a rolled rim and a concha, placed by [`Frame`] at the root. The elf draws
 //! the same shell out into a pointed tip. [`build`] makes the mesh of either, [`anchor`] the attachment point hair and
-//! hats read, and [`cover`] the disc of head the ear hides, which `head` publishes as [`fact::EarCoverFact`]. Animal ears are.
+//! hats read, and [`cover`] the disc of head the ear hides, which `head` publishes as [`fact::EarCoverFact`].
+//!
+//! **Animal ears** ([`animal`]) stand on top of the head instead: a cupped shell with an inner panel, four species, the
+//! rabbit's on a spring chain. They publish no cover and no `ear_l`/`ear_r` anchor, but `ear_top_l`/`ear_top_r` at their
+//! tips, for hats and accessories.
 //!
 //! **Orientation.** The prototype hard-codes the left ear's shell normal `(0.74, 0.05, 0.66)` and height direction
 //! `(0, 1, 0.12)`. The contract's defaults, [`Ears::default`]'s `flare_deg` 42 and `tilt_deg` 7, *are* those two vectors
@@ -208,10 +212,13 @@ fn shell_mesh(positions: Vec<Vec3>) -> Result<MeshData, MeshError> {
 }
 
 /// Where the left ear's root sits, bind space: on `head`'s surface in the direction of [`Ears::position`] from the head
-/// centre. The position is authored on the cranium (the prototype's); the root follows the head as built, so it never
+/// centre (an animal ear's is on top of the head, [`animal::root`]). The position is authored on the cranium (the prototype's); the root follows the head as built, so it never
 /// floats off a reshaped face. The right ear mirrors it in x.
 #[must_use]
 pub fn root(ears: &Ears, head: &dyn HeadSurface) -> Vec3 {
+    if ears.kind == EarKind::Animal {
+        return animal::root(ears, head);
+    }
     let towards = Vec3::from_array(ears.position.map(narrow)).normalize_or_zero();
     // A position at the very centre has no direction; the left side is where a left ear belongs.
     head.point(if towards == Vec3::ZERO { Vec3::X } else { towards }, 0.0)

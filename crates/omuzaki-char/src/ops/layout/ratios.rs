@@ -78,90 +78,134 @@ impl LayoutRatios {
         }
     }
 
+    /// The ratio named `field`, one of [`FIELDS`]' names.
+    fn get(&self, field: &str) -> Option<f64> {
+        Some(match field {
+            "eye_width_to_iod" => self.eye_width_to_iod,
+            "drop_to_iod" => self.drop_to_iod,
+            "nose" => self.nose,
+            "mouth" => self.mouth,
+            "blush" => self.blush,
+            "blush_spacing_to_iod" => self.blush_spacing_to_iod,
+            _ => return None,
+        })
+    }
+
     /// Plain-language lines for a difference (`self` is the character minus the reference), one per feature in field
     /// order. A difference that rounds to 0.00 at two places reads as a match, so the notes never claim a gap too small
     /// to see on the overlay.
     #[must_use]
     pub fn notes(difference: &Self) -> Vec<String> {
-        vec![
-            note("the eye size", difference.eye_width_to_iod, "larger", "smaller", " (in eye distances)"),
-            note("the eye-to-chin distance", difference.drop_to_iod, "longer", "shorter", " (in eye distances)"),
-            note("the nose", difference.nose, "lower", "higher", ""),
-            note("the mouth", difference.mouth, "lower", "higher", ""),
-            note("the blush", difference.blush, "lower", "higher", ""),
-            note("the blush spacing", difference.blush_spacing_to_iod, "wider", "narrower", " (in eye distances)"),
-        ]
+        FIELDS.iter().filter_map(|f| difference.get(f.name).map(|d| f.note(d))).collect()
     }
 }
 
-/// Reference ratios that may hold only some of the fields: what an image measure gives (`measure.feature_spacing`'s
-/// `layout_ratios` has `drop_to_iod`, `mouth` and `nose` when it saw them). The comparison covers the fields present;
-/// a full set reads exactly as [`LayoutRatios`].
+/// Each ratio: its name, and the words its note uses.
+struct Field {
+    name: &'static str,
+    feature: &'static str,
+    more: &'static str,
+    less: &'static str,
+    unit: &'static str,
+}
+
+impl Field {
+    fn note(&self, diff: f64) -> String {
+        note(self.feature, diff, self.more, self.less, self.unit)
+    }
+}
+
+/// The ratios in field order.
+const FIELDS: [Field; 6] = [
+    Field {
+        name: "eye_width_to_iod",
+        feature: "the eye size",
+        more: "larger",
+        less: "smaller",
+        unit: " (in eye distances)",
+    },
+    Field {
+        name: "drop_to_iod",
+        feature: "the eye-to-chin distance",
+        more: "longer",
+        less: "shorter",
+        unit: " (in eye distances)",
+    },
+    Field { name: "nose", feature: "the nose", more: "lower", less: "higher", unit: "" },
+    Field { name: "mouth", feature: "the mouth", more: "lower", less: "higher", unit: "" },
+    Field { name: "blush", feature: "the blush", more: "lower", less: "higher", unit: "" },
+    Field {
+        name: "blush_spacing_to_iod",
+        feature: "the blush spacing",
+        more: "wider",
+        less: "narrower",
+        unit: " (in eye distances)",
+    },
+];
+
+/// Reference ratios, any of them: an image measure gives only the ratios it can see (a profile shot has no eye
+/// distance, a cropped one no chin). Every field is optional; a full set is exactly a [`LayoutRatios`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct PartialLayoutRatios {
-    /// The eyes' size: half an eye's width over the eye distance.
+pub struct PartialRatios {
+    /// As [`LayoutRatios::eye_width_to_iod`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eye_width_to_iod: Option<f64>,
-    /// The eye line to the chin, over the eye distance.
+    /// As [`LayoutRatios::drop_to_iod`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drop_to_iod: Option<f64>,
-    /// The nose's height as a fraction of the eye-to-chin drop.
+    /// As [`LayoutRatios::nose`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nose: Option<f64>,
-    /// The mouth line's height as a fraction of the eye-to-chin drop.
+    /// As [`LayoutRatios::mouth`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mouth: Option<f64>,
-    /// The blush's height as a fraction of the eye-to-chin drop.
+    /// As [`LayoutRatios::blush`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blush: Option<f64>,
-    /// The distance between the blush centres over the eye distance.
+    /// As [`LayoutRatios::blush_spacing_to_iod`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blush_spacing_to_iod: Option<f64>,
 }
 
-impl PartialLayoutRatios {
-    /// Whether no field is given.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        *self == Self::default()
+impl PartialRatios {
+    /// The ratio named `field`, if given.
+    fn get(&self, field: &str) -> Option<f64> {
+        match field {
+            "eye_width_to_iod" => self.eye_width_to_iod,
+            "drop_to_iod" => self.drop_to_iod,
+            "nose" => self.nose,
+            "mouth" => self.mouth,
+            "blush" => self.blush,
+            "blush_spacing_to_iod" => self.blush_spacing_to_iod,
+            _ => None,
+        }
     }
 
-    /// `ratios - self` for the fields present, and the plain-language note of each, in field order.
-    #[must_use]
-    pub fn compare(&self, ratios: &LayoutRatios) -> (Self, Vec<String>) {
-        let full = LayoutRatios {
-            eye_width_to_iod: self.eye_width_to_iod.unwrap_or(ratios.eye_width_to_iod),
-            drop_to_iod: self.drop_to_iod.unwrap_or(ratios.drop_to_iod),
-            nose: self.nose.unwrap_or(ratios.nose),
-            mouth: self.mouth.unwrap_or(ratios.mouth),
-            blush: self.blush.unwrap_or(ratios.blush),
-            blush_spacing_to_iod: self.blush_spacing_to_iod.unwrap_or(ratios.blush_spacing_to_iod),
-        };
-        let d = ratios.minus(&full);
-        let present = [
-            self.eye_width_to_iod.is_some(),
-            self.drop_to_iod.is_some(),
-            self.nose.is_some(),
-            self.mouth.is_some(),
-            self.blush.is_some(),
-            self.blush_spacing_to_iod.is_some(),
-        ];
-        let notes = LayoutRatios::notes(&d).into_iter().zip(present).filter_map(|(n, p)| p.then_some(n)).collect();
-        let keep = |given: Option<f64>, diff: f64| given.map(|_| diff);
-        let difference = Self {
-            eye_width_to_iod: keep(self.eye_width_to_iod, d.eye_width_to_iod),
-            drop_to_iod: keep(self.drop_to_iod, d.drop_to_iod),
-            nose: keep(self.nose, d.nose),
-            mouth: keep(self.mouth, d.mouth),
-            blush: keep(self.blush, d.blush),
-            blush_spacing_to_iod: keep(self.blush_spacing_to_iod, d.blush_spacing_to_iod),
-        };
-        (difference, notes)
+    /// Whether no ratio is given.
+    pub fn is_empty(&self) -> bool {
+        FIELDS.iter().all(|f| self.get(f.name).is_none())
+    }
+
+    /// `ratios` minus these, for the fields given, in field order.
+    pub fn difference(&self, ratios: &LayoutRatios) -> Vec<(&'static str, f64)> {
+        FIELDS
+            .iter()
+            .filter_map(|f| Some((f.name, ratios.get(f.name)? - self.get(f.name)?)))
+            .collect()
+    }
+
+    /// One plain-language line per field given ([`LayoutRatios::notes`]), for `ratios` against these.
+    pub fn notes(&self, ratios: &LayoutRatios) -> Vec<String> {
+        let by_name = self.difference(ratios);
+        FIELDS
+            .iter()
+            .filter_map(|f| by_name.iter().find(|(n, _)| *n == f.name).map(|(_, d)| f.note(*d)))
+            .collect()
     }
 }
 
-impl Validate for PartialLayoutRatios {
+impl Validate for PartialRatios {
     fn check(&self, c: &mut Check) {
         if let Some(v) = self.eye_width_to_iod {
             c.positive("eye_width_to_iod", v);
@@ -169,8 +213,8 @@ impl Validate for PartialLayoutRatios {
         if let Some(v) = self.drop_to_iod {
             c.positive("drop_to_iod", v);
         }
-        for (name, value) in [("nose", self.nose), ("mouth", self.mouth), ("blush", self.blush)] {
-            if let Some(v) = value {
+        for (name, v) in [("nose", self.nose), ("mouth", self.mouth), ("blush", self.blush)] {
+            if let Some(v) = v {
                 c.range(name, v, 0.0, 1.0);
             }
         }

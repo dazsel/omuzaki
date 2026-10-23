@@ -66,7 +66,7 @@ fn named(prefix: &str, error: &ParamError) -> (String, String) {
 ///
 /// # Errors
 /// `Invalid`, naming the first problem the edit introduces and listing all of them.
-pub(super) fn refuse_new_problems(current: &FaceLayout, after: &FaceLayout) -> Result<(), OpError> {
+pub(crate) fn refuse_new_problems(current: &FaceLayout, after: &FaceLayout) -> Result<(), OpError> {
     let Some(refusal) = refuse_introduced(&problems(current), problems(after)) else {
         return Ok(());
     };
@@ -94,7 +94,7 @@ pub(super) fn refuse_bad_ratios(ratios: &impl Validate, prefix: &str) -> Result<
 ///
 /// # Errors
 /// `Internal` if a layout does not serialise as an object.
-pub(super) fn changed_fields(current: &FaceLayout, target: &FaceLayout) -> Result<Vec<(String, f64)>, OpError> {
+pub(crate) fn changed_fields(current: &FaceLayout, target: &FaceLayout) -> Result<Vec<(String, f64)>, OpError> {
     let before = layout_fields(current)?;
     let after = layout_fields(target)?;
     Ok(after
@@ -112,7 +112,7 @@ pub(super) fn changed_fields(current: &FaceLayout, target: &FaceLayout) -> Resul
 ///
 /// # Errors
 /// `Conflict` when the stored `face` or `face/layout` is not an object, so it cannot hold the fields.
-pub(super) fn layout_changes(
+pub(crate) fn layout_changes(
     ctx: &OpCtx<'_>,
     character: &CharId,
     fields: &[(String, f64)],

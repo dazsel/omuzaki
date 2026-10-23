@@ -25,9 +25,9 @@
 #![allow(clippy::many_single_char_names, clippy::similar_names, clippy::cast_possible_truncation)]
 
 mod buckle;
-mod cuff;
+pub(crate) mod cuff;
 pub mod profile;
-mod sole;
+pub(crate) mod sole;
 mod stitch;
 mod strap;
 mod tab;
@@ -376,7 +376,7 @@ impl Validate for BootsParams {
 
 /// How finely each piece is tessellated.
 #[derive(Copy, Clone, Debug)]
-struct Tess {
+pub(crate) struct Tess {
     upper_seg: usize,
     upper_rows: [usize; 3],
     sole_seg: usize,
@@ -431,7 +431,12 @@ impl Tess {
         tab_seg: 6,
     };
 
-    fn of(quality: Quality) -> Self {
+    /// Segments round the sole.
+    pub(crate) fn sole_seg(&self) -> usize {
+        self.sole_seg
+    }
+
+    pub(crate) fn of(quality: Quality) -> Self {
         match quality {
             Quality::Live => Self::LIVE,
             Quality::Offline => Self::OFFLINE,
@@ -496,7 +501,7 @@ fn build_left(boot: &Boot, tess: &Tess, p: &BootsParams) -> Result<Builders, Gar
     stitch::add_rows(boot, &p.stitching, (p.cuff.height, p.cuff.fold), p.toe.cap, &mut b.thread)?;
     stitch::add_seams(boot, tess, p.toe.cap, &mut b.seams)?;
     sole::add_sole(boot, tess, &p.sole, &mut b.sole)?;
-    sole::add_heel(boot, tess, &p.sole, &p.heel, &mut b.sole)?;
+    sole::add_heel(boot, tess, &p.sole, &p.heel, 0.0, &mut b.sole)?;
     Ok(b)
 }
 
@@ -525,19 +530,19 @@ impl Garment for Boots {
 }
 
 /// A toon material with the prototype's shading controls.
-fn toon(base: Colour, shade: Colour, shift: f32, softness: f32, rim: (Colour, f32)) -> MaterialSpec {
+pub(crate) fn toon(base: Colour, shade: Colour, shift: f32, softness: f32, rim: (Colour, f32)) -> MaterialSpec {
     let default = Toon::default();
     let toon = Toon { shade, shift, softness, rim: Rim { colour: rim.0, strength: rim.1, ..default.rim }, ..default };
     MaterialSpec { shading: Shading::Toon(toon), ..MaterialSpec::toon(base) }
 }
 
 /// A flat, unlit material.
-fn unlit(base: Colour) -> MaterialSpec {
+pub(crate) fn unlit(base: Colour) -> MaterialSpec {
     MaterialSpec { shading: Shading::Unlit, ..MaterialSpec::toon(base) }
 }
 
 /// An outline `width` metres wide at the reference distance.
-fn outline(colour: Colour, width: f32) -> Outline {
+pub(crate) fn outline(colour: Colour, width: f32) -> Outline {
     Outline { colour, width }
 }
 

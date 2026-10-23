@@ -50,6 +50,7 @@ pub use recover::RecoveryReport;
 omuzaki_core::define_link! {
     omuzaki_char_api::link();
     omuzaki_mcp::link();
+    omuzaki_library::link();
     omuzaki_library_api::link();
     omuzaki_settings::link();
     omuzaki_setup::link();

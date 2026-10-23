@@ -5,8 +5,8 @@
 use omuzaki_core::glam::{UVec2, Vec3};
 use omuzaki_render_api::{
     AlphaEncoding, Camera, Capabilities, FrameReport, Image, Material, MaterialId, MeshData, MeshId, MeshOptions,
-    Painter, Quality, RenderError, Renderer, ResourceRef, ResourceStats, Scene, TargetDesc, TargetId, TextureDesc,
-    TextureId,
+    Painter, ParticleSystemDesc, ParticleSystemId, Quality, RenderError, Renderer, ResourceRef, ResourceStats, Scene,
+    TargetDesc, TargetId, TextureDesc, TextureId,
 };
 use omuzaki_render_mock::MockRenderer;
 
@@ -19,6 +19,9 @@ pub struct Recorder {
     pub canned: FrameReport,
     /// Whether `render` really draws (through the mock) or only answers `canned`.
     pub draw: bool,
+    /// Whether particle systems are made (through the mock) or refused as `Unsupported`, as a renderer without
+    /// particles does.
+    pub particles: bool,
 }
 
 impl Recorder {
@@ -32,7 +35,7 @@ impl Recorder {
         if let Some(t) = target {
             inner.release(t.into()).expect("the target exists");
         }
-        Self { inner, updates: Vec::with_capacity(1 << 16), canned, draw }
+        Self { inner, updates: Vec::with_capacity(1 << 16), canned, draw, particles: true }
     }
 }
 
@@ -73,6 +76,22 @@ impl Renderer for Recorder {
 
     fn update_material(&mut self, id: MaterialId, material: &Material) -> Result<(), RenderError> {
         self.inner.update_material(id, material)
+    }
+
+    fn create_particle_system(&mut self, desc: &ParticleSystemDesc) -> Result<ParticleSystemId, RenderError> {
+        if self.particles {
+            self.inner.create_particle_system(desc)
+        } else {
+            Err(RenderError::Unsupported("particles"))
+        }
+    }
+
+    fn update_particle_system(&mut self, id: ParticleSystemId, desc: &ParticleSystemDesc) -> Result<(), RenderError> {
+        if self.particles {
+            self.inner.update_particle_system(id, desc)
+        } else {
+            Err(RenderError::Unsupported("particles"))
+        }
     }
 
     fn create_target(&mut self, desc: &TargetDesc) -> Result<TargetId, RenderError> {

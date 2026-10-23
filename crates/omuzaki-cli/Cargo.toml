@@ -71,6 +71,9 @@ omuzaki-store = { path = "../omuzaki-store" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
 
 [dev-dependencies]
+# The library the `library.*` op examples run against (`tests/op_conformance.rs`).
+omuzaki-library = { path = "../omuzaki-library" }
+omuzaki-library-api = { path = "../omuzaki-library-api" }
 tempfile.workspace = true
 toml.workspace = true
 # The snapshots service the conformance rig stands in for the `project.*` examples (`tests/op_conformance.rs`).
@@ -97,6 +100,8 @@ omuzaki-io-mock = { path = "../omuzaki-io-mock" }
 omuzaki-io-ops = { path = "../omuzaki-io-ops" }
 omuzaki-io-vrm = { path = "../omuzaki-io-vrm" }
 omuzaki-stage = { path = "../omuzaki-stage" }
+# The effect service the conformance rig gives the `stage.effect.*` examples.
+omuzaki-stage-api = { path = "../omuzaki-stage-api" }
 # The expressions and the camera ids the idle hosts list.
 omuzaki-face-api = { path = "../omuzaki-face-api" }
 omuzaki-track-api = { path = "../omuzaki-track-api" }

@@ -10,12 +10,12 @@
 //! Every op plans against the document and returns a patch; none writes it. A value is checked on a copy of the layout,
 //! and an edit is refused only for the problems it introduces, so a layout damaged elsewhere still takes unrelated edits.
 
-mod chin;
-mod edit;
+pub(crate) mod chin;
+pub(crate) mod edit;
 mod measure;
 mod ratios;
 mod set;
 
 pub use measure::MeasureLayout;
-pub use ratios::{LayoutRatios, PartialLayoutRatios};
+pub use ratios::LayoutRatios;
 pub use set::{SetLayout, SetLayoutRatios};

@@ -791,6 +791,11 @@ impl ModelRegistry for Registry {
         out
     }
 
+    fn manifest(&self, model: &ModelRef) -> Option<ModelManifest> {
+        let state = self.lock();
+        self.known(&state).iter().find(|r| &r.model == model).map(|r| r.manifest.clone())
+    }
+
     fn open(&self, slot: &SlotRef, model: Option<&ModelRef>) -> Result<Box<dyn Session>, RegistryError> {
         let info = Self::slot_info(slot)?;
         if matches!(info.mode, SlotMode::Stream { .. }) {

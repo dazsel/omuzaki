@@ -166,39 +166,45 @@ fn a_partial_reference_compares_only_the_ratios_it_gives() {
     let doc = project(Some(FaceLayout::default()));
     let mine = ratios_of(&FaceLayout::default());
     let x = |field: &str| mine[field].as_f64().unwrap();
-    // What measure.feature_spacing reads from a reference image: the drop and the mouth.
-    let reference = json!({ "drop_to_iod": x("drop_to_iod") - 0.1, "mouth": x("mouth") + 0.05 });
+    let reference = json!({ "drop_to_iod": x("drop_to_iod") - 0.2, "mouth": x("mouth") + 0.05 });
     let out = run(&doc, "face.layout.measure", json!({"character": "mock", "reference": reference}));
     let difference = out["difference"].as_object().unwrap();
-    assert_eq!(difference.len(), 2, "{out}");
-    assert!((difference["drop_to_iod"].as_f64().unwrap() - 0.1).abs() < 1e-12);
-    assert!((difference["mouth"].as_f64().unwrap() + 0.05).abs() < 1e-12);
+    assert_eq!(difference.len(), 2, "two fields given, two compared: {out}");
+    assert!((difference["drop_to_iod"].as_f64().unwrap() - 0.2).abs() < 1e-12, "{out}");
+    assert!((difference["mouth"].as_f64().unwrap() + 0.05).abs() < 1e-12, "{out}");
     let notes: Vec<&str> = out["notes"].as_array().unwrap().iter().map(|n| n.as_str().unwrap()).collect();
     assert_eq!(
         notes,
         [
-            "the eye-to-chin distance is 0.10 longer than the reference (in eye distances)",
-            "the mouth is 0.05 higher than the reference",
+            "the eye-to-chin distance is 0.20 longer than the reference (in eye distances)",
+            "the mouth is 0.05 higher than the reference"
         ]
     );
-    assert_eq!(out["reference"], reference, "the reference is echoed as given");
+    assert_eq!(out["reference"], reference, "the reference is echoed as given: {out}");
     assert!(!out.to_string().contains("null"), "{out}");
-    // A partial reference is still checked, field by field.
-    let e = refused(&doc, "face.layout.measure", json!({"character": "mock", "reference": {"mouth": 1.4}}));
-    assert_error(&e, ErrorCode::Invalid, "reference/mouth", &["0 to 1"], &[]);
-    // A reference with nothing in it compares nothing.
-    let e = refused(&doc, "face.layout.measure", json!({"character": "mock", "reference": {}}));
-    assert_error(&e, ErrorCode::Invalid, "reference", &["no ratio"], &[]);
 }
 
 #[test]
-fn the_reference_schema_makes_every_ratio_optional() {
-    let schema = serde_json::to_value((omuzaki_ops_api::find("face.layout.measure").unwrap().schema)()).unwrap();
-    let text = schema.to_string();
-    let reference = schema.pointer("/properties/reference").unwrap_or_else(|| panic!("{text}"));
-    let properties = reference["properties"].as_object().unwrap();
-    assert_eq!(properties.len(), 6);
-    assert!(reference.get("required").is_none_or(|r| r.as_array().unwrap().is_empty()), "{reference}");
+fn an_empty_reference_is_refused_and_every_reference_field_is_optional() {
+    let doc = project(Some(FaceLayout::default()));
+    let e = refused(&doc, "face.layout.measure", json!({"character": "mock", "reference": {}}));
+    assert_error(&e, ErrorCode::Invalid, "reference", &["no ratio"], &[]);
+    let e = refused(&doc, "face.layout.measure", json!({"character": "mock", "reference": {"mouth": 1.5}}));
+    assert_error(&e, ErrorCode::Invalid, "reference/mouth", &["0 to 1"], &[]);
+
+    let schema = serde_json::to_value((find("face.layout.measure").unwrap().schema)()).unwrap();
+    let reference = &schema["properties"]["reference"];
+    let text = reference.to_string();
+    for field in ["eye_width_to_iod", "drop_to_iod", "nose", "mouth", "blush", "blush_spacing_to_iod"] {
+        assert!(text.contains(field), "the reference schema names {field}: {reference}");
+    }
+    let required = |v: &Value| v.get("required").and_then(Value::as_array).is_some_and(|r| !r.is_empty());
+    let object = reference
+        .get("anyOf")
+        .and_then(|a| a.as_array())
+        .and_then(|a| a.iter().find(|v| v.get("properties").is_some()))
+        .unwrap_or(reference);
+    assert!(!required(object), "no reference field is required: {reference}");
 }
 
 /// The ratios `face.layout.measure` reports for `layout` on the test head.

@@ -11,7 +11,6 @@ mod render;
 
 use omuzaki_anim_api::HumanoidBone;
 use omuzaki_char::outfit::common::{FabricStyle, Garment};
-use omuzaki_char::outfit::skirt::cloth::cloth_sheet;
 use omuzaki_char::outfit::skirt::pleats::{self, Plan};
 use omuzaki_char::outfit::skirt::{
     LAYER_SKIRT, MAX_HEM, PLEAT, PLEATS, PROTOTYPE_BLEND, PROTOTYPE_REACH, Pleats, Skirt, SkirtParams, SkirtProfile,
@@ -265,10 +264,17 @@ fn the_plaids_pixels_are_the_canvas_composite() {
 }
 
 #[test]
-fn the_cloth_hook_has_no_sheet_yet() {
-    let stack = built("standard", &SkirtParams::default());
-    let fit = stack.before("skirt").get::<FitFact>().fits.first().unwrap().clone();
-    assert!(cloth_sheet(&SkirtParams::default(), fit.as_ref()).is_none());
+fn with_cloth_on_the_skirt_drapes_on_every_template() {
+    for template in ["soft-sd", "mini", "standard", "tall"] {
+        let mut params = SkirtParams::default();
+        params.common.cloth.enabled = true;
+        let stack = built(template, &params);
+        let out = stack.output("skirt");
+        assert!(out.runtime.is_some(), "{template}: the skirt has a cloth runtime");
+        let mesh = &out.meshes[0];
+        assert!(mesh.dynamic && !mesh.geometry.is_skinned(), "{template}: the runtime draws the pleats");
+        assert!(!out.meshes[1].dynamic, "{template}: the band lines stay skinned");
+    }
 }
 
 #[test]
@@ -297,7 +303,7 @@ fn the_parameters_are_checked() {
     assert!(bad(&|p| p.profile = Some(SkirtProfile { rx: vec![], rz: vec![[0.0, 0.1]], cz: vec![[0.0, 0.0]] })));
     assert!(bad(&|p| p.profile =
         Some(SkirtProfile { rx: vec![[0.0, 0.1], [0.0, 0.2]], rz: vec![[0.0, 0.1]], cz: vec![[0.0, 0.0]] })));
-    assert!(bad(&|p| p.common.cloth.enabled = true));
+    assert!(bad(&|p| p.common.cloth.overrides.stiffness = Some(0.0)));
 }
 
 #[test]
