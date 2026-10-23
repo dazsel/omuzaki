@@ -14,6 +14,7 @@ use omuzaki_doc::{Project, ProjectLock};
 use omuzaki_doc_api::{DocPath, Value};
 use omuzaki_history_api::branch::{BranchError, BranchId, Branches, MAX_OPEN_LANES};
 use omuzaki_history_api::{JournalSink, JournalStatus, Snapshots};
+use omuzaki_library::HostLibrary;
 use omuzaki_library_api::Library;
 use omuzaki_mcp::{AccessToken, HttpOptions, HttpServer, InAppLink, InAppSpec, McpOptions, McpServer, ToolMode};
 use omuzaki_mcp::{LibraryProvider, MeasureProvider, MetricsProvider, MetricsSource, RenderProvider};
@@ -40,6 +41,8 @@ const REAP_EVERY: Duration = Duration::from_secs(5);
 const SAVE_TIMEOUT: Duration = Duration::from_secs(10);
 /// The asset store's folder inside the person's data folder (the studio's connector host uses the same).
 const ASSET_STORE: &str = "store";
+/// The person's own library items inside the data folder (`items/<publisher>/<name>/<version>.toml`).
+const LIBRARY: &str = "library";
 /// Worker threads of the MCP runtime: the server is I/O-bound and every call it makes runs on the executor's lock.
 const MCP_WORKERS: usize = 2;
 
@@ -286,6 +289,13 @@ impl AppCore {
         let mut services = ServicesBuilder::from(options.services.clone());
         if let (Some(data), None) = (&options.data_dir, options.services.get::<dyn Store>()) {
             services = services.insert::<dyn Store>(Arc::new(LazyDiskStore::new(data.join(ASSET_STORE))));
+        }
+        // The library: the first-party items linked into this build and the person's own (design D11). A host that
+        // gives its own `Library` keeps it, and then installing is unavailable.
+        if options.services.get::<dyn Library>().is_none() {
+            let folder = options.data_dir.as_ref().map(|data| data.join(LIBRARY));
+            let library = Arc::new(HostLibrary::open(folder.as_deref()));
+            services = services.insert::<dyn Library>(Arc::clone(&library) as Arc<dyn Library>).insert(library);
         }
         let session_ids = Arc::new(AtomicU64::new(1));
         let ids = Arc::new(IdMark::open(dir, Arc::clone(&session_ids)));

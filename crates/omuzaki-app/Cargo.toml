@@ -25,6 +25,7 @@ omuzaki-mcp = { path = "../omuzaki-mcp" }
 omuzaki-ops = { path = "../omuzaki-ops" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-store = { path = "../omuzaki-store" }
+omuzaki-library = { path = "../omuzaki-library" }
 omuzaki-library-api = { path = "../omuzaki-library-api" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
 omuzaki-settings = { path = "../omuzaki-settings" }

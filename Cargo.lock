@@ -4621,6 +4621,7 @@ dependencies = [
  "omuzaki-doc",
  "omuzaki-doc-api",
  "omuzaki-history-api",
+ "omuzaki-library",
  "omuzaki-library-api",
  "omuzaki-library-mock",
  "omuzaki-mcp",
