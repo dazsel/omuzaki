@@ -49,6 +49,10 @@ def outputs(report):
         # Everything affected is cross-built, so a crate reached only through a link-only dependency still builds.
         "cross_crates": " ".join(sorted(set(report["full"] + report["link_only"]))),
         "has_cross": str(bool(report["full"] or report["link_only"])).lower(),
+        # The workspace-scan test targets (xtask/src/scans.rs) read every crate, so a change anywhere can break them:
+        # they run on every change, an empty scope included (#2139, #2163). An older report without the field has none.
+        "scan_tests": " ".join(f"{scan['krate']}:{scan['test']}" for scan in report.get("scans", [])),
+        "has_scans": str(bool(report.get("scans"))).lower(),
     }
 
 
