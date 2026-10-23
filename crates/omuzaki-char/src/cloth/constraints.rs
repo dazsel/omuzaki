@@ -9,7 +9,7 @@
 //! stiffness). `λ` accumulates over the iterations of one sub-step and restarts at zero on the next.
 //!
 //! The warp and weft edges are not projected one by one: each column and each row is a chain whose linearised system
-//! is solved exactly per iteration ([`Chains`], line relaxation), so a long hanging column or a sagging row converges
+//! is solved exactly per iteration (`Chains`, line relaxation), so a long hanging column or a sagging row converges
 //! as fast as a short one and a finer sheet hangs like a coarser one. Shear, bend and soft pins are projected one by
 //! one; a sweep is block Gauss-Seidel.
 //!

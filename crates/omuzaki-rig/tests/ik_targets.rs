@@ -41,6 +41,8 @@ struct Body {
     inward: f32,
     /// Where on the opposite upper arm the palm lands (0 at the shoulder, 1 at the elbow).
     fraction: f32,
+    /// How far the shoulders are drawn forward to cross the arms, radians: soft-sd's short arms need it (#876).
+    protraction: f32,
 }
 
 fn soft_sd() -> Body {
@@ -68,6 +70,7 @@ fn soft_sd() -> Body {
         to_palm: 0.02,
         inward: 0.7,
         fraction: 0.5,
+        protraction: 30.0_f32.to_radians(),
     }
 }
 
@@ -97,6 +100,7 @@ fn tall() -> Body {
         to_palm: 0.4 * 0.74 * head,
         inward: 0.36,
         fraction: 1.0,
+        protraction: 0.0,
     }
 }
 
@@ -208,6 +212,7 @@ fn crossed(body: &Body, skeleton: &Skeleton) -> CrossedArms {
         stack: Vec3::Y,
         torso: Capsule { a: at(skeleton, &rest, B::Hips), b: at(skeleton, &rest, B::Neck), radius: body.torso },
         margin: 0.005,
+        protraction: body.protraction,
         weight: 1.0,
     }
 }
@@ -289,9 +294,9 @@ fn a_book_in_both_hands_keeps_both_palms_on_their_frames() {
     }
 }
 
-/// Soft-sd's smaller gap (metres) with both palms really on the opposite upper arms: no pair of elbow swings reaches the
-/// 5 mm margin on its 0.1 m arms. A regression bound, not a goal: the result may not get worse than this.
-const SOFT_SD_FLOOR: f32 = -0.010;
+/// Soft-sd's smaller gap (metres) with the shoulders left as animated and both palms really on the opposite upper arms:
+/// no pair of elbow swings reaches the 5 mm margin on its 0.1 m arms without drawing the shoulders forward (#876).
+const SOFT_SD_UNPROTRACTED_FLOOR: f32 = -0.010;
 
 #[test]
 fn crossed_arms_clear_the_torso_and_each_other_deterministically() {
@@ -322,11 +327,21 @@ fn crossed_arms_clear_the_torso_and_each_other_deterministically() {
             println!("  {hand:?} palm: {:.4} mm, {:.4} deg off its frame", metres * 1000.0, radians.to_degrees());
             assert!(metres <= MM && radians <= TWO_DEGREES, "{} {hand:?}: {metres} m, {radians} rad", body.name);
         }
-        if body.name == "tall" {
-            assert!(cleared && torso >= 5.0 * MM && forearms >= 5.0 * MM, "{}: {clearance:?}", body.name);
-        } else {
-            let worst = torso.min(forearms);
-            assert!(!cleared && worst >= SOFT_SD_FLOOR, "{}: {clearance:?}", body.name);
+        assert!(cleared && torso >= 5.0 * MM && forearms >= 5.0 * MM, "{}: {clearance:?}", body.name);
+        if body.protraction > 0.0 {
+            // The shoulders came forward: each upper arm's joint sits in front of where it was animated.
+            let (before, after) = (world(&skeleton, &start), world(&skeleton, &pose));
+            for upper in [B::LeftUpperArm, B::RightUpperArm] {
+                let (from, to) = (at(&skeleton, &before, upper), at(&skeleton, &after, upper));
+                println!("  {upper:?} joint forward {:.1} mm", (to.z - from.z) * 1000.0);
+                assert!(to.z > from.z + MM, "{} {upper:?}: {from} -> {to}", body.name);
+            }
+            // Without it the short arms cannot cross clear; the best they reach is bounded.
+            let mut flat = start.clone();
+            let unprotracted = CrossedArms { protraction: 0.0, ..arms }.solve(&skeleton, &mut flat).unwrap();
+            println!("  shoulders as animated: {unprotracted:?}");
+            let worst = unprotracted.torso.min(unprotracted.forearms);
+            assert!(!unprotracted.cleared && worst >= SOFT_SD_UNPROTRACTED_FLOOR, "{}: {unprotracted:?}", body.name);
         }
 
         // The same gaps from an independent measurement of the posed skeleton.
@@ -391,7 +406,7 @@ fn the_clearance_search_cost_is_measured() {
         let (cold, worst) = (time(&arms, None), time(&uncleared, None));
         let warm = time(&arms, Some(swings));
         println!("search {}: cold {cold:?}, uncleared worst case {worst:?}, warm start {warm:?}", body.name);
-        assert!(body.name == "soft-sd" || warm < cold);
+        assert!(warm < cold, "{}: warm {warm:?}, cold {cold:?}", body.name);
     }
 }
 

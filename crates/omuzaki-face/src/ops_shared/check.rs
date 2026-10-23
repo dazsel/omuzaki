@@ -1,11 +1,11 @@
 //! What a face edit may introduce. A face is read section by section, and everything wrong with it is listed as a
 //! [`Problem`] with its path: a value of the wrong kind, a key the default doesn't have, a section or mark that won't
 //! read, and every out-of-range field the validator reports. An edit is refused only for the problems it adds, compared
-//! with the stored face by path and message, with the comparison `omuzaki-char`'s layout ops use too (`omuzaki_face_api::refuse_introduced`). A face that is already damaged
-//! elsewhere therefore still takes unrelated edits.
+//! with the stored face by path and message ([`refuse_new_problems`], shared with `omuzaki-char`'s layout ops, #659). A
+//! face that is already damaged elsewhere therefore still takes unrelated edits.
 
-use omuzaki_face_api::{FaceMark, FaceProfile, Problem, Validate, refuse_introduced};
-use omuzaki_ops_api::OpError;
+use omuzaki_face_api::{FaceMark, FaceProfile, Validate};
+use omuzaki_ops_api::{FieldProblem as Problem, OpError, refuse_new_problems};
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 use serde_path_to_error::Segment;
@@ -14,11 +14,6 @@ use super::path::{Template, channel, kind_of, unknown_key};
 
 /// The fix for a field whose problem names none of its own.
 const GENERIC_HINT: &str = "give each named field a value of the type it holds, inside the range its message gives";
-
-/// A problem found in a face, from an op's own refusal (its field, message and hint).
-fn from_error(error: OpError) -> Problem {
-    Problem { path: error.field.unwrap_or_default(), message: error.message, hint: error.hint }
-}
 
 /// Refuses an edit that introduces a problem. The problems the stored face already has are not blamed on the edit, so
 /// a face damaged elsewhere can still be edited, and an edit that leaves a damaged field damaged is refused only if its
@@ -29,10 +24,7 @@ fn from_error(error: OpError) -> Problem {
 pub(crate) fn check_edit(stored: Option<&Value>, working: &Value, defaults: &Template) -> Result<(), OpError> {
     let empty = Value::Object(Map::new());
     let before = diagnose(stored.unwrap_or(&empty), defaults);
-    let Some(refusal) = refuse_introduced(&before, diagnose(working, defaults)) else {
-        return Ok(());
-    };
-    Err(OpError::invalid(refusal.field, refusal.message).hint(refusal.hint.unwrap_or_else(|| GENERIC_HINT.to_owned())))
+    refuse_new_problems(&before, diagnose(working, defaults), GENERIC_HINT)
 }
 
 /// Every problem in `face`, read against the defaults. Nothing stops at the first one: each section is read on its own,
@@ -155,12 +147,12 @@ fn rest(face: &Value, problems: &mut Vec<Problem>) {
         let found = match channel(name) {
             Ok(found) => found,
             Err(error) => {
-                problems.push(from_error(error));
+                problems.push(Problem::from_error(error));
                 continue;
             }
         };
         match child.as_f64() {
-            None => problems.push(Problem::new(at, format!("expected a number, found {}", kind_of(child)))),
+            None => problems.push(Problem::new(&at, format!("expected a number, found {}", kind_of(child)))),
             Some(number) => {
                 let (lo, hi) = found.range();
                 if !(number.is_finite() && (f64::from(lo)..=f64::from(hi)).contains(&number)) {
@@ -206,7 +198,7 @@ fn repair(value: &Value, template: &Value, at: &str, problems: &mut Vec<Problem>
                         let repaired = repair(child, default, &format!("{at}/{key}"), problems);
                         kept.insert(key.clone(), repaired);
                     }
-                    None => problems.push(from_error(unknown_key(at, key, defaults.keys()))),
+                    None => problems.push(Problem::from_error(unknown_key(at, key, defaults.keys()))),
                 }
             }
             Value::Object(kept)
@@ -244,8 +236,7 @@ mod tests {
     #[test]
     fn a_default_face_has_no_problems() {
         let defaults = template().expect("the default face serialises");
-        let problems = diagnose(&defaults.profile, &defaults);
-        assert_eq!(problems.len(), 0, "{problems:?}");
+        assert_eq!(diagnose(&defaults.profile, &defaults), Vec::new());
     }
 
     #[test]

@@ -1,0 +1,10 @@
+# The legs' soft ambient darkening (#710). Read by tools/ci/evidence.py; the format is documented at the top of that script.
+
+[[case]]
+name = "leg-shading"
+description = "The bare legs of standard, 512 px, from the front then from behind, each without the vertex colours and with them: the inner thighs 10% darker where they face each other, fading in under the crotch (so no seam shows against the pelvis) and out towards the knee, and the hollow behind the knee 5%."
+env = { OMUZAKI_LEGS_PPM = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-char", "--test", "body", "render_the_legs_when_asked", "--", "--exact"] },
+]
+images = ["front-flat.ppm", "front-shaded.ppm", "back-flat.ppm", "back-shaded.ppm"]

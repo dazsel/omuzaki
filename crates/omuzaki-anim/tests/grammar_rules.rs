@@ -147,14 +147,18 @@ fn tick(index: u64) -> Tick {
     Tick::at_rate(index, 60.0)
 }
 
-/// A stage and the frame it is on: frames come at 60 fps unless asked otherwise.
-/// Laughing out loud: the voice that a laugh needs (#638), for the cases that are about the mouth.
-const ALOUD: Cues = Cues { loudness: 1.0, onset: false, laugh: 0.0, eyes_lead_turn: false, look_shift: false };
+/// Speech loud enough to start and keep a laugh (the prototype's `loud > 0.45`): what every test hears unless it says
+/// otherwise, so the mouth alone decides.
+const LOUD: Cues = Cues { loudness: 1.0, onset: false, laugh: 0.0, eyes_lead_turn: false, look_shift: false };
+/// No audio.
+const SILENT: Cues = Cues { loudness: 0.0, onset: false, laugh: 0.0, eyes_lead_turn: false, look_shift: false };
 
+/// A stage and the frame it is on: frames come at 60 fps unless asked otherwise.
 struct Run {
     stage: GrammarStage,
     frame: u64,
     fps: f32,
+    /// What the stage hears, [`LOUD`] unless set.
     cues: Cues,
 }
 
@@ -164,11 +168,11 @@ impl Run {
     }
 
     fn at(stage: GrammarStage, fps: f32) -> Self {
-        Self { stage, frame: 0, fps, cues: ALOUD }
+        Self { stage, frame: 0, fps, cues: LOUD }
     }
 
-    /// The same run with these cues.
-    fn with_cues(mut self, cues: Cues) -> Self {
+    /// The same run hearing `cues` from now on.
+    fn hearing(mut self, cues: Cues) -> Self {
         self.cues = cues;
         self
     }
@@ -434,40 +438,6 @@ fn laugh_squint_table() {
     );
 }
 
-/// #638: the rule reads the voice the life layer reads. A big open smile while talking quietly is no laugh; a loud voice,
-/// or laughter the audio hears however quiet, makes one; and a laugh whose voice drops below the keep level for longer
-/// than the hold ends.
-#[test]
-fn laugh_squint_needs_a_loud_voice_or_heard_laughter_as_the_life_layer_does() {
-    let mouth = lips(0.9, 0.0, 0.5, 0.0);
-    let voice = |loudness: f32, laugh: f32| Cues { loudness, laugh, ..Cues::default() };
-    let squint = |cues: Cues, frames: u64| Run::new(laugh()).with_cues(cues).hold(&mouth, frames).values[SQUINT[0]];
-    assert_eq!(squint(voice(0.0, 0.0), 60), 0.0, "silence: smiling with the mouth open is no laugh");
-    assert_eq!(squint(voice(0.3, 0.0), 60), 0.0, "talking while smiling");
-    assert_eq!(squint(voice(0.45, 0.0), 60), 0.0, "exactly at the start level");
-    assert!(close(squint(voice(0.5, 0.0), 60), 0.6), "just over it: a full laugh");
-    assert!(close(squint(voice(0.0, 0.9), 60), 0.6), "laughter the audio hears, however quiet");
-    assert_eq!(squint(voice(f32::NAN, f32::INFINITY), 60), 0.0, "cues that aren't finite read as silence");
-
-    // Kept down to the release level, and ended by a quiet spell longer than the hold.
-    let mut run = Run::new(laugh()).with_cues(voice(0.8, 0.0));
-    run.hold(&mouth, 30);
-    run.cues = voice(0.35, 0.0);
-    assert!(close(run.hold(&mouth, 60).values[SQUINT[0]], 0.6), "a voice above 0.3 keeps the laugh");
-    run.cues = voice(0.2, 0.0);
-    assert_eq!(run.hold(&mouth, 60).values[SQUINT[0]], 0.0, "a voice below it ends the laugh after the hold");
-
-    // A character's own levels.
-    let mut lenient =
-        GrammarStage::new(&config(&[("laugh-squint", rule_config(true, 1.0, &[("loud-on", 0.2)]))])).unwrap();
-    let mut bus = mouth;
-    for i in 0..60 {
-        bus = mouth;
-        lenient.step(tick(i), &voice(0.3, 0.0), &mut bus);
-    }
-    assert!(close(bus.values[SQUINT[0]], 0.6), "loud-on 0.2: talking at 0.3 laughs");
-}
-
 #[test]
 fn laugh_squint_eases_in_and_out_instead_of_snapping() {
     let mut run = Run::new(laugh());
@@ -482,6 +452,33 @@ fn laugh_squint_eases_in_and_out_instead_of_snapping() {
     run.hold(&lips(0.9, 0.0, 0.5, 0.0), 30);
     let ends = run.hold(&lips(0.0, 0.0, 0.0, 0.0), 10).values[SQUINT[0]];
     assert!(ends > 0.0 && ends < 0.6, "ten frames after the laugh it is still fading out: {ends}");
+}
+
+#[test]
+fn laugh_squint_hears_the_laugh_as_the_life_layer_does() {
+    let big = lips(0.9, 0.0, 0.5, 0.0);
+    let heard = |loudness, laugh| Cues { loudness, onset: false, laugh, eyes_lead_turn: false, look_shift: false };
+    let squint = |run: &mut Run, frames| run.hold(&big, frames).values[SQUINT[0]];
+    // Talking through a smile is no laugh (#638), and without audio (or with a broken cue) nothing is.
+    for cues in [SILENT, heard(0.45, 0.0), heard(f32::NAN, 0.0), heard(0.3, 0.4)] {
+        assert_eq!(squint(&mut Run::new(laugh()).hearing(cues), 60), 0.0, "{cues:?}");
+    }
+    // Loud speech starts one, and so does laughter heard in the audio however quiet the speech is.
+    for cues in [heard(0.46, 0.0), heard(0.0, 0.9)] {
+        assert!(close(squint(&mut Run::new(laugh()).hearing(cues), 60), 0.6), "{cues:?}");
+    }
+    // A laugh is kept while the loudness stays over the release level, and ends once it is under it for longer than the
+    // hold.
+    let mut run = Run::new(laugh());
+    squint(&mut run, 30);
+    run.cues = heard(0.35, 0.0);
+    assert!(close(squint(&mut run, 60), 0.6), "kept at 0.35");
+    run.cues = heard(0.25, 0.0);
+    assert_eq!(squint(&mut run, 60), 0.0, "ended at 0.25");
+    // A character that laughs at quieter speech sets its own levels.
+    let easy = config(&[("laugh-squint", rule_config(true, 1.0, &[("loud-on", 0.2), ("loud-off", 0.1)]))]);
+    let mut run = Run::new(solo(LaughSquint::default(), &easy)).hearing(heard(0.3, 0.0));
+    assert!(close(squint(&mut run, 60), 0.6), "loud-on 0.2");
 }
 
 #[test]
@@ -963,11 +960,11 @@ fn new_numbers_keep_a_running_look_instead_of_restarting_it() {
     let laughing = lips(0.9, 0.0, 0.5, 0.0);
     for i in 0..60 {
         let mut frame = laughing;
-        stage.step(tick(i), &ALOUD, &mut frame);
+        stage.step(tick(i), &LOUD, &mut frame);
     }
     stage.set_config(&config(&[("laugh-squint", rule_config(true, 1.0, &[("squint", 0.3)]))]));
     let mut next = laughing;
-    stage.step(tick(60), &ALOUD, &mut next);
+    stage.step(tick(60), &LOUD, &mut next);
     assert!(close(next.values[SQUINT[0]], 0.3), "the next frame already uses the new level, at the full weight");
 }
 
@@ -1033,7 +1030,7 @@ fn the_rules_write_only_their_own_channels_and_never_a_persons() {
         }
         input.owners.claim(if i % 2 == 0 { Source::Tracker } else { Source::Trigger }, human);
         let mut out = input;
-        stage.step(tick(i), &ALOUD, &mut out);
+        stage.step(tick(i), &LOUD, &mut out);
         assert_eq!(out.owners, input.owners, "a rule decorates; it does not take channels");
         for info in CHANNELS {
             let c = info.channel;
@@ -1105,7 +1102,8 @@ fn play(seed: u64, smile: f32, loud: f32) -> Vec<Played> {
             let t = i as f32 / 60.0;
             let laughing = (1.0..4.0).contains(&t);
             let mut bus = if laughing { lips(smile, 0.0, 0.55, 0.0) } else { lips(0.1, 0.0, 0.0, 0.0) };
-            let cues = Cues { loudness: if laughing { loud } else { 0.0 }, ..Cues::default() };
+            let cues =
+                Cues { loudness: if laughing { loud } else { 0.0 }, onset: false, laugh: 0.0, ..Cues::default() };
             life.step(tick(i), &cues, &mut bus);
             let from_life = bus;
             stage.step(tick(i), &cues, &mut bus);
@@ -1192,6 +1190,24 @@ fn a_blink_in_a_big_laugh_closes_into_an_arc_over_the_squint() {
         }
     }
     assert!(blinks >= 6, "the seeds must put blinks into the laugh: {blinks}");
+}
+
+#[test]
+fn talking_through_a_smile_is_no_laugh_for_the_life_layer_or_the_rule() {
+    // The mouth of a big laugh, but quiet speech: neither the life layer nor the rule laughs, so the rule leaves the
+    // squint and the cheeks exactly as the life layer did (#638). (A blink in the smile still closes into a `^`: that is
+    // `smile-blink-arc`, not a laugh.)
+    for seed in 1..=4 {
+        let run = play(seed, 0.9, 0.2);
+        assert_coherent(seed, &run);
+        for frame in &run {
+            for channel in [SQUINT[0], SQUINT[1], CHEEK[0], CHEEK[1]] {
+                let (before, after) = (frame.from_life.values[channel], frame.after.values[channel]);
+                assert_eq!(after.to_bits(), before.to_bits(), "seed {seed}, t {}: {channel}", frame.t);
+            }
+            assert!(frame.after.values[SQUINT[0]] < 0.3, "seed {seed}, t {}: no laugh squint", frame.t);
+        }
+    }
 }
 
 #[test]
@@ -1432,7 +1448,7 @@ fn a_replay_is_bit_identical() {
         let (mut stage, mut rng) = (everything(), Rng::new(5));
         (0..3000).fold(0_u64, |h, i| {
             let mut bus = busy_frame(i, &mut rng);
-            stage.step(tick(i), &ALOUD, &mut bus);
+            stage.step(tick(i), &LOUD, &mut bus);
             h.rotate_left(5) ^ bus.values.checksum()
         })
     };
@@ -1458,7 +1474,7 @@ fn a_frame_of_the_grammar_rules_allocates_nothing() {
             }
             for s in [&mut stage, &mut off] {
                 let mut bus = busy_frame(i, &mut rng);
-                s.step(tick(i), &ALOUD, &mut bus);
+                s.step(tick(i), &LOUD, &mut bus);
                 std::hint::black_box(bus);
             }
         }

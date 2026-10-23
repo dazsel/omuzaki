@@ -1,10 +1,10 @@
 //! The anime grammar stage (spec FE-05): the rules of the drawn-face language that no tracker or score supplies, such as
 //! a blink while smiling closing into a happy `^` instead of a flat lash line.
 //!
-//! [`GrammarStage`] is a `Bus -> Bus` stage that runs **after the life layer** (`docs/design/anim-api.md` section 3),
-//! with the frame's audio [`Cues`]. The rules it runs are [`GrammarRule`]s, each registered where it is written with
-//! [`register_grammar_rule!`](crate::register_grammar_rule), so there is no central list to edit. Which of them run for
-//! a character, and how strongly, is the face profile's `grammar` section ([`GrammarConfig::from_profile`]).
+//! [`GrammarStage`] is a `Bus -> Bus` stage that runs **after the life layer**, with the same audio [`Cues`]
+//! (`docs/design/anim-api.md` section 3). The rules it runs are [`GrammarRule`]s, each registered where it is written
+//! with [`register_grammar_rule!`](crate::register_grammar_rule), so there is no central list to edit. Which of them run
+//! for a character, and how strongly, is the face profile's `grammar` section ([`GrammarConfig::from_profile`]).
 //!
 //! ## What the stage guarantees
 //!
@@ -166,8 +166,9 @@ impl GrammarStage {
         }
     }
 
-    /// Runs the enabled rules, in order, over `bus`, with the frame's audio `cues` (the ones the life layer got). Hot
-    /// path: no allocation, no locking.
+    /// Runs the enabled rules, in order, over `bus`, with the frame's audio `cues` (the ones the life layer got; all zero
+    /// without audio): the same shape as [`LifeLayer::step`](omuzaki_anim_api::LifeLayer::step). Hot path: no
+    /// allocation, no locking.
     pub fn step(&mut self, tick: Tick, cues: &Cues, bus: &mut Bus) {
         // Rules never change who owns a channel, so this holds for the whole frame.
         let taken = bus.owners.human_mask();
@@ -180,7 +181,7 @@ impl GrammarStage {
                 continue;
             }
             slot.dirty = true;
-            slot.rule.step(&mut RuleCtx::new(&mut bus.values, cues, taken, slot.strength, tick));
+            slot.rule.step(&mut RuleCtx::new(&mut bus.values, taken, slot.strength, tick, cues));
         }
     }
 }

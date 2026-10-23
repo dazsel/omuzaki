@@ -3,9 +3,9 @@
 //!
 //! **Build.** The band is a flat tube in the plane of the ears: its centre line stands `clearance` metres above the head's
 //! surface, or further where the hair the hair part published ([`HairReachFact`]) stands higher, so its underside clears
-//! the hair by [`HAIR_MARGIN`], from one cup over the crown to the other, and ends inside the cups. Each cup is a
+//! the hair by `HAIR_MARGIN`, from one cup over the crown to the other, and ends inside the cups. Each cup is a
 //! rounded disc whose axis is the head's across axis, centred level with its ear and `cup_gap` outside the ear's root
-//! (or [`HAIR_MARGIN`] outside the hair over the ear, if that is further), where the ear anchor (`ear_l`, `ear_r`, as the head publishes them) says. A head without a side ear (animal ears, none)
+//! (or `HAIR_MARGIN` outside the hair over the ear, if that is further), where the ear anchor (`ear_l`, `ear_r`, as the head publishes them) says. A head without a side ear (animal ears, none)
 //! has no such anchor, so the cup sits at `ear_height` below the head centre on the side of the head.
 //!
 //! **Both sides.** Each side is generated with its own sign `s` (`+1` the character's left, `-1` the right), so the pair

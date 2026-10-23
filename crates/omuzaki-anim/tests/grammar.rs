@@ -23,9 +23,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use omuzaki_anim::grammar::{GrammarConfig, GrammarError, GrammarRule, GrammarStage, RuleCtx};
 use omuzaki_anim_api::{Bus, Channel, ChannelBuf, ChannelMask, Cues, Source, Tick};
-
-/// No voice: the framework's cases are about the bus.
-const QUIET: Cues = Cues { loudness: 0.0, onset: false, laugh: 0.0, eyes_lead_turn: false, look_shift: false };
 use omuzaki_core::rng::Rng;
 use omuzaki_face_api::{FaceProfile, GrammarRules, RuleConfig, RuleId};
 use serde_json::Value;
@@ -245,8 +242,8 @@ fn arc_decisions_match_the_prototype_on_every_frame_of_2000_traces() {
         for (f, row) in rows.iter().enumerate() {
             let (mut bus, mut shut) = (row.bus(false), row.bus(true));
             let t = Tick::at_rate(f as u64, 30.0);
-            real.step(t, &QUIET, &mut bus);
-            probe.step(t, &QUIET, &mut shut);
+            real.step(t, &Cues::default(), &mut bus);
+            probe.step(t, &Cues::default(), &mut shut);
             // Bit 0 and 1: which eyes close as ^. Bit 2: the smile latch, seen through eyes that are always shut.
             let got = arc(&bus, ARC_L) | (arc(&bus, ARC_R) << 1) | (arc(&shut, ARC_L) << 2);
             let want = (expected[f] as char).to_digit(16).unwrap() as u8;
@@ -267,7 +264,7 @@ fn arcs_while_hovering(smiling: bool) -> usize {
     let mut stage = stage();
     let settle = if smiling { 0.8 } else { 0.0 };
     for i in 0..30 {
-        stage.step(tick(i), &QUIET, &mut face(settle, 1.0, 1.0));
+        stage.step(tick(i), &Cues::default(), &mut face(settle, 1.0, 1.0));
     }
     (0..300)
         .filter(|&i| {
@@ -275,7 +272,7 @@ fn arcs_while_hovering(smiling: bool) -> usize {
             let phase = (i % 7) as f32 / 7.0;
             let smile = 0.37 + 0.02 * (1.0 - 4.0 * (phase - 0.5).abs()).clamp(-1.0, 1.0);
             let mut bus = face(smile, 1.0, 1.0);
-            stage.step(tick(30 + i), &QUIET, &mut bus);
+            stage.step(tick(30 + i), &Cues::default(), &mut bus);
             arc(&bus, ARC_L) == 1
         })
         .count()
@@ -294,7 +291,7 @@ fn the_thresholds_are_strict_and_a_frown_takes_off_a_smile() {
         let mut bus = face(smile, 1.0, 1.0);
         bus.values[Channel::MOUTH_FROWN_LEFT] = frown;
         bus.values[Channel::MOUTH_FROWN_RIGHT] = frown;
-        stage.step(tick(0), &QUIET, &mut bus);
+        stage.step(tick(0), &Cues::default(), &mut bus);
         arc(&bus, ARC_L) == 1
     };
     assert!(!arcs(0.42, 0.0), "exactly 0.42 is not above it");
@@ -310,25 +307,25 @@ fn the_thresholds_are_strict_and_a_frown_takes_off_a_smile() {
 #[test]
 fn a_blink_while_smiling_closes_into_the_arc_and_a_plain_blink_stays_a_lash_line() {
     let mut smiling = face(0.8, 0.9, 0.9);
-    stage().step(tick(0), &QUIET, &mut smiling);
+    stage().step(tick(0), &Cues::default(), &mut smiling);
     assert_eq!((smiling.values[ARC_L], smiling.values[ARC_R]), (1.0, 1.0));
     assert_eq!((smiling.values[BLINK_L], smiling.values[BLINK_R]), (0.0, 0.0), "the plain close relaxes");
 
     let mut plain = face(0.0, 0.9, 0.9);
     let before = plain;
-    stage().step(tick(0), &QUIET, &mut plain);
+    stage().step(tick(0), &Cues::default(), &mut plain);
     assert_eq!(plain, before, "not smiling: nothing changes");
 
     let mut open = face(0.8, 0.55, 0.2);
     let before = open;
-    stage().step(tick(0), &QUIET, &mut open);
+    stage().step(tick(0), &Cues::default(), &mut open);
     assert_eq!(open, before, "a blink must pass 0.55, and a half-closed eye is not a blink");
 }
 
 #[test]
 fn a_wink_arcs_only_the_winking_eye() {
     let mut bus = face(0.8, 0.9, 0.0);
-    stage().step(tick(0), &QUIET, &mut bus);
+    stage().step(tick(0), &Cues::default(), &mut bus);
     assert_eq!((bus.values[ARC_L], bus.values[BLINK_L]), (1.0, 0.0));
     assert_eq!((bus.values[ARC_R], bus.values[BLINK_R]), (0.0, 0.0));
 }
@@ -337,7 +334,7 @@ fn a_wink_arcs_only_the_winking_eye() {
 fn strength_dials_how_far_the_eye_follows_the_arc() {
     let run = |strength: f64| {
         let mut bus = face(0.8, 0.8, 0.8);
-        stage_with(&smile_blink(true, strength)).step(tick(0), &QUIET, &mut bus);
+        stage_with(&smile_blink(true, strength)).step(tick(0), &Cues::default(), &mut bus);
         (bus.values[ARC_L], bus.values[BLINK_L])
     };
     let before = face(0.8, 0.8, 0.8);
@@ -348,7 +345,7 @@ fn strength_dials_how_far_the_eye_follows_the_arc() {
     assert_eq!(run(2.0), (1.0, 0.0), "twice the strength stays inside the channel ranges");
     assert_eq!(run(f64::NAN), (1.0, 0.0), "a corrupt strength reads as the default");
     let mut off = face(0.8, 0.8, 0.8);
-    stage_with(&smile_blink(true, 0.0)).step(tick(0), &QUIET, &mut off);
+    stage_with(&smile_blink(true, 0.0)).step(tick(0), &Cues::default(), &mut off);
     assert_eq!(off, before);
 }
 
@@ -358,7 +355,7 @@ fn an_arc_already_on_the_bus_is_never_lowered_and_owners_are_untouched() {
     bus.values[ARC_R] = 0.7; // a laugh's arc, from the life layer
     bus.owners.claim(Source::Life, ChannelMask::of(ARC_R));
     let owners = bus.owners;
-    stage().step(tick(0), &QUIET, &mut bus);
+    stage().step(tick(0), &Cues::default(), &mut bus);
     assert_eq!(bus.values[ARC_R], 0.7);
     assert_eq!(bus.owners, owners, "the grammar decorates; it does not take channels");
 }
@@ -371,7 +368,7 @@ fn odd_numbers_on_the_bus_neither_panic_nor_spread() {
         for c in [Channel::MOUTH_SMILE_LEFT, Channel::MOUTH_FROWN_RIGHT, BLINK_L, BLINK_R] {
             bus.values[c] = poison;
         }
-        stage.step(Tick { index: 0, time: omuzaki_core::time::Seconds(0.0), dt: f32::NAN }, &QUIET, &mut bus);
+        stage.step(Tick { index: 0, time: omuzaki_core::time::Seconds(0.0), dt: f32::NAN }, &Cues::default(), &mut bus);
         for c in [ARC_L, ARC_R] {
             assert!(bus.values[c].is_finite(), "{poison}: {c}");
         }
@@ -398,7 +395,7 @@ fn channels_a_person_drives_are_never_written() {
         }
         bus.owners.claim(if i % 2 == 0 { Source::Tracker } else { Source::Trigger }, human);
         let before = bus;
-        stage.step(tick(i), &QUIET, &mut bus);
+        stage.step(tick(i), &Cues::default(), &mut bus);
         for c in EYE_CHANNELS {
             if human.contains(c) {
                 assert_eq!(bus.values[c].to_bits(), before.values[c].to_bits(), "{c} is driven by a person");
@@ -420,7 +417,7 @@ fn a_tracked_blink_while_smiling_still_draws_the_arc() {
     // A tracker drives the ARKit channels, including eyeBlink, but has no eyeArc channel: the painter draws ^ from the arc.
     let mut bus = face(0.8, 0.9, 0.9);
     bus.owners.claim(Source::Tracker, ChannelMask::ARKIT);
-    stage().step(tick(0), &QUIET, &mut bus);
+    stage().step(tick(0), &Cues::default(), &mut bus);
     assert_eq!((bus.values[ARC_L], bus.values[ARC_R]), (1.0, 1.0));
     assert_eq!((bus.values[BLINK_L], bus.values[BLINK_R]), (0.9, 0.9), "the person's blink is left alone");
 }
@@ -429,20 +426,20 @@ fn a_tracked_blink_while_smiling_still_draws_the_arc() {
 fn the_smile_latch_keeps_following_while_the_eyes_belong_to_a_person() {
     let mut stage = stage();
     for i in 0..3 {
-        stage.step(tick(i), &QUIET, &mut face(0.9, 0.0, 0.0)); // smiling, eyes open and free
+        stage.step(tick(i), &Cues::default(), &mut face(0.9, 0.0, 0.0)); // smiling, eyes open and free
     }
     // A person takes the eyes and the smile ends meanwhile: nothing is written...
     for i in 3..8 {
         let mut bus = face(0.0, 1.0, 1.0);
         bus.owners.claim(Source::Tracker, ChannelMask::EYES);
         let before = bus;
-        stage.step(tick(i), &QUIET, &mut bus);
+        stage.step(tick(i), &Cues::default(), &mut bus);
         assert_eq!(bus, before);
     }
     // ...and on hand-back the face sits in the dead band, where only a latch that kept following (and so already
     // reads "not smiling") gives a plain blink. A latch frozen at the old smile would draw the arcs: a jump.
     let mut bus = face(0.37, 1.0, 1.0);
-    stage.step(tick(8), &QUIET, &mut bus);
+    stage.step(tick(8), &Cues::default(), &mut bus);
     assert_eq!(arc(&bus, ARC_L), 0);
 }
 
@@ -498,8 +495,8 @@ fn rules_run_by_priority_then_id_whatever_the_registration_order() {
     assert_eq!(one.rule_ids().collect::<Vec<_>>(), ["c", "a", "b"]);
     assert_eq!(two.rule_ids().collect::<Vec<_>>(), ["c", "a", "b"]);
     let (mut x, mut y) = (Bus::default(), Bus::default());
-    one.step(tick(0), &QUIET, &mut x);
-    two.step(tick(0), &QUIET, &mut y);
+    one.step(tick(0), &Cues::default(), &mut x);
+    two.step(tick(0), &Cues::default(), &mut y);
     // c: 0 * 0.5 + 0.5 = 0.5, then a: 0.5 * 0.5 + 0.125 = 0.375, then b: 0.375 * 0.5 + 0.25 = 0.4375. Any other order differs.
     assert_eq!(bits(&x.values), bits(&y.values));
     assert_eq!(x.values[Channel::BLUSH], 0.4375);
@@ -524,19 +521,19 @@ fn a_disabled_rule_is_skipped_and_reset_once_and_the_bus_is_bit_identical() {
         }
         bus.owners.claim(Source::Score, ChannelMask::from_bits_truncate(u128::from(rng.next_u64())));
         let before = bus;
-        stage.step(tick(i), &QUIET, &mut bus);
+        stage.step(tick(i), &Cues::default(), &mut bus);
         assert_eq!((bits(&bus.values), bus.owners), (bits(&before.values), before.owners));
     }
     assert_eq!((steps.load(Ordering::Relaxed), resets.load(Ordering::Relaxed)), (0, 0), "never ran, nothing to reset");
 
     // Switched on, it runs; switched off again, it is reset once, on the next frame, and not again.
     stage.set_config(&GrammarConfig::default());
-    stage.step(tick(0), &QUIET, &mut Bus::default());
-    stage.step(tick(1), &QUIET, &mut Bus::default());
+    stage.step(tick(0), &Cues::default(), &mut Bus::default());
+    stage.step(tick(1), &Cues::default(), &mut Bus::default());
     assert_eq!((steps.load(Ordering::Relaxed), resets.load(Ordering::Relaxed)), (2, 0));
     stage.set_config(&GrammarConfig::from_rules(off));
     for i in 0..5 {
-        stage.step(tick(i), &QUIET, &mut Bus::default());
+        stage.step(tick(i), &Cues::default(), &mut Bus::default());
     }
     assert_eq!((steps.load(Ordering::Relaxed), resets.load(Ordering::Relaxed)), (2, 1));
 }
@@ -560,8 +557,8 @@ fn the_registry_supplies_smile_blink_arc_and_unknown_switches_are_ignored() {
     }
     let mut a = face(0.8, 0.9, 0.9);
     let mut b = a;
-    stage().step(tick(0), &QUIET, &mut a);
-    stage_with(&GrammarConfig::from_rules(rules)).step(tick(0), &QUIET, &mut b);
+    stage().step(tick(0), &Cues::default(), &mut a);
+    stage_with(&GrammarConfig::from_rules(rules)).step(tick(0), &Cues::default(), &mut b);
     assert_eq!(a, b);
 }
 
@@ -572,7 +569,7 @@ fn the_face_profile_switches_the_rule() {
     let config = GrammarConfig::from_profile(&profile);
     let mut bus = face(0.8, 0.9, 0.9);
     let before = bus;
-    stage_with(&config).step(tick(0), &QUIET, &mut bus);
+    stage_with(&config).step(tick(0), &Cues::default(), &mut bus);
     assert_eq!(bus, before, "the profile turned the rule off");
     assert_eq!(GrammarConfig::from_profile(&FaceProfile::default()), GrammarConfig::default());
 }
@@ -580,10 +577,10 @@ fn the_face_profile_switches_the_rule() {
 #[test]
 fn reset_forgets_the_smile() {
     let mut stage = stage();
-    stage.step(tick(0), &QUIET, &mut face(0.9, 0.0, 0.0));
+    stage.step(tick(0), &Cues::default(), &mut face(0.9, 0.0, 0.0));
     stage.reset();
     let mut bus = face(0.37, 1.0, 1.0); // in the dead band: only a remembered smile would draw the arcs
-    stage.step(tick(1), &QUIET, &mut bus);
+    stage.step(tick(1), &Cues::default(), &mut bus);
     assert_eq!(arc(&bus, ARC_L), 0);
 }
 
@@ -605,7 +602,7 @@ fn a_replay_is_bit_identical() {
         let mut stage = stage();
         (0..2000).fold(0_u64, |h, i| {
             let mut bus = busy_frame(i, &rows);
-            stage.step(tick(i), &QUIET, &mut bus);
+            stage.step(tick(i), &Cues::default(), &mut bus);
             h.rotate_left(5) ^ bus.values.checksum()
         })
     };
@@ -621,7 +618,7 @@ fn a_frame_of_the_grammar_stage_allocates_nothing() {
         for i in from..to {
             for s in [&mut stage, &mut off] {
                 let mut bus = busy_frame(i, &rows);
-                s.step(tick(i), &QUIET, &mut bus);
+                s.step(tick(i), &Cues::default(), &mut bus);
                 std::hint::black_box(bus);
             }
         }

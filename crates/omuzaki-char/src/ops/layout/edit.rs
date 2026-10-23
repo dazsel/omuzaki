@@ -7,8 +7,8 @@
 
 use omuzaki_char_api::{CharId, paths};
 use omuzaki_doc_api::{Change, DocPath};
-use omuzaki_face_api::{FaceLayout, ParamError, ParamErrors, Problem, Validate, refuse_introduced};
-use omuzaki_ops_api::{OpCtx, OpError};
+use omuzaki_face_api::{FaceLayout, ParamError, ParamErrors, Validate};
+use omuzaki_ops_api::{FieldProblem, OpCtx, OpError};
 use serde_json::{Map, Value, json};
 
 use crate::ops::character::access;
@@ -47,12 +47,16 @@ pub(super) fn with_field(current: &FaceLayout, field: &str, value: f64) -> Resul
 }
 
 /// Every problem in `layout`, at the path it names in the face (`face/layout/eye_y`).
-fn problems(layout: &FaceLayout) -> Vec<Problem> {
+fn problems(layout: &FaceLayout) -> Vec<FieldProblem> {
     match layout.validate() {
         Ok(()) => Vec::new(),
-        Err(ParamErrors(errors)) => {
-            errors.iter().map(|e| named("face/layout", e)).map(|(path, message)| Problem::new(path, message)).collect()
-        }
+        Err(ParamErrors(errors)) => errors
+            .into_iter()
+            .map(|e| {
+                let (path, message) = named("face/layout", &e);
+                FieldProblem::new(path, message)
+            })
+            .collect(),
     }
 }
 
@@ -67,10 +71,7 @@ fn named(prefix: &str, error: &ParamError) -> (String, String) {
 /// # Errors
 /// `Invalid`, naming the first problem the edit introduces and listing all of them.
 pub(crate) fn refuse_new_problems(current: &FaceLayout, after: &FaceLayout) -> Result<(), OpError> {
-    let Some(refusal) = refuse_introduced(&problems(current), problems(after)) else {
-        return Ok(());
-    };
-    Err(OpError::invalid(refusal.field, refusal.message).hint(RANGE_HINT))
+    omuzaki_ops_api::refuse_new_problems(&problems(current), problems(after), RANGE_HINT)
 }
 
 /// Refuses ratios that fail their own checks, naming each field as `<prefix>/<field>` with the range it accepts.

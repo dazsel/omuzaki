@@ -153,7 +153,7 @@ impl WarmJob {
         let solved = if built.rig == self.old_rig {
             None
         } else {
-            let mut frame = RigFrame::new(&built.rig).map_err(|e| e.to_string())?;
+            let mut frame = RigFrame::for_character(&built).map_err(|e| e.to_string())?;
             frame.solve_with_channels(self.tick, &self.pose, &self.goals, &self.channels);
             Some(frame.skin().to_vec())
         };
@@ -867,7 +867,7 @@ impl Stage {
         tick: Tick,
     ) -> Result<Staged, StageError> {
         let Warmed { built: new, expressions } = warmed;
-        let mut new_rig = (new.rig != self.built.rig).then(|| RigFrame::new(&new.rig)).transpose()?;
+        let mut new_rig = (new.rig != self.built.rig).then(|| RigFrame::for_character(&new)).transpose()?;
         if let Some(frame) = new_rig.as_mut() {
             // A first solve off the frame path; the swapping frame solves it again with its own input.
             frame.solve_with_channels(tick, &input.pose, &input.goals, &input.channels);
@@ -983,7 +983,7 @@ impl Stage {
         rig: &mut FaceRig,
         mut new: BuiltCharacter,
     ) -> Result<(SyncReport, Result<(), StageError>), StageError> {
-        let mut new_rig = (new.rig != self.built.rig).then(|| RigFrame::new(&new.rig)).transpose()?;
+        let mut new_rig = (new.rig != self.built.rig).then(|| RigFrame::for_character(&new)).transpose()?;
         if let Some(frame) = new_rig.as_mut() {
             // The bone drivers go on reading the last frame's channels, as the live rig's do.
             frame.set_channels(self.rig.channels());

@@ -104,27 +104,13 @@ fn on_head_top(translation: [f64; 3]) -> Attach {
     }
 }
 
-/// The head parameters that seat the head on `template`'s neck: the default cranium is sculpted for soft-sd, so on
-/// another template its centre moves up with the neck by the same distance. Remove this when the bug that floats the head
-/// on the other templates is fixed.
-fn head_params(template: &str) -> Value {
-    let body = omuzaki_char_api::BodyParams::default();
-    let layout =
-        omuzaki_char::template::registry::find(template).unwrap().layout(&body.proportions, &body.shape, &body.hand);
-    let soft_sd =
-        omuzaki_char::template::registry::find("soft-sd").unwrap().layout(&body.proportions, &body.shape, &body.hand);
-    let rise = layout.head_base().unwrap().y - soft_sd.head_base().unwrap().y;
-    let default = omuzaki_char_api::HeadParams::default().cranium.centre;
-    json!({ "cranium": { "centre": [default[0], default[1] + rise, default[2]] } })
-}
-
 /// The real body and head of `template` with one accessory `acc`.
 fn character(template: &str, kind: &str, params: Value, attach: Option<Attach>) -> CharacterDef {
     let mut def = mock_character().unwrap();
     def.template = template.parse().unwrap();
     def.parts.clear();
     def.parts.insert(pid("body"), part("body", 0, None, json!({})));
-    def.parts.insert(pid("head"), part("head", 0, None, head_params(template)));
+    def.parts.insert(pid("head"), part("head", 0, None, json!({})));
     def.parts.insert(pid("acc"), part(kind, 50, attach, params));
     def
 }

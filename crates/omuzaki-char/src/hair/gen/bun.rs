@@ -13,7 +13,7 @@
 //! **Gather locks.** [`BunGen::gather`] broad flat locks (after the strands) sweep from the back and side hairline along the
 //! scalp up into the bun's base, ending [`INSET`] of the radius inside the ball ([`gather_locks`]); the presets have them, and `0` turns them off.
 //!
-//! **Clearance.** Every rest point stands at least [`CLEARANCE`] off the head ([`Root::keep_outside`]).
+//! **Clearance.** Every rest point stands at least `CLEARANCE` off the head ([`Root::keep_outside`]).
 //!
 //! **Anchors.** [`anchors`] gives `bun_centre` (the ball's centre) and `bun_tie` (the lowest pole, +Y along the ball's
 //! axis) for a hair tie accessory.

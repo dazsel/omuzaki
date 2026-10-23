@@ -10,7 +10,7 @@
 //! rows) and thumb (11 rings of 18 segments), vertex for vertex: on soft-sd at the default numbers they are the
 //! prototype's. Two short pieces follow, which the prototype does not need because a cuff hides its wrist and its thumb
 //! root:
-//! - the **wrist sleeve**, one ring [`WRIST_OVERLAP`] behind the wrist joint (narrowed to fit inside the forearm) joined
+//! - the **wrist sleeve**, one ring `WRIST_OVERLAP` behind the wrist joint (narrowed to fit inside the forearm) joined
 //!   to the block's first row, so a bare arm's rounded end covers the hand's opening;
 //! - the **thumb stem**, one ring back along the thumb's line and seated wholly inside the palm, joined to the thumb's
 //!   root ring, so the thumb's open end lies inside the palm whatever the palm and thumb numbers.

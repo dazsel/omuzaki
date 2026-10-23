@@ -25,6 +25,10 @@ const EAR_OUTLINE: f32 = 0.0016;
 /// The rim power every skin material uses.
 const RIM_POWER: f32 = 3.0;
 
+/// Resolves a colour reference through the palette of a build ([`BuildCtx::colour`]) or of a recolour
+/// (`RecolourCtx::colour`): the materials are made by the same functions either way, so the two cannot drift apart.
+pub type Resolve<'a> = &'a dyn Fn(&ColourRef) -> Result<Colour, BuildError>;
+
 /// `name` prefixed by the part id, the convention for material names (`MaterialName`).
 ///
 /// # Errors
@@ -41,32 +45,38 @@ fn lighten(from: Colour, to: Colour, t: f32) -> Colour {
 }
 
 /// The toon shading shared by the skin materials, from the head's colours.
-fn toon(ctx: &BuildCtx<'_>, p: &HeadParams, shift: f32, softness: f32, rim_strength: f32) -> Result<Toon, BuildError> {
+fn toon(colour: Resolve<'_>, p: &HeadParams, shift: f32, softness: f32, rim_strength: f32) -> Result<Toon, BuildError> {
     Ok(Toon {
-        shade: ctx.colour(&p.skin.shade)?,
+        shade: colour(&p.skin.shade)?,
         shift,
         softness,
-        rim: Rim { colour: ctx.colour(&p.skin.rim)?, power: RIM_POWER, strength: rim_strength },
+        rim: Rim { colour: colour(&p.skin.rim)?, power: RIM_POWER, strength: rim_strength },
         emissive: Colour::BLACK,
         skin: Some(Skin { floor: HEAD_FLOOR, hue_keep: HUE_KEEP }),
     })
 }
 
-/// The face (`skin-head`): lit flat, no shadows, a soft coloured outline, and the painted face composited over it.
-/// `head_centre` is the head centre in bind space, where the face window is placed.
+/// The painted face's overlays on the skin: the face window placed at `head_centre` (the head centre in bind space). The
+/// overlay (sweat drop, gloom hatch) goes on the skin and on the hair, so it shows on whichever is in front. Geometry,
+/// not colour: a recolour keeps the ones the build made.
+pub fn face_overlays(p: &HeadParams, head_centre: Vec3) -> Vec<FaceOverlay> {
+    [FaceLayerId::Base, FaceLayerId::Overlay]
+        .map(|layer| FaceOverlay::of(&p.face_projection(), head_centre, layer))
+        .to_vec()
+}
+
+/// The face (`skin-head`): lit flat, no shadows, a soft coloured outline, and the painted face composited over it
+/// (`overlays`, from [`face_overlays`]).
 ///
 /// # Errors
 /// [`BuildError::Colour`] if a skin slot is missing from the palette.
-pub fn skin_head(ctx: &BuildCtx<'_>, p: &HeadParams, head_centre: Vec3) -> Result<MaterialSpec, BuildError> {
-    let (base, line) = (ctx.colour(&p.skin.base)?, ctx.colour(&p.skin.line)?);
+pub fn skin_head(colour: Resolve<'_>, p: &HeadParams, overlays: Vec<FaceOverlay>) -> Result<MaterialSpec, BuildError> {
+    let (base, line) = (colour(&p.skin.base)?, colour(&p.skin.line)?);
     Ok(MaterialSpec {
         base,
         base_texture: None,
-        shading: Shading::Toon(toon(ctx, p, -0.28, 0.28, 0.10)?),
-        // The overlay (sweat drop, gloom hatch) goes on the skin and on the hair, so it shows on whichever is in front.
-        overlays: [FaceLayerId::Base, FaceLayerId::Overlay]
-            .map(|layer| FaceOverlay::of(&p.face_projection(), head_centre, layer))
-            .to_vec(),
+        shading: Shading::Toon(toon(colour, p, -0.28, 0.28, 0.10)?),
+        overlays,
         alpha: AlphaMode::Opaque,
         double_sided: false,
         vertex_colours: false,
@@ -80,19 +90,19 @@ pub fn skin_head(ctx: &BuildCtx<'_>, p: &HeadParams, head_centre: Vec3) -> Resul
 ///
 /// # Errors
 /// [`BuildError::Colour`] if a skin slot is missing from the palette.
-pub fn skin_ear(ctx: &BuildCtx<'_>, p: &HeadParams) -> Result<MaterialSpec, BuildError> {
+pub fn skin_ear(colour: Resolve<'_>, p: &HeadParams) -> Result<MaterialSpec, BuildError> {
     Ok(MaterialSpec {
-        base: ctx.colour(&p.skin.base)?,
+        base: colour(&p.skin.base)?,
         base_texture: None,
         shading: Shading::Toon(Toon {
             skin: Some(Skin { floor: Skin::default().floor, hue_keep: HUE_KEEP }),
-            ..toon(ctx, p, -0.1, 0.2, 0.08)?
+            ..toon(colour, p, -0.1, 0.2, 0.08)?
         }),
         overlays: Vec::new(),
         alpha: AlphaMode::Opaque,
         double_sided: true,
         vertex_colours: false,
-        outline: Some(Outline { colour: ctx.colour(&p.skin.line)?, width: EAR_OUTLINE }),
+        outline: Some(Outline { colour: colour(&p.skin.line)?, width: EAR_OUTLINE }),
         receives_shadows: true,
         uv_transform: omuzaki_render_api::UvTransform::IDENTITY,
     })
@@ -104,10 +114,10 @@ pub fn skin_ear(ctx: &BuildCtx<'_>, p: &HeadParams) -> Result<MaterialSpec, Buil
 ///
 /// # Errors
 /// [`BuildError::Colour`] if a skin slot is missing from the palette.
-pub fn skin_neck(ctx: &BuildCtx<'_>, p: &HeadParams) -> Result<MaterialSpec, BuildError> {
-    let mut neck = MaterialSpec::toon(ctx.colour(&p.skin.base)?);
+pub fn skin_neck(colour: Resolve<'_>, p: &HeadParams) -> Result<MaterialSpec, BuildError> {
+    let mut neck = MaterialSpec::toon(colour(&p.skin.base)?);
     neck.shading = Shading::Toon(Toon {
-        shade: ctx.colour(&p.skin.shade)?,
+        shade: colour(&p.skin.shade)?,
         shift: 0.1,
         softness: 0.2,
         rim: Rim { strength: 0.0, ..Rim::default() },
@@ -125,12 +135,12 @@ const INNER: Colour = Colour::rgb(0xf0, 0xa8, 0xa8);
 /// `colour` from the palette; when it is still the default slot reference (`default`) and the palette has no such slot,
 /// `fallback`. A slot the person chose must exist.
 fn defaulted(
-    ctx: &BuildCtx<'_>,
+    resolve: Resolve<'_>,
     colour: &ColourRef,
     default: &ColourRef,
     fallback: Colour,
 ) -> Result<Colour, BuildError> {
-    match ctx.colour(colour) {
+    match resolve(colour) {
         Err(_) if colour == default => Ok(fallback),
         resolved => resolved,
     }
@@ -147,8 +157,8 @@ const FUR_LINE: f32 = 0.5;
 ///
 /// # Errors
 /// [`BuildError::Colour`] if the fur colour's slot is missing from the palette.
-pub fn fur_ear(ctx: &BuildCtx<'_>, p: &HeadParams) -> Result<MaterialSpec, BuildError> {
-    let fur = defaulted(ctx, &p.ears.animal.fur, &AnimalEars::default().fur, FUR)?;
+pub fn fur_ear(colour: Resolve<'_>, p: &HeadParams) -> Result<MaterialSpec, BuildError> {
+    let fur = defaulted(colour, &p.ears.animal.fur, &AnimalEars::default().fur, FUR)?;
     // The hair is drawn lighter than its mid colour where lit; the fur is lifted the same way so the two read as one.
     let mut spec = MaterialSpec::toon(lighten(fur, Colour::WHITE, FUR_LIFT));
     spec.shading = Shading::Toon(Toon {
@@ -168,8 +178,8 @@ pub fn fur_ear(ctx: &BuildCtx<'_>, p: &HeadParams) -> Result<MaterialSpec, Build
 ///
 /// # Errors
 /// [`BuildError::Colour`] if the inner colour's slot is missing from the palette.
-pub fn ear_inner(ctx: &BuildCtx<'_>, p: &HeadParams) -> Result<MaterialSpec, BuildError> {
-    let inner = defaulted(ctx, &p.ears.animal.inner, &AnimalEars::default().inner, INNER)?;
+pub fn ear_inner(colour: Resolve<'_>, p: &HeadParams) -> Result<MaterialSpec, BuildError> {
+    let inner = defaulted(colour, &p.ears.animal.inner, &AnimalEars::default().inner, INNER)?;
     let mut spec = MaterialSpec::toon(inner);
     spec.shading = Shading::Toon(Toon {
         shade: lighten(inner, Colour::BLACK, FUR_SHADE),

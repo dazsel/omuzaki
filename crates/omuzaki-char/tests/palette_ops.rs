@@ -12,7 +12,10 @@
 mod common;
 
 use common::{apply, assert_error, at, build, mock_node, plan, project, refused, round_trip};
-use omuzaki_char_api::BuiltCharacter;
+use omuzaki_char_api::{
+    BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, CharacterDef, RegistryBuilder, VariantId,
+    VariantSet, resolve_variant,
+};
 use omuzaki_char_mock::VARIANTS_JSON;
 use omuzaki_doc_api::DocPath;
 use omuzaki_doc_mock::MemDoc;
@@ -302,6 +305,92 @@ fn rename_refuses_a_name_that_something_already_names_without_the_palette_defini
         &["has no palette slot `trim`", "characters/mock/parts/shirt/params/colour"],
         &["palette.add_slot", "nothing refers to"],
     );
+}
+
+// ------------------------------------------------------------------------------------------------ defaults and variants
+
+/// The fixture character as stored: its head and body leave their skin out, so they take `@skin`, `@skin_shade` and
+/// `@skin_line` from their kinds' defaults (#650).
+#[test]
+fn the_skin_a_part_takes_from_its_defaults_is_a_use_that_blocks_removal_and_a_rename_stores() {
+    let mut doc = project();
+    assert_eq!(at(&doc, "characters/mock/parts/head/params"), None, "the fixture leaves the head's params out");
+    let before = build(&doc, "mock");
+
+    let out = plan(&doc, "palette.usage", json!({"character": "mock"})).unwrap().output.unwrap();
+    let skin = out["slots"]["skin"]["used_by"].as_array().unwrap();
+    for part in ["body", "head"] {
+        let path = json!(format!("characters/mock/parts/{part}/params/skin/base"));
+        assert!(skin.contains(&path), "the {part}'s default skin is a use of `skin`: {skin:?}");
+    }
+
+    let e = refused(&doc, "palette.remove_slot", json!({"character": "mock", "slot": "skin"}));
+    assert_error(&e, ErrorCode::Invalid, "slot", &["characters/mock/parts/head/params/skin/base"], &[]);
+
+    let planned =
+        round_trip(&mut doc, "palette.rename_slot", json!({"character": "mock", "from": "skin", "to": "skin_base"}));
+    let refs = planned.output.as_ref().unwrap()["references"].as_array().unwrap().clone();
+    assert!(refs.contains(&json!("characters/mock/parts/head/params/skin/base")), "{refs:?}");
+    assert_eq!(at(&doc, "characters/mock/parts/head/params/skin/base"), Some(json!("@skin_base")));
+    assert_eq!(at(&doc, "characters/mock/parts/body/params/skin/base"), Some(json!("@skin_base")));
+    assert_eq!(
+        at(&doc, "characters/mock/parts/head/params/skin/shade"),
+        Some(json!("@skin_shade")),
+        "the rest of the stored piece is the default as it was"
+    );
+    assert_same_build(&before, &build(&doc, "mock"));
+    let usage = plan(&doc, "palette.usage", json!({"character": "mock"})).unwrap().output.unwrap();
+    assert_eq!(usage["undefined"], json!({}), "nothing names a slot the palette lacks after the rename");
+}
+
+/// The dressed character with a variant `night` whose overrides name `@hair_root` in a part and recolour the slot
+/// itself (#651).
+fn with_variant() -> MemDoc {
+    let mut node = dressed_node();
+    node["variants"] = json!({
+        "night": {
+            "description": "Darker roots.",
+            "overrides": {
+                "parts/vest/params/colour": "@hair_root",
+                "palette/hair_root": "#302020"
+            }
+        }
+    });
+    MemDoc::from_value(json!({ "characters": { "mock": node } }))
+}
+
+/// The variant `night` of the stored character, resolved and built.
+fn build_night(doc: &MemDoc) -> BuiltCharacter {
+    let node = at(doc, "characters/mock").unwrap();
+    let base = CharacterDef::from_node(&node).unwrap();
+    let variants: VariantSet = serde_json::from_value(node["variants"].clone()).unwrap();
+    let night = resolve_variant(&base, &variants, &VariantId::new("night").unwrap()).unwrap();
+    let services = BuildServices::default().with_rasterizer(|| Box::new(omuzaki_face_mock::MockRasterizer));
+    RegistryBuilder.build(&CharId::new("mock").unwrap(), &night, &BuildOptions::default(), &services).unwrap()
+}
+
+#[test]
+fn a_variant_override_naming_a_slot_is_a_use_blocks_removal_and_follows_a_rename() {
+    let mut doc = with_variant();
+    let night = build_night(&doc);
+
+    let out = plan(&doc, "palette.usage", json!({"character": "mock"})).unwrap().output.unwrap();
+    let used = out["slots"]["hair_root"]["used_by"].as_array().unwrap();
+    assert!(
+        used.contains(&json!("characters/mock/variants/night/overrides/parts/vest/params/colour")),
+        "the variant's override is a use: {used:?}"
+    );
+
+    let e = refused(&doc, "palette.remove_slot", json!({"character": "mock", "slot": "hair_root"}));
+    assert_error(&e, ErrorCode::Invalid, "slot", &["variants/night/overrides/parts/vest/params/colour"], &["variant"]);
+
+    round_trip(&mut doc, "palette.rename_slot", json!({"character": "mock", "from": "hair_root", "to": "hair_crown"}));
+    assert_eq!(
+        at(&doc, "characters/mock/variants/night/overrides"),
+        Some(json!({ "parts/vest/params/colour": "@hair_crown", "palette/hair_crown": "#302020" })),
+        "the override's reference and its recolour of the slot both follow"
+    );
+    assert_same_build(&night, &build_night(&doc));
 }
 
 // ------------------------------------------------------------------------------------------------ the character's siblings

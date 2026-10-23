@@ -62,7 +62,7 @@ impl Hand {
     }
 
     /// The bone ids `[upper arm, lower arm, hand]`, if the skeleton has all three.
-    fn ids(self, skeleton: &Skeleton) -> Option<[BoneId; 3]> {
+    pub(super) fn ids(self, skeleton: &Skeleton) -> Option<[BoneId; 3]> {
         let map = skeleton.humanoid_map()?;
         let [a, b, c] = self.bones();
         Some([map.get(a)?, map.get(b)?, map.get(c)?])
@@ -79,14 +79,14 @@ fn unit_rotation(q: Quat) -> Option<Quat> {
 }
 
 /// The inverse of a rigid transform.
-fn inverse(t: Transform) -> Transform {
+pub(super) fn inverse(t: Transform) -> Transform {
     let rotation = t.rotation.inverse();
     Transform { translation: rotation * -t.translation, rotation }
 }
 
 /// A bone's transform in the skeleton's root space, found by multiplying up its chain (a handful of multiplies, so the
 /// arm code never runs forward kinematics over the whole skeleton).
-fn bone_world(skeleton: &Skeleton, pose: &Pose, bone: BoneId) -> Transform {
+pub(super) fn bone_world(skeleton: &Skeleton, pose: &Pose, bone: BoneId) -> Transform {
     let mut world = pose.local[bone.index()];
     let mut at = skeleton.bones()[bone.index()].parent;
     while let Some(parent) = at {
@@ -225,13 +225,19 @@ impl Capsule {
     }
 }
 
-#[allow(clippy::many_single_char_names)] // the closest-points derivation names its terms a, b, c, e, f, s, t
-/// The shortest distance between the segments `p1`-`q1` and `p2`-`q2` (closest points of two segments, clamped to both).
+/// The shortest distance between the segments `p1`-`q1` and `p2`-`q2`.
 fn segment_distance(p1: Vec3, q1: Vec3, p2: Vec3, q2: Vec3) -> f32 {
+    let (s, t) = closest_points(p1, q1, p2, q2);
+    (p1 + (q1 - p1) * s).distance(p2 + (q2 - p2) * t)
+}
+
+#[allow(clippy::many_single_char_names)] // the closest-points derivation names its terms a, b, c, e, f, s, t
+/// Where the segments `p1`-`q1` and `p2`-`q2` come closest: `(s, t)`, the fractions along each (clamped to both).
+pub(super) fn closest_points(p1: Vec3, q1: Vec3, p2: Vec3, q2: Vec3) -> (f32, f32) {
     const TINY: f32 = 1e-12;
     let (d1, d2, r) = (q1 - p1, q2 - p2, p1 - p2);
     let (a, e, f) = (d1.length_squared(), d2.length_squared(), d2.dot(r));
-    let (s, t) = if a <= TINY && e <= TINY {
+    if a <= TINY && e <= TINY {
         (0.0, 0.0)
     } else if a <= TINY {
         (0.0, (f / e).clamp(0.0, 1.0))
@@ -252,8 +258,7 @@ fn segment_distance(p1: Vec3, q1: Vec3, p2: Vec3, q2: Vec3) -> f32 {
                 (s, t)
             }
         }
-    };
-    (p1 + d1 * s).distance(p2 + d2 * t)
+    }
 }
 
 /// What the clearance pass of [`CrossedArms`] settled on.
@@ -291,6 +296,11 @@ pub struct CrossedArms {
     pub torso: Capsule,
     /// The smallest gap the clearance pass accepts, metres.
     pub margin: f32,
+    /// How far each shoulder is drawn forward about the vertical before the arms are solved, radians (scaled by
+    /// [`weight`](Self::weight)); `0` leaves the shoulders as animated. People draw their shoulders forward to cross their
+    /// arms, and a short-armed figure cannot cross them without it: soft-sd's 0.1 m arms clear 5 mm only at about 30
+    /// degrees (#876). Needs the shoulder bones; a skeleton without them crosses from the shoulders as animated.
+    pub protraction: f32,
     /// How much of the goal to apply, `0..=1`.
     pub weight: f32,
 }
@@ -335,6 +345,25 @@ impl ArmClearance {
 
 #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)] // a few dozen steps
 impl CrossedArms {
+    /// Draws both shoulders forward by [`protraction`](Self::protraction): each turns about the vertical through its own
+    /// joint, the left one way and the right the other, so both arms swing toward `+Z`.
+    fn protract(&self, skeleton: &Skeleton, pose: &mut Pose) {
+        let angle = self.protraction * self.weight;
+        if angle == 0.0 || !angle.is_finite() {
+            return;
+        }
+        let Some(map) = skeleton.humanoid_map() else { return };
+        for (bone, sign) in [(HumanoidBone::LeftShoulder, -1.0), (HumanoidBone::RightShoulder, 1.0)] {
+            let Some(id) = map.get(bone) else { continue };
+            let parent =
+                skeleton.bones()[id.index()].parent.map_or(Quat::IDENTITY, |p| bone_world(skeleton, pose, p).rotation);
+            // A turn about root-space Y, carried into the shoulder's parent space.
+            let turn = parent.inverse() * Quat::from_rotation_y(sign * angle) * parent;
+            let local = &mut pose.local[id.index()];
+            local.rotation = (turn * local.rotation).normalize();
+        }
+    }
+
     /// The palm frame for `hand` on the opposite upper arm of `pose`: the back of the hand facing away from the torso,
     /// the fingers across the body. The over hand rests a forearm's width off the under one, along [`stack`](Self::stack).
     fn frame(&self, skeleton: &Skeleton, pose: &Pose, hand: Hand) -> Option<Transform> {
@@ -417,8 +446,8 @@ impl CrossedArms {
         Some((pose, ArmClearance { torso, forearms, contact, swings, cleared }))
     }
 
-    /// Crosses the arms in `pose`, whose upper arms (as animated) start the contact frames: each hand lands on the
-    /// opposite upper arm *as solved*. Then the elbows swing about their shoulder-to-wrist lines until both forearms
+    /// Crosses the arms in `pose`: the shoulders are drawn forward by [`protraction`](Self::protraction), then the upper
+    /// arms (as animated) start the contact frames, and each hand lands on the opposite upper arm *as solved*. Then the elbows swing about their shoulder-to-wrist lines until both forearms
     /// clear the torso and each other by [`margin`](Self::margin): every pair of swings round the circle in coarse steps,
     /// then fine steps around the best, keeping the cleared pose with the smallest turns. If none clears, the pose with
     /// its palms on their arms and the largest smaller gap is kept and `cleared` is `false`. `None` (pose untouched) if
@@ -435,13 +464,16 @@ impl CrossedArms {
     /// neighbouring swings (at most 25 attempts) and never searches the whole circle, so call [`solve`](Self::solve) to
     /// search afresh. With no hint this is [`solve`](Self::solve).
     pub fn solve_from(&self, skeleton: &Skeleton, pose: &mut Pose, hint: Option<[f32; 2]>) -> Option<ArmClearance> {
-        let frames = self.frames(skeleton, pose)?;
+        let mut start = pose.clone();
+        self.protract(skeleton, &mut start);
+        let start = &start;
+        let frames = self.frames(skeleton, start)?;
         // The bend each elbow starts with: the side it is animated on, else hanging down.
         let mut bends = [Vec3::NEG_Y; 2];
         for (i, hand) in [Hand::Left, Hand::Right].into_iter().enumerate() {
             let [upper, lower, _] = hand.ids(skeleton)?;
-            let s = bone_world(skeleton, pose, upper).translation;
-            let e = bone_world(skeleton, pose, lower).translation;
+            let s = bone_world(skeleton, start, upper).translation;
+            let e = bone_world(skeleton, start, lower).translation;
             let axis = ((frames[i] * inverse(hand.palm(self.to_palm))).translation - s).try_normalize()?;
             let perpendicular = |v: Vec3| (v - axis * v.dot(axis)).try_normalize();
             bends[i] = perpendicular(e - s)
@@ -451,7 +483,7 @@ impl CrossedArms {
         let mut best: Option<(Pose, ArmClearance)> = None;
         // Whether the attempt became the best so far.
         let consider = |swings: [f32; 2], best: &mut Option<(Pose, ArmClearance)>| -> Option<bool> {
-            let trial = self.attempt(skeleton, pose, bends, swings)?;
+            let trial = self.attempt(skeleton, start, bends, swings)?;
             let better = best.as_ref().is_none_or(|(_, b)| trial.1.beats(b));
             if better {
                 *best = Some(trial);

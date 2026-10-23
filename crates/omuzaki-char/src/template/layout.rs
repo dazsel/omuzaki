@@ -589,12 +589,29 @@ fn swung(d: DVec3, swing: f64) -> DVec3 {
     DVec3::new(along * sin, along * (1.0 - sin * sin).sqrt() * d.y.signum(), d.z)
 }
 
+/// The most a limb root's offset across the body may grow, as a factor of the template's: the width slider (up to 2)
+/// and the shape's spacing (up to 1.35) multiply, and their product is eased toward this, so a lateral root bone stays
+/// within the 2.5 times its default length every other bone keeps to (#640).
+const LATERAL_MAX: f64 = 2.4;
+/// Where [`lateral`] starts to ease the product: below it the offsets follow the factors exactly.
+const LATERAL_KNEE: f64 = 2.0;
+
+/// The product of a width slider and a spacing factor, unchanged up to [`LATERAL_KNEE`] and eased (C1, rising) toward
+/// [`LATERAL_MAX`] above it, so the widest bodies stop widening rather than stretching their root bones.
+fn lateral(x: f64) -> f64 {
+    if x <= LATERAL_KNEE {
+        return x;
+    }
+    let room = LATERAL_MAX - LATERAL_KNEE;
+    LATERAL_KNEE + room * ((x - LATERAL_KNEE) / room).tanh()
+}
+
 /// The joints with the factors applied. Segment vectors scale, so each joint keeps its place in its limb.
 fn place(n: &Joints, f: &Factors) -> Joints {
     let stacked = |base: DVec3, from: DVec3, to: DVec3, k: f64| base + (to - from) * k;
     // Legs, from the floor up: the ankle rises with the foot and the body's length, the hips ride up on the legs (and
     // their small offset from the hip joint is part of the body's length), so soles stay at y = 0.
-    let leg_x = f.hip * f.leg_spacing;
+    let leg_x = lateral(f.hip * f.leg_spacing);
     // The hip root sits at the spaced offset and the rest of the leg hangs from it by the template's own offsets (scaled
     // with the leg), so a leg that leans, as a short template's does, keeps its bone lengths whatever the spacing.
     let upper_x = n.upper_leg.x * leg_x;
@@ -609,7 +626,7 @@ fn place(n: &Joints, f: &Factors) -> Joints {
     // The torso stretches along y from the hips; widths stay.
     let above = |p: DVec3, x: f64| DVec3::new(x, hips.y + (p.y - n.hips.y) * f.torso, hips.z + (p.z - n.hips.z));
     let neck = above(n.neck, n.neck.x);
-    let arm_x = f.shoulder * f.arm_spacing;
+    let arm_x = lateral(f.shoulder * f.arm_spacing);
     let upper_arm = above(n.upper_arm, n.upper_arm.x * arm_x);
     let lower_arm = upper_arm + swung(n.lower_arm - n.upper_arm, f.arm_swing) * f.arm;
     Joints {
@@ -1100,7 +1117,7 @@ impl Shaper<'_> {
 }
 
 /// Builds the layout of `table` for these numbers: the loft of its curves ([`build_loft`]), with the leg
-/// blended into the torso's outline where it leaves it (see [`junction`]), so the body's outline is C1 across the
+/// blended into the torso's outline where it leaves it (see `junction`), so the body's outline is C1 across the
 /// hip.
 ///
 /// # Errors
@@ -1207,6 +1224,19 @@ fn build_stage(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_lateral_factor_is_exact_below_its_knee_and_rises_smoothly_toward_its_ceiling() {
+        assert!((lateral(1.7) - 1.7).abs() < 1e-15 && (lateral(LATERAL_KNEE) - LATERAL_KNEE).abs() < 1e-15);
+        // The widest product the sliders and the shape reach: 2 x 1.35.
+        let widest = lateral(2.0 * 1.35);
+        assert!(widest > LATERAL_KNEE && widest < LATERAL_MAX, "{widest}");
+        let samples: Vec<f64> = (0..=200).map(|k| lateral(1.5 + f64::from(k) * 0.01)).collect();
+        assert!(samples.windows(2).all(|w| w[1] > w[0]), "rising");
+        // C1 at the knee: the slope just above it is 1.
+        let slope = (lateral(LATERAL_KNEE + 1e-6) - LATERAL_KNEE) / 1e-6;
+        assert!((slope - 1.0).abs() < 1e-3, "{slope}");
+    }
     use crate::template::soft_sd::TABLE;
 
     #[test]

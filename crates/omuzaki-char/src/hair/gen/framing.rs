@@ -35,7 +35,7 @@
 //! `wa = rr(0.012, 0.02)`. Locks run left side first, then the right.
 //!
 //! **Width and thickness.** The group's `width` with its `start` raised by `0.004 i` (the prototype's
-//! `taper(0.030 + 0.004 i, 0.050, 0.006, 0.80)` is exactly a [`Taper`](omuzaki_char_api::Taper)) and the group's
+//! `taper(0.030 + 0.004 i, 0.050, 0.006, 0.80)` is exactly a [`Taper`]) and the group's
 //! `thickness`. The prototype's `0.006 + 0.004 sin(pi min(1, 1.2 t))` peaks at `t = 0.42` and settles at the
 //! base `0.006` past `t = 0.83`; a [`Bulge`](omuzaki_char_api::Bulge) is the closest shape (`base + swell sin(pi t)`, peak at the middle).
 //! The shade is `1 - 0.025 i`. Stiffness and follow are the group's [`Dynamics`](omuzaki_char_api::Dynamics).

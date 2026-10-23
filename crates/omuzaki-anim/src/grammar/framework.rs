@@ -82,29 +82,27 @@ impl<'a> RuleParams<'a> {
 #[derive(Debug)]
 pub struct RuleCtx<'a> {
     values: &'a mut ChannelBuf,
-    cues: &'a Cues,
     taken: ChannelMask,
     strength: f32,
     tick: Tick,
     dt: f32,
+    loudness: f32,
 }
 
 impl<'a> RuleCtx<'a> {
-    /// A context over `values`, where the channels in `taken` belong to a person.
-    pub(super) fn new(
-        values: &'a mut ChannelBuf,
-        cues: &'a Cues,
-        taken: ChannelMask,
-        strength: f32,
-        tick: Tick,
-    ) -> Self {
+    /// A context over `values`, where the channels in `taken` belong to a person, with the frame's audio `cues`.
+    pub(super) fn new(values: &'a mut ChannelBuf, taken: ChannelMask, strength: f32, tick: Tick, cues: &Cues) -> Self {
         let dt = if tick.dt.is_finite() { tick.dt.clamp(0.0, MAX_DT) } else { 0.0 };
-        Self { values, cues, taken, strength, tick, dt }
+        let unit = |x: f32| if x.is_nan() { 0.0 } else { x.clamp(0.0, 1.0) };
+        let loudness = unit(cues.loudness).max(unit(cues.laugh));
+        Self { values, taken, strength, tick, dt, loudness }
     }
 
-    /// The frame's audio cues, as the life layer got them: the speech loudness and the laughter probability (#638).
-    pub fn cues(&self) -> &Cues {
-        self.cues
+    /// How loud the person is this frame, `0..=1`, as the life layer's laugh hears it: the speech loudness, raised to
+    /// the audio laughter probability when that is higher ([`Cues`]). Zero when there is no audio. A non-finite cue
+    /// reads as `0`.
+    pub fn loudness(&self) -> f32 {
+        self.loudness
     }
 
     /// The frame's tick, as the pipeline gave it.
@@ -196,11 +194,8 @@ pub enum GrammarError {
 mod tests {
     use super::*;
 
-    const QUIET: Cues =
-        Cues { loudness: 0.0, onset: false, laugh: 0.0, eyes_lead_turn: false, look_shift: false };
-
     fn ctx(values: &mut ChannelBuf, taken: ChannelMask, strength: f32) -> RuleCtx<'_> {
-        RuleCtx::new(values, &QUIET, taken, strength, Tick::at_rate(0, 60.0))
+        RuleCtx::new(values, taken, strength, Tick::at_rate(0, 60.0), &Cues::default())
     }
 
     #[test]
@@ -228,9 +223,22 @@ mod tests {
         v[Channel::BLUSH] = f32::INFINITY;
         let mut tick = Tick::at_rate(0, 60.0);
         tick.dt = 5.0;
-        let c = RuleCtx::new(&mut v, &QUIET, ChannelMask::EMPTY, 1.0, tick);
+        let c = RuleCtx::new(&mut v, ChannelMask::EMPTY, 1.0, tick, &Cues::default());
         assert_eq!((c.get(Channel::BLUSH), c.dt()), (0.0, MAX_DT));
         tick.dt = f32::NAN;
-        assert_eq!(RuleCtx::new(&mut v, &QUIET, ChannelMask::EMPTY, 1.0, tick).dt(), 0.0);
+        assert_eq!(RuleCtx::new(&mut v, ChannelMask::EMPTY, 1.0, tick, &Cues::default()).dt(), 0.0);
+    }
+
+    #[test]
+    fn loudness_is_the_louder_of_speech_and_laughter_and_reads_broken_cues_as_silence() {
+        let mut v = ChannelBuf::NEUTRAL;
+        let tick = Tick::at_rate(0, 60.0);
+        let mut loudness = |loudness, laugh| {
+            RuleCtx::new(&mut v, ChannelMask::EMPTY, 1.0, tick, &Cues { loudness, onset: false, laugh, eyes_lead_turn: false, look_shift: false }).loudness()
+        };
+        assert_eq!(loudness(0.3, 0.7), 0.7);
+        assert_eq!(loudness(0.6, 0.2), 0.6);
+        assert_eq!(loudness(f32::NAN, f32::NAN), 0.0);
+        assert_eq!(loudness(5.0, -1.0), 1.0);
     }
 }

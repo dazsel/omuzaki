@@ -13,7 +13,8 @@
 //! surface at fractions of its torso's length.
 
 use omuzaki_char_api::{
-    BuildCtx, BuildError, JointRef, MaterialName, MaterialSpec, PartCategory, PartKind, PartMeta, PartOutput,
+    BuildCtx, BuildError, JointRef, MaterialName, MaterialSpec, PartCategory, PartColours, PartKind, PartMeta,
+    PartOutput, RecolourCtx, Recoloured,
 };
 use omuzaki_core::glam::DVec3;
 use omuzaki_face_api::{Check, ColourRef, Validate};
@@ -25,7 +26,7 @@ use super::{Hang, hang, mesh_of, name_of};
 use crate::kit::curve::{Pchip, fraction, lerp, sstep};
 use crate::kit::grid::{Grid, GridOptions, MeshBuilder, Skin, grid_offset};
 use crate::kit::sweep::tube;
-use crate::outfit::common::GarmentError;
+use crate::outfit::common::{GarmentError, recolour_named};
 use crate::outfit::shirt::cloth_look;
 use crate::outfit::shirt::torso::along;
 
@@ -174,19 +175,31 @@ impl PartKind for Collar {
 
         let cloth_name: MaterialName = name_of(ctx, "cloth")?;
         let lines_name: MaterialName = name_of(ctx, "lines")?;
-        let mut cloth = MaterialSpec::toon(ctx.colour(&p.colours.cloth)?);
-        cloth_look(&mut cloth, ctx.colour(&p.colours.shade)?, ctx.colour(&p.colours.line)?);
-        let mut ink = MaterialSpec::toon(ctx.colour(&p.colours.line)?);
-        ink.shading = Shading::Unlit;
+        let (cloth, ink) = materials(p, ctx)?;
         let mut line_mesh = mesh_of(ctx, "lines", lines, lines_name.clone())?;
         line_mesh.casts_shadow = false;
         Ok(PartOutput::new()
             .with_meshes(vec![mesh_of(ctx, "shell", shell, cloth_name.clone())?, line_mesh])
             .with_materials(vec![(cloth_name, cloth), (lines_name, ink)]))
     }
+
+    fn recolour(p: &CollarParams, output: &mut PartOutput, ctx: &RecolourCtx<'_>) -> Result<Recoloured, BuildError> {
+        let (cloth, ink) = materials(p, ctx)?;
+        Ok(recolour_named(output, ctx.part, vec![("cloth", cloth), ("lines", ink)], Vec::new()))
+    }
 }
 
 omuzaki_char_api::register_part_kind!(Collar);
+
+/// The collar's cloth (the shirt's cloth look, so the two read as one) and its ink lines, for the build and the
+/// recolour.
+fn materials<C: PartColours>(p: &CollarParams, ctx: &C) -> Result<(MaterialSpec, MaterialSpec), BuildError> {
+    let mut cloth = MaterialSpec::toon(ctx.colour(&p.colours.cloth)?);
+    cloth_look(&mut cloth, ctx.colour(&p.colours.shade)?, ctx.colour(&p.colours.line)?);
+    let mut ink = MaterialSpec::toon(ctx.colour(&p.colours.line)?);
+    ink.shading = Shading::Unlit;
+    Ok((cloth, ink))
+}
 
 /// The number of open borders the collar's meshes have: the outer and inner shell's outlines, and the ends of the ink
 /// lines (a tube tapers to a hair's width, not to a point; the two lower lines meet at the back and share an end).

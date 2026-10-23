@@ -97,7 +97,7 @@ pub fn radius(frame: &Frame, y: f64) -> f64 {
     frame.ring(y).map_or(0.1, |r| f64::midpoint(r.radii.x, r.radii.y)).max(0.01)
 }
 
-/// Where the lapels break: at the V's start, or above it where the front edges have opened [`LAPEL_START`] either
+/// Where the lapels break: at the V's start, or above it where the front edges have opened `LAPEL_START` either
 /// side of the centre.
 pub fn break_height(frame: &Frame) -> Option<f64> {
     let Front::Open { point, .. } = frame.cut.front else { return None };

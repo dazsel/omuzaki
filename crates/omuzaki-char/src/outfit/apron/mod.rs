@@ -4,8 +4,8 @@
 //!
 //! It is laid out on the [coat framework](crate::outfit::coat)'s [`Frame`] without a shell of its own: the frame's
 //! outside (over the dress or skirt under it, which the frame's skirt clears through their published reach) is where
-//! every piece lies, each a lined [patch](crate::outfit::coat::edge::patch), a closed
-//! [band](crate::outfit::coat::edge::band) or a cord.
+//! every piece lies, each a lined [patch], a closed
+//! [band] or a cord.
 
 use std::f64::consts::{FRAC_PI_2, PI};
 

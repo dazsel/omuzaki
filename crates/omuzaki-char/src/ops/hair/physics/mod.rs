@@ -8,7 +8,7 @@
 //! | `hair.group.set_dynamics` | one group's `simulate`, `follow` and `stiffness` |
 //! | `hair.settle` | (query) builds the character, lets the hair hang, turns it and reports the sag, the swing and the settle time |
 //!
-//! The edits write the part's `physics` or `groups` back as one change ([`part::changes`]), so undo restores it exactly.
+//! The edits write the part's `physics` or `groups` back as one change (`part::changes`), so undo restores it exactly.
 
 use omuzaki_char_api::{
     CharId, Falloff, Follow, GroupId, HairParams, HairPhysics, JointRef, PartId, PoseSource, StepCtx,

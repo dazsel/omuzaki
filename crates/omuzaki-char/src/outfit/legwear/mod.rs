@@ -2,10 +2,10 @@
 //!
 //! The port of the prototype's `buildLeg` (`body.js` 12-51) and its `tights` material, as the Director's reference for
 //! #193 gives them. Each leg is a tube lofted over the leg region of the fit it is worn over, `ease` outside it. Its
-//! rows follow the prototype's: eight in the lowest 8 cm of the shin and 28 up the rest of the leg ([`section`]); its 44
+//! rows follow the prototype's: eight in the lowest 8 cm of the shin and 28 up the rest of the leg (`section`); its 44
 //! columns go once round the leg. The skin
 //! weights are the prototype's `W(x, y)`: the hips, the thigh and the shin handing over at the hip and the knee
-//! ([`skin`]), and the vertex colour darkens the inner thigh and the back of the knee a little.
+//! (`skin`), and the vertex colour darkens the inner thigh and the back of the knee a little.
 //!
 //! **What differs from the prototype.** The prototype's tights go on up into the hips and close in a dome under the
 //! skirt, and close in a cap under the ankle for the boot to hide; both ends are inside the body (the torso, the foot),
@@ -20,8 +20,8 @@ mod section;
 mod skin;
 
 use omuzaki_char_api::{
-    BodyRegion, BuildCtx, BuildError, MaterialName, MaterialSpec, PartCategory, PartKind, PartMeta, PartOutput,
-    register_part_kind,
+    BodyRegion, BuildCtx, BuildError, MaterialName, MaterialSpec, PartCategory, PartColours, PartKind, PartMeta,
+    PartOutput, RecolourCtx, Recoloured, register_part_kind,
 };
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::DVec3;
@@ -31,7 +31,9 @@ use omuzaki_render_api::{Outline, ParamValue, ProgramParams, Shading};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::common::{FabricStyle, Garment, GarmentCommon, GarmentError, LAYER_UNDERWEAR, publish_envelope};
+use super::common::{
+    FabricStyle, Garment, GarmentCommon, GarmentError, LAYER_UNDERWEAR, publish_envelope, recolour_named,
+};
 use super::loft::MIN_EXPONENT;
 use crate::kit::KitError;
 use crate::kit::grid::{GridOptions, MeshBuilder, Skin};
@@ -211,6 +213,11 @@ impl PartKind for Legwear {
             .with_materials(vec![(material_id, material)])
             .with_publishes(envelope))
     }
+
+    /// The nylon is the one material, made by the build's own function; the vertex colours are tones, not colours.
+    fn recolour(p: &LegwearParams, output: &mut PartOutput, ctx: &RecolourCtx<'_>) -> Result<Recoloured, BuildError> {
+        Ok(recolour_named(output, ctx.part, vec![(MATERIAL, material(p, ctx)?)], Vec::new()))
+    }
 }
 
 /// The nylon: a vertex-coloured toon with a coloured outline and the sheen program, which adds the faint glow on the
@@ -218,7 +225,7 @@ impl PartKind for Legwear {
 ///
 /// The sheen program shades with the renderer's default toon, so the prototype's own shade colour, terminator shift and
 /// rim (`0x8a7880`, `-0.12`, `0x8a6a78`) don't reach the screen.
-fn material(p: &LegwearParams, ctx: &BuildCtx<'_>) -> Result<MaterialSpec, BuildError> {
+fn material<C: PartColours>(p: &LegwearParams, ctx: &C) -> Result<MaterialSpec, BuildError> {
     let strength = p.sheen * p.style.sheen();
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped to a byte
     let channel = |v: f64| (v * strength).round().clamp(0.0, 255.0) as u8;

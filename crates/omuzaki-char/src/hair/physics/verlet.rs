@@ -76,8 +76,8 @@ pub const STIFFNESS_HZ: f32 = 90.0;
 /// The bind-space height band over which a [`Follow::Body`] particle goes from following the chest (below) to the head
 /// (above), as `smoothstep(y, lo, hi)`. The prototype's numbers, for its head centre at 0.778 m.
 pub const BODY_BLEND: (f32, f32) = (0.56, 0.70);
-/// The head centre's bind-space height [`BODY_BLEND`] was set for; [`ChainSet::set_head_height`] moves the band with the
-/// head of a character of another size.
+/// The head centre's bind-space height [`BODY_BLEND`] was set for; [`ChainSet::set_head`] moves the band with the head
+/// of a character of another size and scales it with the head.
 pub const BODY_BLEND_HEAD: f32 = 0.778;
 
 /// Why a chain set could not be built or driven.
@@ -179,6 +179,17 @@ pub struct ChainSet {
     gravity_scale: f32,
     wind_scale: f32,
     iterations: u8,
+}
+
+/// The chest-to-head band ([`ChainSet::set_head`]) under a head centre at `head_y` of a head `scale` times the
+/// prototype's: [`BODY_BLEND`] taken relative to [`BODY_BLEND_HEAD`] and scaled. `None` for a non-finite height or a
+/// scale that is not positive and finite.
+#[must_use]
+pub fn body_band(head_y: f32, scale: f32) -> Option<(f32, f32)> {
+    (head_y.is_finite() && scale.is_finite() && scale > 0.0).then(|| {
+        let at = |y: f32| head_y + (y - BODY_BLEND_HEAD) * scale;
+        (at(BODY_BLEND.0), at(BODY_BLEND.1))
+    })
 }
 
 /// three.js `MathUtils.smoothstep`: 0 at or below `lo`, 1 at or above `hi`.
@@ -294,18 +305,19 @@ impl ChainSet {
         Ok(set)
     }
 
-    /// Moves the band over which a [`Follow::Body`] particle hands over from the chest to the head ([`BODY_BLEND`]) by
-    /// as much as `head_y`, the head centre's bind-space height, differs from [`BODY_BLEND_HEAD`]: so the band sits
-    /// as far under the head of any character as the prototype's sat under its own. Call it before the first
-    /// [`ChainSet::targets`]. A non-finite height changes nothing.
-    pub fn set_head_height(&mut self, head_y: f32) {
-        if !head_y.is_finite() {
+    /// Places the band over which a [`Follow::Body`] particle hands over from the chest to the head for a character
+    /// whose head centre is at bind-space height `head_y` and whose head is `scale` times the prototype's: the
+    /// prototype's band ([`BODY_BLEND`], under its head centre at [`BODY_BLEND_HEAD`]) moved under this head and
+    /// stretched by `scale` ([`body_band`]), so it sits under the head of any template at any stature as the
+    /// prototype's sat under its own (#898). Call it before the first [`ChainSet::targets`]. A non-finite height or a
+    /// scale that is not positive and finite changes nothing.
+    pub fn set_head(&mut self, head_y: f32, scale: f32) {
+        let Some((lo, hi)) = body_band(head_y, scale) else {
             return;
-        }
-        let shift = head_y - BODY_BLEND_HEAD;
+        };
         for ((w, &body), p) in self.head_weight.iter_mut().zip(&self.follows_body).zip(&self.rest) {
             if body {
-                *w = smoothstep(p.y, BODY_BLEND.0 + shift, BODY_BLEND.1 + shift);
+                *w = smoothstep(p.y, lo, hi);
             }
         }
         self.needs_chest = self.head_weight.iter().any(|&w| w < 1.0);

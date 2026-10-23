@@ -98,7 +98,7 @@ fn render_the_head_join_when_asked() {
         let params = HeadParams { outline: profile.profile.outline, ..HeadParams::default() };
         let built = build(&character(&serde_json::to_value(&params).unwrap())).unwrap();
         // The head's local origin is its cranium centre, lowered by the neck drop (as `tests/head_part.rs` places it).
-        let join = Vec3::new(0.0, narrow(params.cranium.centre[1] - params.neck.drop + params.outline.top), 0.0);
+        let join = Vec3::new(0.0, narrow(params.cranium.centre()[1] - params.neck.drop + params.outline.top), 0.0);
         // Only the head surface is drawn: the ears sit at eye level and would cover the side silhouette the sheet shows.
         let surface: Vec<_> = built.meshes.iter().filter(|m| m.mesh.name == HEAD_SURFACE).collect();
         assert_eq!(surface.len(), 1, "{id}: one {HEAD_SURFACE} mesh");

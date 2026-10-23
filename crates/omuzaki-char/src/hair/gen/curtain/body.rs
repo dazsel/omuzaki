@@ -56,7 +56,7 @@ impl BodyKeepOut {
 
     /// `p` drawn back behind the arms, for hair that falls past the shoulders: below `from_y` (the head's lowest point)
     /// the further it is the more its `z` is compressed (smoothly, so no strand folds) toward the arms' back surface
-    /// less [`BEHIND_MARGIN`]; by `over` metres below it the compression is complete. A fit without arms, or a point
+    /// less `BEHIND_MARGIN`; by `over` metres below it the compression is complete. A fit without arms, or a point
     /// already behind, is left alone.
     pub fn hang_behind(&self, p: Vec3, from_y: f32, over: f32) -> Vec3 {
         let Some(back) = self.behind_arms else { return p };

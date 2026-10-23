@@ -1,13 +1,16 @@
 //! [`Performer`]: the fixed-step loop from a frame source to a humanoid pose.
 
 use omuzaki_anim_api::{
-    Animator, Bus, ChannelBuf, Cues, FrameSource, HumanoidPose, Layer, LayerStack, LifeLayer, Retarget, Tick,
-    TrackFrame, TrackStatus,
+    Animator, Bus, ChannelBuf, Cues, FrameSource, HumanoidPose, Layer, LayerStack, LifeLayer, PoseLayers, Retarget,
+    Tick, TrackFrame, TrackStatus,
 };
 use omuzaki_anim::grammar::GrammarStage;
 use omuzaki_core::time::Seconds;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+
+use super::drive::{self, DriveGate};
+use super::score::ScorePose;
 
 /// The fixed step rate, steps per second.
 pub const STEP_HZ: f32 = 60.0;
@@ -67,6 +70,10 @@ pub struct Performer {
     /// The anime grammar (spec FE-05), after the life layer with the same cues; `None` runs none.
     grammar: Option<GrammarStage>,
     stack: LayerStack,
+    /// Which drivers move which channels (the member's drive map).
+    drive: DriveGate,
+    /// The live score's body clips, laid on the base pose before the animator.
+    score_pose: ScorePose,
     bus: Bus,
     pose: HumanoidPose,
     base: HumanoidPose,
@@ -93,6 +100,8 @@ impl Performer {
             parts,
             grammar: None,
             stack: LayerStack::new(rest),
+            drive: DriveGate::OPEN,
+            score_pose: ScorePose::default(),
             bus: Bus::default(),
             pose: base,
             base,
@@ -161,6 +170,22 @@ impl Performer {
         &mut self.stack.trigger
     }
 
+    /// The score layer of the stack and the score's body layers: what the live score writes before each step (acts
+    /// from agents, scripts and the AI performer).
+    pub fn score_mut(&mut self) -> (&mut Layer, &mut ScorePose) {
+        (&mut self.stack.score, &mut self.score_pose)
+    }
+
+    /// Which drivers move which channels from the next step: the member's drive map (`perform::drive`).
+    pub fn set_drive(&mut self, gate: DriveGate) {
+        self.drive = gate;
+    }
+
+    /// The drive gate in use.
+    pub fn drive(&self) -> &DriveGate {
+        &self.drive
+    }
+
     /// The audio (lip-sync) layer of the stack: what a voice writes before each step (`PerformHost::set_voice`).
     pub fn audio_layer_mut(&mut self) -> &mut Layer {
         &mut self.stack.audio
@@ -205,6 +230,11 @@ impl Performer {
         &self.stack.rest
     }
 
+    /// The base pose: the character's bind, which the animator layers onto.
+    pub fn base(&self) -> &HumanoidPose {
+        &self.base
+    }
+
     /// Replaces the resting expression and the base pose.
     pub fn set_rest(&mut self, rest: ChannelBuf, base: HumanoidPose) {
         self.stack.rest = rest;
@@ -223,6 +253,8 @@ impl Performer {
         self.stack.tracker.clear();
         self.stack.audio.clear();
         self.stack.trigger.clear();
+        self.stack.score.clear();
+        self.score_pose.clear();
         self.cues = Cues::default();
         self.origin = None;
         self.next_step = 0;
@@ -246,14 +278,16 @@ impl Performer {
 
     fn run_step(&mut self, tick: Tick) {
         self.track(tick);
-        self.stack.resolve(&mut self.bus);
+        drive::resolve(&self.stack, &self.drive, &mut self.bus);
         self.parts.life.step(tick, &self.cues, &mut self.bus);
         if let Some(grammar) = self.grammar.as_mut() {
             grammar.step(tick, &self.cues, &mut self.bus);
         }
         self.cues.onset = false;
         self.bus.values.sanitize();
+        // The score's clips lie under the animator, so the tracked head and the breath still move a waving body.
         self.pose = self.base;
+        PoseLayers(self.score_pose.layers()).resolve(&mut self.pose);
         self.parts.animator.animate(tick, &self.bus, &[], &mut self.pose);
     }
 
