@@ -81,7 +81,7 @@ fn live(outline: HeadOutline) -> MeshData {
 fn measure(p: &ShapePreset) -> SilhouetteMetrics {
     let params = params_of(p.profile.outline);
     let mesh = build(&params, Resolution::OFFLINE, None).unwrap();
-    Silhouette::of(&mesh, params.cranium.centre[1]).unwrap().metrics(p.profile.outline.top)
+    Silhouette::of(&mesh, params.cranium.centre()[1]).unwrap().metrics(p.profile.outline.top)
 }
 
 fn within(what: &str, id: &str, measured: f64, target: f64) {
@@ -412,7 +412,7 @@ fn outline_curve(outline: &HeadOutline) -> Vec<[f64; 2]> {
 fn dump() {
     let dir = std::path::PathBuf::from(std::env::var("SHAPE_PRESETS_OUT").expect("SHAPE_PRESETS_OUT names the folder"));
     std::fs::create_dir_all(&dir).unwrap();
-    let origin = HeadParams::default().cranium.centre;
+    let origin = HeadParams::default().cranium.centre();
     let heads: Vec<_> = TARGETS
         .iter()
         .map(|t| {

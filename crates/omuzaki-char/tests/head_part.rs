@@ -17,8 +17,8 @@ use omuzaki_char::template::skeleton::TemplateFit;
 use omuzaki_char::template::soft_sd::SoftSd;
 use omuzaki_char_api::{
     BodyFit, BodyParams, BuildCtx, BuildError, BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder,
-    CharacterDef, FitFact, HeadParams, JointRef, KindProvenance, PartCategory, PartDef, PartId, PartKind, PartKindId,
-    PartMeta, PartOutput, Published, Publishes, RegistryBuilder, find_kind, plan,
+    CharacterDef, Chin, FitFact, HeadParams, JointRef, KindProvenance, PartCategory, PartDef, PartId, PartKind,
+    PartKindId, PartMeta, PartOutput, Published, Publishes, RegistryBuilder, find_kind, plan,
 };
 use omuzaki_char_mock::mock_character;
 use omuzaki_core::glam::Vec3;
@@ -133,9 +133,25 @@ fn the_face_window_is_the_published_projection_moved_with_the_lowered_head() {
     let m = &built.materials[&"head-skin-head".parse().unwrap()];
     let window = m.overlays[0].window;
     let projection = params.face_projection();
-    let centre_y = narrow(params.cranium.centre[1] - 0.03);
+    let centre_y = narrow(params.cranium.centre()[1] - 0.03);
     assert!((window.min.y - (projection.rect.y0 + centre_y)).abs() < 1e-6);
     assert!((window.max.x - projection.rect.x1).abs() < 1e-6);
+}
+
+#[test]
+fn the_face_window_follows_the_built_chin_when_the_asked_chin_is_out_of_reach() {
+    // A chin asked 50 cm below the centre: the head clamps it into its plausible space, and the window follows the chin
+    // the mesh has, not the one asked for (#693).
+    let mut params = HeadParams::default();
+    params.outline.chin = Some(Chin { y: -0.5, ..Chin::default() });
+    let built = build(&character(&serde_json::to_value(&params).unwrap())).unwrap();
+    let head = built.meshes.iter().find(|m| m.mesh.name == "head-head").expect("the head mesh");
+    let lowest = head.mesh.geometry.positions.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
+    let window = built.materials[&"head-skin-head".parse().unwrap()].overlays[0].window;
+    let below = narrow(params.window.below_chin);
+    assert!((window.min.y - (lowest - below)).abs() < 2e-3, "window from {} for a chin at {lowest}", window.min.y);
+    let asked = narrow(params.cranium.centre()[1]) + params.face_projection().rect.y0;
+    assert!(window.min.y > asked + 0.05, "the window no longer reaches the asked chin: {} vs {asked}", window.min.y);
 }
 
 #[test]
@@ -159,7 +175,7 @@ fn the_eyes_straddle_the_face_and_sit_on_the_layout_eye_line() {
     let built = build(&character(&json!({}))).unwrap();
     let (left, right) = (head_joint(&built, HumanoidBone::LeftEye), head_joint(&built, HumanoidBone::RightEye));
     let layout = mock_character().unwrap().face.layout;
-    let centre_y = HeadParams::default().cranium.centre[1] - HeadParams::default().neck.drop;
+    let centre_y = HeadParams::default().cranium.centre()[1] - HeadParams::default().neck.drop;
     assert!(left.x > 0.0 && right.x < 0.0, "the character's left is +X");
     assert!((left.x + right.x).abs() < 1e-6 && (left.x - narrow(layout.eye_spacing)).abs() < 1e-5);
     assert!((left.y - narrow(centre_y + layout.eye_y)).abs() < 1e-5);
@@ -173,7 +189,7 @@ fn the_published_surface_projection_and_anchor_are_the_lowered_cranium() {
     let def = character(&serde_json::to_value(&params).unwrap());
     let built = build(&def).unwrap();
     let anchor = built.anchors.get(&(pid("head"), "top".parse().unwrap())).expect("top anchor");
-    let top = narrow(params.cranium.centre[1] + params.cranium.half_height_up - 0.02);
+    let top = narrow(params.cranium.centre()[1] + params.cranium.half_height_up - 0.02);
     assert!((anchor.position.y - top).abs() < 1e-6, "{anchor:?}");
     assert_eq!(anchor.bone, JointRef::HEAD);
 }

@@ -384,7 +384,7 @@ fn json_mesh(name: &str, params: &HeadParams) -> serde_json::Value {
         .collect();
     serde_json::json!({
         "name": name,
-        "centre": params.cranium.centre,
+        "centre": params.cranium.centre(),
         "cranium": params.cranium,
         "outline": params.outline,
         "target": { "top": target.top, "chin": target.chin, "half_width": target.half_width, "curve": outline },

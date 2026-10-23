@@ -110,7 +110,7 @@ pub struct Quality {
 
 /// Measures `mesh`, built from `params` at `grid`, against `target`.
 pub fn measure(mesh: &MeshData, grid: Resolution, params: &HeadParams, target: &Target) -> Quality {
-    let centre = DVec3::from_array(params.cranium.centre);
+    let centre = DVec3::from_array(params.cranium.centre());
     let points: Vec<DVec3> = mesh.positions.iter().map(|p| p.as_dvec3() - centre).collect();
     let normals: Vec<DVec3> = mesh.normals.iter().map(|n| n.as_dvec3()).collect();
     let g = GridView {

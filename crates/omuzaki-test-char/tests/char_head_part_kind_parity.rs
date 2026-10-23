@@ -237,7 +237,7 @@ fn params_for(c: &Constants, centre: [f64; 3]) -> HeadParams {
         min_ratio: c.min_ratio.unwrap(),
     });
     let mut params = HeadParams::default();
-    params.cranium.centre = centre;
+    params.cranium.centre = Some(centre);
     params.outline = HeadOutline {
         half_width: c.half_width,
         top: c.top - centre[1],

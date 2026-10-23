@@ -260,7 +260,7 @@ fn height_lengthens_the_body_from_the_sole_to_the_head_base_by_12_percent_and_no
 fn the_crown_of_the_default_head_rises_by_about_7_percent_at_plus_one_height() {
     // The head keeps its size and sits on the head base, so the crown moves by the head base's rise only.
     let c = HeadParams::default().cranium;
-    let crown = c.centre[1] + c.half_height_up;
+    let crown = c.centre()[1] + c.half_height_up;
     let (base, tall) = (soft(&BodyShape::default()), soft(&axis("height", 1.0)));
     let rise = tall.head_base().unwrap().y - base.head_base().unwrap().y;
     let share = rise / crown;

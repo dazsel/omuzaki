@@ -20,7 +20,7 @@ pub(super) fn silhouette(params: &HeadParams, profile: &ShapeProfile) -> Value {
     let Ok(mesh) = build(&head, Resolution::LIVE, None) else {
         return Value::Null;
     };
-    let Some(shape) = Silhouette::of(&mesh, head.cranium.centre[1]) else {
+    let Some(shape) = Silhouette::of(&mesh, head.cranium.centre()[1]) else {
         return Value::Null;
     };
     let m = shape.metrics(profile.layout.eye_y);

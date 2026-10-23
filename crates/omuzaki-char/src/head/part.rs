@@ -1,7 +1,8 @@
 //! The `head` part kind registration: the head mesh, the neck, the skin materials with the painted-face overlay, and what
 //! the head publishes to everything built on it (port of the prototype's `head.js` `build`).
 //!
-//! **Placement.** The head is authored in the template's frame ([`HeadParams::cranium`]). `Neck::drop` lowers the whole
+//! **Placement.** The head is authored in the template's frame ([`HeadParams::cranium`]); a cranium with no centre of its
+//! own is seated on the template's head joint ([`seated`]). `Neck::drop` lowers the whole
 //! head part (mesh, surface, face window, anchors and the `head` joint) relative to the template's neck top, which the
 //! neck itself does not follow: a chibi chin then rests near the collar. The neck is placed from the template's `head`
 //! joint, found in the body's fit, so the head part requires the `body` kind and is built after it.
@@ -17,9 +18,9 @@ use std::sync::Arc;
 
 use omuzaki_anim_api::{HumanoidBone, SpringChain, SpringParams, Transform};
 use omuzaki_char_api::{
-    Anchor, AnchorId, AnchorsFact, BoneName, BuildCtx, BuildError, EarKind, ExtraBone, FaceFact, FitFact, HeadFact,
-    HeadParams, HeadSurface, JointFit, JointRef, KindProvenance, MaterialSpec, PartCategory, PartKind, PartMesh,
-    PartMeta, PartOutput, Publishes, RecolourCtx, Recoloured, RigContribution,
+    Anchor, AnchorId, AnchorsFact, BoneName, BuildCtx, BuildError, Cranium, EarKind, ExtraBone, FaceFact, FitFact,
+    HeadFact, HeadParams, HeadSurface, JointFit, JointRef, KindProvenance, MaterialSpec, PartCategory, PartKind,
+    PartMesh, PartMeta, PartOutput, Publishes, RecolourCtx, Recoloured, RigContribution,
 };
 use omuzaki_core::glam::{Mat3, Quat, Vec3};
 use omuzaki_core::mesh::MeshData;
@@ -30,6 +31,8 @@ use super::ears::{self, Side};
 use super::material;
 use super::mesh::{self, Resolution};
 use super::neck;
+use super::outline;
+use crate::template::soft_sd;
 
 /// The head-local height below which the head mesh blends into the neck bone when the face has no stretched chin
 /// (the prototype: world 0.60 against a head centre at 0.778).
@@ -71,14 +74,16 @@ impl PartKind for Head {
             .joint(&JointRef::HEAD)
             .ok_or_else(|| ctx.fail("the body's fit has no head joint to place the head on"))?
             / ctx.published.scale();
-        let placed = lowered(params);
-        let centre = Vec3::from_array(placed.cranium.centre.map(narrow));
+        let placed = lowered(&seated(params, f64::from(template_head.y)));
+        let centre = Vec3::from_array(placed.cranium.centre().map(narrow));
         let drop = Vec3::Y * narrow(params.neck.drop);
 
         let built = mesh::build_head(&placed, Resolution::of(ctx.quality), None)
             .map_err(|e| ctx.fail(format!("head mesh: {e}")))?;
         let (mut head_mesh, surface) = (built.mesh, built.surface);
-        let projection = placed.face_projection();
+        // The face window follows the outline the mesh is built from, so they agree outside the plausible space too (#693).
+        let framed = HeadParams { outline: outline::plausible(&placed.outline, &placed.cranium), ..placed.clone() };
+        let projection = framed.face_projection();
 
         weigh_head(&mut head_mesh, centre.y, below_chin_line(params));
         let mut meshes = vec![part_mesh(ctx, "head", head_mesh, vec![JointRef::HEAD, JointRef::NECK], "skin-head")?];
@@ -99,7 +104,7 @@ impl PartKind for Head {
             meshes.extend(animal_meshes);
             ear_anchors.extend(tips);
         }
-        let overlays = material::face_overlays(&placed, surface.centre());
+        let overlays = material::face_overlays(&framed, surface.centre());
         let materials = materials(&|c| ctx.colour(c), &placed, overlays)?
             .into_iter()
             .map(|(name, spec)| Ok((material::name(ctx, name)?, spec)))
@@ -298,10 +303,29 @@ fn along_chain(v: f32, bones: usize) -> ([u16; 4], [f32; 4]) {
     ([below, above, 0, 0], [1.0 - t, t, 0.0, 0.0])
 }
 
+/// `params` with the cranium's centre written: as the author wrote it, or, when unset, seated on the template whose head
+/// joint is at `template_head_y` (#825). [`Cranium::DEFAULT_CENTRE`] is sculpted on soft-sd's neck, so an unset centre
+/// rises with the template's head joint above soft-sd's, and the head meets the neck on every template and rides it
+/// when the body's sliders move it. The rise is taken to the micrometre: the joint comes back from the stature's scale
+/// in `f32`, and that noise must not move a soft-sd head off its own seat.
+pub fn seated(params: &HeadParams, template_head_y: f64) -> HeadParams {
+    let mut seated = params.clone();
+    seated.cranium.centre = Some(seat(&params.cranium, template_head_y));
+    seated
+}
+
+/// Where `cranium`'s centre is on a template whose head joint is at `template_head_y` ([`seated`]).
+#[must_use]
+pub fn seat(cranium: &Cranium, template_head_y: f64) -> [f64; 3] {
+    let rise = ((template_head_y - soft_sd::TABLE.joints.head_base.y) * 1e6).round() / 1e6;
+    cranium.raised_centre(rise)
+}
+
 /// `params` with the whole head lowered by the neck's drop.
 fn lowered(params: &HeadParams) -> HeadParams {
     let mut placed = params.clone();
-    placed.cranium.centre[1] -= params.neck.drop;
+    let [x, y, z] = params.cranium.centre();
+    placed.cranium.centre = Some([x, y - params.neck.drop, z]);
     placed
 }
 
@@ -387,7 +411,7 @@ mod tests {
     fn lowering_moves_only_the_vertical_centre() {
         let mut p = HeadParams::default();
         p.neck.drop = 0.02;
-        let (a, b) = (HeadParams::default().cranium.centre, lowered(&p).cranium.centre);
+        let (a, b) = (HeadParams::default().cranium.centre(), lowered(&p).cranium.centre());
         assert_eq!((a[0], a[2]), (b[0], b[2]));
         assert!((a[1] - b[1] - 0.02).abs() < 1e-12);
     }

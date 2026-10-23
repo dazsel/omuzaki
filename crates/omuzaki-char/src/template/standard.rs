@@ -22,7 +22,7 @@
 //! The standard template is the middle one: a young adult's neutral build, shoulders about as wide as the hips and a
 //! waist at four fifths of the chest. The body shape (CB-04) moves it towards a body type.
 
-use omuzaki_char_api::{BodyParams, BodyShape, Cranium, HandParams, HeadParams, Neck, Proportions};
+use omuzaki_char_api::{BodyParams, BodyShape, HandParams, HeadParams, Neck, Proportions};
 use omuzaki_core::glam::DVec3;
 
 use super::layout::{
@@ -106,14 +106,11 @@ pub(super) fn hip_zone(y: f64, from: f64, to: f64) -> f64 {
 }
 
 /// The numbers a new character of a template starts from: the template's layout is the default sliders, so what changes
-/// is the head, which rides on the head base, and the neck, which has to meet the body's.
-pub(super) fn defaults(head_base_y: f64, neck: Neck) -> TemplateDefaults {
-    // The default cranium sits `lift` above soft-sd's head base; every template puts it that far above its own.
-    let lift = Cranium::default().centre[1] - soft_sd::TABLE.joints.head_base.y;
-    let mut cranium = Cranium::default();
-    cranium.centre[1] = head_base_y + lift;
+/// is the neck, which has to meet the body's. The head leaves its centre unset, so the head part seats it on the head
+/// base and it rides the neck ([`seated`](crate::head::part::seated)).
+pub(super) fn defaults(neck: Neck) -> TemplateDefaults {
     TemplateDefaults {
-        head: HeadParams { cranium, neck, ..HeadParams::default() },
+        head: HeadParams { neck, ..HeadParams::default() },
         body: BodyParams::default(),
         ..TemplateDefaults::default()
     }
@@ -361,7 +358,7 @@ impl Template for Standard {
     }
 
     fn defaults(&self) -> TemplateDefaults {
-        defaults(JOINTS.head_base.y, Neck { radius_top: h(0.15), radius_bottom: h(0.215), height: h(0.36), drop: 0.0 })
+        defaults(Neck { radius_top: h(0.15), radius_bottom: h(0.215), height: h(0.36), drop: 0.0 })
     }
 }
 

@@ -41,8 +41,13 @@ impl Default for SkinColours {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Cranium {
-    /// Head centre in bind space: the origin of the head-local frame.
-    pub centre: [f64; 3],
+    /// Head centre in bind space: the origin of the head-local frame. `None` (the default) seats the head on the
+    /// template it is built on: [`Cranium::DEFAULT_CENTRE`] raised by as much as the template's head joint stands above
+    /// soft-sd's, so the head meets the neck on every template and rides it when the body's sliders move it (#825). A
+    /// centre written here is taken as written, on every template (#960). [`Cranium::centre`] reads it with soft-sd's
+    /// seat for `None`, where no template is known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub centre: Option<[f64; 3]>,
     /// Half-width (x).
     pub half_width: f64,
     /// Half-depth at the front (+z).
@@ -64,7 +69,7 @@ pub struct Cranium {
 impl Default for Cranium {
     fn default() -> Self {
         Self {
-            centre: [0.0, 0.78, -0.02],
+            centre: None,
             half_width: 0.186,
             half_depth_front: 0.184,
             half_depth_back: 0.181,
@@ -74,6 +79,26 @@ impl Default for Cranium {
             cheek_fullness: 0.01,
             face_flatten: 0.035,
         }
+    }
+}
+
+impl Cranium {
+    /// Where an unset centre puts the head on soft-sd, the template the default cranium is sculpted on.
+    pub const DEFAULT_CENTRE: [f64; 3] = [0.0, 0.78, -0.02];
+
+    /// The centre as written, or soft-sd's seat ([`Cranium::DEFAULT_CENTRE`]) when it is unset: what a head built with
+    /// no template under it uses.
+    #[must_use]
+    pub fn centre(&self) -> [f64; 3] {
+        self.raised_centre(0.0)
+    }
+
+    /// The centre as written, or, when it is unset, [`Cranium::DEFAULT_CENTRE`] raised by `rise`: how far the head
+    /// joint of the template the head is built on stands above soft-sd's.
+    #[must_use]
+    pub fn raised_centre(&self, rise: f64) -> [f64; 3] {
+        let [x, y, z] = Self::DEFAULT_CENTRE;
+        self.centre.unwrap_or([x, y + rise, z])
     }
 }
 
@@ -87,7 +112,7 @@ impl Validate for Cranium {
         c.range("half_height_down_front", self.half_height_down_front, 0.05, 0.4);
         c.range("cheek_fullness", self.cheek_fullness, 0.0, 0.05);
         c.range("face_flatten", self.face_flatten, 0.0, 0.2);
-        for (i, v) in self.centre.iter().enumerate() {
+        for (i, v) in self.centre.iter().flatten().enumerate() {
             c.range(&format!("centre/{i}"), *v, -4.0, 4.0);
         }
     }
@@ -101,7 +126,8 @@ pub struct Chin {
     pub y: f64,
     /// Head-local height below which the lower face is stretched down.
     pub stretch_top: f64,
-    /// Smallest allowed ratio between the target outline width and the cranium's width (stops pinching).
+    /// Smallest allowed ratio between the target outline width and the cranium's width (stops pinching). The head
+    /// applies it only near the chin's tip, held to `0.6..=0.75`.
     pub min_ratio: f64,
 }
 
@@ -120,7 +146,8 @@ pub struct HeadOutline {
     pub half_width: f64,
     /// Head-local height where the taper toward the chin begins.
     pub top: f64,
-    /// How far below `top` the outline closes (the face length without a stretched chin).
+    /// How far below `top` the outline closes, when there is no `chin`. With a chin the outline closes at the chin and
+    /// this is unused.
     pub height: f64,
     /// Superellipse exponent: 2 is an ellipse; lower is pointier, higher squarer.
     pub exponent: f64,
@@ -128,7 +155,8 @@ pub struct HeadOutline {
     /// whole outline (today's single exponent).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub exponent_lower: Option<f64>,
-    /// A longer chin (close-up faces), or `None` for the cranium's own.
+    /// A longer chin (close-up faces), or `None` to close the outline at `top - height`: a chinless head is stretched
+    /// (or pressed in slightly) so its lowest point lands there, so [`HeadOutline::chin_y`] holds for it too.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub chin: Option<Chin>,
     /// How far the cheeks bulge forward either side of the mouth (chubby), in metres.
@@ -259,6 +287,17 @@ pub struct Ears {
     pub flare_deg: f64,
     /// How far it tilts back, degrees.
     pub tilt_deg: f64,
+    /// How long an [`EarKind::Elf`] ear's pointed tip is, metres (0.04 to 0.14); `None` for the length its `size` gives
+    /// (0.09 m per unit, held to that range), which is what every ear saved before this field had. Ignored by the
+    /// other kinds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("x-ui" = {"level": "advanced"}))]
+    pub tip_length: Option<f64>,
+    /// How far an [`EarKind::Elf`] ear's tip leans back from straight up, degrees (0 to 45), in the plane of the
+    /// shell. Ignored by the other kinds.
+    #[serde(skip_serializing_if = "Ears::is_default_tip_angle")]
+    #[schemars(extend("x-ui" = {"level": "advanced"}))]
+    pub tip_angle_deg: f64,
     /// What an [`EarKind::Animal`] ear is: the animal, where it stands and its colours. Ignored by the other kinds, so
     /// a form shows it folded.
     #[serde(skip_serializing_if = "AnimalEars::is_default")]
@@ -274,8 +313,21 @@ impl Default for Ears {
             position: [0.184, -0.066, -0.012],
             flare_deg: 42.0,
             tilt_deg: 7.0,
+            tip_length: None,
+            tip_angle_deg: Self::TIP_ANGLE_DEG,
             animal: AnimalEars::default(),
         }
+    }
+}
+
+impl Ears {
+    /// The default lean of an elf ear's tip, degrees.
+    pub const TIP_ANGLE_DEG: f64 = 15.0;
+
+    /// Whether `deg` is the default tip lean, which a file leaves out.
+    #[allow(clippy::trivially_copy_pass_by_ref, clippy::float_cmp)] // serde passes a reference; only the exact default is left out
+    fn is_default_tip_angle(deg: &f64) -> bool {
+        *deg == Self::TIP_ANGLE_DEG
     }
 }
 
@@ -404,8 +456,11 @@ pub struct HeadParams {
 }
 
 impl HeadParams {
-    /// Where the painted face layers land, head-local. Published by the head part; the face painter's layers cover
-    /// exactly this rectangle. Follows the chin, so a variant with a longer chin gets a taller window.
+    /// Where the painted face layers land, head-local, for the outline as written. The face painter's layers cover
+    /// exactly this rectangle. Follows the chin, so a variant with a longer chin gets a taller window. The head part
+    /// builds from the outline clamped into its plausible space and publishes the projection of that outline, so the
+    /// window and the mesh agree for any slider values; this method, on parameters outside that space, gives the
+    /// window of the unclamped request.
     pub fn face_projection(&self) -> FaceProjection {
         let w = &self.window;
         FaceProjection {
@@ -434,6 +489,10 @@ impl Validate for HeadParams {
             }
         }
         c.range("ears/size", self.ears.size, 0.2, 3.0);
+        if let Some(length) = self.ears.tip_length {
+            c.range("ears/tip_length", length, 0.04, 0.14);
+        }
+        c.range("ears/tip_angle_deg", self.ears.tip_angle_deg, 0.0, 45.0);
         if let Some(deg) = self.ears.animal.from_top_deg {
             c.range("ears/animal/from_top_deg", deg, 0.0, 80.0);
         }
@@ -454,11 +513,25 @@ mod tests {
     #[test]
     fn the_cranium_may_sit_as_high_as_the_tallest_template_puts_it() {
         // The 7.5 head template's head centre is 2.7 m up in the shared head frame.
-        let mut c = Cranium::default();
-        c.centre[1] = 2.7;
+        let mut c = Cranium { centre: Some([0.0, 2.7, -0.02]), ..Cranium::default() };
         c.validate().unwrap();
-        c.centre[1] = 4.5;
+        c.centre = Some([0.0, 4.5, -0.02]);
         assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn an_unset_centre_is_soft_sds_seat_raised_and_a_written_one_is_kept() {
+        let unset = Cranium::default();
+        assert_eq!(unset.centre(), Cranium::DEFAULT_CENTRE);
+        assert_eq!(unset.raised_centre(0.5), [0.0, 0.78 + 0.5, -0.02]);
+        // A written centre equal to the old default is the author's, not a stand-in for "unset".
+        let written = Cranium { centre: Some(Cranium::DEFAULT_CENTRE), ..Cranium::default() };
+        assert_eq!(written.raised_centre(0.5), Cranium::DEFAULT_CENTRE);
+        // Unset is not written, and a file without it reads as unset.
+        let json = serde_json::to_value(&unset).unwrap();
+        assert!(json.get("centre").is_none(), "{json}");
+        let read: Cranium = serde_json::from_value(serde_json::json!({ "centre": [0.0, 0.78, -0.02] })).unwrap();
+        assert_eq!(read, written);
     }
 
     #[test]

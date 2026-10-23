@@ -260,7 +260,7 @@ impl Template for Tall {
     }
 
     fn defaults(&self) -> TemplateDefaults {
-        defaults(JOINTS.head_base.y, Neck { radius_top: h(0.158), radius_bottom: h(0.22), height: h(0.38), drop: 0.0 })
+        defaults(Neck { radius_top: h(0.158), radius_bottom: h(0.22), height: h(0.38), drop: 0.0 })
     }
 }
 

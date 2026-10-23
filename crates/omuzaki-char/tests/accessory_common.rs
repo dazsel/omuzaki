@@ -41,19 +41,6 @@ pub fn bone(joint: JointRef, translation: [f64; 3]) -> Attach {
     Attach::Bone { bone: joint, offset: AttachOffset { translation, ..AttachOffset::default() } }
 }
 
-/// The head parameters that seat the head on `template`'s neck: the default cranium is sculpted for soft-sd, so on
-/// another template its centre moves up with the neck by the same distance (the accessory tests of `rigid` do the same).
-pub fn head_params(template: &str) -> Value {
-    let body = omuzaki_char_api::BodyParams::default();
-    let layout =
-        omuzaki_char::template::registry::find(template).unwrap().layout(&body.proportions, &body.shape, &body.hand);
-    let soft_sd =
-        omuzaki_char::template::registry::find("soft-sd").unwrap().layout(&body.proportions, &body.shape, &body.hand);
-    let rise = layout.head_base().unwrap().y - soft_sd.head_base().unwrap().y;
-    let default = omuzaki_char_api::HeadParams::default().cranium.centre;
-    json!({ "cranium": { "centre": [default[0], default[1] + rise, default[2]] } })
-}
-
 /// The hairstyles the real `hair` kind makes on `main` today (the seed styles are not in yet): the default style and
 /// each generator alone on the scalp shell.
 pub fn hairstyles() -> Vec<(&'static str, Value)> {
@@ -80,7 +67,7 @@ pub fn character_with(
     def.template = template.parse().unwrap();
     def.parts.clear();
     def.parts.insert(pid("body"), part("body", 0, None, json!({})));
-    def.parts.insert(pid("head"), part("head", 0, None, head_params(template)));
+    def.parts.insert(pid("head"), part("head", 0, None, json!({})));
     if let Some(hair) = hair {
         def.parts.insert(pid("hair"), part("hair", 10, None, hair.clone()));
     }

@@ -78,11 +78,12 @@ pub trait Template: Send + Sync + 'static {
     /// Crown to sole of a character built from `layout` and the template's default head: the head rides the neck, so the
     /// crown follows the head base when the sliders move it. `0` for an empty layout.
     fn authored_height_of(&self, layout: &BodyLayout) -> f64 {
-        let neutral = self.layout(&Proportions::default(), &BodyShape::default(), &HandParams::default());
-        let (Some(base), Some(neutral_base)) = (layout.head_base(), neutral.head_base()) else { return 0.0 };
+        let Some(base) = layout.head_base() else { return 0.0 };
         let Some(foot) = layout.section64(BodyRegion::FootL, 0.5) else { return 0.0 };
         let cranium = self.defaults().head.cranium;
-        let crown = cranium.centre[1] + cranium.half_height_up + (base.y - neutral_base.y);
+        // An unset centre rides the head base (`head::part::seated`); a written one stays where it is written.
+        let centre = cranium.raised_centre(base.y - soft_sd::TABLE.joints.head_base.y);
+        let crown = centre[1] + cranium.half_height_up;
         (crown - (foot.centre.y - foot.radii.y)).max(0.0)
     }
 

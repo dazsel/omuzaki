@@ -47,24 +47,11 @@ pub fn built(template: &str, kind: &str, params: Value) -> BuiltCharacter {
         params,
     };
     def.parts.insert(PartId::new("body").unwrap(), part("body", 0, json!({})));
-    def.parts.insert(PartId::new("head").unwrap(), part("head", 0, head_params(template)));
+    def.parts.insert(PartId::new("head").unwrap(), part("head", 0, json!({})));
     def.parts.insert(PartId::new("acc").unwrap(), part(kind, 50, params));
     RegistryBuilder
         .build(&CharId::new("t").unwrap(), &def, &BuildOptions::default(), &BuildServices::default())
         .unwrap_or_else(|e| panic!("{kind} on {template}: {e}"))
-}
-
-/// The head parameters that seat the head on `template`'s neck: the default cranium is sculpted for soft-sd, so on another
-/// template its centre moves up with the neck by the same distance (the accessory tests of `omuzaki-char` do the same).
-fn head_params(template: &str) -> Value {
-    let body = omuzaki_char_api::BodyParams::default();
-    let layout =
-        omuzaki_char::template::registry::find(template).unwrap().layout(&body.proportions, &body.shape, &body.hand);
-    let soft_sd =
-        omuzaki_char::template::registry::find("soft-sd").unwrap().layout(&body.proportions, &body.shape, &body.hand);
-    let rise = layout.head_base().unwrap().y - soft_sd.head_base().unwrap().y;
-    let default = omuzaki_char_api::HeadParams::default().cranium.centre;
-    json!({ "cranium": { "centre": [default[0], default[1] + rise, default[2]] } })
 }
 
 /// The prototype's meshes whose name contains one of `keywords`, from every geometry set the dump holds; `None` (after saying

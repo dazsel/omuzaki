@@ -96,7 +96,7 @@ fn the_reshape_is_in_the_face_not_the_cranium() {
     apply(&mut doc, "face.set_profile", json!({"character": "kit", "profile": "egg-oval", "blend": 0.5}));
     let after = build(&head(&doc), Resolution::LIVE, None).unwrap();
     let layout = definition(&doc, "kit").face.layout;
-    let centre = head(&doc).cranium.centre[1];
+    let centre = head(&doc).cranium.centre()[1];
     assert_eq!(before.positions.len(), after.positions.len());
     let (mut below, mut total, mut above_brows) = (0.0f64, 0.0f64, 0.0f64);
     for (a, b) in before.positions.iter().zip(&after.positions) {

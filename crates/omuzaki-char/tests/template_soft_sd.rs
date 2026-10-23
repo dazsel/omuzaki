@@ -243,7 +243,7 @@ fn the_template_registers_itself_and_declares_what_it_is() {
 #[test]
 fn the_declared_height_in_heads_matches_the_default_head_within_3_percent() {
     let c = HeadParams::default().cranium;
-    let (crown, chin) = (c.centre[1] + c.half_height_up, c.centre[1] - c.half_height_down_front);
+    let (crown, chin) = (c.centre()[1] + c.half_height_up, c.centre()[1] - c.half_height_down_front);
     let l = default_layout();
     let sole = sample(&l, BodyRegion::FootL, 0.5).centre.y - sample(&l, BodyRegion::FootL, 0.5).radii.y;
     let measured = (crown - sole) / (crown - chin);
