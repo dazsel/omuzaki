@@ -4,8 +4,9 @@
 //! split, so the parser holds text from `[` until `]` (at most [`TAG_MAX_CHARS`]) and emits [`BrainEvent`]s: speakable
 //! text, intents at the character offset of the text spoken before them, `[style …]`, `[pass]`, and the runs it
 //! dropped. A run that doesn't parse, an unknown verb, an over-long run and an unclosed `[` at the end are **dropped,
-//! never spoken**. Markdown (`*`, `#`, backticks) and emoji names (`:smile:`) are stripped from speech, and runs of
-//! whitespace become one space, so the text the voice gets is what a person would say.
+//! never spoken**. Markdown (`*`, `#`, backticks), emoji names (`:smile:`), markup (`<br>`) and a reasoning model's
+//! `<think>…</think>` block are stripped from speech, and runs of whitespace become one space, so the text the voice
+//! gets is what a person would say.
 
 use omuzaki_anim_api::score::{ClipId, ExpressionId};
 use omuzaki_performer_api::brain::{BrainEvent, ParseIssue, ParseIssueKind};
@@ -14,6 +15,10 @@ use omuzaki_performer_api::limits::{EMOTE_HOLD_DEFAULT_S, LOOK_HOLD_DEFAULT_S, T
 
 /// The longest emoji name held back before it is spoken as text (`:thumbsup:` and its kin are shorter).
 const EMOJI_MAX_CHARS: usize = 32;
+/// The longest `<…>` run treated as markup.
+const MARKUP_MAX_CHARS: usize = 16;
+/// What closes a reasoning block.
+const THINK_END: &str = "</think>";
 
 /// What the parser is in the middle of.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,6 +29,10 @@ enum Held {
     Tag(String),
     /// After a `:` that may open an emoji name: the name so far, without the colon.
     Emoji(String),
+    /// After a `<` that may open markup: the run so far, without the angle bracket.
+    Angle(String),
+    /// Inside `<think>`: the last few characters, to find its end. Nothing in it is spoken.
+    Think(String),
 }
 
 /// Turns streamed reply text into [`BrainEvent`]s. One per turn.
@@ -69,7 +78,8 @@ impl TagParser {
     pub fn finish(&mut self) -> Vec<BrainEvent> {
         let mut events = Vec::new();
         match std::mem::replace(&mut self.held, Held::None) {
-            Held::None => {}
+            // An unfinished reasoning block is never spoken.
+            Held::None | Held::Think(_) => {}
             Held::Tag(run) => {
                 self.flush_text(&mut events);
                 events.push(BrainEvent::Issue(ParseIssue::new(cut(&run), ParseIssueKind::Unclosed, self.spoken)));
@@ -77,6 +87,11 @@ impl TagParser {
             Held::Emoji(name) => {
                 self.speak(':');
                 for c in name.chars() {
+                    self.speak(c);
+                }
+            }
+            Held::Angle(run) => {
+                for c in run.chars() {
                     self.speak(c);
                 }
             }
@@ -126,11 +141,38 @@ impl TagParser {
                     self.feed(c, events);
                 }
             }
+            Held::Angle(run) => {
+                if c == '>' {
+                    // `<think>` opens a reasoning block; any other short markup is dropped.
+                    let think = run == "think";
+                    self.held = if think { Held::Think(String::new()) } else { Held::None };
+                } else if c.is_whitespace() || c == '<' || run.chars().count() >= MARKUP_MAX_CHARS {
+                    // Not markup: the words were speech (the `<` itself never is).
+                    let run = std::mem::take(run);
+                    self.held = Held::None;
+                    for r in run.chars() {
+                        self.speak(r);
+                    }
+                    self.feed(c, events);
+                } else {
+                    run.push(c);
+                }
+            }
+            Held::Think(tail) => {
+                tail.push(c);
+                if tail.ends_with(THINK_END) {
+                    self.held = Held::None;
+                } else if tail.len() > 4 * THINK_END.len() {
+                    let keep = tail.char_indices().rev().nth(THINK_END.len()).map_or(0, |(i, _)| i);
+                    tail.drain(..keep);
+                }
+            }
             Held::None => match c {
                 '[' => {
                     self.held = Held::Tag(String::new());
                 }
                 ':' => self.held = Held::Emoji(String::new()),
+                '<' => self.held = Held::Angle(String::new()),
                 '*' | '#' | '`' | ']' => {}
                 _ => self.speak(c),
             },
@@ -369,6 +411,32 @@ mod tests {
     fn markdown_emoji_and_spaces_are_not_spoken() {
         let (text, _) = parse_reply("**Wow!**  `really` # yes :smile: it's 3:30, note: fine :) ok");
         assert_eq!(text, "Wow! really yes it's 3:30, note: fine :) ok");
+    }
+
+    #[test]
+    fn reasoning_blocks_and_markup_are_not_spoken() {
+        let reply =
+            "<think>\nThe user greets me. [emote sad] I should wave.\n</think>\n\nHi chat! [emote happy] a<br>b, 3 < 4";
+        let (text, events) = parse_reply(reply);
+        assert_eq!(text, "Hi chat! ab, 3 4");
+        assert_eq!(intents(&events), [("emote".to_owned(), 8)]);
+        // Split anywhere, the same.
+        for at in 0..reply.len() {
+            if !reply.is_char_boundary(at) {
+                continue;
+            }
+            let mut p = TagParser::new();
+            let mut events = p.push(&reply[..at]);
+            events.extend(p.push(&reply[at..]));
+            events.extend(p.finish());
+            let text: String = events
+                .iter()
+                .filter_map(|e| if let BrainEvent::Text(t) = e { Some(t.as_str()) } else { None })
+                .collect();
+            assert_eq!(text, "Hi chat! ab, 3 4", "split at {at}");
+        }
+        // An unfinished block says nothing.
+        assert_eq!(parse_reply("<think>still thinking").0, "");
     }
 
     #[test]
