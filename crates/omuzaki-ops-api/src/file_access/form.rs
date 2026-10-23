@@ -617,7 +617,6 @@ mod tests {
         assert_eq!((place.path(0), place.path(2), place.path(9)), ("/".into(), "/a/b".into(), "/a/b/c".into()));
     }
 
-    #[test]
     /// A verbatim network path whose server starts with a dot (the fuzzer's find, #2246) is refused: its plain
     /// spelling `\\.x\...` is the device namespace. The other prefixes that change meaning without the `\\?\` are
     /// refused in both forms already.

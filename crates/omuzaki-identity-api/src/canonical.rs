@@ -510,16 +510,14 @@ mod tests {
             ids: std::collections::BTreeMap<String, Id>,
             big: (u128, i128, i64, u64),
             floats: (f32, f64, f32),
-            bytes: &'a serde_bytes_like::Bytes,
+            bytes: &'a Bytes,
             c: char,
             none: Option<u8>,
         }
-        mod serde_bytes_like {
-            pub struct Bytes(pub [u8; 3]);
-            impl serde::Serialize for Bytes {
-                fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-                    s.serialize_bytes(&self.0)
-                }
+        struct Bytes([u8; 3]);
+        impl serde::Serialize for Bytes {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                s.serialize_bytes(&self.0)
             }
         }
         let body = Body {
@@ -534,7 +532,7 @@ mod tests {
             ids: std::collections::BTreeMap::from([("k".to_owned(), Id("v".into()))]),
             big: (u128::from(u64::MAX), -5, i64::MIN, u64::MAX),
             floats: (1.1, -0.0, 3.4e38),
-            bytes: &serde_bytes_like::Bytes([0, 128, 255]),
+            bytes: &Bytes([0, 128, 255]),
             c: 'é',
             none: None,
         };
