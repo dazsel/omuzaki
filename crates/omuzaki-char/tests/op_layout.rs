@@ -161,6 +161,52 @@ fn measure_beside_a_reference_gives_the_difference_and_plain_notes() {
     assert!(!out.to_string().contains("null"), "{out}");
 }
 
+#[test]
+fn a_partial_reference_compares_only_the_ratios_it_gives() {
+    let doc = project(Some(FaceLayout::default()));
+    let mine = ratios_of(&FaceLayout::default());
+    let x = |field: &str| mine[field].as_f64().unwrap();
+    let reference = json!({ "drop_to_iod": x("drop_to_iod") - 0.2, "mouth": x("mouth") + 0.05 });
+    let out = run(&doc, "face.layout.measure", json!({"character": "mock", "reference": reference}));
+    let difference = out["difference"].as_object().unwrap();
+    assert_eq!(difference.len(), 2, "two fields given, two compared: {out}");
+    assert!((difference["drop_to_iod"].as_f64().unwrap() - 0.2).abs() < 1e-12, "{out}");
+    assert!((difference["mouth"].as_f64().unwrap() + 0.05).abs() < 1e-12, "{out}");
+    let notes: Vec<&str> = out["notes"].as_array().unwrap().iter().map(|n| n.as_str().unwrap()).collect();
+    assert_eq!(
+        notes,
+        [
+            "the eye-to-chin distance is 0.20 longer than the reference (in eye distances)",
+            "the mouth is 0.05 higher than the reference"
+        ]
+    );
+    assert_eq!(out["reference"], reference, "the reference is echoed as given: {out}");
+    assert!(!out.to_string().contains("null"), "{out}");
+}
+
+#[test]
+fn an_empty_reference_is_refused_and_every_reference_field_is_optional() {
+    let doc = project(Some(FaceLayout::default()));
+    let e = refused(&doc, "face.layout.measure", json!({"character": "mock", "reference": {}}));
+    assert_error(&e, ErrorCode::Invalid, "reference", &["no ratio"], &[]);
+    let e = refused(&doc, "face.layout.measure", json!({"character": "mock", "reference": {"mouth": 1.5}}));
+    assert_error(&e, ErrorCode::Invalid, "reference/mouth", &["0 to 1"], &[]);
+
+    let schema = serde_json::to_value((find("face.layout.measure").unwrap().schema)()).unwrap();
+    let reference = &schema["properties"]["reference"];
+    let text = reference.to_string();
+    for field in ["eye_width_to_iod", "drop_to_iod", "nose", "mouth", "blush", "blush_spacing_to_iod"] {
+        assert!(text.contains(field), "the reference schema names {field}: {reference}");
+    }
+    let required = |v: &Value| v.get("required").and_then(Value::as_array).is_some_and(|r| !r.is_empty());
+    let object = reference
+        .get("anyOf")
+        .and_then(|a| a.as_array())
+        .and_then(|a| a.iter().find(|v| v.get("properties").is_some()))
+        .unwrap_or(reference);
+    assert!(!required(object), "no reference field is required: {reference}");
+}
+
 /// The ratios `face.layout.measure` reports for `layout` on the test head.
 fn ratios_of(layout: &FaceLayout) -> Value {
     run(&project(Some(*layout)), "face.layout.measure", json!({"character": "mock"}))["ratios"].clone()

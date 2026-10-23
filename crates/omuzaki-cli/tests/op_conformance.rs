@@ -467,6 +467,10 @@ impl Rig {
                     .insert::<dyn omuzaki_settings_api::service::Settings>(settings_with_a_profile())
                     .insert::<dyn PerformHost>(Arc::new(IdleHost))
                     .insert::<dyn InputHost>(Arc::new(IdleInput))
+                    // The stage's effect queue with no stage draining it: the `stage.effect.*` examples dry-run.
+                    .insert::<dyn omuzaki_stage_api::EffectService>(Arc::new(
+                        omuzaki_stage::effects::service::StageEffects::new(0),
+                    ))
                     // Snapshots with nothing to reload: `project.save` and `project.reload` run as they would on a
                     // project whose files match the document.
                     .insert::<dyn omuzaki_history_api::state::HistoryView>(Arc::new(view))

@@ -32,7 +32,7 @@ pub(crate) fn rounds(quality: &Quality, hardware: u32) -> u32 {
 
 /// Whether `pass` runs once per round. The rest run once per frame.
 pub(crate) fn repeats(pass: Pass) -> bool {
-    matches!(pass, Pass::Opaque | Pass::Outlines | Pass::Transparent)
+    matches!(pass, Pass::Opaque | Pass::Outlines | Pass::Particles | Pass::Transparent)
 }
 
 /// The row each round's sample takes in its cell, by the number of rounds: rook patterns that are also queen patterns

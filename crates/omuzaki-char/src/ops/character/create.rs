@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::fmt::Display;
 
 use omuzaki_char_api::{
-    BodyTemplateId, CharId, CharacterDef, PartDef, PartId, PartKindId, PartKindRegistration, find_kind, paths,
+    BodyTemplateId, CharId, CharacterDef, PartDef, PartId, PartKindId, find_kind, paths,
     requires_of,
 };
 use omuzaki_core::colour::Colour;
@@ -24,8 +24,9 @@ use crate::template::{Template, TemplateDefaults};
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum StartingParts {
-    /// A body, a head, hair and an outfit of a shirt, trousers and boots (ids `body`, `head`, `hair`, `shirt`,
-    /// `trousers`, `boots`), with the template's own numbers: the character builds and renders straight away, dressed.
+    /// The kit's default character: a body with five-finger hands, a head, hair, and an outfit of a shirt, a pleated
+    /// skirt, tights and boots (ids `body`, `head`, `hair`, `shirt`, `skirt`, `legwear`, `boots`), on the template's own
+    /// proportions: the character builds and renders straight away, dressed.
     #[default]
     Defaults,
     /// No parts at all: add each one with `part.add`.
@@ -34,8 +35,9 @@ pub enum StartingParts {
 
 /// Creates a character from a body template.
 ///
-/// With `parts: "defaults"` (the default) the character starts with a body, a head, hair and an outfit (a shirt,
-/// trousers and boots), taking the template's own proportions and head, so it builds and renders at once, dressed.
+/// With `parts: "defaults"` (the default) the character starts as the kit's default character: a body with five-finger
+/// hands, a head with open, round eyes, a brown bob with face-framing locks, and an outfit of a shirt, a pleated skirt,
+/// tights and boots, on the template's own proportions and head, so it builds and renders at once, dressed.
 /// With `parts: "empty"` it has no parts: add them one by one with `part.add`. Either way the palette starts with the
 /// three standard skin colours (`skin`, `skin_shade`, `skin_line`) that the head and body refer to, and the face starts
 /// as the template's, with the built-in expression library (moods, accents, visemes and blink) when the template brings
@@ -62,8 +64,8 @@ pub struct CharacterCreate {
     /// 4294967295; 0 when left out.
     #[serde(default)]
     pub seed: u32,
-    /// Which parts to start with: `defaults` (body, head, hair, shirt, trousers and boots; the default) or `empty`
-    /// (none).
+    /// Which parts to start with: `defaults` (body, head, hair, shirt, skirt, legwear and boots; the default) or
+    /// `empty` (none).
     #[serde(default)]
     pub parts: StartingParts,
 }
@@ -76,62 +78,92 @@ const STARTING_SKIN: [(&str, Colour); 3] = [
     ("skin_line", Colour::rgb(0xc9, 0x8a, 0x80)),
 ];
 
-/// A part that `parts: "defaults"` creates.
+/// The kit's default character (`library/starter.toml`): the parts `parts: "defaults"` creates and what it changes of
+/// their defaults and of the template's face.
+const STARTER: &str = include_str!("../../../library/starter.toml");
+
+/// The starter file: the face changes, then the parts in the order they are listed. Each builds after the parts it
+/// reads (hair after the head, the outfit after the body), whatever the order here.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Starter {
-    id: &'static str,
-    kind: &'static str,
-    /// The kind's parameters for this template: the template's own numbers where it has them, the kind's defaults
-    /// otherwise.
-    params: fn(&TemplateDefaults, &PartKindRegistration) -> Result<Value, serde_json::Error>,
+    /// Merged over the template's face.
+    #[serde(default)]
+    face: Value,
+    parts: Vec<StarterPart>,
 }
 
-/// The default parts, in the order they are listed. Each builds after the parts it reads (hair after the head, the
-/// outfit after the body), whatever the order here. The outfit takes its kinds' defaults, which fit any body.
-const STARTERS: [Starter; 6] = [
-    Starter { id: "body", kind: "body", params: |template, _| serde_json::to_value(&template.body) },
-    Starter { id: "head", kind: "head", params: |template, _| serde_json::to_value(&template.head) },
-    Starter { id: "hair", kind: "hair", params: kind_defaults },
-    Starter { id: "shirt", kind: "shirt", params: kind_defaults },
-    Starter { id: "trousers", kind: "trousers", params: kind_defaults },
-    Starter { id: "boots", kind: "boots", params: kind_defaults },
-];
-
-/// A starting part that takes its kind's own defaults.
-#[allow(clippy::unnecessary_wraps)] // the signature every starter's parameters share
-fn kind_defaults(_: &TemplateDefaults, kind: &PartKindRegistration) -> Result<Value, serde_json::Error> {
-    Ok((kind.defaults)())
+/// One starting part: its id, its kind, and what it changes of its defaults.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StarterPart {
+    id: String,
+    kind: String,
+    /// Merged over the part's defaults: the template's own numbers for `body` and `head`, the kind's otherwise.
+    #[serde(default)]
+    params: Value,
 }
 
-/// A built-in id that turned out not to be a valid slug: a bug in the table above, not in the caller's arguments.
+/// The starter, parsed once per call (it is small, and `character.create` is not a hot path).
+fn starter() -> Result<Starter, OpError> {
+    toml::from_str(STARTER).map_err(|e| OpError::internal(format!("the built-in starter (library/starter.toml): {e}")))
+}
+
+/// `over` merged into `base`: objects field by field, anything else (a list, a number) replaced whole.
+fn merge(base: &mut Value, over: &Value) {
+    match (base, over) {
+        (Value::Object(base), Value::Object(over)) => {
+            for (key, value) in over {
+                match base.get_mut(key) {
+                    Some(slot) => merge(slot, value),
+                    None => {
+                        base.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+        }
+        // An absent table (a part that changes nothing of its defaults) leaves them as they are.
+        (_, Value::Null) => {}
+        (base, over) => *base = over.clone(),
+    }
+}
+
+/// A built-in id that turned out not to be a valid slug: a bug in the starter file, not in the caller's arguments.
 fn built_in<T, E: Display>(what: &str, id: &str, made: Result<T, E>) -> Result<T, OpError> {
     made.map_err(|e| OpError::internal(format!("the built-in {what} id `{id}` isn't a valid id: {e}")))
 }
 
-impl Starter {
+impl StarterPart {
     /// The part, with parameters normalised through its kind.
     fn part(&self, defaults: &TemplateDefaults, template: &str) -> Result<(PartId, PartDef), OpError> {
-        let kind = find_kind(self.kind).ok_or_else(|| {
+        let kind = find_kind(&self.kind).ok_or_else(|| {
             OpError::unsupported(format!("this build has no `{}` part kind, which the default parts need", self.kind))
                 .hint("create the character with parts=\"empty\" and add the parts this build offers with part.add")
         })?;
-        let raw = (self.params)(defaults, kind).map_err(|e| {
+        let base = match self.kind.as_str() {
+            "body" => serde_json::to_value(&defaults.body),
+            "head" => serde_json::to_value(&defaults.head),
+            _ => Ok((kind.defaults)()),
+        };
+        let mut raw = base.map_err(|e| {
             OpError::internal(format!("serialising the `{}` defaults of template `{template}` failed: {e}", self.kind))
         })?;
+        merge(&mut raw, &self.params);
         let params = (kind.check)(&raw).map_err(|e| {
             OpError::internal(format!(
-                "template `{template}` gives `{}` parameters its own kind rejects: {e}",
+                "the starter gives `{}` parameters its own kind rejects on template `{template}`: {e}",
                 self.kind
             ))
         })?;
         let part = PartDef {
-            kind: built_in("part kind", self.kind, PartKindId::new(self.kind))?,
+            kind: built_in("part kind", &self.kind, PartKindId::new(&self.kind))?,
             parent: None,
             enabled: true,
             layer: tree::layer_of(kind),
             attach: None,
             params,
         };
-        Ok((built_in("part", self.id, PartId::new(self.id))?, part))
+        Ok((built_in("part", &self.id, PartId::new(&self.id))?, part))
     }
 }
 
@@ -163,12 +195,20 @@ impl CharacterCreate {
             defaults.face.expressions = ExpressionSet::library()
                 .map_err(|e| OpError::internal(format!("the built-in expression library doesn't read: {e}")))?;
         }
+        let starter = starter()?;
+        if matches!(self.parts, StartingParts::Defaults) && !starter.face.is_null() {
+            let mut face = serde_json::to_value(&defaults.face)
+                .map_err(|e| OpError::internal(format!("serialising the template's face failed: {e}")))?;
+            merge(&mut face, &starter.face);
+            defaults.face = serde_json::from_value(face)
+                .map_err(|e| OpError::internal(format!("the built-in starter's face doesn't read: {e}")))?;
+        }
         defaults.face.validate().map_err(|e| {
             OpError::internal(format!("the default face of template `{}` is invalid: {e}", template.id()))
         })?;
         let parts = match self.parts {
             StartingParts::Defaults => {
-                STARTERS.iter().map(|starter| starter.part(&defaults, template.id())).collect::<Result<_, _>>()?
+                starter.parts.iter().map(|part| part.part(&defaults, template.id())).collect::<Result<_, _>>()?
             }
             StartingParts::Empty => BTreeMap::new(),
         };
@@ -245,9 +285,18 @@ mod tests {
     }
 
     #[test]
-    fn the_starter_ids_are_valid_slugs() {
-        for starter in &STARTERS {
-            assert!(PartId::new(starter.id).is_ok() && PartKindId::new(starter.kind).is_ok(), "{}", starter.id);
+    fn the_starter_reads_and_its_ids_are_valid_slugs() {
+        let starter = starter().unwrap_or_else(|e| panic!("{e}"));
+        assert!(!starter.parts.is_empty());
+        for part in &starter.parts {
+            assert!(PartId::new(&part.id).is_ok() && PartKindId::new(&part.kind).is_ok(), "{}", part.id);
         }
+    }
+
+    #[test]
+    fn merging_sets_the_fields_it_names_and_keeps_the_rest() {
+        let mut base = json!({"a": 1, "b": {"c": 2, "d": [1, 2]}, "e": "x"});
+        merge(&mut base, &json!({"b": {"c": 3, "d": [9]}, "f": true}));
+        assert_eq!(base, json!({"a": 1, "b": {"c": 3, "d": [9]}, "e": "x", "f": true}));
     }
 }

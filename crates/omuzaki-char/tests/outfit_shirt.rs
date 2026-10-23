@@ -83,7 +83,7 @@ fn the_defaults_are_valid_and_every_bad_number_is_refused_naming_its_field() {
         ("neck/rise", Box::new(|p| p.neck.rise = 0.0)),
         ("neck/rise", Box::new(|p| p.neck.rise = f64::NAN)),
         ("common/ease", Box::new(|p| p.common.ease = 0.5)),
-        ("common/cloth/enabled", Box::new(|p| p.common.cloth.enabled = true)),
+        ("common/cloth/overrides/density", Box::new(|p| p.common.cloth.overrides.density = Some(5.0))),
     ];
     for (field, change) in bad {
         let mut p = ShirtParams::default();

@@ -208,9 +208,10 @@ fn a_hairstyle_item_creates_a_real_hair_part_that_builds_and_can_replace_the_kit
     let hair = derived["parts"].as_array().unwrap().iter().find(|p| p["part"] == "hair").expect("the hair row");
     assert_eq!(hair["recorded"], true, "{hair}");
     let def = CharacterDef::from_node(&node).unwrap();
-    let built = RegistryBuilder
-        .build(&CharId::new("mia").unwrap(), &def, &BuildOptions::default(), &BuildServices::default())
-        .unwrap();
+    // The kit's plaid skirt paints its texture; the apps paint with the rasteriser `omuzaki-face` links, which this
+    // crate doesn't, so the test hands the build the mock one.
+    let services = BuildServices::default().with_rasterizer(|| Box::new(omuzaki_face_mock::MockRasterizer));
+    let built = RegistryBuilder.build(&CharId::new("mia").unwrap(), &def, &BuildOptions::default(), &services).unwrap();
     let hair_vertices: usize =
         built.meshes.iter().filter(|m| m.part.as_str() == "hair").map(|m| m.mesh.geometry.positions.len()).sum();
     assert!(hair_vertices > 0, "the item's hair part builds");

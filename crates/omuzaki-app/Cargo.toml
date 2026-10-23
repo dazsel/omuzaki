@@ -35,6 +35,7 @@ omuzaki-setup = { path = "../omuzaki-setup" }
 
 [dev-dependencies]
 omuzaki-char = { path = "../omuzaki-char" }
+omuzaki-face-mock = { path = "../omuzaki-face-mock" }
 # `licence.derive` over the parts a library item made (`tests/library.rs`).
 omuzaki-io-ops = { path = "../omuzaki-io-ops" }
 omuzaki-library-mock = { path = "../omuzaki-library-mock" }

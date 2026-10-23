@@ -9,6 +9,8 @@
 //! - [`camera`], [`cast`]: [`CameraDef`], [`Framing`], [`CastMember`]
 //! - [`anchor`]: the [`Anchor`] a light or camera is measured against
 //! - [`check`]: [`SceneDef::check`], the one validator (design D13), with [`SceneError`] and [`Finding`]
+//! - [`effects`]: effect presets, the scene's [`WeatherDef`], live bursts and weather, and the [`EffectService`]
+//!   (particles D9 to D14)
 //!
 //! Phase 2 fields are additive (design D14): spot lights, fog, the environment and its backdrop are here; typed props
 //! and the other backdrop kinds arrive with their own tasks.
@@ -22,6 +24,7 @@ pub mod anchor;
 pub mod camera;
 pub mod cast;
 pub mod check;
+pub mod effects;
 pub mod error;
 pub mod ids;
 pub mod lighting;
@@ -32,6 +35,11 @@ pub mod settings;
 pub use anchor::Anchor;
 pub use camera::{CameraDef, Framing};
 pub use cast::CastMember;
+pub use effects::{
+    BurstAccepted, BurstRequest, ChatEmoteRef, EffectAt, EffectError, EffectEvent, EffectEventKind, EffectKind,
+    EffectOrigin, EffectPreset, EffectService, EffectStatus, LiveWeather, PresetInfo, SpriteDef, WeatherArea,
+    WeatherDef,
+};
 pub use error::{Finding, FindingKind, Findings, SceneError};
 pub use ids::{CameraId, LightId, MemberId, PropId, SceneId};
 pub use lighting::{

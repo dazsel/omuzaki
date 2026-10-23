@@ -272,6 +272,12 @@ pub(crate) fn shade_pixel(material: &Material, lit: Lit, textures: &Textures<'_>
     Some(colour.extend(alpha))
 }
 
+/// The lit colour of a linear `albedo` under `lit`, with `material`'s toon model (or as it is, unlit): what a particle's
+/// centre gets (particles.md D5).
+pub(crate) fn lit_colour(material: &Material, lit: Lit, albedo: Vec3) -> Vec3 {
+    toon_of(&material.shading).map_or(albedo, |toon| toon_colour(&toon, albedo, lit))
+}
+
 fn toon_colour(toon: &Toon, albedo: Vec3, lit: Lit) -> Vec3 {
     let colour = albedo * lit.radiance + toon.emissive.to_linear() + lit.rim;
     toon.skin.map_or(colour, |skin| skin_adjust(colour, albedo, skin))

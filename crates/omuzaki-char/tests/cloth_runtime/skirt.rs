@@ -123,7 +123,7 @@ pub fn tube(rows: usize, cols: usize, y0: f32, r0: f32, y1: f32, r1: f32) -> Clo
             skin.push(SkinWeights { joints: [0, 2, 3, 0], weights: [1.0 - leg, leg * left, leg * (1.0 - left), 0.0] });
         }
     }
-    ClothGrid { rows, cols, wrap: true, positions, skin, joints: joints() }
+    ClothGrid { rows, cols, wrap: true, positions, skin, joints: joints(), mesh: Vec::new() }
 }
 
 /// The skirt: 48 x 32 vertices, waist 14 cm at 1.02 m flaring to a 24 cm hem at 0.58 m.

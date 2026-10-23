@@ -68,9 +68,10 @@ fn get(runner: &dyn Runner, path: &str) -> Option<Value> {
 fn build(runner: &dyn Runner) -> BuiltCharacter {
     let node = get(runner, "characters/mia").expect("the character");
     let def = CharacterDef::from_node(&node).unwrap();
-    RegistryBuilder
-        .build(&CharId::new("mia").unwrap(), &def, &BuildOptions::default(), &BuildServices::default())
-        .unwrap()
+    // The kit's plaid skirt paints its texture; the apps paint with the rasteriser `omuzaki-face` links, which this
+    // crate doesn't, so the test hands the build the mock one.
+    let services = BuildServices::default().with_rasterizer(|| Box::new(omuzaki_face_mock::MockRasterizer));
+    RegistryBuilder.build(&CharId::new("mia").unwrap(), &def, &BuildOptions::default(), &services).unwrap()
 }
 
 /// What a part that isn't built leaves.

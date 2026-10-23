@@ -118,6 +118,29 @@ impl EmoteAtlas {
         Some(cell)
     }
 
+    /// Gives up on `key`: its fetch failed or was never sent. It stops loading and draws the placeholder until it is
+    /// asked for again.
+    pub fn cancel(&mut self, key: u64) {
+        self.finish_loading(key);
+    }
+
+    /// Frees the cell holding `key`, if it is unpinned: its picture didn't reach the texture.
+    pub fn forget(&mut self, key: u64) {
+        self.finish_loading(key);
+        if let Some(cell) = self.find(key)
+            && self.slots[usize::from(cell)].pins == 0
+        {
+            self.slots[usize::from(cell)] = Slot::default();
+        }
+    }
+
+    /// Drops every pin, before the live batches pin their cells again (the frame step recounts them each frame).
+    pub fn clear_pins(&mut self) {
+        for slot in &mut self.slots {
+            slot.pins = 0;
+        }
+    }
+
     /// Pins `cell` for one live batch, so it is not evicted. Each call adds one pin; a cell pinned twice needs two
     /// [`unpin`](Self::unpin)s. A cell number outside the grid is ignored.
     pub fn pin(&mut self, cell: u16) {

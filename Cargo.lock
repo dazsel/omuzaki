@@ -4642,6 +4642,7 @@ dependencies = [
  "omuzaki-core",
  "omuzaki-doc",
  "omuzaki-doc-api",
+ "omuzaki-face-mock",
  "omuzaki-history-api",
  "omuzaki-io-ops",
  "omuzaki-library",
@@ -4917,6 +4918,7 @@ dependencies = [
  "omuzaki-settings-api",
  "omuzaki-settings-mock",
  "omuzaki-stage",
+ "omuzaki-stage-api",
  "omuzaki-store",
  "omuzaki-store-api",
  "omuzaki-stream",
@@ -5920,6 +5922,7 @@ dependencies = [
  "omuzaki-render-api",
  "omuzaki-render-mock",
  "pollster",
+ "serde_json",
  "tempfile",
  "wgpu",
 ]

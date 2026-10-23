@@ -20,9 +20,9 @@ fn missing_pass(capabilities: &Capabilities, name: &str) -> Option<Pass> {
     NEEDS_PASS.iter().find(|(n, pass)| *n == name && !capabilities.supports(*pass)).map(|&(_, pass)| pass)
 }
 
-fn counts(r: &dyn Renderer) -> [u32; 5] {
+fn counts(r: &dyn Renderer) -> [u32; 6] {
     let s = r.stats();
-    [s.meshes, s.textures, s.materials, s.targets, s.environments]
+    [s.meshes, s.textures, s.materials, s.targets, s.environments, s.particle_systems]
 }
 
 #[test]

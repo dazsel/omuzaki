@@ -13,6 +13,11 @@
 //! build gets its inputs, never what the same inputs build (assets are content-addressed, the rasteriser is a
 //! deterministic function of its draw list). Both are optional; a part that needs a missing one fails with a named
 //! error instead of building something wrong.
+//!
+//! **The linked rasteriser.** A build whose services name no rasteriser paints with the one the binary links:
+//! `omuzaki-face` registers its CPU rasteriser with [`register_rasterizer!`](crate::register_rasterizer), so every
+//! surface that builds a character (the studio, the CLI, MCP, export) paints garment textures without wiring one in,
+//! and a binary that links none (an API test) still gets the named error.
 
 use std::fmt;
 use std::sync::Arc;
@@ -96,6 +101,34 @@ impl fmt::Debug for BuildServices {
     }
 }
 
+/// A rasteriser a crate links into every binary that links it ([`register_rasterizer!`](crate::register_rasterizer)):
+/// the one a build paints with when its [`BuildServices`] name none.
+pub struct RasterizerRegistration {
+    /// Makes a fresh rasteriser.
+    pub make: fn() -> Box<dyn FaceRasterizer>,
+}
+
+inventory::collect!(RasterizerRegistration);
+
+/// Registers `$make` (a `fn() -> Box<dyn FaceRasterizer>`) as the linked rasteriser, next to the rasteriser itself.
+/// One crate registers one; a binary that links several paints with the first the linker lists.
+///
+/// ```ignore
+/// omuzaki_char_api::register_rasterizer!(make_rasterizer);
+/// ```
+#[macro_export]
+macro_rules! register_rasterizer {
+    ($make:path) => {
+        $crate::__inventory::submit! { $crate::RasterizerRegistration { make: $make } }
+        $crate::__record_registration!("rasterizer", $make);
+    };
+}
+
+/// The rasteriser the binary links, if any.
+pub fn linked_rasterizer() -> Option<fn() -> Box<dyn FaceRasterizer>> {
+    inventory::iter::<RasterizerRegistration>.into_iter().next().map(|r| r.make)
+}
+
 /// The services as one part reaches them. [`BuildCtx`] and [`RecolourCtx`] both delegate here, so a part's texture is
 /// painted by the same code, with the same checks and errors, whether it is being built or recoloured.
 struct PartServices<'a> {
@@ -123,11 +156,11 @@ impl PartServices<'_> {
         list: &DrawList,
         desc: TextureDesc,
     ) -> Result<TextureData, BuildError> {
-        let factory = self
-            .services
-            .rasterizer
-            .as_ref()
-            .ok_or_else(|| BuildError::Missing { part: self.part.clone(), needs: "a 2D rasteriser" })?;
+        let mut rasterizer = match (&self.services.rasterizer, linked_rasterizer()) {
+            (Some(factory), _) => factory(),
+            (None, Some(linked)) => linked(),
+            (None, None) => return Err(BuildError::Missing { part: self.part.clone(), needs: "a 2D rasteriser" }),
+        };
         let desc = TextureDesc { size: size_px, ..desc };
         desc.validate().map_err(|e| self.fail(format!("texture description: {e}")))?;
         if desc.colour_space != ColourSpace::Srgb {
@@ -149,7 +182,7 @@ impl PartServices<'_> {
             )));
         }
         let mut raster = Raster::new(size_px.x, size_px.y);
-        factory()
+        rasterizer
             .rasterize(&spec, list, px_per_m, &mut raster)
             .map_err(|e| self.fail(format!("painting a texture failed: {e}")))?;
         if (raster.width, raster.height) != (size_px.x, size_px.y) {

@@ -654,6 +654,24 @@ fn a_nested_object_is_a_section_of_its_own_fields() {
     assert_eq!(json_of(&h)["eyes"]["glint"], json!(false));
 }
 
+#[test]
+fn a_nested_object_marked_advanced_starts_folded_and_opens_on_a_click() {
+    let mut h = rig(&schema(json!({"type": "object", "properties": {
+        "ears": {"title": "Ears", "type": "object", "properties": {
+            "size": {"title": "Size", "type": "number", "minimum": 0, "maximum": 2, "default": 1},
+            "animal": {"title": "Animal", "type": "object", "x-ui": {"level": "advanced"}, "properties": {
+                "round": {"title": "Round", "type": "number", "minimum": 0, "maximum": 1, "default": 0.5}
+            }}
+        }}
+    }})));
+    assert!(h.query_by_role_and_label(Role::Slider, "Size").is_some(), "the section's own fields show");
+    assert!(h.query_by_role_and_label(Role::Slider, "Round").is_none(), "the advanced section starts folded");
+    h.get_by_role_and_label(Role::DisclosureTriangle, "Animal").click();
+    h.run();
+    assert!(h.query_by_role_and_label(Role::Slider, "Round").is_some(), "a click opens it");
+    assert_eq!(json_of(&h)["ears"]["animal"]["round"], json!(0.5), "a folded section keeps its value");
+}
+
 // ---- failing closed ----
 
 #[test]

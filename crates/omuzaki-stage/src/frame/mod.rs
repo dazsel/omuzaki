@@ -33,6 +33,9 @@ use self::face::FaceRig;
 use self::rig::{RigFrame, SkinPose};
 use self::runtimes::DynamicMeshes;
 use self::scene::ScenePlan;
+use crate::effects::frame::{EffectsFrame, FrameCtx, palette_colours};
+use crate::effects::log::EffectLimits;
+use crate::effects::service::StageEffects;
 use crate::error::StageError;
 use crate::scene::apply::{Owed, SceneLink, reserve};
 use crate::scene::backdrop::StageBackdrop;
@@ -187,6 +190,8 @@ pub struct Stage {
     clock: StageClock,
     /// While set, every tick takes this one instead of the clock's ([`Stage::pin_time`]).
     pinned: Option<Tick>,
+    /// Particle effects, once attached ([`Stage::attach_effects`]).
+    effects: Option<Box<EffectsFrame>>,
 }
 
 impl Stage {
@@ -234,6 +239,7 @@ impl Stage {
                 quality,
                 clock,
                 pinned: None,
+                effects: None,
             }),
             Err(error) => {
                 if let Err(cleanup) = character.release(renderer) {
@@ -266,6 +272,9 @@ impl Stage {
         self.swap_variant(renderer)?;
         if !std::ptr::eq(table, self.built.meshes.as_ptr()) {
             self.revision += 1;
+            if let Some(effects) = self.effects.as_mut() {
+                effects.set_palette(palette_colours(&self.built.palette));
+            }
         }
         let tick = self.pinned.unwrap_or_else(|| self.clock.next(input.dt, input.time));
         self.input_root = input.root;
@@ -285,6 +294,18 @@ impl Stage {
         // must not go on naming the character it retired (its meshes are released).
         self.plan.fill(&mut self.scene, self.rig.skin(), self.root);
         self.ground.push(&mut self.scene);
+        if let Some(effects) = self.effects.as_mut() {
+            let ctx = FrameCtx {
+                t: tick.time,
+                dt: tick.dt,
+                root: self.root,
+                world: self.rig.world(),
+                rig: &self.built.rig,
+                camera: self.scene.camera,
+                density: self.quality.particle_density,
+            };
+            effects.step(renderer, &ctx, &mut self.scene.particles);
+        }
         self.scene.frame = self.frame_info(tick);
         let uploads = prepared?;
         let report = renderer
@@ -377,6 +398,26 @@ impl Stage {
         FrameInfo { index, time: tick.time }
     }
 
+    /// Attaches particle effects (particles.md D12): from the next frame the stage drains `service`'s requests, runs
+    /// the scene's weather and fills the scene's particles under `limits` ([`EffectLimits::live`] while performing,
+    /// [`EffectLimits::offline`] for renders). The app registers the same `service` as the ops' `EffectService`.
+    /// Cold. Attaching again replaces the effects (release the old ones first with [`release`](Self::release)'s
+    /// renderer, or they stay until the renderer drops).
+    pub fn attach_effects(&mut self, service: std::sync::Arc<StageEffects>, limits: EffectLimits) {
+        crate::effects::frame::reserve(&mut self.scene.particles);
+        self.effects = Some(Box::new(EffectsFrame::new(service, limits, palette_colours(&self.built.palette))));
+    }
+
+    /// The particle effects, once attached.
+    pub fn effects(&self) -> Option<&EffectsFrame> {
+        self.effects.as_deref()
+    }
+
+    /// The particle effects, once attached, to switch scenes, change limits or restore a checkpoint.
+    pub fn effects_mut(&mut self) -> Option<&mut EffectsFrame> {
+        self.effects.as_deref_mut()
+    }
+
     /// Makes the renderer quality of the following frames `quality`: what the frame-budget scheduler decided.
     pub fn set_quality(&mut self, quality: Quality) {
         self.quality = quality;
@@ -396,6 +437,9 @@ impl Stage {
     /// Allocation-free for a scene the lights of which fit ([`MAX_LIGHTS`](omuzaki_render_api::limits::MAX_LIGHTS)).
     pub fn set_scene(&mut self, resolved: &ResolvedScene, subject_root: Mat4) -> Owed {
         let owed = self.link.set(resolved, &mut self.scene);
+        if let Some(effects) = self.effects.as_mut() {
+            effects.set_scene(&resolved.effects);
+        }
         self.scene.environment = self.environment.use_for(resolved.environment.as_ref());
         if let Some(picture) = self.backdrop.background_for(resolved.backdrop_image.as_ref()) {
             self.scene.background = picture;
@@ -488,6 +532,14 @@ impl Stage {
         &self.character
     }
 
+    /// Where `bone` was in the last frame, in the world: the character's root times the bone's solved model-space
+    /// transform. `None` for a bone the character lacks.
+    pub fn bone_world(&self, bone: omuzaki_anim_api::HumanoidBone) -> Option<Mat4> {
+        let id = self.built.rig.bone(&omuzaki_char_api::JointRef::Humanoid(bone))?;
+        let local = self.rig.world().local.get(id.index())?;
+        Some(self.root * Mat4::from_rotation_translation(local.rotation, local.translation))
+    }
+
     /// The skinning matrices of the last frame, indexed by bone.
     pub fn skin(&self) -> &[Mat4] {
         self.rig.skin()
@@ -505,7 +557,11 @@ impl Stage {
         let ground = self.ground.release(renderer);
         let environment = self.environment.release(renderer);
         let backdrop = self.backdrop.release(renderer);
-        self.character.release(renderer).and(ground).and(environment).and(backdrop)
+        let effects = match self.effects.as_mut() {
+            Some(effects) => effects.release(renderer).map_err(|source| StageError::render("the effects", source)),
+            None => Ok(()),
+        };
+        self.character.release(renderer).and(ground).and(environment).and(backdrop).and(effects)
     }
 
     /// Draws the character in `look` (LK-06, #714): the materials the look changes are updated on the renderer in

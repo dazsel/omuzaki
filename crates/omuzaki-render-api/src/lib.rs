@@ -14,6 +14,8 @@
 //!   painter composites through (material.rs).
 //! - [`TextureDesc`], [`Image`]: data that lives on the GPU for many frames (resource.rs); [`MeshData`] and [`Colour`]
 //!   are defined in `omuzaki-core` (shared with the character kit and I/O) and re-exported here.
+//! - [`ParticleSystemDesc`], [`SpawnBatch`], [`particles::evaluate`]: stateless particles, a resource plus the
+//!   batches a frame draws, and the one reference definition of their motion (particles.rs).
 //! - [`Quality`]: how much work a frame may spend; live versus frame-exact offline (quality.rs).
 //! - [`Pass`], [`FrameReport`]: the frame graph and its timings (pass.rs).
 //! - [`Renderer`], [`Painter`], [`PaintTarget`]: the entry points (renderer.rs).
@@ -35,6 +37,7 @@ mod material;
 pub mod memory;
 mod morph;
 mod mtoon;
+pub mod particles;
 mod pass;
 mod quality;
 mod renderer;
@@ -43,7 +46,7 @@ mod scene;
 
 pub use environment::{EnvironmentDesc, EnvironmentUse, sky_radiance};
 pub use error::RenderError;
-pub use handle::{EnvironmentId, MaterialId, MeshId, ResourceRef, TargetId, TextureId};
+pub use handle::{EnvironmentId, MaterialId, MeshId, ParticleSystemId, ResourceRef, TargetId, TextureId};
 pub use material::{
     AlphaMode, Mapping, Material, Outline, OutlineStyle, OutlineWidthMode, Overlay, ParamValue, ProgramParams, Rim,
     Shading, Skin, Toon, UvTransform,
@@ -52,6 +55,10 @@ pub use morph::{MeshOptions, MeshUsage, MorphSet, SparseMorph};
 pub use mtoon::Mtoon;
 pub use omuzaki_core::colour::{Colour, ColourParseError, srgb_decode, srgb_encode, to_byte};
 pub use omuzaki_core::mesh::{ExtraAttribute, MeshData, MeshError};
+pub use particles::{
+    CellPick, ColourSet, Edge, EmitterShape, Flutter, Orientation, ParticleParams, ParticleShading, ParticleState,
+    ParticleSystemDesc, Span, SpawnBatch, Sprite, SpriteShape,
+};
 pub use pass::{FrameReport, GpuTimings, Pass, PassTimes};
 pub use quality::{PostQuality, Quality, QualityMode, ShadowQuality, budget};
 pub use renderer::{Capabilities, MtoonSupport, PaintTarget, Painter, Renderer, RendererExt};

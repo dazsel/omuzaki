@@ -128,6 +128,7 @@ fn the_publisher_writes_what_the_panel_reads() {
         gpu: None,
         draw_calls: 12,
         triangles: 4000,
+        particles: 0,
     };
     let mut t = 0.0;
     for _ in 0..30 {

@@ -100,6 +100,8 @@ omuzaki-io-mock = { path = "../omuzaki-io-mock" }
 omuzaki-io-ops = { path = "../omuzaki-io-ops" }
 omuzaki-io-vrm = { path = "../omuzaki-io-vrm" }
 omuzaki-stage = { path = "../omuzaki-stage" }
+# The effect service the conformance rig gives the `stage.effect.*` examples.
+omuzaki-stage-api = { path = "../omuzaki-stage-api" }
 # The expressions and the camera ids the idle hosts list.
 omuzaki-face-api = { path = "../omuzaki-face-api" }
 omuzaki-track-api = { path = "../omuzaki-track-api" }
