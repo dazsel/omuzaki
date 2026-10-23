@@ -1,0 +1,24 @@
+{"t":0,"p":"e8ffc675ac7f","ev":"heard","utterance":0,"text":"Mochi, say hi to chat!"}
+{"t":0,"p":"e8ffc675ac7f","ev":"thinking","turn":1,"safety":"pass"}
+{"t":0,"p":"e8ffc675ac7f","ev":"intent","turn":1,"intent":{"emote":{"expression":"happy","intensity":0.59,"hold_s":2.5}}}
+{"t":200,"p":"e8ffc675ac7f","ev":"speaking","turn":1,"chunk":0,"text":"Hi chat!","ms":480}
+{"t":680,"p":"e8ffc675ac7f","ev":"speaking","turn":1,"chunk":1,"text":"Fold it and see!","ms":960}
+{"t":680,"p":"e8ffc675ac7f","ev":"intent","turn":1,"intent":{"emote":{"expression":"happy","intensity":0.8,"hold_s":1.5}}}
+{"t":680,"p":"e8ffc675ac7f","ev":"intent","turn":1,"intent":{"gesture":{"clip":"wave","weight":1.0}}}
+{"t":9000,"p":"e8ffc675ac7f","ev":"heard","utterance":1,"text":"What's your favourite fold?","addressed":"follow-up, 6360 ms after turn 1"}
+{"t":9000,"p":"e8ffc675ac7f","ev":"thinking","turn":2,"safety":"pass"}
+{"t":9000,"p":"e8ffc675ac7f","ev":"intent","turn":2,"intent":{"emote":{"expression":"thinking","intensity":0.515,"hold_s":2.5}}}
+{"t":9200,"p":"e8ffc675ac7f","ev":"speaking","turn":2,"chunk":0,"text":"The crane, obviously.","ms":1260}
+{"t":10460,"p":"e8ffc675ac7f","ev":"speaking","turn":2,"chunk":1,"text":"It took me a whole week to learn and I still fold it wrong.","ms":3540}
+{"t":10460,"p":"e8ffc675ac7f","ev":"intent","turn":2,"intent":{"emote":{"expression":"smug","intensity":1.0,"hold_s":1.5}}}
+{"t":11900,"p":"e8ffc675ac7f","ev":"held","turn":2}
+{"t":13000,"p":"e8ffc675ac7f","ev":"interrupted","turn":2,"spoken_chars":46}
+{"t":13000,"p":"e8ffc675ac7f","ev":"heard","utterance":2,"text":"Sorry, go on.","addressed":"follow-up, 0 ms after turn 2"}
+{"t":13000,"p":"e8ffc675ac7f","ev":"thinking","turn":3,"safety":"pass"}
+{"t":13000,"p":"e8ffc675ac7f","ev":"filtered","turn":3,"what":"clip backflip","why":"unknown clip"}
+{"t":13000,"p":"e8ffc675ac7f","ev":"intent","turn":3,"intent":{"emote":{"expression":"happy","intensity":0.515,"hold_s":2.5}}}
+{"t":13200,"p":"e8ffc675ac7f","ev":"speaking","turn":3,"chunk":0,"text":"Anyway, a week!","ms":900}
+{"t":24000,"p":"e8ffc675ac7f","ev":"heard","utterance":3,"text":"Okay chat, next game.","addressed":"no: 9900 ms after turn 3, no name"}
+{"t":27000,"p":"e8ffc675ac7f","ev":"heard","utterance":4,"private":true}
+{"t":27000,"p":"e8ffc675ac7f","ev":"thinking","turn":4,"private":true}
+{"t":27200,"p":"e8ffc675ac7f","ev":"speaking","turn":4,"chunk":0,"private":true}

@@ -43,6 +43,7 @@ impl CrateKind {
             | "omuzaki-ui"
             | "omuzaki-test"
             | "omuzaki-stage"
+            | "omuzaki-cohost"
             | "omuzaki-link-probe"
             | "omuzaki-model-worker"
             | "xtask" => Self::App,
