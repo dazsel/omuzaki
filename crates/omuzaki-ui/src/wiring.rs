@@ -32,6 +32,8 @@ const DEFAULT_PROJECT_NAME: &str = "My character";
 pub struct Document {
     doc: Tree,
     dir: Option<PathBuf>,
+    /// The person's local data folder, for the app core's asset store and library (`None` in tests).
+    data: Option<PathBuf>,
 }
 
 /// What a [`Document`] holds: an in-memory tree, or a project folder as its files read before the app core opens it.
@@ -49,7 +51,7 @@ impl fmt::Debug for Document {
 impl Document {
     /// An empty in-memory document at version 0: what ops change lasts until the app quits.
     pub fn empty() -> Self {
-        Self { doc: Tree::Memory(Scratch::of(&Empty)), dir: None }
+        Self { doc: Tree::Memory(Scratch::of(&Empty)), dir: None, data: None }
     }
 
     /// The project in `dir`, made there first when the folder holds none. [`core_on`] opens it through the app core,
@@ -69,7 +71,16 @@ impl Document {
         };
         // Refused now, while the app can still fall back to an in-memory document, rather than when the core opens.
         drop(ProjectLock::acquire(dir)?);
-        Ok(Self { doc: Tree::Project(project), dir: Some(dir.to_path_buf()) })
+        Ok(Self { doc: Tree::Project(project), dir: Some(dir.to_path_buf()), data: None })
+    }
+
+    /// This document with the person's local data folder: the app core keeps its asset store in its `store/` (the
+    /// folder the live slice's connectors use) and the person's own library items in its `library/`. Without one, the
+    /// core offers no asset store and installing library items is unavailable.
+    #[must_use]
+    pub fn with_data_dir(mut self, data: impl Into<PathBuf>) -> Self {
+        self.data = Some(data.into());
+        self
     }
 
     /// The project folder, when the document is one.
@@ -208,7 +219,10 @@ pub fn core_on(document: Document, services: Services) -> Result<Core, CoreError
         (Tree::Project(files), Some(dir)) => {
             // The core reads the folder itself, through its journal: the copy read for staging goes first.
             drop(files);
-            let options = AppOptions::studio(Actor::Person { name: PERSON.to_owned() }).with_services(services);
+            let mut options = AppOptions::studio(Actor::Person { name: PERSON.to_owned() }).with_services(services);
+            if let Some(data) = document.data {
+                options = options.with_data_dir(data);
+            }
             let app = Arc::new(AppCore::open(&dir, options).map_err(CoreError::Project)?);
             let runner: Arc<dyn Runner> = Arc::new(Holding { runner: app.runner(), _app: Arc::clone(&app) });
             Ok(Core { runner, sessions: app.sessions(), app: Some(app) })
