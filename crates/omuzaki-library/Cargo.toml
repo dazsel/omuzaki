@@ -1,0 +1,42 @@
+[package]
+name = "omuzaki-library"
+description = "The library (spec v3 §28, design docs/design/library.md): the registry and search index over first-party and the person's items, and the library.* ops that find, apply, pin, update and install them."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+tracing.workspace = true
+unicode-normalization = { workspace = true }
+omuzaki-char-api = { path = "../omuzaki-char-api" }
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-doc-api = { path = "../omuzaki-doc-api" }
+omuzaki-library-api = { path = "../omuzaki-library-api" }
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+omuzaki-store-api = { path = "../omuzaki-store-api" }
+
+[dev-dependencies]
+tempfile.workspace = true
+omuzaki-char-mock = { path = "../omuzaki-char-mock" }
+omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+omuzaki-library-mock = { path = "../omuzaki-library-mock" }
+omuzaki-ops-mock = { path = "../omuzaki-ops-mock" }
+
+[build-dependencies]
+omuzaki-embed = { path = "../omuzaki-embed" }
+
+[lints]
+workspace = true
+
+[package.metadata.omuzaki]
+kind = "Implementation"
+generated-mods = ["src/ops"]
+registers = true
+summary = "the library (§28): `HostLibrary`, the registry and search index over first-party sources and the person's library folder, and the `library.*` ops (list, search, describe, lock, apply, update, detach, install, uninstall)"

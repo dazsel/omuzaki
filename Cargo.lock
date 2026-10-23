@@ -5413,6 +5413,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-library"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-char-api",
+ "omuzaki-char-mock",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-embed",
+ "omuzaki-library-api",
+ "omuzaki-library-mock",
+ "omuzaki-ops-api",
+ "omuzaki-ops-mock",
+ "omuzaki-store-api",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+ "tracing",
+ "unicode-normalization",
+]
+
+[[package]]
 name = "omuzaki-library-api"
 version = "0.0.0"
 dependencies = [

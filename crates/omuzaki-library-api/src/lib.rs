@@ -18,11 +18,12 @@
 //! - [`ApplicationRecord`]: the pin and what an application wrote, stored in the document (the records are the lock)
 //! - [`ItemSource`] and [`register_library_source!`]: first-party items register per crate, from data
 //! - [`Library`]: the service that lists, searches, describes and resolves items, with [`Query`], [`SearchPage`],
-//!   [`ItemInfo`] and [`Facets`]
+//!   [`ItemInfo`] and [`Facets`]; [`CharacterFacts`] is what `compatible_with` is answered from
 //! - [`migrations`]: append-only migrations of the manifest format
 #![deny(missing_docs)]
 
 mod check;
+mod facts;
 mod id;
 mod manifest;
 omuzaki_core::define_link! {
@@ -41,6 +42,7 @@ mod service;
 mod source;
 
 pub use check::{Problem, check_ops};
+pub use facts::CharacterFacts;
 pub use id::{FIRST_PARTY_PUBLISHER, FIXTURE_PUBLISHER, IdError, ItemId, Version, VersionError, VersionReq};
 pub use manifest::{
     BodyKind, Compat, Creates, Framing, ItemManifest, ItemStep, Migrate, OpStep, ParamSpec, ParamType, ParseError,
