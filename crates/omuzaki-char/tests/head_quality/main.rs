@@ -28,7 +28,7 @@ use std::path::PathBuf;
 use metrics::{Quality, Target, measure};
 use omuzaki_char::head::cranium;
 use omuzaki_char::head::mesh::{Resolution, build, build_head};
-use omuzaki_char::head::outline::plausible;
+use omuzaki_char::head::outline::{LOWER_EXPONENT_RANGE, plausible};
 use omuzaki_char_api::{Chin, Cranium, HeadOutline, HeadParams, HeadSurface};
 use omuzaki_core::glam::{DVec3, Vec3};
 use omuzaki_core::mesh::MeshData;
@@ -432,8 +432,8 @@ fn dump() {
 const CORNER_EXPONENTS: [f64; 3] = [1.4, 1.475, 1.55];
 
 /// Every corner of the plausible space (the width, the eye line, the chin and the stretch line each at either end, so
-/// `plausible` clamps them to its limits) at each exponent of [`CORNER_EXPONENTS`], with and without a lower exponent at
-/// the floor, on the default cranium and on crania 10% smaller and larger: `(label, head)`.
+/// `plausible` clamps them to its limits) at each exponent of [`CORNER_EXPONENTS`], without a lower exponent and with one
+/// at the exponent's floor and at its own, on the default cranium and on crania 10% smaller and larger: `(label, head)`.
 fn corners() -> Vec<(String, HeadParams)> {
     let base = Cranium::default();
     let scaled = |k: f64| Cranium {
@@ -448,7 +448,7 @@ fn corners() -> Vec<(String, HeadParams)> {
     let mut out = Vec::new();
     for (name, cranium) in [("default", base.clone()), ("small", scaled(0.9)), ("large", scaled(1.1))] {
         for exponent in CORNER_EXPONENTS {
-            for lower in [None, Some(CORNER_EXPONENTS[0])] {
+            for lower in [None, Some(CORNER_EXPONENTS[0]), Some(LOWER_EXPONENT_RANGE.0)] {
                 for corner in 0..16_u8 {
                     let pick = |bit: u8, (a, b): (f64, f64)| if corner & (1 << bit) == 0 { a } else { b };
                     let y = pick(2, (-0.5, -0.001));

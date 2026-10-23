@@ -185,7 +185,10 @@ impl HeadOutline {
 
     /// Linear blend (CB-10 "blendable"). If only one side has a chin, the chin switches at `t = 0.5`. `exponent_lower`
     /// is exact at the ends: `t = 0` gives `self`'s value and `t = 1` gives `other`'s, `None` included. Between them a
-    /// `None` side counts as that side's `exponent`, so the blend stays continuous; two `None`s stay `None`.
+    /// `None` side counts as that side's `exponent`, so the blend stays continuous; two `None`s stay `None`. It blends
+    /// its reciprocal linearly: near the chin a superellipse's width grows as the `1 / exponent` power of the height,
+    /// so the chin then moves by about as much at every step of a blend, where a linear blend toward a low exponent
+    /// would leave most of the change to its last steps.
     #[must_use]
     pub fn lerp(&self, other: &Self, t: f64) -> Self {
         let m = |a: f64, b: f64| a + (b - a) * t;
@@ -193,7 +196,7 @@ impl HeadOutline {
             (None, None) => None,
             _ if t <= 0.0 => self.exponent_lower,
             _ if t >= 1.0 => other.exponent_lower,
-            (a, b) => Some(m(a.unwrap_or(self.exponent), b.unwrap_or(other.exponent))),
+            (a, b) => Some(1.0 / m(1.0 / a.unwrap_or(self.exponent), 1.0 / b.unwrap_or(other.exponent))),
         };
         let chin = match (self.chin, other.chin) {
             (Some(a), Some(b)) => Some(Chin {
@@ -598,10 +601,12 @@ mod tests {
         let some = HeadOutline { exponent: 2.0, exponent_lower: Some(1.5), ..HeadOutline::default() };
         let none = HeadOutline { exponent: 1.8, ..HeadOutline::default() };
         assert_eq!(some.lerp(&none, 0.0).exponent_lower, Some(1.5));
-        assert!((some.lerp(&none, 0.5).exponent_lower.unwrap() - 1.65).abs() < 1e-6);
+        // Half way is the harmonic mean: the reciprocals blend linearly.
+        let half = 2.0 / (1.0 / 1.5 + 1.0 / 1.8);
+        assert!((some.lerp(&none, 0.5).exponent_lower.unwrap() - half).abs() < 1e-6);
         assert_eq!(some.lerp(&none, 1.0).exponent_lower, None, "t = 1 is `other`, exactly");
         // The `None` side on the left counts as its own `exponent` (1.8 here), so the blend is symmetric.
-        assert!((none.lerp(&some, 0.5).exponent_lower.unwrap() - 1.65).abs() < 1e-6);
+        assert!((none.lerp(&some, 0.5).exponent_lower.unwrap() - half).abs() < 1e-6);
         assert_eq!(none.lerp(&some, 1.0).exponent_lower, Some(1.5));
     }
 

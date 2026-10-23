@@ -9,6 +9,7 @@ half_width = 0.1570
 top = -0.0820
 height = 0.1267
 exponent = 1.650
+exponent_lower = 1.450
 cheek_puff = 0.0000
 
 [outline.chin]

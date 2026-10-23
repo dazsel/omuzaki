@@ -56,10 +56,10 @@ const TARGETS: [Target; 5] = [
     Target { id: "egg-oval", length_to_width: 0.336, fullness: 0.849, chin: 167.5, jaw_width: 0.198, eye_width_to_iod: 0.28, nose: 0.31, mouth: 0.60, drop_to_iod: 0.61 },
     // The edge of the plausible space: the highest chin, the fullest exponent, the fullest and softest cheeks, the widest jaw.
     Target { id: "mochi", length_to_width: 0.299, fullness: 0.916, chin: 173.8, jaw_width: 0.251, eye_width_to_iod: 0.31, nose: 0.27, mouth: 0.56, drop_to_iod: 0.45 },
-    // The edge: the widest cheeks the eye line allows, the lowest exponent (1.6, where the crease limit binds), the deepest chin, a narrow jaw.
-    Target { id: "heart", length_to_width: 0.398, fullness: 0.779, chin: 155.3, jaw_width: 0.180, eye_width_to_iod: 0.27, nose: 0.30, mouth: 0.62, drop_to_iod: 0.84 },
-    // The edge: the deepest chin on the narrowest jaw, the eye line high, almost as pointed as the heart.
-    Target { id: "long", length_to_width: 0.403, fullness: 0.792, chin: 157.0, jaw_width: 0.174, eye_width_to_iod: 0.26, nose: 0.32, mouth: 0.64, drop_to_iod: 0.77 },
+    // The edge: the widest cheeks the eye line allows, kept full half way down, then blended into a low lower exponent for a pointed chin (#1688).
+    Target { id: "heart", length_to_width: 0.372, fullness: 0.866, chin: 143.0, jaw_width: 0.180, eye_width_to_iod: 0.27, nose: 0.32, mouth: 0.66, drop_to_iod: 0.79 },
+    // The edge: the deepest chin on the narrowest jaw, the eye line high, the longest face, almost as pointed as the heart.
+    Target { id: "long", length_to_width: 0.403, fullness: 0.792, chin: 147.0, jaw_width: 0.162, eye_width_to_iod: 0.26, nose: 0.32, mouth: 0.64, drop_to_iod: 0.77 },
 ];
 
 /// The acceptance tolerance: measured within 5% of the target.
@@ -171,18 +171,21 @@ fn each_preset_lays_out_the_features_by_its_cb12_ratios() {
 fn the_presets_differ_the_way_their_descriptions_say() {
     let m = |id| measure(preset(id));
     let (round_u, egg, mochi, heart, long) = (m("round-u"), m("egg-oval"), m("mochi"), m("heart"), m("long"));
-    // Mochi is the widest and shortest head, then round-u; the egg, heart and long share the template's chin depth.
+    // Mochi is the widest and shortest head, then round-u; the egg and the heart share a chin depth, long's is deeper.
     assert!(mochi.width_to_height() > round_u.width_to_height() && round_u.width_to_height() > egg.width_to_height());
-    // Lower-face length grows mochi < round-u < egg < heart and long, which are as long as each other (both at the
-    // deepest chin the plausible space allows); the chin sinks in the same order.
+    // Lower-face length grows mochi < round-u < egg < heart < long, and long is clearly the longest (#1688).
     let lengths = [mochi, round_u, egg, heart].map(|x| x.face_length_to_width());
     assert!(lengths.windows(2).all(|w| w[0] < w[1]), "{lengths:?}");
-    assert!((heart.face_length_to_width() / long.face_length_to_width() - 1.0).abs() < 0.02);
+    assert!(long.face_length_to_width() >= heart.face_length_to_width() + 0.03);
     // Mochi and round-u differ in their cheeks, not only in the chin: mochi is fuller and its jaw wider.
     assert!(mochi.mid_face_fullness > round_u.mid_face_fullness + 0.03);
     assert!(mochi.jaw_width > round_u.jaw_width * 1.1);
-    let chins = [mochi, round_u, egg, heart].map(|x| x.chin_y);
-    assert!(chins.windows(2).all(|w| w[0] > w[1]) && (heart.chin_y - long.chin_y).abs() < 1e-6, "{chins:?}");
+    // The chin sinks mochi, round-u, egg; the heart's is as low as the egg's, and long's is the deepest.
+    let chins = [mochi, round_u, egg].map(|x| x.chin_y);
+    assert!(chins.windows(2).all(|w| w[0] > w[1]), "{chins:?}");
+    assert!(heart.chin_y <= egg.chin_y + 1e-6 && long.chin_y < heart.chin_y - 0.005);
+    // The heart keeps its cheeks fuller than the egg's and long's, yet ends on the pointiest chin.
+    assert!(heart.mid_face_fullness > egg.mid_face_fullness && heart.mid_face_fullness > long.mid_face_fullness);
     // The heart is the pointiest, mochi and round-u have no chin point, and the low-set mochi eye line is lowest.
     assert!([round_u, egg, mochi, long].iter().all(|x| heart.chin_angle_deg < x.chin_angle_deg - 1.0));
     assert!(round_u.chin_angle_deg > 170.0 && mochi.chin_angle_deg > 170.0);

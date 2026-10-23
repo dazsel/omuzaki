@@ -52,7 +52,12 @@ pub struct Target {
 impl Target {
     /// The target an outline asks for.
     pub fn of(outline: &HeadOutline) -> Self {
-        Self { half_width: outline.half_width, top: outline.top, chin: outline.chin_y(), curve: OutlineCurve::of(outline) }
+        Self {
+            half_width: outline.half_width,
+            top: outline.top,
+            chin: outline.chin_y(),
+            curve: OutlineCurve::of(outline),
+        }
     }
 
     /// Half-width at head-local height `y` (full above the top, 0 below the chin).

@@ -2,17 +2,18 @@
 # tests/shape_presets.rs and already sit inside the plausible space of head/outline.rs, so the outline named here
 # is the outline that is built.
 id = "heart"
-summary = "Widest at the eye line, tapering to a soft chin point."
+summary = "Wide, full cheeks that taper to a pointed chin."
 
 [outline]
 half_width = 0.1679
 top = -0.0750
-height = 0.1337
-exponent = 1.600
+height = 0.1250
+exponent = 2.000
+exponent_lower = 1.310
 cheek_puff = 0.0100
 
 [outline.chin]
-y = -0.2087
+y = -0.2000
 stretch_top = -0.0750
 min_ratio = 0.60
 

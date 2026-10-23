@@ -677,7 +677,7 @@ pub fn check_recolour(base: &CharacterDef, services: &BuildServices) -> Result<R
                 build_part(base, part, &options, services, &published).map_err(|e| format!("{part}: {e}"))?;
             let fresh = build_part(&other, part, &options, services, &published)
                 .map_err(|e| format!("{part} under the flipped palette: {e}"))?;
-            let publishes = output.publishes.clone();
+            let facts = output.publishes.clone();
             match omuzaki_char_api::recolour_part(&other, part, services, &mut output) {
                 Ok(omuzaki_char_api::Recoloured::Done) => {
                     report.recoloured.insert(kind.clone());
@@ -707,7 +707,7 @@ pub fn check_recolour(base: &CharacterDef, services: &BuildServices) -> Result<R
                     "part `{part}` (kind `{kind}`, {quality:?}, rig_export {rig_export}): recolour failed: {e}"
                 )),
             }
-            published.absorb(part, publishes).map_err(|e| format!("{part}: {e}"))?;
+            published.absorb(part, facts).map_err(|e| format!("{part}: {e}"))?;
         }
     }
     report.declined.retain(|kind| !report.recoloured.contains(kind));

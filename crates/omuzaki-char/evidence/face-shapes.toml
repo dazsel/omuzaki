@@ -1,0 +1,38 @@
+# The face-shape presets' outlines (#1688). The sheet is drawn by the inline script below rather than a file under
+# tools/, so the same step also runs at the PR's base (which has the dump test but not a new script) and the case
+# shows before and after.
+
+[[case]]
+name = "face-shape-outlines"
+description = "The five face-shape presets' front outlines from the eye line to the chin, overlaid at one scale, with each one's measured mid-face fullness and chin angle."
+env = { SHAPE_PRESETS_OUT = "{out}/data" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-char", "--test", "shape_presets", "--", "--ignored", "--exact", "dump"] },
+    { run = ["python3", "-I", "-c", '''
+import json, sys
+from pathlib import Path
+from PIL import Image, ImageDraw, ImageFont
+out = Path(sys.argv[1])
+heads = json.loads((out / "data" / "heads.json").read_text())
+colours = [(214, 96, 77), (67, 147, 195), (77, 172, 38), (152, 78, 163), (40, 40, 40)]
+size, scale = 900, 2400.0  # px, px per metre
+cx, top = size // 2, 140
+try:
+    font = ImageFont.truetype("DejaVuSans.ttf", 22)
+except OSError:
+    font = ImageFont.load_default()
+img = Image.new("RGB", (size, size), (250, 250, 248))
+d = ImageDraw.Draw(img)
+eye = max(h["eye_line"] for h in heads)
+d.line([(40, top), (size - 40, top)], fill=(200, 200, 200), width=1)
+for i, (h, c) in enumerate(zip(heads, colours)):
+    pts = [(x * scale, (eye - y) * scale + top) for x, y in h["outline_curve"]]
+    left = [(cx - x, y) for x, y in pts]
+    right = [(cx + x, y) for x, y in reversed(pts)]
+    d.line(left + right, fill=c, width=4, joint="curve")
+    m = h["measured"]
+    d.text((40, size - 40 - 34 * (len(heads) - i)), f'{h["id"]}: fullness {m["fullness"]:.3f}, chin {m["chin_angle"]:.1f} deg, length/width {m["length_to_width"]:.3f}', fill=c, font=font)
+img.save(out / "outlines.png")
+''', "{out}"] },
+]
+images = ["outlines.png"]

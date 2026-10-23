@@ -71,6 +71,17 @@ pub const IMPLICIT_STRETCH_LINE: f64 = 0.0;
 /// eye line on the test grid's corners is 17.6 degrees at 1.4, 16.3 at 1.475 and 15.1 at 1.55 (limit 19), where the
 /// bare superellipse creased them 27.3, 22.9 and 19.2 (#1687).
 pub const EXPONENT_RANGE: (f64, f64) = (1.4, 2.4);
+/// The lower exponent's range ([`OutlineCurve`]): wider than [`EXPONENT_RANGE`] at the bottom, since the curve it shapes
+/// starts at the cheek line and cannot crease the eye line. Below about 1.2 the chin tip limit ([`MIN_TIP_DEG`]) binds
+/// before the floor does: at 1.0 a superellipse is a straight V. The floor lets a full-cheeked face end on a pointed
+/// chin (the heart preset, #1688).
+pub const LOWER_EXPONENT_RANGE: (f64, f64) = (1.0, 2.4);
+/// The most the built head may stray outside a pointed outline near its chin, metres ([`TipFit`]): under the
+/// head-quality flange limit (3 mm), with room for the mesh's own sampling.
+const TIP_MISS: f64 = 0.0025;
+/// How far above the chin [`TipFit::miss`] looks, as a fraction of the lower face's length: the ratio floor acts only
+/// near the tip.
+const TIP_REACH: f64 = 0.3;
 /// The pointiest the chin may be in the front view: the outline's own tip angle, measured as the head-quality tests
 /// measure the mesh (on a circle of a quarter of the half-width round the chin), degrees. The exponent is raised until
 /// the outline meets it. 5 degrees above the pointiest CC0 anime reference's (130 after rounding down).
@@ -143,8 +154,8 @@ pub fn half_width_at(outline: &HeadOutline, y: f64) -> f64 {
     OutlineCurve::of(outline).at(y)
 }
 
-/// The front outline of the lower face, solved once: half its width at each height, from the outline's top (the eye
-/// line, `t = 0`) to the chin ([`HeadOutline::chin_y`], `t = 1`).
+/// The front outline of the lower face: half its width at each height, from the outline's top (the eye line, `t = 0`)
+/// to the chin ([`HeadOutline::chin_y`], `t = 1`).
 ///
 /// - **The superellipse.** `W0 * (1 - t^P)^(1/P)` with `P` the outline's `exponent`.
 /// - **A round start.** Below an exponent of 2 the superellipse turns infinitely sharply as it leaves the top (its
@@ -152,11 +163,12 @@ pub fn half_width_at(outline: &HeadOutline, y: f64) -> f64 {
 ///   the cranium. `t^P` is replaced by `((t^2 + e^2)^(P/2) - e^P)`, normalised to 1 at the chin, with `e`
 ///   [`ROUND_PER_EXPONENT`] times how far `P` is below 2: quadratic (so of finite curvature) within about `e` of the
 ///   top and the superellipse beyond it. At 2 and above `e` is 0 and the curve is the superellipse exactly (#1687).
-/// - **The lower exponent.** With `exponent_lower`, the curve below the cheek line ([`CHEEK_LINE`], half way down) is
-///   another superellipse, of that exponent, closing at the chin and joined to the upper curve with the same width and
-///   slope (C1) at the cheek line: the cheeks keep the upper exponent's fullness and the chin takes the lower one's
-///   point (#1688). Its own top lies above the cheek line, where the upper curve's slope says it must; a lower curve
-///   so much fuller than the upper that no superellipse can meet its slope is made as full as one can.
+/// - **The lower exponent.** With `exponent_lower`, the curve below the cheek line ([`CHEEK_LINE`], half way down)
+///   blends from the upper curve into the superellipse of that exponent (`W0 * (1 - t^Pl)^(1/Pl)`) by a C2 step that
+///   is 0 at the cheek line and 1 at the chin: the cheeks keep the upper exponent's fullness down to the cheek line,
+///   the chin takes the lower one's point, and width, slope and curvature are continuous at the join (#1688). A lower
+///   superellipse that started at the cheek line with the upper curve's slope could not: near an exponent of 1 it is
+///   a straight line almost from its top, so it turned a corner there.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct OutlineCurve {
     half_width: f64,
@@ -164,41 +176,28 @@ pub struct OutlineCurve {
     length: f64,
     exponent: f64,
     round: f64,
-    lower: Option<Lower>,
+    lower: Option<f64>,
 }
 
-/// The superellipse below the cheek line: `width * (1 - u^exponent)^(1/exponent)` with `u = (t - start) / (1 - start)`.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct Lower {
-    width: f64,
-    start: f64,
-    exponent: f64,
-}
-
-/// Where the lower exponent takes over, as the fraction `t` of the way from the outline's top to the chin: half way, the
-/// height mid-face fullness is measured at.
+/// Where the lower exponent starts to take over, as the fraction `t` of the way from the outline's top to the chin:
+/// half way, the height mid-face fullness is measured at.
 pub const CHEEK_LINE: f64 = 0.5;
 /// How round the outline's start is per unit of exponent below 2, as a fraction of the lower face's length.
 pub const ROUND_PER_EXPONENT: f64 = 0.25;
-/// How near the steepest slope a superellipse can start with the lower curve may come (its limit is approached only as
-/// its top runs off to infinity).
-const LOWER_SLOPE_MARGIN: f64 = 0.98;
-/// The highest the lower curve's own top may be, in `t` (far above the eye line: the solve's bracket).
-const LOWER_START_FLOOR: f64 = -64.0;
 
 impl OutlineCurve {
     /// The curve `outline` asks for.
     #[must_use]
     pub fn of(outline: &HeadOutline) -> Self {
-        let length = outline.top - outline.chin_y();
         let exponent = outline.exponent;
-        let round = ROUND_PER_EXPONENT * (2.0 - exponent).max(0.0);
-        let mut curve =
-            Self { half_width: outline.half_width, top: outline.top, length, exponent, round, lower: None };
-        if let Some(lower) = outline.exponent_lower {
-            curve.lower = curve.lower_curve(lower);
+        Self {
+            half_width: outline.half_width,
+            top: outline.top,
+            length: outline.top - outline.chin_y(),
+            exponent,
+            round: ROUND_PER_EXPONENT * (2.0 - exponent).max(0.0),
+            lower: outline.exponent_lower,
         }
-        curve
     }
 
     /// Half the width at head-local height `y`.
@@ -212,18 +211,14 @@ impl OutlineCurve {
 
     /// The width at `t` over the width at the top.
     fn fraction(&self, t: f64) -> f64 {
+        let upper = (1.0 - self.power(t)).max(0.0).powf(1.0 / self.exponent);
         match self.lower {
             Some(lower) if t > CHEEK_LINE => {
-                let u = clamp((t - lower.start) / (1.0 - lower.start), 0.0, 1.0);
-                lower.width * superellipse(u, lower.exponent)
+                let w = smoother(CHEEK_LINE, 1.0, t);
+                (1.0 - w) * upper + w * superellipse(t, lower)
             }
-            _ => self.upper(t),
+            _ => upper,
         }
-    }
-
-    /// The upper curve's width fraction at `t`.
-    fn upper(&self, t: f64) -> f64 {
-        (1.0 - self.power(t)).max(0.0).powf(1.0 / self.exponent)
     }
 
     /// `t^P`, with the round start.
@@ -235,50 +230,6 @@ impl OutlineCurve {
         let e2 = self.round * self.round;
         let base = e2.powf(half);
         ((t * t + e2).powf(half) - base) / ((1.0 + e2).powf(half) - base)
-    }
-
-    /// `-d/dt ln(upper(t))`: how fast the upper curve closes in, relative to its width.
-    fn closing(&self, t: f64) -> f64 {
-        let half = 0.5 * self.exponent;
-        let derivative = if self.round <= 0.0 {
-            self.exponent * t.powf(self.exponent - 1.0)
-        } else {
-            let e2 = self.round * self.round;
-            let base = e2.powf(half);
-            self.exponent * t * (t * t + e2).powf(half - 1.0) / ((1.0 + e2).powf(half) - base)
-        };
-        derivative / (self.exponent * (1.0 - self.power(t)).max(f64::MIN_POSITIVE))
-    }
-
-    /// The superellipse of `exponent` that meets the upper curve at the cheek line with its width and slope.
-    fn lower_curve(&self, exponent: f64) -> Option<Lower> {
-        let width_here = self.upper(CHEEK_LINE);
-        let closing = self.closing(CHEEK_LINE);
-        if width_here <= 0.0 || !closing.is_finite() {
-            return None;
-        }
-        // How fast a superellipse of `p` starting at `start` closes in at the cheek line, relative to its width.
-        let closing_of = |p: f64, start: f64| {
-            let u = (CHEEK_LINE - start) / (1.0 - start);
-            u.powf(p - 1.0) / ((1.0 - u.powf(p)).max(f64::MIN_POSITIVE) * (1.0 - start))
-        };
-        // A superellipse closes in at most `1 / (p (1 - CHEEK_LINE))` there, as its top runs off: an exponent too high
-        // for that is lowered to the fullest that can still meet the slope.
-        let fullest = LOWER_SLOPE_MARGIN / (closing * (1.0 - CHEEK_LINE));
-        let p = exponent.min(fullest);
-        let (mut high, mut low) = (CHEEK_LINE, LOWER_START_FLOOR);
-        for _ in 0..SOLVE_STEPS * 2 {
-            let mid = f64::midpoint(low, high);
-            // Closing falls as the start moves up (toward `low`): keep `high` too slow and `low` too fast.
-            if closing_of(p, mid) < closing {
-                high = mid;
-            } else {
-                low = mid;
-            }
-        }
-        let start = f64::midpoint(low, high);
-        let u = (CHEEK_LINE - start) / (1.0 - start);
-        Some(Lower { width: width_here / superellipse(u, p), start, exponent: p })
     }
 }
 
@@ -295,8 +246,8 @@ fn superellipse(u: f64, p: f64) -> f64 {
 /// - the chin within [`CHIN_RANGE`] of the cranium's lowest point and [`LENGTH_RANGE`] below the top (the chin moves;
 ///   the top stays);
 /// - the stretch line within [`STRETCH_LINE_RANGE`] of the top and [`MIN_STRETCH_DEPTH`] above the cranium's bottom;
-/// - the exponent and the lower exponent, if set, within [`EXPONENT_RANGE`]; the one that shapes the chin (the lower
-///   one when set) raised until the front chin is no pointier than [`MIN_TIP_DEG`];
+/// - the exponent within [`EXPONENT_RANGE`] and the lower exponent, if set, within [`LOWER_EXPONENT_RANGE`]; the one
+///   that shapes the chin (the lower one when set) raised until the front chin is no pointier than [`MIN_TIP_DEG`];
 /// - `min_ratio` within [`MIN_RATIO_RANGE`] and the puff at most [`MAX_CHEEK_PUFF`].
 ///
 /// An outline inside the space comes back with the same numbers. Every limit is continuous in the parameters, so a
@@ -331,15 +282,18 @@ pub fn plausible(outline: &HeadOutline, cranium: &Cranium) -> HeadOutline {
         clamp(line, (top + STRETCH_LINE_RANGE.0).max(lowest + MIN_STRETCH_DEPTH * down), top + STRETCH_LINE_RANGE.1);
     let min_ratio =
         outline.chin.map_or(IMPLICIT_MIN_RATIO, |c| clamp(c.min_ratio, MIN_RATIO_RANGE.0, MIN_RATIO_RANGE.1));
-    blunt(HeadOutline {
-        half_width,
-        top,
-        height: length,
-        exponent: clamp(outline.exponent, EXPONENT_RANGE.0, EXPONENT_RANGE.1),
-        exponent_lower: outline.exponent_lower.map(|e| clamp(e, EXPONENT_RANGE.0, EXPONENT_RANGE.1)),
-        chin: Some(Chin { y: chin_y, stretch_top, min_ratio }),
-        cheek_puff: clamp(outline.cheek_puff, 0.0, MAX_CHEEK_PUFF),
-    })
+    blunt(
+        HeadOutline {
+            half_width,
+            top,
+            height: length,
+            exponent: clamp(outline.exponent, EXPONENT_RANGE.0, EXPONENT_RANGE.1),
+            exponent_lower: outline.exponent_lower.map(|e| clamp(e, LOWER_EXPONENT_RANGE.0, LOWER_EXPONENT_RANGE.1)),
+            chin: Some(Chin { y: chin_y, stretch_top, min_ratio }),
+            cheek_puff: clamp(outline.cheek_puff, 0.0, MAX_CHEEK_PUFF),
+        },
+        cranium,
+    )
 }
 
 /// The outline's front tip angle, degrees: on the circle of radius [`TIP_SCALE`] x the half-width round the chin, the
@@ -364,26 +318,80 @@ fn tip_angle(outline: &HeadOutline) -> f64 {
     2.0 * x.atan2(y).to_degrees()
 }
 
-/// `outline` with the exponent that shapes its chin (the lower one when it has one, else the exponent) raised, up to
-/// the top of [`EXPONENT_RANGE`], until the tip is at least [`MIN_TIP_DEG`].
-fn blunt(outline: HeadOutline) -> HeadOutline {
+/// `outline` (with a chin) with the exponent that shapes its chin (the lower one when it has one, else the exponent)
+/// raised, up to the top of its range, until the tip is at least [`MIN_TIP_DEG`] and the head built on `cranium` can
+/// follow the outline into the chin to within [`TIP_MISS`] ([`TipFit`]).
+fn blunt(outline: HeadOutline, cranium: &Cranium) -> HeadOutline {
+    let Some(fit) = TipFit::new(&outline, cranium) else {
+        return outline;
+    };
     let with = |p: f64| match outline.exponent_lower {
         Some(_) => HeadOutline { exponent_lower: Some(p), ..outline },
         None => HeadOutline { exponent: p, ..outline },
     };
-    if tip_angle(&outline) >= MIN_TIP_DEG {
+    let fits = |o: &HeadOutline| tip_angle(o) >= MIN_TIP_DEG && fit.miss(o) <= TIP_MISS;
+    if fits(&outline) {
         return outline;
     }
-    let (mut low, mut high) = (outline.exponent_lower.unwrap_or(outline.exponent), EXPONENT_RANGE.1);
+    let ceiling = if outline.exponent_lower.is_some() { LOWER_EXPONENT_RANGE.1 } else { EXPONENT_RANGE.1 };
+    let (mut low, mut high) = (outline.exponent_lower.unwrap_or(outline.exponent), ceiling);
     for _ in 0..SOLVE_STEPS {
         let mid = f64::midpoint(low, high);
-        if tip_angle(&with(mid)) >= MIN_TIP_DEG {
+        if fits(&with(mid)) {
             high = mid;
         } else {
             low = mid;
         }
     }
     with(high)
+}
+
+/// How closely a head can follow a pointed outline into its chin. Near the tip the outline may close in faster than
+/// the cranium's round bottom, and the ratio floor (`min_ratio`) then holds the head's width at that fraction of the
+/// cranium's: the head is rounder there than the outline. [`TipFit::miss`] predicts by how much from the stretched
+/// cranium's width profile, which the chin's exponent does not change, so it is measured once per outline.
+struct TipFit {
+    profile: WidthProfile,
+    min_ratio: f64,
+}
+
+impl TipFit {
+    /// The fit for `outline`'s chin on the analytic `cranium`, or `None` for an outline without a chin.
+    fn new(outline: &HeadOutline, cranium: &Cranium) -> Option<Self> {
+        let chin = outline.chin?;
+        let radius = |dir: DVec3| cranium::radius(cranium, dir);
+        let points: Vec<DVec3> = (0..=MERIDIANS)
+            .flat_map(|j| {
+                let phi = PI * fraction(j, MERIDIANS);
+                (0..=MERIDIAN_STEPS).map(move |i| direction(FRAC_PI_2 * (1.0 + fraction(i, MERIDIAN_STEPS)), phi))
+            })
+            .map(|dir| dir * radius(dir))
+            .collect();
+        let stretch = Stretch::solve(&points, &chin);
+        Some(Self { profile: WidthProfile::new(&radius, &stretch, outline.top), min_ratio: chin.min_ratio })
+    }
+
+    /// How far the head strays outside `outline` in the [`TIP_REACH`] above its chin, metres: at each height, the
+    /// width the sideways scale gives (`side_scale`'s ratio, floor included, times the cranium's width) beyond the
+    /// outline's, measured across the outline (divided by the length of its normal).
+    fn miss(&self, outline: &HeadOutline) -> f64 {
+        let curve = OutlineCurve::of(outline);
+        let chin = outline.chin_y();
+        let reach = TIP_REACH * (outline.top - chin);
+        let mut worst = 0.0_f64;
+        let mut y = chin + PROFILE_STEP;
+        while y <= chin + reach {
+            let current = self.profile.smoothed(y);
+            if current > TIP_WIDTH {
+                let wanted = curve.at(y);
+                let ratio = soft_max(soft_min(wanted / current, MAX_RATIO), self.min_ratio);
+                let slope = (curve.at(y + PROFILE_STEP) - curve.at(y - PROFILE_STEP)) / (2.0 * PROFILE_STEP);
+                worst = worst.max((self.profile.at(y) * ratio - wanted) / slope.hypot(1.0));
+            }
+            y += PROFILE_STEP;
+        }
+        worst
+    }
 }
 
 // ------------------------------------------------------------------------------------------------ the chin stretch
@@ -797,8 +805,14 @@ mod tests {
         let set = |e: Option<f64>| plausible(&HeadOutline { exponent_lower: e, ..inside() }, &c).exponent_lower;
         assert_eq!(set(None), None);
         assert_eq!(set(Some(2.0)), Some(2.0), "an in-range value comes back unchanged");
-        assert_eq!(set(Some(0.5)), Some(EXPONENT_RANGE.0), "below the range stops at the floor");
-        assert_eq!(set(Some(9.0)), Some(EXPONENT_RANGE.1), "above the range stops at the ceiling");
+        assert_eq!(set(Some(1.3)), Some(1.3), "the lower exponent's range reaches below the exponent's");
+        assert_eq!(set(Some(9.0)), Some(LOWER_EXPONENT_RANGE.1), "above the range stops at the ceiling");
+        // Below the floor the value stops at the floor, or above it where the chin tip limit binds first.
+        let floor = set(Some(0.5)).unwrap();
+        assert!(floor >= LOWER_EXPONENT_RANGE.0 && floor < EXPONENT_RANGE.0, "{floor}");
+        assert!(
+            (tip_angle(&plausible(&HeadOutline { exponent_lower: Some(0.5), ..inside() }, &c)) - MIN_TIP_DEG) > -0.01
+        );
     }
 
     #[test]
@@ -972,7 +986,9 @@ mod tests {
         let points: Vec<(f64, f64)> = (0..40)
             .map(|k| o.top - 0.02 + 0.005 * f64::from(k))
             .take_while(|y| *y <= o.top + band + 0.01)
-            .map(|y| (profile.smoothed(y) * side_scale(&profile, &OutlineCurve::of(&o), o.top, chin.min_ratio, band, y), y))
+            .map(|y| {
+                (profile.smoothed(y) * side_scale(&profile, &OutlineCurve::of(&o), o.top, chin.min_ratio, band, y), y)
+            })
             .collect();
         let headings: Vec<f64> = points.windows(2).map(|w| (w[1].0 - w[0].0).atan2(w[1].1 - w[0].1)).collect();
         let turns: Vec<f64> = headings.windows(2).map(|h| h[1] - h[0]).collect();
