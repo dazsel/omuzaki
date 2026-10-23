@@ -100,7 +100,9 @@ impl Gate {
         let (entered_tx, entered) = channel();
         let (release, release_rx) = channel();
         let gate = Arc::new(WorkGate { entered: entered_tx, release: Mutex::new(release_rx) });
-        GATES.lock().unwrap().insert(key.to_owned(), gate);
+        // The map is shared by every test in the binary: two tests on one key would take each other's gate.
+        let taken = GATES.lock().unwrap().insert(key.to_owned(), gate);
+        assert!(taken.is_none(), "gate {key:?} is already used by another test");
         Self { entered, release }
     }
 
@@ -353,10 +355,11 @@ fn a_running_job_does_not_block_another_actor_and_its_finish_is_one_undo_step() 
     gate.wait_entered();
     assert_eq!(live(&rig, info.id).state, JobState::Running);
 
+    // The job holds its gate shut until the edit is in, so an edit that waited for the job would never return; a
+    // wall-clock bound here only measured the machine's load.
     let other = rig.bobs_agent();
-    let began = Instant::now();
     rig.set_as(&other, "other", json!(1));
-    assert!(began.elapsed() < Duration::from_millis(5), "an edit by another actor waited for the job");
+    assert_eq!(live(&rig, info.id).state, JobState::Running, "the edit landed while the job still ran");
 
     gate.release.send(()).unwrap();
     let ended = rig.exec.wait(info.id, None).unwrap();
@@ -583,8 +586,8 @@ fn spending_past_the_estimate_fails_and_cancels_the_job() {
 fn progress_events_are_coalesced_to_ten_a_second() {
     let rig = rig(json!({}));
     let events = rig.subscribe();
-    let gate = Gate::new("g1");
-    let info = rig.exec.start(job("g1", &json!("progress"))).unwrap();
+    let gate = Gate::new("pc1");
+    let info = rig.exec.start(job("pc1", &json!("progress"))).unwrap();
     gate.wait_entered();
     advance(&rig, 0.1);
     gate.release.send(()).unwrap();
@@ -933,10 +936,15 @@ fn a_job_start_is_recorded_before_its_work_runs_and_a_refused_record_stops_it() 
 fn a_shutdown_during_a_slow_finish_leaves_the_document_unchanged() {
     let rig = rig(json!({}));
     let gate = Gate::new("sf");
-    let info = rig.exec.start(job("sf", &json!("slow_finish"))).unwrap();
-    // `finish` is running with the document lock held; it returns its plan only once shutdown has cancelled the job.
-    gate.wait_entered();
-    rig.exec.shutdown_jobs();
+    // `finish` runs with the document lock held and returns its plan only once shutdown has cancelled the job. It can
+    // begin before `start` returns, and `start` publishes its events under that lock (#2365), so the start runs on a
+    // thread of its own and the shutdown waits only for `finish` to have begun.
+    let info = std::thread::scope(|scope| {
+        let started = scope.spawn(|| rig.exec.start(job("sf", &json!("slow_finish"))).unwrap());
+        gate.wait_entered();
+        rig.exec.shutdown_jobs();
+        started.join().unwrap()
+    });
     let ended = rig.exec.wait(info.id, None).unwrap();
     assert_eq!(ended.state, JobState::Cancelled { by: None, reason: CancelReason::Shutdown });
     assert_eq!(rig.at("sf"), None, "the finish applied after shutdown began");
