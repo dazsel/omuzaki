@@ -350,7 +350,8 @@ fn read_node(root: &Value, schema: &Value, key: &str, parent_path: &str) -> Node
     let Some(view) = view(root, schema) else {
         return read_only(key, &path, schema, "unresolved reference");
     };
-    let label = view.get("title").and_then(Value::as_str).filter(|t| !t.is_empty()).unwrap_or(key).to_owned();
+    let label =
+        view.get("title").and_then(Value::as_str).filter(|t| !t.is_empty()).map_or_else(|| words(key), str::to_owned);
     let (kind, type_name) = read_kind(root, &view, &path);
     let level = match view.ui("level").and_then(Value::as_str).map(str::to_ascii_lowercase).as_deref() {
         Some("advanced") => Level::Advanced,
@@ -381,12 +382,24 @@ fn read_node(root: &Value, schema: &Value, key: &str, parent_path: &str) -> Node
     node
 }
 
+/// A field's key as words, for a schema that gives it no title: `character` reads "Character" and `vmc_port` "Vmc
+/// port", never the raw key a person would read as code.
+fn words(key: &str) -> String {
+    let spaced: String = key.chars().map(|c| if c == '_' || c == '-' { ' ' } else { c }).collect();
+    let mut chars = spaced.chars();
+    chars.next().map_or_else(String::new, |first| first.to_uppercase().chain(chars).collect())
+}
+
 fn read_only(key: &str, path: &str, schema: &Value, type_name: &str) -> Node {
     Node {
         key: key.to_owned(),
         path: path.to_owned(),
         index: 0,
-        label: schema.get("title").and_then(Value::as_str).filter(|t| !t.is_empty()).unwrap_or(key).to_owned(),
+        label: schema
+            .get("title")
+            .and_then(Value::as_str)
+            .filter(|t| !t.is_empty())
+            .map_or_else(|| words(key), str::to_owned),
         type_name: type_name.to_owned(),
         kind: Kind::ReadOnly,
         level: Level::Essentials,
