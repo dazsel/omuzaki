@@ -11,7 +11,7 @@ a shared file.
 | **Mock** | `*-mock` | API crates |
 | **Lib** (format libraries) | crates with `layer = "lib"` under `[package.metadata.omuzaki]` | API crates and other lib crates (mocks as dev-dependencies) |
 | **Implementation** | everything else under `crates/` | API crates and lib crates (mocks as dev-dependencies) |
-| **App** | `omuzaki-cli`, `omuzaki-ui`, `omuzaki-test`, `omuzaki-stage`, `omuzaki-model-worker`, `xtask`, the area test crates `omuzaki-test-<area>` | anything: they wire implementations together (area test crates: see below) |
+| **App** | `omuzaki-cli`, `omuzaki-ui`, `omuzaki-test`, `omuzaki-stage`, `omuzaki-cohost`, `omuzaki-model-worker`, `xtask`, the area test crates `omuzaki-test-<area>` | anything: they wire implementations together (area test crates: see below) |
 
 `cargo xtask lint-deps` enforces the table (§39 rule 10). API crates change rarely and go through maintainer
 review; breaking changes need a decision record (§39.2 item 8).

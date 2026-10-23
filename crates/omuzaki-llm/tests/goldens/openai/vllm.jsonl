@@ -1,4 +1,4 @@
-{"request":{"body":{"max_tokens":256,"messages":[{"content":[{"text":"hello","type":"text"}],"role":"user"}],"model":"llama3.2","stream":true,"stream_options":{"include_usage":true},"tool_choice":"auto","tools":[{"function":{"description":"A tool","name":"render_preview","parameters":{"type":"object"}},"type":"function"}]},"method":"POST","path":"/v1/chat/completions"}}
+{"request":{"body":{"max_tokens":256,"messages":[{"content":"hello","role":"user"}],"model":"llama3.2","stream":true,"stream_options":{"include_usage":true},"tool_choice":"auto","tools":[{"function":{"description":"A tool","name":"render_preview","parameters":{"type":"object"}},"type":"function"}]},"method":"POST","path":"/v1/chat/completions"}}
 {"Start":{"model":"Qwen/Qwen2.5-7B-Instruct"}}
 {"TextDelta":"Rendering both views."}
 {"ToolUseStart":{"id":"chatcmpl-tool-a1","name":"render_preview"}}

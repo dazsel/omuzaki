@@ -67,7 +67,10 @@ impl Protocol for Wire {
     }
 
     fn decoder(&self, secret: Option<SecretValue>) -> Box<dyn Decoder> {
-        Box::new(decode::OpenAiDecoder::new(self.model.clone(), self.context_window, secret))
+        Box::new(
+            decode::OpenAiDecoder::new(self.model.clone(), self.context_window, secret)
+                .on_loopback(self.endpoint.loopback),
+        )
     }
 }
 
