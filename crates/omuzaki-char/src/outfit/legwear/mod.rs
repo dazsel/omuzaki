@@ -20,8 +20,8 @@ mod section;
 mod skin;
 
 use omuzaki_char_api::{
-    BodyRegion, BuildCtx, BuildError, MaterialName, MaterialSpec, PartCategory, PartKind, PartMeta, PartOutput,
-    register_part_kind,
+    BodyRegion, BuildCtx, BuildError, MaterialName, MaterialSpec, PartCategory, PartColours, PartKind, PartMeta,
+    PartOutput, RecolourCtx, Recoloured, register_part_kind,
 };
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::DVec3;
@@ -31,7 +31,9 @@ use omuzaki_render_api::{Outline, ParamValue, ProgramParams, Shading};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::common::{FabricStyle, Garment, GarmentCommon, GarmentError, LAYER_UNDERWEAR, publish_envelope};
+use super::common::{
+    FabricStyle, Garment, GarmentCommon, GarmentError, LAYER_UNDERWEAR, publish_envelope, recolour_named,
+};
 use super::loft::MIN_EXPONENT;
 use crate::kit::KitError;
 use crate::kit::grid::{GridOptions, MeshBuilder, Skin};
@@ -211,6 +213,11 @@ impl PartKind for Legwear {
             .with_materials(vec![(material_id, material)])
             .with_publishes(envelope))
     }
+
+    /// The nylon is the one material, made by the build's own function; the vertex colours are tones, not colours.
+    fn recolour(p: &LegwearParams, output: &mut PartOutput, ctx: &RecolourCtx<'_>) -> Result<Recoloured, BuildError> {
+        Ok(recolour_named(output, ctx.part, vec![(MATERIAL, material(p, ctx)?)], Vec::new()))
+    }
 }
 
 /// The nylon: a vertex-coloured toon with a coloured outline and the sheen program, which adds the faint glow on the
@@ -218,7 +225,7 @@ impl PartKind for Legwear {
 ///
 /// The sheen program shades with the renderer's default toon, so the prototype's own shade colour, terminator shift and
 /// rim (`0x8a7880`, `-0.12`, `0x8a6a78`) don't reach the screen.
-fn material(p: &LegwearParams, ctx: &BuildCtx<'_>) -> Result<MaterialSpec, BuildError> {
+fn material<C: PartColours>(p: &LegwearParams, ctx: &C) -> Result<MaterialSpec, BuildError> {
     let strength = p.sheen * p.style.sheen();
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped to a byte
     let channel = |v: f64| (v * strength).round().clamp(0.0, 255.0) as u8;

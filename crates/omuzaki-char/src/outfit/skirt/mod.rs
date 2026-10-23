@@ -28,8 +28,8 @@ pub use weights::{PROTOTYPE_BLEND, PROTOTYPE_REACH, ThighPull};
 
 use omuzaki_anim_api::HumanoidBone;
 use omuzaki_char_api::{
-    BodyFit, BodyRegion, BuildCtx, BuildError, JointRef, MaterialName, MaterialSpec, PartCategory, PartKind, PartMeta,
-    PartOutput, TextureName, register_part_kind,
+    BodyFit, BodyRegion, BuildCtx, BuildError, JointRef, MaterialName, MaterialSpec, PartCategory, PartColours,
+    PartKind, PartMeta, PartOutput, RecolourCtx, Recoloured, TextureName, register_part_kind,
 };
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::DVec3;
@@ -40,6 +40,7 @@ use serde::{Deserialize, Serialize};
 
 use super::common::{
     FabricStyle, Garment, GarmentCommon, GarmentError, LAYER_SHIRT, LAYER_VEST, fabric_tile, publish_envelope,
+    recolour_named,
 };
 use super::loft::MIN_EXPONENT;
 use crate::kit::KitError;
@@ -439,6 +440,15 @@ impl PartKind for Skirt {
         super::drape::simulate(&p.common.cloth, &drape, ctx, &mut output)?;
         Ok(output)
     }
+
+    /// The cloth (with its plaid or fabric tile) and the band, made by the build's own functions; the pleats' vertex
+    /// colours are tones and the drape is geometry, so both are kept.
+    fn recolour(p: &SkirtParams, output: &mut PartOutput, ctx: &RecolourCtx<'_>) -> Result<Recoloured, BuildError> {
+        let cloth = cloth(p, ctx)?;
+        let textures = cloth.texture.map(|(_, data)| ("plaid", data)).into_iter().collect();
+        let materials = vec![("cloth", cloth.material), ("band", band_material(p, ctx)?)];
+        Ok(recolour_named(output, ctx.part, materials, textures))
+    }
 }
 
 impl Garment for Skirt {
@@ -502,16 +512,16 @@ struct Cloth {
 }
 
 /// The id `<part>-<suffix>` as a `T`.
-fn name<T: std::str::FromStr>(ctx: &BuildCtx<'_>, suffix: &str) -> Result<T, BuildError>
+fn name<T: std::str::FromStr>(ctx: &impl PartColours, suffix: &str) -> Result<T, BuildError>
 where
     T::Err: std::fmt::Display,
 {
-    let id = format!("{}-{suffix}", ctx.part);
+    let id = format!("{}-{suffix}", ctx.part());
     id.parse::<T>().map_err(|e| ctx.fail(format!("`{id}` isn't a valid name: {e}")))
 }
 
 /// The cloth's toon: shaded, with the rim and the outline, in vertex colours.
-fn cloth(p: &SkirtParams, ctx: &BuildCtx<'_>) -> Result<Cloth, BuildError> {
+fn cloth<C: PartColours>(p: &SkirtParams, ctx: &C) -> Result<Cloth, BuildError> {
     let (base, texture, tile) = match &p.plaid {
         Some(tartan) => {
             let colours = plaid::Colours {
@@ -552,7 +562,7 @@ fn cloth(p: &SkirtParams, ctx: &BuildCtx<'_>) -> Result<Cloth, BuildError> {
 }
 
 /// The band lines: a plain toon without a rim or an outline.
-fn band_material(p: &SkirtParams, ctx: &BuildCtx<'_>) -> Result<MaterialSpec, BuildError> {
+fn band_material<C: PartColours>(p: &SkirtParams, ctx: &C) -> Result<MaterialSpec, BuildError> {
     let mut material = MaterialSpec::toon(ctx.colour(&p.band)?);
     material.shading = Shading::Toon(Toon {
         shade: ctx.colour(&p.band_shade)?,

@@ -642,3 +642,74 @@ fn unnamed_flipped(def: &CharacterDef, part: &PartId) -> CharacterDef {
     }
     other
 }
+
+// ------------------------------------------------------------------------------------------------------- recolouring
+
+/// What [`check_recolour`] found.
+#[derive(Debug, Default)]
+pub struct RecolourReport {
+    /// One line per part and option set whose recoloured output differs from a fresh build under the new palette.
+    pub violations: Vec<String>,
+    /// The kinds that recoloured (answered [`Recoloured::Done`](omuzaki_char_api::Recoloured::Done)) at least once.
+    pub recoloured: BTreeSet<String>,
+    /// The kinds that declined, and so are rebuilt on a palette change.
+    pub declined: BTreeSet<String>,
+}
+
+/// The third contract (`PartKind::recolour`): recolouring a part's output to a new palette gives exactly what a build
+/// under that palette gives. For each part of `base` under each of the [`OPTIONS`], the part is built under the
+/// character's palette and recoloured to the [`flipped`] one, then built under the flipped one; a kind that answers
+/// `Done` must match the fresh build in meshes, materials, material classes, textures and warnings.
+///
+/// # Errors
+/// The first build of `base` (under either palette) that fails, with the part and the reason.
+pub fn check_recolour(base: &CharacterDef, services: &BuildServices) -> Result<RecolourReport, String> {
+    let order = plan(base).map_err(|e| e.to_string())?;
+    let mut other = base.clone();
+    other.palette = flipped(&base.palette);
+    let mut report = RecolourReport::default();
+    for (quality, rig_export) in OPTIONS {
+        let options = BuildOptions { quality, rig_export, ..BuildOptions::default() };
+        let mut published = Published::default();
+        for part in &order {
+            let kind = base.parts.get(part).map_or_else(String::new, |p| p.kind.to_string());
+            let mut output =
+                build_part(base, part, &options, services, &published).map_err(|e| format!("{part}: {e}"))?;
+            let fresh = build_part(&other, part, &options, services, &published)
+                .map_err(|e| format!("{part} under the flipped palette: {e}"))?;
+            let publishes = output.publishes.clone();
+            match omuzaki_char_api::recolour_part(&other, part, services, &mut output) {
+                Ok(omuzaki_char_api::Recoloured::Done) => {
+                    report.recoloured.insert(kind.clone());
+                    let differs: Vec<&str> = [
+                        ("meshes", output.meshes != fresh.meshes),
+                        ("materials", output.materials != fresh.materials),
+                        ("material classes", output.material_classes != fresh.material_classes),
+                        ("textures", output.textures != fresh.textures),
+                        ("warnings", output.warnings != fresh.warnings),
+                        ("runtime", output.runtime.is_some() != fresh.runtime.is_some()),
+                    ]
+                    .into_iter()
+                    .filter_map(|(what, differs)| differs.then_some(what))
+                    .collect();
+                    if !differs.is_empty() {
+                        report.violations.push(format!(
+                            "part `{part}` (kind `{kind}`, {quality:?}, rig_export {rig_export}): recoloured, its {} \
+                             differ from a build under the new palette",
+                            differs.join(", ")
+                        ));
+                    }
+                }
+                Ok(_) => {
+                    report.declined.insert(kind.clone());
+                }
+                Err(e) => report.violations.push(format!(
+                    "part `{part}` (kind `{kind}`, {quality:?}, rig_export {rig_export}): recolour failed: {e}"
+                )),
+            }
+            published.absorb(part, publishes).map_err(|e| format!("{part}: {e}"))?;
+        }
+    }
+    report.declined.retain(|kind| !report.recoloured.contains(kind));
+    Ok(report)
+}

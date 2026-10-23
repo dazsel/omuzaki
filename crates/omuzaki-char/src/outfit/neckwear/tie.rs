@@ -10,8 +10,8 @@
 //! ([`along`]). The tie's length and width are parameters that stretch the whole tie from its top and its middle.
 
 use omuzaki_char_api::{
-    BuildCtx, BuildError, JointRef, MaterialName, MaterialSpec, PartCategory, PartKind, PartMeta, PartOutput,
-    TextureData, TextureName,
+    BuildCtx, BuildError, JointRef, MaterialName, MaterialSpec, PartCategory, PartColours, PartKind, PartMeta,
+    PartOutput, RecolourCtx, Recoloured, TextureData, TextureName,
 };
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::{DVec2, DVec3, UVec2, Vec2};
@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use super::{Hang, hang, mesh_of, name_of};
 use crate::kit::curve::{Pchip, TAU, fraction, rows_of, sstep};
 use crate::kit::grid::{Grid, GridOptions, MeshBuilder, Skin};
-use crate::outfit::common::GarmentError;
+use crate::outfit::common::{GarmentError, recolour_named};
 use crate::outfit::shirt::torso::{along, to_reference};
 
 /// Segments round the blade and the knot: columns are one more.
@@ -193,30 +193,43 @@ impl PartKind for Tie {
         let fail = |e: GarmentError| ctx.fail(e.to_string());
         let on = hang(ctx)?;
         let mesh = build_mesh(&on, p).map_err(fail)?;
-        let colours = [&p.stripes.base, &p.stripes.main, &p.stripes.edge, &p.stripes.thin].map(|c| ctx.colour(c));
-        let [base, main, edge, thin] = colours;
-        let list = stripes_list(base?, main?, edge?, thin?);
-        let texture = paint(ctx, &list)?;
+        let (material, texture) = look(p, ctx)?;
         let texture_name: TextureName = name_of(ctx, "stripes")?;
         let material_name: MaterialName = name_of(ctx, "tie")?;
-        let mut material = MaterialSpec::toon(Colour::rgb(255, 255, 255));
-        material.base_texture = Some(texture_name.clone());
-        material.shading = Shading::Toon(Toon {
-            shade: ctx.colour(&p.shade)?,
-            shift: -0.1,
-            softness: 0.2,
-            rim: Rim { colour: Colour::hex(0x00cf_e0d8), strength: 0.12, ..Rim::default() },
-            ..Toon::default()
-        });
-        material.outline = Some(Outline { colour: ctx.colour(&p.line)?, width: 0.0012 });
         Ok(PartOutput::new()
             .with_meshes(vec![mesh_of(ctx, "tie", mesh, material_name.clone())?])
             .with_materials(vec![(material_name, material)])
             .with_textures(vec![(texture_name, texture)]))
     }
+
+    fn recolour(p: &TieParams, output: &mut PartOutput, ctx: &RecolourCtx<'_>) -> Result<Recoloured, BuildError> {
+        let (material, texture) = look(p, ctx)?;
+        Ok(recolour_named(output, ctx.part, vec![("tie", material)], vec![("stripes", texture)]))
+    }
 }
 
 omuzaki_char_api::register_part_kind!(Tie);
+
+/// The tie's material and its painted stripes (the `<part>-stripes` texture), for the build and the recolour.
+fn look<C: PartColours>(p: &TieParams, ctx: &C) -> Result<(MaterialSpec, TextureData), BuildError> {
+    let colours = [&p.stripes.base, &p.stripes.main, &p.stripes.edge, &p.stripes.thin].map(|c| ctx.colour(c));
+    let [base, main, edge, thin] = colours;
+    let list = stripes_list(base?, main?, edge?, thin?);
+    let texture = paint(ctx, &list)?;
+    let texture_name: TextureName =
+        format!("{}-stripes", ctx.part()).parse().map_err(|e| ctx.fail(format!("texture name: {e}")))?;
+    let mut material = MaterialSpec::toon(Colour::rgb(255, 255, 255));
+    material.base_texture = Some(texture_name);
+    material.shading = Shading::Toon(Toon {
+        shade: ctx.colour(&p.shade)?,
+        shift: -0.1,
+        softness: 0.2,
+        rim: Rim { colour: Colour::hex(0x00cf_e0d8), strength: 0.12, ..Rim::default() },
+        ..Toon::default()
+    });
+    material.outline = Some(Outline { colour: ctx.colour(&p.line)?, width: 0.0012 });
+    Ok((material, texture))
+}
 
 /// The open borders the tie's mesh has: the blade's top, and the knot's bottom and top (the blade's point is closed).
 pub const OPEN_BORDERS: usize = 3;
@@ -382,7 +395,7 @@ pub fn stripes_list(base: Colour, main: Colour, edge: Colour, thin: Colour) -> D
 }
 
 /// Paints the stripes into the tie's texture: repeating, mip-mapped and filtered.
-fn paint(ctx: &BuildCtx<'_>, list: &DrawList) -> Result<TextureData, BuildError> {
+fn paint(ctx: &impl PartColours, list: &DrawList) -> Result<TextureData, BuildError> {
     let size = f64::from(TEXTURE_PX);
     #[allow(clippy::cast_possible_truncation)] // the plane is f32
     let rect = FaceRect { x0: 0.0, x1: size as f32, y0: 0.0, y1: size as f32 };

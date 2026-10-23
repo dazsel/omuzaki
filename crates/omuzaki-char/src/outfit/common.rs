@@ -22,8 +22,8 @@ use std::sync::{Arc, Mutex};
 
 use omuzaki_anim_api::HumanoidPose;
 use omuzaki_char_api::{
-    BodyFit, BodyRegion, BuildCtx, BuildError, FitFact, JointRef, MaterialName, MaterialSpec, PartKind, PartMesh,
-    PartOutput, Publishes, RegionEnd, Section, TextureName,
+    BodyFit, BodyRegion, BuildCtx, BuildError, FitFact, JointRef, MaterialName, MaterialSpec, PartColours, PartId,
+    PartKind, PartMesh, PartOutput, Publishes, Recoloured, RegionEnd, Section, TextureName,
 };
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::{UVec2, Vec2};
@@ -722,6 +722,68 @@ pub trait Garment: PartKind {
     fn open_borders(params: &Self::Params) -> usize;
 }
 
+/// A garment's fabric as its colours make it: the `<part>-fabric` material, the painted tile of a patterned fabric
+/// (the `<part>-fabric` texture) and the tile's side in metres.
+pub struct FabricLook {
+    /// The fabric material: the plain colour, or white under the painted tile.
+    pub material: MaterialSpec,
+    /// The painted tile of a patterned fabric.
+    pub texture: Option<omuzaki_char_api::TextureData>,
+    /// The side of one repeat, metres; `None` for a plain fabric.
+    pub tile: Option<f64>,
+}
+
+/// The fabric of `common` through `cx`'s palette: what [`GarmentOutput::new`] starts a garment with, and what a recolour
+/// remakes.
+///
+/// # Errors
+/// As [`GarmentOutput::new`].
+pub fn fabric_look<C: PartColours>(cx: &C, common: &GarmentCommon) -> Result<FabricLook, BuildError> {
+    let tile = fabric_tile(&common.fabric, 1, |c| cx.colour(c), |m| cx.fail(m))?;
+    let size = tile.as_ref().map(|t| t.size);
+    let (material, texture) = match (&common.fabric, tile) {
+        (FabricStyle::Plain { colour }, _) => (MaterialSpec::toon(cx.colour(colour)?), None),
+        (_, Some(tile)) => {
+            let name = format!("{}-fabric", cx.part()).parse::<TextureName>().map_err(|e| cx.fail(e.to_string()))?;
+            let texture = tile.paint(|size, rect, list, desc| cx.paint_texture(size, rect, list, desc))?;
+            (MaterialSpec { base_texture: Some(name), ..MaterialSpec::toon(Colour::rgb(255, 255, 255)) }, Some(texture))
+        }
+        (_, None) => return Err(cx.fail("a patterned fabric painted no tile")),
+    };
+    Ok(FabricLook { material, texture, tile: size })
+}
+
+/// Recolours `output` in place from freshly made `materials` and `textures`, each named `<part>-<suffix>`: every
+/// material and texture the output holds is replaced by the fresh one of the same name, where it stands, so the build's
+/// order is kept. The output is left as it was, and the kind is rebuilt, when it holds a name the fresh ones lack.
+pub fn recolour_named(
+    output: &mut PartOutput,
+    part: &PartId,
+    materials: Vec<(&str, MaterialSpec)>,
+    textures: Vec<(&str, omuzaki_char_api::TextureData)>,
+) -> Recoloured {
+    let named = |suffix: &str| format!("{part}-{suffix}");
+    let mut materials: Vec<(String, MaterialSpec)> = materials.into_iter().map(|(s, m)| (named(s), m)).collect();
+    let mut textures: Vec<(String, omuzaki_char_api::TextureData)> =
+        textures.into_iter().map(|(s, t)| (named(s), t)).collect();
+    let all_known = output.materials.iter().all(|(n, _)| materials.iter().any(|(m, _)| m == n.as_str()))
+        && output.textures.iter().all(|(n, _)| textures.iter().any(|(t, _)| t == n.as_str()));
+    if !all_known {
+        return Recoloured::NeedsRebuild;
+    }
+    for (name, spec) in &mut output.materials {
+        if let Some(i) = materials.iter().position(|(m, _)| m == name.as_str()) {
+            *spec = materials.swap_remove(i).1;
+        }
+    }
+    for (name, data) in &mut output.textures {
+        if let Some(i) = textures.iter().position(|(t, _)| t == name.as_str()) {
+            *data = textures.swap_remove(i).1;
+        }
+    }
+    Recoloured::Done
+}
+
 /// The output of a garment as it is assembled: the fabric's material and texture, then a mesh per surface, then the
 /// envelope. Every material, texture and mesh is named after the part (`<part>-fabric`, `<part>-<surface>`).
 pub struct GarmentOutput {
@@ -740,21 +802,13 @@ impl GarmentOutput {
     pub fn new(ctx: &BuildCtx<'_>, common: &GarmentCommon) -> Result<Self, BuildError> {
         let part = ctx.part.as_str().to_owned();
         let fabric = id_of::<MaterialName>(ctx, &format!("{part}-fabric"))?;
-        let tile = fabric_tile(&common.fabric, 1, |c| ctx.colour(c), |m| ctx.fail(m))?;
+        let look = fabric_look(ctx, common)?;
         let mut output = PartOutput::new();
-        let tile_size = tile.as_ref().map(|t| t.size);
-        let material = match (&common.fabric, tile) {
-            (FabricStyle::Plain { colour }, _) => MaterialSpec::toon(ctx.colour(colour)?),
-            (_, Some(tile)) => {
-                let texture_name = id_of::<TextureName>(ctx, &format!("{part}-fabric"))?;
-                let texture = tile.paint(|size, rect, list, desc| ctx.paint_texture(size, rect, list, desc))?;
-                output.textures.push((texture_name.clone(), texture));
-                MaterialSpec { base_texture: Some(texture_name), ..MaterialSpec::toon(Colour::rgb(255, 255, 255)) }
-            }
-            (_, None) => return Err(ctx.fail("a patterned fabric painted no tile")),
-        };
-        output.materials.push((fabric.clone(), material));
-        Ok(Self { part, fabric, tile: tile_size, output })
+        if let Some(texture) = look.texture {
+            output.textures.push((id_of::<TextureName>(ctx, &format!("{part}-fabric"))?, texture));
+        }
+        output.materials.push((fabric.clone(), look.material));
+        Ok(Self { part, fabric, tile: look.tile, output })
     }
 
     /// The side of one repeat of the fabric's pattern, metres, for [`Loft::add_to`](super::loft::Loft::add_to); `None`

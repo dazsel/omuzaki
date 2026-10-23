@@ -96,7 +96,7 @@ pub use rig::{
 };
 pub use runtime::{DynamicMesh, PartRuntime, PoseSource, RuntimeCost, StepCtx};
 pub use services::{
-    AssetError, AssetSource, BuildServices, RasterizerFactory, RasterizerRegistration, linked_rasterizer,
+    AssetError, AssetSource, BuildServices, PartColours, RasterizerFactory, RasterizerRegistration, linked_rasterizer,
 };
 pub use shape::{PRESET_IDS, ShapeProfile};
 pub use skin::{BrushFalloff, WeightBrush, apply_brushes, influence_cut};

@@ -18,8 +18,8 @@ use std::sync::Arc;
 use omuzaki_anim_api::{HumanoidBone, SpringChain, SpringParams, Transform};
 use omuzaki_char_api::{
     Anchor, AnchorId, AnchorsFact, BoneName, BuildCtx, BuildError, EarKind, ExtraBone, FaceFact, FitFact, HeadFact,
-    HeadParams, HeadSurface, JointFit, JointRef, KindProvenance, PartCategory, PartKind, PartMesh, PartMeta,
-    PartOutput, Publishes, RigContribution,
+    HeadParams, HeadSurface, JointFit, JointRef, KindProvenance, MaterialSpec, PartCategory, PartKind, PartMesh,
+    PartMeta, PartOutput, Publishes, RecolourCtx, Recoloured, RigContribution,
 };
 use omuzaki_core::glam::{Mat3, Quat, Vec3};
 use omuzaki_core::mesh::MeshData;
@@ -94,18 +94,16 @@ impl PartKind for Head {
         let (ear_meshes, mut ear_anchors, ear_covers) = ears(ctx, &placed, surface.as_ref())?;
         meshes.extend(ear_meshes);
         let mut rig = RigContribution::default();
-        let mut materials = vec![
-            (material::name(ctx, "skin-head")?, material::skin_head(ctx, &placed, surface.centre())?),
-            (material::name(ctx, "skin-ear")?, material::skin_ear(ctx, &placed)?),
-            (material::name(ctx, "skin-neck")?, material::skin_neck(ctx, &placed)?),
-        ];
         if placed.ears.kind == EarKind::Animal {
             let (animal_meshes, tips) = animal_ears(ctx, &placed, surface.as_ref(), &mut rig)?;
             meshes.extend(animal_meshes);
             ear_anchors.extend(tips);
-            materials.push((material::name(ctx, "fur-ear")?, material::fur_ear(ctx, &placed)?));
-            materials.push((material::name(ctx, "ear-inner")?, material::ear_inner(ctx, &placed)?));
         }
+        let overlays = material::face_overlays(&placed, surface.centre());
+        let materials = materials(&|c| ctx.colour(c), &placed, overlays)?
+            .into_iter()
+            .map(|(name, spec)| Ok((material::name(ctx, name)?, spec)))
+            .collect::<Result<Vec<_>, BuildError>>()?;
 
         let top = Anchor {
             bone: JointRef::HEAD,
@@ -137,9 +135,51 @@ impl PartKind for Head {
             .with_rig(rig)
             .with_warnings(warnings))
     }
+
+    /// The head's colours are its materials, made by the same function as the build's; the face window's overlays are
+    /// geometry and are kept. The meshes don't depend on colour.
+    fn recolour(params: &HeadParams, output: &mut PartOutput, ctx: &RecolourCtx<'_>) -> Result<Recoloured, BuildError> {
+        let placed = lowered(params);
+        let face = format!("{}-skin-head", ctx.part);
+        let Some(overlays) =
+            output.materials.iter().find(|(name, _)| name.as_str() == face).map(|(_, s)| s.overlays.clone())
+        else {
+            return Ok(Recoloured::NeedsRebuild);
+        };
+        let fresh = materials(&|c| ctx.colour(c), &placed, overlays)?;
+        if fresh.len() != output.materials.len() {
+            return Ok(Recoloured::NeedsRebuild);
+        }
+        for ((name, spec), (suffix, made)) in output.materials.iter_mut().zip(fresh) {
+            if name.as_str() != format!("{}-{suffix}", ctx.part) {
+                return Ok(Recoloured::NeedsRebuild);
+            }
+            *spec = made;
+        }
+        Ok(Recoloured::Done)
+    }
 }
 
 omuzaki_char_api::register_part_kind!(Head);
+
+/// The head's materials, by name after the part id, in the order the build lists them: the face (with `overlays`), the
+/// ears and the neck, then the fur and inner panel of animal ears. The build and the recolour both make them here.
+fn materials(
+    colour: material::Resolve<'_>,
+    placed: &HeadParams,
+    overlays: Vec<omuzaki_char_api::FaceOverlay>,
+) -> Result<Vec<(&'static str, MaterialSpec)>, BuildError> {
+    let mut all = vec![
+        ("skin-head", material::skin_head(colour, placed, overlays)?),
+        ("skin-ear", material::skin_ear(colour, placed)?),
+        ("skin-neck", material::skin_neck(colour, placed)?),
+    ];
+    if placed.ears.kind == EarKind::Animal {
+        all.push(("fur-ear", material::fur_ear(colour, placed)?));
+        all.push(("ear-inner", material::ear_inner(colour, placed)?));
+    }
+    Ok(all)
+}
 
 /// What the ears add to the part: their meshes, their `ear_l` and `ear_r` anchors and the covers they publish.
 type EarParts = (Vec<PartMesh>, Vec<(AnchorId, Anchor)>, Vec<(Side, ears::EarCover)>);

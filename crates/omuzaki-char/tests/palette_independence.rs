@@ -11,9 +11,11 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use omuzaki_char::builder::conformance::{
-    Probes, Sweep, check, check_all, check_all_with, check_colours_through_parameters, check_with,
+    Probes, Sweep, check, check_all, check_all_with, check_colours_through_parameters, check_recolour, check_with,
 };
+use omuzaki_char::outfit::boots::LAYER_FOOTWEAR;
 use omuzaki_char::outfit::common::LAYER_SHIRT;
+use omuzaki_char::outfit::legwear::LAYER_LEGWEAR;
 use omuzaki_char::outfit::skirt::LAYER_SKIRT;
 use omuzaki_char_api::fact::FactProbe;
 use omuzaki_char_api::{BuildServices, CharacterDef, PartDef, PartId, PartKindId};
@@ -40,8 +42,8 @@ fn kit_characters() -> Vec<CharacterDef> {
     vec![mock_character().unwrap(), real]
 }
 
-/// The real kit character dressed: a shirt with a collar and a tie on its collar ring, and a skirt (the kinds that hang
-/// on a shirt or go round the legs, which the plain characters can't build).
+/// The real kit character dressed: a shirt with a collar and a tie on its collar ring, a skirt, legwear and boots (the
+/// kinds that hang on a shirt or go round the legs, which the plain characters can't build).
 fn dressed() -> CharacterDef {
     let mut def = kit_characters().pop().unwrap();
     let on_collar = json!({ "to": "anchor", "part": "shirt", "anchor": "collar_ring" });
@@ -50,6 +52,8 @@ fn dressed() -> CharacterDef {
         ("collar", LAYER_SHIRT + 1, Some(on_collar.clone())),
         ("tie", LAYER_SHIRT + 2, Some(on_collar)),
         ("skirt", LAYER_SKIRT, None),
+        ("legwear", LAYER_LEGWEAR, None),
+        ("boots", LAYER_FOOTWEAR, None),
     ] {
         let part = PartDef {
             kind: PartKindId::new(id).unwrap(),
@@ -243,4 +247,19 @@ fn every_kit_part_reads_colours_only_through_its_parameters() {
         let violations = check_colours_through_parameters(&def, &services()).unwrap();
         assert!(violations.is_empty(), "parts {parts:?}: {violations:#?}");
     }
+}
+
+/// The recolour contract (#644): every kit part whose kind recolours gives, recoloured, exactly what a build under the
+/// new palette gives.
+#[test]
+fn every_kit_part_that_recolours_matches_a_fresh_build() {
+    let mut recoloured = std::collections::BTreeSet::new();
+    let mut declined = std::collections::BTreeSet::new();
+    for def in kit_characters().into_iter().chain([dressed()]) {
+        let report = check_recolour(&def, &services()).unwrap();
+        assert!(report.violations.is_empty(), "{:#?}", report.violations);
+        recoloured.extend(report.recoloured);
+        declined.extend(report.declined);
+    }
+    eprintln!("recoloured: {recoloured:?}\ndeclined: {declined:?}");
 }
