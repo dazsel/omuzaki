@@ -14,7 +14,7 @@
 //! - the character seed, the quality, `rig_export` and the whole face profile (every part reads them);
 //! - the value in the palette of every slot the parameters name (`@slot`);
 //! - what the parts before it published, as a chain over the keys of the earlier parts that published anything.
-//!   Parts see each other only through [`Published`](omuzaki_char_api::Published), so this is exact: a part rebuilds
+//!   Parts see each other only through [`Published`], so this is exact: a part rebuilds
 //!   when, and only when, a publisher before it changed. Editing a part that publishes nothing (hair, most accessories)
 //!   rebuilds that part alone; editing the body rebuilds every part after it that follows a publisher.
 //!

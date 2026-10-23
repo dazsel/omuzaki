@@ -3,7 +3,7 @@
 //!
 //! Built on the left foot and mirrored for the right, skinned to the lower leg (shaft), foot, and toes (toe cap), blended
 //! at the ankle. The prototype's `boots.js` is the reference; this module owns its upper, sole and cuff, and the pieces
-//! the details are made of ([`strap`], [`buckle`], [`stitch`], [`tab`]) are used by plain boots and by the shoes alike.
+//! the details are made of (`strap`, `buckle`, `stitch`, `tab`) are used by plain boots and by the shoes alike.
 //!
 //! | Module | Builds |
 //! |---|---|

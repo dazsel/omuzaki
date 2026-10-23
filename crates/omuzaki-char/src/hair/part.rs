@@ -1,4 +1,4 @@
-//! The `hair` part kind: a hairstyle's groups compiled to clumps ([`compile`](super::compile)) and drawn as lens tubes
+//! The `hair` part kind: a hairstyle's groups compiled to clumps ([`compile`]) and drawn as lens tubes
 //! ([`tube`](super::tube)) with the hair shading program.
 //!
 //! **Meshes.** Static groups (not simulated) go into one mesh, `<part>-static`, skinned wholly to the head joint.
@@ -9,7 +9,7 @@
 //! generator-made shells (the cap) after them, so a mesh can be walked clump by clump from the front
 //! ([`recolour`](Hair::recolour) does).
 //!
-//! **Material.** One double-sided `hair` material per part: the `hair` shading program ([`HairShading::shading`]), vertex
+//! **Material.** One double-sided `hair` material per part: the `hair` shading program (`HairShading::shading`), vertex
 //! colours for streak tints, the outline in the hair's outline colour, and the brows overlay when `brows_through`. A palette
 //! change re-resolves the colours without compiling a clump ([`Hair::recolour`]).
 //!
@@ -17,7 +17,7 @@
 //! a back face from every side (a flat ribbon wound outward gets no outline from outside).
 //!
 //! **The curtain.** A group that compiles to a strip (the curtain) is meshed by
-//! [`curtain::group_mesh`](super::r#gen::curtain::group_mesh): each guide's strip of columns, vertices of its own, in
+//! `curtain::group_mesh`: each guide's strip of columns, vertices of its own, in
 //! order of `u`. A mesh holds its tubes first, then the strips, then the shells; the strips carry their clump's streak
 //! tint like a tube, so [`recolour`](Hair::recolour) finds every clump.
 //!

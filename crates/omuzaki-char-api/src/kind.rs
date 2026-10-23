@@ -1,6 +1,6 @@
 //! Part kinds: how generators plug in (spec §18, §39 rule 2).
 //!
-//! A part kind is a generator with a typed parameter struct. It **registers itself** with [`register_part_kind!`], the
+//! A part kind is a generator with a typed parameter struct. It **registers itself** with [`register_part_kind!`](crate::register_part_kind!), the
 //! same way ops do, so adding a garment generator means adding one file and nothing edits a central list. The
 //! parameter struct is the single source of truth: its serde form is what the project file stores, its JSON Schema is
 //! what ops, the MCP server and the UI sliders read, and [`Validate`] is what rejects bad edits.
@@ -199,7 +199,7 @@ pub struct PartKindRegistration {
 }
 
 impl PartKindRegistration {
-    /// The registration for kind `K`; `const` so [`register_part_kind!`] works at link time.
+    /// The registration for kind `K`; `const` so [`register_part_kind!`](crate::register_part_kind!) works at link time.
     pub const fn of<K: PartKind>() -> Self {
         Self {
             meta: K::meta,
@@ -401,7 +401,7 @@ pub struct Anchor {
 
 /// What one part makes available to the parts after it: a [`Fact`] value per [`Publishes::put`]. The facts of this
 /// crate are [`HeadFact`], [`FaceFact`], [`FitFact`], [`AnchorsFact`], [`CollidersFact`] and [`StatureFact`]; any crate
-/// may define more ([`fact!`](crate::fact)).
+/// may define more ([`fact!`](crate::fact!)).
 #[derive(Clone, Default)]
 pub struct Publishes {
     /// By fact name, so the merge order is deterministic.
@@ -716,7 +716,7 @@ pub struct BuildCtx<'a> {
     /// The character's body template ([`CharacterDef::template`](crate::CharacterDef)): the body part lofts its mesh
     /// from it, and no other part needs it (everything else reads what the body published).
     pub template: &'a BodyTemplateId,
-    /// The character's colours. Resolve a part's [`ColourRef`](omuzaki_face_api::ColourRef)s with [`BuildCtx::colour`]
+    /// The character's colours. Resolve a part's [`ColourRef`]s with [`BuildCtx::colour`]
     /// when building materials (the renderer's material types hold plain colours). A palette change doesn't rebuild the
     /// part if its kind implements [`PartKind::recolour`].
     pub palette: &'a Palette,

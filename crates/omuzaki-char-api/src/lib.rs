@@ -6,7 +6,7 @@
 //! - [`character`]: [`CharacterDef`], the part tree ([`PartDef`]) and the document paths ops edit
 //! - [`kind`]: [`PartKind`], self-registration ([`register_part_kind!`]), what parts [`Publishes`] to each other, and
 //!   [`PartKind::recolour`], how a palette change reaches a built part without rebuilding its geometry
-//! - [`geometry`], [`mesh`]: meshes, joint lists, toon materials, textures: what a part gives the renderer
+//! - [`geometry`], [`mesh`](omuzaki_core::mesh): meshes, joint lists, toon materials, textures: what a part gives the renderer
 //! - [`runtime`]: [`PartRuntime`], the contract for hair and cloth simulations in the frame loop
 //! - [`build`]: [`BuiltCharacter`], [`CharacterBuilder`], the reference [`RegistryBuilder`] and the pipeline it is made of
 //!   ([`plan`], [`build_part`], [`recolour_part`], [`part_rng`], [`Assembler`]), which any other builder reuses

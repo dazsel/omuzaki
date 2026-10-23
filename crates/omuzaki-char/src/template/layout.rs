@@ -1100,7 +1100,7 @@ impl Shaper<'_> {
 }
 
 /// Builds the layout of `table` for these numbers: the loft of its curves ([`build_loft`]), with the leg
-/// blended into the torso's outline where it leaves it (see [`junction`]), so the body's outline is C1 across the
+/// blended into the torso's outline where it leaves it (see `junction`), so the body's outline is C1 across the
 /// hip.
 ///
 /// # Errors

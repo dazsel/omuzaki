@@ -222,7 +222,7 @@ fn unused_name(base: &str, sep: char, taken: impl Fn(&str) -> bool) -> String {
 /// in every channel of every entry (the [`PALETTES`] colour alternatives). Then the slot-set ones, all with the colours
 /// of `palette`, so a fact that depends on the slot set is caught: one with an extra slot no part references; one
 /// without the slots no part names (when `palette` has any); and one per slot a part names, without only that slot.
-/// Only the palettes that remove slots may fail to build (see [`check_seed`]). The same for the same input.
+/// Only the palettes that remove slots may fail to build (see `check_seed`). The same for the same input.
 pub fn alternatives(palette: &Palette, referenced: &BTreeSet<String>) -> Vec<Palette> {
     let mut rng = Rng::new(SEED);
     let mut all = vec![flipped(palette)];

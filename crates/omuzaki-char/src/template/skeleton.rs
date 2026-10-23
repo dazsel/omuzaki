@@ -102,7 +102,7 @@ fn lead_of(bone: HumanoidBone) -> Option<(Vec3, HumanoidBone)> {
 /// The pose that takes the T-pose rest onto `joints`: the template's sculpted pose, as the rig's bind.
 ///
 /// Walking down from the hips, each shoulder, arm, hand and finger bone is turned by the shortest arc from its T-pose
-/// direction (`+X` on the left, `-X` on the right) to the direction of its joint towards its lead's ([`LEFT_LEADS`]);
+/// direction (`+X` on the left, `-X` on the right) to the direction of its joint towards its lead's (`LEFT_LEADS`);
 /// a shortest arc adds no twist of its own, so a palm that faces -Y in the T faces the way the layout's palm does. A
 /// bone with no lead (the thumb, a fingertip, the rest of the body) keeps its parent's rotation, which leaves the legs
 /// and trunk where the layout has them. Rotations are local, in the normalised space of [`HumanoidPose`].

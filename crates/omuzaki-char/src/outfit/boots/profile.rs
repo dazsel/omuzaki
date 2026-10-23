@@ -4,11 +4,11 @@
 //! **Boot space.** The prototype built its boot in metres on one body: sole on the floor (`y = 0`), cuff top at about
 //! `0.12`. Every constant of the boot (heights of creases, straps, seams, the cuff) is a height in that space. A boot on
 //! another body is the same boot in a [`Space`]: boot space is lifted so the sole sits under the foot and stretched
-//! above the sole so the cuff top lands where [`BootHeight`](super::BootHeight) says. With an explicit
+//! above the sole so the cuff top lands where [`BootHeight`] says. With an explicit
 //! [`BootProfile`] the space is the identity and the numbers are the prototype's.
 //!
 //! **Where the profile comes from.** Either the knots of an explicit [`BootProfile`] (the prototype's `BOOT` curves
-//! `cx`, `zb`, `zf`, `rx`), or, by default, the body: [`Boot::derive`] cuts the fit's foot and lower leg at each knot
+//! `cx`, `zb`, `zf`, `rx`), or, by default, the body: `Boot::derive` cuts the fit's foot and lower leg at each knot
 //! height and fits the superellipse of `plan` round what it finds, with the garment's ease to spare.
 
 use omuzaki_anim_api::HumanoidBone;
@@ -248,7 +248,7 @@ impl Space {
         self.sole_top_world + (y - self.sole_top)
     }
 
-    /// The body height of a height that is part of the heel block: as [`Space::flat`], hung [`HEEL_SAG`] lower on a fitted boot.
+    /// The body height of a height that is part of the heel block: as [`Space::flat`], hung `HEEL_SAG` lower on a fitted boot.
     pub fn heel(&self, y: f64) -> f64 {
         self.flat(y) - self.heel_sag
     }
@@ -296,7 +296,7 @@ impl SkinRamp {
     /// The prototype's thresholds, metres, for a boot given as an explicit profile.
     pub const PROTOTYPE: Self = Self { ankle: (0.045, 0.098), toes: (0.064, 0.094), thigh: (0.160, 0.192) };
 
-    /// The ramps placed on a body: offsets from its ankle ([`BODY_BLEND`]), toes joint ([`TOE_BLEND`]) and the prototype's from its knee (`0.030` below
+    /// The ramps placed on a body: offsets from its ankle (`BODY_BLEND`), toes joint (`TOE_BLEND`) and the prototype's from its knee (`0.030` below
     /// to `0.002` above), taken from the joints of `fit`.
     ///
     /// # Errors
@@ -423,7 +423,7 @@ impl Boot {
     }
 
     /// How far the centre of a cuff roll of half thickness `fold` stands off the surface, metres: the prototype's, or on a
-    /// fitted boot far enough that the roll's inner face sinks into the upper by at most [`CUFF_SINK`] of the ease (the
+    /// fitted boot far enough that the roll's inner face sinks into the upper by at most `CUFF_SINK` of the ease (the
     /// upper itself is an ease from the leg, and the roll may not come within half an ease of it).
     pub fn cuff_stand_off(&self, fold: f64, prototype: f64) -> f64 {
         self.fitted_ease.map_or(prototype, |ease| prototype.max(fold - CUFF_SINK * ease))

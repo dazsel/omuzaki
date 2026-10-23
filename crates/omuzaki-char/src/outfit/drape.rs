@@ -337,8 +337,8 @@ fn hang_of(grid: &ClothGrid) -> f32 {
     (top - bottom).max(0.0)
 }
 
-/// The extra air drag, 1/s, of a garment that hangs `hang` metres: none up to [`DRAG_FROM_M`], rising evenly to
-/// [`DRAG_MAX`] over [`DRAG_OVER_M`] more. A long sheet held only at its top edge creeps toward its hang slowly; the
+/// The extra air drag, 1/s, of a garment that hangs `hang` metres: none up to `DRAG_FROM_M`, rising evenly to
+/// `DRAG_MAX` over `DRAG_OVER_M` more. A long sheet held only at its top edge creeps toward its hang slowly; the
 /// drag lets it get there in the time a skirt does.
 pub fn hang_drag(hang: f32) -> f32 {
     DRAG_MAX * ((hang - DRAG_FROM_M) / DRAG_OVER_M).clamp(0.0, 1.0)

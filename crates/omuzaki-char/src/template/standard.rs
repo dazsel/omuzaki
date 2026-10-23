@@ -3,7 +3,7 @@
 //!
 //! **A ratio table, in head units.** Every number below is a multiple of [`HEAD`], the head part's chin-to-crown height
 //! (the project's one head frame), so a table reads as a figure-drawing proportion chart: heights are heads above the
-//! sole, widths are heads from the centre line. [`h`] turns them into metres at compile time. The three templates differ
+//! sole, widths are heads from the centre line. `h` turns them into metres at compile time. The three templates differ
 //! only in these tables; the builder, the sliders and the body shape act on all of them the same way.
 //!
 //! **Where the numbers come from.** Each class was fitted to a measured reference, never to a traced likeness (the

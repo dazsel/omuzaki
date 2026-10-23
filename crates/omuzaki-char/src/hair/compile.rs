@@ -73,7 +73,7 @@ pub struct HairGenCtx<'a> {
     /// Level of detail.
     pub quality: Quality,
     /// The body the hair hangs over, where the build has one (a test or tool with a bare head has none). Generators
-    /// that fall past the shoulders keep clear of it ([`curtain`](super::r#gen::curtain)).
+    /// that fall past the shoulders keep clear of it (`curtain`).
     pub body: Option<&'a dyn BodyFit>,
     group: &'a GroupId,
     dynamics: &'a Dynamics,
@@ -154,7 +154,7 @@ pub enum GroupGeometry {
         ties: Vec<Tie>,
     },
     /// The curtain: each clump owns `columns` columns of one wide strip, ordered across the head by `u` (one per clump).
-    /// The strips are meshed by [`curtain::group_mesh`](super::r#gen::curtain::group_mesh); the runtime (#322) refills them.
+    /// The strips are meshed by `curtain::group_mesh`; the runtime (#322) refills them.
     Strip {
         /// Columns across one guide.
         columns: u8,

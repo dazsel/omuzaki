@@ -3,8 +3,8 @@
 //! Each parameter in turn is searched over a bracket for the value that lowers the cost; the golden steps end with one
 //! parabolic step through the lowest probe and its neighbours, which the smooth cost (the coverage `IoU`, see the
 //! [module](super) docs) rewards with a far closer value than another golden step would. A sweep goes through every
-//! parameter once; its brackets are a window round the current value, [`WINDOW`] of the parameter's range wide in the
-//! first sweep and [`SHRINK`] times the last one's after each sweep that gained. A sweep that gains nothing is run once
+//! parameter once; its brackets are a window round the current value, `WINDOW` of the parameter's range wide in the
+//! first sweep and `SHRINK` times the last one's after each sweep that gained. A sweep that gains nothing is run once
 //! more at the wide window. A last move along the sweep's net displacement follows each sweep. Every sweep searches
 //! every parameter: whether one shows depends on the others, which keep moving. The result depends only on the inputs
 //! and [`PARAM_ORDER`]: no threads, no randomness, and a tie keeps the lower parameter value within a line search and

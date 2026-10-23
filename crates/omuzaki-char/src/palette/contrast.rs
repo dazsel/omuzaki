@@ -27,7 +27,7 @@
 //!
 //! The lightness search scans a fine grid from the colour towards each end and bisects the first crossing, so it does
 //! not assume the pass region is a single half-line: a gamut-mapped path that passes, fails and passes again is handled,
-//! down to the grid resolution ([`SCAN_STEPS`]), which is finer than one 8-bit step of the stored colour.
+//! down to the grid resolution (`SCAN_STEPS`), which is finer than one 8-bit step of the stored colour.
 
 use omuzaki_char_api::{CharId, CharacterDef};
 use omuzaki_core::colour::Colour;

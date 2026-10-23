@@ -2,10 +2,10 @@
 //!
 //! The port of the prototype's `buildLeg` (`body.js` 12-51) and its `tights` material, as the Director's reference for
 //! #193 gives them. Each leg is a tube lofted over the leg region of the fit it is worn over, `ease` outside it. Its
-//! rows follow the prototype's: eight in the lowest 8 cm of the shin and 28 up the rest of the leg ([`section`]); its 44
+//! rows follow the prototype's: eight in the lowest 8 cm of the shin and 28 up the rest of the leg (`section`); its 44
 //! columns go once round the leg. The skin
 //! weights are the prototype's `W(x, y)`: the hips, the thigh and the shin handing over at the hip and the knee
-//! ([`skin`]), and the vertex colour darkens the inner thigh and the back of the knee a little.
+//! (`skin`), and the vertex colour darkens the inner thigh and the back of the knee a little.
 //!
 //! **What differs from the prototype.** The prototype's tights go on up into the hips and close in a dome under the
 //! skirt, and close in a cap under the ankle for the boot to hide; both ends are inside the body (the torso, the foot),

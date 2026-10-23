@@ -1,9 +1,9 @@
 //! The `shirt` garment: a body, two sleeves and two cuffs over the torso and arms of whatever lies beneath it (CB-40;
 //! the prototype's `uniform.js` 58-147).
 //!
-//! The shirt is the first layer of clothing ([`LAYER_SHIRT`]) and needs a body. It lofts its body from the hem to the
+//! The shirt is the first layer of clothing (`LAYER_SHIRT`) and needs a body. It lofts its body from the hem to the
 //! neck opening over the fit beneath it, runs a sleeve along each arm to a rolled cuff with a fold seam and a pearl
-//! button, and publishes two things for the parts after it: its [`Envelope`](crate::outfit::common::Envelope), so a
+//! button, and publishes two things for the parts after it: its [`Envelope`], so a
 //! vest fits over the shirt, and the `collar_ring` anchor, the centre of its neck opening, which the collar and the tie
 //! hang on ([`neckwear`](crate::outfit::neckwear)).
 //!
@@ -14,7 +14,7 @@
 //! | the cuffs' fold seams | `<part>-lines` | [`cuff`] |
 //! | the buttons' thread holes | `<part>-holes` | [`cuff`] |
 //!
-//! Everything is fitted to the [`BodyFit`](omuzaki_char_api::BodyFit) the shirt is given: heights are fractions of the
+//! Everything is fitted to the [`BodyFit`] the shirt is given: heights are fractions of the
 //! torso's length, the sleeve follows the arm's joints and sections, and the cuff closes round the sleeve's end. Where
 //! the prototype's numbers were fitted to its own body they appear here as the fractions and offsets of the same shirt
 //! on the soft-sd template, named once.

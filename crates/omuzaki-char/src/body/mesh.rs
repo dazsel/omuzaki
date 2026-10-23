@@ -106,7 +106,7 @@ pub struct Cap {
 const HIDDEN_CAP: f64 = 0.75;
 const SHOWN_CAP: f64 = 0.45;
 
-/// The rings of `region` at `rows` fractions from its start to its end, crowded towards the ends ([`clustered`]).
+/// The rings of `region` at `rows` fractions from its start to its end, crowded towards the ends (`clustered`).
 ///
 /// # Errors
 /// [`KitError`] if the layout has no such region or `rows < 2`.

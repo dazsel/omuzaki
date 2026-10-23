@@ -1,9 +1,9 @@
 //! Facts: what parts publish to each other, as an open map of typed values (ADR 0054 §3).
 //!
 //! A [`Fact`] is a typed value a part publishes for later parts, and the builder, to read. A new capability is a new
-//! fact in a new file (plus [`register_fact!`]), not a new field on [`Publishes`](crate::Publishes) and
+//! fact in a new file (plus [`register_fact!`](crate::register_fact!)), not a new field on [`Publishes`] and
 //! [`Published`](crate::Published) that every part, test and mock has to follow. Most facts merge by one of four rules
-//! ([`Last`], [`Agree`], [`Append`], [`Keyed`]) and are one line with [`fact!`].
+//! ([`Last`], [`Agree`], [`Append`], [`Keyed`]) and are one line with [`fact!`](crate::fact!).
 //!
 //! Facts are build-time only: they live in the [`Assembler`](crate::Assembler)'s view while a character builds and are
 //! never touched on the frame path.
@@ -40,7 +40,7 @@ pub trait Fact: 'static {
     fn merge(merged: &mut Self::Merged, part: &PartId, value: Self::Value) -> Result<(), String>;
 }
 
-/// A merge rule that facts share. Implemented by [`Last`], [`Agree`], [`Append`] and [`Keyed`]; [`fact!`] builds a
+/// A merge rule that facts share. Implemented by [`Last`], [`Agree`], [`Append`] and [`Keyed`]; [`fact!`](crate::fact!) builds a
 /// [`Fact`] from one.
 pub trait Rule {
     /// What one part publishes.
@@ -157,7 +157,7 @@ macro_rules! register_fact {
     };
 }
 
-/// A fact recorded with [`register_fact!`]: its name and its type.
+/// A fact recorded with [`register_fact!`](crate::register_fact!): its name and its type.
 pub struct FactRegistration {
     /// [`Fact::NAME`].
     pub name: &'static str,
@@ -197,7 +197,7 @@ pub fn facts() -> Result<Vec<&'static FactRegistration>, String> {
 
 /// Records how fact `F`'s values are compared, for the palette-independence check (`omuzaki_char::builder::conformance`):
 /// the check reads every probe through [`probes`], so a fact needs no entry in a shared list. Put it next to
-/// [`register_fact!`]; a registered fact with no probe fails the check's gate test.
+/// [`register_fact!`](crate::register_fact!); a registered fact with no probe fails the check's gate test.
 ///
 /// `register_fact_probe!(F)` compares the values with `==` (`F::Value: PartialEq + Debug`). `register_fact_probe!(F,
 /// same)` takes a `fn(&F::Value, &F::Value) -> bool`, for a value that cannot use `==` (a trait object) or that is
