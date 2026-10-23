@@ -140,10 +140,14 @@ fn shows(h: &Harness<'_, Rig>, text: &str) -> bool {
 }
 
 #[test]
-fn every_registered_key_has_a_row_in_its_areas_section() {
+fn every_registered_key_but_a_page_owned_one_has_a_row_in_its_areas_section() {
     let h = rig(Settings::default());
     let listed = h.state().window.as_ref().map(SettingsWindow::listed).unwrap_or_default();
-    let mut registered: Vec<&str> = omuzaki_settings_api::registry::registrations().map(|r| r.meta.key).collect();
+    // The Connectors page edits `connectors.entries` in words; the list does not show it as a raw map.
+    let mut registered: Vec<&str> = omuzaki_settings_api::registry::registrations()
+        .map(|r| r.meta.key)
+        .filter(|key| *key != omuzaki_connect::settings::KEY)
+        .collect();
     registered.sort_unstable();
     let mut shown = listed.clone();
     shown.sort_unstable();

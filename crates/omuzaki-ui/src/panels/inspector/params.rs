@@ -33,6 +33,7 @@ pub fn read(answer: &Value, query: &str) -> Params {
     let mut fields = 0;
     let entries = answer.get("parameters").and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
     let query = query.trim().to_lowercase();
+    let vectors = vectors(entries);
     for entry in entries {
         let Some(path) = entry.get("path").and_then(Value::as_str) else { continue };
         let ty = entry.get("type").and_then(Value::as_str).unwrap_or("any");
@@ -49,7 +50,8 @@ pub fn read(answer: &Value, query: &str) -> Params {
             continue;
         };
         if let Some(props) = section.get_mut("properties").and_then(Value::as_object_mut) {
-            props.insert((*last).to_owned(), field_schema(entry, ty, last, parents.last().copied()));
+            let axes = vectors.contains(&parents.join("/"));
+            props.insert((*last).to_owned(), field_schema(entry, ty, last, parents.last().copied(), axes));
         }
         if let Some(current) = entry.get("current") {
             holder.insert((*last).to_owned(), current.clone());
@@ -57,6 +59,28 @@ pub fn read(answer: &Value, query: &str) -> Params {
         fields += 1;
     }
     Params { schema, value, fields }
+}
+
+/// The lists that read as a point or a direction: two to four numbers, whose items are named by their axis.
+fn vectors(entries: &[Value]) -> Vec<String> {
+    let mut lists: Vec<(String, usize, bool)> = Vec::new();
+    for entry in entries {
+        let Some((list, index)) = entry.get("path").and_then(Value::as_str).and_then(|p| p.rsplit_once('/')) else {
+            continue;
+        };
+        if index.parse::<usize>().is_err() {
+            continue;
+        }
+        let number = entry.get("type").and_then(Value::as_str) == Some("number");
+        match lists.iter_mut().find(|(path, ..)| path == list) {
+            Some((_, count, all)) => {
+                *count += 1;
+                *all &= number;
+            }
+            None => lists.push((list.to_owned(), 1, number)),
+        }
+    }
+    lists.into_iter().filter(|(_, count, all)| *all && (2..=4).contains(count)).map(|(path, ..)| path).collect()
 }
 
 /// Whether the entry is a section, map or list whose members follow it (it has no value of its own then).
@@ -117,9 +141,9 @@ fn value_at<'a>(value: &'a mut Value, parents: &[&str]) -> Option<&'a mut Map<St
 }
 
 /// The schema of one value, `key` in the section or list `parent`.
-fn field_schema(entry: &Value, ty: &str, key: &str, parent: Option<&str>) -> Value {
+fn field_schema(entry: &Value, ty: &str, key: &str, parent: Option<&str>, axes: bool) -> Value {
     let mut field = Map::new();
-    field.insert("title".to_owned(), Value::String(item_title(key, parent)));
+    field.insert("title".to_owned(), Value::String(item_title(key, parent, axes)));
     let copy = |field: &mut Map<String, Value>, keys: &[&str]| {
         for k in keys {
             if let Some(v) = entry.get(*k) {
@@ -154,10 +178,13 @@ fn field_schema(entry: &Value, ty: &str, key: &str, parent: Option<&str>) -> Val
     Value::Object(field)
 }
 
-/// A field's label. A list item is named by its list and its place from 1 (`centre/0` reads "Centre 1"): an index
-/// alone would be read out as a bare "0", the same in every list of the part.
-fn item_title(key: &str, parent: Option<&str>) -> String {
+/// A field's label. A list item is named by its list and its place from 1 (`weights/0` reads "Weights 1"), or by its
+/// axis in a list of two to four numbers (`centre/0` reads "Centre X"): an index alone would be read out as a bare
+/// "0", the same in every list of the part.
+fn item_title(key: &str, parent: Option<&str>, axes: bool) -> String {
+    const AXES: [&str; 4] = ["X", "Y", "Z", "W"];
     match (key.parse::<usize>(), parent) {
+        (Ok(index), Some(list)) if axes && index < AXES.len() => format!("{} {}", title_of(list), AXES[index]),
         (Ok(index), Some(list)) => format!("{} {}", title_of(list), index.saturating_add(1)),
         _ => title_of(key),
     }
@@ -190,6 +217,25 @@ mod tests {
             {"path": "groups/a-cap/enabled", "type": "boolean", "current": true, "default": true},
             {"path": "tags", "type": "list", "current": ["a"]}
         ]})
+    }
+
+    #[test]
+    fn a_list_of_two_to_four_numbers_names_its_items_by_axis() {
+        let item = |path: &str, ty: &str| json!({"path": path, "type": ty, "current": 0.0});
+        let answer = json!({"parameters": [
+            {"path": "centre", "type": "list"},
+            item("centre/0", "number"), item("centre/1", "number"), item("centre/2", "number"),
+            {"path": "weights", "type": "list"},
+            item("weights/0", "number"), item("weights/1", "number"), item("weights/2", "number"),
+            item("weights/3", "number"), item("weights/4", "number"),
+            {"path": "flags", "type": "list"},
+            item("flags/0", "boolean"), item("flags/1", "boolean")
+        ]});
+        let params = read(&answer, "");
+        let title = |list: &str, i: &str| params.schema["properties"][list]["properties"][i]["title"].clone();
+        assert_eq!([title("centre", "0"), title("centre", "2")], [json!("Centre X"), json!("Centre Z")]);
+        assert_eq!(title("weights", "4"), json!("Weights 5"), "five numbers are a list, not a point");
+        assert_eq!(title("flags", "1"), json!("Flags 2"), "only numbers are axes");
     }
 
     #[test]

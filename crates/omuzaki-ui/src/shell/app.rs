@@ -888,6 +888,12 @@ impl Shell {
         }
     }
 
+    /// Opens the Perform workspace with its Live panel in front, where an output is set up (Go Live, while none is).
+    fn set_up_output(&self) {
+        self.requests.push(ShellRequest::Workspace(crate::live::registration::PERFORM_WORKSPACE));
+        self.requests.push(ShellRequest::ShowPanel(crate::live::registration::LIVE_PANEL));
+    }
+
     /// Shows the panel registered as `id` in the active workspace (View, Show panel): a panel in the arrangement is
     /// brought to the front and focused; one the arrangement lacks joins the tab group of a panel of its region, or
     /// gets a column of its own; a left panel in a window that folds the left dock opens as the drawer.
@@ -1057,10 +1063,15 @@ impl Shell {
                     if ui.add(if waiting { button } else { button.ghost() }).clicked() {
                         self.show_panel(agent::ID);
                     }
-                    if plan.go_live_icon {
-                        icon_button(ui, icons::BROADCAST, &Tip::new(&go_live).detail(&off), false);
+                    // Until an output is set up, Go Live takes the person to where one is: the Live panel of Perform.
+                    // A button that only ever showed disabled would leave them to find it.
+                    let clicked = if plan.go_live_icon {
+                        icon_button(ui, icons::BROADCAST, &Tip::new(&go_live).detail(&off), true).clicked()
                     } else {
-                        ui.add(Button::new(&go_live).icon(icons::BROADCAST).disabled(&off));
+                        ui.add(Button::new(&go_live).icon(icons::BROADCAST).ghost()).tip(Tip::new(&off)).clicked()
+                    };
+                    if clicked {
+                        self.set_up_output();
                     }
                 });
             });

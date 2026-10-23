@@ -626,7 +626,8 @@ fn task_flow_edit_a_parameter_then_undo_is_one_gesture_and_one_key() {
 
 /// The wings kind (a text field, "Feathers", beside sliders and a choice) with its Advanced section open.
 fn wings_rig() -> Harness<'static, Rig<MockRunner<MemDoc>>> {
-    let mut h = rig(real(json!({"probe": at_defaults("wings")})), &["probe"], vec2(420.0, 4000.0));
+    // Wide enough that the kind's options fit whole and stay a segmented control.
+    let mut h = rig(real(json!({"probe": at_defaults("wings")})), &["probe"], vec2(900.0, 4000.0));
     if h.query_by_role_and_label(Role::DisclosureTriangle, "Advanced").is_some() {
         h.get_by_role_and_label(Role::DisclosureTriangle, "Advanced").click();
         h.run_steps(3);

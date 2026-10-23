@@ -38,6 +38,9 @@ const REFRESH_S: f64 = 1.0;
 const CHANGES: usize = 200;
 /// The property each row's one-field form holds its value under.
 const FIELD: &str = "value";
+/// Settings a page of their own edits in words: the list leaves them out rather than show their raw value (the
+/// Connectors page writes `connectors.entries`, a map a person would otherwise read as `{}`).
+const OWN_PAGE: &[&str] = &[omuzaki_connect::settings::KEY];
 
 /// One setting's row.
 struct Row {
@@ -265,7 +268,9 @@ impl SettingsWindow {
         let mut old: Vec<Row> = std::mem::take(&mut self.rows);
         let entries = listed.get("settings").and_then(Value::as_array).cloned().unwrap_or_default();
         for entry in &entries {
-            let Some(key) = entry.get("key").and_then(Value::as_str) else { continue };
+            let Some(key) = entry.get("key").and_then(Value::as_str).filter(|key| !OWN_PAGE.contains(key)) else {
+                continue;
+            };
             let current = entry.get("value").cloned().unwrap_or(Value::Null);
             let agent = last_agent(&changes, key);
             if let Some(at) = old.iter().position(|row| row.key == key) {
