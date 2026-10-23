@@ -3673,6 +3673,9 @@ ui-setting-replay-length-s = How many seconds a saved replay clip holds, 5 to 30
 ui-setting-replay-max-mb = The most memory or disk the replay buffer uses, in MiB (at least 64)
 
 # The line under a setting in the Settings window, saying what it does.
+ui-setting-startup-reopen = What opens at start: the last project, the Welcome screen with an offer to reopen it, or the Welcome screen
+
+# The line under a setting in the Settings window, saying what it does.
 ui-setting-ui-density = How tightly controls are packed: comfortable, compact or touch
 
 # The line under a setting in the Settings window, saying what it does.
