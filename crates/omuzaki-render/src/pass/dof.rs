@@ -317,8 +317,6 @@ pub(crate) struct DepthOfField {
     spiral: wgpu::Buffer,
     /// How the gather reads the tiles (binding 1, beside the prepass's depth at binding 0 of the same group index).
     tiles_layout: wgpu::BindGroupLayout,
-    /// How the prepass reads depth: `[single sample, multisampled]`.
-    depth_layouts: [wgpu::BindGroupLayout; 2],
     pipelines: Pipelines,
     layers: Vec<Layers>,
 }
@@ -326,21 +324,6 @@ pub(crate) struct DepthOfField {
 impl DepthOfField {
     pub(crate) fn new(shared: &Shared) -> Self {
         let device = &shared.gpu.device;
-        let depth_layout = |multisampled| {
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("dof depth"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Depth,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled,
-                    },
-                    count: None,
-                }],
-            })
-        };
         Self {
             layers_layout: layers_layout(device),
             params_layout: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -386,7 +369,6 @@ impl DepthOfField {
                     count: None,
                 }],
             }),
-            depth_layouts: [depth_layout(false), depth_layout(true)],
             pipelines: Pipelines::default(),
             layers: Vec::with_capacity(CACHED_SIZES),
         }
@@ -466,9 +448,9 @@ impl DepthOfField {
             }
         }
         let (depth_type, layout) = if multisampled {
-            ("texture_depth_multisampled_2d", &self.depth_layouts[1])
+            ("texture_depth_multisampled_2d", &shared.layouts.depth_input[1])
         } else {
-            ("texture_depth_2d", &self.depth_layouts[0])
+            ("texture_depth_2d", &shared.layouts.depth_input[0])
         };
         let slot = &mut self.pipelines.prepass[usize::from(multisampled)][kind];
         if slot.is_none() {
@@ -573,7 +555,7 @@ impl FramePass for DepthOfField {
 
         let scene = cx.attachments.resolved_colour(cx.encoder).clone();
         let depth =
-            cx.attachments.depth_input(&shared.gpu.device, &self.depth_layouts[usize::from(multisampled)]).clone();
+            cx.attachments.depth_input(&shared.gpu.device, &shared.layouts.depth_input[usize::from(multisampled)]).clone();
         let mut pass = begin(cx.encoder, "dof prepass", &[Some(clear_to(&layers.colour)), Some(clear_to(&layers.coc))]);
         pass.set_pipeline(prepass);
         pass.set_bind_group(0, &scene, &[]);

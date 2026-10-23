@@ -195,6 +195,32 @@ impl Attachments {
         })
     }
 
+    /// Starts a render pass that draws over the scene colour with no depth attachment, so the pass can read the depth
+    /// as a texture (edge lines). `None` before any geometry pass this round: there is nothing to draw over.
+    pub(crate) fn overlay_pass<'e>(
+        &mut self,
+        encoder: &'e mut wgpu::CommandEncoder,
+        label: &str,
+    ) -> Option<wgpu::RenderPass<'e>> {
+        if !self.cleared {
+            return None;
+        }
+        self.resolved = false;
+        Some(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some(label),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: self.msaa.as_ref().unwrap_or(&self.colour),
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        }))
+    }
+
     /// The depth attachment as a one-binding bind group of `layout` (a depth texture, multisampled exactly when these
     /// attachments are), built on first use and kept until the attachments are rebuilt. The layout is the caller's, so
     /// the pass that reads depth owns how it reads it; it must be the same layout on every call.
