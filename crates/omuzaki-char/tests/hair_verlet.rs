@@ -13,7 +13,8 @@ use std::f32::consts::TAU;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use omuzaki_char::hair::physics::verlet::{
-    ChainSet, MAX_COORDINATE, MAX_DT, MAX_SEGMENT, MAX_STEPS, MIN_SEGMENT, VerletError,
+    BODY_BLEND, BODY_BLEND_HEAD, ChainSet, MAX_COORDINATE, MAX_DT, MAX_SEGMENT, MAX_STEPS, MIN_SEGMENT, VerletError,
+    body_band,
 };
 use omuzaki_char_api::{
     Bulge, Falloff, Follow, GroupId, HairClump, HairPhysics, JointRef, PoseSource, SphereCollider, Taper,
@@ -380,6 +381,33 @@ fn body_locks_follow_the_chest_below_the_blend_and_the_head_above() {
     let (top, bottom) = (set.positions()[0], set.positions()[10]);
     assert!((top.x - 0.1).abs() < 1e-6, "the root (y 0.8) follows the head: {top}");
     assert!(bottom.x.abs() < 1e-6, "the tip (y 0.4) follows the chest: {bottom}");
+}
+
+#[test]
+fn the_chest_to_head_band_sits_under_the_head_and_scales_with_it() {
+    // The prototype's head gives the prototype's band.
+    let (lo, hi) = body_band(BODY_BLEND_HEAD, 1.0).unwrap();
+    assert!((lo - BODY_BLEND.0).abs() < 1e-6 && (hi - BODY_BLEND.1).abs() < 1e-6, "{lo} {hi}");
+    // A character 1.8 times the prototype's size: the band is 1.8 times as high and as tall.
+    let (lo, hi) = body_band(1.8 * BODY_BLEND_HEAD, 1.8).unwrap();
+    assert!((lo - 1.8 * BODY_BLEND.0).abs() < 1e-6 && (hi - 1.8 * BODY_BLEND.1).abs() < 1e-6, "{lo} {hi}");
+    assert_eq!(body_band(f32::NAN, 1.0), None);
+    assert_eq!(body_band(1.0, 0.0), None);
+
+    // A lock scaled with its character keeps every particle's share of the head (#898): the prototype-sized lock and
+    // the same lock 1.8 times larger, each set under its own head.
+    let rest: Vec<Vec3> = (0..21).map(|i| Vec3::new(0.0, 0.8 - 0.02 * i as f32, -0.12)).collect();
+    let big: Vec<Vec3> = rest.iter().map(|p| *p * 1.8).collect();
+    let mut small = ChainSet::from_clumps(&[clump(rest, Follow::Body)], &HairPhysics::default(), &[]).unwrap();
+    let mut large = ChainSet::from_clumps(&[clump(big, Follow::Body)], &HairPhysics::default(), &[]).unwrap();
+    let unset = small.head_weights().to_vec();
+    small.set_head(BODY_BLEND_HEAD, 1.0);
+    assert_eq!(small.head_weights(), unset.as_slice(), "the prototype's own head changes nothing");
+    large.set_head(1.8 * BODY_BLEND_HEAD, 1.8);
+    for (a, b) in small.head_weights().iter().zip(large.head_weights()) {
+        assert!((a - b).abs() < 1e-5, "{a} vs {b}");
+    }
+    assert!(unset.iter().any(|&w| w > 0.0 && w < 1.0), "the lock crosses the band");
 }
 
 #[test]

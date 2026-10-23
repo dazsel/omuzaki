@@ -32,7 +32,7 @@ use std::ops::Range;
 use omuzaki_char_api::{
     AnchorsFact, BodyRegion, BuildCtx, BuildError, FaceOverlay, Generator, GroupId, HAIR_UV, HairParams, HeadSurface,
     JointRef, KindProvenance, MaterialName, MaterialSpec, PartCategory, PartId, PartKind, PartMesh, PartMeta,
-    PartOutput, RecolourCtx, Recoloured,
+    PartOutput, RecolourCtx, Recoloured, StatureFact,
 };
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::{Vec2, Vec3};
@@ -161,7 +161,11 @@ pub fn build_with(
             let clumps: Vec<_> =
                 entries.iter().filter(|e| e.simulate).flat_map(|e| e.group.clumps.iter().cloned()).collect();
             let colliders = physics::colliders::from_character(head.as_ref(), body.as_deref());
-            let runtime = HairRuntime::new(&clumps, &params.physics, &colliders, head.centre().y, mesh, &geometry)
+            // The head is the template's, scaled to the character's stature: that scale is its size against the
+            // prototype's, whose head the chest-to-head band was set under (#898).
+            let head_scale = ctx.published.get::<StatureFact>().map_or(1.0, |s| s.scale);
+            let head_y = head.centre().y;
+            let runtime = HairRuntime::new(&clumps, &params.physics, &colliders, head_y, head_scale, mesh, &geometry)
                 .map_err(|e| ctx.fail(format!("hair physics: {e}")))?;
             out.runtime = Some(Box::new(runtime));
             Vec::new()
