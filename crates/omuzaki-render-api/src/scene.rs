@@ -15,7 +15,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::limits::{MAX_JOINTS, MAX_LIGHTS, MAX_MORPH_WEIGHTS};
-use crate::{Colour, EnvironmentUse, MaterialId, MeshId, RenderError, TextureId};
+use crate::{Colour, EnvironmentUse, MaterialId, MeshId, RenderError, SpawnBatch, TextureId};
 
 /// The vertical field of view, in degrees, through which an orthographic camera sees an environment backdrop
 /// ([`Camera::sky_rays`]).
@@ -562,6 +562,10 @@ pub struct Scene {
     /// Morph target weights for all morphed instances, at most [`MAX_MORPH_WEIGHTS`], each finite. Weights are not
     /// clamped (glTF allows any real value). One flat buffer, like `joints`.
     pub morph_weights: Vec<f32>,
+    /// Particles born together, at most [`MAX_SPAWN_BATCHES`](crate::limits::MAX_SPAWN_BATCHES) batches and
+    /// [`MAX_PARTICLES`](crate::limits::MAX_PARTICLES) slots in all. Each names a live particle system
+    /// (`UnknownHandle` at render otherwise). Cleared by [`Scene::clear`], like `instances`.
+    pub particles: Vec<SpawnBatch>,
     /// What is behind everything.
     pub background: Background,
     /// Distance fog, if wanted. Like `background`, [`Scene::clear`] leaves it as it is.
@@ -590,6 +594,7 @@ impl Scene {
             instances: Vec::new(),
             joints: Vec::new(),
             morph_weights: Vec::new(),
+            particles: Vec::new(),
             background: Background::default(),
             fog: None,
             environment: None,
@@ -599,7 +604,7 @@ impl Scene {
         }
     }
 
-    /// Empties the per-frame lists (`lights`, `instances` and `joints`) but keeps their allocations, ready to be refilled
+    /// Empties the per-frame lists (`lights`, `instances`, `joints`, `morph_weights` and `particles`) but keeps their allocations, ready to be refilled
     /// for the next frame.
     ///
     /// Everything else stays as it was: `camera`, `frame`, `background`, `fog`, `environment`, `outline_light`,
@@ -616,6 +621,7 @@ impl Scene {
         self.instances.clear();
         self.joints.clear();
         self.morph_weights.clear();
+        self.particles.clear();
     }
 
     /// Checks everything that doesn't need the renderer's resource tables, so every renderer rejects the same inputs
@@ -680,7 +686,7 @@ impl Scene {
         if self.joints.iter().any(|m| !m.is_finite()) {
             return Err(RenderError::invalid("scene", "joint matrices must be finite"));
         }
-        Ok(())
+        crate::particles::validate_batches(&self.particles)
     }
 }
 

@@ -361,6 +361,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         shadows: args.shadows,
         shadow_interval: args.interval,
         mode: if args.offline { QualityMode::Offline } else { QualityMode::Live },
+        particle_density: 1.0,
     };
 
     let (mut cpu, mut gpu_passes, mut wall): (Vec<PassTimes>, Vec<PassTimes>, Vec<f64>) =

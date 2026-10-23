@@ -1,4 +1,4 @@
-//! The fixed frame graph: eight passes in the contract's order, each timed on the CPU and bracketed by GPU timestamps,
+//! The fixed frame graph: nine passes in the contract's order, each timed on the CPU and bracketed by GPU timestamps,
 //! with the geometry passes repeated per round when a frame supersamples (`supersample.rs`).
 
 use std::time::{Duration, Instant};

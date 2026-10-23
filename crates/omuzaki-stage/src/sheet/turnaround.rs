@@ -591,6 +591,7 @@ fn restore_settings(scene: &mut Scene, saved: Scene) {
         instances: _,
         joints: _,
         morph_weights: _,
+        particles: _,
         background,
         fog,
         environment,

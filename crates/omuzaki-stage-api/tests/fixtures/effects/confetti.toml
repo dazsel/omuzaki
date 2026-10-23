@@ -1,0 +1,31 @@
+name = "confetti"
+title = "Confetti"
+summary = "A burst of paper confetti in the subject's palette that tumbles and flutters down."
+tags = ["celebration", "burst"]
+version = "1.0.0"
+origin = "designed for ST-13: paper rectangles 12 to 18 mm, launched at 3 to 5 m/s, terminal speed 1 m/s"
+kind = "burst"
+sprite = { shape = "rect", aspect = 0.6 }
+
+[burst]
+count = 150
+at = { from = "subject", point = "chest", offset = [0.0, 0.0, 0.15] }
+colours = "palette"
+
+[particles]
+lifetime = [3.5, 5.0]
+speed = [3.0, 5.0]
+direction = [0.0, 1.0, 0.0]
+spread_deg = 35.0
+gravity = [0.0, -3.0, 0.0]
+drag = 3.0
+wind = [0.0, 0.0, 0.0]
+flutter = { amplitude_m = 0.05, frequency_hz = 1.5 }
+size = [0.012, 0.018]
+size_curve = [0.4, 1.0, 1.0, 0.0]
+orientation = { kind = "tumble", rate_deg = [360.0, 900.0] }
+colours = ["#ff5a7a", "#ffc94d", "#5ad1ff", "#9b7bff", "#6ee7a0", "#ffffff"]
+coverage = 1.0
+shading = { kind = "toon", shade = "#b8a8c8", shift = 0.0, softness = 0.1 }
+glow = 0.0
+floor = 0.0

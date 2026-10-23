@@ -7,6 +7,7 @@
 pub(crate) mod material;
 pub(crate) mod mesh;
 pub(crate) mod mips;
+pub(crate) mod particles;
 pub(crate) mod premultiply;
 pub(crate) mod target;
 pub(crate) mod texture;
@@ -17,6 +18,7 @@ use crate::morph::{MorphPath, MorphPool, is_morphing};
 use material::GpuMaterial;
 use mesh::{GpuMesh, Needs};
 use omuzaki_render_api::{AlphaMode, ResourceStats, Scene};
+use particles::GpuParticleSystem;
 use target::GpuTarget;
 use texture::GpuTexture;
 
@@ -28,11 +30,12 @@ pub(crate) struct Resources {
     pub(crate) materials: Arena<GpuMaterial>,
     pub(crate) targets: Arena<GpuTarget>,
     pub(crate) environments: Arena<GpuEnvironment>,
+    pub(crate) particles: Arena<GpuParticleSystem>,
     /// The per-instance morphed vertex streams of the frame (`morph.rs`).
     pub(crate) morphs: MorphPool,
 }
 
-/// The resources a scene draws with, read-only: meshes, textures, materials and environments. Split from the targets so a frame can
+/// The resources a scene draws with, read-only: meshes, textures, materials, environments and particle systems. Split from the targets so a frame can
 /// hold one target mutably while its passes read the rest.
 #[derive(Copy, Clone)]
 pub(crate) struct SceneResources<'a> {
@@ -40,6 +43,7 @@ pub(crate) struct SceneResources<'a> {
     pub(crate) textures: &'a Arena<GpuTexture>,
     pub(crate) materials: &'a Arena<GpuMaterial>,
     pub(crate) environments: &'a Arena<GpuEnvironment>,
+    pub(crate) particles: &'a Arena<GpuParticleSystem>,
     pub(crate) morphs: &'a MorphPool,
 }
 
@@ -51,6 +55,7 @@ impl Resources {
             textures: &self.textures,
             materials: &self.materials,
             environments: &self.environments,
+            particles: &self.particles,
             morphs: &self.morphs,
         };
         (scene, &mut self.targets)
@@ -101,6 +106,7 @@ impl Resources {
             + self.materials.iter().map(|_| material::UNIFORM_BYTES).sum::<u64>()
             + self.targets.iter().map(GpuTarget::bytes).sum::<u64>()
             + self.environments.iter().map(|e| e.bytes).sum::<u64>()
+            + self.particles.iter().map(|_| GpuParticleSystem::BYTES).sum::<u64>()
             + self.morphs.bytes();
         // Counts are bounded by memory long before they reach u32::MAX.
         #[allow(clippy::cast_possible_truncation)]
@@ -110,6 +116,7 @@ impl Resources {
             materials: self.materials.len() as u32,
             targets: self.targets.len() as u32,
             environments: self.environments.len() as u32,
+            particle_systems: self.particles.len() as u32,
             gpu_bytes,
         }
     }

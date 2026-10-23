@@ -5,6 +5,7 @@ use omuzaki_char_api::CharId;
 
 use crate::anchor::Anchor;
 use crate::camera::{CameraDef, Framing};
+use crate::effects::WeatherArea;
 use crate::error::{Finding, FindingKind, Findings, SceneError};
 use crate::ids::MemberId;
 use crate::lighting::{LightDef, LightShape};
@@ -73,6 +74,7 @@ impl SceneDef {
         self.check_lighting()?;
         self.check_cameras()?;
         self.check_cast()?;
+        self.check_weather()?;
         Ok(self.findings(has_character))
     }
 
@@ -179,6 +181,15 @@ impl SceneDef {
                 positive(&format!("{path}.range"), range)
             }
         }
+    }
+
+    fn check_weather(&self) -> Check {
+        let Some(weather) = &self.weather else { return Ok(()) };
+        weather.check().or_else(|(path, rule)| refuse(format!("weather.{path}"), rule))?;
+        if let WeatherArea::Box(area) = &weather.area {
+            self.check_anchor("weather.area.anchor", &area.anchor)?;
+        }
+        Ok(())
     }
 
     fn check_cameras(&self) -> Check {

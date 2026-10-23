@@ -1,0 +1,29 @@
+name = "hit-stars"
+title = "Hit stars"
+summary = "A quick pop of yellow and white stars where something hits."
+tags = ["burst", "impact", "comic"]
+version = "1.0.0"
+origin = "designed for BR-12: comic impact stars 3 to 5 cm, thrown out at 1.5 to 2.5 m/s and gone within a second"
+kind = "burst"
+sprite = { shape = "star", points = 5 }
+
+[burst]
+count = 10
+at = { from = "world" }
+colours = "preset"
+
+[particles]
+lifetime = [0.5, 0.8]
+speed = [1.5, 2.5]
+direction = [0.0, 1.0, 0.0]
+spread_deg = 180.0
+gravity = [0.0, -4.0, 0.0]
+drag = 3.0
+wind = [0.0, 0.0, 0.0]
+size = [0.03, 0.05]
+size_curve = [0.5, 1.0, 0.9, 0.0]
+orientation = { kind = "billboard", spin_deg = [-180.0, 180.0] }
+colours = ["#ffd84a", "#fff3a8", "#ffffff"]
+coverage = 1.0
+shading = { kind = "unlit" }
+glow = 1.5
