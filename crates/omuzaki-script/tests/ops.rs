@@ -592,7 +592,7 @@ fn work_sends_every_inner_request_through_the_job_with_apply_and_returns_the_out
 fn work_with_dry_run_sends_dry_runs_and_lists_the_plans() {
     let calls = Calls::default();
     let source = "ops::fake::set(#{ path: \"a\", value: 1 })";
-    let result = work(json!({ "source": source, "dry_run": true }), json!({}), &calls, &Signal::default()).unwrap();
+    let result = work(json!({ "source": source, "rehearse": true }), json!({}), &calls, &Signal::default()).unwrap();
     assert_eq!(calls.sent.lock().unwrap()[0].2, Mode::DryRun);
     assert_eq!(result["plans"][0]["op"], "fake.set");
 }
@@ -657,8 +657,8 @@ fn replay_refuses_a_step_a_script_could_not_call_before_sending_anything() {
             { "op": op, "args": { "id": "loop" } }
         ] } } });
         for dry_run in [false, true] {
-            let error =
-                work(json!({ "id": "loop", "dry_run": dry_run }), doc.clone(), &calls, &Signal::default()).unwrap_err();
+            let error = work(json!({ "id": "loop", "rehearse": dry_run }), doc.clone(), &calls, &Signal::default())
+                .unwrap_err();
             assert_eq!(error.code, ErrorCode::Unsupported, "{op}: {error}");
             assert!(error.message.starts_with(&format!("step 2 (`{op}`) failed")), "{op}: {}", error.message);
             assert!(error.message.contains(needle), "{op}: {}", error.message);
@@ -691,7 +691,7 @@ fn a_saved_macros_plans_count_their_brackets_and_commas_against_the_result_limit
         json!({ "scripts": { "m": { "name": "M", "kind": "macro", "steps": steps } } })
     };
     let run =
-        |count: usize| work(json!({ "id": "m", "dry_run": true }), doc(count), &Calls::default(), &Signal::default());
+        |count: usize| work(json!({ "id": "m", "rehearse": true }), doc(count), &Calls::default(), &Signal::default());
     let mut largest = 0;
     for count in 1..2_000 {
         if run(count).is_err() {
@@ -727,7 +727,7 @@ fn a_saved_macros_dry_run_plans_are_held_to_the_result_limit_together() {
         (0..400).map(|_| json!({ "op": "fake.set", "args": { "path": "a", "value": note } })).collect();
     let doc = json!({ "scripts": { "wide": { "name": "Wide", "kind": "macro", "steps": steps } } });
     let calls = Calls::default();
-    let error = work(json!({ "id": "wide", "dry_run": true }), doc.clone(), &calls, &Signal::default()).unwrap_err();
+    let error = work(json!({ "id": "wide", "rehearse": true }), doc.clone(), &calls, &Signal::default()).unwrap_err();
     assert_eq!(error.code, ErrorCode::Invalid, "{error}");
     assert!(error.message.contains("larger than the 65536-byte result limit"), "{error}");
     let sent = calls.sent.lock().unwrap().len();
