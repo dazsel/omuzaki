@@ -7,7 +7,7 @@ use std::net::TcpListener;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use omuzaki_http::{ConnectHttp, MAX_IN_FLIGHT};
+use omuzaki_http::{ConnectHttp, MAX_IN_FLIGHT, in_flight};
 use omuzaki_http_api::{CancelFlag, HttpBody, HttpError, HttpRequest, HttpTransport, Method};
 
 #[test]
@@ -45,27 +45,23 @@ fn one_request_past_the_cap_is_refused_and_all_return_once_cancelled() {
     for _ in 0..MAX_IN_FLIGHT {
         rx.recv_timeout(Duration::from_secs(10)).unwrap();
     }
-    // Every caller has started; probe (with a cancelled flag, so a probe never holds a slot) until their requests
-    // hold all the slots.
-    let probe = CancelFlag::new();
-    probe.cancel();
-    let mut ninth = transport.send(&req, &probe);
-    // A deadline, not a count of tries: on a loaded runner the callers can take far longer than 500 yields to reach
-    // their slots.
+    // Every caller has started; wait for their requests to hold every slot. A deadline, not a count of tries: on a
+    // loaded runner the callers can take far longer than a few yields to reach their slots.
     let deadline = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < deadline {
-        if matches!(&ninth, Err(HttpError::Refused(m)) if m.contains("in flight")) {
-            break;
-        }
+    while in_flight() < MAX_IN_FLIGHT && Instant::now() < deadline {
         std::thread::yield_now();
-        ninth = transport.send(&req, &probe);
     }
+    let ninth = transport.send(&req, &CancelFlag::new());
     if !matches!(&ninth, Err(HttpError::Refused(m)) if m.contains("in flight")) {
         // Say why the slots never filled: a caller whose request ended early gave its slot back.
         flag.cancel();
         let ended: Vec<String> = callers.into_iter().map(|caller| format!("{:?}", caller.join())).collect();
-        panic!("the probe got {ninth:?}; the callers ended with {ended:?}");
+        panic!("the ninth request got {ninth:?} with {} in flight; the callers ended with {ended:?}", in_flight());
     }
+    // A cancelled request is refused as cancelled, without taking a slot.
+    let probe = CancelFlag::new();
+    probe.cancel();
+    assert_eq!(transport.send(&req, &probe), Err(HttpError::Cancelled));
     flag.cancel();
     for caller in callers {
         assert_eq!(caller.join().unwrap(), Err(HttpError::Cancelled));

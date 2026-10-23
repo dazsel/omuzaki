@@ -97,6 +97,7 @@ impl Step {
     fn export(&self) -> StepExport {
         StepExport::new(self.tx, self.label.clone(), self.patch.clone(), self.scopes.clone())
             .with_effects(self.effects.clone())
+            .with_order(self.order, self.undone)
     }
 
     fn import(step: &StepExport) -> Self {
@@ -353,18 +354,31 @@ impl Histories {
             .collect()
     }
 
-    /// Replaces every history with `actors`, leaving out those not seen since `before`. Steps are numbered in the
-    /// order they are read: each actor's undo stack oldest first, then the redo stacks, so a person's undo after a
-    /// restore reaches the most recently listed actor's newest step first.
+    /// Replaces every history with `actors`, leaving out those not seen since `before`. Steps keep the commit and
+    /// undo numbers they were exported with, so the order across actors is the order they were committed and undone
+    /// in. An export made before those were recorded is numbered in the order it is read: each actor's undo stack
+    /// oldest first, then the redo stacks, so a person's undo after a restore reaches the most recently listed
+    /// actor's newest step first.
     pub(crate) fn import(&mut self, actors: &[ActorHistory], before: Option<WallTime>) {
         self.list.clear();
-        for actor in actors.iter().filter(|a| !stale(a.last_seen, before)) {
+        let kept = actors.iter().filter(|a| !stale(a.last_seen, before));
+        // Numbers carry on above the highest imported one.
+        for actor in kept.clone() {
+            self.commits = actor.undo.iter().chain(&actor.redo).map(|s| s.order).fold(self.commits, u64::max);
+            self.undos = actor.redo.iter().map(|s| s.undone).fold(self.undos, u64::max);
+        }
+        for actor in kept {
             let undo = actor
                 .undo
                 .iter()
                 .map(|s| {
-                    self.commits += 1;
-                    Step { order: self.commits, ..Step::import(s) }
+                    let order = if s.order > 0 {
+                        s.order
+                    } else {
+                        self.commits += 1;
+                        self.commits
+                    };
+                    Step { order, ..Step::import(s) }
                 })
                 .collect();
             // The export lists redo steps next first; the stack keeps the next one last.
@@ -373,8 +387,13 @@ impl Histories {
                 .iter()
                 .rev()
                 .map(|s| {
-                    self.undos += 1;
-                    Step { undone: self.undos, ..Step::import(s) }
+                    let undone = if s.undone > 0 {
+                        s.undone
+                    } else {
+                        self.undos += 1;
+                        self.undos
+                    };
+                    Step { order: s.order, undone, ..Step::import(s) }
                 })
                 .collect();
             self.list.push(History {

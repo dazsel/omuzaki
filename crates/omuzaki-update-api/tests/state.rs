@@ -40,7 +40,7 @@ fn unknown_keys_survive_a_round_trip() {
     let state = State::from_toml(STATE).unwrap();
     assert_eq!(state.current, Version::new(1, 4, 0));
     assert_eq!(state.rolled_back_from, Some((Version::new(1, 5, 0), RollbackReason::FailedToStartTwice)));
-    let again = State::from_toml(&state.to_toml()).unwrap();
+    let again = State::from_toml(&state.to_toml().unwrap()).unwrap();
     assert_eq!(again, state);
     assert_eq!(again.unknown["future_top_level"].as_str(), Some("kept"));
     assert_eq!(again.unknown["future_table"]["a"].as_integer(), Some(1));
@@ -53,7 +53,7 @@ fn a_changed_known_key_wins_over_the_text_it_came_from() {
     let mut state = State::from_toml(STATE).unwrap();
     state.pending = Some(Version::new(1, 5, 0));
     state.attempts = 0;
-    let again = State::from_toml(&state.to_toml()).unwrap();
+    let again = State::from_toml(&state.to_toml().unwrap()).unwrap();
     assert_eq!((again.pending, again.attempts), (Some(Version::new(1, 5, 0)), 0));
     assert_eq!(again.unknown, state.unknown);
 }
@@ -72,10 +72,10 @@ fn every_sequence_round_trips_exactly() {
         state.keys_sequence = n;
         state.watermarks.insert("stable".into(), Watermark { epoch: u32::MAX, sequence: n });
         state.watermarks.insert("beta".into(), Watermark { epoch: 0, sequence: n });
-        let text = state.to_toml();
+        let text = state.to_toml().unwrap();
         let again = State::from_toml(&text).unwrap();
         assert_eq!(again, state, "{n}: {text}");
-        assert_eq!(State::from_toml(&again.to_toml()).unwrap(), state, "{n}");
+        assert_eq!(State::from_toml(&again.to_toml().unwrap()).unwrap(), state, "{n}");
     }
 }
 
@@ -85,9 +85,9 @@ fn a_sequence_above_i64_is_a_string_and_a_bad_one_is_an_error() {
     assert_eq!(State::from_toml(text).unwrap().keys_sequence, u64::MAX);
     let mut state = State::from_toml("current = \"1.0.0\"").unwrap();
     state.keys_sequence = u64::MAX;
-    assert!(state.to_toml().contains("keys_sequence = \"18446744073709551615\""));
+    assert!(state.to_toml().unwrap().contains("keys_sequence = \"18446744073709551615\""));
     state.keys_sequence = 7;
-    assert!(state.to_toml().contains("keys_sequence = 7"));
+    assert!(state.to_toml().unwrap().contains("keys_sequence = 7"));
     assert!(State::from_toml("current = \"1.0.0\"\nkeys_sequence = \"18446744073709551616\"").is_err());
     assert!(State::from_toml("current = \"1.0.0\"\nkeys_sequence = \"-1\"").is_err());
     assert!(State::from_toml("current = \"1.0.0\"\n[watermarks.stable]\nepoch = 1\nsequence = \"x\"").is_err());
@@ -97,7 +97,7 @@ fn a_sequence_above_i64_is_a_string_and_a_bad_one_is_an_error() {
 fn clearing_the_watermarks_drops_their_unknown_keys_and_reloads() {
     let mut state = State::from_toml(STATE).unwrap();
     state.watermarks.clear();
-    let again = State::from_toml(&state.to_toml()).unwrap();
+    let again = State::from_toml(&state.to_toml().unwrap()).unwrap();
     assert!(again.watermarks.is_empty());
     assert!(!again.unknown.contains_key("watermarks"));
     assert_eq!(again.unknown["future_top_level"].as_str(), Some("kept"));
@@ -109,7 +109,7 @@ fn removing_one_feed_keeps_the_unknown_keys_of_another() {
     let mut state =
         State::from_toml(&format!("{STATE}\n[watermarks.beta]\nepoch = 2\nsequence = 3\nfuture_beta = 1\n")).unwrap();
     state.watermarks.remove("stable");
-    let again = State::from_toml(&state.to_toml()).unwrap();
+    let again = State::from_toml(&state.to_toml().unwrap()).unwrap();
     assert_eq!(again.watermarks.keys().collect::<Vec<_>>(), ["beta"]);
     assert_eq!(again.unknown["watermarks"]["beta"]["future_beta"].as_integer(), Some(1));
     assert!(again.unknown["watermarks"].get("stable").is_none());
@@ -174,4 +174,22 @@ fn the_json_schemas_match_the_snapshot() {
     }
     let before = std::fs::read_to_string(&path).unwrap_or_default();
     assert!(before == text, "a schema changed: review it, then regenerate with UPDATE_SCHEMAS=1");
+}
+
+/// Every field at its edges is written and read back whole: `to_toml` has no state it writes short, and a failure
+/// would be an error, never a file without `current`.
+#[test]
+fn every_field_at_its_edges_is_written_whole() {
+    for (at, reason) in [(i64::MIN, RollbackReason::Manual), (i64::MAX, RollbackReason::FailedToStartTwice)] {
+        let mut state = State::from_toml(STATE).unwrap();
+        state.previous = Some("0.9.0-beta.2+build.7".parse().unwrap());
+        state.pending = Some("2.0.0".parse().unwrap());
+        state.attempts = u8::MAX;
+        state.bad = vec!["1.5.0".parse().unwrap(), "1.5.1-rc.1".parse().unwrap()];
+        state.rolled_back_from = Some(("1.6.0".parse().unwrap(), reason));
+        state.last_checked = Some(Timestamp(at));
+        let text = state.to_toml().unwrap();
+        assert!(text.contains("current = "), "{text}");
+        assert_eq!(State::from_toml(&text).unwrap(), state, "{text}");
+    }
 }

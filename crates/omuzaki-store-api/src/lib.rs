@@ -228,6 +228,16 @@ pub trait Store: Send + Sync {
 
     /// True if the store holds `hash`.
     fn contains(&self, hash: &ContentHash) -> bool;
+
+    /// The stored length of `hash` in bytes, without reading them, so a caller can refuse an asset over its cap before
+    /// fetching it. The length is the store's record, not verified against the hash: [`get`](Self::get) still checks
+    /// the bytes. The default reads through `get`; every store in the workspace answers without reading.
+    ///
+    /// # Errors
+    /// [`StoreError::Missing`] or [`StoreError::Io`] (and, from the default, what `get` returns).
+    fn size(&self, hash: &ContentHash) -> Result<u64, StoreError> {
+        self.get(hash).map(|bytes| bytes.len() as u64)
+    }
 }
 
 /// What [`StoreGc::sweep`] did.

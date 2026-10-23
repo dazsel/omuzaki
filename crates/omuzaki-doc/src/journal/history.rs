@@ -132,7 +132,7 @@ pub fn summarise(records: &[(Lsn, Record)]) -> Vec<TxSummary> {
                     item.cause.clone_from(&op.cause);
                 }
             }
-            HistoryEntry::Commit { tx } => settle(&mut items, &index, *tx, Some(*lsn), TxOutcome::Committed),
+            HistoryEntry::Commit { tx, .. } => settle(&mut items, &index, *tx, Some(*lsn), TxOutcome::Committed),
             HistoryEntry::Rollback { tx, .. } => settle(&mut items, &index, *tx, Some(*lsn), TxOutcome::RolledBack),
             HistoryEntry::Undo { tx, .. } => settle(&mut items, &index, *tx, None, TxOutcome::Undone),
             HistoryEntry::Redo { tx, .. } => settle(&mut items, &index, *tx, None, TxOutcome::Committed),

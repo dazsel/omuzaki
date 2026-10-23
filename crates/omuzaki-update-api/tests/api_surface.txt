@@ -66,7 +66,7 @@ src/state.rs: pub struct Watermark {
 src/state.rs: pub struct StateError(pub String);
 src/state.rs: pub struct State {
 src/state.rs: pub fn from_toml(text: &str) -> Result<Self, StateError> {
-src/state.rs: pub fn to_toml(&self) -> String {
+src/state.rs: pub fn to_toml(&self) -> Result<String, StateError> {
 src/status.rs: pub enum Unavailable {
 src/status.rs: pub enum CheckFailure {
 src/status.rs: pub enum RollbackReason {

@@ -1189,3 +1189,67 @@ fn an_output_already_applied_is_not_listed_as_later() {
         assert_eq!(g.progress().skipped, Vec::<Step>::new(), "{accept:?}");
     }
 }
+
+/// Keep while the Sample is outstanding waits for the host's answer (#2267): Character doesn't move on until then,
+/// and an answer can't replace the project behind a step the person already left.
+#[test]
+fn keep_while_a_card_is_outstanding_waits_for_its_answer() {
+    let current = Current { input: Some(InputChoice::Webcam), output: Some(OutputKind::Spout) };
+    let open = || SetupFlow::new(Probes { project_open: true, ..probes() }, Progress::default(), current);
+    // The host refuses the sample: nothing changed, so Keep moves on with the open project and its output.
+    let mut f = open();
+    send(&mut f, &[Event::Next]);
+    let fx = send_raw(&mut f, &[Event::ChooseCharacter(CharacterChoice::Sample)]);
+    assert_eq!(send_raw(&mut f, &[Event::ChooseCharacter(CharacterChoice::Keep)]), no_effects(), "Keep waits");
+    assert_eq!(f.view().step, Step::Character);
+    let after = send_raw(&mut f, &[Event::Refused { request: request_of(&fx) }]);
+    assert!(matches!(after.as_slice(), [Effect::Persist(_), Effect::Show(Step::Input)]), "{after:?}");
+    assert_eq!(f.view().output, Some(OutputKind::Spout), "the kept project keeps its output");
+    assert!(!f.view().notes.contains(&Note::CharacterNotApplied));
+    // The host made the sample before it heard Keep: the project did change, so the state says so before moving on,
+    // and nothing is asked again.
+    let mut g = open();
+    send(&mut g, &[Event::Next]);
+    let fx = send_raw(&mut g, &[Event::ChooseCharacter(CharacterChoice::Sample)]);
+    send_raw(&mut g, &[Event::ChooseCharacter(CharacterChoice::Keep)]);
+    let after = send_raw(&mut g, &[Event::Applied { request: request_of(&fx) }]);
+    assert!(!after.iter().any(|e| matches!(e, Effect::ApplyCharacter { .. })), "{after:?}");
+    assert_eq!(g.view().step, Step::Input);
+    assert_eq!(g.view().output, None, "the old project's output went with it");
+    // Choosing another card after Keep drops the Keep: the new card is asked for in its turn, and the step waits.
+    let mut h = open();
+    send(&mut h, &[Event::Next]);
+    let fx = send_raw(&mut h, &[Event::ChooseCharacter(CharacterChoice::Sample)]);
+    send_raw(
+        &mut h,
+        &[Event::ChooseCharacter(CharacterChoice::Keep), Event::ChooseCharacter(CharacterChoice::ImportVrm)],
+    );
+    let next = send_raw(&mut h, &[Event::Refused { request: request_of(&fx) }]);
+    assert!(matches!(next.as_slice(), [Effect::ApplyCharacter { choice: CharacterChoice::ImportVrm, .. }]), "{next:?}");
+    assert_eq!(h.view().step, Step::Character);
+}
+
+/// Importing again after going back is a new request for another file, not the first import counted again (#2267).
+#[test]
+fn a_second_import_is_a_new_request() {
+    let mut f = flow(probes());
+    send(&mut f, &[Event::Next]);
+    for (round, card) in [CharacterChoice::ImportVrm, CharacterChoice::ImportVrm, CharacterChoice::FromSheetOrIdea]
+        .into_iter()
+        .enumerate()
+    {
+        let fx = send_raw(&mut f, &[Event::ChooseCharacter(card)]);
+        assert!(matches!(fx.as_slice(), [Effect::ApplyCharacter { choice, .. }] if *choice == card), "{round}: {fx:?}");
+        assert_eq!(f.view().step, Step::Character, "{round}: the step waits for the host");
+        send_raw(&mut f, &[Event::Applied { request: request_of(&fx) }]);
+        assert_eq!(f.view().step, Step::Input, "{round}");
+        send_raw(&mut f, &[Event::Back]);
+        assert_eq!(f.view().step, Step::Character, "{round}");
+    }
+    // The sample is the same whenever it is made: chosen twice, it is made once.
+    let fx = send_raw(&mut f, &[Event::ChooseCharacter(CharacterChoice::Sample)]);
+    send_raw(&mut f, &[Event::Applied { request: request_of(&fx) }, Event::Back]);
+    let again = send_raw(&mut f, &[Event::ChooseCharacter(CharacterChoice::Sample)]);
+    assert!(!again.iter().any(|e| matches!(e, Effect::ApplyCharacter { .. })), "{again:?}");
+    assert_eq!(f.view().step, Step::Input);
+}

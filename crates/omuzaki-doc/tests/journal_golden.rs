@@ -69,7 +69,7 @@ fn segments() -> [Vec<Record>; 3] {
             entry(HistoryEntry::Begin { tx: TxId(1), actor: actor(), label: "rename".into(), at: Seconds(0.5) }),
             entry(HistoryEntry::Op { record: op(1, 1, "a", "b"), commits: false }),
             entry(HistoryEntry::Op { record: op(2, 1, "b", "c"), commits: false }),
-            entry(HistoryEntry::Commit { tx: TxId(1) }),
+            entry(HistoryEntry::commit(TxId(1))),
             entry(HistoryEntry::Op { record: op(3, 2, "c", "d"), commits: true }),
         ],
         vec![

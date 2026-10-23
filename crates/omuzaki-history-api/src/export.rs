@@ -29,6 +29,20 @@ pub struct StepExport {
     /// redoable after a snapshot and a restart. Empty in exports made before effects were recorded.
     #[serde(default)]
     pub effects: Vec<Effect>,
+    /// Its commit number, counted across every actor: a person's undo takes the newest step among their own and
+    /// their agents' histories, so the order steps were committed in survives an export (#2241). `0` in exports made
+    /// before it was recorded, which are numbered in the order they are read.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub order: u64,
+    /// Its undo number, counted across every actor, for a step on a redo stack (a person's redo takes the most
+    /// recently undone); `0` on an undo stack and in older exports.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub undone: u64,
+}
+
+#[expect(clippy::trivially_copy_pass_by_ref, reason = "serde's skip_serializing_if passes a reference")]
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// One actor's history.
@@ -90,13 +104,19 @@ pub struct HistoryExport {
 impl StepExport {
     /// A step with these facts.
     pub fn new(tx: TxId, label: impl Into<String>, patch: Arc<Patch>, scopes: BTreeSet<Scope>) -> Self {
-        Self { tx, label: label.into(), patch, scopes, effects: Vec::new() }
+        Self { tx, label: label.into(), patch, scopes, effects: Vec::new(), order: 0, undone: 0 }
     }
 
     /// This step with the effects of its ops, in apply order.
     #[must_use]
     pub fn with_effects(self, effects: Vec<Effect>) -> Self {
         Self { effects, ..self }
+    }
+
+    /// This step with its commit number and, on a redo stack, its undo number (see [`StepExport::order`]).
+    #[must_use]
+    pub fn with_order(self, order: u64, undone: u64) -> Self {
+        Self { order, undone, ..self }
     }
 }
 

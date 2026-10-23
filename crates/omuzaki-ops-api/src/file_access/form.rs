@@ -382,6 +382,11 @@ fn parse_unc(rest: &str, verbatim: bool) -> Result<Parsed, Refusal> {
     if server.is_empty() || share.is_empty() {
         return Err(Refusal::IncompleteUnc);
     }
+    // `\\?\UNC\.x\share` is spelt `\\.x\share` in the plain form, which reads as the device namespace (`\\.\`), so a
+    // server whose name starts with a dot has no form that round-trips; no host name starts with one (#2246).
+    if server.starts_with('.') {
+        return Err(Refusal::Device);
+    }
     check_windows_name(server)?;
     check_windows_name(share)?;
     let steps = parse_steps(pieces.next().unwrap_or(""), verbatim)?;
@@ -610,6 +615,35 @@ mod tests {
         assert_eq!(spell(r"C:\"), PathBuf::from(r"C:\"));
         let place = Lexical::absolute("/a/b/c", Style::Posix).unwrap();
         assert_eq!((place.path(0), place.path(2), place.path(9)), ("/".into(), "/a/b".into(), "/a/b/c".into()));
+    }
+
+    /// A verbatim network path whose server starts with a dot (the fuzzer's find, #2246) is refused: its plain
+    /// spelling `\\.x\...` is the device namespace. The other prefixes that change meaning without the `\\?\` are
+    /// refused in both forms already.
+    #[test]
+    fn a_server_whose_plain_spelling_reads_as_another_place_is_refused() {
+        for raw in [
+            r"\\?\UNC\.Qv^saerha\H\b",
+            r"\\?\UNC\.\share\a",
+            r"\\?\UNC\..\share",
+            r"\\?\UNC\.srv\share",
+            r"\\.srv\share",
+            r"//.srv/share",
+            r"\\?\UNC\?\share",
+            r"\\?\UNC\srv.\share",
+            r"\\?\UNC\srv \share",
+            r"\\?\UNC\con\share",
+            r"\\?\UNC\srv\nul.txt",
+            r"\\?\UNC\srv\share.\a",
+        ] {
+            assert!(Lexical::absolute(raw, Style::Windows).is_none(), "{raw:?} is refused");
+            assert_eq!(crate::file_access::fuzzing::check_path(raw), Ok(()), "{raw:?}");
+        }
+        // A dot inside or after the first character is an ordinary server name.
+        for raw in [r"\\?\UNC\srv.lan\share\a", r"\\srv.lan\share\a", r"\\?\UNC\s.\x"] {
+            assert_eq!(crate::file_access::fuzzing::check_path(raw), Ok(()), "{raw:?}");
+        }
+        assert!(Lexical::absolute(r"\\?\UNC\srv.lan\share\a", Style::Windows).is_some());
     }
 
     #[test]

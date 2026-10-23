@@ -15,6 +15,46 @@ use crate::{AuditFact, HistoryExport, OpenTxExport, WallTime};
 #[serde(transparent)]
 pub struct Lsn(pub u64);
 
+/// How a committed transaction ended, which its label shows in history.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum TxEnd {
+    /// Committed by its owner.
+    #[default]
+    Finished,
+    /// Kept as it stood because ending it couldn't revert it (a session's end, a job's failure): " (unfinished)".
+    Unfinished,
+    /// Kept as it stood at a person's Stop: " (stopped)".
+    Stopped,
+}
+
+impl TxEnd {
+    /// What the step's label gets after its own: empty for a finished one.
+    #[must_use]
+    pub fn suffix(self) -> &'static str {
+        match self {
+            Self::Finished => "",
+            Self::Unfinished => " (unfinished)",
+            Self::Stopped => " (stopped)",
+        }
+    }
+
+    /// Whether it was committed by its owner.
+    #[must_use]
+    pub fn is_finished(&self) -> bool {
+        *self == Self::Finished
+    }
+}
+
+impl HistoryEntry {
+    /// The entry of a transaction its owner committed.
+    #[must_use]
+    pub fn commit(tx: TxId) -> Self {
+        Self::Commit { tx, end: TxEnd::Finished }
+    }
+}
+
 /// Which of an actor's two history stacks a step sits on.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -71,6 +111,10 @@ pub enum HistoryEntry {
     Commit {
         /// Which.
         tx: TxId,
+        /// How it ended: a step kept as it stood after a failed revert, or a person's Stop, says so in its label, and
+        /// replay keeps that suffix. Absent in the journal for a finished one (and in journals written before it).
+        #[serde(default, skip_serializing_if = "TxEnd::is_finished")]
+        end: TxEnd,
     },
     /// A transaction was rolled back.
     Rollback {
