@@ -48,7 +48,7 @@ struct Variant {
     mirrored: bool,
     samples: u32,
     side: Side,
-    /// The material is double-sided, so the hull widens by the rims.
+    /// The material is double-sided and the mesh open, so the hull widens by the rims.
     rims: bool,
 }
 
@@ -77,10 +77,11 @@ fn hulls<'a>(frame: &'a FrameView<'_>, resources: SceneResources<'a>) -> impl It
     frame.draws.for_pass(Pass::Outlines).flat_map(move |draw| {
         let found = resources.meshes.at(draw.mesh).zip(resources.materials.at(draw.material));
         let found = found.filter(|(_, material)| material.draws_outline());
-        let rims = found.is_some_and(|(_, material)| material.material.double_sided);
+        // Only an open mesh has rims to widen by, and only it gets the second hull.
+        let rims = found.is_some_and(|(mesh, material)| material.material.double_sided && mesh.open());
         let sides = match found {
             None => [None, None],
-            Some((mesh, _)) => [Some(Side::Out), (rims && mesh.open).then_some(Side::In)],
+            Some(_) => [Some(Side::Out), rims.then_some(Side::In)],
         };
         sides.into_iter().flatten().filter_map(move |side| {
             let (mesh, material) = found?;
