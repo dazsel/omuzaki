@@ -149,9 +149,9 @@ fn tick(index: u64) -> Tick {
 
 /// Speech loud enough to start and keep a laugh (the prototype's `loud > 0.45`): what every test hears unless it says
 /// otherwise, so the mouth alone decides.
-const LOUD: Cues = Cues { loudness: 1.0, onset: false, laugh: 0.0 };
+const LOUD: Cues = Cues { loudness: 1.0, onset: false, laugh: 0.0, eyes_lead_turn: false, look_shift: false };
 /// No audio.
-const SILENT: Cues = Cues { loudness: 0.0, onset: false, laugh: 0.0 };
+const SILENT: Cues = Cues { loudness: 0.0, onset: false, laugh: 0.0, eyes_lead_turn: false, look_shift: false };
 
 /// A stage and the frame it is on: frames come at 60 fps unless asked otherwise.
 struct Run {
@@ -457,7 +457,7 @@ fn laugh_squint_eases_in_and_out_instead_of_snapping() {
 #[test]
 fn laugh_squint_hears_the_laugh_as_the_life_layer_does() {
     let big = lips(0.9, 0.0, 0.5, 0.0);
-    let heard = |loudness, laugh| Cues { loudness, onset: false, laugh };
+    let heard = |loudness, laugh| Cues { loudness, onset: false, laugh, eyes_lead_turn: false, look_shift: false };
     let squint = |run: &mut Run, frames| run.hold(&big, frames).values[SQUINT[0]];
     // Talking through a smile is no laugh (#638), and without audio (or with a broken cue) nothing is.
     for cues in [SILENT, heard(0.45, 0.0), heard(f32::NAN, 0.0), heard(0.3, 0.4)] {
@@ -1102,7 +1102,8 @@ fn play(seed: u64, smile: f32, loud: f32) -> Vec<Played> {
             let t = i as f32 / 60.0;
             let laughing = (1.0..4.0).contains(&t);
             let mut bus = if laughing { lips(smile, 0.0, 0.55, 0.0) } else { lips(0.1, 0.0, 0.0, 0.0) };
-            let cues = Cues { loudness: if laughing { loud } else { 0.0 }, onset: false, laugh: 0.0 };
+            let cues =
+                Cues { loudness: if laughing { loud } else { 0.0 }, onset: false, laugh: 0.0, ..Cues::default() };
             life.step(tick(i), &cues, &mut bus);
             let from_life = bus;
             stage.step(tick(i), &cues, &mut bus);

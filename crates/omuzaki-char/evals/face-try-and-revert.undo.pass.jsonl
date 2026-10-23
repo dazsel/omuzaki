@@ -1,0 +1,4 @@
+{"turn":1,"call":"part.set_param","args":{"character":"{main}","part":"head","path":"outline/half_width","value":0.165},"applied":true}
+{"turn":2,"call":"face.layout.measure","args":{"character":"{main}"}}
+{"turn":3,"call":"history_undo","args":{}}
+{"assert":{"doc_same_as":"start"}}

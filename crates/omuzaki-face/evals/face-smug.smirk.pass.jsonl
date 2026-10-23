@@ -1,0 +1,1 @@
+{"turn":1,"call":"face.expression.set","args":{"character":"{main}","id":"smug","kind":"emotion","deltas":{"mouthSmileLeft":0.7,"mouthPressRight":0.3,"eyeSquintLeft":0.35,"eyeSquintRight":0.35,"browDownRight":0.4,"browOuterUpLeft":0.3}},"applied":true}

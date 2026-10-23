@@ -639,6 +639,28 @@ pub struct MouthStyle {
     pub interior: MouthInterior,
     /// Fangs.
     pub fang: FangStyle,
+    /// Size multiplier in a wide shot, where the head is at most [`WIDE_SHOT`] of the frame's height: a mouth drawn
+    /// for a close-up shrinks to a few pixels in a full-body shot, so lip sync stops reading. It eases back to 1 by
+    /// [`CLOSE_SHOT`] ([`shot_scale`](Self::shot_scale)).
+    pub wide_shot_scale: f64,
+}
+
+/// The head's share of the frame's height at or below which a shot is wide: a full-body shot.
+pub const WIDE_SHOT: f32 = 0.12;
+/// The share at or above which a shot is close: a bust shot and nearer, where the mouth is drawn at its own size.
+pub const CLOSE_SHOT: f32 = 0.3;
+
+impl MouthStyle {
+    /// The mouth's size multiplier for a shot whose head covers `head_coverage` of the frame's height:
+    /// [`wide_shot_scale`](Self::wide_shot_scale) at [`WIDE_SHOT`] and below, 1 at [`CLOSE_SHOT`] and above, and a
+    /// smoothstep between, so a dolly in or out never jumps. 1 when the coverage is unknown.
+    #[must_use]
+    pub fn shot_scale(&self, head_coverage: Option<f32>) -> f32 {
+        let Some(coverage) = head_coverage.filter(|c| c.is_finite() && *c > 0.0) else { return 1.0 };
+        let t = ((CLOSE_SHOT - coverage) / (CLOSE_SHOT - WIDE_SHOT)).clamp(0.0, 1.0);
+        let ease = t * t * (3.0 - 2.0 * t);
+        1.0 + (crate::narrow(self.wide_shot_scale) - 1.0) * ease
+    }
 }
 
 impl Default for MouthStyle {
@@ -653,6 +675,7 @@ impl Default for MouthStyle {
             lips: Lips::default(),
             interior: MouthInterior::default(),
             fang: FangStyle::default(),
+            wide_shot_scale: 1.4,
         }
     }
 }
@@ -664,6 +687,7 @@ impl Validate for MouthStyle {
         c.range("open_scale", self.open_scale, 0.5, 4.0);
         c.range("line_width", self.line_width, 0.0003, 0.01);
         c.range("corner_curve", self.corner_curve, 0.0, 0.02);
+        c.range("wide_shot_scale", self.wide_shot_scale, 1.0, 2.5);
         c.nested("lips", &self.lips);
         c.nested("interior", &self.interior);
         c.nested("fang", &self.fang);
@@ -968,5 +992,33 @@ mod tests {
         let l = FaceLayout { eye_width: 0.05, eye_spacing: 0.1, ..FaceLayout::default() };
         let r = l.ratios(-0.25).unwrap();
         assert!((r.eye_width_to_iod - 0.25).abs() < 1e-12, "{r:?}");
+    }
+}
+
+#[cfg(test)]
+mod shot_tests {
+    use super::*;
+
+    #[test]
+    fn the_mouth_grows_in_a_wide_shot_and_eases_back_by_a_bust_shot() {
+        let mouth = MouthStyle::default();
+        let wide = crate::narrow(mouth.wide_shot_scale);
+        assert!((mouth.shot_scale(Some(0.08)) - wide).abs() < 1e-6);
+        assert!((mouth.shot_scale(Some(WIDE_SHOT)) - wide).abs() < 1e-6);
+        assert!((mouth.shot_scale(Some(CLOSE_SHOT)) - 1.0).abs() < 1e-6);
+        assert!((mouth.shot_scale(Some(0.8)) - 1.0).abs() < 1e-6);
+        for unknown in [None, Some(0.0), Some(f32::NAN), Some(-1.0)] {
+            assert!((mouth.shot_scale(unknown) - 1.0).abs() < 1e-6, "{unknown:?}");
+        }
+        // Monotonic and without a jump across the band.
+        let mut last = f32::INFINITY;
+        for step in 0..=100_u8 {
+            let coverage = 0.05 + 0.3 * f32::from(step) / 100.0;
+            let scale = mouth.shot_scale(Some(coverage));
+            assert!(scale <= last && last - scale < 0.02 || last.is_infinite(), "{coverage}: {scale} after {last}");
+            last = scale;
+        }
+        let still = MouthStyle { wide_shot_scale: 1.0, ..MouthStyle::default() };
+        assert!((still.shot_scale(Some(0.05)) - 1.0).abs() < 1e-6);
     }
 }

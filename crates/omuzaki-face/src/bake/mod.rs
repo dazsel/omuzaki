@@ -30,7 +30,9 @@ use std::collections::BTreeMap;
 
 use omuzaki_anim_api::Channel;
 use omuzaki_core::glam::{Vec2, Vec3, Vec4};
-use omuzaki_face_api::{BakerInput, FaceBakerFactory, FaceProfile, FaceProjection, FaceRect, register_face_baker};
+use omuzaki_face_api::{
+    BakerInput, DEFAULT_PX_PER_M, FaceBakerFactory, FaceProfile, FaceProjection, FaceRect, register_face_baker,
+};
 use omuzaki_io_api::{
     AlphaMode, Avatar, BakeReport, BakeRequest, Blob, ChannelBake, ColorBind, ColorBindKind, EXTRA_PREFIX,
     EncodedImage, Expression, ExpressionBaker, ExpressionName, Filter, Finding, ImageMime, IoError, IoScene, Material,
@@ -73,7 +75,12 @@ impl FaceBaker {
         Self {
             profile: input.profile.clone(),
             projection: input.projection,
-            frame: HeadFrame { centre: input.head_centre, front_from: input.projection.front_fade[0] },
+            frame: HeadFrame {
+                centre: input.head_centre,
+                // A scale that is no size at all would put every vertex at infinity: the template's size instead.
+                scale: if input.scale.is_finite() && input.scale > 0.0 { input.scale } else { 1.0 },
+                front_from: input.projection.front_fade[0],
+            },
         }
     }
 }
@@ -249,6 +256,21 @@ impl FaceBaker {
         )
     }
 
+    /// The extras some feature can carry that `names` ask for: by name (`omuzaki_sweat-drop`), or through a named
+    /// expression (`omuzaki_gloom`, whose deltas set `eyesGloom`) or a preset, sorted.
+    fn extras<'a>(&self, names: &'a [String]) -> Vec<&'a str> {
+        let mut extras: Vec<&str> = names
+            .iter()
+            .flat_map(|n| self.sources(n))
+            .chain(PresetExpression::ALL.into_iter().flat_map(|p| self.preset(p)))
+            .map(|(channel, _)| channel)
+            .filter(|channel| flipbook::is_feature_extra(channel))
+            .collect();
+        extras.sort_unstable();
+        extras.dedup();
+        extras
+    }
+
     /// The channels a requested name stands for: a channel or an extra (`omuzaki_eyes-heart`) at full weight, or the
     /// face's own named expression exported as `omuzaki_<id>` (`omuzaki_smug`) at its deltas.
     fn sources<'a>(&self, name: &'a str) -> Vec<(&'a str, f32)> {
@@ -315,12 +337,15 @@ impl ExpressionBaker for FaceBaker {
             .ok_or_else(|| IoError::unsupported("a face bake target without a mesh", "pass the head's node"))?;
         let max_px = request.budget.max_atlas_px.unwrap_or(MAX_ATLAS_PX).max(64);
         let names: Vec<String> = request.channels.iter().map(ToString::to_string).collect();
-        let extras: Vec<&str> = names.iter().filter_map(|n| extra_channel(n)).collect();
+        let extras = self.extras(&names);
         let mut report = BakeReport::default();
         let mut baked = Baked::default();
 
         // Patches and atlases.
         let features = flipbook::features(&extras);
+        for finding in dropped_extras(&features, &extras) {
+            report.findings.push(finding);
+        }
         let head_material =
             scene.meshes[mesh_ix.index()].primitives.first().and_then(|p| p.material).map(MaterialIx::index);
         let head_material = head_material.and_then(|m| scene.materials.get(m)).cloned();
@@ -362,6 +387,22 @@ impl ExpressionBaker for FaceBaker {
             scene.meshes[mesh_ix.index()].primitives.push(primitive);
             record_feature(&mut baked, feature, &atlas, material);
             report.findings.push(Finding::info("face.bake_atlas", layout(feature, &atlas)));
+            if atlas.px_per_m < 0.99 * DEFAULT_PX_PER_M {
+                report.findings.push(
+                    Finding::warning(
+                        "face.bake_density",
+                        format!(
+                            "{}: its {} cells fit {max_px} px a side only at {:.0} px/m, against the live face's {:.0}, \
+                             so it reads softer in the file than in the studio",
+                            feature.name,
+                            1_usize << feature.bits.len(),
+                            atlas.px_per_m,
+                            DEFAULT_PX_PER_M
+                        ),
+                    )
+                    .hint("bake fewer extras, or raise the atlas limit in the bake budget"),
+                );
+            }
         }
 
         // Morph targets, on the head and on the patches.
@@ -421,7 +462,7 @@ impl FaceBaker {
                     .enumerate()
                     .map(|(i, &p)| {
                         let normal = data.normals.get(i).map_or(Vec3::ZERO, |n| n.normalize_or_zero());
-                        anchors.displacement(channel, self.frame.local(p), normal)
+                        anchors.displacement(channel, self.frame.local(p), normal) * self.frame.scale
                     })
                     .collect();
                 moved |= deltas.iter().any(|d| *d != Vec3::ZERO);
@@ -441,6 +482,32 @@ impl FaceBaker {
         }
         Ok(())
     }
+}
+
+/// A warning for each eye whose extras did not all fit in its bits.
+fn dropped_extras(features: &[Feature], extras: &[&str]) -> Vec<Finding> {
+    features
+        .iter()
+        .filter(|f| f.name.starts_with("eye-"))
+        .filter_map(|feature| {
+            let dropped: Vec<&str> = extras
+                .iter()
+                .copied()
+                .filter(|e| flipbook::is_eye_extra(e, &feature.name) && !feature.bits.iter().any(|b| b.name() == *e))
+                .collect();
+            (!dropped.is_empty()).then(|| {
+                Finding::warning(
+                    "face.bake_bits",
+                    format!(
+                        "{}: {} have no cell ({} bits at most), so the file's eye does not show them",
+                        feature.name,
+                        dropped.join(", "),
+                        flipbook::MAX_BITS
+                    ),
+                )
+            })
+        })
+        .collect()
 }
 
 /// Records what each bit of `feature`'s atlas carries: its channel moves the material's UV offset by the bit's step.

@@ -858,3 +858,38 @@ fn the_counter_sees_an_allocation() {
     });
     assert_eq!(allocations, 1, "without this the zero-allocation test proves nothing");
 }
+
+/// #464: in a wide shot the mouth grows by the style's `wide_shot_scale` (closed width, line weight, open width and
+/// height), so lip sync still reads when the head is a small part of the frame; from a bust shot in it is drawn at its
+/// own size, and an unknown shot leaves it alone.
+#[test]
+fn the_mouth_grows_in_a_wide_shot_so_lip_sync_still_reads() {
+    let profile = flat();
+    let in_shot = |coverage: Option<f32>, p: &PaintParams| {
+        let mut out = FaceDrawing::new();
+        let view = FaceView { highlight_shift: Vec2::ZERO, head_coverage: coverage };
+        let input = FaceInput { profile: &profile, params: p, time: Seconds(0.0), view };
+        painter().paint_mouth_piece(MouthPiece::Shape, &input, &mut out).unwrap();
+        out[FaceLayerId::Base].clone()
+    };
+    let scale = omuzaki_face_api::narrow(profile.mouth.wide_shot_scale);
+    let closed_params = params(|_| {});
+    let (near_width_pts, near_line) = closed(&in_shot(None, &closed_params));
+    let (wide_pts, wide_line) = closed(&in_shot(Some(0.08), &closed_params));
+    let (bust_pts, _) = closed(&in_shot(Some(0.4), &closed_params));
+    let width = |pts: &[Vec2]| {
+        let (lo, hi) = extent(pts);
+        hi.x - lo.x
+    };
+    assert_close(width(&wide_pts), width(&near_width_pts) * scale, "the closed line widens by the scale");
+    assert_close(wide_line, near_line * scale.sqrt(), "and thickens by its square root");
+    assert_close(width(&bust_pts), width(&near_width_pts), "a bust shot draws the mouth at its own size");
+
+    // Talking: the open lens grows both ways.
+    let open = params(|m| m.open = 0.6);
+    let lens = |coverage| extent(&outline(&in_shot(coverage, &open)));
+    let ((lo, hi), (wlo, whi)) = (lens(None), lens(Some(0.08)));
+    let (size, wide) = (hi - lo, whi - wlo);
+    println!("open mouth: {size} close up, {wide} in a wide shot (scale {scale})");
+    assert!((wide.x / size.x - scale).abs() < 0.02 && (wide.y / size.y - scale).abs() < 0.02, "{size} -> {wide}");
+}

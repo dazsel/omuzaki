@@ -1792,6 +1792,9 @@ ui-live-channel-body-turn = Body turn
 ui-live-channel-breath = Breath
 
 # A face or body channel's name in the Channels panel: keep it short.
+ui-live-channel-brow-arch = Brow arch
+
+# A face or body channel's name in the Channels panel: keep it short.
 ui-live-channel-brow-down-left = Brow down L
 
 # A face or body channel's name in the Channels panel: keep it short.
@@ -1860,6 +1863,9 @@ ui-live-channel-eye-squint-left = Eye squint L
 
 # A face or body channel's name in the Channels panel: keep it short.
 ui-live-channel-eye-squint-right = Eye squint R
+
+# A face or body channel's name in the Channels panel: keep it short.
+ui-live-channel-eye-tilt = Eye tilt
 
 # A face or body channel's name in the Channels panel: keep it short.
 ui-live-channel-eye-wide-left = Eye wide L
@@ -1992,6 +1998,9 @@ ui-live-channel-nose-sneer-left = Sneer L
 
 # A face or body channel's name in the Channels panel: keep it short.
 ui-live-channel-nose-sneer-right = Sneer R
+
+# A face or body channel's name in the Channels panel: keep it short.
+ui-live-channel-pupil-size = Pupil size
 
 # A face or body channel's name in the Channels panel: keep it short.
 ui-live-channel-sparkle = Sparkle

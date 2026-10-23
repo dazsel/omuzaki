@@ -1,0 +1,22 @@
+# Starter face task (#430): a shape edit judged by the face's aspect (eye line to chin over the outline's width).
+id = "face.rounder"
+feature = "CB-10"
+title = "Make the face rounder"
+prompt = "Make the face rounder."
+fixture = "face-mini"
+scopes = ["read", "edit:character"]
+tags = ["starter"]
+version = 1
+
+[[check]]
+id = "rounder"
+kind = "query"
+op = "face.layout.measure"
+args = { character = "{main}" }
+at = "/aspect"
+expect = { change = "down", at_least = 0.04, relative = true }
+
+[[check]]
+id = "only-the-head-shape"
+kind = "doc.changed_only"
+paths = ["characters/{main}/parts/head/params/outline/**", "characters/{main}/face/layout/**"]

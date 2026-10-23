@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::chin::{chin_not_below_eye, head_chin};
+use super::chin::{chin_not_below_eye, head_part};
 use super::edit::refuse_bad_ratios;
 use super::ratios::{LayoutRatios, PartialRatios};
 use crate::ops::character::access;
@@ -46,11 +46,16 @@ impl Op for MeasureLayout {
 
     fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
         let def = access::load(ctx, &self.character)?;
-        let chin = head_chin(&def, &self.character)?;
+        let (_, head) = head_part(&def, &self.character)?;
+        let chin = head.outline.chin_y();
         let layout = def.face.layout;
         let ratios = LayoutRatios::measure(&layout, chin).ok_or_else(|| chin_not_below_eye(layout.eye_y, chin))?;
+        // The face's proportion as the image measures read it (VF-01's `aspect`): the eye line to the chin over the
+        // outline's width. A rounder face has a smaller aspect.
+        let aspect = (layout.eye_y - chin) / (2.0 * head.outline.half_width).max(f64::EPSILON);
 
-        let mut answer = json!({ "character": self.character.to_string(), "chin_y": chin, "ratios": ratios });
+        let mut answer =
+            json!({ "character": self.character.to_string(), "chin_y": chin, "aspect": aspect, "ratios": ratios });
         if let Some(reference) = &self.reference {
             if reference.is_empty() {
                 return Err(OpError::invalid("reference", "the reference gives no ratio")

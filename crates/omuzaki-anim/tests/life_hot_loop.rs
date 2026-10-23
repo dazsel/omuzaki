@@ -54,7 +54,12 @@ fn frame(tick: Tick) -> (Bus, Cues) {
     if (45.0..55.0).contains(&t) {
         bus.owners.claim(Source::Tracker, ChannelMask::EYES);
     }
-    let cues = Cues { loudness: if t >= 10.0 { 0.7 } else { 0.0 }, onset: tick.index.is_multiple_of(14), laugh: 0.0 };
+    let cues = Cues {
+        loudness: if t >= 10.0 { 0.7 } else { 0.0 },
+        onset: tick.index.is_multiple_of(14),
+        laugh: 0.0,
+        ..Cues::default()
+    };
     (bus, cues)
 }
 

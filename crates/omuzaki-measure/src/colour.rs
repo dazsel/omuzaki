@@ -48,6 +48,30 @@ pub fn lab(rgb: [u8; 3]) -> [f64; 3] {
     [116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz)]
 }
 
+/// Parses `#rrggbb` (the `#` optional) to its three bytes.
+#[must_use]
+pub fn parse_hex(text: &str) -> Option<[u8; 3]> {
+    let hex = text.strip_prefix('#').unwrap_or(text);
+    if hex.len() != 6 || !hex.is_ascii() {
+        return None;
+    }
+    let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
+    Some([byte(0)?, byte(2)?, byte(4)?])
+}
+
+/// `#rrggbb` of three bytes.
+#[must_use]
+pub fn hex([r, g, b]: [u8; 3]) -> String {
+    format!("#{r:02x}{g:02x}{b:02x}")
+}
+
+/// The CIE 1976 colour difference (`ΔE*ab`): the straight distance between two CIELAB colours.
+#[must_use]
+pub fn delta_e(p: [f64; 3], q: [f64; 3]) -> f64 {
+    let [dl, da, db] = [p[0] - q[0], p[1] - q[1], p[2] - q[2]];
+    (dl * dl + da * da + db * db).sqrt()
+}
+
 /// The CIE 1976 companding curve of one XYZ ratio to its white.
 fn lab_curve(ratio: f64) -> f64 {
     if ratio > EPSILON { libm::cbrt(ratio) } else { (KAPPA * ratio + 16.0) / 116.0 }
@@ -116,6 +140,15 @@ mod tests {
             assert!(l > last, "L* must rise: {v} gave {l} after {last}");
             last = l;
         }
+    }
+
+    #[test]
+    fn hex_colours_parse_and_print() {
+        assert_eq!(parse_hex("#f9d3c5"), Some([249, 211, 197]));
+        assert_eq!(parse_hex("f9d3c5").map(hex), Some("#f9d3c5".to_owned()));
+        assert_eq!(parse_hex("#f9d3c"), None);
+        assert_eq!(parse_hex("#gg0000"), None);
+        assert!((delta_e(lab([0, 0, 0]), lab([255, 255, 255])) - 100.0).abs() < 0.01);
     }
 
     #[test]

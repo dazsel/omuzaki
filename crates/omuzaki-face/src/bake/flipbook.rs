@@ -10,7 +10,8 @@
 //!
 //! **Features.** Each eye and each brow is its own feature, so either side flips on its own, and the mouth is one. The
 //! static face (marks and nose) is a feature with one cell, and the cheeks are two cross-faded by a colour bind, at rest
-//! and at full blush. A feature's rectangle is the union of what its cells paint, and its patch is the head's triangles
+//! and at full blush. The Overlay layer's extras (the sweat drop, the gloom's hatch) are an `effects` feature, made only
+//! when an export asks for one of them. A feature's rectangle is the union of what its cells paint, and its patch is the head's triangles
 //! over that rectangle (`patch`).
 //!
 //! **Atlas size.** A feature with `n` bits has `2^n` cells, in a grid `2^ceil(n/2)` wide and `2^floor(n/2)` high, each
@@ -94,11 +95,26 @@ const MOUTH_BITS: [&str; 8] = [
     "mouthFunnel",
     "tongueOut",
 ];
-/// The anime extras an eye can carry as more bits, when an export asks for them, per side.
-const EYE_EXTRAS: [[&str; 5]; 2] = [
-    ["eyeArcLeft", "eyesHeart", "eyesStar", "eyesSqueeze", "tears"],
-    ["eyeArcRight", "eyesHeart", "eyesStar", "eyesSqueeze", "tears"],
+/// The anime extras an eye can carry as more bits, when an export asks for them, per side: as many as fit beside the
+/// three base bits, in this order.
+const EYE_EXTRAS: [[&str; 7]; 2] = [
+    ["eyeArcLeft", "eyesHeart", "eyesStar", "eyesSqueeze", "tears", "eyesGloom", "eyesShock"],
+    ["eyeArcRight", "eyesHeart", "eyesStar", "eyesSqueeze", "tears", "eyesGloom", "eyesShock"],
 ];
+/// The extras drawn on the Overlay layer (the sweat drop at the temple, the gloom's band and hatch over the forehead):
+/// the bits of the `effects` feature, when an export asks for them.
+const EFFECT_EXTRAS: [&str; 2] = ["sweatDrop", "eyesGloom"];
+
+/// Whether `channel` is an eye extra of the feature named `feature` (`eye-left` or `eye-right`).
+pub fn is_eye_extra(channel: &str, feature: &str) -> bool {
+    let side = usize::from(feature == "eye-right");
+    EYE_EXTRAS[side].contains(&channel)
+}
+
+/// Whether `channel` is an extra some feature can carry as a bit.
+pub fn is_feature_extra(channel: &str) -> bool {
+    EYE_EXTRAS.iter().flatten().chain(&EFFECT_EXTRAS).any(|extra| *extra == channel)
+}
 
 fn channels(names: &[&str]) -> Vec<Channel> {
     names.iter().filter_map(|n| Channel::from_name(n)).collect()
@@ -129,6 +145,11 @@ pub fn features(extras: &[&str]) -> Vec<Feature> {
         out.push(feature(name, &[Section::Brows], side, channels(&BROW_BITS[at]), 0.000_9));
     }
     out.push(feature("mouth", &[Section::Mouth], Side::Both, channels(&MOUTH_BITS), 0.000_6));
+    let effects: Vec<&str> = EFFECT_EXTRAS.iter().copied().filter(|n| extras.contains(n)).collect();
+    if !effects.is_empty() {
+        // In front of every other feature, as the Overlay layer is in front of the face.
+        out.push(feature("effects", &[Section::Overlay], Side::Both, channels(&effects), 0.001_2));
+    }
     out
 }
 

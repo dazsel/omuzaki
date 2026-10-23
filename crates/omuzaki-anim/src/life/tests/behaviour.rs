@@ -99,7 +99,7 @@ fn laughter_heard_in_the_audio_strengthens_the_case() {
             }
             v[Channel::JAW_OPEN] = 0.6;
         });
-        (bus, Cues { loudness: 0.1, onset: false, laugh: 0.9 })
+        (bus, Cues { loudness: 0.1, onset: false, laugh: 0.9, ..Cues::default() })
     };
     let squint = series(LifeConfig::new(2), 30.0, 3.0, scene, |b| b.values[Channel::EYE_SQUINT_LEFT]);
     assert!(squint[squint.len() - 1] > 0.15, "a quiet but detected laugh still squints");
@@ -109,7 +109,7 @@ fn laughter_heard_in_the_audio_strengthens_the_case() {
 fn speaking(loudness: f32, onsets: &[f64]) -> impl FnMut(&Tick) -> (Bus, Cues) + '_ {
     move |tick| {
         let onset = onsets.iter().any(|t| (tick.time.0 - t).abs() < 0.5 / 30.0);
-        (bus_of(|v| v[Channel::JAW_OPEN] = 0.3), Cues { loudness, onset, laugh: 0.0 })
+        (bus_of(|v| v[Channel::JAW_OPEN] = 0.3), Cues { loudness, onset, laugh: 0.0, ..Cues::default() })
     }
 }
 

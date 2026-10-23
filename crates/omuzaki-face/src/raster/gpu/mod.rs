@@ -15,6 +15,7 @@ mod stroke;
 use std::any::Any;
 use std::future::Future;
 use std::ops::Range;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::task::{Context, Poll, Waker};
 
 use omuzaki_core::glam::Affine2;
@@ -321,8 +322,61 @@ struct Batch {
 struct Gpu {
     /// The device the engine, the resolve pipeline and the layers' textures belong to.
     device: wgpu::Device,
-    engine: Engine,
+    /// Vello's stages and scratch buffers: the rasteriser's own, or one shared with the other rasterisers of its
+    /// [`VelloEngines`] on this device (#894).
+    engine: Arc<Mutex<Engine>>,
     resolve: Resolve,
+}
+
+/// The engines that a group of rasterisers share, one per device and held weakly: the last rasteriser on a device to
+/// drop its engine frees it (#894).
+///
+/// Each engine compiles Vello's stages (about 0.7 s on lavapipe) and holds Vello's scratch buffers (about 200 MiB at
+/// Vello's sizes), so with one per rasteriser every character on stage pays both again. Give one `VelloEngines` to the
+/// rasterisers that draw for one renderer ([`VelloRasterizer::sharing`]): those on one device then record with one
+/// engine, one after another into their own encoders, which the renderer submits in order on the device's one queue, as
+/// one rasteriser's layers already do; the lock only keeps two threads from recording at once.
+///
+/// Devices are told apart by wgpu's id, which is unique only within one `wgpu::Instance`, so a group never spans two
+/// renderers with instances of their own: two such devices can carry the same id. This is why sharing is a handle the
+/// renderer's owner passes and not a process-wide table.
+#[derive(Clone, Default)]
+pub struct VelloEngines(Arc<Mutex<Vec<InUse>>>);
+
+/// A device and the engine its rasterisers of one group share, held weakly.
+type InUse = (wgpu::Device, Weak<Mutex<Engine>>);
+
+impl VelloEngines {
+    /// An empty group: the first rasteriser to paint on a device makes that device's engine.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The engine in use on `device`, if a rasteriser of the group holds one.
+    fn in_use(&self, device: &wgpu::Device) -> Option<Arc<Mutex<Engine>>> {
+        let mut engines = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        engines.retain(|(_, engine)| engine.strong_count() > 0);
+        engines.iter().find(|(d, _)| d == device).and_then(|(_, engine)| engine.upgrade())
+    }
+
+    /// Shares `engine` with the group's rasterisers that come later on `device`.
+    fn share(&self, device: &wgpu::Device, engine: &Arc<Mutex<Engine>>) {
+        let mut engines = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        engines.push((device.clone(), Arc::downgrade(engine)));
+    }
+}
+
+impl std::fmt::Debug for VelloEngines {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let engines = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        f.debug_struct("VelloEngines").field("devices", &engines.len()).finish()
+    }
+}
+
+/// The engine, locked. A panic while another thread held it leaves at worst a cache or a buffer size stale, which the
+/// next record or overflow check repairs, so a poisoned lock is taken as is.
+fn locked(engine: &Mutex<Engine>) -> MutexGuard<'_, Engine> {
+    engine.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// The Vello rasteriser: encodes a list with [`SceneEncoder`], rasterises it with Vello's compute stages into a private
@@ -373,6 +427,8 @@ pub struct VelloRasterizer {
     pass_timestamps: Option<(wgpu::QuerySet, u32)>,
     /// The sizes Vello's bump-allocated buffers start at, instead of Vello's own: for tests of the overflow path.
     bump_capacity: Option<BumpCapacity>,
+    /// The group whose engine this rasteriser draws with, if it shares one (#894).
+    engines: Option<VelloEngines>,
     /// What has been logged once: a scene outgrowing Vello's buffers, a layer too large for its bins.
     logged_overflow: bool,
     logged_too_large: bool,
@@ -395,6 +451,17 @@ impl VelloRasterizer {
         self.encoded
     }
 
+    /// The device memory this rasteriser's engine holds for all its layers (Vello's scratch buffers), in bytes: `None`
+    /// before its first paint on a device. For the timing probe's `--setup` reading (#894).
+    pub fn shared_bytes(&self) -> Option<u64> {
+        self.gpu.as_ref().map(|gpu| locked(&gpu.engine).shared_bytes())
+    }
+
+    /// Whether this rasteriser and `other` draw with the same engine: rasterisers of one [`VelloEngines`] on one device share one (#894).
+    pub fn shares_engine_with(&self, other: &Self) -> bool {
+        matches!((&self.gpu, &other.gpu), (Some(a), Some(b)) if Arc::ptr_eq(&a.engine, &b.engine))
+    }
+
     /// How many layers this frame's batch rasterised together (0 when the frame drew each layer on its own): for tests
     /// and tools that check the frame ran Vello's stages once.
     pub fn layers_batched(&self) -> usize {
@@ -409,6 +476,15 @@ impl VelloRasterizer {
     #[must_use]
     pub fn with_bump_capacity(mut self, capacity: BumpCapacity) -> Self {
         self.bump_capacity = Some(capacity);
+        self
+    }
+
+    /// Draws with the engine that `engines` holds for the device, made by the first of the group to paint there,
+    /// instead of an engine of its own (#894). A rasteriser with its own buffer sizes
+    /// ([`with_bump_capacity`](Self::with_bump_capacity)) keeps its own engine.
+    #[must_use]
+    pub fn sharing(mut self, engines: &VelloEngines) -> Self {
+        self.engines = Some(engines.clone());
         self
     }
 
@@ -430,13 +506,23 @@ impl Gpu {
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
         capacity: Option<BumpCapacity>,
+        engines: Option<&VelloEngines>,
     ) -> Result<Self, String> {
+        let engines = if capacity.is_none() { engines } else { None };
+        let shared = engines.and_then(|engines| engines.in_use(device));
+        let reused = shared.is_some();
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let engine = Engine::new(device, capacity);
+        let engine = shared.unwrap_or_else(|| Arc::new(Mutex::new(Engine::new(device, capacity))));
         let gpu = Self { device: device.clone(), engine, resolve: Resolve::new(device, format) };
         // A scope that is still pending can't be read as "no error": count it as a failure, as `omuzaki-render` does.
         match ready(scope.pop()) {
-            Some(None) => Ok(gpu),
+            Some(None) => {
+                // Shared only once it is known to work, and only at Vello's own sizes (a test's sizes stay its own).
+                if let Some(engines) = engines.filter(|_| !reused) {
+                    engines.share(device, &gpu.engine);
+                }
+                Ok(gpu)
+            }
             Some(Some(error)) => Err(error.to_string()),
             None => Err("the device did not report whether Vello's pipelines are valid".to_owned()),
         }
@@ -536,7 +622,7 @@ impl VelloRasterizer {
         if self.hardware_only && device.adapter_info().device_type == wgpu::DeviceType::Cpu {
             return Err("it is a software adapter".to_owned());
         }
-        Gpu::create(device, format, self.bump_capacity)
+        Gpu::create(device, format, self.bump_capacity, self.engines.as_ref())
     }
 
     /// Records the drawing of `list` into `native`'s encoder, redoing only what the sections' ranges say changed.
@@ -624,7 +710,7 @@ impl VelloRasterizer {
         let stamps = self.pass_timestamps.as_ref().map(|(queries, at)| (queries, *at));
         let frame =
             Frame { scene: &self.scene, width: rect[2], height: rect[3], out: &private.view, timestamps: stamps };
-        gpu.engine
+        locked(&gpu.engine)
             .record(device, queue, commands, vello, &frame)
             .map_err(|e| FaceError::Raster(format!("Vello could not rasterise the layer: {e}")))?;
         Resolve::set_origin(queue, &private.origin, rect[0], rect[1]);
@@ -689,7 +775,7 @@ impl VelloRasterizer {
     fn check_layer(&mut self, at: usize) -> bool {
         let reported = self.batch.repaint.get_mut(at).is_some_and(|flag| std::mem::replace(flag, false));
         let (Some(gpu), Some(layer)) = (self.gpu.as_mut(), self.layers.get_mut(at)) else { return reported };
-        let Some(recovery) = layer.vello.as_mut().and_then(|vello| gpu.engine.check_overflow(vello)) else {
+        let Some(recovery) = layer.vello.as_mut().and_then(|vello| locked(&gpu.engine).check_overflow(vello)) else {
             return reported;
         };
         layer.painted = false;
@@ -702,7 +788,8 @@ impl VelloRasterizer {
     /// every batch read was submitted (a probe may submit a frame's paints together, after all of them).
     fn check_batch(&mut self) {
         let Some(gpu) = self.gpu.as_mut() else { return };
-        let Some(recovery) = self.batch.vello.as_mut().and_then(|vello| gpu.engine.check_overflow(vello)) else {
+        let Some(recovery) = self.batch.vello.as_mut().and_then(|vello| locked(&gpu.engine).check_overflow(vello))
+        else {
             return;
         };
         self.batch.repaint = [true; FaceLayerId::COUNT];
@@ -860,7 +947,7 @@ impl VelloRasterizer {
         }
         let stamps = self.pass_timestamps.as_ref().map(|(queries, at)| (queries, *at));
         let frame = Frame { scene: &self.scene, width, height, out: &atlas.view, timestamps: stamps };
-        gpu.engine
+        locked(&gpu.engine)
             .record(device, queue, commands, vello, &frame)
             .map_err(|e| FaceError::Raster(format!("Vello could not rasterise the face's layers: {e}")))?;
         batch.recorded = Some((index, members));

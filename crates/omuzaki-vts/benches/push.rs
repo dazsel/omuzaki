@@ -15,7 +15,7 @@ fn bench(c: &mut Criterion) {
     }
     let injector = Injector::new(&map);
     let mut buf = ChannelBuf::default();
-    for (n, info) in CHANNELS.iter().enumerate().take(73) {
+    for (n, info) in CHANNELS.iter().enumerate().take(76) {
         buf.set(info.channel, f32::from(u8::try_from(n).unwrap()) / 100.0);
     }
     c.bench_function("vts push, 90 parameters", |b| b.iter(|| injector.push(std::hint::black_box(&buf), true)));

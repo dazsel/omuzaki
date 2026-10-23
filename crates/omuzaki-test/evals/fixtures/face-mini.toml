@@ -1,0 +1,8 @@
+id = "face-mini"
+summary = "One original synthetic character on the mini template with the kit's default parts: a head with the default face and the starter expressions, less `smug` (a face task adds it)."
+steps = [
+  { op = "character.create", args = { id = "aki", name = "Aki", template = "mini" } },
+  { op = "face.expression.delete", args = { character = "{0.character}", id = "smug" } },
+]
+# `character.create` reports the new id under `character`.
+exports = { main = "{0.character}" }

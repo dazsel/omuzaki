@@ -101,6 +101,9 @@ Every ARKit channel and every anime extra reaches at least one paint parameter, 
 | `browInnerUp`, `browOuterUp*`, `browDown*`, `noseSneer*` | `*_brow.height`, `*_brow.tilt`, `brow_arch` | `brows.*` (9 numbers); bases `rest.brow_*` |
 | brows (derived) | `eye_tilt` | `eyes.tilt_from_brows` (0 turns it off) |
 | `eyesShock` | `effects.shock`, shrinks `pupil` | `eyes.shock_pupil`; base `rest.pupil` |
+| `eyeTilt` (signed) | adds to `eye_tilt`: `-1..=1` spans the painter's `-2..=2` | none (`EYE_TILT_PER_UNIT`) |
+| `browArch` (signed) | adds to `brow_arch` | none |
+| `pupilSize` | shrinks `pupil`, to 40% at 1 (pinpoint) | none (`PINPOINT`); multiplies with the `eyesShock` shrink |
 | `eyesHeart`, `eyesStar`, `eyesGloom`, `eyesSqueeze`, `eyesSpiral`, `sparkle`, `tears` | `effects.*` | none |
 | `jawOpen`, `mouthClose` | `mouth.open` | `mouth.open`, `mouth.close_cancel` |
 | `mouthSmile*`, `mouthFrown*`, `mouthDimple*` | `mouth.smile_left`, `mouth.smile_right`; also widen the mouth and gate lower teeth | `mouth.smile`, `mouth.frown`, `mouth.dimple`, `mouth.wide_smile`; base `rest.mouth_smile` |
@@ -120,17 +123,13 @@ Every ARKit channel and every anime extra reaches at least one paint parameter, 
 
 The formulas are the prototype's (`arkit.js` lines 140 to 190), moved from the retargeter to here. The default coefficients reproduce them exactly: a one-sided `mouthSmileLeft = 0.8` gives `smile_left = 1.35 × 0.8`; `mouthClose` cancels 35% of itself from the jaw; a kiss fades as the jaw opens. Tests hold these, plus: **mirroring the bus mirrors the result** (`PaintParams::mirrored`), and outputs stay in range even for wild input.
 
-### Channels wanted from anim-api
+### The signed face shapes (#74)
 
-Everything the prototype's painter did is reachable from the table as it stands. Three optional additions would make a lossless port of the prototype's expression library possible; none blocks this contract:
-
-| Channel | Why | Interim |
-|---|---|---|
-| `eyeTilt` (signed, `-1..=1`) | The prototype's lid tilt (angry slants, sad droops) is set by expressions and scores; no ARKit channel carries it. | Derived from the mean brow angle (`eyes.tilt_from_brows`). |
-| `browArch` (signed) | Same: `browArch` is set by expressions (surprised arches, sad flattens). | Derived from `browOuterUp` and `browInnerUp` (`brows.outer_up_arch`, `brows.inner_up_arch`). |
-| `pupilSize` | The prototype shrinks pupils for surprise. | Derived from `eyesShock` (`eyes.shock_pupil`). |
-
-The first two need a signed range (`-1..=1`); the table's weights are all `0..=1` today.
+Three prototype parameters are set only by expressions and scores, with no ARKit counterpart: the lid tilt, the brow
+arch and the pupil size. `omuzaki-anim-api` gives them channels 73 to 75, `eyeTilt` and `browArch` signed (`-1..=1`)
+and `pupilSize` `0..=1`, so the prototype's expression library ports without loss. Each adds to what the mapping
+derives from the other channels (the brows still tilt the lids, `eyesShock` still shrinks the pupil), inside the
+painter's ranges.
 
 ### Paint parameters
 
@@ -202,6 +201,14 @@ impl Painter for FaceLayerPainter<'_> {
 `face_texture_desc(&spec)` (char-api) gives the dynamic, premultiplied, sRGB, mip-mapped, anisotropy-8 texture each layer needs, and `BuiltCharacter::face_textures(px_per_m)` lists exactly the layers some material composites. The head material then carries `FaceOverlay::of(&projection, head_centre, Base)`, which `to_overlay(texture)` turns into the renderer's `Overlay { Mapping::Planar { min, max, fade_from, fade_to }, strength }` field for field.
 
 **Palette and the painter.** A face profile may name colours by palette slot (`@eyes`), but a painter never sees a slot. `FaceInput::profile` and `FaceBinding::profile` are slot-free: the stage calls `FaceProfile::resolve_colours(&palette)` before painting and again whenever the palette changes, so every painter, the GPU one included, reads plain colours. `resolve_colours` walks the profile's JSON and replaces each `@slot` by its colour, so a colour field added later is resolved with no change to the resolver. An unknown slot is an error that names its JSON path (`eyes/iris/top`). `FaceProfile::slots_used()` lists the slots a profile names, for the contrast checker and the palette UI.
+
+**The view.** `FaceView` carries what depends on the camera, which the stage works out each frame: `highlight_shift`
+(the eyes' reflections slide opposite the direction the camera sees the face from, #174) and `head_coverage` (the
+head's height over the frame's height at the head). The mouth reads `head_coverage` (#464): in a wide shot, at most
+`WIDE_SHOT` (0.12) of the frame, it grows by `mouth.wide_shot_scale` (default 1.4: width, opening and the line's weight
+by its square root), so lip sync still reads when the head is a few dozen pixels tall; it eases back to its own size by
+`CLOSE_SHOT` (0.3, a bust shot) with a smoothstep, so a dolly never jumps. An unknown coverage (a preview, a bake)
+draws the mouth at its own size.
 
 ### The face baker (G13)
 
@@ -460,7 +467,7 @@ Body types (CB-04) and five-finger hands (RG-09) are P0, so the body kind's para
 | `face.js` `winkL`, `winkR`, `smileEye`, `winkArc` | `eyeBlinkLeft/Right`, `eyeArcLeft/Right` → `EyeParams.close`, `.arc` (the grammar stage sets arcs from smile and blink) |
 | `open`, `openL/R` | `eyeWide − eyeSquint` per side; base `mapping.rest.eye_open` |
 | `lowLid`, `lowLidL/R` | `eyeSquint`, `cheekSquint`; base `rest.lower_lid` |
-| `tilt`, `pupil` | `eye_tilt` (derived), `pupil` (from `eyesShock`) |
+| `tilt`, `pupil` | `eye_tilt` (from the brows and `eyeTilt`), `pupil` (from `eyesShock` and `pupilSize`) |
 | `browY*`, `browTilt*`, `browArch` | brow channels → `BrowParams`, `brow_arch` |
 | `mOpen`, `mWide`, `mSmile`, `mSmileL/R`, `mRound`, `pucker`, `mPress`, `mX` | `MouthParams.{open, wide, smile_left/right, round, pucker, press, shift}` |
 | `teeth`, `teethLow`, `tongue`, `fang` | `mouth.{teeth_upper, teeth_lower, tongue, fangs}` |

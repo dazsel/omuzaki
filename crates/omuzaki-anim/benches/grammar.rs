@@ -13,7 +13,7 @@ use omuzaki_face_api::{GrammarRules, RuleConfig, RuleId};
 
 /// A face with both mouth corners at `smile` and `frown`, the jaw at `jaw` and the lips puckered by `pucker`.
 /// Speech loud enough for a laugh, so the laugh's whole path is measured.
-const LOUD: Cues = Cues { loudness: 0.8, onset: false, laugh: 0.0 };
+const LOUD: Cues = Cues { loudness: 0.8, onset: false, laugh: 0.0, eyes_lead_turn: false, look_shift: false };
 
 fn mouth(smile: f32, frown: f32, jaw: f32, pucker: f32) -> Bus {
     let mut bus = Bus::default();

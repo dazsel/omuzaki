@@ -78,13 +78,16 @@ impl Preview {
     /// # Errors
     /// What the painter or the rasteriser returns.
     pub fn paint(&mut self, bus: &ChannelBuf) -> Result<(), FaceError> {
+        self.paint_in(bus, FaceView::default())
+    }
+
+    /// [`paint`](Self::paint) as the face would be seen in `view` (a camera off to one side, a wide shot).
+    ///
+    /// # Errors
+    /// What the painter or the rasteriser returns.
+    pub fn paint_in(&mut self, bus: &ChannelBuf, view: FaceView) -> Result<(), FaceError> {
         let params = self.subject.profile.mapping.apply(bus);
-        let input = FaceInput {
-            profile: &self.subject.profile,
-            params: &params,
-            time: Seconds(0.0),
-            view: FaceView::default(),
-        };
+        let input = FaceInput { profile: &self.subject.profile, params: &params, time: Seconds(0.0), view };
         self.painter.paint(&input, &mut self.drawing)?;
         for spec in self.painter.layers() {
             let out = &mut self.layers[spec.id as usize];

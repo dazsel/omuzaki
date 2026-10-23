@@ -152,7 +152,7 @@ pub fn paint_params(
 
 /// The painter's [`FaceView`]: the prototype's eye reflection offset (`reflV`) is the highlight shift, unchanged.
 pub fn face_view(refl_v: Xy) -> FaceView {
-    FaceView { highlight_shift: Vec2::new(narrow(refl_v.x), narrow(refl_v.y)) }
+    FaceView { highlight_shift: Vec2::new(narrow(refl_v.x), narrow(refl_v.y)), head_coverage: None }
 }
 
 /// Sets the entries of `p` that the prototype keeps beside the animated ones but that describe the face's *design*,

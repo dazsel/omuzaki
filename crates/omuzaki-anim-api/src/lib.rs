@@ -81,7 +81,9 @@ pub use retarget::{
     Calibration, CalibrationError, CalibrationOutcome, CalibrationPrompt, Calibrator, ChannelRange, EXAGGERATED, FAST,
     LOOK_FULL_RAD, LostPolicy, MIN_FIT_SPAN, MIN_SPAN, OneEuroParams, RangeSource, Response, Retarget, RetargetConfig,
 };
-pub use score::{ChannelTrack, ClipId, CompiledScore, Cue, CueKind, Ease, ExpressionId, Key, Score, ScoreError};
+pub use score::{
+    ChannelTrack, ClipId, CompiledScore, Cue, CueKind, Ease, ExpressionId, Key, LookTarget, Score, ScoreError,
+};
 pub use skeleton::{
     Animator, BoneDef, BoneId, HUMANOID_COUNT, HumanoidBone, HumanoidMap, HumanoidPose, MAX_BONES, NotHumanoid, Pose,
     Rig, Skeleton, SkeletonError, Transform,
