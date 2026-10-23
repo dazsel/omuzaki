@@ -12,7 +12,7 @@ use omuzaki_doc::journal::{JournalFs, JournalOptions, ProjectJournal, Recover, S
 use omuzaki_doc::snapshot::{Snapshotter, snapshot_dir};
 use omuzaki_doc::{Project, ProjectLock};
 use omuzaki_doc_api::{DocPath, Value};
-use omuzaki_history_api::branch::{BranchError, BranchId, MAX_OPEN_LANES};
+use omuzaki_history_api::branch::{BranchError, BranchId, Branches, MAX_OPEN_LANES};
 use omuzaki_history_api::{JournalSink, JournalStatus, Snapshots};
 use omuzaki_library_api::Library;
 use omuzaki_mcp::{AccessToken, HttpOptions, HttpServer, InAppLink, InAppSpec, McpOptions, McpServer, ToolMode};
@@ -569,6 +569,9 @@ impl AppCore {
     /// recovers from the journal. For tests and for a host that must exit at once.
     pub fn abandon(self) {
         self.stop_serving();
+        // A switch's last steps run to where they stop (a test's failpoint cuts one there), so what is left is what
+        // a crash at that step leaves.
+        drop(self.branches.settled());
         // Without the lock, the drop that follows doesn't close: the journal stops when its last owner goes.
         drop(lock(&self.lock).take());
     }
