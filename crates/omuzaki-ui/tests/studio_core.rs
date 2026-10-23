@@ -161,3 +161,36 @@ fn an_in_memory_document_has_no_app_core_and_serves_no_port() {
     assert!(core.app().is_none());
     assert_eq!(core.serve_mcp(HttpOptions::default()), None);
 }
+
+/// A colourway the person installs: one palette step, owned and free to use.
+const COLOURWAY: &str = "schema = 1\nid = \"me/colourways/dusk\"\nversion = \"1.0.0\"\nsection = \"colourways\"\n\
+    kind = \"setting\"\ntarget = \"character\"\nslot = \"colourway\"\ntitle = \"Dusk\"\nsummary = \"A test colourway.\"\n\
+    origin = \"studio test\"\ntags = [\"test\"]\n[rights]\nauthor = \"Omuzaki\"\nlicence = \"CC0-1.0\"\n\
+    commercial = \"ok\"\nowned = true\n[[step]]\nop = \"palette.set\"\n[step.args]\ncharacter = \"$character\"\n\
+    slot = \"hair_root\"\ncolour = \"#2a2346\"\n";
+
+fn install(runner: &dyn Runner) -> Result<omuzaki_ops_api::Outcome, omuzaki_ops_api::OpError> {
+    runner.run(Request {
+        op: "library.install".into(),
+        args: json!({"manifest": COLOURWAY}),
+        mode: Mode::Apply,
+        actor: you(),
+        grants: Grants::person(),
+        cause: None,
+        tx: None,
+        base: None,
+    })
+}
+
+#[test]
+fn the_studio_s_data_folder_keeps_the_library_items_the_person_installs() {
+    omuzaki_ui::link();
+    let (tmp, data) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let with =
+        core_on(Document::project(&tmp.path().join("a")).unwrap().with_data_dir(data.path()), Services::default())
+            .unwrap();
+    install(with.runner.as_ref()).unwrap_or_else(|e| panic!("installs with a data folder: {e}"));
+    assert!(data.path().join("library").exists(), "the item is kept in the data folder");
+    let without = core_on(Document::project(&tmp.path().join("b")).unwrap(), Services::default()).unwrap();
+    assert!(install(without.runner.as_ref()).is_err(), "without one there is nowhere to keep it");
+}

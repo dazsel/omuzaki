@@ -1,7 +1,7 @@
 section = "rust"
 item = "url"
 kind = "crate"
-used_for = "parsing lineage source URLs in the models gate (xtask)"
+used_for = "parsing lineage source URLs in the models gate (xtask); checking that a studio's published MCP address is on this machine before `omuzaki mcp` bridges to it (`omuzaki-app`)"
 status = "yes"
 audit = "(crates.io: MIT OR Apache-2.0)"
 crates = ["url"]
