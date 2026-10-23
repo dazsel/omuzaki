@@ -380,6 +380,15 @@ fn a_probe_that_says_nothing_is_an_error_and_is_not_cached() {
 }
 
 #[test]
+fn a_template_that_cannot_render_the_image_probe_means_no_vision() {
+    // llama-cpp-python answers a chat template's failure on image parts with a 500.
+    let rig = Rig::plain(vec![accepts(), Reply::status(500, "{}")]);
+    let client = OpenAiClient::new(&rig.config("text-only"), &rig.env()).unwrap();
+    let info = client.info();
+    assert!(info.tools && !info.vision, "{info:?}");
+}
+
+#[test]
 fn a_refused_key_while_probing_is_auth() {
     let rig = Rig::plain(vec![Reply::status(401, r#"{"error":{"message":"bad key","code":401}}"#)]);
     assert!(matches!(OpenAiClient::new(&rig.config("locked"), &rig.env()), Err(LlmError::Auth)));

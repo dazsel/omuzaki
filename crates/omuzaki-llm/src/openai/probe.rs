@@ -160,11 +160,19 @@ pub(crate) async fn probe(
         }
     }
 
+    // Whether the model has already answered a chat request, so the server is up and serving it.
+    let mut answered = false;
     if !tools_known {
         found.tools = ask.accepts(probe_body(model, true, false)).await?;
+        answered = true;
     }
     if !vision_known {
-        found.vision = ask.accepts(probe_body(model, false, true)).await?;
+        found.vision = match ask.accepts(probe_body(model, false, true)).await {
+            // A server whose chat template renders only text content fails on the image parts with a 500
+            // (llama-cpp-python's Jinja templates do): once the model has answered the tool probe, that is a no.
+            Err(LlmError::Network(_)) if answered => false,
+            other => other?,
+        };
     }
     cache.insert(endpoint, model, found);
     Ok(found)
