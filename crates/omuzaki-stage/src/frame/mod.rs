@@ -625,6 +625,15 @@ impl Stage {
         })
     }
 
+    /// Puts `floor` on every toon skin material of the character (or each back to its own, for `None`), outside any
+    /// scene: what a [`CastStage`](crate::cast::CastStage) does for a member, which has no scene of its own. Cold.
+    ///
+    /// # Errors
+    /// [`StageError::Render`] if the renderer refuses a material.
+    pub(crate) fn set_skin_floor(&mut self, renderer: &mut dyn Renderer, floor: Option<f32>) -> Result<(), StageError> {
+        self.character.set_skin_floor(renderer, &self.built, floor).map(drop)
+    }
+
     /// Does the renderer work the last [`set_scene`](Self::set_scene) owes and records it as done: the ground (a new
     /// disc, or none), the skin floor (every toon skin material updated in place to the scene's floor, or back to
     /// its own) and the environment (made from its sky or its loaded HDRI, or released). The floor stays on the

@@ -12,3 +12,5 @@
   allocates nothing.
 - Every stage's frame is split at the render (`StageMember::prepare`, `prepare_redraw` and `submit`); `tick` and
   `redraw` are those halves run together, unchanged.
+- The scene's skin floor reaches every member's skin materials when the cast pays the scene, as it reaches the lead's;
+  a member added later owes it until the next pay.
