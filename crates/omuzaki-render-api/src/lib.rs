@@ -37,6 +37,7 @@ mod material;
 pub mod memory;
 mod morph;
 mod mtoon;
+mod outline;
 pub mod particles;
 mod pass;
 mod quality;
@@ -55,6 +56,7 @@ pub use morph::{MeshOptions, MeshUsage, MorphSet, SparseMorph};
 pub use mtoon::Mtoon;
 pub use omuzaki_core::colour::{Colour, ColourParseError, srgb_decode, srgb_encode, to_byte};
 pub use omuzaki_core::mesh::{ExtraAttribute, MeshData, MeshError};
+pub use outline::outline_rims;
 pub use particles::{
     CellPick, ColourSet, Edge, EmitterShape, Flutter, Orientation, ParticleParams, ParticleShading, ParticleState,
     ParticleSystemDesc, Span, SpawnBatch, Sprite, SpriteShape,

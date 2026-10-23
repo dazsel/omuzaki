@@ -72,6 +72,7 @@ pub const CHECKS: &[(&str, Check)] = &[
     ("background and alpha encoding", background_and_alpha_encoding),
     ("painted textures show through overlays", painted_textures_show_through_overlays),
     ("outlines hug the silhouette", outlines_hug_the_silhouette),
+    ("an open double-sided sheet is outlined from both sides", open_sheets_are_outlined_from_both_sides),
     ("blended instances sort back to front", blended_instances_sort_back_to_front),
     ("skinned instances follow their joints", skinned_instances_follow_their_joints),
     ("mirrored instances render like the original", mirrored_instances_render_like_the_original),
@@ -560,6 +561,54 @@ fn outlines_hug_the_silhouette(r: &mut dyn Renderer) -> Outcome {
     s.outline_light = 0.0;
     let dark = draw(r, &s, &plain())?;
     expect_pixel(&dark, ring, Colour::BLACK, tol, "outline_light 0 removes the line's light")?;
+    for resource in [mesh.into(), material.into()] {
+        r.release(resource)?;
+    }
+    Ok(())
+}
+
+/// A single-layer card (a hair ribbon, #819) seen face on, from the front and from behind: the line runs round its
+/// edge on both sides, outside the card and never over it.
+fn open_sheets_are_outlined_from_both_sides(r: &mut dyn Renderer) -> Outcome {
+    let tol = tolerance(r).max(1);
+    let mesh = r.create_mesh(&shapes::quad(Vec2::splat(0.4)))?;
+    let line = Colour::rgb(255, 0, 0);
+    let mut material = Material::unlit(Colour::rgb(0, 255, 0));
+    material.double_sided = true;
+    material.outline = Some(Outline { colour: line, width: 0.1 });
+    let material = r.create_material(&material)?;
+
+    // The card's edge is at world x = 0.4 (pixel 44.8) and y = 0.4; 0.44 (pixel 46) is inside the line, 0.9 is not.
+    let probes = [
+        ((CENTRE.0 + 14, CENTRE.1), "the line beyond the right edge"),
+        ((CENTRE.0 - 15, CENTRE.1), "the line beyond the left edge"),
+        ((CENTRE.0, CENTRE.1 - 15), "the line beyond the top edge"),
+        ((CENTRE.0 + 15, CENTRE.1 + 14), "the line round a corner"),
+    ];
+    for (turn, side) in [(0.0, "front"), (std::f32::consts::PI, "back")] {
+        let mut s = scene(Colour::BLACK);
+        s.instances.push(Instance::new(mesh, material, Mat4::from_rotation_y(turn)));
+        let img = draw(r, &s, &plain())?;
+        let seen = format!("seen from the {side}");
+        expect_pixel(
+            &img,
+            CENTRE,
+            Colour::rgb(0, 255, 0),
+            tol,
+            &format!("the card stays in front of its line, {seen}"),
+        )?;
+        expect_pixel(
+            &img,
+            (CENTRE.0 + 11, CENTRE.1),
+            Colour::rgb(0, 255, 0),
+            tol,
+            &format!("inside the edge, {seen}"),
+        )?;
+        for (probe, what) in probes {
+            expect_pixel(&img, probe, line, tol, &format!("{what}, {seen}"))?;
+        }
+        expect_pixel(&img, (CENTRE.0 + 29, CENTRE.1), Colour::BLACK, tol, &format!("far from the card, {seen}"))?;
+    }
     for resource in [mesh.into(), material.into()] {
         r.release(resource)?;
     }
