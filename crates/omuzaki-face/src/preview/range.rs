@@ -144,8 +144,8 @@ fn features(subject: &FaceSubject) -> FaceRect {
     }
 }
 
-/// The eyes' region: both eyes with a margin, from the brows' top down to the blush under them.
-fn eyes_region(subject: &FaceSubject) -> FaceRect {
+/// The eyes' region: both eyes with a margin, from the brows' top down to the blush under them, in face-plane metres.
+pub fn eyes_region(subject: &FaceSubject) -> FaceRect {
     let layout = &subject.profile.layout;
     let (eye_y, eye_w) = (narrow(layout.eye_y), narrow(layout.eye_width));
     let half = narrow(layout.eye_spacing) + 1.7 * eye_w;
@@ -155,8 +155,8 @@ fn eyes_region(subject: &FaceSubject) -> FaceRect {
     )
 }
 
-/// The mouth's region: room for its widest open shape and a tongue below it.
-fn mouth_region(subject: &FaceSubject) -> FaceRect {
+/// The mouth's region: room for its widest open shape and a tongue below it, in face-plane metres.
+pub fn mouth_region(subject: &FaceSubject) -> FaceRect {
     let (layout, mouth) = (&subject.profile.layout, &subject.profile.mouth);
     let mouth_y = narrow(layout.mouth_y);
     let half = (narrow(mouth.half_width * mouth.open_scale.max(mouth.closed_scale)) * 2.6).max(0.02);

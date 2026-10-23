@@ -60,7 +60,7 @@ pub(super) fn busy(tick: &Tick) -> (Bus, Cues) {
     } else {
         0.0
     };
-    (bus, Cues { loudness, onset: talk && tick.index.is_multiple_of(8), laugh: 0.0 })
+    (bus, Cues { loudness, onset: talk && tick.index.is_multiple_of(8), laugh: 0.0, ..Cues::default() })
 }
 
 /// Runs a scene and keeps one number per frame.

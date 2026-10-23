@@ -59,7 +59,11 @@ fn a_frame_of_the_mock_pipeline_allocates_nothing() {
         for i in from..to {
             let tick = Tick::at_rate(i, 30.0);
             let frame = replay.poll(tick.time);
-            let _ = performer.step(tick, frame.as_ref(), &Cues { loudness: 0.5, onset: i % 20 == 0, laugh: 0.0 });
+            let _ = performer.step(
+                tick,
+                frame.as_ref(),
+                &Cues { loudness: 0.5, onset: i % 20 == 0, laugh: 0.0, ..Cues::default() },
+            );
         }
     };
     run(0, frames / 2); // warm-up: covers tracking, the lost span, the score fade and the loop wrap

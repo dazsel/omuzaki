@@ -153,9 +153,13 @@ impl LifeLayer for Life {
         let free = Gate::new(taken);
         self.ease.advance(free, dt, config.params.face.hand_back_s);
         let loud = unit(cues.loudness);
+        let mut systems = config.systems;
+        // The gaze coordinator's eyes already lead its turn toward a look target: leading it again would hold the head
+        // back twice.
+        systems.gaze_lead &= !cues.eyes_lead_turn;
         let frame = Frame {
             params: &config.params,
-            systems: config.systems,
+            systems,
             traits: &self.traits,
             noise: &self.noise,
             src: &src,
@@ -189,7 +193,7 @@ impl LifeLayer for Life {
         let shut = already_shut(blink, &src, laugh.arcs);
         if blinking {
             self.blink.update(&frame, &mut self.streams.blink, shut);
-            if lead.started && self.streams.blink.next_f32() < blink.on_head_turn_chance {
+            if (lead.started || cues.look_shift) && self.streams.blink.next_f32() < blink.on_head_turn_chance {
                 self.blink.extra(&frame, &mut self.streams.blink, shut);
             }
         } else {

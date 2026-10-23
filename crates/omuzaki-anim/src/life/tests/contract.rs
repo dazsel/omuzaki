@@ -287,7 +287,7 @@ fn channels_the_layer_changes_are_relabelled_and_a_persons_never_are() {
     let mut relabelled = ChannelMask::EMPTY;
     for i in 0..900 {
         let mut frame = bus;
-        life.step(Tick::at_rate(i, 30.0), &Cues { loudness: 0.5, onset: i % 9 == 0, laugh: 0.0 }, &mut frame);
+        life.step(Tick::at_rate(i, 30.0), &Cues { loudness: 0.5, onset: i % 9 == 0, laugh: 0.0, ..Cues::default() }, &mut frame);
         relabelled |= frame.owners.mask_of(Source::Life);
         assert_eq!(frame.owners.of(Channel::JAW_OPEN), Source::Tracker);
         assert_eq!(frame.owners.of(Channel::HEAD_YAW), Source::Trigger);

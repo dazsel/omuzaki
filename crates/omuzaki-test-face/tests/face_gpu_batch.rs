@@ -11,7 +11,7 @@ mod common;
 
 use common::{Gpu, Native, device, native, read_back, submit};
 use omuzaki_core::time::Seconds;
-use omuzaki_face::raster::gpu::VelloRasterizer;
+use omuzaki_face::raster::gpu::{VelloEngines, VelloRasterizer};
 use omuzaki_face::{GpuRasterizer, LayerSections, RealPainter};
 use omuzaki_face_api::{
     FaceDrawing, FaceInput, FaceLayerId, FaceLayerSpec, FaceMapping, FacePainter, FaceView, PaintParams,
@@ -208,4 +208,38 @@ fn a_staged_layer_painted_a_frame_late_shows_its_staged_picture() {
     batched.paint(&frames[1], last);
     alone.show(&frames[1]);
     assert_same(&gpu, &batched, &alone, "the late layer");
+}
+
+#[test]
+fn faces_on_one_device_share_one_engine_and_each_draws_its_own() {
+    let Some(gpu) = device() else { return };
+    let mut painter = painter();
+    let frames = [neutral, everything, mouth_only].map(|change| frame(&mut painter, change));
+    // Two characters on stage sharing one group, painting different frames, interleaved as the stage updates them.
+    let engines = VelloEngines::new();
+    let shared = |frame: &Frame| {
+        let mut layers = Layers::new(&gpu, frame, true);
+        layers.rasterizer = VelloRasterizer::new().sharing(&engines);
+        layers
+    };
+    let (mut first, mut second) = (shared(&frames[0]), shared(&frames[0]));
+    // The same two with engines of their own.
+    let mut first_alone = Layers::new(&gpu, &frames[0], true);
+    let mut second_alone = Layers::new(&gpu, &frames[0], true);
+    for step in 0..frames.len() {
+        let (a, b) = (&frames[step], &frames[(step + 1) % frames.len()]);
+        first.stage(a);
+        second.stage(b);
+        for at in 0..a.specs.len() {
+            first.paint(a, at);
+            second.paint(b, at);
+        }
+        first_alone.show(a);
+        second_alone.show(b);
+        assert_same(&gpu, &first, &first_alone, &format!("the first face, frame {step}"));
+        assert_same(&gpu, &second, &second_alone, &format!("the second face, frame {step}"));
+    }
+    assert!(first.rasterizer.shares_engine_with(&second.rasterizer), "one engine for the device");
+    assert!(!first_alone.rasterizer.shares_engine_with(&second_alone.rasterizer), "no group, own engine");
+    assert!(!first.rasterizer.shares_engine_with(&first_alone.rasterizer));
 }

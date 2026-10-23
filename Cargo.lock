@@ -5725,11 +5725,13 @@ dependencies = [
 name = "omuzaki-measure"
 version = "0.0.0"
 dependencies = [
+ "criterion",
  "image",
  "inventory",
  "libm",
  "moxcms",
  "omuzaki-core",
+ "omuzaki-doc-api",
  "omuzaki-doc-mock",
  "omuzaki-l10n-api",
  "omuzaki-ops-api",
@@ -5740,6 +5742,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "toml",
  "zune-jpeg",
 ]
 
@@ -6404,6 +6407,8 @@ dependencies = [
  "omuzaki-doc",
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
+ "omuzaki-face",
+ "omuzaki-face-api",
  "omuzaki-history-api",
  "omuzaki-io-api",
  "omuzaki-io-gltf",
@@ -6412,6 +6417,7 @@ dependencies = [
  "omuzaki-io-vrm",
  "omuzaki-link-build",
  "omuzaki-mcp",
+ "omuzaki-measure",
  "omuzaki-ops",
  "omuzaki-ops-api",
  "omuzaki-ops-mock",

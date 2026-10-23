@@ -127,6 +127,58 @@ pub enum CueKind {
         /// The marker's name.
         name: String,
     },
+    /// Look at something for a while (spec FE-07): the eyes go first and the head follows if it must, then the gaze
+    /// goes back to the character's own target (`omuzaki_anim::gaze::GazeCoordinator::look`).
+    #[non_exhaustive]
+    Look {
+        /// What to look at.
+        target: LookTarget,
+        /// How long to hold the look, seconds; 0 holds until the next look.
+        #[serde(default)]
+        hold_s: f32,
+    },
+}
+
+impl CueKind {
+    /// A [`CueKind::Look`] at `target` for `hold_s` seconds.
+    pub fn look(target: LookTarget, hold_s: f32) -> Self {
+        Self::Look { target, hold_s }
+    }
+}
+
+/// What a [`CueKind::Look`] aims the eyes at. The stage resolves it each frame, so a moving target is followed.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "at", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum LookTarget {
+    /// The viewer: the active camera.
+    Camera,
+    /// Straight ahead: no target, so the eyes and the head go back to rest.
+    Ahead,
+    /// A fixed point, world space, metres.
+    #[non_exhaustive]
+    Point {
+        /// Where.
+        position: [f32; 3],
+    },
+    /// Something in the scene by name: another character, a prop, the chat overlay.
+    #[non_exhaustive]
+    Entity {
+        /// Its name in the scene.
+        name: String,
+    },
+}
+
+impl LookTarget {
+    /// A [`LookTarget::Point`].
+    pub fn point(position: [f32; 3]) -> Self {
+        Self::Point { position }
+    }
+
+    /// A [`LookTarget::Entity`].
+    pub fn entity(name: impl Into<String>) -> Self {
+        Self::Entity { name: name.into() }
+    }
 }
 
 fn one() -> f32 {
@@ -437,12 +489,14 @@ mod tests {
             "cues": [
                 {"time": 1.0, "type": "clip", "clip": "wave"},
                 {"time": 2.0, "type": "expression", "expression": "smug", "hold_s": 1.5},
+                {"time": 3.0, "type": "look", "target": {"at": "entity", "name": "chat"}, "hold_s": 2.0},
                 {"time": 3.0, "type": "marker", "name": "scene-2"}
             ]
         }"#;
         let sc: Score = serde_json::from_str(json).unwrap();
         assert_eq!(sc.tracks[0].keys[0].ease, Ease::OutCubic);
         assert!(matches!(&sc.cues[0].kind, CueKind::Clip { weight, fade_s, .. } if *weight == 1.0 && *fade_s == 0.2));
+        assert_eq!(sc.cues[2].kind, CueKind::look(LookTarget::entity("chat"), 2.0));
         assert_eq!(serde_json::from_str::<Score>(&serde_json::to_string(&sc).unwrap()).unwrap(), sc);
         assert!(serde_json::from_str::<Score>(r#"{"duration":1,"tracks":[{"channel":"jawOpne","keys":[]}]}"#).is_err());
         assert!(serde_json::from_str::<ClipId>("\"Not A Slug\"").is_err());

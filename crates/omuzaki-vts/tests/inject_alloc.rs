@@ -58,12 +58,12 @@ fn push_and_read_allocate_nothing() {
         map.enable_default(name, true).unwrap();
     }
     let injector = Injector::new(&map);
-    assert_eq!(injector.params().len(), 90, "every custom parameter and every default");
+    assert_eq!(injector.params().len(), 93, "every custom parameter and every default");
     let mut buf = ChannelBuf::default();
     let mut snap = Snapshot::default();
     MEASURING.with(|m| m.set(true));
     for i in 0..10_000u16 {
-        for (n, info) in CHANNELS.iter().enumerate().take(73) {
+        for (n, info) in CHANNELS.iter().enumerate().take(76) {
             buf.set(info.channel, f32::from((i + u16::try_from(n).unwrap()) % 100) / 100.0);
         }
         injector.push(&buf, i % 2 == 0);

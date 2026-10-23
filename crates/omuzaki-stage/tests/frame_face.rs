@@ -1442,3 +1442,99 @@ fn the_gpu_rasteriser_follows_the_face_into_the_face_system_a_resize_makes() {
     assert!(offered_by_a_blink(&mut stage, &mut renderer, &offered) > 0, "and keeps the rasteriser");
     stage.release(&mut renderer).expect("released");
 }
+
+/// The mock painter, keeping the view of each paint.
+struct ViewPainter {
+    inner: MockPainter,
+    seen: Arc<Mutex<Vec<omuzaki_face_api::FaceView>>>,
+}
+
+impl omuzaki_face_api::FacePainter for ViewPainter {
+    fn layers(&self) -> &[FaceLayerSpec] {
+        omuzaki_face_api::FacePainter::layers(&self.inner)
+    }
+
+    fn paint(
+        &mut self,
+        input: &omuzaki_face_api::FaceInput<'_>,
+        out: &mut omuzaki_face_api::FaceDrawing,
+    ) -> Result<(), FaceError> {
+        self.seen.lock().unwrap().push(input.view);
+        omuzaki_face_api::FacePainter::paint(&mut self.inner, input, out)
+    }
+}
+
+/// #174: the painter gets the highlight shift for the scene's camera, seen from the head: centred from the front, and
+/// sliding opposite the camera as it moves round (the prototype's `face.js` 440-441, through
+/// `omuzaki_anim::gaze::highlight_shift`).
+#[test]
+fn the_eyes_highlights_slide_as_the_camera_moves_round_the_head() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let views = Arc::clone(&seen);
+    let rig = FaceRig::new(Box::new(move |projection, _| {
+        let painter = ViewPainter { inner: MockPainter::new(*projection), seen: Arc::clone(&views) };
+        FaceSystem::new(Box::new(painter), Box::new(MockRasterizer))
+    }))
+    .with_executor(Box::new(InlineExecutor));
+    let mut renderer = Spy::new(false);
+    let mut stage = stage_with_rig(&mut renderer, 48, false, rig);
+    let last =
+        |seen: &Arc<Mutex<Vec<omuzaki_face_api::FaceView>>>| seen.lock().unwrap().last().unwrap().highlight_shift;
+
+    stage.tick(&mut renderer, &FrameInput::default()).expect("frame");
+    let front = last(&seen);
+    assert!(front.length() < 0.01, "from the front the highlights stay centred: {front}");
+
+    // The same distance away, 30 degrees round toward the character's left and 15 degrees up.
+    let built = stage.built();
+    let bone = built.rig.bone(&JointRef::HEAD).expect("a head bone").index();
+    let bind = built.rig.inverse_bind()[bone].inverse().w_axis.truncate();
+    let head = stage.skin().get(bone).map_or(bind, |skin| skin.transform_point3(bind));
+    let (yaw, pitch) = (30_f32.to_radians(), 15_f32.to_radians());
+    let direction = Vec3::new(yaw.sin() * pitch.cos(), pitch.sin(), yaw.cos() * pitch.cos());
+    let projection = Projection::Perspective { fov_y_deg: 30.0, near: 0.01, far: 50.0 };
+    stage.scene_mut().camera = Camera::look_at(head + direction * 1.5, head, Vec3::Y, projection);
+    stage.tick(&mut renderer, &FrameInput::default()).expect("frame");
+    let side = last(&seen);
+    let expected = (-(direction.x.atan2(direction.z)) * 0.35, -pitch * 0.35);
+    println!("highlight shift: front {front}, from 30 degrees left and 15 up {side} (formula {expected:?})");
+    assert!(
+        (side.x - expected.0).abs() < 0.01 && (side.y - expected.1).abs() < 0.01,
+        "the highlights slide right and down: {side}, against {expected:?}"
+    );
+    stage.release(&mut renderer).expect("released");
+}
+
+/// #464: the painter gets how large the head is in the shot, so the mouth can grow in a wide shot: the head's height
+/// over the frame's, which falls as the camera pulls back.
+#[test]
+fn the_painter_is_told_how_large_the_head_is_in_the_shot() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let views = Arc::clone(&seen);
+    let rig = FaceRig::new(Box::new(move |projection, _| {
+        let painter = ViewPainter { inner: MockPainter::new(*projection), seen: Arc::clone(&views) };
+        FaceSystem::new(Box::new(painter), Box::new(MockRasterizer))
+    }))
+    .with_executor(Box::new(InlineExecutor));
+    let mut renderer = Spy::new(false);
+    let mut stage = stage_with_rig(&mut renderer, 48, false, rig);
+    stage.tick(&mut renderer, &FrameInput::default()).expect("frame");
+    let built = stage.built();
+    let bone = built.rig.bone(&JointRef::HEAD).expect("a head bone").index();
+    let bind = built.rig.inverse_bind()[bone].inverse().w_axis.truncate();
+    let head = stage.skin().get(bone).map_or(bind, |skin| skin.transform_point3(bind));
+    let projection = Projection::Perspective { fov_y_deg: 30.0, near: 0.01, far: 50.0 };
+    let mut coverage_at = |distance: f32| {
+        stage.scene_mut().camera = Camera::look_at(head + Vec3::Z * distance, head, Vec3::Y, projection);
+        // Each distance gets a fresh paint: blink so the face changes and is painted again.
+        let mut input = FrameInput::default();
+        input.channels[Channel::EYE_BLINK_LEFT] = distance / 10.0;
+        stage.tick(&mut renderer, &input).expect("frame");
+        seen.lock().unwrap().last().unwrap().head_coverage.expect("the stage knows the head's size")
+    };
+    let (close, wide) = (coverage_at(0.6), coverage_at(6.0));
+    println!("head coverage: {close} at 0.6 m, {wide} at 6 m");
+    assert!(close > wide && wide > 0.0, "{close} {wide}");
+    assert!((wide / close - 0.1).abs() < 0.01, "the coverage falls with the distance: {close} at 0.6 m, {wide} at 6 m");
+    stage.release(&mut renderer).expect("released");
+}

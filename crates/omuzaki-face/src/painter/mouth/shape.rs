@@ -210,15 +210,18 @@ pub(super) struct Frame {
 impl Frame {
     /// The frame of the mouth this context paints.
     pub(super) fn of(ctx: &PaintCtx<'_>) -> Self {
-        Self::new(&ctx.profile.mouth, &ctx.params.mouth, narrow(ctx.profile.layout.mouth_y))
+        let shot = ctx.profile.mouth.shot_scale(ctx.view.head_coverage);
+        Self::new(&ctx.profile.mouth, &ctx.params.mouth, narrow(ctx.profile.layout.mouth_y), shot)
     }
 
-    fn new(style: &MouthStyle, mouth: &MouthParams, mouth_y: f32) -> Self {
+    /// `shot` is the shot's size multiplier ([`MouthStyle::shot_scale`]), folded into the performance scale so every
+    /// piece of the mouth grows with it.
+    fn new(style: &MouthStyle, mouth: &MouthParams, mouth_y: f32, shot: f32) -> Self {
         let press = mouth.press.clamp(0.0, 1.0);
         let pucker = mouth.pucker.clamp(0.0, 1.0);
         let open = (mouth.open - PRESS_CLOSES * press).max(0.0);
         let (closed, open_scale) = (narrow(style.closed_scale), narrow(style.open_scale));
-        let grow = closed + (open_scale - closed) * (open * GROW_OPEN_GAIN + pucker).min(1.0);
+        let grow = (closed + (open_scale - closed) * (open * GROW_OPEN_GAIN + pucker).min(1.0)) * shot;
         let half_width = narrow(style.half_width)
             * mouth.wide
             * grow

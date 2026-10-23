@@ -234,7 +234,7 @@ mod tests {
         let mut v = ChannelBuf::NEUTRAL;
         let tick = Tick::at_rate(0, 60.0);
         let mut loudness = |loudness, laugh| {
-            RuleCtx::new(&mut v, ChannelMask::EMPTY, 1.0, tick, &Cues { loudness, onset: false, laugh }).loudness()
+            RuleCtx::new(&mut v, ChannelMask::EMPTY, 1.0, tick, &Cues { loudness, onset: false, laugh, eyes_lead_turn: false, look_shift: false }).loudness()
         };
         assert_eq!(loudness(0.3, 0.7), 0.7);
         assert_eq!(loudness(0.6, 0.2), 0.6);

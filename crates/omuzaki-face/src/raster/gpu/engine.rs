@@ -486,6 +486,14 @@ impl Engine {
         }
     }
 
+    /// The bytes of the device memory this engine holds for every layer it draws: Vello's scratch buffers and the
+    /// one-texel atlas. What sharing one engine per device would hold once instead of once per rasteriser (the compiled
+    /// pipelines are the driver's and not counted).
+    pub(super) fn shared_bytes(&self) -> u64 {
+        let scratch: u64 = self.scratch.as_ref().map_or(0, |s| s.buffers.iter().map(wgpu::Buffer::size).sum());
+        scratch + 4
+    }
+
     /// Reads the counters of `target`'s earlier repaints that have come back and, when one ran out of room, grows the
     /// buffers it ran out of. `None` when every one had room; after `Repaint` the caller repaints the layer whole, after
     /// `Exhausted` it gives the layer to the CPU raster. Never waits.

@@ -30,6 +30,11 @@ pub struct Cues {
     /// Probability the person is laughing, `0..1`, from audio laughter detection. The layer also infers laughs from
     /// a wide smile, an open mouth and loudness, as the prototype did; this only strengthens the case.
     pub laugh: f32,
+    /// True while a gaze coordinator turns the head toward a look target with the eyes already ahead of it
+    /// (`omuzaki_anim::gaze::GazeCoordinator`): the layer does not lead that turn a second time.
+    pub eyes_lead_turn: bool,
+    /// True on the frame a large look shift starts. It may earn a blink, with the same chance as a fast head turn.
+    pub look_shift: bool,
 }
 
 /// A closed range `lo..=hi` to draw from. `sample(r)` maps a uniform `r` in `[0, 1)` onto it.
