@@ -63,7 +63,17 @@ impl PerformFrame {
         renderer: &mut dyn Renderer,
         now: Seconds,
     ) -> Result<Option<FrameOutput>, StageError> {
-        let Some(out) = control.advance(performer, now) else { return Ok(None) };
+        if !self.advance(control, performer, now) {
+            return Ok(None);
+        }
+        stage.tick(renderer, &self.input).map(Some)
+    }
+
+    /// Advances the performer to `now` and, when a step ran, takes its pose and channels into the next frame's input
+    /// without ticking a stage: what a cast member beside the subject does until the stage draws every member.
+    /// Returns whether a step ran. Allocates nothing beyond what the performer costs.
+    pub fn advance(&mut self, control: &mut PerformControl, performer: &mut Performer, now: Seconds) -> bool {
+        let Some(out) = control.advance(performer, now) else { return false };
         self.input.pose = *out.pose;
         self.input.channels = out.bus.values;
         self.input.dt = step_dt(self.last, out.tick);
@@ -71,7 +81,7 @@ impl PerformFrame {
         // restart, is at that step's time, not at the sum of the frame times before it.
         self.input.time = Some(out.tick.time);
         self.last = Some(out.tick);
-        stage.tick(renderer, &self.input).map(Some)
+        true
     }
 }
 

@@ -236,6 +236,12 @@ impl SceneDef {
             }
             all_finite(&format!("{path}.position"), &member.position)?;
             within(&format!("{path}.yaw"), member.yaw, -180.0, 180.0)?;
+            if let Some((group, driver, _)) = member.drive.invalid() {
+                return refuse(
+                    format!("{path}.drive.{}.{}", group.name(), driver.name()),
+                    "a driver's weight is a number from 0 to 1",
+                );
+            }
         }
         Ok(())
     }

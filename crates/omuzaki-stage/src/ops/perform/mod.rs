@@ -12,12 +12,12 @@ pub mod status;
 pub mod triggers;
 
 /// The performer behind the ops, or `Unavailable` when the app did not wire one in.
-fn host<'a>(ctx: &OpCtx<'a>) -> Result<&'a dyn PerformHost, OpError> {
+pub(crate) fn host<'a>(ctx: &OpCtx<'a>) -> Result<&'a dyn PerformHost, OpError> {
     ctx.service::<dyn PerformHost>()
 }
 
 /// What each refusal means to a caller of an op.
-fn op_error(error: PerformError) -> OpError {
+pub(crate) fn op_error(error: PerformError) -> OpError {
     match error {
         PerformError::CalibrationRunning => OpError::conflict(error.to_string())
             .hint("wait for the running calibration to finish (`perform.status` shows it), then ask again"),
@@ -34,6 +34,7 @@ fn op_error(error: PerformError) -> OpError {
         }
         PerformError::UnknownExpression => OpError::not_found(error.to_string())
             .hint("use an expression from the character's face"),
+        PerformError::UnknownClip => OpError::not_found(error.to_string()).hint("`act.list` lists the clips"),
         PerformError::InvalidKey => OpError::invalid("key", error.to_string())
             .hint(format!("use 1 to {MAX_KEY_CHARS} printable characters, such as `F1`")),
     }
@@ -56,6 +57,7 @@ mod tests {
             (PerformError::TooManyTriggers, ErrorCode::Conflict),
             (PerformError::UnknownKey, ErrorCode::NotFound),
             (PerformError::UnknownExpression, ErrorCode::NotFound),
+            (PerformError::UnknownClip, ErrorCode::NotFound),
             (PerformError::InvalidKey, ErrorCode::Invalid),
         ];
         for (error, code) in cases {

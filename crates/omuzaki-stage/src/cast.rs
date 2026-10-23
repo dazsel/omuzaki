@@ -469,6 +469,14 @@ impl<M: StageMember> FrameLoop for CastStage<M> {
         self.lead.trigger_expressions()
     }
 
+    fn set_member_input(&mut self, id: &MemberId, input: &FrameInput) -> bool {
+        CastStage::set_member_input(self, id, input)
+    }
+
+    fn trigger_expressions_of(&self, id: &MemberId) -> Option<ExpressionSet> {
+        CastStage::trigger_expressions_of(self, id)
+    }
+
     fn release(self, renderer: &mut dyn Renderer) -> Result<(), StageError> {
         let mut result = self.lead.release(renderer);
         for member in self.members {

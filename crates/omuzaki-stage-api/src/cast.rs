@@ -4,6 +4,8 @@ use omuzaki_char_api::{CharId, VariantId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::drive::DriveMap;
+
 fn yes() -> bool {
     true
 }
@@ -32,13 +34,17 @@ pub struct CastMember {
     /// Whether it is drawn.
     #[serde(default = "yes")]
     pub visible: bool,
+    /// Which drivers move which of its channels when it performs (`docs/design/drivers.md`). Empty: every driver,
+    /// everywhere, at full strength.
+    #[serde(default, skip_serializing_if = "DriveMap::is_open")]
+    pub drive: DriveMap,
 }
 
 impl CastMember {
     /// A visible member of `character` at the origin, facing the front.
     #[must_use]
     pub fn new(character: CharId) -> Self {
-        Self { character, variant: None, position: [0.0, 0.0], yaw: 0.0, visible: true }
+        Self { character, variant: None, position: [0.0, 0.0], yaw: 0.0, visible: true, drive: DriveMap::open() }
     }
 }
 
