@@ -25,3 +25,4 @@ pub mod decide;
 pub mod parser;
 pub mod persona;
 pub mod prompt;
+pub mod show;

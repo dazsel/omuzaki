@@ -68,7 +68,7 @@ const MOODS: [(&[&str], &[&str]); 6] = [
     ),
     (
         &["sad", "sorrow", "cry", "sorry"],
-        &["sorry", "sad", "unfortunately", "miss", "lost", "lose", "cry", "oh no", "bad", "tired", "hurt"],
+        &["sad", "unfortunately", "miss", "lost", "lose", "cry", "oh no", "bad", "tired", "hurt"],
     ),
     (
         &["surprised", "surprise", "shock", "shocked", "wow"],
@@ -295,7 +295,7 @@ impl Gates {
             let (Some(q), Some(a)) = (ask.question(id), decision.answer(id)) else { continue };
             let QuestionKind::Choice { options, .. } = &q.kind else { continue };
             let Some((i, p)) = a.best() else { continue };
-            let name = &options[i];
+            let Some(name) = options.get(i) else { continue };
             if name == NONE || p < self.reaction {
                 continue;
             }
