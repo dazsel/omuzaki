@@ -140,7 +140,7 @@ mod tests {
         (Group::Controls, 4),
         (Group::Display, 2),
         (Group::Feedback, 3),
-        (Group::Composites, 1),
+        (Group::Composites, 2),
     ];
 
     #[test]

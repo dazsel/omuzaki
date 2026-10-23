@@ -1916,6 +1916,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui-scale"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "16194efd2800275df80448afa0ee11d3e23ce0220f6754e1af53fec8e9b7467a"
+dependencies = [
+ "egui",
+]
+
+[[package]]
+name = "egui-snarl"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "247c36a1f3b71fb25597f16f9396687641fec220a8116d5093941138fae59e61"
+dependencies = [
+ "ahash",
+ "egui",
+ "egui-scale",
+ "slab",
+ "smallvec",
+]
+
+[[package]]
 name = "egui-wgpu"
 version = "0.36.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6401,6 +6423,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-theatre"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-ops-api",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "omuzaki-track"
 version = "0.0.0"
 dependencies = [
@@ -6504,6 +6539,7 @@ dependencies = [
  "eframe",
  "egui",
  "egui-phosphor",
+ "egui-snarl",
  "egui_kittest",
  "egui_tiles",
  "image",
@@ -6522,18 +6558,23 @@ dependencies = [
  "omuzaki-char-mock",
  "omuzaki-connect",
  "omuzaki-connect-api",
+ "omuzaki-connect-mock",
  "omuzaki-core",
  "omuzaki-doc",
  "omuzaki-doc-api",
  "omuzaki-doc-mock",
  "omuzaki-face-api",
  "omuzaki-http",
+ "omuzaki-http-mock",
  "omuzaki-input",
  "omuzaki-input-api",
+ "omuzaki-input-mock",
  "omuzaki-l10n-api",
  "omuzaki-live",
  "omuzaki-live-api",
+ "omuzaki-live-mock",
  "omuzaki-live-nodes",
+ "omuzaki-metrics-api",
  "omuzaki-obs",
  "omuzaki-ops",
  "omuzaki-ops-api",
@@ -6542,6 +6583,7 @@ dependencies = [
  "omuzaki-render",
  "omuzaki-render-api",
  "omuzaki-render-mock",
+ "omuzaki-script",
  "omuzaki-secrets",
  "omuzaki-secrets-api",
  "omuzaki-secrets-mock",
@@ -6553,9 +6595,12 @@ dependencies = [
  "omuzaki-stage-api",
  "omuzaki-store",
  "omuzaki-store-api",
+ "omuzaki-store-mock",
  "omuzaki-stream",
  "omuzaki-stream-api",
  "omuzaki-stream-share",
+ "omuzaki-test",
+ "omuzaki-theatre",
  "omuzaki-track",
  "omuzaki-track-api",
  "omuzaki-track-mock",
@@ -6577,6 +6622,7 @@ dependencies = [
  "tracing-subscriber",
  "wgpu",
  "windows-sys 0.61.2",
+ "x11rb",
 ]
 
 [[package]]

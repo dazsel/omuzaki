@@ -1,0 +1,10 @@
+# The Script workspace (spine/ui, #1097, #1221): its own case file, so no other change edits it (tools/ci/evidence.py).
+
+[[case]]
+name = "script"
+description = "The Script workspace over the real executor and the kit (spine/ui, #1097, #1221): the console after a run of two calls (the script highlighted and checked clean, its output and the one undo step it made), a macro recorded with Ctrl+Shift+M waiting to be saved in Macros, and My scripts and the project's scripts listed. At 1920x1080 and 1366x768."
+env = { OMUZAKI_EVIDENCE_OUT = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-ui", "--test", "script_console", "--", "--ignored", "--exact", "script_evidence"] },
+]
+images = ["script-1920x1080.png", "script-1366x768.png"]

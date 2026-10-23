@@ -31,7 +31,7 @@ fn render(size: PhysicalSize, scale: f32, key: Color32) -> (image::RgbaImage, eg
                 let handle = texture
                     .get_or_insert_with(|| ui.ctx().load_texture("program", shown.clone(), TextureOptions::NEAREST));
                 let program = Program { texture: handle.id(), size };
-                paint_output(ui.painter(), ui.ctx().content_rect(), key, Some(program));
+                let _ = paint_output(ui.painter(), ui.ctx().content_rect(), key, Some(program), 1.0);
             },
         );
     harness.run_steps(2);
@@ -89,7 +89,7 @@ fn a_program_of_another_aspect_is_fitted_and_the_rest_is_key() {
             let handle =
                 texture.get_or_insert_with(|| ui.ctx().load_texture("square", card.clone(), TextureOptions::NEAREST));
             let program = Program { texture: handle.id(), size: PhysicalSize::new(90, 90) };
-            paint_output(ui.painter(), ui.ctx().content_rect(), DEFAULT_KEY, Some(program));
+            let _ = paint_output(ui.painter(), ui.ctx().content_rect(), DEFAULT_KEY, Some(program), 1.0);
         });
     harness.run_steps(2);
     let image = harness.render().expect("renders");
@@ -98,5 +98,24 @@ fn a_program_of_another_aspect_is_fitted_and_the_rest_is_key() {
     // The square is centred at full height: the side bands are pure key.
     for (x, y) in [(5, 90), (314, 90), (60, 10)] {
         assert_eq!(&image.get_pixel(x, y).0[..3], &key[..3], "({x}, {y}) is key");
+    }
+}
+
+#[test]
+fn the_desktop_opacity_fades_the_character_and_its_coverage_together() {
+    let white = egui::ColorImage::new([16, 16], vec![Color32::WHITE; 256]);
+    let mut texture = None;
+    let mut harness = Harness::builder().with_size(vec2(16.0, 16.0)).wgpu_setup(support::wgpu_setup()).build_ui(|ui| {
+        let handle =
+            texture.get_or_insert_with(|| ui.ctx().load_texture("white", white.clone(), TextureOptions::NEAREST));
+        let program = Program { texture: handle.id(), size: PhysicalSize::new(16, 16) };
+        let _ = paint_output(ui.painter(), ui.ctx().content_rect(), Color32::BLACK, Some(program), 0.5);
+    });
+    harness.run_steps(2);
+    let image = harness.render().expect("renders");
+    // White at half opacity over black: half way, give or take the sRGB rounding of the blend.
+    let [r, g, b, _] = image.get_pixel(8, 8).0;
+    for channel in [r, g, b] {
+        assert!((120..=200).contains(&channel), "a half-faded white over black reads {channel}");
     }
 }

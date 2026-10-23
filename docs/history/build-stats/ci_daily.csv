@@ -41,8 +41,8 @@ date_pt,repo,workflow,runs,success,failure,cancelled,other,wall_minutes
 2026-10-21,this,Nightly,2,0,2,0,0,360.9
 2026-10-21,this,Visual evidence,185,0,0,8,177,179.4
 2026-10-21,this,"github_actions in /., /.github/actions/setup-linux - Update #1642014790",1,1,0,0,0,1.2
-2026-10-22,this,CI,249,111,30,107,1,3596.1
-2026-10-22,this,Cache warm,34,15,2,17,0,661.9
-2026-10-22,this,Close external pull requests,34,0,0,0,34,23.9
+2026-10-22,this,CI,266,119,32,114,1,3869.3
+2026-10-22,this,Cache warm,37,15,4,18,0,714.7
+2026-10-22,this,Close external pull requests,36,0,0,0,36,24.0
 2026-10-22,this,Nightly,1,0,1,0,0,180.4
-2026-10-22,this,Visual evidence,216,0,0,9,207,457.4
+2026-10-22,this,Visual evidence,230,0,0,12,218,521.5

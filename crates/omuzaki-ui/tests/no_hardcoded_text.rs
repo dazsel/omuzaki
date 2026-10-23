@@ -85,6 +85,8 @@ const NOT_FOR_PEOPLE: &[&str] = &[
     "title: \"",
     // A setting's summary, likewise: the English key the Settings window translates when it draws.
     "const META: SettingMeta",
+    // A schema option's own title: a language's name in that language, which reads the same in every language.
+    "{ \"const\":",
     // Key legends, as printed on keys.
     "shortcut_hint(",
     // A GPU object's debug label, and a type's debug name.
@@ -113,8 +115,11 @@ const NOT_FOR_PEOPLE: &[&str] = &[
 
 /// Files outside the components whose literals are not prose: the audits' and the contrast table's failure reports,
 /// which only a failing test prints; the font table's file names; and the schema form's reading of JSON Schema, whose
-/// type names are the schema's own vocabulary, shown as a read-only row's detail.
-const NOT_PROSE: &[&str] = &["audit.rs", "contrast.rs", "fonts.rs", "schema_form/model.rs"];
+/// type names are the schema's own vocabulary, shown as a read-only row's detail; and the lexicon's translator notes,
+/// which go into the Fluent files for translators and are never drawn; and My scripts' folder store, whose refusals are
+/// op errors (`script.save_mine` returns them), which are English like every op's.
+const NOT_PROSE: &[&str] =
+    &["audit.rs", "contrast.rs", "fonts.rs", "schema_form/model.rs", "ds/lexicon.rs", "script/store.rs"];
 
 /// Names given to things in the document or the window, not UI text: the product, the kit's sample character, and the
 /// name of the project folder the studio makes for itself.
