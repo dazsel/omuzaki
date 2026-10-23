@@ -1,14 +1,15 @@
-//! The skin materials of the head part: the face (with the painted-face overlay), the ears and the neck.
+//! The skin materials of the head part: the face (with the painted-face overlay), the ears and the neck; and the fur and
+//! inner panel of animal ears.
 //!
 //! The numbers are the prototype's `toon()` options in `head.js`: a toned-down terminator (`shift` -0.28, `soft` 0.28) and
 //! a faint rim so an anime face reads nearly flat-lit, a brightness floor (`HEAD_FLOOR`) higher than the body's so the
 //! chin underside is never muddy, and no shadows on the face. Colours come from the head's palette slots
 //! ([`HeadParams::skin`]) so head, body and ears always agree, and a palette change recolours them.
 
-use omuzaki_char_api::{BuildCtx, BuildError, FaceOverlay, HeadParams, MaterialName, MaterialSpec};
+use omuzaki_char_api::{AnimalEars, BuildCtx, BuildError, FaceOverlay, HeadParams, MaterialName, MaterialSpec};
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::Vec3;
-use omuzaki_face_api::FaceLayerId;
+use omuzaki_face_api::{ColourRef, FaceLayerId};
 use omuzaki_render_api::{AlphaMode, Outline, Rim, Shading, Skin, Toon};
 
 /// Anime faces read nearly flat-lit: the head's brightness floor, higher than the body's skin ([`Skin::default`]).
@@ -114,4 +115,71 @@ pub fn skin_neck(ctx: &BuildCtx<'_>, p: &HeadParams) -> Result<MaterialSpec, Bui
         ..Toon::default()
     });
     Ok(neck)
+}
+
+/// The animal ears' colours while the palette has no `hair_mid` or `ear_inner` slot: the kit's hair brown and a soft
+/// pink.
+const FUR: Colour = Colour::rgb(0x8a, 0x5a, 0x44);
+const INNER: Colour = Colour::rgb(0xf0, 0xa8, 0xa8);
+
+/// `colour` from the palette; when it is still the default slot reference (`default`) and the palette has no such slot,
+/// `fallback`. A slot the person chose must exist.
+fn defaulted(
+    ctx: &BuildCtx<'_>,
+    colour: &ColourRef,
+    default: &ColourRef,
+    fallback: Colour,
+) -> Result<Colour, BuildError> {
+    match ctx.colour(colour) {
+        Err(_) if colour == default => Ok(fallback),
+        resolved => resolved,
+    }
+}
+
+/// How far an animal ear's fur shade and line move from its colour toward black.
+const FUR_SHADE: f32 = 0.15;
+/// How far the lit fur moves from its colour toward white.
+const FUR_LIFT: f32 = 0.12;
+const FUR_LINE: f32 = 0.5;
+
+/// An animal ear's fur (`fur-ear`): the fur colour ([`omuzaki_char_api::AnimalEars::fur`], the hair's mid colour by
+/// default) in the hair's soft toon, with a darker line, so the ears read as part of the hair.
+///
+/// # Errors
+/// [`BuildError::Colour`] if the fur colour's slot is missing from the palette.
+pub fn fur_ear(ctx: &BuildCtx<'_>, p: &HeadParams) -> Result<MaterialSpec, BuildError> {
+    let fur = defaulted(ctx, &p.ears.animal.fur, &AnimalEars::default().fur, FUR)?;
+    // The hair is drawn lighter than its mid colour where lit; the fur is lifted the same way so the two read as one.
+    let mut spec = MaterialSpec::toon(lighten(fur, Colour::WHITE, FUR_LIFT));
+    spec.shading = Shading::Toon(Toon {
+        shade: lighten(fur, Colour::BLACK, FUR_SHADE),
+        shift: 0.0,
+        softness: 0.15,
+        rim: Rim { colour: lighten(fur, Colour::WHITE, 0.5), power: RIM_POWER, strength: 0.05 },
+        emissive: Colour::BLACK,
+        skin: None,
+    });
+    spec.outline = Some(Outline { colour: lighten(fur, Colour::BLACK, FUR_LINE), width: EAR_OUTLINE });
+    spec.double_sided = false;
+    Ok(spec)
+}
+
+/// An animal ear's inner panel (`ear-inner`): the inner colour, softly shaded, no outline, seen from either side.
+///
+/// # Errors
+/// [`BuildError::Colour`] if the inner colour's slot is missing from the palette.
+pub fn ear_inner(ctx: &BuildCtx<'_>, p: &HeadParams) -> Result<MaterialSpec, BuildError> {
+    let inner = defaulted(ctx, &p.ears.animal.inner, &AnimalEars::default().inner, INNER)?;
+    let mut spec = MaterialSpec::toon(inner);
+    spec.shading = Shading::Toon(Toon {
+        shade: lighten(inner, Colour::BLACK, FUR_SHADE),
+        shift: 0.1,
+        softness: 0.25,
+        rim: Rim { strength: 0.0, ..Rim::default() },
+        emissive: Colour::BLACK,
+        skin: None,
+    });
+    spec.outline = None;
+    spec.double_sided = true;
+    Ok(spec)
 }

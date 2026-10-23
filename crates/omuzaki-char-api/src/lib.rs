@@ -72,7 +72,10 @@ pub use hair::{
     HairRng, HairShading, HairShadingError, HairSide, LegacyLcg, PartSweepGen, SphereCollider, Streak, StreakBlend,
     TailGen, Taper, TaperShape, Wave, Wisp,
 };
-pub use head::{Chin, Cranium, EarKind, Ears, FaceWindow, HeadOutline, HeadParams, Neck, SkinColours, TracedHead};
+pub use head::{
+    AnimalEars, Chin, Cranium, EarKind, EarSpecies, Ears, FaceWindow, HeadOutline, HeadParams, Neck, SkinColours,
+    TracedHead,
+};
 pub use ids::{
     AnchorId, BodyShapeId, BodyTemplateId, BoneName, CharId, ColourwayId, GroupId, JointRef, LookPresetId,
     MaterialName, PartId, PartKindId, ProfileId, SkinToneId, TextureName, VariantId,
