@@ -324,16 +324,23 @@ crates, voice and speech.
 
 **Exists when:** the webcam drives the character's face and head live (52 blendshapes plus head pose) within 5 ms p95
 for tracking; calibration takes one guided step; iPhone ARKit and VMC input work as alternatives; the microphone drives
-the mouth (voice activity plus visemes); models install through the registry with their licences checked.
+the mouth (voice activity plus visemes); models install through the registry with their licences checked; and, with
+a model configured, the AI co-host hears the person, answers aloud through the local ASR, LLM and TTS path, and its
+face and head move with the reply on a character in the viewport, with reactions from the decision layer even when the
+LLM is slow or absent (Director ruling, #2 comment 6357499075).
 
-**Path:** tracker frames into the stage (with the Render owner) → the 5 ms budget (#903) → calibration and the rest
-pose (#542, #536) → curves, smoothing and life (#474, #475, #477) → iPhone ARKit and VMC ingest → voice activity and
-visemes for lip sync (#464, with Face) → model operations (#687, #857, #2126) → the AI performer contract (#2176),
-after the spine.
+**Path:** tracker frames into the stage (with the Render owner) → the thin AI co-host loop: the performer core
+(#2061), the AI mouth (#2071) and the decision layer's rule floor and local provider (#2348) → the 5 ms budget (#903) →
+calibration and the rest pose (#542, #536) → curves, smoothing and life (#474, #475, #477) → iPhone ARKit and VMC
+ingest → voice activity and visemes for lip sync (#464, with Face) → model operations (#687, #857, #2126). The rest of
+the performer (memory, handoff modes, rehearsal) is a leaf. Hosted voices and hosted decision models (realtime
+speech-to-speech, #2347; hosted providers in #2348) are optional bring-your-own-key providers: the local path stays
+the default, and nothing locks a user into a paid service.
 
 **Inherits:** #2126, #2176, #2199, #1513, #1982, #1987, #1989, #2215, #1981, #1984.
 
-**Beat:** VSeeFace and VTube Studio for tracking feel; MediaPipe's own demos for accuracy.
+**Beat:** VSeeFace and VTube Studio for tracking feel; MediaPipe's own demos for accuracy; Open-LLM-VTuber, AIRI and
+open-annie for the co-host's turn-taking, latency and reactions.
 
 ### 7. Broadcast and live (`live`)
 
