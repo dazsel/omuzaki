@@ -368,6 +368,34 @@ struct Bound<'a> {
 }
 
 impl Facts<'_> {
+    /// An alternative no value fits (`false`, or a union with only `null` branches).
+    fn nothing() -> Self {
+        Self { kinds: Some(Vec::new()), ..Self::default() }
+    }
+
+    /// Whether one value could match both `self` and `other`, as far as the comment's facts can tell. They are apart
+    /// when they share no type, or their constants and enums share no value. Branches that meet only as objects or
+    /// arrays are apart in the properties or items the comment never shows, so only a shared scalar type counts.
+    fn may_overlap(&self, other: &Self) -> bool {
+        let values_apart = match (&self.values, &other.values) {
+            (Some(x), Some(y)) => !x.iter().any(|value| y.contains(value)),
+            _ => false,
+        };
+        let constants_apart = match (self.constant, other.constant) {
+            (Some(x), Some(y)) => x != y,
+            (Some(c), None) => other.values.as_ref().is_some_and(|values| !values.contains(&c)),
+            (None, Some(c)) => self.values.as_ref().is_some_and(|values| !values.contains(&c)),
+            (None, None) => false,
+        };
+        if values_apart || constants_apart {
+            return false;
+        }
+        match (&self.kinds, &other.kinds) {
+            (Some(x), Some(y)) => common_kinds(x, y).iter().any(|kind| !matches!(*kind, "object" | "array")),
+            _ => true,
+        }
+    }
+
     /// Drops the keywords that cannot constrain any type the alternative allows. JSON Schema applies `maximum` to
     /// numbers only, so an untyped `maximum` met by a `string` branch says nothing about the string.
     fn keep_applicable(mut self) -> Self {
@@ -471,6 +499,12 @@ impl Facts<'_> {
 
 /// The alternatives a node allows: its own keywords, intersected with each `allOf` member, and with the union of its
 /// non-null `oneOf` and `anyOf` branches. Each branch is expanded the same way, so the nesting has no depth limit.
+///
+/// Never more permissive than the schema (#1896): an `allOf` member `false` admits nothing and `true` changes nothing;
+/// a union whose branches were all `null` or `false` admits no non-null value, which is not the same as having no
+/// union; a `true` branch admits anything, which the comment does not state; and `oneOf` branches that a value could
+/// match at once (overlapping scalars, which `oneOf` then refuses) fail closed, since the comment cannot say "but not
+/// both".
 fn expand(node: &Map<String, Value>) -> Vec<Facts<'_>> {
     // Sibling combinators need an intersection of unions that the comment cannot state, so the node is unstated.
     let combinators = ["allOf", "oneOf", "anyOf"].into_iter().filter(|keyword| node.contains_key(*keyword)).count();
@@ -479,18 +513,33 @@ fn expand(node: &Map<String, Value>) -> Vec<Facts<'_>> {
     }
     let mut current = vec![own(node)];
     if let Some(members) = node.get("allOf").and_then(Value::as_array) {
-        for member in members.iter().filter_map(Value::as_object) {
-            current = cross(&current, &expand(member));
+        for member in members {
+            match member {
+                Value::Bool(true) => {}
+                Value::Object(member) => current = cross(&current, &expand(member)),
+                // `false`, and anything that is not a schema, admits no value.
+                _ => current = cross(&current, &[Facts::nothing()]),
+            }
         }
     }
-    let union: Vec<Facts<'_>> = ["oneOf", "anyOf"]
-        .into_iter()
-        .filter_map(|keyword| node.get(keyword).and_then(Value::as_array))
-        .flatten()
-        .filter(|branch| !is_null_schema(branch))
-        .filter_map(Value::as_object)
-        .flat_map(expand)
-        .collect();
+    let Some((keyword, branches)) =
+        ["oneOf", "anyOf"].into_iter().find_map(|keyword| Some((keyword, node.get(keyword)?.as_array()?)))
+    else {
+        return current.into_iter().map(Facts::keep_applicable).collect();
+    };
+    let mut union: Vec<Facts<'_>> = Vec::new();
+    for branch in branches.iter().filter(|branch| !is_null_schema(branch)) {
+        match branch {
+            Value::Bool(false) => {}
+            Value::Object(branch) => union.extend(expand(branch)),
+            _ => union.push(Facts { unstated: true, ..Facts::default() }),
+        }
+    }
+    if keyword == "oneOf" && union.iter().enumerate().any(|(i, a)| union[i + 1..].iter().any(|b| a.may_overlap(b))) {
+        union = vec![Facts { unstated: true, ..Facts::default() }];
+    }
+    // Every branch was `null` or `false`: no non-null value fits, which an absent union would not say.
+    let union = if union.is_empty() { vec![Facts::nothing()] } else { union };
     cross(&current, &union).into_iter().map(Facts::keep_applicable).collect()
 }
 
