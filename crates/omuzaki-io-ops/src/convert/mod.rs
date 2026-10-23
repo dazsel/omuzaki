@@ -4,6 +4,7 @@
 //! tests check them in isolation. Where a conversion cannot be exact it says so: fallible ones return an error, and
 //! lossy ones are documented next to the function.
 
+pub mod animation;
 pub mod bones;
 pub mod channels;
 pub mod colour;

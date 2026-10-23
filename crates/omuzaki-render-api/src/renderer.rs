@@ -16,7 +16,7 @@ use crate::{
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Capabilities {
-    /// A human-readable name for logs and bug reports, for example `"mock-cpu"` or `"wgpu Vulkan (NVIDIA RTX 4090)"`.
+    /// A human-readable name for logs and bug reports, for example `"mock-cpu"` or `"wgpu Vulkan (<the adapter's name>)"`.
     pub backend: String,
     /// The largest texture or target side. At least [`limits::GUARANTEED_TEXTURE_SIZE`](crate::limits).
     pub max_texture_size: u32,
@@ -224,6 +224,21 @@ pub trait Renderer: Send {
     fn update_vertices(&mut self, mesh: MeshId, positions: &[Vec3], normals: &[Vec3]) -> Result<(), RenderError> {
         let _ = (mesh, positions, normals);
         Err(RenderError::Unsupported("dynamic meshes"))
+    }
+
+    /// Replaces the vertex colours of a mesh created with colours (`MeshData::colours` not empty), static or
+    /// dynamic. A palette change that moves a tint baked into vertex colours (hair streaks) recolours the mesh in place
+    /// rather than creating a new one. Positions, normals, UVs, skinning data and morph targets stay; a morphed copy
+    /// of the mesh shows the new colours too.
+    ///
+    /// The default says [`RenderError::Unsupported`]; a caller then creates a new mesh instead.
+    ///
+    /// # Errors
+    /// `UnknownHandle`; `Invalid` for a mesh created without colours, a `colours` length that isn't the mesh's vertex
+    /// count, or a non-finite value; `Unsupported`; `DeviceLost`.
+    fn update_colours(&mut self, mesh: MeshId, colours: &[[f32; 4]]) -> Result<(), RenderError> {
+        let _ = (mesh, colours);
+        Err(RenderError::Unsupported("vertex colour updates"))
     }
 
     /// Creates a texture, optionally with initial pixels (`desc.byte_len()` bytes of RGBA8, rows top to bottom).

@@ -418,7 +418,7 @@ Render-api D2 stands: the graph is still fixed and linear, with one more named p
   while wgpu's internal allocations stay as render-api documents.
 - **The parity test.** A test-only compute shader includes the same WGSL `particle_state` and writes the positions of
   10,000 particles across all shapes and orientations. They must match `particles::evaluate` within 1e-4 m plus 1e-5
-  of the distance from the origin. The test runs on lavapipe and on the RTX 4090; compute is used in tests only.
+  of the distance from the origin. The test runs on lavapipe and on a desktop GPU; compute is used in tests only.
 
 ### D7. Determinism, offline renders and goldens
 
@@ -454,9 +454,9 @@ Render-api D2 stands: the graph is still fixed and linear, with one more named p
   with the live preset, paced and warm, as every row is read.
 - **Why 0.2 ms is about right.** Particle cost is fill, not geometry. At the face-and-upper-body framing, a 1.5 cm
   confetti square is about 15 pixels on a side, so 5,000 particles shade about 1.25 Mpx, about 0.6 of a 1080p screen
-  of one cheap fragment each. The R1 frame (130k triangles plus a full-screen resolve) measured 0.084 ms on the 4090
-  and estimates at 1.4 ms on `R` (render-api, post-effects table). By the same model, a 0.01 to 0.015 ms pass on the
-  4090 estimates at 0.15 to 0.25 ms on `R`. The `gpu.particles` measurement checks it. If the number doesn't hold, it proposes one with
+  of one cheap fragment each. The R1 frame (130k triangles plus a full-screen resolve) measured 0.084 ms on a desktop GPU
+  and estimates at 1.4 ms on `R` (render-api, post-effects table). By the same model, a 0.01 to 0.015 ms pass on that
+  GPU estimates at 0.15 to 0.25 ms on `R`. The `gpu.particles` measurement checks it. If the number doesn't hold, it proposes one with
   the evidence, and the maintainers decide, because a budget is a spec change.
 - **The live cap.** The stage holds the live sum of `count` (slots, an upper bound on live particles) to 5,000
   (`EffectLimits::live()`). Weather may take at most 70 % of it (3,500), so reactions always have room. Offline

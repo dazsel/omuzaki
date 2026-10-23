@@ -51,13 +51,21 @@ pub(super) fn rights(scene: &IoScene, options: &ExportOptions) -> Report {
         );
         return r;
     };
+    r.extend(gate(p, options));
+    r.extend(terms_within_record(&scene.meta.terms, p));
+    r.extend(sharing_terms(scene, p, options.purpose));
+    r
+}
+
+/// The store's licence gate for a [`Purpose::Publish`] export, with the gate's own explanation; nothing for a private
+/// one. Shared by the model preflight and the animation preflight.
+pub(super) fn gate(p: &Provenance, options: &ExportOptions) -> Report {
+    let mut r = Report::new();
     if options.purpose == Purpose::Publish
         && let Err(e) = licence_gate(p, options.involves_real_person)
     {
         r.push(Finding::error(gate_rule(&e), e.to_string()).at("provenance"));
     }
-    r.extend(terms_within_record(&scene.meta.terms, p));
-    r.extend(sharing_terms(scene, p, options.purpose));
     r
 }
 

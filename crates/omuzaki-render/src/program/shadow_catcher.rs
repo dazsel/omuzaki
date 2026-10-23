@@ -16,10 +16,13 @@ use omuzaki_render_api::Toon;
 
 use super::{ParamSpec, ProgramSpec, register_shading_program};
 
-register_shading_program!(ProgramSpec {
-    name: "shadow-catcher",
-    params: &[ParamSpec::float("opacity", 0.25, 0.0, 1.0)],
-    attributes: &[],
-    toon: |_| Toon::default(),
-    wgsl: include_str!("../shader/program_shadow_catcher.wgsl"),
-});
+register_shading_program!(
+    "shadow-catcher",
+    ProgramSpec {
+        name: "shadow-catcher",
+        params: &[ParamSpec::float("opacity", 0.25, 0.0, 1.0)],
+        attributes: &[],
+        toon: |_| Toon::default(),
+        wgsl: include_str!("../shader/program_shadow_catcher.wgsl"),
+    }
+);

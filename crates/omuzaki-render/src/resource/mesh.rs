@@ -214,6 +214,9 @@ pub(crate) struct GpuMesh {
     morphs: Option<MeshMorphs>,
     /// Counts the changes of the base vertices, so a morphed copy knows when it is stale.
     vertex_version: u64,
+    /// The surface stream as uploaded, kept for a mesh created with vertex colours so
+    /// [`update_colours`](Self::update_colours) can rewrite it in one write (a palette change recolouring baked tints).
+    recolour: Option<Vec<Surface>>,
 }
 
 impl GpuMesh {
@@ -250,8 +253,11 @@ impl GpuMesh {
         let weld_count = welder.weld(mesh.positions.iter().copied(), &mut welds);
         let smooth: Vec<[f32; 3]> =
             smooth_by_slots(&welds, weld_count, &mesh.normals).iter().map(Vec3::to_array).collect();
-        // A dynamic mesh's vertex buffers are rewritten by `queue.write_buffer`; the rest never are.
+        // A dynamic mesh's vertex buffers are rewritten by `queue.write_buffer`, and so is the surface stream of a mesh
+        // with vertex colours (`update_colours`); the rest never are.
         let rewritable = if dynamic { wgpu::BufferUsages::COPY_DST } else { wgpu::BufferUsages::empty() };
+        let coloured = !mesh.colours.is_empty();
+        let recolourable = if coloured { wgpu::BufferUsages::COPY_DST } else { wgpu::BufferUsages::empty() };
         // The GPU morph blend reads the mesh's own shapes as the base its targets apply to, and a dynamic mesh's outline
         // directions are welded from them by a dispatch, into the direction stream.
         let welded_on_gpu = compute && dynamic;
@@ -300,7 +306,7 @@ impl GpuMesh {
         });
         Ok(Self {
             shapes: buffer(bytemuck::cast_slice(&shapes), wgpu::BufferUsages::VERTEX | rewritable | blendable),
-            surface: buffer(bytemuck::cast_slice(&surface), wgpu::BufferUsages::VERTEX),
+            surface: buffer(bytemuck::cast_slice(&surface), wgpu::BufferUsages::VERTEX | recolourable),
             smooth_normals: buffer(bytemuck::cast_slice(&smooth), wgpu::BufferUsages::VERTEX | rewritable | weldable),
             shadow,
             dynamic,
@@ -316,6 +322,7 @@ impl GpuMesh {
                 + extra_bytes) as u64,
             morphs,
             vertex_version: 0,
+            recolour: coloured.then_some(surface),
         })
     }
 
@@ -356,6 +363,22 @@ impl GpuMesh {
                 joints_needed: self.joints_needed,
             },
         })
+    }
+
+    /// How many colours [`update_colours`](Self::update_colours) takes, or `None` for a mesh created without them.
+    pub(crate) fn colour_count(&self) -> Option<usize> {
+        self.recolour.as_ref().map(Vec::len)
+    }
+
+    /// Replaces the vertex colours with one `queue.write_buffer` of the surface stream. The caller has checked that the
+    /// mesh has colours ([`colour_count`](Self::colour_count)), that `colours` has that many and that all are finite.
+    /// Allocation-free: the stream's copy was kept at creation.
+    pub(crate) fn update_colours(&mut self, queue: &wgpu::Queue, colours: &[[f32; 4]]) {
+        let Some(surface) = self.recolour.as_mut() else { return };
+        for (vertex, colour) in surface.iter_mut().zip(colours) {
+            vertex.colour = *colour;
+        }
+        queue.write_buffer(&self.surface, 0, bytemuck::cast_slice(surface));
     }
 
     /// Changes whenever the base vertices do.

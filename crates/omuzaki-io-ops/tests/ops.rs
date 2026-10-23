@@ -150,6 +150,10 @@ fn list_formats_merges_importers_and_exporters() {
         assert_eq!(format.media_type, "model/gltf-binary");
     }
     assert_eq!(formats.formats[1].extensions, ["vrm"]);
+    // The mock's motion format, apart from the models: `io.export_animation` takes these.
+    let motions: Vec<(&str, &[String])> =
+        formats.animations.iter().map(|f| (f.id.as_str(), f.extensions.as_slice())).collect();
+    assert_eq!(motions, [("vrma", &["vrma".to_owned()][..])]);
 }
 
 #[test]
