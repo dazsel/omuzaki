@@ -65,7 +65,7 @@ use crate::live::health::HealthPublisher;
 use crate::live::hotkeys::Hotkeys;
 use crate::live::viewport::{LiveViewport, Presenter, SharedTracker, ViewportError};
 use crate::output_window::{OutputHost, OutputPlan, OutputWindow, Program};
-use crate::wiring::{self, Core, Document, ExecutorError};
+use crate::wiring::{self, Core, CoreError, Document};
 
 /// The studio's shortcut that turns a desktop character's full click-through off.
 pub const WAY_BACK: egui::KeyboardShortcut =
@@ -79,8 +79,9 @@ pub enum StartError {
     Wiring(WiringError),
     /// The performer refused the starter expressions.
     Perform(PerformError),
-    /// The op registry is broken (two crates register one name): a bug in whichever crate registered them.
-    Ops(ExecutorError),
+    /// The ops or the project did not open: the op registry is broken (two crates register one name), or the app core
+    /// refused the project folder.
+    Ops(CoreError),
 }
 
 impl std::fmt::Display for StartError {

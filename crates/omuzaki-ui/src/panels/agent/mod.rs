@@ -55,6 +55,11 @@ pub trait CredentialGrants {
     fn remember(&self, session: &SessionInfo, grants: &Grants) -> Result<(), OpError>;
 }
 
+/// Where agents connect to this studio: the app core's loopback MCP address, shared with panels as a view model once
+/// the port is open. The connect card names it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct McpEndpoint(pub String);
+
 /// The credential store, shared with panels as a view model.
 #[derive(Clone)]
 pub struct Credentials(pub Arc<dyn CredentialGrants>);
@@ -96,7 +101,7 @@ impl Panel for AgentPanel {
     fn ui(&mut self, ui: &mut Ui, ctx: &PanelCtx<'_>) {
         let ds = ds(ui.ctx());
         let Some(Agents(sessions)) = ctx.view::<Agents>() else {
-            return connect(ui, &ds);
+            return connect(ui, &ds, ctx.view::<McpEndpoint>());
         };
         let shared = ctx.view::<AgentFeed>();
         if shared.is_none() {
@@ -115,7 +120,7 @@ impl Panel for AgentPanel {
         }
         let live: Vec<&SessionInfo> = feed.live().collect();
         if live.is_empty() && feed.approvals().is_empty() {
-            return connect(ui, &ds);
+            return connect(ui, &ds, ctx.view::<McpEndpoint>());
         }
         let person = ctx.actor();
         let desk = ctx.view::<Reviews>().map(|r| r.0.as_ref());
@@ -481,9 +486,14 @@ fn spend(ds: &Ds, session: &SessionInfo) -> String {
     parts.join(" \u{b7} ")
 }
 
-/// No agent is connected: how to connect one.
-fn connect(ui: &mut Ui, ds: &Ds) {
-    let (headline, line) = (say(ds, text::AGENT_NONE, &[]), say(ds, text::AGENT_NONE_HOW, &[]));
+/// No agent is connected: how to connect one, and where when the studio's MCP port is open.
+fn connect(ui: &mut Ui, ds: &Ds, endpoint: Option<&McpEndpoint>) {
+    let headline = say(ds, text::AGENT_NONE, &[]);
+    let mut line = say(ds, text::AGENT_NONE_HOW, &[]).into_owned();
+    if let Some(McpEndpoint(url)) = endpoint {
+        line.push(' ');
+        line.push_str(&say(ds, text::AGENT_NONE_WHERE, &[("url", url)]));
+    }
     ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
         EmptyState::new(icons::ROBOT, &headline, &line).show(ui);
     });

@@ -23,7 +23,7 @@ use crate::{
 const DEFAULT_SECONDS: u32 = 120;
 
 /// Runs a script (`source`) or a saved script or macro (`id`) as a job: one transaction, so one undo step, rolled back
-/// whole on the first error, a limit or a cancel. `params` is the map the script reads as `params`; `dry_run` sends
+/// whole on the first error, a limit or a cancel. `params` is the map the script reads as `params`; `rehearse` sends
 /// every inner call as a dry run and lists the plans instead of changing anything (the calls see the document as it was
 /// before the script, so later calls that read earlier ones' writes may plan differently); `seconds` is the wall clock,
 /// 120 by default and at most 600.
@@ -50,9 +50,9 @@ pub struct ScriptRun {
     /// What the script reads as `params`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub params: Option<Map<String, Value>>,
-    /// Plan every inner call instead of applying it.
+    /// Plan every inner call instead of applying it. Not `dry_run`, which MCP keeps for previewing the call itself.
     #[serde(default)]
-    pub dry_run: bool,
+    pub rehearse: bool,
     /// The wall-clock limit in seconds: 1 to 600, 120 if omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seconds: Option<u32>,
@@ -81,7 +81,7 @@ impl ScriptRun {
             grants: Grants::person(),
             tx: None,
             params: self.params.clone().unwrap_or_default(),
-            dry_run: self.dry_run,
+            dry_run: self.rehearse,
         };
         let outcome = host.run(request, &calls, &calls).map_err(|e| run_error(job, &e))?;
         serde_json::to_value(outcome).map_err(|e| OpError::internal(format!("serialising the outcome failed: {e}")))
@@ -182,7 +182,7 @@ impl Op for ScriptRun {
             .map_err(|e| OpError::internal(format!("the planned script does not read back: {e}")))?;
         match planned {
             Planned::Script { name, source } => self.run_script(job, name, source),
-            Planned::Macro { steps, .. } => replay(job, &steps, self.dry_run, self.seconds.unwrap_or(DEFAULT_SECONDS), crate::testing::replay_clock().as_ref()),
+            Planned::Macro { steps, .. } => replay(job, &steps, self.rehearse, self.seconds.unwrap_or(DEFAULT_SECONDS), crate::testing::replay_clock().as_ref()),
         }
     }
 
