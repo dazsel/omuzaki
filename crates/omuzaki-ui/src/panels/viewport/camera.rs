@@ -143,6 +143,36 @@ impl OrbitCamera {
         self.pitch = 0.0;
     }
 
+    /// Where `point` lands in a view of `size` points, from its top left, or `None` behind the camera. The same
+    /// perspective as [`camera`](Self::camera), so a box drawn over the render sits on what it marks.
+    pub fn project(&self, point: Vec3, size: [f32; 2]) -> Option<[f32; 2]> {
+        let aspect = size[0] / size[1].max(1.0);
+        let camera = self.camera();
+        let clip = camera.projection_matrix(aspect.max(1e-3)) * camera.view() * point.extend(1.0);
+        if clip.w <= 1e-6 {
+            return None;
+        }
+        let ndc = clip.truncate() / clip.w;
+        Some([(ndc.x * 0.5 + 0.5) * size[0], (0.5 - ndc.y * 0.5) * size[1]])
+    }
+
+    /// The screen box around `bounds` in a view of `size` points: its eight corners projected; `None` when any is
+    /// behind the camera.
+    pub fn project_bounds(&self, bounds: Bounds, size: [f32; 2]) -> Option<[f32; 4]> {
+        let (lo, hi) = (bounds.min, bounds.max);
+        let mut out = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+        for i in 0..8 {
+            let corner = Vec3::new(
+                if i & 1 == 0 { lo.x } else { hi.x },
+                if i & 2 == 0 { lo.y } else { hi.y },
+                if i & 4 == 0 { lo.z } else { hi.z },
+            );
+            let [x, y] = self.project(corner, size)?;
+            out = [out[0].min(x), out[1].min(y), out[2].max(x), out[3].max(y)];
+        }
+        Some(out)
+    }
+
     /// Centres `bounds` and moves back until it fills the view, keeping the angles.
     pub fn frame(&mut self, bounds: Bounds) {
         self.target = bounds.centre();
@@ -185,6 +215,20 @@ mod tests {
         camera.pan(100.0, 0.0, 500.0);
         assert!(camera.target.x < 0.0, "dragging right moves the scene right, so the target goes left");
         assert!((camera.target.y - 0.8).abs() < 1e-5);
+    }
+
+    #[test]
+    fn the_target_projects_to_the_centre_and_a_framed_box_fits_the_view() {
+        let mut camera = OrbitCamera::default();
+        let centre = camera.project(camera.target, [400.0, 300.0]).unwrap_or_default();
+        assert!((centre[0] - 200.0).abs() < 1e-3 && (centre[1] - 150.0).abs() < 1e-3, "{centre:?}");
+        let head = Bounds { min: Vec3::new(-0.1, 1.4, -0.1), max: Vec3::new(0.1, 1.65, 0.1) };
+        camera.frame(head);
+        let [left, top, right, bottom] = camera.project_bounds(head, [400.0, 300.0]).unwrap_or_default();
+        assert!(left > 0.0 && top > 0.0 && right < 400.0 && bottom < 300.0, "{left} {top} {right} {bottom}");
+        assert!(right > left && bottom > top);
+        let above = camera.project(Vec3::new(0.0, 2.0, 0.0), [400.0, 300.0]).unwrap_or_default();
+        assert!(above[1] < top, "up is up on screen");
     }
 
     #[test]

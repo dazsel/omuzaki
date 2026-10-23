@@ -31,6 +31,7 @@ ed25519-dalek = { version = "2.2", default-features = false, features = ["std"] 
 eframe = { version = "0.36", default-features = false, features = ["wgpu", "wayland", "x11", "accesskit", "default_fonts"] }
 egui = "0.36"
 egui-phosphor = { version = "0.14", default-features = false, features = ["regular", "fill"] }   # Phosphor icon fonts (MIT), omuzaki-ui icons
+egui-snarl = "0.12"   # node graphs for the automation editor (MIT OR Apache-2.0), omuzaki-ui
 egui_tiles = { version = "0.17", features = ["serde"] }   # docking for the app shell (MIT OR Apache-2.0), omuzaki-ui
 egui_kittest = { version = "0.36", features = ["wgpu"] }   # headless render + AccessKit queries for UI tests and gallery screenshots
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] } # gunzips the ONNX Runtime archives (MIT OR Apache-2.0), omuzaki-ai-native

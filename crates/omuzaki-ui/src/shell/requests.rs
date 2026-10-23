@@ -29,6 +29,9 @@ pub enum ShellRequest {
     Redo,
     /// Put away the card that says an undo could not be done.
     DismissConflict,
+    /// Open the Settings window on a page, and on the Connectors page on one connector (the cost card's way to a
+    /// missing key).
+    Settings(crate::settings::Page, Option<crate::settings::connectors::Connector>),
 }
 
 /// The queue of requests, shared by the shell and every panel (clones are one queue).

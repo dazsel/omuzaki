@@ -19,12 +19,10 @@ use crate::{
 };
 
 /// The words shown, unchanged, when a person adds a model (ADR 0016 rule 2). One text for every surface.
-pub const DISCLAIMER: &str = "This model isn't made or distributed by Omuzaki. You chose it; its licence and terms are \
-between you and its author. Omuzaki checks that it runs safely and records it in your project, but doesn't vouch for \
-its quality, safety or licence.";
+pub const DISCLAIMER: &str = "This is your model. Its licence and terms are between you and its author.";
 
 /// Bumped whenever [`DISCLAIMER`] changes, so an acknowledgement records which words were accepted.
-pub const DISCLAIMER_VERSION: u32 = 1;
+pub const DISCLAIMER_VERSION: u32 = 2;
 
 /// Where a model stands. When several apply, the first in this order wins.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

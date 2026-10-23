@@ -7,6 +7,8 @@
 use std::sync::Arc;
 
 use egui::{Event, Key, RichText, ScrollArea, Sense, Ui, WidgetInfo, WidgetType, vec2};
+use omuzaki_metrics_api::MetricsReader;
+use omuzaki_metrics_api::sections::TrackingState;
 use omuzaki_ops_api::{Actor, Runner};
 use omuzaki_stage::perform::Tracking;
 use omuzaki_stage::perform::host::CalibrationState;
@@ -15,7 +17,8 @@ use omuzaki_stream_api::window::{Backdrop as Shown, DEFAULT_TITLE, WindowState};
 use super::hotkeys::chord;
 use super::latency::LatencyMeter;
 use super::model::{
-    Backdrop, Control, HOTKEY_ROWS, LiveModel, OP_CALIBRATE, OP_SET_RETARGET, SMOOTHING_RANGE, WindowChoice,
+    Backdrop, Clicks, Control, HOTKEY_ROWS, LiveModel, OP_CALIBRATE, OP_SET_RETARGET, OP_WINDOW_SET, OPACITY_RANGE,
+    Place, SMOOTHING_RANGE, WindowChoice,
 };
 use super::text::{Word, say, text};
 use crate::ds::a11y;
@@ -70,8 +73,12 @@ pub struct LivePanel {
     capturing: Option<String>,
     /// Mood rows shown: [`HOTKEY_ROWS`], and more after Add hotkey.
     moods: usize,
-    /// The camera-to-output latency the render side measures.
+    /// The camera-to-output latency the render side measures, read when there is no live-metrics snapshot.
     latency: Arc<LatencyMeter>,
+    /// The app's live-metrics snapshot: the health strip's source once the shell has one (#1348).
+    metrics: Option<MetricsReader>,
+    /// The desktop opacity slider's value, in percent, while it is dragged; sent when it settles.
+    opacity: f64,
 }
 
 impl LivePanel {
@@ -89,7 +96,19 @@ impl LivePanel {
 
     /// The workspace showing `model` (the gallery story and tests).
     pub fn with_model(model: LiveModel) -> Self {
-        Self { model, refreshed: None, capturing: None, moods: HOTKEY_ROWS, latency: LatencyMeter::shared() }
+        let opacity = f64::from(model.window_choice().opacity);
+        let latency = LatencyMeter::shared();
+        Self { model, refreshed: None, capturing: None, moods: HOTKEY_ROWS, latency, metrics: None, opacity }
+    }
+
+    /// Reads the health strip from `reader` from now on: tracking, the camera's rate and the latency.
+    pub fn set_metrics(&mut self, reader: MetricsReader) {
+        self.metrics = Some(reader);
+    }
+
+    /// The snapshot the health strip reads, once one is set.
+    pub fn metrics(&self) -> Option<&MetricsReader> {
+        self.metrics.as_ref()
     }
 
     /// The model.
@@ -302,21 +321,72 @@ impl LivePanel {
                 self.model.set_window_open(runner, actor, open);
             }
             let mut choice = self.model.window_choice();
-            let (key, clear) = (text(&ctx, Word::OutputKey), text(&ctx, Word::OutputTransparent));
-            let segments = [Segment::new(Backdrop::Key, &key), Segment::new(Backdrop::Transparent, &clear)];
-            // Its two options name themselves; the whole width keeps both whole in a narrow dock.
-            let backdrop = text(&ctx, Word::OutputBackdrop);
-            let segmented =
-                Segmented::new(&backdrop, &mut choice.backdrop, &segments).id_salt("live.output.backdrop").stretch();
+            let (capture, desktop) = (text(&ctx, Word::OutputCapture), text(&ctx, Word::OutputDesktop));
+            let places = [Segment::new(Place::Capture, &capture), Segment::new(Place::Desktop, &desktop)];
+            let place = text(&ctx, Word::OutputPlace);
+            let segmented = Segmented::new(&place, &mut choice.place, &places).id_salt("live.output.place").stretch();
             ui.add(disable(segmented, missing.as_deref(), Segmented::disabled));
-            let on_top = text(&ctx, Word::OutputOnTop);
-            let toggle = Toggle::switch(&on_top, &mut choice.on_top).id_salt("live.output.on_top");
-            ui.add(disable(toggle, missing.as_deref(), Toggle::disabled));
+            if let Some(reason) = self.model.unavailable(Place::Desktop) {
+                // The host's own reason is detail for the curious; the line is the studio's words.
+                let line = RichText::new(text(&ctx, Word::OutputNoDesktop)).font(ds(&ctx).text.small.clone());
+                ui.label(line.color(ds(&ctx).theme.text2)).on_hover_text(reason);
+            }
+            match choice.place {
+                Place::Capture => Self::capture_controls(ui, &mut choice, missing.as_deref()),
+                Place::Desktop => self.desktop_controls(ui, &mut choice, missing.as_deref()),
+            }
             if choice != self.model.window_choice() {
                 self.model.set_window_choice(runner, actor, choice);
             }
             self.output_state(ui, choice);
         });
+    }
+
+    /// The capture window's backdrop and stacking.
+    fn capture_controls(ui: &mut Ui, choice: &mut WindowChoice, missing: Option<&str>) {
+        let ctx = ui.ctx().clone();
+        let (key, clear) = (text(&ctx, Word::OutputKey), text(&ctx, Word::OutputTransparent));
+        let segments = [Segment::new(Backdrop::Key, &key), Segment::new(Backdrop::Transparent, &clear)];
+        // Its two options name themselves; the whole width keeps both whole in a narrow dock.
+        let backdrop = text(&ctx, Word::OutputBackdrop);
+        let segmented =
+            Segmented::new(&backdrop, &mut choice.backdrop, &segments).id_salt("live.output.backdrop").stretch();
+        ui.add(disable(segmented, missing, Segmented::disabled));
+        let on_top = text(&ctx, Word::OutputOnTop);
+        let toggle = Toggle::switch(&on_top, &mut choice.on_top).id_salt("live.output.on_top");
+        ui.add(disable(toggle, missing, Toggle::disabled));
+    }
+
+    /// The desktop window's opacity and which clicks pass through it. The opacity is sent when the slider settles, so
+    /// a drag is one change, not one per frame.
+    fn desktop_controls(&mut self, ui: &mut Ui, choice: &mut WindowChoice, missing: Option<&str>) {
+        let ctx = ui.ctx().clone();
+        let label = text(&ctx, Word::OutputOpacity);
+        let slider = ParamSlider::new(&label, &mut self.opacity, OPACITY_RANGE)
+            .default_value(100.0)
+            .step(5.0)
+            .decimals(0)
+            .op_call(OpCall { op: OP_WINDOW_SET, target: "" })
+            .id_salt("live.output.opacity");
+        let out = match missing {
+            Some(reason) => slider.disabled(reason).show(ui),
+            None => slider.show(ui),
+        };
+        if out.events.iter().any(|event| matches!(event, ParamEvent::Commit { .. })) {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped to 10..=100 first
+            let percent = self.opacity.clamp(*OPACITY_RANGE.start(), *OPACITY_RANGE.end()).round() as u8;
+            choice.opacity = percent;
+        }
+        let (off, empty, all) =
+            (text(&ctx, Word::ClicksOff), text(&ctx, Word::ClicksEmpty), text(&ctx, Word::ClicksAll));
+        let segments =
+            [Segment::new(Clicks::Off, &off), Segment::new(Clicks::Empty, &empty), Segment::new(Clicks::All, &all)];
+        let clicks = text(&ctx, Word::OutputClicks);
+        let segmented = Segmented::new(&clicks, &mut choice.clicks, &segments).id_salt("live.output.clicks").stretch();
+        ui.add(disable(segmented, missing, Segmented::disabled));
+        if choice.clicks == Clicks::All {
+            ui.add(StatusChip::new(Status::Warn, &text(&ctx, Word::ClicksAllNote)));
+        }
     }
 
     /// What the output window is: its size and backdrop when open, where to find it when closed, and the two states a
@@ -325,18 +395,27 @@ impl LivePanel {
         let ctx = ui.ctx().clone();
         let small = ds(&ctx).text.small.clone();
         // Closed, not read yet, or a state this build doesn't know: where to find the window once it opens.
-        let Some(WindowState::Open { physical, backdrop, minimised, .. }) = self.model.window() else {
-            let hint = say(&ctx, Word::OutputHint, &[("title", DEFAULT_TITLE)]);
+        let Some(WindowState::Open { physical, backdrop, minimised, desktop, .. }) = self.model.window() else {
+            let hint = match choice.place {
+                Place::Capture => say(&ctx, Word::OutputHint, &[("title", DEFAULT_TITLE)]),
+                Place::Desktop => text(&ctx, Word::OutputDesktopHint).into_owned(),
+            };
             ui.label(RichText::new(hint).font(small));
             return;
         };
         let (width, height) = (physical.x.to_string(), physical.y.to_string());
         let size = say(&ctx, Word::OutputSize, &[("width", &width), ("height", &height)]);
-        let line = match backdrop {
-            Shown::Key(key) => say(&ctx, Word::OutputOverKey, &[("size", &size), ("key", &key.to_string())]),
-            Shown::Transparent => say(&ctx, Word::OutputOverNothing, &[("size", &size)]),
-            // A backdrop newer than this panel: the size alone.
-            _ => size,
+        let line = match (desktop, backdrop) {
+            (Some(desktop), _) => {
+                let percent = format!("{:.0}", desktop.opacity * 100.0);
+                say(&ctx, Word::OutputOnDesktop, &[("size", &size), ("opacity", &percent)])
+            }
+            (None, backdrop) => match backdrop {
+                Shown::Key(key) => say(&ctx, Word::OutputOverKey, &[("size", &size), ("key", &key.to_string())]),
+                Shown::Transparent => say(&ctx, Word::OutputOverNothing, &[("size", &size)]),
+                // A backdrop newer than this panel: the size alone.
+                _ => size,
+            },
         };
         ui.label(RichText::new(line).font(small));
         if self.model.window_fallback() && choice.backdrop == Backdrop::Transparent {
@@ -347,14 +426,23 @@ impl LivePanel {
         }
     }
 
-    /// The health strip: tracking state, frame rate and latency on one line (nothing in it takes the keyboard).
+    /// The health strip: tracking state, frame rate and latency on one line (nothing in it takes the keyboard). It reads
+    /// the live-metrics snapshot when the shell has one, and the performer's status and the latency meter otherwise.
     fn health(&self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
+        let snapshot = self.metrics.as_ref().map(MetricsReader::read);
+        let perform = snapshot.as_ref().and_then(|live| live.perform);
+        let tracking = match perform.map(|p| p.tracking) {
+            Some(TrackingState::Tracking) => Some(Tracking::Tracking),
+            Some(TrackingState::Lost) => Some(Tracking::Lost),
+            Some(_) => Some(Tracking::NoFrames),
+            None => self.model.tracking(),
+        };
         // Wrapped: in a narrow dock the frame rate and latency move to a second line rather than widen the panel.
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = space::S16;
             ui.label(RichText::new(text(&ctx, Word::HealthSection)).strong());
-            let (status, word) = match self.model.tracking() {
+            let (status, word) = match tracking {
                 None => (Status::Info, Word::HealthUnknown),
                 Some(Tracking::NoFrames) => (Status::Info, Word::HealthNoFrames),
                 Some(Tracking::Tracking) => (Status::Ok, Word::HealthTracking),
@@ -364,15 +452,22 @@ impl LivePanel {
             // Each reading stays on one line: a wrap moves it whole, never splits "29" from "fps".
             let reading =
                 |ui: &mut Ui, line: String| ui.add(egui::Label::new(line).wrap_mode(egui::TextWrapMode::Extend));
-            if let Some(status) = self.model.status() {
-                let fps = format!("{:.0}", status.source_fps);
+            if let Some(source_fps) =
+                perform.map(|p| p.source_fps).or_else(|| self.model.status().map(|s| s.source_fps))
+            {
+                let fps = format!("{source_fps:.0}");
                 reading(ui, say(&ctx, Word::HealthFps, &[("fps", &fps)]));
             }
             let latency = text(&ctx, Word::HealthLatency);
-            // A dash until the first frame has been through to the picture; then the measured number.
-            let (line, detail) = match self.latency.reading() {
-                Some(measured) => {
-                    let ms = format!("{:.0}", measured.as_secs_f64() * 1000.0);
+            // The snapshot's latency while a tracked face is in use, else the meter's; a dash until the first frame has
+            // been through to the picture.
+            let measured = match snapshot.as_ref().and_then(|snapshot| snapshot.frame) {
+                Some(frame) => frame.track_to_submit_ms.map(|ms| f64::from(ms) / 1000.0),
+                None => self.latency.reading().map(|d| d.as_secs_f64()),
+            };
+            let (line, detail) = match measured {
+                Some(secs) => {
+                    let ms = format!("{:.0}", secs * 1000.0);
                     (say(&ctx, Word::HealthLatencyValue, &[("ms", &ms)]), text(&ctx, Word::LatencyDetail))
                 }
                 None => (format!("{latency}: —"), text(&ctx, Word::LatencyUnknown)),
@@ -380,7 +475,7 @@ impl LivePanel {
             // The tip only adds detail to a plain label; nothing reads its response.
             let _ = reading(ui, line).tip(Tip::new(&latency).detail(&detail));
         });
-        if self.model.tracking() == Some(Tracking::Lost) {
+        if tracking == Some(Tracking::Lost) {
             ui.label(RichText::new(text(&ctx, Word::HealthLostLine)).font(ds(&ctx).text.small.clone()));
         }
     }

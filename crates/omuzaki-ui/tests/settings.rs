@@ -124,3 +124,115 @@ fn a_scale_outside_the_range_is_refused_and_the_look_stays() {
     frame(&ctx, &mut link);
     assert_eq!(link.applied().map(|s| s.scale), Some(Scale::NORMAL));
 }
+
+#[test]
+fn a_language_set_through_the_op_layer_swaps_the_words_on_the_next_frame() {
+    use omuzaki_l10n_api::Locale;
+    omuzaki_ui::link();
+    let store: Arc<dyn SettingsService> = Arc::new(omuzaki_settings_mock::MemorySettings::with_clock(Arc::new(
+        omuzaki_core::time::FakeClock::new(omuzaki_core::time::Seconds(0.0)),
+    )));
+    let services = omuzaki_ops_api::ServicesBuilder::new().insert::<dyn SettingsService>(Arc::clone(&store)).build();
+    let runner = omuzaki_ui::wiring::runner(services).unwrap_or_else(|e| panic!("{e}"));
+    let ctx = Context::default();
+    let mut link = SettingsLink::new(Arc::clone(&store));
+    frame(&ctx, &mut link);
+    assert!(link.speaks().is_some(), "the computer's language is applied on the first frame");
+
+    let person = Actor::Person { name: "kit".into() };
+    set(runner.as_ref(), &person, "ui.language", serde_json::json!("ja"));
+    frame(&ctx, &mut link);
+    assert_eq!(link.speaks(), Some(&Locale::JA));
+    assert_eq!(ds(&ctx).strings.locale(), "ja");
+    let look = link.applied();
+    set(runner.as_ref(), &person, "ui.language", serde_json::json!("en"));
+    frame(&ctx, &mut link);
+    assert_eq!(ds(&ctx).strings.locale(), "en");
+    assert_eq!(link.applied(), look, "a new language leaves the look as it was");
+
+    let request = Request {
+        op: "settings.set".to_owned(),
+        args: serde_json::json!({ "key": "ui.language", "value": "zh-Hant" }),
+        mode: Mode::Apply,
+        actor: person,
+        grants: Grants::person(),
+        cause: None,
+        tx: None,
+        base: None,
+    };
+    let refused = runner.run(request).err().unwrap_or_else(|| panic!("zh-Hant isn't shipped yet"));
+    assert_eq!(refused.field.as_deref(), Some("value"), "{refused:?}");
+}
+
+#[test]
+fn a_translated_word_is_said_in_its_language_and_an_untranslated_one_in_english() {
+    use omuzaki_l10n_api::{Catalog, Locale, Resource};
+    use omuzaki_ui::ds::strings::CatalogStrings;
+    use omuzaki_ui::shell::text::{Word, say, title};
+    omuzaki_ui::link();
+    // A fixture translation: two of the shell's words, one panel title and one component word.
+    let english =
+        Resource { package: "omuzaki-ui", locale: "en", source: include_str!("../locales/en/omuzaki-ui.ftl") };
+    let japanese = Resource {
+        package: "omuzaki-ui",
+        locale: "ja",
+        source: "ui-shell-menu-settings = 設定\nui-shell-status-can-undo = Ctrl+Z で { $label } を元に戻す\n\
+                 ui-panels-outliner = アウトライナー\nds-status-ok = 正常\n",
+    };
+    let catalog = Catalog::from_sources(Locale::JA, &[], &[english, japanese]);
+    let ctx = Context::default();
+    omuzaki_ui::ds::set_strings(&ctx, Arc::new(CatalogStrings::new(catalog)));
+    assert_eq!(say(&ctx, Word::MenuSettings, &[]), "設定");
+    assert_eq!(say(&ctx, Word::StatusCanUndo, &[("label", "Hair colour")]), "Ctrl+Z で Hair colour を元に戻す");
+    assert_eq!(title(&ctx, omuzaki_ui::panels::text::OUTLINER), "アウトライナー");
+    assert_eq!(ds(&ctx).status_word(omuzaki_ui::ds::tokens::Status::Ok), "正常");
+    assert_eq!(say(&ctx, Word::MenuHelp, &[]), "Help", "an untranslated word falls back to English");
+}
+
+/// A font source that hands out a bundled Latin face in place of the pinned file and counts what it is asked for.
+#[derive(Default)]
+struct FakeFonts(std::sync::Mutex<Vec<String>>);
+
+impl omuzaki_stage::sheet::layout::FontSource for FakeFonts {
+    fn load(
+        &self,
+        spec: &omuzaki_stage::sheet::layout::FontSpec,
+    ) -> Result<Vec<u8>, omuzaki_stage::sheet::layout::FontError> {
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(spec.file_name.to_owned());
+        Ok(include_bytes!("../src/ds/fonts/JetBrainsMono.ttf").to_vec())
+    }
+}
+
+#[test]
+fn a_cjk_language_fetches_its_face_once_and_english_fetches_none() {
+    use omuzaki_stage::sheet::layout::Family;
+    use omuzaki_ui::ds::script_fonts::ScriptFonts;
+    omuzaki_ui::link();
+    let store: Arc<dyn SettingsService> = Arc::new(omuzaki_settings_mock::MemorySettings::with_clock(Arc::new(
+        omuzaki_core::time::FakeClock::new(omuzaki_core::time::Seconds(0.0)),
+    )));
+    let services = omuzaki_ops_api::ServicesBuilder::new().insert::<dyn SettingsService>(Arc::clone(&store)).build();
+    let runner = omuzaki_ui::wiring::runner(services).unwrap_or_else(|e| panic!("{e}"));
+    let source = Arc::new(FakeFonts::default());
+    let fonts = ScriptFonts::new(Arc::clone(&source) as Arc<dyn omuzaki_stage::sheet::layout::FontSource>);
+    let ctx = Context::default();
+    let mut link = SettingsLink::new(Arc::clone(&store)).with_fonts(fonts);
+    let person = Actor::Person { name: "kit".into() };
+    set(runner.as_ref(), &person, "ui.language", serde_json::json!("en"));
+    frame(&ctx, &mut link);
+    let fonts = link.fonts().unwrap_or_else(|| panic!("the link fetches faces"));
+    assert!(!fonts.loading() && fonts.installed().is_empty(), "English needs no face");
+
+    set(runner.as_ref(), &person, "ui.language", serde_json::json!("ja"));
+    frame(&ctx, &mut link);
+    let fonts = link.fonts().unwrap_or_else(|| panic!("the link fetches faces"));
+    // The second pass of `frame` may already have taken the face; `finish` waits for it otherwise.
+    fonts.finish(&ctx);
+    assert_eq!(fonts.installed(), vec![Family::Jp], "the Japanese face arrived and went into the fonts");
+    set(runner.as_ref(), &person, "ui.language", serde_json::json!("en"));
+    frame(&ctx, &mut link);
+    set(runner.as_ref(), &person, "ui.language", serde_json::json!("ja"));
+    frame(&ctx, &mut link);
+    let asked = source.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    assert_eq!(asked, vec!["NotoSansJP-Regular.otf".to_owned()], "fetched once, for Japanese only");
+}

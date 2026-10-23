@@ -10,7 +10,7 @@ use omuzaki_stage::perform::Tracking;
 use omuzaki_stage::perform::host::{CalibrationState, PerformStatus};
 use omuzaki_stage::perform::input::{InputState, SourceKind};
 use omuzaki_stage::perform::triggers::TriggerInfo;
-use omuzaki_stream_api::window::WindowState;
+use omuzaki_stream_api::window::{ModeSupport, WindowMode, WindowState};
 use serde::Deserialize as _;
 
 /// `perform.calibrate`: start a neutral capture.
@@ -35,6 +35,10 @@ pub const OP_WINDOW_OPEN: &str = "output.window.open";
 pub const OP_WINDOW_CLOSE: &str = "output.window.close";
 /// `output.window.status`: whether the output window is open, its size, backdrop and whether it is minimised.
 pub const OP_WINDOW_STATUS: &str = "output.window.status";
+/// `output.window.set`: change an open desktop window's opacity or click-through in place.
+pub const OP_WINDOW_SET: &str = "output.window.set";
+/// The desktop window's opacity range, in percent (`output.window.open`'s `opacity`, 0.1 to 1).
+pub const OPACITY_RANGE: std::ops::RangeInclusive<f64> = 10.0..=100.0;
 /// `input.state`: the source, the bound camera, the mirror, the permission, the cameras and tracking.
 pub const OP_INPUT_STATE: &str = "input.state";
 /// `input.select`: choose what drives the face.
@@ -87,6 +91,8 @@ pub struct Ops {
     pub window_close: bool,
     /// `output.window.status` is registered.
     pub window_status: bool,
+    /// `output.window.set` is registered.
+    pub window_set: bool,
     /// `input.state` is registered.
     pub input_state: bool,
     /// `input.select` is registered.
@@ -115,6 +121,7 @@ impl Ops {
             window_open: has(OP_WINDOW_OPEN),
             window_close: has(OP_WINDOW_CLOSE),
             window_status: has(OP_WINDOW_STATUS),
+            window_set: has(OP_WINDOW_SET),
             input_state: has(OP_INPUT_STATE),
             input_select: has(OP_INPUT_SELECT),
             input_bind_camera: has(OP_INPUT_BIND_CAMERA),
@@ -202,13 +209,83 @@ impl Backdrop {
     }
 }
 
-/// The output window's settings as the person picked them; they are the arguments of the next open.
+/// Where the output window shows the character, as the person picks it (`output.window.open`'s `mode`).
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum Place {
+    /// A clean window a capture tool grabs. The default.
+    #[default]
+    Capture,
+    /// The character alone on the desktop.
+    Desktop,
+}
+
+impl Place {
+    /// The contract's mode.
+    pub const fn mode(self) -> WindowMode {
+        match self {
+            Self::Capture => WindowMode::Capture,
+            Self::Desktop => WindowMode::Desktop,
+        }
+    }
+
+    /// `output.window.open`'s `mode` argument.
+    pub const fn arg(self) -> &'static str {
+        match self {
+            Self::Capture => "capture",
+            Self::Desktop => "desktop",
+        }
+    }
+}
+
+/// Which clicks on the desktop window reach the windows under it, as the person picks it.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum Clicks {
+    /// The window takes every click.
+    Off,
+    /// Clicks on empty pixels pass through; the character takes its own. The default.
+    #[default]
+    Empty,
+    /// Every click passes through; the studio's own control is the way back.
+    All,
+}
+
+impl Clicks {
+    /// `click_through`'s value.
+    pub const fn arg(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Empty => "transparent",
+            Self::All => "full",
+        }
+    }
+}
+
+/// The output window's settings as the person picked them; they are the arguments of the next open.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct WindowChoice {
-    /// What shows behind the character.
+    /// Where the window shows the character.
+    pub place: Place,
+    /// What shows behind the character, for capture.
     pub backdrop: Backdrop,
-    /// Keep the window above other windows.
+    /// Keep the window above other windows, for capture (the desktop is always on top).
     pub on_top: bool,
+    /// How opaque the character is on the desktop, in percent ([`OPACITY_RANGE`]).
+    pub opacity: u8,
+    /// Which clicks pass through the desktop window.
+    pub clicks: Clicks,
+}
+
+impl Default for WindowChoice {
+    fn default() -> Self {
+        Self { place: Place::Capture, backdrop: Backdrop::Key, on_top: false, opacity: 100, clicks: Clicks::Empty }
+    }
+}
+
+impl WindowChoice {
+    /// The same choice but for the desktop's opacity and clicks: changing only those needs no reopen.
+    fn same_window(self, other: Self) -> bool {
+        Self { opacity: other.opacity, clicks: other.clicks, ..self } == other
+    }
 }
 
 /// What went wrong with the last op, for the workspace's status line.
@@ -231,6 +308,8 @@ pub struct LiveModel {
     imported: Option<String>,
     input: Option<InputState>,
     window: Option<WindowState>,
+    /// The modes `output.window.status` says this machine can show, each with why not.
+    modes: Vec<ModeSupport>,
     window_choice: WindowChoice,
     /// The last open asked for a transparent surface and got the key (`output.window.open`'s `fallback`).
     window_fallback: bool,
@@ -253,6 +332,7 @@ impl LiveModel {
             imported: None,
             input: None,
             window: None,
+            modes: Vec::new(),
             window_choice: WindowChoice::default(),
             window_fallback: false,
         }
@@ -333,6 +413,13 @@ impl LiveModel {
         matches!(self.window, Some(WindowState::Open { .. }))
     }
 
+    /// Why this machine can't show `place`, as `output.window.status` said; `None` when it can, or before the first
+    /// read.
+    pub fn unavailable(&self, place: Place) -> Option<&str> {
+        let support = self.modes.iter().find(|m| m.mode == place.mode())?;
+        if support.available { None } else { Some(support.reason.as_deref().unwrap_or_default()) }
+    }
+
     /// The output window settings the next open asks for.
     pub fn window_choice(&self) -> WindowChoice {
         self.window_choice
@@ -385,11 +472,18 @@ impl LiveModel {
         if !self.ops.window_status {
             return;
         }
-        let read = run(runner, actor, OP_WINDOW_STATUS, object(&[])).and_then(|output| {
-            WindowState::deserialize(output).map_err(|e| OpError::internal(format!("{OP_WINDOW_STATUS} answered {e}")))
+        let read = run(runner, actor, OP_WINDOW_STATUS, object(&[])).and_then(|mut output| {
+            let modes = output.get_mut("modes").map(Value::take).unwrap_or_default();
+            let modes = Vec::<ModeSupport>::deserialize(modes).unwrap_or_default();
+            let state = WindowState::deserialize(output)
+                .map_err(|e| OpError::internal(format!("{OP_WINDOW_STATUS} answered {e}")))?;
+            Ok((state, modes))
         });
         match read {
-            Ok(state) => self.window = Some(state),
+            Ok((state, modes)) => {
+                self.window = Some(state);
+                self.modes = modes;
+            }
             Err(error) => {
                 self.window = None;
                 self.fail(OP_WINDOW_STATUS, &error);
@@ -481,25 +575,52 @@ impl LiveModel {
     }
 
     /// Picks the window's settings; an open window re-opens with them (an open replaces the window).
+    ///
+    /// The desktop's opacity and clicks change an open desktop window in place (`output.window.set`). A place this
+    /// machine can't show is refused, with its reason as the failure.
     pub fn set_window_choice(&mut self, runner: &dyn Runner, actor: &Actor, choice: WindowChoice) {
         if choice == self.window_choice {
             return;
         }
-        self.window_choice = choice;
-        if self.window_open() {
-            self.open_window(runner, actor);
-            self.refresh_window(runner, actor);
+        if let Some(reason) = self.unavailable(choice.place) {
+            let error = OpError::unsupported(reason.to_owned());
+            self.fail(OP_WINDOW_OPEN, &error);
+            return;
         }
+        let in_place = choice.same_window(self.window_choice) && choice.place == Place::Desktop;
+        self.window_choice = choice;
+        if !self.window_open() {
+            return;
+        }
+        if in_place {
+            let args = object(&[
+                ("opacity", Value::from(f64::from(choice.opacity) / 100.0)),
+                ("click_through", Value::from(choice.clicks.arg())),
+            ]);
+            self.act(runner, actor, self.ops.window_set, OP_WINDOW_SET, args);
+        } else {
+            self.open_window(runner, actor);
+        }
+        self.refresh_window(runner, actor);
     }
 
     fn open_window(&mut self, runner: &dyn Runner, actor: &Actor) {
         if !self.ops.window_open {
             return;
         }
-        let args = object(&[
-            ("backdrop", Value::from(self.window_choice.backdrop.arg())),
-            ("always_on_top", Value::from(self.window_choice.on_top)),
-        ]);
+        let choice = self.window_choice;
+        let args = match choice.place {
+            Place::Capture => object(&[
+                ("mode", Value::from(choice.place.arg())),
+                ("backdrop", Value::from(choice.backdrop.arg())),
+                ("always_on_top", Value::from(choice.on_top)),
+            ]),
+            Place::Desktop => object(&[
+                ("mode", Value::from(choice.place.arg())),
+                ("opacity", Value::from(f64::from(choice.opacity) / 100.0)),
+                ("click_through", Value::from(choice.clicks.arg())),
+            ]),
+        };
         match run(runner, actor, OP_WINDOW_OPEN, args) {
             Ok(answer) => {
                 self.failure = None;

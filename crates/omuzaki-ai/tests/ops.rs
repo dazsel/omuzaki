@@ -112,7 +112,7 @@ fn an_agent_asks_the_person_acknowledges_and_then_the_agent_may_switch() {
     assert!(detail_is_person_only(&refused), "{refused:?}");
 
     let accepted = run(&ModelAcknowledge { model: name.clone() }, &person(), &services).unwrap();
-    assert!(accepted["notice"].as_str().unwrap().contains("isn't made or distributed by Omuzaki"));
+    assert!(accepted["notice"].as_str().unwrap().contains("This is your model."));
     let switched = run(&select, &agent(), &services).unwrap();
     assert_eq!(switched["selected"], name);
     let listing = run(&ModelList::default(), &agent(), &services).unwrap();
@@ -195,7 +195,7 @@ fn model_add_reads_through_the_persons_roots_and_only_a_person_accepts_the_notic
 
     let by_agent = add_op(&op(false), &agent(), &services, &[rig.picked.path()]).unwrap();
     assert_eq!(by_agent["status"]["state"], "needs_acknowledgement", "{by_agent}");
-    assert!(by_agent["notice"].as_str().unwrap().starts_with("This model isn't made or distributed by Omuzaki."));
+    assert!(by_agent["notice"].as_str().unwrap().starts_with("This is your model."));
     let by_person = add_op(&op(true), &person(), &services, &[rig.picked.path()]).unwrap();
     assert_eq!(by_person["status"]["state"], "ready", "{by_person}");
     assert!(!by_person.to_string().contains(&*rig.picked.path().to_string_lossy()), "{by_person}");

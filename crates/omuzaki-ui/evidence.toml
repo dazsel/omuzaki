@@ -14,7 +14,7 @@ images = ["dark.png", "light.png", "high-contrast.png"]
 
 [[case]]
 name = "gallery-pseudo"
-description = "The gallery in the pseudo-locale (accented, 40% longer text) at 200% UI scale, dark palette, one section per picture; a section too tall for one GPU texture is cut into parts (--part I/N). Foundations 1 part, Controls 4, Display 2, Feedback 3, Composites 1: every part is under half a texture."
+description = "The gallery in the pseudo-locale (accented, 40% longer text) at 200% UI scale, dark palette, one section per picture; a section too tall for one GPU texture is cut into parts (--part I/N). Foundations 1 part, Controls 4, Display 2, Feedback 3, Composites 2: every part is under half a texture."
 steps = [
     { run = ["cargo", "run", "--locked", "-p", "omuzaki-ui", "--bin", "gallery", "--", "--pseudo", "--scale", "200", "--group", "foundations", "--screenshot", "{out}/pseudo-200-foundations.png"] },
     { run = ["cargo", "run", "--locked", "-p", "omuzaki-ui", "--bin", "gallery", "--", "--pseudo", "--scale", "200", "--group", "controls", "--part", "1/4", "--screenshot", "{out}/pseudo-200-controls-1of4.png"] },
@@ -26,6 +26,7 @@ steps = [
     { run = ["cargo", "run", "--locked", "-p", "omuzaki-ui", "--bin", "gallery", "--", "--pseudo", "--scale", "200", "--group", "feedback", "--part", "1/3", "--screenshot", "{out}/pseudo-200-feedback-1of3.png"] },
     { run = ["cargo", "run", "--locked", "-p", "omuzaki-ui", "--bin", "gallery", "--", "--pseudo", "--scale", "200", "--group", "feedback", "--part", "2/3", "--screenshot", "{out}/pseudo-200-feedback-2of3.png"] },
     { run = ["cargo", "run", "--locked", "-p", "omuzaki-ui", "--bin", "gallery", "--", "--pseudo", "--scale", "200", "--group", "feedback", "--part", "3/3", "--screenshot", "{out}/pseudo-200-feedback-3of3.png"] },
-    { run = ["cargo", "run", "--locked", "-p", "omuzaki-ui", "--bin", "gallery", "--", "--pseudo", "--scale", "200", "--group", "composites", "--screenshot", "{out}/pseudo-200-composites.png"] },
+    { run = ["cargo", "run", "--locked", "-p", "omuzaki-ui", "--bin", "gallery", "--", "--pseudo", "--scale", "200", "--group", "composites", "--part", "1/2", "--screenshot", "{out}/pseudo-200-composites-1of2.png"] },
+    { run = ["cargo", "run", "--locked", "-p", "omuzaki-ui", "--bin", "gallery", "--", "--pseudo", "--scale", "200", "--group", "composites", "--part", "2/2", "--screenshot", "{out}/pseudo-200-composites-2of2.png"] },
 ]
-images = ["pseudo-200-foundations.png", "pseudo-200-controls-1of4.png", "pseudo-200-controls-2of4.png", "pseudo-200-controls-3of4.png", "pseudo-200-controls-4of4.png", "pseudo-200-display-1of2.png", "pseudo-200-display-2of2.png", "pseudo-200-feedback-1of3.png", "pseudo-200-feedback-2of3.png", "pseudo-200-feedback-3of3.png", "pseudo-200-composites.png"]
+images = ["pseudo-200-foundations.png", "pseudo-200-controls-1of4.png", "pseudo-200-controls-2of4.png", "pseudo-200-controls-3of4.png", "pseudo-200-controls-4of4.png", "pseudo-200-display-1of2.png", "pseudo-200-display-2of2.png", "pseudo-200-feedback-1of3.png", "pseudo-200-feedback-2of3.png", "pseudo-200-feedback-3of3.png", "pseudo-200-composites-1of2.png", "pseudo-200-composites-2of2.png"]
