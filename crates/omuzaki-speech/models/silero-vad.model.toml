@@ -1,0 +1,29 @@
+# Silero VAD 6.2.3 (16 kHz and 8 kHz in one graph) for vad@1, on the onnx runtime. The pin is the one the speech host
+# used before the registry (URL at the tagged commit, size and SHA-256); the file is never committed.
+id = "silero-vad"
+version = "6.2.3"
+name = "Silero VAD"
+slot = "vad@1"
+runtime = "onnx"
+providers = ["cpu"]
+
+[[files]]
+name = "silero_vad.onnx"
+sha256 = "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3"
+size = 2327524
+urls = ["https://raw.githubusercontent.com/snakers4/silero-vad/5cd7945676eb32225748052e2e6a0580e4686a08/src/silero_vad/data/silero_vad.onnx"]
+
+[card]
+register = "Silero VAD `silero_vad.onnx` (v6.2.3)"
+authors = "Silero Team"
+homepage = "https://github.com/snakers4/silero-vad"
+
+[card.licence]
+spdx = "MIT"
+url = "https://github.com/snakers4/silero-vad/blob/5cd7945676eb32225748052e2e6a0580e4686a08/LICENSE"
+
+[[card.lineage]]
+kind = "base_model"
+name = "Silero VAD v6.2.3, the published ONNX graph, unmodified"
+licence = "MIT"
+url = "https://github.com/snakers4/silero-vad"

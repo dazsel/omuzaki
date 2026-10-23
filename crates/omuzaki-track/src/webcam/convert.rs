@@ -10,8 +10,8 @@ use crate::frame::RgbFrame;
 
 /// [`CameraFrame`] (any [`PixelFormat`]) to packed RGB8 in a buffer it owns, allocated at the first frame or when the
 /// frame size changes (or at [`with_size`](Self::with_size), for the mode a camera opened with). NV12 and YUY2 are
-/// read as BT.601 limited range, which is what UVC webcams send. The raw formats allocate nothing per frame. MJPG
-/// decodes into the same buffer, but zune-jpeg builds a small decoder per image (see the note in `convert`).
+/// read as BT.601 limited range, which is what UVC webcams send. No format allocates per frame: MJPG decodes into the
+/// same buffer through a decoder that keeps its tables and planes from the first frame of a size.
 #[derive(Debug, Default)]
 pub struct FrameConverter {
     rgb: Vec<u8>,
@@ -79,10 +79,8 @@ pub(super) fn convert_into(mjpg: &mut MjpgDecoder, frame: &CameraFrame<'_>, rgb:
         PixelFormat::Yuy2 => yuy2_to_rgb(plane, Yuv::default(), &mut out),
         PixelFormat::Rgb8 => rgb_to_rgb(plane, &mut out),
         PixelFormat::Bgra8 => bgra_to_rgb(plane, false, &mut out),
-        // The pixels go straight into our buffer. What remains per frame is inside zune-jpeg, which builds its
-        // decoder (tables and row buffers, a few small allocations, none of them frame sized) for each image
-        // and offers no way to hand one back; `omuzaki-pixfmt` is outside this task's fence. Measured in
-        // `tests/webcam.rs` and `benches/webcam.rs`.
+        // Webcam MJPG (baseline, 4:2:2 or 4:2:0, usually without Huffman tables) decodes with no allocation once
+        // the decoder has seen the frame size; `tests/webcam.rs` proves it at 720p and 1080p.
         PixelFormat::Mjpg => mjpg.decode(frame.data, &mut out),
         other => return Err(Failure::NoConverter(other)),
     };

@@ -219,3 +219,76 @@ fn unreadable_manifests_say_so() {
     let bad_slot = SILERO.replace("vad@1", "vad");
     assert!(matches!(ModelManifest::from_toml(&bad_slot), Err(ManifestError::Parse(e)) if e.contains("vad@1")));
 }
+
+/// A text-to-speech model a person adds, with its controls and voices (`ai-performer-voice-face.md` §3.4).
+const USER_TTS: &str = r#"
+id = "user-narrator"
+version = "1.0.0"
+name = "Narrator"
+slot = "tts@1"
+runtime = "onnx"
+providers = ["cpu"]
+
+[[files]]
+name = "narrator.onnx"
+sha256 = "abababababababababababababababababababababababababababababababab"
+size = 1000
+
+[[files]]
+name = "deep.bin"
+sha256 = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+size = 10
+
+[tts]
+honours = ["speed", "expressiveness"]
+
+[[voices]]
+id = "plain"
+languages = ["en-US"]
+
+[[voices]]
+id = "deep"
+languages = ["en-US", "en-GB"]
+file = "deep.bin"
+
+[[voices]]
+id = "like-a-star"
+imitates = "A Famous Person"
+
+[[voices]]
+id = "me"
+cloned = true
+
+[card.licence]
+text = "my own recordings"
+"#;
+
+#[test]
+fn a_tts_manifest_lists_its_voices_and_which_need_consent() {
+    let m = ModelManifest::from_toml(USER_TTS).unwrap();
+    m.validate(Origin::User).unwrap();
+    let ids: Vec<&str> = m.voices.iter().map(|v| v.id.as_str()).collect();
+    assert_eq!(ids, ["plain", "deep", "like-a-star", "me"]);
+    assert_eq!(m.voices[1].languages, ["en-US", "en-GB"]);
+    assert_eq!(m.voices[1].file.as_deref(), Some("deep.bin"));
+    let consent: Vec<bool> = m.voices.iter().map(omuzaki_ai_api::VoiceRow::needs_consent).collect();
+    assert_eq!(consent, [false, false, true, true], "imitating a real person or cloned from a recording needs consent");
+    let tts = m.tts.as_ref().unwrap();
+    assert!(tts.honours("speed") && tts.honours("expressiveness") && !tts.honours("pitch"));
+    assert_eq!(ModelManifest::from_toml(&m.to_toml().unwrap()).unwrap(), m, "round-trips");
+
+    // A model without voices writes none, and old manifests read as before.
+    let silero = ModelManifest::from_toml(SILERO).unwrap();
+    assert!(silero.voices.is_empty() && silero.tts.is_none());
+    assert!(!silero.to_toml().unwrap().contains("voices"));
+
+    let broken =
+        USER_TTS.replace("id = \"me\"", "id = \"plain\"").replace("file = \"deep.bin\"", "file = \"gone.bin\"");
+    let errors = ModelManifest::from_toml(&broken).unwrap().validate(Origin::User).unwrap_err();
+    assert!(errors.contains(&ManifestError::VoiceId("plain".into())), "{errors:?}");
+    assert!(errors.contains(&ManifestError::VoiceFile { voice: "deep".into(), file: "gone.bin".into() }), "{errors:?}");
+    let spaced = USER_TTS.replace("id = \"plain\"", "id = \"two words\"");
+    let errors = ModelManifest::from_toml(&spaced).unwrap().validate(Origin::User).unwrap_err();
+    assert_eq!(errors, [ManifestError::VoiceId("two words".into())]);
+    assert!(ModelManifest::from_toml(&USER_TTS.replace("cloned = true", "cloned = true\nage = 3")).is_err());
+}

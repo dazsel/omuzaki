@@ -4679,16 +4679,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "omuzaki-audio"
-version = "0.0.0"
-dependencies = [
- "hound",
- "ort",
- "thiserror 2.0.21",
- "whisper-rs",
-]
-
-[[package]]
 name = "omuzaki-audio-api"
 version = "0.0.0"
 dependencies = [
@@ -6065,6 +6055,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-speech"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "hound",
+ "omuzaki-ai-api",
+ "omuzaki-ai-mock",
+ "omuzaki-audio-api",
+ "omuzaki-audio-mock",
+ "omuzaki-char-api",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-l10n-api",
+ "omuzaki-live-api",
+ "omuzaki-ops-api",
+ "omuzaki-performer-api",
+ "omuzaki-settings-api",
+ "omuzaki-settings-mock",
+ "omuzaki-store-api",
+ "schemars",
+ "serde",
+ "serde_json",
+ "symphonia",
+ "thiserror 2.0.21",
+ "toml",
+ "tracing",
+ "unicode-normalization",
+ "whisper-rs",
+]
+
+[[package]]
 name = "omuzaki-stage"
 version = "0.0.0"
 dependencies = [
@@ -6382,11 +6404,21 @@ name = "omuzaki-test-track"
 version = "0.0.0"
 dependencies = [
  "criterion",
+ "hound",
+ "omuzaki-ai",
  "omuzaki-ai-api",
  "omuzaki-ai-litert",
+ "omuzaki-ai-mock",
  "omuzaki-ai-ort",
+ "omuzaki-anim-api",
+ "omuzaki-audio-api",
+ "omuzaki-audio-mock",
  "omuzaki-core",
+ "omuzaki-live-api",
+ "omuzaki-performer-api",
+ "omuzaki-speech",
  "omuzaki-track",
+ "omuzaki-track-voice",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
@@ -6417,6 +6449,7 @@ dependencies = [
  "omuzaki-ai-native",
  "omuzaki-anim-api",
  "omuzaki-core",
+ "omuzaki-metrics-api",
  "omuzaki-pixfmt",
  "omuzaki-track-api",
  "omuzaki-track-mock",
@@ -6473,10 +6506,14 @@ name = "omuzaki-track-voice"
 version = "0.0.0"
 dependencies = [
  "criterion",
+ "omuzaki-ai-api",
+ "omuzaki-ai-mock",
  "omuzaki-anim-api",
  "omuzaki-audio-api",
+ "omuzaki-audio-mock",
  "omuzaki-core",
  "omuzaki-face-api",
+ "omuzaki-performer-api",
  "thiserror 2.0.21",
 ]
 

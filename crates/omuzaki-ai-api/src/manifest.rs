@@ -184,8 +184,61 @@ pub struct ModelManifest {
     /// For streaming slots: the model's rate, block size and own delay.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream: Option<StreamSpec>,
+    /// For `tts@1` models: which control inputs the model honours (`[tts] honours = ["speed"]`); the others are fed
+    /// and ignored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tts: Option<TtsSpec>,
+    /// For `tts@1` models: the voices it speaks in (`[[voices]]`, `ai-performer-voice-face.md` §3.4).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub voices: Vec<VoiceRow>,
     /// Its card.
     pub card: ModelCard,
+}
+
+/// `[tts]`: what a text-to-speech model does with the slot's controls.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TtsSpec {
+    /// The control inputs it honours: `speed`, `expressiveness`.
+    #[serde(default)]
+    pub honours: Vec<String>,
+}
+
+impl TtsSpec {
+    /// Whether it honours the control `port`.
+    #[must_use]
+    pub fn honours(&self, port: &str) -> bool {
+        self.honours.iter().any(|h| h == port)
+    }
+}
+
+/// One `[[voices]]` row: a voice a text-to-speech model offers.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct VoiceRow {
+    /// The voice's name within the model (`af_heart`); with the model id it makes the voice id
+    /// (`kokoro-82m/af_heart`). Letters, digits, `_` and `-`.
+    pub id: String,
+    /// The languages it speaks well, as BCP 47 tags (`en-US`).
+    #[serde(default)]
+    pub languages: Vec<String>,
+    /// The real person it sounds like, if any: it then needs that person's consent record (SE-05).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imitates: Option<String>,
+    /// Cloned from a recording: it needs a consent record, the streamer's own included.
+    #[serde(default)]
+    pub cloned: bool,
+    /// The model file that holds the voice, when it has one of its own (a style pack).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+}
+
+impl VoiceRow {
+    /// Whether using it needs a consent record.
+    #[must_use]
+    pub fn needs_consent(&self) -> bool {
+        self.cloned || self.imitates.is_some()
+    }
 }
 
 /// Why a manifest is refused. People see these as-is, so each says what to change.
@@ -254,6 +307,17 @@ pub enum ManifestError {
     /// An empty name in the `io` table.
     #[error("the io table maps {0:?} to an empty name")]
     Io(String),
+    /// A `[[voices]]` row whose id is empty, repeated, or has characters other than letters, digits, `_` and `-`.
+    #[error("voice {0:?} must be unique and use only letters, digits, _ and -")]
+    VoiceId(String),
+    /// A `[[voices]]` row whose file isn't one of the model's files.
+    #[error("voice {voice:?} names {file:?}, which isn't one of the model's files")]
+    VoiceFile {
+        /// The voice.
+        voice: String,
+        /// The file it names.
+        file: String,
+    },
 }
 
 /// A file name that is safe on every OS and can't climb out of a folder.
@@ -358,6 +422,19 @@ impl ModelManifest {
         out.extend(
             self.io.iter().filter(|(k, v)| k.is_empty() || v.is_empty()).map(|(k, _)| ManifestError::Io(k.clone())),
         );
+        for (i, voice) in self.voices.iter().enumerate() {
+            let id_ok = !voice.id.is_empty()
+                && voice.id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+                && !self.voices[..i].iter().any(|v| v.id == voice.id);
+            if !id_ok {
+                out.push(ManifestError::VoiceId(voice.id.clone()));
+            }
+            if let Some(file) = &voice.file
+                && !self.files.iter().any(|f| &f.name == file)
+            {
+                out.push(ManifestError::VoiceFile { voice: voice.id.clone(), file: file.clone() });
+            }
+        }
         if out.is_empty() { Ok(()) } else { Err(out) }
     }
 

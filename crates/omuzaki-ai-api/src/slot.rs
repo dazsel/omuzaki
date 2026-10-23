@@ -1,5 +1,5 @@
 //! Slots: the versioned interfaces models plug into. The crate that owns a slot's data (speech in `omuzaki-speech`,
-//! trackers in `omuzaki-track`, voice conversion in `omuzaki-audio`) implements [`Slot`] and registers it with
+//! trackers in `omuzaki-track`, voice conversion in `omuzaki-speech`) implements [`Slot`] and registers it with
 //! [`register_slot!`](crate::register_slot); nothing lists slots centrally (spec §39 rule 2).
 
 use schemars::JsonSchema;

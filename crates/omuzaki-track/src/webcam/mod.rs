@@ -101,9 +101,11 @@ pub struct WebcamConfig {
 
 impl Default for WebcamConfig {
     /// 1280 x 720 at 60 fps (as `CameraFormatRequest::default()`: a camera that offers 30 and 60 gives 60), the first
-    /// camera, and [Rgb8, Bgra8, Nv12, Yuy2, Mjpg] (`PixelFormat::convert_cost`'s order): the raw formats first, cheapest to convert first. MJPG is last,
-    /// chosen only when the camera has no raw format for the requested mode, because decoding it allocates inside
-    /// the JPEG library on every frame (`FrameConverter`).
+    /// camera, and [Rgb8, Bgra8, Nv12, Yuy2, Mjpg] (`PixelFormat::convert_cost`'s order): the raw formats first,
+    /// cheapest to convert first. MJPG is last, chosen when the camera has no raw format for the requested mode
+    /// (most USB 2 webcams at 720p60 or 1080p30): it allocates nothing per frame either, but a 720p frame costs about
+    /// 1.7 times an NV12 conversion to decode (`omuzaki-pixfmt`'s `convert` bench), and it carries the camera's
+    /// compression.
     fn default() -> Self {
         Self {
             camera: None,
