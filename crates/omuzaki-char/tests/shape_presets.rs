@@ -2,7 +2,7 @@
 //! closed head, and measures its stated targets; blends between them are continuous.
 //!
 //! **The targets** ([`TARGETS`]) were written from each preset's geometric description before it was fitted. They are
-//! measured on the head built from the preset on the template's default cranium
+//! measured on the head built from the preset on the template's default cranium, scaled by the preset's own proportions
 //! ([`omuzaki_char::head::presets::measure`]), not on the raw superellipse, and the layout ratios are CB-12's
 //! (`FaceLayout::ratios`). Two ignored tests produce evidence: `report` prints the measured table as Markdown, and
 //! `dump` writes the five meshes and their target curves as JSON for the contact sheet (`SHAPE_PRESETS_OUT`).
@@ -23,7 +23,7 @@ use omuzaki_char::head::outline::{half_width_at, plausible};
 use omuzaki_char::head::presets::measure::{Silhouette, SilhouetteMetrics};
 use omuzaki_char::head::presets::{ShapePreset, ShapeProfileError, ShapeProfiles};
 use omuzaki_char::template::registry;
-use omuzaki_char_api::{HeadOutline, HeadParams, PRESET_IDS};
+use omuzaki_char_api::{HeadOutline, HeadParams, PRESET_IDS, ShapeProfile};
 use omuzaki_core::glam::Vec3;
 use omuzaki_core::mesh::MeshData;
 use omuzaki_face_api::Validate;
@@ -54,12 +54,12 @@ const TARGETS: [Target; 5] = [
     Target { id: "round-u", length_to_width: 0.319, fullness: 0.881, chin: 170.9, jaw_width: 0.220, eye_width_to_iod: 0.29, nose: 0.30, mouth: 0.58, drop_to_iod: 0.57 },
     // Between round-u and heart: widest at the temples, tapering to a soft chin.
     Target { id: "egg-oval", length_to_width: 0.336, fullness: 0.849, chin: 167.5, jaw_width: 0.198, eye_width_to_iod: 0.28, nose: 0.31, mouth: 0.60, drop_to_iod: 0.61 },
-    // The edge of the plausible space: the highest chin, the fullest exponent, the fullest and softest cheeks, the widest jaw.
-    Target { id: "mochi", length_to_width: 0.299, fullness: 0.916, chin: 173.8, jaw_width: 0.251, eye_width_to_iod: 0.31, nose: 0.27, mouth: 0.56, drop_to_iod: 0.45 },
+    // The edge of the plausible space: the highest chin, the fullest exponent, the fullest and softest cheeks, the widest jaw, on a cranium 7% wider (#1690).
+    Target { id: "mochi", length_to_width: 0.280, fullness: 0.916, chin: 173.8, jaw_width: 0.268, eye_width_to_iod: 0.31, nose: 0.27, mouth: 0.56, drop_to_iod: 0.45 },
     // The edge: the widest cheeks the eye line allows, kept full half way down, then blended into a low lower exponent for a pointed chin (#1688).
     Target { id: "heart", length_to_width: 0.372, fullness: 0.866, chin: 143.0, jaw_width: 0.180, eye_width_to_iod: 0.27, nose: 0.32, mouth: 0.66, drop_to_iod: 0.79 },
-    // The edge: the deepest chin on the narrowest jaw, the eye line high, the longest face, almost as pointed as the heart.
-    Target { id: "long", length_to_width: 0.403, fullness: 0.792, chin: 147.0, jaw_width: 0.162, eye_width_to_iod: 0.26, nose: 0.32, mouth: 0.64, drop_to_iod: 0.77 },
+    // The edge: the deepest chin on the narrowest jaw, the eye line high, the longest face on a cranium 10% narrower and 10% taller (#1690), almost as pointed as the heart.
+    Target { id: "long", length_to_width: 0.502, fullness: 0.792, chin: 147.0, jaw_width: 0.157, eye_width_to_iod: 0.26, nose: 0.32, mouth: 0.64, drop_to_iod: 0.89 },
 ];
 
 /// The acceptance tolerance: measured within 5% of the target.
@@ -69,17 +69,22 @@ fn preset(id: &str) -> &'static ShapePreset {
     ShapeProfiles::get(id).unwrap()
 }
 
-fn params_of(outline: HeadOutline) -> HeadParams {
-    HeadParams { outline, ..HeadParams::default() }
+/// The default head with `profile`'s outline, on the default cranium scaled by the profile's proportions.
+fn params_of(profile: &ShapeProfile) -> HeadParams {
+    let mut params = HeadParams { outline: profile.outline, ..HeadParams::default() };
+    if let Some(scale) = profile.cranium {
+        scale.apply(&mut params.cranium);
+    }
+    params
 }
 
-fn live(outline: HeadOutline) -> MeshData {
-    build(&params_of(outline), Resolution::LIVE, None).unwrap()
+fn live(profile: &ShapeProfile) -> MeshData {
+    build(&params_of(profile), Resolution::LIVE, None).unwrap()
 }
 
-/// The silhouette numbers of the head built from `p` on the template's default cranium, finely meshed.
+/// The silhouette numbers of the head built from `p` on its cranium, finely meshed.
 fn measure(p: &ShapePreset) -> SilhouetteMetrics {
-    let params = params_of(p.profile.outline);
+    let params = params_of(&p.profile);
     let mesh = build(&params, Resolution::OFFLINE, None).unwrap();
     Silhouette::of(&mesh, params.cranium.centre()[1]).unwrap().metrics(p.profile.outline.top)
 }
@@ -122,8 +127,8 @@ fn every_preset_validates_and_states_its_chin() {
 
 #[test]
 fn every_preset_is_inside_the_plausible_space_so_what_it_names_is_what_is_built() {
-    let cranium = HeadParams::default().cranium;
     for p in ShapeProfiles::list().unwrap() {
+        let cranium = params_of(&p.profile).cranium;
         let (given, built) = (p.profile.outline, plausible(&p.profile.outline, &cranium));
         let (gc, bc) = (given.chin.unwrap(), built.chin.unwrap());
         for (what, a, b) in [
@@ -152,6 +157,18 @@ fn each_preset_measures_its_silhouette_targets_within_5_percent() {
         within("mid-face fullness", t.id, m.mid_face_fullness, t.fullness);
         within("chin angle", t.id, m.chin_angle_deg, t.chin);
         within("jaw width", t.id, m.jaw_width, t.jaw_width);
+    }
+}
+
+#[test]
+fn mochi_is_a_wide_head_and_long_a_tall_one() {
+    // The plan's whole-head proportions, which the default cranium cannot reach (it spans about 0.94 to 1.03).
+    let (mochi, long) = (measure(preset("mochi")), measure(preset("long")));
+    within("whole-head width / height", "mochi", mochi.width_to_height(), 1.10);
+    within("whole-head height / width", "long", 1.0 / long.width_to_height(), 1.30);
+    // The other three keep the default cranium.
+    for id in ["round-u", "egg-oval", "heart"] {
+        assert_eq!(preset(id).profile.cranium, None, "{id}");
     }
 }
 
@@ -199,8 +216,8 @@ fn the_presets_differ_the_way_their_descriptions_say() {
 
 #[test]
 fn the_widest_point_of_the_head_is_the_craniums_and_the_face_is_widest_at_the_eye_line() {
-    let cranium = HeadParams::default().cranium;
     for p in ShapeProfiles::list().unwrap() {
+        let cranium = params_of(&p.profile).cranium;
         let m = measure(p);
         assert!((m.head_width - 2.0 * cranium.half_width).abs() < 1e-3, "{}: {}", p.id.as_str(), m.head_width);
         assert!(m.widest_y.abs() < 0.01, "{}: the cranium is widest at its centre line", p.id.as_str());
@@ -251,7 +268,10 @@ fn every_preset_builds_a_watertight_head_on_every_template() {
     for template in registry::templates() {
         let head = template.defaults().head;
         for p in ShapeProfiles::list().unwrap() {
-            let params = HeadParams { outline: p.profile.outline, ..head.clone() };
+            let mut params = HeadParams { outline: p.profile.outline, ..head.clone() };
+            if let Some(scale) = p.profile.cranium {
+                scale.apply(&mut params.cranium);
+            }
             let mesh = build(&params, Resolution::LIVE, None).unwrap();
             assert_closed_and_wound_outward(&format!("{} on {}", p.id.as_str(), template.id()), &mesh);
         }
@@ -302,14 +322,14 @@ fn mix_refuses_bad_weights() {
 
 #[test]
 fn a_blend_of_any_two_presets_is_valid_and_inside_the_plausible_space() {
-    let cranium = HeadParams::default().cranium;
     for a in PRESET_IDS {
         for b in PRESET_IDS {
             for t in [0.25, 0.5, 0.75] {
                 let blend = ShapeProfiles::blend(a, b, t).unwrap();
                 blend.outline.validate().unwrap();
                 blend.layout.validate().unwrap();
-                let built = plausible(&blend.outline, &cranium);
+                blend.validate().unwrap();
+                let built = plausible(&blend.outline, &params_of(&blend).cranium);
                 // The plausible limits are not convex, so a blend of two outlines inside them may sit a hair outside
                 // (here by under a millimetre of width): the head builder then clamps it, and nothing jumps.
                 assert!((built.half_width - blend.outline.half_width).abs() < 1e-3, "{a}/{b} at {t}");
@@ -330,7 +350,7 @@ fn blends_move_the_head_in_proportion_to_the_blend_step() {
     for (i, a) in PRESET_IDS.iter().enumerate() {
         for b in &PRESET_IDS[i + 1..] {
             let meshes: Vec<MeshData> = (0..=STEPS)
-                .map(|k| live(ShapeProfiles::blend(a, b, f64::from(k) / f64::from(STEPS)).unwrap().outline))
+                .map(|k| live(&ShapeProfiles::blend(a, b, f64::from(k) / f64::from(STEPS)).unwrap()))
                 .collect();
             let whole = max_step(&meshes[0], &meshes[STEPS as usize]);
             let worst = meshes.windows(2).map(|w| max_step(&w[0], &w[1])).fold(0.0, f64::max);
@@ -420,7 +440,7 @@ fn dump() {
         .iter()
         .map(|t| {
             let p = preset(t.id);
-            let params = params_of(p.profile.outline);
+            let params = params_of(&p.profile);
             let mesh = build(&params, Resolution::LIVE, None).unwrap();
             let m = measure(p);
             let local = |v: Vec3| {

@@ -68,7 +68,7 @@ pub const STRETCH_LINE_RANGE: (f64, f64) = (-0.02, 0.016);
 pub const IMPLICIT_STRETCH_LINE: f64 = 0.0;
 /// The superellipse exponent's range: below it the jaw runs to a V, above it to a box. The lower end is a V-jaw's, held
 /// by the chin tip ([`MIN_TIP_DEG`]) rather than the crease: with [`OutlineCurve`]'s round start the worst crease at the
-/// eye line on the test grid's corners is 17.6 degrees at 1.4, 16.3 at 1.475 and 15.1 at 1.55 (limit 19), where the
+/// eye line on the test grid's corners is 15.8 degrees at 1.4, 14.8 at 1.475 and 13.9 at 1.55 (limit 19), where the
 /// bare superellipse creased them 27.3, 22.9 and 19.2 (#1687).
 pub const EXPONENT_RANGE: (f64, f64) = (1.4, 2.4);
 /// The lower exponent's range ([`OutlineCurve`]): wider than [`EXPONENT_RANGE`] at the bottom, since the curve it shapes
@@ -182,8 +182,9 @@ pub struct OutlineCurve {
 /// Where the lower exponent starts to take over, as the fraction `t` of the way from the outline's top to the chin:
 /// half way, the height mid-face fullness is measured at.
 pub const CHEEK_LINE: f64 = 0.5;
-/// How round the outline's start is per unit of exponent below 2, as a fraction of the lower face's length.
-pub const ROUND_PER_EXPONENT: f64 = 0.25;
+/// How round the outline's start is per unit of exponent below 2, as a fraction of the lower face's length. 0.25 was
+/// enough on the default cranium; the wide crania the face-shape presets' proportions reach (#1690) need 0.35.
+pub const ROUND_PER_EXPONENT: f64 = 0.35;
 
 impl OutlineCurve {
     /// The curve `outline` asks for.

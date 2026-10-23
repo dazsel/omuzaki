@@ -1,7 +1,8 @@
 //! Face-shape presets (CB-10): `round-u`, `egg-oval`, `mochi`, `heart` and `long`, as library data.
 //!
-//! A preset is a [`ShapeProfile`]: a head outline and a feature layout that belong together, in head-local metres. The
-//! five files are `library/shape-profiles/*.toml`, compiled in. [`ShapeProfiles`] reads them once and hands them out
+//! A preset is a [`ShapeProfile`]: a head outline and a feature layout that belong together, in head-local metres, and,
+//! for a shape the default cranium cannot give (mochi's wide head, long's tall one), the cranium's width and height
+//! as factors of the default's (`[cranium]`, #1690). The outline is fitted on that scaled cranium. The five files are `library/shape-profiles/*.toml`, compiled in. [`ShapeProfiles`] reads them once and hands them out
 //! (`get`, `list`) and blends them (`blend` for two, `mix` for any weights); the `face.set_profile` op writes the
 //! blended numbers into a character, so the document never refers to a preset.
 //!
@@ -12,7 +13,7 @@
 //! ([`measure::Silhouette`]) to within 5%.
 //!
 //! **Inside the plausible space.** The head builder clamps every outline to [`super::outline::plausible`]. A preset
-//! stores numbers already inside it, so the outline it names is the outline that is built (a test holds every preset
+//! stores numbers already inside it (on its own cranium), so the outline it names is the outline that is built (a test holds every preset
 //! to that): for instance the exponent never goes below what keeps the chin angle at
 //! [`super::outline::MIN_TIP_DEG`], however pointed the description reads.
 //!
@@ -24,7 +25,7 @@ pub mod measure;
 
 use std::sync::OnceLock;
 
-use omuzaki_char_api::{HeadOutline, ProfileId, ShapeProfile};
+use omuzaki_char_api::{CraniumScale, HeadOutline, ProfileId, ShapeProfile};
 use omuzaki_face_api::{FaceLayout, Validate};
 use serde::Deserialize;
 
@@ -56,7 +57,7 @@ pub struct ShapePreset {
     pub id: ProfileId,
     /// One line for pickers.
     pub summary: String,
-    /// The numbers: the head outline and the feature layout.
+    /// The numbers: the head outline, the feature layout and, for some, the cranium's proportions.
     pub profile: ShapeProfile,
 }
 
@@ -68,6 +69,9 @@ struct PresetFile {
     summary: String,
     outline: HeadOutline,
     layout: FaceLayout,
+    /// The cranium's proportions, for a preset that needs its own (mochi wide, long tall, #1690).
+    #[serde(default)]
+    cranium: Option<CraniumScale>,
 }
 
 /// Every library file, in the order of [`omuzaki_char_api::PRESET_IDS`].
@@ -90,10 +94,13 @@ fn parse(file: &'static str, source: &str) -> Result<ShapePreset, ShapeProfileEr
     }
     p.outline.validate().map_err(|e| fail(e.to_string()))?;
     p.layout.validate().map_err(|e| fail(e.to_string()))?;
+    if let Some(scale) = &p.cranium {
+        scale.validate().map_err(|e| fail(e.to_string()))?;
+    }
     Ok(ShapePreset {
         id: p.id,
         summary: p.summary,
-        profile: ShapeProfile { outline: p.outline, layout: p.layout, cranium: None },
+        profile: ShapeProfile { outline: p.outline, layout: p.layout, cranium: p.cranium },
     })
 }
 

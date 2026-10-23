@@ -24,8 +24,10 @@ pub const PRESET_IDS: [&str; 5] = ["round-u", "egg-oval", "mochi", "heart", "lon
 ///
 /// `width` scales the cranium's `half_width`; `height` scales its `half_height_up`, `half_height_down_back` and
 /// `half_height_down_front`. Both are relative to the default cranium, not to the head they are applied to, so applying
-/// a profile twice gives the same head as applying it once. The plausible range of each is [`CraniumScale::RANGE`]: a
-/// head well outside it reads as another species, not another face shape.
+/// a profile twice gives the same head as applying it once. The plausible range of each is [`CraniumScale::RANGE`], and
+/// the width may be at most [`CraniumScale::MAX_ASPECT`] times the height: the range the head's quality limits are
+/// tested over (`tests/head_quality`). A wider, flatter cranium creases the face at the eye line on the plausible
+/// outlines' extremes.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 #[non_exhaustive]
@@ -44,7 +46,9 @@ impl Default for CraniumScale {
 
 impl CraniumScale {
     /// The plausible range of each factor.
-    pub const RANGE: (f64, f64) = (0.8, 1.25);
+    pub const RANGE: (f64, f64) = (0.85, 1.15);
+    /// The most `width` may be over `height`.
+    pub const MAX_ASPECT: f64 = 1.2;
 
     /// A cranium `width` and `height` times the default's.
     #[must_use]
@@ -82,6 +86,11 @@ impl Validate for CraniumScale {
     fn check(&self, c: &mut Check) {
         c.range("width", self.width, Self::RANGE.0, Self::RANGE.1);
         c.range("height", self.height, Self::RANGE.0, Self::RANGE.1);
+        c.rule(
+            &["width", "height"],
+            self.width <= Self::MAX_ASPECT * self.height,
+            "the width may be at most 1.2 times the height",
+        );
     }
 }
 
@@ -217,12 +226,19 @@ mod tests {
     fn a_cranium_scale_out_of_range_fails_validation_naming_the_field() {
         let base = ShapeProfile { outline: HeadOutline::default(), layout: FaceLayout::default(), cranium: None };
         base.validate().unwrap();
-        let wide = ShapeProfile { cranium: Some(CraniumScale::new(1.5, 1.0)), ..base };
+        let wide = ShapeProfile { cranium: Some(CraniumScale::new(1.18, 1.0)), ..base };
         let errors = wide.validate().unwrap_err().0;
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].path, "cranium/width");
         let short = ShapeProfile { cranium: Some(CraniumScale::new(1.0, 0.5)), ..base };
         assert_eq!(short.validate().unwrap_err().0[0].path, "cranium/height");
+        // Each factor in range, but the cranium too wide for its height.
+        let flat = ShapeProfile { cranium: Some(CraniumScale::new(1.15, 0.9)), ..base };
+        let errors = flat.validate().unwrap_err().0;
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].path, "cranium/width");
+        assert!(errors[0].message.contains("1.2 times the height"), "{}", errors[0].message);
+        ShapeProfile { cranium: Some(CraniumScale::new(1.08, 0.9)), ..base }.validate().unwrap();
     }
 
     #[test]

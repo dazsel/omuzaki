@@ -86,6 +86,9 @@ impl Op for FaceSetProfile {
         if after.outline != current.outline {
             changes.extend(self.outline_change(ctx, &part, &after)?);
         }
+        if after.cranium != current.cranium {
+            changes.extend(self.cranium_change(ctx, &part, &head, &after)?);
+        }
         if self.blend > 0.0 {
             changes.extend(self.preset_change(ctx, &part, preset.filter(|_| self.blend >= 1.0)));
         }
@@ -128,6 +131,9 @@ impl FaceSetProfile {
             ProfileSource::Inline(profile) => {
                 invalid("profile/outline", profile.outline.validate())?;
                 invalid("profile/layout", profile.layout.validate())?;
+                if let Some(scale) = &profile.cranium {
+                    invalid("profile/cranium", scale.validate())?;
+                }
                 Ok((None, **profile))
             }
         }
@@ -153,6 +159,23 @@ impl FaceSetProfile {
         let path = paths::part_params(&self.character, part).join("outline");
         let value = serde_json::to_value(after.outline)
             .map_err(|e| OpError::internal(format!("a head outline did not serialise: {e}")))?;
+        Ok(if ctx.doc.get(&path).is_some() { vec![access::change(ctx, path, Some(value))] } else { access::create(ctx, path, value) })
+    }
+
+    /// The change that writes `after`'s cranium proportions into the head's cranium (its width and heights; the rest of
+    /// the cranium, its centre included, is kept), creating the cranium's table if the head has none.
+    fn cranium_change(
+        &self,
+        ctx: &OpCtx<'_>,
+        part: &PartId,
+        head: &HeadParams,
+        after: &ShapeProfile,
+    ) -> Result<Vec<Change>, OpError> {
+        let mut cranium = head.cranium.clone();
+        after.cranium.unwrap_or_default().apply(&mut cranium);
+        let path = paths::part_params(&self.character, part).join("cranium");
+        let value = serde_json::to_value(&cranium)
+            .map_err(|e| OpError::internal(format!("a head cranium did not serialise: {e}")))?;
         Ok(if ctx.doc.get(&path).is_some() { vec![access::change(ctx, path, Some(value))] } else { access::create(ctx, path, value) })
     }
 

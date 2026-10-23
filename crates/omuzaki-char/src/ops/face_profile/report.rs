@@ -12,11 +12,14 @@ fn r4(x: f64) -> f64 {
     (x * 1e4).round() / 1e4
 }
 
-/// The silhouette of the head `params` builds, with `profile` in place of its outline, measured from the layout's eye
-/// line; `null` when the head doesn't build.
+/// The silhouette of the head `params` builds, with `profile` in place of its outline (and its cranium proportions,
+/// if it has any), measured from the layout's eye line; `null` when the head doesn't build.
 pub(super) fn silhouette(params: &HeadParams, profile: &ShapeProfile) -> Value {
     let mut head = params.clone();
     head.outline = profile.outline;
+    if let Some(scale) = profile.cranium {
+        scale.apply(&mut head.cranium);
+    }
     let Ok(mesh) = build(&head, Resolution::LIVE, None) else {
         return Value::Null;
     };
