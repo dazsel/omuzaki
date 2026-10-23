@@ -5840,7 +5840,6 @@ name = "omuzaki-pixfmt"
 version = "0.0.0"
 dependencies = [
  "criterion",
- "image",
  "proptest",
  "thiserror 2.0.21",
  "zune-jpeg",
