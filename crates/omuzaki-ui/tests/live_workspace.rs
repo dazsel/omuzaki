@@ -629,6 +629,10 @@ fn a_machine_without_a_verified_transparent_surface_says_why_it_cannot_show_the_
     assert_eq!(h.state().panel.model().window_choice().place, Place::Capture, "it stays a capture window");
     assert!(h.state().runner.last("output.window.open").is_none(), "nothing was opened");
     assert!(h.state().panel.model().failure().is_some_and(|f| f.message.contains("transparent window")));
+    h.run_steps(2);
+    let said = all_strings(&h);
+    assert!(said.iter().any(|s| s.starts_with("The output window didn't work: ")), "named in words: {said:?}");
+    assert!(!said.iter().any(|s| s.contains("output.window")), "never by the op's id: {said:?}");
 }
 
 #[test]

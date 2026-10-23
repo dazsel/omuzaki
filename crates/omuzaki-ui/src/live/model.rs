@@ -293,8 +293,10 @@ impl WindowChoice {
 pub struct Failure {
     /// The op.
     pub op: &'static str,
-    /// Its error, as the runner said it.
+    /// What went wrong, in the runner's sentence.
     pub message: String,
+    /// How to fix it, when the op said.
+    pub hint: Option<String>,
 }
 
 /// The Live workspace's state.
@@ -690,7 +692,7 @@ impl LiveModel {
     }
 
     fn fail(&mut self, op: &'static str, error: &OpError) {
-        self.failure = Some(Failure { op, message: error.to_string() });
+        self.failure = Some(Failure { op, message: error.message.clone(), hint: error.hint.clone() });
     }
 }
 
