@@ -1,0 +1,11 @@
+# Light: chiffon and silk. Floaty and slow to settle: a tenth of cotton's bending stiffness and under half its weight.
+density = 0.08
+stretch = 2.0e-4
+shear = 2.0e-3
+bend = 2.0e5
+damping = 3.0
+thickness = 0.001
+max_stretch = 0.06
+friction = [0.4, 0.3]
+# The soft hold toward the designed shape (a soft pin's weight on every free particle).
+shape = 5e-6

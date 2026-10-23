@@ -120,6 +120,18 @@ impl SkinWeights {
         Some(out)
     }
 
+    /// The direction `n` turned by these weights through `matrices` (one per joint): the blended linear parts.
+    #[inline]
+    pub(crate) fn turn(&self, matrices: &[Affine3A], n: Vec3A) -> Vec3A {
+        let mut out = Vec3A::ZERO;
+        for (&joint, &weight) in self.joints.iter().zip(&self.weights) {
+            if weight > 0.0 {
+                out += matrices[usize::from(joint)].transform_vector3a(n) * weight;
+            }
+        }
+        out
+    }
+
     /// `p` skinned by these weights through `matrices` (one per joint).
     #[inline]
     pub(crate) fn skin(&self, matrices: &[Affine3A], p: Vec3A) -> Vec3A {
@@ -149,6 +161,31 @@ pub struct ClothGrid {
     pub skin: Vec<SkinWeights>,
     /// The joints [`SkinWeights::joints`] index.
     pub joints: Vec<JointRef>,
+    /// The part's mesh as it is drawn, vertex by vertex, when it is more than the grid (a seam column repeated, a
+    /// lining, a rolled hem): where each of its vertices comes from. Empty: the mesh is the grid.
+    pub mesh: Vec<MeshVertex>,
+}
+
+/// Where one vertex of a simulated garment's mesh comes from ([`ClothGrid::mesh`]).
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum MeshVertex {
+    /// Grid vertex `k`.
+    Grid(u32),
+    /// A copy of grid vertex `k`, drawn exactly where it is with its normal: a seam column repeated so that its UVs can
+    /// run on, welded to the column it repeats.
+    Twin(u32),
+    /// A vertex off the grid (a lining, a hem's roll) that rides on grid vertex `host`: skinned with its own weights and
+    /// carried by the host's cell as the host is, so it keeps its place against the cloth.
+    Rides {
+        /// The grid vertex it rides on.
+        host: u32,
+        /// Its bind-space position.
+        rest: Vec3,
+        /// Its bind-space normal.
+        normal: Vec3,
+        /// Its skinning.
+        skin: SkinWeights,
+    },
 }
 
 impl ClothGrid {
@@ -177,6 +214,27 @@ impl ClothGrid {
         }
         if !self.positions.iter().all(|p| p.is_finite() && p.abs().max_element() <= super::solver::MAX_COORDINATE) {
             return Err(ClothRuntimeError::Grid("a cloth grid position is not finite or is too far from the origin"));
+        }
+        if self.mesh.len() > u32::MAX as usize / 2 {
+            return Err(ClothRuntimeError::Grid("a cloth mesh has too many vertices"));
+        }
+        for vertex in &self.mesh {
+            let host = match vertex {
+                MeshVertex::Grid(k) | MeshVertex::Twin(k) => *k,
+                MeshVertex::Rides { host, rest, normal, skin } => {
+                    let ok = rest.is_finite()
+                        && rest.abs().max_element() <= super::solver::MAX_COORDINATE
+                        && normal.is_finite()
+                        && skin.normalised(self.joints.len()).is_some();
+                    if !ok {
+                        return Err(ClothRuntimeError::Grid("a riding vertex is not finite or has a bad skin weight"));
+                    }
+                    *host
+                }
+            };
+            if host as usize >= self.positions.len() {
+                return Err(ClothRuntimeError::Grid("a mesh vertex names a grid vertex the grid doesn't have"));
+            }
         }
         self.skin
             .iter()
@@ -247,6 +305,10 @@ pub struct ClothSpec {
     pub lod: LodPolicy,
     /// The mesh's index in the part's mesh list ([`DynamicMesh::mesh`]).
     pub mesh: u16,
+    /// How strongly every free particle is held toward its skinned rest place, as a soft pin's weight (0 none, below 1):
+    /// a toon garment keeps the silhouette it was designed with and only swings with motion. Tiny weights do: the
+    /// pull's compliance is the stretch compliance times `(1 - shape) / shape`.
+    pub shape: f32,
 }
 
 impl Default for ClothSpec {
@@ -263,6 +325,7 @@ impl Default for ClothSpec {
             quality: Quality::Live,
             lod: LodPolicy::default(),
             mesh: 0,
+            shape: 0.0,
         }
     }
 }
@@ -588,6 +651,12 @@ pub struct ClothRuntime {
     grid_skin: Vec<SkinWeights>,
     joints: Vec<JointRef>,
     follow: Vec<f32>,
+    /// The drawn mesh when it is more than the grid ([`ClothGrid::mesh`], riders' weights normalised); empty when the
+    /// grid is the mesh.
+    drawn: Vec<MeshVertex>,
+    /// With a drawn mesh: the grid's positions and normals of the frame, before they are copied into it.
+    grid_out: Vec<Vec3>,
+    grid_normals: Vec<Vec3>,
     /// `+1` or `-1`: the cross product's sign that makes rest normals face out.
     orient: f32,
     height: f32,
@@ -630,8 +699,12 @@ impl ClothRuntime {
             return Err(ClothRuntimeError::Spec("pin_rows must be at least 1 and fewer than the finest sheet's rows"));
         }
         let pin_grid_row = pick(base.rows, grid.rows, false)[spec.pin_rows - 1];
-        if !(spec.density.is_finite() && spec.density > 0.0) {
-            return Err(ClothRuntimeError::Spec("density must be finite and > 0 (kg/m²)"));
+        if !(spec.shape.is_finite()
+            && (0.0..1.0).contains(&spec.shape)
+            && spec.density.is_finite()
+            && spec.density > 0.0)
+        {
+            return Err(ClothRuntimeError::Spec("density must be finite and > 0 (kg/m²) and shape in [0, 1)"));
         }
         check_lod(&spec.lod, levels.len())?;
         let follow = if spec.follow.is_empty() { follow_ramp(grid.rows, pin_grid_row) } else { spec.follow.clone() };
@@ -640,6 +713,7 @@ impl ClothRuntime {
         }
         let config = quality::solver_config(spec.quality);
         let grid_rest: Vec<Vec3A> = grid.positions.iter().map(|&p| p.into()).collect();
+        let drawn = drawn_of(grid);
         let (mut built, mut states, mut winds) =
             (Vec::with_capacity(levels.len()), Vec::with_capacity(levels.len()), Vec::with_capacity(levels.len()));
         for &size in &levels {
@@ -653,8 +727,10 @@ impl ClothRuntime {
         env.set_sheet(Some(built[0].shape), built[0].spacing);
         let max_particles = built.iter().map(|l| l.rest.len()).max().unwrap_or(0);
         let max_pins = built.iter().map(|l| l.pins.len()).max().unwrap_or(0);
-        let vertices = grid.positions.len();
+        let vertices = if drawn.is_empty() { grid.positions.len() } else { drawn.len() };
         let orient = orientation(grid, &grid_rest);
+        let (initial_positions, initial_normals) = drawn_rest(grid, &drawn);
+        let grid_scratch = if drawn.is_empty() { 0 } else { grid.positions.len() };
         let joint_count = joints.len();
         let mut runtime = Self {
             grid_shape: (grid.rows, grid.cols, grid.wrap),
@@ -662,6 +738,9 @@ impl ClothRuntime {
             grid_skin: skin,
             joints,
             follow,
+            drawn,
+            grid_out: vec![Vec3::ZERO; grid_scratch],
+            grid_normals: vec![Vec3::Y; grid_scratch],
             orient,
             height: grid.height(),
             colliders,
@@ -681,31 +760,15 @@ impl ClothRuntime {
                 asleep: false,
                 clock_offset: 0,
                 carry_s: 0.0,
-                positions: grid.positions.clone(),
-                normals: vec![Vec3::Y; vertices],
+                positions: initial_positions,
+                normals: initial_normals,
                 revision: 0,
                 fade: vec![Vec3::ZERO; vertices],
                 fade_s: 0.0,
                 report: StepReport::default(),
             },
             levels: built,
-            d: Dynamic {
-                states: Vec::new(),
-                env: ClothEnvironment::new(0, spec.contact)?,
-                winds: Vec::new(),
-                matrices: Vec::new(),
-                root_inv: Affine3A::IDENTITY,
-                active: 0,
-                asleep: false,
-                clock_offset: 0,
-                carry_s: 0.0,
-                positions: Vec::new(),
-                normals: Vec::new(),
-                revision: 0,
-                fade: Vec::new(),
-                fade_s: 0.0,
-                report: StepReport::default(),
-            },
+            d: Dynamic::empty(spec.contact)?,
             skinned_particles: vec![Vec3A::ZERO; max_particles],
             targets: vec![Vec3::ZERO; max_pins],
             resampled: vec![Vec3::ZERO; max_particles],
@@ -714,9 +777,11 @@ impl ClothRuntime {
             previous_normals: vec![Vec3::ZERO; vertices],
             rotations: vec![Mat3A::IDENTITY; max_particles],
         };
-        let mut normals = std::mem::take(&mut runtime.initial.normals);
-        runtime.derive_normals_into(&runtime.initial.positions, &mut normals);
-        runtime.initial.normals = normals;
+        if runtime.drawn.is_empty() {
+            let mut normals = std::mem::take(&mut runtime.initial.normals);
+            runtime.derive_normals_into(&runtime.initial.positions, &mut normals);
+            runtime.initial.normals = normals;
+        }
         runtime.d = runtime.initial.clone();
         runtime.key = runtime.compute_key(spec, &levels);
         Ok(runtime)
@@ -959,7 +1024,8 @@ impl ClothRuntime {
             // The new particle sits on grid vertex `v`: skinned like it, placed in the old sheet like a drawn vertex.
             let v = vertex as usize;
             let skinned = self.grid_skin[v].skin(&self.d.matrices, self.grid_rest[v]);
-            let pinned = u32::try_from(k).is_ok_and(|k| to_level.pins.binary_search(&k).is_ok());
+            // Hard pins only: a soft pin (the shape's hold) keeps its simulated place like any free particle.
+            let pinned = k / to_level.binding.size.cols < to_level.binding.pin_rows;
             let placed =
                 if pinned { skinned } else { from_level.binding.place(v, skinned, &self.skinned_particles, from_x) };
             self.resampled[k] = placed.into();
@@ -1012,6 +1078,10 @@ impl ClothRuntime {
 
     /// Writes the drawn positions and normals from the active level; bumps the revision if a position changed.
     fn write_output(&mut self) {
+        if !self.drawn.is_empty() {
+            self.write_drawn();
+            return;
+        }
         let active = self.d.active;
         let level = &self.levels[active];
         let x = self.d.states[active].positions();
@@ -1044,6 +1114,63 @@ impl ClothRuntime {
         }
     }
 
+    /// [`ClothRuntime::write_output`] for a drawn mesh that is more than the grid: the grid's vertices as the grid alone
+    /// would draw them (normals from their differences), then every drawn vertex from its source, with the fade.
+    fn write_drawn(&mut self) {
+        let active = self.d.active;
+        let level = &self.levels[active];
+        let x = self.d.states[active].positions();
+        let cols = self.grid_shape.1;
+        level.binding.cell_rotations(self.grid_shape.2, &self.skinned_particles, x, &mut self.rotations);
+        for (v, ((out, &rest), skin)) in self.grid_out.iter_mut().zip(&self.grid_rest).zip(&self.grid_skin).enumerate()
+        {
+            let follow = self.follow[v / cols];
+            let mut p = skin.skin(&self.d.matrices, rest);
+            if follow > 0.0 {
+                p += (level.binding.place_with(v, p, &self.skinned_particles, x, &self.rotations) - p) * follow;
+            }
+            *out = self.d.root_inv.transform_point3a(p).into();
+        }
+        let mut normals = std::mem::take(&mut self.grid_normals);
+        self.derive_normals_into(&self.grid_out, &mut normals);
+        self.grid_normals = normals;
+        let level = &self.levels[active];
+        let fade = if self.d.fade_s > 0.0 { self.d.fade_s / FADE_S } else { 0.0 };
+        let mut changed = false;
+        for (m, vertex) in self.drawn.iter().enumerate() {
+            let (mut p, n) = match *vertex {
+                MeshVertex::Grid(k) | MeshVertex::Twin(k) => (self.grid_out[k as usize], self.grid_normals[k as usize]),
+                MeshVertex::Rides { host, rest, normal, skin } => {
+                    let host = host as usize;
+                    let follow = self.follow[host / cols];
+                    let mut p = skin.skin(&self.d.matrices, rest.into());
+                    let mut n = skin.turn(&self.d.matrices, normal.into());
+                    if follow > 0.0 {
+                        let placed = level.binding.place_with(host, p, &self.skinned_particles, x, &self.rotations);
+                        p += (placed - p) * follow;
+                        let turned = self.rotations[level.binding.embed[host].particles[0] as usize] * n;
+                        n += (turned - n) * follow;
+                    }
+                    let p: Vec3 = self.d.root_inv.transform_point3a(p).into();
+                    let n: Vec3 = self.d.root_inv.transform_vector3a(n).into();
+                    (p, n.try_normalize().unwrap_or(self.d.normals[m]))
+                }
+            };
+            if fade > 0.0 {
+                p += self.d.fade[m] * fade;
+            }
+            let out = &mut self.d.positions[m];
+            if p.to_array().map(f32::to_bits) != out.to_array().map(f32::to_bits) {
+                changed = true;
+                *out = p;
+            }
+            self.d.normals[m] = n;
+        }
+        if changed {
+            self.d.revision = self.d.revision.wrapping_add(1);
+        }
+    }
+
     /// Normals of the grid `positions`, by central differences across rows and columns.
     fn derive_normals_into(&self, positions: &[Vec3], normals: &mut [Vec3]) {
         let (rows, cols, wrap) = self.grid_shape;
@@ -1066,6 +1193,27 @@ impl ClothRuntime {
 }
 
 impl Dynamic {
+    /// A placeholder with nothing in it, until the initial state is copied in.
+    fn empty(contact: ContactParams) -> Result<Self, ClothRuntimeError> {
+        Ok(Self {
+            states: Vec::new(),
+            env: ClothEnvironment::new(0, contact)?,
+            winds: Vec::new(),
+            matrices: Vec::new(),
+            root_inv: Affine3A::IDENTITY,
+            active: 0,
+            asleep: false,
+            clock_offset: 0,
+            carry_s: 0.0,
+            positions: Vec::new(),
+            normals: Vec::new(),
+            revision: 0,
+            fade: Vec::new(),
+            fade_s: 0.0,
+            report: StepReport::default(),
+        })
+    }
+
     /// Clears the fade and the time carried, after a reset.
     fn clear_transients(&mut self) {
         self.fade_s = 0.0;
@@ -1098,6 +1246,38 @@ pub(crate) fn rest_normals(grid: &ClothGrid) -> Vec<Vec3> {
         }
     }
     normals
+}
+
+/// The grid's drawn mesh with every rider's weights normalised.
+fn drawn_of(grid: &ClothGrid) -> Vec<MeshVertex> {
+    grid.mesh
+        .iter()
+        .map(|&vertex| match vertex {
+            MeshVertex::Rides { host, rest, normal, skin } => MeshVertex::Rides {
+                host,
+                rest,
+                normal: normal.normalize_or(Vec3::Y),
+                skin: skin.normalised(grid.joints.len()).unwrap_or(skin),
+            },
+            other => other,
+        })
+        .collect()
+}
+
+/// The drawn mesh at rest: the grid's own positions (normals set later from their differences) when it is the mesh,
+/// otherwise each drawn vertex's source at rest, the grid's vertices with their rest normals.
+fn drawn_rest(grid: &ClothGrid, drawn: &[MeshVertex]) -> (Vec<Vec3>, Vec<Vec3>) {
+    if drawn.is_empty() {
+        return (grid.positions.clone(), vec![Vec3::Y; grid.positions.len()]);
+    }
+    let normals = rest_normals(grid);
+    drawn
+        .iter()
+        .map(|vertex| match *vertex {
+            MeshVertex::Grid(k) | MeshVertex::Twin(k) => (grid.positions[k as usize], normals[k as usize]),
+            MeshVertex::Rides { rest, normal, .. } => (rest, normal),
+        })
+        .unzip()
 }
 
 /// The sign that makes the grid's rest normals (`du x dv`) face away from its centre, on balance.
@@ -1152,7 +1332,8 @@ fn build_level(
     let binding = ClothBinding::from_grid(grid, size, pin_grid_row)?;
     let rest: Vec<Vec3> = binding.vertex.iter().map(|&v| grid.positions[v as usize]).collect();
     let particle_skin: Vec<SkinWeights> = binding.vertex.iter().map(|&v| skin[v as usize]).collect();
-    let pin_weights = (0..rest.len()).map(|i| if i / size.cols < binding.pin_rows { 1.0 } else { 0.0 }).collect();
+    let pin_weights =
+        (0..rest.len()).map(|i| if i / size.cols < binding.pin_rows { 1.0 } else { spec.shape }).collect();
     let shape = SheetShape { rows: size.rows, cols: size.cols, wrap: grid.wrap };
     let sheet = ClothSheet::with_density(shape, rest, spec.density, pin_weights)?;
     let solver = ClothSolver::new(&sheet, &spec.params, config)?;
@@ -1237,10 +1418,27 @@ impl ClothRuntime {
         for &f in &self.follow {
             h.f32(f);
         }
+        for vertex in &self.drawn {
+            match *vertex {
+                MeshVertex::Grid(k) => h.usize(0).usize(k as usize),
+                MeshVertex::Twin(k) => h.usize(1).usize(k as usize),
+                MeshVertex::Rides { host, rest, normal, skin } => {
+                    h.usize(2).usize(host as usize).vec3a(rest.into()).vec3a(normal.into());
+                    for (&j, &w) in skin.joints.iter().zip(&skin.weights) {
+                        h.usize(usize::from(j)).f32(w);
+                    }
+                    &mut h
+                }
+            };
+        }
         for size in levels {
             h.usize(size.cols).usize(size.rows);
         }
-        h.usize(spec.pin_rows).f32(spec.density).str(&format!("{:?}", spec.params)).str(&format!("{:?}", spec.contact));
+        h.usize(spec.pin_rows)
+            .f32(spec.density)
+            .f32(spec.shape)
+            .str(&format!("{:?}", spec.params))
+            .str(&format!("{:?}", spec.contact));
         h.str(&format!("{:?}", spec.wind)).str(&format!("{:?}", spec.quality)).str(&format!("{:?}", spec.lod));
         self.colliders.hash_into(&mut h);
         h.finish()
@@ -1258,8 +1456,10 @@ impl ClothRuntime {
             })
             .sum();
         let vertices = self.grid_rest.len();
+        let drawn = self.drawn.len();
         per_level
             + vertices * (size_of::<Vec3A>() + size_of::<SkinWeights>() + 2 * (4 * size_of::<Vec3>()))
+            + drawn * (size_of::<MeshVertex>() + 2 * (4 * size_of::<Vec3>()))
             + self.colliders.len() * 128
     }
 }
@@ -1344,7 +1544,7 @@ impl PartRuntime for ClothRuntime {
         RuntimeCost {
             particles: self.levels[self.d.active].rest.len() as u32,
             colliders: self.colliders.len() as u32,
-            vertices: self.grid_rest.len() as u32,
+            vertices: self.d.positions.len() as u32,
         }
     }
 

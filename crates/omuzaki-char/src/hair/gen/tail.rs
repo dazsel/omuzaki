@@ -315,6 +315,8 @@ pub struct Chain {
     pub rest: Vec<Vec3>,
     /// Length from the first bone over which the locks blend from the head to the chain, metres.
     pub root_band: f32,
+    /// The spring parameters at the root and the tip, tapered between.
+    pub springs: [SpringParams; 2],
 }
 
 /// The chains of a tail group: one per side (`_l` as authored, then `_r` for a mirrored group), each
@@ -344,6 +346,7 @@ pub fn chains(g: &TailGen, head: &dyn HeadSurface, prefix: &str, mirror: bool) -
             rest,
             #[allow(clippy::cast_possible_truncation)] // a small length
             root_band: (ROOT_BAND * shape.scale) as f32,
+            springs: [CHAIN_ROOT, CHAIN_TIP],
         });
     }
     Ok(out)
@@ -377,7 +380,8 @@ pub fn add_chains(chains: Vec<Chain>, colliders: &[String], out: &mut RigContrib
             ids.push(out.add_bone(ExtraBone { name: bone.clone(), parent, rest: Transform::from_translation(*at) }));
             parent = JointRef::Named(bone.clone());
         }
-        let mut spring = SpringChain::tapered(chain.name, &ids, CHAIN_ROOT, CHAIN_TIP);
+        let [root, tip] = chain.springs;
+        let mut spring = SpringChain::tapered(chain.name, &ids, root, tip);
         spring.collider_groups = colliders.to_vec();
         spring.center = Some(humanoid_id(HumanoidBone::Head));
         out.chains.push(spring);

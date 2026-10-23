@@ -35,7 +35,7 @@
 //! - `level` (`"essentials"`, the default, or `"advanced"`) and `group` (fields of the same group share a section). At
 //!   most [`MAX_ESSENTIALS`] fields are Essentials: the rest are listed under Advanced and counted in
 //!   [`Form::demoted`]. A form with no Advanced field has no section headers. Nested objects are one section; their
-//!   fields are listed in schema order.
+//!   fields are listed in schema order. A nested object marked `"advanced"` starts folded.
 //! - `default` (else the schema's `default`, else the field's natural first value). A field with a declared default
 //!   shows the modified dot and a reset while its value differs from it; the reset's space is kept while it is hidden.
 //! - `unit`, `step` and `decimals` for number fields (an integer steps by a whole number and shows no decimals).

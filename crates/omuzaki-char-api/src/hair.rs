@@ -1028,6 +1028,11 @@ impl Default for BunGen {
     }
 }
 
+/// The most clumps a guides group holds.
+pub const MAX_GUIDE_CLUMPS: usize = 512;
+/// The most control points a guide clump holds.
+pub const MAX_GUIDE_POINTS: usize = 128;
+
 /// Explicit clumps: hand-edited or traced guide curves (CB-32). Every other generator can be baked into these.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -1197,8 +1202,9 @@ impl Default for HairShading {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Streak {
-    /// Share of the eligible clumps that take the streak, `0..=1`. Each clump is picked by a hash of `seed` and its
-    /// position among the eligible clumps, so the same seed picks the same clumps on every build.
+    /// Share of the eligible clumps that take the streak, `0..=1`: exactly that share, rounded. The clumps are ranked
+    /// by a hash of `seed` and their position among the eligible clumps, and the lowest ranked take it, so the same
+    /// seed picks the same clumps on every build.
     pub fraction: f64,
     /// The streak colour: a palette slot or a literal.
     pub colour: ColourRef,
@@ -1354,15 +1360,20 @@ impl HairShading {
         let mid = palette.resolve(&self.mid)?.to_linear();
         for streak in &self.streaks {
             let colour = palette.resolve(&streak.colour)?.to_linear();
-            let eligible = groups
+            let mut eligible: Vec<(f64, &mut Option<Colour>)> = groups
                 .iter()
                 .zip(tints.iter_mut())
-                .filter(|(group, _)| streak.groups.is_empty() || streak.groups.contains(group));
-            for (index, (_, tint)) in eligible.enumerate() {
-                if unit(streak.seed, index) < streak.fraction {
-                    let current = tint.map_or(mid, Colour::to_linear);
-                    *tint = Some(Colour::from_linear(streak.paint(current, colour), 1.0));
-                }
+                .filter(|(group, _)| streak.groups.is_empty() || streak.groups.contains(group))
+                .enumerate()
+                .map(|(index, (_, tint))| (unit(streak.seed, index), tint))
+                .collect();
+            // Exactly the share asked for, rounded: the eligible clumps with the lowest draws.
+            #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let take = ((streak.fraction.clamp(0.0, 1.0) * eligible.len() as f64).round() as usize).min(eligible.len());
+            eligible.sort_by(|a, b| a.0.total_cmp(&b.0));
+            for (_, tint) in eligible.into_iter().take(take) {
+                let current = tint.map_or(mid, Colour::to_linear);
+                *tint = Some(Colour::from_linear(streak.paint(current, colour), 1.0));
             }
         }
         Ok(())
@@ -1633,9 +1644,18 @@ impl Validate for HairGroup {
                 c.range("generator/radius", g.radius, 0.01, 0.2);
             }
             Generator::Guides(g) => {
+                if g.clumps.len() > MAX_GUIDE_CLUMPS {
+                    c.fail("generator/clumps", format!("{} clumps: use at most {MAX_GUIDE_CLUMPS}", g.clumps.len()));
+                }
                 for (i, clump) in g.clumps.iter().enumerate() {
                     if clump.points.len() < 2 {
                         c.fail(&format!("generator/clumps/{i}/points"), "a clump needs at least two points");
+                    }
+                    if clump.points.len() > MAX_GUIDE_POINTS {
+                        c.fail(
+                            &format!("generator/clumps/{i}/points"),
+                            format!("{} points: use at most {MAX_GUIDE_POINTS}", clump.points.len()),
+                        );
                     }
                     for (k, p) in clump.points.iter().enumerate() {
                         c.nested(&format!("generator/clumps/{i}/points/{k}"), p);

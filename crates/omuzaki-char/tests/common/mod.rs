@@ -112,10 +112,12 @@ pub fn definition(doc: &MemDoc, id: &str) -> CharacterDef {
     CharacterDef::from_node(&at(doc, &format!("characters/{id}")).unwrap()).unwrap()
 }
 
-/// Builds the character `id` with the registry builder and default options.
+/// Builds the character `id` with the registry builder and default options. Painted textures (the default skirt's
+/// plaid) come from the mock rasteriser: the apps paint with the one `omuzaki-face` links, which this crate can't.
 pub fn build(doc: &MemDoc, id: &str) -> BuiltCharacter {
     let (char_id, def) = (CharId::new(id).unwrap(), definition(doc, id));
+    let services = BuildServices::default().with_rasterizer(|| Box::new(omuzaki_face_mock::MockRasterizer));
     RegistryBuilder
-        .build(&char_id, &def, &BuildOptions::default(), &BuildServices::default())
+        .build(&char_id, &def, &BuildOptions::default(), &services)
         .unwrap_or_else(|e| panic!("{id} doesn't build: {e}"))
 }

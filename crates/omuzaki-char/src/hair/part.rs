@@ -40,6 +40,7 @@ use omuzaki_core::mesh::MeshData;
 use omuzaki_face_api::{FaceLayerId, Palette, narrow};
 use omuzaki_render_api::{AlphaMode, Outline};
 
+use super::bake;
 use super::compile::{self, CompiledEntry, Dispatch, GroupGenerator, GroupGeometry, enabled};
 use super::r#gen::bangs;
 use super::r#gen::curtain::{self, BodyKeepOut, StripError};
@@ -142,8 +143,11 @@ pub fn build_with(
     let material = hair_material(ctx.part, params, ctx.palette, overlays)?;
     let mut out = PartOutput::new().with_materials(vec![(material_name.clone(), material)]).with_warnings(warnings);
     // Built for export, the simulated groups other than tails hang on strand chains of their own.
-    let strands =
-        if ctx.rig_export { strand_chains(ctx.part, &entries, &chains).map_err(|e| ctx.fail(e))? } else { Vec::new() };
+    let strands = if ctx.rig_export {
+        bake::strand_chains(ctx.part, params, &entries, &chains).map_err(|e| ctx.fail(e))?
+    } else {
+        Vec::new()
+    };
     // Static hair follows the head, except a tail's locks, which follow their chain's bones. Simulated hair is the
     // runtime's to move, unskinned in character space; an export build skins it as static hair is, for its spring
     // chains to move in other apps.
@@ -197,45 +201,6 @@ pub fn build_with(
     let reach = HairReach::from_points(head.as_ref(), out.meshes.iter().flat_map(|m| &m.geometry.positions));
     out.publishes.put::<HairReachFact>(reach);
     publish_ties(params, ctx, head.as_ref(), &mut out)?;
-    Ok(out)
-}
-
-/// The most strand chains an exported group gets: enough for the curtain to swing in parts, few enough for a VRM
-/// viewer's spring-bone budget.
-const STRANDS_PER_GROUP: usize = 8;
-/// Bones along each strand chain, root to tip.
-const STRAND_BONES: usize = 5;
-/// Length from a strand's root over which its locks blend from the head to the chain, metres.
-const STRAND_ROOT_BAND: f32 = 0.03;
-
-/// The strand chains of the simulated groups that are not tails (tails have their own): up to [`STRANDS_PER_GROUP`]
-/// clumps of each, evenly spread, each a chain of [`STRAND_BONES`] bones along its rest shape. Named as a tail's chains
-/// are, `hair_<part>_<group>_s<k>`.
-fn strand_chains(
-    part: &PartId,
-    entries: &[CompiledEntry],
-    tails: &BTreeMap<GroupId, Vec<Chain>>,
-) -> Result<Vec<Chain>, String> {
-    let mut out = Vec::new();
-    for entry in entries.iter().filter(|e| e.simulate && !tails.contains_key(&e.id)) {
-        let clumps: Vec<_> = entry.group.clumps.iter().filter(|c| c.simulate && c.rest.len() >= 2).collect();
-        let count = clumps.len().min(STRANDS_PER_GROUP);
-        for k in 0..count {
-            let clump = clumps[if count < 2 { 0 } else { k * (clumps.len() - 1) / (count - 1) }];
-            let name = format!("{}_s{k}", chain_prefix(part, &entry.id));
-            let last = clump.rest.len() - 1;
-            let mut bones = Vec::with_capacity(STRAND_BONES);
-            let mut rest = Vec::with_capacity(STRAND_BONES);
-            for i in 0..STRAND_BONES {
-                bones.push(
-                    omuzaki_char_api::BoneName::new(format!("{name}_{i}"))
-                        .map_err(|e| format!("a strand bone name: {e}"))?,
-                );
-                rest.push(clump.rest[i * last / (STRAND_BONES - 1)]);
-            }
-            out.push(Chain { name, bones, rest, root_band: STRAND_ROOT_BAND });
-        }
-    }
     Ok(out)
 }
 
@@ -516,7 +481,7 @@ fn tail_chains(
 }
 
 /// The start of every bone and chain name of a tail group: `hair_<part>_<group id>`.
-fn chain_prefix(part: &PartId, group: &GroupId) -> String {
+pub(crate) fn chain_prefix(part: &PartId, group: &GroupId) -> String {
     format!("hair_{part}_{group}")
 }
 
