@@ -10,7 +10,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use omuzaki_anim_api::HumanoidBone;
-use omuzaki_char::template::conformance::{self, LATERAL_ROOT_MAX_RATIO};
+use omuzaki_char::template::conformance;
 use omuzaki_char::template::layout::{BodyLayout, RegionSection, section_basis};
 use omuzaki_char::template::registry;
 use omuzaki_char::template::shape::{self, Gain, Marks, Shape};
@@ -811,20 +811,12 @@ fn the_thighs_read_as_two_at_every_corner_of_the_cube() {
 
 #[test]
 fn every_corner_at_the_slider_extremes_keeps_every_bone_a_sensible_length() {
-    // The conformance suite's bone-length rule (0.4 to 2.5 times the default, 2.8 for the lateral roots), over all 32
+    // The conformance suite's bone-length rule (0.4 to 2.5 times the default, the lateral roots included, #640), over all 32
     // corners of the shape cube at all 256 corners of the proportion sliders (its own samples are random). That is
     // every pair in the nightly run (`OMUZAKI_FULL_TESTS`); the pull request gate, whose test shards have a time limit
     // (#2300), takes every seventh pair, from a different start on each template. Seven and 256 share no factor, so each
     // template still meets every shape corner and every slider corner.
     let stride = if std::env::var_os("OMUZAKI_FULL_TESTS").is_some() { 1 } else { 7 };
-    let lateral = [
-        HumanoidBone::LeftUpperLeg,
-        HumanoidBone::RightUpperLeg,
-        HumanoidBone::LeftShoulder,
-        HumanoidBone::RightShoulder,
-        HumanoidBone::LeftUpperArm,
-        HumanoidBone::RightUpperArm,
-    ];
     for (n, id) in templates().into_iter().enumerate() {
         let template = registry::find(id).unwrap();
         let lengths = |l: &BodyLayout| -> Vec<(HumanoidBone, f64)> {
@@ -847,9 +839,8 @@ fn every_corner_at_the_slider_extremes_keeps_every_bone_a_sensible_length() {
             };
             let l = template.layout(&p, &corner(shape_corner), &HandParams::default());
             for ((bone, now), (_, was)) in lengths(&l).into_iter().zip(&default) {
-                let (low, high) = (0.4, if lateral.contains(&bone) { f64::from(LATERAL_ROOT_MAX_RATIO) } else { 2.5 });
                 assert!(
-                    (low..=high).contains(&(now / was)),
+                    (0.4..=2.5).contains(&(now / was)),
                     "{id}: {bone} is {:.2} times its default length at shape corner {shape_corner} and {p:?}",
                     now / was
                 );

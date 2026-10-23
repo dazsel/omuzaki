@@ -108,9 +108,9 @@ const NECK_BASE_SHARE: f64 = 0.6;
 /// How far down the neck its own gain is fully in force, as a fraction of the neck's length.
 const NECK_RAMP: f64 = 0.35;
 /// The range of the factors on where the limbs' roots sit across the body ([`Shape::arm_spacing`],
-/// [`Shape::leg_spacing`]). The proportion sliders scale the same offsets by `0.5..=2`, and a lateral root bone must stay
-/// within `0.4..=2.8` times its default length at every setting of both (`conformance::LATERAL_ROOT_MAX_RATIO`); the
-/// factors here keep to `0.85..=1.35` of that.
+/// [`Shape::leg_spacing`]). The proportion sliders scale the same offsets by `0.5..=2`; the layout eases the product of
+/// the two toward 2.4, so a lateral root bone stays within the `0.4..=2.5` times its default length every bone keeps to
+/// (`conformance::BONE_LENGTH_RATIO`, #640).
 const SPACING: (f64, f64) = (0.85, 1.35);
 /// The most the legs' girth grows across the body: what `build = 1` alone gives.
 const LEG_GIRTH_MAX: f64 = 1.26;
