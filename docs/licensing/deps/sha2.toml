@@ -1,7 +1,7 @@
 section = "rust"
 item = "sha2"
 kind = "crate"
-used_for = "verifies the pinned SHA-256 of downloaded fallback fonts in `omuzaki-stage`; checks RFC 8032's SHA(abc) test message in `omuzaki-identity-mock`'s tests"
+used_for = "verifies the pinned SHA-256 of downloaded fallback fonts in `omuzaki-stage` and of starter characters in `omuzaki-io-ops`; checks RFC 8032's SHA(abc) test message in `omuzaki-identity-mock`'s tests"
 status = "yes"
 condition = "MIT OR Apache-2.0: keep the notices"
 audit = "(crates.io)"

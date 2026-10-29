@@ -1,0 +1,7 @@
+section = "models"
+item = "MakeHuman and MPFB (MakeHuman Plugin For Blender): the tools and their core assets"
+kind = "tool"
+used_for = "(optional) a person-side route to a realistic human base body, exported to glTF or VRM and imported"
+status = "external"
+condition = "Split licence (https://static.makehumancommunity.org/about/license.html, read 2026-10-29): MPFB's code is GPL and MakeHuman's AGPL, so both stay separate programs, never linked or bundled; \"All core assets are shared under Creative Commons, CC0\" and the MPFB FAQ says models made with it may go in closed-source products. Third-party assets from community packs carry their own licences and need their own row"
+audit = "(MakeHuman Community site, read 2026-10-29)"

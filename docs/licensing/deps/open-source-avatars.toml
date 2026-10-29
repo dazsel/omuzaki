@@ -1,0 +1,7 @@
+section = "models"
+item = "Open Source Avatars registry (opensourceavatars.com, github.com/ToxSam/open-source-avatars)"
+kind = "asset"
+used_for = "(not shipped) a pointer for people who want more free VRMs; the 100Avatars series is a candidate for stylised, low-poly starters"
+status = "conditions"
+condition = "The registry's data is CC0; each collection carries its own licence in `data/projects.json` (read 2026-10-29): 100Avatars R1 to R3, Grifters Squaddies, ToxSam, Halloween Rising, Xmas Chibis and NeonGlitch86 are CC0, VIPE Heroes Genesis is CC-BY. Check the collection before using an avatar; the CC-BY one needs credit"
+audit = "(GitHub README and projects.json, read 2026-10-29)"

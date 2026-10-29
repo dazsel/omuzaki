@@ -1,0 +1,7 @@
+section = "models"
+item = "Seed-san, the VRM Consortium's VRM 1.0 sample model (VirtualCast, Inc.)"
+kind = "asset"
+used_for = "a starter character (`crates/omuzaki-io-ops/data/starter-characters.toml`, fetched on demand by `io.starter.fetch`, never committed)"
+status = "conditions"
+condition = "VRM Public License 1.0 (https://vrm.dev/en/licenses/1.0/), with the licence settings in the file's own meta (read 2026-10-29): commercialUsage \"corporation\", allowRedistribution true, modification \"allowModificationRedistribution\", avatarPermission \"everyone\", creditNotation \"required\". So: credit \"Seed-san model by VirtualCast, Inc.\" with the licence link wherever the model is shown or redistributed, say when it was modified, and an edited copy keeps terms at least as strict. The file is from https://github.com/vrm-c/vrm-specification (`samples/Seed-san/vrm/Seed-san.vrm`), pinned by SHA-256"
+audit = "(vrm-c/vrm-specification README and the file's VRMC_vrm meta, read 2026-10-29)"

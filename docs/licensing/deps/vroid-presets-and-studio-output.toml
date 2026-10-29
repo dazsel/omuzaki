@@ -1,0 +1,7 @@
+section = "models"
+item = "VRoid Studio's non-CC0 sample models (VRoidPreset_A to Z, AvatarSample_A to C) and characters made in VRoid Studio"
+kind = "asset"
+used_for = "(not shipped) a person's own VRoid characters import like any VRM (`io.import {as: avatar}`)"
+status = "NO"
+condition = "Not for shipping with Omuzaki or for its kit to build on. The VRoidPreset_A to Z conditions (https://vroid.pixiv.help/hc/en-us/articles/4402394424089, updated 2024-12-26, read 2026-10-29) prohibit \"Development of a character creation service using data contained in the sample model, or diversion of data contained in the sample model to an existing character creation service\". For VRoid Studio output in general, https://vroid.pixiv.help/hc/en-us/articles/4405813333657 (read 2026-10-29): \"You cannot create an application that can generate or output 3D models, avatars, or items consisting of deformed or combined meshes and textures that were created in VRoid Studio\" without a separate licence from pixiv. So a character we design in VRoid Studio cannot become a built-in preset of a character maker. Users importing their own VRoid characters to perform as them is ordinary VRM use and stays allowed; their model's own VRM licence travels with it (io-api D5)"
+audit = "(pixiv help centre, read 2026-10-29)"

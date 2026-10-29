@@ -1,0 +1,89 @@
+# The starter characters: finished, rigged VRM characters whose licence lets Omuzaki hand them to anyone to perform as,
+# edit and export (`io.starter.list`, `io.starter.fetch`). The files are not in the repository (ADR 0003): each is
+# downloaded on first use from its pinned URL, checked against its SHA-256, and stored under the record below.
+#
+# Each licence was read at its primary source; the evidence is in `docs/licensing/deps/vroid-sample-models.toml` and
+# `docs/licensing/deps/seed-san.toml`, and the survey behind the choice in
+# `docs/research/2026-10-free-character-assets.md`. Add a starter only with a licence row that says `yes` or
+# `conditions`, and only a licence that allows commercial use, modification and redistribution.
+#
+# Fields:
+# - `id`: what `io.starter.fetch` takes; lowercase letters, digits and `-`.
+# - `name`: the character's name, as its makers give it; `about`: one line on how it looks.
+# - `licence`: SPDX or `LicenseRef-…`; `author`, `attribution` (the credit line, when the licence requires one) and
+#   `source_url` (where the licence was read) go into the store's record with `commercial = "ok"`.
+# - `terms`: what the licence grants, in the VRM `meta` vocabulary; the avatar's source row gets them, because a file's
+#   own meta may say less than its licence (a VRoid Hub `Other` reads as "no modification, no redistribution").
+# - `download`: the pinned file (`urls`, `sha256`, `size`). With `member`, the download is a zip archive and the model
+#   is that member, pinned again by `member_sha256` and `member_size`.
+
+[[starter]]
+id = "vroid-shibu"
+name = "Sendagaya Shibu"
+about = "black bob with a hairpin, school uniform with an orange bow (VRoid β sample 1)"
+licence = "CC0-1.0"
+author = "VRoid Project (pixiv Inc.)"
+source_url = "https://vroid.pixiv.help/hc/en-us/articles/360012381793"
+terms = { avatarPermission = "everyone", allowExcessivelyViolentUsage = true, allowExcessivelySexualUsage = true, commercialUsage = "corporation", allowPoliticalOrReligiousUsage = true, allowAntisocialOrHateUsage = true, creditNotation = "unnecessary", allowRedistribution = true, modification = "allowModificationRedistribution" }
+download = { urls = ["https://opengameart.org/sites/default/files/avatarsample_d_0.zip"], sha256 = "311a383b0b63b55102c82efa5ab2afec0dfcccc1cc6fa2db10fd5583981b3167", size = 13601220, member = "AvatarSample_D.vrm", member_sha256 = "9adf1b44e959d2688d62c2dd558e74315d6aa40e3bf8d281390b7a85dc0df9b7", member_size = 16851352 }
+
+[[starter]]
+id = "vroid-bibi"
+name = "Bibi"
+about = "brown bob with round jade eyes, green apron dress and lace-up boots (VRoid β sample 2)"
+licence = "CC0-1.0"
+author = "VRoid Project (pixiv Inc.)"
+source_url = "https://vroid.pixiv.help/hc/en-us/articles/360014900273"
+terms = { avatarPermission = "everyone", allowExcessivelyViolentUsage = true, allowExcessivelySexualUsage = true, commercialUsage = "corporation", allowPoliticalOrReligiousUsage = true, allowAntisocialOrHateUsage = true, creditNotation = "unnecessary", allowRedistribution = true, modification = "allowModificationRedistribution" }
+download = { urls = ["https://opengameart.org/sites/default/files/avatarsample_e.zip"], sha256 = "3b6808e241102221625380d3e5d6911efb5cd484f290bfa16955e1b65856b6b1", size = 14959110, member = "AvatarSample_E.vrm", member_sha256 = "aea824cc43a95dd022a57d460ed901534a45fc2ac195f26ffc4d0d5beb0d7911", member_size = 17936516 }
+
+[[starter]]
+id = "vroid-vita"
+name = "Vita"
+about = "short silver hair with a blue streak, green and blue eyes, cyber ears and a stage outfit (VRoid β sample 3)"
+licence = "CC0-1.0"
+author = "VRoid Project (pixiv Inc.)"
+source_url = "https://vroid.pixiv.help/hc/en-us/articles/360014900113"
+terms = { avatarPermission = "everyone", allowExcessivelyViolentUsage = true, allowExcessivelySexualUsage = true, commercialUsage = "corporation", allowPoliticalOrReligiousUsage = true, allowAntisocialOrHateUsage = true, creditNotation = "unnecessary", allowRedistribution = true, modification = "allowModificationRedistribution" }
+download = { urls = ["https://opengameart.org/sites/default/files/avatarsample_f.zip"], sha256 = "e187569ebb25b34800b28daf6d75680f8b8945811b368d8478660d8f2798ebd1", size = 11165899, member = "AvatarSample_F.vrm", member_sha256 = "d8eff1ed09b41afb94e30da27997560fb901dde925c813f835ab1986708521bb", member_size = 14198800 }
+
+[[starter]]
+id = "vroid-victoria"
+name = "Victoria Rubin"
+about = "long blonde side ponytail fading to pink, blue eyes, frilled white blouse (VRoid β sample 4)"
+licence = "CC0-1.0"
+author = "VRoid Project (pixiv Inc.)"
+source_url = "https://vroid.pixiv.help/hc/en-us/articles/360014900233"
+terms = { avatarPermission = "everyone", allowExcessivelyViolentUsage = true, allowExcessivelySexualUsage = true, commercialUsage = "corporation", allowPoliticalOrReligiousUsage = true, allowAntisocialOrHateUsage = true, creditNotation = "unnecessary", allowRedistribution = true, modification = "allowModificationRedistribution" }
+download = { urls = ["https://opengameart.org/sites/default/files/avatarsample_g.zip"], sha256 = "3dc643aa55bf565512aa445775943b3ee93c71dc157b8ea8394863d494811b34", size = 12244783, member = "AvatarSample_G.vrm", member_sha256 = "ad5750ce944b708155abb7ac6807e19d7f5e73a939f0ee32daf0539acfca57c0", member_size = 15321932 }
+
+[[starter]]
+id = "vroid-shino"
+name = "Sendagaya Shino"
+about = "long straight navy hair, school uniform with a blue bow"
+licence = "CC0-1.0"
+author = "VRoid Project (pixiv Inc.)"
+source_url = "https://vroid.pixiv.help/hc/en-us/articles/360013482714"
+terms = { avatarPermission = "everyone", allowExcessivelyViolentUsage = true, allowExcessivelySexualUsage = true, commercialUsage = "corporation", allowPoliticalOrReligiousUsage = true, allowAntisocialOrHateUsage = true, creditNotation = "unnecessary", allowRedistribution = true, modification = "allowModificationRedistribution" }
+download = { urls = ["https://opengameart.org/sites/default/files/sendagaya_shino.zip"], sha256 = "ff85ff42c1d041fd66dabdb36761a98557d7b55199f635769f3698a41c0a3696", size = 11738036, member = "Sendagaya Shino.vrm", member_sha256 = "f11b2648e7e588ae171ad1c32e465f84e5b130b1d1789e3a3702946c0981d2a9", member_size = 14870776 }
+
+[[starter]]
+id = "vroid-fumiriya"
+name = "Sakurada Fumiriya"
+about = "semi-long blonde-pink hair, school uniform with a tie and trousers"
+licence = "CC0-1.0"
+author = "VRoid Project (pixiv Inc.)"
+source_url = "https://vroid.pixiv.help/hc/en-us/articles/360014788554"
+terms = { avatarPermission = "everyone", allowExcessivelyViolentUsage = true, allowExcessivelySexualUsage = true, commercialUsage = "corporation", allowPoliticalOrReligiousUsage = true, allowAntisocialOrHateUsage = true, creditNotation = "unnecessary", allowRedistribution = true, modification = "allowModificationRedistribution" }
+download = { urls = ["https://opengameart.org/sites/default/files/sakurada_fumiriya.zip"], sha256 = "f3c53eea11398c7ed650d686a1e19e0823122068280ed4adc8105c9913e9fc66", size = 15862898, member = "Sakurada Fumiriya.vrm", member_sha256 = "a36e91b81518c59f6da0e3f34a176b79090a8c68cc6bd5fe03c1560744b283f3", member_size = 19589760 }
+
+[[starter]]
+id = "seed-san"
+name = "Seed-san"
+about = "the VRM Consortium's VRM 1.0 sample: black hair, white suit and a robot arm"
+licence = "LicenseRef-VRM-Public-License-1.0"
+author = "VirtualCast, Inc."
+attribution = "Seed-san model by VirtualCast, Inc. (VRM Public License 1.0, https://vrm.dev/licenses/1.0/)"
+source_url = "https://github.com/vrm-c/vrm-specification/tree/94e82dd346fa6cf0337c4421728640e5252dd38e/samples/Seed-san"
+terms = { avatarPermission = "everyone", allowExcessivelyViolentUsage = true, allowExcessivelySexualUsage = true, commercialUsage = "corporation", allowPoliticalOrReligiousUsage = true, allowAntisocialOrHateUsage = true, creditNotation = "required", allowRedistribution = true, modification = "allowModificationRedistribution" }
+download = { urls = ["https://raw.githubusercontent.com/vrm-c/vrm-specification/94e82dd346fa6cf0337c4421728640e5252dd38e/samples/Seed-san/vrm/Seed-san.vrm"], sha256 = "624d0d554bc205bbdc33e22a68a2c3c20edebb3e573011ead8878a65e5329b23", size = 10917800 }
