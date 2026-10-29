@@ -706,6 +706,20 @@ pub struct BraidGen {
     /// uses the head's own crown radius.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub height_radius: Option<f64>,
+    /// A path of its own over the head in place of the crown round the back (#2448): two or more points on the head's
+    /// surface, `[theta_deg, phi_deg]` as a guide's `surface` point (`theta` from the top, `phi` from the front toward
+    /// the character's left), root first. One braid follows it, with no mirrored side: from a side part over the crown,
+    /// or from ear to ear as a headband. Empty (the default) is the crown.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub path: Vec<[f64; 2]>,
+    /// How far the braid stands off the head, metres. `None`: the crown's 3.6 cm, which clears the default cap; a braid
+    /// on its own path lies on the cap at 2.4 cm.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lift: Option<f64>,
+    /// How far each end sinks toward the head over the first and last eighth of the braid, metres, so it goes into
+    /// the hair round it instead of ending in mid-air. `None`: none for the crown, 1.2 cm on a path of its own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tuck: Option<f64>,
 }
 
 impl Default for BraidGen {
@@ -722,6 +736,9 @@ impl Default for BraidGen {
             strand_width: 0.024,
             strand_thickness: 0.014,
             height_radius: None,
+            path: Vec::new(),
+            lift: None,
+            tuck: None,
         }
     }
 }
@@ -1646,6 +1663,29 @@ pub struct HairParams {
     pub groups: BTreeMap<GroupId, HairGroup>,
     /// Where the random jitter comes from. The default is the per-part forked stream; `LegacyLcg` is parity mode.
     pub rng: HairRng,
+    /// What the locks do where a pointed (elf) ear stands (#2449): `behind`, the default, routes them behind the ear so
+    /// its tip shows through the hair; `cover` lets them fall over it. Human ears are covered either way.
+    #[serde(skip_serializing_if = "PointedEars::is_default")]
+    pub ears: PointedEars,
+}
+
+/// How hair meets a pointed ear ([`HairParams::ears`]).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PointedEars {
+    /// The locks pass behind the ear, so it shows through the hair (the anime convention).
+    #[default]
+    Behind,
+    /// The locks fall over the ear as they are styled.
+    Cover,
+}
+
+impl PointedEars {
+    /// Whether this is the default, which a saved file leaves out.
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 impl Default for HairParams {
@@ -1663,7 +1703,13 @@ impl Default for HairParams {
         .into_iter()
         .filter_map(Result::ok)
         .collect();
-        Self { shading: HairShading::default(), physics: HairPhysics::default(), groups, rng: HairRng::default() }
+        Self {
+            shading: HairShading::default(),
+            physics: HairPhysics::default(),
+            groups,
+            rng: HairRng::default(),
+            ears: PointedEars::default(),
+        }
     }
 }
 
@@ -1732,6 +1778,19 @@ impl Validate for HairGroup {
                 // The narrowest part of a strand is 0.4 of its width, which a width must be allowed to reach.
                 c.range("generator/strand_width", g.strand_width, 0.0025, 0.3);
                 c.range("generator/strand_thickness", g.strand_thickness, 0.0005, 0.05);
+                if g.path.len() == 1 {
+                    c.fail("generator/path", "a path needs at least two points (or none, for the crown)");
+                }
+                for (i, [theta, phi]) in g.path.iter().enumerate() {
+                    c.range(&format!("generator/path/{i}/0"), *theta, 0.0, 180.0);
+                    c.range(&format!("generator/path/{i}/1"), *phi, -360.0, 360.0);
+                }
+                if let Some(lift) = g.lift {
+                    c.range("generator/lift", lift, 0.0, 0.1);
+                }
+                if let Some(tuck) = g.tuck {
+                    c.range("generator/tuck", tuck, 0.0, 0.05);
+                }
                 if let Some(r) = g.height_radius {
                     c.range("generator/height_radius", r, 0.01, 1.0);
                 }

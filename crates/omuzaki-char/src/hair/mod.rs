@@ -5,6 +5,7 @@
 pub mod bake;
 pub mod colour;
 pub mod compile;
+pub mod ears;
 pub mod edit;
 pub mod r#gen;
 pub mod part;

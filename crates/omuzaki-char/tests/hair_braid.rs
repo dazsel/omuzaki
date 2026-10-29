@@ -12,7 +12,7 @@ use omuzaki_char_api::{
 };
 use omuzaki_core::glam::Vec3;
 use omuzaki_core::rng::Rng;
-use omuzaki_face_api::Palette;
+use omuzaki_face_api::{Palette, Validate};
 
 /// A sphere of radius `R` about `CENTRE`: the surface the braid is rooted on.
 #[derive(Debug)]
@@ -208,7 +208,6 @@ fn a_non_finite_parameter_keeps_the_clump_count_and_the_points_finite() {
 
 #[test]
 fn each_out_of_range_braid_value_fails_naming_its_field() {
-    use omuzaki_face_api::Validate;
     let bad = |g: BraidGen| {
         let group =
             HairGroup { enabled: true, mirror: false, dynamics: Dynamics::default(), generator: Generator::Braid(g) };
@@ -242,4 +241,61 @@ fn a_height_radius_turns_the_braid_lines_height_into_its_own_angle() {
     assert_ne!(plain[0].rest, wide[0].rest);
     let same = compile_with(&BraidGen { height_radius: Some(f64::from(R)), ..BraidGen::default() }).0;
     assert_eq!(plain[0].rest, same[0].rest, "the head's own crown radius is the default");
+}
+
+/// A side-part braid over the crown: from the character's right temple, over the top, to behind the left ear.
+fn over_the_top() -> BraidGen {
+    BraidGen { path: vec![[70.0, -60.0], [20.0, -20.0], [25.0, 60.0], [75.0, 120.0]], ..BraidGen::default() }
+}
+
+#[test]
+fn a_braid_on_its_own_path_follows_it_over_the_top_of_the_head_once() {
+    let g = over_the_top();
+    let (clumps, draws) = compile_with(&g);
+    assert_eq!((clumps.len(), braid::clump_count(&g), draws), (3, 3, 0), "one braid, no mirrored side, no randomness");
+    assert!(!is_bilateral(&Generator::Braid(g.clone())), "a mirror flag would make a second braid");
+    for clump in &clumps {
+        let first = clump.rest[0] - CENTRE;
+        let middle = clump.rest[clump.rest.len() / 2] - CENTRE;
+        let last = clump.rest[clump.rest.len() - 1] - CENTRE;
+        assert!(first.x < -0.03 && last.x > 0.03, "it runs from the right side to the left: {first:?} {last:?}");
+        assert!(middle.y > 0.07, "it passes over the top of the head: {middle:?}");
+        for p in &clump.rest {
+            assert!((*p - CENTRE).length() > R, "{p:?} is inside the head");
+        }
+    }
+}
+
+#[test]
+fn its_ends_tuck_toward_the_head_and_its_middle_lies_at_its_lift() {
+    let g = over_the_top();
+    let (clumps, _) = compile_with(&g);
+    // The path itself is not exposed, so read the strands' mean distance off the surface at the ends and the middle.
+    let off = |i: usize| clumps.iter().map(|c| (c.rest[i] - CENTRE).length() - R).sum::<f32>() / clumps.len() as f32;
+    let (end, middle) = (off(0), off(braid::REST_POINTS / 2));
+    assert!(middle > end + 0.008, "the ends sink into the hair: end {end}, middle {middle}");
+    assert!((middle - braid::PATH_LIFT as f32).abs() < 0.015, "the middle lies near its lift: {middle}");
+
+    let untucked = BraidGen { tuck: Some(0.0), ..over_the_top() };
+    let (clumps, _) = compile_with(&untucked);
+    let off = |i: usize| clumps.iter().map(|c| (c.rest[i] - CENTRE).length() - R).sum::<f32>() / clumps.len() as f32;
+    assert!((off(0) - off(braid::REST_POINTS / 2)).abs() < 0.008, "without a tuck the ends stand as high");
+}
+
+#[test]
+fn the_crown_is_unchanged_without_a_path_and_a_one_point_path_is_refused() {
+    let (crown, _) = compile_with(&BraidGen::default());
+    let (explicit, _) = compile_with(&BraidGen { tuck: Some(0.0), lift: None, ..BraidGen::default() });
+    assert_eq!(crown, explicit, "no path and no tuck is the prototype's crown");
+    let text = |g: BraidGen| {
+        let group =
+            HairGroup { enabled: true, mirror: false, dynamics: Dynamics::default(), generator: Generator::Braid(g) };
+        let mut c = omuzaki_face_api::Check::new();
+        group.check(&mut c);
+        c.finish().err().map(|e| e.to_string()).unwrap_or_default()
+    };
+    assert_eq!(text(over_the_top()), "");
+    assert!(text(BraidGen { path: vec![[30.0, 0.0]], ..BraidGen::default() }).contains("generator/path:"));
+    assert!(text(BraidGen { path: vec![[30.0, 0.0], [200.0, 0.0]], ..BraidGen::default() }).contains("path/1/0"));
+    assert!(text(BraidGen { tuck: Some(0.2), ..BraidGen::default() }).contains("generator/tuck:"));
 }
