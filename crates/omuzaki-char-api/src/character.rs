@@ -110,6 +110,16 @@ pub mod paths {
         poses(id).join(name)
     }
 
+    /// `characters/<id>/clips`: the character's clip set (#2414).
+    pub fn clips(id: &CharId) -> DocPath {
+        character(id).join("clips")
+    }
+
+    /// `characters/<id>/clips/<name>`: one clip, named by the clip.
+    pub fn clip(id: &CharId, name: &str) -> DocPath {
+        clips(id).join(name)
+    }
+
     /// `characters/<id>/emotes`: the character's emote set.
     pub fn emotes(id: &CharId) -> DocPath {
         character(id).join("emotes")
@@ -378,7 +388,7 @@ impl CharacterDef {
     ///
     /// This is the built-in list; a new file of the character registers its key with
     /// [`register_doc_key!`](crate::register_doc_key), and [`doc_key::sibling_keys`] lists both.
-    pub const SIBLING_KEYS: [&'static str; 14] = doc_key::BUILT_IN_SIBLING_KEYS;
+    pub const SIBLING_KEYS: [&'static str; 15] = doc_key::BUILT_IN_SIBLING_KEYS;
 
     /// The definition stored in the character node `node` (`characters/<id>`): reads [`NODE_KEYS`](Self::NODE_KEYS) and
     /// skips the [`SIBLING_KEYS`](Self::SIBLING_KEYS), so a character with variants, colourways, a rig or a look reads
@@ -638,6 +648,7 @@ mod tests {
             "sources": {"head": {"schema": 1}},
             "applied": {"hairstyle": {"item": "hair-bun"}},
             "poses": {"wave": {"arm_r": [0.0, 1.0, 0.0]}},
+            "clips": {"hello": {"summary": "a wave", "length": 1.0, "keys": []}},
             "emotes": {"hi": {"clip": "wave-short"}},
             "avatar": {"schema": 1},
         })
@@ -698,13 +709,13 @@ mod tests {
     }
 
     #[test]
-    fn applied_poses_and_emotes_read_and_write_back_unchanged() {
+    fn applied_poses_clips_and_emotes_read_and_write_back_unchanged() {
         let node = node_with_siblings();
         let def = CharacterDef::from_node(&node).unwrap();
         // The first write fills in the definition's defaults; after that a read and write is the identity.
         let mut written = node.clone();
         def.to_node(&mut written).unwrap();
-        for sibling in ["applied", "poses", "emotes"] {
+        for sibling in ["applied", "poses", "clips", "emotes"] {
             assert_eq!(written[sibling], node[sibling], "{sibling} is kept as it was");
         }
         let mut again = written.clone();

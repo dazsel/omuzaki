@@ -1,0 +1,26 @@
+schema = 1
+id = "omuzaki/hair/back-braid"
+version = "1.0.0"
+section = "hair"
+kind = "setting"
+target = "character"
+title = "Back braid"
+summary = "One thick braid down the back from the nape."
+tags = ["hair", "braid", "plait"]
+origin = "the kit's tail generator presets (#2411), tuned by eye on the kit's renders"
+compat = { kinds = ["humanoid"], templates = ["*"], requires = ["hair"] }
+target_part = ["hair"]
+
+[rights]
+author = "Omuzaki"
+licence = "CC0-1.0"
+commercial = "ok"
+owned = true
+
+[[step]]
+op = "part.set_param"
+[step.args]
+character = "$character"
+part = "$target"
+path = "groups"
+value = { back-braid = { generator = { type = "tail", root = [110.0, 180.0, 0.01], length = 0.5, lean = 0.35, gather = 6, braid = { crossings = 7.0, width = 0.06, narrow = 0.4 } } } }

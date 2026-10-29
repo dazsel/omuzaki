@@ -1,0 +1,16 @@
+{
+  "about": "A clip `hello` in the kit character's own set, so there is a clip to list, play, replace or delete.",
+  "base": "character",
+  "steps": [
+    {
+      "op": "clip.set",
+      "args": {
+        "character": "kit",
+        "id": "hello",
+        "summary": "A hand on the chest, then a wave.",
+        "length": 1.6,
+        "keys": [{ "t": 0.0, "pose": "hand-on-chest" }, { "t": 1.6, "pose": "wave-right" }]
+      }
+    }
+  ]
+}

@@ -74,6 +74,7 @@ impl SceneDef {
         self.check_lighting()?;
         self.check_cameras()?;
         self.check_cast()?;
+        self.check_props()?;
         self.check_weather()?;
         Ok(self.findings(has_character))
     }
@@ -236,10 +237,35 @@ impl SceneDef {
             }
             all_finite(&format!("{path}.position"), &member.position)?;
             within(&format!("{path}.yaw"), member.yaw, -180.0, 180.0)?;
+            if let Some(interact) = &member.interact {
+                let path = format!("{path}.interact");
+                if &interact.with == id {
+                    return refuse(format!("{path}.with"), "a member can't touch itself");
+                }
+                self.require_member(&format!("{path}.with"), &interact.with)?;
+                within(&format!("{path}.weight"), interact.weight, 0.0, 1.0)?;
+            }
             if let Some((group, driver, _)) = member.drive.invalid() {
                 return refuse(
                     format!("{path}.drive.{}.{}", group.name(), driver.name()),
                     "a driver's weight is a number from 0 to 1",
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn check_props(&self) -> Check {
+        for (id, prop) in &self.props {
+            let path = format!("props.{id}");
+            all_finite(&format!("{path}.position"), &prop.position)?;
+            all_finite(&format!("{path}.rotation"), &prop.rotation)?;
+            positive(&format!("{path}.scale"), prop.scale)?;
+            self.check_anchor(&format!("{path}.anchor"), &prop.anchor)?;
+            if prop.attach.is_some() && prop.anchor == Anchor::Stage {
+                return refuse(
+                    format!("{path}.attach"),
+                    "a prop follows a bone of a member: anchor it to `subject` or `member:<id>`",
                 );
             }
         }
@@ -274,6 +300,15 @@ impl SceneDef {
                 message: "the backdrop is the environment but the lighting has none, so its background colour shows"
                     .into(),
             });
+        }
+        for (id, prop) in &self.props {
+            if crate::props::find_prop_kind(prop.kind.as_str()).is_none() {
+                found.push(Finding {
+                    kind: FindingKind::UnknownPropKind,
+                    path: format!("props.{id}.kind"),
+                    message: format!("no prop kind `{}` in this build, so the stage skips this prop", prop.kind),
+                });
+            }
         }
         for (id, member) in &self.cast {
             if !has_character(&member.character) {

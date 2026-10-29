@@ -7,6 +7,7 @@
 //! |---|---|
 //! | [`two_bone`] | analytic two-bone solve for arms and legs: pole vector, soft reach, hinge limits, weight |
 //! | [`look_at`] | neck, head and eye aim (FE-07) |
+//! | [`reach`] | hand goals from reaches on the body's own bones (#2414) |
 //! | [`targets`] | goal sources for hands and feet (follow-up) |
 //! | [`feet`] | foot placement (follow-up) |
 //! | [`guard`] | keeps the forearms and hands out of the body, last before the springs (#2353) |
@@ -14,6 +15,7 @@
 pub mod feet;
 pub mod guard;
 pub mod look_at;
+pub mod reach;
 pub mod targets;
 pub mod two_bone;
 

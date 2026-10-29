@@ -17,8 +17,7 @@ use std::time::{Duration, Instant};
 
 use omuzaki_anim_api::{Channel, ChannelBuf, FrameSource, HumanoidPose};
 use omuzaki_anim_mock::track::{SyntheticSpec, synthetic_track};
-use omuzaki_char_api::{BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, RegistryBuilder};
-use omuzaki_core::glam::{UVec2, Vec3};
+use omuzaki_core::glam::UVec2;
 use omuzaki_core::time::{FakeClock, Seconds};
 use omuzaki_doc_api::Value;
 use omuzaki_doc_mock::MemDoc;
@@ -29,16 +28,18 @@ use omuzaki_live_api::need::Need;
 use omuzaki_live_api::services::ShowKey;
 use omuzaki_ops::Executor;
 use omuzaki_ops_api::{Actor, Grants, Mode, Request, Runner, ServicesBuilder, find};
-use omuzaki_render_api::{AlphaEncoding, Camera, Projection, Quality, Renderer, Scene, TargetDesc};
+use omuzaki_render_api::{AlphaEncoding, MtoonSupport, Quality, Renderer, TargetDesc};
 use omuzaki_render_mock::MockRenderer;
 use omuzaki_stage::UploadOptions;
-use omuzaki_stage::frame::{Stage, StageClock};
+use omuzaki_stage::frame::StageClock;
 use omuzaki_stage::perform::Tracking;
 use omuzaki_stage::perform::host::{CalibrationState, PerformHost};
 use omuzaki_stage::perform::input::{InputError, InputHost as _, NoSource, PreviewState, SourceKind};
+use omuzaki_stage::scene::stage::{SceneStage, SceneStageOptions};
 use omuzaki_track_api::tracker::{Tracker, TrackerConfig};
 use omuzaki_track_mock::{FakeCamera, FakeTracker};
 use omuzaki_ui::aux_window::Transparency;
+use omuzaki_ui::live::viewport::{StudioBodies, Tree};
 use omuzaki_ui::live::wiring::{
     FrameReader, FrameTap, LiveApp, LiveFrame, LiveRig, LiveScene, LoopReport, NoTracker, PerformClock, PerformThread,
     RealClock, THREAD_NAME, live_performer,
@@ -110,34 +111,21 @@ fn camera(seconds: f32) -> Box<dyn FrameSource> {
     tracker(seconds).start(&FakeCamera::id(), &TrackerConfig::default()).expect("the fake camera starts")
 }
 
-fn character() -> BuiltCharacter {
-    let def = omuzaki_char_mock::mock_character().expect("the fixture parses");
-    RegistryBuilder
-        .build(&CharId::new("mock").expect("a valid id"), &def, &BuildOptions::default(), &BuildServices::default())
-        .expect("the mock character builds")
-}
-
-/// The mock character on `renderer`, with a small target and the live clock.
-fn stage(renderer: &mut MockRenderer) -> Stage {
+/// The mock character alone in the default scene on `renderer`, with a small target and the live clock: what the live
+/// view stages for a project of one character and no scene.
+fn stage(renderer: &mut MockRenderer) -> SceneStage {
     let target = renderer
         .create_target(&TargetDesc { size: UVec2::new(32, 32), alpha: AlphaEncoding::Straight })
         .expect("a target");
-    let camera = Camera::look_at(
-        Vec3::new(0.0, 0.8, 0.95),
-        Vec3::new(0.0, 0.78, 0.0),
-        Vec3::Y,
-        Projection::Perspective { fov_y_deg: 30.0, near: 0.05, far: 10.0 },
-    );
-    Stage::new(
-        renderer,
-        character(),
-        UploadOptions { face_px_per_m: 600.0 },
-        Scene::new(camera),
-        target,
-        Quality::offline(),
-        StageClock::live(),
-    )
-    .expect("the stage starts")
+    let def = omuzaki_char_mock::mock_character().expect("the fixture parses");
+    let mut node = serde_json::json!({});
+    def.to_node(&mut node).expect("the fixture writes");
+    let doc = Tree::new(serde_json::json!({ "characters": { "mock": node } }));
+    let options = SceneStageOptions::new(Quality::offline(), StageClock::live())
+        .with_upload(UploadOptions { face_px_per_m: 600.0 })
+        .with_face(None);
+    let mut bodies = StudioBodies::new(None, MtoonSupport::NONE);
+    SceneStage::open(&doc, None, &mut bodies, renderer, target, 1.0, options).expect("the stage starts")
 }
 
 /// Waits up to `limit` for `check` to hold, looking every few milliseconds.

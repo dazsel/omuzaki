@@ -1,0 +1,84 @@
+# Mature: an older anime character (late teens to adult) on the standard and tall templates (#2410).
+#
+# Applied over the kit's own design, so only what changes is written. The face reads older through the eyes most of
+# all: a narrow almond (low roundness, a shallow upper and lower lid) with a heavy, flicked upper lash, a stronger
+# crease and lid shadow, a smaller catchlight and an iris the upper lid cuts into; a small mouth, a tick of a nose and
+# finer, arched brows. The long face-shape preset lengthens the jaw and the cranium. The body gets a longer neck,
+# slightly broader shoulders and a longer body against the same head, so the head reads smaller.
+id = "mature"
+name = "Mature"
+summary = "An older anime character: narrow eyes under heavy upper lashes, a small mouth, a longer face and a long neck."
+origin = "Design target: the anime model-sheet conventions for adult characters (narrow almond eyes, heavy upper lash line, small mouth, long neck), tuned by eye on the kit's own renders against the default; no traced likeness."
+templates = ["standard", "tall"]
+profile = "long"
+
+[face.layout]
+eye_width = 0.041
+eye_spacing = 0.081
+brow_gap = 0.072
+
+[face.eyes]
+lid_shadow = 0.72
+
+[face.eyes.aperture]
+roundness = 0.22
+upper_height = 0.55
+lower_depth = 0.34
+tilt = 0.07
+inner_sharpness = 0.9
+outer_bluntness = 0.25
+
+[face.eyes.lash]
+thickness = 0.0095
+flick = 0.75
+lower = 0.25
+
+[face.eyes.iris]
+width = 0.6
+height = 1.04
+
+[face.eyes.crease]
+strength = 0.5
+lift = 0.55
+
+[face.eyes.highlights]
+size = 0.22
+
+[face.mouth]
+half_width = 0.0085
+
+[face.nose]
+kind = "tick"
+
+[face.brows]
+thickness = 0.0015
+arch = 0.006
+
+[body]
+hands = "five_finger"
+
+[body.proportions]
+neck_length = 1.35
+shoulder_width = 1.06
+
+[body.shape]
+height = 0.6
+
+# A new mature character: the kit's hair with a braided lock falling in front of each shoulder and a two-lock ahoge.
+[[parts]]
+id = "hair"
+kind = "hair"
+
+[parts.params.groups.e-braids]
+mirror = true
+dynamics = { simulate = false }
+generator = { type = "tail", root = [100.0, 82.0, 0.012], length = 0.42, droop = 1.0, lean = -0.05, forward = 0.45, braid = { crossings = 6.0, width = 0.044, face_deg = 90.0 } }
+
+[parts.params.groups.f-ahoge]
+generator = { type = "ahoge", locks = 2, length = 0.14, curl_deg = 230.0, fan_deg = 28.0 }
+
+# A low collar stand, so the longer neck shows above the shirt.
+[[parts]]
+id = "shirt"
+kind = "shirt"
+params = { neck = { rise = 0.004 } }

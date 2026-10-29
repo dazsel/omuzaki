@@ -211,7 +211,7 @@ fn the_braid_tubes_match_the_prototypes_vertices() {
     for (n, clump) in group.clumps.iter().enumerate() {
         let count = clump.rest.len() * RING;
         let (mut p, mut nrm) = (vec![Vec3::ZERO; count], vec![Vec3::ZERO; count]);
-        tube_vertices(&clump.rest, &clump.width, &clump.thickness, |q| frame.rest(q), &mut p, &mut nrm).unwrap();
+        tube_vertices(&clump.rest, RING, &clump.width, &clump.thickness, |q| frame.rest(q), &mut p, &mut nrm).unwrap();
         for k in 0..count {
             let (their_p, their_n) = (theirs.positions[vertex + k], theirs.normals[vertex + k]);
             positions.fold(p[k].distance(their_p), (n, k));

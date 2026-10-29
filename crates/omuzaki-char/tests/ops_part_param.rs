@@ -779,10 +779,11 @@ fn a_mistyped_path_names_the_nearest_valid_key() {
             }
             let typo = &last[..last.len() - 1];
             let wrong = if parent.is_empty() { typo.to_owned() } else { format!("{parent}/{typo}") };
-            // `edge0` and `edge1` minus their last character are the same typo: either is a fair guess.
+            // `edge0` and `edge1` minus their last character are the same typo, and `rin` is one edit from both `ring`
+            // and `rim`: when another parameter is as close, either is a fair guess.
             let twin = |e: &Value| {
                 let other = path_of(e);
-                other != path && other.len() == path.len() && other.starts_with(&wrong)
+                other != path && omuzaki_core::text::edit_distance(&wrong, other) <= 1
             };
             if listed(&wrong) || subject.description["parameters"].as_array().unwrap().iter().any(twin) {
                 continue;

@@ -4825,6 +4825,7 @@ dependencies = [
  "omuzaki-embed",
  "omuzaki-face-api",
  "omuzaki-face-mock",
+ "omuzaki-library-api",
  "omuzaki-ops-api",
  "omuzaki-render-api",
  "omuzaki-render-mock",
@@ -6282,6 +6283,8 @@ dependencies = [
 name = "omuzaki-stage-api"
 version = "0.0.0"
 dependencies = [
+ "inventory",
+ "omuzaki-anim-api",
  "omuzaki-char-api",
  "omuzaki-core",
  "omuzaki-doc-api",

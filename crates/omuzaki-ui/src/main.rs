@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use clap::Parser;
-use omuzaki_char_api::{BuildServices, CharId, CharacterDef, RegistryBuilder};
+use omuzaki_char_api::{BuildServices, RegistryBuilder};
 
 use omuzaki_anim_api::HumanoidPose;
 use omuzaki_core::glam::UVec2;
@@ -20,13 +20,13 @@ use omuzaki_ops_api::Runner;
 use omuzaki_render::WgpuRenderer;
 use omuzaki_script::ScriptStore;
 use omuzaki_settings_api::service::Settings as SettingsService;
-use omuzaki_stage::frame::Stage;
+use omuzaki_stage::scene::stage::SceneStage;
 use omuzaki_theatre::TheatreBook;
 use omuzaki_ui::aux_window::{Backend, Platform, SurfaceRoute, transparency};
 use omuzaki_ui::ds::script_fonts::ScriptFonts;
 use omuzaki_ui::ds::settings_keys::SettingsLink;
 use omuzaki_ui::generate::Generation;
-use omuzaki_ui::live::viewport::{NativePresenter, Presenter, ViewportError, kit_stage, project_stage};
+use omuzaki_ui::live::viewport::{NativePresenter, Presenter, StudioBodies, ViewportError, document_stage, kit_stage};
 use omuzaki_ui::live::wiring::{LiveApp, LiveScene, RealClock};
 use omuzaki_ui::panels::agent::Agents;
 use omuzaki_ui::panels::edit::EditFocus;
@@ -103,19 +103,12 @@ fn start_live(
     document: Document,
     settings: Option<Arc<dyn SettingsService>>,
 ) -> Option<LiveApp> {
-    let character = match studio::character_to_stage(&document) {
-        Ok(character) => Some(character),
-        Err(error) => {
-            tracing::error!(%error, "the project's character can't be staged: the stage shows the kit character");
-            None
-        }
-    };
     let backend = cc
         .wgpu_render_state
         .as_ref()
         .map_or(Backend::Unknown, |state| Backend::from_name(state.adapter.get_info().backend.to_str()));
     let transparency = transparency(Platform::current(), backend, SurfaceRoute::EguiViewport);
-    let stage = cc.wgpu_render_state.as_ref().and_then(|state| match start_stage(state, character.as_ref()) {
+    let stage = cc.wgpu_render_state.as_ref().and_then(|state| match start_stage(state, &document) {
         Ok(stage) => Some(stage),
         Err(error) => {
             tracing::error!(%error, "the stage did not start");
@@ -168,16 +161,21 @@ fn models_dir() -> Option<PathBuf> {
     default_project_dir()?.parent().map(|data| data.join("models"))
 }
 
-/// The renderer on eframe's own device, `character` (else the kit's) staged on it, and the presenter that shares its
-/// picture with egui.
+/// The renderer on eframe's own device, the scene `document` opens in staged on it (the kit character alone when it
+/// has nobody to stage, or they don't build), and the presenter that shares its picture with egui. The stage follows
+/// the document from then on (`LiveApp::attach_viewport`).
 fn start_stage(
     gpu: &eframe::egui_wgpu::RenderState,
-    character: Option<&(CharId, CharacterDef)>,
-) -> Result<(WgpuRenderer, Stage, Box<dyn Presenter>), ViewportError> {
+    document: &Document,
+) -> Result<(WgpuRenderer, SceneStage, Box<dyn Presenter>), ViewportError> {
     let mut renderer = WgpuRenderer::from_device(&gpu.adapter, gpu.device.clone(), gpu.queue.clone())?;
-    let stage = match character {
-        Some((id, def)) => project_stage(&mut renderer, id, def, PROGRAM_SIZE)?,
-        None => kit_stage(&mut renderer, PROGRAM_SIZE)?,
+    let mut bodies = StudioBodies::new(None, omuzaki_render_api::Renderer::capabilities(&renderer).mtoon);
+    let stage = match document_stage(&mut renderer, document, &mut bodies, PROGRAM_SIZE) {
+        Ok(stage) => stage,
+        Err(error) => {
+            tracing::warn!(%error, "the project's scene can't be staged yet: the stage shows the kit character");
+            kit_stage(&mut renderer, PROGRAM_SIZE)?
+        }
     };
     Ok((renderer, stage, Box::new(NativePresenter::new(gpu.clone()))))
 }

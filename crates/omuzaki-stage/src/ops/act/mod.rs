@@ -13,7 +13,8 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use omuzaki_anim::poses::{ClipLibrary, PoseClip};
+use omuzaki_anim::poses::{ClipLibrary, find_clip};
+use omuzaki_char_api::CharId;
 use omuzaki_anim_api::Channel;
 use omuzaki_core::text::nearest;
 use omuzaki_face_api::{ExpressionId, Playback, narrow};
@@ -387,15 +388,23 @@ impl Op for Channels {
 
 register_op!(Channels);
 
-/// Play a body clip from the clip library live, such as `wave`, faded over the body (the tracked head and the face go
-/// on as before). A clip that plays once (`yawn`) ends with itself; a looping one (`wave`) plays for `hold_s` (default
-/// 2), or until `act.release` with `held`.
+/// Play a body clip live, such as `wave` or `hand-on-chest`, faded over the body (the tracked head and the face go on as
+/// before): a character's own clip (`clip.set`) when `character` names one, else the clip library's. A clip that plays
+/// once (`yawn`) ends with itself; a looping one (`wave`) plays for `hold_s` (default 2), or until `act.release` with
+/// `held`. A clip's hands land where its keys reach on this body (a hand on the chest, palms together).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(extend("examples" = [{ "clip": "wave" }, { "clip": "wave-both", "hold_s": 3.0, "weight": 0.8 }]))]
+#[schemars(extend("examples" = [
+    { "clip": "wave" },
+    { "clip": "wave-both", "hold_s": 3.0, "weight": 0.8 },
+    { "clip": "hand-on-chest", "held": true }
+]))]
 pub struct Clip {
-    /// The clip (`act.list` lists them).
+    /// The clip (`clip.list` lists them; `act.list` lists the library's).
     pub clip: String,
+    /// The character whose own clips (`clip.set`) are looked in first. Left out, only the library's clips play.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub character: Option<CharId>,
     /// How strongly it moves the body, 0 to 1. Default 1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weight: Option<f32>,
@@ -427,27 +436,22 @@ impl Clip {
 
 impl Op for Clip {
     fn meta() -> OpMeta {
-        live("act.clip", "Play a body clip from the clip library live (such as wave), faded over the body.")
+        live("act.clip", "Play a body clip live (wave, hand-on-chest, a character's own clip), faded over the body.")
     }
 
     fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
         let weight = within("weight", self.weight.unwrap_or(1.0), 0.0, 1.0)?;
-        let ids = clip_ids()?;
-        if !ids.contains(&self.clip.as_str()) {
-            let error = OpError::not_found(format!("there is no clip '{}'", self.clip));
-            return Err(match nearest(&self.clip, ids.iter().copied()) {
-                Some(near) => error.hint(format!("did you mean '{near}'? clips: {}", ids.join(", "))),
-                None => error.hint(format!("clips: {}", ids.join(", "))),
-            });
-        }
+        let clip = find_clip(ctx.doc, self.character.as_ref(), &self.clip).map_err(|e| match e.field {
+            None => OpError { field: Some("clip".to_owned()), ..e },
+            Some(_) => e,
+        })?;
         // No hold given: a one-shot clip plays once (the host holds it for its own length) and a looping one holds
         // for the default.
-        let looped = ClipLibrary::builtin().ok().and_then(|l| l.get(&self.clip)).is_some_and(PoseClip::looped);
-        let mut envelope = self.timing().envelope(looped.then_some(DEFAULT_HOLD_S))?;
+        let mut envelope = self.timing().envelope(clip.looped().then_some(DEFAULT_HOLD_S))?;
         if self.fade_s.is_none() {
             envelope = Envelope::new(0.25, envelope.hold);
         }
-        play(ctx, self.member.as_ref(), ActRequest::Clip { clip: self.clip.clone(), weight }, envelope)
+        play(ctx, self.member.as_ref(), ActRequest::clip_def(clip, weight), envelope)
     }
 }
 

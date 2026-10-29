@@ -24,14 +24,19 @@
 
 use std::collections::BTreeMap;
 
-use omuzaki_core::glam::Mat4;
+use omuzaki_anim::hands::{HandLibrary, HandRest};
+use omuzaki_anim::poses::PoseLibrary;
+use omuzaki_anim_api::{HumanoidBone, HumanoidPose};
+use omuzaki_core::glam::{Mat4, Vec3};
 use omuzaki_face_api::ExpressionSet;
 use omuzaki_render_api::{Quality, Renderer, Scene, TargetId};
-use omuzaki_stage_api::MemberId;
+use omuzaki_rig::ik::guard::Obstacle;
+use omuzaki_stage_api::{CastMember, Interact, InteractKind, MemberId};
 
 use crate::avatar::AvatarStage;
 use crate::error::StageError;
 use crate::frame::{FrameInput, FrameOutput, Prepared, Stage};
+use crate::interact::{self, BODY_PARTS, MemberBody, Overlay, PLACEHOLDER, TouchReport};
 use crate::scene::apply::Owed;
 use crate::scene::resolve::{Figure, ResolvedScene};
 use crate::stages::{AnyStage, FrameLoop};
@@ -75,6 +80,24 @@ pub trait StageMember: FrameLoop + sealed::Sealed {
         prepared: Prepared,
         what: &'static str,
     ) -> Result<FrameOutput, StageError>;
+
+    /// Where humanoid `bone` of the body was in the last frame, in the world. `None` for a bone it lacks.
+    fn humanoid_world(&self, bone: HumanoidBone) -> Option<Mat4>;
+
+    /// Adds the scene's props attached to cast member `member` to the stage's scene, under `bone`'s answers: what the
+    /// lead does for each member once that member's frame is posed. Hot: allocation-free.
+    fn push_member_props(&mut self, member: &MemberId, bone: &dyn Fn(HumanoidBone) -> Option<Mat4>);
+
+    /// The body as another member's touch reads it (#2415): its joints and the arm guard's parts where the last frame
+    /// left them, in the world. Allocation-free.
+    fn touch_body(&self) -> MemberBody;
+
+    /// The scene's transform of this member: what [`FrameLoop::set_subject_root`] last set.
+    fn subject_root(&self) -> Mat4;
+
+    /// Keeps the body's arms out of another member's `parts` (world space) from the next frame, the body standing at
+    /// `root` then; an empty slice clears them. Allocation-free.
+    fn set_partner_parts(&mut self, parts: &[Obstacle], root: Mat4);
 }
 
 impl StageMember for Stage {
@@ -94,6 +117,21 @@ impl StageMember for Stage {
         what: &'static str,
     ) -> Result<FrameOutput, StageError> {
         Stage::submit(self, renderer, prepared, what)
+    }
+    fn humanoid_world(&self, bone: HumanoidBone) -> Option<Mat4> {
+        self.bone_world(bone)
+    }
+    fn push_member_props(&mut self, member: &MemberId, bone: &dyn Fn(HumanoidBone) -> Option<Mat4>) {
+        Stage::push_member_props(self, member, bone);
+    }
+    fn touch_body(&self) -> MemberBody {
+        Stage::touch_body(self)
+    }
+    fn subject_root(&self) -> Mat4 {
+        self.subject_root_now()
+    }
+    fn set_partner_parts(&mut self, parts: &[Obstacle], root: Mat4) {
+        Stage::set_partner_parts(self, parts, root);
     }
 }
 
@@ -115,6 +153,21 @@ impl StageMember for AvatarStage {
         what: &'static str,
     ) -> Result<FrameOutput, StageError> {
         AvatarStage::submit(self, renderer, prepared, what)
+    }
+    fn humanoid_world(&self, bone: HumanoidBone) -> Option<Mat4> {
+        AvatarStage::humanoid_world(self, bone)
+    }
+    fn push_member_props(&mut self, member: &MemberId, bone: &dyn Fn(HumanoidBone) -> Option<Mat4>) {
+        AvatarStage::push_member_props(self, member, bone);
+    }
+    fn touch_body(&self) -> MemberBody {
+        AvatarStage::touch_body(self)
+    }
+    fn subject_root(&self) -> Mat4 {
+        self.subject_root_now()
+    }
+    fn set_partner_parts(&mut self, parts: &[Obstacle], root: Mat4) {
+        AvatarStage::set_partner_parts(self, parts, root);
     }
 }
 
@@ -148,6 +201,36 @@ impl StageMember for AnyStage {
             Self::Avatar(stage) => StageMember::submit(stage, renderer, prepared, what),
         }
     }
+    fn humanoid_world(&self, bone: HumanoidBone) -> Option<Mat4> {
+        match self {
+            Self::Kit(stage) => stage.bone_world(bone),
+            Self::Avatar(stage) => stage.humanoid_world(bone),
+        }
+    }
+    fn push_member_props(&mut self, member: &MemberId, bone: &dyn Fn(HumanoidBone) -> Option<Mat4>) {
+        match self {
+            Self::Kit(stage) => Stage::push_member_props(stage, member, bone),
+            Self::Avatar(stage) => AvatarStage::push_member_props(stage, member, bone),
+        }
+    }
+    fn touch_body(&self) -> MemberBody {
+        match self {
+            Self::Kit(stage) => stage.touch_body(),
+            Self::Avatar(stage) => stage.touch_body(),
+        }
+    }
+    fn subject_root(&self) -> Mat4 {
+        match self {
+            Self::Kit(stage) => stage.subject_root_now(),
+            Self::Avatar(stage) => stage.subject_root_now(),
+        }
+    }
+    fn set_partner_parts(&mut self, parts: &[Obstacle], root: Mat4) {
+        match self {
+            Self::Kit(stage) => stage.set_partner_parts(parts, root),
+            Self::Avatar(stage) => stage.set_partner_parts(parts, root),
+        }
+    }
 }
 
 /// One member besides the lead: its body, the last input its performer gave it, and the skin floor its materials have.
@@ -157,6 +240,21 @@ struct Member<M> {
     input: FrameInput,
     /// The floor on its skin materials: `None` (their own) until the cast pays the scene's.
     floor: Option<f32>,
+    /// Where the scene placed it, before a touch moves it to meet its partner.
+    placed: Mat4,
+}
+
+/// A touch between two members the cast solves every frame (#2415): `a` holds it, `b` is its partner.
+#[derive(Clone, Debug)]
+struct Touch {
+    a: MemberId,
+    b: MemberId,
+    kind: InteractKind,
+    weight: f32,
+    /// Both halves as last solved, `[a's, b's]`, in the world.
+    overlays: [Overlay; 2],
+    /// How the last frame's bodies met.
+    report: TouchReport,
 }
 
 /// How far the lead's scene lists reach before the members are appended: what the lead itself put there.
@@ -205,6 +303,14 @@ pub struct CastStage<M: StageMember = AnyStage> {
     own: Own,
     /// The skin floor the last scene wants on every member, as on the lead.
     floor: Option<f32>,
+    /// Where the scene placed the lead, before a touch moves it.
+    lead_placed: Mat4,
+    /// The touches between members ([`set_touches`](Self::set_touches)), solved every frame.
+    touches: Vec<Touch>,
+    /// The `palm-touch` posture, `[left arm, right arm]`, that palms together lays the arm in first.
+    palm: [HumanoidPose; 2],
+    /// The input a member in a touch runs with this frame: its performer's, with the touch laid over it.
+    touched: FrameInput,
 }
 
 impl<M: StageMember> std::fmt::Debug for CastStage<M> {
@@ -221,7 +327,19 @@ impl<M: StageMember> CastStage<M> {
     /// whole cast renders with.
     pub fn new(lead_id: MemberId, lead: M) -> Self {
         let own = Own::of(lead.scene());
-        Self { lead_id, lead, lead_input: FrameInput::default(), members: Vec::new(), own, floor: None }
+        let lead_placed = lead.subject_root();
+        Self {
+            lead_id,
+            lead,
+            lead_input: FrameInput::default(),
+            members: Vec::new(),
+            own,
+            floor: None,
+            lead_placed,
+            touches: Vec::new(),
+            palm: palm_postures(),
+            touched: FrameInput::default(),
+        }
     }
 
     /// The lead's member id.
@@ -264,9 +382,10 @@ impl<M: StageMember> CastStage<M> {
         scene.particles.reserve(particles);
         if let Some(slot) = self.members.iter_mut().find(|m| m.id == id) {
             slot.floor = None;
+            slot.placed = root;
             return Some(std::mem::replace(&mut slot.stage, stage));
         }
-        self.members.push(Member { id, stage, input: FrameInput::default(), floor: None });
+        self.members.push(Member { id, stage, input: FrameInput::default(), floor: None, placed: root });
         None
     }
 
@@ -315,9 +434,15 @@ impl<M: StageMember> CastStage<M> {
     /// Puts member `id` at `root` from the next frame (the lead: [`FrameLoop::set_subject_root`]). False for an id not
     /// in the cast.
     pub fn set_member_root(&mut self, id: &MemberId, root: Mat4) -> bool {
-        match self.member_mut(id) {
-            Some(stage) => {
-                stage.set_subject_root(root);
+        if *id == self.lead_id {
+            self.lead_placed = root;
+            self.lead.set_subject_root(root);
+            return true;
+        }
+        match self.members.iter_mut().find(|m| &m.id == id) {
+            Some(member) => {
+                member.placed = root;
+                member.stage.set_subject_root(root);
                 true
             }
             None => false,
@@ -328,12 +453,151 @@ impl<M: StageMember> CastStage<M> {
     /// included. Members without a figure stay where they were.
     pub fn set_member_roots(&mut self, figures: &BTreeMap<MemberId, Figure>) {
         if let Some(figure) = figures.get(&self.lead_id) {
-            self.lead.set_subject_root(Mat4::from(figure.root));
+            self.lead_placed = Mat4::from(figure.root);
+            self.lead.set_subject_root(self.lead_placed);
         }
         for member in &mut self.members {
             if let Some(figure) = figures.get(&member.id) {
-                member.stage.set_subject_root(Mat4::from(figure.root));
+                member.placed = Mat4::from(figure.root);
+                member.stage.set_subject_root(member.placed);
             }
+        }
+    }
+
+    /// The touches between members from now on (#2415), each held by the member it is paired with: what the scene's
+    /// cast says ([`touches_of`]). A touch naming a member not in the cast waits until it is. Replaces the touches
+    /// there were; a member no longer in one stands back where the scene placed it, its arms free. Cold.
+    pub fn set_touches(&mut self, touches: impl IntoIterator<Item = (MemberId, Interact)>) {
+        self.touches.clear();
+        for (a, interact) in touches {
+            if a == interact.with || self.touches.iter().any(|t| t.a == a && t.b == interact.with) {
+                continue;
+            }
+            self.touches.push(Touch {
+                a,
+                b: interact.with,
+                kind: interact.kind,
+                weight: if interact.weight.is_finite() { interact.weight.clamp(0.0, 1.0) } else { 0.0 },
+                overlays: [Overlay::default(); 2],
+                report: TouchReport::default(),
+            });
+        }
+        let root = self.lead.subject_root();
+        self.lead.set_partner_parts(&[], root);
+        self.lead.set_subject_root(self.lead_placed);
+        for member in &mut self.members {
+            let root = member.stage.subject_root();
+            member.stage.set_partner_parts(&[], root);
+            member.stage.set_subject_root(member.placed);
+        }
+    }
+
+    /// How the touch member `a` holds met in the last frame: how close each hand came to its goal and how near the
+    /// bodies are. `None` without one.
+    pub fn touch_report(&self, a: &MemberId) -> Option<TouchReport> {
+        self.touches.iter().find(|t| &t.a == a).map(|t| t.report)
+    }
+
+    /// Where the scene placed member `id` (the lead's too), before a touch moved it.
+    fn placed(&self, id: &MemberId) -> Option<Mat4> {
+        if *id == self.lead_id {
+            return Some(self.lead_placed);
+        }
+        self.members.iter().find(|m| &m.id == id).map(|m| m.placed)
+    }
+
+    /// Member `id`'s input this frame (the lead's too).
+    fn input_of(&self, id: &MemberId) -> Option<&FrameInput> {
+        if *id == self.lead_id {
+            return Some(&self.lead_input);
+        }
+        self.members.iter().find(|m| &m.id == id).map(|m| &m.input)
+    }
+
+    /// Solves every touch from the bodies the last frame left: moves each partner to meet the member holding it, keeps
+    /// each one's arms out of the other's body and keeps both halves for the frame to lay over the inputs.
+    /// Allocation-free.
+    fn solve_touches(&mut self) {
+        // The list is taken out for the loop (a move, not a copy), so the members can be borrowed beside it.
+        let mut touches = std::mem::take(&mut self.touches);
+        for touch in &mut touches {
+            let (a, b, kind, weight) = (&touch.a, &touch.b, touch.kind, touch.weight);
+            let (Some(stage_a), Some(stage_b), Some(placed_b)) = (self.member(a), self.member(b), self.placed(b))
+            else {
+                touch.overlays = [Overlay::default(); 2];
+                continue;
+            };
+            let (body_a, body_b) = (stage_a.touch_body(), stage_b.touch_body());
+            let root_b = stage_b.subject_root();
+            // The partner stands where the touch needs it: along the line from `a` to where the scene placed it.
+            let from = body_a.at();
+            let placed_at = placed_b.w_axis.truncate();
+            let level = Vec3::new(placed_at.x - from.x, 0.0, placed_at.z - from.z);
+            let fallback = match kind {
+                InteractKind::CheekToCheek => body_a.right(),
+                InteractKind::Hug | InteractKind::PalmTouch => body_a.facing(),
+            };
+            let along = level.try_normalize().unwrap_or(fallback);
+            let distance = interact::spacing(kind, &body_a, &body_b);
+            let meet = Vec3::new(from.x, placed_at.y, from.z) + along * distance;
+            let at = placed_at.lerp(meet, weight);
+            let moved = Mat4::from_translation(at - placed_at) * placed_b;
+            let shift = moved.w_axis.truncate() - root_b.w_axis.truncate();
+            let body_b = body_b.shifted(shift);
+            touch.overlays = interact::solve(kind, &body_a, &body_b, &touch.overlays);
+            // Each arm guard keeps out of the other body as it stands this frame.
+            let (mut parts_a, mut parts_b) = ([PLACEHOLDER; BODY_PARTS], [PLACEHOLDER; BODY_PARTS]);
+            let (na, nb) = (body_a.obstacles(&mut parts_a), body_b.obstacles(&mut parts_b));
+            let root_a = self.input_of(a).map_or(Mat4::IDENTITY, |input| input.root);
+            let root_b_input = self.input_of(b).map_or(Mat4::IDENTITY, |input| input.root);
+            if let Some(stage) = self.member_mut(b) {
+                stage.set_subject_root(moved);
+                stage.set_partner_parts(&parts_a[..na], moved * root_b_input);
+            }
+            if let Some(stage) = self.member_mut(a) {
+                let root = stage.subject_root() * root_a;
+                stage.set_partner_parts(&parts_b[..nb], root);
+            }
+        }
+        self.touches = touches;
+    }
+
+    /// `input` with every touch member `id` takes part in laid over it, into `scratch`; `None` when it takes part in
+    /// none. Allocation-free.
+    fn touched_input<'a>(
+        touches: &[Touch],
+        palm: &[HumanoidPose; 2],
+        scratch: &'a mut FrameInput,
+        id: &MemberId,
+        input: &FrameInput,
+        subject_root: Mat4,
+    ) -> Option<&'a FrameInput> {
+        let mut any = false;
+        for touch in touches {
+            let half = if &touch.a == id {
+                0
+            } else if &touch.b == id {
+                1
+            } else {
+                continue;
+            };
+            if !any {
+                scratch.clone_from(input);
+                any = true;
+            }
+            let root = subject_root * input.root;
+            interact::apply(&touch.overlays[half], touch.weight, root, palm, &mut scratch.pose, &mut scratch.goals);
+        }
+        any.then_some(&*scratch)
+    }
+
+    /// Measures every touch on the bodies this frame left.
+    fn report_touches(&mut self) {
+        for i in 0..self.touches.len() {
+            let t = &self.touches[i];
+            let (Some(a), Some(b)) = (self.member(&t.a), self.member(&t.b)) else { continue };
+            let report = interact::report(&a.touch_body(), &b.touch_body(), &t.overlays);
+            self.touches[i].report = report;
         }
     }
 
@@ -374,10 +638,22 @@ impl<M: StageMember> CastStage<M> {
     /// Prepares the lead, then every member, appends the members to the lead's scene and renders it.
     fn run(&mut self, renderer: &mut dyn Renderer, pass: Pass) -> Result<FrameOutput, StageError> {
         self.own.restore(self.lead.scene_mut());
-        let (input, what) = (&self.lead_input, match pass {
+        if matches!(pass, Pass::Tick) && !self.touches.is_empty() {
+            self.solve_touches();
+        }
+        let what = match pass {
             Pass::Tick => "the frame",
             Pass::Redraw => "the still",
-        });
+        };
+        let input = Self::touched_input(
+            &self.touches,
+            &self.palm,
+            &mut self.touched,
+            &self.lead_id,
+            &self.lead_input,
+            self.lead.subject_root(),
+        )
+        .unwrap_or(&self.lead_input);
         let prepared = match pass {
             Pass::Tick => self.lead.prepare(renderer, input),
             Pass::Redraw => self.lead.prepare_redraw(renderer, input),
@@ -387,15 +663,25 @@ impl<M: StageMember> CastStage<M> {
         for member in &mut self.members {
             member.input.dt = self.lead_input.dt;
             member.input.time = self.lead_input.time;
+            let root = member.stage.subject_root();
+            let input =
+                Self::touched_input(&self.touches, &self.palm, &mut self.touched, &member.id, &member.input, root)
+                    .unwrap_or(&member.input);
             let prepared = match pass {
-                Pass::Tick => member.stage.prepare(renderer, &member.input),
-                Pass::Redraw => member.stage.prepare_redraw(renderer, &member.input),
+                Pass::Tick => member.stage.prepare(renderer, input),
+                Pass::Redraw => member.stage.prepare_redraw(renderer, input),
             };
             // A member that failed still filled its scene with this frame's body, as a lone stage does.
             append(self.lead.scene_mut(), member.stage.scene());
+            // The lead holds the scene's props; the ones in this member's hands follow its bones.
+            let stage = &member.stage;
+            self.lead.push_member_props(&member.id, &|bone| stage.humanoid_world(bone));
             if let (Ok(_), Err(error)) = (&result, prepared) {
                 result = Err(error);
             }
+        }
+        if matches!(pass, Pass::Tick) && !self.touches.is_empty() {
+            self.report_touches();
         }
         let prepared = result?;
         self.lead.submit(renderer, prepared, what)
@@ -406,6 +692,27 @@ impl<M: StageMember> CastStage<M> {
     /// Whether some member's skin materials don't have the floor the scene wants.
     fn members_owe_floor(&self) -> bool {
         self.members.iter().any(|m| m.floor != self.floor)
+    }
+}
+
+/// The touches a scene's cast holds (#2415): each member's [`Interact`], keyed by the member holding it, for
+/// [`CastStage::set_touches`].
+pub fn touches_of(cast: &BTreeMap<MemberId, CastMember>) -> impl Iterator<Item = (MemberId, Interact)> + '_ {
+    cast.iter().filter_map(|(id, member)| member.interact.clone().map(|interact| (id.clone(), interact)))
+}
+
+/// The library's `palm-touch` posture as the arm that palms together lays first, `[left, right]`: the authored right
+/// arm and its mirror. Rest when the library can't give it (a touch then reaches with the arm as it is).
+fn palm_postures() -> [HumanoidPose; 2] {
+    let posture = PoseLibrary::builtin()
+        .ok()
+        .and_then(|library| library.get("palm-touch"))
+        .zip(HandLibrary::builtin().ok())
+        .and_then(|(pose, hands)| pose.posture(hands).ok());
+    let rest = HandRest::nominal();
+    match posture {
+        Some(right) => [right.mirrored().to_humanoid(&rest), right.to_humanoid(&rest)],
+        None => [HumanoidPose::REST; 2],
     }
 }
 
@@ -467,6 +774,7 @@ impl<M: StageMember> FrameLoop for CastStage<M> {
     /// The lead takes the scene; every member takes its skin floor at the next [`pay_scene`](FrameLoop::pay_scene).
     fn set_scene(&mut self, resolved: &ResolvedScene, subject_root: Mat4) -> Owed {
         self.floor = resolved.skin_floor;
+        self.lead_placed = subject_root;
         let mut owed = self.lead.set_scene(resolved, subject_root);
         if self.members_owe_floor() {
             owed.skin_floor = Some(self.floor);
@@ -475,6 +783,7 @@ impl<M: StageMember> FrameLoop for CastStage<M> {
     }
 
     fn set_subject_root(&mut self, subject_root: Mat4) {
+        self.lead_placed = subject_root;
         self.lead.set_subject_root(subject_root);
     }
 

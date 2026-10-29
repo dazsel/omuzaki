@@ -1,0 +1,26 @@
+schema = 1
+id = "omuzaki/accessories/beaded-bracelet"
+version = "1.0.0"
+section = "accessories"
+kind = "part"
+target = "character"
+title = "Beaded bracelet"
+summary = "Gold and ruby beads round the right wrist."
+tags = ["jewellery", "bracelet", "beads"]
+origin = "the kit's bracelet generator, tuned by eye on close-up renders (#2413)"
+compat = { kinds = ["humanoid"], templates = ["*"], requires = ["body"] }
+creates.piece = { kind = "bracelet", id = "beaded-bracelet", layer = 50 }
+
+[rights]
+author = "Omuzaki"
+licence = "CC0-1.0"
+commercial = "ok"
+owned = true
+
+[[step]]
+op = "part.add"
+[step.args]
+character = "$character"
+kind = "bracelet"
+id = "$parts.piece"
+params = { hand = "right", style = "beads", width = 0.004 }

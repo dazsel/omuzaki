@@ -1,0 +1,23 @@
+# Pose "palm-touch": the right hand raised in front at face height, palm out and fingers up, as if laid against a pane
+# or another's palm. Degrees, Euler XYZ, VRM normalised space; see crates/omuzaki-anim/src/poses/mod.rs.
+id = "palm-touch"
+summary = "The right hand raised in front at face height, palm out and fingers up, as if laid against a pane or another's palm."
+tags = ["gesture", "contact", "palm", "arm"]
+mirrorable = true
+
+[bones]
+spine = [2.0, 0.0, 0.0]
+head = [2.0, 5.0, 2.0]
+leftUpperArm = [0.0, 0.0, -66.0]
+leftLowerArm = [0.0, -10.0, 0.0]
+rightUpperArm = [-38.1, 27.0, 59.5]
+rightLowerArm = [90.1, 1.4, -94.6]
+rightHand = [-32.1, -32.8, -49.2]
+
+[hands.right]
+shape = "flat"
+
+[reach.right]
+bone = "upperChest"
+at = [-0.363, 0.084, 0.681]
+pole = [-0.45, -0.54, 0.71]

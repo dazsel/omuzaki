@@ -1,0 +1,53 @@
+# A bedroom: the subject stands at the origin facing +Z, the bed against the back wall to their left.
+title = "Bedroom"
+summary = "A soft pastel bedroom: a made bed under a window, a bedside table and lamp, a low bookshelf, a plant and a round rug. Pairs with the dev-warm rig, or viewer-candle for evening."
+light_rig = "dev-warm"
+tags = ["interior", "cosy", "pastel"]
+
+[backdrop]
+kind = "gradient"
+top = "#3b3340"
+bottom = "#6b5b6e"
+
+[ground]
+kind = "none"
+
+[props.room]
+kind = "room"
+params = { width = 5.0, depth = 4.6, height = 2.6, walls = "#ead9e0", floor = "#b08a6a", wainscot = "#f4eef0", trim = "#fbf6f4" }
+position = [0.0, 0.0, 0.3]
+
+[props.bed]
+kind = "bed"
+params = { width = 1.4, length = 2.0, sheet = "#f7f1ec", blanket = "#b9a3d6", pillows = 2 }
+position = [-1.25, 0.0, -0.9]
+
+[props.window]
+kind = "window"
+params = { width = 1.1, height = 1.2, panes = [2, 2], curtains = "#e7b9c6", sky = "#f2c6a8", horizon = "#fbe6cf", light = "#ffd9b8", intensity = 7.0 }
+position = [-1.25, 1.0, -2.0]
+
+[props.nightstand]
+kind = "cafe-table"
+params = { radius = 0.25, height = 0.6, top = "#f4eef0", metal = "#c8b8a8" }
+position = [-0.25, 0.0, -1.65]
+
+[props.lamp]
+kind = "lamp"
+params = { style = "table", height = 0.45, shade = "#f6e3d6", intensity = 1.6, range = 3.5 }
+position = [-0.25, 0.6, -1.7]
+
+[props.books]
+kind = "shelf"
+params = { width = 1.1, height = 0.9, depth = 0.3, shelves = 2, books = 0.7, seed = 11, colour = "#f2ebe6" }
+position = [1.35, 0.0, -2.0]
+
+[props.plant]
+kind = "plant"
+params = { height = 0.9, leaves = 20, seed = 5, pot = "#e7d8cc" }
+position = [2.15, 0.0, -1.7]
+
+[props.rug]
+kind = "rug"
+params = { width = 2.0, length = 1.6, colour = "#c9b6dc", border = "#f4eef0" }
+position = [0.4, 0.0, 0.3]

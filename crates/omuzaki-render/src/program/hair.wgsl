@@ -49,5 +49,32 @@ fn program_light(lit: vec3<f32>, n: vec3<f32>, v: vec3<f32>, p: ProgramIn) -> ve
     let facing = glsl_smoothstep(0.1, 0.6, dot(n, v));
     let ringed = lit + program_vec3(P_RING) * band * teeth * facing * program_float(P_RING_STRENGTH);
     let luma = dot(ringed, vec3<f32>(0.299, 0.587, 0.114));
-    return mix(ringed, luma * vec3<f32>(1.05, 0.97, 0.90), program_float(P_KEEP_IDENTITY));
+    let kept = mix(ringed, luma * vec3<f32>(1.05, 0.97, 0.90), program_float(P_KEEP_IDENTITY));
+    // The back lights' rim goes on after keep-identity: it is the light's colour, not the hair's.
+    return kept + hair_back_light(n, v, p);
+}
+
+// The hair's own back rim (`back-light`): every spot, point or directional light behind the hair, as the eye sees it,
+// adds its colour on a band at the silhouette as wide as the rim (`rim-width`), on the side of the lock that faces it,
+// so coloured kickers outline the locks. 0 skips it, and so does a scene that asks for the back rim on every surface
+// (`frame.look.z`), which the hair gets with the rest.
+fn hair_back_light(n: vec3<f32>, v: vec3<f32>, p: ProgramIn) -> vec3<f32> {
+    let strength = program_float(P_BACK_LIGHT);
+    if (strength <= 0.0 || frame.look.z > 0.0) {
+        return vec3<f32>(0.0);
+    }
+    let width = max(program_float(P_RIM_WIDTH), 0.1);
+    let edge = glsl_smoothstep(1.0 - width, 1.0 - 0.35 * width, 1.0 - saturate(dot(n, v)));
+    var rim = vec3<f32>(0.0);
+    for (var i = 0u; i < frame.counts.x; i++) {
+        let l = frame.lights[i];
+        if (l.vector.w == LIGHT_HEMISPHERE) {
+            continue;
+        }
+        let incident = incident_light(l, i, n, p.world_position);
+        let behind = saturate(-dot(incident.to_light, v));
+        let side = saturate(0.5 + 0.5 * dot(n, incident.to_light));
+        rim += incident.colour * incident.shadow * behind * side;
+    }
+    return rim * edge * strength;
 }

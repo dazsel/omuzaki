@@ -13,14 +13,17 @@
 use std::sync::Arc;
 
 use omuzaki_anim_api::{
-    BoneId, ChannelBuf, ConstraintSet, HumanoidPose, IkGoals, IkSolver, MAX_BONES, Pose, Rig, Skeleton, SpringSet, Tick,
+    BoneId, ChannelBuf, ConstraintSet, HumanoidPose, IkGoals, IkSolver, MAX_BONES, Pose, Reaches, Rig, Skeleton,
+    SpringSet, Tick,
 };
 use omuzaki_avatar_api::avatar::ImportedAvatar;
 use omuzaki_char_api::{BuiltCharacter, CharacterRig, DriverPlan, JointRef, PartMesh, PoseSource};
-use omuzaki_core::glam::Mat4;
+use omuzaki_core::glam::{Mat4, Vec3};
 use omuzaki_rig::constraint::VrmConstraintSolver;
 use omuzaki_rig::full::FullRig;
-use omuzaki_rig::ik::guard::{ArmGuard, BodyProxy, GuardConfig, SkinnedMesh};
+use omuzaki_rig::ik::guard::{
+    ArmGuard, BodyPart, BodyProxy, GuardConfig, MAX_OBSTACLES, Obstacle, SkinnedMesh,
+};
 use omuzaki_rig::ik::TwoBoneIk;
 use omuzaki_rig::ik::look_at::LookAtIk;
 use omuzaki_rig::pose::HumanoidRig;
@@ -28,6 +31,7 @@ use omuzaki_rig::skeleton::RigSkeleton;
 use omuzaki_rig::spring::VrmSpringSolver;
 
 use crate::error::StageError;
+use crate::interact::{BODY_JOINTS, MemberBody};
 
 /// Both IK solvers as one stage. The gaze goes first because the look-at turns the chest and neck, which carry the
 /// arms: the limbs then solve against that posed upper body, so a hand or foot goal still lands on its target when the
@@ -170,6 +174,12 @@ impl RigFrame {
         self.solve(tick, pose, goals);
     }
 
+    /// The hands' reaches for the following solves, until replaced: each becomes a hand goal on the posed body
+    /// (`omuzaki_rig::ik::reach`).
+    pub(crate) fn set_reaches(&mut self, reaches: &Reaches) {
+        self.rig.set_reaches(reaches);
+    }
+
     /// The channel values the bone drivers read on the next [`solve`](Self::solve).
     pub(crate) fn channels(&self) -> &ChannelBuf {
         &self.channels
@@ -195,7 +205,56 @@ impl RigFrame {
     pub(crate) fn world(&self) -> &Pose {
         self.rig.world()
     }
+
+    /// The body as another member's interaction reads it (#2415): its joints and its guard's parts as the last solve
+    /// left them, and its arms' sizes, carried into the world by `root`. Allocation-free.
+    pub(crate) fn body(&self, root: Mat4) -> MemberBody {
+        use omuzaki_anim_api::HumanoidBone as B;
+        let skeleton = self.rig.skeleton();
+        let world = self.rig.world();
+        let mut body = MemberBody { root, ..MemberBody::EMPTY };
+        if let Some(map) = skeleton.humanoid_map() {
+            for (slot, bone) in body.joints.iter_mut().zip(BODY_JOINTS) {
+                *slot = map
+                    .get(bone)
+                    .and_then(|id| world.local.get(id.index()))
+                    .map(|t| root.transform_point3(t.translation));
+            }
+        }
+        if let Some(guard) = self.rig.guard() {
+            let proxy = guard.proxy();
+            for (slot, part) in body.parts.iter_mut().zip(proxy.obstacles(skeleton, &self.local)) {
+                *slot = Some(part.moved(root));
+            }
+            body.forearm = proxy.forearm_radius;
+            body.palm = proxy.hands.map(Vec3::length);
+            body.hand_thickness = proxy.hand_axes.map(Vec3::min_element);
+        }
+        let length = |a: Option<Vec3>, b: Option<Vec3>| a.zip(b).map_or(0.0, |(a, b)| a.distance(b));
+        let j = |bone| body.joint(bone);
+        body.arm = [
+            length(j(B::LeftUpperArm), j(B::LeftLowerArm)) + length(j(B::LeftLowerArm), j(B::LeftHand)),
+            length(j(B::RightUpperArm), j(B::RightLowerArm)) + length(j(B::RightLowerArm), j(B::RightHand)),
+        ];
+        body
+    }
+
+    /// Keeps the arms out of another member's parts too from the next solve: `parts` in the world, `root` this body's.
+    /// An empty slice clears them. Allocation-free.
+    pub(crate) fn set_partner(&mut self, parts: &[Obstacle], root: Mat4) {
+        let Some(guard) = self.rig.guard_mut() else { return };
+        let to_root = root.inverse();
+        let mut placed = [EMPTY_OBSTACLE; MAX_OBSTACLES];
+        for (slot, part) in placed.iter_mut().zip(parts) {
+            *slot = part.moved(to_root);
+        }
+        guard.set_obstacles(&placed[..parts.len().min(MAX_OBSTACLES)]);
+    }
 }
+
+/// A placeholder obstacle for the unused slots of a fixed buffer; never handed to the guard.
+const EMPTY_OBSTACLE: Obstacle =
+    Obstacle { part: BodyPart::Torso, a: Vec3::ZERO, b: Vec3::ZERO, radius: 0.0, depth: 0.0, forward: Vec3::Z };
 
 /// The solved skeleton as the part runtimes see it: skin matrices looked up by joint, and the character's root.
 pub(crate) struct SkinPose<'a> {

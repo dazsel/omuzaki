@@ -1,0 +1,23 @@
+schema = 1
+id = "omuzaki/face-profiles/mature"
+version = "1.0.0"
+section = "face-profiles"
+kind = "setting"
+target = "character"
+title = "Mature"
+summary = "An older anime character: narrow eyes under heavy upper lashes, a small mouth, a longer face and neck."
+tags = ["face", "style", "mature", "adult"]
+origin = "the kit's mature character style (#2410)"
+compat = { kinds = ["humanoid"], templates = ["standard", "tall"], requires = ["head", "body"] }
+
+[rights]
+author = "Omuzaki"
+licence = "CC0-1.0"
+commercial = "ok"
+owned = true
+
+[[step]]
+op = "character.set_style"
+[step.args]
+character = "$character"
+style = "mature"

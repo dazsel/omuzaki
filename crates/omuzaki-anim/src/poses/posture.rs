@@ -1,6 +1,6 @@
 //! A pose ready to combine: [`Posture`], [`PoseMask`] and the three operations (blend, mirror, layer).
 
-use omuzaki_anim_api::{HumanoidBone, HumanoidPose};
+use omuzaki_anim_api::{HumanoidBone, HumanoidPose, Reaches};
 
 use crate::hands::{Finger, FingerCurl, HandRest, HandShape, Side, finger_targets, set_bone};
 
@@ -130,6 +130,8 @@ pub struct Posture {
     pub left: Hand,
     /// The character's right hand shape.
     pub right: Hand,
+    /// Where the hands reach on the body (the rig's IK, after the bones above).
+    pub reach: Reaches,
 }
 
 impl Posture {
@@ -152,6 +154,7 @@ impl Posture {
             body: a.body.lerp(&b.body, w),
             left: Hand::blend(&a.left, &b.left, w),
             right: Hand::blend(&a.right, &b.right, w),
+            reach: Reaches::blend(&a.reach, &b.reach, w),
         }
     }
 
@@ -159,7 +162,7 @@ impl Posture {
     /// are side-neutral, so they only change sides. Exact: mirroring twice gives back the same posture.
     #[must_use]
     pub fn mirrored(&self) -> Self {
-        Self { body: self.body.mirrored(), left: self.right, right: self.left }
+        Self { body: self.body.mirrored(), left: self.right, right: self.left, reach: self.reach.mirrored() }
     }
 
     /// `overlay` over `base`, `w` strong (held to `0..=1`), on the bones in `mask` only; everything outside the mask is
@@ -174,6 +177,13 @@ impl Posture {
         }
         if mask.contains(HumanoidBone::Hips) {
             out.body.hips_offset = mixed.body.hips_offset;
+        }
+        // A reach moves its arm: it is layered where the mask holds that arm.
+        if mask.contains(HumanoidBone::LeftUpperArm) {
+            out.reach.left = mixed.reach.left;
+        }
+        if mask.contains(HumanoidBone::RightUpperArm) {
+            out.reach.right = mixed.reach.right;
         }
         for (side, hand, from) in
             [(Side::Left, &mut out.left, &mixed.left), (Side::Right, &mut out.right, &mixed.right)]

@@ -8,7 +8,7 @@ use serde::Deserialize;
 use super::shape::{FingerCurl, HandShape, HandShapeError};
 
 /// The built-in files, in the order `hand.list_shapes` shows them. Adding a shape is adding a file and a line here.
-const BUILTIN: [(&str, &str); 8] = [
+const BUILTIN: [(&str, &str); 10] = [
     ("open", include_str!("../../library/hand-shapes/open.toml")),
     ("fist", include_str!("../../library/hand-shapes/fist.toml")),
     ("point", include_str!("../../library/hand-shapes/point.toml")),
@@ -17,6 +17,8 @@ const BUILTIN: [(&str, &str); 8] = [
     ("grip", include_str!("../../library/hand-shapes/grip.toml")),
     ("thumbs-up", include_str!("../../library/hand-shapes/thumbs-up.toml")),
     ("rest", include_str!("../../library/hand-shapes/rest.toml")),
+    ("spread", include_str!("../../library/hand-shapes/spread.toml")),
+    ("flat", include_str!("../../library/hand-shapes/flat.toml")),
 ];
 
 /// One finger as written in a library file: degrees.

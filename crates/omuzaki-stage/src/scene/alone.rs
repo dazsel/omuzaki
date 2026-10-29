@@ -20,7 +20,8 @@ const ALONE: &str = "alone";
 const SHOT: &str = "shot";
 
 /// `def` with `character` as its only member: in the subject's place (its id, position and yaw) when the scene has a
-/// subject, else at the stage centre. Lights and cameras anchored to another member follow the subject instead.
+/// subject, else at the stage centre. Lights and cameras anchored to another member follow the subject instead; props
+/// anchored to another member are left out.
 /// Returns the member's id.
 ///
 /// # Errors
@@ -55,6 +56,8 @@ pub fn cast_alone(def: &mut SceneDef, character: &CharId, variant: Option<&Varia
             follow(anchor);
         }
     }
+    // A prop placed by, or held by, a member who is no longer on the stage leaves with them.
+    def.props.retain(|_, prop| !matches!(prop.anchor, Anchor::Member(_)) || prop.anchor == keep);
     Ok(id)
 }
 

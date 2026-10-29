@@ -9,10 +9,12 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+inventory.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+omuzaki-anim-api = { path = "../omuzaki-anim-api" }
 omuzaki-char-api = { path = "../omuzaki-char-api" }
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }

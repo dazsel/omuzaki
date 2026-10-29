@@ -5,8 +5,8 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use omuzaki_char_api::{
-    BangsGen, BraidGen, BrushFalloff, BunGen, CapGen, CurtainGen, FramingGen, Generator, GuidesGen, HAIR_INFO,
-    HAIR_PROGRAM, HAIR_UV, HairShading, PRESET_IDS, PartSweepGen, TailGen,
+    AhogeGen, BangsGen, BraidGen, BrushFalloff, BunGen, CapGen, CurtainGen, FramingGen, Generator, GuidesGen,
+    HAIR_INFO, HAIR_PROGRAM, HAIR_UV, HairShading, PRESET_IDS, PartSweepGen, TailGen,
 };
 use omuzaki_face_api::Palette;
 use omuzaki_render_api::Shading;
@@ -31,6 +31,7 @@ fn preset_ids_generators_and_the_hair_program_are_documented() {
         Generator::Bangs(BangsGen::default()),
         Generator::Tail(TailGen::default()),
         Generator::Bun(BunGen::default()),
+        Generator::Ahoge(AhogeGen::default()),
         Generator::Guides(GuidesGen::default()),
     ];
     for g in &generators {

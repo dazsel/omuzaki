@@ -263,7 +263,7 @@ fn the_rig_chain_has_the_asked_bones_in_a_line_from_the_head() {
     for bones in 4..=6_u8 {
         let g = TailGen { chain_bones: bones, ..tail::ponytail() };
         let mut rig = RigContribution::default();
-        tail::rig(&g, &Ball, "hair_x_tail", false, &["head".to_owned()], &mut rig).unwrap();
+        tail::rig(&g, &Ball, None, "hair_x_tail", false, &["head".to_owned()], &mut rig).unwrap();
         assert_eq!(rig.bones.len(), usize::from(bones));
         assert_eq!(rig.bones[0].parent, JointRef::HEAD);
         for pair in rig.bones.windows(2) {
@@ -284,7 +284,7 @@ fn the_rig_chain_has_the_asked_bones_in_a_line_from_the_head() {
 fn a_mirrored_rig_has_a_chain_per_side_with_distinct_names() {
     use omuzaki_char_api::RigContribution;
     let mut rig = RigContribution::default();
-    tail::rig(&tail::twintails(), &Ball, "hair_h_twin", true, &[], &mut rig).unwrap();
+    tail::rig(&tail::twintails(), &Ball, None, "hair_h_twin", true, &[], &mut rig).unwrap();
     assert_eq!(rig.chains.len(), 2);
     assert_eq!(rig.chains[0].name, "hair_h_twin_l");
     assert_eq!(rig.chains[1].name, "hair_h_twin_r");
@@ -299,7 +299,7 @@ fn a_mirrored_rig_has_a_chain_per_side_with_distinct_names() {
 fn a_bad_prefix_is_an_error_not_a_panic() {
     use omuzaki_char_api::RigContribution;
     let mut rig = RigContribution::default();
-    assert!(tail::rig(&tail::ponytail(), &Ball, "Not A Name", false, &[], &mut rig).is_err());
+    assert!(tail::rig(&tail::ponytail(), &Ball, None, "Not A Name", false, &[], &mut rig).is_err());
 }
 
 // ------------------------------------------------------------------------------------------------ the bun
