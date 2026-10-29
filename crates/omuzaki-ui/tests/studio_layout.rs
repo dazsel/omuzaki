@@ -23,7 +23,8 @@ use egui::{Key, Modifiers, Rect, Ui, vec2};
 use egui_kittest::kittest::NodeT as _;
 use egui_kittest::{Harness, Node};
 use omuzaki_char_api::{BuildServices, RegistryBuilder};
-use omuzaki_ops_api::Services;
+use omuzaki_ops_api::ServicesBuilder;
+use omuzaki_settings_api::service::Settings as SettingsService;
 use omuzaki_ui::ds::audit::{
     Control, LayoutFinding, LayoutProblem, control_bounds, cut_sideways, elided_findings, painted,
 };
@@ -82,13 +83,19 @@ const EXPECTED: &[Expected] = &[];
 struct Studio {
     shell: Shell,
     theme: ThemeKind,
+    _folder: tempfile::TempDir,
 }
 
 /// The studio as `main.rs` builds it at `size`, with the kit character open when `populated`, no viewport GPU, and the
 /// design system's settings applied every frame (as the app's settings sync does).
 fn studio(populated: bool, size: egui::Vec2, theme: ThemeKind) -> Harness<'static, Studio> {
     omuzaki_ui::link();
-    let core = core_on(Document::empty(), Services::default()).unwrap_or_else(|e| panic!("{e}"));
+    // A settings store in a folder of its own, so the Settings window draws its rows rather than an error.
+    let folder = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    let paths = omuzaki_settings::Paths::new(folder.path().join("config"), folder.path().join("data"));
+    let store: Arc<dyn SettingsService> = Arc::new(omuzaki_settings::Store::open(&paths));
+    let services = ServicesBuilder::new().insert::<dyn SettingsService>(store).build();
+    let core = core_on(Document::empty(), services).unwrap_or_else(|e| panic!("{e}"));
     let mut shell = Shell::new(Arc::clone(&core.runner), None);
     if populated {
         let character = studio::open_character(core.runner.as_ref()).unwrap_or_else(|e| panic!("{e}"));
@@ -105,7 +112,7 @@ fn studio(populated: bool, size: egui::Vec2, theme: ThemeKind) -> Harness<'stati
             apply_settings(ui.ctx(), Settings { theme: s.theme, ..Settings::default() });
             s.shell.ui(ui);
         },
-        Studio { shell, theme },
+        Studio { shell, theme, _folder: folder },
     );
     // The fonts become active a pass after they are installed, and a trailing row measures itself once they are.
     h.run_steps(6);
@@ -247,8 +254,9 @@ fn audit_studio() -> Vec<(LayoutFinding, String)> {
                     let found = audit(&h, size);
                     add(&mut h, found, format!("{} shown, {at}", def.id));
                 }
+                // Half a second: the window has faded in, so a picture of it shows it as a person sees it.
                 h.state_mut().shell.toggle_settings();
-                h.run_steps(6);
+                h.run_steps(30);
                 let found = audit_with(&h, size, false);
                 add(&mut h, found, format!("the Settings window, {at}"));
             }
