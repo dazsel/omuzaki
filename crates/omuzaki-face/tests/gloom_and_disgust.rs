@@ -17,8 +17,8 @@ use omuzaki_face::preview::sheet::{Cell, compose, png};
 use omuzaki_face::preview::{FaceSubject, Preview};
 use omuzaki_face::raster::SkiaRasterizer;
 use omuzaki_face_api::{
-    DEFAULT_PX_PER_M, ExpressionKind, ExpressionSet, FaceDrawing, FaceInput, FaceLayerId, FacePainter, FaceProfile,
-    FaceRasterizer, FaceView, Palette, Raster,
+    DEFAULT_PX_PER_M, ExpressionId, ExpressionKind, ExpressionSet, FaceDrawing, FaceInput, FaceLayerId, FacePainter,
+    FaceProfile, FaceRasterizer, FaceView, Palette, Raster,
 };
 
 fn subject(set: ExpressionSet) -> FaceSubject {
@@ -98,6 +98,21 @@ fn disgusted_reads_apart_from_the_gloom() {
             .unwrap();
         assert_ne!(closest, "gloom", "at {size} px disgusted reads closest to gloom ({best:.3})");
     }
+}
+
+#[test]
+fn disgusted_draws_its_own_marks_and_none_of_the_gloom() {
+    let face = subject(ExpressionSet::library().unwrap());
+    let disgusted = ExpressionId::new("disgusted").unwrap();
+    let buf = face.profile.expressions.blend(&ChannelBuf::NEUTRAL, &[(&disgusted, 1.0)]).unwrap();
+    let params = face.profile.mapping.apply(&buf);
+    assert_eq!(params.effects.gloom, 0.0, "disgusted borrows none of the gloom");
+    assert!(params.nose_sneer > 0.9, "it sneers: {}", params.nose_sneer);
+    let mut painter = RealPainter::new(face.projection, DEFAULT_PX_PER_M);
+    let mut drawing = FaceDrawing::new();
+    let input = FaceInput { profile: &face.profile, params: &params, time: Seconds(0.0), view: FaceView::default() };
+    painter.paint(&input, &mut drawing).unwrap();
+    assert!(drawing[FaceLayerId::Overlay].cmds().is_empty(), "no gloom band or hatch on the Overlay layer");
 }
 
 #[test]
