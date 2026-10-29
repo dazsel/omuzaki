@@ -9,3 +9,5 @@ committed to `main` (ADR 0003).
 - `2413/`: ring, earrings, bracelet and filigree collar, full body and close.
 - `2414/`: five gesture clips from the lens and the side; a hand on the chest before and after the elliptic torso; the
   spread thumb before and after the stem fix.
+- `2415/`: hug, palms together and cheek to cheek between the kit's standard and tall characters, each from two
+  cameras (`touches.png` puts the six side by side).
