@@ -143,10 +143,12 @@ pub fn paint_params(
             teeth_lower: narrow(get(p, "teethLow")?),
             tongue: narrow(get(p, "tongue")?),
             fangs: narrow(get(p, "fang")?),
+            teeth_sharp: 0.0,
         },
         blush: narrow(get(p, "blush")?),
         cheek_puff: 0.0,
         sweat: 0.0,
+        anger_vein: 0.0,
     })
 }
 

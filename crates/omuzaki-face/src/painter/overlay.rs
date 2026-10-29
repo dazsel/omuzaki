@@ -1,4 +1,5 @@
-//! The Overlay layer, in front of the hair: the sweat drop at the temple and the gloom's hatch over the forehead.
+//! The Overlay layer, in front of the hair: the sweat drop at the temple, the gloom's hatch over the forehead and the
+//! anger vein.
 //!
 //! The prototype has neither (they are new designs in its drawing language: flat colours, fine lines, one soft shade),
 //! so there is no parity test; the Face lead signs the look on a contact sheet. Both scale smoothly with their channel,
@@ -8,10 +9,16 @@
 //!   outline and a small highlight. It grows from 60 % to full size as it fades in.
 //! - **Gloom** (`effects.gloom`): a soft dark band across the upper forehead, darkest at the top, and a row of fine
 //!   vertical hatch lines of alternating length over it.
+//! - **Anger vein** (`PaintParams::anger_vein`, #2403): the cross-shaped popping mark at the temple, on the side the
+//!   face style says ([`AngerVeinStyle`](omuzaki_face_api::AngerVeinStyle)). Four thick corner strokes in the style's
+//!   red, each with a dark outline, their corners pointing at a shared centre. It pops in: its size overshoots by about
+//!   12 % halfway through its fade-in and settles at full size, and it is fully opaque from 40 % on, so a fade of a few
+//!   frames reads as a pop and a hard cut shows it at its final size.
 
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::Vec2;
 use omuzaki_face_api::{Cap, Cmd, FaceLayerId, FaceRect, Join, Paint, Stops, narrow};
+use std::f32::consts::PI;
 
 use crate::painter::{PaintCtx, fixed_colour};
 
@@ -53,7 +60,27 @@ const HATCH_WIDTH: f32 = 0.0012;
 const HATCH_OPACITY: f32 = 0.55;
 const HATCH_SHORT: f32 = 0.6;
 
-/// Paints the Overlay layer: the sweat drop and the gloom's band and hatch.
+// ---- anger vein
+
+/// The gap between the four strokes' corners and the centre, and how far each arm reaches, in vein half-sizes; the
+/// stroke's width as a share of the half-size, and the outline round it in metres.
+const VEIN_GAP: f32 = 0.2;
+const VEIN_ARM: f32 = 1.0;
+const VEIN_WIDTH: f32 = 0.34;
+const VEIN_OUTLINE: f32 = 0.0016;
+/// The pop: the size at the start of the fade-in, the overshoot's height, and the share of the fade-in by which the
+/// vein is fully opaque.
+const VEIN_START: f32 = 0.6;
+const VEIN_OVERSHOOT: f32 = 0.3;
+const VEIN_OPAQUE_BY: f32 = 0.4;
+
+/// The vein's size multiplier at `t` of its fade-in: from [`VEIN_START`] up past 1 and back to exactly 1 at `t = 1`.
+fn vein_pop(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    VEIN_START + (1.0 - VEIN_START) * t + VEIN_OVERSHOOT * (PI * t).sin()
+}
+
+/// Paints the Overlay layer: the sweat drop, the gloom's band and hatch, and the anger vein.
 pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
     let sweat = ctx.params.sweat.clamp(0.0, 1.0);
     if sweat > OFF {
@@ -62,6 +89,63 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
     let gloom = ctx.params.effects.gloom.clamp(0.0, 1.0);
     if gloom > OFF {
         gloom_band(ctx, gloom);
+    }
+    let vein = ctx.params.anger_vein.clamp(0.0, 1.0);
+    if vein > OFF {
+        anger_vein(ctx, vein);
+    }
+}
+
+/// The anger vein at the temple (see the module docs).
+fn anger_vein(ctx: &mut PaintCtx<'_>, strength: f32) {
+    let style = &ctx.profile.effects.anger_vein;
+    let layout = &ctx.profile.layout;
+    let bounds = rect(ctx);
+    let reach = VEIN_ARM + VEIN_WIDTH / 2.0;
+    let half = narrow(style.size) * vein_pop(strength);
+    // Never larger than the window, so the clamp below always has room.
+    let half = half.min((bounds.x1 - bounds.x0) / (2.0 * reach)).min((bounds.y1 - bounds.y0) / (2.0 * reach));
+    let room = half * reach;
+    let corner = narrow(layout.eye_spacing + layout.eye_width * ctx.profile.eyes.scale);
+    let at = Vec2::new(
+        (style.side.sign() * (corner + narrow(style.out))).clamp(bounds.x0 + room, bounds.x1 - room),
+        (narrow(layout.eye_y + layout.brow_gap + style.up)).clamp(bounds.y0 + room, bounds.y1 - room),
+    );
+    let opacity = (strength / VEIN_OPAQUE_BY).min(1.0);
+    let (fill, outline) = (
+        fixed_colour(&style.colour, Colour::rgb(0xe8, 0x2c, 0x34)),
+        fixed_colour(&style.outline, Colour::rgb(0x4a, 0x0c, 0x14)),
+    );
+    let width = VEIN_WIDTH * half;
+    let list = ctx.list(FaceLayerId::Overlay);
+    // The four corners, one per quadrant, each a quadratic from one arm's end round the corner near the centre to the
+    // other arm's end: the corner points inward, the arms flare out. All four outlines go first, so no outline cuts
+    // across a neighbour's fill.
+    let mut strokes = [None; 4];
+    for (i, (sx, sy)) in [(1.0_f32, 1.0_f32), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0)].into_iter().enumerate() {
+        let p = |x: f32, y: f32| at + Vec2::new(sx * x * half, sy * y * half);
+        let path = list.path().move_to(p(VEIN_GAP, VEIN_ARM)).quad_to(p(VEIN_GAP, VEIN_GAP), p(VEIN_ARM, VEIN_GAP)).finish();
+        strokes[i] = Some(path);
+    }
+    for path in strokes.iter().flatten() {
+        list.push(Cmd::Stroke {
+            path: *path,
+            paint: Paint::Solid(outline),
+            width: width + 2.0 * VEIN_OUTLINE,
+            cap: Cap::Round,
+            join: Join::Round,
+            opacity,
+        });
+    }
+    for path in strokes.iter().flatten() {
+        list.push(Cmd::Stroke {
+            path: *path,
+            paint: Paint::Solid(fill),
+            width,
+            cap: Cap::Round,
+            join: Join::Round,
+            opacity,
+        });
     }
 }
 

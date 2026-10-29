@@ -74,6 +74,14 @@ pub struct EyeEffects {
     pub sparkle: f32,
     /// Tear drops.
     pub tears: f32,
+    /// Fully blank eyes: white with a bold outline and no iris (the shock beat).
+    pub blank: f32,
+    /// Dot eyes: each eye becomes a small solid dot.
+    pub dot: f32,
+    /// Wide, pinned stare: a small iris in a widened white, with a heavy shadow under the eye.
+    pub stare: f32,
+    /// Pill (capsule) eyes: a flat capsule per eye, the iris colour on its outer half.
+    pub pill: f32,
 }
 
 /// The mouth.
@@ -104,6 +112,8 @@ pub struct MouthParams {
     pub tongue: f32,
     /// Fangs show, `0..=1`.
     pub fangs: f32,
+    /// The teeth become a sharp zigzag row, upper and lower, `0..=1`.
+    pub teeth_sharp: f32,
 }
 
 /// Lid tilt per unit of `eyeTilt` (#74): the channel's `-1..1` spans the painter's whole `-2..2`.
@@ -112,7 +122,7 @@ pub const EYE_TILT_PER_UNIT: f32 = 2.0;
 pub const PINPOINT: f32 = 0.6;
 
 /// Everything a painter needs to draw one face this frame, derived from the channels by a [`FaceMapping`]. `Copy` and
-/// fixed-size (164 bytes): nothing allocates between the bus and the painter.
+/// fixed-size (188 bytes): nothing allocates between the bus and the painter.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct PaintParams {
     /// The character's left eye (+x).
@@ -143,6 +153,8 @@ pub struct PaintParams {
     pub cheek_puff: f32,
     /// Sweat drop, `0..=1`.
     pub sweat: f32,
+    /// The anger vein at the temple, `0..=1`.
+    pub anger_vein: f32,
 }
 
 impl PaintParams {
@@ -244,11 +256,21 @@ pub struct EyeMap {
     pub tilt_from_brows: f64,
     /// How far `eyesShock` shrinks the pupil, `0..=1`.
     pub shock_pupil: f64,
+    /// Openness added by `eyesStare`: a stare holds the lids wide.
+    pub stare_open: f64,
 }
 
 impl Default for EyeMap {
     fn default() -> Self {
-        Self { wide: 0.65, squint: 0.45, squint_lid: 0.35, cheek_lid: 0.4, tilt_from_brows: 0.5, shock_pupil: 0.6 }
+        Self {
+            wide: 0.65,
+            squint: 0.45,
+            squint_lid: 0.35,
+            cheek_lid: 0.4,
+            tilt_from_brows: 0.5,
+            shock_pupil: 0.6,
+            stare_open: 0.45,
+        }
     }
 }
 
@@ -551,6 +573,10 @@ impl FaceMapping {
                 spiral: g(Channel::EYES_SPIRAL),
                 sparkle: g(Channel::SPARKLE),
                 tears: g(Channel::TEARS),
+                blank: g(Channel::EYES_BLANK),
+                dot: g(Channel::EYES_DOT),
+                stare: g(Channel::EYES_STARE),
+                pill: g(Channel::EYES_PILL),
             },
             left_brow,
             right_brow,
@@ -567,6 +593,7 @@ impl FaceMapping {
             .clamp(0.0, 1.6),
             cheek_puff: g(Channel::CHEEK_PUFF),
             sweat: g(Channel::SWEAT_DROP),
+            anger_vein: g(Channel::ANGER_VEIN),
         }
     }
 
@@ -590,8 +617,9 @@ impl FaceMapping {
         };
         let (rest, map) = (&self.rest, &self.eyes);
         EyeParams {
-            open: (coef(rest.eye_open) + coef(map.wide) * ch.get(wide) - coef(map.squint) * ch.get(squint))
-                .clamp(0.0, 1.9),
+            open: (coef(rest.eye_open) + coef(map.wide) * ch.get(wide) - coef(map.squint) * ch.get(squint)
+                + coef(map.stare_open) * ch.get(Channel::EYES_STARE))
+            .clamp(0.0, 1.9),
             close: ch.get(blink),
             arc: ch.get(arc),
             lower_lid: unit(
@@ -666,6 +694,7 @@ impl FaceMapping {
                 * unit((s_avg - coef(map.teeth_lower_smile_start)) * coef(map.teeth_lower_smile_gain)),
             tongue: g(Channel::TONGUE_OUT),
             fangs: g(Channel::FANGS),
+            teeth_sharp: g(Channel::TEETH_SHARP),
         }
     }
 }
@@ -694,6 +723,7 @@ impl Validate for FaceMapping {
             ("eyes/squint_lid", eyes.squint_lid),
             ("eyes/cheek_lid", eyes.cheek_lid),
             ("eyes/tilt_from_brows", eyes.tilt_from_brows),
+            ("eyes/stare_open", eyes.stare_open),
             ("brows/inner_up", brows.inner_up),
             ("brows/outer_up", brows.outer_up),
             ("brows/down", brows.down),
@@ -765,7 +795,7 @@ mod tests {
 
     #[test]
     fn the_paint_parameters_are_small_and_copy() {
-        assert_eq!(std::mem::size_of::<PaintParams>(), 164, "update the design doc if this changes");
+        assert_eq!(std::mem::size_of::<PaintParams>(), 188, "update the design doc if this changes");
     }
 
     #[test]
@@ -967,7 +997,7 @@ mod tests {
         );
         assert!(within(p.gaze.x, -1.0, 1.0) && within(p.gaze.y, -1.0, 1.0) && within(p.vergence, -1.0, 1.0));
         let e = p.effects;
-        for v in [e.heart, e.star, e.gloom, e.shock, e.squeeze, e.spiral, e.sparkle, e.tears] {
+        for v in [e.heart, e.star, e.gloom, e.shock, e.squeeze, e.spiral, e.sparkle, e.tears, e.blank, e.dot, e.stare, e.pill] {
             assert!(within(v, 0.0, 1.0), "effect {v}");
         }
         for brow in [p.left_brow, p.right_brow] {
@@ -978,10 +1008,11 @@ mod tests {
         assert!(within(m.open, 0.0, 1.5) && within(m.wide, 0.3, 2.0), "{m:?}");
         assert!(within(m.smile_left, -2.0, 2.0) && within(m.smile_right, -2.0, 2.0), "{m:?}");
         assert!(within(m.shift, -1.0, 1.0), "{m:?}");
-        for v in [m.round, m.press, m.pucker, m.teeth_upper, m.teeth_lower, m.tongue, m.fangs] {
+        for v in [m.round, m.press, m.pucker, m.teeth_upper, m.teeth_lower, m.tongue, m.fangs, m.teeth_sharp] {
             assert!(within(v, 0.0, 1.0), "mouth {m:?}");
         }
         assert!(within(p.blush, 0.0, 1.6) && within(p.cheek_puff, 0.0, 1.0) && within(p.sweat, 0.0, 1.0), "{p:?}");
+        assert!(within(p.anger_vein, 0.0, 1.0), "{p:?}");
     }
 
     proptest! {

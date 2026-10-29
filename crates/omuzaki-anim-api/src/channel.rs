@@ -13,7 +13,8 @@
 //! | `52..60` | head and body: head angles and shift, lean, body turn, breath |
 //! | `60..73` | anime extras (spec FE-02): ^^ arcs, heart/star/gloom/shock/squeeze/spiral eyes, sparkle, tears, sweat, blush, fangs |
 //! | `73..76` | signed face shapes the drawn face reads (#74): `eyeTilt` (-1 sad to 1 angry), `browArch` (-1 flat to 1 arched), `pupilSize` (1 pinpoint) |
-//! | `76..112` | reserved for future standard channels (finger curls, more extras) |
+//! | `76..82` | the reference-bar marks (#2393): `angerVein`, `eyesBlank`, `eyesDot`, `eyesStare`, `eyesPill`, `teethSharp` |
+//! | `82..112` | reserved for future standard channels (finger curls, more extras) |
 //! | `112..128` | 16 `customNN` slots for character-specific toggles that scores and triggers can drive |
 //!
 //! Naming: camelCase, `Left`/`Right` suffix for the character's own sides (`ARKit` convention). Names are what files
@@ -68,7 +69,7 @@ pub enum Region {
     Head,
     /// Lean, body turn and breath.
     Body,
-    /// Anime extras that are not eye styles: sparkle, tears, sweat, blush, fangs.
+    /// Anime extras that are not eye styles: sparkle, tears, sweat, blush, fangs, the anger vein, sharp teeth.
     Extras,
     /// The `customNN` slots.
     Custom,
@@ -222,6 +223,12 @@ channels! {
     EYE_TILT = 73, "eyeTilt", Weight, -1.0, 1.0, Eyes, [none];
     BROW_ARCH = 74, "browArch", Weight, -1.0, 1.0, Brows, [none];
     PUPIL_SIZE = 75, "pupilSize", Weight, 0.0, 1.0, Eyes, [none];
+    ANGER_VEIN = 76, "angerVein", Weight, 0.0, 1.0, Extras, [none];
+    EYES_BLANK = 77, "eyesBlank", Weight, 0.0, 1.0, Eyes, [none];
+    EYES_DOT = 78, "eyesDot", Weight, 0.0, 1.0, Eyes, [none];
+    EYES_STARE = 79, "eyesStare", Weight, 0.0, 1.0, Eyes, [none];
+    EYES_PILL = 80, "eyesPill", Weight, 0.0, 1.0, Eyes, [none];
+    TEETH_SHARP = 81, "teethSharp", Weight, 0.0, 1.0, Extras, [none];
     CUSTOM_00 = 112, "custom00", Weight, 0.0, 1.0, Custom, [none];
     CUSTOM_01 = 113, "custom01", Weight, 0.0, 1.0, Custom, [none];
     CUSTOM_02 = 114, "custom02", Weight, 0.0, 1.0, Custom, [none];
@@ -786,7 +793,7 @@ mod tests {
     #[test]
     fn indices_names_and_slots_are_consistent() {
         assert!(CHANNELS.len() < usize::from(NO_SLOT));
-        assert_eq!(CHANNELS.len(), 52 + 8 + 13 + 3 + CUSTOM_COUNT);
+        assert_eq!(CHANNELS.len(), 52 + 8 + 13 + 3 + 6 + CUSTOM_COUNT);
         let mut seen = std::collections::HashSet::new();
         for (pos, info) in CHANNELS.iter().enumerate() {
             assert!(info.channel.index() < CHANNEL_CAPACITY);
