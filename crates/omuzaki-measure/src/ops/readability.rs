@@ -13,6 +13,9 @@ use crate::readability::silhouette::{self, Ground, MIN_DISTINCT, SIDE};
 
 /// The most images one call reads: every pair is compared, so the work grows with the square.
 const MAX_IMAGES: usize = 32;
+/// The most expressions one readability call reads: a face's whole library at once (the kit's holds 36 besides its
+/// visemes), still a few thousand small pairs.
+const MAX_EXPRESSIONS: usize = 64;
 
 /// How many other characters the spec checks a silhouette against (§32).
 const SPEC_OTHERS: usize = 20;
@@ -145,7 +148,7 @@ register_op!(MeasureSilhouette);
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MeasureReadability {
-    /// The expressions, the resting face first, each a head or face render of one size (2 to 32).
+    /// The expressions, the resting face first, each a head or face render of one size (2 to 64).
     pub expressions: Vec<NamedImage>,
     /// The sizes, pixels (default 112, 56 and 28, Twitch's emote sizes).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -187,8 +190,8 @@ impl Op for MeasureReadability {
     #[allow(clippy::too_many_lines)] // one report, built in order
     fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
         let n = self.expressions.len();
-        if !(2..=MAX_IMAGES).contains(&n) {
-            return Err(OpError::invalid("expressions", format!("{n} expressions; give 2 to {MAX_IMAGES}"))
+        if !(2..=MAX_EXPRESSIONS).contains(&n) {
+            return Err(OpError::invalid("expressions", format!("{n} expressions; give 2 to {MAX_EXPRESSIONS}"))
                 .hint("render the resting face and each expression the same way"));
         }
         let sizes = self.sizes.clone().unwrap_or_else(|| SIZES.to_vec());

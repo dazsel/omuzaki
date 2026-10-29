@@ -12,6 +12,10 @@
 //! The score is the lowest driver above the rest face: on a member a webcam drives, the tracker wins wherever it reads
 //! the face, unless the member's drive map gates it off (`perform::drive`). That is the PF-23 rule, unchanged.
 //!
+//! An act made **over tracking** ([`Act::over_tracking`]) is the exception the caller asks for: it is left out of the
+//! score layer and written to an [`OverLayer`] instead, which the performer lays over the resolved and living bus, so
+//! it wins on the channels it sets (eyes forced shut while the webcam runs) and fades back to whatever drives them.
+//!
 //! Hot path: [`LiveScore::step`] allocates, locks and frees nothing. A clip is the built-in library's, borrowed for
 //! `'static`, so nothing the perform thread holds is freed when an act ends.
 
@@ -136,6 +140,58 @@ pub struct Act {
     pub envelope: Envelope,
     /// Which acts it takes over from.
     pub lane: Lane,
+    /// It plays over the tracker, lip sync, the triggers and the life layer on the channels it sets ([`OverLayer`]),
+    /// instead of under them. Channel acts only; a clip ignores it.
+    pub over_tracking: bool,
+}
+
+/// The channel acts that play over everything else ([`Act::over_tracking`]): for each channel some such act moves, the
+/// value it pulls toward and how far, as one lerp that composes the acts in the order they started. The performer
+/// applies it after the life layer. Allocation-free.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct OverLayer {
+    values: ChannelBuf,
+    /// How far each channel is pulled toward `values`, `0..=1`.
+    weights: ChannelBuf,
+    mask: ChannelMask,
+}
+
+impl Default for OverLayer {
+    fn default() -> Self {
+        Self { values: ChannelBuf::NEUTRAL, weights: ChannelBuf::NEUTRAL, mask: ChannelMask::EMPTY }
+    }
+}
+
+impl OverLayer {
+    /// No channels.
+    pub fn clear(&mut self) {
+        self.mask = ChannelMask::EMPTY;
+    }
+
+    /// The channels it moves.
+    pub fn mask(&self) -> ChannelMask {
+        self.mask
+    }
+
+    /// Lays `target` over what the layer already holds on `mask`, by `weight`: applying the result equals applying the
+    /// old layer and then lerping toward `target` by `weight`.
+    fn push(&mut self, target: &ChannelBuf, mask: ChannelMask, weight: f32) {
+        let weight = weight.clamp(0.0, 1.0);
+        for c in mask {
+            let (held, had) = if self.mask.contains(c) { (self.values[c], self.weights[c]) } else { (0.0, 0.0) };
+            let total = 1.0 - (1.0 - weight) * (1.0 - had);
+            self.values[c] = if total > 0.0 { ((1.0 - weight) * had * held + weight * target[c]) / total } else { target[c] };
+            self.weights[c] = total;
+        }
+        self.mask |= mask;
+    }
+
+    /// Pulls each channel of `bus` it moves toward its value by its weight.
+    pub fn apply(&self, bus: &mut ChannelBuf) {
+        for c in self.mask {
+            bus[c] += (self.values[c] - bus[c]) * self.weights[c];
+        }
+    }
 }
 
 /// Where a playing act is in its life.
@@ -257,10 +313,17 @@ impl LiveScore {
     }
 
     /// Advances to `now` and writes the score: `layer` gets the channels of every act over `rest` (an override layer
-    /// at full weight over the channels some act moves, absent when none does) and `pose` the clips' body layers.
-    /// Allocation-free.
+    /// at full weight over the channels some act moves, absent when none does), `over` the acts made over tracking,
+    /// and `pose` the clips' body layers. Allocation-free.
     #[allow(clippy::cast_possible_truncation)] // ages of seconds fit f32
-    pub fn step(&mut self, now: Seconds, rest: &ChannelBuf, layer: &mut Layer, pose: &mut ScorePose) {
+    pub fn step(
+        &mut self,
+        now: Seconds,
+        rest: &ChannelBuf,
+        layer: &mut Layer,
+        over: &mut OverLayer,
+        pose: &mut ScorePose,
+    ) {
         let now = now.0;
         let mut i = 0;
         while i < MAX_ACTS {
@@ -289,10 +352,12 @@ impl LiveScore {
         layer.values = *rest;
         layer.mask = ChannelMask::EMPTY;
         layer.mode = BlendMode::Override;
+        over.clear();
         pose.len = 0;
         for playing in self.acts.iter().flatten() {
             let w = playing.weight;
             match playing.act.motion {
+                Motion::Channels { target, mask } if playing.act.over_tracking => over.push(&target, mask, w),
                 Motion::Channels { target, mask } => {
                     layer.values.lerp_masked(&target, mask, w);
                     layer.mask |= mask;
@@ -345,13 +410,24 @@ mod tests {
     fn face(channel: Channel, value: f32, envelope: Envelope) -> Act {
         let mut target = ChannelBuf::NEUTRAL;
         target[channel] = value;
-        Act { motion: Motion::Channels { target, mask: ChannelMask::of(channel) }, envelope, lane: Lane::Face }
+        Act {
+            motion: Motion::Channels { target, mask: ChannelMask::of(channel) },
+            envelope,
+            lane: Lane::Face,
+            over_tracking: false,
+        }
     }
 
     fn run(score: &mut LiveScore, t: f64) -> (Layer, ScorePose) {
-        let (mut layer, mut pose) = (Layer::absent(BlendMode::Override), ScorePose::default());
-        score.step(Seconds(t), &ChannelBuf::NEUTRAL, &mut layer, &mut pose);
+        let (layer, _, pose) = run_over(score, t);
         (layer, pose)
+    }
+
+    fn run_over(score: &mut LiveScore, t: f64) -> (Layer, OverLayer, ScorePose) {
+        let (mut layer, mut over, mut pose) =
+            (Layer::absent(BlendMode::Override), OverLayer::default(), ScorePose::default());
+        score.step(Seconds(t), &ChannelBuf::NEUTRAL, &mut layer, &mut over, &mut pose);
+        (layer, over, pose)
     }
 
     #[test]
@@ -399,7 +475,8 @@ mod tests {
         // Acts that move nothing in common never release each other, so every one stays until the score is full.
         let none = Motion::Channels { target: ChannelBuf::NEUTRAL, mask: ChannelMask::EMPTY };
         for id in 1..=MAX_ACTS as u64 + 1 {
-            score.start(id, Act { motion: none, envelope: Envelope::new(0.0, None), lane: Lane::Channels });
+            let act = Act { motion: none, envelope: Envelope::new(0.0, None), lane: Lane::Channels, over_tracking: false };
+            score.start(id, act);
         }
         assert_eq!(score.ids()[0], 2, "the first act made room");
         assert_eq!(score.release(None), MAX_ACTS);
@@ -417,6 +494,7 @@ mod tests {
             motion: Motion::Clip { clip: wave, hands: HandRest::nominal(), bones: BoneMask::ALL, weight: 1.0 },
             envelope: Envelope::new(0.0, Some(2.0)),
             lane: Lane::Body,
+            over_tracking: false,
         };
         score.start(1, act);
         run(&mut score, 5.0);
@@ -425,5 +503,45 @@ mod tests {
         assert_eq!(pose.layers().len(), 1);
         assert_eq!(pose.layers()[0].pose, wave.sample(0.25, &HandRest::nominal()));
         assert_eq!(pose.layers()[0].weight, 1.0);
+    }
+
+    #[test]
+    fn an_act_over_tracking_leaves_the_score_layer_and_wins_over_the_bus() {
+        let mut score = LiveScore::new();
+        let shut = Act { over_tracking: true, ..face(Channel::EYE_BLINK_LEFT, 1.0, Envelope::new(0.0, Some(1.0))) };
+        score.start(1, shut);
+        let (layer, over, _) = run_over(&mut score, 0.0);
+        assert_eq!(layer.weight, 0.0, "it is not in the score layer, which the tracker would cover");
+        assert_eq!(over.mask(), ChannelMask::of(Channel::EYE_BLINK_LEFT));
+        // The webcam reads the eye wide open; the act still shuts it.
+        let mut bus = ChannelBuf::NEUTRAL;
+        bus[Channel::EYE_BLINK_LEFT] = 0.0;
+        bus[Channel::JAW_OPEN] = 0.3;
+        over.apply(&mut bus);
+        assert_eq!((bus[Channel::EYE_BLINK_LEFT], bus[Channel::JAW_OPEN]), (1.0, 0.3), "only its own channels");
+        // Once it has faded out, the bus is the tracker's again.
+        run_over(&mut score, 1.5);
+        let (_, over, _) = run_over(&mut score, 1.6);
+        assert_eq!(over.mask(), ChannelMask::EMPTY);
+    }
+
+    #[test]
+    fn over_acts_compose_in_the_order_they_started() {
+        // Two half-strength pulls on one channel equal the two lerps applied one after the other.
+        let mut over = OverLayer::default();
+        let (mut a, mut b) = (ChannelBuf::NEUTRAL, ChannelBuf::NEUTRAL);
+        a[Channel::JAW_OPEN] = 1.0;
+        b[Channel::JAW_OPEN] = 0.2;
+        let mask = ChannelMask::of(Channel::JAW_OPEN);
+        over.push(&a, mask, 0.5);
+        over.push(&b, mask, 0.5);
+        let mut bus = ChannelBuf::NEUTRAL;
+        bus[Channel::JAW_OPEN] = 0.4;
+        over.apply(&mut bus);
+        let mut by_hand = ChannelBuf::NEUTRAL;
+        by_hand[Channel::JAW_OPEN] = 0.4;
+        by_hand.lerp_masked(&a, mask, 0.5);
+        by_hand.lerp_masked(&b, mask, 0.5);
+        assert!((bus[Channel::JAW_OPEN] - by_hand[Channel::JAW_OPEN]).abs() < 1e-6);
     }
 }

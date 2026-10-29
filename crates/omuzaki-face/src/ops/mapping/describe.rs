@@ -81,7 +81,7 @@ fn formula(path: &str) -> Option<&'static str> {
 const FORMULAS: &[(&str, &str)] = &[
     (
         "rest/eye_open",
-        "base openness of both eyes (1 is the rest aperture): open = this + eyes.wide x eyeWide - eyes.squint x eyeSquint, clamped to 0..1.9",
+        "base openness of both eyes (1 is the rest aperture): open = this + eyes.wide x eyeWide - eyes.squint x eyeSquint + eyes.stare_open x eyesStare, clamped to 0..1.9",
     ),
     (
         "rest/lower_lid",
@@ -116,6 +116,7 @@ const FORMULAS: &[(&str, &str)] = &[
     ("eyes/cheek_lid", "lower lid raised per unit of cheekSquint"),
     ("eyes/tilt_from_brows", "how much the mean brow angle tilts the lids (0 turns it off)"),
     ("eyes/shock_pupil", "how far eyesShock shrinks the pupil, 0..1"),
+    ("eyes/stare_open", "openness added per unit of eyesStare (a stare holds the lids wide)"),
     ("brows/inner_up", "brow height added per unit of browInnerUp"),
     ("brows/outer_up", "brow height added per unit of browOuterUp"),
     ("brows/down", "brow height lost per unit of browDown"),
@@ -181,6 +182,6 @@ mod tests {
             assert!(formula(path).is_some(), "{path} has no formula");
         }
         assert_eq!(listed.len(), default.len(), "the table lists a path that FaceMapping doesn't have: {listed:?}");
-        assert_eq!(default.len(), 59);
+        assert_eq!(default.len(), 60);
     }
 }

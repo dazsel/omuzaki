@@ -9,10 +9,10 @@
 //! expressions are binary (`isBinary`): a channel shows its cell from weight 0.5 on.
 //!
 //! **Features.** Each eye and each brow is its own feature, so either side flips on its own, and the mouth is one. The
-//! static face (marks and nose) is a feature with one cell, and the cheeks are two cross-faded by a colour bind, at rest
-//! and at full blush. The Overlay layer's extras (the sweat drop, the gloom's hatch) are an `effects` feature, made only
-//! when an export asks for one of them. A feature's rectangle is the union of what its cells paint, and its patch is the head's triangles
-//! over that rectangle (`patch`).
+//! static face (marks and nose) is a feature with one cell, and the cheeks are two cross-faded by a colour bind, at
+//! rest and at full blush. The Overlay layer's extras (the sweat drop, the gloom's hatch, the anger vein) are an
+//! `effects` feature, made only when an export asks for one of them. A feature's rectangle is the union of what its
+//! cells paint, and its patch is the head's triangles over that rectangle (`patch`).
 //!
 //! **Atlas size.** A feature with `n` bits has `2^n` cells, in a grid `2^ceil(n/2)` wide and `2^floor(n/2)` high, each
 //! with a gutter of [`GUTTER`] pixels so filtering never reads a neighbour. The density is the live layer's
@@ -101,9 +101,9 @@ const EYE_EXTRAS: [[&str; 7]; 2] = [
     ["eyeArcLeft", "eyesHeart", "eyesStar", "eyesSqueeze", "tears", "eyesGloom", "eyesShock"],
     ["eyeArcRight", "eyesHeart", "eyesStar", "eyesSqueeze", "tears", "eyesGloom", "eyesShock"],
 ];
-/// The extras drawn on the Overlay layer (the sweat drop at the temple, the gloom's band and hatch over the forehead):
-/// the bits of the `effects` feature, when an export asks for them.
-const EFFECT_EXTRAS: [&str; 2] = ["sweatDrop", "eyesGloom"];
+/// The extras drawn on the Overlay layer (the sweat drop at the temple, the gloom's band and hatch over the forehead,
+/// the anger vein): the bits of the `effects` feature, when an export asks for them.
+const EFFECT_EXTRAS: [&str; 3] = ["sweatDrop", "eyesGloom", "angerVein"];
 
 /// Whether `channel` is an eye extra of the feature named `feature` (`eye-left` or `eye-right`).
 pub fn is_eye_extra(channel: &str, feature: &str) -> bool {

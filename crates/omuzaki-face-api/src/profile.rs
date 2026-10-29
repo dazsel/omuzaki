@@ -311,6 +311,53 @@ impl Validate for Iris {
     }
 }
 
+/// The right eye's own iris colours and pupil, for a character whose eyes differ (heterochromia). Each field left
+/// out is the left eye's ([`EyeStyle::iris`]), so `right_iris = { mid = "#c03a3a" }` changes one colour and nothing else.
+/// The iris's size and place stay shared: the two eyes are one design.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct IrisColours {
+    /// Top of the gradient.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top: Option<ColourRef>,
+    /// Middle of the gradient.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mid: Option<ColourRef>,
+    /// Bottom of the gradient (the lit crescent).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub low: Option<ColourRef>,
+    /// The outline ring.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ring: Option<ColourRef>,
+    /// The pupil (its shape, size and colour), when it differs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pupil: Option<Pupil>,
+}
+
+impl Validate for IrisColours {
+    fn check(&self, c: &mut Check) {
+        if let Some(pupil) = &self.pupil {
+            c.nested("pupil", pupil);
+        }
+    }
+}
+
+/// The colours and pupil one eye's iris paints with: the left eye's [`Iris`], or for the right eye the same with the
+/// [`EyeStyle::right_iris`] overrides on top. Borrowed, so painting a frame copies nothing.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct IrisPaint<'a> {
+    /// Top of the gradient.
+    pub top: &'a ColourRef,
+    /// Middle of the gradient.
+    pub mid: &'a ColourRef,
+    /// Bottom of the gradient.
+    pub low: &'a ColourRef,
+    /// The ring.
+    pub ring: &'a ColourRef,
+    /// The pupil.
+    pub pupil: &'a Pupil,
+}
+
 /// The eye white, shaded under the lid.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -427,8 +474,11 @@ pub struct EyeStyle {
     pub lash: Lash,
     /// The crease.
     pub crease: Crease,
-    /// The iris.
+    /// The iris (both eyes', unless `right_iris` says otherwise for the right one).
     pub iris: Iris,
+    /// The right eye's own iris colours and pupil (heterochromia); left out, both eyes match.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub right_iris: Option<IrisColours>,
     /// The eye white.
     pub sclera: Sclera,
     /// Catchlights.
@@ -450,6 +500,7 @@ impl Default for EyeStyle {
             lash: Lash::default(),
             crease: Crease::default(),
             iris: Iris::default(),
+            right_iris: None,
             sclera: Sclera::default(),
             highlights: Highlights::default(),
             lower_lid: LowerLidStyle::default(),
@@ -467,10 +518,32 @@ impl Validate for EyeStyle {
         c.nested("lash", &self.lash);
         c.nested("crease", &self.crease);
         c.nested("iris", &self.iris);
+        if let Some(right) = &self.right_iris {
+            c.nested("right_iris", right);
+        }
         c.nested("sclera", &self.sclera);
         c.nested("highlights", &self.highlights);
         c.nested("lower_lid", &self.lower_lid);
         c.range("lid_shadow", self.lid_shadow, 0.0, 1.0);
+    }
+}
+
+impl EyeStyle {
+    /// The iris colours and pupil of one eye: `right` is the character's right eye, which takes
+    /// [`right_iris`](Self::right_iris) where it says something, and the shared iris everywhere else.
+    pub fn iris_paint(&self, right: bool) -> IrisPaint<'_> {
+        fn pick<'a>(own: Option<&'a Option<ColourRef>>, shared: &'a ColourRef) -> &'a ColourRef {
+            own.and_then(Option::as_ref).unwrap_or(shared)
+        }
+        let iris = &self.iris;
+        let over = if right { self.right_iris.as_ref() } else { None };
+        IrisPaint {
+            top: pick(over.map(|o| &o.top), &iris.top),
+            mid: pick(over.map(|o| &o.mid), &iris.mid),
+            low: pick(over.map(|o| &o.low), &iris.low),
+            ring: pick(over.map(|o| &o.ring), &iris.ring),
+            pupil: over.and_then(|o| o.pupil.as_ref()).unwrap_or(&iris.pupil),
+        }
     }
 }
 
@@ -578,14 +651,34 @@ impl Validate for MouthInterior {
     fn check(&self, _: &mut Check) {}
 }
 
-/// Whether the character has fangs at all (CB-22).
+/// Which fangs the character has (CB-22).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FangKind {
     /// No fangs: none are painted whatever the `fangs` channel says, and the `grin-fangs` rule writes nothing.
     None,
-    /// Small pointed fangs at the upper mouth corners (the default).
-    Pointed,
+    /// A small pointed fang at both upper mouth corners (the default). Files written before single fangs say
+    /// `pointed`, which still reads as this.
+    #[serde(alias = "pointed")]
+    Both,
+    /// One fang, at the character's left corner (the viewer's right).
+    #[serde(alias = "one-left")]
+    OneLeft,
+    /// One fang, at the character's right corner (the viewer's left).
+    #[serde(alias = "one-right")]
+    OneRight,
+}
+
+impl FangKind {
+    /// The corners that have a fang, as signs along the mouth: `+1` the character's left, `-1` the right.
+    pub fn corners(self) -> &'static [f32] {
+        match self {
+            Self::None => &[],
+            Self::Both => &[-1.0, 1.0],
+            Self::OneLeft => &[1.0],
+            Self::OneRight => &[-1.0],
+        }
+    }
 }
 
 /// Fangs at the upper mouth corners (yaeba); drawn when the `fangs` channel is above 0 and the kind is not
@@ -605,7 +698,7 @@ pub struct FangStyle {
 
 impl Default for FangStyle {
     fn default() -> Self {
-        Self { kind: FangKind::Pointed, width: 0.006, height: 0.0058, position: 0.72 }
+        Self { kind: FangKind::Both, width: 0.006, height: 0.0058, position: 0.72 }
     }
 }
 
@@ -830,6 +923,83 @@ impl Validate for FaceMark {
     }
 }
 
+// ------------------------------------------------------------------------------------------------ effects
+
+/// Which side of the face a one-sided mark goes on: the character's own.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MarkSide {
+    /// The character's left (+x, the viewer's right).
+    #[default]
+    Left,
+    /// The character's right.
+    Right,
+}
+
+impl MarkSide {
+    /// `+1` for the left, `-1` for the right: the sign of x on that side.
+    pub fn sign(self) -> f32 {
+        match self {
+            Self::Left => 1.0,
+            Self::Right => -1.0,
+        }
+    }
+}
+
+/// The anger vein (the cross-shaped popping mark at the temple), drawn in front of the hair when the `angerVein`
+/// channel is on.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct AngerVeinStyle {
+    /// The side of the head it pops on.
+    pub side: MarkSide,
+    /// Its half-size at full strength, in metres.
+    pub size: f64,
+    /// How far out from the eye's outer corner its centre sits, in metres.
+    pub out: f64,
+    /// How far above the brow line its centre sits, in metres.
+    pub up: f64,
+    /// The fill.
+    pub colour: ColourRef,
+    /// The dark outline round each stroke.
+    pub outline: ColourRef,
+}
+
+impl Default for AngerVeinStyle {
+    fn default() -> Self {
+        Self {
+            side: MarkSide::Left,
+            size: 0.02,
+            out: 0.0,
+            up: 0.035,
+            colour: rgb(0xe8, 0x2c, 0x34),
+            outline: rgb(0x4a, 0x0c, 0x14),
+        }
+    }
+}
+
+impl Validate for AngerVeinStyle {
+    fn check(&self, c: &mut Check) {
+        c.range("size", self.size, 0.005, 0.05);
+        c.range("out", self.out, -0.05, 0.08);
+        c.range("up", self.up, -0.05, 0.12);
+    }
+}
+
+/// The anime marks' own styles: what a mark looks like on this character, while channels say when it shows.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct EffectStyle {
+    /// The anger vein.
+    pub anger_vein: AngerVeinStyle,
+}
+
+impl Validate for EffectStyle {
+    fn check(&self, c: &mut Check) {
+        c.nested("anger_vein", &self.anger_vein);
+    }
+}
+
 // ------------------------------------------------------------------------------------------------ the profile
 
 /// One character's face: layout, styles, resting face and expression library (`face.toml`, spec §7).
@@ -850,6 +1020,8 @@ pub struct FaceProfile {
     pub cheeks: CheekStyle,
     /// Freckles, beauty marks, face paint, scars.
     pub marks: Vec<FaceMark>,
+    /// How the anime marks look on this character (the anger vein).
+    pub effects: EffectStyle,
     /// How this face reads the channels: its resting face in paint terms (a sleepy half-lid, a slightly downturned
     /// mouth, a usual blush) and the coefficients of every formula (FE-06). Variants override single numbers: a
     /// performing face is livelier than a game face.
@@ -893,6 +1065,7 @@ impl Validate for FaceProfile {
         for (i, m) in self.marks.iter().enumerate() {
             c.nested(&format!("marks/{i}"), m);
         }
+        c.nested("effects", &self.effects);
         c.nested("mapping", &self.mapping);
         c.nested("grammar", &self.grammar);
         if let Err(message) = self.rest.validate_ranges() {
@@ -984,6 +1157,51 @@ mod tests {
         p.validate().unwrap();
         let back: FaceProfile = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
         assert_eq!(back, p);
+    }
+
+    #[test]
+    fn old_pointed_fangs_load_as_both_and_single_fangs_have_one_corner() {
+        let p: FaceProfile = serde_json::from_str(r#"{"mouth":{"fang":{"kind":"pointed"}}}"#).unwrap();
+        assert_eq!(p.mouth.fang.kind, FangKind::Both);
+        assert_eq!(serde_json::to_value(FangKind::Both).unwrap(), "both");
+        for (text, kind) in
+            [("one_left", FangKind::OneLeft), ("one-left", FangKind::OneLeft), ("one-right", FangKind::OneRight)]
+        {
+            let p: FaceProfile =
+                serde_json::from_str(&format!(r#"{{"mouth":{{"fang":{{"kind":"{text}"}}}}}}"#)).unwrap();
+            assert_eq!(p.mouth.fang.kind, kind, "{text}");
+            assert!(p.has_fangs());
+        }
+        assert_eq!((FangKind::OneLeft.corners(), FangKind::OneRight.corners()), (&[1.0][..], &[-1.0][..]));
+        assert_eq!((FangKind::Both.corners().len(), FangKind::None.corners().len()), (2, 0));
+    }
+
+    #[test]
+    fn the_right_iris_takes_what_it_says_and_the_left_irises_the_rest() {
+        let same = EyeStyle::default();
+        assert_eq!(same.iris_paint(true), same.iris_paint(false), "no right iris: both eyes match");
+        let p: FaceProfile =
+            serde_json::from_str(r##"{"eyes":{"right_iris":{"mid":"#c03a3a","pupil":{"shape":"slit"}}}}"##).unwrap();
+        p.validate().unwrap();
+        let (left, right) = (p.eyes.iris_paint(false), p.eyes.iris_paint(true));
+        assert_eq!(*right.mid, ColourRef::rgb(0xc0, 0x3a, 0x3a));
+        assert_eq!((right.top, right.low, right.ring), (left.top, left.low, left.ring), "the rest is shared");
+        assert_eq!((left.pupil.shape, right.pupil.shape), (PupilShape::Round, PupilShape::Slit));
+        assert_eq!(*left.mid, Iris::default().mid, "the left eye is untouched");
+        let back: FaceProfile = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+        assert_eq!(back, p);
+        assert!(!serde_json::to_string(&FaceProfile::default()).unwrap().contains("right_iris"), "old files unchanged");
+    }
+
+    #[test]
+    fn the_anger_vein_has_a_side_and_a_checked_size() {
+        let p: FaceProfile =
+            serde_json::from_str(r#"{"effects":{"anger_vein":{"side":"right","size":0.03}}}"#).unwrap();
+        assert_eq!((p.effects.anger_vein.side, p.effects.anger_vein.side.sign()), (MarkSide::Right, -1.0));
+        p.validate().unwrap();
+        let mut bad = p;
+        bad.effects.anger_vein.size = 1.0;
+        assert_eq!(bad.validate().unwrap_err().0[0].path, "effects/anger_vein/size");
     }
 
     #[test]

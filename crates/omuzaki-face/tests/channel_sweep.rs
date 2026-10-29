@@ -84,7 +84,7 @@ fn it_is_a_read_only_job() {
 #[test]
 fn the_plan_says_what_the_job_will_sweep() {
     let all = plan(json!({ "character": "mira" })).unwrap();
-    assert_eq!(all["channels"], 68);
+    assert_eq!(all["channels"], 74);
     assert_eq!(all["width_px"], 774);
     assert_eq!(all["min_changed_px"], 10);
     let some = plan(json!({ "character": "mira", "channels": ["jawOpen", "blush"], "width_px": 1548 })).unwrap();

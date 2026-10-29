@@ -172,6 +172,8 @@ pub(super) struct Eye {
     arc_growth: f32,
     /// The squeeze effect, `0..=1`.
     squeeze: f32,
+    /// How far a symbol eye (dot or pill) has taken the eye's place, `0..=1`.
+    replaced: f32,
     tilt: f32,
     low_lid: f32,
 }
@@ -211,6 +213,7 @@ impl Eye {
             shut,
             arc_growth,
             squeeze,
+            replaced: params.effects.dot.max(params.effects.pill).clamp(0.0, 1.0),
             tilt: params.eye_tilt,
             low_lid: eye.lower_lid,
         }
@@ -221,15 +224,21 @@ impl Eye {
         self.shut
     }
 
-    /// How much of the open eye's pieces show: the share of the eye that is not shut.
+    /// How much of the open eye's pieces show: the share of the eye that is not shut, and that no symbol eye (a dot or
+    /// a pill) has taken over.
     pub(super) fn open_fade(&self) -> f32 {
-        1.0 - self.shut
+        (1.0 - self.shut) * (1.0 - self.replaced)
     }
 
     /// How much of the closed curve shows: the shut share of the eye, fading out as the squeeze grows, because the
-    /// chevron (at the squeeze's own strength) takes over from it.
+    /// chevron (at the squeeze's own strength) takes over from it, and as a symbol eye does.
     pub(super) fn closed_weight(&self) -> f32 {
-        self.shut * (1.0 - self.squeeze)
+        self.shut * (1.0 - self.squeeze) * (1.0 - self.replaced)
+    }
+
+    /// The eye's centre on the face plane.
+    pub(super) fn centre(&self) -> Vec2 {
+        self.centre
     }
 
     /// How far an arc has grown, `0..=1`: the closed curve is the relaxed lash curve at `0` and the happy `^` at `1`.

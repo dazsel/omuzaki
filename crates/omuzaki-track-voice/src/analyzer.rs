@@ -10,7 +10,11 @@
 //! 3. **Formants.** Linear prediction of order [`LPC_ORDER`] (autocorrelation method, Levinson-Durbin) gives the vocal
 //!    tract's spectral envelope; its first peaks in the F1 and F2 ranges are the formants, and the [`VowelProfile`]
 //!    turns them into viseme weights, scaled by how open the voice is (its loudness).
-//! 4. **Onsets.** The [`OnsetDetector`]'s syllable onsets (three-band onset strength, adaptive threshold, 120 ms
+//! 4. **Closures.** Against the sentence's loudest voiced level (falling [`PEAK_FALL_DB_S`] while nothing louder is
+//!    heard): a hop that is not voiced and [`GAP_BELOW_DB`] under it while speaking is a stop's closure, and a voiced
+//!    hop [`MURMUR_BELOW_DB`] under it with a first formant below [`MURMUR_F1_HZ`] is a nasal's murmur. Either is a
+//!    lip closure for the mouth (`p b m`, and the tongue's `t d n k g`, which a drawn mouth may close on too).
+//! 5. **Onsets.** The [`OnsetDetector`]'s syllable onsets (three-band onset strength, adaptive threshold, 120 ms
 //!    refractory) on the analysis signal, each reported on the first voiced frame within [`ONSET_VOICED_WITHIN_S`] of
 //!    it, so a keyboard click or a cough is not a syllable (brow kicks and nods in the life layer).
 //!
@@ -45,6 +49,14 @@ pub const HANGOVER_S: f32 = 0.25;
 pub const FLOOR_RISE_DB_S: f32 = 3.0;
 /// An onset counts when a voiced frame follows it within this, seconds: voicing needs a few hops of a vowel to show.
 pub const ONSET_VOICED_WITHIN_S: f32 = 0.06;
+/// A hop this far under the sentence's peak, not voiced, while speaking, is a stop's closure, dB.
+pub const GAP_BELOW_DB: f32 = 25.0;
+/// A voiced hop this far under the sentence's peak, with a first formant below [`MURMUR_F1_HZ`], is a nasal, dB.
+pub const MURMUR_BELOW_DB: f32 = 7.0;
+/// See [`MURMUR_BELOW_DB`], Hz.
+pub const MURMUR_F1_HZ: f32 = 400.0;
+/// How fast the sentence's peak falls while nothing louder is voiced, dB per second.
+pub const PEAK_FALL_DB_S: f32 = 4.0;
 /// Loudness is 0 at this many dB over the floor and 1 at this plus [`LOUDNESS_SPAN_DB`].
 const LOUDNESS_FROM_DB: f32 = 6.0;
 /// See [`LOUDNESS_FROM_DB`].
@@ -80,6 +92,8 @@ pub struct VoiceFrame {
     pub onsets: u32,
     /// The F1 and F2 found, Hz; zero when not voiced. For the vowel calibration and the meters.
     pub formants: [f32; 2],
+    /// The lips are shut for a closure: a stop's gap or a nasal's murmur, `0` or `1`.
+    pub closure: f32,
 }
 
 /// Why an analyser could not be made.
@@ -115,6 +129,8 @@ pub struct VoiceAnalyzer {
     sin: Box<[f32]>,
     envelope: Box<[f32]>,
     floor_db: f32,
+    /// The sentence's loudest voiced level, dBFS, falling slowly.
+    peak_db: f32,
     hangover: u32,
     hangover_hops: u32,
     onset: OnsetDetector,
@@ -169,6 +185,7 @@ impl VoiceAnalyzer {
             sin: sin.into(),
             envelope: vec![0.0; bins].into(),
             floor_db: SILENCE_DBFS - 10.0,
+            peak_db: SILENCE_DBFS,
             hangover: 0,
             hangover_hops: (HANGOVER_S * hops_per_s).round() as u32,
             onset: OnsetDetector::new(rate.round() as u32),
@@ -240,14 +257,19 @@ impl VoiceAnalyzer {
 
         self.hangover = if voiced { self.hangover_hops } else { self.hangover.saturating_sub(1) };
         let (visemes, formants) = if voiced { self.vowel(loudness) } else { ([0.0; 5], [0.0; 2]) };
+        self.peak_db = if voiced { self.peak_db.max(db) } else { self.peak_db } - PEAK_FALL_DB_S * HOP_S;
+        let speaking = voiced || self.hangover > 0;
+        let gap = speaking && !voiced && db < self.peak_db - GAP_BELOW_DB;
+        let murmur = voiced && formants[0] < MURMUR_F1_HZ && db < self.peak_db - MURMUR_BELOW_DB;
         self.frame = VoiceFrame {
             seq: self.frame.seq + 1,
-            speaking: voiced || self.hangover > 0,
+            speaking,
             voiced,
             loudness: if voiced || self.hangover > 0 { loudness } else { 0.0 },
             visemes,
             onsets: self.frame.onsets.wrapping_add(u32::from(onset)),
             formants,
+            closure: if gap || murmur { 1.0 } else { 0.0 },
         };
     }
 
