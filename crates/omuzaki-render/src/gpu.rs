@@ -61,7 +61,7 @@ pub(crate) struct Gpu {
     /// The largest texture side the device accepts.
     pub(crate) max_texture_size: u32,
     /// The hardware MSAA sample counts [`SCENE_FORMAT`] supports, as a set of the values 1, 2, 4 and 8 or'd together
-    /// (so 4 and 1 are `0b0101`). Not every adapter has 2 or 8; lavapipe has only 1 and 4.
+    /// (so 4 and 1 are `0b0101`). Not every adapter has 2 or 8; lavapipe has 1 and 4, and 8 from Mesa 25.3 on.
     sample_counts: u32,
     /// Whether per-pass GPU timestamps work: both the pass-boundary and the between-passes kinds.
     pub(crate) timestamps: bool,
