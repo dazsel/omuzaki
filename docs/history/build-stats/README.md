@@ -11,7 +11,7 @@ pull requests, issues, CI runs and code reviews. Omuzaki is built by AI agents (
 a while) under one human owner. These files are aggregates only: counts and hours per day or per time bucket, with no
 conversation content, task descriptions or names.
 
-Snapshot refreshed hourly by `refresh.py` (git, GitHub and CI parts); last refresh in `summary.json`. Each dataset below says how far its data is complete.
+Snapshot refreshed by `refresh.py` (git, GitHub and CI parts) after chunks of work land, not on a timer; last refresh in `summary.json`. Each dataset below says how far its data is complete.
 
 ## The short version
 
