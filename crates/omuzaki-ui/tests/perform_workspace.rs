@@ -219,6 +219,24 @@ fn the_expression_strip_shows_the_bound_keys_and_a_click_shows_the_expression() 
     h.state_mut().app.shutdown().expect("a clean shutdown");
 }
 
+/// At both reference sizes the Perform workspace cuts no label short: every channel's name, the Live panel's controls and
+/// the top bar read whole (`studio_layout.rs` audits the other workspaces; this one needs the live slice).
+#[test]
+fn the_perform_workspace_cuts_no_label_at_either_reference_size() {
+    for size in [vec2(1366.0, 768.0), vec2(1920.0, 1080.0)] {
+        let mut h = perform(live(), size, false);
+        h.run_steps(8);
+        let mut found: Vec<String> = omuzaki_ui::ds::audit::elided_findings(h.output())
+            .into_iter()
+            .chain(omuzaki_ui::ds::audit::cut_sideways(h.output()))
+            .map(|f| format!("{size:?}: {f}"))
+            .collect();
+        found.dedup();
+        h.state_mut().app.shutdown().expect("a clean shutdown");
+        assert!(found.is_empty(), "{} labels cut:\n{}", found.len(), found.join("\n"));
+    }
+}
+
 /// The Perform workspace at both reference sizes with the kit character on the stage, for the pull request.
 #[test]
 #[ignore = "writes images; run by the visual evidence job"]
