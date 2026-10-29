@@ -12,6 +12,8 @@
 //!
 //! Skips with a message when one is unset. With `OMUZAKI_SHORT_EVIDENCE` set to a folder, writes the voice there as
 //! `spoken-short.wav`.
+
+#![allow(clippy::disallowed_methods, reason = "the test finds the model files on this machine")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::cast_precision_loss)] // a panic is a test failure
 
 use std::io::Read as _;

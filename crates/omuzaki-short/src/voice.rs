@@ -115,6 +115,10 @@ impl VoiceTrack {
 ///
 /// # Errors
 /// [`ShortError::Voice`] for a file that isn't a readable WAV.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "for examples and tools reading a path the person gave; ops read through `fs_access`"
+)]
 pub fn read_wav(path: &Path) -> Result<Vec<f32>, ShortError> {
     let file = std::fs::File::open(path).map_err(|e| ShortError::Voice(format!("{}: {e}", path.display())))?;
     read_wav_from(std::io::BufReader::new(file), &path.display().to_string())

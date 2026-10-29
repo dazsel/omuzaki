@@ -8,6 +8,8 @@
 //! `<puppet>` is a bundle folder (holding `puppet.json`) or a `*.layers.toml` manifest of layered art, rigged on the
 //! spot. A silent or file voice only: a spoken short needs the studio's model registry.
 
+#![allow(clippy::disallowed_methods, reason = "an example reads and writes the paths it is given")]
+
 use std::path::Path;
 
 use omuzaki_puppet::autorig::autorig;
