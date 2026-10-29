@@ -205,10 +205,15 @@ pub struct ShortPlan {
 /// Plans a short: its timeline and its measures, without rendering.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(extend("examples" = [
-    {"path": "shorts/intro.short.toml"},
-    {"short": {"character": "kit", "line": [{"text": "Hi!", "face": "happy", "camera": "close+punch"}]}}
-]))]
+#[schemars(extend(
+    "examples" = [
+        {"short": {"character": "kit", "line": [
+            {"text": "Hi! {surprised @close+punch} Oh, you're here.", "face": "happy", "camera": "face"},
+            {"text": "(I wasn't ready.)", "face": "flustered", "camera": "close+right", "caption": "aside"}
+        ]}}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
 pub struct PlanShort {
     /// The short.
     #[serde(flatten)]
@@ -261,9 +266,12 @@ register_op!(PlanShort);
 /// Drafts a directed short from a plain script.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(extend("examples" = [
-    {"character": "kit", "script": "Okay so today I tried baking.\nIt was a DISASTER!!\n(don't tell anyone)"}
-]))]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "script": "Okay so today I tried baking.\nIt was a DISASTER!!\n(don't tell anyone)"}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
 pub struct DraftShort {
     /// The character who performs it.
     pub character: CharId,
@@ -313,10 +321,14 @@ fn default_true() -> bool {
 /// Renders a short to a video file in the project.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(extend("examples" = [
-    {"path": "shorts/intro.short.toml"},
-    {"path": "shorts/intro.short.toml", "out": "shorts/intro-draft.webm", "size": [540, 960], "quality": "live"}
-]))]
+#[schemars(extend(
+    "examples" = [
+        {"short": {"character": "kit", "line": [{"text": "Hello!", "face": "happy", "camera": "close+punch"}]}},
+        {"short": {"character": "kit", "line": [{"text": "A quick draft."}]}, "out": "shorts/draft.webm",
+         "size": [540, 960], "quality": "live"}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
 pub struct RenderShort {
     /// The short.
     #[serde(flatten)]

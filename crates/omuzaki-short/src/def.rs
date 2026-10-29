@@ -22,6 +22,8 @@
 use std::collections::BTreeMap;
 
 use omuzaki_char_api::CharId;
+use omuzaki_performer_api::ids::VoiceId;
+use omuzaki_performer_api::voice::{SPEED_MAX, SPEED_MIN};
 use omuzaki_render_api::Colour;
 use omuzaki_stage_api::SceneId;
 use schemars::JsonSchema;
@@ -141,10 +143,45 @@ pub enum VoiceDef {
         /// The WAV file, relative to the project folder.
         path: String,
     },
+    /// Said by the project's local text-to-speech (Kokoro, `tts@1`): each line is synthesised in `voice`, lasts as long
+    /// as it takes to say (unless it gives its own `duration`), and the mouth moves with the sound. `short.plan` only
+    /// estimates the timing from the words; `short.render` synthesises.
+    Speech {
+        /// The voice, `<model>/<voice>` as `voice.list` names it (`kokoro-82m/af_heart`).
+        voice: String,
+        /// Tempo: 1 is the voice's own pace.
+        #[serde(default = "one")]
+        speed: f32,
+    },
 }
 
 const fn default_wpm() -> f32 {
     170.0
+}
+
+impl VoiceDef {
+    /// Checks the voice's numbers and names.
+    ///
+    /// # Errors
+    /// [`ShortError::Invalid`] naming the field and the rule.
+    fn check(&self) -> Result<(), ShortError> {
+        match self {
+            Self::Silent { words_per_minute } if !(60.0..=400.0).contains(words_per_minute) => Err(
+                ShortError::invalid("voice.words_per_minute", format!("{words_per_minute} is outside 60 to 400")),
+            ),
+            Self::Speech { voice, speed } => {
+                VoiceId::new(voice).map_err(|e| {
+                    ShortError::invalid("voice.voice", format!("{voice:?} isn't a voice id: {} (voice.list)", e.rule))
+                })?;
+                if (SPEED_MIN..=SPEED_MAX).contains(speed) {
+                    Ok(())
+                } else {
+                    Err(ShortError::invalid("voice.speed", format!("{speed} is outside {SPEED_MIN} to {SPEED_MAX}")))
+                }
+            }
+            _ => Ok(()),
+        }
+    }
 }
 
 impl Default for VoiceDef {
@@ -575,14 +612,7 @@ impl ShortDef {
                 return Err(ShortError::invalid(field, format!("{value} s is outside 0 to 10")));
             }
         }
-        if let VoiceDef::Silent { words_per_minute } = self.voice
-            && !(60.0..=400.0).contains(&words_per_minute)
-        {
-            return Err(ShortError::invalid(
-                "voice.words_per_minute",
-                format!("{words_per_minute} is outside 60 to 400"),
-            ));
-        }
+        self.voice.check()?;
         if !(0.05..=0.95).contains(&self.captions.y) {
             return Err(ShortError::invalid("captions.y", format!("{} is outside 0.05 to 0.95", self.captions.y)));
         }
@@ -726,6 +756,18 @@ text = "Second line."
         let odd = format!("size = [1081, 1920]\n{SAMPLE}");
         assert!(ShortDef::from_toml(&odd).unwrap_err().to_string().contains("odd"));
         assert!(ShortDef::from_toml("character = \"lumi\"").unwrap_err().to_string().contains("at least one line"));
+    }
+
+    #[test]
+    fn reads_a_spoken_voice_and_checks_it() {
+        let spoken = format!("{SAMPLE}\n[voice]\nkind = \"speech\"\nvoice = \"kokoro-82m/af_heart\"\n");
+        let def = ShortDef::from_toml(&spoken).unwrap();
+        assert_eq!(def.voice, VoiceDef::Speech { voice: "kokoro-82m/af_heart".into(), speed: 1.0 });
+        assert_eq!(ShortDef::from_toml(&def.to_toml().unwrap()).unwrap(), def);
+        let fast = spoken.replace("af_heart\"", "af_heart\"\nspeed = 3.0");
+        assert!(ShortDef::from_toml(&fast).unwrap_err().to_string().contains("voice.speed"));
+        let unnamed = spoken.replace("kokoro-82m/af_heart", "af_heart");
+        assert!(ShortDef::from_toml(&unnamed).unwrap_err().to_string().contains("voice.voice"));
     }
 
     #[test]
