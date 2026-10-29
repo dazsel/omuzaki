@@ -27,8 +27,9 @@ const TOL: f32 = 1e-6;
 const MATRIX_TOL: f32 = 1e-5;
 /// The hips' rest translation in the manifest's normalised rig: every case's hips sit here (pose `t` 0, no `par`).
 const REST_HIPS: Vec3 = Vec3::new(0.0, 0.37, 0.0);
-/// The rigs the library ships, in file order: the prototype's seven, the measurement rig, then our own `stage`.
-const RIGS: [&str; 9] = [
+/// The rigs the library ships, in file order: the prototype's seven, the measurement rig, then our own `stage` and
+/// `short-rim`.
+const RIGS: [&str; 10] = [
     "viewer-studio",
     "viewer-candle",
     "viewer-moonlit",
@@ -38,6 +39,7 @@ const RIGS: [&str; 9] = [
     "perform-facecam",
     "measure-flat",
     "stage",
+    "short-rim",
 ];
 
 /// The manifest's cases, or `None` when the goldens are absent. The test then skips, saying why on stderr.
@@ -205,7 +207,7 @@ struct ResolvedBone {
 }
 
 #[test]
-fn the_library_holds_its_nine_rigs_in_file_order() {
+fn the_library_holds_its_ten_rigs_in_file_order() {
     assert_eq!(LightRig::names().collect::<Vec<_>>(), RIGS);
 }
 

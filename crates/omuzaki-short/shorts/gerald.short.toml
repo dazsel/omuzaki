@@ -1,0 +1,149 @@
+# Gerald: the project's own first short, written for the reference loop (docs/quality/reference-shorts.md). An original
+# script for the kit's own character; nothing in it comes from another creator. About a minute, 9:16, a talking head
+# that changes face or shot on nearly every line, with captions.
+#
+# Make the character first (`character.create { id = "lumi", template = "standard" }`), copy this file into the
+# project, then `short.render { path = "gerald.short.toml" }`. With a recording of the lines, set
+# `voice = { kind = "file", path = "gerald.wav" }` and the mouth and the timing follow it.
+title = "Gerald"
+character = "lumi"
+seed = 7
+
+[voice]
+kind = "silent"
+words_per_minute = 175
+
+[[line]]
+text = "Okay. {determined @close} I need to tell you about Gerald."
+face = "happy"
+camera = "face+drift"
+
+[[line]]
+text = "Gerald is my plant."
+face = "smug"
+camera = "close"
+
+[[line]]
+text = "I've had Gerald for {@close+push} three days."
+face = "determined"
+camera = "face+left+drift"
+
+[[line]]
+text = "And he's already... {cross @eyes+punch} judging me."
+face = "gloom"
+camera = "eyes+push"
+pause = 0.4
+
+[[line]]
+text = "Like, LOOK at him!!"
+face = "angry"
+camera = "close+punch+shake"
+caption = "shout"
+
+[[line]]
+text = "(he's drooping. on purpose.)"
+face = "smirk"
+camera = "close+right+drift"
+caption = "aside"
+caption_text = "he's drooping. on purpose."
+
+[[line]]
+text = "I watered him. {happy+sparkle @close+tilt-left} I sang to him."
+face = "happy"
+camera = "bust+push"
+
+[[line]]
+text = "I bought him a tiny hat!"
+face = "happy+sparkle"
+camera = "face+tilt-right"
+
+[[line]]
+text = "Do you know {@close} what he did?"
+face = "confused"
+camera = "face+tilt-left"
+
+[[line]]
+text = "He dropped a leaf. {angry @mouth+punch+shake} ON MY FOOT."
+face = "surprised"
+camera = "close+punch+shake"
+caption = "shout"
+
+[[line]]
+text = "Wow."
+face = "cross"
+camera = "eyes"
+caption = "big"
+pause = 0.5
+
+[[line]]
+text = "So I did what {smirk @close+right} any normal person would do."
+face = "smug"
+camera = "face+drift"
+
+[[line]]
+text = "I searched {sad+sweat @eyes} why does my plant hate me."
+face = "worried+sweat"
+camera = "close+left"
+
+[[line]]
+text = "Forty thousand results."
+face = "dizzy"
+camera = "face+tilt-right+push"
+
+[[line]]
+text = "FORTY THOUSAND!!"
+face = "surprised"
+camera = "mouth+punch+shake"
+caption = "big"
+
+[[line]]
+text = "Turns out {surprised @close+punch} I was watering him {gloom @eyes+push} too much..."
+face = "sad"
+camera = "bust+push"
+
+[[line]]
+text = "I was loving him too hard."
+face = "cry"
+camera = "close+high"
+
+[[line]]
+text = "Which, honestly? {smug @close+punch} Relatable."
+face = "smirk"
+camera = "face+right+drift"
+
+[[line]]
+text = "So now {@close+left} we're on a schedule."
+face = "determined"
+camera = "face"
+
+[[line]]
+text = "Water on Sundays. {happy+sparkle @close+tilt-right} Compliments every day."
+face = "relaxed"
+camera = "bust+drift"
+
+[[line]]
+text = "And look!"
+face = "surprised"
+camera = "close+punch"
+
+[[line]]
+text = "A new leaf!!"
+face = "hearts"
+camera = "eyes+punch"
+caption = "big"
+
+[[line]]
+text = "I'm not crying. YOU'RE crying."
+face = "cry+flustered"
+camera = "close+tilt-left+shake"
+caption = "shout"
+
+[[line]]
+text = "Gerald, {flustered @eyes+push} I love you."
+face = "shy+hearts"
+camera = "face+push"
+
+[[line]]
+text = "See you next week. {smirk @close+right} If he lets me."
+face = "laugh"
+camera = "bust+low+drift"

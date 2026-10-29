@@ -10,6 +10,13 @@
 gpu = { max-threads = 2 }
 
 [[profile.default.overrides]]
+# These run the `omuzaki` binary, which builds a kit character from scratch and renders it inside a job's time cap (at
+# least 60 s). Beside CI's heaviest tests a 5 s render took over 80 s, so they get the runner to themselves.
+filter = 'package(omuzaki-cli) & (binary(render_preview) | binary(short_render))'
+test-group = 'gpu'
+threads-required = 'num-test-threads'
+
+[[profile.default.overrides]]
 filter = 'package(omuzaki-render) | package(omuzaki-ui) | package(omuzaki-stage) | package(omuzaki-test-stage)'
 test-group = 'gpu'
 

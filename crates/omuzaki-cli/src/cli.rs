@@ -61,6 +61,10 @@ pub enum Command {
     },
 
     /// Run an op, or preview it with --dry-run.
+    ///
+    /// A render op (`render.preview`, `render.turnaround`, ...) renders on a GPU of this machine (a software one such as
+    /// lavapipe will do), stores the PNG in your asset store and prints its `omuzaki://render/<hash>.png` address:
+    /// `omuzaki store export <ADDRESS> <FILE>` writes it to a file.
     Run {
         /// The op's name, e.g. `face.set_profile`; `omuzaki ops` lists them.
         op: String,
@@ -131,7 +135,8 @@ pub enum Command {
     #[command(hide = true)]
     Registrations,
 
-    /// Check or repair the asset store on disk. The store is a folder you name with `--store`, not the project.
+    /// Check or repair the asset store on disk, or write one of its objects (a render's PNG) to a file. The store is a
+    /// folder, not the project: `verify` and `repair` take it with `--store`, and `export` reads yours unless told.
     Store {
         /// What to do with the store.
         #[command(subcommand)]
@@ -350,6 +355,26 @@ pub enum StoreCommand {
     /// Move what the store can't trust into its quarantine folder; nothing is deleted. Exits 12 if a problem needs a
     /// person (listed as left alone), and 0 otherwise.
     Repair(StoreArgs),
+
+    /// Write an object of the store to a file: a render's PNG, by the `omuzaki://render/<hash>.png` address the render
+    /// ops print (or its bare hash). Its bytes are checked against the hash first.
+    Export(ExportArgs),
+}
+
+/// What `store export` takes.
+#[derive(Args, Debug, PartialEq, Eq)]
+pub struct ExportArgs {
+    /// The object: an `omuzaki://render/<hash>.png` address, or a content hash (64 lowercase hex characters).
+    #[arg(value_name = "ADDRESS")]
+    pub object: String,
+
+    /// The file to write; one already there is replaced.
+    pub file: PathBuf,
+
+    /// The store's folder: the one with an `objects` folder in it. Defaults to your asset store, where the render ops
+    /// put their PNGs (`store` in your data folder, which `OMUZAKI_DATA_DIR` moves).
+    #[arg(long, value_name = "DIR")]
+    pub store: Option<PathBuf>,
 }
 
 /// The arguments both `store` subcommands take.
@@ -534,6 +559,28 @@ mod tests {
                 })
             }
         );
+    }
+
+    #[test]
+    fn store_export_takes_an_address_a_file_and_an_optional_store() {
+        assert_eq!(
+            parse(&["store", "export", "omuzaki://render/ab.png", "out.png"]).command,
+            Command::Store {
+                action: StoreCommand::Export(ExportArgs {
+                    object: "omuzaki://render/ab.png".into(),
+                    file: PathBuf::from("out.png"),
+                    store: None,
+                })
+            }
+        );
+        let Command::Store { action: StoreCommand::Export(args) } =
+            parse(&["store", "export", "ab", "out.png", "--store", "s"]).command
+        else {
+            panic!("store export");
+        };
+        assert_eq!(args.store, Some(PathBuf::from("s")));
+        assert!(!parse(&["store", "export", "ab", "out.png"]).command.needs_project());
+        assert!(try_parse_from(["omuzaki", "store", "export", "ab"]).is_err(), "the file is required");
     }
 
     #[test]

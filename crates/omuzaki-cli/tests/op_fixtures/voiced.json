@@ -1,0 +1,7 @@
+{
+  "about": "The character `mochi` on the standard template, speaking with the local Kokoro voice `af_heart`: for the `voice.*` ops that read, change or preview a character's voice.",
+  "steps": [
+    { "op": "character.create", "args": { "id": "mochi", "name": "Mochi", "template": "standard" } },
+    { "op": "voice.assign", "args": { "character": "mochi", "voice": "kokoro-82m/af_heart" } }
+  ]
+}
