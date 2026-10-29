@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use omuzaki_anim::hands::{Finger, Side};
 use omuzaki_anim::hands::{HandLibrary, HandRest};
 use omuzaki_anim::poses::{Hand, PoseDef, PoseError, PoseLibrary, PoseMask, Posture};
-use omuzaki_anim_api::{HumanoidBone, HumanoidPose};
+use omuzaki_anim_api::{HumanoidBone, HumanoidPose, Reaches};
 use omuzaki_core::glam::{Quat, Vec3};
 use omuzaki_core::time::{FakeClock, Seconds};
 use omuzaki_doc_mock::MemDoc;
@@ -74,7 +74,10 @@ fn busy() -> Posture {
 fn the_built_in_poses_load_and_are_valid() {
     let lib = PoseLibrary::builtin().unwrap();
     let ids: Vec<_> = lib.iter().map(|p| p.id.as_str()).collect();
-    assert_eq!(ids, ["wave-right", "wave-left", "stand-relaxed"]);
+    assert_eq!(
+        ids,
+        ["wave-right", "wave-left", "reach-to-lens", "hand-on-chest", "palm-touch", "point", "cheer", "stand-relaxed"]
+    );
     for p in lib.iter() {
         p.validate().unwrap();
         p.posture(HandLibrary::builtin().unwrap()).unwrap();
@@ -128,7 +131,8 @@ fn blend_endpoints_are_exact() {
 
 #[test]
 fn blend_halfway_is_the_midpoint_of_bones_hips_and_hands() {
-    let (a, b) = (busy(), Posture { body: HumanoidPose::REST, left: Hand::NONE, right: Hand::NONE });
+    let (a, b) =
+        (busy(), Posture { body: HumanoidPose::REST, left: Hand::NONE, right: Hand::NONE, reach: Reaches::NONE });
     let mid = Posture::blend(&a, &b, 0.5);
     assert_eq!(mid.body.hips_offset, a.body.hips_offset * 0.5);
     let want = Quat::IDENTITY.slerp(a.body.get(HumanoidBone::RightLowerArm), 0.5);
@@ -139,7 +143,7 @@ fn blend_halfway_is_the_midpoint_of_bones_hips_and_hands() {
 }
 
 fn only(left: &Hand) -> Posture {
-    Posture { body: HumanoidPose::REST, left: *left, right: Hand::NONE }
+    Posture { body: HumanoidPose::REST, left: *left, right: Hand::NONE, reach: Reaches::NONE }
 }
 
 #[test]
@@ -203,10 +207,9 @@ fn a_mask_touches_only_its_bones() {
 
 /// Base and overlay with a different hand on each, so a leak shows in the resolved bones.
 fn hands_pair() -> (Posture, Posture) {
-    let base =
-        Posture { body: HumanoidPose::REST, left: Hand::of(shape("fist"), 1.0), right: Hand::of(shape("fist"), 1.0) };
+    let base = Posture { left: Hand::of(shape("fist"), 1.0), right: Hand::of(shape("fist"), 1.0), ..only(&Hand::NONE) };
     let overlay =
-        Posture { body: HumanoidPose::REST, left: Hand::of(shape("open"), 1.0), right: Hand::of(shape("peace"), 1.0) };
+        Posture { left: Hand::of(shape("open"), 1.0), right: Hand::of(shape("peace"), 1.0), ..only(&Hand::NONE) };
     (base, overlay)
 }
 
@@ -248,10 +251,9 @@ fn a_finger_only_mask_takes_that_finger_and_nothing_else_after_resolution() {
 fn a_single_joint_mask_takes_that_joint_after_resolution() {
     // Each hand bone on its own: base fist, overlay open, on both hands. The masked joint must read as the overlay, and
     // every other hand bone must still read as the base, once the hand shapes are applied.
-    let base =
-        Posture { body: HumanoidPose::REST, left: Hand::of(shape("fist"), 1.0), right: Hand::of(shape("fist"), 1.0) };
+    let base = Posture { left: Hand::of(shape("fist"), 1.0), right: Hand::of(shape("fist"), 1.0), ..only(&Hand::NONE) };
     let overlay =
-        Posture { body: HumanoidPose::REST, left: Hand::of(shape("open"), 1.0), right: Hand::of(shape("open"), 1.0) };
+        Posture { left: Hand::of(shape("open"), 1.0), right: Hand::of(shape("open"), 1.0), ..only(&Hand::NONE) };
     let rest = HandRest::nominal();
     let (b, o) = (base.to_humanoid(&rest), overlay.to_humanoid(&rest));
     for finger in Finger::ALL {
@@ -339,7 +341,10 @@ fn pose_list_lists_the_library() {
     assert!(plan.patch.is_empty(), "a query changes nothing");
     let out = plan.output.unwrap();
     let ids: Vec<_> = out["poses"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap()).collect();
-    assert_eq!(ids, ["wave-right", "wave-left", "stand-relaxed"]);
+    assert_eq!(
+        ids,
+        ["wave-right", "wave-left", "reach-to-lens", "hand-on-chest", "palm-touch", "point", "cheer", "stand-relaxed"]
+    );
     assert_eq!(out["poses"][0]["tags"], json!(["greeting", "arm"]));
     assert!(out["poses"][0]["summary"].as_str().unwrap().contains("Right arm"));
 }

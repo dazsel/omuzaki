@@ -12,6 +12,7 @@ use crate::effects::WeatherDef;
 use crate::error::did_you_mean;
 use crate::ids::{CameraId, MemberId, PropId};
 use crate::lighting::Lighting;
+use crate::props::PropDef;
 use crate::settings::SceneSettings;
 
 pub use omuzaki_render_api::limits::MAX_LIGHTS;
@@ -76,7 +77,7 @@ pub mod paths {
         scene(id).join("cast").join(member.as_str())
     }
 
-    /// `scenes/<id>/props/<prop>`: one prop (typed in phase 2).
+    /// `scenes/<id>/props/<prop>`: one [`PropDef`](crate::PropDef).
     #[must_use]
     pub fn prop(id: &SceneId, prop: &PropId) -> DocPath {
         scene(id).join("props").join(prop.as_str())
@@ -110,10 +111,9 @@ pub struct SceneDef {
     /// The placed characters, by member id (`cast/<member>.toml`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub cast: BTreeMap<MemberId, CastMember>,
-    /// The props, by id (`props/<prop>.toml`). Phase 2 defines `PropDef`; until then each prop is kept as written, so
-    /// a scene that has props loses none of them and the count limit holds.
+    /// The props, by id (`props/<prop>.toml`, design D7).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub props: BTreeMap<PropId, Value>,
+    pub props: BTreeMap<PropId, PropDef>,
     /// The weather (`weather.toml`, particles D10): materialised preset values, absent for none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weather: Option<WeatherDef>,
@@ -181,12 +181,7 @@ impl SceneDef {
     /// The [`serde_json::Error`] if the definition cannot be turned into a table.
     pub fn to_node(&self, into: &mut Value) -> Result<(), serde_json::Error> {
         let mut value = serde_json::to_value(self)?;
-        // Props are kept exactly as written: only the typed fields are normalised.
-        let props = value.as_object_mut().and_then(|map| map.remove("props"));
         shorten_floats(&mut value);
-        if let (Some(props), Some(map)) = (props, value.as_object_mut()) {
-            map.insert("props".into(), props);
-        }
         let Value::Object(written) = value else {
             return Err(<serde_json::Error as serde::ser::Error>::custom("a scene definition is a table"));
         };
@@ -290,13 +285,22 @@ mod tests {
     }
 
     #[test]
-    fn opaque_props_are_written_exactly_as_read() {
+    fn props_are_written_with_their_floats_shortened() {
         let mut def = scene();
-        let prop = json!({"kind": "mug", "params": {"height": 0.899_999_976_158_142_1, "mass": 0.1}});
-        def.props.insert(PropId::new("mug").unwrap(), prop.clone());
+        let mut prop = crate::PropDef::new(crate::PropKindId::new("cup").unwrap());
+        prop.params = json!({"height": f64::from(0.9_f32)});
+        prop.position = [0.25, 0.74, 0.1];
+        def.props.insert(PropId::new("mug").unwrap(), prop);
         let mut node = Value::Null;
         def.to_node(&mut node).unwrap();
-        assert_eq!(node["props"]["mug"], prop);
+        assert_eq!(serde_json::to_string(&node["props"]["mug"]["params"]["height"]).unwrap(), "0.9");
+        assert_eq!(serde_json::to_string(&node["props"]["mug"]["position"]).unwrap(), "[0.25,0.74,0.1]");
+        let back = SceneDef::from_node(&node).unwrap();
+        let mug = &back.props[&PropId::new("mug").unwrap()];
+        assert_eq!(mug.position, [0.25, 0.74, 0.1], "reads back as the same f32");
+        #[allow(clippy::cast_possible_truncation)]
+        let height = mug.params["height"].as_f64().unwrap() as f32;
+        assert_eq!(height, 0.9, "a kind decodes the same f32");
     }
 
     #[test]

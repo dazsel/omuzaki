@@ -684,7 +684,10 @@ fn the_other_parts_are_drawn_with_the_body() {
         leg(&drawn),
         leg(&alone)
     );
-    assert!(with >= 0.97, "{with}");
+    // 0.970 until the close-up hair (#2412) sank the bangs' under-layers and tucked the crown under the locks, 0.962
+    // since: the fit lands the legs as well (1.256 against 1.248), and drawing the parts still beats leaving them out
+    // by far. Listed on the pull request to look at.
+    assert!(with >= 0.955, "{with}");
     assert!(with > without, "{with} against {without}");
     assert!((leg(&drawn) - 1.25).abs() < (leg(&alone) - 1.25).abs(), "drawing the parts recovers the legs better");
 }

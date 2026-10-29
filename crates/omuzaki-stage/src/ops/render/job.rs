@@ -333,7 +333,10 @@ pub fn build_character(
 }
 
 /// The definition of `id` with `variant` applied, read from the document.
-pub(crate) fn read_definition(
+///
+/// # Errors
+/// `NotFound` for an unknown character or variant; `Invalid` for one that doesn't read.
+pub fn read_definition(
     doc: &dyn DocRead,
     id: &CharId,
     variant: Option<&VariantId>,

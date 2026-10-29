@@ -13,3 +13,4 @@ pub mod reach;
 pub mod tie;
 pub mod trace;
 pub mod tube;
+pub mod wisp;

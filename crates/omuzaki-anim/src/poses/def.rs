@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use omuzaki_anim_api::{HumanoidBone, HumanoidPose};
+use omuzaki_anim_api::{HumanoidBone, HumanoidPose, Reach, Reaches};
 use omuzaki_core::glam::{EulerRot, Quat, Vec3};
 use omuzaki_core::id::Slug;
 use serde::Deserialize;
@@ -93,9 +93,16 @@ pub struct PoseDef {
     pub left_hand: Option<HandSlot>,
     /// The character's right hand shape, if the pose sets one.
     pub right_hand: Option<HandSlot>,
+    /// Where each hand reaches on the body (#2414): a hand on the chest, two palms meeting, an arm to the lens. The rig
+    /// bends the arm to it on any body; the bones above are the arm's shape on the way.
+    pub reach: Reaches,
     /// Whether [`PoseDef::mirrored`] is meaningful for this pose.
     pub mirrorable: bool,
 }
+
+/// The farthest a reach's offset may be from its bone, in arm lengths: far enough to stretch an arm out at anything,
+/// near enough that a typo is refused.
+pub const MAX_REACH: f32 = 4.0;
 
 /// Reflects a rotation across the centre plane, the rule of `HumanoidPose::mirrored`.
 fn reflected(q: Quat) -> Quat {
@@ -117,6 +124,7 @@ impl PoseDef {
             hips_offset: Vec3::new(-self.hips_offset.x, self.hips_offset.y, self.hips_offset.z),
             left_hand: self.right_hand.clone(),
             right_hand: self.left_hand.clone(),
+            reach: self.reach.mirrored(),
             ..self.clone()
         })
     }
@@ -137,7 +145,7 @@ impl PoseDef {
                 .map(|shape| Hand::of(shape, s.weight))
                 .ok_or_else(|| PoseError::UnknownHandShape { id: self.id.clone(), shape: s.shape.clone() }),
         };
-        Ok(Posture { body, left: resolve(&self.left_hand)?, right: resolve(&self.right_hand)? })
+        Ok(Posture { body, left: resolve(&self.left_hand)?, right: resolve(&self.right_hand)?, reach: self.reach })
     }
 
     /// The pose a character plays: bones as authored, fingers from the hand shapes on a rig whose thumbs rest at the
@@ -185,6 +193,16 @@ impl PoseDef {
                 number(format!("hands.{side}.weight"), s.weight, (0.0..=1.0).contains(&s.weight))?;
             }
         }
+        for (side, reach) in [("left", &self.reach.left), ("right", &self.reach.right)] {
+            let Some(r) = reach else { continue };
+            for (axis, v) in ["x", "y", "z"].into_iter().zip(r.offset.to_array()) {
+                number(format!("reach.{side}.at.{axis}"), v, v.is_finite() && v.abs() <= MAX_REACH)?;
+            }
+            for (axis, v) in ["x", "y", "z"].into_iter().zip(r.pole.to_array()) {
+                number(format!("reach.{side}.pole.{axis}"), v, v.is_finite())?;
+            }
+            number(format!("reach.{side}.weight"), r.weight, (0.0..=1.0).contains(&r.weight))?;
+        }
         Ok(())
     }
 }
@@ -210,6 +228,43 @@ struct HandsFile {
     right: Option<HandFile>,
 }
 
+/// One hand's reach in a file: `bone`, `at` (arm lengths in the bone's frame), `pole` and `weight`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ReachFile {
+    bone: HumanoidBone,
+    at: [f32; 3],
+    #[serde(default = "default_pole")]
+    pole: [f32; 3],
+    #[serde(default = "full_weight")]
+    weight: f32,
+}
+
+/// The elbow's side when a reach gives none: down and a little out behind, as an arm hangs.
+pub(super) fn default_pole() -> [f32; 3] {
+    [0.0, -1.0, -0.3]
+}
+
+impl From<ReachFile> for Reach {
+    fn from(f: ReachFile) -> Self {
+        Self { bone: f.bone, offset: Vec3::from_array(f.at), pole: Vec3::from_array(f.pole), weight: f.weight }
+    }
+}
+
+/// The `[reach]` table of a file.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ReachesFile {
+    left: Option<ReachFile>,
+    right: Option<ReachFile>,
+}
+
+impl From<ReachesFile> for Reaches {
+    fn from(f: ReachesFile) -> Self {
+        Self { left: f.left.map(Reach::from), right: f.right.map(Reach::from) }
+    }
+}
+
 /// A pose file: bones in degrees.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -226,6 +281,8 @@ pub(super) struct PoseFile {
     bones: BTreeMap<HumanoidBone, [f32; 3]>,
     #[serde(default)]
     hands: HandsFile,
+    #[serde(default)]
+    reach: ReachesFile,
 }
 
 fn yes() -> bool {
@@ -250,6 +307,7 @@ impl From<PoseFile> for PoseDef {
             hips_offset: Vec3::from_array(f.hips_offset),
             left_hand: f.hands.left.map(HandSlot::from),
             right_hand: f.hands.right.map(HandSlot::from),
+            reach: f.reach.into(),
             mirrorable: f.mirrorable,
         }
     }

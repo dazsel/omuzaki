@@ -1,0 +1,23 @@
+# Palm touch: from rest, the right hand rises to face height, palm out as if against a pane or another's palm, holds
+# and comes down.
+id = "palm-touch"
+summary = "A one-shot gesture: the right hand rises to face height with the palm out, holds as if against a pane, and comes down."
+length = 3.4
+looped = false
+easing = "smoother"
+
+[[keys]]
+t = 0.0
+pose = "stand-neutral"
+
+[[keys]]
+t = 0.9
+pose = "palm-touch"
+
+[[keys]]
+t = 2.6
+pose = "palm-touch"
+
+[[keys]]
+t = 3.4
+pose = "stand-neutral"

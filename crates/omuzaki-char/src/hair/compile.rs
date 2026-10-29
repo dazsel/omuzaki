@@ -262,6 +262,7 @@ impl GroupGenerator for Dispatch {
             Generator::Bangs(g) => r#gen::bangs::compile(g, ctx),
             Generator::Tail(g) => r#gen::tail::compile(g, ctx),
             Generator::Bun(g) => r#gen::bun::compile(g, ctx),
+            Generator::Ahoge(g) => r#gen::ahoge::compile(g, ctx),
             Generator::Guides(g) => r#gen::guides::compile(g, ctx),
         }
     }
@@ -276,6 +277,7 @@ impl GroupGenerator for Dispatch {
             Generator::Bangs(g) => r#gen::bangs::clump_count(g),
             Generator::Tail(g) => r#gen::tail::clump_count(g),
             Generator::Bun(g) => r#gen::bun::clump_count(g),
+            Generator::Ahoge(g) => r#gen::ahoge::clump_count(g),
             Generator::Guides(g) => r#gen::guides::clump_count(g),
         }
     }
@@ -370,7 +372,7 @@ pub fn is_bilateral(generator: &Generator) -> bool {
         | Generator::Curtain(_)
         | Generator::Bangs(_) => true,
         Generator::Framing(g) => g.side == HairSide::Both,
-        Generator::Tail(_) | Generator::Bun(_) | Generator::Guides(_) => false,
+        Generator::Tail(_) | Generator::Bun(_) | Generator::Ahoge(_) | Generator::Guides(_) => false,
     }
 }
 

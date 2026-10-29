@@ -1,11 +1,11 @@
-//! A scene's cast (design D6, D8): `stage.place_character`, `stage.set_member`, `stage.remove_member` and
-//! `stage.set_subject`.
+//! A scene's cast (design D6, D8): `stage.place_character`, `stage.set_member`, `stage.remove_member`,
+//! `stage.set_subject` and `stage.interact` (#2415).
 
 use omuzaki_char_api::{CharId, VariantId, paths as char_paths};
 use omuzaki_core::text::nearest;
 use omuzaki_doc_api::{DocPath, DocRead, Value};
 use omuzaki_ops_api::{Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
-use omuzaki_stage_api::{Anchor, CastMember, MAX_CAST, MemberId, SceneDef, SceneId};
+use omuzaki_stage_api::{Anchor, CastMember, Interact, InteractKind, MAX_CAST, MemberId, SceneDef, SceneId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -262,6 +262,13 @@ impl Op for RemoveMember {
         def.cast.remove(&self.member);
         let gone = Anchor::Member(self.member.clone());
         let mut repointed = Vec::new();
+        // A touch with the member ends with it.
+        for (id, member) in &mut def.cast {
+            if member.interact.as_ref().is_some_and(|i| i.with == self.member) {
+                member.interact = None;
+                repointed.push(format!("cast.{id}.interact"));
+            }
+        }
         for (id, light) in &mut def.lighting.lights {
             if light.anchor == gone {
                 light.anchor = Anchor::Subject;
@@ -323,3 +330,121 @@ impl Op for SetSubject {
 }
 
 register_op!(SetSubject);
+
+/// How far apart, metres, and at what turn, degrees, [`Interact`] stands the other member for each touch: a nominal
+/// adult pair. The stage then spaces the two for their own bodies every frame.
+fn partner_place(kind: InteractKind, position: [f32; 2], yaw: f32) -> ([f32; 2], f32) {
+    let (sin, cos) = yaw.to_radians().sin_cos();
+    // The member's facing and its own right on the floor, as (x, z).
+    let (facing, right) = ([sin, cos], [-cos, sin]);
+    let at = |dir: [f32; 2], d: f32| [position[0] + dir[0] * d, position[1] + dir[1] * d];
+    let turned = if yaw > 0.0 { yaw - 180.0 } else { yaw + 180.0 };
+    match kind {
+        InteractKind::Hug => (at(facing, 0.3), turned),
+        InteractKind::PalmTouch => (at(facing, 0.65), turned),
+        InteractKind::CheekToCheek => (at(right, 0.32), yaw),
+    }
+}
+
+/// Starts, changes or ends a touch between two cast members.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"member": "main", "with": "friend", "kind": "hug"},
+        {"member": "main", "with": "friend", "kind": "cheek-to-cheek", "weight": 0.8, "place": false}
+    ],
+    "x-omuzaki-fixture" = "duo"
+))]
+pub struct SetInteract {
+    /// The scene; the one the project opens in when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene: Option<SceneId>,
+    /// The member that holds the touch: for cheek to cheek, the one on the left of the pair as they face.
+    pub member: MemberId,
+    /// The other member; needed unless `kind` is `off`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub with: Option<MemberId>,
+    /// `hug`, `palm-touch` (the member's right palm against the other's left), `cheek-to-cheek` (side by side, the
+    /// other on the member's right), or `off` to end the member's touch.
+    pub kind: OrOff<InteractKind>,
+    /// How much of the touch, 0 to 1; 1 when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight: Option<f32>,
+    /// Whether the other member is moved to stand for the touch (facing the member, or beside it); true when left out.
+    /// The stage still spaces the two for their bodies every frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place: Option<bool>,
+}
+
+impl Op for SetInteract {
+    fn meta() -> OpMeta {
+        OpMeta {
+            name: "stage.interact",
+            summary: "Start, change or end a touch between two cast members: a hug, palms together or cheek to cheek. \
+                      The stage spaces the two for their bodies and reaches each one's arms and head for the other's \
+                      body without passing through it.",
+            kind: OpKind::Edit,
+            scope: Scope::EditScene,
+            undo: Undo::Auto,
+        }
+    }
+
+    fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        let mut edit = SceneEdit::open(ctx.doc, self.scene.as_ref())?;
+        require_member(&edit.def, "member", &self.member)?;
+        let kind = match &self.kind {
+            OrOff::Off(_) => {
+                let Some(member) = edit.def.cast.get_mut(&self.member) else {
+                    return Err(OpError::internal("the member went missing"));
+                };
+                let Some(ended) = member.interact.take() else {
+                    return Err(OpError::invalid("kind", format!("'{}' isn't touching anyone", self.member))
+                        .hint("stage.list_scenes shows the cast and its touches"));
+                };
+                let output = json!({ "scene": edit.id.as_str(), "member": self.member.as_str(),
+                                     "ended": ended.kind.name(), "with": ended.with.as_str() });
+                return edit.finish(ctx, output);
+            }
+            OrOff::Set(kind) => *kind,
+        };
+        let Some(with) = &self.with else {
+            return Err(OpError::invalid("with", "a touch needs the other member")
+                .hint("name it in 'with', or end the member's touch with kind 'off'"));
+        };
+        if *with == self.member {
+            return Err(OpError::invalid("with", "a member can't touch itself").hint("name another cast member"));
+        }
+        require_member(&edit.def, "with", with)?;
+        let weight = self.weight.unwrap_or(1.0);
+        if !(0.0..=1.0).contains(&weight) {
+            return Err(OpError::invalid("weight", format!("{weight} is outside 0 to 1")).hint("1 is the whole touch"));
+        }
+        let (position, yaw) = {
+            let member = &edit.def.cast[&self.member];
+            (member.position, member.yaw)
+        };
+        let mut notes = Vec::new();
+        if let Some(partner) = edit.def.cast.get_mut(with) {
+            // One touch per pair: the other's touch back is replaced by this one.
+            if partner.interact.as_ref().is_some_and(|i| i.with == self.member) {
+                partner.interact = None;
+                notes.push(format!("cast.{with}.interact"));
+            }
+            if self.place.unwrap_or(true) {
+                (partner.position, partner.yaw) = partner_place(kind, position, yaw);
+            }
+        }
+        let mut interact = Interact::new(with.clone(), kind);
+        interact.weight = weight;
+        if let Some(member) = edit.def.cast.get_mut(&self.member) {
+            member.interact = Some(interact);
+        }
+        let placed = edit.def.cast.get(with).map(|m| json!({ "position": m.position, "yaw": m.yaw }));
+        let output = json!({ "scene": edit.id.as_str(), "member": self.member.as_str(), "with": with.as_str(),
+                             "kind": kind.name(), "weight": weight, "partner": placed, "replaced": notes });
+        edit.finish(ctx, output)
+    }
+}
+
+register_op!(SetInteract);

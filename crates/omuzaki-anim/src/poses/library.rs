@@ -5,9 +5,14 @@ use std::sync::OnceLock;
 use super::def::{PoseDef, PoseError, PoseFile};
 
 /// The built-in files, in the order `pose.list` shows them. Adding a pose is adding a file and a line here.
-const BUILTIN: [(&str, &str); 3] = [
+const BUILTIN: [(&str, &str); 8] = [
     ("wave-right", include_str!("../../library/poses/wave-right.toml")),
     ("wave-left", include_str!("../../library/poses/wave-left.toml")),
+    ("reach-to-lens", include_str!("../../library/poses/reach-to-lens.toml")),
+    ("hand-on-chest", include_str!("../../library/poses/hand-on-chest.toml")),
+    ("palm-touch", include_str!("../../library/poses/palm-touch.toml")),
+    ("point", include_str!("../../library/poses/point.toml")),
+    ("cheer", include_str!("../../library/poses/cheer.toml")),
     ("stand-relaxed", include_str!("../../library/poses/stand-relaxed.toml")),
 ];
 

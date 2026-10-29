@@ -1,5 +1,6 @@
 //! The `stage.*` scene ops (design D8): one op per intent, one patch per op. `edit` holds what
-//! every edit of an existing scene shares; each other submodule is one op or one family of ops (lights, cameras, cast).
+//! every edit of an existing scene shares; each other submodule is one op or one family of ops (lights, cameras, cast,
+//! props).
 
 pub mod camera;
 pub mod cast;
@@ -9,7 +10,9 @@ pub mod light;
 pub mod list;
 pub mod look;
 pub mod manage;
+pub mod prop;
 pub mod set_default;
+pub mod stage_preset;
 
 use omuzaki_doc_api::{DocPath, DocRead, Patch, Value};
 

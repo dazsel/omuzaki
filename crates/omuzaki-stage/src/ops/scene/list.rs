@@ -37,7 +37,13 @@ impl Op for ListScenes {
                 let cast: Vec<Value> = def
                     .cast
                     .iter()
-                    .map(|(member, m)| json!({ "member": member.as_str(), "character": m.character.as_str() }))
+                    .map(|(member, m)| {
+                        let mut row = json!({ "member": member.as_str(), "character": m.character.as_str() });
+                        if let Some(touch) = &m.interact {
+                            row["touch"] = json!({ "with": touch.with.as_str(), "kind": touch.kind.name() });
+                        }
+                        row
+                    })
                     .collect();
                 let default = opening.as_ref().map(SceneId::as_str) == Some(id.as_str());
                 scenes.push(json!({ "id": id, "name": def.scene.name, "cast": cast, "default": default }));

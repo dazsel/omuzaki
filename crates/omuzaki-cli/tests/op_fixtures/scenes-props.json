@@ -1,0 +1,8 @@
+{
+  "about": "The `scenes` fixture with props in `main`: a `desk` standing on the stage and a `cup` in the subject's right hand: the base for ops that change or remove props.",
+  "base": "scenes",
+  "steps": [
+    { "op": "stage.add_prop", "args": { "kind": "desk", "position": [0.0, 0.0, 0.45] } },
+    { "op": "stage.add_prop", "args": { "kind": "cup", "anchor": "subject", "attach": "rightHand", "position": [0.0, -0.04, 0.05] } }
+  ]
+}

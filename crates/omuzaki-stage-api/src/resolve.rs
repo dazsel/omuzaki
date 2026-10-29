@@ -68,6 +68,15 @@ impl LightBuf {
         self.len == 0
     }
 
+    /// Appends `light` after the rig's: a prop's practical light (design D7). False, and nothing written, when the
+    /// buffer is full: the caller drops it.
+    pub fn try_push(&mut self, light: Light) -> bool {
+        let Some(slot) = self.lights.get_mut(self.len) else { return false };
+        *slot = light;
+        self.len += 1;
+        true
+    }
+
     /// Appends `light`. Refused, not dropped, when the buffer is full.
     fn push(&mut self, light: Light) -> Result<(), SceneError> {
         let slot = self.lights.get_mut(self.len).ok_or_else(|| {

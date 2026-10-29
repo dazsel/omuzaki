@@ -1,0 +1,26 @@
+schema = 1
+id = "omuzaki/accessories/gold-cuff"
+version = "1.0.0"
+section = "accessories"
+kind = "part"
+target = "character"
+title = "Gold cuff"
+summary = "A wide gold cuff on the left wrist with a ruby on its back."
+tags = ["jewellery", "bracelet", "cuff", "gold"]
+origin = "the kit's bracelet generator, tuned by eye on close-up renders (#2413)"
+compat = { kinds = ["humanoid"], templates = ["*"], requires = ["body"] }
+creates.piece = { kind = "bracelet", id = "gold-cuff", layer = 50 }
+
+[rights]
+author = "Omuzaki"
+licence = "CC0-1.0"
+commercial = "ok"
+owned = true
+
+[[step]]
+op = "part.add"
+[step.args]
+character = "$character"
+kind = "bracelet"
+id = "$parts.piece"
+params = { style = "cuff", width = 0.012, stone = { shape = "gem", size = 0.003 } }

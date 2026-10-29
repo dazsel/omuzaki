@@ -16,13 +16,19 @@
 //! score layer and written to an [`OverLayer`] instead, which the performer lays over the resolved and living bus, so
 //! it wins on the channels it sets (eyes forced shut while the webcam runs) and fades back to whatever drives them.
 //!
-//! Hot path: [`LiveScore::step`] allocates, locks and frees nothing. A clip is the built-in library's, borrowed for
-//! `'static`, so nothing the perform thread holds is freed when an act ends.
+//! Hot path: [`LiveScore::step`] allocates, locks and frees nothing. A clip is shared ([`Arc`]) with the handle that
+//! baked the act, which keeps its own reference until the act has ended (`perform::host`), so the perform thread never
+//! drops the last one: nothing is freed there when an act ends.
+//!
+//! A clip's keys may say where its hands reach on the body (#2414): the score writes those reaches beside the pose
+//! layers ([`ScorePose::reaches`]), each at the strength its act plays, and the rig bends the arms to them.
+
+use std::sync::Arc;
 
 use omuzaki_anim::hands::HandRest;
 use omuzaki_anim::poses::PoseClip;
 use omuzaki_anim_api::{
-    BlendMode, BoneMask, ChannelBuf, ChannelMask, Ease, HumanoidBone, HumanoidPose, Layer, PoseLayer, PoseMode,
+    BlendMode, BoneMask, ChannelBuf, ChannelMask, Ease, HumanoidBone, HumanoidPose, Layer, PoseLayer, PoseMode, Reaches,
 };
 use omuzaki_core::time::Seconds;
 use schemars::JsonSchema;
@@ -96,7 +102,7 @@ pub enum Lane {
 
 /// What an act moves.
 #[allow(clippy::large_enum_variant)] // held inline in the score's fixed slots: boxing would allocate on the perform thread
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Motion {
     /// The channels in `mask` toward `target` (absolute values, the rest face elsewhere).
     Channels {
@@ -107,8 +113,8 @@ pub enum Motion {
     },
     /// A body clip from its start, over the bones in `bones`.
     Clip {
-        /// The clip.
-        clip: &'static PoseClip,
+        /// The clip, shared with the handle that baked it.
+        clip: Arc<PoseClip>,
         /// The thumbs' rest the clip's hand shapes are laid on.
         hands: HandRest,
         /// The bones it moves.
@@ -132,7 +138,7 @@ impl Motion {
 }
 
 /// One act: what it moves, how it comes and goes, and its lane.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Act {
     /// What it moves.
     pub motion: Motion,
@@ -207,7 +213,7 @@ enum Phase {
     Fading { at: f64, from: f32 },
 }
 
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct Playing {
     id: u64,
     act: Act,
@@ -216,11 +222,12 @@ struct Playing {
     weight: f32,
 }
 
-/// The score's body layers of one step: the first `len` of `layers`, lowest first.
+/// The score's body layers of one step: the first `len` of `layers`, lowest first, and where the clips' hands reach.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ScorePose {
     layers: [PoseLayer; MAX_CLIPS],
     len: usize,
+    reaches: Reaches,
 }
 
 impl Default for ScorePose {
@@ -231,7 +238,7 @@ impl Default for ScorePose {
             weight: 0.0,
             mode: PoseMode::Override,
         };
-        Self { layers: [none; MAX_CLIPS], len: 0 }
+        Self { layers: [none; MAX_CLIPS], len: 0, reaches: Reaches::NONE }
     }
 }
 
@@ -241,9 +248,15 @@ impl ScorePose {
         &self.layers[..self.len]
     }
 
-    /// No layer.
+    /// Where the playing clips' hands reach, each at the strength its clip plays (the strongest per hand).
+    pub fn reaches(&self) -> &Reaches {
+        &self.reaches
+    }
+
+    /// No layer and no reach.
     pub fn clear(&mut self) {
         self.len = 0;
+        self.reaches = Reaches::NONE;
     }
 }
 
@@ -263,7 +276,7 @@ impl Default for LiveScore {
 impl LiveScore {
     /// No acts.
     pub const fn new() -> Self {
-        Self { acts: [None; MAX_ACTS] }
+        Self { acts: [const { None }; MAX_ACTS] }
     }
 
     /// Starts `act` as `id` on the next step, releasing the earlier acts of its lane that it overlaps. With
@@ -295,7 +308,7 @@ impl LiveScore {
 
     /// Ends every act at once.
     pub fn clear(&mut self) {
-        self.acts = [None; MAX_ACTS];
+        self.acts = [const { None }; MAX_ACTS];
     }
 
     /// The ids of the acts playing, oldest first, `0` past the last.
@@ -353,14 +366,14 @@ impl LiveScore {
         layer.mask = ChannelMask::EMPTY;
         layer.mode = BlendMode::Override;
         over.clear();
-        pose.len = 0;
+        pose.clear();
         for playing in self.acts.iter().flatten() {
             let w = playing.weight;
-            match playing.act.motion {
-                Motion::Channels { target, mask } if playing.act.over_tracking => over.push(&target, mask, w),
+            match &playing.act.motion {
+                Motion::Channels { target, mask } if playing.act.over_tracking => over.push(target, *mask, w),
                 Motion::Channels { target, mask } => {
-                    layer.values.lerp_masked(&target, mask, w);
-                    layer.mask |= mask;
+                    layer.values.lerp_masked(target, *mask, w);
+                    layer.mask |= *mask;
                 }
                 Motion::Clip { clip, hands, bones, weight } => {
                     if let Some(slot) = pose.layers.get_mut(pose.len) {
@@ -368,11 +381,14 @@ impl LiveScore {
                             Phase::Playing(started) | Phase::Releasing { started, .. } => (now - started) as f32,
                             Phase::Fading { .. } | Phase::Starting => clip.length(),
                         };
-                        slot.pose = clip.sample(age, &hands);
-                        slot.mask = bones;
+                        let posture = clip.sample_posture(age);
+                        slot.pose = posture.to_humanoid(hands);
+                        slot.mask = *bones;
                         slot.weight = w * weight;
                         slot.mode = PoseMode::Override;
                         pose.len += 1;
+                        // A later clip's reach takes over a hand as its strength passes the earlier one's.
+                        pose.reaches = pose.reaches.layered(&posture.reach, w * weight);
                     }
                 }
             }
@@ -475,7 +491,8 @@ mod tests {
         // Acts that move nothing in common never release each other, so every one stays until the score is full.
         let none = Motion::Channels { target: ChannelBuf::NEUTRAL, mask: ChannelMask::EMPTY };
         for id in 1..=MAX_ACTS as u64 + 1 {
-            let act = Act { motion: none, envelope: Envelope::new(0.0, None), lane: Lane::Channels, over_tracking: false };
+            let act =
+                Act { motion: none.clone(), envelope: Envelope::new(0.0, None), lane: Lane::Channels, over_tracking: false };
             score.start(id, act);
         }
         assert_eq!(score.ids()[0], 2, "the first act made room");
@@ -488,10 +505,10 @@ mod tests {
     #[test]
     fn a_body_clip_plays_from_its_start_into_a_pose_layer() {
         let clips = ClipLibrary::builtin().unwrap();
-        let wave = clips.get("wave").unwrap();
+        let wave = Arc::new(clips.get("wave").unwrap().clone());
         let mut score = LiveScore::new();
         let act = Act {
-            motion: Motion::Clip { clip: wave, hands: HandRest::nominal(), bones: BoneMask::ALL, weight: 1.0 },
+            motion: Motion::Clip { clip: Arc::clone(&wave), hands: HandRest::nominal(), bones: BoneMask::ALL, weight: 1.0 },
             envelope: Envelope::new(0.0, Some(2.0)),
             lane: Lane::Body,
             over_tracking: false,

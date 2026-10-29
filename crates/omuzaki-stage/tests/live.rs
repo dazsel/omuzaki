@@ -602,7 +602,7 @@ fn a_steady_live_frame_with_a_second_member_and_acts_playing_allocates_nothing()
     live.go_live("cam");
     for host in [&subject, &cohost] {
         host.act(ActRequest::Look { x: -0.4, y: 0.1, head: 0.5 }, Envelope::new(0.2, None)).unwrap();
-        host.act(ActRequest::Clip { clip: "wave".into(), weight: 1.0 }, Envelope::new(0.2, None)).unwrap();
+        host.act(ActRequest::clip("wave", 1.0), Envelope::new(0.2, None)).unwrap();
     }
     live.frames(120);
     let (result, allocations) = allocations_in(|| {

@@ -1,0 +1,22 @@
+# Hand on the chest: from rest, the right palm comes to lie flat on the chest, holds, and drops back.
+id = "hand-on-chest"
+summary = "A one-shot gesture: the right palm comes to rest flat on the chest with a tip of the head, holds and drops back."
+length = 3.4
+looped = false
+easing = "smoother"
+
+[[keys]]
+t = 0.0
+pose = "stand-neutral"
+
+[[keys]]
+t = 0.8
+pose = "hand-on-chest"
+
+[[keys]]
+t = 2.6
+pose = "hand-on-chest"
+
+[[keys]]
+t = 3.4
+pose = "stand-neutral"

@@ -1,0 +1,26 @@
+schema = 1
+id = "omuzaki/accessories/pearl-studs"
+version = "1.0.0"
+section = "accessories"
+kind = "part"
+target = "character"
+title = "Pearl studs"
+summary = "A round pearl on each ear lobe."
+tags = ["jewellery", "earrings", "stud", "pearl"]
+origin = "the kit's earrings generator, tuned by eye on close-up renders (#2413)"
+compat = { kinds = ["humanoid"], templates = ["*"], requires = ["head"] }
+creates.piece = { kind = "earrings", id = "pearl-studs", layer = 50 }
+
+[rights]
+author = "Omuzaki"
+licence = "CC0-1.0"
+commercial = "ok"
+owned = true
+
+[[step]]
+op = "part.add"
+[step.args]
+character = "$character"
+kind = "earrings"
+id = "$parts.piece"
+params = { style = "stud", stone = { shape = "orb", size = 0.0022 }, accent = "#f4eee6" }

@@ -8,7 +8,9 @@
 //! with `u = phi / spread`, so the fringe sweeps to one side and each tip hooks inward. The distance from the head is
 //! `lerp(root_offset, tip_offset, t) + 0.016 sin(pi min(1, 1.15 t))`.
 //!
-//! **Layers and wisps.** Layers build in [`BangsGen::layers`] order (under to over), then the wisps. The last layer is
+//! **Layers and wisps.** Layers build in [`BangsGen::layers`] order (under to over), then the wisps. Each under-layer
+//! sinks [`UNDER_SINK`] under the next near the root, so layers sharing a root offset lie one over the other instead of
+//! cutting through each other across the crown. The last layer is
 //! the top layer: pointed clumps spread from `-spread` to `+spread` with a fixed jitter in position, width, shade and
 //! hook, and its outer tips drop by [`TOP_DROP`]. Every earlier layer is an under-layer: broad, short clumps at the
 //! centres of equal cells (the prototype's `(i + 0.5) / n`), tips dropping by [`UNDER_DROP`] at the outer clumps, no
@@ -162,7 +164,18 @@ struct Lock {
     hook_deg: f64,
     /// `phi / spread`.
     u: f64,
+    /// How far the lock sinks under the layers over it, metres, at the root (fading out by the tip).
+    sink: f64,
 }
+
+/// How far each under-layer sinks under the layer over it near the root, metres: a lock's thickness and a little, so
+/// layers that share a root offset don't cut through each other across the crown (a jagged patchwork in a close-up,
+/// #2412). It fades out over [`SINK_FADE`] of the lock, so the tips keep the prototype's fall.
+pub const UNDER_SINK: f64 = 0.009;
+/// How far every other top-layer lock sinks under its neighbours, as a share of [`UNDER_SINK`].
+const TOP_SINK: f64 = 0.45;
+/// Where along the lock the sink fades out.
+const SINK_FADE: (f64, f64) = (0.45, 0.95);
 
 /// Compiles the group: the layers under to over, then the wisps.
 pub fn compile(g: &BangsGen, ctx: &mut HairGenCtx<'_>) -> CompiledGroup {
@@ -173,8 +186,13 @@ pub fn compile(g: &BangsGen, ctx: &mut HairGenCtx<'_>) -> CompiledGroup {
     };
     let last = g.layers.len().saturating_sub(1);
     for (n, layer) in g.layers.iter().enumerate() {
+        #[allow(clippy::cast_precision_loss)] // a handful of layers
+        let sink = UNDER_SINK * (last - n) as f64;
         for i in 0..usize::from(layer.count) {
-            push(&layer_lock(layer, n == last, i));
+            // In the top layer every other lock (the darker ones) sits a little under its neighbours, so neighbours
+            // that overlap at their edges lie one over the other too.
+            let sink = if n == last && i % 2 == 1 { UNDER_SINK * TOP_SINK } else { sink };
+            push(&Lock { sink, ..layer_lock(layer, n == last, i) });
         }
     }
     for w in &g.wisps {
@@ -213,6 +231,7 @@ fn layer_lock(layer: &BangLayer, top: bool, i: usize) -> Lock {
             shade: (shade * (1.0 - SHADE_STEP * (i % 2) as f64)).clamp(MIN_SHADE, 1.0),
             hook_deg: hook_deg * (1.0 + hj(i + J_TOP_HOOK)),
             u: ratio(phi, spread),
+            sink: 0.0,
         }
     } else {
         let u = (i as f64 + 0.5) / n as f64 * 2.0 - 1.0;
@@ -226,6 +245,7 @@ fn layer_lock(layer: &BangLayer, top: bool, i: usize) -> Lock {
             shade,
             hook_deg,
             u,
+            sink: 0.0,
         }
     }
 }
@@ -241,6 +261,7 @@ fn wisp_lock(w: &Wisp) -> Lock {
         shade: WISP_SHADE,
         hook_deg: 0.0,
         u: 0.0,
+        sink: 0.0,
     }
 }
 
@@ -415,7 +436,7 @@ fn clear_lock(
     let mut short = 0.0_f32;
     // One measurement more than pushes, so the last push is checked too.
     for pass in 0..=CLEARANCE_PASSES {
-        tube_vertices(rest, width, thickness, |p| frame.rest(p), &mut positions, &mut normals)?;
+        tube_vertices(rest, RING, width, thickness, |p| frame.rest(p), &mut positions, &mut normals)?;
         let mut deficit = [0.0_f32; REST_POINTS];
         for ring in 0..REST_POINTS - 1 {
             for k in 0..RING {
@@ -499,7 +520,8 @@ fn control_points(g: &BangsGen, head: &dyn HeadSurface, lock: &Lock, out: &mut [
             - lock.u * hook * smoothstep(t, 0.75, 1.0);
         let offset = lock.root_offset
             + (lock.tip_offset - lock.root_offset) * t
-            + BELLY * (std::f64::consts::PI * (t * BELLY_REACH).min(1.0)).sin();
+            + BELLY * (std::f64::consts::PI * (t * BELLY_REACH).min(1.0)).sin()
+            - lock.sink * (1.0 - smoothstep(t, SINK_FADE.0, SINK_FADE.1));
         let dir = DVec3::new(theta.sin() * phi.sin(), theta.cos(), theta.sin() * phi.cos());
         *point = head.centre().as_dvec3() + dir * (f64::from(head.radius(dir.as_vec3())) + offset);
     }

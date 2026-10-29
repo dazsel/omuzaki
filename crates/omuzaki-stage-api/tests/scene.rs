@@ -161,7 +161,8 @@ fn counts_over_the_limits_are_refused() {
     assert_eq!(refused(&s).path, "cast");
 
     let mut s = fixture();
-    s.props = (0..=MAX_PROPS).map(|i| (PropId::new(format!("p-{i}")).unwrap(), json!({"kind": "mug"}))).collect();
+    let cup = omuzaki_stage_api::PropDef::new(omuzaki_stage_api::PropKindId::new("cup").unwrap());
+    s.props = (0..=MAX_PROPS).map(|i| (PropId::new(format!("p-{i}")).unwrap(), cup.clone())).collect();
     assert_eq!(refused(&s).path, "props");
     s.props.pop_last();
     s.check().unwrap();
