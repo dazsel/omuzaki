@@ -10,14 +10,14 @@ chest = [0.0, -8.0, 0.0]
 head = [0.0, 10.0, 0.0]
 leftUpperArm = [0.0, 0.0, -66.0]
 leftLowerArm = [0.0, -10.0, 0.0]
-rightUpperArm = [-33.1, 61.2, 22.7]
-rightLowerArm = [-6.7, 6.6, -1.2]
-rightHand = [-5.6, 2.4, 2.6]
+rightUpperArm = [-93.1, 16.5, 92.8]
+rightLowerArm = [54.6, 3.0, -4.2]
+rightHand = [0.1, -2.7, 1.9]
 
 [hands.right]
 shape = "point"
 
 [reach.right]
 bone = "upperChest"
-at = [-0.9, 0.3, 1.8]
-pole = [-0.3, -1.0, 0.0]
+at = [-0.243, 0.237, 1.591]
+pole = [-0.28, -0.95, 0.09]

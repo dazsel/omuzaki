@@ -141,6 +141,11 @@ impl<I: IkSolver, S: SpringSolver> FullRig<I, S> {
         self.guard.as_ref()
     }
 
+    /// The arm guard, to give it another body's parts ([`ArmGuard::set_obstacles`]).
+    pub fn guard_mut(&mut self) -> Option<&mut ArmGuard> {
+        self.guard.as_mut()
+    }
+
     /// What the arm guard did in the last solve (all zero without a guard).
     pub fn guard_report(&self) -> GuardReport {
         self.guarded

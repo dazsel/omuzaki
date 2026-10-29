@@ -13,7 +13,7 @@ use omuzaki_anim_api::HumanoidBone;
 use omuzaki_char_api::JointRef;
 use omuzaki_core::glam::DVec3;
 
-use super::{Block, Hand, Style, THUMB_T, add_rings, bone, palm_skin, thumb, thumb_skin, tone};
+use super::{Block, Hand, Style, THUMB_T, add_rings, bone, palm_skin, stem_skin, thumb, thumb_skin, tone};
 use crate::kit::KitError;
 use crate::kit::curve::{TAU, clamp, fraction, sstep};
 use crate::kit::grid::{Grid, MeshBuilder};
@@ -78,7 +78,7 @@ pub(super) fn left_hand(hand: &Hand, layout: &BodyLayout) -> Result<MeshBuilder,
     let thumb = thumb(hand, &block, style.splay_deg)?;
     let thumb_tone = |k: usize| tone(super::THUMB_TIP_TONE, sstep(0.4, 1.0, fraction(k, THUMB_T.len() - 1)));
     add_rings(&mut builder, &thumb.grid, &|i| thumb.centres[i], &thumb_tone, &|i, _| thumb_skin(THUMB_T[i]))?;
-    add_rings(&mut builder, &thumb.stem, &|i| thumb.stem_centres[i], &|_| thumb_tone(0), &|_, _| thumb_skin(0.0))?;
+    add_rings(&mut builder, &thumb.stem, &|i| thumb.stem_centres[i], &|_| thumb_tone(0), &|i, _| stem_skin(i))?;
 
     for bones in FINGERS {
         let finger = Finger::new(hand, layout, bones)?;

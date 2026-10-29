@@ -218,7 +218,11 @@ fn the_body_is_measured_from_its_mesh() {
         assert!((got - want).abs() < 0.003, "{part:?}: {got} vs {want}");
     }
     assert!((proxy.forearm_radius - FOREARM).abs() < 0.003, "{}", proxy.forearm_radius);
-    assert!((proxy.hand_radius - HAND).abs() < 0.003, "{}", proxy.hand_radius);
+    for axes in proxy.hand_axes {
+        assert!((axes - Vec3::splat(HAND)).abs().max_element() < 0.003, "{axes}");
+    }
+    let torso = proxy.body.iter().find(|p| p.part == BodyPart::Torso).unwrap();
+    assert!((torso.depth - TORSO).abs() < 0.003, "a round torso is as deep as it is wide: {}", torso.depth);
     assert!((proxy.hands[0] - Vec3::X * 0.08).length() < 0.003 && (proxy.hands[1] + Vec3::X * 0.08).length() < 0.003);
     // No mesh on the torso or the forearms: nothing to measure.
     assert!(BodyProxy::fit(&skeleton, &skeleton.rest_pose(), &[]).is_none());

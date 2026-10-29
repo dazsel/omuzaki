@@ -7,21 +7,21 @@ tags = ["gesture", "reach", "lens", "arm"]
 mirrorable = true
 
 [bones]
-spine = [5.0, 0.0, 0.0]
-chest = [4.0, -6.0, 0.0]
+spine = [6.0, 10.0, 0.0]
+chest = [0.0, 0.0, 0.0]
 neck = [-3.0, 0.0, 0.0]
 head = [-4.0, 4.0, 3.0]
 leftUpperArm = [0.0, 0.0, -68.0]
 leftLowerArm = [0.0, -12.0, 0.0]
 rightShoulder = [0.0, 8.0, 0.0]
-rightUpperArm = [0.0, 81.5, -5.6]
-rightLowerArm = [-0.3, 2.8, -1.2]
-rightHand = [-0.7, 5.7, -76.3]
+rightUpperArm = [-83.7, 17.3, 85.0]
+rightLowerArm = [125.5, -3.0, -4.2]
+rightHand = [-50.4, -14.2, -78.5]
 
 [hands.right]
 shape = "spread"
 
 [reach.right]
 bone = "upperChest"
-at = [-0.3, 0.25, 2.0]
-pole = [-0.4, -1.0, 0.0]
+at = [-0.226, 0.037, 1.623]
+pole = [-0.31, -0.95, -0.02]

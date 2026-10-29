@@ -7,8 +7,13 @@
 //! pelvis (hip joint to hip joint), each thigh (hip to knee) and the head (a sphere). [`BodyProxy::fit`] measures them
 //! from the character's own skinned mesh, so a kit character and an imported avatar each get their own: each capsule's
 //! radius is a high quantile of the distance from its axis of the vertices its bones carry, which takes in clothing
-//! that is skinned to the body and leaves out hair and accessories on bones of their own. The forearm's radius and the
-//! hand's centre and radius come from the same mesh.
+//! that is skinned to the body and leaves out hair and accessories on bones of their own. The torso is wider than it
+//! is deep, so its cross-section is an ellipse: a half width and a half depth, measured the same way, facing the way
+//! the body faces (#2414: a round torso as wide as the shoulders held a hand on the chest a hand's breadth off it).
+//!
+//! The forearm's radius comes from the same mesh, and so does the hand: an ellipsoid about its centre, with a half
+//! extent along each of the hand bone's axes, so a palm laid on the chest or on another palm is as thin as a hand
+//! and not a ball.
 //!
 //! # The guard
 //!
@@ -24,7 +29,7 @@
 //! No allocation per frame; the cost is a few capsule tests and at most a handful of two-bone solves per arm.
 
 use omuzaki_anim_api::{BoneId, HumanoidBone, Pose, Skeleton, Transform};
-use omuzaki_core::glam::{Mat4, Vec3};
+use omuzaki_core::glam::{Mat4, Quat, Vec3};
 
 use super::targets::{Hand, HandTarget, bone_world, closest_points, inverse};
 
@@ -58,8 +63,108 @@ pub struct Proxy {
     pub a: Anchor,
     /// The other end (the same as `a` for a sphere).
     pub b: Anchor,
-    /// The radius, metres.
+    /// The radius, metres: the half width across the body for the torso.
     pub radius: f32,
+    /// The half depth, front to back, metres: the same as `radius` for a round part.
+    pub depth: f32,
+    /// The way the body faces, in `a`'s bone space: which way `depth` is measured.
+    pub forward: Vec3,
+}
+
+impl Proxy {
+    /// A round part: `depth` the same as `radius`.
+    pub fn round(part: BodyPart, a: Anchor, b: Anchor, radius: f32) -> Self {
+        Self { part, a, b, radius, depth: radius, forward: Vec3::Z }
+    }
+
+    /// The part as it stands in `pose`, skeleton root space.
+    pub fn placed(&self, skeleton: &Skeleton, pose: &Pose) -> Obstacle {
+        let forward = bone_world(skeleton, pose, self.a.bone).rotation * self.forward;
+        Obstacle {
+            part: self.part,
+            a: self.a.at(skeleton, pose),
+            b: self.b.at(skeleton, pose),
+            radius: self.radius,
+            depth: self.depth,
+            forward,
+        }
+    }
+}
+
+/// A part of a body placed in some space: its axis ends, its half width and half depth and its facing. What the guard
+/// tests an arm against: its own body's parts each frame ([`Proxy::placed`]), and another body's ([`ArmGuard::
+/// set_obstacles`], #2415), so a hug keeps each forearm out of the other's back.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Obstacle {
+    /// What it stands for.
+    pub part: BodyPart,
+    /// One end of the axis.
+    pub a: Vec3,
+    /// The other end (the same as `a` for a sphere).
+    pub b: Vec3,
+    /// The half width, metres.
+    pub radius: f32,
+    /// The half depth along `forward`, metres.
+    pub depth: f32,
+    /// The way the part faces (unit).
+    pub forward: Vec3,
+}
+
+impl Obstacle {
+    /// The obstacle carried by the rigid transform `m` (rotation and translation; no scale).
+    #[must_use]
+    pub fn moved(&self, m: Mat4) -> Self {
+        Self {
+            a: m.transform_point3(self.a),
+            b: m.transform_point3(self.b),
+            forward: m.transform_vector3(self.forward).normalize_or_zero(),
+            ..*self
+        }
+    }
+
+    /// Whether every field is finite.
+    pub fn is_finite(&self) -> bool {
+        self.a.is_finite()
+            && self.b.is_finite()
+            && self.forward.is_finite()
+            && self.radius.is_finite()
+            && self.depth.is_finite()
+    }
+
+    /// The gap between `p` (a point with `own` radius toward the obstacle) and the surface, and the normal out of it.
+    pub fn gap_to(&self, p: Vec3, own: f32) -> (f32, Vec3) {
+        let (_, t) = closest_points(p, p, self.a, self.b);
+        let on = self.a + (self.b - self.a) * t;
+        let normal = (p - on).try_normalize().unwrap_or(self.forward);
+        (p.distance(on) - own - self.across(normal, self.b - self.a, self.forward), normal)
+    }
+
+    /// How far the surface is from the axis toward `out` (a unit direction from the axis), metres: on the ellipse of
+    /// `radius` across and `depth` along `forward`, for the part of `out` square to `axis`.
+    fn across(&self, out: Vec3, axis: Vec3, forward: Vec3) -> f32 {
+        if (self.depth - self.radius).abs() <= f32::EPSILON * self.radius {
+            return self.radius;
+        }
+        let axis = axis.normalize_or_zero();
+        let Some(front) = (forward - axis * forward.dot(axis)).try_normalize() else { return self.radius };
+        let side = axis.cross(front);
+        let (f, s) = (out.dot(front), out.dot(side));
+        let square = (f * f + s * s).sqrt();
+        if square < 1e-6 {
+            return self.radius.min(self.depth);
+        }
+        let (f, s) = (f / square, s / square);
+        self.radius * self.depth / ((self.depth * s).powi(2) + (self.radius * f).powi(2)).sqrt()
+    }
+}
+
+/// How far the surface of an ellipsoid with half extents `axes` (in the frame `rotation`) is from its centre toward
+/// `out` (a unit direction, root space), metres.
+fn ellipsoid_toward(axes: Vec3, rotation: Quat, out: Vec3) -> f32 {
+    let local = rotation.inverse() * out;
+    let scaled = local / axes.max(Vec3::splat(1e-4));
+    let length = scaled.length();
+    if length > 1e-6 { 1.0 / length } else { axes.max_element() }
 }
 
 /// The parts of the body the arms are kept out of.
@@ -86,14 +191,18 @@ pub struct BodyProxy {
     pub forearm_radius: f32,
     /// Each hand's centre, in its hand bone's space, `[left, right]`.
     pub hands: [Vec3; 2],
-    /// The hand's radius about its centre, metres.
-    pub hand_radius: f32,
+    /// Each hand's half extents about its centre along its hand bone's axes, metres, `[left, right]`.
+    pub hand_axes: [Vec3; 2],
 }
 
 /// How far out a vertex may be and still count: the share of each part's vertices inside its capsule.
 const BODY_QUANTILE: f32 = 0.95;
-/// The same for the forearm and the hand, whose extremes are fingers and wrist bones rather than surface.
+/// The same for the forearm, whose extremes are wrist bones rather than surface.
 const LIMB_QUANTILE: f32 = 0.85;
+/// The share of a hand's vertices within each of its half extents: the fingertips and the knuckles are the surface.
+const HAND_QUANTILE: f32 = 0.97;
+/// The thinnest a hand's half extent is taken to be, metres.
+const MIN_HAND_AXIS: f32 = 0.004;
 
 /// The `q` quantile of `values` (which it sorts), or `None` if there are none.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)] // an index into a short list
@@ -135,13 +244,21 @@ impl BodyProxy {
         let capsule = |part, a: (BoneId, Transform), b: (BoneId, Transform), bones: &[Option<BoneId>]| {
             let points = carried(bones);
             let r = radius(&points, a.1.translation, b.1.translation, BODY_QUANTILE)?;
-            Some(Proxy { part, a: anchor(a, a.1.translation), b: anchor(b, b.1.translation), radius: r })
+            Some(Proxy::round(part, anchor(a, a.1.translation), anchor(b, b.1.translation), r))
         };
 
         let hips = joint(B::Hips)?;
         let top = joint(B::Neck).or_else(|| joint(B::Head))?;
         let spine = [map.get(B::Spine), map.get(B::Chest), map.get(B::UpperChest)];
-        let mut body = vec![capsule(BodyPart::Torso, hips, top, &spine)?];
+        let torso = elliptic(&carried(&spine), hips, top).map(|(radius, depth, forward)| Proxy {
+            part: BodyPart::Torso,
+            a: anchor(hips, hips.1.translation),
+            b: anchor(top, top.1.translation),
+            radius,
+            depth,
+            forward,
+        });
+        let mut body = vec![torso?];
         if let (Some(l), Some(r)) = (joint(B::LeftUpperLeg), joint(B::RightUpperLeg)) {
             body.extend(capsule(BodyPart::Pelvis, l, r, &[Some(hips.0)]));
             for (part, upper, knee) in
@@ -159,22 +276,24 @@ impl BodyProxy {
                 let centre = points.iter().sum::<Vec3>() / points.len() as f32;
                 if let Some(r) = radius(&points, centre, centre, BODY_QUANTILE) {
                     let a = anchor(head, centre);
-                    body.push(Proxy { part: BodyPart::Head, a, b: a, radius: r });
+                    body.push(Proxy::round(BodyPart::Head, a, a, r));
                 }
             }
         }
 
         let mut forearm = Vec::new();
         let mut hands = [Vec3::ZERO; 2];
-        let mut hand_radii = Vec::new();
+        let mut hand_axes = [Vec3::ZERO; 2];
         for (i, hand) in [Hand::Left, Hand::Right].into_iter().enumerate() {
             let [_, lower, wrist] = hand.ids(skeleton)?;
             let (elbow, wrist_world) = (bone_world(skeleton, pose, lower), bone_world(skeleton, pose, wrist));
             for p in carried(&[Some(lower)]) {
                 forearm.push(to_segment(p, elbow.translation, wrist_world.translation));
             }
-            // The hand: the vertices of the hand bone and every bone under it (the fingers).
-            let under_hand = |mut b: BoneId| loop {
+            // The hand: the vertices of the hand bone and every bone under it (the fingers), less the thumb, which
+            // stands off the palm and would make a flat hand as thick as a fist.
+            let thumb = thumb_bones(map, hand);
+            let under_hand = |mut b: BoneId| !thumb.contains(&Some(b)) && loop {
                 if b == wrist {
                     break true;
                 }
@@ -189,15 +308,74 @@ impl BodyProxy {
             }
             #[allow(clippy::cast_precision_loss)] // a vertex count
             let centre = points.iter().sum::<Vec3>() / points.len() as f32;
-            hands[i] = point(inverse(wrist_world), centre);
-            hand_radii.extend(points.iter().map(|p| p.distance(centre)));
+            let to_hand = inverse(wrist_world);
+            hands[i] = point(to_hand, centre);
+            let local: Vec<Vec3> = points.iter().map(|p| to_hand.rotation * (*p - centre)).collect();
+            let extent = |pick: fn(Vec3) -> f32| {
+                let mut d: Vec<f32> = local.iter().map(|v| pick(*v).abs()).collect();
+                quantile(&mut d, HAND_QUANTILE).unwrap_or(0.0).max(MIN_HAND_AXIS)
+            };
+            hand_axes[i] = Vec3::new(extent(|v| v.x), extent(|v| v.y), extent(|v| v.z));
         }
         let forearm_radius = quantile(&mut forearm, LIMB_QUANTILE)?;
         // Without hand vertices the hand is the wrist, as thick as the forearm.
-        let hand_radius = quantile(&mut hand_radii, LIMB_QUANTILE).unwrap_or(forearm_radius);
-        Some(Self { body, forearm_radius, hands, hand_radius })
+        for axes in &mut hand_axes {
+            if *axes == Vec3::ZERO {
+                *axes = Vec3::splat(forearm_radius);
+            }
+        }
+        Some(Self { body, forearm_radius, hands, hand_axes })
+    }
+
+    /// The hand's radius as one number: its largest half extent, metres.
+    pub fn hand_radius(&self) -> f32 {
+        self.hand_axes[0].max(self.hand_axes[1]).max_element()
     }
 }
+
+/// The thumb's bones on `hand`'s side.
+fn thumb_bones(map: &omuzaki_anim_api::HumanoidMap, hand: Hand) -> [Option<BoneId>; 3] {
+    use HumanoidBone as B;
+    let bones = match hand {
+        Hand::Left => [B::LeftThumbMetacarpal, B::LeftThumbProximal, B::LeftThumbDistal],
+        Hand::Right => [B::RightThumbMetacarpal, B::RightThumbProximal, B::RightThumbDistal],
+    };
+    bones.map(|b| map.get(b))
+}
+
+/// The torso's ellipse, fitted to `points` about the axis from `a` to `b` (the hips and the neck, posed as the points
+/// are): `(half width, half depth, the body's facing in a's bone space)`, or `None` without points. The facing is the
+/// root's `+Z` (VRM normalised space: the body faces `+Z`) made square to the axis. The depth-to-width ratio comes from
+/// the quantiles of each, and the size from the quantile of each point's distance on the ellipse of that ratio.
+fn elliptic(points: &[Vec3], a: (BoneId, Transform), b: (BoneId, Transform)) -> Option<(f32, f32, Vec3)> {
+    let (from, to) = (a.1.translation, b.1.translation);
+    let axis = (to - from).try_normalize().unwrap_or(Vec3::Y);
+    let front = (Vec3::Z - axis * Vec3::Z.dot(axis)).try_normalize().unwrap_or(Vec3::Z);
+    let side = axis.cross(front);
+    let along = to - from;
+    let flat: Vec<(f32, f32)> = points
+        .iter()
+        .map(|p| {
+            let t = if along.length_squared() > 1e-12 {
+                ((*p - from).dot(along) / along.length_squared()).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let v = *p - (from + along * t);
+            (v.dot(side), v.dot(front))
+        })
+        .collect();
+    let mut wide: Vec<f32> = flat.iter().map(|(s, _)| s.abs()).collect();
+    let mut deep: Vec<f32> = flat.iter().map(|(_, f)| f.abs()).collect();
+    let (wide, deep) = (quantile(&mut wide, BODY_QUANTILE)?, quantile(&mut deep, BODY_QUANTILE)?);
+    let ratio = if wide > 1e-6 { (deep / wide).clamp(MIN_DEPTH_RATIO, 1.0 / MIN_DEPTH_RATIO) } else { 1.0 };
+    let mut on_ellipse: Vec<f32> = flat.iter().map(|(s, f)| s.hypot(f / ratio)).collect();
+    let radius = quantile(&mut on_ellipse, BODY_QUANTILE)?;
+    Some((radius, radius * ratio, a.1.rotation.inverse() * front))
+}
+
+/// The flattest a torso's ellipse is taken to be, depth to width (and the inverse).
+const MIN_DEPTH_RATIO: f32 = 0.35;
 
 /// The least share of its fitted radius a capsule keeps when [`BodyProxy::clear_of`] shrinks it.
 const MIN_SHRINK: f32 = 0.5;
@@ -205,19 +383,50 @@ const MIN_SHRINK: f32 = 0.5;
 impl BodyProxy {
     /// The smallest gap between either arm (forearm and hand) and `proxy` in `pose`.
     fn arm_gap(&self, skeleton: &Skeleton, pose: &Pose, proxy: &Proxy) -> f32 {
-        let (a, b) = (proxy.a.at(skeleton, pose), proxy.b.at(skeleton, pose));
+        let placed = proxy.placed(skeleton, pose);
         let mut gap = f32::INFINITY;
         for (i, hand) in [Hand::Left, Hand::Right].into_iter().enumerate() {
-            let Some([_, lower, wrist]) = hand.ids(skeleton) else { continue };
-            let elbow = bone_world(skeleton, pose, lower).translation;
-            let wrist = bone_world(skeleton, pose, wrist);
-            let palm = point(wrist, self.hands[i]);
-            for (p, q, radius) in [(elbow, wrist.translation, self.forearm_radius), (palm, palm, self.hand_radius)] {
-                let (s, t) = closest_points(p, q, a, b);
-                gap = gap.min((p + (q - p) * s).distance(a + (b - a) * t) - radius - proxy.radius);
-            }
+            let Some(ids) = hand.ids(skeleton) else { continue };
+            gap = gap.min(self.touch(&placed, self.arm(skeleton, pose, i, ids), i).0);
         }
         gap
+    }
+
+    /// The elbow, the wrist bone's transform and the palm's centre of hand `i` (bones `ids`) in `pose`.
+    fn arm(&self, skeleton: &Skeleton, pose: &Pose, i: usize, ids: [BoneId; 3]) -> (Vec3, Transform, Vec3) {
+        let elbow = bone_world(skeleton, pose, ids[1]).translation;
+        let wrist = bone_world(skeleton, pose, ids[2]);
+        (elbow, wrist, point(wrist, self.hands[i]))
+    }
+
+    /// The body's parts as they stand in `pose`, skeleton root space: what another body's guard keeps its arms out
+    /// of ([`ArmGuard::set_obstacles`]).
+    pub fn obstacles<'a>(&'a self, skeleton: &'a Skeleton, pose: &'a Pose) -> impl Iterator<Item = Obstacle> + 'a {
+        self.body.iter().map(move |p| p.placed(skeleton, pose))
+    }
+
+    /// The closest hand `i`'s arm (its [`arm`](Self::arm)) comes to `obstacle`: `(gap, the normal out of it, the
+    /// fraction along the forearm, 1 for the hand)`.
+    #[allow(clippy::many_single_char_names)] // segment ends a, b, p, q and the fractions s, t along them
+    fn touch(&self, obstacle: &Obstacle, (elbow, wrist, palm): (Vec3, Transform, Vec3), i: usize) -> (f32, Vec3, f32) {
+        let Obstacle { a, b, forward, .. } = *obstacle;
+        let mut best = (f32::INFINITY, Vec3::Z, 1.0);
+        for (k, (p, q)) in [(elbow, wrist.translation), (palm, palm)].into_iter().enumerate() {
+            let (s, t) = closest_points(p, q, a, b);
+            let (on_arm, on_body) = (p + (q - p) * s, a + (b - a) * t);
+            // Out of the body; on the axis itself, forward.
+            let normal = (on_arm - on_body).try_normalize().unwrap_or(forward);
+            let own = if k == 0 {
+                self.forearm_radius
+            } else {
+                ellipsoid_toward(self.hand_axes[i], wrist.rotation, normal)
+            };
+            let gap = on_arm.distance(on_body) - own - obstacle.across(normal, b - a, forward);
+            if gap < best.0 {
+                best = (gap, normal, if k == 0 { s } else { 1.0 });
+            }
+        }
+        best
     }
 
     /// Shrinks every capsule the arms touch in `pose` until they clear it by `margin`, keeping at least half its fitted
@@ -229,7 +438,9 @@ impl BodyProxy {
             let gap = self.arm_gap(skeleton, pose, &self.body[k]);
             if gap < margin {
                 let proxy = &mut self.body[k];
-                proxy.radius = (proxy.radius - (margin - gap)).max(proxy.radius * MIN_SHRINK);
+                let radius = (proxy.radius - (margin - gap)).max(proxy.radius * MIN_SHRINK);
+                proxy.depth *= radius / proxy.radius;
+                proxy.radius = radius;
             }
         }
     }
@@ -325,12 +536,17 @@ pub struct ArmGuard {
     config: GuardConfig,
     /// Each wrist's push from the last frame, root space.
     held: [Vec3; 2],
+    /// Other bodies' parts the arms are kept out of too, root space ([`set_obstacles`](Self::set_obstacles)).
+    others: [Option<Obstacle>; MAX_OBSTACLES],
 }
+
+/// How many parts of other bodies the guard takes ([`ArmGuard::set_obstacles`]): two partners' five parts and more.
+pub const MAX_OBSTACLES: usize = 12;
 
 impl ArmGuard {
     /// A guard for the body `proxy`.
     pub fn new(proxy: BodyProxy, config: GuardConfig) -> Self {
-        Self { proxy, config, held: [Vec3::ZERO; 2] }
+        Self { proxy, config, held: [Vec3::ZERO; 2], others: [None; MAX_OBSTACLES] }
     }
 
     /// The body it guards.
@@ -338,34 +554,37 @@ impl ArmGuard {
         &self.proxy
     }
 
+    /// Keeps the arms out of `obstacles` too (skeleton root space, from the next [`apply`](Self::apply)), as well as the
+    /// body: another cast member's parts, placed this frame. The first [`MAX_OBSTACLES`] finite ones count; an empty
+    /// slice clears them. Allocation-free.
+    pub fn set_obstacles(&mut self, obstacles: &[Obstacle]) {
+        let mut finite = obstacles.iter().filter(|o| o.is_finite());
+        for slot in &mut self.others {
+            *slot = finite.next().copied();
+        }
+    }
+
+    /// The other bodies' parts the guard keeps the arms out of.
+    pub fn obstacles(&self) -> impl Iterator<Item = &Obstacle> {
+        self.others.iter().flatten()
+    }
+
     /// Forgets the pushes being let go.
     pub fn reset(&mut self) {
         self.held = [Vec3::ZERO; 2];
     }
 
-    /// The deepest contact of `hand`'s arm in `pose`.
-    #[allow(clippy::many_single_char_names)] // segment ends a, b, p, q and the fractions s, t along them
+    /// The deepest contact of `hand`'s arm in `pose`: the forearm (elbow to wrist, which takes in the elbow) and the
+    /// hand, against each part of the body.
     fn contact(&self, skeleton: &Skeleton, pose: &Pose, hand: Hand, ids: [BoneId; 3]) -> Contact {
-        let [_, lower, wrist] = ids;
-        let elbow = bone_world(skeleton, pose, lower).translation;
-        let wrist_world = bone_world(skeleton, pose, wrist);
-        let palm = point(wrist_world, self.proxy.hands[usize::from(hand == Hand::Right)]);
+        let i = usize::from(hand == Hand::Right);
+        let arm = self.proxy.arm(skeleton, pose, i, ids);
         let mut deepest = Contact { gap: f32::INFINITY, normal: Vec3::ZERO, along: 1.0 };
-        for proxy in &self.proxy.body {
-            let (a, b) = (proxy.a.at(skeleton, pose), proxy.b.at(skeleton, pose));
-            // The forearm (elbow to wrist, which takes in the elbow) and the hand.
-            let parts =
-                [(elbow, wrist_world.translation, self.proxy.forearm_radius), (palm, palm, self.proxy.hand_radius)];
-            for (k, (p, q, radius)) in parts.into_iter().enumerate() {
-                let (s, t) = closest_points(p, q, a, b);
-                let (on_arm, on_body) = (p + (q - p) * s, a + (b - a) * t);
-                let d = on_arm.distance(on_body);
-                let gap = d - radius - proxy.radius;
-                if gap < deepest.gap {
-                    // Out of the body; on the axis itself, forward.
-                    let normal = (on_arm - on_body).try_normalize().unwrap_or(Vec3::Z);
-                    deepest = Contact { gap, normal, along: if k == 0 { s } else { 1.0 } };
-                }
+        let own = self.proxy.body.iter().map(|p| p.placed(skeleton, pose));
+        for obstacle in own.chain(self.others.iter().flatten().copied()) {
+            let (gap, normal, along) = self.proxy.touch(&obstacle, arm, i);
+            if gap < deepest.gap {
+                deepest = Contact { gap, normal, along };
             }
         }
         deepest

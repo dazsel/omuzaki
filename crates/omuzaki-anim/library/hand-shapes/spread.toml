@@ -3,7 +3,7 @@
 id = "spread"
 summary = "Fingers splayed wide and straight, the thumb well out: a hand reaching for the lens or pressed flat to a pane."
 
-thumb  = { spread =  30.0, mcp =  -5.0, pip =   0.0, dip =   0.0 }
+thumb  = { spread =  12.0, mcp =  -4.0, pip =   0.0, dip =   0.0 }
 index  = { spread =  16.0, mcp =  -6.0, pip =   0.0, dip =   0.0 }
 middle = { spread =   2.0, mcp =  -6.0, pip =   0.0, dip =   0.0 }
 ring   = { spread = -13.0, mcp =  -5.0, pip =   0.0, dip =   0.0 }
