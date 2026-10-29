@@ -1,0 +1,26 @@
+schema = 1
+id = "omuzaki/accessories/gorget"
+version = "1.0.0"
+section = "accessories"
+kind = "part"
+target = "character"
+title = "Ornate gorget"
+summary = "A high collar of gold scrollwork that rises up the neck and spreads onto the collarbones, set with a large centre stone."
+tags = ["jewellery", "collar", "gorget", "armour", "filigree", "gold"]
+origin = "the kit's filigree-collar generator as a gorget, tuned by eye on bust renders (#2450)"
+compat = { kinds = ["humanoid"], templates = ["*"], requires = ["body"] }
+creates.piece = { kind = "filigree-collar", id = "gorget", layer = 50 }
+
+[rights]
+author = "Omuzaki"
+licence = "CC0-1.0"
+commercial = "ok"
+owned = true
+
+[[step]]
+op = "part.add"
+[step.args]
+character = "$character"
+kind = "filigree-collar"
+id = "$parts.piece"
+params = { ease = 0.002, motifs = 6, spread_deg = 55.0, drop = 0.034, wire = 0.0008, stone_size = 0.0018, height = 0.45, chest = 0.1, plate = 0.0014, scroll_scale = 1.4, scroll_depth = 0.0005, centre = { size = 0.008, shape = "gem", setting = "halo" } }

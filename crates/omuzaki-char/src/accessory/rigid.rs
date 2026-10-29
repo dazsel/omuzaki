@@ -229,6 +229,26 @@ impl<'a> Shells<'a> {
         self.builder(slot).add_grid(&placed, &options)
     }
 
+    /// A sheet of `rows` (points in the accessory frame), closed along each row (its last point repeats its first) and
+    /// round the rows (the last row repeats the first), its outside facing away from `inside`, a point inside the
+    /// shell for each.
+    fn sheet(&mut self, slot: Slot, rows: &[Vec<DVec3>], inside: &[Vec<DVec3>]) -> Result<(), KitError> {
+        let cols = rows.first().map_or(0, Vec::len);
+        let attach = self.attach;
+        let placed = Grid::new(rows.len(), cols, rows.iter().flatten().map(|&p| attach.point(p)).collect())?;
+        let inside = |i: usize, j: usize| attach.point(inside[i][j]);
+        let follow = self.follow;
+        let skin = |p: DVec3, _: usize, _: usize| follow.weights(p);
+        let options = GridOptions {
+            wrap_i: true,
+            wrap_j: true,
+            inside: Some(&inside),
+            skin: Skin::Per(&skin),
+            ..GridOptions::default()
+        };
+        self.builder(slot).add_grid(&placed, &options)
+    }
+
     /// A body of revolution about local `+Y` through `origin`; `profile` is `(distance along Y, radius)` and should
     /// start and end on the axis so the shell is closed.
     fn lathe(&mut self, slot: Slot, origin: DVec3, profile: &[(f64, f64)], seg: usize) -> Result<(), KitError> {
@@ -598,7 +618,8 @@ pub(super) fn frame_up(origin: DVec3, up: DVec3) -> DMat4 {
     DMat4::from_rotation_translation(DQuat::from_rotation_arc(DVec3::Y, up.normalize_or_zero()), origin)
 }
 
-mod jewellery;
+mod gorget;
+pub mod jewellery;
 
 // ------------------------------------------------------------------------------------------------ choker
 
