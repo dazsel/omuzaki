@@ -38,6 +38,8 @@
     clippy::neg_cmp_op_on_partial_ord
 )]
 
+use std::ops::Range;
+
 use omuzaki_core::glam::Vec2;
 
 use super::geom::{Conic, chop_cubic_at_y_extrema, chop_quad_at_y_extrema};
@@ -594,7 +596,7 @@ impl Scan {
     /// alpha values (0 to 255) from column `x`; rows and runs with no coverage are skipped.
     pub fn sweep(&mut self, mut emit: impl FnMut(usize, usize, &[u8])) {
         let mut row_buf = std::mem::take(&mut self.row);
-        self.sweep_with(&mut row_buf, coverage_to_alpha, |y, x0, alphas| {
+        self.sweep_with(&mut row_buf, coverage_to_alpha, 0..usize::MAX, 0..usize::MAX, |y, x0, alphas| {
             if alphas.iter().any(|&a| a != 0) {
                 emit(y, x0, alphas);
             }
@@ -602,11 +604,25 @@ impl Scan {
         self.row = row_buf;
     }
 
+    /// As [`sweep`](Self::sweep), but only rows `rows` and columns `cols` reach `emit` (rows that may be all zero
+    /// included): the rest of the accumulated coverage is only cleared, which is what lets a partial repaint (#2443)
+    /// skip the rows and columns it doesn't draw.
+    pub fn sweep_within(
+        &mut self,
+        rows: Range<usize>,
+        cols: Range<usize>,
+        emit: impl FnMut(usize, usize, &[u8]),
+    ) {
+        let mut row_buf = std::mem::take(&mut self.row);
+        self.sweep_with(&mut row_buf, coverage_to_alpha, rows, cols, emit);
+        self.row = row_buf;
+    }
+
     /// The sweep before the rounding to alpha, for the tests: `emit(y, x, coverage)` gets each row's coverage (0 to 1).
     #[cfg(test)]
     fn sweep_coverage(&mut self, mut emit: impl FnMut(usize, usize, &[f32])) {
         let mut row = vec![0.0; self.width];
-        self.sweep_with(&mut row, |c| c, |y, x0, coverage| emit(y, x0, coverage));
+        self.sweep_with(&mut row, |c| c, 0..usize::MAX, 0..usize::MAX, |y, x0, coverage| emit(y, x0, coverage));
     }
 
     /// Sweeps the accumulated deltas row by row into `row` (as many values as the raster is wide, each made by `convert`
@@ -640,6 +656,8 @@ impl Scan {
         &mut self,
         row: &mut [T],
         convert: impl Fn(f32) -> T + Copy,
+        rows: Range<usize>,
+        cols: Range<usize>,
         mut emit: impl FnMut(usize, usize, &[T]),
     ) {
         let dirty = std::mem::replace(&mut self.dirty, Dirty::NONE);
@@ -648,20 +666,29 @@ impl Scan {
             return;
         }
         let last = dirty.max_x.min(self.stride - 1);
-        let end = (last + 1).min(self.width);
+        // The columns that reach `emit`, and the last one whose coverage is needed: the prefix sum runs from the left,
+        // so every column before the wanted ones is summed, and those after them are only cleared.
+        let (from, end) = (dirty.min_x.max(cols.start), (last + 1).min(self.width).min(cols.end));
         let mut bucketed = false;
         for y in dirty.min_y..dirty.max_y {
             let cells = &mut self.acc[y * self.stride..(y + 1) * self.stride];
-            let mut sum = 0.0_f32;
-            for x in dirty.min_x..=last {
-                sum += cells[x];
-                cells[x] = 0.0;
-                if x < self.width {
-                    row[x] = convert(sum.abs().min(1.0));
-                }
-            }
             let overlap = std::mem::take(&mut self.overlapping[y]);
             self.occupied[y * 2 * self.words..(y + 1) * 2 * self.words].fill(0);
+            if !rows.contains(&y) || from >= end {
+                cells[dirty.min_x..=last].fill(0.0);
+                continue;
+            }
+            let mut sum = 0.0_f32;
+            for cell in &mut cells[dirty.min_x..from] {
+                sum += *cell;
+                *cell = 0.0;
+            }
+            for (x, cell) in cells.iter_mut().enumerate().take(end).skip(from) {
+                sum += *cell;
+                *cell = 0.0;
+                row[x] = convert(sum.abs().min(1.0));
+            }
+            cells[end..=last].fill(0.0);
             if overlap {
                 if !bucketed {
                     self.bucket_edges();
@@ -669,9 +696,7 @@ impl Scan {
                 }
                 self.union_row(y, row, convert);
             }
-            if dirty.min_x < end {
-                emit(y, dirty.min_x, &row[dirty.min_x..end]);
-            }
+            emit(y, from, &row[from..end]);
         }
         self.edges.clear();
     }

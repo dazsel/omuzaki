@@ -6,6 +6,7 @@
 //! [`scan`] turns edges into anti-aliased coverage, [`clip`] keeps the clip masks, [`paint`] colours and blends,
 //! [`stroke`] makes a stroke's outline, [`path`] is the outline buffer they share and [`geom`] the curve geometry under them.
 
+mod bounds;
 mod clip;
 pub mod cpu;
 mod geom;
@@ -13,8 +14,10 @@ mod geom;
 pub mod gpu;
 mod hairline;
 mod paint;
+mod partial;
 mod path;
 mod scan;
 mod stroke;
 
 pub use cpu::SkiaRasterizer;
+pub use partial::{CpuLayer, Repaint};

@@ -72,17 +72,30 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
     let layout = &ctx.profile.layout;
     let (blush_y, spacing) = (narrow(layout.blush_y), narrow(layout.blush_spacing));
     wash(ctx, &rect, narrow(style.wash), blush_y);
-    let strength = narrow(style.strength) * ctx.params.blush;
+    let strength = narrow(style.strength) * settled(ctx.params.blush);
     for side in [1.0, -1.0] {
         patch(ctx, style, strength, Vec2::new(side * spacing, blush_y));
     }
-    let puff = ctx.params.cheek_puff.clamp(0.0, 1.0);
+    let puff = settled(((ctx.params.cheek_puff.clamp(0.0, 1.0) - PUFF_DEAD) / (1.0 - PUFF_DEAD)).max(0.0));
     if puff > PUFF_MIN {
         for side in [1.0, -1.0] {
             puffed_cheek(ctx, style, puff, side, Vec2::new(side * spacing, blush_y));
         }
     }
     fringe_shade(ctx, &rect);
+}
+
+/// Steps the blush takes: a tracked face's cheek channels jitter by a hundredth or two every frame, which would change
+/// the blush by a fraction of a colour level and still repaint both patches, the largest part of a CPU repaint (#2443).
+/// In 32nds a step is under 5 levels of the patch's colour at full strength (a soft wash, where that doesn't show), and
+/// the noise crosses one far less often.
+const BLUSH_STEPS: f32 = 32.0;
+/// The puff a tracker reports at rest (its noise) counts as none; above it the puff is in 32nds, as the blush.
+const PUFF_DEAD: f32 = 0.04;
+
+/// `value` rounded to [`BLUSH_STEPS`].
+fn settled(value: f32) -> f32 {
+    (value * BLUSH_STEPS).round() / BLUSH_STEPS
 }
 
 /// A colour with `alpha` (clamped to `0..=1`) as its coverage.

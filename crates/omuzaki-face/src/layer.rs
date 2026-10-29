@@ -3,7 +3,7 @@
 use std::any::Any;
 
 use omuzaki_core::glam::UVec2;
-use omuzaki_face_api::{DrawList, FaceError, FaceLayerId, FaceLayerSpec, FaceRasterizer};
+use omuzaki_face_api::{DrawList, FaceError, FaceLayerId, FaceLayerSpec, FaceRasterizer, RasterRect};
 use omuzaki_render_api::{PaintTarget, Painter, PixelRect, RenderError};
 
 use crate::painter::LayerSections;
@@ -147,22 +147,42 @@ impl Painter for FaceLayerPainter<'_> {
                 if let Some(damage) = gpu.last_damage() {
                     target.mark_damage(damage);
                 }
+                // The texture holds the GPU's picture now, not the CPU raster's.
+                self.slot.written = false;
                 return Ok(());
             }
         }
         if self.slot.stale {
-            self.cpu
-                .rasterize(&self.spec, self.list, self.spec.px_per_m, &mut self.slot.raster)
-                .map_err(|e| render_error(&e))?;
+            let repaint = self.slot.cpu.repaint(self.cpu, &self.spec, self.list).map_err(|e| render_error(&e))?;
+            self.slot.repainted(repaint);
             self.slot.stale = false;
         }
-        let raster = &self.slot.raster;
+        let raster = self.slot.cpu.raster();
         if (raster.width, raster.height) != (w, h) {
             return Err(RenderError::invalid(
                 "face layer",
                 format!("the rasteriser made {}x{} px for a {w}x{h} px layer", raster.width, raster.height),
             ));
         }
-        target.write_rgba(PixelRect::full(size), &raster.pixels)
+        // Only what changed since the last write, when the texture holds that write.
+        let rect = match (self.slot.written, self.slot.pending) {
+            (true, None) => return Ok(()),
+            (true, Some(rect)) if rect != RasterRect::full(w, h) => rect,
+            _ => {
+                target.write_rgba(PixelRect::full(size), &raster.pixels)?;
+                (self.slot.written, self.slot.pending) = (true, None);
+                return Ok(());
+            }
+        };
+        let upload = &mut self.slot.upload;
+        upload.clear();
+        let stride = w as usize * 4;
+        let (x0, x1) = (rect.x as usize * 4, (rect.x + rect.width) as usize * 4);
+        for y in rect.y as usize..(rect.y + rect.height) as usize {
+            upload.extend_from_slice(&raster.pixels[y * stride + x0..y * stride + x1]);
+        }
+        target.write_rgba(PixelRect { x: rect.x, y: rect.y, width: rect.width, height: rect.height }, upload)?;
+        (self.slot.written, self.slot.pending) = (true, None);
+        Ok(())
     }
 }

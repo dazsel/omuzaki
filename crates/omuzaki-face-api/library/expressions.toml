@@ -157,7 +157,7 @@ deltas = { eyeBlinkLeft = 0.7, eyeBlinkRight = 0.7, browInnerUp = 0.3, eyeLookDo
 kind = "emotion"
 playback = { group = "mood" }
 curve = "smooth"
-deltas = { noseSneerLeft = 1.0, noseSneerRight = 1.0, browDownLeft = 0.5, browDownRight = 0.8, eyeSquintLeft = 0.3, eyeSquintRight = 0.7, mouthUpperUpLeft = 0.9, mouthUpperUpRight = 0.9, mouthFrownLeft = 0.6, mouthFrownRight = 0.6, eyesGloom = 0.5 }
+deltas = { noseSneerLeft = 1.0, noseSneerRight = 1.0, browDownLeft = 0.5, browDownRight = 0.8, eyeSquintLeft = 0.3, eyeSquintRight = 0.7, mouthUpperUpLeft = 0.9, mouthUpperUpRight = 0.9, mouthFrownLeft = 0.6, mouthFrownRight = 0.6 }
 
 [confused]
 kind = "emotion"

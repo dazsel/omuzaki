@@ -40,7 +40,7 @@ pub use omuzaki_core::colour::Colour;
 pub use paint::{
     Cap, Cmd, ColourExt, Composite, DEFAULT_PX_PER_M, DrawList, FaceDrawing, FaceError, FaceInput, FaceLayerId,
     FaceLayerSpec, FacePainter, FaceProjection, FaceRasterizer, FaceRect, FaceView, Fade, GradientStop, Join,
-    LayerTarget, Paint, PathBuilder, PathEl, PathRef, PlanarWindow, Raster, Stops, narrow,
+    LayerTarget, Paint, PathBuilder, PathEl, PathRef, PlanarWindow, Raster, RasterRect, Stops, narrow,
 };
 pub use palette::{ColourError, ColourRef, Palette, PaletteSlot};
 pub use profile::{

@@ -98,6 +98,7 @@ fn paint_summary(paint: PaintParams) -> Value {
         cheek_puff,
         sweat,
         anger_vein,
+        nose_sneer,
     } = paint;
     json!({
         "left_eye": eye_summary(left_eye),
@@ -115,6 +116,7 @@ fn paint_summary(paint: PaintParams) -> Value {
         "cheek_puff": shortest(cheek_puff),
         "sweat": shortest(sweat),
         "anger_vein": shortest(anger_vein),
+        "nose_sneer": shortest(nose_sneer),
     })
 }
 
