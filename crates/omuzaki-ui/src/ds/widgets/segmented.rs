@@ -3,7 +3,9 @@
 //! One tab stop for the whole group; Left and Right move the selection (radio-group semantics, roving focus). The
 //! selected segment is a `bg4` fill with a 2 pt accent underline and Medium weight, so selection never relies on
 //! colour alone. Icon-only segments need a label, which is also their accessible name and their tooltip. The group
-//! never grows past the room it is given: a label that does not fit ends in an ellipsis and its tooltip says it all.
+//! never grows past the room it is given. Segments share it equally while every label fits that way; with less room
+//! each gets what its own label needs plus an equal share of the rest, so "You" gives "Everyone" the room it lacks.
+//! Only when even that does not fit does a label end in an ellipsis, and its tooltip says it all.
 
 use egui::{
     Align2, EventFilter, Id, Key, Rect, Response, Sense, Stroke, StrokeKind, Ui, UiBuilder, Widget, WidgetInfo,
@@ -130,7 +132,8 @@ impl<T: Copy + PartialEq> Widget for Segmented<'_, T> {
         }
 
         let tab_stop = selected.unwrap_or(0);
-        let seg_w = rect.width() / (count as f32);
+        let edges = segment_edges(&ctx, &ds, self.segments, rect);
+        let seg_rect = |i: usize| Rect::from_x_y_ranges(edges[i]..=edges[i + 1], rect.y_range());
         let builder = UiBuilder::new().id(gid.with("segments")).max_rect(rect).accessibility_parent(gid);
         let mut clicked_index = None;
         let mut ring_index = None;
@@ -142,8 +145,7 @@ impl<T: Copy + PartialEq> Widget for Segmented<'_, T> {
             let painter = ui.painter().clone();
             painter.rect_filled(rect, radius::CONTROL, paint::dim(looks_enabled, t.bg2));
             for (i, segment) in self.segments.iter().enumerate() {
-                let seg =
-                    Rect::from_min_size(pos2(rect.left() + seg_w * (i as f32), rect.top()), vec2(seg_w, rect.height()));
+                let seg = seg_rect(i);
                 let sense = if !enabled {
                     Sense::hover()
                 } else if i == tab_stop {
@@ -180,8 +182,7 @@ impl<T: Copy + PartialEq> Widget for Segmented<'_, T> {
                 StrokeKind::Inside,
             );
             if let Some(i) = ring_index.filter(|_| crate::ds::focus::visible(&ctx)) {
-                let seg =
-                    Rect::from_min_size(pos2(rect.left() + seg_w * (i as f32), rect.top()), vec2(seg_w, rect.height()));
+                let seg = seg_rect(i);
                 paint::draw_ring(&painter, t, seg, radius::CONTROL, RingPlacement::Outside);
             }
         }
@@ -211,16 +212,52 @@ impl<T: Copy + PartialEq> Widget for Segmented<'_, T> {
     }
 }
 
-/// The width one segment needs for its widest label, icon and padding: every segment of a group is this wide.
+/// The most segments a group holds.
+const MAX_SEGMENTS: usize = 5;
+
+/// The width `segment` needs for its label (in the selected weight, the wider one), icon and padding.
+fn own_width<T>(ctx: &egui::Context, ds: &Ds, segment: &Segment<'_, T>) -> f32 {
+    let text = if segment.icon_only { 0.0 } else { paint::text_width(ctx, segment.label, &ds.text.strong) };
+    let icon = if segment.icon.is_some() { 16.0 + if segment.icon_only { 0.0 } else { space::S6 } } else { 0.0 };
+    (text + icon + 2.0 * space::S12).max(size::SEGMENT_MIN)
+}
+
+/// The width one segment needs for its widest label, icon and padding: with room, every segment of a group is this wide.
 fn natural_width<T>(ctx: &egui::Context, ds: &Ds, segments: &[Segment<'_, T>]) -> f32 {
-    segments
-        .iter()
-        .map(|s| {
-            let text = if s.icon_only { 0.0 } else { paint::text_width(ctx, s.label, &ds.text.strong) };
-            let icon = if s.icon.is_some() { 16.0 + if s.icon_only { 0.0 } else { space::S6 } } else { 0.0 };
-            text + icon + 2.0 * space::S12
-        })
-        .fold(size::SEGMENT_MIN, f32::max)
+    segments.iter().map(|s| own_width(ctx, ds, s)).fold(size::SEGMENT_MIN, f32::max)
+}
+
+/// Where each segment of a group drawn in `rect` starts and ends, left to right (`count + 1` edges; the rest unused).
+///
+/// Equal shares while the widest label fits one; otherwise each segment gets its own width and an equal share of what
+/// is left; and when the labels do not fit even so, each shrinks in proportion to what it needs. On the stack, so a
+/// frame allocates nothing.
+fn segment_edges<T>(ctx: &egui::Context, ds: &Ds, segments: &[Segment<'_, T>], rect: Rect) -> [f32; MAX_SEGMENTS + 1] {
+    let count = segments.len().clamp(1, MAX_SEGMENTS);
+    let mut own = [0.0_f32; MAX_SEGMENTS];
+    for (slot, segment) in own.iter_mut().zip(segments) {
+        *slot = own_width(ctx, ds, segment);
+    }
+    let needed: f32 = own[..count].iter().sum();
+    #[allow(clippy::cast_precision_loss, reason = "at most five segments")]
+    let share = rect.width() / count as f32;
+    let widest = own[..count].iter().copied().fold(0.0, f32::max);
+    let mut edges = [rect.right(); MAX_SEGMENTS + 1];
+    let mut x = rect.left();
+    for i in 0..count {
+        edges[i] = x;
+        #[allow(clippy::cast_precision_loss, reason = "at most five segments")]
+        let width = if widest <= share || needed <= 0.0 {
+            share
+        } else if needed <= rect.width() {
+            own[i] + (rect.width() - needed) / count as f32
+        } else {
+            own[i] * rect.width() / needed
+        };
+        x += width;
+    }
+    edges[count] = rect.right();
+    edges
 }
 
 /// The segment an arrow, Home or End key asks for, when one of the group's segments has focus (roving focus).
