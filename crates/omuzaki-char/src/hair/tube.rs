@@ -20,6 +20,8 @@ use omuzaki_core::glam::{Vec2, Vec3};
 use omuzaki_core::id::{Slug, SlugError};
 use omuzaki_core::mesh::MeshData;
 
+use crate::hair::strands;
+
 /// Vertices in one ring of a live tube (the prototype's `K`).
 pub const RING: usize = 8;
 /// Vertices in one ring of an offline tube: twice the live ring, so a lock's lens reads round in a close-up instead of
@@ -374,13 +376,24 @@ impl TubeMesh {
             return Err(e);
         }
         let last = points.len() - 1;
+        // The strand texture's `v` runs by length, so every lock's tip frays over the same few centimetres; its `u` is
+        // shifted by the seed, so neighbouring locks show different strands.
+        let lengths: Vec<f32> = std::iter::once(0.0)
+            .chain(points.windows(2).scan(0.0, |run, pair| {
+                *run += pair[0].distance(pair[1]);
+                Some(*run)
+            }))
+            .collect();
+        let length = lengths[last];
+        let shift = strands::offset(look.seed);
         for (i, polar) in look.polar.iter().enumerate() {
             let t = along(i, last);
+            let v = strands::tip_v(lengths[i], length);
             for k in 0..ring {
                 let across = ring_angle(k, ring).cos() * look.flip;
                 self.uv.extend([across, t]);
                 self.info.extend([look.seed, look.shade, *polar]);
-                self.mesh.uvs.push(Vec2::new(0.5 + 0.5 * across, t));
+                self.mesh.uvs.push(Vec2::new(shift + 0.5 + 0.5 * across, v));
             }
         }
         self.mesh.colours.extend(std::iter::repeat_n(vertex_colour(look.tint), count));
@@ -411,7 +424,9 @@ impl TubeMesh {
             m.mesh.normals.push(cap.axis);
             m.uv.extend([across * look.flip, cap.t]);
             m.info.extend([look.seed, look.shade, cap.polar]);
-            m.mesh.uvs.push(Vec2::new(0.5 + 0.5 * across * look.flip, cap.t));
+            m.mesh
+                .uvs
+                .push(Vec2::new(strands::offset(look.seed) + 0.5 + 0.5 * across * look.flip, cap.t * strands::V_END));
             m.mesh.colours.push(colour);
         };
         let ring = self.ring;

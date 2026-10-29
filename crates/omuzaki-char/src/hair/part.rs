@@ -32,7 +32,7 @@ use std::ops::Range;
 use omuzaki_char_api::{
     AnchorsFact, BodyRegion, BuildCtx, BuildError, Bulge, FaceOverlay, Generator, GroupId, HAIR_UV, HairParams,
     HeadSurface, JointRef, KindProvenance, MaterialName, MaterialSpec, PartCategory, PartId, PartKind, PartMesh,
-    PartMeta, PartOutput, PointedEars, Quality, RecolourCtx, Recoloured, StatureFact, Taper,
+    PartMeta, PartOutput, PointedEars, Quality, RecolourCtx, Recoloured, StatureFact, Taper, TextureName,
 };
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::{Vec2, Vec3};
@@ -49,6 +49,7 @@ use super::r#gen::tail::Chain;
 use super::r#gen::{ahoge, bun, cap, tail};
 use super::physics::{self, runtime::HairRuntime};
 use super::reach::{HairReach, HairReachFact};
+use super::strands;
 use super::tie;
 use super::tube::{
     OutwardFrame, TubeError, TubeLook, TubeMesh, cap_vertices, polar_angles, refine, ring_for, vertex_colour,
@@ -138,8 +139,7 @@ pub fn build_with(
         mesh_groups(&entries, &frame, keep_out.as_ref(), &chains, ctx.quality, &mut warnings)
             .map_err(|e| ctx.fail(e.to_string()))?;
 
-    let material_name =
-        MaterialName::new(format!("{}-hair", ctx.part)).map_err(|e| ctx.fail(format!("material name: {e}")))?;
+    let material_name = hair_material_name(ctx.part).map_err(|e| ctx.fail(format!("material name: {e}")))?;
     // The brows when they show through, and the face's overlay (sweat drop, gloom hatch), which is in front of the hair.
     let overlays = || {
         let mut overlays = Vec::with_capacity(2);
@@ -151,6 +151,7 @@ pub fn build_with(
     };
     let material = hair_material(ctx.part, params, ctx.palette, overlays)?;
     let mut out = PartOutput::new().with_materials(vec![(material_name.clone(), material)]).with_warnings(warnings);
+    out.textures.push(strands_texture(ctx)?);
     // Built for export, the simulated groups other than tails hang on strand chains of their own.
     let strands = if ctx.rig_export {
         bake::strand_chains(ctx.part, params, &entries, &chains).map_err(|e| ctx.fail(e))?
@@ -583,6 +584,22 @@ fn ties_mesh_name(part: &PartId) -> String {
     format!("{part}-ties")
 }
 
+/// The name of the hair material of `part`.
+fn hair_material_name(part: &PartId) -> Result<MaterialName, omuzaki_core::id::SlugError> {
+    MaterialName::new(format!("{part}-hair"))
+}
+
+/// The name of the strand texture of `part` ([`strands`]).
+fn strands_texture_name(part: &PartId) -> Result<TextureName, omuzaki_core::id::SlugError> {
+    TextureName::new(format!("{part}-strands"))
+}
+
+/// The strand texture the hair material reads, under its name.
+fn strands_texture(ctx: &BuildCtx<'_>) -> Result<(TextureName, omuzaki_char_api::TextureData), BuildError> {
+    let name = strands_texture_name(ctx.part).map_err(|e| ctx.fail(format!("texture name: {e}")))?;
+    Ok((name, strands::texture()))
+}
+
 /// The name of the tie material of `part`.
 fn tie_material_name(part: &PartId) -> Result<MaterialName, omuzaki_core::id::SlugError> {
     MaterialName::new(format!("{part}-tie"))
@@ -615,12 +632,14 @@ fn hair_material(
     let overlays = overlays()?;
     let colour =
         palette.resolve(&params.shading.outline).map_err(|error| BuildError::Colour { part: part.clone(), error })?;
+    let texture =
+        strands_texture_name(part).map_err(|e| BuildError::Part { part: part.clone(), message: e.to_string() })?;
     Ok(MaterialSpec {
         base: Colour::WHITE,
-        base_texture: None,
+        base_texture: Some(texture),
         shading,
         overlays,
-        alpha: AlphaMode::Opaque,
+        alpha: AlphaMode::Mask { cutoff: strands::CUTOFF },
         double_sided: true,
         vertex_colours: true,
         outline: Some(Outline { colour, width: narrow(params.shading.outline_width) }),

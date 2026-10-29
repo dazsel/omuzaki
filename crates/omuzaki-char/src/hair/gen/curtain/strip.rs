@@ -27,6 +27,7 @@ use omuzaki_core::glam::{Vec2, Vec3};
 use omuzaki_core::id::{Slug, SlugError};
 use omuzaki_core::mesh::MeshData;
 
+use crate::hair::strands;
 use crate::hair::tube::{along, smoothstep};
 
 /// How far the columns bulge outward, metres.
@@ -340,13 +341,23 @@ pub fn strip_mesh(
         let shade = (SHADE_BASE + SHADE_SWING * (u_f32(j) * SHADE_STRIDE).sin()) * look.shade;
         for c in 0..count {
             let a = column_offset(c, count);
+            // The strand texture's `v` runs by the column's own length, so its tip frays over the same few centimetres
+            // as a lock's.
+            let run = &positions[(j * count + c) * points..(j * count + c + 1) * points];
+            let lengths: Vec<f32> = std::iter::once(0.0)
+                .chain(run.windows(2).scan(0.0, |sum, pair| {
+                    *sum += pair[0].distance(pair[1]);
+                    Some(*sum)
+                }))
+                .collect();
+            let length = lengths[points - 1];
             for k in 0..points {
                 let t = along(k, points - 1);
                 // The guide's own point sets the polar angle, as in the prototype, not the column's.
                 let polar = (guide[k] - head).normalize_or_zero().y.clamp(-1.0, 1.0).acos();
                 uv.extend([a, t]);
                 info.extend([seed, shade, polar]);
-                uvs.push(Vec2::new(0.5 + 0.5 * a, t));
+                uvs.push(Vec2::new(strands::offset(seed) + 0.5 + 0.5 * a, strands::tip_v(lengths[k], length)));
                 colours.push(look.colour);
             }
         }

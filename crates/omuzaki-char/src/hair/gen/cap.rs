@@ -34,16 +34,19 @@
 use std::f64::consts::TAU;
 
 use omuzaki_char_api::{Bulge, CapGen, HAIR_INFO, HAIR_UV, HeadSurface, Taper};
-use omuzaki_core::glam::Vec3;
+use omuzaki_core::glam::{Vec2, Vec3};
 use omuzaki_core::id::Slug;
 use omuzaki_core::mesh::{ExtraAttribute, MeshData};
 
 use crate::hair::compile::{CompiledGroup, GroupGeometry, HairGenCtx};
+use crate::hair::strands;
 
 /// Quads round the head.
 pub const SEGMENTS: usize = 96;
 /// Rings of quads from the crown to the hairline.
 pub const RINGS: usize = 48;
+/// How many times the strand texture repeats round the head: a whole number, so its seam at the back closes.
+pub const CAP_STRANDS: f32 = 14.0;
 
 /// Compiles the group: one shell and no clumps.
 pub fn compile(g: &CapGen, ctx: &mut HairGenCtx<'_>) -> CompiledGroup {
@@ -99,7 +102,7 @@ fn direction(theta: f64, phi: f64) -> Vec3 {
 #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)] // grid indices are small; attributes are f32
 pub fn fill_shell(g: &CapGen, head: &dyn HeadSurface, out: &mut MeshData) {
     ensure_attributes(&mut out.extra);
-    let MeshData { positions, normals, indices, extra, .. } = out;
+    let MeshData { positions, normals, uvs, indices, extra, .. } = out;
     let [uv, info] = extra.as_mut_slice() else {
         // `ensure_attributes` leaves exactly these two, and `attribute_names_are_slugs` proves it can create them; a
         // shell without them would be silently empty, so a broken invariant stops a debug build.
@@ -113,6 +116,7 @@ pub fn fill_shell(g: &CapGen, head: &dyn HeadSurface, out: &mut MeshData) {
     let reach = back.max(g.hairline_front_deg.to_radians());
     let (seed, shade) = (g.strand_seed as f32, g.shade as f32);
     positions.clear();
+    uvs.clear();
     uv.data.clear();
     info.data.clear();
     for i in 0..=RINGS {
@@ -123,6 +127,10 @@ pub fn fill_shell(g: &CapGen, head: &dyn HeadSurface, out: &mut MeshData) {
             let offset = g.thickness * (1.0 + g.crown_rise * (1.0 - t / reach));
             positions.push(head.point(direction(t, phi), offset as f32));
             uv.data.extend([phi.sin() as f32, (t / reach) as f32]);
+            // The strand texture runs down from the crown, [`CAP_STRANDS`] locks' worth of strands round the head,
+            // all of it the texture's body: the shell has no tips.
+            let along = (t / reach) as f32 * (1.0 - strands::TIP) * strands::V_END;
+            uvs.push(Vec2::new((j as f64 / SEGMENTS as f64) as f32 * CAP_STRANDS, along));
             info.data.extend([seed, shade, t as f32]);
         }
     }
