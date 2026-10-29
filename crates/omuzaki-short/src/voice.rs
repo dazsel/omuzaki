@@ -173,12 +173,12 @@ fn samples(seconds: f32) -> usize {
 }
 
 fn silent(def: &ShortDef, wpm: f32) -> VoiceTrack {
-    let spans = lay_out(def, |line| spoken_seconds(&line.text, wpm));
+    let spans = lay_out(def, |line| spoken_seconds(&line.spoken(), wpm));
     let duration = spans.iter().map(|s| s.end).fold(0.0, f32::max) + def.tail;
     let mut frames = Vec::new();
     let mut onsets = 0;
     for (line, span) in def.lines.iter().zip(&spans) {
-        text_frames(&line.text, *span, &mut onsets, &mut frames);
+        text_frames(&line.spoken(), *span, &mut onsets, &mut frames);
     }
     frames.sort_by(|a, b| a.0.total_cmp(&b.0));
     VoiceTrack { pcm: vec![0.0; samples(duration)], spans, frames, duration }

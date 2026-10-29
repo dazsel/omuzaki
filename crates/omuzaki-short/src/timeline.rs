@@ -98,8 +98,22 @@ impl Timeline {
                 let shot = cue.numbers().map_err(|e| e.at(format!("line[{i}].camera")))?;
                 push_or_replace(&mut shots, ShotSpan { start: span.start, line_end: span.end, shot }, |s| s.start);
             }
+            for beat in line.beats().map_err(|e| e.at(format!("line[{i}].text")))? {
+                let at = span.start + beat.at * span.len();
+                if let Some(face) = &beat.face {
+                    // A beat's face keeps the line's channels.
+                    let channels = faces.last().map(|f| f.channels.clone()).unwrap_or_default();
+                    let start = (at - FACE_LEAD_S).max(0.0);
+                    push_or_replace(&mut faces, FaceSpan { start, ids: face.ids(), channels }, |f| f.start);
+                }
+                if let Some(cue) = &beat.camera {
+                    let shot = cue.numbers().map_err(|e| e.at(format!("line[{i}].text")))?;
+                    push_or_replace(&mut shots, ShotSpan { start: at, line_end: span.end, shot }, |s| s.start);
+                }
+            }
             if def.captions.enabled && line.caption != CaptionStyle::None {
-                let text = line.caption_text.as_deref().unwrap_or(&line.text);
+                let spoken = line.spoken();
+                let text = line.caption_text.as_deref().unwrap_or(&spoken);
                 lay_captions(text, line.caption, def.captions.max_chars, *span, &mut captions);
             }
         }

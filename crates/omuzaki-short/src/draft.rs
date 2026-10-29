@@ -14,7 +14,9 @@
 //! - Anything else cycles through calm faces ([`CALM`]) and alternates a face shot with a closer one, with a bust shot
 //!   every fourth line so the frame breathes.
 //!
-//! The same face or shot never runs twice in a row: a repeat moves to the next in its list.
+//! The same face or shot never runs twice in a row: a repeat moves to the next in its list. A line of
+//! [`BEAT_WORDS`] words or more also gets a beat halfway (after its first comma or full stop when there is one): the
+//! second sentence's cue face when it has one, and a cut, so a long line doesn't hold one frame.
 
 use crate::def::{CaptionStyle, FaceCue, LineDef, ShortDef, ShotCue};
 
@@ -67,6 +69,24 @@ pub const CALM: [&str; 6] = ["happy", "smug", "relaxed", "determined", "shy", "s
 
 /// The shots an undirected line alternates between.
 const CALM_SHOTS: [&str; 3] = ["face+drift", "close", "face+left+drift"];
+
+/// The words a line needs before the drafter cuts inside it.
+pub const BEAT_WORDS: usize = 7;
+
+/// `text` with a beat inserted at its middle word (or after its first mid-line punctuation): a cut to `shot`, and the
+/// second half's cue face when it has one. Text that already has beats is left alone.
+fn with_beat(text: &str, shot: &str) -> String {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.len() < BEAT_WORDS || text.contains('{') {
+        return text.to_owned();
+    }
+    let lo = words.len() / 3;
+    let hi = words.len() - 2;
+    let at = (lo..hi).find(|&i| words[i].ends_with([',', '.', ';', '!', '?', '…'])).map_or(words.len() / 2, |i| i + 1);
+    let second = words[at..].join(" ");
+    let face = cue_face(&second).map(|f| format!("{f} ")).unwrap_or_default();
+    format!("{} {{{face}@{shot}}} {second}", words[..at].join(" "))
+}
 
 /// What kind of line it is, for the rules.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -186,6 +206,14 @@ pub fn direct(def: &mut ShortDef) {
         if line.caption == CaptionStyle::Normal {
             line.caption = caption;
         }
+        if matches!(k, Kind::Plain | Kind::Question) {
+            let cut = if line.camera.as_ref().is_some_and(|c| matches!(c, ShotCue::Words(w) if w.starts_with("close"))) {
+                "face+right"
+            } else {
+                "close"
+            };
+            line.text = with_beat(&line.text, cut);
+        }
         if k == Kind::Aside && line.caption_text.is_none() {
             let inner = line.text.trim().trim_start_matches(['(', '[']).trim_end_matches([')', ']']).trim();
             line.caption_text = Some(inner.to_owned());
@@ -250,6 +278,17 @@ mod tests {
         direct(&mut def);
         assert_eq!(def.lines[0].face, Some(FaceCue::One("shy".into())));
         assert!(def.lines[0].camera.is_some());
+    }
+
+    #[test]
+    fn a_long_line_cuts_halfway_and_takes_its_second_face() {
+        let def = draft("Okay so I tried baking, and honestly I love how it turned out.", id());
+        let line = &def.lines[0];
+        assert!(line.text.contains("{hearts @"), "{}", line.text);
+        assert_eq!(line.spoken(), "Okay so I tried baking, and honestly I love how it turned out.");
+        let beats = line.beats().unwrap();
+        assert_eq!(beats.len(), 1);
+        assert!(beats[0].at > 0.3 && beats[0].at < 0.5, "{beats:?}");
     }
 
     #[test]

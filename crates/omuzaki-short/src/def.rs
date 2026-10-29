@@ -214,7 +214,8 @@ pub enum CaptionStyle {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LineDef {
-    /// What is said.
+    /// What is said. A change inside the line goes in braces before the word it lands on: `{surprised}` changes the
+    /// face, `{@close+punch}` the shot, `{surprised @close+punch}` both. The braces are not said or captioned.
     pub text: String,
     /// The face for the line: one expression or several layered in order; the line before's when left out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -257,6 +258,76 @@ impl LineDef {
             at: None,
             duration: None,
         }
+    }
+}
+
+/// A change inside a line: a face, a shot or both, landing a share of the way through the line's words.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Beat {
+    /// How far through the line it lands: the share of the spoken characters before it, `0..1`.
+    pub at: f32,
+    /// The new face, if it changes.
+    pub face: Option<FaceCue>,
+    /// The new shot, if it changes.
+    pub camera: Option<ShotCue>,
+}
+
+impl LineDef {
+    /// What is said: the text without its beats, spaces collapsed.
+    #[must_use]
+    pub fn spoken(&self) -> String {
+        let mut out = String::new();
+        let mut depth = 0usize;
+        for c in self.text.chars() {
+            match c {
+                '{' => depth += 1,
+                '}' => depth = depth.saturating_sub(1),
+                c if depth == 0 => out.push(c),
+                _ => {}
+            }
+        }
+        out.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// The beats in the text, in order.
+    ///
+    /// # Errors
+    /// [`ShortError::Invalid`] for an unclosed or empty brace, or a shot whose words don't read.
+    #[allow(clippy::cast_precision_loss, reason = "character counts")]
+    pub fn beats(&self) -> Result<Vec<Beat>, ShortError> {
+        let total = self.spoken().chars().count().max(1) as f32;
+        let mut beats = Vec::new();
+        let mut rest = self.text.as_str();
+        let mut before = String::new();
+        while let Some(open) = rest.find('{') {
+            before.push_str(&rest[..open]);
+            let after = &rest[open + 1..];
+            let close = after.find('}').ok_or_else(|| ShortError::invalid("text", "a `{` with no `}`"))?;
+            let inside = after[..close].trim();
+            if inside.is_empty() {
+                return Err(ShortError::invalid("text", "an empty `{}`: name a face, or a shot after `@`"));
+            }
+            let (mut faces, mut shots) = (Vec::new(), Vec::new());
+            for token in inside.split_whitespace() {
+                match token.strip_prefix('@') {
+                    Some(shot) => shots.push(shot.to_owned()),
+                    None => faces.push(token.to_owned()),
+                }
+            }
+            let camera = (!shots.is_empty()).then(|| ShotCue::Words(shots.join("+")));
+            if let Some(camera) = &camera {
+                camera.numbers()?;
+            }
+            let said = before.split_whitespace().collect::<Vec<_>>().join(" ");
+            let chars = said.chars().count() + usize::from(!said.is_empty());
+            beats.push(Beat {
+                at: (chars as f32 / total).min(1.0),
+                face: (!faces.is_empty()).then(|| FaceCue::One(faces.join("+"))),
+                camera,
+            });
+            rest = &after[close + 1..];
+        }
+        Ok(beats)
     }
 }
 
@@ -515,8 +586,13 @@ impl ShortDef {
 
 fn check_line(i: usize, line: &LineDef) -> Result<(), ShortError> {
     let field = |name: &str| format!("line[{i}].{name}");
-    if line.text.trim().is_empty() {
+    if line.spoken().is_empty() {
         return Err(ShortError::invalid(field("text"), "a line needs words"));
+    }
+    for beat in line.beats().map_err(|e| e.at(field("text")))? {
+        if let Some(camera) = &beat.camera {
+            check_shot(&field("text"), &camera.numbers()?)?;
+        }
     }
     if line.text.chars().count() > MAX_TEXT {
         return Err(ShortError::invalid(field("text"), format!("at most {MAX_TEXT} characters")));
