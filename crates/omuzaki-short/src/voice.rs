@@ -5,8 +5,12 @@
 //! - **File**: a recording of the whole script. Its spoken stretches are found by loudness and matched to the lines
 //!   in order, and the mouth reads the sound through the same analyser as a live microphone
 //!   (`omuzaki-track-voice`).
+//! - **Speech**: each line said by a [`Speaker`] (the project's local text-to-speech in the ops). Lines are laid out
+//!   with their real synthesised lengths, their sound placed at their spans, and the mouth reads the sound through the
+//!   same analyser. A cheap plan may [estimate](Synthesis::Estimate) instead: lines timed from their words at the
+//!   voice's speed, the mouth from the text, no sound.
 //!
-//! Either way the result is a list of [`VoiceFrame`]s on the short's clock, which the offline perform loop hands to
+//! Every way, the result the result is a list of [`VoiceFrame`]s on the short's clock, which the offline perform loop hands to
 //! the same [`LipSync`](omuzaki_track_voice::LipSync) the live loop uses.
 
 use std::path::Path;
@@ -28,6 +32,37 @@ const TEXT_HOP_S: f32 = 0.01;
 const JOIN_GAP_S: f32 = 0.22;
 /// Spoken stretches shorter than this are noise, seconds.
 const MIN_SPEECH_S: f32 = 0.12;
+/// About the pace of the local voices at speed 1, words per minute: what an estimate times a spoken line by.
+pub const SPEECH_WPM: f32 = 170.0;
+/// The fade at the end of a line's sound cut short by its `duration`, seconds.
+const CUT_FADE_S: f32 = 0.01;
+
+/// One line's speech, as a [`Speaker`] says it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Spoken {
+    /// Mono samples at `rate`, with no long silence before or after the words.
+    pub pcm: Vec<f32>,
+    /// Samples per second.
+    pub rate: u32,
+}
+
+/// Says a line in a voice: the project's local text-to-speech in the ops, a stub in tests.
+pub trait Speaker {
+    /// `text` said in `voice` (`<model>/<voice>`, as `voice.list` names it) at `speed` (1 is the voice's own pace).
+    ///
+    /// # Errors
+    /// [`ShortError::Voice`] when the voice can't be found or the synthesis fails.
+    fn speak(&mut self, text: &str, voice: &str, speed: f32) -> Result<Spoken, ShortError>;
+}
+
+/// How a spoken short ([`VoiceDef::Speech`]) gets its sound; silent and recorded shorts ignore it.
+pub enum Synthesis<'a> {
+    /// Each line is said by the speaker.
+    Speak(&'a mut dyn Speaker),
+    /// Nothing is said: each line is timed from its words at [`SPEECH_WPM`] times the voice's speed and the mouth reads
+    /// the text, as for a silent short. For a cheap plan.
+    Estimate,
+}
 
 /// When a line is spoken.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -128,13 +163,15 @@ pub fn resample(pcm: &[f32], from: u32, to: u32) -> Vec<f32> {
         .collect()
 }
 
-/// The voice for `def`, reading a recording through `read` (a path relative to the project, opened for reading).
+/// The voice for `def`, reading a recording through `read` (a path relative to the project, opened for reading) and
+/// saying spoken lines as `synthesis` says.
 ///
 /// # Errors
-/// [`ShortError::Voice`] when the recording doesn't read, or holds no speech.
+/// [`ShortError::Voice`] when the recording doesn't read or holds no speech, or the speaker fails.
 pub fn voice_for(
     def: &ShortDef,
     read: impl FnOnce(&str) -> Result<Vec<f32>, ShortError>,
+    synthesis: Synthesis<'_>,
 ) -> Result<VoiceTrack, ShortError> {
     match &def.voice {
         VoiceDef::Silent { words_per_minute } => Ok(silent(def, *words_per_minute)),
@@ -142,6 +179,10 @@ pub fn voice_for(
             let pcm = read(path)?;
             from_recording(def, pcm)
         }
+        VoiceDef::Speech { voice, speed } => match synthesis {
+            Synthesis::Speak(speaker) => spoken(def, voice, *speed, speaker),
+            Synthesis::Estimate => Ok(silent(def, SPEECH_WPM * speed)),
+        },
     }
 }
 
@@ -156,13 +197,14 @@ pub fn spoken_seconds(text: &str, wpm: f32) -> f32 {
 
 /// Lays the lines out one after another from `def.lead`: each starts at its `at` or after the line before and its
 /// pause, and lasts its `duration` or `length(line)`.
-fn lay_out(def: &ShortDef, mut length: impl FnMut(&LineDef) -> f32) -> Vec<Span> {
+fn lay_out(def: &ShortDef, mut length: impl FnMut(usize, &LineDef) -> f32) -> Vec<Span> {
     let mut t = def.lead;
     def.lines
         .iter()
-        .map(|line| {
+        .enumerate()
+        .map(|(i, line)| {
             let start = line.at.unwrap_or(t);
-            let end = start + line.duration.unwrap_or_else(|| length(line));
+            let end = start + line.duration.unwrap_or_else(|| length(i, line));
             t = end + line.pause;
             Span { start, end }
         })
@@ -180,7 +222,7 @@ fn samples(seconds: f32) -> usize {
 }
 
 fn silent(def: &ShortDef, wpm: f32) -> VoiceTrack {
-    let spans = lay_out(def, |line| spoken_seconds(&line.spoken(), wpm));
+    let spans = lay_out(def, |_, line| spoken_seconds(&line.spoken(), wpm));
     let duration = spans.iter().map(|s| s.end).fold(0.0, f32::max) + def.tail;
     let mut frames = Vec::new();
     let mut onsets = 0;
@@ -361,6 +403,13 @@ fn from_recording(def: &ShortDef, mut pcm: Vec<f32>) -> Result<VoiceTrack, Short
     #[allow(clippy::cast_precision_loss)]
     let duration = end.max(pcm.len() as f32 / RATE as f32);
     pcm.resize(samples(duration), 0.0);
+    let frames = mouth(&pcm)?;
+    Ok(VoiceTrack { pcm, spans, frames, duration })
+}
+
+/// The mouth's voice frames for `pcm` at [`RATE`]: the live microphone's analyser, fed 10 ms blocks, each frame at the
+/// end of its block.
+fn mouth(pcm: &[f32]) -> Result<Vec<(f32, VoiceFrame)>, ShortError> {
     let mut analyzer =
         VoiceAnalyzer::new(RATE, VowelProfile::default()).map_err(|e| ShortError::Voice(e.to_string()))?;
     let mut frames = Vec::new();
@@ -370,7 +419,47 @@ fn from_recording(def: &ShortDef, mut pcm: Vec<f32>) -> Result<VoiceTrack, Short
         let t = (i + 1) as f32 * block as f32 / RATE as f32;
         analyzer.push(chunk, |frame| frames.push((t, *frame)));
     }
+    Ok(frames)
+}
+
+/// Says every line of `def` in `voice` at `speed`, lays the lines out with the lengths of their sound, and places each
+/// line's sound at its span: from its start, cut (with a short fade) at its end when a `duration` makes it shorter
+/// than the sound, mixed where an `at` makes lines overlap.
+fn spoken(def: &ShortDef, voice: &str, speed: f32, speaker: &mut dyn Speaker) -> Result<VoiceTrack, ShortError> {
+    let mut said = Vec::with_capacity(def.lines.len());
+    for (i, line) in def.lines.iter().enumerate() {
+        let text = line.spoken();
+        let spoken = speaker.speak(&text, voice, speed)?;
+        let pcm = resample(&spoken.pcm, spoken.rate, RATE);
+        if pcm.is_empty() {
+            return Err(ShortError::Voice(format!("line[{i}]: {voice} said nothing for {text:?}")));
+        }
+        said.push(pcm);
+    }
+    #[allow(clippy::cast_precision_loss, reason = "a line is seconds long")]
+    let spans = lay_out(def, |i, _| said.get(i).map_or(0.0, |pcm| pcm.len() as f32 / RATE as f32));
+    let duration = spans.iter().map(|s| s.end).fold(0.0, f32::max) + def.tail;
+    let mut pcm = vec![0.0; samples(duration)];
+    for (sound, span) in said.iter().zip(&spans) {
+        place(&mut pcm, sound, *span);
+    }
+    let frames = mouth(&pcm)?;
     Ok(VoiceTrack { pcm, spans, frames, duration })
+}
+
+/// Mixes `sound` into `pcm` from `span`'s start, no longer than the span, fading out over [`CUT_FADE_S`] where it is
+/// cut short.
+#[allow(clippy::cast_precision_loss, reason = "fade positions")]
+fn place(pcm: &mut [f32], sound: &[f32], span: Span) {
+    let start = samples(span.start);
+    let len = sound.len().min(samples(span.len())).min(pcm.len().saturating_sub(start));
+    let fade = if len < sound.len() { samples(CUT_FADE_S).min(len) } else { 0 };
+    let Some(out) = pcm.get_mut(start..start + len) else { return };
+    for (i, (out, s)) in out.iter_mut().zip(sound).enumerate() {
+        let left = len - i;
+        let gain = if left <= fade { left as f32 / fade.max(1) as f32 } else { 1.0 };
+        *out = (*out + s * gain).clamp(-1.0, 1.0);
+    }
 }
 
 #[cfg(test)]
@@ -390,7 +479,7 @@ mod tests {
     #[test]
     fn silent_lines_follow_each_other_with_their_pauses() {
         let def = short(&["One two three four.", "Five!"]);
-        let voice = voice_for(&def, |_| unreachable!()).unwrap();
+        let voice = voice_for(&def, |_| unreachable!(), Synthesis::Estimate).unwrap();
         assert_eq!(voice.spans.len(), 2);
         assert!((voice.spans[0].start - def.lead).abs() < 1e-6);
         assert!((voice.spans[1].start - (voice.spans[0].end + 0.25)).abs() < 1e-5);
@@ -403,7 +492,7 @@ mod tests {
     #[test]
     fn the_text_mouth_opens_on_vowels_and_shuts_after_the_line() {
         let def = short(&["Papa mama"]);
-        let voice = voice_for(&def, |_| unreachable!()).unwrap();
+        let voice = voice_for(&def, |_| unreachable!(), Synthesis::Estimate).unwrap();
         let span = voice.spans[0];
         let open = voice.frames.iter().filter(|(t, f)| *t < span.end && f.voiced).count();
         let shut = voice.frames.iter().filter(|(t, f)| *t < span.end && !f.voiced).count();

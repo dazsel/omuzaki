@@ -166,9 +166,9 @@ impl VoiceDef {
     /// [`ShortError::Invalid`] naming the field and the rule.
     fn check(&self) -> Result<(), ShortError> {
         match self {
-            Self::Silent { words_per_minute } if !(60.0..=400.0).contains(words_per_minute) => Err(
-                ShortError::invalid("voice.words_per_minute", format!("{words_per_minute} is outside 60 to 400")),
-            ),
+            Self::Silent { words_per_minute } if !(60.0..=400.0).contains(words_per_minute) => {
+                Err(ShortError::invalid("voice.words_per_minute", format!("{words_per_minute} is outside 60 to 400")))
+            }
             Self::Speech { voice, speed } => {
                 VoiceId::new(voice).map_err(|e| {
                     ShortError::invalid("voice.voice", format!("{voice:?} isn't a voice id: {} (voice.list)", e.rule))

@@ -333,11 +333,11 @@ fn lay_captions(text: &str, style: CaptionStyle, max_chars: usize, span: Span, o
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::voice::voice_for;
+    use crate::voice::{Synthesis, voice_for};
 
     fn timeline(text: &str) -> Timeline {
         let def = ShortDef::from_toml(text).unwrap();
-        let voice = voice_for(&def, |_| unreachable!()).unwrap();
+        let voice = voice_for(&def, |_| unreachable!(), Synthesis::Estimate).unwrap();
         Timeline::new(&def, &voice).unwrap()
     }
 
@@ -389,7 +389,7 @@ camera = "bust"
     fn unknown_channels_are_refused_by_name() {
         let text = format!("{SHORT}channels = {{ notAChannel = 1.0 }}\n");
         let def = ShortDef::from_toml(&text).unwrap();
-        let voice = voice_for(&def, |_| unreachable!()).unwrap();
+        let voice = voice_for(&def, |_| unreachable!(), Synthesis::Estimate).unwrap();
         let err = Timeline::new(&def, &voice).unwrap_err().to_string();
         assert!(err.contains("line[2].channels.notAChannel"), "{err}");
     }

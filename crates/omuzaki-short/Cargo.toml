@@ -18,6 +18,8 @@ omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 omuzaki-face-api = { path = "../omuzaki-face-api" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+# Voice ids and the speed range of a spoken short.
+omuzaki-performer-api = { path = "../omuzaki-performer-api" }
 omuzaki-render-api = { path = "../omuzaki-render-api" }
 omuzaki-stage = { path = "../omuzaki-stage" }
 omuzaki-stage-api = { path = "../omuzaki-stage-api" }

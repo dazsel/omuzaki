@@ -28,7 +28,7 @@ use crate::encode::{ShortWriter, wav_bytes};
 use crate::error::ShortError;
 use crate::render::{ShortScene, frame_count, render_short};
 use crate::timeline::{Measures, Timeline};
-use crate::voice::{VoiceTrack, read_wav_from, voice_for};
+use crate::voice::{Synthesis, VoiceTrack, read_wav_from, voice_for};
 
 /// The largest short file read, bytes.
 const MAX_FILE_BYTES: u64 = 1 << 20;
@@ -95,20 +95,25 @@ impl ShortArg {
     }
 }
 
-/// The voice of `def`, its recording read through the project's file access.
+/// The voice of `def`, its recording read through the project's file access, its spoken lines as `synthesis` says.
 fn voice(
     def: &ShortDef,
     fs: &dyn Fn(&str, FsMode) -> Result<omuzaki_ops_api::CanonicalPath, OpError>,
+    synthesis: Synthesis<'_>,
 ) -> Result<VoiceTrack, OpError> {
     let mut denied = None;
-    let track = voice_for(def, |path| {
-        let file = fs(path, FsMode::Read).and_then(|p| p.open_read()).map_err(|e| {
-            let message = e.to_string();
-            denied = Some(e);
-            ShortError::Voice(message)
-        })?;
-        read_wav_from(std::io::BufReader::new(file), path)
-    });
+    let track = voice_for(
+        def,
+        |path| {
+            let file = fs(path, FsMode::Read).and_then(|p| p.open_read()).map_err(|e| {
+                let message = e.to_string();
+                denied = Some(e);
+                ShortError::Voice(message)
+            })?;
+            read_wav_from(std::io::BufReader::new(file), path)
+        },
+        synthesis,
+    );
     match (track, denied) {
         (Ok(track), _) => Ok(track),
         (Err(_), Some(e)) => Err(e),
@@ -236,7 +241,7 @@ impl Op for PlanShort {
     fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
         let fs = |path: &str, mode| ctx.fs_access(path, mode);
         let def = self.source.load(&fs)?;
-        let voice = voice(&def, &fs)?;
+        let voice = voice(&def, &fs, Synthesis::Estimate)?;
         let timeline = Timeline::new(&def, &voice)?;
         let measures = timeline.measures();
         let lines = def
@@ -417,7 +422,7 @@ impl Op for RenderShort {
         let out = self.out.clone().unwrap_or_else(|| self.source.default_out(&def));
         ctx.fs_access(&out, FsMode::Write)?;
         scene_def(ctx.doc, &def)?;
-        let voice = voice(&def, &fs)?;
+        let voice = voice(&def, &fs, Synthesis::Estimate)?;
         let timeline = Timeline::new(&def, &voice)?;
         let frames = frame_count(timeline.duration, def.fps);
         let character = character_bytes(ctx, &def.character, None, self.quality)?;
@@ -435,7 +440,7 @@ impl Op for RenderShort {
         let def = self.sized(self.source.load(&fs)?)?;
         let out = self.out.clone().unwrap_or_else(|| self.source.default_out(&def));
         job.checkpoint("loading", 0.0)?;
-        let voice = voice(&def, &fs)?;
+        let voice = voice(&def, &fs, Synthesis::Estimate)?;
         let timeline = Timeline::new(&def, &voice)?;
         let (scene, member) = job.read(|doc| scene_def(doc, &def))?;
         let clock = SystemClock::default();
