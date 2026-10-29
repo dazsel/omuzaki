@@ -25,7 +25,7 @@ use omuzaki_live::vars::DiskVariables;
 use omuzaki_live_api::event::EventSink;
 use omuzaki_live_api::services::Approvals;
 use omuzaki_obs::service::ObsService;
-use omuzaki_ops_api::{Actor, Runner, ServicesBuilder};
+use omuzaki_ops_api::{Actor, Event, Grants, Runner, ServicesBuilder};
 use omuzaki_render::WgpuRenderer;
 use omuzaki_secrets::KeychainSecrets;
 use omuzaki_secrets_api::prelude::SecretStore;
@@ -33,10 +33,11 @@ use omuzaki_settings_api::service::Settings;
 use omuzaki_stage::effects::emotes::EmoteSource;
 use omuzaki_stage::effects::log::EffectLimits;
 use omuzaki_stage::effects::service::StageEffects;
-use omuzaki_stage::frame::Stage;
 use omuzaki_stage::perform::Tracking;
 use omuzaki_stage::perform::host::{PerformError, PerformHost};
 use omuzaki_stage::perform::input::{InputHost, NoSource};
+use omuzaki_stage::scene::stage::SceneStage;
+use omuzaki_stage::stages::{AnyStage, FrameLoop};
 use omuzaki_stage_api::EffectService;
 use omuzaki_store::DiskStore;
 use omuzaki_store_api::Store;
@@ -63,7 +64,7 @@ use crate::aux_window::{PhysicalSize, Transparency};
 use crate::live::channels::ChannelFeed;
 use crate::live::health::HealthPublisher;
 use crate::live::hotkeys::Hotkeys;
-use crate::live::viewport::{LiveViewport, Presenter, SharedTracker, ViewportError};
+use crate::live::viewport::{LiveViewport, Presenter, SharedTracker, StudioBodies, Tree, ViewportError};
 use crate::output_window::{OutputHost, OutputPlan, OutputWindow, Program};
 use crate::wiring::{self, Core, CoreError, Document};
 
@@ -116,6 +117,8 @@ pub struct LiveApp {
     clock: Option<ClockObserver>,
     tracker: SharedTracker,
     viewport: Option<LiveViewport>,
+    /// The document's changes, which the stage view follows once they settle.
+    follow: Option<Follow>,
     hotkeys: Hotkeys,
     /// Feeds the program frame to the recorder, the replay buffer and the live outputs while any of them runs.
     feed: Option<ProgramFeed>,
@@ -399,6 +402,7 @@ impl LiveApp {
             clock: observer,
             tracker,
             viewport: None,
+            follow: None,
             hotkeys: Hotkeys::new(),
             feed: stream.map(ProgramFeed::new),
             automation,
@@ -454,15 +458,16 @@ impl LiveApp {
         self.secrets.clone().map(crate::settings::connectors::Keychain)
     }
 
-    /// Starts drawing the stage: `stage` (from [`project_stage`](crate::live::viewport::project_stage), made on
-    /// `renderer` at `size`) takes the perform thread's frames from now on, and `presenter` shows each picture to egui.
+    /// Starts drawing the stage: `stage` (the open scene, from [`scene_stage`](crate::live::viewport::scene_stage), made
+    /// on `renderer` at `size`) takes the perform thread's frames from now on, follows the document's changes, and
+    /// `presenter` shows each picture to egui.
     ///
     /// # Errors
     /// [`ViewportError::Stopped`] after [`shutdown`](Self::shutdown).
     pub fn attach_viewport(
         &mut self,
         mut renderer: WgpuRenderer,
-        mut stage: Stage,
+        mut stage: SceneStage,
         size: UVec2,
         presenter: Box<dyn Presenter>,
     ) -> Result<(), ViewportError> {
@@ -475,11 +480,63 @@ impl LiveApp {
         if let Some(feed) = &self.feed {
             feed.service().set_program(StreamProgram { size, fps: STREAM_FPS });
         }
-        stage.attach_effects(Arc::clone(&self.effects), EffectLimits::live());
+        self.attach_effects(&mut stage);
+        let mtoon = omuzaki_render_api::Renderer::capabilities(&renderer).mtoon;
+        self.follow = match self.core.runner.subscribe(&Grants::person()) {
+            // The first look is right away: the stage was made from the project's files before the app core opened them,
+            // which may have brought back later work, and without the asset store an imported character couldn't load.
+            Ok(events) => Some(Follow {
+                events,
+                changed: Some(std::time::Instant::now()),
+                bodies: StudioBodies::new(self.renders.clone(), mtoon),
+            }),
+            Err(error) => {
+                tracing::warn!(%error, "the stage can't follow the document: it shows the scene as it opened");
+                None
+            }
+        };
         let view =
             LiveViewport::new(renderer, stage, size, reader, presenter, self.clock.clone(), Some(self.tracker.clone()));
         self.viewport = Some(view);
         Ok(())
+    }
+
+    /// The live effects (emotes, particles) on the scene's subject, when it is a kit character.
+    fn attach_effects(&self, stage: &mut SceneStage) {
+        if let AnyStage::Kit(lead) = stage.cast_mut().lead_mut() {
+            lead.attach_effects(Arc::clone(&self.effects), EffectLimits::live());
+        }
+    }
+
+    /// Stages what the document changed once its changes have settled for [`SETTLE`]: a run of edits (a slider drag,
+    /// an agent's batch) is staged once, at its end, and a frame is never held for each.
+    fn follow_document(&mut self) {
+        let (Some(follow), Some(view)) = (self.follow.as_mut(), self.viewport.as_mut()) else { return };
+        let now = std::time::Instant::now();
+        if follow.events.try_iter().filter(changes_document).count() > 0 {
+            follow.changed = Some(now);
+        }
+        let Some(since) = follow.changed else { return };
+        if now.duration_since(since) < SETTLE {
+            return;
+        }
+        follow.changed = None;
+        let root = match self.core.runner.get(&omuzaki_doc_api::DocPath::root(), &Grants::person()) {
+            Ok(root) => root.unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new())),
+            Err(error) => {
+                tracing::warn!(%error, "the document can't be read: the stage keeps what it shows");
+                return;
+            }
+        };
+        match view.follow(&Tree::new(root), &mut follow.bodies) {
+            Ok(synced) if synced.restaged => {
+                if let AnyStage::Kit(lead) = view.scene_mut().stage_mut().cast_mut().lead_mut() {
+                    lead.attach_effects(Arc::clone(&self.effects), EffectLimits::live());
+                }
+            }
+            Ok(_) => {}
+            Err(error) => tracing::warn!(%error, "the stage did not follow the document's last change"),
+        }
     }
 
     /// The stage view, once [`attach_viewport`](Self::attach_viewport) has run.
@@ -547,6 +604,7 @@ impl LiveApp {
         // A take, the replay buffer or a live output carries the character alone with alpha too.
         let streaming = self.feed.as_ref().is_some_and(ProgramFeed::wanted);
         let clean = (self.output.status().open && !ctx.embed_viewports()) || streaming;
+        self.follow_document();
         let program = self.viewport.as_mut().and_then(|view| {
             view.set_clean(clean);
             match view.frame(ctx, ctx.input(|i| i.unstable_dt)) {
@@ -714,6 +772,22 @@ impl Tracker for NoTracker {
 }
 
 /// The stream service counting from `epoch`, or `None` with a warning when it can't start.
+/// How long the document must stay unchanged before the stage view stages what changed.
+const SETTLE: std::time::Duration = std::time::Duration::from_millis(120);
+
+/// The stage view's end of the document: its change events, the first change not yet staged, and where bodies come
+/// from.
+struct Follow {
+    events: std::sync::mpsc::Receiver<Event>,
+    changed: Option<std::time::Instant>,
+    bodies: StudioBodies,
+}
+
+/// Whether `event` changed the document.
+fn changes_document(event: &Event) -> bool {
+    matches!(event, Event::OpApplied { .. } | Event::TxRolledBack { .. } | Event::Undone { .. } | Event::Redone { .. })
+}
+
 fn start_stream(epoch: std::time::Instant) -> Option<Arc<StreamService>> {
     match StreamService::with_epoch(epoch) {
         Ok(stream) => Some(Arc::new(stream)),

@@ -10,3 +10,4 @@ pub mod frame;
 pub(crate) mod ground;
 pub mod landmarks;
 pub mod resolve;
+pub mod stage;

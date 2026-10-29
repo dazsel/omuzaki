@@ -518,14 +518,13 @@ impl<M: StageMember> CastStage<M> {
     /// each one's arms out of the other's body and keeps both halves for the frame to lay over the inputs.
     /// Allocation-free.
     fn solve_touches(&mut self) {
-        for i in 0..self.touches.len() {
-            let (a, b, kind, weight) = {
-                let t = &self.touches[i];
-                (t.a.clone(), t.b.clone(), t.kind, t.weight)
-            };
-            let (Some(stage_a), Some(stage_b), Some(placed_b)) = (self.member(&a), self.member(&b), self.placed(&b))
+        // The list is taken out for the loop (a move, not a copy), so the members can be borrowed beside it.
+        let mut touches = std::mem::take(&mut self.touches);
+        for touch in &mut touches {
+            let (a, b, kind, weight) = (&touch.a, &touch.b, touch.kind, touch.weight);
+            let (Some(stage_a), Some(stage_b), Some(placed_b)) = (self.member(a), self.member(b), self.placed(b))
             else {
-                self.touches[i].overlays = [Overlay::default(); 2];
+                touch.overlays = [Overlay::default(); 2];
                 continue;
             };
             let (body_a, body_b) = (stage_a.touch_body(), stage_b.touch_body());
@@ -545,22 +544,22 @@ impl<M: StageMember> CastStage<M> {
             let moved = Mat4::from_translation(at - placed_at) * placed_b;
             let shift = moved.w_axis.truncate() - root_b.w_axis.truncate();
             let body_b = body_b.shifted(shift);
-            let last = self.touches[i].overlays;
-            self.touches[i].overlays = interact::solve(kind, &body_a, &body_b, &last);
+            touch.overlays = interact::solve(kind, &body_a, &body_b, &touch.overlays);
             // Each arm guard keeps out of the other body as it stands this frame.
             let (mut parts_a, mut parts_b) = ([PLACEHOLDER; BODY_PARTS], [PLACEHOLDER; BODY_PARTS]);
             let (na, nb) = (body_a.obstacles(&mut parts_a), body_b.obstacles(&mut parts_b));
-            let root_a = self.input_of(&a).map_or(Mat4::IDENTITY, |input| input.root);
-            let root_b_input = self.input_of(&b).map_or(Mat4::IDENTITY, |input| input.root);
-            if let Some(stage) = self.member_mut(&b) {
+            let root_a = self.input_of(a).map_or(Mat4::IDENTITY, |input| input.root);
+            let root_b_input = self.input_of(b).map_or(Mat4::IDENTITY, |input| input.root);
+            if let Some(stage) = self.member_mut(b) {
                 stage.set_subject_root(moved);
                 stage.set_partner_parts(&parts_a[..na], moved * root_b_input);
             }
-            if let Some(stage) = self.member_mut(&a) {
+            if let Some(stage) = self.member_mut(a) {
                 let root = stage.subject_root() * root_a;
                 stage.set_partner_parts(&parts_b[..nb], root);
             }
         }
+        self.touches = touches;
     }
 
     /// `input` with every touch member `id` takes part in laid over it, into `scratch`; `None` when it takes part in
