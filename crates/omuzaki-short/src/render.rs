@@ -120,7 +120,7 @@ fn on_target(
     let mut stage = body
         .stage(renderer, UploadOptions::default(), Scene::new(Camera::default()), target, scene.quality, clock)
         .map_err(|e| render_error("staging the character", e))?;
-    let outcome = run(renderer, &mut stage, has_face, base, scene, sink, progress);
+    let outcome = run(renderer, &mut stage, has_face, &base, scene, sink, progress);
     let released = stage.release(renderer).map_err(|e| render_error("releasing the stage", e));
     match (outcome, released) {
         (Ok(report), Ok(())) => Ok(report),
@@ -133,11 +133,12 @@ fn run(
     renderer: &mut dyn Renderer,
     stage: &mut AnyStage,
     has_face: bool,
-    base: omuzaki_anim_api::HumanoidPose,
+    base: &omuzaki_anim_api::HumanoidPose,
     scene: &ShortScene<'_>,
     sink: &mut dyn FrameSink,
     progress: &mut dyn FnMut(f32) -> Result<(), ShortError>,
 ) -> Result<LoopReport, ShortError> {
+    let base = *base;
     let def = scene.def;
     stage.set_scene(&scene.staged.resolved, scene.staged.subject_root);
     stage.pay_scene(renderer).map_err(|e| render_error("the scene", e))?;
@@ -148,7 +149,12 @@ fn run(
     let mut performer = OfflinePerformer::new(scene.timeline, &expressions, ChannelBuf::NEUTRAL, base, def.seed)?;
     let [w, h] = def.size;
     #[allow(clippy::cast_precision_loss, reason = "sides are at most 4096")]
-    let rig = CameraRig { landmarks: scene.landmarks, root: scene.staged.subject_root, aspect: w as f32 / h as f32, seed: def.seed };
+    let rig = CameraRig {
+        landmarks: scene.landmarks,
+        root: scene.staged.subject_root,
+        aspect: w as f32 / h as f32,
+        seed: def.seed,
+    };
     // Warm up as the stills do: a frame at the base pose, the springs and part runtimes settled under it, so the first
     // frame doesn't start with hair falling from its rest shape.
     let warm = FrameInput { pose: base, ..FrameInput::default() };
@@ -168,17 +174,18 @@ fn run(
         let input = performer.advance(scene.timeline, scene.voice, t).clone();
         stage.scene_mut().camera = rig.camera_at(scene.timeline, t)?;
         stage.tick(renderer, &input).map_err(|e| render_error(&format!("frame {index}"), e))?;
-        let image = renderer.read_target(stage.target()).map_err(|e| render_error(&format!("reading frame {index}"), e))?;
+        let image =
+            renderer.read_target(stage.target()).map_err(|e| render_error(&format!("reading frame {index}"), e))?;
         let mut rgba = straight_rgba(&image);
-        let rendered = std::time::Instant::now();
+        let drawn = std::time::Instant::now();
         if def.captions.enabled
             && let Some(caption) = scene.timeline.caption_at(t)
         {
-            captioner.draw(&mut rgba, w, h, caption, t, def.captions.y, def.captions.size);
+            captioner.draw(&mut rgba, [w, h], caption, t, def.captions.y, def.captions.size);
         }
         sink.frame(index, &rgba)?;
-        report.render_s += (rendered - started).as_secs_f64();
-        report.encode_s += rendered.elapsed().as_secs_f64();
+        report.render_s += (drawn - started).as_secs_f64();
+        report.encode_s += drawn.elapsed().as_secs_f64();
         report.frames += 1;
         #[allow(clippy::cast_precision_loss, reason = "a share")]
         progress((index + 1) as f32 / frames as f32)?;

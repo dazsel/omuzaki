@@ -77,7 +77,8 @@ fn opus_packets(pcm: &[f32]) -> Result<Option<(u16, Vec<OpusPacket>)>, ShortErro
 /// # Errors
 /// [`ShortError::Encode`] if the WAV writer fails (it writes to memory, so only on a sample count past its limits).
 pub fn wav_bytes(pcm: &[f32]) -> Result<Vec<u8>, ShortError> {
-    let spec = hound::WavSpec { channels: 1, sample_rate: RATE, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
+    let spec =
+        hound::WavSpec { channels: 1, sample_rate: RATE, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
     let mut bytes = Cursor::new(Vec::new());
     let mut writer = hound::WavWriter::new(&mut bytes, spec).map_err(encode_error)?;
     for &s in pcm {
@@ -94,7 +95,13 @@ impl ShortWriter {
     ///
     /// # Errors
     /// [`ShortError::Encode`] when libvpx is missing or refuses the settings, or the file can't be written.
-    pub fn create(file: File, name: &Path, size: [u32; 2], fps: u32, voice: Option<&[f32]>) -> Result<Self, ShortError> {
+    pub fn create(
+        file: File,
+        name: &Path,
+        size: [u32; 2],
+        fps: u32,
+        voice: Option<&[f32]>,
+    ) -> Result<Self, ShortError> {
         vp9::available().map_err(|e| {
             ShortError::Encode(format!("{e}; install libvpx (BSD) to write videos, as the recorder needs it too"))
         })?;

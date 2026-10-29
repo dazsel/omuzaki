@@ -56,7 +56,10 @@ fn score_face(span: &FaceSpan, expressions: &ExpressionSet, rest: &ChannelBuf) -
         let id = ExpressionId::new(name).map_err(|e| ShortError::invalid("face", format!("'{name}': {e}")))?;
         let expression = expressions.0.get(&id).ok_or_else(|| {
             let known: Vec<String> = expressions.0.keys().map(ToString::to_string).collect();
-            ShortError::invalid("face", format!("the character has no expression '{name}'; it has {}", known.join(", ")))
+            ShortError::invalid(
+                "face",
+                format!("the character has no expression '{name}'; it has {}", known.join(", ")),
+            )
         })?;
         for channel in expression.deltas.0.keys() {
             mask.insert(*channel);

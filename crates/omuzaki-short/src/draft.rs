@@ -123,12 +123,12 @@ fn cue_face(text: &str) -> Option<&'static str> {
 }
 
 /// `pick`, or the next of `list` after it when it equals `last`.
-fn not_again<'a>(pick: &'a str, last: Option<&str>, list: &[&'a str]) -> &'a str {
-    if Some(pick) != last {
+fn not_again<'a>(pick: &'a str, previous: Option<&str>, choices: &[&'a str]) -> &'a str {
+    if Some(pick) != previous {
         return pick;
     }
-    let at = list.iter().position(|p| *p == pick).unwrap_or(0);
-    list[(at + 1) % list.len()]
+    let at = choices.iter().position(|p| *p == pick).unwrap_or(0);
+    choices[(at + 1) % choices.len()]
 }
 
 /// The lines of `script`: one per non-empty line, a long one split at its sentence ends.
@@ -168,12 +168,17 @@ pub fn direct(def: &mut ShortDef) {
             Kind::Aside => (cue.unwrap_or("smirk"), "close+right+drift", CaptionStyle::Aside),
             Kind::Shout => {
                 let face = cue.unwrap_or(if line.text.contains('?') { "surprised" } else { "angry" });
-                let caption = if line.text.split_whitespace().count() <= 2 { CaptionStyle::Big } else { CaptionStyle::Shout };
+                let caption =
+                    if line.text.split_whitespace().count() <= 2 { CaptionStyle::Big } else { CaptionStyle::Shout };
                 (face, "close+punch+shake", caption)
             }
             Kind::Question => {
                 tilt = !tilt;
-                (cue.unwrap_or("confused"), if tilt { "face+tilt-left" } else { "face+tilt-right" }, CaptionStyle::Normal)
+                (
+                    cue.unwrap_or("confused"),
+                    if tilt { "face+tilt-left" } else { "face+tilt-right" },
+                    CaptionStyle::Normal,
+                )
             }
             Kind::Trailing => (cue.unwrap_or("gloom"), "eyes+push", CaptionStyle::Normal),
             Kind::Plain => {
@@ -207,7 +212,8 @@ pub fn direct(def: &mut ShortDef) {
             line.caption = caption;
         }
         if matches!(k, Kind::Plain | Kind::Question) {
-            let cut = if line.camera.as_ref().is_some_and(|c| matches!(c, ShotCue::Words(w) if w.starts_with("close"))) {
+            let cut = if line.camera.as_ref().is_some_and(|c| matches!(c, ShotCue::Words(w) if w.starts_with("close")))
+            {
                 "face+right"
             } else {
                 "close"

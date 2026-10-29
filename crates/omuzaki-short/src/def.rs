@@ -345,7 +345,8 @@ impl FaceCue {
     /// The expression ids, in order. `"a+b"` in a single string names two.
     #[must_use]
     pub fn ids(&self) -> Vec<String> {
-        let split = |s: &str| s.split('+').map(str::trim).filter(|p| !p.is_empty()).map(str::to_owned).collect::<Vec<_>>();
+        let split =
+            |s: &str| s.split('+').map(str::trim).filter(|p| !p.is_empty()).map(str::to_owned).collect::<Vec<_>>();
         match self {
             Self::One(s) => split(s),
             Self::Many(all) => all.iter().flat_map(|s| split(s)).collect(),
@@ -447,8 +448,22 @@ impl ShotCue {
 
 /// The framing words and the modifiers a shot's words may use, for the error that lists them.
 pub const SHOT_WORDS: [&str; 16] = [
-    "face", "close", "eyes", "mouth", "bust", "wide", "tilt-left", "tilt-right", "low", "high", "left", "right",
-    "punch", "shake", "push", "drift",
+    "face",
+    "close",
+    "eyes",
+    "mouth",
+    "bust",
+    "wide",
+    "tilt-left",
+    "tilt-right",
+    "low",
+    "high",
+    "left",
+    "right",
+    "punch",
+    "shake",
+    "push",
+    "drift",
 ];
 
 fn shot_words(words: &str) -> Result<ShotNumbers, ShortError> {
@@ -543,11 +558,17 @@ impl ShortDef {
                 ));
             }
             if side % 2 != 0 {
-                return Err(ShortError::invalid(format!("size[{i}]"), format!("{side} px is odd: video needs even sides")));
+                return Err(ShortError::invalid(
+                    format!("size[{i}]"),
+                    format!("{side} px is odd: video needs even sides"),
+                ));
             }
         }
         if !(FPS_RANGE.0..=FPS_RANGE.1).contains(&self.fps) {
-            return Err(ShortError::invalid("fps", format!("{} is outside {} to {}", self.fps, FPS_RANGE.0, FPS_RANGE.1)));
+            return Err(ShortError::invalid(
+                "fps",
+                format!("{} is outside {} to {}", self.fps, FPS_RANGE.0, FPS_RANGE.1),
+            ));
         }
         for (field, value) in [("lead", self.lead), ("tail", self.tail)] {
             if !(0.0..=10.0).contains(&value) {
@@ -557,7 +578,10 @@ impl ShortDef {
         if let VoiceDef::Silent { words_per_minute } = self.voice
             && !(60.0..=400.0).contains(&words_per_minute)
         {
-            return Err(ShortError::invalid("voice.words_per_minute", format!("{words_per_minute} is outside 60 to 400")));
+            return Err(ShortError::invalid(
+                "voice.words_per_minute",
+                format!("{words_per_minute} is outside 60 to 400"),
+            ));
         }
         if !(0.05..=0.95).contains(&self.captions.y) {
             return Err(ShortError::invalid("captions.y", format!("{} is outside 0.05 to 0.95", self.captions.y)));
@@ -645,7 +669,10 @@ fn check_shot(field: &str, n: &ShotNumbers) -> Result<(), ShortError> {
     }
     for (name, value) in [("punch", n.punch), ("push", n.push)] {
         if value != 0.0 && !(1.0..=3.0).contains(&value) {
-            return Err(ShortError::invalid(format!("{field}.{name}"), format!("{value} is outside 1 to 3 (or 0 for none)")));
+            return Err(ShortError::invalid(
+                format!("{field}.{name}"),
+                format!("{value} is outside 1 to 3 (or 0 for none)"),
+            ));
         }
     }
     Ok(())

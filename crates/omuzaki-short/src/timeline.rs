@@ -6,6 +6,7 @@
 //! captions are its phrases ([`phrases`]), each on screen while it is said.
 
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 
 use omuzaki_anim_api::Channel;
 use schemars::JsonSchema;
@@ -184,10 +185,7 @@ impl Timeline {
             .lines
             .iter()
             .map(|line| {
-                self.captions
-                    .iter()
-                    .map(|c| (c.end.min(line.end) - c.start.max(line.start)).max(0.0))
-                    .sum::<f32>()
+                self.captions.iter().map(|c| (c.end.min(line.end) - c.start.max(line.start)).max(0.0)).sum::<f32>()
             })
             .sum();
         #[allow(clippy::cast_precision_loss, reason = "counts")]
@@ -211,8 +209,22 @@ pub const MARK_EXPRESSIONS: [&str; 9] =
     ["flustered", "laugh", "gloom", "dizzy", "hearts", "stars", "sparkle", "sweat", "scared"];
 /// Channels that are anime marks, set directly.
 pub const MARK_CHANNELS: [&str; 16] = [
-    "eyesSqueeze", "eyesShock", "eyesGloom", "eyesSpiral", "eyesHeart", "eyesStar", "sparkle", "sweatDrop", "tears",
-    "angerVein", "eyesBlank", "eyesDot", "eyesPill", "teethSharp", "eyeArcLeft", "eyeArcRight",
+    "eyesSqueeze",
+    "eyesShock",
+    "eyesGloom",
+    "eyesSpiral",
+    "eyesHeart",
+    "eyesStar",
+    "sparkle",
+    "sweatDrop",
+    "tears",
+    "angerVein",
+    "eyesBlank",
+    "eyesDot",
+    "eyesPill",
+    "teethSharp",
+    "eyeArcLeft",
+    "eyeArcRight",
 ];
 
 /// The measures of a short's timeline (reference bar, `docs/quality/reference-shorts.md`).
@@ -250,7 +262,7 @@ fn millis(t: f32) -> i64 {
 fn face_key(f: &FaceSpan) -> String {
     let mut key = f.ids.join("+");
     for (c, v) in &f.channels {
-        key.push_str(&format!("|{}={v:.2}", c.info().name));
+        let _ = write!(key, "|{}={v:.2}", c.info().name);
     }
     key
 }
@@ -350,7 +362,7 @@ camera = "bust"
         assert_eq!(tl.faces.len(), 3, "rest, flustered, smug");
         assert_eq!(tl.face_at(tl.lines[1].start + 0.01).ids, ["flustered"]);
         assert_eq!(tl.face_at(tl.lines[2].start).ids, ["smug"]);
-        assert!(tl.face_at(0.0).ids.is_empty());
+        assert_eq!(tl.face_at(0.0).ids, Vec::<String>::new());
         let shot = &tl.shots[tl.shot_index_at(tl.lines[1].start)];
         assert!(shot.shot.roll < 0.0);
     }

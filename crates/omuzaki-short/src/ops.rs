@@ -60,7 +60,10 @@ fn read_text(file: std::fs::File, path: &str) -> Result<String, OpError> {
 
 impl ShortArg {
     /// The short, read and checked.
-    fn load(&self, fs: &dyn Fn(&str, FsMode) -> Result<omuzaki_ops_api::CanonicalPath, OpError>) -> Result<ShortDef, OpError> {
+    fn load(
+        &self,
+        fs: &dyn Fn(&str, FsMode) -> Result<omuzaki_ops_api::CanonicalPath, OpError>,
+    ) -> Result<ShortDef, OpError> {
         let def = match (&self.path, &self.short) {
             (Some(path), None) => {
                 let file = fs(path, FsMode::Read)?.open_read()?;
@@ -68,8 +71,11 @@ impl ShortArg {
             }
             (None, Some(def)) => (**def).clone(),
             _ => {
-                return Err(OpError::invalid("path", "give the short as `path` (a file of the project) or `short`, one of them")
-                    .hint("short.draft writes a short from a plain script"));
+                return Err(OpError::invalid(
+                    "path",
+                    "give the short as `path` (a file of the project) or `short`, one of them",
+                )
+                .hint("short.draft writes a short from a plain script"));
             }
         };
         def.check()?;
@@ -90,7 +96,10 @@ impl ShortArg {
 }
 
 /// The voice of `def`, its recording read through the project's file access.
-fn voice(def: &ShortDef, fs: &dyn Fn(&str, FsMode) -> Result<omuzaki_ops_api::CanonicalPath, OpError>) -> Result<VoiceTrack, OpError> {
+fn voice(
+    def: &ShortDef,
+    fs: &dyn Fn(&str, FsMode) -> Result<omuzaki_ops_api::CanonicalPath, OpError>,
+) -> Result<VoiceTrack, OpError> {
     let mut denied = None;
     let track = voice_for(def, |path| {
         let file = fs(path, FsMode::Read).and_then(|p| p.open_read()).map_err(|e| {
@@ -407,6 +416,7 @@ impl Op for RenderShort {
         Ok(Plan { cost: Some(CostHint { seconds: Some(seconds), ..gpu }), ..Plan::default() })
     }
 
+    #[allow(clippy::too_many_lines, reason = "one job's steps in order: load, stage, render, write, report")]
     fn work(&self, job: &JobCtx<'_>) -> Result<Value, OpError> {
         let started = std::time::Instant::now();
         let fs = |path: &str, mode| job.fs_access(path, mode);
@@ -432,10 +442,16 @@ impl Op for RenderShort {
         let mut staged: StagedScene =
             stage_alone(&scene, &member, landmarks, aspect).map_err(|e| OpError::invalid("scene", e.to_string()))?;
         if staged.resolved.backdrop_image.is_some() {
-            staged.resolved.load_backdrop(job.service::<dyn Store>()?).map_err(|e| OpError::invalid("scene", e.to_string()))?;
+            staged
+                .resolved
+                .load_backdrop(job.service::<dyn Store>()?)
+                .map_err(|e| OpError::invalid("scene", e.to_string()))?;
         }
         if staged.resolved.environment.and_then(|e| e.hdri()).is_some() {
-            staged.resolved.load_hdri(job.service::<dyn Store>()?).map_err(|e| OpError::invalid("scene", e.to_string()))?;
+            staged
+                .resolved
+                .load_hdri(job.service::<dyn Store>()?)
+                .map_err(|e| OpError::invalid("scene", e.to_string()))?;
         }
         if let Body::Kit(built) = &body {
             post_in_look(&mut staged.resolved.post, &built.look().scene);
@@ -446,16 +462,20 @@ impl Op for RenderShort {
             folder.create_dir_all()?;
         }
         if !self.replace && target.open_read().is_ok() {
-            return Err(OpError::invalid("out", format!("{out} is already there")).hint("pass `replace: true`, or another `out`"));
+            return Err(OpError::invalid("out", format!("{out} is already there"))
+                .hint("pass `replace: true`, or another `out`"));
         }
         let mut replacement = target.replace()?;
-        let file = replacement
-            .file()
-            .try_clone()
-            .map_err(|e| OpError::internal(format!("the video file's handle: {e}")))?;
+        let file =
+            replacement.file().try_clone().map_err(|e| OpError::internal(format!("the video file's handle: {e}")))?;
         let has_voice = matches!(def.voice, VoiceDef::File { .. });
-        let mut writer =
-            ShortWriter::create(file, std::path::Path::new(&out), def.size, def.fps, has_voice.then_some(voice.pcm.as_slice()))?;
+        let mut writer = ShortWriter::create(
+            file,
+            std::path::Path::new(&out),
+            def.size,
+            def.fps,
+            has_voice.then_some(voice.pcm.as_slice()),
+        )?;
 
         let scene = ShortScene {
             def: &def,
@@ -470,7 +490,7 @@ impl Op for RenderShort {
         let mut done = 0u64;
         let mut progress = |share: f32| {
             done += 1;
-            if done % PROGRESS_EVERY != 0 {
+            if !done.is_multiple_of(PROGRESS_EVERY) {
                 return Ok(());
             }
             job.checkpoint("rendering", 0.05 + 0.9 * share).map_err(|e| {
@@ -479,16 +499,16 @@ impl Op for RenderShort {
             })
         };
         let renderer = job.service::<Mutex<Box<dyn Renderer>>>()?;
-        let rendered = {
-            let mut guard = renderer
-                .lock()
-                .map_err(|_| OpError::internal("the renderer is unusable: an earlier render panicked while holding it"))?;
+        let outcome = {
+            let mut guard = renderer.lock().map_err(|_| {
+                OpError::internal("the renderer is unusable: an earlier render panicked while holding it")
+            })?;
             render_short(&mut **guard, body, &scene, &mut writer, &mut progress)
         };
         if let Some(e) = stopped {
             return Err(e);
         }
-        let report = rendered?;
+        let report = outcome?;
         job.checkpoint("finishing", 0.97)?;
         let written = writer.finish()?;
         replacement.commit()?;
@@ -500,7 +520,12 @@ impl Op for RenderShort {
         }
         let measures = timeline.measures();
         let elapsed = started.elapsed().as_secs_f32();
-        tracing::info!(frames = report.frames, render_s = report.render_s, encode_s = report.encode_s, "short rendered");
+        tracing::info!(
+            frames = report.frames,
+            render_s = report.render_s,
+            encode_s = report.encode_s,
+            "short rendered"
+        );
         let result = RenderedShort {
             path: out,
             bytes: written.bytes,

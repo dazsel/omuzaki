@@ -57,7 +57,8 @@ impl Captioner {
     /// # Errors
     /// [`ShortError::Render`] if the bundled face doesn't load (a build fault).
     pub fn new() -> Result<Self, ShortError> {
-        let mut font = FontRef::try_from_slice(FACE).map_err(|e| ShortError::Render(format!("the caption face: {e}")))?;
+        let mut font =
+            FontRef::try_from_slice(FACE).map_err(|e| ShortError::Render(format!("the caption face: {e}")))?;
         font.set_variation(b"wght", WEIGHT);
         Ok(Self { font })
     }
@@ -92,7 +93,12 @@ impl Captioner {
         (glyphs, x)
     }
 
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        clippy::cast_possible_wrap
+    )]
     fn mask(&self, text: &str, height: f32, max_width: f32) -> Mask {
         let (_, natural) = self.layout(text, height);
         let height = if natural > max_width { height * max_width / natural } else { height };
@@ -121,20 +127,28 @@ impl Captioner {
         Mask { width, height: rows, line: grow(&fill, width, rows, line), fill, drop }
     }
 
-    /// Draws `caption` onto `rgba` (straight alpha, `width` x `height`) at `t` seconds, its middle at `y` (share of the
-    /// height), its letters `size` of the width tall.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
-    pub fn draw(&self, rgba: &mut [u8], width: u32, height: u32, caption: &CaptionSpan, t: f32, y: f32, size: f32) {
+    /// Draws `caption` onto `rgba` (straight alpha, `size` pixels) at `t` seconds, its middle at `y` (share of the
+    /// height), its letters `letter` of the width tall.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        clippy::cast_possible_wrap,
+        reason = "pixel positions within frames of at most 4096 a side"
+    )]
+    pub fn draw(&self, rgba: &mut [u8], size: [u32; 2], caption: &CaptionSpan, t: f32, y: f32, letter: f32) {
+        let [width, height] = size;
         let pop = ((t - caption.start) / POP_S).clamp(0.0, 1.0);
         let scale = POP_SCALE + (1.0 - POP_SCALE) * (1.0 - (1.0 - pop) * (1.0 - pop));
-        let letter = Self::height(caption.style, width, size) * scale;
+        let letter = Self::height(caption.style, width, letter) * scale;
         let mask = self.mask(&caption.text, letter, width as f32 * MAX_WIDTH_SHARE);
-        let left = (width as i64 - mask.width as i64) / 2;
+        let left = (i64::from(width) - mask.width as i64) / 2;
         let top = (height as f32 * y) as i64 - (mask.height as i64) / 2;
         let at = |mx: usize, my: usize| -> Option<usize> {
             let x = left + mx as i64;
             let y = top + my as i64;
-            (x >= 0 && y >= 0 && x < i64::from(width) && y < i64::from(height)).then(|| (y as usize * width as usize + x as usize) * 4)
+            (x >= 0 && y >= 0 && x < i64::from(width) && y < i64::from(height))
+                .then(|| (y as usize * width as usize + x as usize) * 4)
         };
         let blend = |rgba: &mut [u8], i: usize, colour: [f32; 3], a: f32| {
             for (k, c) in colour.iter().enumerate() {
@@ -164,7 +178,12 @@ impl Captioner {
 }
 
 /// `cover` grown by a disc of `radius` pixels (a max filter), with an anti-aliased edge.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss, clippy::cast_possible_wrap)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_wrap
+)]
 fn grow(cover: &[f32], width: usize, height: usize, radius: f32) -> Vec<f32> {
     let r = radius.ceil() as i64;
     let mut offsets = Vec::new();
@@ -210,7 +229,7 @@ mod tests {
             px.copy_from_slice(&[90, 120, 200, 255]);
         }
         let caption = CaptionSpan { start: 0.0, end: 1.0, text: "Hello there!".into(), style: CaptionStyle::Normal };
-        captioner.draw(&mut rgba, w, h, &caption, 0.5, 0.5, 0.06);
+        captioner.draw(&mut rgba, [w, h], &caption, 0.5, 0.5, 0.06);
         let white = rgba.chunks(4).filter(|p| p[0] > 245 && p[1] > 245 && p[2] > 245).count();
         let dark = rgba.chunks(4).filter(|p| p[0] < 30 && p[1] < 30 && p[2] < 30).count();
         assert!(white > 200, "letters: {white}");

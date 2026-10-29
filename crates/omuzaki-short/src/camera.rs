@@ -64,10 +64,16 @@ impl CameraRig {
     /// Three smooth noises in -1..1 (yaw, pitch, roll) at `t`, from the seed.
     #[allow(clippy::cast_precision_loss, reason = "seed bits to a phase")]
     fn wobble(&self, t: f32) -> [f32; 3] {
-        let phase = |k: u64| ((self.seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(k * 0x632B_E59B_D9B4_E019) >> 40) as f32) / (1u64 << 24) as f32 * std::f32::consts::TAU;
+        let phase = |k: u64| {
+            ((self.seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(k * 0x632B_E59B_D9B4_E019) >> 40) as f32)
+                / (1u64 << 24) as f32
+                * std::f32::consts::TAU
+        };
         std::array::from_fn(|axis| {
             let a = axis as u64 * 3;
-            0.55 * (t * 0.71 + phase(a)).sin() + 0.3 * (t * 1.37 + phase(a + 1)).sin() + 0.15 * (t * 2.93 + phase(a + 2)).sin()
+            0.55 * (t * 0.71 + phase(a)).sin()
+                + 0.3 * (t * 1.37 + phase(a + 1)).sin()
+                + 0.15 * (t * 2.93 + phase(a + 2)).sin()
         })
     }
 

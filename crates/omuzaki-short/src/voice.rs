@@ -103,8 +103,7 @@ pub fn read_wav_from(reader: impl std::io::Read, name: &str) -> Result<Vec<f32>,
     }
     .map_err(|e| ShortError::Voice(format!("{name} has unreadable samples: {e}")))?;
     #[allow(clippy::cast_precision_loss, reason = "a channel count")]
-    let mono: Vec<f32> =
-        samples.chunks(channels).map(|frame| frame.iter().sum::<f32>() / frame.len() as f32).collect();
+    let mono: Vec<f32> = samples.chunks(channels).map(|frame| frame.iter().sum::<f32>() / frame.len() as f32).collect();
     Ok(resample(&mono, spec.sample_rate, RATE))
 }
 
@@ -133,7 +132,10 @@ pub fn resample(pcm: &[f32], from: u32, to: u32) -> Vec<f32> {
 ///
 /// # Errors
 /// [`ShortError::Voice`] when the recording doesn't read, or holds no speech.
-pub fn voice_for(def: &ShortDef, read: impl FnOnce(&str) -> Result<Vec<f32>, ShortError>) -> Result<VoiceTrack, ShortError> {
+pub fn voice_for(
+    def: &ShortDef,
+    read: impl FnOnce(&str) -> Result<Vec<f32>, ShortError>,
+) -> Result<VoiceTrack, ShortError> {
     match &def.voice {
         VoiceDef::Silent { words_per_minute } => Ok(silent(def, *words_per_minute)),
         VoiceDef::File { path } => {
@@ -167,7 +169,12 @@ fn lay_out(def: &ShortDef, mut length: impl FnMut(&LineDef) -> f32) -> Vec<Span>
         .collect()
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "a short is at most 600 s")]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "a short is at most 600 s"
+)]
 fn samples(seconds: f32) -> usize {
     (seconds.max(0.0) * RATE as f32).round() as usize
 }
@@ -217,7 +224,10 @@ fn syllables(text: &str) -> Vec<Syllable> {
                 while j < letters.len() && viseme_of(letters[j]).is_some() {
                     j += 1;
                 }
-                let closes = letters[j..].iter().take_while(|c| viseme_of(**c).is_none()).any(|c| matches!(c.to_ascii_lowercase(), 'p' | 'b' | 'm'));
+                let closes = letters[j..]
+                    .iter()
+                    .take_while(|c| viseme_of(**c).is_none())
+                    .any(|c| matches!(c.to_ascii_lowercase(), 'p' | 'b' | 'm'));
                 out.push(Syllable { viseme, closes, stressed: false });
                 i = j;
             } else {
@@ -287,7 +297,8 @@ pub fn text_frames(text: &str, span: Span, onsets: &mut u32, out: &mut Vec<(f32,
 #[allow(clippy::cast_precision_loss)]
 pub fn speech_spans(pcm: &[f32]) -> Vec<Span> {
     let window = (RATE / 50) as usize;
-    let rms: Vec<f32> = pcm.chunks(window).map(|w| (w.iter().map(|s| s * s).sum::<f32>() / w.len() as f32).sqrt()).collect();
+    let rms: Vec<f32> =
+        pcm.chunks(window).map(|w| (w.iter().map(|s| s * s).sum::<f32>() / w.len() as f32).sqrt()).collect();
     let loudest = rms.iter().copied().fold(0.0, f32::max);
     if loudest <= 1e-5 {
         return Vec::new();
@@ -350,7 +361,8 @@ fn from_recording(def: &ShortDef, mut pcm: Vec<f32>) -> Result<VoiceTrack, Short
     #[allow(clippy::cast_precision_loss)]
     let duration = end.max(pcm.len() as f32 / RATE as f32);
     pcm.resize(samples(duration), 0.0);
-    let mut analyzer = VoiceAnalyzer::new(RATE, VowelProfile::default()).map_err(|e| ShortError::Voice(e.to_string()))?;
+    let mut analyzer =
+        VoiceAnalyzer::new(RATE, VowelProfile::default()).map_err(|e| ShortError::Voice(e.to_string()))?;
     let mut frames = Vec::new();
     let block = (RATE / 100) as usize;
     for (i, chunk) in pcm.chunks(block).enumerate() {
@@ -363,12 +375,14 @@ fn from_recording(def: &ShortDef, mut pcm: Vec<f32>) -> Result<VoiceTrack, Short
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
+
     use super::*;
 
     fn short(lines: &[&str]) -> ShortDef {
         let mut text = String::from("character = \"lumi\"\n");
         for line in lines {
-            text.push_str(&format!("[[line]]\ntext = \"{line}\"\n"));
+            let _ = writeln!(text, "[[line]]\ntext = \"{line}\"");
         }
         ShortDef::from_toml(&text).unwrap()
     }
@@ -401,6 +415,7 @@ mod tests {
     #[test]
     fn recorded_stretches_fit_the_line_count() {
         let tone = |seconds: f32| -> Vec<f32> {
+            #[allow(clippy::cast_precision_loss, reason = "a sample index")]
             (0..samples(seconds)).map(|i| (i as f32 * 0.05).sin() * 0.5).collect()
         };
         let quiet = |seconds: f32| vec![0.0_f32; samples(seconds)];
