@@ -209,7 +209,9 @@ fn map_node(
     let ty = type_name(f)?.unwrap_or_default();
     let mut masks = Vec::new();
     let kind = match ty.as_str() {
-        "Node" | "SimplePhysics" => NodeKind::Group,
+        // `Shapes` (experimental) and `Tmp` (an editor placeholder) are registered in 0.8.7 and store only what a
+        // plain node does.
+        "Node" | "SimplePhysics" | "Shapes" | "Tmp" => NodeKind::Group,
         "Part" => map_part(j, path, texture_count, ctx, &mut masks)?,
         "Mask" => NodeKind::Mask(map_mesh(j.mesh, path, MeshUse::Mask, ctx)?),
         "Composite" => {
@@ -247,7 +249,10 @@ fn map_transform(raw: Option<&RawValue>, path: &str, report: &mut ImportReport) 
     let (rx, ry, rz) = (rot(0)?, rot(1)?, rot(2)?);
     let (sx, sy) = (scale(0)?, scale(1)?);
     if tz != 0.0 {
-        report.add(rule::TRANSLATE_Z, FindingKind::Dropped, format!("{path}/trans/2"), format!("z translation {tz}"));
+        // Inochi Creator gives parts small z offsets; the picture doesn't depend on them (draw order is `zsort`, and
+        // the camera is orthographic), so this is a note, not a loss.
+        let detail = format!("z translation {tz}: dropped, as draw order comes from zsort");
+        report.add(rule::TRANSLATE_Z, FindingKind::Note, format!("{path}/trans/2"), detail);
     }
     let flip = |a: f32| (a - (a / PI).round() * PI).abs() <= FLIP_EPSILON;
     if !flip(rx) || !flip(ry) {

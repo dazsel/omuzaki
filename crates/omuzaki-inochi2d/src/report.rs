@@ -45,7 +45,7 @@ pub mod rule {
     pub const UNKNOWN_NODE: &str = "inochi2d.unknown_node";
     /// `lockToRoot` is set: the node follows the root, skipping its parents; not modelled.
     pub const LOCK_TO_ROOT: &str = "inochi2d.lock_to_root";
-    /// A z translation, which a flat puppet has no use for.
+    /// A z translation, dropped: draw order comes from `zsort`, and the camera is orthographic.
     pub const TRANSLATE_Z: &str = "inochi2d.translate_z";
     /// An x or y rotation folded into scale; exact only for multiples of pi.
     pub const ROTATION_XY: &str = "inochi2d.rotation_xy";

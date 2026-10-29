@@ -19,7 +19,7 @@ use crate::texture::Texture;
 pub const MAX_WRITE_DEPTH: usize = 60;
 
 /// The node type names this writer writes for the kinds it knows; an unknown node can't take one of them.
-const KNOWN_TYPES: [&str; 6] = ["Node", "Part", "Mask", "Composite", "MeshGroup", "SimplePhysics"];
+const KNOWN_TYPES: [&str; 8] = ["Node", "Part", "Mask", "Composite", "MeshGroup", "SimplePhysics", "Shapes", "Tmp"];
 
 fn unsupported(path: impl Into<String>, detail: impl Into<String>) -> WriteError {
     WriteError::Unsupported { path: path.into(), detail: detail.into() }

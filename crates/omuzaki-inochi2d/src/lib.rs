@@ -61,7 +61,8 @@
 //!   `Inochi2D`'s defaults for missing fields (gravity 1, length 100, frequency 1, damping 0.5 and 0.5, output scale
 //!   `[1, 1]`; `core/nodes/drivers/simplephysics.d`). The puppet's `physics` (pixels per metre, gravity) becomes
 //!   [`omuzaki_puppet_api::PhysicsWorld`].
-//! - **Node types.** `Node`, `Part`, `Composite`, `MeshGroup` and `SimplePhysics` (0.8), and `Mask` (0.7, a mesh drawn
+//! - **Node types.** `Node`, `Part`, `Composite`, `MeshGroup` and `SimplePhysics` (0.8; also `Shapes` and `Tmp`, which
+//!   store only a plain node's fields and map to groups), and `Mask` (0.7, a mesh drawn
 //!   only into the stencil). Any other type is kept as [`omuzaki_puppet_api::NodeKind::Unknown`] with
 //!   `inochi2d.unknown_node`; `Inochi2D` itself skips such a node and its subtree (`core/nodes/package.d:816-829`).
 //!   `lockToRoot` (follow the root, not the parents) has no field in the contract and is reported.
