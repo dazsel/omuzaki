@@ -532,12 +532,12 @@ impl<M: StageMember> CastStage<M> {
         }
     }
 
-    /// `input` with every touch member `id` takes part in laid over it, into `touched`; `None` when it takes part in
+    /// `input` with every touch member `id` takes part in laid over it, into `scratch`; `None` when it takes part in
     /// none. Allocation-free.
     fn touched_input<'a>(
         touches: &[Touch],
         palm: &[HumanoidPose; 2],
-        touched: &'a mut FrameInput,
+        scratch: &'a mut FrameInput,
         id: &MemberId,
         input: &FrameInput,
         subject_root: Mat4,
@@ -552,13 +552,13 @@ impl<M: StageMember> CastStage<M> {
                 continue;
             };
             if !any {
-                touched.clone_from(input);
+                scratch.clone_from(input);
                 any = true;
             }
             let root = subject_root * input.root;
-            interact::apply(&touch.overlays[half], touch.weight, root, palm, &mut touched.pose, &mut touched.goals);
+            interact::apply(&touch.overlays[half], touch.weight, root, palm, &mut scratch.pose, &mut scratch.goals);
         }
-        any.then_some(&*touched)
+        any.then_some(&*scratch)
     }
 
     /// Measures every touch on the bodies this frame left.

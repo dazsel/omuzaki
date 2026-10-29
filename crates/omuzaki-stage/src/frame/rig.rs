@@ -209,6 +209,7 @@ impl RigFrame {
     /// The body as another member's interaction reads it (#2415): its joints and its guard's parts as the last solve
     /// left them, and its arms' sizes, carried into the world by `root`. Allocation-free.
     pub(crate) fn body(&self, root: Mat4) -> MemberBody {
+        use omuzaki_anim_api::HumanoidBone as B;
         let skeleton = self.rig.skeleton();
         let world = self.rig.world();
         let mut body = MemberBody { root, ..MemberBody::EMPTY };
@@ -227,11 +228,10 @@ impl RigFrame {
             }
             body.forearm = proxy.forearm_radius;
             body.palm = proxy.hands.map(Vec3::length);
-            body.hand_thickness = proxy.hand_axes.map(|a| a.min_element());
+            body.hand_thickness = proxy.hand_axes.map(Vec3::min_element);
         }
         let length = |a: Option<Vec3>, b: Option<Vec3>| a.zip(b).map_or(0.0, |(a, b)| a.distance(b));
         let j = |bone| body.joint(bone);
-        use omuzaki_anim_api::HumanoidBone as B;
         body.arm = [
             length(j(B::LeftUpperArm), j(B::LeftLowerArm)) + length(j(B::LeftLowerArm), j(B::LeftHand)),
             length(j(B::RightUpperArm), j(B::RightLowerArm)) + length(j(B::RightLowerArm), j(B::RightHand)),
