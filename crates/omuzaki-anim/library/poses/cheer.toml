@@ -1,0 +1,22 @@
+# Pose "cheer": both arms thrown up in a V with the fists closed, the chin up. Degrees, Euler XYZ, VRM normalised space;
+# see crates/omuzaki-anim/src/poses/mod.rs. Symmetric, so its mirror is itself.
+id = "cheer"
+summary = "Both arms thrown up in a V with the fists closed, the chin up: a cheer."
+tags = ["gesture", "cheer", "celebrate", "arm"]
+mirrorable = true
+
+[bones]
+spine = [-3.0, 0.0, 0.0]
+head = [-8.0, 0.0, 0.0]
+leftUpperArm = [-90.0, -59.5, -8.6]
+leftLowerArm = [2.0, -12.8, 4.3]
+leftHand = [0.2, -3.1, 1.7]
+rightUpperArm = [-90.0, 59.5, 8.6]
+rightLowerArm = [2.0, 12.8, -4.3]
+rightHand = [0.2, 3.1, -1.7]
+
+[hands.left]
+shape = "fist"
+
+[hands.right]
+shape = "fist"

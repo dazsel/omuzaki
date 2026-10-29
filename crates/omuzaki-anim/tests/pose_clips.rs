@@ -35,7 +35,10 @@ fn assert_same(a: &HumanoidPose, b: &HumanoidPose, eps: f32) {
 fn builtin_clips_load() {
     let lib = ClipLibrary::builtin().unwrap();
     let ids: Vec<_> = lib.iter().map(|c| c.id.as_str()).collect();
-    assert_eq!(ids, ["wave", "wave-both", "yawn", "walk"]);
+    assert_eq!(
+        ids,
+        ["wave", "wave-both", "yawn", "walk", "reach-to-lens", "hand-on-chest", "palm-touch", "point", "cheer"]
+    );
     assert_eq!(clip("yawn").length(), 4.2);
     assert!(!clip("yawn").looped() && clip("walk").looped() && clip("wave").looped());
 }
@@ -289,4 +292,28 @@ fn a_long_clip_with_a_late_first_key_blends_across_its_seam() {
     let after = c.sample_posture(1000.0);
     assert_ne!(after, left);
     assert_ne!(after, right);
+}
+
+#[test]
+fn the_gestures_reach_at_their_peak_and_fade_their_reach_in_and_out() {
+    use omuzaki_anim_api::HumanoidBone;
+    for (id, peak) in [("reach-to-lens", 1.5), ("hand-on-chest", 1.7), ("palm-touch", 1.7), ("point", 1.0)] {
+        let c = clip(id);
+        assert!(!c.looped(), "{id} plays once");
+        let at_rest = c.sample_posture(0.0).reach;
+        assert!(at_rest.is_idle(), "{id} starts with the arm free");
+        let held = c.sample_posture(peak).reach;
+        let right = held.right.unwrap_or_else(|| panic!("{id} reaches with the right hand"));
+        assert_eq!((right.bone, right.weight), (HumanoidBone::UpperChest, 1.0), "{id}");
+        assert!(held.left.is_none(), "{id} leaves the left arm as posed");
+        // On the way in the reach fades in with the pose, never jumping to full.
+        let rising = c.sample_posture(c.keys()[1].t * 0.25).reach;
+        assert!(rising.right.is_none_or(|r| r.weight < 0.5), "{id}: {rising:?}");
+        assert!(c.sample_posture(c.length()).reach.is_idle(), "{id} ends free");
+    }
+    let cheer = clip("cheer");
+    assert!(cheer.keys().iter().all(|k| k.posture.reach.is_idle()), "a cheer is arms only");
+    // Mirroring a gesture moves its reach to the other hand.
+    let left = clip("hand-on-chest").mirrored().sample_posture(1.7).reach;
+    assert!(left.right.is_none() && left.left.unwrap().offset.x > 0.0);
 }

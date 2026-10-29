@@ -81,6 +81,7 @@ register_op!(SetStyle);
 /// Lists the character styles with what each looks like and the templates it is tuned for.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend("examples" = [{}]))]
 pub struct ListStyles {}
 
 impl Op for ListStyles {

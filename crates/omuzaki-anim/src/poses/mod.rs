@@ -27,12 +27,21 @@
 //! [hands.right]                         # optional, per side
 //! shape = "open"                        # a hand-shape id (RG-09)
 //! weight = 1.0
+//! [reach.right]                         # optional, per side (#2414): where the hand goes on the body
+//! bone = "upperChest"                   # the bone the target rides on
+//! at = [-0.1, 0.05, 0.35]               # from its joint, in arm lengths, along the T-pose axes turned with it
+//! pole = [0.0, -1.0, -0.3]              # optional: the side the elbow bends to
+//! weight = 1.0
 //! ```
+//!
+//! A reach makes a pose fit any body: the rig bends the arm (two-bone IK, `omuzaki_rig::ik::reach`) so the wrist lands
+//! on the target, wherever this body's chest or shoulder is and however long its arms are.
 //!
 //! Left and right follow the T-pose's mirror rule (`HumanoidPose::mirrored`): the left version of a right-hand pose has
 //! the sides swapped, X kept and Y and Z negated, so a library may author only one side and mirror the other.
 
 mod clip;
+mod clip_set;
 mod def;
 mod hips;
 mod library;
@@ -41,7 +50,10 @@ mod posture;
 mod set;
 
 pub use clip::{ClipError, ClipKey, ClipLibrary, Easing, PoseClip};
-pub use def::{HandSlot, PoseDef, PoseError};
+pub use clip_set::{
+    ClipBody, ContactsBody, DeleteClip, KeyArg, KeyBody, ListClips, PoseRef, SetClip, character_clip, find_clip,
+};
+pub use def::{HandSlot, MAX_REACH, PoseDef, PoseError};
 pub use hips::{HipsScaleError, hips_rest_height, retarget_hips, scale_hips};
 pub use library::PoseLibrary;
 pub use posture::{BoneMix, Hand, PoseMask, Posture};

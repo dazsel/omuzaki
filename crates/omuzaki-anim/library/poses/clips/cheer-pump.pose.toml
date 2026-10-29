@@ -1,0 +1,21 @@
+# Key pose "cheer-pump" for the cheer clip (RG-06): the arms at the top of a pump, straighter and higher than `cheer`,
+# up on the toes of the chest. Degrees, Euler XYZ, VRM normalised space; see src/poses/mod.rs.
+id = "cheer-pump"
+summary = "Both fists at the top of a pump, the arms nearly straight up: the beat of a cheer."
+tags = ["clip-key"]
+mirrorable = true
+hips_offset = [0.0, 0.012, 0.0]
+
+[bones]
+spine = [-5.0, 0.0, 0.0]
+head = [-11.0, 0.0, 0.0]
+leftUpperArm = [-90.0, -72.5, -4.6]
+leftLowerArm = [0.7, -8.9, 4.6]
+rightUpperArm = [-90.0, 72.5, 4.6]
+rightLowerArm = [0.7, 8.9, -4.6]
+
+[hands.left]
+shape = "fist"
+
+[hands.right]
+shape = "fist"

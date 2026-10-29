@@ -75,6 +75,7 @@ impl PerformFrame {
     pub fn advance(&mut self, control: &mut PerformControl, performer: &mut Performer, now: Seconds) -> bool {
         let Some(out) = control.advance(performer, now) else { return false };
         self.input.pose = *out.pose;
+        self.input.reach = *out.reach;
         self.input.channels = out.bus.values;
         self.input.dt = step_dt(self.last, out.tick);
         // The stage shows the performer's own time: a frame that caught up several steps, or the first one after a

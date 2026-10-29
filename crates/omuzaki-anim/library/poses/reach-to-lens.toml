@@ -1,0 +1,27 @@
+# Pose "reach-to-lens": the right arm stretched straight at a camera in front, palm and spread fingers to the lens,
+# leaning in. Rotations are degrees, Euler XYZ, in the VRM normalised space (T-pose = zero); see
+# crates/omuzaki-anim/src/poses/mod.rs. The reach straightens the arm at a point two arm lengths ahead on any body.
+id = "reach-to-lens"
+summary = "Right arm stretched straight at the camera, the palm and spread fingers to the lens, leaning in: reaching for the viewer."
+tags = ["gesture", "reach", "lens", "arm"]
+mirrorable = true
+
+[bones]
+spine = [5.0, 0.0, 0.0]
+chest = [4.0, -6.0, 0.0]
+neck = [-3.0, 0.0, 0.0]
+head = [-4.0, 4.0, 3.0]
+leftUpperArm = [0.0, 0.0, -68.0]
+leftLowerArm = [0.0, -12.0, 0.0]
+rightShoulder = [0.0, 8.0, 0.0]
+rightUpperArm = [0.0, 81.5, -5.6]
+rightLowerArm = [-0.3, 2.8, -1.2]
+rightHand = [-0.7, 5.7, -76.3]
+
+[hands.right]
+shape = "spread"
+
+[reach.right]
+bone = "upperChest"
+at = [-0.3, 0.25, 2.0]
+pole = [-0.4, -1.0, 0.0]

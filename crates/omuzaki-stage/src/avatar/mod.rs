@@ -166,6 +166,7 @@ impl AvatarStage {
             gaze.apply(&input.channels, &mut self.pose);
         }
         self.goals = input.goals;
+        self.rig.set_reaches(&input.reach);
         self.rig.solve(tick, &self.pose, &self.goals);
         self.prepare_draw(renderer, input, tick)
     }

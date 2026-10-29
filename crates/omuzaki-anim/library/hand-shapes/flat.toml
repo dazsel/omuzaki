@@ -1,0 +1,10 @@
+# Hand shape "flat". Angles are degrees; spread is positive toward the thumb side, flexion toward the palm
+# (see crates/omuzaki-anim/src/hands/mod.rs for the conventions).
+id = "flat"
+summary = "A flat hand with the fingers together and a soft curl, the thumb alongside: a palm laid on the chest or against another palm."
+
+thumb  = { spread =   4.0, mcp =   6.0, pip =   8.0, dip =   4.0 }
+index  = { spread =   2.0, mcp =   6.0, pip =   8.0, dip =   4.0 }
+middle = { spread =   0.0, mcp =   7.0, pip =   9.0, dip =   5.0 }
+ring   = { spread =  -2.0, mcp =   8.0, pip =  10.0, dip =   5.0 }
+little = { spread =  -4.0, mcp =   9.0, pip =  11.0, dip =   6.0 }

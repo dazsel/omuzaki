@@ -299,9 +299,9 @@ fn is_curled(h: &Hand, f: Finger) -> bool {
 // ---- the library ----
 
 #[test]
-fn the_library_has_seven_shapes_and_a_rest() {
+fn the_library_has_nine_shapes_and_a_rest() {
     let ids: Vec<_> = library().iter().map(|s| s.id.to_string()).collect();
-    assert_eq!(ids, ["open", "fist", "point", "peace", "heart", "grip", "thumbs-up", "rest"]);
+    assert_eq!(ids, ["open", "fist", "point", "peace", "heart", "grip", "thumbs-up", "rest", "spread", "flat"]);
     for s in library().iter() {
         s.validate().unwrap();
         assert!(!s.summary.is_empty());
@@ -940,7 +940,7 @@ fn hand_list_shapes_lists_the_library() {
 
     let out = plan.output.unwrap();
     let names: Vec<_> = out["shapes"].as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["open", "fist", "point", "peace", "heart", "grip", "thumbs-up", "rest"]);
+    assert_eq!(names, ["open", "fist", "point", "peace", "heart", "grip", "thumbs-up", "rest", "spread", "flat"]);
     let fist = &out["shapes"][1];
     assert!(fist["summary"].as_str().unwrap().contains("fist"));
     assert_eq!(fist["curls_deg"]["index"]["mcp"], 80.0);

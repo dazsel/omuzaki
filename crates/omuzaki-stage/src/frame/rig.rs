@@ -13,7 +13,8 @@
 use std::sync::Arc;
 
 use omuzaki_anim_api::{
-    BoneId, ChannelBuf, ConstraintSet, HumanoidPose, IkGoals, IkSolver, MAX_BONES, Pose, Rig, Skeleton, SpringSet, Tick,
+    BoneId, ChannelBuf, ConstraintSet, HumanoidPose, IkGoals, IkSolver, MAX_BONES, Pose, Reaches, Rig, Skeleton,
+    SpringSet, Tick,
 };
 use omuzaki_avatar_api::avatar::ImportedAvatar;
 use omuzaki_char_api::{BuiltCharacter, CharacterRig, DriverPlan, JointRef, PartMesh, PoseSource};
@@ -168,6 +169,12 @@ impl RigFrame {
     pub(crate) fn solve_with_channels(&mut self, tick: Tick, pose: &HumanoidPose, goals: &IkGoals, channels: &ChannelBuf) {
         self.set_channels(channels);
         self.solve(tick, pose, goals);
+    }
+
+    /// The hands' reaches for the following solves, until replaced: each becomes a hand goal on the posed body
+    /// (`omuzaki_rig::ik::reach`).
+    pub(crate) fn set_reaches(&mut self, reaches: &Reaches) {
+        self.rig.set_reaches(reaches);
     }
 
     /// The channel values the bone drivers read on the next [`solve`](Self::solve).

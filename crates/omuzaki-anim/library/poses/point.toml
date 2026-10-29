@@ -1,0 +1,23 @@
+# Pose "point": the right arm straight out ahead and to the side, the index finger pointing. Degrees, Euler XYZ, VRM
+# normalised space; see crates/omuzaki-anim/src/poses/mod.rs.
+id = "point"
+summary = "The right arm straight out ahead and a little to the side, the index finger pointing: look there."
+tags = ["gesture", "point", "arm"]
+mirrorable = true
+
+[bones]
+chest = [0.0, -8.0, 0.0]
+head = [0.0, 10.0, 0.0]
+leftUpperArm = [0.0, 0.0, -66.0]
+leftLowerArm = [0.0, -10.0, 0.0]
+rightUpperArm = [-33.1, 61.2, 22.7]
+rightLowerArm = [-6.7, 6.6, -1.2]
+rightHand = [-5.6, 2.4, 2.6]
+
+[hands.right]
+shape = "point"
+
+[reach.right]
+bone = "upperChest"
+at = [-0.9, 0.3, 1.8]
+pole = [-0.3, -1.0, 0.0]

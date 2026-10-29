@@ -78,12 +78,13 @@ pub fn unit_of(path: &DocPath, trees: &[&Value]) -> Unit {
                 },
                 "rig" => Unit::new(s, 3, "rig", format!("{character}: rig")),
                 "look" => Unit::new(s, 3, "look", format!("{character}: look")),
-                kind @ ("variants" | "colourways" | "poses" | "emotes") if s.len() >= 4 => {
+                kind @ ("variants" | "colourways" | "poses" | "clips" | "emotes") if s.len() >= 4 => {
                     let singular = &kind[..kind.len() - 1];
                     let kind = match kind {
                         "variants" => "variant",
                         "colourways" => "colourway",
                         "poses" => "pose",
+                        "clips" => "clip",
                         _ => "emote",
                     };
                     Unit::new(s, 4, kind, format!("{character}: {singular} {}", seg(3)))
