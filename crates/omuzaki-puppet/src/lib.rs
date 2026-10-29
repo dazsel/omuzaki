@@ -7,6 +7,7 @@
 //! - [`layers`] and [`autorig`]: layered art (PNG layers and a manifest) into a rigged puppet with its mapping
 //! - [`mapping`]: the channel bus onto a puppet's parameters, every frame
 //! - [`bundle`]: a puppet as a folder of plain files
+//! - [`track`]: a performance as a track of views and parameters per frame, played back on a puppet
 //! - [`builder`]: puppets assembled in code (the auto-rig, fixtures and tests)
 #![deny(missing_docs)]
 
@@ -20,6 +21,7 @@ pub mod mapping;
 pub mod physics;
 pub mod raster;
 pub mod texture;
+pub mod track;
 
 pub use builder::{PuppetBuilder, grid_mesh};
 pub use eval::Evaluator;
