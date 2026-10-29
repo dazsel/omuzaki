@@ -58,7 +58,7 @@ const ROUND_OPEN: f32 = 0.5;
 /// is a silence (one per run); a diphthong (`A` eɪ, `I` aɪ, `O` oʊ, `W` aʊ, `Y` ɔɪ, `Q` əʊ) is its two vowels.
 pub fn phones(text: &str) -> Vec<Phone> {
     let mut out: Vec<Phone> = Vec::with_capacity(text.chars().count());
-    let mut push = |phone: Phone, out: &mut Vec<Phone>| {
+    let push = |phone: Phone, out: &mut Vec<Phone>| {
         if !(phone == Phone::Silence && out.last().is_none_or(|last| *last == Phone::Silence)) {
             out.push(phone);
         }
@@ -227,7 +227,14 @@ impl PhonemeMouth {
             _ => None,
         };
         let before = self.spans[..index].iter().rev().take(3).enumerate().find_map(|(d, s)| vowel(s).map(|v| (d, v)));
-        let after = self.spans.get(index + 1..).unwrap_or_default().iter().take(3).enumerate().find_map(|(d, s)| vowel(s).map(|v| (d, v)));
+        let after = self
+            .spans
+            .get(index + 1..)
+            .unwrap_or_default()
+            .iter()
+            .take(3)
+            .enumerate()
+            .find_map(|(d, s)| vowel(s).map(|v| (d, v)));
         match (before, after) {
             (Some((a, va)), Some((b, vb))) => Some(if a <= b { va } else { vb }),
             (Some((_, v)), None) | (None, Some((_, v))) => Some(v),
@@ -295,9 +302,9 @@ mod tests {
 
     #[test]
     fn misaki_phonemes_read_as_phones() {
+        use Phone::{Bilabial, Consonant, Silence, Vowel};
         // "my bad, man": mˈI bˈæd, mˈæn
         let got = phones("mˈI bˈæd, mˈæn");
-        use Phone::{Bilabial, Consonant, Silence, Vowel};
         assert_eq!(
             got,
             [
@@ -315,16 +322,19 @@ mod tests {
             ]
         );
         assert_eq!(phones("  "), []);
-        assert_eq!(phones("fˈIv wˈʌn"), [
-            Phone::Labiodental,
-            Vowel(Viseme::Aa),
-            Vowel(Viseme::Ih),
-            Phone::Labiodental,
-            Silence,
-            Phone::Round,
-            Vowel(Viseme::Aa),
-            Consonant
-        ]);
+        assert_eq!(
+            phones("fˈIv wˈʌn"),
+            [
+                Phone::Labiodental,
+                Vowel(Viseme::Aa),
+                Vowel(Viseme::Ih),
+                Phone::Labiodental,
+                Silence,
+                Phone::Round,
+                Vowel(Viseme::Aa),
+                Consonant
+            ]
+        );
     }
 
     fn span(phone: Phone, start_s: f64, end_s: f64) -> PhoneSpan {

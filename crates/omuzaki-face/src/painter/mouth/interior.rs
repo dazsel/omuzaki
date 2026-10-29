@@ -140,16 +140,14 @@ fn sharp_teeth(ctx: &mut PaintCtx<'_>, open: &OpenMouth, strength: f32) {
         let point = |k: u8| {
             let shift = if lower { 1.0 / f32::from(2 * n) } else { 0.0 };
             let u = (-1.0 + 2.0 * f32::from(k) / f32::from(2 * n) + shift).clamp(-1.0, 1.0);
-            let share = if k % 2 == 1 {
-                if lower { SHARP_LOWER_TIP } else { SHARP_UPPER_TIP }
-            } else {
-                SHARP_ROOT
-            };
+            let share = if k % 2 == 1 { if lower { SHARP_LOWER_TIP } else { SHARP_UPPER_TIP } } else { SHARP_ROOT };
             let depth = gap(u) * share;
             let y = if lower { edge(u) + depth } else { edge(u) - depth };
             open.centre + Vec2::new(u * open.half_width, y)
         };
-        let beyond = |u: f32| open.centre + Vec2::new(u * open.half_width, edge(u) + if lower { -1.0 } else { 1.0 } * open.height);
+        let beyond = |u: f32| {
+            open.centre + Vec2::new(u * open.half_width, edge(u) + if lower { -1.0 } else { 1.0 } * open.height)
+        };
         let mut path = list.path().move_to(beyond(-1.0));
         for k in 0..=2 * n {
             path = path.line_to(point(k));

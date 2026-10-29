@@ -988,6 +988,7 @@ fn saying_a(seq: u64, aa: f32, onsets: u32) -> VoiceFrame {
         visemes: [aa, 0.0, 0.0, 0.0, 0.0],
         onsets,
         formants: [800.0, 1300.0],
+        closure: 0.0,
     }
 }
 

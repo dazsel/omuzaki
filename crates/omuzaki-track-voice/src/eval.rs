@@ -15,7 +15,7 @@
 //! Vowel samples leave out [`EDGE_S`] at each end of a vowel, where any mouth is between shapes, and pause samples
 //! leave out [`EDGE_S`] after speech, where any mouth is still closing; closures are given [`EDGE_S`] either side.
 
-use crate::analyzer::{HOP_S, VoiceAnalyzer, VoiceFrame};
+use crate::analyzer::{HOP_S, VoiceAnalyzer, VoiceFrame, WINDOW_S};
 use crate::lipsync::{LipSync, LipSyncConfig};
 use crate::phoneme::{MouthFrame, Phone, PhoneSpan};
 use omuzaki_anim_api::{BlendMode, ChannelBuf, Cues, Layer};
@@ -79,9 +79,8 @@ pub fn score(truth: &[PhoneSpan], end_s: f64, mouth: &dyn Fn(f64) -> MouthFrame)
                 }
             }
             (Phone::Silence, _) => {
-                let after_speech = truth
-                    .iter()
-                    .any(|s| s.phone != Phone::Silence && s.end_s <= t && t < s.end_s + EDGE_S.max(0.06));
+                let after_speech =
+                    truth.iter().any(|s| s.phone != Phone::Silence && s.end_s <= t && t < s.end_s + EDGE_S.max(0.06));
                 if !after_speech {
                     pauses += 1;
                     quiet += u32::from(shut(m));
@@ -111,18 +110,18 @@ pub fn score(truth: &[PhoneSpan], end_s: f64, mouth: &dyn Fn(f64) -> MouthFrame)
 }
 
 /// The lag, seconds, that best correlates the mouth's openness with the truth's.
-#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)] // lags of a few tens of steps
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)] // a few tens of steps
 fn offset(truth: &[PhoneSpan], times: &[f64], frames: &[MouthFrame]) -> f64 {
     let want: Vec<f32> = times.iter().map(|&t| truth_open(truth, t)).collect();
     let got: Vec<f32> = frames.iter().map(MouthFrame::openness).collect();
-    let max = (MAX_OFFSET_S / STEP_S).round() as isize;
-    let correlation = |lag: isize| {
-        let pairs: Vec<(f32, f32)> = (0..want.len() as isize)
-            .filter_map(|i| {
-                let j = i + lag;
-                (j >= 0 && (j as usize) < got.len()).then(|| (want[i as usize], got[j as usize]))
-            })
-            .collect();
+    let max = (MAX_OFFSET_S / STEP_S).round() as usize;
+    // The mouth `late` steps behind the truth (or ahead, when not `late`).
+    let correlation = |steps: usize, late: bool| {
+        let pairs: Vec<(f32, f32)> = if late {
+            want.iter().zip(got.iter().skip(steps)).map(|(a, b)| (*a, *b)).collect()
+        } else {
+            want.iter().skip(steps).zip(&got).map(|(a, b)| (*a, *b)).collect()
+        };
         let n = pairs.len().max(1) as f32;
         let (ma, mb) = (pairs.iter().map(|p| p.0).sum::<f32>() / n, pairs.iter().map(|p| p.1).sum::<f32>() / n);
         let (mut ab, mut aa, mut bb) = (0.0, 0.0, 0.0);
@@ -133,8 +132,11 @@ fn offset(truth: &[PhoneSpan], times: &[f64], frames: &[MouthFrame]) -> f64 {
         }
         if aa > 0.0 && bb > 0.0 { ab / (aa * bb).sqrt() } else { f32::MIN }
     };
-    let best = (-max..=max).max_by(|&a, &b| correlation(a).total_cmp(&correlation(b))).unwrap_or(0);
-    best as f64 * STEP_S
+    let lags = (0..=max).map(|s| (s, true)).chain((1..=max).map(|s| (s, false)));
+    let (steps, late) =
+        lags.max_by(|a, b| correlation(a.0, a.1).total_cmp(&correlation(b.0, b.1))).unwrap_or((0, true));
+    let seconds = steps as f64 * STEP_S;
+    if late { seconds } else { -seconds }
 }
 
 /// The analyser's frames of `pcm` (mono, `rate` Hz), one per hop.
@@ -163,11 +165,15 @@ pub fn mic_mouth(frames: &[VoiceFrame], expressions: &ExpressionSet, config: Lip
         .collect()
 }
 
-/// A track of one mouth frame per hop, as a mouth at any time (the frame of the hop that has ended by then).
+/// A track of one mouth frame per hop, as a mouth at any time: the newest frame whose window has ended by then (the
+/// first frame is the first full window, and one follows every hop).
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // hop counts
 pub fn per_hop(track: &[MouthFrame]) -> impl Fn(f64) -> MouthFrame + '_ {
     move |t| {
-        let k = (t / f64::from(HOP_S)).floor() as isize - 1;
-        if k < 0 { MouthFrame::default() } else { track.get(k as usize).copied().unwrap_or_default() }
+        let since = t - f64::from(WINDOW_S);
+        if since < 0.0 {
+            return MouthFrame::default();
+        }
+        track.get((since / f64::from(HOP_S)).floor() as usize).copied().unwrap_or_default()
     }
 }

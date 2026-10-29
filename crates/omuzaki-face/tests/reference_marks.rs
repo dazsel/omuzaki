@@ -5,7 +5,13 @@
 //! writes the contact sheet the pull request shows.
 
 // Integration-test helpers may panic: a panic is a clear test failure. Pixel coordinates are small.
-#![allow(clippy::expect_used, clippy::unwrap_used, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
 
 use image::RgbaImage;
 use omuzaki_anim_api::{Channel, ChannelBuf};
@@ -194,12 +200,21 @@ fn deep_gloom_darkens_the_upper_face_and_the_pupils_glow() {
     assert!(mean(&deep, forehead.clone()) + 60 < mean(&rest, forehead), "1.0 darkens the forehead");
     // The brightest pixel in the eye rows is the glow, far above the band's dark.
     let eye_rows = (h * 4 / 10)..(h * 3 / 4);
-    let brightest = eye_rows.clone().flat_map(|y| (0..deep.width()).map(move |x| (x, y))).map(|(x, y)| luma(deep.get_pixel(x, y))).max().unwrap();
+    let brightest = eye_rows
+        .clone()
+        .flat_map(|y| (0..deep.width()).map(move |x| (x, y)))
+        .map(|(x, y)| luma(deep.get_pixel(x, y)))
+        .max()
+        .unwrap();
     assert!(brightest > 200, "the pupils glow: {brightest}");
 }
 
 /// The contact sheet for the pull request: each mark and the expressions that use them, on the kit's default face.
+/// One picture of the sheet: its label, the face, and the channels pushed.
+type Mark<'a> = (&'a str, &'a FaceProfile, Vec<(Channel, f32)>);
+
 #[test]
+#[allow(clippy::disallowed_methods)] // writes the evidence pictures into the folder CI names; no op runs here
 fn render_the_reference_marks_when_asked() {
     let Ok(dir) = std::env::var("OMUZAKI_FACE_EVIDENCE_DIR") else { return };
     let default = FaceProfile::default();
@@ -207,11 +222,15 @@ fn render_the_reference_marks_when_asked() {
     let mut one_left = FaceProfile::default();
     one_left.mouth.fang.kind = FangKind::OneLeft;
     let open = (Channel::JAW_OPEN, 0.55);
-    let cells: Vec<(&str, &FaceProfile, Vec<(Channel, f32)>)> = vec![
+    let cells: Vec<Mark<'_>> = vec![
         ("rest", &default, vec![]),
         ("angerVein 0.5 (pop)", &default, vec![(Channel::ANGER_VEIN, 0.5)]),
         ("angerVein 1", &default, vec![(Channel::ANGER_VEIN, 1.0)]),
-        ("eyesBlank", &default, vec![(Channel::EYES_BLANK, 1.0), (Channel::EYE_WIDE_LEFT, 0.6), (Channel::EYE_WIDE_RIGHT, 0.6)]),
+        (
+            "eyesBlank",
+            &default,
+            vec![(Channel::EYES_BLANK, 1.0), (Channel::EYE_WIDE_LEFT, 0.6), (Channel::EYE_WIDE_RIGHT, 0.6)],
+        ),
         ("eyesDot", &default, vec![(Channel::EYES_DOT, 1.0)]),
         ("eyesStare", &default, vec![(Channel::EYES_STARE, 1.0)]),
         ("eyesPill", &default, vec![(Channel::EYES_PILL, 1.0)]),
@@ -258,7 +277,10 @@ fn render_the_reference_marks_when_asked() {
     let rect = HeadParams::default().face_projection().rect;
     let width = 1600_u32;
     let to_px = |x: f32, y: f32, h: u32| {
-        (((x - rect.x0) / (rect.x1 - rect.x0) * width as f32) as u32, ((rect.y1 - y) / (rect.y1 - rect.y0) * h as f32) as u32)
+        (
+            ((x - rect.x0) / (rect.x1 - rect.x0) * width as f32) as u32,
+            ((rect.y1 - y) / (rect.y1 - rect.y0) * h as f32) as u32,
+        )
     };
     let mouths: Vec<Cell> = cells
         .iter()

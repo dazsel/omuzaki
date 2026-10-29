@@ -264,8 +264,8 @@ fn blank_outline(ctx: &mut PaintCtx<'_>, side: Side, strength: f32) {
 fn stare_shadow(ctx: &mut PaintCtx<'_>, side: Side, strength: f32) {
     let eye = Eye::new(ctx.profile, ctx.params, side);
     let (r, g, b) = STARE_COLOUR;
-    let steps = 16_u8;
-    let along = |i: u8| -STARE_REACH + 2.0 * STARE_REACH * f32::from(i) / f32::from(steps);
+    let points = 16_u8;
+    let along = |i: u8| -STARE_REACH + 2.0 * STARE_REACH * f32::from(i) / f32::from(points);
     // The band follows the lower lid: its top edge just under the lid, its bottom edge a fixed depth further down, both
     // tapering to the corners so it never reads as a box.
     let taper = |u: f32| 1.0 - (u / STARE_REACH).powi(2);
@@ -273,20 +273,17 @@ fn stare_shadow(ctx: &mut PaintCtx<'_>, side: Side, strength: f32) {
     let low = |u: f32| eye.point(u, eye.bottom(u) - STARE_FROM - STARE_DEPTH * taper(u));
     let list = ctx.list(FaceLayerId::Base);
     let mut path = list.path().move_to(top(along(0)));
-    for i in 1..=steps {
+    for i in 1..=points {
         path = path.line_to(top(along(i)));
     }
-    for i in (0..=steps).rev() {
+    for i in (0..=points).rev() {
         path = path.line_to(low(along(i)));
     }
     let band = path.close().finish();
-    let (from, to) = (eye.point(0.0, eye.bottom(0.0) - STARE_FROM), eye.point(0.0, eye.bottom(0.0) - STARE_FROM - STARE_DEPTH));
+    let (from, to) =
+        (eye.point(0.0, eye.bottom(0.0) - STARE_FROM), eye.point(0.0, eye.bottom(0.0) - STARE_FROM - STARE_DEPTH));
     let stops = Stops::new(&[(0.0, Colour::rgb(r, g, b)), (1.0, Colour::rgba(r, g, b, 0))]);
-    list.push(Cmd::Fill {
-        path: band,
-        paint: Paint::Linear { from, to, stops },
-        opacity: STARE_OPACITY * strength,
-    });
+    list.push(Cmd::Fill { path: band, paint: Paint::Linear { from, to, stops }, opacity: STARE_OPACITY * strength });
     for u in STARE_HATCH {
         let start = eye.bottom(u) - STARE_FROM - 0.06;
         let line = list
@@ -318,6 +315,8 @@ fn dot(ctx: &mut PaintCtx<'_>, side: Side, strength: f32) {
 /// A pill eye: a flat capsule where the eye was, its outer half in the iris colour (this eye's own, so heterochromia
 /// gives one red and one blue pill), its inner half white, divided and outlined in the lash colour, with a glint.
 fn pill(ctx: &mut PaintCtx<'_>, side: Side, strength: f32) {
+    /// A quarter circle's cubic control distance, as a share of its radius.
+    const K: f32 = 0.552_284_8;
     let eye = Eye::new(ctx.profile, ctx.params, side);
     let iris = colours(ctx.profile, side);
     let (mid, top) = (fixed_colour(iris.mid, FALLBACK_COLOUR), fixed_colour(iris.top, FALLBACK_COLOUR));
@@ -325,7 +324,6 @@ fn pill(ctx: &mut PaintCtx<'_>, side: Side, strength: f32) {
     let (half, r) = (PILL_HALF, PILL_RADIUS);
     let p = |u: f32, v: f32| eye.point(u, v);
     // Quarter circles as cubics, in eye units (eye.point is affine, so the curves map exactly).
-    const K: f32 = 0.552_284_8;
     let straight = half - r;
     let list = ctx.list(FaceLayerId::Base);
     let capsule = list
@@ -352,7 +350,10 @@ fn pill(ctx: &mut PaintCtx<'_>, side: Side, strength: f32) {
         paint: Paint::Linear { from: p(0.0, r), to: p(0.0, -r), stops },
         opacity: strength,
     });
-    let glint = list.path().ellipse(p(PILL_GLINT.x, PILL_GLINT.y), PILL_GLINT_RADIUS * eye.width() * 1.6, PILL_GLINT_RADIUS * eye.width()).finish();
+    let glint = list
+        .path()
+        .ellipse(p(PILL_GLINT.x, PILL_GLINT.y), PILL_GLINT_RADIUS * eye.width() * 1.6, PILL_GLINT_RADIUS * eye.width())
+        .finish();
     list.push(Cmd::Fill { path: glint, paint: Paint::Solid(WHITE), opacity: 0.85 * strength });
     list.push(Cmd::PopClip);
     let divider = list.path().move_to(p(0.0, r)).line_to(p(0.0, -r)).finish();
@@ -417,11 +418,8 @@ pub(super) fn paint_deep_gloom(ctx: &mut PaintCtx<'_>) {
         let light = lighten(fixed_colour(colours(ctx.profile, side).low, FALLBACK_COLOUR), GLOW_LIGHTEN);
         let centre = iris.at(0.0, 0.15);
         let radius = GLOW_RADIUS * iris.rx;
-        let glow_stops = Stops::new(&[
-            (0.0, light),
-            (0.3, Colour { a: 210, ..light }),
-            (1.0, Colour { a: 0, ..light }),
-        ]);
+        let glow_stops =
+            Stops::new(&[(0.0, light), (0.3, Colour { a: 210, ..light }), (1.0, Colour { a: 0, ..light })]);
         let list = ctx.list(FaceLayerId::Base);
         // Inside the aperture, so the glow goes shut with the eye as the other open pieces do.
         let clip = aperture::outline(list, &eye);
@@ -456,8 +454,10 @@ fn gloom(ctx: &mut PaintCtx<'_>, iris: &Iris, side: Side, strength: f32) {
 /// The iris covered by the eye white and replaced by a small disc with a white dot for a pupil.
 fn shock(ctx: &mut PaintCtx<'_>, iris: &Iris, side: Side, strength: f32) {
     let eyes = &ctx.profile.eyes;
-    let (white, disc) =
-        (fixed_colour(&eyes.sclera.mid, FALLBACK_COLOUR), fixed_colour(colours(ctx.profile, side).mid, FALLBACK_COLOUR));
+    let (white, disc) = (
+        fixed_colour(&eyes.sclera.mid, FALLBACK_COLOUR),
+        fixed_colour(colours(ctx.profile, side).mid, FALLBACK_COLOUR),
+    );
     let list = ctx.list(FaceLayerId::Base);
     // A little bigger than the iris, so no edge of it shows round the cover.
     let cover = list.path().ellipse(iris.centre, iris.rx * SHOCK_COVER, iris.ry * SHOCK_COVER).finish();

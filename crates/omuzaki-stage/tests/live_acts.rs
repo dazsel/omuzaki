@@ -262,6 +262,49 @@ fn a_webcam_wins_the_eyes_until_the_drive_map_gives_them_to_the_score() {
 }
 
 #[test]
+fn an_act_over_tracking_shuts_the_eyes_while_the_webcam_runs_and_gives_them_back() {
+    omuzaki_stage::link();
+    let mut rig = Rig::tracked();
+    let services = rig.services();
+    let blink = Channel::EYE_BLINK_LEFT;
+    rig.run_for(0.5);
+    let shut = json!({ "channels": { "eyeBlinkLeft": 1.0, "eyeBlinkRight": 1.0 }, "held": true, "fade_s": 0.0 });
+    run(&services, "act.channels", shut.clone()).unwrap();
+    let steps = |rig: &mut Rig| (0..30).map(|_| rig.step()).collect::<Vec<_>>();
+    let under = steps(&mut rig);
+    assert_eq!(under[0].owners.of(blink), Source::Tracker, "under the webcam, as PF-23 says");
+    assert!(under.iter().any(|s| s.values[blink] < 0.9), "the webcam's open eye wins");
+
+    run(&services, "act.release", json!({})).unwrap();
+    let mut over = shut;
+    over["over_tracking"] = json!(true);
+    run(&services, "act.channels", over).unwrap();
+    rig.step();
+    let forced = steps(&mut rig);
+    assert!(forced.iter().all(|s| s.values[blink] == 1.0), "over tracking, the eye stays shut while the webcam runs");
+    assert_eq!(forced[0].owners.of(Channel::JAW_OPEN), Source::Tracker, "the webcam keeps every other channel");
+
+    run(&services, "act.release", json!({})).unwrap();
+    rig.run_for(0.3);
+    let back = steps(&mut rig);
+    assert!(back.iter().any(|s| s.values[blink] < 0.9), "released, the webcam has the eye again");
+}
+
+#[test]
+fn an_expression_act_plays_with_the_expression_s_own_fades_and_auto_stop() {
+    omuzaki_stage::link();
+    let rig = Rig::new(None);
+    let services = rig.services();
+    run(&services, "act.expression", json!({ "expression": "happy" })).unwrap();
+    let envelope = rig.handle.acts().last().expect("the act is listed").envelope;
+    // The starter's playback: in over 0.12 s, out over 0.2 s, no auto-stop, so the default hold of 2 s.
+    assert_eq!((envelope.fade_in, envelope.fade_out, envelope.hold), (0.12, 0.2, Some(2.0)));
+    run(&services, "act.expression", json!({ "expression": "happy", "fade_s": 0.0, "hold_s": 1.0 })).unwrap();
+    let cut = rig.handle.acts().last().expect("listed").envelope;
+    assert_eq!((cut.fade_in, cut.fade_out, cut.hold), (0.0, 0.0, Some(1.0)), "the call's own times win: a hard cut");
+}
+
+#[test]
 fn a_clip_moves_the_body_under_the_tracked_head_and_ends_with_itself() {
     omuzaki_stage::link();
     let mut rig = Rig::new(None);
@@ -305,7 +348,11 @@ fn a_step_with_acts_playing_and_a_gated_webcam_allocates_nothing() {
     let mut map = DriveMap::open();
     map.set(DriveGroup::Head, DriverKind::Tracker, 0.0);
     rig.handle.set_drive(map).unwrap();
-    let expression = ActRequest::Expression { expression: ExpressionId::new("happy").unwrap(), intensity: 1.0, over_tracking: false };
+    let expression = ActRequest::Expression {
+        expression: ExpressionId::new("happy").unwrap(),
+        intensity: 1.0,
+        over_tracking: false,
+    };
     rig.handle.act(expression, Envelope::new(0.2, None)).unwrap();
     rig.handle.act(ActRequest::Look { x: 0.5, y: 0.2, head: 0.5 }, Envelope::new(0.2, None)).unwrap();
     rig.handle.act(ActRequest::Clip { clip: "wave-both".into(), weight: 1.0 }, Envelope::new(0.2, None)).unwrap();

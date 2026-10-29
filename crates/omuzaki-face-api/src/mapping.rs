@@ -997,7 +997,9 @@ mod tests {
         );
         assert!(within(p.gaze.x, -1.0, 1.0) && within(p.gaze.y, -1.0, 1.0) && within(p.vergence, -1.0, 1.0));
         let e = p.effects;
-        for v in [e.heart, e.star, e.gloom, e.shock, e.squeeze, e.spiral, e.sparkle, e.tears, e.blank, e.dot, e.stare, e.pill] {
+        for v in [
+            e.heart, e.star, e.gloom, e.shock, e.squeeze, e.spiral, e.sparkle, e.tears, e.blank, e.dot, e.stare, e.pill,
+        ] {
             assert!(within(v, 0.0, 1.0), "effect {v}");
         }
         for brow in [p.left_brow, p.right_brow] {

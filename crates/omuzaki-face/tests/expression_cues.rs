@@ -48,7 +48,11 @@ fn the_cue_track_plays_each_cue_at_its_own_time_whatever_the_frame_rate() {
             frame += 1.0;
         }
         track.advance_to(&set, t).unwrap();
-        (track.player().weight(&id("happy")), track.player().weight(&id("shocked")), track.blend(&set, &ChannelBuf::NEUTRAL))
+        (
+            track.player().weight(&id("happy")),
+            track.player().weight(&id("shocked")),
+            track.blend(&set, &ChannelBuf::NEUTRAL),
+        )
     };
     // Happy fades in over its 0.12 s; at 1 s the cut takes the face to shocked on the frame.
     let (happy, shocked, _) = face_at(30.0, 0.5);

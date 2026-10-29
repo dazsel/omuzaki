@@ -16,7 +16,7 @@ use crate::analyzer::VoiceFrame;
 pub const MAX_RETRIES: usize = 4;
 
 /// The fields of a [`VoiceFrame`] after `seq`, as bits: speaking and voiced, loudness, five visemes, onsets, two
-/// formants.
+/// formants, the closure.
 const WORDS: usize = 11;
 
 struct Shared {
@@ -61,7 +61,7 @@ fn pack(frame: &VoiceFrame) -> [u32; WORDS] {
         frame.onsets,
         frame.formants[0].to_bits(),
         frame.formants[1].to_bits(),
-        0,
+        frame.closure.to_bits(),
     ]
 }
 
@@ -74,6 +74,7 @@ fn unpack(seq: u64, w: [u32; WORDS]) -> VoiceFrame {
         visemes: [2, 3, 4, 5, 6].map(|i| f32::from_bits(w[i])),
         onsets: w[7],
         formants: [f32::from_bits(w[8]), f32::from_bits(w[9])],
+        closure: f32::from_bits(w[10]),
     }
 }
 
@@ -135,6 +136,7 @@ mod tests {
             visemes: [0.1, 0.2, 0.3, 0.0, 0.4],
             onsets: 7,
             formants: [700.0, 1200.0],
+            closure: 1.0,
         }
     }
 

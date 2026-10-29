@@ -144,7 +144,11 @@ impl Sound {
     /// Its length, seconds.
     pub fn seconds(self) -> f32 {
         match self {
-            Self::Vowel(_, s) | Self::Nasal(s) | Self::Fricative(s) | Self::Pause(s) | Self::Stop { seconds: s, .. } => s,
+            Self::Vowel(_, s)
+            | Self::Nasal(s)
+            | Self::Fricative(s)
+            | Self::Pause(s)
+            | Self::Stop { seconds: s, .. } => s,
         }
     }
 

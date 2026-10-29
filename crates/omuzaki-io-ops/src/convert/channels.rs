@@ -131,8 +131,9 @@ mod tests {
     fn the_extras_cover_the_anime_channels_exactly() {
         let table: BTreeSet<Channel> = EXTRAS.iter().map(|(channel, _)| *channel).collect();
         let span = |first: Channel, last: Channel| (first.index()..=last.index()).filter_map(Channel::from_index);
-        let assigned: BTreeSet<Channel> =
-            span(Channel::EYE_ARC_LEFT, Channel::FANGS).chain(span(Channel::ANGER_VEIN, Channel::TEETH_SHARP)).collect();
+        let assigned: BTreeSet<Channel> = span(Channel::EYE_ARC_LEFT, Channel::FANGS)
+            .chain(span(Channel::ANGER_VEIN, Channel::TEETH_SHARP))
+            .collect();
         assert_eq!(assigned.len(), 19, "channels 60 to 72 and 76 to 81 are all assigned");
         assert_eq!(table, assigned);
     }

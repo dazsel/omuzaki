@@ -124,7 +124,8 @@ fn anger_vein(ctx: &mut PaintCtx<'_>, strength: f32) {
     let mut strokes = [None; 4];
     for (i, (sx, sy)) in [(1.0_f32, 1.0_f32), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0)].into_iter().enumerate() {
         let p = |x: f32, y: f32| at + Vec2::new(sx * x * half, sy * y * half);
-        let path = list.path().move_to(p(VEIN_GAP, VEIN_ARM)).quad_to(p(VEIN_GAP, VEIN_GAP), p(VEIN_ARM, VEIN_GAP)).finish();
+        let path =
+            list.path().move_to(p(VEIN_GAP, VEIN_ARM)).quad_to(p(VEIN_GAP, VEIN_GAP), p(VEIN_ARM, VEIN_GAP)).finish();
         strokes[i] = Some(path);
     }
     for path in strokes.iter().flatten() {

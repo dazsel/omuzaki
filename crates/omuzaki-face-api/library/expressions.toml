@@ -172,6 +172,7 @@ curve = "smooth"
 deltas = { tongueOut = 1.0, jawOpen = 0.15, eyeBlinkRight = 1.0, eyeArcRight = 1.0, browOuterUpLeft = 0.4, mouthSmileLeft = 0.3, mouthSmileRight = 0.3, blush = 0.2 }
 
 # The reference bar's symbol faces (#2393): the anime marks a comedic short switches between on almost every phrase.
+# The symbol eyes (blank, dot, pill) pop in on the frame, as they do on screen; the rest fade like any mood.
 
 [rage]
 kind = "emotion"
@@ -181,13 +182,13 @@ deltas = { eyesSqueeze = 1.0, teethSharp = 1.0, angerVein = 1.0, jawOpen = 0.75,
 
 [shocked]
 kind = "emotion"
-playback = { group = "mood" }
+playback = { group = "mood", fade_in_s = 0.0, fade_out_s = 0.1 }
 curve = "ease_out"
 deltas = { eyesBlank = 1.0, eyeWideLeft = 0.8, eyeWideRight = 0.8, browInnerUp = 0.7, browOuterUpLeft = 0.8, browOuterUpRight = 0.8, jawOpen = 0.5, mouthStretchLeft = 0.3, mouthStretchRight = 0.3 }
 
 [dumbfounded]
 kind = "emotion"
-playback = { group = "mood" }
+playback = { group = "mood", fade_in_s = 0.0, fade_out_s = 0.1 }
 curve = "ease_out"
 deltas = { eyesDot = 1.0, browOuterUpLeft = 0.6, browOuterUpRight = 0.6, jawOpen = 0.18, mouthFunnel = 0.4 }
 
@@ -199,7 +200,7 @@ deltas = { eyesStare = 1.0, browInnerUp = 0.25, browDownLeft = 0.2, browDownRigh
 
 [deadpan]
 kind = "emotion"
-playback = { group = "mood" }
+playback = { group = "mood", fade_in_s = 0.0, fade_out_s = 0.1 }
 curve = "smooth"
 deltas = { eyesPill = 1.0, mouthPressLeft = 0.8, mouthPressRight = 0.8, mouthStretchLeft = 0.3, mouthStretchRight = 0.3 }
 

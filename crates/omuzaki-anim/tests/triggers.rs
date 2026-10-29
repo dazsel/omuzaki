@@ -368,7 +368,8 @@ fn played(edit: impl Fn(&mut omuzaki_face_api::Playback)) -> ExpressionSet {
 fn rig_with(set: &ExpressionSet, modes: [TriggerMode; 2]) -> Triggers {
     let mut t = Triggers::new(TriggerFades::default());
     for (index, (name, mode)) in ["happy", "angry"].into_iter().zip(modes).enumerate() {
-        let slot = expression_slot(set, &id(name), &ChannelBuf::NEUTRAL, mode).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let slot =
+            expression_slot(set, &id(name), &ChannelBuf::NEUTRAL, mode).unwrap_or_else(|e| panic!("{name}: {e}"));
         t.set_slot(index, Some(slot)).unwrap_or_else(|e| panic!("slot {index}: {e}"));
     }
     t

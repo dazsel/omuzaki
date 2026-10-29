@@ -5,6 +5,9 @@
 //! for its best mouth, 13.6% and 26.4% for its vowel-only one. These lines are synthetic, so the numbers are not the same
 //! corpus; the floors here hold the shape of the result: closures caught, vowels right, nothing worse than before.
 
+// Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
+#![allow(clippy::unwrap_used)]
+
 use omuzaki_face_api::expression::ExpressionSet;
 use omuzaki_track_voice::align::align;
 use omuzaki_track_voice::eval::{LipSyncScore, frames_of, mic_mouth, per_hop, score};
@@ -118,6 +121,10 @@ fn alignment_finds_the_spans_within_a_few_hops() {
     let mut errors: Vec<f64> = got.iter().zip(&want).map(|(g, w)| (g.start_s - w.start_s).abs()).collect();
     errors.sort_by(f64::total_cmp);
     let median = errors[errors.len() / 2];
-    println!("alignment: median start error {:.0} ms, worst {:.0} ms", median * 1000.0, errors[errors.len() - 1] * 1000.0);
+    println!(
+        "alignment: median start error {:.0} ms, worst {:.0} ms",
+        median * 1000.0,
+        errors[errors.len() - 1] * 1000.0
+    );
     assert!(median <= 0.03, "median start error {median} s");
 }

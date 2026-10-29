@@ -88,7 +88,7 @@ struct Shown {
     /// slot holds then comes in from zero.
     replaced: bool,
     /// Seconds it has been wanted, for its auto-stop.
-    shown_for: f32,
+    wanted_for: f32,
 }
 
 /// Up to [`MAX_TRIGGERS`] expression slots, one shown at a time, faded.
@@ -156,7 +156,7 @@ impl Triggers {
         self.wanted = Some(slot);
         if let Some(shown) = self.shown.as_mut().filter(|shown| shown.index == slot) {
             // Pressed again while it shows: its auto-stop starts over.
-            shown.shown_for = 0.0;
+            shown.wanted_for = 0.0;
         }
     }
 
@@ -179,7 +179,7 @@ impl Triggers {
             && let Some(index) = self.wanted
             && let Some(Some(slot)) = self.slots.get(index)
         {
-            self.shown = Some(Shown { index, slot: *slot, replaced: false, shown_for: 0.0 });
+            self.shown = Some(Shown { index, slot: *slot, replaced: false, wanted_for: 0.0 });
             self.fade = Fade(0.0);
             self.shows = self.shows.wrapping_add(1);
         }
@@ -195,8 +195,8 @@ impl Triggers {
             && self.wanted == Some(shown.index)
             && !shown.replaced
         {
-            shown.shown_for += dt;
-            if shown.slot.auto_stop_s.is_some_and(|stop| shown.shown_for >= stop) {
+            shown.wanted_for += dt;
+            if shown.slot.auto_stop_s.is_some_and(|stop| shown.wanted_for >= stop) {
                 self.hide_wanted();
             }
         }

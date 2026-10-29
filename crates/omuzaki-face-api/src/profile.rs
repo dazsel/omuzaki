@@ -1164,7 +1164,8 @@ mod tests {
         let p: FaceProfile = serde_json::from_str(r#"{"mouth":{"fang":{"kind":"pointed"}}}"#).unwrap();
         assert_eq!(p.mouth.fang.kind, FangKind::Both);
         assert_eq!(serde_json::to_value(FangKind::Both).unwrap(), "both");
-        for (text, kind) in [("one_left", FangKind::OneLeft), ("one-left", FangKind::OneLeft), ("one-right", FangKind::OneRight)]
+        for (text, kind) in
+            [("one_left", FangKind::OneLeft), ("one-left", FangKind::OneLeft), ("one-right", FangKind::OneRight)]
         {
             let p: FaceProfile =
                 serde_json::from_str(&format!(r#"{{"mouth":{{"fang":{{"kind":"{text}"}}}}}}"#)).unwrap();
@@ -1179,8 +1180,8 @@ mod tests {
     fn the_right_iris_takes_what_it_says_and_the_left_irises_the_rest() {
         let same = EyeStyle::default();
         assert_eq!(same.iris_paint(true), same.iris_paint(false), "no right iris: both eyes match");
-        let p: FaceProfile = serde_json::from_str(r##"{"eyes":{"right_iris":{"mid":"#c03a3a","pupil":{"shape":"slit"}}}}"##)
-            .unwrap();
+        let p: FaceProfile =
+            serde_json::from_str(r##"{"eyes":{"right_iris":{"mid":"#c03a3a","pupil":{"shape":"slit"}}}}"##).unwrap();
         p.validate().unwrap();
         let (left, right) = (p.eyes.iris_paint(false), p.eyes.iris_paint(true));
         assert_eq!(*right.mid, ColourRef::rgb(0xc0, 0x3a, 0x3a));
