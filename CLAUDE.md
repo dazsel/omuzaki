@@ -11,17 +11,39 @@ Deliver the whole product in `docs/product/02-studio-spec-v3.md`: one applicatio
 working for them, designs a VTuber character, performs it live into any streaming setup, and reuses it everywhere, at
 an extremely high quality, with an interface that is easy for both agents and people.
 
-## How the work runs: spine first (ADR 0067)
+## How the work runs: spines, in big chunks (ADR 0067)
 
 - **The spine** of an area is the thinnest end-to-end path through it that the product needs in order to exist: what
   a person or an agent can actually do, start to finish. The map is at the end of this file.
 - **One owner per area** (an Opus session at the highest effort offered) builds that area's spine with full agency:
-  it designs, writes and tests as it judges best, decides everything inside its area, and lands its own work.
+  it designs, writes and tests as it judges best, decides everything inside its area, and lands its own work. Seven
+  owners work at once, one per area of the map, and coordinate with each other on issue #2.
+- **Big chunks, many issues each.** An owner works in big one-shot chunks (the spine, then waves), never small steps.
+  Each chunk is one pull request that closes many of its area's open issues, each with its evidence. Spine work that
+  leaves most of an area's issues untouched is surface work: a chunk is scoped against the area's whole issue list.
 - **No review gate and no required checks.** No reviewer agents, no Codex, no sign-off labels, no fix rounds, no small
-  pull requests, no task fences. CI runs on every pull request and every push to `main`; its result informs you.
+  pull requests, no task fences. CI runs on every pull request and every push to `main`; an owner merges its own
+  chunk once CI is green.
 - **Make it exist first, then make it good.** When an area's spine passes its exists-when test, the area gets one deep
   audit (correctness, security, performance), its findings are fixed, and then its leaves start: the rest of its
   spec, in the order of spec §35. Everything in the spec ships; the spine changes the order, not the scope.
+
+### A chunk, start to finish
+
+1. **Plan.** Go through every open issue under your area's labels. Pick the chunk: as much as you can build correctly
+   in one go, in your section's order. Post on #2 the issues it covers, its target count and what a person or an
+   agent can do once it lands.
+2. **Build** on `spine/<slug>` with one pull request against `main` (a draft is fine), building to each issue's
+   acceptance criteria. Commit and push at least every 30 minutes; merge `main` in at least daily.
+3. **Prove** each issue with its evidence in the pull request body: tests, numbers, renders or a video. Write one
+   `Closes #n` line per issue, so the merge closes it.
+4. **Land.** Merge `main` in, wait for CI to go green, and merge with a merge commit. A failure that isn't yours (a
+   flaky test in another area) gets one re-run and an issue labelled `bug` for its owner; it is not a reason to wait.
+5. **Report** on #2: what landed, issues closed against the target, what's left open and why, and the next chunk.
+   Then watch CI on `main` and fix what you broke first.
+6. **Next chunk.** Open the next pull request from the same branch and start again at step 1.
+
+Anything only a person can check (see "Hand-only checks" below) never holds a chunk back.
 
 ## Why we work this way
 
@@ -55,8 +77,13 @@ what can't be undone.
   - keep `main` green: watch CI on `main`; if it's red and its author doesn't fix it promptly, fix it or have it fixed;
   - keep this file's map current (order, contracts, what's done);
   - make sure every bug anyone finds becomes an issue labelled `bug` (or is fixed on the spot);
-  - report to the owner at milestones only: an area passing its exists-when test, with the evidence, and "Omuzaki
-    exists". Routine events get a line or nothing.
+  - pass the owner's direction to the area owners it concerns, and post the owner's decisions as rulings on #2;
+  - check on the owners: one that has gone quiet, or stopped before landing its pull request, is told to resume and
+    land; a finished session is archived;
+  - keep the hand-only checks in one list for the owner (see "Hand-only checks");
+  - refresh the build stats after chunks land (see "Tracking");
+  - report to the owner at milestones: an area passing its exists-when test, with the evidence, and "Omuzaki exists".
+    A landed chunk gets one line (issues closed, what it adds); other routine events get nothing.
 - **Area owners** decide everything inside their area, land their own work and keep the area's status on issue #2.
   They ask the Director only about a breaking change to a contract another area uses, or a call that spans areas.
 - **Instructions** reach a session from the owner directly, or from the Director in the session or as a comment that
@@ -67,12 +94,14 @@ what can't be undone.
 
 > You own the <area> spine of Omuzaki (dazsel/omuzaki), section "<n>. <area>" of the spine map in CLAUDE.md. Read
 > CLAUDE.md in full and AGENTS.md, then your section, the spec sections and design docs it points to, and the code.
-> Build the spine end to end with full agency, in your section's order; decide the details yourself. Work on branch
-> `spine/<slug>` with one pull request against `main`; commit and push at least every 30 minutes; merge `main` in daily
-> and right before you land; land working slices yourself with a merge commit; after landing, watch CI on `main` and
-> fix what you broke first. Your inherited pull requests are yours to merge, finish, fold in or close. Post on #2 when
-> you land a slice and when your exists-when test passes, with evidence (numbers, a render or a video). Never block:
-> decide, keep working, and ask on #2 with options and a recommendation.
+> Build the spine end to end with full agency, in your section's order; decide the details yourself. Work in big
+> chunks, as "A chunk, start to finish" in CLAUDE.md describes: scope each against all your area's open issues, post
+> its issues and target count on #2, and close each issue with its evidence. Work on branch `spine/<slug>` with one
+> pull request against `main`; commit and push at least every 30 minutes; merge `main` in daily and right before you
+> land; land each chunk yourself with a merge commit once CI is green; after landing, watch CI on `main` and fix what
+> you broke first. Your inherited pull requests are yours to merge, finish, fold in or close. Post on #2 when you land
+> a chunk and when your exists-when test passes, with evidence (numbers, a render or a video). Never block: decide,
+> keep working, and ask on #2 with options and a recommendation; leave hand-only checks to the owner with exact steps.
 
 ## Rules that always hold
 
@@ -110,9 +139,9 @@ something is private, leave it out and ask the owner.
   pushed work survives.
 - **Merge `main` into your branch** at least daily and right before you land. Never rebase a shared branch; never
   force-push `main`.
-- **Land it yourself** with a merge commit (not a squash) when a working slice is in, then open the next pull request
-  from the same branch. Any size. (A merge commit keeps your commits and their trailers on `main` and lets the branch
-  carry on without conflicts; a squash would make the branch conflict with its own landed work.)
+- **Land it yourself** with a merge commit (not a squash) once a chunk is in and CI is green, then open the next pull
+  request from the same branch. Any size. (A merge commit keeps your commits and their trailers on `main` and lets the
+  branch carry on without conflicts; a squash would make the branch conflict with its own landed work.)
 - **Keep `main` green.** After you land, watch CI on `main`. If your change broke the build or a test, fixing it comes
   first. Anyone may fix a red `main`; say so on #2.
 - **Another area's code:** change it when your work needs a call site, a test or one line of wiring; for anything
@@ -121,6 +150,13 @@ something is private, leave it out and ask the owner.
   labelled `bug` with the area named in its body.
 - **Never block on a question.** Decide, keep working, and ask on #2 with options and a recommendation. Questions for
   the owner go through the Director.
+- **Hand-only checks are left to the owner.** What a cloud session can't do (timings on a real GPU, a real webcam or
+  microphone, OBS, Windows or macOS, a hand test in a real window, a service that needs the owner's own key) goes on
+  #2 or on its issue as exact steps: the commands, how long it takes, and what to paste back. Keep the issue open,
+  say on your pull request that it waits on a hand check, and keep going. The owner runs these when they can.
+- **Tracking:** the build stats in `docs/history/build-stats/` are refreshed after chunks land, not on a timer: the
+  Director runs `refresh.py` and adds a cloud-usage row, in one pull request merged once CI is green. A change to how
+  the work runs gets a row in its `events.csv`. Aggregates only: no cost, no names, no per-session detail.
 - **Times for the owner** are Pacific time, 12-hour clock.
 - **Hygiene:** wrap long commands in a timeout, stop every background process you started, and search the issues
   before filing one.
@@ -144,6 +180,24 @@ later work cheaper; every owner holds itself to them, and nobody gates on them:
   central list every feature edits; `omuzaki-core` and the `*-api` crates stay contracts (`cargo xtask lint-deps`);
   every struct-like variant of a public enum in an `*-api` crate is `#[non_exhaustive]` with a constructor (#1514); a
   crate that registers things is linked into the Apps with a one-line `link()` call (ADR 0015).
+
+### The quality loop: match a reference
+
+The bar for what Omuzaki can make is a reference: a video (or several) of a character, its performance, its
+creativity, emotion and expression, at the quality the product must reach. The target is to match it shot for shot.
+
+1. **Recreate it** with Omuzaki the way a person or an agent would, end to end, through operations.
+2. **Compare** side by side, frame by frame and against the numbers, and list every gap: a missing feature, a result
+   that falls short, or a step that is too slow or too hard for someone new to the app.
+3. **Answer your own questions and act.** Decide what each gap needs, mention the decision on #2, and do it without
+   waiting for an answer. Only money and a change to the product's scope go to the owner.
+4. **File each gap as an issue** with its area's label, the shot it comes from and what "matches" means as its
+   acceptance criteria.
+5. **Close them in chunks,** like any other issues, then recreate the reference again and compare. Repeat until it
+   matches; then take the next reference.
+
+A reference that isn't the project's own stays out of the repository: describe it in words, and use the kit's
+characters for every render and video in the evidence.
 
 ## Product principles
 
@@ -172,8 +226,8 @@ later work cheaper; every owner holds itself to them, and nobody gates on them:
   Check `df -h .` before a big build; `cargo clean -p <crate>` or delete `target/` when the disk fills.
 - **Long cargo commands:** run them in the background and wait for them to finish; render tests use lavapipe, which
   the environment installs.
-- **What a VM can't do** (a real GPU, a real webcam, OBS, Windows): ask the owner, through the Director, for a run with
-  exact steps.
+- **What a VM can't do** (a real GPU, a real webcam, OBS, Windows): leave it to the owner as a hand-only check with
+  exact steps (see "Working").
 
 ## Activity trailers
 
