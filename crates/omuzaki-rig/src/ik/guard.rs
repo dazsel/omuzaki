@@ -293,14 +293,17 @@ impl BodyProxy {
             // The hand: the vertices of the hand bone and every bone under it (the fingers), less the thumb, which
             // stands off the palm and would make a flat hand as thick as a fist.
             let thumb = thumb_bones(map, hand);
-            let under_hand = |mut b: BoneId| !thumb.contains(&Some(b)) && loop {
-                if b == wrist {
-                    break true;
-                }
-                match skeleton.bones()[b.index()].parent {
-                    Some(parent) => b = parent,
-                    None => break false,
-                }
+            let under_hand = |mut b: BoneId| {
+                !thumb.contains(&Some(b))
+                    && loop {
+                        if b == wrist {
+                            break true;
+                        }
+                        match skeleton.bones()[b.index()].parent {
+                            Some(parent) => b = parent,
+                            None => break false,
+                        }
+                    }
             };
             let points: Vec<Vec3> = vertices.iter().filter(|(_, b)| under_hand(*b)).map(|(p, _)| *p).collect();
             if points.is_empty() {
@@ -416,11 +419,8 @@ impl BodyProxy {
             let (on_arm, on_body) = (p + (q - p) * s, a + (b - a) * t);
             // Out of the body; on the axis itself, forward.
             let normal = (on_arm - on_body).try_normalize().unwrap_or(forward);
-            let own = if k == 0 {
-                self.forearm_radius
-            } else {
-                ellipsoid_toward(self.hand_axes[i], wrist.rotation, normal)
-            };
+            let own =
+                if k == 0 { self.forearm_radius } else { ellipsoid_toward(self.hand_axes[i], wrist.rotation, normal) };
             let gap = on_arm.distance(on_body) - own - obstacle.across(normal, b - a, forward);
             if gap < best.0 {
                 best = (gap, normal, if k == 0 { s } else { 1.0 });

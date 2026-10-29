@@ -49,4 +49,5 @@ pub mod template;
 
 omuzaki_core::define_link! {
     omuzaki_char_api::link();
+    omuzaki_library_api::link();
 }

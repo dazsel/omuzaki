@@ -64,8 +64,12 @@ fn each_templates_forearms_are_kept_out_of_its_chest_and_its_bind_pose_is_left_a
         let built = build(template.id());
         let mut guard = guard(&built);
         let skeleton = Arc::new(built.rig.skeleton.clone());
-        let parts: Vec<String> =
-            guard.proxy().body.iter().map(|p| format!("{:?} {:.0}x{:.0} mm", p.part, p.radius * 1e3, p.depth * 1e3)).collect();
+        let parts: Vec<String> = guard
+            .proxy()
+            .body
+            .iter()
+            .map(|p| format!("{:?} {:.0}x{:.0} mm", p.part, p.radius * 1e3, p.depth * 1e3))
+            .collect();
         println!(
             "{}: {}, forearm {:.0} mm, hand {:.3} mm",
             template.id(),
