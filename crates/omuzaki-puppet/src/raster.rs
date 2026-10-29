@@ -171,6 +171,10 @@ fn draw_band(
                 });
             }
             DrawCmd2D::Mesh { texture, first, count, state } => {
+                // A hidden part (an expression or a pose that is off) costs nothing: zero opacity changes no pixel.
+                if state.opacity <= 0.0 {
+                    continue;
+                }
                 let Some(tex) = textures.get(texture.get()) else {
                     debug_assert!(false, "a mesh names a texture that isn't loaded");
                     continue;
