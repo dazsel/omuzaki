@@ -357,6 +357,10 @@ impl Session for SlotSession {
         info.fallback_for = info.fallback_for.filter(|w| *w != info.model);
         info
     }
+
+    fn phonemes(&self) -> Option<&str> {
+        self.active.as_ref().and_then(|active| active.session.phonemes())
+    }
 }
 
 impl Drop for SlotSession {

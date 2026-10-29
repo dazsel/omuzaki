@@ -52,7 +52,7 @@ pub const ONSET_VOICED_WITHIN_S: f32 = 0.06;
 /// A hop this far under the sentence's peak, not voiced, while speaking, is a stop's closure, dB.
 pub const GAP_BELOW_DB: f32 = 25.0;
 /// A voiced hop this far under the sentence's peak, with a first formant below [`MURMUR_F1_HZ`], is a nasal, dB.
-pub const MURMUR_BELOW_DB: f32 = 7.0;
+pub const MURMUR_BELOW_DB: f32 = 10.0;
 /// See [`MURMUR_BELOW_DB`], Hz.
 pub const MURMUR_F1_HZ: f32 = 400.0;
 /// How fast the sentence's peak falls while nothing louder is voiced, dB per second.

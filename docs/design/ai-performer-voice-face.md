@@ -288,6 +288,16 @@ that used one (`late_keys` / ticks).** Delaying ticks instead would put the mout
 mouth's first frame is ready: that adds ≤ 100 ms to ADR 0031 §5.3 (2,396 + 100 ≤ 2,500 ms p95). On a cut the pump calls
 `VoiceLead::cut(at)`, which only tidies: the drive's release and drop decisions never wait for it (§4.2).
 
+**Phones (#2351).** A speech model that knows what it said reports it after each run as `Session::phonemes`
+(`omuzaki-ai-api`; Kokoro gives misaki's phoneme string, a model that doesn't gives `None`). Before a line's first
+sample the pump calls `VoiceLead::line(feed_sample, rate, pcm, phonemes)` with the whole line (never for private
+speech). `LeadAnalysis` (`omuzaki-track-voice`) aligns the phones to the line's own sound (a segmental DP over the
+analyser's frames, with a duration prior and a penalty for pauses inside a word) and, for every frame that falls in the
+line, takes the mouth from the aligned phones: lips shut on p, b and m, the vowel's shape on vowels, `PHONE_LEAD_S`
+(30 ms) early so the face's attack lands it on the sound. Frames outside a known line keep the analyser's mouth. On
+Kokoro's own voices the phone mouth gets 72 to 76 % of vowel frames right and shuts on 82 % of closures, against
+open-annie's 34.6 % and 40.9 % (the harness is `tools/lipsync-eval/`).
+
 ### 4.2 The mouth drive (`omuzaki-voice`)
 
 One thread, one model session, and **one timeline** in which stamping, interpolation, release, stalls and cuts are

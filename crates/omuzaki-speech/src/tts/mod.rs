@@ -199,6 +199,8 @@ struct OnFeed {
 struct ChunkInner {
     state: SpeechState,
     pcm: Option<Arc<Vec<f32>>>,
+    /// The phonemes the model spoke the PCM from, when it reports them: the mouth lines its lips up with them.
+    phonemes: Option<Arc<str>>,
     feed: Option<OnFeed>,
     /// PCM samples written, then pad samples written.
     written: usize,
@@ -208,6 +210,9 @@ struct ChunkInner {
     settled: bool,
     late: bool,
 }
+
+/// A cut chunk's speech kept for its resume: its key, PCM and phonemes.
+type Spoken = (String, Arc<Vec<f32>>, Option<Arc<str>>);
 
 /// One queued chunk: the host's record, which every handle on it reads.
 struct Chunk {
@@ -356,7 +361,7 @@ struct State {
     /// The public feed in use: 0 or 1.
     active: usize,
     /// The last cut chunk's PCM, by its key.
-    cache: Option<(String, Arc<Vec<f32>>)>,
+    cache: Option<Spoken>,
     synthesising: bool,
     /// The last chunk written has played to its end, and nothing was written after it.
     drained: bool,
@@ -570,6 +575,7 @@ impl PcmVoice for TtsHost {
             inner: Mutex::new(ChunkInner {
                 state: SpeechState::ready(duration),
                 pcm: Some(Arc::new(pcm)),
+                phonemes: None,
                 feed: None,
                 written: 0,
                 pad_written: 0,
@@ -599,7 +605,11 @@ impl Voice for TtsHost {
         let controls = StyleControls::of(&how.style);
         let key = format!("{sentence}\u{0}{voice}\u{0}{how:?}");
         let mut state = lock(&shared.state);
-        let cached = state.cache.as_ref().filter(|(k, _)| *k == key).map(|(_, pcm)| Arc::clone(pcm));
+        let cached = state
+            .cache
+            .as_ref()
+            .filter(|(k, ..)| *k == key)
+            .map(|(_, pcm, phonemes)| (Arc::clone(pcm), phonemes.clone()));
         let chunk = Arc::new(Chunk {
             text: sentence.to_owned(),
             key,
@@ -612,6 +622,7 @@ impl Voice for TtsHost {
             inner: Mutex::new(ChunkInner {
                 state: SpeechState::Queued,
                 pcm: None,
+                phonemes: None,
                 feed: None,
                 written: 0,
                 pad_written: 0,
@@ -620,10 +631,11 @@ impl Voice for TtsHost {
                 late: false,
             }),
         });
-        if let Some(pcm) = cached {
+        if let Some((pcm, phonemes)) = cached {
             let mut inner = lock(&chunk.inner);
             inner.state = SpeechState::ready(chunk.seconds(pcm.len()));
             inner.pcm = Some(pcm);
+            inner.phonemes = phonemes;
             state.stats.resumed += 1;
         }
         state.queue.push_back(Arc::clone(&chunk));
@@ -699,6 +711,7 @@ impl Shared {
                 // Trimmed in samples of the declared rate: the kept 40 ms are 40 ms as played.
                 trim(pcm, self.rate).iter().map(|s| s * gain).collect::<Vec<f32>>()
             });
+            let phonemes = session.phonemes().filter(|p| !p.is_empty()).map(Arc::<str>::from);
             let mut state = lock(&self.state);
             state.synthesising = false;
             {
@@ -710,6 +723,7 @@ impl Shared {
                             inner.state = SpeechState::ready(chunk.seconds(pcm.len()));
                         }
                         inner.pcm = Some(Arc::new(pcm));
+                        inner.phonemes = phonemes;
                     }
                     _ => {
                         state.stats.failures += 1;
@@ -766,7 +780,7 @@ impl Shared {
                 if inner.cut || matches!(inner.state, SpeechState::Playing { .. }) {
                     inner.cut = true;
                     if cut_pcm.is_none() {
-                        cut_pcm = inner.pcm.clone().map(|pcm| (chunk.key.clone(), pcm));
+                        cut_pcm = inner.pcm.clone().map(|pcm| (chunk.key.clone(), pcm, inner.phonemes.clone()));
                     }
                     chunk.settle(&mut inner);
                 } else {
@@ -892,6 +906,12 @@ impl Shared {
             let mut room = usize::try_from(lead_samples.saturating_sub(queued)).unwrap_or(0).min(writer.free());
             if inner.written < pcm.len() && room > 0 {
                 let from = inner.written;
+                if from == 0
+                    && !chunk.private
+                    && let (Some(lead), Some(phonemes)) = (state.lead.as_mut(), inner.phonemes.as_deref())
+                {
+                    lead.line(writer.written(), self.rate, &pcm, phonemes);
+                }
                 let take = room.min(pcm.len() - from);
                 let pushed = writer.push(&pcm[from..from + take]);
                 if let Some(lead) = state.lead.as_mut() {
