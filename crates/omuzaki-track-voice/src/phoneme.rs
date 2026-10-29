@@ -16,6 +16,7 @@
 use omuzaki_anim_api::{Channel, ChannelBuf, ChannelMask};
 use omuzaki_face_api::expression::{ExpressionId, ExpressionSet, IntensityCurve};
 
+use crate::analyzer::VoiceFrame;
 use crate::lipsync::PRESS;
 use crate::viseme::Viseme;
 
@@ -137,7 +138,20 @@ impl MouthFrame {
     pub fn openness(&self) -> f32 {
         (self.visemes.iter().sum::<f32>() * (1.0 - self.closure)).clamp(0.0, 1.0)
     }
+
+    /// Puts this mouth on an analyser frame, as [`LipSync`](crate::LipSync) reads it: the visemes narrowed by a
+    /// partial closure (`f v`), and the frame's closure set when the lips meet (`p b m`, from [`SHUT_FROM`]). Level,
+    /// voicing and onsets stay the audio's.
+    pub fn onto(&self, frame: &mut VoiceFrame) {
+        let shut = self.closure >= SHUT_FROM;
+        let open = if shut { 0.0 } else { 1.0 - self.closure.clamp(0.0, 1.0) };
+        frame.visemes = self.visemes.map(|v| v * open);
+        frame.closure = if shut { 1.0 } else { 0.0 };
+    }
 }
+
+/// A phone mouth this shut is a closure: the lips meet (`p b m`); less is a narrowing that shrinks the vowel (`f v`).
+pub const SHUT_FROM: f32 = 0.9;
 
 /// `t` eased: 0 at 0, 1 at 1, smooth at both ends.
 fn smooth(t: f64) -> f64 {

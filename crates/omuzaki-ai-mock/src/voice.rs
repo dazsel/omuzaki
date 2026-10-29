@@ -101,6 +101,8 @@ pub struct FakeTts {
     fail: BTreeSet<usize>,
     gate: Option<Receiver<()>>,
     calls: Arc<AtomicUsize>,
+    /// The last text, given back as its phonemes when the fake reports them.
+    spoken: Option<String>,
 }
 
 impl Default for FakeTts {
@@ -119,7 +121,16 @@ impl FakeTts {
             fail: BTreeSet::new(),
             gate: None,
             calls: Arc::new(AtomicUsize::new(0)),
+            spoken: None,
         }
+    }
+
+    /// Reports each call's text as the phonemes it spoke ([`Session::phonemes`]), as Kokoro reports its own, so a
+    /// test can say a line in phonemes.
+    #[must_use]
+    pub fn with_phonemes(mut self) -> Self {
+        self.spoken = Some(String::new());
+        self
     }
 
     /// Only these voices (and the empty voice, the first of them); any other is an error.
@@ -186,6 +197,10 @@ impl Session for FakeTts {
             return Err(RunError::Failed(format!("no voice {voice:?}")));
         }
         let pcm = fake_speech(text, speed.first().copied().unwrap_or(1.0));
+        if let Some(spoken) = self.spoken.as_mut() {
+            spoken.clear();
+            spoken.push_str(text);
+        }
         let problem = |problem| RunError::Mismatch { port: Port::Output, index: 0, problem };
         if let TensorDataMut::F32(out) = outputs[0].resize(&[pcm.len()]).map_err(problem)? {
             out.copy_from_slice(&pcm);
@@ -197,6 +212,10 @@ impl Session for FakeTts {
 
     fn info(&self) -> SessionInfo {
         SessionInfo { model: fake_model(), provider: Provider::Cpu, sandboxed: false, fallback_for: None }
+    }
+
+    fn phonemes(&self) -> Option<&str> {
+        self.spoken.as_deref()
     }
 }
 

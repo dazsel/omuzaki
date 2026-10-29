@@ -437,6 +437,14 @@ pub trait VoiceLead: Send {
 
     /// The pump saw a cut at `at`. Only tidies: the drive's release decisions come from the probe, never from this.
     fn cut(&mut self, at: Seconds);
+
+    /// A line's whole voice before its first [`push`](VoiceLead::push): `pcm` (mono, `rate` Hz) will be written from
+    /// feed index `feed_sample` of the attached feed, and the model spoke it from `phonemes` (misaki's alphabet, as
+    /// `omuzaki-ai-api`'s `Session::phonemes` gives them). A drive that knows phones lines its lips up with them
+    /// (#2351); the default ignores it. Called on the pump's thread: it may take a few milliseconds, never longer.
+    fn line(&mut self, feed_sample: u64, rate: u32, pcm: &[f32], phonemes: &str) {
+        let _ = (feed_sample, rate, pcm, phonemes);
+    }
 }
 
 #[cfg(test)]

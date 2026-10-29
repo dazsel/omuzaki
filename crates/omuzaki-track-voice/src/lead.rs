@@ -13,7 +13,13 @@
 //! The pump hands over PCM about half a second before it plays; each 10 ms frame is stamped with the program time its
 //! audio is predicted to play (the pump's `at` plus its offset in the PCM) and published only when that time comes,
 //! so the mouth moves with the sound, not ahead of it. A cut drops every frame after it and closes the mouth; private
-//! speech moves nothing (§4.3). [`MouthDrive`](crate::MouthDrive) is the learned-model path that replaces this when a
+//! speech moves nothing (§4.3).
+//!
+//! **Phones** (#2351). When the TTS model reports the phonemes it spoke ([`VoiceLead::line`]), the line's phones are
+//! aligned to its audio ([`align`](crate::align::align)) before its first sample is pushed, and every frame inside the
+//! line takes its visemes and closure from the [`PhonemeMouth`] at the moment the frame's audio plays: the right vowel
+//! shape, and lips shut on `p b m` even when the voice runs through them. Loudness, voicing and onsets still come from
+//! the audio. A line without phonemes, or a model that reports none, keeps the analyser's own mouth. [`MouthDrive`](crate::MouthDrive) is the learned-model path that replaces this when a
 //! `voice_to_face@1` model is installed; this one needs no model.
 
 use std::collections::VecDeque;
@@ -22,14 +28,29 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use omuzaki_core::time::Seconds;
 use omuzaki_performer_api::voice::{CutProbe, CutState, VoiceLead};
 
+use crate::align::align;
 use crate::analyzer::{HOP_S, VoiceAnalyzer, VoiceFrame};
 use crate::mailbox::VoiceWriter;
+use crate::phoneme::{PhonemeMouth, phones};
 use crate::viseme::VowelProfile;
 
 /// Frames kept ahead of playback: 4 s, far more than the pump's lead.
 pub const QUEUE_FRAMES: usize = 400;
 /// With nothing more to play for this long after the last frame, the mouth is closed.
 pub const CLOSE_AFTER_S: f64 = 0.05;
+/// Lines kept with their phones: the TTS host writes at most a few ahead of the one playing.
+const LINES: usize = 8;
+/// How far ahead of its frame's sound the phone mouth is read, seconds: the line is known in full, so the mouth can
+/// start toward each shape early by [`LipSync`](crate::LipSync)'s attack and land on the sound.
+pub const PHONE_LEAD_S: f64 = 0.03;
+
+/// A line whose phones are known: feed samples `[start, end)` at `rate`, and its mouth.
+struct Line {
+    start: u64,
+    end: u64,
+    rate: u32,
+    mouth: PhonemeMouth,
+}
 
 struct Inner {
     profile: VowelProfile,
@@ -46,6 +67,10 @@ struct Inner {
     /// The pump's last cut, until new PCM arrives.
     cut: Option<f64>,
     frames: u64,
+    /// The lines with phones on the attached feed, oldest first.
+    lines: VecDeque<Line>,
+    /// Frames whose mouth came from a line's phones.
+    phoned: u64,
 }
 
 /// The analysis of the AI's voice. Clone it: one clone goes to the TTS host as its [`VoiceLead`], another is polled by
@@ -67,6 +92,8 @@ impl LeadAnalysis {
             pcm_end: f64::NEG_INFINITY,
             cut: None,
             frames: 0,
+            lines: VecDeque::new(),
+            phoned: 0,
         })))
     }
 
@@ -106,6 +133,11 @@ impl LeadAnalysis {
     pub fn frames(&self) -> u64 {
         self.lock().frames
     }
+
+    /// Frames whose visemes and closure came from their line's phones.
+    pub fn phoned_frames(&self) -> u64 {
+        self.lock().phoned
+    }
 }
 
 impl Inner {
@@ -122,10 +154,32 @@ impl VoiceLead for LeadAnalysis {
         let mut inner = self.lock();
         inner.probe = Some(probe);
         inner.queue.clear();
+        inner.lines.clear();
         inner.pcm_end = f64::NEG_INFINITY;
     }
 
-    fn push(&mut self, at: Seconds, _feed_sample: u64, rate: u32, pcm: &[f32], private: bool) {
+    /// Aligns the line's phones to its audio (outside the lock: a few milliseconds for a long line) and keeps them for
+    /// the frames of `[feed_sample, feed_sample + pcm.len())`.
+    fn line(&mut self, feed_sample: u64, rate: u32, pcm: &[f32], phonemes: &str) {
+        let line = phones(phonemes);
+        if line.is_empty() || pcm.is_empty() {
+            return;
+        }
+        let profile = self.lock().profile;
+        let Ok(mut analyzer) = VoiceAnalyzer::new(rate, profile) else { return };
+        let mut frames = Vec::with_capacity(pcm.len() / 160 + 1);
+        analyzer.push(pcm, |f| frames.push(*f));
+        let mouth = PhonemeMouth::new(align(&line, &frames));
+        let mut inner = self.lock();
+        let end = feed_sample + pcm.len() as u64;
+        inner.lines.retain(|l| l.end <= feed_sample || l.start >= end);
+        inner.lines.push_back(Line { start: feed_sample, end, rate, mouth });
+        while inner.lines.len() > LINES {
+            inner.lines.pop_front();
+        }
+    }
+
+    fn push(&mut self, at: Seconds, feed_sample: u64, rate: u32, pcm: &[f32], private: bool) {
         if private || pcm.is_empty() || rate == 0 {
             return;
         }
@@ -145,12 +199,25 @@ impl VoiceLead for LeadAnalysis {
         let hop = ((rate as f32 * HOP_S).round() as usize).max(1);
         let mut produced = Vec::new();
         let mut offset = 0usize;
-        if let Some((_, analyzer)) = inner.analyzer.as_mut() {
+        let Inner { analyzer, lines, phoned, .. } = &mut *inner;
+        if let Some((_, analyzer)) = analyzer.as_mut() {
             for slice in pcm.chunks(hop) {
                 offset += slice.len();
                 #[allow(clippy::cast_precision_loss)]
                 let t = start + offset as f64 / f64::from(rate);
-                analyzer.push(slice, |frame| produced.push((t, *frame)));
+                // The feed sample playing at `t`, and the line it belongs to.
+                let at_sample = feed_sample + offset as u64;
+                let line = lines.iter().find(|l| l.rate == rate && l.start < at_sample && at_sample <= l.end);
+                analyzer.push(slice, |frame| {
+                    let mut frame = *frame;
+                    if let Some(line) = line {
+                        #[allow(clippy::cast_precision_loss)] // a line is seconds long
+                        let into = (at_sample - line.start) as f64 / f64::from(rate);
+                        line.mouth.frame(into + PHONE_LEAD_S).onto(&mut frame);
+                        *phoned += 1;
+                    }
+                    produced.push((t, frame));
+                });
             }
         }
         #[allow(clippy::cast_precision_loss)]
@@ -165,6 +232,7 @@ impl VoiceLead for LeadAnalysis {
 
     fn cut(&mut self, at: Seconds) {
         let mut inner = self.lock();
+        inner.lines.clear();
         inner.queue.retain(|(t, _)| *t <= at.0);
         inner.pcm_end = f64::NEG_INFINITY;
         inner.cut = Some(at.0);
@@ -205,6 +273,64 @@ mod tests {
         lead.poll(Seconds(1.7));
         let closed = reader.poll().unwrap();
         assert!(!closed.speaking && closed.visemes.iter().all(|v| *v == 0.0));
+    }
+
+    #[test]
+    fn a_line_s_phones_shut_the_lips_on_its_closures_and_shape_its_vowels() {
+        use crate::phoneme::Phone;
+        use crate::synth::{Sound, utterance};
+        // "ma, bo pi": a nasal and two stops a voice runs through, each before another vowel.
+        let lips = |seconds| Sound::Stop { lips: true, seconds };
+        let sounds = [
+            Sound::Pause(0.2),
+            Sound::Nasal(0.08),
+            Sound::Vowel(Viseme::Aa, 0.22),
+            Sound::Pause(0.12),
+            lips(0.08),
+            Sound::Vowel(Viseme::Oh, 0.2),
+            lips(0.08),
+            Sound::Vowel(Viseme::Ih, 0.2),
+            Sound::Pause(0.3),
+        ];
+        let rate = 24_000;
+        let (pcm, truth) = utterance(&sounds, 160.0, rate, 0.5);
+        let (writer, mut reader) = voice_mailbox();
+        let lead = LeadAnalysis::new(writer, VowelProfile::default());
+        let mut pump = lead.clone();
+        pump.line(0, rate, &pcm, "mˈɑ, bˈɔ pˈi");
+        // The pump writes it in 50 ms pieces, from feed sample 0, playing from 1.0 s.
+        for (i, piece) in (0u32..).zip(pcm.chunks(1_200)) {
+            let first = i * 1_200;
+            pump.push(Seconds(1.0 + f64::from(first) / f64::from(rate)), u64::from(first), rate, piece, false);
+        }
+        assert!(lead.phoned_frames() > 100, "{} frames took their mouth from the phones", lead.phoned_frames());
+        // What the stage reads every 10 ms while it plays.
+        let mut shown = Vec::new();
+        for k in 0..170 {
+            let t = 1.0 + f64::from(k) * 0.01;
+            lead.poll(Seconds(t));
+            if let Some(frame) = reader.poll() {
+                shown.push((t - 1.0, frame));
+            }
+        }
+        let shown = &shown;
+        // The phones lead the sound by PHONE_LEAD_S, so that the face's attack lands the shape on it.
+        let during = |span: crate::PhoneSpan| {
+            let (start, end) = (span.start_s - PHONE_LEAD_S, span.end_s - PHONE_LEAD_S);
+            shown.iter().filter(move |(t, _)| *t >= start && *t < end)
+        };
+        for span in &truth {
+            match span.phone {
+                Phone::Bilabial => {
+                    assert!(during(*span).any(|(_, f)| f.closure > 0.5), "the lips shut on {span:?}");
+                }
+                Phone::Vowel(v) => {
+                    let right = during(*span).filter(|(_, f)| f.closure == 0.0 && f.visemes[v.index()] > 0.5).count();
+                    assert!(right >= 5, "{v:?} shows in {right} frames of {span:?}");
+                }
+                _ => {}
+            }
+        }
     }
 
     #[test]
