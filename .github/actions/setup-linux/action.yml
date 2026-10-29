@@ -46,9 +46,6 @@ runs:
         packages=(pkg-config libasound2-dev libudev-dev libxkbcommon-dev libwayland-dev libx11-dev libxcb1-dev)
         # libvulkan1 is the loader wgpu opens; mesa-vulkan-drivers ships lavapipe (lvp), the CPU Vulkan driver.
         if [[ $GPU == true ]]; then packages+=(libvulkan1 mesa-vulkan-drivers); fi
-        # libvpx (VP9) and libopus, which the video encoder loads at run time (BSD both): the recording and short tests
-        # write real videos instead of skipping.
-        if [[ $GPU == true ]]; then packages+=(libvpx9 libopus0); fi
         if [[ $WINDOWS_CROSS == true ]]; then packages+=(gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64); fi
         # Every package here is Ubuntu's own. The image's Microsoft list isn't needed, and when its server refuses the
         # update (a 403, as on 2026-10-22) the whole job failed for nothing.
