@@ -31,7 +31,7 @@ use omuzaki_performer_api::voice::{CutProbe, CutState, VoiceLead};
 use crate::align::align;
 use crate::analyzer::{HOP_S, VoiceAnalyzer, VoiceFrame};
 use crate::mailbox::VoiceWriter;
-use crate::phoneme::{MouthFrame, PhonemeMouth, phones};
+use crate::phoneme::{PhonemeMouth, phones};
 use crate::viseme::VowelProfile;
 
 /// Frames kept ahead of playback: 4 s, far more than the pump's lead.
@@ -40,8 +40,9 @@ pub const QUEUE_FRAMES: usize = 400;
 pub const CLOSE_AFTER_S: f64 = 0.05;
 /// Lines kept with their phones: the TTS host writes at most a few ahead of the one playing.
 const LINES: usize = 8;
-/// A phone mouth this shut is a closure: the lips meet (`p b m`); less is a narrowing that shrinks the vowel (`f v`).
-const SHUT_FROM: f32 = 0.9;
+/// How far ahead of its frame's sound the phone mouth is read, seconds: the line is known in full, so the mouth can
+/// start toward each shape early by [`LipSync`](crate::LipSync)'s attack and land on the sound.
+pub const PHONE_LEAD_S: f64 = 0.03;
 
 /// A line whose phones are known: feed samples `[start, end)` at `rate`, and its mouth.
 struct Line {
@@ -139,15 +140,6 @@ impl LeadAnalysis {
     }
 }
 
-/// `frame` with its mouth from `phones`: the visemes as the phones show them, narrowed by a partial closure, and the
-/// lips shut (closure 1) when the phones shut them.
-fn with_phones(frame: &mut VoiceFrame, phones: &MouthFrame) {
-    let shut = phones.closure >= SHUT_FROM;
-    let open = if shut { 0.0 } else { 1.0 - phones.closure.clamp(0.0, 1.0) };
-    frame.visemes = phones.visemes.map(|v| v * open);
-    frame.closure = if shut { 1.0 } else { 0.0 };
-}
-
 impl Inner {
     fn publish(&mut self, t: f64, frame: VoiceFrame, closing: bool) {
         self.seq += 1;
@@ -221,7 +213,7 @@ impl VoiceLead for LeadAnalysis {
                     if let Some(line) = line {
                         #[allow(clippy::cast_precision_loss)] // a line is seconds long
                         let into = (at_sample - line.start) as f64 / f64::from(rate);
-                        with_phones(&mut frame, &line.mouth.frame(into));
+                        line.mouth.frame(into + PHONE_LEAD_S).onto(&mut frame);
                         *phoned += 1;
                     }
                     produced.push((t, frame));
@@ -307,9 +299,9 @@ mod tests {
         let mut pump = lead.clone();
         pump.line(0, rate, &pcm, "mˈɑ, bˈɔ pˈi");
         // The pump writes it in 50 ms pieces, from feed sample 0, playing from 1.0 s.
-        for (i, piece) in pcm.chunks(1_200).enumerate() {
-            let first = (i * 1_200) as u64;
-            pump.push(Seconds(1.0 + first as f64 / f64::from(rate)), first, rate, piece, false);
+        for (i, piece) in (0u32..).zip(pcm.chunks(1_200)) {
+            let first = i * 1_200;
+            pump.push(Seconds(1.0 + f64::from(first) / f64::from(rate)), u64::from(first), rate, piece, false);
         }
         assert!(lead.phoned_frames() > 100, "{} frames took their mouth from the phones", lead.phoned_frames());
         // What the stage reads every 10 ms while it plays.
@@ -322,7 +314,11 @@ mod tests {
             }
         }
         let shown = &shown;
-        let during = |span: crate::PhoneSpan| shown.iter().filter(move |(t, _)| *t >= span.start_s && *t < span.end_s);
+        // The phones lead the sound by PHONE_LEAD_S, so that the face's attack lands the shape on it.
+        let during = |span: crate::PhoneSpan| {
+            let (start, end) = (span.start_s - PHONE_LEAD_S, span.end_s - PHONE_LEAD_S);
+            shown.iter().filter(move |(t, _)| *t >= start && *t < end)
+        };
         for span in &truth {
             match span.phone {
                 Phone::Bilabial => {

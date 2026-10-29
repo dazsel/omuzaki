@@ -211,6 +211,9 @@ struct ChunkInner {
     late: bool,
 }
 
+/// A cut chunk's speech kept for its resume: its key, PCM and phonemes.
+type Spoken = (String, Arc<Vec<f32>>, Option<Arc<str>>);
+
 /// One queued chunk: the host's record, which every handle on it reads.
 struct Chunk {
     text: String,
@@ -358,7 +361,7 @@ struct State {
     /// The public feed in use: 0 or 1.
     active: usize,
     /// The last cut chunk's PCM, by its key.
-    cache: Option<(String, Arc<Vec<f32>>, Option<Arc<str>>)>,
+    cache: Option<Spoken>,
     synthesising: bool,
     /// The last chunk written has played to its end, and nothing was written after it.
     drained: bool,

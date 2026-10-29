@@ -6641,6 +6641,7 @@ dependencies = [
  "omuzaki-core",
  "omuzaki-face-api",
  "omuzaki-performer-api",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 

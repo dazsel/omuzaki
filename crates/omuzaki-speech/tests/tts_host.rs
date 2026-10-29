@@ -424,7 +424,7 @@ fn a_model_that_reports_no_phonemes_leaves_the_lead_without_lines() {
     let mut rig = Rig::new();
     let h = rig.speak("Hello there.");
     rig.run_until(&h, SpeechState::is_final);
-    assert!(rig.seen.lock().unwrap().lines.is_empty());
+    assert_eq!(rig.seen.lock().unwrap().lines.len(), 0, "no lines without phonemes");
 }
 
 #[test]
