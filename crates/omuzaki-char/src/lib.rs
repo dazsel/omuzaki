@@ -39,6 +39,7 @@ pub mod fit;
 pub mod hair;
 pub mod head;
 pub mod kit;
+pub mod library_items;
 pub mod look;
 pub mod ops;
 pub mod outfit;

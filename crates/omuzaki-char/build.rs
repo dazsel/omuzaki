@@ -1,5 +1,5 @@
-//! Embeds the look presets in `library/looks/` (LK-06) and the character styles in `library/styles/`: writes `looks.rs`
-//! and `styles.rs` with one `(id, text)` entry per `<id>.toml` file, in name order, so a preset is added by adding a
+//! Embeds the look presets in `library/looks/` (LK-06), the character styles in `library/styles/` and the library items
+//! in `library/items/`: writes `looks.rs`, `styles.rs` and `items.rs` with one `(id, text)` entry per `<id>.toml` file, in name order, so a preset is added by adding a
 //! file and no list in code names them (spec v3 §39 rules 2 and 5). The crate parses them once (`src/look/mod.rs`,
 //! `src/style.rs`).
 
@@ -18,12 +18,16 @@ const LOOKS: &str = "library/looks";
 /// The folder of character styles, relative to the crate.
 const STYLES: &str = "library/styles";
 
+/// The folder of first-party library items (`omuzaki-library-api`'s manifests), relative to the crate.
+const ITEMS: &str = "library/items";
+
 /// The folder of op families, relative to the crate: its children are declared as modules (ADR 0054).
 const OPS: &str = "src/ops";
 
 fn main() {
     println!("cargo::rerun-if-changed={LOOKS}");
     println!("cargo::rerun-if-changed={STYLES}");
+    println!("cargo::rerun-if-changed={ITEMS}");
     if let Err(message) = generate() {
         println!("cargo::error={message}");
         process::exit(1);
@@ -35,6 +39,7 @@ fn generate() -> Result<(), String> {
     let out = PathBuf::from(env::var_os("OUT_DIR").ok_or("OUT_DIR isn't set")?);
     embed(&manifest, LOOKS, &out.join("looks.rs"))?;
     embed(&manifest, STYLES, &out.join("styles.rs"))?;
+    embed(&manifest, ITEMS, &out.join("items.rs"))?;
     omuzaki_embed::modules(manifest.join(OPS), out.join("ops_mods.rs"), "pub")
         .map_err(|e| format!("can't declare the ops modules: {e}"))
 }

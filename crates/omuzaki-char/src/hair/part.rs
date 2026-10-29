@@ -30,9 +30,9 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 
 use omuzaki_char_api::{
-    AnchorsFact, BodyRegion, BuildCtx, BuildError, FaceOverlay, Generator, GroupId, HAIR_UV, HairParams, HeadSurface,
-    JointRef, KindProvenance, MaterialName, MaterialSpec, PartCategory, PartId, PartKind, PartMesh, PartMeta,
-    PartOutput, RecolourCtx, Recoloured, StatureFact,
+    AnchorsFact, BodyRegion, BuildCtx, BuildError, Bulge, FaceOverlay, Generator, GroupId, HAIR_UV, HairParams,
+    HeadSurface, JointRef, KindProvenance, MaterialName, MaterialSpec, PartCategory, PartId, PartKind, PartMesh,
+    PartMeta, PartOutput, Quality, RecolourCtx, Recoloured, StatureFact, Taper,
 };
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::{Vec2, Vec3};
@@ -45,11 +45,14 @@ use super::compile::{self, CompiledEntry, Dispatch, GroupGenerator, GroupGeometr
 use super::r#gen::bangs;
 use super::r#gen::curtain::{self, BodyKeepOut, StripError};
 use super::r#gen::tail::Chain;
-use super::r#gen::{ahoge, bun, tail};
+use super::r#gen::{ahoge, bun, cap, tail};
 use super::physics::{self, runtime::HairRuntime};
 use super::reach::{HairReach, HairReachFact};
 use super::tie;
-use super::tube::{CAP_VERTICES, OutwardFrame, RING, TubeError, TubeLook, TubeMesh, polar_angles, vertex_colour};
+use super::tube::{
+    OutwardFrame, TubeError, TubeLook, TubeMesh, cap_vertices, polar_angles, refine, ring_for, vertex_colour,
+};
+use super::wisp;
 
 /// Where along the torso the body's vertical axis is read, from hips (0) to neck base (1): the upper back, where long
 /// hair hangs.
@@ -124,10 +127,12 @@ pub fn build_with(
 
     let frame = OutwardFrame { head: head.centre(), body_axis: body_axis(ctx, head.centre()) };
     clear_fringes(params, head.as_ref(), &frame, &mut entries).map_err(|e| ctx.fail(e))?;
+    tuck_shells(head.as_ref(), &mut entries);
     let mut warnings = Vec::new();
     let chains = tail_chains(params, ctx, head.as_ref())?;
-    let Meshes { stat, dynamic, ties } = mesh_groups(&entries, &frame, keep_out.as_ref(), &chains, &mut warnings)
-        .map_err(|e| ctx.fail(e.to_string()))?;
+    let Meshes { stat, dynamic, ties } =
+        mesh_groups(&entries, &frame, keep_out.as_ref(), &chains, ctx.quality, &mut warnings)
+            .map_err(|e| ctx.fail(e.to_string()))?;
 
     let material_name =
         MaterialName::new(format!("{}-hair", ctx.part)).map_err(|e| ctx.fail(format!("material name: {e}")))?;
@@ -265,6 +270,22 @@ fn clear_fringes(
     Ok(())
 }
 
+/// Tucks every shell (the scalp cap) under the locks drawn over it ([`cap::tuck`]), so no lock cuts through it.
+fn tuck_shells(head: &dyn HeadSurface, entries: &mut [CompiledEntry]) {
+    let locks: Vec<(Vec<Vec3>, Taper, Bulge)> = entries
+        .iter()
+        .filter(|e| !matches!(e.group.geometry, GroupGeometry::Shell(_)))
+        .flat_map(|e| e.group.clumps.iter().map(|c| (c.rest.clone(), c.width, c.thickness)))
+        .collect();
+    let locks: Vec<cap::Lock<'_>> =
+        locks.iter().map(|(rest, width, thickness)| cap::Lock { rest, width, thickness }).collect();
+    for entry in entries {
+        if let GroupGeometry::Shell(shell) = &mut entry.group.geometry {
+            cap::tuck(shell, head, &locks);
+        }
+    }
+}
+
 /// Publishes the anchors of every enabled tail and bun group, and adds each tail's spring chain to the rig.
 ///
 /// **Anchor names.** Keys are `(part, anchor)`, and a part can hold several tail or bun groups, so each anchor is named
@@ -343,16 +364,27 @@ enum MeshError {
     Strip(#[from] StripError),
 }
 
+/// Segments of an offline lock are split this many more times, on the spline through its points ([`refine`]).
+const OFFLINE_REFINE: usize = 1;
+
 /// The static and the dynamic mesh of the entries (`None` for a mesh with nothing in it): tubes first, in group order,
-/// then strips, then shells. Pushes a warning for each group that made nothing.
+/// then strips, then shells, then (offline) the wisps. Pushes a warning for each group that made nothing.
+///
+/// `quality` sets the detail: live locks are rings of 8 on their compiled points; offline locks are rings of 16 on
+/// twice the points, and the outer locks shed fine wisps ([`wisp`]), for close-ups.
 fn mesh_groups<'a>(
     entries: &[CompiledEntry],
     frame: &OutwardFrame,
     keep_out: Option<&BodyKeepOut>,
     chains: &'a BTreeMap<GroupId, Vec<Chain>>,
+    quality: Quality,
     warnings: &mut Vec<String>,
 ) -> Result<Meshes<'a>, MeshError> {
-    let (mut stat, mut dynamic) = (TubeMesh::new(), TubeMesh::new());
+    let ring = ring_for(quality);
+    let offline = quality == Quality::Offline;
+    let (mut stat, mut dynamic) = (TubeMesh::with_ring(ring), TubeMesh::with_ring(ring));
+    // The wisps the locks shed, with the mesh and the chain each goes with: drawn last, after the shells.
+    let mut wisps: Vec<(bool, wisp::Wisp, Option<&'a Chain>, TubeLook<'static>)> = Vec::new();
     let (mut stat_clumps, mut dynamic_clumps) = (0usize, 0usize);
     let (mut stat_runs, mut dynamic_runs, mut bands) = (Vec::new(), Vec::new(), Vec::new());
     for entry in entries {
@@ -370,18 +402,19 @@ fn mesh_groups<'a>(
                 let chains = chains.get(&entry.id).map_or(&[][..], Vec::as_slice);
                 let per_chain = entry.group.clumps.len().checked_div(chains.len()).unwrap_or(0).max(1);
                 for (k, clump) in entry.group.clumps.iter().enumerate() {
-                    let polar = polar_angles(&clump.rest, frame.head);
-                    let look = TubeLook {
-                        seed: strand_seed(*drawn, entry.simulate),
-                        shade: clump.shade,
-                        polar: &polar,
-                        tint: clump.tint,
-                        flip: 1.0,
-                    };
+                    let rest = if offline { refine(&clump.rest, OFFLINE_REFINE) } else { clump.rest.clone() };
+                    let polar = polar_angles(&rest, frame.head);
+                    let seed = strand_seed(*drawn, entry.simulate);
+                    let look = TubeLook { seed, shade: clump.shade, polar: &polar, tint: clump.tint, flip: 1.0 };
                     let first = target.vertex_count();
-                    target.push(&clump.rest, &clump.width, &clump.thickness, |p| frame.rest(p), &look)?;
-                    if let Some(chain) = chains.get(k / per_chain) {
+                    target.push(&rest, &clump.width, &clump.thickness, |p| frame.rest(p), &look)?;
+                    let chain = chains.get(k / per_chain);
+                    if let Some(chain) = chain {
                         runs.push(Run { range: first..target.vertex_count(), chain });
+                    }
+                    if offline && let Some(w) = wisp::wisp(*drawn, &rest, &clump.width, clump.shade, frame) {
+                        let look = TubeLook { seed, shade: 1.0, polar: &[], tint: clump.tint, flip: 1.0 };
+                        wisps.push((entry.simulate, w, chain, look));
                     }
                     *drawn += 1;
                 }
@@ -419,6 +452,15 @@ fn mesh_groups<'a>(
             } else if !target.append(shell) {
                 warnings.push(format!("the '{}' shell lacks valid hair-uv and hair-info and was left out", entry.id));
             }
+        }
+    }
+    for (simulate, w, chain, look) in wisps {
+        let (target, runs) = if simulate { (&mut dynamic, &mut dynamic_runs) } else { (&mut stat, &mut stat_runs) };
+        let polar = polar_angles(&w.points, frame.head);
+        let first = target.vertex_count();
+        target.push(&w.points, &w.width, &w.thickness, |p| frame.rest(p), &TubeLook { polar: &polar, ..look })?;
+        if let Some(chain) = chain {
+            runs.push(Run { range: first..target.vertex_count(), chain });
         }
     }
     let finish = |mesh: TubeMesh| if mesh.is_empty() { Ok(None) } else { mesh.finish().map(Some) };
@@ -681,8 +723,9 @@ fn clumps_in_mesh_order(clumps: &[(Drawn, Option<Colour>)]) -> impl Iterator<Ite
 }
 
 /// The vertex ranges of `clumps` in `mesh`, in mesh order (see [`clumps_in_mesh_order`]). A tube starts at a ring whose
-/// `hair-uv.y` is 0 and ends after the ring where it reaches 1 (the last ring of every tube) and its two caps, which
-/// take the tube's tint too. A strip is `columns` runs of vertices, each from `hair-uv.y` 0 to 1. `None` if the mesh
+/// `hair-uv.y` is 0 (the vertices up to the first that isn't are its ring, 8 live and 16 offline) and ends after the
+/// ring where it reaches 1 (the last ring of every tube) and its two caps, which take the tube's tint too. What follows
+/// the clumps (an offline build's wisps) keeps its colours. A strip is `columns` runs of vertices, each from `hair-uv.y` 0 to 1. `None` if the mesh
 /// doesn't hold that many.
 fn clump_ranges(mesh: &MeshData, clumps: impl Iterator<Item = Drawn> + Clone) -> Option<Vec<Range<usize>>> {
     let uv = &mesh.extra_attribute(HAIR_UV)?.data;
@@ -698,7 +741,11 @@ fn clump_ranges(mesh: &MeshData, clumps: impl Iterator<Item = Drawn> + Clone) ->
         }
         // A tube's run of rings, or one of a strip's columns, ends at `hair-uv.y` 1.
         let runs = if let Drawn::Strip(columns) = drawn { usize::from(columns) } else { 1 };
-        let step = if drawn == Drawn::Tube { RING } else { 1 };
+        let step =
+            if drawn == Drawn::Tube { (at..uv.len() / 2).take_while(|&k| along(k) == Some(0.0)).count() } else { 1 };
+        if step == 0 {
+            return None;
+        }
         for _ in 0..runs {
             loop {
                 let t = along(at)?;
@@ -709,7 +756,7 @@ fn clump_ranges(mesh: &MeshData, clumps: impl Iterator<Item = Drawn> + Clone) ->
             }
         }
         if drawn == Drawn::Tube {
-            at += CAP_VERTICES;
+            at += cap_vertices(step);
         }
         ranges.push(start..at);
     }

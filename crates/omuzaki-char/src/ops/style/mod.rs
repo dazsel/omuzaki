@@ -58,21 +58,21 @@ impl Op for SetStyle {
         let mut after = before.clone();
         style.apply(&mut after).map_err(style_error)?;
         let mut changes = Vec::new();
-        let mut changed = Vec::new();
+        let mut touched = Vec::new();
         if after.face != before.face {
             let value = serde_json::to_value(&after.face)
                 .map_err(|e| OpError::internal(format!("a face did not serialise: {e}")))?;
             changes.push(access::change(ctx, paths::face(&self.character), Some(value)));
-            changed.push("face".to_owned());
+            touched.push("face".to_owned());
         }
         for (id, part) in &after.parts {
             if before.parts.get(id).is_some_and(|b| b.params != part.params) {
                 let path = paths::part_params(&self.character, id);
                 changes.push(access::change(ctx, path, Some(part.params.clone())));
-                changed.push(format!("parts/{id}"));
+                touched.push(format!("parts/{id}"));
             }
         }
-        Ok(access::edit_plan(changes, json!({ "character": self.character, "style": style.id, "changed": changed })))
+        Ok(access::edit_plan(changes, json!({ "character": self.character, "style": style.id, "changed": touched })))
     }
 }
 

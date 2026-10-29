@@ -1257,6 +1257,17 @@ pub struct HairShading {
     pub edge_darkening: f64,
     /// How much of the hair's own colour survives strongly coloured light, `0..=1` ("keep identity", CB-34).
     pub keep_identity: f64,
+    /// The rim's colour: the soft light along the hair's silhouette.
+    pub rim: ColourRef,
+    /// The rim's strength, `0..=1`. The default, 0.12, is the prototype's.
+    pub rim_strength: f64,
+    /// How far in from the silhouette the rim reaches, `0.1..=1`: the rim falls off as `(1 - N.V)^(1 / width)`, so the
+    /// default, 1/3, is the prototype's power of 3, and a smaller width draws a thinner, crisper line.
+    pub rim_width: f64,
+    /// How strongly the scene's back lights edge the hair in their own colour, `0..=2`: each light behind the hair, as
+    /// the eye sees it, adds its colour on the rim band, so a cool kicker or a pink stage light outlines the locks. 0.6 by
+    /// default; 0 turns it off. A scene that turns the back rim on for every surface gives the hair that one instead.
+    pub back_light: f64,
     /// Outline thickness in metres. The default, 0.0014, is the prototype's hair outline.
     pub outline_width: f64,
     /// Draw the brows over the hair (the anime see-through bangs convention).
@@ -1285,6 +1296,10 @@ impl Default for HairShading {
             strand_lines: 0.10,
             edge_darkening: 0.14,
             keep_identity: 0.36,
+            rim: ColourRef::rgb(0xff, 0xe2, 0xcc),
+            rim_strength: 0.12,
+            rim_width: 1.0 / 3.0,
+            back_light: 0.6,
             outline_width: 0.0014,
             brows_through: true,
             streaks: Vec::new(),
@@ -1376,8 +1391,8 @@ pub enum HairShadingError {
 
 impl HairShading {
     /// The renderer's shading for this hair: `Shading::Program { name: "hair", params }`. Parameters, all read by the
-    /// program: colours `root`, `mid`, `tip`, `shade`, `line`, `ring` (resolved through `palette`) and floats
-    /// `ring-strength`, `strand-lines`, `edge-darkening`, `keep-identity`. The outline width and `brows_through` are not
+    /// program: colours `root`, `mid`, `tip`, `shade`, `line`, `ring`, `rim` (resolved through `palette`) and floats
+    /// `ring-strength`, `strand-lines`, `edge-darkening`, `keep-identity`, `rim-strength`, `rim-width`, `back-light`. The outline width and `brows_through` are not
     /// shader parameters: the first goes on the material's `Outline`, the second adds the brow overlay.
     ///
     /// # Errors
@@ -1391,6 +1406,7 @@ impl HairShading {
             ("shade", &self.shade),
             ("line", &self.line),
             ("ring", &self.ring),
+            ("rim", &self.rim),
         ] {
             params.insert(Slug::new(name)?, ParamValue::Colour(palette.resolve(colour)?));
         }
@@ -1399,6 +1415,9 @@ impl HairShading {
             ("strand-lines", self.strand_lines),
             ("edge-darkening", self.edge_darkening),
             ("keep-identity", self.keep_identity),
+            ("rim-strength", self.rim_strength),
+            ("rim-width", self.rim_width),
+            ("back-light", self.back_light),
         ] {
             params.insert(Slug::new(name)?, ParamValue::Float(narrow(value)));
         }
@@ -1482,6 +1501,9 @@ impl Validate for HairShading {
         c.range("strand_lines", self.strand_lines, 0.0, 1.0);
         c.range("edge_darkening", self.edge_darkening, 0.0, 1.0);
         c.range("keep_identity", self.keep_identity, 0.0, 1.0);
+        c.range("rim_strength", self.rim_strength, 0.0, 1.0);
+        c.range("rim_width", self.rim_width, 0.1, 1.0);
+        c.range("back_light", self.back_light, 0.0, 2.0);
         c.range("outline_width", self.outline_width, 0.0, 0.01);
         c.range("inner_darkening", self.inner_darkening, 0.0, 1.0);
         for (i, streak) in self.streaks.iter().enumerate() {
@@ -1663,6 +1685,7 @@ impl Validate for HairParams {
 }
 
 impl Validate for HairGroup {
+    #[allow(clippy::too_many_lines, reason = "one arm per generator, each a few range checks")]
     fn check(&self, c: &mut Check) {
         c.nested("dynamics/stiffness", &self.dynamics.stiffness);
         match &self.generator {
@@ -1775,6 +1798,7 @@ impl Validate for HairGroup {
 /// reach a generator as `NaN`, infinite or absurd (a class sweep: #1775). Angles are degrees within +-360, heights
 /// and lengths metres within the head's scale (+-1.5), offsets as [`GuidePoint`]'s. Each generator's own counts and
 /// shapes are the arms' business.
+#[allow(clippy::too_many_lines, reason = "one arm per generator, each a few range checks")]
 fn check_generator_values(generator: &Generator, c: &mut Check) {
     let g = |name: &str| format!("generator/{name}");
     match generator {
@@ -1987,7 +2011,9 @@ mod tests {
         let shading = HairShading::default().shading(&Palette::default()).unwrap();
         let Shading::Program { name, params } = &shading else { panic!("a program") };
         assert_eq!(name.as_str(), HAIR_PROGRAM);
-        assert_eq!(params.len(), 10);
+        assert_eq!(params.len(), 14);
+        assert_eq!(params[&Slug::new("rim-strength").unwrap()], ParamValue::Float(0.12));
+        assert_eq!(params[&Slug::new("back-light").unwrap()], ParamValue::Float(0.6));
         assert!(
             matches!(params[&Slug::new("root").unwrap()], ParamValue::Colour(c) if c == omuzaki_core::colour::Colour::rgb(0xc8, 0xb0, 0x9a))
         );

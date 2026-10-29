@@ -188,7 +188,7 @@ fn a_springy_ahoge_has_a_chain_of_its_own_and_a_stiff_one_has_none() {
     assert_eq!(chains[0].bones.len(), ahoge::CHAIN_BONES);
     assert_eq!(ahoge::chains(&ahoge::hook(), &Ball, "hair_h_a", true).unwrap().len(), 2, "a chain per side");
     let stiff = AhogeGen { spring: false, ..ahoge::hook() };
-    assert!(ahoge::chains(&stiff, &Ball, "hair_h_a", false).unwrap().is_empty());
+    assert_eq!(ahoge::chains(&stiff, &Ball, "hair_h_a", false).unwrap(), Vec::new());
     let mut rig = RigContribution::default();
     tail::add_chains(chains, &[], &mut rig);
     assert_eq!(rig.chains.len(), 1);
@@ -250,8 +250,7 @@ fn part(kind: &str, layer: i32, params: Value) -> PartDef {
 }
 
 fn hair(groups: &[(&str, Generator, bool)]) -> HairParams {
-    let mut params = HairParams::default();
-    params.groups = groups
+    let groups = groups
         .iter()
         .map(|(id, generator, mirror)| {
             let group = HairGroup {
@@ -263,7 +262,7 @@ fn hair(groups: &[(&str, Generator, bool)]) -> HairParams {
             (GroupId::new(*id).unwrap(), group)
         })
         .collect();
-    params
+    HairParams { groups, ..HairParams::default() }
 }
 
 fn styled() -> HairParams {

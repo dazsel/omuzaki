@@ -232,8 +232,51 @@ impl<'a> Shells<'a> {
     /// A body of revolution about local `+Y` through `origin`; `profile` is `(distance along Y, radius)` and should
     /// start and end on the axis so the shell is closed.
     fn lathe(&mut self, slot: Slot, origin: DVec3, profile: &[(f64, f64)], seg: usize) -> Result<(), KitError> {
-        let grid = lathe_axis(origin, DVec3::Y, profile, seg)?;
-        self.add(slot, &grid, false, &|i| origin + DVec3::Y * profile[i].0)
+        self.lathe_along(slot, origin, DVec3::Y, profile, seg)
+    }
+
+    /// [`Shells::lathe`] about local `axis` (unit) instead of `+Y`.
+    fn lathe_along(
+        &mut self,
+        slot: Slot,
+        origin: DVec3,
+        axis: DVec3,
+        profile: &[(f64, f64)],
+        seg: usize,
+    ) -> Result<(), KitError> {
+        let grid = lathe_axis(origin, axis, profile, seg)?;
+        self.add(slot, &grid, false, &|i| origin + axis * profile[i].0)
+    }
+
+    /// A wire along `path` (local space, at least two points), round in section, `radius(t)` thick at `t` in `0..=1`
+    /// along it. A radius that falls to 0 at both ends closes the wire.
+    fn wire(&mut self, slot: Slot, path: &[DVec3], radius: &dyn Fn(f64) -> f64) -> Result<(), KitError> {
+        let (rows, cols) = (path.len(), self.detail.cross);
+        if rows < 2 {
+            return Err(KitError::Degenerate { what: "a wire" });
+        }
+        let last = rows - 1;
+        let frame = |i: usize| {
+            let tangent = (path[(i + 1).min(last)] - path[i.saturating_sub(1)]).normalize_or_zero();
+            let side = tangent.any_orthonormal_vector();
+            (tangent, side, tangent.cross(side))
+        };
+        // Parallel transport keeps the section from twisting along the wire.
+        let mut frames = Vec::with_capacity(rows);
+        let (mut t0, mut a0, _) = frame(0);
+        for i in 0..rows {
+            let (t1, _, _) = frame(i);
+            let turn = DQuat::from_rotation_arc(t0, t1);
+            a0 = (turn * a0).normalize_or_zero();
+            t0 = t1;
+            frames.push((t1, a0, t1.cross(a0)));
+        }
+        let grid = Grid::from_fn(rows, cols + 1, |i, j| {
+            let (_, a, b) = frames[i];
+            let phi = TAU * fraction(j, cols);
+            path[i] + (a * phi.cos() + b * phi.sin()) * radius(fraction(i, last))
+        })?;
+        self.add(slot, &grid, false, &|i| path[i])
     }
 
     /// An ellipsoid of semi-axes `radii` turned by `rotation`, centred on `centre`.
@@ -393,6 +436,58 @@ fn output(
     glow: f32,
     rig: RigContribution,
 ) -> Result<PartOutput, BuildError> {
+    output_with(ctx, vec![shells], colours, glow, rig, Finish::Toon)
+}
+
+/// How a piece's two materials are shaded.
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum Finish {
+    /// Both toon ([`material`]): the kit's plain jewellery.
+    Toon,
+    /// The primary in the `metal` program and the accent in `gem` (#2413): fine jewellery. The primary is classed as
+    /// metal for looks.
+    Jewel,
+}
+
+impl Finish {
+    /// The material of `slot` in `colour`, giving off `glow` of it (toon only).
+    fn material(self, slot: Slot, colour: Colour, glow: f32) -> Result<MaterialSpec, String> {
+        match self {
+            Self::Toon => Ok(material(colour, glow)),
+            Self::Jewel => {
+                let program = if slot == Slot::Primary { "metal" } else { "gem" };
+                let name = omuzaki_core::id::Slug::new(program).map_err(|e| e.to_string())?;
+                let mut spec = MaterialSpec::toon(colour);
+                spec.shading = Shading::Program { name, params: omuzaki_render_api::ProgramParams::new() };
+                // A fine line in a deep shade of the piece: jewellery is small, and the body's line would swallow it.
+                let line = Colour::rgb(scale_byte(colour.r, 0.4), scale_byte(colour.g, 0.4), scale_byte(colour.b, 0.4));
+                spec.outline = Some(omuzaki_render_api::Outline { colour: line, width: JEWEL_LINE });
+                Ok(spec)
+            }
+        }
+    }
+}
+
+/// The outline of fine jewellery, metres at the reference distance.
+const JEWEL_LINE: f32 = 0.0004;
+
+/// `v` times `k`, as a byte.
+fn scale_byte(v: u8, k: f32) -> u8 {
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped to a byte
+    {
+        (f32::from(v) * k).round().clamp(0.0, 255.0) as u8
+    }
+}
+
+/// [`output`] for several shells of one piece (an earring on each ear), shaded by `finish`.
+fn output_with(
+    ctx: &BuildCtx<'_>,
+    shells: Vec<Shells<'_>>,
+    colours: [&ColourRef; 2],
+    glow: f32,
+    rig: RigContribution,
+    finish: Finish,
+) -> Result<PartOutput, BuildError> {
     let mut out = PartOutput::new().with_rig(rig);
     // Publish the bones this part contributes, so another part can attach to one (`halo_acc_0`): a joint-only fit never
     // hides the body from garments, and the rig still gets the bones from the contribution.
@@ -400,17 +495,33 @@ fn output(
     if !bones.is_empty() {
         out.publishes.put::<FitFact>(std::sync::Arc::new(JointFit::new(bones)));
     }
-    for (slot, builder) in Slot::ALL.into_iter().zip(shells.meshes) {
-        if builder.vertex_count() == 0 {
-            continue;
+    let several = shells.len() > 1;
+    let mut used = [false; 2];
+    for (n, shells) in shells.into_iter().enumerate() {
+        for (slot, builder) in Slot::ALL.into_iter().zip(shells.meshes) {
+            if builder.vertex_count() == 0 {
+                continue;
+            }
+            let name = material_name(ctx.part, slot)?;
+            let mesh_name = if several {
+                format!("{}-{}-{n}", ctx.part, slot.suffix())
+            } else {
+                format!("{}-{}", ctx.part, slot.suffix())
+            };
+            let mut mesh: PartMesh = builder.finish(mesh_name, name).map_err(kit_error(ctx))?;
+            mesh.casts_shadow = true;
+            out.meshes.push(mesh);
+            used[usize::from(slot == Slot::Accent)] = true;
         }
+    }
+    for slot in Slot::ALL.into_iter().filter(|s| used[usize::from(*s == Slot::Accent)]) {
         let name = material_name(ctx.part, slot)?;
-        let mut mesh: PartMesh =
-            builder.finish(format!("{}-{}", ctx.part, slot.suffix()), name.clone()).map_err(kit_error(ctx))?;
-        mesh.casts_shadow = true;
-        out.meshes.push(mesh);
         let colour = ctx.colour(colours[usize::from(slot == Slot::Accent)])?;
-        out.materials.push((name, material(colour, if slot == Slot::Primary { glow } else { 0.0 })));
+        let glow = if slot == Slot::Primary { glow } else { 0.0 };
+        out.materials.push((name.clone(), finish.material(slot, colour, glow).map_err(|e| ctx.fail(e))?));
+        if finish == Finish::Jewel && slot == Slot::Primary {
+            out.material_classes.push((name, omuzaki_char_api::MaterialClass::Metal));
+        }
     }
     Ok(out)
 }
@@ -422,12 +533,27 @@ fn recolour_output(
     colours: [&ColourRef; 2],
     glow: f32,
 ) -> Result<Recoloured, BuildError> {
+    recolour_with(out, ctx, colours, glow, Finish::Toon)
+}
+
+/// [`recolour_output`] for a piece shaded by `finish`.
+fn recolour_with(
+    out: &mut PartOutput,
+    ctx: &RecolourCtx<'_>,
+    colours: [&ColourRef; 2],
+    glow: f32,
+    finish: Finish,
+) -> Result<Recoloured, BuildError> {
     for (name, spec) in &mut out.materials {
         let Some(slot) = Slot::ALL.into_iter().find(|s| name.as_str().ends_with(&format!("-{}", s.suffix()))) else {
             return Ok(Recoloured::NeedsRebuild);
         };
         let colour = ctx.colour(colours[usize::from(slot == Slot::Accent)])?;
-        *spec = material(colour, if slot == Slot::Primary { glow } else { 0.0 });
+        let glow = if slot == Slot::Primary { glow } else { 0.0 };
+        match finish.material(slot, colour, glow) {
+            Ok(material) => *spec = material,
+            Err(_) => return Ok(Recoloured::NeedsRebuild),
+        }
     }
     Ok(Recoloured::Done)
 }
@@ -471,6 +597,8 @@ const BOB: SpringParams =
 pub(super) fn frame_up(origin: DVec3, up: DVec3) -> DMat4 {
     DMat4::from_rotation_translation(DQuat::from_rotation_arc(DVec3::Y, up.normalize_or_zero()), origin)
 }
+
+mod jewellery;
 
 // ------------------------------------------------------------------------------------------------ choker
 

@@ -209,6 +209,7 @@ impl Shape {
 
     /// The axis frame at fraction `s` of the length, between the samples.
     #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a small index
+    #[allow(clippy::many_single_char_names)] // a fraction, its sample and the frames either side
     fn frame_at(&self, s: f64) -> Frame {
         let x = s.clamp(0.0, 1.0) * (AXIS_SAMPLES - 1) as f64;
         let i = (x.floor() as usize).min(AXIS_SAMPLES - 2);
@@ -460,6 +461,7 @@ impl Plait {
     /// from it to the end band each follows the plait's figure of eight, `sin phi` across the face and `sin 2 phi`
     /// through it, a third of a turn (for three strands) behind its neighbour, so every strand passes over and under
     /// the others in turn.
+    #[allow(clippy::many_single_char_names)] // the plait's axes and phases, as in the formula
     fn strand_point(&self, shape: &Shape, k: u8, s: f64) -> DVec3 {
         let frame = shape.frame_at(s);
         let (a, b) = self.axes(&frame);
@@ -500,8 +502,8 @@ fn compile_braid(g: &TailGen, b: &TailBraid, shape: &Shape, ctx: &mut HairGenCtx
                 shape.root.keep_outside(ctx.head, plait.strand_point(shape, k, s)).as_vec3()
             })
             .collect();
-        let shade = STRAND_SHADES[usize::from(k) % STRAND_SHADES.len()];
-        clumps.push(ctx.clump(rest, width, thickness, shade));
+        let tone = STRAND_SHADES[usize::from(k) % STRAND_SHADES.len()];
+        clumps.push(ctx.clump(rest, width, thickness, tone));
     }
     let end_width = plait.width_at(plait.to);
     let tuft_width = Taper {
@@ -533,6 +535,7 @@ fn compile_braid(g: &TailGen, b: &TailBraid, shape: &Shape, ctx: &mut HairGenCtx
 
 /// Lock `i` of `n` of a braid's tuft: from the end band to the tail's tip, fanning out as a loose tail does.
 #[allow(clippy::cast_precision_loss)] // indices are small
+#[allow(clippy::many_single_char_names)] // a lock's index and count, and its geometry
 fn tuft_lock(g: &TailGen, plait: &Plait, shape: &Shape, i: usize, n: usize) -> Vec<Vec3> {
     let radius = ((i as f64 + 0.5) / n as f64).sqrt();
     let angle = i as f64 * GOLDEN_ANGLE;

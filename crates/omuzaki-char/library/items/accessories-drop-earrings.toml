@@ -1,0 +1,26 @@
+schema = 1
+id = "omuzaki/accessories/drop-earrings"
+version = "1.0.0"
+section = "accessories"
+kind = "part"
+target = "character"
+title = "Ruby drop earrings"
+summary = "A ruby teardrop on a short gold chain from each ear lobe."
+tags = ["jewellery", "earrings", "drop", "gold", "ruby"]
+origin = "the kit's earrings generator, tuned by eye on close-up renders (#2413)"
+compat = { kinds = ["humanoid"], templates = ["*"], requires = ["head"] }
+creates.piece = { kind = "earrings", id = "drop-earrings", layer = 50 }
+
+[rights]
+author = "Omuzaki"
+licence = "CC0-1.0"
+commercial = "ok"
+owned = true
+
+[[step]]
+op = "part.add"
+[step.args]
+character = "$character"
+kind = "earrings"
+id = "$parts.piece"
+params = { }
