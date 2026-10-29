@@ -117,6 +117,10 @@ pub struct EarCover {
     pub normal: Vec3,
     /// The disc's radius, metres: the ear's half height, which reaches past its half width.
     pub radius: f32,
+    /// The highest point of the ear, bind space: the top of the disc, or the end of a pointed ear's tip.
+    pub tip: Vec3,
+    /// Whether the ear is pointed (elf), which hair makes way for ([`omuzaki_char_api::PointedEars`]).
+    pub pointed: bool,
 }
 
 impl EarCover {
@@ -124,7 +128,7 @@ impl EarCover {
     /// (the anchors are scaled the same way). The normal is a direction and stays as it is.
     #[must_use]
     pub fn scaled(self, s: f32) -> Self {
-        Self { centre: self.centre * s, normal: self.normal, radius: self.radius * s }
+        Self { centre: self.centre * s, normal: self.normal, radius: self.radius * s, tip: self.tip * s, ..self }
     }
 }
 
@@ -135,10 +139,18 @@ const HALF_HEIGHT: f64 = 0.043;
 /// (none, and animal ears, which stand on top).
 #[must_use]
 pub fn cover(ears: &Ears, side: Side, root: Vec3) -> Option<EarCover> {
-    on_the_side(ears.kind).then(|| EarCover {
-        centre: root,
-        normal: Frame::of(ears, side).normal.as_vec3(),
-        radius: narrow(HALF_HEIGHT * ears.size),
+    on_the_side(ears.kind).then(|| {
+        let frame = Frame::of(ears, side);
+        let top = root.as_dvec3() + frame.up * HALF_HEIGHT * ears.size;
+        let pointed = ears.kind == EarKind::Elf;
+        let tip = if pointed { top + elf::tip_direction(ears, side) * elf::tip_length_of(ears) } else { top };
+        EarCover {
+            centre: root,
+            normal: frame.normal.as_vec3(),
+            radius: narrow(HALF_HEIGHT * ears.size),
+            tip: tip.as_vec3(),
+            pointed,
+        }
     })
 }
 

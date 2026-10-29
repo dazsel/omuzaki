@@ -32,7 +32,7 @@ use std::ops::Range;
 use omuzaki_char_api::{
     AnchorsFact, BodyRegion, BuildCtx, BuildError, Bulge, FaceOverlay, Generator, GroupId, HAIR_UV, HairParams,
     HeadSurface, JointRef, KindProvenance, MaterialName, MaterialSpec, PartCategory, PartId, PartKind, PartMesh,
-    PartMeta, PartOutput, Quality, RecolourCtx, Recoloured, StatureFact, Taper,
+    PartMeta, PartOutput, PointedEars, Quality, RecolourCtx, Recoloured, StatureFact, Taper,
 };
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::{Vec2, Vec3};
@@ -42,6 +42,7 @@ use omuzaki_render_api::{AlphaMode, Outline};
 
 use super::bake;
 use super::compile::{self, CompiledEntry, Dispatch, GroupGenerator, GroupGeometry, enabled};
+use super::ears;
 use super::r#gen::bangs;
 use super::r#gen::curtain::{self, BodyKeepOut, StripError};
 use super::r#gen::tail::Chain;
@@ -53,6 +54,8 @@ use super::tube::{
     OutwardFrame, TubeError, TubeLook, TubeMesh, cap_vertices, polar_angles, refine, ring_for, vertex_colour,
 };
 use super::wisp;
+use crate::head::ears::EarCover;
+use crate::head::ears::fact::EarCoverFact;
 
 /// Where along the torso the body's vertical axis is read, from hips (0) to neck base (1): the upper back, where long
 /// hair hangs.
@@ -127,6 +130,7 @@ pub fn build_with(
 
     let frame = OutwardFrame { head: head.centre(), body_axis: body_axis(ctx, head.centre()) };
     clear_fringes(params, head.as_ref(), &frame, &mut entries).map_err(|e| ctx.fail(e))?;
+    make_way_for_ears(params, ctx, head.as_ref(), &mut entries);
     tuck_shells(head.as_ref(), &mut entries);
     let mut warnings = Vec::new();
     let chains = tail_chains(params, ctx, head.as_ref())?;
@@ -268,6 +272,18 @@ fn clear_fringes(
         }
     }
     Ok(())
+}
+
+/// Routes every lock behind the pointed ears the head published ([`ears::make_way`], #2449), unless the hair is set to
+/// cover them. Shells (the scalp cap) are left as they are: they lie under the ears.
+fn make_way_for_ears(params: &HairParams, ctx: &BuildCtx<'_>, head: &dyn HeadSurface, entries: &mut [CompiledEntry]) {
+    if params.ears == PointedEars::Cover {
+        return;
+    }
+    let covers: Vec<EarCover> = ctx.published.get::<EarCoverFact>().values().copied().collect();
+    for entry in entries.iter_mut().filter(|e| !matches!(e.group.geometry, GroupGeometry::Shell(_))) {
+        ears::make_way(&covers, head, &mut entry.group.clumps);
+    }
 }
 
 /// Tucks every shell (the scalp cap) under the locks drawn over it ([`cap::tuck`]), so no lock cuts through it.

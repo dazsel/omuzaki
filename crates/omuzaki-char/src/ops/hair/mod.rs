@@ -1,6 +1,7 @@
 //! Hair ops.
 
 pub mod bangs;
+pub mod group;
 pub mod guides;
 pub(crate) mod part;
 pub mod physics;
