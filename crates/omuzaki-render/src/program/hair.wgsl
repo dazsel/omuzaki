@@ -44,8 +44,12 @@ fn program_light(lit: vec3<f32>, n: vec3<f32>, v: vec3<f32>, p: ProgramIn) -> ve
     let u = p.extra[0].x;
     let seed = p.extra[1].x;
     let polar = p.extra[1].z;
-    let band = glsl_smoothstep(0.11, 0.0, abs(polar - 0.92 - 0.06 * sin(u * 3.0 + seed * 9.0)));
-    let teeth = glsl_smoothstep(0.35, 0.75, hair_noise(u * 6.0 + seed * 17.0));
+    // The band's half width, how far each lock's copy of it wanders, and how much the comb teeth break it: the
+    // prototype's 0.11, 0.06 and 1 draw a soft band that steps from lock to lock; a narrow, steady one reads as one arc.
+    let wobble = program_float(P_RING_WOBBLE) * sin(u * 3.0 + seed * 9.0);
+    let band = glsl_smoothstep(program_float(P_RING_WIDTH), 0.0, abs(polar - 0.92 - wobble));
+    let comb = glsl_smoothstep(0.35, 0.75, hair_noise(u * 6.0 + seed * 17.0));
+    let teeth = mix(1.0, comb, program_float(P_RING_TEETH));
     let facing = glsl_smoothstep(0.1, 0.6, dot(n, v));
     let ringed = lit + program_vec3(P_RING) * band * teeth * facing * program_float(P_RING_STRENGTH);
     let luma = dot(ringed, vec3<f32>(0.299, 0.587, 0.114));

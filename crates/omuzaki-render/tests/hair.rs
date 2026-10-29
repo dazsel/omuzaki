@@ -158,6 +158,14 @@ fn render_quad(renderer: &mut WgpuRenderer, mesh: omuzaki_render_api::MeshId, ma
     image
 }
 
+/// The prototype's angel ring: its half width, its wander from lock to lock and its comb teeth. The kit draws a thinner,
+/// steadier one by default (#2462), so the oracle sets these.
+const PROTOTYPE_RING: &[(&str, ParamValue)] = &[
+    ("ring-width", ParamValue::Float(0.11)),
+    ("ring-wobble", ParamValue::Float(0.06)),
+    ("ring-teeth", ParamValue::Float(1.0)),
+];
+
 fn hair_material(shading: Shading) -> Material {
     Material { base: Colour::WHITE, shading, double_sided: true, ..Material::toon(Colour::WHITE) }
 }
@@ -178,7 +186,7 @@ struct Prototype {
 }
 
 impl Prototype {
-    /// The default `HairShading` of the character kit: the parameters a hair material gets when it sets none.
+    /// The default `HairShading` of the character kit, with the prototype's ring ([`PROTOTYPE_RING`]).
     fn defaults() -> Self {
         let colour = |hex| Colour::hex(hex).to_linear();
         Self {
@@ -355,14 +363,14 @@ fn the_hair_program_matches_the_prototypes_shader_maths() {
     let _serial = serial();
     let mut renderer = support::renderer();
     let mesh = renderer.create_mesh(&quad(true)).unwrap();
-    let image = render_quad(&mut renderer, mesh, &hair_material(hair(&[])));
+    let image = render_quad(&mut renderer, mesh, &hair_material(hair(PROTOTYPE_RING)));
     let oracle = Prototype::defaults();
     save(&image, "hair-oracle-after.png");
     save(&oracle_image(&oracle), "hair-oracle-reference.png");
     save(&render_quad(&mut renderer, mesh, &hair_material(hair_named("unregistered", &[]))), "hair-oracle-before.png");
 
     // The angel ring is at polar 0.92 of the quad's 0.5..1.3: where is its band, and how wide, in the oracle and on the GPU?
-    let no_ring = hair(&[("ring-strength", ParamValue::Float(0.0))]);
+    let no_ring = hair(&[PROTOTYPE_RING, &[("ring-strength", ParamValue::Float(0.0))]].concat());
     let gpu_without = render_quad(&mut renderer, mesh, &hair_material(no_ring));
     let reference = Prototype { ring_strength: 0.0, ..Prototype::defaults() };
     let gpu_band = ring_band(&image, &gpu_without);
@@ -411,6 +419,9 @@ fn every_parameter_reaches_the_shader() {
     moved("line", &[("line", colour(0x0000_00ff)), ("strand-lines", ParamValue::Float(1.0))]);
     moved("ring", &[("ring", colour(0x0000_ff00)), ("ring-strength", ParamValue::Float(1.0))]);
     moved("ring-strength", &[("ring-strength", ParamValue::Float(1.0))]);
+    moved("ring-width", &[("ring-width", ParamValue::Float(0.3))]);
+    moved("ring-wobble", &[("ring-wobble", ParamValue::Float(0.2))]);
+    moved("ring-teeth", &[("ring-teeth", ParamValue::Float(1.0))]);
     moved("strand-lines", &[("strand-lines", ParamValue::Float(1.0))]);
     moved("edge-darkening", &[("edge-darkening", ParamValue::Float(0.9))]);
     moved("keep-identity", &[("keep-identity", ParamValue::Float(1.0))]);
@@ -693,6 +704,7 @@ fn the_angel_ring_lands_on_the_crown_where_the_prototype_puts_it() {
         (peak_row - expected).abs() <= 4.0,
         "the ring peaks at row {peak_row}, polar 0.92 projects to {expected:.1}"
     );
-    assert!((4..=24).contains(&fwhm), "the ring is {fwhm} rows wide");
+    // The kit's ring is thin and steady (#2462): about 3 rows here, against 11 for the prototype's 0.11 rad band.
+    assert!((2..=24).contains(&fwhm), "the ring is {fwhm} rows wide");
     assert!((3.0..=20.0).contains(&peak), "the ring raises luma by {peak:.2} levels (prototype: 8.3)");
 }
