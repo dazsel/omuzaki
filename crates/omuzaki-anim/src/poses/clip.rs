@@ -29,7 +29,7 @@
 
 use std::sync::OnceLock;
 
-use omuzaki_anim_api::HumanoidPose;
+use omuzaki_anim_api::{HumanoidPose, Reaches};
 use omuzaki_core::id::Slug;
 use serde::Deserialize;
 
@@ -200,6 +200,13 @@ pub struct ClipKey {
     pub contacts: [Option<bool>; 2],
 }
 
+impl ClipKey {
+    /// A key: `posture` at `t` seconds, made from the pose `pose` (a name, for display), with foot `contacts`.
+    pub fn new(t: f32, pose: impl Into<String>, posture: Posture, contacts: [Option<bool>; 2]) -> Self {
+        Self { t, pose: pose.into(), posture, contacts }
+    }
+}
+
 /// A clip: key poses in time (see the [module](self)). Make one with [`PoseClip::parse`], or take a built-in from
 /// [`ClipLibrary::builtin`].
 ///
@@ -288,33 +295,11 @@ impl PoseClip {
         let file: ClipFile =
             toml::from_str(text).map_err(|e| ClipError::Parse { file: label.to_owned(), message: e.to_string() })?;
         let id = file.id;
-        if let Err(e) = Slug::new(&id) {
-            return Err(ClipError::BadName { id, message: e.to_string() });
-        }
-        if file.summary.trim().is_empty() {
-            return Err(ClipError::EmptySummary(id));
-        }
-        if !(file.length.is_finite() && file.length > 0.0 && file.length <= MAX_LENGTH) {
-            return Err(ClipError::BadLength { id, length: file.length });
-        }
         let Some(easing) = Easing::from_name(&file.easing) else {
             return Err(ClipError::UnknownEasing { id, easing: file.easing });
         };
-        if file.looped && !easing.stops_at_keys() {
-            return Err(ClipError::SeamNotSmooth { id, easing: easing.name() });
-        }
-        if file.keys.is_empty() {
-            return Err(ClipError::NoKeys(id));
-        }
         let mut keys: Vec<ClipKey> = Vec::with_capacity(file.keys.len());
         for (index, k) in file.keys.into_iter().enumerate() {
-            let inside = k.t.is_finite() && k.t >= 0.0 && if file.looped { k.t < file.length } else { k.t <= file.length };
-            if !inside {
-                return Err(ClipError::KeyOutside { id, index, t: k.t });
-            }
-            if keys.last().is_some_and(|prev| k.t <= prev.t) {
-                return Err(ClipError::NotIncreasing { id, index, t: k.t });
-            }
             let Some(def) = libraries.iter().find_map(|l| l.get(&k.pose)) else {
                 return Err(ClipError::UnknownPose { id, index, pose: k.pose });
             };
@@ -323,14 +308,51 @@ impl PoseClip {
             }
             let posture = def.posture(hands)?;
             let posture = if k.mirror { posture.mirrored() } else { posture };
-            keys.push(ClipKey {
-                t: k.t,
-                pose: k.pose,
-                posture,
-                contacts: [k.contacts.left, k.contacts.right],
-            });
+            keys.push(ClipKey::new(k.t, k.pose, posture, [k.contacts.left, k.contacts.right]));
         }
-        Ok(Self { id, summary: file.summary, length: file.length, looped: file.looped, easing, keys })
+        Self::new(id, file.summary, file.length, file.looped, easing, keys)
+    }
+
+    /// A clip from its parts, checked as [`PoseClip::parse`] checks a file: a valid id and summary, a finite length
+    /// above zero and at most [`MAX_LENGTH`], at least one key, key times finite, strictly increasing and inside
+    /// `0..=length` (below `length` when looped), and an easing that stops at the keys when looped. A document's clip
+    /// set (`clip.set`) builds its clips this way.
+    ///
+    /// # Errors
+    /// The first [`ClipError`] found.
+    pub fn new(
+        id: String,
+        summary: String,
+        length: f32,
+        looped: bool,
+        easing: Easing,
+        keys: Vec<ClipKey>,
+    ) -> Result<Self, ClipError> {
+        if let Err(e) = Slug::new(&id) {
+            return Err(ClipError::BadName { id, message: e.to_string() });
+        }
+        if summary.trim().is_empty() {
+            return Err(ClipError::EmptySummary(id));
+        }
+        if !(length.is_finite() && length > 0.0 && length <= MAX_LENGTH) {
+            return Err(ClipError::BadLength { id, length });
+        }
+        if looped && !easing.stops_at_keys() {
+            return Err(ClipError::SeamNotSmooth { id, easing: easing.name() });
+        }
+        if keys.is_empty() {
+            return Err(ClipError::NoKeys(id));
+        }
+        for (index, k) in keys.iter().enumerate() {
+            let inside = k.t.is_finite() && k.t >= 0.0 && if looped { k.t < length } else { k.t <= length };
+            if !inside {
+                return Err(ClipError::KeyOutside { id, index, t: k.t });
+            }
+            if index > 0 && k.t <= keys[index - 1].t {
+                return Err(ClipError::NotIncreasing { id, index, t: k.t });
+            }
+        }
+        Ok(Self { id, summary, length, looped, easing, keys })
     }
 
     /// The keys, in strictly increasing time. A parsed clip has at least one.
@@ -360,7 +382,12 @@ impl PoseClip {
     #[must_use]
     pub fn sample_posture(&self, t: f32) -> Posture {
         let (Some(first), Some(last)) = (self.keys.first(), self.keys.last()) else {
-            return Posture { body: HumanoidPose::REST, left: super::Hand::NONE, right: super::Hand::NONE };
+            return Posture {
+                body: HumanoidPose::REST,
+                left: super::Hand::NONE,
+                right: super::Hand::NONE,
+                reach: Reaches::NONE,
+            };
         };
         if !t.is_finite() {
             return first.posture;
@@ -436,15 +463,20 @@ pub struct ClipLibrary {
 }
 
 /// The built-in clip files, in the order [`ClipLibrary::iter`] gives them.
-const BUILTIN_CLIPS: [(&str, &str); 4] = [
+const BUILTIN_CLIPS: [(&str, &str); 9] = [
     ("wave", include_str!("../../library/poses/clips/wave.toml")),
     ("wave-both", include_str!("../../library/poses/clips/wave-both.toml")),
     ("yawn", include_str!("../../library/poses/clips/yawn.toml")),
     ("walk", include_str!("../../library/poses/clips/walk.toml")),
+    ("reach-to-lens", include_str!("../../library/poses/clips/reach-to-lens.toml")),
+    ("hand-on-chest", include_str!("../../library/poses/clips/hand-on-chest.toml")),
+    ("palm-touch", include_str!("../../library/poses/clips/palm-touch.toml")),
+    ("point", include_str!("../../library/poses/clips/point.toml")),
+    ("cheer", include_str!("../../library/poses/clips/cheer.toml")),
 ];
 
 /// The key poses only the built-in clips use, beside them in `library/poses/clips/`.
-const BUILTIN_KEY_POSES: [(&str, &str); 8] = [
+const BUILTIN_KEY_POSES: [(&str, &str); 9] = [
     ("stand-neutral", include_str!("../../library/poses/clips/stand-neutral.pose.toml")),
     ("wave-right-swing", include_str!("../../library/poses/clips/wave-right-swing.pose.toml")),
     ("wave-both", include_str!("../../library/poses/clips/wave-both.pose.toml")),
@@ -453,6 +485,7 @@ const BUILTIN_KEY_POSES: [(&str, &str); 8] = [
     ("yawn-peak", include_str!("../../library/poses/clips/yawn-peak.pose.toml")),
     ("walk-contact", include_str!("../../library/poses/clips/walk-contact.pose.toml")),
     ("walk-passing", include_str!("../../library/poses/clips/walk-passing.pose.toml")),
+    ("cheer-pump", include_str!("../../library/poses/clips/cheer-pump.pose.toml")),
 ];
 
 /// The built-in clips, or why they failed to load, parsed once.
@@ -479,7 +512,8 @@ impl ClipLibrary {
         Ok(Self { clips })
     }
 
-    /// The clips that ship with Omuzaki: `wave`, `wave-both`, `yawn` and `walk`.
+    /// The clips that ship with Omuzaki: `wave`, `wave-both`, `yawn` and `walk`, and the gestures `reach-to-lens`,
+    /// `hand-on-chest`, `palm-touch`, `point` and `cheer` (#2414).
     ///
     /// # Errors
     /// Only if the embedded files are broken, which the crate's tests rule out.

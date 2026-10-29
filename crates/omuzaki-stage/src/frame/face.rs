@@ -43,7 +43,7 @@ use std::mem;
 use std::sync::Arc;
 use std::sync::mpsc;
 
-use omuzaki_anim_api::{ChannelBuf, HumanoidPose, IkGoals, Tick};
+use omuzaki_anim_api::{ChannelBuf, HumanoidPose, IkGoals, Reaches, Tick};
 use omuzaki_char::builder::CachingBuilder;
 use omuzaki_char_api::{
     BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, CharacterDef, CharacterRig, JointRef,
@@ -138,6 +138,7 @@ struct WarmJob {
     tick: Tick,
     pose: HumanoidPose,
     goals: IkGoals,
+    reach: Reaches,
     /// The frame's channels, for the new rig's bone drivers (boxed: 512 bytes).
     channels: Box<ChannelBuf>,
     steps: u32,
@@ -154,6 +155,7 @@ impl WarmJob {
             None
         } else {
             let mut frame = RigFrame::for_character(&built).map_err(|e| e.to_string())?;
+            frame.set_reaches(&self.reach);
             frame.solve_with_channels(self.tick, &self.pose, &self.goals, &self.channels);
             Some(frame.skin().to_vec())
         };
@@ -844,6 +846,7 @@ impl Stage {
             tick,
             pose: input.pose,
             goals: input.goals,
+            reach: input.reach,
             channels: Box::new(input.channels),
             steps: rig.settle_steps,
         };
@@ -870,6 +873,7 @@ impl Stage {
         let mut new_rig = (new.rig != self.built.rig).then(|| RigFrame::for_character(&new)).transpose()?;
         if let Some(frame) = new_rig.as_mut() {
             // A first solve off the frame path; the swapping frame solves it again with its own input.
+            frame.set_reaches(&input.reach);
             frame.solve_with_channels(tick, &input.pose, &input.goals, &input.channels);
         }
         let bound = match FaceRig::resolve(&new, expressions)? {

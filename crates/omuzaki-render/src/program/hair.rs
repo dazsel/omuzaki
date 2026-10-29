@@ -15,15 +15,27 @@
 //! | `strand-lines` | how far strand lines tint the colour | the `0.10` of `lines * 0.10` |
 //! | `edge-darkening` | how much darker a clump's edges are | `1 - 0.86` |
 //! | `keep-identity` | how much of the hair's own colour survives coloured light | the `0.36` |
+//! | `rim` | the rim's colour | the toon rim `0xffe2cc` |
+//! | `rim-strength` | the rim's strength | its `0.12` |
+//! | `rim-width` | how far in the rim reaches: the fresnel power is `1 / width` | its power 3 |
+//! | `back-light` | how strongly lights behind the hair edge it in their own colour | (none) |
 //!
 //! Attributes: `hair-uv` (`across` in `-1..=1`, `along` in `0..=1`) and `hair-info` (strand seed, shade multiplier,
 //! polar angle: the ring follows it). The toon base is the prototype's hair material: `shift -0.05`, `soft 0.22`, rim
-//! `0xffe2cc` at `0.12`, power 3.
+//! `0xffe2cc` at `0.12`, power 3; the rim's three numbers are parameters, so a close-up can thin and brighten it.
+//!
+//! `back-light` (0.6 by default) is the hair's own back rim: on the band where the rim lies, each spot, point or directional
+//! light behind the hair, as the eye sees it, adds its colour, shadow and falloff included, so a stage's coloured
+//! kickers outline the locks; a scene that turns on the back rim for every surface (`Scene::back_light_rim`) gives the
+//! hair that one instead.
 
 use omuzaki_core::colour::Colour;
 use omuzaki_render_api::{Rim, Toon};
 
 use super::{AttributeSpec, ParamSpec, ProgramSpec, Values, register_shading_program};
+
+/// The default rim width: the prototype's fresnel power of 3.
+const RIM_WIDTH: f32 = 1.0 / 3.0;
 
 /// The prototype's hair toon: a wide soft terminator with the shadow side tinted by the `shade` parameter and a warm rim.
 fn toon(values: &Values) -> Toon {
@@ -31,7 +43,11 @@ fn toon(values: &Values) -> Toon {
         shade: values.colour("shade").unwrap_or(Colour::hex(0x00b0_8e88)),
         shift: -0.05,
         softness: 0.22,
-        rim: Rim { colour: Colour::hex(0x00ff_e2cc), power: 3.0, strength: 0.12 },
+        rim: Rim {
+            colour: values.colour("rim").unwrap_or(Colour::hex(0x00ff_e2cc)),
+            power: 1.0 / values.float("rim-width").unwrap_or(RIM_WIDTH).max(0.1),
+            strength: values.float("rim-strength").unwrap_or(0.12),
+        },
         ..Toon::default()
     }
 }
@@ -51,6 +67,10 @@ register_shading_program!(
             ParamSpec::float("strand-lines", 0.10, 0.0, 1.0),
             ParamSpec::float("edge-darkening", 0.14, 0.0, 1.0),
             ParamSpec::float("keep-identity", 0.36, 0.0, 1.0),
+            ParamSpec::colour("rim", 0x00ff_e2cc),
+            ParamSpec::float("rim-strength", 0.12, 0.0, 1.0),
+            ParamSpec::float("rim-width", RIM_WIDTH, 0.1, 1.0),
+            ParamSpec::float("back-light", 0.6, 0.0, 2.0),
         ],
         attributes: &[
             AttributeSpec { name: "hair-uv", components: 2 },

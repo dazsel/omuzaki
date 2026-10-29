@@ -1,7 +1,7 @@
 //! [`Performer`]: the fixed-step loop from a frame source to a humanoid pose.
 
 use omuzaki_anim_api::{
-    Animator, Bus, ChannelBuf, Cues, FrameSource, HumanoidPose, Layer, LayerStack, LifeLayer, PoseLayers, Retarget,
+    Animator, Bus, ChannelBuf, Cues, FrameSource, HumanoidPose, Layer, LayerStack, LifeLayer, PoseLayers, Reaches, Retarget,
     Tick, TrackFrame, TrackStatus,
 };
 use omuzaki_anim::grammar::GrammarStage;
@@ -60,6 +60,9 @@ pub struct PerformOutput<'a> {
     pub bus: &'a Bus,
     /// The animation pose: what the rig reads.
     pub pose: &'a HumanoidPose,
+    /// Where the score's clips put the hands on the body: what the rig bends the arms to after the pose
+    /// ([`FrameInput::reach`](crate::frame::FrameInput::reach)).
+    pub reach: &'a Reaches,
     /// Whether the face is tracked.
     pub tracking: Tracking,
 }
@@ -276,6 +279,7 @@ impl Performer {
             frame: if self.arrived { self.last_frame.as_ref() } else { None },
             bus: &self.bus,
             pose: &self.pose,
+            reach: self.score_pose.reaches(),
             tracking: self.tracking,
         }
     }

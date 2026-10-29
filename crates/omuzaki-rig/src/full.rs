@@ -5,7 +5,8 @@
 //! [`FullRig`] implements [`Rig`] by running, in this order:
 //!
 //! 1. [`HumanoidRig::apply_humanoid`]: the animated pose onto the skeleton's rest;
-//! 2. the IK stage ([`IkSolver`], by default [`TwoBoneIk`]) on the goals set with [`FullRig::set_goals`];
+//! 2. the IK stage ([`IkSolver`], by default [`TwoBoneIk`]) on the goals set with [`FullRig::set_goals`], with the
+//!    reaches set with [`FullRig::set_reaches`] resolved into hand goals on the animated body first;
 //! 3. the constraint stage ([`VrmConstraintSolver`]), only when one was set with [`FullRig::with_constraints`];
 //! 4. the caller's own pre-spring stage, only through [`FullRig::solve_and_skin_with`]: whatever else poses bones the
 //!    springs must follow in the same frame (a character's bone drivers, #800);
@@ -43,13 +44,13 @@
 use std::sync::Arc;
 
 use omuzaki_anim_api::{
-    HumanoidPose, IkGoals, IkSolver, Pose, Rig, Skeleton, SpringError, SpringSet, SpringSolver, Tick,
+    HumanoidPose, IkGoals, IkSolver, Pose, Reaches, Rig, Skeleton, SpringError, SpringSet, SpringSolver, Tick,
 };
 use omuzaki_core::glam::Mat4;
 
 use crate::constraint::VrmConstraintSolver;
-use crate::ik::TwoBoneIk;
 use crate::ik::guard::{ArmGuard, GuardReport};
+use crate::ik::{TwoBoneIk, reach};
 use crate::pose::HumanoidRig;
 use crate::skeleton::RigSkeleton;
 use crate::skin::Skinner;
@@ -68,6 +69,10 @@ pub struct FullRig<I = TwoBoneIk, S = VrmSpringSolver> {
     guard: Option<ArmGuard>,
     guarded: GuardReport,
     goals: IkGoals,
+    /// The hands' reaches on the body's own bones, resolved into hand goals each solve ([`set_reaches`](Self::set_reaches)).
+    reaches: Reaches,
+    /// Scratch for resolving reaches: the animated body's root-relative transforms (boxed: 16 KiB).
+    reach_world: Box<Pose>,
     skinner: Skinner,
     /// Root-relative transforms of the last [`solve_and_skin`](Self::solve_and_skin) (boxed: 16 KiB).
     world: Box<Pose>,
@@ -102,6 +107,8 @@ impl<I: IkSolver, S: SpringSolver> FullRig<I, S> {
             guard: None,
             guarded: GuardReport::default(),
             goals: IkGoals::NONE,
+            reaches: Reaches::NONE,
+            reach_world: Box::new(Pose::IDENTITY),
             world: Box::new(Pose::IDENTITY),
         }
     }
@@ -134,6 +141,11 @@ impl<I: IkSolver, S: SpringSolver> FullRig<I, S> {
         self.guard.as_ref()
     }
 
+    /// The arm guard, to give it another body's parts ([`ArmGuard::set_obstacles`]).
+    pub fn guard_mut(&mut self) -> Option<&mut ArmGuard> {
+        self.guard.as_mut()
+    }
+
     /// What the arm guard did in the last solve (all zero without a guard).
     pub fn guard_report(&self) -> GuardReport {
         self.guarded
@@ -152,6 +164,18 @@ impl<I: IkSolver, S: SpringSolver> FullRig<I, S> {
     /// The goals in force.
     pub fn goals(&self) -> &IkGoals {
         &self.goals
+    }
+
+    /// Sets the hands' reaches for the following solves, until replaced ([`Reaches::NONE`] for none). Each solve turns
+    /// them into hand goals on the animated body ([`ik::reach`](crate::ik::reach)); a hand goal set with
+    /// [`set_goals`](Self::set_goals) wins over the reach for that hand.
+    pub fn set_reaches(&mut self, reaches: &Reaches) {
+        self.reaches = *reaches;
+    }
+
+    /// The reaches in force.
+    pub fn reaches(&self) -> &Reaches {
+        &self.reaches
     }
 
     /// The prepared skeleton.
@@ -203,8 +227,15 @@ impl<I: IkSolver, S: SpringSolver> FullRig<I, S> {
     ) {
         self.humanoid.apply_humanoid(pose, out);
         let skeleton = self.humanoid.rig_skeleton().skeleton();
-        if !self.goals.is_idle() {
-            self.ik.solve(skeleton, &self.goals, out);
+        let goals = match skeleton.humanoid_map() {
+            Some(map) if !self.reaches.is_idle() => {
+                skeleton.world_pose(out, &mut self.reach_world);
+                reach::resolve(map, &self.reach_world, pose, &self.reaches, &self.goals)
+            }
+            _ => self.goals,
+        };
+        if !goals.is_idle() {
+            self.ik.solve(skeleton, &goals, out);
         }
         if let Some(constraints) = &self.constraints {
             constraints.apply(skeleton, out);

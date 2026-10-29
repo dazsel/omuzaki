@@ -355,7 +355,7 @@ fn a_step_with_acts_playing_and_a_gated_webcam_allocates_nothing() {
     };
     rig.handle.act(expression, Envelope::new(0.2, None)).unwrap();
     rig.handle.act(ActRequest::Look { x: 0.5, y: 0.2, head: 0.5 }, Envelope::new(0.2, None)).unwrap();
-    rig.handle.act(ActRequest::Clip { clip: "wave-both".into(), weight: 1.0 }, Envelope::new(0.2, None)).unwrap();
+    rig.handle.act(ActRequest::clip("wave-both", 1.0), Envelope::new(0.2, None)).unwrap();
     rig.run_for(0.5);
     MEASURING.with(|m| m.set(true));
     let before = ALLOCATIONS.load(Ordering::Relaxed);

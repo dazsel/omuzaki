@@ -23,7 +23,7 @@ pub(crate) mod rig;
 pub(crate) mod runtimes;
 pub(crate) mod scene;
 
-use omuzaki_anim_api::{ChannelBuf, HumanoidPose, IkGoals, Tick};
+use omuzaki_anim_api::{ChannelBuf, HumanoidPose, IkGoals, Reaches, Tick};
 use omuzaki_char_api::{BuiltCharacter, LookParams, StepCtx};
 use omuzaki_core::glam::{Mat4, Vec3};
 use omuzaki_core::time::Seconds;
@@ -96,6 +96,9 @@ pub struct FrameInput {
     pub pose: HumanoidPose,
     /// IK and look-at goals; [`IkGoals::NONE`] turns the stage off.
     pub goals: IkGoals,
+    /// Where the hands reach on the body (a clip's hand on the chest, #2414): the rig turns each into a hand goal on
+    /// the posed body, unless `goals` sets that hand itself. [`Reaches::NONE`] for none.
+    pub reach: Reaches,
     /// The channel values of the frame: the face paints from them, and the character's bone drivers read them, so a
     /// channel a driver names (a custom channel folding a wing) moves its bone, and the spring chains under that bone,
     /// this frame. The rig keeps the last values a [`Stage::tick`] gave it:
@@ -118,6 +121,7 @@ impl Default for FrameInput {
         Self {
             pose: HumanoidPose::REST,
             goals: IkGoals::NONE,
+            reach: Reaches::NONE,
             channels: ChannelBuf::default(),
             wind: Vec3::ZERO,
             root: Mat4::IDENTITY,
@@ -303,6 +307,7 @@ impl Stage {
         self.pose = input.pose;
         self.goals = input.goals;
         self.tick = tick;
+        self.rig.set_reaches(&input.reach);
         self.rig.solve_with_channels(tick, &input.pose, &input.goals, &input.channels);
         let pose = SkinPose { character: &self.built.rig, skin: self.rig.skin(), root: self.root };
         let ctx = StepCtx::new(tick.dt, tick.time, &pose, input.wind);
@@ -487,6 +492,22 @@ impl Stage {
             // A paused stage redraws from `root`, so it moves with the subject at once.
             self.root = subject_root * self.input_root;
         }
+    }
+
+    /// The body as a touch with another member reads it (#2415): where the last frame left it, in the world.
+    pub(crate) fn touch_body(&self) -> crate::interact::MemberBody {
+        self.rig.body(self.root)
+    }
+
+    /// The scene's transform of this member ([`set_subject_root`](Self::set_subject_root)).
+    pub(crate) fn subject_root_now(&self) -> Mat4 {
+        self.subject_root
+    }
+
+    /// Keeps the arms out of another member's `parts` (world space) from the next frame, this member standing at
+    /// `root` then; an empty slice clears them. Allocation-free.
+    pub(crate) fn set_partner_parts(&mut self, parts: &[omuzaki_rig::ik::guard::Obstacle], root: Mat4) {
+        self.rig.set_partner(parts, root);
     }
 
     /// What the last [`set_scene`](Self::set_scene) still owes the renderer: nothing once everything was committed.

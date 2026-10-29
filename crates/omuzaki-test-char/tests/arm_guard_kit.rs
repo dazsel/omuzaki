@@ -64,14 +64,18 @@ fn each_templates_forearms_are_kept_out_of_its_chest_and_its_bind_pose_is_left_a
         let built = build(template.id());
         let mut guard = guard(&built);
         let skeleton = Arc::new(built.rig.skeleton.clone());
-        let parts: Vec<String> =
-            guard.proxy().body.iter().map(|p| format!("{:?} {:.0} mm", p.part, p.radius * 1e3)).collect();
+        let parts: Vec<String> = guard
+            .proxy()
+            .body
+            .iter()
+            .map(|p| format!("{:?} {:.0}x{:.0} mm", p.part, p.radius * 1e3, p.depth * 1e3))
+            .collect();
         println!(
-            "{}: {}, forearm {:.0} mm, hand {:.0} mm",
+            "{}: {}, forearm {:.0} mm, hand {:.3} mm",
             template.id(),
             parts.join(", "),
             guard.proxy().forearm_radius * 1e3,
-            guard.proxy().hand_radius * 1e3
+            guard.proxy().hand_axes[1] * 1e3
         );
 
         // The bind pose (the arms' own hang) is clear and untouched.
@@ -87,7 +91,7 @@ fn each_templates_forearms_are_kept_out_of_its_chest_and_its_bind_pose_is_left_a
             (B::LeftUpperArm, B::LeftLowerArm, Vec3::X, 1.0_f32),
             (B::RightUpperArm, B::RightLowerArm, Vec3::NEG_X, -1.0),
         ] {
-            let u = Quat::from_rotation_arc(along, Vec3::new(0.15 * flip, -0.9, 0.35).normalize());
+            let u = Quat::from_rotation_arc(along, Vec3::new(0.15 * flip, -0.9, 0.2).normalize());
             let f = Quat::from_rotation_arc(along, Vec3::new(-flip, 0.1, 0.05).normalize());
             across.set(upper, u);
             across.set(lower, u.inverse() * f);

@@ -1,0 +1,7 @@
+{
+  "about": "The `scenes` fixture with a second member, `friend` (the same character), beside `main` in the default scene: the base for ops between two cast members.",
+  "base": "scenes",
+  "steps": [
+    { "op": "stage.place_character", "args": { "scene": "main", "character": "kit", "id": "friend", "position": [0.7, 0.0] } }
+  ]
+}

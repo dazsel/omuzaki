@@ -33,7 +33,7 @@
 
 use std::f64::consts::TAU;
 
-use omuzaki_char_api::{CapGen, HAIR_INFO, HAIR_UV, HeadSurface};
+use omuzaki_char_api::{Bulge, CapGen, HAIR_INFO, HAIR_UV, HeadSurface, Taper};
 use omuzaki_core::glam::Vec3;
 use omuzaki_core::id::Slug;
 use omuzaki_core::mesh::{ExtraAttribute, MeshData};
@@ -134,6 +134,82 @@ pub fn fill_shell(g: &CapGen, head: &dyn HeadSurface, out: &mut MeshData) {
     lift_to_clearance(head, positions, indices, normals);
     normals.fill(Vec3::ZERO);
     smooth_normals(positions, indices, normals);
+}
+
+/// A lock the shell tucks under ([`tuck`]): its rest points, width and thickness.
+pub struct Lock<'a> {
+    /// Root to tip.
+    pub rest: &'a [Vec3],
+    /// Its width along it.
+    pub width: &'a Taper,
+    /// Its thickness along it.
+    pub thickness: &'a Bulge,
+}
+
+/// How far under a lock's inner face the shell tucks, metres.
+pub const TUCK_MARGIN: f32 = 0.0015;
+/// The share of a lock's half width the tuck covers, so the shell stays up along the lock's edges, where a dip would
+/// show between locks.
+const TUCK_FOOTPRINT: f32 = 0.85;
+
+/// Lowers the shell under every lock that would cut through it (#2412). The shell stands up to 26 mm off the scalp at
+/// the crown and a lock that lies across it at a shallow angle, a fringe diving to the forehead, crosses its surface
+/// along a ragged line: in a close-up a jagged patchwork of shell and lock. Under the middle of each lock (the lock's
+/// footprint), the shell drops to [`TUCK_MARGIN`] below the lock's inner face, never below [`MIN_CLEARANCE`] off the
+/// head; elsewhere it keeps its height. Locks are culled by their boxes, so the cost is the shell's few thousand vertices
+/// against the locks that pass near each.
+#[allow(clippy::many_single_char_names)] // vector geometry: points, directions and fractions
+pub fn tuck(shell: &mut MeshData, head: &dyn HeadSurface, locks: &[Lock<'_>]) {
+    let centre = head.centre();
+    let boxes: Vec<(Vec3, Vec3)> = locks
+        .iter()
+        .map(|l| {
+            #[allow(clippy::cast_possible_truncation)] // a lock's width in metres
+            let reach = l.width.start.max(l.width.mid).max(l.width.tip) as f32 * 0.5;
+            let (lo, hi) = l.rest.iter().fold((Vec3::MAX, Vec3::MIN), |(lo, hi), p| (lo.min(*p), hi.max(*p)));
+            (lo - Vec3::splat(reach), hi + Vec3::splat(reach))
+        })
+        .collect();
+    let mut moved = false;
+    for v in &mut shell.positions {
+        let offset = *v - centre;
+        let (r, Some(u)) = (offset.length(), offset.try_normalize()) else { continue };
+        let floor = head.radius(u) + MIN_CLEARANCE * 1.5;
+        let mut limit = r;
+        for (lock, (lo, hi)) in locks.iter().zip(&boxes) {
+            if v.clamp(*lo, *hi) != *v {
+                continue;
+            }
+            let last = lock.rest.len().saturating_sub(1);
+            for (i, pair) in lock.rest.windows(2).enumerate() {
+                let (p, q) = (pair[0], pair[1]);
+                let d = q - p;
+                let s =
+                    if d.length_squared() > 0.0 { ((*v - p).dot(d) / d.length_squared()).clamp(0.0, 1.0) } else { 0.0 };
+                let near = p + d * s;
+                let along = (near - centre).dot(u);
+                let lateral = ((near - centre) - u * along).length();
+                #[allow(clippy::cast_precision_loss)] // a few dozen points
+                let t = (i as f32 + s) / last.max(1) as f32;
+                if lateral < lock.width.at(t) * 0.5 * TUCK_FOOTPRINT {
+                    limit = limit.min(along - lock.thickness.at(t) * 0.5 - TUCK_MARGIN);
+                }
+            }
+        }
+        let target = limit.max(floor);
+        if target < r {
+            *v = centre + u * target;
+            moved = true;
+        }
+    }
+    if moved {
+        let MeshData { positions, normals, indices, .. } = shell;
+        normals.clear();
+        normals.resize(positions.len(), Vec3::ZERO);
+        lift_to_clearance(head, positions, indices, normals);
+        normals.fill(Vec3::ZERO);
+        smooth_normals(positions, indices, normals);
+    }
 }
 
 /// The least distance, metres, any point of the shell keeps from the head surface.

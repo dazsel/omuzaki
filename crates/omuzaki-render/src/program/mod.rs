@@ -52,7 +52,9 @@ use omuzaki_core::id::Slug;
 use omuzaki_render_api::{ParamValue, ProgramParams, RenderError, Shading, Toon};
 
 mod band_highlight;
+mod gem;
 mod hair;
+mod metal;
 mod shadow_catcher;
 mod sheen;
 
@@ -169,6 +171,14 @@ impl Values {
     pub(crate) fn colour(&self, name: &str) -> Option<Colour> {
         self.items.iter().find_map(|(n, v)| match v {
             ParamValue::Colour(c) if *n == name => Some(*c),
+            _ => None,
+        })
+    }
+
+    /// The float parameter `name`, if the program declares one.
+    pub(crate) fn float(&self, name: &str) -> Option<f32> {
+        self.items.iter().find_map(|(n, v)| match v {
+            ParamValue::Float(f) if *n == name => Some(*f),
             _ => None,
         })
     }
