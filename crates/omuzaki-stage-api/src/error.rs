@@ -30,6 +30,8 @@ pub enum FindingKind {
     NoLights,
     /// The backdrop is the environment and the lighting has none, so the lighting's `background` colour shows.
     NoEnvironment,
+    /// A prop names a kind this build doesn't have; the stage skips the prop and the scene keeps it.
+    UnknownPropKind,
 }
 
 /// Something that looks wrong but is allowed (D13).

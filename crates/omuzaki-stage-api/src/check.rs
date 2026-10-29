@@ -74,6 +74,7 @@ impl SceneDef {
         self.check_lighting()?;
         self.check_cameras()?;
         self.check_cast()?;
+        self.check_props()?;
         self.check_weather()?;
         Ok(self.findings(has_character))
     }
@@ -246,6 +247,23 @@ impl SceneDef {
         Ok(())
     }
 
+    fn check_props(&self) -> Check {
+        for (id, prop) in &self.props {
+            let path = format!("props.{id}");
+            all_finite(&format!("{path}.position"), &prop.position)?;
+            all_finite(&format!("{path}.rotation"), &prop.rotation)?;
+            positive(&format!("{path}.scale"), prop.scale)?;
+            self.check_anchor(&format!("{path}.anchor"), &prop.anchor)?;
+            if prop.attach.is_some() && prop.anchor == Anchor::Stage {
+                return refuse(
+                    format!("{path}.attach"),
+                    "a prop follows a bone of a member: anchor it to `subject` or `member:<id>`",
+                );
+            }
+        }
+        Ok(())
+    }
+
     fn check_anchor(&self, path: &str, anchor: &Anchor) -> Check {
         anchor.member().map_or(Ok(()), |m| self.require_member(path, m))
     }
@@ -274,6 +292,15 @@ impl SceneDef {
                 message: "the backdrop is the environment but the lighting has none, so its background colour shows"
                     .into(),
             });
+        }
+        for (id, prop) in &self.props {
+            if crate::props::find_prop_kind(prop.kind.as_str()).is_none() {
+                found.push(Finding {
+                    kind: FindingKind::UnknownPropKind,
+                    path: format!("props.{id}.kind"),
+                    message: format!("no prop kind `{}` in this build, so the stage skips this prop", prop.kind),
+                });
+            }
         }
         for (id, member) in &self.cast {
             if !has_character(&member.character) {
