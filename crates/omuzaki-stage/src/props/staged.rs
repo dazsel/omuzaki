@@ -237,9 +237,8 @@ fn place(
         Some((to, bone))
     });
     let transform = match (attach, figure) {
-        (Some(_), _) => local,
         (None, Some(figure)) => Mat4::from(figure.root) * local,
-        (None, None) => local,
+        _ => local,
     };
     Placement { transform, attach, visible: prop.visible && present, casts_shadow: prop.casts_shadow }
 }

@@ -78,7 +78,7 @@ impl StagePreset {
         self.props
             .iter()
             .map(|(name, prop)| {
-                let id = PropId::new(&format!("{SET_PREFIX}{name}")).map_err(|e| format!("prop '{name}': {e}"))?;
+                let id = PropId::new(format!("{SET_PREFIX}{name}")).map_err(|e| format!("prop '{name}': {e}"))?;
                 let kind = find_prop_kind(prop.kind.as_str())
                     .ok_or_else(|| format!("prop '{name}': no prop kind '{}'", prop.kind))?;
                 let mut prop = prop.clone();

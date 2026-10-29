@@ -101,7 +101,7 @@ impl PropKind for Lamp {
         if p.on {
             // A lit shade glows from inside: its own light, a little of the bulb's colour.
             if let omuzaki_render_api::Shading::Toon(toon) = &mut shade_material.shading {
-                toon.emissive = mix(Colour::BLACK, p.light, 0.35);
+                toon.emissive = mix(Colour::BLACK, p.light, 0.18);
             }
         }
         let bulb_at = Vec3::new(0.0, shade_y + shade_h * 0.45, 0.0);
@@ -234,8 +234,8 @@ impl PropKind for Window {
                     let z = depth + 0.05 + if f % 2 == 0 { 0.0 } else { 0.035 };
                     let shade = mix(cloth, darker(cloth, 0.3), if f % 2 == 0 { 0.0 } else { 1.0 });
                     curtains.bevelled(
-                        At::xyz(x, (h + bar) * 0.5 - 0.05, z),
-                        Vec3::new(0.026, (h + bar * 2.0) * 0.5 + 0.1, 0.014),
+                        At::xyz(x, f32::midpoint(h, bar) - 0.05, z),
+                        Vec3::new(0.026, f32::midpoint(h, bar * 2.0) + 0.1, 0.014),
                         0.008,
                         shade,
                     );

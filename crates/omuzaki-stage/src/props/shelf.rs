@@ -139,14 +139,17 @@ fn fill_board(
     while at < end - 0.02 {
         let roll = rng.next();
         if roll < 0.06 && end - at > 0.2 {
-            // A stack of two to four books lying flat.
+            // A stack of two to four books lying flat, each pushed up to 1 cm along: never back past where it starts.
             let (len, depth) = (rng.range(0.16, 0.22), rng.range(0.13, (z.1 - z.0) * 0.85).max(0.12));
+            if at + len + 0.01 > x.1 {
+                break;
+            }
             let mut top = y;
             for _ in 0..2 + rng.index(3) {
                 let t = rng.range(0.025, 0.045);
                 let c = pick(rng);
                 books.bevelled(
-                    At::xyz(at + len * 0.5 + rng.range(-0.01, 0.01), top + t * 0.5, z.0 + 0.01 + depth * 0.5),
+                    At::xyz(at + len * 0.5 + rng.range(0.0, 0.01), top + t * 0.5, z.0 + 0.01 + depth * 0.5),
                     Vec3::new(len * 0.5, t * 0.5, depth * 0.5),
                     0.003,
                     c,
@@ -157,6 +160,10 @@ fn fill_board(
             continue;
         }
         let thick = rng.range(0.018, 0.05);
+        // Nothing stands past the side of the case.
+        if at + thick > x.1 {
+            break;
+        }
         let tall = (room * rng.range(0.62, 0.92)).min(room - 0.01).max(0.06);
         let depth = rng.range(0.6, 0.9) * (z.1 - z.0);
         let c = pick(rng);
@@ -166,6 +173,9 @@ fn fill_board(
             let lean = rng.range(10.0_f32, 22.0).to_radians();
             let (sin, cos) = lean.sin_cos();
             let pivot = at + tall * sin;
+            if pivot + thick * cos > x.1 {
+                break;
+            }
             let centre = Vec3::new(pivot + thick * 0.5 * cos - tall * 0.5 * sin, y + thick * 0.5 * sin + tall * 0.5 * cos, z.0 + 0.01 + depth * 0.5);
             books.bevelled(
                 At::pos(centre).roll(lean.to_degrees()),

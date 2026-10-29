@@ -150,6 +150,7 @@ fn id(name: &str) -> PropId {
     PropId::new(name).unwrap()
 }
 
+#[allow(clippy::needless_pass_by_value, reason = "every call site passes a json! literal")]
 fn prop(kind: &str, params: serde_json::Value) -> PropDef {
     let mut prop = PropDef::new(PropKindId::new(kind).unwrap());
     prop.params = omuzaki_stage_api::prop_kind(kind).unwrap().check(&params).unwrap();
@@ -210,6 +211,7 @@ fn props_resolve_into_builds_and_placements_and_the_lamp_lights_the_room() {
     assert_eq!(builds.props.len(), 10);
     assert!(builds.props.iter().all(|b| b.output.is_some()), "every kind is registered and builds");
     // The lamp's bulb is a point light where the lamp stands, after the rig's ambient and lights.
+    #[allow(clippy::cast_possible_truncation)] // a height in metres
     let lamp = def.props[&id("lamp")].params["height"].as_f64().unwrap() as f32;
     let point = out.lights.as_slice().iter().find_map(|l| match *l {
         Light::Point { position, .. } => Some(position),

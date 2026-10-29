@@ -1,7 +1,7 @@
 # A bedroom: the subject stands at the origin facing +Z, the bed against the back wall to their left.
 title = "Bedroom"
-summary = "A soft pastel bedroom: a made bed under a window, a bedside table and lamp, a low bookshelf, a plant and a round rug. Pairs with the viewer-candle rig for evening or dev-warm for day."
-light_rig = "viewer-candle"
+summary = "A soft pastel bedroom: a made bed under a window, a bedside table and lamp, a low bookshelf, a plant and a round rug. Pairs with the dev-warm rig, or viewer-candle for evening."
+light_rig = "dev-warm"
 tags = ["interior", "cosy", "pastel"]
 
 [backdrop]

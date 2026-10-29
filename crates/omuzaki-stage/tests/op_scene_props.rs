@@ -157,13 +157,14 @@ fn a_stage_preset_sets_the_room_and_replaces_only_the_last_presets_set() {
     let (_, out) = edit::<SetStagePreset>(&mut doc, json!({ "preset": "study" }));
     assert_eq!(out["light_rig"], "dev-warm");
     let study = scene(&doc);
-    assert!(study.props.keys().filter(|k| k.as_str().starts_with("set-")).count() >= 9);
+    let set = study.props.keys().filter(|k| k.as_str().starts_with("set-")).count();
+    assert!(set >= 9, "{set}");
     assert!(study.props.contains_key(&id("my-cup")), "a prop someone added stays");
     assert_eq!(study.scene.ground.kind, GroundKind::None, "the room has its own floor");
     assert_eq!(study.lighting, lighting, "a preset never touches the lighting (D9)");
 
     let (patch, out) = edit::<SetStagePreset>(&mut doc, json!({ "preset": "green-screen" }));
-    assert!(!out["replaced"].as_array().unwrap().is_empty());
+    assert_eq!(out["replaced"].as_array().unwrap().len(), set, "every prop the study placed is replaced");
     let green = scene(&doc);
     assert_eq!(green.props.keys().map(PropId::as_str).collect::<Vec<_>>(), ["my-cup"]);
     assert!(

@@ -8,11 +8,17 @@
 //! - [`staged`]: a scene's props resolved (builds kept while their params are), uploaded once per build and drawn
 //!   every frame, attached ones under their bones.
 
+#[allow(clippy::many_single_char_names, reason = "w, d, h and x, y, z are the extents and axes of what a kind builds")]
 pub mod furniture;
+#[allow(clippy::many_single_char_names, reason = "w, d, h and x, y, z are the extents and axes of what a kind builds")]
 pub mod lighting;
+#[allow(clippy::many_single_char_names, reason = "w, d, h and x, y, z are the extents and axes of what a kind builds")]
 pub mod room;
+#[allow(clippy::many_single_char_names, reason = "w, d, h and x, y, z are the extents and axes of what a kind builds")]
 pub mod shape;
+#[allow(clippy::many_single_char_names, reason = "w, d, h and x, y, z are the extents and axes of what a kind builds")]
 pub mod shelf;
+#[allow(clippy::many_single_char_names, reason = "w, d, h and x, y, z are the extents and axes of what a kind builds")]
 pub mod small;
 pub mod staged;
 
@@ -132,7 +138,7 @@ mod tests {
         // The budget the PR states: the largest prop stays under 20,000 triangles, so a room of a dozen props is a
         // fraction of a character.
         assert!(worst.0 < 20_000, "{} builds {} triangles", worst.1, worst.0);
-        assert!(MAX_PROPS >= 64);
+        const { assert!(MAX_PROPS >= 64) };
     }
 
     #[test]
@@ -156,6 +162,21 @@ mod tests {
         assert_eq!(build("lamp", json!({"on": false})).lights.len(), 0);
         assert_eq!(build("window", json!({})).lights.len(), 1);
         assert_eq!(build("window", json!({"daylight": false})).lights.len(), 0);
+    }
+
+    #[test]
+    fn no_book_stands_past_the_side_of_its_case() {
+        let shelf = omuzaki_stage_api::prop_kind("shelf").unwrap();
+        for seed in 0..40 {
+            for (width, books) in [(0.4, 1.0), (0.9, 0.8), (2.0, 1.0)] {
+                let params = shelf.check(&json!({"width": width, "books": books, "seed": seed})).unwrap();
+                let built = shelf.build(&params).unwrap();
+                // The inside of the case: half the width less half a side board.
+                let inside = width * 0.5 - 0.011 + 1e-4;
+                let worst = built.parts[1].mesh.positions.iter().map(|p| p.x.abs()).fold(0.0_f32, f32::max);
+                assert!(worst <= inside, "seed {seed}, width {width}: a book reaches {worst} past {inside}");
+            }
+        }
     }
 
     #[test]
