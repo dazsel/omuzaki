@@ -13,6 +13,7 @@ use std::path::Path;
 
 use omuzaki_core::glam::{Mat4, UVec2, Vec2, Vec3};
 use omuzaki_core::time::Seconds;
+use omuzaki_render::{AdapterPreference, CapabilityProfile, HeadlessOptions, WgpuRenderer};
 use omuzaki_render_api::{
     AlphaEncoding, AlphaMode, Background, Camera, Colour, ColourSet, Image, Instance, Material, Orientation,
     ParticleParams, ParticleSystemDesc, ParticleSystemId, Pass, Projection, Quality, Renderer, RendererExt, Scene,
@@ -37,7 +38,7 @@ fn matches_golden(image: &Image, name: &str) {
     assert_eq!(golden.dimensions(), (image.size.x, image.size.y));
     let diff = support::Diff::of(golden.as_raw(), &image.rgba8);
     assert!(
-        diff.max <= 2,
+        diff.matches_but_strays(),
         "{name} differs from its golden by up to {} levels ({diff}; bless with OMUZAKI_BLESS=1)",
         diff.max
     );
@@ -347,14 +348,36 @@ fn preset_sheet(r: &mut dyn Renderer, background: Background) -> Image {
 /// #940's goldens: the §3 confetti at 0.1, 0.6 and 2.0 s, rain and snow at 4 s, over transparent and over grey (the
 /// offline preset). The transparent render composited over grey in linear light agrees with the grey render within
 /// two levels: coverage leaves nothing for an encoding to get wrong.
+///
+/// The offline preset draws with the most samples the adapter has, and alpha-to-coverage turns a particle's coverage
+/// into that many samples, so the picture depends on the count: lavapipe offers 4 up to Mesa 25.2 and 8 from 25.3 on
+/// (CI's ubuntu-26.04, #2431). The goldens are the 4-sample pictures, which every lavapipe draws and anyone can bless;
+/// where the adapter has more, they come from a device opened with the WebGPU profile, which keeps to 1 and 4, and the
+/// adapter's own count runs the checks that need no golden.
 #[test]
 fn the_presets_match_their_goldens_and_composite_like_the_grey_render() {
-    let mut r = support::renderer();
-    let grey = Colour::hex(0x0080_8080);
-    let over_grey = preset_sheet(&mut r, Background::Solid { colour: grey });
-    let transparent = preset_sheet(&mut r, Background::Transparent);
+    let mut native = support::renderer();
+    let hardware = native.capabilities().max_samples;
+    eprintln!("the adapter draws {hardware} samples a pass");
+    let mut four = if hardware > 4 {
+        presets_composite(&mut native, hardware);
+        let options = HeadlessOptions { adapter: AdapterPreference::Software };
+        WgpuRenderer::headless_with_profile(&options, CapabilityProfile::WebGpu).unwrap()
+    } else {
+        native
+    };
+    assert_eq!(four.capabilities().max_samples, 4, "the goldens are drawn with 4 samples");
+    let (over_grey, transparent) = presets_composite(&mut four, 4);
     matches_golden(&over_grey, "particles-presets-grey.png");
     matches_golden(&transparent, "particles-presets-transparent.png");
+}
+
+/// The presets over grey and over transparent with `hardware` samples, after checking that the second composited over
+/// grey is the first and that the presets are visible.
+fn presets_composite(r: &mut WgpuRenderer, hardware: u8) -> (Image, Image) {
+    let grey = Colour::hex(0x0080_8080);
+    let over_grey = preset_sheet(r, Background::Solid { colour: grey });
+    let transparent = preset_sheet(r, Background::Transparent);
     let behind = grey.to_linear();
     let mut worst = 0u8;
     for (t, g) in transparent.rgba8.as_chunks::<4>().0.iter().zip(over_grey.rgba8.as_chunks::<4>().0) {
@@ -363,7 +386,11 @@ fn the_presets_match_their_goldens_and_composite_like_the_grey_render() {
         let c = Colour::from_linear(mixed, 1.0);
         worst = worst.max(c.r.abs_diff(g[0])).max(c.g.abs_diff(g[1])).max(c.b.abs_diff(g[2]));
     }
-    assert!(worst <= 2, "the transparent render over grey differs from the grey render by up to {worst} levels");
+    assert!(
+        worst <= 2,
+        "{hardware} samples: the transparent render over grey differs from the grey render by up to {worst} levels"
+    );
     let covered = transparent.rgba8.as_chunks::<4>().0.iter().filter(|p| p[3] > 0).count();
-    assert!(covered > 2_000, "the presets are visible: {covered} pixels");
+    assert!(covered > 2_000, "{hardware} samples: the presets are visible: {covered} pixels");
+    (over_grey, transparent)
 }

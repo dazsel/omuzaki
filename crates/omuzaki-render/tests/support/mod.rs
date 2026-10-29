@@ -13,6 +13,8 @@ use std::path::PathBuf;
 /// on a new adapter arrives with the numbers a tolerance has to be chosen from (and says whether the difference is noise
 /// or a structured error).
 pub struct Diff {
+    /// Pixels where any channel differs by more than 2 levels.
+    pub beyond_2: usize,
     /// Pixels where any channel differs by more than 3 levels.
     pub beyond_3: usize,
     /// Pixels where any channel differs at all.
@@ -32,9 +34,10 @@ impl Diff {
     #[allow(clippy::cast_precision_loss)] // a picture's sample count and level total are far below 2^52
     pub fn of(golden: &[u8], actual: &[u8]) -> Self {
         let mut histogram = [0_usize; 256];
-        let (mut beyond_3, mut any) = (0, 0);
+        let (mut beyond_2, mut beyond_3, mut any) = (0, 0, 0);
         for (a, b) in golden.chunks(4).zip(actual.chunks(4)) {
             let worst = a.iter().zip(b).map(|(x, y)| x.abs_diff(*y)).max().unwrap_or(0);
+            beyond_2 += usize::from(worst > 2);
             beyond_3 += usize::from(worst > 3);
             any += usize::from(worst > 0);
         }
@@ -54,7 +57,16 @@ impl Diff {
                 break;
             }
         }
-        Self { beyond_3, any, pixels: samples / 4, max, p99, mean: total as f64 / samples as f64 }
+        Self { beyond_2, beyond_3, any, pixels: samples / 4, max, p99, mean: total as f64 / samples as f64 }
+    }
+
+    /// Whether the picture matches within 2 levels everywhere but at a few stray pixels: one in 50,000, rounded down.
+    ///
+    /// A stray pixel is a sample that lands on the other side of an edge on another rasteriser: Mesa 26's lavapipe
+    /// moves one sample of one pixel of the particle sheet's 663,552 against Mesa 25's (21 levels, a quarter of the
+    /// contrast at four samples). A real change moves whole edges, hundreds of pixels at least, and still fails.
+    pub fn matches_but_strays(&self) -> bool {
+        self.beyond_2 <= self.pixels / 50_000
     }
 }
 
