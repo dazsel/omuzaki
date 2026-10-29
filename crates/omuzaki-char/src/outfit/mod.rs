@@ -30,6 +30,7 @@
 
 pub mod apron;
 pub mod blazer;
+pub mod bodysuit;
 pub mod boots;
 pub mod cloak;
 pub mod coat;

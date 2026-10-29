@@ -20,6 +20,7 @@ pub mod look;
 pub mod reach;
 pub mod shell;
 pub mod sleeves;
+pub mod straps;
 pub mod trims;
 
 use omuzaki_face_api::Check;
@@ -41,11 +42,21 @@ pub enum NeckShape {
     Scoop,
     /// A square neck with soft corners.
     Square,
-    /// No dip: the neck stands up round the throat (a crew or a high collar).
+    /// No dip: the neck stands up round the throat (a crew or a high collar). Without sleeves the armholes are cut in
+    /// toward the neck at the front and the back, and a collar band goes round the neck ([`straps`]).
     High,
+    /// A halter: the front rises to a collar band round the neck, and the back is cut away down to the armholes'
+    /// floor ([`straps`]). Without sleeves only.
+    Halter,
 }
 
 impl NeckShape {
+    /// Whether it stands up round the neck: a high neck or a halter, which a sleeveless coat holds up by a collar band
+    /// instead of straps.
+    pub fn stands(self) -> bool {
+        matches!(self, Self::High | Self::Halter)
+    }
+
     /// How deep the neckline is at `s`, the share of its half width from the middle (0) to its side (1): 1 at the
     /// bottom, 0 at the sides.
     pub fn dip(self, s: f64) -> f64 {
@@ -58,7 +69,7 @@ impl NeckShape {
             Self::V => 1.0 - s,
             Self::Scoop => (1.0 - s.powi(4)).sqrt(),
             Self::Square => 1.0 - crate::kit::curve::sstep(0.8, 1.0, s),
-            Self::High => 0.0,
+            Self::High | Self::Halter => 0.0,
         }
     }
 }

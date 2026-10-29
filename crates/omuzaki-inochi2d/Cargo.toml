@@ -1,0 +1,27 @@
+[package]
+name = "omuzaki-inochi2d"
+description = "Inochi2D puppet format library: reads INP1 (.inp/.inx, the Inochi2D 0.8 puppet) into omuzaki-puppet-api's PuppetDef with an import report, reads the INP2 container, and writes INP1 from our own puppets."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# A format library (crates/README.md, ADR 0011): importers depend on it; it depends on the
+# puppet contract only. It registers nothing and keeps no global state.
+[package.metadata.omuzaki]
+kind = "Lib"
+summary = "the Inochi2D puppet format: the INP1 container (JSON payload, PNG/TGA textures, vendor data) mapped onto `PuppetDef` with an import report (mapped, synthesised, dropped, findings with `inochi2d.<rule>` ids and JSON paths), the INP2 tagged container (payload refused as unsupported), and an INP1 writer for our own puppets. Every declared length is checked against the bytes left and `Limits` before allocating. Conventions and sources in the crate docs and `docs/research/2026-10-inochi2d-format.md`"
+layer = "lib"
+
+[dependencies]
+crc32fast.workspace = true
+image.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+omuzaki-puppet-api = { path = "../omuzaki-puppet-api" }
+
+[lints]
+workspace = true

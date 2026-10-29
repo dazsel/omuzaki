@@ -18,7 +18,7 @@ use super::cloud::Cloud;
 use super::edge::{Tube, loop_tube};
 use super::hang::{Arms, HangSpec, Table};
 use super::reach::HangReach;
-use super::{CoatCut, Front, MAX_LENGTH, MIN_LENGTH};
+use super::{CoatCut, Front, MAX_LENGTH, MIN_LENGTH, NeckShape};
 use crate::kit::curve::{TAU, fraction, lerp, sstep};
 use crate::kit::grid::{Grid, GridOptions, MeshBuilder, Skin};
 use crate::outfit::common::GarmentError;
@@ -35,6 +35,8 @@ pub const SEGMENTS: usize = 96;
 const SKIRT_ROW: f64 = 0.012;
 /// The bodice's rows are about this far apart, metres.
 const BODICE_ROW: f64 = 0.009;
+/// Below this ease the bodice's rows come nearer together, metres.
+const CLOSE_EASE: f64 = 0.004;
 /// The fewest and most rows of either.
 const ROWS: (usize, usize) = (6, 44);
 /// How far the waist seam's ring stands clear of the arms beyond the cloth, metres.
@@ -63,6 +65,12 @@ const SHOULDER: (f64, f64, f64) = (0.5, 1.0, 0.5);
 /// The straps beside an armhole: the highest their top may be, as a fraction of the torso below its top, and over
 /// which angles from the armhole's edge they keep to it (all of it, then easing back to the neckline).
 const STRAP: (f64, f64, f64) = (0.08, 0.15, 0.35);
+/// A sleeveless high or halter neck's cut-in ([`Frame::cut_in`]): the height it is measured across at, as a fraction
+/// of the torso (the chest), and where it leaves the armhole's floor and reaches the collar line, as shares of the
+/// chest's half width from the middle.
+const CUT_IN: (f64, f64, f64) = (0.75, 0.9, 0.3);
+/// How far below the neck's top a collar line stays, metres.
+const NECK_CLEAR: f64 = 0.004;
 /// The neckline dips at the back over this many radians either side of the centre back.
 const BACK_DIP: f64 = 0.9;
 /// Where the skirt's skin hands over from the torso's bones to the hips and thighs, as fractions of the torso: the
@@ -166,7 +174,8 @@ impl Frame {
             arms: cut.arms,
         };
         let table = Table::new(&cloud, &spec)?;
-        let top = column.top() + cut.neckline.rise * column.length();
+        // A collar line no higher than the neck: the rings above it are the neck's last, and rows there would meet.
+        let top = (column.top() + cut.neckline.rise * column.length()).min(column.neck_top() - NECK_CLEAR);
         Ok(Self { cut: cut.clone(), column, table, weights, thighs, hem, top })
     }
 
@@ -234,11 +243,41 @@ impl Frame {
             let shoulder = self.column.top() + SHOULDER.2 * (self.column.neck_top() - self.column.top());
             return neck + side * (shoulder - neck).max(0.0);
         }
+        if n.shape.stands() && self.closed() {
+            // Cut in: from the armhole's floor at the side up to the collar line near the middle of the front (and, for
+            // a high neck, of the back), so the shoulders are bare; a halter's back stays at the floor. The collar band
+            // round the neck joins them.
+            let floor = (self.column.top() - len * self.cut.armhole).min(self.top);
+            if n.shape == NeckShape::Halter && a > PI / 2.0 {
+                return floor;
+            }
+            return lerp(floor, self.top, self.cut_in(phi));
+        }
         let cut = 1.0 - sstep(ARMHOLE.0, ARMHOLE.0 + ARMHOLE.1, from_side);
         // The straps beside an armhole stay below the arms' roots, however high the neckline stands.
         let strap = 1.0 - sstep(ARMHOLE.0 + ARMHOLE.1 + STRAP.1, ARMHOLE.0 + ARMHOLE.1 + STRAP.2, from_side);
         let cap = self.column.top() - len * STRAP.0;
         lerp(neck - strap * (neck - cap).max(0.0), floor, cut)
+    }
+
+    /// How far a sleeveless high or halter neck's top has climbed from the armhole's floor toward the collar line at
+    /// `phi`, 0 to 1: by how far across the chest the column lies, so the cut runs diagonally from under the arm to the
+    /// neck in the front view. (The torso's rings are squarish: most angles toward the front lie on its side, at one
+    /// width, and a climb by angle there would be a vertical edge.) Under the arm and round the side it stays at the
+    /// floor, clear of the arms.
+    fn cut_in(&self, phi: f64) -> f64 {
+        let Ok(ring) = self.column.ring(self.torso(CUT_IN.0), self.cut.ease) else {
+            return 0.0;
+        };
+        let across = |phi: f64| (ring.point(phi) - ring.centre).dot(ring.across).abs();
+        let half = across(PI / 2.0).max(1e-3);
+        1.0 - sstep(CUT_IN.2 * half, CUT_IN.1 * half, across(phi))
+    }
+
+    /// Where a sleeveless coat's straps meet its front, as the angle from the centre front of the middle of the flat
+    /// top beside each armhole, radians; its back mirrors it about the side.
+    pub fn strap_angle(&self) -> f64 {
+        PI / 2.0 - (ARMHOLE.0 + ARMHOLE.1 + STRAP.1 / 2.0)
     }
 
     /// The hem's height at angle `phi`.
@@ -429,8 +468,11 @@ fn bodice_heights(frame: &Frame, us: &[f64]) -> Result<(usize, Vec<Vec<f64>>), G
         ));
     }
     let tallest = tops.iter().copied().fold(waist, f64::max) - waist;
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a small row count
-    let rows = ((tallest / BODICE_ROW).round() as usize).clamp(ROWS.0, ROWS.1);
+    // A close coat's rows are nearer: a flat between two of them chords in by the square of their spacing over the
+    // body's curve, and must stay inside its ease.
+    let fine = (frame.cut.ease / CLOSE_EASE).sqrt().clamp(0.5, 1.0);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)] // a small row count
+    let rows = ((tallest / (BODICE_ROW * fine)).round() as usize).clamp(ROWS.0, (ROWS.1 as f64 / fine) as usize);
     Ok((rows, tops.iter().map(|&top| (0..=rows).map(|i| lerp(waist, top, fraction(i, rows))).collect()).collect()))
 }
 

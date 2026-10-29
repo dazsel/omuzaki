@@ -366,11 +366,8 @@ pub fn enabled(params: &HairParams) -> impl Iterator<Item = (&GroupId, &HairGrou
 /// wildcard: a new generator has to say which kind it is.
 pub fn is_bilateral(generator: &Generator) -> bool {
     match generator {
-        Generator::Cap(_)
-        | Generator::PartSweep(_)
-        | Generator::Braid(_)
-        | Generator::Curtain(_)
-        | Generator::Bangs(_) => true,
+        Generator::Cap(_) | Generator::PartSweep(_) | Generator::Curtain(_) | Generator::Bangs(_) => true,
+        Generator::Braid(g) => !r#gen::braid::own_path(g),
         Generator::Framing(g) => g.side == HairSide::Both,
         Generator::Tail(_) | Generator::Bun(_) | Generator::Ahoge(_) | Generator::Guides(_) => false,
     }

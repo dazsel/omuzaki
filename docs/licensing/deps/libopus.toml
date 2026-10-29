@@ -1,0 +1,7 @@
+section = "rust"
+item = "libopus"
+kind = "native"
+used_for = "Opus encode and decode for the voice track of a WebM take or short (`omuzaki-stream` `opus`), loaded at run time from the system's own library or the file `OMUZAKI_LIBOPUS` names; nothing links it at build time and nothing ships it yet"
+status = "conditions"
+condition = "BSD-3-Clause (\"Copyright 2001-2011 Xiph.Org, Skype Limited, Octasic, Jean-Marc Valin, Timothy B. Terriberry, CSIRO, Gregory Maxwell, Mark Borgerding, Erik de Castro Lopes\") plus the royalty-free patent licences listed at opus-codec.org/license; keep the notice when a build bundles the library. Shown on 1.4 (Ubuntu libopus0): `opus_get_version_string` reports libopus 1.4"
+audit = "(opus-codec.org/license: BSD-3-Clause)"

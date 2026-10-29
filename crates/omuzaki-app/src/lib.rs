@@ -39,7 +39,7 @@ mod recover;
 pub mod startup;
 pub mod studio;
 
-pub use core::{AppCore, AppOptions, FailpointChoice, JournalFsChoice, with_resource_providers};
+pub use core::{ASSET_STORE, AppCore, AppOptions, FailpointChoice, JournalFsChoice, with_resource_providers};
 pub use error::AppError;
 pub use omuzaki_doc::journal::Recover;
 pub use recover::RecoveryReport;

@@ -4,7 +4,7 @@
 
 use omuzaki_anim_api::{CHANNELS, Channel};
 use omuzaki_core::text::edit_distance;
-use omuzaki_face_api::{FaceMark, FaceProfile};
+use omuzaki_face_api::{FaceMark, FaceProfile, IrisColours};
 use omuzaki_ops_api::OpError;
 use serde_json::Value;
 
@@ -78,12 +78,22 @@ pub(crate) struct Template {
     pub(crate) mark: Value,
 }
 
-/// The default face, serialised once per op call.
+/// The default face, serialised once per op call. A section the face may leave out (the right eye's own iris) is in it
+/// whole, holding what it shows when left out, so a path into it resolves and a face that sets it reads as valid.
 ///
 /// # Errors
 /// `Internal` if the default face can't be serialised, which would be a bug in `omuzaki-face-api`.
 pub(crate) fn template() -> Result<Template, OpError> {
-    Ok(Template { profile: to_json(&FaceProfile::default())?, mark: to_json(&FaceMark::default())? })
+    let mut face = FaceProfile::default();
+    let iris = &face.eyes.iris;
+    face.eyes.right_iris = Some(IrisColours {
+        top: Some(iris.top.clone()),
+        mid: Some(iris.mid.clone()),
+        low: Some(iris.low.clone()),
+        ring: Some(iris.ring.clone()),
+        pupil: Some(iris.pupil.clone()),
+    });
+    Ok(Template { profile: to_json(&face)?, mark: to_json(&FaceMark::default())? })
 }
 
 /// The face section called `name`, when the face has one.

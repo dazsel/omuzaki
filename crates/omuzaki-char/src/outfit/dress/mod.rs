@@ -1,6 +1,9 @@
 //! The `dress` garment (#328): a fitted bodice with a neckline and straps or sleeves, a waist seam, and a skirt that
 //! hangs from it to the hem, A-line, full (a circle) or a pencil, with soft folds and a sash at the seam.
 //!
+//! Without sleeves it is held up by a strap over each shoulder, or, with a high or halter neck, by a collar band round
+//! the neck with the armholes cut in toward it ([`straps`](super::coat::straps), #2447).
+//!
 //! It is cut with the [coat framework](crate::outfit::coat): closed all round, lined, its neckline and hem rolled. Its
 //! skirt is the grid [`cloth.set`](crate::ops::cloth) turns into cloth.
 
@@ -12,8 +15,9 @@ use serde::{Deserialize, Serialize};
 use super::coat::edge::{Band, band};
 use super::coat::hang::{Arms, Fall};
 use super::coat::look::CoatColours;
-use super::coat::shell::{self, Frame};
+use super::coat::shell::{self, Frame, Tones};
 use super::coat::sleeves::{self, SleeveCut};
+use super::coat::straps;
 use super::coat::{CoatCut, Front, MAX_LENGTH, MIN_LENGTH, NeckShape, Neckline};
 use super::common::{FabricStyle, Garment, GarmentCommon, GarmentError, GarmentOutput, LAYER_SHIRT, MAX_EASE};
 use super::shirt::sleeve::SleeveShape;
@@ -23,12 +27,20 @@ use crate::kit::curve::{TAU, fraction};
 pub const LAYER_DRESS: i32 = LAYER_SHIRT + 5;
 /// The cut of its rings: a little squarer than an ellipse.
 pub const EXPONENT: f64 = 2.15;
-/// The cloth's thickness by default, metres.
-pub const THICKNESS: f64 = 0.0022;
+/// The cloth's thickness by default, metres: a light dress cloth, so its bodice lies within 4 mm of the body.
+pub const THICKNESS: f64 = 0.0012;
+/// How far it stands off the layer under it by default, metres.
+pub const EASE: f64 = 0.0025;
 /// The strap armholes' depth by default, as a fraction of the torso: their floor where the vest's is, below the arms' roots.
 pub const ARMHOLE: f64 = 0.54;
 /// The rolled edge's lip, metres.
 const LIP: f64 = 0.0008;
+/// A strap's width by default, metres.
+pub const STRAP_WIDTH: f64 = 0.018;
+/// The widest a strap may be, metres.
+pub const MAX_STRAP_WIDTH: f64 = 0.05;
+/// The least a high or halter neck stands up the neck, as a fraction of the torso: up round the throat.
+pub const STANDING_RISE: f64 = 0.04;
 /// Segments round the sash.
 const SASH_SEGMENTS: usize = 96;
 
@@ -73,7 +85,7 @@ pub enum DressSleeves {
 
 impl DressSleeves {
     /// The cut of the sleeves, if any.
-    fn cut(self) -> Option<SleeveCut> {
+    pub(crate) fn cut(self) -> Option<SleeveCut> {
         let plain = SleeveCut {
             width: 0.004,
             ease_at_elbow: 0.004,
@@ -127,6 +139,9 @@ pub struct DressParams {
     pub sleeves: DressSleeves,
     /// How far down from the torso's top the armholes' floor is when it has straps, as a fraction of the torso.
     pub armhole: f64,
+    /// How wide each strap over the shoulder is without sleeves, metres; 0 for none (strapless). A high or halter neck
+    /// has a collar band instead.
+    pub strap_width: f64,
     /// How the skirt is cut.
     pub skirt: SkirtCut,
     /// Where the hem is: 0 at the hips' joints, 1 at the ankles.
@@ -148,7 +163,7 @@ impl Default for DressParams {
     fn default() -> Self {
         Self {
             common: GarmentCommon {
-                ease: 0.004,
+                ease: EASE,
                 fabric: FabricStyle::Plain { colour: ColourRef::rgb(0x4e, 0x58, 0x7a) },
                 ..GarmentCommon::default()
             },
@@ -157,6 +172,7 @@ impl Default for DressParams {
             neckline: Neckline { shape: NeckShape::Scoop, depth: 0.12, width: 0.8, back: 0.05, rise: -0.08 },
             sleeves: DressSleeves::Straps,
             armhole: ARMHOLE,
+            strap_width: STRAP_WIDTH,
             skirt: SkirtCut::ALine,
             length: 0.5,
             back_drop: 0.0,
@@ -181,6 +197,10 @@ impl Validate for DressParams {
         c.range("waist", self.waist, 0.1, 0.7);
         self.neckline.check(c);
         c.range("armhole", self.armhole, 0.0, 0.6);
+        c.range("strap_width", self.strap_width, 0.0, MAX_STRAP_WIDTH);
+        if self.neckline.shape == NeckShape::Halter && self.sleeves != DressSleeves::Straps {
+            c.fail("neckline/shape", "a halter neck leaves the shoulders bare: set sleeves to straps");
+        }
         c.range("length", self.length, MIN_LENGTH, MAX_LENGTH);
         c.range("back_drop", self.back_drop, 0.0, 0.3);
         if let Some(flare) = self.flare {
@@ -204,7 +224,7 @@ impl DressParams {
             thickness: self.thickness,
             waist: self.waist,
             front: Front::Closed,
-            neckline: self.neckline.clone(),
+            neckline: standing(&self.neckline),
             armhole: if sleeves.is_some() { 0.0 } else { self.armhole },
             length: self.length,
             back_drop: self.back_drop,
@@ -218,6 +238,36 @@ impl DressParams {
             },
             lip: LIP,
         }
+    }
+}
+
+/// `neckline` as cut: a high or halter neck stands at least [`STANDING_RISE`] up the neck.
+pub fn standing(neckline: &Neckline) -> Neckline {
+    let mut n = neckline.clone();
+    if n.shape.stands() {
+        n.rise = n.rise.max(STANDING_RISE);
+    }
+    n
+}
+
+/// What holds up a coat without sleeves: a collar band for a high or halter neck, else a strap `width` wide over each
+/// shoulder (none for 0). Returns the open borders it adds.
+///
+/// # Errors
+/// As [`straps::straps`] and [`straps::collar`].
+pub fn hold_up(
+    mesh: &mut crate::kit::grid::MeshBuilder,
+    frame: &Frame,
+    width: f64,
+    tones: &Tones,
+) -> Result<usize, GarmentError> {
+    if frame.cut.neckline.shape.stands() {
+        straps::collar(frame, tones, mesh)?;
+        Ok(0)
+    } else if width > 0.0 {
+        straps::straps(frame, width, tones, mesh)
+    } else {
+        Ok(0)
     }
 }
 
@@ -256,9 +306,11 @@ impl PartKind for Dress {
             let colour = ctx.colour(&p.sash.colour)?.to_linear().to_array();
             add_sash(&mut shell.mesh, &frame, p.sash.height, colour).map_err(fail)?;
         }
-        let sleeves = match p.sleeves.cut() {
-            Some(cut) => Some(sleeves::build(&frame, &cut, &tones, out.tile()).map_err(fail)?),
-            None => None,
+        let sleeves = if let Some(cut) = p.sleeves.cut() {
+            Some(sleeves::build(&frame, &cut, &tones, out.tile()).map_err(fail)?)
+        } else {
+            hold_up(&mut shell.mesh, &frame, p.strap_width, &tones).map_err(fail)?;
+            None
         };
         super::coat::finish(ctx, out, &p.common, &p.colours, &frame, shell, sleeves, &Self::regions(p))
     }
@@ -289,9 +341,16 @@ impl Garment for Dress {
         }
     }
 
-    /// The hem and the neckline, outside and in; with sleeves, an armhole in each and two ends to each sleeve.
+    /// The hem and the neckline, outside and in; with sleeves, an armhole in each and two ends to each sleeve; with
+    /// straps, two for each strap.
     fn open_borders(p: &DressParams) -> usize {
-        4 + if p.sleeves.cut().is_some() { 4 + 4 } else { 0 }
+        4 + if p.sleeves.cut().is_some() {
+            4 + 4
+        } else if p.strap_width > 0.0 && !p.neckline.shape.stands() {
+            4
+        } else {
+            0
+        }
     }
 }
 

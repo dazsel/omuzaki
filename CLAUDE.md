@@ -181,23 +181,40 @@ later work cheaper; every owner holds itself to them, and nobody gates on them:
   every struct-like variant of a public enum in an `*-api` crate is `#[non_exhaustive]` with a constructor (#1514); a
   crate that registers things is linked into the Apps with a one-line `link()` call (ADR 0015).
 
-### The quality loop: match a reference
+### The main loop: build a target, find what's missing, build it
 
-The bar for what Omuzaki can make is a reference: a video (or several) of a character, its performance, its
-creativity, emotion and expression, at the quality the product must reach. The target is to match it shot for shot.
+This is the standing loop for the whole product, beside each area's spine. The bar is that a person who has never
+used the app can easily make a custom VTuber at a target's quality, and that an agent can make the same character
+through Omuzaki's MCP operations alone. If it can't be built that way today, something is missing.
 
-1. **Recreate it** with Omuzaki the way a person or an agent would, end to end, through operations.
-2. **Compare** side by side, frame by frame and against the numbers, and list every gap: a missing feature, a result
-   that falls short, or a step that is too slow or too hard for someone new to the app.
-3. **Answer your own questions and act.** Decide what each gap needs, mention the decision on #2, and do it without
+The target is a reference: a character (an openly licensed model such as the CC0 VRoid samples, studied for how it is
+built: meshes, hair, eyes, textures, materials, blendshapes) or a video of one (its performance, creativity, emotion
+and expression), at the quality the product must reach. The aim is to match it, shot for shot and pixel for pixel.
+
+1. **Pick a target** and post it on its tracking issue (one per target, such as #2393 for short-form video): what it
+   is, its licence, and what "matches" means.
+2. **Build it** with Omuzaki the way a person or an agent would, end to end, only through its tools and operations
+   (MCP, the CLI, scripts, the panels). **Recreate, never copy:** the reference is only looked at, like an artist
+   studies a model sheet, and scored against. No pixel of it goes into what is rendered: no texture, layer, sprite or
+   part cut, traced or fitted from its frames, and no puppet solved from it; a licensed model is studied, not
+   imported and called done. The exercise is to find what the tools are missing (drawing, textures, the shape library,
+   the kit, materials, rigging, expressions) for a character like this at pixel parity.
+3. **Compare** side by side, frame by frame and against the numbers (`tools/reference-loop/parity.py` asks how the
+   render was made and refuses to score assets that copy the reference), and list every gap: a missing feature or
+   operation, a result that falls short, or a step that is too slow or too hard for someone new to the app.
+4. **Answer your own questions and act.** Decide what each gap needs, mention the decision on #2, and do it without
    waiting for an answer. Only money and a change to the product's scope go to the owner.
-4. **File each gap as an issue** with its area's label, the shot it comes from and what "matches" means as its
-   acceptance criteria.
-5. **Close them in chunks,** like any other issues, then recreate the reference again and compare. Repeat until it
-   matches; then take the next reference.
+5. **File each gap as an issue** with its area's label, the shot or part it comes from and what "matches" means as
+   its acceptance criteria.
+6. **Close them in chunks,** like any other issues; after each chunk, build the target again, re-score, and update
+   its tracking issue with the new numbers, a before/after render and what's still missing. Repeat until it matches;
+   then take the next target.
 
 A reference that isn't the project's own stays out of the repository: describe it in words, and use the kit's
 characters for every render and video in the evidence.
+
+For short-form video the bar, the `short.*` ops that recreate a short from a script, and the compare tool
+(`tools/reference-loop/compare.py`) are in `docs/quality/reference-shorts.md`.
 
 ## Product principles
 

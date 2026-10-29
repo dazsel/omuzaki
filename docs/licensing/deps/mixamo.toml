@@ -1,0 +1,7 @@
+section = "models"
+item = "Adobe Mixamo characters and animations"
+kind = "service"
+used_for = "(not shipped) a person downloads clips with their own Adobe account and imports the FBX (`io.import`)"
+status = "unverified"
+condition = "Never bundled. Adobe's own FAQ (helpx.adobe.com/creative-cloud/faq/mixamo-faq.html) refused automated reads on 2026-10-29; the community copy of it says use is royalty free, commercial included, but \"the only thing you can't do is distribute the raw character and animation files\", which bundling clips in a character app with an animation export would do. The CC0 Quaternius libraries cover the same ground for anything we ship"
+audit = "(community.adobe.com Mixamo FAQ copy, 2022; primary page unread)"

@@ -21,7 +21,9 @@
 //! **Imported avatars.** A character imported from a model (`characters/<id>/avatar`, design D5) has no parts to
 //! build: the scene it would export is its avatar rebuilt from the stored original and gathered back (D8), carrying
 //! its source row's provenance, and the model's own terms come with its meta. So the rights gate refuses to publish a
-//! model whose terms forbid sharing it, and lets the same file through for a private export.
+//! model whose terms forbid sharing it, and lets the same file through for a private export. When the project holds a
+//! licence record for it (someone read the model's actual licence, corrected the row and ran `licence.set`), the
+//! record's terms and provenance replace the file's, and the record is held against the rows as for a kit character.
 
 use omuzaki_avatar_api::body::BodyView;
 use omuzaki_char_api::{
@@ -33,8 +35,8 @@ use omuzaki_core::glam::Vec3;
 use omuzaki_doc_api::DocPath;
 use omuzaki_face_api::{FaceProfile, FaceProjection};
 use omuzaki_io_api::{
-    ExportOptions, Exporter, Finding, FormatId, IoScene, NodeIx, PerfectSync, Purpose, Report, Severity,
-    find_exporter, formats, preflight,
+    CreditNotation, ExportOptions, Exporter, Finding, FormatId, IoScene, NodeIx, PerfectSync, Purpose, Report,
+    Severity, VrmMeta, find_exporter, formats, preflight,
 };
 use omuzaki_ops_api::{Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
 use omuzaki_store_api::{Provenance, Store};
@@ -286,10 +288,23 @@ impl CheckExport {
                 OpError::invalid("character", format!("character '{}' can't be written to a file: {e}", self.character))
             })?;
         scene.provenance = imported_provenance(ctx, &self.character)?;
+        // A stored record (`licence.set`, bounded by the source rows) is what the project says the model's licence is,
+        // so its terms replace the file's own: a file's meta may say less than its licence (a VRoid Hub `Other` reads
+        // as "no modification, no redistribution" for a model published under CC0). The record is held against the
+        // rows below, so a record that has gone stale is reported, never trusted.
+        let record = read_record(ctx, &self.character)?;
+        if let Some(record) = &record {
+            apply_record(&mut scene.meta, record);
+            scene.provenance = Some(record.provenance.clone());
+        }
         let mut report = preflight(&scene, &options);
         report.extend(exporter.check(&scene, &options));
         // Its face is the model's own expressions, which the scene already carries: there is nothing to bake.
-        Ok(ExportScene { check: self.answer(report), scene: Some(scene), face: None })
+        let mut check = self.answer(report);
+        if record.is_some() {
+            check.add_findings(against_stored_record(&self.character, self.purpose, record.as_ref(), &load(ctx, &self.character)?));
+        }
+        Ok(ExportScene { check, scene: Some(scene), face: None })
     }
 
     /// The exporter of `self.format`, the options the check runs it with, and whether the format is a VRM one.
@@ -337,6 +352,27 @@ fn imported_provenance(ctx: &OpCtx<'_>, id: &CharId) -> Result<Option<Provenance
             .hint("the row is written by io.import; import the model again")
     })?;
     Ok(row.map(|r| r.provenance))
+}
+
+/// Writes an imported model's licence from its stored `record` over the file's own meta: the terms, the licence
+/// documents and the copyright line, with the record's attribution as the credit (as [`add_rights`] carries it). The
+/// rest of the file's meta (its name, authors, thumbnail and vendor keys) stays, since it describes this file.
+fn apply_record(meta: &mut VrmMeta, record: &LicenceRecord) {
+    let given = &record.meta;
+    meta.terms = given.terms.clone();
+    if !given.license_url.trim().is_empty() {
+        meta.license_url.clone_from(&given.license_url);
+    }
+    meta.other_license_url.clone_from(&given.other_license_url);
+    if given.copyright_information.as_deref().is_some_and(|c| !c.trim().is_empty()) {
+        meta.copyright_information.clone_from(&given.copyright_information);
+    }
+    if let Some(credit) = record.provenance.attribution.as_deref().filter(|a| !a.trim().is_empty()) {
+        meta.terms.credit_notation = CreditNotation::Required;
+        if meta.copyright_information.as_deref().is_none_or(|c| c.trim().is_empty()) {
+            meta.copyright_information = Some(credit.to_owned());
+        }
+    }
 }
 
 /// "exportable formats: glb, vrm1", for hints.

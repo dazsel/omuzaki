@@ -20,6 +20,14 @@
 //! 8 %: a [`TaperShape::Plateau`] [`Taper`] (the prototype's `0.024 · ramp(0.5 → 1, t < 0.04) · ramp(1 → 0.4, t >
 //! 0.92)`). Its thickness is [`BraidGen::strand_thickness`] at both ends, with no swell.
 //!
+//! **A path of its own** ([`BraidGen::path`], #2448). Given two or more `[theta, phi]` surface points, one braid (no
+//! mirrored side) follows them instead of the crown: the [`CONTROL_POINTS`] control points are spread evenly by angle
+//! along the polyline through them, each [`BraidGen::lift`] (default [`PATH_LIFT`]) off the head, then resampled as the
+//! crown is.
+//!
+//! **Tucked ends.** With [`BraidGen::tuck`] (default none on the crown, [`PATH_TUCK`] on a path), the path sinks by up
+//! to `tuck` toward the head over its first and last [`TUCK_REACH`] of length, so the braid goes into the hair round it.
+//!
 //! **Shade** falls by 0.02 per strand from 0.98. The generator draws no random numbers.
 
 use std::f64::consts::{PI, TAU};
@@ -42,6 +50,12 @@ pub const LIFT: f64 = 0.036;
 pub const RISE: f64 = 0.004;
 /// The part of the path, as a fraction of its length, over which [`RISE`] is gained.
 pub const RISE_REACH: (f64, f64) = (0.0, 0.2);
+/// How far a braid on a path of its own stands off the head by default, metres: on the default cap, not over it.
+pub const PATH_LIFT: f64 = 0.024;
+/// How far a braid on a path of its own sinks at its ends by default, metres.
+pub const PATH_TUCK: f64 = 0.012;
+/// The part of the braid's length at each end over which it sinks by its tuck.
+pub const TUCK_REACH: f64 = 0.125;
 /// Height of a strand above its path point, metres.
 const STRAND_LIFT: f64 = 0.005;
 /// Shade of the first strand; each later strand is [`SHADE_STEP`] darker.
@@ -66,8 +80,13 @@ pub fn compile(g: &BraidGen, ctx: &mut HairGenCtx<'_>) -> CompiledGroup {
     let width = Taper::new(ROOT_FRACTION * g.strand_width, g.strand_width, TIP_FRACTION * g.strand_width)
         .with_shape(TaperShape::plateau(RAMP_IN, RAMP_OUT));
     let thickness = Bulge { base: g.strand_thickness, swell: 0.0 };
-    for side in [1.0, -1.0] {
-        control_points(g, ctx.head, side, &mut controls);
+    let sides: &[f64] = if own_path(g) { &[1.0] } else { &[1.0, -1.0] };
+    for &side in sides {
+        if own_path(g) {
+            path_control_points(g, ctx.head, &mut controls);
+        } else {
+            control_points(g, ctx.head, side, &mut controls);
+        }
         // The resample refuses only a non-finite or zero-length path; take the nearest control points then, so the
         // clump count the dispatch checks never changes.
         if spaced_points_into(&controls, &mut path).is_err() {
@@ -101,12 +120,60 @@ fn sanitised(g: &BraidGen) -> BraidGen {
         strand_width: fix(g.strand_width, d.strand_width),
         strand_thickness: fix(g.strand_thickness, d.strand_thickness),
         height_radius: g.height_radius.filter(|r| r.is_finite()),
+        path: if g.path.iter().flatten().all(|v| v.is_finite()) { g.path.clone() } else { Vec::new() },
+        lift: g.lift.filter(|v| v.is_finite()),
+        tuck: g.tuck.filter(|v| v.is_finite()),
     }
 }
 
-/// How many clumps [`compile`] makes: [`BraidGen::strands`] on each side.
+/// Whether `g` follows a path of its own rather than the crown (and so makes one side only).
+pub fn own_path(g: &BraidGen) -> bool {
+    g.path.len() >= 2 && g.path.iter().flatten().all(|v| v.is_finite())
+}
+
+/// How many clumps [`compile`] makes: [`BraidGen::strands`] on each side, or once on a path of its own.
 pub fn clump_count(g: &BraidGen) -> usize {
-    2 * usize::from(g.strands)
+    if own_path(g) { usize::from(g.strands) } else { 2 * usize::from(g.strands) }
+}
+
+/// How far the path at `t` (0 at the root, 1 at the end) sinks toward the head: `tuck` at each end, easing to none
+/// over [`TUCK_REACH`].
+fn sink(t: f64, tuck: f64) -> f64 {
+    tuck * ((1.0 - smoothstep(t, 0.0, TUCK_REACH)) + smoothstep(t, 1.0 - TUCK_REACH, 1.0))
+}
+
+/// The control points of a path of its own, root first, written into `out`: spread evenly by angle along the polyline
+/// through [`BraidGen::path`]'s points, [`BraidGen::lift`] off the head less the tuck. Allocates nothing.
+#[allow(clippy::cast_precision_loss)] // point indices are small
+fn path_control_points(g: &BraidGen, head: &dyn HeadSurface, out: &mut [DVec3; CONTROL_POINTS]) {
+    let dir = |[theta, phi]: [f64; 2]| {
+        let (theta, phi) = (theta.to_radians(), phi.to_radians());
+        DVec3::new(theta.sin() * phi.sin(), theta.cos(), theta.sin() * phi.cos())
+    };
+    let angle = |a: DVec3, b: DVec3| a.dot(b).clamp(-1.0, 1.0).acos();
+    let total: f64 = g.path.windows(2).map(|w| angle(dir(w[0]), dir(w[1]))).sum();
+    let (lift, tuck) = (g.lift.unwrap_or(PATH_LIFT), g.tuck.unwrap_or(PATH_TUCK));
+    for (k, point) in out.iter_mut().enumerate() {
+        let t = k as f64 / (CONTROL_POINTS - 1) as f64;
+        let mut remaining = t * total;
+        let mut along = dir(g.path[g.path.len() - 1]);
+        for w in g.path.windows(2) {
+            let (a, b) = (dir(w[0]), dir(w[1]));
+            let span = angle(a, b);
+            if remaining <= span {
+                along = slerp(a, b, if span > 0.0 { remaining / span } else { 0.0 });
+                break;
+            }
+            remaining -= span;
+        }
+        *point = on_head(head, along, (lift - sink(t, tuck)).max(0.0));
+    }
+}
+
+/// The unit direction `f` of the way from `a` to `b` round the sphere.
+fn slerp(a: DVec3, b: DVec3, f: f64) -> DVec3 {
+    let mixed = a.lerp(b, f);
+    if mixed.length_squared() < 1e-12 { a } else { mixed.normalize() }
 }
 
 /// The control points of the path on `side` (`+1` for +x, `-1` for -x), root first, written into `out`. Allocates
@@ -118,7 +185,7 @@ fn control_points(g: &BraidGen, head: &dyn HeadSurface, side: f64, out: &mut [DV
         let phi = side * (g.path_from_deg + (g.path_to_deg - g.path_from_deg) * t).to_radians();
         let crown = g.height_radius.unwrap_or_else(|| f64::from(head.radius(Vec3::Y)));
         let dir = braid_direction_with(g.height_front, g.height_back, crown, phi);
-        let offset = LIFT + RISE * smoothstep(t, RISE_REACH.0, RISE_REACH.1);
+        let offset = LIFT + RISE * smoothstep(t, RISE_REACH.0, RISE_REACH.1) - sink(t, g.tuck.unwrap_or(0.0));
         *point = on_head(head, dir, offset);
     }
 }
