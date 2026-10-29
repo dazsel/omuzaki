@@ -89,11 +89,12 @@ pub(super) struct TriggerLayer {
     fades: TriggerFades,
     /// The slots as last set, so a reset can put them back.
     slots: [Option<TriggerSlot>; MAX_TRIGGERS],
-    /// The slot a press wants, as `Triggers` holds it: set by a press, cleared by a toggle off, a hold's release or
-    /// replacing the slot.
+    /// The slot a press wants, as `Triggers` holds it (read back after every change): set by a press, cleared by a
+    /// toggle off, a hold's release, an auto-stop or replacing the slot, and given back to a held slot when a
+    /// momentary one over it ends.
     wanted: Option<usize>,
-    /// The slot on the layer, fading in, held or fading out: `Triggers` keeps it private, so it is mirrored here by its
-    /// own rule (see [`step`](Self::step)). A key switch leaves the outgoing slot here while `wanted` names the next.
+    /// The slot on the layer, fading in, held or fading out, as `Triggers` holds it after each step. A key switch
+    /// leaves the outgoing slot here while `wanted` names the next.
     shown: Option<usize>,
     /// The shown slot was replaced while it showed: what fades out is the old binding's expression, and the slot now
     /// belongs to a new binding that has not been pressed, so it is not listed active.
@@ -110,19 +111,17 @@ impl TriggerLayer {
 
     /// Advances the fade by `dt` and writes the trigger layer.
     ///
-    /// The shown slot follows `Triggers`: when nothing shows, the wanted slot is put on the layer at the start of the
-    /// step; when the layer ends the step empty, nothing shows.
+    /// The shown slot follows `Triggers`: a new showing (counted by [`Triggers::shows`]) belongs to the binding that
+    /// was pressed; when the layer ends the step empty, nothing shows.
     pub(super) fn step(&mut self, dt: f32, out: &mut Layer) {
-        if self.shown.is_none()
-            && let Some(index) = self.wanted
-            && matches!(self.slots.get(index), Some(Some(_)))
-        {
-            self.shown = Some(index);
+        let shows = self.triggers.shows();
+        self.triggers.step(dt, out);
+        if self.triggers.shows() != shows {
             self.shown_replaced = false;
         }
-        self.triggers.step(dt, out);
-        if out.weight <= 0.0 {
-            self.shown = None;
+        self.wanted = self.triggers.wanted();
+        self.shown = self.triggers.shown().filter(|_| out.weight > 0.0);
+        if self.shown.is_none() {
             self.shown_replaced = false;
         }
     }
@@ -144,21 +143,14 @@ impl TriggerLayer {
 
     /// Key down on `index`: a toggle flips it, a hold shows it. An empty slot is ignored.
     pub(super) fn press(&mut self, index: usize) {
-        let Some(Some(slot)) = self.slots.get(index) else { return };
-        self.wanted = match slot.mode {
-            TriggerMode::Toggle if self.wanted == Some(index) => None,
-            _ => Some(index),
-        };
         self.triggers.press(index);
+        self.wanted = self.triggers.wanted();
     }
 
     /// Key up on `index`: a hold hides it, a toggle does nothing.
     pub(super) fn release(&mut self, index: usize) {
-        let held = matches!(self.slots.get(index), Some(Some(slot)) if slot.mode == TriggerMode::Hold);
-        if held && self.wanted == Some(index) {
-            self.wanted = None;
-        }
         self.triggers.release(index);
+        self.wanted = self.triggers.wanted();
     }
 
     /// Replaces slot `index` (`None` empties it). Replacing a slot ends the press that shows it, and what was shown
@@ -190,9 +182,7 @@ impl TriggerLayer {
         if let Some(entry) = self.slots.get_mut(index) {
             *entry = slot.copied();
         }
-        if self.wanted == Some(index) {
-            self.wanted = None;
-        }
+        self.wanted = self.triggers.wanted();
         Ok(())
     }
 

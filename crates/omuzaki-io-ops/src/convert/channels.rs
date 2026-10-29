@@ -130,10 +130,10 @@ mod tests {
     #[test]
     fn the_extras_cover_the_anime_channels_exactly() {
         let table: BTreeSet<Channel> = EXTRAS.iter().map(|(channel, _)| *channel).collect();
-        let first = Channel::EYE_ARC_LEFT.index();
-        let last = Channel::FANGS.index();
-        let assigned: BTreeSet<Channel> = (first..=last).filter_map(Channel::from_index).collect();
-        assert_eq!(assigned.len(), 13, "channels 60 to 72 are all assigned");
+        let span = |first: Channel, last: Channel| (first.index()..=last.index()).filter_map(Channel::from_index);
+        let assigned: BTreeSet<Channel> =
+            span(Channel::EYE_ARC_LEFT, Channel::FANGS).chain(span(Channel::ANGER_VEIN, Channel::TEETH_SHARP)).collect();
+        assert_eq!(assigned.len(), 19, "channels 60 to 72 and 76 to 81 are all assigned");
         assert_eq!(table, assigned);
     }
 
@@ -165,7 +165,7 @@ mod tests {
                 ),
             }
         }
-        assert_eq!(names.len(), 52 + 13);
+        assert_eq!(names.len(), 52 + 19);
         for not_expressions in [Channel::HEAD_YAW, Channel::BREATH, Channel::CUSTOM_00, Channel::CUSTOM_15] {
             assert_eq!(expression_name(not_expressions), None, "{not_expressions}");
         }

@@ -84,3 +84,12 @@ steps = [
     { run = ["cargo", "test", "--locked", "-p", "omuzaki-face", "--test", "evidence", "--", "--exact", "render_the_pout_and_the_brows_when_asked"] },
 ]
 images = ["pout-cheek-puff.png", "brows-height.png"]
+
+[[case]]
+name = "reference-marks"
+description = "The reference bar's face marks on the default face (#2403 to #2408): the anger vein, blank, dot, stare and pill eyes, a right iris of its own, sharp teeth and a single fang, deep gloom with glowing pupils, and rage and menace from the library; then the same sheet at 112, 56 and 28 pixels wide, the sizes a stream shows."
+env = { OMUZAKI_FACE_EVIDENCE_DIR = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-face", "--test", "reference_marks", "--", "--exact", "render_the_reference_marks_when_asked"] },
+]
+images = ["reference-marks.png", "reference-mouths.png", "reference-marks-112px.png", "reference-marks-56px.png", "reference-marks-28px.png"]

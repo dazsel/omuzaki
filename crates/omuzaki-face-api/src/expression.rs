@@ -369,8 +369,8 @@ impl ExpressionSet {
         Self(map)
     }
 
-    /// The built-in library (FE-03): the five visemes (with the [`starter`](Self::starter)'s mouth openings) and `blink`, twenty-one moods
-    /// and seven accents, each with its intensity curve, tuned with the expression range test. It is data, in
+    /// The built-in library (FE-03): the five visemes (with the [`starter`](Self::starter)'s mouth openings) and `blink`, twenty-seven moods
+    /// and eight accents, each with its intensity curve, tuned with the expression range test. It is data, in
     /// `library/expressions.toml` of this crate, compiled in. A new character's face starts with it.
     ///
     /// # Errors
@@ -477,7 +477,7 @@ mod tests {
         let moods = library.0.values().filter(|e| e.kind == ExpressionKind::Emotion).count();
         let accents = library.0.values().filter(|e| e.kind == ExpressionKind::Accent).count();
         assert!(moods >= 18, "{moods} moods");
-        assert_eq!((moods, accents), (21, 7));
+        assert_eq!((moods, accents), (27, 8));
         for (name, e) in &library.0 {
             assert!(!e.deltas.0.is_empty(), "{name} moves nothing");
             for (c, v) in &e.deltas.0 {

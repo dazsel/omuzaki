@@ -10,7 +10,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::drive::{self, DriveGate};
-use super::score::ScorePose;
+use super::score::{OverLayer, ScorePose};
 
 /// The fixed step rate, steps per second.
 pub const STEP_HZ: f32 = 60.0;
@@ -74,6 +74,8 @@ pub struct Performer {
     drive: DriveGate,
     /// The live score's body clips, laid on the base pose before the animator.
     score_pose: ScorePose,
+    /// The live score's acts made over tracking, laid on the bus after the life layer.
+    score_over: OverLayer,
     bus: Bus,
     pose: HumanoidPose,
     base: HumanoidPose,
@@ -102,6 +104,7 @@ impl Performer {
             stack: LayerStack::new(rest),
             drive: DriveGate::OPEN,
             score_pose: ScorePose::default(),
+            score_over: OverLayer::default(),
             bus: Bus::default(),
             pose: base,
             base,
@@ -170,10 +173,10 @@ impl Performer {
         &mut self.stack.trigger
     }
 
-    /// The score layer of the stack and the score's body layers: what the live score writes before each step (acts
-    /// from agents, scripts and the AI performer).
-    pub fn score_mut(&mut self) -> (&mut Layer, &mut ScorePose) {
-        (&mut self.stack.score, &mut self.score_pose)
+    /// The score layer of the stack, the score's acts made over tracking and its body layers: what the live score
+    /// writes before each step (acts from agents, scripts and the AI performer).
+    pub fn score_mut(&mut self) -> (&mut Layer, &mut OverLayer, &mut ScorePose) {
+        (&mut self.stack.score, &mut self.score_over, &mut self.score_pose)
     }
 
     /// Which drivers move which channels from the next step: the member's drive map (`perform::drive`).
@@ -254,6 +257,7 @@ impl Performer {
         self.stack.audio.clear();
         self.stack.trigger.clear();
         self.stack.score.clear();
+        self.score_over.clear();
         self.score_pose.clear();
         self.cues = Cues::default();
         self.origin = None;
@@ -280,6 +284,9 @@ impl Performer {
         self.track(tick);
         drive::resolve(&self.stack, &self.drive, &mut self.bus);
         self.parts.life.step(tick, &self.cues, &mut self.bus);
+        // An act made over tracking wins on its channels over every driver and the life layer; the grammar still
+        // reads the result, so its rules hold on a forced face too.
+        self.score_over.apply(&mut self.bus.values);
         if let Some(grammar) = self.grammar.as_mut() {
             grammar.step(tick, &self.cues, &mut self.bus);
         }

@@ -17,7 +17,10 @@
 //! | [`mailbox`] | [`voice_mailbox`]: the wait-free newest-wins hand-off to the perform thread |
 //! | [`lipsync`] | [`LipSync`]: frames to the audio layer, through the character's viseme expressions, and the cues |
 //! | [`listener`] | [`VoiceListener`]: the analyser's thread over an audio-api tap ring |
-//! | [`synth`] | a deterministic formant synthesiser for tests and evidence |
+//! | [`phoneme`] | [`PhonemeMouth`]: the mouth from known phones and their times (an AI line, a short's voice), closures included |
+//! | [`align`] | [`align()`](align::align): the times of a line's phones in its audio, by dynamic programming over the analyser's frames |
+//! | [`eval`] | the lip-sync evaluation: vowel accuracy, closures, silence and A/V offset against the phones really said |
+//! | [`synth`] | a deterministic formant synthesiser for tests and evidence, with synthetic lines and their exact phones |
 //!
 //! The analysis is classic signal processing (the technique of formant-based lip sync, as in uLipSync's MFCC or
 //! Rhubarb's phonetic recogniser, at a fraction of the cost): it needs no model, runs in well under a percent of a
@@ -28,13 +31,16 @@
 #![allow(clippy::doc_markdown)]
 
 pub mod ai_mouth;
+pub mod align;
 pub mod analyzer;
 pub mod cues;
+pub mod eval;
 pub mod lead;
 pub mod lipsync;
 pub mod listener;
 pub mod mailbox;
 pub mod onset;
+pub mod phoneme;
 pub mod synth;
 pub mod viseme;
 
@@ -46,6 +52,7 @@ pub use lipsync::{LipSync, LipSyncConfig};
 pub use listener::VoiceListener;
 pub use mailbox::{VoiceReader, VoiceWriter, voice_mailbox};
 pub use onset::OnsetDetector;
+pub use phoneme::{MouthFrame, Phone, PhoneSpan, PhonemeMouth, VisemeShapes};
 pub use viseme::{Viseme, VowelProfile};
 
 omuzaki_core::define_link! {

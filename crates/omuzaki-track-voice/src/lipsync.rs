@@ -6,12 +6,33 @@
 //! not chatter) and written as `rest + Σ weight × delta` over the mouth channels. The layer stack blends the audio
 //! layer with `BlendMode::Max` by default (anim-api), so with a tracker the mouth opens if either the camera or the
 //! voice says so, and with no tracker the voice alone moves it.
+//!
+//! **Closures** (#2351). Lips shut on `p`, `b` and `m`, and a vowel-only mouth never does. Two signs in the frames mark
+//! a closure: a stop's silent gap in the middle of speech (speaking, not voiced, quiet), and a nasal's murmur (voiced,
+//! low first formant, well under the sentence's loudness). On either the closure weight rises within
+//! [`CLOSE_S`] and the vowel weights fall as fast, so the mouth snaps shut, then opens again on the next vowel at the
+//! usual attack; while shut the lips press a little ([`PRESS`]).
 
 use omuzaki_anim_api::{Channel, ChannelBuf, ChannelMask, Cues, Layer};
 use omuzaki_face_api::expression::{ExpressionId, ExpressionSet, IntensityCurve};
 
 use crate::analyzer::VoiceFrame;
 use crate::viseme::Viseme;
+
+/// Seconds for the mouth to cover most (63%) of a close: lips shut faster than a jaw drops.
+pub const CLOSE_S: f32 = 0.012;
+/// Seconds for the closure to let go once the next sound starts.
+const OPEN_S: f32 = 0.03;
+/// How far the lips press while shut (`mouthPressLeft` and `mouthPressRight`).
+pub const PRESS: f32 = 0.35;
+/// A gap in speech this quiet (loudness, `0..1`) is a stop's closure.
+const GAP_LOUDNESS: f32 = 0.12;
+/// A voiced frame with a first formant below this, Hz, and under [`MURMUR_SHARE`] of the sentence's loudness is a
+/// nasal's murmur.
+const MURMUR_F1_HZ: f32 = 400.0;
+const MURMUR_SHARE: f32 = 0.6;
+/// The sentence's loudness falls by half over this many seconds without a louder frame.
+const PEAK_HALF_LIFE_S: f32 = 1.5;
 
 /// How the mouth follows the voice.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -23,12 +44,14 @@ pub struct LipSyncConfig {
     pub release_s: f32,
     /// Multiplies the weights before smoothing (a quiet speaker's mouth can open fully), clamped to `0..1` after.
     pub gain: f32,
+    /// Whether the lips shut on closures (see the module docs).
+    pub closure: bool,
 }
 
 impl Default for LipSyncConfig {
-    /// 30 ms attack, 80 ms release, gain 1.3.
+    /// 30 ms attack, 80 ms release, gain 1.3, closures on.
     fn default() -> Self {
-        Self { attack_s: 0.03, release_s: 0.08, gain: 1.3 }
+        Self { attack_s: 0.03, release_s: 0.08, gain: 1.3, closure: true }
     }
 }
 
@@ -47,6 +70,13 @@ impl LipSyncConfig {
         self.gain = gain.max(0.0);
         self
     }
+
+    /// With closures on or off (off is the vowel-only mouth).
+    #[must_use]
+    pub fn with_closure(mut self, closure: bool) -> Self {
+        self.closure = closure;
+        self
+    }
 }
 
 /// Turns voice frames into the audio layer and the cues. One per performer, on the perform thread.
@@ -63,6 +93,9 @@ pub struct LipSync {
     /// The smoothed weights and loudness.
     weights: [f32; 5],
     loudness: f32,
+    /// How shut the lips are for a closure, `0..1`, and the sentence's loudness it is judged against.
+    closure: f32,
+    peak: f32,
     /// The onset count already reported.
     onsets: u32,
 }
@@ -87,7 +120,38 @@ impl LipSync {
                 mask.insert(channel);
             }
         }
-        Self { config, deltas, curves, mask, voice: VoiceFrame::default(), weights: [0.0; 5], loudness: 0.0, onsets: 0 }
+        // A closure presses the lips of a mouth the visemes move; a set without visemes moves nothing at all.
+        if config.closure && !mask.is_empty() {
+            mask.insert(Channel::MOUTH_PRESS_LEFT);
+            mask.insert(Channel::MOUTH_PRESS_RIGHT);
+        }
+        Self {
+            config,
+            deltas,
+            curves,
+            mask,
+            voice: VoiceFrame::default(),
+            weights: [0.0; 5],
+            loudness: 0.0,
+            closure: 0.0,
+            peak: 0.0,
+            onsets: 0,
+        }
+    }
+
+    /// How shut the lips are for a closure now, `0..1`.
+    pub fn closure(&self) -> f32 {
+        self.closure
+    }
+
+    /// Whether `frame` is a lip closure, judged against the sentence's loudness `peak`.
+    fn closes(frame: &VoiceFrame, peak: f32) -> bool {
+        let gap = frame.speaking && !frame.voiced && frame.loudness < GAP_LOUDNESS;
+        let murmur = frame.voiced
+            && frame.formants[0] > 0.0
+            && frame.formants[0] < MURMUR_F1_HZ
+            && frame.loudness < MURMUR_SHARE * peak;
+        gap || murmur
     }
 
     /// The channels the visemes move.
@@ -114,8 +178,15 @@ impl LipSync {
             let tau = if target > current { config.attack_s } else { config.release_s };
             current + (target - current) * (1.0 - (-dt / tau).exp())
         };
+        if self.voice.voiced {
+            self.peak = self.peak.max(self.voice.loudness);
+        }
+        self.peak *= 0.5f32.powf(dt / PEAK_HALF_LIFE_S);
+        let shut = self.config.closure && Self::closes(&self.voice, self.peak);
+        let toward = |current: f32, target: f32, tau: f32| current + (target - current) * (1.0 - (-dt / tau).exp());
+        self.closure = toward(self.closure, if shut { 1.0 } else { 0.0 }, if shut { CLOSE_S } else { OPEN_S });
         for (w, target) in self.weights.iter_mut().zip(self.voice.visemes) {
-            *w = follow(*w, (target * self.config.gain).clamp(0.0, 1.0), &self.config);
+            *w = if shut { toward(*w, 0.0, CLOSE_S) } else { follow(*w, (target * self.config.gain).clamp(0.0, 1.0), &self.config) };
         }
         self.loudness = follow(self.loudness, self.voice.loudness, &self.config);
 
@@ -124,14 +195,17 @@ impl LipSync {
         self.onsets = self.voice.onsets;
 
         let open: f32 = self.weights.iter().sum();
-        if open < 1e-3 && !self.voice.speaking {
+        if open < 1e-3 && !self.voice.speaking && self.closure < 1e-3 {
             layer.clear();
             return;
         }
         layer.values = *rest;
         let shaped: [f32; 5] = std::array::from_fn(|i| self.curves[i].eval(self.weights[i]));
         for channel in self.mask {
-            let moved: f32 = shaped.iter().zip(&self.deltas).map(|(w, d)| w * d[channel]).sum();
+            let mut moved: f32 = shaped.iter().zip(&self.deltas).map(|(w, d)| w * d[channel]).sum();
+            if matches!(channel, Channel::MOUTH_PRESS_LEFT | Channel::MOUTH_PRESS_RIGHT) {
+                moved += PRESS * self.closure;
+            }
             layer.values[channel] = (rest[channel] + moved).clamp(channel.info().min, channel.info().max);
         }
         layer.mask = self.mask;

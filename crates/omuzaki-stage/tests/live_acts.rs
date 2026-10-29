@@ -305,7 +305,7 @@ fn a_step_with_acts_playing_and_a_gated_webcam_allocates_nothing() {
     let mut map = DriveMap::open();
     map.set(DriveGroup::Head, DriverKind::Tracker, 0.0);
     rig.handle.set_drive(map).unwrap();
-    let expression = ActRequest::Expression { expression: ExpressionId::new("happy").unwrap(), intensity: 1.0 };
+    let expression = ActRequest::Expression { expression: ExpressionId::new("happy").unwrap(), intensity: 1.0, over_tracking: false };
     rig.handle.act(expression, Envelope::new(0.2, None)).unwrap();
     rig.handle.act(ActRequest::Look { x: 0.5, y: 0.2, head: 0.5 }, Envelope::new(0.2, None)).unwrap();
     rig.handle.act(ActRequest::Clip { clip: "wave-both".into(), weight: 1.0 }, Envelope::new(0.2, None)).unwrap();

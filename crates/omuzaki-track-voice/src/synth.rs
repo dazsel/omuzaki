@@ -1,4 +1,4 @@
-//! A deterministic formant synthesiser: vowels and silence made from numbers, for tests, benches and evidence, so no
+//! A deterministic formant synthesiser: vowels, a few consonants and silence made from numbers, for tests, benches and evidence, so no
 //! recording of a real person is ever needed (`CLAUDE.md`, "The repository is public").
 //!
 //! The classic source-filter model: a glottal pulse train (a Rosenberg pulse at the pitch `f0`, with a little
@@ -7,6 +7,7 @@
 
 use std::f32::consts::PI;
 
+use crate::phoneme::{Phone, PhoneSpan};
 use crate::viseme::Viseme;
 
 /// One vowel to synthesise.
@@ -117,6 +118,85 @@ pub fn vowel(vowel: Vowel, rate: u32, seconds: f32, noise: f32) -> Vec<f32> {
         *s = *s / peak * vowel.level + noise * rng.next();
     }
     out
+}
+
+/// One sound of a synthetic line ([`utterance`]).
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum Sound {
+    /// A vowel for this many seconds.
+    Vowel(Viseme, f32),
+    /// `m`: a voiced murmur through the nose (low first formant, about a third of a vowel's level), lips shut.
+    Nasal(f32),
+    /// `p` or `b` (`lips`), else `t` or `k`: a silent closure ending in a short burst.
+    Stop {
+        /// The lips make the closure.
+        lips: bool,
+        /// Seconds, burst included.
+        seconds: f32,
+    },
+    /// `s`: a hiss.
+    Fricative(f32),
+    /// A pause.
+    Pause(f32),
+}
+
+impl Sound {
+    /// Its length, seconds.
+    pub fn seconds(self) -> f32 {
+        match self {
+            Self::Vowel(_, s) | Self::Nasal(s) | Self::Fricative(s) | Self::Pause(s) | Self::Stop { seconds: s, .. } => s,
+        }
+    }
+
+    /// The phone it is, as the mouth sees it.
+    pub fn phone(self) -> Phone {
+        match self {
+            Self::Vowel(v, _) => Phone::Vowel(v),
+            Self::Nasal(_) | Self::Stop { lips: true, .. } => Phone::Bilabial,
+            Self::Stop { lips: false, .. } | Self::Fricative(_) => Phone::Consonant,
+            Self::Pause(_) => Phone::Silence,
+        }
+    }
+}
+
+/// The burst at the end of a stop, seconds.
+const BURST_S: f32 = 0.015;
+/// The room under a synthetic line, of full scale.
+const ROOM: f32 = 0.002;
+
+/// A synthetic line: `sounds` one after another at pitch `f0` and peak `level`, over a quiet room, with the exact span
+/// of each (the ground truth a lip-sync evaluation scores against, `crate::eval`).
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)] // sample counts
+pub fn utterance(sounds: &[Sound], f0: f32, rate: u32, level: f32) -> (Vec<f32>, Vec<PhoneSpan>) {
+    let fs = rate as f32;
+    let mut pcm: Vec<f32> = Vec::new();
+    let mut spans = Vec::with_capacity(sounds.len());
+    for &sound in sounds {
+        let start = pcm.len();
+        let len = (sound.seconds() * fs) as usize;
+        match sound {
+            Sound::Vowel(viseme, seconds) => pcm.extend(vowel(Vowel::of(viseme, f0, 1.0, level), rate, seconds, 0.0)),
+            Sound::Nasal(seconds) => {
+                let murmur = Vowel { f0, formants: [270.0, 1100.0, 2300.0], level: level * 0.3 };
+                pcm.extend(vowel(murmur, rate, seconds, 0.0));
+            }
+            Sound::Stop { seconds, .. } => {
+                let burst = ((BURST_S.min(seconds)) * fs) as usize;
+                pcm.extend(std::iter::repeat_n(0.0, len.saturating_sub(burst)));
+                pcm.extend(noise(rate, burst as f32 / fs, level * 0.15));
+            }
+            Sound::Fricative(seconds) => pcm.extend(noise(rate, seconds, level * 0.12)),
+            Sound::Pause(seconds) => pcm.extend(std::iter::repeat_n(0.0, (seconds * fs) as usize)),
+        }
+        pcm.resize(start + len, 0.0);
+        let at = |i: usize| f64::from(i as f32 / fs);
+        spans.push(PhoneSpan { phone: sound.phone(), start_s: at(start), end_s: at(start + len) });
+    }
+    let room = noise(rate, pcm.len() as f32 / fs + 1.0, ROOM);
+    for (s, n) in pcm.iter_mut().zip(room) {
+        *s += n;
+    }
+    (pcm, spans)
 }
 
 /// `seconds` of white noise at `level` of full scale: a quiet room, or a fan.

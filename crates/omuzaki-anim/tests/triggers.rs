@@ -138,22 +138,24 @@ fn switching_fades_the_first_out_before_the_second_comes_in() {
     assert_eq!(t.active(), Some(1));
     let happy = slot("happy", TriggerMode::Toggle);
     let angry = slot("angry", TriggerMode::Toggle);
-    let mut reached_zero = false;
+    // Happy fades all the way out; angry comes in on the step happy ends, from zero, so no step mixes the two.
+    let (mut reached_zero, mut happy_weight) = (false, 1.0f32);
     for _ in 0..60 {
         t.step(DT, &mut out);
-        if !out.is_active() {
-            reached_zero = true;
-            continue;
-        }
         // Whatever shows is one expression whole: every masked channel matches that slot.
         let (own, other) =
             if out.mask == happy.mask && out.values == happy.target { (happy, angry) } else { (angry, happy) };
         assert_eq!(out.mask, own.mask);
         assert!(own.mask.into_iter().all(|c| out.values[c] == own.target[c]));
         if own.target == angry.target {
-            assert!(reached_zero, "angry appeared before the weight reached 0");
+            if !reached_zero {
+                assert!(happy_weight <= DT / 0.2 + 1e-4, "angry appeared with happy still at {happy_weight}");
+                assert!(out.weight <= DT / 0.12 + 1e-4, "angry starts from zero: {}", out.weight);
+            }
+            reached_zero = true;
         } else {
             assert!(!reached_zero, "happy came back");
+            happy_weight = out.weight;
         }
         assert_ne!(own.target, other.target);
     }
@@ -203,7 +205,9 @@ fn ownership_changes_hands_at_half_weight() {
 fn bad_dt_is_clamped() {
     let mut out = layer();
     let mut t = Triggers::new(TriggerFades { in_s: 1.0, out_s: 1.0 });
-    t.set_slot(0, Some(slot("happy", TriggerMode::Toggle))).unwrap_or_else(|e| panic!("slot 0: {e}"));
+    // No fades of its own, so the triggers' 1 s fades apply.
+    let happy = TriggerSlot { fades: None, ..slot("happy", TriggerMode::Toggle) };
+    t.set_slot(0, Some(happy)).unwrap_or_else(|e| panic!("slot 0: {e}"));
     t.press(0);
     t.step(f32::NAN, &mut out);
     assert!(!out.is_active(), "NaN is a zero step");
@@ -278,7 +282,7 @@ fn repress_after_replacing(mode: TriggerMode, replace: impl FnOnce(&mut Triggers
     t.press(0);
     while out.is_active() && out.values == happy {
         t.step(DT, &mut out);
-        assert!(out.weight <= last, "the replaced happy must not fade back in");
+        assert!(out.values != happy || out.weight <= last, "the replaced happy must not fade back in");
         last = out.weight;
     }
     let angry = slot("angry", mode);
@@ -350,4 +354,89 @@ fn stepping_allocates_nothing() {
     }
     MEASURING.with(|m| m.set(false));
     assert_eq!(ALLOCATIONS.load(Ordering::Relaxed) - before, 0);
+}
+
+/// The starter set with happy and angry played the way `edit` says.
+fn played(edit: impl Fn(&mut omuzaki_face_api::Playback)) -> ExpressionSet {
+    let mut set = ExpressionSet::starter();
+    for name in ["happy", "angry"] {
+        edit(&mut set.0.get_mut(&id(name)).unwrap_or_else(|| panic!("starter {name}")).playback);
+    }
+    set
+}
+
+fn rig_with(set: &ExpressionSet, modes: [TriggerMode; 2]) -> Triggers {
+    let mut t = Triggers::new(TriggerFades::default());
+    for (index, (name, mode)) in ["happy", "angry"].into_iter().zip(modes).enumerate() {
+        let slot = expression_slot(set, &id(name), &ChannelBuf::NEUTRAL, mode).unwrap_or_else(|e| panic!("{name}: {e}"));
+        t.set_slot(index, Some(slot)).unwrap_or_else(|e| panic!("slot {index}: {e}"));
+    }
+    t
+}
+
+#[test]
+fn a_slot_fades_as_its_expression_s_playback_says() {
+    let set = played(|p| (p.fade_in_s, p.fade_out_s) = (0.5, 1.0));
+    let mut t = rig_with(&set, [TriggerMode::Toggle; 2]);
+    let mut out = layer();
+    t.press(0);
+    let half = run(&mut t, &mut out, 0.25);
+    assert!((half - 0.5).abs() < 0.04, "half way in after 0.25 of a 0.5 s fade: {half}");
+    run(&mut t, &mut out, 0.3);
+    t.press(0);
+    let half = run(&mut t, &mut out, 0.5);
+    assert!((half - 0.5).abs() < 0.04, "half way out after 0.5 of a 1 s fade: {half}");
+}
+
+#[test]
+fn hard_cuts_switch_faces_on_one_step() {
+    let set = played(|p| (p.fade_in_s, p.fade_out_s) = (0.0, 0.0));
+    let mut t = rig_with(&set, [TriggerMode::Toggle; 2]);
+    let mut out = layer();
+    t.press(0);
+    t.step(DT, &mut out);
+    assert_eq!(out.weight, 1.0, "in at once");
+    let happy = out.values;
+    t.press(1);
+    t.step(DT, &mut out);
+    assert_eq!(out.weight, 1.0, "no empty step between the two faces");
+    assert_ne!(out.values, happy, "angry on the very next step");
+    assert_eq!((t.shown(), t.wanted()), (Some(1), Some(1)));
+}
+
+#[test]
+fn an_auto_stop_hides_the_slot_on_its_own_and_a_press_shows_it_again() {
+    let set = played(|p| p.auto_stop_s = Some(0.5));
+    let mut t = rig_with(&set, [TriggerMode::Toggle; 2]);
+    let mut out = layer();
+    t.press(0);
+    assert_eq!(run(&mut t, &mut out, 0.4), 1.0);
+    run(&mut t, &mut out, 0.5);
+    assert_eq!((out.weight, t.wanted()), (0.0, None), "gone after its auto-stop and its fade-out");
+    t.press(0);
+    assert_eq!(run(&mut t, &mut out, 0.3), 1.0, "one press shows it again, not two");
+}
+
+#[test]
+fn a_momentary_slot_gives_the_face_back_to_the_held_one() {
+    let mut set = ExpressionSet::starter();
+    let angry = &mut set.0.get_mut(&id("angry")).unwrap_or_else(|| panic!("starter angry")).playback;
+    angry.layer = omuzaki_face_api::PlaybackLayer::Momentary;
+    angry.auto_stop_s = Some(0.5);
+    let mut t = rig_with(&set, [TriggerMode::Toggle; 2]);
+    let mut out = layer();
+    t.press(0);
+    run(&mut t, &mut out, 0.3);
+    t.press(1);
+    run(&mut t, &mut out, 0.4);
+    assert_eq!(t.shown(), Some(1), "the momentary one took over");
+    run(&mut t, &mut out, 1.0);
+    assert_eq!((t.shown(), t.wanted(), out.weight), (Some(0), Some(0), 1.0), "and gave the face back");
+    // Pressing a held slot instead forgets what to go back to.
+    t.press(1);
+    run(&mut t, &mut out, 0.1);
+    t.press(0);
+    t.press(0);
+    run(&mut t, &mut out, 1.5);
+    assert_eq!((t.wanted(), out.weight), (None, 0.0));
 }
