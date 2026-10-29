@@ -32,8 +32,10 @@ const TEXT_HOP_S: f32 = 0.01;
 const JOIN_GAP_S: f32 = 0.22;
 /// Spoken stretches shorter than this are noise, seconds.
 const MIN_SPEECH_S: f32 = 0.12;
-/// About the pace of the local voices at speed 1, words per minute: what an estimate times a spoken line by.
-pub const SPEECH_WPM: f32 = 170.0;
+/// About the pace of the local voices at speed 1, words per minute: what an estimate times a spoken line by. Kokoro's
+/// `af_heart` said two stream lines at 200 to 240 words a minute (`tests/speech_voice.rs`); the lower end keeps an
+/// estimate from promising a shorter short than the render makes.
+pub const SPEECH_WPM: f32 = 200.0;
 /// The fade at the end of a line's sound cut short by its `duration`, seconds.
 const CUT_FADE_S: f32 = 0.01;
 
@@ -499,6 +501,113 @@ mod tests {
         assert!(open > 0 && shut > 0, "open {open}, shut {shut}");
         assert!(voice.frames.iter().filter(|(_, f)| f.voiced).all(|(_, f)| f.visemes[0] > 0.5), "a's are aa");
         assert!(!voice.frame_at(span.end + 0.5).speaking);
+    }
+
+    /// Says every line as a 300 Hz tone at 24 kHz, 50 ms per spoken character, and remembers what it was asked.
+    #[derive(Default)]
+    struct Stub {
+        asked: Vec<(String, String, f32)>,
+    }
+
+    const STUB_RATE: u32 = 24_000;
+
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    fn stub_seconds(text: &str, speed: f32) -> f32 {
+        // Whole samples at the stub's rate, as the stub makes them.
+        let n = (text.chars().count() as f32 * 0.05 / speed * STUB_RATE as f32).round();
+        n / STUB_RATE as f32
+    }
+
+    impl Speaker for Stub {
+        #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        fn speak(&mut self, text: &str, voice: &str, speed: f32) -> Result<Spoken, ShortError> {
+            self.asked.push((text.to_owned(), voice.to_owned(), speed));
+            if text.contains("fail") {
+                return Err(ShortError::Voice("the stub won't".into()));
+            }
+            let n = (stub_seconds(text, speed) * STUB_RATE as f32).round() as usize;
+            let pcm =
+                (0..n).map(|i| (std::f32::consts::TAU * 300.0 * i as f32 / STUB_RATE as f32).sin() * 0.5).collect();
+            Ok(Spoken { pcm, rate: STUB_RATE })
+        }
+    }
+
+    fn spoken_short(lines: &str) -> ShortDef {
+        let text = format!(
+            "character = \"lumi\"\n[voice]\nkind = \"speech\"\nvoice = \"kokoro-82m/af_heart\"\nspeed = 1.25\n{lines}"
+        );
+        ShortDef::from_toml(&text).unwrap()
+    }
+
+    fn rms(pcm: &[f32], from: f32, to: f32) -> f32 {
+        let part = &pcm[samples(from).min(pcm.len())..samples(to).min(pcm.len())];
+        #[allow(clippy::cast_precision_loss)]
+        let n = part.len().max(1) as f32;
+        (part.iter().map(|s| s * s).sum::<f32>() / n).sqrt()
+    }
+
+    #[test]
+    fn spoken_lines_last_as_long_as_their_sound_and_follow_with_their_pauses() {
+        let def = spoken_short(
+            "[[line]]\ntext = \"Hello {surprised} there!\"\n[[line]]\ntext = \"Second line.\"\npause = 0.5\n\
+             [[line]]\ntext = \"Third.\"",
+        );
+        let mut stub = Stub::default();
+        let voice = voice_for(&def, |_| unreachable!(), Synthesis::Speak(&mut stub)).unwrap();
+        let said: Vec<&str> = stub.asked.iter().map(|(t, _, _)| t.as_str()).collect();
+        assert_eq!(said, ["Hello there!", "Second line.", "Third."], "the beats are not said");
+        assert!(stub.asked.iter().all(|(_, v, s)| v == "kokoro-82m/af_heart" && (*s - 1.25).abs() < 1e-6));
+        let [a, b, c] = voice.spans[..] else { panic!("{:?}", voice.spans) };
+        assert!((a.start - def.lead).abs() < 1e-6);
+        for (span, text) in [(a, "Hello there!"), (b, "Second line."), (c, "Third.")] {
+            assert!((span.len() - stub_seconds(text, 1.25)).abs() < 1e-3, "{span:?} for {text:?}");
+        }
+        assert!((b.start - (a.end + def.lines[0].pause)).abs() < 1e-5);
+        assert!((c.start - (b.end + 0.5)).abs() < 1e-5);
+        assert!((voice.duration - (c.end + def.tail)).abs() < 1e-5);
+        #[allow(clippy::cast_precision_loss)]
+        let pcm_s = voice.pcm.len() as f32 / RATE as f32;
+        assert!((pcm_s - voice.duration).abs() < 1e-3);
+        // The sound is where the spans are, resampled to the short's rate, and quiet between them.
+        assert!(rms(&voice.pcm, a.start + 0.02, a.end - 0.02) > 0.3);
+        assert!(rms(&voice.pcm, b.end + 0.02, c.start - 0.02) < 1e-4);
+        assert!(rms(&voice.pcm, 0.0, a.start - 0.01) < 1e-4);
+        // The mouth reads the sound: speaking inside the lines, closed in the pause.
+        assert!(voice.frame_at(b.start + b.len() * 0.5).speaking);
+        assert!(!voice.frame_at(c.start - 0.05).voiced);
+    }
+
+    #[test]
+    fn a_spoken_line_keeps_its_own_start_and_length() {
+        let def = spoken_short(
+            "[[line]]\ntext = \"A rather long first line of words.\"\nduration = 0.5\n\
+             [[line]]\ntext = \"Later.\"\nat = 3.0",
+        );
+        let voice = voice_for(&def, |_| unreachable!(), Synthesis::Speak(&mut Stub::default())).unwrap();
+        let [a, b] = voice.spans[..] else { panic!("{:?}", voice.spans) };
+        assert!((a.len() - 0.5).abs() < 1e-6 && (b.start - 3.0).abs() < 1e-6, "{:?}", voice.spans);
+        assert!((b.len() - stub_seconds("Later.", 1.25)).abs() < 1e-3);
+        // The first line's sound is cut at its end, faded rather than clicked off.
+        assert!(rms(&voice.pcm, a.end + 0.005, a.end + 0.5) < 1e-4);
+        let edge = samples(a.end) - 1;
+        assert!(voice.pcm[edge].abs() < 0.01, "faded out: {}", voice.pcm[edge]);
+    }
+
+    #[test]
+    fn an_estimate_times_spoken_lines_from_their_words_at_the_voice_speed() {
+        let def = spoken_short("[[line]]\ntext = \"One two three four five six.\"");
+        let voice = voice_for(&def, |_| unreachable!(), Synthesis::Estimate).unwrap();
+        let expected = spoken_seconds("One two three four five six.", SPEECH_WPM * 1.25);
+        assert!((voice.spans[0].len() - expected).abs() < 1e-5);
+        assert!(voice.pcm.iter().all(|s| *s == 0.0), "an estimate says nothing");
+        assert!(voice.frames.iter().any(|(_, f)| f.voiced), "the mouth reads the text");
+    }
+
+    #[test]
+    fn a_speaker_failure_is_the_voice_error() {
+        let def = spoken_short("[[line]]\ntext = \"This will fail.\"");
+        let err = voice_for(&def, |_| unreachable!(), Synthesis::Speak(&mut Stub::default())).unwrap_err();
+        assert!(matches!(err, ShortError::Voice(_)), "{err}");
     }
 
     #[test]

@@ -27,8 +27,9 @@ use crate::draft;
 use crate::encode::{ShortWriter, wav_bytes};
 use crate::error::ShortError;
 use crate::render::{ShortScene, frame_count, render_short};
+use crate::speech::{SpeechServices, TtsSpeaker};
 use crate::timeline::{Measures, Timeline};
-use crate::voice::{Synthesis, VoiceTrack, read_wav_from, voice_for};
+use crate::voice::{SPEECH_WPM, Synthesis, VoiceTrack, read_wav_from, voice_for};
 
 /// The largest short file read, bytes.
 const MAX_FILE_BYTES: u64 = 1 << 20;
@@ -205,6 +206,10 @@ pub struct ShortPlan {
     pub measures: Measures,
     /// The measures against the reference bar.
     pub bar: Vec<BarCheck>,
+    /// How the timing was found when it is an estimate: a spoken short's lines are timed from their words, not
+    /// synthesised; `short.render` says them and times them by their sound.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimate: Option<String>,
 }
 
 /// Plans a short: its timeline and its measures, without rendering.
@@ -231,7 +236,8 @@ impl Op for PlanShort {
             name: "short.plan",
             summary: "Plan a short (a `*.short.toml` file of the project as `path`, or inline as `short`) without \
                       rendering: when each line is spoken, its face, and the measures against the talking-head bar \
-                      (face changes per minute, distinct faces, anime marks, caption coverage).",
+                      (face changes per minute, distinct faces, anime marks, caption coverage). A spoken short \
+                      (`voice.kind = \"speech\"`) is not synthesised here: its timing is estimated from the words.",
             kind: OpKind::Query,
             scope: Scope::Read,
             undo: Undo::None,
@@ -260,6 +266,7 @@ impl Op for PlanShort {
             lines,
             bar: bar_checks(&measures),
             measures,
+            estimate: estimate_note(&def),
         };
         let value = serde_json::to_value(plan).map_err(|e| OpError::internal(format!("serialising the plan: {e}")))?;
         Ok(Plan::answer(value))
@@ -267,6 +274,16 @@ impl Op for PlanShort {
 }
 
 register_op!(PlanShort);
+
+/// What `short.plan` says about a spoken short's timing, which it estimates rather than synthesising.
+fn estimate_note(def: &ShortDef) -> Option<String> {
+    let VoiceDef::Speech { voice, speed } = &def.voice else { return None };
+    Some(format!(
+        "estimated: the lines are timed from their words at about {:.0} words a minute ({voice} at speed {speed}) and \
+         the mouth from the text; short.render synthesises them and times every line by its sound",
+        SPEECH_WPM * speed
+    ))
+}
 
 /// Drafts a directed short from a plain script.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -422,6 +439,10 @@ impl Op for RenderShort {
         let out = self.out.clone().unwrap_or_else(|| self.source.default_out(&def));
         ctx.fs_access(&out, FsMode::Write)?;
         scene_def(ctx.doc, &def)?;
+        if let VoiceDef::Speech { voice, speed } = &def.voice {
+            // Refused before the job starts when the voice can't be said here; the timing is still an estimate.
+            TtsSpeaker::for_op(&SpeechServices::of_op(ctx), &def.character, voice, *speed)?;
+        }
         let voice = voice(&def, &fs, Synthesis::Estimate)?;
         let timeline = Timeline::new(&def, &voice)?;
         let frames = frame_count(timeline.duration, def.fps);
@@ -440,7 +461,14 @@ impl Op for RenderShort {
         let def = self.sized(self.source.load(&fs)?)?;
         let out = self.out.clone().unwrap_or_else(|| self.source.default_out(&def));
         job.checkpoint("loading", 0.0)?;
-        let voice = voice(&def, &fs, Synthesis::Estimate)?;
+        let voice = match &def.voice {
+            VoiceDef::Speech { voice: name, speed } => {
+                job.checkpoint("speaking", 0.01)?;
+                let mut speaker = TtsSpeaker::for_op(&SpeechServices::of_job(job), &def.character, name, *speed)?;
+                voice(&def, &fs, Synthesis::Speak(&mut speaker))?
+            }
+            _ => voice(&def, &fs, Synthesis::Estimate)?,
+        };
         let timeline = Timeline::new(&def, &voice)?;
         let (scene, member) = job.read(|doc| scene_def(doc, &def))?;
         let clock = SystemClock::default();
@@ -485,7 +513,7 @@ impl Op for RenderShort {
         let mut replacement = target.replace()?;
         let file =
             replacement.file().try_clone().map_err(|e| OpError::internal(format!("the video file's handle: {e}")))?;
-        let has_voice = matches!(def.voice, VoiceDef::File { .. });
+        let has_voice = matches!(def.voice, VoiceDef::File { .. } | VoiceDef::Speech { .. });
         let mut writer = ShortWriter::create(
             file,
             std::path::Path::new(&out),

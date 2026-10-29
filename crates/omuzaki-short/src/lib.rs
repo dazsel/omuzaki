@@ -8,7 +8,8 @@
 //! | Module | Holds |
 //! |---|---|
 //! | [`def`] | the short file: [`ShortDef`](def::ShortDef), its lines, faces, shot words and caption styles |
-//! | [`voice`] | the voice: a recording read and matched to the lines, or silence timed from the words, with the mouth's frames |
+//! | [`voice`] | the voice: a recording read and matched to the lines, lines said by a speaker, or silence timed from the words, with the mouth's frames |
+//! | [`speech`] | the local text-to-speech (Kokoro through the model registry) as a speaker |
 //! | [`timeline`] | when each line, face, shot and caption starts, and the measures against the reference bar |
 //! | [`perform`] | the live performer (retarget, life, grammar, animator) stepped at 60 Hz on the short's clock |
 //! | [`camera`] | the camera track: cuts, eases, punch-ins, pushes, dutch roll and handheld drift |
@@ -28,6 +29,7 @@ pub mod error;
 pub mod ops;
 pub mod perform;
 pub mod render;
+pub mod speech;
 pub mod timeline;
 pub mod voice;
 

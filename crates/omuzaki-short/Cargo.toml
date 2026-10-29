@@ -11,6 +11,8 @@ repository.workspace = true
 [dependencies]
 ab_glyph.workspace = true
 hound.workspace = true
+# The model registry and consent records a spoken short's voice goes through.
+omuzaki-ai-api = { path = "../omuzaki-ai-api" }
 omuzaki-anim = { path = "../omuzaki-anim" }
 omuzaki-anim-api = { path = "../omuzaki-anim-api" }
 omuzaki-char-api = { path = "../omuzaki-char-api" }
@@ -21,6 +23,8 @@ omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 # Voice ids and the speed range of a spoken short.
 omuzaki-performer-api = { path = "../omuzaki-performer-api" }
 omuzaki-render-api = { path = "../omuzaki-render-api" }
+# A spoken short's lines are said by the local text-to-speech (Kokoro, `tts@1`).
+omuzaki-speech = { path = "../omuzaki-speech" }
 omuzaki-stage = { path = "../omuzaki-stage" }
 omuzaki-stage-api = { path = "../omuzaki-stage-api" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
@@ -37,10 +41,14 @@ tracing.workspace = true
 omuzaki-link-build = { path = "../omuzaki-link-build" }
 
 [dev-dependencies]
+# The spoken-short test (`tests/speech_voice.rs`): the registry over prepared folders and the ONNX runtime Kokoro runs on.
+omuzaki-ai = { path = "../omuzaki-ai" }
+omuzaki-ai-ort = { path = "../omuzaki-ai-ort" }
 omuzaki-char = { path = "../omuzaki-char" }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-render = { path = "../omuzaki-render" }
 omuzaki-render-mock = { path = "../omuzaki-render-mock" }
+sha2.workspace = true
 
 [lints]
 workspace = true
