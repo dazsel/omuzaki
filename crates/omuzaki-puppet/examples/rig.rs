@@ -1,12 +1,14 @@
 //! Rigs layered art and renders a sheet of poses: `cargo run --release -p omuzaki-puppet --example rig -- ART.layers.toml
 //! OUT_DIR`. Writes the puppet bundle to `OUT_DIR/<name>.puppet/` and the sheet to `OUT_DIR/sheet.png`.
 
+#![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, reason = "a demo's image sizes")]
+
 use std::path::PathBuf;
 
 use omuzaki_core::glam::{Affine2, Vec2};
 use omuzaki_puppet::autorig::autorig;
 use omuzaki_puppet::layers::LayeredArt;
-use omuzaki_puppet::{Canvas, CpuRenderer, Evaluator, Physics, bundle};
+use omuzaki_puppet::{Canvas, CpuRenderer, Evaluator, bundle};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
@@ -56,19 +58,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut sheet = image::RgbaImage::from_pixel(tw * cols, th * rows, image::Rgba([24, 24, 28, 255]));
     let mut renderer = CpuRenderer::default();
     let mut eval = Evaluator::new(loaded.def.clone())?;
-    let mut physics = Physics::new(loaded.def.physics.len());
     let mut render_s = 0.0;
     for (i, (label, values)) in poses.iter().enumerate() {
         eval.reset();
-        for (name, v) in values.iter() {
+        for (name, v) in *values {
             match eval.def().param(name) {
                 Some(p) => eval.set(p, [*v, 0.0]),
                 None => println!("  {label}: no parameter {name}"),
             }
         }
         eval.evaluate();
-        physics.reset();
-        let _ = &mut physics;
         let mut canvas = Canvas::new(tw, th);
         canvas.fill([24.0 / 255.0, 24.0 / 255.0, 28.0 / 255.0, 1.0]);
         let scale = th as f32 / loaded.def.canvas[1];
