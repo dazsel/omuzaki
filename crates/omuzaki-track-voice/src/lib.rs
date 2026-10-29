@@ -12,7 +12,7 @@
 //! | [`analyzer`] | [`VoiceAnalyzer`]: samples at any rate to a [`VoiceFrame`] every 10 ms |
 //! | [`onset`] | [`OnsetDetector`]: syllable onsets from the three-band onset strength, peak-picked adaptively |
 //! | [`cues`] | [`CueExtractor`]: the life layer's loudness and onset cues from the `cues` tap, in performance time; [`cue_mailbox`] and [`CueListener`] |
-//! | [`lead`] | [`LeadAnalysis`]: the AI performer's TTS voice through the same analyser, released as its audio plays |
+//! | [`lead`] | [`LeadAnalysis`]: the AI performer's TTS voice through the same analyser, released as its audio plays; with the line's phonemes, its mouth from the aligned phones |
 //! | [`viseme`] | the five visemes and the [`VowelProfile`] that maps formants onto them |
 //! | [`mailbox`] | [`voice_mailbox`]: the wait-free newest-wins hand-off to the perform thread |
 //! | [`lipsync`] | [`LipSync`]: frames to the audio layer, through the character's viseme expressions, and the cues |

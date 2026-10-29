@@ -234,6 +234,7 @@ impl Runtime for Kokoro {
             signature: tts_signature(),
             ids: Vec::new(),
             waveform: TensorBuf::for_outputs(&graph_signature()),
+            spoken: String::new(),
         }))
     }
 }
@@ -253,6 +254,8 @@ struct KokoroSession {
     /// The padded ids of one piece.
     ids: Vec<i64>,
     waveform: Vec<TensorBuf>,
+    /// The phonemes of the last run, as spoken: those with a token in the vocabulary.
+    spoken: String,
 }
 
 impl KokoroSession {
@@ -270,6 +273,8 @@ impl KokoroSession {
             _ => &self.us,
         };
         let phonemes = lexicon.phonemize(text);
+        self.spoken.clear();
+        self.spoken.extend(phonemes.chars().filter(|c| self.vocabulary.contains_key(c)));
         let ids: Vec<i64> = phonemes.chars().filter_map(|c| self.vocabulary.get(&c).copied()).collect();
         let speed = [if speed.is_finite() { speed.clamp(0.5, 2.0) } else { 1.0 }];
         for piece in split_ids(&ids, MAX_PHONEMES, &self.sentence, &self.clause, self.space) {
@@ -321,6 +326,10 @@ impl Session for KokoroSession {
 
     fn info(&self) -> SessionInfo {
         self.graph.info()
+    }
+
+    fn phonemes(&self) -> Option<&str> {
+        Some(&self.spoken)
     }
 }
 
