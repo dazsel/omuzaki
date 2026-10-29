@@ -385,7 +385,8 @@ A hairstyle is `HairParams { shading, physics, groups }`. Each group has `enable
 | `braid` | braid crown | path angles and heights, strands, lobes, swing, strand width |
 | `curtain` | long wavy hair | count, spread, root heights, lengths, a body-axis `envelope`, wave and curl, columns per strip |
 | `bangs` | close-up fringe | layers (count, spread, per-lock tip heights, width, hook, offsets, shade), wisps, sweep |
-| `tail`, `bun` | ponytails, twintails, buns (reserved; spec CB-30) | root, length or radius, count |
+| `tail`, `bun` | ponytails, twintails, buns; a tail with `braid` is a plait on the tail's path (a back braid, twin braids, a braided side lock) ending in a band and a loose tuft (spec CB-30) | root, length or radius, count, lean and `forward`, and the braid's strands, crossings, width, narrowing, depth, tuft and face angle |
+| `ahoge` | one to three springy locks standing up from the crown and curling over, on a spring chain of their own | root, locks, length, curl, the direction it curls toward, fan, width, thickness, spring |
 | `guides` | hand-edited or traced guide curves (CB-32) | explicit clumps of `GuidePoint`s |
 
 A `GuidePoint` is `Surface([theta, phi, offset])`, `Head([x, y, z])` (head-local) or `Body([x, y, z])` (bind space). `GuidePoint::resolve(head)` is the one definition of the angles. `HairPhysics` holds the prototype's Verlet numbers (90 Hz, damping 0.965, gravity scale 0.35, 2 iterations, collider margin) and optional own colliders (empty: use the rig's). The brows-through-hair convention is `shading.brows_through`.

@@ -45,7 +45,7 @@ use super::compile::{self, CompiledEntry, Dispatch, GroupGenerator, GroupGeometr
 use super::r#gen::bangs;
 use super::r#gen::curtain::{self, BodyKeepOut, StripError};
 use super::r#gen::tail::Chain;
-use super::r#gen::{bun, tail};
+use super::r#gen::{ahoge, bun, tail};
 use super::physics::{self, runtime::HairRuntime};
 use super::reach::{HairReach, HairReachFact};
 use super::tie;
@@ -187,13 +187,17 @@ pub fn build_with(
         });
     }
     if let Some(mut geometry) = ties {
-        skin_to_head(&mut geometry);
+        // A band rides the chain it sits on (a braid's end band); one at the root stays with the head.
+        let all: Vec<Chain> = chains.values().flatten().cloned().collect();
+        let mut runs = Vec::new();
+        bind_to_strands(&geometry, &all, &mut runs);
+        let joint_bones = skin_runs(&mut geometry, &runs).map_err(|e| ctx.fail(e))?;
         let tie_name = tie_material_name(ctx.part).map_err(|e| ctx.fail(format!("material name: {e}")))?;
         out.materials.push((tie_name.clone(), tie_material(ctx.part, params, ctx.palette)?));
         out.meshes.push(PartMesh {
             name: ties_mesh_name(ctx.part),
             geometry,
-            joint_bones: vec![JointRef::HEAD],
+            joint_bones,
             material: tie_name,
             casts_shadow: true,
             render_order: 2,
@@ -275,13 +279,20 @@ fn publish_ties(
     out: &mut PartOutput,
 ) -> Result<(), BuildError> {
     let colliders: Vec<String> = ctx.colliders().iter().map(|group| group.name.clone()).collect();
+    let body = ctx.fit().ok();
     for (id, group) in enabled(params) {
         let anchors = match &group.generator {
             Generator::Tail(g) => {
                 let prefix = chain_prefix(ctx.part, id);
-                tail::rig(g, head, &prefix, group.mirror, &colliders, &mut out.rig)
+                tail::rig(g, head, body.as_deref(), &prefix, group.mirror, &colliders, &mut out.rig)
                     .map_err(|e| ctx.fail(format!("group '{id}': a tail bone name: {e}")))?;
                 tail::anchors(g, head, group.mirror)
+            }
+            Generator::Ahoge(g) => {
+                let chains = ahoge::chains(g, head, &chain_prefix(ctx.part, id), group.mirror)
+                    .map_err(|e| ctx.fail(format!("group '{id}': an ahoge bone name: {e}")))?;
+                tail::add_chains(chains, &colliders, &mut out.rig);
+                continue;
             }
             Generator::Bun(g) => {
                 bun::anchors(g, head).into_iter().map(|(name, anchor)| (name.to_owned(), anchor)).collect()
@@ -467,17 +478,24 @@ fn skin_runs(mesh: &mut MeshData, runs: &[Run<'_>]) -> Result<Vec<JointRef>, Str
     Ok(joints)
 }
 
-/// The chains of every enabled tail group, by group id, for the skin and the rig.
+/// The chains of every enabled tail group and springy ahoge group, by group id, for the skin and the rig.
 fn tail_chains(
     params: &HairParams,
     ctx: &BuildCtx<'_>,
     head: &dyn HeadSurface,
 ) -> Result<BTreeMap<GroupId, Vec<Chain>>, BuildError> {
     let mut out = BTreeMap::new();
+    let body = ctx.fit().ok();
     for (id, group) in enabled(params) {
-        if let Generator::Tail(g) = &group.generator {
-            let chains = tail::chains(g, head, &chain_prefix(ctx.part, id), group.mirror)
-                .map_err(|e| ctx.fail(format!("group '{id}': a tail bone name: {e}")))?;
+        let prefix = chain_prefix(ctx.part, id);
+        let chains = match &group.generator {
+            Generator::Tail(g) => tail::chains(g, head, body.as_deref(), &prefix, group.mirror)
+                .map_err(|e| ctx.fail(format!("group '{id}': a tail bone name: {e}")))?,
+            Generator::Ahoge(g) => ahoge::chains(g, head, &prefix, group.mirror)
+                .map_err(|e| ctx.fail(format!("group '{id}': an ahoge bone name: {e}")))?,
+            _ => continue,
+        };
+        if !chains.is_empty() {
             out.insert(id.clone(), chains);
         }
     }

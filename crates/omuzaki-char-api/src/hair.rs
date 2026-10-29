@@ -972,6 +972,56 @@ pub struct TailGen {
     /// Gather locks: broad flat locks that sweep from the back and side hairline up into the tie, so the hair reads as
     /// gathered rather than cut off (`0` for none, the default; the presets set some).
     pub gather: u8,
+    /// How the hanging part leans toward the face, `-1..=1`: positive brings it forward (a lock or braid that falls in
+    /// front of the shoulder), negative takes it back. Where the build has a body the tail also keeps off it, so a lock
+    /// brought forward drapes over the shoulder instead of through it.
+    pub forward: f64,
+    /// Plait the tail instead of letting it hang loose: a braid on any tail path (a back braid, twin braids, a braided
+    /// side lock), with a band at its end and a loose tuft below. `None` (the default) is a loose tail.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub braid: Option<TailBraid>,
+}
+
+/// A plait along a tail's path ([`TailGen::braid`]): `strands` strands crossing over one another down the tail, as the
+/// braid crown's do round the head, tied off with a band and ending in a loose tuft.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct TailBraid {
+    /// Interleaved strands, `2..=5` (a classic plait has 3).
+    pub strands: u8,
+    /// Full crossings of the strands along the braided length, `1..=40`.
+    pub crossings: f64,
+    /// The braid's width at its widest, metres (for the reference head; it scales with the head).
+    pub width: f64,
+    /// How much narrower the braid gets toward its end band, `0..=0.9`.
+    pub narrow: f64,
+    /// The plait's depth against its width, `0.1..=1.5`: how far the strands swing front to back as they cross.
+    pub depth: f64,
+    /// A strand's thickness against the braid's width at that point, `0.1..=1`.
+    pub strand_thickness: f64,
+    /// The share of the tail's length left loose below the end band, `0..=0.6`.
+    pub tuft: f64,
+    /// Locks in the loose tuft, `0..=12`.
+    pub tuft_locks: u8,
+    /// Turns the plait's flat face about the tail's axis, degrees: 0 faces it away from the head (a back braid seen
+    /// from behind), 90 turns it a quarter round (a side braid seen from the front).
+    pub face_deg: f64,
+}
+
+impl Default for TailBraid {
+    fn default() -> Self {
+        Self {
+            strands: 3,
+            crossings: 7.0,
+            width: 0.034,
+            narrow: 0.35,
+            depth: 0.55,
+            strand_thickness: 0.55,
+            tuft: 0.16,
+            tuft_locks: 5,
+            face_deg: 0.0,
+        }
+    }
 }
 
 impl Default for TailGen {
@@ -989,6 +1039,50 @@ impl Default for TailGen {
             chain_bones: 5,
             lean: 0.0,
             gather: 0,
+            forward: 0.0,
+            braid: None,
+        }
+    }
+}
+
+/// An ahoge: one to three springy locks standing up from the crown and curling over, with a spring chain of their own
+/// so they bob when the head moves.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct AhogeGen {
+    /// Where it springs from, a surface point `[theta_deg, phi_deg, offset]` (the offset clears the cap's shell).
+    pub root: [f64; 3],
+    /// Locks, `1..=3`: the first is the longest, the others shorter and fanned to either side.
+    pub locks: u8,
+    /// Length of the first lock, metres (for the reference head; it scales with the head).
+    pub length: f64,
+    /// How far it curls over along its length, degrees (`0..=320`): about 180 is a hook, more a curl.
+    pub curl_deg: f64,
+    /// The direction it curls toward round the head's vertical axis, degrees from the front (positive toward the
+    /// character's left).
+    pub toward_deg: f64,
+    /// How far the extra locks fan out from the first, degrees.
+    pub fan_deg: f64,
+    /// Lock width.
+    pub width: Taper,
+    /// Lock thickness.
+    pub thickness: Bulge,
+    /// Give the locks a spring chain so they bob and sway (on by default).
+    pub spring: bool,
+}
+
+impl Default for AhogeGen {
+    fn default() -> Self {
+        Self {
+            root: [14.0, 0.0, 0.022],
+            locks: 1,
+            length: 0.11,
+            curl_deg: 200.0,
+            toward_deg: 0.0,
+            fan_deg: 24.0,
+            width: Taper { start: 0.010, mid: 0.016, tip: 0.002, tip_at: 0.35, ..Taper::default() },
+            thickness: Bulge { base: 0.004, swell: 0.002 },
+            spring: true,
         }
     }
 }
@@ -1084,6 +1178,8 @@ pub enum Generator {
     Tail(TailGen),
     /// A bun.
     Bun(BunGen),
+    /// An ahoge: springy locks standing up from the crown.
+    Ahoge(AhogeGen),
     /// Explicit guide curves.
     Guides(GuidesGen),
 }
@@ -1643,6 +1739,11 @@ impl Validate for HairGroup {
                 count("generator/strands", c, u32::from(g.strands), 1, 20);
                 c.range("generator/radius", g.radius, 0.01, 0.2);
             }
+            Generator::Ahoge(g) => {
+                count("generator/locks", c, u32::from(g.locks), 1, 3);
+                c.range("generator/length", g.length, 0.02, 0.4);
+                c.range("generator/curl_deg", g.curl_deg, 0.0, 320.0);
+            }
             Generator::Guides(g) => {
                 if g.clumps.len() > MAX_GUIDE_CLUMPS {
                     c.fail("generator/clumps", format!("{} clumps: use at most {MAX_GUIDE_CLUMPS}", g.clumps.len()));
@@ -1746,6 +1847,26 @@ fn check_generator_values(generator: &Generator, c: &mut Check) {
             count(&g("chain_bones"), c, u32::from(x.chain_bones), 4, 6);
             c.range(&g("lean"), x.lean, -1.0, 1.0);
             count(&g("gather"), c, u32::from(x.gather), 0, 12);
+            c.nested(&g("width"), &x.width);
+            c.nested(&g("thickness"), &x.thickness);
+            c.range(&g("forward"), x.forward, -1.0, 1.0);
+            if let Some(b) = &x.braid {
+                count(&g("braid/strands"), c, u32::from(b.strands), 2, 5);
+                c.range(&g("braid/crossings"), b.crossings, 1.0, 40.0);
+                c.range(&g("braid/width"), b.width, 0.005, 0.2);
+                c.range(&g("braid/narrow"), b.narrow, 0.0, 0.9);
+                c.range(&g("braid/depth"), b.depth, 0.1, 1.5);
+                c.range(&g("braid/strand_thickness"), b.strand_thickness, 0.1, 1.0);
+                c.range(&g("braid/tuft"), b.tuft, 0.0, 0.6);
+                count(&g("braid/tuft_locks"), c, u32::from(b.tuft_locks), 0, 12);
+                c.range(&g("braid/face_deg"), b.face_deg, -360.0, 360.0);
+            }
+        }
+        Generator::Ahoge(x) => {
+            c.nested(&g("root"), &GuidePoint::Surface(x.root));
+            c.range(&g("root/phi_deg"), x.root[1], -360.0, 360.0);
+            c.range(&g("toward_deg"), x.toward_deg, -360.0, 360.0);
+            c.range(&g("fan_deg"), x.fan_deg, 0.0, 90.0);
             c.nested(&g("width"), &x.width);
             c.nested(&g("thickness"), &x.thickness);
         }
