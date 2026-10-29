@@ -67,7 +67,8 @@ fn the_gloom_fades_out_at_its_top_and_its_sides() {
     let edge = 16;
     let top_rows = drawn.iter().filter(|p| p.1 < top + 3).map(|&(x, y)| alpha(&r, x, y)).max().unwrap();
     assert!(top_rows <= edge, "its top rows reach alpha {top_rows} (peak {peak})");
-    let sides = drawn.iter().filter(|p| p.0 < left + 3 || p.0 > right - 3).map(|&(x, y)| alpha(&r, x, y)).max().unwrap();
+    let sides =
+        drawn.iter().filter(|p| p.0 < left + 3 || p.0 > right - 3).map(|&(x, y)| alpha(&r, x, y)).max().unwrap();
     assert!(sides <= edge, "its outer columns reach alpha {sides} (peak {peak})");
     // Nowhere does a column jump from clear to dark in one row going down from the top.
     for x in left..=right {

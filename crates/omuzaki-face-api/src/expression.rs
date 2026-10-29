@@ -142,7 +142,7 @@ pub enum PlaybackLayer {
     Momentary,
 }
 
-/// How an expression plays when a trigger shows it (spec FE-03: fades, auto-stop, exclusive groups, layers). The
+/// How an expression plays when a trigger shows it (spec FE-03: fades, auto-stop, exclusive groups, layers, dwell). The
 /// trigger runtime (PF-25) reads it; the player in `omuzaki-face` (`player`) runs it. Lip sync and scores give weights
 /// directly and don't use it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -161,11 +161,27 @@ pub struct Playback {
     pub group: Option<String>,
     /// Held (stays) or momentary (plays over the held ones).
     pub layer: PlaybackLayer,
+    /// The least time it holds before another expression in its group may replace it, `0..=10` s: a face asked for
+    /// sooner waits until then (the latest one asked for wins), so faces don't flicker. Left out, it may be replaced at
+    /// once. A cut ignores it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dwell_s: Option<f64>,
+    /// It replaces another in its group at once, whatever that one's dwell: a startle or a flash of anger cuts in.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub cuts_in: bool,
 }
 
 impl Default for Playback {
     fn default() -> Self {
-        Self { fade_in_s: 0.12, fade_out_s: 0.2, auto_stop_s: None, group: None, layer: PlaybackLayer::Held }
+        Self {
+            fade_in_s: 0.12,
+            fade_out_s: 0.2,
+            auto_stop_s: None,
+            group: None,
+            layer: PlaybackLayer::Held,
+            dwell_s: None,
+            cuts_in: false,
+        }
     }
 }
 
@@ -182,6 +198,9 @@ impl crate::check::Validate for Playback {
         c.range("fade_out_s", self.fade_out_s, 0.0, 10.0);
         if let Some(stop) = self.auto_stop_s {
             c.range("auto_stop_s", stop, 0.05, 600.0);
+        }
+        if let Some(dwell) = self.dwell_s {
+            c.range("dwell_s", dwell, 0.0, 10.0);
         }
         if let Some(group) = &self.group {
             let ok = !group.is_empty()

@@ -607,12 +607,7 @@ impl Scan {
     /// As [`sweep`](Self::sweep), but only rows `rows` and columns `cols` reach `emit` (rows that may be all zero
     /// included): the rest of the accumulated coverage is only cleared, which is what lets a partial repaint (#2443)
     /// skip the rows and columns it doesn't draw.
-    pub fn sweep_within(
-        &mut self,
-        rows: Range<usize>,
-        cols: Range<usize>,
-        emit: impl FnMut(usize, usize, &[u8]),
-    ) {
+    pub fn sweep_within(&mut self, rows: Range<usize>, cols: Range<usize>, emit: impl FnMut(usize, usize, &[u8])) {
         let mut row_buf = std::mem::take(&mut self.row);
         self.sweep_with(&mut row_buf, coverage_to_alpha, rows, cols, emit);
         self.row = row_buf;
