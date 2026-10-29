@@ -74,7 +74,7 @@ fn busy() -> Posture {
 fn the_built_in_poses_load_and_are_valid() {
     let lib = PoseLibrary::builtin().unwrap();
     let ids: Vec<_> = lib.iter().map(|p| p.id.as_str()).collect();
-    assert_eq!(ids, ["wave-right", "wave-left"]);
+    assert_eq!(ids, ["wave-right", "wave-left", "stand-relaxed"]);
     for p in lib.iter() {
         p.validate().unwrap();
         p.posture(HandLibrary::builtin().unwrap()).unwrap();
@@ -339,7 +339,7 @@ fn pose_list_lists_the_library() {
     assert!(plan.patch.is_empty(), "a query changes nothing");
     let out = plan.output.unwrap();
     let ids: Vec<_> = out["poses"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap()).collect();
-    assert_eq!(ids, ["wave-right", "wave-left"]);
+    assert_eq!(ids, ["wave-right", "wave-left", "stand-relaxed"]);
     assert_eq!(out["poses"][0]["tags"], json!(["greeting", "arm"]));
     assert!(out["poses"][0]["summary"].as_str().unwrap().contains("Right arm"));
 }

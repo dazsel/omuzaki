@@ -65,6 +65,8 @@ pub struct ShortScene<'a> {
     pub landmarks: Landmarks,
     /// The render settings.
     pub quality: Quality,
+    /// The pose the character performs from; the body's own when `None`.
+    pub pose: Option<omuzaki_anim_api::HumanoidPose>,
 }
 
 fn render_error(what: &str, e: impl std::fmt::Display) -> ShortError {
@@ -112,7 +114,7 @@ fn on_target(
     sink: &mut dyn FrameSink,
     progress: &mut dyn FnMut(f32) -> Result<(), ShortError>,
 ) -> Result<LoopReport, ShortError> {
-    let base = body.base_pose();
+    let base = scene.pose.unwrap_or_else(|| body.base_pose());
     let has_face = matches!(&body, Body::Kit(built) if built.face.is_some());
     let fps = scene.def.fps;
     #[allow(clippy::cast_precision_loss, reason = "frame rates of at most 60")]

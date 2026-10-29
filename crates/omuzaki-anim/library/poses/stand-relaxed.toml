@@ -1,0 +1,12 @@
+# Pose "stand-relaxed": standing at ease, talking to the camera. Rotations are degrees, Euler XYZ, in the VRM normalised
+# space (T-pose = zero); see crates/omuzaki-anim/src/poses/mod.rs for the conventions.
+id = "stand-relaxed"
+summary = "Standing at ease, arms relaxed down with a soft bend at the elbows and the hands loose: the rest pose of a talking head or a short."
+tags = ["rest", "idle", "short"]
+mirrorable = true
+
+[bones]
+leftUpperArm = [0.0, 0.0, -68.0]
+rightUpperArm = [0.0, 0.0, 68.0]
+leftLowerArm = [0.0, -12.0, 0.0]
+rightLowerArm = [0.0, 12.0, 0.0]

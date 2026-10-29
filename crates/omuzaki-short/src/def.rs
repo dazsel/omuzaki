@@ -25,6 +25,7 @@ use omuzaki_char_api::CharId;
 use omuzaki_performer_api::ids::VoiceId;
 use omuzaki_performer_api::voice::{SPEED_MAX, SPEED_MIN};
 use omuzaki_render_api::Colour;
+use omuzaki_stage::ops::render::pose::PoseArg;
 use omuzaki_stage_api::SceneId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -114,15 +115,26 @@ pub struct LookDef {
     /// The backdrop colour; the light rig's background when left out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backdrop: Option<Colour>,
+    /// The pose the character performs from: a pose of the pose library (`pose.list`); `stand-relaxed` (arms down,
+    /// at ease) by default.
+    #[serde(default = "default_pose")]
+    pub pose: PoseArg,
 }
 
 fn default_rig() -> String {
     "short-rim".to_owned()
 }
 
+/// The pose a short performs from when the file names none.
+pub const DEFAULT_POSE: &str = "stand-relaxed";
+
+fn default_pose() -> PoseArg {
+    PoseArg { id: DEFAULT_POSE.to_owned(), mirror: false, blend: None }
+}
+
 impl Default for LookDef {
     fn default() -> Self {
-        Self { light_rig: default_rig(), backdrop: None }
+        Self { light_rig: default_rig(), backdrop: None, pose: default_pose() }
     }
 }
 
@@ -217,7 +229,7 @@ const fn default_caption_y() -> f32 {
 }
 
 const fn default_caption_size() -> f32 {
-    0.058
+    0.072
 }
 
 const fn default_caption_chars() -> usize {
@@ -510,7 +522,7 @@ fn shot_words(words: &str) -> Result<ShotNumbers, ShortError> {
             "face" => {}
             "close" => n.zoom *= 1.35,
             "eyes" => {
-                n.zoom *= 2.3;
+                n.zoom *= 1.9;
                 n.shift[1] -= 0.04;
             }
             "mouth" => {

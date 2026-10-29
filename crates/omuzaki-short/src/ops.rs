@@ -417,6 +417,24 @@ fn write_file(job: &JobCtx<'_>, path: &str, bytes: &[u8]) -> Result<(), OpError>
     replacement.commit()
 }
 
+/// Seconds per frame of a 1080x1920 render on a software GPU (lavapipe on four cores), by quality: the slowest machine a
+/// short renders on, so the estimate (and the job's time cap, four times it) holds there. A real GPU is far faster.
+const SOFTWARE_FRAME_S: [f32; 3] = [0.6, 1.5, 2.0];
+/// Seconds per frame that don't scale with the size: the performer, captions and the encoder.
+const FRAME_OVERHEAD_S: f32 = 0.1;
+
+/// The estimate of a render of `frames` frames of `size` at `quality`.
+#[allow(clippy::cast_precision_loss, reason = "frame and pixel counts")]
+fn render_seconds(frames: u64, size: [u32; 2], quality: RenderQuality) -> f32 {
+    let share = (size[0] as f32 * size[1] as f32) / (1080.0 * 1920.0);
+    let per_frame = match quality {
+        RenderQuality::Live => SOFTWARE_FRAME_S[0],
+        RenderQuality::High => SOFTWARE_FRAME_S[1],
+        RenderQuality::Offline => SOFTWARE_FRAME_S[2],
+    };
+    frames as f32 * (per_frame * share + FRAME_OVERHEAD_S)
+}
+
 impl Op for RenderShort {
     fn meta() -> OpMeta {
         OpMeta {
@@ -438,6 +456,7 @@ impl Op for RenderShort {
         let def = self.sized(self.source.load(&fs)?)?;
         let out = self.out.clone().unwrap_or_else(|| self.source.default_out(&def));
         ctx.fs_access(&out, FsMode::Write)?;
+        def.look.pose.check("look.pose")?;
         scene_def(ctx.doc, &def)?;
         if let VoiceDef::Speech { voice, speed } = &def.voice {
             // Refused before the job starts when the voice can't be said here; the timing is still an estimate.
@@ -449,9 +468,10 @@ impl Op for RenderShort {
         let character = character_bytes(ctx, &def.character, None, self.quality)?;
         let size = check_size(def.size, self.quality)?;
         let gpu = cost(size, 1, self.quality, character);
-        #[allow(clippy::cast_precision_loss, reason = "frame counts")]
-        let seconds = frames as f32 * if self.quality == RenderQuality::Live { 0.05 } else { 0.15 };
-        Ok(Plan { cost: Some(CostHint { seconds: Some(seconds), ..gpu }), ..Plan::default() })
+        Ok(Plan {
+            cost: Some(CostHint { seconds: Some(render_seconds(frames, def.size, self.quality)), ..gpu }),
+            ..Plan::default()
+        })
     }
 
     #[allow(clippy::too_many_lines, reason = "one job's steps in order: load, stage, render, write, report")]
@@ -481,6 +501,7 @@ impl Op for RenderShort {
         );
         let body = job.read(|doc| load_body(doc, &services, &def.character, None, self.quality.detail()))?;
         let landmarks = body.landmarks().map_err(|e| OpError::invalid("character", e.to_string()))?;
+        let pose = def.look.pose.resolve("look.pose", &body)?;
         let [w, h] = def.size;
         #[allow(clippy::cast_precision_loss, reason = "sides are at most 4096")]
         let aspect = w as f32 / h as f32;
@@ -529,6 +550,7 @@ impl Op for RenderShort {
             staged: &staged,
             landmarks,
             quality: self.quality.quality(),
+            pose: Some(pose),
         };
         let frames = frame_count(timeline.duration, def.fps);
         let mut stopped: Option<OpError> = None;
