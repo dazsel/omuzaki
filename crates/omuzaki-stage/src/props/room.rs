@@ -3,7 +3,7 @@
 
 use omuzaki_core::glam::Vec3;
 use omuzaki_render_api::Colour;
-use omuzaki_stage_api::{PropKind, PropOutput, register_prop_kind};
+use omuzaki_stage_api::{PropKind, PropOutput, PropPart, register_prop_kind};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -144,7 +144,7 @@ impl PropKind for Room {
         if !trim.is_empty() {
             parts.push((trim, painted(darker(p.trim, 0.45))));
         }
-        Ok(output(parts))
+        Ok(unshadowed(output(parts)))
     }
 }
 
@@ -196,8 +196,15 @@ impl PropKind for Rug {
             0.003,
             mix(p.colour, border, 0.25),
         );
-        Ok(output(vec![(rug, painted_plain())]))
+        Ok(unshadowed(output(vec![(rug, painted_plain())])))
     }
 }
 
 register_prop_kind!(Rug);
+
+/// `out` with no part in the shadow maps: a floor and walls only receive (a directional key's map is fitted to its
+/// casters, and a room-sized caster would spread the cast's shadow over it), and a rug lies flat.
+fn unshadowed(mut out: PropOutput) -> PropOutput {
+    out.parts = out.parts.into_iter().map(PropPart::without_shadow).collect();
+    out
+}

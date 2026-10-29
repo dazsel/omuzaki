@@ -463,7 +463,10 @@ mod tests {
     #[test]
     fn a_prop_writes_only_what_differs_from_its_defaults() {
         let prop = PropDef::new(PropKindId::new("cup").unwrap());
-        assert_eq!(serde_json::to_value(&prop).unwrap(), serde_json::json!({"kind": "cup", "position": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0], "scale": 1.0}));
+        assert_eq!(
+            serde_json::to_value(&prop).unwrap(),
+            serde_json::json!({"kind": "cup", "position": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0], "scale": 1.0})
+        );
         let back: PropDef = serde_json::from_value(serde_json::json!({"kind": "cup"})).unwrap();
         assert_eq!(back, prop);
     }

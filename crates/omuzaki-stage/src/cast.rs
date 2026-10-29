@@ -24,6 +24,7 @@
 
 use std::collections::BTreeMap;
 
+use omuzaki_anim_api::HumanoidBone;
 use omuzaki_core::glam::Mat4;
 use omuzaki_face_api::ExpressionSet;
 use omuzaki_render_api::{Quality, Renderer, Scene, TargetId};
@@ -75,6 +76,13 @@ pub trait StageMember: FrameLoop + sealed::Sealed {
         prepared: Prepared,
         what: &'static str,
     ) -> Result<FrameOutput, StageError>;
+
+    /// Where humanoid `bone` of the body was in the last frame, in the world. `None` for a bone it lacks.
+    fn humanoid_world(&self, bone: HumanoidBone) -> Option<Mat4>;
+
+    /// Adds the scene's props attached to cast member `member` to the stage's scene, under `bone`'s answers: what the
+    /// lead does for each member once that member's frame is posed. Hot: allocation-free.
+    fn push_member_props(&mut self, member: &MemberId, bone: &dyn Fn(HumanoidBone) -> Option<Mat4>);
 }
 
 impl StageMember for Stage {
@@ -94,6 +102,12 @@ impl StageMember for Stage {
         what: &'static str,
     ) -> Result<FrameOutput, StageError> {
         Stage::submit(self, renderer, prepared, what)
+    }
+    fn humanoid_world(&self, bone: HumanoidBone) -> Option<Mat4> {
+        self.bone_world(bone)
+    }
+    fn push_member_props(&mut self, member: &MemberId, bone: &dyn Fn(HumanoidBone) -> Option<Mat4>) {
+        Stage::push_member_props(self, member, bone);
     }
 }
 
@@ -115,6 +129,12 @@ impl StageMember for AvatarStage {
         what: &'static str,
     ) -> Result<FrameOutput, StageError> {
         AvatarStage::submit(self, renderer, prepared, what)
+    }
+    fn humanoid_world(&self, bone: HumanoidBone) -> Option<Mat4> {
+        AvatarStage::humanoid_world(self, bone)
+    }
+    fn push_member_props(&mut self, member: &MemberId, bone: &dyn Fn(HumanoidBone) -> Option<Mat4>) {
+        AvatarStage::push_member_props(self, member, bone);
     }
 }
 
@@ -146,6 +166,18 @@ impl StageMember for AnyStage {
         match self {
             Self::Kit(stage) => StageMember::submit(stage, renderer, prepared, what),
             Self::Avatar(stage) => StageMember::submit(stage, renderer, prepared, what),
+        }
+    }
+    fn humanoid_world(&self, bone: HumanoidBone) -> Option<Mat4> {
+        match self {
+            Self::Kit(stage) => stage.bone_world(bone),
+            Self::Avatar(stage) => stage.humanoid_world(bone),
+        }
+    }
+    fn push_member_props(&mut self, member: &MemberId, bone: &dyn Fn(HumanoidBone) -> Option<Mat4>) {
+        match self {
+            Self::Kit(stage) => Stage::push_member_props(stage, member, bone),
+            Self::Avatar(stage) => AvatarStage::push_member_props(stage, member, bone),
         }
     }
 }
@@ -393,6 +425,9 @@ impl<M: StageMember> CastStage<M> {
             };
             // A member that failed still filled its scene with this frame's body, as a lone stage does.
             append(self.lead.scene_mut(), member.stage.scene());
+            // The lead holds the scene's props; the ones in this member's hands follow its bones.
+            let stage = &member.stage;
+            self.lead.push_member_props(&member.id, &|bone| stage.humanoid_world(bone));
             if let (Ok(_), Err(error)) = (&result, prepared) {
                 result = Err(error);
             }

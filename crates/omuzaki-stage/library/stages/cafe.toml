@@ -1,0 +1,63 @@
+# A café corner: the subject stands at the origin facing +Z, tables behind them.
+title = "Café"
+summary = "A warm café: panelled walls, a big window, two round tables with cups and chairs, a plant and a hanging-light glow from a floor lamp. Pairs with the dev-warm rig."
+light_rig = "dev-warm"
+tags = ["interior", "day", "warm", "public"]
+
+[backdrop]
+kind = "gradient"
+top = "#2e2420"
+bottom = "#5b463a"
+
+[ground]
+kind = "none"
+
+[props.room]
+kind = "room"
+params = { width = 6.0, depth = 5.0, height = 3.0, walls = "#efe2c8", floor = "#5e3d2b", wainscot = "#3d5a48", trim = "#e9dfcc", seed = 3 }
+position = [0.0, 0.0, 0.3]
+
+[props.window]
+kind = "window"
+params = { width = 2.4, height = 1.6, panes = [4, 3], curtains = "#b8433a" }
+position = [0.0, 0.85, -2.2]
+
+[props.table-left]
+kind = "cafe-table"
+position = [-1.4, 0.0, -1.3]
+
+[props.table-right]
+kind = "cafe-table"
+position = [1.4, 0.0, -1.3]
+
+[props.cup-left]
+kind = "cup"
+params = { saucer = true, colour = "#f4efe6" }
+position = [-1.5, 0.75, -1.25]
+
+[props.cup-right]
+kind = "cup"
+params = { colour = "#d9c7f0" }
+position = [1.3, 0.75, -1.35]
+
+[props.chair-left]
+kind = "chair"
+params = { cushion = "#3d5a48" }
+position = [-2.05, 0.0, -1.2]
+rotation = [90.0, 0.0, 0.0]
+
+[props.chair-right]
+kind = "chair"
+params = { cushion = "#3d5a48" }
+position = [2.05, 0.0, -1.2]
+rotation = [-90.0, 0.0, 0.0]
+
+[props.plant]
+kind = "plant"
+params = { height = 1.5, leaves = 34, seed = 21 }
+position = [-2.6, 0.0, -1.9]
+
+[props.lamp]
+kind = "lamp"
+params = { height = 1.8, intensity = 2.6 }
+position = [2.6, 0.0, -1.9]

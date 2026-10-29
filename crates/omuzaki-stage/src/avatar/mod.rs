@@ -20,7 +20,7 @@ pub mod ease;
 mod gaze;
 pub mod upload;
 
-use omuzaki_anim_api::{BoneId, HumanoidPose, IkGoals, Tick};
+use omuzaki_anim_api::{BoneId, HumanoidBone, HumanoidPose, IkGoals, Tick};
 use omuzaki_avatar::buffers::{BindDeltas, MorphWeights};
 use omuzaki_avatar::evaluator::ExpressionEvaluator;
 use omuzaki_avatar_api::avatar::ImportedAvatar;
@@ -38,6 +38,7 @@ use crate::frame::{FrameInput, FrameOutput, Prepared, StageClock};
 use crate::scene::apply::{Owed, SceneLink, reserve};
 use crate::scene::backdrop::StageBackdrop;
 use crate::scene::environment::StageEnvironment;
+use crate::props::staged::StageProps;
 use crate::scene::ground::StageGround;
 use crate::scene::resolve::ResolvedScene;
 
@@ -62,6 +63,7 @@ pub struct AvatarStage {
     ground: StageGround,
     environment: StageEnvironment,
     backdrop: StageBackdrop,
+    props: StageProps,
     submissions: u64,
     tick: Tick,
     scene: Scene,
@@ -124,6 +126,7 @@ impl AvatarStage {
             ground: StageGround::default(),
             environment: StageEnvironment::default(),
             backdrop: StageBackdrop::default(),
+            props: StageProps::default(),
             submissions: 0,
             tick: Tick { index: 0, time: Seconds(0.0), dt: 0.0 },
             scene,
@@ -217,6 +220,8 @@ impl AvatarStage {
         let uploads = self.upload.send_binds(renderer, &self.binds)?;
         self.plan.fill(&mut self.scene, self.rig.world(), &self.weights, self.root);
         self.ground.push(&mut self.scene);
+        let (avatar, rig, root) = (&self.avatar, &self.rig, self.root);
+        self.props.push(&mut self.scene, &|bone| avatar_bone_world(avatar, rig, root, bone));
         self.submissions += 1;
         let index = if self.clock.is_live() { self.submissions } else { tick.index };
         self.scene.frame = FrameInfo { index, time: tick.time };
@@ -255,6 +260,7 @@ impl AvatarStage {
         if let Some(picture) = self.backdrop.background_for(resolved.backdrop_image.as_ref()) {
             self.scene.background = picture;
         }
+        self.props.take(&resolved.props);
         self.set_subject_root(subject_root);
         owed
     }
@@ -308,6 +314,22 @@ impl AvatarStage {
         (bone.index() < self.avatar.skeleton.len()).then(|| self.rig.world().local[bone.index()].to_mat4())
     }
 
+    /// Where humanoid `bone` was in the last frame, in the world: the avatar's root times its model-space matrix.
+    /// `None` for a bone the skeleton doesn't map.
+    pub fn humanoid_world(&self, bone: HumanoidBone) -> Option<Mat4> {
+        avatar_bone_world(&self.avatar, &self.rig, self.root, bone)
+    }
+
+    /// The props of the scene attached to cast member `member`, under `bone`'s answers, as
+    /// [`Stage`](crate::frame::Stage) does. Hot: allocation-free.
+    pub(crate) fn push_member_props(
+        &mut self,
+        member: &omuzaki_stage_api::MemberId,
+        bone: &dyn Fn(HumanoidBone) -> Option<Mat4>,
+    ) {
+        self.props.push_member(&mut self.scene, member, bone);
+    }
+
     /// The morph weights of the last frame, mesh after mesh, with each expression's applied weight.
     pub fn weights(&self) -> &MorphWeights {
         &self.weights
@@ -321,10 +343,11 @@ impl AvatarStage {
         let ground = self.ground.release(renderer);
         let environment = self.environment.release(renderer);
         let backdrop = self.backdrop.release(renderer);
-        self.upload.release(renderer).and(ground).and(environment).and(backdrop)
+        let props = self.props.release(renderer);
+        self.upload.release(renderer).and(ground).and(environment).and(backdrop).and(props)
     }
 
-    /// Does the renderer work the last [`set_scene`](Self::set_scene) owes for the ground and the environment and
+    /// Does the renderer work the last [`set_scene`](Self::set_scene) owes for the ground, the environment and the props and
     /// records it as done, as [`Stage::pay_scene`](crate::frame::Stage::pay_scene). An imported avatar's materials
     /// have no skin floor, so that part is never owed work here. Cold.
     ///
@@ -354,6 +377,11 @@ impl AvatarStage {
         if let Some(floor) = owed.skin_floor {
             self.link.commit(&Owed { skin_floor: Some(floor), ..Owed::default() });
         }
+        if let Some(generation) = owed.props {
+            let builds = std::sync::Arc::clone(&self.link.wanted().props.builds);
+            self.props.set(renderer, &builds, &mut self.scene)?;
+            self.link.commit(&Owed { props: Some(generation), ..Owed::default() });
+        }
         Ok(())
     }
 }
@@ -362,4 +390,10 @@ impl std::fmt::Debug for AvatarStage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AvatarStage").field("meshes", &self.avatar.meshes.len()).finish_non_exhaustive()
     }
+}
+
+/// Where humanoid `bone` of an imported avatar is in the world: `root` times its posed model-space matrix.
+fn avatar_bone_world(avatar: &ImportedAvatar, rig: &RigFrame, root: Mat4, bone: HumanoidBone) -> Option<Mat4> {
+    let id = avatar.skeleton.humanoid_bone(bone)?;
+    rig.world().local.get(id.index()).map(|local| root * local.to_mat4())
 }

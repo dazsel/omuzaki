@@ -61,6 +61,9 @@ pub struct Owed {
     /// The backdrop picture to upload from now on: `Some(Some(asset))` for a new one, `Some(None)` to release it,
     /// `None` when it is as before. Its fit and bars are values and owe nothing.
     pub image: Option<Option<ContentHash>>,
+    /// The generation of the prop builds to upload from now on ([`PropBuilds`](crate::props::staged::PropBuilds)),
+    /// `None` when the renderer has them. Moving a prop is a value and owes nothing.
+    pub props: Option<u64>,
 }
 
 impl Owed {
@@ -78,6 +81,7 @@ pub struct Applier {
     skin_floor: Option<f32>,
     environment: Option<EnvironmentSource>,
     image: Option<ContentHash>,
+    props: u64,
 }
 
 impl Applier {
@@ -112,6 +116,9 @@ impl Applier {
         if image != self.image {
             owed.image = Some(image);
         }
+        if resolved.props.builds.generation != self.props {
+            owed.props = Some(resolved.props.builds.generation);
+        }
         owed
     }
 
@@ -129,6 +136,9 @@ impl Applier {
         }
         if let Some(image) = owed.image {
             self.image = image;
+        }
+        if let Some(props) = owed.props {
+            self.props = props;
         }
     }
 }
@@ -178,12 +188,13 @@ impl SceneLink {
         self.debt.wanted.hdri.clone_from(&resolved.hdri);
         self.debt.wanted.backdrop_image = resolved.backdrop_image;
         self.debt.wanted.image.clone_from(&resolved.image);
+        self.debt.wanted.props.builds.clone_from(&resolved.props.builds);
         self.debt.set = true;
         self.owed
     }
 
-    /// What the last [`set`](Self::set) wants: its ground, skin floor, environment, backdrop picture and their pixels
-    /// (nothing else of it is kept).
+    /// What the last [`set`](Self::set) wants: its ground, skin floor, environment, backdrop picture and their pixels,
+    /// and its prop builds (nothing else of it is kept).
     pub(crate) fn wanted(&self) -> &ResolvedScene {
         &self.debt.wanted
     }

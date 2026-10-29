@@ -52,9 +52,11 @@ pub use effects::{
 };
 pub use error::{Finding, FindingKind, Findings, SceneError};
 pub use ids::{CameraId, LightId, MemberId, PropId, SceneId};
-pub use props::{PropDef, PropError, PropKind, PropKindId, PropOutput, PropPart, find_prop_kind, prop_kind, prop_kinds};
 pub use lighting::{
     Ambient, BloomDef, EnvironmentDef, EnvironmentSource, FogDef, LightDef, LightRole, LightShape, Lighting,
+};
+pub use props::{
+    PropDef, PropError, PropKind, PropKindId, PropOutput, PropPart, find_prop_kind, prop_kind, prop_kinds,
 };
 pub use scene::{MAX_CAMERAS, MAX_CAST, MAX_LIGHTS, MAX_PROPS, REFERENCE_HEIGHT_M, SceneDef, paths};
 pub use settings::{

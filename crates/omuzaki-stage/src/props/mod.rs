@@ -5,6 +5,8 @@
 //! - The interior kinds (#1166): [`room`] (`room`, `rug`), [`furniture`] (`desk`, `chair`, `cafe-table`, `bed`),
 //!   [`shelf`], [`lighting`] (`lamp`, `window`) and [`small`] (`cup`, `plant`). Each is procedural, in metres, toon
 //!   with vertex colours, and registers itself.
+//! - [`staged`]: a scene's props resolved (builds kept while their params are), uploaded once per build and drawn
+//!   every frame, attached ones under their bones.
 
 pub mod furniture;
 pub mod lighting;
@@ -12,6 +14,7 @@ pub mod room;
 pub mod shape;
 pub mod shelf;
 pub mod small;
+pub mod staged;
 
 use omuzaki_render_api::Material;
 use omuzaki_stage_api::{PropOutput, PropPart};
