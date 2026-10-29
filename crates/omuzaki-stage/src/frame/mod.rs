@@ -494,6 +494,22 @@ impl Stage {
         }
     }
 
+    /// The body as a touch with another member reads it (#2415): where the last frame left it, in the world.
+    pub(crate) fn touch_body(&self) -> crate::interact::MemberBody {
+        self.rig.body(self.root)
+    }
+
+    /// The scene's transform of this member ([`set_subject_root`](Self::set_subject_root)).
+    pub(crate) fn subject_root_now(&self) -> Mat4 {
+        self.subject_root
+    }
+
+    /// Keeps the arms out of another member's `parts` (world space) from the next frame, this member standing at
+    /// `root` then; an empty slice clears them. Allocation-free.
+    pub(crate) fn set_partner_parts(&mut self, parts: &[omuzaki_rig::ik::guard::Obstacle], root: Mat4) {
+        self.rig.set_partner(parts, root);
+    }
+
     /// What the last [`set_scene`](Self::set_scene) still owes the renderer: nothing once everything was committed.
     pub fn owed(&self) -> Owed {
         self.link.owed()

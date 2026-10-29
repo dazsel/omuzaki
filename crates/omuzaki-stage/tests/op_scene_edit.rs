@@ -11,13 +11,13 @@ use omuzaki_doc_mock::MemDoc;
 use omuzaki_ops_api::{Actor, ErrorCode, Op, OpCtx, OpError, Plan, Scope};
 use omuzaki_render_api::Colour;
 use omuzaki_stage::ops::scene::camera::{AddCamera, RemoveCamera, SetActiveCamera, SetCamera};
-use omuzaki_stage::ops::scene::cast::{PlaceCharacter, RemoveMember, SetMember, SetSubject};
+use omuzaki_stage::ops::scene::cast::{PlaceCharacter, RemoveMember, SetInteract, SetMember, SetSubject};
 use omuzaki_stage::ops::scene::create::CreateScene;
 use omuzaki_stage::ops::scene::light::{AddLight, LightRigs, RemoveLight, SetLight, SetLightRig, SetLighting};
 use omuzaki_stage::ops::scene::look::{SetBackdrop, SetGround, SetPost};
 use omuzaki_stage::ops::scene::manage::{DeleteScene, DescribeScene, DuplicateScene, RenameScene};
 use omuzaki_stage::scene::default::scene_for;
-use omuzaki_stage_api::{Anchor, Backdrop, MAX_LIGHTS, SceneDef, SceneId, paths};
+use omuzaki_stage_api::{Anchor, Backdrop, InteractKind, MAX_LIGHTS, MemberId, SceneDef, SceneId, paths};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
@@ -497,4 +497,63 @@ fn a_gradient_and_an_image_backdrop_are_set_with_their_own_fields_only() {
     assert_eq!(foreign.field.as_deref(), Some("asset"));
     let foreign = refused::<SetBackdrop>(&doc, json!({ "kind": "transparent", "colour": "#00b140" }));
     assert_eq!(foreign.field.as_deref(), Some("colour"));
+}
+
+// ---- #2415: touches between members -------------------------------------------------------------------------------
+
+#[test]
+fn a_touch_is_held_by_one_member_stands_the_other_for_it_and_ends_with_either() {
+    let mut doc = project();
+    edit::<PlaceCharacter>(&mut doc, json!({ "character": "aiko", "id": "guest", "position": [1.5, 0.4] }));
+    edit::<SetMember>(&mut doc, json!({ "member": "main", "position": [0.2, 0.0], "yaw": 30.0 }));
+    let member = |doc: &MemDoc, id: &str| scene(doc, "main").cast[&MemberId::new(id).unwrap()].clone();
+
+    // A hug stands the guest 0.3 m in front of `main`, facing it, in the same step.
+    let (_, out) = edit::<SetInteract>(&mut doc, json!({ "member": "main", "with": "guest", "kind": "hug" }));
+    assert_eq!((out["kind"].as_str(), out["with"].as_str()), (Some("hug"), Some("guest")));
+    let touch = member(&doc, "main").interact.unwrap();
+    assert_eq!((touch.with.as_str(), touch.kind, touch.weight), ("guest", InteractKind::Hug, 1.0));
+    let guest = member(&doc, "guest");
+    let (sin, cos) = 30.0_f32.to_radians().sin_cos();
+    assert!((guest.position[0] - (0.2 + 0.3 * sin)).abs() < 1e-5 && (guest.position[1] - 0.3 * cos).abs() < 1e-5);
+    assert!((guest.yaw - -150.0).abs() < 1e-4, "facing back: {}", guest.yaw);
+
+    // Cheek to cheek without placing: the guest stays; the touch changes in place.
+    let (patch, _) = edit::<SetInteract>(
+        &mut doc,
+        json!({ "member": "main", "with": "guest", "kind": "cheek-to-cheek", "weight": 0.5, "place": false }),
+    );
+    assert!(paths_of(&patch).iter().all(|p| p.contains("main/interact")), "{:?}", paths_of(&patch));
+    assert_eq!(member(&doc, "main").interact.unwrap().kind, InteractKind::CheekToCheek);
+
+    // The guest touching back replaces the pair's touch: one touch per pair.
+    edit::<SetInteract>(&mut doc, json!({ "member": "guest", "with": "main", "kind": "palm-touch" }));
+    assert!(member(&doc, "main").interact.is_none());
+    assert_eq!(member(&doc, "guest").interact.unwrap().kind, InteractKind::PalmTouch);
+
+    // Removing the partner ends the touch in the same step; `off` ends it on the holder.
+    let mut removed = MemDoc::from_value(doc.root().clone());
+    let (_, out) = edit::<RemoveMember>(&mut removed, json!({ "member": "main" }));
+    assert!(out["repointed_to_subject"].as_array().unwrap().iter().any(|p| p == "cast.guest.interact"), "{out}");
+    edit::<SetInteract>(&mut doc, json!({ "member": "guest", "kind": "off" }));
+    assert!(member(&doc, "guest").interact.is_none());
+}
+
+#[test]
+fn a_touch_needs_a_partner_other_than_itself_and_a_weight_in_range() {
+    let mut doc = project();
+    edit::<PlaceCharacter>(&mut doc, json!({ "character": "aiko", "id": "guest" }));
+    let e = refused::<SetInteract>(&doc, json!({ "member": "main", "kind": "hug" }));
+    assert_eq!((e.code, e.field.as_deref()), (ErrorCode::Invalid, Some("with")));
+    let e = refused::<SetInteract>(&doc, json!({ "member": "main", "with": "main", "kind": "hug" }));
+    assert_eq!(e.field.as_deref(), Some("with"));
+    let e = refused::<SetInteract>(&doc, json!({ "member": "main", "with": "gest", "kind": "hug" }));
+    assert!(e.hint.unwrap_or_default().contains("guest"), "the nearest member");
+    let e = refused::<SetInteract>(&doc, json!({ "member": "main", "with": "guest", "kind": "hug", "weight": 1.5 }));
+    assert_eq!(e.field.as_deref(), Some("weight"));
+    let e = refused::<SetInteract>(&doc, json!({ "member": "main", "kind": "off" }));
+    assert_eq!(e.field.as_deref(), Some("kind"));
+    assert!(
+        serde_json::from_value::<SetInteract>(json!({ "member": "main", "with": "guest", "kind": "kiss" })).is_err()
+    );
 }

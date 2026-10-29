@@ -36,7 +36,7 @@ pub mod settings;
 
 pub use anchor::Anchor;
 pub use camera::{CameraDef, Framing};
-pub use cast::CastMember;
+pub use cast::{CastMember, Interact, InteractKind};
 pub use drive::{DriveGroup, DriveMap, DriverKind};
 pub use effects::{
     BurstAccepted, BurstRequest, ChatEmoteRef, EffectAt, EffectError, EffectEvent, EffectEventKind, EffectKind,
