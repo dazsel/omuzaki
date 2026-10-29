@@ -1,0 +1,26 @@
+schema = 1
+id = "omuzaki/hair/twin-braids"
+version = "1.0.0"
+section = "hair"
+kind = "setting"
+target = "character"
+title = "Twin braids"
+summary = "Two long braids from behind the ears, hanging over the back."
+tags = ["hair", "braid", "braids", "twin"]
+origin = "the kit's tail generator presets (#2411), tuned by eye on the kit's renders"
+compat = { kinds = ["humanoid"], templates = ["*"], requires = ["hair"] }
+target_part = ["hair"]
+
+[rights]
+author = "Omuzaki"
+licence = "CC0-1.0"
+commercial = "ok"
+owned = true
+
+[[step]]
+op = "part.set_param"
+[step.args]
+character = "$character"
+part = "$target"
+path = "groups"
+value = { twin-braids = { mirror = true, generator = { type = "tail", root = [115.0, 100.0, 0.012], length = 0.48, lean = 0.1, braid = { crossings = 8.0, width = 0.05 } } } }

@@ -1,5 +1,6 @@
 //! Hair generators.
 
+pub mod ahoge;
 pub mod bangs;
 pub mod braid;
 pub mod bun;

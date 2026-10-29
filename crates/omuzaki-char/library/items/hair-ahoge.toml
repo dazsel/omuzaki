@@ -1,0 +1,26 @@
+schema = 1
+id = "omuzaki/hair/ahoge"
+version = "1.0.0"
+section = "hair"
+kind = "setting"
+target = "character"
+title = "Ahoge"
+summary = "Two curled strands standing up from the crown, on springs."
+tags = ["hair", "ahoge", "antenna", "cowlick"]
+origin = "the kit's ahoge generator presets (#2411), tuned by eye on the kit's renders"
+compat = { kinds = ["humanoid"], templates = ["*"], requires = ["hair"] }
+target_part = ["hair"]
+
+[rights]
+author = "Omuzaki"
+licence = "CC0-1.0"
+commercial = "ok"
+owned = true
+
+[[step]]
+op = "part.set_param"
+[step.args]
+character = "$character"
+part = "$target"
+path = "groups"
+value = { ahoge = { generator = { type = "ahoge", locks = 2, length = 0.14, curl_deg = 230.0, fan_deg = 28.0 } } }

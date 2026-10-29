@@ -131,7 +131,7 @@ fn the_head_carries_the_face_and_the_hair_carries_the_brows() {
     let Shading::Program { name, params } = &c.materials[&MaterialName::new("mock-hair").unwrap()].shading else {
         panic!("hair uses a program")
     };
-    assert_eq!((name.as_str(), params.len()), (HAIR_PROGRAM, 10));
+    assert_eq!((name.as_str(), params.len()), (HAIR_PROGRAM, 14));
     let strands = &mesh(&c, "hair-dynamic").extra;
     let attributes: Vec<_> = strands.iter().map(|a| (a.name.as_str(), a.components)).collect();
     assert_eq!(attributes, [("hair-uv", 2), ("hair-info", 3)]);

@@ -1,0 +1,22 @@
+# Reach to the lens: from rest, the arm comes up and straight at the camera, holds, and comes back.
+id = "reach-to-lens"
+summary = "A one-shot reach: the right arm comes up straight at the camera, palm and fingers spread to the lens, holds and returns."
+length = 3.2
+looped = false
+easing = "smoother"
+
+[[keys]]
+t = 0.0
+pose = "stand-neutral"
+
+[[keys]]
+t = 0.75
+pose = "reach-to-lens"
+
+[[keys]]
+t = 2.3
+pose = "reach-to-lens"
+
+[[keys]]
+t = 3.2
+pose = "stand-neutral"

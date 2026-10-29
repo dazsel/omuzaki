@@ -45,7 +45,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use omuzaki_anim::hands::HandRest;
-use omuzaki_anim::poses::ClipLibrary;
+use omuzaki_anim::poses::{ClipLibrary, PoseClip};
 use omuzaki_anim::{
     MAX_NEUTRAL_FRAMES, MAX_TRIGGERS, MIN_NEUTRAL_FRAMES, NeutralCapture, NeutralError, TriggerFades, TriggerSlot,
 };
@@ -336,13 +336,30 @@ pub enum ActRequest {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         over_tracking: bool,
     },
-    /// A body clip from the clip library, from its start.
+    /// A body clip, from its start: the one given, or the clip library's of that id.
     Clip {
         /// The clip's id.
         clip: String,
         /// How strongly it moves the body, `0..=1`.
         weight: f32,
+        /// The clip itself when the caller found it (a character's own clip, `clip.set`); `None` plays the library's
+        /// clip of that id.
+        #[serde(skip)]
+        #[schemars(skip)]
+        def: Option<Arc<PoseClip>>,
     },
+}
+
+impl ActRequest {
+    /// The clip library's clip `id`, at `weight`.
+    pub fn clip(id: impl Into<String>, weight: f32) -> Self {
+        Self::Clip { clip: id.into(), weight, def: None }
+    }
+
+    /// `clip` itself (a character's own clip, or any other), at `weight`.
+    pub fn clip_def(clip: Arc<PoseClip>, weight: f32) -> Self {
+        Self::Clip { clip: clip.id.clone(), weight, def: Some(clip) }
+    }
 }
 
 /// An act playing or about to ([`PerformHost::acts`]).
@@ -552,6 +569,9 @@ struct Shared {
     act_book: Mutex<VecDeque<ActInfo>>,
     /// The drive map last set. Handle side only.
     drive: Mutex<DriveMap>,
+    /// The clips of the acts handed to the control, kept until the control has dropped its own reference, so the
+    /// perform thread never frees a clip when an act ends. Handle side only; pruned on each act.
+    clips: Mutex<Vec<Arc<PoseClip>>>,
 }
 
 /// Locks `m`; a panic elsewhere cannot leave these plain records half-written, so a poisoned lock is still good.
@@ -762,6 +782,7 @@ pub fn perform_channel(performer: &Performer) -> (PerformHandle, PerformControl)
         acts_taken: AtomicU64::new(0),
         last_act: AtomicU64::new(0),
         act_book: Mutex::new(VecDeque::with_capacity(ACT_BOOK_LEN + 1)),
+        clips: Mutex::new(Vec::new()),
         drive: Mutex::new(DriveMap::open()),
     });
     let control = PerformControl {
@@ -1014,8 +1035,15 @@ impl PerformHost for PerformHandle {
             bake_act(&request, envelope, book.expression_set(), book.rest())?
         };
         let mut acts = lock(&self.shared.act_book);
+        if let Motion::Clip { clip, .. } = &act.motion {
+            let mut clips = lock(&self.shared.clips);
+            // A clip only this list still holds has left the score: dropping it here frees it off the perform thread.
+            clips.retain(|kept| Arc::strong_count(kept) > 1);
+            clips.push(Arc::clone(clip));
+        }
         // Held across the send, so ids reach the performer in the order they are handed out.
         let id = self.shared.last_act.load(Ordering::Acquire) + 1;
+        let envelope = act.envelope;
         self.send(Command::Act { id, act })?;
         self.shared.last_act.store(id, Ordering::Release);
         let playing = self.playing_acts();
@@ -1024,7 +1052,7 @@ impl PerformHost for PerformHandle {
         if acts.len() >= ACT_BOOK_LEN {
             acts.pop_front();
         }
-        acts.push_back(ActInfo { id, act: request, envelope: act.envelope });
+        acts.push_back(ActInfo { id, act: request, envelope });
         Ok(id)
     }
 
@@ -1105,9 +1133,13 @@ fn bake_act(
             }
             (channels(target, mask), Lane::Channels, envelope)
         }
-        ActRequest::Clip { clip, weight } => {
-            let library = ClipLibrary::builtin().map_err(|_| PerformError::UnknownClip)?;
-            let clip = library.get(clip).ok_or(PerformError::UnknownClip)?;
+        ActRequest::Clip { clip, weight, def } => {
+            let clip = if let Some(def) = def {
+                Arc::clone(def)
+            } else {
+                let library = ClipLibrary::builtin().map_err(|_| PerformError::UnknownClip)?;
+                Arc::new(library.get(clip).ok_or(PerformError::UnknownClip)?.clone())
+            };
             // A clip that plays once ends with itself, unless the caller holds it for longer or less.
             let envelope = match envelope.hold {
                 None if !clip.looped() => Envelope {

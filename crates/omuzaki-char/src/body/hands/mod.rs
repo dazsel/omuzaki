@@ -266,6 +266,14 @@ fn thumb_skin(t: f64) -> Vec<(JointRef, f32)> {
     ]
 }
 
+/// The skin of the thumb stem's ring `i`: the seat (ring 0) on the hand bone, so it stays inside the palm however far
+/// the thumb turns, and the root ring on the thumb as [`thumb_skin`] has it. The stem stretches between them like the
+/// web of the thumb: a spread thumb (an open or spread hand, #2414) stays joined to the palm instead of pulling its
+/// open end out of it.
+fn stem_skin(i: usize) -> Vec<(JointRef, f32)> {
+    if i == 0 { vec![(bone(HumanoidBone::LeftHand), 1.0)] } else { thumb_skin(0.0) }
+}
+
 /// The vertex colour `amount` of the way from the wrist to the tip tone `tip`: white at 0, `tip` over the base at 1.
 fn tone(tip: [f32; 4], amount: f64) -> [f32; 4] {
     std::array::from_fn(|k| lerp(1.0, f64::from(tip[k] / BASE_TONE[k]), amount) as f32)
@@ -479,7 +487,7 @@ fn left_hand(hand: &Hand, style: &Style) -> Result<(MeshBuilder, Block), KitErro
         &|i| palm_tone(sleeve[i]),
         &|i, j| palm_skin_at(sleeve[i], j),
     )?;
-    add_rings(&mut builder, &thumb.stem, &|i| thumb.stem_centres[i], &|_| thumb_tone(0), &|_, _| thumb_skin(0.0))?;
+    add_rings(&mut builder, &thumb.stem, &|i| thumb.stem_centres[i], &|_| thumb_tone(0), &|i, _| stem_skin(i))?;
     Ok((builder, block))
 }
 

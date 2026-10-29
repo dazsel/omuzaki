@@ -57,6 +57,7 @@ pub mod ik;
 pub mod life;
 pub mod playout;
 pub mod pose_layer;
+pub mod reach;
 pub mod retarget;
 pub mod score;
 pub mod skeleton;
@@ -77,6 +78,7 @@ pub use life::{
 };
 pub use playout::{DEFAULT_CAPACITY, DelayRamp, MAX_SLEW, PlayoutDelay, PlayoutError};
 pub use pose_layer::{BoneMask, PoseLayer, PoseLayers, PoseMode};
+pub use reach::{Reach, Reaches};
 pub use retarget::{
     Calibration, CalibrationError, CalibrationOutcome, CalibrationPrompt, Calibrator, ChannelRange, EXAGGERATED, FAST,
     LOOK_FULL_RAD, LostPolicy, MIN_FIT_SPAN, MIN_SPAN, OneEuroParams, RangeSource, Response, Retarget, RetargetConfig,

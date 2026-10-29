@@ -237,6 +237,14 @@ impl SceneDef {
             }
             all_finite(&format!("{path}.position"), &member.position)?;
             within(&format!("{path}.yaw"), member.yaw, -180.0, 180.0)?;
+            if let Some(interact) = &member.interact {
+                let path = format!("{path}.interact");
+                if &interact.with == id {
+                    return refuse(format!("{path}.with"), "a member can't touch itself");
+                }
+                self.require_member(&format!("{path}.with"), &interact.with)?;
+                within(&format!("{path}.weight"), interact.weight, 0.0, 1.0)?;
+            }
             if let Some((group, driver, _)) = member.drive.invalid() {
                 return refuse(
                     format!("{path}.drive.{}.{}", group.name(), driver.name()),

@@ -39,12 +39,15 @@ pub mod fit;
 pub mod hair;
 pub mod head;
 pub mod kit;
+pub mod library_items;
 pub mod look;
 pub mod ops;
 pub mod outfit;
 pub mod palette;
+pub mod style;
 pub mod template;
 
 omuzaki_core::define_link! {
     omuzaki_char_api::link();
+    omuzaki_library_api::link();
 }

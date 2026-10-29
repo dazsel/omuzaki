@@ -1,0 +1,22 @@
+# Point: from rest, the right arm snaps out with the index finger, holds, and drops back.
+id = "point"
+summary = "A one-shot point: the right arm snaps out ahead with the index finger, holds and drops back."
+length = 2.4
+looped = false
+easing = "smooth"
+
+[[keys]]
+t = 0.0
+pose = "stand-neutral"
+
+[[keys]]
+t = 0.45
+pose = "point"
+
+[[keys]]
+t = 1.8
+pose = "point"
+
+[[keys]]
+t = 2.4
+pose = "stand-neutral"

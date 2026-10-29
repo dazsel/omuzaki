@@ -1,0 +1,26 @@
+schema = 1
+id = "omuzaki/accessories/sapphire-signet"
+version = "1.0.0"
+section = "accessories"
+kind = "part"
+target = "character"
+title = "Sapphire ring"
+summary = "A broad gold band with a sapphire cabochon on the right index finger."
+tags = ["jewellery", "ring", "gold", "sapphire"]
+origin = "the kit's ring generator, tuned by eye on close-up renders (#2413)"
+compat = { kinds = ["humanoid"], templates = ["*"], requires = ["body"] }
+creates.piece = { kind = "ring", id = "sapphire-signet", layer = 50 }
+
+[rights]
+author = "Omuzaki"
+licence = "CC0-1.0"
+commercial = "ok"
+owned = true
+
+[[step]]
+op = "part.add"
+[step.args]
+character = "$character"
+kind = "ring"
+id = "$parts.piece"
+params = { hand = "right", finger = "index", width = 0.004, stone = { shape = "orb", size = 0.0026 }, accent = "#2850c8" }

@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use omuzaki_anim_api::HumanoidBone;
+use omuzaki_anim_api::{HumanoidBone, Reach, Reaches};
 use omuzaki_char_api::{CharId, paths};
 use omuzaki_core::glam::{Quat, Vec3};
 use omuzaki_core::text::{edit_distance, nearest};
@@ -48,6 +48,53 @@ pub struct PoseBody {
     /// The hand shape on each side, if the pose sets one.
     #[serde(default)]
     pub hands: HandsBody,
+    /// Where each hand reaches on the body, if the pose says (#2414).
+    #[serde(default, skip_serializing_if = "ReachesBody::is_empty")]
+    pub reach: ReachesBody,
+}
+
+/// The `reach` of a pose: one optional reach per side. A side that is absent is not written.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReachesBody {
+    /// The character's left hand.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left: Option<ReachBody>,
+    /// The character's right hand.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right: Option<ReachBody>,
+}
+
+impl ReachesBody {
+    /// Whether neither side reaches.
+    pub fn is_empty(&self) -> bool {
+        self.left.is_none() && self.right.is_none()
+    }
+}
+
+/// One hand's reach: a point on a bone of the body, in arm lengths (`omuzaki_anim_api::reach`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReachBody {
+    /// The bone the target rides on (a VRM humanoid bone name, such as `upperChest`).
+    pub bone: HumanoidBone,
+    /// The wrist's target from the bone's joint, in arm lengths: `+x` the character's left, `+y` up, `+z` forward,
+    /// turned with the bone.
+    pub at: [f32; 3],
+    /// The side the elbow bends to, in the same frame. Defaults to down and a little behind.
+    #[serde(default = "super::def::default_pole")]
+    pub pole: [f32; 3],
+    /// `0..=1`; defaults to full.
+    #[serde(default = "full_weight")]
+    pub weight: f32,
+}
+
+fn reach_body(reach: &Reach) -> ReachBody {
+    ReachBody { bone: reach.bone, at: reach.offset.to_array(), pole: reach.pole.to_array(), weight: reach.weight }
+}
+
+fn reach_of(body: &ReachBody) -> Reach {
+    Reach { bone: body.bone, offset: Vec3::from_array(body.at), pole: Vec3::from_array(body.pole), weight: body.weight }
 }
 
 /// The `hands` of a pose: one optional shape per side. A side that is absent is not written, so the document never
@@ -84,7 +131,7 @@ fn full_weight() -> f32 {
 
 impl PoseBody {
     /// The stored form of a checked pose.
-    fn of(def: &PoseDef) -> Self {
+    pub(crate) fn of(def: &PoseDef) -> Self {
         Self {
             summary: def.summary.clone(),
             tags: def.tags.clone(),
@@ -95,12 +142,13 @@ impl PoseBody {
                 left: def.left_hand.as_ref().map(hand_body),
                 right: def.right_hand.as_ref().map(hand_body),
             },
+            reach: ReachesBody { left: def.reach.left.as_ref().map(reach_body), right: def.reach.right.as_ref().map(reach_body) },
         }
     }
 
     /// The pose this body describes, named `id`. Each bone and its rotation are checked where they enter, so a refusal
     /// names the bone; the rest is checked as a library file is.
-    fn into_def(self, id: &str) -> Result<PoseDef, OpError> {
+    pub(crate) fn into_def(self, id: &str) -> Result<PoseDef, OpError> {
         let mut bones = BTreeMap::new();
         for (name, q) in &self.bones {
             let field = format!("pose/bones/{name}");
@@ -116,6 +164,7 @@ impl PoseBody {
             hips_offset: Vec3::from_array(self.hips_offset),
             left_hand: self.hands.left.map(hand_slot),
             right_hand: self.hands.right.map(hand_slot),
+            reach: Reaches { left: self.reach.left.as_ref().map(reach_of), right: self.reach.right.as_ref().map(reach_of) },
             mirrorable: self.mirrorable,
         };
         checked(&def)?;
@@ -155,7 +204,7 @@ fn unknown_bone(field: &str, name: &str) -> OpError {
 
 /// The candidate nearest to `wanted`, when it is close enough to be a typo: at most a third of its length plus one edit
 /// away. The candidates are scanned in the order given, so a tie goes to the first.
-fn did_you_mean<'a>(wanted: &str, candidates: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
+pub(crate) fn did_you_mean<'a>(wanted: &str, candidates: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
     let close = wanted.chars().count() / 3 + 1;
     nearest(wanted, candidates).filter(|near| edit_distance(wanted, near) <= close)
 }
@@ -168,12 +217,12 @@ fn checked(def: &PoseDef) -> Result<(), OpError> {
 }
 
 /// A library-style refusal: the message already names the pose and the field that is wrong.
-fn pose_refusal(e: &PoseError) -> OpError {
+pub(crate) fn pose_refusal(e: &PoseError) -> OpError {
     OpError::invalid("pose", e.to_string())
 }
 
 /// The library pose called `from`, as the set will hold it.
-fn library_pose(from: &str) -> Result<PoseDef, OpError> {
+pub(crate) fn library_pose(from: &str) -> Result<PoseDef, OpError> {
     let library = PoseLibrary::builtin().map_err(|e| OpError::internal(e.to_string()))?;
     library.get(from).cloned().ok_or_else(|| {
         let hint = match did_you_mean(from, library.iter().map(|p| p.id.as_str())) {
@@ -185,7 +234,7 @@ fn library_pose(from: &str) -> Result<PoseDef, OpError> {
 }
 
 /// The character's pose set as the document holds it: `None` when the character has no poses yet.
-fn stored_poses(ctx: &OpCtx<'_>, character: &CharId) -> Result<Option<Map<String, Value>>, OpError> {
+pub(crate) fn stored_poses(ctx: &OpCtx<'_>, character: &CharId) -> Result<Option<Map<String, Value>>, OpError> {
     if ctx.doc.get(&paths::character(character)).is_none() {
         return Err(OpError::not_found(format!("there is no character '{character}'"))
             .hint("`character.create` makes one"));

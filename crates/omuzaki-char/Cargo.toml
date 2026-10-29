@@ -25,6 +25,7 @@ omuzaki-char-api = { path = "../omuzaki-char-api" }
 omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 omuzaki-face-api = { path = "../omuzaki-face-api" }
+omuzaki-library-api = { path = "../omuzaki-library-api" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-render-api = { path = "../omuzaki-render-api" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }

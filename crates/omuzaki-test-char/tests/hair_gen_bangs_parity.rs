@@ -195,8 +195,16 @@ fn the_width_and_the_tubes_match_the_prototypes() {
         assert_eq!(expected.tube.count, REST_POINTS * RING, "the dump's tube is {REST_POINTS} rings of {RING}");
         let mut positions = vec![Vec3::ZERO; REST_POINTS * RING];
         let mut normals = vec![Vec3::ZERO; REST_POINTS * RING];
-        tube_vertices(&clump.rest, &clump.width, &clump.thickness, |p| frame.rest(p), &mut positions, &mut normals)
-            .unwrap();
+        tube_vertices(
+            &clump.rest,
+            RING,
+            &clump.width,
+            &clump.thickness,
+            |p| frame.rest(p),
+            &mut positions,
+            &mut normals,
+        )
+        .unwrap();
         for k in 0..positions.len() {
             let v = expected.tube.first + k;
             position = position.max(positions[k].distance(mesh.positions[v]));

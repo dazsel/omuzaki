@@ -14,19 +14,34 @@
 //!
 //! The vertex data is `f32`; the prototype's is `f64`, and the parity test holds them to rounding noise.
 
-use omuzaki_char_api::{Bulge, ExtraAttribute, HAIR_INFO, HAIR_UV, Taper};
+use omuzaki_char_api::{Bulge, ExtraAttribute, HAIR_INFO, HAIR_UV, Quality, Taper};
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::{Vec2, Vec3};
 use omuzaki_core::id::{Slug, SlugError};
 use omuzaki_core::mesh::MeshData;
 
-/// Vertices in one ring of a tube (the prototype's `K`), as an index type.
-const RING_U32: u32 = 8;
-/// Vertices in one ring of a tube (the prototype's `K`).
-pub const RING: usize = RING_U32 as usize;
+/// Vertices in one ring of a live tube (the prototype's `K`).
+pub const RING: usize = 8;
+/// Vertices in one ring of an offline tube: twice the live ring, so a lock's lens reads round in a close-up instead of
+/// as an octagon.
+pub const RING_OFFLINE: usize = 16;
 
-/// The vertices a tube's two caps add after its rings: a centre and a rim copy per end (see `TubeMesh::push_cap`).
-pub const CAP_VERTICES: usize = 2 * (RING + 1);
+/// The ring size for `quality`: [`RING`] live, [`RING_OFFLINE`] for offline renders and export.
+pub fn ring_for(quality: Quality) -> usize {
+    match quality {
+        Quality::Live => RING,
+        Quality::Offline => RING_OFFLINE,
+    }
+}
+
+/// The vertices a tube's two caps add after its rings of `ring` vertices: a centre and a rim copy per end (see
+/// `TubeMesh::push_cap`).
+pub const fn cap_vertices(ring: usize) -> usize {
+    2 * (ring + 1)
+}
+
+/// The vertices a live tube's two caps add.
+pub const CAP_VERTICES: usize = cap_vertices(RING);
 
 /// A smoothstep that is 0 at or below `lo`, 1 at or above `hi` (three.js `MathUtils.smoothstep`).
 pub(crate) fn smoothstep(x: f32, lo: f32, hi: f32) -> f32 {
@@ -92,12 +107,12 @@ pub enum TubeError {
     /// A tube needs two points to have a direction.
     #[error("a tube needs at least 2 points, got {0}")]
     TooFewPoints(usize),
-    /// The output slices are not [`RING`] vertices per point.
+    /// The output slices are not a ring of vertices per point, or the ring has fewer than three.
     #[error("{points} points need {expected} output vertices, got {got}")]
     WrongOutputLength {
         /// Points in the polyline.
         points: usize,
-        /// `points * RING`.
+        /// `points * ring`.
         expected: usize,
         /// What the caller gave.
         got: usize,
@@ -110,14 +125,16 @@ pub enum TubeError {
     Name(#[from] SlugError),
 }
 
-/// Writes the ring vertices and normals of the tube along `points` into `positions` and `normals`, [`RING`] per point,
-/// ring after ring. Allocates nothing. `outward` gives the direction the lens's thin axis faces at each point.
+/// Writes the ring vertices and normals of the tube along `points` into `positions` and `normals`, `ring` per point
+/// ([`RING`] live), ring after ring. Allocates nothing. `outward` gives the direction the lens's thin axis faces at each
+/// point.
 ///
 /// # Errors
 /// [`TubeError::TooFewPoints`] for fewer than two points; [`TubeError::WrongOutputLength`] if either output slice is not
-/// `points.len() * RING` long.
+/// `points.len() * ring` long, or `ring` is below 3.
 pub fn tube_vertices(
     points: &[Vec3],
+    ring: usize,
     width: &Taper,
     thickness: &Bulge,
     outward: impl Fn(Vec3) -> Vec3,
@@ -128,18 +145,13 @@ pub fn tube_vertices(
     if n < 2 {
         return Err(TubeError::TooFewPoints(n));
     }
-    let expected = n * RING;
-    if positions.len() != expected || normals.len() != expected {
+    let expected = n * ring;
+    if ring < 3 || positions.len() != expected || normals.len() != expected {
         return Err(TubeError::WrongOutputLength { points: n, expected, got: positions.len().min(normals.len()) });
     }
     let last = n - 1;
-    for (i, ((ring_p, ring_n), p)) in positions
-        .as_chunks_mut::<RING>()
-        .0
-        .iter_mut()
-        .zip(normals.as_chunks_mut::<RING>().0.iter_mut())
-        .zip(points)
-        .enumerate()
+    for (i, ((ring_p, ring_n), p)) in
+        positions.chunks_exact_mut(ring).zip(normals.chunks_exact_mut(ring)).zip(points).enumerate()
     {
         let (a, b) = (points[i.saturating_sub(1)], points[(i + 1).min(last)]);
         let tangent = (b - a).normalize_or_zero();
@@ -152,7 +164,7 @@ pub fn tube_vertices(
         let t = along(i, last);
         let (half_w, half_t) = (width.at(t) * 0.5, thickness.at(t) * 0.5);
         for (k, (vp, vn)) in ring_p.iter_mut().zip(ring_n.iter_mut()).enumerate() {
-            let (sy, cx) = ring_angle(k).sin_cos();
+            let (sy, cx) = ring_angle(k, ring).sin_cos();
             // A lens: flat-ish front and back with a soft rounded spine.
             let yy = sy * half_t * (0.55 + 0.45 * (1.0 - cx * cx).max(0.0).sqrt());
             *vp = *p + across * (cx * half_w) + thin * yy;
@@ -163,10 +175,46 @@ pub fn tube_vertices(
     Ok(())
 }
 
-/// The angle of ring vertex `k`.
-#[allow(clippy::cast_precision_loss)] // k < RING
-fn ring_angle(k: usize) -> f32 {
-    k as f32 / RING as f32 * std::f32::consts::TAU
+/// The angle of vertex `k` of a ring of `ring`.
+#[allow(clippy::cast_precision_loss)] // k < ring, a few dozen
+fn ring_angle(k: usize, ring: usize) -> f32 {
+    k as f32 / ring as f32 * std::f32::consts::TAU
+}
+
+/// `points` with `between` more points in each segment, on the Catmull-Rom spline through them (centripetal ends
+/// mirrored): offline locks are drawn on these, so a curl reads as a curve, not as straight runs. The originals are kept,
+/// in place.
+pub fn refine(points: &[Vec3], between: usize) -> Vec<Vec3> {
+    let n = points.len();
+    if n < 2 || between == 0 {
+        return points.to_vec();
+    }
+    let at = |i: isize| -> Vec3 {
+        match usize::try_from(i) {
+            Ok(i) if i < n => points[i],
+            Ok(_) => 2.0 * points[n - 1] - points[n - 2],
+            Err(_) => 2.0 * points[0] - points[1],
+        }
+    };
+    let mut out = Vec::with_capacity((n - 1) * (between + 1) + 1);
+    #[allow(clippy::cast_possible_wrap, clippy::cast_precision_loss)] // a clump has a few hundred points at most
+    for i in 0..n - 1 {
+        let k = i as isize;
+        let (p0, p1, p2, p3) = (at(k - 1), at(k), at(k + 1), at(k + 2));
+        out.push(p1);
+        for j in 1..=between {
+            let t = j as f32 / (between + 1) as f32;
+            let (t2, t3) = (t * t, t * t * t);
+            out.push(
+                0.5 * ((2.0 * p1)
+                    + (p2 - p0) * t
+                    + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2
+                    + (3.0 * p1 - p0 - 3.0 * p2 + p3) * t3),
+            );
+        }
+    }
+    out.push(points[n - 1]);
+    out
 }
 
 /// `i / last` as the position along a clump, `0..=1`; exactly 1 at the last point.
@@ -175,15 +223,16 @@ pub(crate) fn along(i: usize, last: usize) -> f32 {
     i as f32 / last as f32
 }
 
-/// The triangles that join the rings of a tube of `points` points whose first vertex is `base`, wound so they face out of
-/// the closed tube (`tubeIndex`).
-pub fn tube_indices(base: u32, points: usize) -> impl Iterator<Item = u32> {
+/// The triangles that join the rings (of `ring` vertices) of a tube of `points` points whose first vertex is `base`,
+/// wound so they face out of the closed tube (`tubeIndex`).
+pub fn tube_indices(base: u32, points: usize, ring: usize) -> impl Iterator<Item = u32> {
     let segments = u32::try_from(points.saturating_sub(1)).unwrap_or(0);
+    let ring = u32::try_from(ring).unwrap_or(0);
     (0..segments).flat_map(move |i| {
-        (0..RING_U32).flat_map(move |k| {
-            let a = base + i * RING_U32 + k;
-            let b = base + i * RING_U32 + (k + 1) % RING_U32;
-            let (c, d) = (a + RING_U32, b + RING_U32);
+        (0..ring).flat_map(move |k| {
+            let a = base + i * ring + k;
+            let b = base + i * ring + (k + 1) % ring;
+            let (c, d) = (a + ring, b + ring);
             [a, c, b, b, c, d]
         })
     })
@@ -195,10 +244,12 @@ pub fn polar_angles(points: &[Vec3], head_centre: Vec3) -> Vec<f32> {
     points.iter().map(|p| (*p - head_centre).normalize_or_zero().y.clamp(-1.0, 1.0).acos()).collect()
 }
 
-/// Checks that a tube of `rings` rings, with its two caps, appended at vertex `first`, still gets `u32` indices. Every
-/// vertex of the tube is counted before anything is written, so an over-full mesh is refused, not saturated.
-fn vertices_fit(first: usize, rings: usize) -> Result<(), TubeError> {
-    let vertices = rings.checked_mul(RING).and_then(|n| n.checked_add(CAP_VERTICES)).and_then(|n| n.checked_add(first));
+/// Checks that a tube of `rings` rings of `ring` vertices, with its two caps, appended at vertex `first`, still gets
+/// `u32` indices. Every vertex of the tube is counted before anything is written, so an over-full mesh is refused, not
+/// saturated.
+fn vertices_fit(first: usize, rings: usize, ring: usize) -> Result<(), TubeError> {
+    let vertices =
+        rings.checked_mul(ring).and_then(|n| n.checked_add(cap_vertices(ring))).and_then(|n| n.checked_add(first));
     match vertices.map(u32::try_from) {
         Some(Ok(_)) => Ok(()),
         _ => Err(TubeError::TooMany),
@@ -237,17 +288,30 @@ pub struct TubeLook<'a> {
 }
 
 /// A mesh of tubes at rest, with the two attributes the hair program reads and a vertex colour per vertex.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct TubeMesh {
     mesh: MeshData,
     uv: Vec<f32>,
     info: Vec<f32>,
+    /// Vertices per ring.
+    ring: usize,
+}
+
+impl Default for TubeMesh {
+    fn default() -> Self {
+        Self::with_ring(RING)
+    }
 }
 
 impl TubeMesh {
-    /// An empty mesh.
+    /// An empty mesh of live tubes ([`RING`] vertices a ring).
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// An empty mesh whose tubes have `ring` vertices a ring (at least 3; [`ring_for`] picks it by quality).
+    pub fn with_ring(ring: usize) -> Self {
+        Self { mesh: MeshData::default(), uv: Vec::new(), info: Vec::new(), ring: ring.max(3) }
     }
 
     /// Vertices so far.
@@ -280,10 +344,11 @@ impl TubeMesh {
                 got: look.polar.len(),
             });
         }
-        let count = points.len() * RING;
+        let ring = self.ring;
+        let count = points.len() * ring;
         let first = self.mesh.positions.len();
         // The caps come after the rings, so the caps' vertices count too, before anything is written.
-        vertices_fit(first, points.len())?;
+        vertices_fit(first, points.len(), ring)?;
         let (Some(&root_polar), Some(&tip_polar)) = (look.polar.first(), look.polar.last()) else {
             return Err(TubeError::WrongOutputLength {
                 points: points.len(),
@@ -296,6 +361,7 @@ impl TubeMesh {
         self.mesh.normals.resize(first + count, Vec3::ZERO);
         let written = tube_vertices(
             points,
+            ring,
             width,
             thickness,
             outward,
@@ -310,17 +376,18 @@ impl TubeMesh {
         let last = points.len() - 1;
         for (i, polar) in look.polar.iter().enumerate() {
             let t = along(i, last);
-            for k in 0..RING {
-                let across = ring_angle(k).cos() * look.flip;
+            for k in 0..ring {
+                let across = ring_angle(k, ring).cos() * look.flip;
                 self.uv.extend([across, t]);
                 self.info.extend([look.seed, look.shade, *polar]);
                 self.mesh.uvs.push(Vec2::new(0.5 + 0.5 * across, t));
             }
         }
         self.mesh.colours.extend(std::iter::repeat_n(vertex_colour(look.tint), count));
-        self.mesh.indices.extend(tube_indices(base, points.len()));
+        self.mesh.indices.extend(tube_indices(base, points.len(), ring));
         // The caps come after every ring vertex, so the ring vertices keep their indices.
-        let tip_ring = base + RING_U32 * u32::try_from(last).map_err(|_| TubeError::TooMany)?;
+        let ring_u32 = u32::try_from(ring).map_err(|_| TubeError::TooMany)?;
+        let tip_ring = base + ring_u32 * u32::try_from(last).map_err(|_| TubeError::TooMany)?;
         let root_axis = (points[0] - points[1]).normalize_or_zero();
         let tip_axis = (points[last] - points[last - 1]).normalize_or_zero();
         let root =
@@ -347,13 +414,15 @@ impl TubeMesh {
             m.mesh.uvs.push(Vec2::new(0.5 + 0.5 * across * look.flip, cap.t));
             m.mesh.colours.push(colour);
         };
+        let ring = self.ring;
+        let ring_u32 = u32::try_from(ring).map_err(|_| TubeError::TooMany)?;
         add(self, cap.centre, 0.0);
-        for k in 0..RING {
+        for k in 0..ring {
             let p = self.mesh.positions[rim + k];
-            add(self, p, ring_angle(k).cos());
+            add(self, p, ring_angle(k, ring).cos());
         }
-        for k in 0..RING_U32 {
-            let (a, b) = (centre + 1 + k, centre + 1 + (k + 1) % RING_U32);
+        for k in 0..ring_u32 {
+            let (a, b) = (centre + 1 + k, centre + 1 + (k + 1) % ring_u32);
             if cap.flip_winding {
                 self.mesh.indices.extend([centre, a, b]);
             } else {
@@ -394,7 +463,7 @@ impl TubeMesh {
     /// # Errors
     /// [`TubeError::Name`] if a contract attribute name is not a valid slug (a test catches that).
     pub fn finish(self) -> Result<MeshData, TubeError> {
-        let Self { mut mesh, uv, info } = self;
+        let Self { mut mesh, uv, info, .. } = self;
         mesh.extra = vec![
             ExtraAttribute { name: Slug::new(HAIR_UV)?, components: 2, data: uv },
             ExtraAttribute { name: Slug::new(HAIR_INFO)?, components: 3, data: info },
@@ -484,10 +553,10 @@ mod tests {
     fn the_caps_count_against_the_index_limit_before_anything_is_written() {
         let rings = 2;
         let last_fit = u32::MAX as usize - rings * RING - CAP_VERTICES;
-        assert!(vertices_fit(last_fit, rings).is_ok(), "the rings and both caps end at the last index");
+        assert!(vertices_fit(last_fit, rings, RING).is_ok(), "the rings and both caps end at the last index");
         let ring_prefix = last_fit + 1;
         assert!(
-            matches!(vertices_fit(ring_prefix, rings), Err(TubeError::TooMany)),
+            matches!(vertices_fit(ring_prefix, rings, RING), Err(TubeError::TooMany)),
             "the rings fit but the caps don't"
         );
     }
@@ -536,12 +605,12 @@ mod tests {
         let mut n = p.clone();
         let one = [Vec3::Z];
         assert_eq!(
-            tube_vertices(&one, &Taper::default(), &Bulge::default(), |_| Vec3::Z, &mut p, &mut n),
+            tube_vertices(&one, RING, &Taper::default(), &Bulge::default(), |_| Vec3::Z, &mut p, &mut n),
             Err(TubeError::TooFewPoints(1))
         );
         let two = [Vec3::Z, Vec3::Z * 2.0];
         assert!(matches!(
-            tube_vertices(&two, &Taper::default(), &Bulge::default(), |_| Vec3::Z, &mut p, &mut n),
+            tube_vertices(&two, RING, &Taper::default(), &Bulge::default(), |_| Vec3::Z, &mut p, &mut n),
             Err(TubeError::WrongOutputLength { expected: 16, .. })
         ));
     }

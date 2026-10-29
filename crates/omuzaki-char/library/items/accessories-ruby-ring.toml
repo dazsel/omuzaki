@@ -1,0 +1,26 @@
+schema = 1
+id = "omuzaki/accessories/ruby-ring"
+version = "1.0.0"
+section = "accessories"
+kind = "part"
+target = "character"
+title = "Ruby ring"
+summary = "A gold band with a faceted ruby on the left ring finger."
+tags = ["jewellery", "ring", "gold", "ruby"]
+origin = "the kit's ring generator, tuned by eye on close-up renders (#2413)"
+compat = { kinds = ["humanoid"], templates = ["*"], requires = ["body"] }
+creates.piece = { kind = "ring", id = "ruby-ring", layer = 50 }
+
+[rights]
+author = "Omuzaki"
+licence = "CC0-1.0"
+commercial = "ok"
+owned = true
+
+[[step]]
+op = "part.add"
+[step.args]
+character = "$character"
+kind = "ring"
+id = "$parts.piece"
+params = { }

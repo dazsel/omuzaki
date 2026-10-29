@@ -312,7 +312,7 @@ fn guest_skin_after(steps: u64, wave: bool) -> Vec<Mat4> {
     live.set_subject_member(id("lead"));
     let guest = live.add_member(id("guest"), performer(&base)).unwrap();
     if wave {
-        guest.act(ActRequest::Clip { clip: "wave".into(), weight: 1.0 }, Envelope::new(0.0, None)).unwrap();
+        guest.act(ActRequest::clip("wave", 1.0), Envelope::new(0.0, None)).unwrap();
     }
     for step in 0..steps {
         live.frame(&mut renderer, mid_step(step)).unwrap();
