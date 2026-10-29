@@ -605,11 +605,21 @@ impl SnarlViewer<GraphNode> for Viewer<'_> {
     ) {
         let Some(n) = snarl.get_node(node) else { return };
         ui.label(RichText::new(&n.title).strong()).on_hover_text(&n.kind);
-        if let Some(why) = &n.inert {
-            ui.add(StatusChip::new(Tone::Warn, &say(self.ctx, Word::Inert, &[]))).on_hover_text(why);
+        let inert = n.inert.as_ref().map(|why| (why, say(self.ctx, Word::Inert, &[])));
+        let faulted = n.faulted.then(|| say(self.ctx, Word::Faulted, &[("count", "1")]));
+        // A node is as wide as its pins; the header grows it to hold its chips whole, or "Won't run" reads "…".
+        let gap = ui.spacing().item_spacing.x;
+        let chips: f32 =
+            inert.iter().map(|(_, word)| StatusChip::new(Tone::Warn, word).width(self.ctx) + gap).sum::<f32>()
+                + faulted.iter().map(|word| StatusChip::new(Tone::Danger, word).width(self.ctx) + gap).sum::<f32>();
+        if chips > 0.0 {
+            ui.set_min_width(ui.min_rect().width() + chips);
         }
-        if n.faulted {
-            ui.add(StatusChip::new(Tone::Danger, &say(self.ctx, Word::Faulted, &[("count", "1")])));
+        if let Some((why, word)) = &inert {
+            ui.add(StatusChip::new(Tone::Warn, word)).on_hover_text(why.as_str());
+        }
+        if let Some(word) = &faulted {
+            ui.add(StatusChip::new(Tone::Danger, word));
         }
     }
 

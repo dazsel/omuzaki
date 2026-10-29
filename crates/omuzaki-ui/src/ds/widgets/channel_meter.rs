@@ -198,6 +198,7 @@ impl<'a> MeterGrid<'a> {
         if ui.is_rect_visible(rect) {
             let painter = ui.painter().with_clip_rect(rect.expand(4.0));
             let guard = shown.lock().unwrap_or_else(PoisonError::into_inner);
+            let name_w = name_width(&ctx, &ds, &self.channels, cell_w);
             for (i, channel) in self.channels.iter().enumerate() {
                 let cell = cell_rect(i);
                 let value = guard.values.get(i).copied().unwrap_or(channel.processed);
@@ -205,7 +206,7 @@ impl<'a> MeterGrid<'a> {
                 if hovered == Some(i) || (focused == Some(i) && response.has_focus()) {
                     painter.rect_filled(cell.shrink2(vec2(-2.0, 1.0)), radius::CONTROL, ds.theme.bg3);
                 }
-                draw_cell(&painter, &ds, cell, channel, value, peak, self.show_values);
+                draw_cell(&painter, &ds, cell, name_w, channel, value, peak, self.show_values);
             }
             if let (Some(i), true) = (focused, response.has_focus())
                 && crate::ds::focus::visible(&ctx)
@@ -342,10 +343,27 @@ fn fill_colour(t: &Theme, value: f32) -> egui::Color32 {
     mix(t.accent, t.bg4, t.meter_floor + (span * value.clamp(0.0, 1.0)) as u32)
 }
 
-fn draw_cell(painter: &egui::Painter, ds: &Ds, cell: Rect, c: &Channel<'_>, shown: f32, peak: f32, show_value: bool) {
+/// The width of the name column: the longest name in the list whole, so "Brow outer up L" never reads "Brow outer up…",
+/// at least 72 pt and at most half the cell, leaving the bar room. Names are laid out through the galley cache, so this
+/// allocates nothing in a steady frame.
+fn name_width(ctx: &Context, ds: &Ds, channels: &[Channel<'_>], cell_w: f32) -> f32 {
+    let widest = channels.iter().map(|c| paint::text_width(ctx, c.name, &ds.text.small)).fold(0.0, f32::max);
+    (widest + space::S6 + 1.0).clamp(72.0, (cell_w * 0.5).max(72.0))
+}
+
+#[allow(clippy::too_many_arguments)] // one cell's geometry, its channel and how it is shown
+fn draw_cell(
+    painter: &egui::Painter,
+    ds: &Ds,
+    cell: Rect,
+    name_w: f32,
+    c: &Channel<'_>,
+    shown: f32,
+    peak: f32,
+    show_value: bool,
+) {
     let t = &ds.theme;
     let cy = cell.center().y;
-    let name_w = (cell.width() * 0.34).clamp(72.0, 132.0);
     paint::text_in(
         painter,
         Rect::from_min_size(cell.min, vec2(name_w - space::S6, cell.height())),
