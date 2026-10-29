@@ -65,7 +65,11 @@ fn tap(engine: &MockEngine, bus: &str) -> TapReader {
 struct Seen {
     attached: Vec<CutProbe>,
     pushed: Vec<(Seconds, u32, usize, bool)>,
+    /// The feed sample of each push.
+    firsts: Vec<u64>,
     cuts: Vec<Seconds>,
+    /// `line`: feed sample, rate, samples, phonemes, and how many pushes came before it.
+    lines: Vec<(u64, u32, usize, String, usize)>,
 }
 
 struct Lead(Arc<Mutex<Seen>>);
@@ -74,11 +78,18 @@ impl VoiceLead for Lead {
     fn attach(&mut self, probe: CutProbe) {
         self.0.lock().unwrap().attached.push(probe);
     }
-    fn push(&mut self, at: Seconds, _feed_sample: u64, rate: u32, pcm: &[f32], private: bool) {
-        self.0.lock().unwrap().pushed.push((at, rate, pcm.len(), private));
+    fn push(&mut self, at: Seconds, feed_sample: u64, rate: u32, pcm: &[f32], private: bool) {
+        let mut seen = self.0.lock().unwrap();
+        seen.pushed.push((at, rate, pcm.len(), private));
+        seen.firsts.push(feed_sample);
     }
     fn cut(&mut self, at: Seconds) {
         self.0.lock().unwrap().cuts.push(at);
+    }
+    fn line(&mut self, feed_sample: u64, rate: u32, pcm: &[f32], phonemes: &str) {
+        let mut seen = self.0.lock().unwrap();
+        let before = seen.pushed.len();
+        seen.lines.push((feed_sample, rate, pcm.len(), phonemes.to_owned(), before));
     }
 }
 
@@ -372,6 +383,48 @@ fn the_lead_gets_every_sample_ahead_of_playback() {
     assert!(seen.pushed.iter().all(|p| p.1 == 24_000 && !p.3));
     assert!(seen.pushed.windows(2).all(|w| w[1].0.0 >= w[0].0.0), "stamps never go back");
     assert_eq!(seen.attached.len(), 1);
+}
+
+#[test]
+fn a_model_s_phonemes_reach_the_lead_with_the_whole_line_before_its_first_sample() {
+    // The fake says each text as its phonemes, as Kokoro reports the phonemes it spoke.
+    let mut rig = Rig::with(FakeTts::new().with_phonemes(), TtsVoice::new(voice_id()));
+    let first = rig.speak("hˈɛlO.");
+    let second = rig.speak("bˈI!");
+    rig.run_until(&second, SpeechState::is_final);
+    assert!(matches!(first.state(), SpeechState::Done { .. }));
+    {
+        let seen = rig.seen.lock().unwrap();
+        assert_eq!(seen.lines.len(), 2, "one line per chunk");
+        let pushed: usize = seen.pushed.iter().map(|p| p.2).sum();
+        assert_eq!(seen.lines.iter().map(|l| l.2).sum::<usize>(), pushed, "each line is its chunk's whole voice");
+        for (feed_sample, rate, _, _, before) in &seen.lines {
+            assert_eq!(*rate, 24_000);
+            assert_eq!(seen.firsts[*before], *feed_sample, "the line comes just before its first sample");
+        }
+        assert_eq!((seen.lines[0].3.as_str(), seen.lines[1].3.as_str()), ("hˈɛlO.", "bˈI!"));
+    }
+
+    // A cut chunk spoken again gets its line again, on the feed it is written to; private speech gets none.
+    let again = rig.speak("wˈAt.");
+    rig.run_until(&again, |s| matches!(s, SpeechState::Playing { .. }));
+    again.cut();
+    rig.run(0.05);
+    let resumed = rig.speak("wˈAt.");
+    rig.run_until(&resumed, SpeechState::is_final);
+    let private = rig.speak_how("ʃˈʊ.", &SpeakHow::default().private());
+    rig.run_until(&private, SpeechState::is_final);
+    let seen = rig.seen.lock().unwrap();
+    let said: Vec<&str> = seen.lines.iter().map(|l| l.3.as_str()).collect();
+    assert_eq!(said, ["hˈɛlO.", "bˈI!", "wˈAt.", "wˈAt."]);
+}
+
+#[test]
+fn a_model_that_reports_no_phonemes_leaves_the_lead_without_lines() {
+    let mut rig = Rig::new();
+    let h = rig.speak("Hello there.");
+    rig.run_until(&h, SpeechState::is_final);
+    assert!(rig.seen.lock().unwrap().lines.is_empty());
 }
 
 #[test]

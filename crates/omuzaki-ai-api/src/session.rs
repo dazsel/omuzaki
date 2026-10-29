@@ -118,4 +118,11 @@ pub trait Session: Send {
 
     /// What is running now. Cold: for the health meter and records, not per frame.
     fn info(&self) -> SessionInfo;
+
+    /// What the last [`run`](Session::run) said, as the phonemes the model spoke from, when it is a speech model that
+    /// knows them (Kokoro: misaki's phoneme alphabet); `None` otherwise. The mouth lines its lips up with them
+    /// (#2351). Cold: read once per run.
+    fn phonemes(&self) -> Option<&str> {
+        None
+    }
 }
