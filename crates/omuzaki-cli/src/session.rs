@@ -162,7 +162,8 @@ pub fn ceiling(args: &McpArgs, project: Option<&Path>, token: Option<String>) ->
 }
 
 /// The app core's options for a command-line host: headless (nobody can be asked to approve), recovering as
-/// `--recover` says, and for `mcp` with its [`Ceiling`] and `--tools`.
+/// `--recover` says, with the render services ([`crate::gpu`]) and the person's settings and asset store, and for
+/// `mcp` with its [`Ceiling`] and `--tools`.
 ///
 /// # Errors
 /// As [`ceiling`], for `mcp`.
@@ -171,14 +172,17 @@ pub fn core_options(cli: &Cli, actor: Actor) -> Result<AppOptions, OpError> {
     if let Some(adjust) = ADJUST.get() {
         options = adjust(options);
     }
+    // The render ops get a headless renderer that opens its GPU on the first render (`crate::gpu`), so an agent or a
+    // script sees what it made, and nothing else starts a GPU.
+    let mut services = crate::gpu::with_render_services(ServicesBuilder::from(options.services.clone()));
     // The asset store and the settings are the person's, the ones the studio uses: an import here is there in the
-    // studio, and `settings.set` changes the same file.
+    // studio, a render lands where `omuzaki store export` finds it, and `settings.set` changes the same file.
     if let Ok(paths) = omuzaki_settings::Paths::from_env() {
         let settings: Arc<dyn Settings> = Arc::new(omuzaki_settings::Store::open(&paths));
-        options = options
-            .with_data_dir(paths.data())
-            .with_services(ServicesBuilder::new().insert::<dyn Settings>(settings).build());
+        options = options.with_data_dir(paths.data());
+        services = services.insert::<dyn Settings>(settings);
     }
+    options = options.with_services(services.build());
     Ok(match &cli.command {
         // The person running `omuzaki mcp --grant ...`, or who issued its credential, says yes in advance, since nobody
         // is at a window to be asked.

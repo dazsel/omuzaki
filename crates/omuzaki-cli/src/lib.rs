@@ -31,6 +31,7 @@ pub mod cli;
 pub mod commands;
 pub mod credential;
 pub mod exit;
+pub mod gpu;
 pub mod json;
 pub mod mcp;
 pub mod output;

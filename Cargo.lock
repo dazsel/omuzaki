@@ -4878,6 +4878,7 @@ name = "omuzaki-cli"
 version = "0.0.0"
 dependencies = [
  "clap",
+ "image",
  "omuzaki-anim-api",
  "omuzaki-app",
  "omuzaki-audio-api",
@@ -4912,6 +4913,7 @@ dependencies = [
  "omuzaki-obs",
  "omuzaki-ops",
  "omuzaki-ops-api",
+ "omuzaki-render",
  "omuzaki-render-api",
  "omuzaki-render-mock",
  "omuzaki-script",
@@ -4920,6 +4922,7 @@ dependencies = [
  "omuzaki-settings",
  "omuzaki-settings-api",
  "omuzaki-settings-mock",
+ "omuzaki-short",
  "omuzaki-stage",
  "omuzaki-stage-api",
  "omuzaki-store",
@@ -6179,6 +6182,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-short"
+version = "0.0.0"
+dependencies = [
+ "ab_glyph",
+ "hound",
+ "omuzaki-anim",
+ "omuzaki-anim-api",
+ "omuzaki-char",
+ "omuzaki-char-api",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-face-api",
+ "omuzaki-link-build",
+ "omuzaki-ops-api",
+ "omuzaki-render",
+ "omuzaki-render-api",
+ "omuzaki-render-mock",
+ "omuzaki-stage",
+ "omuzaki-stage-api",
+ "omuzaki-store-api",
+ "omuzaki-stream",
+ "omuzaki-track-voice",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "toml",
+ "tracing",
+]
+
+[[package]]
 name = "omuzaki-speech"
 version = "0.0.0"
 dependencies = [
@@ -6729,6 +6764,7 @@ dependencies = [
  "omuzaki-settings-api",
  "omuzaki-settings-mock",
  "omuzaki-setup",
+ "omuzaki-short",
  "omuzaki-stage",
  "omuzaki-stage-api",
  "omuzaki-store",
