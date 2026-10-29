@@ -1,7 +1,7 @@
 //! Colour for a pixel: solid colours and gradients as the 2D canvas computes them, and blending onto the raster.
 
 use omuzaki_core::glam::{Affine2, Vec2};
-use omuzaki_face_api::{Colour, GradientStop, Paint, Stops};
+use omuzaki_face_api::{Colour, Paint, Stops};
 
 /// A paint ready to be sampled: coordinates already carried into pixel space, opacity folded into the colours.
 #[derive(Copy, Clone, Debug)]
@@ -14,16 +14,68 @@ pub(super) enum Shader {
         from: Vec2,
         /// `(to - from) / |to - from|^2`, so a dot product is the position.
         axis: Vec2,
-        stops: Stops,
-        opacity: f32,
+        ramp: Ramp,
     },
     Radial {
         inv: Affine2,
         centre: Vec2,
         inv_radius: f32,
-        stops: Stops,
-        opacity: f32,
+        ramp: Ramp,
     },
+}
+
+/// A gradient's stops with their colours already in `0..=1` floats, so sampling it converts nothing (#2443). It samples
+/// exactly what the stops' colours sample to, operation for operation.
+#[derive(Copy, Clone, Debug)]
+pub(super) struct Ramp {
+    len: usize,
+    offsets: [f32; 4],
+    colours: [[f32; 4]; 4],
+    opacity: f32,
+}
+
+impl Ramp {
+    fn new(stops: &Stops, opacity: f32) -> Self {
+        let mut ramp = Self { len: 0, offsets: [0.0; 4], colours: [[0.0; 4]; 4], opacity };
+        for (i, stop) in stops.as_slice().iter().take(4).enumerate() {
+            ramp.offsets[i] = stop.offset;
+            ramp.colours[i] = components(stop.colour);
+            ramp.len = i + 1;
+        }
+        ramp
+    }
+
+    /// The colour at position `t`: the first stop's colour before it and the last one's after it, between stops a
+    /// straight blend of the stored colours (the canvas interpolates before it premultiplies, so a stop that fades to
+    /// transparent keeps its hue), then premultiplied and scaled by the opacity.
+    #[inline]
+    fn at(&self, t: f32) -> [f32; 4] {
+        let last = self.len.saturating_sub(1);
+        let straight = if t <= self.offsets[0] {
+            self.colours[0]
+        } else if t >= self.offsets[last] {
+            self.colours[last]
+        } else {
+            let mut colour = [0.0; 4];
+            for k in 1..self.len {
+                if t <= self.offsets[k] {
+                    let span = (self.offsets[k] - self.offsets[k - 1]).max(f32::EPSILON);
+                    let along = (t - self.offsets[k - 1]) / span;
+                    let (from, to) = (self.colours[k - 1], self.colours[k]);
+                    colour = [
+                        from[0] + (to[0] - from[0]) * along,
+                        from[1] + (to[1] - from[1]) * along,
+                        from[2] + (to[2] - from[2]) * along,
+                        from[3] + (to[3] - from[3]) * along,
+                    ];
+                    break;
+                }
+            }
+            colour
+        };
+        let alpha = straight[3] * self.opacity;
+        [straight[0] * alpha, straight[1] * alpha, straight[2] * alpha, alpha]
+    }
 }
 
 impl Shader {
@@ -45,8 +97,7 @@ impl Shader {
                     inv,
                     from,
                     axis: d / len2,
-                    stops,
-                    opacity,
+                    ramp: Ramp::new(&stops, opacity),
                 })
             }
             Paint::Radial { centre, radius, stops } => {
@@ -62,26 +113,22 @@ impl Shader {
                     inv,
                     centre,
                     inv_radius: radius.recip(),
-                    stops,
-                    opacity,
+                    ramp: Ramp::new(&stops, opacity),
                 })
             }
         }
     }
 
     /// The premultiplied colour at the centre of pixel (`x`, `y`).
+    #[inline]
     pub fn colour_at(&self, x: usize, y: usize) -> [f32; 4] {
         #[allow(clippy::cast_precision_loss)] // pixel coordinates are far below 2^24
         let pixel = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
         match self {
             Self::Solid(c) => *c,
-            Self::Linear { inv, from, axis, stops, opacity } => {
-                let t = (inv.transform_point2(pixel) - *from).dot(*axis);
-                ramp(stops, t, *opacity)
-            }
-            Self::Radial { inv, centre, inv_radius, stops, opacity } => {
-                let t = (inv.transform_point2(pixel) - *centre).length() * *inv_radius;
-                ramp(stops, t, *opacity)
+            Self::Linear { inv, from, axis, ramp } => ramp.at((inv.transform_point2(pixel) - *from).dot(*axis)),
+            Self::Radial { inv, centre, inv_radius, ramp } => {
+                ramp.at((inv.transform_point2(pixel) - *centre).length() * *inv_radius)
             }
         }
     }
@@ -106,34 +153,13 @@ fn premultiply(colour: Colour, opacity: f32) -> [f32; 4] {
     [red * alpha, green * alpha, blue * alpha, alpha]
 }
 
-/// The colour at position `t` of a gradient: the first stop's colour before it and the last one's after it, between
-/// stops a straight blend of the stored colours (the canvas interpolates before it premultiplies, so a stop that fades
-/// to transparent keeps its hue), then premultiplied and scaled by the opacity.
-fn ramp(stops: &Stops, t: f32, opacity: f32) -> [f32; 4] {
-    let stops: &[GradientStop] = stops.as_slice();
-    let straight = match (stops.first(), stops.last()) {
-        (Some(first), _) if t <= first.offset => components(first.colour),
-        (_, Some(last)) if t >= last.offset => components(last.colour),
-        _ => {
-            let mut colour = [0.0; 4];
-            for pair in stops.windows(2) {
-                if t <= pair[1].offset {
-                    let span = (pair[1].offset - pair[0].offset).max(f32::EPSILON);
-                    let along = (t - pair[0].offset) / span;
-                    let (from, to) = (components(pair[0].colour), components(pair[1].colour));
-                    colour = [0, 1, 2, 3].map(|k| from[k] + (to[k] - from[k]) * along);
-                    break;
-                }
-            }
-            colour
-        }
-    };
-    let alpha = straight[3] * opacity;
-    [straight[0] * alpha, straight[1] * alpha, straight[2] * alpha, alpha]
-}
-
 /// Source-over of premultiplied `src` (0..=1) with `coverage` (0..=255) onto one premultiplied RGBA8 pixel.
+#[inline]
 pub(super) fn blend(dst: &mut [u8], src: [f32; 4], coverage: u8) {
+    // A transparent source leaves the pixel as it is (`0 + d * 1`, rounded back to `d`): skip the arithmetic.
+    if src.iter().all(|&v| v == 0.0) {
+        return;
+    }
     let c = f32::from(coverage) / 255.0;
     let keep = 1.0 - src[3] * c;
     for (d, s) in dst.iter_mut().zip(src) {

@@ -7,8 +7,8 @@
 //!
 //! - **Sweat** (`PaintParams::sweat`): a drop at the character's left temple, in the tear's colour with a thin darker
 //!   outline and a small highlight. It grows from 60 % to full size as it fades in.
-//! - **Gloom** (`effects.gloom`): a soft dark band across the upper forehead, darkest at the top, and a row of fine
-//!   vertical hatch lines of alternating length over it.
+//! - **Gloom** (`effects.gloom`): a soft dark oval across the upper forehead, gone at its edges, and a row of fine
+//!   vertical hatch lines of alternating length over it, each fading out toward its top (#2428).
 //! - **Anger vein** (`PaintParams::anger_vein`, #2403): the cross-shaped popping mark at the temple, on the side the
 //!   face style says ([`AngerVeinStyle`](omuzaki_face_api::AngerVeinStyle)). Four thick corner strokes in the style's
 //!   red, each with a dark outline, their corners pointing at a shared centre. It pops in: its size overshoots by about
@@ -16,7 +16,7 @@
 //!   frames reads as a pop and a hard cut shows it at its final size.
 
 use omuzaki_core::colour::Colour;
-use omuzaki_core::glam::Vec2;
+use omuzaki_core::glam::{Affine2, Vec2};
 use omuzaki_face_api::{Cap, Cmd, FaceLayerId, FaceRect, Join, Paint, Stops, narrow};
 use std::f32::consts::PI;
 
@@ -46,9 +46,12 @@ const DROP_SHINE_OPACITY: f32 = 0.8;
 
 // ---- gloom
 
-/// The band's colour (`rgb(40,30,44)`, the lid shadow's) and its opacity at the top at full strength.
+/// The band's colour (`rgb(40,30,44)`, the lid shadow's) and its opacity in its middle at full strength.
 const BAND_COLOUR: (u8, u8, u8) = (40, 30, 44);
 const BAND_OPACITY: f32 = 0.30;
+/// The shade's oval holds most of its darkness out to this share of its radius (the stop's alpha), then fades to none.
+const BAND_FLAT: f32 = 0.55;
+const BAND_FLAT_ALPHA: f32 = 0.75;
 /// The band and the hatch cover this much either side of the midline, from this far above the brow line, up to this far
 /// above it (or the rect's top), in metres.
 const BAND_HALF_WIDTH: f32 = 0.12;
@@ -59,6 +62,8 @@ const HATCH_LINES: u8 = 9;
 const HATCH_WIDTH: f32 = 0.0012;
 const HATCH_OPACITY: f32 = 0.55;
 const HATCH_SHORT: f32 = 0.6;
+/// A hatch line is solid over this share of its length from the bottom, then fades to nothing at its top.
+const HATCH_SOLID: f32 = 0.35;
 
 // ---- anger vein
 
@@ -215,18 +220,28 @@ fn gloom_band(ctx: &mut PaintCtx<'_>, strength: f32) {
         return;
     }
     let (r, g, b) = BAND_COLOUR;
-    let stops = Stops::new(&[(0.0, Colour::rgba(r, g, b, 0)), (1.0, Colour::rgb(r, g, b))]);
+    // The shade is a soft oval over the band, darkest in its middle and gone at every edge (#2428): a rectangle with a
+    // vertical ramp read as a grey patch with a hard top where the layer's rectangle cut it. A disc of the band's
+    // half-width, squashed to its half-height, so the fade is round whatever the band's shape.
+    let centre = Vec2::new(f32::midpoint(left, right), f32::midpoint(bottom, top));
+    let radii = Vec2::new(0.5 * (right - left), 0.5 * (top - bottom));
+    let stops = Stops::new(&[
+        (0.0, Colour::rgb(r, g, b)),
+        (BAND_FLAT, Colour::rgba(r, g, b, omuzaki_core::colour::to_byte(BAND_FLAT_ALPHA))),
+        (1.0, Colour::rgba(r, g, b, 0)),
+    ]);
+    let squash = Affine2::from_translation(centre)
+        * Affine2::from_scale(Vec2::new(1.0, radii.y / radii.x))
+        * Affine2::from_translation(-centre);
     let list = ctx.list(FaceLayerId::Overlay);
-    let band = list
-        .path()
-        .polyline(&[Vec2::new(left, bottom), Vec2::new(right, bottom), Vec2::new(right, top), Vec2::new(left, top)])
-        .close()
-        .finish();
+    let band = list.path().ellipse(centre, radii.x, radii.x).finish();
+    list.push(Cmd::PushTransform(squash));
     list.push(Cmd::Fill {
         path: band,
-        paint: Paint::Linear { from: Vec2::new(left, bottom), to: Vec2::new(left, top), stops },
+        paint: Paint::Radial { centre, radius: radii.x, stops },
         opacity: BAND_OPACITY * strength,
     });
+    list.push(Cmd::PopTransform);
     let lines = f32::from(HATCH_LINES);
     for i in 0..HATCH_LINES {
         // The lines keep their places over the band's full width; those outside the rect are left out, not
@@ -237,10 +252,17 @@ fn gloom_band(ctx: &mut PaintCtx<'_>, strength: f32) {
         }
         // Every other line is short, from the top down, so the hatch reads as hand-drawn rather than as a fence.
         let low = if i % 2 == 0 { bottom } else { top - (top - bottom) * HATCH_SHORT };
+        // Each line fades out toward the top, so the hatch dissolves into the forehead instead of stopping at a
+        // ruled edge.
         let line = list.path().move_to(Vec2::new(x, low)).line_to(Vec2::new(x, top)).finish();
+        let fade = Stops::new(&[
+            (0.0, Colour::rgb(r, g, b)),
+            (HATCH_SOLID, Colour::rgb(r, g, b)),
+            (1.0, Colour::rgba(r, g, b, 0)),
+        ]);
         list.push(Cmd::Stroke {
             path: line,
-            paint: Paint::Solid(Colour::rgb(r, g, b)),
+            paint: Paint::Linear { from: Vec2::new(x, low), to: Vec2::new(x, top), stops: fade },
             width: HATCH_WIDTH,
             cap: Cap::Round,
             join: Join::Round,

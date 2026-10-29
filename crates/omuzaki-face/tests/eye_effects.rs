@@ -14,7 +14,7 @@ use std::cell::Cell;
 use std::hint::black_box;
 
 use omuzaki_core::colour::Colour;
-use omuzaki_core::glam::Vec2;
+use omuzaki_core::glam::{Affine2, Vec2};
 use omuzaki_core::time::Seconds;
 use omuzaki_face::raster::SkiaRasterizer;
 use omuzaki_face::{RealPainter, Section};
@@ -147,20 +147,35 @@ fn ink_moved(layer: FaceLayerId, a: &DrawList, b: &DrawList) -> u64 {
 
 /// All the points of a list's paths.
 fn points(list: &DrawList) -> Vec<Vec2> {
-    list.cmds()
-        .iter()
-        .filter_map(|c| match c {
-            Cmd::Fill { path, .. } | Cmd::Stroke { path, .. } | Cmd::PushClip(path) => Some(*path),
-            _ => None,
-        })
-        .flat_map(|path| list.elements(path).to_vec())
-        .flat_map(|el| match el {
-            PathEl::Move(p) | PathEl::Line(p) => vec![p],
-            PathEl::Quad(c, p) => vec![c, p],
-            PathEl::Cubic(a, b, p) => vec![a, b, p],
-            PathEl::Close => vec![],
-        })
-        .collect()
+    // Each path's points where they land: under the transforms open around it.
+    let mut stack = vec![Affine2::IDENTITY];
+    let mut out = Vec::new();
+    for cmd in list.cmds() {
+        let path = match cmd {
+            Cmd::Fill { path, .. } | Cmd::Stroke { path, .. } | Cmd::PushClip(path) => *path,
+            Cmd::PushTransform(t) => {
+                let top = *stack.last().unwrap();
+                stack.push(top * *t);
+                continue;
+            }
+            Cmd::PopTransform => {
+                stack.pop();
+                continue;
+            }
+            Cmd::PopClip => continue,
+        };
+        let at = *stack.last().unwrap();
+        for el in list.elements(path) {
+            let pts = match *el {
+                PathEl::Move(p) | PathEl::Line(p) => vec![p],
+                PathEl::Quad(c, p) => vec![c, p],
+                PathEl::Cubic(a, b, p) => vec![a, b, p],
+                PathEl::Close => vec![],
+            };
+            out.extend(pts.into_iter().map(|p| at.transform_point2(p)));
+        }
+    }
+    out
 }
 
 /// The effects, one at a time at full strength, by name.
@@ -400,8 +415,8 @@ fn the_sweat_drop_sits_at_the_left_temple_in_front_of_the_hair() {
 fn gloom_draws_its_band_and_hatch_on_the_overlay() {
     let drawing = paint(&profile(), &params(|e, _| e.gloom = 1.0));
     let overlay = &drawing[FaceLayerId::Overlay];
-    // The band, then nine hatch lines.
-    assert_eq!(overlay.cmds().len(), 1 + 9);
+    // The band (inside the transform that makes its fade an oval), then nine hatch lines.
+    assert_eq!(overlay.cmds().len(), 3 + 9);
 }
 
 #[test]

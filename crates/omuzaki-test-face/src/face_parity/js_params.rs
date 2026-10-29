@@ -103,7 +103,7 @@ fn gaze(look: Xy, look_d: Xy, follow_weight: f64) -> Vec2 {
 /// ([`Setup::follow_weight`](super::Setup)), never from code.
 ///
 /// The effects the prototype has no counterpart for (`star`, `gloom`, `shock`, `squeeze`, `spiral`), `vergence`,
-/// `cheek_puff` and `sweat` stay 0.
+/// `cheek_puff`, `sweat` and `nose_sneer` stay 0.
 ///
 /// # Errors
 /// [`ParamError::Missing`] when `p` lacks a parameter the prototype always writes.
@@ -149,6 +149,7 @@ pub fn paint_params(
         cheek_puff: 0.0,
         sweat: 0.0,
         anger_vein: 0.0,
+        nose_sneer: 0.0,
     })
 }
 

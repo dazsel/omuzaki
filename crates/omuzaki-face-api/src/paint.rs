@@ -471,6 +471,16 @@ impl DrawList {
         }
         h.0
     }
+
+    /// The fingerprint of command `index` alone, with the path elements it refers to, as [`fingerprint`](Self::fingerprint)
+    /// hashes it; `None` past the end. Two lists' commands with equal fingerprints draw the same under the same
+    /// transform, which is how a CPU repaint finds the commands that changed (#2443).
+    pub fn cmd_fingerprint(&self, index: usize) -> Option<u64> {
+        let cmd = self.cmds.get(index)?;
+        let mut h = Fnv::new();
+        h.cmd(cmd, self);
+        Some(h.0)
+    }
 }
 
 /// Builds one path inside a [`DrawList`].
@@ -777,6 +787,70 @@ impl Raster {
     }
 }
 
+/// A rectangle of a [`Raster`]'s pixels, origin top-left.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct RasterRect {
+    /// Left edge.
+    pub x: u32,
+    /// Top edge.
+    pub y: u32,
+    /// Width.
+    pub width: u32,
+    /// Height.
+    pub height: u32,
+}
+
+impl RasterRect {
+    /// The whole of a `width` x `height` raster.
+    pub fn full(width: u32, height: u32) -> Self {
+        Self { x: 0, y: 0, width, height }
+    }
+
+    /// True if it holds no pixel.
+    pub fn is_empty(&self) -> bool {
+        self.width == 0 || self.height == 0
+    }
+
+    /// True if the two share a pixel.
+    pub fn intersects(&self, other: &Self) -> bool {
+        !self.is_empty()
+            && !other.is_empty()
+            && self.x < other.x + other.width
+            && other.x < self.x + self.width
+            && self.y < other.y + other.height
+            && other.y < self.y + self.height
+    }
+
+    /// The pixels the two share, if any.
+    #[must_use]
+    pub fn intersection(self, other: Self) -> Option<Self> {
+        let (x0, y0) = (self.x.max(other.x), self.y.max(other.y));
+        let x1 = (self.x + self.width).min(other.x + other.width);
+        let y1 = (self.y + self.height).min(other.y + other.height);
+        (x1 > x0 && y1 > y0).then(|| Self { x: x0, y: y0, width: x1 - x0, height: y1 - y0 })
+    }
+
+    /// How many pixels it holds.
+    pub fn area(&self) -> u64 {
+        u64::from(self.width) * u64::from(self.height)
+    }
+
+    /// The smallest rectangle holding both.
+    #[must_use]
+    pub fn union(self, other: Self) -> Self {
+        if self.is_empty() {
+            return other;
+        }
+        if other.is_empty() {
+            return self;
+        }
+        let (x0, y0) = (self.x.min(other.x), self.y.min(other.y));
+        let x1 = (self.x + self.width).max(other.x + other.width);
+        let y1 = (self.y + self.height).max(other.y + other.height);
+        Self { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }
+    }
+}
+
 /// Draws a [`DrawList`] into pixels on the CPU. Row 0 of the image is the top of `spec.rect`.
 pub trait FaceRasterizer: Send {
     /// Rasterises `list` over `spec.rect` into `out`, resizing `out` to `spec.rect` at `px_per_m`.
@@ -790,6 +864,30 @@ pub trait FaceRasterizer: Send {
         px_per_m: f32,
         out: &mut Raster,
     ) -> Result<(), FaceError>;
+
+    /// Draws `list`'s commands in `cmds` over what `out` already holds, inside `rect` only: every pixel outside it is
+    /// left as it is. `out` is already the layer's size at `px_per_m`, and no clip or transform is open at
+    /// `cmds.start`. The face system repaints a tracked face with it: from a snapshot of the commands that did not
+    /// change, over the rectangle the changed ones cover (#2443). Drawing `0..len` over the whole of a cleared raster is
+    /// [`rasterize`](Self::rasterize).
+    ///
+    /// `Ok(false)`, the default, means this rasteriser can't draw part of a list, and nothing was drawn: the caller
+    /// rasterises the whole list instead.
+    ///
+    /// # Errors
+    /// As [`rasterize`](Self::rasterize), or [`FaceError::Raster`] if `rect` or `cmds` is not inside `out` or the list.
+    fn rasterize_part(
+        &mut self,
+        spec: &FaceLayerSpec,
+        list: &DrawList,
+        px_per_m: f32,
+        cmds: std::ops::Range<usize>,
+        rect: RasterRect,
+        out: &mut Raster,
+    ) -> Result<bool, FaceError> {
+        let _ = (spec, list, px_per_m, cmds, rect, out);
+        Ok(false)
+    }
 }
 
 #[cfg(test)]
