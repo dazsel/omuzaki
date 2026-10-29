@@ -180,6 +180,7 @@ impl Starter {
 /// Lists the starter characters: finished VRM characters that anyone may perform as, edit and export.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend("examples" = [{}]))]
 pub struct StarterList {}
 
 /// One row of `io.starter.list`.
@@ -412,21 +413,21 @@ impl Op for StarterFetch {
         }
     }
 
-    fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+    fn plan(&self, _ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
         let starter = find(&self.id)?;
         if let Err(e) = omuzaki_char_api::CharId::new(self.character()) {
             return Err(OpError::invalid("character", e.to_string()).hint("pass a character id: lowercase, `_`"));
         }
-        // Both are needed by `work`; their absence is better reported here.
-        ctx.service::<dyn Store>()?;
-        ctx.service::<dyn FileSource>()?;
+        // The store and the download service are `work`'s; a dry run only says what would be fetched.
         Ok(Plan::answer(json!({ "id": starter.id, "download_bytes": starter.download.size })))
     }
 
     fn work(&self, job: &JobCtx<'_>) -> Result<Value, OpError> {
         let starter = find(&self.id)?;
         let store = job.service::<dyn Store>()?;
-        let files = job.service::<dyn FileSource>()?;
+        let files = job.service::<dyn FileSource>().map_err(|e| {
+            e.hint("downloads need a host with the verified model cache (the studio); or import a VRM file of your own")
+        })?;
         job.checkpoint("downloading", 0.0)?;
         let fetched = fetch(starter, &self.character(), files, store, &JobProgress(job))
             .map_err(|e| if job.is_cancelled() { OpError::cancelled(job.id()) } else { e })?;

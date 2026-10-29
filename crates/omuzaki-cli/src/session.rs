@@ -172,18 +172,12 @@ pub fn core_options(cli: &Cli, actor: Actor) -> Result<AppOptions, OpError> {
         options = adjust(options);
     }
     // The asset store and the settings are the person's, the ones the studio uses: an import here is there in the
-    // studio, and `settings.set` changes the same file. Downloads (a starter character) go through the verified cache
-    // the studio's models use.
+    // studio, and `settings.set` changes the same file.
     if let Ok(paths) = omuzaki_settings::Paths::from_env() {
         let settings: Arc<dyn Settings> = Arc::new(omuzaki_settings::Store::open(&paths));
-        let cache =
-            omuzaki_ai::VerifiedCache::new(paths.data().join(omuzaki_ai::CACHE_DIR), omuzaki_http::HttpFetcher::new());
-        options = options.with_data_dir(paths.data()).with_services(
-            ServicesBuilder::new()
-                .insert::<dyn Settings>(settings)
-                .insert::<dyn omuzaki_ai_api::FileSource>(Arc::new(cache))
-                .build(),
-        );
+        options = options
+            .with_data_dir(paths.data())
+            .with_services(ServicesBuilder::new().insert::<dyn Settings>(settings).build());
     }
     Ok(match &cli.command {
         // The person running `omuzaki mcp --grant ...`, or who issued its credential, says yes in advance, since nobody

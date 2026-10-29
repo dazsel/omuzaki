@@ -206,9 +206,9 @@ fn the_ops_are_a_read_query_and_a_job_that_changes_no_document() {
     let error = plan(&doc, "io.starter.fetch", json!({ "id": "nobody" })).unwrap_err();
     assert_eq!((error.code, error.field.as_deref()), (ErrorCode::NotFound, Some("id")));
     assert!(error.hint.as_deref().unwrap().contains("vroid-vita"), "{error:?}");
-    // Without the download cache and the store, the plan says so rather than failing in the job.
-    let error = plan(&doc, "io.starter.fetch", json!({ "id": "vroid-vita" })).unwrap_err();
-    assert_eq!(error.code, ErrorCode::Unavailable);
+    // A dry run needs no services: it says what would be downloaded, and the job reaches for the store and the cache.
+    let planned = plan(&doc, "io.starter.fetch", json!({ "id": "vroid-vita" })).unwrap().output.unwrap();
+    assert_eq!((planned["id"].as_str(), planned["download_bytes"].as_u64()), (Some("vroid-vita"), Some(11_165_899)));
 }
 
 #[test]
