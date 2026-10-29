@@ -6,9 +6,9 @@ area: quality
 
 # Reference shorts
 
-The main loop (`CLAUDE.md`, "The main loop: build a target, find what's missing, build it") applied to short-form character video. The
-references are other creators' videos and stay out of the repository; this page describes them only in words, and
-every render in the evidence uses the kit's own characters and the project's own scripts.
+The main loop (`CLAUDE.md`, "The main loop: build a target, find what's missing, build it") applied to short-form
+character video. The references are other creators' videos and stay out of the repository; this page describes them
+only in words, and every render in the evidence uses the kit's own characters and the project's own scripts.
 
 ## Recreate, never copy
 
