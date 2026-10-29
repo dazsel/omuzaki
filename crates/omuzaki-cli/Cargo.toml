@@ -93,6 +93,10 @@ omuzaki-settings-api = { path = "../omuzaki-settings-api" }
 omuzaki-settings-mock = { path = "../omuzaki-settings-mock" }
 # The performer the conformance rig stands in for the `trigger.*` examples (`tests/op_conformance.rs`).
 omuzaki-anim-api = { path = "../omuzaki-anim-api" }
+# The voice catalog and voice commands the conformance rig gives the `voice.*` and `voice_commands.*` examples.
+omuzaki-l10n-api = { path = "../omuzaki-l10n-api" }
+omuzaki-performer-api = { path = "../omuzaki-performer-api" }
+omuzaki-speech = { path = "../omuzaki-speech" }
 # The end-to-end design test (tests/design_e2e.rs, #2216) builds the designed character to compare it after a reopen.
 omuzaki-char-api = { path = "../omuzaki-char-api" }
 # ...and runs the same design as an MCP client over `omuzaki mcp`'s server.

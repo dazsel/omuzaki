@@ -10,7 +10,7 @@
 gpu = { max-threads = 2 }
 
 [[profile.default.overrides]]
-filter = 'package(omuzaki-render) | package(omuzaki-ui) | package(omuzaki-stage) | package(omuzaki-test-stage)'
+filter = 'package(omuzaki-render) | package(omuzaki-ui) | package(omuzaki-stage) | package(omuzaki-test-stage) | (package(omuzaki-cli) & (binary(render_preview) | binary(short_render)))'
 test-group = 'gpu'
 
 [profile.ci]

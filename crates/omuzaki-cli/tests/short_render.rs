@@ -1,6 +1,6 @@
 //! A short rendered as a script sees it: `omuzaki run short.render` performs a kit character through a two-line short
 //! on this machine's GPU and writes the video into the project, the same bytes on every run. Skips where no GPU adapter
-//! exists (lavapipe is one, in CI and the dev VMs).
+//! exists (lavapipe is one, in CI and the dev VMs), or without libvpx, which the encoder loads at run time.
 
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
 #![allow(clippy::expect_used, clippy::unwrap_used)]
@@ -34,6 +34,11 @@ fn has_gpu() -> bool {
     omuzaki_render::WgpuRenderer::headless(&omuzaki_render::HeadlessOptions::default()).is_ok()
 }
 
+/// The encoder loads libvpx at run time; a machine without it can't write a video.
+fn has_libvpx() -> bool {
+    omuzaki_stream::vp9::available().is_ok()
+}
+
 const SHORT: &str = r#"{"short": {"character": "lumi", "fps": 12, "seed": 7, "line": [
     {"text": "You found me!", "face": "happy", "camera": "close+tilt-left+punch"},
     {"text": "Now go away.", "face": "angry", "camera": "bust"}
@@ -50,8 +55,8 @@ fn render(home: &Path, project: &str, name: &str) -> (Value, Vec<u8>) {
 
 #[test]
 fn a_short_rendered_from_the_shell_is_a_webm_and_the_same_on_every_run() {
-    if !has_gpu() {
-        eprintln!("skipped: no GPU adapter");
+    if !has_gpu() || !has_libvpx() {
+        eprintln!("skipped: no GPU adapter or no libvpx");
         return;
     }
     let home = tempfile::tempdir().expect("temp dir");

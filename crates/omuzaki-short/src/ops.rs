@@ -471,6 +471,9 @@ fn write_file(job: &JobCtx<'_>, path: &str, bytes: &[u8]) -> Result<(), OpError>
 const SOFTWARE_FRAME_S: [f32; 3] = [0.6, 1.5, 2.0];
 /// Seconds per frame that don't scale with the size: the performer, captions and the encoder.
 const FRAME_OVERHEAD_S: f32 = 0.1;
+/// Seconds before the first frame: opening the GPU device, compiling its pipelines and building the character, on a
+/// software GPU with other work beside it.
+const SETUP_S: f32 = 20.0;
 
 /// The estimate of a render of `frames` frames of `size` at `quality`.
 #[allow(clippy::cast_precision_loss, reason = "frame and pixel counts")]
@@ -481,7 +484,7 @@ fn render_seconds(frames: u64, size: [u32; 2], quality: RenderQuality) -> f32 {
         RenderQuality::High => SOFTWARE_FRAME_S[1],
         RenderQuality::Offline => SOFTWARE_FRAME_S[2],
     };
-    frames as f32 * (per_frame * share + FRAME_OVERHEAD_S)
+    SETUP_S + frames as f32 * (per_frame * share + FRAME_OVERHEAD_S)
 }
 
 /// Seconds per frame of a 1080x1920 puppet frame on the CPU renderer (four cores), with the performer, captions and
