@@ -16,14 +16,15 @@ use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 use omuzaki_anim_api::HumanoidBone;
 use omuzaki_char_api::{
-    AnchorsFact, BodyRegion, BuildCtx, BuildError, JointRef, PartCategory, PartKind, PartMeta, PartOutput, RecolourCtx,
-    Recoloured, RigContribution,
+    AnchorsFact, BodyRegion, BuildCtx, BuildError, FitFact, JointRef, PartCategory, PartKind, PartMeta, PartOutput,
+    RecolourCtx, Recoloured, RigContribution,
 };
 use omuzaki_core::glam::{DMat3, DMat4, DQuat, DVec3};
 use omuzaki_face_api::{Check, ColourRef, Validate};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::gorget::{Plate, Shape};
 use super::{
     Detail, Finish, Follow, PendantShape, ResolvedAttach, Ring, Shells, Slot, attachment, kit_error, output_with,
     recolour_with,
@@ -715,7 +716,45 @@ omuzaki_char_api::register_part_kind!(Bracelet);
 
 // ------------------------------------------------------------------------------------------------ collar
 
-/// An ornate collar of filigree round the base of the neck.
+/// How a large stone is held.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Setting {
+    /// A rim of metal round its girdle.
+    #[default]
+    Bezel,
+    /// Six claws over its girdle.
+    Claws,
+    /// A bezel in a ring of small beads.
+    Halo,
+}
+
+/// The large stone at the collar's centre front.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct CentreStone {
+    /// Its radius, metres; 0 for none (the centre motif keeps its small stone).
+    pub size: f64,
+    /// Its cut: `gem` (six facets), `orb` (a cabochon) or `drop`.
+    pub shape: PendantShape,
+    /// How it is held.
+    pub setting: Setting,
+}
+
+impl Default for CentreStone {
+    fn default() -> Self {
+        Self { size: 0.0, shape: PendantShape::Gem, setting: Setting::Bezel }
+    }
+}
+
+impl Validate for CentreStone {
+    fn check(&self, c: &mut Check) {
+        c.range("size", self.size, 0.0, 0.02);
+    }
+}
+
+/// An ornate collar of filigree round the base of the neck; with `height` or `chest`, an ornate gorget: a plate of
+/// metal up the neck and down onto the collarbones, its scrollwork in relief on it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct CollarParams {
@@ -725,14 +764,28 @@ pub struct CollarParams {
     pub ease: f64,
     /// How many filigree motifs hang across the front, `1..=15` (odd counts centre one).
     pub motifs: u8,
-    /// How far round the neck the motifs spread, degrees either side of the front.
+    /// How far round the neck the motifs spread, degrees either side of the front; the gorget's chest piece reaches a
+    /// little further.
     pub spread_deg: f64,
-    /// How far a motif hangs below the band, metres.
+    /// How far a motif hangs below the band, metres (on a gorget, at most to the chest piece's edge).
     pub drop: f64,
     /// The filigree wire's thickness, metres.
     pub wire: f64,
     /// The stones at the motifs' feet and the centre: their size, metres (0 for none).
     pub stone_size: f64,
+    /// How far the gorget's plate rises up the neck above the band, as a fraction of the neck; 0 for none.
+    pub height: f64,
+    /// How far the gorget's plate runs down onto the chest at the front, as a fraction of the torso's length; 0 for
+    /// none. Its lower edge is a crescent, rising to the band at the ends of the spread.
+    pub chest: f64,
+    /// The gorget plate's thickness, metres.
+    pub plate: f64,
+    /// How large the scrollwork is, as a multiple of the size the motifs' spacing gives them.
+    pub scroll_scale: f64,
+    /// How far the scrollwork stands out in relief, metres: 0 lays the wire on the surface.
+    pub scroll_depth: f64,
+    /// The large stone at the centre front.
+    pub centre: CentreStone,
     /// The metal's colour.
     pub primary: ColourRef,
     /// The stones' colour.
@@ -749,6 +802,12 @@ impl Default for CollarParams {
             drop: 0.022,
             wire: 0.00055,
             stone_size: 0.0018,
+            height: 0.0,
+            chest: 0.0,
+            plate: 0.0012,
+            scroll_scale: 1.0,
+            scroll_depth: 0.0,
+            centre: CentreStone::default(),
             primary: gold(),
             accent: ruby(),
         }
@@ -764,25 +823,39 @@ impl Validate for CollarParams {
         c.range("drop", self.drop, 0.006, 0.06);
         c.range("wire", self.wire, 0.0002, 0.002);
         c.range("stone_size", self.stone_size, 0.0, 0.008);
+        c.range("height", self.height, 0.0, 0.8);
+        if self.along + self.height > 0.9 {
+            c.fail(
+                "height",
+                format!("the plate would rise to {:.2} of the neck: at most 0.9", self.along + self.height),
+            );
+        }
+        c.range("chest", self.chest, 0.0, 0.25);
+        c.range("plate", self.plate, 0.0004, 0.004);
+        c.range("scroll_scale", self.scroll_scale, 0.4, 3.0);
+        c.range("scroll_depth", self.scroll_depth, 0.0, 0.004);
+        c.nested("centre", &self.centre);
+    }
+}
+
+impl CollarParams {
+    /// Whether these parameters make a gorget (a plate up the neck or down the chest) rather than a band.
+    pub fn gorget(&self) -> bool {
+        self.height > 0.0 || self.chest > 0.0
     }
 }
 
 /// The `filigree-collar` kind.
 pub struct Collar;
 
+/// How much further round the neck than the motifs a gorget's chest piece reaches.
+const CRESCENT_REACH: f64 = 1.18;
+/// Over how many metres below the band a gorget passes from following the neck to following the chest.
+const CHEST_RAMP: f64 = 0.012;
+
 /// Points along one motif in its own plane: `x` round the neck, `y` down; the motif is `width` wide and `drop` long.
 /// Two C-curls back to back over a stem, then a small curl at the foot: one wire's worth each.
 fn motif_curves(width: f64, drop: f64) -> Vec<Vec<[f64; 2]>> {
-    let curl = |cx: f64, cy: f64, r: f64, from: f64, turns: f64, mirror: f64| -> Vec<[f64; 2]> {
-        (0..=40)
-            .map(|k| {
-                let s = fraction(k, 40);
-                let a = from + mirror * TAU * turns * s;
-                let radius = r * (1.0 - 0.72 * s);
-                [cx + mirror * radius * a.cos() * mirror, cy + radius * a.sin()]
-            })
-            .collect()
-    };
     let r = 0.27 * width;
     let mut curves = Vec::new();
     for mirror in [-1.0, 1.0] {
@@ -796,6 +869,107 @@ fn motif_curves(width: f64, drop: f64) -> Vec<Vec<[f64; 2]>> {
     curves
 }
 
+/// A curl round `(cx, cy)` from radius `r` in to a quarter of it over `turns`, starting at angle `from`, mirrored by
+/// `mirror` (`1` or `-1`).
+fn curl(cx: f64, cy: f64, r: f64, from: f64, turns: f64, mirror: f64) -> Vec<[f64; 2]> {
+    (0..=40)
+        .map(|k| {
+            let s = fraction(k, 40);
+            let a = from + mirror * TAU * turns * s;
+            let radius = r * (1.0 - 0.72 * s);
+            [cx + mirror * radius * a.cos() * mirror, cy + radius * a.sin()]
+        })
+        .collect()
+}
+
+/// A running scroll for a band `length` long and `height` high, in its own plane (`x` along, `y` up from its middle):
+/// a wave with a curl in each of its hollows, `period` apart.
+fn running_scroll(length: f64, height: f64, period: f64) -> Vec<Vec<[f64; 2]>> {
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a few dozen periods
+    let periods = ((length / period).round() as usize).max(2);
+    #[allow(clippy::cast_precision_loss)] // a few dozen
+    let period = length / periods as f64;
+    let amplitude = 0.28 * height;
+    let steps = periods * 24;
+    let wave = (0..=steps)
+        .map(|k| {
+            let x = length * fraction(k, steps);
+            [x, amplitude * (TAU * x / period).sin()]
+        })
+        .collect();
+    let mut curves = vec![wave];
+    for k in 0..periods {
+        #[allow(clippy::cast_precision_loss)] // a few dozen
+        let x0 = period * k as f64;
+        // Above the wave where it dips, below it where it rises, each curl turning in from the wave.
+        curves.push(curl(x0 + 0.75 * period, 0.05 * height, 0.32 * height, -FRAC_PI_2, 0.8, 1.0));
+        curves.push(curl(x0 + 0.25 * period, -0.05 * height, 0.32 * height, FRAC_PI_2, 0.8, -1.0));
+    }
+    curves
+}
+
+/// A stone of `shape` and `size` standing on `axis` at `base`, held by `setting` in the primary metal.
+fn set_large_stone(
+    shells: &mut Shells<'_>,
+    base: DVec3,
+    axis: DVec3,
+    shape: PendantShape,
+    size: f64,
+    setting: Setting,
+) -> Result<(), KitError> {
+    let (rows, lathe) = (shells.detail.rows, shells.detail.lathe);
+    let ex = axis.any_orthonormal_vector();
+    let ez = axis.cross(ex);
+    // A set stone is cut low, its height a share of its width; its lowest point just clears the surface.
+    let lift = size * LOW_CUT * 1.05;
+    let girdle = base + axis * lift;
+    let ring = |radius: f64, half_w: f64, half_t: f64, centre: DVec3| Ring {
+        centre,
+        ex,
+        ez,
+        up: axis,
+        rx: radius,
+        rz: radius,
+        half_w,
+        half_t,
+    };
+    // A cup from the surface up to the stone, so the setting stands on what it is set in.
+    shells.ring(Slot::Primary, &ring(size * 0.72, 0.5 * lift, size * 0.3, base + axis * (0.5 * lift)))?;
+    match setting {
+        Setting::Bezel | Setting::Halo => {
+            shells.ring(Slot::Primary, &ring(size * 1.02, size * 0.3, size * 0.12, girdle))?;
+        }
+        Setting::Claws => {
+            for k in 0..6 {
+                let a = TAU * fraction(k, 6) + PI / 6.0;
+                let out = ex * a.cos() + ez * a.sin();
+                let path: Vec<DVec3> = (0..=8)
+                    .map(|m| {
+                        let t = fraction(m, 8);
+                        // Up from the cup, out round the girdle and back in over it.
+                        let radius = size * (0.75 + 0.35 * (PI * t).sin() - 0.25 * t * t);
+                        base + out * radius + axis * ((lift + 0.2 * size) * t)
+                    })
+                    .collect();
+                shells.wire(Slot::Primary, &path, &|t| size * 0.11 * (1.0 - 0.4 * t))?;
+            }
+        }
+    }
+    if setting == Setting::Halo {
+        let beads = 16;
+        for k in 0..beads {
+            let a = TAU * fraction(k, beads);
+            let centre = base + (ex * a.cos() + ez * a.sin()) * (size * 1.42) + axis * (0.12 * size);
+            shells.ellipsoid(Slot::Primary, centre, DVec3::splat(size * 0.17), DQuat::IDENTITY)?;
+        }
+    }
+    let profile: Vec<(f64, f64)> = shape.profile(size, rows).into_iter().map(|(y, r)| (y * LOW_CUT, r)).collect();
+    shells.lathe_along(Slot::Accent, girdle, axis, &profile, shape.segments(lathe))
+}
+
+/// How high a large set stone is for its width.
+const LOW_CUT: f64 = 0.6;
+
 impl PartKind for Collar {
     type Params = CollarParams;
 
@@ -803,7 +977,8 @@ impl PartKind for Collar {
         PartMeta {
             id: "filigree-collar",
             summary: "Build an ornate collar of gold filigree round the base of the neck: twisted wire, scroll motifs and \
-                      stones.",
+                      stones; with a height or a chest, an ornate gorget whose plate rises up the neck and spreads onto \
+                      the collarbones, its scrollwork in relief and a large centre stone.",
             category: PartCategory::Accessory,
             requires: &["body"],
         }
@@ -815,68 +990,40 @@ impl PartKind for Collar {
 
     fn build(p: &CollarParams, ctx: &mut BuildCtx<'_>) -> Result<PartOutput, BuildError> {
         let (section_frame, [across, front]) = super::Choker::neck_frame(ctx, p.along)?;
+        let neck_to_bind = section_frame.to_bind;
         let attach = attachment(ctx, |_| Ok(section_frame))?;
-        let follow = Follow::Fixed(attach.joint.clone());
+        let follow = if p.gorget() && ctx.attach.is_none() {
+            // The neck plate turns with the neck, the chest piece stays on the chest.
+            let to_local = attach.to_bind.inverse();
+            Follow::Swing { fixed: attach.joint.clone(), swing: JointRef::CHEST, ramp: CHEST_RAMP, to_local }
+        } else {
+            Follow::Fixed(attach.joint.clone())
+        };
         let detail = Detail::of(ctx.quality);
         let mut shells = Shells::new(&attach, &follow, detail);
         let err = kit_error(ctx);
-        let (rx, rz) = (across + p.ease, front + p.ease);
-        let wire = p.wire;
-        // The band: a flat backing and a twisted pair of wires along its top and bottom.
-        let backing = Ring {
-            centre: DVec3::ZERO,
-            ex: DVec3::X,
-            ez: DVec3::Z,
-            up: DVec3::Y,
-            rx: rx + wire,
-            rz: rz + wire,
-            half_w: 2.2 * wire,
-            half_t: 0.6 * wire,
-        };
-        shells.ring(Slot::Primary, &backing).map_err(&err)?;
-        let on_band = |theta: f64, out: f64, y: f64| DVec3::new((rx + out) * theta.sin(), y, (rz + out) * theta.cos());
-        let steps = detail.ring * 3;
-        for (edge, phase) in [(2.6 * wire, 0.0), (-2.6 * wire, PI)] {
-            for strand in [0.0, PI] {
-                let path: Vec<DVec3> = (0..=steps)
-                    .map(|k| {
-                        let theta = TAU * fraction(k, steps);
-                        let twist = 90.0 * theta + strand + phase;
-                        on_band(theta, 1.6 * wire + 0.7 * wire * twist.cos(), edge + 0.7 * wire * twist.sin())
-                    })
-                    .collect();
-                shells.wire(Slot::Primary, &path, &|_| 0.75 * wire).map_err(&err)?;
-            }
-        }
-        // The motifs across the front: each one's plane is tangent to the band, its wires standing just off the chest,
-        // leaning out as they hang (the chest falls away from the neck).
-        let spread = p.spread_deg.to_radians();
-        let count = usize::from(p.motifs.max(1));
-        #[allow(clippy::cast_precision_loss)] // a few motifs
-        let spacing = if count > 1 { 2.0 * spread / (count - 1) as f64 } else { 0.0 };
-        let width = (spacing * rx.max(rz)).clamp(0.008, 0.03);
-        let curves = motif_curves(width, p.drop);
-        for m in 0..count {
-            #[allow(clippy::cast_precision_loss)] // a few motifs
-            let theta = if count > 1 { -spread + spacing * m as f64 } else { 0.0 };
-            let place = |[x, y]: [f64; 2]| {
-                // `x` round the band (as an angle at the band's radius), `y` down, leaning out as it drops.
-                let along = theta + x / rx.max(rz);
-                on_band(along, 2.2 * wire - 0.35 * y, y - 2.4 * wire)
+        if p.gorget() {
+            // The body, then what is worn over it, innermost first.
+            let fits: Vec<_> = ctx.published.get::<FitFact>().fits.iter().filter(|f| f.envelope()).cloned().collect();
+            let fit = fits.first().ok_or_else(|| ctx.fail("the body has no fit to lay the gorget on"))?;
+            let length = |region: BodyRegion| -> Result<f64, BuildError> {
+                let end =
+                    |t: f32| fit.section(region, t).ok_or_else(|| ctx.fail(format!("the body has no {region:?}")));
+                Ok(f64::from(end(1.0)?.centre.distance(end(0.0)?.centre)))
             };
-            let scale = if m == count / 2 && count % 2 == 1 { 1.25 } else { 1.0 };
-            for curve in &curves {
-                let path: Vec<DVec3> = curve.iter().map(|&[x, y]| place([x * scale, y * scale])).collect();
-                shells.wire(Slot::Primary, &path, &|t| wire * (1.0 - 0.5 * t)).map_err(&err)?;
-            }
-            if p.stone_size > 0.0 {
-                let foot = place([0.0, -p.drop * scale]);
-                let normal = (foot - DVec3::new(0.0, foot.y, 0.0)).normalize_or_zero();
-                let size = p.stone_size * scale;
-                let profile = PendantShape::Gem.profile(size, detail.rows);
-                let seg = PendantShape::Gem.segments(detail.lathe);
-                shells.lathe_along(Slot::Accent, foot + normal * (0.4 * size), normal, &profile, seg).map_err(&err)?;
-            }
+            let shape = Shape {
+                height: p.height * length(BodyRegion::Neck)?,
+                chest: p.chest * length(BodyRegion::Torso)?,
+                spread: (p.spread_deg * CRESCENT_REACH).min(120.0).to_radians(),
+                band: 3.4 * p.wire,
+                ease: p.ease,
+                thickness: p.plate,
+            };
+            let plate = Plate::new(&fits, &neck_to_bind, &neck_to_bind.inverse(), shape, detail.ring * 2)
+                .ok_or_else(|| ctx.fail("the body has no neck or torso to lay the gorget on"))?;
+            build_gorget(p, &plate, &mut shells).map_err(&err)?;
+        } else {
+            build_band(p, (across + p.ease, front + p.ease), &mut shells).map_err(&err)?;
         }
         output_with(ctx, vec![shells], [&p.primary, &p.accent], 0.0, RigContribution::default(), Finish::Jewel)
     }
@@ -884,6 +1031,163 @@ impl PartKind for Collar {
     fn recolour(p: &CollarParams, out: &mut PartOutput, ctx: &RecolourCtx<'_>) -> Result<Recoloured, BuildError> {
         recolour_with(out, ctx, [&p.primary, &p.accent], 0.0, Finish::Jewel)
     }
+}
+
+/// The motifs' angles round the neck, and the angle between two.
+fn motif_angles(p: &CollarParams) -> (Vec<f64>, f64) {
+    let spread = p.spread_deg.to_radians();
+    let count = usize::from(p.motifs.max(1));
+    #[allow(clippy::cast_precision_loss)] // a few motifs
+    let spacing = if count > 1 { 2.0 * spread / (count - 1) as f64 } else { 0.0 };
+    #[allow(clippy::cast_precision_loss)] // a few motifs
+    let angles = (0..count).map(|m| if count > 1 { -spread + spacing * m as f64 } else { 0.0 }).collect();
+    (angles, spacing)
+}
+
+/// The classic collar: a band of twisted wire at the base of the neck, `rx` across and `rz` front to back, its motifs
+/// hanging down the front.
+fn build_band(p: &CollarParams, (rx, rz): (f64, f64), shells: &mut Shells<'_>) -> Result<(), KitError> {
+    let (wire, detail) = (p.wire, shells.detail);
+    // The band: a flat backing and a twisted pair of wires along its top and bottom.
+    let backing = Ring {
+        centre: DVec3::ZERO,
+        ex: DVec3::X,
+        ez: DVec3::Z,
+        up: DVec3::Y,
+        rx: rx + wire,
+        rz: rz + wire,
+        half_w: 2.2 * wire,
+        half_t: 0.6 * wire,
+    };
+    shells.ring(Slot::Primary, &backing)?;
+    let on_band = |theta: f64, out: f64, y: f64| DVec3::new((rx + out) * theta.sin(), y, (rz + out) * theta.cos());
+    let steps = detail.ring * 3;
+    for (edge, phase) in [(2.6 * wire, 0.0), (-2.6 * wire, PI)] {
+        for strand in [0.0, PI] {
+            let path: Vec<DVec3> = (0..=steps)
+                .map(|k| {
+                    let theta = TAU * fraction(k, steps);
+                    let twist = 90.0 * theta + strand + phase;
+                    on_band(theta, 1.6 * wire + 0.7 * wire * twist.cos(), edge + 0.7 * wire * twist.sin())
+                })
+                .collect();
+            shells.wire(Slot::Primary, &path, &|_| 0.75 * wire)?;
+        }
+    }
+    // The motifs across the front: each one's plane is tangent to the band, its wires standing just off the chest,
+    // leaning out as they hang (the chest falls away from the neck).
+    let (angles, spacing) = motif_angles(p);
+    let count = angles.len();
+    let width = (spacing * rx.max(rz)).clamp(0.008, 0.03) * p.scroll_scale;
+    let curves = motif_curves(width, p.drop * p.scroll_scale);
+    for (m, &theta) in angles.iter().enumerate() {
+        let place = |[x, y]: [f64; 2]| {
+            // `x` round the band (as an angle at the band's radius), `y` down, leaning out as it drops.
+            let along = theta + x / rx.max(rz);
+            on_band(along, 2.2 * wire + p.scroll_depth - 0.35 * y, y - 2.4 * wire)
+        };
+        let centre = m == count / 2 && count % 2 == 1;
+        let scale = if centre { 1.25 } else { 1.0 };
+        for curve in &curves {
+            let path: Vec<DVec3> = curve.iter().map(|&[x, y]| place([x * scale, y * scale])).collect();
+            shells.wire(Slot::Primary, &path, &|t| wire * (1.0 - 0.5 * t))?;
+        }
+        let foot = place([0.0, -p.drop * p.scroll_scale * scale]);
+        let normal = (foot - DVec3::new(0.0, foot.y, 0.0)).normalize_or_zero();
+        if centre && p.centre.size > 0.0 {
+            let c = &p.centre;
+            set_large_stone(shells, foot + normal * (0.2 * c.size), normal, c.shape, c.size, c.setting)?;
+        } else if p.stone_size > 0.0 {
+            let size = p.stone_size * scale;
+            let profile = PendantShape::Gem.profile(size, detail.rows);
+            let seg = PendantShape::Gem.segments(detail.lathe);
+            shells.lathe_along(Slot::Accent, foot + normal * (0.4 * size), normal, &profile, seg)?;
+        }
+    }
+    Ok(())
+}
+
+/// The gorget: the plate, a twisted pair of wires along each of its edges, a running scroll round the neck plate,
+/// the motifs in relief on the chest piece and the centre stone.
+fn build_gorget(p: &CollarParams, plate: &Plate, shells: &mut Shells<'_>) -> Result<(), KitError> {
+    let (wire, detail) = (p.wire, shells.detail);
+    let shape = *plate.shape();
+    let (rows, middles) = plate.shell(detail.ring * 2, detail.rows * 3);
+    shells.sheet(Slot::Primary, &rows, &middles)?;
+    let lift = wire + p.scroll_depth;
+    // The edges' twisted wire, just inside each edge.
+    let steps = detail.ring * 3;
+    let edges: [&dyn Fn(f64) -> f64; 2] = [&|_| shape.top() - 1.4 * wire, &|theta: f64| plate.foot(theta) + 1.4 * wire];
+    for (edge, phase) in edges.iter().zip([0.0, PI]) {
+        for strand in [0.0, PI] {
+            let path: Vec<DVec3> = (0..=steps)
+                .map(|k| {
+                    let theta = TAU * fraction(k, steps);
+                    let twist = 90.0 * theta + strand + phase;
+                    let s = edge(theta) + 0.6 * wire * twist.sin();
+                    plate.outside(theta, s, 0.75 * wire + 0.6 * wire * twist.cos()).0
+                })
+                .collect();
+            shells.wire(Slot::Primary, &path, &|_| 0.75 * wire)?;
+        }
+    }
+    // A running scroll round the neck plate, between its upper edge and the band, its seam at the back.
+    let band_radius = [0.0, FRAC_PI_2].map(|theta| plate.at(theta, 0.0).0.length()).into_iter().fold(0.0, f64::max);
+    let room = shape.top() - 2.8 * wire;
+    if room > 10.0 * wire {
+        let length = TAU * band_radius;
+        let period = (1.6 * room * p.scroll_scale).max(8.0 * wire);
+        let middle = 0.5 * room;
+        for curve in running_scroll(length, room, period) {
+            // Where the plate's lower edge rises over a shoulder, the scroll stops short of it.
+            let points: Vec<(f64, f64)> = curve.iter().map(|&[x, y]| (PI + x / band_radius, middle + y)).collect();
+            for run in points.split(|&(theta, s)| s < plate.foot(theta) + 3.0 * wire) {
+                if run.len() < 2 {
+                    continue;
+                }
+                let path: Vec<DVec3> = run.iter().map(|&(theta, s)| plate.outside(theta, s, lift).0).collect();
+                shells.wire(Slot::Primary, &path, &|t| wire * (1.0 - 0.3 * t))?;
+            }
+        }
+    }
+    // The motifs on the chest piece, each no longer than the plate under it; none in the middle under a centre stone.
+    let (angles, spacing) = motif_angles(p);
+    let count = angles.len();
+    let width = (spacing * band_radius).clamp(0.008, 0.03) * p.scroll_scale;
+    let start = -(shape.band + 2.0 * wire);
+    for (m, &theta) in angles.iter().enumerate() {
+        let centre = m == count / 2 && count % 2 == 1;
+        if centre && p.centre.size > 0.0 {
+            continue;
+        }
+        let scale = if centre { 1.25 } else { 1.0 };
+        let room = plate.depth(theta) - 4.0 * wire - p.stone_size * 2.0;
+        let drop = (p.drop * p.scroll_scale * scale).min(room);
+        if drop < 6.0 * wire {
+            continue;
+        }
+        let curves = motif_curves(width * scale, drop);
+        let on_plate = |[x, y]: [f64; 2], lift: f64| plate.outside(theta + x / band_radius, start + y, lift);
+        for curve in &curves {
+            let path: Vec<DVec3> = curve.iter().map(|&xy| on_plate(xy, lift).0).collect();
+            shells.wire(Slot::Primary, &path, &|t| wire * (1.0 - 0.5 * t))?;
+        }
+        if p.stone_size > 0.0 {
+            let size = p.stone_size * scale;
+            let (foot, normal) = on_plate([0.0, -drop], 0.0);
+            let profile = PendantShape::Gem.profile(size, detail.rows);
+            let seg = PendantShape::Gem.segments(detail.lathe);
+            shells.lathe_along(Slot::Accent, foot + normal * (0.4 * size), normal, &profile, seg)?;
+        }
+    }
+    if p.centre.size > 0.0 {
+        let c = &p.centre;
+        let depth = plate.depth(0.0);
+        let s = if depth > 3.0 * c.size { -(shape.band + (0.5 * depth).max(1.5 * c.size)) } else { 0.5 * shape.height };
+        let (base, normal) = plate.outside(0.0, s, 0.0);
+        set_large_stone(shells, base, normal, c.shape, c.size, c.setting)?;
+    }
+    Ok(())
 }
 
 omuzaki_char_api::register_part_kind!(Collar);

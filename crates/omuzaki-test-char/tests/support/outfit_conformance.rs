@@ -666,7 +666,7 @@ fn pieces(fit: &dyn BodyFit, table: &RegionTable) -> Option<Vec<Piece>> {
 }
 
 /// The point of triangle `abc` nearest `p` (Ericson, Real-Time Collision Detection 5.1.5).
-fn closest_on_triangle(p: DVec3, a: DVec3, b: DVec3, c: DVec3) -> DVec3 {
+pub fn closest_on_triangle(p: DVec3, a: DVec3, b: DVec3, c: DVec3) -> DVec3 {
     let (ab, ac, ap) = (b - a, c - a, p - a);
     let (d1, d2) = (ab.dot(ap), ac.dot(ap));
     if d1 <= 0.0 && d2 <= 0.0 {
