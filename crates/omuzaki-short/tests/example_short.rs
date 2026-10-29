@@ -15,6 +15,7 @@ fn the_example_short_meets_the_bar_on_its_timeline() {
     let timeline = Timeline::new(&def, &voice).expect("the example times");
     let measures = timeline.measures();
     assert!((40.0..=90.0).contains(&measures.duration_s), "about a minute: {}", measures.duration_s);
+    eprintln!("{measures:?}");
     for check in bar_checks(&measures) {
         assert!(check.ok, "{check:?} of {measures:?}");
     }
