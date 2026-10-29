@@ -198,7 +198,7 @@ impl<'a> MeterGrid<'a> {
         if ui.is_rect_visible(rect) {
             let painter = ui.painter().with_clip_rect(rect.expand(4.0));
             let guard = shown.lock().unwrap_or_else(PoisonError::into_inner);
-            let name_w = name_width(&ctx, &ds, &self.channels, cell_w);
+            let name_w = name_width(&ctx, &ds, self.channels, cell_w);
             for (i, channel) in self.channels.iter().enumerate() {
                 let cell = cell_rect(i);
                 let value = guard.values.get(i).copied().unwrap_or(channel.processed);
