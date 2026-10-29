@@ -278,6 +278,12 @@ pub(crate) const CHANNEL_NAMES: &[(&str, &str)] = &[
     ("eyeTilt", "Eye tilt"),
     ("browArch", "Brow arch"),
     ("pupilSize", "Pupil size"),
+    ("angerVein", "Anger vein"),
+    ("eyesBlank", "Blank eyes"),
+    ("eyesDot", "Dot eyes"),
+    ("eyesStare", "Stare eyes"),
+    ("eyesPill", "Pill eyes"),
+    ("teethSharp", "Sharp teeth"),
 ];
 
 /// The name the Channels panel shows for the channel whose stable name is `stable` ("Blink L" for `eyeBlinkLeft`), in

@@ -423,10 +423,14 @@ pub(super) fn paint_deep_gloom(ctx: &mut PaintCtx<'_>) {
             (1.0, Colour { a: 0, ..light }),
         ]);
         let list = ctx.list(FaceLayerId::Base);
+        // Inside the aperture, so the glow goes shut with the eye as the other open pieces do.
+        let clip = aperture::outline(list, &eye);
+        list.push(Cmd::PushClip(clip));
         let glow = list.path().ellipse(centre, radius, radius).finish();
         list.push(Cmd::Fill { path: glow, paint: Paint::Radial { centre, radius, stops: glow_stops }, opacity: shown });
         let core = list.path().ellipse(centre, GLOW_CORE * iris.rx, GLOW_CORE * iris.rx * 1.3).finish();
         list.push(Cmd::Fill { path: core, paint: Paint::Solid(lighten(light, 0.7)), opacity: shown });
+        list.push(Cmd::PopClip);
     }
 }
 

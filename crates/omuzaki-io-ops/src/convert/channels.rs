@@ -22,7 +22,7 @@ use omuzaki_io_api::{ARKIT_52, EXTRA_PREFIX, ExpressionName, PresetExpression, e
 
 /// The anime extras and the id each is exported under (`omuzaki_<id>`). Together with the 52 `ARKit` channels these are
 /// every channel that becomes an expression.
-pub const EXTRAS: [(Channel, &str); 13] = [
+pub const EXTRAS: [(Channel, &str); 19] = [
     (Channel::EYE_ARC_LEFT, "eye-arc-left"),
     (Channel::EYE_ARC_RIGHT, "eye-arc-right"),
     (Channel::EYES_HEART, "eyes-heart"),
@@ -36,6 +36,12 @@ pub const EXTRAS: [(Channel, &str); 13] = [
     (Channel::SWEAT_DROP, "sweat-drop"),
     (Channel::BLUSH, "blush"),
     (Channel::FANGS, "fangs"),
+    (Channel::ANGER_VEIN, "anger-vein"),
+    (Channel::EYES_BLANK, "eyes-blank"),
+    (Channel::EYES_DOT, "eyes-dot"),
+    (Channel::EYES_STARE, "eyes-stare"),
+    (Channel::EYES_PILL, "eyes-pill"),
+    (Channel::TEETH_SHARP, "teeth-sharp"),
 ];
 
 /// The expression `channel` is exported as, or `None` for channels that are not expressions (head and body motion, the

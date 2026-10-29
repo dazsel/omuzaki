@@ -128,6 +128,12 @@ pub fn measure(name: &str, p: &PaintParams) -> Option<f32> {
         "effect.spiral" => e.spiral,
         "effect.sparkle" => e.sparkle,
         "effect.tears" => e.tears,
+        "effect.blank" => e.blank,
+        "effect.dot" => e.dot,
+        "effect.stare" => e.stare,
+        "effect.pill" => e.pill,
+        "teeth_sharp" => m.teeth_sharp,
+        "anger_vein" => p.anger_vein,
         _ => return None,
     })
 }

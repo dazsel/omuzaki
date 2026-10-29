@@ -67,13 +67,13 @@ deltas = { eyeSquintLeft = 0.9, eyeSquintRight = 0.9, mouthSmileLeft = 0.7, mout
 kind = "emotion"
 playback = { group = "mood" }
 curve = "smooth"
-deltas = { browDownLeft = 1.0, browDownRight = 1.0, eyeSquintLeft = 0.25, eyeSquintRight = 0.25, mouthFrownLeft = 0.8, mouthFrownRight = 0.8, jawOpen = 0.12, mouthUpperUpLeft = 0.5, mouthUpperUpRight = 0.5, noseSneerLeft = 0.3, noseSneerRight = 0.3 }
+deltas = { browDownLeft = 1.0, browDownRight = 1.0, eyeSquintLeft = 0.25, eyeSquintRight = 0.25, mouthFrownLeft = 0.8, mouthFrownRight = 0.8, jawOpen = 0.12, mouthUpperUpLeft = 0.5, mouthUpperUpRight = 0.5, noseSneerLeft = 0.3, noseSneerRight = 0.3, angerVein = 1.0 }
 
 [cross]
 kind = "emotion"
 playback = { group = "mood" }
 curve = "smooth"
-deltas = { cheekPuff = 1.0, browDownLeft = 0.7, browDownRight = 0.7, mouthPressLeft = 0.9, mouthPressRight = 0.9, eyeSquintLeft = 0.35, eyeSquintRight = 0.35, eyeLookOutRight = 0.5, eyeLookInLeft = 0.5, blush = 0.3 }
+deltas = { cheekPuff = 1.0, browDownLeft = 0.7, browDownRight = 0.7, mouthPressLeft = 0.9, mouthPressRight = 0.9, eyeSquintLeft = 0.35, eyeSquintRight = 0.35, eyeLookOutRight = 0.5, eyeLookInLeft = 0.5, blush = 0.3, angerVein = 0.7 }
 
 [pout]
 kind = "emotion"
@@ -171,6 +171,44 @@ playback = { group = "mood" }
 curve = "smooth"
 deltas = { tongueOut = 1.0, jawOpen = 0.15, eyeBlinkRight = 1.0, eyeArcRight = 1.0, browOuterUpLeft = 0.4, mouthSmileLeft = 0.3, mouthSmileRight = 0.3, blush = 0.2 }
 
+# The reference bar's symbol faces (#2393): the anime marks a comedic short switches between on almost every phrase.
+
+[rage]
+kind = "emotion"
+playback = { group = "mood" }
+curve = "ease_out"
+deltas = { eyesSqueeze = 1.0, teethSharp = 1.0, angerVein = 1.0, jawOpen = 0.75, mouthStretchLeft = 0.5, mouthStretchRight = 0.5, browDownLeft = 1.0, browDownRight = 1.0, blush = 0.5 }
+
+[shocked]
+kind = "emotion"
+playback = { group = "mood" }
+curve = "ease_out"
+deltas = { eyesBlank = 1.0, eyeWideLeft = 0.8, eyeWideRight = 0.8, browInnerUp = 0.7, browOuterUpLeft = 0.8, browOuterUpRight = 0.8, jawOpen = 0.5, mouthStretchLeft = 0.3, mouthStretchRight = 0.3 }
+
+[dumbfounded]
+kind = "emotion"
+playback = { group = "mood" }
+curve = "ease_out"
+deltas = { eyesDot = 1.0, browOuterUpLeft = 0.6, browOuterUpRight = 0.6, jawOpen = 0.18, mouthFunnel = 0.4 }
+
+[stare]
+kind = "emotion"
+playback = { group = "mood" }
+curve = "ease_out"
+deltas = { eyesStare = 1.0, browInnerUp = 0.25, browDownLeft = 0.2, browDownRight = 0.2, mouthPressLeft = 0.6, mouthPressRight = 0.6, mouthFrownLeft = 0.3, mouthFrownRight = 0.3 }
+
+[deadpan]
+kind = "emotion"
+playback = { group = "mood" }
+curve = "smooth"
+deltas = { eyesPill = 1.0, mouthPressLeft = 0.8, mouthPressRight = 0.8, mouthStretchLeft = 0.3, mouthStretchRight = 0.3 }
+
+[menace]
+kind = "emotion"
+playback = { group = "mood" }
+curve = "ease_in"
+deltas = { eyesGloom = 1.0, eyesStare = 0.5, mouthSmileLeft = 0.9, mouthSmileRight = 0.9, jawOpen = 0.32, fangs = 1.0, browDownLeft = 0.6, browDownRight = 0.6 }
+
 # ---------------------------------------------------------------------------------------------------------- accents
 
 [wink]
@@ -208,6 +246,12 @@ kind = "accent"
 playback = { layer = "momentary", fade_in_s = 0.08, auto_stop_s = 3.0 }
 curve = "smooth"
 deltas = { eyesGloom = 1.0 }
+
+[vein]
+kind = "accent"
+playback = { layer = "momentary", fade_in_s = 0.1, auto_stop_s = 1.5 }
+curve = "linear"
+deltas = { angerVein = 1.0 }
 
 [dizzy]
 kind = "accent"

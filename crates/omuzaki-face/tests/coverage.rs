@@ -34,7 +34,7 @@ fn options(channels: Vec<Channel>) -> SweepOptions {
 #[test]
 fn every_face_channel_moves_the_default_face_except_the_three_unmapped() {
     let report = sweep(&subject(&FaceProfile::default()), &options(face_channels()), &|| false).unwrap().unwrap();
-    assert_eq!(report.rows.len(), 68, "52 ARKit channels, 13 anime extras and the 3 face shapes (#74)");
+    assert_eq!(report.rows.len(), 74, "52 ARKit channels, 19 anime extras and the 3 face shapes (#74)");
     assert_eq!(report.with_status(ChannelStatus::Dead), Vec::<&str>::new());
     assert_eq!(report.with_status(ChannelStatus::OffInDesign), Vec::<&str>::new(), "the default face has fangs");
     let unmapped: Vec<&str> = UNMAPPED.iter().map(|c| c.name()).collect();
