@@ -6002,6 +6002,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-puppet"
+version = "0.0.0"
+dependencies = [
+ "image",
+ "omuzaki-anim-api",
+ "omuzaki-core",
+ "omuzaki-puppet-api",
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "omuzaki-puppet-api"
 version = "0.0.0"
 dependencies = [
