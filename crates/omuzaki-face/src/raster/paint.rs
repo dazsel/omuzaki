@@ -157,7 +157,7 @@ fn premultiply(colour: Colour, opacity: f32) -> [f32; 4] {
 #[inline]
 pub(super) fn blend(dst: &mut [u8], src: [f32; 4], coverage: u8) {
     // A transparent source leaves the pixel as it is (`0 + d * 1`, rounded back to `d`): skip the arithmetic.
-    if src == [0.0; 4] {
+    if src.iter().all(|&v| v == 0.0) {
         return;
     }
     let c = f32::from(coverage) / 255.0;

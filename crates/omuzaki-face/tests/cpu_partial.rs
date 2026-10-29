@@ -105,7 +105,7 @@ fn whole(spec: &FaceLayerSpec, face: &Face) -> Raster {
 
 /// The first pixel where two rasters differ, for the failure message.
 fn first_difference(a: &Raster, b: &Raster) -> Option<(u32, u32, [u8; 4], [u8; 4])> {
-    let at = a.pixels.chunks_exact(4).zip(b.pixels.chunks_exact(4)).position(|(p, q)| p != q)?;
+    let at = a.pixels.as_chunks::<4>().0.iter().zip(b.pixels.as_chunks::<4>().0).position(|(p, q)| p != q)?;
     let (x, y) = (at as u32 % a.width, at as u32 / a.width);
     let px = |r: &Raster| r.pixels[at * 4..at * 4 + 4].try_into().unwrap();
     Some((x, y, px(a), px(b)))

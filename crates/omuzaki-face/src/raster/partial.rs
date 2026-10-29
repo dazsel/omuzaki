@@ -206,21 +206,21 @@ impl CpuLayer {
     /// kept commands is the same in both lists, so outside the changed commands' rectangles every pixel is as before.
     fn changes(&mut self, width: u32, height: u32) -> Option<usize> {
         let (old, new) = (&self.keys, &self.next_keys);
-        let (n, m) = (old.len(), new.len());
+        let (old_len, new_len) = (old.len(), new.len());
         let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
-        if prefix == n && n == m {
+        if prefix == old_len && old_len == new_len {
             self.damage.clear();
             return None;
         }
         let suffix = old[prefix..].iter().rev().zip(new[prefix..].iter().rev()).take_while(|(a, b)| a == b).count();
-        let (a, b) = (&old[prefix..n - suffix], &new[prefix..m - suffix]);
-        // The table of common-subsequence lengths of the suffixes of `a` and `b`.
-        let (rows, cols) = (a.len() + 1, b.len() + 1);
+        let (gone, came) = (&old[prefix..old_len - suffix], &new[prefix..new_len - suffix]);
+        // The table of common-subsequence lengths of the suffixes of `gone` and `came`.
+        let (rows, cols) = (gone.len() + 1, came.len() + 1);
         self.lcs.clear();
         self.lcs.resize(rows * cols, 0);
-        for i in (0..a.len()).rev() {
-            for j in (0..b.len()).rev() {
-                self.lcs[i * cols + j] = if a[i] == b[j] {
+        for i in (0..gone.len()).rev() {
+            for j in (0..came.len()).rev() {
+                self.lcs[i * cols + j] = if gone[i] == came[j] {
                     self.lcs[(i + 1) * cols + j + 1] + 1
                 } else {
                     self.lcs[(i + 1) * cols + j].max(self.lcs[i * cols + j + 1])
@@ -238,10 +238,11 @@ impl CpuLayer {
             }
         };
         let (mut i, mut j) = (0, 0);
-        while i < a.len() || j < b.len() {
-            if i < a.len() && j < b.len() && a[i] == b[j] {
+        while i < gone.len() || j < came.len() {
+            if i < gone.len() && j < came.len() && gone[i] == came[j] {
                 (i, j) = (i + 1, j + 1);
-            } else if j < b.len() && (i == a.len() || self.lcs[i * cols + j + 1] >= self.lcs[(i + 1) * cols + j]) {
+            } else if j < came.len() && (i == gone.len() || self.lcs[i * cols + j + 1] >= self.lcs[(i + 1) * cols + j])
+            {
                 changed(self.next_bounds.get(prefix + j), &mut self.damage);
                 j += 1;
             } else {

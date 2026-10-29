@@ -306,7 +306,7 @@ impl Canvas<'_> {
         let opaque = shader.opaque_bytes();
         // A solid colour is the same at every pixel: look it up once (and skip it if it is clear).
         let solid = match shader {
-            Shader::Solid(c) if *c == [0.0; 4] => return self.scan.sweep_within(0..0, 0..0, |_, _, _| {}),
+            Shader::Solid(c) if c.iter().all(|&v| v == 0.0) => return self.scan.sweep_within(0..0, 0..0, |_, _, _| {}),
             Shader::Solid(c) => Some(*c),
             _ => None,
         };
@@ -316,7 +316,7 @@ impl Canvas<'_> {
             let start = y * width + x0;
             let row = &mut pixels[start * 4..(start + alphas.len()) * 4];
             let mask = clip.map(|mask| &mask[start..start + alphas.len()]);
-            for (i, (&a, dst)) in alphas.iter().zip(row.chunks_exact_mut(4)).enumerate() {
+            for (i, (&a, dst)) in alphas.iter().zip(row.as_chunks_mut::<4>().0).enumerate() {
                 if a == 0 {
                     continue;
                 }

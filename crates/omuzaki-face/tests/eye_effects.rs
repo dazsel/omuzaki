@@ -162,7 +162,7 @@ fn points(list: &DrawList) -> Vec<Vec2> {
                 stack.pop();
                 continue;
             }
-            _ => continue,
+            Cmd::PopClip => continue,
         };
         let at = *stack.last().unwrap();
         for el in list.elements(path) {

@@ -121,6 +121,7 @@ fn a_sneer_wrinkles_the_nose() {
 
 /// Writes the sheet the issue asks for: gloom and disgusted at the readability sizes.
 #[test]
+#[allow(clippy::disallowed_methods)] // writes the evidence sheet into the folder named; no op runs here
 fn sheet() {
     let Some(dir) = std::env::var_os("OMUZAKI_EVIDENCE") else { return };
     let face = subject(ExpressionSet::library().unwrap());

@@ -223,7 +223,7 @@ fn gloom_band(ctx: &mut PaintCtx<'_>, strength: f32) {
     // The shade is a soft oval over the band, darkest in its middle and gone at every edge (#2428): a rectangle with a
     // vertical ramp read as a grey patch with a hard top where the layer's rectangle cut it. A disc of the band's
     // half-width, squashed to its half-height, so the fade is round whatever the band's shape.
-    let centre = Vec2::new(0.5 * (left + right), 0.5 * (bottom + top));
+    let centre = Vec2::new(f32::midpoint(left, right), f32::midpoint(bottom, top));
     let radii = Vec2::new(0.5 * (right - left), 0.5 * (top - bottom));
     let stops = Stops::new(&[
         (0.0, Colour::rgb(r, g, b)),

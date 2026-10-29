@@ -47,7 +47,7 @@ fn miter_reach(elements: &[PathEl]) -> f32 {
             return;
         }
         // The miter's length over the half-width is 1 / cos(turn / 2), and cos(turn / 2)^2 = (1 + cos(turn)) / 2.
-        let half_cos = (0.5 * (1.0 + a.dot(b))).max(0.0).sqrt();
+        let half_cos = f32::midpoint(1.0, a.dot(b)).max(0.0).sqrt();
         let ratio = if half_cos > 0.0 { half_cos.recip() } else { f32::INFINITY };
         if ratio <= MITER_LIMIT {
             reach = reach.max(ratio);
