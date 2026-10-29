@@ -27,8 +27,10 @@ use crate::kit::curve::{TAU, fraction};
 pub const LAYER_DRESS: i32 = LAYER_SHIRT + 5;
 /// The cut of its rings: a little squarer than an ellipse.
 pub const EXPONENT: f64 = 2.15;
-/// The cloth's thickness by default, metres.
-pub const THICKNESS: f64 = 0.0022;
+/// The cloth's thickness by default, metres: a light dress cloth, so its bodice lies within 4 mm of the body.
+pub const THICKNESS: f64 = 0.0012;
+/// How far it stands off the layer under it by default, metres.
+pub const EASE: f64 = 0.0025;
 /// The strap armholes' depth by default, as a fraction of the torso: their floor where the vest's is, below the arms' roots.
 pub const ARMHOLE: f64 = 0.54;
 /// The rolled edge's lip, metres.
@@ -161,7 +163,7 @@ impl Default for DressParams {
     fn default() -> Self {
         Self {
             common: GarmentCommon {
-                ease: 0.004,
+                ease: EASE,
                 fabric: FabricStyle::Plain { colour: ColourRef::rgb(0x4e, 0x58, 0x7a) },
                 ..GarmentCommon::default()
             },

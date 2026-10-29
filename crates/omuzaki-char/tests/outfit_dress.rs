@@ -1,4 +1,5 @@
-//! The dress garment (#328): the conformance suite for every neckline, skirt cut and sleeve, and its parameters.
+//! The dress garment (#328): the conformance suite for every neckline, skirt cut and sleeve, how close its bodice
+//! follows the body, its straps and necks, and its parameters.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)] // test helpers: a panic is a clear failure
 #![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)] // test arithmetic
@@ -109,4 +110,13 @@ fn straps_go_over_the_shoulders_and_a_halter_bares_the_back() {
     }
     let bad = DressParams { sleeves: DressSleeves::Long, ..halter };
     assert!(bad.validate().is_err(), "a halter with sleeves is refused");
+}
+
+#[test]
+fn its_bodice_follows_the_bust_and_the_waist_within_4_mm() {
+    for (label, shape) in conformance::shapes() {
+        let value = serde_json::to_value(DressParams::default()).unwrap();
+        let (gap, at) = conformance::torso_gap("dress", LAYER_DRESS, value, &shape, &services());
+        assert!(gap <= 0.004, "{label}: its inside stands {:.1} mm off the body at {at}", gap * 1e3);
+    }
 }
