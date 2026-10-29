@@ -174,7 +174,8 @@ pub fn core_options(cli: &Cli, actor: Actor) -> Result<AppOptions, OpError> {
     }
     // The render ops get a headless renderer that opens its GPU on the first render (`crate::gpu`), so an agent or a
     // script sees what it made, and nothing else starts a GPU.
-    let mut services = crate::gpu::with_render_services(ServicesBuilder::from(options.services.clone()));
+    let warm = matches!(&cli.command, Command::Run { op, dry_run: false, .. } if crate::gpu::renders(op));
+    let mut services = crate::gpu::with_render_services(ServicesBuilder::from(options.services.clone()), warm);
     // The asset store and the settings are the person's, the ones the studio uses: an import here is there in the
     // studio, a render lands where `omuzaki store export` finds it, and `settings.set` changes the same file.
     if let Ok(paths) = omuzaki_settings::Paths::from_env() {

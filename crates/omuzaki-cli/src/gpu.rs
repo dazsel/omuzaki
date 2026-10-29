@@ -37,13 +37,31 @@ static NO_GPU: OnceLock<String> = OnceLock::new();
 
 /// `builder` with the render services added: the lazily opened renderer (as `Mutex<Box<dyn Renderer>>`, the form the
 /// render jobs borrow it in), its [`promised`] capabilities, the kit's builder and default build services.
-pub fn with_render_services(builder: ServicesBuilder) -> ServicesBuilder {
-    let renderer: Box<dyn Renderer> = Box::new(LazyRenderer::new(HeadlessOptions::default()));
+///
+/// With `warm`, the device opens now, before any job starts: a render job's time cap counts its rendering, and opening
+/// a software GPU and compiling its pipelines can take most of a minute on a busy machine. A device that can't open is
+/// remembered and reported by the render that needs it, as without `warm`.
+pub fn with_render_services(builder: ServicesBuilder, warm: bool) -> ServicesBuilder {
+    let mut lazy = LazyRenderer::new(HeadlessOptions::default());
+    if warm {
+        // A failure is recorded in `NO_GPU`; the job that renders reports it.
+        let _ = lazy.open();
+    }
+    let renderer: Box<dyn Renderer> = Box::new(lazy);
     builder
         .insert::<Mutex<Box<dyn Renderer>>>(Arc::new(Mutex::new(renderer)))
         .insert::<Capabilities>(Arc::new(promised()))
         .insert::<dyn CharacterBuilder>(Arc::new(RegistryBuilder))
         .insert::<BuildServices>(Arc::new(BuildServices::default()))
+}
+
+/// Whether `op` is a render job, so a command that runs it opens the GPU before the job starts ([`with_render_services`]).
+#[must_use]
+pub fn renders(op: &str) -> bool {
+    omuzaki_ops_api::registrations().any(|reg| {
+        let meta = (reg.meta)();
+        meta.name == op && meta.kind == omuzaki_ops_api::OpKind::Job && meta.scope == omuzaki_ops_api::Scope::Render
+    })
 }
 
 /// What the headless wgpu renderer can do, as far as it is known before its device opens (see the module docs).
@@ -231,7 +249,7 @@ mod tests {
     /// The services carry the renderer without opening it: a command that doesn't render never starts a GPU.
     #[test]
     fn the_services_hold_an_unopened_renderer_and_the_promise() {
-        let services = with_render_services(ServicesBuilder::new()).build();
+        let services = with_render_services(ServicesBuilder::new(), false).build();
         let renderer = services.get::<Mutex<Box<dyn Renderer>>>().expect("the renderer is wired");
         let renderer = renderer.lock().expect("not poisoned");
         assert_eq!(renderer.capabilities(), &promised(), "nothing opened it, so it answers with the promise");
