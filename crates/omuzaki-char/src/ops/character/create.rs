@@ -17,6 +17,8 @@ use serde_json::json;
 
 use super::access::{self, list};
 use super::tree;
+use crate::style;
+use crate::style::merge;
 use crate::template::registry;
 use crate::template::{Template, TemplateDefaults};
 
@@ -68,6 +70,11 @@ pub struct CharacterCreate {
     /// `empty` (none).
     #[serde(default)]
     pub parts: StartingParts,
+    /// A character style to start from (`character.list_styles` lists them; `mature` on `standard` or `tall`): its
+    /// face design, face shape, neck and proportions, and with the default parts the parts it brings (the mature
+    /// style's braided locks and ahoge). Left out, the kit's own design.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<String>,
 }
 
 /// The skin colours new characters start with, under the palette slots the head and body parameters name (`@skin`,
@@ -107,25 +114,6 @@ struct StarterPart {
 /// The starter, parsed once per call (it is small, and `character.create` is not a hot path).
 fn starter() -> Result<Starter, OpError> {
     toml::from_str(STARTER).map_err(|e| OpError::internal(format!("the built-in starter (library/starter.toml): {e}")))
-}
-
-/// `over` merged into `base`: objects field by field, anything else (a list, a number) replaced whole.
-fn merge(base: &mut Value, over: &Value) {
-    match (base, over) {
-        (Value::Object(base), Value::Object(over)) => {
-            for (key, value) in over {
-                match base.get_mut(key) {
-                    Some(slot) => merge(slot, value),
-                    None => {
-                        base.insert(key.clone(), value.clone());
-                    }
-                }
-            }
-        }
-        // An absent table (a part that changes nothing of its defaults) leaves them as they are.
-        (_, Value::Null) => {}
-        (base, over) => *base = over.clone(),
-    }
 }
 
 /// A built-in id that turned out not to be a valid slug: a bug in the starter file, not in the caller's arguments.
@@ -206,19 +194,43 @@ impl CharacterCreate {
         defaults.face.validate().map_err(|e| {
             OpError::internal(format!("the default face of template `{}` is invalid: {e}", template.id()))
         })?;
+        let style = self.style.as_deref().map(style::find).transpose().map_err(super::super::style::style_error)?;
+        let mut starting = starter.parts;
+        if let (StartingParts::Defaults, Some(style)) = (self.parts, style) {
+            starting.retain(|part| !style.without.contains(&part.id));
+            for extra in &style.parts {
+                match starting.iter_mut().find(|part| part.id == extra.id) {
+                    Some(part) => merge(&mut part.params, &extra.params),
+                    None => starting.push(StarterPart {
+                        id: extra.id.clone(),
+                        kind: extra.kind.clone(),
+                        params: extra.params.clone(),
+                    }),
+                }
+            }
+        }
         let parts = match self.parts {
             StartingParts::Defaults => {
-                starter.parts.iter().map(|part| part.part(&defaults, template.id())).collect::<Result<_, _>>()?
+                starting.iter().map(|part| part.part(&defaults, template.id())).collect::<Result<_, _>>()?
             }
             StartingParts::Empty => BTreeMap::new(),
         };
-        Ok(CharacterDef::new(self.name.trim().to_owned(), self.template.clone())
+        let mut def = CharacterDef::new(self.name.trim().to_owned(), self.template.clone())
             .with_seed(self.seed)
             .with_palette(starting_palette())
             .with_skin_tone(None)
             .with_parts(parts)
             .with_face(defaults.face)
-            .with_weight_brushes(BTreeMap::new()))
+            .with_weight_brushes(BTreeMap::new());
+        if let Some(style) = style {
+            // An empty character has no head or body for the style to change: it gets the face design alone.
+            if matches!(self.parts, StartingParts::Empty) {
+                return Err(OpError::invalid("style", "a style needs the default parts (it changes the head and body)")
+                    .hint("leave `parts` out, or create the character empty and apply the style once it has a head and body"));
+            }
+            style.apply(&mut def).map_err(super::super::style::style_error)?;
+        }
+        Ok(def)
     }
 }
 
@@ -234,6 +246,7 @@ pub fn default_character(template: &BodyTemplateId) -> Result<CharacterDef, OpEr
         template: template.clone(),
         seed: 0,
         parts: StartingParts::Defaults,
+        style: None,
     };
     create.definition(find_template(template)?)
 }

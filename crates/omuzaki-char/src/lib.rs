@@ -43,6 +43,7 @@ pub mod look;
 pub mod ops;
 pub mod outfit;
 pub mod palette;
+pub mod style;
 pub mod template;
 
 omuzaki_core::define_link! {
