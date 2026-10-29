@@ -741,7 +741,7 @@ mod hostile {
             json!(""),
             json!("main"),
             json!("kit"),
-            json!("../../outside"),
+            json!("../outside"),
             json!("a".repeat(5000)),
             json!("\u{0}\u{202e}"),
             json!([]),
