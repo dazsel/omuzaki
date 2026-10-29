@@ -1,5 +1,5 @@
 //! A short rendered as a script sees it: `omuzaki run short.render` performs a kit character through a two-line short
-//! on this machine's GPU and writes a WebM into the project, the same bytes on every run. Skips where no GPU adapter
+//! on this machine's GPU and writes the video into the project, the same bytes on every run. Skips where no GPU adapter
 //! exists (lavapipe is one, in CI and the dev VMs).
 
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
