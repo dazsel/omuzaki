@@ -269,7 +269,8 @@ impl FrameState {
         let rounds = rounds.clamp(1, MAX_ROUNDS);
         for round in 0..rounds {
             let jitter = supersample::jitter(round, rounds, hardware);
-            let packed = uniform::frame_uniform(scene, internal_size, jitter);
+            let dither = supersample::coverage_dither(round, rounds, hardware);
+            let packed = uniform::frame_uniform(scene, internal_size, jitter).with_coverage_dither(dither);
             queue.write_buffer(
                 &self.uniforms.buffer,
                 u64::from(round) * self.uniforms.stride,
