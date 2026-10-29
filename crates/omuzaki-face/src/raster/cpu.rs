@@ -15,11 +15,14 @@
 //!
 //! Row 0 of the output is the top of `spec.rect` (plane y is up, pixel y is down).
 
-use omuzaki_core::glam::{Affine2, Vec2};
+use omuzaki_core::glam::Affine2;
+use std::ops::Range;
+
 use omuzaki_face_api::{
-    Cap, Cmd, DrawList, FaceError, FaceLayerSpec, FaceRasterizer, Join, Paint, PathEl, PathRef, Raster,
+    Cap, Cmd, DrawList, FaceError, FaceLayerSpec, FaceRasterizer, Join, Paint, PathEl, PathRef, Raster, RasterRect,
 };
 
+use super::bounds::{command_extent, to_pixels};
 use super::clip::ClipStack;
 use super::hairline;
 use super::paint::{Shader, blend};
@@ -67,44 +70,131 @@ impl FaceRasterizer for SkiaRasterizer {
         px_per_m: f32,
         out: &mut Raster,
     ) -> Result<(), FaceError> {
-        let rect = spec.rect;
-        if !(rect.width() > 0.0 && rect.height() > 0.0 && px_per_m.is_finite() && px_per_m > 0.0) {
-            return Err(FaceError::Raster("the layer rectangle and density must be positive".to_owned()));
-        }
-        let (w, h) = rect.size_px(px_per_m);
-        if w > MAX_SIDE || h > MAX_SIDE {
-            return Err(FaceError::Raster(format!("a {w} x {h} raster is larger than the {MAX_SIDE} px limit")));
-        }
+        let (w, h) = size(spec, px_per_m)?;
         out.width = w;
         out.height = h;
         out.pixels.clear();
         out.pixels.resize(w as usize * h as usize * 4, 0);
+        self.draw(spec, list, 0..list.cmds().len(), RasterRect::full(w, h), out)
+    }
 
+    fn rasterize_part(
+        &mut self,
+        spec: &FaceLayerSpec,
+        list: &DrawList,
+        px_per_m: f32,
+        cmds: Range<usize>,
+        rect: RasterRect,
+        out: &mut Raster,
+    ) -> Result<bool, FaceError> {
+        let (w, h) = size(spec, px_per_m)?;
+        if (out.width, out.height) != (w, h) || out.pixels.len() != w as usize * h as usize * 4 {
+            return Err(FaceError::Raster(format!(
+                "a part is drawn over the layer's {w} x {h} raster, not a {} x {} one",
+                out.width, out.height
+            )));
+        }
+        if rect.x.saturating_add(rect.width) > w || rect.y.saturating_add(rect.height) > h {
+            return Err(FaceError::Raster(format!("{rect:?} is not inside the {w} x {h} raster")));
+        }
+        if cmds.start > cmds.end || cmds.end > list.cmds().len() {
+            return Err(FaceError::Raster(format!("{cmds:?} is not inside a list of {}", list.cmds().len())));
+        }
+        self.draw(spec, list, cmds, rect, out)?;
+        Ok(true)
+    }
+}
+
+/// The layer's size in pixels at `px_per_m`.
+fn size(spec: &FaceLayerSpec, px_per_m: f32) -> Result<(u32, u32), FaceError> {
+    let rect = spec.rect;
+    if !(rect.width() > 0.0 && rect.height() > 0.0 && px_per_m.is_finite() && px_per_m > 0.0) {
+        return Err(FaceError::Raster("the layer rectangle and density must be positive".to_owned()));
+    }
+    let (w, h) = rect.size_px(px_per_m);
+    if w > MAX_SIDE || h > MAX_SIDE {
+        return Err(FaceError::Raster(format!("a {w} x {h} raster is larger than the {MAX_SIDE} px limit")));
+    }
+    Ok((w, h))
+}
+
+impl SkiaRasterizer {
+    /// Draws `list`'s commands in `cmds` over `out` (already the layer's size for the call's density), inside `rect`
+    /// only.
+    fn draw(
+        &mut self,
+        spec: &FaceLayerSpec,
+        list: &DrawList,
+        cmds: Range<usize>,
+        rect: RasterRect,
+        out: &mut Raster,
+    ) -> Result<(), FaceError> {
+        let (w, h) = (out.width, out.height);
         // Plane (metres, y up) to pixel (y down), scaled so the rect fills the image exactly (`size_px` rounds).
-        #[allow(clippy::cast_precision_loss)] // pixel counts are far below 2^24
-        let (sx, sy) = (w as f32 / rect.width(), h as f32 / rect.height());
-        let to_px = Affine2::from_cols(Vec2::new(sx, 0.0), Vec2::new(0.0, -sy), Vec2::new(-rect.x0 * sx, rect.y1 * sy));
+        let to_px = to_pixels(spec, (w, h));
 
         let (width, height) = (w as usize, h as usize);
         self.scan.reset(width, height);
         self.transforms.clear();
         self.transforms.push(Affine2::IDENTITY);
         self.clips.reset(width, height);
+        let scissor = Scissor {
+            x0: rect.x as usize,
+            y0: rect.y as usize,
+            x1: (rect.x + rect.width) as usize,
+            y1: (rect.y + rect.height) as usize,
+        };
         let mut canvas = Canvas {
             pixels: &mut out.pixels,
             width,
             list,
             to_px,
+            scissor,
             scan: &mut self.scan,
             outline: &mut self.outline,
             stroker: &mut self.stroker,
             transforms: &mut self.transforms,
             clips: &mut self.clips,
         };
-        list.cmds().iter().enumerate().try_for_each(|(index, cmd)| {
-            check(index, cmd, list)?;
+        let start = cmds.start;
+        // Drawing part of the layer, a command that can't reach the part is skipped, and so is everything under a clip
+        // that can't (the clip's own push and pop included): neither can change a pixel there.
+        let part = rect != RasterRect::full(w, h);
+        let mut skipping = 0_usize;
+        list.cmds()[cmds].iter().enumerate().try_for_each(|(i, cmd)| {
+            check(start + i, cmd, list)?;
+            if part {
+                let reaches = || command_extent(cmd, list, canvas.total(), (w, h)).is_some_and(|r| r.intersects(&rect));
+                match cmd {
+                    Cmd::PushClip(_) if skipping > 0 || !reaches() => {
+                        skipping += 1;
+                        return Ok(());
+                    }
+                    Cmd::PopClip if skipping > 0 => {
+                        skipping -= 1;
+                        return Ok(());
+                    }
+                    Cmd::Fill { .. } | Cmd::Stroke { .. } if skipping > 0 || !reaches() => return Ok(()),
+                    _ => {}
+                }
+            }
             canvas.run(cmd)
         })
+    }
+}
+
+/// The pixels a call may change: columns `x0..x1` of rows `y0..y1`.
+#[derive(Copy, Clone, Debug)]
+struct Scissor {
+    x0: usize,
+    y0: usize,
+    x1: usize,
+    y1: usize,
+}
+
+impl Scissor {
+    fn holds(&self, x: usize, y: usize) -> bool {
+        (self.x0..self.x1).contains(&x) && (self.y0..self.y1).contains(&y)
     }
 }
 
@@ -114,6 +204,7 @@ struct Canvas<'a> {
     width: usize,
     list: &'a DrawList,
     to_px: Affine2,
+    scissor: Scissor,
     scan: &'a mut Scan,
     outline: &'a mut Outline,
     stroker: &'a mut Stroker,
@@ -197,11 +288,12 @@ impl Canvas<'_> {
         let factor = scaled as f32 / a8 as f32;
         let Some(shader) = Shader::new(paint, opacity * factor, to_px) else { return };
         let (width, height) = (self.width, self.pixels.len() / 4 / self.width.max(1));
-        let (pixels, clip) = (&mut *self.pixels, self.clips.current());
+        let (pixels, clip, scissor) = (&mut *self.pixels, self.clips.current(), self.scissor);
         hairline::stroke(self.list.elements(path), to_px, cap, (width, height), &mut |x, y, a| {
             if let (Ok(x), Ok(y)) = (usize::try_from(x), usize::try_from(y))
                 && x < width
                 && y < height
+                && scissor.holds(x, y)
             {
                 shade(pixels, width, clip, &shader, x, y, a);
             }
@@ -210,22 +302,41 @@ impl Canvas<'_> {
 
     /// Sweeps the edges accumulated in the scan and blends `shader` through the coverage (times the clip's).
     fn blit(&mut self, shader: &Shader) {
-        let (width, clip) = (self.width, self.clips.current());
+        let (width, clip, scissor) = (self.width, self.clips.current(), self.scissor);
         let opaque = shader.opaque_bytes();
+        // A solid colour is the same at every pixel: look it up once (and skip it if it is clear).
+        let solid = match shader {
+            Shader::Solid(c) if c.iter().all(|&v| v == 0.0) => return self.scan.sweep_within(0..0, 0..0, |_, _, _| {}),
+            Shader::Solid(c) => Some(*c),
+            _ => None,
+        };
         let pixels = &mut *self.pixels;
-        self.scan.sweep(|y, x0, alphas| {
-            for (i, &a) in alphas.iter().enumerate() {
+        self.scan.sweep_within(scissor.y0..scissor.y1, scissor.x0..scissor.x1, |y, x0, alphas| {
+            // The row's pixels and clip coverage, sliced once so the loop indexes without checks.
+            let start = y * width + x0;
+            let row = &mut pixels[start * 4..(start + alphas.len()) * 4];
+            let mask = clip.map(|mask| &mask[start..start + alphas.len()]);
+            for (i, (&a, dst)) in alphas.iter().zip(row.as_chunks_mut::<4>().0).enumerate() {
                 if a == 0 {
                     continue;
                 }
-                let x = x0 + i;
-                if let (255, None, Some(bytes)) = (a, clip, opaque) {
+                let a = match mask {
+                    Some(mask) => match clipped(a, mask[i]) {
+                        0 => continue,
+                        a => a,
+                    },
+                    None => a,
+                };
+                if let (255, None, Some(bytes)) = (a, mask, opaque) {
                     // An opaque colour through full coverage replaces the pixel: no blend needed.
-                    let at = (y * width + x) * 4;
-                    pixels[at..at + 4].copy_from_slice(&bytes);
+                    dst.copy_from_slice(&bytes);
                     continue;
                 }
-                shade(pixels, width, clip, shader, x, y, a);
+                let src = match solid {
+                    Some(c) => c,
+                    None => shader.colour_at(x0 + i, y),
+                };
+                blend(dst, src, a);
             }
         });
     }
@@ -241,21 +352,27 @@ impl Canvas<'_> {
 }
 
 /// Blends `shader` onto pixel (`x`, `y`) with coverage `a`, limited by the clip mask if there is one.
-#[allow(clippy::cast_possible_truncation)] // the clipped alpha is at most 255
 fn shade(pixels: &mut [u8], width: usize, clip: Option<&[u8]>, shader: &Shader, x: usize, y: usize, a: u8) {
     let a = match clip {
-        Some(mask) => {
-            let m = mask[y * width + x];
-            if m == 0 {
-                return;
-            }
-            // Skia's anti-aliased clip blitter: alpha * (clip + 1) / 256.
-            ((u32::from(a) * (u32::from(m) + 1)) >> 8) as u8
-        }
+        Some(mask) => match clipped(a, mask[y * width + x]) {
+            0 => return,
+            a => a,
+        },
         None => a,
     };
     let at = (y * width + x) * 4;
     blend(&mut pixels[at..at + 4], shader.colour_at(x, y), a);
+}
+
+/// Coverage `a` through clip coverage `m`: Skia's anti-aliased clip blitter, `a * (m + 1) / 256`, and 0 where the clip
+/// is.
+#[inline]
+#[allow(clippy::cast_possible_truncation)] // at most 255
+fn clipped(a: u8, m: u8) -> u8 {
+    if m == 0 {
+        return 0;
+    }
+    ((u32::from(a) * (u32::from(m) + 1)) >> 8) as u8
 }
 
 /// The error for a command whose `field` is not a finite number: the command's place in the list says which.

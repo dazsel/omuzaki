@@ -122,7 +122,7 @@ pub const EYE_TILT_PER_UNIT: f32 = 2.0;
 pub const PINPOINT: f32 = 0.6;
 
 /// Everything a painter needs to draw one face this frame, derived from the channels by a [`FaceMapping`]. `Copy` and
-/// fixed-size (188 bytes): nothing allocates between the bus and the painter.
+/// fixed-size (192 bytes): nothing allocates between the bus and the painter.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct PaintParams {
     /// The character's left eye (+x).
@@ -155,6 +155,8 @@ pub struct PaintParams {
     pub sweat: f32,
     /// The anger vein at the temple, `0..=1`.
     pub anger_vein: f32,
+    /// The nose wrinkled in a sneer (disgust), `0..=1`: creases over the bridge (#2428).
+    pub nose_sneer: f32,
 }
 
 impl PaintParams {
@@ -594,6 +596,7 @@ impl FaceMapping {
             cheek_puff: g(Channel::CHEEK_PUFF),
             sweat: g(Channel::SWEAT_DROP),
             anger_vein: g(Channel::ANGER_VEIN),
+            nose_sneer: mid(ch, Channel::NOSE_SNEER_LEFT, Channel::NOSE_SNEER_RIGHT).clamp(0.0, 1.0),
         }
     }
 
@@ -795,7 +798,7 @@ mod tests {
 
     #[test]
     fn the_paint_parameters_are_small_and_copy() {
-        assert_eq!(std::mem::size_of::<PaintParams>(), 188, "update the design doc if this changes");
+        assert_eq!(std::mem::size_of::<PaintParams>(), 192, "update the design doc if this changes");
     }
 
     #[test]
@@ -1015,6 +1018,7 @@ mod tests {
         }
         assert!(within(p.blush, 0.0, 1.6) && within(p.cheek_puff, 0.0, 1.0) && within(p.sweat, 0.0, 1.0), "{p:?}");
         assert!(within(p.anger_vein, 0.0, 1.0), "{p:?}");
+        assert!(within(p.nose_sneer, 0.0, 1.0), "{p:?}");
     }
 
     proptest! {

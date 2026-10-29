@@ -71,7 +71,7 @@ pub struct Painted {
 impl Painted {
     /// How alike `self` and `other` read at size index `s`: the lowest of the regions' SSIM, and the largest of their
     /// luma distances.
-    fn likeness(&self, other: &Self, s: usize) -> Option<(f64, f64)> {
+    pub fn likeness(&self, other: &Self, s: usize) -> Option<(f64, f64)> {
         let mut score = 1.0f64;
         let mut distance = 0.0f64;
         for (mine, theirs, share) in [

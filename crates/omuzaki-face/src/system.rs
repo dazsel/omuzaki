@@ -4,11 +4,12 @@ use omuzaki_anim_api::ChannelBuf;
 use omuzaki_core::time::{Clock, Seconds, SystemClock};
 use omuzaki_face_api::{
     FaceDrawing, FaceError, FaceInput, FaceLayerId, FaceLayerSpec, FacePainter, FaceProfile, FaceRasterizer, FaceView,
-    Raster,
+    Raster, RasterRect,
 };
 
 use crate::layer::{FaceLayerPainter, GpuRasterizer};
 use crate::painter::{LayerSections, RealPainter};
+use crate::raster::{CpuLayer, Repaint};
 
 /// The painter a system owns. The real one is kept by value so its section ranges reach the GPU rasteriser (Q2 of #1433);
 /// any other (the mock) goes through the contract only.
@@ -45,16 +46,35 @@ impl Painter {
 pub(crate) struct LayerSlot {
     /// The fingerprint and spec of the picture last reported as changed; `None` until the first one.
     shown: Option<(u64, FaceLayerSpec)>,
-    /// The CPU raster of the current draw list, valid unless `stale`.
-    pub(crate) raster: Raster,
+    /// The CPU raster of the current draw list, valid unless `stale`, repainted in part when it can be (#2443).
+    pub(crate) cpu: CpuLayer,
     /// The raster lags the draw list: a GPU rasteriser is registered (it draws at paint time and the CPU raster is only
     /// the fallback), or the last CPU rasterisation failed.
     pub(crate) stale: bool,
+    /// The texture holds the CPU raster as of the last write, so a write can send only what changed since.
+    pub(crate) written: bool,
+    /// What the CPU raster changed since the last write; `None` if nothing did.
+    pub(crate) pending: Option<RasterRect>,
+    /// The rows of a partial write, reused.
+    pub(crate) upload: Vec<u8>,
+}
+
+impl LayerSlot {
+    /// Records a CPU repaint: what changed is due to be written.
+    pub(crate) fn repainted(&mut self, repaint: Repaint) {
+        let (width, height) = (self.cpu.raster().width, self.cpu.raster().height);
+        let rect = match repaint {
+            Repaint::Unchanged => return,
+            Repaint::Whole => RasterRect::full(width, height),
+            Repaint::Part(rect) => rect,
+        };
+        self.pending = Some(self.pending.map_or(rect, |p| p.union(rect)));
+    }
 }
 
 impl LayerSlot {
     fn new() -> Self {
-        Self { shown: None, raster: Raster::new(0, 0), stale: true }
+        Self { shown: None, cpu: CpuLayer::default(), stale: true, written: false, pending: None, upload: Vec::new() }
     }
 }
 
@@ -169,6 +189,10 @@ impl FaceSystem {
         if let Some(gpu) = self.gpu.as_mut() {
             gpu.device_lost();
         }
+        // The textures are new: a CPU write must send the whole raster.
+        for slot in &mut self.slots {
+            slot.written = false;
+        }
     }
 
     /// Whether the registered GPU rasteriser (if any) needs `layer` painted again although nothing changed
@@ -183,6 +207,12 @@ impl FaceSystem {
     pub fn gpu_paint_failed(&mut self, layer: FaceLayerId) {
         if let Some(gpu) = self.gpu.as_mut() {
             gpu.paint_failed(layer);
+        }
+        // Nor does the texture hold a CPU write the renderer refused.
+        if let Some(at) = self.painter.layers().iter().position(|spec| spec.id == layer)
+            && let Some(slot) = self.slots.get_mut(at)
+        {
+            slot.written = false;
         }
     }
 
@@ -220,7 +250,7 @@ impl FaceSystem {
     /// is only drawn on the GPU.
     pub fn raster(&self, layer: FaceLayerId) -> Option<&Raster> {
         let at = self.painter.layers().iter().position(|spec| spec.id == layer)?;
-        self.slots.get(at).filter(|slot| !slot.stale).map(|slot| &slot.raster)
+        self.slots.get(at).filter(|slot| !slot.stale).map(|slot| slot.cpu.raster())
     }
 
     /// One frame: maps `channels` through `profile.mapping` once, paints, and rasterises the layers whose draw list
@@ -256,7 +286,8 @@ impl FaceSystem {
             update.changed[spec.id as usize] = true;
             slot.stale = true;
             if self.gpu.is_none() {
-                self.cpu.rasterize(spec, &self.drawing[spec.id], spec.px_per_m, &mut slot.raster)?;
+                let repaint = slot.cpu.repaint(self.cpu.as_mut(), spec, &self.drawing[spec.id])?;
+                slot.repainted(repaint);
                 slot.stale = false;
             }
         }
