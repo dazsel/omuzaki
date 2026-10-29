@@ -210,6 +210,8 @@ pub struct SceneStage {
     resolved: ResolvedScene,
     aspect: f32,
     options: SceneStageOptions,
+    /// The visible members left off the stage at the last open or sync, and why.
+    skipped: Vec<(MemberId, OpError)>,
 }
 
 impl std::fmt::Debug for SceneStage {
@@ -249,6 +251,7 @@ impl SceneStage {
             resolved: ResolvedScene::new(),
             aspect,
             options,
+            skipped: Vec::new(),
         };
         this.cast.set_member_input(&lead_id, &this.base_input(&lead_id));
         let built = this.add_members(doc, bodies, renderer).and_then(|_| this.resolve(bodies.store(), renderer));
@@ -355,6 +358,12 @@ impl SceneStage {
         self.members.get(id).map(|staged| staged.base)
     }
 
+    /// The visible members left off the stage at the last open or sync because their body didn't load, and why: a
+    /// character that is missing or doesn't build. The rest of the cast is drawn.
+    pub fn skipped(&self) -> &[(MemberId, OpError)] {
+        &self.skipped
+    }
+
     /// The members on the stage, the subject among them, in id order.
     pub fn members(&self) -> impl Iterator<Item = &MemberId> {
         self.members.keys()
@@ -396,7 +405,8 @@ impl SceneStage {
         result.map(|()| gone).map_err(SceneStageError::Stage)
     }
 
-    /// Stages the visible members the cast doesn't have yet. Returns them; the first that fails ends it.
+    /// Stages the visible members the cast doesn't have yet, and returns them. One whose body doesn't load is skipped
+    /// ([`skipped`](SceneStage::skipped)); a renderer failure ends it.
     fn add_members(
         &mut self,
         doc: &dyn DocRead,
@@ -411,8 +421,19 @@ impl SceneStage {
             .map(|(id, _)| id.clone())
             .collect();
         let mut added = Vec::with_capacity(missing.len());
+        self.skipped.clear();
         for id in missing {
-            let (stage, staged) = stage_member(doc, &self.def, &id, bodies, renderer, None, &self.options)?;
+            // A member whose character is missing or doesn't build stays off the stage and is reported; the rest of the
+            // cast is drawn (design D6). The next sync tries it again.
+            let (stage, staged) = match stage_member(doc, &self.def, &id, bodies, renderer, None, &self.options) {
+                Ok(staged) => staged,
+                Err(SceneStageError::Member { member, source }) => {
+                    tracing::warn!(%member, %source, "a cast member can't be staged: the scene is drawn without it");
+                    self.skipped.push((member, source));
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             let root = Mat4::from(Figure::new(&self.def.cast[&id], staged.landmarks).root);
             self.members.insert(id.clone(), staged);
             if let Some(replaced) = self.cast.add_member(id.clone(), stage, root) {
