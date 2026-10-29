@@ -18,7 +18,7 @@ use super::cloud::Cloud;
 use super::edge::{Tube, loop_tube};
 use super::hang::{Arms, HangSpec, Table};
 use super::reach::HangReach;
-use super::{CoatCut, Front, MAX_LENGTH, MIN_LENGTH};
+use super::{CoatCut, Front, MAX_LENGTH, MIN_LENGTH, NeckShape};
 use crate::kit::curve::{TAU, fraction, lerp, sstep};
 use crate::kit::grid::{Grid, GridOptions, MeshBuilder, Skin};
 use crate::outfit::common::GarmentError;
@@ -63,6 +63,12 @@ const SHOULDER: (f64, f64, f64) = (0.5, 1.0, 0.5);
 /// The straps beside an armhole: the highest their top may be, as a fraction of the torso below its top, and over
 /// which angles from the armhole's edge they keep to it (all of it, then easing back to the neckline).
 const STRAP: (f64, f64, f64) = (0.08, 0.15, 0.35);
+/// A sleeveless high or halter neck's cut-in, as angles from the side, radians: it leaves the armhole's floor where the
+/// torso turns from its side to its front, and reaches the collar line this far from the middle of the front. The
+/// torso's rings are squarish, so most of the angles round to the front lie on its side, at one width.
+const CUT_IN: (f64, f64) = (0.8, PI / 2.0 - 0.2);
+/// How far below the neck's top a collar line stays, metres.
+const NECK_CLEAR: f64 = 0.004;
 /// The neckline dips at the back over this many radians either side of the centre back.
 const BACK_DIP: f64 = 0.9;
 /// Where the skirt's skin hands over from the torso's bones to the hips and thighs, as fractions of the torso: the
@@ -166,7 +172,8 @@ impl Frame {
             arms: cut.arms,
         };
         let table = Table::new(&cloud, &spec)?;
-        let top = column.top() + cut.neckline.rise * column.length();
+        // A collar line no higher than the neck: the rings above it are the neck's last, and rows there would meet.
+        let top = (column.top() + cut.neckline.rise * column.length()).min(column.neck_top() - NECK_CLEAR);
         Ok(Self { cut: cut.clone(), column, table, weights, thighs, hem, top })
     }
 
@@ -234,11 +241,28 @@ impl Frame {
             let shoulder = self.column.top() + SHOULDER.2 * (self.column.neck_top() - self.column.top());
             return neck + side * (shoulder - neck).max(0.0);
         }
+        if n.shape.stands() && self.closed() {
+            // Cut in: from the armhole's floor at the side up to the collar line near the middle of the front (and, for
+            // a high neck, of the back), so the shoulders are bare; a halter's back stays at the floor. The collar band
+            // round the neck joins them.
+            let floor = (self.column.top() - len * self.cut.armhole).min(self.top);
+            if n.shape == NeckShape::Halter && a > PI / 2.0 {
+                return floor;
+            }
+            let rise = sstep(CUT_IN.0, CUT_IN.1, from_side);
+            return lerp(floor, self.top, rise);
+        }
         let cut = 1.0 - sstep(ARMHOLE.0, ARMHOLE.0 + ARMHOLE.1, from_side);
         // The straps beside an armhole stay below the arms' roots, however high the neckline stands.
         let strap = 1.0 - sstep(ARMHOLE.0 + ARMHOLE.1 + STRAP.1, ARMHOLE.0 + ARMHOLE.1 + STRAP.2, from_side);
         let cap = self.column.top() - len * STRAP.0;
         lerp(neck - strap * (neck - cap).max(0.0), floor, cut)
+    }
+
+    /// Where a sleeveless coat's straps meet its front, as the angle from the centre front of the middle of the flat
+    /// top beside each armhole, radians; its back mirrors it about the side.
+    pub fn strap_angle(&self) -> f64 {
+        PI / 2.0 - (ARMHOLE.0 + ARMHOLE.1 + STRAP.1 / 2.0)
     }
 
     /// The hem's height at angle `phi`.
