@@ -56,8 +56,8 @@ pixiv made or endorses Omuzaki.
 **The bar.** The reference bar (#2393, the talking-head short T1) asks for a mature anime face with an anime symbol vocabulary (`><`
 eyes, blank shock eyes, anger marks, gloom shading), heterochromia, rim-lit hair and 12 or more distinct expressions.
 The VRoid samples bring a clean anime base (β 3 is even heterochromatic) with 5 to 7 emotion expressions, visemes and
-blinks; the anime symbols are not in the files, and the renderer does not yet draw MToon's matcap, rim and shade
-textures (LK-07). The gaps are listed in the pull request that adds the starters, with renders.
+blinks; the anime symbols are not in the files. The renderer draws their `MToon` groups (shade, rim, matcap,
+outline). The gaps are listed in the pull request that adds the starters, with renders.
 
 ## Sources
 
