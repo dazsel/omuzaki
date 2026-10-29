@@ -347,7 +347,10 @@ fn the_resolution_agrees_with_cargo_on_the_workspaces_gate_configurations() {
         ("omuzaki-stage", &["wgpu"]),
     ] {
         let ours = gate_links(&root, package, features);
-        assert!(ours.contains("omuzaki-render") == features.iter().any(|f| f.ends_with("wgpu")), "{ours:?}");
+        // The stage links the wgpu renderer only with its feature; the CLI always does, for its headless renders
+        // (`render.preview`, `short.render`).
+        let renders = package == "omuzaki-cli" || features.iter().any(|f| f.ends_with("wgpu"));
+        assert!(ours.contains("omuzaki-render") == renders, "{package} {features:?}: {ours:?}");
         assert_eq!(ours, cargo_links(&root, package, features), "{package} {features:?}");
     }
 }
