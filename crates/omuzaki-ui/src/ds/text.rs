@@ -156,9 +156,99 @@ pub fn decimals_for_range(min: f64, max: f64) -> usize {
     }
 }
 
+/// Words a key spells in lower case that a person reads in their own spelling: acronyms and product names.
+const PROPER: &[(&str, &str)] = &[
+    ("ai", "AI"),
+    ("api", "API"),
+    ("arkit", "ARKit"),
+    ("asr", "ASR"),
+    ("cpu", "CPU"),
+    ("fbx", "FBX"),
+    ("fps", "FPS"),
+    ("gltf", "glTF"),
+    ("gpu", "GPU"),
+    ("http", "HTTP"),
+    ("id", "ID"),
+    ("ids", "IDs"),
+    ("ifacialmocap", "iFacialMocap"),
+    ("ik", "IK"),
+    ("ip", "IP"),
+    ("iphone", "iPhone"),
+    ("json", "JSON"),
+    ("llm", "LLM"),
+    ("mcp", "MCP"),
+    ("midi", "MIDI"),
+    ("mtoon", "MToon"),
+    ("obs", "OBS"),
+    ("osc", "OSC"),
+    ("rgb", "RGB"),
+    ("tts", "TTS"),
+    ("udp", "UDP"),
+    ("ui", "UI"),
+    ("url", "URL"),
+    ("uv", "UV"),
+    ("vad", "VAD"),
+    ("vmc", "VMC"),
+    ("vrm", "VRM"),
+    ("vtube", "VTube"),
+    ("vts", "VTS"),
+    ("youtube", "YouTube"),
+];
+
+/// Product names of more than one word, as a person reads them once [`PROPER`] has run.
+const NAMES: &[(&str, &str)] = &[("VTube studio", "VTube Studio"), ("Live link face", "Live Link Face")];
+
+/// A key, a key segment or an enum value as words, for a schema or a setting that gives it no title: `reduce_motion`
+/// reads "Reduce motion", `high-contrast` "High contrast", `vmc_port` "VMC port" and `iphone` "iPhone". The first word
+/// takes a capital unless it is a name with its own spelling; acronyms and product names keep theirs everywhere.
+pub fn key_words(key: &str) -> String {
+    let mut out = String::with_capacity(key.len());
+    for (index, word) in key.split(['_', '-', ' ']).filter(|w| !w.is_empty()).enumerate() {
+        if index > 0 {
+            out.push(' ');
+        }
+        let lower = word.to_lowercase();
+        if let Some((_, proper)) = PROPER.iter().find(|(plain, _)| *plain == lower) {
+            out.push_str(proper);
+        } else if index == 0 {
+            let mut chars = word.chars();
+            if let Some(first) = chars.next() {
+                out.extend(first.to_uppercase());
+                out.push_str(chars.as_str());
+            }
+        } else {
+            out.push_str(word);
+        }
+    }
+    for (plain, name) in NAMES {
+        if out.contains(plain) {
+            out = out.replace(plain, name);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keys_read_as_words_with_names_and_acronyms_spelled_right() {
+        assert_eq!(key_words("reduce_motion"), "Reduce motion");
+        assert_eq!(key_words("high-contrast"), "High contrast");
+        assert_eq!(key_words("half_width"), "Half width");
+        assert_eq!(key_words("vmc_port"), "VMC port");
+        assert_eq!(key_words("ifacialmocap_port"), "iFacialMocap port");
+        assert_eq!(key_words("ifacialmocap"), "iFacialMocap");
+        assert_eq!(key_words("vtube_studio_port"), "VTube Studio port");
+        assert_eq!(key_words("live_link_face_port"), "Live Link Face port");
+        assert_eq!(key_words("iphone"), "iPhone");
+        assert_eq!(key_words("id"), "ID");
+        assert_eq!(key_words("obs_url"), "OBS URL");
+        // A word that merely contains an acronym is left alone.
+        assert_eq!(key_words("video"), "Video");
+        assert_eq!(key_words(""), "");
+    }
 
     #[test]
     fn numbers_format_without_a_heap_and_never_print_negative_zero() {

@@ -190,14 +190,9 @@ fn item_title(key: &str, parent: Option<&str>, axes: bool) -> String {
     }
 }
 
-/// A key as a label: `half_width` reads "Half width". A list index stays a number.
+/// A key as a label: `half_width` reads "Half width", `ik_target` "IK target". A list index stays a number.
 fn title_of(key: &str) -> String {
-    let mut words = key.replace(['_', '-'], " ");
-    if let Some(first) = words.get(..1) {
-        let upper = first.to_uppercase();
-        words.replace_range(..1, &upper);
-    }
-    words
+    crate::ds::text::key_words(key)
 }
 
 #[cfg(test)]

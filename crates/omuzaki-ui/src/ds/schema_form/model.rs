@@ -382,12 +382,10 @@ fn read_node(root: &Value, schema: &Value, key: &str, parent_path: &str) -> Node
     node
 }
 
-/// A field's key as words, for a schema that gives it no title: `character` reads "Character" and `vmc_port` "Vmc
+/// A field's key as words, for a schema that gives it no title: `character` reads "Character" and `vmc_port` "VMC
 /// port", never the raw key a person would read as code.
 fn words(key: &str) -> String {
-    let spaced: String = key.chars().map(|c| if c == '_' || c == '-' { ' ' } else { c }).collect();
-    let mut chars = spaced.chars();
-    chars.next().map_or_else(String::new, |first| first.to_uppercase().chain(chars).collect())
+    crate::ds::text::key_words(key)
 }
 
 fn read_only(key: &str, path: &str, schema: &Value, type_name: &str) -> Node {

@@ -18,7 +18,7 @@ use eframe::egui_wgpu;
 use egui::{Context, Id, Sense, Ui};
 use omuzaki_char_api::{
     BodyTemplateId, BuildError, BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, CharacterDef,
-    PartDef, PartId, PartKindId, RegistryBuilder,
+    RegistryBuilder,
 };
 use omuzaki_core::glam::UVec2;
 use omuzaki_face_api::ExpressionSet;
@@ -101,7 +101,9 @@ impl From<RenderError> for ViewportError {
     }
 }
 
-/// The kit default character: the soft-sd body, head and hair, with the starter expressions on its face.
+/// The kit default character: the same dressed character `character.create` gives a new project on the soft-sd
+/// template (body, hands, head, hair and an outfit), with the starter expressions on its face. One source with the
+/// Build workspace's sample, so the stage never shows a bare stand-in.
 ///
 /// # Errors
 /// [`ViewportError::Character`] if the kit's own parts don't build: a bug in the character crate, not in the caller.
@@ -109,28 +111,9 @@ pub fn kit_character() -> Result<BuiltCharacter, ViewportError> {
     omuzaki_char::link();
     let bad = |error: &dyn std::fmt::Display| ViewportError::KitId(error.to_string());
     let template = BodyTemplateId::new("soft-sd").map_err(|e| bad(&e))?;
-    let mut def = CharacterDef::new("Soft SD", template);
-    for kind in ["body", "head", "hair"] {
-        let part = PartDef {
-            kind: PartKindId::new(kind).map_err(|e| bad(&e))?,
-            parent: None,
-            enabled: true,
-            layer: 0,
-            attach: None,
-            params: serde_json::json!({}),
-        };
-        def.parts.insert(PartId::new(kind).map_err(|e| bad(&e))?, part);
-    }
-    // The colours the kit's body, head and hair ask for: skin with its shade and line, and an outfit colour.
-    def.palette = serde_json::from_value(serde_json::json!({
-        "skin": "#f9d3c5", "skin_shade": "#f2b4ab", "skin_line": "#c98a80", "outfit": "#24392f",
-    }))
-    .map_err(|e| bad(&e))?;
-    def.face.expressions = ExpressionSet::starter();
+    let def = omuzaki_char::ops::character::create::default_character(&template).map_err(|e| bad(&e))?;
     let id = CharId::new("kit").map_err(|e| bad(&e))?;
-    RegistryBuilder
-        .build(&id, &def, &BuildOptions::default(), &BuildServices::default())
-        .map_err(ViewportError::Character)
+    stage_character(&id, &def)
 }
 
 /// Character `id` as `def` describes it, built for the stage: a character with no expressions of its own performs with

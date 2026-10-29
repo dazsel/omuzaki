@@ -468,6 +468,13 @@ fn the_editor_draws_the_bonk_graph_from_the_document_with_its_wires() {
     assert_eq!(h.state().panel.wires(), 3, "redeem→cool, cool→count, cool→throw, and nothing else");
     assert!(has_label(&h, "throw"), "a node's title");
     assert!(h.query_all_by_label("Won't run").next().is_some(), "the scene switch is inert until approved");
+    // The node's header makes room for its chip: "Won't run" reads whole, not "…" (it did, at every size).
+    let cut: Vec<String> = omuzaki_ui::ds::audit::elided_findings(h.output())
+        .into_iter()
+        .filter(|f| f.what == "Won't run")
+        .map(|f| f.to_string())
+        .collect();
+    assert!(cut.is_empty(), "the node's warning is cut: {cut:?}");
 }
 
 #[test]
