@@ -830,7 +830,7 @@ fn every_effect_on_the_eye_follows_it_shut_as_smoothly_as_the_eye() {
     // Each effect drawn on the open eye, at full strength, through a squeeze, an arc and a blink: no step of the rendered
     // sweep moves over three times the median step, so none outlives or pops against the open pieces.
     type Set = fn(&mut PaintParams);
-    let effects: [(&str, Set); 7] = [
+    let effects: [(&str, Set); 9] = [
         ("tears", |p| p.effects.tears = 1.0),
         ("sparkle", |p| p.effects.sparkle = 1.0),
         ("heart", |p| p.effects.heart = 1.0),
@@ -838,6 +838,8 @@ fn every_effect_on_the_eye_follows_it_shut_as_smoothly_as_the_eye() {
         ("spiral", |p| p.effects.spiral = 1.0),
         ("shock", |p| p.effects.shock = 1.0),
         ("gloom", |p| p.effects.gloom = 1.0),
+        ("blank", |p| p.effects.blank = 1.0),
+        ("stare", |p| p.effects.stare = 1.0),
     ];
     for (name, on) in effects {
         let sweeps: [(&str, Vec<DrawList>); 3] = [

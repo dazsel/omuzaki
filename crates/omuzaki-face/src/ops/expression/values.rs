@@ -97,6 +97,7 @@ fn paint_summary(paint: PaintParams) -> Value {
         blush,
         cheek_puff,
         sweat,
+        anger_vein,
     } = paint;
     json!({
         "left_eye": eye_summary(left_eye),
@@ -113,6 +114,7 @@ fn paint_summary(paint: PaintParams) -> Value {
         "blush": shortest(blush),
         "cheek_puff": shortest(cheek_puff),
         "sweat": shortest(sweat),
+        "anger_vein": shortest(anger_vein),
     })
 }
 
@@ -130,7 +132,7 @@ fn brow_summary(brow: BrowParams) -> Value {
 
 /// The eye effects, destructured without `..`.
 fn effects_summary(effects: EyeEffects) -> Value {
-    let EyeEffects { heart, star, gloom, shock, squeeze, spiral, sparkle, tears } = effects;
+    let EyeEffects { heart, star, gloom, shock, squeeze, spiral, sparkle, tears, blank, dot, stare, pill } = effects;
     fields(&[
         ("heart", heart),
         ("star", star),
@@ -140,6 +142,10 @@ fn effects_summary(effects: EyeEffects) -> Value {
         ("spiral", spiral),
         ("sparkle", sparkle),
         ("tears", tears),
+        ("blank", blank),
+        ("dot", dot),
+        ("stare", stare),
+        ("pill", pill),
     ])
 }
 
@@ -158,6 +164,7 @@ fn mouth_summary(mouth: MouthParams) -> Value {
         teeth_lower,
         tongue,
         fangs,
+        teeth_sharp,
     } = mouth;
     fields(&[
         ("open", open),
@@ -172,6 +179,7 @@ fn mouth_summary(mouth: MouthParams) -> Value {
         ("teeth_lower", teeth_lower),
         ("tongue", tongue),
         ("fangs", fangs),
+        ("teeth_sharp", teeth_sharp),
     ])
 }
 

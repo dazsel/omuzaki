@@ -7,8 +7,8 @@
 //! 2D face, by contract (`jawForward`, `mouthShrugLower`, `mouthShrugUpper`): they are reported as **unmapped**, not
 //! dead.
 //!
-//! A few channels only show in a setting ([`context`]): fangs need an open mouth, so they are pushed over a slightly open
-//! jaw and measured against that. A channel the face's own design switches off (fangs on a face without them) is
+//! A few channels only show in a setting ([`context`]): fangs and sharp teeth need an open mouth, so they are pushed over
+//! a slightly open jaw and measured against that. A channel the face's own design switches off (fangs on a face without them) is
 //! reported as **off in the design**: not a broken control, a choice.
 
 use image::RgbaImage;
@@ -26,8 +26,9 @@ pub use omuzaki_face_api::UNMAPPED;
 /// The setting a channel is pushed in, when it only shows in one: the channels set first, at rest and pushed alike.
 pub fn context(channel: Channel) -> &'static [(Channel, f32)] {
     match channel {
-        // Fangs hang from the upper lip of an open mouth (a closed one shows a fang only in a smile).
-        Channel::FANGS => &[(Channel::JAW_OPEN, 0.35)],
+        // Fangs hang from the upper lip of an open mouth (a closed one shows a fang only in a smile), and sharp teeth
+        // replace the teeth of an open mouth.
+        Channel::FANGS | Channel::TEETH_SHARP => &[(Channel::JAW_OPEN, 0.35)],
         _ => &[],
     }
 }

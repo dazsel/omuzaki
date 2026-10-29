@@ -1783,6 +1783,9 @@ ui-live-camera-tracking = Tracking from { $name }
 ui-live-camera-unplugged = Camera unplugged
 
 # A face or body channel's name in the Channels panel: keep it short.
+ui-live-channel-anger-vein = Anger vein
+
+# A face or body channel's name in the Channels panel: keep it short.
 ui-live-channel-blush = Blush
 
 # A face or body channel's name in the Channels panel: keep it short.
@@ -1874,10 +1877,19 @@ ui-live-channel-eye-wide-left = Eye wide L
 ui-live-channel-eye-wide-right = Eye wide R
 
 # A face or body channel's name in the Channels panel: keep it short.
+ui-live-channel-eyes-blank = Blank eyes
+
+# A face or body channel's name in the Channels panel: keep it short.
+ui-live-channel-eyes-dot = Dot eyes
+
+# A face or body channel's name in the Channels panel: keep it short.
 ui-live-channel-eyes-gloom = Gloom eyes
 
 # A face or body channel's name in the Channels panel: keep it short.
 ui-live-channel-eyes-heart = Heart eyes
+
+# A face or body channel's name in the Channels panel: keep it short.
+ui-live-channel-eyes-pill = Pill eyes
 
 # A face or body channel's name in the Channels panel: keep it short.
 ui-live-channel-eyes-shock = Shock eyes
@@ -1890,6 +1902,9 @@ ui-live-channel-eyes-squeeze = Squeezed eyes
 
 # A face or body channel's name in the Channels panel: keep it short.
 ui-live-channel-eyes-star = Star eyes
+
+# A face or body channel's name in the Channels panel: keep it short.
+ui-live-channel-eyes-stare = Stare eyes
 
 # A face or body channel's name in the Channels panel: keep it short.
 ui-live-channel-fangs = Fangs
@@ -2010,6 +2025,9 @@ ui-live-channel-sweat-drop = Sweat drop
 
 # A face or body channel's name in the Channels panel: keep it short.
 ui-live-channel-tears = Tears
+
+# A face or body channel's name in the Channels panel: keep it short.
+ui-live-channel-teeth-sharp = Sharp teeth
 
 # A face or body channel's name in the Channels panel: keep it short.
 ui-live-channel-tongue-out = Tongue out

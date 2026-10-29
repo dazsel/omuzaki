@@ -58,6 +58,11 @@ at full weight over the union of the acts' channels, absent when nothing plays. 
 layers, which the performer lays on the base pose **before** the animator, so the tracked head, the lean and the breath
 still move a waving body.
 
+**Over tracking** (#2409). An act made with `over_tracking: true` (`act.expression`, `act.channels`) is left out of the
+score layer and written to the score's `OverLayer`: per channel, the value it pulls toward and how far, composed in start
+order. The performer applies it after the blend and the life layer, before the grammar, so the act wins on its
+channels over the tracker, lip sync and the triggers (eyes forced shut while the webcam runs), and fades back to them.
+
 The life layer chases the acted face and rides on it (`omuzaki-anim` `life`): an AI character still blinks and its smile
 still breathes. It relabels the channels it moves as `Life`, as it always has.
 
@@ -102,9 +107,9 @@ subject, when `member` is left out).
 
 | Op | Kind | What it does |
 |---|---|---|
-| `act.expression { expression, intensity?, hold_s?, held?, fade_s?, member? }` | live action | shows one of the character's expressions for a while (default 2 s) or until released |
+| `act.expression { expression, intensity?, hold_s?, held?, fade_s?, over_tracking?, member? }` | live action | shows one of the character's expressions for a while or until released; times left out come from its `playback` (its fades, `0` a hard cut, and its `auto_stop_s` as the hold, else 2 s) |
 | `act.look { at? \| x?, y?, head?, … }` | live action | points the eyes (`camera`, `left`, `right`, `up`, `down`, or `x`/`y` in -1..1, `x` toward the picture's right), the head following by `head` (default 0.35) |
-| `act.channels { channels: {name: value}, … }` | live action | sets channels by name (ARKit, head, body, extras), each held to its range |
+| `act.channels { channels: {name: value}, over_tracking?, … }` | live action | sets channels by name (ARKit, head, body, extras), each held to its range |
 | `act.clip { clip, weight?, … }` | live action | plays a body clip; a one-shot clip ends with itself, a looping one plays for `hold_s` (default 2) or until released |
 | `act.release { act?, member? }` | live action | fades one act, or every act, out |
 | `act.list { member? }` | query | the acts playing (with ids and envelopes), the expressions and clips, who performs |

@@ -551,7 +551,7 @@ fn a_character_can_be_given_no_fangs_through_the_style_ops() {
         run(&doc, "face.describe_style", json!({ "character": "mira", "section": "mouth" })).expect("describes");
     let mouth = &mouth.output.as_ref().expect("answers")["sections"]["mouth"];
     assert_eq!(mouth["current"]["fang"]["kind"], json!("none"));
-    assert_eq!(mouth["defaults"]["fang"]["kind"], json!("pointed"));
+    assert_eq!(mouth["defaults"]["fang"]["kind"], json!("both"));
     let err = run(&doc, "face.set_style", set_args("face/mouth/fang/kind", json!("sharp"))).unwrap_err();
     assert_eq!(err.field.as_deref(), Some("face/mouth/fang/kind"), "{err:?}");
 }

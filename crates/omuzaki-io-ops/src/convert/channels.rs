@@ -22,7 +22,7 @@ use omuzaki_io_api::{ARKIT_52, EXTRA_PREFIX, ExpressionName, PresetExpression, e
 
 /// The anime extras and the id each is exported under (`omuzaki_<id>`). Together with the 52 `ARKit` channels these are
 /// every channel that becomes an expression.
-pub const EXTRAS: [(Channel, &str); 13] = [
+pub const EXTRAS: [(Channel, &str); 19] = [
     (Channel::EYE_ARC_LEFT, "eye-arc-left"),
     (Channel::EYE_ARC_RIGHT, "eye-arc-right"),
     (Channel::EYES_HEART, "eyes-heart"),
@@ -36,6 +36,12 @@ pub const EXTRAS: [(Channel, &str); 13] = [
     (Channel::SWEAT_DROP, "sweat-drop"),
     (Channel::BLUSH, "blush"),
     (Channel::FANGS, "fangs"),
+    (Channel::ANGER_VEIN, "anger-vein"),
+    (Channel::EYES_BLANK, "eyes-blank"),
+    (Channel::EYES_DOT, "eyes-dot"),
+    (Channel::EYES_STARE, "eyes-stare"),
+    (Channel::EYES_PILL, "eyes-pill"),
+    (Channel::TEETH_SHARP, "teeth-sharp"),
 ];
 
 /// The expression `channel` is exported as, or `None` for channels that are not expressions (head and body motion, the
@@ -124,10 +130,11 @@ mod tests {
     #[test]
     fn the_extras_cover_the_anime_channels_exactly() {
         let table: BTreeSet<Channel> = EXTRAS.iter().map(|(channel, _)| *channel).collect();
-        let first = Channel::EYE_ARC_LEFT.index();
-        let last = Channel::FANGS.index();
-        let assigned: BTreeSet<Channel> = (first..=last).filter_map(Channel::from_index).collect();
-        assert_eq!(assigned.len(), 13, "channels 60 to 72 are all assigned");
+        let span = |first: Channel, last: Channel| (first.index()..=last.index()).filter_map(Channel::from_index);
+        let assigned: BTreeSet<Channel> = span(Channel::EYE_ARC_LEFT, Channel::FANGS)
+            .chain(span(Channel::ANGER_VEIN, Channel::TEETH_SHARP))
+            .collect();
+        assert_eq!(assigned.len(), 19, "channels 60 to 72 and 76 to 81 are all assigned");
         assert_eq!(table, assigned);
     }
 
@@ -159,7 +166,7 @@ mod tests {
                 ),
             }
         }
-        assert_eq!(names.len(), 52 + 13);
+        assert_eq!(names.len(), 52 + 19);
         for not_expressions in [Channel::HEAD_YAW, Channel::BREATH, Channel::CUSTOM_00, Channel::CUSTOM_15] {
             assert_eq!(expression_name(not_expressions), None, "{not_expressions}");
         }
