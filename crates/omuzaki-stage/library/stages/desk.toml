@@ -1,0 +1,44 @@
+# A streamer's desk: the subject stands at the origin facing +Z behind a desk, a bust shot's set.
+title = "Desk"
+summary = "A streamer's desk set for bust shots: a desk in front of the subject with a mug and a table lamp, a bookshelf and a plant in the room behind. Pairs with the perform-facecam rig."
+light_rig = "perform-facecam"
+tags = ["interior", "stream", "desk"]
+
+[backdrop]
+kind = "gradient"
+top = "#262a36"
+bottom = "#3e4456"
+
+[ground]
+kind = "none"
+
+[props.room]
+kind = "room"
+params = { width = 4.5, depth = 3.6, height = 2.6, walls = "#d9dbe6", floor = "#6b5244", wainscot = "#9aa2bd", trim = "#f2f2f6" }
+position = [0.0, 0.0, 0.35]
+
+[props.desk]
+kind = "desk"
+params = { width = 1.6, depth = 0.7, height = 0.74 }
+position = [0.0, 0.0, 0.5]
+rotation = [180.0, 0.0, 0.0]
+
+[props.mug]
+kind = "cup"
+params = { colour = "#ffd2e0" }
+position = [0.55, 0.74, 0.55]
+
+[props.lamp]
+kind = "lamp"
+params = { style = "table", height = 0.5, shade = "#f4e8d8", intensity = 1.2, range = 3.0 }
+position = [-0.6, 0.74, 0.65]
+
+[props.shelf]
+kind = "shelf"
+params = { width = 1.0, height = 1.8, depth = 0.3, shelves = 5, books = 0.75, seed = 9, colour = "#e6e2dc" }
+position = [-1.4, 0.0, -1.45]
+
+[props.plant]
+kind = "plant"
+params = { height = 1.2, leaves = 28, seed = 14 }
+position = [1.5, 0.0, -1.2]

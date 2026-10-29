@@ -23,6 +23,7 @@ use super::environment::HdriPixels;
 use super::frame::frame;
 use super::landmarks::{Bounds, Landmarks};
 use crate::effects::weather::SceneEffects;
+use crate::props::staged::ResolvedProps;
 use crate::error::StageError;
 
 /// The near plane of a free camera as a share of its distance to the target, with a floor (as in a preset's).
@@ -116,6 +117,11 @@ pub struct Changes {
     pub image: bool,
     /// What the effects take from the scene changed: its weather, the subject's unit, the weather's floor bounds.
     pub effects: bool,
+    /// A prop moved, turned, scaled, hid or showed: values only.
+    pub props: bool,
+    /// A prop was added, removed or rebuilt (a kind or a param changed). Apply uploads it, so this is not a value-only
+    /// change.
+    pub prop_builds: bool,
 }
 
 impl Changes {
@@ -128,7 +134,7 @@ impl Changes {
     /// the ground-disc mesh (#274), nor is a change of the environment's source or the backdrop's picture, which apply
     /// re-creates.
     pub fn value_only(&self) -> bool {
-        !(self.structure || self.ground || self.sky || self.image)
+        !(self.structure || self.ground || self.sky || self.image || self.prop_builds)
     }
 }
 
@@ -169,6 +175,8 @@ pub struct ResolvedScene {
     /// What the stage's effects take from the scene: its weather in metres, the subject's unit and the floor bounds
     /// `"auto"` weather falls over (particles.md D10).
     pub effects: SceneEffects,
+    /// The props: their builds, where each is drawn, and their lights (already in `lights`).
+    pub props: ResolvedProps,
 }
 
 /// An image backdrop as the renderer takes it: the picture's asset, how it fits, and the bars' gradient.
@@ -266,6 +274,7 @@ impl ResolvedScene {
             backdrop_image: None,
             image: None,
             effects: SceneEffects::default(),
+            props: ResolvedProps::default(),
         }
     }
 
@@ -350,6 +359,8 @@ impl ResolvedScene {
             return Err(scene_error(SceneError::new("lighting.fog", "the fog's distances aren't usable numbers")));
         }
 
+        // After every step that can fail: the props are written into `self` here.
+        let prop_changes = self.props.resolve_into(def, figures, subject_id, &mut lights);
         let active_camera = active.map(|i| cameras[i]);
         let effects = SceneEffects::resolve(
             def,
@@ -370,6 +381,8 @@ impl ResolvedScene {
             sky: self.environment.map(|e| e.source) != environment.map(|e| e.source),
             environment: replace(&mut self.environment, environment),
             image: self.backdrop_image.map(|i| i.asset) != backdrop_image.map(|i| i.asset),
+            props: prop_changes.placements,
+            prop_builds: prop_changes.builds,
             ..Changes::default()
         };
         changes.backdrop |= replace(&mut self.backdrop_image, backdrop_image);

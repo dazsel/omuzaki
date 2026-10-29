@@ -1,0 +1,11 @@
+# Chroma key: the green shown exactly as authored, no ground and no props.
+title = "Green screen"
+summary = "A flat chroma-key green (#00b140) with no ground and no props, for keying in OBS. Keep any light rig."
+tags = ["key", "flat"]
+
+[backdrop]
+kind = "colour"
+colour = "#00b140"
+
+[ground]
+kind = "none"

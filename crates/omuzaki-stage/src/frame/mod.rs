@@ -40,6 +40,7 @@ use crate::error::StageError;
 use crate::scene::apply::{Owed, SceneLink, reserve};
 use crate::scene::backdrop::StageBackdrop;
 use crate::scene::environment::StageEnvironment;
+use crate::props::staged::StageProps;
 use crate::scene::ground::StageGround;
 use crate::scene::resolve::ResolvedScene;
 use crate::upload::{StageCharacter, UploadOptions};
@@ -189,6 +190,8 @@ pub struct Stage {
     environment: StageEnvironment,
     /// The scene's backdrop picture on the renderer.
     backdrop: StageBackdrop,
+    /// The scene's props on the renderer, and where each is drawn.
+    props: StageProps,
     /// How many times a staged variant replaced the character, so a caller can tell the face profile may have changed.
     revision: u64,
     /// Renders submitted so far; numbers the frames of a live clock.
@@ -236,6 +239,7 @@ impl Stage {
                 ground: StageGround::default(),
                 environment: StageEnvironment::default(),
                 backdrop: StageBackdrop::default(),
+                props: StageProps::default(),
                 revision: 0,
                 submissions: 0,
                 built,
@@ -320,6 +324,7 @@ impl Stage {
         // must not go on naming the character it retired (its meshes are released).
         self.plan.fill(&mut self.scene, self.rig.skin(), self.root);
         self.ground.push(&mut self.scene);
+        self.push_props();
         if let Some(effects) = self.effects.as_mut() {
             let ctx = FrameCtx {
                 t: tick.time,
@@ -381,6 +386,7 @@ impl Stage {
         self.rig.solve_with_channels(Tick { dt: 0.0, ..pin.tick }, &pin.pose, &pin.goals, &pin.channels);
         self.plan.fill(&mut self.scene, self.rig.skin(), pin.root);
         self.ground.push(&mut self.scene);
+        self.push_props();
         self.scene.frame = FrameInfo { index: pin.tick.index, time: pin.tick.time };
     }
 
@@ -480,6 +486,7 @@ impl Stage {
         if let Some(picture) = self.backdrop.background_for(resolved.backdrop_image.as_ref()) {
             self.scene.background = picture;
         }
+        self.props.take(&resolved.props);
         self.set_subject_root(subject_root);
         owed
     }
@@ -566,6 +573,7 @@ impl Stage {
         self.update_face(renderer, tick, input)?;
         self.plan.fill(&mut self.scene, self.rig.skin(), self.root);
         self.ground.push(&mut self.scene);
+        self.push_props();
         // What the last tick wrote into the scene, so a redraw before any tick doesn't render the caller's frame info.
         self.scene.frame = self.frame_info(tick);
         Ok(Prepared { tick, uploads })
@@ -594,9 +602,24 @@ impl Stage {
     /// Where `bone` was in the last frame, in the world: the character's root times the bone's solved model-space
     /// transform. `None` for a bone the character lacks.
     pub fn bone_world(&self, bone: omuzaki_anim_api::HumanoidBone) -> Option<Mat4> {
-        let id = self.built.rig.bone(&omuzaki_char_api::JointRef::Humanoid(bone))?;
-        let local = self.rig.world().local.get(id.index())?;
-        Some(self.root * Mat4::from_rotation_translation(local.rotation, local.translation))
+        kit_bone_world(&self.built, &self.rig, self.root, bone)
+    }
+
+    /// The scene's props into the frame: the unattached ones where they stand, the ones on the character's bones
+    /// where the frame posed them. Hot: allocation-free.
+    fn push_props(&mut self) {
+        let (built, rig, root) = (&self.built, &self.rig, self.root);
+        self.props.push(&mut self.scene, &|bone| kit_bone_world(built, rig, root, bone));
+    }
+
+    /// The props of the scene attached to cast member `member`, under `bone`'s answers: what a cast adds once the
+    /// member's frame is posed. Hot: allocation-free.
+    pub(crate) fn push_member_props(
+        &mut self,
+        member: &omuzaki_stage_api::MemberId,
+        bone: &dyn Fn(omuzaki_anim_api::HumanoidBone) -> Option<Mat4>,
+    ) {
+        self.props.push_member(&mut self.scene, member, bone);
     }
 
     /// The skinning matrices of the last frame, indexed by bone.
@@ -616,11 +639,12 @@ impl Stage {
         let ground = self.ground.release(renderer);
         let environment = self.environment.release(renderer);
         let backdrop = self.backdrop.release(renderer);
+        let props = self.props.release(renderer);
         let effects = match self.effects.as_mut() {
             Some(effects) => effects.release(renderer).map_err(|source| StageError::render("the effects", source)),
             None => Ok(()),
         };
-        self.character.release(renderer).and(ground).and(environment).and(backdrop).and(effects)
+        self.character.release(renderer).and(ground).and(environment).and(backdrop).and(props).and(effects)
     }
 
     /// Draws the character in `look` (LK-06, #714): the materials the look changes are updated on the renderer in
@@ -657,8 +681,9 @@ impl Stage {
 
     /// Does the renderer work the last [`set_scene`](Self::set_scene) owes and records it as done: the ground (a new
     /// disc, or none), the skin floor (every toon skin material updated in place to the scene's floor, or back to
-    /// its own) and the environment (made from its sky or its loaded HDRI, or released). The floor stays on the
-    /// materials through palette changes, variant swaps and look edits. Cold.
+    /// its own), the environment (made from its sky or its loaded HDRI, or released) and the props (the builds the
+    /// renderer doesn't have uploaded, the ones the scene dropped released). The floor stays on the materials through
+    /// palette changes, variant swaps and look edits. Cold.
     ///
     /// # Errors
     /// [`StageError::Render`] if the renderer refuses the disc, a material or the environment, and
@@ -687,6 +712,23 @@ impl Stage {
             }
             self.link.commit(&Owed { image: Some(asset), ..Owed::default() });
         }
+        if let Some(generation) = owed.props {
+            let builds = std::sync::Arc::clone(&self.link.wanted().props.builds);
+            self.props.set(renderer, &builds, &mut self.scene)?;
+            self.link.commit(&Owed { props: Some(generation), ..Owed::default() });
+        }
         Ok(())
     }
+}
+
+/// Where `bone` of a kit character is in the world: `root` times its solved model-space transform.
+fn kit_bone_world(
+    built: &BuiltCharacter,
+    rig: &RigFrame,
+    root: Mat4,
+    bone: omuzaki_anim_api::HumanoidBone,
+) -> Option<Mat4> {
+    let id = built.rig.bone(&omuzaki_char_api::JointRef::Humanoid(bone))?;
+    let local = rig.world().local.get(id.index())?;
+    Some(root * Mat4::from_rotation_translation(local.rotation, local.translation))
 }

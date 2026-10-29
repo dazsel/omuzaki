@@ -351,6 +351,16 @@ casts_shadow = true
   its provenance, and library items record theirs in `applied`. The export gate for renders and clips joins both with
   the cast's character licences.
 - Physics props and throws (ST-03, BR-12) add fields to a prop when designed.
+- **Built (#705, #932, #1166).** `omuzaki-stage-api::props` holds the contract (`PropDef`, `PropKind`,
+  `register_prop_kind!`); `omuzaki-stage::props` registers eleven interior kinds (`room`, `rug`, `desk`, `chair`,
+  `cafe-table`, `bed`, `shelf`, `lamp`, `window`, `cup`, `plant`). The stage keeps each prop's build while its kind
+  and params stay the same, uploads only builds the renderer lacks, draws every visible prop each frame without
+  allocating, and moves an attached prop with its bone, in a cast as well. A lamp's bulb and a window's daylight join
+  the rig's lights within `MAX_LIGHTS`; the extra lights are dropped in prop-id order and counted. The ops are
+  `stage.add_prop`, `stage.set_prop`, `stage.remove_prop` and `stage.prop_kinds`. Stage presets
+  (`library/stages/*.toml`: study, bedroom, cafe, night-library, desk, green-screen) are applied with
+  `stage.set_stage_preset`, which replaces the backdrop, the ground and the props an earlier preset placed (ids
+  starting `set-`). Their Library-item form waits on the scene target (#427). The `mesh` kind is not built yet.
 
 ### D8. The `stage.*` ops: one op per intent, one patch per op
 

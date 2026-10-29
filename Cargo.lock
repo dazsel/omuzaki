@@ -6283,6 +6283,8 @@ dependencies = [
 name = "omuzaki-stage-api"
 version = "0.0.0"
 dependencies = [
+ "inventory",
+ "omuzaki-anim-api",
  "omuzaki-char-api",
  "omuzaki-core",
  "omuzaki-doc-api",

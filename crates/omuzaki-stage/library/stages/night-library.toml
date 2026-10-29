@@ -1,0 +1,54 @@
+# A library at night: the subject stands at the origin facing +Z, the shelves along the back wall.
+title = "Night library"
+summary = "A library at night: dark panelled walls lined with full bookcases, a moonlit window, a lit reading lamp beside an armchair and a deep rug. Pairs with the viewer-moonlit or dev-night rig."
+light_rig = "viewer-moonlit"
+tags = ["interior", "night", "cool"]
+
+[backdrop]
+kind = "gradient"
+top = "#0c0f18"
+bottom = "#1c2130"
+
+[ground]
+kind = "none"
+
+[props.room]
+kind = "room"
+params = { width = 6.0, depth = 5.0, height = 3.2, walls = "#3a3a48", floor = "#4a3226", wainscot = "#2a1e18", trim = "#5a4636" }
+position = [0.0, 0.0, 0.3]
+
+[props.shelf-left]
+kind = "shelf"
+params = { width = 1.4, height = 2.6, depth = 0.4, shelves = 7, books = 0.95, seed = 31, colour = "#3b2a20" }
+position = [-2.0, 0.0, -2.2]
+
+[props.shelf-middle]
+kind = "shelf"
+params = { width = 1.4, height = 2.6, depth = 0.4, shelves = 7, books = 0.9, seed = 32, colour = "#3b2a20" }
+position = [-0.55, 0.0, -2.2]
+
+[props.window]
+kind = "window"
+params = { width = 1.1, height = 1.9, panes = [2, 4], sky = "#1a2550", horizon = "#3a4a7a", curtains = "#4a2a36", light = "#9fb4ff", intensity = 6.0, elevation = 35.0 }
+position = [1.05, 0.7, -2.2]
+
+[props.shelf-right]
+kind = "shelf"
+params = { width = 0.9, height = 2.6, depth = 0.4, shelves = 7, books = 0.85, seed = 33, colour = "#3b2a20" }
+position = [2.3, 0.0, -2.2]
+
+[props.armchair]
+kind = "chair"
+params = { seat_height = 0.42, width = 0.6, back = 0.55, colour = "#2a1e18", cushion = "#6a2a2a" }
+position = [-1.9, 0.0, -0.9]
+rotation = [40.0, 0.0, 0.0]
+
+[props.lamp]
+kind = "lamp"
+params = { height = 1.6, shade = "#f0d8a8", light = "#ffc880", intensity = 3.0, range = 5.0 }
+position = [-2.5, 0.0, -1.3]
+
+[props.rug]
+kind = "rug"
+params = { width = 3.0, length = 2.2, colour = "#5a1e22", border = "#c9a25a" }
+position = [-0.4, 0.0, -0.2]
