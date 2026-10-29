@@ -5,6 +5,7 @@
 
 // Integration-test helpers may panic: a panic is a clear test failure.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::disallowed_methods, reason = "tests set up their fixtures on disk; the fence is for ops")]
 
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -72,7 +73,8 @@ fn the_shipped_catalogue_lists_only_starters_anyone_may_perform_edit_and_export(
         assert!(t.allow_redistribution, "{}", starter.id);
         assert_eq!(starter.provenance().commercial, Commercial::Ok);
         assert!(starter.download.urls.iter().all(|u| u.starts_with("https://")));
-        assert!(starter.file_name().ends_with(".vrm"), "{}: {}", starter.id, starter.file_name());
+        let name = std::path::Path::new(starter.file_name());
+        assert!(name.extension().is_some_and(|x| x.eq_ignore_ascii_case("vrm")), "{}: {}", starter.id, name.display());
     }
     // Credit travels with the one starter whose licence asks for it, and only that one.
     let credited: Vec<&str> = all.iter().filter(|s| s.attribution.is_some()).map(|s| s.id.as_str()).collect();
@@ -93,7 +95,10 @@ fn a_catalogue_that_would_ship_something_it_may_not_is_refused() {
     };
     refused(format!("{one}\n{}", &one[one.find("[[starter]]").unwrap()..]), "listed twice");
     refused(one.replace("https://opengameart", "http://opengameart"), "https");
-    refused(one.replace("modification = \"allowModificationRedistribution\"", "modification = \"prohibited\""), "must allow");
+    refused(
+        one.replace("modification = \"allowModificationRedistribution\"", "modification = \"prohibited\""),
+        "must allow",
+    );
     refused(one.replace("allowRedistribution = true", "allowRedistribution = false"), "must allow");
     refused(one.replace("commercialUsage = \"corporation\"", "commercialUsage = \"personalNonProfit\""), "must allow");
     refused(one.replace("creditNotation = \"unnecessary\"", "creditNotation = \"required\""), "attribution");
@@ -193,7 +198,10 @@ fn the_ops_are_a_read_query_and_a_job_that_changes_no_document() {
     let listed = plan(&doc, "io.starter.list", json!({})).unwrap().output.unwrap();
     let rows = listed["starters"].as_array().unwrap();
     assert_eq!(rows.len(), 7);
-    assert_eq!(rows.iter().find(|r| r["id"] == "seed-san").unwrap()["credit"].as_str().map(|c| c.contains("VirtualCast")), Some(true));
+    assert_eq!(
+        rows.iter().find(|r| r["id"] == "seed-san").unwrap()["credit"].as_str().map(|c| c.contains("VirtualCast")),
+        Some(true)
+    );
 
     let error = plan(&doc, "io.starter.fetch", json!({ "id": "nobody" })).unwrap_err();
     assert_eq!((error.code, error.field.as_deref()), (ErrorCode::NotFound, Some("id")));
@@ -217,14 +225,16 @@ fn the_row_a_fetch_gives_is_recorded_on_an_imported_avatar() {
         }, "terms": serde_json::to_value(&meta_terms).unwrap() } }
     } } }));
     let starter = catalogue().unwrap().iter().find(|s| s.id == "vroid-vita").unwrap();
-    let args = json!({ "character": "vita", "part": "avatar", "source": serde_json::to_value(starter.source_row()).unwrap() });
+    let args =
+        json!({ "character": "vita", "part": "avatar", "source": serde_json::to_value(starter.source_row()).unwrap() });
     let planned = plan(&doc, "licence.set_source", args).expect("an imported avatar's row can be corrected");
     assert!(!planned.patch.is_empty());
     let derived = plan(&doc, "licence.derive", json!({ "character": "vita" })).unwrap();
     assert!(derived.output.is_some());
     // A character that is not an avatar still has no `avatar` part.
     let kit = MemDoc::from_value(json!({ "characters": { "kit": { "name": "Kit", "parts": {} } } }));
-    let args = json!({ "character": "kit", "part": "avatar", "source": serde_json::to_value(starter.source_row()).unwrap() });
+    let args =
+        json!({ "character": "kit", "part": "avatar", "source": serde_json::to_value(starter.source_row()).unwrap() });
     assert_eq!(plan(&kit, "licence.set_source", args).unwrap_err().code, ErrorCode::NotFound);
     let _ = CreditNotation::Unnecessary;
 }

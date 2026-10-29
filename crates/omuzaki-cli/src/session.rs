@@ -176,7 +176,8 @@ pub fn core_options(cli: &Cli, actor: Actor) -> Result<AppOptions, OpError> {
     // the studio's models use.
     if let Ok(paths) = omuzaki_settings::Paths::from_env() {
         let settings: Arc<dyn Settings> = Arc::new(omuzaki_settings::Store::open(&paths));
-        let cache = omuzaki_ai::VerifiedCache::new(paths.data().join(omuzaki_ai::CACHE_DIR), omuzaki_http::HttpFetcher::new());
+        let cache =
+            omuzaki_ai::VerifiedCache::new(paths.data().join(omuzaki_ai::CACHE_DIR), omuzaki_http::HttpFetcher::new());
         options = options.with_data_dir(paths.data()).with_services(
             ServicesBuilder::new()
                 .insert::<dyn Settings>(settings)

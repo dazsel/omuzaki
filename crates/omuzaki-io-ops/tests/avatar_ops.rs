@@ -661,3 +661,55 @@ fn publishing_a_non_profit_model_is_refused_by_the_gate() {
     let (_, errors) = export_check(&project, &id, "private");
     assert!(!errors.iter().any(|r| r.starts_with("rights.")), "{errors:?}");
 }
+
+/// Applies the plan of the edit op `name` to the project's document, as the executor does.
+fn apply(project: &mut Project, name: &str, args: Value) {
+    let plan = project.plan(name, args).unwrap_or_else(|e| panic!("{name} plans: {e:?}"));
+    project.doc.apply(&plan.patch).unwrap();
+}
+
+/// The model's source row with its licence corrected to what a person read at its source: commercial use allowed and
+/// `terms` that let anyone share and modify it, as for a model published under CC0 whose file says less.
+fn corrected_row(project: &Project, id: &CharId) -> Value {
+    let mut row = project.value(&format!("characters/{id}/sources/avatar")).unwrap();
+    row["provenance"]["licence"] = json!("CC0-1.0");
+    row["provenance"]["commercial"] = json!("ok");
+    let terms = row["terms"].as_object_mut().unwrap();
+    terms.insert("allowRedistribution".into(), json!(true));
+    terms.insert("modification".into(), json!("allowModificationRedistribution"));
+    row
+}
+
+#[test]
+fn a_corrected_licence_record_lets_an_imported_model_publish_and_a_stale_one_does_not() {
+    let mut project = Project::new();
+    // The file forbids redistribution and modification; its licence (read at its source) does not.
+    let id = project.imported(&model(), &json!({}));
+    let row = corrected_row(&project, &id);
+    apply(&mut project, "licence.set_source", json!({ "character": id, "part": "avatar", "source": row }));
+    let (ok, errors) = export_check(&project, &id, "publish");
+    assert!(!ok, "a corrected row alone changes nothing until a record is set: {errors:?}");
+    let record = derived(&project, &id)["record"].clone();
+    assert_eq!(record["meta"]["allowRedistribution"], true, "{record:#}");
+    apply(&mut project, "licence.set", json!({ "character": id, "record": record }));
+    let (ok, errors) = export_check(&project, &id, "publish");
+    assert!(ok, "the record's terms replace the file's: {errors:?}");
+    // The row goes back to what the file said: the record now grants more than the model allows, and is not trusted.
+    let original = project.value(&format!("characters/{id}/sources/avatar")).unwrap();
+    let mut narrow = original.clone();
+    narrow["terms"]["allowRedistribution"] = json!(false);
+    apply(&mut project, "licence.set_source", json!({ "character": id, "part": "avatar", "source": narrow }));
+    let (ok, errors) = export_check(&project, &id, "publish");
+    assert!(!ok && errors.iter().any(|r| r == "licence.exceeds_parts"), "{errors:?}");
+}
+
+#[test]
+fn a_record_of_the_files_own_terms_still_refuses_to_publish_it() {
+    let mut project = Project::new();
+    let id = project.imported(&model(), &json!({}));
+    let record = derived(&project, &id)["record"].clone();
+    apply(&mut project, "licence.set", json!({ "character": id, "record": record }));
+    let (ok, errors) = export_check(&project, &id, "publish");
+    assert!(!ok, "{errors:?}");
+    assert!(errors.iter().any(|r| r == "rights.licence_forbids_redistribution"), "{errors:?}");
+}

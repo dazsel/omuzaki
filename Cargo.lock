@@ -4879,6 +4879,8 @@ name = "omuzaki-cli"
 version = "0.0.0"
 dependencies = [
  "clap",
+ "omuzaki-ai",
+ "omuzaki-ai-api",
  "omuzaki-anim-api",
  "omuzaki-app",
  "omuzaki-audio-api",
@@ -4895,6 +4897,7 @@ dependencies = [
  "omuzaki-face-mock",
  "omuzaki-history-api",
  "omuzaki-history-mock",
+ "omuzaki-http",
  "omuzaki-http-api",
  "omuzaki-http-mock",
  "omuzaki-io-api",

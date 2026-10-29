@@ -45,8 +45,10 @@ Hub licence URL whose query string allows everything (corporate commercial use, 
 credit). Omuzaki's importer reads a 0.x `Other` conservatively (design `io-api.md`: no redistribution, no modification,
 credit required, commercial status unknown), which is right for an unknown file but wrong for these, whose CC0 waiver
 pixiv publishes. That is why starters enter through a catalogue that carries the verified record, not through a plain
-import: the catalogue stores the original under CC0 and writes the avatar's source row with the CC0 terms, so the
-character can be edited and exported like the person's own.
+import: the catalogue stores the original under CC0 and hands back the avatar's source row with the CC0 terms. The
+path is `io.starter.fetch`, then `io.inspect` and `io.import` as an avatar, then `licence.set_source` with that row,
+`licence.derive` and `licence.set`. With the record set, `io.check_export` and `io.export` use the record's terms in
+place of the file's own (held against the rows, so a stale record is refused), and the character publishes as CC0.
 
 **Trademarks.** "VRoid" is pixiv's mark. We say where a starter came from and credit the VRoid Project, and never imply
 pixiv made or endorses Omuzaki.
