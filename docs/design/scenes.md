@@ -466,6 +466,11 @@ Three steps, split by when they may allocate:
   manifest's camera, so the parity goldens keep their numbers.
 - **The CRDT later** (ST-10, §7) mirrors the same flat, id-keyed node. Anchors are parent links, like a part's `parent`,
   so loro's movable tree maps onto them without a second model.
+- **Built in the studio (#2401).** `omuzaki_stage::scene::stage::SceneStage` stages a scene of the document whole:
+  every visible member's body on one cast with its touches (#2415), the scene resolved around them. It follows the
+  document: a scene edit re-resolves and builds no body, a member whose character changed is built again alone, a
+  member added, hidden or removed is staged or given back, and a new subject stages the cast again on the same target.
+  The Live view and every output draw it; the studio stages what changed once the document has been still for 120 ms.
 
 ### D11. The default scene: the studio look, three framings, the default character
 

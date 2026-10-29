@@ -20,7 +20,7 @@ use omuzaki_doc_api::DocRead;
 use omuzaki_face_api::ExpressionSet;
 use omuzaki_ops_api::OpError;
 use omuzaki_render_api::{AlphaEncoding, Camera, Quality, Renderer, Scene, TargetDesc, TargetId};
-use omuzaki_stage_api::{MemberId, SceneDef, SceneId};
+use omuzaki_stage_api::{Framing, MemberId, SceneDef, SceneId};
 use omuzaki_store_api::Store;
 use serde_json::Value;
 
@@ -92,13 +92,23 @@ pub struct SceneStageOptions {
     pub clock: StageClock,
     /// The face rig every kit character's painted face runs on; `None` draws the faces still.
     pub face: Option<fn() -> FaceRig>,
+    /// The framing a project with no scene of its own opens on, among the built-in default's cameras; `None` keeps
+    /// the default's own (`full`). A stored scene always opens on its own camera.
+    pub unsaved_framing: Option<Framing>,
 }
 
 impl SceneStageOptions {
     /// Frames at `quality` on `clock`, faces on the standard rig.
     #[must_use]
     pub fn new(quality: Quality, clock: StageClock) -> Self {
-        Self { upload: UploadOptions::default(), quality, clock, face: Some(FaceRig::standard) }
+        Self { upload: UploadOptions::default(), quality, clock, face: Some(FaceRig::standard), unsaved_framing: None }
+    }
+
+    /// The same, opening a project with no scene on the default scene's camera of `framing` (the live view's bust).
+    #[must_use]
+    pub fn with_unsaved_framing(mut self, framing: Framing) -> Self {
+        self.unsaved_framing = Some(framing);
+        self
     }
 
     /// The same, with kit faces on `face`'s rig (a test's inline executor), or still for `None`.
@@ -227,7 +237,7 @@ impl SceneStage {
         aspect: f32,
         options: SceneStageOptions,
     ) -> Result<Self, SceneStageError> {
-        let (id, def) = scene_for(doc, scene).map_err(SceneStageError::Scene)?;
+        let (id, def) = read_scene(doc, scene, &options)?;
         let lead_id = subject(&def).ok_or(SceneStageError::NoCast)?;
         let (lead, staged) = stage_member(doc, &def, &lead_id, bodies, renderer, Some(target), &options)?;
         let mut this = Self {
@@ -265,7 +275,7 @@ impl SceneStage {
         bodies: &mut dyn BodySource,
         renderer: &mut dyn Renderer,
     ) -> Result<Synced, SceneStageError> {
-        let (id, def) = scene_for(doc, self.asked.as_ref()).map_err(SceneStageError::Scene)?;
+        let (id, def) = read_scene(doc, self.asked.as_ref(), &self.options)?;
         let lead_id = subject(&def).ok_or(SceneStageError::NoCast)?;
         let lead_key = def.cast.get(&lead_id).map(|m| BodyKey::of(doc, &m.character, m.variant.as_ref()));
         if lead_id != *self.cast.lead_id() || lead_key.as_ref() != self.members.get(&lead_id).map(|s| &s.key) {
@@ -456,6 +466,22 @@ impl SceneStage {
         }
         result
     }
+}
+
+/// Scene `scene` of `doc` ([`scene_for`]), the built-in default opened on `options`' framing when it is the one.
+fn read_scene(
+    doc: &dyn DocRead,
+    scene: Option<&SceneId>,
+    options: &SceneStageOptions,
+) -> Result<(Option<SceneId>, SceneDef), SceneStageError> {
+    let (id, mut def) = scene_for(doc, scene).map_err(SceneStageError::Scene)?;
+    if id.is_none()
+        && let Some(framing) = options.unsaved_framing
+        && let Some(camera) = def.cameras.iter().find(|(_, c)| c.framing == framing).map(|(id, _)| id.clone())
+    {
+        def.scene.camera = Some(camera);
+    }
+    Ok((id, def))
 }
 
 /// The scene's subject: the member it names, else the first of its cast; `None` when that member is hidden or there is
