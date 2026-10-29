@@ -156,7 +156,7 @@ const fn live(name: &'static str, summary: &'static str) -> OpMeta {
     { "expression": "happy" },
     { "expression": "surprised", "intensity": 0.7, "hold_s": 1.5 },
     { "expression": "sad", "held": true, "fade_s": 0.5 },
-    { "expression": "shocked", "fade_s": 0, "hold_s": 1, "over_tracking": true }
+    { "expression": "surprised", "fade_s": 0, "hold_s": 1, "over_tracking": true }
 ]))]
 pub struct Expression {
     /// An expression of the character's face, such as `happy` (`act.list` lists them).
