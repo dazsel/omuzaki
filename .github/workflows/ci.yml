@@ -183,8 +183,10 @@ jobs:
 
           if [[ -n $CRATES ]]; then
             packages=(); for name in $CRATES; do packages+=(-p "$name"); done
+            # A shard's whole crates may hold no tests at all (omuzaki-test-audio is a library of helpers), and nextest
+            # fails such a run unless told; a crate with tests still runs them all.
             # shellcheck disable=SC2046
-            cargo nextest run --profile ci --locked "${packages[@]}" $(features_for $CRATES) || status=1
+            cargo nextest run --profile ci --locked --no-tests=pass "${packages[@]}" $(features_for $CRATES) || status=1
           fi
           for part in $PARTS; do
             name=${part%@*}

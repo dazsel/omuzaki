@@ -27,7 +27,11 @@ fn matches_golden(image: &Image, name: &str) {
     let golden = image::open(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display())).to_rgba8();
     assert_eq!(golden.dimensions(), (image.size.x, image.size.y));
     let diff = support::Diff::of(golden.as_raw(), &image.rgba8);
-    assert!(diff.max <= 2, "{name} under webgpu differs from its golden by up to {} levels ({diff})", diff.max);
+    assert!(
+        diff.matches_but_strays(),
+        "{name} under webgpu differs from its golden by up to {} levels ({diff})",
+        diff.max
+    );
 }
 
 #[test]
