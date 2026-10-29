@@ -6,7 +6,7 @@ area: quality
 
 # Reference shorts
 
-The quality loop (`CLAUDE.md`, "The quality loop: match a reference") applied to short-form character video. The
+The main loop (`CLAUDE.md`, "The main loop: build a target, find what's missing, build it") applied to short-form character video. The
 references are other creators' videos and stay out of the repository; this page describes them only in words, and
 every render in the evidence uses the kit's own characters and the project's own scripts.
 
