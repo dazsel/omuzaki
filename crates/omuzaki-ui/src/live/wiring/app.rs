@@ -358,6 +358,11 @@ impl LiveApp {
             services = services.insert::<VtsService>(vts);
         }
         services = InputWiring::serve(services, hub.as_ref());
+        // Downloads an op asks for (a starter character) go through the verified cache the models use.
+        if let Some(data) = &data {
+            let cache = omuzaki_ai::VerifiedCache::new(data.join(omuzaki_ai::CACHE_DIR), HttpFetcher::new());
+            services = services.insert::<dyn omuzaki_ai_api::FileSource>(Arc::new(cache));
+        }
         let (with, renders) = with_connectors(services, data.as_deref(), secrets.as_ref(), settings.as_ref());
         // The Theatre's book is kept beside the project, so a reopened project shows its plans and cards again.
         let theatre = document.dir().map_or_else(TheatreBook::new, TheatreBook::for_project);
