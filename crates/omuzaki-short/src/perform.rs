@@ -119,7 +119,7 @@ impl OfflinePerformer {
             let now = tick.time.0 as f32;
             let face = timeline.faces.partition_point(|f| f.start <= now).saturating_sub(1);
             if let Some(face) = self.faces.get(face) {
-                let (layer, _) = self.performer.score_mut();
+                let (layer, _, _) = self.performer.score_mut();
                 *layer = Layer { values: face.values, mask: face.mask, weight: 1.0, mode: BlendMode::Override };
             }
             self.lip.take(&voice.frame_at(now));

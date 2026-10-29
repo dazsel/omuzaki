@@ -161,6 +161,64 @@ mod tests {
     }
 
     #[test]
+    fn the_golden_table_on_half_grey() {
+        // src = (0.8, 0.4, 0.2, 1), dst = (0.5, 0.5, 0.5, 1): both opaque, so out = B(0.5, Cs) per channel.
+        let s = [0.8, 0.4, 0.2, 1.0];
+        let d = [0.5, 0.5, 0.5, 1.0];
+        let soft = 0.5 + 0.6 * (0.5_f32.sqrt() - 0.5); // Cs = 0.8: Cd + (2Cs - 1)(sqrt(Cd) - Cd)
+        let table = [
+            (BlendMode::Normal, [0.8, 0.4, 0.2]),
+            (BlendMode::Multiply, [0.4, 0.2, 0.1]),           // Cd * Cs
+            (BlendMode::Screen, [0.9, 0.7, 0.6]),             // Cd + Cs - Cd * Cs
+            (BlendMode::Overlay, [0.8, 0.4, 0.2]),            // Cd = 0.5: 2 * Cd * Cs = Cs
+            (BlendMode::Darken, [0.5, 0.4, 0.2]),             // min
+            (BlendMode::Lighten, [0.8, 0.5, 0.5]),            // max
+            (BlendMode::ColorDodge, [1.0, 0.5 / 0.6, 0.625]), // min(1, Cd / (1 - Cs)): 2.5 clamps
+            (BlendMode::LinearDodge, [1.0, 0.9, 0.7]),        // min(1, Cd + Cs)
+            (BlendMode::ColorBurn, [0.375, 0.0, 0.0]),        // 1 - min(1, (1 - Cd) / Cs)
+            (BlendMode::HardLight, [0.8, 0.4, 0.2]),          // Cs > 0.5: screen(0.5, 0.6) = 0.8; else 2 * 0.5 * Cs
+            (BlendMode::SoftLight, [soft, 0.45, 0.35]),       // Cs <= 0.5: Cd - (1 - 2Cs) Cd (1 - Cd)
+            (BlendMode::Difference, [0.3, 0.1, 0.3]),         // |Cd - Cs|
+            (BlendMode::Exclusion, [0.5, 0.5, 0.5]),          // Cd + Cs - 2 Cd Cs, with Cd = 0.5
+            (BlendMode::Subtract, [0.0, 0.1, 0.3]),           // max(0, Cd - Cs)
+        ];
+        for (mode, rgb) in table {
+            let want = [rgb[0], rgb[1], rgb[2], 1.0];
+            assert!(close(blend(mode, s, d), want), "{mode:?}: {:?} != {want:?}", blend(mode, s, d));
+        }
+        // Half-transparent src (straight (0.8, 0.4, 0.2), alpha 0.5, so premultiplied (0.4, 0.2, 0.1, 0.5)) on the
+        // opaque grey: out = 0.5 * d + 0.5 * B, alpha 1; Normal is s + 0.5 * d.
+        let half = [0.4, 0.2, 0.1, 0.5];
+        assert!(close(blend(BlendMode::Normal, half, d), [0.65, 0.45, 0.35, 1.0]));
+        assert!(close(blend(BlendMode::Multiply, half, d), [0.45, 0.35, 0.3, 1.0]));
+        assert!(close(blend(BlendMode::Screen, half, d), [0.7, 0.6, 0.55, 1.0]));
+    }
+
+    #[test]
+    fn symmetric_modes_commute_and_outputs_stay_finite_in_range() {
+        let steps: Vec<f32> = (0..=10_u8).map(|i| f32::from(i) / 10.0).collect();
+        for &a in &steps {
+            for &b in &steps {
+                for mode in [
+                    BlendMode::Multiply,
+                    BlendMode::Screen,
+                    BlendMode::Darken,
+                    BlendMode::Lighten,
+                    BlendMode::LinearDodge,
+                    BlendMode::Difference,
+                    BlendMode::Exclusion,
+                ] {
+                    assert!((mix(mode, a, b) - mix(mode, b, a)).abs() < 1e-6, "{mode:?} at {a}, {b}");
+                }
+                for mode in MODES {
+                    let m = mix(mode, a, b);
+                    assert!(m.is_finite() && (-1e-6..=1.0 + 1e-6).contains(&m), "{mode:?} at {a}, {b}: {m}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn every_separable_mode_over_nothing_is_the_source_and_nothing_over_anything_keeps_it() {
         let s = [0.2, 0.3, 0.1, 0.5];
         let d = [0.4, 0.1, 0.3, 0.8];

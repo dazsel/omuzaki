@@ -327,6 +327,7 @@ pub fn text_frames(text: &str, span: Span, onsets: &mut u32, out: &mut Vec<(f32,
                 visemes,
                 onsets: *onsets,
                 formants: [0.0, 0.0],
+                closure: 0.0,
             },
         ));
     }
