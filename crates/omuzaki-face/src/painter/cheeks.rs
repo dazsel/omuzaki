@@ -76,7 +76,8 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
     for side in [1.0, -1.0] {
         patch(ctx, style, strength, Vec2::new(side * spacing, blush_y));
     }
-    let puff = settled(((ctx.params.cheek_puff.clamp(0.0, 1.0) - PUFF_DEAD) / (1.0 - PUFF_DEAD)).max(0.0));
+    let puff = ctx.params.cheek_puff.clamp(0.0, 1.0);
+    let puff = if puff < PUFF_DEAD { 0.0 } else { settled(puff) };
     if puff > PUFF_MIN {
         for side in [1.0, -1.0] {
             puffed_cheek(ctx, style, puff, side, Vec2::new(side * spacing, blush_y));
