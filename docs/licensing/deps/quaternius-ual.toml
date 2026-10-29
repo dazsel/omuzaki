@@ -1,0 +1,7 @@
+section = "models"
+item = "Quaternius Universal Animation Library 1 and 2 (Standard versions)"
+kind = "asset"
+used_for = "(planned) idle, gesture and locomotion clips for starter characters, retargeted onto the VRM humanoid"
+status = "yes"
+condition = "CC0 on both OpenGameArt pages (https://opengameart.org/content/universal-animation-library and https://opengameart.org/content/universal-animation-library-2, read 2026-10-29). Only the free Standard downloads; the paid Source versions are not needed. Fetched on demand, never committed"
+audit = "(OpenGameArt, read 2026-10-29)"
