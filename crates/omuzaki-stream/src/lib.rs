@@ -11,8 +11,9 @@
 //! |---|---|---|
 //! | [`service`] | [`StreamService`](service::StreamService): frames from the frame loop fanned out to every output, paced on each output's grid | works |
 //! | [`alpha`] | the exact straight, premultiplied and flattened conversions of D9 | works |
-//! | [`sinks`] | [`sinks::png`] (one file per frame, crash-safe), [`sinks::wav`] (float WAV, header current each second) [`sinks::webm`] (VP9 with alpha, crash-safe clusters) and [`sinks::webm_mux`] (the same writer behind the `Muxer` trait) | works |
+//! | [`sinks`] | [`sinks::png`] (one file per frame, crash-safe), [`sinks::wav`] (float WAV, header current each second) [`sinks::webm`] (VP9 with alpha and an optional Opus track, crash-safe clusters) and [`sinks::webm_mux`] (the same writer behind the `Muxer` trait) | works |
 //! | [`vp9`] | VP9 through libvpx loaded at run time, behind the `Encoder` trait with its alpha as side data ([`vp9::alpha`]), and [`i420`]: straight RGBA to the colour and alpha pictures | works |
+//! | [`opus`] | Opus through libopus loaded at run time: the 20 ms packet encoder for a take's voice in its `WebM`, and a decoder for reading it back | works |
 //! | [`record`] | [`settings`](record::settings), [`take`](record::take) naming and manifest, [`runtime`](record::runtime): the recorder output | works: `WebM` VP9 with alpha, or a PNG sequence |
 //! | [`ops`] | [`record`](ops::record) (`record.start`, `stop`, `status`), [`replay`](ops::replay) (`record.replay_start`, `replay_stop`, `save_replay`, `replay_status`), [`output`](ops::output) (`output.kinds`, `list`, `start`, `stop`), [`window`](ops::window) | works |
 //! | [`timeline`] | the [`AudioSource`](timeline::AudioSource) trait recording reads audio through | works |
@@ -33,6 +34,7 @@ pub mod feed;
 pub mod i420;
 pub mod live_hold;
 pub mod ops;
+pub mod opus;
 pub mod pacing;
 pub mod record;
 pub mod replay;
