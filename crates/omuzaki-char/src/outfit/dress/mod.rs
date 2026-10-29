@@ -83,7 +83,7 @@ pub enum DressSleeves {
 
 impl DressSleeves {
     /// The cut of the sleeves, if any.
-    fn cut(self) -> Option<SleeveCut> {
+    pub(crate) fn cut(self) -> Option<SleeveCut> {
         let plain = SleeveCut {
             width: 0.004,
             ease_at_elbow: 0.004,
@@ -304,12 +304,11 @@ impl PartKind for Dress {
             let colour = ctx.colour(&p.sash.colour)?.to_linear().to_array();
             add_sash(&mut shell.mesh, &frame, p.sash.height, colour).map_err(fail)?;
         }
-        let sleeves = match p.sleeves.cut() {
-            Some(cut) => Some(sleeves::build(&frame, &cut, &tones, out.tile()).map_err(fail)?),
-            None => {
-                hold_up(&mut shell.mesh, &frame, p.strap_width, &tones).map_err(fail)?;
-                None
-            }
+        let sleeves = if let Some(cut) = p.sleeves.cut() {
+            Some(sleeves::build(&frame, &cut, &tones, out.tile()).map_err(fail)?)
+        } else {
+            hold_up(&mut shell.mesh, &frame, p.strap_width, &tones).map_err(fail)?;
+            None
         };
         super::coat::finish(ctx, out, &p.common, &p.colours, &frame, shell, sleeves, &Self::regions(p))
     }

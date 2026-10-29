@@ -84,6 +84,7 @@ pub fn straps(frame: &Frame, width: f64, tones: &Tones, mesh: &mut MeshBuilder) 
     let mut borders = 0;
     for side in [1.0, -1.0] {
         let starts = starts(frame, side * front, width)?;
+        #[allow(clippy::cast_precision_loss)] // a strap's few lines
         let x = starts.iter().map(|(f, _)| f.x).sum::<f64>() / starts.len().max(1) as f64;
         let lowest = starts.iter().map(|(f, b)| f.y.min(b.y)).fold(f64::INFINITY, f64::min) - SAMPLE_BELOW;
         let obstacles = obstacles(frame, x, lowest)?;
