@@ -199,6 +199,9 @@ creativity, emotion and expression, at the quality the product must reach. The t
 A reference that isn't the project's own stays out of the repository: describe it in words, and use the kit's
 characters for every render and video in the evidence.
 
+For short-form video the bar, the `short.*` ops that recreate a short from a script, and the compare tool
+(`tools/reference-loop/compare.py`) are in `docs/quality/reference-shorts.md`.
+
 ## Product principles
 
 - **Core first:** spend first where characters are designed (the kit through operations and MCP, plus the edit panels)
