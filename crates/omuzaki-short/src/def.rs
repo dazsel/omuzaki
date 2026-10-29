@@ -70,8 +70,14 @@ pub struct ShortDef {
     /// What the short is called (for people; nothing reads it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    /// The character who performs it: built from the kit or imported.
+    /// The character who performs it: built from the kit or imported. With `puppet`, it names the performer (its voice
+    /// and the video's default name) and needn't be in the project.
     pub character: CharId,
+    /// A flat 2D puppet to perform it in place of the character's 3D body (EX-08), relative to the project: a puppet
+    /// bundle folder (`puppets/pip.puppet`, holding `puppet.json`) or layered art (`art/pip.layers.toml`), which is
+    /// rigged on the spot. The scene, light rig and pose don't apply to a puppet; `look.backdrop` does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub puppet: Option<String>,
     /// The scene it is shot in; the project's opening scene when left out. The short's `look` is laid over it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scene: Option<SceneId>,
@@ -562,6 +568,7 @@ impl ShortDef {
         Self {
             title: None,
             character,
+            puppet: None,
             scene: None,
             size: default_size(),
             fps: default_fps(),

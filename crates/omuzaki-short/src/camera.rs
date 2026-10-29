@@ -60,23 +60,23 @@ fn lerp(a: f32, b: f32, k: f32) -> f32 {
     a + (b - a) * k
 }
 
-impl CameraRig {
-    /// Three smooth noises in -1..1 (yaw, pitch, roll) at `t`, from the seed.
-    #[allow(clippy::cast_precision_loss, reason = "seed bits to a phase")]
-    fn wobble(&self, t: f32) -> [f32; 3] {
-        let phase = |k: u64| {
-            ((self.seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(k * 0x632B_E59B_D9B4_E019) >> 40) as f32)
-                / (1u64 << 24) as f32
-                * std::f32::consts::TAU
-        };
-        std::array::from_fn(|axis| {
-            let a = axis as u64 * 3;
-            0.55 * (t * 0.71 + phase(a)).sin()
-                + 0.3 * (t * 1.37 + phase(a + 1)).sin()
-                + 0.15 * (t * 2.93 + phase(a + 2)).sin()
-        })
-    }
+/// Three smooth noises in -1..1 (yaw, pitch, roll) at `t`, from `seed`.
+#[allow(clippy::cast_precision_loss, reason = "seed bits to a phase")]
+fn wobble(seed: u64, t: f32) -> [f32; 3] {
+    let phase = |k: u64| {
+        ((seed.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(k.wrapping_mul(0x632B_E59B_D9B4_E019)) >> 40) as f32)
+            / (1u64 << 24) as f32
+            * std::f32::consts::TAU
+    };
+    std::array::from_fn(|axis| {
+        let a = axis as u64 * 3;
+        0.55 * (t * 0.71 + phase(a)).sin()
+            + 0.3 * (t * 1.37 + phase(a + 1)).sin()
+            + 0.15 * (t * 2.93 + phase(a + 2)).sin()
+    })
+}
 
+impl CameraRig {
     /// The shot `i` of `timeline` as numbers at `t`: its own, eased from the one before, with its punch and push.
     fn numbers_at(timeline: &Timeline, i: usize, t: f32) -> ShotNumbers {
         let span = &timeline.shots[i];
@@ -103,20 +103,29 @@ impl CameraRig {
         n
     }
 
+    /// The shot at `t` seconds as numbers, the handheld drift and the cut's jolt on top (roll included): what a camera
+    /// does, before it is a camera. The 2D puppet path frames from these.
+    #[must_use]
+    pub fn shot_at(timeline: &Timeline, seed: u64, t: f32) -> ShotNumbers {
+        let i = timeline.shot_index_at(t);
+        let mut n = Self::numbers_at(timeline, i, t);
+        let since = t - timeline.shots[i].start;
+        let w = wobble(seed, t);
+        let drift = DRIFT_DEG + SHAKE_DEG * n.shake;
+        let jolt = n.shake * 2.5 * (-since / (JOLT_S / 4.0)).exp() * (since * 38.0).sin();
+        n.yaw += drift * w[0] + jolt;
+        n.pitch = (n.pitch + drift * w[1] + 0.6 * jolt).clamp(-89.0, 89.0);
+        n.roll += 0.5 * drift * w[2] + 0.4 * jolt;
+        n
+    }
+
     /// The camera at `t` seconds.
     ///
     /// # Errors
     /// [`ShortError::Render`] when the framing can't frame the character (no head for a face shot).
     pub fn camera_at(&self, timeline: &Timeline, t: f32) -> Result<Camera, ShortError> {
-        let i = timeline.shot_index_at(t);
-        let mut n = Self::numbers_at(timeline, i, t);
-        let since = t - timeline.shots[i].start;
-        let w = self.wobble(t);
-        let drift = DRIFT_DEG + SHAKE_DEG * n.shake;
-        let jolt = n.shake * 2.5 * (-since / (JOLT_S / 4.0)).exp() * (since * 38.0).sin();
-        n.yaw += drift * w[0] + jolt;
-        n.pitch = (n.pitch + drift * w[1] + 0.6 * jolt).clamp(-89.0, 89.0);
-        let roll = n.roll + 0.5 * drift * w[2] + 0.4 * jolt;
+        let n = Self::shot_at(timeline, self.seed, t);
+        let roll = n.roll;
         let framing = match n.framing {
             ShotFraming::Face => Framing::Face,
             ShotFraming::Bust => Framing::Bust,

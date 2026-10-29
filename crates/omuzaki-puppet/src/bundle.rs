@@ -70,41 +70,57 @@ pub fn save(
 /// # Errors
 /// [`BundleError`] for a missing or malformed file, a texture of the wrong size, or a puppet that fails its checks.
 pub fn load(dir: &Path) -> Result<Bundle, BundleError> {
-    let path = dir.join(PUPPET_FILE);
-    let text = std::fs::read(&path).map_err(|e| err(&path, e))?;
-    let def: PuppetDef = serde_json::from_slice(&text).map_err(|e| err(&path, e))?;
-    def.check().map_err(|e| err(&path, e))?;
-    let path = dir.join(MAPPING_FILE);
-    let mapping = match std::fs::read(&path) {
-        Ok(text) => serde_json::from_slice(&text).map_err(|e| err(&path, e))?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => ParamMapping::default(),
-        Err(e) => return Err(err(&path, e)),
+    load_with(|file| match std::fs::read(dir.join(file)) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && file == MAPPING_FILE => Ok(None),
+        Err(e) => Err(e.to_string()),
+    })
+}
+
+/// Loads a bundle through `read`, which gives the bytes of a file of the bundle by its path inside it (`puppet.json`,
+/// `textures/0.png`), or `None` when it isn't there; so a host reads the files through its own file access. Checks
+/// as [`load`].
+///
+/// # Errors
+/// As [`load`].
+pub fn load_with(mut read: impl FnMut(&str) -> Result<Option<Vec<u8>>, String>) -> Result<Bundle, BundleError> {
+    let named = |file: &str, detail: String| BundleError { path: file.to_owned(), detail };
+    let bytes =
+        read(PUPPET_FILE).map_err(|e| named(PUPPET_FILE, e))?.ok_or_else(|| named(PUPPET_FILE, "missing".into()))?;
+    let def: PuppetDef = serde_json::from_slice(&bytes).map_err(|e| named(PUPPET_FILE, e.to_string()))?;
+    def.check().map_err(|e| named(PUPPET_FILE, e.to_string()))?;
+    let mapping = match read(MAPPING_FILE).map_err(|e| named(MAPPING_FILE, e))? {
+        Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| named(MAPPING_FILE, e.to_string()))?,
+        None => ParamMapping::default(),
     };
     let mut textures = Vec::with_capacity(def.textures.len());
     for t in &def.textures {
-        if t.file.contains("..") || Path::new(&t.file).is_absolute() {
-            return Err(err(dir, format!("texture {:?} leaves the bundle", t.file)));
+        if t.file.contains("..") || Path::new(&t.file).is_absolute() || t.file.starts_with(['/', '\\']) {
+            return Err(named(&t.file, "the texture leaves the bundle".to_owned()));
         }
         if t.size[0] > MAX_TEXTURE_SIDE || t.size[1] > MAX_TEXTURE_SIDE {
-            return Err(err(dir, format!("texture {:?} is larger than {MAX_TEXTURE_SIDE}", t.file)));
+            return Err(named(&t.file, format!("larger than {MAX_TEXTURE_SIDE}")));
         }
-        let path = dir.join(&t.file);
-        let img = image::ImageReader::open(&path)
-            .map_err(|e| err(&path, e))?
-            .with_guessed_format()
-            .map_err(|e| err(&path, e))?
-            .decode()
-            .map_err(|e| err(&path, e))?
-            .into_rgba8();
+        let bytes = read(&t.file).map_err(|e| named(&t.file, e))?.ok_or_else(|| named(&t.file, "missing".into()))?;
+        let img = image::load_from_memory(&bytes).map_err(|e| named(&t.file, e.to_string()))?.into_rgba8();
         if [img.width(), img.height()] != t.size {
-            return Err(err(
-                &path,
+            return Err(named(
+                &t.file,
                 format!("{}x{} where the puppet says {}x{}", img.width(), img.height(), t.size[0], t.size[1]),
             ));
         }
         let tex = Texture::from_straight(img.width(), img.height(), img.as_raw())
-            .ok_or_else(|| err(&path, "an empty texture"))?;
+            .ok_or_else(|| named(&t.file, "an empty texture".into()))?;
         textures.push(tex);
     }
     Ok(Bundle { def, mapping, textures })
+}
+
+impl Bundle {
+    /// The bundle of a freshly rigged puppet, its textures made from its images.
+    #[must_use]
+    pub fn from_rigged(rigged: crate::autorig::Rigged) -> Self {
+        let textures = rigged.textures();
+        Self { def: rigged.def, mapping: rigged.mapping, textures }
+    }
 }

@@ -15,6 +15,7 @@
 //! | [`camera`] | the camera track: cuts, eases, punch-ins, pushes, dutch roll and handheld drift |
 //! | [`caption`] | burned-in captions |
 //! | [`render`] | the render loop |
+//! | [`puppet`] | the render loop for a flat 2D puppet in place of a 3D body |
 //! | [`encode`] | VP9 and Opus into `WebM` |
 //! | [`draft`] | `short.draft`'s rules: a plain script to a directed short |
 //! | [`ops`] | `short.render`, `short.plan`, `short.draft` |
@@ -28,6 +29,7 @@ pub mod encode;
 pub mod error;
 pub mod ops;
 pub mod perform;
+pub mod puppet;
 pub mod render;
 pub mod speech;
 pub mod timeline;

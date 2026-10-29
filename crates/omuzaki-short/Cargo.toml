@@ -22,6 +22,9 @@ omuzaki-face-api = { path = "../omuzaki-face-api" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 # Voice ids and the speed range of a spoken short.
 omuzaki-performer-api = { path = "../omuzaki-performer-api" }
+# A short performed by a flat 2D puppet (EX-08).
+omuzaki-puppet = { path = "../omuzaki-puppet" }
+omuzaki-puppet-api = { path = "../omuzaki-puppet-api" }
 omuzaki-render-api = { path = "../omuzaki-render-api" }
 # A spoken short's lines are said by the local text-to-speech (Kokoro, `tts@1`).
 omuzaki-speech = { path = "../omuzaki-speech" }

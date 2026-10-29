@@ -10,6 +10,9 @@ use omuzaki_char_api::{BuildServices, CharId, CharacterBuilder, paths as char_pa
 use omuzaki_core::time::SystemClock;
 use omuzaki_doc_api::DocRead;
 use omuzaki_ops_api::{CostHint, FsMode, JobCtx, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
+use omuzaki_puppet::autorig::autorig;
+use omuzaki_puppet::bundle::{self, Bundle};
+use omuzaki_puppet::layers::LayeredArt;
 use omuzaki_render_api::{Capabilities, MtoonSupport, Renderer};
 use omuzaki_stage::body::{Body, BodyServices, load_body};
 use omuzaki_stage::ops::render::job::{RenderQuality, character_bytes, check_size, cost};
@@ -26,6 +29,7 @@ use crate::def::{ShortDef, VoiceDef};
 use crate::draft;
 use crate::encode::{ShortWriter, wav_bytes};
 use crate::error::ShortError;
+use crate::puppet::render_puppet_short;
 use crate::render::{ShortScene, frame_count, render_short};
 use crate::speech::{SpeechServices, TtsSpeaker};
 use crate::timeline::{Measures, Timeline};
@@ -35,6 +39,8 @@ use crate::voice::{SPEECH_WPM, Synthesis, VoiceTrack, read_wav_from, voice_for};
 const MAX_FILE_BYTES: u64 = 1 << 20;
 /// Report progress every this many frames.
 const PROGRESS_EVERY: u64 = 15;
+/// The largest file of a puppet read, bytes: a texture atlas of 16384 pixels a side compresses well below it.
+const MAX_PUPPET_FILE_BYTES: u64 = 512 << 20;
 
 /// Where a short comes from: a file of the project, or inline.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -119,6 +125,49 @@ fn voice(
         (Ok(track), _) => Ok(track),
         (Err(_), Some(e)) => Err(e),
         (Err(e), None) => Err(e.into()),
+    }
+}
+
+/// The puppet at `path` in the project, read through the op's file access: a bundle folder, or layered art (a
+/// `*.toml` manifest) rigged now.
+fn load_puppet(
+    path: &str,
+    fs: &dyn Fn(&str, FsMode) -> Result<omuzaki_ops_api::CanonicalPath, OpError>,
+) -> Result<Bundle, OpError> {
+    let read = |file: &str| -> Result<Vec<u8>, String> {
+        let mut bytes = Vec::new();
+        fs(file, FsMode::Read)
+            .and_then(|p| p.open_read())
+            .map_err(|e| e.to_string())?
+            .take(MAX_PUPPET_FILE_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| format!("{file}: {e}"))?;
+        if bytes.len() as u64 > MAX_PUPPET_FILE_BYTES {
+            return Err(format!("{file} is over {MAX_PUPPET_FILE_BYTES} bytes"));
+        }
+        Ok(bytes)
+    };
+    let invalid = |e: String| {
+        OpError::invalid("puppet", e)
+            .hint("a puppet is a bundle folder holding puppet.json, or a *.layers.toml manifest of layered art")
+    };
+    if std::path::Path::new(path).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("toml")) {
+        let dir = path.rsplit_once('/').map_or("", |(dir, _)| dir);
+        let text = String::from_utf8(read(path).map_err(invalid)?).map_err(|e| invalid(format!("{path}: {e}")))?;
+        let art = LayeredArt::from_toml_with(&text, |file| {
+            read(&if dir.is_empty() { file.to_owned() } else { format!("{dir}/{file}") })
+        })
+        .map_err(|e| invalid(e.to_string()))?;
+        let rigged = autorig(&art).map_err(|e| invalid(e.to_string()))?;
+        Ok(Bundle::from_rigged(rigged))
+    } else {
+        let dir = path.trim_end_matches('/');
+        bundle::load_with(|file| match read(&format!("{dir}/{file}")) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(_) if file == bundle::MAPPING_FILE => Ok(None),
+            Err(e) => Err(e),
+        })
+        .map_err(|e| invalid(e.to_string()))
     }
 }
 
@@ -435,6 +484,17 @@ fn render_seconds(frames: u64, size: [u32; 2], quality: RenderQuality) -> f32 {
     frames as f32 * (per_frame * share + FRAME_OVERHEAD_S)
 }
 
+/// Seconds per frame of a 1080x1920 puppet frame on the CPU renderer (four cores), with the performer, captions and
+/// the encoder.
+const PUPPET_FRAME_S: f32 = 0.25;
+
+/// The estimate of a puppet render of `frames` frames of `size`.
+#[allow(clippy::cast_precision_loss, reason = "frame and pixel counts")]
+fn puppet_seconds(frames: u64, size: [u32; 2]) -> f32 {
+    let share = (size[0] as f32 * size[1] as f32) / (1080.0 * 1920.0);
+    frames as f32 * (PUPPET_FRAME_S * share + FRAME_OVERHEAD_S)
+}
+
 impl Op for RenderShort {
     fn meta() -> OpMeta {
         OpMeta {
@@ -456,8 +516,12 @@ impl Op for RenderShort {
         let def = self.sized(self.source.load(&fs)?)?;
         let out = self.out.clone().unwrap_or_else(|| self.source.default_out(&def));
         ctx.fs_access(&out, FsMode::Write)?;
-        def.look.pose.check("look.pose")?;
-        scene_def(ctx.doc, &def)?;
+        if let Some(puppet) = &def.puppet {
+            ctx.fs_access(puppet, FsMode::Read)?;
+        } else {
+            def.look.pose.check("look.pose")?;
+            scene_def(ctx.doc, &def)?;
+        }
         if let VoiceDef::Speech { voice, speed } = &def.voice {
             // Refused before the job starts when the voice can't be said here; the timing is still an estimate.
             TtsSpeaker::for_op(&SpeechServices::of_op(ctx), &def.character, voice, *speed)?;
@@ -465,6 +529,12 @@ impl Op for RenderShort {
         let voice = voice(&def, &fs, Synthesis::Estimate)?;
         let timeline = Timeline::new(&def, &voice)?;
         let frames = frame_count(timeline.duration, def.fps);
+        if def.puppet.is_some() {
+            return Ok(Plan {
+                cost: Some(CostHint { seconds: Some(puppet_seconds(frames, def.size)), ..CostHint::default() }),
+                ..Plan::default()
+            });
+        }
         let character = character_bytes(ctx, &def.character, None, self.quality)?;
         let size = check_size(def.size, self.quality)?;
         let gpu = cost(size, 1, self.quality, character);
@@ -490,6 +560,12 @@ impl Op for RenderShort {
             _ => voice(&def, &fs, Synthesis::Estimate)?,
         };
         let timeline = Timeline::new(&def, &voice)?;
+        if let Some(path) = &def.puppet {
+            let puppet = load_puppet(path, &fs)?;
+            return self.finish(job, started, &def, &out, &timeline, &voice, |writer, progress| {
+                render_puppet_short(puppet, &def, &timeline, &voice, writer, progress)
+            });
+        }
         let (scene, member) = job.read(|doc| scene_def(doc, &def))?;
         let clock = SystemClock::default();
         let services = BodyServices::new(
@@ -523,7 +599,43 @@ impl Op for RenderShort {
             post_in_look(&mut staged.resolved.post, &built.look().scene);
         }
 
-        let target = job.fs_access(&out, FsMode::Write)?;
+        let scene = ShortScene {
+            def: &def,
+            timeline: &timeline,
+            voice: &voice,
+            staged: &staged,
+            landmarks,
+            quality: self.quality.quality(),
+            pose: Some(pose),
+        };
+        let renderer = job.service::<Mutex<Box<dyn Renderer>>>()?;
+        self.finish(job, started, &def, &out, &timeline, &voice, |writer, progress| {
+            let mut guard = renderer.lock().map_err(|_| {
+                ShortError::Render("the renderer is unusable: an earlier render panicked while holding it".into())
+            })?;
+            render_short(&mut **guard, body, &scene, writer, progress)
+        })
+    }
+}
+
+impl RenderShort {
+    /// Opens the video at `out`, runs `render` into it with a progress callback that reports to `job`, finishes the
+    /// file (the voice beside it when it couldn't go in) and reports.
+    #[allow(clippy::too_many_arguments, reason = "the render's parts, each used once")]
+    fn finish(
+        &self,
+        job: &JobCtx<'_>,
+        started: std::time::Instant,
+        def: &ShortDef,
+        out: &str,
+        timeline: &Timeline,
+        voice: &VoiceTrack,
+        render: impl FnOnce(
+            &mut ShortWriter,
+            &mut dyn FnMut(f32) -> Result<(), ShortError>,
+        ) -> Result<crate::render::LoopReport, ShortError>,
+    ) -> Result<Value, OpError> {
+        let target = job.fs_access(out, FsMode::Write)?;
         if let Some(folder) = target.parent() {
             folder.create_dir_all()?;
         }
@@ -537,21 +649,11 @@ impl Op for RenderShort {
         let has_voice = matches!(def.voice, VoiceDef::File { .. } | VoiceDef::Speech { .. });
         let mut writer = ShortWriter::create(
             file,
-            std::path::Path::new(&out),
+            std::path::Path::new(out),
             def.size,
             def.fps,
             has_voice.then_some(voice.pcm.as_slice()),
         )?;
-
-        let scene = ShortScene {
-            def: &def,
-            timeline: &timeline,
-            voice: &voice,
-            staged: &staged,
-            landmarks,
-            quality: self.quality.quality(),
-            pose: Some(pose),
-        };
         let frames = frame_count(timeline.duration, def.fps);
         let mut stopped: Option<OpError> = None;
         let mut done = 0u64;
@@ -565,13 +667,7 @@ impl Op for RenderShort {
                 ShortError::Render("stopped".into())
             })
         };
-        let renderer = job.service::<Mutex<Box<dyn Renderer>>>()?;
-        let outcome = {
-            let mut guard = renderer.lock().map_err(|_| {
-                OpError::internal("the renderer is unusable: an earlier render panicked while holding it")
-            })?;
-            render_short(&mut **guard, body, &scene, &mut writer, &mut progress)
-        };
+        let outcome = render(&mut writer, &mut progress);
         if let Some(e) = stopped {
             return Err(e);
         }
@@ -594,7 +690,7 @@ impl Op for RenderShort {
             "short rendered"
         );
         let result = RenderedShort {
-            path: out,
+            path: out.to_owned(),
             bytes: written.bytes,
             frames,
             fps: def.fps,

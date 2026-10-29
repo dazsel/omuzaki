@@ -304,6 +304,27 @@ impl LayeredArt {
         })
     }
 
+    /// Parses the manifest `text` and reads every layer it names through `read`, which gives the bytes of an image
+    /// file by its path relative to the manifest (PNG, or any format the `image` crate reads). So a host reads the
+    /// files through its own file access.
+    ///
+    /// # Errors
+    /// As [`LayeredArt::load`].
+    pub fn from_toml_with(
+        text: &str,
+        mut read: impl FnMut(&str) -> Result<Vec<u8>, String>,
+    ) -> Result<Self, LayersError> {
+        let manifest: LayersManifest = toml::from_str(text)
+            .map_err(|e| LayersError::Manifest { path: PathBuf::from("layers.toml"), detail: e.to_string() })?;
+        Self::from_manifest(manifest, |file| {
+            if file.contains("..") || Path::new(file).is_absolute() {
+                return Err("the layer's file leaves the manifest's folder".to_owned());
+            }
+            let img = image::load_from_memory(&read(file)?).map_err(|e| e.to_string())?.into_rgba8();
+            Ok(([img.width(), img.height()], img.into_raw()))
+        })
+    }
+
     /// Builds layered art from a manifest, reading each layer's straight RGBA8 pixels with `read` (given the layer's
     /// `file`).
     ///
