@@ -314,6 +314,9 @@ pub enum ActRequest {
         expression: ExpressionId,
         /// Strength, `0..=1`.
         intensity: f32,
+        /// It wins over the tracker, lip sync and the triggers on its channels ([`Act::over_tracking`]).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        over_tracking: bool,
     },
     /// Where the eyes point, in look units (`x` toward the character's left, `y` up, `1` a full look), with the head
     /// following by `head` (`0` the eyes alone, `1` the head turns [`LOOK_HEAD_YAW_RAD`] for a full look).
@@ -329,6 +332,9 @@ pub enum ActRequest {
     Channels {
         /// The channels and their values.
         values: Vec<(Channel, f32)>,
+        /// It wins over the tracker, lip sync and the triggers on its channels ([`Act::over_tracking`]).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        over_tracking: bool,
     },
     /// A body clip, from its start: the one given, or the clip library's of that id.
     Clip {
@@ -1089,8 +1095,12 @@ fn bake_act(
 ) -> Result<Act, PerformError> {
     let envelope = envelope.clamped();
     let channels = |target: ChannelBuf, mask: ChannelMask| Motion::Channels { target, mask };
+    let over_tracking = matches!(
+        request,
+        ActRequest::Expression { over_tracking: true, .. } | ActRequest::Channels { over_tracking: true, .. }
+    );
     let (motion, lane, envelope) = match request {
-        ActRequest::Expression { expression, intensity } => {
+        ActRequest::Expression { expression, intensity, .. } => {
             let intensity = unit(*intensity);
             let target = expressions
                 .blend(rest, &[(expression, intensity)])
@@ -1113,7 +1123,7 @@ fn bake_act(
             }
             (channels(target, mask), Lane::Look, envelope)
         }
-        ActRequest::Channels { values } => {
+        ActRequest::Channels { values, .. } => {
             let mut target = *rest;
             let mut mask = ChannelMask::EMPTY;
             for (channel, value) in values {
@@ -1143,7 +1153,7 @@ fn bake_act(
             (motion, Lane::Body, envelope)
         }
     };
-    Ok(Act { motion, envelope, lane })
+    Ok(Act { motion, envelope, lane, over_tracking })
 }
 
 /// `v` held to `0..=1`; not a number is 0.
@@ -1276,8 +1286,8 @@ impl PerformControl {
     fn step_performer<'p>(&mut self, performer: &'p mut Performer, tick: Tick) -> PerformOutput<'p> {
         self.triggers.step(STEP_SECS, performer.trigger_layer_mut());
         let rest = *performer.rest();
-        let (score, pose) = performer.score_mut();
-        self.score.step(tick.time, &rest, score, pose);
+        let (score, over, pose) = performer.score_mut();
+        self.score.step(tick.time, &rest, score, over, pose);
         if let Some(voice) = self.voice.as_deref_mut() {
             if let Some(frame) = voice.reader.poll() {
                 voice.lips.take(&frame);

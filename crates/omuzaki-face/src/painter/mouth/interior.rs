@@ -12,17 +12,22 @@
 //! - **Lower teeth**: a row under the line, as strong as `teeth_lower`, with a split line when the upper teeth are
 //!   clenched too, as faint as the row. The row starts below the lowest point of a flat mouth, so only a real smile,
 //!   which lowers the mouth's centre, brings it into the opening.
-//! - **Fangs**: two triangles hanging from the upper edge at [`FangStyle::position`] of the half-width, as opaque as
-//!   the `fangs` channel. In a mouth too narrow for the base, the outer corner stops at the mouth's corner, so the fang
-//!   narrows instead of being clipped.
-//! - **Closed-smile fang**: one small outlined triangle on the line of a closed mouth, at the corner that smiles, when
-//!   the `fangs` channel is on and the smile is wide enough. As the mouth opens it fades out over the openings 0.06 to
+//! - **Fangs**: a triangle hanging from the upper edge at [`FangStyle::position`] of the half-width at each corner the
+//!   style's [`FangKind`] has (both, or one), as opaque as the `fangs` channel. In a mouth too narrow for the base, the
+//!   outer corner stops at the mouth's corner, so the fang narrows instead of being clipped.
+//! - **Sharp teeth** (`teeth_sharp`, #2406): a zigzag row of pointed teeth along the upper edge and another, offset by
+//!   half a tooth, rising from the lower edge, each with a thin outline: the shark teeth of an angry anime face. As
+//!   they come in, the plain teeth and the fangs give way to them.
+//! - **Closed-smile fang**: one small outlined triangle on the line of a closed mouth, at the character's left corner
+//!   (the right one for a [`FangKind::OneRight`] face), when the `fangs` channel is on and that corner smiles enough. As the mouth opens it fades out over the openings 0.06 to
 //!   0.2 ([`OpenMouth::fade`]) while the open fangs, clipped to a lens that has hardly any depth there, take over.
 //!
 //! [`FangStyle::position`]: omuzaki_face_api::FangStyle::position
+//! [`FangKind`]: omuzaki_face_api::FangKind
+//! [`FangKind::OneRight`]: omuzaki_face_api::FangKind::OneRight
 
 use omuzaki_core::glam::Vec2;
-use omuzaki_face_api::{Cap, Cmd, FaceLayerId, Join, Paint, narrow};
+use omuzaki_face_api::{Cap, Cmd, FaceLayerId, FangKind, Join, Paint, narrow};
 
 use super::OpenMouth;
 use super::lips::{DEFAULT_LINE, DEFAULT_TEETH, DEFAULT_TEETH_LOWER, DEFAULT_TONGUE, lighten};
@@ -82,6 +87,16 @@ const CLOSED_FANG_AT: f32 = 0.55 / 0.72;
 const CLOSED_FANG_OUTLINE: f32 = 0.0008;
 /// The closed fang needs a smile above this at its corner.
 const CLOSED_FANG_SMILE: f32 = 0.3;
+/// Sharp teeth show from this strength. Each row has this many teeth; a tooth's tip reaches this share of the opening
+/// at its place (upper row) or rises this share (lower row), and its root sits this share in from the edge, so the row
+/// reads as a band with points. The outline is the mouth line's colour at this alpha and width.
+const SHARP_MIN: f32 = 0.01;
+const SHARP_TEETH: u8 = 7;
+const SHARP_UPPER_TIP: f32 = 0.42;
+const SHARP_LOWER_TIP: f32 = 0.36;
+const SHARP_ROOT: f32 = 0.08;
+const SHARP_OUTLINE_ALPHA: f32 = 0.7;
+const SHARP_OUTLINE_WIDTH: f32 = 0.0006;
 
 /// Paints the inside of an open mouth, or the fang of a closed smile.
 pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
@@ -98,10 +113,60 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
 fn open_interior(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
     ctx.list(FaceLayerId::Base).push(Cmd::PushClip(open.path));
     tongue(ctx, open);
+    // Sharp teeth take over from the plain ones and the fangs as they come in.
+    let sharp = ctx.params.mouth.teeth_sharp.clamp(0.0, 1.0);
+    let mark = ctx.list(FaceLayerId::Base).cmds().len();
     upper_teeth(ctx, open);
     lower_teeth(ctx, open);
     fangs(ctx, open);
+    if sharp > SHARP_MIN {
+        ctx.list(FaceLayerId::Base).scale_opacity_from(mark, 1.0 - sharp);
+        sharp_teeth(ctx, open, sharp);
+    }
     ctx.list(FaceLayerId::Base).push(Cmd::PopClip);
+}
+
+/// The zigzag rows of sharp teeth, upper and lower, at `strength` (see the module docs).
+fn sharp_teeth(ctx: &mut PaintCtx<'_>, open: &OpenMouth, strength: f32) {
+    let teeth = fixed_colour(&ctx.profile.mouth.interior.teeth, DEFAULT_TEETH);
+    let line = fixed_colour(&ctx.profile.mouth.line_colour, DEFAULT_LINE);
+    let opacity = strength * open.reveal;
+    let n = SHARP_TEETH;
+    // Points along the row: `2n + 1` of them, a root on every even index and a tip on every odd one. `lower` offsets
+    // the lower row by half a tooth, so its points sit between the upper row's.
+    let row = |list: &mut omuzaki_face_api::DrawList, lower: bool| {
+        let edge = |u: f32| if lower { open.bottom(u) } else { open.top(u) };
+        let gap = |u: f32| (open.top(u) - open.bottom(u)).max(0.0);
+        let point = |k: u8| {
+            let shift = if lower { 1.0 / f32::from(2 * n) } else { 0.0 };
+            let u = (-1.0 + 2.0 * f32::from(k) / f32::from(2 * n) + shift).clamp(-1.0, 1.0);
+            let share = if k % 2 == 1 { if lower { SHARP_LOWER_TIP } else { SHARP_UPPER_TIP } } else { SHARP_ROOT };
+            let depth = gap(u) * share;
+            let y = if lower { edge(u) + depth } else { edge(u) - depth };
+            open.centre + Vec2::new(u * open.half_width, y)
+        };
+        let beyond = |u: f32| {
+            open.centre + Vec2::new(u * open.half_width, edge(u) + if lower { -1.0 } else { 1.0 } * open.height)
+        };
+        let mut path = list.path().move_to(beyond(-1.0));
+        for k in 0..=2 * n {
+            path = path.line_to(point(k));
+        }
+        path.line_to(beyond(1.0)).close().finish()
+    };
+    let list = ctx.list(FaceLayerId::Base);
+    for lower in [false, true] {
+        let path = row(list, lower);
+        list.push(Cmd::Fill { path, paint: Paint::Solid(teeth), opacity });
+        list.push(Cmd::Stroke {
+            path,
+            paint: solid(line, SHARP_OUTLINE_ALPHA),
+            width: SHARP_OUTLINE_WIDTH * open.grow,
+            cap: Cap::Round,
+            join: Join::Miter,
+            opacity,
+        });
+    }
 }
 
 fn tongue(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
@@ -191,7 +256,7 @@ fn fangs(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
     let room = (1.0 - position) * open.half_width;
     let length = (height * open.grow).min(open.height * FANG_MAX_SHARE);
     let list = ctx.list(FaceLayerId::Base);
-    for side in [-1.0_f32, 1.0] {
+    for &side in style.kind.corners() {
         let u = side * position;
         let base = open.centre + Vec2::new(u * open.half_width, open.top(u) + FANG_DROP);
         // The base corner toward the mouth's corner (outer) stops there, so a narrow mouth narrows the fang instead of
@@ -213,7 +278,9 @@ fn fangs(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
 /// drawn at `opacity` (less than 1 while the mouth opens and the open fangs take over).
 fn closed_fang(ctx: &mut PaintCtx<'_>, opacity: f32) {
     let frame = Frame::of(ctx);
-    let smile = frame.smile[0];
+    // The character's left corner, unless the only fang is on the right.
+    let side = if ctx.profile.mouth.fang.kind == FangKind::OneRight { -1.0 } else { 1.0 };
+    let smile = if side > 0.0 { frame.smile[0] } else { frame.smile[1] };
     if !ctx.profile.has_fangs()
         || ctx.params.mouth.fangs <= FANG_BAND_ABOVE
         || smile <= CLOSED_FANG_SMILE
@@ -230,14 +297,15 @@ fn closed_fang(ctx: &mut PaintCtx<'_>, opacity: f32) {
     // The base stands on the closed line, at the same height `closed_line` draws it at this far along.
     let u = offset / frame.half_width;
     let y = frame.centre.y + smile * narrow(style.corner_curve) * u * u * frame.grow;
-    let x = frame.centre.x + offset;
+    let x = frame.centre.x + side * offset;
     // As for the open fangs, the outer base corner stops at the line's end instead of hanging past it.
     let outer = half.min(frame.half_width - offset);
     let list = ctx.list(FaceLayerId::Base);
+    let (inner_x, outer_x) = (x - side * half, x + side * outer);
     let fang = list
         .path()
-        .move_to(Vec2::new(x - half, y))
-        .line_to(Vec2::new(x + outer, y))
+        .move_to(Vec2::new(inner_x.min(outer_x), y))
+        .line_to(Vec2::new(inner_x.max(outer_x), y))
         .line_to(Vec2::new(x, y - height))
         .close()
         .finish();

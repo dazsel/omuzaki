@@ -55,6 +55,7 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
             iris::paint(ctx, side);
             effects::paint_iris(ctx, side);
             highlight::paint(ctx, side);
+            effects::paint_cover(ctx, side);
             ctx.list(FaceLayerId::Base).push(Cmd::PopClip);
         }
         lid::paint(ctx, side);
@@ -67,4 +68,5 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
         closed::paint(ctx, side);
         effects::paint(ctx, side);
     }
+    effects::paint_deep_gloom(ctx);
 }

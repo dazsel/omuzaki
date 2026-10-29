@@ -2,7 +2,10 @@
 //! `act.release` and `act.list`. Anything that can run an op (a person's panel, an agent over MCP, a script, a show's
 //! automation, the AI performer) moves a performing character with them: each plays an act on the member's live score
 //! ([`PerformHost::act`]), which the score layer blends under the tracker unless the member's drive map gives it the
-//! channels.
+//! channels, or the call asks for `over_tracking` (`act.expression`, `act.channels`), which wins on its channels.
+//!
+//! `act.expression` plays an expression the way its `playback` says when the call doesn't: its own fade-in and
+//! fade-out (`0` is a hard cut), and its `auto_stop_s` as the hold.
 //!
 //! They are live actions, like `trigger.press`: logged, scope `perform`, nothing to undo (the act fades by itself or
 //! on `act.release`). A member left out means the scene's subject.
@@ -14,7 +17,7 @@ use omuzaki_anim::poses::{ClipLibrary, find_clip};
 use omuzaki_char_api::CharId;
 use omuzaki_anim_api::Channel;
 use omuzaki_core::text::nearest;
-use omuzaki_face_api::ExpressionId;
+use omuzaki_face_api::{ExpressionId, Playback, narrow};
 use omuzaki_ops_api::{Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
 use omuzaki_stage_api::ids::MemberId;
 use schemars::JsonSchema;
@@ -153,7 +156,8 @@ const fn live(name: &'static str, summary: &'static str) -> OpMeta {
 #[schemars(extend("examples" = [
     { "expression": "happy" },
     { "expression": "surprised", "intensity": 0.7, "hold_s": 1.5 },
-    { "expression": "sad", "held": true, "fade_s": 0.5 }
+    { "expression": "sad", "held": true, "fade_s": 0.5 },
+    { "expression": "surprised", "fade_s": 0, "hold_s": 1, "over_tracking": true }
 ]))]
 pub struct Expression {
     /// An expression of the character's face, such as `happy` (`act.list` lists them).
@@ -161,23 +165,44 @@ pub struct Expression {
     /// Strength, 0 to 1. Default 1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intensity: Option<f32>,
-    /// Seconds to hold at full strength before fading out. Default 2.
+    /// Seconds to hold at full strength before fading out. Default: the expression's `auto_stop_s` (counted from
+    /// when it starts), else 2.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hold_s: Option<f32>,
     /// Hold until `act.release` instead of for `hold_s`. Default `false`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub held: bool,
-    /// Seconds to fade in and out, 0 to snap. Default 0.2.
+    /// Seconds to fade in and out, 0 to snap (a hard cut). Default: the expression's own `fade_in_s` and
+    /// `fade_out_s`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fade_s: Option<f32>,
+    /// Win over the webcam, lip sync and hotkeys on the channels the expression sets (eyes forced shut while
+    /// tracking), instead of playing under them. Default `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub over_tracking: bool,
     /// The cast member; the scene's subject when left out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub member: Option<MemberId>,
 }
 
 impl Expression {
-    fn timing(&self) -> Timing {
-        Timing { hold_s: self.hold_s, held: self.held, fade_s: self.fade_s }
+    /// The envelope: the call's times where it gives them, else the expression's `playback`.
+    fn envelope(&self, playback: &Playback) -> Result<Envelope, OpError> {
+        let (fade_in, fade_out) = match self.fade_s {
+            Some(fade) => {
+                let fade = seconds("fade_s", fade)?;
+                (fade, fade)
+            }
+            None => (narrow(playback.fade_in_s), narrow(playback.fade_out_s)),
+        };
+        let hold = match (self.held, self.hold_s, playback.auto_stop_s) {
+            (true, _, _) => None,
+            (false, Some(s), _) => Some(seconds("hold_s", s)?),
+            // An auto-stop counts from the show, so the hold is what is left of it after the fade in.
+            (false, None, Some(stop)) => Some((narrow(stop) - fade_in).max(0.0)),
+            (false, None, None) => Some(DEFAULT_HOLD_S),
+        };
+        Ok(Envelope { fade_in, hold, fade_out }.clamped())
     }
 }
 
@@ -190,18 +215,19 @@ impl Op for Expression {
         let expression =
             ExpressionId::new(&self.expression).map_err(|e| OpError::invalid("expression", e.to_string()))?;
         let intensity = within("intensity", self.intensity.unwrap_or(1.0), 0.0, 1.0)?;
-        let envelope = self.timing().envelope(Some(DEFAULT_HOLD_S))?;
         let performing = performing(ctx, self.member.as_ref())?;
         let expressions = performing.host().expressions();
-        if !expressions.0.contains_key(&expression) {
+        let Some(found) = expressions.0.get(&expression) else {
             let names = expressions.0.keys().map(ExpressionId::as_str);
             let error = OpError::not_found(format!("no expression '{}' on this character", self.expression));
             return Err(match nearest(&self.expression, names) {
                 Some(near) => error.hint(format!("did you mean '{near}'? act.list lists the expressions")),
                 None => error.hint("act.list lists the expressions"),
             });
-        }
-        play(ctx, self.member.as_ref(), ActRequest::Expression { expression, intensity }, envelope)
+        };
+        let envelope = self.envelope(&found.playback)?;
+        let request = ActRequest::Expression { expression, intensity, over_tracking: self.over_tracking };
+        play(ctx, self.member.as_ref(), request, envelope)
     }
 }
 
@@ -316,6 +342,9 @@ pub struct Channels {
     /// Seconds to fade in and out, 0 to snap. Default 0.2.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fade_s: Option<f32>,
+    /// Win over the webcam, lip sync and hotkeys on these channels instead of playing under them. Default `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub over_tracking: bool,
     /// The cast member; the scene's subject when left out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub member: Option<MemberId>,
@@ -353,7 +382,7 @@ impl Op for Channels {
             values.push((channel, *value));
         }
         let envelope = self.timing().envelope(Some(DEFAULT_HOLD_S))?;
-        play(ctx, self.member.as_ref(), ActRequest::Channels { values }, envelope)
+        play(ctx, self.member.as_ref(), ActRequest::Channels { values, over_tracking: self.over_tracking }, envelope)
     }
 }
 

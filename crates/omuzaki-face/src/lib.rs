@@ -29,7 +29,7 @@
 //! | [`preview`] | pictures of a face for the tools (sweep, range test): paint, compare, contact sheets |
 //! | [`underlay`] | tracing a sheet face under the painted one |
 //! | [`ops`] | the registered face ops: `style`, `mapping`, `rest`, `expression`, `exaggeration`, `sweep`, `range_test` |
-//! | [`player`] | the expression player: fades, auto-stop, exclusive groups, layers and the default expression |
+//! | [`player`] | the expression player: fades, auto-stop, groups, layers, cuts, the default; a short's cue track |
 //! | [`exaggeration`] | the exaggeration dial: presets from realistic through anime to chibi extreme |
 //! | [`bake`] | the expression bakers (`morph`, `flipbook`) |
 //! | [`atlas`] | the atlas-scale controller: the layers' density stepped with the face's GPU budget pressure |

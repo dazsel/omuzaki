@@ -24,7 +24,9 @@
 
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::Vec2;
-use omuzaki_face_api::{Cmd, DrawList, FaceLayerId, FaceProfile, Paint, PaintParams, PathRef, PupilShape, Stops};
+use omuzaki_face_api::{
+    Cmd, DrawList, FaceLayerId, FaceProfile, IrisPaint, Paint, PaintParams, PathRef, PupilShape, Stops,
+};
 
 use super::FALLBACK_COLOUR;
 use super::Side;
@@ -34,6 +36,15 @@ use crate::painter::PaintCtx;
 use crate::painter::fixed_colour;
 
 // ---- the prototype's constants that the profile does not parametrise
+
+/// A full stare (`eyesStare`) shrinks the iris to this share of its size: a small pinned iris in a wide white.
+pub(super) const STARE_IRIS: f32 = 0.52;
+
+/// The colours and pupil the iris of the eye on `side` paints with: the right eye's own when the profile gives the
+/// right eye a different iris (heterochromia).
+pub(super) fn colours(profile: &FaceProfile, side: Side) -> IrisPaint<'_> {
+    profile.eyes.iris_paint(side == Side::Right)
+}
 
 /// How far `low` is lightened toward white for the gradient's last stop (`#b4cfa2` against `#a8c99c`).
 const LIGHTEST: f32 = 0.1;
@@ -92,7 +103,7 @@ pub(super) struct Iris {
 
 impl Iris {
     /// The iris of `eye`: set toward the nose and below the eye's centre, then moved by the gaze and by the
-    /// convergence.
+    /// convergence, and shrunk by a stare.
     #[allow(clippy::cast_possible_truncation)] // the profile is f64 for the file's sake; the painter works in f32
     pub(super) fn new(profile: &FaceProfile, params: &PaintParams, eye: &Eye) -> Self {
         let style = &profile.eyes;
@@ -101,10 +112,11 @@ impl Iris {
         let travel = Vec2::new(iris.gaze_travel[0] as f32, iris.gaze_travel[1] as f32) * style.scale as f32;
         // Toward the nose on this side: the eye's own mirror, so the right eye converges by +x.
         let nose = (eye.point(-1.0, 0.0) - eye.point(0.0, 0.0)).normalize_or_zero();
+        let stare = 1.0 - (1.0 - STARE_IRIS) * params.effects.stare.clamp(0.0, 1.0);
         Self {
             centre: rest + params.gaze * travel + nose * params.vergence * travel.x,
-            rx: iris.width as f32 * eye.width(),
-            ry: iris.height as f32 * eye.width(),
+            rx: iris.width as f32 * eye.width() * stare,
+            ry: iris.height as f32 * eye.width() * stare,
         }
     }
 
@@ -127,13 +139,13 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>, side: Side) {
         return;
     }
     let iris = Iris::new(profile, params, &eye);
-    let style = &profile.eyes.iris;
+    let style = colours(profile, side);
     let outline = iris.outline(ctx.list(FaceLayerId::Base));
 
     let (top, mid, low) = (
-        fixed_colour(&style.top, FALLBACK_COLOUR),
-        fixed_colour(&style.mid, FALLBACK_COLOUR),
-        fixed_colour(&style.low, FALLBACK_COLOUR),
+        fixed_colour(style.top, FALLBACK_COLOUR),
+        fixed_colour(style.mid, FALLBACK_COLOUR),
+        fixed_colour(style.low, FALLBACK_COLOUR),
     );
     let stops = Stops::new(&[(0.0, top), (0.5, mid), (LOW_STOP, low), (1.0, lighten(low, LIGHTEST))]);
     let gradient = Paint::Linear { from: iris.at(0.0, 1.0), to: iris.at(0.0, -1.0), stops };
@@ -142,10 +154,10 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>, side: Side) {
     // The crescent and the pupil are cut by the iris.
     ctx.list(FaceLayerId::Base).push(Cmd::PushClip(outline));
     crescent(ctx.list(FaceLayerId::Base), &iris, lighten(low, CRESCENT_LIGHTEN));
-    pupil(ctx, &iris);
+    pupil(ctx, &iris, side);
     ctx.list(FaceLayerId::Base).push(Cmd::PopClip);
 
-    let ring = fixed_colour(&style.ring, FALLBACK_COLOUR);
+    let ring = fixed_colour(style.ring, FALLBACK_COLOUR);
     ctx.list(FaceLayerId::Base).stroke(outline, Paint::Solid(ring), RING_WIDTH);
     lid_shadow(ctx, &eye);
 }
@@ -162,8 +174,8 @@ fn crescent(list: &mut DrawList, iris: &Iris, colour: Colour) {
 /// The pupil: the profile's shape and colour, scaled by its `size` and the `pupil` channel (never below
 /// [`PUPIL_MIN_SCALE`] for the channel, as in the prototype).
 #[allow(clippy::cast_possible_truncation)] // see `Iris::new`
-fn pupil(ctx: &mut PaintCtx<'_>, iris: &Iris) {
-    let style = &ctx.profile.eyes.iris.pupil;
+fn pupil(ctx: &mut PaintCtx<'_>, iris: &Iris, side: Side) {
+    let style = colours(ctx.profile, side).pupil;
     let scale = ctx.params.pupil.max(PUPIL_MIN_SCALE) * style.size as f32;
     let paint = Paint::Solid(fixed_colour(&style.colour, FALLBACK_COLOUR));
     let centre = iris.at(0.0, PUPIL_RISE);

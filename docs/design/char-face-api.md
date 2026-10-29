@@ -23,7 +23,7 @@ A character is **parts on a standard skeleton** plus a **painted face**. Two cra
  bus (anim-api)                          face-api                                         render-api (merged)
  ──────────────                          ────────                                         ───────────────────
  ChannelBuf ──FaceMapping::apply──▶ PaintParams ──FacePainter::paint──▶ DrawList ×3 layers
- (52 ARKit + extras, per frame)       (Copy, 164 B)                     (vector, reused)
+ (52 ARKit + extras, per frame)       (Copy, 188 B)                     (vector, reused)
                                                                               │ FaceRasterizer (CPU) or GPU Vello/SDF
                                                                               ▼
                                                               premultiplied sRGB pixels ──▶ Painter / PaintTarget::write_rgba
@@ -45,7 +45,7 @@ A character is **parts on a standard skeleton** plus a **painted face**. Two cra
 | # | Decision | Why | Rejected |
 |---|---|---|---|
 | D1 | **The face reads the ARKit-native bus and owns the mapping to shapes.** `FaceMapping::apply(&ChannelBuf) -> PaintParams`, coefficients stored in the face profile. | Project decision; FE-01. One vocabulary for trackers, scores, lip sync, the life layer and VRM export (perfect sync is the identity map). The smile and brow formulas are a property of a face, so a character can exaggerate or tame them (FE-06) with plain numbers. | Painter-specific semantic channels on the bus (the prototype's bus); mapping inside the retargeter. |
-| D2 | **`PaintParams` is a fixed-size `Copy` struct, not a second channel table.** | The painter wants "left eye openness", not index arithmetic; named fields can't be mixed up. 164 bytes, so nothing allocates between bus and painter. Mapped once per frame by the caller, so the live face, a VRM bake and a thumbnail agree. | Painters reading `ChannelBuf` directly (every painter re-derives the formulas). |
+| D2 | **`PaintParams` is a fixed-size `Copy` struct, not a second channel table.** | The painter wants "left eye openness", not index arithmetic; named fields can't be mixed up. 188 bytes, so nothing allocates between bus and painter. Mapped once per frame by the caller, so the live face, a VRM bake and a thumbnail agree. | Painters reading `ChannelBuf` directly (every painter re-derives the formulas). |
 | D3 | **The painter outputs vector `DrawList`s, resolution independent, in face-plane metres.** | CB-24 "crisp at any zoom"; plain CPU maths that is deterministic and golden-testable without a GPU; the same list feeds a CPU rasteriser (tests, WASM fallback) and a GPU one (Vello or SDF, ≤ 0.5 ms). Lists are reused: no allocation once warm. A `fingerprint()` says when a layer changed. | A fixed-resolution canvas (the prototype's); a GPU-only painter with no testable middle. |
 | D4 | **The face composites as renderer `Overlay`s; layers and their compositing are fixed by the contract.** `Base` on the skin (soft front fade, strength 1), `Brows` on the hair (hard cut, 0.85), `Overlay` reserved. | Matches `docs/design/render-api.md` ("Face painter compositing"). Brows through bangs (CB-21) need no special case. The numbers are the prototype's, verified there. | A special face slot in the renderer; per-character compositing settings. |
 | D5 | **Atlas resolution is a runtime knob, not a profile field.** `FaceLayerSpec::px_per_m`, brows at half. | The scheduler shrinks it under load (render-api's degrade ladder); the vector list stays crisp at any size. A profile that fixed it would couple the look to the machine. | A resolution field in `face.toml`. |
@@ -105,6 +105,8 @@ Every ARKit channel and every anime extra reaches at least one paint parameter, 
 | `browArch` (signed) | adds to `brow_arch` | none |
 | `pupilSize` | shrinks `pupil`, to 40% at 1 (pinpoint) | none (`PINPOINT`); multiplies with the `eyesShock` shrink |
 | `eyesHeart`, `eyesStar`, `eyesGloom`, `eyesSqueeze`, `eyesSpiral`, `sparkle`, `tears` | `effects.*` | none |
+| `eyesBlank`, `eyesDot`, `eyesPill` (#2404, #2405) | `effects.blank`, `effects.dot`, `effects.pill` | none |
+| `eyesStare` (#2404) | `effects.stare`, and widens `*_eye.open` | `eyes.stare_open` |
 | `jawOpen`, `mouthClose` | `mouth.open` | `mouth.open`, `mouth.close_cancel` |
 | `mouthSmile*`, `mouthFrown*`, `mouthDimple*` | `mouth.smile_left`, `mouth.smile_right`; also widen the mouth and gate lower teeth | `mouth.smile`, `mouth.frown`, `mouth.dimple`, `mouth.wide_smile`; base `rest.mouth_smile` |
 | `mouthStretch*`, `mouthPucker` | `mouth.wide` | `mouth.stretch`, `mouth.wide_pucker`; base `rest.mouth_wide` |
@@ -114,9 +116,10 @@ Every ARKit channel and every anime extra reaches at least one paint parameter, 
 | `mouthPress*`, `mouthRollLower`, `mouthRollUpper`, `mouthClose` | `mouth.press` | `mouth.press*` (4 numbers) |
 | `mouthUpperUp*` | `mouth.teeth_upper` | `mouth.teeth_start`, `mouth.teeth_gain` |
 | `mouthLowerDown*` | `mouth.teeth_lower` (only on a real smile: a toothy grin, as in the prototype) | `mouth.teeth_lower_*` (4 numbers) |
-| `tongueOut`, `fangs` | `mouth.tongue`, `mouth.fangs` | none |
+| `tongueOut`, `fangs`, `teethSharp` | `mouth.tongue`, `mouth.fangs`, `mouth.teeth_sharp` | none |
 | `cheekPuff`, `cheekSquint*`, `blush` | `blush`, `cheek_puff` | `cheeks.puff_blush`, `cheeks.squint_blush`, `cheeks.blush`; base `rest.blush` |
 | `sweatDrop` | `sweat` | none |
+| `angerVein` (#2403) | `anger_vein` | none |
 | every `ARKit` channel, before the rows above | the channel itself | `amplify.knee`, `amplify.gain`: the subtle-movement expander (FE-06), off by default. Below the knee a channel is multiplied by the gain, above it the curve runs straight to 1. Per-channel response curves are retarget calibration (PF-22), not this. |
 
 **No painted effect (`UNMAPPED`):** `jawForward`, `mouthShrugLower`, `mouthShrugUpper`. They move lips in depth, which a front-facing 2D face can't show. They stay in the bus (trackers send them), painters ignore them, and a VRM bake writes empty targets for them (perfect sync lists them as inert, which io-api allows). Art can decide to give them a small effect (question Q3).
@@ -139,10 +142,10 @@ painter's ranges.
 |---|---|
 | `left_eye`, `right_eye`: `EyeParams { open, close, arc, lower_lid }` | Lids per eye. An arc closes the lid as well: the eye is shut when `max(close, arc)` is near 1, and drawn as ^ when `arc >= 0.5`. |
 | `eye_tilt`, `pupil`, `gaze: Vec2`, `vergence` | Shared eye state. |
-| `effects: EyeEffects` | Heart, star, gloom, shock, squeeze, spiral, sparkle, tears. |
+| `effects: EyeEffects` | Heart, star, gloom, shock, squeeze, spiral, sparkle, tears, blank, dot, stare, pill. |
 | `left_brow`, `right_brow`: `BrowParams { height, tilt }`, `brow_arch` | Brows. |
-| `mouth: MouthParams` | Open, wide, per-corner lift (absolute), round, shift, press, pucker, teeth, tongue, fangs. |
-| `blush`, `cheek_puff`, `sweat` | Face surface. |
+| `mouth: MouthParams` | Open, wide, per-corner lift (absolute), round, shift, press, pucker, teeth, tongue, fangs, sharp teeth. |
+| `blush`, `cheek_puff`, `sweat`, `anger_vein` | Face surface and the marks in front of the hair. |
 
 ### The face profile (`face.toml`)
 
@@ -151,12 +154,13 @@ Everything below is `serde` + `JsonSchema` with `deny_unknown_fields` and defaul
 | Section | What | Spec |
 |---|---|---|
 | `layout` | eye line, eye spacing and width, brow gap, nose, mouth, blush heights and spacing; `ratios(chin_y)` gives the head-size-independent view | CB-12 |
-| `eyes` | `scale`, `drop`; `aperture` (roundness, tilt, corner shapes, lid height), `lash` (thickness, flick, lower lash, inner tick), `crease`, `iris` (size, inset, gradient colours, ring, gaze travel, `pupil` shape and size), `sclera`, `highlights` (shape blob/star/heart, size, offset, second light, shimmer, view motion), `lower_lid` (line, cheek line), `lid_shadow`, `tear` | CB-20 |
+| `eyes` | `scale`, `drop`; `aperture` (roundness, tilt, corner shapes, lid height), `lash` (thickness, flick, lower lash, inner tick), `crease`, `iris` (size, inset, gradient colours, ring, gaze travel, `pupil` shape and size), `right_iris` (the right eye's own colours and pupil, each defaulting to `iris`: heterochromia, #2407), `sclera`, `highlights` (shape blob/star/heart, size, offset, second light, shimmer, view motion), `lower_lid` (line, cheek line), `lid_shadow`, `tear` | CB-20 |
 | `brows` | inner and outer x, thickness, arch, colour, `through_hair` | CB-21 |
-| `mouth` | half width, closed and open scale, line width and colour, corner curve, `lips` (rim and gloss), `interior` (mouth, tongue, teeth colours), `fang` | CB-22 |
+| `mouth` | half width, closed and open scale, line width and colour, corner curve, `lips` (rim and gloss), `interior` (mouth, tongue, teeth colours), `fang` (`none`, `both`, `one_left` or `one_right`; `pointed` reads as `both`) | CB-22 |
 | `nose` | none, dot or tick; size, colour | CB-23 |
 | `cheeks` | soft or hatched blush, radius, strength, warm wash | CB-23 |
 | `marks` | freckles, beauty marks, face paint, scars | CB-23 |
+| `effects` | the anime marks' looks: `anger_vein` (side, size, place, fill and outline colours) | FE-02 |
 | `mapping` | `rest` (the resting face in paint terms) and the coefficients above | FE-06 |
 | `rest` | channel values the `rest` bus layer starts from (usually empty) | |
 | `expressions` | named expressions and visemes | FE-03 |
@@ -517,7 +521,7 @@ Implemented by `omuzaki-char` and `omuzaki-face` (vertical slices, §39.1 rule 3
 
 ## Performance
 
-`PaintParams` is 164 bytes; `FaceMapping::apply` is a few dozen multiply-adds and clamps (no allocation, no branches on data beyond `max`/`clamp`); `FacePainter::paint` appends to reused arenas; the stage repaints only layers whose fingerprint changed. The GPU painter owns the 0.5 ms budget (§10). Build time is authoring-time (hundreds of ms is fine; the prototype's hair rebuild is a per-frame CPU cost that a `PartRuntime` keeps inside its own budget via `cost()`). `crates/omuzaki-char-mock` has no benchmark; the hot-path types are tiny and `Copy`, and the real painter and hair runtime will bring their own (a task per stream).
+`PaintParams` is 188 bytes; `FaceMapping::apply` is a few dozen multiply-adds and clamps (no allocation, no branches on data beyond `max`/`clamp`); `FacePainter::paint` appends to reused arenas; the stage repaints only layers whose fingerprint changed. The GPU painter owns the 0.5 ms budget (§10). Build time is authoring-time (hundreds of ms is fine; the prototype's hair rebuild is a per-frame CPU cost that a `PartRuntime` keeps inside its own budget via `cost()`). `crates/omuzaki-char-mock` has no benchmark; the hot-path types are tiny and `Copy`, and the real painter and hair runtime will bring their own (a task per stream).
 
 ## Evidence
 

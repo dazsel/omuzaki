@@ -561,7 +561,7 @@ fn a_second_member_performs_beside_the_subject_on_the_same_clock() {
     let stage = live.inner.as_mut().unwrap();
     let handle = stage.add_member(cohost.clone(), performer(&HumanoidPose::REST)).unwrap();
     handle.set_expressions(ExpressionSet::starter(), ChannelBuf::NEUTRAL).unwrap();
-    let puff = ActRequest::Channels { values: vec![(Channel::CHEEK_PUFF, 0.6)] };
+    let puff = ActRequest::Channels { values: vec![(Channel::CHEEK_PUFF, 0.6)], over_tracking: false };
     handle.act(puff, Envelope::new(0.0, None)).unwrap();
     live.frames(30);
     let (subject, member) = (live.live().input(), live.live().member_input(&cohost).unwrap());
@@ -988,6 +988,7 @@ fn saying_a(seq: u64, aa: f32, onsets: u32) -> VoiceFrame {
         visemes: [aa, 0.0, 0.0, 0.0, 0.0],
         onsets,
         formants: [800.0, 1300.0],
+        closure: 0.0,
     }
 }
 

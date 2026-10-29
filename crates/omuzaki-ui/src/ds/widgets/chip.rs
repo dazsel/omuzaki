@@ -368,13 +368,22 @@ impl<'a> StatusChip<'a> {
         a11y::require_label(text);
         Self { status, text }
     }
+
+    /// The width the chip takes with its whole text: what a container that sizes to its content (a graph node's
+    /// header) makes room for, so the chip is never cut to "…".
+    pub fn width(&self, ctx: &egui::Context) -> f32 {
+        STATUS_FIXED + paint::text_width(ctx, self.text, &ds(ctx).text.small)
+    }
 }
+
+/// A status chip's padding, icon and gap: everything but its text.
+const STATUS_FIXED: f32 = 2.0 * space::S8 + 14.0 + space::S4;
 
 impl Widget for StatusChip<'_> {
     fn ui(self, ui: &mut Ui) -> Response {
         let ds = ds(ui.ctx());
         let ctx = ui.ctx().clone();
-        let fixed = 2.0 * space::S8 + 14.0 + space::S4;
+        let fixed = STATUS_FIXED;
         let text_full = paint::text_width(&ctx, self.text, &ds.text.small);
         let room = label_room(paint::fit_width(ui), fixed);
         let text_w = text_full.min(room);

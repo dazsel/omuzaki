@@ -9,13 +9,21 @@
 //!   step back by its weight and return as it fades, so a wink takes the eye from a smile and gives it back. Channels it
 //!   leaves alone keep the held expression.
 //! - **The default expression** fills in where nothing held shows: its weight is 1 less the strongest held weight.
+//! - **Cuts.** [`ExpressionPlayer::cut`] switches faces on one frame whatever the fades say, as an edit does; an
+//!   expression whose `fade_in_s` is 0 cuts in by itself.
 //!
-//! The trigger runtime (spec PF-25) decides when to show and hide; lip sync and scores give weights directly and don't
-//! go through here. [`ExpressionPlayer::step`] and [`ExpressionPlayer::blend`] don't allocate; showing an expression
+//! A short's expression cues play through [`CueTrack`] (`cues.rs`): the cues in time order, each applied at its own
+//! time, frame-exact and the same on every run. The live triggers bake the same playback into their slots
+//! (`omuzaki_anim::triggers`), since a hotkey's layer shows one expression at a time; lip sync and scores give weights
+//! directly and don't go through here. [`ExpressionPlayer::step`] and [`ExpressionPlayer::blend`] don't allocate; showing an expression
 //! may, once.
 
 use omuzaki_anim_api::{CHANNEL_CAPACITY, ChannelBuf};
 use omuzaki_face_api::{ExpressionId, ExpressionSet, Playback, PlaybackLayer, UnknownExpression, narrow};
+
+mod cues;
+
+pub use cues::{CueAction, CueError, CueTrack, ExpressionCue};
 
 /// How many expressions may show (or fade) at once; showing one more drops the faintest.
 pub const MAX_SHOWN: usize = 16;
@@ -115,6 +123,29 @@ impl ExpressionPlayer {
             self.entries.swap_remove(faintest);
         }
         self.entries.push(Entry::new(id, playback));
+        Ok(())
+    }
+
+    /// Cuts to `id`: it shows at full weight at once, and whatever it takes over from is gone at once: every other
+    /// expression in its group, or, for a held expression in no group, every other held one. A momentary one in no
+    /// group cuts in over the held ones and leaves them be.
+    ///
+    /// # Errors
+    /// [`UnknownExpression`] when `set` has no such expression; nothing changes.
+    pub fn cut(&mut self, set: &ExpressionSet, id: &ExpressionId) -> Result<(), UnknownExpression> {
+        let playback = &set.0.get(id).ok_or_else(|| UnknownExpression(id.clone()))?.playback;
+        let (group, layer) = (playback.group.clone(), playback.layer);
+        self.entries.retain(|e| {
+            let replaced = match &group {
+                Some(group) => e.group.as_ref() == Some(group),
+                None => layer == PlaybackLayer::Held && e.layer == PlaybackLayer::Held,
+            };
+            e.id == *id || !replaced
+        });
+        self.show(set, id)?;
+        for entry in self.entries.iter_mut().filter(|e| e.id == *id) {
+            entry.weight = 1.0;
+        }
         Ok(())
     }
 

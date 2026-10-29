@@ -235,6 +235,9 @@ pub enum LayoutProblem {
     OutsideWindow,
     /// Two pieces of text, or two controls, are drawn over each other (neither wholly inside the other).
     Overlap,
+    /// Text was cut short with an ellipsis: a button that reads "Go L…" or a warning that stops mid-sentence. It fits
+    /// its box by construction, so [`layout_findings`] does not see it; [`elided_findings`] does.
+    Elided,
 }
 
 /// One layout problem: what it is, the text or control concerned, and where it is.
@@ -256,6 +259,7 @@ impl std::fmt::Display for LayoutFinding {
             LayoutProblem::Clipped => "clipped",
             LayoutProblem::OutsideWindow => "outside the window",
             LayoutProblem::Overlap => "overlaps",
+            LayoutProblem::Elided => "cut with an ellipsis",
         };
         write!(
             f,
@@ -327,6 +331,49 @@ pub fn layout_findings(output: &FullOutput, window: Rect) -> Vec<LayoutFinding> 
         for (other, other_rect, _) in &texts[index + 1..] {
             if overlaps(*rect, *other_rect) {
                 out.push(finding(LayoutProblem::Overlap, what, *rect, Some(other)));
+            }
+        }
+    }
+    out
+}
+
+/// Text that egui cut with an ellipsis because its box was too narrow. In a whole window at a reference size this is a
+/// defect wherever the cut hides words a person needs (a button's label, a warning, a setting's name); places that cut
+/// on purpose, such as a long name in a list with its full text in a tooltip, are listed by the test that calls this.
+pub fn elided_findings(output: &FullOutput) -> Vec<LayoutFinding> {
+    let mut out = Vec::new();
+    for ClippedShape { shape, .. } in &output.shapes {
+        let mut flat = Vec::new();
+        flatten(shape, &mut flat);
+        for shape in flat {
+            let Shape::Text(text) = shape else { continue };
+            if text.galley.elided && !text.galley.job.text.trim().is_empty() {
+                out.push(finding(LayoutProblem::Elided, &text.galley.job.text, painted_rect(text), None));
+            }
+        }
+    }
+    out
+}
+
+/// Text cut by the left or right edge of the rectangle it is clipped to: a node's port label running out of its node, a
+/// row wider than its panel. Text cut at the top or bottom is left out: that is a scrolling list's edge, where the next
+/// row is half in view by design. Text wholly outside its clip rectangle is scrolled away, not cut, and is left out
+/// too. Use it where [`layout_findings`] would report every scrolled list in a real window.
+pub fn cut_sideways(output: &FullOutput) -> Vec<LayoutFinding> {
+    let mut out = Vec::new();
+    for ClippedShape { shape, clip_rect } in &output.shapes {
+        let mut flat = Vec::new();
+        flatten(shape, &mut flat);
+        for shape in flat {
+            let Shape::Text(text) = shape else { continue };
+            if text.galley.job.text.trim().is_empty() {
+                continue;
+            }
+            let rect = painted_rect(text);
+            let visible = overlaps(rect, *clip_rect);
+            let sideways = rect.left() < clip_rect.left() - EDGE_SLACK || rect.right() > clip_rect.right() + EDGE_SLACK;
+            if visible && sideways {
+                out.push(finding(LayoutProblem::Clipped, &text.galley.job.text, rect, None));
             }
         }
     }

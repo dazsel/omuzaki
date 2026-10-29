@@ -188,11 +188,9 @@ pub fn area_title(ctx: &Context, area: &str) -> String {
 }
 
 /// A key segment or an option's value as words: `reduce_motion` and `high-contrast` read "Reduce motion" and
-/// "High contrast".
+/// "High contrast", `vmc_port` "VMC port" ([`crate::ds::text::key_words`]).
 pub fn humanise(id: &str) -> String {
-    let spaced: String = id.chars().map(|c| if c == '_' || c == '-' { ' ' } else { c }).collect();
-    let mut chars = spaced.chars();
-    chars.next().map_or_else(String::new, |first| first.to_uppercase().chain(chars).collect())
+    crate::ds::text::key_words(id)
 }
 
 #[cfg(test)]
@@ -213,6 +211,7 @@ mod tests {
     fn ids_read_as_words() {
         assert_eq!(humanise("reduce_motion"), "Reduce motion");
         assert_eq!(humanise("high-contrast"), "High contrast");
+        assert_eq!(humanise("iphone"), "iPhone");
         assert_eq!(humanise(""), "");
     }
 }
