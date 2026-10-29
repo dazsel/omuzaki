@@ -186,8 +186,13 @@ later work cheaper; every owner holds itself to them, and nobody gates on them:
 The bar for what Omuzaki can make is a reference: a video (or several) of a character, its performance, its
 creativity, emotion and expression, at the quality the product must reach. The target is to match it shot for shot.
 
-1. **Recreate it** with Omuzaki the way a person or an agent would, end to end, through operations.
-2. **Compare** side by side, frame by frame and against the numbers, and list every gap: a missing feature, a result
+1. **Recreate it** with Omuzaki the way a person or an agent would, end to end, through operations. **Recreate, never
+   copy:** the reference is only looked at, like an artist studies a model sheet, and scored against. No pixel of it
+   goes into what is rendered: no texture, layer, sprite or part cut, traced or fitted from its frames, and no puppet
+   solved from it. The character is drawn and built with Omuzaki's own tools; the exercise is to find what those tools
+   are missing for a character like this at pixel parity, so every gap met while building it is filed and built.
+2. **Compare** side by side, frame by frame and against the numbers (`tools/reference-loop/parity.py` asks how the
+   render was made and refuses to score assets that copy the reference), and list every gap: a missing feature, a result
    that falls short, or a step that is too slow or too hard for someone new to the app.
 3. **Answer your own questions and act.** Decide what each gap needs, mention the decision on #2, and do it without
    waiting for an answer. Only money and a change to the product's scope go to the owner.

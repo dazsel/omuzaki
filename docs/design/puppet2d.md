@@ -7,7 +7,7 @@ area: design
 # Flat 2D puppets (EX-08)
 
 **Status:** accepted by its owner (spine phase, ADR 0067); the code is on `main` with this page.
-**Features:** EX-08 (Inochi2D import), the 2D path of SH-03 (shorts), the reference loop's puppet-from-video.
+**Features:** EX-08 (Inochi2D import), the 2D path of SH-03 (shorts), the reference loop's 2D characters.
 **Decision record:** `docs/decisions/0068-puppet2d.md`.
 **Spec:** v3 §27 (EX-08), §26 (SH-03, SH-05), §21 and §22 (PF-20, PF-24), §24 (ST-10, ST-12), §25 (BR-01 to BR-04), §10.
 **Builds on:** `docs/research/2026-10-inochi2d-format.md` (the format facts and the full-scope checklist), ADRs 0009
@@ -28,7 +28,7 @@ settles how Omuzaki holds, moves, draws, imports and authors them.
 Reasons. The format is a lib (ADR 0011): it has no registrations and nothing but the importer needs it. The data the
 stage, the renderer, the UI and the shorts see is an API crate, so they depend on a contract and not on the runtime;
 `PuppetDef` is a plain serde tree with no behaviour beyond `check()`. Every other source of a puppet (layered art, a
-puppet from a video, a puppet written by an agent) produces the same `PuppetDef`, so the runtime has one input.
+puppet drawn with Omuzaki's tools, a puppet written by an agent) produces the same `PuppetDef`, so the runtime has one input.
 
 The `puppet.*` ops (import, rig from layers, render, play a track) register next to their code in `omuzaki-puppet`'s
 op module when that lands (ADR 0054); until then `short.render` reads puppets (§8) and the examples run the rest.
@@ -136,7 +136,7 @@ in the UI.
 Of the performer's layers, the life layer (PF-24) applies unchanged (it writes channels); calibration (PF-20) applies to
 the tracker before the channels, so it is unchanged too. Lighting does not apply to a flat puppet.
 
-## 7. Authoring: layered art, video and tracks
+## 7. Authoring: layered art and tracks
 
 Inochi2D and Live2D rigs take a rigger days. Omuzaki also makes a puppet from **layered art** in one step:
 `autorig(&LayeredArt)` reads a manifest (`*.layers.toml`: the canvas, then each layer's file, offset and optional role,
@@ -148,14 +148,12 @@ replace. `tools/puppet-fixture/make_layers.py` writes the project's own test cha
 
 A **track** (`PuppetTrack`, plain JSON) is a performance frame by frame: per frame, a view and the parameters that
 change. `track.play` renders it; the `play` example streams the frames raw to `ffmpeg` or a script. It is how a
-tracker's log, an agent's keyframes or a solved video plays back exactly.
+tracker's log or an agent's keyframes play back exactly.
 
-**A puppet from a video** is the reference loop's way to a pixel score against a flat-2D reference: solve each frame's
-camera (a similarity transform from matched features), map the frames onto one canvas, cut the canvas into overlapping
-tiles, cluster each tile's appearances into states, and write the states as parts whose opacity a parameter sets. The
-camera becomes the track's views and the states its parameters, and `tools/reference-loop/parity.py` scores the result
-frame by frame (PSNR, SSIM, the worst frames). A puppet made from another creator's video stays out of the repository;
-the tooling is generic.
+**No puppet from a reference's pixels.** A 2D reference is matched by drawing the character with Omuzaki's tools and
+scoring the render against it (`docs/quality/reference-shorts.md`, "Recreate, never copy"); a puppet whose textures are
+cut or fitted from the reference's frames is not a recreation, and `tools/reference-loop/parity.py` refuses to score
+one.
 
 ## 8. Shorts
 

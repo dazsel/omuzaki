@@ -10,6 +10,19 @@ The quality loop (`CLAUDE.md`, "The quality loop: match a reference") applied to
 references are other creators' videos and stay out of the repository; this page describes them only in words, and
 every render in the evidence uses the kit's own characters and the project's own scripts.
 
+## Recreate, never copy
+
+The reference is only looked at and scored against. No pixel of it goes into what Omuzaki renders: no texture, layer,
+sprite or part cut, traced or fitted from its frames, and no puppet solved from it. The character is drawn and built
+with Omuzaki's own tools (the kit, the 2D puppet's drawing and rigging, the face painter), studying the reference for
+proportions, style, colour, motion and expression the way an artist studies a model sheet. The point of the exercise is
+what those tools are missing for a character like this at pixel parity: every missing tool, weak result or slow step
+met on the way is filed under the epic (#2393) and built. A recreation of another creator's character stays private,
+like the reference; the tools it needed go into the repository.
+
+`tools/reference-loop/parity.py` enforces the rule before it scores: it asks how the render was made (`--made-with`,
+kept in `score.json`) and refuses when an image in an `--assets` folder is a near-copy of a frame of the reference.
+
 ## The two references
 
 - **T1, a talking head.** About a minute, 9:16. One anime character, framed face to bust against near-black with a warm
@@ -46,4 +59,6 @@ issues are under the epic.
    `quality: "live"` for a quick draft).
 4. `python3 tools/reference-loop/compare.py ours.webm reference.mp4 OUT` (OUT outside the repository) and read the
    sheets pair by pair: face, framing, light, captions, timing.
-5. File each gap under the epic (#2393) with what "matches" means, close them in chunks, and render again.
+5. Score it: `python3 tools/reference-loop/parity.py ours.webm reference.mp4 OUT --made-with "..." --assets <the
+   textures and layers it was built from>` for PSNR, SSIM and the worst frames (it refuses copied assets).
+6. File each gap under the epic (#2393) with what "matches" means, close them in chunks, and render again.

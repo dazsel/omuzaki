@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 """The reference loop's pixel score: our render against a reference, frame by frame, as numbers and the worst frames.
 
-    python3 tools/reference-loop/parity.py OURS REFERENCE OUT_DIR [--size 540x960] [--offset 0] [--mask x,y,w,h ...]
-        [--worst 8] [--frames N]
+    python3 tools/reference-loop/parity.py OURS REFERENCE OUT_DIR --made-with "HOW" [--assets DIR ...]
+        [--size 540x960] [--offset 0] [--mask x,y,w,h ...] [--worst 8] [--frames N]
+
+**Recreate, never copy.** The reference is only looked at and scored against: no pixel of it goes into what is scored
+(no texture, layer, sprite or part cut, traced or fitted from its frames, no puppet solved from it). The character is
+drawn and built with Omuzaki's own tools. So the tool asks how the render was made (--made-with, kept in score.json)
+and, for every --assets folder (the textures and layers the render was built from), refuses to score when an image
+there is a near-copy of a reference frame (a perceptual hash within a few bits of one sampled every second).
 
 Both videos are read through `ffmpeg` at --size (default 540x960) and compared frame for frame: frame i of ours
 against frame i + --offset of the reference. --mask leaves a rectangle (in --size pixels) out of every score, such as
@@ -48,6 +54,65 @@ def frames(path: pathlib.Path, w: int, h: int, start: int = 0):
         proc.kill()
 
 
+RULE = (
+    "Recreate, never copy: the reference is only looked at and scored against. No pixel of it may go into the render "
+    "(no texture, layer or part cut, traced or fitted from its frames). Draw and build the character with Omuzaki's "
+    "own tools."
+)
+HASH_SIDE = 16  # a 256-bit difference hash
+NEAR_COPY_BITS = 24  # at most this many of 256 bits apart counts as a copy
+
+
+def dhash(img: Image.Image) -> np.ndarray:
+    """The difference hash of `img`: 256 bits, whether each pixel of a 17x16 grey thumbnail is brighter than its right
+    neighbour. Near-identical pictures, at any size, hash within a few bits."""
+    g = np.asarray(img.convert("L").resize((HASH_SIDE + 1, HASH_SIDE), Image.Resampling.LANCZOS), np.int16)
+    return (g[:, 1:] > g[:, :-1]).ravel()
+
+
+def copied_assets(folders: list[pathlib.Path], reference: pathlib.Path) -> list[str]:
+    """The images under `folders` that are near-copies of a whole frame of `reference` (every frame is checked, since a
+    talking head changes from one frame to the next), as messages. A part cut from a frame is not caught here; that is
+    what `--made-with` is for."""
+    w, h = 68, 120
+    proc = subprocess.run(
+        ["ffmpeg", "-loglevel", "error", "-i", str(reference), "-vf", f"scale={w}:{h}", "-f", "rawvideo",
+         "-pix_fmt", "rgb24", "-"],
+        check=True, capture_output=True,
+    )
+    size = w * h * 3
+    frames = np.frombuffer(proc.stdout, np.uint8)[: len(proc.stdout) // size * size].reshape(-1, h, w, 3)
+    hashes = np.stack([dhash(Image.fromarray(f)) for f in frames])
+    rate = frame_rate(reference)
+    found = []
+    for folder in folders:
+        for path in sorted(folder.rglob("*")):
+            if path.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp", ".tga", ".bmp"}:
+                continue
+            try:
+                h_img = dhash(Image.open(path))
+            except OSError:
+                continue
+            bits = (hashes != h_img).sum(axis=1)
+            nearest = int(bits.argmin())
+            if bits[nearest] <= NEAR_COPY_BITS:
+                found.append(
+                    f"{path} is a near-copy of the reference at {nearest / rate:.2f} s "
+                    f"({int(bits[nearest])} of 256 bits apart)"
+                )
+    return found
+
+
+def frame_rate(video: pathlib.Path) -> float:
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=r_frame_rate", "-of",
+         "default=nw=1:nk=1", str(video)],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    num, _, den = out.partition("/")
+    return float(num) / float(den or 1)
+
+
 def psnr(a: np.ndarray, b: np.ndarray, keep: np.ndarray) -> float:
     err = ((a.astype(np.float32) - b.astype(np.float32)) ** 2)[keep].mean()
     return 99.0 if err <= 1e-10 else float(10.0 * np.log10(255.0 ** 2 / err))
@@ -86,7 +151,15 @@ def main() -> int:
     ap.add_argument("--mask", action="append", default=[], help="x,y,w,h left out of every score")
     ap.add_argument("--worst", type=int, default=8)
     ap.add_argument("--frames", type=int, default=0, help="score at most this many frames")
+    ap.add_argument("--made-with", required=True, help="how the render was made: the tools, ops and assets, in a line")
+    ap.add_argument("--assets", type=pathlib.Path, action="append", default=[],
+                    help="a folder of the images the render was built from, checked for copies of the reference")
     args = ap.parse_args()
+    print(RULE, file=sys.stderr)
+    copies = copied_assets(args.assets, args.reference)
+    if copies:
+        print("refused: the render is built from the reference's own pixels:\n  " + "\n  ".join(copies), file=sys.stderr)
+        return 2
     w, h = (int(v) for v in args.size.lower().split("x"))
     keep = np.ones((h, w), bool)
     for m in args.mask:
@@ -117,6 +190,8 @@ def main() -> int:
         "frames": len(rows),
         "size": [w, h],
         "offset": args.offset,
+        "made_with": args.made_with,
+        "assets_checked": [str(a) for a in args.assets],
         "masks": args.mask,
         "psnr_db": {"mean": float(ps.mean()), "median": float(np.median(ps)), "p10": float(np.percentile(ps, 10))},
         "ssim": {"mean": float(ss.mean()), "median": float(np.median(ss)), "p10": float(np.percentile(ss, 10))},

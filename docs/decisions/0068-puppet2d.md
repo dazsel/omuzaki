@@ -1,6 +1,6 @@
 ---
 title: "0068: Flat 2D puppets: one contract, one runtime, every source into the same PuppetDef (2026-10-29)"
-summary: "Flat 2D puppets: puppet-api holds the data, omuzaki-puppet the runtime and the CPU reference renderer, Inochi2D is a lib; layered art, video and tracks author the same PuppetDef"
+summary: "Flat 2D puppets: puppet-api holds the data, omuzaki-puppet the runtime and the CPU reference renderer, Inochi2D is a lib; layered art, drawing and tracks author the same PuppetDef"
 area: decisions
 ---
 
@@ -23,13 +23,14 @@ author a puppet without a rigger's days in another tool.
    every other renderer and the offline path for shorts and tracks.
 3. `omuzaki-inochi2d` (Lib) reads Inochi2D into `PuppetDef` with a report of what it mapped, made up, dropped or
    approximated, and limits checked before allocation.
-4. Every way of making a puppet produces the same `PuppetDef`: an import, the auto-rig from layered art, a puppet from
-   a video, or an agent writing JSON. A performance is a track of views and parameters, so any source of motion plays
+4. Every way of making a puppet produces the same `PuppetDef`: an import, the auto-rig from layered art, a puppet drawn
+   with Omuzaki's tools, or an agent writing JSON. None is made from a reference's pixels ("Recreate, never copy",
+   `docs/quality/reference-shorts.md`). A performance is a track of views and parameters, so any source of motion plays
    back the same way.
 5. The GPU pass draws `DrawList2D` into the stage's target and is accepted against the CPU renderer's pixels.
 
 ## Consequences
 
-- One runtime to make fast and correct; the importer, the auto-rig and the video solver are only producers.
+- One runtime to make fast and correct; the importer, the auto-rig and the drawing tools are only producers.
 - Shorts play on puppets now (offline, on the CPU); the live stage waits on the GPU pass.
 - What `PuppetDef` can't yet hold of Inochi2D is reported by the importer and is leaf work on the EX-08 epic.
