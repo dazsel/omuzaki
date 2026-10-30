@@ -11,6 +11,11 @@
 //!   it keeps helping; the step halves when a sweep finds nothing. The search never sees the true pose, only pixels.
 //! - **Two levels.** Big steps are judged on the [`Level::Coarse`] picture (small and cheap), small ones on the
 //!   [`Level::Fine`] one (the frame itself), where a fit is exact only when its map is 0.
+//! - **Blurred while far.** A raw difference gives an arm no pull toward a target it doesn't overlap, so the search
+//!   settles where it overlaps a little (a bent elbow putting the hand in place). Big steps compare both pictures
+//!   blurred, by a radius that shrinks with the step, which turns a displaced part into a slope toward its place.
+//! - **Several starts.** The tracker's pose, and any others the caller gives (the character's relaxed stance for a
+//!   frame the tracker missed); the one that scores best on the most blurred picture is the one walked.
 //! - **Deterministic.** The search order is fixed, so the same frame and start give the same fit, render for render.
 
 use omuzaki_anim_api::{HumanoidBone, HumanoidPose};
@@ -39,6 +44,8 @@ pub trait Synth {
 pub struct Targets<'a> {
     /// The small picture.
     pub coarse: &'a [u8],
+    /// Its width in pixels.
+    pub coarse_width: u32,
     /// The picture itself.
     pub fine: &'a [u8],
 }
@@ -78,6 +85,10 @@ pub struct FitConfig {
     pub sweeps: u32,
     /// The most renders in all; the fit stops with what it has.
     pub renders: u32,
+    /// The coarse blur's radius, in coarse pixels per degree of step.
+    pub blur_per_deg: f32,
+    /// The largest blur radius.
+    pub max_blur: u32,
 }
 
 impl Default for FitConfig {
@@ -99,10 +110,14 @@ impl Default for FitConfig {
                 B::LeftHand,
                 B::RightHand,
             ],
-            steps_deg: vec![32.0, 16.0, 8.0, 4.0, 2.0, 1.0, 0.5, 0.25, 0.12, 0.06, 0.03, 0.015, 0.008],
-            coarse_from_deg: 2.0,
+            steps_deg: vec![
+                32.0, 16.0, 8.0, 4.0, 2.0, 1.0, 0.5, 0.25, 0.12, 0.06, 0.03, 0.015, 0.008, 0.004, 0.002, 0.001,
+            ],
+            coarse_from_deg: 0.25,
             sweeps: 4,
             renders: 6000,
+            blur_per_deg: 0.25,
+            max_blur: 8,
         }
     }
 }
@@ -118,28 +133,50 @@ pub struct Fit {
     pub start: Score,
     /// Renders made, at each level.
     pub renders: [u32; 2],
+    /// Each step size walked, with the score it ended on at its level and the renders made by then.
+    pub trace: Vec<(f32, Level, Score, u32)>,
 }
 
-/// The pose whose render best matches the synth's target, searched from `start`. See the module docs.
+/// The pose whose render best matches the synth's target, searched from the best of `starts` (at least one). See the
+/// module docs.
 ///
 /// # Errors
-/// A render that failed, in words.
+/// A render that failed, in words; no start.
 pub fn fit(
     synth: &mut dyn Synth,
     targets: Targets<'_>,
-    start: &HumanoidPose,
+    starts: &[HumanoidPose],
     config: &FitConfig,
 ) -> Result<Fit, String> {
-    let mut search =
-        Search { synth, targets, start: *start, offsets: vec![Vec3::ZERO; config.bones.len()], renders: [0; 2] };
-    let first = search.score(&config.bones, Level::Fine)?;
-    let mut best = first;
+    let first_start = *starts.first().ok_or("no starting pose")?;
+    let mut search = Search {
+        synth,
+        targets,
+        blurred: Vec::new(),
+        start: first_start,
+        offsets: vec![Vec3::ZERO; config.bones.len()],
+        renders: [0; 2],
+    };
+    let first = search.score(&config.bones, Level::Fine, 0)?;
+    let widest = config.steps_deg.first().map_or(0, |&step| config.blur(step));
+    let mut chosen = (search.score(&config.bones, Level::Coarse, widest)?, first_start);
+    for start in &starts[1..] {
+        search.start = *start;
+        let score = search.score(&config.bones, Level::Coarse, widest)?;
+        if score.sum < chosen.0.sum {
+            chosen = (score, *start);
+        }
+    }
+    search.start = chosen.1;
+    let mut best = Score::default();
     let mut level = None;
+    let mut trace = Vec::new();
     'steps: for &step_deg in &config.steps_deg {
         let now = if step_deg >= config.coarse_from_deg { Level::Coarse } else { Level::Fine };
-        if level != Some(now) {
-            level = Some(now);
-            best = search.score(&config.bones, now)?;
+        let blur = if now == Level::Coarse { config.blur(step_deg) } else { 0 };
+        if level != Some((now, blur)) {
+            level = Some((now, blur));
+            best = search.score(&config.bones, now, blur)?;
         }
         let step = step_deg.to_radians();
         for _ in 0..config.sweeps {
@@ -153,7 +190,7 @@ pub fn fit(
                                 break 'steps;
                             }
                             search.offsets[bone] += sign * step * axis;
-                            let score = search.score(&config.bones, now)?;
+                            let score = search.score(&config.bones, now, blur)?;
                             if score.sum < best.sum {
                                 (best, went, moved) = (score, true, true);
                             } else {
@@ -171,17 +208,63 @@ pub fn fit(
                 break;
             }
         }
+        trace.push((step_deg, now, best, search.renders.iter().sum()));
         if now == Level::Fine && best.differ == 0 {
             break;
         }
     }
-    let score = search.score(&config.bones, Level::Fine)?;
-    Ok(Fit { pose: search.pose(&config.bones), score, start: first, renders: search.renders })
+    let score = search.score(&config.bones, Level::Fine, 0)?;
+    Ok(Fit { pose: search.pose(&config.bones), score, start: first, renders: search.renders, trace })
+}
+
+impl FitConfig {
+    /// The coarse blur radius for a step of `step_deg`.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)] // small, clamped
+    fn blur(&self, step_deg: f32) -> u32 {
+        (step_deg * self.blur_per_deg).round().clamp(0.0, self.max_blur as f32) as u32
+    }
+}
+
+/// `rgb` (`width` wide) box-blurred by `radius` along each axis, each channel as 16 times its mean.
+fn blur(rgb: &[u8], width: usize, radius: usize) -> Vec<u32> {
+    let height = rgb.len() / 3 / width.max(1);
+    let pass = |src: &[u32], along_x: bool| -> Vec<u32> {
+        let mut out = vec![0; src.len()];
+        for y in 0..height {
+            for x in 0..width {
+                let (at, len) = if along_x { (x, width) } else { (y, height) };
+                let (lo, hi) = (at.saturating_sub(radius), (at + radius).min(len - 1));
+                for c in 0..3 {
+                    let sum: u32 = (lo..=hi)
+                        .map(|i| if along_x { src[(y * width + i) * 3 + c] } else { src[(i * width + x) * 3 + c] })
+                        .sum();
+                    out[(y * width + x) * 3 + c] = sum / u32::try_from(hi - lo + 1).unwrap_or(1);
+                }
+            }
+        }
+        out
+    };
+    let wide: Vec<u32> = rgb.iter().map(|&v| 16 * u32::from(v)).collect();
+    pass(&pass(&wide, true), false)
+}
+
+/// `ours` against `target`, both from [`blur`]: the sum of the channels' absolute differences, and the pixels that
+/// differ at all.
+fn blurred_score(ours: &[u32], target: &[u32]) -> Score {
+    let mut score = Score::default();
+    for (a, b) in ours.as_chunks::<3>().0.iter().zip(target.as_chunks::<3>().0) {
+        let d = [a[0].abs_diff(b[0]), a[1].abs_diff(b[1]), a[2].abs_diff(b[2])];
+        score.sum += u64::from(d[0]) + u64::from(d[1]) + u64::from(d[2]);
+        score.differ += u64::from(d != [0; 3]);
+    }
+    score
 }
 
 struct Search<'a> {
     synth: &'a mut dyn Synth,
     targets: Targets<'a>,
+    /// The coarse target blurred, by radius.
+    blurred: Vec<(u32, Vec<u32>)>,
     start: HumanoidPose,
     /// Each bone's rotation vector on top of its starting rotation.
     offsets: Vec<Vec3>,
@@ -197,11 +280,23 @@ impl Search<'_> {
         pose
     }
 
-    fn score(&mut self, bones: &[HumanoidBone], level: Level) -> Result<Score, String> {
+    /// The current pose's score at `level`, the coarse picture blurred by `radius` when it is above 0.
+    fn score(&mut self, bones: &[HumanoidBone], level: Level, radius: u32) -> Result<Score, String> {
         let pose = self.pose(bones);
         self.renders[usize::from(level == Level::Fine)] += 1;
-        let target = if level == Level::Fine { self.targets.fine } else { self.targets.coarse };
-        Ok(Score::of(self.synth.render(&pose, level)?, target))
+        if level == Level::Fine {
+            return Ok(Score::of(self.synth.render(&pose, level)?, self.targets.fine));
+        }
+        if radius == 0 {
+            return Ok(Score::of(self.synth.render(&pose, level)?, self.targets.coarse));
+        }
+        let width = self.targets.coarse_width as usize;
+        let at = self.blurred.iter().position(|(r, _)| *r == radius).unwrap_or_else(|| {
+            self.blurred.push((radius, blur(self.targets.coarse, width, radius as usize)));
+            self.blurred.len() - 1
+        });
+        let ours = blur(self.synth.render(&pose, level)?, width, radius as usize);
+        Ok(blurred_score(&ours, &self.blurred[at].1))
     }
 }
 
@@ -245,8 +340,8 @@ mod tests {
         let target = draw(&bones, &truth);
         let mut synth = Dial { bones: bones.clone(), out: Vec::new() };
         let config = FitConfig { bones, ..FitConfig::default() };
-        let targets = Targets { coarse: &target, fine: &target };
-        let fit = fit(&mut synth, targets, &HumanoidPose::REST, &config).unwrap();
+        let targets = Targets { coarse: &target, coarse_width: 4, fine: &target };
+        let fit = fit(&mut synth, targets, &[HumanoidPose::REST], &config).unwrap();
         assert!(fit.start.differ > 0);
         assert_eq!(fit.score.differ, 0, "{fit:?}");
         for bone in [HumanoidBone::LeftUpperArm, HumanoidBone::LeftLowerArm, HumanoidBone::Head] {

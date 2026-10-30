@@ -537,6 +537,8 @@ fn the_body_fits_onto_its_frames_pixel_for_pixel_when_asked() {
     let built = build(&builder, &def);
     let (light, shot) = (light(), shot(&built));
     let truths: std::collections::BTreeMap<String, HumanoidPose> = poses(&built).into_iter().collect();
+    let mut stance = HumanoidPose::REST;
+    omuzaki_stage::frame::pose::seed_base_pose(&built.rig, &mut stance);
     let mut synth = StageSynth::new(renderer(), &builder, &def, &light, &shot);
     let mut config = FitConfig::default();
     if let Some(renders) = std::env::var("OMUZAKI_BODY_FIT_RENDERS").ok().and_then(|v| v.parse().ok()) {
@@ -565,9 +567,12 @@ fn the_body_fits_onto_its_frames_pixel_for_pixel_when_asked() {
             }
         }
         let coarse = shrink(frame, width, height);
-        let start = as_the_stage_shows(&read_solved(&serde_json::from_slice(&text).unwrap()));
+        // From what the tracker solved, or the character's own stance (as sculpted) when that scores better.
+        let tracked = as_the_stage_shows(&read_solved(&serde_json::from_slice(&text).unwrap()));
+        let starts = [tracked, stance];
         let began = std::time::Instant::now();
-        let fitted = fit(&mut synth, Targets { coarse: &coarse, fine: frame }, &start, &config).unwrap();
+        let targets = Targets { coarse: &coarse, coarse_width: width / COARSE, fine: frame };
+        let fitted = fit(&mut synth, targets, &starts, &config).unwrap();
         let share = |n: u64| 100.0 * n as f64 / f64::from(width * height);
         println!(
             "{name}: from {} px ({:.2}%) to {} px ({:.2}%) differing, sum {} to {}; {} coarse and {} fine renders in {:.0} s",
@@ -581,6 +586,9 @@ fn the_body_fits_onto_its_frames_pixel_for_pixel_when_asked() {
             fitted.renders[1],
             began.elapsed().as_secs_f64(),
         );
+        for (step, level, score, renders) in &fitted.trace {
+            println!("  {step} deg {level:?}: sum {} differ {} after {renders} renders", score.sum, score.differ);
+        }
         if let Some(out) = &out {
             std::fs::create_dir_all(out).unwrap();
             let ours = synth.render(&fitted.pose, Level::Fine).unwrap().to_vec();
