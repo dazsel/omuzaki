@@ -36,8 +36,11 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::blend::Bus;
+use crate::body::BodyStyle;
 use crate::channel::fnv_mix;
 use crate::frame::Tick;
+use crate::life::Cues;
+use crate::pose_layer::BoneMask;
 use crate::score::Cue;
 
 /// How many humanoid bones VRM 1.0 defines.
@@ -794,6 +797,26 @@ pub trait Animator: Send {
 
     /// Forgets playing clips and filter state.
     fn reset(&mut self);
+
+    /// This step's voice cues (loudness, the stressed-syllable onset, laughter), given just before
+    /// [`animate`](Self::animate) on every step. An animator that infers body language from the voice reads them; the
+    /// default ignores them. Hot path.
+    fn hear(&mut self, _cues: &Cues) {}
+
+    /// The bones another source drives from the next step on (a tracked body, a tracked hand): the animator leaves them
+    /// as `out` brings them. Empty by default and until set. Hot path.
+    fn set_tracked(&mut self, _bones: BoneMask) {}
+
+    /// How the body moves on its own (the living body's dials). Applied between two steps, allocating nothing; the
+    /// default ignores it. Returns whether this animator uses a style.
+    fn set_style(&mut self, _style: &BodyStyle) -> bool {
+        false
+    }
+
+    /// The style in use, when this animator has one.
+    fn style(&self) -> Option<BodyStyle> {
+        None
+    }
 }
 
 #[cfg(test)]

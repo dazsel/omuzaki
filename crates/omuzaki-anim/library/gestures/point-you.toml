@@ -1,0 +1,29 @@
+# Gesture "point-you" (deictic). Arm angles are degrees in a person's terms: raise, forward, twist, elbow, pronate, wrist,
+# shrug and reach (see crates/omuzaki-anim/src/body/arm.rs). `lead` is the gesturing hand, `other` the second hand of a
+# two-handed gesture (the lead's mirror when left out); `chest` is pitch, yaw toward the lead side and roll, in degrees.
+id = "point-you"
+summary = "The index finger toward the camera: you, the viewer."
+kind = "deictic"
+hands = "one"
+strokes = [1, 2]
+
+[prep.lead]
+raise = 10.0
+forward = 38.0
+twist = 20.0
+elbow = 92.0
+pronate = 24.0
+wrist = 0.0
+hand = "point"
+
+[stroke]
+chest = [2.0, 8.0, 0.0]
+
+[stroke.lead]
+raise = 12.0
+forward = 58.0
+twist = 14.0
+elbow = 44.0
+pronate = 30.0
+wrist = -4.0
+hand = "point"
