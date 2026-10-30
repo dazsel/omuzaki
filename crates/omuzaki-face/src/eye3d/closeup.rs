@@ -21,8 +21,8 @@ use super::{EyeDesign, EyeFrame, eye_params, lash_params, meshes, skin, skin_par
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum View {
-    /// Three-quarter from the nose's side and a little below, the eye looking up and a little toward the camera: the
-    /// outer corner tucks behind the eyeball's bulge, and the iris is in focus with the lashes and skin falling out.
+    /// Three-quarter from the temple's side and a little below, the eye looking toward the camera and up: the inner
+    /// corner tucks behind the eyeball's bulge, and the iris is in focus with the lashes and skin falling out.
     #[default]
     Macro,
     /// Straight on, the eye looking into the camera, everything in focus: how the opening and the iris read.
@@ -34,7 +34,7 @@ impl View {
     fn shot(self) -> (Vec3, Vec3, f32, Vec3) {
         match self {
             Self::Macro => {
-                (Vec3::new(0.024, -0.008, 0.056), Vec3::new(-0.0005, 0.0008, 0.010), 27.0, Vec3::new(0.39, -0.07, 0.91))
+                (Vec3::new(-0.024, -0.014, 0.048), Vec3::new(0.002, 0.0005, 0.010), 32.0, Vec3::new(-0.52, -0.07, 0.85))
             }
             Self::Front => {
                 (Vec3::new(0.0, 0.001, 0.07), Vec3::new(0.0, 0.0005, 0.008), 27.0, Vec3::new(0.0, 0.015, 1.0))
@@ -179,7 +179,7 @@ fn build(
     // shadow and the ball and the lids are modelled by it.
     let key = Vec3::new(0.55, 0.6, 0.55);
     scene.lights = vec![
-        Light::Directional { to_light: key, colour: Colour::hex(0x00ff_e8d0), intensity: 1.0, casts_shadow: true },
+        Light::Directional { to_light: key, colour: Colour::hex(0x00ff_e8d0), intensity: 0.85, casts_shadow: true },
         // An anime eye is lit brighter and flatter, as a cel is.
         Light::Hemisphere {
             sky: Colour::hex(0x00c8_d0e0),
@@ -201,7 +201,7 @@ fn build(
     if view == View::Macro {
         // A macro lens: sharp on the iris, the lashes and the skin falling out of focus.
         scene.post.depth_of_field = Some(DepthOfField {
-            focus_distance: (camera_at - Vec3::new(0.0, 0.0, 0.011)).length(),
+            focus_distance: (camera_at - forward * 0.0105).length(),
             focus_range: 0.0022,
             max_blur: 0.05,
         });

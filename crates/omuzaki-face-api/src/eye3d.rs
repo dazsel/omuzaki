@@ -148,17 +148,17 @@ pub struct Iris {
 impl Default for Iris {
     fn default() -> Self {
         Self {
-            outer: Colour::hex(0x008a_5a26),
-            inner: Colour::hex(0x009a_6a30),
+            outer: Colour::hex(0x00ae_7a3e),
+            inner: Colour::hex(0x00c0_8c48),
             deep: Colour::hex(0x0024_140a),
-            fibre_colour: Colour::hex(0x00b8_8a50),
+            fibre_colour: Colour::hex(0x00d4_a466),
             limbal_colour: Colour::hex(0x001e_120a),
             fibres: 0.8,
-            collarette: 0.35,
+            collarette: 0.42,
             crypts: 40,
-            specks: 70,
+            specks: 25,
             furrows: 4,
-            limbal_ring: 0.65,
+            limbal_ring: 0.85,
         }
     }
 }
@@ -190,7 +190,7 @@ pub struct Sclera {
 
 impl Default for Sclera {
     fn default() -> Self {
-        Self { white: Colour::hex(0x00c8_c6c2), edge: Colour::hex(0x00b8_a8a2), vessels: 60, network: 0.7 }
+        Self { white: Colour::hex(0x00c8_c6c2), edge: Colour::hex(0x00b8_a8a2), vessels: 25, network: 0.7 }
     }
 }
 
@@ -273,12 +273,12 @@ pub struct Skin {
 impl Default for Skin {
     fn default() -> Self {
         Self {
-            tone: Colour::hex(0x009e_745e),
+            tone: Colour::hex(0x0088_5c44),
             freckles: 90.0,
             freckle: Colour::hex(0x0070_3a24),
             lid_thickness: 0.0009,
             crease: 0.0058,
-            crease_depth: 0.0014,
+            crease_depth: 0.001,
         }
     }
 }
@@ -318,13 +318,13 @@ impl Default for Lashes {
     fn default() -> Self {
         Self {
             upper: 190,
-            lower: 80,
+            lower: 120,
             upper_length: 0.0062,
-            lower_length: 0.003,
-            curl: 0.7,
+            lower_length: 0.0042,
+            curl: 0.9,
             clumping: 0.85,
-            thickness: 0.000_075,
-            colour: Colour::hex(0x0024_1812),
+            thickness: 0.000_11,
+            colour: Colour::hex(0x0016_0f0c),
         }
     }
 }

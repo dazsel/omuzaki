@@ -282,7 +282,7 @@ impl Lids {
     fn face(&self, x: f32, y: f32) -> f32 {
         let base = self.ball.radius + self.thickness - 0.8 * MM;
         let curve = -(x * x) / (2.0 * 85.0 * MM) - (y * y) / (2.0 * 90.0 * MM);
-        let brow = 3.6 * MM * smoothstep(9.0 * MM, 20.0 * MM, y);
+        let brow = 2.4 * MM * smoothstep(11.0 * MM, 24.0 * MM, y);
         // The nose's side and the temple turn away in soft bends, never a crease (a smooth `max(t, 0)`).
         let bend = |t: f32| f32::midpoint(t, (t * t + (3.0 * MM).powi(2)).sqrt());
         let nose = 0.55 * bend(x - 14.0 * MM) * smoothstep(-22.0 * MM, -4.0 * MM, y);
@@ -325,11 +325,18 @@ impl Lids {
         let mut z = self.proxy(p.x, p.y, offset);
         // The upper lid's crease and the skin above it folding forward; the lower lid's gentle rise to the cheek. Toward
         // the corners each lid's shape eases to the two lids' mean, so the lids meet there without a seam.
-        let fold = gauss((d - self.crease) / (1.4 * MM));
+        // The crease and the hood fade out toward both corners rather than running round them: carried round, they
+        // would draw a groove all the way round the eye, a ring no face has.
+        let fold = gauss((d - self.crease) / (1.4 * MM)) * smoothstep(0.02, 0.3, u) * (1.0 - smoothstep(0.75, 1.0, u));
         // The skin above the crease hangs forward over it, so the fold reads as a shelf with a shadow under it.
-        let hood = 1.2 * MM * (1.0 - self.style) * smoothstep(self.crease - 0.5 * MM, self.crease + 3.5 * MM, d);
+        let hood = 1.2
+            * MM
+            * (1.0 - self.style)
+            * smoothstep(self.crease - 0.5 * MM, self.crease + 3.5 * MM, d)
+            * smoothstep(0.02, 0.3, u)
+            * (1.0 - smoothstep(0.75, 1.0, u));
         let upper_z = -self.crease_depth * fold + hood;
-        let lower_z = 0.5 * MM * smoothstep(2.0 * MM, 7.0 * MM, d);
+        let lower_z = 0.2 * MM * smoothstep(1.0 * MM, 6.0 * MM, d);
         let own = smoothstep(0.0, 0.3, u.min(1.0 - u));
         let side = |upper_v: f32, lower_v: f32| {
             let mean = f32::midpoint(upper_v, lower_v);
@@ -342,8 +349,8 @@ impl Lids {
         // Past the lid's roll the skin never sinks far below the face: the ball's sphere falls away under the lower lid,
         // and following it would carve a deep trench between the lid and the cheek. The lid-cheek junction stays a soft
         // groove; the hollow under the brow keeps its depth.
-        let floor = self.face(p.x, p.y) - side(1.2, 0.4) * MM;
-        let k = 0.5 * MM;
+        let floor = self.face(p.x, p.y) - side(0.25, 0.0) * MM;
+        let k = 0.2 * MM;
         let lifted = 0.5 * (z + floor + ((z - floor).powi(2) + k * k).sqrt());
         z += (lifted - z) * smoothstep(0.5 * MM, 2.0 * MM, d);
         // The lids blend into the face round them, sooner at the corners.
@@ -526,7 +533,7 @@ impl Lids {
                 at += gap / total;
                 let u = 0.03 + 0.92 * at;
                 // The lower lid's lashes thin out toward the inner corner.
-                if !upper && rng.unit() < 0.85 * smoothstep(0.62, 0.95, u) {
+                if !upper && rng.unit() < 0.6 * smoothstep(0.75, 0.98, u) {
                     continue;
                 }
                 // Toward anime only the outer corner's flicks are left; the inked lash line draws the rest.
@@ -536,7 +543,7 @@ impl Lids {
                 strands.push(self.strand(lashes, upper, u, &mut rng));
             }
             clump(&mut strands, lashes.clumping, &mut rng);
-            let width = lashes.thickness * if upper { 1.0 } else { 0.6 };
+            let width = lashes.thickness * if upper { 1.0 } else { 0.8 };
             for strand in &strands {
                 ribbon(&mut mesh, &mut info, strand, width, view_from);
             }
@@ -566,7 +573,8 @@ impl Lids {
         // Lashes fan out from the lid's middle toward each corner, the outer ones sweeping furthest.
         let sweep = Vec3::new(-1.3, 0.0, 0.0) * (0.55 - u) + Vec3::new(-0.5, 0.0, 0.0) * (1.0 - u).powi(3);
         let length = if upper { lashes.upper_length } else { lashes.lower_length }
-            * (0.3 + 0.7 * bump(u, if upper { 0.38 } else { 0.4 }).powf(0.6))
+            * (if upper { 0.5 } else { 0.3 }
+                + if upper { 0.5 } else { 0.7 } * bump(u, if upper { 0.3 } else { 0.4 }).powf(0.6))
             * if rng.unit() < 0.25 { rng.range(0.3, 0.65) } else { rng.range(0.7, 1.1) };
         let start = (normal * 0.85 + out * 0.1 - up * 0.08 + sweep * 0.7).normalize_or_zero();
         let curl = (up * 1.2 - normal * 0.35).normalize_or_zero()
@@ -620,7 +628,7 @@ fn ribbon(mesh: &mut MeshData, info: &mut Vec<f32>, line: &[Vec3], width: f32, v
         let normal = side.cross(tangent).normalize_or_zero();
         #[allow(clippy::cast_precision_loss)]
         let t = i as f32 / (n - 1) as f32;
-        let w = width * (1.0 - 0.92 * t.powf(1.3));
+        let w = width * (1.0 - 0.92 * t.powf(0.8));
         for s in [-0.5, 0.5] {
             mesh.positions.push(p + side * w * s);
             mesh.normals.push(normal);
