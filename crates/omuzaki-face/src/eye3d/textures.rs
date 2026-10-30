@@ -112,12 +112,11 @@ pub fn iris(iris: &Iris, seed: u32, size: u32) -> Canvas {
         let inside = 1.0 - smoothstep(c - 0.02, c + 0.02, t);
         colour *= 1.0 - fibres * dark * (0.55 + 0.2 * inside);
         colour = colour.lerp(fibre, fibres * light * (0.46 - 0.16 * inside));
-        // The collarette: a raised, lighter, jagged ridge.
         // The collarette: a jagged ring where the two zones meet, darker just inside it (the crypts' shadow) and
         // lighter on its ridge.
         let jag = c + 0.025 * (value_wrapped(a * 90.0, t * 4.0, 90, s ^ 0x66) - 0.5);
         let inside_band = smoothstep(jag - 0.07, jag - 0.01, t) * (1.0 - smoothstep(jag - 0.01, jag + 0.005, t));
-        colour *= 1.0 - 0.45 * inside_band;
+        colour *= 1.0 - 0.3 * inside_band;
         let ridge = (-((t - jag - 0.012) / 0.012).powi(2)).exp();
         colour = colour.lerp(fibre * 0.8, 0.22 * ridge);
         // The pupillary ruff: a thin dark rim round the pupil.

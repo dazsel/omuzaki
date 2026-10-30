@@ -55,7 +55,7 @@ pub struct Ball {
 
 impl Default for Ball {
     fn default() -> Self {
-        Self { radius: 0.012, iris_radius: 0.0059, cornea_rise: 0.09, pupil: 0.27 }
+        Self { radius: 0.012, iris_radius: 0.0059, cornea_rise: 0.09, pupil: 0.23 }
     }
 }
 
@@ -90,10 +90,10 @@ pub struct Iris {
 impl Default for Iris {
     fn default() -> Self {
         Self {
-            outer: Colour::hex(0x0092_602c),
-            inner: Colour::hex(0x0064_3c1c),
+            outer: Colour::hex(0x00a4_6c34),
+            inner: Colour::hex(0x00bc_8440),
             deep: Colour::hex(0x0024_140a),
-            fibre: Colour::hex(0x00c4_8a48),
+            fibre: Colour::hex(0x00d0_9a50),
             limbal: Colour::hex(0x001e_120a),
             fibres: 0.8,
             collarette: 0.4,
