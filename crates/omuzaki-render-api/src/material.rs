@@ -311,6 +311,186 @@ impl HairShadow {
     pub const RECEIVES: Self = Self { casts: false, receives: true };
 }
 
+/// What a [`SurfaceFx`] does to the part of the surface its front has passed.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SurfaceFxKind {
+    /// The surface turns to `colour` and is still lit and outlined: burnt to charcoal, turned to stone, frozen, painted
+    /// over, rotting. The default.
+    #[default]
+    Tint,
+    /// The surface is cut away (a dissolve, a teleport, burning to nothing); its outline goes with it.
+    Dissolve,
+}
+
+/// A front that sweeps over a surface and changes it (the burn in a sunlit vampire's skin, a teleport's dissolve, a
+/// petrifying spell): a 3D noise field in the mesh's own bind-pose space, so the pattern sticks to the body as it moves,
+/// optionally biased along a direction so the change climbs from the feet or falls from the head. Where the field is
+/// below [`amount`](Self::amount) the [`kind`](Self::kind) applies; a band of [`edge_width`](Self::edge_width) above it
+/// glows in [`edge`](Self::edge). Animating `amount` from 0 to `1 + edge_width` runs the whole change.
+///
+/// Every renderer that draws the material follows the same field ([`SurfaceFx::field`]), so the mock and the GPU agree on
+/// where the front is.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct SurfaceFx {
+    /// What happens behind the front.
+    pub kind: SurfaceFxKind,
+    /// How far the front has come, `0..=2`: 0 leaves the surface alone; `1 + edge_width` has passed everywhere.
+    pub amount: f32,
+    /// The colour behind the front, for [`SurfaceFxKind::Tint`].
+    pub colour: Colour,
+    /// The colour of the band at the front.
+    pub edge: Colour,
+    /// How wide that band is, in field units, `0..=0.5`.
+    pub edge_width: f32,
+    /// How bright the band glows on its own (added after the light, so embers show in the dark), `0..=8`.
+    pub glow: f32,
+    /// The size of the pattern's blobs in metres, `0.005..=2`.
+    pub size: f32,
+    /// Picks the pattern.
+    pub seed: u32,
+    /// A direction in the mesh's space the front travels along (`[0, 1, 0]`: from the feet up), or zero for none.
+    #[schemars(with = "[f32; 3]")]
+    pub sweep: Vec3,
+    /// Where along `sweep` the front starts and ends, metres: the field is 0 at the first and 1 at the second.
+    #[schemars(with = "[f32; 2]")]
+    pub sweep_range: Vec2,
+    /// How much the sweep decides the field against the noise, `0..=1`: 0 is blobs anywhere, 1 a clean line.
+    pub sweep_mix: f32,
+}
+
+impl Default for SurfaceFx {
+    /// A charcoal burn with an ember edge, in blobs about 6 cm across, not started.
+    fn default() -> Self {
+        Self {
+            kind: SurfaceFxKind::Tint,
+            amount: 0.0,
+            colour: Colour::rgb(52, 46, 46),
+            edge: Colour::rgb(255, 140, 40),
+            edge_width: 0.06,
+            glow: 1.5,
+            size: 0.06,
+            seed: 0,
+            sweep: Vec3::ZERO,
+            sweep_range: Vec2::new(0.0, 1.8),
+            sweep_mix: 0.0,
+        }
+    }
+}
+
+/// The largest [`SurfaceFx::amount`].
+pub const MAX_SURFACE_FX_AMOUNT: f32 = 2.0;
+/// The widest [`SurfaceFx::edge_width`].
+pub const MAX_SURFACE_FX_EDGE: f32 = 0.5;
+/// The brightest [`SurfaceFx::glow`].
+pub const MAX_SURFACE_FX_GLOW: f32 = 8.0;
+/// The smallest and largest [`SurfaceFx::size`], metres.
+pub const SURFACE_FX_SIZES: (f32, f32) = (0.005, 2.0);
+
+/// What the front does at one point of a surface: the share of the surface's colour that turns (`covered`, 0 or 1),
+/// and how much the edge band shows there (`edge`, 0 to 1).
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct SurfaceFxAt {
+    /// 1 behind the front, 0 ahead of it.
+    pub covered: f32,
+    /// 1 inside the edge band, fading to 0 at its far side; 0 behind the front.
+    pub edge: f32,
+}
+
+impl SurfaceFx {
+    /// The field at `local` (the mesh's bind-pose position), `0..=1`: three octaves of value noise at
+    /// [`size`](Self::size), mixed with the position along [`sweep`](Self::sweep). The shader's `fx_field`
+    /// (`common.wgsl`) is the same function.
+    pub fn field(&self, local: Vec3) -> f32 {
+        let noise = fx_fbm(local / self.size.max(SURFACE_FX_SIZES.0), self.seed);
+        let length = self.sweep.length();
+        if length <= 1e-6 || self.sweep_mix <= 0.0 {
+            return noise;
+        }
+        let along = local.dot(self.sweep / length);
+        let span = (self.sweep_range.y - self.sweep_range.x).abs().max(1e-4);
+        let line = ((along - self.sweep_range.x) / span).clamp(0.0, 1.0);
+        noise + (line - noise) * self.sweep_mix.clamp(0.0, 1.0)
+    }
+
+    /// What the front does at `local`.
+    pub fn at(&self, local: Vec3) -> SurfaceFxAt {
+        let v = self.field(local);
+        if v < self.amount {
+            return SurfaceFxAt { covered: 1.0, edge: 0.0 };
+        }
+        let width = self.edge_width.max(1e-4);
+        let into = (v - self.amount) / width;
+        SurfaceFxAt { covered: 0.0, edge: if self.amount > 0.0 && into < 1.0 { 1.0 - into * into } else { 0.0 } }
+    }
+
+    /// Checks the ranges.
+    ///
+    /// # Errors
+    /// [`RenderError::Invalid`] naming the first value out of range.
+    pub fn validate(&self) -> Result<(), RenderError> {
+        let bad = |reason: String| Err(RenderError::invalid("material", reason));
+        if !(self.amount.is_finite() && (0.0..=MAX_SURFACE_FX_AMOUNT).contains(&self.amount)) {
+            return bad(format!("surface fx amount must be in 0..={MAX_SURFACE_FX_AMOUNT}"));
+        }
+        if !(0.0..=MAX_SURFACE_FX_EDGE).contains(&self.edge_width) {
+            return bad(format!("surface fx edge_width must be in 0..={MAX_SURFACE_FX_EDGE}"));
+        }
+        if !(0.0..=MAX_SURFACE_FX_GLOW).contains(&self.glow) {
+            return bad(format!("surface fx glow must be in 0..={MAX_SURFACE_FX_GLOW}"));
+        }
+        let (lo, hi) = SURFACE_FX_SIZES;
+        if !(lo..=hi).contains(&self.size) {
+            return bad(format!("surface fx size must be in {lo}..={hi} metres"));
+        }
+        if !(self.sweep.is_finite() && self.sweep_range.is_finite() && (0.0..=1.0).contains(&self.sweep_mix)) {
+            return bad("surface fx sweep must be finite and sweep_mix in 0..=1".to_owned());
+        }
+        Ok(())
+    }
+}
+
+/// The lattice hash the shader's `fx_hash` is: an integer mix of the cell and the seed (lowbias32), so every renderer
+/// picks the same value for the same cell, bit for bit. `0..1`, 24 bits.
+fn fx_hash(cell: [i32; 3], seed: u32) -> f32 {
+    #[allow(clippy::cast_sign_loss, reason = "the cell's bits are hashed, not its value")]
+    let [x, y, z] = cell.map(|c| c as u32);
+    let mut h = x.wrapping_mul(0x8da6_b343)
+        ^ y.wrapping_mul(0xd816_3841)
+        ^ z.wrapping_mul(0xcb1a_b31f)
+        ^ seed.wrapping_mul(0x9e37_79b9);
+    h ^= h >> 16;
+    h = h.wrapping_mul(0x7feb_352d);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x846c_a68b);
+    h ^= h >> 16;
+    #[allow(clippy::cast_precision_loss, reason = "24 bits are exact in f32")]
+    let unit = (h >> 8) as f32 / 16_777_216.0;
+    unit
+}
+
+/// Value noise at `p`, `0..=1`, smoothly interpolated between the hashed lattice corners.
+fn fx_noise(p: Vec3, seed: u32) -> f32 {
+    let i = p.floor();
+    let f = p - i;
+    let u = f * f * (Vec3::splat(3.0) - 2.0 * f);
+    #[allow(clippy::cast_possible_truncation, reason = "a floored coordinate of a body-sized field")]
+    let base = [i.x as i32, i.y as i32, i.z as i32];
+    let corner = |x: i32, y: i32, z: i32| fx_hash([base[0] + x, base[1] + y, base[2] + z], seed);
+    let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
+    let x00 = lerp(corner(0, 0, 0), corner(1, 0, 0), u.x);
+    let x10 = lerp(corner(0, 1, 0), corner(1, 1, 0), u.x);
+    let x01 = lerp(corner(0, 0, 1), corner(1, 0, 1), u.x);
+    let x11 = lerp(corner(0, 1, 1), corner(1, 1, 1), u.x);
+    lerp(lerp(x00, x10, u.y), lerp(x01, x11, u.y), u.z)
+}
+
+/// Three octaves of [`fx_noise`], normalised to `0..=1`.
+fn fx_fbm(p: Vec3, seed: u32) -> f32 {
+    (fx_noise(p, seed) * 0.571 + fx_noise(p * 2.03, seed) * 0.286 + fx_noise(p * 4.01, seed) * 0.143).clamp(0.0, 1.0)
+}
+
 /// Everything about how one mesh's surface looks.
 #[derive(Clone, Debug, PartialEq)]
 #[allow(clippy::struct_excessive_bools, reason = "independent switches a renderer reads one at a time")]
@@ -349,6 +529,9 @@ pub struct Material {
     /// `MToon` 1.0's own lighting, for an imported model (LK-07): with toon shading, the surface is lit by the spec's
     /// model ([`Mtoon`]) in place of the toon ramp. Boxed, as only imported materials carry it.
     pub mtoon: Option<Box<Mtoon>>,
+    /// A front sweeping over the surface (a burn, a dissolve, turning to stone), animated by its `amount`. `None` by
+    /// default.
+    pub fx: Option<SurfaceFx>,
 }
 
 impl Material {
@@ -369,6 +552,7 @@ impl Material {
             hair_shadow: HairShadow::NONE,
             uv_transform: UvTransform::IDENTITY,
             mtoon: None,
+            fx: None,
         }
     }
 
@@ -448,6 +632,9 @@ impl Material {
         }
         if let Some(mtoon) = &self.mtoon {
             mtoon.validate()?;
+        }
+        if let Some(fx) = &self.fx {
+            fx.validate()?;
         }
         Ok(())
     }

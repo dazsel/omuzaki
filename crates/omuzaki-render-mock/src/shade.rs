@@ -8,8 +8,8 @@ use std::f32::consts::PI;
 
 use omuzaki_core::glam::{Vec2, Vec3, Vec4};
 use omuzaki_render_api::{
-    AlphaEncoding, AlphaMode, ColourSpace, Fog, Light, Mapping, Material, Shading, Skin, TextureId, Toon, Wrap,
-    srgb_decode,
+    AlphaEncoding, AlphaMode, ColourSpace, Fog, Light, Mapping, Material, Shading, Skin, SurfaceFxKind, TextureId, Toon,
+    Wrap, srgb_decode,
 };
 
 use crate::TextureData;
@@ -226,6 +226,10 @@ fn skin_adjust(lit: Vec3, albedo: Vec3, skin: Skin) -> Vec3 {
 /// colour's and the base texture's, which is the albedo's alpha in [`shade_pixel`]) is at least the cutoff. Always true
 /// for a material without a mask. The outline hull asks it, so a cut-out card's line follows the visible shape (#649).
 pub(crate) fn mask_keeps(material: &Material, textures: &Textures<'_>, v: Varying) -> bool {
+    // A dissolved surface takes its line with it.
+    if material.fx.is_some_and(|fx| fx.kind == SurfaceFxKind::Dissolve && fx.at(v.local).covered > 0.5) {
+        return false;
+    }
     let AlphaMode::Mask { cutoff } = material.alpha else { return true };
     let mut coverage = material.base.alpha();
     if material.vertex_colours {
@@ -267,9 +271,25 @@ pub(crate) fn shade_pixel(material: &Material, lit: Lit, textures: &Textures<'_>
         AlphaMode::Opaque | AlphaMode::Mask { .. } => 1.0,
         AlphaMode::Blend => albedo.w,
     };
+    // The surface fx (the shader's `fx_at`, `fx_albedo` and `fx_glow`): a dissolve cuts, a tint recolours behind the
+    // front, and the band at the front takes the edge colour and glows after the light.
+    let mut glow = Vec3::ZERO;
+    if let Some(fx) = material.fx {
+        let at = fx.at(v.local);
+        if fx.kind == SurfaceFxKind::Dissolve && at.covered > 0.5 {
+            return None;
+        }
+        let mut rgb = albedo.truncate();
+        if fx.kind == SurfaceFxKind::Tint {
+            rgb = rgb.lerp(fx.colour.to_linear(), at.covered);
+        }
+        rgb = rgb.lerp(fx.edge.to_linear(), at.edge);
+        albedo = rgb.extend(albedo.w);
+        glow = fx.edge.to_linear() * fx.glow * at.edge;
+    }
     let colour =
         toon_of(&material.shading).map_or(albedo.truncate(), |toon| toon_colour(&toon, albedo.truncate(), lit));
-    Some(colour.extend(alpha))
+    Some((colour + glow).extend(alpha))
 }
 
 /// The lit colour of a linear `albedo` under `lit`, with `material`'s toon model (or as it is, unlit): what a particle's

@@ -30,8 +30,8 @@ const FRAME_CHUNKS: usize = 12 + 3 + 32 + 4;
 const PROGRAM_START: usize = 9 + 8;
 /// Chunks of the program parameters (`program: array<vec4<f32>, 16>`).
 const PROGRAM_CHUNKS: usize = 16;
-// Then the UV transform, the outline mix and the six of MToon.
-const MATERIAL_CHUNKS: usize = PROGRAM_START + PROGRAM_CHUNKS + 2 + 6;
+// Then the UV transform, the outline mix, the six of MToon and the five of the surface fx.
+const MATERIAL_CHUNKS: usize = PROGRAM_START + PROGRAM_CHUNKS + 2 + 6 + 5;
 const INSTANCE_CHUNKS: usize = 4 + 3 + 1;
 
 const PROBE: &str = r"
@@ -84,7 +84,12 @@ fn material_chunk(i: u32) -> vec4<u32> {
     if (i == 37u) { return bits(material.mtoon_shading); }
     if (i == 38u) { return bits(material.mtoon_rim); }
     if (i == 39u) { return bits(material.mtoon_matcap); }
-    return bits(material.mtoon_uv);
+    if (i == 40u) { return bits(material.mtoon_uv); }
+    if (i == 41u) { return material.fx_flags; }
+    if (i == 42u) { return bits(material.fx); }
+    if (i == 43u) { return bits(material.fx_colour); }
+    if (i == 44u) { return bits(material.fx_edge); }
+    return bits(material.fx_sweep);
 }
 
 fn instance_chunk(i: u32) -> vec4<u32> {
@@ -157,6 +162,19 @@ fn probe_material(face: TextureId) -> Material {
         hair_shadow: omuzaki_render_api::HairShadow { casts: true, receives: true },
         uv_transform: UvTransform { scale: Vec2::new(0.5, 0.25), offset: Vec2::new(0.125, 0.75) },
         mtoon: None,
+        fx: Some(omuzaki_render_api::SurfaceFx {
+            kind: omuzaki_render_api::SurfaceFxKind::Dissolve,
+            amount: 0.625,
+            colour: Colour::rgb(10, 20, 30),
+            edge: Colour::rgb(250, 120, 30),
+            edge_width: 0.125,
+            glow: 2.5,
+            size: 0.25,
+            seed: 0x0001_0203,
+            sweep: Vec3::new(0.0, 2.0, 0.0),
+            sweep_range: Vec2::new(-0.5, 1.5),
+            sweep_mix: 0.375,
+        }),
     }
 }
 

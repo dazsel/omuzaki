@@ -538,10 +538,15 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
         dpdy(in.extra0),
     );
     let uv = mtoon_uv(in.uv);
-    let albedo = surface_albedo(uv, in.colour, in.local);
+    var albedo = surface_albedo(uv, in.colour, in.local);
     if (material.flags.z == ALPHA_MASK && albedo.a < material.alpha.x) {
         discard;
     }
+    let fx = fx_at(in.local);
+    if (fx_cut(fx)) {
+        discard;
+    }
+    albedo = vec4<f32>(fx_albedo(albedo.rgb, fx), albedo.a);
     begin_hair_shadow(in.world_position);
     var colour = albedo.rgb;
     if (mtoon_on()) {
@@ -560,6 +565,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
             colour += back_light_rim(n, in.world_position);
         }
     }
+    colour += fx_glow(fx);
     // Opaque and masked surfaces cover what is behind them completely. Fog fades unlit surfaces too.
     return vec4<f32>(apply_fog(colour, in.world_position), 1.0);
 }

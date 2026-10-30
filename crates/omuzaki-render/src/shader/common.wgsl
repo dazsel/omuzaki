@@ -40,6 +40,9 @@ const MTOON_RIM_TEXTURE: u32 = 16u;
 const MTOON_EMISSIVE_TEXTURE: u32 = 32u;
 const MTOON_NORMAL_TEXTURE: u32 = 64u;
 const MTOON_MASK_TEXTURE: u32 = 128u;
+// `Material.fx_flags.x`: what a surface fx does behind its front (`fx_kind` in resource/material.rs); 0 is none.
+const FX_TINT: u32 = 1u;
+const FX_DISSOLVE: u32 = 2u;
 
 // Material.flags.y
 const SHADING_TOON: u32 = 0u;
@@ -121,6 +124,11 @@ struct Material {
     mtoon_rim: vec4<f32>,        // rim rgb, fresnel power
     mtoon_matcap: vec4<f32>,     // matcap rgb, rim lift
     mtoon_uv: vec4<f32>,         // UV scroll per second xy, rotation per second, normal map scale
+    fx_flags: vec4<u32>,         // surface fx: FX_* kind (0: none), seed
+    fx: vec4<f32>,               // amount, 1 / blob size, edge width, glow
+    fx_colour: vec4<f32>,        // colour behind the front rgb, sweep mix
+    fx_edge: vec4<f32>,          // edge band rgb, sweep start
+    fx_sweep: vec4<f32>,         // sweep unit direction xyz (zero: none), sweep end
 }
 
 @group(1) @binding(0) var<uniform> material: Material;
@@ -268,6 +276,80 @@ fn overlay_fade(start: f32, end: f32, z: f32) -> f32 {
 // reads the UV, so it does not.
 fn material_uv(uv: vec2<f32>) -> vec2<f32> {
     return uv * material.uv_transform.xy + material.uv_transform.zw;
+}
+
+// ---- surface fx (`SurfaceFx` in omuzaki-render-api; `SurfaceFx::field` is the same function on the CPU) ----
+
+// lowbias32 of the cell and the seed: bit-identical to the CPU's `fx_hash`. 0..1, 24 bits.
+fn fx_hash(cell: vec3<i32>, seed: u32) -> f32 {
+    let c = bitcast<vec3<u32>>(cell);
+    var h = (c.x * 0x8da6b343u) ^ (c.y * 0xd8163841u) ^ (c.z * 0xcb1ab31fu) ^ (seed * 0x9e3779b9u);
+    h ^= h >> 16u;
+    h *= 0x7feb352du;
+    h ^= h >> 15u;
+    h *= 0x846ca68bu;
+    h ^= h >> 16u;
+    return f32(h >> 8u) / 16777216.0;
+}
+
+fn fx_noise(p: vec3<f32>, seed: u32) -> f32 {
+    let i = floor(p);
+    let f = p - i;
+    let u = f * f * (3.0 - 2.0 * f);
+    let b = vec3<i32>(i);
+    let x00 = mix(fx_hash(b, seed), fx_hash(b + vec3<i32>(1, 0, 0), seed), u.x);
+    let x10 = mix(fx_hash(b + vec3<i32>(0, 1, 0), seed), fx_hash(b + vec3<i32>(1, 1, 0), seed), u.x);
+    let x01 = mix(fx_hash(b + vec3<i32>(0, 0, 1), seed), fx_hash(b + vec3<i32>(1, 0, 1), seed), u.x);
+    let x11 = mix(fx_hash(b + vec3<i32>(0, 1, 1), seed), fx_hash(b + vec3<i32>(1, 1, 1), seed), u.x);
+    return mix(mix(x00, x10, u.y), mix(x01, x11, u.y), u.z);
+}
+
+// The front's field at the bind-pose position `local`, 0..1: blobs, mixed with the position along the sweep.
+fn fx_field(local: vec3<f32>) -> f32 {
+    let seed = material.fx_flags.y;
+    let p = local * material.fx.y;
+    let noise = saturate(fx_noise(p, seed) * 0.571 + fx_noise(p * 2.03, seed) * 0.286 + fx_noise(p * 4.01, seed) * 0.143);
+    let mix_amount = material.fx_colour.w;
+    if (mix_amount <= 0.0 || dot(material.fx_sweep.xyz, material.fx_sweep.xyz) < 1e-12) {
+        return noise;
+    }
+    let start = material.fx_edge.w;
+    let span = max(abs(material.fx_sweep.w - start), 1e-4);
+    let line = saturate((dot(local, material.fx_sweep.xyz) - start) / span);
+    return mix(noise, line, saturate(mix_amount));
+}
+
+// What the front does at `local`: x is 1 behind it, y how much of the edge band shows (0..1).
+fn fx_at(local: vec3<f32>) -> vec2<f32> {
+    if (material.fx_flags.x == 0u) {
+        return vec2<f32>(0.0);
+    }
+    let amount = material.fx.x;
+    let v = fx_field(local);
+    if (v < amount) {
+        return vec2<f32>(1.0, 0.0);
+    }
+    let into = (v - amount) / max(material.fx.z, 1e-4);
+    return vec2<f32>(0.0, select(0.0, 1.0 - into * into, amount > 0.0 && into < 1.0));
+}
+
+// Whether a dissolve has cut the surface away at `local`.
+fn fx_cut(at: vec2<f32>) -> bool {
+    return material.fx_flags.x == FX_DISSOLVE && at.x > 0.5;
+}
+
+// The albedo with the front's colours laid on: the tint behind it, the edge band at it.
+fn fx_albedo(albedo: vec3<f32>, at: vec2<f32>) -> vec3<f32> {
+    var out = albedo;
+    if (material.fx_flags.x == FX_TINT) {
+        out = mix(out, material.fx_colour.rgb, at.x);
+    }
+    return mix(out, material.fx_edge.rgb, at.y);
+}
+
+// The edge band's own light, added after the lights.
+fn fx_glow(at: vec2<f32>) -> vec3<f32> {
+    return material.fx_edge.rgb * material.fx.w * at.y;
 }
 
 // The surface colour before lighting: base colour, vertex colours, base texture, then the overlays in order (the

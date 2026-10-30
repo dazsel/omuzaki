@@ -7,7 +7,10 @@
 
 use bytemuck::{Pod, Zeroable};
 use omuzaki_core::id::Slug;
-use omuzaki_render_api::{AlphaMode, Colour, Mapping, Material, Mtoon, OutlineWidthMode, Shading, TextureId, Toon};
+use omuzaki_render_api::{
+    AlphaMode, Colour, Mapping, Material, Mtoon, OutlineWidthMode, SURFACE_FX_SIZES, Shading, SurfaceFx, SurfaceFxKind,
+    TextureId, Toon,
+};
 
 use crate::arena::Arena;
 use crate::program::{PACKED_FLOATS, Registry, Resolved};
@@ -109,6 +112,37 @@ pub(crate) struct MaterialUniform {
     mtoon_matcap: [f32; 4],
     /// `MToon`'s UV scroll per second (xy), rotation per second (z) and the normal map's scale (w).
     mtoon_uv: [f32; 4],
+    /// The surface fx: its kind in x (`fx_kind::*`, 0 for none), its seed in y.
+    fx_flags: [u32; 4],
+    /// The surface fx's amount, one over its blob size, edge width and glow.
+    fx: [f32; 4],
+    /// The colour behind the front (rgb) and the sweep mix.
+    fx_colour: [f32; 4],
+    /// The edge band's colour (rgb) and where the sweep starts.
+    fx_edge: [f32; 4],
+    /// The sweep's unit direction (xyz, zero for none) and where it ends.
+    fx_sweep: [f32; 4],
+}
+
+/// `SurfaceFxKind` as the shader reads it (`FX_*` in `common.wgsl`); 0 is no effect.
+mod fx_kind {
+    pub(super) const TINT: u32 = 1;
+    pub(super) const DISSOLVE: u32 = 2;
+}
+
+/// The surface fx part of the uniform, all zeros (off) for `None`.
+fn fx_uniform(fx: Option<&SurfaceFx>, uniform: &mut MaterialUniform) {
+    let Some(fx) = fx else { return };
+    let kind = match fx.kind {
+        SurfaceFxKind::Tint => fx_kind::TINT,
+        SurfaceFxKind::Dissolve => fx_kind::DISSOLVE,
+    };
+    let sweep = if fx.sweep_mix > 0.0 { fx.sweep.normalize_or_zero() } else { omuzaki_core::glam::Vec3::ZERO };
+    uniform.fx_flags = [kind, fx.seed, 0, 0];
+    uniform.fx = [fx.amount, 1.0 / fx.size.max(SURFACE_FX_SIZES.0), fx.edge_width, fx.glow];
+    uniform.fx_colour = rgb(fx.colour, fx.sweep_mix);
+    uniform.fx_edge = rgb(fx.edge, fx.sweep_range.x);
+    uniform.fx_sweep = [sweep.x, sweep.y, sweep.z, fx.sweep_range.y];
 }
 
 /// Bytes of one material uniform, for the memory estimate.
@@ -208,7 +242,7 @@ impl MaterialUniform {
         }
         let skin = toon.skin.unwrap_or_default();
         let outline = material.outline.map_or([0.0; 4], |o| rgb(o.colour, o.width));
-        Self {
+        let mut uniform = Self {
             base: rgb(material.base, material.base.alpha()),
             shade: rgb(toon.shade, 0.0),
             rim: rgb(toon.rim.colour, toon.rim.strength),
@@ -228,7 +262,9 @@ impl MaterialUniform {
             ],
             outline_mix: [material.outline_style.lighting_mix, 0.0, 0.0, 0.0],
             ..mtoon_uniform(mtoon_of(material), texture_flags)
-        }
+        };
+        fx_uniform(material.fx.as_ref(), &mut uniform);
+        uniform
     }
 }
 

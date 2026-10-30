@@ -143,6 +143,20 @@ impl AvatarStage {
         ease::at_ease(&self.avatar.bind)
     }
 
+    /// Runs the surface fx `fx` over every material of the avatar whose name contains none of `spare`, or takes it off
+    /// with `None`, as [`Stage::set_surface_fx`](crate::frame::Stage::set_surface_fx) does for a kit character. Cold.
+    ///
+    /// # Errors
+    /// [`StageError::Render`] if the renderer refuses a material; the materials are as they were.
+    pub fn set_surface_fx(
+        &mut self,
+        renderer: &mut dyn Renderer,
+        fx: Option<omuzaki_render_api::SurfaceFx>,
+        spare: &[String],
+    ) -> Result<(), StageError> {
+        self.upload.set_surface_fx(renderer, &self.avatar, fx, spare)
+    }
+
     /// Runs one frame and renders it into the stage's target. Returns the frame, with
     /// [`uploads`](FrameOutput::uploads) counting the materials an expression bind re-sent.
     ///

@@ -160,6 +160,7 @@ impl MaterialSpec {
             hair_shadow: self.hair_shadow,
             uv_transform: self.uv_transform,
             mtoon: None,
+            fx: None,
         })
     }
 }

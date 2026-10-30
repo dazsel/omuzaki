@@ -71,6 +71,7 @@ pub const CHECKS: &[(&str, Check)] = &[
     ("offline frames ignore history", offline_frames_ignore_history),
     ("background and alpha encoding", background_and_alpha_encoding),
     ("painted textures show through overlays", painted_textures_show_through_overlays),
+    ("a surface fx front recolours or cuts what it has passed", surface_fx_fronts_recolour_or_cut),
     ("outlines hug the silhouette", outlines_hug_the_silhouette),
     ("an open double-sided sheet is outlined from both sides", open_sheets_are_outlined_from_both_sides),
     ("edge lines draw on the near side of every depth jump", edge_lines_draw_on_the_near_side_of_depth_jumps),
@@ -490,6 +491,53 @@ fn overlay_scene(r: &mut dyn Renderer, overlay: Option<Overlay>) -> Result<(Scen
     let mut s = scene(Colour::BLACK);
     s.instances.push(Instance::new(mesh, material, Mat4::IDENTITY));
     Ok((s, mesh, material))
+}
+
+/// A surface fx swept along +X with no noise: behind the front (the quad's left half at amount 0.5) a tint turns the
+/// surface its colour and a dissolve cuts it away (with its outline), and at amount 0 nothing changes.
+fn surface_fx_fronts_recolour_or_cut(r: &mut dyn Renderer) -> Outcome {
+    use omuzaki_render_api::{SurfaceFx, SurfaceFxKind};
+    let tol = tolerance(r).max(1);
+    let (s, mesh, material) = overlay_scene(r, None)?;
+    let left = (CENTRE.0 - 12, CENTRE.1); // world x = -0.375
+    let right = (CENTRE.0 + 12, CENTRE.1); // world x = 0.375
+    let front = |kind: SurfaceFxKind, amount: f32| SurfaceFx {
+        kind,
+        amount,
+        colour: Colour::rgb(255, 0, 0),
+        edge: Colour::WHITE,
+        edge_width: 0.0,
+        glow: 0.0,
+        sweep: Vec3::X,
+        sweep_range: Vec2::new(-0.5, 0.5),
+        sweep_mix: 1.0,
+        ..SurfaceFx::default()
+    };
+    let with = |fx: SurfaceFx| Material { fx: Some(fx), ..Material::unlit(Colour::WHITE) };
+
+    r.update_material(material, &with(front(SurfaceFxKind::Tint, 0.5)))?;
+    let img = draw(r, &s, &plain())?;
+    expect_pixel(&img, left, Colour::rgb(255, 0, 0), tol, "a tint recolours what its front has passed")?;
+    expect_pixel(&img, right, Colour::WHITE, tol, "ahead of the front the surface is as it was")?;
+
+    r.update_material(material, &with(front(SurfaceFxKind::Dissolve, 0.5)))?;
+    let img = draw(r, &s, &plain())?;
+    expect_pixel(&img, left, Colour::BLACK, tol, "a dissolve cuts away what its front has passed")?;
+    expect_pixel(&img, right, Colour::WHITE, tol, "ahead of a dissolve the surface stays")?;
+
+    r.update_material(material, &with(front(SurfaceFxKind::Dissolve, 0.0)))?;
+    let img = draw(r, &s, &plain())?;
+    expect_pixel(&img, left, Colour::WHITE, tol, "a front at amount 0 changes nothing")?;
+
+    expect_err(
+        r.update_material(material, &with(SurfaceFx { amount: 3.0, ..SurfaceFx::default() })),
+        "a surface fx amount out of range",
+        |e| matches!(e, RenderError::Invalid { .. }),
+    )?;
+    for resource in [mesh.into(), material.into()] {
+        r.release(resource)?;
+    }
+    Ok(())
 }
 
 fn painted_textures_show_through_overlays(r: &mut dyn Renderer) -> Outcome {

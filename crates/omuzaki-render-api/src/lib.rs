@@ -50,7 +50,8 @@ pub use error::RenderError;
 pub use handle::{EnvironmentId, MaterialId, MeshId, ParticleSystemId, ResourceRef, TargetId, TextureId};
 pub use material::{
     AlphaMode, HairShadow, Mapping, Material, Outline, OutlineStyle, OutlineWidthMode, Overlay, ParamValue,
-    ProgramParams, Rim, Shading, Skin, Toon, UvTransform,
+    ProgramParams, Rim, Shading, Skin, SurfaceFx, SurfaceFxAt, SurfaceFxKind, Toon, UvTransform, MAX_SURFACE_FX_AMOUNT,
+    MAX_SURFACE_FX_EDGE, MAX_SURFACE_FX_GLOW, SURFACE_FX_SIZES,
 };
 pub use morph::{MeshOptions, MeshUsage, MorphSet, SparseMorph};
 pub use mtoon::Mtoon;
