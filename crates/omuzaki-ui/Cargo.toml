@@ -73,6 +73,8 @@ omuzaki-script = { path = "../omuzaki-script" }
 omuzaki-settings = { path = "../omuzaki-settings" }
 omuzaki-settings-api = { path = "../omuzaki-settings-api" }
 omuzaki-setup = { path = "../omuzaki-setup" }
+# The `parity.*` ops: the viewport's reference overlay and difference count call them.
+omuzaki-parity = { path = "../omuzaki-parity" }
 # The `short.*` ops (#2394).
 omuzaki-short = { path = "../omuzaki-short" }
 omuzaki-stage = { path = "../omuzaki-stage" }
