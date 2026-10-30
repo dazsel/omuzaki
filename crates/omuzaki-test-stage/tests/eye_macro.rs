@@ -70,12 +70,12 @@ fn program(name: &str, params: omuzaki_render_api::ProgramParams) -> Shading {
 
 /// Renders the macro shot of `design` and returns the frame.
 fn render(renderer: &mut WgpuRenderer, design: &EyeDesign) -> image::RgbaImage {
-    // Three-quarter from the outer corner's side and a little below, as in the reference close-up.
-    let camera_at = Vec3::new(-0.016, -0.007, 0.058);
-    let look = Vec3::new(0.0005, 0.0006, 0.010);
-    // The eye looks toward the camera, a little toward the outer corner.
-    // The eye looks up and out, toward the outer corner.
-    let forward = Vec3::new(-0.34, 0.2, 1.0).normalize();
+    // Three-quarter from the nose's side and a little below, as in the reference close-up: the far (outer) corner
+    // tucks behind the ball's bulge.
+    let camera_at = Vec3::new(0.024, -0.008, 0.056);
+    let look = Vec3::new(-0.0005, 0.0008, 0.010);
+    // The eye looks up, a little past the camera.
+    let forward = Vec3::new(0.08, 0.24, 1.0).normalize();
     let frame = EyeFrame { centre: Vec3::ZERO, forward, up: Vec3::Y };
     let built = eye3d::meshes(design, camera_at, forward);
 
@@ -124,7 +124,7 @@ fn render(renderer: &mut WgpuRenderer, design: &EyeDesign) -> image::RgbaImage {
         camera_at,
         look,
         Vec3::Y,
-        Projection::Perspective { fov_y_deg: 24.0, near: 0.004, far: 1.0 },
+        Projection::Perspective { fov_y_deg: 27.0, near: 0.004, far: 1.0 },
     ));
     for (mesh, material, transform) in [
         (&built.eyeball, &eye_material, gaze),
@@ -165,7 +165,9 @@ fn render(renderer: &mut WgpuRenderer, design: &EyeDesign) -> image::RgbaImage {
 #[test]
 fn the_eye_renders_at_macro_framing_as_an_eye() {
     let Some(mut renderer) = renderer() else { return };
-    let design = EyeDesign::default();
+    // Looking up lifts the upper lid, as in the reference close-up.
+    let mut design = EyeDesign::default();
+    design.aperture.upper = 0.006;
     let frame = render(&mut renderer, &design);
     if let Some(dir) = std::env::var_os("OMUZAKI_EYE_OUT").map(PathBuf::from) {
         std::fs::create_dir_all(&dir).unwrap();
