@@ -310,9 +310,39 @@ pub struct PoseKey {
     /// Hand shapes (`fist`, `point`, `open`, ...) by side, `left` and `right`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub hands: BTreeMap<String, String>,
+    /// Where each hand goes, by side (`left`, `right`), in place of the library pose's: the arm bends (two-bone IK) so
+    /// the wrist lands on a point riding on a bone of the same body, on any body (hands folded on a desk, a palm on
+    /// the chest).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub reach: BTreeMap<String, KeyReach>,
     /// How the body travels here from the key before.
     #[serde(default)]
     pub ease: Ease,
+}
+
+/// Where one hand goes in a pose key.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct KeyReach {
+    /// The bone the target rides on, by VRM name (`hips`, `spine`, `chest`, `upperChest`, `head`).
+    pub bone: String,
+    /// The wrist's target from the bone's joint, in arm lengths: `+X` the character's left, `+Y` up, `+Z` forward,
+    /// turned with the bone.
+    pub at: [f32; 3],
+    /// The side the elbow bends toward, in the same frame; down and a little behind when left out.
+    #[serde(default = "elbow_down")]
+    pub pole: [f32; 3],
+    /// How much of the reach applies, 0 to 1.
+    #[serde(default = "one")]
+    pub weight: f32,
+}
+
+fn elbow_down() -> [f32; 3] {
+    [0.0, -1.0, -0.3]
+}
+
+fn one() -> f32 {
+    1.0
 }
 
 /// One face key.

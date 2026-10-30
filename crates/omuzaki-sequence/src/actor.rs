@@ -11,7 +11,8 @@ use omuzaki_anim::life::Life;
 use omuzaki_anim::poses::{Hand, PoseLibrary, Posture};
 use omuzaki_anim::retarget::ArkitRetarget;
 use omuzaki_anim_api::{
-    BlendMode, ChannelBuf, ChannelMask, DeviceProfile, HumanoidBone, HumanoidPose, Layer, LifeConfig, Tick,
+    BlendMode, ChannelBuf, ChannelMask, DeviceProfile, HumanoidBone, HumanoidPose, Layer, LifeConfig, Reach, Reaches,
+    Tick,
 };
 use omuzaki_core::glam::{EulerRot, Mat4, Quat, Vec3};
 use omuzaki_core::time::Seconds;
@@ -80,7 +81,10 @@ fn invalid(m: impl Into<String>) -> SequenceError {
     SequenceError::Invalid(m.into())
 }
 
-/// The posture of `key` at `at`: its library pose (mirrored if asked), its bones set outright, its hands.
+/// The farthest a key's reach may be from its bone, in arm lengths.
+const MAX_KEY_REACH: f32 = 4.0;
+
+/// The posture of `key` at `at`: its library pose (mirrored if asked), its bones set outright, its hands, its reaches.
 fn posture_of(key: &crate::def::PoseKey, at: &str) -> Result<Posture, SequenceError> {
     let library = PoseLibrary::builtin().map_err(|e| SequenceError::Render(format!("the pose library: {e}")))?;
     let hands = HandLibrary::builtin().map_err(|e| SequenceError::Render(format!("the hand library: {e}")))?;
@@ -103,6 +107,24 @@ fn posture_of(key: &crate::def::PoseKey, at: &str) -> Result<Posture, SequenceEr
         match side.as_str() {
             "left" => posture.left = Hand::of(hand, 1.0),
             _ => posture.right = Hand::of(hand, 1.0),
+        }
+    }
+    for (side, r) in &key.reach {
+        let at = format!("{at}.reach.{side}");
+        let bone =
+            HumanoidBone::from_name(&r.bone).ok_or_else(|| invalid(format!("{at}.bone: no bone '{}'", r.bone)))?;
+        if r.at.iter().any(|v| !v.is_finite() || v.abs() > MAX_KEY_REACH) {
+            return Err(invalid(format!("{at}.at: each axis is -{MAX_KEY_REACH} to {MAX_KEY_REACH} arm lengths")));
+        }
+        if r.pole.iter().any(|v| !v.is_finite()) || !(0.0..=1.0).contains(&r.weight) {
+            return Err(invalid(format!("{at}: the pole is finite and the weight 0 to 1")));
+        }
+        let reach =
+            Some(Reach { bone, offset: Vec3::from_array(r.at), pole: Vec3::from_array(r.pole), weight: r.weight });
+        match side.as_str() {
+            "left" => posture.reach.left = reach,
+            "right" => posture.reach.right = reach,
+            _ => return Err(invalid(format!("{at}: the sides are left and right"))),
         }
     }
     Ok(posture)
@@ -165,6 +187,7 @@ impl ActorPlayer {
                 mirror: false,
                 bones: std::collections::BTreeMap::new(),
                 hands: std::collections::BTreeMap::new(),
+                reach: std::collections::BTreeMap::new(),
                 ease: Ease::default(),
             });
         }
@@ -277,6 +300,19 @@ impl ActorPlayer {
         pose
     }
 
+    /// Where the hands reach at `t`: the keys' reaches, blended as the body travels between them.
+    #[must_use]
+    pub fn reach_at(&self, t: f32) -> Reaches {
+        let Some((a, b, u)) = segment(self.poses.iter().map(|k| k.t), t) else {
+            return Reaches::NONE;
+        };
+        if a == b {
+            return self.poses[a].posture.reach;
+        }
+        let w = self.poses[b].ease.apply(self.style.snapped(u)).clamp(0.0, 1.0);
+        Reaches::blend(&self.poses[a].posture.reach, &self.poses[b].posture.reach, w)
+    }
+
     /// How open the talking mouth is at `t` (0 to 1) and which viseme it shapes.
     #[must_use]
     pub fn mouth_at(&self, t: f32) -> Option<(usize, f32)> {
@@ -345,6 +381,7 @@ impl ActorPlayer {
         let base = self.pose_at(pose_t);
         let face = self.face_at(pose_t);
         self.input.root = self.root_at(pose_t);
+        self.input.reach = self.reach_at(pose_t);
         let Some(performer) = self.performer.as_mut() else {
             self.input.pose = base;
             self.input.channels = face;
@@ -386,6 +423,7 @@ mod tests {
                     mirror: false,
                     bones: std::collections::BTreeMap::new(),
                     hands: std::collections::BTreeMap::new(),
+                    reach: std::collections::BTreeMap::new(),
                     ease: Ease::default(),
                 },
                 PoseKey {
@@ -394,6 +432,7 @@ mod tests {
                     mirror: false,
                     bones,
                     hands: std::collections::BTreeMap::new(),
+                    reach: std::collections::BTreeMap::new(),
                     ease: Ease::Named(Curve::Linear),
                 },
             ],
@@ -410,8 +449,12 @@ mod tests {
     }
 
     fn player() -> ActorPlayer {
+        player_of(&actor()).unwrap()
+    }
+
+    fn player_of(actor: &Actor) -> Result<ActorPlayer, SequenceError> {
         ActorPlayer::new(
-            &actor(),
+            actor,
             "actor",
             &ExpressionSet::default(),
             ChannelBuf::NEUTRAL,
@@ -419,7 +462,36 @@ mod tests {
             1,
             Knobs::default(),
         )
-        .unwrap()
+    }
+
+    #[test]
+    fn keyed_reaches_put_the_hands_where_the_keys_say_and_blend_between() {
+        let mut a = actor();
+        let folded = serde_json::json!({"left": {"bone": "spine", "at": [0.08, 0.05, 0.6], "pole": [1.0, -0.6, -0.4]},
+            "right": {"bone": "spine", "at": [-0.08, 0.05, 0.6]}});
+        a.pose[1].reach = serde_json::from_value(folded).unwrap();
+        let mut p = player_of(&a).unwrap();
+        assert_eq!(p.reach_at(0.0), Reaches::NONE, "the first key reaches nowhere");
+        let end = p.reach_at(1.0);
+        let left = end.left.unwrap();
+        assert_eq!((left.bone, left.weight), (HumanoidBone::Spine, 1.0));
+        assert!((left.offset - Vec3::new(0.08, 0.05, 0.6)).length() < 1e-6);
+        assert_eq!(end.right.unwrap().pole, Vec3::new(0.0, -1.0, -0.3), "the default pole hangs the elbow");
+        let half = p.reach_at(0.75).left.unwrap().weight;
+        assert!(half > 0.0 && half < 1.0, "it fades in between the keys: {half}");
+        assert_eq!(p.advance(1.0, 24).reach, end, "the frame carries the reaches to the rig");
+        // A library pose's own reach comes with it.
+        a.pose[1].reach.clear();
+        a.pose[1].pose = Some("hand-on-chest".into());
+        assert!(player_of(&a).unwrap().reach_at(1.0).right.is_some());
+        for bad in [
+            serde_json::json!({"middle": {"bone": "spine", "at": [0, 0, 0.5]}}),
+            serde_json::json!({"left": {"bone": "tail", "at": [0, 0, 0.5]}}),
+            serde_json::json!({"left": {"bone": "spine", "at": [0, 0, 9]}}),
+        ] {
+            a.pose[1].reach = serde_json::from_value(bad.clone()).unwrap();
+            assert!(player_of(&a).is_err(), "{bad} is refused");
+        }
     }
 
     #[test]
