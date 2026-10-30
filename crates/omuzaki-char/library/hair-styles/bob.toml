@@ -53,7 +53,9 @@ width = { start = 0.08, mid = 0.13, tip = 0.04, tip_at = 0.85 }
 
 [groups.d-framing]
 dynamics = { simulate = true, follow = "head" }
-lock = { tip = "curl_in" }
 
+# The side locks fall beside the cheeks and end in a point at the jaw: no tail behind the ear, which hooked them back
+# over it, and no curl, which twisted their ends.
 [groups.d-framing.generator]
 type = "framing"
+tail = []
