@@ -5,7 +5,8 @@ origin = "a written description of the cut, built from the kit's generators and 
 
 [volume]
 whorl = { polar_deg = 25.0, azimuth_deg = 180.0 }
-fullness = 1.1
+# Fuller than the generators make: an anime bob is a rounded mass standing well off the head, not a cap.
+fullness = 1.5
 crown = 1.1
 back = 1.0
 
