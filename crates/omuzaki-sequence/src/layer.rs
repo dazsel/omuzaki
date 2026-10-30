@@ -28,6 +28,9 @@ pub const MAX_TEXT: usize = 400;
 /// The most bars in one chart.
 pub const MAX_BARS: usize = 24;
 
+/// The land of the world map: Natural Earth's 1:110m coastline (public domain), simplified.
+static WORLD: &str = include_str!("../assets/world-land.txt");
+
 /// The face text is set in: Bricolage Grotesque (SIL OFL 1.1), a variable font from 200 to 800.
 static FACE: &[u8] = include_bytes!("../../omuzaki-short/assets/fonts/BricolageGrotesque.ttf");
 
@@ -134,6 +137,30 @@ pub struct GradientAt {
     pub colour: Colour,
 }
 
+/// How a map flattens the globe.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Projection {
+    /// Longitude and latitude as a square grid. The default.
+    #[default]
+    Equirectangular,
+    /// Miller's: the poles stretched as on a wall map.
+    Miller,
+}
+
+impl Projection {
+    /// The height of `lat` degrees, in degrees of longitude (up is positive).
+    fn y(self, lat: f32) -> f32 {
+        match self {
+            Self::Equirectangular => lat,
+            Self::Miller => {
+                let phi = lat.clamp(-89.0, 89.0).to_radians();
+                (1.25 * (std::f32::consts::FRAC_PI_4 + 0.4 * phi).tan().ln()).to_degrees()
+            }
+        }
+    }
+}
+
 /// What a layer draws.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -202,6 +229,23 @@ pub enum Draw {
         #[serde(default = "middle_of")]
         apex: f32,
     },
+    /// A map of the world's land, filled, in a box: the backdrop of a weather report, a newsroom's wall, a travel
+    /// title.
+    Map {
+        /// Width, points.
+        w: f32,
+        /// Height, points.
+        h: f32,
+        /// The longitude and latitude at the middle of the box, degrees.
+        #[serde(default = "map_centre")]
+        centre: [f32; 2],
+        /// Degrees of longitude across the box, 10 to 360: 360 shows the whole world, less zooms in.
+        #[serde(default = "map_span")]
+        span: f32,
+        /// How the globe is flattened.
+        #[serde(default)]
+        projection: Projection,
+    },
     /// A closed polygon through points, in points from the layer's origin (y down).
     Polygon {
         /// The corners.
@@ -269,6 +313,14 @@ pub enum Draw {
     },
 }
 
+fn map_centre() -> [f32; 2] {
+    [10.0, 20.0]
+}
+
+fn map_span() -> f32 {
+    360.0
+}
+
 fn middle_of() -> f32 {
     0.5
 }
@@ -319,8 +371,8 @@ fn line_band() -> f32 {
 
 impl Draw {
     /// Every kind's name, for listings.
-    pub const KINDS: [&'static str; 9] =
-        ["text", "rect", "ellipse", "ring", "band", "polygon", "bars", "icon", "lines"];
+    pub const KINDS: [&'static str; 10] =
+        ["text", "rect", "ellipse", "ring", "band", "map", "polygon", "bars", "icon", "lines"];
 
     /// This one's kind.
     #[must_use]
@@ -331,6 +383,7 @@ impl Draw {
             Self::Ellipse { .. } => "ellipse",
             Self::Ring { .. } => "ring",
             Self::Band { .. } => "band",
+            Self::Map { .. } => "map",
             Self::Polygon { .. } => "polygon",
             Self::Bars { .. } => "bars",
             Self::Icon { .. } => "icon",
@@ -445,6 +498,99 @@ fn white() -> Track<Colour> {
     Track::Hold(Colour::WHITE)
 }
 
+impl Draw {
+    /// Checks the drawing's numbers, naming `at`.
+    ///
+    /// # Errors
+    /// A sentence naming the first bad value.
+    pub fn check(&self, at: &str) -> Result<(), String> {
+        let positive = |name: &str, v: f32| {
+            if v.is_finite() && v > 0.0 && v <= 20_000.0 { Ok(()) } else { Err(format!("{at}.{name} is over 0")) }
+        };
+        match self {
+            Draw::Text { text, size, weight, .. } => {
+                if text.chars().count() > MAX_TEXT {
+                    return Err(format!("{at}.text is at most {MAX_TEXT} characters"));
+                }
+                positive("size", *size)?;
+                if !(200.0..=800.0).contains(weight) {
+                    return Err(format!("{at}.weight is 200 to 800"));
+                }
+            }
+            Draw::Rect { w, h, radius } => {
+                positive("w", *w)?;
+                positive("h", *h)?;
+                if *radius < 0.0 {
+                    return Err(format!("{at}.radius is 0 or more"));
+                }
+            }
+            Draw::Ellipse { w, h } => {
+                positive("w", *w)?;
+                positive("h", *h)?;
+            }
+            Draw::Ring { radius, width, sweep } => {
+                positive("radius", *radius)?;
+                positive("width", *width)?;
+                sweep.check(&format!("{at}.sweep"))?;
+            }
+            Draw::Band { w, h, bow, bow_bottom, apex } => {
+                positive("w", *w)?;
+                positive("h", *h)?;
+                for (name, v) in [("bow", Some(*bow)), ("bow_bottom", *bow_bottom)] {
+                    if v.is_some_and(|v| !v.is_finite() || v.abs() > 20_000.0) {
+                        return Err(format!("{at}.{name} is -20000 to 20000 points"));
+                    }
+                }
+                if !(-2.0..=3.0).contains(apex) {
+                    return Err(format!("{at}.apex is -2 to 3"));
+                }
+            }
+            Draw::Map { w, h, centre, span, .. } => {
+                positive("w", *w)?;
+                positive("h", *h)?;
+                if !(-180.0..=180.0).contains(&centre[0]) || !(-90.0..=90.0).contains(&centre[1]) {
+                    return Err(format!("{at}.centre is a longitude (-180 to 180) and a latitude (-90 to 90)"));
+                }
+                if !(10.0..=360.0).contains(span) {
+                    return Err(format!("{at}.span is 10 to 360 degrees"));
+                }
+            }
+            Draw::Polygon { points } => {
+                if points.len() < 3 || points.len() > 256 {
+                    return Err(format!("{at}.points: 3 to 256 corners"));
+                }
+            }
+            Draw::Bars { values, w, h, icons, grow, .. } => {
+                if values.is_empty() || values.len() > MAX_BARS {
+                    return Err(format!("{at}.values: 1 to {MAX_BARS} of them"));
+                }
+                positive("w", *w)?;
+                positive("h", *h)?;
+                if let Some(bad) = icons.iter().find(|i| !ICONS.contains(&i.as_str())) {
+                    return Err(format!("{at}.icons: no icon '{bad}'; the icons are {}", ICONS.join(", ")));
+                }
+                grow.check(&format!("{at}.grow"))?;
+            }
+            Draw::Icon { name, size } => {
+                if !ICONS.contains(&name.as_str()) {
+                    return Err(format!("{at}.name: no icon '{name}'; the icons are {}", ICONS.join(", ")));
+                }
+                positive("size", *size)?;
+            }
+            Draw::Lines { count, length, thickness, band, travel } => {
+                if !(1..=200).contains(count) {
+                    return Err(format!("{at}.count is 1 to 200"));
+                }
+                positive("length", *length)?;
+                positive("thickness", *thickness)?;
+                positive("band", *band)?;
+                travel.check(&format!("{at}.travel"))?;
+            }
+        }
+        Ok(())
+    }
+}
+
 /// The icon names [`Draw::Icon`] and [`Draw::Bars`] take.
 pub const ICONS: [&str; 8] = ["sun", "moon", "cloud", "bolt", "drop", "star", "arrow", "heart"];
 
@@ -479,80 +625,7 @@ impl Layer {
         if self.end.is_some_and(|end| end <= self.start) {
             return Err(format!("{at}: end comes after start"));
         }
-        let positive = |name: &str, v: f32| {
-            if v.is_finite() && v > 0.0 && v <= 20_000.0 { Ok(()) } else { Err(format!("{at}.draw.{name} is over 0")) }
-        };
-        match &self.draw {
-            Draw::Text { text, size, weight, .. } => {
-                if text.chars().count() > MAX_TEXT {
-                    return Err(format!("{at}.draw.text is at most {MAX_TEXT} characters"));
-                }
-                positive("size", *size)?;
-                if !(200.0..=800.0).contains(weight) {
-                    return Err(format!("{at}.draw.weight is 200 to 800"));
-                }
-            }
-            Draw::Rect { w, h, radius } => {
-                positive("w", *w)?;
-                positive("h", *h)?;
-                if *radius < 0.0 {
-                    return Err(format!("{at}.draw.radius is 0 or more"));
-                }
-            }
-            Draw::Ellipse { w, h } => {
-                positive("w", *w)?;
-                positive("h", *h)?;
-            }
-            Draw::Ring { radius, width, sweep } => {
-                positive("radius", *radius)?;
-                positive("width", *width)?;
-                sweep.check(&format!("{at}.draw.sweep"))?;
-            }
-            Draw::Band { w, h, bow, bow_bottom, apex } => {
-                positive("w", *w)?;
-                positive("h", *h)?;
-                for (name, v) in [("bow", Some(*bow)), ("bow_bottom", *bow_bottom)] {
-                    if v.is_some_and(|v| !v.is_finite() || v.abs() > 20_000.0) {
-                        return Err(format!("{at}.draw.{name} is -20000 to 20000 points"));
-                    }
-                }
-                if !(-2.0..=3.0).contains(apex) {
-                    return Err(format!("{at}.draw.apex is -2 to 3"));
-                }
-            }
-            Draw::Polygon { points } => {
-                if points.len() < 3 || points.len() > 256 {
-                    return Err(format!("{at}.draw.points: 3 to 256 corners"));
-                }
-            }
-            Draw::Bars { values, w, h, icons, grow, .. } => {
-                if values.is_empty() || values.len() > MAX_BARS {
-                    return Err(format!("{at}.draw.values: 1 to {MAX_BARS} of them"));
-                }
-                positive("w", *w)?;
-                positive("h", *h)?;
-                if let Some(bad) = icons.iter().find(|i| !ICONS.contains(&i.as_str())) {
-                    return Err(format!("{at}.draw.icons: no icon '{bad}'; the icons are {}", ICONS.join(", ")));
-                }
-                grow.check(&format!("{at}.draw.grow"))?;
-            }
-            Draw::Icon { name, size } => {
-                if !ICONS.contains(&name.as_str()) {
-                    return Err(format!("{at}.draw.name: no icon '{name}'; the icons are {}", ICONS.join(", ")));
-                }
-                positive("size", *size)?;
-            }
-            Draw::Lines { count, length, thickness, band, travel } => {
-                if !(1..=200).contains(count) {
-                    return Err(format!("{at}.draw.count is 1 to 200"));
-                }
-                positive("length", *length)?;
-                positive("thickness", *thickness)?;
-                positive("band", *band)?;
-                travel.check(&format!("{at}.draw.travel"))?;
-            }
-        }
-        Ok(())
+        self.draw.check(&format!("{at}.draw"))
     }
 
     /// Whether the layer shows at `t`.
@@ -819,6 +892,14 @@ fn shapes(draw: &Draw, t: f32) -> Vec<Shape> {
         Draw::Band { w, h, bow, bow_bottom, apex } => {
             shape(band(*w, *h, *bow, bow_bottom.unwrap_or(*bow), *apex), None).into_iter().collect()
         }
+        // An unseen box under the land, so the layer's box (its anchor and gradient) is the map's wherever land lies.
+        Draw::Map { w, h, centre, span, projection } => [
+            shape(Rect::from_xywh(0.0, 0.0, *w, *h).map(PathBuilder::from_rect), Some(Colour::rgba(0, 0, 0, 0))),
+            shape(world(*w, *h, *centre, *span, *projection), None),
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
         Draw::Polygon { points } => shape(polygon(points), None).into_iter().collect(),
         Draw::Bars { values, max, labels, captions, icons, colours, slot, w, h, gap, grow } => bars(
             &Bars { values, max: *max, labels, captions, icons, colours, slot: *slot, w: *w, h: *h, gap: *gap },
@@ -877,6 +958,70 @@ fn band(w: f32, h: f32, bow: f32, bow_bottom: f32, apex: f32) -> Option<Path> {
     }
     pb.close();
     pb.finish()
+}
+
+/// The world's land in a `w` by `h` box centred on `centre` (longitude, latitude), `span` degrees of longitude across,
+/// cut to the box. Each coastline ring is moved a turn east or west to land nearest the centre.
+fn world(w: f32, h: f32, centre: [f32; 2], span: f32, projection: Projection) -> Option<Path> {
+    let scale = w / span.clamp(10.0, 360.0);
+    let mid_y = projection.y(centre[1]);
+    let mut pb = PathBuilder::new();
+    for line in WORLD.lines().filter(|l| !l.starts_with('#')) {
+        let ring: Vec<[f32; 2]> = line
+            .split_whitespace()
+            .filter_map(|pair| {
+                let (lon, lat) = pair.split_once(',')?;
+                Some([lon.parse().ok()?, lat.parse().ok()?])
+            })
+            .collect();
+        if ring.len() < 3 {
+            continue;
+        }
+        #[allow(clippy::cast_precision_loss, reason = "a ring has at most a few hundred points")]
+        let mean = ring.iter().map(|p| p[0]).sum::<f32>() / ring.len() as f32;
+        let turn = ((centre[0] - mean) / 360.0).round() * 360.0;
+        let placed: Vec<[f32; 2]> = ring
+            .iter()
+            .map(|[lon, lat]| {
+                [w / 2.0 + (lon + turn - centre[0]) * scale, h / 2.0 - (projection.y(*lat) - mid_y) * scale]
+            })
+            .collect();
+        let cut = clip_to_box(&placed, w, h);
+        if let Some((first, rest)) = cut.split_first() {
+            pb.move_to(first[0], first[1]);
+            for p in rest {
+                pb.line_to(p[0], p[1]);
+            }
+            pb.close();
+        }
+    }
+    pb.finish()
+}
+
+/// `ring` cut to the box `0..w` by `0..h` (Sutherland and Hodgman, one edge at a time).
+fn clip_to_box(ring: &[[f32; 2]], w: f32, h: f32) -> Vec<[f32; 2]> {
+    let edges: [(usize, f32, bool); 4] = [(0, 0.0, true), (0, w, false), (1, 0.0, true), (1, h, false)];
+    let mut points = ring.to_vec();
+    for (axis, bound, keep_above) in edges {
+        let inside = |p: &[f32; 2]| if keep_above { p[axis] >= bound } else { p[axis] <= bound };
+        let mut out = Vec::with_capacity(points.len() + 4);
+        for (i, p) in points.iter().enumerate() {
+            let q = points[(i + 1) % points.len()];
+            let (pin, qin) = (inside(p), inside(&q));
+            if pin {
+                out.push(*p);
+            }
+            if pin != qin {
+                let t = (bound - p[axis]) / (q[axis] - p[axis]);
+                out.push([p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t]);
+            }
+        }
+        points = out;
+        if points.is_empty() {
+            break;
+        }
+    }
+    points
 }
 
 fn polygon(points: &[[f32; 2]]) -> Option<Path> {
@@ -1321,6 +1466,36 @@ mod tests {
         let p = painted(&[down], 0.0);
         let (top, bottom) = (p.data()[(2 * 216 + 108) * 4], p.data()[(381 * 216 + 108) * 4]);
         assert!(top < 10 && bottom > 245, "the default runs down: {top} then {bottom}");
+    }
+
+    #[test]
+    fn a_map_draws_the_land_where_it_lies() {
+        // The whole world, equirectangular, on the full frame: 3 points a degree.
+        let map = layer(serde_json::json!({"id": "m", "draw": {"kind": "map", "w": 1080, "h": 540, "centre": [0, 0]},
+            "fill": "#ffffff"}));
+        map.check("m").unwrap();
+        let p = painted(&[map], 0.0);
+        // 216 by 384 pixels: the map is 216 by 108, centred at row 192; a degree is 0.6 pixels.
+        let land = |lon: f32, lat: f32| {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "points inside the frame")]
+            let (x, y) = ((108.0 + lon * 0.6) as usize, (192.0 - lat * 0.6) as usize);
+            p.data()[(y * 216 + x) * 4 + 3] > 128
+        };
+        for (name, lon, lat) in [("the Sahara", 10.0, 22.0), ("Siberia", 100.0, 62.0), ("Brazil", -50.0, -10.0)] {
+            assert!(land(lon, lat), "{name} is land");
+        }
+        for (name, lon, lat) in [("the Pacific", -140.0, 0.0), ("the South Atlantic", -20.0, -30.0)] {
+            assert!(!land(lon, lat), "{name} is sea");
+        }
+        let share = coverage(&p) as f32 / (216.0 * 108.0);
+        assert!((0.2..0.4).contains(&share), "land is about 29% of the map: {share}");
+        // Zoomed onto Europe, the map fills its box and nothing spills out.
+        let europe = layer(serde_json::json!({"id": "e", "draw": {"kind": "map", "w": 1080, "h": 1080,
+            "centre": [15, 50], "span": 60, "projection": "miller"}}));
+        let p = painted(&[europe], 0.0);
+        let outside =
+            (0..384).filter(|y| !(84..300).contains(y)).any(|y| (0..216).any(|x| p.data()[(y * 216 + x) * 4 + 3] > 0));
+        assert!(!outside, "the land is cut to the box");
     }
 
     #[test]
