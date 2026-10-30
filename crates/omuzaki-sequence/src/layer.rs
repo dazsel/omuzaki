@@ -1240,7 +1240,7 @@ fn carded_bars(chart: &Bars<'_>, card: &BarCard, grow: f32) -> Vec<Shape> {
         }
         // Capitals stand about 0.72 of the size above the baseline: the label sits centred in its strip.
         if let Some(text) = chart.labels.get(i) {
-            let baseline = (card.strip + card.label_size * 0.72) / 2.0;
+            let baseline = f32::midpoint(card.strip, card.label_size * 0.72);
             out.extend(type_shape(
                 text_path(text, card.label_size, 700.0, 0.0, Align::Centre, centre, baseline),
                 Some(Colour::rgb(4, 4, 8)),
