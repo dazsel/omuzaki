@@ -5,14 +5,19 @@
 //! |---|---|
 //! | [`HumanoidTake`] | a dense take: one [`HumanoidPose`] a frame at the file's rate, sampled at any time |
 //! | [`asf`] | the Acclaim skeleton (`.asf`) and motion (`.amc`) files of the CMU motion-capture library, retargeted |
+//! | [`bvh`] | the `BioVision` Hierarchy (`.bvh`): Mixamo, Rokoko, Perception Neuron, Blender and most tools, retargeted |
+//! | [`ops`] | `motion.import`: a take stored as a character's clip, which `act.clip` plays live |
 //!
 //! A take is what the motion-parity loop measures against (the reference's poses) and what `motion.*` ops play or
-//! turn into clips. Reading one never touches the filesystem: callers hand in the text.
+//! turn into clips. Reading one never touches the filesystem: callers hand in the text (`motion.import` reads files through the op's
+//! file access).
 
 pub mod asf;
+pub mod bvh;
+pub mod ops;
 
-use omuzaki_anim_api::HumanoidPose;
-use omuzaki_core::glam::Vec3;
+use omuzaki_anim_api::{HumanoidBone as B, HumanoidPose};
+use omuzaki_core::glam::{Quat, Vec3};
 
 /// Why a motion file could not be read.
 #[derive(Clone, Debug, PartialEq, thiserror::Error)]
@@ -27,9 +32,6 @@ pub enum MotionError {
         /// What is wrong.
         message: String,
     },
-    /// The skeleton lacks a bone the humanoid needs.
-    #[error("the skeleton has no {0} bone")]
-    MissingBone(String),
     /// The motion has no frames.
     #[error("the motion has no frames")]
     Empty,
@@ -98,3 +100,66 @@ impl HumanoidTake {
     }
 }
 
+
+/// Where a humanoid bone points in the VRM T-pose (from its joint to its child's), for the bones whose source rest
+/// direction is compared with it; `None` leaves the bone's rotation as the source bone's (the hips, the feet).
+fn rest_direction(bone: B) -> Option<Vec3> {
+    Some(match bone {
+        B::Spine | B::Chest | B::UpperChest | B::Neck | B::Head => Vec3::Y,
+        B::LeftShoulder | B::LeftUpperArm | B::LeftLowerArm | B::LeftHand => Vec3::X,
+        B::RightShoulder | B::RightUpperArm | B::RightLowerArm | B::RightHand => Vec3::NEG_X,
+        B::LeftUpperLeg | B::LeftLowerLeg | B::RightUpperLeg | B::RightLowerLeg => Vec3::NEG_Y,
+        _ => return None,
+    })
+}
+
+/// The turn about `+Y` that faces `root`'s forward (its `+Z`) along `+Z`.
+fn facing(root: Quat) -> Quat {
+    let forward = root * Vec3::Z;
+    Quat::from_rotation_y(-forward.x.atan2(forward.z))
+}
+
+/// Which source bone each humanoid bone follows, parents first, with the turn from the humanoid bone's rest direction
+/// to the source bone's: a source skeleton whose bones rest along other directions (CMU legs 20 degrees apart, a BVH in
+/// an A-pose) still points each limb where the performer's did.
+struct Mapping {
+    bones: Vec<(B, Option<(usize, Quat)>)>,
+}
+
+impl Mapping {
+    /// From each humanoid bone (parents first) to its source bone's index and rest direction, if the source has one.
+    fn new(bones: impl IntoIterator<Item = (B, Option<(usize, Vec3)>)>) -> Self {
+        let bones = bones
+            .into_iter()
+            .map(|(bone, source)| {
+                let source = source.map(|(i, theirs)| {
+                    let align = match rest_direction(bone) {
+                        Some(ours) if theirs.length_squared() > 0.5 => Quat::from_rotation_arc(ours, theirs.normalize()),
+                        _ => Quat::IDENTITY,
+                    };
+                    (i, align)
+                });
+                (bone, source)
+            })
+            .collect();
+        Self { bones }
+    }
+
+    /// The humanoid pose (without the hips offset) of a frame whose source bones turn by `world` from their rests,
+    /// turned about `+Y` by `turn`. A humanoid bone the source lacks stays straight on its parent.
+    fn pose(&self, world: &[Quat], turn: Quat) -> HumanoidPose {
+        let mut worlds = [Quat::IDENTITY; B::ALL.len()];
+        let mut pose = HumanoidPose::REST;
+        for (bone, source) in &self.bones {
+            let parent = bone.parent().map_or(turn, |p| worlds[p as usize]);
+            let mine = match source {
+                Some((i, align)) => turn * world[*i] * *align,
+                None => parent,
+            };
+            worlds[*bone as usize] = mine;
+            let parent = bone.parent().map_or(Quat::IDENTITY, |p| worlds[p as usize]);
+            pose.set(*bone, (parent.inverse() * mine).normalize());
+        }
+        pose
+    }
+}

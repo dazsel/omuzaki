@@ -14,10 +14,10 @@
 
 use std::collections::HashMap;
 
-use omuzaki_anim_api::{HumanoidBone as B, HumanoidPose};
+use omuzaki_anim_api::HumanoidBone as B;
 use omuzaki_core::glam::{EulerRot, Quat, Vec3};
 
-use super::{HumanoidTake, MotionError};
+use super::{HumanoidTake, Mapping, MotionError, facing};
 
 /// Metres in an inch.
 const INCH_M: f32 = 0.0254;
@@ -48,18 +48,6 @@ const MAP: [(B, &str); 22] = [
     (B::LeftToes, "ltoes"),
     (B::RightToes, "rtoes"),
 ];
-
-/// Where a humanoid bone points in the VRM T-pose (from its joint to its child's), for the bones whose ASF rest
-/// direction is compared with it; `None` leaves the bone's rotation as the ASF bone's (the hips, the feet).
-fn rest_direction(bone: B) -> Option<Vec3> {
-    Some(match bone {
-        B::Spine | B::Chest | B::UpperChest | B::Neck | B::Head => Vec3::Y,
-        B::LeftShoulder | B::LeftUpperArm | B::LeftLowerArm | B::LeftHand => Vec3::X,
-        B::RightShoulder | B::RightUpperArm | B::RightLowerArm | B::RightHand => Vec3::NEG_X,
-        B::LeftUpperLeg | B::LeftLowerLeg | B::RightUpperLeg | B::RightLowerLeg => Vec3::NEG_Y,
-        _ => return None,
-    })
-}
 
 /// One ASF bone.
 #[derive(Clone, Debug)]
@@ -101,7 +89,12 @@ fn parse_err(file: &'static str, line: usize, message: impl Into<String>) -> Mot
 fn numbers(file: &'static str, line: usize, words: &[&str]) -> Result<Vec<f32>, MotionError> {
     words
         .iter()
-        .map(|w| w.parse::<f32>().ok().filter(|v| v.is_finite()).ok_or_else(|| parse_err(file, line, format!("{w:?} is not a number"))))
+        .map(|w| {
+            w.parse::<f32>()
+                .ok()
+                .filter(|v| v.is_finite())
+                .ok_or_else(|| parse_err(file, line, format!("{w:?} is not a number")))
+        })
         .collect()
 }
 
@@ -143,7 +136,8 @@ impl Skeleton {
             match (section, words.first().copied()) {
                 ("units", Some("length")) => {
                     let v = numbers(F, line, &words[1..2.min(words.len())])?;
-                    sk.length_unit = v.first().copied().filter(|v| *v > 0.0).ok_or_else(|| parse_err(F, line, "no length unit"))?;
+                    sk.length_unit =
+                        v.first().copied().filter(|v| *v > 0.0).ok_or_else(|| parse_err(F, line, "no length unit"))?;
                 }
                 ("root", Some("order")) => {
                     sk.root_order = words[1..]
@@ -187,7 +181,10 @@ impl Skeleton {
                                 bone.direction = Vec3::new(v[0], v[1], v[2]).normalize_or_zero();
                             }
                         }
-                        "length" => bone.length = numbers(F, line, &words[1..2.min(words.len())])?.first().copied().unwrap_or(0.0),
+                        "length" => {
+                            bone.length =
+                                numbers(F, line, &words[1..2.min(words.len())])?.first().copied().unwrap_or(0.0);
+                        }
                         "axis" => {
                             let v = numbers(F, line, &words[1..words.len().min(4)])?;
                             let order = words.get(4).copied().unwrap_or("XYZ");
@@ -213,9 +210,13 @@ impl Skeleton {
                 }
                 ("hierarchy", Some("begin" | "end")) => {}
                 ("hierarchy", Some(parent)) => {
-                    let p = *sk.by_name.get(parent).ok_or_else(|| parse_err(F, line, format!("unknown bone {parent}")))?;
+                    let p =
+                        *sk.by_name.get(parent).ok_or_else(|| parse_err(F, line, format!("unknown bone {parent}")))?;
                     for child in &words[1..] {
-                        let c = *sk.by_name.get(*child).ok_or_else(|| parse_err(F, line, format!("unknown bone {child}")))?;
+                        let c = *sk
+                            .by_name
+                            .get(*child)
+                            .ok_or_else(|| parse_err(F, line, format!("unknown bone {child}")))?;
                         sk.bones[c].parent = Some(p);
                     }
                 }
@@ -257,16 +258,12 @@ impl Skeleton {
     /// travel scaled to a body whose hips stand `hips_height` metres up.
     ///
     /// # Errors
-    /// [`MotionError::Parse`] for text that is not an AMC motion of this skeleton; [`MotionError::MissingBone`] when
-    /// the skeleton lacks a bone the humanoid maps; [`MotionError::Empty`] for no frames.
+    /// [`MotionError::Parse`] for text that is not an AMC motion of this skeleton;
+    /// [`MotionError::Empty`] for no frames. A humanoid bone the skeleton lacks (a skeleton with no toes, one neck bone, no
+    /// hands) stays straight on its parent.
     #[allow(clippy::too_many_lines)] // one pass over the file and one over the frames
     pub fn motion(&self, text: &str, fps: f32, hips_height: f32) -> Result<HumanoidTake, MotionError> {
         const F: &str = "motion";
-        for (_, name) in MAP {
-            if !self.by_name.contains_key(name) {
-                return Err(MotionError::MissingBone(name.to_owned()));
-            }
-        }
         let order = self.order();
         let n = self.bones.len();
         // Raw channels per frame: root's six, then each bone's dof angles.
@@ -295,18 +292,10 @@ impl Skeleton {
         }
         let unit_m = INCH_M / self.length_unit;
         // A CMU bone need not rest along the humanoid's: its legs rest 20 degrees apart, its collarbones tilted up.
-        // Each humanoid bone takes its ASF bone's rotation from the ASF rest *direction*, so the limb points where the
-        // performer's did, not 20 degrees inward of it.
-        let aligns: Vec<Quat> = MAP
-            .iter()
-            .map(|(bone, name)| {
-                let theirs = self.by_name.get(*name).map_or(Vec3::ZERO, |i| self.bones[*i].direction);
-                match rest_direction(*bone) {
-                    Some(ours) if theirs.length_squared() > 0.5 => Quat::from_rotation_arc(ours, theirs.normalize()),
-                    _ => Quat::IDENTITY,
-                }
-            })
-            .collect();
+        // The mapping takes each ASF bone's rotation from its rest *direction*.
+        let mapping = Mapping::new(
+            MAP.iter().map(|(bone, name)| (*bone, self.by_name.get(*name).map(|i| (*i, self.bones[*i].direction)))),
+        );
         let mut world = vec![Quat::IDENTITY; n];
         let mut out = Vec::with_capacity(frames.len());
         let mut first: Option<(Quat, Vec3)> = None;
@@ -332,25 +321,9 @@ impl Skeleton {
                 let parent = bone.parent.map_or(Quat::IDENTITY, |p| world[p]);
                 world[i] = (parent * local).normalize();
             }
-            // Face +Z on the first frame: the root's heading about +Y.
-            let (turn, origin) = *first.get_or_insert_with(|| {
-                let forward = world[0] * Vec3::Z;
-                let yaw = forward.x.atan2(forward.z);
-                (Quat::from_rotation_y(-yaw), hips)
-            });
-            let w = |name: &str| self.by_name.get(name).map_or(Quat::IDENTITY, |i| turn * world[*i]);
-            let mut pose = HumanoidPose::REST;
-            let mut worlds: HashMap<B, Quat> = HashMap::with_capacity(MAP.len());
-            for ((bone, name), align) in MAP.into_iter().zip(&aligns) {
-                worlds.insert(bone, w(name) * *align);
-            }
-            for (bone, _) in MAP {
-                let mine = worlds[&bone];
-                let parent = bone.parent().and_then(|p| worlds.get(&p).copied()).unwrap_or(Quat::IDENTITY);
-                pose.set(bone, (parent.inverse() * mine).normalize());
-            }
-            let travel = turn * (hips - origin);
-            pose.hips_offset = travel;
+            let (turn, origin) = *first.get_or_insert_with(|| (facing(world[0]), hips));
+            let mut pose = mapping.pose(&world, turn);
+            pose.hips_offset = turn * (hips - origin);
             out.push(pose);
         }
         let take = HumanoidTake { fps, frames: out, hips_height: self.hips_height(&order) };
@@ -375,7 +348,9 @@ mod tests {
 
     fn bone(id: usize, name: &str, dir: &str, len: f32, axis: &str, dof: &str) -> String {
         let dof = if dof.is_empty() { String::new() } else { format!("    dof {dof}\n") };
-        format!("  begin\n    id {id}\n    name {name}\n    direction {dir}\n    length {len}\n    axis {axis} XYZ\n{dof}  end\n")
+        format!(
+            "  begin\n    id {id}\n    name {name}\n    direction {dir}\n    length {len}\n    axis {axis} XYZ\n{dof}  end\n"
+        )
     }
 
     /// A tiny CMU-shaped skeleton: every mapped bone, straight T-pose directions.
@@ -425,7 +400,8 @@ mod tests {
     #[test]
     fn a_still_frame_is_the_rest_pose_and_a_bent_elbow_bends_the_lower_arm() {
         let sk = Skeleton::parse(&skeleton()).unwrap();
-        let amc = ":FULLY-SPECIFIED\n:DEGREES\n1\nroot 0 30 0 0 0 0\n2\nroot 0 30 0 0 0 0\nlradius 90\nlowerback 0 30 0\n";
+        let amc =
+            ":FULLY-SPECIFIED\n:DEGREES\n1\nroot 0 30 0 0 0 0\n2\nroot 0 30 0 0 0 0\nlradius 90\nlowerback 0 30 0\n";
         let take = sk.motion(amc, 120.0, 0.9).unwrap();
         assert_eq!(take.frames.len(), 2);
         let rest = &take.frames[0];
