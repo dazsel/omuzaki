@@ -57,8 +57,8 @@ Counts are rows in this file only (the deep lists above keep their own).
 | 7 | [Face rig and expression](#7-face-rig-and-expression) | 8 | 1 | 2 | eye and face owner (in part) | a control board; ARKit generation for imports |
 | 8 | [Motion and animation](#8-motion-and-animation) | 3 | 3 | 2 | **none** | locomotion, co-speech gestures |
 | 9 | [Tracking and inputs](#9-tracking-and-inputs) | 4 | 11 | 6 | **none** | hands, upper body, body over VMC |
-| 10 | [Lip sync, voice and audio](#10-lip-sync-voice-and-audio) | 4 | 5 | 3 | **none** | noise suppression, the mixer, singing |
-| 11 | [AI co-host and performer](#11-ai-co-host-and-performer) | 2 | 6 | 5 | **none** | perception, memory, listening reactions |
+| 10 | [Lip sync, voice and audio](#10-lip-sync-voice-and-audio) | 4 | 6 | 2 | voice and co-host owner | echo cancellation, the mixer, singing |
+| 11 | [AI co-host and performer](#11-ai-co-host-and-performer) | 3 | 6 | 4 | voice and co-host owner | perception, memory, modes |
 | 12 | [Stage, props and particles](#12-stage-props-and-particles) | 2 | 4 | 3 | render owner (in part) | scene transitions, imported props, collab |
 | 13 | [Camera, shots and cinematics](#13-camera-shots-and-cinematics) | 3 | 5 | 5 | reference-video owner (shorts, in part) | the timeline (SH-02), takes, auto-clips |
 | 14 | [Broadcast and outputs](#14-broadcast-and-outputs) | 4 | 4 | 5 | **none** | Windows and macOS virtual camera, NDI, direct streaming |
@@ -395,7 +395,7 @@ w-okada (voice changers), NVIDIA Broadcast (noise removal), VoiceMeeter (routing
 | Voice | AI voice conversion (ML-14) | w-okada RVC | ✗ | #690, #918 |
 | Audio | A mixer with mic, soundboard, AI voice and music buses (BR-22) | VoiceMeeter, OBS | ◐ | `audio.bus.*` ops; #603 |
 | Audio | Soundboard with provenance and ducking (BR-21) | Streamer.bot, Voicemod | ◐ | `omuzaki-audio-api`; #602 |
-| Audio | Echo cancellation and noise suppression on the mic | NVIDIA Broadcast, RNNoise | ✗ | echo #1268; noise **new** #2587 |
+| Audio | Echo cancellation and noise suppression on the mic | NVIDIA Broadcast, RNNoise | ◐ | noise: `fx.denoise` and the "Noisy room" preset, #2587 closed; echo #1268 |
 | Speech | Local ASR (Whisper), local TTS (Kokoro), VAD (Silero) | Open-LLM-VTuber | ✓ | `omuzaki-speech`, registered models |
 | Speech | Voice commands to avatar actions (AP-10) | none built in | ◐ | `voice_commands.*` ops; #719 |
 
@@ -422,11 +422,11 @@ voice, NVIDIA ACE and Audio2Face.
 |---|---|---|---|---|
 | Persona | Personality, backstory, style, boundaries, versioned (AP-01) | Character.AI | ◐ | `performer.persona.set`; #481 |
 | Voice | TTS voice per character, local or hosted; speech-to-speech (AP-02) | ElevenLabs, OpenAI realtime | ◐ | `voice.*` ops, `omuzaki-llm-realtime`; #482 |
-| Loop | Listen, read chat, think, speak, barge-in under 200 ms, turn-taking (AP-03) | open-annie, Open-LLM-VTuber | ◐ | `omuzaki-cohost`, `omuzaki-performer`; #483 |
+| Loop | Listen, read chat, think, speak, barge-in under 200 ms, turn-taking (AP-03) | open-annie, Open-LLM-VTuber | ◐ | `omuzaki-cohost`, `omuzaki-performer`, end-of-turn prediction in `omuzaki-speech/src/turn.rs`; #483 |
 | Loop | Opt-in perception: see a screen or camera and react; proactive speech (AP-03) | Neuro-sama | ✗ | #483 |
 | Intents | emote, gesture, look_at, move_to, speak, play_clip (AP-04) | AIRI | ◐ | `omuzaki-performer/src/decide.rs`; #484 |
 | Face | Voice and intent drive the face and body (AP-05) | Audio2Face | ◐ | AI mouth in `omuzaki-track-voice/src/ai_mouth`; #485 |
-| Reactions | Listening reactions while the person talks | none | ✗ | #2453 |
+| Reactions | Listening reactions while the person talks | none | ✓ | faces on partial words and backchannel nods, `omuzaki-performer/src/show.rs`; #2453 closed |
 | Decision | A rule floor that reacts when the LLM is slow or absent | none | ✓ | `omuzaki-performer/src/systemone.rs` |
 | Providers | Local and hosted LLMs (Anthropic, OpenAI-compatible) as bring-your-own-key | Open-LLM-VTuber | ✓ | `omuzaki-llm` |
 | Memory | Per-viewer and per-show memory with privacy controls (AP-06) | Neuro-sama | ✗ | #486 |
@@ -447,6 +447,12 @@ voice, NVIDIA ACE and Audio2Face.
 | AI characters are slow and miss timing: they talk over people, pause oddly and laugh late | **Full-duplex conversational timing:** predict the end of the person's turn from prosody and content, start the reply's face and breath before its words, and backchannel ("mm", nods) while listening | response gap p50 < 300 ms; overlap and interruption rates within human ranges; blind rating of "felt natural" |
 | AI performers lack comic timing and stagecraft | **A stage-aware performer:** the planner sees the scene, camera and chat state and plans beats (setup, pause, punchline, reaction shot) through ops | audience retention on A/B rehearsal runs; human rating of "entertaining" |
 | An AI's face doesn't match what it means: the words are sarcastic, the face is happy | **Meaning to face:** the intent layer carries subtext tags the face model renders | rater agreement that the face matches the line's intent, target ≥ 80% |
+
+Started on full-duplex timing: the speech host predicts the end of the person's turn from pitch, taper, words and
+length, transcribes speculatively on the first pause, and finds backchannel cues in the voice; the performer nods on
+them and keeps a listening face. On the synthetic conversation in `omuzaki-speech/tests/turn_timing.rs` the transcript
+is ready about 400 ms after a turn ends (844 ms with a fixed 600 ms silence) with no hesitation cut short. The gap to a
+spoken reply and a blind rating need the real models and a person (hand checks); the learned model is #2602.
 
 ---
 

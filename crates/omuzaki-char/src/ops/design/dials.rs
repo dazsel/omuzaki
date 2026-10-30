@@ -180,15 +180,16 @@ impl Op for ShapeSetDial {
 register_op!(ShapeSetDial);
 
 /// A standard normal sample (Box-Muller).
-fn normal(rng: &mut Rng) -> f64 {
+pub(super) fn normal(rng: &mut Rng) -> f64 {
     let u = f64::from(rng.next_f32()).max(1e-7);
     let v = f64::from(rng.next_f32());
     (-2.0 * u.ln()).sqrt() * (std::f64::consts::TAU * v).cos()
 }
 
-/// Samples every dial (or a group's) from its prior: a plausible new face or body from a seed. `amount` scales the
-/// spread (`1`: each dial's prior; `0.5`: subtler); `asymmetry` adds a small, separate offset on each side of the sided
-/// dials, as real faces have. The same seed gives the same character. Replaces the sampled dials' settings.
+/// Samples every dial (or a group's) from its prior, and the anatomy under them: a plausible new face or body from a
+/// seed. `amount` scales the spread (`1`: each dial's prior; `0.5`: subtler); `asymmetry` adds a small, separate
+/// offset on each side of the sided dials and structures, as real faces have. The same seed gives the same character.
+/// Replaces the sampled dials' settings and the anatomy.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(extend(
@@ -211,9 +212,13 @@ pub struct ShapeRandomise {
     #[serde(default)]
     #[schemars(range(min = 0.0, max = 1.0))]
     pub asymmetry: f64,
-    /// Only this group's dials.
+    /// Only this group's dials (the anatomy is then left as it is).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
+    /// Sample the anatomy under the dials too (`anatomy.randomise` with the same seed, amount and asymmetry), so the
+    /// face and the body vary as a whole; `true` (the default) unless a `group` is given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anatomy: Option<bool>,
 }
 
 fn one() -> f64 {
@@ -227,7 +232,7 @@ impl Op for ShapeRandomise {
     fn meta() -> OpMeta {
         OpMeta {
             name: "shape.randomise",
-            summary: "Sample a plausible face and body from a seed: every shape dial (or a group's) from its prior.",
+            summary: "Sample a plausible face and body from a seed: the anatomy, and every shape dial (or a group's) from its prior.",
             kind: OpKind::Edit,
             scope: Scope::EditCharacter,
             undo: Undo::Auto,
@@ -261,8 +266,14 @@ impl Op for ShapeRandomise {
             }
             design.dials.insert(d.id.clone(), setting);
         }
+        let anatomy = if self.anatomy.unwrap_or(self.group.is_none()) {
+            super::anatomy::sample(&mut design.anatomy, self.seed, self.amount, self.asymmetry)?
+        } else {
+            0
+        };
         let changes = store(ctx, &self.character, &design)?;
-        let summary = json!({ "character": self.character, "seed": self.seed, "dials": picked.len() });
+        let summary =
+            json!({ "character": self.character, "seed": self.seed, "dials": picked.len(), "structures": anatomy });
         Ok(access::edit_plan(changes, summary))
     }
 }
