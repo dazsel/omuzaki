@@ -75,7 +75,7 @@ fn render(renderer: &mut WgpuRenderer, design: &EyeDesign) -> image::RgbaImage {
     let camera_at = Vec3::new(0.024, -0.008, 0.056);
     let look = Vec3::new(-0.0005, 0.0008, 0.010);
     // The eye looks up, a little toward the camera.
-    let forward = Vec3::new(0.16, 0.24, 1.0).normalize();
+    let forward = Vec3::new(0.16, 0.12, 1.0).normalize();
     let frame = EyeFrame { centre: Vec3::ZERO, forward, up: Vec3::Y };
     let built = eye3d::meshes(design, camera_at, forward);
 
