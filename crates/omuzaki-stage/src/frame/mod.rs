@@ -288,6 +288,16 @@ impl Stage {
         self.submit(renderer, prepared, "the frame")
     }
 
+    /// [`tick`](Self::tick) without the render: the frame is solved, stepped and uploaded and the scene names it, but
+    /// nothing is drawn. For work that needs only the last of several frames drawn, such as fitting a pose to a picture
+    /// by rendering it (`omuzaki_track::fit`), where each candidate's warm-up frames are never seen.
+    ///
+    /// # Errors
+    /// As [`tick`](Self::tick), the render's own errors aside.
+    pub fn advance(&mut self, renderer: &mut dyn Renderer, input: &FrameInput) -> Result<Tick, StageError> {
+        self.prepare_tick(renderer, input).map(|prepared| prepared.tick)
+    }
+
     /// Everything [`tick`](Self::tick) does before the render: the scene names this frame's character and nothing has
     /// been drawn. A cast adds its other members' instances to the scene before [`submit`](Self::submit).
     pub(crate) fn prepare_tick(

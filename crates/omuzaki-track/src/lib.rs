@@ -37,6 +37,7 @@ pub mod calibration;
 pub mod detector;
 pub mod doctor;
 pub mod error;
+pub mod fit;
 pub mod frame;
 pub mod geometry;
 pub mod gesture;
