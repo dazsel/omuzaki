@@ -5,7 +5,7 @@
 //! | `voice.compare` | job | `render` | auto (the overlay is a file; the document never changes) |
 //!
 //! The answer has the shape every track's parity op shares (`track`, `done`, `made_with`, `metrics`, `worst`,
-//! `evidence`), with the voice's own `measures`, `floor` and `segments` beside it. The targets are the **two-takes
+//! `evidence`), with the voice's own `measures`, `floor` and `segments` beside it. The targets are the **takes
 //! floor** when `takes` are given (other recordings of the reference speaker saying the same line): per measure, the
 //! widest any of those takes is from the reference, so ours is held to be no further off than the speaker's own other
 //! takes. Without them, documented defaults stand in and the answer says so.
@@ -14,7 +14,10 @@
 //! cloned or resynthesised from it). The op asks how ours was made (`made_with`), and refuses to score a file that is
 //! the reference itself or measures as a near-copy of it.
 
-use omuzaki_ops_api::{CostHint, FsMode, JobCtx, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
+use omuzaki_ops_api::{
+    CanonicalPath, CostHint, ErrorCode, FsMode, JobCtx, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo,
+    register_op,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -47,10 +50,14 @@ pub struct VoiceCompare {
 
 register_op!(VoiceCompare);
 
-/// Targets when no other takes are given: a close match to a careful reading, never the floor itself.
+/// Targets when no other takes are given: a close match to a careful reading, never the floor itself. The timbre
+/// targets sit at what one voice measures against its own other take, so a different voice can't pass them: one
+/// Kokoro voice against itself at another speed reads 0.96 dB MCD and 3.2 dB spectral, a synthetic speaker's takes
+/// 0.83 and 2.3, and four Kokoro voices against each other 2.3 to 4.5 and 7.1 to 11.5
+/// (`omuzaki-test-track/tests/voice_parity.rs`).
 const DEFAULTS: Targets = Targets {
-    mcd_db: 4.5,
-    spectral_db: 5.0,
+    mcd_db: 1.0,
+    spectral_db: 3.5,
     level_db: 1.0,
     f0_bias_cents: 50.0,
     f0_shape_cents: 120.0,
@@ -100,6 +107,17 @@ impl Targets {
     }
 }
 
+/// The grants allow reading `path`. A file that isn't there yet passes the plan (an agent plans the comparison while
+/// the take it will score is still being spoken or recorded) and fails the run with `not_found`; a path outside the
+/// grants fails here.
+fn readable(ctx: &OpCtx<'_>, path: &str) -> Result<Option<CanonicalPath>, OpError> {
+    match ctx.fs_access(path, FsMode::Read) {
+        Ok(checked) => Ok(Some(checked)),
+        Err(e) if e.code == ErrorCode::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
 impl Op for VoiceCompare {
     fn meta() -> OpMeta {
         OpMeta {
@@ -107,8 +125,8 @@ impl Op for VoiceCompare {
             summary: "Measure our audio against a reference recording of the same words: aligned frame by frame, it \
                       reports the timbre (mel-cepstral distortion), spectrum, level, pitch offset and intonation (in \
                       cents), voicing, speed and rhythm, each phrase's timing, the worst places with what to change, \
-                      and a spectrogram overlay. With a second take of the reference, every target is the two-takes \
-                      floor.",
+                      and a spectrogram overlay. With other takes of the reference, every target is the widest any of \
+                      them is from it.",
             kind: OpKind::Job,
             scope: Scope::Render,
             // The overlay is a file; the document never changes.
@@ -118,13 +136,13 @@ impl Op for VoiceCompare {
 
     fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
         self.check_args()?;
-        let ours = ctx.fs_access(&self.ours, FsMode::Read)?;
-        let reference = ctx.fs_access(&self.reference, FsMode::Read)?;
-        if ours == reference {
+        let ours = readable(ctx, &self.ours)?;
+        let reference = readable(ctx, &self.reference)?;
+        if ours.is_some() && ours == reference || self.ours == self.reference {
             return Err(OpError::invalid("ours", "is the reference itself: score a take that was made, not copied"));
         }
         for take in &self.takes {
-            ctx.fs_access(take, FsMode::Read)?;
+            readable(ctx, take)?;
         }
         if let Some(out) = &self.out {
             ctx.fs_access(out, FsMode::Write)?;

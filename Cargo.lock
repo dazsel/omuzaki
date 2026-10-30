@@ -6669,6 +6669,7 @@ version = "0.0.0"
 dependencies = [
  "criterion",
  "hound",
+ "image",
  "omuzaki-ai",
  "omuzaki-ai-api",
  "omuzaki-ai-litert",

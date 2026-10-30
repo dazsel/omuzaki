@@ -587,13 +587,15 @@ fn mel_bank() -> Vec<Vec<(usize, f64)>> {
         .collect()
 }
 
-/// The mel cepstrum c1 to c13 of log-mel powers: an orthonormal DCT-II of the log amplitudes.
+/// The mel cepstrum c1 to c13 of log-mel powers, on SPTK's scale: `log|H(w)| = c0 + 2 sum c_k cos(k w)`, so
+/// `c_k = 1/N sum log|H| cos(k w_i)` over the bands (an orthonormal DCT would be sqrt(N/2) times larger, and the MCD
+/// with it, 4.5 times larger at 40 bands, than the values published for speech).
 fn dct(log_power: &[f64; MEL_BANDS]) -> [f64; CEPSTRA] {
     let n = MEL_BANDS as f64;
     let mut out = [0.0; CEPSTRA];
     for (k, c) in out.iter_mut().enumerate() {
         let q = (k + 1) as f64;
-        *c = (2.0 / n).sqrt()
+        *c = (1.0 / n)
             * log_power.iter().enumerate().map(|(i, v)| 0.5 * v * (PI * q * (i as f64 + 0.5) / n).cos()).sum::<f64>();
     }
     out

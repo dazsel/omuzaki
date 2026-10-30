@@ -22,6 +22,8 @@ sha2.workspace = true
 serde_json.workspace = true
 # The LibriVox reading and the golden clip are 16 kHz WAV in the speech data folder.
 hound.workspace = true
+# `tests/voice_parity.rs` writes the spectrogram overlay as a PNG, outside the repository.
+image.workspace = true
 omuzaki-ai = { path = "../omuzaki-ai" }
 omuzaki-ai-api = { path = "../omuzaki-ai-api" }
 omuzaki-ai-litert = { path = "../omuzaki-ai-litert" }
