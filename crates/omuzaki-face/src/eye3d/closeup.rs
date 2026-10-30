@@ -207,7 +207,7 @@ fn build(
 
 /// A studio: a dim warm room and one bright softbox toward `key`, equirectangular (three.js layout).
 #[allow(clippy::cast_precision_loss, reason = "pixel coordinates of a 512 by 256 map")]
-fn studio(key: Vec3) -> EnvironmentDesc {
+pub(crate) fn studio(key: Vec3) -> EnvironmentDesc {
     let (w, h) = (512u32, 256u32);
     let mut rgb = Vec::with_capacity((w * h * 3) as usize);
     let key = key.normalize();

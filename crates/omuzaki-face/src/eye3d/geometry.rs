@@ -284,7 +284,7 @@ impl Lids {
         let curve = -(x * x) / (2.0 * 85.0 * MM) - (y * y) / (2.0 * 90.0 * MM);
         let brow = 3.6 * MM * smoothstep(9.0 * MM, 20.0 * MM, y);
         // The nose's side and the temple turn away in soft bends, never a crease (a smooth `max(t, 0)`).
-        let bend = |t: f32| 0.5 * (t + (t * t + (3.0 * MM).powi(2)).sqrt());
+        let bend = |t: f32| f32::midpoint(t, (t * t + (3.0 * MM).powi(2)).sqrt());
         let nose = 0.55 * bend(x - 14.0 * MM) * smoothstep(-22.0 * MM, -4.0 * MM, y);
         let temple = -0.22 * bend(-x - 14.0 * MM);
         let cheek = 1.8 * MM * smoothstep(-9.0 * MM, -22.0 * MM, y);
