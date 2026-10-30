@@ -112,6 +112,7 @@ fn the_face_material_is_flat_lit_shadowless_outlined_and_carries_the_face_overla
     let skin = t.skin.expect("skin treatment");
     assert_eq!((skin.floor, skin.hue_keep), (0.66, 0.55));
     assert!(!m.receives_shadows && !m.double_sided);
+    assert!(m.hair_shadow.receives && !m.hair_shadow.casts, "the fringe's shadow falls on the face (#2528)");
     assert_eq!(m.outline.map(|o| o.width), Some(0.0014));
     let layers: Vec<FaceLayerId> = m.overlays.iter().map(|o| o.layer).collect();
     assert_eq!(layers, [FaceLayerId::Base, FaceLayerId::Overlay]);

@@ -23,6 +23,7 @@ pub mod vtube_studio;
 
 use omuzaki_anim_api::{DeviceProfile, TrackFrame};
 use omuzaki_core::time::Seconds;
+use omuzaki_track_api::body::BodyFrame;
 use omuzaki_track_api::camera::DeviceTime;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -138,6 +139,14 @@ pub trait Decoder: Send {
     /// # Errors
     /// [`DecodeError`] for a datagram that is not this protocol's.
     fn decode(&mut self, packet: &[u8], out: &mut TrackFrame) -> Result<Option<Stamp>, DecodeError>;
+
+    /// The body the sender has sent so far (PF-04, PF-07), read after [`decode`](Self::decode) completed a frame:
+    /// fills `out`'s bones, mask and confidences (its `seq` and `time` are the receiver's to set) and returns whether
+    /// the sender sends a body at all. Face-only protocols send none. Allocates nothing.
+    fn body(&self, out: &mut BodyFrame) -> bool {
+        let _ = out;
+        false
+    }
 }
 
 /// The frame every phone protocol starts from: `ARKit`-scaled values, tracking, nothing present yet.

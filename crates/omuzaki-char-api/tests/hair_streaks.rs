@@ -44,12 +44,19 @@ fn apply(shading: &HairShading, clumps: &mut [HairClump]) -> Result<(), HairShad
 }
 
 #[test]
-fn the_default_shading_changes_no_clump() {
+fn the_prototypes_darkening_changes_no_clump_and_the_default_lifts_the_under_layers() {
     let mut set = clumps("cap", 3);
+    set[1].shade = 0.7;
+    apply(&HairShading { inner_darkening: 1.0, ..HairShading::default() }, &mut set).unwrap();
+    assert_eq!(set[0].shade, 1.0);
+    assert_eq!(set[1].shade.to_bits(), 0.7_f32.to_bits(), "a darkening of 1 keeps the shade bit for bit");
+    assert!(set.iter().all(|c| c.tint.is_none()));
+    // The anime default (0.3) keeps 30 % of an under-layer's darkening: 0.7 becomes 1 - 0.3 * 0.3.
+    let mut set = clumps("cap", 2);
     set[1].shade = 0.7;
     apply(&HairShading::default(), &mut set).unwrap();
     assert_eq!(set[0].shade, 1.0);
-    assert_eq!(set[1].shade.to_bits(), 0.7_f32.to_bits(), "the default keeps the shade bit for bit");
+    assert!((set[1].shade - 0.91).abs() < 1e-6, "{}", set[1].shade);
     assert!(set.iter().all(|c| c.tint.is_none()));
 }
 

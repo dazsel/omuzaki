@@ -3697,6 +3697,9 @@ ui-setting-connectors-entries = Each connector's settings: enabled, endpoint, pl
 ui-setting-effects-chat-emotes = Show chat emotes' pictures in emote effects (fetched from the chat platform's servers)
 
 # The line under a setting in the Settings window, saying what it does.
+ui-setting-input-body = What the camera tracks beside the face: the arms, the hands and fingers, and whether on the heavier model
+
+# The line under a setting in the Settings window, saying what it does.
 ui-setting-input-camera = The camera the webcam source reads
 
 # The line under a setting in the Settings window, saying what it does.

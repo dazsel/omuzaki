@@ -37,20 +37,20 @@ custom character that holds up at macro, live in real time, through operations a
 | Feature | Status | Parity (who has it) | Supremacy |
 |---|---|---|---|
 | Physically based GGX specular, energy-conserving | ◐ per program (`eye`, `skin`) | everyone | one shared BSDF library every program calls; multiple-scattering compensation (Kulla-Conty) |
-| Layered specular: dual lobe for skin, clear coat for the tear film | ○ | UE Substrate, Unity HDRP | a layered material model (slabs) shared by skin, eye, lips and nails |
+| Layered specular: dual lobe for skin, clear coat for the tear film | ◐ the eye's tear film is a clear coat over the white's own sheen; skin is single-lobe | UE Substrate, Unity HDRP | a layered material model (slabs) shared by skin, eye, lips and nails |
 | Subsurface scattering, screen-space separable (Jimenez) or Burley | ◐ pre-integrated on d'Eon's six-Gaussian skin profile round the mesh's curvature, red-softened normals (`skin` program) | UE subsurface profile, Unity diffusion profiles | Burley diffusion with per-region profiles (lips, ears, lids), plus a validated match to random-walk ground truth |
 | Transmission through thin parts (ears, nostrils, lids) with thickness maps | ○ | UE, Unity | thickness baked from the mesh automatically; backlit ears without hand maps |
 | Refraction through the cornea, iris parallax | ✓ ray-refracted in `eye` | MetaHuman, Unity eye | true per-pixel refraction with a varying cornea shape (keratoconus to normal) |
 | Caustics on the iris | ◐ a far-side brightening term | Unity eye shader | a caustic computed from the cornea's lens for each light |
 | Shadow maps fitted to the casters | ✓ | everyone | |
 | Soft shadows with contact hardening (PCSS) | ○ | UE, Unity | |
-| Contact shadows (screen-space rays) for lids, lashes and nostrils | ✓ a 16-step depth march toward the shadow-casting light (`Scene::occlusion`) | UE, Unity | |
+| Contact shadows (screen-space rays) for lids, lashes and nostrils | ✓ a 16-step depth march toward the shadow-casting light (`Scene::occlusion`); a blocker must rise above the pixel's tangent plane, so curved and slanted surfaces never shadow themselves (`omuzaki-render/tests/occlusion.rs`) | UE, Unity | |
 | Ambient occlusion: GTAO or SSAO, with bent normals | ◐ horizon-based SSAO from the depth (`Scene::occlusion`), no bent normals yet | UE, Unity | GTAO with bent normals for the specular occlusion of skin and eyes |
 | Specular occlusion | ○ | UE, Unity | |
 | Image-based lighting: HDRI, SH irradiance, prefiltered specular | ✓ | everyone | |
 | Area lights (rect, disc) with LTC | ○ | UE, Unity | a softbox as a real area light, so catchlights and highlights come from geometry |
 | Light linking and per-light catchlight control | ○ | UE (lighting channels) | catchlight placement as an operation |
-| Order-independent or sorted transparency for lashes, hair cards and the tear film | ◐ one blended pass | UE, Unity | weighted blended OIT, or per-strand sorting for hair |
+| Order-independent or sorted transparency for lashes, hair cards and the tear film | ✓ sorted blending, plus weighted blended OIT per material (`Material::order_independent`) | UE, Unity | weighted blended OIT, or per-strand sorting for hair |
 | Hair BSDF: Marschner or Chiang (R, TT, TRT), with multiple scattering | ◐ the `hair` program is stylised | UE, Unity, path tracers | a dual-scattering approximation in real time |
 | Strand rendering: line or curve rasteriser, with LOD to cards | ○ (ribbons only) | UE grooms, Unity hair | |
 | TAA or another temporal resolve (thin lashes and hair without shimmer) | ○ (supersampling only) | everyone | |
@@ -97,7 +97,7 @@ Tracked in #2508.
 | Sclera: vessel network, branching vessels, pinker corners | ✓ | random-eyes, MetaHuman | |
 | Sclera SSS and a yellowing or redness tint (fatigue, crying) | ◐ wrap only | Unity | |
 | Limbus darkening and the clear cornea edge | ✓ | MetaHuman | |
-| Tear film: a clear coat with its own normal, the meniscus along the lids | ◐ the meniscus bead | Unity tear layer | |
+| Tear film: a clear coat with its own normal, the meniscus along the lids | ✓ a sharp, uneven clear coat (`tear-coat`, `tear-roughness`, `tear-wobble`) and the meniscus bead | Unity tear layer | |
 | Occlusion where the lids meet the eye | ◐ a vertex-alpha shell plus SSAO and contact shadows | MetaHuman, Unity | a shell plus contact shadows plus GTAO |
 | Caruncle and plica semilunaris | ◐ the caruncle | MetaHuman | |
 | Lids with thickness, wet margins, crease and pocket | ✓ | MetaHuman | |
@@ -107,7 +107,7 @@ Tracked in #2508.
 | Catchlights from area lights | ◐ from the environment | everyone | |
 | Saccades, blinks, micro-movements, vergence | ○ in 3D | random-eyes, MetaHuman | |
 | The anime eye as a style on the same eyeball and lids | ○ | (no one does both) | one eye system from photoreal to anime, morphing between them |
-| Every `EyeDesign` field as an operation | ○ | (no one) | an agent makes any eye through MCP |
+| Every `EyeDesign` field as an operation | ✓ `face/eye3d/...` through `face.set_style`, listed with ranges by `face.describe_style`; `render.eye` shows it | (no one) | an agent makes any eye through MCP |
 
 Tracked in #2500, #2501, #2502 and #2505.
 
@@ -165,8 +165,8 @@ Tracked in #2510.
 | Feature | Status | Parity | Supremacy |
 |---|---|---|---|
 | Every part designable in the panels | ◐ | MetaHuman Creator, VRoid | |
-| Every part designable through MCP operations alone | ◐ (49 character and 16 face operations; not the 3D eye) | (no one) | an agent builds a photoreal human end to end |
-| A macro preview of any part (eye, lips, skin) | ◐ the eye lab (`eye_macro`) | MetaHuman | a turntable at three framings, scored against a reference automatically |
+| Every part designable through MCP operations alone | ◐ (49 character and 16 face operations, and the 3D eye through `face.set_style`; not yet the 3D head, skin or mouth) | (no one) | an agent builds a photoreal human end to end |
+| A macro preview of any part (eye, lips, skin) | ◐ the eye: `render.eye`, macro and front views, the same builder as the lab (`eye_macro`) | MetaHuman | a turntable at three framings, scored against a reference automatically |
 | A reference loop with a parity score (no copied pixels) | ◐ `tools/reference-loop` | (no one) | |
 
 Tracked in #2505 and #2509.

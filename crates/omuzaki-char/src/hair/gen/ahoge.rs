@@ -68,6 +68,11 @@ pub fn clump_count(g: &AhogeGen) -> usize {
     usize::from(g.locks.clamp(1, 3))
 }
 
+/// Where the locks spring from, bind space (on the authored side of a mirrored group).
+pub fn root(g: &AhogeGen, head: &dyn HeadSurface) -> DVec3 {
+    Root::new(g.root, DEFAULT_ROOT, head).point
+}
+
 /// Compiles the group: [`clump_count`] locks, the first the longest.
 #[allow(clippy::cast_precision_loss)] // at most three locks
 pub fn compile(g: &AhogeGen, ctx: &mut HairGenCtx<'_>) -> CompiledGroup {

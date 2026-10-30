@@ -373,6 +373,15 @@ impl InputHost for IdleInput {
     ) -> Result<omuzaki_track_api::pose_out::PoseOutStatus, InputError> {
         Ok(omuzaki_track_api::pose_out::PoseOutStatus::default())
     }
+
+    // Body tracking that "starts" without tracking: the `input.track_body` examples dry-run against it.
+    fn track_body(
+        &self,
+        _config: omuzaki_track_api::body::BodyConfig,
+        _mode: Mode,
+    ) -> Result<omuzaki_track_api::body::BodyConfig, InputError> {
+        Ok(omuzaki_track_api::body::BodyConfig::OFF)
+    }
 }
 
 impl PerformHost for IdleHost {

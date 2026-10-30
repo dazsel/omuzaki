@@ -5,8 +5,9 @@
 //! `[-1, -0.5, 0, 0.5, 1]` for 5; a single column is `a = 0` alone). A column at `a != 0` is the guide's own point pulled
 //! `|a| / 2` of the way toward the neighbouring guide on its side (the missing neighbour mirrored at the ends of the
 //! curtain), so the outer columns of neighbours meet halfway. Columns end at `1 - 0.15 |a|^1.5` of the length, so the
-//! bottom splits into pointed clumps, and every column bulges outward by `0.007 (1 - a^2) ss(t, 0.04, 0.25)` (zero only
-//! at the outer edge).
+//! bottom splits into pointed clumps, and every column bulges outward by `BULGE (1 - a^2) ss(t, 0.04, 0.25)` (zero only
+//! at the outer edge). The prototype's bulge was 7 mm, which ribbed the curtain into a row of ridges next to the anime
+//! samples' smooth sheets; it is 1.5 mm.
 //!
 //! **Separate vertices per strip.** Neighbouring strips share no vertices, so each clump shades on its own; `hair-info`
 //! carries a seed per strip. Triangles join the columns of one guide only.
@@ -30,8 +31,8 @@ use omuzaki_core::mesh::MeshData;
 use crate::hair::strands::{self, StrandMap};
 use crate::hair::tube::{along, smoothstep};
 
-/// How far the columns bulge outward, metres.
-const BULGE: f32 = 0.007;
+/// How far the columns bulge outward, metres: enough to round each clump, not to rib the sheet.
+const BULGE: f32 = 0.0015;
 /// The bulge grows in over this span of the strip's length ...
 const BULGE_FROM: f32 = 0.04;
 /// ... to here.

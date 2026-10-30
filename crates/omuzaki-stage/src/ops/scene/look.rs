@@ -3,7 +3,7 @@
 
 use omuzaki_ops_api::{Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
 use omuzaki_render_api::{BackdropFit, Colour, Tonemap};
-use omuzaki_stage_api::{Backdrop, Bars, DepthOfFieldDef, GradeDef, GroundKind, SceneId};
+use omuzaki_stage_api::{Backdrop, Bars, DepthOfFieldDef, GradeDef, GroundKind, OcclusionDef, SceneId};
 use omuzaki_store_api::{ContentHash, Store};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -245,7 +245,9 @@ register_op!(SetGround);
         {"bloom": false},
         {"grain": 0.15, "grade": {"saturation": 1.1, "contrast": 1.05}},
         {"depth_of_field": {"focus": "subject", "range": 0.3, "max_blur": 0.01}},
-        {"scene": "night_stream", "tonemap": "none", "grain": "off"}
+        {"scene": "night_stream", "tonemap": "none", "grain": "off"},
+        {"occlusion": {"radius": 0.005, "strength": 0.6, "contact": 0.015}},
+        {"occlusion": "off"}
     ],
     "x-omuzaki-fixture" = "scenes"
 ))]
@@ -268,14 +270,19 @@ pub struct SetPost {
     /// A colour grade (saturation and contrast, 1 leaves them alone), or `off`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grade: Option<OrOff<GradeDef>>,
+    /// Ambient occlusion and contact shadows (a fold's radius, strength and how far a contact shadow reaches, in
+    /// metres; a field left out takes its default: 5 mm, 0.6 and 1.5 cm), or `off`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occlusion: Option<OrOff<OcclusionDef>>,
 }
 
 impl Op for SetPost {
     fn meta() -> OpMeta {
         OpMeta {
             name: "stage.set_post",
-            summary: "Change a scene's post look: bloom on or off, tone mapping, depth of field, film grain and colour \
-                      grade (`off` removes an effect). Only the fields given change.",
+            summary: "Change a scene's post look: bloom on or off, tone mapping, depth of field, film grain, colour \
+                      grade and ambient occlusion with contact shadows (`off` removes an effect). Only the fields \
+                      given change.",
             kind: OpKind::Edit,
             scope: Scope::EditScene,
             undo: Undo::Auto,
@@ -299,6 +306,9 @@ impl Op for SetPost {
         }
         if let Some(grade) = &self.grade {
             post.grade = grade.clone().into_option();
+        }
+        if let Some(occlusion) = &self.occlusion {
+            post.occlusion = occlusion.clone().into_option();
         }
         let id = edit.id.clone();
         let plan = edit.finish(ctx, serde_json::Value::Null)?;

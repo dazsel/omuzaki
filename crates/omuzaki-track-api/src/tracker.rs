@@ -2,12 +2,14 @@
 //!
 //! [`TrackFrame`]: omuzaki_anim_api::TrackFrame
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use omuzaki_anim_api::FrameSource;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::body::{BodyBoard, BodyConfig, BodyStatus};
 use crate::camera::{CameraFormatRequest, CameraId, CameraInfo};
 use crate::doctor::Diagnosis;
 use crate::error::TrackError;
@@ -168,6 +170,24 @@ pub trait Tracker: Send {
     /// Asks the doctor to forget what it measured and measure again from now (the "recheck" after a fix). A no-op for a
     /// tracker without a doctor.
     fn recheck(&self) {}
+
+    /// Tracks the body (PF-06 hands, PF-07 arms) beside the face from the same camera, publishing solved frames to
+    /// `board`, or stops with a config that tracks nothing ([`BodyConfig::OFF`]). Returns the config it had. It runs
+    /// whenever a session runs, so it can be switched on before or during one. Cold: it may start a thread, and the
+    /// models load on that thread ([`BodyState::Loading`](crate::body::BodyState::Loading)), so this returns at once.
+    ///
+    /// # Errors
+    /// [`TrackError::Unsupported`] for a tracker without body tracking (the default), [`TrackError::Backend`] when its
+    /// thread cannot start.
+    fn track_body(&mut self, config: BodyConfig, board: &Arc<BodyBoard>) -> Result<BodyConfig, TrackError> {
+        let _ = (config, board);
+        Err(TrackError::Unsupported("body tracking".to_owned()))
+    }
+
+    /// How body tracking is doing; [`BodyStatus::default`] (off) for a tracker without it. Cheap.
+    fn body_status(&self) -> BodyStatus {
+        BodyStatus::default()
+    }
 }
 
 #[cfg(test)]

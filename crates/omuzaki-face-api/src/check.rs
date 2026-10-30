@@ -120,6 +120,21 @@ impl Check {
         }
     }
 
+    /// A single-precision `value` must be finite and within `lo..=hi`, compared in single precision so a value written
+    /// as the end of the range (`0.2`) is inside it. The range is listed with the ends as given.
+    pub fn range_f32(&mut self, name: &str, value: f32, lo: f64, hi: f64) {
+        let path = self.at(name);
+        if let Some(ranges) = &mut self.recorded {
+            ranges.push(FieldRange { path, lo, hi, note: None });
+            return;
+        }
+        #[allow(clippy::cast_possible_truncation, reason = "the ends are compared at the field's own precision")]
+        let (lo32, hi32) = (lo as f32, hi as f32);
+        if !(value.is_finite() && (lo32..=hi32).contains(&value)) {
+            self.fail(name, format!("{value} is out of range: use a number from {lo} to {hi}"));
+        }
+    }
+
     /// `value` must be finite and greater than zero.
     pub fn positive(&mut self, name: &str, value: f64) {
         if !(value.is_finite() && value > 0.0) {

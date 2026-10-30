@@ -464,6 +464,18 @@ impl Tracker for SharedTracker {
     fn recheck(&self) {
         self.lock().recheck();
     }
+
+    fn track_body(
+        &mut self,
+        config: omuzaki_track_api::body::BodyConfig,
+        board: &Arc<omuzaki_track_api::body::BodyBoard>,
+    ) -> Result<omuzaki_track_api::body::BodyConfig, omuzaki_track_api::error::TrackError> {
+        self.lock().track_body(config, board)
+    }
+
+    fn body_status(&self) -> omuzaki_track_api::body::BodyStatus {
+        self.lock().body_status()
+    }
 }
 
 /// The render side of the live slice.

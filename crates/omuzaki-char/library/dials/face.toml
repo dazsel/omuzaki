@@ -1,0 +1,304 @@
+# Face dials (#2612): regional shape controls on the head, each a bump round a landmark of the face read from the face
+# layout, so it finds the cheek or the jaw on any profile and template. Amounts are fractions of the distance from the
+# head's centre; `reach` is degrees round the head. Sided dials are written for the character's left (+x).
+#
+# Origin: design targets from facial anatomy (the fat pads, the zygomatic arch, the mandible's angle, the brow ridge)
+# and the ranges sliders in character creators expose; no likeness is traced. The age curves follow the well-known
+# course of facial ageing: a child's full cheeks and small jaw and nose, the temples and cheeks hollowing and the jowls
+# dropping after middle age, the nose and ears lengthening slowly through life.
+
+[[dial]]
+id = "cheek_fullness"
+name = "Cheek fullness"
+summary = "+1 full, round cheeks (the malar fat pad); -1 lean cheeks"
+group = "face"
+sided = true
+prior = 0.3
+age = [[3.0, 0.9], [10.0, 0.5], [20.0, 0.1], [30.0, 0.0], [60.0, -0.3], [85.0, -0.55]]
+[[dial.effects]]
+frame = "head"
+landmark = "cheek_left"
+reach = 28.0
+push = "radial"
+amount = 0.06
+
+[[dial]]
+id = "cheekbone_prominence"
+name = "Cheekbones"
+summary = "+1 high, prominent cheekbones; -1 flat"
+group = "face"
+sided = true
+prior = 0.3
+age = [[3.0, -0.6], [16.0, -0.1], [30.0, 0.0], [70.0, 0.35]]
+[[dial.effects]]
+frame = "head"
+landmark = "cheekbone_left"
+reach = 18.0
+amount = 0.045
+
+[[dial]]
+id = "cheek_hollow"
+name = "Cheek hollows"
+summary = "+1 hollow under the cheekbones; -1 filled"
+group = "face"
+sided = true
+prior = 0.25
+age = [[30.0, 0.0], [55.0, 0.25], [85.0, 0.7]]
+[[dial.effects]]
+frame = "head"
+landmark = "cheekbone_left"
+nudge = [0.0, -0.14, 0.0]
+reach = 15.0
+amount = -0.05
+
+[[dial]]
+id = "jaw_width"
+name = "Jaw width"
+summary = "+1 a wide, square jaw; -1 a narrow, tapered one"
+group = "face"
+sided = true
+prior = 0.3
+age = [[3.0, -0.5], [14.0, -0.2], [25.0, 0.0]]
+[[dial.effects]]
+frame = "head"
+landmark = "jaw_left"
+reach = 26.0
+push = "out"
+amount = 0.08
+
+[[dial]]
+id = "jaw_definition"
+name = "Jaw angle"
+summary = "+1 a sharp, defined angle of the jaw; -1 soft"
+group = "face"
+sided = true
+prior = 0.3
+age = [[3.0, -0.6], [18.0, 0.0]]
+[[dial.effects]]
+frame = "head"
+landmark = "jaw_left"
+nudge = [0.05, -0.08, -0.12]
+reach = 14.0
+amount = 0.04
+
+[[dial]]
+id = "jowls"
+name = "Jowls"
+summary = "+1 jowls that sag past the jaw line; -1 a taut jaw line"
+group = "face"
+sided = true
+prior = 0.2
+age = [[40.0, 0.0], [60.0, 0.35], [85.0, 0.8]]
+[[dial.effects]]
+frame = "head"
+landmark = "jaw_left"
+nudge = [-0.22, -0.02, 0.24]
+reach = 16.0
+push = "up"
+amount = -0.05
+[[dial.effects]]
+frame = "head"
+landmark = "jaw_left"
+nudge = [-0.22, -0.02, 0.24]
+reach = 14.0
+amount = 0.03
+
+[[dial]]
+id = "chin_length"
+name = "Chin length"
+summary = "+1 a longer chin; -1 a short one"
+group = "face"
+prior = 0.3
+age = [[3.0, -0.6], [12.0, -0.3], [20.0, 0.0]]
+[[dial.effects]]
+frame = "head"
+landmark = "chin"
+reach = 24.0
+push = "up"
+amount = -0.07
+
+[[dial]]
+id = "chin_projection"
+name = "Chin projection"
+summary = "+1 a chin that juts forward; -1 a receding chin"
+group = "face"
+prior = 0.3
+[[dial.effects]]
+frame = "head"
+landmark = "chin"
+reach = 20.0
+push = "forward"
+amount = 0.06
+
+[[dial]]
+id = "chin_width"
+name = "Chin width"
+summary = "+1 a broad chin; -1 a pointed one"
+group = "face"
+sided = true
+prior = 0.3
+[[dial.effects]]
+frame = "head"
+landmark = "chin"
+nudge = [0.22, 0.02, 0.0]
+reach = 14.0
+push = "out"
+amount = 0.05
+
+[[dial]]
+id = "brow_ridge"
+name = "Brow ridge"
+summary = "+1 a heavy brow ridge; -1 a smooth brow"
+group = "face"
+sided = true
+prior = 0.3
+age = [[3.0, -0.6], [18.0, 0.0], [60.0, 0.2]]
+[[dial.effects]]
+frame = "head"
+landmark = "brow_left"
+nudge = [0.0, 0.03, 0.0]
+reach = 18.0
+push = "forward"
+amount = 0.035
+
+[[dial]]
+id = "forehead_slope"
+name = "Forehead"
+summary = "+1 an upright, rounded forehead; -1 one that slopes back"
+group = "face"
+prior = 0.3
+age = [[3.0, 0.6], [14.0, 0.2], [25.0, 0.0]]
+[[dial.effects]]
+frame = "head"
+landmark = "forehead"
+reach = 32.0
+push = "forward"
+amount = 0.05
+
+[[dial]]
+id = "temple_hollow"
+name = "Temples"
+summary = "+1 hollow temples; -1 full"
+group = "face"
+sided = true
+prior = 0.25
+age = [[40.0, 0.0], [70.0, 0.5], [90.0, 0.8]]
+[[dial.effects]]
+frame = "head"
+landmark = "temple_left"
+reach = 18.0
+amount = -0.04
+
+[[dial]]
+id = "nose_projection"
+name = "Nose projection"
+summary = "+1 a nose that stands out from the face; -1 a flat nose"
+group = "face"
+prior = 0.3
+age = [[3.0, -0.6], [16.0, -0.1], [25.0, 0.0], [80.0, 0.25]]
+[[dial.effects]]
+frame = "head"
+landmark = "nose"
+reach = 10.0
+push = "forward"
+amount = 0.05
+
+[[dial]]
+id = "nose_bridge"
+name = "Nose bridge"
+summary = "+1 a high bridge between the eyes; -1 a low one"
+group = "face"
+prior = 0.3
+age = [[3.0, -0.6], [18.0, 0.0]]
+[[dial.effects]]
+frame = "head"
+landmark = "nose_bridge"
+reach = 9.0
+push = "forward"
+amount = 0.035
+
+[[dial]]
+id = "nose_width"
+name = "Nose width"
+summary = "+1 wide nostrils; -1 a narrow nose"
+group = "face"
+sided = true
+prior = 0.3
+[[dial.effects]]
+frame = "head"
+landmark = "nose"
+nudge = [0.07, 0.0, 0.0]
+reach = 8.0
+push = "out"
+amount = 0.03
+
+[[dial]]
+id = "nose_length"
+name = "Nose length"
+summary = "+1 a long nose whose tip sits lower; -1 a short, upturned one"
+group = "face"
+prior = 0.3
+age = [[3.0, -0.5], [20.0, 0.0], [80.0, 0.5]]
+[[dial.effects]]
+frame = "head"
+landmark = "nose"
+reach = 9.0
+push = "up"
+amount = -0.04
+
+[[dial]]
+id = "mouth_projection"
+name = "Mouth projection"
+summary = "+1 a mouth that stands forward; -1 a flat mouth"
+group = "face"
+prior = 0.3
+age = [[20.0, 0.0], [80.0, -0.4]]
+[[dial.effects]]
+frame = "head"
+landmark = "mouth"
+reach = 13.0
+push = "forward"
+amount = 0.035
+
+[[dial]]
+id = "lip_fullness"
+name = "Lip fullness"
+summary = "+1 full lips; -1 thin lips"
+group = "face"
+prior = 0.3
+age = [[18.0, 0.2], [30.0, 0.0], [80.0, -0.6]]
+[[dial.effects]]
+frame = "head"
+landmark = "mouth"
+reach = 6.5
+push = "forward"
+amount = 0.03
+
+[[dial]]
+id = "mouth_corners"
+name = "Mouth corners"
+summary = "+1 corners that turn up; -1 corners that turn down"
+group = "face"
+sided = true
+prior = 0.2
+age = [[30.0, 0.0], [80.0, -0.5]]
+[[dial.effects]]
+frame = "head"
+landmark = "mouth_left"
+reach = 6.0
+push = "up"
+amount = 0.025
+
+[[dial]]
+id = "eye_socket_depth"
+name = "Eye sockets"
+summary = "+1 deep-set eyes; -1 shallow sockets"
+group = "face"
+sided = true
+prior = 0.25
+age = [[3.0, -0.5], [20.0, 0.0], [80.0, 0.5]]
+[[dial.effects]]
+frame = "head"
+landmark = "eye_left"
+reach = 12.0
+amount = -0.03

@@ -39,7 +39,13 @@ static GREEDY: ProgramSpec = ProgramSpec {
         ParamSpec::colour("n", 0),
         ParamSpec::colour("o", 0),
         ParamSpec::colour("p", 0),
+        ParamSpec::colour("r", 0),
+        ParamSpec::colour("s", 0),
+        ParamSpec::colour("t", 0),
+        ParamSpec::colour("u", 0),
+        ParamSpec::colour("v", 0),
         ParamSpec::float("q", 0.0, 0.0, 1.0),
+        ParamSpec::float("w", 0.0, 0.0, 1.0),
     ],
     attributes: &[],
     toon: |_| Toon::default(),
@@ -82,7 +88,7 @@ fn a_duplicate_name_is_a_backend_error_naming_the_program() {
 
 #[test]
 fn declarations_that_cannot_work_are_refused_at_registration() {
-    for (spec, needle) in [(&GREEDY, "49 floats"), (&WIDE, "5 components")] {
+    for (spec, needle) in [(&GREEDY, "65 floats"), (&WIDE, "5 components")] {
         let Err(RenderError::Backend(message)) = Registry::build(vec![spec]) else { panic!("{} must fail", spec.name) };
         assert!(message.contains(needle), "{message}");
     }

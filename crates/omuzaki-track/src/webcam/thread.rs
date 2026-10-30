@@ -16,6 +16,7 @@ use omuzaki_track_api::error::TrackError;
 use omuzaki_track_api::mailbox::MailboxWriter;
 use omuzaki_track_api::tracker::LatencyStats;
 
+use super::body::BodyTap;
 use super::convert::{convert_into, rgb_len};
 use super::preview::{PreviewFrame, PreviewTap};
 use super::{Failures, FrameTracker};
@@ -258,6 +259,8 @@ pub(super) struct Run {
     pub(super) grace: Duration,
     pub(super) stop: Arc<StopSignal>,
     pub(super) preview: Arc<PreviewTap>,
+    /// Where the body thread takes its frames from (PF-06, PF-07).
+    pub(super) body: Arc<BodyTap>,
     pub(super) stats: Arc<Stats>,
     pub(super) error: Arc<Mutex<Option<TrackError>>>,
     /// Where the tracking doctor's findings go.
@@ -535,6 +538,7 @@ impl Run {
             grace,
             stop,
             preview,
+            body,
             stats,
             error,
             board,
@@ -638,6 +642,7 @@ impl Run {
             let frame =
                 RgbFrame { data: &rgb, width: frame.width, height: frame.height, stride: 3 * frame.width as usize };
             preview.offer(&mut scratch, &frame, seq, sample.as_ref().map(|s| &s.landmarks));
+            body.offer(&frame, time);
             checkup.frame(&frame, sample.as_ref().map(|s| &s.landmarks), time, &stats);
         }
         hand_over(worker, &stop, grace, &handoff, out.seq, stream);

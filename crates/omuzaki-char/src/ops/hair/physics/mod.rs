@@ -6,12 +6,13 @@
 //! | `hair.physics.set` | one field of the part's [`HairPhysics`]: `damping`, `gravity_scale`, `wind_scale`, `iterations`, `collider_margin`, `fixed_hz`, `colliders` |
 //! | `hair.physics.preset` | a named feel ([`Preset`]): the physics and every simulated group's stiffness at once |
 //! | `hair.group.set_dynamics` | one group's `simulate`, `follow` and `stiffness` |
-//! | `hair.settle` | (query) builds the character, lets the hair hang, turns it and reports the sag, the swing and the settle time |
+//! | `hair.settle` | (query) builds the character, lets the hair hang, turns it and reports the sag, the swing, the settle time and whether the hanging hair enters the body or the head |
 //!
 //! The edits write the part's `physics` or `groups` back as one change (`part::changes`), so undo restores it exactly.
 
 use omuzaki_char_api::{
-    CharId, Falloff, Follow, GroupId, HairParams, HairPhysics, JointRef, PartId, PoseSource, StepCtx,
+    Assembler, BuildOptions, CharId, CharacterDef, Falloff, Follow, GroupId, HairParams, HairPhysics, HeadFact,
+    JointRef, PartId, PartOutput, PoseSource, StepCtx, build_part, plan as build_plan,
 };
 use omuzaki_core::glam::{Mat4, Vec3};
 use omuzaki_core::time::Seconds;
@@ -22,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::part::{self, HairPart};
+use crate::hair::clearance::{Clearance, Clipping, TOLERANCE};
 use crate::hair::physics::presets::Preset;
 use crate::ops::character::access as character;
 use crate::ops::character::access::{list, not_found};
@@ -257,8 +259,10 @@ const MAX_SECONDS: f64 = 20.0;
 /// Builds the character, lets a hair part hang at rest, then turns the whole character `turn_deg` about the vertical
 /// over 0.2 s and watches for `seconds`. Reports how far the hanging hair sags from its styled shape (`rest`), how far
 /// it swings off its turned rest after the turn (`swing_mm`), and how long it takes to settle within 2 mm of it
-/// (`settle_s`, from the end of the turn; null when it hasn't settled by the end). Read-only: use it to compare
-/// presets or to check a tuning.
+/// (`settle_s`, from the end of the turn; null when it hasn't settled by the end). `clipping` says whether the hair
+/// hanging at rest, its still locks with it, goes into the body or the head (`clear`, the deepest point of each in
+/// millimetres, and how many points pass the 2 mm tolerance, #2485). Read-only: use it to compare presets or to check
+/// a tuning.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(extend(
@@ -292,8 +296,8 @@ impl Op for HairSettle {
     fn meta() -> OpMeta {
         OpMeta {
             name: "hair.settle",
-            summary: "Run a hair part's simulation: how far it sags at rest, how far a turn swings it and how long it \
-                      takes to settle",
+            summary: "Run a hair part's simulation: how far it sags at rest, whether it then enters the body or the \
+                      head, how far a turn swings it and how long it takes to settle",
             kind: OpKind::Query,
             scope: Scope::Read,
             undo: Undo::None,
@@ -310,30 +314,87 @@ impl Op for HairSettle {
                 .hint(format!("use more than 0 and at most {MAX_SECONDS} seconds")));
         }
         let found = part::load(ctx, &self.character, &self.part)?;
-        let mut built = crate::ops::weights::build_character(&self.character, &found.def)?;
-        let Some(slot) = built.runtimes.iter_mut().find(|s| s.part == self.part) else {
+        let mut hung = hang(&self.character, &found.def, &self.part)?;
+        let still: Vec<Vec3> =
+            hung.output.meshes.iter().filter(|m| !m.dynamic).flat_map(|m| m.geometry.positions.iter().copied()).collect();
+        let Some(runtime) = hung.output.runtime.as_mut() else {
             return Ok(Plan::answer(json!({
                 "character": self.character,
                 "part": self.part,
                 "simulated": false,
+                "clipping": clipping_json(&hung.clearance().measure(&still)),
                 "note": "no group of this hair is simulated; turn one on with hair.group.set_dynamics",
             })));
         };
         #[allow(clippy::cast_possible_truncation)] // checked ranges, well inside f32
         let (turn, seconds) = ((self.turn_deg as f32).to_radians(), self.seconds as f32);
-        let report = settle(slot.runtime.as_mut(), turn, seconds)?;
+        let report = settle(runtime.as_mut(), turn, seconds)?;
+        let particles = runtime.cost().particles;
+        let mut points = still;
+        points.extend(&report.hanging);
+        let clipping = hung.clearance().measure(&points);
         Ok(Plan::answer(json!({
             "character": self.character,
             "part": self.part,
             "simulated": true,
-            "particles": slot.runtime.cost().particles,
+            "particles": particles,
             "rest": { "max_mm": mm(report.sag_max), "mean_mm": mm(report.sag_mean) },
+            "clipping": clipping_json(&clipping),
             "turn_deg": self.turn_deg,
             "swing_mm": mm(report.swing),
             "settle_s": report.settle.map(|s| (f64::from(s) * 1000.0).round() / 1000.0),
             "seconds": self.seconds,
         })))
     }
+}
+
+/// The clipping report: how deep the hair goes into the body and the head, and how many of its points pass the
+/// tolerance.
+fn clipping_json(c: &Clipping) -> serde_json::Value {
+    json!({
+        "clear": c.clear(),
+        "body_mm": mm(c.body),
+        "head_mm": mm(c.head),
+        "points": c.points,
+        "of": c.of,
+        "tolerance_mm": mm(TOLERANCE),
+    })
+}
+
+/// A hair part built on its character, with the body fit and head the build published before it.
+struct Hung {
+    output: PartOutput,
+    head: std::sync::Arc<dyn omuzaki_char_api::HeadSurface>,
+    fit: Option<std::sync::Arc<dyn omuzaki_char_api::BodyFit>>,
+}
+
+impl Hung {
+    fn clearance(&self) -> Clearance<'_> {
+        Clearance::new(self.head.as_ref(), self.fit.as_deref())
+    }
+}
+
+/// Builds `def`'s parts in order up to the hair part `part`: its output, and the head and body fit published before it.
+fn hang(id: &CharId, def: &CharacterDef, part: &PartId) -> Result<Hung, OpError> {
+    let failed = |e: &dyn std::fmt::Display| {
+        OpError::invalid("character", format!("character `{id}` doesn't build: {e}"))
+            .hint("fix the part the message names, then try again")
+    };
+    let (options, services) = (BuildOptions::default(), crate::ops::weights::geometry_services());
+    let mut assembler = Assembler::new(id, def, &options);
+    for p in build_plan(def).map_err(|e| failed(&e))? {
+        let out = build_part(def, &p, &options, &services, assembler.published()).map_err(|e| failed(&e))?;
+        if p == *part {
+            let published = assembler.published();
+            let head = published.get::<HeadFact>().clone().ok_or_else(|| {
+                OpError::invalid("part", format!("`{part}` has no head to hang from"))
+                    .hint("give the character a head part")
+            })?;
+            return Ok(Hung { output: out, head, fit: published.outer_fit().cloned() });
+        }
+        assembler.add(&p, out).map_err(|e| failed(&e))?;
+    }
+    Err(not_found("part", format!("`{part}` isn't one of the parts `{id}` builds")).hint("part.list names them"))
 }
 
 register_op!(HairSettle);
@@ -352,6 +413,8 @@ struct Settled {
     swing: f32,
     /// Seconds after the turn until the hair stays within [`SETTLED`]; `None` if it never does.
     settle: Option<f32>,
+    /// The simulated mesh's points as it hangs at rest, before the turn.
+    hanging: Vec<Vec3>,
 }
 
 /// Every joint turned by `yaw` about the vertical through the origin: the character turning on the spot.
@@ -415,7 +478,7 @@ fn settle(rt: &mut dyn omuzaki_char_api::PartRuntime, turn: f32, seconds: f32) -
         Some(k) => Some(k as f32 * FRAME),
         None => Some(0.0),
     };
-    Ok(Settled { sag_max, sag_mean, swing, settle })
+    Ok(Settled { sag_max, sag_mean, swing, settle, hanging })
 }
 
 /// Whole frames in `seconds`.

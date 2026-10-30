@@ -10,7 +10,7 @@
 use omuzaki_core::glam::UVec2;
 
 use super::supersample::Accumulate;
-use crate::gpu::{DEPTH_FORMAT, SCENE_FORMAT};
+use crate::gpu::{DEPTH_FORMAT, OIT_REVEAL_FORMAT, SCENE_FORMAT};
 use crate::shadow::map::ShadowMaps;
 use crate::shared::Shared;
 
@@ -37,6 +37,9 @@ pub(crate) struct Attachments {
     depth: wgpu::TextureView,
     /// The depth as a bind group, built the first time a pass asks ([`Attachments::depth_input`]).
     depth_input: Option<wgpu::BindGroup>,
+    /// Order-independent transparency's targets and their bind group, made the first time a frame draws such a surface
+    /// ([`Attachments::oit_pass`]).
+    oit: Option<OitTargets>,
     /// Products of the post passes for this frame's `Resolve`.
     pub(crate) post: PostProducts,
     /// The average of a supersampled frame's rounds and its bind group (`Layouts::colour_input`), made by the first frame
@@ -51,6 +54,15 @@ pub(crate) struct Attachments {
     /// The target's shadow maps and their lookup settings: drawn by `Shadows`, bound by the lit passes at group 2. They
     /// are here, not in the pass, because a live frame that skips a redraw must still find the last maps of this target.
     pub(crate) shadow: ShadowMaps,
+}
+
+/// Weighted blended order-independent transparency's two targets (#2507), at the scene's size and sample count: the
+/// weighted sum of the layers' premultiplied colour and their weights, and the product of what each lets through.
+struct OitTargets {
+    accum: wgpu::TextureView,
+    reveal: wgpu::TextureView,
+    /// Both as a bind group of the composite's layout, built the first time it asks.
+    input: Option<wgpu::BindGroup>,
 }
 
 fn texture(
@@ -107,6 +119,7 @@ impl Attachments {
             colour_input,
             depth: texture(device, "scene depth", size, samples, DEPTH_FORMAT, readable),
             depth_input: None,
+            oit: None,
             post: PostProducts::default(),
             average: None,
             cleared: false,
@@ -218,6 +231,72 @@ impl Attachments {
             timestamp_writes: None,
             occlusion_query_set: None,
             multiview_mask: None,
+        }))
+    }
+
+    /// Starts a render pass that draws order-independent layers into their two targets, cleared (no colour, everything
+    /// shows through), testing against the scene depth without writing it. Makes the targets the first time.
+    pub(crate) fn oit_pass<'e>(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &'e mut wgpu::CommandEncoder,
+    ) -> wgpu::RenderPass<'e> {
+        let (size, samples) = (self.size, self.samples);
+        if self.oit.is_none() {
+            // A sum (8 bytes) and a reveal (2 bytes) per sample.
+            self.bytes += u64::from(size.x) * u64::from(size.y) * u64::from(samples) * (8 + 2);
+        }
+        let depth_load = if self.cleared { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(1.0) };
+        let targets = self.oit.get_or_insert_with(|| {
+            let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
+            OitTargets {
+                accum: texture(device, "transparency sum", size, samples, SCENE_FORMAT, usage),
+                reveal: texture(device, "transparency reveal", size, samples, OIT_REVEAL_FORMAT, usage),
+                input: None,
+            }
+        });
+        let attachment = |view, clear| {
+            Some(wgpu::RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(clear), store: wgpu::StoreOp::Store },
+            })
+        };
+        let (accum, reveal) = (&targets.accum, &targets.reveal);
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("transparent (order-independent)"),
+            color_attachments: &[attachment(accum, wgpu::Color::TRANSPARENT), attachment(reveal, wgpu::Color::WHITE)],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &self.depth,
+                depth_ops: Some(wgpu::Operations { load: depth_load, store: wgpu::StoreOp::Store }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        })
+    }
+
+    /// Order-independent transparency's two targets as a two-binding bind group of `layout` (unfilterable float
+    /// textures, multisampled exactly when these attachments are), built on first use and kept until the attachments
+    /// are rebuilt. `None` before [`Attachments::oit_pass`] made them.
+    pub(crate) fn oit_input(
+        &mut self,
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+    ) -> Option<&wgpu::BindGroup> {
+        let targets = self.oit.as_mut()?;
+        let (accum, reveal) = (&targets.accum, &targets.reveal);
+        Some(targets.input.get_or_insert_with(|| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("transparency targets"),
+                layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(accum) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(reveal) },
+                ],
+            })
         }))
     }
 
