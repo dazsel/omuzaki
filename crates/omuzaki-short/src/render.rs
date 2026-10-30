@@ -67,6 +67,22 @@ pub struct ShortScene<'a> {
     pub quality: Quality,
     /// The pose the character performs from; the body's own when `None`.
     pub pose: Option<omuzaki_anim_api::HumanoidPose>,
+    /// The frames to draw, by index; every frame when `None`. Frames before the first are performed but not drawn,
+    /// so the performer and the camera stand where they would in the whole short, and the hair settles under the
+    /// first drawn frame's pose.
+    pub frames: Option<std::ops::Range<u64>>,
+}
+
+/// The frames of a short of `total` frames that `span` (seconds from and to) covers: from the frame at or after its
+/// start to the frame before its end; every frame when `None`.
+#[must_use]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "a short is at most 600 s")]
+pub fn span_frames(span: Option<[f32; 2]>, fps: u32, total: u64) -> std::ops::Range<u64> {
+    let Some([from, to]) = span else { return 0..total };
+    // A thousandth of a frame of slack, so 0.6 s at 30 fps is frame 18 though 0.6 is a hair over it in f32.
+    let at = |s: f32| ((f64::from(s) * f64::from(fps) - 1e-3).ceil().max(0.0) as u64).min(total);
+    let start = at(from);
+    start..at(to).max(start)
 }
 
 fn render_error(what: &str, e: impl std::fmt::Display) -> ShortError {
@@ -167,14 +183,26 @@ fn run(
         AnyStage::Avatar(avatar) => avatar.settle(SETTLE_STEPS),
     }
     let captioner = Captioner::new()?;
-    let frames = frame_count(scene.timeline.duration, def.fps);
+    let total = frame_count(scene.timeline.duration, def.fps);
+    let frames = scene.frames.clone().map_or(0..total, |r| r.start.min(total)..r.end.min(total));
     let mut report = LoopReport::default();
-    for index in 0..frames {
+    for index in 0..frames.end {
         #[allow(clippy::cast_precision_loss, reason = "frame counts far below 2^24")]
         let t = index as f32 / def.fps as f32;
         let started = std::time::Instant::now();
         let input = performer.advance(scene.timeline, scene.voice, t).clone();
+        if index < frames.start {
+            continue;
+        }
         stage.scene_mut().camera = rig.camera_at(scene.timeline, t)?;
+        if index == frames.start && index > 0 {
+            // A span starting mid-short: the hair settles under this frame's pose, as it did under the base one.
+            stage.tick(renderer, &input).map_err(|e| render_error(&format!("frame {index}"), e))?;
+            match stage {
+                AnyStage::Kit(kit) => kit.settle(SETTLE_STEPS),
+                AnyStage::Avatar(avatar) => avatar.settle(SETTLE_STEPS),
+            }
+        }
         stage.tick(renderer, &input).map_err(|e| render_error(&format!("frame {index}"), e))?;
         let image =
             renderer.read_target(stage.target()).map_err(|e| render_error(&format!("reading frame {index}"), e))?;
@@ -190,7 +218,21 @@ fn run(
         report.encode_s += drawn.elapsed().as_secs_f64();
         report.frames += 1;
         #[allow(clippy::cast_precision_loss, reason = "a share")]
-        progress((index + 1) as f32 / frames as f32)?;
+        progress((index + 1 - frames.start) as f32 / (frames.end - frames.start).max(1) as f32)?;
     }
     Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_span_covers_its_frames_and_stays_inside_the_short() {
+        assert_eq!(span_frames(None, 30, 90), 0..90);
+        assert_eq!(span_frames(Some([1.0, 2.0]), 30, 90), 30..60);
+        assert_eq!(span_frames(Some([2.5, 9.0]), 30, 90), 75..90, "the end is clamped to the short");
+        assert_eq!(span_frames(Some([5.0, 6.0]), 30, 90), 90..90, "past the end draws nothing");
+        assert_eq!(span_frames(Some([0.51, 0.6]), 30, 90), 16..18, "the first frame at or after the start");
+    }
 }

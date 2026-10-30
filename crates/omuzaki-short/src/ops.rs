@@ -30,7 +30,7 @@ use crate::draft;
 use crate::encode::{ShortWriter, wav_bytes};
 use crate::error::ShortError;
 use crate::puppet::render_puppet_short;
-use crate::render::{ShortScene, frame_count, render_short};
+use crate::render::{FrameSink, ShortScene, frame_count, render_short, span_frames};
 use crate::speech::{SpeechServices, TtsSpeaker};
 use crate::timeline::{Measures, Timeline};
 use crate::voice::{SPEECH_WPM, Synthesis, VoiceTrack, read_wav_from, voice_for};
@@ -396,7 +396,8 @@ fn default_true() -> bool {
     "examples" = [
         {"short": {"character": "kit", "line": [{"text": "Hello!", "face": "happy", "camera": "close+punch"}]}},
         {"short": {"character": "kit", "line": [{"text": "A quick draft."}]}, "out": "shorts/draft.webm",
-         "size": [540, 960], "quality": "live"}
+         "size": [540, 960], "quality": "live"},
+        {"path": "shorts/intro.short.toml", "span": [12.0, 15.5], "out": "shorts/intro-12s.webm"}
     ],
     "x-omuzaki-fixture" = "character"
 ))]
@@ -416,6 +417,10 @@ pub struct RenderShort {
     /// Replace the video if it is there.
     #[serde(default = "default_true")]
     pub replace: bool,
+    /// Seconds from and to: render only this stretch, for a quick look at the part you changed. The short is
+    /// performed from its start, so the stretch looks as it does in the whole; the video starts at its first frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span: Option<[f32; 2]>,
 }
 
 /// What `short.render` gives back.
@@ -425,8 +430,11 @@ pub struct RenderedShort {
     pub path: String,
     /// Its bytes.
     pub bytes: u64,
-    /// Frames, and the rate.
+    /// Frames in the video.
     pub frames: u64,
+    /// The short's frame the video starts at: 0, or the first frame of `span`.
+    #[serde(default)]
+    pub first_frame: u64,
     /// Frames per second.
     pub fps: u32,
     /// Width and height.
@@ -453,7 +461,25 @@ impl RenderShort {
             def.check()?;
         }
         check_size(def.size, self.quality)?;
+        if let Some([from, to]) = self.span
+            && !(from.is_finite() && to.is_finite() && from >= 0.0 && to > from)
+        {
+            return Err(OpError::invalid("span", format!("[{from}, {to}] is not a stretch of time"))
+                .hint("give seconds from and to, the second after the first: `[12.0, 15.5]`"));
+        }
         Ok(def)
+    }
+
+    /// The frames this render draws.
+    fn frames(&self, timeline: &Timeline, fps: u32) -> Result<std::ops::Range<u64>, OpError> {
+        let frames = span_frames(self.span, fps, frame_count(timeline.duration, fps));
+        if frames.is_empty() {
+            return Err(OpError::invalid(
+                "span",
+                format!("the span holds no frame of the short, which is {:.2} s long", timeline.duration),
+            ));
+        }
+        Ok(frames)
     }
 }
 
@@ -469,8 +495,10 @@ fn write_file(job: &JobCtx<'_>, path: &str, bytes: &[u8]) -> Result<(), OpError>
 /// Seconds per frame of a 1080x1920 render on a software GPU (lavapipe on four cores), by quality: the slowest machine a
 /// short renders on, so the estimate (and the job's time cap, four times it) holds there. A real GPU is far faster.
 const SOFTWARE_FRAME_S: [f32; 3] = [0.6, 1.5, 2.0];
-/// Seconds per frame that don't scale with the size: the performer, captions and the encoder.
-const FRAME_OVERHEAD_S: f32 = 0.1;
+/// Seconds per frame that don't scale with the size: the performer, the face painter, skinning the character, captions
+/// and the encoder. Measured on a software GPU (four cores): a 270x480 offline short of 1957 frames took 31 minutes,
+/// 0.95 s a frame, almost all of it this part, so a small render of a long short needs it to keep its time cap.
+const FRAME_OVERHEAD_S: f32 = 1.0;
 /// Seconds before the first frame: opening the GPU device, compiling its pipelines and building the character, on a
 /// software GPU with other work beside it.
 const SETUP_S: f32 = 20.0;
@@ -491,11 +519,14 @@ fn render_seconds(frames: u64, size: [u32; 2], quality: RenderQuality) -> f32 {
 /// the encoder.
 const PUPPET_FRAME_S: f32 = 0.25;
 
+/// Seconds per puppet frame that don't scale with the size: the performer, captions and the encoder.
+const PUPPET_OVERHEAD_S: f32 = 0.1;
+
 /// The estimate of a puppet render of `frames` frames of `size`.
 #[allow(clippy::cast_precision_loss, reason = "frame and pixel counts")]
 fn puppet_seconds(frames: u64, size: [u32; 2]) -> f32 {
     let share = (size[0] as f32 * size[1] as f32) / (1080.0 * 1920.0);
-    frames as f32 * (PUPPET_FRAME_S * share + FRAME_OVERHEAD_S)
+    frames as f32 * (PUPPET_FRAME_S * share + PUPPET_OVERHEAD_S)
 }
 
 impl Op for RenderShort {
@@ -531,7 +562,8 @@ impl Op for RenderShort {
         }
         let voice = voice(&def, &fs, Synthesis::Estimate)?;
         let timeline = Timeline::new(&def, &voice)?;
-        let frames = frame_count(timeline.duration, def.fps);
+        let span = self.frames(&timeline, def.fps)?;
+        let frames = span.end - span.start;
         if def.puppet.is_some() {
             return Ok(Plan {
                 cost: Some(CostHint { seconds: Some(puppet_seconds(frames, def.size)), ..CostHint::default() }),
@@ -565,8 +597,10 @@ impl Op for RenderShort {
         let timeline = Timeline::new(&def, &voice)?;
         if let Some(path) = &def.puppet {
             let puppet = load_puppet(path, &fs)?;
+            let frames = self.frames(&timeline, def.fps)?;
             return self.finish(job, started, &def, &out, &timeline, &voice, |writer, progress| {
-                render_puppet_short(puppet, &def, &timeline, &voice, writer, progress)
+                let mut only = SpanSink { inner: writer, frames };
+                render_puppet_short(puppet, &def, &timeline, &voice, &mut only, progress)
             });
         }
         let (scene, member) = job.read(|doc| scene_def(doc, &def))?;
@@ -611,6 +645,7 @@ impl Op for RenderShort {
             landmarks,
             quality: self.quality.quality(),
             pose: Some(pose),
+            frames: Some(self.frames(&timeline, def.fps)?),
         };
         let renderer = job.service::<Mutex<Box<dyn Renderer>>>()?;
         self.finish(job, started, &def, &out, &timeline, &voice, |writer, progress| {
@@ -651,14 +686,11 @@ impl RenderShort {
         let file =
             replacement.file().try_clone().map_err(|e| OpError::internal(format!("the video file's handle: {e}")))?;
         let has_voice = matches!(def.voice, VoiceDef::File { .. } | VoiceDef::Speech { .. });
-        let mut writer = ShortWriter::create(
-            file,
-            std::path::Path::new(out),
-            def.size,
-            def.fps,
-            has_voice.then_some(voice.pcm.as_slice()),
-        )?;
-        let frames = frame_count(timeline.duration, def.fps);
+        let span = self.frames(timeline, def.fps)?;
+        let pcm = span_pcm(&voice.pcm, &span, def.fps);
+        let mut writer =
+            ShortWriter::create(file, std::path::Path::new(out), def.size, def.fps, has_voice.then_some(pcm))?;
+        let frames = span.end - span.start;
         let mut stopped: Option<OpError> = None;
         let mut done = 0u64;
         let mut progress = |share: f32| {
@@ -682,11 +714,13 @@ impl RenderShort {
         let mut voice_wav = None;
         if has_voice && !written.audio_in_video {
             let wav = out.strip_suffix(".webm").map_or_else(|| format!("{out}.wav"), |stem| format!("{stem}.wav"));
-            write_file(job, &wav, &wav_bytes(&voice.pcm)?)?;
+            write_file(job, &wav, &wav_bytes(pcm)?)?;
             voice_wav = Some(wav);
         }
         let measures = timeline.measures();
         let elapsed = started.elapsed().as_secs_f32();
+        #[allow(clippy::cast_precision_loss, reason = "frame counts far below 2^24")]
+        let seconds = frames as f32 / def.fps.max(1) as f32;
         tracing::info!(
             frames = report.frames,
             render_s = report.render_s,
@@ -697,12 +731,13 @@ impl RenderShort {
             path: out.to_owned(),
             bytes: written.bytes,
             frames,
+            first_frame: span.start,
             fps: def.fps,
             size: def.size,
             duration_s: timeline.duration,
             audio: written.audio_in_video,
             voice_wav,
-            realtime_factor: elapsed / timeline.duration.max(0.001),
+            realtime_factor: elapsed / seconds.max(0.001),
             bar: bar_checks(&measures),
             measures,
         };
@@ -712,3 +747,27 @@ impl RenderShort {
 }
 
 register_op!(RenderShort);
+
+/// The voice under `frames` of a short at `fps`.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "sample offsets of a short of at most 600 s"
+)]
+fn span_pcm<'a>(pcm: &'a [f32], frames: &std::ops::Range<u64>, fps: u32) -> &'a [f32] {
+    let at =
+        |frame: u64| ((frame as f64 * f64::from(crate::voice::RATE) / f64::from(fps.max(1))) as usize).min(pcm.len());
+    &pcm[at(frames.start)..at(frames.end).max(at(frames.start))]
+}
+
+/// Passes on the frames of a span, renumbered from 0, and drops the rest.
+struct SpanSink<'a> {
+    inner: &'a mut dyn FrameSink,
+    frames: std::ops::Range<u64>,
+}
+
+impl FrameSink for SpanSink<'_> {
+    fn frame(&mut self, index: u64, rgba: &[u8]) -> Result<(), ShortError> {
+        if self.frames.contains(&index) { self.inner.frame(index - self.frames.start, rgba) } else { Ok(()) }
+    }
+}

@@ -56,7 +56,15 @@ issues are under the epic.
    their word: `"I watered him. {happy+sparkle @close+tilt-left} I sang to him."`.
 2. `short.plan` until the bar checks pass.
 3. `short.render` to a WebM in the project (VP9 with the voice as Opus; 1080x1920 at 30 fps by default; `size` and
-   `quality: "live"` for a quick draft).
+   `quality: "live"` for a quick draft, `span: [from, to]` to render only the seconds you changed).
+
+To land on a reference's frames rather than near them:
+
+- `[[cue]]` tables place a face, channels or a shot at an exact second (`at`), apart from the lines' words, so a cut
+  or a face change lands on the frame it lands on in the reference; a cue wins over a line's change at the same moment.
+- `handheld = 0` locks the camera off (1, the default, is a phone in a hand), so the only motion is what the shots ask.
+- A shot's `head_width` frames the head (hair included) at a share of the frame's width, the same on every character,
+  where `zoom` alone depends on the character's size; `zoom`, `punch` and `push` scale it from there.
 4. `python3 tools/reference-loop/compare.py ours.webm reference.mp4 OUT` (OUT outside the repository) and read the
    sheets pair by pair: face, framing, light, captions, timing.
 5. Score it: `python3 tools/reference-loop/parity.py ours.webm reference.mp4 OUT --made-with "..." --assets <the
