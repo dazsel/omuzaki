@@ -36,6 +36,8 @@
 //! | `ring-shape` | the painted ring's shape per lock: `0` band, `1` zig-zag, `2` streak, `3` crescent (#2525) | `0` |
 //! | `ring-shape-depth` | how deep the teeth hang, the streaks run or the crescents curl | (none) |
 //! | `keep-hue` | `keep-identity` keeps the surface's own hue (`1`) or the prototype's cream (`0`) | `0` |
+//! | `style` | the style axis (#2607): `1` this anime hair, `0` strands lit as fibres (Kajiya-Kay, two shifted lobes) | `1` |
+//! | `strand-shine`, `strand-gloss` | the physical end's specular strength and tightness | `0.35`, `0.5` |
 //!
 //! Attributes: `hair-uv` (`across` in `-1..=1`, `along` in `0..=1`) and `hair-info` (strand seed, shade multiplier,
 //! polar angle: the ring follows it). The toon base is the prototype's hair material: `shift -0.05`, `soft 0.22`, rim
@@ -136,6 +138,9 @@ register_shading_program!(
             ParamSpec::float("ring-shape", 0.0, 0.0, 3.0),
             ParamSpec::float("ring-shape-depth", RING_SHAPE_DEPTH, 0.0, 1.0),
             ParamSpec::float("keep-hue", 1.0, 0.0, 1.0),
+            ParamSpec::float("style", 1.0, 0.0, 1.0),
+            ParamSpec::float("strand-shine", 0.35, 0.0, 2.0),
+            ParamSpec::float("strand-gloss", 0.5, 0.0, 1.0),
         ],
         attributes: &[
             AttributeSpec { name: "hair-uv", components: 2 },

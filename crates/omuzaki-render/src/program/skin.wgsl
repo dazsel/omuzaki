@@ -3,6 +3,8 @@
 // surface up, and wet skin (the lid margins) is glossy. Appended after `support.wgsl`; the offsets (P_ROUGHNESS, ...) are
 // generated from the declaration.
 //
+// `style` (the style axis, #2607) blends this physical skin toward the cel toon the renderer lit it with (`lit`).
+//
 // The `skin-info` attribute: x how wet the skin is (0 dry, 1 the wet line of a lid), y the cavity term (1 open, 0 deep in
 // a fold), z extra flush (redness), w the surface's curvature in 1/m (0: flat) for the scattering.
 
@@ -87,7 +89,8 @@ fn program_albedo(albedo: vec3<f32>, p: ProgramIn) -> vec3<f32> {
     let info = p.extra[0];
     let flushed = albedo * mix(vec3<f32>(1.0), program_vec3(P_FLUSH_COLOUR), saturate(info.z));
     skin_albedo = mix(flushed, program_vec3(P_WET_COLOUR), saturate(info.x) * program_float(P_WET_TINT));
-    return skin_albedo;
+    // The style axis: the cel end lights the surface's own colour.
+    return mix(skin_albedo, albedo, program_float(P_STYLE));
 }
 
 // Skin's diffusion profile: d'Eon and Luebke's six Gaussians (variances in mm^2, weights per channel).
@@ -132,6 +135,15 @@ fn skin_scatter(cosines: vec3<f32>, radius_mm: f32, spread: f32) -> vec3<f32> {
 }
 
 fn program_light(lit: vec3<f32>, n: vec3<f32>, v: vec3<f32>, p: ProgramIn) -> vec3<f32> {
+    // The style axis (#2607): `lit` is the cel toon; 1 is it exactly, so the axis has no step at its end.
+    let style = program_float(P_STYLE);
+    if (style >= 1.0) {
+        return lit;
+    }
+    return mix(skin_physical(n, v, p), lit, style);
+}
+
+fn skin_physical(n: vec3<f32>, v: vec3<f32>, p: ProgramIn) -> vec3<f32> {
     let info = p.extra[0];
     let wet = saturate(info.x);
     let cavity = mix(1.0, saturate(info.y), program_float(P_CAVITY));
