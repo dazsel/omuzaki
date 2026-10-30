@@ -1354,6 +1354,14 @@ pub struct HairShading {
     /// How much comb teeth break the angel ring, `0..=1`: 1 breaks it into soft blobs, 0 leaves it whole (the strand
     /// texture still breaks it into strands).
     pub ring_teeth: f64,
+    /// How far the angel ring follows the strands, `0..=1` (#2483): `0` paints it at one height round the head, `1` (the
+    /// default) makes it a highlight along each lock's own direction, so it bends with every lock and still reads as one
+    /// band where neighbours run alike.
+    pub ring_follow: f64,
+    /// Where the strand-following ring sits, `-2..=2`: how far the strands tilt toward the surface's normal for the
+    /// highlight. The default, `-0.75`, puts it where the painted ring is, seen from the front; nearer 0 slides it down
+    /// toward the brow, further below 0 up toward the crown.
+    pub ring_shift: f64,
     /// Strength of the strand lines, `0..=1`.
     pub strand_lines: f64,
     /// How much darker each clump's edges are, so overlapping locks separate, `0..=1`.
@@ -1427,6 +1435,8 @@ impl Default for HairShading {
             ring_width: RING_WIDTH,
             ring_wobble: RING_WOBBLE,
             ring_teeth: RING_TEETH,
+            ring_follow: 1.0,
+            ring_shift: -0.75,
             strand_lines: 0.10,
             edge_darkening: 0.14,
             keep_identity: 0.36,
@@ -1532,9 +1542,10 @@ pub enum HairShadingError {
 impl HairShading {
     /// The renderer's shading for this hair: `Shading::Program { name: "hair", params }`. Parameters, all read by the
     /// program: colours `root`, `mid`, `tip`, `shade`, `line`, `ring`, `rim` (resolved through `palette`) and floats
-    /// `ring-strength`, `ring-width`, `ring-wobble`, `ring-teeth`, `strand-lines`, `edge-darkening`, `keep-identity`,
-    /// `rim-strength`, `rim-width`, `back-light`. The outline width and `brows_through` are not
-    /// shader parameters: the first goes on the material's `Outline`, the second adds the brow overlay.
+    /// `ring-strength`, `ring-width`, `ring-wobble`, `ring-teeth`, `ring-follow`, `ring-shift`, `strand-lines`,
+    /// `edge-darkening`, `keep-identity`, `rim-strength`, `rim-width`, `back-light`. The outline width and
+    /// `brows_through` are not shader parameters: the first goes on the material's `Outline`, the second adds the brow
+    /// overlay.
     ///
     /// # Errors
     /// [`HairShadingError`] for an undefined palette slot.
@@ -1556,6 +1567,8 @@ impl HairShading {
             ("ring-width", self.ring_width),
             ("ring-wobble", self.ring_wobble),
             ("ring-teeth", self.ring_teeth),
+            ("ring-follow", self.ring_follow),
+            ("ring-shift", self.ring_shift),
             ("strand-lines", self.strand_lines),
             ("edge-darkening", self.edge_darkening),
             ("keep-identity", self.keep_identity),
@@ -1645,6 +1658,8 @@ impl Validate for HairShading {
         c.range("ring_width", self.ring_width, 0.01, 0.3);
         c.range("ring_wobble", self.ring_wobble, 0.0, 0.2);
         c.range("ring_teeth", self.ring_teeth, 0.0, 1.0);
+        c.range("ring_follow", self.ring_follow, 0.0, 1.0);
+        c.range("ring_shift", self.ring_shift, -2.0, 2.0);
         c.range("strand_lines", self.strand_lines, 0.0, 1.0);
         c.range("edge_darkening", self.edge_darkening, 0.0, 1.0);
         c.range("keep_identity", self.keep_identity, 0.0, 1.0);
@@ -2209,7 +2224,7 @@ mod tests {
         let shading = HairShading::default().shading(&Palette::default()).unwrap();
         let Shading::Program { name, params } = &shading else { panic!("a program") };
         assert_eq!(name.as_str(), HAIR_PROGRAM);
-        assert_eq!(params.len(), 17);
+        assert_eq!(params.len(), 19);
         assert_eq!(params[&Slug::new("rim-strength").unwrap()], ParamValue::Float(0.12));
         assert_eq!(params[&Slug::new("ring-width").unwrap()], ParamValue::Float(0.035));
         assert_eq!(params[&Slug::new("back-light").unwrap()], ParamValue::Float(0.6));

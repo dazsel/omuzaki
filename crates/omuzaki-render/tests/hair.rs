@@ -158,12 +158,14 @@ fn render_quad(renderer: &mut WgpuRenderer, mesh: omuzaki_render_api::MeshId, ma
     image
 }
 
-/// The prototype's angel ring: its half width, its wander from lock to lock and its comb teeth. The kit draws a thinner,
-/// steadier one by default (#2462), so the oracle sets these.
+/// The prototype's angel ring: its half width, its wander from lock to lock and its comb teeth, painted at a fixed polar
+/// angle. The kit draws a thinner, steadier one by default (#2462) that follows the strands (#2483), so the oracle sets
+/// these.
 const PROTOTYPE_RING: &[(&str, ParamValue)] = &[
     ("ring-width", ParamValue::Float(0.11)),
     ("ring-wobble", ParamValue::Float(0.06)),
     ("ring-teeth", ParamValue::Float(1.0)),
+    ("ring-follow", ParamValue::Float(0.0)),
 ];
 
 fn hair_material(shading: Shading) -> Material {
@@ -407,10 +409,17 @@ fn every_parameter_reaches_the_shader() {
     let _serial = serial();
     let mut renderer = support::renderer();
     let mesh = renderer.create_mesh(&quad(true)).unwrap();
-    let base = render_quad(&mut renderer, mesh, &hair_material(hair(&[])));
+    // The quad faces the eye with its strands running up it, so the kit's strand-following ring (#2483) sits on it only
+    // untilted: `ring-shift` 0 puts it over the whole quad, where the ring's own parameters show.
+    let untilted = ("ring-shift", ParamValue::Float(0.0));
+    let base = render_quad(&mut renderer, mesh, &hair_material(hair(&[untilted])));
     let colour = |hex| ParamValue::Colour(Colour::hex(hex));
     let mut moved = |what: &str, params: &[(&str, ParamValue)]| {
-        let image = render_quad(&mut renderer, mesh, &hair_material(hair(params)));
+        let mut all = params.to_vec();
+        if !params.iter().any(|(name, _)| *name == "ring-shift") {
+            all.push(untilted);
+        }
+        let image = render_quad(&mut renderer, mesh, &hair_material(hair(&all)));
         assert_ne!(image.rgba8, base.rgba8, "setting {what} changed nothing");
     };
     moved("root", &[("root", colour(0x0020_4080))]);
@@ -422,6 +431,8 @@ fn every_parameter_reaches_the_shader() {
     moved("ring-width", &[("ring-width", ParamValue::Float(0.3))]);
     moved("ring-wobble", &[("ring-wobble", ParamValue::Float(0.2))]);
     moved("ring-teeth", &[("ring-teeth", ParamValue::Float(1.0))]);
+    moved("ring-follow", &[("ring-follow", ParamValue::Float(0.0))]);
+    moved("ring-shift", &[("ring-shift", ParamValue::Float(-0.75))]);
     moved("strand-lines", &[("strand-lines", ParamValue::Float(1.0))]);
     moved("edge-darkening", &[("edge-darkening", ParamValue::Float(0.9))]);
     moved("keep-identity", &[("keep-identity", ParamValue::Float(1.0))]);
@@ -566,12 +577,16 @@ fn mock_head_scene(renderer: &mut WgpuRenderer, hair: Hair) -> Scene {
             if name.as_str() == "mock-hair" {
                 match hair {
                     Hair::Toon => spec.shading = Shading::Toon(Toon::default()),
-                    Hair::Program { ring_strength: Some(r) } => {
+                    Hair::Program { ring_strength, painted } => {
                         if let Shading::Program { params, .. } = &mut spec.shading {
-                            params.insert(slug("ring-strength"), ParamValue::Float(r));
+                            if let Some(r) = ring_strength {
+                                params.insert(slug("ring-strength"), ParamValue::Float(r));
+                            }
+                            if painted {
+                                params.insert(slug("ring-follow"), ParamValue::Float(0.0));
+                            }
                         }
                     }
-                    Hair::Program { ring_strength: None } => {}
                 }
             }
             let material = spec.to_material(&|_| None, &|_| None).unwrap();
@@ -595,11 +610,12 @@ fn mock_head_scene(renderer: &mut WgpuRenderer, hair: Hair) -> Scene {
 }
 
 /// How the mock's hair is drawn: as plain toon (what a renderer without the program shows), or with the program, whose
-/// ring strength a test may override.
+/// ring strength a test may override and whose ring it may paint at the prototype's fixed angle instead of along the
+/// strands.
 #[derive(Copy, Clone)]
 enum Hair {
     Toon,
-    Program { ring_strength: Option<f32> },
+    Program { ring_strength: Option<f32>, painted: bool },
 }
 
 fn mock_head(hair: Hair) -> Image {
@@ -625,7 +641,7 @@ fn save(image: &Image, name: &str) {
 #[test]
 fn the_mock_characters_hair_matches_its_golden() {
     let _serial = serial();
-    let (before, after) = (mock_head(Hair::Toon), mock_head(Hair::Program { ring_strength: None }));
+    let (before, after) = (mock_head(Hair::Toon), mock_head(Hair::Program { ring_strength: None, painted: false }));
     save(&before, "mock-hair-before.png");
     save(&after, "mock-hair-after.png");
     assert_ne!(before.rgba8, after.rgba8, "the program must change how the hair looks");
@@ -678,19 +694,14 @@ fn the_angel_ring_lands_on_the_crown_where_the_prototype_puts_it() {
     // tone curve on, the ring-only difference (default ring minus `ring-strength` 0) must be one band, centred on the
     // projected row of polar 0.92 straight ahead, a few rows wide, and several sRGB levels brighter.
     let _serial = serial();
-    let (with, without) =
-        (mock_head(Hair::Program { ring_strength: None }), mock_head(Hair::Program { ring_strength: Some(0.0) }));
+    // The painted ring is the prototype's; the kit's own follows the strands (the next test).
+    let (with, without) = (
+        mock_head(Hair::Program { ring_strength: None, painted: true }),
+        mock_head(Hair::Program { ring_strength: Some(0.0), painted: true }),
+    );
     save(&with, "crown-ring-with.png");
     save(&without, "crown-ring-without.png");
-    let centre = i64::from(MOCK_SIZE.x / 2);
-    let rows: Vec<f32> = (0..MOCK_SIZE.y)
-        .map(|y| {
-            let diffs: Vec<f32> = (centre - 10..=centre + 10)
-                .map(|x| luma(rgb_of(&with, x as u32, y)) - luma(rgb_of(&without, x as u32, y)))
-                .collect();
-            diffs.iter().sum::<f32>() / diffs.len() as f32
-        })
-        .collect();
+    let rows = ring_rows(&with, &without, i64::from(MOCK_SIZE.x / 2), 10);
     let peak = rows.iter().copied().fold(0.0, f32::max);
     let peak_row = rows.iter().position(|&r| (r - peak).abs() < f32::EPSILON).unwrap() as f32;
     let fwhm = rows.iter().filter(|&&r| r >= peak / 2.0).count();
@@ -707,4 +718,44 @@ fn the_angel_ring_lands_on_the_crown_where_the_prototype_puts_it() {
     // The kit's ring is thin and steady (#2462): about 3 rows here, against 11 for the prototype's 0.11 rad band.
     assert!((2..=24).contains(&fwhm), "the ring is {fwhm} rows wide");
     assert!((3.0..=20.0).contains(&peak), "the ring raises luma by {peak:.2} levels (prototype: 8.3)");
+}
+
+/// The ring-only difference (`with` minus `without`, in luma) of each row, averaged over the `half * 2 + 1` columns
+/// round `centre`.
+fn ring_rows(with: &Image, without: &Image, centre: i64, half: i64) -> Vec<f32> {
+    (0..MOCK_SIZE.y)
+        .map(|y| {
+            let diffs: Vec<f32> = (centre - half..=centre + half)
+                .map(|x| luma(rgb_of(with, x as u32, y)) - luma(rgb_of(without, x as u32, y)))
+                .collect();
+            diffs.iter().sum::<f32>() / diffs.len() as f32
+        })
+        .collect()
+}
+
+#[test]
+fn the_strand_following_ring_reads_as_one_band_across_the_locks() {
+    // The kit's ring (#2483) is a highlight along each lock's own direction. Across the front of the mock's crown, seen
+    // from above, each narrow strip of columns must show it as one clear band, and neighbouring strips' bands must sit
+    // within a few rows of each other: one band across the locks, not a scatter of glints.
+    let _serial = serial();
+    let (with, without) = (
+        mock_head(Hair::Program { ring_strength: None, painted: false }),
+        mock_head(Hair::Program { ring_strength: Some(0.0), painted: false }),
+    );
+    save(&with, "crown-follow-with.png");
+    save(&without, "crown-follow-without.png");
+    let centre = i64::from(MOCK_SIZE.x / 2);
+    let mut peaks = Vec::new();
+    for strip in -3..=3_i64 {
+        let rows = ring_rows(&with, &without, centre + strip * 8, 3);
+        let peak = rows.iter().copied().fold(0.0, f32::max);
+        let row = rows.iter().position(|&r| (r - peak).abs() < f32::EPSILON).unwrap() as f32;
+        println!("strip {strip}: peak row {row}, rise {peak:.2} luma");
+        assert!(peak >= 3.0, "strip {strip}: the ring raises luma by only {peak:.2} levels");
+        peaks.push(row);
+    }
+    for pair in peaks.windows(2) {
+        assert!((pair[0] - pair[1]).abs() <= 8.0, "the band breaks between strips: rows {peaks:?}");
+    }
 }

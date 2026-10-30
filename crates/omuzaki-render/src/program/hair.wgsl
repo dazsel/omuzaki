@@ -38,8 +38,14 @@ fn program_albedo(albedo: vec3<f32>, p: ProgramIn) -> vec3<f32> {
     return albedo * col;
 }
 
-// The painted angel ring across the crown, broken into comb teeth by the strands, then the pull back toward the hair's
-// own cream so coloured light (lanterns orange, moonlight grey-blue) does not change its identity.
+// The angel ring across the crown, broken into comb teeth by the strands, then the pull back toward the hair's own
+// cream so coloured light (lanterns orange, moonlight grey-blue) does not change its identity.
+//
+// The ring is painted at a fixed polar angle (the prototype's), or follows the strands (`ring-follow`): a shifted
+// Kajiya-Kay lobe on the direction each lock runs (`program_gradient` of `hair-uv.y`), lit from the eye, so the band
+// bends with every lock yet lines up across neighbours where they run alike. `ring-shift` tilts the strands toward the
+// normal, which slides the band up or down the head: the kit's -0.75 puts it where the painted ring is, seen from the
+// front. A surface whose `hair-uv` doesn't run along it (a cap's end, a mesh without the attribute) keeps the painted one.
 fn program_light(lit: vec3<f32>, n: vec3<f32>, v: vec3<f32>, p: ProgramIn) -> vec3<f32> {
     let u = p.extra[0].x;
     let seed = p.extra[1].x;
@@ -47,7 +53,24 @@ fn program_light(lit: vec3<f32>, n: vec3<f32>, v: vec3<f32>, p: ProgramIn) -> ve
     // The band's half width, how far each lock's copy of it wanders, and how much the comb teeth break it: the
     // prototype's 0.11, 0.06 and 1 draw a soft band that steps from lock to lock; a narrow, steady one reads as one arc.
     let wobble = program_float(P_RING_WOBBLE) * sin(u * 3.0 + seed * 9.0);
-    let band = glsl_smoothstep(program_float(P_RING_WIDTH), 0.0, abs(polar - 0.92 - wobble));
+    let width = program_float(P_RING_WIDTH);
+    let painted = glsl_smoothstep(width, 0.0, abs(polar - 0.92 - wobble));
+    let along = program_gradient(p, n, p.extra0_dx.y, p.extra0_dy.y);
+    let tilted_raw = along + n * program_float(P_RING_SHIFT);
+    let tilted_len = length(tilted_raw);
+    let tilted = select(vec3<f32>(0.0), tilted_raw / tilted_len, tilted_len > 1e-6);
+    // Where the tilted strand stands square to the eye's level direction (the view with its height taken out, so the
+    // band keeps its place on the head as the camera rises or drops, as a drawn ring does), within the same angle as
+    // the painted band's width.
+    let level_raw = vec3<f32>(v.x, 0.0, v.z);
+    let level_len = length(level_raw);
+    let level = select(v, level_raw / level_len, level_len > 1e-4);
+    // Only over the head, as a drawn ring is: hair hanging below it would catch stray glints where it curls square to
+    // the eye.
+    let crown = glsl_smoothstep(1.7, 1.3, polar);
+    let lobe = glsl_smoothstep(sin(width), 0.0, abs(dot(tilted, level) + wobble)) * crown;
+    let follow = program_float(P_RING_FOLLOW) * select(0.0, 1.0, dot(along, along) > 0.5);
+    let band = mix(painted, lobe, follow);
     let comb = glsl_smoothstep(0.35, 0.75, hair_noise(u * 6.0 + seed * 17.0));
     let teeth = mix(1.0, comb, program_float(P_RING_TEETH));
     let facing = glsl_smoothstep(0.1, 0.6, dot(n, v));
