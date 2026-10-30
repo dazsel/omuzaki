@@ -45,7 +45,8 @@ const LIMP_UNTIL: f32 = 0.35;
 const MOTORS_BACK: f32 = 0.75;
 const BLEND_FROM: f32 = 0.7;
 
-/// The joints, parents before children.
+/// The joints, parents before children. A fall pivots mostly at the hips (the legs keep pointing down) and bends the
+/// spine only a little: a spine bent further than garments are weighted for opens gaps in them.
 const JOINTS: [B; 10] = [
     B::Hips,
     B::Spine,
@@ -96,12 +97,12 @@ const fn joint(pivot: [f32; 3], inertia: f32, hz: f32, damping: f32, lag: f32, l
 }
 
 const BODY: [Joint; N] = [
-    joint([0.0, 0.95, 0.0], 40.0, 2.6, 0.75, 0.0, 14.0, false),
-    joint([0.0, 1.03, 0.0], 22.0, 3.2, 0.62, 0.25, 16.0, false),
-    joint([0.0, 1.15, 0.0], 15.0, 3.6, 0.58, 0.3, 14.0, false),
-    joint([0.0, 1.27, 0.0], 10.0, 4.0, 0.55, 0.3, 12.0, false),
-    joint([0.0, 1.42, 0.0], 2.4, 3.8, 0.48, 0.55, 28.0, false),
-    joint([0.0, 1.5, 0.0], 1.0, 4.4, 0.46, 0.65, 26.0, false),
+    joint([0.0, 0.95, 0.0], 40.0, 2.6, 0.75, 0.0, 18.0, false),
+    joint([0.0, 1.03, 0.0], 22.0, 3.2, 0.62, 0.25, 8.0, false),
+    joint([0.0, 1.15, 0.0], 15.0, 3.6, 0.58, 0.3, 7.0, false),
+    joint([0.0, 1.27, 0.0], 10.0, 4.0, 0.55, 0.3, 6.0, false),
+    joint([0.0, 1.42, 0.0], 2.4, 3.8, 0.48, 0.55, 22.0, false),
+    joint([0.0, 1.5, 0.0], 1.0, 4.4, 0.46, 0.65, 22.0, false),
     joint([0.18, 1.42, 0.0], 1.6, 2.4, 0.5, 0.6, 55.0, true),
     joint([0.2, 1.15, 0.0], 0.7, 2.6, 0.5, 0.55, 45.0, true),
     joint([-0.18, 1.42, 0.0], 1.6, 2.4, 0.5, 0.6, 55.0, true),
