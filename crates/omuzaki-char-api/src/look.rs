@@ -197,6 +197,9 @@ pub struct ClassLook {
     /// Whether shadow maps darken the class.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub receives_shadows: Option<bool>,
+    /// Whether the hair shadow shades the class (#2528): the skin under a fringe takes its shade tone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub receives_hair_shadow: Option<bool>,
     /// Where the class sits on the style axis (#2607), `0..=1`: `1` the cel look the parts built (exactly), `0` physical
     /// (subsurface skin, fibre-lit hair, a conductor for metal, a physically based surface with cloth sheen for the
     /// rest), and every value between a continuous blend. Lines thin with it and are gone at `0`.
@@ -429,7 +432,7 @@ fn first<T: Clone>(over: Option<&T>, base: Option<&T>) -> Option<T> {
 
 impl ClassLook {
     /// The field names, as parameter paths spell them.
-    pub const FIELDS: [&'static str; 9] = [
+    pub const FIELDS: [&'static str; 10] = [
         "softness_scale",
         "rim_scale",
         "program",
@@ -438,6 +441,7 @@ impl ClassLook {
         "outline_width_scale",
         "outline_colour",
         "receives_shadows",
+        "receives_hair_shadow",
         "style",
     ];
 
@@ -466,6 +470,7 @@ impl ClassLook {
             outline_width_scale: first(self.outline_width_scale.as_ref(), base.outline_width_scale.as_ref()),
             outline_colour: first(self.outline_colour.as_ref(), base.outline_colour.as_ref()),
             receives_shadows: first(self.receives_shadows.as_ref(), base.receives_shadows.as_ref()),
+            receives_hair_shadow: first(self.receives_hair_shadow.as_ref(), base.receives_hair_shadow.as_ref()),
             style: first(self.style.as_ref(), base.style.as_ref()),
         }
     }
@@ -529,6 +534,9 @@ impl ClassLook {
         out.outline = self.outline(spec);
         if let Some(receives) = self.receives_shadows {
             out.receives_shadows = receives;
+        }
+        if let Some(receives) = self.receives_hair_shadow {
+            out.hair_shadow.receives = receives;
         }
         if let Some(style) = self.style
             && style < 1.0
@@ -1187,6 +1195,7 @@ mod tests {
                 outline_width_scale: pick(0.5).then_some(0.5),
                 outline_colour: pick(0.5).then_some(OutlineColour::Flat(flat)),
                 receives_shadows: pick(0.5).then_some(false),
+                receives_hair_shadow: pick(0.5).then_some(true),
                 ..ClassLook::default()
             };
             for spec in [decorated(), hair()] {

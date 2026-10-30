@@ -6,7 +6,9 @@
 //! never sees landmarks or protocols:
 //!
 //! - **Bones** are [`HumanoidPose`] rotations in VRM normalised space (T space: identity is the T-pose, each rotation
-//!   is parent-local), for the bones in [`BodyFrame::mask`] only: the upper chest, the arms and the hands' wrists.
+//!   is parent-local), for the bones in [`BodyFrame::mask`] only. A webcam gives the upper chest, the arms and the
+//!   hands' wrists; a mocap source (VMC) can give any bone, legs and fingers included. The head, neck, eyes and jaw are
+//!   the face's and are never read from a body frame.
 //! - **Fingers** are four anatomical, side-neutral angles per finger ([`FingerAngles`]), the conventions of the
 //!   character kit's hand shapes, so the stage poses them through the rig's own hand rest.
 //! - **Sides** are the **performer's own**, unmirrored: the performer's left hand drives the character's left hand.
@@ -192,6 +194,13 @@ pub struct BodyFrame {
     pub arms: [f32; 2],
     /// How sure the source is of each hand (wrist rotation and fingers), by [`Side`], `0..=1`.
     pub hands: [f32; 2],
+    /// How sure the source is of the rest of the masked bones (hips, spine, shoulders, legs), `0..=1`. Finger bones in
+    /// the mask go with their hand's confidence.
+    pub body: f32,
+    /// Whether the face's head pose is already relative to the chest (a mocap source sends the head as a local
+    /// rotation), so the tracked chest carries the head. `false` for a webcam, whose head pose is in the camera's frame:
+    /// the stage then turns the neck back by the chest's turn, so the head stays where the face put it.
+    pub head_relative: bool,
 }
 
 impl BodyFrame {
@@ -205,12 +214,14 @@ impl BodyFrame {
             fingers: [None, None],
             arms: [0.0; 2],
             hands: [0.0; 2],
+            body: 0.0,
+            head_relative: false,
         }
     }
 
     /// Whether the frame sees any part of the body.
     pub fn sees_anything(&self) -> bool {
-        self.arms.iter().chain(&self.hands).any(|&c| c > 0.0)
+        self.arms.iter().chain(&self.hands).chain([&self.body]).any(|&c| c > 0.0)
     }
 }
 
@@ -278,9 +289,9 @@ const INDEX: u8 = 0b011;
 const SEQ: usize = 0; // 2 words
 const TIME: usize = 2; // 2 words, f64 bits
 const MASK: usize = 4; // 2 words, one bit per humanoid bone
-const FLAGS: usize = 6; // bit 0: left fingers present, bit 1: right fingers present
-const CONFIDENCE: usize = 7; // arms left, right, hands left, right
-const ROTATIONS: usize = CONFIDENCE + 4; // 4 words per humanoid bone
+const FLAGS: usize = 6; // bit 0: left fingers present, bit 1: right fingers present, bit 2: head relative
+const CONFIDENCE: usize = 7; // arms left, right, hands left, right, body
+const ROTATIONS: usize = CONFIDENCE + 5; // 4 words per humanoid bone
 const FINGERS: usize = ROTATIONS + 4 * HUMANOID_COUNT; // 2 hands x 5 fingers x 4 angles
 const WORDS: usize = FINGERS + 2 * 5 * 4;
 
@@ -407,7 +418,7 @@ impl BodySource for BodyReader {
 #[allow(clippy::cast_possible_truncation)] // splitting integers into their 32-bit words
 fn encode(f: &BodyFrame) -> [u32; WORDS] {
     // Exhaustive pattern: a field added to the frame fails to compile here until it is encoded.
-    let BodyFrame { seq, time, pose, mask, fingers, arms, hands } = *f;
+    let BodyFrame { seq, time, pose, mask, fingers, arms, hands, body, head_relative } = *f;
     let mut w = [0; WORDS];
     let split = |w: &mut [u32], v: u64| {
         w[0] = v as u32;
@@ -417,13 +428,13 @@ fn encode(f: &BodyFrame) -> [u32; WORDS] {
     split(&mut w[TIME..], time.0.to_bits());
     let bits = HumanoidBone::ALL.iter().filter(|b| mask.contains(**b)).fold(0_u64, |acc, b| acc | 1 << b.index());
     split(&mut w[MASK..], bits);
-    for (i, confidence) in arms.iter().chain(&hands).enumerate() {
+    for (i, confidence) in arms.iter().chain(&hands).chain([&body]).enumerate() {
         w[CONFIDENCE + i] = confidence.to_bits();
     }
     for (bone, chunk) in pose.rotations.iter().zip(w[ROTATIONS..FINGERS].as_chunks_mut::<4>().0) {
         *chunk = bone.to_array().map(f32::to_bits);
     }
-    let mut flags = 0;
+    let mut flags = u32::from(head_relative) << 2;
     for (side, hand) in fingers.iter().enumerate() {
         let Some(hand) = hand else { continue };
         flags |= 1 << side;
@@ -445,6 +456,8 @@ fn decode(w: &[u32; WORDS]) -> BodyFrame {
         HumanoidBone::ALL.iter().filter(|b| bits >> b.index() & 1 == 1).fold(BoneMask::EMPTY, |m, b| m.with(*b));
     frame.arms = [float(CONFIDENCE), float(CONFIDENCE + 1)];
     frame.hands = [float(CONFIDENCE + 2), float(CONFIDENCE + 3)];
+    frame.body = float(CONFIDENCE + 4);
+    frame.head_relative = w[FLAGS] >> 2 & 1 == 1;
     for (bone, chunk) in frame.pose.rotations.iter_mut().zip(w[ROTATIONS..FINGERS].as_chunks::<4>().0) {
         *bone = Quat::from_array(chunk.map(f32::from_bits));
     }
@@ -473,6 +486,8 @@ mod tests {
         f.mask = BoneMask::of(&[HumanoidBone::LeftUpperArm, HumanoidBone::RightHand]);
         f.arms = [0.9, 0.0];
         f.hands = [0.0, 0.75];
+        f.body = 0.5;
+        f.head_relative = seq % 2 == 1;
         let mut fingers = [FingerAngles::default(); 5];
         fingers[1] = FingerAngles { spread: 0.1, mcp: 1.2, pip: 1.4, dip: 0.9 };
         f.fingers[1] = Some(fingers);

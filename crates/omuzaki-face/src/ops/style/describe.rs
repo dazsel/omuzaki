@@ -2,7 +2,6 @@
 //! holds before it sets one.
 
 use omuzaki_char_api::CharId;
-use omuzaki_face_api::eye3d::EyeDesign;
 use omuzaki_face_api::{
     BrowStyle, CheekStyle, EyeStyle, FaceMark, FaceProfile, FieldRange, MouthStyle, NoseStyle, Validate,
 };
@@ -18,13 +17,15 @@ use crate::ops_shared::path::{Section, section};
 /// Describes the face sections of a character: for each, its path, its JSON Schema (inlined), its defaults, its current
 /// values and the `ranges` of its numeric fields (`path`, `lo`, `hi`, and a `note` for a rule between fields). Marks are
 /// a list: `defaults` is empty, `item_defaults` is what a new mark starts from and `item_ranges` are one mark's ranges.
-/// The 3D eye (`eye3d`) says whether the face has one (`in_use`); without one, `current` is what it starts from.
+/// The 3D eye (`eye3d`) and the sculpted features (`nose3d`, `lips3d`, `ear3d`) each say whether the face has one
+/// (`in_use`); without one, `current` is what it starts from.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DescribeStyle {
     /// The character whose face to describe.
     pub character: CharId,
-    /// One section (`eyes`, `brows`, `mouth`, `nose`, `cheeks`, `marks` or `eye3d`); all seven when omitted.
+    /// One section (`eyes`, `brows`, `mouth`, `nose`, `cheeks`, `marks`, `eye3d`, `nose3d`, `lips3d` or `ear3d`); all ten
+    /// when omitted.
     #[serde(default)]
     pub section: Option<String>,
 }
@@ -69,13 +70,10 @@ fn describe(section: Section, profile: &FaceProfile) -> Result<Value, OpError> {
         Section::Mouth => section_entry::<MouthStyle>(&path, &profile.mouth)?,
         Section::Nose => section_entry::<NoseStyle>(&path, &profile.nose)?,
         Section::Cheeks => section_entry::<CheekStyle>(&path, &profile.cheeks)?,
-        Section::Eye3d => {
-            let mut entry = section_entry::<EyeDesign>(&path, &profile.eye3d.clone().unwrap_or_default())?;
-            if let Value::Object(fields) = &mut entry {
-                fields.insert("in_use".to_owned(), Value::Bool(profile.eye3d.is_some()));
-            }
-            entry
-        }
+        Section::Eye3d => optional_entry(&path, profile.eye3d.as_ref())?,
+        Section::Nose3d => optional_entry(&path, profile.nose3d.as_deref())?,
+        Section::Lips3d => optional_entry(&path, profile.lips3d.as_deref())?,
+        Section::Ear3d => optional_entry(&path, profile.ear3d.as_deref())?,
         Section::Marks => {
             let mut entry = list_entry(&path, &profile.marks)?;
             if let Value::Object(fields) = &mut entry {
@@ -97,6 +95,19 @@ fn section_entry<T: JsonSchema + Default + Serialize + Validate>(path: &str, cur
         "current": to_json(current)?,
         "ranges": ranges_of(path, current),
     }))
+}
+
+/// The entry for a section the face may leave out (the 3D eye, the sculpted features): described at its defaults when
+/// the face has none, with `in_use` saying whether it has.
+fn optional_entry<T: JsonSchema + Default + Serialize + Validate + Clone>(
+    path: &str,
+    current: Option<&T>,
+) -> Result<Value, OpError> {
+    let mut entry = section_entry::<T>(path, &current.cloned().unwrap_or_default())?;
+    if let Value::Object(fields) = &mut entry {
+        fields.insert("in_use".to_owned(), Value::Bool(current.is_some()));
+    }
+    Ok(entry)
 }
 
 /// The ranges of `item`'s numeric fields, each with the full path an agent sets it by below `path`.
