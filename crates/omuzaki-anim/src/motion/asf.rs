@@ -195,7 +195,7 @@ impl Skeleton {
                         }
                         "length" => {
                             bone.length =
-                                numbers(F, line, &words[1..2.min(words.len())])?.first().copied().unwrap_or(0.0)
+                                numbers(F, line, &words[1..2.min(words.len())])?.first().copied().unwrap_or(0.0);
                         }
                         "axis" => {
                             let v = numbers(F, line, &words[1..words.len().min(4)])?;
