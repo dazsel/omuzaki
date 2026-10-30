@@ -765,7 +765,8 @@ fn shadow_softness_widens_the_edge_and_keeps_the_core() {
     if let Some(dir) = std::env::var_os("OMUZAKI_SOFT_SHADOW_DUMP") {
         let dir = PathBuf::from(dir);
         for (name, image) in [("hard", &hard), ("soft", &soft)] {
-            image::save_buffer(dir.join(format!("{name}.png")), &image.rgba8, SIZE.x, SIZE.y, image::ColorType::Rgba8).unwrap();
+            image::save_buffer(dir.join(format!("{name}.png")), &image.rgba8, SIZE.x, SIZE.y, image::ColorType::Rgba8)
+                .unwrap();
         }
     }
     let (hard_edge, soft_edge) = (penumbra_pixels(&hard, &unlit, &open), penumbra_pixels(&soft, &unlit, &open));
