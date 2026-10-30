@@ -330,7 +330,7 @@ pub enum ClearanceError {
         short_mm: f64,
     },
     /// A clump of the group has not the points a lock has.
-    #[error("a bangs clump has {0} points, not {REST_POINTS}")]
+    #[error("a bangs clump has {0} points, not {REST_POINTS} (another lock needs at least two)")]
     WrongPoints(usize),
     /// A tube could not be built to measure.
     #[error("the fringe's tube could not be built: {0}")]
@@ -415,12 +415,28 @@ pub fn keep_clear(
     frame: &OutwardFrame,
     clumps: &mut [HairClump],
 ) -> Result<(), ClearanceError> {
+    if let Some(clump) = clumps.iter().find(|c| c.rest.len() != REST_POINTS) {
+        return Err(ClearanceError::WrongPoints(clump.rest.len()));
+    }
+    keep_locks_clear(head, frame, clumps)
+}
+
+/// [`keep_clear`] for locks of any number of points (two or more), whatever generator made them: the framing locks
+/// that run down beside the face are kept off the cheek and temple this way (#2486).
+///
+/// # Errors
+/// As [`keep_clear`]; a clump of fewer than two points is [`ClearanceError::WrongPoints`].
+pub fn keep_locks_clear(
+    head: &dyn HeadSurface,
+    frame: &OutwardFrame,
+    clumps: &mut [HairClump],
+) -> Result<(), ClearanceError> {
     let spacing = sample_spacing(head)?;
     for clump in clumps {
-        let points = clump.rest.len();
-        let rest: &mut [Vec3; REST_POINTS] =
-            clump.rest.as_mut_slice().try_into().map_err(|_| ClearanceError::WrongPoints(points))?;
-        clear_lock(head, frame, spacing, &clump.width, &clump.thickness, rest)?;
+        if clump.rest.len() < 2 {
+            return Err(ClearanceError::WrongPoints(clump.rest.len()));
+        }
+        clear_lock(head, frame, spacing, &clump.width, &clump.thickness, &mut clump.rest)?;
     }
     Ok(())
 }
@@ -433,8 +449,9 @@ fn clear_lock(
     spacing: f64,
     width: &Taper,
     thickness: &Bulge,
-    rest: &mut [Vec3; REST_POINTS],
+    rest: &mut [Vec3],
 ) -> Result<(), ClearanceError> {
+    let points = rest.len();
     let centre = head.centre();
     let outward = |p: Vec3| (p - centre).normalize_or_zero();
     let gap = |p: Vec3| {
@@ -442,16 +459,16 @@ fn clear_lock(
         d.length() - head.radius(d.normalize_or_zero())
     };
     let (target, spacing_f) = (SURFACE_CLEARANCE as f32, spacing as f32);
-    let mut positions = [Vec3::ZERO; REST_POINTS * RING];
-    let mut normals = [Vec3::ZERO; REST_POINTS * RING];
+    let mut positions = vec![Vec3::ZERO; points * RING];
+    let mut normals = vec![Vec3::ZERO; points * RING];
     // A lock counts as clear when it stands within a tenth of the target of it (float noise, not a lock in the skull).
     let settled = target * SETTLED_FRACTION;
     let mut short = 0.0_f32;
     // One measurement more than pushes, so the last push is checked too.
     for pass in 0..=CLEARANCE_PASSES {
         tube_vertices(rest, RING, width, thickness, |p| frame.rest(p), &mut positions, &mut normals)?;
-        let mut deficit = [0.0_f32; REST_POINTS];
-        for ring in 0..REST_POINTS - 1 {
+        let mut deficit = vec![0.0_f32; points];
+        for ring in 0..points - 1 {
             for k in 0..RING {
                 let at = |r: usize, k: usize| positions[r * RING + k % RING];
                 let (a, b, c, d) = (at(ring, k), at(ring, k + 1), at(ring + 1, k), at(ring + 1, k + 1));
@@ -473,7 +490,7 @@ fn clear_lock(
         if pass == CLEARANCE_PASSES {
             break;
         }
-        for (point, d) in rest.iter_mut().zip(deficit) {
+        for (point, &d) in rest.iter_mut().zip(&deficit) {
             if d > 0.0 {
                 *point += outward(*point) * d;
             }

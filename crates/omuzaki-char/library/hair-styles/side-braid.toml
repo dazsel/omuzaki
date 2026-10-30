@@ -1,0 +1,59 @@
+id = "side-braid"
+name = "Side braid"
+summary = "A deep side part, the hair swept into one braid falling over the left shoulder."
+origin = "a written description of the cut, built from the kit's generators and tuned by eye on the kit's renders (#2486)"
+
+[volume]
+whorl = { polar_deg = 25.0, azimuth_deg = 180.0 }
+fullness = 1.0
+crown = 1.0
+back = 1.0
+part = { side_deg = 30.0 }
+
+[groups.a-cap]
+dynamics = { simulate = false, follow = "head" }
+
+[groups.a-cap.generator]
+type = "cap"
+hairline_back_deg = 150.0
+
+[groups.b-bangs]
+dynamics = { simulate = false, follow = "head" }
+
+[groups.b-bangs.generator]
+type = "bangs"
+sweep_deg = 24.0
+
+[[groups.b-bangs.generator.layers]]
+count = 10
+spread_deg = 46.0
+tip_heights = [0.03, 0.02, 0.01, 0.0, -0.01, -0.02]
+shade = 0.8
+hook_deg = 5.0
+
+[[groups.b-bangs.generator.layers]]
+count = 8
+spread_deg = 40.0
+tip_heights = [0.045, 0.03, 0.015, 0.0, -0.015, -0.03]
+shade = 1.0
+hook_deg = 8.0
+
+[groups.c-sweep]
+dynamics = { simulate = false, follow = "head" }
+
+[groups.c-sweep.generator]
+type = "part_sweep"
+count = 18
+
+[groups.e-braid]
+dynamics = { simulate = true, follow = "head" }
+
+[groups.e-braid.generator]
+type = "tail"
+root = [100.0, 82.0, 0.012]
+length = 0.46
+droop = 1.0
+lean = -0.05
+forward = 0.5
+gather = 4
+braid = { crossings = 7.0, width = 0.05, face_deg = 90.0 }
