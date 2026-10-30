@@ -2,7 +2,9 @@
 //! `tools/models/mediapipe-body.sh` writes opens and loads at both pose sizes, a flat frame finds nobody, and, with the
 //! kit's posed frames from `omuzaki-stage`'s `body_frames` test, the solved arms and fingers are scored against the
 //! poses they show. Gated on `OMUZAKI_BODY_MODELS` (that folder) and `OMUZAKI_ORT_CACHE` (the pinned ONNX Runtime
-//! archive); the score also on `OMUZAKI_BODY_FRAMES_DIR`. Each test prints a line and passes when one is unset.
+//! archive); the score also on `OMUZAKI_BODY_FRAMES_DIR`. Each test prints a line and passes when one is unset. With
+//! `OMUZAKI_BODY_SOLVED_DIR`, the score also writes what it solved for each frame, which `body_frames` re-renders and
+//! diffs against the frame pixel by pixel.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 #![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
 
@@ -140,6 +142,25 @@ fn finger_bones(side: usize) -> [[HumanoidBone; 3]; 4] {
     }
 }
 
+/// What the tracker solved for a frame, for `omuzaki-stage`'s `body_frames` to drive the same character with and
+/// re-render from the same camera (the pixel loop): the masked bones' T-space rotations, each part's confidence and the
+/// fingers, everything the stage's tracked-body layer reads.
+fn solved(frame: &BodyFrame) -> serde_json::Value {
+    let bones: serde_json::Map<String, serde_json::Value> = HumanoidBone::ALL
+        .into_iter()
+        .filter(|&bone| frame.mask.contains(bone))
+        .map(|bone| (format!("{bone:?}"), serde_json::json!(frame.pose.get(bone).to_array())))
+        .collect();
+    serde_json::json!({
+        "bones": bones,
+        "arms": frame.arms,
+        "hands": frame.hands,
+        "body": frame.body,
+        "fingers": frame.fingers,
+        "head_relative": frame.head_relative,
+    })
+}
+
 #[test]
 #[allow(clippy::too_many_lines)] // one table, frame by frame
 fn kit_frames_score_against_their_poses() {
@@ -179,6 +200,11 @@ fn kit_frames_score_against_their_poses() {
             if i == 3 {
                 times.push(started.elapsed().as_secs_f32() * 1e3);
             }
+        }
+        if let Some(dir) = std::env::var_os("OMUZAKI_BODY_SOLVED_DIR").map(PathBuf::from) {
+            std::fs::create_dir_all(&dir).unwrap();
+            let name = path.file_stem().unwrap().to_string_lossy();
+            std::fs::write(dir.join(format!("{name}.json")), solved(&out).to_string()).unwrap();
         }
         let landmarks = tracker.landmarks();
         let mut cells = Vec::new();
