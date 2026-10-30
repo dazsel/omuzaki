@@ -31,7 +31,9 @@ fn doc() -> MemDoc {
 }
 
 fn set(field: &str, value: Value) -> Value {
-    json!({ "character": "mira", "path": field, "value": value })
+    let mut args = json!({ "character": "mira", "path": field });
+    args["value"] = value;
+    args
 }
 
 /// `value` as an agent writes it: a whole number as one (a count reads only a whole number), anything else as it is.

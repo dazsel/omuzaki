@@ -9,6 +9,8 @@
 //!   occlusion shell and the lashes;
 //! - [`skin::texture`]: the skin round the eye (tone, mottling, fine lines, freckles);
 //! - [`eye_params`] and [`skin_params`]: the programs' parameters for a design and where the eye is.
+//! - [`closeup::Closeup`]: all of it built on a renderer, lit and framed as a macro still (the lab test and
+//!   `render.eye` draw through it).
 //!
 //! Everything is a pure function of an [`EyeDesign`], whose seed drives every random detail.
 
@@ -18,6 +20,7 @@
 )]
 
 pub mod canvas;
+pub mod closeup;
 pub mod design;
 pub mod geometry;
 pub mod noise;

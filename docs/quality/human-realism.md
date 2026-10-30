@@ -44,7 +44,7 @@ custom character that holds up at macro, live in real time, through operations a
 | Caustics on the iris | ◐ a far-side brightening term | Unity eye shader | a caustic computed from the cornea's lens for each light |
 | Shadow maps fitted to the casters | ✓ | everyone | |
 | Soft shadows with contact hardening (PCSS) | ○ | UE, Unity | |
-| Contact shadows (screen-space rays) for lids, lashes and nostrils | ✓ a 16-step depth march toward the shadow-casting light (`Scene::occlusion`) | UE, Unity | |
+| Contact shadows (screen-space rays) for lids, lashes and nostrils | ✓ a 16-step depth march toward the shadow-casting light (`Scene::occlusion`); a blocker must rise above the pixel's tangent plane, so curved and slanted surfaces never shadow themselves (`omuzaki-render/tests/occlusion.rs`) | UE, Unity | |
 | Ambient occlusion: GTAO or SSAO, with bent normals | ◐ horizon-based SSAO from the depth (`Scene::occlusion`), no bent normals yet | UE, Unity | GTAO with bent normals for the specular occlusion of skin and eyes |
 | Specular occlusion | ○ | UE, Unity | |
 | Image-based lighting: HDRI, SH irradiance, prefiltered specular | ✓ | everyone | |
@@ -107,7 +107,7 @@ Tracked in #2508.
 | Catchlights from area lights | ◐ from the environment | everyone | |
 | Saccades, blinks, micro-movements, vergence | ○ in 3D | random-eyes, MetaHuman | |
 | The anime eye as a style on the same eyeball and lids | ○ | (no one does both) | one eye system from photoreal to anime, morphing between them |
-| Every `EyeDesign` field as an operation | ○ | (no one) | an agent makes any eye through MCP |
+| Every `EyeDesign` field as an operation | ✓ `face/eye3d/...` through `face.set_style`, listed with ranges by `face.describe_style`; `render.eye` shows it | (no one) | an agent makes any eye through MCP |
 
 Tracked in #2500, #2501, #2502 and #2505.
 
@@ -165,8 +165,8 @@ Tracked in #2510.
 | Feature | Status | Parity | Supremacy |
 |---|---|---|---|
 | Every part designable in the panels | ◐ | MetaHuman Creator, VRoid | |
-| Every part designable through MCP operations alone | ◐ (49 character and 16 face operations; not the 3D eye) | (no one) | an agent builds a photoreal human end to end |
-| A macro preview of any part (eye, lips, skin) | ◐ the eye lab (`eye_macro`) | MetaHuman | a turntable at three framings, scored against a reference automatically |
+| Every part designable through MCP operations alone | ◐ (49 character and 16 face operations, and the 3D eye through `face.set_style`; not yet the 3D head, skin or mouth) | (no one) | an agent builds a photoreal human end to end |
+| A macro preview of any part (eye, lips, skin) | ◐ the eye: `render.eye`, macro and front views, the same builder as the lab (`eye_macro`) | MetaHuman | a turntable at three framings, scored against a reference automatically |
 | A reference loop with a parity score (no copied pixels) | ◐ `tools/reference-loop` | (no one) | |
 
 Tracked in #2505 and #2509.

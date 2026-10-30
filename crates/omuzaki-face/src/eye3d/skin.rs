@@ -49,17 +49,25 @@ fn lines(canvas: &mut Canvas, design: &EyeDesign) {
     let fold = Vec3::new(0.22, 0.1, 0.07);
     let lift = Vec3::new(0.95, 0.75, 0.65);
     let draw = |canvas: &mut Canvas, points: &[Vec2], rng: &mut Pcg, strength: f32| {
-        // Broken into short runs.
+        // Broken into short runs, each fading in and out (a run that stops at full strength reads as a cut), and the
+        // whole line fading toward its ends.
         let mut i = 0;
         while i + 3 < points.len() {
             // In range: 0..8.
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let run = (3 + (rng.unit() * 8.0) as usize).min(points.len() - i);
             if rng.unit() < 0.8 {
+                #[allow(clippy::cast_precision_loss)]
+                let along = (i as f32 + run as f32 * 0.5) / points.len() as f32;
+                let strength = strength * (std::f32::consts::PI * along).sin().sqrt();
                 let seg = &points[i..i + run];
-                let up: Vec<Vec2> = seg.iter().map(|p| *p - Vec2::new(0.0, 1.6)).collect();
-                canvas.stroke(&up, (2.4, 2.0), lift, (0.02 * strength, 0.015 * strength));
-                canvas.stroke(seg, (1.6, 1.2), fold, (0.22 * strength, 0.12 * strength));
+                let middle = run / 2;
+                for (half, rising) in [(&seg[..=middle], true), (&seg[middle..], false)] {
+                    let ramp = |a: f32| if rising { (0.0, a) } else { (a, 0.0) };
+                    let up: Vec<Vec2> = half.iter().map(|p| *p - Vec2::new(0.0, 1.6)).collect();
+                    canvas.stroke(&up, ramp(2.4), lift, ramp(0.02 * strength));
+                    canvas.stroke(half, ramp(1.6), fold, ramp(0.2 * strength));
+                }
             }
             i += run;
         }

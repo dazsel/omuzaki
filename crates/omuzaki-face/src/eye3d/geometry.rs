@@ -32,9 +32,9 @@ const PROXY_WIDEN: f32 = 1.12;
 /// How far the lid margin reaches from the opening's edge to the lid's full thickness.
 const MARGIN: f32 = 0.65 * MM;
 /// Distances from the opening's edge, outward (negative: the pocket behind the margin), at which the rings sit.
-const RINGS: [f32; 31] = [
-    -3.2, -2.0, -1.2, -0.7, -0.35, -0.12, 0.0, 0.08, 0.18, 0.3, 0.45, 0.62, 0.8, 1.0, 1.3, 1.7, 2.2, 2.8, 3.6, 4.6,
-    5.8, 7.0, 8.3, 9.8, 11.5, 13.5, 16.0, 19.0, 22.5, 26.0, 30.0,
+const RINGS: [f32; 38] = [
+    -3.2, -2.0, -1.2, -0.7, -0.35, -0.12, 0.0, 0.08, 0.18, 0.3, 0.45, 0.62, 0.8, 1.0, 1.3, 1.7, 2.2, 2.8, 3.6, 4.1,
+    4.6, 5.1, 5.6, 6.1, 6.6, 7.1, 7.7, 8.3, 9.0, 9.8, 10.6, 11.5, 13.5, 16.0, 19.0, 22.5, 26.0, 30.0,
 ];
 /// Samples round the opening.
 const AROUND: usize = 240;
