@@ -31,6 +31,7 @@ use omuzaki_face_api::{
 use super::FALLBACK_COLOUR;
 use super::Side;
 use super::aperture::Eye;
+use super::detail;
 use super::highlight;
 use crate::painter::PaintCtx;
 use crate::painter::fixed_colour;
@@ -151,8 +152,10 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>, side: Side) {
     let gradient = Paint::Linear { from: iris.at(0.0, 1.0), to: iris.at(0.0, -1.0), stops };
     ctx.list(FaceLayerId::Base).fill(outline, gradient);
 
-    // The crescent and the pupil are cut by the iris.
+    // The detail, the crescent and the pupil are cut by the iris.
     ctx.list(FaceLayerId::Base).push(Cmd::PushClip(outline));
+    let extent = pupil_extent(ctx, &iris, side);
+    detail::paint(ctx, &iris, side, low, extent);
     crescent(ctx.list(FaceLayerId::Base), &iris, lighten(low, CRESCENT_LIGHTEN));
     pupil(ctx, &iris, side);
     ctx.list(FaceLayerId::Base).push(Cmd::PopClip);
@@ -169,6 +172,19 @@ fn crescent(list: &mut DrawList, iris: &Iris, colour: Colour) {
         .ellipse(iris.at(0.0, -CRESCENT_DROP), iris.rx * CRESCENT_RADII.x, iris.ry * CRESCENT_RADII.y)
         .finish();
     list.push(Cmd::Fill { path, paint: Paint::Solid(colour), opacity: CRESCENT_OPACITY });
+}
+
+/// The pupil's centre and radii, whatever its shape (the round pupil's; a slit or a heart is about as wide): what
+/// the glow round it fits to.
+#[allow(clippy::cast_possible_truncation)] // see `Iris::new`
+fn pupil_extent(ctx: &PaintCtx<'_>, iris: &Iris, side: Side) -> (Vec2, Vec2) {
+    let style = colours(ctx.profile, side).pupil;
+    let scale = ctx.params.pupil.max(PUPIL_MIN_SCALE) * style.size as f32;
+    let radii = match style.shape {
+        PupilShape::None => Vec2::ZERO,
+        _ => Vec2::new(iris.rx * PUPIL_RADII.x, iris.ry * PUPIL_RADII.y) * scale,
+    };
+    (iris.at(0.0, PUPIL_RISE), radii)
 }
 
 /// The pupil: the profile's shape and colour, scaled by its `size` and the `pupil` channel (never below

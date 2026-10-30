@@ -42,6 +42,7 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
     let runs = |piece| only.is_none_or(|only| only == piece);
     shape::record_outline(ctx);
     if runs(MouthPiece::Gloss) {
+        lips::paint_tint(ctx);
         lips::paint_gloss(ctx);
     }
     if runs(MouthPiece::Shape) {

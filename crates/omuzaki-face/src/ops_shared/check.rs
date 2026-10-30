@@ -187,7 +187,7 @@ fn marks(face: &Value, defaults: &Template, problems: &mut Vec<Problem>) -> Vec<
 }
 
 /// Walks `value` against the default `template` at `at`. Each key the default doesn't have, and each value of the wrong
-/// kind or the wrong length, becomes a problem and is put back to its default, so the rest of the value still reads.
+/// kind or the wrong length (for a fixed-length list), becomes a problem and is put back to its default, so the rest of the value still reads.
 fn repair(value: &Value, template: &Value, at: &str, problems: &mut Vec<Problem>) -> Value {
     match (template, value) {
         (Value::Object(defaults), Value::Object(given)) => {
@@ -203,6 +203,9 @@ fn repair(value: &Value, template: &Value, at: &str, problems: &mut Vec<Problem>
             }
             Value::Object(kept)
         }
+        // A list whose default is empty (the extra catchlights) holds any number of items; reading the section checks
+        // each one.
+        (Value::Array(defaults), Value::Array(_)) if defaults.is_empty() => value.clone(),
         (Value::Array(defaults), Value::Array(given)) if defaults.len() == given.len() => Value::Array(
             given
                 .iter()

@@ -90,6 +90,45 @@ pub(super) fn tint(ctx: &PaintCtx<'_>) -> Colour {
     fixed_colour(&ctx.profile.mouth.lips.colour, DEFAULT_TINT)
 }
 
+/// The lip colour (#2472): a soft lens of the lip colour round the mouth, under its line or its open shape, so the
+/// lips read as coloured. It is `TINT_HEIGHT` metres tall (times the performance scale) round a closed mouth, and that
+/// much taller than an open one; `TINT_WIDTH` of the half-width wide; opaque to `TINT_CORE` of its radius.
+const TINT_WIDTH: f32 = 1.12;
+const TINT_HEIGHT: f32 = 0.0042;
+const TINT_CORE: f32 = 0.55;
+const TINT_ALPHA: f32 = 0.85;
+
+/// Paints the lip colour round the mouth. Nothing when the lips have none.
+pub(super) fn paint_tint(ctx: &mut PaintCtx<'_>) {
+    let amount = narrow(ctx.profile.mouth.lips.tint).clamp(0.0, 1.0);
+    if amount <= 0.0 {
+        return;
+    }
+    let frame = Frame::of(ctx);
+    let (centre, half_width, height) = match ctx.open_mouth {
+        Some(open) => {
+            let mid = open.centre.y + f32::midpoint(open.top(0.0), open.bottom(0.0));
+            (Vec2::new(open.centre.x, mid), open.half_width, open.top(0.0) - open.bottom(0.0))
+        }
+        None => (frame.centre, frame.half_width, 0.0),
+    };
+    let rx = half_width * TINT_WIDTH;
+    let ry = 0.5 * height.max(0.0) + TINT_HEIGHT * frame.grow;
+    if rx <= f32::EPSILON {
+        return;
+    }
+    let colour = scaled(tint(ctx), TINT_ALPHA * amount);
+    let squash = Affine2::from_translation(centre)
+        * Affine2::from_scale(Vec2::new(1.0, ry / rx))
+        * Affine2::from_translation(-centre);
+    let stops = Stops::new(&[(0.0, colour), (TINT_CORE, colour), (1.0, scaled(colour, 0.0))]);
+    let list = ctx.list(FaceLayerId::Base);
+    let disc = list.path().ellipse(centre, rx, rx).finish();
+    list.push(Cmd::PushTransform(squash));
+    list.fill(disc, Paint::Radial { centre, radius: rx, stops });
+    list.push(Cmd::PopTransform);
+}
+
 /// Paints the glossy lower lip under the mouth: a soft swell of the lip tint with a small highlight. Nothing on a flat
 /// face. A kiss always has some gloss ([`KISS_LIPS`]).
 pub(super) fn paint_gloss(ctx: &mut PaintCtx<'_>) {

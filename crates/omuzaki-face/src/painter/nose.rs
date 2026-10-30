@@ -4,10 +4,10 @@
 //! Offsets are from the nose line (`layout.nose_y`, face plane) and in metres, the prototype's own numbers; the
 //! style's `size` scales every length of the mark about `(0, nose_y)`.
 
-use omuzaki_core::glam::Vec2;
-use omuzaki_face_api::{Cap, Cmd, Colour, FaceLayerId, Join, NoseKind, Paint, narrow};
+use omuzaki_core::glam::{Affine2, Vec2};
+use omuzaki_face_api::{Cap, Cmd, Colour, DrawList, FaceLayerId, Join, NoseKind, Paint, Stops, narrow};
 
-use crate::painter::{PaintCtx, fixed_colour};
+use crate::painter::{PaintCtx, fixed_colour, scaled};
 
 /// The tick runs from the first point to the second, as offsets from `(0, nose_y)`.
 const TICK_FROM: Vec2 = Vec2::new(0.0012, 0.0017);
@@ -31,6 +31,18 @@ const CREASES: [(Vec2, Vec2); 2] =
 const CREASE_WIDTH: f32 = 0.0011;
 const CREASE_OPACITY: f32 = 0.75;
 const SNEER_FROM: f32 = 0.05;
+/// The contour (#2472): a soft shade down the bridge on the side away from the light (the tick's light is on the
+/// character's left, so the shade is on the right), as offsets from the nose line: its centre and radii, and its
+/// opacity at full strength.
+const SHADE_AT: Vec2 = Vec2::new(-0.0032, 0.0085);
+const SHADE_RADII: Vec2 = Vec2::new(0.0028, 0.011);
+const SHADE_ALPHA: f32 = 0.7;
+/// The highlight: a soft streak on the bridge and a spot on the tip.
+const STREAK_AT: Vec2 = Vec2::new(0.0012, 0.011);
+const STREAK_RADII: Vec2 = Vec2::new(0.0011, 0.0062);
+const TIP_AT: Vec2 = Vec2::new(0.0012, 0.0012);
+const TIP_RADIUS: f32 = 0.0016;
+const HIGHLIGHT_ALPHA: f32 = 0.6;
 /// Colour used when a palette slot reached the painter unresolved (it should not: the host resolves them).
 const FALLBACK_COLOUR: Colour = Colour::rgb(0xbe, 0x78, 0x78);
 
@@ -41,7 +53,16 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
     let origin = Vec2::new(0.0, narrow(ctx.profile.layout.nose_y));
     let size = narrow(style.size);
     let at = |offset: Vec2| origin + offset * size;
+    let (shade, light) = (narrow(style.shadow).clamp(0.0, 1.0), narrow(style.highlight).clamp(0.0, 1.0));
     let list = ctx.list(FaceLayerId::Base);
+    if shade > 0.0 {
+        soft(list, at(SHADE_AT), SHADE_RADII * size, scaled(colour, SHADE_ALPHA * shade));
+    }
+    if light > 0.0 {
+        let white = scaled(LIGHT_COLOUR, HIGHLIGHT_ALPHA * light);
+        soft(list, at(STREAK_AT), STREAK_RADII * size, white);
+        soft(list, at(TIP_AT), Vec2::splat(TIP_RADIUS * size), white);
+    }
     match style.kind {
         NoseKind::None => {}
         NoseKind::Tick => {
@@ -81,4 +102,16 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
             }
         }
     }
+}
+
+/// A soft elliptical spot of `colour` fading to nothing at its rim.
+fn soft(list: &mut DrawList, centre: Vec2, radii: Vec2, colour: Colour) {
+    let stops = Stops::new(&[(0.0, colour), (0.5, scaled(colour, 0.6)), (1.0, scaled(colour, 0.0))]);
+    let squash = Affine2::from_translation(centre)
+        * Affine2::from_scale(Vec2::new(1.0, radii.y / radii.x))
+        * Affine2::from_translation(-centre);
+    let disc = list.path().ellipse(centre, radii.x, radii.x).finish();
+    list.push(Cmd::PushTransform(squash));
+    list.fill(disc, Paint::Radial { centre, radius: radii.x, stops });
+    list.push(Cmd::PopTransform);
 }

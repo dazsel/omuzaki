@@ -1,0 +1,100 @@
+# Makeup presets (#2472): `face.makeup.preset` sets a character's makeup to one of these. The makeup is the fields
+# listed in `src/makeup_presets.rs` (eyeshadow, lip colour, blush style, contour, nose shade and highlight); each preset
+# names only what differs from no makeup at all, and everything it leaves out returns to none. Lip and blush colours
+# are the preset's own.
+
+[[preset]]
+id = "none"
+summary = "No makeup: the face as the kit draws it"
+
+[[preset]]
+id = "natural"
+summary = "Barely there: a warm peach lid, a light lip tint and a touch of everyday blush"
+
+[preset.face.eyes.shadow]
+strength = 0.55
+colour = "#d89080"
+crease_colour = "#ecc2b0"
+height = 0.45
+wing = 0.15
+
+[preset.face.mouth.lips]
+tint = 0.35
+colour = "#e8968e"
+
+[preset.face.cheeks]
+base = 0.3
+
+[[preset]]
+id = "soft-glam"
+summary = "Soft glam: a rosy smoked lid with a short wing, a rose lip, swept blush, contour and a highlit nose"
+
+[preset.face.eyes.shadow]
+strength = 0.7
+colour = "#c8726e"
+crease_colour = "#d8a090"
+height = 0.6
+wing = 0.5
+lower = 0.4
+
+[preset.face.mouth.lips]
+tint = 0.6
+colour = "#d8707a"
+
+[preset.face.cheeks]
+kind = "sweep"
+base = 0.5
+colour = "#ee8a86"
+contour = 0.45
+
+[preset.face.nose]
+shadow = 0.4
+highlight = 0.5
+
+[[preset]]
+id = "idol"
+summary = "Idol stage: a pink sparkle lid, a glossy pink lip and a blush band across the nose"
+
+[preset.face.eyes.shadow]
+strength = 0.6
+colour = "#f08aa0"
+crease_colour = "#f6bccb"
+height = 0.5
+wing = 0.25
+lower = 0.5
+
+[preset.face.mouth.lips]
+tint = 0.55
+colour = "#f07c96"
+
+[preset.face.cheeks]
+kind = "bridge"
+base = 0.6
+colour = "#f4889a"
+
+[preset.face.nose]
+highlight = 0.6
+
+[[preset]]
+id = "gothic"
+summary = "Gothic: a deep plum lid with a long wing and a smudged lower lid, a dark berry lip and sharp contour"
+
+[preset.face.eyes.shadow]
+strength = 0.85
+colour = "#5a2a4a"
+crease_colour = "#8a4a6a"
+height = 0.7
+wing = 0.8
+lower = 0.7
+
+[preset.face.mouth.lips]
+tint = 0.85
+colour = "#7a2240"
+
+[preset.face.cheeks]
+base = 0.0
+contour = 0.6
+contour_colour = "#a07888"
+
+[preset.face.nose]
+shadow = 0.5

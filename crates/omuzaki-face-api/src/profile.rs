@@ -16,6 +16,15 @@ use crate::grammar::GrammarRules;
 use crate::mapping::FaceMapping;
 use crate::palette::ColourRef;
 
+mod eye_detail;
+mod makeup;
+
+pub use makeup::{EyeShadow, TeethStyle, TongueStyle};
+
+pub use eye_detail::{
+    Catchlight, Collarette, IrisDetail, IrisFibres, IrisFlecks, LashStrands, LimbalRing, MAX_CATCHLIGHTS, StrandRow,
+};
+
 const fn rgb(r: u8, g: u8, b: u8) -> ColourRef {
     ColourRef::rgb(r, g, b)
 }
@@ -177,11 +186,20 @@ pub struct Lash {
     pub inner_tick: bool,
     /// Line colour.
     pub colour: ColourRef,
+    /// Strand lashes along both lids, in the line's colour (#2468); none by default.
+    pub strands: LashStrands,
 }
 
 impl Default for Lash {
     fn default() -> Self {
-        Self { thickness: 0.006, flick: 0.5, lower: 0.5, inner_tick: true, colour: rgb(0x3a, 0x24, 0x20) }
+        Self {
+            thickness: 0.006,
+            flick: 0.5,
+            lower: 0.5,
+            inner_tick: true,
+            colour: rgb(0x3a, 0x24, 0x20),
+            strands: LashStrands::default(),
+        }
     }
 }
 
@@ -190,6 +208,7 @@ impl Validate for Lash {
         c.range("thickness", self.thickness, 0.0005, 0.02);
         c.range("flick", self.flick, 0.0, 1.0);
         c.range("lower", self.lower, 0.0, 1.0);
+        c.nested("strands", &self.strands);
     }
 }
 
@@ -280,6 +299,8 @@ pub struct Iris {
     pub gaze_travel: [f64; 2],
     /// The pupil.
     pub pupil: Pupil,
+    /// The iris's structure: fibres, collarette, flecks, limbal ring (#2465); none by default.
+    pub detail: IrisDetail,
 }
 
 impl Default for Iris {
@@ -295,6 +316,7 @@ impl Default for Iris {
             ring: rgb(0x1d, 0x36, 0x2c),
             gaze_travel: [0.026, 0.013],
             pupil: Pupil::default(),
+            detail: IrisDetail::default(),
         }
     }
 }
@@ -308,6 +330,7 @@ impl Validate for Iris {
         c.range("gaze_travel/0", self.gaze_travel[0], 0.0, 0.08);
         c.range("gaze_travel/1", self.gaze_travel[1], 0.0, 0.08);
         c.nested("pupil", &self.pupil);
+        c.nested("detail", &self.detail);
     }
 }
 
@@ -368,16 +391,49 @@ pub struct Sclera {
     pub mid: ColourRef,
     /// Colour at the lower lid.
     pub bottom: ColourRef,
+    /// How much the white darkens toward both corners, where the eyeball turns away, 0 none (#2467).
+    pub corner_shade: f64,
+    /// The corners' shade colour.
+    pub corner_colour: ColourRef,
+    /// Fine vessels running in from the corners, 0 none.
+    pub vessels: f64,
+    /// The vessels' colour.
+    pub vessel_colour: ColourRef,
+    /// The pink caruncle in the inner corner, 0 none.
+    pub caruncle: f64,
+    /// The caruncle's colour.
+    pub caruncle_colour: ColourRef,
+    /// The wet waterline along the lower lid: a soft rim of the lid's colour with a thin bright line on it, 0 none.
+    pub waterline: f64,
+    /// The waterline's rim colour.
+    pub waterline_colour: ColourRef,
 }
 
 impl Default for Sclera {
     fn default() -> Self {
-        Self { top: rgb(0xe6, 0xc9, 0xcc), mid: rgb(0xfb, 0xf3, 0xf1), bottom: rgb(0xff, 0xfa, 0xf8) }
+        Self {
+            top: rgb(0xe6, 0xc9, 0xcc),
+            mid: rgb(0xfb, 0xf3, 0xf1),
+            bottom: rgb(0xff, 0xfa, 0xf8),
+            corner_shade: 0.0,
+            corner_colour: rgb(0xc9, 0xae, 0xb4),
+            vessels: 0.0,
+            vessel_colour: rgb(0xd4, 0x6a, 0x6a),
+            caruncle: 0.0,
+            caruncle_colour: rgb(0xe8, 0x9a, 0x96),
+            waterline: 0.0,
+            waterline_colour: rgb(0xe6, 0xa8, 0xa0),
+        }
     }
 }
 
 impl Validate for Sclera {
-    fn check(&self, _: &mut Check) {}
+    fn check(&self, c: &mut Check) {
+        c.range("corner_shade", self.corner_shade, 0.0, 1.0);
+        c.range("vessels", self.vessels, 0.0, 1.0);
+        c.range("caruncle", self.caruncle, 0.0, 1.0);
+        c.range("waterline", self.waterline, 0.0, 1.0);
+    }
 }
 
 /// The shape of the main catchlight (CB-20). The `eye_heart` and `eye_star` channels swap to their own shape.
@@ -390,6 +446,12 @@ pub enum CatchlightShape {
     Star,
     /// A heart.
     Heart,
+    /// A window: a rounded pane split in four by a cross bar, the reflection of a lit room.
+    Window,
+    /// A thin ring, the reflection of a ring light.
+    Ring,
+    /// A crescent, opening away from the iris centre.
+    Crescent,
     /// No catchlight.
     None,
 }
@@ -410,6 +472,12 @@ pub struct Highlights {
     pub shimmer: f64,
     /// How far reflections slide as the view direction changes, 0 none.
     pub view_motion: f64,
+    /// More catchlights, drawn after the main one (#2466); at most [`MAX_CATCHLIGHTS`].
+    pub extra: Vec<Catchlight>,
+    /// A soft glow of light in the iris opposite the main catchlight, where light focused by the cornea lands, 0 none.
+    pub caustic: f64,
+    /// The glow's colour.
+    pub caustic_colour: ColourRef,
 }
 
 impl Default for Highlights {
@@ -421,6 +489,9 @@ impl Default for Highlights {
             second: 0.65,
             shimmer: 0.0,
             view_motion: 0.5,
+            extra: Vec::new(),
+            caustic: 0.0,
+            caustic_colour: ColourRef::rgba(255, 248, 225, 255),
         }
     }
 }
@@ -433,6 +504,11 @@ impl Validate for Highlights {
         c.range("second", self.second, 0.0, 1.0);
         c.range("shimmer", self.shimmer, 0.0, 1.0);
         c.range("view_motion", self.view_motion, 0.0, 1.0);
+        c.rule(&["extra"], self.extra.len() <= MAX_CATCHLIGHTS, "an eye holds at most 8 extra catchlights");
+        for (i, light) in self.extra.iter().enumerate() {
+            c.nested(&format!("extra/{i}"), light);
+        }
+        c.range("caustic", self.caustic, 0.0, 1.0);
     }
 }
 
@@ -489,6 +565,10 @@ pub struct EyeStyle {
     pub lid_shadow: f64,
     /// Colour of the `tear` drop.
     pub tear: ColourRef,
+    /// Seeds the eye's fine detail (fibres, flecks, vessels, lashes), so one design always paints the same eye.
+    pub seed: u32,
+    /// Eyeshadow on the lid (#2472); none by default.
+    pub shadow: EyeShadow,
 }
 
 impl Default for EyeStyle {
@@ -506,6 +586,8 @@ impl Default for EyeStyle {
             lower_lid: LowerLidStyle::default(),
             lid_shadow: 0.55,
             tear: ColourRef::rgba(190, 225, 255, 217),
+            seed: 1,
+            shadow: EyeShadow::default(),
         }
     }
 }
@@ -525,6 +607,7 @@ impl Validate for EyeStyle {
         c.nested("highlights", &self.highlights);
         c.nested("lower_lid", &self.lower_lid);
         c.range("lid_shadow", self.lid_shadow, 0.0, 1.0);
+        c.nested("shadow", &self.shadow);
     }
 }
 
@@ -605,17 +688,20 @@ pub struct Lips {
     pub strength: f64,
     /// Rim and gloss tint.
     pub colour: ColourRef,
+    /// Lip colour (makeup, #2472): both lips washed with `colour` round a closed mouth, 0 none.
+    pub tint: f64,
 }
 
 impl Default for Lips {
     fn default() -> Self {
-        Self { strength: 0.0, colour: rgb(0xee, 0x8e, 0x92) }
+        Self { strength: 0.0, colour: rgb(0xee, 0x8e, 0x92), tint: 0.0 }
     }
 }
 
 impl Validate for Lips {
     fn check(&self, c: &mut Check) {
         c.range("strength", self.strength, 0.0, 1.0);
+        c.range("tint", self.tint, 0.0, 1.0);
     }
 }
 
@@ -736,6 +822,10 @@ pub struct MouthStyle {
     /// for a close-up shrinks to a few pixels in a full-body shot, so lip sync stops reading. It eases back to 1 by
     /// [`CLOSE_SHOT`] ([`shot_scale`](Self::shot_scale)).
     pub wide_shot_scale: f64,
+    /// The upper teeth's shape (#2473).
+    pub teeth: TeethStyle,
+    /// The tongue's shape (#2473).
+    pub tongue: TongueStyle,
 }
 
 /// The head's share of the frame's height at or below which a shot is wide: a full-body shot.
@@ -769,6 +859,8 @@ impl Default for MouthStyle {
             interior: MouthInterior::default(),
             fang: FangStyle::default(),
             wide_shot_scale: 1.4,
+            teeth: TeethStyle::default(),
+            tongue: TongueStyle::default(),
         }
     }
 }
@@ -784,6 +876,8 @@ impl Validate for MouthStyle {
         c.nested("lips", &self.lips);
         c.nested("interior", &self.interior);
         c.nested("fang", &self.fang);
+        c.nested("teeth", &self.teeth);
+        c.nested("tongue", &self.tongue);
     }
 }
 
@@ -811,17 +905,23 @@ pub struct NoseStyle {
     pub size: f64,
     /// Mark colour.
     pub colour: ColourRef,
+    /// Contour (makeup, #2472): a soft shade down the shadow side of the nose, 0 none.
+    pub shadow: f64,
+    /// A soft light spot on the bridge and the tip, 0 none.
+    pub highlight: f64,
 }
 
 impl Default for NoseStyle {
     fn default() -> Self {
-        Self { kind: NoseKind::None, size: 1.0, colour: rgb(0xbe, 0x78, 0x78) }
+        Self { kind: NoseKind::None, size: 1.0, colour: rgb(0xbe, 0x78, 0x78), shadow: 0.0, highlight: 0.0 }
     }
 }
 
 impl Validate for NoseStyle {
     fn check(&self, c: &mut Check) {
         c.range("size", self.size, 0.2, 3.0);
+        c.range("shadow", self.shadow, 0.0, 1.0);
+        c.range("highlight", self.highlight, 0.0, 1.0);
     }
 }
 
@@ -833,6 +933,10 @@ pub enum BlushKind {
     Soft,
     /// Diagonal hatch lines (manga).
     Hatched,
+    /// Soft patches swept up toward the temples.
+    Sweep,
+    /// One soft band across the nose from cheek to cheek.
+    Bridge,
 }
 
 /// Blush and the warm wash over the lower face (CB-23). The `blush` channel scales `strength`.
@@ -849,11 +953,26 @@ pub struct CheekStyle {
     pub strength: f64,
     /// Opacity of the warm wash over the lower face.
     pub wash: f64,
+    /// Blush as makeup (#2472): opacity of blush that shows whatever the `blush` channel says, 0 none.
+    pub base: f64,
+    /// Contour: a soft shade under the cheekbones toward the jaw, 0 none.
+    pub contour: f64,
+    /// The contour's colour.
+    pub contour_colour: ColourRef,
 }
 
 impl Default for CheekStyle {
     fn default() -> Self {
-        Self { kind: BlushKind::Soft, colour: rgb(0xf0, 0x8c, 0x84), radius: [0.068, 0.028], strength: 0.95, wash: 0.3 }
+        Self {
+            kind: BlushKind::Soft,
+            colour: rgb(0xf0, 0x8c, 0x84),
+            radius: [0.068, 0.028],
+            strength: 0.95,
+            wash: 0.3,
+            base: 0.0,
+            contour: 0.0,
+            contour_colour: rgb(0xc8, 0x8e, 0x80),
+        }
     }
 }
 
@@ -863,6 +982,8 @@ impl Validate for CheekStyle {
         c.range("radius/1", self.radius[1], 0.005, 0.1);
         c.range("strength", self.strength, 0.0, 1.0);
         c.range("wash", self.wash, 0.0, 1.0);
+        c.range("base", self.base, 0.0, 1.0);
+        c.range("contour", self.contour, 0.0, 1.0);
     }
 }
 
