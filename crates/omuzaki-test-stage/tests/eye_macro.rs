@@ -69,7 +69,8 @@ fn the_eye_renders_at_macro_framing_as_an_eye() {
     let Some(mut renderer) = renderer() else { return };
     // Looking up lifts the upper lid, as in the reference close-up.
     let mut design = EyeDesign::default();
-    design.aperture.upper = 0.006;
+    design.aperture.upper = 0.0052;
+    design.aperture.lower = 0.0041;
     for (view, name) in [(View::Macro, "eye-macro.png"), (View::Front, "eye-front.png")] {
         let frame = render(&mut renderer, &design, view);
         if let Some(dir) = std::env::var_os("OMUZAKI_EYE_OUT").map(PathBuf::from) {

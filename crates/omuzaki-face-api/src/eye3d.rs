@@ -148,13 +148,13 @@ pub struct Iris {
 impl Default for Iris {
     fn default() -> Self {
         Self {
-            outer: Colour::hex(0x00a2_6a32),
-            inner: Colour::hex(0x00ae_7c3e),
+            outer: Colour::hex(0x008a_5a26),
+            inner: Colour::hex(0x009a_6a30),
             deep: Colour::hex(0x0024_140a),
-            fibre_colour: Colour::hex(0x00c8_9a5c),
+            fibre_colour: Colour::hex(0x00b8_8a50),
             limbal_colour: Colour::hex(0x001e_120a),
             fibres: 0.8,
-            collarette: 0.4,
+            collarette: 0.35,
             crypts: 40,
             specks: 70,
             furrows: 4,
@@ -190,7 +190,7 @@ pub struct Sclera {
 
 impl Default for Sclera {
     fn default() -> Self {
-        Self { white: Colour::hex(0x00cc_c2b6), edge: Colour::hex(0x00c4_a89c), vessels: 60, network: 0.7 }
+        Self { white: Colour::hex(0x00c8_c6c2), edge: Colour::hex(0x00b8_a8a2), vessels: 60, network: 0.7 }
     }
 }
 
@@ -276,7 +276,7 @@ impl Default for Skin {
             tone: Colour::hex(0x009e_745e),
             freckles: 40.0,
             freckle: Colour::hex(0x0070_3a24),
-            lid_thickness: 0.0016,
+            lid_thickness: 0.0012,
             crease: 0.0058,
             crease_depth: 0.0014,
         }
@@ -317,14 +317,14 @@ pub struct Lashes {
 impl Default for Lashes {
     fn default() -> Self {
         Self {
-            upper: 170,
-            lower: 60,
-            upper_length: 0.0048,
+            upper: 190,
+            lower: 80,
+            upper_length: 0.0062,
             lower_length: 0.003,
-            curl: 0.8,
-            clumping: 0.7,
-            thickness: 0.000_07,
-            colour: Colour::hex(0x0030_2018),
+            curl: 0.7,
+            clumping: 0.85,
+            thickness: 0.000_075,
+            colour: Colour::hex(0x0024_1812),
         }
     }
 }

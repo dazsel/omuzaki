@@ -34,7 +34,7 @@ impl View {
     fn shot(self) -> (Vec3, Vec3, f32, Vec3) {
         match self {
             Self::Macro => {
-                (Vec3::new(0.024, -0.008, 0.056), Vec3::new(-0.0005, 0.0008, 0.010), 27.0, Vec3::new(0.16, 0.12, 1.0))
+                (Vec3::new(0.024, -0.008, 0.056), Vec3::new(-0.0005, 0.0008, 0.010), 27.0, Vec3::new(0.39, -0.07, 0.91))
             }
             Self::Front => {
                 (Vec3::new(0.0, 0.001, 0.07), Vec3::new(0.0, 0.0005, 0.008), 27.0, Vec3::new(0.0, 0.015, 1.0))
@@ -200,8 +200,8 @@ fn build(
         // A macro lens: sharp on the iris, the lashes and the skin falling out of focus.
         scene.post.depth_of_field = Some(DepthOfField {
             focus_distance: (camera_at - Vec3::new(0.0, 0.0, 0.011)).length(),
-            focus_range: 0.0015,
-            max_blur: 0.07,
+            focus_range: 0.003,
+            max_blur: 0.035,
         });
     }
     Ok(scene)

@@ -327,7 +327,7 @@ impl Lids {
         // the corners each lid's shape eases to the two lids' mean, so the lids meet there without a seam.
         let fold = gauss((d - self.crease) / (1.4 * MM));
         // The skin above the crease hangs forward over it, so the fold reads as a shelf with a shadow under it.
-        let hood = 2.2 * MM * (1.0 - self.style) * smoothstep(self.crease - 0.5 * MM, self.crease + 3.5 * MM, d);
+        let hood = 1.2 * MM * (1.0 - self.style) * smoothstep(self.crease - 0.5 * MM, self.crease + 3.5 * MM, d);
         let upper_z = -self.crease_depth * fold + hood;
         let lower_z = 0.5 * MM * smoothstep(2.0 * MM, 7.0 * MM, d);
         let own = smoothstep(0.0, 0.3, u.min(1.0 - u));
@@ -357,7 +357,7 @@ impl Lids {
         }
         // The inner corner and the lid margins are flushed.
         let inner = smoothstep(0.75, 1.0, u) * (1.0 - smoothstep(0.0, 6.0 * MM, d));
-        let flush = 0.35 * (1.0 - smoothstep(0.0, 5.0 * MM, d)) + 0.5 * inner;
+        let flush = 0.2 * (1.0 - smoothstep(0.0, 5.0 * MM, d)) + 0.5 * inner;
         (Vec3::new(p.x, p.y, z), [wet, cavity, flush, 0.0])
     }
 
@@ -487,10 +487,13 @@ impl Lids {
                 let z = cornea.surface_z(&self.ball, gaze, p.x, p.y).max(self.proxy(p.x, p.y, -0.6 * MM)) + 0.06 * MM;
                 mesh.positions.push(Vec3::new(p.x, p.y, z));
                 // The upper lid shades more and farther than the lower, and the corners, deep in the socket, most.
-                let (strength, reach) = if Self::is_upper(k) { (0.85, 3.0) } else { (0.65, 1.6) };
+                let (strength, reach) = if Self::is_upper(k) { (0.8, 4.0) } else { (0.35, 1.0) };
                 let socket = 1.0 - smoothstep(0.0, 0.25, Self::along(k).min(1.0 - Self::along(k)));
-                let alpha =
-                    (strength * (-d / (reach * (1.0 + socket))).exp() * (1.0 - smoothstep(5.0, 7.0, d))).min(0.92);
+                let near = strength * (-d / (reach * (1.0 + socket))).exp() * (1.0 - smoothstep(5.0, 7.0, d));
+                // The whole ball sits in the socket: the white darkens broadly toward the lids and corners, so it reads
+                // as a sphere seen through the opening rather than a flat disc behind it.
+                let broad = (0.65 + 0.2 * socket) * (1.0 - smoothstep(0.0, 6.5, d));
+                let alpha = (1.0 - (1.0 - near) * (1.0 - broad)).min(0.92);
                 mesh.colours.push([0.0, 0.0, 0.0, alpha]);
             }
         }
@@ -532,7 +535,7 @@ impl Lids {
                 strands.push(self.strand(lashes, upper, u, &mut rng));
             }
             clump(&mut strands, lashes.clumping, &mut rng);
-            let width = lashes.thickness * if upper { 1.0 } else { 0.75 };
+            let width = lashes.thickness * if upper { 1.0 } else { 0.6 };
             for strand in &strands {
                 ribbon(&mut mesh, &mut info, strand, width, view_from);
             }
@@ -560,10 +563,10 @@ impl Lids {
         let normal = root.normalize_or_zero();
         let up = if upper { Vec3::Y } else { -Vec3::Y };
         // Lashes fan out from the lid's middle toward each corner, the outer ones sweeping furthest.
-        let sweep = Vec3::new(-0.9, 0.0, 0.0) * (0.5 - u) + Vec3::new(-0.3, 0.0, 0.0) * (1.0 - u).powi(3);
+        let sweep = Vec3::new(-1.3, 0.0, 0.0) * (0.55 - u) + Vec3::new(-0.5, 0.0, 0.0) * (1.0 - u).powi(3);
         let length = if upper { lashes.upper_length } else { lashes.lower_length }
             * (0.3 + 0.7 * bump(u, if upper { 0.38 } else { 0.4 }).powf(0.6))
-            * if rng.unit() < 0.15 { rng.range(0.35, 0.7) } else { rng.range(0.75, 1.08) };
+            * if rng.unit() < 0.25 { rng.range(0.3, 0.65) } else { rng.range(0.7, 1.1) };
         let start = (normal * 0.85 + out * 0.1 - up * 0.08 + sweep * 0.7).normalize_or_zero();
         let curl = (up * 1.2 - normal * 0.35).normalize_or_zero()
             * lashes.curl
