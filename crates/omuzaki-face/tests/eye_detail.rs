@@ -106,7 +106,7 @@ fn every_knob_changes_the_eye_when_turned_on() {
         ("caustic", |p| p.eyes.highlights.caustic = 0.7),
         ("window", |p| p.eyes.highlights.shape = CatchlightShape::Window),
         ("ring", |p| {
-            p.eyes.highlights.extra = vec![Catchlight { shape: CatchlightShape::Ring, ..Catchlight::default() }]
+            p.eyes.highlights.extra = vec![Catchlight { shape: CatchlightShape::Ring, ..Catchlight::default() }];
         }),
         ("crescent", |p| {
             p.eyes.highlights.extra = vec![Catchlight { shape: CatchlightShape::Crescent, ..Catchlight::default() }];
