@@ -55,6 +55,27 @@ pub enum Heard {
     },
     /// The mic was muted (`true`) or unmuted (`false`).
     Muted(bool),
+    /// The words of the utterance in progress so far (a partial transcript): what the listening face reacts to
+    /// while the person talks (#2453). Never a turn: only a `Final` is answered.
+    #[non_exhaustive]
+    Partial {
+        /// The utterance it belongs to.
+        utterance: u64,
+        /// The words so far.
+        text: String,
+        /// How far the audio went, on the runner clock. It comes from the recogniser, later than the voice
+        /// activity around it, so it is not part of the event order ([`Heard::time`] is `None`).
+        at: Seconds,
+        /// Spoken in `CohostOnly`: its words never leave the machine for a reaction.
+        private: bool,
+    },
+    /// A place where a listener would nod or say "mm" while the person keeps talking (a low-pitch stretch, or a pause
+    /// after a falling phrase): the speech host's backchannel cue.
+    #[non_exhaustive]
+    Backchannel {
+        /// When.
+        at: Seconds,
+    },
 }
 
 impl Heard {
@@ -78,21 +99,32 @@ impl Heard {
         Self::Final { utterance, text: text.into(), start, end, private: false }
     }
 
-    /// The same event, private if it is a `Final`; other events are unchanged.
+    /// [`Heard::Partial`].
+    pub fn partial(utterance: u64, text: impl Into<String>, at: Seconds) -> Self {
+        Self::Partial { utterance, text: text.into(), at, private: false }
+    }
+
+    /// [`Heard::Backchannel`].
+    pub fn backchannel(at: Seconds) -> Self {
+        Self::Backchannel { at }
+    }
+
+    /// The same event, private if it is a `Final` or a `Partial`; other events are unchanged.
     #[must_use]
     pub fn private(mut self) -> Self {
-        if let Self::Final { private, .. } = &mut self {
+        if let Self::Final { private, .. } | Self::Partial { private, .. } = &mut self {
             *private = true;
         }
         self
     }
 
-    /// When it happened: `at`, or a `Final`'s `end`. `None` for `Muted`, which carries no time.
+    /// When it happened: `at`, or a `Final`'s `end`. `None` for `Muted`, which carries no time, and for a
+    /// `Partial`, which arrives from the recogniser after the events around its audio.
     pub fn time(&self) -> Option<Seconds> {
         match self {
-            Self::Onset { at } | Self::Held { at } | Self::Rejected { at } => Some(*at),
+            Self::Onset { at } | Self::Held { at } | Self::Rejected { at } | Self::Backchannel { at } => Some(*at),
             Self::Final { end, .. } => Some(*end),
-            Self::Muted(_) => None,
+            Self::Muted(_) | Self::Partial { .. } => None,
         }
     }
 }
@@ -110,6 +142,8 @@ mod tests {
             Heard::final_text(3, "Mochi, hi", Seconds(1.0), Seconds(2.0)),
             Heard::final_text(4, "between us", Seconds(3.0), Seconds(4.0)).private(),
             Heard::Muted(true),
+            Heard::partial(5, "so I went to the", Seconds(5.5)),
+            Heard::backchannel(Seconds(6.0)),
         ];
         for e in events {
             let json = serde_json::to_string(&e).unwrap();

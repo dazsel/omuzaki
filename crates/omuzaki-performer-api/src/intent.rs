@@ -61,6 +61,13 @@ pub enum Intent {
         /// Where.
         place: PlaceId,
     },
+    /// Nod (`[nod [strength]]`): the head dips and comes back, a listener's "mm-hm" (#2453). The decision layer nods
+    /// on the speech host's backchannel cues while the person talks; the model may tag one too.
+    #[non_exhaustive]
+    Nod {
+        /// `0..=1`: 1 is a clear nod, 0.3 a small one.
+        strength: f32,
+    },
     /// Say a chunk: the chunks themselves, never a tag.
     #[non_exhaustive]
     Speak {
@@ -97,12 +104,17 @@ impl Intent {
         Self::MoveTo { place }
     }
 
+    /// `[nod strength]`.
+    pub fn nod(strength: f32) -> Self {
+        Self::Nod { strength }
+    }
+
     /// A spoken chunk with its style.
     pub fn speak(text: impl Into<String>, tags: Vec<StyleTag>) -> Self {
         Self::Speak { text: text.into(), tags }
     }
 
-    /// The tag verb that writes this intent (`emote`, `gesture`, `clip`, `look`, `move`), or `None` for speech.
+    /// The tag verb that writes this intent (`emote`, `gesture`, `clip`, `look`, `move`, `nod`), or `None` for speech.
     pub fn verb(&self) -> Option<&'static str> {
         match self {
             Self::Emote { .. } => Some("emote"),
@@ -110,6 +122,7 @@ impl Intent {
             Self::PlayClip { .. } => Some("clip"),
             Self::LookAt { .. } => Some("look"),
             Self::MoveTo { .. } => Some("move"),
+            Self::Nod { .. } => Some("nod"),
             Self::Speak { .. } => None,
         }
     }
@@ -127,6 +140,7 @@ impl Intent {
                 a | b
             }
             Self::Gesture { weight, .. } => clamp(weight, 0.0, 1.0, 1.0),
+            Self::Nod { strength } => clamp(strength, 0.0, 1.0, 1.0),
             Self::LookAt { hold_s, .. } => clamp(hold_s, LOOK_HOLD_MIN_S, LOOK_HOLD_MAX_S, LOOK_HOLD_DEFAULT_S),
             Self::PlayClip { .. } | Self::MoveTo { .. } | Self::Speak { .. } => false,
         };

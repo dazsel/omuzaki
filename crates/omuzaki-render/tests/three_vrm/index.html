@@ -1,0 +1,63 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<script type="importmap">{"imports":{"three":"/node_modules/three/build/three.module.js","mtoon":"/node_modules/@pixiv/three-vrm-materials-mtoon/lib/three-vrm-materials-mtoon.module.js"}}</script>
+</head><body style="margin:0;background:#000">
+<script type="module">
+import * as THREE from 'three';
+import { MToonMaterial } from 'mtoon';
+
+const srgb = (r, g, b) => new THREE.Color().setRGB(r / 255, g / 255, b / 255, THREE.SRGBColorSpace);
+async function tex(name, colour) {
+  const img = new Image();
+  img.src = `/out/${name}.png`;
+  await img.decode();
+  const c = document.createElement('canvas');
+  c.width = img.width; c.height = img.height;
+  const cx = c.getContext('2d', { colorSpace: 'srgb' });
+  cx.drawImage(img, 0, 0);
+  const data = cx.getImageData(0, 0, c.width, c.height).data;
+  const t = new THREE.DataTexture(new Uint8Array(data), c.width, c.height, THREE.RGBAFormat);
+  t.colorSpace = colour ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+  t.magFilter = THREE.LinearFilter; t.minFilter = THREE.LinearFilter;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.flipY = false; t.generateMipmaps = false; t.needsUpdate = true;
+  return t;
+}
+const [stripes, matcap, bumps, checker, glow] = await Promise.all([
+  tex('stripes', false), tex('matcap', true), tex('bumps', false), tex('checker', true), tex('glow', true)]);
+
+const renderer = new THREE.WebGLRenderer({ antialias: false, preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(768, 256);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.NoToneMapping;
+renderer.setClearColor(0x000000, 1);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.OrthographicCamera(-3.6, 3.6, 1.2, -1.2, 0.1, 20);
+camera.position.set(0, 0, 5); camera.lookAt(0, 0, 0);
+const key = new THREE.DirectionalLight(srgb(255, 250, 240), 2.5);
+key.position.set(1, 1, 1); scene.add(key);
+scene.add(new THREE.HemisphereLight(srgb(200, 210, 235), srgb(110, 95, 85), 1.0));
+
+const m = [
+  new MToonMaterial({ color: srgb(240, 200, 185), shadeColorFactor: srgb(150, 100, 140),
+    parametricRimColorFactor: srgb(170, 190, 255), parametricRimFresnelPowerFactor: 4, parametricRimLiftFactor: 0.1 }),
+  new MToonMaterial({ color: srgb(170, 210, 240), shadeColorFactor: srgb(80, 110, 170), shadingToonyFactor: 0.95,
+    shadingShiftFactor: 0.1, shadingShiftTexture: stripes, shadingShiftTextureScale: -0.6 }),
+  new MToonMaterial({ color: srgb(140, 140, 150), matcapTexture: matcap, rimLightingMixFactor: 0.5 }),
+  new MToonMaterial({ color: srgb(200, 220, 200), shadeColorFactor: srgb(90, 120, 100), normalMap: bumps,
+    normalScale: new THREE.Vector2(1, -1), emissive: srgb(120, 60, 0), emissiveMap: glow }),
+  new MToonMaterial({ color: srgb(255, 255, 255), map: checker, shadeColorFactor: srgb(140, 140, 170),
+    uvAnimationScrollXOffset: 0.25 * 0.8, uvAnimationRotationPhase: 0.5 * 0.8 }),
+];
+const geometry = new THREE.SphereGeometry(0.6, 48, 24);
+m.forEach((material, i) => {
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.position.x = -2.8 + 1.4 * i;
+  scene.add(mesh);
+});
+renderer.render(scene, camera);
+window.done = renderer.domElement.toDataURL('image/png');
+</script></body></html>
