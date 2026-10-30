@@ -16,7 +16,7 @@ PT = ZoneInfo("America/Los_Angeles")
 DIR = Path(__file__).resolve().parent
 REPO = "dazsel/omuzaki"
 now = datetime.now(PT)
-SINCE_DAY = now.date().isoformat()
+SINCE_DAY = sys.argv[1] if len(sys.argv) > 1 else now.date().isoformat()
 
 
 def sh(*a, **k):

@@ -153,6 +153,29 @@ pub struct GradeDef {
     pub contrast: f32,
 }
 
+/// Ambient occlusion and contact shadows as authored: `post.occlusion` (render-api `Occlusion`). Creases and the
+/// places where surfaces meet darken, and small casters (a fringe on the forehead, lashes on the eye) shadow what is
+/// just under them, finer than a shadow map can.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct OcclusionDef {
+    /// How far round each point occluders are looked for, metres, `> 0`: about the size of the folds that darken.
+    pub radius: f32,
+    /// How dark full occlusion is, `0..=1`.
+    pub strength: f32,
+    /// How far toward each shadow-casting light a point looks for a blocker, metres, `>= 0` (`0`: no contact
+    /// shadows).
+    pub contact: f32,
+}
+
+impl Default for OcclusionDef {
+    /// Tuned for a whole character in a close-up: 5 mm folds and contact shadows reaching 1.5 cm, so a fringe shadows
+    /// the forehead.
+    fn default() -> Self {
+        Self { radius: 0.005, strength: 0.6, contact: 0.015 }
+    }
+}
+
 impl From<GradeDef> for ColourGrade {
     fn from(g: GradeDef) -> Self {
         Self { saturation: g.saturation, contrast: g.contrast }
@@ -184,6 +207,9 @@ pub struct PostDef {
     /// Colour grade, if wanted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grade: Option<GradeDef>,
+    /// Ambient occlusion and contact shadows, if wanted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occlusion: Option<OcclusionDef>,
 }
 
 fn yes() -> bool {
@@ -192,7 +218,7 @@ fn yes() -> bool {
 
 impl Default for PostDef {
     fn default() -> Self {
-        Self { bloom: true, tonemap: Tonemap::Aces, depth_of_field: None, grain: None, grade: None }
+        Self { bloom: true, tonemap: Tonemap::Aces, depth_of_field: None, grain: None, grade: None, occlusion: None }
     }
 }
 

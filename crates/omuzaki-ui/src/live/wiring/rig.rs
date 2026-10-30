@@ -67,6 +67,9 @@ pub struct Extras {
     /// My scripts, for the `script.*_mine` ops and the Script workspace (the app puts it in the runner's services;
     /// the rig ignores it).
     pub scripts: Option<Arc<dyn omuzaki_script::ScriptStore>>,
+    /// Where the webcam's body tracking publishes: the board whose reader the performer was made with
+    /// (`Performer::with_body`), for `input.track_body`.
+    pub body: Option<Arc<omuzaki_track_api::body::BodyBoard>>,
 }
 
 impl std::fmt::Debug for Extras {
@@ -80,6 +83,7 @@ impl std::fmt::Debug for Extras {
             .field("tap", &self.tap.is_some())
             .field("settings", &self.settings.is_some())
             .field("scripts", &self.scripts.is_some())
+            .field("body", &self.body.is_some())
             .finish()
     }
 }
@@ -126,6 +130,9 @@ impl LiveRig {
         }
         if let Some(pose_out) = extras.pose_out {
             input = input.with_pose_out(pose_out);
+        }
+        if let Some(board) = extras.body {
+            input = input.with_body(board);
         }
         Ok((Self { perform: Some(perform), input: Arc::new(input) }, reader))
     }

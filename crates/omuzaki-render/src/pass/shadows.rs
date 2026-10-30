@@ -22,11 +22,17 @@
 //! **Looking it up.** The maps and their settings are published to the lit passes as group 2 (`Attachments::shadow`);
 //! the lookup is `shadow_visibility` in `shader/toon.wgsl`, which finds a directional light's map by its slot. With
 //! shadows off, or no caster, sampling is switched off and the pass is skipped.
+//!
+//! **The hair shadow** (#2528). After the maps, the casters whose material casts the hair shadow are drawn once more,
+//! from the camera, as their distance from the eye (`shadow/map.rs`), every frame (live ones too: the camera and the hair
+//! move). The surfaces that receive it march toward the light through that distance (`hair_shadow` in
+//! `shader/toon.wgsl`). It
+//! goes with the maps: with shadows off, no casting light, no hair, or an orthographic camera, it is switched off.
 
 use std::collections::HashMap;
 
 use omuzaki_core::glam::Vec3;
-use omuzaki_render_api::{AlphaMode, Light, Pass, RenderError};
+use omuzaki_render_api::{AlphaMode, Light, Pass, Projection, RenderError};
 
 use super::{FramePass, Outcome, PassCx};
 use crate::gpu::DEPTH_FORMAT;
@@ -46,6 +52,17 @@ struct Variant {
     mirrored: bool,
     /// The material discards texels (masked or blended), so the fragment stage runs.
     cutout: bool,
+    /// What it draws into.
+    target: Target,
+}
+
+/// What a caster pipeline draws into.
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+enum Target {
+    /// A shadow map: back faces, the map's matrix, depth only.
+    Map,
+    /// The hair shadow's distance: front faces, the camera's matrix.
+    Hair,
 }
 
 /// See the module docs.
@@ -97,14 +114,18 @@ impl Shadows {
             layout: Some(&self.layout),
             vertex: wgpu::VertexState {
                 module: &self.module,
-                entry_point: Some("vs_main"),
+                entry_point: Some(if variant.target == Target::Hair { "vs_camera" } else { "vs_main" }),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 buffers: &vertex_layouts(),
             },
             primitive: wgpu::PrimitiveState {
                 front_face: if variant.mirrored { wgpu::FrontFace::Cw } else { wgpu::FrontFace::Ccw },
-                // Back faces into the map for single-sided surfaces (see the module docs).
-                cull_mode: (!variant.double_sided).then_some(wgpu::Face::Front),
+                // Back faces into the map for single-sided surfaces (see the module docs); the camera sees front faces.
+                cull_mode: (!variant.double_sided).then_some(if variant.target == Target::Hair {
+                    wgpu::Face::Back
+                } else {
+                    wgpu::Face::Front
+                }),
                 ..Default::default()
             },
             depth_stencil: Some(wgpu::DepthStencilState {
@@ -115,12 +136,26 @@ impl Shadows {
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample: wgpu::MultisampleState::default(),
-            fragment: variant.cutout.then(|| wgpu::FragmentState {
-                module: &self.module,
-                entry_point: Some("fs_cutout"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[],
-            }),
+            fragment: if variant.target == Target::Hair {
+                // The hair's distance into the hair shadow's colour target.
+                Some(wgpu::FragmentState {
+                    module: &self.module,
+                    entry_point: Some(if variant.cutout { "fs_hair_cutout" } else { "fs_hair" }),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: map::HAIR_DISTANCE_FORMAT,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::RED,
+                    })],
+                })
+            } else {
+                variant.cutout.then(|| wgpu::FragmentState {
+                    module: &self.module,
+                    entry_point: Some("fs_cutout"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    targets: &[],
+                })
+            },
             multiview_mask: None,
             cache: None,
         })
@@ -171,10 +206,12 @@ impl FramePass for Shadows {
         let count = casting_lights(&cx.frame.scene.lights).take(most).count();
         let (Some((size, spacing)), true) = (map::settings(cx.frame.quality.shadows), count > 0) else {
             cx.attachments.shadow.disable_from(queue, 0);
+            cx.attachments.shadow.set_hair(queue, false);
             return Ok(Outcome::Skipped);
         };
         if cx.frame.draws.for_pass(Pass::Shadows).next().is_none() {
             cx.attachments.shadow.disable_from(queue, 0);
+            cx.attachments.shadow.set_hair(queue, false);
             return Ok(Outcome::Skipped);
         }
         cx.attachments.shadow.resize(cx.shared, size, count);
@@ -196,11 +233,76 @@ impl FramePass for Shadows {
             self.draw_map(cx, index);
             ran = true;
         }
+        ran |= self.draw_hair(cx);
         Ok(if ran { Outcome::Ran } else { Outcome::Skipped })
     }
 }
 
+/// Whether `material` is drawn into the hair depth.
+fn casts_hair(material: &crate::resource::material::GpuMaterial) -> bool {
+    material.material.hair_shadow.casts
+}
+
 impl Shadows {
+    /// Draws the hair's distance from the camera and switches its lookup on, or switches it off when there is
+    /// no hair or the camera is orthographic. Returns whether it drew.
+    fn draw_hair(&mut self, cx: &mut PassCx<'_>) -> bool {
+        let queue = &cx.shared.gpu.queue;
+        let perspective = matches!(cx.frame.scene.camera.projection, Projection::Perspective { .. });
+        let hair = cx
+            .frame
+            .draws
+            .for_pass(Pass::Shadows)
+            .any(|draw| cx.resources.materials.at(draw.material).is_some_and(casts_hair));
+        if !(perspective && hair) {
+            cx.attachments.shadow.set_hair(queue, false);
+            return false;
+        }
+        let device = &cx.shared.gpu.device;
+        for draw in cx.frame.draws.for_pass(Pass::Shadows) {
+            let Some(material) = cx.resources.materials.at(draw.material).filter(|m| casts_hair(m)) else { continue };
+            let variant = Variant {
+                double_sided: material.material.double_sided,
+                mirrored: draw.mirrored,
+                cutout: !matches!(material.material.alpha, AlphaMode::Opaque),
+                target: Target::Hair,
+            };
+            if !self.pipelines.contains_key(&variant) {
+                let pipeline = self.build(device, variant);
+                self.pipelines.insert(variant, pipeline);
+            }
+        }
+        cx.attachments.shadow.set_hair(queue, true);
+        let frame_group = cx.frame_group();
+        let size = cx.frame.internal_size;
+        let (shared, encoder) = (cx.shared, &mut *cx.encoder);
+        let mut pass = cx.attachments.shadow.begin_hair_pass(shared, encoder, size.x, size.y);
+        // The camera's pipelines read the frame's matrix; the caster group is bound only because the layout has it.
+        let (caster_group, offset) = cx.attachments.shadow.caster_group(0);
+        pass.set_bind_group(0, frame_group, &[]);
+        pass.set_bind_group(2, caster_group, &[offset]);
+        for draw in cx.frame.draws.for_pass(Pass::Shadows) {
+            let (Some(mesh), Some(material)) =
+                (cx.resources.meshes.at(draw.mesh), cx.resources.materials.at(draw.material).filter(|m| casts_hair(m)))
+            else {
+                continue;
+            };
+            let variant = Variant {
+                double_sided: material.material.double_sided,
+                mirrored: draw.mirrored,
+                cutout: !matches!(material.material.alpha, AlphaMode::Opaque),
+                target: Target::Hair,
+            };
+            let Some(pipeline) = self.pipelines.get(&variant) else { continue };
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(1, &material.bind_group, &[]);
+            mesh.draw(&mut pass, draw.instance, cx.resources.morphs.shapes(draw.instance));
+            cx.stats.draw_calls += 1;
+            cx.stats.triangles += mesh.triangles;
+        }
+        true
+    }
+
     /// Draws the casters into map `index`, whose matrix was just published.
     fn draw_map(&mut self, cx: &mut PassCx<'_>, index: usize) {
         // Build any pipeline the frame needs before the render pass borrows the encoder.
@@ -211,6 +313,7 @@ impl Shadows {
                 double_sided: material.material.double_sided,
                 mirrored: draw.mirrored,
                 cutout: !matches!(material.material.alpha, AlphaMode::Opaque),
+                target: Target::Map,
             };
             if !self.pipelines.contains_key(&variant) {
                 let pipeline = self.build(device, variant);
@@ -233,6 +336,7 @@ impl Shadows {
                 double_sided: material.material.double_sided,
                 mirrored: draw.mirrored,
                 cutout: !matches!(material.material.alpha, AlphaMode::Opaque),
+                target: Target::Map,
             };
             let Some(pipeline) = self.pipelines.get(&variant) else { continue };
             pass.set_pipeline(pipeline);

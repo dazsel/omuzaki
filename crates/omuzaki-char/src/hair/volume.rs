@@ -16,15 +16,26 @@
 //! **Fullness** ([`Field::fullness`]) scales how far each lock and shell stands off the head ([`swell`]), more at the crown
 //! or the back as [`HairVolume::crown`] and [`HairVolume::back`] say, fading out below the ears so hanging hair keeps
 //! its fall.
+//!
+//! **Accent pieces** (#2484) ride the volume instead of stretching with it: an ahoge, a bun or a tail moves as one piece
+//! by how far its root rises ([`Accents`]), so it keeps its shape, and its spring chain, ties and anchors move with it.
+//! Their gather locks, which lie along the scalp from the hairline, swell point by point like the rest.
 
-use omuzaki_char_api::{HairClump, HairVolume, HeadSurface};
+use std::collections::BTreeMap;
+
+use omuzaki_char_api::{Anchor, Generator, GroupId, HairClump, HairParams, HairVolume, HeadSurface};
 use omuzaki_core::glam::{DQuat, DVec3, Vec3};
 use omuzaki_core::mesh::MeshData;
 
-use crate::hair::compile::{CompiledEntry, GroupGeometry};
+use crate::hair::compile::{CompiledEntry, GroupGeometry, enabled};
+use crate::hair::r#gen::tail::Chain;
+use crate::hair::r#gen::{ahoge, bun, tail};
 
 /// The polar angles (radians from the top) over which [`swell`] fades out: whole above the first, none below the second.
 const SWELL_FADE: (f64, f64) = (1.6, 2.1);
+/// A lock rooted this close to an accent piece's root is part of the piece and moves with it; one rooted farther off (a
+/// gather lock from the hairline) swells as it lies, metres.
+pub const ACCENT_REACH: f32 = 0.03;
 
 /// The volume's field over one head.
 #[derive(Clone, Debug)]
@@ -112,6 +123,25 @@ impl Field {
         self.fullness * (1.0 + (self.crown - 1.0) * top) * (1.0 + (self.back - 1.0) * behind)
     }
 
+    /// Where `p` lies once the hair has swollen: its height over `head` scaled by [`Self::fullness`], fully over the
+    /// head and fading out below the ears. A point on or inside the head stays where it is.
+    pub fn lifted(&self, head: &dyn HeadSurface, p: Vec3) -> Vec3 {
+        let centre = head.centre();
+        let offset = p - centre;
+        let Some(dir) = offset.try_normalize() else { return p };
+        let surface = head.radius(dir);
+        let height = offset.length() - surface;
+        if height <= 0.0 {
+            return p;
+        }
+        let d = dir.as_dvec3();
+        let fade = smoothstep(-d.y, -SWELL_FADE.0.cos(), -SWELL_FADE.1.cos());
+        let factor = 1.0 + (self.fullness(d) - 1.0) * (1.0 - fade);
+        #[allow(clippy::cast_possible_truncation)] // a factor near 1
+        let height = height * factor as f32;
+        centre + dir * (surface + height)
+    }
+
     /// [`Comb`] from the whorl alone: its distance, and its angle round the whorl from the direction toward the face.
     fn whorl_comb(&self, dir: DVec3) -> Comb {
         let w = self.whorl;
@@ -144,32 +174,99 @@ impl Part {
     }
 }
 
-/// Every lock and shell of `entries` stands off the head as `field`'s fullness says: each point's height over the head
-/// surface is scaled by it, fully over the head and fading out below the ears ([`SWELL_FADE`]). Points on or inside the
-/// head stay where they are.
-pub fn swell(entries: &mut [CompiledEntry], field: &Field, head: &dyn HeadSurface) {
-    let centre = head.centre();
-    let moved = |p: Vec3| -> Vec3 {
-        let offset = p - centre;
-        let Some(dir) = offset.try_normalize() else { return p };
-        let surface = head.radius(dir);
-        let height = offset.length() - surface;
-        if height <= 0.0 {
-            return p;
+/// How far each accent piece of a style moves as the hair swells: the rise of its root, on each side of a mirrored
+/// group. Built once per build and read by [`swell`], the chains and the anchors, so the piece and its rig agree.
+#[derive(Clone, Debug, Default)]
+pub struct Accents {
+    groups: BTreeMap<GroupId, Vec<(Vec3, Vec3)>>,
+}
+
+impl Accents {
+    /// The accent pieces of `params`' enabled ahoge, bun and tail groups, each root lifted by `field`. Empty without a
+    /// field, so nothing moves.
+    pub fn new(params: &HairParams, field: Option<&Field>, head: &dyn HeadSurface) -> Self {
+        let Some(field) = field else { return Self::default() };
+        let mid_x = head.centre().x;
+        let mut groups = BTreeMap::new();
+        for (id, group) in enabled(params) {
+            let root = match &group.generator {
+                Generator::Ahoge(g) => ahoge::root(g, head),
+                Generator::Bun(g) => bun::root(g, head),
+                Generator::Tail(g) => tail::root(g, head),
+                _ => continue,
+            }
+            .as_vec3();
+            let mut roots = vec![root];
+            if group.mirror {
+                roots.push(Vec3::new(2.0 * mid_x - root.x, root.y, root.z));
+            }
+            groups.insert(id.clone(), roots.into_iter().map(|r| (r, field.lifted(head, r) - r)).collect());
         }
-        let d = dir.as_dvec3();
-        let fade = smoothstep(-d.y, -SWELL_FADE.0.cos(), -SWELL_FADE.1.cos());
-        let factor = 1.0 + (field.fullness(d) - 1.0) * (1.0 - fade);
-        #[allow(clippy::cast_possible_truncation)] // a factor near 1
-        let height = height * factor as f32;
-        centre + dir * (surface + height)
-    };
+        Self { groups }
+    }
+
+    /// Whether `group` is an accent piece.
+    pub fn contains(&self, group: &GroupId) -> bool {
+        self.groups.contains_key(group)
+    }
+
+    /// The root of `group` nearest `p`, and how far it moves (`None` if the group is not an accent piece).
+    fn nearest(&self, group: &GroupId, p: Vec3) -> Option<(Vec3, Vec3)> {
+        self.groups
+            .get(group)?
+            .iter()
+            .copied()
+            .min_by(|a, b| a.0.distance_squared(p).total_cmp(&b.0.distance_squared(p)))
+    }
+
+    /// How far a point of `group`'s rig at `p` moves: by its nearer root's rise (zero for any other group).
+    pub fn shift(&self, group: &GroupId, p: Vec3) -> Vec3 {
+        self.nearest(group, p).map_or(Vec3::ZERO, |(_, shift)| shift)
+    }
+
+    /// `chains` of `group` moved with the piece.
+    pub fn move_chains(&self, group: &GroupId, chains: &mut [Chain]) {
+        for chain in chains {
+            let shift = chain.rest.first().map_or(Vec3::ZERO, |&root| self.shift(group, root));
+            for p in &mut chain.rest {
+                *p += shift;
+            }
+        }
+    }
+
+    /// `anchor` of `group` moved with the piece.
+    pub fn move_anchor(&self, group: &GroupId, anchor: &mut Anchor) {
+        anchor.position += self.shift(group, anchor.position);
+    }
+}
+
+/// Every lock and shell of `entries` stands off the head as `field`'s fullness says ([`Field::lifted`]): each point's
+/// height over the head surface is scaled by it, fully over the head and fading out below the ears ([`SWELL_FADE`]).
+/// Points on or inside the head stay where they are. The locks of an accent piece rooted at its root, and its ties, move
+/// as one with the root instead ([`Accents`]).
+pub fn swell(entries: &mut [CompiledEntry], field: &Field, head: &dyn HeadSurface, accents: &Accents) {
+    let moved = |p: Vec3| field.lifted(head, p);
     for entry in entries {
+        let id = &entry.id;
         for clump in &mut entry.group.clumps {
-            swell_clump(clump, &moved);
+            let root = clump.rest.first().copied().unwrap_or_default();
+            match accents.nearest(id, root) {
+                Some((at, shift)) if at.distance(root) <= ACCENT_REACH => {
+                    for p in &mut clump.rest {
+                        *p += shift;
+                    }
+                }
+                _ => swell_clump(clump, &moved),
+            }
         }
-        if let GroupGeometry::Shell(shell) = &mut entry.group.geometry {
-            swell_shell(shell, &moved);
+        match &mut entry.group.geometry {
+            GroupGeometry::Shell(shell) => swell_shell(shell, &moved),
+            GroupGeometry::Tied { ties } => {
+                for tie in ties {
+                    tie.centre += accents.shift(id, tie.centre);
+                }
+            }
+            _ => {}
         }
     }
 }

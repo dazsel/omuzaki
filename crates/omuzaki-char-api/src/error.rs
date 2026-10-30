@@ -181,6 +181,10 @@ pub enum BuildError {
         /// Every invalid field, with its path under `weight_brushes/<part>`.
         errors: ParamErrors,
     },
+    /// The character's design layer (dials, sculpt, layers, age) is invalid: the message names the field, as a path
+    /// under `design`.
+    #[error("the design layer is invalid: {0}")]
+    Design(String),
     /// A generator failed for a reason of its own.
     #[error("part '{part}' could not be built: {message}")]
     Part {

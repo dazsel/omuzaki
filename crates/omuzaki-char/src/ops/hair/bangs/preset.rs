@@ -30,7 +30,7 @@ pub struct HairBangsPreset {
     pub part: PartId,
     /// The bangs group of the part.
     pub group: GroupId,
-    /// The preset: `blunt`, `side-swept`, `curtain`, `wispy` or `none`. `hair.bangs.list_presets` shows what each
+    /// The preset: `blunt`, `side-swept`, `curtain`, `wispy`, `anime` or `none`. `hair.bangs.list_presets` shows what each
     /// looks like.
     pub preset: String,
 }
@@ -39,7 +39,7 @@ impl Op for HairBangsPreset {
     fn meta() -> OpMeta {
         OpMeta {
             name: "hair.bangs.preset",
-            summary: "Restyle a bangs group with a preset (blunt, side-swept, curtain, wispy, none), replacing its \
+            summary: "Restyle a bangs group with a preset (blunt, side-swept, curtain, wispy, anime, none), replacing its \
                       whole fringe.",
             kind: OpKind::Edit,
             scope: Scope::EditCharacter,

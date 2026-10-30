@@ -220,3 +220,34 @@ fn recolour_goes_through_the_palette_by_default_and_into_the_part_on_request() {
     let e = refused(&doc, "hair.recolour", json!({"character": "kit", "part": "hair", "mid": "purple"}));
     assert_error(&e, ErrorCode::Invalid, "mid", &["purple"], &[]);
 }
+
+#[test]
+fn recolour_brings_the_shadow_lines_outline_ring_and_rim_with_the_new_colour() {
+    // Platinum hair takes a light, near neutral shadow and pale lines, not the kit brown's dark ones.
+    let mut doc = kit();
+    let before = at(&doc, &format!("{SHADING}/shade"));
+    round_trip(&mut doc, "hair.recolour", json!({"character": "kit", "part": "hair", "mid": "#f1f3f7"}));
+    let colour = |doc: &MemDoc, field: &str| -> Colour {
+        serde_json::from_value(at(doc, &format!("{SHADING}/{field}")).unwrap()).unwrap()
+    };
+    let companions = omuzaki_char::hair::colour::companions("#f1f3f7".parse().unwrap());
+    for (field, want) in [
+        ("shade", companions.shade),
+        ("line", companions.line),
+        ("outline", companions.outline),
+        ("ring", companions.ring),
+        ("rim", companions.rim),
+    ] {
+        assert_eq!(colour(&doc, field), want, "{field}");
+    }
+    assert_ne!(at(&doc, &format!("{SHADING}/shade")), before);
+    let shade = colour(&doc, "shade");
+    assert!(shade.r > 200 && shade.r.abs_diff(shade.b) < 12, "a light, neutral shadow: {shade:?}");
+    // `derive: false` leaves them as they were.
+    round_trip(
+        &mut doc,
+        "hair.recolour",
+        json!({"character": "kit", "part": "hair", "mid": "#d04080", "derive": false}),
+    );
+    assert_eq!(colour(&doc, "shade"), companions.shade);
+}

@@ -133,10 +133,12 @@ fn skin_material(
         }),
         overlays: Vec::new(),
         alpha: omuzaki_render_api::AlphaMode::Opaque,
+        order_independent: false,
         double_sided: false,
         vertex_colours: true,
         outline: Some(Outline { colour: colour(&params.skin.line)?, width: OUTLINE_WIDTH }),
         receives_shadows: true,
+        hair_shadow: omuzaki_render_api::HairShadow::NONE,
         uv_transform: omuzaki_render_api::UvTransform::IDENTITY,
     })
 }
