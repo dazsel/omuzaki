@@ -80,6 +80,7 @@ fn three() -> usize {
     3
 }
 
+#[allow(clippy::disallowed_methods)] // a command-line tool reads the recipe and writes the picture the user names
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = std::env::args_os().skip(1);
     let (Some(recipe), Some(out)) = (args.next(), args.next()) else {

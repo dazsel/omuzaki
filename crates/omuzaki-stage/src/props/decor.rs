@@ -399,7 +399,7 @@ mod tests {
         ];
         for build in builds {
             let out = build.expect("builds");
-            assert!(!out.parts.is_empty());
+            assert_ne!(out.parts.len(), 0, "a prop with no parts");
             let lowest = out
                 .parts
                 .iter()
