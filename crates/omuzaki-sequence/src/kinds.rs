@@ -287,8 +287,25 @@ pub struct SkylineParams {
     pub windows: Colour,
     /// Lit windows (glowing) rather than painted ones.
     pub lit: bool,
+    /// How the windows are laid out on each front.
+    pub facade: Facade,
     /// Picks the heights, widths and shades.
     pub seed: u32,
+}
+
+/// How a skyline's windows are laid out on a building's front.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Facade {
+    /// A band of windows a storey apart, across the front. The default.
+    #[default]
+    Rows,
+    /// Tall strips of glass from the first storey to near the roof, as a flat-shaded cartoon city draws them.
+    Columns,
+    /// Single windows in rows and columns, as an office block.
+    Grid,
+    /// A blank front.
+    None,
 }
 
 impl Default for SkylineParams {
@@ -303,6 +320,7 @@ impl Default for SkylineParams {
             variation: 0.35,
             windows: Colour::hex(0x00cf_e3ff),
             lit: false,
+            facade: Facade::Rows,
             seed: 7,
         }
     }
@@ -312,7 +330,7 @@ impl PropKind for Skyline {
     type Params = SkylineParams;
     const ID: &'static str = "skyline";
     const SUMMARY: &'static str = "A city skyline: a row of box buildings of seeded heights and widths with roof caps and \
-        rows of windows, painted or lit. Width, depth, count, height range, colours and seed.";
+        windows in rows, columns or a grid, painted or lit. Width, depth, count, height range, colours, facade and seed.";
 
     fn validate(p: &SkylineParams) -> Result<(), String> {
         between("width", p.width, 2.0, 400.0)?;
@@ -356,16 +374,42 @@ impl PropKind for Skyline {
                     darker(shade, 0.15),
                 );
             }
-            // Rows of windows on the front: a band a storey apart, up to 24 storeys.
+            // The windows on the front, a storey apart up to 24 storeys.
             let storey = (height / 24.0).max(2.4 * (p.max_height / 80.0).max(0.25));
             let rows = ((height - storey) / storey).floor().clamp(0.0, 24.0) as u32;
-            for row in 0..rows {
-                let y = storey * (row as f32 + 0.75);
-                windows.block(
-                    Vec3::new(x - w * 0.38, y, z + d * 0.5),
-                    Vec3::new(x + w * 0.38, y + storey * 0.38, z + d * 0.5 + 0.02 * slot),
-                    p.windows,
-                );
+            let (front, proud) = (z + d * 0.5, z + d * 0.5 + 0.02 * slot);
+            let pane = |windows: &mut Shape, x0: f32, x1: f32, y0: f32, y1: f32| {
+                windows.block(Vec3::new(x0, y0, front), Vec3::new(x1, y1, proud), p.windows);
+            };
+            match p.facade {
+                Facade::Rows => {
+                    for row in 0..rows {
+                        let y = storey * (row as f32 + 0.75);
+                        pane(&mut windows, x - w * 0.38, x + w * 0.38, y, y + storey * 0.38);
+                    }
+                }
+                Facade::Columns => {
+                    // Three or four strips, as wide as the gaps between them, from the first storey to a storey
+                    // below the roof.
+                    let strips = if r(6) > 0.5 { 4 } else { 3 };
+                    let pitch = w * 0.8 / (strips as f32 * 2.0 - 1.0);
+                    for k in 0..strips {
+                        let x0 = x - w * 0.4 + pitch * 2.0 * k as f32;
+                        pane(&mut windows, x0, x0 + pitch, storey, (height - storey).max(storey * 1.5));
+                    }
+                }
+                Facade::Grid => {
+                    let across = ((w / storey) * 1.5).round().clamp(2.0, 12.0) as u32;
+                    let pitch = w * 0.8 / across as f32;
+                    for row in 0..rows {
+                        let y = storey * (row as f32 + 0.75);
+                        for k in 0..across {
+                            let x0 = x - w * 0.4 + pitch * (k as f32 + 0.2);
+                            pane(&mut windows, x0, x0 + pitch * 0.6, y, y + storey * 0.45);
+                        }
+                    }
+                }
+                Facade::None => {}
             }
         }
         let line = darker(p.colour, 0.75);
@@ -635,5 +679,31 @@ mod tests {
         assert_eq!(a.parts[0].mesh.positions, b.parts[0].mesh.positions);
         let c = Skyline::build(&SkylineParams { seed: 8, ..SkylineParams::default() }).unwrap();
         assert_ne!(a.parts[0].mesh.positions, c.parts[0].mesh.positions);
+    }
+
+    #[test]
+    fn a_facade_lays_the_windows_out_in_rows_columns_or_a_grid() {
+        let panes = |facade: Facade| {
+            let out = Skyline::build(&SkylineParams { facade, ..SkylineParams::default() }).unwrap();
+            let windows = &out.parts[1].mesh;
+            // Each pane is a box of 24 vertices; its height over its width says strip or band.
+            let boxes: Vec<(f32, f32)> = windows
+                .positions
+                .chunks(24)
+                .map(|b| {
+                    let (lo, hi) = b
+                        .iter()
+                        .fold((Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)), |(lo, hi), p| (lo.min(*p), hi.max(*p)));
+                    (hi.x - lo.x, hi.y - lo.y)
+                })
+                .collect();
+            boxes
+        };
+        let (rows, columns, grid) = (panes(Facade::Rows), panes(Facade::Columns), panes(Facade::Grid));
+        assert!(rows.iter().all(|(w, h)| w > h), "rows are wide bands");
+        assert!(columns.iter().all(|(w, h)| h > w), "columns are tall strips");
+        assert!(grid.len() > rows.len() * 2, "a grid splits each row into windows: {} {}", grid.len(), rows.len());
+        let blank = Skyline::build(&SkylineParams { facade: Facade::None, ..SkylineParams::default() }).unwrap();
+        assert!(blank.parts.len() < 2 || blank.parts[1].mesh.positions.is_empty(), "a blank front has no windows");
     }
 }

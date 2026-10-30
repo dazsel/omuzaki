@@ -87,6 +87,53 @@ pub struct Stroke {
     pub width: f32,
 }
 
+/// The most stops in one gradient.
+pub const MAX_STOPS: usize = 16;
+
+/// A fill that fades through colours across the layer's box.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Gradient {
+    /// The direction it runs, degrees clockwise from top to bottom: 0 runs down, 90 runs left to right.
+    #[serde(default)]
+    pub angle: f32,
+    /// Its colours, 2 to 16, in order along the direction.
+    pub stops: Vec<GradientAt>,
+}
+
+impl Gradient {
+    /// Checks the angle and the stops, naming `at`.
+    ///
+    /// # Errors
+    /// A sentence naming the first bad value.
+    pub fn check(&self, at: &str) -> Result<(), String> {
+        if !self.angle.is_finite() {
+            return Err(format!("{at}.angle is a number of degrees"));
+        }
+        if !(2..=MAX_STOPS).contains(&self.stops.len()) {
+            return Err(format!("{at}.stops: 2 to {MAX_STOPS} of them"));
+        }
+        let mut last = 0.0;
+        for (i, stop) in self.stops.iter().enumerate() {
+            if !(last..=1.0).contains(&stop.at) {
+                return Err(format!("{at}.stops[{i}].at is {last} to 1, after the stop before it"));
+            }
+            last = stop.at;
+        }
+        Ok(())
+    }
+}
+
+/// One colour of a gradient.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GradientAt {
+    /// Where it sits along the gradient, 0 (start) to 1 (end), no earlier than the stop before it.
+    pub at: f32,
+    /// Its colour.
+    pub colour: Colour,
+}
+
 /// What a layer draws.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -134,6 +181,26 @@ pub enum Draw {
         /// Degrees of the ring drawn, clockwise from the top.
         #[serde(default = "full_turn")]
         sweep: Track<f32>,
+    },
+    /// A band whose top and bottom edges bow: the front of a curved desk, a stage lip, a road seen in perspective. Each
+    /// edge is a parabola through its apex, so a band seen from one side of a curved set keeps its shape when `apex`
+    /// moves off the middle.
+    Band {
+        /// Width, points.
+        w: f32,
+        /// Height at the apex, points.
+        h: f32,
+        /// How far the top edge's ends sit below its apex, points; negative lifts them (a desk seen from above bows
+        /// down at its ends, one seen from below bows up).
+        #[serde(default)]
+        bow: f32,
+        /// The bottom edge's bow, points; the same as `bow` when left out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bow_bottom: Option<f32>,
+        /// Where the apex sits across the band, 0 (left end) to 1 (right end); -2 to 3 puts it off the band, for a
+        /// piece of a longer curve (a stripe across only part of a curved desk).
+        #[serde(default = "middle_of")]
+        apex: f32,
     },
     /// A closed polygon through points, in points from the layer's origin (y down).
     Polygon {
@@ -202,6 +269,10 @@ pub enum Draw {
     },
 }
 
+fn middle_of() -> f32 {
+    0.5
+}
+
 fn text_size() -> f32 {
     96.0
 }
@@ -248,7 +319,8 @@ fn line_band() -> f32 {
 
 impl Draw {
     /// Every kind's name, for listings.
-    pub const KINDS: [&'static str; 8] = ["text", "rect", "ellipse", "ring", "polygon", "bars", "icon", "lines"];
+    pub const KINDS: [&'static str; 9] =
+        ["text", "rect", "ellipse", "ring", "band", "polygon", "bars", "icon", "lines"];
 
     /// This one's kind.
     #[must_use]
@@ -258,6 +330,7 @@ impl Draw {
             Self::Rect { .. } => "rect",
             Self::Ellipse { .. } => "ellipse",
             Self::Ring { .. } => "ring",
+            Self::Band { .. } => "band",
             Self::Polygon { .. } => "polygon",
             Self::Bars { .. } => "bars",
             Self::Icon { .. } => "icon",
@@ -323,6 +396,10 @@ pub struct Layer {
     /// A second colour the fill fades to, top to bottom.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fill_to: Option<Colour>,
+    /// A gradient with several stops in any direction (a desk lit from one side, a sky with a horizon band), in place
+    /// of `fill` and `fill_to`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gradient: Option<Gradient>,
     /// A line along the edge.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stroke: Option<Stroke>,
@@ -393,6 +470,12 @@ impl Layer {
         if !(0.0..=1.0).contains(&self.motion_blur) {
             return Err(format!("{at}.motion_blur is 0 to 1"));
         }
+        if let Some(g) = &self.gradient {
+            if self.fill_to.is_some() {
+                return Err(format!("{at}: give a gradient or fill_to, not both"));
+            }
+            g.check(&format!("{at}.gradient"))?;
+        }
         if self.end.is_some_and(|end| end <= self.start) {
             return Err(format!("{at}: end comes after start"));
         }
@@ -424,6 +507,18 @@ impl Layer {
                 positive("radius", *radius)?;
                 positive("width", *width)?;
                 sweep.check(&format!("{at}.draw.sweep"))?;
+            }
+            Draw::Band { w, h, bow, bow_bottom, apex } => {
+                positive("w", *w)?;
+                positive("h", *h)?;
+                for (name, v) in [("bow", Some(*bow)), ("bow_bottom", *bow_bottom)] {
+                    if v.is_some_and(|v| !v.is_finite() || v.abs() > 20_000.0) {
+                        return Err(format!("{at}.draw.{name} is -20000 to 20000 points"));
+                    }
+                }
+                if !(-2.0..=3.0).contains(apex) {
+                    return Err(format!("{at}.draw.apex is -2 to 3"));
+                }
             }
             Draw::Polygon { points } => {
                 if points.len() < 3 || points.len() > 256 {
@@ -590,8 +685,10 @@ impl<'a> Painter<'a> {
         for shape in &shapes {
             let colour = shape.colour.unwrap_or(fill);
             let mut paint = Paint { anti_alias: true, ..Paint::default() };
-            paint.shader = match (layer.fill_to, shape.colour) {
-                (Some(to), None) => LinearGradient::new(
+            paint.shader = match (&layer.gradient, layer.fill_to, shape.colour) {
+                (Some(g), _, None) => gradient_shader(g, bounds, opacity)
+                    .unwrap_or_else(|| Shader::SolidColor(sk_colour(colour, opacity))),
+                (None, Some(to), None) => LinearGradient::new(
                     Point::from_xy(0.0, bounds.top()),
                     Point::from_xy(0.0, bounds.bottom()),
                     vec![
@@ -624,6 +721,23 @@ impl<'a> Painter<'a> {
             }
         }
     }
+}
+
+/// A gradient's shader across `bounds`: its line runs through the box's middle at `angle`, long enough that the first
+/// and last stops land on the box's two farthest corners along it.
+fn gradient_shader(g: &Gradient, bounds: Rect, opacity: f32) -> Option<Shader<'static>> {
+    let (sin, cos) = g.angle.to_radians().sin_cos();
+    let (dx, dy) = (sin, cos);
+    let reach = f32::midpoint(dx.abs() * bounds.width(), dy.abs() * bounds.height());
+    let (cx, cy) = (bounds.left() + bounds.width() / 2.0, bounds.top() + bounds.height() / 2.0);
+    let stops = g.stops.iter().map(|s| GradientStop::new(s.at, sk_colour(s.colour, opacity))).collect();
+    LinearGradient::new(
+        Point::from_xy(cx - dx * reach, cy - dy * reach),
+        Point::from_xy(cx + dx * reach, cy + dy * reach),
+        stops,
+        SpreadMode::Pad,
+        Transform::identity(),
+    )
 }
 
 /// The mask of a partly revealed layer, or `None` when it shows whole.
@@ -702,6 +816,9 @@ fn shapes(draw: &Draw, t: f32) -> Vec<Shape> {
             shape(Rect::from_xywh(0.0, 0.0, *w, *h).and_then(PathBuilder::from_oval), None).into_iter().collect()
         }
         Draw::Ring { radius, width, sweep } => shape(ring(*radius, *width, sweep.at(t)), None).into_iter().collect(),
+        Draw::Band { w, h, bow, bow_bottom, apex } => {
+            shape(band(*w, *h, *bow, bow_bottom.unwrap_or(*bow), *apex), None).into_iter().collect()
+        }
         Draw::Polygon { points } => shape(polygon(points), None).into_iter().collect(),
         Draw::Bars { values, max, labels, captions, icons, colours, slot, w, h, gap, grow } => bars(
             &Bars { values, max: *max, labels, captions, icons, colours, slot: *slot, w: *w, h: *h, gap: *gap },
@@ -731,6 +848,33 @@ fn rounded_rect(x: f32, y: f32, w: f32, h: f32, radius: f32) -> Option<Path> {
     pb.cubic_to(x + r - k, y + h, x, y + h - r + k, x, y + h - r);
     pb.line_to(x, y + r);
     pb.cubic_to(x, y + r - k, x + r - k, y, x + r, y);
+    pb.close();
+    pb.finish()
+}
+
+/// A band `w` by `h` whose edges are parabolas through the apex at `apex` of the width, each end `bow` (top) and
+/// `bow_bottom` points off it.
+fn band(w: f32, h: f32, bow: f32, bow_bottom: f32, apex: f32) -> Option<Path> {
+    const STEPS: u16 = 48;
+    let centre = w * apex.clamp(-2.0, 3.0);
+    // The farther end lands exactly on the bow; the nearer one partway along the same parabola.
+    let reach = centre.abs().max((w - centre).abs()).max(f32::EPSILON);
+    let at = |i: u16, bow: f32, base: f32| {
+        let x = w * f32::from(i) / f32::from(STEPS);
+        let d = (x - centre) / reach;
+        (x, base + bow * d * d)
+    };
+    let mut pb = PathBuilder::new();
+    let (x0, y0) = at(0, bow, 0.0);
+    pb.move_to(x0, y0);
+    for i in 1..=STEPS {
+        let (x, y) = at(i, bow, 0.0);
+        pb.line_to(x, y);
+    }
+    for i in (0..=STEPS).rev() {
+        let (x, y) = at(i, bow_bottom, h);
+        pb.line_to(x, y);
+    }
     pb.close();
     pb.finish()
 }
@@ -1141,9 +1285,65 @@ mod tests {
     }
 
     #[test]
+    fn a_band_bows_about_its_apex() {
+        // Frame-wide, apex a quarter across, ends lifted 100 points on top and 40 below (a curved desk seen from its
+        // left): at a fifth of the scale, 20 and 8 pixels at the far end.
+        let band = layer(serde_json::json!({"id": "b", "draw": {"kind": "band", "w": 1080, "h": 200, "bow": -100,
+            "bow_bottom": -40, "apex": 0.25}}));
+        band.check("b").unwrap();
+        let p = painted(&[band], 0.0);
+        let column = |x: usize| {
+            let rows: Vec<usize> = (0..384).filter(|y| p.data()[(y * 216 + x) * 4 + 3] > 128).collect();
+            (rows[0] as f32, *rows.last().unwrap() as f32 + 1.0)
+        };
+        let (apex, near, far) = (column(54), column(1), column(214));
+        assert!((apex.1 - apex.0 - 40.0).abs() <= 1.0, "200 points high at the apex: {apex:?}");
+        assert!((apex.0 - far.0 - 20.0).abs() <= 1.5, "the far end's top lifts 20 pixels: {apex:?} {far:?}");
+        assert!((apex.1 - far.1 - 8.0).abs() <= 1.5, "its bottom 8: {apex:?} {far:?}");
+        assert!(apex.0 - near.0 < 3.5, "the near end lifts only a ninth as much: {apex:?} {near:?}");
+    }
+
+    #[test]
+    fn a_gradient_runs_through_its_stops_in_its_direction() {
+        let across = layer(serde_json::json!({"id": "g", "draw": {"kind": "rect", "w": 1080, "h": 1920},
+            "gradient": {"angle": 90, "stops": [{"at": 0, "colour": "#ff0000"}, {"at": 0.5, "colour": "#00ff00"},
+            {"at": 1, "colour": "#0000ff"}]}}));
+        across.check("g").unwrap();
+        let p = painted(&[across], 0.0);
+        let at = |x: usize, y: usize| {
+            let px = &p.data()[(y * 216 + x) * 4..][..3];
+            [px[0], px[1], px[2]]
+        };
+        assert!(at(1, 100)[0] > 240 && at(214, 100)[2] > 240, "red at the left, blue at the right");
+        assert!(at(108, 10)[1] > 240 && at(108, 370)[1] > 240, "green down the middle, top to bottom");
+        let down = layer(serde_json::json!({"id": "g", "draw": {"kind": "rect", "w": 1080, "h": 1920},
+            "gradient": {"stops": [{"at": 0, "colour": "#000000"}, {"at": 1, "colour": "#ffffff"}]}}));
+        let p = painted(&[down], 0.0);
+        let (top, bottom) = (p.data()[(2 * 216 + 108) * 4], p.data()[(381 * 216 + 108) * 4]);
+        assert!(top < 10 && bottom > 245, "the default runs down: {top} then {bottom}");
+    }
+
+    #[test]
     fn bad_layers_are_refused() {
+        for (gradient, says) in [
+            (serde_json::json!({"stops": [{"at": 0, "colour": "#000000"}]}), "2 to 16"),
+            (
+                serde_json::json!({"stops": [{"at": 0.6, "colour": "#000000"}, {"at": 0.4, "colour": "#ffffff"}]}),
+                "after",
+            ),
+        ] {
+            let l =
+                layer(serde_json::json!({"id": "g", "draw": {"kind": "rect", "w": 10, "h": 10}, "gradient": gradient}));
+            assert!(l.check("l").unwrap_err().contains(says), "{says}");
+        }
+        let both =
+            layer(serde_json::json!({"id": "g", "draw": {"kind": "rect", "w": 10, "h": 10}, "fill_to": "#000000",
+            "gradient": {"stops": [{"at": 0, "colour": "#000000"}, {"at": 1, "colour": "#ffffff"}]}}));
+        assert!(both.check("l").unwrap_err().contains("not both"));
         let l = layer(serde_json::json!({"id": "i", "draw": {"kind": "icon", "name": "unicorn"}}));
         assert!(l.check("l").unwrap_err().contains("no icon"));
+        let l = layer(serde_json::json!({"id": "b", "draw": {"kind": "band", "w": 100, "h": 10, "apex": 3.5}}));
+        assert!(l.check("l").unwrap_err().contains("apex is -2 to 3"));
     }
 }
 

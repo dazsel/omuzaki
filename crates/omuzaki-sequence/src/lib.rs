@@ -10,8 +10,8 @@
 //! | [`curve`] | the easing library, keys and tracks |
 //! | [`def`] | the sequence file: [`SequenceDef`](def::SequenceDef), its shots, actors and props |
 //! | [`motion`] | motion styles: smooth, anime on twos and threes, limited, snappy cartoon, rubber-hose, stop-motion |
-//! | [`volume`] | toon volumes: smoke, goo, cloud, steam, fire and dust as meshed, cel-shaded puffs |
-//! | [`layer`] | motion-graphics layers: text, shapes, rings, bar charts, icons and speed lines |
+//! | [`volume`] | toon volumes: smoke, goo, cloud, steam, fire, dust and splash as meshed, cel-shaded puffs |
+//! | [`layer`] | motion-graphics layers: text, shapes, bowed bands, rings, bar charts, icons, speed lines, gradients |
 //! | [`render`] | the render loop: shots staged as they show, composited with the layers |
 //! | [`ops`] | the `sequence.*` ops: set, key, delete, get, list, check, kinds, render, stills |
 //! | [`kinds`] | the prop kinds `news-desk`, `skyline`, `cloud-bank` and `card` |

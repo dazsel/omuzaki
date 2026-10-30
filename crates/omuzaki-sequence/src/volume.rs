@@ -1,5 +1,6 @@
-//! Toon volumes: cel-shaded smoke, goo, cloud, steam, fire and dust that billow, grow and fade like the hand-drawn
-//! effects of an anime or a cartoon, as solid surfaces with hard two-tone shading and an ink line.
+//! Toon volumes: cel-shaded smoke, goo, cloud, steam, fire, dust and splash that billow, grow and fade like the
+//! hand-drawn effects of an anime or a cartoon, as surfaces with hard two-tone shading and an ink line, solid or
+//! see-through.
 //!
 //! A volume is a field of puffs. An emitter (a point in the world or on an actor's bone) releases puffs at a rate; each
 //! rises and spreads, swells, wobbles in a turbulent drift, then thins away. The puffs melt into one surface (a smooth
@@ -7,13 +8,13 @@
 //! every frame with surface nets and drawn with the toon shader and an outline. Everything is a pure function of time
 //! and the emitter's path, so any frame renders on its own and two renders match.
 //!
-//! The parameters are the ones an effects animator reaches for: rate, life, size, rise, spread, turbulence, density
-//! over time, colours, line; the presets set them for each look.
+//! The parameters are the ones an effects animator reaches for: rate, life, size, rise, spread, turbulence, gravity,
+//! density over time, colours, opacity, line; the presets set them for each look.
 
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::Vec3;
 use omuzaki_core::mesh::MeshData;
-use omuzaki_render_api::{Material, Outline, Rim, Shading, Toon};
+use omuzaki_render_api::{AlphaMode, Material, Outline, Rim, Shading, Toon};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -42,11 +43,13 @@ pub enum VolumePreset {
     Fire,
     /// Low tan dust that spreads along the ground.
     Dust,
+    /// Liquid thrown up and out that falls back in sheets and drops, see-through: a slime burst, spray, paint.
+    Splash,
 }
 
 impl VolumePreset {
     /// Every preset, for listings.
-    pub const ALL: [Self; 6] = [Self::Smoke, Self::Goo, Self::Cloud, Self::Steam, Self::Fire, Self::Dust];
+    pub const ALL: [Self; 7] = [Self::Smoke, Self::Goo, Self::Cloud, Self::Steam, Self::Fire, Self::Dust, Self::Splash];
 
     /// The preset's name.
     pub fn name(self) -> &'static str {
@@ -57,6 +60,7 @@ impl VolumePreset {
             Self::Steam => "steam",
             Self::Fire => "fire",
             Self::Dust => "dust",
+            Self::Splash => "splash",
         }
     }
 
@@ -73,6 +77,8 @@ impl VolumePreset {
             rise,
             spread,
             turbulence,
+            gravity: 0.0,
+            opacity: 1.0,
         };
         match self {
             Self::Smoke => t(0x00c8_c4cc, [0.62, 0.6, 0.7], 0x004a_4654, 9.0, 2.6, 0.2, 0.45, 0.18, 0.55),
@@ -83,6 +89,11 @@ impl VolumePreset {
                 Tuning { glow: 1.2, ..t(0x00ff_a030, [0.95, 0.45, 0.2], 0x00a0_3010, 16.0, 0.9, 0.13, 1.1, 0.1, 0.8) }
             }
             Self::Dust => t(0x00d8_c4a0, [0.72, 0.64, 0.55], 0x006e_5c44, 10.0, 2.0, 0.16, 0.08, 0.6, 0.45),
+            Self::Splash => Tuning {
+                gravity: 4.5,
+                opacity: 0.8,
+                ..t(0x009f_dcff, [0.62, 0.8, 0.92], 0x0030_6a8a, 40.0, 1.3, 0.09, 2.4, 1.3, 0.5)
+            },
         }
     }
 }
@@ -110,6 +121,10 @@ pub struct Tuning {
     pub spread: f32,
     /// 0 to 1: how much the drift and the edge's noise break the shapes up.
     pub turbulence: f32,
+    /// Metres a second squared down: thrown liquid arcs back to the ground.
+    pub gravity: f32,
+    /// 0 (unseen) to 1 (solid): how much shows through.
+    pub opacity: f32,
 }
 
 /// Where a volume's puffs come from.
@@ -191,6 +206,12 @@ pub struct VolumeDef {
     /// Turbulence, 0 to 1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turbulence: Option<f32>,
+    /// Pull down, metres a second squared, 0 to 20 (a splash falls back).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gravity: Option<f32>,
+    /// How solid, 0.05 to 1: below 1 what is behind shows through (slime, spray, a thin smoke).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opacity: Option<f32>,
     /// How thick it is over time, 0 to 2: scales every puff (key it up to boil over, down to clear).
     #[serde(default = "density")]
     pub density: Track<f32>,
@@ -229,6 +250,8 @@ impl VolumeDef {
             rise: self.rise.unwrap_or(p.rise),
             spread: self.spread.unwrap_or(p.spread),
             turbulence: self.turbulence.unwrap_or(p.turbulence),
+            gravity: self.gravity.unwrap_or(p.gravity),
+            opacity: self.opacity.unwrap_or(p.opacity),
         }
     }
 
@@ -248,6 +271,10 @@ impl VolumeDef {
         });
         material.outline = (self.line_width > 0.0).then_some(Outline { colour: t.line, width: self.line_width });
         material.receives_shadows = false;
+        if t.opacity < 1.0 {
+            material.base = Colour::from_linear(lit, t.opacity.clamp(0.0, 1.0));
+            material.alpha = AlphaMode::Blend;
+        }
         material
     }
 
@@ -271,6 +298,8 @@ impl VolumeDef {
         range("spread", t.spread, 0.0, 5.0)?;
         range("turbulence", t.turbulence, 0.0, 1.0)?;
         range("glow", t.glow, 0.0, 4.0)?;
+        range("gravity", t.gravity, 0.0, 20.0)?;
+        range("opacity", t.opacity, 0.05, 1.0)?;
         range("line_width", self.line_width, 0.0, 0.05)?;
         range("emitter.radius", self.emitter.radius, 0.0, 10.0)?;
         if !(16..=MAX_RESOLUTION).contains(&self.resolution) {
@@ -365,7 +394,8 @@ pub fn puffs(def: &VolumeDef, t: f32, seed: u32, emitter: &dyn Fn(f32) -> Vec3) 
         let start = emitter(born) + dir * def.emitter.radius * r(4).cbrt();
         let out_dir = Vec3::new(dir.x, 0.0, dir.z).normalize_or_zero();
         let speed = 0.7 + 0.6 * r(5);
-        let travel = Vec3::Y * tune.rise * speed * age + out_dir * tune.spread * speed * age;
+        let travel =
+            Vec3::Y * (tune.rise * speed * age - 0.5 * tune.gravity * age * age) + out_dir * tune.spread * speed * age;
         // A turbulent drift: each puff wanders on its own slow noise.
         let wander = tune.turbulence * tune.size * 1.2;
         let drift = Vec3::new(
@@ -615,6 +645,30 @@ mod tests {
         let b = mesh(&volume, 1.3, 9, &at).unwrap();
         assert_eq!(a.positions, b.positions);
         assert_eq!(a.indices, b.indices);
+    }
+
+    #[test]
+    fn a_splash_arcs_up_and_falls_back_and_shows_what_is_behind() {
+        let volume = def(VolumePreset::Splash);
+        let at = |_: f32| Vec3::ZERO;
+        let t = volume.tuning();
+        // A puff born at the start peaks near rise / gravity and is back below its peak by its life's end.
+        let height = |age: f32| {
+            let one = VolumeDef { stop: Some(0.0), ..volume.clone() };
+            let p = puffs(&one, age, 3, &at);
+            p.iter().map(|p| p.centre.y).sum::<f32>() / p.len().max(1) as f32
+        };
+        let peak = t.rise / t.gravity;
+        assert!(height(peak) > height(0.1), "it rises first");
+        assert!(height(t.life * 0.95) < height(peak) - 0.3, "then falls: {} at the peak", height(peak));
+        let material = volume.material();
+        material.validate().unwrap();
+        assert_eq!(material.alpha, AlphaMode::Blend);
+        assert!((material.base.alpha() - 0.8).abs() < 0.01);
+        let solid = VolumeDef { opacity: Some(1.0), ..volume.clone() };
+        assert_eq!(solid.material().alpha, AlphaMode::Opaque, "a solid one stays opaque");
+        let thin = VolumeDef { opacity: Some(0.0), ..volume };
+        assert!(thin.check("v", &[]).unwrap_err().contains("opacity"));
     }
 
     #[test]
