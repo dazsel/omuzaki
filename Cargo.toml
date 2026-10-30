@@ -96,7 +96,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # The plugin host (ADR 0058): a component-model JIT with fuel and epochs and nothing else (no WASI, no cache, no async,
 # no GC, no wat); `=49.0.0` because the host's WASI stubs and limits are written against this release (Apache-2.0 WITH
 # LLVM-exception), omuzaki-plugin.
-wasmtime = { version = "=49.0.0", default-features = false, features = ["cranelift", "component-model", "runtime", "std"] }
+wasmtime = { version = "=49.0.4", default-features = false, features = ["cranelift", "component-model", "runtime", "std"] }
 wasmparser = { version = "=0.258.3", default-features = false, features = ["std", "component-model"] }   # the canonical options of a plugin component, read before compiling (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT); the version wasmtime 49 uses, omuzaki-plugin
 wat = "1"   # WAT text to wasm for the plugin host's test components (Apache-2.0 WITH LLVM-exception); dev-dependency only
 wgpu = "30"
