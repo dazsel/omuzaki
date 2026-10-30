@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
 
-use omuzaki_video::ffmpeg::Ffmpeg;
-use omuzaki_video::{Picture, VideoError, VideoReader};
+use omuzaki_track_video::ffmpeg::Ffmpeg;
+use omuzaki_track_video::{Picture, VideoError, VideoReader};
 
 /// Whether the real ffmpeg runs here.
 fn have_ffmpeg() -> bool {
@@ -30,7 +30,7 @@ fn encode(dir: &Path, name: &str, size: &str, codec: &[&str]) -> Option<PathBuf>
 }
 
 /// Reads every frame of `path`, returning the count.
-fn count(path: &Path) -> (omuzaki_video::VideoInfo, usize) {
+fn count(path: &Path) -> (omuzaki_track_video::VideoInfo, usize) {
     let mut reader = VideoReader::open(path, &Ffmpeg::default()).unwrap();
     let mut picture = Picture::default();
     let mut frames = 0;

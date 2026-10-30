@@ -1,5 +1,5 @@
 [package]
-name = "omuzaki-video"
+name = "omuzaki-track-video"
 description = "Video files as a tracking input (#2585): a Y4M reader, decoding through the person's own ffmpeg, and a camera that plays a file at its own rate."
 version.workspace = true
 edition.workspace = true

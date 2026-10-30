@@ -37,8 +37,8 @@ use omuzaki_track::body::BodyTrackerConfig;
 use omuzaki_track::body::models::BodyModelDir;
 use omuzaki_track::provision::{face_models, face_tracker};
 use omuzaki_track::webcam::{BodyLoader, WebcamConfig, WebcamTracker};
-use omuzaki_video::camera::VideoCamera;
-use omuzaki_video::ffmpeg::Ffmpeg;
+use omuzaki_track_video::camera::VideoCamera;
+use omuzaki_track_video::ffmpeg::Ffmpeg;
 
 /// The model registry over `data_dir` (the app's data folder): the shipped models' slots and the person's own models,
 /// with the `model.*` ops over it. Files a model needs are downloaded through a verified cache in `<data_dir>/cache`,

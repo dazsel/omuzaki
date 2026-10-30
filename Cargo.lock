@@ -6635,8 +6635,8 @@ dependencies = [
  "omuzaki-speech",
  "omuzaki-track",
  "omuzaki-track-api",
+ "omuzaki-track-video",
  "omuzaki-track-voice",
- "omuzaki-video",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
@@ -6716,6 +6716,15 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "omuzaki-track-video"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-track-api",
+ "tempfile",
  "thiserror 2.0.21",
 ]
 
@@ -6836,11 +6845,11 @@ dependencies = [
  "omuzaki-track-api",
  "omuzaki-track-mock",
  "omuzaki-track-net",
+ "omuzaki-track-video",
  "omuzaki-twitch",
  "omuzaki-ui-api",
  "omuzaki-ui-mock",
  "omuzaki-vcam",
- "omuzaki-video",
  "omuzaki-vts",
  "regex",
  "rmcp",
@@ -6920,15 +6929,6 @@ dependencies = [
  "omuzaki-core",
  "omuzaki-render-api",
  "omuzaki-stream-api",
-]
-
-[[package]]
-name = "omuzaki-video"
-version = "0.0.0"
-dependencies = [
- "omuzaki-track-api",
- "tempfile",
- "thiserror 2.0.21",
 ]
 
 [[package]]

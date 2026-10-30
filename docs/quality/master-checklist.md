@@ -352,7 +352,7 @@ Warudo (MediaPipe body and hands), XR Animator, mocopi and SlimeVR (body), Leap 
 | Inputs | Keyboard, mouse, gamepad, MIDI, OSC bindings (PF-05) | Warudo | ✓ | `input.binding.*`, `omuzaki-input` |
 | Inputs | Stream Deck: buttons that run ops, with state shown on the keys | VTube Studio and Warudo plugins | ✗ | **new** #2584 |
 | Inputs | Input-driven body motion: hands on the keys, arm to the mouse (PF-29) | VNyan, Warudo | ◐ | #718, #783 |
-| Inputs | A recorded video file as a tracking input (re-track footage offline) | none for VTubing | ✓ | `input.open_video`, `omuzaki-video`: `.y4m` read directly, MP4, MKV, MOV and WebM through the person's own ffmpeg; plays at the file's rate through the webcam tracker, on every platform |
+| Inputs | A recorded video file as a tracking input (re-track footage offline) | none for VTubing | ✓ | `input.open_video`, `omuzaki-track-video`: `.y4m` read directly, MP4, MKV, MOV and WebM through the person's own ffmpeg; plays at the file's rate through the webcam tracker, on every platform |
 | Processing | Guided calibration in one step (PF-20) | VTube Studio | ◐ | `input.calibrate`, `omuzaki-track/src/guided.rs`; #473 |
 | Processing | One-Euro smoothing and a latency dial (PF-21); per-channel curves (PF-22) | VTube Studio | ◐ | `omuzaki-track/src/smoothing.rs`; #474, #475 |
 | Processing | Source blending and ownership per channel (PF-23) | none | ◐ | #476 |

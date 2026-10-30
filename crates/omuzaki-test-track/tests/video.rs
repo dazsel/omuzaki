@@ -26,10 +26,10 @@ use omuzaki_track::{FaceSample, FaceTrackError, FaceTracker, FaceTrackerConfig, 
 use omuzaki_track_api::body::{BodyConfig, BodyFrame};
 use omuzaki_track_api::camera::{CameraFrame, DeviceTime, PixelFormat};
 use omuzaki_track_api::tracker::{Tracker, TrackerConfig};
-use omuzaki_video::camera::VideoCamera;
-use omuzaki_video::ffmpeg::Ffmpeg;
-use omuzaki_video::y4m::write_frame;
-use omuzaki_video::{Picture, VideoInfo, VideoReader};
+use omuzaki_track_video::camera::VideoCamera;
+use omuzaki_track_video::ffmpeg::Ffmpeg;
+use omuzaki_track_video::y4m::write_frame;
+use omuzaki_track_video::{Picture, VideoInfo, VideoReader};
 
 /// Frames in the synthetic clip.
 const FRAMES: u8 = 12;
