@@ -1,0 +1,7 @@
+section = "in-use"
+item = "MediaPipe hand_landmarker.task, pose_landmarker_lite.task and pose_landmarker_full.task"
+kind = "model"
+used_for = "body tracking beside the face (PF-06 hands, PF-07 arms): palm detection, 21 hand landmarks, BlazePose GHUM 3D's 33 body landmarks"
+status = "conditions"
+condition = "Apache-2.0 per the two model cards (BlazePose GHUM 3D; Hand Tracking Lite/Full, read 2026-10-30), the same terms as face_landmarker.task, which the Director's ruling cleared; archive the cards + hashes + object generation numbers (pinned and fetched by `tools/models/mediapipe-cards.sh`); bundles pinned by SHA-256 in `tools/models/mediapipe-body.sh`, fetched at build time only, never at run time"
+audit = "A1, same terms as the face landmarker"

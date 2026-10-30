@@ -67,6 +67,34 @@ impl NormRect {
     }
 }
 
+impl NormRect {
+    /// MediaPipe's `RectTransformationCalculator` shift: moves the centre by `shift_x` widths and `shift_y` heights
+    /// along the rectangle's own (rotated) axes, measured in pixels of a `frame_w` x `frame_h` frame.
+    #[must_use]
+    pub fn shifted(&self, frame_w: f32, frame_h: f32, shift_x: f32, shift_y: f32) -> Self {
+        let (sin, cos) = self.rotation.sin_cos();
+        let (dx, dy) = (frame_w * self.width * shift_x, frame_h * self.height * shift_y);
+        Self {
+            x_center: self.x_center + (dx * cos - dy * sin) / frame_w,
+            y_center: self.y_center + (dx * sin + dy * cos) / frame_h,
+            ..*self
+        }
+    }
+
+    /// MediaPipe's `AlignmentPointsRectsCalculator`: a square centred on `start` whose side is twice the distance to
+    /// `end` (in pixels), turned so the line from `start` to `end` points at `target` radians (pi/2: straight up).
+    pub fn aligned(start: (f32, f32), end: (f32, f32), frame_w: f32, frame_h: f32, target: f32) -> Self {
+        let side = 2.0 * ((end.0 - start.0) * frame_w).hypot((end.1 - start.1) * frame_h);
+        Self {
+            x_center: start.0,
+            y_center: start.1,
+            width: side / frame_w,
+            height: side / frame_h,
+            rotation: normalize_radians(target + rotation_from_points(start, end, frame_w, frame_h)),
+        }
+    }
+}
+
 /// Wraps an angle into `[-pi, pi)`.
 pub fn normalize_radians(angle: f32) -> f32 {
     angle - 2.0 * PI * ((angle + PI) / (2.0 * PI)).floor()
@@ -232,6 +260,26 @@ mod tests {
         // In a 100x100 frame it is 25x50: squaring takes the long side.
         let s = r.expanded(100.0, 100.0, 1.0, true);
         assert!(close(s.width, 0.5) && close(s.height, 0.5));
+    }
+
+    #[test]
+    fn shifts_follow_the_rotated_axes() {
+        let r = NormRect { x_center: 0.5, y_center: 0.5, width: 0.2, height: 0.4, rotation: 0.0 };
+        let s = r.shifted(100.0, 100.0, 0.0, -0.5);
+        assert!(close(s.x_center, 0.5) && close(s.y_center, 0.3));
+        // A quarter turn clockwise: the rectangle's up points at the image's right, so the shift moves right.
+        let q = NormRect { rotation: PI / 2.0, ..r }.shifted(100.0, 100.0, 0.0, -0.5);
+        assert!(close(q.x_center, 0.7) && close(q.y_center, 0.5), "{q:?}");
+    }
+
+    #[test]
+    fn aligned_squares_point_their_line_at_the_target() {
+        // End straight above start: already at 90 degrees, so no rotation; side twice the distance.
+        let r = NormRect::aligned((0.5, 0.6), (0.5, 0.4), 100.0, 100.0, PI / 2.0);
+        assert!(close(r.rotation, 0.0) && close(r.width, 0.4) && close(r.height, 0.4) && close(r.y_center, 0.6));
+        // End to the right of start: the rectangle turns a quarter clockwise, so its up points at the end.
+        let t = NormRect::aligned((0.5, 0.5), (0.6, 0.5), 200.0, 100.0, PI / 2.0);
+        assert!(close(t.rotation, PI / 2.0) && close(t.width, 0.2) && close(t.height, 0.4), "{t:?}");
     }
 
     #[test]
