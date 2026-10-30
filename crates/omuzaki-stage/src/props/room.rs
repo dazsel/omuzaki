@@ -40,6 +40,7 @@ pub struct RoomParams {
     /// How patchy the walls' plaster is, 0 (flat paint) to 1: soft lighter and darker clouds over the paint.
     pub mottle: f32,
     /// A ceiling over the room in this colour, with a moulded border a little in from the walls; open when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub ceiling: Option<Colour>,
     /// Varies the planks.
     pub seed: u32,
@@ -186,6 +187,7 @@ pub struct RugParams {
     /// What is woven into the field.
     pub pattern: RugPattern,
     /// The pattern's colour; between the field and the border when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub motif: Option<Colour>,
     /// Varies a scattered pattern.
     pub seed: u32,

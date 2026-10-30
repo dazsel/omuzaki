@@ -36,6 +36,7 @@ pub struct ShelfParams {
     pub colour: Colour,
     /// Gilded edging: a strip down the front of each side, along the boards' fronts, a crown on top and the doors'
     /// emblems; none for plain wood.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub trim: Option<Colour>,
     /// Boards closed by doors, counted from the bottom (a cabinet under open shelves), 0 to the number of boards.
     pub doors: u8,
@@ -43,6 +44,7 @@ pub struct ShelfParams {
     /// one): a carved case rather than a plain one.
     pub pilasters: bool,
     /// The back panel behind the boards; the paint, darker, when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub back: Option<Colour>,
     /// Round arches over the top bay: the bay's upper corners filled in under a moulded arch.
     pub arch: bool,

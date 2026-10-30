@@ -160,6 +160,7 @@ pub struct WindowParams {
     /// With a round head, bars radiating from the arch's centre like a fan.
     pub fanlight: bool,
     /// Pleated sheer curtains drawn behind the glass, in this colour: the daylight glows through their folds.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub sheers: Option<Colour>,
 }
 

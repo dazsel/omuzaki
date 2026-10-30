@@ -160,6 +160,7 @@ pub struct PictureParams {
     /// The canvas: its ground colour, darkening a little toward the edges.
     pub canvas: Colour,
     /// An oval medallion on the canvas (a portrait's ground, an emblem), none when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub medallion: Option<Colour>,
 }
 
