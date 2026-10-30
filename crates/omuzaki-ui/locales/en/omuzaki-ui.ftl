@@ -2224,6 +2224,16 @@ ui-live-health-partial-detail = Partial: measured from the tracker frame's captu
 ui-live-health-percent = { $n }%
 
 # The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-health-quality = Quality
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+ui-live-health-quality-full = Full
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
+# $n (id, never translated): "hair-b"
+ui-live-health-quality-lowered = Lowered { $n } steps to hold the budget
+
+# The Live workspace: the camera, tracking, the stage, expressions and outputs.
 ui-live-health-section = Health
 
 # The Live workspace: the camera, tracking, the stage, expressions and outputs.

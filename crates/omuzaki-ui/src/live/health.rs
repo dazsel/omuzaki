@@ -662,6 +662,16 @@ mod tests {
     }
 
     #[test]
+    fn adaptive_quality_is_published_with_the_frame() {
+        let (mut p, reader) = HealthPublisher::with_reader();
+        p.frame(0.0, Some(rendered(Some(1.0))));
+        assert_eq!(reader.read().frame.map(|f| (f.quality_rung, f.quality_changes)), Some((0, 0)));
+        p.quality(3, 4);
+        p.frame(0.02, Some(rendered(Some(1.0))));
+        assert_eq!(reader.read().frame.map(|f| (f.quality_rung, f.quality_changes)), Some((3, 4)));
+    }
+
+    #[test]
     fn an_idle_tracker_publishes_nothing_and_the_slow_sections_run_at_ten_hertz() {
         let (mut p, reader) = HealthPublisher::with_reader();
         p.tracker(0.0, &LatencyStats::default());

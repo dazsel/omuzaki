@@ -85,6 +85,7 @@ fn every_reading_is_a_tab_stop_in_order() {
         "Frame time: 16.7 ms, worst 19 ms",
         "Latency: No face in use",
         "Late frames: 2",
+        "Quality: Full",
         "Dropped frames: n/a",
         "Tracking drops: 3",
         "Audio underruns: 0",
