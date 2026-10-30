@@ -597,6 +597,7 @@ fn restore_settings(scene: &mut Scene, saved: Scene) {
         environment,
         outline_light,
         back_light_rim,
+        shadow_softness,
         post,
         edges,
         occlusion,
@@ -608,6 +609,7 @@ fn restore_settings(scene: &mut Scene, saved: Scene) {
     scene.environment = environment;
     scene.outline_light = outline_light;
     scene.back_light_rim = back_light_rim;
+    scene.shadow_softness = shadow_softness;
     scene.post = post;
     scene.edges = edges;
     scene.occlusion = occlusion;

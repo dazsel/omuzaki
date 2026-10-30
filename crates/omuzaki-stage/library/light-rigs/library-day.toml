@@ -8,6 +8,8 @@ tags = ["warm", "day", "interior"]
 exposure = 1.0
 background = "#c9876a"
 skin_floor = 0.5
+# Window light through a tall pane: soft-edged shadows (render-api `Scene::shadow_softness`).
+shadow_softness = 0.8
 
 [hemisphere]
 sky = "#eef0f6"

@@ -82,6 +82,9 @@ pub struct LightRig {
     /// rig leaves it out.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub back_light_rim: f32,
+    /// How soft the shadows are, `0..=1` (`Scene::shadow_softness`); 0, the maps' tight edge, when the rig leaves it out.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub shadow_softness: f32,
     /// Sky-and-ground ambient light: the base of every rig.
     pub hemisphere: Hemisphere,
     /// The key light. Every rig has one.
@@ -252,6 +255,9 @@ impl LightRig {
             return Err(bad(format!("scene_skin_floor {floor} must be in 0..=1")));
         }
         non_negative(self.back_light_rim, "back_light_rim").map_err(bad)?;
+        if !(0.0..=1.0).contains(&self.shadow_softness) {
+            return Err(bad(format!("shadow_softness {} must be in 0..=1", self.shadow_softness)));
+        }
         non_negative(self.hemisphere.intensity, "hemisphere intensity").map_err(bad)?;
         self.key.validate("key").map_err(bad)?;
         for (label, light) in [("rim", &self.rim), ("fill", &self.fill)] {
@@ -388,6 +394,7 @@ impl LightRig {
             background: self.background,
             outline_light: 1.0,
             back_light_rim: self.back_light_rim,
+            shadow_softness: self.shadow_softness,
             skin_floor: self.scene_skin_floor,
             ambient: Ambient {
                 sky: self.hemisphere.sky,
