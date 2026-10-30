@@ -1268,6 +1268,14 @@ pub struct HairShading {
     pub ring: ColourRef,
     /// Strength of the angel ring, `0..=1`.
     pub ring_strength: f64,
+    /// The angel ring's half width, in radians of polar angle from the crown, `0.01..=0.3`.
+    pub ring_width: f64,
+    /// How far each lock's copy of the angel ring wanders up and down, in radians, `0..=0.2`: 0 lines the locks' copies
+    /// up into one arc round the head.
+    pub ring_wobble: f64,
+    /// How much comb teeth break the angel ring, `0..=1`: 1 breaks it into soft blobs, 0 leaves it whole (the strand
+    /// texture still breaks it into strands).
+    pub ring_teeth: f64,
     /// Strength of the strand lines, `0..=1`.
     pub strand_lines: f64,
     /// How much darker each clump's edges are, so overlapping locks separate, `0..=1`.
@@ -1298,6 +1306,15 @@ pub struct HairShading {
     pub inner_darkening: f64,
 }
 
+/// The kit's angel ring: a thin band ([`HairShading::ring_width`]) that holds one height from lock to lock
+/// ([`HairShading::ring_wobble`]) and is barely combed ([`HairShading::ring_teeth`]), so it reads as one arc following
+/// the head, as on the CC0 sample avatars (#2462). The prototype's soft, stepped band is `0.11`, `0.06` and `1`.
+const RING_WIDTH: f64 = 0.035;
+/// See [`RING_WIDTH`].
+const RING_WOBBLE: f64 = 0.012;
+/// See [`RING_WIDTH`].
+const RING_TEETH: f64 = 0.25;
+
 impl Default for HairShading {
     fn default() -> Self {
         Self {
@@ -1310,6 +1327,9 @@ impl Default for HairShading {
             outline: ColourRef::rgb(0xa4, 0x78, 0x68),
             ring: ColourRef::rgb(0xff, 0xf4, 0xe8),
             ring_strength: 0.22,
+            ring_width: RING_WIDTH,
+            ring_wobble: RING_WOBBLE,
+            ring_teeth: RING_TEETH,
             strand_lines: 0.10,
             edge_darkening: 0.14,
             keep_identity: 0.36,
@@ -1409,7 +1429,8 @@ pub enum HairShadingError {
 impl HairShading {
     /// The renderer's shading for this hair: `Shading::Program { name: "hair", params }`. Parameters, all read by the
     /// program: colours `root`, `mid`, `tip`, `shade`, `line`, `ring`, `rim` (resolved through `palette`) and floats
-    /// `ring-strength`, `strand-lines`, `edge-darkening`, `keep-identity`, `rim-strength`, `rim-width`, `back-light`. The outline width and `brows_through` are not
+    /// `ring-strength`, `ring-width`, `ring-wobble`, `ring-teeth`, `strand-lines`, `edge-darkening`, `keep-identity`,
+    /// `rim-strength`, `rim-width`, `back-light`. The outline width and `brows_through` are not
     /// shader parameters: the first goes on the material's `Outline`, the second adds the brow overlay.
     ///
     /// # Errors
@@ -1429,6 +1450,9 @@ impl HairShading {
         }
         for (name, value) in [
             ("ring-strength", self.ring_strength),
+            ("ring-width", self.ring_width),
+            ("ring-wobble", self.ring_wobble),
+            ("ring-teeth", self.ring_teeth),
             ("strand-lines", self.strand_lines),
             ("edge-darkening", self.edge_darkening),
             ("keep-identity", self.keep_identity),
@@ -1515,6 +1539,9 @@ impl HairShading {
 impl Validate for HairShading {
     fn check(&self, c: &mut Check) {
         c.range("ring_strength", self.ring_strength, 0.0, 1.0);
+        c.range("ring_width", self.ring_width, 0.01, 0.3);
+        c.range("ring_wobble", self.ring_wobble, 0.0, 0.2);
+        c.range("ring_teeth", self.ring_teeth, 0.0, 1.0);
         c.range("strand_lines", self.strand_lines, 0.0, 1.0);
         c.range("edge_darkening", self.edge_darkening, 0.0, 1.0);
         c.range("keep_identity", self.keep_identity, 0.0, 1.0);
@@ -2070,8 +2097,9 @@ mod tests {
         let shading = HairShading::default().shading(&Palette::default()).unwrap();
         let Shading::Program { name, params } = &shading else { panic!("a program") };
         assert_eq!(name.as_str(), HAIR_PROGRAM);
-        assert_eq!(params.len(), 14);
+        assert_eq!(params.len(), 17);
         assert_eq!(params[&Slug::new("rim-strength").unwrap()], ParamValue::Float(0.12));
+        assert_eq!(params[&Slug::new("ring-width").unwrap()], ParamValue::Float(0.035));
         assert_eq!(params[&Slug::new("back-light").unwrap()], ParamValue::Float(0.6));
         assert!(
             matches!(params[&Slug::new("root").unwrap()], ParamValue::Colour(c) if c == omuzaki_core::colour::Colour::rgb(0xc8, 0xb0, 0x9a))
