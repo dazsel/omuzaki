@@ -22,7 +22,9 @@ pub fn texture(design: &EyeDesign, width: u32) -> Canvas {
         // Mottling: warm and cool patches a few millimetres across.
         let m1 = fbm(x * 260.0, y * 260.0, 4, s ^ 1) - 0.5;
         let m2 = fbm(x * 900.0, y * 900.0, 2, s ^ 2) - 0.5;
-        let mut c = tone * (1.0 + 0.16 * m1 + 0.06 * m2);
+        // Grain: the speckle of pores and fine texture, a few tenths of a millimetre across.
+        let grain = fbm(x * 3600.0, y * 3600.0, 2, s ^ 3) - 0.5;
+        let mut c = tone * (1.0 + 0.16 * m1 + 0.06 * m2 + 0.12 * grain);
         c = c.lerp(c * Vec3::new(1.04, 0.88, 0.86), (0.5 + m1).clamp(0.0, 1.0) * 0.35);
         // A faint darker band under the eye.
         let under = smoothstep(-0.004, -0.009, y)
@@ -56,7 +58,7 @@ fn lines(canvas: &mut Canvas, design: &EyeDesign) {
             if rng.unit() < 0.8 {
                 let seg = &points[i..i + run];
                 let up: Vec<Vec2> = seg.iter().map(|p| *p - Vec2::new(0.0, 1.6)).collect();
-                canvas.stroke(&up, (2.4, 2.0), lift, (0.06 * strength, 0.04 * strength));
+                canvas.stroke(&up, (2.4, 2.0), lift, (0.02 * strength, 0.015 * strength));
                 canvas.stroke(seg, (1.6, 1.2), fold, (0.22 * strength, 0.12 * strength));
             }
             i += run;
@@ -133,6 +135,12 @@ fn freckles(canvas: &mut Canvas, skin: &Skin, seed: u32) {
         let p = Vec2::new((x + SKIN_HALF.x) * px_per_m, (SKIN_TOP - y) * px_per_m);
         let r = size * px_per_m;
         let shade = colour * rng.range(0.8, 1.2);
-        canvas.disc(p, Vec2::new(r, r * rng.range(0.7, 1.0)), shade, rng.range(0.25, 0.6), 0.2);
+        let alpha = rng.range(0.3, 0.7);
+        // Irregular and soft-edged: a few overlapping blots.
+        for _ in 0..3 {
+            let at = p + Vec2::new(rng.normal(), rng.normal()) * 0.35 * r;
+            let size = Vec2::new(r, r * rng.range(0.6, 1.0)) * rng.range(0.6, 1.0);
+            canvas.disc(at, size, shade, alpha * 0.6, 0.0);
+        }
     }
 }

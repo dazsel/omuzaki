@@ -71,7 +71,7 @@ pub fn eye_params(design: &EyeDesign, frame: EyeFrame) -> ProgramParams {
 /// The `skin` program's parameters for the skin round the eye.
 pub fn skin_params() -> ProgramParams {
     let mut p = ProgramParams::new();
-    put(&mut p, "pore-depth", ParamValue::Float(0.035));
+    put(&mut p, "pore-depth", ParamValue::Float(0.07));
     put(&mut p, "roughness", ParamValue::Float(0.52));
     put(&mut p, "sheen", ParamValue::Float(0.7));
     put(&mut p, "wet-colour", ParamValue::Colour(Colour::hex(0x00b8_8070)));
