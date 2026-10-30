@@ -257,16 +257,12 @@ impl Skeleton {
     /// travel scaled to a body whose hips stand `hips_height` metres up.
     ///
     /// # Errors
-    /// [`MotionError::Parse`] for text that is not an AMC motion of this skeleton; [`MotionError::MissingBone`] when
-    /// the skeleton lacks a bone the humanoid maps; [`MotionError::Empty`] for no frames.
+    /// [`MotionError::Parse`] for text that is not an AMC motion of this skeleton;
+    /// [`MotionError::Empty`] for no frames. A humanoid bone the skeleton lacks (a skeleton with no toes, one neck bone, no
+    /// hands) stays straight on its parent.
     #[allow(clippy::too_many_lines)] // one pass over the file and one over the frames
     pub fn motion(&self, text: &str, fps: f32, hips_height: f32) -> Result<HumanoidTake, MotionError> {
         const F: &str = "motion";
-        for (_, name) in MAP {
-            if !self.by_name.contains_key(name) {
-                return Err(MotionError::MissingBone(name.to_owned()));
-            }
-        }
         let order = self.order();
         let n = self.bones.len();
         // Raw channels per frame: root's six, then each bone's dof angles.
@@ -338,11 +334,15 @@ impl Skeleton {
                 let yaw = forward.x.atan2(forward.z);
                 (Quat::from_rotation_y(-yaw), hips)
             });
-            let w = |name: &str| self.by_name.get(name).map_or(Quat::IDENTITY, |i| turn * world[*i]);
             let mut pose = HumanoidPose::REST;
             let mut worlds: HashMap<B, Quat> = HashMap::with_capacity(MAP.len());
+            // MAP lists parents first, so a bone the skeleton lacks takes its parent's world: it stays straight on it.
             for ((bone, name), align) in MAP.into_iter().zip(&aligns) {
-                worlds.insert(bone, w(name) * *align);
+                let mine = match self.by_name.get(name) {
+                    Some(i) => turn * world[*i] * *align,
+                    None => bone.parent().and_then(|p| worlds.get(&p).copied()).unwrap_or(turn),
+                };
+                worlds.insert(bone, mine);
             }
             for (bone, _) in MAP {
                 let mine = worlds[&bone];

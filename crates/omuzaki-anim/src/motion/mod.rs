@@ -5,11 +5,14 @@
 //! |---|---|
 //! | [`HumanoidTake`] | a dense take: one [`HumanoidPose`] a frame at the file's rate, sampled at any time |
 //! | [`asf`] | the Acclaim skeleton (`.asf`) and motion (`.amc`) files of the CMU motion-capture library, retargeted |
+//! | [`ops`] | `motion.import`: a take stored as a character's clip, which `act.clip` plays live |
 //!
 //! A take is what the motion-parity loop measures against (the reference's poses) and what `motion.*` ops play or
-//! turn into clips. Reading one never touches the filesystem: callers hand in the text.
+//! turn into clips. Reading one never touches the filesystem: callers hand in the text (`motion.import` reads files through the op's
+//! file access).
 
 pub mod asf;
+pub mod ops;
 
 use omuzaki_anim_api::HumanoidPose;
 use omuzaki_core::glam::Vec3;
@@ -27,9 +30,6 @@ pub enum MotionError {
         /// What is wrong.
         message: String,
     },
-    /// The skeleton lacks a bone the humanoid needs.
-    #[error("the skeleton has no {0} bone")]
-    MissingBone(String),
     /// The motion has no frames.
     #[error("the motion has no frames")]
     Empty,
