@@ -19,11 +19,23 @@
 //! | `ring-shift` | how far the lobe's strands tilt toward the normal, sliding the ring up or down the head | (none) |
 //! | `strand-lines` | how far strand lines tint the colour | the `0.10` of `lines * 0.10` |
 //! | `edge-darkening` | how much darker a clump's edges are | `1 - 0.86` |
-//! | `keep-identity` | how much of the hair's own colour survives coloured light | the `0.36` |
+//! | `keep-identity` | how much of the hair's own hue (its surface colour's, streaks included) survives coloured light | the `0.36` |
 //! | `rim` | the rim's colour | the toon rim `0xffe2cc` |
 //! | `rim-strength` | the rim's strength | its `0.12` |
 //! | `rim-width` | how far in the rim reaches: the fresnel power is `1 / width` | its power 3 |
 //! | `back-light` | how strongly lights behind the hair edge it in their own colour | (none) |
+//! | `highlight` | the per-light highlight's colour (#2521) | (none) |
+//! | `highlight-strength` | the primary lobe, in the light's colour | (none) |
+//! | `highlight-width` | how wide both lobes are (the secondary twice this) | (none) |
+//! | `highlight-shift` | the primary's tilt along the strand; the secondary sits 0.25 further toward the tip | (none) |
+//! | `highlight-secondary` | the secondary lobe, tinted by the hair | (none) |
+//! | `highlight-jitter` | how far each strand shifts the lobes, so their edge is combed | (none) |
+//! | `highlight-cel` | `0` soft lobes, `1` crisp anime bands | (none) |
+//! | `shade-deep` | the second, deeper shadow tone (#2525), a multiplier; white is none | (none) |
+//! | `shade-deep-at` | the N.L below which it takes over (cast shadows take it too) | (none) |
+//! | `ring-shape` | the painted ring's shape per lock: `0` band, `1` zig-zag, `2` streak, `3` crescent (#2525) | `0` |
+//! | `ring-shape-depth` | how deep the teeth hang, the streaks run or the crescents curl | (none) |
+//! | `keep-hue` | `keep-identity` keeps the surface's own hue (`1`) or the prototype's cream (`0`) | `0` |
 //!
 //! Attributes: `hair-uv` (`across` in `-1..=1`, `along` in `0..=1`) and `hair-info` (strand seed, shade multiplier,
 //! polar angle: the ring follows it). The toon base is the prototype's hair material: `shift -0.05`, `soft 0.22`, rim
@@ -51,6 +63,27 @@ const RING_TEETH: f32 = 0.25;
 const RING_FOLLOW: f32 = 1.0;
 /// The tilt that puts the strand-following ring where the painted one is, seen from the front: `tan(0.92) = -1 / shift`.
 const RING_SHIFT: f32 = -0.75;
+
+/// The per-light highlight's colour (#2521): a warm white.
+const HIGHLIGHT: u32 = 0x00ff_f6ec;
+/// The primary highlight's strength.
+const HIGHLIGHT_STRENGTH: f32 = 0.4;
+/// The primary lobe's width: the cosine between strand and half vector at which it fades out.
+const HIGHLIGHT_WIDTH: f32 = 0.14;
+/// The primary lobe's tilt along the strand (toward the root below 0).
+const HIGHLIGHT_SHIFT: f32 = -0.08;
+/// The secondary, hair-tinted lobe's strength.
+const HIGHLIGHT_SECONDARY: f32 = 0.2;
+/// How far each strand of the texture shifts the lobes.
+const HIGHLIGHT_JITTER: f32 = 0.25;
+/// How crisp the lobes' edges are.
+const HIGHLIGHT_CEL: f32 = 0.2;
+/// The second shadow tone (#2525), a multiplier: white is none.
+const SHADE_DEEP: u32 = 0x00d8_c4d0;
+/// The N.L below which the second tone takes over.
+const SHADE_DEEP_AT: f32 = -0.25;
+/// How deep a zig-zag's teeth hang, or how far a crescent curls or a streak runs.
+const RING_SHAPE_DEPTH: f32 = 0.5;
 
 /// The prototype's hair toon: a wide soft terminator with the shadow side tinted by the `shade` parameter and a warm rim.
 fn toon(values: &Values) -> Toon {
@@ -91,6 +124,18 @@ register_shading_program!(
             ParamSpec::float("rim-strength", 0.12, 0.0, 1.0),
             ParamSpec::float("rim-width", RIM_WIDTH, 0.1, 1.0),
             ParamSpec::float("back-light", 0.6, 0.0, 2.0),
+            ParamSpec::colour("highlight", HIGHLIGHT),
+            ParamSpec::float("highlight-strength", HIGHLIGHT_STRENGTH, 0.0, 2.0),
+            ParamSpec::float("highlight-width", HIGHLIGHT_WIDTH, 0.02, 0.8),
+            ParamSpec::float("highlight-shift", HIGHLIGHT_SHIFT, -0.6, 0.6),
+            ParamSpec::float("highlight-secondary", HIGHLIGHT_SECONDARY, 0.0, 2.0),
+            ParamSpec::float("highlight-jitter", HIGHLIGHT_JITTER, 0.0, 1.0),
+            ParamSpec::float("highlight-cel", HIGHLIGHT_CEL, 0.0, 1.0),
+            ParamSpec::colour("shade-deep", SHADE_DEEP),
+            ParamSpec::float("shade-deep-at", SHADE_DEEP_AT, -1.0, 1.0),
+            ParamSpec::float("ring-shape", 0.0, 0.0, 3.0),
+            ParamSpec::float("ring-shape-depth", RING_SHAPE_DEPTH, 0.0, 1.0),
+            ParamSpec::float("keep-hue", 1.0, 0.0, 1.0),
         ],
         attributes: &[
             AttributeSpec { name: "hair-uv", components: 2 },

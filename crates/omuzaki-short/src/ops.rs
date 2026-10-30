@@ -17,7 +17,7 @@ use omuzaki_render_api::{Capabilities, MtoonSupport, Renderer};
 use omuzaki_stage::body::{Body, BodyServices, load_body};
 use omuzaki_stage::ops::render::job::{RenderQuality, character_bytes, check_size, cost};
 use omuzaki_stage::recipe::LightRig;
-use omuzaki_stage::scene::alone::{ShotChoice, StagedScene, cast_alone, post_in_look, stage_alone};
+use omuzaki_stage::scene::alone::{ShotChoice, StagedScene, cast_alone, occlusion_in_look, post_in_look, stage_alone};
 use omuzaki_stage::scene::default::scene_for;
 use omuzaki_stage_api::{Framing, SceneDef};
 use omuzaki_store_api::Store;
@@ -600,6 +600,7 @@ impl Op for RenderShort {
         }
         if let Body::Kit(built) = &body {
             post_in_look(&mut staged.resolved.post, &built.look().scene);
+            occlusion_in_look(&mut staged.resolved.occlusion, &built.look().scene);
         }
 
         let scene = ShortScene {

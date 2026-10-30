@@ -28,8 +28,9 @@ pub fn reserve(scene: &mut Scene) {
     scene.lights.reserve(MAX_LIGHTS.saturating_sub(scene.lights.len()));
 }
 
-/// Copies `resolved` into `scene`: the active camera, the lights, the background, the fog, the post look and the outline
-/// light. The instances, the joints, the frame info and the environment (whose handle the stage holds) stay as they are.
+/// Copies `resolved` into `scene`: the active camera, the lights, the background, the fog, the post look, the occlusion
+/// and the outline light. The instances, the joints, the frame info and the environment (whose handle the stage holds)
+/// stay as they are.
 ///
 /// A resolved scene without cameras leaves the camera of `scene` alone, so a scene with no camera keeps the one the
 /// stage was made with. Allocation-free once [`reserve`] has run on `scene`.
@@ -42,6 +43,7 @@ pub fn fill(resolved: &ResolvedScene, scene: &mut Scene) {
     scene.background = resolved.background;
     scene.fog = resolved.fog;
     scene.post = resolved.post;
+    scene.occlusion = resolved.occlusion;
     scene.outline_light = resolved.outline_light;
     scene.back_light_rim = resolved.back_light_rim;
 }

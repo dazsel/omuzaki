@@ -24,7 +24,7 @@
 //!
 //! # What a program is given
 //!
-//! - **Parameters** are packed, in declaration order, into the material uniform's `program[]` (48 floats; colours
+//! - **Parameters** are packed, in declaration order, into the material uniform's `program[]` (64 floats; colours
 //!   arrive in linear light). The shader sees each one's float offset as a constant named `P_<NAME>` (upper case,
 //!   `-` as `_`), generated from the declaration so the two cannot drift, and reads them with `program_float`,
 //!   `program_vec2` and `program_vec3`.
@@ -60,8 +60,8 @@ mod shadow_catcher;
 mod sheen;
 mod skin;
 
-/// Floats in the material uniform's `program[]` (`array<vec4<f32>, 12>`).
-pub(crate) const PACKED_FLOATS: usize = 48;
+/// Floats in the material uniform's `program[]` (`array<vec4<f32>, 16>`).
+pub(crate) const PACKED_FLOATS: usize = 64;
 /// The most extra vertex attributes a program reads (the most a mesh carries).
 pub(crate) const MAX_ATTRIBUTES: usize = 4;
 
@@ -234,7 +234,7 @@ impl Registry {
     ///
     /// # Errors
     /// `Backend` naming the first rule a declaration breaks: a duplicate name, a name that is not a slug, a parameter
-    /// block over 48 floats, more than four attributes or a component count outside `1..=4`.
+    /// block over 64 floats, more than four attributes or a component count outside `1..=4`.
     pub(crate) fn build(mut specs: Vec<&'static ProgramSpec>) -> Result<Self, RenderError> {
         specs.sort_by_key(|s| s.name);
         for pair in specs.windows(2) {

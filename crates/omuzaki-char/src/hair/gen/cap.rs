@@ -10,7 +10,10 @@
 //! of `cos phi` over [`CapGen::front_blend`]) to [`CapGen::hairline_front_deg`] at the forehead, minus an ear notch,
 //! [`CapGen::ear_notch_deg`] x `exp(-cos^2 phi / `[`CapGen::notch_width`]`)` x smoothstep of `cos phi` over [`CapGen::notch_edges`],
 //! that lifts the edge above each ear. Rings past the hairline collapse onto it (the prototype's `min`), so the grid
-//! keeps its shape and the surplus triangles have no area.
+//! keeps its shape and the surplus triangles have no area. The front height is a curve across the forehead
+//! ([`CapGen::hairline`], #2517): an arch, a widow's peak or receding temples, each fading out toward the sides. Over
+//! the last [`Hairline::density_fade_deg`](omuzaki_char_api::Hairline::density_fade_deg) above it the shell takes the
+//! strand texture's tips, so its strands end one by one and skin shows between them toward the hairline.
 //!
 //! **The offset.** [`CapGen::thickness`] at the hairline, rising by [`CapGen::crown_rise`] of itself (0.010 m on the default
 //! 0.016 m) toward the crown, so the shell is a thin cap over the scalp and stands a little off it at the top where the
@@ -78,11 +81,19 @@ pub const fn vertex_count() -> usize {
     (SEGMENTS + 1) * (RINGS + 1)
 }
 
-/// The polar angle (radians) where the shell ends at azimuth `phi`: the hairline, lifted over the ears.
+/// The polar angle (radians) where the shell ends at azimuth `phi` (radians, 0 the front, round through the
+/// character's left): the hairline's curve across the forehead ([`CapGen::hairline`]), eased into the back height and
+/// lifted over the ears. Baby hairs and anything else that grows from the hairline read it here.
+pub fn hairline_at(g: &CapGen, phi: f64) -> f64 {
+    hairline(g, g.hairline_back_deg.to_radians().max(1e-6), phi)
+}
+
+/// [`hairline_at`] with the back height in radians.
 fn hairline(g: &CapGen, back: f64, phi: f64) -> f64 {
     let front = phi.cos();
     let blend = smoothstep(front, g.front_blend[0], g.front_blend[1]);
-    let edge = back + (g.hairline_front_deg.to_radians() - back) * blend;
+    let middle = (g.hairline_front_deg + g.hairline.offset_deg(phi)).clamp(5.0, 150.0).to_radians();
+    let edge = back + (middle - back) * blend;
     let notch = g.ear_notch_deg.to_radians()
         * (-front * front / g.notch_width).exp()
         * smoothstep(front, g.notch_edges[0], g.notch_edges[1]);
@@ -126,6 +137,7 @@ pub fn fill_shell_combed(g: &CapGen, head: &dyn HeadSurface, field: Option<&Fiel
     // lower on the head than the back one); by default that is the back, as in the prototype.
     let reach = back.max(g.hairline_front_deg.to_radians());
     let (seed, shade) = (g.strand_seed as f32, g.shade as f32);
+    let fade = g.hairline.density_fade_deg.to_radians();
     positions.clear();
     uvs.clear();
     uv.data.clear();
@@ -145,7 +157,12 @@ pub fn fill_shell_combed(g: &CapGen, head: &dyn HeadSurface, field: Option<&Fiel
                 None => (t / reach, (j as f64 / SEGMENTS as f64) as f32 * CAP_STRANDS),
             };
             uv.data.extend([phi.sin() as f32, down as f32]);
-            let along = down as f32 * (1.0 - strands::TIP) * strands::V_END;
+            let along = match thinning(t, hairline(g, back, phi), fade) {
+                // In the band above the hairline the shell takes the strand texture's tips, so its strands end one by
+                // one and the hairline thins out instead of stopping at one edge.
+                Some(f) => (1.0 - strands::TIP + strands::TIP * f) * strands::V_END,
+                None => down as f32 * (1.0 - strands::TIP) * strands::V_END,
+            };
             uvs.push(Vec2::new(strand, along));
             info.data.extend([seed, shade, t as f32]);
         }
@@ -158,6 +175,14 @@ pub fn fill_shell_combed(g: &CapGen, head: &dyn HeadSurface, field: Option<&Fiel
     lift_to_clearance(head, positions, indices, normals);
     normals.fill(Vec3::ZERO);
     smooth_normals(positions, indices, normals);
+}
+
+/// How far into the thinning band above the hairline a point at polar angle `t` is, `0..=1` (1 on the hairline), or
+/// `None` above the band or without one. The band is `fade` radians, never more than the hairline's own height.
+#[allow(clippy::cast_possible_truncation)] // a fraction
+fn thinning(t: f64, edge: f64, fade: f64) -> Option<f32> {
+    let fade = fade.min(edge * 0.5);
+    (fade > 0.0 && t > edge - fade).then(|| ((t - (edge - fade)) / fade).clamp(0.0, 1.0) as f32)
 }
 
 /// A lock the shell tucks under ([`tuck`]): its rest points, width and thickness.
