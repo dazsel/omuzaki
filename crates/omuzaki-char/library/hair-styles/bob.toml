@@ -5,7 +5,8 @@ origin = "a written description of the cut, built from the kit's generators and 
 
 [volume]
 whorl = { polar_deg = 25.0, azimuth_deg = 180.0 }
-fullness = 1.1
+# Fuller than the generators make: an anime bob is a rounded mass standing well off the head, not a cap.
+fullness = 1.5
 crown = 1.1
 back = 1.0
 
@@ -46,14 +47,16 @@ length_front = 0.12
 length_back = 0.15
 drape_deg = 90.0
 envelope = [[3.0, 0.13], [0.0, 0.13]]
-count = 40
-columns = 4
+count = 24
+columns = 2
 wave = { amplitude = 0.0, frequency = 1.0, curl = 0.05 }
-width = { start = 0.08, mid = 0.1, tip = 0.04, tip_at = 0.85 }
+width = { start = 0.08, mid = 0.13, tip = 0.04, tip_at = 0.85 }
 
 [groups.d-framing]
 dynamics = { simulate = true, follow = "head" }
-lock = { tip = "curl_in" }
 
+# The side locks fall beside the cheeks and end in a point at the jaw: no tail behind the ear, which hooked them back
+# over it, and no curl, which twisted their ends.
 [groups.d-framing.generator]
 type = "framing"
+tail = []

@@ -10,7 +10,7 @@
 //! | [`set`] | `hair.bangs.set`: one field of a group (layers, clumps, tip heights, sweep, hook, wisps) |
 //! | [`preset`] | `hair.bangs.preset`: restyle a group with one of the presets |
 //! | [`list_presets`] | `hair.bangs.list_presets`: the presets, a query |
-//! | [`presets`] | the five presets' `BangsGen` values: `blunt`, `side-swept`, `curtain`, `wispy`, `none` |
+//! | [`presets`] | the six presets' `BangsGen` values: `blunt`, `side-swept`, `curtain`, `wispy`, `anime`, `none` |
 //! | [`access`] | finding a bangs group, checking and writing it back, and the refusals the ops share |
 //!
 //! Brows showing through the fringe is `HairShading::brows_through`, set with `hair.set_shading`, not here.

@@ -25,7 +25,7 @@ impl Op for HairBangsListPresets {
     fn meta() -> OpMeta {
         OpMeta {
             name: NAME,
-            summary: "List the bangs presets (blunt, side-swept, curtain, wispy, none) with what each looks like.",
+            summary: "List the bangs presets (blunt, side-swept, curtain, wispy, anime, none) with what each looks like.",
             kind: OpKind::Query,
             scope: Scope::Read,
             undo: Undo::None,

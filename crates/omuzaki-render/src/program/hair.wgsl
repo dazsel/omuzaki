@@ -133,7 +133,7 @@ fn hair_cel(lit: vec3<f32>, n: vec3<f32>, v: vec3<f32>, p: ProgramIn) -> vec3<f3
     let comb = glsl_smoothstep(0.35, 0.75, hair_noise(u * 6.0 + seed * 17.0));
     let teeth = mix(1.0, comb, program_float(P_RING_TEETH));
     let facing = glsl_smoothstep(0.1, 0.6, dot(n, v));
-    let deep = lit * hair_deep_shade(n, p);
+    let deep = (lit + hair_cast_shade(n, p)) * hair_deep_shade(n, p);
     let ringed = deep + program_vec3(P_RING) * band * teeth * shape.z * facing * program_float(P_RING_STRENGTH);
     let luma = dot(ringed, LUMA);
     let kept = mix(ringed, luma * hair_identity(), program_float(P_KEEP_IDENTITY));
@@ -181,6 +181,23 @@ fn hair_ring_shape(u: f32, seed: f32) -> vec3<f32> {
         return vec3<f32>(-depth * 2.5 * width * a * a, max(1.0 - a * a, 0.08), 1.0);
     }
     return vec3<f32>(0.0, 1.0, 1.0);
+}
+
+// A cast shadow on hair turns it to its shade tone, as `MToon`'s does (the shadow goes into the terminator), instead
+// of taking the light away: the toon model gives `colour * shadow * mix(shade, 1, ramp)`, `MToon` gives
+// `colour * mix(shade, 1, ramp * shadow)`, and the difference is `colour * shade * (1 - shadow)`, added back here for each
+// light with a shadow map. Without it the shadow of the head and the fringe cuts a dark diagonal across the back hair.
+fn hair_cast_shade(n: vec3<f32>, p: ProgramIn) -> vec3<f32> {
+    var light = vec3<f32>(0.0);
+    for (var i = 0u; i < frame.counts.x; i++) {
+        let l = frame.lights[i];
+        if (l.vector.w != LIGHT_DIRECTIONAL) {
+            continue;
+        }
+        let incident = incident_light(l, i, n, p.world_position);
+        light += incident.colour * (1.0 - incident.shadow);
+    }
+    return hair_albedo * material.shade.rgb * light / PI;
 }
 
 // The deeper second tone of the shadow (`shade-deep`, `shade-deep-at`): where the lights' share of the surface turns
