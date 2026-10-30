@@ -18,8 +18,8 @@ use omuzaki_core::id::Slug;
 use omuzaki_face::eye3d::{self, EyeDesign, EyeFrame};
 use omuzaki_render::{AdapterPreference, HeadlessOptions, WgpuRenderer};
 use omuzaki_render_api::{
-    AlphaEncoding, AlphaMode, Background, Camera, DepthOfField, EnvironmentDesc, EnvironmentUse, Instance, Light, Material,
-    Projection, Quality, Renderer, Scene, Shading, TargetDesc, TextureDesc,
+    AlphaEncoding, AlphaMode, Background, Camera, DepthOfField, EnvironmentDesc, EnvironmentUse, Instance, Light,
+    Material, Occlusion, Projection, Quality, Renderer, Scene, Shading, TargetDesc, TextureDesc,
 };
 
 /// The frame's size (the reference close-up's proportions).
@@ -146,6 +146,8 @@ fn render(renderer: &mut WgpuRenderer, design: &EyeDesign) -> image::RgbaImage {
     let environment = renderer.create_environment(&studio(softbox)).unwrap();
     scene.environment = Some(EnvironmentUse::new(environment));
     scene.background = Background::Solid { colour: Colour::hex(0x0030_2420) };
+    // The folds' and contacts' occlusion at the eye's scale: the crease, the corners, the lids and lashes on the eye.
+    scene.occlusion = Some(Occlusion::new(0.0025, 0.7).with_contact(0.0015));
     // A macro lens: sharp on the iris, the lashes and the skin falling out of focus.
     scene.post.depth_of_field = Some(DepthOfField {
         focus_distance: (camera_at - Vec3::new(0.0, 0.0, 0.011)).length(),

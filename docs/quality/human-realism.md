@@ -38,14 +38,14 @@ custom character that holds up at macro, live in real time, through operations a
 |---|---|---|---|
 | Physically based GGX specular, energy-conserving | ◐ per program (`eye`, `skin`) | everyone | one shared BSDF library every program calls; multiple-scattering compensation (Kulla-Conty) |
 | Layered specular: dual lobe for skin, clear coat for the tear film | ○ | UE Substrate, Unity HDRP | a layered material model (slabs) shared by skin, eye, lips and nails |
-| Subsurface scattering, screen-space separable (Jimenez) or Burley | ○ (a wrap approximation only) | UE subsurface profile, Unity diffusion profiles | Burley diffusion with per-region profiles (lips, ears, lids), plus a validated match to random-walk ground truth |
+| Subsurface scattering, screen-space separable (Jimenez) or Burley | ◐ pre-integrated on d'Eon's six-Gaussian skin profile round the mesh's curvature, red-softened normals (`skin` program) | UE subsurface profile, Unity diffusion profiles | Burley diffusion with per-region profiles (lips, ears, lids), plus a validated match to random-walk ground truth |
 | Transmission through thin parts (ears, nostrils, lids) with thickness maps | ○ | UE, Unity | thickness baked from the mesh automatically; backlit ears without hand maps |
 | Refraction through the cornea, iris parallax | ✓ ray-refracted in `eye` | MetaHuman, Unity eye | true per-pixel refraction with a varying cornea shape (keratoconus to normal) |
 | Caustics on the iris | ◐ a far-side brightening term | Unity eye shader | a caustic computed from the cornea's lens for each light |
 | Shadow maps fitted to the casters | ✓ | everyone | |
 | Soft shadows with contact hardening (PCSS) | ○ | UE, Unity | |
-| Contact shadows (screen-space rays) for lids, lashes and nostrils | ○ | UE, Unity | |
-| Ambient occlusion: GTAO or SSAO, with bent normals | ○ (a vertex-alpha shell at the eye only) | UE, Unity | GTAO with bent normals for the specular occlusion of skin and eyes |
+| Contact shadows (screen-space rays) for lids, lashes and nostrils | ✓ a 16-step depth march toward the shadow-casting light (`Scene::occlusion`) | UE, Unity | |
+| Ambient occlusion: GTAO or SSAO, with bent normals | ◐ horizon-based SSAO from the depth (`Scene::occlusion`), no bent normals yet | UE, Unity | GTAO with bent normals for the specular occlusion of skin and eyes |
 | Specular occlusion | ○ | UE, Unity | |
 | Image-based lighting: HDRI, SH irradiance, prefiltered specular | ✓ | everyone | |
 | Area lights (rect, disc) with LTC | ○ | UE, Unity | a softbox as a real area light, so catchlights and highlights come from geometry |
@@ -98,7 +98,7 @@ Tracked in #2508.
 | Sclera SSS and a yellowing or redness tint (fatigue, crying) | ◐ wrap only | Unity | |
 | Limbus darkening and the clear cornea edge | ✓ | MetaHuman | |
 | Tear film: a clear coat with its own normal, the meniscus along the lids | ◐ the meniscus bead | Unity tear layer | |
-| Occlusion where the lids meet the eye | ◐ a vertex-alpha shell | MetaHuman, Unity | a shell plus contact shadows plus GTAO |
+| Occlusion where the lids meet the eye | ◐ a vertex-alpha shell plus SSAO and contact shadows | MetaHuman, Unity | a shell plus contact shadows plus GTAO |
 | Caruncle and plica semilunaris | ◐ the caruncle | MetaHuman | |
 | Lids with thickness, wet margins, crease and pocket | ✓ | MetaHuman | |
 | Lid geometry that follows gaze (the lid rides the cornea) | ○ | MetaHuman rig | |
