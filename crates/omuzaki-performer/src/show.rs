@@ -289,6 +289,11 @@ impl Turn {
         self.queued.iter().any(|q| !q.handle.state().is_final())
     }
 
+    /// Whether a chunk is sounding now (not only queued or synthesising).
+    fn audible(&self) -> bool {
+        self.queued.iter().any(|q| matches!(q.handle.state(), SpeechState::Playing { .. }))
+    }
+
     /// Speech queued so far: each chunk's length as the voice reports it, or an estimate until it does.
     fn estimated_s(&self) -> f64 {
         self.queued
@@ -1052,7 +1057,10 @@ impl Show {
         for line in lines {
             self.push(now, line);
         }
-        let damp = if self.speaking() { SPEAKING_DAMP } else { 1.0 };
+        // Damped only while its voice is sounding: the face that opens a reply, decided before the first chunk
+        // plays, keeps its full strength.
+        let audible = self.turn.as_ref().is_some_and(|t| t.held.is_none() && t.audible());
+        let damp = if audible { SPEAKING_DAMP } else { 1.0 };
         for intent in checked {
             let intent = match intent {
                 Intent::Emote { expression, intensity, hold_s, .. } => {
