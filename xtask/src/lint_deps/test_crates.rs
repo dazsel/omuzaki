@@ -39,8 +39,14 @@ const MEMBERS: &[(&str, &str)] = &[
 /// track area's real-model tests run the graphs through the runtimes (`omuzaki-ai-ort`, `omuzaki-ai-litert`), which no
 /// implementation crate may depend on, so its test crate is the one place the tracker meets them; the speech models
 /// are installed (smoke test included) and opened through the registry (`omuzaki-ai`) the way the app does. Only that
-/// crate is allowed: every other area's test crate still fails on them.
-const GUESTS: &[(&str, &str)] = &[("omuzaki-ai-ort", "track"), ("omuzaki-ai-litert", "track"), ("omuzaki-ai", "track")];
+/// crate is allowed: every other area's test crate still fails on them. The mic's voice effects (`omuzaki-audio-fx`)
+/// sit in front of the microphone mouth, so the track test crate measures that they never cost lip sync (#2587).
+const GUESTS: &[(&str, &str)] = &[
+    ("omuzaki-ai-ort", "track"),
+    ("omuzaki-ai-litert", "track"),
+    ("omuzaki-ai", "track"),
+    ("omuzaki-audio-fx", "track"),
+];
 
 /// The area an area test crate covers, from its name; `None` for every other crate.
 pub fn area_of(name: &str) -> Option<&str> {
@@ -215,7 +221,8 @@ mod tests {
         assert!(got[0].starts_with("omuzaki-test-face → omuzaki-ai-ort: the face area test crate"), "{}", got[0]);
         assert!(got[1].starts_with("omuzaki-test-face → omuzaki-ai: the face area test crate"), "{}", got[1]);
         assert!(got[2].starts_with("omuzaki-test-track → omuzaki-render:"), "{}", got[2]);
-        let allowed = "(omuzaki-track, omuzaki-track-*, omuzaki-speech, omuzaki-ai-ort, omuzaki-ai-litert, omuzaki-ai)";
+        let allowed = "(omuzaki-track, omuzaki-track-*, omuzaki-speech, omuzaki-ai-ort, omuzaki-ai-litert, omuzaki-ai, \
+            omuzaki-audio-fx)";
         assert!(got[2].contains(allowed), "{}", got[2]);
     }
 

@@ -2,7 +2,8 @@
 //!
 //! The host's events become [`Heard`] on the runner clock: `SpeechStarted` is an `Onset`, `Held` the barge-in, a
 //! rejected or empty utterance `Rejected`, a transcript `Final` (private when spoken in `CohostOnly`), and the mute
-//! flag `Muted`. Partials, queue drops and errors stay with the host's own consumers.
+//! flag `Muted`, and the partial transcripts and backchannel cues the listening face reacts to (#2453). Queue drops and errors
+//! stay with the host's own consumers.
 //!
 //! **Echo.** `listen` reads the echo-cancelled signal, but a canceller that hasn't converged lets the performer's own
 //! voice back in. So a transcript that overlaps the performer's speech in time and matches its text (token Jaccard at
@@ -121,6 +122,16 @@ impl SpeechEars {
             SpeechEvent::Held { at } => Some(Heard::held(self.at(at))),
             SpeechEvent::SpeechRejected { end, .. } => Some(Heard::rejected(self.at(end))),
             SpeechEvent::Muted(muted) => Some(Heard::Muted(muted)),
+            SpeechEvent::Backchannel { at } => Some(Heard::backchannel(self.at(at))),
+            SpeechEvent::Partial { utterance, start, end, text, private } => {
+                let text = text.trim();
+                // Its own voice coming back is not the person talking.
+                if text.is_empty() || self.echo.is_echo(text, self.at(start), self.at(end)) {
+                    return None;
+                }
+                let heard = Heard::partial(utterance, text, self.at(end));
+                Some(if private { heard.private() } else { heard })
+            }
             SpeechEvent::Final { utterance, start, end, text, private, .. } => {
                 let (start, end) = (self.at(start), self.at(end));
                 let text = text.trim();

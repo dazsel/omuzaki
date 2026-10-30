@@ -59,6 +59,8 @@ fn preset(name: &str, chain: Vec<Option<NodeSpec>>) -> Option<FxPreset> {
 pub fn builtin() -> Vec<FxPreset> {
     [
         preset("Clean", vec![gate(), eq(), compressor()]),
+        // A fan, a keyboard or a busy room: RNNoise with its voice-aware gate in place of the level gate (20 ms).
+        preset("Noisy room", vec![node("denoise", "fx.denoise", &[("gate", 0.7)]), eq(), compressor()]),
         preset("Deeper", vec![gate(), eq(), pitch(-4.0, 0.88), compressor()]),
         preset("Higher", vec![gate(), eq(), pitch(4.0, 1.12), compressor()]),
         preset("Giant", vec![gate(), eq(), pitch(-9.0, 0.78), compressor()]),
@@ -107,7 +109,7 @@ mod tests {
 
     #[test]
     fn every_builtin_is_complete() {
-        assert_eq!(builtin().len(), 8);
+        assert_eq!(builtin().len(), 9);
         assert!(builtin().iter().all(|p| p.chain.len() >= 3));
         assert_eq!(budget_chain().len(), 5);
         let with_pitch = budget_chain_with_pitch();

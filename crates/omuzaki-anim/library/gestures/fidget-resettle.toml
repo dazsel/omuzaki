@@ -1,0 +1,29 @@
+# Gesture "fidget-resettle" (fidget). Arm angles are degrees in a person's terms: raise, forward, twist, elbow, pronate, wrist,
+# shrug and reach (see crates/omuzaki-anim/src/body/arm.rs). `lead` is the gesturing hand, `other` the second hand of a
+# two-handed gesture (the lead's mirror when left out); `chest` is pitch, yaw toward the lead side and roll, in degrees.
+id = "fidget-resettle"
+summary = "An arm lifted a little and let fall back: settling in."
+kind = "fidget"
+hands = "one"
+strokes = [1, 1]
+
+[prep.lead]
+raise = 12.0
+forward = 12.0
+twist = 22.0
+elbow = 36.0
+pronate = 0.0
+wrist = 4.0
+hand = "rest"
+
+[stroke]
+chest = [0.0, 0.0, 0.0]
+
+[stroke.lead]
+raise = 14.0
+forward = 18.0
+twist = 26.0
+elbow = 52.0
+pronate = 6.0
+wrist = 10.0
+hand = "rest"
