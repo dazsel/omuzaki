@@ -451,6 +451,8 @@ pub struct Skin {
     pub crease: f32,
     /// How deep the crease folds, metres.
     pub crease_depth: f32,
+    /// The pink mound in the inner corner.
+    pub caruncle: Caruncle,
 }
 
 impl Default for Skin {
@@ -462,6 +464,7 @@ impl Default for Skin {
             lid_thickness: 0.0012,
             crease: 0.0058,
             crease_depth: 0.001,
+            caruncle: Caruncle::default(),
         }
     }
 }
@@ -472,6 +475,43 @@ impl Validate for Skin {
         c.range_f32("lid_thickness", self.lid_thickness, 0.0005, 0.004);
         c.range_f32("crease", self.crease, 0.002, 0.012);
         c.range_f32("crease_depth", self.crease_depth, 0.0, 0.004);
+        c.nested("caruncle", &self.caruncle);
+    }
+}
+
+/// The caruncle: the small wet mound of pink flesh in the eye's inner corner, seen past the white when the eye is
+/// viewed from the temple's side.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Caruncle {
+    /// Its width along the opening, metres.
+    pub width: f32,
+    /// Its height across the opening, metres.
+    pub height: f32,
+    /// How far it stands up off the corner's floor, metres.
+    pub rise: f32,
+    /// How far its centre sits below the eye's surface, metres: deeper tucks it into the corner.
+    pub depth: f32,
+    /// Where it sits in from the inner corner, metres, along the opening.
+    pub inset: f32,
+    /// How pink it is, from 0 (the skin's tone) to 1 (wet flesh).
+    pub flush: f32,
+}
+
+impl Default for Caruncle {
+    fn default() -> Self {
+        Self { width: 0.003, height: 0.002, rise: 0.000_45, depth: 0.001_5, inset: 0.001_3, flush: 1.0 }
+    }
+}
+
+impl Validate for Caruncle {
+    fn check(&self, c: &mut Check) {
+        c.range_f32("width", self.width, 0.0005, 0.006);
+        c.range_f32("height", self.height, 0.0005, 0.004);
+        c.range_f32("rise", self.rise, 0.0001, 0.003);
+        c.range_f32("depth", self.depth, 0.0, 0.004);
+        c.range_f32("inset", self.inset, 0.0, 0.004);
+        c.range_f32("flush", self.flush, 0.0, 1.0);
     }
 }
 
@@ -521,6 +561,13 @@ pub struct LashClump {
     /// How far it sweeps along the lid, degrees from straight out: positive toward the outer corner, -80 to 80.
     #[serde(default)]
     pub sweep: f32,
+    /// How far it stands up off the lid at the root, degrees: 0 lies along the lid's skin, 90 points straight out of
+    /// the eye. Left out, it starts as the grown lashes do.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lift: Option<f32>,
+    /// How tightly its hairs meet at the tip, 0 (each its own way) to 1 (one point).
+    #[serde(default = "full")]
+    pub gather: f32,
 }
 
 impl Validate for LashClump {
@@ -531,6 +578,10 @@ impl Validate for LashClump {
         c.range_f32("length", self.length, 0.0, 0.02);
         c.range_f32("curl", self.curl, 0.0, 2.0);
         c.range_f32("sweep", self.sweep, -80.0, 80.0);
+        if let Some(lift) = self.lift {
+            c.range_f32("lift", lift, 0.0, 90.0);
+        }
+        c.range_f32("gather", self.gather, 0.0, 1.0);
     }
 }
 
