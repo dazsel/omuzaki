@@ -10,7 +10,8 @@ repository.workspace = true
 
 # Tests only: every dependency is a dev-dependency, so the library stays empty and links nothing. Only the track area's
 # implementation crates (`omuzaki-track`, `omuzaki-track-*`, `omuzaki-speech`), the runtimes its real graphs load through (`omuzaki-ai-ort`,
-# `omuzaki-ai-litert`) and the registry the speech models install through (`omuzaki-ai`) may appear here
+# `omuzaki-ai-litert`), the registry the speech models install through (`omuzaki-ai`) and the mic's effects whose
+# effect on lip sync it measures (`omuzaki-audio-fx`) may appear here
 # (`cargo xtask lint-deps`).
 [dev-dependencies]
 criterion.workspace = true
@@ -25,6 +26,9 @@ omuzaki-ai = { path = "../omuzaki-ai" }
 omuzaki-ai-api = { path = "../omuzaki-ai-api" }
 omuzaki-ai-litert = { path = "../omuzaki-ai-litert" }
 omuzaki-ai-ort = { path = "../omuzaki-ai-ort" }
+# `tests/denoise.rs`: the mic's noise suppression measured on the voice line and through the microphone mouth.
+omuzaki-audio-fx = { path = "../omuzaki-audio-fx" }
+omuzaki-face-api = { path = "../omuzaki-face-api" }
 # Kokoro through the TTS host into a mock engine's feeds, as the performer speaks.
 omuzaki-audio-api = { path = "../omuzaki-audio-api" }
 omuzaki-audio-mock = { path = "../omuzaki-audio-mock" }

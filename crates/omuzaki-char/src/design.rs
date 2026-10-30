@@ -1,18 +1,21 @@
-//! The kit's design library (#2612, #2615): the named shape dials and the age model in `library/dials/`, embedded by
+//! The kit's design library (#2612, #2614, #2615): the named shape dials, the anatomy's structures (`anatomy-*.toml`)
+//! and the age model in `library/dials/`, embedded by
 //! `build.rs` and registered once with the character contract's design layer
 //! ([`omuzaki_char_api::design`]). Adding a dial is adding a `[[dial]]` table to a file.
 
-use omuzaki_char_api::design::{AgeModel, DesignLibrary, DialDef};
+use omuzaki_char_api::design::{AgeModel, DesignLibrary, DialDef, StructureDef};
 use serde::Deserialize;
 
 include!(concat!(env!("OUT_DIR"), "/dials.rs"));
 
-/// One file of `library/dials/`: dials, and at most one age model across the folder.
+/// One file of `library/dials/`: dials, anatomy structures, and at most one age model across the folder.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DialFile {
     #[serde(default)]
     dial: Vec<DialDef>,
+    #[serde(default)]
+    structure: Vec<StructureDef>,
     #[serde(default)]
     age: Option<AgeModel>,
 }
@@ -28,7 +31,11 @@ pub fn load() -> Result<DesignLibrary, String> {
         for dial in &file.dial {
             dial.check().map_err(|e| format!("library/dials/{stem}.toml: {e}"))?;
         }
+        for structure in &file.structure {
+            structure.check().map_err(|e| format!("library/dials/{stem}.toml: {e}"))?;
+        }
         lib.dials.extend(file.dial);
+        lib.structures.extend(file.structure);
         if let Some(age) = file.age {
             if !lib.age.is_empty() {
                 return Err(format!("library/dials/{stem}.toml: a second age model"));

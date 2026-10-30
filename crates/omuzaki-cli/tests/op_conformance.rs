@@ -729,6 +729,148 @@ fn sorted_report(mut found: Vec<String>) -> String {
     found.join("\n")
 }
 
+/// Hostile arguments (QG-11, the agent surface): every example of every op, as it is and then with each value in it
+/// deleted and replaced by each of a set of nasty values, dry-run on the example's fixture. An agent over MCP can send
+/// any of these, and a plan runs on the caller's thread, where nothing catches a panic: the rule is that a dry-run
+/// answers with a plan or an error, never a panic.
+#[test]
+fn every_op_answers_hostile_arguments_without_a_panic() {
+    omuzaki_cli::link();
+    let nasty = hostile::values();
+    let (mut ops, mut tried) = (0_usize, 0_usize);
+    let mut panics: Vec<String> = Vec::new();
+    for reg in registrations() {
+        let examples = reg.examples();
+        if examples.is_empty() {
+            continue;
+        }
+        let name = (reg.meta)().name;
+        ops += 1;
+        let mut rig = Rig::new(reg, reg.fixture().as_deref()).unwrap_or_else(|e| panic!("{name}: {e}"));
+        for example in &examples {
+            for args in hostile::variants(example, &nasty) {
+                tried += 1;
+                let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _ = rig.run(name, &args, Mode::DryRun);
+                }));
+                if let Err(panic) = ran {
+                    let why = panic
+                        .downcast_ref::<String>()
+                        .cloned()
+                        .or_else(|| panic.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+                        .unwrap_or_default();
+                    panics.push(format!("{name} {args}: {why}"));
+                    // A panic may have left the executor half-way through a request: start the next on a fresh one.
+                    rig = Rig::new(reg, reg.fixture().as_deref()).unwrap_or_else(|e| panic!("{name}: {e}"));
+                }
+            }
+        }
+    }
+    println!("hostile arguments: {ops} ops, {tried} argument sets, {} panicked", panics.len());
+    assert!(panics.is_empty(), "dry-runs panicked:\n{}", sorted_report(panics));
+}
+
+/// The argument sets [`every_op_answers_hostile_arguments_without_a_panic`] tries.
+mod hostile {
+    use serde_json::{Value, json};
+
+    /// Values that break assumptions: signs, zero, huge and tiny numbers, wrong types, ids that exist in the fixtures,
+    /// a path out of the project, a long string and control characters, and vectors of the wrong length or size.
+    pub(super) fn values() -> Vec<Value> {
+        vec![
+            json!(-1),
+            json!(0),
+            json!(1),
+            json!(-1e30),
+            json!(1e30),
+            json!(1e300),
+            json!(-0.0),
+            json!(0.5),
+            json!(4_294_967_296_u64),
+            json!(u64::MAX),
+            json!(i64::MIN),
+            json!(null),
+            json!(true),
+            json!(""),
+            json!("main"),
+            json!("kit"),
+            json!("../outside"),
+            json!("a".repeat(5000)),
+            json!("\u{0}\u{202e}"),
+            json!([]),
+            json!([0.0, 0.0, 0.0]),
+            json!([1e30, -1e30, 1e30]),
+            json!({}),
+        ]
+    }
+
+    /// `example` as it is, then with the value at each path in it (the whole value included) deleted and replaced by
+    /// each of `nasty`.
+    pub(super) fn variants(example: &Value, nasty: &[Value]) -> Vec<Value> {
+        let mut paths = Vec::new();
+        leaves(example, &mut Vec::new(), &mut paths);
+        let mut out = vec![example.clone()];
+        for path in &paths {
+            out.extend(edited(example, path, None));
+            out.extend(nasty.iter().filter_map(|v| edited(example, path, Some(v))));
+        }
+        out
+    }
+
+    /// The path of every value in `value`, as keys and indices, the empty path first.
+    fn leaves(value: &Value, at: &mut Vec<String>, out: &mut Vec<Vec<String>>) {
+        out.push(at.clone());
+        match value {
+            Value::Object(map) => {
+                for (key, child) in map {
+                    at.push(key.clone());
+                    leaves(child, at, out);
+                    at.pop();
+                }
+            }
+            Value::Array(items) => {
+                for (ix, child) in items.iter().enumerate() {
+                    at.push(ix.to_string());
+                    leaves(child, at, out);
+                    at.pop();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn at_path<'a>(value: &'a mut Value, path: &[String]) -> Option<&'a mut Value> {
+        path.iter().try_fold(value, |v, key| match v {
+            Value::Object(map) => map.get_mut(key),
+            Value::Array(items) => items.get_mut(key.parse::<usize>().ok()?),
+            _ => None,
+        })
+    }
+
+    /// `example` with the value at `path` deleted (`None`) or replaced.
+    fn edited(example: &Value, path: &[String], replacement: Option<&Value>) -> Option<Value> {
+        let Some((last, parent)) = path.split_last() else {
+            return replacement.cloned();
+        };
+        let mut out = example.clone();
+        match (at_path(&mut out, parent)?, replacement) {
+            (Value::Object(map), Some(v)) => {
+                map.insert(last.clone(), v.clone());
+            }
+            (Value::Object(map), None) => {
+                map.remove(last);
+            }
+            (Value::Array(items), Some(v)) => *items.get_mut(last.parse::<usize>().ok()?)? = v.clone(),
+            (Value::Array(items), None) => {
+                let ix = last.parse::<usize>().ok().filter(|&i| i < items.len())?;
+                items.remove(ix);
+            }
+            _ => return None,
+        }
+        Some(out)
+    }
+}
+
 /// Planted ops, never registered: each breaks exactly one rule, and the suite must say so.
 mod planted {
     use omuzaki_doc_api::Patch;

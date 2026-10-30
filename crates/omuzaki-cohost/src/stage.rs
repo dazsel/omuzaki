@@ -2,7 +2,8 @@
 //!
 //! An `emote` holds the character's own expression trigger for its `hold_s` (bound on first use under an `ai:` key, in
 //! `Hold` mode, so it fades in and out with the expression's own playback); one AI face shows at a time, and a cut
-//! (`release`) lets go of it at once. The inventory is the character's emotions and accents. Gestures, clips, looks
+//! (`release`) lets go of it at once. A `nod` is a short head-pitch act on the score layer (a dip and a slower return,
+//! tilting to alternate sides), the listener's "mm-hm". The inventory is the character's emotions and accents. Gestures, clips, looks
 //! and walks need the score layer's live cues (anim-api §10) and are refused as unsupported until it lands; the
 //! performer then lists no clips, so the model is never offered one.
 
@@ -10,17 +11,24 @@ use std::collections::{BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use omuzaki_anim::TriggerMode;
+use omuzaki_anim_api::Channel;
 use omuzaki_anim_api::ExpressionId;
 use omuzaki_core::time::Seconds;
 use omuzaki_face_api::ExpressionKind;
 use omuzaki_performer_api::intent::Intent;
 use omuzaki_performer_api::stage::{Inventory, Refusal, Stage, StageError};
-use omuzaki_stage::perform::host::{PerformError, PerformHost};
+use omuzaki_stage::perform::host::{ActRequest, PerformError, PerformHost};
+use omuzaki_stage::perform::score::Envelope;
 use omuzaki_stage::perform::triggers::TriggerBinding;
 use omuzaki_stage_api::ids::MemberId;
 
 /// The prefix of the trigger keys the performer binds, so they never take a person's key.
 pub const KEY_PREFIX: &str = "ai:";
+/// A full nod's dip, radians of head pitch (about 7°, a listener's clear nod; the speech nods of the life layer are 4°).
+pub const NOD_PITCH_RAD: f32 = 0.12;
+/// A full nod's tilt, radians of head roll, to alternate sides.
+pub const NOD_ROLL_RAD: f32 = 0.035;
+
 /// Trigger keys are at most this many characters.
 const KEY_CHARS: usize = 32;
 
@@ -32,6 +40,8 @@ struct State {
     down: Option<(String, f64)>,
     /// Emotes applied ahead of their time: `(at, key, until)`.
     queued: VecDeque<(f64, String, f64)>,
+    /// The side the last nod tilted to.
+    nod_left: bool,
 }
 
 /// The performer's stage for one cast member on one perform host.
@@ -104,6 +114,22 @@ impl PerformStage {
     }
 }
 
+impl PerformStage {
+    /// A nod now: the head dips over 120 ms and comes back over 350 ms, tilting a little to the other side from the
+    /// last one.
+    fn nod(&self, strength: f32) -> Result<(), StageError> {
+        let side = {
+            let mut state = self.lock();
+            state.nod_left = !state.nod_left;
+            if state.nod_left { 1.0 } else { -1.0 }
+        };
+        let values =
+            vec![(Channel::HEAD_PITCH, NOD_PITCH_RAD * strength), (Channel::HEAD_ROLL, NOD_ROLL_RAD * strength * side)];
+        let envelope = Envelope { fade_in: 0.12, hold: Some(0.04), fade_out: 0.35 };
+        self.host.act(ActRequest::Channels { values, over_tracking: false }, envelope).map(|_| ()).map_err(stage_error)
+    }
+}
+
 impl Stage for PerformStage {
     fn apply(&self, member: &MemberId, intent: &Intent, at: Seconds) -> Result<(), StageError> {
         if member != &self.member {
@@ -113,6 +139,7 @@ impl Stage for PerformStage {
         inventory.check(intent).map_err(StageError::Refused)?;
         match intent {
             Intent::Emote { expression, hold_s, .. } => self.emote(expression, *hold_s, at),
+            Intent::Nod { strength, .. } => self.nod(*strength),
             _ => Err(StageError::Refused(Refusal::Unsupported)),
         }
     }
