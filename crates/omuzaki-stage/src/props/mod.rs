@@ -4,8 +4,7 @@
 //! - [`shape`]: boxes, frustums, vessels, ellipsoids, tubes and leaves, closed and painted, appended into one mesh.
 //! - The interior kinds (#1166): [`room`] (`room`, `rug`), [`furniture`] (`desk`, `chair`, `cafe-table`, `bed`),
 //!   [`shelf`], [`lighting`] (`lamp`, `window`), [`small`] (`cup`, `plant`) and [`decor`] (`gramophone`, `picture`,
-//!   `urn`). Each is procedural, in metres, toon
-//!   with vertex colours, and registers itself.
+//!   `urn`, `chest`, `armchair`). Each is procedural, in metres, toon with vertex colours, and registers itself.
 //! - [`staged`]: a scene's props resolved (builds kept while their params are), uploaded once per build and drawn
 //!   every frame, attached ones under their bones.
 

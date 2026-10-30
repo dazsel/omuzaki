@@ -1,6 +1,7 @@
 //! Things that dress a room: `gramophone` (a cabinet, a platter and a flared horn), `picture` (a framed picture to hang
-//! on a wall), `urn` (a lidded vase with handles) and `chest` (a lidded chest with metal straps). Procedural, in metres, toon with vertex colours, like the other
-//! interior kinds.
+//! on a wall), `urn` (a lidded vase with handles), `chest` (a lidded chest with metal straps) and `armchair` (an
+//! upholstered chair with a tufted oval back). Procedural, in metres, toon with vertex colours, like the other interior
+//! kinds.
 
 use std::f32::consts::{PI, TAU};
 
@@ -383,6 +384,121 @@ impl PropKind for Chest {
 
 register_prop_kind!(Chest);
 
+/// An upholstered armchair.
+pub struct Armchair;
+
+/// The armchair's parameters.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct ArmchairParams {
+    /// Metres across, 0.55 to 1.1.
+    pub width: f32,
+    /// The seat's height in metres, 0.3 to 0.55.
+    pub seat_height: f32,
+    /// The back's height above the seat in metres, 0.3 to 0.9.
+    pub back: f32,
+    /// The upholstery.
+    pub cloth: Colour,
+    /// The frame: the legs, the arms' fronts and the rim round the back.
+    pub frame: Colour,
+    /// Buttons pulled into the back on a diamond grid.
+    pub tufted: bool,
+    /// Round-headed studs along the back's rim; none when absent.
+    pub studs: Option<Colour>,
+    /// Arms at the sides.
+    pub arms: bool,
+}
+
+impl Default for ArmchairParams {
+    fn default() -> Self {
+        Self {
+            width: 0.75,
+            seat_height: 0.42,
+            back: 0.6,
+            cloth: Colour::hex(0x007a_6e9a),
+            frame: Colour::hex(0x005a_5462),
+            tufted: true,
+            studs: Some(Colour::hex(0x00b8_b4bc)),
+            arms: true,
+        }
+    }
+}
+
+impl PropKind for Armchair {
+    type Params = ArmchairParams;
+    const ID: &'static str = "armchair";
+    const SUMMARY: &'static str = "An upholstered armchair standing on y = 0, facing +Z: a cushioned seat on short legs, \
+                                   padded arms and an oval back in a rimmed frame, tufted with buttons and studded \
+                                   along the rim if asked. Size, cloth and frame.";
+
+    fn validate(p: &ArmchairParams) -> Result<(), String> {
+        between("width", p.width, 0.55, 1.1)?;
+        between("seat_height", p.seat_height, 0.3, 0.55)?;
+        between("back", p.back, 0.3, 0.9)
+    }
+
+    fn build(p: &ArmchairParams) -> Result<PropOutput, String> {
+        let (w, sh) = (p.width * 0.5, p.seat_height);
+        let d = (p.width * 0.45).clamp(0.28, 0.42);
+        let leg = 0.1_f32.min(sh * 0.3);
+        let mut cloth = Shape::new();
+        let mut frame = Shape::new();
+        for (x, z) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+            frame.frustum(At::xyz(x * (w - 0.05), 0.0, z * (d - 0.05)), 0.018, 0.026, leg, 10, (true, true), p.frame);
+        }
+        // The base and the seat cushion on it.
+        cloth.bevelled(At::xyz(0.0, f32::midpoint(leg, sh - 0.07), 0.0), Vec3::new(w, (sh - 0.07 - leg) * 0.5, d), 0.03, darker(p.cloth, 0.12));
+        cloth.bevelled(At::xyz(0.0, sh - 0.04, 0.02), Vec3::new(w - 0.06, 0.045, d - 0.02), 0.035, p.cloth);
+        if p.arms {
+            for x in [-1.0, 1.0] {
+                cloth.bevelled(At::xyz(x * (w - 0.045), sh + 0.08, 0.0), Vec3::new(0.05, 0.13, d), 0.035, p.cloth);
+                frame.bevelled(At::xyz(x * (w - 0.045), sh + 0.08, d + 0.004), Vec3::new(0.045, 0.12, 0.006), 0.004, p.frame);
+            }
+        }
+        // The back: an oval pad leaning back 8°, in a rim.
+        let (rx, ry, rz) = (w - 0.02, p.back * 0.55, 0.07);
+        let centre = Vec3::new(0.0, sh + p.back * 0.45, -d + 0.06);
+        let lean = At::pos(centre).pitch(-8.0);
+        cloth.ellipsoid(lean, Vec3::new(rx, ry, rz), 14, 40, p.cloth);
+        let rim: Vec<Vec3> = (0..=48)
+            .map(|i| {
+                let a = TAU * frac(i, 48);
+                lean.0.transform_point3(Vec3::new(rx * a.cos(), ry * a.sin(), 0.0))
+            })
+            .collect();
+        frame.tube(&rim, 0.022, 8, p.frame);
+        if let Some(stud) = p.studs {
+            for i in 0..36 {
+                let a = TAU * frac(i, 36);
+                let at = lean.0.transform_point3(Vec3::new(rx * 0.96 * a.cos(), ry * 0.96 * a.sin(), 0.02));
+                frame.ellipsoid(At::pos(at), Vec3::splat(0.008), 4, 8, stud);
+            }
+        }
+        if p.tufted {
+            // Buttons on a diamond grid over the pad's front, each sunk a little into it.
+            let pitch = (rx * 0.42).clamp(0.07, 0.14);
+            let button = darker(p.cloth, 0.35);
+            for row in -3_i8..=3 {
+                for col in -4_i8..=4 {
+                    if (row + col) % 2 != 0 {
+                        continue;
+                    }
+                    let (x, y) = (f32::from(col) * pitch * 0.5, f32::from(row) * pitch * 0.5);
+                    let r2 = (x / (rx * 0.82)).powi(2) + (y / (ry * 0.82)).powi(2);
+                    if r2 >= 1.0 {
+                        continue;
+                    }
+                    let z = rz * (1.0 - (x / rx).powi(2) - (y / ry).powi(2)).max(0.0).sqrt();
+                    cloth.ellipsoid(At(lean.0 * At::xyz(x, y, z - 0.004).0), Vec3::new(0.012, 0.012, 0.006), 4, 10, button);
+                }
+            }
+        }
+        Ok(output(vec![(cloth, painted(darker(p.cloth, 0.55))), (frame, painted(darker(p.frame, 0.55)))]))
+    }
+}
+
+register_prop_kind!(Armchair);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -396,6 +512,8 @@ mod tests {
             Urn::build(&UrnParams::default()),
             Chest::build(&ChestParams::default()),
             Chest::build(&ChestParams { domed: false, ..ChestParams::default() }),
+            Armchair::build(&ArmchairParams::default()),
+            Armchair::build(&ArmchairParams { tufted: false, studs: None, arms: false, ..ArmchairParams::default() }),
         ];
         for build in builds {
             let out = build.expect("builds");
@@ -407,6 +525,16 @@ mod tests {
                 .fold(f32::INFINITY, f32::min);
             assert!(lowest.abs() < 0.01, "stands on y = 0: lowest point {lowest}");
         }
+    }
+
+    #[test]
+    fn tufting_and_studs_add_buttons_to_the_armchair() {
+        let count = |p: &ArmchairParams| -> usize {
+            Armchair::build(p).expect("builds").parts.iter().map(|part| part.mesh.positions.len()).sum()
+        };
+        let bare = ArmchairParams { tufted: false, studs: None, ..ArmchairParams::default() };
+        assert!(count(&ArmchairParams { tufted: true, ..bare.clone() }) > count(&bare));
+        assert!(count(&ArmchairParams { studs: Some(BRASS), ..bare.clone() }) > count(&bare));
     }
 
     #[test]

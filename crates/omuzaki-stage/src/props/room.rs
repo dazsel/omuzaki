@@ -35,6 +35,8 @@ pub struct RoomParams {
     pub trim: Colour,
     /// Which walls stand: the back (-Z), the left (-X) and the right (+X).
     pub walls_up: [bool; 3],
+    /// A ceiling over the room in this colour, with a moulded border a little in from the walls; open when absent.
+    pub ceiling: Option<Colour>,
     /// Varies the planks.
     pub seed: u32,
 }
@@ -51,6 +53,7 @@ impl Default for RoomParams {
             wainscot: Some(Colour::hex(0x007a_5238)),
             trim: Colour::hex(0x00f3_ede2),
             walls_up: [true, true, true],
+            ceiling: None,
             seed: 7,
         }
     }
@@ -61,7 +64,7 @@ impl PropKind for Room {
     const ID: &'static str = "room";
     const SUMMARY: &'static str = "An interior: a floor centred on the origin and up to three walls (back, left, \
                                    right), open toward +Z, with skirting, a cornice and panelling if asked. Size, \
-                                   paint, wood, planks.";
+                                   paint, wood, planks and a ceiling.";
 
     fn validate(p: &RoomParams) -> Result<(), String> {
         between("width", p.width, 2.0, 12.0)?;
@@ -139,6 +142,23 @@ impl PropKind for Room {
             trim.block(lo, hi, p.trim);
             let (lo, hi) = band(h - 0.09, h, 0.05);
             trim.block(lo, hi, p.trim);
+        }
+        if let Some(ceiling) = p.ceiling {
+            walls.block(Vec3::new(-w - wall, h, -d - wall), Vec3::new(w + wall, h + wall, d), ceiling);
+            // A moulded frame hanging a little below the ceiling, 0.35 m in from the walls (and from the open side).
+            let (inset, band, drop) = (0.35_f32, 0.06, 0.025);
+            let (x0, x1, z0, z1) = (-w + inset, w - inset, -d + inset, d - inset);
+            if x1 - x0 > band * 3.0 && z1 - z0 > band * 3.0 {
+                let y = h - drop;
+                for (lo, hi) in [
+                    (Vec3::new(x0, y, z0), Vec3::new(x1, h, z0 + band)),
+                    (Vec3::new(x0, y, z1 - band), Vec3::new(x1, h, z1)),
+                    (Vec3::new(x0, y, z0 + band), Vec3::new(x0 + band, h, z1 - band)),
+                    (Vec3::new(x1 - band, y, z0 + band), Vec3::new(x1, h, z1 - band)),
+                ] {
+                    trim.block(lo, hi, p.trim);
+                }
+            }
         }
         let mut parts = vec![(floor, painted_plain()), (walls, painted_plain())];
         if !trim.is_empty() {
@@ -339,6 +359,17 @@ mod tests {
                 assert!(q.y >= -1e-4 && q.y < 0.016, "{pattern:?} stands up off the rug: {q}");
             }
         }
+    }
+
+    #[test]
+    fn a_ceiling_closes_the_room_at_its_height() {
+        let top = |p: &RoomParams| {
+            Room::build(p).expect("builds").parts.iter().flat_map(|part| part.mesh.positions.iter().map(|q| q.y)).fold(f32::NEG_INFINITY, f32::max)
+        };
+        let open = RoomParams::default();
+        let closed = RoomParams { ceiling: Some(Colour::hex(0x00ee_e4d4)), ..RoomParams::default() };
+        assert!((top(&open) - open.height).abs() < 1e-4);
+        assert!(top(&closed) > closed.height + 0.05, "the ceiling sits on the walls");
     }
 
     #[test]
