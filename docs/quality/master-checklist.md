@@ -344,7 +344,7 @@ Warudo (MediaPipe body and hands), XR Animator, mocopi and SlimeVR (body), Leap 
 | Face | iPhone ARKit receivers: iFacialMocap, VTube Studio phone, Live Link Face (PF-02) | Warudo | ✓ | `omuzaki-track-net/src/protocol/` |
 | Face | Android phone apps over the same protocols (PF-03); a web phone page (PF-10) | VTube Studio Android | ◐ | receivers done; web page #595 |
 | Face | Tongue from the webcam (MediaPipe has no tongue channel) | none reliable | ✗ | covered by the "not invented" row below |
-| Body | VMC in for face; body bones over VMC (PF-04) | Warudo, VSeeFace | ◐ | face done; body bones #468 |
+| Body | VMC in for face; body bones over VMC (PF-04) | Warudo, VSeeFace | ✓ | face and full body (hips, spine, legs, arms, finger bones) with `input.track_body` on the VMC source |
 | Body | VMC out (PF-04) | VSeeFace | ✓ | `input.vmc_out` |
 | Body | Upper body from the webcam (PF-07) | Warudo, XR Animator | ◐ | `input.track_body`, `omuzaki-track/src/body/`; waits on a real-webcam hand check, #471 |
 | Body | OpenXR and SteamVR trackers (Vive trackers, Index controllers) as inputs | VNyan, VirtualMotionCapture | ✗ | **new** #2583 |

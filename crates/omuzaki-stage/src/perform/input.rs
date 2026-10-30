@@ -946,6 +946,14 @@ impl InputHost for LiveInput {
         if mode == Mode::DryRun || config == before {
             return Ok(before);
         }
+        // Every source that can track a body is told, so the body follows whichever runs: the webcam's own tracker,
+        // or a mocap app over VMC (PF-04). Each publishes only while its frames come.
+        if let Some(phone) = inner.phone.as_mut() {
+            match phone.track_body(config, &board) {
+                Ok(_) | Err(TrackError::Unsupported(_)) => {}
+                Err(other) => return Err(InputError::Device(other)),
+            }
+        }
         inner.tracker.track_body(config, &board).map_err(|e| match e {
             TrackError::Unsupported(_) => InputError::NoBodyTracking,
             other => InputError::Device(other),
@@ -957,7 +965,10 @@ impl InputHost for LiveInput {
         if inner.body.is_none() {
             return BodyStatus::default();
         }
-        inner.tracker.body_status()
+        match (inner.source, inner.phone.as_ref()) {
+            (SourceKind::Iphone, Some(phone)) => phone.body_status(),
+            _ => inner.tracker.body_status(),
+        }
     }
 }
 

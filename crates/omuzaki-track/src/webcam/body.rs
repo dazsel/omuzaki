@@ -27,7 +27,10 @@ const WAIT: Duration = Duration::from_millis(100);
 /// A gap this long between frames is a new session: the tracker starts over instead of tracking from stale regions.
 const NEW_SESSION_S: f64 = 0.5;
 /// How long the body thread waits for the last tracker to hand the board's writer back.
-const LEASE_WAIT: Duration = Duration::from_secs(5);
+const LEASE_WAIT: Duration = Duration::from_millis(200);
+
+/// Empty waits (of [`WAIT`] each) after which the thread hands the board's writer back: a second without frames.
+const RELEASE_AFTER_WAITS: u32 = 10;
 /// How long switching off waits for the thread before letting it go.
 const JOIN_GRACE: Duration = Duration::from_secs(2);
 /// Frame times kept for the percentiles.
@@ -200,11 +203,10 @@ impl Run {
                 return;
             }
         };
-        let Some(mut writer) = self.lease() else {
-            self.shared.status().state =
-                BodyState::Failed("another body tracker still holds the stage's body input".to_owned());
-            return;
-        };
+        // The board is held only while camera frames come, so another source (VMC) can drive the body while the
+        // camera is off.
+        let mut writer: Option<BodyWriter> = None;
+        let mut idle = 0_u32;
         self.shared.status().state = BodyState::Running;
         let mut frame = TapFrame::default();
         let mut out = BodyFrame::empty(0, Seconds(0.0));
@@ -215,8 +217,10 @@ impl Run {
         while !self.shared.stop.load(Ordering::Relaxed) {
             if !self.tap.take(&mut frame) {
                 // No frame: the session stopped or the camera stalled. Say the body is gone once, so the stage eases
-                // the arms back instead of holding the last pose.
-                if saw {
+                // the arms back instead of holding the last pose; after a quiet second, hand the board back.
+                if let Some(writer) = writer.as_mut()
+                    && saw
+                {
                     seq += 1;
                     writer.publish(&BodyFrame::empty(seq, last_time.map_or(Seconds(0.0), Seconds)));
                     gestures.reset();
@@ -225,8 +229,20 @@ impl Run {
                     self.shared.status().arms = [0.0; 2];
                     self.shared.status().hands = [0.0; 2];
                 }
+                idle += 1;
+                if idle >= RELEASE_AFTER_WAITS {
+                    writer = None;
+                }
                 continue;
             }
+            idle = 0;
+            if writer.is_none() {
+                writer = self.lease();
+            }
+            let Some(writer) = writer.as_mut() else {
+                // Another source holds the board: this frame is not tracked.
+                continue;
+            };
             let time = frame.time.0;
             if last_time.is_none_or(|last| !(0.0..NEW_SESSION_S).contains(&(time - last))) {
                 tracker.reset();
@@ -263,7 +279,9 @@ impl Run {
                 (out.arms, out.hands, frames, p50, p95);
         }
         // Switched off: the stage lets the body go.
-        writer.publish(&BodyFrame::empty(seq + 1, last_time.map_or(Seconds(0.0), Seconds)));
+        if let Some(writer) = writer.as_mut() {
+            writer.publish(&BodyFrame::empty(seq + 1, last_time.map_or(Seconds(0.0), Seconds)));
+        }
         self.shared.status().state = BodyState::Off;
     }
 
