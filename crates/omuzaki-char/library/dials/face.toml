@@ -3,9 +3,9 @@
 # head's centre; `reach` is degrees round the head. Sided dials are written for the character's left (+x).
 #
 # Origin: design targets from facial anatomy (the fat pads, the zygomatic arch, the mandible's angle, the brow ridge)
-# and the ranges sliders in character creators expose; no likeness is traced. The age curves follow the well-known
-# course of facial ageing: a child's full cheeks and small jaw and nose, the temples and cheeks hollowing and the jowls
-# dropping after middle age, the nose and ears lengthening slowly through life.
+# and the ranges sliders in character creators expose; no likeness is traced. Age reaches the face through its anatomy
+# (anatomy-face.toml: the fat pads deflating and descending, the bone resorbing, the folds deepening), so these dials
+# carry no age curves of their own.
 
 [[dial]]
 id = "cheek_fullness"
@@ -14,7 +14,6 @@ summary = "+1 full, round cheeks (the malar fat pad); -1 lean cheeks"
 group = "face"
 sided = true
 prior = 0.3
-age = [[3.0, 0.9], [10.0, 0.5], [20.0, 0.1], [30.0, 0.0], [60.0, -0.3], [85.0, -0.55]]
 [[dial.effects]]
 frame = "head"
 landmark = "cheek_left"
@@ -29,7 +28,6 @@ summary = "+1 high, prominent cheekbones; -1 flat"
 group = "face"
 sided = true
 prior = 0.3
-age = [[3.0, -0.6], [16.0, -0.1], [30.0, 0.0], [70.0, 0.35]]
 [[dial.effects]]
 frame = "head"
 landmark = "cheekbone_left"
@@ -43,7 +41,6 @@ summary = "+1 hollow under the cheekbones; -1 filled"
 group = "face"
 sided = true
 prior = 0.25
-age = [[30.0, 0.0], [55.0, 0.25], [85.0, 0.7]]
 [[dial.effects]]
 frame = "head"
 landmark = "cheekbone_left"
@@ -58,7 +55,6 @@ summary = "+1 a wide, square jaw; -1 a narrow, tapered one"
 group = "face"
 sided = true
 prior = 0.3
-age = [[3.0, -0.5], [14.0, -0.2], [25.0, 0.0]]
 [[dial.effects]]
 frame = "head"
 landmark = "jaw_left"
@@ -73,7 +69,6 @@ summary = "+1 a sharp, defined angle of the jaw; -1 soft"
 group = "face"
 sided = true
 prior = 0.3
-age = [[3.0, -0.6], [18.0, 0.0]]
 [[dial.effects]]
 frame = "head"
 landmark = "jaw_left"
@@ -88,7 +83,6 @@ summary = "+1 jowls that sag past the jaw line; -1 a taut jaw line"
 group = "face"
 sided = true
 prior = 0.2
-age = [[40.0, 0.0], [60.0, 0.35], [85.0, 0.8]]
 [[dial.effects]]
 frame = "head"
 landmark = "jaw_left"
@@ -109,7 +103,6 @@ name = "Chin length"
 summary = "+1 a longer chin; -1 a short one"
 group = "face"
 prior = 0.3
-age = [[3.0, -0.6], [12.0, -0.3], [20.0, 0.0]]
 [[dial.effects]]
 frame = "head"
 landmark = "chin"
@@ -152,7 +145,6 @@ summary = "+1 a heavy brow ridge; -1 a smooth brow"
 group = "face"
 sided = true
 prior = 0.3
-age = [[3.0, -0.6], [18.0, 0.0], [60.0, 0.2]]
 [[dial.effects]]
 frame = "head"
 landmark = "brow_left"
@@ -167,7 +159,6 @@ name = "Forehead"
 summary = "+1 an upright, rounded forehead; -1 one that slopes back"
 group = "face"
 prior = 0.3
-age = [[3.0, 0.6], [14.0, 0.2], [25.0, 0.0]]
 [[dial.effects]]
 frame = "head"
 landmark = "forehead"
@@ -182,7 +173,6 @@ summary = "+1 hollow temples; -1 full"
 group = "face"
 sided = true
 prior = 0.25
-age = [[40.0, 0.0], [70.0, 0.5], [90.0, 0.8]]
 [[dial.effects]]
 frame = "head"
 landmark = "temple_left"
@@ -195,7 +185,6 @@ name = "Nose projection"
 summary = "+1 a nose that stands out from the face; -1 a flat nose"
 group = "face"
 prior = 0.3
-age = [[3.0, -0.6], [16.0, -0.1], [25.0, 0.0], [80.0, 0.25]]
 [[dial.effects]]
 frame = "head"
 landmark = "nose"
@@ -209,7 +198,6 @@ name = "Nose bridge"
 summary = "+1 a high bridge between the eyes; -1 a low one"
 group = "face"
 prior = 0.3
-age = [[3.0, -0.6], [18.0, 0.0]]
 [[dial.effects]]
 frame = "head"
 landmark = "nose_bridge"
@@ -238,7 +226,6 @@ name = "Nose length"
 summary = "+1 a long nose whose tip sits lower; -1 a short, upturned one"
 group = "face"
 prior = 0.3
-age = [[3.0, -0.5], [20.0, 0.0], [80.0, 0.5]]
 [[dial.effects]]
 frame = "head"
 landmark = "nose"
@@ -252,7 +239,6 @@ name = "Mouth projection"
 summary = "+1 a mouth that stands forward; -1 a flat mouth"
 group = "face"
 prior = 0.3
-age = [[20.0, 0.0], [80.0, -0.4]]
 [[dial.effects]]
 frame = "head"
 landmark = "mouth"
@@ -266,7 +252,6 @@ name = "Lip fullness"
 summary = "+1 full lips; -1 thin lips"
 group = "face"
 prior = 0.3
-age = [[18.0, 0.2], [30.0, 0.0], [80.0, -0.6]]
 [[dial.effects]]
 frame = "head"
 landmark = "mouth"
@@ -281,7 +266,6 @@ summary = "+1 corners that turn up; -1 corners that turn down"
 group = "face"
 sided = true
 prior = 0.2
-age = [[30.0, 0.0], [80.0, -0.5]]
 [[dial.effects]]
 frame = "head"
 landmark = "mouth_left"
@@ -296,7 +280,6 @@ summary = "+1 deep-set eyes; -1 shallow sockets"
 group = "face"
 sided = true
 prior = 0.25
-age = [[3.0, -0.5], [20.0, 0.0], [80.0, 0.5]]
 [[dial.effects]]
 frame = "head"
 landmark = "eye_left"

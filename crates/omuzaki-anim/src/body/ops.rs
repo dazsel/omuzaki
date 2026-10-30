@@ -1,16 +1,19 @@
-//! The living body's query ops: `gesture.list`, `body.styles`, `measure.body_motion` and `measure.reaction`. The live dial
-//! (`perform.set_body`) is the perform host's, in `omuzaki-stage`, beside `perform.set_retarget`.
+//! The living body's query ops: `gesture.list`, `body.styles`, `measure.body_motion`, `measure.reaction` and
+//! `measure.clip_motion`. The live dial (`perform.set_body`) is the perform host's, in `omuzaki-stage`, beside
+//! `perform.set_retarget`.
 
 use omuzaki_anim_api::{BodyStyle, HumanoidPose, Impact, Personality};
+use omuzaki_char_api::CharId;
 use omuzaki_ops_api::{Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::gesture::GestureLibrary;
-use super::measure::{Take, measure, measure_face_only, measure_reaction};
+use super::measure::{TAKE_FPS, Take, living_poses, measure, measure_face_only, measure_poses, measure_reaction};
 use super::tune::Tuning;
-use crate::poses::PoseLibrary;
+use crate::hands::HandRest;
+use crate::poses::{PoseLibrary, find_clip};
 
 /// Longest measured take, seconds.
 const MAX_SECONDS: f32 = 600.0;
@@ -207,3 +210,59 @@ impl Op for MeasureReaction {
 }
 
 omuzaki_ops_api::register_op!(MeasureReaction);
+
+/// Measure how a clip moves the body (a library clip, a character's own, or a motion-capture take that
+/// `motion.import` stored) beside a living-body style on a talking take of the same length, in the same numbers:
+/// motion by region, frozen windows, the fastest turn, and where the arms rest and how often a hand is up.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(extend("examples" = [
+    { "clip": "wave" },
+    { "clip": "yawn", "style": { "preset": "calm" } }
+]))]
+pub struct MeasureClipMotion {
+    /// The clip (`clip.list` lists them).
+    pub clip: String,
+    /// The character whose own clips (`clip.set`, `motion.import`) are looked in first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub character: Option<CharId>,
+    /// The living-body style to compare with; the natural preset when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style: Option<BodyStyle>,
+    /// Seeds the comparison take and the body's choices. Default 7.
+    #[serde(default = "default_seed")]
+    pub seed: u64,
+}
+
+impl Op for MeasureClipMotion {
+    fn meta() -> OpMeta {
+        OpMeta {
+            name: "measure.clip_motion",
+            summary: "Measure how a clip or an imported motion-capture take moves the body beside a living-body style, in the same numbers (motion by region, frozen windows, arm rest, hands up), to pick the style that matches it.",
+            kind: OpKind::Query,
+            scope: Scope::Read,
+            undo: Undo::None,
+        }
+    }
+
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)] // bounded counts
+    fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        let clip = find_clip(ctx.doc, self.character.as_ref(), &self.clip)
+            .map_err(|e| OpError { field: e.field.or_else(|| Some("clip".to_owned())), ..e })?;
+        let style = self.style.unwrap_or_default().clamped();
+        let rest = HandRest::nominal();
+        let frames = ((clip.length().min(MAX_SECONDS) * TAKE_FPS).round() as usize).max(2);
+        let poses: Vec<HumanoidPose> =
+            (0..frames).map(|i| clip.sample_posture(i as f32 / TAKE_FPS).to_humanoid(&rest)).collect();
+        let take = Take::synthesize(frames as f32 / TAKE_FPS, 0.7, self.seed);
+        let living = living_poses(&style, &take, &standing_base(), self.seed);
+        Ok(Plan::answer(json!({
+            "clip": clip.id,
+            "style": style,
+            "clip_motion": measure_poses(&poses, TAKE_FPS),
+            "living": measure_poses(&living, TAKE_FPS),
+        })))
+    }
+}
+
+omuzaki_ops_api::register_op!(MeasureClipMotion);
