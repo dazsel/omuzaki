@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use omuzaki_ops_api::{Effect, Mode, Op, OpCall, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo};
+use omuzaki_ops_api::{Effect, FsMode, Mode, Op, OpCall, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo};
 use omuzaki_track_api::camera::CameraId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -14,7 +14,8 @@ use crate::perform::input::{InputHost, SourceKind};
 /// Track the face, head and (with `input.track_body`) the body from a recorded video, a webcam clip or a phone video
 /// of the person, as if it were a camera: it is bound as the webcam source's camera, and the preview (`input.preview`)
 /// plays it at the file's own rate, looping, with calibration, the doctor and recording working as they do live.
-/// `.y4m` is read directly; MP4, MKV, MOV, WebM and the rest through the person's own ffmpeg, on this machine only.
+/// `.y4m` is read directly; MP4, MKV, MOV, `WebM` and the rest through the person's own ffmpeg, on this machine only.
+/// The path is checked like any op's file: outside the project folder it needs a granted root.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[schemars(extend("examples" = [{ "path": "/home/me/Videos/clip.mp4" }]))]
 pub struct OpenVideo {
@@ -56,12 +57,12 @@ impl Op for OpenVideo {
         let before = held(host);
         let (camera, after_source, info) = match (&self.path, &self.restore) {
             (Some(path), None) => {
-                let path = Path::new(path.trim());
-                if !path.is_absolute() {
-                    return Err(OpError::invalid("path", format!("'{}' is not an absolute path", path.display()))
-                        .hint("give the video's full path, starting from the root of the drive"));
-                }
-                let info = host.add_video(path, mode(ctx)).map_err(op_error)?;
+                // The file fence (`OpCtx::fs_access`) decides whether this actor may read the path and resolves it,
+                // links and `..` included. ffmpeg, a separate program, then opens the resolved path by its text: a
+                // link swapped in after this check could only change which video is decoded into tracking frames,
+                // whose pixels never come back to the caller.
+                let checked = ctx.fs_access(path.trim(), FsMode::Read)?.to_string();
+                let info = host.add_video(Path::new(&checked), mode(ctx)).map_err(op_error)?;
                 (info.as_ref().map(|i| i.id.clone()), SourceKind::Webcam, info)
             }
             (None, Some(restore)) => (restore.camera.clone(), restore.source, None),

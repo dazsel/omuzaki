@@ -155,6 +155,7 @@ impl Tracker for Cameras {
     }
 
     /// A file that exists becomes a camera `video:<path>` replaying a face of its own, as `omuzaki-video` lists one.
+    #[allow(clippy::disallowed_methods, reason = "a stand-in for the video reader, over a test's temporary file")]
     fn add_video(&mut self, path: &std::path::Path) -> Result<CameraInfo, TrackError> {
         let id = format!("video:{}", path.display());
         if !path.is_file() {

@@ -1,0 +1,7 @@
+section = "in-use"
+item = "ffmpeg (the person's own install)"
+kind = "tool"
+used_for = "decoding a recorded video for tracking (`omuzaki-video` `ffmpeg`, #2585): run as a separate program that reads one local file and writes raw Y4M frames to a pipe; found on the PATH or named by `OMUZAKI_FFMPEG`"
+status = "external"
+condition = "separate program, like git (ADR 0045): never bundled, linked or redistributed, so its build's licence (LGPL or GPL) and codecs stay the person's own; Omuzaki detects it and says how to install it when it is missing. Not the LGPL shared-library route of `ffmpeg-lgpl.toml` (#1424), which stays open"
+audit = "B4"

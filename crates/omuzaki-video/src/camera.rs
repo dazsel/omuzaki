@@ -72,7 +72,9 @@ impl VideoCamera {
 /// The camera a file at `path` reads as.
 fn camera_info(path: &Path, video: VideoInfo) -> CameraInfo {
     let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
-    let fps = u32::try_from(video.fps().round() as i64).unwrap_or(0).max(1);
+    // The nominal rate rounded to whole frames: 29.97 lists as 30; frame times keep the exact rate.
+    let fps = (video.fps_num + video.fps_den / 2) / video.fps_den;
+    let fps = fps.max(1);
     let format = CameraFormat::new(video.width, video.height, fps, PixelFormat::Nv12);
     CameraInfo::new(CameraId(format!("{ID_PREFIX}{}", path.display())), format!("{name} (video)"), vec![format])
 }
@@ -241,7 +243,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = clip(dir.path(), 3, 30);
         let mut camera = VideoCamera::new(None, Ffmpeg::new("ffmpeg-is-not-needed-for-y4m"));
-        assert!(camera.enumerate().is_empty());
+        assert_eq!(camera.enumerate(), Vec::new());
         let info = camera.add_file(&path).unwrap();
         assert!(info.id.0.starts_with(ID_PREFIX) && info.name == "clip.y4m (video)", "{info:?}");
         assert_eq!(info.formats, vec![CameraFormat::new(16, 8, 30, PixelFormat::Nv12)]);
@@ -298,6 +300,6 @@ mod tests {
         std::thread::sleep(Duration::from_millis(105));
         let late = stream.next_frame(Duration::from_millis(100)).unwrap().unwrap();
         assert!(late.seq >= 10, "the newest frame wins: {}", late.seq);
-        assert_eq!(usize::from(late.data[0]), late.seq as usize, "its pixels are that frame's");
+        assert_eq!(u64::from(late.data[0]), late.seq, "its pixels are that frame's");
     }
 }

@@ -76,7 +76,7 @@ impl<R: BufRead> Y4mReader<R> {
             for y in 0..ch {
                 self.input.read_exact(&mut self.row)?;
                 let dst = &mut chroma[y * stride..y * stride + 2 * cw];
-                for (pair, &v) in dst.chunks_exact_mut(2).zip(&self.row) {
+                for (pair, &v) in dst.as_chunks_mut::<2>().0.iter_mut().zip(&self.row) {
                     pair[offset] = v;
                 }
             }
@@ -167,7 +167,7 @@ mod tests {
         let mut p = Picture::default();
         p.resize(width, height);
         for (i, b) in p.data.iter_mut().enumerate() {
-            *b = seed.wrapping_add((i % 251) as u8);
+            *b = seed.wrapping_add(u8::try_from(i % 251).unwrap_or(0));
         }
         p
     }

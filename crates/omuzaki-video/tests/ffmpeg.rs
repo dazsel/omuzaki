@@ -1,6 +1,7 @@
 //! Reading videos through ffmpeg: the real program on the formats people record in, when it is installed, and stand-in
 //! programs that check what Omuzaki asks of it and how it reports a failure, which run everywhere.
 #![allow(clippy::disallowed_methods)] // tests write their own clips and stand-in programs into a temporary folder
+#![allow(clippy::unwrap_used)] // a panic in a helper is a test failure
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

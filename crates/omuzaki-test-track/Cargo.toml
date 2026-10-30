@@ -40,6 +40,8 @@ omuzaki-speech = { path = "../omuzaki-speech" }
 omuzaki-track = { path = "../omuzaki-track" }
 # The body frame the body tracker solves into.
 omuzaki-track-api = { path = "../omuzaki-track-api" }
+# A recorded video as a tracking input, through the webcam tracker and offline (`tests/video.rs`, #2585).
+omuzaki-video = { path = "../omuzaki-video" }
 
 # The timing probe's CPU-per-frame column on Windows (`GetProcessTimes`).
 [target.'cfg(windows)'.dev-dependencies]

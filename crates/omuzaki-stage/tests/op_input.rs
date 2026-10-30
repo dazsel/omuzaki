@@ -13,7 +13,7 @@ use omuzaki_anim_api::HumanoidPose;
 use omuzaki_core::time::{FakeClock, Seconds};
 use omuzaki_doc_mock::MemDoc;
 use omuzaki_ops_api::{
-    Actor, ErrorCode, ErrorDetail, OpCtx, OpError, OpKind, Plan, Scope, Services, ServicesBuilder, Undo, find,
+    Actor, ErrorCode, ErrorDetail, Grants, OpCtx, OpError, OpKind, Plan, Scope, Services, ServicesBuilder, Undo, find,
 };
 use omuzaki_settings_api::service::Settings;
 use omuzaki_stage::perform::host::{PerformHost, perform_channel};
@@ -52,10 +52,14 @@ impl Rig {
     }
 
     fn plan(&self, op: &str, args: Value, actor: &Actor, dry_run: bool) -> Result<Plan, OpError> {
+        self.plan_with(op, args, actor, dry_run, &Grants::person())
+    }
+
+    fn plan_with(&self, op: &str, args: Value, actor: &Actor, dry_run: bool, grants: &Grants) -> Result<Plan, OpError> {
         let op = (find(op).expect("the op registers itself").decode)(args)?;
         let (doc, clock) = (MemDoc::new(), FakeClock::new(Seconds(0.0)));
         let services = self.services();
-        op.plan(&OpCtx::new(&doc, actor, &clock).with_dry_run(dry_run).with_services(&services))
+        op.plan(&OpCtx::new(&doc, actor, &clock).with_dry_run(dry_run).with_services(&services).with_grants(grants))
     }
 
     fn run(&self, op: &str, args: Value) -> Result<Plan, OpError> {
@@ -572,21 +576,26 @@ fn gestures_list_their_keys_and_none_shows_before_a_capture() {
 }
 
 #[test]
+#[allow(clippy::disallowed_methods, reason = "the test writes its video into a temporary folder")]
 fn a_video_file_becomes_the_webcams_camera_plays_in_the_preview_and_undoes_back() {
     let rig = Rig::new(false);
     rig.run("input.select", json!({ "source": "iphone" })).unwrap();
     let dir = tempfile::tempdir().unwrap();
     let clip = dir.path().join("clip.mp4");
     std::fs::write(&clip, b"a recording").unwrap();
-    let path = clip.display().to_string();
+    let path = clip.canonicalize().unwrap().display().to_string();
+    // The video's folder is a granted root, as the file picker or an agent's session grants it.
+    let grants = Grants::person().with_fs_root(dir.path().canonicalize().unwrap().display().to_string());
+    let open =
+        |args: Value, actor: &Actor, dry_run: bool| rig.plan_with("input.open_video", args, actor, dry_run, &grants);
 
     // Reading a recording of the person is theirs to confirm; a dry run adds nothing.
-    assert_eq!(refusal(rig.plan("input.open_video", json!({ "path": path }), &agent(), false)), Some("needs_person"));
-    let dry = rig.plan("input.open_video", json!({ "path": path }), &person(), true).unwrap();
+    assert_eq!(refusal(open(json!({ "path": path }), &agent(), false)), Some("needs_person"));
+    let dry = open(json!({ "path": path }), &person(), true).unwrap();
     assert_eq!(dry.output.unwrap()["camera"], Value::Null);
     assert!(!rig.state()["cameras"].to_string().contains("video:"), "{}", rig.state());
 
-    let plan = rig.run("input.open_video", json!({ "path": path })).unwrap();
+    let plan = open(json!({ "path": path }), &person(), false).unwrap();
     let answer = plan.output.clone().unwrap();
     let id = format!("video:{path}");
     assert_eq!(answer["camera"]["id"], json!(id));
@@ -601,21 +610,26 @@ fn a_video_file_becomes_the_webcams_camera_plays_in_the_preview_and_undoes_back(
 
     // Undo puts the source and camera back; redo opens it again.
     let effect = plan.effect.unwrap();
-    rig.run(&effect.undo.op, effect.undo.args.clone()).unwrap();
+    open(effect.undo.args.clone(), &person(), false).unwrap();
     let state = rig.state();
     assert_eq!((state["source"].clone(), state["camera"].clone()), (json!("iphone"), Value::Null), "{state}");
-    rig.run(&effect.redo.op, effect.redo.args.clone()).unwrap();
+    open(effect.redo.args.clone(), &person(), false).unwrap();
     assert_eq!(rig.state()["camera"], json!(id));
 }
 
 #[test]
-fn a_video_path_must_be_absolute_and_name_a_file() {
+#[allow(clippy::disallowed_methods, reason = "the test writes its video into a temporary folder")]
+fn a_video_path_goes_through_the_file_check() {
     let rig = Rig::new(false);
-    let refused = |args: Value| rig.run("input.open_video", args).unwrap_err();
-    let relative = refused(json!({ "path": "clip.mp4" }));
-    assert_eq!((relative.code, relative.field.as_deref()), (ErrorCode::Invalid, Some("path")));
-    let missing = refused(json!({ "path": "/no/such/clip.mp4" }));
-    assert_eq!(missing.code, ErrorCode::Invalid);
-    assert!(missing.message.contains("no video file"), "{missing:?}");
-    assert_eq!(refused(json!({})).code, ErrorCode::Invalid, "a path or a restore");
+    let dir = tempfile::tempdir().unwrap();
+    let clip = dir.path().join("clip.mp4");
+    std::fs::write(&clip, b"a recording").unwrap();
+    // Outside the project folder with no root granted: refused without saying whether the file is there.
+    let refused = rig.run("input.open_video", json!({ "path": clip.display().to_string() })).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::Denied, "{refused:?}");
+    let grants = Grants::person().with_fs_root(dir.path().canonicalize().unwrap().display().to_string());
+    let missing = dir.path().canonicalize().unwrap().join("gone.mp4").display().to_string();
+    let gone = rig.plan_with("input.open_video", json!({ "path": missing }), &person(), false, &grants).unwrap_err();
+    assert_eq!(gone.code, ErrorCode::NotFound, "{gone:?}");
+    assert_eq!(rig.run("input.open_video", json!({})).unwrap_err().code, ErrorCode::Invalid, "a path or a restore");
 }

@@ -352,7 +352,7 @@ Warudo (MediaPipe body and hands), XR Animator, mocopi and SlimeVR (body), Leap 
 | Inputs | Keyboard, mouse, gamepad, MIDI, OSC bindings (PF-05) | Warudo | ✓ | `input.binding.*`, `omuzaki-input` |
 | Inputs | Stream Deck: buttons that run ops, with state shown on the keys | VTube Studio and Warudo plugins | ✗ | **new** #2584 |
 | Inputs | Input-driven body motion: hands on the keys, arm to the mouse (PF-29) | VNyan, Warudo | ◐ | #718, #783 |
-| Inputs | A recorded video file as a tracking input (re-track footage offline) | none for VTubing | ✗ | **new** #2585 |
+| Inputs | A recorded video file as a tracking input (re-track footage offline) | none for VTubing | ✓ | `input.open_video`, `omuzaki-video`: `.y4m` read directly, MP4, MKV, MOV and WebM through the person's own ffmpeg; plays at the file's rate through the webcam tracker, on every platform |
 | Processing | Guided calibration in one step (PF-20) | VTube Studio | ◐ | `input.calibrate`, `omuzaki-track/src/guided.rs`; #473 |
 | Processing | One-Euro smoothing and a latency dial (PF-21); per-channel curves (PF-22) | VTube Studio | ◐ | `omuzaki-track/src/smoothing.rs`; #474, #475 |
 | Processing | Source blending and ownership per channel (PF-23) | none | ◐ | #476 |
@@ -364,7 +364,7 @@ Warudo (MediaPipe body and hands), XR Animator, mocopi and SlimeVR (body), Leap 
 
 - **The tracking doctor** says what is wrong in plain words and how to fix it; no tracker diagnoses itself.
 - **Everything recorded is re-trackable.** Raw inputs are kept, so a better tracker next year improves last year's
-  takes.
+  takes; any recorded clip already re-tracks today (`input.open_video`), faster than real time offline.
 - **One channel bus** that a webcam, an iPhone, audio, an AI and a hotkey all write to, with ownership per channel.
 - **Scored against the truth.** The kit renders its own character in known poses, so body and hand tracking are
   measured in degrees per bone (`track_body.rs`), not judged by eye.

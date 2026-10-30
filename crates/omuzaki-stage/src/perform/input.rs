@@ -426,9 +426,9 @@ pub trait InputHost: Send + Sync {
         BodyStatus::default()
     }
 
-    /// Adds the video file at `path` as a camera that plays it at the file's own rate (#2585) and returns it: binding
-    /// its id and starting the preview tracks the file as a webcam. Adding a file again returns the same camera. A
-    /// dry run checks that the file is there, adds nothing and returns `None`. Cold: it reads the file's header.
+    /// Adds the video file at `path`, one the op's file check resolved, as a camera that plays it at the file's own
+    /// rate (#2585) and returns it: binding its id and starting the preview tracks the file as a webcam. Adding a file
+    /// again returns the same camera. A dry run adds nothing and returns `None`. Cold: it reads the file's header.
     ///
     /// # Errors
     /// [`InputError::NoVideo`] for a host whose tracker reads no files, [`InputError::Video`] with the reason when the
@@ -980,13 +980,12 @@ impl InputHost for LiveInput {
     }
 
     fn add_video(&self, path: &Path, mode: Mode) -> Result<Option<CameraInfo>, InputError> {
-        let missing = || InputError::Video(format!("no video file at {}", path.display()));
         if mode == Mode::DryRun {
-            return if path.is_file() { Ok(None) } else { Err(missing()) };
+            return Ok(None);
         }
         self.inner().tracker.add_video(path).map(Some).map_err(|e| match e {
             TrackError::Unsupported(_) => InputError::NoVideo,
-            TrackError::NoDevice(_) => missing(),
+            TrackError::NoDevice(_) => InputError::Video(format!("no video file at {}", path.display())),
             TrackError::Backend(reason) => InputError::Video(reason),
             other => InputError::Device(other),
         })
