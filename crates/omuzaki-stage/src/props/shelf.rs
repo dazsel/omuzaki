@@ -32,8 +32,13 @@ pub struct ShelfParams {
     pub book_colours: Vec<Colour>,
     /// Picks the books.
     pub seed: u32,
-    /// The wood.
+    /// The wood (or its paint).
     pub colour: Colour,
+    /// Gilded edging: a strip down the front of each side, along the boards' fronts, a crown on top and the doors'
+    /// emblems; none for plain wood.
+    pub trim: Option<Colour>,
+    /// Boards closed by doors, counted from the bottom (a cabinet under open shelves), 0 to the number of boards.
+    pub doors: u8,
 }
 
 impl Default for ShelfParams {
@@ -47,6 +52,8 @@ impl Default for ShelfParams {
             book_colours: Vec::new(),
             seed: 1,
             colour: WOOD,
+            trim: None,
+            doors: 0,
         }
     }
 }
@@ -61,7 +68,8 @@ impl PropKind for Shelf {
     type Params = ShelfParams;
     const ID: &'static str = "shelf";
     const SUMMARY: &'static str = "A bookcase open toward +Z, its boards filled with seeded books. Size, boards, how \
-                                   full, the spines' colours and the wood.";
+                                   full, the spines' colours, the wood or paint, gilded trim and a cabinet of doors \
+                                   under the open boards.";
 
     fn validate(p: &ShelfParams) -> Result<(), String> {
         between("width", p.width, 0.4, 2.0)?;
@@ -70,6 +78,9 @@ impl PropKind for Shelf {
         between("books", p.books, 0.0, 1.0)?;
         if !(1..=8).contains(&p.shelves) {
             return Err(format!("shelves is 1 to 8, got {}", p.shelves));
+        }
+        if p.doors > p.shelves {
+            return Err(format!("doors is 0 to the {} boards, got {}", p.shelves, p.doors));
         }
         if p.book_colours.len() > 16 {
             return Err(format!("book_colours holds at most 16, got {}", p.book_colours.len()));
@@ -99,9 +110,30 @@ impl PropKind for Shelf {
             if i > 0 {
                 frame.block(Vec3::new(-w + side * 0.5, y - board, back), Vec3::new(w - side * 0.5, y, d), wood);
             }
-            fill_board(&mut books, &mut rng, &colours, p.books, (-w + side * 0.5, w - side * 0.5), y, gap - board, (back, d));
+            if i < p.doors {
+                door_bay(&mut frame, wood, p.trim, (-w + side * 0.5, w - side * 0.5), (y, y + gap - board), d);
+            } else {
+                fill_board(&mut books, &mut rng, &colours, p.books, (-w + side * 0.5, w - side * 0.5), y, gap - board, (back, d));
+            }
+        }
+        let mut gilt = Shape::new();
+        if let Some(trim) = p.trim {
+            // Down the front of each side, a lip on every board's front edge, and a crown over the top.
+            for x in [-1.0, 1.0] {
+                gilt.block(Vec3::new(x * w - side * 0.35, 0.0, d), Vec3::new(x * w + side * 0.35, h, d + 0.006), trim);
+            }
+            for i in p.doors.max(1)..p.shelves {
+                let y = 0.07 + gap * f32::from(i);
+                gilt.block(Vec3::new(-w + side * 0.5, y - board * 0.6, d), Vec3::new(w - side * 0.5, y - board * 0.2, d + 0.005), trim);
+            }
+            frame.block(Vec3::new(-w - 0.03, h, -0.01), Vec3::new(w + 0.03, h + 0.07, d + 0.035), darker(wood, 0.08));
+            gilt.block(Vec3::new(-w - 0.032, h + 0.018, d + 0.035), Vec3::new(w + 0.032, h + 0.032, d + 0.04), trim);
+            gilt.block(Vec3::new(-w - 0.035, h + 0.07, -0.012), Vec3::new(w + 0.035, h + 0.085, d + 0.045), trim);
         }
         let mut parts = vec![(frame, painted(darker(wood, 0.6)))];
+        if !gilt.is_empty() {
+            parts.push((gilt, painted(darker(p.trim.unwrap_or(wood), 0.55))));
+        }
         if !books.is_empty() {
             parts.push((books, painted(Colour::hex(0x0022_1a18))));
         }
@@ -110,6 +142,29 @@ impl PropKind for Shelf {
 }
 
 register_prop_kind!(Shelf);
+
+/// Closes the bay between `x.0` and `x.1` from `y.0` to `y.1` with doors on the front (`z = d`): one door, or two
+/// on a bay wider than 0.7 m, each with a raised panel and, with `trim`, a gilded diamond on it.
+fn door_bay(frame: &mut Shape, wood: Colour, trim: Option<Colour>, x: (f32, f32), y: (f32, f32), d: f32) {
+    let span = x.1 - x.0;
+    let count: u8 = if span > 0.7 { 2 } else { 1 };
+    let each = span / f32::from(count);
+    for k in 0..count {
+        let (x0, x1) = (x.0 + each * f32::from(k) + 0.004, x.0 + each * f32::from(k + 1) - 0.004);
+        let (y0, y1) = (y.0 + 0.004, y.1 - 0.004);
+        frame.block(Vec3::new(x0, y0, d - 0.018), Vec3::new(x1, y1, d), wood);
+        let inset = (each * 0.14).min(0.06);
+        let (px0, px1, py0, py1) = (x0 + inset, x1 - inset, y0 + inset, y1 - inset);
+        if px1 > px0 && py1 > py0 {
+            frame.block(Vec3::new(px0, py0, d), Vec3::new(px1, py1, d + 0.008), mix(wood, Colour::WHITE, 0.06));
+            if let Some(trim) = trim {
+                let centre = Vec3::new((px0 + px1) * 0.5, (py0 + py1) * 0.5, d + 0.011);
+                let size = ((px1 - px0).min(py1 - py0) * 0.22).max(0.01);
+                frame.bevelled(At::pos(centre).roll(45.0), Vec3::new(size, size, 0.003), 0.001, trim);
+            }
+        }
+    }
+}
 
 /// Stands books on one board from `x.0` to `x.1` at height `y` under a clearance of `room`: runs of upright books with
 /// gaps, the odd one leaning on its neighbour, and now and then a short stack lying flat.
@@ -193,5 +248,38 @@ fn fill_board(
             c,
         );
         at += thick + if rng.next() < 0.12 { rng.range(0.004, 0.02) } else { 0.0008 };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn extent(out: &PropOutput) -> (Vec3, Vec3) {
+        out.parts.iter().flat_map(|part| part.mesh.positions.iter().copied()).fold(
+            (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)),
+            |(lo, hi), p| (lo.min(p), hi.max(p)),
+        )
+    }
+
+    #[test]
+    fn trim_adds_a_gilded_part_and_a_crown_and_doors_close_the_lowest_bays() {
+        let plain = Shelf::build(&ShelfParams::default()).expect("builds");
+        let gilded = ShelfParams { trim: Some(Colour::hex(0x00c0_9058)), doors: 2, ..ShelfParams::default() };
+        let built = Shelf::build(&gilded).expect("builds");
+        assert_eq!(built.parts.len(), plain.parts.len() + 1, "the trim is its own part");
+        assert!(extent(&built).1.y > extent(&plain).1.y + 0.05, "a crown stands over the top");
+        // No book stands in the two closed bays: the lowest book is above them.
+        let gap = (gilded.height - 0.07 - 0.022) / f32::from(gilded.shelves);
+        // The frame, the gilding, then the books.
+        let books = &built.parts[2];
+        let lowest = books.mesh.positions.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
+        assert!(lowest >= 0.07 + gap * 2.0 - 0.025, "the books start above the doors: {lowest}");
+    }
+
+    #[test]
+    fn more_doors_than_boards_is_refused() {
+        let p = ShelfParams { shelves: 3, doors: 4, ..ShelfParams::default() };
+        assert!(Shelf::validate(&p).is_err());
     }
 }

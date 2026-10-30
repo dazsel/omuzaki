@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use super::RecipeError;
 
 /// The rigs shipped with the crate, by name. Each file is parsed on use, so a broken file fails the test that loads it.
-static LIBRARY: [(&str, &str); 10] = [
+static LIBRARY: [(&str, &str); 11] = [
     ("viewer-studio", include_str!("../../library/light-rigs/viewer-studio.toml")),
     ("viewer-candle", include_str!("../../library/light-rigs/viewer-candle.toml")),
     ("viewer-moonlit", include_str!("../../library/light-rigs/viewer-moonlit.toml")),
@@ -32,6 +32,7 @@ static LIBRARY: [(&str, &str); 10] = [
     ("measure-flat", include_str!("../../library/light-rigs/measure-flat.toml")),
     ("stage", include_str!("../../library/light-rigs/stage.toml")),
     ("short-rim", include_str!("../../library/light-rigs/short-rim.toml")),
+    ("library-day", include_str!("../../library/light-rigs/library-day.toml")),
 ];
 
 /// Directional lights shine from `position` toward this point. Three.js aims every directional light at the origin

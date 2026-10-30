@@ -1,0 +1,74 @@
+# A grand library by day: the subject stands at the origin facing +Z; the back wall is 2.7 m behind them and the side
+# walls 3.5 m to each side. Every prop's id gets the `set-` prefix when the preset is applied.
+title = "Grand library"
+summary = "A grand library by day: warm terracotta walls under a cornice, painted bookcases with gilded trim and cabinets below, a tall window, a gramophone, a framed picture, a lidded urn, an armchair and a pale carpet. Pairs with the library-day rig."
+light_rig = "library-day"
+tags = ["interior", "day", "warm", "ornate"]
+
+[backdrop]
+kind = "gradient"
+top = "#7a4a3a"
+bottom = "#c9876a"
+
+[ground]
+kind = "none"
+
+[props.room]
+kind = "room"
+params = { width = 7.0, depth = 6.0, height = 3.6, walls = "#d4785a", floor = "#a89a84", planks = false, trim = "#c8b088" }
+position = [0.0, 0.0, 0.3]
+
+[props.rug]
+kind = "rug"
+params = { width = 3.6, length = 2.8, colour = "#b4a68e", border = "#8a6a4a" }
+position = [0.0, 0.0, 0.0]
+
+[props.cabinet-left]
+kind = "shelf"
+params = { width = 1.5, height = 2.4, depth = 0.45, shelves = 5, books = 0.7, seed = 41, colour = "#4a4650", trim = "#c09058", doors = 3 }
+position = [-1.7, 0.0, -2.45]
+
+[props.bookcase-middle]
+kind = "shelf"
+params = { width = 1.3, height = 2.6, depth = 0.4, shelves = 7, books = 0.9, seed = 42, colour = "#6e6670", trim = "#c09058", book_colours = ["#2e5a5a", "#3a6a4a", "#6a2a2a", "#2a3a5a", "#b8a070", "#4a3a2a"] }
+position = [0.2, 0.0, -2.45]
+
+[props.bookcase-right]
+kind = "shelf"
+params = { width = 1.3, height = 2.6, depth = 0.4, shelves = 7, books = 0.85, seed = 43, colour = "#6e6670", trim = "#c09058", book_colours = ["#2e5a5a", "#3a6a4a", "#6a2a2a", "#2a3a5a", "#b8a070", "#4a3a2a"] }
+position = [1.7, 0.0, -2.45]
+
+[props.window]
+kind = "window"
+params = { width = 1.0, height = 2.2, panes = [2, 5], sky = "#cfe0f0", horizon = "#f0e8dc", curtains = "#7a4a4a", light = "#fff0d8", intensity = 4.0, elevation = 30.0 }
+position = [-3.45, 0.6, -0.6]
+rotation = [90.0, 0.0, 0.0]
+
+[props.picture]
+kind = "picture"
+params = { width = 0.9, height = 1.2, frame_width = 0.07, frame = "#b8a07a", canvas = "#5a5048", medallion = "#9aa0b0" }
+position = [3.45, 1.35, -0.4]
+rotation = [-90.0, 0.0, 0.0]
+
+[props.gramophone-table]
+kind = "shelf"
+params = { width = 0.8, height = 0.85, depth = 0.45, shelves = 1, books = 0.0, seed = 44, colour = "#4a4650", trim = "#c09058", doors = 1 }
+position = [3.2, 0.0, 0.5]
+rotation = [-90.0, 0.0, 0.0]
+
+[props.gramophone]
+kind = "gramophone"
+params = { size = 0.34, horn = 0.3, petals = 8 }
+position = [3.2, 0.85, 0.5]
+rotation = [-120.0, 0.0, 0.0]
+
+[props.urn]
+kind = "urn"
+params = { height = 0.6, colour = "#3e4a78", trim = "#c09a5a" }
+position = [3.1, 0.0, -1.3]
+
+[props.armchair]
+kind = "chair"
+params = { seat_height = 0.45, width = 0.6, back = 0.6, colour = "#5a5260", cushion = "#7a6e8a" }
+position = [1.9, 0.0, 1.4]
+rotation = [-140.0, 0.0, 0.0]

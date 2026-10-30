@@ -1,0 +1,46 @@
+# library-day: a library by day, for the grand-library stage. Warm window light from the side, a soft warm fill bounced
+# off terracotta walls, and a cool sky rim from behind. Three.js units (render-api D10), like the transcribed rigs.
+name = "library-day"
+source = "omuzaki, for the grand-library stage"
+title = "Library by day"
+summary = "Soft afternoon window light from the left, a neutral bounce and a pale rim from behind."
+tags = ["warm", "day", "interior"]
+exposure = 1.0
+background = "#c9876a"
+skin_floor = 0.5
+
+[hemisphere]
+sky = "#eef0f6"
+ground = "#5e5850"
+intensity = 1.5
+
+[key]
+colour = "#fff2e4"
+intensity = 2.0
+position = [-2.6, 2.4, 1.2]
+
+[key.shadow]
+map_size = 2048
+left = -3.6
+right = 3.6
+top = 3.6
+bottom = -3.6
+near = 0.1
+far = 14.0
+bias = -0.0004
+normal_bias = 0.012
+
+[rim]
+colour = "#e8eeff"
+intensity = 1.1
+position = [1.8, 2.0, -2.4]
+
+[fill]
+colour = "#e4e6f0"
+intensity = 0.5
+position = [2.0, 1.0, 2.6]
+
+[bloom]
+strength = 0.3
+radius = 0.6
+threshold = 0.9
