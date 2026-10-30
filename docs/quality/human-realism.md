@@ -37,7 +37,7 @@ custom character that holds up at macro, live in real time, through operations a
 | Feature | Status | Parity (who has it) | Supremacy |
 |---|---|---|---|
 | Physically based GGX specular, energy-conserving | ◐ per program (`eye`, `skin`) | everyone | one shared BSDF library every program calls; multiple-scattering compensation (Kulla-Conty) |
-| Layered specular: dual lobe for skin, clear coat for the tear film | ○ | UE Substrate, Unity HDRP | a layered material model (slabs) shared by skin, eye, lips and nails |
+| Layered specular: dual lobe for skin, clear coat for the tear film | ◐ the eye's tear film is a clear coat over the white's own sheen; skin is single-lobe | UE Substrate, Unity HDRP | a layered material model (slabs) shared by skin, eye, lips and nails |
 | Subsurface scattering, screen-space separable (Jimenez) or Burley | ◐ pre-integrated on d'Eon's six-Gaussian skin profile round the mesh's curvature, red-softened normals (`skin` program) | UE subsurface profile, Unity diffusion profiles | Burley diffusion with per-region profiles (lips, ears, lids), plus a validated match to random-walk ground truth |
 | Transmission through thin parts (ears, nostrils, lids) with thickness maps | ○ | UE, Unity | thickness baked from the mesh automatically; backlit ears without hand maps |
 | Refraction through the cornea, iris parallax | ✓ ray-refracted in `eye` | MetaHuman, Unity eye | true per-pixel refraction with a varying cornea shape (keratoconus to normal) |
@@ -97,7 +97,7 @@ Tracked in #2508.
 | Sclera: vessel network, branching vessels, pinker corners | ✓ | random-eyes, MetaHuman | |
 | Sclera SSS and a yellowing or redness tint (fatigue, crying) | ◐ wrap only | Unity | |
 | Limbus darkening and the clear cornea edge | ✓ | MetaHuman | |
-| Tear film: a clear coat with its own normal, the meniscus along the lids | ◐ the meniscus bead | Unity tear layer | |
+| Tear film: a clear coat with its own normal, the meniscus along the lids | ✓ a sharp, uneven clear coat (`tear-coat`, `tear-roughness`, `tear-wobble`) and the meniscus bead | Unity tear layer | |
 | Occlusion where the lids meet the eye | ◐ a vertex-alpha shell plus SSAO and contact shadows | MetaHuman, Unity | a shell plus contact shadows plus GTAO |
 | Caruncle and plica semilunaris | ◐ the caruncle | MetaHuman | |
 | Lids with thickness, wet margins, crease and pocket | ✓ | MetaHuman | |
