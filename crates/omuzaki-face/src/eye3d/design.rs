@@ -90,17 +90,17 @@ pub struct Iris {
 impl Default for Iris {
     fn default() -> Self {
         Self {
-            outer: Colour::hex(0x009c_6a2e),
-            inner: Colour::hex(0x0070_4a22),
-            deep: Colour::hex(0x002c_1a0c),
-            fibre: Colour::hex(0x00c8_9a5a),
-            limbal: Colour::hex(0x0026_180e),
+            outer: Colour::hex(0x0092_602c),
+            inner: Colour::hex(0x0064_3c1c),
+            deep: Colour::hex(0x0024_140a),
+            fibre: Colour::hex(0x00c4_8a48),
+            limbal: Colour::hex(0x001e_120a),
             fibres: 0.8,
             collarette: 0.4,
-            crypts: 26,
+            crypts: 40,
             specks: 70,
             furrows: 4,
-            limbal_ring: 0.75,
+            limbal_ring: 0.85,
         }
     }
 }

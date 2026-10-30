@@ -29,6 +29,7 @@
 //! | `caustic` | how much brighter the iris's far side is | `0.6` |
 //! | `sclera-roughness`, `cornea-roughness` | the tear film's roughness | `0.16`, `0.04` |
 //! | `gloss` | the tear film's reflections, as a multiplier | `1` |
+//! | `iris-relief` | how far the iris's light fibres stand out from its dark gaps, lit by each light | `0.008` |
 
 use omuzaki_core::colour::Colour;
 use omuzaki_render_api::{Rim, Toon};
@@ -70,6 +71,7 @@ register_shading_program!(
             ParamSpec::float("sclera-roughness", 0.16, 0.01, 1.0),
             ParamSpec::float("cornea-roughness", 0.04, 0.01, 1.0),
             ParamSpec::float("gloss", 1.0, 0.0, 4.0),
+            ParamSpec::float("iris-relief", 0.008, 0.0, 0.1),
         ],
         attributes: &[],
         toon,

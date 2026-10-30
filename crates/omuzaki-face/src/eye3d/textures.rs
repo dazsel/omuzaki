@@ -101,7 +101,7 @@ pub fn iris(iris: &Iris, seed: u32, size: u32) -> Canvas {
         // Large, soft variation in the stroma.
         colour *= 0.82 + 0.36 * fbm(u * 6.0, v * 6.0, 3, s ^ 0x11);
         // Radial fibres at three scales, wandering a little as they run out.
-        let warp = 0.9 * (fbm(a * 18.0, t * 3.0, 2, s ^ 0x22) - 0.5);
+        let warp = 0.45 * (fbm(a * 18.0, t * 3.0, 2, s ^ 0x22) - 0.5);
         let f1 = value_wrapped(a * 170.0 + warp * 3.0, t * 2.5, 170, s ^ 0x33);
         let f2 = value_wrapped(a * 420.0 + warp * 7.0, t * 5.0, 420, s ^ 0x44);
         let f3 = value_wrapped(a * 980.0 + warp * 14.0, t * 9.0, 980, s ^ 0x55);
@@ -111,14 +111,19 @@ pub fn iris(iris: &Iris, seed: u32, size: u32) -> Canvas {
         // The pupillary zone's fibres are coarser and darker (the ruff's spokes).
         let inside = 1.0 - smoothstep(c - 0.02, c + 0.02, t);
         colour *= 1.0 - fibres * dark * (0.55 + 0.2 * inside);
-        colour = colour.lerp(fibre, fibres * light * (0.58 - 0.2 * inside));
+        colour = colour.lerp(fibre, fibres * light * (0.46 - 0.16 * inside));
         // The collarette: a raised, lighter, jagged ridge.
-        let ridge = (-((t - c) / 0.022).powi(2)).exp();
-        colour = colour.lerp(fibre * 0.8, 0.3 * ridge);
+        // The collarette: a jagged ring where the two zones meet, darker just inside it (the crypts' shadow) and
+        // lighter on its ridge.
+        let jag = c + 0.025 * (value_wrapped(a * 90.0, t * 4.0, 90, s ^ 0x66) - 0.5);
+        let inside_band = smoothstep(jag - 0.07, jag - 0.01, t) * (1.0 - smoothstep(jag - 0.01, jag + 0.005, t));
+        colour *= 1.0 - 0.45 * inside_band;
+        let ridge = (-((t - jag - 0.012) / 0.012).powi(2)).exp();
+        colour = colour.lerp(fibre * 0.8, 0.22 * ridge);
         // The pupillary ruff: a thin dark rim round the pupil.
         colour = colour.lerp(deep * 0.5, smoothstep(0.045, 0.0, t));
         // The limbal ring, and the rim beyond the iris.
-        colour = colour.lerp(limbal, ring * smoothstep(0.8, 1.0, t).powf(1.2));
+        colour = colour.lerp(limbal, ring * smoothstep(0.7, 1.0, t).powf(1.4));
         if r > 1.0 {
             return limbal.lerp(Vec3::splat(0.5), smoothstep(1.0, 1.04, r));
         }
@@ -139,11 +144,11 @@ fn crypts(canvas: &mut Canvas, iris: &Iris, seed: u32, deep: Vec3, fibre: Vec3) 
         let a = rng.unit();
         let angle = a * TAU - PI;
         let c = collarette_at(iris, a, seed);
-        // Most sit just outside the collarette; a few inside it.
-        let t = if rng.unit() < 0.8 { c + rng.range(0.01, 0.2) } else { c - rng.range(0.03, 0.12) };
-        let half = rng.range(0.025, 0.07);
-        let width = rng.range(0.02, 0.045) * px_per_r;
-        let bend = rng.range(-0.03, 0.03);
+        // Most open just outside the collarette, wide at its edge and narrowing outward; a few sit inside it.
+        let t = if rng.unit() < 0.75 { c + rng.range(0.0, 0.08) } else { c + rng.range(0.1, 0.3) };
+        let half = rng.range(0.02, 0.06);
+        let width = rng.range(0.02, 0.05) * px_per_r;
+        let bend = rng.range(-0.008, 0.008);
         let points: Vec<Vec2> = (0..=6)
             .map(|k| {
                 #[allow(clippy::cast_precision_loss)]
@@ -152,8 +157,8 @@ fn crypts(canvas: &mut Canvas, iris: &Iris, seed: u32, deep: Vec3, fibre: Vec3) 
                 to_px(canvas.width, iris_r(tt), angle + bend * (1.0 - 4.0 * s * s))
             })
             .collect();
-        canvas.stroke(&points, (width * 1.5, width * 1.2), fibre * 0.9, (0.25, 0.2));
-        canvas.stroke(&points, (width * 0.6, width), deep, (0.55, 0.4));
+        canvas.stroke(&points, (width * 1.6, width * 0.6), fibre * 0.9, (0.22, 0.1));
+        canvas.stroke(&points, (width, width * 0.25), deep, (0.6, 0.3));
     }
 }
 
@@ -173,7 +178,7 @@ fn furrows(canvas: &mut Canvas, iris: &Iris, seed: u32, deep: Vec3) {
                     to_px(canvas.width, iris_r(t + 0.01 * (ang * 7.0).sin()), ang)
                 })
                 .collect();
-            canvas.stroke(&points[2..points.len() - 2], (1.8, 1.8), deep, (0.32, 0.32));
+            canvas.stroke(&points[2..points.len() - 2], (1.6, 1.6), deep, (0.18, 0.18));
             a += span + rng.range(0.3, 1.2);
         }
     }

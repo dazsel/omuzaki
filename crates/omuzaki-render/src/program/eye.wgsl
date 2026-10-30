@@ -15,6 +15,7 @@ const EYE_F0: f32 = 0.024;             // the tear film's reflectance head-on (n
 var<private> eye_albedo: vec3<f32>;
 var<private> eye_iris: f32;            // 1 where the view ray reaches the iris, 0 on the sclera
 var<private> eye_pupil: f32;           // 1 inside the pupil
+var<private> eye_relief: vec2<f32>;    // the iris's slope in its own plane (x, y): light fibres stand, dark gaps sink
 
 struct EyeFrame {
     centre: vec3<f32>,
@@ -128,6 +129,18 @@ fn program_albedo(albedo: vec3<f32>, p: ProgramIn) -> vec3<f32> {
         colour = mix(white * program_vec3(P_LIMBUS_TINT), colour, hit.iris);
     }
     colour = mix(colour, program_vec3(P_PUPIL_COLOUR), hit.pupil);
+    // The stroma's relief, from the iris's own brightness: its light fibres are the raised ones.
+    eye_relief = vec2<f32>(0.0);
+    if (hit.iris > 0.0 && hit.pupil < 1.0) {
+        let e = 0.006;
+        let gx = hx.uv - hit.uv;
+        let gy = hy.uv - hit.uv;
+        let w = vec3<f32>(0.3, 0.59, 0.11);
+        let lx = dot(eye_sample(iris_uv(hit.q + vec2<f32>(e, 0.0)), gx, gy), w) - dot(eye_sample(iris_uv(hit.q - vec2<f32>(e, 0.0)), gx, gy), w);
+        let ly = dot(eye_sample(iris_uv(hit.q + vec2<f32>(0.0, e)), gx, gy), w) - dot(eye_sample(iris_uv(hit.q - vec2<f32>(0.0, e)), gx, gy), w);
+        let level = max(dot(colour, w), 0.02);
+        eye_relief = vec2<f32>(lx, ly) / (2.0 * e * level) * hit.iris * (1.0 - hit.pupil);
+    }
     eye_albedo = colour;
     eye_iris = hit.iris;
     eye_pupil = hit.pupil;
@@ -168,7 +181,9 @@ fn eye_fresnel(cos_theta: f32) -> f32 {
 fn program_light(lit: vec3<f32>, n: vec3<f32>, v: vec3<f32>, p: ProgramIn) -> vec3<f32> {
     let f = eye_frame();
     // The iris faces forward (tilted a little by its cone); the sclera faces out of the ball.
-    let iris_n = normalize(f.forward + 0.25 * eye_world(f, vec3<f32>(eye_local(f, n).xy, 0.0)));
+    let cone = 0.25 * eye_world(f, vec3<f32>(eye_local(f, n).xy, 0.0));
+    let relief = program_float(P_IRIS_RELIEF) * eye_world(f, vec3<f32>(eye_relief, 0.0));
+    let iris_n = normalize(f.forward + cone - relief);
     let wrap = program_float(P_SCATTER);
     let scatter = program_vec3(P_SCATTER_COLOUR);
     var diffuse = vec3<f32>(0.0);
@@ -189,7 +204,7 @@ fn program_light(lit: vec3<f32>, n: vec3<f32>, v: vec3<f32>, p: ProgramIn) -> ve
         // The iris is lit through the cornea, which gathers the light onto the far side of the iris (the caustic).
         let l_local = eye_local(f, incident.to_light);
         let far_side = saturate(-dot(normalize(eye_local(f, iris_n).xy + vec2<f32>(1e-5)), l_local.xy));
-        let iris = saturate(dot(iris_n, incident.to_light) * 0.7 + 0.3)
+        let iris = saturate(dot(iris_n, incident.to_light) * 0.85 + 0.15)
             * (1.0 + program_float(P_CAUSTIC) * far_side * length(l_local.xy));
         diffuse += light * mix(sclera, vec3<f32>(iris), eye_iris);
         specular += light * eye_ggx(n, v, incident.to_light, roughness) * eye_fresnel(dot(normalize(v + incident.to_light), v));
