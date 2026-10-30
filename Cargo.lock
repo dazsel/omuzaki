@@ -6653,6 +6653,7 @@ dependencies = [
  "omuzaki-performer-api",
  "omuzaki-speech",
  "omuzaki-track",
+ "omuzaki-track-api",
  "omuzaki-track-voice",
  "serde_json",
  "sha2 0.10.9",

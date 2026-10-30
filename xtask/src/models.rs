@@ -365,6 +365,7 @@ const GENERATED: [(&str, &str, &str); 22] = [
     ("omuzaki-char", "styles.rs", "styles.rs"),
     ("omuzaki-char", "hair_styles.rs", "hair_styles.rs"),
     ("omuzaki-char", "items.rs", "items.rs"),
+    ("omuzaki-char", "dials.rs", "dials.rs"),
     ("omuzaki-cli", "link_calls.rs", "omuzaki_link_build::emit"),
     ("omuzaki-doc", "migrations.rs", "migration_files::module_decls"),
     ("omuzaki-face", "ops_mods.rs", "omuzaki_embed::modules"),

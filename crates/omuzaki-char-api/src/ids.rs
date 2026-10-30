@@ -70,6 +70,15 @@ slug_id!(
     /// A face-shape preset (CB-10): `round-u`, `egg-oval`, `mochi`, `heart`, `long`.
     ProfileId
 );
+slug_id!(
+    /// A named shape dial of the design layer (#2612): `jaw_width`, `calf_size`. It is also the dial's key under
+    /// `characters/<id>/design/dials`.
+    DialId
+);
+slug_id!(
+    /// A layer of a part's material layer stack (#2609), unique within the part: `blush`, `wear`, `polish`.
+    LayerId
+);
 
 /// A joint a mesh is skinned to, or an anchor follows: a **VRM humanoid role** (portable across skeletons: `head` is the
 /// head of whatever skeleton the character wears) or the **name** of an extra bone (hair, cloth, accessories). The

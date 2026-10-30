@@ -35,6 +35,7 @@ pub mod accessory;
 pub mod body;
 pub mod builder;
 pub mod cloth;
+pub mod design;
 pub mod fit;
 pub mod hair;
 pub mod head;

@@ -62,6 +62,11 @@ fn packets(protocol: Protocol) -> Vec<Vec<u8>> {
                 &[Arg::Str("Head"), Arg::Float(0.0), Arg::Float(1.5), Arg::Float(0.0), Arg::Float(0.0),
                   Arg::Float(0.1), Arg::Float(0.0), Arg::Float(0.99)],
             ),
+            Writer::message(
+                "/VMC/Ext/Bone/Pos",
+                &[Arg::Str("LeftUpperArm"), Arg::Float(0.0), Arg::Float(1.4), Arg::Float(0.0), Arg::Float(0.0),
+                  Arg::Float(0.0), Arg::Float(0.5), Arg::Float(0.87)],
+            ),
             Writer::message("/VMC/Ext/Blend/Apply", &[]),
         ])],
     }
@@ -77,9 +82,12 @@ fn decoding_allocates_nothing() {
         decoder.decode(&packets[0], &mut out).unwrap();
         ALLOCATIONS.store(0, Ordering::Relaxed);
         MEASURING.with(|m| m.set(true));
+        let mut body = omuzaki_track_api::body::BodyFrame::empty(0, Seconds(0.0));
         for _ in 0..1000 {
             for packet in &packets {
                 assert!(decoder.decode(packet, &mut out).unwrap().is_some());
+                // The body is read after each frame, as the receiver does.
+                assert_eq!(decoder.body(&mut body), protocol == Protocol::Vmc);
             }
         }
         MEASURING.with(|m| m.set(false));

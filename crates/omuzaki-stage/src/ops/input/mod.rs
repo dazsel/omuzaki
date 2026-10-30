@@ -17,8 +17,10 @@
 //! | `input.health` | `read` | free | none (a query) |
 //! | `input.gestures` | `read` | free | none (a query) |
 //! | `input.vmc_out {to}` | `perform` | Confirm to start (it sends the performance out); anyone may stop | the inverse `input.vmc_out` |
+//! | `input.track_body {arms, hands, precise}` | `perform` | Confirm to start (it reads more of the person); anyone may stop | the inverse `input.track_body` |
+//! | `input.body` | `read` | free | none (a query) |
 //!
-//! The two choices are Machine settings (`input.source`, `input.camera`): when the App registers a
+//! The choices are Machine settings (`input.source`, `input.camera`, `input.body`): when the App registers a
 //! [`Settings`](omuzaki_settings_api::service::Settings) service, the ops write them there too, and their answer says
 //! so in `saved`. The OS input capture ops of `docs/design/input-motion.md` share the namespace as `input.capture.*`
 //! and `input.binding.*`; nothing here clashes with them.
@@ -38,6 +40,7 @@ pub mod calibrate;
 pub mod calibration;
 pub mod cameras;
 pub mod doctor;
+pub mod body;
 pub mod gestures;
 pub mod health;
 pub mod preview;
@@ -45,6 +48,7 @@ pub mod recheck;
 pub mod request_camera;
 pub mod select;
 pub mod state;
+pub mod track_body;
 pub mod vmc_out;
 
 /// The input behind the ops, or `Unavailable` when the app did not wire one in.
@@ -184,6 +188,9 @@ fn op_error(error: InputError) -> OpError {
             OpError::conflict(message).hint("wait for it to finish (`input.calibration`), or cancel it")
         }
         InputError::NoGuidedCalibration | InputError::NoPoseOutput => OpError::unsupported(message),
+        InputError::NoBodyTracking => {
+            OpError::unsupported(message).hint("the body models are not installed in this build")
+        }
         InputError::PoseOutput(_) => {
             OpError::internal(message).hint("check the address, or pick another port if this one is taken")
         }

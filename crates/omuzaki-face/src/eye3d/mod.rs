@@ -7,8 +7,10 @@
 //!   (vessels, the fine network), one atlas for the `eye` program;
 //! - [`geometry::meshes`]: the eyeball and cornea, the lids with their margins, crease and pocket, the caruncle, the
 //!   occlusion shell and the lashes;
-//! - [`skin::texture`]: the skin round the eye (tone, mottling, freckles);
+//! - [`skin::texture`]: the skin round the eye (tone, mottling, fine lines, freckles);
 //! - [`eye_params`] and [`skin_params`]: the programs' parameters for a design and where the eye is.
+//! - [`closeup::Closeup`]: all of it built on a renderer, lit and framed as a macro still (the lab test and
+//!   `render.eye` draw through it).
 //!
 //! Everything is a pure function of an [`EyeDesign`], whose seed drives every random detail.
 
@@ -18,6 +20,7 @@
 )]
 
 pub mod canvas;
+pub mod closeup;
 pub mod design;
 pub mod geometry;
 pub mod noise;
@@ -64,18 +67,37 @@ pub fn eye_params(design: &EyeDesign, frame: EyeFrame) -> ProgramParams {
     // The iris's rim sits just behind the limbus's plane.
     let limbus_z = (1.0 - (ball.iris_radius * LIMBUS / ball.radius).powi(2)).max(0.0).sqrt();
     put(&mut p, "iris-depth", ParamValue::Float(limbus_z - 0.04));
-    put(&mut p, "scatter", ParamValue::Float(0.2));
+    // Toward anime the eye is drawn, not seen through a lens: the cornea stops bending the view, and the iris's caustic,
+    // relief and scattering give way to the painted iris and its painted highlights.
+    let real = 1.0 - design.style;
+    put(&mut p, "scatter", ParamValue::Float(0.2 * real));
+    put(&mut p, "ior", ParamValue::Float(1.0 + 0.376 * real));
+    put(&mut p, "caustic", ParamValue::Float(0.6 * real));
+    put(&mut p, "iris-relief", ParamValue::Float(0.008 * real));
+    put(&mut p, "iris-bulge", ParamValue::Float(0.035 * real));
+    put(&mut p, "tear-wobble", ParamValue::Float(0.05 * real));
+    put(&mut p, "gloss", ParamValue::Float(real));
+    put(&mut p, "drawn", ParamValue::Float(design.style));
+    if design.style > 0.0 {
+        put(&mut p, "pupil-colour", ParamValue::Colour(design.anime.pupil));
+    }
     p
 }
 
-/// The `skin` program's parameters for the skin round the eye.
-pub fn skin_params() -> ProgramParams {
+/// The `skin` program's parameters for the skin round `design`'s eye. Toward anime the skin reads as a flat painted
+/// tone: no pores, little scattering or shine, and light that wraps round softly.
+pub fn skin_params(design: &EyeDesign) -> ProgramParams {
+    let real = 1.0 - design.style;
     let mut p = ProgramParams::new();
-    put(&mut p, "pore-depth", ParamValue::Float(0.035));
-    put(&mut p, "roughness", ParamValue::Float(0.52));
-    put(&mut p, "sheen", ParamValue::Float(0.7));
+    put(&mut p, "pore-depth", ParamValue::Float(0.07 * real));
+    put(&mut p, "roughness", ParamValue::Float(0.52 + 0.4 * design.style));
+    put(&mut p, "sheen", ParamValue::Float(0.7 * real));
+    put(&mut p, "sss", ParamValue::Float(0.3 + 0.7 * real));
+    put(&mut p, "wrap", ParamValue::Float(0.4 + 0.5 * design.style));
+    put(&mut p, "specular", ParamValue::Float(0.028 * real));
+    // The lid margins' wet pink gives way to the skin's own tone.
+    put(&mut p, "wet-tint", ParamValue::Float(0.4 * real));
     put(&mut p, "wet-colour", ParamValue::Colour(Colour::hex(0x00b8_8070)));
-    put(&mut p, "wet-tint", ParamValue::Float(0.4));
     p
 }
 

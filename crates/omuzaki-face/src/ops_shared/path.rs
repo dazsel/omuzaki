@@ -4,6 +4,8 @@
 
 use omuzaki_anim_api::{CHANNELS, Channel};
 use omuzaki_core::text::edit_distance;
+use omuzaki_face_api::eye3d::EyeDesign;
+use omuzaki_face_api::sculpt::{EarDesign, LipsDesign, NoseDesign};
 use omuzaki_face_api::{FaceMark, FaceProfile, IrisColours};
 use omuzaki_ops_api::OpError;
 use serde_json::Value;
@@ -25,12 +27,30 @@ pub(crate) enum Section {
     Cheeks,
     /// `face/marks`, a list.
     Marks,
+    /// `face/eye3d`, the photoreal 3D eye; a face without one has painted eyes only.
+    Eye3d,
+    /// `face/nose3d`, the sculpted 3D nose.
+    Nose3d,
+    /// `face/lips3d`, the sculpted 3D lips.
+    Lips3d,
+    /// `face/ear3d`, the sculpted 3D ear.
+    Ear3d,
 }
 
 impl Section {
     /// Every section, in the order `face.describe_style` lists them.
-    pub(crate) const ALL: [Section; 6] =
-        [Section::Eyes, Section::Brows, Section::Mouth, Section::Nose, Section::Cheeks, Section::Marks];
+    pub(crate) const ALL: [Section; 10] = [
+        Section::Eyes,
+        Section::Brows,
+        Section::Mouth,
+        Section::Nose,
+        Section::Cheeks,
+        Section::Marks,
+        Section::Eye3d,
+        Section::Nose3d,
+        Section::Lips3d,
+        Section::Ear3d,
+    ];
 
     /// The key the section has below the face.
     pub(crate) const fn name(self) -> &'static str {
@@ -41,6 +61,10 @@ impl Section {
             Section::Nose => "nose",
             Section::Cheeks => "cheeks",
             Section::Marks => "marks",
+            Section::Eye3d => "eye3d",
+            Section::Nose3d => "nose3d",
+            Section::Lips3d => "lips3d",
+            Section::Ear3d => "ear3d",
         }
     }
 }
@@ -78,8 +102,9 @@ pub(crate) struct Template {
     pub(crate) mark: Value,
 }
 
-/// The default face, serialised once per op call. A section the face may leave out (the right eye's own iris) is in it
-/// whole, holding what it shows when left out, so a path into it resolves and a face that sets it reads as valid.
+/// The default face, serialised once per op call. A section the face may leave out (the right eye's own iris, the 3D
+/// eye and the sculpted features) is in it whole, holding what it shows when left out or first added, so a path into it resolves and a face that
+/// sets it reads as valid.
 ///
 /// # Errors
 /// `Internal` if the default face can't be serialised, which would be a bug in `omuzaki-face-api`.
@@ -93,6 +118,10 @@ pub(crate) fn template() -> Result<Template, OpError> {
         ring: Some(iris.ring.clone()),
         pupil: Some(iris.pupil.clone()),
     });
+    face.eye3d = Some(EyeDesign::default());
+    face.nose3d = Some(Box::new(NoseDesign::default()));
+    face.lips3d = Some(Box::new(LipsDesign::default()));
+    face.ear3d = Some(Box::new(EarDesign::default()));
     Ok(Template { profile: to_json(&face)?, mark: to_json(&FaceMark::default())? })
 }
 

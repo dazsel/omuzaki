@@ -75,12 +75,18 @@ The full plan is the [spec](docs/product/02-studio-spec-v3.md): a plan, not a li
 ## How this project was created
 
 Omuzaki is built by AI agents (Claude Code) under one human owner. The numbers behind it are kept in
-[`docs/history/build-stats`](docs/history/build-stats/README.md), refreshed hourly: agent-hours, how many agents worked at
-once, lines of code, commits, pull requests, issues and CI runs. Open its [`index.html`](docs/history/build-stats/index.html)
-for the one-page view.
+[`docs/history/build-stats`](docs/history/build-stats/README.md), refreshed after each chunk of work lands: agent-hours,
+how many agents worked at once, lines of code (1,147,300 now), commits (1,391 on main), pull requests, issues, CI runs and
+aggregate token use. Dashed lines on the charts mark the turning points (the repository move, the peak of 52 agents at
+once, the pause, the switch to big one-shot spines). Open its [`index.html`](docs/history/build-stats/index.html) for the
+one-page view.
 
 ![Agents working at once](docs/history/build-stats/charts/agents-at-once.svg)
 ![Lines of code](docs/history/build-stats/charts/lines-of-code.svg)
+![Commits per day](docs/history/build-stats/charts/commits.svg)
+![Pull requests per day](docs/history/build-stats/charts/pull-requests.svg)
+![Cloud project sessions](docs/history/build-stats/charts/cloud-sessions.svg)
+![Cumulative tokens](docs/history/build-stats/charts/tokens-cumulative.svg)
 
 ## Contributing
 

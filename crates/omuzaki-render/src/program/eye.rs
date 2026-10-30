@@ -6,9 +6,11 @@
 //! left half, the sclera's polar map on the right.
 //!
 //! Lighting is its own: the sclera wraps light past the terminator and reddens there (`scatter`, `scatter-colour`);
-//! the iris is lit through the cornea, brighter on the side away from the light (`caustic`); the tear film over the
-//! whole eye reflects every light and the environment with a Fresnel term (`cornea-roughness` over the cornea,
-//! `sclera-roughness` over the white, `gloss` to scale both).
+//! the iris is lit through the cornea, brighter on the side away from the light (`caustic`). Reflections come in two
+//! layers, each with a Fresnel term, for every light and the environment: the white's own satin sheen
+//! (`sclera-roughness`), and over it the tear film, a clear coat (`tear-coat`) that is sharp (`tear-roughness`) but
+//! uneven (`tear-wobble`) over the white and is the cornea itself over the iris (`cornea-roughness`); `gloss` scales
+//! both.
 //!
 //! The eye's frame (`centre`, `forward` the gaze, `up`) is in world space: whoever moves the eye updates them with the
 //! instance's transform.
@@ -27,8 +29,10 @@
 //! | `pupil-colour` | the pupil's colour | `0x060404` |
 //! | `scatter`, `scatter-colour` | the white's light wrap and its colour in the wrap | `0.35`, `0xe8a090` |
 //! | `caustic` | how much brighter the iris's far side is | `0.6` |
-//! | `sclera-roughness`, `cornea-roughness` | the tear film's roughness | `0.16`, `0.04` |
-//! | `gloss` | the tear film's reflections, as a multiplier | `1` |
+//! | `sclera-roughness` | the white's own sheen under the tear film | `0.35` |
+//! | `tear-coat`, `tear-roughness` | how much of the white the tear film covers, and its roughness there | `1`, `0.03` |
+//! | `cornea-roughness` | the cornea's roughness | `0.04` |
+//! | `gloss` | the reflections, as a multiplier | `1` |
 //! | `iris-relief` | how far the iris's light fibres stand out from its dark gaps, lit by each light | `0.008` |
 //! | `tear-wobble` | how unevenly the tear film over the sclera reflects (its normal's tilt) | `0.05` |
 
@@ -69,11 +73,16 @@ register_shading_program!(
             ParamSpec::float("scatter", 0.35, 0.0, 1.0),
             ParamSpec::colour("scatter-colour", 0x00e8_a090),
             ParamSpec::float("caustic", 0.6, 0.0, 3.0),
-            ParamSpec::float("sclera-roughness", 0.16, 0.01, 1.0),
+            ParamSpec::float("sclera-roughness", 0.35, 0.01, 1.0),
             ParamSpec::float("cornea-roughness", 0.04, 0.01, 1.0),
             ParamSpec::float("gloss", 1.0, 0.0, 4.0),
             ParamSpec::float("iris-relief", 0.008, 0.0, 0.1),
             ParamSpec::float("tear-wobble", 0.05, 0.0, 0.5),
+            ParamSpec::float("tear-coat", 1.0, 0.0, 1.0),
+            ParamSpec::float("tear-roughness", 0.03, 0.005, 1.0),
+            // 0 lit as a real eye; toward 1 lit flat, as an anime eye is painted: its colours read as drawn, with only
+            // a soft shadow where a light is blocked.
+            ParamSpec::float("drawn", 0.0, 0.0, 1.0),
         ],
         attributes: &[],
         toon,
