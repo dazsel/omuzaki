@@ -16,7 +16,16 @@ use omuzaki_face_api::{Check, Validate};
 /// The check's message for one group holding `generator`, or an empty string if it passes.
 fn errors(generator: Generator) -> String {
     let mut c = Check::new();
-    c.nested("groups/g", &HairGroup { enabled: true, mirror: false, dynamics: Dynamics::default(), generator });
+    c.nested(
+        "groups/g",
+        &HairGroup {
+            enabled: true,
+            mirror: false,
+            dynamics: Dynamics::default(),
+            generator,
+            lock: omuzaki_char_api::LockShape::default(),
+        },
+    );
     c.finish().err().map(|e| e.to_string()).unwrap_or_default()
 }
 
@@ -216,6 +225,7 @@ fn the_defaults_and_every_preset_still_pass() {
         mirror,
         dynamics: Dynamics::default(),
         generator,
+        lock: omuzaki_char_api::LockShape::default(),
     };
     let all: BTreeMap<GroupId, HairGroup> = [
         ("a", group(Generator::Cap(CapGen::default()), false)),

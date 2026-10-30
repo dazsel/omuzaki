@@ -15,6 +15,8 @@
 //! | `ring-width` | the ring's half width in polar angle | the `0.11` of its `smoothstep` |
 //! | `ring-wobble` | how far each lock's copy of the ring wanders | the `0.06` of its `sin` |
 //! | `ring-teeth` | how much the comb teeth break the ring (`0` none) | always on |
+//! | `ring-follow` | `0` paints the ring at a fixed polar angle; `1` makes it a lobe along each lock's strands | `0` |
+//! | `ring-shift` | how far the lobe's strands tilt toward the normal, sliding the ring up or down the head | (none) |
 //! | `strand-lines` | how far strand lines tint the colour | the `0.10` of `lines * 0.10` |
 //! | `edge-darkening` | how much darker a clump's edges are | `1 - 0.86` |
 //! | `keep-identity` | how much of the hair's own colour survives coloured light | the `0.36` |
@@ -45,6 +47,10 @@ const RING_WIDTH: f32 = 0.035;
 const RING_WOBBLE: f32 = 0.012;
 /// How much the comb teeth break the ring, `0..=1`: barely, in the kit; the prototype's is 1.
 const RING_TEETH: f32 = 0.25;
+/// The kit's ring follows the strands (#2483); the prototype's is painted (0).
+const RING_FOLLOW: f32 = 1.0;
+/// The tilt that puts the strand-following ring where the painted one is, seen from the front: `tan(0.92) = -1 / shift`.
+const RING_SHIFT: f32 = -0.75;
 
 /// The prototype's hair toon: a wide soft terminator with the shadow side tinted by the `shade` parameter and a warm rim.
 fn toon(values: &Values) -> Toon {
@@ -76,6 +82,8 @@ register_shading_program!(
             ParamSpec::float("ring-width", RING_WIDTH, 0.01, 0.3),
             ParamSpec::float("ring-wobble", RING_WOBBLE, 0.0, 0.2),
             ParamSpec::float("ring-teeth", RING_TEETH, 0.0, 1.0),
+            ParamSpec::float("ring-follow", RING_FOLLOW, 0.0, 1.0),
+            ParamSpec::float("ring-shift", RING_SHIFT, -2.0, 2.0),
             ParamSpec::float("strand-lines", 0.10, 0.0, 1.0),
             ParamSpec::float("edge-darkening", 0.14, 0.0, 1.0),
             ParamSpec::float("keep-identity", 0.36, 0.0, 1.0),

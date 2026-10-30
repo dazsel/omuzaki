@@ -1236,10 +1236,88 @@ pub struct HairGroup {
     pub dynamics: Dynamics,
     /// What the group generates.
     pub generator: Generator,
+    /// How each of its locks is shaped: cross-section, tip and sub-locks (#2480). The default is the kit's lens tube
+    /// ending in one point. Read by every generator whose locks are tubes; a curtain's strips and a cap's shell ignore it.
+    #[serde(default, skip_serializing_if = "LockShape::is_default")]
+    pub lock: LockShape,
 }
 
 fn yes() -> bool {
     true
+}
+
+/// How every lock of a group is shaped (#2480): its cross-section, its tip and how many sub-locks it parts into. One
+/// layer for every lock generator, applied to the clumps they compile.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct LockShape {
+    /// The lock's cross-section.
+    pub profile: LockProfile,
+    /// How the lock ends.
+    pub tip: LockTip,
+    /// Sub-locks each lock parts into, `1..=4`: they share the lock's root and part from [`LockShape::split_from`] on,
+    /// fanning apart toward their tips.
+    pub split: u8,
+    /// How far down the lock its sub-locks part, `0..=0.9` of its length.
+    pub split_from: f64,
+    /// How far the sub-locks (and a forked tip's two points) fan apart at their tips, in widths of the lock, `0..=2`.
+    pub spread: f64,
+}
+
+impl Default for LockShape {
+    fn default() -> Self {
+        Self { profile: LockProfile::Lens, tip: LockTip::Point, split: 1, split_from: 0.45, spread: 0.6 }
+    }
+}
+
+impl LockShape {
+    /// Whether this is the default shape (left out of a saved file).
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// How many tubes each compiled clump becomes: its sub-locks, each forked in two by a [`LockTip::Fork`].
+    pub fn tubes_per_clump(&self) -> usize {
+        usize::from(self.split.clamp(1, 4)) * if self.tip == LockTip::Fork { 2 } else { 1 }
+    }
+}
+
+impl Validate for LockShape {
+    fn check(&self, c: &mut Check) {
+        c.range("split", f64::from(self.split), 1.0, 4.0);
+        c.range("split_from", self.split_from, 0.0, 0.9);
+        c.range("spread", self.spread, 0.0, 2.0);
+    }
+}
+
+/// A lock's cross-section.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LockProfile {
+    /// Wide and thin, with flat faces and a rounded spine: the kit's lock.
+    #[default]
+    Lens,
+    /// A flat card: very thin, with crisp edges, for sharp anime spikes and flat bangs.
+    Card,
+    /// Nearly round, as thick as it is wide: a twisted or heavy lock.
+    Round,
+}
+
+/// How a lock ends.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LockTip {
+    /// Tapers to one point.
+    #[default]
+    Point,
+    /// Parts into two points over its last quarter.
+    Fork,
+    /// Ends cut straight across, barely narrowed.
+    Blunt,
+    /// Its last third curls under, toward the head and body.
+    CurlIn,
+    /// Its last third flicks out, away from the head and body.
+    CurlOut,
 }
 
 // ------------------------------------------------------------------------------------------------ shading and physics
@@ -1276,6 +1354,14 @@ pub struct HairShading {
     /// How much comb teeth break the angel ring, `0..=1`: 1 breaks it into soft blobs, 0 leaves it whole (the strand
     /// texture still breaks it into strands).
     pub ring_teeth: f64,
+    /// How far the angel ring follows the strands, `0..=1` (#2483): `0` paints it at one height round the head, `1` (the
+    /// default) makes it a highlight along each lock's own direction, so it bends with every lock and still reads as one
+    /// band where neighbours run alike.
+    pub ring_follow: f64,
+    /// Where the strand-following ring sits, `-2..=2`: how far the strands tilt toward the surface's normal for the
+    /// highlight. The default, `-0.75`, puts it where the painted ring is, seen from the front; nearer 0 slides it down
+    /// toward the brow, further below 0 up toward the crown.
+    pub ring_shift: f64,
     /// Strength of the strand lines, `0..=1`.
     pub strand_lines: f64,
     /// How much darker each clump's edges are, so overlapping locks separate, `0..=1`.
@@ -1349,6 +1435,8 @@ impl Default for HairShading {
             ring_width: RING_WIDTH,
             ring_wobble: RING_WOBBLE,
             ring_teeth: RING_TEETH,
+            ring_follow: 1.0,
+            ring_shift: -0.75,
             strand_lines: 0.10,
             edge_darkening: 0.14,
             keep_identity: 0.36,
@@ -1454,9 +1542,10 @@ pub enum HairShadingError {
 impl HairShading {
     /// The renderer's shading for this hair: `Shading::Program { name: "hair", params }`. Parameters, all read by the
     /// program: colours `root`, `mid`, `tip`, `shade`, `line`, `ring`, `rim` (resolved through `palette`) and floats
-    /// `ring-strength`, `ring-width`, `ring-wobble`, `ring-teeth`, `strand-lines`, `edge-darkening`, `keep-identity`,
-    /// `rim-strength`, `rim-width`, `back-light`. The outline width and `brows_through` are not
-    /// shader parameters: the first goes on the material's `Outline`, the second adds the brow overlay.
+    /// `ring-strength`, `ring-width`, `ring-wobble`, `ring-teeth`, `ring-follow`, `ring-shift`, `strand-lines`,
+    /// `edge-darkening`, `keep-identity`, `rim-strength`, `rim-width`, `back-light`. The outline width and
+    /// `brows_through` are not shader parameters: the first goes on the material's `Outline`, the second adds the brow
+    /// overlay.
     ///
     /// # Errors
     /// [`HairShadingError`] for an undefined palette slot.
@@ -1478,6 +1567,8 @@ impl HairShading {
             ("ring-width", self.ring_width),
             ("ring-wobble", self.ring_wobble),
             ("ring-teeth", self.ring_teeth),
+            ("ring-follow", self.ring_follow),
+            ("ring-shift", self.ring_shift),
             ("strand-lines", self.strand_lines),
             ("edge-darkening", self.edge_darkening),
             ("keep-identity", self.keep_identity),
@@ -1567,6 +1658,8 @@ impl Validate for HairShading {
         c.range("ring_width", self.ring_width, 0.01, 0.3);
         c.range("ring_wobble", self.ring_wobble, 0.0, 0.2);
         c.range("ring_teeth", self.ring_teeth, 0.0, 1.0);
+        c.range("ring_follow", self.ring_follow, 0.0, 1.0);
+        c.range("ring_shift", self.ring_shift, -2.0, 2.0);
         c.range("strand_lines", self.strand_lines, 0.0, 1.0);
         c.range("edge_darkening", self.edge_darkening, 0.0, 1.0);
         c.range("keep_identity", self.keep_identity, 0.0, 1.0);
@@ -1751,7 +1844,9 @@ impl Default for HairParams {
     fn default() -> Self {
         let group = |name: &str, simulate: bool, follow: Follow, generator: Generator| {
             let dynamics = Dynamics { simulate, follow, stiffness: Falloff::default() };
-            GroupId::new(name).map(|id| (id, HairGroup { enabled: true, mirror: false, dynamics, generator }))
+            GroupId::new(name).map(|id| {
+                (id, HairGroup { enabled: true, mirror: false, dynamics, generator, lock: LockShape::default() })
+            })
         };
         let groups = [
             group("a-cap", false, Follow::Head, Generator::Cap(CapGen::default())),
@@ -1792,6 +1887,7 @@ impl Validate for HairGroup {
     #[allow(clippy::too_many_lines, reason = "one arm per generator, each a few range checks")]
     fn check(&self, c: &mut Check) {
         c.nested("dynamics/stiffness", &self.dynamics.stiffness);
+        c.nested("lock", &self.lock);
         match &self.generator {
             Generator::Cap(g) => {
                 c.range("generator/hairline_front_deg", g.hairline_front_deg, 20.0, 120.0);
@@ -2128,7 +2224,7 @@ mod tests {
         let shading = HairShading::default().shading(&Palette::default()).unwrap();
         let Shading::Program { name, params } = &shading else { panic!("a program") };
         assert_eq!(name.as_str(), HAIR_PROGRAM);
-        assert_eq!(params.len(), 17);
+        assert_eq!(params.len(), 19);
         assert_eq!(params[&Slug::new("rim-strength").unwrap()], ParamValue::Float(0.12));
         assert_eq!(params[&Slug::new("ring-width").unwrap()], ParamValue::Float(0.035));
         assert_eq!(params[&Slug::new("back-light").unwrap()], ParamValue::Float(0.6));
@@ -2212,6 +2308,7 @@ mod tests {
             enabled: true,
             mirror: true,
             dynamics: Dynamics::default(),
+            lock: LockShape::default(),
             generator: Generator::Guides(GuidesGen {
                 clumps: vec![GuideClump {
                     points: vec![GuidePoint::Surface([200.0, 0.0, 0.0])],

@@ -460,12 +460,21 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
     // Transformed: the base texture and the UV overlays inside `surface_albedo` read `material_uv(in.uv)` (common.wgsl).
     // The environment cube (`environment_light`, environment.wgsl) is addressed by direction, not UV: not transformed.
     // An MToon material's UV animation moves every texture it reads, the base texture among them.
+    // The derivatives a program reads are taken first, while every fragment of the quad still runs.
+    let program = ProgramIn(
+        array<vec4<f32>, 4>(in.extra0, in.extra1, in.extra2, in.extra3),
+        front,
+        in.world_position,
+        dpdx(in.world_position),
+        dpdy(in.world_position),
+        dpdx(in.extra0),
+        dpdy(in.extra0),
+    );
     let uv = mtoon_uv(in.uv);
     let albedo = surface_albedo(uv, in.colour, in.local);
     if (material.flags.z == ALPHA_MASK && albedo.a < material.alpha.x) {
         discard;
     }
-    let program = ProgramIn(array<vec4<f32>, 4>(in.extra0, in.extra1, in.extra2, in.extra3), front, in.world_position);
     var colour = albedo.rgb;
     if (mtoon_on()) {
         let facing = normalize(in.world_normal);

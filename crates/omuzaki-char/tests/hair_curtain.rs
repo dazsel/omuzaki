@@ -223,7 +223,13 @@ fn a_disabled_group_does_not_shift_later_draws() {
     let with_disabled = |disabled: bool| {
         let mut params = HairParams::default();
         params.groups.clear();
-        let group = |enabled, generator| HairGroup { enabled, mirror: false, dynamics: Dynamics::default(), generator };
+        let group = |enabled, generator| HairGroup {
+            enabled,
+            mirror: false,
+            dynamics: Dynamics::default(),
+            generator,
+            lock: omuzaki_char_api::LockShape::default(),
+        };
         if disabled {
             params.groups.insert(
                 GroupId::new("a-off").unwrap(),

@@ -47,6 +47,7 @@ use super::r#gen::bangs;
 use super::r#gen::curtain::{self, BodyKeepOut, StripError};
 use super::r#gen::tail::Chain;
 use super::r#gen::{ahoge, bun, cap, tail};
+use super::lock;
 use super::physics::{self, runtime::HairRuntime};
 use super::reach::{HairReach, HairReachFact};
 use super::strands::{self, StrandMap, Strands};
@@ -131,9 +132,7 @@ pub fn build_with(
     apply_streaks(params, ctx.palette, &mut entries).map_err(|e| ctx.fail(e.to_string()))?;
 
     let frame = OutwardFrame { head: head.centre(), body_axis: body_axis(ctx, head.centre()) };
-    clear_fringes(params, head.as_ref(), &frame, &mut entries).map_err(|e| ctx.fail(e))?;
-    make_way_for_ears(params, ctx, head.as_ref(), &mut entries);
-    tuck_shells(head.as_ref(), &mut entries);
+    place(params, ctx, head.as_ref(), &frame, keep_out.as_ref(), &mut entries)?;
     let mut warnings = Vec::new();
     let chains = tail_chains(params, ctx, head.as_ref())?;
     let Meshes { stat, dynamic, ties } =
@@ -253,6 +252,26 @@ fn bind_to_strands<'a>(mesh: &MeshData, strands: &'a [Chain], runs: &mut Vec<Run
             runs.push(Run { range: v..v + 1, chain });
         }
     }
+}
+
+/// Settles the compiled locks round the head and body: the fringes clear the skull, the locks make way for the ears,
+/// the shells tuck under the locks, and then every group's locks take their shape (cross-section, tip, sub-locks).
+///
+/// # Errors
+/// [`BuildError::Part`] if a fringe cannot be cleared.
+fn place(
+    params: &HairParams,
+    ctx: &BuildCtx<'_>,
+    head: &dyn omuzaki_char_api::HeadSurface,
+    frame: &OutwardFrame,
+    keep_out: Option<&BodyKeepOut>,
+    entries: &mut [CompiledEntry],
+) -> Result<(), BuildError> {
+    clear_fringes(params, head, frame, entries).map_err(|e| ctx.fail(e))?;
+    make_way_for_ears(params, ctx, head, entries);
+    tuck_shells(head, entries);
+    lock::shape(entries, frame, head, keep_out);
+    Ok(())
 }
 
 /// Lifts every bangs group's locks off the head, measured in `frame`, the frame the tubes are drawn in. This runs here,
@@ -427,7 +446,9 @@ fn mesh_groups<'a>(
                     let rest = if offline { refine(&clump.rest, OFFLINE_REFINE) } else { clump.rest.clone() };
                     let polar = polar_angles(&rest, frame.head);
                     let seed = strand_seed(*drawn, entry.simulate);
-                    let look = TubeLook { seed, shade: clump.shade, polar: &polar, tint: clump.tint, flip: 1.0 };
+                    let profile = entry.lock.profile;
+                    let look =
+                        TubeLook { seed, shade: clump.shade, polar: &polar, tint: clump.tint, flip: 1.0, profile };
                     let first = target.vertex_count();
                     target.push(&rest, &clump.width, &clump.thickness, |p| frame.rest(p), &look)?;
                     let chain = chains.get(k / per_chain);
@@ -435,7 +456,7 @@ fn mesh_groups<'a>(
                         runs.push(Run { range: first..target.vertex_count(), chain });
                     }
                     if offline && let Some(w) = wisp::wisp(*drawn, &rest, &clump.width, clump.shade, frame) {
-                        let look = TubeLook { seed, shade: 1.0, polar: &[], tint: clump.tint, flip: 1.0 };
+                        let look = TubeLook { seed, shade: 1.0, polar: &[], tint: clump.tint, flip: 1.0, profile };
                         wisps.push((entry.simulate, w, chain, look));
                     }
                     *drawn += 1;
@@ -709,6 +730,7 @@ enum Drawn {
 }
 
 /// One clump of the hair as a recolour sees it: from the parameters alone.
+#[derive(Clone, Copy)]
 struct Slot<'a> {
     group: &'a GroupId,
     simulate: bool,
@@ -740,9 +762,21 @@ pub fn recolour_with(
     ctx: &RecolourCtx<'_>,
     generators: &dyn GroupGenerator,
 ) -> Result<Recoloured, BuildError> {
-    let layout = layout(params, generators);
-    let groups: Vec<&GroupId> = layout.iter().map(|s| s.group).collect();
-    let tints = params.shading.streak_tints(ctx.palette, &groups).map_err(|e| ctx.fail(e.to_string()))?;
+    let compiled = layout(params, generators);
+    let groups: Vec<&GroupId> = compiled.iter().map(|s| s.group).collect();
+    let compiled_tints = params.shading.streak_tints(ctx.palette, &groups).map_err(|e| ctx.fail(e.to_string()))?;
+    // The streaks tint the compiled clumps; each one's tubes (its sub-locks and forks, [`lock`]) take its tint.
+    let (layout, tints): (Vec<Slot<'_>>, Vec<Option<Colour>>) = compiled
+        .into_iter()
+        .zip(compiled_tints)
+        .flat_map(|(slot, tint)| {
+            let tubes = match (slot.drawn, params.groups.get(slot.group)) {
+                (Drawn::Tube, Some(group)) => group.lock.tubes_per_clump(),
+                _ => 1,
+            };
+            std::iter::repeat_n((slot, tint), tubes)
+        })
+        .unzip();
     // A mesh the layout says holds tubes, or a cap's shell (which has no clumps, so the layout cannot see it), must
     // exist: without it there is nothing to tint or keep, and `Done` would be a lie.
     for simulated in [false, true] {

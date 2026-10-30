@@ -142,8 +142,13 @@ fn a_mirrored_braid_group_makes_the_same_clumps_as_an_unmirrored_one() {
     let palette = Palette::default();
     let head = Ball;
     let clumps_of = |mirror: bool| {
-        let group =
-            HairGroup { enabled: true, mirror, dynamics: Dynamics::default(), generator: Generator::Braid(g.clone()) };
+        let group = HairGroup {
+            enabled: true,
+            mirror,
+            dynamics: Dynamics::default(),
+            generator: Generator::Braid(g.clone()),
+            lock: omuzaki_char_api::LockShape::default(),
+        };
         let params = HairParams { groups: [(GroupId::new("braid").unwrap(), group)].into(), ..HairParams::default() };
         let mut rng = Counting::default();
         let entries = compile_groups(&params, &Dispatch, &head, &palette, Quality::Live, &mut rng).unwrap();
@@ -209,8 +214,13 @@ fn a_non_finite_parameter_keeps_the_clump_count_and_the_points_finite() {
 #[test]
 fn each_out_of_range_braid_value_fails_naming_its_field() {
     let bad = |g: BraidGen| {
-        let group =
-            HairGroup { enabled: true, mirror: false, dynamics: Dynamics::default(), generator: Generator::Braid(g) };
+        let group = HairGroup {
+            enabled: true,
+            mirror: false,
+            dynamics: Dynamics::default(),
+            generator: Generator::Braid(g),
+            lock: omuzaki_char_api::LockShape::default(),
+        };
         let mut c = omuzaki_face_api::Check::new();
         group.check(&mut c);
         c.finish().err().map(|e| e.to_string()).unwrap_or_default()
@@ -288,8 +298,13 @@ fn the_crown_is_unchanged_without_a_path_and_a_one_point_path_is_refused() {
     let (explicit, _) = compile_with(&BraidGen { tuck: Some(0.0), lift: None, ..BraidGen::default() });
     assert_eq!(crown, explicit, "no path and no tuck is the prototype's crown");
     let text = |g: BraidGen| {
-        let group =
-            HairGroup { enabled: true, mirror: false, dynamics: Dynamics::default(), generator: Generator::Braid(g) };
+        let group = HairGroup {
+            enabled: true,
+            mirror: false,
+            dynamics: Dynamics::default(),
+            generator: Generator::Braid(g),
+            lock: omuzaki_char_api::LockShape::default(),
+        };
         let mut c = omuzaki_face_api::Check::new();
         group.check(&mut c);
         c.finish().err().map(|e| e.to_string()).unwrap_or_default()

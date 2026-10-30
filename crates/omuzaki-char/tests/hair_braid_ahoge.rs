@@ -141,7 +141,16 @@ fn the_braid_checks_name_their_field() {
     let fails = |b: TailBraid| {
         let mut c = omuzaki_face_api::Check::new();
         let generator = Generator::Tail(TailGen { braid: Some(b), ..TailGen::default() });
-        c.nested("g", &HairGroup { enabled: true, mirror: false, dynamics: Dynamics::default(), generator });
+        c.nested(
+            "g",
+            &HairGroup {
+                enabled: true,
+                mirror: false,
+                dynamics: Dynamics::default(),
+                generator,
+                lock: omuzaki_char_api::LockShape::default(),
+            },
+        );
         c.finish().err().map(|e| e.to_string()).unwrap_or_default()
     };
     assert!(fails(TailBraid { strands: 6, ..TailBraid::default() }).contains("braid/strands"));
@@ -258,6 +267,7 @@ fn hair(groups: &[(&str, Generator, bool)]) -> HairParams {
                 mirror: *mirror,
                 dynamics: Dynamics::default(),
                 generator: generator.clone(),
+                lock: omuzaki_char_api::LockShape::default(),
             };
             (GroupId::new(*id).unwrap(), group)
         })
