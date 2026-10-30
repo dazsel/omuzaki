@@ -268,6 +268,50 @@ pub struct CaptionsDef {
     /// The most characters on a caption before a phrase is split.
     #[serde(default = "default_caption_chars")]
     pub max_chars: usize,
+    /// The look the letters start from: `punchy` (the default), `clean` or `outline`. The fields below change one
+    /// thing about it each.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub look: CaptionLook,
+    /// The weight of the type, from [`CAPTION_WEIGHT_MIN`] (light) to [`CAPTION_WEIGHT_MAX`] (extra bold).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight: Option<f32>,
+    /// The width of the dark outline, as a share of the letter height, `0..=0.3` (0 for none).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outline: Option<f32>,
+    /// How dark the drop shadow is, `0..=1` (0 for none).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shadow: Option<f32>,
+    /// Whether a caption pops in slightly larger and settles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pop: Option<bool>,
+    /// The letters' colour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill: Option<Colour>,
+    /// The outline's colour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<Colour>,
+}
+
+/// The lightest caption weight the bundled face draws.
+pub const CAPTION_WEIGHT_MIN: f32 = 200.0;
+/// The heaviest caption weight the bundled face draws.
+pub const CAPTION_WEIGHT_MAX: f32 = 800.0;
+
+/// A caption look to start from: each sets the weight, outline, shadow and pop together.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptionLook {
+    /// Extra bold white with a heavy dark outline and a drop shadow, popping in: the loud short-form caption.
+    #[default]
+    Punchy,
+    /// Bold white with a thin dark edge and a faint shadow, steady: the subtitle look of a talking-head clip.
+    Clean,
+    /// Semibold white with a dark outline and no shadow, steady.
+    Outline,
+}
+
+fn is_default<T: Default + PartialEq>(value: &T) -> bool {
+    *value == T::default()
 }
 
 const fn yes() -> bool {
@@ -288,7 +332,19 @@ const fn default_caption_chars() -> usize {
 
 impl Default for CaptionsDef {
     fn default() -> Self {
-        Self { enabled: true, y: default_caption_y(), size: default_caption_size(), max_chars: default_caption_chars() }
+        Self {
+            enabled: true,
+            y: default_caption_y(),
+            size: default_caption_size(),
+            max_chars: default_caption_chars(),
+            look: CaptionLook::default(),
+            weight: None,
+            outline: None,
+            shadow: None,
+            pop: None,
+            fill: None,
+            line: None,
+        }
     }
 }
 
@@ -690,6 +746,21 @@ impl ShortDef {
         if !(0.01..=0.2).contains(&self.captions.size) {
             return Err(ShortError::invalid("captions.size", format!("{} is outside 0.01 to 0.2", self.captions.size)));
         }
+        let captions = &self.captions;
+        for (field, value, range) in [
+            ("captions.weight", captions.weight, CAPTION_WEIGHT_MIN..=CAPTION_WEIGHT_MAX),
+            ("captions.outline", captions.outline, 0.0..=0.3),
+            ("captions.shadow", captions.shadow, 0.0..=1.0),
+        ] {
+            if let Some(value) = value
+                && !range.contains(&value)
+            {
+                return Err(ShortError::invalid(
+                    field,
+                    format!("{value} is outside {} to {}", range.start(), range.end()),
+                ));
+            }
+        }
         if !(4..=80).contains(&self.captions.max_chars) {
             return Err(ShortError::invalid(
                 "captions.max_chars",
@@ -906,6 +977,19 @@ text = "Second line."
         let shaky = text.replace("handheld = 0.0", "handheld = 9.0");
         assert!(ShortDef::from_toml(&shaky).unwrap_err().to_string().contains("handheld"));
         assert!(!ShortDef::from_toml(SAMPLE).unwrap().to_toml().unwrap().contains("handheld"), "the default stays out");
+    }
+
+    #[test]
+    fn reads_a_caption_look_and_its_changes_and_checks_them() {
+        let text = format!("{SAMPLE}\n[captions]\nlook = \"clean\"\nweight = 650\nline = \"#202030\"\n");
+        let def = ShortDef::from_toml(&text).unwrap();
+        assert_eq!(def.captions.look, CaptionLook::Clean);
+        assert_eq!(def.captions.weight, Some(650.0));
+        assert_eq!(def.captions.line, Some(Colour::rgb(0x20, 0x20, 0x30)));
+        assert_eq!(ShortDef::from_toml(&def.to_toml().unwrap()).unwrap(), def);
+        let heavy = text.replace("weight = 650", "weight = 950");
+        assert!(ShortDef::from_toml(&heavy).unwrap_err().to_string().contains("captions.weight"));
+        assert!(!ShortDef::from_toml(SAMPLE).unwrap().to_toml().unwrap().contains("punchy"), "the default stays out");
     }
 
     #[test]

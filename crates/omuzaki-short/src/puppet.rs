@@ -17,7 +17,7 @@ use omuzaki_puppet_api::{NodeIx, NodeKind, PuppetDef};
 use omuzaki_render_api::Colour;
 
 use crate::camera::CameraRig;
-use crate::caption::Captioner;
+use crate::caption::{Captioner, Ink};
 use crate::def::{ShortDef, ShotFraming, ShotNumbers};
 use crate::error::ShortError;
 use crate::perform::OfflinePerformer;
@@ -164,7 +164,7 @@ pub fn render_puppet_short(
     let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
     let mut renderer = CpuRenderer::new(threads);
     let mut canvas = Canvas::new(w, h);
-    let captioner = Captioner::new()?;
+    let captioner = Captioner::new(Ink::of(&def.captions))?;
     let frames = frame_count(timeline.duration, def.fps);
     let mut report = LoopReport::default();
     for index in 0..frames {

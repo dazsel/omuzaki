@@ -13,6 +13,7 @@ use omuzaki_char::outfit::dress::DressSleeves;
 use omuzaki_char_api::BuildServices;
 use omuzaki_face_api::Validate;
 use omuzaki_face_mock::MockRasterizer;
+use omuzaki_render_api::AlphaMode;
 
 fn services() -> BuildServices {
     BuildServices::default().with_rasterizer(|| Box::new(MockRasterizer))
@@ -51,6 +52,31 @@ fn it_follows_the_bust_and_the_waist_within_4_mm() {
 }
 
 #[test]
+fn a_sheer_bodysuit_blends_its_cloth_over_the_skin_and_an_opaque_one_does_not() {
+    let fabric_of = |sheer: f64| {
+        let mut p = BodysuitParams::default();
+        p.common.sheer = sheer;
+        let value = serde_json::to_value(&p).unwrap();
+        let def =
+            conformance::character("tall", &conformance::shapes()[0].1, &[("suit", "bodysuit", LAYER_BODYSUIT, value)]);
+        let stack = conformance::build(def, &services()).unwrap();
+        let output = stack.output("suit");
+        output.materials.iter().find(|(name, _)| name.as_str() == "suit-fabric").expect("the cloth").1.clone()
+    };
+    let opaque = fabric_of(0.0);
+    assert_eq!(opaque.alpha, AlphaMode::Opaque);
+    assert_eq!(opaque.base.a, 255);
+    let sheer = fabric_of(0.6);
+    assert_eq!(sheer.alpha, AlphaMode::Blend, "the cloth blends over what it covers");
+    assert_eq!(sheer.base.a, 102, "40% of the cloth covers");
+    assert!(!sheer.receives_shadows, "skin seen through it isn't shadowed twice");
+    assert!(
+        serde_json::to_value(BodysuitParams::default()).unwrap()["common"].get("sheer").is_none(),
+        "opaque isn't written"
+    );
+}
+
+#[test]
 fn the_parameters_are_checked() {
     assert!(BodysuitParams::default().validate().is_ok());
     let mut halter = BodysuitParams::default();
@@ -60,6 +86,10 @@ fn the_parameters_are_checked() {
         BodysuitParams { length: 0.5, ..BodysuitParams::default() },
         BodysuitParams { thickness: 0.05, ..BodysuitParams::default() },
         BodysuitParams { strap_width: 0.2, ..BodysuitParams::default() },
+        BodysuitParams {
+            common: omuzaki_char::outfit::common::GarmentCommon { sheer: 0.95, ..BodysuitParams::default().common },
+            ..BodysuitParams::default()
+        },
     ] {
         assert!(bad.validate().is_err(), "{bad:?}");
     }

@@ -28,7 +28,7 @@ use omuzaki_char_api::{
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::{UVec2, Vec2};
 use omuzaki_face_api::{Check, ColourRef, DrawList, FaceRect, Paint, Validate};
-use omuzaki_render_api::{Filter, Sampler, TextureDesc, Wrap};
+use omuzaki_render_api::{AlphaMode, Filter, Sampler, TextureDesc, Wrap};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -66,17 +66,30 @@ pub struct GarmentCommon {
     /// Cloth simulation: off (the garment is skinned to the skeleton) unless enabled; a garment that cannot drape
     /// ignores it.
     pub cloth: ClothSpec,
+    /// How see-through the cloth is, from 0 (opaque, the default) to [`MAX_SHEER`]: what lies under it shows through,
+    /// as under chiffon, tulle, organza or sheer tights. The fabric's colour tints what shows.
+    #[serde(skip_serializing_if = "is_opaque")]
+    pub sheer: f64,
+}
+
+/// The most see-through a fabric may be: past this the cloth is gone and only its shading would show.
+pub const MAX_SHEER: f64 = 0.9;
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's `skip_serializing_if` passes a reference
+fn is_opaque(sheer: &f64) -> bool {
+    *sheer == 0.0
 }
 
 impl Default for GarmentCommon {
     fn default() -> Self {
-        Self { ease: DEFAULT_EASE, fabric: FabricStyle::default(), cloth: ClothSpec::default() }
+        Self { ease: DEFAULT_EASE, fabric: FabricStyle::default(), cloth: ClothSpec::default(), sheer: 0.0 }
     }
 }
 
 impl Validate for GarmentCommon {
     fn check(&self, c: &mut Check) {
         c.range("ease", self.ease, MIN_EASE, MAX_EASE);
+        c.range("sheer", self.sheer, 0.0, MAX_SHEER);
         c.nested("fabric", &self.fabric);
         c.nested("cloth", &self.cloth);
     }
@@ -764,7 +777,24 @@ pub fn fabric_look<C: PartColours>(cx: &C, common: &GarmentCommon) -> Result<Fab
         }
         (_, None) => return Err(cx.fail("a patterned fabric painted no tile")),
     };
+    let mut material = material;
+    make_sheer(&mut material, common.sheer);
     Ok(FabricLook { material, texture, tile: size })
+}
+
+/// Makes `spec` as see-through as `sheer` says ([`GarmentCommon::sheer`]): its coverage drops to `1 - sheer` and it
+/// blends over what lies under it. A sheer cloth doesn't take shadows, which would darken the skin seen through it
+/// twice. `sheer` of 0 leaves `spec` as it is.
+pub fn make_sheer(spec: &mut MaterialSpec, sheer: f64) {
+    if sheer <= 0.0 {
+        return;
+    }
+    let cover = (1.0 - sheer.clamp(0.0, MAX_SHEER)) * f64::from(spec.base.a);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // rounded and inside 0..=255
+    let cover = cover.round().clamp(0.0, 255.0) as u8;
+    spec.base.a = cover;
+    spec.alpha = AlphaMode::Blend;
+    spec.receives_shadows = false;
 }
 
 /// Recolours `output` in place from freshly made `materials` and `textures`, each named `<part>-<suffix>`: every

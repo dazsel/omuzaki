@@ -17,7 +17,7 @@ use omuzaki_stage::scene::landmarks::Landmarks;
 use omuzaki_stage::stages::{AnyStage, FrameLoop};
 
 use crate::camera::CameraRig;
-use crate::caption::Captioner;
+use crate::caption::{Captioner, Ink};
 use crate::def::ShortDef;
 use crate::error::ShortError;
 use crate::perform::OfflinePerformer;
@@ -182,7 +182,7 @@ fn run(
         AnyStage::Kit(kit) => kit.settle(SETTLE_STEPS),
         AnyStage::Avatar(avatar) => avatar.settle(SETTLE_STEPS),
     }
-    let captioner = Captioner::new()?;
+    let captioner = Captioner::new(Ink::of(&def.captions))?;
     let total = frame_count(scene.timeline.duration, def.fps);
     let frames = scene.frames.clone().map_or(0..total, |r| r.start.min(total)..r.end.min(total));
     let mut report = LoopReport::default();

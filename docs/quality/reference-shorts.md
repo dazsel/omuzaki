@@ -65,6 +65,10 @@ To land on a reference's frames rather than near them:
 - `handheld = 0` locks the camera off (1, the default, is a phone in a hand), so the only motion is what the shots ask.
 - A shot's `head_width` frames the head (hair included) at a share of the frame's width, the same on every character,
   where `zoom` alone depends on the character's size; `zoom`, `punch` and `push` scale it from there.
+- `[captions]` takes a `look` (`punchy`, the default: extra bold, heavy outline, shadow and pop; `clean`: bold, a thin
+  edge, a faint shadow, steady; `outline`: semibold, an outline, no shadow) and changes one thing about it with
+  `weight`, `outline`, `shadow`, `pop`, `fill` and `line`.
+- A garment's `common.sheer` (0 to 0.9) lets what it covers show through, for chiffon, tulle or a sheer bodysuit.
 4. `python3 tools/reference-loop/compare.py ours.webm reference.mp4 OUT` (OUT outside the repository) and read the
    sheets pair by pair: face, framing, light, captions, timing.
 5. Score it: `python3 tools/reference-loop/parity.py ours.webm reference.mp4 OUT --made-with "..." --assets <the
