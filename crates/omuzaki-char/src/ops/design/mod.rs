@@ -1,10 +1,11 @@
-//! The design-layer ops (#2607 to #2615): named shape dials, age, sculpt strokes and material layers, every one an
+//! The design-layer ops (#2607 to #2615): named shape dials, the anatomy, age, sculpt strokes and material layers, every one an
 //! edit of the character's `design` node (`characters/<id>/design`), so the UI, MCP, the CLI and scripts share them and
 //! undo is the patch's inverse.
 //!
 //! | Module | Holds |
 //! |---|---|
 //! | [`dials`] | `shape.list_dials`, `shape.set_dial`, `shape.randomise`, `shape.reset` (#2612) |
+//! | [`anatomy`] | `anatomy.list`, `anatomy.set`, `anatomy.randomise`, `anatomy.reset` (#2614) |
 //! | [`age`] | `character.set_age` (#2615) |
 //! | [`sculpt`] | `part.sculpt.stroke`, `part.sculpt.undo`, `part.sculpt.clear`, `part.sculpt.list` (#2613) |
 //! | [`layers`] | `part.layer.add`, `.remove`, `.move`, `.set`, `.mask`, `.list` and `part.decal.add` (#2609, #2610) |
@@ -20,6 +21,7 @@ use omuzaki_ops_api::{OpCtx, OpError};
 use crate::ops::character::access;
 
 pub mod age;
+pub mod anatomy;
 pub mod dials;
 pub mod layers;
 pub mod sculpt;

@@ -1,0 +1,239 @@
+# The body's anatomy (#2614): subcutaneous fat, the muscles that shape the silhouette and the bony points that show
+# through, as z-scores with their spreads (`sd_mm`) and loadings on the shared factors (see anatomy-face.toml). Body
+# effects are a fraction `t` along a region from its start (the hips for the torso, the shoulder for an arm, the hip
+# for a leg) and lobes round its section, as the body dials are; `amount` is a weight, 1 the full spread.
+#
+# Origin: design targets from skinfold and limb-girth surveys and the usual course of ageing (fat gathering at the
+# waist from middle age, muscle thinning after sixty); rounded, no body is measured.
+
+# ----------------------------------------------------------------------------------------------------------- fat
+
+[[structure]]
+id = "neck_fat"
+name = "Neck fat"
+summary = "The fat round the neck: +1 a thick, soft neck, -1 lean"
+tissue = "fat"
+group = "neck"
+sd_mm = 5.0
+factors = { adiposity = 0.9 }
+age = [[45.0, 0.0], [70.0, 0.4]]
+[[structure.effects]]
+frame = "body"
+region = "neck"
+t = 0.45
+span = 0.7
+lobes = { all = 0.5, front = 1.0 }
+amount = 1.0
+
+[[structure]]
+id = "breast"
+name = "Breast"
+summary = "The breast's tissue: +1 full, -1 flat"
+tissue = "fat"
+group = "torso"
+sd_mm = 14.0
+factors = { adiposity = 0.6 }
+age = [[3.0, -1.0], [12.0, -0.8], [18.0, 0.0]]
+[[structure.effects]]
+frame = "body"
+region = "torso"
+t = 0.74
+span = 0.1
+lobes = { front = 1.0 }
+amount = 1.0
+
+[[structure]]
+id = "belly_fat"
+name = "Belly fat"
+summary = "The fat over the abdomen: +1 a round belly, -1 a flat one"
+tissue = "fat"
+group = "torso"
+sd_mm = 14.0
+factors = { adiposity = 1.0 }
+age = [[3.0, 0.4], [14.0, -0.3], [25.0, 0.0], [50.0, 0.7], [80.0, 0.9]]
+[[structure.effects]]
+frame = "body"
+region = "torso"
+t = 0.38
+span = 0.17
+lobes = { front = 1.0, all = 0.2 }
+amount = 1.0
+
+[[structure]]
+id = "flank_fat"
+name = "Flanks"
+summary = "The fat over the hips' sides and the waist: +1 full flanks, -1 lean"
+tissue = "fat"
+group = "torso"
+sd_mm = 9.0
+factors = { adiposity = 0.9 }
+age = [[25.0, 0.0], [55.0, 0.5]]
+[[structure.effects]]
+frame = "body"
+region = "torso"
+t = 0.22
+span = 0.16
+lobes = { out = 1.0, back = 0.3 }
+amount = 1.0
+
+[[structure]]
+id = "upper_arm_fat"
+name = "Upper arm fat"
+summary = "The fat at the back of the upper arm: +1 soft, full, -1 lean"
+tissue = "fat"
+group = "arms"
+sided = true
+sd_mm = 5.0
+factors = { adiposity = 0.9, laxity = 0.3 }
+age = [[40.0, 0.0], [70.0, 0.4]]
+[[structure.effects]]
+frame = "body"
+region = "arm_left"
+t = 0.3
+span = 0.22
+lobes = { back = 1.0, all = 0.3 }
+amount = 1.0
+
+[[structure]]
+id = "thigh_fat"
+name = "Thigh fat"
+summary = "The fat over the thigh: +1 full thighs, -1 lean"
+tissue = "fat"
+group = "legs"
+sided = true
+sd_mm = 8.0
+factors = { adiposity = 0.9 }
+[[structure.effects]]
+frame = "body"
+region = "leg_left"
+t = 0.22
+span = 0.22
+lobes = { all = 0.6, out = 0.6 }
+amount = 1.0
+
+# -------------------------------------------------------------------------------------------------------- muscle
+
+[[structure]]
+id = "trapezius_muscle"
+name = "Trapezius"
+summary = "The muscle from the neck to the shoulders: +1 a sloped, muscular neck line, -1 slight"
+tissue = "muscle"
+group = "torso"
+sd_mm = 5.0
+factors = { muscularity = 0.9 }
+age = [[3.0, -1.2], [16.0, -0.3], [25.0, 0.0], [65.0, -0.5], [85.0, -1.0]]
+[[structure.effects]]
+frame = "body"
+region = "torso"
+t = 0.96
+span = 0.1
+lobes = { out = 1.0, back = 0.6 }
+amount = 1.0
+
+[[structure]]
+id = "deltoid_muscle"
+name = "Deltoid"
+summary = "The shoulder's cap: +1 broad, round shoulders, -1 narrow"
+tissue = "muscle"
+group = "arms"
+sided = true
+sd_mm = 5.0
+factors = { muscularity = 1.0 }
+age = [[3.0, -1.4], [16.0, -0.3], [25.0, 0.0], [65.0, -0.5], [85.0, -1.2]]
+[[structure.effects]]
+frame = "body"
+region = "arm_left"
+t = 0.06
+span = 0.14
+lobes = { up = 1.0, front = 0.4, back = 0.4 }
+amount = 1.0
+
+[[structure]]
+id = "biceps_muscle"
+name = "Biceps"
+summary = "The front of the upper arm: +1 a full biceps, -1 slight"
+tissue = "muscle"
+group = "arms"
+sided = true
+sd_mm = 4.0
+factors = { muscularity = 1.0 }
+age = [[3.0, -1.4], [16.0, -0.3], [25.0, 0.0], [65.0, -0.5], [85.0, -1.2]]
+[[structure.effects]]
+frame = "body"
+region = "arm_left"
+t = 0.32
+span = 0.16
+lobes = { front = 1.0 }
+amount = 1.0
+
+[[structure]]
+id = "quadriceps"
+name = "Quadriceps"
+summary = "The front of the thigh: +1 full, muscular, -1 slight"
+tissue = "muscle"
+group = "legs"
+sided = true
+sd_mm = 6.0
+factors = { muscularity = 1.0 }
+age = [[3.0, -1.4], [16.0, -0.3], [25.0, 0.0], [65.0, -0.6], [85.0, -1.4]]
+[[structure.effects]]
+frame = "body"
+region = "leg_left"
+t = 0.3
+span = 0.2
+lobes = { front = 1.0, out = 0.3 }
+amount = 1.0
+
+[[structure]]
+id = "calf_muscle"
+name = "Calf"
+summary = "The gastrocnemius at the back of the lower leg: +1 full calves, -1 slender"
+tissue = "muscle"
+group = "legs"
+sided = true
+sd_mm = 5.0
+factors = { muscularity = 0.9, adiposity = 0.3 }
+age = [[3.0, -1.2], [16.0, -0.3], [25.0, 0.0], [70.0, -0.6], [90.0, -1.2]]
+[[structure.effects]]
+frame = "body"
+region = "leg_left"
+t = 0.68
+span = 0.16
+lobes = { back = 1.0, out = 0.35, in = 0.35 }
+amount = 1.0
+
+# ---------------------------------------------------------------------------------------------------------- bone
+
+[[structure]]
+id = "wrist_bone"
+name = "Wrists"
+summary = "The wrist's bony breadth: +1 broad, -1 fine"
+tissue = "bone"
+group = "arms"
+sided = true
+sd_mm = 1.5
+factors = { robusticity = 0.9 }
+[[structure.effects]]
+frame = "body"
+region = "arm_left"
+t = 0.96
+span = 0.08
+lobes = { all = 1.0 }
+amount = 1.0
+
+[[structure]]
+id = "ankle_bone"
+name = "Ankles"
+summary = "The ankle's bony breadth: +1 broad, -1 fine"
+tissue = "bone"
+group = "legs"
+sided = true
+sd_mm = 2.0
+factors = { robusticity = 0.9 }
+[[structure.effects]]
+frame = "body"
+region = "leg_left"
+t = 0.96
+span = 0.08
+lobes = { all = 1.0, out = 0.4, in = 0.4 }
+amount = 1.0

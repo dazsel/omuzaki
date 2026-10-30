@@ -1,8 +1,12 @@
 //! Age as one control (#2615): a number of years that moves every part coherently.
 //!
 //! Age reaches a character three ways, all derived at build time so changing it re-derives everything:
-//! 1. **shape**: each dial of the library has an age curve ([`DialDef::age`](super::DialDef::age)): the cheeks fill
-//!    and the jaw softens toward childhood, the temples hollow, the jowls drop and the nose lengthens with age;
+//! 1. **shape**: through the anatomy ([`StructureDef::age`](super::StructureDef::age), #2614): a child's full cheeks,
+//!    small jaw and nose and round forehead; then the fat pads deflating and sliding down (the malar fat toward the
+//!    jowl), the orbit widening and the maxilla and the jaw's angle receding as bone resorbs, the nose's cartilage
+//!    lengthening, muscle thinning late, and the skin's folds (the nasolabial fold, marionette lines, crow's feet,
+//!    forehead lines) cut into the surface as real grooves. A dial may carry an age curve of its own
+//!    ([`DialDef::age`](super::DialDef::age)) where no structure stands under it;
 //! 2. **skin**: the age model's curves ([`AgeModel`]) set implicit layers on the skin parts: wrinkle cavities in the
 //!    folds a face makes (crow's feet, the nasolabial fold, the forehead), age spots, and a child's flush;
 //! 3. **hair**: greying, as an implicit layer on the hair parts, which takes the hair's own colours toward silver.
