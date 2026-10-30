@@ -199,9 +199,12 @@ and expression), at the quality the product must reach. The aim is to match it, 
    part cut, traced or fitted from its frames, and no puppet solved from it; a licensed model is studied, not
    imported and called done. The exercise is to find what the tools are missing (drawing, textures, the shape library,
    the kit, materials, rigging, expressions) for a character like this at pixel parity.
-3. **Compare** side by side, frame by frame and against the numbers (`tools/reference-loop/parity.py` asks how the
-   render was made and refuses to score assets that copy the reference), and list every gap: a missing feature or
-   operation, a result that falls short, or a step that is too slow or too hard for someone new to the app.
+3. **Compare** pixel for pixel: overlay the render on the reference at the same framing and timing and difference
+   them with `parity.loop` (`omuzaki-parity`; `parity.compare`, `parity.overlay` and `parity.series` for one frame or
+   a signal). It refuses a render built from reference pixels, and its `done` is true only when the exact difference
+   map is 0 on every frame. **Work on a target stops only when that map shows 0**: "looks similar" is not parity.
+   List every gap the map shows: a missing feature or operation, a result that falls short, or a step that is too
+   slow or too hard for someone new to the app.
 4. **Answer your own questions and act.** Decide what each gap needs, mention the decision on #2, and do it without
    waiting for an answer. Only money and a change to the product's scope go to the owner.
 5. **File each gap as an issue** with its area's label, the shot or part it comes from and what "matches" means as
