@@ -5944,6 +5944,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-paint"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "image",
+ "kurbo",
+ "libm",
+ "proptest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "omuzaki-performer"
 version = "0.0.0"
 dependencies = [
