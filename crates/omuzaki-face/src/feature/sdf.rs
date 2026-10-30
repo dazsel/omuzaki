@@ -60,13 +60,54 @@ pub fn round_cone(p: Vec3, a: Vec3, b: Vec3, ra: f32, rb: f32) -> f32 {
 }
 
 /// A tube along the polyline `points`, its radius running through `radii` (one per point): round cones joined end to
-/// end, blended over `k` so the joints don't show.
+/// end, blended over `k`. A smooth blend swells each joint a little, so a finely [`resample`]d line takes `k = 0` (the
+/// cones already meet smoothly) and a coarse one a small `k` to round its corners.
 pub fn tube(p: Vec3, points: &[Vec3], radii: &[f32], k: f32) -> f32 {
     let mut d = f32::INFINITY;
     for (seg, r) in points.windows(2).zip(radii.windows(2)) {
         d = smin(d, round_cone(p, seg[0], seg[1], r[0], r[1]), k);
     }
     d
+}
+
+/// An open polyline `points` with a radius at each, resampled along a Catmull-Rom spline into `steps` pieces per
+/// segment, so a [`tube`] along it swells and narrows smoothly instead of beading at each joint.
+pub fn resample(points: &[Vec3], radii: &[f32], steps: usize) -> (Vec<Vec3>, Vec<f32>) {
+    let n = points.len().min(radii.len());
+    if n < 2 || steps == 0 {
+        return (points[..n].to_vec(), radii[..n].to_vec());
+    }
+    let p = |i: isize| -> (Vec3, f32) {
+        // Past either end the line runs on straight.
+        let Ok(i) = usize::try_from(i) else {
+            return (points[0] * 2.0 - points[1], radii[0]);
+        };
+        if i >= n {
+            return (points[n - 1] * 2.0 - points[n - 2], radii[n - 1]);
+        }
+        (points[i], radii[i])
+    };
+    let mut out = (Vec::with_capacity((n - 1) * steps + 1), Vec::with_capacity((n - 1) * steps + 1));
+    for seg in 0..n - 1 {
+        #[allow(clippy::cast_possible_wrap)]
+        let s = seg as isize;
+        let (a, b, c, d) = (p(s - 1), p(s), p(s + 1), p(s + 2));
+        for i in 0..steps {
+            #[allow(clippy::cast_precision_loss)]
+            let t = i as f32 / steps as f32;
+            let w = [
+                -0.5 * t * t * t + t * t - 0.5 * t,
+                1.5 * t * t * t - 2.5 * t * t + 1.0,
+                -1.5 * t * t * t + 2.0 * t * t + 0.5 * t,
+                0.5 * t * t * t - 0.5 * t * t,
+            ];
+            out.0.push(a.0 * w[0] + b.0 * w[1] + c.0 * w[2] + d.0 * w[3]);
+            out.1.push((a.1 * w[0] + b.1 * w[1] + c.1 * w[2] + d.1 * w[3]).max(0.0));
+        }
+    }
+    out.0.push(points[n - 1]);
+    out.1.push(radii[n - 1]);
+    out
 }
 
 /// The smooth union of two distances over `k` metres (the polynomial smooth minimum).

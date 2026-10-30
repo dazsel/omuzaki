@@ -3,6 +3,8 @@
 //! real geometry a camera can look into from any side.
 //!
 //! - [`nose::NoseDesign`]: the nose on a patch of face.
+//! - [`lips::LipsDesign`]: the lips on the patch of face round the mouth.
+//! - [`ear::EarDesign`]: the ear on a patch of the side of the head.
 //! - [`skin_mesh`]: a field meshed for the renderer's `skin` program, with its colours and `skin-info` (wet, cavity,
 //!   flush, curvature) taken from the field.
 //! - [`closeup::Closeup`]: a feature built on a renderer, lit as the eye's close-up is, from the front, three-quarter,
@@ -11,6 +13,8 @@
 #![allow(clippy::many_single_char_names, reason = "geometry maths: x, y, z, p, d, k are the field's names")]
 
 pub mod closeup;
+pub mod ear;
+pub mod lips;
 pub mod nets;
 pub mod nose;
 pub mod sdf;

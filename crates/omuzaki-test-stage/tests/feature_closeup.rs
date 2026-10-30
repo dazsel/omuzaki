@@ -13,6 +13,8 @@ use std::path::PathBuf;
 use omuzaki_core::glam::{UVec2, Vec3};
 use omuzaki_core::mesh::MeshData;
 use omuzaki_face::feature::closeup::{Closeup, FeatureView};
+use omuzaki_face::feature::ear::EarDesign;
+use omuzaki_face::feature::lips::LipsDesign;
 use omuzaki_face::feature::nose::NoseDesign;
 use omuzaki_face::feature::{Paint, skin_mesh};
 use omuzaki_render::{AdapterPreference, HeadlessOptions, WgpuRenderer};
@@ -87,6 +89,47 @@ fn the_nose_renders_from_every_side_in_both_styles() {
     let Some(mut renderer) = renderer() else { return };
     for (design, name) in [(NoseDesign::default(), "nose-real.png"), (NoseDesign::anime(), "nose-anime.png")] {
         let mesh = nose_mesh(&design);
+        assert!(mesh.indices.len() > 30_000, "{name}: {} triangles", mesh.indices.len() / 3);
+        let sheet = render(&mut renderer, &mesh, design.bounds(), design.style);
+        save(&sheet, name);
+    }
+}
+
+fn lips_mesh(design: &LipsDesign) -> MeshData {
+    let field = design.field();
+    let (min, max) = design.bounds();
+    let colour = |p: Vec3| design.colour_at(p);
+    let wet = |p: Vec3| design.wet_at(p);
+    let flush = |_: Vec3| 0.0;
+    skin_mesh(&field, min, max, 0.00035, &Paint { colour: &colour, wet: &wet, flush: &flush })
+}
+
+#[test]
+fn the_lips_render_from_every_side_in_both_styles() {
+    let Some(mut renderer) = renderer() else { return };
+    for (design, name) in [(LipsDesign::default(), "lips-real.png"), (LipsDesign::anime(), "lips-anime.png")] {
+        let mesh = lips_mesh(&design);
+        assert!(mesh.indices.len() > 30_000, "{name}: {} triangles", mesh.indices.len() / 3);
+        let sheet = render(&mut renderer, &mesh, design.bounds(), design.style);
+        save(&sheet, name);
+    }
+}
+
+fn ear_mesh(design: &EarDesign) -> MeshData {
+    let field = design.field();
+    let (min, max) = design.bounds();
+    let tone = design.tone.to_linear();
+    let colour = |p: Vec3| tone.lerp(tone * Vec3::new(1.06, 0.84, 0.82), 0.3 * design.redness(p));
+    let wet = |_: Vec3| 0.0;
+    let flush = |p: Vec3| 0.5 * design.redness(p);
+    skin_mesh(&field, min, max, 0.00035, &Paint { colour: &colour, wet: &wet, flush: &flush })
+}
+
+#[test]
+fn the_ear_renders_from_every_side_in_both_styles() {
+    let Some(mut renderer) = renderer() else { return };
+    for (design, name) in [(EarDesign::default(), "ear-real.png"), (EarDesign::anime(), "ear-anime.png")] {
+        let mesh = ear_mesh(&design);
         assert!(mesh.indices.len() > 30_000, "{name}: {} triangles", mesh.indices.len() / 3);
         let sheet = render(&mut renderer, &mesh, design.bounds(), design.style);
         save(&sheet, name);
