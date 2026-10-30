@@ -103,8 +103,9 @@ pub fn ssim_map(x: &Plane, y: &Plane) -> Plane {
     let v = (0..x.v.len())
         .map(|i| {
             let (ux, uy) = (mx.v[i], my.v[i]);
-            let vx = (xx.v[i] - ux * ux).max(0.0);
-            let vy = (yy.v[i] - uy * uy).max(0.0);
+            // Not clamped at 0: equal planes then give exactly equal variances and covariance, so exactly 1.
+            let vx = xx.v[i] - ux * ux;
+            let vy = yy.v[i] - uy * uy;
             let cov = xy.v[i] - ux * uy;
             ((2.0 * ux * uy + C1) * (2.0 * cov + C2)) / ((ux * ux + uy * uy + C1) * (vx + vy + C2))
         })

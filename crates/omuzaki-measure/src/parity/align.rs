@@ -129,7 +129,7 @@ pub fn from_points(ours: &Points, reference: &Points) -> Option<Similarity> {
 }
 
 /// The shift and scale that put our silhouette's centroid on the reference's and match their areas; `None` when either
-/// is empty.
+/// is empty or touches the frame's edge (a silhouette cut by the frame has a moved centroid and a wrong area).
 #[must_use]
 #[allow(clippy::cast_precision_loss)] // pixel counts
 pub fn from_silhouettes(ours: &[bool], reference: &[bool], w: usize) -> Option<Similarity> {
@@ -142,6 +142,12 @@ pub fn from_silhouettes(ours: &[bool], reference: &[bool], w: usize) -> Option<S
         }
         (n > 0.0).then(|| (n, [sx / n, sy / n]))
     };
+    let h = ours.len() / w.max(1);
+    let touches =
+        |m: &[bool]| (0..w).any(|x| m[x] || m[(h - 1) * w + x]) || (0..h).any(|y| m[y * w] || m[y * w + w - 1]);
+    if touches(ours) || touches(reference) {
+        return None;
+    }
     let (na, ca) = moments(ours)?;
     let (nb, cb) = moments(reference)?;
     let scale = (nb / na).sqrt();
@@ -162,29 +168,28 @@ impl Level {
 }
 
 /// The mean absolute L* difference plus the coverage difference (scaled to L*'s range), of ours carried by `t`,
-/// on the reference's grid at one level.
+/// on the reference's grid at one level. Reference pixels that `t` maps outside our frame are left out (nothing is
+/// known there), and a transform that leaves out more than half of the frame costs infinity.
 #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)] // pixel grids
 fn cost(ours: &Level, reference: &Level, t: &Similarity) -> f64 {
     let inv = t.inverse();
     let f = reference.factor as f64;
     let (w, h) = (reference.l.w, reference.l.h);
-    let mut sum = 0.0f64;
+    let (mut sum, mut n) = (0.0f64, 0usize);
     for y in 0..h {
         for x in 0..w {
-            let p = [(x as f64 + 0.5) * f, (y as f64 + 0.5) * f];
-            let q = inv.apply(p);
+            let q = inv.apply([(x as f64 + 0.5) * f, (y as f64 + 0.5) * f]);
             let (qx, qy) = ((q[0] / ours.factor as f64) as f32, (q[1] / ours.factor as f64) as f32);
+            if qx < 0.0 || qy < 0.0 || qx > ours.l.w as f32 || qy > ours.l.h as f32 {
+                continue;
+            }
             let i = y * w + x;
-            let outside = qx < 0.0 || qy < 0.0 || qx > ours.l.w as f32 || qy > ours.l.h as f32;
-            let (l, a) = if outside {
-                (reference.l.v[i] + 50.0, 0.0)
-            } else {
-                (ours.l.sample(qx, qy), ours.alpha.sample(qx, qy))
-            };
+            let (l, a) = (ours.l.sample(qx, qy), ours.alpha.sample(qx, qy));
             sum += f64::from((l - reference.l.v[i]).abs()) + 100.0 * f64::from((a - reference.alpha.v[i]).abs());
+            n += 1;
         }
     }
-    sum / (w * h).max(1) as f64
+    if n * 2 < w * h { f64::INFINITY } else { sum / n as f64 }
 }
 
 /// The transform near `start` with the least [`cost`], found coarse to fine by coordinate descent.
@@ -202,10 +207,29 @@ pub fn refine(ours: &LabImage, reference: &LabImage, start: Similarity) -> Simil
         f /= 2;
     }
     let mut t = start;
+    let mut first = true;
     for factor in factors {
         // Below full size only the coarse levels carry the long moves; the full level only polishes.
         let (lo, lr) = (Level::of(ours, factor), Level::of(reference, factor));
         let mut best = cost(&lo, &lr, &t);
+        if first {
+            // The coarsest level tries every shift within a sixth of the frame, so a start far off is not a trap.
+            first = false;
+            let reach = (lr.l.w.max(lr.l.h) / 6).max(2) as isize;
+            let base = t;
+            for dy in -reach..=reach {
+                for dx in -reach..=reach {
+                    let mut c = base;
+                    c.shift[0] += dx as f64 * factor as f64;
+                    c.shift[1] += dy as f64 * factor as f64;
+                    let v = cost(&lo, &lr, &c);
+                    if v + 1e-9 < best {
+                        best = v;
+                        t = c;
+                    }
+                }
+            }
+        }
         let mut step = [factor as f64, factor as f64, 0.01, 0.5];
         for _ in 0..60 {
             let mut moved = false;

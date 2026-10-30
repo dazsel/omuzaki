@@ -468,13 +468,15 @@ fn hint(name: &str, c: &ColourGap, ssim: f64, edge_px: Option<f64>, sil_iou: f64
     if c.delta_hue_deg.abs() >= 2.0 {
         parts.push(format!("hue turned {:.0} degrees", c.delta_hue_deg));
     }
-    if c.shift_explains >= 0.5 {
+    if c.shift_explains >= 0.3 {
         parts.push(format!(
-            "a colour or material change fixes {:.0}% of it: aim the mean at {}",
+            "one colour change across it fixes {:.0}%: aim its mean at {} (ours {})",
             c.shift_explains * 100.0,
-            c.reference
+            c.reference,
+            c.ours
         ));
-    } else if ssim < 0.9 {
+    }
+    if c.shift_explains < 0.5 && ssim < 0.9 {
         parts.push(format!("structure differs (SSIM {ssim:.2}): shading, texture, strands or detail"));
     }
     if parts.is_empty() {
