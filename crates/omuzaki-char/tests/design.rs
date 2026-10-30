@@ -119,7 +119,10 @@ fn check_anatomy(template: &str, base_def: &CharacterDef, base: &BuiltCharacter,
         let (body, head) = (largest_move(base, &built, "body"), largest_move(base, &built, "head"));
         let moved = body.0.max(head.0);
         assert!(moved > floor_m, "{template} {what} {z}: moves only {moved} m");
-        assert!(moved < 0.04 * tall, "{template} {what} {z}: the body moves {body:?}, the head {head:?}, of a {tall} m body");
+        assert!(
+            moved < 0.04 * tall,
+            "{template} {what} {z}: the body moves {body:?}, the head {head:?}, of a {tall} m body"
+        );
     };
     for s in &lib.structures {
         let mut def = base_def.clone();
@@ -648,8 +651,11 @@ fn the_ops_refuse_what_they_cannot_do() {
     assert!(e.hint.unwrap().contains("malar_fat"));
     let e = common::refused(&doc, "anatomy.set", json!({"character": "kit", "name": "adiposity", "value": 4.0}));
     assert_eq!(e.field.as_deref(), Some("value"));
-    let e =
-        common::refused(&doc, "anatomy.set", json!({"character": "kit", "name": "adiposity", "value": 1.0, "side": "left"}));
+    let e = common::refused(
+        &doc,
+        "anatomy.set",
+        json!({"character": "kit", "name": "adiposity", "value": 1.0, "side": "left"}),
+    );
     assert_eq!(e.field.as_deref(), Some("side"));
     let e = common::refused(&doc, "anatomy.list", json!({"tissue": "cartilage"}));
     assert_eq!(e.field.as_deref(), Some("tissue"));

@@ -143,9 +143,10 @@ impl AnatomyDef {
             }
         }
         for (id, setting) in &self.structures {
-            let def = structures.iter().find(|s| &s.id == id).ok_or_else(|| {
-                format!("structures/{id}: there is no structure `{id}` (`anatomy.list` lists them)")
-            })?;
+            let def = structures
+                .iter()
+                .find(|s| &s.id == id)
+                .ok_or_else(|| format!("structures/{id}: there is no structure `{id}` (`anatomy.list` lists them)"))?;
             setting.check_in(STRUCTURE_RANGE, def.sided, id.as_str()).map_err(|e| format!("structures/{id}/{e}"))?;
         }
         Ok(())
@@ -331,8 +332,8 @@ impl StructureDef {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::design::frame::Landmark;
     use crate::design::dial::Push;
+    use crate::design::frame::Landmark;
 
     fn malar() -> StructureDef {
         StructureDef {
@@ -385,8 +386,12 @@ mod tests {
         assert!((s.descent_at(80.0, 0.0) - 0.12).abs() < 1e-9);
         assert!(s.descent_at(80.0, 1.0) > s.descent_at(80.0, 0.0), "laxity deepens the descent");
         let sag = s.sag_at(0.1);
-        assert_eq!(sag.iter().map(|(_, v)| *v).collect::<Vec<_>>(), [-1.0, 1.0], "taken from where it was, added below");
-        assert!(s.sag_at(0.0).is_empty());
+        assert_eq!(
+            sag.iter().map(|(_, v)| *v).collect::<Vec<_>>(),
+            [-1.0, 1.0],
+            "taken from where it was, added below"
+        );
+        assert_eq!(s.sag_at(0.0), Vec::new(), "nothing descends at no descent");
         assert!(s.check().is_ok());
     }
 

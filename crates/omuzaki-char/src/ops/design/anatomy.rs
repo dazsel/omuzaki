@@ -386,15 +386,14 @@ impl Op for AnatomyReset {
         let before = design.anatomy.factors.len() + design.anatomy.structures.len();
         match self.name.as_deref() {
             None => design.anatomy = AnatomyDef::default(),
-            Some(name) => match factor_named(name) {
-                Some(f) => {
+            Some(name) => {
+                if let Some(f) = factor_named(name) {
                     design.anatomy.factors.remove(&f);
-                }
-                None => {
+                } else {
                     let s = structure(name, "name")?;
                     design.anatomy.structures.remove(&s.id);
                 }
-            },
+            }
         }
         let after = design.anatomy.factors.len() + design.anatomy.structures.len();
         let changes = store(ctx, &self.character, &design)?;
