@@ -167,6 +167,40 @@ fn it_builds_the_same_twice() {
 }
 
 #[test]
+fn a_pointed_edge_hangs_points_down_the_chest_and_stays_off_the_body() {
+    let mut pointed = preset();
+    pointed["points"] = json!(7);
+    pointed["point_depth"] = json!(0.6);
+    for template in ["standard", "tall"] {
+        for (label, shape) in conformance::shapes() {
+            let stack = built(template, &shape, pointed.clone());
+            let out = stack.output(conformance::PART);
+            for mesh in &out.meshes {
+                mesh.validate().unwrap_or_else(|e| panic!("{template} {label}: {}: {e}", mesh.name));
+            }
+            conformance::check_body_mesh(out, stack.output(conformance::BODY))
+                .unwrap_or_else(|e| panic!("{template} {label}: {e}"));
+        }
+    }
+    // Down the front the plate reaches as far as the smooth one (a point hangs there); a little to the side, between
+    // the middle point and the next, its edge rises.
+    let lowest_near = |params: Value, x: f64| {
+        let stack = built("standard", &BodyShape::default(), params);
+        positions(stack.output(conformance::PART), "-primary")
+            .into_iter()
+            .filter(|p| (p.x - x).abs() < 0.002 && p.z > 0.0)
+            .map(|p| p.y)
+            .fold(f64::MAX, f64::min)
+    };
+    let (smooth, points) = (lowest_near(preset(), 0.0), lowest_near(pointed.clone(), 0.0));
+    assert!((points - smooth).abs() < 0.002, "a point at the front: {:.1} vs {:.1} mm", points * 1e3, smooth * 1e3);
+    let side =
+        (0..40).map(|k| f64::from(k) * 0.001).map(|x| lowest_near(pointed.clone(), x) - lowest_near(preset(), x));
+    let rise = side.fold(0.0_f64, f64::max);
+    assert!(rise > 0.004, "between two points the edge rises {:.1} mm", rise * 1e3);
+}
+
+#[test]
 fn the_parameters_are_checked() {
     for bad in [
         json!({"height": 0.9}),
@@ -176,6 +210,8 @@ fn the_parameters_are_checked() {
         json!({"scroll_scale": 5.0}),
         json!({"scroll_depth": 0.01}),
         json!({"centre": {"size": 0.05}}),
+        json!({"points": 16}),
+        json!({"point_depth": 0.95}),
     ] {
         let p: CollarParams = serde_json::from_value(bad.clone()).unwrap();
         assert!(p.validate().is_err(), "{bad} is refused");
