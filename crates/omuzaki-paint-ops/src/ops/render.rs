@@ -23,11 +23,14 @@ pub const MAX_SAMPLES: usize = 4096;
 /// asset store (`omuzaki://render/<hash>.png`) and, with `out`, to a file in the project.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(extend("examples" = [
+#[schemars(extend(
+    "examples" = [
     { "painting": "bust" },
     { "painting": "bust", "crop": [380, 540, 220, 120], "scale": 4 },
     { "painting": "bust", "layer": "lines", "background": "#ffffff", "out": "renders/lines.png" }
-]))]
+],
+    "x-omuzaki-fixture" = "painting"
+))]
 pub struct Render {
     /// The painting.
     pub painting: String,
@@ -273,7 +276,10 @@ register_op!(Render);
 /// on your own work, to check a mark landed the colour you meant.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(extend("examples" = [{ "painting": "bust", "points": [[520, 700], [450, 690]] }]))]
+#[schemars(extend(
+    "examples" = [{ "painting": "bust", "points": [[520, 700], [450, 690]] }],
+    "x-omuzaki-fixture" = "painting"
+))]
 pub struct Sample {
     /// The painting.
     pub painting: String,

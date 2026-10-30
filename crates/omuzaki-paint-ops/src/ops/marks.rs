@@ -50,7 +50,8 @@ fn check_after(p: &Painting) -> Result<(), OpError> {
 /// See `paint.brushes` for the brushes and blend modes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(extend("examples" = [
+#[schemars(extend(
+    "examples" = [
     { "painting": "bust", "layer": "lines", "marks": [
         { "type": "stroke", "brush": "g_pen", "colour": "#1b1420", "size": 4,
           "points": [[400, 610, 0.3], [470, 590, 1], [540, 600, 0.6]], "tag": "upper lid, left" }
@@ -64,7 +65,9 @@ fn check_after(p: &Painting) -> Result<(), OpError> {
         { "type": "hatch", "region": { "kind": "ellipse", "cx": 450, "cy": 690, "rx": 40, "ry": 16 },
           "colour": "#ff6f7f", "angle": 110, "spacing": 7, "width": 2, "opacity": 0.8, "tag": "blush, left" }
     ] }
-]))]
+],
+    "x-omuzaki-fixture" = "painting"
+))]
 pub struct Draw {
     /// The painting.
     pub painting: String,
@@ -119,9 +122,12 @@ register_op!(Draw);
 /// Replace one mark of a layer with another (fix a stroke without redrawing the rest).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(extend("examples" = [{ "painting": "bust", "layer": "lines", "index": 0, "mark":
+#[schemars(extend(
+    "examples" = [{ "painting": "bust", "layer": "lines", "index": 0, "mark":
     { "type": "stroke", "brush": "g_pen", "colour": "#1b1420", "size": 5, "points": [[400, 612], [470, 588], [540, 600]] }
-}]))]
+}],
+    "x-omuzaki-fixture" = "painting"
+))]
 pub struct ReplaceMark {
     /// The painting.
     pub painting: String,
@@ -162,10 +168,13 @@ register_op!(ReplaceMark);
 /// Remove marks from a layer: `count` marks from `from`, or every mark with a tag.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(extend("examples" = [
-    { "painting": "bust", "layer": "lines", "from": 12, "count": 3 },
+#[schemars(extend(
+    "examples" = [
+    { "painting": "bust", "layer": "lines", "from": 1, "count": 2 },
     { "painting": "bust", "layer": "skin-shadow", "tag": "blush, left" }
-]))]
+],
+    "x-omuzaki-fixture" = "painting"
+))]
 pub struct RemoveMarks {
     /// The painting.
     pub painting: String,
@@ -231,13 +240,16 @@ register_op!(RemoveMarks);
 /// cut holes), like a painter's layer mask. The marks are the same kinds as `paint.draw`'s, without bucket sampling.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(extend("examples" = [
+#[schemars(extend(
+    "examples" = [
     { "painting": "bust", "layer": "hair-glow", "marks": [
         { "type": "shape", "geometry": { "kind": "ellipse", "cx": 540, "cy": 420, "rx": 300, "ry": 120 },
           "fill": "#ffffff", "feather": 30 }
     ] },
     { "painting": "bust", "layer": "hair-glow", "marks": null }
-]))]
+],
+    "x-omuzaki-fixture" = "painting"
+))]
 pub struct SetMask {
     /// The painting.
     pub painting: String,

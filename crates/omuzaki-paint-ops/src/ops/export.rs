@@ -178,7 +178,10 @@ struct Manifest {
 /// `iris`, `eye_line`, `mouth`, ...) with `paint.set_layer` so the auto-rig moves them right.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(extend("examples" = [{ "painting": "bust", "folder": "puppets/bust" }]))]
+#[schemars(extend(
+    "examples" = [{ "painting": "bust", "folder": "puppets/bust" }],
+    "x-omuzaki-fixture" = "painting"
+))]
 pub struct ExportLayers {
     /// The painting.
     pub painting: String,

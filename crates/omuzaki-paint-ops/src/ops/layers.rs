@@ -83,11 +83,14 @@ fn layer_kind_default() -> LayerKind {
 /// with `clip` so it stays inside the colour under it, and line art on top.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(extend("examples" = [
-    { "painting": "bust", "id": "lines", "name": "Line art" },
-    { "painting": "bust", "id": "skin-shadow", "name": "Skin shadow", "below": "lines", "clip": true, "blend": "multiply" },
-    { "painting": "bust", "id": "hair", "name": "Hair", "kind": "group" }
-]))]
+#[schemars(extend(
+    "examples" = [
+    { "painting": "bust", "id": "highlights", "name": "Highlights", "blend": "add" },
+    { "painting": "bust", "id": "rim-light", "name": "Rim light", "below": "lines", "clip": true, "blend": "screen" },
+    { "painting": "bust", "id": "eyes", "name": "Eyes", "kind": "group" }
+],
+    "x-omuzaki-fixture" = "painting"
+))]
 pub struct AddLayer {
     /// The painting.
     pub painting: String,
@@ -170,10 +173,13 @@ register_op!(AddLayer);
 /// Change a layer's settings: name, visibility, opacity, blend, clipping, role. Only what you give changes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(extend("examples" = [
+#[schemars(extend(
+    "examples" = [
     { "painting": "bust", "layer": "skin-shadow", "opacity": 0.6, "blend": "multiply" },
     { "painting": "bust", "layer": "sketch", "visible": false }
-]))]
+],
+    "x-omuzaki-fixture" = "painting"
+))]
 pub struct SetLayer {
     /// The painting.
     pub painting: String,
@@ -268,7 +274,10 @@ fn settings(l: &Layer) -> Value {
 /// Remove a layer with its marks (a group goes with every layer in it). Undoable.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(extend("examples" = [{ "painting": "bust", "layer": "sketch" }]))]
+#[schemars(extend(
+    "examples" = [{ "painting": "bust", "layer": "sketch" }],
+    "x-omuzaki-fixture" = "painting"
+))]
 pub struct RemoveLayer {
     /// The painting.
     pub painting: String,
@@ -308,10 +317,13 @@ register_op!(RemoveLayer);
 /// Move a layer (a group moves with its layers) above or below another, into a group, or out to the top level.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(extend("examples" = [
+#[schemars(extend(
+    "examples" = [
     { "painting": "bust", "layer": "lines", "above": "hair-shadow" },
     { "painting": "bust", "layer": "fringe", "parent": "hair" }
-]))]
+],
+    "x-omuzaki-fixture" = "painting"
+))]
 pub struct MoveLayer {
     /// The painting.
     pub painting: String,

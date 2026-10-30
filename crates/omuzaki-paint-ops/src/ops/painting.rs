@@ -14,7 +14,8 @@ use crate::doc::{PAINTINGS, from_paint, id, ids, json, load, painting_path};
 /// with `paint.add_layer`, then draw on them with `paint.draw`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(extend("examples" = [
+#[schemars(extend(
+    "examples" = [
     { "id": "bust", "name": "Painted bust", "width": 1080, "height": 1920, "background": "#000000" },
     { "id": "eye-l", "name": "Left eye", "width": 512, "height": 512 }
 ]))]
@@ -72,7 +73,10 @@ register_op!(New);
 /// Delete a painting and every layer and mark in it (undoable).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(extend("examples" = [{ "painting": "bust" }]))]
+#[schemars(extend(
+    "examples" = [{ "painting": "bust" }],
+    "x-omuzaki-fixture" = "painting"
+))]
 pub struct Delete {
     /// The painting's id.
     pub painting: String,
@@ -122,7 +126,9 @@ register_op!(List);
 /// Read a painting: its layers back to front with their settings and mark counts, and, for one layer, its marks.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(extend("examples" = [{ "painting": "bust" }, { "painting": "bust", "layer": "lines", "from": 0, "count": 50 }]))]
+#[schemars(extend("examples" = [{ "painting": "bust" }, { "painting": "bust", "layer": "lines", "from": 0, "count": 50 }],
+    "x-omuzaki-fixture" = "painting"
+))]
 pub struct Get {
     /// The painting's id.
     pub painting: String,
