@@ -1,6 +1,6 @@
 //! Proves a living-body frame allocates nothing (spec §8 "no allocation in the hot loop"): talking, gesture phrases
-//! with predicted and reactive strokes, fidgets, weight shifts, a laugh and a hand-off to a tracked arm all run in
-//! the measured frames. Its own test file, counting only the measuring thread (see `life_hot_loop.rs`).
+//! with predicted and reactive strokes, fidgets, weight shifts, a laugh, a hand-off to a tracked arm, a bonk and a
+//! fall all run in the measured frames. Its own test file, counting only the measuring thread (see `life_hot_loop.rs`).
 
 // A counting allocator is the only way to *prove* "no allocation"; the workspace denies unsafe code by default.
 #![allow(unsafe_code)]
@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use omuzaki_anim::body::LivingBody;
 use omuzaki_anim::body::measure::{TAKE_FPS, Take};
 use omuzaki_anim::body::ops::standing_base;
-use omuzaki_anim_api::{Animator, BodyStyle, BoneMask, HumanoidBone, Personality, Tick};
+use omuzaki_anim_api::{Animator, BodyPart, BodyStyle, BoneMask, HumanoidBone, Impact, Personality, Tick};
 
 struct Counting;
 
@@ -54,6 +54,12 @@ fn a_living_body_frame_allocates_nothing() {
         }
         if i == 3600 {
             body.set_style(&BodyStyle::preset(Personality::Calm));
+        }
+        if i == 1200 {
+            body.react(&Impact::hit(BodyPart::Face, [0.0, 0.0, -1.0], 1.0));
+        }
+        if i == 2000 {
+            body.react(&Impact::fall(BodyPart::LeftShoulder, [-1.0, 0.0, -0.5], 2.0));
         }
         body.hear(&frame.cues);
         let mut pose = base;

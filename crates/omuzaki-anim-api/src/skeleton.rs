@@ -39,6 +39,7 @@ use crate::blend::Bus;
 use crate::body::BodyStyle;
 use crate::channel::fnv_mix;
 use crate::frame::Tick;
+use crate::impact::Impact;
 use crate::life::Cues;
 use crate::pose_layer::BoneMask;
 use crate::score::Cue;
@@ -816,6 +817,13 @@ pub trait Animator: Send {
     /// The style in use, when this animator has one.
     fn style(&self) -> Option<BodyStyle> {
         None
+    }
+
+    /// Plays a physical reaction (a blow, a fall) on the body from the next step on; the body is back on its animated
+    /// pose after [`Impact::recover_s`]. Applied between two steps, allocating nothing; the default ignores it.
+    /// Returns whether this animator plays reactions.
+    fn react(&mut self, _impact: &Impact) -> bool {
+        false
     }
 }
 

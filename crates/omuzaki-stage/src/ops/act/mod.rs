@@ -1,6 +1,7 @@
 //! The live control ops (`docs/design/drivers.md` §5): `act.expression`, `act.look`, `act.channels`, `act.clip`,
-//! `act.release` and `act.list`. Anything that can run an op (a person's panel, an agent over MCP, a script, a show's
-//! automation, the AI performer) moves a performing character with them: each plays an act on the member's live score
+//! `act.release`, `act.list`, and `act.react` ([`react`]), which knocks the body. Anything that can run an op (a
+//! person's panel, an agent over MCP, a script, a show's automation, the AI performer) moves a performing character
+//! with them: each plays an act on the member's live score
 //! ([`PerformHost::act`]), which the score layer blends under the tracker unless the member's drive map gives it the
 //! channels, or the call asks for `over_tracking` (`act.expression`, `act.channels`), which wins on its channels.
 //!
@@ -9,6 +10,8 @@
 //!
 //! They are live actions, like `trigger.press`: logged, scope `perform`, nothing to undo (the act fades by itself or
 //! on `act.release`). A member left out means the scene's subject.
+
+pub mod react;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

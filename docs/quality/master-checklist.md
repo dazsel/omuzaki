@@ -248,7 +248,7 @@ AccuRIG (auto-rig), Blender (weights), Marvelous Designer (cloth).
 | Physics | VRM spring bones with sphere and capsule colliders, limits, master dial and wind (RG-03) | UniVRM, three-vrm | ✓ | `omuzaki-rig/src/spring/`; `power.set` |
 | Physics | Spring bone and collider authoring with viewport gizmos | UniVRM in Unity, VRoid | ✗ | **new** #2580 |
 | Physics | Cloth as particle sheets with body collision, pinning, a quality mode and a bake to springs (RG-04) | Unity cloth, Magica Cloth 2 | ✓ | `omuzaki-char/src/cloth/` |
-| Physics | Physical reactions: an active ragdoll blended with animation for throws, knocks and falls | Warudo (ragdoll), PuppetMaster | ✗ | **new** #2581 |
+| Physics | Physical reactions: an active ragdoll blended with animation for throws, knocks and falls | Warudo (ragdoll), PuppetMaster | ✓ | `omuzaki-anim/src/body/react.rs`; `act.react`, `measure.reaction` |
 | Physics | Hair-to-body clearance after settle | none check it | ✗ | #2485 |
 | Deformation | Corrective shapes and machine-learned deformation (elbows, shoulders) | Ziva, MetaHuman | ✗ | #2510 |
 

@@ -12,7 +12,7 @@
 //!
 //! The take is the same for every style with the same seed, so two styles compare like for like.
 
-use omuzaki_anim_api::{Animator, BodyStyle, Bus, Channel, Cues, HumanoidBone as B, HumanoidPose, Tick};
+use omuzaki_anim_api::{Animator, BodyStyle, Bus, Channel, Cues, HumanoidBone as B, HumanoidPose, Impact, Tick};
 use omuzaki_core::glam::Quat;
 use omuzaki_core::rng::Rng;
 use schemars::JsonSchema;
@@ -292,4 +292,85 @@ pub fn measure(style: &BodyStyle, take: &Take, base: &HumanoidPose, seed: u64) -
 /// way: the baseline a living body is compared with.
 pub fn measure_face_only(take: &Take, base: &HumanoidPose) -> BodyMotion {
     measure(&BodyStyle::OFF, take, base, 0)
+}
+
+/// How a body took a physical reaction ([`measure_reaction`]): how far each region was knocked from where the same
+/// body went without it, when it was back and whether it was back exactly.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ReactionMotion {
+    /// The furthest the head turned from its course, degrees (in the world, so the torso's share counts).
+    pub head_deg: f32,
+    /// The same for the upper chest.
+    pub chest_deg: f32,
+    /// The same for the hips.
+    pub hips_deg: f32,
+    /// The same for the upper arms (the larger of the two).
+    pub arms_deg: f32,
+    /// Seconds from the impact to the head's furthest point.
+    pub head_peak_s: f32,
+    /// Seconds from the impact until no bone was more than 0.5 degrees off its course again.
+    pub settled_s: f32,
+    /// Whether every frame from the recovery time on was the unreacted pose exactly.
+    pub exact_after_recovery: bool,
+    /// The fastest any bone turned while reacting, degrees a second.
+    pub peak_deg_s: f32,
+}
+
+/// Plays `take` through two living bodies with `style` and the same `seed`, knocks one with `impact` `at_s` seconds
+/// in, and measures the difference.
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)] // bounded counts
+pub fn measure_reaction(
+    style: &BodyStyle,
+    impact: &Impact,
+    take: &Take,
+    base: &HumanoidPose,
+    seed: u64,
+    at_s: f32,
+) -> ReactionMotion {
+    let impact = impact.clamped();
+    let mut plain = LivingBody::new(*style, seed);
+    let mut knocked = LivingBody::new(*style, seed);
+    let hit_frame = (at_s.max(0.0) * TAKE_FPS).round() as usize;
+    let recovered_frame = hit_frame + (impact.recover_s * TAKE_FPS).round() as usize;
+    let mut out = ReactionMotion { exact_after_recovery: true, ..ReactionMotion::default() };
+    let mut last_off = hit_frame;
+    let mut prev: Option<HumanoidPose> = None;
+    for (i, frame) in take.frames.iter().enumerate() {
+        let tick = Tick::at_rate(i as u64, TAKE_FPS);
+        let mut a = *base;
+        let mut b = *base;
+        plain.hear(&frame.cues);
+        plain.animate(tick, &frame.bus, &[], &mut a);
+        if i == hit_frame {
+            knocked.react(&impact);
+        }
+        knocked.hear(&frame.cues);
+        knocked.animate(tick, &frame.bus, &[], &mut b);
+        if i < hit_frame {
+            continue;
+        }
+        let t = (i - hit_frame) as f32 / TAKE_FPS;
+        let off = |bone| angle_deg(super::chain(&a, bone), super::chain(&b, bone));
+        let head = off(B::Head);
+        if head > out.head_deg {
+            out.head_deg = head;
+            out.head_peak_s = t;
+        }
+        out.chest_deg = out.chest_deg.max(off(B::UpperChest));
+        out.hips_deg = out.hips_deg.max(off(B::Hips));
+        out.arms_deg = out.arms_deg.max(off(B::LeftUpperArm)).max(off(B::RightUpperArm));
+        if B::ALL.into_iter().any(|bone| angle_deg(a.get(bone), b.get(bone)) > 0.5) {
+            last_off = i;
+        }
+        if i >= recovered_frame && a != b {
+            out.exact_after_recovery = false;
+        }
+        if let Some(p) = prev {
+            let fastest = B::ALL.into_iter().map(|bone| angle_deg(p.get(bone), b.get(bone))).fold(0.0, f32::max);
+            out.peak_deg_s = out.peak_deg_s.max(fastest * TAKE_FPS);
+        }
+        prev = Some(b);
+    }
+    out.settled_s = (last_off + 1 - hit_frame) as f32 / TAKE_FPS;
+    out
 }

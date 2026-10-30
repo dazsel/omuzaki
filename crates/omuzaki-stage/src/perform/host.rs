@@ -51,7 +51,7 @@ use omuzaki_anim::{
 };
 use omuzaki_anim_api::{
     ARKIT_COUNT, BodyStyle, BoneMask, Calibration, Channel, ChannelBuf, ChannelMask, Cues, DeviceProfile, HeadPose,
-    RetargetConfig, Tick, TrackStatus,
+    Impact, RetargetConfig, Tick, TrackStatus,
 };
 use omuzaki_core::glam::Vec3;
 use omuzaki_core::time::Seconds;
@@ -277,6 +277,15 @@ pub trait PerformHost: Send + Sync {
     /// The body style last set, or `None` before one is.
     fn body(&self) -> Option<BodyStyle> {
         None
+    }
+
+    /// Plays a physical reaction on the body from the next step (`act.react`): a blow or a fall, back on the
+    /// performed pose after the impact's recovery time.
+    ///
+    /// # Errors
+    /// [`PerformError::QueueFull`] or [`PerformError::Disconnected`]; nothing plays then.
+    fn react(&self, _impact: Impact) -> Result<(), PerformError> {
+        Err(PerformError::Unsupported)
     }
 
     /// The expression library the triggers bake against (empty until [`set_expressions`](Self::set_expressions)).
@@ -514,6 +523,8 @@ enum Command {
     Drive(DriveGate),
     /// The living body's dials, from [`PerformHost::set_body`].
     Body(BodyStyle),
+    /// A physical reaction, from [`PerformHost::react`].
+    React(Impact),
 }
 
 /// An attached voice, as the control holds it: the analyser's mailbox and the lip sync over the character's visemes.
@@ -1106,6 +1117,10 @@ impl PerformHost for PerformHandle {
     fn body(&self) -> Option<BodyStyle> {
         *lock(&self.shared.body)
     }
+
+    fn react(&self, impact: Impact) -> Result<(), PerformError> {
+        self.send(Command::React(impact))
+    }
 }
 
 impl PerformHandle {
@@ -1463,6 +1478,9 @@ impl PerformControl {
             Command::Drive(gate) => performer.set_drive(gate),
             Command::Body(style) => {
                 performer.animator_mut().set_style(&style);
+            }
+            Command::React(impact) => {
+                performer.animator_mut().react(&impact);
             }
         }
     }

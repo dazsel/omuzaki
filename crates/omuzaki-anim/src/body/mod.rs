@@ -15,6 +15,7 @@
 //! | Speech accents | stressed syllables | a small push of the chest on each stress |
 //! | Gestures | loudness and stressed syllables | co-speech gestures whose strokes land on the stresses ([`gesture`]), a talk-rest pose between them, idle fidgets |
 //! | Follow-through | the torso's motion | the arms lag behind the torso and swing back |
+//! | Reactions | [`Animator::react`] | a blow or a fall knocks an active ragdoll off the pose and back within its recovery time ([`react`]) |
 //!
 //! Every amount is a [`BodyStyle`] dial over a preset ([`tune`]); a style of all zeros is the bus animator exactly.
 //! Bones another source drives ([`Animator::set_tracked`]: a tracked body or hands, a playing body clip) are handed
@@ -26,13 +27,14 @@ pub mod arm;
 pub mod gesture;
 pub mod measure;
 pub mod ops;
+pub mod react;
 pub mod spring;
 pub mod tune;
 
 use std::f32::consts::TAU;
 
 use omuzaki_anim_api::{
-    Animator, BodyStyle, BoneMask, Bus, Channel, Cue, Cues, HumanoidBone as B, HumanoidPose, Reaches, Tick,
+    Animator, BodyStyle, BoneMask, Bus, Channel, Cue, Cues, HumanoidBone as B, HumanoidPose, Impact, Reaches, Tick,
 };
 use omuzaki_core::glam::{Quat, Vec3};
 use omuzaki_core::rng::Rng;
@@ -40,6 +42,7 @@ use omuzaki_core::rng::Rng;
 use self::arm::{ArmPose, Side};
 use self::gesture::scheduler::Output;
 use self::gesture::{GestureLibrary, GestureScheduler, Phase, StrokeLog};
+use self::react::Reaction;
 use self::spring::{Feel, Spring};
 use self::tune::Tuning;
 use crate::animator::BusAnimator;
@@ -137,6 +140,7 @@ pub struct LivingBody {
     gestures: GestureScheduler,
     torso: Torso,
     arms: [ArmState; 2],
+    reaction: Reaction,
     /// Seconds since the first step.
     time: f64,
 }
@@ -184,6 +188,7 @@ impl LivingBody {
             gestures,
             torso: Torso::default(),
             arms: Default::default(),
+            reaction: Reaction::default(),
             time: 0.0,
         };
         body.torso.next_shift_s = body.tuning.shift_gap_s.sample(body.rng.next_f32());
@@ -195,6 +200,11 @@ impl LivingBody {
     pub fn with_hand_rest(mut self, rest: HandRest) -> Self {
         self.hand_rest = rest;
         self
+    }
+
+    /// The physical reaction playing, if any ([`Animator::react`]).
+    pub fn reaction(&self) -> &Reaction {
+        &self.reaction
     }
 
     /// The gesture scheduler's phase.
@@ -396,6 +406,16 @@ impl LivingBody {
     }
 }
 
+impl LivingBody {
+    /// The physical reaction, over everything else (tracking included): a blow moves what it hits.
+    fn react_step(&mut self, dt: f32, out: &mut HumanoidPose) {
+        if self.reaction.active() {
+            self.reaction.step(dt);
+            self.reaction.apply(out);
+        }
+    }
+}
+
 /// `delta` added onto `bone` in its parent's T space (`PoseMode::Add`).
 fn add(pose: &mut HumanoidPose, bone: B, delta: Quat) {
     pose.set(bone, (delta * pose.get(bone)).normalize());
@@ -419,10 +439,11 @@ fn chain(pose: &HumanoidPose, last: B) -> Quat {
 impl Animator for LivingBody {
     fn animate(&mut self, tick: Tick, bus: &Bus, cues: &[Cue], out: &mut HumanoidPose) {
         self.bus.animate(tick, bus, cues, out);
+        let dt = if tick.dt.is_finite() { tick.dt.clamp(0.0, 0.1) } else { 0.0 };
         if self.off() {
+            self.react_step(dt, out);
             return;
         }
-        let dt = if tick.dt.is_finite() { tick.dt.clamp(0.0, 0.1) } else { 0.0 };
         self.time += f64::from(dt);
         let incoming = *out;
         let gesture = *self.gestures.step(
@@ -448,6 +469,7 @@ impl Animator for LivingBody {
             out.set(B::Neck, (after.inverse() * before * neck).normalize());
         }
         self.cues.onset = false;
+        self.react_step(dt, out);
     }
 
     fn reset(&mut self) {
@@ -477,6 +499,11 @@ impl Animator for LivingBody {
 
     fn style(&self) -> Option<BodyStyle> {
         Some(self.style)
+    }
+
+    fn react(&mut self, impact: &Impact) -> bool {
+        self.reaction.hit(impact);
+        true
     }
 }
 
