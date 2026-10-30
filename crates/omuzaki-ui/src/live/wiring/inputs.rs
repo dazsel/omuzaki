@@ -52,7 +52,7 @@ pub fn model_registry(data_dir: &Path) -> Result<Registry, String> {
 /// Where the face models sit under the install folder.
 pub const FACE_MODELS_DIR: &str = "models/mediapipe-face";
 
-/// Where the body models (MediaPipe's pose and hand landmarkers, `tools/models/mediapipe-body.sh`) sit under the
+/// Where the body models (the `MediaPipe` pose and hand landmarkers, `tools/models/mediapipe-body.sh`) sit under the
 /// install folder.
 pub const BODY_MODELS_DIR: &str = "models/mediapipe-body";
 
