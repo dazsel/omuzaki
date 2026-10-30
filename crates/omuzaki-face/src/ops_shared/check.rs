@@ -40,6 +40,9 @@ pub(crate) fn diagnose(face: &Value, defaults: &Template) -> Vec<Problem> {
         marks: marks(face, defaults, &mut problems),
         mapping: section(face, "mapping", defaults, &mut problems),
         eye3d: face.get("eye3d").is_some().then(|| section(face, "eye3d", defaults, &mut problems)),
+        nose3d: face.get("nose3d").is_some().then(|| section(face, "nose3d", defaults, &mut problems)),
+        lips3d: face.get("lips3d").is_some().then(|| section(face, "lips3d", defaults, &mut problems)),
+        ear3d: face.get("ear3d").is_some().then(|| section(face, "ear3d", defaults, &mut problems)),
         ..FaceProfile::default()
     };
     rest(face, &mut problems);

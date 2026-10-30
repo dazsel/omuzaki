@@ -207,14 +207,18 @@ fn program_light(lit: vec3<f32>, n: vec3<f32>, v: vec3<f32>, p: ProgramIn) -> ve
     let scatter = program_vec3(P_SCATTER_COLOUR);
     var diffuse = vec3<f32>(0.0);
     var specular = vec3<f32>(0.0);
+    // The painted light: every light as if faced head-on, a blocked one leaving a soft shadow.
+    var painted = vec3<f32>(0.0);
     for (var i = 0u; i < frame.counts.x; i++) {
         let l = frame.lights[i];
         if (l.vector.w == LIGHT_HEMISPHERE) {
             diffuse += mix(l.ground.rgb, l.colour.rgb, 0.5 + 0.5 * n.y);
+            painted += l.colour.rgb;
             continue;
         }
         let incident = incident_light(l, i, n, p.world_position);
         let light = incident.colour * incident.shadow;
+        painted += incident.colour * mix(0.55, 1.0, incident.shadow);
         // The sclera scatters: light wraps past the terminator, reddened.
         let ndl = dot(n, incident.to_light);
         let wrapped = saturate((ndl + wrap) / (1.0 + wrap));
@@ -224,13 +228,17 @@ fn program_light(lit: vec3<f32>, n: vec3<f32>, v: vec3<f32>, p: ProgramIn) -> ve
         let far_side = saturate(-dot(normalize(eye_local(f, iris_n).xy + vec2<f32>(1e-5)), l_local.xy));
         let iris = saturate(dot(iris_n, incident.to_light) * 0.85 + 0.15)
             * (1.0 + program_float(P_CAUSTIC) * far_side * length(l_local.xy));
-        diffuse += light * mix(sclera, vec3<f32>(iris), eye_iris);
+        // The hair shadow (#2528) falls across the white, not the iris, so a fringe's shadow crosses the eye and the
+        // iris and its highlights stay bright.
+        diffuse += light * mix(sclera * incident.hair, vec3<f32>(iris), eye_iris);
         let fresnel = eye_fresnel(dot(normalize(v + incident.to_light), v));
         specular += light * fresnel
             * (coat * eye_ggx(ns, v, incident.to_light, coat_roughness)
                 + base * eye_ggx(n, v, incident.to_light, base_roughness));
     }
     diffuse += environment_light(mix(n, iris_n, eye_iris));
+    painted += environment_light(f.forward);
+    diffuse = mix(diffuse, painted, program_float(P_DRAWN));
     specular += environment_specular(reflect(-v, ns), coat_roughness) * eye_fresnel(dot(ns, v)) * coat;
     specular += environment_specular(reflect(-v, n), base_roughness) * eye_fresnel(dot(n, v)) * base;
     // What the tear film reflects does not reach the eye beneath it.

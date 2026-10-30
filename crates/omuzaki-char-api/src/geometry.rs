@@ -15,8 +15,8 @@ use omuzaki_core::glam::Vec3;
 use omuzaki_core::mesh::{MeshData, MeshError};
 use omuzaki_face_api::{FaceLayerId, FaceLayerSpec, FaceProjection, PlanarWindow};
 use omuzaki_render_api::{
-    AlphaEncoding, AlphaMode, ColourSpace, Mapping, Material, Outline, OutlineStyle, Overlay, Sampler, Shading,
-    TextureDesc, TextureId, TextureUsage, UvTransform,
+    AlphaEncoding, AlphaMode, ColourSpace, HairShadow, Mapping, Material, Outline, OutlineStyle, Overlay, Sampler,
+    Shading, TextureDesc, TextureId, TextureUsage, UvTransform,
 };
 
 use crate::ids::{JointRef, MaterialName, TextureName};
@@ -51,6 +51,7 @@ impl FaceOverlay {
 
 /// Everything about how one mesh's surface looks (the renderer's `Material`, with named textures).
 #[derive(Clone, Debug, PartialEq)]
+#[allow(clippy::struct_excessive_bools, reason = "independent switches, as on the renderer's material")]
 pub struct MaterialSpec {
     /// The surface colour (its alpha multiplies the texture's).
     pub base: Colour,
@@ -63,6 +64,8 @@ pub struct MaterialSpec {
     pub overlays: Vec<FaceOverlay>,
     /// How alpha is used.
     pub alpha: AlphaMode,
+    /// Blend without sorting (the renderer's `Material::order_independent`); with a mask, a soft edge: hair tips.
+    pub order_independent: bool,
     /// Draw both sides of every triangle (hair sheets, cloth).
     pub double_sided: bool,
     /// Multiply the mesh's vertex colours into `base`.
@@ -71,6 +74,8 @@ pub struct MaterialSpec {
     pub outline: Option<Outline>,
     /// Whether shadow maps darken this surface. Faces turn it off.
     pub receives_shadows: bool,
+    /// Whether the surface casts the hair shadow (hair) or receives it (a face): the renderer's `Material::hair_shadow`.
+    pub hair_shadow: HairShadow,
     /// Scale and offset applied to the UV of every UV-addressed texture of the material (the renderer's
     /// `Material::uv_transform`). Identity for every built part; an imported material keeps its file's texture
     /// transform here, and an expression's UV bind moves it (`byom.md` D3).
@@ -98,10 +103,12 @@ impl MaterialSpec {
             shading: m.shading,
             overlays: Vec::new(),
             alpha: m.alpha,
+            order_independent: m.order_independent,
             double_sided: m.double_sided,
             vertex_colours: m.vertex_colours,
             outline: m.outline,
             receives_shadows: m.receives_shadows,
+            hair_shadow: m.hair_shadow,
             uv_transform: m.uv_transform,
         }
     }
@@ -144,12 +151,13 @@ impl MaterialSpec {
             shading: self.shading.clone(),
             overlays,
             alpha: self.alpha,
-            order_independent: false,
+            order_independent: self.order_independent,
             double_sided: self.double_sided,
             vertex_colours: self.vertex_colours,
             outline: self.outline,
             outline_style: OutlineStyle::KIT,
             receives_shadows: self.receives_shadows,
+            hair_shadow: self.hair_shadow,
             uv_transform: self.uv_transform,
             mtoon: None,
         })

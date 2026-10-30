@@ -120,7 +120,7 @@ fn the_five_prototype_columns_sit_where_the_construction_puts_them() {
                 let want = Vec3::new(
                     0.02 * j as f32 + a * 0.5 * 0.02,
                     -0.5 * t.min(0.9999),
-                    0.007 * (1.0 - a * a) * smoothstep(t, 0.04, 0.25),
+                    0.0015 * (1.0 - a * a) * smoothstep(t, 0.04, 0.25),
                 );
                 let got = vertex(j, c, k);
                 assert!((got - want).abs().max_element() < 2e-5, "guide {j} column {c} point {k}: {got} want {want}");

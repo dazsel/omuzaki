@@ -80,6 +80,9 @@ register_shading_program!(
             ParamSpec::float("tear-wobble", 0.05, 0.0, 0.5),
             ParamSpec::float("tear-coat", 1.0, 0.0, 1.0),
             ParamSpec::float("tear-roughness", 0.03, 0.005, 1.0),
+            // 0 lit as a real eye; toward 1 lit flat, as an anime eye is painted: its colours read as drawn, with only
+            // a soft shadow where a light is blocked.
+            ParamSpec::float("drawn", 0.0, 0.0, 1.0),
         ],
         attributes: &[],
         toon,
