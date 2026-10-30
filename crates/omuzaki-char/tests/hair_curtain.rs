@@ -283,7 +283,7 @@ fn a_drape_lays_each_guide_over_the_head_from_above_its_root() {
         // just above the plain guide's root stands over the shell (under 2.6 cm thick).
         assert!(d.rest[0].y > p.rest[0].y + 0.03, "{} against {}", d.rest[0], p.rest[0]);
         assert!(gap(d.rest[0]) < 0.02, "it starts under the shell: {} m off the head", gap(d.rest[0]));
-        let over = d.rest.iter().filter(|q| q.y > p.rest[0].y).last().unwrap();
+        let over = d.rest.iter().rfind(|q| q.y > p.rest[0].y).unwrap();
         assert!(gap(*over) > 0.026, "{over} is {} m off the head", gap(*over));
         // Below, it falls as the plain guide does.
         let (pe, de) = (p.rest[GUIDE_POINTS - 1], d.rest[GUIDE_POINTS - 1]);
