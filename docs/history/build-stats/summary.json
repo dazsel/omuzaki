@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-29 10:57 PM PT",
+ "generated": "2026-10-29 11:12 PM PT",
  "agent_hours": {
   "director": 113.1,
   "opus_local": 305.3,
@@ -22,17 +22,17 @@
   "cloud": 51
  },
  "loc_now": {
-  "Rust source": 605665,
-  "Rust tests and benches": 366723,
-  "Docs": 57501,
+  "Rust source": 606578,
+  "Rust tests and benches": 367178,
+  "Docs": 57536,
   "Tooling and CI": 25700,
-  "Other": 92507,
-  "total": 1148096
+  "Other": 92587,
+  "total": 1149579
  },
- "commits_on_main": 1394,
+ "commits_on_main": 1407,
  "prs": {
-  "this_repo_opened": 480,
-  "this_repo_merged": 450,
+  "this_repo_opened": 483,
+  "this_repo_merged": 452,
   "earlier_repo_opened": 431,
   "earlier_repo_merged": 349
  },
@@ -40,7 +40,7 @@
   "opened": 2150,
   "closed": 1132
  },
- "ci_runs": 8650,
+ "ci_runs": 8667,
  "reviews": 1267,
  "coverage": {
   "agents": {
@@ -50,22 +50,22 @@
   },
   "loc": {
    "from": "2026-10-11T19:00:00-07:00",
-   "complete_through": "2026-10-29T22:00:00-07:00"
+   "complete_through": "2026-10-29T23:00:00-07:00"
   },
   "commits": {
-   "complete_through": "2026-10-29 10:57 PM PT"
+   "complete_through": "2026-10-29 11:12 PM PT"
   },
   "prs": {
-   "this_repo_complete_through": "2026-10-29 10:57 PM PT",
+   "this_repo_complete_through": "2026-10-29 11:12 PM PT",
    "earlier_repo_complete_through": "2026-10-22 1:46 PM PT",
    "earlier_repo_from": "2026-10-11 8:45 PM PT"
   },
   "issues": {
-   "complete_through": "2026-10-29 10:57 PM PT",
+   "complete_through": "2026-10-29 11:12 PM PT",
    "note": "this repository only"
   },
   "ci": {
-   "this_repo_complete_through": "2026-10-29 10:57 PM PT",
+   "this_repo_complete_through": "2026-10-29 11:12 PM PT",
    "earlier_repo_complete_through": "2026-10-18 8:22 AM PT"
   },
   "reviews": {

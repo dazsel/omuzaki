@@ -61,6 +61,13 @@ Drawn by `charts.py` (standard library only) from the CSVs; `refresh.py` redraws
   that area's whole spine in a Claude cloud project, lands its own work and keeps `main` green, with no review gate and
   no required checks ("make it exist first, then make it good"). From 3:36 PM PT on 10-21 almost every commit carries
   `Agent-Lane: cloud`.
+- **2026-10-22: big one-shot spines.** Each area owner works in large chunks, one pull request closing many issues at
+  once. The busiest day since the move: 320 commits and about 200,000 lines added, with about 63 cloud agent-hours reported.
+- **2026-10-23: first round done.** The first-round area threads finish; 72 commits that day.
+- **2026-10-24 to 10-27:** no commits and no cloud sessions.
+- **2026-10-28 to 10-29: work resumes in new chunks.** 27 commits on 10-28 and 93 on 10-29, with 31 pull requests
+  opened and 24 merged on 10-29. Reported agent hours are over, so these days show the cloud project's open-session
+  hours (an upper bound).
 
 ## The files
 
