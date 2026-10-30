@@ -18,7 +18,7 @@ const PIN_TOLERANCE: f64 = 1e-4;
 /// Sets where a part is fixed: a bone, or another part's anchor, plus an offset from it.
 ///
 /// Give exactly one of:
-/// - `attach`: the new place, as `part.add` takes it (`{"to": "bone", "bone": "head", "offset": {..}}` or
+/// - `attach`: the new place, as `part.add` takes it (`{"to": "bone", "bone": {"humanoid": "head"}, "offset": {..}}` or
 ///   `{"to": "anchor", "part": "shirt", "anchor": "collar_ring"}`). The offset is metres, then degrees about x, y and z
 ///   in that order, then a uniform scale, in the bone's or anchor's frame (`accessory.list_anchors` lists both).
 /// - `pin: true`: writes the place the part's kind puts it by itself as an explicit attachment on the bone it follows,
@@ -29,10 +29,11 @@ const PIN_TOLERANCE: f64 = 1e-4;
 #[serde(deny_unknown_fields)]
 #[schemars(extend(
     "examples" = [
-        {"character": "kit", "part": "hairpin", "pin": true},
-        {"character": "kit", "part": "hairpin", "attach": {"to": "bone", "bone": "head", "offset": {"translation": [0.05, 0.12, 0.02]}}}
+        {"character": "kit", "part": "hat", "pin": true},
+        {"character": "kit", "part": "hat", "attach": {"to": "bone", "bone": {"humanoid": "head"}, "offset": {"translation": [0.0, 0.14, 0.01], "rotation_deg": [-8.0, 0.0, 0.0]}}},
+        {"character": "kit", "part": "hat", "clear": true}
     ],
-    "x-omuzaki-fixture" = "character"
+    "x-omuzaki-fixture" = "character-hat"
 ))]
 pub struct PartSetAttach {
     /// The character the part belongs to.
