@@ -111,7 +111,7 @@ struct Material {
     alpha: vec4<f32>,            // x: mask cutoff
     textures: vec4<u32>,         // x: four bits of TEXTURE_* flags per slot (base, overlay 0..3, outline width)
     overlays: array<Overlay, 4>,
-    program: array<vec4<f32>, 12>, // shading program parameters (the programs task)
+    program: array<vec4<f32>, 16>, // shading program parameters (the programs task)
     uv_transform: vec4<f32>,     // xy: UV scale, zw: UV offset (applied as uv * xy + zw)
     outline_mix: vec4<f32>,      // x: how much the lit surface tints the outline, 0..=1
     mtoon_flags: vec4<u32>,      // x: MTOON_* bits; y: four bits of TEXTURE_* flags per MToon slot

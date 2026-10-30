@@ -69,6 +69,8 @@ fn character_with(template: &str, bangs: omuzaki_char_api::BangsGen, brows_throu
         hair.groups.clear();
     }
     hair.shading.brows_through = brows_through;
+    // These pin the fringe's own locks (their tubes, their tops): no flyaways off them.
+    hair.strays.share = 0.0;
     hair.groups.insert(
         GroupId::new("b-bangs").unwrap(),
         HairGroup {

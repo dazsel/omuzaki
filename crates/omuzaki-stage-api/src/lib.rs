@@ -60,6 +60,6 @@ pub use props::{
 };
 pub use scene::{MAX_CAMERAS, MAX_CAST, MAX_LIGHTS, MAX_PROPS, REFERENCE_HEIGHT_M, SceneDef, paths};
 pub use settings::{
-    Backdrop, BackdropFit, Bars, DepthOfFieldDef, Focus, FocusSubject, GradeDef, Ground, GroundKind, PostDef,
-    SceneSettings,
+    Backdrop, BackdropFit, Bars, DepthOfFieldDef, Focus, FocusSubject, GradeDef, Ground, GroundKind, OcclusionDef,
+    PostDef, SceneSettings,
 };
