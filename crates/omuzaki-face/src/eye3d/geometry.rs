@@ -420,9 +420,11 @@ impl Lids {
                 let p = self.plane_point(k, -d * MM);
                 let z = cornea.surface_z(&self.ball, gaze, p.x, p.y).max(self.proxy(p.x, p.y, -0.6 * MM)) + 0.06 * MM;
                 mesh.positions.push(Vec3::new(p.x, p.y, z));
-                // The upper lid shades more and farther than the lower.
-                let (strength, reach) = if Self::is_upper(k) { (0.8, 2.6) } else { (0.6, 1.2) };
-                let alpha = strength * (-d / reach).exp() * (1.0 - smoothstep(5.0, 7.0, d));
+                // The upper lid shades more and farther than the lower, and the corners, deep in the socket, most.
+                let (strength, reach) = if Self::is_upper(k) { (0.85, 3.0) } else { (0.65, 1.6) };
+                let corner = 1.0 - smoothstep(0.0, 0.25, Self::along(k).min(1.0 - Self::along(k)));
+                let alpha = (strength * (-d / (reach * (1.0 + corner))).exp() * (1.0 - smoothstep(5.0, 7.0, d)))
+                    .min(0.92);
                 mesh.colours.push([0.0, 0.0, 0.0, alpha]);
             }
         }

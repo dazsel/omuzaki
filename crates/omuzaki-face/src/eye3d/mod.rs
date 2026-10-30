@@ -74,7 +74,7 @@ pub fn skin_params() -> ProgramParams {
     put(&mut p, "pore-depth", ParamValue::Float(0.035));
     put(&mut p, "roughness", ParamValue::Float(0.52));
     put(&mut p, "sheen", ParamValue::Float(0.7));
-    put(&mut p, "wet-colour", ParamValue::Colour(Colour::hex(0x00c8_8478)));
+    put(&mut p, "wet-colour", ParamValue::Colour(Colour::hex(0x00b8_8070)));
     put(&mut p, "wet-tint", ParamValue::Float(0.4));
     p
 }

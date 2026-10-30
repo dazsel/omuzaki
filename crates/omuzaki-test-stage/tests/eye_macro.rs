@@ -72,10 +72,10 @@ fn program(name: &str, params: omuzaki_render_api::ProgramParams) -> Shading {
 fn render(renderer: &mut WgpuRenderer, design: &EyeDesign) -> image::RgbaImage {
     // Three-quarter from the outer corner's side and a little below, as in the reference close-up.
     let camera_at = Vec3::new(-0.016, -0.007, 0.058);
-    let look = Vec3::new(0.0, 0.0002, 0.010);
+    let look = Vec3::new(0.0005, 0.0006, 0.010);
     // The eye looks toward the camera, a little toward the outer corner.
     // The eye looks up and in, past the camera.
-    let forward = Vec3::new(0.14, 0.12, 1.0).normalize();
+    let forward = Vec3::new(0.2, 0.2, 1.0).normalize();
     let frame = EyeFrame { centre: Vec3::ZERO, forward, up: Vec3::Y };
     let built = eye3d::meshes(design, camera_at, forward);
 
@@ -124,7 +124,7 @@ fn render(renderer: &mut WgpuRenderer, design: &EyeDesign) -> image::RgbaImage {
         camera_at,
         look,
         Vec3::Y,
-        Projection::Perspective { fov_y_deg: 27.0, near: 0.004, far: 1.0 },
+        Projection::Perspective { fov_y_deg: 24.0, near: 0.004, far: 1.0 },
     ));
     for (mesh, material, transform) in [
         (&built.eyeball, &eye_material, gaze),

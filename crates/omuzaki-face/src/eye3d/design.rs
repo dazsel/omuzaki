@@ -188,7 +188,7 @@ impl Default for Skin {
             tone: Colour::hex(0x00a0_7458),
             freckles: 40.0,
             freckle: Colour::hex(0x0070_3a24),
-            lid_thickness: 0.0016,
+            lid_thickness: 0.0012,
             crease: 0.0072,
             crease_depth: 0.0007,
         }
@@ -222,8 +222,8 @@ impl Default for Lashes {
         Self {
             upper: 220,
             lower: 60,
-            upper_length: 0.0062,
-            lower_length: 0.0034,
+            upper_length: 0.0056,
+            lower_length: 0.003,
             curl: 0.8,
             clumping: 0.55,
             thickness: 0.000_085,
