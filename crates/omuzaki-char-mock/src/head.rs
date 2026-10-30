@@ -82,6 +82,7 @@ fn skin_material(
         }),
         overlays,
         alpha: AlphaMode::Opaque,
+        order_independent: false,
         double_sided: false,
         vertex_colours: false,
         outline: Some(Outline { colour: colour(&params.skin.line)?, width: 0.0014 }),

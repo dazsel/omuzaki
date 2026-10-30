@@ -328,7 +328,9 @@ pub struct Material {
     /// With [`AlphaMode::Blend`], blend without sorting (weighted blended order-independent transparency, #2507):
     /// many overlapping layers of one surface, such as hair tips or fur, blend smoothly with no sorting errors, at the
     /// cost of an approximate order where layers of very different colours overlap. A renderer that lacks it sorts the
-    /// surface with the other blended ones. Ignored for other alpha modes.
+    /// surface with the other blended ones. With [`AlphaMode::Mask`], the surface gets a soft edge (hair tips, #2529):
+    /// the texels at or above the cutoff draw opaque, and those below it, instead of being cut, blend this way with
+    /// their alpha scaled up to 1 at the cutoff. Ignored for an opaque surface.
     pub order_independent: bool,
     /// Draw both sides of every triangle (hair sheets, cloth). The back side is shaded with the flipped normal.
     pub double_sided: bool,

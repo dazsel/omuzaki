@@ -51,6 +51,7 @@ impl FaceOverlay {
 
 /// Everything about how one mesh's surface looks (the renderer's `Material`, with named textures).
 #[derive(Clone, Debug, PartialEq)]
+#[allow(clippy::struct_excessive_bools, reason = "independent switches, as on the renderer's material")]
 pub struct MaterialSpec {
     /// The surface colour (its alpha multiplies the texture's).
     pub base: Colour,
@@ -63,6 +64,8 @@ pub struct MaterialSpec {
     pub overlays: Vec<FaceOverlay>,
     /// How alpha is used.
     pub alpha: AlphaMode,
+    /// Blend without sorting (the renderer's `Material::order_independent`); with a mask, a soft edge: hair tips.
+    pub order_independent: bool,
     /// Draw both sides of every triangle (hair sheets, cloth).
     pub double_sided: bool,
     /// Multiply the mesh's vertex colours into `base`.
@@ -100,6 +103,7 @@ impl MaterialSpec {
             shading: m.shading,
             overlays: Vec::new(),
             alpha: m.alpha,
+            order_independent: m.order_independent,
             double_sided: m.double_sided,
             vertex_colours: m.vertex_colours,
             outline: m.outline,
@@ -147,7 +151,7 @@ impl MaterialSpec {
             shading: self.shading.clone(),
             overlays,
             alpha: self.alpha,
-            order_independent: false,
+            order_independent: self.order_independent,
             double_sided: self.double_sided,
             vertex_colours: self.vertex_colours,
             outline: self.outline,

@@ -843,6 +843,7 @@ fn hair_material(
         shading,
         overlays,
         alpha: AlphaMode::Mask { cutoff: strands::CUTOFF },
+        order_independent: true,
         double_sided: true,
         vertex_colours: true,
         outline: Some(Outline { colour, width: narrow(params.shading.outline_width) }),
