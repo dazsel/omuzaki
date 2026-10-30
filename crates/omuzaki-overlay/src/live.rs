@@ -725,7 +725,7 @@ mod tests {
         let fonts = Fonts::new().unwrap();
         let mut w = LiveWidget::new(WidgetDef::new(Content::Goal(GoalDef::default())));
         let first = w.picture(&fonts, (1920, 1080)).clone();
-        assert!(first.width > 500 && first.height > 50, "{}x{}", first.width, first.height);
+        assert!(first.width > 400 && first.height > 50, "{}x{}", first.width, first.height);
         assert_eq!(w.picture(&fonts, (1920, 1080)), &first);
         w.observe(&event("sub", json!({ "user": user("A"), "tier": "1000", "months": 1 })), 0.0);
         assert_ne!(w.picture(&fonts, (1920, 1080)), &first, "the bar moved");

@@ -52,6 +52,7 @@ pub const MAX_TEXT: usize = 500;
 
 /// One on-stream widget.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(from = "RawWidgetDef")]
 pub struct WidgetDef {
     /// What it is, with its own settings.
     #[serde(flatten)]
@@ -72,6 +73,28 @@ pub struct WidgetDef {
 
 const fn yes() -> bool {
     true
+}
+
+/// A widget as written, before a missing layout becomes its kind's usual one.
+#[derive(Deserialize, JsonSchema)]
+struct RawWidgetDef {
+    #[serde(flatten)]
+    content: Content,
+    #[serde(default)]
+    layout: Option<Layout>,
+    #[serde(default)]
+    style: Style,
+    #[serde(default = "yes")]
+    visible: bool,
+    #[serde(default)]
+    scenes: Vec<String>,
+}
+
+impl From<RawWidgetDef> for WidgetDef {
+    fn from(raw: RawWidgetDef) -> Self {
+        let layout = raw.layout.unwrap_or_else(|| raw.content.kind().default_layout());
+        Self { content: raw.content, layout, style: raw.style, visible: raw.visible, scenes: raw.scenes }
+    }
 }
 
 impl WidgetDef {
@@ -142,9 +165,9 @@ impl Kind {
     /// Where it usually goes: alerts top centre, chat bottom left, goal top left, timer top right, text bottom.
     pub fn default_layout(self) -> Layout {
         let (anchor, width) = match self {
-            Kind::Alerts => (Anchor::Top, 0.42),
+            Kind::Alerts => (Anchor::Top, 0.36),
             Kind::Chat => (Anchor::BottomLeft, 0.28),
-            Kind::Goal => (Anchor::TopLeft, 0.3),
+            Kind::Goal => (Anchor::TopLeft, 0.26),
             Kind::Timer => (Anchor::TopRight, 0.16),
             Kind::Text => (Anchor::Bottom, 0.5),
         };
@@ -648,6 +671,7 @@ mod tests {
         assert_eq!(timer.mode, TimerMode::Subathon);
         assert!((timer.add.sub - 60.0).abs() < 1e-9);
         assert!(def.visible);
+        assert_eq!(def.layout, Kind::Timer.default_layout(), "a missing layout is the kind's usual one");
         assert_eq!(def.check(), Ok(()));
     }
 

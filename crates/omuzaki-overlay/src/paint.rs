@@ -273,33 +273,58 @@ impl Canvas {
         let straight = frame.alpha == AlphaEncoding::Straight;
         let (x0, y0) = (x.max(0), y.max(0));
         let (x1, y1) = ((x + i64::from(self.width)).min(fw), (y + i64::from(self.height)).min(fh));
+        if x0 >= x1 || y0 >= y1 {
+            return;
+        }
+        // Integer maths in 0..=255 (the hot loop of every output frame): one rounding multiply per channel.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "clamped to 0..=1 first")]
+        let op = (opacity * 255.0 + 0.5) as u32;
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation, reason = "inside both images")]
+        let (cols, sw, dw, sx0) =
+            ((x1 - x0) as usize * 4, self.width as usize * 4, fw as usize * 4, (x0 - x) as usize * 4);
         for fy in y0..y1 {
-            for fx in x0..x1 {
-                #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation, reason = "inside both images")]
-                let (si, di) = (
-                    ((fy - y) as usize * self.width as usize + (fx - x) as usize) * 4,
-                    (fy as usize * fw as usize + fx as usize) * 4,
-                );
-                let (Some(src), Some(dst)) = (self.rgba8.get(si..si + 4), frame.rgba8.get_mut(di..di + 4)) else {
-                    continue;
-                };
-                let sa = f32::from(src[3]) / 255.0 * opacity;
-                if sa <= 0.0 {
+            #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation, reason = "inside both images")]
+            let (srow, drow) = ((fy - y) as usize * sw + sx0, fy as usize * dw + x0 as usize * 4);
+            let (Some(src), Some(dst)) = (self.rgba8.get(srow..srow + cols), frame.rgba8.get_mut(drow..drow + cols))
+            else {
+                continue;
+            };
+            for (s, d) in src.as_chunks::<4>().0.iter().zip(dst.as_chunks_mut::<4>().0.iter_mut()) {
+                let sa = mul255(u32::from(s[3]), op);
+                if sa == 0 {
                     continue;
                 }
-                let da = f32::from(dst[3]) / 255.0;
-                let out_a = sa + da * (1.0 - sa);
+                let keep = 255 - sa;
+                let da = u32::from(d[3]);
+                let out_a = sa + mul255(da, keep);
+                // A straight frame under a part-transparent result divides by the new alpha; once per pixel.
+                let unpremul = if straight && out_a < 255 && out_a > 0 { Some((255 << 16) / out_a) } else { None };
                 for k in 0..3 {
-                    let s = f32::from(src[k]) / 255.0 * opacity;
-                    let d = f32::from(dst[k]) / 255.0;
-                    let d_pre = if straight { d * da } else { d };
-                    let pre = s + d_pre * (1.0 - sa);
-                    dst[k] = to_byte(if straight { if out_a > 0.0 { pre / out_a } else { 0.0 } } else { pre });
+                    let sc = mul255(u32::from(s[k]), op);
+                    let dc = if straight && da < 255 { mul255(u32::from(d[k]), da) } else { u32::from(d[k]) };
+                    let pre = sc + mul255(dc, keep);
+                    let v = match unpremul {
+                        Some(inv) => (pre * inv + (1 << 15)) >> 16,
+                        None if straight && out_a == 0 => 0,
+                        None => pre,
+                    };
+                    #[allow(clippy::cast_possible_truncation, reason = "clamped to a byte")]
+                    let byte = v.min(255) as u8;
+                    d[k] = byte;
                 }
-                dst[3] = to_byte(out_a);
+                #[allow(clippy::cast_possible_truncation, reason = "at most 255")]
+                let alpha = out_a.min(255) as u8;
+                d[3] = alpha;
             }
         }
     }
+}
+
+/// `a * b / 255`, rounded, for `a` and `b` in `0..=255`.
+#[inline]
+fn mul255(a: u32, b: u32) -> u32 {
+    let t = a * b + 128;
+    (t + (t >> 8)) >> 8
 }
 
 #[inline]
