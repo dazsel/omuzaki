@@ -11,11 +11,57 @@ fn metal_step(edge: f32, width: f32, x: f32) -> f32 {
     return glsl_smoothstep(edge - width - 1e-5, edge + width + 1e-5, x);
 }
 
+var<private> metal_albedo: vec3<f32>;
+
 fn program_albedo(albedo: vec3<f32>, p: ProgramIn) -> vec3<f32> {
+    metal_albedo = albedo;
     return albedo;
 }
 
+// The style axis (#2607): 1 is the anime metal below, 0 a physical conductor (GGX with the surface colour as its
+// reflectance, under every light and the environment), and the two blend between.
 fn program_light(lit: vec3<f32>, n: vec3<f32>, v: vec3<f32>, p: ProgramIn) -> vec3<f32> {
+    let style = program_float(P_STYLE);
+    let cel = metal_cel(lit, n, v, p);
+    if (style >= 1.0) {
+        return cel;
+    }
+    return mix(metal_physical(n, v, p), cel, style);
+}
+
+fn metal_ggx(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, roughness: f32) -> f32 {
+    let h = normalize(v + l);
+    let a = roughness * roughness;
+    let a2 = a * a;
+    let nh = saturate(dot(n, h));
+    let nl = saturate(dot(n, l));
+    let nv = max(dot(n, v), 1e-4);
+    let den = nh * nh * (a2 - 1.0) + 1.0;
+    let dist = a2 / (PI * den * den);
+    let vis = 0.5 / max(nl * sqrt(nv * nv * (1.0 - a2) + a2) + nv * sqrt(nl * nl * (1.0 - a2) + a2), 1e-5);
+    return dist * vis * nl;
+}
+
+fn metal_physical(n: vec3<f32>, v: vec3<f32>, p: ProgramIn) -> vec3<f32> {
+    let roughness = program_float(P_ROUGHNESS);
+    let f0 = metal_albedo;
+    var colour = vec3<f32>(0.0);
+    for (var i = 0u; i < frame.counts.x; i++) {
+        let l = frame.lights[i];
+        if (l.vector.w == LIGHT_HEMISPHERE) {
+            continue;
+        }
+        let incident = incident_light(l, i, n, p.world_position);
+        let h = normalize(v + incident.to_light);
+        let fresnel = f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - saturate(dot(h, v)), 5.0);
+        colour += incident.colour * incident.shadow * metal_ggx(n, v, incident.to_light, roughness) * fresnel;
+    }
+    let nv = saturate(dot(n, v));
+    let fresnel_v = f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - nv, 5.0);
+    return colour + environment_specular(reflect(-v, n), roughness) * fresnel_v;
+}
+
+fn metal_cel(lit: vec3<f32>, n: vec3<f32>, v: vec3<f32>, p: ProgramIn) -> vec3<f32> {
     let sharp = program_float(P_SHARPNESS);
     let width = mix(0.08, 0.004, sharp);
     // The reflected view: sky above a hard horizon, a dark ground below it, a lighter floor bounce further down.
