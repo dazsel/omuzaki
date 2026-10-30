@@ -6,7 +6,7 @@
 //! The same timeline and seed give the same frames on every run: the performer's steps are a function of the step
 //! index alone.
 
-use omuzaki_anim::BusAnimator;
+use omuzaki_anim::body::LivingBody;
 use omuzaki_anim::grammar::{GrammarConfig, GrammarStage};
 use omuzaki_anim::life::Life;
 use omuzaki_anim::retarget::ArkitRetarget;
@@ -93,7 +93,7 @@ impl OfflinePerformer {
             source: Box::new(NoSource),
             retarget: Box::new(ArkitRetarget::new(DeviceProfile::Webcam)),
             life: Box::new(Life::new(LifeConfig::new(seed))),
-            animator: Box::new(BusAnimator::default()),
+            animator: Box::new(LivingBody::new(omuzaki_anim_api::BodyStyle::default(), seed)),
         };
         let mut performer = Performer::new(parts, rest, base);
         if let Ok(grammar) = GrammarStage::new(&GrammarConfig::default()) {

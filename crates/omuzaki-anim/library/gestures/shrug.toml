@@ -1,0 +1,31 @@
+# Gesture "shrug" (emblem). Arm angles are degrees in a person's terms: raise, forward, twist, elbow, pronate, wrist,
+# shrug and reach (see crates/omuzaki-anim/src/body/arm.rs). `lead` is the gesturing hand, `other` the second hand of a
+# two-handed gesture (the lead's mirror when left out); `chest` is pitch, yaw toward the lead side and roll, in degrees.
+id = "shrug"
+summary = "Palms up, elbows in, shoulders up: who knows."
+kind = "emblem"
+hands = "both"
+strokes = [1, 1]
+
+[prep.lead]
+raise = 8.0
+forward = 18.0
+twist = 14.0
+elbow = 84.0
+pronate = -40.0
+wrist = 0.0
+shrug = 0.0
+hand = "open"
+
+[stroke]
+chest = [-2.0, 0.0, 0.0]
+
+[stroke.lead]
+raise = 24.0
+forward = 20.0
+twist = -16.0
+elbow = 82.0
+pronate = -86.0
+wrist = -10.0
+shrug = 14.0
+hand = "spread"

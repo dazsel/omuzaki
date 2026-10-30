@@ -1,0 +1,29 @@
+# Gesture "beat-pinch" (beat). Arm angles are degrees in a person's terms: raise, forward, twist, elbow, pronate, wrist,
+# shrug and reach (see crates/omuzaki-anim/src/body/arm.rs). `lead` is the gesturing hand, `other` the second hand of a
+# two-handed gesture (the lead's mirror when left out); `chest` is pitch, yaw toward the lead side and roll, in degrees.
+id = "beat-pinch"
+summary = "Thumb and fingers drawn together, tapping the point home: precise."
+kind = "beat"
+hands = "one"
+strokes = [1, 4]
+
+[prep.lead]
+raise = 10.0
+forward = 30.0
+twist = 26.0
+elbow = 104.0
+pronate = -18.0
+wrist = -6.0
+hand = "grip"
+
+[stroke]
+chest = [2.0, 2.0, 0.0]
+
+[stroke.lead]
+raise = 10.0
+forward = 36.0
+twist = 24.0
+elbow = 82.0
+pronate = -18.0
+wrist = 6.0
+hand = "grip"

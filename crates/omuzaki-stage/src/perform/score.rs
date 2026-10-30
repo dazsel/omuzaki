@@ -253,6 +253,11 @@ impl ScorePose {
         &self.reaches
     }
 
+    /// The bones the playing clips drive (any weight above zero): the animator leaves them to the clips.
+    pub fn busy(&self) -> BoneMask {
+        self.layers().iter().filter(|l| l.weight > 0.0).fold(BoneMask::EMPTY, |m, l| m.union(l.mask))
+    }
+
     /// No layer and no reach.
     pub fn clear(&mut self) {
         self.len = 0;

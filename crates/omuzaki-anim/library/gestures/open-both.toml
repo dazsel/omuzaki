@@ -1,0 +1,29 @@
+# Gesture "open-both" (metaphoric). Arm angles are degrees in a person's terms: raise, forward, twist, elbow, pronate, wrist,
+# shrug and reach (see crates/omuzaki-anim/src/body/arm.rs). `lead` is the gesturing hand, `other` the second hand of a
+# two-handed gesture (the lead's mirror when left out); `chest` is pitch, yaw toward the lead side and roll, in degrees.
+id = "open-both"
+summary = "Both hands opening out palms-up: all of it, everything, so much."
+kind = "metaphoric"
+hands = "both"
+strokes = [1, 1]
+
+[prep.lead]
+raise = 10.0
+forward = 30.0
+twist = 32.0
+elbow = 86.0
+pronate = -46.0
+wrist = 0.0
+hand = "open"
+
+[stroke]
+chest = [-3.0, 0.0, 0.0]
+
+[stroke.lead]
+raise = 36.0
+forward = 30.0
+twist = -10.0
+elbow = 50.0
+pronate = -80.0
+wrist = -10.0
+hand = "spread"

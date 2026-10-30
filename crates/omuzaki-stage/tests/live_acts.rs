@@ -17,11 +17,12 @@ use std::cell::Cell;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use omuzaki_anim::body::LivingBody;
 use omuzaki_anim::retarget::ArkitRetarget;
 use omuzaki_anim::{BusAnimator, BusAnimatorParams};
 use omuzaki_anim_api::{
-    Bus, Channel, ChannelBuf, Cues, DeviceProfile, FrameSource, HumanoidBone, HumanoidPose, LifeConfig, LifeLayer,
-    Ownership, Source, Tick,
+    BodyStyle, Bus, Channel, ChannelBuf, Cues, DeviceProfile, FrameSource, HumanoidBone, HumanoidPose, LifeConfig,
+    LifeLayer, Ownership, Source, Tick,
 };
 use omuzaki_anim_mock::track::{SyntheticSpec, TrackReplay, synthetic_track};
 use omuzaki_core::time::{FakeClock, Seconds};
@@ -101,11 +102,16 @@ impl Rig {
 
     /// A performer reading `source`, or nothing, whose life layer leaves the bus alone.
     fn new(source: Option<Box<dyn FrameSource>>) -> Self {
+        Self::animated(source, Box::new(BusAnimator::new(BusAnimatorParams::default())))
+    }
+
+    /// The same with `animator` posing the body.
+    fn animated(source: Option<Box<dyn FrameSource>>, animator: Box<dyn omuzaki_anim_api::Animator>) -> Self {
         let parts = PerformerParts {
             source: Box::new(NoSource),
             retarget: Box::new(ArkitRetarget::new(DeviceProfile::Webcam)),
             life: Box::new(Still),
-            animator: Box::new(BusAnimator::new(BusAnimatorParams::default())),
+            animator,
         };
         Self::with(Performer::new(parts, ChannelBuf::NEUTRAL, HumanoidPose::REST), source)
     }
@@ -434,4 +440,42 @@ fn a_drive_binding_is_saved_with_the_scene_and_its_undo_reaches_the_live_perform
         })
         .unwrap_err();
     assert_eq!(error.field.as_deref(), Some("weight"), "{error}");
+}
+
+/// The world rotation of `bone` in `pose`, from the hips.
+fn world(pose: &HumanoidPose, bone: HumanoidBone) -> omuzaki_core::glam::Quat {
+    let mut chain = vec![bone];
+    while let Some(parent) = chain.last().and_then(|b| b.parent()) {
+        chain.push(parent);
+    }
+    chain.iter().rev().fold(omuzaki_core::glam::Quat::IDENTITY, |q, b| q * pose.get(*b))
+}
+
+#[test]
+fn act_react_knocks_the_tracked_body_and_hands_it_back_exactly_with_the_face_untouched() {
+    omuzaki_stage::link();
+    let living = || {
+        let track = synthetic_track(&SyntheticSpec { seconds: 60.0, ..SyntheticSpec::default() });
+        Rig::animated(Some(Box::new(TrackReplay::new(track))), Box::new(LivingBody::new(BodyStyle::default(), 3)))
+    };
+    let (mut plain, mut knocked) = (living(), living());
+    plain.run_for(1.0);
+    knocked.run_for(1.0);
+    let answer = run(&knocked.services(), "act.react", json!({ "at": "face", "strength": 1.5 })).unwrap();
+    assert!((answer["back_in_s"].as_f64().unwrap() - 1.2).abs() < 1e-6, "{answer}");
+    let mut furthest = 0.0_f32;
+    for frame in 0..90 {
+        let (a, b) = (plain.step(), knocked.step());
+        assert_eq!(a.values, b.values, "the face is the tracker's on every step");
+        let off = world(&a.pose, HumanoidBone::Head).angle_between(world(&b.pose, HumanoidBone::Head)).to_degrees();
+        furthest = furthest.max(off);
+        // The command lands on the step after the call; 1.2 s later the body is the tracked one again, exactly.
+        if frame >= 74 {
+            assert_eq!(a.pose, b.pose, "back exactly on step {frame}");
+        }
+    }
+    assert!(furthest > 8.0, "the head was knocked: {furthest} degrees");
+    // Out of range is refused, naming the field.
+    let e = run(&knocked.services(), "act.react", json!({ "strength": 9 })).unwrap_err();
+    assert_eq!((e.code, e.field.as_deref()), (ErrorCode::Invalid, Some("strength")), "{e:?}");
 }

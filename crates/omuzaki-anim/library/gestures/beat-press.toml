@@ -1,0 +1,29 @@
+# Gesture "beat-press" (beat). Arm angles are degrees in a person's terms: raise, forward, twist, elbow, pronate, wrist,
+# shrug and reach (see crates/omuzaki-anim/src/body/arm.rs). `lead` is the gesturing hand, `other` the second hand of a
+# two-handed gesture (the lead's mirror when left out); `chest` is pitch, yaw toward the lead side and roll, in degrees.
+id = "beat-press"
+summary = "Both hands, palms down, pressing a little on each stressed word: steady, certain."
+kind = "beat"
+hands = "both"
+strokes = [1, 3]
+
+[prep.lead]
+raise = 14.0
+forward = 30.0
+twist = 24.0
+elbow = 88.0
+pronate = 78.0
+wrist = -14.0
+hand = "open"
+
+[stroke]
+chest = [3.0, 0.0, 0.0]
+
+[stroke.lead]
+raise = 14.0
+forward = 28.0
+twist = 26.0
+elbow = 66.0
+pronate = 80.0
+wrist = 6.0
+hand = "spread"
