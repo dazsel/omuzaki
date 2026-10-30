@@ -7,6 +7,7 @@ use crate::perform::host::{PerformError, PerformHost};
 use crate::perform::triggers::MAX_KEY_CHARS;
 
 pub mod calibrate;
+pub mod set_body;
 pub mod set_retarget;
 pub mod status;
 pub mod triggers;

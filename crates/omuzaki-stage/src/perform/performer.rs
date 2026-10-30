@@ -224,6 +224,16 @@ impl Performer {
         &self.cues
     }
 
+    /// The animator in use, for its body style (control calls, between steps).
+    pub fn animator_mut(&mut self) -> &mut dyn Animator {
+        &mut *self.parts.animator
+    }
+
+    /// The animator in use.
+    pub fn animator(&self) -> &dyn Animator {
+        &*self.parts.animator
+    }
+
     /// The retarget in use.
     pub fn retarget(&self) -> &dyn Retarget {
         &*self.parts.retarget
@@ -312,16 +322,23 @@ impl Performer {
         if let Some(grammar) = self.grammar.as_mut() {
             grammar.step(tick, &self.cues, &mut self.bus);
         }
+        // The animator hears the voice too (the living body gestures on the stresses), onset included.
+        self.parts.animator.hear(&self.cues);
         self.cues.onset = false;
         self.bus.values.sanitize();
-        // The score's clips lie under the animator, so the tracked head and the breath still move a waving body.
+        // The score's clips lie under the animator, so the tracked head and the breath still move a waving body; the
+        // bones a clip plays are the clip's, and the animator leaves them alone.
         self.pose = self.base;
         PoseLayers(self.score_pose.layers()).resolve(&mut self.pose);
         // The tracked arms win over a clip's on the bones they see; the animator's breath still moves them.
         self.body.step(tick, self.parts.retarget.config().mirror);
         self.body.apply(&mut self.pose);
+        // The bones a clip or the tracked body drive are theirs: the living body hands them over.
+        self.parts.animator.set_tracked(self.score_pose.busy().union(self.body.busy()));
         self.parts.animator.animate(tick, &self.bus, &[], &mut self.pose);
         self.body.settle_head(&mut self.pose);
+        // A clip played over tracking (a recorded take played back) is the body exactly, head included.
+        PoseLayers(self.score_pose.over_layers()).resolve(&mut self.pose);
     }
 
     /// Polls the source and feeds the retarget: the new frame, or a synthetic lost frame once the source has gone

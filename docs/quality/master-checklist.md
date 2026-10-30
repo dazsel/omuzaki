@@ -249,7 +249,7 @@ AccuRIG (auto-rig), Blender (weights), Marvelous Designer (cloth).
 | Physics | VRM spring bones with sphere and capsule colliders, limits, master dial and wind (RG-03) | UniVRM, three-vrm | ✓ | `omuzaki-rig/src/spring/`; `power.set` |
 | Physics | Spring bone and collider authoring with viewport gizmos | UniVRM in Unity, VRoid | ✗ | **new** #2580 |
 | Physics | Cloth as particle sheets with body collision, pinning, a quality mode and a bake to springs (RG-04) | Unity cloth, Magica Cloth 2 | ✓ | `omuzaki-char/src/cloth/` |
-| Physics | Physical reactions: an active ragdoll blended with animation for throws, knocks and falls | Warudo (ragdoll), PuppetMaster | ✗ | **new** #2581 |
+| Physics | Physical reactions: an active ragdoll blended with animation for throws, knocks and falls | Warudo (ragdoll), PuppetMaster | ✓ | `omuzaki-anim/src/body/react.rs`; `act.react`, `measure.reaction` |
 | Physics | Hair-to-body clearance after settle | none check it | ✗ | #2485 |
 | Deformation | Corrective shapes and machine-learned deformation (elbows, shoulders) | Ziva, MetaHuman | ✗ | #2510 |
 
@@ -308,11 +308,11 @@ AccuRIG (auto-rig), Blender (weights), Marvelous Designer (cloth).
 |---|---|---|---|---|
 | Poses | Pose library with blending and mirroring (RG-06) | VRoid poses | ✓ | `pose.*` ops, `omuzaki-anim/src/poses` |
 | Retarget | ARKit-52 and humanoid retarget onto any avatar | Warudo | ✓ | `omuzaki-anim/src/retarget`, `perform.set_retarget` |
-| Life | Life layer: blinks, saccades, breathing, speech nods, personality presets (PF-24) | VTube Studio idle, Warudo | ◐ | `omuzaki-anim/src/life`; #477 |
+| Life | Life layer: blinks, saccades, breathing, speech nods, personality presets, and a living body below the face: sway, weight shifts, chest follow-through, emotion posture, idle fidgets (PF-24) | VTube Studio idle, Warudo | ✓ | `omuzaki-anim/src/life`, `omuzaki-anim/src/body`; `perform.set_body`, `body.styles` |
 | Clips | Motion import: BVH, FBX, VRMA retarget (RG-08) | Mixamo, Unity | ◐ | VRMA in `omuzaki-io-vrm`; BVH and video to motion #465, #588 |
 | Clips | VRMA export (EX-16) | UniVRM | ✓ | `io.export_animation` |
 | Locomotion | Walk, run, jump, sit and emotes from keyboard or gamepad with a state machine (PF-30) | Warudo, VNyan | ✗ | #764 |
-| Gesture | Co-speech body gestures generated from speech for voice-only and AI performers | none in VTubing | ✗ | #2349 |
+| Gesture | Co-speech body gestures generated from speech for voice-only and AI performers: a 17-gesture library (beats, points, offers, shrugs, fidgets) and a scheduler that lands strokes on stressed syllables | none in VTubing | ✓ | `omuzaki-anim/src/body/gesture`; `gesture.list`, `measure.body_motion` |
 | Cleanup | Foot-lock, jitter filter, retime as layers over a take (SH-11) | Cascadeur, MotionBuilder | ◐ | foot lock in `omuzaki-rig/src/ik/feet.rs`; #606 |
 
 **Beyond them**
@@ -324,7 +324,7 @@ AccuRIG (auto-rig), Blender (weights), Marvelous Designer (cloth).
 
 | Problem | Direction | Measure |
 |---|---|---|
-| The uncanny valley in motion: tracked avatars look like puppets because the body below the face is frozen or noisy | **Whole-body inference from face and voice:** infer plausible shoulders, spine and hands from head motion, speech and emotion so a webcam-only streamer has a living body | blind rating against face-only and against mocap, target indistinguishable from mocap in ≥ 40% of clips; no frozen 0.5 s windows |
+| The uncanny valley in motion: tracked avatars look like puppets because the body below the face is frozen or noisy | **Whole-body inference from face and voice:** infer plausible shoulders, spine and hands from head motion, speech and emotion so a webcam-only streamer has a living body | blind rating against face-only and against mocap, target indistinguishable from mocap in ≥ 40% of clips; no frozen 0.5 s windows (first step landed: `measure.body_motion` reports zero frozen windows and 97 to 100% of gesture strokes within 100 ms of the stressed syllable on synthetic takes; the blind rating is still to run) |
 | Licence-clean motion models barely exist (most are trained on SMPL-derived data, banned by our policy) | **A licence-clean motion dataset and model**, recorded with our own volunteers and the project's tools (ML-12) | coverage of the pose library and gesture set; motion quality metric against a held-out set |
 
 ---

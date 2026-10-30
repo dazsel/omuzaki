@@ -19,11 +19,11 @@ use omuzaki_core::glam::{Vec2, Vec3};
 use omuzaki_core::id::Slug;
 use omuzaki_core::mesh::{ExtraAttribute, MeshData};
 
-use super::design::{Aperture, Ball, EyeDesign, Lashes};
+use super::design::{Aperture, Ball, EyeDesign, LashClump, Lashes};
 use super::noise::{Pcg, smoothstep};
 use super::textures::SCLERA_REACH;
 
-const MM: f32 = 0.001;
+pub(super) const MM: f32 = 0.001;
 /// The limbus as a share of the iris's radius: the cornea is a little wider than the iris (the shader's `limbus`).
 pub const LIMBUS: f32 = 1.04;
 /// The eye's surface under the lids, for the lids to lie on: the eyeball's sphere widened toward the corners, where
@@ -177,6 +177,23 @@ pub(super) fn lid_outline(aperture: &Aperture, u: f32, upper: bool) -> Vec2 {
     Lids::outline(aperture, u, upper)
 }
 
+/// The eye's surface under the lids at `(x, y)`, pushed out by `out` metres.
+fn proxy(ball: &Ball, x: f32, y: f32, out: f32) -> f32 {
+    let r = ball.radius + out;
+    // Past the ball's edge the surface eases onto a floor instead of breaking off it: a smooth maximum.
+    let q = r * r - (x / PROXY_WIDEN).powi(2) - y * y;
+    let floor = (0.45 * r).powi(2);
+    let soft = 0.3 * r * r;
+    (0.5 * (q + floor + ((q - floor).powi(2) + soft * soft).sqrt())).sqrt()
+}
+
+/// The point of the opening's edge at `u` along a lid (0 the outer corner, 1 the inner), where the lid's margin meets
+/// the eye: the outline in the frontal plane, laid on the eye's surface.
+pub(super) fn margin_point(design: &EyeDesign, u: f32, upper: bool) -> Vec3 {
+    let p = Lids::outline(&design.aperture, u, upper);
+    Vec3::new(p.x, p.y, proxy(&design.ball, p.x, p.y, 0.15 * MM))
+}
+
 /// The lids: the opening's outline and the surface laid out from it.
 struct Lids {
     ball: Ball,
@@ -269,12 +286,7 @@ impl Lids {
 
     /// The eye's surface under the lids at `(x, y)`, pushed out by `out` metres.
     fn proxy(&self, x: f32, y: f32, out: f32) -> f32 {
-        let r = self.ball.radius + out;
-        // Past the ball's edge the surface eases onto a floor instead of breaking off it: a smooth maximum.
-        let q = r * r - (x / PROXY_WIDEN).powi(2) - y * y;
-        let floor = (0.45 * r).powi(2);
-        let soft = 0.3 * r * r;
-        (0.5 * (q + floor + ((q - floor).powi(2) + soft * soft).sqrt())).sqrt()
+        proxy(&self.ball, x, y, out)
     }
 
     /// The face round the eye, far from the lids: the brow ridge above, the nose's side toward the inner corner, the
@@ -282,7 +294,7 @@ impl Lids {
     fn face(&self, x: f32, y: f32) -> f32 {
         let base = self.ball.radius + self.thickness - 0.8 * MM;
         let curve = -(x * x) / (2.0 * 85.0 * MM) - (y * y) / (2.0 * 90.0 * MM);
-        let brow = 3.6 * MM * smoothstep(9.0 * MM, 20.0 * MM, y);
+        let brow = 2.4 * MM * smoothstep(11.0 * MM, 24.0 * MM, y);
         // The nose's side and the temple turn away in soft bends, never a crease (a smooth `max(t, 0)`).
         let bend = |t: f32| f32::midpoint(t, (t * t + (3.0 * MM).powi(2)).sqrt());
         let nose = 0.55 * bend(x - 14.0 * MM) * smoothstep(-22.0 * MM, -4.0 * MM, y);
@@ -316,25 +328,34 @@ impl Lids {
         // this sample's line out: past a sharp corner the lines out run nearly parallel, and measuring along them would
         // fold each shape into a chevron with a ridge running out of the corner.
         let (d, upper, u) = if d > 0.0 { self.nearest(p) } else { (d, Self::is_upper(k), Self::along(k)) };
-        // The margin: tucked under the ball's surface in the pocket, rounding up to the lid's thickness.
-        let offset = if d <= 0.0 {
-            0.15 * MM + 1.05 * d
-        } else {
-            0.15 * MM + (self.thickness - 0.15 * MM) * (0.5 * PI * (d / MARGIN).min(1.0)).sin()
-        };
-        let mut z = self.proxy(p.x, p.y, offset);
-        // The upper lid's crease and the skin above it folding forward; the lower lid's gentle rise to the cheek. Toward
-        // the corners each lid's shape eases to the two lids' mean, so the lids meet there without a seam.
-        let fold = gauss((d - self.crease) / (1.4 * MM));
-        // The skin above the crease hangs forward over it, so the fold reads as a shelf with a shadow under it.
-        let hood = 2.2 * MM * (1.0 - self.style) * smoothstep(self.crease - 0.5 * MM, self.crease + 3.5 * MM, d);
-        let upper_z = -self.crease_depth * fold + hood;
-        let lower_z = 0.5 * MM * smoothstep(2.0 * MM, 7.0 * MM, d);
+        // Toward the corners each lid's shape eases to the two lids' mean, so the lids meet there without a seam.
         let own = smoothstep(0.0, 0.3, u.min(1.0 - u));
         let side = |upper_v: f32, lower_v: f32| {
             let mean = f32::midpoint(upper_v, lower_v);
             mean + ((if upper { upper_v } else { lower_v }) - mean) * own
         };
+        // The margin: tucked under the ball's surface in the pocket, rounding up to the lid's thickness. The lower lid
+        // is the thinner: a slim wet ledge under the eye, not a second rim as thick as the upper.
+        let thickness = self.thickness * side(1.0, 0.6);
+        let offset = if d <= 0.0 {
+            0.15 * MM + 1.05 * d
+        } else {
+            0.15 * MM + (thickness - 0.15 * MM) * (0.5 * PI * (d / MARGIN).min(1.0)).sin()
+        };
+        let mut z = self.proxy(p.x, p.y, offset);
+        // The upper lid's crease and the skin above it folding forward; the lower lid's gentle rise to the cheek.
+        // The crease and the hood fade out toward both corners rather than running round them: carried round, they
+        // would draw a groove all the way round the eye, a ring no face has.
+        let fold = gauss((d - self.crease) / (1.4 * MM)) * smoothstep(0.02, 0.3, u) * (1.0 - smoothstep(0.75, 1.0, u));
+        // The skin above the crease hangs forward over it, so the fold reads as a shelf with a shadow under it.
+        let hood = 1.2
+            * MM
+            * (1.0 - self.style)
+            * smoothstep(self.crease - 0.5 * MM, self.crease + 3.5 * MM, d)
+            * smoothstep(0.02, 0.3, u)
+            * (1.0 - smoothstep(0.75, 1.0, u));
+        let upper_z = -self.crease_depth * fold + hood;
+        let lower_z = 0.2 * MM * smoothstep(1.0 * MM, 6.0 * MM, d);
         z += side(upper_z, lower_z);
         // The lash line: the roots' dense shadow along each lid's front edge, darker on the upper lid.
         let lash_line = gauss((d - 0.7 * MM) / (0.3 * MM));
@@ -342,8 +363,8 @@ impl Lids {
         // Past the lid's roll the skin never sinks far below the face: the ball's sphere falls away under the lower lid,
         // and following it would carve a deep trench between the lid and the cheek. The lid-cheek junction stays a soft
         // groove; the hollow under the brow keeps its depth.
-        let floor = self.face(p.x, p.y) - side(3.0, 0.6) * MM;
-        let k = 0.5 * MM;
+        let floor = self.face(p.x, p.y) - side(0.25, 0.0) * MM;
+        let k = 0.2 * MM;
         let lifted = 0.5 * (z + floor + ((z - floor).powi(2) + k * k).sqrt());
         z += (lifted - z) * smoothstep(0.5 * MM, 2.0 * MM, d);
         // The lids blend into the face round them, sooner at the corners.
@@ -351,13 +372,20 @@ impl Lids {
         let reach = side(14.0, 9.0) * MM * (1.0 - 0.45 * corner);
         let blend = smoothstep(0.35 * reach, reach, d);
         z = z + (self.face(p.x, p.y) - z) * blend;
-        let wet = 1.0 - smoothstep(0.2 * MM, 0.45 * MM, d);
+        // Dry at the outer corner, where the lids pinch together and a wet sheen would catch the key as a hard spot.
+        let wet = (1.0 - smoothstep(0.2 * MM, 0.45 * MM, d)) * smoothstep(0.0, 0.12, u);
+        // The pocket behind the margin darkens as it runs back behind the ball, deepest at the inner corner, where the
+        // ball's bulge hides it in shadow; at the outer corner the lids meet in a point and the pink inside shows.
         if d < 0.0 {
-            cavity = 0.55;
+            cavity = 0.85 - (0.1 + 0.2 * smoothstep(0.6, 1.0, u)) * smoothstep(0.0, 1.2 * MM, -d);
         }
-        // The inner corner and the lid margins are flushed.
+        // The inner corner and the lid margins are flushed: the margin itself, the thin moist rim between the lashes
+        // and the eye, is a deeper red than the skin, more so on the upper lid, whose margin the eye looks up into.
         let inner = smoothstep(0.75, 1.0, u) * (1.0 - smoothstep(0.0, 6.0 * MM, d));
-        let flush = 0.35 * (1.0 - smoothstep(0.0, 5.0 * MM, d)) + 0.5 * inner;
+        let rim = 1.0 - smoothstep(0.25 * MM, 0.75 * MM, d);
+        let flush = 0.2 * (1.0 - smoothstep(0.0, 5.0 * MM, d))
+            + 0.5 * inner
+            + side(0.75, 0.25) * rim * (1.0 - 0.7 * smoothstep(0.7, 0.95, u));
         (Vec3::new(p.x, p.y, z), [wet, cavity, flush, 0.0])
     }
 
@@ -480,17 +508,25 @@ impl Lids {
     fn shell(&self, gaze: Vec3) -> MeshData {
         let cornea = Cornea::new(&self.ball);
         let mut mesh = MeshData::default();
-        let depths = [0.0, 0.15, 0.35, 0.6, 0.9, 1.3, 1.8, 2.4, 3.1, 4.0, 5.0, 6.0, 7.0];
+        // Rings a quarter of a millimetre apart: a coarser film's flat triangles cut under the cornea's bulge where it
+        // rises from the white, and the iris showed through there as a bright streak.
+        #[allow(clippy::cast_precision_loss)]
+        let depths: Vec<f32> = (0..=28).map(|i| i as f32 * 0.25).collect();
         for &d in &depths {
             for k in 0..AROUND {
                 let p = self.plane_point(k, -d * MM);
                 let z = cornea.surface_z(&self.ball, gaze, p.x, p.y).max(self.proxy(p.x, p.y, -0.6 * MM)) + 0.06 * MM;
                 mesh.positions.push(Vec3::new(p.x, p.y, z));
                 // The upper lid shades more and farther than the lower, and the corners, deep in the socket, most.
-                let (strength, reach) = if Self::is_upper(k) { (0.85, 3.0) } else { (0.65, 1.6) };
-                let socket = 1.0 - smoothstep(0.0, 0.25, Self::along(k).min(1.0 - Self::along(k)));
-                let alpha =
-                    (strength * (-d / (reach * (1.0 + socket))).exp() * (1.0 - smoothstep(5.0, 7.0, d))).min(0.92);
+                let (strength, reach) = if Self::is_upper(k) { (0.9, 5.0) } else { (0.35, 1.0) };
+                // The inner corner sits deep behind the nose's side; the outer one, where the lids meet in a point, less.
+                let along = Self::along(k);
+                let socket = (1.0 - smoothstep(0.0, 0.25, 1.0 - along)).max(0.4 * (1.0 - smoothstep(0.0, 0.2, along)));
+                let near = strength * (-d / (reach * (1.0 + socket))).exp() * (1.0 - smoothstep(5.0, 7.0, d));
+                // The whole ball sits in the socket: the white darkens broadly toward the lids and corners, so it reads
+                // as a sphere seen through the opening rather than a flat disc behind it.
+                let broad = (0.65 + 0.2 * socket) * (1.0 - smoothstep(0.0, 6.5, d));
+                let alpha = (1.0 - (1.0 - near) * (1.0 - broad)).min(0.92);
                 mesh.colours.push([0.0, 0.0, 0.0, alpha]);
             }
         }
@@ -522,7 +558,7 @@ impl Lids {
                 at += gap / total;
                 let u = 0.03 + 0.92 * at;
                 // The lower lid's lashes thin out toward the inner corner.
-                if !upper && rng.unit() < 0.85 * smoothstep(0.62, 0.95, u) {
+                if !upper && rng.unit() < 0.6 * smoothstep(0.75, 0.98, u) {
                     continue;
                 }
                 // Toward anime only the outer corner's flicks are left; the inked lash line draws the rest.
@@ -531,8 +567,13 @@ impl Lids {
                 }
                 strands.push(self.strand(lashes, upper, u, &mut rng));
             }
-            clump(&mut strands, lashes.clumping, &mut rng);
-            let width = lashes.thickness * if upper { 1.0 } else { 0.75 };
+            clump(&mut strands, lashes.clumping, if upper { (4.0, 10.0) } else { (2.0, 6.0) }, &mut rng);
+            // The clumps placed by hand, each from its own stream so adding one never moves another.
+            for (i, placed) in lashes.clumps.iter().enumerate().filter(|(_, c)| c.upper == upper) {
+                let i = u32::try_from(i).unwrap_or(u32::MAX);
+                strands.extend(self.placed(placed, &mut Pcg::new(seed ^ i.wrapping_mul(0x9e37_79b9), 0xc1a5)));
+            }
+            let width = lashes.thickness * if upper { 1.0 } else { 0.8 };
             for strand in &strands {
                 ribbon(&mut mesh, &mut info, strand, width, view_from);
             }
@@ -543,6 +584,54 @@ impl Lids {
 
     /// One lash's centre line, rooted at `u` along a lid (0 outer, 1 inner).
     fn strand(&self, lashes: &Lashes, upper: bool, u: f32, rng: &mut Pcg) -> Vec<Vec3> {
+        // Rooted along the margin's front edge, in two or three loose rows.
+        let row = rng.range(0.55, 0.85) * MM;
+        // Lashes fan out from the lid's middle toward each corner, the outer ones sweeping furthest.
+        let sweep = Vec3::new(-1.3, 0.0, 0.0) * (0.55 - u) + Vec3::new(-0.5, 0.0, 0.0) * (1.0 - u).powi(3);
+        let length = if upper { lashes.upper_length } else { lashes.lower_length }
+            * (if upper { 0.5 } else { 0.3 }
+                + if upper { 0.5 } else { 0.7 } * bump(u, if upper { 0.3 } else { 0.4 }).powf(0.6))
+            * if rng.unit() < 0.25 { rng.range(0.3, 0.65) } else { rng.range(0.7, 1.1) };
+        let curl = lashes.curl * rng.range(0.7, 1.2);
+        // A few strays point their own way.
+        let wander = if rng.unit() < 0.05 { 0.35 } else { 0.1 };
+        self.grow(upper, u, row, length, (curl, sweep * 0.7), wander, rng)
+    }
+
+    /// The hairs of a clump placed by hand: rooted side by side across its spread, gathered to one tip.
+    fn placed(&self, clump: &LashClump, rng: &mut Pcg) -> Vec<Vec<Vec3>> {
+        let lid = 1.15 * (self.aperture.inner_x - self.aperture.outer_x).max(1e-3);
+        let sweep = Vec3::NEG_X * clump.sweep.clamp(-80.0, 80.0).to_radians().tan();
+        let n = clump.strands.clamp(1, 40);
+        let mut hairs: Vec<Vec<Vec3>> = (0..n)
+            .map(|j| {
+                #[allow(clippy::cast_precision_loss, reason = "at most 40 hairs")]
+                let f = if n == 1 { 0.0 } else { j as f32 / (n - 1) as f32 - 0.5 };
+                let u = (clump.at + f * clump.spread / lid).clamp(0.0, 1.0);
+                let row = rng.range(0.55, 0.85) * MM;
+                let length = clump.length * rng.range(0.85, 1.05);
+                let curl = clump.curl * rng.range(0.9, 1.1);
+                self.grow(clump.upper, u, row, length, (curl, sweep), 0.04, rng)
+            })
+            .collect();
+        gather(&mut hairs, 1.0);
+        hairs
+    }
+
+    /// A lash's centre line rooted at `u` along a lid, `row` behind the margin's edge: `length` long, curling by
+    /// `bend.0` (1 as grown lashes do) and swept along the lid by `bend.1`, its direction jittered by `wander`.
+    #[allow(clippy::too_many_arguments, reason = "one hair's shape, each argument a different property of it")]
+    fn grow(
+        &self,
+        upper: bool,
+        u: f32,
+        row: f32,
+        length: f32,
+        bend: (f32, Vec3),
+        wander: f32,
+        rng: &mut Pcg,
+    ) -> Vec<Vec3> {
+        let (curl, sweep) = bend;
         // The outline sample at `u` on this lid, and its neighbour toward the outer corner.
         let half = AROUND / 2;
         // In range: u in 0..1.
@@ -552,25 +641,13 @@ impl Lids {
         } else {
             (half + ((1.0 - u) * half as f32) as usize).min(AROUND - 1)
         };
-        // Rooted along the margin's front edge, in two or three loose rows.
-        let row = rng.range(0.55, 0.85) * MM;
         let (root, _) = self.surface(k, row);
         let (ahead, _) = self.surface(k, row + 0.4 * MM);
         let out = (ahead - root).normalize_or_zero();
         let normal = root.normalize_or_zero();
         let up = if upper { Vec3::Y } else { -Vec3::Y };
-        // Lashes fan out from the lid's middle toward each corner, the outer ones sweeping furthest.
-        let sweep = Vec3::new(-0.9, 0.0, 0.0) * (0.5 - u) + Vec3::new(-0.3, 0.0, 0.0) * (1.0 - u).powi(3);
-        let length = if upper { lashes.upper_length } else { lashes.lower_length }
-            * (0.3 + 0.7 * bump(u, if upper { 0.38 } else { 0.4 }).powf(0.6))
-            * if rng.unit() < 0.15 { rng.range(0.35, 0.7) } else { rng.range(0.75, 1.08) };
-        let start = (normal * 0.85 + out * 0.1 - up * 0.08 + sweep * 0.7).normalize_or_zero();
-        let curl = (up * 1.2 - normal * 0.35).normalize_or_zero()
-            * lashes.curl
-            * if upper { 1.0 } else { 0.5 }
-            * rng.range(0.7, 1.2);
-        // A few strays point their own way.
-        let wander = if rng.unit() < 0.05 { 0.35 } else { 0.1 };
+        let start = (normal * 0.9 + out * 0.1 - up * 0.22 + sweep).normalize_or_zero();
+        let curl = (up * 1.2 - normal * 0.35).normalize_or_zero() * curl * if upper { 1.0 } else { 0.5 };
         let jitter = Vec3::new(rng.normal(), rng.normal(), rng.normal()) * wander;
         (0..=10)
             .map(|i| {
@@ -582,25 +659,32 @@ impl Lids {
     }
 }
 
+/// Pulls `group`'s strands toward their shared tip by `clumping`, more toward the tip.
+fn gather(group: &mut [Vec<Vec3>], clumping: f32) {
+    if group.is_empty() {
+        return;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let tip = group.iter().filter_map(|s| s.last().copied()).sum::<Vec3>() / group.len() as f32;
+    for strand in group.iter_mut() {
+        let own = strand.last().copied().unwrap_or(tip);
+        let n = strand.len().max(2) - 1;
+        for (j, p) in strand.iter_mut().enumerate() {
+            #[allow(clippy::cast_precision_loss)]
+            let t = j as f32 / n as f32;
+            *p += (tip - own) * clumping.clamp(0.0, 1.0) * t.powf(1.6);
+        }
+    }
+}
+
 /// Pulls each run of neighbouring strands toward their shared tip, more toward the tip.
-fn clump(strands: &mut [Vec<Vec3>], clumping: f32, rng: &mut Pcg) {
+fn clump(strands: &mut [Vec<Vec3>], clumping: f32, sizes: (f32, f32), rng: &mut Pcg) {
     let mut i = 0;
     while i < strands.len() {
         // In range: a small count.
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let size = (rng.range(2.0, 7.0) as usize).min(strands.len() - i);
-        let group = &mut strands[i..i + size];
-        #[allow(clippy::cast_precision_loss)]
-        let tip = group.iter().filter_map(|s| s.last().copied()).sum::<Vec3>() / size as f32;
-        for strand in group.iter_mut() {
-            let own = strand.last().copied().unwrap_or(tip);
-            let n = strand.len().max(2) - 1;
-            for (j, p) in strand.iter_mut().enumerate() {
-                #[allow(clippy::cast_precision_loss)]
-                let t = j as f32 / n as f32;
-                *p += (tip - own) * clumping.clamp(0.0, 1.0) * t.powf(1.6);
-            }
-        }
+        let size = (rng.range(sizes.0, sizes.1) as usize).min(strands.len() - i);
+        gather(&mut strands[i..i + size], clumping);
         i += size;
     }
 }
@@ -616,7 +700,7 @@ fn ribbon(mesh: &mut MeshData, info: &mut Vec<f32>, line: &[Vec3], width: f32, v
         let normal = side.cross(tangent).normalize_or_zero();
         #[allow(clippy::cast_precision_loss)]
         let t = i as f32 / (n - 1) as f32;
-        let w = width * (1.0 - 0.92 * t.powf(1.3));
+        let w = width * (1.0 - 0.92 * t.powf(0.8));
         for s in [-0.5, 0.5] {
             mesh.positions.push(p + side * w * s);
             mesh.normals.push(normal);

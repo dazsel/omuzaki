@@ -50,8 +50,8 @@ use omuzaki_anim::{
     MAX_NEUTRAL_FRAMES, MAX_TRIGGERS, MIN_NEUTRAL_FRAMES, NeutralCapture, NeutralError, TriggerFades, TriggerSlot,
 };
 use omuzaki_anim_api::{
-    ARKIT_COUNT, BoneMask, Calibration, Channel, ChannelBuf, ChannelMask, Cues, DeviceProfile, HeadPose,
-    RetargetConfig, Tick, TrackStatus,
+    ARKIT_COUNT, BodyStyle, BoneMask, Calibration, Channel, ChannelBuf, ChannelMask, Cues, DeviceProfile, HeadPose,
+    Impact, RetargetConfig, Tick, TrackStatus,
 };
 use omuzaki_core::glam::Vec3;
 use omuzaki_core::time::Seconds;
@@ -266,6 +266,28 @@ pub trait PerformHost: Send + Sync {
         DriveMap::open()
     }
 
+    /// How the body moves on its own from the next step (the living body's dials, `perform.set_body`).
+    ///
+    /// # Errors
+    /// [`PerformError::QueueFull`] or [`PerformError::Disconnected`]; nothing changes then.
+    fn set_body(&self, _style: BodyStyle) -> Result<(), PerformError> {
+        Err(PerformError::Unsupported)
+    }
+
+    /// The body style last set, or `None` before one is.
+    fn body(&self) -> Option<BodyStyle> {
+        None
+    }
+
+    /// Plays a physical reaction on the body from the next step (`act.react`): a blow or a fall, back on the
+    /// performed pose after the impact's recovery time.
+    ///
+    /// # Errors
+    /// [`PerformError::QueueFull`] or [`PerformError::Disconnected`]; nothing plays then.
+    fn react(&self, _impact: Impact) -> Result<(), PerformError> {
+        Err(PerformError::Unsupported)
+    }
+
     /// The expression library the triggers bake against (empty until [`set_expressions`](Self::set_expressions)).
     fn expressions(&self) -> ExpressionSet {
         ExpressionSet::default()
@@ -347,18 +369,34 @@ pub enum ActRequest {
         #[serde(skip)]
         #[schemars(skip)]
         def: Option<Arc<PoseClip>>,
+        /// It plays over the tracked head, the breath and the living body too: the body is the clip exactly, as a
+        /// recorded take is played back ([`Act::over_tracking`]).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        over_tracking: bool,
     },
 }
 
 impl ActRequest {
     /// The clip library's clip `id`, at `weight`.
     pub fn clip(id: impl Into<String>, weight: f32) -> Self {
-        Self::Clip { clip: id.into(), weight, def: None }
+        Self::Clip { clip: id.into(), weight, def: None, over_tracking: false }
     }
 
     /// `clip` itself (a character's own clip, or any other), at `weight`.
     pub fn clip_def(clip: Arc<PoseClip>, weight: f32) -> Self {
-        Self::Clip { clip: clip.id.clone(), weight, def: Some(clip) }
+        Self::Clip { clip: clip.id.clone(), weight, def: Some(clip), over_tracking: false }
+    }
+
+    /// The same act, played over the tracker when `over` (an expression, channels or a clip; other acts ignore it).
+    #[must_use]
+    pub fn over_tracking(mut self, over: bool) -> Self {
+        match &mut self {
+            Self::Expression { over_tracking, .. }
+            | Self::Channels { over_tracking, .. }
+            | Self::Clip { over_tracking, .. } => *over_tracking = over,
+            Self::Look { .. } => {}
+        }
+        self
     }
 }
 
@@ -499,6 +537,10 @@ enum Command {
     Release(Option<u64>),
     /// The drive gate, from [`PerformHost::set_drive`].
     Drive(DriveGate),
+    /// The living body's dials, from [`PerformHost::set_body`].
+    Body(BodyStyle),
+    /// A physical reaction, from [`PerformHost::react`].
+    React(Impact),
 }
 
 /// An attached voice, as the control holds it: the analyser's mailbox and the lip sync over the character's visemes.
@@ -569,6 +611,8 @@ struct Shared {
     act_book: Mutex<VecDeque<ActInfo>>,
     /// The drive map last set. Handle side only.
     drive: Mutex<DriveMap>,
+    /// The body style last set. Handle side only.
+    body: Mutex<Option<BodyStyle>>,
     /// The clips of the acts handed to the control, kept until the control has dropped its own reference, so the
     /// perform thread never frees a clip when an act ends. Handle side only; pruned on each act.
     clips: Mutex<Vec<Arc<PoseClip>>>,
@@ -784,6 +828,7 @@ pub fn perform_channel(performer: &Performer) -> (PerformHandle, PerformControl)
         act_book: Mutex::new(VecDeque::with_capacity(ACT_BOOK_LEN + 1)),
         clips: Mutex::new(Vec::new()),
         drive: Mutex::new(DriveMap::open()),
+        body: Mutex::new(None),
     });
     let control = PerformControl {
         commands: commands_rx,
@@ -1077,6 +1122,21 @@ impl PerformHost for PerformHandle {
     fn drive(&self) -> DriveMap {
         lock(&self.shared.drive).clone()
     }
+
+    fn set_body(&self, style: BodyStyle) -> Result<(), PerformError> {
+        let mut held = lock(&self.shared.body);
+        self.send(Command::Body(style))?;
+        *held = Some(style);
+        Ok(())
+    }
+
+    fn body(&self) -> Option<BodyStyle> {
+        *lock(&self.shared.body)
+    }
+
+    fn react(&self, impact: Impact) -> Result<(), PerformError> {
+        self.send(Command::React(impact))
+    }
 }
 
 impl PerformHandle {
@@ -1097,7 +1157,9 @@ fn bake_act(
     let channels = |target: ChannelBuf, mask: ChannelMask| Motion::Channels { target, mask };
     let over_tracking = matches!(
         request,
-        ActRequest::Expression { over_tracking: true, .. } | ActRequest::Channels { over_tracking: true, .. }
+        ActRequest::Expression { over_tracking: true, .. }
+            | ActRequest::Channels { over_tracking: true, .. }
+            | ActRequest::Clip { over_tracking: true, .. }
     );
     let (motion, lane, envelope) = match request {
         ActRequest::Expression { expression, intensity, .. } => {
@@ -1133,7 +1195,7 @@ fn bake_act(
             }
             (channels(target, mask), Lane::Channels, envelope)
         }
-        ActRequest::Clip { clip, weight, def } => {
+        ActRequest::Clip { clip, weight, def, .. } => {
             let clip = if let Some(def) = def {
                 Arc::clone(def)
             } else {
@@ -1432,6 +1494,12 @@ impl PerformControl {
                 self.score.release(id);
             }
             Command::Drive(gate) => performer.set_drive(gate),
+            Command::Body(style) => {
+                performer.animator_mut().set_style(&style);
+            }
+            Command::React(impact) => {
+                performer.animator_mut().react(&impact);
+            }
         }
     }
 

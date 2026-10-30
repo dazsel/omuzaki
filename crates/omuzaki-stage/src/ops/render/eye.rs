@@ -7,7 +7,7 @@ use omuzaki_char_api::{CharId, paths};
 use omuzaki_core::glam::UVec2;
 use omuzaki_doc_api::DocRead;
 use omuzaki_face::eye3d::EyeDesign;
-use omuzaki_face::eye3d::closeup::{Closeup, View};
+use omuzaki_face::eye3d::closeup::{Closeup, Shot, View};
 use omuzaki_face_api::FaceProfile;
 use omuzaki_ops_api::{JobCtx, Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
 use omuzaki_render_api::{AlphaEncoding, RendererExt};
@@ -32,17 +32,23 @@ fn default_size() -> [u32; 2] {
 #[schemars(extend(
     "examples" = [
         {"character": "kit"},
-        {"character": "kit", "view": "front", "size": [512, 512], "quality": "live"}
+        {"character": "kit", "view": "front", "size": [512, 512], "quality": "live"},
+        {"character": "kit", "shot": {"camera": [-0.03, -0.012, 0.05], "look": [-0.002, -0.0008, 0.01], "roll": -18,
+                                      "fov": 32, "gaze": [-0.2, 0.17, 0.92], "depth_of_field": true}}
     ],
     "x-omuzaki-fixture" = "character"
 ))]
 pub struct EyeCloseup {
     /// The character whose eye to show.
     pub character: CharId,
-    /// `macro` (the default: three-quarter from the nose's side, the iris in focus and the lashes and skin falling out
-    /// of it) or `front` (straight on, everything in focus).
+    /// `macro` (the default: three-quarter from the temple's side and below, rolled, the iris in focus and the lashes
+    /// and skin falling out of it) or `front` (straight on, everything in focus).
     #[serde(default)]
     pub view: View,
+    /// A shot of its own (camera, look, roll, field of view, gaze, depth of field, in the eye's frame) in place of the
+    /// view's: `face.eye3d.fit` returns one that frames the eye as a photograph does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shot: Option<Shot>,
     /// Width and height in pixels, each 16 to 4096.
     #[serde(default = "default_size")]
     pub size: [u32; 2],
@@ -63,6 +69,8 @@ pub struct EyeCloseupResult {
     pub size: [u32; 2],
     /// The view it was shot from.
     pub view: View,
+    /// The shot it was taken with (the view's, unless one was given).
+    pub shot: Shot,
     /// Whether the face has a 3D eye of its own; `false` shows the design one starts from.
     pub in_use: bool,
 }
@@ -93,6 +101,13 @@ impl EyeCloseup {
         Ok((face.eye3d.unwrap_or_default(), in_use))
     }
 
+    /// The shot to take: the one given, or the view's.
+    fn shot(&self) -> Result<Shot, OpError> {
+        let shot = self.shot.clone().unwrap_or_else(|| self.view.shot());
+        shot.check().map_err(|e| OpError::invalid("shot", e))?;
+        Ok(shot)
+    }
+
     /// The bytes the eye's textures take on the GPU: the iris atlas (two squares) and the skin texture, RGBA.
     fn texture_bytes(&self) -> u64 {
         let side = u64::from(self.texture());
@@ -118,6 +133,7 @@ impl Op for EyeCloseup {
 
     fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
         self.design(ctx.doc)?;
+        self.shot()?;
         let size = check_size(self.size, self.quality)?;
         Ok(Plan { cost: Some(cost(size, 1, self.quality, self.texture_bytes())), ..Plan::default() })
     }
@@ -125,10 +141,11 @@ impl Op for EyeCloseup {
     fn work(&self, job: &JobCtx<'_>) -> Result<Value, OpError> {
         let size: UVec2 = check_size(self.size, self.quality)?;
         let (design, in_use) = job.read(|doc| self.design(doc))?;
+        let shot = self.shot()?;
         job.checkpoint("building", 0.0)?;
         let quality = self.quality.quality();
         let image = with_renderer(job, |renderer| {
-            let closeup = Closeup::build(renderer, &design, self.view, self.texture())
+            let closeup = Closeup::shoot(renderer, &design, &shot, self.texture())
                 .map_err(|e| StageError::render("the eye", e))?;
             let image = renderer.render_image(size, AlphaEncoding::Straight, closeup.scene(), &quality);
             let released = closeup.release(renderer);
@@ -140,8 +157,14 @@ impl Op for EyeCloseup {
         let png = encode_png(&image).map_err(|e| OpError::internal(e.to_string()))?;
         let stored = store_png(job, &png)?;
         job.checkpoint("done", 1.0)?;
-        let result =
-            EyeCloseupResult { uri: stored.uri, hash: stored.hash.to_string(), size: self.size, view: self.view, in_use };
+        let result = EyeCloseupResult {
+            uri: stored.uri,
+            hash: stored.hash.to_string(),
+            size: self.size,
+            view: self.view,
+            shot,
+            in_use,
+        };
         serde_json::to_value(result).map_err(|e| OpError::internal(format!("serialising the close-up: {e}")))
     }
 }
