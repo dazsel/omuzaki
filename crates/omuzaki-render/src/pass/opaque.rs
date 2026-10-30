@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use omuzaki_render_api::{Pass, RenderError};
 
 use super::backdrop::BackdropDraw;
+use super::occlusion::AmbientOcclusion;
 use super::{FramePass, Outcome, PassCx};
 use crate::gpu::{DEPTH_FORMAT, SCENE_FORMAT};
 use crate::program::{AttributeSpec, MAX_ATTRIBUTES, ProgramSpec, Registry, opaque_source};
@@ -50,6 +51,8 @@ pub(crate) struct Opaque {
     zeros: wgpu::Buffer,
     /// The environment behind everything, when the scene's background is the environment.
     backdrop: BackdropDraw,
+    /// The scene's ambient occlusion and contact shadows, drawn over the surfaces.
+    occlusion: AmbientOcclusion,
 }
 
 impl Opaque {
@@ -76,6 +79,7 @@ impl Opaque {
             }),
             pipelines: HashMap::new(),
             backdrop: BackdropDraw::new(shared),
+            occlusion: AmbientOcclusion::new(shared),
         }
     }
 
@@ -214,6 +218,9 @@ impl FramePass for Opaque {
             self.backdrop.draw(&mut pass, backdrop);
             cx.stats.draw_calls += 1;
         }
+        drop(pass);
+        // The occlusion of what was just drawn, before the outlines and blended surfaces go over it.
+        self.occlusion.record(cx);
         Ok(Outcome::Ran)
     }
 }

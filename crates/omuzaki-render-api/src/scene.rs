@@ -379,6 +379,49 @@ impl EdgeLines {
     }
 }
 
+/// Screen-space ambient occlusion and contact shadows (#2507): creases, folds and the places where surfaces meet
+/// darken, because their neighbours block the light that would reach them. A renderer finds the occluders in the depth
+/// it has drawn, so it costs one fullscreen pass and needs no baking. A renderer that lacks it skips it.
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct Occlusion {
+    /// How far round each point occluders are looked for, in metres, `> 0`: about the size of the folds that should
+    /// darken (2 mm for an eyelid's crease, 5 cm for a sleeve against a body).
+    pub radius: f32,
+    /// How dark full occlusion is, `0..=1`.
+    pub strength: f32,
+    /// Contact shadows: how far toward each shadow-casting directional light a point looks for a blocker, in metres
+    /// (`0`: none). Catches the small shadows a shadow map is too coarse for (lashes on the eye, a lid on the eyeball).
+    pub contact: f32,
+}
+
+impl Occlusion {
+    /// Occlusion out to `radius` metres at `strength`, without contact shadows.
+    pub fn new(radius: f32, strength: f32) -> Self {
+        Self { radius, strength, contact: 0.0 }
+    }
+
+    /// The same occlusion with contact shadows reaching `contact` metres toward the light.
+    #[must_use]
+    pub fn with_contact(mut self, contact: f32) -> Self {
+        self.contact = contact;
+        self
+    }
+
+    fn validate(&self) -> Result<(), RenderError> {
+        let radius = self.radius.is_finite() && self.radius > 0.0;
+        let strength = (0.0..=1.0).contains(&self.strength);
+        let contact = self.contact.is_finite() && self.contact >= 0.0;
+        if radius && strength && contact {
+            return Ok(());
+        }
+        Err(RenderError::invalid(
+            "occlusion",
+            format!("needs radius > 0, strength in 0..=1 and contact >= 0, got {self:?}"),
+        ))
+    }
+}
+
 /// Of two slopes, the one nearer zero, and zero when they disagree in sign; the one that is known when the other isn't.
 fn gentler(near: Option<f32>, far: Option<f32>) -> f32 {
     match (near, far) {
@@ -705,6 +748,8 @@ pub struct Scene {
     pub back_light_rim: f32,
     /// Lines where the depth jumps, if wanted (#2319). [`Scene::clear`] leaves them as they are.
     pub edges: Option<EdgeLines>,
+    /// Ambient occlusion and contact shadows, if wanted (#2507). [`Scene::clear`] leaves them as they are.
+    pub occlusion: Option<Occlusion>,
     /// The frame's post-processing look.
     pub post: Post,
 }
@@ -726,6 +771,7 @@ impl Scene {
             outline_light: 1.0,
             back_light_rim: 0.0,
             edges: None,
+            occlusion: None,
             post: Post::default(),
         }
     }
@@ -734,8 +780,9 @@ impl Scene {
     /// for the next frame.
     ///
     /// Everything else stays as it was: `camera`, `frame`, `background`, `fog`, `environment`, `outline_light`,
-    /// `back_light_rim`, `edges` and `post`. Lights do go, so a scene that wants the same lights every frame must push them
-    /// again after each `clear`. To keep lights across frames, leave them out of the reset and clear only what changes:
+    /// `back_light_rim`, `edges`, `occlusion` and `post`. Lights do go, so a scene that wants the same lights every
+    /// frame must push them again after each `clear`. To keep lights across frames, leave them out of the reset and
+    /// clear only what changes:
     ///
     /// ```ignore
     /// scene.instances.clear();
@@ -778,6 +825,7 @@ impl Scene {
         self.lights.iter().try_for_each(Light::validate)?;
         self.fog.iter().try_for_each(Fog::validate)?;
         self.edges.iter().try_for_each(EdgeLines::validate)?;
+        self.occlusion.iter().try_for_each(Occlusion::validate)?;
         self.post.validate()?;
         self.environment.iter().try_for_each(EnvironmentUse::validate)?;
         for (i, inst) in self.instances.iter().enumerate() {
@@ -820,6 +868,19 @@ impl Scene {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn occlusion_takes_a_positive_radius_and_a_strength_up_to_one() {
+        let mut scene = Scene::new(Camera::default());
+        scene.occlusion = Some(Occlusion::new(0.002, 0.7).with_contact(0.0015));
+        assert!(scene.validate().is_ok());
+        for bad in [Occlusion::new(0.0, 0.5), Occlusion::new(f32::NAN, 0.5), Occlusion::new(0.01, 1.5)] {
+            scene.occlusion = Some(bad);
+            assert!(scene.validate().is_err(), "{bad:?} is refused");
+        }
+        scene.occlusion = Some(Occlusion::new(0.01, 0.5).with_contact(-1.0));
+        assert!(scene.validate().is_err(), "a negative contact reach is refused");
+    }
 
     fn white_key() -> Light {
         Light::Directional { to_light: Vec3::Y, colour: Colour::WHITE, intensity: 1.0, casts_shadow: false }

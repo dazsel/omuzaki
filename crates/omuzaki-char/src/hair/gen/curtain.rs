@@ -12,6 +12,12 @@
 //! S-wave and an outward wave a quarter-turn behind it grow in along `wave.growth`, and the last 22 % curls at the
 //! tip. The path is resampled to [`GUIDE_POINTS`] points evenly by arc length.
 //!
+//! **The drape (#2486).** With `drape_deg` set, a guide first lies over the head: it starts that many degrees of polar
+//! angle above its root, under the scalp shell at the tuck's height, comes out over the shell over the first
+//! `DRAPE_EMERGE` of the way and follows the head's curve down to the root at the root's own height, so the hair reads
+//! as one mass from the crown down instead of hanging from under the shell's edge. A bob or a nape
+//! layer is a short draped curtain whose `envelope` holds it close to the head.
+//!
 //! **Randomness.** Six draws per guide, in this order and nothing else between guides: length jitter, wave amplitude,
 //! wave frequency, wave phase, curl size, curl sign.
 //!
@@ -56,6 +62,10 @@ const BODY_AXIS_Z: f64 = -0.03;
 const ROOT_BELOW_BRAID: f64 = 0.022;
 /// How far the root stands off the head surface, metres.
 const ROOT_OFFSET: f64 = 0.032;
+/// Points of the drape over the head before the root ([`CurtainGen::drape_deg`]).
+const DRAPE_POINTS: usize = 6;
+/// The share of the drape over which it rises from under the scalp shell to the root's height over it.
+const DRAPE_EMERGE: f64 = 0.4;
 /// The fall outward finishes over this fraction of the length.
 const FALL_END: f64 = 0.5;
 /// The envelope's outward factor (`0.92 + 0.06`), and how much of it holds at the back.
@@ -311,23 +321,37 @@ fn guide(
     };
     // The tuck: a first point carried up the head, just under the cap's shell, so the curtain starts hidden under the
     // cap's edge instead of standing off the head as a band. It is zero in the prototype's own parameters.
-    let tuck = (params.root_tuck_deg > 0.0).then(|| {
+    // The drape, where there is one, takes its place: the guide lies over the head from `drape_deg` above the root down
+    // to it, at the root's own height over the scalp, so it covers the cap instead of starting under it.
+    let start: Vec<DVec3> = if params.drape_deg > 0.0 {
+        (0..DRAPE_POINTS)
+            .map(|k| {
+                let s = along(k, DRAPE_POINTS);
+                let theta = (root_theta - params.drape_deg * (1.0 - s)).max(0.0);
+                // It comes out from under the shell: at the tuck's height where it starts, at the root's over the rest.
+                let offset = lerp(params.root_tuck_offset, ROOT_OFFSET, smoothstep(s, 0.0, DRAPE_EMERGE));
+                GuidePoint::Surface([theta, phi.to_degrees(), offset]).resolve(ctx.head).as_dvec3()
+            })
+            .collect()
+    } else if params.root_tuck_deg > 0.0 {
         let theta = (root_theta - params.root_tuck_deg).max(0.0);
-        GuidePoint::Surface([theta, phi.to_degrees(), params.root_tuck_offset]).resolve(ctx.head).as_dvec3()
-    });
+        vec![GuidePoint::Surface([theta, phi.to_degrees(), params.root_tuck_offset]).resolve(ctx.head).as_dvec3()]
+    } else {
+        Vec::new()
+    };
     let hang = (!params.in_front).then_some(keep_out).flatten().map(|k| {
         let head = ctx.head;
         (k, head.centre().y - head.radius(Vec3::NEG_Y), HANG_OVER * head.radius(Vec3::X))
     });
     let head = ctx.head;
     let fall = drape((1..=SEGMENTS).map(|k| clear_of_head(head, at(along(k, SEGMENTS)))), keep_out, hang);
-    let path: Vec<DVec3> = tuck.into_iter().chain(std::iter::once(root)).chain(fall).collect();
+    let path: Vec<DVec3> = start.into_iter().chain(std::iter::once(root)).chain(fall).collect();
     spaced_points(&path, GUIDE_POINTS).map_or_else(
         |_| straight_fall(root, length),
         |pts| {
             pts.into_iter()
                 .map(|p| {
-                    // The fall only: the tuck above the root stands under the cap on purpose.
+                    // The fall only: the tuck above the root stands under the cap on purpose, the drape over it.
                     let p = if p.y < root.y { clear_of_head(head, p) } else { p };
                     clear_of_body(keep_out, p).as_vec3()
                 })
