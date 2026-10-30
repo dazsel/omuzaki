@@ -18,7 +18,7 @@
 #![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)] // pixel indices
 
 use omuzaki_anim_api::ChannelBuf;
-use omuzaki_char::ops::hair::bangs::presets::PRESETS;
+use omuzaki_char::ops::hair::bangs::presets::{PRESETS, find};
 use omuzaki_char_api::{
     BodyTemplateId, BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, CharacterDef, Dynamics,
     FaceOverlay, Generator, GroupId, HairGroup, HairParams, MaterialSpec, PartDef, PartId, PartKindId, RegistryBuilder,
@@ -214,7 +214,7 @@ fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
 /// The Brows overlay the hair material of `template` carries when the brows show through: where the layer lands on this
 /// template's head, at the contract's strength.
 fn brows_overlay(template: &str) -> FaceOverlay {
-    let built = build(&character(template, (PRESETS[4].make)(), true));
+    let built = build(&character(template, (find("none").unwrap().make)(), true));
     built
         .materials
         .values()
@@ -417,15 +417,15 @@ fn render_the_bangs_when_asked() {
 
 /// The hair of the `none` preset is one lock whose tip ends at the crown, so its top stands off the head by the root
 /// offset's rise plus the tip offset. That rise must be the same on every template: the fringe follows the head surface
-/// the head part publishes, which must match the head mesh the renderer draws. (The roots themselves stand 46 mm off the
-/// scalp by design, as in the prototype, where the cap shell hides them; see `LOCK_RISE`.)
+/// the head part publishes, which must match the head mesh the renderer draws. (The lock's offset is 46 mm at the root
+/// by design, as in the prototype; the root tuck sinks its first stretch into the hair, so its top is where it comes out.)
 #[test]
 fn the_fringe_follows_the_head_mesh_on_every_template() {
-    /// How far the `none` lock's top stands above the head mesh's crown at soft-sd, metres (measured; the root
-    /// offset 0.046 m dominates).
-    const LOCK_RISE: f32 = 0.0508;
+    /// How far the `none` lock's top stands above the head mesh's crown, metres (measured: 51.2 mm on soft-sd and mini,
+    /// 51.8 on standard; the root offset 0.046 m dominates).
+    const LOCK_RISE: f32 = 0.0515;
     for template in TEMPLATES {
-        let built = build(&character(template, (PRESETS[4].make)(), true));
+        let built = build(&character(template, (find("none").unwrap().make)(), true));
         let crown = built
             .meshes
             .iter()

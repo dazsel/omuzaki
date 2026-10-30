@@ -161,12 +161,19 @@ fn render_quad(renderer: &mut WgpuRenderer, mesh: omuzaki_render_api::MeshId, ma
 /// The prototype's angel ring: its half width, its wander from lock to lock and its comb teeth, painted at a fixed polar
 /// angle. The kit draws a thinner, steadier one by default (#2462) that follows the strands (#2483), so the oracle sets
 /// these, and the prototype's keep-identity, which pulls toward a fixed cream where the kit keeps the hair's own hue.
+/// The kit's anime look also paints fainter strand lines and clump edges, lights further round the hair and keeps its
+/// second shadow tone light, so the oracle sets the prototype's numbers for those too.
 const PROTOTYPE_RING: &[(&str, ParamValue)] = &[
     ("ring-width", ParamValue::Float(0.11)),
     ("ring-wobble", ParamValue::Float(0.06)),
     ("ring-teeth", ParamValue::Float(1.0)),
     ("ring-follow", ParamValue::Float(0.0)),
     ("keep-hue", ParamValue::Float(0.0)),
+    ("strand-lines", ParamValue::Float(0.10)),
+    ("edge-darkening", ParamValue::Float(0.14)),
+    ("shade-shift", ParamValue::Float(-0.05)),
+    ("shade-softness", ParamValue::Float(0.22)),
+    ("shade-deep", ParamValue::Colour(Colour::rgb(0xd8, 0xc4, 0xd0))),
 ];
 
 /// The prototype's keep-identity alone: its fixed cream (`keep-hue` 0).
@@ -192,7 +199,7 @@ struct Prototype {
 }
 
 impl Prototype {
-    /// The default `HairShading` of the character kit, with the prototype's ring ([`PROTOTYPE_RING`]).
+    /// The prototype's `HairShading`, with its ring ([`PROTOTYPE_RING`]).
     fn defaults() -> Self {
         let colour = |hex| Colour::hex(hex).to_linear();
         Self {

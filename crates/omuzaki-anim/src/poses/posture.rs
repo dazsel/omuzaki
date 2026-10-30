@@ -61,7 +61,9 @@ impl Hand {
         Self { bones: Finger::ALL.map(|f| [BoneMix { curl: shape.curl(f), weight }; 3]) }
     }
 
-    fn blend(a: &Self, b: &Self, w: f32) -> Self {
+    /// Moves `w` of the way from `a` to `b`, bone by bone: each side counts in proportion to its weight, so a hand at
+    /// weight `0` blends exactly like no shape at all. Exact at both ends.
+    pub fn blend(a: &Self, b: &Self, w: f32) -> Self {
         let mut out = *a;
         for (out_finger, (fa, fb)) in out.bones.iter_mut().zip(a.bones.iter().zip(&b.bones)) {
             for (o, (x, y)) in out_finger.iter_mut().zip(fa.iter().zip(fb)) {

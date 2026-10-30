@@ -40,6 +40,12 @@ impl BoneMask {
         Self(self.0 | 1 << bone.index())
     }
 
+    /// The bones in either mask.
+    #[must_use]
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
     /// Whether `bone` is in the mask.
     pub const fn contains(self, bone: HumanoidBone) -> bool {
         self.0 >> bone.index() & 1 == 1

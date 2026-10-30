@@ -1,0 +1,41 @@
+# Head dials (#2612): the cranium's shape, as bumps in the head's own proportions. Amounts are fractions of the
+# distance from the head's centre. Design targets, not likenesses.
+
+[[dial]]
+id = "cranium_width"
+name = "Cranium width"
+summary = "+1 a broad skull above the ears; -1 a narrow one"
+group = "head"
+sided = true
+prior = 0.25
+[[dial.effects]]
+frame = "head"
+landmark = "cranium_left"
+reach = 45.0
+push = "out"
+amount = 0.05
+
+[[dial]]
+id = "cranium_height"
+name = "Crown height"
+summary = "+1 a tall crown; -1 a flat top"
+group = "head"
+prior = 0.25
+[[dial.effects]]
+frame = "head"
+landmark = "crown"
+reach = 50.0
+push = "up"
+amount = 0.06
+
+[[dial]]
+id = "occiput"
+name = "Back of the head"
+summary = "+1 a full, rounded back of the head; -1 a flat one"
+group = "head"
+prior = 0.25
+[[dial.effects]]
+frame = "head"
+landmark = "occiput"
+reach = 45.0
+amount = 0.06

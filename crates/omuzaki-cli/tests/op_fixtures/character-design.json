@@ -1,0 +1,90 @@
+{
+  "about": "The kit character with a design layer to edit: two shape dials, an anatomy (a factor and a structure), a sculpt stroke on the head and two material layers on the head (blush and freckles), so there are dials and an anatomy to reset, strokes to clear or list and layers to move, set, mask or remove.",
+  "base": "character",
+  "steps": [
+    {
+      "op": "shape.set_dial",
+      "args": {
+        "character": "kit",
+        "dial": "jaw_width",
+        "value": 0.4
+      }
+    },
+    {
+      "op": "shape.set_dial",
+      "args": {
+        "character": "kit",
+        "dial": "calf_size",
+        "value": -0.3
+      }
+    },
+    {
+      "op": "anatomy.set",
+      "args": {
+        "character": "kit",
+        "name": "adiposity",
+        "value": 0.8
+      }
+    },
+    {
+      "op": "anatomy.set",
+      "args": {
+        "character": "kit",
+        "name": "malar_fat",
+        "value": 0.5
+      }
+    },
+    {
+      "op": "part.sculpt.stroke",
+      "args": {
+        "character": "kit",
+        "part": "head",
+        "brush": "inflate",
+        "at": {
+          "on": "head",
+          "dir": [
+            0.45,
+            -0.25,
+            0.85
+          ]
+        },
+        "radius": 0.25,
+        "strength": 0.04,
+        "symmetric": true
+      }
+    },
+    {
+      "op": "part.layer.add",
+      "args": {
+        "character": "kit",
+        "part": "head",
+        "layer": {
+          "id": "blush",
+          "kind": {
+            "type": "makeup",
+            "zone": "blush",
+            "colour": "#e0607a",
+            "amount": 0.6
+          }
+        }
+      }
+    },
+    {
+      "op": "part.layer.add",
+      "args": {
+        "character": "kit",
+        "part": "head",
+        "layer": {
+          "id": "freckles",
+          "kind": {
+            "type": "spots",
+            "colour": "#a06040",
+            "density": 0.5,
+            "amount": 0.4,
+            "seed": 3
+          }
+        }
+      }
+    }
+  ]
+}
