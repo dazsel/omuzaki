@@ -1,0 +1,40 @@
+id = "updo-slick"
+name = "Slicked updo"
+summary = "Combed straight back off the forehead with no fringe and gathered into a high bun on the back of the crown; add flyaways with hair.strays.set."
+origin = "a written description of the cut (a polished newsreader's updo), built from the kit's generators and tuned by eye on the kit's renders (#2670)"
+
+[volume]
+whorl = { polar_deg = 30.0, azimuth_deg = 180.0 }
+fullness = 0.75
+crown = 0.9
+back = 0.85
+part = { side_deg = 0.0 }
+
+[groups.a-cap]
+dynamics = { simulate = false, follow = "head" }
+
+[groups.a-cap.generator]
+type = "cap"
+hairline_back_deg = 150.0
+hairline = { arch_deg = 6.0, peak_deg = 4.0, peak_width = 0.3 }
+
+[groups.c-sweep]
+dynamics = { simulate = false, follow = "head" }
+
+[groups.c-sweep.generator]
+type = "part_sweep"
+count = 16
+end_from_deg = 95.0
+end_to_deg = 178.0
+end_height_front = 0.03
+end_height_back = 0.0
+
+[groups.e-bun]
+dynamics = { simulate = false, follow = "head" }
+
+[groups.e-bun.generator]
+type = "bun"
+centre = [32.0, 180.0, 0.02]
+radius = 0.06
+strands = 8
+gather = 6

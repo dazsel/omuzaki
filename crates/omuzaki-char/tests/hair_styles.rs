@@ -17,7 +17,7 @@ use serde_json::json;
 
 const TEMPLATES: [&str; 4] = ["soft-sd", "mini", "standard", "tall"];
 
-const NAMED: [&str; 10] = [
+const NAMED: [&str; 11] = [
     "long-straight",
     "bob",
     "twin-tails",
@@ -27,6 +27,7 @@ const NAMED: [&str; 10] = [
     "messy-short",
     "wavy-long",
     "bun",
+    "updo-slick",
     "half-up",
 ];
 

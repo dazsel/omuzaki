@@ -994,6 +994,9 @@ pub struct CheekStyle {
     /// Face lines: the inked and cel-shaded lines that give a face its age and structure (cheekbones, smile lines,
     /// under-eye lines, the chin and a jaw shadow). All off by default, as anime faces draw none.
     pub lines: FaceLines,
+    /// The shade a fringe casts across the top of the face, 0 to 1 (1 the default; 0 for hair swept off the forehead,
+    /// which casts none).
+    pub fringe_shade: f64,
 }
 
 /// Face lines (CB-23): each a strength 0 to 1 (0 not drawn). Lines are inked in `colour` at `width`; the jaw shade is
@@ -1058,6 +1061,7 @@ impl Default for CheekStyle {
             contour: 0.0,
             contour_colour: rgb(0xc8, 0x8e, 0x80),
             lines: FaceLines::default(),
+            fringe_shade: 1.0,
         }
     }
 }
@@ -1070,6 +1074,7 @@ impl Validate for CheekStyle {
         c.range("wash", self.wash, 0.0, 1.0);
         c.range("base", self.base, 0.0, 1.0);
         c.range("contour", self.contour, 0.0, 1.0);
+        c.range("fringe_shade", self.fringe_shade, 0.0, 1.0);
         self.lines.check(c);
     }
 }

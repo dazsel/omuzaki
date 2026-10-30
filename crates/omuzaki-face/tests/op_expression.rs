@@ -366,3 +366,40 @@ fn a_library_that_is_not_an_object_is_a_conflict() {
     assert_eq!(err.code, ErrorCode::Conflict);
     assert_eq!(err.message, "face/expressions is not an object, so it can't hold expressions");
 }
+
+// ------------------------------------------------------------------------------------------------ add_from_library
+
+#[test]
+fn add_from_library_brings_in_what_the_face_lacks_and_keeps_its_tuning() {
+    let mut doc = doc_with(Some(starter_face()));
+    // Tune the starter `happy`, then bring in the library: the tuning stays, the library's moods arrive.
+    let tuned = set_args("happy", "emotion", json!({ "mouthSmileLeft": 0.3 }));
+    let plan = run(&doc, "face.expression.set", tuned).expect("set");
+    doc.apply(&plan.patch).expect("apply set");
+    let happy = stored(&doc, "happy");
+    let plan = run(&doc, "face.expression.add_from_library", json!({ "character": "mira" })).expect("add");
+    let added = plan.output.as_ref().expect("an output")["added"].as_array().expect("a list").clone();
+    assert!(added.contains(&json!("grin")) && added.contains(&json!("menace")), "{added:?}");
+    assert!(!added.contains(&json!("happy")), "a face's own expression is kept");
+    doc.apply(&plan.patch).expect("apply add");
+    assert_eq!(stored(&doc, "happy"), happy);
+    let library = ExpressionSet::library().expect("the library reads");
+    assert_eq!(stored(&doc, "grin"), serde_json::to_value(&library.0[&id("grin")]).expect("serialises"));
+    // A second run adds nothing, and undo takes back exactly what was added.
+    let again = run(&doc, "face.expression.add_from_library", json!({ "character": "mira" })).expect("again");
+    assert!(again.patch.is_empty());
+    doc.apply(&plan.patch.inverse()).expect("undo");
+    assert_eq!(stored(&doc, "grin"), Value::Null);
+    assert_eq!(stored(&doc, "happy"), happy);
+}
+
+#[test]
+fn add_from_library_adds_only_the_named_and_refuses_an_unknown_name() {
+    let doc = doc_with(Some(starter_face()));
+    let plan =
+        run(&doc, "face.expression.add_from_library", json!({ "character": "mira", "ids": ["grin"] })).expect("add");
+    assert_eq!(plan.output.as_ref().expect("an output")["added"], json!(["grin"]));
+    let e = refused(run(&doc, "face.expression.add_from_library", json!({ "character": "mira", "ids": ["zzz"] })));
+    assert_eq!(e.code, ErrorCode::Invalid);
+    assert!(e.message.contains("zzz") && e.hint.as_deref().unwrap_or_default().contains("grin"), "{e:?}");
+}

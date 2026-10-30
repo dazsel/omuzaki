@@ -361,8 +361,13 @@ fn puffed_cheek(ctx: &mut PaintCtx<'_>, style: &CheekStyle, puff: f32, side: f32
 /// The warm strip under the fringe: full across the face, from the top of the rect down to a gradient that is gone
 /// at [`FRINGE_BOTTOM_HEAD`].
 fn fringe_shade(ctx: &mut PaintCtx<'_>, rect: &FaceRect) {
+    let amount = narrow(ctx.profile.cheeks.fringe_shade).clamp(0.0, 1.0);
+    if amount <= 0.0 {
+        return;
+    }
     let (top, bottom) = (FRINGE_TOP_HEAD + HEAD_TO_PLANE, FRINGE_BOTTOM_HEAD + HEAD_TO_PLANE);
-    let stops = Stops::new(&[(0.0, with_alpha(FRINGE_COLOUR, FRINGE_ALPHA)), (1.0, with_alpha(FRINGE_COLOUR, 0.0))]);
+    let stops =
+        Stops::new(&[(0.0, with_alpha(FRINGE_COLOUR, FRINGE_ALPHA * amount)), (1.0, with_alpha(FRINGE_COLOUR, 0.0))]);
     let list = ctx.list(FaceLayerId::Base);
     let path =
         list.path().polyline(&corners(rect, Vec2::new(rect.x0, bottom), Vec2::new(rect.x1, rect.y1))).close().finish();

@@ -426,6 +426,22 @@ fn the_fringe_shade_is_a_strip_under_the_top_of_the_face_in_the_face_plane() {
     assert!((lo - 0.022).abs() < 1e-6 && (hi - rect.y1).abs() < 1e-6, "from the rect's top to where the fade ends");
 }
 
+#[test]
+fn hair_off_the_forehead_casts_no_fringe_shade_and_half_casts_half() {
+    let shades = |amount: f64| {
+        let list = base(Section::Cheeks, &profile_with(|p| p.cheeks.fringe_shade = amount), BLUSH);
+        list.cmds()
+            .iter()
+            .filter_map(|c| match c {
+                Cmd::Fill { paint: Paint::Linear { stops, .. }, .. } => Some(stops.as_slice()[0].colour.a),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(shades(0.0), Vec::<u8>::new());
+    assert_eq!(shades(0.5), [to_byte(0.15)]);
+}
+
 fn points_of(list: &DrawList, path: omuzaki_face_api::PathRef) -> Vec<Vec2> {
     list.elements(path)
         .iter()
