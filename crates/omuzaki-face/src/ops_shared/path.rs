@@ -4,6 +4,7 @@
 
 use omuzaki_anim_api::{CHANNELS, Channel};
 use omuzaki_core::text::edit_distance;
+use omuzaki_face_api::eye3d::EyeDesign;
 use omuzaki_face_api::{FaceMark, FaceProfile, IrisColours};
 use omuzaki_ops_api::OpError;
 use serde_json::Value;
@@ -25,12 +26,14 @@ pub(crate) enum Section {
     Cheeks,
     /// `face/marks`, a list.
     Marks,
+    /// `face/eye3d`, the photoreal 3D eye; a face without one has painted eyes only.
+    Eye3d,
 }
 
 impl Section {
     /// Every section, in the order `face.describe_style` lists them.
-    pub(crate) const ALL: [Section; 6] =
-        [Section::Eyes, Section::Brows, Section::Mouth, Section::Nose, Section::Cheeks, Section::Marks];
+    pub(crate) const ALL: [Section; 7] =
+        [Section::Eyes, Section::Brows, Section::Mouth, Section::Nose, Section::Cheeks, Section::Marks, Section::Eye3d];
 
     /// The key the section has below the face.
     pub(crate) const fn name(self) -> &'static str {
@@ -41,6 +44,7 @@ impl Section {
             Section::Nose => "nose",
             Section::Cheeks => "cheeks",
             Section::Marks => "marks",
+            Section::Eye3d => "eye3d",
         }
     }
 }
@@ -78,8 +82,9 @@ pub(crate) struct Template {
     pub(crate) mark: Value,
 }
 
-/// The default face, serialised once per op call. A section the face may leave out (the right eye's own iris) is in it
-/// whole, holding what it shows when left out, so a path into it resolves and a face that sets it reads as valid.
+/// The default face, serialised once per op call. A section the face may leave out (the right eye's own iris, the 3D
+/// eye) is in it whole, holding what it shows when left out or first added, so a path into it resolves and a face that
+/// sets it reads as valid.
 ///
 /// # Errors
 /// `Internal` if the default face can't be serialised, which would be a bug in `omuzaki-face-api`.
@@ -93,6 +98,7 @@ pub(crate) fn template() -> Result<Template, OpError> {
         ring: Some(iris.ring.clone()),
         pupil: Some(iris.pupil.clone()),
     });
+    face.eye3d = Some(EyeDesign::default());
     Ok(Template { profile: to_json(&face)?, mark: to_json(&FaceMark::default())? })
 }
 

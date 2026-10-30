@@ -12,6 +12,7 @@ use omuzaki_anim_api::ChannelBuf;
 
 use crate::check::{Check, Validate};
 use crate::expression::{ChannelValues, ExpressionId, ExpressionKind, ExpressionSet};
+use crate::eye3d::EyeDesign;
 use crate::grammar::GrammarRules;
 use crate::mapping::FaceMapping;
 use crate::palette::ColourRef;
@@ -1159,6 +1160,10 @@ pub struct FaceProfile {
     /// Which anime grammar rules run for this character and how strongly (FE-05). A rule with no entry runs at its
     /// default, so a file without this section behaves as before. Variants switch single rules by path.
     pub grammar: GrammarRules,
+    /// The photoreal 3D eye and the skin round it, for a character whose eyes are modelled rather than painted. Left
+    /// out, the face has painted eyes only; `face.set_style` on any `face/eye3d/...` field adds it with its defaults.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eye3d: Option<EyeDesign>,
 }
 
 impl FaceProfile {
@@ -1189,6 +1194,9 @@ impl Validate for FaceProfile {
         c.nested("effects", &self.effects);
         c.nested("mapping", &self.mapping);
         c.nested("grammar", &self.grammar);
+        if let Some(eye) = &self.eye3d {
+            c.nested("eye3d", eye);
+        }
         if let Err(message) = self.rest.validate_ranges() {
             c.fail("rest", message);
         }

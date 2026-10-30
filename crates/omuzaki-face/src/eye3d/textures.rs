@@ -83,7 +83,7 @@ fn collarette_at(iris: &Iris, a: f32, seed: u32) -> f32 {
 /// The iris half of the atlas.
 pub fn iris(iris: &Iris, seed: u32, size: u32) -> Canvas {
     let (outer, inner, deep, fibre, limbal) =
-        (lin(iris.outer), lin(iris.inner), lin(iris.deep), lin(iris.fibre), lin(iris.limbal));
+        (lin(iris.outer), lin(iris.inner), lin(iris.deep), lin(iris.fibre_colour), lin(iris.limbal_colour));
     let fibres = iris.fibres.clamp(0.0, 1.0);
     let ring = iris.limbal_ring.clamp(0.0, 1.0);
     let s = seed ^ FIBRE_STREAM;
