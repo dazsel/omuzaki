@@ -38,8 +38,11 @@ pub struct Atlas {
 /// Draws the eye's atlas at `size` pixels per half (a power of two keeps mipmaps exact).
 pub fn atlas(design: &EyeDesign, size: u32) -> Atlas {
     let style = design.style.clamp(0.0, 1.0);
-    let iris = styled(style, || iris(&design.iris, design.seed, size), || anime_iris(&design.anime, design.seed, size));
-    let sclera = styled(style, || sclera(&design.sclera, design.seed, size), || anime_sclera(&design.sclera, size));
+    let mut iris =
+        styled(style, || iris(&design.iris, design.seed, size), || anime_iris(&design.anime, design.seed, size));
+    let mut sclera = styled(style, || sclera(&design.sclera, design.seed, size), || anime_sclera(&design.sclera, size));
+    super::paint::iris(&mut iris, design);
+    super::paint::sclera(&mut sclera, design);
     let (w, h) = (size as usize * 2, size as usize);
     let mut rgba = vec![0u8; w * h * 4];
     let (left, right) = (iris.to_srgb(), sclera.to_srgb());

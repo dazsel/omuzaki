@@ -11,7 +11,7 @@ use omuzaki_core::time::FakeClock;
 use omuzaki_doc_api::{DocPath, DocRead, DocWrite};
 use omuzaki_doc_mock::MemDoc;
 use omuzaki_face::eye3d::EyeDesign;
-use omuzaki_face::eye3d::closeup::{Shot, View};
+use omuzaki_face::eye3d::closeup::{Lamp, Shot, View};
 use omuzaki_face::eye3d::fit::{Circle, Landmarks, fit, project, residuals};
 use omuzaki_face_api::FaceProfile;
 use omuzaki_face_api::eye3d::{EyeShape, IrisColour};
@@ -138,6 +138,18 @@ fn bad_landmarks_and_shots_are_refused_with_their_field() {
     bad.gaze = [0.0, 0.0, -1.0];
     assert!(bad.check().is_err(), "an eye can't look into its own head");
     assert!(View::Macro.shot().check().is_ok() && View::Front.shot().check().is_ok());
+
+    // The light rides on the shot, and its numbers are checked with it.
+    let mut lit = View::Macro.shot();
+    lit.light.lamp = Some(Lamp { position: [0.03, -0.03, 0.02], intensity: 1.0, reach: 0.06 });
+    assert!(lit.check().is_ok());
+    let json = serde_json::to_value(&lit).unwrap();
+    assert_eq!(serde_json::from_value::<Shot>(json).unwrap(), lit, "a lit shot reads back as it was written");
+    lit.light.lamp = Some(Lamp { position: [0.03, -0.03, 0.02], intensity: 12.0, reach: 0.06 });
+    assert!(lit.check().unwrap_err().contains("lamp"));
+    lit.light.lamp = None;
+    lit.light.key = [0.0; 3];
+    assert!(lit.check().unwrap_err().contains("key"));
 }
 
 #[test]

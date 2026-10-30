@@ -1,4 +1,5 @@
-//! The 3D eye's quick edits. `face.eye3d.preset` gives a character's eye a named shape and iris colour in one undoable
+//! The 3D eye's quick edits. `face.eye3d.paint` paints marks by hand on its skin, white and iris, placed exactly.
+//! `face.eye3d.preset` gives a character's eye a named shape and iris colour in one undoable
 //! edit, the first step before its numbers are tuned with `face.set_style`.
 //!
 //! The fit (`face.eye3d.fit`): an agent measures landmarks on a photograph of an eye (the opening's outline,
@@ -14,7 +15,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use omuzaki_face_api::eye3d::{EyeShape, IrisColour};
+use omuzaki_face_api::eye3d::{EyeMark, EyeShape, IrisColour};
 
 use crate::eye3d::closeup::{Shot, View};
 use crate::eye3d::fit::{Landmarks, fit};
@@ -87,6 +88,76 @@ impl Op for EyePreset {
 }
 
 register_op!(EyePreset);
+
+/// Paints marks by hand on a character's 3D eye: on its skin, its white or its iris.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "marks": [
+            {"on": "skin", "points": [[0.016, -0.009]], "size": 0.0006, "colour": "#6a3a24", "opacity": 0.7, "softness": 0.6},
+            {"on": "sclera", "points": [[0.011, 0.0], [0.009, 0.0004], [0.0075, 0.0003]], "size": 0.00008,
+             "colour": "#a03a3a", "opacity": 0.5, "taper": 0.8},
+            {"on": "iris", "points": [[0.0025, 0.0012]], "size": 0.0004, "colour": "#3a2412", "opacity": 0.8}
+        ]},
+        {"character": "kit", "marks": [], "replace": true}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
+pub struct PaintEye {
+    /// The character whose 3D eye to paint (it gets one with the defaults if it has none).
+    pub character: CharId,
+    /// The marks, painted in order over the ones already there.
+    pub marks: Vec<EyeMark>,
+    /// Whether the marks replace every mark already painted (an empty list clears them) rather than adding to them.
+    #[serde(default)]
+    pub replace: bool,
+}
+
+impl Op for PaintEye {
+    fn meta() -> OpMeta {
+        OpMeta {
+            name: "face.eye3d.paint",
+            summary: "Paint marks by hand on a character's 3D eye: dots and strokes on its skin, its white or its iris \
+                      (freckles, moles, vessels, crypts, flecks), each placed in metres in the eye's frame, over the \
+                      detail the design generates; adds to the marks already there, or replaces them. One undoable \
+                      edit",
+            kind: OpKind::Edit,
+            scope: Scope::EditCharacter,
+            undo: Undo::Auto,
+        }
+    }
+
+    fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        if self.marks.is_empty() && !self.replace {
+            return Err(OpError::invalid("marks", "give at least one mark, or `replace: true` to clear them"));
+        }
+        let stored = stored_face(ctx, &self.character)?;
+        let mut design = effective(stored.as_ref())?.eye3d.unwrap_or_default();
+        if self.replace {
+            design.paint.clear();
+        }
+        design.paint.extend(self.marks.iter().cloned());
+        let count = design.paint.len();
+        let mut working = working_copy(stored.as_ref());
+        if let Value::Object(face) = &mut working {
+            face.insert("eye3d".to_owned(), to_json(&design)?);
+        }
+        check_edit(stored.as_ref(), &working, &template()?)?;
+        let mut patch = Patch::new();
+        diff(&paths::face(&self.character), stored.as_ref(), Some(&working), &mut patch);
+        let mut plan = Plan::edit(patch);
+        let mut output = changed_output(&plan.patch, None);
+        if let Value::Object(fields) = &mut output {
+            fields.insert("marks".to_owned(), json!(count));
+            fields.insert("next".to_owned(), json!("render.eye to see them"));
+        }
+        plan.output = Some(output);
+        Ok(plan)
+    }
+}
+
+register_op!(PaintEye);
 
 fn rounds() -> u32 {
     200

@@ -94,11 +94,27 @@ pub struct Lighting {
     /// The softbox, from the camera's direction: how far it sits toward the nose (`x`) and above (`y`) the camera's
     /// line; the catchlight moves with it.
     pub softbox: [f32; 2],
+    /// A lamp close to the face, whose light fades across the frame: one side of the picture bright, the other in
+    /// shade, as a lamp a hand's width away lights a macro still. None by default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lamp: Option<Lamp>,
+}
+
+/// A lamp near the eye: warm and unshadowed, its light fading to nothing at its reach.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Lamp {
+    /// Where it is, metres in the eye's frame (`[0.03, -0.03, 0.02]`: by the nose, below the eye).
+    pub position: [f32; 3],
+    /// Its strength, 0 to 10 (about the key's at 1).
+    pub intensity: f32,
+    /// How far its light reaches, metres, 0.01 to 1; the light fades over the whole of it.
+    pub reach: f32,
 }
 
 impl Default for Lighting {
     fn default() -> Self {
-        Self { key: [0.55, 0.6, 0.55], key_intensity: 0.8, fill: 0.22, softbox: [0.4, 1.0] }
+        Self { key: [0.55, 0.6, 0.55], key_intensity: 0.8, fill: 0.22, softbox: [0.4, 1.0], lamp: None }
     }
 }
 
@@ -120,6 +136,17 @@ impl Lighting {
         }
         if self.softbox.iter().any(|v| v.abs() > 4.0) {
             return Err("light.softbox: each must be -4 to 4".to_owned());
+        }
+        if let Some(lamp) = &self.lamp {
+            if lamp.position.iter().chain([&lamp.intensity, &lamp.reach]).any(|v| !v.is_finite()) {
+                return Err("light.lamp: every number must be finite".to_owned());
+            }
+            if Vec3::from(lamp.position).length() > 1.0 {
+                return Err("light.lamp.position: must be within a metre of the eye".to_owned());
+            }
+            if !(0.0..=10.0).contains(&lamp.intensity) || !(0.01..=1.0).contains(&lamp.reach) {
+                return Err("light.lamp: intensity must be 0 to 10 and reach 0.01 to 1".to_owned());
+            }
         }
         Ok(())
     }
@@ -346,6 +373,16 @@ fn build(
             intensity: 0.08 + 0.44 * design.style,
         },
     ];
+    if let Some(lamp) = &light.lamp {
+        // The renderer's point light is inverse-square from 10 cm in, flat inside that (it is built for rooms), so at
+        // the eye's scale its fade is its window alone: `intensity` here is scaled to the key's.
+        scene.lights.push(Light::Point {
+            position: Vec3::from(lamp.position),
+            colour: Colour::hex(0x00ff_e8d0),
+            intensity: lamp.intensity * 0.01 * real,
+            range: lamp.reach,
+        });
+    }
     // The softbox sits above the camera, so its reflection lands on the cornea as the catchlight.
     let softbox = camera_at.normalize() + Vec3::new(light.softbox[0], light.softbox[1], 0.0);
     let environment = renderer.create_environment(&studio(softbox))?;

@@ -15,6 +15,9 @@
 //!   (`face.eye3d.fit`); named shapes and iris colours ([`EyeShape`](omuzaki_face_api::eye3d::EyeShape),
 //!   [`IrisColour`](omuzaki_face_api::eye3d::IrisColour), `face.eye3d.preset`) are the quick start before it.
 //!
+//! Marks painted by hand ([`EyeDesign::paint`], `face.eye3d.paint`) go over the generated detail of the skin, the
+//! white and the iris, so any freckle, vessel or fleck can be put exactly where it is wanted.
+//!
 //! Everything is a pure function of an [`EyeDesign`], whose seed drives every random detail.
 
 #![allow(
@@ -28,6 +31,7 @@ pub mod design;
 pub mod fit;
 pub mod geometry;
 pub mod noise;
+mod paint;
 pub mod skin;
 pub mod textures;
 

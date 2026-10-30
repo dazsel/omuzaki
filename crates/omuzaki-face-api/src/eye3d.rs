@@ -33,6 +33,9 @@ pub struct EyeDesign {
     pub lashes: Lashes,
     /// How the eye looks in the anime style: the painted iris and the inked lines.
     pub anime: Anime,
+    /// Marks painted by hand on the skin, the white and the iris, over the detail the design generates, in the order
+    /// painted (at most [`MAX_MARKS`]).
+    pub paint: Vec<EyeMark>,
 }
 
 impl Default for EyeDesign {
@@ -47,6 +50,7 @@ impl Default for EyeDesign {
             skin: Skin::default(),
             lashes: Lashes::default(),
             anime: Anime::default(),
+            paint: Vec::new(),
         }
     }
 }
@@ -62,6 +66,63 @@ impl EyeDesign {
             skin: Skin { tone: Colour::hex(0x00f6_dccf), freckles: 0.0, ..base.skin },
             ..base
         }
+    }
+}
+
+/// The surface a mark is painted on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum EyeSurface {
+    /// The lids and the skin round the eye; points in metres in the eye's frame (`+x` toward the nose, `+y` up, the
+    /// eyeball's centre at the origin).
+    Skin,
+    /// The white; points in metres across the eyeball as seen from straight in front, the eye looking straight ahead.
+    Sclera,
+    /// The iris; points in metres from the iris's centre in its own plane, the eye looking straight ahead.
+    Iris,
+}
+
+/// One mark painted by hand on the eye: a dot (one point) or a stroke (two or more), placed exactly where it is wanted,
+/// over the detail the design generates. It is how a freckle, a mole, a vessel, a crypt or a fleck is put in a given
+/// place, and how an eye is redrawn mark by mark to match a picture.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EyeMark {
+    /// What it is painted on.
+    pub on: EyeSurface,
+    /// Where: one point for a dot, more for a stroke through them, in the surface's metres (see [`EyeSurface`]).
+    pub points: Vec<[f32; 2]>,
+    /// The dot's diameter or the stroke's width, metres (0.01 mm to 10 mm).
+    pub size: f32,
+    /// Its colour.
+    pub colour: Colour,
+    /// How opaque, 0 to 1.
+    #[serde(default = "full")]
+    pub opacity: f32,
+    /// How soft a dot's edge is, 0 (crisp) to 1 (fading from its centre); strokes are drawn crisp.
+    #[serde(default)]
+    pub softness: f32,
+    /// How much a stroke narrows toward its last point, 0 (not at all) to 1 (to nothing).
+    #[serde(default)]
+    pub taper: f32,
+}
+
+fn full() -> f32 {
+    1.0
+}
+
+/// The most marks one eye holds.
+pub const MAX_MARKS: usize = 4096;
+
+impl Validate for EyeMark {
+    fn check(&self, c: &mut Check) {
+        c.rule(&["points"], (1..=512).contains(&self.points.len()), "a mark needs 1 to 512 points");
+        let inside = self.points.iter().flatten().all(|v| v.is_finite() && v.abs() <= 0.05);
+        c.rule(&["points"], inside, "every point must be within 5 cm of the eye");
+        c.range_f32("size", self.size, 0.000_01, 0.01);
+        c.range_f32("opacity", self.opacity, 0.0, 1.0);
+        c.range_f32("softness", self.softness, 0.0, 1.0);
+        c.range_f32("taper", self.taper, 0.0, 1.0);
     }
 }
 
@@ -193,6 +254,10 @@ impl Validate for EyeDesign {
         c.nested("skin", &self.skin);
         c.nested("lashes", &self.lashes);
         c.nested("anime", &self.anime);
+        c.rule(&["paint"], self.paint.len() <= MAX_MARKS, "an eye holds at most 4096 painted marks");
+        for (i, mark) in self.paint.iter().enumerate() {
+            c.nested(&format!("paint/{i}"), mark);
+        }
     }
 }
 
