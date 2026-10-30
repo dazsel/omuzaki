@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use omuzaki_ops_api::{Effect, FsMode, Mode, Op, OpCall, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo};
+use omuzaki_ops_api::{Effect, ErrorCode, FsMode, Mode, Op, OpCall, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo};
 use omuzaki_track_api::camera::CameraId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -17,9 +17,9 @@ use crate::perform::input::{InputHost, SourceKind};
 /// `.y4m` is read directly; MP4, MKV, MOV, `WebM` and the rest through the person's own ffmpeg, on this machine only.
 /// The path is checked like any op's file: outside the project folder it needs a granted root.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[schemars(extend("examples" = [{ "path": "/home/me/Videos/clip.mp4" }]))]
+#[schemars(extend("examples" = [{ "path": "footage/clip.mp4" }]))]
 pub struct OpenVideo {
-    /// The video's absolute path on this machine.
+    /// The video: a path in the project folder, or an absolute path in a folder the person shared.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     /// Used by undo; callers leave it unset. Puts back the source and camera held before a file was opened.
@@ -61,8 +61,13 @@ impl Op for OpenVideo {
                 // links and `..` included. ffmpeg, a separate program, then opens the resolved path by its text: a
                 // link swapped in after this check could only change which video is decoded into tracking frames,
                 // whose pixels never come back to the caller.
-                let checked = ctx.fs_access(path.trim(), FsMode::Read)?.to_string();
-                let info = host.add_video(Path::new(&checked), mode(ctx)).map_err(op_error)?;
+                let info = match ctx.fs_access(path.trim(), FsMode::Read) {
+                    Ok(checked) => host.add_video(Path::new(&checked.to_string()), mode(ctx)).map_err(op_error)?,
+                    // A dry run checks that the actor may read the path and previews the change; whether a video is
+                    // there and decodes is learned only by reading it, which applying does.
+                    Err(missing) if ctx.dry_run && missing.code == ErrorCode::NotFound => None,
+                    Err(refused) => return Err(refused),
+                };
                 (info.as_ref().map(|i| i.id.clone()), SourceKind::Webcam, info)
             }
             (None, Some(restore)) => (restore.camera.clone(), restore.source, None),

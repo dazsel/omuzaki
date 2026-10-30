@@ -631,5 +631,9 @@ fn a_video_path_goes_through_the_file_check() {
     let missing = dir.path().canonicalize().unwrap().join("gone.mp4").display().to_string();
     let gone = rig.plan_with("input.open_video", json!({ "path": missing }), &person(), false, &grants).unwrap_err();
     assert_eq!(gone.code, ErrorCode::NotFound, "{gone:?}");
+    // A dry run checks the actor may read the path and previews the change; it reads no file, so a missing one is
+    // found when applying.
+    let preview = rig.plan_with("input.open_video", json!({ "path": missing }), &person(), true, &grants).unwrap();
+    assert_eq!(preview.output.unwrap()["camera"], Value::Null);
     assert_eq!(rig.run("input.open_video", json!({})).unwrap_err().code, ErrorCode::Invalid, "a path or a restore");
 }
