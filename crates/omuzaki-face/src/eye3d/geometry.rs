@@ -54,13 +54,14 @@ pub struct EyeMeshes {
 }
 
 /// Builds the eye's meshes. `view_from` is where the lashes are seen from, in the eye's frame: a ribbon turns to face
-/// it.
-pub fn meshes(design: &EyeDesign, view_from: Vec3) -> EyeMeshes {
+/// it. `gaze` is where the eyeball looks, in the same frame (`+z` straight ahead): the eyeball itself is built looking
+/// down `+z` and turned by its instance's transform, and the occlusion shell follows the turned cornea.
+pub fn meshes(design: &EyeDesign, view_from: Vec3, gaze: Vec3) -> EyeMeshes {
     let lids = Lids::new(design);
     EyeMeshes {
         eyeball: eyeball(&design.ball),
         region: lids.region(),
-        shell: lids.shell(),
+        shell: lids.shell(gaze.normalize_or(Vec3::Z)),
         lashes: lids.lashes(&design.lashes, design.seed, view_from),
     }
 }
@@ -82,14 +83,13 @@ impl Cornea {
         Self { edge, radius, centre_z: apex - radius }
     }
 
-    /// The outer surface's height at `(x, y)`, unrotated eye.
-    fn surface_z(&self, ball: &Ball, x: f32, y: f32) -> f32 {
-        let r2 = x * x + y * y;
-        if r2 < self.edge * self.edge {
-            self.centre_z + (self.radius * self.radius - r2).max(0.0).sqrt()
-        } else {
-            (ball.radius * ball.radius - r2).max(0.0).sqrt()
-        }
+    /// The outer surface's height at `(x, y)` with the eye looking along `gaze`: the higher of the ball and the
+    /// cornea's sphere (which lies inside the ball everywhere but over the cornea).
+    fn surface_z(&self, ball: &Ball, gaze: Vec3, x: f32, y: f32) -> f32 {
+        let sphere = (ball.radius * ball.radius - x * x - y * y).max(0.0).sqrt();
+        let c = gaze * self.centre_z;
+        let rest = self.radius * self.radius - (x - c.x).powi(2) - (y - c.y).powi(2);
+        if rest > 0.0 { sphere.max(c.z + rest.sqrt()) } else { sphere }
     }
 }
 
@@ -326,8 +326,52 @@ impl Lids {
         self.caruncle(&mut mesh, &mut info);
         mesh.normals = smooth_normals(&mesh.positions, &mesh.indices);
         orient_toward(&mut mesh, Vec3::Z);
+        self.meniscus(&mut mesh, &mut info);
         mesh.extra.push(ExtraAttribute { name: slug(SKIN_INFO), components: 4, data: info });
         mesh
+    }
+
+    /// The tear meniscus: a thin wet bead where each lid's margin meets the eye, fuller along the lower lid and
+    /// thinning out at the corners. It catches the light as a bright line.
+    fn meniscus(&self, mesh: &mut MeshData, info: &mut Vec<f32>) {
+        const SIDES: usize = 8;
+        let first = mesh.positions.len();
+        for k in 0..AROUND {
+            let u = Self::along(k);
+            let full = if Self::is_upper(k) { 0.06 } else { 0.14 } * MM;
+            let radius = 0.02 * MM + full * bump(u, 0.5).powf(0.5);
+            let p = self.plane_point(k, -0.05 * MM);
+            let centre = Vec3::new(p.x, p.y, self.proxy(p.x, p.y, 0.04 * MM));
+            let next = self.edge[(k + 1) % AROUND];
+            let prev = self.edge[(k + AROUND - 1) % AROUND];
+            let tangent = Vec3::new(next.x - prev.x, next.y - prev.y, 0.0).normalize_or(Vec3::X);
+            let out = centre.normalize_or(Vec3::Z);
+            let side = tangent.cross(out).normalize_or(Vec3::Y);
+            for j in 0..SIDES {
+                #[allow(clippy::cast_precision_loss)]
+                let phi = 2.0 * PI * j as f32 / SIDES as f32;
+                let n = out * phi.cos() + side * phi.sin();
+                let q = centre + n * radius;
+                mesh.positions.push(q);
+                mesh.normals.push(n);
+                mesh.uvs.push(skin_uv(q));
+                info.extend_from_slice(&[1.0, 1.0, 0.5, 0.0]);
+            }
+        }
+        let at = |k: usize, j: usize| u32::try_from(first + (k % AROUND) * SIDES + j % SIDES).unwrap_or(0);
+        for k in 0..AROUND {
+            for j in 0..SIDES {
+                let (a, b, c, d) = (at(k, j), at(k + 1, j), at(k + 1, j + 1), at(k, j + 1));
+                // Wind each quad to face along its normal.
+                let pa = mesh.positions[a as usize];
+                let facing = (mesh.positions[b as usize] - pa).cross(mesh.positions[c as usize] - pa);
+                if facing.dot(mesh.normals[a as usize]) >= 0.0 {
+                    mesh.indices.extend_from_slice(&[a, b, c, a, c, d]);
+                } else {
+                    mesh.indices.extend_from_slice(&[a, c, b, a, d, c]);
+                }
+            }
+        }
     }
 
     /// The caruncle: a small wet mound in the inner corner.
@@ -363,18 +407,18 @@ impl Lids {
     }
 
     /// The occlusion shell: a film over the eyeball inside the opening, its alpha in the vertex colours.
-    fn shell(&self) -> MeshData {
+    fn shell(&self, gaze: Vec3) -> MeshData {
         let cornea = Cornea::new(&self.ball);
         let mut mesh = MeshData::default();
-        let depths = [0.0, 0.15, 0.35, 0.6, 0.9, 1.3, 1.8, 2.4, 3.1, 4.0];
+        let depths = [0.0, 0.15, 0.35, 0.6, 0.9, 1.3, 1.8, 2.4, 3.1, 4.0, 5.0, 6.0, 7.0];
         for &d in &depths {
             for k in 0..AROUND {
                 let p = self.plane_point(k, -d * MM);
-                let z = cornea.surface_z(&self.ball, p.x, p.y).max(self.proxy(p.x, p.y, -0.6 * MM)) + 0.06 * MM;
+                let z = cornea.surface_z(&self.ball, gaze, p.x, p.y).max(self.proxy(p.x, p.y, -0.6 * MM)) + 0.06 * MM;
                 mesh.positions.push(Vec3::new(p.x, p.y, z));
                 // The upper lid shades more and farther than the lower.
-                let (strength, reach) = if Self::is_upper(k) { (0.85, 1.8) } else { (0.55, 0.8) };
-                let alpha = strength * (-d / reach).exp() * (1.0 - smoothstep(3.0, 4.0, d));
+                let (strength, reach) = if Self::is_upper(k) { (0.8, 2.6) } else { (0.6, 1.2) };
+                let alpha = strength * (-d / reach).exp() * (1.0 - smoothstep(5.0, 7.0, d));
                 mesh.colours.push([0.0, 0.0, 0.0, alpha]);
             }
         }

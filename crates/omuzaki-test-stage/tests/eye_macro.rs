@@ -47,7 +47,7 @@ fn studio(key: Vec3) -> EnvironmentDesc {
             let phi = (u - 0.5) * std::f32::consts::TAU;
             let elevation = (0.5 - v) * std::f32::consts::PI;
             let d = Vec3::new(elevation.cos() * phi.cos(), elevation.sin(), elevation.cos() * phi.sin());
-            let room = 0.07 + 0.08 * (0.5 + 0.5 * d.y);
+            let room = 0.05 + 0.06 * (0.5 + 0.5 * d.y);
             let mut c = Vec3::new(room * 1.05, room, room * 0.92);
             // The softbox: a rectangle about 30 by 22 degrees round the key, measured along the horizon and up.
             let side = key.cross(Vec3::Y).normalize();
@@ -56,7 +56,7 @@ fn studio(key: Vec3) -> EnvironmentDesc {
                 let (a, b) = (d.dot(side) / d.dot(key), d.dot(up) / d.dot(key));
                 let inside = (1.0 - ((a.abs() - 0.26) / 0.02).clamp(0.0, 1.0))
                     * (1.0 - ((b.abs() - 0.2) / 0.02).clamp(0.0, 1.0));
-                c += Vec3::new(24.0, 23.0, 21.0) * inside;
+                c += Vec3::new(15.0, 14.2, 13.0) * inside;
             }
             rgb.extend_from_slice(&[c.x, c.y, c.z]);
         }
@@ -77,7 +77,7 @@ fn render(renderer: &mut WgpuRenderer, design: &EyeDesign) -> image::RgbaImage {
     // The eye looks up and in, past the camera.
     let forward = Vec3::new(0.14, 0.12, 1.0).normalize();
     let frame = EyeFrame { centre: Vec3::ZERO, forward, up: Vec3::Y };
-    let built = eye3d::meshes(design, camera_at);
+    let built = eye3d::meshes(design, camera_at, forward);
 
     let atlas = eye3d::textures::atlas(design, 2048);
     if let Some(dir) = std::env::var_os("OMUZAKI_EYE_OUT").map(PathBuf::from) {
@@ -138,8 +138,8 @@ fn render(renderer: &mut WgpuRenderer, design: &EyeDesign) -> image::RgbaImage {
     }
     let key = Vec3::new(-0.35, 0.72, 0.6);
     scene.lights = vec![
-        Light::Directional { to_light: key, colour: Colour::hex(0x00ff_f2e4), intensity: 1.1, casts_shadow: true },
-        Light::Hemisphere { sky: Colour::hex(0x00c8_d0e0), ground: Colour::hex(0x0060_4a40), intensity: 0.2 },
+        Light::Directional { to_light: key, colour: Colour::hex(0x00ff_f2e4), intensity: 0.8, casts_shadow: true },
+        Light::Hemisphere { sky: Colour::hex(0x00c8_d0e0), ground: Colour::hex(0x0060_4a40), intensity: 0.12 },
     ];
     // The softbox sits above the camera, so its reflection lands on the cornea as the catchlight.
     let softbox = camera_at.normalize() + Vec3::new(0.25, 0.55, 0.0);

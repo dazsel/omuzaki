@@ -121,7 +121,7 @@ pub struct Sclera {
 
 impl Default for Sclera {
     fn default() -> Self {
-        Self { white: Colour::hex(0x00dc_d4ca), edge: Colour::hex(0x00cc_b4aa), vessels: 60, network: 0.7 }
+        Self { white: Colour::hex(0x00cc_c2b6), edge: Colour::hex(0x00c4_a89c), vessels: 60, network: 0.7 }
     }
 }
 
@@ -185,7 +185,7 @@ pub struct Skin {
 impl Default for Skin {
     fn default() -> Self {
         Self {
-            tone: Colour::hex(0x00ac_7458),
+            tone: Colour::hex(0x00a8_6c4c),
             freckles: 26.0,
             freckle: Colour::hex(0x0070_3a24),
             lid_thickness: 0.0016,
