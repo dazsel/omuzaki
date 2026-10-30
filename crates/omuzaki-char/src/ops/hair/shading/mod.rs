@@ -48,7 +48,9 @@ fn write(ctx: &OpCtx<'_>, found: &HairPart, shading: HairShading, field: &str) -
 /// `highlight_jitter` and `highlight_cel` (`0` soft to `1` a crisp band). The second shadow tone (#2525): `shade_deep`
 /// (a colour multiplier, `#ffffff` for none) and `shade_deep_at` (`-1` to `1`). The ring's shape: `ring_shape`
 /// (`band`, `zigzag`, `streak` or `crescent`) and `ring_shape_depth` (`0` to `1`). The occlusion (#2526):
-/// `occlusion` (`0` to `1`) and `occlusion_reach` (metres, `0.01` to `0.1`).
+/// `occlusion` (`0` to `1`) and `occlusion_reach` (metres, `0.01` to `0.1`). The terminator, as `MToon`'s: `shade_shift`
+/// (`-1` to `1`, the cosine where the shadow starts; lower wraps the light further round) and `shade_softness` (`0` a
+/// hard cel edge to `1`).
 /// A colour is `#rrggbb` or a palette slot, `@hair_root`. Streaks have their own ops (`hair.streak.*`), and so does a
 /// natural colour (`hair.colour.natural`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -80,8 +82,8 @@ impl Op for HairSetShading {
                       edge_darkening, keep_identity, inner_darkening, normal_blend, edge_feather, strands, strand_gap, \
                       strand_grain, tip_length, outline_width, brows_through, the highlights (highlight, \
                       highlight_strength, highlight_width, highlight_shift, highlight_secondary, highlight_jitter, \
-                      highlight_cel), shade_deep, shade_deep_at, ring_shape, ring_shape_depth, occlusion or \
-                      occlusion_reach",
+                      highlight_cel), shade_deep, shade_deep_at, ring_shape, ring_shape_depth, occlusion, \
+                      occlusion_reach, shade_shift or shade_softness",
             kind: OpKind::Edit,
             scope: Scope::EditCharacter,
             undo: Undo::Auto,

@@ -1473,7 +1473,8 @@ pub struct HairShading {
     pub brows_through: bool,
     /// Coloured streaks laid over shares of the clumps, applied in order (CB-34). See [`HairShading::apply_to_clumps`].
     pub streaks: Vec<Streak>,
-    /// How much of the prototype's inner-layer darkening is applied, `0..=1`: `1` (the default) is the designed
+    /// How much of the prototype's inner-layer darkening is applied, `0..=1` (the kit's default, `0.3`, keeps the
+    /// hair a light, even mass, as the anime samples read): `1` is the designed
     /// darkening, so a clump authored darker (`shade < 1`) keeps its shade; `0` is none, and every clump is drawn at
     /// full shade `1.0`. Applied to [`HairClump::shade`] on the CPU as `shade += (1 - d) * (1 - shade)`, so the hair
     /// program's parameters don't change.
@@ -1530,6 +1531,14 @@ pub struct HairShading {
     pub occlusion: f64,
     /// How far the occlusion looks for hair and head around each vertex, metres, `0.01..=0.1`.
     pub occlusion_reach: f64,
+    /// Where the shadow starts, as the cosine between the surface and the light, `-1..=1`: below 0 the light wraps
+    /// further round the hair, as `MToon`'s shade shift does. The default, `-0.45`, lights most of the hair as the anime
+    /// samples' `MToon` hair is lit; the prototype's was `-0.05`.
+    pub shade_shift: f64,
+    /// How soft the shadow's edge is, `0..=1`: half the width of the blend from light to shade, in the same cosine
+    /// (`MToon`'s `1 - shade toony`, halved). `0` is a hard cel edge; the default, `0.45`, is soft, as the anime samples'
+    /// is; the prototype's was `0.22`.
+    pub shade_softness: f64,
     /// The natural colour the root, mid, tip, shade, line, outline, ring and rim colours were made from, if they were
     /// (`hair.colour.natural`, #2524): kept so the next edit starts from it. Setting the colours by hand keeps it as a
     /// record; it is not read at build.
@@ -1611,6 +1620,12 @@ const RING_WOBBLE: f64 = 0.012;
 /// See [`RING_WIDTH`].
 const RING_TEETH: f64 = 0.25;
 
+/// The hair's default terminator: the shadow starts well past square to the light, as `MToon` hair's does with its
+/// shade shift (the anime samples' `-0.3`, on a half-Lambert scale).
+pub const SHADE_SHIFT: f64 = -0.45;
+/// The hair's default terminator softness: a soft edge, as `MToon` hair's with a low shade toony.
+pub const SHADE_SOFTNESS: f64 = 0.45;
+
 impl Default for HairShading {
     fn default() -> Self {
         Self {
@@ -1628,8 +1643,8 @@ impl Default for HairShading {
             ring_teeth: RING_TEETH,
             ring_follow: 1.0,
             ring_shift: -0.75,
-            strand_lines: 0.10,
-            edge_darkening: 0.14,
+            strand_lines: 0.03,
+            edge_darkening: 0.03,
             keep_identity: 0.36,
             rim: ColourRef::rgb(0xff, 0xe2, 0xcc),
             rim_strength: 0.12,
@@ -1638,12 +1653,12 @@ impl Default for HairShading {
             outline_width: 0.0014,
             brows_through: true,
             streaks: Vec::new(),
-            inner_darkening: 1.0,
+            inner_darkening: 0.3,
             normal_blend: 1.0,
-            edge_feather: 0.25,
+            edge_feather: 0.0,
             strands: 28,
-            strand_gap: 0.28,
-            strand_grain: 0.06,
+            strand_gap: 0.05,
+            strand_grain: 0.02,
             tip_length: 0.012,
             highlight: ColourRef::rgb(0xff, 0xf6, 0xec),
             highlight_strength: 0.4,
@@ -1652,12 +1667,14 @@ impl Default for HairShading {
             highlight_secondary: 0.2,
             highlight_jitter: 0.25,
             highlight_cel: 0.2,
-            shade_deep: ColourRef::rgb(0xd8, 0xc4, 0xd0),
+            shade_deep: ColourRef::rgb(0xf4, 0xee, 0xf2),
             shade_deep_at: -0.25,
             ring_shape: RingShape::Band,
             ring_shape_depth: 0.5,
-            occlusion: 0.55,
+            occlusion: 0.25,
             occlusion_reach: 0.04,
+            shade_shift: SHADE_SHIFT,
+            shade_softness: SHADE_SOFTNESS,
             pigment: None,
         }
     }
@@ -1791,7 +1808,9 @@ impl HairShading {
             ("shade-deep-at", self.shade_deep_at),
             ("ring-shape", self.ring_shape.program_index()),
             ("ring-shape-depth", self.ring_shape_depth),
-            ("keep-hue", 1.0),
+            // `keep-hue` is left at the program's own default, 1: the material's parameter count is capped.
+            ("shade-shift", self.shade_shift),
+            ("shade-softness", self.shade_softness),
         ] {
             params.insert(Slug::new(name)?, ParamValue::Float(narrow(value)));
         }
@@ -1901,6 +1920,8 @@ impl Validate for HairShading {
         c.range("ring_shape_depth", self.ring_shape_depth, 0.0, 1.0);
         c.range("occlusion", self.occlusion, 0.0, 1.0);
         c.range("occlusion_reach", self.occlusion_reach, 0.01, 0.1);
+        c.range("shade_shift", self.shade_shift, -1.0, 1.0);
+        c.range("shade_softness", self.shade_softness, 0.0, 1.0);
         if let Some(pigment) = &self.pigment {
             c.nested("pigment", pigment);
         }
@@ -2610,7 +2631,8 @@ mod tests {
         let shading = HairShading::default().shading(&Palette::default()).unwrap();
         let Shading::Program { name, params } = &shading else { panic!("a program") };
         assert_eq!(name.as_str(), HAIR_PROGRAM);
-        assert_eq!(params.len(), 31);
+        // 9 colours and 23 numbers: `keep-hue` stays at the program's default, under the 32-parameter cap.
+        assert_eq!(params.len(), 32);
         assert_eq!(params[&Slug::new("rim-strength").unwrap()], ParamValue::Float(0.12));
         assert_eq!(params[&Slug::new("ring-width").unwrap()], ParamValue::Float(0.035));
         assert_eq!(params[&Slug::new("back-light").unwrap()], ParamValue::Float(0.6));
@@ -2735,12 +2757,15 @@ mod tests {
     fn the_default_shading_keeps_the_program_and_adds_no_streaks() {
         let shading = HairShading::default();
         assert_eq!(shading.streaks, Vec::new());
-        assert_eq!(shading.inner_darkening, 1.0);
+        // The kit's anime defaults: a light inner darkening and faint clump edges.
+        assert_eq!(shading.inner_darkening, 0.3);
         let Shading::Program { params, .. } = shading.shading(&Palette::default()).unwrap() else {
             panic!("a program")
         };
         assert_eq!(params[&Slug::new("keep-identity").unwrap()], ParamValue::Float(0.36));
-        assert_eq!(params[&Slug::new("edge-darkening").unwrap()], ParamValue::Float(0.14));
+        assert_eq!(params[&Slug::new("edge-darkening").unwrap()], ParamValue::Float(0.03));
+        assert_eq!(params[&Slug::new("shade-shift").unwrap()], ParamValue::Float(-0.45));
+        assert_eq!(params[&Slug::new("shade-softness").unwrap()], ParamValue::Float(0.45));
     }
 
     #[test]

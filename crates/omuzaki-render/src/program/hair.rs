@@ -33,6 +33,8 @@
 //! | `highlight-cel` | `0` soft lobes, `1` crisp anime bands | (none) |
 //! | `shade-deep` | the second, deeper shadow tone (#2525), a multiplier; white is none | (none) |
 //! | `shade-deep-at` | the N.L below which it takes over (cast shadows take it too) | (none) |
+//! | `shade-shift` | where the shadow starts, a cosine (`MToon`'s shade shift) | `shift` of the hair's `toon()` |
+//! | `shade-softness` | half the width of the shadow's edge | `softness` of the hair's `toon()` |
 //! | `ring-shape` | the painted ring's shape per lock: `0` band, `1` zig-zag, `2` streak, `3` crescent (#2525) | `0` |
 //! | `ring-shape-depth` | how deep the teeth hang, the streaks run or the crescents curl | (none) |
 //! | `keep-hue` | `keep-identity` keeps the surface's own hue (`1`) or the prototype's cream (`0`) | `0` |
@@ -78,8 +80,12 @@ const HIGHLIGHT_SECONDARY: f32 = 0.2;
 const HIGHLIGHT_JITTER: f32 = 0.25;
 /// How crisp the lobes' edges are.
 const HIGHLIGHT_CEL: f32 = 0.2;
+/// The kit's terminator, as `MToon` hair's (the prototype's was -0.05 and 0.22): where the shadow starts (a cosine) and
+/// half its edge's width.
+const SHADE_SHIFT: f32 = -0.45;
+const SHADE_SOFTNESS: f32 = 0.45;
 /// The second shadow tone (#2525), a multiplier: white is none.
-const SHADE_DEEP: u32 = 0x00d8_c4d0;
+const SHADE_DEEP: u32 = 0x00f4_eef2;
 /// The N.L below which the second tone takes over.
 const SHADE_DEEP_AT: f32 = -0.25;
 /// How deep a zig-zag's teeth hang, or how far a crescent curls or a streak runs.
@@ -89,8 +95,8 @@ const RING_SHAPE_DEPTH: f32 = 0.5;
 fn toon(values: &Values) -> Toon {
     Toon {
         shade: values.colour("shade").unwrap_or(Colour::hex(0x00b0_8e88)),
-        shift: -0.05,
-        softness: 0.22,
+        shift: values.float("shade-shift").unwrap_or(SHADE_SHIFT),
+        softness: values.float("shade-softness").unwrap_or(SHADE_SOFTNESS),
         rim: Rim {
             colour: values.colour("rim").unwrap_or(Colour::hex(0x00ff_e2cc)),
             power: 1.0 / values.float("rim-width").unwrap_or(RIM_WIDTH).max(0.1),
@@ -117,8 +123,8 @@ register_shading_program!(
             ParamSpec::float("ring-teeth", RING_TEETH, 0.0, 1.0),
             ParamSpec::float("ring-follow", RING_FOLLOW, 0.0, 1.0),
             ParamSpec::float("ring-shift", RING_SHIFT, -2.0, 2.0),
-            ParamSpec::float("strand-lines", 0.10, 0.0, 1.0),
-            ParamSpec::float("edge-darkening", 0.14, 0.0, 1.0),
+            ParamSpec::float("strand-lines", 0.03, 0.0, 1.0),
+            ParamSpec::float("edge-darkening", 0.03, 0.0, 1.0),
             ParamSpec::float("keep-identity", 0.36, 0.0, 1.0),
             ParamSpec::colour("rim", 0x00ff_e2cc),
             ParamSpec::float("rim-strength", 0.12, 0.0, 1.0),
@@ -136,6 +142,8 @@ register_shading_program!(
             ParamSpec::float("ring-shape", 0.0, 0.0, 3.0),
             ParamSpec::float("ring-shape-depth", RING_SHAPE_DEPTH, 0.0, 1.0),
             ParamSpec::float("keep-hue", 1.0, 0.0, 1.0),
+            ParamSpec::float("shade-shift", SHADE_SHIFT, -1.0, 1.0),
+            ParamSpec::float("shade-softness", SHADE_SOFTNESS, 0.0, 1.0),
         ],
         attributes: &[
             AttributeSpec { name: "hair-uv", components: 2 },
