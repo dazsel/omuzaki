@@ -2529,7 +2529,7 @@ mod tests {
         let shading = HairShading::default().shading(&Palette::default()).unwrap();
         let Shading::Program { name, params } = &shading else { panic!("a program") };
         assert_eq!(name.as_str(), HAIR_PROGRAM);
-        assert_eq!(params.len(), 19);
+        assert_eq!(params.len(), 31);
         assert_eq!(params[&Slug::new("rim-strength").unwrap()], ParamValue::Float(0.12));
         assert_eq!(params[&Slug::new("ring-width").unwrap()], ParamValue::Float(0.035));
         assert_eq!(params[&Slug::new("back-light").unwrap()], ParamValue::Float(0.6));
