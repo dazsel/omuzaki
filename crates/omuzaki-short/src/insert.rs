@@ -48,6 +48,10 @@ pub struct InsertDef {
     /// Scales the whole card about the frame's middle.
     #[serde(default = "one", skip_serializing_if = "is_one")]
     pub scale: f32,
+    /// Squashes or stretches the whole card about the frame's middle, across and down, before it turns: `[1, 0.6]`
+    /// squashes it flat, as a cartoon squashes on a hit.
+    #[serde(default = "ones", skip_serializing_if = "is_ones")]
+    pub stretch: [f32; 2],
     /// Turns the whole card about the frame's middle, degrees clockwise.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub roll: f32,
@@ -114,6 +118,15 @@ const fn one() -> f32 {
     1.0
 }
 
+const fn ones() -> [f32; 2] {
+    [1.0, 1.0]
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref, reason = "serde's skip_serializing_if passes a reference")]
+fn is_ones(v: &[f32; 2]) -> bool {
+    is_one(&v[0]) && is_one(&v[1])
+}
+
 const fn default_width() -> f32 {
     0.01
 }
@@ -178,6 +191,8 @@ pub fn check(i: usize, insert: &InsertDef, max_seconds: f32) -> Result<(), Short
         ("offset[1]", insert.offset[1], -2.0, 2.0),
         ("scale", insert.scale, 0.05, 10.0),
         ("roll", insert.roll, -360.0, 360.0),
+        ("stretch[0]", insert.stretch[0], 0.05, 10.0),
+        ("stretch[1]", insert.stretch[1], 0.05, 10.0),
     ];
     for (name, value, lo, hi) in ranges {
         if !(lo..=hi).contains(&value) {
@@ -320,7 +335,7 @@ impl InsertPainter {
 /// offset, then pixels to the plane.
 struct Placement {
     size: Vec2,
-    scale: f32,
+    scale: Vec2,
     rotation: Vec2,
     offset: Vec2,
 }
@@ -330,7 +345,7 @@ impl Placement {
         let roll = insert.roll.to_radians();
         Self {
             size: Vec2::new(w, h),
-            scale: insert.scale,
+            scale: Vec2::from(insert.stretch) * insert.scale,
             rotation: Vec2::new(roll.cos(), roll.sin()),
             offset: Vec2::from(insert.offset) * Vec2::new(w, h),
         }
@@ -380,7 +395,8 @@ fn add_shape(list: &mut DrawList, shape: &ShapeDef, place: &Placement, w: f32) {
         list.push(Cmd::Fill { path, paint: Paint::Solid(fill), opacity: 1.0 });
     }
     if let Some(line) = shape.line {
-        let width = shape.width * place.scale;
+        // A stretched card's lines thicken with its area.
+        let width = shape.width * (place.scale.x * place.scale.y).sqrt();
         list.push(Cmd::Stroke {
             path,
             paint: Paint::Solid(line),
@@ -523,6 +539,7 @@ mod tests {
             card: None,
             offset: [0.0; 2],
             scale: 1.0,
+            stretch: [1.0, 1.0],
             roll: 0.0,
             shapes,
         }
@@ -562,8 +579,13 @@ mod tests {
         // A half turn about the middle puts the bar near the bottom.
         let mut turned = insert(0.0, vec![bar]);
         turned.roll = 180.0;
-        painter.draw(&[turned], 0.1, &mut rgba, [w, h]).unwrap();
+        painter.draw(&[turned.clone()], 0.1, &mut rgba, [w, h]).unwrap();
         assert_eq!(pixel(&rgba, w, 45, 160 - 24)[2], 255);
+        // Squashed to half its height about the middle: the bar moves halfway in and is half as tall.
+        let squashed = InsertDef { stretch: [1.0, 0.5], roll: 0.0, ..turned };
+        painter.draw(&[squashed], 0.1, &mut rgba, [w, h]).unwrap();
+        assert_eq!(pixel(&rgba, w, 45, 52)[2], 255);
+        assert_eq!(pixel(&rgba, w, 45, 62)[2], 0x20, "below its squashed edge");
     }
 
     #[test]
