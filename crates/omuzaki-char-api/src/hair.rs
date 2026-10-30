@@ -1829,7 +1829,7 @@ impl HairShading {
     pub fn apply_to_clumps(&self, palette: &Palette, clumps: &mut [HairClump]) -> Result<(), HairShadingError> {
         let lift = narrow(1.0 - self.inner_darkening);
         for clump in clumps.iter_mut() {
-            // At the default `1` the added term is exactly zero, so the shade stays bit-identical, not merely close.
+            // At `1` (the prototype's darkening) the added term is exactly zero, so the shade stays bit-identical.
             clump.shade += lift * (1.0 - clump.shade);
         }
         let groups: Vec<&GroupId> = clumps.iter().map(|c| &c.group).collect();
