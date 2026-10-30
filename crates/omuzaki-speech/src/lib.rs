@@ -18,6 +18,8 @@
 //! - [`asr`]: speech to text on an `asr@1` session.
 //! - [`host`]: [`SpeechHost`] runs both workers and owns the back-pressure policy. It reports `Held` (the barge-in,
 //!   three speech frames in a row), the mute flag, and which utterances were spoken privately (`CohostOnly`).
+//! - [`turn`]: [`TurnTaker`], end-of-turn prediction from the voice's pitch, loudness and last words, which sets the
+//!   segmenter's wait per pause and marks where a listener would nod.
 //! - [`ears`]: [`SpeechEars`], the host as the AI performer hears it, dropping its own echo.
 //! - [`commands`]: voice commands (AP-10): the phrase matcher, the [`CommandListener`] that turns the person's raw-mic
 //!   transcripts into `voice.command` events, and the opt-in `voice_commands.*` ops.
@@ -51,6 +53,7 @@ pub mod segmenter;
 pub mod slots;
 pub mod synth;
 pub mod tts;
+pub mod turn;
 pub mod vad;
 pub mod voices;
 pub mod whisper_runtime;
@@ -66,6 +69,7 @@ pub use host::{
 pub use kokoro_runtime::Kokoro;
 pub use segmenter::{Segment, Segmenter, SegmenterConfig};
 pub use tts::{TtsHost, TtsStats, TtsVoice};
+pub use turn::{TurnConfig, TurnCues, TurnFrame, TurnTaker};
 pub use vad::{SileroVad, VadStream, VoiceActivity};
 pub use whisper_runtime::WhisperGgml;
 

@@ -22,6 +22,8 @@
 //! | [`retarget`] | [`Calibration`] ranges, [`RetargetConfig`], the [`Retarget`] and [`Calibrator`] traits |
 //! | [`playout`] | the A/V delay for the performance stream: [`PlayoutDelay`] and [`DelayRamp`] |
 //! | [`blend`] | the blending order ([`LayerStack`]), ownership ([`Ownership`]), hand-off ([`Fade`]) |
+//! | [`body`] | the living body's dials ([`BodyStyle`]): how much the torso, arms and hands move on their own |
+//! | [`impact`] | a physical reaction to play on a body ([`Impact`]): a bonk, a shove, a fall |
 //! | [`life`] | the [`LifeLayer`] trait, seeds ([`LifeStreams`]) and every tuning number ([`LifeParams`]) |
 //! | [`skeleton`] | VRM humanoid bones, [`Skeleton`] (a humanoid, or generic for creatures), [`HumanoidPose`], [`Pose`], the [`Rig`] and [`Animator`] traits |
 //! | [`humanoid_frames`] | [`HumanoidFrames`]: the normalised-pose maths, [`HumanoidPose`] to and from a skeleton's own bone axes |
@@ -49,11 +51,13 @@
 #![deny(missing_docs)]
 
 pub mod blend;
+pub mod body;
 pub mod channel;
 pub mod constraint;
 pub mod frame;
 pub mod humanoid_frames;
 pub mod ik;
+pub mod impact;
 pub mod life;
 pub mod playout;
 pub mod pose_layer;
@@ -64,6 +68,7 @@ pub mod skeleton;
 pub mod spring;
 
 pub use blend::{BlendMode, Bus, Fade, Layer, LayerStack, OWN_THRESHOLD, Ownership, Source};
+pub use body::{BodyStyle, Handedness, MAX_BODY_AMOUNT};
 pub use channel::{
     ARKIT_COUNT, CHANNEL_CAPACITY, CHANNELS, CUSTOM_COUNT, Channel, ChannelBuf, ChannelInfo, ChannelMask, Mirror,
     Region, Unit,
@@ -72,6 +77,7 @@ pub use constraint::{Axis, BoneConstraint, ConstraintError, ConstraintKind, Cons
 pub use frame::{DeviceProfile, EyeAngles, FrameSource, HeadPose, NotArkit, Tick, TrackFrame, TrackStatus};
 pub use humanoid_frames::HumanoidFrames;
 pub use ik::{IkGoals, IkSolver, Limb, LookAt};
+pub use impact::{BodyPart, Impact, ImpactKind, MAX_IMPACT_STRENGTH, MAX_RECOVER_S, MIN_RECOVER_S};
 pub use life::{
     BlinkParams, Cues, Dynamics, FaceParams, GazeParams, HeadParams, LaughParams, LifeConfig, LifeDynamics, LifeLayer,
     LifeParams, LifeStreams, LifeSystems, LifeTraits, Personality, Span,

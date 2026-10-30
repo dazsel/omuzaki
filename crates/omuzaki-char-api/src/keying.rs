@@ -105,10 +105,12 @@ fn every_context_field_is_keyed_or_excluded(ctx: &BuildCtx<'_>) {
 /// the weight brushes.
 #[derive(Debug, Clone, Copy)]
 pub struct DesignKeyInputs<'a> {
-    /// The age, for the body and the head (its dials move them).
+    /// The age, for the body and the head (its anatomy and dials move them).
     pub age: Option<f64>,
     /// The dials, for the body and the head.
     pub dials: Option<&'a std::collections::BTreeMap<crate::ids::DialId, crate::design::DialSetting>>,
+    /// The anatomy, for the body and the head.
+    pub anatomy: Option<&'a crate::design::AnatomyDef>,
     /// The part's own sculpt strokes.
     pub strokes: &'a [crate::design::SculptStroke],
 }
@@ -116,11 +118,12 @@ pub struct DesignKeyInputs<'a> {
 /// What of the design layer goes into the key of `part`, a part of `category`.
 pub fn design_key_inputs<'a>(def: &'a CharacterDef, part: &PartId, category: PartCategory) -> DesignKeyInputs<'a> {
     // Exhaustive, like the others: `sculpt` is read per part below, `layers` run in the assembler.
-    let DesignDef { age, dials, sculpt: _, layers: _ } = &*def.design;
+    let DesignDef { age, dials, anatomy, sculpt: _, layers: _ } = &*def.design;
     let shaped = matches!(category, PartCategory::Body | PartCategory::Head);
     DesignKeyInputs {
         age: if shaped { *age } else { None },
         dials: shaped.then_some(dials),
+        anatomy: shaped.then_some(anatomy),
         strokes: def.design.strokes(part),
     }
 }

@@ -64,6 +64,20 @@ pub(crate) fn jitter(round: u32, rounds: u32, hardware: u32) -> Vec2 {
     Vec2::new(step(round), step(row))
 }
 
+/// The amount `round` (of `rounds`) moves a particle's coverage before alpha-to-coverage turns it into samples (#2433).
+///
+/// Alpha-to-coverage picks samples from the alpha alone, the same in every round, so without it a particle's coverage
+/// lands on one of `hardware + 1` levels however many rounds there are. Each round instead moves the threshold by its
+/// own step of `1 / (hardware × rounds)`, centred on zero, so over the rounds a coverage `c` reaches `c` of the
+/// `hardware × rounds` samples, to within one of them, on any GPU. One round is no change at all.
+#[allow(clippy::cast_precision_loss)] // counts of at most 16: exact in f32
+pub(crate) fn coverage_dither(round: u32, rounds: u32, hardware: u32) -> f32 {
+    if rounds <= 1 {
+        return 0.0;
+    }
+    ((round as f32 + 0.5) / rounds as f32 - 0.5) / hardware.max(1) as f32
+}
+
 /// The pipeline that adds one round's resolved colour, weighted, into the average (`shader/accumulate.wgsl`). The
 /// weight is the blend constant, so one pipeline serves every round count.
 pub(crate) struct Accumulate {
@@ -210,6 +224,32 @@ mod tests {
             assert!(sum.length() < 1e-6, "{rounds} rounds: the mean offset is zero, so nothing shifts on average");
             assert_eq!(jitter(1, rounds, 16 / rounds), jitter(1, rounds, 16 / rounds));
         }
+    }
+
+    /// Alpha-to-coverage as the common hardware draws it: the alpha rounded to the nearest of `hardware + 1` levels.
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    fn to_coverage(alpha: f32, hardware: u32) -> u32 {
+        (alpha.clamp(0.0, 1.0) * hardware as f32).round() as u32
+    }
+
+    #[test]
+    #[allow(clippy::cast_precision_loss)]
+    fn the_rounds_together_reach_a_coverage_level_per_sample_on_any_hardware() {
+        for hardware in [1, 2, 4, 8] {
+            let rounds = 16 / hardware;
+            for step in 0..=160 {
+                let alpha = step as f32 / 160.0;
+                let dithered =
+                    |r| if alpha > 0.0 && alpha < 1.0 { alpha + coverage_dither(r, rounds, hardware) } else { alpha };
+                let covered: u32 = (0..rounds).map(|r| to_coverage(dithered(r), hardware)).sum();
+                let coverage = covered as f32 / 16.0;
+                assert!(
+                    (coverage - alpha).abs() <= 1.0 / 32.0 + 1e-6,
+                    "{hardware} samples x {rounds} rounds: alpha {alpha} covers {coverage}"
+                );
+            }
+        }
+        assert_eq!(coverage_dither(0, 1, 4), 0.0, "a frame that does not supersample is unchanged");
     }
 
     #[test]

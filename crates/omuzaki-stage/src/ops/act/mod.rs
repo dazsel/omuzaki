@@ -1,6 +1,7 @@
 //! The live control ops (`docs/design/drivers.md` §5): `act.expression`, `act.look`, `act.channels`, `act.clip`,
-//! `act.release` and `act.list`. Anything that can run an op (a person's panel, an agent over MCP, a script, a show's
-//! automation, the AI performer) moves a performing character with them: each plays an act on the member's live score
+//! `act.release`, `act.list`, and `act.react` ([`react`]), which knocks the body. Anything that can run an op (a
+//! person's panel, an agent over MCP, a script, a show's automation, the AI performer) moves a performing character
+//! with them: each plays an act on the member's live score
 //! ([`PerformHost::act`]), which the score layer blends under the tracker unless the member's drive map gives it the
 //! channels, or the call asks for `over_tracking` (`act.expression`, `act.channels`), which wins on its channels.
 //!
@@ -9,6 +10,8 @@
 //!
 //! They are live actions, like `trigger.press`: logged, scope `perform`, nothing to undo (the act fades by itself or
 //! on `act.release`). A member left out means the scene's subject.
+
+pub mod react;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -397,7 +400,8 @@ register_op!(Channels);
 #[schemars(extend("examples" = [
     { "clip": "wave" },
     { "clip": "wave-both", "hold_s": 3.0, "weight": 0.8 },
-    { "clip": "hand-on-chest", "held": true }
+    { "clip": "hand-on-chest", "held": true },
+    { "clip": "wave", "over_tracking": true, "fade_s": 0.0 }
 ]))]
 pub struct Clip {
     /// The clip (`clip.list` lists them; `act.list` lists the library's).
@@ -417,6 +421,10 @@ pub struct Clip {
     /// Seconds to fade in and out, 0 to snap. Default 0.25.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fade_s: Option<f32>,
+    /// Play it over the tracked head, the breath and the living body too, so the body is the clip exactly: a
+    /// recorded take (`motion.import`) played back as it was recorded. Default `false`: the webcam keeps the head.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub over_tracking: bool,
     /// The cast member; the scene's subject when left out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub member: Option<MemberId>,
@@ -451,7 +459,7 @@ impl Op for Clip {
         if self.fade_s.is_none() {
             envelope = Envelope::new(0.25, envelope.hold);
         }
-        play(ctx, self.member.as_ref(), ActRequest::clip_def(clip, weight), envelope)
+        play(ctx, self.member.as_ref(), ActRequest::clip_def(clip, weight).over_tracking(self.over_tracking), envelope)
     }
 }
 

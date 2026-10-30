@@ -254,7 +254,7 @@ impl SceneStage {
             skipped: Vec::new(),
         };
         this.cast.set_member_input(&lead_id, &this.base_input(&lead_id));
-        let built = this.add_members(doc, bodies, renderer).and_then(|_| this.resolve(bodies.store(), renderer));
+        let built = this.add_members(doc, bodies, renderer, &mut Vec::new()).and_then(|()| this.resolve(bodies.store(), renderer));
         match built {
             Ok(()) => Ok(this),
             Err(error) => {
@@ -293,14 +293,15 @@ impl SceneStage {
         self.id = id;
         self.def = def;
         let mut members = self.drop_members(doc, renderer)?;
-        let added = self.add_members(doc, bodies, renderer);
-        let resolved = if scene_changed || !members.is_empty() || added.as_ref().is_ok_and(|a| !a.is_empty()) {
+        // The members staged before a renderer failure stay on the stage, so the scene is resolved around them first.
+        let added = self.add_members(doc, bodies, renderer, &mut members);
+        let resolved = if scene_changed || !members.is_empty() {
             self.resolve(bodies.store(), renderer)?;
             true
         } else {
             false
         };
-        members.extend(added?);
+        added?;
         members.sort();
         members.dedup();
         Ok(Synced { restaged: false, members, resolved })
@@ -405,14 +406,15 @@ impl SceneStage {
         result.map(|()| gone).map_err(SceneStageError::Stage)
     }
 
-    /// Stages the visible members the cast doesn't have yet, and returns them. One whose body doesn't load is skipped
-    /// ([`skipped`](SceneStage::skipped)); a renderer failure ends it.
+    /// Stages the visible members the cast doesn't have yet, adding each to `added`. One whose body doesn't load is
+    /// skipped ([`skipped`](SceneStage::skipped)); a renderer failure ends it, with the members staged so far kept.
     fn add_members(
         &mut self,
         doc: &dyn DocRead,
         bodies: &mut dyn BodySource,
         renderer: &mut dyn Renderer,
-    ) -> Result<Vec<MemberId>, SceneStageError> {
+        added: &mut Vec<MemberId>,
+    ) -> Result<(), SceneStageError> {
         let missing: Vec<MemberId> = self
             .def
             .cast
@@ -420,7 +422,6 @@ impl SceneStage {
             .filter(|(id, member)| member.visible && !self.members.contains_key(*id))
             .map(|(id, _)| id.clone())
             .collect();
-        let mut added = Vec::with_capacity(missing.len());
         self.skipped.clear();
         for id in missing {
             // A member whose character is missing or doesn't build stays off the stage and is reported; the rest of the
@@ -442,7 +443,7 @@ impl SceneStage {
             self.cast.set_member_input(&id, &self.base_input(&id));
             added.push(id);
         }
-        Ok(added)
+        Ok(())
     }
 
     /// Resolves the scene around the members on the stage and hands it to the cast: placements, touches, and the

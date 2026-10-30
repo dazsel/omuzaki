@@ -1,8 +1,9 @@
 # Body dials (#2612): regional swellings of the body's regions, placed by a fraction along the region and shaped round
 # its section, so one definition serves every template and body shape. Amounts are fractions of the section's radius.
 # Sided dials are written for the left side (+x); the right is mirrored. Design targets from surface anatomy (the
-# deltoid, biceps, the calf's gastrocnemius, the gluteal mass), not likenesses. The age curves are gentle: the belly
-# fills in middle age, a child's bust is flat.
+# deltoid, biceps, the calf's gastrocnemius, the gluteal mass), not likenesses. Age reaches the body through its
+# anatomy (anatomy-body.toml: the belly filling in middle age, muscle thinning late, a child's flat chest), so these
+# dials carry no age curves of their own.
 
 [[dial]]
 id = "neck_girth"
@@ -68,7 +69,6 @@ name = "Bust"
 summary = "+1 a fuller bust; -1 a flat chest"
 group = "torso"
 prior = 0.35
-age = [[3.0, -0.8], [12.0, -0.6], [18.0, 0.0]]
 [[dial.effects]]
 frame = "body"
 region = "torso"
@@ -83,7 +83,6 @@ name = "Belly"
 summary = "+1 a round belly; -1 a flat stomach"
 group = "torso"
 prior = 0.3
-age = [[25.0, 0.0], [50.0, 0.25], [80.0, 0.35]]
 [[dial.effects]]
 frame = "body"
 region = "torso"

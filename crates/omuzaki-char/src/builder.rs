@@ -202,10 +202,10 @@ impl<'a> Run<'a> {
             // Invalid parameters hash as stored; they fail to build, and failures are never cached.
             let normalised = find_kind(kind.as_str()).and_then(|registration| (registration.check)(params).ok());
             h.word(u64::from(normalised.is_some()));
-            // The design layer's shape: the dials and age for the body and head, and this part's strokes.
+            // The design layer's shape: the dials, anatomy and age for the body and head, and this part's strokes.
             let category = find_kind(kind.as_str()).map_or(PartCategory::Accessory, |r| (r.meta)().category);
-            let DesignKeyInputs { age, dials, strokes } = design_key_inputs(self.def, part, category);
-            let _ = serde_json::to_writer(&mut h, &(age, dials, strokes)); // plain data always serialises
+            let DesignKeyInputs { age, dials, anatomy, strokes } = design_key_inputs(self.def, part, category);
+            let _ = serde_json::to_writer(&mut h, &(age, dials, anatomy, strokes)); // plain data always serialises
             normalised.unwrap_or_else(|| params.clone())
         });
         let mut slots = BTreeSet::new();

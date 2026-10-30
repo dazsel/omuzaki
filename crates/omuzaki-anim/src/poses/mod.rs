@@ -57,3 +57,4 @@ pub use def::{HandSlot, MAX_REACH, PoseDef, PoseError};
 pub use hips::{HipsScaleError, hips_rest_height, retarget_hips, scale_hips};
 pub use library::PoseLibrary;
 pub use posture::{BoneMix, Hand, PoseMask, Posture};
+pub use set::{HandBody, HandsBody, PoseBody, ReachesBody};

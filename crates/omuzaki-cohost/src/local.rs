@@ -764,8 +764,9 @@ impl CohostFactory for LocalFactory {
             .map_err(StartError::failed)?;
             tts.spawn_pump().map_err(StartError::failed)?;
             tts.set_echo(echo.clone());
-            let (mut speech, input) = SpeechHost::open(open(&vad_slot())?, open(&asr_slot())?, &HostConfig::default())
-                .map_err(StartError::failed)?;
+            let (mut speech, input) =
+                SpeechHost::open(open(&vad_slot())?, open(&asr_slot())?, &HostConfig::conversation())
+                    .map_err(StartError::failed)?;
             speech.request_transcripts().keep();
             let request = TapRequest {
                 point: TapPoint::Voice(VoiceUse::Listen),
