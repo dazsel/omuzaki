@@ -389,7 +389,12 @@ impl PropKind for CloudBank {
         between("size", p.size, 0.2, 60.0)
     }
 
-    #[allow(clippy::cast_precision_loss, reason = "small counts")]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "small counts; r() is in 0..1"
+    )]
     fn build(p: &CloudBankParams) -> Result<PropOutput, String> {
         let mut s = Shape::new();
         for i in 0..p.count {

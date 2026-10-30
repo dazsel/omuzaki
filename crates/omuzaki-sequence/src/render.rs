@@ -480,9 +480,7 @@ fn shot_frame(
     {
         let fx = surface.at(local, live.seed);
         if fx != live.fx {
-            live.stage
-                .set_surface_fx(renderer, fx.clone(), &surface.spare)
-                .map_err(|e| render_error("the surface fx", e))?;
+            live.stage.set_surface_fx(renderer, fx, &surface.spare).map_err(|e| render_error("the surface fx", e))?;
             live.fx = fx;
         }
     }

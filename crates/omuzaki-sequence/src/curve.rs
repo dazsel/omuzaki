@@ -301,7 +301,7 @@ fn cubic_bezier([x1, y1, x2, y2]: [f32; 4], u: f32) -> f32 {
     }
     let (mut lo, mut hi) = (0.0f32, 1.0f32);
     for _ in 0..30 {
-        s = 0.5 * (lo + hi);
+        s = f32::midpoint(lo, hi);
         if coord(x1, x2, s) < u {
             lo = s;
         } else {
@@ -467,12 +467,11 @@ impl<T: Lerp> Track<T> {
             *self = Self::Keys(Vec::new());
         }
         let Self::Keys(keys) = self else { return };
-        match keys.iter().position(|k| (k.t - key.t).abs() < 1e-3) {
-            Some(i) => keys[i] = key,
-            None => {
-                let at = keys.iter().position(|k| k.t > key.t).unwrap_or(keys.len());
-                keys.insert(at, key);
-            }
+        if let Some(i) = keys.iter().position(|k| (k.t - key.t).abs() < 1e-3) {
+            keys[i] = key;
+        } else {
+            let at = keys.iter().position(|k| k.t > key.t).unwrap_or(keys.len());
+            keys.insert(at, key);
         }
     }
 

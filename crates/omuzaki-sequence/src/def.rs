@@ -394,7 +394,7 @@ impl SurfaceTrack {
         if amount <= 0.0 {
             return None;
         }
-        let (sweep, sweep_mix) = self.sweep.map_or(([0.0; 3], 0.0), |(d, m)| (d, m));
+        let (sweep, sweep_mix) = self.sweep.unwrap_or(([0.0; 3], 0.0));
         Some(SurfaceFx {
             kind: self.kind,
             amount,

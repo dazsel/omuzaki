@@ -6,7 +6,7 @@
 //! - queries: `sequence.get`, `sequence.list`, `sequence.check` (the shots, layers and frames, and what a render would
 //!   refuse) and `sequence.kinds` (every easing, layer kind, icon, volume preset, prop kind, pose, hand shape and
 //!   expression a sequence may name);
-//! - jobs: `sequence.render` (a WebM video) and `sequence.stills` (frames at chosen times, as one PNG sheet).
+//! - jobs: `sequence.render` (a VP9 video) and `sequence.stills` (frames at chosen times, as one PNG sheet).
 
 use std::io::Read as _;
 use std::sync::Mutex;
@@ -351,9 +351,10 @@ impl KeySequence {
         let t = f64::from(self.t);
         let mut keys = if is_keys(track) {
             track.as_array().cloned().unwrap_or_default()
-        } else if track.is_null() || track.as_array().is_some_and(Vec::is_empty) {
-            Vec::new()
-        } else if self.v.as_ref().is_some_and(Value::is_object) && track.is_array() {
+        } else if track.is_null()
+            || track.as_array().is_some_and(Vec::is_empty)
+            || (self.v.as_ref().is_some_and(Value::is_object) && track.is_array())
+        {
             Vec::new()
         } else {
             // A held value becomes a key at 0, so the new key travels from it.
@@ -381,12 +382,11 @@ impl KeySequence {
             if let (Some(ease), Value::Object(fields)) = (&self.ease, &mut key) {
                 fields.insert("ease".into(), serde_json::to_value(ease).map_err(|e| OpError::internal(e.to_string()))?);
             }
-            match found {
-                Some(at) => keys[at] = key,
-                None => {
-                    let at = keys.partition_point(|k| key_time(k).is_some_and(|kt| kt < t));
-                    keys.insert(at, key);
-                }
+            if let Some(at) = found {
+                keys[at] = key;
+            } else {
+                let at = keys.partition_point(|k| key_time(k).is_some_and(|kt| kt < t));
+                keys.insert(at, key);
             }
         }
         *track = Value::Array(keys);
@@ -874,7 +874,7 @@ impl Op for RenderSequence {
         let mut done = 0usize;
         let mut progress = |share: f32| {
             done += 1;
-            if done % PROGRESS_EVERY != 0 {
+            if !done.is_multiple_of(PROGRESS_EVERY) {
                 return Ok(());
             }
             job.checkpoint("rendering", 0.02 + 0.95 * share).map_err(|e| {

@@ -411,11 +411,11 @@ fn noise3(p: Vec3, seed: u32) -> f32 {
 /// The volume's signed distance at `p` (negative inside): the puffs melted together, the edge broken by noise that
 /// flows upward over time.
 fn field(puffs: &[Puff], p: Vec3, blend: f32, roughness: f32, scale: f32, t: f32, seed: u32) -> f32 {
-    let mut d = f32::MAX;
-    for puff in puffs {
-        let di = p.distance(puff.centre) - puff.radius;
-        d = if d == f32::MAX { di } else { smooth_min(d, di, blend) };
-    }
+    let d = puffs
+        .iter()
+        .map(|puff| p.distance(puff.centre) - puff.radius)
+        .reduce(|d, di| smooth_min(d, di, blend))
+        .unwrap_or(f32::MAX);
     if roughness <= 0.0 {
         return d;
     }
@@ -456,6 +456,10 @@ pub fn mesh(def: &VolumeDef, t: f32, seed: u32, emitter: &dyn Fn(f32) -> Vec3) -
 /// per cell the surface crosses, at the mean of its edge crossings; one quad per grid edge the surface crosses), with
 /// smooth normals from the field's gradient. Outward-facing triangles, counter-clockwise from outside.
 pub fn surface_nets(f: &dyn Fn(Vec3) -> f32, lo: Vec3, hi: Vec3, cell: f32) -> Option<MeshData> {
+    const CORNERS: [[usize; 3]; 8] =
+        [[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0], [0, 0, 1], [1, 0, 1], [0, 1, 1], [1, 1, 1]];
+    const EDGES: [[usize; 2]; 12] =
+        [[0, 1], [2, 3], [4, 5], [6, 7], [0, 2], [1, 3], [4, 6], [5, 7], [0, 4], [1, 5], [2, 6], [3, 7]];
     if !(cell > 0.0 && cell.is_finite()) {
         return None;
     }
@@ -491,10 +495,6 @@ pub fn surface_nets(f: &dyn Fn(Vec3) -> f32, lo: Vec3, hi: Vec3, cell: f32) -> O
         )
         .normalize_or_zero()
     };
-    const CORNERS: [[usize; 3]; 8] =
-        [[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0], [0, 0, 1], [1, 0, 1], [0, 1, 1], [1, 1, 1]];
-    const EDGES: [[usize; 2]; 12] =
-        [[0, 1], [2, 3], [4, 5], [6, 7], [0, 2], [1, 3], [4, 6], [5, 7], [0, 4], [1, 5], [2, 6], [3, 7]];
     let mut vertex_of = vec![u32::MAX; nx * ny * nz];
     let cell_index = |x: usize, y: usize, z: usize| (z * ny + y) * nx + x;
     let mut mesh = MeshData::default();

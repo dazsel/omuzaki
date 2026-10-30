@@ -169,7 +169,7 @@ impl ActorPlayer {
             .iter()
             .enumerate()
             .map(|(i, key)| {
-                Ok(PoseAt { t: key.t, posture: posture_of(key, &format!("{at}.pose[{i}]"))?, ease: key.ease.clone() })
+                Ok(PoseAt { t: key.t, posture: posture_of(key, &format!("{at}.pose[{i}]"))?, ease: key.ease })
             })
             .collect::<Result<Vec<_>, SequenceError>>()?;
         let mut mask = ChannelMask::EMPTY;
@@ -202,7 +202,7 @@ impl ActorPlayer {
             }
             let weights: Vec<(&ExpressionId, f32)> = ids.iter().map(|(id, w)| (id, *w)).collect();
             let values = set.blend(&rest, &weights).map_err(|e| invalid(format!("{at}.face[{i}]: {}", e.0)))?;
-            faces.push(FaceAt { t: key.t, values, ease: key.ease.clone() });
+            faces.push(FaceAt { t: key.t, values, ease: key.ease });
         }
         let visemes = VISEMES
             .iter()

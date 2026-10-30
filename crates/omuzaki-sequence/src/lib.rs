@@ -16,6 +16,9 @@
 //! | [`kinds`] | the prop kinds `news-desk`, `skyline`, `cloud-bank` and `card` |
 //! | [`error`] | [`SequenceError`] |
 #![deny(missing_docs)]
+// Geometry, curve and colour maths keeps the names of its textbooks (`x`, `y`, `t`, `u`, `r`, `g`, `b`), and its counts
+// (segments, frames, keys, pixels) are far below 2^24, so they become f32 exactly.
+#![allow(clippy::many_single_char_names, clippy::similar_names, clippy::cast_precision_loss)]
 
 pub mod actor;
 pub mod curve;
