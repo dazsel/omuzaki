@@ -45,6 +45,7 @@ use omuzaki_stream::feed::ProgramFeed;
 use omuzaki_stream::service::{Program as StreamProgram, StreamService};
 use omuzaki_stream_api::window::{ClickThrough, WindowHost};
 use omuzaki_theatre::TheatreBook;
+use omuzaki_track_api::body::BodyBoard;
 use omuzaki_track_api::camera::{CameraId, CameraInfo};
 use omuzaki_track_api::error::TrackError;
 use omuzaki_track_api::tracker::{LatencyStats, Tracker, TrackerConfig};
@@ -303,6 +304,7 @@ impl LiveApp {
             settings,
             scripts: crate::script::store::DirScriptStore::in_user_config()
                 .map(|store| Arc::new(store) as Arc<dyn omuzaki_script::ScriptStore>),
+            body: None,
         };
         Self::start_with(document, inputs.webcam, extras, clock, transparency, &base)
     }
@@ -316,7 +318,11 @@ impl LiveApp {
         base: &HumanoidPose,
     ) -> Result<Self, StartError> {
         let hub = InputWiring::hub(clock.as_ref(), extras.data.clone());
-        let performer = live_performer(Box::new(NoSource), ChannelBuf::NEUTRAL, *base);
+        // The tracked arms and hands reach the performer through a board made with it; the input hands the board to the
+        // webcam when `input.track_body` switches them on.
+        let (body, body_reader) = BodyBoard::new();
+        let performer = live_performer(Box::new(NoSource), ChannelBuf::NEUTRAL, *base).with_body(Box::new(body_reader));
+        extras.body = Some(body);
         // The viewport reads the tracker's latency while the input owns the tracker: two handles to one.
         let tracker = SharedTracker::new(tracker);
         let observer = clock.observer();

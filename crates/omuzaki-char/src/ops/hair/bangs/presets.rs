@@ -1,4 +1,4 @@
-//! The five bangs presets: whole `BangsGen` values, in the order `hair.bangs.list_presets` shows them.
+//! The six bangs presets: whole `BangsGen` values, in the order `hair.bangs.list_presets` shows them.
 //!
 //! The table is `pub` so the preset op and the preset renders read the same values. Heights are head-local, as in
 //! `BangLayer::tip_heights`: relative to the head's centre, not to the brow, so `0` is level with the centre and a
@@ -20,7 +20,7 @@ pub struct BangsPreset {
 }
 
 /// Every preset, in listing order.
-pub const PRESETS: [BangsPreset; 5] = [
+pub const PRESETS: [BangsPreset; 6] = [
     BangsPreset { id: "blunt", summary: "A straight-cut fringe across the brow, two even layers.", make: blunt },
     BangsPreset {
         id: "side-swept",
@@ -36,6 +36,12 @@ pub const PRESETS: [BangsPreset; 5] = [
         id: "wispy",
         summary: "Three light layers of thin, uneven locks and a few loose wisps between the eyes.",
         make: wispy,
+    },
+    BangsPreset {
+        id: "anime",
+        summary: "Long pointed locks of uneven length falling between and over the eyes, swept a little to the \
+                  character's right: the anime fringe. Pair it with a card lock (hair.group.set_lock) for crisp tips.",
+        make: anime,
     },
     BangsPreset {
         id: "none",
@@ -88,6 +94,15 @@ fn wispy() -> BangsGen {
         Wisp { phi_deg: 18.0, tip_height: -0.04, width: 0.02 },
     ];
     BangsGen { layers, wisps, sweep_deg: 8.0, ..BangsGen::default() }
+}
+
+// Measured on the kit's renders against an anime reference's fringe: the top layer's long locks reach the lower
+// eyelids (head-local -0.05 to -0.06) between shorter ones at the brow, so the eyes show through the gaps; the under
+// layer fills to the upper lids. The rhythm alternates long and short, longest left of centre, as a drawn fringe does.
+fn anime() -> BangsGen {
+    let under = BangLayer { hook_deg: 6.0, ..layer(10, 46.0, &[-0.01, -0.03, -0.02, -0.04, -0.015, -0.035, -0.02, -0.03], 0.8) };
+    let top = BangLayer { hook_deg: 6.0, ..layer(7, 42.0, &[-0.02, -0.05, -0.03, -0.06, -0.035, -0.05, -0.025], 1.0) };
+    BangsGen { layers: vec![under, top], wisps: Vec::new(), sweep_deg: 12.0, ..BangsGen::default() }
 }
 
 fn none() -> BangsGen {

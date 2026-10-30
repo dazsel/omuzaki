@@ -19,13 +19,14 @@ Snapshot refreshed by `refresh.py` (git, GitHub and CI parts) after chunks of wo
 |---|---|
 | Agent-hours | 1,620 (113 Director, 627 local subagents, 879 cloud sessions); see "Coverage" for what is estimated |
 | Most agents at once | 52, at 7:25 PM PT on 2026-10-15 (23 local, 51 cloud at their own peak) |
-| Lines in the repository | 1,003,528 (Rust source 509,744; Rust tests and benches 331,112; docs 54,249; tooling and CI 24,771; other 83,652) |
-| Commits on `main` | 1,061 (not counting merge commits) |
-| Pull requests | 848 opened and 744 merged (417 and 395 here; 431 and 349 in the earlier repository before the move) |
-| Issues (this repository) | 1,921 opened, 904 closed |
-| CI runs | 8,196 (6,535 here, 1,661 in the earlier repository) |
+| Lines in the repository | 1,147,300 (Rust source 605,665; Rust tests and benches 366,723; docs 56,705; tooling and CI 25,700; other 92,507) |
+| Commits on `main` | 1,391 (not counting merge commits) |
+| Pull requests | 909 opened and 796 merged (478 and 447 here; 431 and 349 in the earlier repository before the move) |
+| Issues (this repository) | 2,149 opened, 1,132 closed |
+| CI runs | 8,626 (6,965 here, 1,661 in the earlier repository) |
+| Cloud project sessions since 10-21 | 33 sessions, up to 371 session-hours open (an upper bound: includes time waiting), at most 9 open at once on a day; see `cloud_sessions_daily.csv` |
 | Code reviews | 1,267 recorded (1,244 by Codex) |
-| Tokens, cumulative | about 30 billion of every kind, mostly cache reads: 15.6 B in local sessions (measured), 9.5 B in cloud sessions before 10-21 (estimated) and 4.9 B in the cloud project since (measured, `cloud_usage_snapshots.csv`) |
+| Tokens, cumulative | about 33 billion of every kind, mostly cache reads: 15.6 B in local sessions (measured), 9.5 B in cloud sessions before 10-21 (estimated) and 7.8 B in the cloud project since (measured, `cloud_usage_snapshots.csv`) |
 
 ## Charts
 
@@ -42,6 +43,7 @@ Drawn by `charts.py` (standard library only) from the CSVs; `refresh.py` redraws
 ![Open issues and pull requests](charts/backlog.svg)
 ![CI runs per day](charts/ci-runs.svg)
 ![Cloud project tokens](charts/cloud-tokens.svg)
+![Cloud sessions open at once](charts/cloud-sessions.svg)
 ![Tokens, cumulative](charts/tokens-cumulative.svg)
 
 ## Timeline
@@ -59,6 +61,13 @@ Drawn by `charts.py` (standard library only) from the CSVs; `refresh.py` redraws
   that area's whole spine in a Claude cloud project, lands its own work and keeps `main` green, with no review gate and
   no required checks ("make it exist first, then make it good"). From 3:36 PM PT on 10-21 almost every commit carries
   `Agent-Lane: cloud`.
+- **2026-10-22: big one-shot spines.** Each area owner works in large chunks, one pull request closing many issues at
+  once. The busiest day since the move: 320 commits and about 200,000 lines added, with about 63 cloud agent-hours reported.
+- **2026-10-23: first round done.** The first-round area threads finish; 72 commits that day.
+- **2026-10-24 to 10-27:** no commits and no cloud sessions.
+- **2026-10-28 to 10-29: work resumes in new chunks.** 27 commits on 10-28 and 93 on 10-29, with 31 pull requests
+  opened and 24 merged on 10-29. Reported agent hours are over, so these days show the cloud project's open-session
+  hours (an upper bound).
 
 ## The files
 
@@ -67,15 +76,16 @@ Drawn by `charts.py` (standard library only) from the CSVs; `refresh.py` redraws
 | `summary.json` | The totals above, plus the coverage of each dataset | (snapshot) |
 | `agents_15min.csv` | Average number of agents working in each 15-minute bucket (UTC), by kind | **complete to 2026-10-21 3:36 PM PT, partial after** (see below) |
 | `agent_hours_daily.csv` | Agent-hours per day (Pacific), by kind | same as above |
-| `loc_hourly.csv` | Lines in the repository at the end of each hour with commits, by category | 2026-10-22 6:00 PM PT |
-| `commits_daily.csv` | Commits on `main` per day: count, lines added and deleted, and the `Agent-Lane` and `Agent-Model` trailers | 2026-10-22 7:43 PM PT |
-| `prs_daily.csv` | Pull requests opened and merged per day, in this repository and the earlier one | this repository 2026-10-22 7:43 PM PT; the earlier one 2026-10-22 1:46 PM PT (from 2026-10-11 8:45 PM PT) |
-| `issues_daily.csv` | Issues opened and closed per day in this repository | 2026-10-22 7:43 PM PT |
-| `ci_daily.csv` | CI runs per day and workflow: result counts and wall-clock minutes (start to last update, not billed minutes); the earlier repository's runs are one "all" row a day | this repository 2026-10-22 7:43 PM PT; the earlier one 2026-10-18 8:22 AM PT |
+| `loc_hourly.csv` | Lines in the repository at the end of each hour with commits, by category | 2026-10-29 9:00 PM PT |
+| `commits_daily.csv` | Commits on `main` per day: count, lines added and deleted, and the `Agent-Lane` and `Agent-Model` trailers | 2026-10-29 10:25 PM PT |
+| `prs_daily.csv` | Pull requests opened and merged per day, in this repository and the earlier one | this repository 2026-10-29 10:25 PM PT; the earlier one 2026-10-22 1:46 PM PT (from 2026-10-11 8:45 PM PT) |
+| `issues_daily.csv` | Issues opened and closed per day in this repository | 2026-10-29 10:25 PM PT |
+| `ci_daily.csv` | CI runs per day and workflow: result counts and wall-clock minutes (start to last update, not billed minutes); the earlier repository's runs are one "all" row a day | this repository 2026-10-29 10:25 PM PT; the earlier one 2026-10-18 8:22 AM PT |
 | `backlog_snapshots.csv` | Open issues and open pull requests at each refresh (one row per run) | each row's own time |
 | `events.csv` | The milestones drawn as dashed lines on the charts (the first commit, the move to this repository, the peak, the pause, the switch to spine-first work) | kept by hand; add a row when something changes how the work runs |
 | `tokens_daily.csv` | Tokens per day and cumulative, by source and kind (input, output, cache write, cache read); totals only, no cost. `local_measured` is every local session (the Director and its subagents) from its own logs; `cloud_estimated` is the cloud sessions before the move, at the local agents' tokens per agent-hour times their estimated hours | local 2026-10-22 4:39 PM PT; cloud estimates stop at the move (2026-10-21 3:36 PM PT), and the cloud project's measured totals after it are in `cloud_usage_snapshots.csv`. Not refreshed hourly: it needs the local logs |
 | `cloud_usage_snapshots.csv` | Sessions in the cloud project and their token totals (input, output, cache read and write) at each refresh; totals only, no cost and no per-session detail | each row's own time |
+| `cloud_sessions_daily.csv` | The cloud project's sessions per Pacific day: opened, active, hours between a session's start and its last activity (an upper bound on working time) and the most open at once. Totals only | 2026-10-29 10:25 PM PT |
 | `reviews_daily.csv` | Code reviews per day by reviewer, model and verdict, with blocking findings | **2026-10-17 6:21 PM PT**; the reviews from then until the review gate ended on 10-21 are missing |
 
 ## Coverage: what is measured and what is estimated
@@ -94,6 +104,7 @@ Drawn by `charts.py` (standard library only) from the CSVs; `refresh.py` redraws
   refresh started, from the cloud project's session list (each session counts from its start to its last activity; 101
   hours to the snapshot, under `cloud_reported`). That is an undercount: the cloud project's own usage records are the
   full source for this period.
+- **From 2026-10-23 the reported agent hours stop** (the agents no longer report time through trailers). The cloud project's own sessions are in `cloud_sessions_daily.csv` (an upper bound on working time) and `cloud_usage_snapshots.csv` (token totals), so from 10-23 `agent_hours_daily.csv` carries the cloud project's open-session hours (upper bound) as cloud (reported). In `agents_15min.csv` from 10-23 `cloud_reported` is the number of distinct agents (by their commit trailers) that committed in that hour, a lower bound.
 - **Lines of code** are counted at the last commit of each hour on `main`, and before the move on the earlier
   repository's `main`. "Other" includes data files and assets.
 - **Commit trailers** (`Agent-Lane`, `Agent-Model`) were added in mid-October and the squash merges before 2026-10-21

@@ -9,6 +9,7 @@ use omuzaki_core::time::Seconds;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::body::TrackedBody;
 use super::drive::{self, DriveGate};
 use super::score::{OverLayer, ScorePose};
 
@@ -79,6 +80,8 @@ pub struct Performer {
     score_pose: ScorePose,
     /// The live score's acts made over tracking, laid on the bus after the life layer.
     score_over: OverLayer,
+    /// The tracked arms, hands and fingers (PF-06, PF-07), laid on the pose after the score's clips.
+    body: TrackedBody,
     bus: Bus,
     pose: HumanoidPose,
     base: HumanoidPose,
@@ -108,6 +111,7 @@ impl Performer {
             drive: DriveGate::OPEN,
             score_pose: ScorePose::default(),
             score_over: OverLayer::default(),
+            body: TrackedBody::default(),
             bus: Bus::default(),
             pose: base,
             base,
@@ -129,6 +133,19 @@ impl Performer {
     pub fn with_grammar(mut self, grammar: GrammarStage) -> Self {
         self.grammar = Some(grammar);
         self
+    }
+
+    /// The same performer reading tracked arms, hands and fingers from `source` (PF-06, PF-07): a body tracker's
+    /// `BodyReader`, made with the performer and kept as long as it.
+    #[must_use]
+    pub fn with_body(mut self, source: Box<dyn omuzaki_track_api::body::BodySource>) -> Self {
+        self.body = TrackedBody::new(source);
+        self
+    }
+
+    /// The tracked body layer: how much of each arm and hand it shows now.
+    pub fn body(&self) -> &TrackedBody {
+        &self.body
     }
 
     /// The grammar stage, to switch rules for another character ([`GrammarStage::set_config`]).
@@ -262,6 +279,7 @@ impl Performer {
         self.stack.score.clear();
         self.score_over.clear();
         self.score_pose.clear();
+        self.body.reset();
         self.cues = Cues::default();
         self.origin = None;
         self.next_step = 0;
@@ -299,7 +317,11 @@ impl Performer {
         // The score's clips lie under the animator, so the tracked head and the breath still move a waving body.
         self.pose = self.base;
         PoseLayers(self.score_pose.layers()).resolve(&mut self.pose);
+        // The tracked arms win over a clip's on the bones they see; the animator's breath still moves them.
+        self.body.step(tick, self.parts.retarget.config().mirror);
+        self.body.apply(&mut self.pose);
         self.parts.animator.animate(tick, &self.bus, &[], &mut self.pose);
+        self.body.settle_head(&mut self.pose);
     }
 
     /// Polls the source and feeds the retarget: the new frame, or a synthetic lost frame once the source has gone

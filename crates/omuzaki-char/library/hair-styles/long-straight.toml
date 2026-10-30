@@ -46,6 +46,10 @@ length_front = 0.5
 length_back = 0.58
 drape_deg = 95.0
 wave = { amplitude = 0.006, frequency = 1.2, curl = 0.01 }
+# Fewer, broader strips read as the few wide ribbons of an anime model, not a comb of narrow ones.
+count = 24
+columns = 2
+width = { start = 0.066, mid = 0.13, tip = 0.014 }
 
 [groups.d-framing]
 dynamics = { simulate = true, follow = "head" }

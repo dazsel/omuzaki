@@ -8,7 +8,7 @@ use omuzaki_char_api::BuiltCharacter;
 use omuzaki_core::glam::UVec2;
 use omuzaki_face_api::ExpressionId;
 use omuzaki_render_api::{
-    AlphaEncoding, Background, Camera, EdgeLines, FrameReport, Image, Light, Post, Quality, RenderError, Renderer, Scene,
+    AlphaEncoding, Background, Camera, EdgeLines, FrameReport, Image, Light, Occlusion, Post, Quality, RenderError, Renderer, Scene,
     TargetDesc, TargetId,
 };
 
@@ -40,13 +40,15 @@ pub struct StillLight {
     pub back_light_rim: f32,
     /// Lines where the depth jumps, if any.
     pub edges: Option<EdgeLines>,
+    /// Ambient occlusion and contact shadows, if any.
+    pub occlusion: Option<Occlusion>,
 }
 
 impl StillLight {
     /// A light with the scene's default outline light (`1.0`, as `Scene::new` sets it).
     #[must_use]
     pub fn new(lights: Vec<Light>, background: Background, post: Post) -> Self {
-        Self { lights, background, post, outline_light: 1.0, back_light_rim: 0.0, edges: None }
+        Self { lights, background, post, outline_light: 1.0, back_light_rim: 0.0, edges: None, occlusion: None }
     }
 
     /// The same light with `outline_light` set.
@@ -60,6 +62,13 @@ impl StillLight {
     #[must_use]
     pub fn with_edges(mut self, edges: Option<EdgeLines>) -> Self {
         self.edges = edges;
+        self
+    }
+
+    /// The same light with ambient occlusion and contact shadows, or without.
+    #[must_use]
+    pub fn with_occlusion(mut self, occlusion: Option<Occlusion>) -> Self {
+        self.occlusion = occlusion;
         self
     }
 
@@ -101,7 +110,8 @@ impl StillSpec {
         let r = &scene.resolved;
         let light = StillLight::new(r.lights.as_slice().to_vec(), r.background, r.post)
             .with_outline_light(r.outline_light)
-            .with_back_light_rim(r.back_light_rim);
+            .with_back_light_rim(r.back_light_rim)
+            .with_occlusion(r.occlusion);
         Self { light, size, quality, scene: Some(scene), pose: None }
     }
 
@@ -239,6 +249,7 @@ fn still_scene(spec: &StillSpec) -> Scene {
     scene.outline_light = spec.light.outline_light;
     scene.back_light_rim = spec.light.back_light_rim;
     scene.edges = spec.light.edges;
+    scene.occlusion = spec.light.occlusion;
     scene
 }
 

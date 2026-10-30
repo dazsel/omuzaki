@@ -24,4 +24,7 @@ pub enum TrackError {
     /// Anything else the backend reported, as text for the log.
     #[error("camera backend: {0}")]
     Backend(String),
+    /// This tracker cannot do what was asked (body tracking without body models, say).
+    #[error("not supported by this tracker: {0}")]
+    Unsupported(String),
 }

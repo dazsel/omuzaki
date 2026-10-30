@@ -1,5 +1,5 @@
 //! The bangs designer ops: `hair.bangs.set` and `hair.bangs.list_presets` are each one undoable patch of one group's
-//! generator, a dry run changes nothing, a refusal names the field, and the five presets are valid `BangsGen`s.
+//! generator, a dry run changes nothing, a refusal names the field, and the six presets are valid `BangsGen`s.
 //! The helpers at the top set up a hair part with a bangs group for the preset op's tests too.
 
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
@@ -46,7 +46,7 @@ fn stored(doc: &MemDoc) -> BangsGen {
 #[test]
 fn every_preset_validates_and_the_query_lists_them_in_order() {
     let ids: Vec<_> = PRESETS.iter().map(|p| p.id).collect();
-    assert_eq!(ids, ["blunt", "side-swept", "curtain", "wispy", "none"]);
+    assert_eq!(ids, ["blunt", "side-swept", "curtain", "wispy", "anime", "none"]);
     for preset in PRESETS {
         let bangs = (preset.make)();
         access::check(&bangs).unwrap_or_else(|f| panic!("{} is out of range: {f:?}", preset.id));

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Archives the licence record of the face-tracking models: downloads Google's three MediaPipe model cards (BlazeFace
-# short range, Face Mesh V2, Blendshape V2), the only place Google states the networks' Apache-2.0 licence (the
-# `.task` bundle carries no licence file), checks each against the SHA-256 and size pinned below and writes
-# `SHA256SUMS` beside them. Nothing is written into the repo.
+# Archives the licence record of the tracking models: downloads Google's MediaPipe model cards (BlazeFace short range,
+# Face Mesh V2, Blendshape V2 for the face; BlazePose GHUM 3D and Hand Tracking for the body), the only place Google
+# states the networks' Apache-2.0 licence (the `.task` bundles carry no licence file), checks each against the SHA-256
+# and size pinned below and writes `SHA256SUMS` beside them. Nothing is written into the repo.
 #
 #   tools/models/mediapipe-cards.sh --out <dir>      (the archive is $OMUZAKI_ASSETS/licences/mediapipe)
 #
@@ -17,6 +17,8 @@ CARDS=(
   "MediaPipe BlazeFace Model Card (Short Range).pdf|cd335c06fc0de7807cd815a0777a697932598bcdb28fa98adaaabf847485f758|434425|1683223301065412"
   "Model Card MediaPipe Face Mesh V2.pdf|c6add060f4ebfb37b2690136b6c711c7e5fcb7038baa2649ae3338b83979565a|3476420|1683910257859728"
   "Model Card Blendshape V2.pdf|c8e9cf60a39998f4b341740623917590e050d1c97004e2de4568d84e026445ae|2324099|1683910254913832"
+  "Model Card BlazePose GHUM 3D.pdf|e982460cedece5ad9a46aa8f13523328e9ab95d7d5b2b8c99b33f13f6a79ca86|1398977|1683223527001276"
+  "Model Card Hand Tracking (Lite_Full) with Fairness Oct 2021.pdf|43127ff8a92e22717f0d8c30dab3efef4641a29cbf50b15ae3de001be94ab76b|358044|1683223215027175"
 )
 
 out=""

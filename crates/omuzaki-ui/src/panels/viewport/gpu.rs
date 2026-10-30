@@ -256,6 +256,7 @@ fn stage(
     scene.post = light.post;
     scene.outline_light = light.outline_light;
     scene.back_light_rim = light.back_light_rim;
+    scene.occlusion = light.occlusion;
     let has_face = built.face.is_some();
     // As stills do: the sculpted pose, not the T-pose of `FrameInput::default()`.
     let mut base = HumanoidPose::REST;

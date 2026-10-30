@@ -160,13 +160,24 @@ fn render_quad(renderer: &mut WgpuRenderer, mesh: omuzaki_render_api::MeshId, ma
 
 /// The prototype's angel ring: its half width, its wander from lock to lock and its comb teeth, painted at a fixed polar
 /// angle. The kit draws a thinner, steadier one by default (#2462) that follows the strands (#2483), so the oracle sets
-/// these.
+/// these, and the prototype's keep-identity, which pulls toward a fixed cream where the kit keeps the hair's own hue.
+/// The kit's anime look also paints fainter strand lines and clump edges, lights further round the hair and keeps its
+/// second shadow tone light, so the oracle sets the prototype's numbers for those too.
 const PROTOTYPE_RING: &[(&str, ParamValue)] = &[
     ("ring-width", ParamValue::Float(0.11)),
     ("ring-wobble", ParamValue::Float(0.06)),
     ("ring-teeth", ParamValue::Float(1.0)),
     ("ring-follow", ParamValue::Float(0.0)),
+    ("keep-hue", ParamValue::Float(0.0)),
+    ("strand-lines", ParamValue::Float(0.10)),
+    ("edge-darkening", ParamValue::Float(0.14)),
+    ("shade-shift", ParamValue::Float(-0.05)),
+    ("shade-softness", ParamValue::Float(0.22)),
+    ("shade-deep", ParamValue::Colour(Colour::rgb(0xd8, 0xc4, 0xd0))),
 ];
+
+/// The prototype's keep-identity alone: its fixed cream (`keep-hue` 0).
+const PROTOTYPE_CREAM: &[(&str, ParamValue)] = &[("keep-hue", ParamValue::Float(0.0))];
 
 fn hair_material(shading: Shading) -> Material {
     Material { base: Colour::WHITE, shading, double_sided: true, ..Material::toon(Colour::WHITE) }
@@ -188,7 +199,7 @@ struct Prototype {
 }
 
 impl Prototype {
-    /// The default `HairShading` of the character kit, with the prototype's ring ([`PROTOTYPE_RING`]).
+    /// The prototype's `HairShading`, with its ring ([`PROTOTYPE_RING`]).
     fn defaults() -> Self {
         let colour = |hex| Colour::hex(hex).to_linear();
         Self {
@@ -443,7 +454,7 @@ fn a_mesh_without_the_hair_attributes_draws_with_zeros_not_black() {
     let _serial = serial();
     let mut renderer = support::renderer();
     let bare = renderer.create_mesh(&quad(false)).unwrap();
-    let image = render_quad(&mut renderer, bare, &hair_material(hair(&[])));
+    let image = render_quad(&mut renderer, bare, &hair_material(hair(PROTOTYPE_CREAM)));
     // Every vertex reads across 0, along 0, seed 0, shade unset (1) and polar 0.
     let want = encode(Prototype::defaults().lit(0.0, 0.0, 0.0, 1.0, 0.0));
     let got = image.pixel(64, 64).unwrap();
@@ -455,7 +466,7 @@ fn a_mesh_without_the_hair_attributes_draws_with_zeros_not_black() {
     wrong.extra[0].components = 1;
     wrong.extra[0].data.truncate(4);
     let wrong = renderer.create_mesh(&wrong).unwrap();
-    let again = render_quad(&mut renderer, wrong, &hair_material(hair(&[])));
+    let again = render_quad(&mut renderer, wrong, &hair_material(hair(PROTOTYPE_CREAM)));
     let partial = again.pixel(64, 64).unwrap();
     assert!(partial[0] > 100, "{partial:?}");
 }
