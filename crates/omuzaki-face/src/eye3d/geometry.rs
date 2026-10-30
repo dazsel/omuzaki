@@ -397,10 +397,18 @@ impl Lids {
         let mut rng = Pcg::new(seed, 0x1a5e);
         for upper in [true, false] {
             let count = if upper { lashes.upper } else { lashes.lower };
+            // Roots at uneven spacing: lashes grow in loose runs with gaps, never as a comb.
+            let gaps: Vec<f32> = (0..count).map(|_| rng.range(0.25, 1.0).powi(2) + 0.08).collect();
+            let total: f32 = gaps.iter().sum::<f32>().max(1e-6);
             let mut strands: Vec<Vec<Vec3>> = Vec::new();
-            for i in 0..count {
-                #[allow(clippy::cast_precision_loss)]
-                let u = 0.03 + 0.92 * (i as f32 + rng.unit()) / count.max(1) as f32;
+            let mut at = 0.0;
+            for gap in &gaps {
+                at += gap / total;
+                let u = 0.03 + 0.92 * at;
+                // The lower lid's lashes thin out toward the inner corner.
+                if !upper && rng.unit() < 0.85 * smoothstep(0.62, 0.95, u) {
+                    continue;
+                }
                 strands.push(self.strand(lashes, upper, u, &mut rng));
             }
             clump(&mut strands, lashes.clumping, &mut rng);
@@ -436,10 +444,15 @@ impl Lids {
             + Vec3::new(0.25, 0.0, 0.0) * smoothstep(0.8, 1.0, u);
         let length = if upper { lashes.upper_length } else { lashes.lower_length }
             * (0.3 + 0.7 * bump(u, if upper { 0.38 } else { 0.4 }).powf(0.6))
-            * rng.range(0.72, 1.06);
+            * if rng.unit() < 0.15 { rng.range(0.35, 0.7) } else { rng.range(0.75, 1.08) };
         let start = (normal * 0.9 + out * 0.12 - up * 0.2 + sweep * 0.7).normalize_or_zero();
-        let curl = (up * 1.2 - normal * 0.35).normalize_or_zero() * lashes.curl * if upper { 1.0 } else { 0.5 };
-        let jitter = Vec3::new(rng.normal(), rng.normal(), rng.normal()) * 0.06;
+        let curl = (up * 1.2 - normal * 0.35).normalize_or_zero()
+            * lashes.curl
+            * if upper { 1.0 } else { 0.5 }
+            * rng.range(0.7, 1.2);
+        // A few strays point their own way.
+        let wander = if rng.unit() < 0.05 { 0.35 } else { 0.1 };
+        let jitter = Vec3::new(rng.normal(), rng.normal(), rng.normal()) * wander;
         (0..=10)
             .map(|i| {
                 #[allow(clippy::cast_precision_loss)]
@@ -456,7 +469,7 @@ fn clump(strands: &mut [Vec<Vec3>], clumping: f32, rng: &mut Pcg) {
     while i < strands.len() {
         // In range: a small count.
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let size = (rng.range(3.0, 7.0) as usize).min(strands.len() - i);
+        let size = (rng.range(2.0, 7.0) as usize).min(strands.len() - i);
         let group = &mut strands[i..i + size];
         #[allow(clippy::cast_precision_loss)]
         let tip = group.iter().filter_map(|s| s.last().copied()).sum::<Vec3>() / size as f32;
