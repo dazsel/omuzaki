@@ -286,6 +286,9 @@ const SLOTS: [&str; 3] = ["hair_root", "hair_mid", "hair_tip"];
 /// Recolours a hair part's gradient at once: `root`, `mid` and `tip`, each `#rrggbb` (any left out keeps its colour).
 /// By default the colours go into the palette's `hair_root`, `hair_mid` and `hair_tip` slots (added when missing) and
 /// the part refers to them, so a colourway swap recolours the hair too; `slots: false` writes them into the part alone.
+/// The shadow tone, strand lines, outline, ring and rim follow the new middle colour (an anime shadow, lines a shade
+/// darker, a ring and rim toward white), so pale or bright hair doesn't keep the old colour's; `derive: false` keeps
+/// them as they are.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(extend(
@@ -311,6 +314,9 @@ pub struct HairRecolour {
     /// Whether the colours go through the palette's hair slots (the default) or into the part alone.
     #[serde(default = "yes")]
     pub slots: bool,
+    /// Whether the shadow tone, strand lines, outline, ring and rim follow the new middle colour (the default).
+    #[serde(default = "yes")]
+    pub derive: bool,
 }
 
 fn yes() -> bool {
@@ -339,6 +345,7 @@ impl Op for HairRecolour {
         let mut shading = found.hair.shading.clone();
         let mut palette_changes = Vec::new();
         let mut colours = serde_json::Map::new();
+        let mut new_mid = None;
         for ((field, text), slot) in given.iter().zip(SLOTS) {
             let Some(text) = text else { continue };
             let colour: omuzaki_core::colour::Colour = text.parse().map_err(|_| {
@@ -346,6 +353,9 @@ impl Op for HairRecolour {
                     .hint("write it as #rrggbb or #rrggbbaa, e.g. #6a5a8a")
             })?;
             colours.insert((*field).to_owned(), json!(colour));
+            if *field == "mid" {
+                new_mid = Some(colour);
+            }
             let reference = if self.slots {
                 let slot = PaletteSlot::new(slot).map_err(|e| OpError::internal(format!("a hair slot: {e}")))?;
                 let path = slot_path(&self.character, &slot);
@@ -365,6 +375,20 @@ impl Op for HairRecolour {
                 "root" => shading.root = reference,
                 "mid" => shading.mid = reference,
                 _ => shading.tip = reference,
+            }
+        }
+        if self.derive
+            && let Some(mid) = new_mid.or_else(|| found.def.palette.resolve(&shading.mid).ok())
+        {
+            let c = crate::hair::colour::companions(mid);
+            for (slot, colour) in [
+                (&mut shading.shade, c.shade),
+                (&mut shading.line, c.line),
+                (&mut shading.outline, c.outline),
+                (&mut shading.ring, c.ring),
+                (&mut shading.rim, c.rim),
+            ] {
+                *slot = ColourRef::Fixed(colour);
             }
         }
         let mut changes = palette_changes;

@@ -16,6 +16,11 @@
 //! From the one colour, [`natural`] makes the hair's toon colours: darker roots and lighter tips by
 //! [`HairPigment::gradient`], a shadow tone that deepens the hue, strand lines and outline a shade darker, and a ring
 //! and rim lit toward white.
+//!
+//! **Any colour** (from the comparison with the openly licensed anime samples): [`companions`] makes the same set from a
+//! hair colour picked by hand, for `hair.recolour`, so platinum or pink hair does not keep the default brown's shadow,
+//! lines and outline. Its shadow is an anime one: as light as those samples' hair shades (their shade colour is about nine tenths
+//! of the lit one, leaning toward the hair's own hue), not the deeper natural tone.
 
 use omuzaki_char_api::HairPigment;
 use omuzaki_core::colour::Colour;
@@ -100,6 +105,46 @@ pub fn natural(pigment: &HairPigment, dye: Option<Colour>) -> NaturalColours {
     }
 }
 
+/// The shadow tone, lines, outline, ring and rim that go with hair coloured `mid` (sRGB), in the anime style: the shade
+/// a light multiplier leaning toward the hair's hue, the lines and outline the hair a shade darker (a touch lighter on
+/// near-black hair, so they still read), the ring and rim lit toward white.
+#[must_use]
+pub fn companions(mid: Colour) -> Companions {
+    let mid = mid.to_linear();
+    let luma = mid.dot(LUMA).max(1e-4);
+    let hue = (mid / luma).clamp(Vec3::splat(0.2), Vec3::splat(2.5));
+    let shade = (Vec3::splat(ANIME_SHADE) * hue.powf(0.3)).min(Vec3::ONE);
+    let ink = |k: f32| (mid * k).max(Vec3::splat(0.012)).lerp(mid * 1.6, (0.02 - luma).max(0.0) * 30.0);
+    let srgb = |v: Vec3| Colour::from_linear(v.clamp(Vec3::ZERO, Vec3::ONE), 1.0);
+    Companions {
+        shade: srgb(shade),
+        line: srgb(ink(0.45)),
+        outline: srgb(ink(0.35)),
+        ring: srgb(mid.lerp(Vec3::ONE, 0.75)),
+        rim: srgb(mid.lerp(Vec3::ONE, 0.6)),
+    }
+}
+
+/// The colours [`companions`] makes, sRGB.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Companions {
+    /// The shadow tone, a multiplier.
+    pub shade: Colour,
+    /// The strand lines.
+    pub line: Colour,
+    /// The ink outline.
+    pub outline: Colour,
+    /// The angel ring.
+    pub ring: Colour,
+    /// The rim light.
+    pub rim: Colour,
+}
+
+/// Rec. 709 luma weights, linear.
+const LUMA: Vec3 = Vec3::new(0.2126, 0.7152, 0.0722);
+/// The anime shadow multiplier's level, linear (about 0.87 in `sRGB`): anime sample hair shades by about this much.
+const ANIME_SHADE: f32 = 0.74;
+
 #[allow(clippy::cast_possible_truncation)] // parameters checked to 0..=1
 fn narrow(x: f64) -> f32 {
     x as f32
@@ -154,6 +199,22 @@ mod tests {
         assert!(shift(0.05) > 5.0 * shift(1.0), "light {} black {}", shift(0.05), shift(1.0));
         let dyed = base(&HairPigment { melanin: 0.05, dye_strength: 1.0, ..HairPigment::default() }, blue);
         assert!(dyed.z > dyed.x, "light hair dyed blue reads blue: {dyed}");
+    }
+
+    #[test]
+    fn companions_shade_light_toward_the_hairs_hue_and_ink_darker() {
+        let luma = |c: Colour| c.to_linear().dot(LUMA);
+        for mid in [Colour::rgb(0xf1, 0xf3, 0xf7), Colour::rgb(0xf3, 0xeb, 0xd0), Colour::rgb(0x8a, 0x5a, 0x44)] {
+            let c = companions(mid);
+            // A light shadow: the multiplier's luma stays near the anime level, and every channel is a multiplier.
+            assert!((luma(c.shade) - ANIME_SHADE).abs() < 0.12, "{mid:?}: shade {:?}", c.shade);
+            assert!(luma(c.line) < luma(mid) && luma(c.outline) < luma(c.line), "{mid:?}: {c:?}");
+            assert!(luma(c.ring) > luma(mid) && luma(c.rim) > luma(mid), "{mid:?}: {c:?}");
+        }
+        // Platinum's shadow is near neutral; brown's leans warm.
+        let (white, brown) =
+            (companions(Colour::rgb(0xf1, 0xf3, 0xf7)).shade, companions(Colour::rgb(0x8a, 0x5a, 0x44)).shade);
+        assert!(white.r.abs_diff(white.b) < 12 && brown.r > brown.b + 20, "{white:?} {brown:?}");
     }
 
     #[test]
