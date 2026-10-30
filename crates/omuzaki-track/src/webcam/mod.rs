@@ -506,7 +506,7 @@ impl Tracker for WebcamTracker {
     }
 
     fn track_body(&mut self, config: BodyConfig, board: &Arc<BodyBoard>) -> Result<BodyConfig, TrackError> {
-        self.body.set(config, board).map_err(TrackError::Backend)
+        self.body.set(config, board)
     }
 
     fn body_status(&self) -> BodyStatus {

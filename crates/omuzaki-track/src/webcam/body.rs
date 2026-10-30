@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use omuzaki_core::time::Seconds;
 use omuzaki_track_api::body::{BodyBoard, BodyConfig, BodyFrame, BodyState, BodyStatus, BodyWriter};
+use omuzaki_track_api::error::TrackError;
 
 use crate::body::BodyTracker;
 use crate::body::models::PoseSize;
@@ -300,8 +301,10 @@ impl Default for BodyPart {
 impl BodyPart {
     /// Switches body tracking to `config`: starts the thread, changes what it tracks, restarts it on the other pose
     /// model, or stops it. Returns the config before.
-    pub(super) fn set(&mut self, config: BodyConfig, board: &Arc<BodyBoard>) -> Result<BodyConfig, String> {
-        let Some(loader) = self.loader.clone() else { return Err("this tracker has no body models".to_owned()) };
+    pub(super) fn set(&mut self, config: BodyConfig, board: &Arc<BodyBoard>) -> Result<BodyConfig, TrackError> {
+        let Some(loader) = self.loader.clone() else {
+            return Err(TrackError::Unsupported("body tracking: no body models".to_owned()));
+        };
         let before = self.config;
         let size = if config.precise { PoseSize::Full } else { PoseSize::Lite };
         // A thread that failed to load is replaced, so asking again retries.
@@ -316,7 +319,9 @@ impl BodyPart {
                     worker.stop(&self.tap);
                 }
                 if config.any() {
-                    self.worker = Some(BodyWorker::start(config, &loader, &self.tap, board).map_err(|e| e.to_string())?);
+                    let worker = BodyWorker::start(config, &loader, &self.tap, board)
+                        .map_err(|e| TrackError::Backend(format!("body thread: {e}")))?;
+                    self.worker = Some(worker);
                 }
             }
         }

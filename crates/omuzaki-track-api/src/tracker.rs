@@ -177,10 +177,11 @@ pub trait Tracker: Send {
     /// models load on that thread ([`BodyState::Loading`](crate::body::BodyState::Loading)), so this returns at once.
     ///
     /// # Errors
-    /// [`TrackError::Backend`] for a tracker without body tracking (the default) or when its thread cannot start.
+    /// [`TrackError::Unsupported`] for a tracker without body tracking (the default), [`TrackError::Backend`] when its
+    /// thread cannot start.
     fn track_body(&mut self, config: BodyConfig, board: &Arc<BodyBoard>) -> Result<BodyConfig, TrackError> {
         let _ = (config, board);
-        Err(TrackError::Backend("this tracker has no body tracking".to_owned()))
+        Err(TrackError::Unsupported("body tracking".to_owned()))
     }
 
     /// How body tracking is doing; [`BodyStatus::default`] (off) for a tracker without it. Cheap.

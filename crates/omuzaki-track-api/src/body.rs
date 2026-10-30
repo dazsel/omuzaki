@@ -78,8 +78,10 @@ pub struct FingerAngles {
 /// The five fingers of one hand, thumb first.
 pub type Fingers = [FingerAngles; 5];
 
-/// What a body tracker should track. Hands and arms each cost a model's run per frame, so each is a switch.
+/// What a body tracker should track. Hands and arms each cost a model's run per frame, so each is a switch. A field
+/// left out reads as its [`Default`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
 pub struct BodyConfig {
     /// The upper body: the chest's turn and tilt, the shoulders, elbows and wrists.
     pub arms: bool,
