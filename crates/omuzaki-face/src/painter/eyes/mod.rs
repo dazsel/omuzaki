@@ -17,12 +17,15 @@
 mod aperture;
 mod closed;
 mod crease;
+mod detail;
 mod effects;
 mod highlight;
 mod iris;
 mod lash;
 mod lid;
 mod sclera;
+mod shadow;
+mod strands;
 
 use omuzaki_core::colour::Colour;
 use omuzaki_face_api::{Cmd, FaceLayerId};
@@ -45,6 +48,8 @@ const FALLBACK_COLOUR: Colour = Colour::rgb(128, 128, 128);
 /// Paints both eyes.
 pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
     for side in [Side::Left, Side::Right] {
+        // Eyeshadow first, under the whole eye and outside the open-eye fade: it stays on a shut lid.
+        shadow::paint(ctx, side);
         let eye = Eye::new(ctx.profile, ctx.params, side);
         // The open pieces start here; an eye that is shutting (a blink, an arc or a squeeze) fades them all together (see `open_fade`).
         let mark = ctx.list(FaceLayerId::Base).cmds().len();
@@ -52,14 +57,17 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
             let outline = aperture::outline(ctx.list(FaceLayerId::Base), &eye);
             sclera::paint(ctx, &eye, outline);
             ctx.list(FaceLayerId::Base).push(Cmd::PushClip(outline));
+            sclera::paint_detail(ctx, &eye);
             iris::paint(ctx, side);
             effects::paint_iris(ctx, side);
             highlight::paint(ctx, side);
+            sclera::paint_waterline(ctx, &eye);
             effects::paint_cover(ctx, side);
             ctx.list(FaceLayerId::Base).push(Cmd::PopClip);
         }
         lid::paint(ctx, side);
         crease::paint(ctx, side);
+        strands::paint(ctx, side);
         lash::paint(ctx, side);
         let fade = eye.open_fade();
         if fade < 1.0 {

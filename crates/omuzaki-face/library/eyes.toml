@@ -1,0 +1,281 @@
+# Eye presets (#2469): `face.eyes.preset` sets a character's eyes to one of these, and `face.eyes.randomise` starts
+# from one. Each `eyes` table is merged over the default eye (the prototype's), so a preset names only what differs;
+# everything it leaves out returns to the default. Colours are written here too, but the op keeps the character's own
+# iris and lash colours unless it is asked not to.
+
+[[preset]]
+id = "kit"
+summary = "The kit's default (new characters start with it): open, round eyes with a fibred iris, a window catchlight, strand lashes and a wet line"
+
+[preset.eyes.aperture]
+roundness = 0.6
+upper_height = 0.75
+lower_depth = 0.6
+tilt = 0.05
+
+[preset.eyes.iris]
+drop = 0.0
+height = 0.9
+detail = { fibres = { strength = 0.55 }, collarette = { strength = 0.6 }, flecks = { strength = 0.4 }, limbal = { strength = 0.65 }, pupil_glow = 0.35 }
+
+[preset.eyes.highlights]
+shape = "window"
+size = 0.3
+offset = [0.26, 0.3]
+caustic = 0.55
+
+[preset.eyes.sclera]
+corner_shade = 0.55
+caruncle = 0.6
+waterline = 0.6
+
+[preset.eyes.lash.strands]
+upper = { count = 26 }
+lower = { count = 10, opacity = 0.7 }
+
+[[preset]]
+id = "sparkle"
+summary = "Shoujo sparkle: a big tall iris, a star and a ring of light, twinkling shimmer and long curled lashes"
+
+[preset.eyes]
+scale = 1.1
+
+[preset.eyes.aperture]
+roundness = 0.75
+upper_height = 0.82
+lower_depth = 0.68
+tilt = 0.04
+
+[preset.eyes.iris]
+width = 0.7
+height = 1.0
+drop = 0.02
+detail = { fibres = { strength = 0.45, count = 96 }, limbal = { strength = 0.5 }, pupil_glow = 0.6, collarette = { strength = 0.35 } }
+
+[preset.eyes.highlights]
+size = 0.34
+shimmer = 0.6
+caustic = 0.8
+extra = [
+    { shape = "star", offset = [-0.4, 0.42], size = 0.12, opacity = 0.95 },
+    { shape = "ring", offset = [-0.25, -0.45], size = 0.16, opacity = 0.7 },
+    { shape = "blob", offset = [0.45, -0.3], size = 0.07, opacity = 0.8 },
+]
+
+[preset.eyes.sclera]
+corner_shade = 0.45
+caruncle = 0.5
+waterline = 0.7
+
+[preset.eyes.lash]
+flick = 0.8
+strands = { upper = { count = 32, length = 0.36, curl = 0.6, clumping = 0.55 }, lower = { count = 14, length = 0.18, opacity = 0.8 } }
+
+[[preset]]
+id = "tareme"
+summary = "Tareme: soft, droopy eyes, the outer corners low, a gentle round iris"
+
+[preset.eyes.aperture]
+roundness = 0.7
+upper_height = 0.7
+lower_depth = 0.55
+tilt = -0.14
+outer_bluntness = 0.7
+
+[preset.eyes.iris]
+drop = 0.04
+height = 0.9
+detail = { fibres = { strength = 0.4 }, limbal = { strength = 0.55 }, pupil_glow = 0.3 }
+
+[preset.eyes.highlights]
+caustic = 0.5
+extra = [{ shape = "blob", offset = [-0.35, -0.42], size = 0.1, opacity = 0.6 }]
+
+[preset.eyes.sclera]
+corner_shade = 0.5
+caruncle = 0.5
+waterline = 0.6
+
+[preset.eyes.lash]
+flick = 0.25
+strands = { upper = { count = 20, length = 0.24, lift = 0.25 }, lower = { count = 12, length = 0.14, opacity = 0.7 } }
+
+[[preset]]
+id = "tsurime"
+summary = "Tsurime: sharp, lifted eyes with a strong winged lash line and a narrow almond opening"
+
+[preset.eyes.aperture]
+roundness = 0.3
+upper_height = 0.62
+lower_depth = 0.45
+tilt = 0.2
+inner_sharpness = 0.8
+
+[preset.eyes.iris]
+width = 0.6
+height = 0.82
+drop = 0.0
+detail = { fibres = { strength = 0.6 }, limbal = { strength = 0.75 }, collarette = { strength = 0.45 } }
+
+[preset.eyes.highlights]
+size = 0.24
+caustic = 0.45
+
+[preset.eyes.sclera]
+corner_shade = 0.6
+caruncle = 0.4
+waterline = 0.5
+
+[preset.eyes.lash]
+thickness = 0.0068
+flick = 1.0
+strands = { upper = { count = 22, length = 0.3, lift = 0.95, curl = 0.5 }, lower = { count = 6, length = 0.12, opacity = 0.6 } }
+
+[[preset]]
+id = "sleepy"
+summary = "Sleepy: heavy half lids over a low iris, a deep lid shadow and soft lashes"
+
+[preset.eyes]
+lid_shadow = 0.85
+
+[preset.eyes.aperture]
+roundness = 0.45
+upper_height = 0.5
+lower_depth = 0.55
+tilt = -0.04
+
+[preset.eyes.iris]
+drop = 0.1
+detail = { fibres = { strength = 0.35 }, limbal = { strength = 0.5 } }
+
+[preset.eyes.highlights]
+size = 0.22
+caustic = 0.4
+
+[preset.eyes.sclera]
+corner_shade = 0.5
+waterline = 0.5
+
+[preset.eyes.lash]
+flick = 0.3
+strands = { upper = { count = 18, length = 0.22, lift = 0.3, curl = 0.25 } }
+
+[[preset]]
+id = "realistic"
+summary = "Realistic: a smaller round iris with dense fibres, a collarette and limbal ring, vessels, a caruncle and fine lashes"
+
+[preset.eyes]
+scale = 0.95
+
+[preset.eyes.aperture]
+roundness = 0.4
+upper_height = 0.6
+lower_depth = 0.5
+tilt = 0.06
+
+[preset.eyes.iris]
+width = 0.5
+height = 0.5
+inset = 0.06
+drop = 0.05
+detail = { fibres = { strength = 0.9, count = 180, waviness = 0.5 }, collarette = { strength = 0.8, teeth = 26, radius = 0.45 }, flecks = { strength = 0.7, count = 18 }, limbal = { strength = 0.9, width = 0.16 }, pupil_glow = 0.25 }
+
+[preset.eyes.iris.pupil]
+size = 0.85
+colour = "#0b0b0b"
+
+[preset.eyes.highlights]
+shape = "window"
+size = 0.22
+offset = [0.3, 0.32]
+second = 0.0
+caustic = 0.7
+
+[preset.eyes.sclera]
+top = "#d8cfcd"
+mid = "#f3eeea"
+bottom = "#f7f2ee"
+corner_shade = 0.75
+vessels = 0.45
+caruncle = 0.85
+waterline = 0.85
+
+[preset.eyes.lash]
+thickness = 0.0035
+flick = 0.1
+lower = 0.0
+inner_tick = false
+strands = { upper = { count = 90, length = 0.28, curl = 0.55, lift = 0.5, clumping = 0.6, thickness = 0.0006, randomness = 0.6, from = -0.8 }, lower = { count = 45, length = 0.13, thickness = 0.0004, from = -0.6, opacity = 0.85 } }
+
+[[preset]]
+id = "cat"
+summary = "Cat: a slit pupil in a golden iris, a lifted outer corner and a sharp catchlight"
+
+[preset.eyes.aperture]
+roundness = 0.5
+upper_height = 0.72
+lower_depth = 0.55
+tilt = 0.14
+
+[preset.eyes.iris]
+width = 0.72
+height = 0.9
+drop = 0.0
+top = "#7a4a0c"
+mid = "#c98a1e"
+low = "#f2d070"
+ring = "#4a2a06"
+detail = { fibres = { strength = 0.6, count = 120 }, limbal = { strength = 0.7 }, pupil_glow = 0.55 }
+
+[preset.eyes.iris.pupil]
+shape = "slit"
+size = 1.2
+colour = "#140c04"
+
+[preset.eyes.highlights]
+size = 0.2
+caustic = 0.7
+
+[preset.eyes.sclera]
+corner_shade = 0.5
+caruncle = 0.4
+waterline = 0.5
+
+[preset.eyes.lash]
+flick = 0.9
+strands = { upper = { count = 16, length = 0.26, lift = 0.85 } }
+
+[[preset]]
+id = "doll"
+summary = "Doll: very round eyes, a large iris with a ring light and a clear window, and dense even lashes"
+
+[preset.eyes]
+scale = 1.08
+
+[preset.eyes.aperture]
+roundness = 0.95
+upper_height = 0.9
+lower_depth = 0.8
+tilt = 0.0
+
+[preset.eyes.iris]
+width = 0.72
+height = 0.92
+drop = 0.0
+detail = { fibres = { strength = 0.5, count = 140, waviness = 0.15 }, limbal = { strength = 0.8, width = 0.14 }, collarette = { strength = 0.5, irregularity = 0.1 } }
+
+[preset.eyes.highlights]
+shape = "window"
+size = 0.28
+offset = [0.25, 0.35]
+second = 0.0
+caustic = 0.6
+extra = [{ shape = "ring", offset = [0.0, 0.0], size = 0.62, opacity = 0.18 }]
+
+[preset.eyes.sclera]
+corner_shade = 0.4
+caruncle = 0.6
+waterline = 0.7
+
+[preset.eyes.lash]
+strands = { upper = { count = 40, length = 0.32, curl = 0.7, clumping = 0.15, randomness = 0.1, lift = 0.3, from = -0.9 }, lower = { count = 24, length = 0.2, clumping = 0.1, randomness = 0.1, from = -0.7 } }

@@ -155,16 +155,16 @@ fn scar(list: &mut List, ink: &Ink, centre: Vec2, size: f32) {
 }
 
 /// A 32-bit xorshift generator: tiny, portable and identical on every platform, which is all a freckle scatter needs.
-struct Rng(u32);
+pub(crate) struct Rng(u32);
 
 impl Rng {
     /// Seeded generator; xorshift never leaves zero, so a zero seed is replaced.
-    fn new(seed: u32) -> Self {
+    pub(crate) fn new(seed: u32) -> Self {
         Self(if seed == 0 { 0x9e37_79b9 } else { seed })
     }
 
     /// The next value in `[0, 1)`.
-    fn unit(&mut self) -> f32 {
+    pub(crate) fn unit(&mut self) -> f32 {
         self.0 ^= self.0 << 13;
         self.0 ^= self.0 >> 17;
         self.0 ^= self.0 << 5;
