@@ -116,7 +116,7 @@ pub struct DesignKeyInputs<'a> {
 /// What of the design layer goes into the key of `part`, a part of `category`.
 pub fn design_key_inputs<'a>(def: &'a CharacterDef, part: &PartId, category: PartCategory) -> DesignKeyInputs<'a> {
     // Exhaustive, like the others: `sculpt` is read per part below, `layers` run in the assembler.
-    let DesignDef { age, dials, sculpt: _, layers: _ } = &def.design;
+    let DesignDef { age, dials, sculpt: _, layers: _ } = &*def.design;
     let shaped = matches!(category, PartCategory::Body | PartCategory::Head);
     DesignKeyInputs {
         age: if shaped { *age } else { None },

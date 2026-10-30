@@ -254,14 +254,20 @@ pub struct CharacterDef {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub weight_brushes: BTreeMap<PartId, Vec<WeightBrush>>,
     /// The shared design layer (`design`): shape dials, sculpt strokes, material layers and age, applied over what
-    /// the parts build. Empty: the parts' character exactly.
-    #[serde(default, skip_serializing_if = "DesignDef::is_empty")]
-    pub design: DesignDef,
+    /// the parts build. Empty: the parts' character exactly. Boxed: most characters have none, and a definition is
+    /// held by value in every built character.
+    #[serde(default, skip_serializing_if = "design_is_empty")]
+    pub design: Box<DesignDef>,
     /// Growth probe (feature `growth-probe`): a field no other crate knows about. See `tests/growth_probe.rs`.
     #[cfg(feature = "growth-probe")]
     #[serde(skip)]
     // a saved field would also need the closed document-key lists (ADR 0054 §5), which this probe doesn't test
     pub growth_probe: u8,
+}
+
+#[allow(clippy::borrowed_box)] // serde's `skip_serializing_if` passes a reference to the field
+fn design_is_empty(design: &Box<DesignDef>) -> bool {
+    design.is_empty()
 }
 
 impl CharacterDef {
@@ -276,7 +282,7 @@ impl CharacterDef {
             parts: BTreeMap::new(),
             face: FaceProfile::default(),
             weight_brushes: BTreeMap::new(),
-            design: DesignDef::default(),
+            design: Box::default(),
             #[cfg(feature = "growth-probe")]
             growth_probe: 0,
         }
@@ -327,7 +333,7 @@ impl CharacterDef {
     /// Sets the design layer.
     #[must_use]
     pub fn with_design(mut self, design: DesignDef) -> Self {
-        self.design = design;
+        self.design = Box::new(design);
         self
     }
 }

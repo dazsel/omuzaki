@@ -69,6 +69,6 @@ pub(crate) fn dial(id: &str, field: &str) -> Result<&'static DialDef, OpError> {
 /// The character and its design.
 pub(crate) fn load(ctx: &OpCtx<'_>, character: &CharId) -> Result<(CharacterDef, DesignDef), OpError> {
     let def = access::load(ctx, character)?;
-    let design = def.design.clone();
+    let design = (*def.design).clone();
     Ok((def, design))
 }
