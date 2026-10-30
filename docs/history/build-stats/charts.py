@@ -125,7 +125,7 @@ chart("agents-at-once.svg", "Agents working at once (hourly average, UTC)",
        "local subagents": [sum(sum(hours[h][k]) / len(hours[h][k]) for k in ("opus_local", "sonnet_local", "haiku_local")) for h in hk],
        "cloud (reported)": [sum(hours[h]["cloud_reported"]) / len(hours[h]["cloud_reported"]) for h in hk],
        "cloud (estimated)": [sum(hours[h]["cloud_estimated"]) / len(hours[h]["cloud_estimated"]) for h in hk]},
-      "area", "Partial after 2026-10-21 3:36 PM PT: only agent-reported cloud time is counted", [h + ":00Z" for h in hk])
+      "area", "Partial after 2026-10-21 3:36 PM PT. Hourly detail ends 10-23; later days are in Agent-hours per day and Cloud project sessions", [h + ":00Z" for h in hk])
 
 ah = rows("agent_hours_daily.csv")
 chart("agent-hours.svg", "Agent-hours per day (Pacific)", [r["date_pt"][5:] for r in ah],
@@ -133,7 +133,7 @@ chart("agent-hours.svg", "Agent-hours per day (Pacific)", [r["date_pt"][5:] for 
        "local subagents": [num(r, "opus_local") + num(r, "sonnet_local") + num(r, "haiku_local") for r in ah],
        "cloud (reported)": [num(r, "cloud_reported") for r in ah],
        "cloud (estimated)": [num(r, "cloud_estimated") for r in ah]}, "bars",
-      "Cloud before 10-21 is estimated from commits; after 10-21 3:36 PM only reported time is counted",
+      "Cloud before 10-21 is estimated from commits; after, reported time, and from 10-23 the cloud project's open-session hours (upper bound)",
       [r["date_pt"] + "T07:00Z" for r in ah])
 
 lo = rows("loc_hourly.csv")
