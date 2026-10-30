@@ -771,6 +771,13 @@ pub struct CurtainGen {
     pub root_tuck_deg: f64,
     /// How far off the skull that first point stands, a little under the cap's own thickness, metres.
     pub root_tuck_offset: f64,
+    /// How far up the head, in degrees of polar angle, the hair lies over the scalp before it falls (`0..=100`): a
+    /// guide starts this far above its root, under the cap's shell at `root_tuck_offset`, comes out over the shell and
+    /// follows the head's curve down to its root, so short cuts (a bob, a nape layer) and long hair alike read as one
+    /// mass from the crown instead of a curtain hung from under the cap's edge. Near 100 the guides start close to the
+    /// crown and the hair radiates from it. It takes the place of the tuck. 0 (the default) hangs the curtain from its
+    /// root.
+    pub drape_deg: f64,
     /// Let the hair fall in front of the shoulders. Off (the default), where the build has a body the curtain hangs
     /// behind the arms, however wide the shoulders are; with no body it is the prototype's either way.
     pub in_front: bool,
@@ -795,6 +802,7 @@ impl Default for CurtainGen {
             wave: Wave { amplitude: 0.036, frequency: 2.1, phase: 0.0, curl: 0.045, growth: [0.15, 0.65] },
             root_tuck_deg: 20.0,
             root_tuck_offset: 0.015,
+            drape_deg: 0.0,
             in_front: false,
             columns: 5,
             width: Taper::new(0.066, 0.095, 0.014),
@@ -2060,6 +2068,7 @@ impl Validate for HairGroup {
                 c.range("generator/length_back", g.length_back, 0.05, 1.5);
                 c.range("generator/root_tuck_deg", g.root_tuck_deg, 0.0, 60.0);
                 c.range("generator/root_tuck_offset", g.root_tuck_offset, 0.0, 0.1);
+                c.range("generator/drape_deg", g.drape_deg, 0.0, 100.0);
                 if g.envelope.len() < 2 {
                     c.fail("generator/envelope", "needs at least two [y, distance] points");
                 }
