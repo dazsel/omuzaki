@@ -1,0 +1,315 @@
+//! The eye's atlas: the iris on the left half and the white of the eye on the right, each a disc (see `eye.wgsl` in
+//! `omuzaki-render`). The iris is drawn in polar terms, as the anatomy is laid out: the pupillary zone inside the
+//! collarette and the ciliary zone outside it, thousands of radial fibres at three scales, crypts opening round the
+//! collarette, contraction furrows, pigment specks and the limbal ring. The white is a polar map of the angle from the
+//! gaze axis, with a fine vessel network and vessels reaching in from the corners.
+
+use std::f32::consts::{PI, TAU};
+
+use omuzaki_core::glam::{Vec2, Vec3};
+
+use super::canvas::Canvas;
+use super::design::{EyeDesign, Iris, Sclera};
+use super::noise::{Pcg, fbm, smoothstep, value_wrapped, worley};
+
+/// Each disc's radius as a share of its half of the atlas (the shader's `ATLAS_DISC`, doubled).
+pub const DISC: f32 = 0.96;
+/// The pupil radius the iris is drawn for, in iris radii (the shader's `DRAWN_PUPIL`).
+pub const DRAWN_PUPIL: f32 = 0.3;
+/// The white's polar map reaches this far from the gaze axis at its rim (the shader's `SCLERA_REACH`), radians.
+pub const SCLERA_REACH: f32 = 1.919_862_2;
+
+const FIBRE_STREAM: u32 = 0x1f1b;
+const CRYPT_STREAM: u32 = 0x2c3d;
+const SPECK_STREAM: u32 = 0x3e4f;
+const VESSEL_STREAM: u32 = 0x4a5b;
+
+/// The atlas, `2 * size` by `size` sRGB bytes (RGBA).
+#[derive(Clone, Debug)]
+pub struct Atlas {
+    /// Pixels across: two halves.
+    pub width: u32,
+    /// Pixels down.
+    pub height: u32,
+    /// sRGB bytes, RGBA, row by row from the top.
+    pub rgba: Vec<u8>,
+}
+
+/// Draws the eye's atlas at `size` pixels per half (a power of two keeps mipmaps exact).
+pub fn atlas(design: &EyeDesign, size: u32) -> Atlas {
+    let iris = iris(&design.iris, design.seed, size);
+    let sclera = sclera(&design.sclera, design.seed, size);
+    let (w, h) = (size as usize * 2, size as usize);
+    let mut rgba = vec![0u8; w * h * 4];
+    let (left, right) = (iris.to_srgb(), sclera.to_srgb());
+    for y in 0..h {
+        let row = y * w * 4;
+        let half = y * h * 4;
+        rgba[row..row + h * 4].copy_from_slice(&left[half..half + h * 4]);
+        rgba[row + h * 4..row + w * 4].copy_from_slice(&right[half..half + h * 4]);
+    }
+    Atlas { width: size * 2, height: size, rgba }
+}
+
+fn lin(c: omuzaki_core::colour::Colour) -> Vec3 {
+    c.to_linear()
+}
+
+/// Polar position of a disc pixel `(u, v)` (`0..1` across the half): radius in disc radii and angle.
+fn polar(u: f32, v: f32) -> (f32, f32) {
+    let q = Vec2::new((u - 0.5) / (0.5 * DISC), (0.5 - v) / (0.5 * DISC));
+    (q.length(), q.y.atan2(q.x))
+}
+
+/// A disc pixel's position in the canvas from a radius (disc radii) and an angle.
+fn to_px(size: u32, r: f32, angle: f32) -> Vec2 {
+    #[allow(clippy::cast_precision_loss)]
+    let s = size as f32;
+    Vec2::new(s * (0.5 + 0.5 * DISC * r * angle.cos()), s * (0.5 - 0.5 * DISC * r * angle.sin()))
+}
+
+/// The radius (disc radii) of the iris at radial position `t` (0 the drawn pupil's edge, 1 the rim).
+fn iris_r(t: f32) -> f32 {
+    DRAWN_PUPIL + t * (1.0 - DRAWN_PUPIL)
+}
+
+/// The collarette's radial position round the iris: wavy at two scales.
+fn collarette_at(iris: &Iris, a: f32, seed: u32) -> f32 {
+    iris.collarette
+        + 0.09 * (value_wrapped(a * 14.0, 0.5, 14, seed ^ 0x77) - 0.5)
+        + 0.05 * (value_wrapped(a * 52.0, 0.5, 52, seed ^ 0x78) - 0.5)
+}
+
+/// The iris half of the atlas.
+pub fn iris(iris: &Iris, seed: u32, size: u32) -> Canvas {
+    let (outer, inner, deep, fibre, limbal) =
+        (lin(iris.outer), lin(iris.inner), lin(iris.deep), lin(iris.fibre), lin(iris.limbal));
+    let fibres = iris.fibres.clamp(0.0, 1.0);
+    let ring = iris.limbal_ring.clamp(0.0, 1.0);
+    let s = seed ^ FIBRE_STREAM;
+    let mut canvas = Canvas::new(size, size, limbal);
+    canvas.fill(|u, v| {
+        let (r, angle) = polar(u, v);
+        if r < DRAWN_PUPIL {
+            return Vec3::splat(0.004);
+        }
+        let a = (angle + PI) / TAU;
+        let t = ((r - DRAWN_PUPIL) / (1.0 - DRAWN_PUPIL)).min(1.0);
+        let c = collarette_at(iris, a, seed);
+        // The two zones, meeting at the collarette.
+        let mut colour = inner.lerp(outer, smoothstep(c - 0.08, c + 0.1, t));
+        // Large, soft variation in the stroma.
+        colour *= 0.82 + 0.36 * fbm(u * 6.0, v * 6.0, 3, s ^ 0x11);
+        // Radial fibres at three scales, wandering a little as they run out.
+        let warp = 0.9 * (fbm(a * 18.0, t * 3.0, 2, s ^ 0x22) - 0.5);
+        let f1 = value_wrapped(a * 170.0 + warp * 3.0, t * 2.5, 170, s ^ 0x33);
+        let f2 = value_wrapped(a * 420.0 + warp * 7.0, t * 5.0, 420, s ^ 0x44);
+        let f3 = value_wrapped(a * 980.0 + warp * 14.0, t * 9.0, 980, s ^ 0x55);
+        let f = 0.45 * f1 + 0.35 * f2 + 0.2 * f3;
+        let light = smoothstep(0.52, 0.8, f);
+        let dark = smoothstep(0.48, 0.18, f);
+        // The pupillary zone's fibres are coarser and darker (the ruff's spokes).
+        let inside = 1.0 - smoothstep(c - 0.02, c + 0.02, t);
+        colour *= 1.0 - fibres * dark * (0.55 + 0.2 * inside);
+        colour = colour.lerp(fibre, fibres * light * (0.58 - 0.2 * inside));
+        // The collarette: a raised, lighter, jagged ridge.
+        let ridge = (-((t - c) / 0.022).powi(2)).exp();
+        colour = colour.lerp(fibre * 0.8, 0.3 * ridge);
+        // The pupillary ruff: a thin dark rim round the pupil.
+        colour = colour.lerp(deep * 0.5, smoothstep(0.045, 0.0, t));
+        // The limbal ring, and the rim beyond the iris.
+        colour = colour.lerp(limbal, ring * smoothstep(0.8, 1.0, t).powf(1.2));
+        if r > 1.0 {
+            return limbal.lerp(Vec3::splat(0.5), smoothstep(1.0, 1.04, r));
+        }
+        colour
+    });
+    crypts(&mut canvas, iris, seed, deep, fibre);
+    furrows(&mut canvas, iris, seed, deep);
+    specks(&mut canvas, iris, seed, deep);
+    canvas
+}
+
+/// Crypts: radially long openings round the collarette, dark with the deep layer and edged lighter.
+fn crypts(canvas: &mut Canvas, iris: &Iris, seed: u32, deep: Vec3, fibre: Vec3) {
+    let mut rng = Pcg::new(seed, CRYPT_STREAM);
+    #[allow(clippy::cast_precision_loss)]
+    let px_per_r = canvas.width as f32 * 0.5 * DISC;
+    for _ in 0..iris.crypts {
+        let a = rng.unit();
+        let angle = a * TAU - PI;
+        let c = collarette_at(iris, a, seed);
+        // Most sit just outside the collarette; a few inside it.
+        let t = if rng.unit() < 0.8 { c + rng.range(0.01, 0.2) } else { c - rng.range(0.03, 0.12) };
+        let half = rng.range(0.025, 0.07);
+        let width = rng.range(0.02, 0.045) * px_per_r;
+        let bend = rng.range(-0.03, 0.03);
+        let points: Vec<Vec2> = (0..=6)
+            .map(|k| {
+                #[allow(clippy::cast_precision_loss)]
+                let s = k as f32 / 6.0 - 0.5;
+                let tt = (t + 2.0 * half * s).clamp(0.02, 0.97);
+                to_px(canvas.width, iris_r(tt), angle + bend * (1.0 - 4.0 * s * s))
+            })
+            .collect();
+        canvas.stroke(&points, (width * 1.5, width * 1.2), fibre * 0.9, (0.25, 0.2));
+        canvas.stroke(&points, (width * 0.6, width), deep, (0.55, 0.4));
+    }
+}
+
+/// Contraction furrows: broken dark arcs ringing the outer zone.
+fn furrows(canvas: &mut Canvas, iris: &Iris, seed: u32, deep: Vec3) {
+    let mut rng = Pcg::new(seed, CRYPT_STREAM ^ 0xf0);
+    for k in 0..iris.furrows {
+        #[allow(clippy::cast_precision_loss)]
+        let t = 0.62 + 0.3 * (k as f32 + rng.unit()) / iris.furrows.max(1) as f32;
+        let mut a = rng.unit() * TAU;
+        while a < TAU * 1.9 {
+            let span = rng.range(0.4, 1.4);
+            let points: Vec<Vec2> = (0..=24)
+                .map(|i| {
+                    #[allow(clippy::cast_precision_loss)]
+                    let ang = a + span * i as f32 / 24.0;
+                    to_px(canvas.width, iris_r(t + 0.01 * (ang * 7.0).sin()), ang)
+                })
+                .collect();
+            canvas.stroke(&points[2..points.len() - 2], (1.8, 1.8), deep, (0.32, 0.32));
+            a += span + rng.range(0.3, 1.2);
+        }
+    }
+}
+
+/// Pigment specks: small dark freckles of the iris, most in the outer zone.
+fn specks(canvas: &mut Canvas, iris: &Iris, seed: u32, deep: Vec3) {
+    let mut rng = Pcg::new(seed, SPECK_STREAM);
+    #[allow(clippy::cast_precision_loss)]
+    let px_per_r = canvas.width as f32 * 0.5 * DISC;
+    for _ in 0..iris.specks {
+        let angle = rng.unit() * TAU;
+        let t = rng.range(0.2, 0.92);
+        let r = rng.range(0.004, 0.014) * px_per_r;
+        let squash = rng.range(0.5, 1.0);
+        canvas.disc(
+            to_px(canvas.width, iris_r(t), angle),
+            Vec2::new(r, r * squash),
+            deep * 0.35,
+            rng.range(0.5, 0.9),
+            0.4,
+        );
+    }
+}
+
+/// The white half of the atlas.
+pub fn sclera(sclera: &Sclera, seed: u32, size: u32) -> Canvas {
+    let (white, edge) = (lin(sclera.white), lin(sclera.edge));
+    let pink = Vec3::new(0.82, 0.42, 0.38);
+    let net = sclera.network.clamp(0.0, 1.0);
+    let s = seed ^ VESSEL_STREAM;
+    let mut canvas = Canvas::new(size, size, edge);
+    canvas.fill(|u, v| {
+        let (rho, phi) = polar(u, v);
+        let theta = rho.min(1.0) * SCLERA_REACH;
+        let mut colour = white.lerp(edge, smoothstep(0.3, 0.95, rho));
+        // The corners of the eye are pinker: the conjunctiva is thicker and the vessels denser there.
+        let corner = smoothstep(0.42, 0.9, rho) * phi.cos().abs().powi(3);
+        colour = colour.lerp(pink, 0.28 * corner);
+        colour *= 0.95 + 0.08 * fbm(u * 9.0, v * 9.0, 3, s ^ 0x91);
+        // The fine vessel network, on the sphere's surface so it doesn't crowd at the pole of the map.
+        let (x, y) = (theta.sin() * phi.cos(), theta.sin() * phi.sin());
+        let (f1, f2) = worley(x * 26.0, y * 26.0, s ^ 0x92);
+        let line = 1.0 - smoothstep(0.0, 0.05, f2 - f1);
+        let faint = fbm(x * 40.0, y * 40.0, 2, s ^ 0x93);
+        let reach = smoothstep(0.28, 0.55, rho);
+        colour = colour.lerp(Vec3::new(0.6, 0.38, 0.4), net * 0.5 * line * faint * reach);
+        colour
+    });
+    vessels(&mut canvas, sclera, seed);
+    canvas
+}
+
+/// Vessels: branching red lines from the corners toward the iris, thinning and fading as they go.
+fn vessels(canvas: &mut Canvas, sclera: &Sclera, seed: u32) {
+    let mut rng = Pcg::new(seed, VESSEL_STREAM);
+    let red = Vec3::new(0.42, 0.1, 0.1);
+    let mut todo: Vec<(f32, f32, f32, f32, u32)> = Vec::new();
+    for _ in 0..sclera.vessels {
+        // From the inner or the outer corner mostly, a few from above and below.
+        let side = if rng.unit() < 0.5 { 0.0 } else { PI };
+        let spread = if rng.unit() < 0.8 { 0.55 } else { 1.4 };
+        todo.push((
+            rng.range(0.7, 0.95),
+            side + spread * rng.normal() * 0.6,
+            rng.range(3.0, 5.0),
+            rng.range(0.5, 0.75),
+            0,
+        ));
+    }
+    while let Some((r0, a0, width, alpha, depth)) = todo.pop() {
+        let mut points = Vec::new();
+        let (mut r, mut a) = (r0, a0);
+        // `heading`: the vessel's sideways drift per step inward, as a share of the step.
+        let mut heading = rng.normal() * 0.3;
+        let end = rng.range(0.3, 0.42);
+        let step = 0.008;
+        while r > end {
+            points.push(to_px(canvas.width, r, a));
+            heading = (heading + rng.normal() * 0.25).clamp(-0.9, 0.9);
+            a += heading * step / r.max(0.3);
+            r -= step;
+            if depth < 3 && rng.unit() < 0.07 {
+                todo.push((r, a, width * 0.6, alpha * 0.8, depth + 1));
+            }
+        }
+        canvas.stroke(&points, (width, 0.35), red, (alpha, 0.0));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at(canvas: &Canvas, r: f32, angle: f32) -> Vec3 {
+        let p = to_px(canvas.width, r, angle);
+        // In range: r < 1.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let (x, y) = (p.x as usize, p.y as usize);
+        canvas.pixels[y * canvas.width as usize + x]
+    }
+
+    #[test]
+    fn the_iris_has_a_dark_pupil_a_coloured_body_and_a_darker_rim() {
+        let design = EyeDesign::default();
+        let c = iris(&design.iris, 1, 256);
+        let pupil = at(&c, 0.1, 0.3);
+        let body: Vec3 = (0..32u8).map(|i| at(&c, 0.62, f32::from(i) * 0.2)).sum::<Vec3>() / 32.0;
+        let rim: Vec3 = (0..32u8).map(|i| at(&c, 0.985, f32::from(i) * 0.2)).sum::<Vec3>() / 32.0;
+        assert!(pupil.max_element() < 0.02, "{pupil}");
+        assert!(body.x > body.z * 3.0, "amber reads warm: {body}");
+        assert!(rim.length() < body.length() * 0.8, "the limbal ring darkens the rim: {rim} vs {body}");
+    }
+
+    #[test]
+    fn the_seed_moves_the_detail_and_repeats_it() {
+        let d = EyeDesign::default();
+        let (a, b, c) = (iris(&d.iris, 1, 128), iris(&d.iris, 1, 128), iris(&d.iris, 2, 128));
+        assert_eq!(a.pixels, b.pixels);
+        assert_ne!(a.pixels, c.pixels);
+    }
+
+    #[test]
+    fn the_atlas_is_two_squares_side_by_side() {
+        let a = atlas(&EyeDesign::default(), 64);
+        assert_eq!((a.width, a.height, a.rgba.len()), (128, 64, 128 * 64 * 4));
+    }
+
+    #[test]
+    fn the_white_is_light_with_vessels_toward_the_corners() {
+        let c = sclera(&Sclera::default(), 1, 256);
+        let centre = at(&c, 0.3, 1.57);
+        assert!(centre.min_element() > 0.6, "{centre}");
+        let corners: f32 = (0..200u8)
+            .map(|i| at(&c, 0.6 + f32::from(i) * 0.0015, 0.0).x - at(&c, 0.6 + f32::from(i) * 0.0015, 0.0).y)
+            .sum();
+        assert!(corners > 0.0, "red vessels and pink corners: {corners}");
+    }
+}
