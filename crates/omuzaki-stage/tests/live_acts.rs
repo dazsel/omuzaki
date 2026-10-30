@@ -524,15 +524,39 @@ fn an_imported_take_plays_live_through_act_clip_exactly_on_the_living_body() {
     omuzaki_doc_api::DocWrite::apply(&mut doc, &planned.patch).unwrap();
     let take = omuzaki_anim::motion::asf::Skeleton::parse(&asf).unwrap().motion(&amc, 30.0, 0.9).unwrap().in_place();
 
+    // A webcam moves the head the whole time; the take is played over it, as recorded.
+    let track = synthetic_track(&SyntheticSpec { seconds: 60.0, ..SyntheticSpec::default() });
+    let mut rig =
+        Rig::animated(Some(Box::new(TrackReplay::new(track))), Box::new(LivingBody::new(BodyStyle::default(), 3)));
+    rig.run_for(0.5);
+    let services = rig.services();
+    let ctx = OpCtx::new(&doc, &actor, &clock).with_services(&services);
+    let args = json!({ "clip": "talk", "character": "kit", "fade_s": 0.0, "over_tracking": true });
+    let op = (find("act.clip").unwrap().decode)(args).unwrap();
+    op.plan(&ctx).unwrap();
+    // The command lands on the next step, which starts the act; the step after shows it one step in, and from there
+    // the body is the take on every bone, the tracked head and the living body's motion included.
+    rig.step();
+    let mut worst = 0.0_f32;
+    for n in 0..230_u32 {
+        let step = rig.step();
+        let theirs = take.sample((n + 1) as f32 / 60.0);
+        for bone in HumanoidBone::ALL {
+            let (a, b) = (step.pose.get(bone), theirs.get(bone));
+            worst = worst.max((a - b).length().min((a + b).length()));
+        }
+        assert!((step.pose.hips_offset - theirs.hips_offset).length() < 1e-6, "step {n}");
+    }
+    assert!(worst < 1e-6, "the live body is the take: {worst} off");
+
+    // Under tracking (the default) the webcam keeps the head, and the living body hands the rest over in half a
+    // second, after which every other bone is the take.
     let mut rig = Rig::animated(None, Box::new(LivingBody::new(BodyStyle::default(), 3)));
     rig.run_for(0.5);
     let services = rig.services();
     let ctx = OpCtx::new(&doc, &actor, &clock).with_services(&services);
     let args = json!({ "clip": "talk", "character": "kit", "fade_s": 0.0 });
-    let op = (find("act.clip").unwrap().decode)(args).unwrap();
-    op.plan(&ctx).unwrap();
-    // The command lands on the next step, which starts the act; the step after shows it one step in. The living body
-    // hands the bones over within half a second (no pop from its own motion); from then on the body is the take.
+    (find("act.clip").unwrap().decode)(args).unwrap().plan(&ctx).unwrap();
     rig.step();
     let mut worst = 0.0_f32;
     for n in 0..230_u32 {
@@ -541,11 +565,10 @@ fn an_imported_take_plays_live_through_act_clip_exactly_on_the_living_body() {
         if n < 30 {
             continue;
         }
-        for bone in HumanoidBone::ALL {
+        for bone in HumanoidBone::ALL.into_iter().filter(|b| !matches!(b, HumanoidBone::Neck | HumanoidBone::Head)) {
             let (a, b) = (step.pose.get(bone), theirs.get(bone));
             worst = worst.max((a - b).length().min((a + b).length()));
         }
-        assert!((step.pose.hips_offset - theirs.hips_offset).length() < 1e-6, "step {n}");
     }
-    assert!(worst < 1e-6, "the live body is the take: {worst} off");
+    assert!(worst < 1e-6, "under the head the live body is the take: {worst} off");
 }

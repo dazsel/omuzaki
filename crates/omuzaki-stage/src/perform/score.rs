@@ -147,7 +147,8 @@ pub struct Act {
     /// Which acts it takes over from.
     pub lane: Lane,
     /// It plays over the tracker, lip sync, the triggers and the life layer on the channels it sets ([`OverLayer`]),
-    /// instead of under them. Channel acts only; a clip ignores it.
+    /// instead of under them; a clip played over tracking is laid over the animator's pose too
+    /// ([`ScorePose::over_layers`]), tracked head and breath included.
     pub over_tracking: bool,
 }
 
@@ -227,6 +228,9 @@ struct Playing {
 pub struct ScorePose {
     layers: [PoseLayer; MAX_CLIPS],
     len: usize,
+    /// The clips played over tracking, again: the performer lays them over everything after the animator.
+    over: [PoseLayer; MAX_CLIPS],
+    over_len: usize,
     reaches: Reaches,
 }
 
@@ -238,7 +242,7 @@ impl Default for ScorePose {
             weight: 0.0,
             mode: PoseMode::Override,
         };
-        Self { layers: [none; MAX_CLIPS], len: 0, reaches: Reaches::NONE }
+        Self { layers: [none; MAX_CLIPS], len: 0, over: [none; MAX_CLIPS], over_len: 0, reaches: Reaches::NONE }
     }
 }
 
@@ -246,6 +250,12 @@ impl ScorePose {
     /// The layers to blend, lowest first.
     pub fn layers(&self) -> &[PoseLayer] {
         &self.layers[..self.len]
+    }
+
+    /// The clips played over tracking ([`Act::over_tracking`]), lowest first: laid over the animator's pose, so on
+    /// their bones the body is the clip, tracked head and breath included.
+    pub fn over_layers(&self) -> &[PoseLayer] {
+        &self.over[..self.over_len]
     }
 
     /// Where the playing clips' hands reach, each at the strength its clip plays (the strongest per hand).
@@ -261,6 +271,7 @@ impl ScorePose {
     /// No layer and no reach.
     pub fn clear(&mut self) {
         self.len = 0;
+        self.over_len = 0;
         self.reaches = Reaches::NONE;
     }
 }
@@ -391,6 +402,12 @@ impl LiveScore {
                         slot.mask = *bones;
                         slot.weight = w * weight;
                         slot.mode = PoseMode::Override;
+                        if playing.act.over_tracking
+                            && let Some(over) = pose.over.get_mut(pose.over_len)
+                        {
+                            *over = *slot;
+                            pose.over_len += 1;
+                        }
                         pose.len += 1;
                         // A later clip's reach takes over a hand as its strength passes the earlier one's.
                         pose.reaches = pose.reaches.layered(&posture.reach, w * weight);
