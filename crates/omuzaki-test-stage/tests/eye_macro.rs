@@ -18,7 +18,7 @@ use omuzaki_core::id::Slug;
 use omuzaki_face::eye3d::{self, EyeDesign, EyeFrame};
 use omuzaki_render::{AdapterPreference, HeadlessOptions, WgpuRenderer};
 use omuzaki_render_api::{
-    AlphaEncoding, AlphaMode, Background, Camera, EnvironmentDesc, EnvironmentUse, Instance, Light, Material,
+    AlphaEncoding, AlphaMode, Background, Camera, DepthOfField, EnvironmentDesc, EnvironmentUse, Instance, Light, Material,
     Projection, Quality, Renderer, Scene, Shading, TargetDesc, TextureDesc,
 };
 
@@ -146,6 +146,12 @@ fn render(renderer: &mut WgpuRenderer, design: &EyeDesign) -> image::RgbaImage {
     let environment = renderer.create_environment(&studio(softbox)).unwrap();
     scene.environment = Some(EnvironmentUse::new(environment));
     scene.background = Background::Solid { colour: Colour::hex(0x0030_2420) };
+    // A macro lens: sharp on the iris, the lashes and the skin falling out of focus.
+    scene.post.depth_of_field = Some(DepthOfField {
+        focus_distance: (camera_at - Vec3::new(0.0, 0.0, 0.011)).length(),
+        focus_range: 0.0015,
+        max_blur: 0.07,
+    });
 
     let target = renderer.create_target(&TargetDesc { size: SIZE, alpha: AlphaEncoding::Straight }).unwrap();
     let quality = Quality { render_scale: 2.0, ..Quality::high() };
