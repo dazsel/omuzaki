@@ -293,6 +293,7 @@ impl Default for UvTransform {
 
 /// Everything about how one mesh's surface looks.
 #[derive(Clone, Debug, PartialEq)]
+#[allow(clippy::struct_excessive_bools, reason = "independent switches a renderer reads one at a time")]
 pub struct Material {
     /// The surface colour (its alpha multiplies the texture's).
     pub base: Colour,
@@ -304,6 +305,11 @@ pub struct Material {
     pub overlays: Vec<Overlay>,
     /// How alpha is used.
     pub alpha: AlphaMode,
+    /// With [`AlphaMode::Blend`], blend without sorting (weighted blended order-independent transparency, #2507):
+    /// many overlapping layers of one surface, such as hair tips or fur, blend smoothly with no sorting errors, at the
+    /// cost of an approximate order where layers of very different colours overlap. A renderer that lacks it sorts the
+    /// surface with the other blended ones. Ignored for other alpha modes.
+    pub order_independent: bool,
     /// Draw both sides of every triangle (hair sheets, cloth). The back side is shaded with the flipped normal.
     pub double_sided: bool,
     /// Multiply the mesh's vertex colours into `base`.
@@ -330,6 +336,7 @@ impl Material {
             shading: Shading::Toon(Toon::default()),
             overlays: Vec::new(),
             alpha: AlphaMode::Opaque,
+            order_independent: false,
             double_sided: false,
             vertex_colours: false,
             outline: None,
