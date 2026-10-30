@@ -1,0 +1,29 @@
+# Gesture "big" (iconic). Arm angles are degrees in a person's terms: raise, forward, twist, elbow, pronate, wrist,
+# shrug and reach (see crates/omuzaki-anim/src/body/arm.rs). `lead` is the gesturing hand, `other` the second hand of a
+# two-handed gesture (the lead's mirror when left out); `chest` is pitch, yaw toward the lead side and roll, in degrees.
+id = "big"
+summary = "Both hands drawn apart, palms facing: this big."
+kind = "iconic"
+hands = "both"
+strokes = [1, 1]
+
+[prep.lead]
+raise = 10.0
+forward = 36.0
+twist = 30.0
+elbow = 86.0
+pronate = -8.0
+wrist = 0.0
+hand = "open"
+
+[stroke]
+chest = [-2.0, 0.0, 0.0]
+
+[stroke.lead]
+raise = 30.0
+forward = 40.0
+twist = -6.0
+elbow = 46.0
+pronate = -10.0
+wrist = -4.0
+hand = "open"

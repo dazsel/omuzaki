@@ -1,0 +1,29 @@
+# Gesture "beat-chop" (beat). Arm angles are degrees in a person's terms: raise, forward, twist, elbow, pronate, wrist,
+# shrug and reach (see crates/omuzaki-anim/src/body/arm.rs). `lead` is the gesturing hand, `other` the second hand of a
+# two-handed gesture (the lead's mirror when left out); `chest` is pitch, yaw toward the lead side and roll, in degrees.
+id = "beat-chop"
+summary = "A small chop of the edge of the hand on each stressed word: the everyday beat."
+kind = "beat"
+hands = "one"
+strokes = [1, 4]
+
+[prep.lead]
+raise = 12.0
+forward = 34.0
+twist = 16.0
+elbow = 96.0
+pronate = -5.0
+wrist = -12.0
+hand = "open"
+
+[stroke]
+chest = [2.0, 3.0, 0.0]
+
+[stroke.lead]
+raise = 12.0
+forward = 30.0
+twist = 18.0
+elbow = 70.0
+pronate = -5.0
+wrist = 10.0
+hand = "flat"
