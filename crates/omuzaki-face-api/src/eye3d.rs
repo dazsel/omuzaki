@@ -321,7 +321,7 @@ impl Default for Lashes {
             lower: 120,
             upper_length: 0.0062,
             lower_length: 0.0042,
-            curl: 0.9,
+            curl: 1.0,
             clumping: 0.85,
             thickness: 0.000_11,
             colour: Colour::hex(0x0016_0f0c),

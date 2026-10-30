@@ -67,10 +67,11 @@ fn luma_spread(frame: &image::RgbaImage) -> (f32, f32) {
 #[test]
 fn the_eye_renders_at_macro_framing_as_an_eye() {
     let Some(mut renderer) = renderer() else { return };
-    // Looking up lifts the upper lid, as in the reference close-up.
+    // Wide open and tilted up toward the outer corner, as in the reference close-up.
     let mut design = EyeDesign::default();
     design.aperture.upper = 0.0076;
     design.aperture.lower = 0.0058;
+    design.aperture.outer_y = 0.0012;
     for (view, name) in [(View::Macro, "eye-macro.png"), (View::Front, "eye-front.png")] {
         let frame = render(&mut renderer, &design, view);
         if let Some(dir) = std::env::var_os("OMUZAKI_EYE_OUT").map(PathBuf::from) {
