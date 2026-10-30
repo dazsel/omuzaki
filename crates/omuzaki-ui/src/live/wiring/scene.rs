@@ -4,9 +4,16 @@
 //!
 //! The main viewport and the output window draw the same frame: the output window shows a copy of what this renders
 //! (`output_window`), never a second render.
+//!
+//! **Adaptive quality** (#2593). With [`set_adaptive`](LiveScene::set_adaptive) on, every frame's report goes to the
+//! frame-budget [`Scheduler`], which lowers the stage's quality one rung of the degrade ladder at a time when the
+//! frame stays over the spec §10 budget (a game beside the show taking the GPU) and gives it back when there is room.
+//! Held (a take recording), the quality stays as it is, so a recording keeps one look.
 
 use omuzaki_anim_api::HumanoidPose;
-use omuzaki_render_api::{Renderer, Scene};
+use omuzaki_budget::{Change, Direction, Scheduler};
+use omuzaki_core::time::Seconds;
+use omuzaki_render_api::{Quality, Renderer, Scene, budget};
 use omuzaki_stage::StageError;
 use omuzaki_stage::frame::{FrameInput, FrameOutput};
 use omuzaki_stage::scene::stage::SceneStage;
@@ -23,13 +30,72 @@ pub struct LiveScene {
     last: Option<LiveFrame>,
     /// The scene changed since the last render: draw it again even without a new perform frame.
     stale: bool,
+    /// Adaptive quality's scheduler, which keeps the quality the stage was made with as its request.
+    scheduler: Scheduler,
+    /// Whether the scheduler may change quality.
+    adaptive: bool,
+    /// Whether it is holding still while on (a take recording).
+    held: bool,
+    /// Changes of quality so far.
+    changes: u64,
+    /// The last change.
+    last_change: Option<Change>,
+}
+
+/// Adaptive quality as it stands, for the health meter and `program.status`.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct QualityState {
+    /// Whether the scheduler may change quality.
+    pub adaptive: bool,
+    /// Holding still while on (a take recording).
+    pub held: bool,
+    /// Ladder rungs applied (0 is the quality asked for).
+    pub rung: u32,
+    /// Changes so far.
+    pub changes: u64,
+    /// The last change.
+    pub last: Option<Change>,
+    /// The smoothed frame time held against the budget.
+    pub smoothed: Option<Seconds>,
+    /// The budget.
+    pub budget: Seconds,
+}
+
+impl QualityState {
+    /// The last change as words: `"down: bloom_off"`.
+    pub fn last_words(&self) -> Option<String> {
+        self.last.map(|c| {
+            let way = match c.direction {
+                Direction::Down => "down",
+                Direction::Up => "up",
+            };
+            format!("{way}: {}", c.step.name())
+        })
+    }
+}
+
+/// The spec §10 budget a quality is held to: the full look's when it is the high preset, the live budget otherwise.
+fn budget_for(quality: &Quality) -> Seconds {
+    if *quality == Quality::high() { budget::HIGH_GPU } else { budget::LIVE_GPU }
 }
 
 impl LiveScene {
     /// The scene `stage`, its subject fed from `reader`.
     pub fn new(stage: SceneStage, reader: FrameReader) -> Self {
         let input = FrameInput { pose: Self::base_pose(&stage), ..FrameInput::default() };
-        Self { stage, reader, input, last: None, stale: false }
+        let requested = *stage.quality();
+        Self {
+            stage,
+            reader,
+            input,
+            last: None,
+            stale: false,
+            scheduler: Scheduler::new(requested, budget_for(&requested)),
+            adaptive: false,
+            held: false,
+            changes: 0,
+            last_change: None,
+        }
     }
 
     /// The pose the performer should be built on for the scene's subject: its bind pose, as the stage seeds it. Pass
@@ -56,7 +122,42 @@ impl LiveScene {
         }
         self.stale = false;
         self.input.dt = dt;
-        self.stage.tick(renderer, &self.input).map(Some)
+        let out = self.stage.tick(renderer, &self.input)?;
+        if self.adaptive
+            && !self.held
+            && let Some(change) = self.scheduler.observe(&out.report)
+        {
+            self.stage.set_quality(self.scheduler.quality());
+            self.changes += 1;
+            self.last_change = Some(change);
+            tracing::info!(?change, "adaptive quality changed the stage's quality");
+        }
+        Ok(Some(out))
+    }
+
+    /// Adaptive quality on or off, and whether it holds still while on (a take recording without leave to change the
+    /// look). Turned off, the stage goes back to the quality it was made with.
+    pub fn set_adaptive(&mut self, on: bool, held: bool) {
+        if self.adaptive && !on {
+            let requested = self.scheduler.requested();
+            self.scheduler.set_requested(requested, budget_for(&requested));
+            self.stage.set_quality(self.scheduler.quality());
+            self.stale = true;
+        }
+        (self.adaptive, self.held) = (on, held);
+    }
+
+    /// Adaptive quality as it stands.
+    pub fn quality_state(&self) -> QualityState {
+        QualityState {
+            adaptive: self.adaptive,
+            held: self.held,
+            rung: u32::try_from(self.scheduler.rungs() + self.scheduler.density_rungs()).unwrap_or(u32::MAX),
+            changes: self.changes,
+            last: self.last_change,
+            smoothed: self.scheduler.smoothed(),
+            budget: self.scheduler.budget(),
+        }
     }
 
     /// Draws the next frame even if no perform frame arrives for it: the scene changed.

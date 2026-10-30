@@ -1,0 +1,37 @@
+[package]
+name = "omuzaki-overlay"
+description = "The program compositor (spec v3 BR-13, BR-20, ST-04): on-stream widgets (alerts, chat box, goal bar, timers with subathon time, text) drawn into the program with alpha, scene transitions, and the overlay.* and program.* ops."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ab_glyph.workspace = true
+glam.workspace = true
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-doc-api = { path = "../omuzaki-doc-api" }
+omuzaki-live-api = { path = "../omuzaki-live-api" }
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+omuzaki-render-api = { path = "../omuzaki-render-api" }
+omuzaki-stage-api = { path = "../omuzaki-stage-api" }
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+image.workspace = true
+
+[lints]
+workspace = true
+
+[package.metadata.omuzaki]
+kind = "Implementation"
+summary = "the program compositor (BR-13, BR-20, ST-04): widgets kept in the document under `overlay/widgets/<id>` (alerts, chat box, goal bar, countdown, stopwatch and subathon timers, text), their live state fed from the show's events, a CPU painter that rasterises each widget only when it changes and blends it into the program frame with alpha, scene transitions (cut, fade, dip, wipe, slide, iris) between program scenes, and the ops `overlay.*` and `program.*`; native only"
+# Native only: it paints into the frames the outputs carry.
+wasm = false
+# The overlay.* and program.* ops register themselves (ADR 0015, `cargo xtask lint-registers`).
+registers = true

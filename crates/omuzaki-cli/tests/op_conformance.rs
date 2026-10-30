@@ -506,6 +506,16 @@ impl Rig {
                     Arc::new(omuzaki_http_mock::FakeHttp::new()),
                     Arc::new(omuzaki_live::Automation::new()),
                 )))
+                // The same with YouTube: the `youtube.*` examples dry-run and report that no token is stored.
+                .insert::<omuzaki_youtube::YouTubeService>(Arc::new(omuzaki_youtube::YouTubeService::new(
+                    Arc::new(omuzaki_http_mock::FakeHttp::new()),
+                    Arc::new(omuzaki_live::Automation::new()),
+                )))
+                // The program compositor with nothing composing: the `overlay.*` and `program.*` live examples
+                // dry-run against it.
+                .insert::<omuzaki_overlay::ProgramService>(Arc::new(
+                    omuzaki_overlay::ProgramService::new(Arc::new(SystemClock::new())).expect("the bundled fonts load"),
+                ))
                 // Settings in memory: the `settings.*` examples read and write them as they would in the app,
                 // with the profile `stream-0001` the `settings.profile.*` examples name.
                 .insert::<dyn omuzaki_settings_api::service::Settings>(settings_with_a_profile())

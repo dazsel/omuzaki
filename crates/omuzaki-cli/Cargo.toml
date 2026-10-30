@@ -69,6 +69,10 @@ omuzaki-live = { path = "../omuzaki-live" }
 omuzaki-live-nodes = { path = "../omuzaki-live-nodes" }
 # The Twitch adapter and its ops (`twitch.connect`, `twitch.disconnect`, `twitch.status`).
 omuzaki-twitch = { path = "../omuzaki-twitch" }
+# The YouTube adapter and its ops (`youtube.connect`, `youtube.disconnect`, `youtube.status`).
+omuzaki-youtube = { path = "../omuzaki-youtube" }
+# The program compositor's ops (`overlay.*`, `program.*`).
+omuzaki-overlay = { path = "../omuzaki-overlay" }
 omuzaki-store = { path = "../omuzaki-store" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
 # The render services of a project command (`src/gpu.rs`): a headless renderer that opens on the first render, the
@@ -157,4 +161,4 @@ summary = "the `omuzaki` command: ops, help, run (dry-run/JSON), undo/redo, all 
 wasm = false
 # Held only to link their registrations in (`omuzaki_cli::link`, ADR 0015); this crate's source calls none of their API.
 # A change to one of them runs just `tests/registrations.rs` here (`cargo xtask check --affected`), not every test.
-link_only = ["omuzaki-io-fbx", "omuzaki-io-gltf", "omuzaki-io-ops", "omuzaki-io-vrm", "omuzaki-short", "omuzaki-stage", "omuzaki-stream", "omuzaki-stream-share", "omuzaki-vcam", "omuzaki-audio-engine", "omuzaki-audio-fx", "omuzaki-obs", "omuzaki-vts", "omuzaki-live", "omuzaki-live-nodes", "omuzaki-twitch"]
+link_only = ["omuzaki-io-fbx", "omuzaki-io-gltf", "omuzaki-io-ops", "omuzaki-io-vrm", "omuzaki-short", "omuzaki-stage", "omuzaki-stream", "omuzaki-stream-share", "omuzaki-vcam", "omuzaki-audio-engine", "omuzaki-audio-fx", "omuzaki-obs", "omuzaki-vts", "omuzaki-live", "omuzaki-live-nodes", "omuzaki-twitch", "omuzaki-youtube", "omuzaki-overlay"]

@@ -26,6 +26,7 @@ use omuzaki_live_api::event::EventSink;
 use omuzaki_live_api::services::Approvals;
 use omuzaki_obs::service::ObsService;
 use omuzaki_ops_api::{Actor, Event, Grants, Runner, ServicesBuilder};
+use omuzaki_overlay::{ProgramService, QualityReport, Tee};
 use omuzaki_render::WgpuRenderer;
 use omuzaki_secrets::KeychainSecrets;
 use omuzaki_secrets_api::prelude::SecretStore;
@@ -53,6 +54,7 @@ use omuzaki_track_net::PhoneSettings;
 use omuzaki_twitch::TwitchService;
 use omuzaki_vts::client::SecretTokens;
 use omuzaki_vts::service::VtsService;
+use omuzaki_youtube::YouTubeService;
 
 use omuzaki_metrics_api::MetricsReader;
 
@@ -143,6 +145,12 @@ pub struct LiveApp {
     scripts: Option<Arc<dyn omuzaki_script::ScriptStore>>,
     /// Writes the live-metrics snapshot the Health panel reads (#1348).
     health: LiveHealth,
+    /// The program compositor: the overlay's widgets and the scene transitions drawn into the frame the outputs carry
+    /// (`overlay.*`, `program.*`); `None` if its fonts did not load.
+    program: Option<Arc<ProgramService>>,
+    /// Whether adaptive quality is on when the project doesn't say (`program.set_adaptive`): on in the studio, off for
+    /// a headless or test slice, whose frames must not change under it.
+    adaptive_default: bool,
 }
 
 /// The live-metrics snapshot's writer, its reader, and the parts it samples that only the app holds.
@@ -306,7 +314,9 @@ impl LiveApp {
                 .map(|store| Arc::new(store) as Arc<dyn omuzaki_script::ScriptStore>),
             body: None,
         };
-        Self::start_with(document, inputs.webcam, extras, clock, transparency, &base)
+        let mut app = Self::start_with(document, inputs.webcam, extras, clock, transparency, &base)?;
+        app.adaptive_default = true;
+        Ok(app)
     }
 
     fn start_with(
@@ -331,9 +341,7 @@ impl LiveApp {
         let settings = extras.settings.clone();
         let scripts = extras.scripts.clone();
         let data = extras.data.clone();
-        // The shows: the automation engine runs their rules through this app's runner, and Twitch's events reach it.
         let automation = Arc::new(Automation::new());
-        let twitch = TwitchService::new(Arc::new(ConnectHttp::new()), Arc::clone(&automation) as Arc<dyn EventSink>);
         let vts = vts_bridge(secrets.as_ref(), &mut extras);
         let (rig, reader) =
             LiveRig::start_with(Box::new(tracker.clone()), extras, TrackerConfig::default(), performer, clock)
@@ -359,7 +367,7 @@ impl LiveApp {
         if let Some(scripts) = &scripts {
             services = services.insert::<dyn omuzaki_script::ScriptStore>(Arc::clone(scripts));
         }
-        services = services.insert::<Automation>(Arc::clone(&automation)).insert::<TwitchService>(Arc::new(twitch));
+        let (mut services, program) = with_shows(services, &automation);
         if let Some(vts) = vts {
             services = services.insert::<VtsService>(vts);
         }
@@ -425,6 +433,8 @@ impl LiveApp {
             renders,
             scripts,
             health: LiveHealth::new(perform, audio),
+            program,
+            adaptive_default: false,
         })
     }
 
@@ -499,6 +509,7 @@ impl LiveApp {
             Ok(events) => Some(Follow {
                 events,
                 changed: Some(std::time::Instant::now()),
+                now: false,
                 bodies: StudioBodies::new(self.renders.clone(), mtoon),
             }),
             Err(error) => {
@@ -528,9 +539,10 @@ impl LiveApp {
             follow.changed = Some(now);
         }
         let Some(since) = follow.changed else { return };
-        if now.duration_since(since) < SETTLE {
+        if now.duration_since(since) < SETTLE && !follow.now {
             return;
         }
+        follow.now = false;
         follow.changed = None;
         let root = match self.core.runner.get(&omuzaki_doc_api::DocPath::root(), &Grants::person()) {
             Ok(root) => root.unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new())),
@@ -539,7 +551,11 @@ impl LiveApp {
                 return;
             }
         };
-        match view.follow(&Tree::new(root), &mut follow.bodies) {
+        let tree = Tree::new(root);
+        if let Some(program) = &self.program {
+            program.follow(&tree);
+        }
+        match view.follow(&tree, &mut follow.bodies) {
             Ok(synced) if synced.restaged => {
                 if let AnyStage::Kit(lead) = view.scene_mut().stage_mut().cast_mut().lead_mut() {
                     lead.attach_effects(Arc::clone(&self.effects), EffectLimits::live());
@@ -615,6 +631,7 @@ impl LiveApp {
         // A take, the replay buffer or a live output carries the character alone with alpha too.
         let streaming = self.feed.as_ref().is_some_and(ProgramFeed::wanted);
         let clean = (self.output.status().open && !ctx.embed_viewports()) || streaming;
+        self.switch_scene(streaming);
         self.follow_document();
         let program = self.viewport.as_mut().and_then(|view| {
             view.set_clean(clean);
@@ -637,8 +654,16 @@ impl LiveApp {
                 Err(error) => tracing::warn!(%error, "the program frame could not be read for click-through"),
             }
         }
+        // The outputs carry the program: the stage's frame with the transition played and the overlay drawn over it.
+        let compositor = self.program.as_deref();
         if let (Some(feed), Some(view)) = (self.feed.as_mut(), self.viewport.as_mut())
-            && let Err(error) = feed.offer(|| view.snapshot())
+            && let Err(error) = feed.offer(|| {
+                let mut frame = view.snapshot()?;
+                if let Some(compositor) = compositor {
+                    compositor.compose(&mut frame);
+                }
+                Ok::<_, ViewportError>(frame)
+            })
         {
             tracing::warn!(%error, "the program frame could not be read back for the outputs");
         }
@@ -647,6 +672,55 @@ impl LiveApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(8));
         }
         self.show_program(ctx, program);
+    }
+
+    /// The scene `program.switch_scene` asked for, once it is due ([`ProgramService::take_switch`]): the stage stages it
+    /// on this frame. With an output running, the outgoing frame was held first, and the outputs blend from it.
+    fn switch_scene(&mut self, outputs: bool) {
+        let (Some(program), Some(view)) = (self.program.as_ref(), self.viewport.as_mut()) else { return };
+        let Some(scene) = program.take_switch(outputs) else { return };
+        match omuzaki_stage_api::SceneId::new(&scene) {
+            Ok(id) => view.ask_scene(Some(id)),
+            Err(error) => {
+                tracing::warn!(%error, "the program was asked for a scene that is not a scene id");
+                return;
+            }
+        }
+        if let Some(follow) = self.follow.as_mut() {
+            follow.changed = Some(std::time::Instant::now());
+            follow.now = true;
+        } else {
+            tracing::warn!("the stage doesn't follow the document: the scene switch shows when it next does");
+        }
+    }
+
+    /// Adaptive quality as the project sets it, held still while a take records unless the project allows changes
+    /// then; reported to `program.status` and the health meter.
+    fn adapt(&mut self) {
+        let Some(view) = self.viewport.as_mut() else { return };
+        let spec = self.program.as_ref().map(|p| p.adaptive()).unwrap_or_default();
+        let on = spec.enabled.unwrap_or(self.adaptive_default);
+        let recording = self.feed.as_ref().is_some_and(|feed| {
+            feed.service()
+                .outputs()
+                .iter()
+                .any(|o| o.kind == omuzaki_stream::record::runtime::KIND && o.state == "running")
+        });
+        let held = recording && !spec.while_recording;
+        view.set_adaptive(on, held);
+        let state = view.scene().quality_state();
+        self.health.publisher.quality(state.rung, state.changes);
+        if let Some(program) = &self.program {
+            program.report_quality(QualityReport {
+                adaptive: on,
+                held: (on && held).then(|| "recording".to_owned()),
+                rung: state.rung,
+                changes: state.changes,
+                last: state.last_words(),
+                frame_ms: state.smoothed.map(|t| t.0 * 1000.0),
+                budget_ms: state.budget.0 * 1000.0,
+            });
+        }
     }
 
     /// The live-metrics snapshot the Health panel and the health strip read.
@@ -665,6 +739,8 @@ impl LiveApp {
         if !health.publisher.slow_due(now) {
             return;
         }
+        self.adapt();
+        let health = &mut self.health;
         if let Some(rig) = &self.rig {
             health.publisher.perform(now, &health.perform.status(), rig.report().skipped);
             health.publisher.tracker(now, &self.tracker.latency());
@@ -791,12 +867,45 @@ const SETTLE: std::time::Duration = std::time::Duration::from_millis(120);
 struct Follow {
     events: std::sync::mpsc::Receiver<Event>,
     changed: Option<std::time::Instant>,
+    /// Stage the change on this frame, without waiting for it to settle: the program's scene switch.
+    now: bool,
     bodies: StudioBodies,
 }
 
 /// Whether `event` changed the document.
 fn changes_document(event: &Event) -> bool {
     matches!(event, Event::OpApplied { .. } | Event::TxRolledBack { .. } | Event::Undone { .. } | Event::Redone { .. })
+}
+
+/// The shows in `services`: the automation engine runs their rules through this app's runner, and the Twitch and
+/// `YouTube` events reach it through the program's overlay first (its alerts, chat and goals). Returns the program
+/// compositor, `None` (with a warning) if its fonts did not load: events then go straight to the engine.
+fn with_shows(
+    services: ServicesBuilder,
+    automation: &Arc<Automation>,
+) -> (ServicesBuilder, Option<Arc<ProgramService>>) {
+    let program = match ProgramService::new(Arc::new(SystemClock::new())) {
+        Ok(program) => Some(Arc::new(program)),
+        Err(error) => {
+            tracing::warn!(%error, "the program compositor did not start: no overlay or transitions this run");
+            None
+        }
+    };
+    let engine = Arc::clone(automation) as Arc<dyn EventSink>;
+    let show: Arc<dyn EventSink> = match &program {
+        Some(program) => Arc::new(Tee::new(engine, Arc::clone(program))),
+        None => engine,
+    };
+    let twitch = TwitchService::new(Arc::new(ConnectHttp::new()), Arc::clone(&show));
+    let youtube = YouTubeService::new(Arc::new(ConnectHttp::new()), show);
+    let mut services = services
+        .insert::<Automation>(Arc::clone(automation))
+        .insert::<TwitchService>(Arc::new(twitch))
+        .insert::<YouTubeService>(Arc::new(youtube));
+    if let Some(program) = &program {
+        services = services.insert::<ProgramService>(Arc::clone(program));
+    }
+    (services, program)
 }
 
 fn start_stream(epoch: std::time::Instant) -> Option<Arc<StreamService>> {

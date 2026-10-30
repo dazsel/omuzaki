@@ -51,5 +51,5 @@ pub use app::{LiveApp, NoTracker, StartError};
 pub use clock::{PerformClock, RealClock};
 pub use mailbox::{FrameReader, FrameWriter, LiveFrame, frame_mailbox};
 pub use rig::{Extras, LIFE_SEED, LiveRig, live_performer};
-pub use scene::LiveScene;
+pub use scene::{LiveScene, QualityState};
 pub use thread::{FrameTap, LoopReport, PerformThread, THREAD_NAME, WiringError};

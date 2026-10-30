@@ -1,0 +1,11 @@
+{
+  "about": "The `scenes` fixture with an overlay: `alerts`, `chat`, a `goal`, a `subathon` timer and a `brb` text line shown only on `night_stream`: for the ops that change, show, hide or drive a widget.",
+  "base": "scenes",
+  "steps": [
+    { "op": "overlay.add", "args": { "id": "alerts", "kind": "alerts" } },
+    { "op": "overlay.add", "args": { "id": "chat", "kind": "chat" } },
+    { "op": "overlay.add", "args": { "id": "goal", "kind": "goal", "settings": { "title": "Road to 100 subs", "metric": "subs", "target": 100 } } },
+    { "op": "overlay.add", "args": { "id": "subathon", "kind": "timer", "settings": { "mode": "subathon", "seconds": 3600 } } },
+    { "op": "overlay.add", "args": { "id": "brb", "kind": "text", "settings": { "text": "Be right back" }, "scenes": ["night_stream"] } }
+  ]
+}
