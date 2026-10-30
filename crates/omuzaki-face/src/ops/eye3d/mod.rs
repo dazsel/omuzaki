@@ -1,4 +1,5 @@
-//! The 3D eye's quick edits. `face.eye3d.paint` paints marks by hand on its skin, white and iris, placed exactly.
+//! The 3D eye's quick edits. `face.eye3d.paint` paints marks by hand on its skin, white and iris, placed exactly;
+//! `face.eye3d.lashes` places lash clumps by hand along its lids.
 //! `face.eye3d.preset` gives a character's eye a named shape and iris colour in one undoable
 //! edit, the first step before its numbers are tuned with `face.set_style`.
 //!
@@ -15,7 +16,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use omuzaki_face_api::eye3d::{EyeMark, EyeShape, IrisColour};
+use omuzaki_face_api::eye3d::{EyeMark, EyeShape, IrisColour, LashClump};
 
 use crate::eye3d::closeup::{Shot, View};
 use crate::eye3d::fit::{Landmarks, fit};
@@ -158,6 +159,82 @@ impl Op for PaintEye {
 }
 
 register_op!(PaintEye);
+
+/// Places lash clumps by hand along a character's 3D eye's lids.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "clumps": [
+            {"upper": true, "at": 0.2, "strands": 8, "spread": 0.0008, "length": 0.009, "curl": 1.2, "sweep": 30},
+            {"upper": true, "at": 0.5, "strands": 6, "spread": 0.0006, "length": 0.008},
+            {"upper": false, "at": 0.3, "strands": 3, "spread": 0.0003, "length": 0.004, "sweep": 15}
+        ]},
+        {"character": "kit", "clumps": [], "replace": true, "grown": [0, 0]}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
+pub struct PlaceLashes {
+    /// The character whose 3D eye's lashes to place (it gets one with the defaults if it has none).
+    pub character: CharId,
+    /// The clumps, added to the ones already placed.
+    pub clumps: Vec<LashClump>,
+    /// Whether the clumps replace every clump already placed (an empty list clears them) rather than adding to them.
+    #[serde(default)]
+    pub replace: bool,
+    /// How many lashes still grow on their own on the upper and lower lid; `[0, 0]` draws only the placed clumps.
+    /// Left as they are when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grown: Option<[u32; 2]>,
+}
+
+impl Op for PlaceLashes {
+    fn meta() -> OpMeta {
+        OpMeta {
+            name: "face.eye3d.lashes",
+            summary: "Place lash clumps by hand along a character's 3D eye's lids: each where it is wanted (along the \
+                      lid from the outer corner, 0, to the inner, 1), its hairs, spread, length, curl and sweep; adds \
+                      to the clumps already placed or replaces them, and can set how many lashes still grow on their \
+                      own. One undoable edit",
+            kind: OpKind::Edit,
+            scope: Scope::EditCharacter,
+            undo: Undo::Auto,
+        }
+    }
+
+    fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        if self.clumps.is_empty() && !self.replace && self.grown.is_none() {
+            return Err(OpError::invalid("clumps", "give at least one clump, `replace: true` or `grown`"));
+        }
+        let stored = stored_face(ctx, &self.character)?;
+        let mut design = effective(stored.as_ref())?.eye3d.unwrap_or_default();
+        if self.replace {
+            design.lashes.clumps.clear();
+        }
+        design.lashes.clumps.extend(self.clumps.iter().cloned());
+        if let Some([upper, lower]) = self.grown {
+            (design.lashes.upper, design.lashes.lower) = (upper, lower);
+        }
+        let count = design.lashes.clumps.len();
+        let mut working = working_copy(stored.as_ref());
+        if let Value::Object(face) = &mut working {
+            face.insert("eye3d".to_owned(), to_json(&design)?);
+        }
+        check_edit(stored.as_ref(), &working, &template()?)?;
+        let mut patch = Patch::new();
+        diff(&paths::face(&self.character), stored.as_ref(), Some(&working), &mut patch);
+        let mut plan = Plan::edit(patch);
+        let mut output = changed_output(&plan.patch, None);
+        if let Value::Object(fields) = &mut output {
+            fields.insert("clumps".to_owned(), json!(count));
+            fields.insert("next".to_owned(), json!("render.eye to see them"));
+        }
+        plan.output = Some(output);
+        Ok(plan)
+    }
+}
+
+register_op!(PlaceLashes);
 
 fn rounds() -> u32 {
     200

@@ -495,6 +495,43 @@ pub struct Lashes {
     pub thickness: f32,
     /// Their colour.
     pub colour: Colour,
+    /// Clumps placed by hand, on top of the lashes the counts above grow (set the counts to 0 to draw only these):
+    /// each one where it is wanted along its lid, its own length, curl and sweep. At most 400.
+    pub clumps: Vec<LashClump>,
+}
+
+/// One clump of lashes placed by hand on a lid: a few hairs rooted side by side that gather to one tip.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LashClump {
+    /// On the upper lid (`true`) or the lower.
+    pub upper: bool,
+    /// Where along the lid, 0 (the outer corner) to 1 (the inner).
+    pub at: f32,
+    /// How many hairs, 1 to 40.
+    pub strands: u32,
+    /// How far apart its outermost roots are along the lid, metres (0 to 3 mm).
+    #[serde(default)]
+    pub spread: f32,
+    /// How long, metres (0 to 20 mm).
+    pub length: f32,
+    /// How far it curls up off the eye, 0 to 2 (1 as the grown lashes curl).
+    #[serde(default = "full")]
+    pub curl: f32,
+    /// How far it sweeps along the lid, degrees from straight out: positive toward the outer corner, -80 to 80.
+    #[serde(default)]
+    pub sweep: f32,
+}
+
+impl Validate for LashClump {
+    fn check(&self, c: &mut Check) {
+        c.range_f32("at", self.at, 0.0, 1.0);
+        c.range("strands", f64::from(self.strands), 1.0, 40.0);
+        c.range_f32("spread", self.spread, 0.0, 0.003);
+        c.range_f32("length", self.length, 0.0, 0.02);
+        c.range_f32("curl", self.curl, 0.0, 2.0);
+        c.range_f32("sweep", self.sweep, -80.0, 80.0);
+    }
 }
 
 impl Default for Lashes {
@@ -508,6 +545,7 @@ impl Default for Lashes {
             clumping: 0.85,
             thickness: 0.000_11,
             colour: Colour::hex(0x0016_0f0c),
+            clumps: Vec::new(),
         }
     }
 }
@@ -521,6 +559,10 @@ impl Validate for Lashes {
         c.range_f32("curl", self.curl, 0.0, 1.0);
         c.range_f32("clumping", self.clumping, 0.0, 1.0);
         c.range_f32("thickness", self.thickness, 0.000_02, 0.000_3);
+        c.rule(&["clumps"], self.clumps.len() <= 400, "a design holds at most 400 placed clumps");
+        for (i, clump) in self.clumps.iter().enumerate() {
+            c.nested(&format!("clumps/{i}"), clump);
+        }
     }
 }
 

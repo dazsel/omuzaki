@@ -19,7 +19,7 @@ use omuzaki_core::glam::{Vec2, Vec3};
 use omuzaki_core::id::Slug;
 use omuzaki_core::mesh::{ExtraAttribute, MeshData};
 
-use super::design::{Aperture, Ball, EyeDesign, Lashes};
+use super::design::{Aperture, Ball, EyeDesign, LashClump, Lashes};
 use super::noise::{Pcg, smoothstep};
 use super::textures::SCLERA_REACH;
 
@@ -568,6 +568,11 @@ impl Lids {
                 strands.push(self.strand(lashes, upper, u, &mut rng));
             }
             clump(&mut strands, lashes.clumping, if upper { (4.0, 10.0) } else { (2.0, 6.0) }, &mut rng);
+            // The clumps placed by hand, each from its own stream so adding one never moves another.
+            for (i, placed) in lashes.clumps.iter().enumerate().filter(|(_, c)| c.upper == upper) {
+                let i = u32::try_from(i).unwrap_or(u32::MAX);
+                strands.extend(self.placed(placed, &mut Pcg::new(seed ^ i.wrapping_mul(0x9e37_79b9), 0xc1a5)));
+            }
             let width = lashes.thickness * if upper { 1.0 } else { 0.8 };
             for strand in &strands {
                 ribbon(&mut mesh, &mut info, strand, width, view_from);
@@ -579,6 +584,54 @@ impl Lids {
 
     /// One lash's centre line, rooted at `u` along a lid (0 outer, 1 inner).
     fn strand(&self, lashes: &Lashes, upper: bool, u: f32, rng: &mut Pcg) -> Vec<Vec3> {
+        // Rooted along the margin's front edge, in two or three loose rows.
+        let row = rng.range(0.55, 0.85) * MM;
+        // Lashes fan out from the lid's middle toward each corner, the outer ones sweeping furthest.
+        let sweep = Vec3::new(-1.3, 0.0, 0.0) * (0.55 - u) + Vec3::new(-0.5, 0.0, 0.0) * (1.0 - u).powi(3);
+        let length = if upper { lashes.upper_length } else { lashes.lower_length }
+            * (if upper { 0.5 } else { 0.3 }
+                + if upper { 0.5 } else { 0.7 } * bump(u, if upper { 0.3 } else { 0.4 }).powf(0.6))
+            * if rng.unit() < 0.25 { rng.range(0.3, 0.65) } else { rng.range(0.7, 1.1) };
+        let curl = lashes.curl * rng.range(0.7, 1.2);
+        // A few strays point their own way.
+        let wander = if rng.unit() < 0.05 { 0.35 } else { 0.1 };
+        self.grow(upper, u, row, length, (curl, sweep * 0.7), wander, rng)
+    }
+
+    /// The hairs of a clump placed by hand: rooted side by side across its spread, gathered to one tip.
+    fn placed(&self, clump: &LashClump, rng: &mut Pcg) -> Vec<Vec<Vec3>> {
+        let lid = 1.15 * (self.aperture.inner_x - self.aperture.outer_x).max(1e-3);
+        let sweep = Vec3::NEG_X * clump.sweep.clamp(-80.0, 80.0).to_radians().tan();
+        let n = clump.strands.clamp(1, 40);
+        let mut hairs: Vec<Vec<Vec3>> = (0..n)
+            .map(|j| {
+                #[allow(clippy::cast_precision_loss, reason = "at most 40 hairs")]
+                let f = if n == 1 { 0.0 } else { j as f32 / (n - 1) as f32 - 0.5 };
+                let u = (clump.at + f * clump.spread / lid).clamp(0.0, 1.0);
+                let row = rng.range(0.55, 0.85) * MM;
+                let length = clump.length * rng.range(0.85, 1.05);
+                let curl = clump.curl * rng.range(0.9, 1.1);
+                self.grow(clump.upper, u, row, length, (curl, sweep), 0.04, rng)
+            })
+            .collect();
+        gather(&mut hairs, 1.0);
+        hairs
+    }
+
+    /// A lash's centre line rooted at `u` along a lid, `row` behind the margin's edge: `length` long, curling by
+    /// `bend.0` (1 as grown lashes do) and swept along the lid by `bend.1`, its direction jittered by `wander`.
+    #[allow(clippy::too_many_arguments, reason = "one hair's shape, each argument a different property of it")]
+    fn grow(
+        &self,
+        upper: bool,
+        u: f32,
+        row: f32,
+        length: f32,
+        bend: (f32, Vec3),
+        wander: f32,
+        rng: &mut Pcg,
+    ) -> Vec<Vec3> {
+        let (curl, sweep) = bend;
         // The outline sample at `u` on this lid, and its neighbour toward the outer corner.
         let half = AROUND / 2;
         // In range: u in 0..1.
@@ -588,26 +641,13 @@ impl Lids {
         } else {
             (half + ((1.0 - u) * half as f32) as usize).min(AROUND - 1)
         };
-        // Rooted along the margin's front edge, in two or three loose rows.
-        let row = rng.range(0.55, 0.85) * MM;
         let (root, _) = self.surface(k, row);
         let (ahead, _) = self.surface(k, row + 0.4 * MM);
         let out = (ahead - root).normalize_or_zero();
         let normal = root.normalize_or_zero();
         let up = if upper { Vec3::Y } else { -Vec3::Y };
-        // Lashes fan out from the lid's middle toward each corner, the outer ones sweeping furthest.
-        let sweep = Vec3::new(-1.3, 0.0, 0.0) * (0.55 - u) + Vec3::new(-0.5, 0.0, 0.0) * (1.0 - u).powi(3);
-        let length = if upper { lashes.upper_length } else { lashes.lower_length }
-            * (if upper { 0.5 } else { 0.3 }
-                + if upper { 0.5 } else { 0.7 } * bump(u, if upper { 0.3 } else { 0.4 }).powf(0.6))
-            * if rng.unit() < 0.25 { rng.range(0.3, 0.65) } else { rng.range(0.7, 1.1) };
-        let start = (normal * 0.9 + out * 0.1 - up * 0.22 + sweep * 0.7).normalize_or_zero();
-        let curl = (up * 1.2 - normal * 0.35).normalize_or_zero()
-            * lashes.curl
-            * if upper { 1.0 } else { 0.5 }
-            * rng.range(0.7, 1.2);
-        // A few strays point their own way.
-        let wander = if rng.unit() < 0.05 { 0.35 } else { 0.1 };
+        let start = (normal * 0.9 + out * 0.1 - up * 0.22 + sweep).normalize_or_zero();
+        let curl = (up * 1.2 - normal * 0.35).normalize_or_zero() * curl * if upper { 1.0 } else { 0.5 };
         let jitter = Vec3::new(rng.normal(), rng.normal(), rng.normal()) * wander;
         (0..=10)
             .map(|i| {
@@ -619,6 +659,24 @@ impl Lids {
     }
 }
 
+/// Pulls `group`'s strands toward their shared tip by `clumping`, more toward the tip.
+fn gather(group: &mut [Vec<Vec3>], clumping: f32) {
+    if group.is_empty() {
+        return;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let tip = group.iter().filter_map(|s| s.last().copied()).sum::<Vec3>() / group.len() as f32;
+    for strand in group.iter_mut() {
+        let own = strand.last().copied().unwrap_or(tip);
+        let n = strand.len().max(2) - 1;
+        for (j, p) in strand.iter_mut().enumerate() {
+            #[allow(clippy::cast_precision_loss)]
+            let t = j as f32 / n as f32;
+            *p += (tip - own) * clumping.clamp(0.0, 1.0) * t.powf(1.6);
+        }
+    }
+}
+
 /// Pulls each run of neighbouring strands toward their shared tip, more toward the tip.
 fn clump(strands: &mut [Vec<Vec3>], clumping: f32, sizes: (f32, f32), rng: &mut Pcg) {
     let mut i = 0;
@@ -626,18 +684,7 @@ fn clump(strands: &mut [Vec<Vec3>], clumping: f32, sizes: (f32, f32), rng: &mut 
         // In range: a small count.
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let size = (rng.range(sizes.0, sizes.1) as usize).min(strands.len() - i);
-        let group = &mut strands[i..i + size];
-        #[allow(clippy::cast_precision_loss)]
-        let tip = group.iter().filter_map(|s| s.last().copied()).sum::<Vec3>() / size as f32;
-        for strand in group.iter_mut() {
-            let own = strand.last().copied().unwrap_or(tip);
-            let n = strand.len().max(2) - 1;
-            for (j, p) in strand.iter_mut().enumerate() {
-                #[allow(clippy::cast_precision_loss)]
-                let t = j as f32 / n as f32;
-                *p += (tip - own) * clumping.clamp(0.0, 1.0) * t.powf(1.6);
-            }
-        }
+        gather(&mut strands[i..i + size], clumping);
         i += size;
     }
 }
