@@ -137,6 +137,55 @@ pub struct GradientAt {
     pub colour: Colour,
 }
 
+/// A card behind each column of a [`Draw::Bars`] chart, as a forecast strip draws them: the label in a strip across the
+/// card's top, the slot inset below it and a foot of card under the slot. With a card the bars fill the slot from its
+/// foot, so a value at the top of the scale reaches the slot's top. All in points.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BarCard {
+    /// The card's colour.
+    pub colour: Colour,
+    /// How far the slot sits in from the card's sides.
+    pub side: f32,
+    /// The strip across the card's top that holds the label.
+    pub strip: f32,
+    /// The card left under the slot.
+    pub foot: f32,
+    /// How far the bar sits in from the slot's sides, and up from its foot.
+    pub bar_inset: [f32; 2],
+    /// The label's size.
+    pub label_size: f32,
+    /// The caption's size; it sits on the bar, near its foot.
+    pub caption_size: f32,
+    /// The icon's size.
+    pub icon_size: f32,
+    /// How far the icon's centre sits below the slot's top.
+    pub icon_at: f32,
+}
+
+impl BarCard {
+    fn check(&self, at: &str, column: f32, h: f32) -> Result<(), String> {
+        let lengths = [self.side, self.strip, self.foot, self.bar_inset[0], self.bar_inset[1], self.icon_at];
+        if lengths.iter().any(|v| !v.is_finite() || *v < 0.0) {
+            return Err(format!("{at}: the insets, strip, foot and icon_at are finite and not negative"));
+        }
+        for (name, v) in
+            [("label_size", self.label_size), ("caption_size", self.caption_size), ("icon_size", self.icon_size)]
+        {
+            if !v.is_finite() || v <= 0.0 || v > 400.0 {
+                return Err(format!("{at}.{name} is above 0 and at most 400"));
+            }
+        }
+        if 2.0 * (self.side + self.bar_inset[0]) >= column {
+            return Err(format!("{at}: the side insets leave no bar in a column {column} points wide"));
+        }
+        if self.strip + self.foot + self.bar_inset[1] >= h {
+            return Err(format!("{at}: the strip, foot and bar inset leave no slot in a chart {h} points high"));
+        }
+        Ok(())
+    }
+}
+
 /// How a map flattens the globe.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -284,6 +333,9 @@ pub enum Draw {
         /// How far the bars have grown, 0 to 1, one after another.
         #[serde(default = "full")]
         grow: Track<f32>,
+        /// A card behind each column, holding its label (a forecast strip); none when left out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        card: Option<BarCard>,
     },
     /// A drawn icon.
     Icon {
@@ -560,12 +612,15 @@ impl Draw {
                     return Err(format!("{at}.points: 3 to 256 corners"));
                 }
             }
-            Draw::Bars { values, w, h, icons, grow, .. } => {
+            Draw::Bars { values, w, h, gap, icons, grow, card, .. } => {
                 if values.is_empty() || values.len() > MAX_BARS {
                     return Err(format!("{at}.values: 1 to {MAX_BARS} of them"));
                 }
                 positive("w", *w)?;
                 positive("h", *h)?;
+                if let Some(card) = card {
+                    card.check(&format!("{at}.card"), column_width(*w, *gap, values.len()), *h)?;
+                }
                 if let Some(bad) = icons.iter().find(|i| !ICONS.contains(&i.as_str())) {
                     return Err(format!("{at}.icons: no icon '{bad}'; the icons are {}", ICONS.join(", ")));
                 }
@@ -901,10 +956,14 @@ fn shapes(draw: &Draw, t: f32) -> Vec<Shape> {
         .flatten()
         .collect(),
         Draw::Polygon { points } => shape(polygon(points), None).into_iter().collect(),
-        Draw::Bars { values, max, labels, captions, icons, colours, slot, w, h, gap, grow } => bars(
-            &Bars { values, max: *max, labels, captions, icons, colours, slot: *slot, w: *w, h: *h, gap: *gap },
-            grow.at(t),
-        ),
+        Draw::Bars { values, max, labels, captions, icons, colours, slot, w, h, gap, grow, card } => {
+            let chart =
+                Bars { values, max: *max, labels, captions, icons, colours, slot: *slot, w: *w, h: *h, gap: *gap };
+            match card {
+                Some(card) => carded_bars(&chart, card, grow.at(t)),
+                None => bars(&chart, grow.at(t)),
+            }
+        }
         Draw::Icon { name, size } => icon(name, 0.0, 0.0, *size, None),
         Draw::Lines { count, length, thickness, band, travel } => {
             lines(*count, *length, *thickness, *band, travel.at(t)).into_iter().collect()
@@ -1077,23 +1136,43 @@ struct Bars<'a> {
     gap: f32,
 }
 
-fn bars(chart: &Bars<'_>, grow: f32) -> Vec<Shape> {
-    let n = chart.values.len().max(1);
+/// The width of one of `n` columns across `w` points with `gap` between them.
+fn column_width(w: f32, gap: f32, n: usize) -> f32 {
     #[allow(clippy::cast_precision_loss, reason = "at most 24 bars")]
-    let nf = n as f32;
-    let column = ((chart.w - chart.gap * (nf - 1.0)) / nf).max(1.0);
-    let top = chart.max.unwrap_or_else(|| chart.values.iter().copied().fold(f32::MIN, f32::max)).max(1e-6);
+    let nf = n.max(1) as f32;
+    ((w - gap * (nf - 1.0)) / nf).max(1.0)
+}
+
+impl Bars<'_> {
+    /// The top of the scale.
+    fn top(&self) -> f32 {
+        self.max.unwrap_or_else(|| self.values.iter().copied().fold(f32::MIN, f32::max)).max(1e-6)
+    }
+
+    /// How far bar `i` has grown when the chart has grown `grow`: each over its own stretch, one after another.
+    fn own(&self, i: usize, grow: f32) -> f32 {
+        let stagger = 0.35;
+        #[allow(clippy::cast_precision_loss, reason = "at most 24 bars")]
+        let (fi, nf) = (i as f32, self.values.len().max(1) as f32);
+        ((grow * (1.0 + stagger * (nf - 1.0)) - stagger * fi).clamp(0.0, 1.0)).powf(0.7)
+    }
+
+    fn colour(&self, i: usize) -> Colour {
+        self.colours.get(i).or(self.colours.last()).copied().unwrap_or(Colour::WHITE)
+    }
+}
+
+fn bars(chart: &Bars<'_>, grow: f32) -> Vec<Shape> {
+    let column = column_width(chart.w, chart.gap, chart.values.len());
+    let top = chart.top();
     let label = (column * 0.32).min(36.0);
     let icon_size = column * 0.62;
     let mut out = Vec::new();
-    // Each bar grows over its own stretch of the track, one after another.
-    let stagger = 0.35;
     for (i, value) in chart.values.iter().enumerate() {
         #[allow(clippy::cast_precision_loss, reason = "at most 24 bars")]
-        let fi = i as f32;
-        let x = fi * (column + chart.gap);
-        let own = ((grow * (1.0 + stagger * (nf - 1.0)) - stagger * fi).clamp(0.0, 1.0)).powf(0.7);
-        let colour = chart.colours.get(i).or(chart.colours.last()).copied().unwrap_or(Colour::WHITE);
+        let x = i as f32 * (column + chart.gap);
+        let own = chart.own(i, grow);
+        let colour = chart.colour(i);
         let label_h = if chart.labels.is_empty() { 0.0 } else { label * 1.5 };
         let icon_h = if chart.icons.is_empty() { 0.0 } else { icon_size * 1.3 };
         let slot_top = label_h;
@@ -1126,6 +1205,57 @@ fn bars(chart: &Bars<'_>, grow: f32) -> Vec<Shape> {
         if let Some(name) = chart.icons.get(i) {
             let y = slot_top + icon_size * 0.15;
             out.extend(icon(name, x + (column - icon_size) / 2.0, y, icon_size, Some(icon_colour(name))));
+        }
+    }
+    out
+}
+
+/// A chart of carded columns: each a card with its label in the strip across its top, the slot inset below, the bar
+/// filling the slot from its foot with the caption on it, and the icon near the slot's top.
+fn carded_bars(chart: &Bars<'_>, card: &BarCard, grow: f32) -> Vec<Shape> {
+    let column = column_width(chart.w, chart.gap, chart.values.len());
+    let top = chart.top();
+    let slot_h = (chart.h - card.strip - card.foot).max(1.0);
+    let slot_w = column - 2.0 * card.side;
+    let bar_w = slot_w - 2.0 * card.bar_inset[0];
+    let bar_foot = card.strip + slot_h - card.bar_inset[1];
+    let room = (slot_h - card.bar_inset[1]).max(1.0);
+    let mut out = Vec::new();
+    for (i, value) in chart.values.iter().enumerate() {
+        #[allow(clippy::cast_precision_loss, reason = "at most 24 bars")]
+        let x = i as f32 * (column + chart.gap);
+        let centre = x + column / 2.0;
+        out.extend(shape(Rect::from_xywh(x, 0.0, column, chart.h).map(PathBuilder::from_rect), Some(card.colour)));
+        out.extend(shape(
+            Rect::from_xywh(x + card.side, card.strip, slot_w, slot_h).map(PathBuilder::from_rect),
+            Some(chart.slot),
+        ));
+        let bar_h = room * (value / top).clamp(0.0, 1.0) * chart.own(i, grow);
+        if bar_h > 0.5 {
+            out.extend(shape(
+                Rect::from_xywh(x + card.side + card.bar_inset[0], bar_foot - bar_h, bar_w, bar_h)
+                    .map(PathBuilder::from_rect),
+                Some(chart.colour(i)),
+            ));
+        }
+        // Capitals stand about 0.72 of the size above the baseline: the label sits centred in its strip.
+        if let Some(text) = chart.labels.get(i) {
+            let baseline = (card.strip + card.label_size * 0.72) / 2.0;
+            out.extend(type_shape(
+                text_path(text, card.label_size, 700.0, 0.0, Align::Centre, centre, baseline),
+                Some(Colour::rgb(4, 4, 8)),
+            ));
+        }
+        if let Some(text) = chart.captions.get(i) {
+            let baseline = bar_foot - card.caption_size * 0.82;
+            out.extend(type_shape(
+                text_path(text, card.caption_size, 700.0, 0.0, Align::Centre, centre, baseline),
+                Some(Colour::WHITE),
+            ));
+        }
+        if let Some(name) = chart.icons.get(i) {
+            let y = card.strip + card.icon_at - card.icon_size / 2.0;
+            out.extend(icon(name, centre - card.icon_size / 2.0, y, card.icon_size, Some(icon_colour(name))));
         }
     }
     out
@@ -1427,6 +1557,37 @@ mod tests {
             l.check("i").unwrap();
             assert!(coverage(&painted(&[l], 0.0)) > 100, "{name} draws");
         }
+    }
+
+    #[test]
+    fn carded_bars_lay_out_card_slot_and_bar_where_the_card_says() {
+        // Two 500-point columns over the frame's middle: the cards span 40..1040 by 710..1210, slot inset 25 at the
+        // sides and 50 under the strip, foot 50; bars inset 25 more. One full, one half.
+        let chart = layer(serde_json::json!({"id": "c", "draw": {"kind": "bars", "values": [10, 5], "max": 10,
+            "colours": ["#ff0000"], "slot": "#0000ff", "w": 1000, "h": 500, "gap": 0, "card": {"colour": "#ffffff",
+            "side": 25, "strip": 50, "foot": 50, "bar_inset": [25, 25], "label_size": 20, "caption_size": 20,
+            "icon_size": 60, "icon_at": 40}}}));
+        chart.check("c").unwrap();
+        let p = painted(&[chart], 0.0);
+        let at = |x: f32, y: f32| {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "points inside the frame")]
+            let i = ((y / 5.0) as usize * 216 + (x / 5.0) as usize) * 4;
+            [p.data()[i], p.data()[i + 1], p.data()[i + 2]]
+        };
+        let (white, blue, red) = ([255, 255, 255], [0, 0, 255], [255, 0, 0]);
+        assert_eq!(at(290.0, 725.0), white, "the strip across the card's top");
+        assert_eq!(at(290.0, 1195.0), white, "the card's foot");
+        assert_eq!(at(52.0, 900.0), white, "the card beside the slot");
+        assert_eq!(at(77.0, 900.0), blue, "the slot beside the bar");
+        assert_eq!(at(290.0, 775.0), red, "a full bar reaches the slot's top");
+        assert_eq!(at(290.0, 1125.0), red, "and stands on its inset foot");
+        assert_eq!(at(290.0, 1150.0), blue, "under it, the slot");
+        assert_eq!(at(790.0, 775.0), blue, "a half bar stops halfway");
+        assert_eq!(at(790.0, 1000.0), red, "a half bar fills the lower half");
+        let squeezed = layer(serde_json::json!({"id": "c", "draw": {"kind": "bars", "values": [1, 2], "w": 100,
+            "h": 500, "card": {"colour": "#ffffff", "side": 20, "strip": 50, "foot": 50, "bar_inset": [10, 5],
+            "label_size": 20, "caption_size": 20, "icon_size": 60, "icon_at": 40}}}));
+        assert!(squeezed.check("c").unwrap_err().contains("no bar"));
     }
 
     #[test]
