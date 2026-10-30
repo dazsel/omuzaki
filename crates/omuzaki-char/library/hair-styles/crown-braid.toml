@@ -63,14 +63,16 @@ type = "framing"
 [groups.e-braid]
 dynamics = { simulate = false, follow = "head" }
 
-# A thick braid across the crown from temple to temple, over the top just behind the fringe's roots, its ends tucked
+# A thick braid across the crown from temple to temple, in a band over the front of the head just behind the hairline, its ends tucked
 # into the hair above the ears.
 [groups.e-braid.generator]
 type = "braid"
-path = [[70.0, -96.0], [46.0, -90.0], [24.0, -66.0], [24.0, 66.0], [46.0, 90.0], [70.0, 96.0]]
+path = [[72.0, -86.0], [46.0, -62.0], [30.0, -22.0], [30.0, 26.0], [46.0, 66.0], [72.0, 90.0]]
 strands = 3
-lobes = 12.0
-across = 0.017
-out = 0.007
-strand_width = 0.03
-strand_thickness = 0.018
+lobes = 10.0
+across = 0.022
+out = 0.009
+strand_width = 0.04
+strand_thickness = 0.022
+# Over the fringe's roots (which stand 4.6 cm off the head), not under them.
+lift = 0.052
