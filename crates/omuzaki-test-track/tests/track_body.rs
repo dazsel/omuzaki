@@ -33,9 +33,13 @@ fn env(test: &str) -> Option<(PathBuf, DirSource)> {
 }
 
 fn tracker(models: &Path, natives: &DirSource, size: PoseSize) -> BodyTracker {
+    tracker_with(models, natives, size, BodyTrackerConfig::default())
+}
+
+fn tracker_with(models: &Path, natives: &DirSource, size: PoseSize, config: BodyTrackerConfig) -> BodyTracker {
     let dir = BodyModelDir::open(models, size).unwrap();
     let graphs = dir.load(&OrtRuntime, natives, &SessionOptions::default()).unwrap();
-    BodyTracker::new(graphs, BodyTrackerConfig::default()).unwrap()
+    BodyTracker::new(graphs, config).unwrap()
 }
 
 #[test]
@@ -139,7 +143,11 @@ fn kit_frames_score_against_their_poses() {
         return;
     };
     let size = if std::env::var_os("OMUZAKI_BODY_FULL").is_some() { PoseSize::Full } else { PoseSize::Lite };
-    let mut tracker = tracker(&models, &natives, size);
+    // The pose detector finds people by their faces, and scores a drawn character's face lower than a person's: the
+    // score can lower its bar (`OMUZAKI_BODY_MIN_DETECTION`) to measure the landmarks and the solve on the kit.
+    let min = std::env::var("OMUZAKI_BODY_MIN_DETECTION").ok().and_then(|v| v.parse().ok()).unwrap_or(0.5);
+    let config = BodyTrackerConfig { min_pose_detection: min, ..BodyTrackerConfig::default() };
+    let mut tracker = tracker_with(&models, &natives, size, config);
     let mut names: Vec<PathBuf> =
         std::fs::read_dir(&frames).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().is_some_and(|e| e == "ppm")).collect();
     names.sort();
@@ -164,6 +172,15 @@ fn kit_frames_score_against_their_poses() {
         let landmarks = tracker.landmarks();
         let mut cells = Vec::new();
         let mut row = serde_json::json!({ "frame": path.file_stem().unwrap().to_string_lossy() });
+        if let Some(pose) = &landmarks.pose {
+            row["pose"] = serde_json::json!(pose.image.iter().map(|p| [p.0, p.1]).collect::<Vec<_>>());
+            row["visibility"] = serde_json::json!(pose.visibility.to_vec());
+        }
+        for (side, hand) in landmarks.hands.iter().enumerate() {
+            if let Some(hand) = hand {
+                row[format!("hand_{side}")] = serde_json::json!(hand.image.iter().map(|p| [p.0, p.1]).collect::<Vec<_>>());
+            }
+        }
         for side in 0..2 {
             if out.arms[side] <= 0.0 {
                 cells.push(("-".to_owned(), "-".to_owned()));

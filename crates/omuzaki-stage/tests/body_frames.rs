@@ -1,6 +1,6 @@
 //! Frames for scoring the body tracker (PF-06, PF-07) against a known answer: the kit's own character, posed in each
 //! pose of the pose library and in a sweep of arm poses, rendered front-on at a webcam's framing (head to hips,
-//! 640x480), each written as a binary PPM beside a JSON of the pose it shows. `omuzaki-test-track`'s `track_body`
+//! 1280x720, the webcam's default mode), each written as a binary PPM beside a JSON of the pose it shows. `omuzaki-test-track`'s `track_body`
 //! reads them, tracks them and scores the solved arms and fingers against the JSON.
 //!
 //! Gated on `OMUZAKI_BODY_FRAMES_DIR`; on lavapipe with the `wgpu` feature, through the render mock without it (whose
@@ -20,7 +20,6 @@ use omuzaki_doc_api::{DocPath, DocRead, DocWrite};
 use omuzaki_doc_mock::MemDoc;
 use omuzaki_ops_api::{Actor, OpCtx, find};
 use omuzaki_render_api::{Camera, Projection, Quality, Renderer};
-use omuzaki_render_mock::MockRenderer;
 use omuzaki_stage::ops::render::pose::PoseArg;
 use omuzaki_stage::ops::render::still::{Shot, StillLight, StillSpec, render_stills};
 use omuzaki_stage::recipe::LightRig;
@@ -70,8 +69,8 @@ const BONES: [HumanoidBone; 37] = {
     ]
 };
 
-/// The default character of the standard template, created through `character.create` and built as the app builds.
-fn kit() -> BuiltCharacter {
+/// The default character of the standard template, created through `character.create`.
+fn kit_def() -> CharacterDef {
     omuzaki_stage::link();
     let mut doc = MemDoc::new();
     let registration = find("character.create").expect("character.create is registered");
@@ -81,9 +80,13 @@ fn kit() -> BuiltCharacter {
     let plan = op.plan(&OpCtx::new(&doc, &actor, &clock)).expect("the character is created");
     doc.apply(&plan.patch).expect("the patch applies");
     let node = doc.get(&DocPath::parse("characters/kit").unwrap()).expect("stored").clone();
-    let def = CharacterDef::from_node(&node).expect("reads back");
-    CachingBuilder::new()
-        .build(&CharId::new("kit").unwrap(), &def, &BuildOptions::default(), &BuildServices::default())
+    CharacterDef::from_node(&node).expect("reads back")
+}
+
+/// The character built as the app builds it, by `builder` (which caches, so a rebuild per still is cheap).
+fn build(builder: &CachingBuilder, def: &CharacterDef) -> BuiltCharacter {
+    builder
+        .build(&CharId::new("kit").unwrap(), def, &BuildOptions::default(), &BuildServices::default())
         .expect("the default character builds")
 }
 
@@ -126,7 +129,7 @@ fn poses(built: &BuiltCharacter) -> Vec<(String, HumanoidPose)> {
     out
 }
 
-/// A webcam's view of the character: front-on, head to hips, 4:3.
+/// A webcam's view of the character: front-on, head to hips, 16:9.
 fn shot(built: &BuiltCharacter) -> Shot {
     let points = built.meshes.iter().flat_map(|m| m.mesh.geometry.positions.iter().copied());
     let (lo, hi) = points.fold((Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)), |(lo, hi), p| {
@@ -175,14 +178,15 @@ fn write_the_body_tracking_frames_when_asked() {
             .expect("a software adapter (install mesa-vulkan-drivers)")
     };
     #[cfg(not(feature = "wgpu"))]
-    let mut renderer = MockRenderer::new();
-    let built = kit();
+    let mut renderer = omuzaki_render_mock::MockRenderer::new();
+    let (builder, def) = (CachingBuilder::new(), kit_def());
+    let built = build(&builder, &def);
     let rig = LightRig::load("viewer-studio").unwrap();
     let light = StillLight::new(rig.to_lights().unwrap(), rig.background(), rig.post(false));
     let shots = [shot(&built)];
     for (name, pose) in poses(&built) {
-        let spec = StillSpec::new(light.clone(), UVec2::new(640, 480), Quality::High).with_pose(Some(pose));
-        let stills = render_stills(&mut renderer as &mut dyn Renderer, built.clone(), &spec, &shots).unwrap();
+        let spec = StillSpec::new(light.clone(), UVec2::new(1280, 720), Quality::offline()).with_pose(Some(pose));
+        let stills = render_stills(&mut renderer as &mut dyn Renderer, build(&builder, &def), &spec, &shots).unwrap();
         std::fs::write(directory.join(format!("{name}.ppm")), ppm(&stills[0].image)).unwrap();
         std::fs::write(directory.join(format!("{name}.json")), truth(&pose).to_string()).unwrap();
     }

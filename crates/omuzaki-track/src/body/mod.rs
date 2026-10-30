@@ -115,6 +115,52 @@ fn side_from_handedness(handedness: f32) -> Side {
     if handedness >= 0.5 { Side::Left } else { Side::Right }
 }
 
+/// Puts each found hand on the side whose pose wrist it is at. A region grown from one wrist can take in the other
+/// hand when the hands are close (held together in front of the chest), and the hand model then follows that one:
+/// a hand nearer the other side's wrist moves there, or is dropped when that side already has its own hand. Only
+/// when both pose wrists are seen; otherwise the regions are trusted.
+fn reconcile(
+    hands: &mut [Option<HandLandmarks>; 2],
+    rects: &mut [Option<NormRect>; 2],
+    pose: &PoseLandmarks,
+    min: f32,
+    (fw, fh): (f32, f32),
+) {
+    let wrists = [POSE_HAND_POINTS[0][0], POSE_HAND_POINTS[1][0]];
+    if wrists.iter().any(|&w| pose.visibility[w] < min) {
+        return;
+    }
+    let distance = |a: (f32, f32), b: (f32, f32)| ((a.0 - b.0) * fw).hypot((a.1 - b.1) * fh);
+    // Which side each found hand's wrist is nearest.
+    let nearest = |hand: &HandLandmarks| {
+        let at = |side: usize| distance(hand.image[0], pose.image[wrists[side]]);
+        if at(0) <= at(1) { 0 } else { 1 }
+    };
+    let owner = [hands[0].as_ref().map(nearest), hands[1].as_ref().map(nearest)];
+    match owner {
+        // Swapped: each hand is at the other's wrist.
+        [Some(1), Some(0)] => {
+            hands.swap(0, 1);
+            rects.swap(0, 1);
+        }
+        // Both on one wrist: the one farther from it lets go.
+        [Some(a), Some(b)] if a == b => {
+            let off = |side: usize| {
+                hands[side].map_or(f32::MAX, |h| distance(h.image[0], pose.image[wrists[a]]))
+            };
+            let far = if off(0) > off(1) { 0 } else { 1 };
+            hands[far] = None;
+            rects[far] = None;
+        }
+        // One hand, on the other side's wrist: it moves there.
+        [Some(1), None] | [None, Some(0)] => {
+            hands.swap(0, 1);
+            rects.swap(0, 1);
+        }
+        _ => {}
+    }
+}
+
 /// The body tracker. Cold to make; [`BodyTracker::track`] is the per-frame call.
 pub struct BodyTracker {
     pose_detector: PoseDetector,
@@ -228,23 +274,9 @@ impl BodyTracker {
             let Some(rect) = rect else { continue };
             self.track_hand(frame, side, &rect)?;
         }
-        // Two regions on one hand (both sides drifted onto it): the side whose pose wrist is farther lets go.
-        if let ([Some(a), Some(b)], Some(p)) = (self.hand_rects, &pose)
-            && same_hand(&a, &b, fw, fh)
-        {
-            let far = Side::BOTH
-                .into_iter()
-                .max_by(|x, y| {
-                    let d = |side: Side| {
-                        let wrist = p.image[POSE_HAND_POINTS[side.index()][0]];
-                        let rect = [a, b][side.index()];
-                        ((rect.x_center - wrist.0) * fw).hypot((rect.y_center - wrist.1) * fh)
-                    };
-                    d(*x).total_cmp(&d(*y))
-                })
-                .unwrap_or(Side::Right);
-            self.hand_rects[far.index()] = None;
-            self.landmarks.hands[far.index()] = None;
+        if let Some(p) = &pose {
+            let min = self.config.min_wrist_visibility;
+            reconcile(&mut self.landmarks.hands, &mut self.hand_rects, p, min, (fw, fh));
         }
 
         // A missing hand: search the frame for palms every few frames.
@@ -318,6 +350,39 @@ mod tests {
         // A hidden wrist places nothing.
         pose.visibility[15] = 0.1;
         assert!(hand_rect_from_pose(&pose, Side::Left, 0.5, 100.0, 100.0).is_none());
+    }
+
+    #[test]
+    fn hands_go_to_the_side_whose_wrist_they_are_at() {
+        let mut pose = PoseLandmarks::NONE;
+        pose.visibility = [1.0; POSE_POINTS];
+        // The performer's left wrist on the image's right, the right wrist on its left.
+        (pose.image[15], pose.image[16]) = ((0.6, 0.5), (0.4, 0.5));
+        let hand_at = |x: f32| {
+            let mut h = HandLandmarks::NONE;
+            h.image[0] = (x, 0.5);
+            Some(h)
+        };
+        let rect = |x: f32| Some(NormRect { x_center: x, ..NormRect::whole_frame() });
+        let size = (100.0, 100.0);
+        // Swapped hands swap back, with their regions.
+        let (mut hands, mut rects) = ([hand_at(0.4), hand_at(0.6)], [rect(0.4), rect(0.6)]);
+        reconcile(&mut hands, &mut rects, &pose, 0.5, size);
+        assert_eq!(hands.map(|h| h.map(|h| h.image[0].0)), [Some(0.6), Some(0.4)]);
+        assert_eq!(rects.map(|r| r.map(|r| r.x_center)), [Some(0.6), Some(0.4)]);
+        // Both on the left wrist: the farther one lets go.
+        let (mut hands, mut rects) = ([hand_at(0.61), hand_at(0.58)], [rect(0.61), rect(0.58)]);
+        reconcile(&mut hands, &mut rects, &pose, 0.5, size);
+        assert!(hands[0].is_some() && hands[1].is_none() && rects[1].is_none());
+        // A lone hand found for the wrong side moves over.
+        let (mut hands, mut rects) = ([hand_at(0.42), None], [rect(0.42), None]);
+        reconcile(&mut hands, &mut rects, &pose, 0.5, size);
+        assert!(hands[0].is_none() && hands[1].is_some());
+        // An unseen wrist: the regions are trusted.
+        pose.visibility[16] = 0.1;
+        let (mut hands, mut rects) = ([hand_at(0.4), hand_at(0.6)], [rect(0.4), rect(0.6)]);
+        reconcile(&mut hands, &mut rects, &pose, 0.5, size);
+        assert_eq!(hands.map(|h| h.map(|h| h.image[0].0)), [Some(0.4), Some(0.6)]);
     }
 
     #[test]
