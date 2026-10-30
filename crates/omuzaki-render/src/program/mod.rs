@@ -24,7 +24,7 @@
 //!
 //! # What a program is given
 //!
-//! - **Parameters** are packed, in declaration order, into the material uniform's `program[]` (48 floats; colours
+//! - **Parameters** are packed, in declaration order, into the material uniform's `program[]` (64 floats; colours
 //!   arrive in linear light). The shader sees each one's float offset as a constant named `P_<NAME>` (upper case,
 //!   `-` as `_`), generated from the declaration so the two cannot drift, and reads them with `program_float`,
 //!   `program_vec2` and `program_vec3`.
@@ -52,14 +52,17 @@ use omuzaki_core::id::Slug;
 use omuzaki_render_api::{ParamValue, ProgramParams, RenderError, Shading, Toon};
 
 mod band_highlight;
+mod eye;
 mod gem;
 mod hair;
 mod metal;
+mod physical;
 mod shadow_catcher;
 mod sheen;
+mod skin;
 
-/// Floats in the material uniform's `program[]` (`array<vec4<f32>, 12>`).
-pub(crate) const PACKED_FLOATS: usize = 48;
+/// Floats in the material uniform's `program[]` (`array<vec4<f32>, 16>`).
+pub(crate) const PACKED_FLOATS: usize = 64;
 /// The most extra vertex attributes a program reads (the most a mesh carries).
 pub(crate) const MAX_ATTRIBUTES: usize = 4;
 
@@ -76,6 +79,11 @@ impl ParamSpec {
     /// A number in `lo..=hi`.
     pub(crate) const fn float(name: &'static str, default: f32, lo: f32, hi: f32) -> Self {
         Self { name, default: ParamValue::Float(default), range: Some((lo, hi)) }
+    }
+
+    /// Three numbers, each in `lo..=hi`.
+    pub(crate) const fn vec3(name: &'static str, default: [f32; 3], lo: f32, hi: f32) -> Self {
+        Self { name, default: ParamValue::Vec3(Vec3::new(default[0], default[1], default[2])), range: Some((lo, hi)) }
     }
 
     /// A colour given as `0xRRGGBB`.
@@ -144,6 +152,54 @@ macro_rules! register_shading_program {
     };
 }
 use register_shading_program;
+
+// ------------------------------------------------------------------------------------------------ the style axis
+
+/// A program's parameters followed by the style axis's (#2607): `style` (`0` the program's physical model, `1` the cel
+/// look) and the cel toon the program blends toward (`cel-shade`, `cel-shift`, `cel-softness`, `cel-rim`,
+/// `cel-rim-power`, `cel-rim-strength`, `cel-emissive`, `cel-skin` with `cel-skin-floor` and `cel-skin-hue`), which
+/// [`cel_toon`] turns back into the [`Toon`] the program lights with. The look writes them from the material's own toon
+/// when it moves a toon material along the axis, so at `style` 1 the program draws exactly what the toon did: the axis
+/// has no step. `$style` is the default style; the cel defaults are a flat white toon with no rim (what a program that
+/// lights itself wants by default).
+macro_rules! with_cel {
+    ($style:expr; $($param:expr),* $(,)?) => {
+        &[
+            $($param,)*
+            $crate::program::ParamSpec::float("style", $style, 0.0, 1.0),
+            $crate::program::ParamSpec::colour("cel-shade", 0x00ff_ffff),
+            $crate::program::ParamSpec::float("cel-shift", 0.0, -1.0, 1.0),
+            $crate::program::ParamSpec::float("cel-softness", 1.0, 0.0, 1.0),
+            $crate::program::ParamSpec::colour("cel-rim", 0x006d_74a8),
+            $crate::program::ParamSpec::float("cel-rim-power", 3.0, 0.0, 64.0),
+            $crate::program::ParamSpec::float("cel-rim-strength", 0.0, 0.0, 4.0),
+            $crate::program::ParamSpec::colour("cel-emissive", 0x0000_0000),
+            $crate::program::ParamSpec::float("cel-skin", 0.0, 0.0, 1.0),
+            $crate::program::ParamSpec::float("cel-skin-floor", 0.42, 0.0, 1.0),
+            $crate::program::ParamSpec::float("cel-skin-hue", 0.55, 0.0, 1.0),
+        ]
+    };
+}
+use with_cel;
+
+/// The cel toon a program on the style axis lights with, from its `cel-*` parameters ([`with_cel!`]).
+pub(crate) fn cel_toon(values: &Values) -> Toon {
+    let f = |name: &str, default: f32| values.float(name).unwrap_or(default);
+    let skin = (f("cel-skin", 0.0) >= 0.5)
+        .then(|| omuzaki_render_api::Skin { floor: f("cel-skin-floor", 0.42), hue_keep: f("cel-skin-hue", 0.55) });
+    Toon {
+        shade: values.colour("cel-shade").unwrap_or(Colour::WHITE),
+        shift: f("cel-shift", 0.0),
+        softness: f("cel-softness", 1.0),
+        rim: omuzaki_render_api::Rim {
+            colour: values.colour("cel-rim").unwrap_or(Colour::hex(0x006d_74a8)),
+            power: f("cel-rim-power", 3.0),
+            strength: f("cel-rim-strength", 0.0),
+        },
+        emissive: values.colour("cel-emissive").unwrap_or(Colour::BLACK),
+        skin,
+    }
+}
 
 /// Whether a registration's name is its spec's name, at compile time.
 pub(crate) const fn same_name(a: &str, b: &str) -> bool {
@@ -227,7 +283,7 @@ impl Registry {
     ///
     /// # Errors
     /// `Backend` naming the first rule a declaration breaks: a duplicate name, a name that is not a slug, a parameter
-    /// block over 48 floats, more than four attributes or a component count outside `1..=4`.
+    /// block over 64 floats, more than four attributes or a component count outside `1..=4`.
     pub(crate) fn build(mut specs: Vec<&'static ProgramSpec>) -> Result<Self, RenderError> {
         specs.sort_by_key(|s| s.name);
         for pair in specs.windows(2) {

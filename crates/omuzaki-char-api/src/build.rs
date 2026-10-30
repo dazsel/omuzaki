@@ -30,7 +30,7 @@ use omuzaki_core::rng::Rng;
 use omuzaki_face_api::{
     FaceLayerId, FaceLayerSpec, FaceProfile, FaceProjection, Palette, ParamError, ParamErrors, Validate,
 };
-use omuzaki_render_api::TextureDesc;
+use omuzaki_render_api::{ParamValue, Shading, TextureDesc};
 
 use crate::character::CharacterDef;
 use crate::error::BuildError;
@@ -308,9 +308,28 @@ impl BuiltCharacter {
             .map(|(name, part)| {
                 let class = self.material_classes.get(name).copied().unwrap_or(MaterialClass::Cloth);
                 let drawn = look.class(class).try_apply(part, &format!("materials.{}", name.as_str()));
-                (name.clone(), drawn)
+                (name.clone(), drawn.map(|spec| self.without_missing_cavity(name, spec)))
             })
             .collect()
+    }
+
+    /// `spec` with the skin program's cavity term off when a mesh drawn with `name` carries no `skin-info` (an imported
+    /// skin, a kit skin without material layers): a missing attribute reads as zeros, which the program would take for
+    /// a fold everywhere.
+    fn without_missing_cavity(&self, name: &MaterialName, mut spec: MaterialSpec) -> MaterialSpec {
+        if let Shading::Program { name: program, params } = &mut spec.shading
+            && program.as_str() == crate::look::SKIN_PROGRAM
+        {
+            let lacks = self
+                .meshes
+                .iter()
+                .filter(|m| m.mesh.material == *name)
+                .any(|m| !m.mesh.geometry.extra.iter().any(|a| a.name.as_str() == crate::design::layer::SKIN_INFO));
+            if lacks && let Ok(key) = omuzaki_core::id::Slug::new("cavity") {
+                params.insert(key, ParamValue::Float(0.0));
+            }
+        }
+        spec
     }
 
     /// Stores `drawn`; returns the names whose drawn material changed.
@@ -398,10 +417,26 @@ fn check_weight_brushes(def: &CharacterDef) -> Result<(), BuildError> {
     Ok(())
 }
 
+/// Rejects a design layer with bad numbers, an unknown dial, or strokes and layers on a part the character lacks.
+fn check_design(def: &CharacterDef) -> Result<(), BuildError> {
+    let design = &def.design;
+    if design.is_empty() {
+        return Ok(());
+    }
+    design.check().map_err(BuildError::Design)?;
+    let owners = design.sculpt.keys().map(|p| ("sculpt", p)).chain(design.layers.keys().map(|p| ("layers", p)));
+    for (what, part) in owners {
+        if !def.parts.contains_key(part) {
+            return Err(BuildError::Design(format!("{what}/{part}: the character has no part with this id")));
+        }
+    }
+    Ok(())
+}
+
 /// The first half of the pipeline: what must hold before any part builds, and the order to build the parts in.
 ///
 /// Validates the face profile, checks the weight brushes (each names a part the character has and carries usable
-/// numbers), then orders the active parts ([`CharacterDef::build_order`]: parents, layers and kind requirements decide
+/// numbers) and the design layer, then orders the active parts ([`CharacterDef::build_order`]: parents, layers and kind requirements decide
 /// who builds first; disabled parts and their children are left out). Build every part of the result, in this order,
 /// and no other: a part's [`Published`] view is whatever the parts before it published.
 ///
@@ -409,10 +444,12 @@ fn check_weight_brushes(def: &CharacterDef) -> Result<(), BuildError> {
 /// error of a build is the same whichever builder runs it.
 ///
 /// # Errors
-/// [`BuildError::Face`], [`BuildError::Brush`], or [`BuildError::Tree`] for a dangling parent or a dependency loop.
+/// [`BuildError::Face`], [`BuildError::Brush`], [`BuildError::Design`], or [`BuildError::Tree`] for a dangling parent or a
+/// dependency loop.
 pub fn plan(def: &CharacterDef) -> Result<Vec<PartId>, BuildError> {
     def.face.validate().map_err(BuildError::Face)?;
     check_weight_brushes(def)?;
+    check_design(def)?;
     Ok(def.build_order(&requires_of)?)
 }
 
@@ -475,6 +512,8 @@ pub fn build_part(
     if let Some(scale) = authored_scale(reg, &output, published) {
         scale_output(part, &mut output, scale)?;
     }
+    let category = (reg.meta)().category;
+    crate::design::deform::apply(&def.design, &def.face.layout, part, category, &mut output, published)?;
     Ok(output)
 }
 
@@ -619,6 +658,8 @@ impl<'a> Assembler<'a> {
             });
         }
         self.check_stature_order(part, &kind, output.publishes.values::<StatureFact>().next().is_some())?;
+        let mut output = output;
+        self.apply_layers(part, &kind, &mut output)?;
         let counts = self.add_meshes(part, output.meshes, check_meshes)?;
         self.add_materials(part, &kind, output.materials, &output.material_classes)?;
         self.add_textures(part, output.textures)?;
@@ -667,6 +708,30 @@ impl<'a> Assembler<'a> {
             }),
             _ => Ok(()),
         }
+    }
+
+    /// Runs the design layer's material layers (#2609) over a part's output, with the age's implicit layers.
+    fn apply_layers(&self, part: &PartId, kind: &PartKindId, output: &mut PartOutput) -> Result<(), BuildError> {
+        let design = &self.def.design;
+        let age = design.age.and_then(|years| {
+            let model = &crate::design::design_library().ok()?.age;
+            let layers = model.at(years);
+            (!layers.is_empty()).then_some(layers)
+        });
+        if age.is_none() && design.layers.is_empty() {
+            return Ok(());
+        }
+        let category = find_kind(kind.as_str()).map_or(PartCategory::Accessory, |reg| (reg.meta)().category);
+        crate::design::layer::apply(
+            design,
+            age,
+            &self.def.palette,
+            &self.def.face.layout,
+            part,
+            category,
+            output,
+            &self.published,
+        )
     }
 
     /// Validates `meshes`, applies the part's weight brushes and collects them.

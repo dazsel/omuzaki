@@ -6,7 +6,10 @@
 //! [`part_sweep`](super::part_sweep) uses it, so a style keeps its shape when the head is scaled; the prototype uses one
 //! fixed head radius). The azimuth is `phi * lerp(0.3, 1, ss(t, 0, 0.65)) - sweep * t^2 - u * hook * ss(t, 0.75, 1)`
 //! with `u = phi / spread`, so the fringe sweeps to one side and each tip hooks inward. The distance from the head is
-//! `lerp(root_offset, tip_offset, t) + 0.016 sin(pi min(1, 1.15 t))`.
+//! `lerp(root_offset, tip_offset, t) + 0.016 sin(pi min(1, 1.15 t))`, less a root tuck: over the first [`ROOT_EMERGE`]
+//! of the lock its root sinks up to [`ROOT_TUCK`] (never closer than [`TUCK_FLOOR`] to the head), so it grows out of the
+//! hair over the crown instead of standing on it as a slab (the comparison with the anime samples showed the fringe's
+//! roots as a ledge on top of draped hair).
 //!
 //! **Layers and wisps.** Layers build in [`BangsGen::layers`] order (under to over), then the wisps. Each under-layer
 //! sinks [`UNDER_SINK`] under the next near the root, so layers sharing a root offset lie one over the other instead of
@@ -51,6 +54,12 @@ pub const FALL_EXPONENT: f64 = 0.8;
 pub const ROOT_AZIMUTH: f64 = 0.3;
 /// Height of the bulge above the root-to-tip offset, metres.
 pub const BELLY: f64 = 0.016;
+/// How far a lock's root sinks into the hair over the crown, metres.
+pub const ROOT_TUCK: f64 = 0.02;
+/// The share of the lock over which it comes out of the hair to its own offset.
+pub const ROOT_EMERGE: f64 = 0.3;
+/// The tuck never brings the root closer to the head than this, metres.
+pub const TUCK_FLOOR: f64 = 0.012;
 /// Ratio of the belly's reach: it peaks and falls again at `t = 1 / BELLY_REACH`.
 const BELLY_REACH: f64 = 1.15;
 /// Top layer: the angular jitter of a clump's position, degrees (times `hj`).
@@ -542,6 +551,7 @@ fn control_points(g: &BangsGen, head: &dyn HeadSurface, lock: &Lock, out: &mut [
     let root_theta = ROOT_THETA_DEG.to_radians();
     let sweep = sane(g.sweep_deg, -MAX_ANGLE_DEG, MAX_ANGLE_DEG, 0.0).to_radians();
     let hook = lock.hook_deg.to_radians();
+    let tuck = ROOT_TUCK.min((lock.root_offset - TUCK_FLOOR).max(0.0));
     for (k, point) in out.iter_mut().enumerate() {
         let t = k as f64 / (CONTROL_POINTS - 1) as f64;
         let theta = root_theta + (tip_theta - root_theta) * t.powf(FALL_EXPONENT);
@@ -551,7 +561,8 @@ fn control_points(g: &BangsGen, head: &dyn HeadSurface, lock: &Lock, out: &mut [
         let offset = lock.root_offset
             + (lock.tip_offset - lock.root_offset) * t
             + BELLY * (std::f64::consts::PI * (t * BELLY_REACH).min(1.0)).sin()
-            - lock.sink * (1.0 - smoothstep(t, SINK_FADE.0, SINK_FADE.1));
+            - lock.sink * (1.0 - smoothstep(t, SINK_FADE.0, SINK_FADE.1))
+            - tuck * (1.0 - smoothstep(t, 0.0, ROOT_EMERGE));
         let dir = DVec3::new(theta.sin() * phi.sin(), theta.cos(), theta.sin() * phi.cos());
         *point = head.centre().as_dvec3() + dir * (f64::from(head.radius(dir.as_vec3())) + offset);
     }

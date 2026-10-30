@@ -49,8 +49,8 @@ pub use environment::{EnvironmentDesc, EnvironmentUse, sky_radiance};
 pub use error::RenderError;
 pub use handle::{EnvironmentId, MaterialId, MeshId, ParticleSystemId, ResourceRef, TargetId, TextureId};
 pub use material::{
-    AlphaMode, Mapping, Material, Outline, OutlineStyle, OutlineWidthMode, Overlay, ParamValue, ProgramParams, Rim,
-    Shading, Skin, Toon, UvTransform,
+    AlphaMode, HairShadow, Mapping, Material, Outline, OutlineStyle, OutlineWidthMode, Overlay, ParamValue,
+    ProgramParams, Rim, Shading, Skin, Toon, UvTransform,
 };
 pub use morph::{MeshOptions, MeshUsage, MorphSet, SparseMorph};
 pub use mtoon::Mtoon;
@@ -70,5 +70,5 @@ pub use resource::{
 };
 pub use scene::{
     BackdropFit, Background, Bloom, Camera, ColourGrade, DepthOfField, EdgeLines, FilmGrain, Fog, FrameInfo, Instance,
-    JointRange, Light, MorphRange, Post, Projection, SKY_LENS_DEG, Scene, Tonemap, gradient_at,
+    JointRange, Light, MorphRange, Occlusion, Post, Projection, SKY_LENS_DEG, Scene, Tonemap, gradient_at,
 };

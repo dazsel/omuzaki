@@ -151,6 +151,9 @@ opt-level = 2                # the CPU rasteriser draws every mock render in the
 [profile.dev.package.omuzaki-char]
 opt-level = 2                # the kit's geometry: its property and fit tests and every mock preview run about 4x faster
 
+[profile.dev.package.omuzaki-char-api]
+opt-level = 2                # the design layer's shape field and material layers run per vertex of every kit build
+
 [profile.dev.package.omuzaki-face]
 opt-level = 2                # the face painter: its sweep tests paint and rasterise thousands of frames (#2289)
 

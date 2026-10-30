@@ -291,8 +291,29 @@ impl Default for UvTransform {
     }
 }
 
+/// A material's part in the hair shadow (#2528): the shadow hair casts on a face, which shadow maps miss because a fringe
+/// hangs inside their bias.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct HairShadow {
+    /// The surface is drawn into the hair shadow: hair.
+    pub casts: bool,
+    /// The surface turns to its shade tone where hair lies between it and a shadow-casting directional light: a face
+    /// under its fringe.
+    pub receives: bool,
+}
+
+impl HairShadow {
+    /// Neither casts nor receives: the default.
+    pub const NONE: Self = Self { casts: false, receives: false };
+    /// Casts it, as hair does.
+    pub const CASTS: Self = Self { casts: true, receives: false };
+    /// Receives it, as a face does.
+    pub const RECEIVES: Self = Self { casts: false, receives: true };
+}
+
 /// Everything about how one mesh's surface looks.
 #[derive(Clone, Debug, PartialEq)]
+#[allow(clippy::struct_excessive_bools, reason = "independent switches a renderer reads one at a time")]
 pub struct Material {
     /// The surface colour (its alpha multiplies the texture's).
     pub base: Colour,
@@ -304,6 +325,13 @@ pub struct Material {
     pub overlays: Vec<Overlay>,
     /// How alpha is used.
     pub alpha: AlphaMode,
+    /// With [`AlphaMode::Blend`], blend without sorting (weighted blended order-independent transparency, #2507):
+    /// many overlapping layers of one surface, such as hair tips or fur, blend smoothly with no sorting errors, at the
+    /// cost of an approximate order where layers of very different colours overlap. A renderer that lacks it sorts the
+    /// surface with the other blended ones. With [`AlphaMode::Mask`], the surface gets a soft edge (hair tips, #2529):
+    /// the texels at or above the cutoff draw opaque, and those below it, instead of being cut, blend this way with
+    /// their alpha scaled up to 1 at the cutoff. Ignored for an opaque surface.
+    pub order_independent: bool,
     /// Draw both sides of every triangle (hair sheets, cloth). The back side is shaded with the flipped normal.
     pub double_sided: bool,
     /// Multiply the mesh's vertex colours into `base`.
@@ -314,6 +342,8 @@ pub struct Material {
     pub outline_style: OutlineStyle,
     /// Whether shadow maps darken this surface. Faces turn it off: anime faces stay clean under hair shadows.
     pub receives_shadows: bool,
+    /// The hair shadow (#2528): whether this surface casts it (hair) or receives it (a face). Both off by default.
+    pub hair_shadow: HairShadow,
     /// Applied to the UV of every UV-addressed texture (`base_texture` and [`Mapping::Uv`] overlays).
     pub uv_transform: UvTransform,
     /// `MToon` 1.0's own lighting, for an imported model (LK-07): with toon shading, the surface is lit by the spec's
@@ -330,11 +360,13 @@ impl Material {
             shading: Shading::Toon(Toon::default()),
             overlays: Vec::new(),
             alpha: AlphaMode::Opaque,
+            order_independent: false,
             double_sided: false,
             vertex_colours: false,
             outline: None,
             outline_style: OutlineStyle::KIT,
             receives_shadows: true,
+            hair_shadow: HairShadow::NONE,
             uv_transform: UvTransform::IDENTITY,
             mtoon: None,
         }

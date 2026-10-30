@@ -373,6 +373,11 @@ fn straight_down(shape: &Shape, out: &mut [DVec3; REST_POINTS]) {
     }
 }
 
+/// Where the tail is tied to the head, bind space (on the authored side of a mirrored group).
+pub fn root(g: &TailGen, head: &dyn HeadSurface) -> DVec3 {
+    Root::new(g.root, DEFAULT_ROOT, head).point
+}
+
 /// The names and frames of the anchors a tail publishes, for a head that is `head`: `tail_root` (where the tail leaves the head,
 /// +Y along the tail's first direction). A mirrored group publishes `tail_root_l` (the +x tail) and `tail_root_r`.
 pub fn anchors(g: &TailGen, head: &dyn HeadSurface, mirror: bool) -> Vec<(String, Anchor)> {

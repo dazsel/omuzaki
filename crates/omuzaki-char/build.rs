@@ -1,6 +1,6 @@
 //! Embeds the look presets in `library/looks/` (LK-06), the character styles in `library/styles/`, the hairstyles in
 //! `library/hair-styles/` (#2486) and the library items in `library/items/`: writes `looks.rs`, `styles.rs`,
-//! `hair_styles.rs` and `items.rs` with one `(id, text)` entry per `<id>.toml` file, in name order, so a preset is added by adding a
+//! `hair_styles.rs`, `items.rs` and `dials.rs` (the design library's dials, `library/dials/`) with one `(id, text)` entry per `<id>.toml` file, in name order, so a preset is added by adding a
 //! file and no list in code names them (spec v3 §39 rules 2 and 5). The crate parses them once (`src/look/mod.rs`,
 //! `src/style.rs`).
 
@@ -25,6 +25,9 @@ const HAIR_STYLES: &str = "library/hair-styles";
 /// The folder of first-party library items (`omuzaki-library-api`'s manifests), relative to the crate.
 const ITEMS: &str = "library/items";
 
+/// The folder of the design library's dials and age model (#2612, #2615), relative to the crate.
+const DIALS: &str = "library/dials";
+
 /// The folder of op families, relative to the crate: its children are declared as modules (ADR 0054).
 const OPS: &str = "src/ops";
 
@@ -33,6 +36,7 @@ fn main() {
     println!("cargo::rerun-if-changed={STYLES}");
     println!("cargo::rerun-if-changed={HAIR_STYLES}");
     println!("cargo::rerun-if-changed={ITEMS}");
+    println!("cargo::rerun-if-changed={DIALS}");
     if let Err(message) = generate() {
         println!("cargo::error={message}");
         process::exit(1);
@@ -46,6 +50,7 @@ fn generate() -> Result<(), String> {
     embed(&manifest, STYLES, &out.join("styles.rs"))?;
     embed(&manifest, HAIR_STYLES, &out.join("hair_styles.rs"))?;
     embed(&manifest, ITEMS, &out.join("items.rs"))?;
+    embed(&manifest, DIALS, &out.join("dials.rs"))?;
     omuzaki_embed::modules(manifest.join(OPS), out.join("ops_mods.rs"), "pub")
         .map_err(|e| format!("can't declare the ops modules: {e}"))
 }

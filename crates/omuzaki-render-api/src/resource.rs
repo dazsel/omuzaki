@@ -25,8 +25,9 @@ pub mod limits {
     pub const MAX_OVERLAYS: usize = 4;
     /// The largest texture or target side every renderer supports; `Capabilities::max_texture_size` can be higher.
     pub const GUARANTEED_TEXTURE_SIZE: u32 = 4096;
-    /// Parameters on one shading program ([`Shading::Program`](crate::Shading::Program)).
-    pub const MAX_PROGRAM_PARAMS: usize = 32;
+    /// Parameters on one shading program ([`Shading::Program`](crate::Shading::Program)): as many as the renderer's
+    /// 64-float parameter block could hold (each takes at least one float; the program's packing is the exact check).
+    pub const MAX_PROGRAM_PARAMS: usize = 64;
     /// The most samples per pixel [`Quality::samples`](crate::Quality::samples) may ask for.
     pub const MAX_SAMPLES: u8 = 16;
     /// Particle slots in one [`Scene`](crate::Scene): the sum of its spawn batches' `count` (particles.md D2).

@@ -29,6 +29,7 @@ use omuzaki_settings_api::meta::{AgentWrite, Apply, InProfile, SettingMeta, Sett
 use omuzaki_settings_api::register_setting;
 use omuzaki_settings_api::setting::Setting;
 use omuzaki_track::gesture::Gesture;
+use omuzaki_track_api::body::{BodyBoard, BodyConfig, BodyStatus, HandGesture};
 use omuzaki_track_api::camera::CameraId;
 use omuzaki_metrics_api::budget::{BudgetKey, BudgetUse, TRACK_FACE};
 use omuzaki_track_api::doctor::{Diagnosis, Finding};
@@ -119,6 +120,30 @@ impl Setting for InputCamera {
 }
 
 register_setting!(InputCamera);
+
+/// What the camera tracks beside the face (PF-06 hands, PF-07 arms), as the Machine setting `input.body`. Switching it
+/// on reads more of the person from the camera, so an agent may ask and the person confirms, as for the source. Machine
+/// scope: the body models' cost depends on the computer.
+pub struct InputBody;
+
+impl Setting for InputBody {
+    type Value = BodyConfig;
+    const META: SettingMeta = SettingMeta::new(
+        "input.body",
+        "What the camera tracks beside the face: the arms, the hands and fingers, and whether on the heavier model",
+        SettingScope::Machine,
+        AgentWrite::Confirm,
+        InProfile::Excluded,
+        Apply::Live,
+        1,
+    );
+
+    fn default() -> BodyConfig {
+        BodyConfig::OFF
+    }
+}
+
+register_setting!(InputBody);
 
 /// Whether the app may use the camera, as the OS says.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -273,6 +298,9 @@ pub enum InputError {
     /// The pose output could not start.
     #[error("the pose output could not start: {0}")]
     PoseOutput(String),
+    /// This build has no body tracking (its tracker has no body models).
+    #[error("this build cannot track the arms and hands")]
+    NoBodyTracking,
 }
 
 impl InputError {
@@ -368,6 +396,27 @@ pub trait InputHost: Send + Sync {
     /// The face gestures showing now (PF-25): each presses its trigger key while it shows.
     fn gestures(&self) -> Vec<Gesture> {
         Vec::new()
+    }
+
+    /// The hand gestures showing now (PF-06), while body tracking runs: each presses its trigger key while it shows.
+    fn hand_gestures(&self) -> Vec<HandGesture> {
+        Vec::new()
+    }
+
+    /// Tracks the arms and hands beside the face (PF-06, PF-07) as `config` says, or stops with
+    /// [`BodyConfig::OFF`]; returns the config before. It follows the capture: on while the camera runs, idle while it
+    /// is off.
+    ///
+    /// # Errors
+    /// [`InputError::NoBodyTracking`] for a host without it, [`InputError::Device`] when its thread cannot start.
+    fn track_body(&self, config: BodyConfig, mode: Mode) -> Result<BodyConfig, InputError> {
+        let _ = (config, mode);
+        Err(InputError::NoBodyTracking)
+    }
+
+    /// How body tracking is doing.
+    fn body(&self) -> BodyStatus {
+        BodyStatus::default()
     }
 }
 
@@ -527,6 +576,8 @@ struct Inner {
     tap: Arc<FrameTap>,
     /// The App's pose output (VMC out), when it has one.
     pose_out: Option<Box<dyn PoseOutput>>,
+    /// Where body tracking publishes, when the App gave the performer a body reader.
+    body: Option<Arc<BodyBoard>>,
 }
 
 impl Inner {
@@ -642,6 +693,7 @@ impl LiveInput {
             refused: false,
             tap: Arc::default(),
             pose_out: None,
+            body: None,
         };
         Self { inner: Mutex::new(inner), slot, perform, guided: GuidedRun::default(), gestures: Mutex::default() }
     }
@@ -664,12 +716,21 @@ impl LiveInput {
         Self { inner: Mutex::new(inner), slot: self.slot, perform: self.perform, guided: self.guided, gestures: self.gestures }
     }
 
-    /// Starts the gesture watch over `tap` if it isn't running. A watch that can't start leaves gestures off and the
-    /// capture running.
-    fn watch_gestures(&self, tap: &Arc<FrameTap>) {
+    /// With `board` as where `input.track_body` publishes: the board whose reader the performer was made with
+    /// (`Performer::with_body`). Without one, that op is [`InputError::NoBodyTracking`].
+    #[must_use]
+    pub fn with_body(self, board: Arc<BodyBoard>) -> Self {
+        let mut inner = self.inner.into_inner().unwrap_or_else(PoisonError::into_inner);
+        inner.body = Some(board);
+        Self { inner: Mutex::new(inner), slot: self.slot, perform: self.perform, guided: self.guided, gestures: self.gestures }
+    }
+
+    /// Starts the gesture watch over `tap` (and the hand gestures on `board`) if it isn't running. A watch that can't
+    /// start leaves gestures off and the capture running.
+    fn watch_gestures(&self, tap: &Arc<FrameTap>, board: Option<&Arc<BodyBoard>>) {
         let mut watch = self.gestures.lock().unwrap_or_else(PoisonError::into_inner);
         if watch.is_none() {
-            *watch = GestureWatch::start(Arc::clone(tap), Arc::clone(&self.perform)).ok();
+            *watch = GestureWatch::start(Arc::clone(tap), board.cloned(), Arc::clone(&self.perform)).ok();
         }
     }
 
@@ -737,7 +798,7 @@ impl InputHost for LiveInput {
         let (device, id) = inner.startable()?;
         if mode == Mode::Apply {
             inner.start_on(device, id, &self.slot)?;
-            self.watch_gestures(&inner.tap);
+            self.watch_gestures(&inner.tap, inner.body.as_ref());
         }
         Ok(before)
     }
@@ -872,6 +933,42 @@ impl InputHost for LiveInput {
 
     fn gestures(&self) -> Vec<Gesture> {
         self.gestures.lock().unwrap_or_else(PoisonError::into_inner).as_ref().map(GestureWatch::active).unwrap_or_default()
+    }
+
+    fn hand_gestures(&self) -> Vec<HandGesture> {
+        self.gestures.lock().unwrap_or_else(PoisonError::into_inner).as_ref().map(GestureWatch::hands).unwrap_or_default()
+    }
+
+    fn track_body(&self, config: BodyConfig, mode: Mode) -> Result<BodyConfig, InputError> {
+        let mut inner = self.inner();
+        let board = inner.body.clone().ok_or(InputError::NoBodyTracking)?;
+        let before = inner.tracker.body_status().config;
+        if mode == Mode::DryRun || config == before {
+            return Ok(before);
+        }
+        // Every source that can track a body is told, so the body follows whichever runs: the webcam's own tracker,
+        // or a mocap app over VMC (PF-04). Each publishes only while its frames come.
+        if let Some(phone) = inner.phone.as_mut() {
+            match phone.track_body(config, &board) {
+                Ok(_) | Err(TrackError::Unsupported(_)) => {}
+                Err(other) => return Err(InputError::Device(other)),
+            }
+        }
+        inner.tracker.track_body(config, &board).map_err(|e| match e {
+            TrackError::Unsupported(_) => InputError::NoBodyTracking,
+            other => InputError::Device(other),
+        })
+    }
+
+    fn body(&self) -> BodyStatus {
+        let inner = self.inner();
+        if inner.body.is_none() {
+            return BodyStatus::default();
+        }
+        match (inner.source, inner.phone.as_ref()) {
+            (SourceKind::Iphone, Some(phone)) => phone.body_status(),
+            _ => inner.tracker.body_status(),
+        }
     }
 }
 

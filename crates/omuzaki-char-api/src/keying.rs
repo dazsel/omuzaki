@@ -15,8 +15,9 @@ use omuzaki_face_api::FaceProfile;
 
 use crate::build::BuildOptions;
 use crate::character::{Attach, CharacterDef, PartDef};
-use crate::ids::{BodyTemplateId, PartKindId};
-use crate::kind::{BuildCtx, Quality};
+use crate::design::DesignDef;
+use crate::ids::{BodyTemplateId, PartId, PartKindId};
+use crate::kind::{BuildCtx, PartCategory, Quality};
 
 /// The inputs every part's key shares: the parts read all of them.
 #[derive(Debug, Clone, Copy)]
@@ -36,7 +37,8 @@ pub struct CommonKeyInputs<'a> {
 /// What of the character and the options goes into every part's key.
 ///
 /// Exhaustive on purpose (no `..`): a field added to the definition or the options fails to compile here until it is
-/// keyed or excluded with a reason. Excluded: `name` and `skin_tone` (no part sees them), `weight_brushes` (applied by
+/// keyed or excluded with a reason. `design` is keyed per part, through [`design_key_inputs`]. Excluded: `name` and
+/// `skin_tone` (no part sees them), `weight_brushes` (applied by
 /// the assembler, after the part is built), `variant` (recorded in the result; the caller applied it to `def`). The
 /// palette and the parts are keyed per part, through [`part_key_inputs`] and the palette slots the parameters name.
 pub fn common_key_inputs<'a>(def: &'a CharacterDef, options: &'a BuildOptions) -> CommonKeyInputs<'a> {
@@ -49,6 +51,7 @@ pub fn common_key_inputs<'a>(def: &'a CharacterDef, options: &'a BuildOptions) -
         parts: _,
         face,
         weight_brushes: _,
+        design: _,
         #[cfg(feature = "growth-probe")]
             growth_probe: _, // excluded: nothing reads it
     } = def;
@@ -95,4 +98,29 @@ fn every_context_field_is_keyed_or_excluded(ctx: &BuildCtx<'_>) {
         #[cfg(feature = "growth-probe")]
             growth_probe: _, // excluded: nothing reads it
     } = ctx;
+}
+
+/// The inputs of one part's key that come from the design layer ([`DesignDef`]): what [`build_part`](crate::build_part)
+/// applies to its output. Its layers are not among them: the assembler runs them after the part is built, as it applies
+/// the weight brushes.
+#[derive(Debug, Clone, Copy)]
+pub struct DesignKeyInputs<'a> {
+    /// The age, for the body and the head (its dials move them).
+    pub age: Option<f64>,
+    /// The dials, for the body and the head.
+    pub dials: Option<&'a std::collections::BTreeMap<crate::ids::DialId, crate::design::DialSetting>>,
+    /// The part's own sculpt strokes.
+    pub strokes: &'a [crate::design::SculptStroke],
+}
+
+/// What of the design layer goes into the key of `part`, a part of `category`.
+pub fn design_key_inputs<'a>(def: &'a CharacterDef, part: &PartId, category: PartCategory) -> DesignKeyInputs<'a> {
+    // Exhaustive, like the others: `sculpt` is read per part below, `layers` run in the assembler.
+    let DesignDef { age, dials, sculpt: _, layers: _ } = &*def.design;
+    let shaped = matches!(category, PartCategory::Body | PartCategory::Head);
+    DesignKeyInputs {
+        age: if shaped { *age } else { None },
+        dials: shaped.then_some(dials),
+        strokes: def.design.strokes(part),
+    }
 }

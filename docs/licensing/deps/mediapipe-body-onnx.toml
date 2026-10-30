@@ -1,0 +1,7 @@
+section = "in-use"
+item = "ONNX conversions of the hand and pose landmarkers (`hand_detector.onnx`, `hand_landmarks_detector.onnx`, `pose_detector.onnx`, `pose_landmarks_lite.onnx`, `pose_landmarks_full.onnx`)"
+kind = "model"
+used_for = "body tracking in `omuzaki-track` (`body`): the same networks as ONNX, the pose landmark graphs pruned to the outputs read"
+status = "conditions"
+condition = "derived from the MediaPipe body landmarkers row, so Apache-2.0 per the model cards; keep `manifest.json` and the numeric check (`tools/models/convert_mediapipe_body.py`, run by `tools/models/mediapipe-body.sh`) with the files"
+audit = "A1, derived"

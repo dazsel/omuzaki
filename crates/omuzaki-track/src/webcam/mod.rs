@@ -20,6 +20,7 @@
 //! `try_lock` on the preview slot. The two threads exchange frames over one-slot channels, which allocate nothing per
 //! frame, and neither allocates once its buffers have grown (MJPG excepted, see [`FrameConverter`]).
 
+mod body;
 mod convert;
 mod preview;
 mod thread;
@@ -34,12 +35,14 @@ use std::time::{Duration, Instant};
 
 use omuzaki_anim_api::{FrameSource, TrackFrame};
 use omuzaki_core::time::{Clock, Seconds};
+use omuzaki_track_api::body::{BodyBoard, BodyConfig, BodyStatus};
 use omuzaki_track_api::camera::{Camera, CameraFormatRequest, CameraId, CameraInfo, CameraStream, PixelFormat};
 use omuzaki_track_api::doctor::{Diagnosis, DoctorBoard};
 use omuzaki_track_api::error::TrackError;
 use omuzaki_track_api::mailbox::{MailboxReader, mailbox};
 use omuzaki_track_api::tracker::{LatencyStats, QualityTier, Tracker, TrackerConfig};
 
+pub use body::BodyLoader;
 pub use convert::FrameConverter;
 pub use preview::{PREVIEW_MAX_WIDTH, PreviewFrame};
 
@@ -47,6 +50,7 @@ use crate::error::FaceTrackError;
 use crate::frame::RgbFrame;
 use crate::pipeline::FaceTracker;
 use crate::sample::{FaceSample, StageTimings};
+use body::BodyPart;
 use preview::PreviewTap;
 use thread::{Handoff, JOIN_GRACE, Outcome, Run, STOP_SLACK, Stats, StopSignal, Worker};
 
@@ -261,6 +265,8 @@ pub struct WebcamTracker {
     spawn_plan: std::collections::VecDeque<bool>,
     /// How long `stop` waits for the camera thread before detaching it; [`JOIN_GRACE`] unless a test says otherwise.
     join_grace: Duration,
+    /// Body tracking beside the face, when the App gave it the models.
+    body: BodyPart,
 }
 
 impl WebcamTracker {
@@ -285,7 +291,16 @@ impl WebcamTracker {
             session: None,
             spawn_plan: std::collections::VecDeque::new(),
             join_grace: JOIN_GRACE,
+            body: BodyPart::default(),
         }
+    }
+
+    /// The same tracker with body tracking (PF-06 hands, PF-07 arms): `loader` builds the body tracker for a pose
+    /// size, on the body thread, when [`Tracker::track_body`] first asks for it.
+    #[must_use]
+    pub fn with_body(mut self, loader: BodyLoader) -> Self {
+        self.body.loader = Some(loader);
+        self
     }
 
     /// The camera [`WebcamConfig::camera`] names, or the first one; `None` if there is no such camera.
@@ -418,6 +433,7 @@ impl Tracker for WebcamTracker {
             grace: self.join_grace,
             stop: Arc::clone(&stop),
             preview: Arc::clone(&self.preview),
+            body: Arc::clone(&self.body.tap),
             stats: Arc::clone(&stats),
             error: Arc::clone(&error),
             board: Arc::clone(&doctor),
@@ -488,10 +504,19 @@ impl Tracker for WebcamTracker {
     fn recheck(&self) {
         self.doctor.request_recheck();
     }
+
+    fn track_body(&mut self, config: BodyConfig, board: &Arc<BodyBoard>) -> Result<BodyConfig, TrackError> {
+        self.body.set(config, board)
+    }
+
+    fn body_status(&self) -> BodyStatus {
+        self.body.status()
+    }
 }
 
 impl Drop for WebcamTracker {
     fn drop(&mut self) {
+        self.body.stop();
         self.stop();
     }
 }
