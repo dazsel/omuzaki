@@ -52,8 +52,12 @@ pub(crate) struct Draw {
 /// The passes that draw `instance` with `material`: the one place the contract's per-instance rules turn into lists.
 fn passes_of(material: &Material, instance: &Instance) -> PassSet {
     let mut passes = PassSet::default();
-    // Opaque and masked instances draw in `Opaque` (which discards masked texels); blended ones in `Transparent`.
+    // Opaque and masked instances draw in `Opaque` (which discards masked texels); blended ones in `Transparent`. A
+    // masked, order-independent one draws in both: its soft edge, the texels the mask cuts, blends in `Transparent`.
     passes = passes.with(if matches!(material.alpha, AlphaMode::Blend) { Pass::Transparent } else { Pass::Opaque });
+    if matches!(material.alpha, AlphaMode::Mask { .. }) && material.order_independent {
+        passes = passes.with(Pass::Transparent);
+    }
     if material.outline.is_some() {
         passes = passes.with(Pass::Outlines);
     }
@@ -337,6 +341,16 @@ mod tests {
         assert_eq!(listed(passes_of(&material, &instance(false))), [Pass::Opaque]);
         material.alpha = AlphaMode::Blend;
         assert_eq!(listed(passes_of(&material, &instance(false))), [Pass::Transparent]);
+    }
+
+    #[test]
+    fn a_soft_edged_mask_draws_its_body_opaque_and_its_edge_blended() {
+        let mut material = Material::toon(Colour::WHITE);
+        material.alpha = AlphaMode::Mask { cutoff: 0.5 };
+        material.order_independent = true;
+        assert_eq!(listed(passes_of(&material, &instance(false))), [Pass::Opaque, Pass::Transparent]);
+        material.alpha = AlphaMode::Opaque;
+        assert_eq!(listed(passes_of(&material, &instance(false))), [Pass::Opaque], "an opaque surface has no edge");
     }
 
     #[test]

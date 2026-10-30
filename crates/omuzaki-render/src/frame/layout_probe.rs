@@ -154,6 +154,7 @@ fn probe_material(face: TextureId) -> Material {
             lighting_mix: 0.375,
         },
         receives_shadows: false,
+        hair_shadow: omuzaki_render_api::HairShadow { casts: true, receives: true },
         uv_transform: UvTransform { scale: Vec2::new(0.5, 0.25), offset: Vec2::new(0.125, 0.75) },
         mtoon: None,
     }

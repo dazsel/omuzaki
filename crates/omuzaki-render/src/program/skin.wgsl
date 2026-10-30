@@ -174,8 +174,9 @@ fn program_light(lit: vec3<f32>, n: vec3<f32>, v: vec3<f32>, p: ProgramIn) -> ve
             let ndl = cosines.z;
             received = vec3<f32>(saturate((ndl + wrap) / (1.0 + wrap))) * mix(scatter, vec3<f32>(1.0), saturate(ndl * 1.6 + 0.15));
         }
-        // The shadow's edge is scattered too: it reddens as it softens.
-        let s = incident.shadow;
+        // The shadow's edge is scattered too: it reddens as it softens. The hair shadow (#2528) takes the light as the
+        // shadow does.
+        let s = incident.shadow * incident.hair;
         let shadow = vec3<f32>(s) + scatter * (s * (1.0 - s) * 1.6);
         diffuse += incident.colour * received * shadow;
         let h = normalize(v + to_light);
