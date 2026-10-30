@@ -271,17 +271,21 @@ fn place(
     if let Some(volume) = &params.volume {
         volume::swell(entries, &volume::Field::new(volume), head);
     }
-    clear_fringes(params, head, frame, entries).map_err(|e| ctx.fail(e))?;
     make_way_for_ears(params, ctx, head, entries);
-    tuck_shells(head, entries);
     lock::shape(entries, frame, head, keep_out);
+    // After the lock shapes, so a curled or split fringe or framing lock is cleared as it is drawn, and before the
+    // shells tuck under the locks where they finally lie.
+    clear_fringes(params, head, frame, entries).map_err(|e| ctx.fail(e))?;
+    tuck_shells(head, entries);
     Ok(())
 }
 
-/// Lifts every bangs group's locks off the head, measured in `frame`, the frame the tubes are drawn in. This runs here,
-/// not in the generator, because the frame reads the torso as well as the head, and a lock cleared in the head's own
-/// frame can still enter the skull in the drawn one (below the frame's blend height, 78 mm under the head's centre).
-/// Only bangs groups are touched: the other generators' tubes are as their generators make them.
+/// Lifts every bangs and framing group's locks off the head, measured in `frame`, the frame the tubes are drawn in. This
+/// runs here, not in the generator, because the frame reads the torso as well as the head, and a lock cleared in the
+/// head's own frame can still enter the skull in the drawn one (below the frame's blend height, 78 mm under the head's
+/// centre). The framing locks lie on the head down the temple and cheek, where a tall template's face cut 5 mm into
+/// them (#2486). The other generators' tubes are as their generators make them: a tail's or bun's locks start inside
+/// their tie on purpose.
 fn clear_fringes(
     params: &HairParams,
     head: &dyn omuzaki_char_api::HeadSurface,
@@ -289,11 +293,12 @@ fn clear_fringes(
     entries: &mut [CompiledEntry],
 ) -> Result<(), String> {
     for entry in entries {
-        if let Some(group) = params.groups.get(&entry.id)
-            && matches!(group.generator, Generator::Bangs(_))
-        {
-            bangs::keep_clear(head, frame, &mut entry.group.clumps)
-                .map_err(|e| format!("the bangs group '{}': {e}", entry.id))?;
+        match params.groups.get(&entry.id).map(|g| &g.generator) {
+            Some(Generator::Bangs(_)) => bangs::keep_clear(head, frame, &mut entry.group.clumps)
+                .map_err(|e| format!("the bangs group '{}': {e}", entry.id))?,
+            Some(Generator::Framing(_)) => bangs::keep_locks_clear(head, frame, &mut entry.group.clumps)
+                .map_err(|e| format!("the framing group '{}': {e}", entry.id))?,
+            _ => {}
         }
     }
     Ok(())

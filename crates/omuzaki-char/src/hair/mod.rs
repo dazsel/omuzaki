@@ -13,6 +13,7 @@ pub mod part;
 pub mod physics;
 pub mod reach;
 pub mod strands;
+pub mod styles;
 pub mod tie;
 pub mod trace;
 pub mod tube;
