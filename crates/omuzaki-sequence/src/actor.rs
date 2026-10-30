@@ -23,6 +23,7 @@ use omuzaki_stage::perform::{Performer, PerformerParts, STEP_HZ};
 use crate::curve::Ease;
 use crate::def::Actor;
 use crate::error::SequenceError;
+use crate::motion::{self, Knobs};
 
 /// The pose a key without one starts from.
 pub const DEFAULT_POSE: &str = "stand-relaxed";
@@ -51,6 +52,7 @@ struct FaceAt {
 
 /// An actor's keys, resolved against its body, ready to play.
 pub struct ActorPlayer {
+    style: Knobs,
     poses: Vec<PoseAt>,
     faces: Vec<FaceAt>,
     talk: Vec<[f32; 2]>,
@@ -151,6 +153,7 @@ impl ActorPlayer {
         rest: ChannelBuf,
         hand_rest: HandRest,
         seed: u32,
+        style: Knobs,
     ) -> Result<Self, SequenceError> {
         let mut set = ExpressionSet::library().map_err(|e| SequenceError::Render(format!("the expressions: {e}")))?;
         set.0.extend(expressions.0.iter().map(|(k, v)| (k.clone(), v.clone())));
@@ -231,6 +234,7 @@ impl ActorPlayer {
             }
         });
         Ok(Self {
+            style,
             poses,
             faces,
             talk: actor.talk.clone(),
@@ -255,12 +259,22 @@ impl ActorPlayer {
         let Some((a, b, u)) = segment(self.poses.iter().map(|k| k.t), t) else {
             return HumanoidPose::REST;
         };
-        let posture = if a == b {
-            self.poses[a].posture
+        let mut pose = if a == b {
+            self.poses[a].posture.to_humanoid(&self.hand_rest)
         } else {
-            Posture::blend(&self.poses[a].posture, &self.poses[b].posture, self.poses[b].ease.apply(u))
+            // The motion style's timing: hold, then move (snap), and pass the key before settling (overshoot).
+            let u = self.style.snapped(u);
+            let w = self.style.overshot(u, self.poses[b].ease.apply(u));
+            let (from, to) = (&self.poses[a].posture, &self.poses[b].posture);
+            if w > 1.0 {
+                let (from, to) = (from.to_humanoid(&self.hand_rest), to.to_humanoid(&self.hand_rest));
+                motion::past(&from, &to, w - 1.0)
+            } else {
+                Posture::blend(from, to, w).to_humanoid(&self.hand_rest)
+            }
         };
-        posture.to_humanoid(&self.hand_rest)
+        self.style.boil(&mut pose, t, self.seed);
+        pose
     }
 
     /// How open the talking mouth is at `t` (0 to 1) and which viseme it shapes.
@@ -297,7 +311,7 @@ impl ActorPlayer {
             Some((a, b, _)) if a == b => self.faces[a].values,
             Some((a, b, u)) => {
                 let mut v = self.faces[a].values;
-                v.lerp_all(&self.faces[b].values, self.faces[b].ease.apply(u));
+                v.lerp_all(&self.faces[b].values, self.faces[b].ease.apply(self.style.snapped(u)));
                 v
             }
         };
@@ -322,12 +336,14 @@ impl ActorPlayer {
         )
     }
 
-    /// The frame input at `t` seconds of the shot, with the pose held at `pose_t` (the frame the character's motion
-    /// last moved on: the same as `t` on ones, earlier on twos). Steps the performer to `t`; times must not go back.
+    /// The frame input at `t` seconds of the shot, at `fps` frames a second: the body and face held on the motion
+    /// style's drawings (the same as `t` on ones, the start of the hold on twos and threes). Steps the performer to
+    /// `t`; times must not go back.
     #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    pub fn advance(&mut self, t: f32, pose_t: f32) -> &FrameInput {
+    pub fn advance(&mut self, t: f32, fps: u32) -> &FrameInput {
+        let pose_t = Knobs::held(self.style.on, fps, t);
         let base = self.pose_at(pose_t);
-        let face = self.face_at(t);
+        let face = self.face_at(pose_t);
         self.input.root = self.root_at(pose_t);
         let Some(performer) = self.performer.as_mut() else {
             self.input.pose = base;
@@ -389,12 +405,21 @@ mod tests {
             talk: vec![[0.0, 2.0]],
             life: false,
             surface: None,
+            motion: None,
         }
     }
 
     fn player() -> ActorPlayer {
-        ActorPlayer::new(&actor(), "actor", &ExpressionSet::default(), ChannelBuf::NEUTRAL, HandRest::nominal(), 1)
-            .unwrap()
+        ActorPlayer::new(
+            &actor(),
+            "actor",
+            &ExpressionSet::default(),
+            ChannelBuf::NEUTRAL,
+            HandRest::nominal(),
+            1,
+            Knobs::default(),
+        )
+        .unwrap()
     }
 
     #[test]
@@ -425,9 +450,16 @@ mod tests {
         assert_ne!(p.face_at(1.0).as_slice(), ChannelBuf::NEUTRAL.as_slice());
         let mut bad = actor();
         bad.face[1].set = [("no-such-face".to_owned(), 1.0)].into();
-        let err =
-            ActorPlayer::new(&bad, "actor", &ExpressionSet::default(), ChannelBuf::NEUTRAL, HandRest::nominal(), 1)
-                .unwrap_err();
+        let err = ActorPlayer::new(
+            &bad,
+            "actor",
+            &ExpressionSet::default(),
+            ChannelBuf::NEUTRAL,
+            HandRest::nominal(),
+            1,
+            Knobs::default(),
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("no-such-face"));
     }
 
@@ -443,9 +475,10 @@ mod tests {
                 ChannelBuf::NEUTRAL,
                 HandRest::nominal(),
                 9,
+                Knobs::default(),
             )
             .unwrap();
-            (0..48).map(|i| p.advance(i as f32 / 24.0, i as f32 / 24.0).channels.checksum()).collect::<Vec<_>>()
+            (0..48).map(|i| p.advance(i as f32 / 24.0, 24).channels.checksum()).collect::<Vec<_>>()
         };
         assert_eq!(run(), run());
     }

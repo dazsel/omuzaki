@@ -2,10 +2,11 @@
 //! a person in the panels and an agent over MCP edit the same one, every edit undoable:
 //!
 //! - edits: `sequence.set` (create or replace one whole), `sequence.key` (set or remove one key of any track, a pose or
-//!   a face key, by its path), `sequence.delete`;
+//!   a face key, by its path), `sequence.set_motion` (the motion style of the sequence or one actor),
+//!   `sequence.delete`;
 //! - queries: `sequence.get`, `sequence.list`, `sequence.check` (the shots, layers and frames, and what a render would
-//!   refuse) and `sequence.kinds` (every easing, layer kind, icon, volume preset, prop kind, pose, hand shape and
-//!   expression a sequence may name);
+//!   refuse) and `sequence.kinds` (every motion style, easing, layer kind, icon, volume preset, prop kind, pose, hand
+//!   shape and expression a sequence may name);
 //! - jobs: `sequence.render` (a VP9 video) and `sequence.stills` (frames at chosen times, as one PNG sheet).
 
 use std::io::Read as _;
@@ -36,6 +37,7 @@ use crate::curve::{Curve, Ease};
 use crate::def::{SequenceDef, Shot};
 use crate::error::SequenceError;
 use crate::layer::ICONS;
+use crate::motion::{MotionPreset, MotionStyle};
 use crate::render::{Collect, ShotStage, render_frames};
 use crate::volume::VolumePreset;
 
@@ -462,6 +464,80 @@ impl Op for DeleteSequence {
 
 register_op!(DeleteSequence);
 
+/// Sets the motion style of a sequence, or of one actor in it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [{"id": "weather", "motion": {"preset": "anime-twos"}}, {"id": "weather", "actor": "anchor", "motion": {"preset": "cartoon-snappy", "overshoot": 0.8}}],
+    "x-omuzaki-fixture" = "sequence"
+))]
+pub struct SetSequenceMotion {
+    /// The sequence.
+    pub id: String,
+    /// An actor's id: the style then applies to that actor in every shot it plays in. Without it the style is the
+    /// sequence's default, which actors without their own follow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor: Option<String>,
+    /// The style: a preset (`sequence.kinds` lists them) and any knobs over it. On an actor, `null` takes its own style
+    /// off so it follows the sequence's again.
+    pub motion: Option<MotionStyle>,
+}
+
+impl Op for SetSequenceMotion {
+    fn meta() -> OpMeta {
+        OpMeta {
+            name: "sequence.set_motion",
+            summary: "Set how a sequence's characters move: a motion style preset (smooth, anime on twos or threes, \
+                      limited, snappy cartoon, rubber-hose, stop-motion) and its knobs, for the whole sequence or \
+                      one actor.",
+            kind: OpKind::Edit,
+            scope: Scope::EditScene,
+            undo: Undo::Auto,
+        }
+    }
+
+    fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        let mut def = stored(ctx.doc, &self.id)?;
+        match &self.actor {
+            None => {
+                def.motion = self.motion.ok_or_else(|| {
+                    OpError::invalid("motion", "the sequence's own style can't be taken off; give `smooth`")
+                })?;
+            }
+            Some(actor) => {
+                let mut found = false;
+                for a in def.shots.iter_mut().flat_map(|s| s.actors.iter_mut()).filter(|a| &a.id == actor) {
+                    a.motion = self.motion;
+                    found = true;
+                }
+                if !found {
+                    return Err(OpError::not_found(format!("no shot of '{}' has an actor '{actor}'", self.id)));
+                }
+            }
+        }
+        check_in(ctx.doc, &def)?;
+        let value = serde_json::to_value(&def)
+            .map_err(|e| OpError::internal(format!("the sequence doesn't serialise: {e}")))?;
+        let path = sequence_path(&self.id)?;
+        let knobs = self.motion.unwrap_or(def.motion).knobs();
+        Ok(Plan {
+            patch: Patch::new().with(path.clone(), ctx.doc.get(&path).cloned(), Some(value)),
+            output: Some(json!({
+                "id": self.id,
+                "actor": self.actor,
+                "on": knobs.on,
+                "camera_on": knobs.camera_on,
+                "snap": knobs.snap,
+                "overshoot": knobs.overshoot,
+                "boil": knobs.boil,
+            })),
+            ..Plan::default()
+        })
+    }
+}
+
+register_op!(SetSequenceMotion);
+
 /// Reads a sequence of the project.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -623,8 +699,8 @@ impl Op for SequenceKinds {
     fn meta() -> OpMeta {
         OpMeta {
             name: "sequence.kinds",
-            summary: "List what a sequence may name: the easings, layer kinds and icons, volume presets, prop kinds, \
-                      library poses, hand shapes and expressions.",
+            summary: "List what a sequence may name: the motion styles, easings, layer kinds and icons, volume presets, \
+                      prop kinds, library poses, hand shapes and expressions.",
             kind: OpKind::Query,
             scope: Scope::Read,
             undo: Undo::None,
@@ -642,6 +718,14 @@ impl Op for SequenceKinds {
         let props: Vec<Value> =
             omuzaki_stage_api::prop_kinds().iter().map(|k| json!({ "id": k.id, "summary": k.summary })).collect();
         Ok(Plan::answer(json!({
+            "motion_styles": MotionPreset::ALL
+                .iter()
+                .map(|p| {
+                    let k = p.knobs();
+                    json!({ "id": p.id(), "summary": p.summary(), "on": k.on, "camera_on": k.camera_on,
+                            "snap": k.snap, "overshoot": k.overshoot, "boil": k.boil })
+                })
+                .collect::<Vec<_>>(),
             "easings": Curve::ALL.iter().map(|c| c.name()).collect::<Vec<_>>(),
             "ease_forms": ["a named easing", "{\"bezier\": [x1, y1, x2, y2]}", "{\"spring\": {\"frequency\": 3, \"damping\": 0.4}}"],
             "layer_kinds": crate::layer::Draw::KINDS,

@@ -9,6 +9,7 @@
 //! | [`actor`] | an actor's pose, face, talk and gaze keys played through the live performer |
 //! | [`curve`] | the easing library, keys and tracks |
 //! | [`def`] | the sequence file: [`SequenceDef`](def::SequenceDef), its shots, actors and props |
+//! | [`motion`] | motion styles: smooth, anime on twos and threes, limited, snappy cartoon, rubber-hose, stop-motion |
 //! | [`volume`] | toon volumes: smoke, goo, cloud, steam, fire and dust as meshed, cel-shaded puffs |
 //! | [`layer`] | motion-graphics layers: text, shapes, rings, bar charts, icons and speed lines |
 //! | [`render`] | the render loop: shots staged as they show, composited with the layers |
@@ -26,6 +27,7 @@ pub mod def;
 pub mod error;
 pub mod kinds;
 pub mod layer;
+pub mod motion;
 pub mod ops;
 pub mod render;
 pub mod volume;

@@ -33,6 +33,7 @@ use crate::curve::wiggle;
 use crate::def::{Backdrop, SequenceDef, Shot};
 use crate::error::SequenceError;
 use crate::layer::{Depth, Painter};
+use crate::motion::Knobs;
 use crate::volume;
 
 /// The camera's near plane, metres.
@@ -348,7 +349,8 @@ impl Loop<'_> {
         let seed = shot_seed(def.seed, index);
         let mut live =
             LiveShot { index, stage, target, player: None, props: Vec::new(), volumes: Vec::new(), fx: None, seed };
-        match fill(renderer, shot, &staged, &mut live, hand_rest, has_face, t) {
+        let style = shot.actors.first().and_then(|a| a.motion).unwrap_or(def.motion).knobs();
+        match fill(renderer, shot, &staged, &mut live, hand_rest, has_face, (t, def.fps), style) {
             Ok(()) => Ok(live),
             Err(e) => {
                 let _ = live.release(renderer);
@@ -367,7 +369,8 @@ fn fill(
     live: &mut LiveShot,
     hand_rest: HandRest,
     has_face: bool,
-    t: f32,
+    (t, fps): (f32, u32),
+    style: Knobs,
 ) -> Result<(), SequenceError> {
     let stage = &mut live.stage;
     stage.set_scene(&staged.resolved, Mat4::IDENTITY);
@@ -384,6 +387,7 @@ fn fill(
             ChannelBuf::NEUTRAL,
             hand_rest,
             live.seed,
+            style,
         )?);
     }
     for (i, prop) in shot.props.iter().enumerate() {
@@ -417,8 +421,8 @@ fn fill(
     // Warm up as the stills do: a frame at the shot's first pose, the springs and part runtimes settled under it, so
     // the first frame doesn't start with hair falling from its rest shape.
     let local = t - shot.start;
-    let warm = live.player.as_mut().map_or_else(FrameInput::default, |p| p.advance(local, local).clone());
-    live.stage.scene_mut().camera = camera_at(shot, local, live.seed);
+    let warm = live.player.as_mut().map_or_else(FrameInput::default, |p| p.advance(local, fps).clone());
+    live.stage.scene_mut().camera = camera_at(shot, Knobs::held(style.camera_on, fps, local), live.seed);
     live.stage.tick(renderer, &warm).map_err(|e| render_error("the shot's first frame", e))?;
     match &mut live.stage {
         AnyStage::Kit(kit) => kit.settle(SETTLE_STEPS),
@@ -470,11 +474,9 @@ fn shot_frame(
 ) -> Result<Vec<u8>, SequenceError> {
     let shot = &def.shots[live.index];
     let local = t - shot.start;
-    // Characters move on `motion_on`s: the pose holds between the frames it moves on.
-    #[allow(clippy::cast_precision_loss, reason = "frame rates of at most 60")]
-    let step = def.motion_on as f32 / def.fps as f32;
-    let pose_t = if def.motion_on > 1 { (local / step + 1e-4).floor() * step } else { local };
-    let input = live.player.as_mut().map_or_else(FrameInput::default, |p| p.advance(local, pose_t).clone());
+    // The actor plays on its motion style's drawings (the player holds them); the camera holds on the style's own.
+    let style = shot.actors.first().and_then(|a| a.motion).unwrap_or(def.motion).knobs();
+    let input = live.player.as_mut().map_or_else(FrameInput::default, |p| p.advance(local, def.fps).clone());
     if let Some(actor) = shot.actors.first()
         && let Some(surface) = &actor.surface
     {
@@ -484,7 +486,7 @@ fn shot_frame(
             live.fx = fx;
         }
     }
-    live.stage.scene_mut().camera = camera_at(shot, local, live.seed);
+    live.stage.scene_mut().camera = camera_at(shot, Knobs::held(style.camera_on, def.fps, local), live.seed);
     let prepared = StageMember::prepare(&mut live.stage, renderer, &input).map_err(|e| render_error("the frame", e))?;
     // Props: in the world, or riding a bone (and let go toward their world place as the hold's weight drops).
     let bones: BTreeMap<String, Option<Mat4>> = shot

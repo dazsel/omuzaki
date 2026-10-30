@@ -43,6 +43,7 @@ use serde_json::Value;
 use crate::curve::{Ease, Track};
 use crate::error::SequenceError;
 use crate::layer::Layer;
+use crate::motion::MotionStyle;
 use crate::volume::VolumeDef;
 
 /// The longest sequence, seconds.
@@ -78,10 +79,10 @@ pub struct SequenceDef {
     /// Picks everything random (blinks, wiggles, the volumes' puffs).
     #[serde(default)]
     pub seed: u32,
-    /// Characters move on every this many frames (2: "on twos", as hand-drawn anime does); layers and cameras move on
-    /// every frame. 1 by default.
-    #[serde(default = "one", skip_serializing_if = "is_one")]
-    pub motion_on: u32,
+    /// How the characters' keys play: a motion style preset (`smooth`, `anime-twos`, `cartoon-snappy`, `stop-motion`
+    /// ...) and its knobs (`on`, `camera_on`, `snap`, `overshoot`, `boil`). An actor's own `motion` replaces it.
+    #[serde(default, skip_serializing_if = "MotionStyle::is_default")]
+    pub motion: MotionStyle,
     /// The shots, in any order; they may overlap (their `opacity` crossfades them).
     #[serde(default, rename = "shot", skip_serializing_if = "Vec::is_empty")]
     pub shots: Vec<Shot>,
@@ -96,15 +97,6 @@ fn default_fps() -> u32 {
 
 fn default_size() -> [u32; 2] {
     [1080, 1920]
-}
-
-fn one() -> u32 {
-    1
-}
-
-#[allow(clippy::trivially_copy_pass_by_ref, reason = "serde's skip_serializing_if passes a reference")]
-fn is_one(n: &u32) -> bool {
-    *n == 1
 }
 
 fn yes() -> bool {
@@ -290,6 +282,9 @@ pub struct Actor {
     /// A surface fx run over the body: a burn, a dissolve, turning to stone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub surface: Option<SurfaceTrack>,
+    /// This actor's motion style, in place of the sequence's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub motion: Option<MotionStyle>,
 }
 
 fn origin() -> Track<[f32; 3]> {
@@ -516,9 +511,7 @@ impl SequenceDef {
         if self.size.iter().any(|s| *s < 16 || *s > MAX_SIDE) || self.size.iter().any(|s| s % 2 == 1) {
             return bad(format!("size is two even numbers of pixels, 16 to {MAX_SIDE}"));
         }
-        if !(1..=4).contains(&self.motion_on) {
-            return bad("motion_on is 1 to 4 frames".into());
-        }
+        self.motion.check("motion").map_err(SequenceError::Invalid)?;
         if self.shots.len() > MAX_SHOTS {
             return bad(format!("at most {MAX_SHOTS} shots"));
         }
@@ -600,6 +593,9 @@ impl Actor {
     fn check(&self, at: &str) -> Result<(), String> {
         self.position.check(&format!("{at}.position"))?;
         self.yaw.check(&format!("{at}.yaw"))?;
+        if let Some(motion) = &self.motion {
+            motion.check(&format!("{at}.motion"))?;
+        }
         for (i, w) in self.pose.windows(2).enumerate() {
             if w[1].t < w[0].t {
                 return Err(format!("{at}.pose[{}]: keys go in time order", i + 1));
