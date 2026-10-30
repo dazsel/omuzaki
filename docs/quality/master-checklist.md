@@ -72,7 +72,7 @@ Counts are rows in this file only (the deep lists above keep their own).
 | 22 | [Platforms](#22-platforms) | 1 | 2 | 3 | **none** | web player, phone page |
 | 23 | [Accessibility, localisation, privacy and safety](#23-accessibility-localisation-privacy-and-safety) | 0 | 7 | 3 | **none** | signed exports, colour-blind themes |
 | F | [The whole VTuber](#f-the-whole-vtuber) | 2 | 7 | 2 | Director | time to first character, soak |
-| | **Total** | **87** | **99** | **84** | | |
+| | **Total** | **88** | **100** | **83** | | |
 
 ---
 
