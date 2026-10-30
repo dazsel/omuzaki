@@ -930,7 +930,7 @@ fn frames(
         None => published.get::<HeadFrameFact>().clone().or_else(|| {
             let surface =
                 output.publishes.values::<HeadFact>().next().cloned().or_else(|| published.get::<HeadFact>().clone());
-            surface.map(|s| std::sync::Arc::new(HeadFrame::of(s, layout, published.scale())))
+            surface.map(|s| std::sync::Arc::new(HeadFrame::of(s, layout)))
         }),
     };
     let body = match output.publishes.values::<BodyFrameFact>().next() {

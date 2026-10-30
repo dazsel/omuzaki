@@ -417,7 +417,7 @@ impl PartKind for Glasses {
         let err = kit_error(ctx);
         let mut shells = Shells::new(&attach, &default, 2);
         let seg = detail.cross.min(8);
-        let placing = Eyes::of(p, &ctx.face.layout, f64::from(ctx.published.scale()));
+        let placing = Eyes::of(p, &ctx.face.layout, f64::from(head.layout_scale()));
         placing.check(p).map_err(|m| ctx.fail(m))?;
         let left = Self::left_eye(head.as_ref(), p, placing);
         let right = Self::mirrored(&left, f64::from(head.centre().x));

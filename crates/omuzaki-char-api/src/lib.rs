@@ -105,7 +105,7 @@ pub use services::{
 };
 pub use shape::{CraniumScale, PRESET_IDS, ShapeProfile};
 pub use skin::{BrushFalloff, WeightBrush, apply_brushes, influence_cut};
-pub use stature::{Stature, scale_output};
+pub use stature::{Stature, scale_output, scale_output_about};
 pub use variant::{
     HeadCoverage, SHOT_HYSTERESIS, ShotRange, VariantDef, VariantError, VariantSet, resolve_variant, select_variant,
 };

@@ -486,7 +486,7 @@ pub fn apply(
     let own_head = output.publishes.values::<HeadFact>().next().cloned();
     let head: Option<Arc<HeadFrame>> = match (&own_head, published.get::<HeadFrameFact>()) {
         (Some(surface), _) if category == PartCategory::Head => {
-            let frame = Arc::new(HeadFrame::of(surface.clone(), layout, published.scale()));
+            let frame = Arc::new(HeadFrame::of(surface.clone(), layout));
             output.publishes.put::<HeadFrameFact>(frame.clone());
             Some(frame)
         }
@@ -614,6 +614,10 @@ impl HeadSurface for DeformedHead {
         let q = c + dir * self.inner.radius(dir);
         let moved = q + self.field.displace(q, &Membership::only(RegionGroup::Head));
         (moved - c).dot(dir).max(1e-5)
+    }
+
+    fn layout_scale(&self) -> f32 {
+        self.inner.layout_scale()
     }
 }
 

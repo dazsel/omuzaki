@@ -128,7 +128,16 @@ impl EarCover {
     /// (the anchors are scaled the same way). The normal is a direction and stays as it is.
     #[must_use]
     pub fn scaled(self, s: f32) -> Self {
-        Self { centre: self.centre * s, normal: self.normal, radius: self.radius * s, tip: self.tip * s, ..self }
+        self.about(s, Vec3::ZERO)
+    }
+
+    /// The disc at `s` times its size about `about`: a head sized about its joint ([`HeadParams::size`]).
+    ///
+    /// [`HeadParams::size`]: omuzaki_char_api::HeadParams::size
+    #[must_use]
+    pub fn about(self, s: f32, about: Vec3) -> Self {
+        let at = |p: Vec3| about + (p - about) * s;
+        Self { centre: at(self.centre), radius: self.radius * s, tip: at(self.tip), ..self }
     }
 }
 
