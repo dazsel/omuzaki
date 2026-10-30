@@ -107,6 +107,13 @@ impl SceneDef {
             non_negative("scene.post.grade.saturation", g.saturation)?;
             non_negative("scene.post.grade.contrast", g.contrast)?;
         }
+        if let Some(o) = &s.post.occlusion {
+            if !(o.radius.is_finite() && o.radius > 0.0) {
+                return refuse("scene.post.occlusion.radius", format!("must be above 0, got {}", o.radius));
+            }
+            within("scene.post.occlusion.strength", o.strength, 0.0, 1.0)?;
+            non_negative("scene.post.occlusion.contact", o.contact)?;
+        }
         if let Some(subject) = &s.subject {
             self.require_member("scene.subject", subject)?;
         }

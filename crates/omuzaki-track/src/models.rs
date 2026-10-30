@@ -170,21 +170,33 @@ impl ModelDir {
         natives: &dyn FileSource,
         options: &SessionOptions,
     ) -> Result<Box<dyn Session>, ModelError> {
-        let name = self.names[index];
-        // The identity ai-api gives a model: SHA-256 of its file list, `<sha256> <size> <name>\n` per file (here one).
-        let (hash, size) = self.files[index];
-        let digest = Sha256(Hasher::digest(format!("{hash} {size} {name}\n")).into());
-        let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem).replace('_', "-");
-        let id = ModelId::new(format!("mediapipe-{stem}")).map_err(|e| ModelError::Load(e.to_string()))?;
-        let model =
-            ModelRef { id, version: "1.0.0".parse().map_err(|_| ModelError::Load("version".to_owned()))?, digest };
-        let files = [LocalFile { name: name.to_owned(), path: self.path.join(name) }];
-        let source = ModelSource { model: &model, files: &files, stages: &[], natives };
-        let own = runtime.probe(&source).map_err(|e| ModelError::Load(format!("{name}: {e}")))?.signature;
-        let io = port_map(slot, &own)
-            .ok_or_else(|| ModelError::Load(format!("{name}: its ports do not match the slot's count")))?;
-        runtime.load(&source, slot, &io, options).map_err(|e| ModelError::Load(format!("{name}: {e}")))
+        load_graph(&self.path, self.names[index], self.files[index], slot, runtime, natives, options)
     }
+}
+
+/// Loads the verified graph `name` of the folder `dir` (its SHA-256 and size are `file`) through `runtime` into
+/// `slot`, its ports paired with the slot's by name or else by position ([`ModelDir::load`]).
+pub(crate) fn load_graph(
+    dir: &Path,
+    name: &str,
+    file: (Sha256, u64),
+    slot: &Signature,
+    runtime: &dyn Runtime,
+    natives: &dyn FileSource,
+    options: &SessionOptions,
+) -> Result<Box<dyn Session>, ModelError> {
+    // The identity ai-api gives a model: SHA-256 of its file list, `<sha256> <size> <name>\n` per file (here one).
+    let (hash, size) = file;
+    let digest = Sha256(Hasher::digest(format!("{hash} {size} {name}\n")).into());
+    let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem).replace('_', "-");
+    let id = ModelId::new(format!("mediapipe-{stem}")).map_err(|e| ModelError::Load(e.to_string()))?;
+    let model = ModelRef { id, version: "1.0.0".parse().map_err(|_| ModelError::Load("version".to_owned()))?, digest };
+    let files = [LocalFile { name: name.to_owned(), path: dir.join(name) }];
+    let source = ModelSource { model: &model, files: &files, stages: &[], natives };
+    let own = runtime.probe(&source).map_err(|e| ModelError::Load(format!("{name}: {e}")))?.signature;
+    let io = port_map(slot, &own)
+        .ok_or_else(|| ModelError::Load(format!("{name}: its ports do not match the slot's count")))?;
+    runtime.load(&source, slot, &io, options).map_err(|e| ModelError::Load(format!("{name}: {e}")))
 }
 
 /// The manifest `io` table that renames the model's ports to the slot's. `Signature::accepts` matches ports by name,
