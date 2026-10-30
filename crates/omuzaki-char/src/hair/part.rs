@@ -138,9 +138,9 @@ pub fn build_with(
     apply_streaks(params, ctx.palette, &mut entries).map_err(|e| ctx.fail(e.to_string()))?;
 
     let frame = OutwardFrame { head: head.centre(), body_axis: body_axis(ctx, head.centre()) };
-    place(params, ctx, head.as_ref(), &frame, keep_out.as_ref(), depth.as_ref(), &mut entries)?;
+    let accents = place(params, ctx, head.as_ref(), &frame, keep_out.as_ref(), depth.as_ref(), &mut entries)?;
     let mut warnings = Vec::new();
-    let chains = tail_chains(params, ctx, head.as_ref())?;
+    let chains = tail_chains(params, ctx, head.as_ref(), &accents)?;
     let strays = Strays::of(params, head.as_ref(), ctx.quality);
     let Meshes { mut stat, mut dynamic, ties } = mesh_groups(
         &entries,
@@ -237,7 +237,7 @@ pub fn build_with(
     tail::add_chains(strands, &colliders, &mut out.rig);
     let reach = HairReach::from_points(head.as_ref(), out.meshes.iter().flat_map(|m| &m.geometry.positions));
     out.publishes.put::<HairReachFact>(reach);
-    publish_ties(params, ctx, head.as_ref(), &mut out)?;
+    publish_ties(params, ctx, head.as_ref(), &accents, &mut out)?;
     Ok(out)
 }
 
@@ -275,6 +275,7 @@ fn bind_to_strands<'a>(mesh: &MeshData, strands: &'a [Chain], runs: &mut Vec<Run
 
 /// Settles the compiled locks round the head and body: the hair takes its shared fullness, the fringes clear the skull, the locks make way for the ears,
 /// the shells tuck under the locks, and then every group's locks take their shape (cross-section, tip, sub-locks).
+/// Returns how far each accent piece moved as the hair swelled, for its chains and anchors.
 ///
 /// # Errors
 /// [`BuildError::Part`] if a fringe cannot be cleared.
@@ -286,9 +287,11 @@ fn place(
     keep_out: Option<&BodyKeepOut>,
     depth: Option<&BodyDepth>,
     entries: &mut [CompiledEntry],
-) -> Result<(), BuildError> {
-    if let Some(volume) = &params.volume {
-        volume::swell(entries, &volume::Field::new(volume), head);
+) -> Result<volume::Accents, BuildError> {
+    let field = params.volume.as_ref().map(volume::Field::new);
+    let accents = volume::Accents::new(params, field.as_ref(), head);
+    if let Some(field) = &field {
+        volume::swell(entries, field, head, &accents);
     }
     make_way_for_ears(params, ctx, head, entries);
     lock::shape(entries, frame, head, keep_out);
@@ -299,7 +302,7 @@ fn place(
         clear_body(body, entries);
     }
     tuck_shells(head, entries);
-    Ok(())
+    Ok(accents)
 }
 
 /// Moves every lock out of the body (#2485): each point of a tube lock (a framing lock down the front, a tail over the
@@ -426,30 +429,35 @@ fn publish_ties(
     params: &HairParams,
     ctx: &BuildCtx<'_>,
     head: &dyn HeadSurface,
+    accents: &volume::Accents,
     out: &mut PartOutput,
 ) -> Result<(), BuildError> {
     let colliders: Vec<String> = ctx.colliders().iter().map(|group| group.name.clone()).collect();
     let body = ctx.fit().ok();
     for (id, group) in enabled(params) {
-        let anchors = match &group.generator {
+        let (chains, anchors) = match &group.generator {
             Generator::Tail(g) => {
                 let prefix = chain_prefix(ctx.part, id);
-                tail::rig(g, head, body.as_deref(), &prefix, group.mirror, &colliders, &mut out.rig)
+                let chains = tail::chains(g, head, body.as_deref(), &prefix, group.mirror)
                     .map_err(|e| ctx.fail(format!("group '{id}': a tail bone name: {e}")))?;
-                tail::anchors(g, head, group.mirror)
+                (chains, tail::anchors(g, head, group.mirror))
             }
             Generator::Ahoge(g) => {
                 let chains = ahoge::chains(g, head, &chain_prefix(ctx.part, id), group.mirror)
                     .map_err(|e| ctx.fail(format!("group '{id}': an ahoge bone name: {e}")))?;
-                tail::add_chains(chains, &colliders, &mut out.rig);
-                continue;
+                (chains, Vec::new())
             }
-            Generator::Bun(g) => {
-                bun::anchors(g, head).into_iter().map(|(name, anchor)| (name.to_owned(), anchor)).collect()
-            }
+            Generator::Bun(g) => (
+                Vec::new(),
+                bun::anchors(g, head).into_iter().map(|(name, anchor)| (name.to_owned(), anchor)).collect(),
+            ),
             _ => continue,
         };
-        for (name, anchor) in anchors {
+        let mut chains = chains;
+        accents.move_chains(id, &mut chains);
+        tail::add_chains(chains, &colliders, &mut out.rig);
+        for (name, mut anchor) in anchors {
+            accents.move_anchor(id, &mut anchor);
             let key = format!("{id}_{name}");
             let anchor_id = key.parse().map_err(|e| ctx.fail(format!("group '{id}': anchor name '{key}': {e}")))?;
             out.publishes.put::<AnchorsFact>((anchor_id, anchor));
@@ -742,18 +750,20 @@ fn tail_chains(
     params: &HairParams,
     ctx: &BuildCtx<'_>,
     head: &dyn HeadSurface,
+    accents: &volume::Accents,
 ) -> Result<BTreeMap<GroupId, Vec<Chain>>, BuildError> {
     let mut out = BTreeMap::new();
     let body = ctx.fit().ok();
     for (id, group) in enabled(params) {
         let prefix = chain_prefix(ctx.part, id);
-        let chains = match &group.generator {
+        let mut chains = match &group.generator {
             Generator::Tail(g) => tail::chains(g, head, body.as_deref(), &prefix, group.mirror)
                 .map_err(|e| ctx.fail(format!("group '{id}': a tail bone name: {e}")))?,
             Generator::Ahoge(g) => ahoge::chains(g, head, &prefix, group.mirror)
                 .map_err(|e| ctx.fail(format!("group '{id}': an ahoge bone name: {e}")))?,
             _ => continue,
         };
+        accents.move_chains(id, &mut chains);
         if !chains.is_empty() {
             out.insert(id.clone(), chains);
         }
