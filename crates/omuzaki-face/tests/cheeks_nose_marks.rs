@@ -494,6 +494,129 @@ fn no_nose_draws_nothing_and_size_scales_the_tick() {
     assert!(((*a - *b).length() - 2.0 * (Vec2::new(0.0018, 0.0034)).length()).abs() < 1e-6);
 }
 
+fn toon_nose(kind: NoseKind, length: f64) -> DrawList {
+    let profile = profile_with(|p| {
+        p.nose.kind = kind;
+        p.nose.length = length;
+        p.layout.nose_y = -0.1185;
+    });
+    base(Section::Nose, &profile, BLUSH)
+}
+
+fn highest(list: &DrawList, path: omuzaki_face_api::PathRef) -> f32 {
+    points_of(list, path).iter().fold(f32::MIN, |m, p| m.max(p.y))
+}
+
+#[test]
+fn the_wedge_is_a_cel_shadow_on_the_shadow_side_with_nostril_hooks_and_its_length_raises_the_bridge() {
+    let list = toon_nose(NoseKind::Wedge, 1.0);
+    let [Cmd::Fill { path: wedge, opacity, .. }, Cmd::Stroke { path: hook, .. }, Cmd::Stroke { path: light, .. }] =
+        list.cmds()
+    else {
+        panic!("{:?}", list.cmds())
+    };
+    assert!(*opacity > 0.5, "a hard shadow, not a tint: {opacity}");
+    assert!(points_of(&list, *wedge).iter().all(|p| p.x <= 0.0), "the shadow is on the character's right (-x)");
+    assert!(points_of(&list, *hook).iter().all(|p| p.x <= 0.0), "the dark hook rounds the shadow-side nostril");
+    assert!(points_of(&list, *light).iter().all(|p| p.x >= 0.0), "the light hook rounds the other");
+    // The bridge rises 12 mm over the nose line at length 1 and twice that at length 2.
+    assert!((highest(&list, *wedge) - (-0.1185 + 0.012)).abs() < 1e-6);
+    let long = toon_nose(NoseKind::Wedge, 2.0);
+    let Cmd::Fill { path, .. } = long.cmds()[0] else { panic!() };
+    assert!((highest(&long, path) - (-0.1185 + 0.024)).abs() < 1e-6);
+}
+
+#[test]
+fn the_line_nose_is_one_inked_stroke_down_the_bridge_and_under_the_tip() {
+    let list = toon_nose(NoseKind::Line, 1.5);
+    let [Cmd::Stroke { path, width, .. }] = list.cmds() else { panic!("{:?}", list.cmds()) };
+    assert_eq!(*width, 0.0012, "the default line width at size 1");
+    let pts = points_of(&list, *path);
+    assert!((pts[0].y - (-0.1185 + 0.018)).abs() < 1e-6, "starts at the bridge top: {:?}", pts[0]);
+    assert!(pts.iter().any(|p| p.y < -0.1185), "and rounds the tip under the nose line");
+}
+
+#[test]
+fn the_button_is_an_arc_under_the_tip_and_two_mirrored_nostril_dots() {
+    let list = toon_nose(NoseKind::Button, 1.0);
+    let [Cmd::Stroke { path: arc, .. }, Cmd::Fill { path: a, .. }, Cmd::Fill { path: b, .. }] = list.cmds() else {
+        panic!("{:?}", list.cmds())
+    };
+    let arc = points_of(&list, *arc);
+    assert!((arc[0].x + arc[arc.len() - 1].x).abs() < 1e-6, "the arc is symmetric about the nose");
+    let centre = |path| {
+        let pts = points_of(&list, path);
+        let lo = pts.iter().fold(Vec2::MAX, |m, p| m.min(*p));
+        let hi = pts.iter().fold(Vec2::MIN, |m, p| m.max(*p));
+        (lo + hi) / 2.0
+    };
+    let (a, b) = (centre(*a), centre(*b));
+    assert!((a.x + b.x).abs() < 1e-6 && (a.y - b.y).abs() < 1e-6, "{a} against {b}");
+}
+
+// ------------------------------------------------------------------------------------------------ face lines
+
+fn lined() -> FaceProfile {
+    profile_with(|p| {
+        let l = &mut p.cheeks.lines;
+        (l.cheekbone, l.smile, l.under_eye, l.chin, l.jaw_shade) = (1.0, 1.0, 1.0, 1.0, 1.0);
+    })
+}
+
+#[test]
+fn face_lines_add_nothing_by_default_and_each_line_is_mirrored_with_the_jaw_shade_on_the_shadow_side() {
+    let strokes = |l: &DrawList| count(l, |c| matches!(c, Cmd::Stroke { .. }));
+    let solids = |l: &DrawList| count(l, |c| matches!(c, Cmd::Fill { paint: Paint::Solid(_), .. }));
+    let plain = base(Section::Cheeks, &mock_profile(), BLUSH);
+    let list = base(Section::Cheeks, &lined(), BLUSH);
+    assert_eq!(strokes(&list) - strokes(&plain), 7, "two cheekbones, two smile lines, two under-eye lines, the chin");
+    assert_eq!(solids(&list) - solids(&plain), 1, "the jaw shade");
+    let ink = Colour::rgb(0x8a, 0x52, 0x4a);
+    let jaw = list
+        .cmds()
+        .iter()
+        .find_map(|c| match c {
+            Cmd::Fill { path, paint: Paint::Solid(c), .. } if *c == ink => Some(*path),
+            _ => None,
+        })
+        .expect("a jaw shade in the line colour");
+    assert!(points_of(&list, jaw).iter().all(|p| p.x < 0.0), "the jaw shadow is on the character's right");
+    let lines: Vec<Vec<Vec2>> = list
+        .cmds()
+        .iter()
+        .filter_map(|c| match c {
+            Cmd::Stroke { path, paint: Paint::Solid(c), .. } if *c == ink => Some(points_of(&list, *path)),
+            _ => None,
+        })
+        .collect();
+    for line in &lines {
+        let mirror: Vec<Vec2> = line.iter().map(|p| Vec2::new(-p.x, p.y)).collect();
+        let reversed: Vec<Vec2> = mirror.iter().rev().copied().collect();
+        let matches = |other: &Vec<Vec2>| {
+            other.iter().zip(&mirror).all(|(a, b)| (*a - *b).length() < 1e-6)
+                || other.iter().zip(&reversed).all(|(a, b)| (*a - *b).length() < 1e-6)
+        };
+        assert!(lines.iter().any(matches), "every face line has its mirror: {line:?}");
+    }
+}
+
+#[test]
+fn a_smile_deepens_the_smile_lines() {
+    let profile = profile_with(|p| p.cheeks.lines.smile = 1.0);
+    let opacity = |smile: f32| {
+        let mut p = params(BLUSH);
+        (p.mouth.smile_left, p.mouth.smile_right) = (smile, smile);
+        let mut out = FaceDrawing::default();
+        paint_with(Section::Cheeks, &profile, &p, mock_projection(), &mut out);
+        out[FaceLayerId::Base]
+            .cmds()
+            .iter()
+            .find_map(|c| if let Cmd::Stroke { opacity, .. } = c { Some(*opacity) } else { None })
+            .unwrap()
+    };
+    assert!(opacity(1.0) > opacity(0.0) + 0.3, "{} against {}", opacity(1.0), opacity(0.0));
+}
+
 // ------------------------------------------------------------------------------------------------ marks
 
 fn mark(kind: MarkKind, at: [f64; 2], size: f64) -> FaceMark {
@@ -664,6 +787,8 @@ fn the_default_blush_is_legible_on_the_lightest_and_the_darkest_skin() {
 fn painting_the_three_sections_allocates_nothing_once_warm() {
     let profile = profile_with(|p| {
         p.nose.kind = NoseKind::Tick;
+        let l = &mut p.cheeks.lines;
+        (l.cheekbone, l.smile, l.under_eye, l.chin, l.jaw_shade) = (1.0, 1.0, 1.0, 1.0, 1.0);
         p.marks = vec![
             FaceMark { count: 30, ..mark(MarkKind::Freckles, [0.05, -0.09], 0.02) },
             mark(MarkKind::BeautyMark, [0.07, -0.13], 0.003),
@@ -673,6 +798,7 @@ fn painting_the_three_sections_allocates_nothing_once_warm() {
         ];
     });
     let hatched_profile = profile_with(|p| p.cheeks.kind = BlushKind::Hatched);
+    let wedge_profile = profile_with(|p| p.nose.kind = NoseKind::Wedge);
     let projection = mock_projection();
     let p = params(BLUSH);
     let mut painter = RealPainter::new(projection, DEFAULT_PX_PER_M);
@@ -682,6 +808,7 @@ fn painting_the_three_sections_allocates_nothing_once_warm() {
             (Section::Cheeks, &profile),
             (Section::Cheeks, &hatched_profile),
             (Section::Nose, &profile),
+            (Section::Nose, &wedge_profile),
             (Section::Marks, &profile),
         ] {
             let input = FaceInput { profile, params: &p, time: Seconds(0.0), view: FaceView::default() };

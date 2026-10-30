@@ -129,6 +129,76 @@ pub(super) fn paint_tint(ctx: &mut PaintCtx<'_>) {
     list.push(Cmd::PopTransform);
 }
 
+/// The full lips' thickness at `fullness` 1, as shares of the mouth's half-width: the upper lip at its peaks and the
+/// lower lip at its middle; and the outline's width as a share of the mouth line's.
+const FULL_UPPER: f32 = 0.26;
+const FULL_LOWER: f32 = 0.36;
+const FULL_OUTLINE: f32 = 0.8;
+/// The full lips' outline opacity relative to their fill.
+const FULL_OUTLINE_ALPHA: f32 = 0.7;
+
+/// Paints full toon lips round the mouth: the upper lip over the mouth's upper edge (two peaks either side of a bow)
+/// and the lower lip under its lower edge, filled with the lip colour and outlined in the line colour. Under the mouth
+/// shape, which draws its line or opening over them.
+pub(super) fn paint_full(ctx: &mut PaintCtx<'_>) {
+    let style = &ctx.profile.mouth.lips;
+    let amount = narrow(style.full).clamp(0.0, 1.0);
+    if amount <= 0.0 {
+        return;
+    }
+    let fullness = narrow(style.fullness).clamp(0.3, 3.0);
+    let frame = Frame::of(ctx);
+    let line = fixed_colour(&ctx.profile.mouth.line_colour, DEFAULT_LINE);
+    let width = narrow(ctx.profile.mouth.line_width) * FULL_OUTLINE * frame.grow;
+    let fill = fixed_colour(&style.colour, DEFAULT_TINT);
+    // The edges the lips sit on: an open mouth's own, or the closed line (bent by the smile at its corners).
+    let (centre, hw, top, bottom): (Vec2, f32, f32, f32) = match ctx.open_mouth {
+        Some(open) => (open.centre, open.half_width, open.top(0.0), open.bottom(0.0)),
+        None => (frame.centre, frame.half_width, 0.0, 0.0),
+    };
+    if hw <= f32::EPSILON {
+        return;
+    }
+    let smile = f32::midpoint(frame.smile[0], frame.smile[1]);
+    let corner_rise = smile * hw * 0.25;
+    let (up, down) = (FULL_UPPER * hw * fullness, FULL_LOWER * hw * fullness);
+    let at = |x: f32, y: f32| centre + Vec2::new(x * hw, y);
+    let corner_l = at(-1.0, corner_rise);
+    let corner_r = at(1.0, corner_rise);
+    let list = ctx.list(FaceLayerId::Base);
+    // The upper lip: from the left corner up to the left peak, down into the bow, up to the right peak and down to the
+    // right corner; then back along the mouth's upper edge.
+    let upper = list
+        .path()
+        .move_to(corner_l)
+        .quad_to(at(-0.55, top + up * 0.9), at(-0.22, top + up))
+        .quad_to(at(-0.08, top + up * 1.02), at(0.0, top + up * 0.72))
+        .quad_to(at(0.08, top + up * 1.02), at(0.22, top + up))
+        .quad_to(at(0.55, top + up * 0.9), corner_r)
+        .quad_to(at(0.0, top - up * 0.08), corner_l)
+        .close()
+        .finish();
+    // The lower lip: a crescent from corner to corner under the lower edge.
+    let lower = list
+        .path()
+        .move_to(corner_l)
+        .quad_to(at(0.0, bottom - down * 0.08), corner_r)
+        .cubic_to(at(0.7, bottom - down * 1.15), at(-0.7, bottom - down * 1.15), corner_l)
+        .close()
+        .finish();
+    for lip in [upper, lower] {
+        list.push(Cmd::Fill { path: lip, paint: Paint::Solid(fill), opacity: amount });
+        list.push(Cmd::Stroke {
+            path: lip,
+            paint: Paint::Solid(line),
+            width,
+            cap: Cap::Round,
+            join: Join::Round,
+            opacity: amount * FULL_OUTLINE_ALPHA,
+        });
+    }
+}
+
 /// Paints the glossy lower lip under the mouth: a soft swell of the lip tint with a small highlight. Nothing on a flat
 /// face. A kiss always has some gloss ([`KISS_LIPS`]).
 pub(super) fn paint_gloss(ctx: &mut PaintCtx<'_>) {

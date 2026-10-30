@@ -1,4 +1,5 @@
-//! Cheeks: the warm wash over the lower face, the two blush patches (soft or hatched) and the shade under the fringe;
+//! Cheeks: the warm wash over the lower face, the two blush patches (soft or hatched), the face lines (cheekbones, smile
+//! lines, under-eye lines, the chin and a cel jaw shadow) and the shade under the fringe;
 //! the prototype's `blush()` and the strip in `draw()` (`face.js` 380-409). The puffed cheek (`cheek_puff`, which the
 //! prototype has no channel for) is drawn over the blush as a shaded rim along the lower outer edge of each patch and a
 //! small highlight on its swell, so a pout reads even though the blush it adds is faint.
@@ -8,7 +9,9 @@
 //! metres, is [`HEAD_TO_PLANE`] lower here.
 
 use omuzaki_core::glam::{Affine2, Vec2};
-use omuzaki_face_api::{BlushKind, Cap, CheekStyle, Cmd, Colour, FaceLayerId, FaceRect, Join, Paint, Stops, narrow};
+use omuzaki_face_api::{
+    BlushKind, Cap, CheekStyle, Cmd, Colour, DrawList, FaceLayerId, FaceRect, Join, Paint, Stops, narrow,
+};
 
 use crate::painter::{PaintCtx, fixed_colour, scaled};
 
@@ -77,6 +80,8 @@ const CONTOUR_DOWN: f32 = 1.3;
 const CONTOUR_RADII: Vec2 = Vec2::new(0.55, 1.5);
 const CONTOUR_TURN: f32 = 0.6;
 const CONTOUR_ALPHA: f32 = 0.5;
+/// The face lines' ink of an unset palette slot: the default's.
+const FALLBACK_LINE: Colour = Colour::rgb(0x8a, 0x52, 0x4a);
 /// Colour used when a palette slot reached the painter unresolved (it should not: the host resolves them).
 const FALLBACK_COLOUR: Colour = Colour::rgb(0xf0, 0x8c, 0x84);
 
@@ -106,7 +111,89 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
             puffed_cheek(ctx, style, puff, side, Vec2::new(side * spacing, blush_y));
         }
     }
+    lines(ctx);
     fringe_shade(ctx, &rect);
+}
+
+/// The jaw shade's opacity at full strength: a hard cel shadow, lighter than the ink.
+const JAW_SHADE_ALPHA: f32 = 0.32;
+/// A smile line's opacity at rest, as a share of its strength; a full smile adds the rest.
+const SMILE_LINE_REST: f32 = 0.55;
+/// Below this strength a face line is not drawn.
+const LINE_MIN: f32 = 0.005;
+
+/// The face lines: inked strokes placed from the layout (eye line, eye spacing and width, nose and mouth
+/// lines), so they follow a face's proportions, and the jaw's cel shadow on the shadow side (the character's right).
+fn lines(ctx: &mut PaintCtx<'_>) {
+    let style = &ctx.profile.cheeks.lines;
+    let strengths = [style.cheekbone, style.smile, style.under_eye, style.chin, style.jaw_shade].map(narrow);
+    if strengths.iter().all(|s| *s < LINE_MIN) {
+        return;
+    }
+    let [cheekbone, smile_line, under_eye, chin, jaw] = strengths.map(|s| s.clamp(0.0, 1.0));
+    let colour = fixed_colour(&style.colour, FALLBACK_LINE);
+    let width = narrow(style.width);
+    let layout = &ctx.profile.layout;
+    let (eye_y, ex, ew) = (narrow(layout.eye_y), narrow(layout.eye_spacing), narrow(layout.eye_width));
+    let (nose_y, mouth_y) = (narrow(layout.nose_y), narrow(layout.mouth_y));
+    let half_mouth = narrow(ctx.profile.mouth.half_width) * (1.0 + 0.4 * ctx.params.mouth.wide.max(0.0));
+    let smile = f32::midpoint(ctx.params.mouth.smile_left, ctx.params.mouth.smile_right).clamp(0.0, 1.0);
+    let drop = (eye_y - mouth_y).max(0.01);
+    let lower = (nose_y - mouth_y).max(0.004);
+    let list = ctx.list(FaceLayerId::Base);
+    let stroke = |list: &mut DrawList, pts: [Vec2; 3], opacity: f32| {
+        let path = list.path().move_to(pts[0]).quad_to(pts[1], pts[2]).finish();
+        list.push(Cmd::Stroke {
+            path,
+            paint: Paint::Solid(colour),
+            width,
+            cap: Cap::Round,
+            join: Join::Round,
+            opacity,
+        });
+    };
+    if jaw >= LINE_MIN {
+        // A crescent down the shadow side, from under the cheekbone to beside the chin.
+        let top = Vec2::new(-(ex + ew * 1.15), eye_y - 0.42 * drop);
+        let bottom = Vec2::new(-0.006, mouth_y - 1.15 * lower);
+        let outer = Vec2::new(-(ex + ew * 1.05), mouth_y - 1.05 * lower);
+        let inner = Vec2::new(-(ex * 0.8), mouth_y - 0.35 * lower);
+        let path = list.path().move_to(top).quad_to(outer, bottom).quad_to(inner, top).close().finish();
+        list.push(Cmd::Fill { path, paint: Paint::Solid(colour), opacity: JAW_SHADE_ALPHA * jaw });
+    }
+    for side in [1.0f32, -1.0] {
+        let m = |p: Vec2| Vec2::new(p.x * side, p.y);
+        if cheekbone >= LINE_MIN {
+            let pts = [
+                Vec2::new(ex + ew * 0.55, eye_y - 0.30 * drop),
+                Vec2::new(ex + ew * 0.35, eye_y - 0.50 * drop),
+                Vec2::new(ex - ew * 0.10, eye_y - 0.62 * drop),
+            ];
+            stroke(list, pts.map(m), cheekbone);
+        }
+        if smile_line >= LINE_MIN {
+            let out = 0.004 * smile;
+            let pts = [
+                Vec2::new(0.009 + out * 0.5, nose_y + 0.002),
+                Vec2::new(half_mouth + 0.006 + out, f32::midpoint(nose_y, mouth_y)),
+                Vec2::new(half_mouth + 0.003 + out, mouth_y - 0.25 * lower),
+            ];
+            stroke(list, pts.map(m), smile_line * (SMILE_LINE_REST + (1.0 - SMILE_LINE_REST) * smile));
+        }
+        if under_eye >= LINE_MIN {
+            let pts = [
+                Vec2::new(ex - ew * 0.55, eye_y - 0.62 * ew),
+                Vec2::new(ex, eye_y - 0.92 * ew),
+                Vec2::new(ex + ew * 0.45, eye_y - 0.66 * ew),
+            ];
+            stroke(list, pts.map(m), under_eye);
+        }
+    }
+    if chin >= LINE_MIN {
+        let cy = mouth_y - 0.62 * lower;
+        let pts = [Vec2::new(-0.0055, cy), Vec2::new(0.0, cy - 0.0028), Vec2::new(0.0055, cy)];
+        stroke(list, pts, chin);
+    }
 }
 
 /// Steps the blush takes: a tracked face's cheek channels jitter by a hundredth or two every frame, which would change

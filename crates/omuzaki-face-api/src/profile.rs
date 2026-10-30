@@ -692,11 +692,17 @@ pub struct Lips {
     pub colour: ColourRef,
     /// Lip colour (makeup, #2472): both lips washed with `colour` round a closed mouth, 0 none.
     pub tint: f64,
+    /// Full toon lips: a filled upper lip with a cupid's bow and a fuller lower lip in `colour`, outlined in the mouth
+    /// line's colour, round a closed or an open mouth (the lips of Western and semi-real toon art). The value is
+    /// their opacity, 0 none.
+    pub full: f64,
+    /// How thick the full lips are, as a multiplier (1: the upper lip about a quarter of the mouth's half-width).
+    pub fullness: f64,
 }
 
 impl Default for Lips {
     fn default() -> Self {
-        Self { strength: 0.0, colour: rgb(0xee, 0x8e, 0x92), tint: 0.0 }
+        Self { strength: 0.0, colour: rgb(0xee, 0x8e, 0x92), tint: 0.0, full: 0.0, fullness: 1.0 }
     }
 }
 
@@ -704,6 +710,8 @@ impl Validate for Lips {
     fn check(&self, c: &mut Check) {
         c.range("strength", self.strength, 0.0, 1.0);
         c.range("tint", self.tint, 0.0, 1.0);
+        c.range("full", self.full, 0.0, 1.0);
+        c.range("fullness", self.fullness, 0.3, 3.0);
     }
 }
 
@@ -895,6 +903,13 @@ pub enum NoseKind {
     Dot,
     /// A short tick with a dot of light above it.
     Tick,
+    /// A hard cel shadow down the shadow side of the bridge, closed by a nostril hook: the nose of Western TV
+    /// animation and semi-real toon art, which reads by its shadow shape rather than a line.
+    Wedge,
+    /// An inked line down one side of the bridge that hooks round the tip into a nostril: comics and Western cartoons.
+    Line,
+    /// A round tip outlined from below, with two nostril dots: a cartoon button nose.
+    Button,
 }
 
 /// The nose mark (CB-23).
@@ -911,11 +926,24 @@ pub struct NoseStyle {
     pub shadow: f64,
     /// A soft light spot on the bridge and the tip, 0 none.
     pub highlight: f64,
+    /// How long the drawn nose runs up from its tip toward the brows, as a multiplier (`wedge` and `line`): 1 is a
+    /// short toon nose, 2 reaches about two thirds of the way to the eye line.
+    pub length: f64,
+    /// Line width of the `line` and `button` kinds and the `wedge`'s nostril, in metres.
+    pub line_width: f64,
 }
 
 impl Default for NoseStyle {
     fn default() -> Self {
-        Self { kind: NoseKind::None, size: 1.0, colour: rgb(0xbe, 0x78, 0x78), shadow: 0.0, highlight: 0.0 }
+        Self {
+            kind: NoseKind::None,
+            size: 1.0,
+            colour: rgb(0xbe, 0x78, 0x78),
+            shadow: 0.0,
+            highlight: 0.0,
+            length: 1.0,
+            line_width: 0.0012,
+        }
     }
 }
 
@@ -924,6 +952,8 @@ impl Validate for NoseStyle {
         c.range("size", self.size, 0.2, 3.0);
         c.range("shadow", self.shadow, 0.0, 1.0);
         c.range("highlight", self.highlight, 0.0, 1.0);
+        c.range("length", self.length, 0.5, 3.0);
+        c.range("line_width", self.line_width, 0.0003, 0.005);
     }
 }
 
@@ -961,6 +991,59 @@ pub struct CheekStyle {
     pub contour: f64,
     /// The contour's colour.
     pub contour_colour: ColourRef,
+    /// Face lines: the inked and cel-shaded lines that give a face its age and structure (cheekbones, smile lines,
+    /// under-eye lines, the chin and a jaw shadow). All off by default, as anime faces draw none.
+    pub lines: FaceLines,
+}
+
+/// Face lines (CB-23): each a strength 0 to 1 (0 not drawn). Lines are inked in `colour` at `width`; the jaw shade is
+/// a hard cel shadow in the same colour, lighter.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct FaceLines {
+    /// The ink colour of every line, and the jaw shade's colour.
+    pub colour: ColourRef,
+    /// Line width, metres.
+    pub width: f64,
+    /// A short stroke under each cheekbone, from below the outer eye toward the mouth corner.
+    pub cheekbone: f64,
+    /// The smile lines (nasolabial folds), from beside the nose to past the mouth corners; a smile deepens them.
+    pub smile: f64,
+    /// A short arc under each eye.
+    pub under_eye: f64,
+    /// A short arc under the lower lip marking the chin.
+    pub chin: f64,
+    /// A hard cel shade along the jaw on the shadow side, under the cheek: the toon jaw shadow.
+    pub jaw_shade: f64,
+}
+
+impl Default for FaceLines {
+    fn default() -> Self {
+        Self {
+            colour: rgb(0x8a, 0x52, 0x4a),
+            width: 0.0011,
+            cheekbone: 0.0,
+            smile: 0.0,
+            under_eye: 0.0,
+            chin: 0.0,
+            jaw_shade: 0.0,
+        }
+    }
+}
+
+impl Validate for FaceLines {
+    fn check(&self, c: &mut Check) {
+        c.range("lines/width", self.width, 0.0003, 0.005);
+        for (name, v) in [
+            ("lines/cheekbone", self.cheekbone),
+            ("lines/smile", self.smile),
+            ("lines/under_eye", self.under_eye),
+            ("lines/chin", self.chin),
+            ("lines/jaw_shade", self.jaw_shade),
+        ] {
+            c.range(name, v, 0.0, 1.0);
+        }
+    }
 }
 
 impl Default for CheekStyle {
@@ -974,6 +1057,7 @@ impl Default for CheekStyle {
             base: 0.0,
             contour: 0.0,
             contour_colour: rgb(0xc8, 0x8e, 0x80),
+            lines: FaceLines::default(),
         }
     }
 }
@@ -986,6 +1070,7 @@ impl Validate for CheekStyle {
         c.range("wash", self.wash, 0.0, 1.0);
         c.range("base", self.base, 0.0, 1.0);
         c.range("contour", self.contour, 0.0, 1.0);
+        self.lines.check(c);
     }
 }
 
