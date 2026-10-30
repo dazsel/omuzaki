@@ -363,9 +363,9 @@ impl Lids {
         // Dry at the outer corner, where the lids pinch together and a wet sheen would catch the key as a hard spot.
         let wet = (1.0 - smoothstep(0.2 * MM, 0.45 * MM, d)) * smoothstep(0.0, 0.12, u);
         // The pocket behind the margin darkens as it runs back behind the ball, deepest at the inner corner, where the
-        // ball's bulge hides it in shadow.
+        // ball's bulge hides it in shadow; at the outer corner the lids meet in a point and the pink inside shows.
         if d < 0.0 {
-            cavity = 0.55 - (0.3 + 0.15 * smoothstep(0.7, 1.0, u)) * smoothstep(0.0, 1.2 * MM, -d);
+            cavity = 0.55 - (0.1 + 0.35 * smoothstep(0.6, 1.0, u)) * smoothstep(0.0, 1.2 * MM, -d);
         }
         // The inner corner and the lid margins are flushed: the margin itself, the thin moist rim between the lashes
         // and the eye, is a deeper red than the skin, more so on the upper lid, whose margin the eye looks up into.
@@ -496,7 +496,10 @@ impl Lids {
     fn shell(&self, gaze: Vec3) -> MeshData {
         let cornea = Cornea::new(&self.ball);
         let mut mesh = MeshData::default();
-        let depths = [0.0, 0.15, 0.35, 0.6, 0.9, 1.3, 1.8, 2.4, 3.1, 4.0, 5.0, 6.0, 7.0];
+        // Rings a quarter of a millimetre apart: a coarser film's flat triangles cut under the cornea's bulge where it
+        // rises from the white, and the iris showed through there as a bright streak.
+        #[allow(clippy::cast_precision_loss)]
+        let depths: Vec<f32> = (0..=28).map(|i| i as f32 * 0.25).collect();
         for &d in &depths {
             for k in 0..AROUND {
                 let p = self.plane_point(k, -d * MM);
@@ -504,7 +507,9 @@ impl Lids {
                 mesh.positions.push(Vec3::new(p.x, p.y, z));
                 // The upper lid shades more and farther than the lower, and the corners, deep in the socket, most.
                 let (strength, reach) = if Self::is_upper(k) { (0.9, 5.0) } else { (0.35, 1.0) };
-                let socket = 1.0 - smoothstep(0.0, 0.25, Self::along(k).min(1.0 - Self::along(k)));
+                // The inner corner sits deep behind the nose's side; the outer one, where the lids meet in a point, less.
+                let along = Self::along(k);
+                let socket = (1.0 - smoothstep(0.0, 0.25, 1.0 - along)).max(0.4 * (1.0 - smoothstep(0.0, 0.2, along)));
                 let near = strength * (-d / (reach * (1.0 + socket))).exp() * (1.0 - smoothstep(5.0, 7.0, d));
                 // The whole ball sits in the socket: the white darkens broadly toward the lids and corners, so it reads
                 // as a sphere seen through the opening rather than a flat disc behind it.
