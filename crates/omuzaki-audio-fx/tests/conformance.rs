@@ -17,6 +17,7 @@ use omuzaki_audio_api::graph::Channels;
 use omuzaki_audio_api::node::{BlockMut, ConfigValue, NodeConfig};
 use omuzaki_audio_api::node::{NodeKind, node_kinds};
 use omuzaki_audio_fx::compressor::CompressorKind;
+use omuzaki_audio_fx::denoise::DenoiseKind;
 use omuzaki_audio_fx::eq::EqKind;
 use omuzaki_audio_fx::gate::GateKind;
 use omuzaki_audio_fx::limiter::LimiterKind;
@@ -84,6 +85,17 @@ fn eq_at_eight_bands_maximum_answers_at_the_impulse() {
 #[test]
 fn gate_conforms() {
     assert_conforms(&GateKind, &Config { linear: false, ..Config::default() });
+}
+
+/// `RNNoise`'s `reset` restores a pristine copy of its network state, which re-clones its buffers, and the first frame
+/// on a new thread builds its FFT plan: both allocate, so the suite's allocation check is excused here and
+/// `tests/denoise.rs` holds `process` to zero allocations from the second frame on and `reset` to its clone. The band
+/// gains act on a windowed spectrum, so a click's onset smears up to 3 samples ahead of the true 960-sample delay
+/// (the dry path at `amount` 0 is exactly 960): measured with 4 samples (0.08 ms) of tolerance, like `fx.radio`.
+#[test]
+fn denoise_conforms() {
+    let config = Config { linear: false, latency_tolerance: 4, ..Config::default() };
+    assert_conforms_except(&DenoiseKind, &config, |r| r.check == Check::Allocation);
 }
 
 #[test]

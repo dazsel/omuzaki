@@ -11,6 +11,8 @@ repository.workspace = true
 [dependencies]
 omuzaki-audio-api = { path = "../omuzaki-audio-api" }
 omuzaki-core = { path = "../omuzaki-core" }
+# `fx.denoise`: RNNoise, its model weights compiled in from the crate.
+nnnoiseless.workspace = true
 # The `audio.fx.*` ops: presets in the document, the render jobs and their WAVs in the asset store.
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
@@ -24,6 +26,9 @@ thiserror.workspace = true
 criterion.workspace = true
 omuzaki-audio-mock = { path = "../omuzaki-audio-mock" }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+# `tests/denoise.rs`: the synthetic voice and the lip-sync evaluation, to show noise suppression keeps the mouth right.
+omuzaki-face-api = { path = "../omuzaki-face-api" }
+omuzaki-track-voice = { path = "../omuzaki-track-voice" }
 toml.workspace = true
 
 [lints]
