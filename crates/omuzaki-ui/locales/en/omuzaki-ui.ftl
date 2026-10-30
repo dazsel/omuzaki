@@ -2995,6 +2995,27 @@ ui-panels-setup-continue = Continue
 ui-panels-setup-customise = Customise the character
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+ui-panels-setup-describe-empty = Write a few words first
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+ui-panels-setup-describe-go = Make it
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+ui-panels-setup-describe-hint = A sleepy librarian with long silver hair, round glasses and a blue cardigan
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+ui-panels-setup-describe-label = Describe your character
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+# $name (id, never translated): "hair-b"
+# $count (id, never translated): "hair-b"
+ui-panels-setup-described = Made { $name } from { $count } choices
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+# $words (id, never translated): "hair-b"
+ui-panels-setup-described-unknown = Not used yet: { $words }
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
 ui-panels-setup-done = You're set
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
@@ -3172,10 +3193,10 @@ ui-panels-setup-sample = Use the sample
 ui-panels-setup-sample-line = Ready now. It is already on the stage.
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
-ui-panels-setup-sheet = Create from a sheet or idea
+ui-panels-setup-sheet = Describe a character
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
-ui-panels-setup-sheet-line = Describe a character or bring a reference sheet, and build it step by step.
+ui-panels-setup-sheet-line = Say who they are in a sentence, and the kit builds them. Change anything after.
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
 ui-panels-setup-skip = Skip setup
@@ -4504,6 +4525,9 @@ ui-shell-palette-copy-cli = Copy as CLI
 
 # The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
 ui-shell-palette-copy-mcp = Copy as MCP call
+
+# The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
+ui-shell-palette-describe = Make a character from these words
 
 # The studio's frame: menus, the status bar, History, the command palette and the shortcut sheet.
 # $op (id, never translated): "hair-b"

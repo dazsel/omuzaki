@@ -53,6 +53,8 @@ omuzaki-vts = { path = "../omuzaki-vts" }
 omuzaki-vcam = { path = "../omuzaki-vcam" }
 omuzaki-stream-share = { path = "../omuzaki-stream-share" }
 omuzaki-app = { path = "../omuzaki-app" }
+# `character.create_from_description`: Setup's Describe card and the palette's "Make a character from these words".
+omuzaki-brief = { path = "../omuzaki-brief" }
 omuzaki-char = { path = "../omuzaki-char" }
 omuzaki-char-api = { path = "../omuzaki-char-api" }
 omuzaki-cohost = { path = "../omuzaki-cohost" }

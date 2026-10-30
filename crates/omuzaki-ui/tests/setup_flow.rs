@@ -235,7 +235,7 @@ fn welcome_says_what_happens_to_the_camera_and_offers_an_agent() {
 fn a_card_this_build_cant_carry_out_is_shown_off_with_its_reason() {
     let mut h = rig(probes());
     click(&mut h, Role::Button, "Start");
-    let sheet = h.get_by_role_and_label(Role::RadioButton, "Create from a sheet or idea");
+    let sheet = h.get_by_role_and_label(Role::RadioButton, "Describe a character");
     assert!(sheet.accesskit_node().is_disabled());
     assert!(sheet.accesskit_node().description().is_some_and(|d| d.contains("Not in this version yet")));
 }
@@ -371,4 +371,114 @@ fn calibrating_runs_through_the_host_and_moves_on() {
     assert!(h.state().asked.borrow().iter().any(|e| matches!(e, Effect::StartCalibration { .. })));
     assert_eq!(step(&h), Step::Output, "the run came back done");
     assert!(!h.state().panel.progress().unwrap_or_default().skipped.contains(&Step::Calibrate));
+}
+
+// ---- #2578: Describe a character, through the studio's own core ----
+
+/// The Setup panel on a real core with the kit and the brief linked, so the Describe card runs
+/// `character.create_from_description` for real; the edit focus is shared, as the shell shares it.
+struct Real {
+    panel: SetupPanel,
+    views: ViewModels,
+    focus: omuzaki_ui::panels::edit::EditFocus,
+    core: omuzaki_ui::wiring::Core,
+    _folder: tempfile::TempDir,
+}
+
+fn real(size: egui::Vec2, settings: Settings) -> Harness<'static, Real> {
+    omuzaki_ui::link();
+    let folder = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+    let core = omuzaki_ui::wiring::core_on(
+        omuzaki_ui::wiring::Document::empty(),
+        omuzaki_ops_api::ServicesBuilder::new().build(),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let focus = omuzaki_ui::panels::edit::EditFocus::default();
+    let mut views = ViewModels::new();
+    views.insert(ShellRequests::default());
+    views.insert(FirstRun::at(folder.path().join("setup-done")));
+    views.insert(focus.clone());
+    let state = Real { panel: SetupPanel::default(), views, focus, core, _folder: folder };
+    let mut h = Harness::builder().with_size(size).wgpu().build_ui_state(
+        move |ui, r: &mut Real| {
+            omuzaki_ui::ds::apply_settings(ui.ctx(), settings);
+            egui::CentralPanel::default().show(ui, |ui| {
+                let actor = Actor::Person { name: "you".into() };
+                let ctx = PanelCtx::new(r.core.runner.as_ref(), &actor).with_views(&r.views);
+                r.panel.ui(ui, &ctx);
+            });
+        },
+        state,
+    );
+    h.run_steps(3);
+    h
+}
+
+/// Start, then the Describe card, then the words typed into its box.
+fn describe(h: &mut Harness<'_, Real>, words: &str) {
+    h.get_by_role_and_label(Role::Button, "Start").click();
+    h.run_steps(3);
+    h.get_by_role_and_label(Role::RadioButton, "Describe a character").click();
+    h.run_steps(3);
+    h.get_by_label("Describe your character").click();
+    h.run_steps(2);
+    h.get_by_label("Describe your character").type_text(words);
+    h.run_steps(2);
+}
+
+#[test]
+fn describing_a_character_makes_it_through_the_op_and_opens_it_for_editing() {
+    let mut h = real(vec2(420.0, 900.0), Settings::default());
+    describe(&mut h, "a sleepy librarian with silver twin tails and round glasses");
+    h.get_by_role_and_label(Role::Button, "Make it").click();
+    h.run_steps(4);
+    let opened = h.state().focus.character();
+    assert_eq!(
+        opened.as_ref().map(omuzaki_char_api::CharId::as_str),
+        Some("sleepy-librarian"),
+        "{:?}",
+        all_strings(&h)
+    );
+    // The character is in the document, made by one op the person can undo, and setup went on to Input.
+    let stored = h
+        .state()
+        .core
+        .runner
+        .get(
+            &omuzaki_doc_api::DocPath::parse("characters/sleepy-librarian").unwrap_or_else(|e| panic!("{e}")),
+            &omuzaki_ops_api::Grants::person(),
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert!(stored.is_some(), "the character is in the document");
+    assert_eq!(h.state().panel.step(), Step::Input);
+}
+
+#[test]
+fn the_make_button_waits_for_words() {
+    let mut h = real(vec2(420.0, 900.0), Settings::default());
+    describe(&mut h, "");
+    let make = h.get_by_role_and_label(Role::Button, "Make it");
+    assert!(make.accesskit_node().is_disabled());
+    assert!(make.accesskit_node().description().is_some_and(|d| d.contains("Write a few words first")));
+}
+
+/// Screenshots of the Describe card for the pull request: the box with words in it, dark and light. Run with
+/// `OMUZAKI_EVIDENCE_OUT=<dir> cargo test -p omuzaki-ui --test setup_flow describe_evidence -- --ignored` (software
+/// Vulkan).
+#[test]
+#[ignore = "writes screenshots; run by hand for a pull request"]
+fn describe_evidence() {
+    use omuzaki_ui::ds::ThemeKind;
+    let Ok(out) = std::env::var("OMUZAKI_EVIDENCE_OUT") else { panic!("set OMUZAKI_EVIDENCE_OUT to a folder") };
+    for (name, settings) in
+        [("dark", Settings::default()), ("light", Settings { theme: ThemeKind::Light, ..Settings::default() })]
+    {
+        let mut h = real(vec2(560.0, 760.0), settings);
+        describe(&mut h, "a sleepy librarian with silver twin tails, round glasses and a zorbly scarf");
+        let image = h.render().unwrap_or_else(|e| panic!("renders: {e}"));
+        let path = format!("{out}/setup-describe-{name}.png");
+        image.save(&path).unwrap_or_else(|e| panic!("writing {path}: {e}"));
+        h.get_by_role_and_label(Role::Button, "Make it").click();
+        h.run_steps(4);
+    }
 }
