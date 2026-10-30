@@ -367,8 +367,7 @@ impl LiveApp {
         if let Some(scripts) = &scripts {
             services = services.insert::<dyn omuzaki_script::ScriptStore>(Arc::clone(scripts));
         }
-        let (with, program) = with_shows(services, &automation);
-        services = with;
+        let (mut services, program) = with_shows(services, &automation);
         if let Some(vts) = vts {
             services = services.insert::<VtsService>(vts);
         }
