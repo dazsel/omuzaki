@@ -342,7 +342,7 @@ impl Lids {
         // Past the lid's roll the skin never sinks far below the face: the ball's sphere falls away under the lower lid,
         // and following it would carve a deep trench between the lid and the cheek. The lid-cheek junction stays a soft
         // groove; the hollow under the brow keeps its depth.
-        let floor = self.face(p.x, p.y) - side(3.0, 0.6) * MM;
+        let floor = self.face(p.x, p.y) - side(1.2, 0.4) * MM;
         let k = 0.5 * MM;
         let lifted = 0.5 * (z + floor + ((z - floor).powi(2) + k * k).sqrt());
         z += (lifted - z) * smoothstep(0.5 * MM, 2.0 * MM, d);
@@ -351,7 +351,8 @@ impl Lids {
         let reach = side(14.0, 9.0) * MM * (1.0 - 0.45 * corner);
         let blend = smoothstep(0.35 * reach, reach, d);
         z = z + (self.face(p.x, p.y) - z) * blend;
-        let wet = 1.0 - smoothstep(0.2 * MM, 0.45 * MM, d);
+        // Dry at the outer corner, where the lids pinch together and a wet sheen would catch the key as a hard spot.
+        let wet = (1.0 - smoothstep(0.2 * MM, 0.45 * MM, d)) * smoothstep(0.0, 0.12, u);
         if d < 0.0 {
             cavity = 0.55;
         }
