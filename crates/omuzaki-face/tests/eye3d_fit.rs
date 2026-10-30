@@ -27,23 +27,19 @@ fn run(doc: &MemDoc, name: &str, args: Value) -> Result<Plan, OpError> {
     op.plan(&OpCtx::new(doc, &actor, &clock))
 }
 
-/// A wide-open eye tilted toward its outer corner, shot from the temple's side: what the fit should find.
+/// An eye a little more open than the default, its outer corner lifted, shot from the temple's side further round than
+/// the macro view: what the fit should find. Its lids rest on the eyeball, as a real eye's do.
 fn target() -> (EyeDesign, Shot) {
     let mut design = EyeDesign::default();
-    design.aperture.inner_x = 0.014;
-    design.aperture.outer_x = -0.013_5;
-    design.aperture.inner_y = -0.001_5;
-    design.aperture.outer_y = -0.002_5;
-    design.aperture.upper = 0.009;
-    design.aperture.upper_peak = 0.48;
-    design.aperture.lower = 0.002;
-    design.aperture.lower_peak = 0.45;
-    design.ball.iris_radius = 0.005_9;
+    design.aperture.outer_y = 0.000_6;
+    design.aperture.upper = 0.006_2;
+    design.aperture.lower = 0.004_2;
+    design.ball.iris_radius = 0.006_1;
     design.ball.pupil = 0.3;
     let mut shot = View::Macro.shot();
-    shot.camera = [-0.029, -0.011, 0.051];
-    shot.roll = -15.0;
-    shot.gaze = [-0.18, 0.15, 0.95];
+    shot.camera = [-0.033, -0.011, 0.051];
+    shot.roll = -16.0;
+    shot.gaze = [-0.12, 0.1, 0.95];
     (design, shot)
 }
 
@@ -64,10 +60,11 @@ fn the_fit_finds_a_known_eye_from_its_landmarks() {
     let marks = landmarks(&design, &shot);
     let exact = residuals(&design, &shot, &marks);
     assert!(exact.outline < 3.0, "the eye that made the landmarks fits them: {exact:?}");
+    assert!(exact.off_ball < 1.0, "and rests on its eyeball: {exact:?}");
 
     let fitted = fit(&EyeDesign::default(), &View::Macro.shot(), &marks, 300);
     let (before, after) = (&fitted.before, &fitted.residuals);
-    assert!(before.outline > 20.0, "the start is well off: {before:?}");
+    assert!(before.outline > 10.0, "the start is well off: {before:?}");
     assert!(after.outline < 3.0, "the outline fits within a few pixels: {after:?}");
     assert!(after.iris_centre < 4.0 && after.iris_radius < 3.0, "the iris fits: {after:?}");
     assert!(after.pupil_radius < 3.0, "the pupil fits: {after:?}");
@@ -86,7 +83,7 @@ fn the_op_fits_a_characters_eye_as_one_undoable_edit() {
     let output = plan.output.clone().expect("the fit answers");
     assert_eq!(output["changed"], json!(["characters/mira/face/eye3d"]), "one edit, of the 3D eye");
     let outline = output["residuals"]["outline"].as_f64().unwrap();
-    assert!(outline < 4.0, "the outline fits within a few pixels: {output}");
+    assert!(outline < 3.0, "the outline fits within a few pixels: {output}");
     let fitted: Shot = serde_json::from_value(output["shot"].clone()).expect("a shot");
     assert!(fitted.check().is_ok());
 
@@ -94,9 +91,10 @@ fn the_op_fits_a_characters_eye_as_one_undoable_edit() {
     let path = DocPath::parse("characters/mira/face").unwrap();
     let face: FaceProfile = serde_json::from_value(doc.get(&path).cloned().unwrap()).unwrap();
     let eye = face.eye3d.expect("the face now has a fitted 3D eye");
-    // One picture barely tells a larger iris from a nearer camera, so the size is only found to within a tenth.
-    let iris = eye.ball.iris_radius;
-    assert!((iris - design.ball.iris_radius).abs() < 0.000_6, "the iris's size: {iris}");
+    // One picture can't tell a larger eye from a nearer camera, so the fit finds the eye's proportions: the iris
+    // against the eyeball.
+    let (found, made) = (eye.ball.iris_radius / eye.ball.radius, design.ball.iris_radius / design.ball.radius);
+    assert!((found / made - 1.0).abs() < 0.1, "the iris against the ball: {found} for {made}");
     assert_eq!(eye.iris, EyeDesign::default().iris, "only the opening, the iris's size and the pupil change");
 
     doc.apply(&plan.patch.inverse()).expect("undoes");

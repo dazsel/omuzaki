@@ -3,8 +3,10 @@
 //! own outlines on them. Only those numbers are used, never the picture's pixels: the eye is still drawn by its design.
 //!
 //! The eye's outlines are projected the way the close-up renders them (the shot's camera, the margin laid on the eye's
-//! surface, the iris seen through the cornea), and the fit is a coordinate descent over the parameters, each step
-//! halving when neither direction helps, inside the design's own ranges. It is plain arithmetic, a few milliseconds.
+//! surface, the iris seen through the cornea), and the fit is a pattern search over the parameters inside the design's
+//! own ranges. Besides the landmarks it keeps the opening on the eyeball as the camera sees it: lids rest on the
+//! globe, so an opening reaching past the ball's silhouette would show the socket behind it where a photograph shows
+//! the white. It is plain arithmetic, well under a second.
 
 use omuzaki_core::glam::{Vec2, Vec3, Vec4};
 use schemars::JsonSchema;
@@ -12,7 +14,8 @@ use serde::{Deserialize, Serialize};
 
 use super::closeup::Shot;
 use super::design::EyeDesign;
-use super::geometry::{LIMBUS, margin_point};
+use super::geometry::{LIMBUS, MM, margin_point};
+use super::noise::smoothstep;
 
 /// How much the cornea magnifies the pupil against the iris, as the close-up renders it: the pupil sits nearer the
 /// cornea's centre, where its lens is strongest (measured on the renderer's macro view).
@@ -89,11 +92,19 @@ pub struct Residuals {
     pub pupil_centre: f32,
     /// The pupil's radius's difference (0 when no pupil was measured).
     pub pupil_radius: f32,
+    /// How far the opening reaches past the eyeball's silhouette, on average over its outline (0 when it rests on the
+    /// ball everywhere, as a real eye's does).
+    #[serde(default)]
+    pub off_ball: f32,
 }
 
 impl Residuals {
     fn total(&self) -> f32 {
-        self.outline + self.iris_centre + self.iris_radius + f32::midpoint(self.pupil_centre, self.pupil_radius)
+        self.outline
+            + self.iris_centre
+            + self.iris_radius
+            + f32::midpoint(self.pupil_centre, self.pupil_radius)
+            + self.off_ball
     }
 }
 
@@ -101,7 +112,7 @@ impl Residuals {
 /// left of the error.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Fitted {
-    /// The design: its aperture, `ball.iris_radius` and `ball.pupil` fitted, everything else as it was.
+    /// The design: its aperture and its eyeball's, iris's and pupil's sizes fitted, everything else as it was.
     pub design: EyeDesign,
     /// The camera and the gaze.
     pub shot: Shot,
@@ -120,6 +131,9 @@ pub struct Projected {
     pub iris: (Vec2, f32),
     /// The pupil's centre and radius.
     pub pupil: (Vec2, f32),
+    /// How far the opening reaches past the eyeball's silhouette, averaged over the outline (the lids'
+    /// tuck, under a millimetre, allowed, and the corners left out).
+    pub off_ball: f32,
 }
 
 /// Where `design`'s outlines land in a `size` picture taken as `shot` takes it.
@@ -132,15 +146,32 @@ pub fn project(design: &EyeDesign, shot: &Shot, size: [u32; 2]) -> Projected {
         let n = c.truncate() / c.w.max(1e-9);
         Vec2::new(f32::midpoint(n.x, 1.0) * w, f32::midpoint(1.0, -n.y) * h)
     };
+    // Pixels per metre at unit distance, for the silhouette's reach.
+    let focal = 0.5 * h / (0.5 * shot.fov.to_radians()).tan();
+    let eye = Vec3::from(shot.camera);
+    let tuck = design.ball.radius + 0.8 * MM;
     let mut outline = Vec::with_capacity(2 * (ALONG + 1));
+    let mut off_ball = 0.0;
     for upper in [true, false] {
         for i in 0..=ALONG {
             #[allow(clippy::cast_precision_loss, reason = "a few dozen samples")]
             let t = i as f32 / ALONG as f32;
             let u = if upper { t } else { 1.0 - t };
-            outline.push(to_px(margin_point(design, u, upper)));
+            let point = margin_point(design, u, upper);
+            outline.push(to_px(point));
+            // How far the line of sight to the margin passes outside the ball, in pixels at its depth. The corners are
+            // left out: the inner one runs past the ball to the caruncle, and the lids meet in a point at the outer.
+            let corners = smoothstep(0.0, 0.2, u) * (1.0 - smoothstep(0.8, 1.0, u));
+            let ray = (point - eye).normalize_or_zero();
+            let along = -eye.dot(ray);
+            let miss = (eye + ray * along).length();
+            if along > 0.0 && miss > tuck {
+                off_ball += corners * (miss - tuck) * focal / along;
+            }
         }
     }
+    #[allow(clippy::cast_precision_loss, reason = "a few dozen samples")]
+    let off_ball = off_ball / outline.len() as f32;
     // The iris as the cornea shows it: the limbus's circle, a little forward, turned with the gaze.
     let forward = shot.forward();
     let right = Vec3::Y.cross(forward).normalize_or(Vec3::X);
@@ -158,7 +189,12 @@ pub fn project(design: &EyeDesign, shot: &Shot, size: [u32; 2]) -> Projected {
         }
         (centre, sum / 16.0)
     };
-    Projected { outline, iris: circle(ball.iris_radius), pupil: circle(ball.iris_radius * ball.pupil * PUPIL_MAGNIFY) }
+    Projected {
+        outline,
+        iris: circle(ball.iris_radius),
+        pupil: circle(ball.iris_radius * ball.pupil * PUPIL_MAGNIFY),
+        off_ball,
+    }
 }
 
 #[allow(clippy::cast_precision_loss, reason = "a picture's side, at most 16384")]
@@ -187,6 +223,7 @@ pub fn residuals(design: &EyeDesign, shot: &Shot, marks: &Landmarks) -> Residual
         iris_radius: (p.iris.1 - marks.iris.radius).abs(),
         pupil_centre,
         pupil_radius,
+        off_ball: p.off_ball,
     }
 }
 
@@ -221,47 +258,94 @@ struct Knob {
     set: fn(&mut EyeDesign, &mut Shot, f32),
     step: f32,
     range: (f32, f32),
+    /// Whether it is part of the eye's shape (held near where it started) rather than the camera or the gaze.
+    shape: bool,
 }
 
-const KNOBS: [Knob; 18] = [
-    Knob { get: |_, s| s.camera[0], set: |_, s, v| s.camera[0] = v, step: 0.002, range: (-0.2, 0.2) },
-    Knob { get: |_, s| s.camera[1], set: |_, s, v| s.camera[1] = v, step: 0.002, range: (-0.2, 0.2) },
-    Knob { get: |_, s| s.camera[2], set: |_, s, v| s.camera[2] = v, step: 0.003, range: (0.02, 0.3) },
-    Knob { get: |_, s| s.look[0], set: |_, s, v| s.look[0] = v, step: 0.001, range: (-0.02, 0.02) },
-    Knob { get: |_, s| s.look[1], set: |_, s, v| s.look[1] = v, step: 0.001, range: (-0.02, 0.02) },
-    Knob { get: |_, s| s.roll, set: |_, s, v| s.roll = v, step: 3.0, range: (-60.0, 60.0) },
-    Knob { get: |_, s| s.gaze[0], set: |_, s, v| s.gaze[0] = v, step: 0.05, range: (-0.8, 0.8) },
-    Knob { get: |_, s| s.gaze[1], set: |_, s, v| s.gaze[1] = v, step: 0.05, range: (-0.8, 0.8) },
-    Knob { get: |d, _| d.aperture.inner_x, set: |d, _, v| d.aperture.inner_x = v, step: 0.001, range: (0.008, 0.018) },
+/// How hard the fit holds the eye's shape near where it started: pixels for moving one shape parameter across its whole
+/// range.
+const SHAPE_PRIOR: f32 = 8.0;
+
+const KNOBS: [Knob; 19] = [
+    Knob { get: |_, s| s.camera[0], set: |_, s, v| s.camera[0] = v, step: 0.002, range: (-0.2, 0.2), shape: false },
+    Knob { get: |_, s| s.camera[1], set: |_, s, v| s.camera[1] = v, step: 0.002, range: (-0.2, 0.2), shape: false },
+    Knob { get: |_, s| s.camera[2], set: |_, s, v| s.camera[2] = v, step: 0.003, range: (0.02, 0.3), shape: false },
+    Knob { get: |_, s| s.look[0], set: |_, s, v| s.look[0] = v, step: 0.001, range: (-0.02, 0.02), shape: false },
+    Knob { get: |_, s| s.look[1], set: |_, s, v| s.look[1] = v, step: 0.001, range: (-0.02, 0.02), shape: false },
+    Knob { get: |_, s| s.roll, set: |_, s, v| s.roll = v, step: 3.0, range: (-60.0, 60.0), shape: false },
+    Knob { get: |_, s| s.gaze[0], set: |_, s, v| s.gaze[0] = v, step: 0.05, range: (-0.8, 0.8), shape: false },
+    Knob { get: |_, s| s.gaze[1], set: |_, s, v| s.gaze[1] = v, step: 0.05, range: (-0.8, 0.8), shape: false },
+    Knob {
+        get: |d, _| d.aperture.inner_x,
+        set: |d, _, v| d.aperture.inner_x = v,
+        step: 0.001,
+        range: (0.008, 0.018),
+        shape: true,
+    },
     Knob {
         get: |d, _| d.aperture.outer_x,
         set: |d, _, v| d.aperture.outer_x = v,
         step: 0.001,
         range: (-0.018, -0.008),
+        shape: true,
     },
-    Knob { get: |d, _| d.aperture.inner_y, set: |d, _, v| d.aperture.inner_y = v, step: 0.001, range: (-0.006, 0.006) },
-    Knob { get: |d, _| d.aperture.outer_y, set: |d, _, v| d.aperture.outer_y = v, step: 0.001, range: (-0.006, 0.006) },
-    Knob { get: |d, _| d.aperture.upper, set: |d, _, v| d.aperture.upper = v, step: 0.000_8, range: (0.0005, 0.012) },
+    Knob {
+        get: |d, _| d.aperture.inner_y,
+        set: |d, _, v| d.aperture.inner_y = v,
+        step: 0.001,
+        range: (-0.006, 0.006),
+        shape: true,
+    },
+    Knob {
+        get: |d, _| d.aperture.outer_y,
+        set: |d, _, v| d.aperture.outer_y = v,
+        step: 0.001,
+        range: (-0.006, 0.006),
+        shape: true,
+    },
+    Knob {
+        get: |d, _| d.aperture.upper,
+        set: |d, _, v| d.aperture.upper = v,
+        step: 0.000_8,
+        range: (0.0005, 0.012),
+        shape: true,
+    },
     Knob {
         get: |d, _| d.aperture.upper_peak,
         set: |d, _, v| d.aperture.upper_peak = v,
         step: 0.05,
         range: (0.15, 0.85),
+        shape: true,
     },
-    Knob { get: |d, _| d.aperture.lower, set: |d, _, v| d.aperture.lower = v, step: 0.000_8, range: (0.0005, 0.008) },
+    Knob {
+        get: |d, _| d.aperture.lower,
+        set: |d, _, v| d.aperture.lower = v,
+        step: 0.000_8,
+        range: (0.0005, 0.008),
+        shape: true,
+    },
     Knob {
         get: |d, _| d.aperture.lower_peak,
         set: |d, _, v| d.aperture.lower_peak = v,
         step: 0.05,
         range: (0.15, 0.85),
+        shape: true,
     },
     Knob {
         get: |d, _| d.ball.iris_radius,
         set: |d, _, v| d.ball.iris_radius = v,
         step: 0.000_3,
         range: (0.003, 0.008),
+        shape: true,
     },
-    Knob { get: |d, _| d.ball.pupil, set: |d, _, v| d.ball.pupil = v, step: 0.02, range: (0.05, 0.8) },
+    Knob { get: |d, _| d.ball.pupil, set: |d, _, v| d.ball.pupil = v, step: 0.02, range: (0.05, 0.8), shape: true },
+    Knob {
+        get: |d, _| d.ball.radius,
+        set: |d, _, v| d.ball.radius = v,
+        step: 0.000_3,
+        range: (0.010_5, 0.013_5),
+        shape: true,
+    },
 ];
 
 /// The parameters the fit moves, read from a design and a shot.
@@ -294,7 +378,22 @@ impl Search<'_> {
     fn eval(&self, params: &Params) -> Option<(Params, f32)> {
         let (d, s) = self.write(params);
         s.check().ok()?;
-        Some((Self::read(&d, &s), residuals(&d, &s, self.marks).total()))
+        let params = Self::read(&d, &s);
+        Some((params, residuals(&d, &s, self.marks).total() + self.prior(&params)))
+    }
+
+    /// The pull back toward the design the fit started from, pixels: one picture leaves the eye's shape and the
+    /// camera partly trading off against each other, and without it the fit bends the shape to suit the one view
+    /// (an inner corner tucked in and dropped, say), which reads wrong from every other side.
+    fn prior(&self, params: &Params) -> f32 {
+        let start = Self::read(self.design, self.shot);
+        KNOBS
+            .iter()
+            .zip(params.iter().zip(&start))
+            .filter(|(knob, _)| knob.shape)
+            .map(|(knob, (v, s))| ((v - s) / (knob.range.1 - knob.range.0)).powi(2))
+            .sum::<f32>()
+            * SHAPE_PRIOR
     }
 
     /// One pass over the parameters from `x`: each takes a step either way if that lowers the error.

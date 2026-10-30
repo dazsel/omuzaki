@@ -23,7 +23,7 @@ use super::design::{Aperture, Ball, EyeDesign, Lashes};
 use super::noise::{Pcg, smoothstep};
 use super::textures::SCLERA_REACH;
 
-const MM: f32 = 0.001;
+pub(super) const MM: f32 = 0.001;
 /// The limbus as a share of the iris's radius: the cornea is a little wider than the iris (the shader's `limbus`).
 pub const LIMBUS: f32 = 1.04;
 /// The eye's surface under the lids, for the lids to lie on: the eyeball's sphere widened toward the corners, where
@@ -377,7 +377,7 @@ impl Lids {
         // The pocket behind the margin darkens as it runs back behind the ball, deepest at the inner corner, where the
         // ball's bulge hides it in shadow; at the outer corner the lids meet in a point and the pink inside shows.
         if d < 0.0 {
-            cavity = 0.55 - (0.1 + 0.35 * smoothstep(0.6, 1.0, u)) * smoothstep(0.0, 1.2 * MM, -d);
+            cavity = 0.85 - (0.1 + 0.2 * smoothstep(0.6, 1.0, u)) * smoothstep(0.0, 1.2 * MM, -d);
         }
         // The inner corner and the lid margins are flushed: the margin itself, the thin moist rim between the lashes
         // and the eye, is a deeper red than the skin, more so on the upper lid, whose margin the eye looks up into.

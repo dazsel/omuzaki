@@ -34,12 +34,13 @@ impl View {
     pub fn shot(self) -> Shot {
         match self {
             Self::Macro => Shot {
-                camera: [-0.030_45, -0.015_5, 0.050_03],
-                look: [-0.002, -0.000_8, 0.010],
-                roll: -10.1,
+                camera: [-0.027_25, -0.014, 0.050_02],
+                look: [-0.001_75, -0.000_8, 0.010],
+                roll: -5.5,
                 fov: 32.0,
-                gaze: [-0.184, 0.181, 0.92],
+                gaze: [-0.146_5, 0.168_3, 0.92],
                 depth_of_field: true,
+                light: Lighting::default(),
             },
             Self::Front => Shot {
                 camera: [0.0, 0.001, 0.07],
@@ -48,6 +49,7 @@ impl View {
                 fov: 27.0,
                 gaze: [0.0, 0.015, 1.0],
                 depth_of_field: false,
+                light: Lighting::default(),
             },
         }
     }
@@ -73,6 +75,54 @@ pub struct Shot {
     /// A macro lens's shallow depth of field, focused on the iris; `false` keeps everything sharp.
     #[serde(default)]
     pub depth_of_field: bool,
+    /// How the eye is lit; a portrait's key and fill when left out.
+    #[serde(default)]
+    pub light: Lighting,
+}
+
+/// How a close-up is lit: a warm key that casts shadows, a soft fill from the camera, and the studio's softbox, whose
+/// reflection is the catchlight. Directions are toward the light, in the eye's frame; their lengths don't matter.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Lighting {
+    /// Toward the key light (`[0.55, 0.6, 0.55]`: above and on the nose's side, as a window lights a portrait).
+    pub key: [f32; 3],
+    /// The key's strength, 0 to 4.
+    pub key_intensity: f32,
+    /// The fill from the camera's side, 0 to 4: it reaches under the lids and into the corners the key leaves dark.
+    pub fill: f32,
+    /// The softbox, from the camera's direction: how far it sits toward the nose (`x`) and above (`y`) the camera's
+    /// line; the catchlight moves with it.
+    pub softbox: [f32; 2],
+}
+
+impl Default for Lighting {
+    fn default() -> Self {
+        Self { key: [0.55, 0.6, 0.55], key_intensity: 0.8, fill: 0.22, softbox: [0.4, 1.0] }
+    }
+}
+
+impl Lighting {
+    /// Why the lighting can't be used, if it can't.
+    ///
+    /// # Errors
+    /// What is wrong, naming the field.
+    pub fn check(&self) -> Result<(), String> {
+        let numbers = self.key.iter().chain(&self.softbox).chain([&self.key_intensity, &self.fill]);
+        if numbers.into_iter().any(|v| !v.is_finite()) {
+            return Err("light: every number must be finite".to_owned());
+        }
+        if Vec3::from(self.key).length() < 1e-6 {
+            return Err("light.key: must point somewhere".to_owned());
+        }
+        if !(0.0..=4.0).contains(&self.key_intensity) || !(0.0..=4.0).contains(&self.fill) {
+            return Err("light: key_intensity and fill must be 0 to 4".to_owned());
+        }
+        if self.softbox.iter().any(|v| v.abs() > 4.0) {
+            return Err("light.softbox: each must be -4 to 4".to_owned());
+        }
+        Ok(())
+    }
 }
 
 impl Shot {
@@ -114,7 +164,7 @@ impl Shot {
         if gaze.length() < 1e-6 || gaze.z <= 0.0 {
             return Err("gaze: must point out of the eye (a positive z)".to_owned());
         }
-        Ok(())
+        self.light.check()
     }
 
     /// The camera this shot uses.
@@ -271,17 +321,22 @@ fn build(
     }
 
     let real = 1.0 - design.style;
-    // The key from above and the nose's side, warm, as in a window-lit portrait: the socket toward the nose falls into
-    // shadow and the ball and the lids are modelled by it.
-    let key = Vec3::new(0.55, 0.6, 0.55);
+    let light = &shot.light;
+    // The key, warm, as in a window-lit portrait: the ball and the lids are modelled by it.
+    let key = Vec3::from(light.key).normalize_or(Vec3::Z);
     scene.lights = vec![
-        Light::Directional { to_light: key, colour: Colour::hex(0x00ff_e8d0), intensity: 0.8, casts_shadow: true },
+        Light::Directional {
+            to_light: key,
+            colour: Colour::hex(0x00ff_e8d0),
+            intensity: light.key_intensity,
+            casts_shadow: true,
+        },
         // A soft fill from the camera, as a photographer bounces one: it reaches under the lids and into the corners,
         // which the key from above leaves black.
         Light::Directional {
             to_light: camera_at.normalize(),
             colour: Colour::hex(0x00ff_dcc8),
-            intensity: 0.22 * real,
+            intensity: light.fill * real,
             casts_shadow: false,
         },
         // An anime eye is lit brighter and flatter, as a cel is.
@@ -292,7 +347,7 @@ fn build(
         },
     ];
     // The softbox sits above the camera, so its reflection lands on the cornea as the catchlight.
-    let softbox = camera_at.normalize() + Vec3::new(0.4, 1.0, 0.0);
+    let softbox = camera_at.normalize() + Vec3::new(light.softbox[0], light.softbox[1], 0.0);
     let environment = renderer.create_environment(&studio(softbox))?;
     made.push(environment.into());
     scene.environment = Some(EnvironmentUse::new(environment));

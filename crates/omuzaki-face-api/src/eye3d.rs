@@ -72,8 +72,8 @@ impl EyeDesign {
 pub enum EyeShape {
     /// The default adult eye: a soft almond, the inner corner a little lower.
     Natural,
-    /// Wide open and round: the upper lid high over the iris, white showing above the lower lid, the iris a little
-    /// larger, the outer corner tilted down; the look of an eye opened for a macro photograph.
+    /// Wide open and round: the upper lid high over the iris, white showing above the lower lid, the outer corner
+    /// tilted down; the look of an eye opened wide for a macro photograph.
     Wide,
     /// Long and narrow, the outer corner lifted.
     Almond,
@@ -96,13 +96,13 @@ impl EyeShape {
         design.aperture = match self {
             Self::Natural => natural,
             Self::Wide => Aperture {
-                inner_x: 0.014_4,
-                outer_x: -0.015_7,
-                inner_y: -0.001_9,
-                outer_y: -0.002_6,
-                upper: 0.011_4,
-                upper_peak: 0.57,
-                lower: 0.002_4,
+                inner_x: 0.011_8,
+                outer_x: -0.015_1,
+                inner_y: -0.003_3,
+                outer_y: -0.001_2,
+                upper: 0.010_6,
+                upper_peak: 0.59,
+                lower: 0.002_3,
                 lower_peak: 0.53,
             },
             Self::Almond => Aperture {
@@ -128,7 +128,7 @@ impl EyeShape {
         };
         match self {
             Self::Wide => {
-                design.ball.iris_radius = 0.006_2;
+                design.ball.iris_radius = 0.005_9;
                 design.ball.pupil = 0.26;
             }
             Self::Hooded => {
