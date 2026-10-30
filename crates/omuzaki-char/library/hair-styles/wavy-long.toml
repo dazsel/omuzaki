@@ -1,0 +1,56 @@
+id = "wavy-long"
+name = "Wavy long"
+summary = "Long hair in loose waves from a side part, the ends curled out."
+origin = "a written description of the cut, built from the kit's generators and tuned by eye on the kit's renders (#2486)"
+
+[volume]
+whorl = { polar_deg = 25.0, azimuth_deg = 180.0 }
+fullness = 1.15
+crown = 1.0
+back = 1.0
+part = { side_deg = 20.0 }
+
+[groups.a-cap]
+dynamics = { simulate = false, follow = "head" }
+
+[groups.a-cap.generator]
+type = "cap"
+
+[groups.b-bangs]
+dynamics = { simulate = false, follow = "head" }
+
+[groups.b-bangs.generator]
+type = "bangs"
+sweep_deg = 24.0
+
+[[groups.b-bangs.generator.layers]]
+count = 10
+spread_deg = 46.0
+tip_heights = [0.03, 0.02, 0.01, 0.0, -0.01, -0.02]
+shade = 0.8
+hook_deg = 5.0
+
+[[groups.b-bangs.generator.layers]]
+count = 8
+spread_deg = 40.0
+tip_heights = [0.045, 0.03, 0.015, 0.0, -0.015, -0.03]
+shade = 1.0
+hook_deg = 8.0
+
+[groups.c-curtain]
+dynamics = { simulate = true, follow = "body" }
+
+[groups.c-curtain.generator]
+type = "curtain"
+length_front = 0.48
+length_back = 0.56
+drape_deg = 50.0
+wave = { amplitude = 0.05, frequency = 3.0, curl = 0.06 }
+
+[groups.d-framing]
+dynamics = { simulate = true, follow = "head" }
+lock = { tip = "curl_out" }
+
+[groups.d-framing.generator]
+type = "framing"
+wave = { amplitude = 0.02, frequency = 2.5, curl = 0.03 }

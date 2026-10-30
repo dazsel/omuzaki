@@ -1,0 +1,59 @@
+id = "bob"
+name = "Bob"
+summary = "A chin-length bob cut level all round, a blunt fringe and the ends turned under."
+origin = "a written description of the cut, built from the kit's generators and tuned by eye on the kit's renders (#2486)"
+
+[volume]
+whorl = { polar_deg = 25.0, azimuth_deg = 180.0 }
+fullness = 1.1
+crown = 1.1
+back = 1.0
+
+[groups.a-cap]
+dynamics = { simulate = false, follow = "head" }
+
+[groups.a-cap.generator]
+type = "cap"
+hairline_back_deg = 150.0
+
+[groups.b-bangs]
+dynamics = { simulate = false, follow = "head" }
+
+[groups.b-bangs.generator]
+type = "bangs"
+sweep_deg = 0.0
+
+[[groups.b-bangs.generator.layers]]
+count = 11
+spread_deg = 46.0
+tip_heights = [0.02]
+shade = 0.8
+hook_deg = 0.0
+
+[[groups.b-bangs.generator.layers]]
+count = 9
+spread_deg = 42.0
+tip_heights = [0.035]
+shade = 1.0
+hook_deg = 0.0
+
+[groups.c-curtain]
+dynamics = { simulate = true, follow = "body" }
+
+[groups.c-curtain.generator]
+type = "curtain"
+length_front = 0.12
+length_back = 0.15
+drape_deg = 60.0
+envelope = [[3.0, 0.13], [0.0, 0.13]]
+count = 40
+columns = 4
+wave = { amplitude = 0.0, frequency = 1.0, curl = 0.05 }
+width = { start = 0.08, mid = 0.1, tip = 0.04, tip_at = 0.85 }
+
+[groups.d-framing]
+dynamics = { simulate = true, follow = "head" }
+lock = { tip = "curl_in" }
+
+[groups.d-framing.generator]
+type = "framing"

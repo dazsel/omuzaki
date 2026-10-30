@@ -1,0 +1,106 @@
+id = "messy-short"
+name = "Messy short"
+summary = "Short, layered and tousled: forked tips, a wispy fringe and an ahoge on top."
+origin = "a written description of the cut, built from the kit's generators and tuned by eye on the kit's renders (#2486)"
+
+[volume]
+whorl = { polar_deg = 25.0, azimuth_deg = 180.0 }
+fullness = 1.3
+crown = 1.2
+back = 1.0
+part = { side_deg = -12.0 }
+
+[groups.a-cap]
+dynamics = { simulate = false, follow = "head" }
+
+[groups.a-cap.generator]
+type = "cap"
+
+[groups.c-nape]
+dynamics = { simulate = false, follow = "head" }
+
+[groups.c-nape.generator]
+type = "curtain"
+length_front = 0.072
+length_back = 0.09
+drape_deg = 55.0
+envelope = [[3.0, 0.135], [0.0, 0.135]]
+count = 36
+columns = 3
+wave = { amplitude = 0.0, frequency = 1.0, curl = 0.02 }
+width = { start = 0.06, mid = 0.08, tip = 0.02, tip_at = 0.75 }
+
+[groups.b-bangs]
+dynamics = { simulate = false, follow = "head" }
+lock = { tip = "fork", spread = 0.5 }
+
+[groups.b-bangs.generator]
+type = "bangs"
+sweep_deg = 8.0
+
+[[groups.b-bangs.generator.layers]]
+count = 12
+spread_deg = 48.0
+tip_heights = [0.02, 0.0, 0.03, -0.01]
+shade = 0.7
+hook_deg = 4.0
+width = 0.04
+
+[[groups.b-bangs.generator.layers]]
+count = 10
+spread_deg = 44.0
+tip_heights = [0.04, 0.01, 0.035, 0.0, 0.02]
+shade = 0.85
+hook_deg = 6.0
+width = 0.04
+
+[[groups.b-bangs.generator.layers]]
+count = 8
+spread_deg = 38.0
+tip_heights = [0.05, 0.02, 0.045, 0.01]
+shade = 1.0
+hook_deg = 8.0
+width = 0.04
+
+[[groups.b-bangs.generator.wisps]]
+phi_deg = -14.0
+tip_height = -0.05
+width = 0.02
+
+[[groups.b-bangs.generator.wisps]]
+phi_deg = 4.0
+tip_height = -0.07
+width = 0.016
+
+[[groups.b-bangs.generator.wisps]]
+phi_deg = 18.0
+tip_height = -0.04
+width = 0.02
+
+[groups.c-sweep]
+dynamics = { simulate = false, follow = "head" }
+lock = { split = 2, spread = 0.8 }
+
+[groups.c-sweep.generator]
+type = "part_sweep"
+count = 20
+end_height_front = 0.02
+end_height_back = 0.0
+
+[groups.d-framing]
+dynamics = { simulate = true, follow = "head" }
+lock = { tip = "fork" }
+
+[groups.d-framing.generator]
+type = "framing"
+count = 2
+
+[groups.f-ahoge]
+dynamics = { simulate = false, follow = "head" }
+
+[groups.f-ahoge.generator]
+type = "ahoge"
+locks = 2
+length = 0.14
+curl_deg = 230.0
+fan_deg = 28.0

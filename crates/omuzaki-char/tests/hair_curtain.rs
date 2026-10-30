@@ -271,3 +271,22 @@ fn a_non_finite_parameter_still_makes_every_clump() {
     let nan = CurtainGen { count: 8, spread_deg: f64::NAN, ..CurtainGen::default() };
     assert_eq!(compile_forked(&nan, 1).clumps.len(), 8);
 }
+
+#[test]
+fn a_drape_lays_each_guide_over_the_head_from_above_its_root() {
+    let plain = compile_forked(&CurtainGen { root_tuck_deg: 0.0, ..params(8) }, 3);
+    let draped = compile_forked(&CurtainGen { drape_deg: 50.0, ..params(8) }, 3);
+    assert_eq!(plain.clumps.len(), draped.clumps.len());
+    for (p, d) in plain.clumps.iter().zip(&draped.clumps) {
+        assert_eq!(d.rest.len(), GUIDE_POINTS);
+        // It starts well up the head, and every point above the plain guide's root stands over the scalp shell
+        // (the shell is under 2.6 cm thick), not under it as the tuck does.
+        assert!(d.rest[0].y > p.rest[0].y + 0.03, "{} against {}", d.rest[0], p.rest[0]);
+        for q in d.rest.iter().filter(|q| q.y > p.rest[0].y) {
+            assert!(gap(*q) > 0.026, "{q} is {} m off the head", gap(*q));
+        }
+        // Below, it falls as the plain guide does.
+        let (pe, de) = (p.rest[GUIDE_POINTS - 1], d.rest[GUIDE_POINTS - 1]);
+        assert!(pe.distance(de) < 0.03, "the tips land {} m apart", pe.distance(de));
+    }
+}

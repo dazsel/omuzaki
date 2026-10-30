@@ -1,0 +1,54 @@
+id = "long-straight"
+name = "Long straight"
+summary = "Straight hair past the shoulder blades, a centre part and a light fringe, long locks framing the face."
+origin = "a written description of the cut, built from the kit's generators and tuned by eye on the kit's renders (#2486)"
+
+[volume]
+whorl = { polar_deg = 25.0, azimuth_deg = 180.0 }
+fullness = 1.0
+crown = 1.0
+back = 1.0
+part = { side_deg = 0.0 }
+
+[groups.a-cap]
+dynamics = { simulate = false, follow = "head" }
+
+[groups.a-cap.generator]
+type = "cap"
+
+[groups.b-bangs]
+dynamics = { simulate = false, follow = "head" }
+
+[groups.b-bangs.generator]
+type = "bangs"
+sweep_deg = 0.0
+
+[[groups.b-bangs.generator.layers]]
+count = 10
+spread_deg = 48.0
+tip_heights = [0.05, 0.035, 0.02, 0.01, 0.01, 0.02, 0.035, 0.05]
+shade = 0.8
+hook_deg = -10.0
+
+[[groups.b-bangs.generator.layers]]
+count = 8
+spread_deg = 44.0
+tip_heights = [0.05, 0.035, 0.02, 0.01, 0.01, 0.02, 0.035, 0.05]
+shade = 1.0
+hook_deg = -14.0
+
+[groups.c-curtain]
+dynamics = { simulate = true, follow = "body" }
+
+[groups.c-curtain.generator]
+type = "curtain"
+length_front = 0.5
+length_back = 0.58
+drape_deg = 50.0
+wave = { amplitude = 0.006, frequency = 1.2, curl = 0.01 }
+
+[groups.d-framing]
+dynamics = { simulate = true, follow = "head" }
+
+[groups.d-framing.generator]
+type = "framing"
