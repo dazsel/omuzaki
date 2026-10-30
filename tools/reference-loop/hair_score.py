@@ -6,12 +6,13 @@
 
 Builds a kit character in a fresh project under OUT_DIR (`character.create`, then `hair.style.apply` and any `--op`,
 each an op name and its arguments, run on the character's hair part), imports SAMPLE.vrm beside it as an avatar
-(`io.inspect`, `io.import`), renders both with `render.preview` at the same framings, and writes to OUT_DIR:
+(`io.inspect`, `io.import`), puts each alone in a scene over a transparent backdrop (`stage.create_scene`,
+`stage.set_backdrop`), renders both with `render.preview` at the same framings, and writes to OUT_DIR:
 
   - side-by-side.png: ours on the left, the sample on the right, one row per framing;
   - scores.json: for each framing and each character, the numbers below over the hair region, and ours minus theirs.
 
-The hair region is the character against the backdrop (whatever differs from the render's corners), above the brows
+The hair region is the character (the render's alpha, over a transparent backdrop), above the brows
 in the front views (the eyes' height from `render.preview`'s face landmarks, less a third of the eyes-to-mouth
 distance) and in the top 55% of the character's height in the back view. The numbers, in CIE L*a*b* (D65):
 
@@ -40,7 +41,7 @@ from PIL import Image, ImageDraw
 SIZE = [640, 640]
 FRAMINGS = {"front": dict(yaw=25, pitch=5), "side": dict(yaw=80, pitch=5), "back": dict(yaw=160, pitch=8)}
 EDGE = 12.0  # L* per pixel of Sobel gradient that counts as an edge
-BACKDROP = 18.0  # Delta E from the corners' colour beyond which a pixel is the character
+GREY = 128  # the backdrop the sheet shows the renders over
 
 
 class Omuzaki:
@@ -89,11 +90,9 @@ def landmarks(answer: dict) -> dict | None:
     return faces[0] if faces else None
 
 
-def region(image: np.ndarray, answer: dict, framing: str) -> np.ndarray:
-    """The hair region of `image`: the character, above the brows (front views) or in its top 55% (back)."""
-    l = lab(image)
-    corners = np.concatenate([l[:8, :8].reshape(-1, 3), l[:8, -8:].reshape(-1, 3)])
-    subject = np.linalg.norm(l - np.median(corners, axis=0), axis=-1) > BACKDROP
+def region(alpha: np.ndarray, answer: dict, framing: str) -> np.ndarray:
+    """The hair region of a render with `alpha`: the character, above the brows (front views) or in its top 55%."""
+    subject = alpha > 128
     rows = np.where(subject.any(axis=1))[0]
     if rows.size == 0:
         return subject
@@ -163,15 +162,21 @@ def main() -> None:
     if not confirm:
         sys.exit("io.inspect gave no confirmation token")
     cli.op("io.import", {"path": str(sample), "as": "avatar", "id": "sample", "confirm": confirm.group(1)})
+    # A scene of each alone, over a transparent backdrop: the render's alpha is the character.
+    for who in ["kit", "sample"]:
+        cli.op("stage.create_scene", {"id": f"{who}-alone", "cast": [who]})
+        cli.op("stage.set_backdrop", {"scene": f"{who}-alone", "kind": "transparent"})
 
     report, rows = {}, []
     for framing, view in FRAMINGS.items():
         row, entry = [], {}
         for who in ["kit", "sample"]:
             path = a.out / f"{framing}-{who}.png"
-            answer = cli.render(who, path, **view)
-            image = np.asarray(Image.open(path).convert("RGB"))
-            mask = region(image, answer, framing)
+            answer = cli.render(who, path, scene=f"{who}-alone", **view)
+            rgba = np.asarray(Image.open(path).convert("RGBA")).astype(np.float64)
+            alpha = rgba[..., 3:] / 255.0
+            image = (rgba[..., :3] * alpha + GREY * (1 - alpha)).round().astype(np.uint8)
+            mask = region(rgba[..., 3], answer, framing)
             entry[who] = scores(image, mask)
             shown = image.copy()
             shown[~mask] = (shown[~mask] * 0.35).astype(np.uint8)
