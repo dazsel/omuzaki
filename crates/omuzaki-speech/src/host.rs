@@ -178,6 +178,8 @@ pub enum SpeechEvent {
         end: f64,
         /// The text so far.
         text: String,
+        /// Some of it was spoken in `MicMode::CohostOnly` (the tap's `private` flag).
+        private: bool,
     },
     /// A place where a listener would nod or say "mm": a low-pitch stretch or a pause after a falling phrase while the
     /// person keeps the floor (only with [`HostConfig::turn`]).
@@ -1161,7 +1163,13 @@ impl AsrWorker {
         spec.text = Some((text.clone(), asr));
         drop(spec);
         *lock(&self.words) = Some((job.utterance, text.clone()));
-        Some(SpeechEvent::Partial { utterance: job.utterance, start: job.start, end: job.end, text })
+        Some(SpeechEvent::Partial {
+            utterance: job.utterance,
+            start: job.start,
+            end: job.end,
+            text,
+            private: job.private,
+        })
     }
 
     fn run(mut self) {
@@ -1196,7 +1204,13 @@ impl AsrWorker {
                 },
                 (Ok(t), JobKind::Partial) => {
                     *lock(&self.words) = Some((job.utterance, t.text.clone()));
-                    SpeechEvent::Partial { utterance: job.utterance, start: job.start, end: job.end, text: t.text }
+                    SpeechEvent::Partial {
+                        utterance: job.utterance,
+                        start: job.start,
+                        end: job.end,
+                        text: t.text,
+                        private: job.private,
+                    }
                 }
                 (Ok(t), JobKind::Speculative) => match self.speculated(&job, t.text, t.elapsed) {
                     Some(event) => event,
