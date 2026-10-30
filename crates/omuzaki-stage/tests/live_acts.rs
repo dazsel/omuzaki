@@ -14,6 +14,7 @@ mod support;
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
+use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -478,4 +479,73 @@ fn act_react_knocks_the_tracked_body_and_hands_it_back_exactly_with_the_face_unt
     // Out of range is refused, naming the field.
     let e = run(&knocked.services(), "act.react", json!({ "strength": 9 })).unwrap_err();
     assert_eq!((e.code, e.field.as_deref()), (ErrorCode::Invalid, Some("strength")), "{e:?}");
+}
+
+/// A motion-capture skeleton with a spine and a left arm, and four seconds of motion on it at 30 fps: the spine turns
+/// and the elbow folds and opens.
+fn mocap() -> (String, String) {
+    let bone = |id: u32, name: &str, dir: &str, axis: &str, dof: &str| {
+        format!(
+            "  begin\n    id {id}\n    name {name}\n    direction {dir}\n    length 4\n    axis {axis} XYZ\n    dof {dof}\n  end\n"
+        )
+    };
+    let mut asf = ":units\n  length 0.45\n:bonedata\n".to_owned();
+    asf += &bone(1, "lowerback", "0 1 0", "0 0 0", "rx ry rz");
+    asf += &bone(2, "lhumerus", "1 0 0", "0 0 -90", "rx ry rz");
+    asf += &bone(3, "lradius", "1 0 0", "0 0 -90", "rx");
+    asf += ":hierarchy\n  begin\n    root lowerback\n    lowerback lhumerus\n    lhumerus lradius\n  end\n";
+    let mut amc = ":FULLY-SPECIFIED\n:DEGREES\n".to_owned();
+    for k in 0..120 {
+        let t = k as f32 / 30.0;
+        let (turn, elbow) = (25.0 * (1.3 * t).sin(), 45.0 + 40.0 * (2.1 * t).sin());
+        writeln!(
+            amc,
+            "{}\nroot 0 {} 0 0 0 0\nlowerback 0 {turn} 0\nlhumerus 0 0 -60\nlradius {elbow}",
+            k + 1,
+            30.0 + t
+        )
+        .unwrap();
+    }
+    (asf, amc)
+}
+
+#[test]
+fn an_imported_take_plays_live_through_act_clip_exactly_on_the_living_body() {
+    omuzaki_stage::link();
+    omuzaki_anim::link();
+    let (asf, amc) = mocap();
+    let mut doc = MemDoc::from_value(json!({ "characters": { "kit": { "name": "Kit" } } }));
+    let (actor, clock) = (Actor::Person { name: "performer".into() }, FakeClock::new(Seconds(0.0)));
+    let import = json!({
+        "character": "kit", "id": "talk", "skeleton": {"text": asf}, "motion": {"text": amc}, "fps": 30.0
+    });
+    let op = (find("motion.import").unwrap().decode)(import).unwrap();
+    let planned = op.plan(&OpCtx::new(&doc, &actor, &clock)).unwrap();
+    omuzaki_doc_api::DocWrite::apply(&mut doc, &planned.patch).unwrap();
+    let take = omuzaki_anim::motion::asf::Skeleton::parse(&asf).unwrap().motion(&amc, 30.0, 0.9).unwrap().in_place();
+
+    let mut rig = Rig::animated(None, Box::new(LivingBody::new(BodyStyle::default(), 3)));
+    rig.run_for(0.5);
+    let services = rig.services();
+    let ctx = OpCtx::new(&doc, &actor, &clock).with_services(&services);
+    let args = json!({ "clip": "talk", "character": "kit", "fade_s": 0.0 });
+    let op = (find("act.clip").unwrap().decode)(args).unwrap();
+    op.plan(&ctx).unwrap();
+    // The command lands on the next step, which starts the act; the step after shows it one step in. The living body
+    // hands the bones over within half a second (no pop from its own motion); from then on the body is the take.
+    rig.step();
+    let mut worst = 0.0_f32;
+    for n in 0..230_u32 {
+        let step = rig.step();
+        let theirs = take.sample((n + 1) as f32 / 60.0);
+        if n < 30 {
+            continue;
+        }
+        for bone in HumanoidBone::ALL {
+            let (a, b) = (step.pose.get(bone), theirs.get(bone));
+            worst = worst.max((a - b).length().min((a + b).length()));
+        }
+        assert!((step.pose.hips_offset - theirs.hips_offset).length() < 1e-6, "step {n}");
+    }
+    assert!(worst < 1e-6, "the live body is the take: {worst} off");
 }

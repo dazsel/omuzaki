@@ -194,11 +194,13 @@ impl ImportMotion {
                 }
             })
             .collect();
-        let summary = self.summary.clone().unwrap_or_else(|| {
-            format!("Motion capture, {length:.1} s from {from:.1} s, as {}", self.id)
-        });
+        let summary = self
+            .summary
+            .clone()
+            .unwrap_or_else(|| format!("Motion capture, {length:.1} s from {from:.1} s, as {}", self.id));
         // A one-frame take is a held pose: a clip needs a length above zero.
-        let body = ClipBody { summary, length: length.max(1.0 / key_fps), looped: false, easing: "linear".to_owned(), keys };
+        let body =
+            ClipBody { summary, length: length.max(1.0 / key_fps), looped: false, easing: "linear".to_owned(), keys };
         body.to_clip(&self.id)?;
         Ok(body)
     }

@@ -101,7 +101,12 @@ fn parse_err(file: &'static str, line: usize, message: impl Into<String>) -> Mot
 fn numbers(file: &'static str, line: usize, words: &[&str]) -> Result<Vec<f32>, MotionError> {
     words
         .iter()
-        .map(|w| w.parse::<f32>().ok().filter(|v| v.is_finite()).ok_or_else(|| parse_err(file, line, format!("{w:?} is not a number"))))
+        .map(|w| {
+            w.parse::<f32>()
+                .ok()
+                .filter(|v| v.is_finite())
+                .ok_or_else(|| parse_err(file, line, format!("{w:?} is not a number")))
+        })
         .collect()
 }
 
@@ -143,7 +148,8 @@ impl Skeleton {
             match (section, words.first().copied()) {
                 ("units", Some("length")) => {
                     let v = numbers(F, line, &words[1..2.min(words.len())])?;
-                    sk.length_unit = v.first().copied().filter(|v| *v > 0.0).ok_or_else(|| parse_err(F, line, "no length unit"))?;
+                    sk.length_unit =
+                        v.first().copied().filter(|v| *v > 0.0).ok_or_else(|| parse_err(F, line, "no length unit"))?;
                 }
                 ("root", Some("order")) => {
                     sk.root_order = words[1..]
@@ -187,7 +193,10 @@ impl Skeleton {
                                 bone.direction = Vec3::new(v[0], v[1], v[2]).normalize_or_zero();
                             }
                         }
-                        "length" => bone.length = numbers(F, line, &words[1..2.min(words.len())])?.first().copied().unwrap_or(0.0),
+                        "length" => {
+                            bone.length =
+                                numbers(F, line, &words[1..2.min(words.len())])?.first().copied().unwrap_or(0.0)
+                        }
                         "axis" => {
                             let v = numbers(F, line, &words[1..words.len().min(4)])?;
                             let order = words.get(4).copied().unwrap_or("XYZ");
@@ -213,9 +222,13 @@ impl Skeleton {
                 }
                 ("hierarchy", Some("begin" | "end")) => {}
                 ("hierarchy", Some(parent)) => {
-                    let p = *sk.by_name.get(parent).ok_or_else(|| parse_err(F, line, format!("unknown bone {parent}")))?;
+                    let p =
+                        *sk.by_name.get(parent).ok_or_else(|| parse_err(F, line, format!("unknown bone {parent}")))?;
                     for child in &words[1..] {
-                        let c = *sk.by_name.get(*child).ok_or_else(|| parse_err(F, line, format!("unknown bone {child}")))?;
+                        let c = *sk
+                            .by_name
+                            .get(*child)
+                            .ok_or_else(|| parse_err(F, line, format!("unknown bone {child}")))?;
                         sk.bones[c].parent = Some(p);
                     }
                 }
@@ -375,7 +388,9 @@ mod tests {
 
     fn bone(id: usize, name: &str, dir: &str, len: f32, axis: &str, dof: &str) -> String {
         let dof = if dof.is_empty() { String::new() } else { format!("    dof {dof}\n") };
-        format!("  begin\n    id {id}\n    name {name}\n    direction {dir}\n    length {len}\n    axis {axis} XYZ\n{dof}  end\n")
+        format!(
+            "  begin\n    id {id}\n    name {name}\n    direction {dir}\n    length {len}\n    axis {axis} XYZ\n{dof}  end\n"
+        )
     }
 
     /// A tiny CMU-shaped skeleton: every mapped bone, straight T-pose directions.
@@ -425,7 +440,8 @@ mod tests {
     #[test]
     fn a_still_frame_is_the_rest_pose_and_a_bent_elbow_bends_the_lower_arm() {
         let sk = Skeleton::parse(&skeleton()).unwrap();
-        let amc = ":FULLY-SPECIFIED\n:DEGREES\n1\nroot 0 30 0 0 0 0\n2\nroot 0 30 0 0 0 0\nlradius 90\nlowerback 0 30 0\n";
+        let amc =
+            ":FULLY-SPECIFIED\n:DEGREES\n1\nroot 0 30 0 0 0 0\n2\nroot 0 30 0 0 0 0\nlradius 90\nlowerback 0 30 0\n";
         let take = sk.motion(amc, 120.0, 0.9).unwrap();
         assert_eq!(take.frames.len(), 2);
         let rest = &take.frames[0];

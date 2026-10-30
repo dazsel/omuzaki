@@ -3,6 +3,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::cast_precision_loss)]
 
+use std::fmt::Write as _;
+
 use omuzaki_anim::motion::asf::Skeleton;
 use omuzaki_anim::poses::find_clip;
 use omuzaki_anim_api::HumanoidBone as B;
@@ -67,12 +69,13 @@ fn amc() -> String {
     let mut s = ":FULLY-SPECIFIED\n:DEGREES\n".to_owned();
     for k in 0..5 {
         let f = k as f32 / 4.0;
-        s += &format!("{}\nroot 0 30 0 0 0 0\nlowerback 0 {} 0\nlhumerus 0 0 0\nlradius {}\n", k + 1, 20.0 * f, 80.0 * f);
+        writeln!(s, "{}\nroot 0 30 0 0 0 0\nlowerback 0 {} 0\nlhumerus 0 0 0\nlradius {}", k + 1, 20.0 * f, 80.0 * f)
+            .unwrap();
     }
     s
 }
 
-fn import(extra: Value) -> Value {
+fn import(extra: &Value) -> Value {
     let mut args = json!({
         "character": "mira", "id": "fold", "skeleton": {"text": ARM}, "motion": {"text": amc()}, "fps": 4.0,
         "key_fps": 8.0
@@ -85,7 +88,7 @@ fn import(extra: Value) -> Value {
 fn every_example_imports_into_a_character() {
     let reg = find("motion.import").unwrap();
     let examples = reg.examples();
-    assert!(!examples.is_empty());
+    assert_ne!(examples.len(), 0);
     let mut doc = MemDoc::from_value(json!({ "characters": { "kit": { "name": "Kit" } } }));
     let planned = plan(examples[0].clone(), &doc).unwrap();
     doc.apply(&planned.patch).unwrap();
@@ -97,7 +100,7 @@ fn every_example_imports_into_a_character() {
 #[test]
 fn the_clip_is_the_take_exactly_at_every_key_and_lands_in_the_set() {
     let mut doc = doc();
-    let planned = plan(import(json!({})), &doc).unwrap();
+    let planned = plan(import(&json!({})), &doc).unwrap();
     let out = planned.output.clone().unwrap();
     assert_eq!((out["created"].clone(), out["keys"].clone()), (json!(true), json!(9)), "{out}");
     assert_eq!(out["plays_with"]["op"], json!("act.clip"));
@@ -127,23 +130,23 @@ fn the_clip_is_the_take_exactly_at_every_key_and_lands_in_the_set() {
     }
 
     // A second import of the same name replaces it, and says so.
-    let again = plan(import(json!({"from_s": 0.5, "hands": "rest"})), &doc).unwrap();
+    let again = plan(import(&json!({"from_s": 0.5, "hands": "rest"})), &doc).unwrap();
     assert_eq!(again.output.unwrap()["created"], json!(false));
 }
 
 #[test]
 fn bad_arguments_are_refused_on_their_fields() {
     let doc = doc();
-    let field = |extra: Value| plan(import(extra), &doc).expect_err("refused").field;
+    let field = |extra: Value| plan(import(&extra), &doc).expect_err("refused").field;
     assert_eq!(field(json!({"from_s": 5.0})).as_deref(), Some("from_s"));
     assert_eq!(field(json!({"key_fps": 0.0})).as_deref(), Some("key_fps"));
     assert_eq!(field(json!({"length_s": 500.0})).as_deref(), Some("length_s"));
     assert_eq!(field(json!({"motion": {"text": "1\nnobone 1\n"}})).as_deref(), Some("motion"));
     assert_eq!(field(json!({"hands": "no-such-shape"})).map(|f| f.starts_with("keys/")), Some(true));
     // A path goes through the actor's file access: with no grants and no project, it is refused before any read.
-    let denied = plan(import(json!({"skeleton": {"path": "/etc/passwd"}})), &doc).expect_err("refused");
+    let denied = plan(import(&json!({"skeleton": {"path": "mocap/18.asf"}})), &doc).expect_err("refused");
     assert_eq!(denied.field.as_deref(), Some("skeleton/path"));
     assert_ne!(denied.code, ErrorCode::Internal);
-    let missing = plan(import(json!({"character": "nobody"})), &doc).expect_err("refused");
+    let missing = plan(import(&json!({"character": "nobody"})), &doc).expect_err("refused");
     assert_eq!(missing.code, ErrorCode::NotFound);
 }
