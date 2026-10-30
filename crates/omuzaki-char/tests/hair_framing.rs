@@ -174,6 +174,7 @@ fn adding_a_disabled_group_does_not_shift_later_draws() {
             mirror: false,
             dynamics: Dynamics::default(),
             generator: Generator::Framing(g),
+            lock: omuzaki_char_api::LockShape::default(),
         };
         if disabled {
             params.groups.insert(GroupId::new("a-off").unwrap(), group(false, swaying(HairSide::Both, 4, true)));
@@ -234,6 +235,7 @@ fn the_mirror_rules_follow_the_side() {
         mirror: true,
         dynamics: Dynamics::default(),
         generator: Generator::Framing(swaying(side, 3, false)),
+        lock: omuzaki_char_api::LockShape::default(),
     };
     assert!(is_bilateral(&group(HairSide::Both).generator));
     assert_eq!(clumps_in(&group(HairSide::Both), &Dispatch), 6);
@@ -270,6 +272,7 @@ fn failures(g: &FramingGen) -> String {
         mirror: false,
         dynamics: Dynamics::default(),
         generator: Generator::Framing(g.clone()),
+        lock: omuzaki_char_api::LockShape::default(),
     };
     let mut c = omuzaki_face_api::Check::new();
     group.check(&mut c);

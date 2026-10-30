@@ -71,7 +71,13 @@ fn character_with(template: &str, bangs: omuzaki_char_api::BangsGen, brows_throu
     hair.shading.brows_through = brows_through;
     hair.groups.insert(
         GroupId::new("b-bangs").unwrap(),
-        HairGroup { enabled: true, mirror: false, dynamics: Dynamics::default(), generator: Generator::Bangs(bangs) },
+        HairGroup {
+            enabled: true,
+            mirror: false,
+            dynamics: Dynamics::default(),
+            generator: Generator::Bangs(bangs),
+            lock: omuzaki_char_api::LockShape::default(),
+        },
     );
     def.parts.insert(PartId::new("hair").unwrap(), part("hair", serde_json::to_value(hair).unwrap()));
     def

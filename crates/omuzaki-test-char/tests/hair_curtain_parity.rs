@@ -26,6 +26,7 @@
 use omuzaki_char::hair::r#gen::curtain::{
     Spacing, StripLook, strip_indices, strip_mesh, strip_normals, strip_positions, vertex_count, winding_flips,
 };
+use omuzaki_char::hair::strands::StrandMap;
 use omuzaki_char_api::{HAIR_INFO, HAIR_UV};
 use omuzaki_core::glam::{Mat4, Vec3};
 use omuzaki_test::jsref::{HairClump, HairDump, JsRef};
@@ -95,7 +96,9 @@ fn the_strip_mesh_has_the_prototypes_counts_order_and_static_attributes() {
     assert!(rest.iter().all(|g| g.len() == POINTS));
     let looks = vec![StripLook { shade: 1.0, colour: [1.0; 4] }; rest.len()];
     // The flip test needs the outward direction at one point; the dump's own bulge there gives it (see below).
-    let mesh = strip_mesh(&rest, &looks, COLUMNS, Spacing::Prototype, HEAD_CENTRE, |_| Vec3::Z, |p| p).unwrap();
+    let mesh =
+        strip_mesh(&rest, &looks, COLUMNS, Spacing::Prototype, &StrandMap::default(), HEAD_CENTRE, |_| Vec3::Z, |p| p)
+            .unwrap();
     assert_eq!((mesh.positions.len(), mesh.triangle_count()), (js.mesh.positions.len(), js.mesh.triangle_count()));
     assert_eq!((mesh.positions.len(), mesh.triangle_count()), (5720, 8800));
 

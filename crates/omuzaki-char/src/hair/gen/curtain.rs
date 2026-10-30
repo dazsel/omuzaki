@@ -42,6 +42,7 @@ use omuzaki_core::mesh::MeshData;
 
 use super::cap::smoothstep;
 use crate::hair::compile::{CompiledGroup, GroupGeometry, HairGenCtx};
+use crate::hair::strands::StrandMap;
 use crate::hair::tube::{OutwardFrame, vertex_colour};
 use crate::kit::catmull::spaced_points;
 
@@ -150,7 +151,7 @@ fn smooth_jitter(draws: &mut [Draws]) {
 
 /// The curtain as one mesh at rest, from the compiled `clumps` and their `u` (a strip's position across the back): each
 /// guide's strip of `columns` columns, in order of `u`, every strip with vertices of its own. Each strip takes its
-/// clump's shade and streak tint. Vertices inside the body (`keep_out`) are moved out of it. Every treatment spaces the
+/// clump's shade and streak tint, and `map` lays it on the strand texture. Vertices inside the body (`keep_out`) are moved out of it. Every treatment spaces the
 /// columns as the prototype does; they differ in the guides [`compile_folds`] makes.
 ///
 /// # Errors
@@ -163,6 +164,7 @@ pub fn group_mesh(
     columns: u8,
     frame: &OutwardFrame,
     keep_out: Option<&BodyKeepOut>,
+    map: &StrandMap,
 ) -> Result<MeshData, StripError> {
     if u.len() != clumps.len() {
         return Err(StripError::GuideCount { clumps: clumps.len(), u: u.len() });
@@ -176,6 +178,7 @@ pub fn group_mesh(
         &looks,
         columns,
         Spacing::Prototype,
+        map,
         frame.head,
         |p| frame.rest(p),
         |p| keep_out.map_or(p, |k| k.push_out(p, STRIP_BODY_MARGIN)),

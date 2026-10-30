@@ -194,7 +194,13 @@ fn compiling_twice_gives_the_same_bytes() {
 
 /// `params` with one group `name`.
 fn params_of(name: &str, generator: Generator, mirror: bool) -> HairParams {
-    let group = HairGroup { enabled: true, mirror, dynamics: Dynamics::default(), generator };
+    let group = HairGroup {
+        enabled: true,
+        mirror,
+        dynamics: Dynamics::default(),
+        generator,
+        lock: omuzaki_char_api::LockShape::default(),
+    };
     HairParams { groups: BTreeMap::from([(id(name), group)]), ..HairParams::default() }
 }
 
@@ -344,7 +350,16 @@ fn more_wraps_wind_a_strand_further() {
 fn the_checks_name_each_tail_and_bun_field() {
     let fails = |generator: Generator| {
         let mut c = omuzaki_face_api::Check::new();
-        c.nested("g", &HairGroup { enabled: true, mirror: false, dynamics: Dynamics::default(), generator });
+        c.nested(
+            "g",
+            &HairGroup {
+                enabled: true,
+                mirror: false,
+                dynamics: Dynamics::default(),
+                generator,
+                lock: omuzaki_char_api::LockShape::default(),
+            },
+        );
         c.finish().err().map(|e| e.to_string()).unwrap_or_default()
     };
     let tail_with = |f: &dyn Fn(&mut TailGen)| {

@@ -2,12 +2,31 @@
 // this file, preceded by the generated `P_<NAME>` offsets of its parameters.
 
 // What the vertex stage hands a program: its extra vertex attributes (declaration order; unused components 0, 0, 0, 1),
-// whether this is the front of the surface and where the fragment is in the world.
+// whether this is the front of the surface and where the fragment is in the world, with the screen-space derivatives of
+// the position and of the first extra attribute (taken where the fragment stage starts, in uniform control flow), so a
+// hook can find which way an attribute runs over the surface (`program_gradient`).
 struct ProgramIn {
     extra: array<vec4<f32>, 4>,
     front: bool,
     // The fragment's position in world space (metres), for hooks that look things up in world space (the shadow map).
     world_position: vec3<f32>,
+    world_dx: vec3<f32>,
+    world_dy: vec3<f32>,
+    extra0_dx: vec4<f32>,
+    extra0_dy: vec4<f32>,
+}
+
+// The world-space direction, along the surface with normal `n`, in which a scalar attribute rises fastest, from its
+// screen-space derivatives `dx` and `dy` (the cotangent frame): for hair, which way a lock runs from root to tip. Zero
+// where the attribute is flat.
+fn program_gradient(p: ProgramIn, n: vec3<f32>, dx: f32, dy: f32) -> vec3<f32> {
+    // Framebuffer `y` runs down the screen, so `world_dx x world_dy` faces away from the eye: the crosses are taken the
+    // other way round from a `y`-up derivation.
+    let across_y = cross(n, p.world_dy);
+    let across_x = cross(p.world_dx, n);
+    let g = across_y * dx + across_x * dy;
+    let len = length(g);
+    return select(vec3<f32>(0.0), g / len, len > 1e-12);
 }
 
 // Parameter `i` (a float offset, `P_<NAME>`), read from the packed block.

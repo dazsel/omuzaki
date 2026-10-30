@@ -134,6 +134,7 @@ fn group(clumps: Vec<GuideClump>, simulate: bool, mirror: bool) -> HairGroup {
         mirror,
         dynamics: Default::default(),
         generator: Generator::Guides(GuidesGen { clumps }),
+        lock: omuzaki_char_api::LockShape::default(),
     };
     g.dynamics.simulate = simulate;
     g
@@ -685,4 +686,24 @@ fn a_recolour_finds_every_strip_and_paints_its_columns_with_its_tint() {
     assert_eq!(new[strips.clone()], want[strips.clone()]);
     assert!(new[strips.clone()] != old[strips.clone()], "the palette really changes some strip's colour");
     assert!(new[strips].iter().any(|c| *c != [1.0; 4]), "some strip is streaked");
+}
+
+#[test]
+fn a_recolour_tints_every_sub_lock_and_fork_as_a_build_does() {
+    // Each compiled clump of `b-locks` becomes 3 sub-locks forked in two (#2480): the recolour must tint the six tubes
+    // with their clump's streak, as the build does.
+    omuzaki_char::link();
+    let mut style = streaked();
+    let group = style.groups.get_mut(&gid("b-locks")).unwrap();
+    group.lock = serde_json::from_value(json!({"split": 3, "tip": "fork"})).unwrap();
+    let mut before = character(&style);
+    colourway(&mut before, 5);
+    let mut after = before.clone();
+    colourway(&mut after, 120);
+    let services = BuildServices::default();
+    let mut recoloured = hair_output(&before).unwrap();
+    let rebuilt = hair_output(&after).unwrap();
+    assert_ne!(exact(&recoloured), exact(&rebuilt), "the palette really changes the output");
+    assert_eq!(recolour_part(&after, &pid("hair"), &services, &mut recoloured), Ok(Recoloured::Done));
+    assert_eq!(exact(&recoloured), exact(&rebuilt));
 }

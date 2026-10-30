@@ -10,6 +10,7 @@ use omuzaki_char::hair::compile::{Forked, GroupGeometry, HairGenCtx};
 use omuzaki_char::hair::r#gen::curtain::{
     self, Folds, GUIDE_POINTS, MIN_GAP, Spacing, StripLook, strip_mesh, strip_normals, strip_positions, vertex_count,
 };
+use omuzaki_char::hair::strands::StrandMap;
 use omuzaki_char::hair::tube::OutwardFrame;
 use omuzaki_char_api::{CurtainGen, Dynamics, GroupId, HAIR_INFO, HAIR_UV, HairClump, HeadSurface, Quality, Wave};
 use omuzaki_core::glam::{Vec2, Vec3};
@@ -57,7 +58,7 @@ fn compile(g: &CurtainGen, seed: u64, folds: Folds) -> (Vec<HairClump>, Vec<f32>
 
 fn mesh_of(g: &CurtainGen, seed: u64, folds: Folds) -> MeshData {
     let (clumps, u) = compile(g, seed, folds);
-    curtain::group_mesh(&clumps, &u, g.columns, &frame(), None).unwrap()
+    curtain::group_mesh(&clumps, &u, g.columns, &frame(), None, &StrandMap::default()).unwrap()
 }
 
 /// Straight parallel guides 2 cm apart along x, hanging from y = 0 to -0.5 in the plane z = 0, outward +Z.
@@ -70,7 +71,8 @@ fn flat_guides(n: usize) -> Vec<Vec<Vec3>> {
 fn flat_mesh(guides: &[Vec<Vec3>], columns: u8, spacing: Spacing) -> MeshData {
     let refs: Vec<&[Vec3]> = guides.iter().map(Vec::as_slice).collect();
     let looks = vec![StripLook { shade: 1.0, colour: [1.0; 4] }; guides.len()];
-    strip_mesh(&refs, &looks, columns, spacing, Vec3::new(0.0, 0.1, -0.5), |_| Vec3::Z, |p| p).unwrap()
+    strip_mesh(&refs, &looks, columns, spacing, &StrandMap::default(), Vec3::new(0.0, 0.1, -0.5), |_| Vec3::Z, |p| p)
+        .unwrap()
 }
 
 fn smoothstep(x: f32, lo: f32, hi: f32) -> f32 {
@@ -298,12 +300,12 @@ fn a_lone_guide_and_a_non_finite_guide_still_build() {
 fn the_strips_follow_u_not_the_order_of_the_clumps() {
     let g = curtain(8, 5);
     let (clumps, u) = compile(&g, 1, Folds::Prototype);
-    let straight = curtain::group_mesh(&clumps, &u, 5, &frame(), None).unwrap();
+    let straight = curtain::group_mesh(&clumps, &u, 5, &frame(), None, &StrandMap::default()).unwrap();
     let reversed_clumps: Vec<_> = clumps.iter().rev().cloned().collect();
     let reversed_u: Vec<f32> = u.iter().rev().copied().collect();
-    let again = curtain::group_mesh(&reversed_clumps, &reversed_u, 5, &frame(), None).unwrap();
+    let again = curtain::group_mesh(&reversed_clumps, &reversed_u, 5, &frame(), None, &StrandMap::default()).unwrap();
     assert_eq!(straight, again);
-    assert!(curtain::group_mesh(&clumps, &u[1..], 5, &frame(), None).is_err());
+    assert!(curtain::group_mesh(&clumps, &u[1..], 5, &frame(), None, &StrandMap::default()).is_err());
 }
 
 #[test]
@@ -312,8 +314,9 @@ fn the_streak_tint_and_shade_of_a_clump_reach_its_strip() {
     let (mut clumps, u) = compile(&g, 1, Folds::Prototype);
     clumps[2].tint = Some(omuzaki_core::colour::Colour::hex(0x00ff_0000));
     clumps[1].shade = 0.5;
-    let mesh = curtain::group_mesh(&clumps, &u, 3, &frame(), None).unwrap();
+    let mesh = curtain::group_mesh(&clumps, &u, 3, &frame(), None, &StrandMap::default()).unwrap();
     let per = 3 * GUIDE_POINTS;
+    // Untinted, and whole to its side: the curtain is one sheet, so a strip's sides are not feathered.
     assert_eq!(mesh.colours[0], [1.0; 4]);
     assert!(mesh.colours[2 * per..3 * per].iter().all(|c| c[0] > 0.9 && c[1] < 0.1));
     let info = &mesh.extra_attribute(HAIR_INFO).unwrap().data;

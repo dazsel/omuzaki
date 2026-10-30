@@ -11,7 +11,15 @@
 fn fs_blend(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
     let uv = mtoon_uv(in.uv);
     let albedo = surface_albedo(uv, in.colour, in.local);
-    let program = ProgramIn(array<vec4<f32>, 4>(in.extra0, in.extra1, in.extra2, in.extra3), front, in.world_position);
+    let program = ProgramIn(
+        array<vec4<f32>, 4>(in.extra0, in.extra1, in.extra2, in.extra3),
+        front,
+        in.world_position,
+        dpdx(in.world_position),
+        dpdy(in.world_position),
+        dpdx(in.extra0),
+        dpdy(in.extra0),
+    );
     var colour = albedo.rgb;
     if (mtoon_on()) {
         let facing = normalize(in.world_normal);

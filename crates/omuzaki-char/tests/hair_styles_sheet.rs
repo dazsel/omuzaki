@@ -45,7 +45,13 @@ fn part(kind: &str, params: Value) -> PartDef {
 }
 
 fn group(generator: Generator, mirror: bool) -> HairGroup {
-    HairGroup { enabled: true, mirror, dynamics: Dynamics::default(), generator }
+    HairGroup {
+        enabled: true,
+        mirror,
+        dynamics: Dynamics::default(),
+        generator,
+        lock: omuzaki_char_api::LockShape::default(),
+    }
 }
 
 fn id(name: &str) -> GroupId {
