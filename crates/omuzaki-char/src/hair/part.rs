@@ -60,6 +60,7 @@ use super::tube::{
 };
 use super::volume;
 use super::wisp;
+use crate::cloth::collide::BodyDepth;
 use crate::head::ears::EarCover;
 use crate::head::ears::fact::EarCoverFact;
 
@@ -119,6 +120,7 @@ pub fn build_with(
     // The body the hair hangs over: the curtain keeps off it. A character without one still builds.
     let body = ctx.fit().ok();
     let keep_out = body.as_deref().map(BodyKeepOut::new);
+    let depth = body.as_deref().map(BodyDepth::new);
     let fail = |message: String| BuildError::Part { part: ctx.part.clone(), message };
     let mut stream =
         compile::stream(params.rng, &mut ctx.rng).map_err(|seed| fail(format!("invalid legacy seed {seed}")))?;
@@ -136,11 +138,11 @@ pub fn build_with(
     apply_streaks(params, ctx.palette, &mut entries).map_err(|e| ctx.fail(e.to_string()))?;
 
     let frame = OutwardFrame { head: head.centre(), body_axis: body_axis(ctx, head.centre()) };
-    place(params, ctx, head.as_ref(), &frame, keep_out.as_ref(), &mut entries)?;
+    place(params, ctx, head.as_ref(), &frame, keep_out.as_ref(), depth.as_ref(), &mut entries)?;
     let mut warnings = Vec::new();
     let chains = tail_chains(params, ctx, head.as_ref())?;
     let strays = Strays::of(params, head.as_ref(), ctx.quality);
-    let Meshes { stat, dynamic, ties } = mesh_groups(
+    let Meshes { mut stat, mut dynamic, ties } = mesh_groups(
         &entries,
         strays,
         head.as_ref(),
@@ -152,6 +154,9 @@ pub fn build_with(
         &mut warnings,
     )
     .map_err(|e| ctx.fail(e.to_string()))?;
+    if let Some(body) = &depth {
+        clear_vertices(body, stat.as_mut(), dynamic.as_mut());
+    }
 
     let material_name = hair_material_name(ctx.part).map_err(|e| ctx.fail(format!("material name: {e}")))?;
     // The brows when they show through, and the face's overlay (sweat drop, gloom hatch), which is in front of the hair.
@@ -279,6 +284,7 @@ fn place(
     head: &dyn omuzaki_char_api::HeadSurface,
     frame: &OutwardFrame,
     keep_out: Option<&BodyKeepOut>,
+    depth: Option<&BodyDepth>,
     entries: &mut [CompiledEntry],
 ) -> Result<(), BuildError> {
     if let Some(volume) = &params.volume {
@@ -289,9 +295,73 @@ fn place(
     // After the lock shapes, so a curled or split fringe or framing lock is cleared as it is drawn, and before the
     // shells tuck under the locks where they finally lie.
     clear_fringes(params, head, frame, entries).map_err(|e| ctx.fail(e))?;
+    if let Some(body) = depth {
+        clear_body(body, entries);
+    }
     tuck_shells(head, entries);
     Ok(())
 }
+
+/// Moves every lock out of the body (#2485): each point of a tube lock (a framing lock down the front, a tail over the
+/// shoulder) that lies within its own half thickness and [`lock::CLEARANCE`] of the body ([`BodyDepth`], the same
+/// measure `hair.settle` reports clipping by) is pushed out, down the slope of that distance. A framing lock hanging
+/// straight down from the temple otherwise passes through the top of the chest or the slope of the shoulders on a
+/// broad-shouldered template, by up to 57 mm on `tall`. Curtain strips keep themselves out vertex by vertex
+/// (`curtain::group_mesh`) and shells lie on the head, so neither is moved here.
+fn clear_body(body: &BodyDepth, entries: &mut [CompiledEntry]) {
+    let tubes =
+        entries.iter_mut().filter(|e| matches!(e.group.geometry, GroupGeometry::Tube | GroupGeometry::Tied { .. }));
+    for entry in tubes {
+        for clump in &mut entry.group.clumps {
+            let last = clump.rest.len().saturating_sub(1).max(1);
+            for (i, p) in clump.rest.iter_mut().enumerate() {
+                #[allow(clippy::cast_precision_loss)] // a lock's few dozen points
+                let t = i as f32 / last as f32;
+                *p = out_of(body, *p, lock::CLEARANCE + clump.thickness.at(t) * 0.5 + clump.width.at(t) * 0.1);
+            }
+        }
+    }
+}
+
+/// `p` pushed out until it stands `margin` off the body, down the slope of the body's distance ([`BodyDepth`]); `p`
+/// itself when it already does.
+fn out_of(body: &BodyDepth, mut p: Vec3, margin: f32) -> Vec3 {
+    /// The step the slope is measured over, metres.
+    const STEP: f32 = 0.002;
+    /// Pushes: each lands on the surface the slope points to; another catches a neighbouring region.
+    const PASSES: usize = 4;
+    for _ in 0..PASSES {
+        let depth = body.depth(p);
+        if depth >= margin || !depth.is_finite() {
+            break;
+        }
+        let slope = Vec3::new(
+            body.depth(p + Vec3::X * STEP) - body.depth(p - Vec3::X * STEP),
+            body.depth(p + Vec3::Y * STEP) - body.depth(p - Vec3::Y * STEP),
+            body.depth(p + Vec3::Z * STEP) - body.depth(p - Vec3::Z * STEP),
+        );
+        let Some(out) = slope.try_normalize() else { break };
+        p += out * (margin - depth);
+    }
+    p
+}
+
+/// Moves every vertex of the finished hair meshes that lies within [`lock::CLEARANCE`] of the body out to it (#2485): the
+/// last word after the locks were cleared point by point, for what lies between their points, the width of a lens tube
+/// and the curtain's strips, whose own keep-out leaves the base of the neck to the head. The simulated mesh keeps
+/// [`SAG_ROOM`] more: its colliders sit inside the body, so hanging under gravity it settles a few millimetres toward
+/// it.
+fn clear_vertices<'a>(body: &BodyDepth, stat: Option<&mut Skinned<'a>>, dynamic: Option<&mut Skinned<'a>>) {
+    for (mesh, margin) in [(stat, lock::CLEARANCE), (dynamic, lock::CLEARANCE + SAG_ROOM)] {
+        for p in mesh.into_iter().flat_map(|m| m.geometry.positions.iter_mut()) {
+            *p = out_of(body, *p, margin);
+        }
+    }
+}
+
+/// How much further off the body the simulated hair rests, metres: what it sags toward the body once it hangs
+/// (measured on the library's styles after three seconds, 6 mm at most on `tall`).
+const SAG_ROOM: f32 = 0.008;
 
 /// Lifts every bangs and framing group's locks off the head, measured in `frame`, the frame the tubes are drawn in. This
 /// runs here, not in the generator, because the frame reads the torso as well as the head, and a lock cleared in the
@@ -609,11 +679,11 @@ struct Strays {
 
 impl Strays {
     fn of(params: &HairParams, head: &dyn HeadSurface, quality: Quality) -> Self {
-        let hairline = enabled(params).find_map(|(_, g)| match &g.generator {
-            Generator::Cap(cap) => Some(cap.hairline_front_deg),
+        let cap = enabled(params).find_map(|(_, g)| match &g.generator {
+            Generator::Cap(cap) => Some(cap),
             _ => None,
         });
-        let baby = hairline.map_or_else(Vec::new, |deg| wisp::baby_hairs(&params.strays, head, deg));
+        let baby = cap.map_or_else(Vec::new, |cap| wisp::baby_hairs(&params.strays, head, cap));
         Self { shed: wisp::Shed::of(&params.strays, quality), baby }
     }
 }

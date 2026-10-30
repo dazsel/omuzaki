@@ -412,6 +412,85 @@ pub struct CapGen {
     pub strand_seed: f64,
     /// `hair-info.y`: the shell's shade, the underlayer sitting in the shadow of the locks, `0.5..=1`.
     pub shade: f64,
+    /// The front hairline's shape across the forehead and how the hair thins toward it (#2517).
+    #[serde(skip_serializing_if = "Hairline::is_default")]
+    pub hairline: Hairline,
+}
+
+/// The shape of the front hairline across the forehead, and how the hair thins toward it (#2517).
+///
+/// The hairline is a curve on the head: [`CapGen::hairline_front_deg`] in the middle of the forehead, moved down (a
+/// larger polar angle) or up by each term below, the terms fading out toward the sides of the head as the hairline
+/// eases into the back one. Across the forehead `x` runs from 0 in the middle to 1 at the temples (`|sin phi|` of
+/// [`Hairline::FOREHEAD`]). The default, every term 0, is a hairline level across the forehead with rounded corners.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Hairline {
+    /// How much lower the hairline sits at the temples than in the middle, degrees, `-20..=20`: positive rounds it
+    /// into an arch, negative lifts the temples into a broad, receding line.
+    pub arch_deg: f64,
+    /// A widow's peak: how far the middle dips toward the brows, degrees, `0..=20`.
+    pub peak_deg: f64,
+    /// The widow's peak's half width, as a share of the forehead, `0.05..=0.8`.
+    pub peak_width: f64,
+    /// How far the temples recede up into the hair, degrees, `0..=25`: an M-shaped hairline.
+    pub temple_recess_deg: f64,
+    /// How far above the hairline the hair starts to thin, degrees, `0..=15`: in that band the strands of the
+    /// scalp shell end one by one at their own lengths, so skin shows through between them toward the hairline
+    /// instead of at one hard edge (0: a hard edge). Baby hairs and the scalp's shade follow the same curve.
+    pub density_fade_deg: f64,
+}
+
+impl Hairline {
+    /// `|sin phi|` at the temples: where `x` across the forehead reaches 1.
+    pub const FOREHEAD: f64 = 0.7;
+
+    /// The named shapes: `level`, `rounded`, `widows_peak`, `m_shape`, `straight`.
+    pub const PRESETS: [&'static str; 5] = ["level", "rounded", "widows_peak", "m_shape", "straight"];
+
+    /// True for the default (level, a hard edge).
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// A named shape (one of [`PRESETS`](Self::PRESETS)), with the default thinning, or `None` for an unknown name.
+    pub fn preset(name: &str) -> Option<Self> {
+        let base = Self { density_fade_deg: 4.0, ..Self::default() };
+        Some(match name {
+            "level" => base,
+            "rounded" => Self { arch_deg: 9.0, ..base },
+            "widows_peak" => Self { arch_deg: 4.0, peak_deg: 9.0, peak_width: 0.3, ..base },
+            "m_shape" => Self { temple_recess_deg: 12.0, peak_deg: 3.0, peak_width: 0.35, ..base },
+            "straight" => Self { arch_deg: -3.0, density_fade_deg: 2.0, ..base },
+            _ => return None,
+        })
+    }
+
+    /// How far, degrees, the hairline at azimuth `phi` (radians, 0 the front) sits below the middle height, before the
+    /// fade toward the back: positive is lower on the head.
+    pub fn offset_deg(&self, phi: f64) -> f64 {
+        let x = (phi.sin().abs() / Self::FOREHEAD).min(1.25);
+        let arch = self.arch_deg * x * x;
+        let peak = self.peak_deg * (1.0 - x / self.peak_width.max(0.01)).max(0.0).powf(1.4);
+        let recess = self.temple_recess_deg * (-((x - 0.85) / 0.28).powi(2)).exp();
+        arch + peak - recess
+    }
+}
+
+impl Default for Hairline {
+    fn default() -> Self {
+        Self { arch_deg: 0.0, peak_deg: 0.0, peak_width: 0.3, temple_recess_deg: 0.0, density_fade_deg: 0.0 }
+    }
+}
+
+impl Validate for Hairline {
+    fn check(&self, c: &mut Check) {
+        c.range("arch_deg", self.arch_deg, -20.0, 20.0);
+        c.range("peak_deg", self.peak_deg, 0.0, 20.0);
+        c.range("peak_width", self.peak_width, 0.05, 0.8);
+        c.range("temple_recess_deg", self.temple_recess_deg, 0.0, 25.0);
+        c.range("density_fade_deg", self.density_fade_deg, 0.0, 15.0);
+    }
 }
 
 impl Default for CapGen {
@@ -427,6 +506,7 @@ impl Default for CapGen {
             crown_rise: 0.625,
             strand_seed: 0.37,
             shade: 0.93,
+            hairline: Hairline::default(),
         }
     }
 }
@@ -2198,6 +2278,7 @@ impl Validate for HairGroup {
                 c.range("generator/hairline_back_deg", g.hairline_back_deg, 60.0, 150.0);
                 c.range("generator/ear_notch_deg", g.ear_notch_deg, 0.0, 40.0);
                 c.range("generator/thickness", g.thickness, 0.002, 0.06);
+                c.nested("generator/hairline", &g.hairline);
             }
             Generator::PartSweep(g) => {
                 count("generator/count", c, u32::from(g.count), 1, 80);

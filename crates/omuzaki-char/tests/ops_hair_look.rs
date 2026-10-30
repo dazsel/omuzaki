@@ -1,5 +1,6 @@
-//! `hair.colour.natural` (#2524), `hair.strays.set` (#2516) and the new shading fields of `hair.set_shading` (#2521,
-//! #2525, #2526): each one undoable edit that keeps what it isn't given and refuses a value out of range by name.
+//! `hair.colour.natural` (#2524), `hair.strays.set` (#2516), `hair.hairline.set` (#2517) and the new shading fields of
+//! `hair.set_shading` (#2521, #2525, #2526): each one undoable edit that keeps what it isn't given and refuses a value
+//! out of range by name.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)] // test helpers: a panic is a clear failure
 
@@ -107,4 +108,25 @@ fn the_look_ops_refuse_what_the_hair_cannot_be() {
     assert_error(&e, ErrorCode::Invalid, "share", &["reset"], &[]);
     let e = refused(&doc, "hair.strays.set", hair(json!({"baby": 500})));
     assert_eq!(e.code, ErrorCode::Invalid, "{e:?}");
+}
+
+#[test]
+fn hairline_set_shapes_the_scalp_shell_and_keeps_what_it_isnt_given() {
+    let mut doc = kit();
+    let planned = round_trip(&mut doc, "hair.hairline.set", hair(json!({"shape": "widows_peak"})));
+    let group = planned.output.as_ref().unwrap()["group"].as_str().unwrap().to_owned();
+    let line = format!("characters/kit/parts/hair/params/groups/{group}/generator/hairline");
+    assert_eq!(at(&doc, &format!("{line}/peak_deg")), Some(json!(9.0)), "the widow's peak");
+    round_trip(&mut doc, "hair.hairline.set", hair(json!({"density_fade_deg": 7.5})));
+    assert_eq!(at(&doc, &format!("{line}/density_fade_deg")), Some(json!(7.5)));
+    assert_eq!(at(&doc, &format!("{line}/peak_deg")), Some(json!(9.0)), "a number alone keeps the shape");
+    round_trip(&mut doc, "hair.hairline.set", hair(json!({"shape": "m_shape", "temple_recess_deg": 15.0})));
+    assert_eq!(at(&doc, &format!("{line}/temple_recess_deg")), Some(json!(15.0)), "a number over a shape wins");
+
+    let e = refused(&doc, "hair.hairline.set", hair(json!({"shape": "zigzag"})));
+    assert_error(&e, ErrorCode::Invalid, "shape", &["zigzag"], &["widows_peak"]);
+    let e = refused(&doc, "hair.hairline.set", hair(json!({})));
+    assert_error(&e, ErrorCode::Invalid, "shape", &["shape"], &["rounded"]);
+    let e = refused(&doc, "hair.hairline.set", hair(json!({"peak_deg": 40.0})));
+    assert_eq!((e.code, e.field.as_deref()), (ErrorCode::Invalid, Some("shape")), "{e:?}");
 }

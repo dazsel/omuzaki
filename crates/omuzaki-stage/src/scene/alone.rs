@@ -6,7 +6,8 @@ use std::collections::BTreeMap;
 
 use omuzaki_char_api::{CharId, SceneLook, VariantId};
 use omuzaki_core::glam::Mat4;
-use omuzaki_render_api::{FilmGrain, Post};
+use omuzaki_render_api::{FilmGrain, Occlusion, Post};
+use omuzaki_stage_api::OcclusionDef;
 use omuzaki_stage_api::{Anchor, CameraDef, CameraId, CastMember, Framing, MemberId, SceneDef, SceneError};
 
 use super::landmarks::Landmarks;
@@ -171,6 +172,25 @@ pub fn stage_alone(
     let mut resolved = ResolvedScene::new();
     resolved.resolve_into(checked, &BTreeMap::from([(member.clone(), figure)]), aspect)?;
     Ok(StagedScene { resolved, subject_root: Mat4::from(figure.root) })
+}
+
+/// `occlusion` with a character's frame look over it, leaf by leaf: a leaf the look sets wins, the rest are the scene's,
+/// then the defaults ([`OcclusionDef::default`]). A look that sets strength 0 turns occlusion off; one that sets nothing
+/// keeps the scene's.
+pub fn occlusion_in_look(occlusion: &mut Option<Occlusion>, look: &SceneLook) {
+    let over = look.occlusion;
+    if over.is_empty() {
+        return;
+    }
+    let base = occlusion.map_or_else(OcclusionDef::default, |o| OcclusionDef {
+        radius: o.radius,
+        strength: o.strength,
+        contact: o.contact,
+    });
+    let strength = over.strength.unwrap_or(base.strength);
+    *occlusion = (strength > 0.0).then(|| {
+        Occlusion::new(over.radius.unwrap_or(base.radius), strength).with_contact(over.contact.unwrap_or(base.contact))
+    });
 }
 
 /// `post` with a character's frame look over it (LK-05): bloom and depth of field switched off when the look says so (a

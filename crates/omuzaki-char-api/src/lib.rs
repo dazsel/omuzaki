@@ -70,8 +70,8 @@ pub use hair::{
     AhogeGen, BangLayer, BangsGen, BraidGen, Bulge, BunGen, CapGen, CurtainGen, Dynamics, Falloff, Follow, FramingGen,
     Generator, GuideClump, GuidePoint, GuidesGen, HAIR_INFO, HAIR_PROGRAM, HAIR_UV, HairClump, HairGroup, HairParams,
     HairParting, HairPhysics, HairPigment, HairRng, HairShading, HairShadingError, HairSide, HairStrays, HairVolume,
-    HairWhorl, LegacyLcg, LockProfile, LockShape, LockTip, PartSweepGen, PointedEars, RingShape, SphereCollider,
-    Streak, StreakBlend, TailBraid, TailGen, Taper, TaperShape, Wave, Wisp,
+    HairWhorl, Hairline, LegacyLcg, LockProfile, LockShape, LockTip, PartSweepGen, PointedEars, RingShape,
+    SphereCollider, Streak, StreakBlend, TailBraid, TailGen, Taper, TaperShape, Wave, Wisp,
 };
 pub use head::{
     AnimalEars, Chin, Cranium, EarKind, EarSpecies, Ears, FaceWindow, HeadOutline, HeadParams, Neck, SkinColours,
@@ -88,7 +88,8 @@ pub use kind::{
 };
 pub use look::{
     ClassLook, DEFAULT_PRESET, DERIVED_LINE, GradeOverride, LookDef, LookError, LookParams, LookPreset,
-    LookPresetSource, MaterialClass, OutlineColour, ProgramLook, SceneLook, find_look_preset, look_presets,
+    LookPresetSource, MaterialClass, OcclusionOverride, OutlineColour, ProgramLook, SceneLook, find_look_preset,
+    look_presets,
 };
 pub use omuzaki_core::mesh::{ExtraAttribute, MeshData, MeshError};
 pub use omuzaki_store_api::ContentHash;

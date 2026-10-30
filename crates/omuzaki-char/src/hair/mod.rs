@@ -3,6 +3,7 @@
 //! The generators live in `gen/`; `gen` is a reserved word in edition 2024, so the module is `r#gen`.
 
 pub mod bake;
+pub mod clearance;
 pub mod colour;
 pub mod compile;
 pub mod ears;

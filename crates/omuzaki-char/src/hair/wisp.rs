@@ -12,9 +12,10 @@
 //! Baby hairs ([`baby_hairs`]) root just behind the scalp shell's front hairline, spread across the forehead, and lie
 //! on the skin a millimetre or two off it, combed down and a little out to the side, curling at their tips.
 
-use omuzaki_char_api::{Bulge, GuidePoint, HairStrays, HeadSurface, Quality, Taper};
+use omuzaki_char_api::{Bulge, CapGen, GuidePoint, HairStrays, HeadSurface, Quality, Taper};
 use omuzaki_core::glam::Vec3;
 
+use super::r#gen::cap;
 use super::tube::{OutwardFrame, along};
 
 /// The share of outer locks that shed a wisp in the close-ups the wisps were first made for (#2412).
@@ -123,12 +124,12 @@ pub fn wisp(index: usize, rest: &[Vec3], width: &Taper, shade: f32, frame: &Outw
     })
 }
 
-/// The baby hairs `strays` asks for (`strays.baby` of them) along a scalp shell whose front hairline is at
-/// `hairline_deg` of polar angle on `head`: each roots a degree behind the hairline, at an azimuth spread across the
-/// forehead (with a hash's jitter), and runs `baby_length` down over the skin, combed a little out to its side and
-/// curling at its tip, lifted [`BABY_LIFT`] off it.
+/// The baby hairs `strays` asks for (`strays.baby` of them) along the front hairline of the scalp shell `cap` on
+/// `head`: each roots a degree behind the hairline (its curve, #2517), at an azimuth spread across the forehead (with a
+/// hash's jitter), and runs `baby_length` down over the skin, combed a little out to its side and curling at its tip,
+/// lifted [`BABY_LIFT`] off it.
 #[must_use]
-pub fn baby_hairs(strays: &HairStrays, head: &dyn HeadSurface, hairline_deg: f64) -> Vec<Wisp> {
+pub fn baby_hairs(strays: &HairStrays, head: &dyn HeadSurface, cap: &CapGen) -> Vec<Wisp> {
     let count = strays.baby as usize;
     if count == 0 {
         return Vec::new();
@@ -145,7 +146,8 @@ pub fn baby_hairs(strays: &HairStrays, head: &dyn HeadSurface, hairline_deg: f64
             let phi = (2.0 * (place + 0.5) / total - 1.0) * BABY_SPREAD
                 + (f64::from(jitter) - 0.5) * 2.0 * BABY_SPREAD / total;
             let length = strays.baby_length * (0.6 + 0.8 * f64::from(scale));
-            let theta0 = hairline_deg - 1.0;
+            // On the shell's own hairline curve (#2517), so a widow's peak or a receding temple carries them.
+            let theta0 = cap::hairline_at(cap, phi.to_radians()).to_degrees() - 1.0;
             let reach = length * per_metre;
             // Combed out toward its own side, and the tip curls further that way.
             let side = if phi.abs() < 4.0 { if lean < 0.5 { -1.0 } else { 1.0 } } else { phi.signum() };

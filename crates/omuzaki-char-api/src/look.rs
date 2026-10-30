@@ -18,8 +18,9 @@
 //!   [`ClassLook`]) it scales the toon terminator's softness and the rim, swaps in a shading program or tunes the
 //!   parameters of one, sets the outline width (scaled, or one uniform weight) and colour (the material's own line, or
 //!   one flat colour), and turns shadow reception on or off;
-//! - for the frame ([`SceneLook`]) it turns bloom and depth of field on or off and sets grain and a colour grade. Light
-//!   rigs stay separate: the bloom's numbers are the rig's, and the stage reads this part when it stages a shot.
+//! - for the frame ([`SceneLook`]) it turns bloom and depth of field on or off and sets grain, a colour grade and the
+//!   ambient occlusion with contact shadows. Light rigs stay separate: the bloom's numbers are the rig's, and the
+//!   stage reads this part when it stages a shot.
 //!
 //! It never touches a material's base colour, base texture, shade colour, emissive, overlays, alpha, sidedness or
 //! vertex colours, so the palette's colours reach the screen as the parts made them under every look. **The painted
@@ -215,6 +216,46 @@ pub struct SceneLook {
     /// A colour grade, leaf by leaf: a leaf left unset takes the preset's, then the neutral value.
     #[serde(skip_serializing_if = "GradeOverride::is_empty")]
     pub grade: GradeOverride,
+    /// Ambient occlusion and contact shadows, leaf by leaf: a leaf left unset takes the scene's, then the default.
+    /// `strength` 0 turns them off.
+    #[serde(skip_serializing_if = "OcclusionOverride::is_empty")]
+    pub occlusion: OcclusionOverride,
+}
+
+/// Ambient occlusion and contact shadows as a look layer holds them: every leaf optional. Whether a fringe shadows the
+/// forehead and lashes the eye is part of how a character reads, so a look can turn them on or tune them.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct OcclusionOverride {
+    /// How far round each point occluders are looked for, metres, `> 0`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub radius: Option<f32>,
+    /// How dark full occlusion is, `0..=1`; 0 turns occlusion and contact shadows off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strength: Option<f32>,
+    /// How far toward each shadow-casting light a contact shadow reaches, metres, `>= 0` (0: none).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contact: Option<f32>,
+}
+
+impl OcclusionOverride {
+    /// The field names, as parameter paths spell them.
+    pub const FIELDS: [&'static str; 3] = ["radius", "strength", "contact"];
+
+    /// True when it sets nothing.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// These leaves over `base`'s: a leaf set here wins.
+    #[must_use]
+    pub fn over(&self, base: &Self) -> Self {
+        Self {
+            radius: first(self.radius.as_ref(), base.radius.as_ref()),
+            strength: first(self.strength.as_ref(), base.strength.as_ref()),
+            contact: first(self.contact.as_ref(), base.contact.as_ref()),
+        }
+    }
 }
 
 /// A colour grade as a look layer holds it: every leaf optional, so a layer can set `saturation` alone and leave
@@ -524,7 +565,7 @@ fn derived_line(base: Colour) -> Colour {
 
 impl SceneLook {
     /// The field names, as parameter paths spell them.
-    pub const FIELDS: [&'static str; 4] = ["bloom", "depth_of_field", "grain", "grade"];
+    pub const FIELDS: [&'static str; 5] = ["bloom", "depth_of_field", "grain", "grade", "occlusion"];
 
     /// True when it sets nothing.
     pub fn is_empty(&self) -> bool {
@@ -539,6 +580,7 @@ impl SceneLook {
             depth_of_field: first(self.depth_of_field.as_ref(), base.depth_of_field.as_ref()),
             grain: first(self.grain.as_ref(), base.grain.as_ref()),
             grade: self.grade.over(&base.grade),
+            occlusion: self.occlusion.over(&base.occlusion),
         }
     }
 
@@ -554,6 +596,17 @@ impl SceneLook {
         }
         check_non_negative("scene.grade.saturation", self.grade.saturation)?;
         check_non_negative("scene.grade.contrast", self.grade.contrast)?;
+        if let Some(radius) = self.occlusion.radius
+            && !(radius.is_finite() && radius > 0.0)
+        {
+            return Err(invalid("scene.occlusion.radius", format!("{radius} must be above 0")));
+        }
+        if let Some(strength) = self.occlusion.strength
+            && !(0.0..=1.0).contains(&strength)
+        {
+            return Err(invalid("scene.occlusion.strength", format!("{strength} must be in 0..=1")));
+        }
+        check_non_negative("scene.occlusion.contact", self.occlusion.contact)?;
         Ok(())
     }
 }
@@ -709,9 +762,11 @@ fn parse_path(path: &str) -> Result<Vec<&str>, LookError> {
     known(section, &LookParams::SECTIONS, "section")?;
     if section == "scene" {
         known(field, &SceneLook::FIELDS, "field")?;
-        if field == "grade" {
+        if field == "grade" || field == "occlusion" {
+            let leaves: &[&'static str] =
+                if field == "grade" { &GradeOverride::FIELDS } else { &OcclusionOverride::FIELDS };
             if let Some(leaf_name) = segments.get(2) {
-                known(leaf_name, &GradeOverride::FIELDS, "field")?;
+                known(leaf_name, leaves, "field")?;
                 leaf(3, leaf_name)?;
             }
         } else {
