@@ -29,8 +29,10 @@ pub struct RoomParams {
     pub floor: Colour,
     /// Lay the floor in planks.
     pub planks: bool,
-    /// Panelling on the lower walls, to 0.9 m; none when absent.
+    /// Panelling on the lower walls, up to `wainscot_height`; none when absent.
     pub wainscot: Option<Colour>,
+    /// How high the panelling and its rail stand, metres, 0.3 to 2.
+    pub wainscot_height: f32,
     /// The skirting, the chair rail and the cornice.
     pub trim: Colour,
     /// Which walls stand: the back (-Z), the left (-X) and the right (+X).
@@ -53,6 +55,7 @@ impl Default for RoomParams {
             floor: Colour::hex(0x008a_5a3c),
             planks: true,
             wainscot: Some(Colour::hex(0x007a_5238)),
+            wainscot_height: 0.9,
             trim: Colour::hex(0x00f3_ede2),
             walls_up: [true, true, true],
             ceiling: None,
@@ -73,7 +76,8 @@ impl PropKind for Room {
         between("width", p.width, 2.0, 12.0)?;
         between("depth", p.depth, 2.0, 12.0)?;
         between("height", p.height, 2.2, 5.0)?;
-        between("mottle", p.mottle, 0.0, 1.0)
+        between("mottle", p.mottle, 0.0, 1.0)?;
+        between("wainscot_height", p.wainscot_height, 0.3, 2.0)
     }
 
     fn build(p: &RoomParams) -> Result<PropOutput, String> {
@@ -140,9 +144,10 @@ impl PropKind for Room {
                 (lo, hi)
             };
             if let Some(panel) = p.wainscot {
-                let (lo, hi) = band(0.0, 0.9, 0.012);
+                let top = p.wainscot_height.min(h - 0.2);
+                let (lo, hi) = band(0.0, top, 0.012);
                 walls.block(lo, hi, panel);
-                let (lo, hi) = band(0.88, 0.93, 0.03);
+                let (lo, hi) = band(top - 0.02, top + 0.03, 0.03);
                 trim.block(lo, hi, p.trim);
             }
             let (lo, hi) = band(0.0, 0.12, 0.022);

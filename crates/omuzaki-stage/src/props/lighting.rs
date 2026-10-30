@@ -157,6 +157,10 @@ pub struct WindowParams {
     pub glazing: Glazing,
     /// A round head: the top corners filled in under an arch as wide as the window.
     pub arch: bool,
+    /// With a round head, bars radiating from the arch's centre like a fan.
+    pub fanlight: bool,
+    /// Pleated sheer curtains drawn behind the glass, in this colour: the daylight glows through their folds.
+    pub sheers: Option<Colour>,
 }
 
 /// How a window's glass is divided.
@@ -168,6 +172,8 @@ pub enum Glazing {
     Grid,
     /// Leaded diamonds: bars crossing at 45°, `panes[0]` diamonds across.
     Diamond,
+    /// Three upright bays, the middle one a column of glowing diamonds stacked point to point.
+    Lozenge,
 }
 
 impl Default for WindowParams {
@@ -186,6 +192,8 @@ impl Default for WindowParams {
             elevation: 28.0,
             glazing: Glazing::Grid,
             arch: false,
+            fanlight: false,
+            sheers: None,
         }
     }
 }
@@ -195,8 +203,8 @@ impl PropKind for Window {
     const ID: &'static str = "window";
     const SUMMARY: &'static str = "A window to set on a wall, facing +Z, from y = 0 at its sill: a frame with panes \
                                    over a daylit sky, curtains if a colour is given, and daylight shining in as a spot \
-                                   light (colour, intensity, elevation). Upright or leaded diamond glazing, square or \
-                                   round-headed.";
+                                   light (colour, intensity, elevation). Upright, leaded diamond or lozenge glazing, square \
+                                   or round-headed with a fanlight, and pleated sheers behind the glass.";
 
     fn validate(p: &WindowParams) -> Result<(), String> {
         between("width", p.width, 0.4, 3.0)?;
@@ -249,17 +257,21 @@ impl PropKind for Window {
                     }
                 }
             }
+            Glazing::Lozenge => {
+                for x in [-p.width / 6.0, p.width / 6.0] {
+                    frame.block(Vec3::new(x - thin * 0.5, 0.0, depth * 0.3), Vec3::new(x + thin * 0.5, h, depth * 0.7), p.frame);
+                }
+            }
         }
         if p.arch {
             round_head(&mut frame, p.width, h, (bar, depth), p.frame);
+            if p.fanlight {
+                fan(&mut frame, w, h, thin, depth, p.frame);
+            }
         }
-        // The glass: a thin slab behind the bars, the sky graded from the top to the horizon.
-        let mut glass = Shape::new();
-        let rows = 8_u8;
-        for r in 0..rows {
-            let (y0, y1) = (h * f32::from(r) / f32::from(rows), h * f32::from(r + 1) / f32::from(rows));
-            let t = 1.0 - (f32::from(r) + 0.5) / f32::from(rows);
-            glass.block(Vec3::new(-w, y0, 0.008), Vec3::new(w, y1, 0.016), mix(p.horizon, p.sky, t));
+        let mut glass = glass(p, h);
+        if p.glazing == Glazing::Lozenge {
+            lozenges(&mut frame, &mut glass, p, (h, thin, depth));
         }
         let mut glass_material = glowing(Colour::WHITE);
         glass_material.vertex_colours = true;
@@ -332,6 +344,71 @@ fn round_head(frame: &mut Shape, width: f32, h: f32, (bar, depth): (f32, f32), c
     frame.tube(&points, bar * 0.35, 8, colour);
 }
 
+/// The glass of window `p` (`h` tall): a thin slab behind the bars, the sky graded from the top to the horizon.
+fn glass(p: &WindowParams, h: f32) -> Shape {
+    let w = p.width * 0.5;
+    let mut glass = Shape::new();
+    let rows = 8_u8;
+    // Sheers fold the glass into upright stripes, alternately lit and shaded, about 6 cm apart.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // at most 50 folds
+    let folds = if p.sheers.is_some() { ((p.width / 0.06).round() as u8).clamp(2, 50) } else { 1 };
+    for r in 0..rows {
+        let (y0, y1) = (h * f32::from(r) / f32::from(rows), h * f32::from(r + 1) / f32::from(rows));
+        let t = 1.0 - (f32::from(r) + 0.5) / f32::from(rows);
+        let sky = mix(p.horizon, p.sky, t);
+        for f in 0..folds {
+            let (x0, x1) = (-w + p.width * f32::from(f) / f32::from(folds), -w + p.width * f32::from(f + 1) / f32::from(folds));
+            let colour = match p.sheers {
+                Some(cloth) => mix(sky, cloth, if f % 2 == 0 { 0.55 } else { 0.8 }),
+                None => sky,
+            };
+            glass.block(Vec3::new(x0, y0, 0.008), Vec3::new(x1, y1, 0.016), colour);
+        }
+    }
+    glass
+}
+
+/// Bars radiating from the centre of a round head (glass `h` tall, `w` half wide) to its arch, and a small hub.
+fn fan(frame: &mut Shape, w: f32, h: f32, thin: f32, depth: f32, colour: Colour) {
+    let rise = w.min(h * 0.5);
+    let spring = h - rise;
+    let z = depth * 0.5;
+    for k in 1..8_u8 {
+        let a = std::f32::consts::PI * f32::from(k) / 8.0;
+        let tip = Vec3::new(-w * a.cos(), spring + rise * a.sin(), z);
+        frame.tube(&[Vec3::new(0.0, spring, z), tip], thin * 0.3, 6, colour);
+    }
+    frame.tube(&[Vec3::new(-w, spring, z), Vec3::new(w, spring, z)], thin * 0.4, 6, colour);
+    frame.ellipsoid(At::xyz(0.0, spring, z), Vec3::new(rise * 0.18, rise * 0.18, thin * 0.5), 6, 16, colour);
+}
+
+/// The middle bay of lozenge glazing: square-cut diamonds stacked point to point up the glass (glass `h` tall), each
+/// leaded and a brighter glass than the sky around it.
+fn lozenges(frame: &mut Shape, glass: &mut Shape, p: &WindowParams, (h, thin, depth): (f32, f32, f32)) {
+    let half = p.width / 6.0 - thin;
+    if half <= 0.02 {
+        return;
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a dozen at most
+    let count = ((h / (half * 2.0)).floor() as u8).clamp(1, 24);
+    let tall = h / f32::from(count);
+    let side = (tall * 0.5).min(half) * std::f32::consts::FRAC_1_SQRT_2;
+    let bright = mix(p.sky, Colour::WHITE, 0.6);
+    for i in 0..count {
+        let yc = tall * (f32::from(i) + 0.5);
+        glass.cuboid(At::xyz(0.0, yc, 0.018).roll(45.0), Vec3::new(side, side, 0.002), bright);
+        let r = side * std::f32::consts::SQRT_2;
+        let outline = [
+            Vec3::new(0.0, yc - r, depth * 0.5),
+            Vec3::new(r, yc, depth * 0.5),
+            Vec3::new(0.0, yc + r, depth * 0.5),
+            Vec3::new(-r, yc, depth * 0.5),
+            Vec3::new(0.0, yc - r, depth * 0.5),
+        ];
+        frame.tube(&outline, thin * 0.25, 6, p.frame);
+    }
+}
+
 /// The part of the line `y = slope * x + c` inside the box `x` by `y`, if any (`slope` is ±1).
 fn clip_diagonal(slope: f32, c: f32, x: (f32, f32), y: (f32, f32)) -> Option<(Vec2, Vec2)> {
     // x where the line meets each of the box's bottom and top, ordered, then clamped to the box's sides.
@@ -361,6 +438,25 @@ mod tests {
         let lo = |v: &[Vec3]| v.iter().fold(Vec3::splat(f32::INFINITY), |m, q| m.min(*q));
         assert!(hi(&b).x <= hi(&a).x + 1e-4 && lo(&b).x >= lo(&a).x - 1e-4, "a bar pokes out at the sides");
         assert!(hi(&b).y <= hi(&a).y + 1e-4 && lo(&b).y >= lo(&a).y - 1e-4, "a bar pokes out at the top or bottom");
+    }
+
+    #[test]
+    fn lozenges_a_fanlight_and_sheers_add_to_the_window_and_stay_in_its_frame() {
+        let plain = WindowParams { curtains: None, arch: true, width: 1.2, height: 2.4, ..WindowParams::default() };
+        let fancy = WindowParams {
+            glazing: Glazing::Lozenge,
+            fanlight: true,
+            sheers: Some(Colour::hex(0x00f0_f4f8)),
+            ..plain.clone()
+        };
+        let (a, b) = (Window::build(&plain).expect("builds"), Window::build(&fancy).expect("builds"));
+        let count = |o: &PropOutput, i: usize| o.parts[i].mesh.positions.len();
+        assert!(count(&b, 0) > count(&a, 0) + 100, "the lozenges' leads and the fan add bars");
+        assert!(count(&b, 1) > count(&a, 1) * 4, "the sheers fold the glass and the lozenges glow");
+        let hi = |o: &PropOutput| o.parts.iter().flat_map(|q| q.mesh.positions.iter()).fold(f32::NEG_INFINITY, |m, q| m.max(q.y));
+        assert!(hi(&b) <= hi(&a) + 1e-4, "nothing pokes above the head");
+        let folds: std::collections::BTreeSet<u32> = b.parts[1].mesh.colours.iter().map(|c| c[0].to_bits()).collect();
+        assert!(folds.len() > 8, "the folds alternate light and shade");
     }
 
     #[test]
