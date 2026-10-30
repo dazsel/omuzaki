@@ -1,16 +1,20 @@
 //! The hair's shared volume and flow (#2478): one parting, one crown whorl and one fullness that the scalp shell, the
-//! part sweeps and the fringe all follow. On a synthetic head, each consumer is checked against the field; on the real
-//! kit, a full volume builds on every template. Everything is synthetic.
+//! part sweeps and the fringe all follow. On a synthetic head, each consumer is checked against the field; on each
+//! template's own head, the shell and a pair of part sweeps share one parting and whorl; on the real kit, a full volume
+//! builds on every template. Everything is synthetic.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // fixtures; a bad one should stop the test with its reason
 #![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
 
-use omuzaki_char::hair::compile::{CompiledEntry, Dispatch, UnitStream, compile_groups};
+use std::sync::Arc;
+
+use omuzaki_char::hair::compile::{CompiledEntry, Dispatch, GroupGeometry, UnitStream, compile_groups};
 use omuzaki_char::hair::r#gen::{cap, part_sweep};
 use omuzaki_char::hair::volume::{self, Field};
 use omuzaki_char_api::{
-    Assembler, BodyTemplateId, BuildOptions, BuildServices, CapGen, CharId, CharacterDef, HairParams, HairParting,
-    HairVolume, HairWhorl, HeadSurface, PartDef, PartId, PartKindId, PartSweepGen, Quality, build_part, plan,
+    Assembler, BodyParams, BodyShape, BodyTemplateId, BuildOptions, BuildServices, CapGen, CharId, CharacterDef,
+    Dynamics, Generator, GroupId, HairGroup, HairParams, HairParting, HairVolume, HairWhorl, HeadParams, HeadSurface,
+    LockShape, PartDef, PartId, PartKindId, PartSweepGen, Quality, build_part, plan,
 };
 use omuzaki_char_mock::mock_character;
 use omuzaki_core::glam::{DVec3, Vec3};
@@ -191,6 +195,73 @@ fn fullness_scales_how_far_the_hair_stands_off_the_head_and_leaves_the_fall_alon
         }
     }
     assert!(over > 50 && under > 10, "{over} points over the head and {under} below the fade");
+}
+
+// ------------------------------------------------------------------------------------------------ on every template
+
+const TEMPLATES: [&str; 4] = ["soft-sd", "mini", "standard", "tall"];
+
+/// The default head seated on `template`'s neck, as the head part builds it.
+fn template_head(template: &str) -> Arc<dyn HeadSurface> {
+    let body = BodyParams::default();
+    let layout = omuzaki_char::template::registry::find(template).unwrap().layout(
+        &body.proportions,
+        &BodyShape::default(),
+        &body.hand,
+    );
+    let seated = omuzaki_char::head::part::seated(&HeadParams::default(), layout.head_base().unwrap().y);
+    omuzaki_char::head::cranium::surface(&seated, None)
+}
+
+/// The default style plus a pair of part sweeps, with `volume`, compiled on `head`.
+fn compiled_on(head: &dyn HeadSurface, volume: &HairVolume) -> Vec<CompiledEntry> {
+    let mut params = HairParams { volume: Some(volume.clone()), ..HairParams::default() };
+    let sweep = HairGroup {
+        enabled: true,
+        mirror: false,
+        dynamics: Dynamics::default(),
+        generator: Generator::PartSweep(PartSweepGen::default()),
+        lock: LockShape::default(),
+    };
+    params.groups.insert(GroupId::new("e-sweep").unwrap(), sweep);
+    compile_groups(&params, &Dispatch, head, &Palette::default(), Quality::Live, &mut Half).unwrap()
+}
+
+#[test]
+fn the_shell_and_the_sweeps_follow_one_parting_and_one_whorl_on_every_template() {
+    for template in TEMPLATES {
+        let head = template_head(template);
+        let centre = head.centre();
+        let towards = |p: Vec3| (p - centre).normalize().as_dvec3();
+        for volume in [parted(25.0), parted(-15.0), HairVolume { part: None, ..parted(0.0) }] {
+            let field = Field::new(&volume);
+            let entries = compiled_on(head.as_ref(), &volume);
+            let find = |id: &str| entries.iter().find(|e| e.id.as_str() == id).unwrap();
+            // The scalp shell's strands start at the parting (or the whorl) and run away from it.
+            let GroupGeometry::Shell(shell) = &find("a-cap").group.geometry else {
+                panic!("{template}: the cap is a shell")
+            };
+            let uv = shell.extra.iter().find(|a| a.name.as_str() == "hair-uv").unwrap();
+            let (start, _) =
+                shell.positions.iter().zip(uv.data.chunks(2)).min_by(|a, b| a.1[1].total_cmp(&b.1[1])).unwrap();
+            let comb = field.comb(towards(*start));
+            assert!(comb.distance < 0.1, "{template} {volume:?}: the shell's strands start {comb:?} off the source");
+            if volume.part.is_some() {
+                assert!(comb.from_part, "{template}: a parted shell starts at the parting");
+            }
+            // The sweeps root on the same parting, each on its own side.
+            let Some(across) = field.part_normal() else { continue };
+            let sweeps = &find("e-sweep").group.clumps;
+            let per_side = sweeps.len() / 2;
+            for (n, clump) in sweeps.iter().enumerate() {
+                let root = towards(clump.rest[0]);
+                let comb = field.comb(root);
+                assert!(comb.from_part && comb.distance < 0.03, "{template}, sweep {n}: {comb:?}");
+                let side = if n < per_side { 1.0 } else { -1.0 };
+                assert!(root.dot(across) * side > 0.0, "{template}, sweep {n} roots on the wrong side");
+            }
+        }
+    }
 }
 
 // ------------------------------------------------------------------------------------------------ on the kit
