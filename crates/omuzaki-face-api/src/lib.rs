@@ -4,6 +4,7 @@
 //! bus) belongs to `omuzaki-anim-api`; this crate owns what the face *does* with it:
 //! - [`mapping`]: [`FaceMapping`], the formulas that turn channels into [`PaintParams`], with their coefficients
 //! - [`profile`]: [`FaceProfile`], one character's face design (layout, eye/brow/mouth styles, mapping, expressions)
+//! - [`eye3d`]: [`eye3d::EyeDesign`], the photoreal 3D eye and the skin round it, stored on the face as `eye3d`
 //! - [`expression`]: named expressions (channel deltas) and the five lip-sync visemes
 //! - [`grammar`]: the anime grammar rule switches (FE-05), which the grammar stage in `omuzaki-anim` reads
 //! - [`paint`]: the [`FacePainter`] contract and the vector [`DrawList`] it produces, and how layers composite
@@ -17,6 +18,7 @@
 mod baker;
 pub mod check;
 pub mod expression;
+pub mod eye3d;
 pub mod grammar;
 pub mod mapping;
 pub mod paint;

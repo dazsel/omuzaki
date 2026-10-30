@@ -125,7 +125,7 @@ chart("agents-at-once.svg", "Agents working at once (hourly average, UTC)",
        "local subagents": [sum(sum(hours[h][k]) / len(hours[h][k]) for k in ("opus_local", "sonnet_local", "haiku_local")) for h in hk],
        "cloud (reported)": [sum(hours[h]["cloud_reported"]) / len(hours[h]["cloud_reported"]) for h in hk],
        "cloud (estimated)": [sum(hours[h]["cloud_estimated"]) / len(hours[h]["cloud_estimated"]) for h in hk]},
-      "area", "Partial after 2026-10-21 3:36 PM PT: only agent-reported cloud time is counted", [h + ":00Z" for h in hk])
+      "area", "Partial after 2026-10-21 3:36 PM PT. From 10-23 the green is distinct agents seen committing each hour (a lower bound)", [h + ":00Z" for h in hk])
 
 ah = rows("agent_hours_daily.csv")
 chart("agent-hours.svg", "Agent-hours per day (Pacific)", [r["date_pt"][5:] for r in ah],
@@ -133,7 +133,7 @@ chart("agent-hours.svg", "Agent-hours per day (Pacific)", [r["date_pt"][5:] for 
        "local subagents": [num(r, "opus_local") + num(r, "sonnet_local") + num(r, "haiku_local") for r in ah],
        "cloud (reported)": [num(r, "cloud_reported") for r in ah],
        "cloud (estimated)": [num(r, "cloud_estimated") for r in ah]}, "bars",
-      "Cloud before 10-21 is estimated from commits; after 10-21 3:36 PM only reported time is counted",
+      "Cloud before 10-21 is estimated from commits; after, reported time, and from 10-23 the cloud project's open-session hours (upper bound)",
       [r["date_pt"] + "T07:00Z" for r in ah])
 
 lo = rows("loc_hourly.csv")
@@ -179,6 +179,11 @@ chart("cloud-tokens.svg", "Cloud project tokens, cumulative (one point per refre
       {"output": [num(r, "output_tokens") for r in cu], "input": [num(r, "input_tokens") for r in cu]}, "line",
       "Cache-read and cache-write tokens are in cloud_usage_snapshots.csv", keys=[r["snapshot_utc"] for r in cu])
 
+cs = rows("cloud_sessions_daily.csv")
+chart("cloud-sessions.svg", "Cloud project sessions open at once (peak per day)", [r["date_pt"][5:] for r in cs],
+      {"peak open at once": [num(r, "peak_open_at_once") for r in cs]}, "bars",
+      "Span from a session's start to its last activity, so an upper bound on agents working", keys=[r["date_pt"] + "T07:00Z" for r in cs])
+
 # Cumulative tokens of every kind (input, output, cache write and read) per day: the local sessions' logs, the cloud
 # sessions before the move (estimated) and the cloud project's own totals (its latest snapshot each day).
 tk = defaultdict(dict)
@@ -215,7 +220,7 @@ cards = [("Agent-hours", f'{s["agent_hours_total"]:,.0f}'), ("Most agents at onc
          ("Pull requests", f'{pr_["this_repo_opened"] + pr_["earlier_repo_opened"]:,}'),
          ("Issues opened", f'{iss_["opened"]:,}'), ("CI runs", f'{s["ci_runs"]:,}')]
 titles = {"agents-at-once": "Agents at once", "agent-hours": "Agent-hours per day", "lines-of-code": "Lines of code",
-          "commits": "Commits", "pull-requests": "Pull requests", "issues": "Issues", "backlog": "Backlog", "cloud-tokens": "Cloud tokens", "tokens-cumulative": "Tokens, cumulative",
+          "commits": "Commits", "pull-requests": "Pull requests", "issues": "Issues", "backlog": "Backlog", "cloud-tokens": "Cloud tokens", "cloud-sessions": "Cloud sessions", "tokens-cumulative": "Tokens, cumulative",
           "ci-runs": "CI runs"}
 figs = "".join(f'<figure>{(OUT / (k + ".svg")).read_text()}</figure>' for k in titles if (OUT / (k + ".svg")).exists())
 story = html.escape((DIR / "README.md").read_text().split("## Timeline", 1)[1].split("## The files", 1)[0].strip())
