@@ -134,8 +134,11 @@ fn build(
         shading: program("eye", eye_params(design, frame))?,
         ..Material::toon(white)
     };
-    let skin =
-        Material { base_texture: Some(skin_tex), shading: program("skin", skin_params())?, ..Material::toon(white) };
+    let skin = Material {
+        base_texture: Some(skin_tex),
+        shading: program("skin", skin_params(design))?,
+        ..Material::toon(white)
+    };
     let lashes = Material {
         shading: program("skin", lash_params())?,
         double_sided: true,
@@ -173,7 +176,12 @@ fn build(
     let key = Vec3::new(-0.35, 0.72, 0.6);
     scene.lights = vec![
         Light::Directional { to_light: key, colour: Colour::hex(0x00ff_f2e4), intensity: 0.8, casts_shadow: true },
-        Light::Hemisphere { sky: Colour::hex(0x00c8_d0e0), ground: Colour::hex(0x0060_4a40), intensity: 0.12 },
+        // An anime eye is lit brighter and flatter, as a cel is.
+        Light::Hemisphere {
+            sky: Colour::hex(0x00c8_d0e0),
+            ground: Colour::hex(0x0060_4a40),
+            intensity: 0.12 + 0.4 * design.style,
+        },
     ];
     // The softbox sits above the camera, so its reflection lands on the cornea as the catchlight.
     let softbox = camera_at.normalize() + Vec3::new(0.25, 0.55, 0.0);
@@ -181,8 +189,10 @@ fn build(
     made.push(environment.into());
     scene.environment = Some(EnvironmentUse::new(environment));
     scene.background = Background::Solid { colour: Colour::hex(0x0030_2420) };
-    // The folds' and contacts' occlusion at the eye's scale: the crease, the corners, the lids and lashes on the eye.
-    scene.occlusion = Some(Occlusion::new(0.0025, 0.7).with_contact(0.0015));
+    // The folds' and contacts' occlusion at the eye's scale: the crease, the corners, the lids and lashes on the eye. A
+    // drawn eye is shaded in flat cels, so it fades out toward anime.
+    let real = 1.0 - design.style;
+    scene.occlusion = (real > 0.01).then(|| Occlusion::new(0.0025, 0.7 * real).with_contact(0.0015));
     if view == View::Macro {
         // A macro lens: sharp on the iris, the lashes and the skin falling out of focus.
         scene.post.depth_of_field = Some(DepthOfField {

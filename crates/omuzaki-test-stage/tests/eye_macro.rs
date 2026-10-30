@@ -81,3 +81,18 @@ fn the_eye_renders_at_macro_framing_as_an_eye() {
         assert!(mean > 30.0 && spread > 15.0, "{name}: a lit, detailed frame: mean {mean}, spread {spread}");
     }
 }
+
+#[test]
+fn the_anime_eye_renders_as_a_drawn_eye() {
+    let Some(mut renderer) = renderer() else { return };
+    let design = EyeDesign::anime();
+    for (view, name) in [(View::Front, "eye-anime-front.png"), (View::Macro, "eye-anime-macro.png")] {
+        let frame = render(&mut renderer, &design, view);
+        if let Some(dir) = std::env::var_os("OMUZAKI_EYE_OUT").map(PathBuf::from) {
+            std::fs::create_dir_all(&dir).unwrap();
+            frame.save(dir.join(name)).unwrap();
+        }
+        let (mean, spread) = luma_spread(&frame);
+        assert!(mean > 30.0 && spread > 15.0, "{name}: a lit, detailed frame: mean {mean}, spread {spread}");
+    }
+}

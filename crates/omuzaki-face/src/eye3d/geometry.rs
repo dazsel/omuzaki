@@ -62,8 +62,22 @@ pub fn meshes(design: &EyeDesign, view_from: Vec3, gaze: Vec3) -> EyeMeshes {
         eyeball: eyeball(&design.ball),
         region: lids.region(),
         shell: lids.shell(gaze.normalize_or(Vec3::Z)),
-        lashes: lids.lashes(&design.lashes, design.seed, view_from),
+        lashes: lids.lashes(&styled_lashes(design), design.seed, view_from),
     }
+}
+
+/// The lashes as drawn at `design`'s style: toward anime, most strands give way to the inked lash line and the few
+/// left are thicker, so they read as the drawn flicks at the outer corner.
+fn styled_lashes(design: &EyeDesign) -> Lashes {
+    let s = design.style;
+    let mut lashes = design.lashes.clone();
+    // In range: the counts are at most a few hundred.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
+    let scale = |n: u32, keep: f32| (n as f32 * (1.0 - (1.0 - keep) * s)).round() as u32;
+    lashes.upper = scale(lashes.upper, 0.12);
+    lashes.lower = scale(lashes.lower, 0.0);
+    lashes.thickness *= 1.0 + 3.0 * s;
+    lashes
 }
 
 /// The cornea: its edge's radius and height, its sphere's radius and its centre's height.
@@ -170,6 +184,9 @@ struct Lids {
     thickness: f32,
     crease: f32,
     crease_depth: f32,
+    /// How far toward anime the eye is drawn (0 photoreal, 1 anime): the hood and the crease flatten, as an anime
+    /// face draws them as lines.
+    style: f32,
     /// The opening's outline, `AROUND` points: the upper lid from the outer corner to the inner one, then the lower
     /// lid back.
     edge: Vec<Vec2>,
@@ -191,9 +208,11 @@ impl Lids {
         Self {
             ball: design.ball.clone(),
             aperture: a,
-            thickness: design.skin.lid_thickness,
+            // An anime lid is a line, not a slab: its margin thins toward anime.
+            thickness: design.skin.lid_thickness * (1.0 - 0.35 * design.style),
             crease: design.skin.crease,
-            crease_depth: design.skin.crease_depth,
+            crease_depth: design.skin.crease_depth * (1.0 - 0.7 * design.style),
+            style: design.style,
             edge,
             centre,
         }
@@ -306,7 +325,7 @@ impl Lids {
         // the corners each lid's shape eases to the two lids' mean, so the lids meet there without a seam.
         let fold = gauss((d - self.crease) / (1.4 * MM));
         // The skin above the crease hangs forward over it, so the fold reads as a shelf with a shadow under it.
-        let hood = 2.2 * MM * smoothstep(self.crease - 0.5 * MM, self.crease + 3.5 * MM, d);
+        let hood = 2.2 * MM * (1.0 - self.style) * smoothstep(self.crease - 0.5 * MM, self.crease + 3.5 * MM, d);
         let upper_z = -self.crease_depth * fold + hood;
         let lower_z = 0.5 * MM * smoothstep(2.0 * MM, 7.0 * MM, d);
         let own = smoothstep(0.0, 0.3, u.min(1.0 - u));
@@ -371,11 +390,16 @@ impl Lids {
     /// thinning out at the corners. It catches the light as a bright line.
     fn meniscus(&self, mesh: &mut MeshData, info: &mut Vec<f32>) {
         const SIDES: usize = 8;
+        // A drawn eye has no tear bead: it thins away toward anime.
+        let real = 1.0 - self.style;
+        if real < 0.01 {
+            return;
+        }
         let first = mesh.positions.len();
         for k in 0..AROUND {
             let u = Self::along(k);
             let full = if Self::is_upper(k) { 0.06 } else { 0.14 } * MM;
-            let radius = 0.02 * MM + full * bump(u, 0.5).powf(0.5);
+            let radius = real * (0.02 * MM + full * bump(u, 0.5).powf(0.5));
             let p = self.plane_point(k, -0.05 * MM);
             let centre = Vec3::new(p.x, p.y, self.proxy(p.x, p.y, 0.04 * MM));
             let next = self.edge[(k + 1) % AROUND];
@@ -490,6 +514,10 @@ impl Lids {
                 let u = 0.03 + 0.92 * at;
                 // The lower lid's lashes thin out toward the inner corner.
                 if !upper && rng.unit() < 0.85 * smoothstep(0.62, 0.95, u) {
+                    continue;
+                }
+                // Toward anime only the outer corner's flicks are left; the inked lash line draws the rest.
+                if rng.unit() < self.style * smoothstep(0.18, 0.32, u) {
                     continue;
                 }
                 strands.push(self.strand(lashes, upper, u, &mut rng));

@@ -15,6 +15,10 @@ use crate::check::{Check, Validate};
 pub struct EyeDesign {
     /// Seeds every random detail (fibres, crypts, vessels, lashes, freckles), so one design always builds one eye.
     pub seed: u32,
+    /// How the eye is drawn, from 0 (photoreal: refraction, fibres, vessels, pores and strand lashes) to 1 (anime: a
+    /// flat painted iris with its highlights, a clean white, cel-shaded skin and an inked lash line). Between the two,
+    /// every look that can blend does, so one eye morphs from one style to the other.
+    pub style: f32,
     /// The eyeball.
     pub ball: Ball,
     /// The iris.
@@ -27,30 +31,50 @@ pub struct EyeDesign {
     pub skin: Skin,
     /// The lashes.
     pub lashes: Lashes,
+    /// How the eye looks in the anime style: the painted iris and the inked lines.
+    pub anime: Anime,
 }
 
 impl Default for EyeDesign {
     fn default() -> Self {
         Self {
             seed: 1,
+            style: 0.0,
             ball: Ball::default(),
             iris: Iris::default(),
             sclera: Sclera::default(),
             aperture: Aperture::default(),
             skin: Skin::default(),
             lashes: Lashes::default(),
+            anime: Anime::default(),
+        }
+    }
+}
+
+impl EyeDesign {
+    /// An anime eye: the anime style, with the larger iris and the taller opening anime proportions use.
+    pub fn anime() -> Self {
+        let base = Self::default();
+        Self {
+            style: 1.0,
+            ball: Ball { iris_radius: 0.0078, pupil: 0.3, cornea_rise: 0.04, ..base.ball },
+            aperture: Aperture { upper: 0.006, upper_peak: 0.5, lower: 0.0042, lower_peak: 0.5, ..base.aperture },
+            skin: Skin { tone: Colour::hex(0x00f6_dccf), freckles: 0.0, ..base.skin },
+            ..base
         }
     }
 }
 
 impl Validate for EyeDesign {
     fn check(&self, c: &mut Check) {
+        c.range_f32("style", self.style, 0.0, 1.0);
         c.nested("ball", &self.ball);
         c.nested("iris", &self.iris);
         c.nested("sclera", &self.sclera);
         c.nested("aperture", &self.aperture);
         c.nested("skin", &self.skin);
         c.nested("lashes", &self.lashes);
+        c.nested("anime", &self.anime);
     }
 }
 
@@ -317,6 +341,62 @@ impl Validate for Lashes {
     }
 }
 
+/// The anime style's painted iris and inked lines (used as `style` rises toward 1).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Anime {
+    /// The iris's colour at its top, under the lid's shadow.
+    pub top: Colour,
+    /// Its colour across the middle.
+    pub mid: Colour,
+    /// Its colour at the bottom, where the light pools.
+    pub low: Colour,
+    /// The ring round its rim.
+    pub ring: Colour,
+    /// The pupil's colour.
+    pub pupil: Colour,
+    /// How large the painted highlights are, `0..=1` (0: none).
+    pub highlight: f32,
+    /// The upper lash line's thickness at its thickest (toward the outer corner), metres.
+    pub lash_line: f32,
+    /// How far the lash line's wing reaches past the outer corner, metres.
+    pub wing: f32,
+    /// How strongly the lower lash line shows, `0..=1`.
+    pub lower_line: f32,
+    /// How strongly the double-lid line above the upper lid shows, `0..=1`.
+    pub crease_line: f32,
+    /// The lines' ink colour.
+    pub ink: Colour,
+}
+
+impl Default for Anime {
+    fn default() -> Self {
+        Self {
+            top: Colour::hex(0x0016_4a3a),
+            mid: Colour::hex(0x002c_8a66),
+            low: Colour::hex(0x0078_d8a8),
+            ring: Colour::hex(0x000c_2a22),
+            pupil: Colour::hex(0x0008_1c16),
+            highlight: 0.7,
+            lash_line: 0.0009,
+            wing: 0.0022,
+            lower_line: 0.5,
+            crease_line: 0.6,
+            ink: Colour::hex(0x0024_1612),
+        }
+    }
+}
+
+impl Validate for Anime {
+    fn check(&self, c: &mut Check) {
+        c.range_f32("highlight", self.highlight, 0.0, 1.0);
+        c.range_f32("lash_line", self.lash_line, 0.0, 0.002);
+        c.range_f32("wing", self.wing, 0.0, 0.006);
+        c.range_f32("lower_line", self.lower_line, 0.0, 1.0);
+        c.range_f32("crease_line", self.crease_line, 0.0, 1.0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,6 +404,7 @@ mod tests {
     #[test]
     fn the_default_eye_is_valid_and_an_empty_document_is_the_default() {
         EyeDesign::default().validate().unwrap();
+        EyeDesign::anime().validate().unwrap();
         let read: EyeDesign = serde_json::from_str("{}").unwrap();
         assert_eq!(read, EyeDesign::default());
     }
@@ -345,8 +426,8 @@ mod tests {
     #[test]
     fn every_numeric_field_has_a_range() {
         let ranges = EyeDesign::default().ranges();
-        // Every field but the seed and the colours: 4 + 6 + 2 + 8 + 4 + 7.
-        assert_eq!(ranges.len(), 31, "{ranges:?}");
+        // Every field but the seed and the colours: the style, then 4 + 6 + 2 + 8 + 4 + 7 + 5.
+        assert_eq!(ranges.len(), 37, "{ranges:?}");
         let rule = ranges.iter().find(|r| r.path == "ball/radius").unwrap();
         assert!(rule.note.is_some(), "the iris rule is listed with the radius");
     }
