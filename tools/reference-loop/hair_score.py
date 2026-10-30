@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Scores the kit's hair against a VRoid sample's in our own renderer, at matching framings (#2536).
+"""Scores the kit's hair against a reference VRM's in our own renderer, at matching framings (#2536).
 
     python3 tools/reference-loop/hair_score.py SAMPLE.vrm OUT_DIR [--template tall] [--style long-straight]
         [--op NAME JSON ...] [--bin target/release/omuzaki]
@@ -23,7 +23,8 @@ distance) and in the top 55% of the character's height in the back view. The num
     lock edges and outline;
   - grain: the mean absolute Laplacian of L*, the pixel-scale noise that reads as shimmer in motion.
 
-The sample is only studied: keep SAMPLE.vrm and OUT_DIR outside the repository. It reads images with Pillow and numpy.
+The reference is only studied: keep SAMPLE.vrm and OUT_DIR, and every render, note and score from them, outside the
+repository, in the private project folder. It reads images with Pillow and numpy.
 """
 
 import argparse
