@@ -86,6 +86,8 @@ omuzaki-stream-api = { path = "../omuzaki-stream-api" }
 omuzaki-track = { path = "../omuzaki-track" }
 omuzaki-track-api = { path = "../omuzaki-track-api" }
 omuzaki-track-net = { path = "../omuzaki-track-net" }
+# Video files as cameras (`input.open_video`, #2585).
+omuzaki-video = { path = "../omuzaki-video" }
 omuzaki-ui-api = { path = "../omuzaki-ui-api" }
 sha2.workspace = true
 tracing.workspace = true

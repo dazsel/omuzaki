@@ -153,6 +153,19 @@ impl Tracker for Cameras {
         *self.log.rechecks.lock().unwrap() += 1;
         self.log.findings.lock().unwrap().clear();
     }
+
+    /// A file that exists becomes a camera `video:<path>` replaying a face of its own, as `omuzaki-video` lists one.
+    fn add_video(&mut self, path: &std::path::Path) -> Result<CameraInfo, TrackError> {
+        let id = format!("video:{}", path.display());
+        if !path.is_file() {
+            return Err(TrackError::NoDevice(CameraId(id)));
+        }
+        if !self.cameras.iter().any(|(known, _)| *known == id) {
+            self.cameras.push((id.clone(), FakeTracker::scripted(face_for(5.0, 9))));
+        }
+        let format = CameraFormat::new(640, 480, 30, PixelFormat::Rgb8);
+        Ok(CameraInfo::new(CameraId(id), "clip.mp4 (video)", vec![format]))
+    }
 }
 
 /// A performer with the real `ArkitRetarget`, `Life` (seed 7) and `BusAnimator`, reading nothing until a source is

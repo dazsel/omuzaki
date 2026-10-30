@@ -6839,6 +6839,7 @@ dependencies = [
  "omuzaki-ui-api",
  "omuzaki-ui-mock",
  "omuzaki-vcam",
+ "omuzaki-video",
  "omuzaki-vts",
  "regex",
  "rmcp",
@@ -6918,6 +6919,15 @@ dependencies = [
  "omuzaki-core",
  "omuzaki-render-api",
  "omuzaki-stream-api",
+]
+
+[[package]]
+name = "omuzaki-video"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-track-api",
+ "tempfile",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

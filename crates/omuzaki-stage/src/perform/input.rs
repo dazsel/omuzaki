@@ -19,6 +19,7 @@
 //! source it replaces goes back into the slot, and the ops side drops it on its next call.
 
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -30,7 +31,7 @@ use omuzaki_settings_api::register_setting;
 use omuzaki_settings_api::setting::Setting;
 use omuzaki_track::gesture::Gesture;
 use omuzaki_track_api::body::{BodyBoard, BodyConfig, BodyStatus, HandGesture};
-use omuzaki_track_api::camera::CameraId;
+use omuzaki_track_api::camera::{CameraId, CameraInfo};
 use omuzaki_metrics_api::budget::{BudgetKey, BudgetUse, TRACK_FACE};
 use omuzaki_track_api::doctor::{Diagnosis, Finding};
 use omuzaki_track_api::error::TrackError;
@@ -301,6 +302,12 @@ pub enum InputError {
     /// This build has no body tracking (its tracker has no body models).
     #[error("this build cannot track the arms and hands")]
     NoBodyTracking,
+    /// This build's tracker reads no video files.
+    #[error("this build cannot track from a video file")]
+    NoVideo,
+    /// The video file could not be read; the reason.
+    #[error("{0}")]
+    Video(String),
 }
 
 impl InputError {
@@ -417,6 +424,18 @@ pub trait InputHost: Send + Sync {
     /// How body tracking is doing.
     fn body(&self) -> BodyStatus {
         BodyStatus::default()
+    }
+
+    /// Adds the video file at `path` as a camera that plays it at the file's own rate (#2585) and returns it: binding
+    /// its id and starting the preview tracks the file as a webcam. Adding a file again returns the same camera. A
+    /// dry run checks that the file is there, adds nothing and returns `None`. Cold: it reads the file's header.
+    ///
+    /// # Errors
+    /// [`InputError::NoVideo`] for a host whose tracker reads no files, [`InputError::Video`] with the reason when the
+    /// file is missing or cannot be read as a video.
+    fn add_video(&self, path: &Path, mode: Mode) -> Result<Option<CameraInfo>, InputError> {
+        let _ = (path, mode);
+        Err(InputError::NoVideo)
     }
 }
 
@@ -956,6 +975,19 @@ impl InputHost for LiveInput {
         }
         inner.tracker.track_body(config, &board).map_err(|e| match e {
             TrackError::Unsupported(_) => InputError::NoBodyTracking,
+            other => InputError::Device(other),
+        })
+    }
+
+    fn add_video(&self, path: &Path, mode: Mode) -> Result<Option<CameraInfo>, InputError> {
+        let missing = || InputError::Video(format!("no video file at {}", path.display()));
+        if mode == Mode::DryRun {
+            return if path.is_file() { Ok(None) } else { Err(missing()) };
+        }
+        self.inner().tracker.add_video(path).map(Some).map_err(|e| match e {
+            TrackError::Unsupported(_) => InputError::NoVideo,
+            TrackError::NoDevice(_) => missing(),
+            TrackError::Backend(reason) => InputError::Video(reason),
             other => InputError::Device(other),
         })
     }

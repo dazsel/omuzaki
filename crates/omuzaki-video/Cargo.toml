@@ -1,0 +1,24 @@
+[package]
+name = "omuzaki-video"
+description = "Video files as a tracking input (#2585): a Y4M reader, decoding through the person's own ffmpeg, and a camera that plays a file at its own rate."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[package.metadata.omuzaki]
+kind = "Implementation"
+summary = "video files as a tracking input (#2585): `VideoReader` reads `.y4m` itself and decodes every other format (MP4, MKV, MOV, WebM) through the person's own `ffmpeg`, run as a separate program on local files only, into NV12 pictures of at most 1280 pixels on the long side; `VideoCamera` is a track-api `Camera` that lists added files beside the platform's cameras and plays each at the file's own rate, skipping frames when tracking falls behind and looping at the end, so the webcam tracker, its preview, calibration and doctor track a file unchanged"
+wasm = false
+
+[dependencies]
+thiserror.workspace = true
+omuzaki-track-api = { path = "../omuzaki-track-api" }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

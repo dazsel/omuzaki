@@ -94,6 +94,7 @@ fn every_op_declares_its_kind_scope_and_undo() {
         ("input.health", OpKind::Query, Scope::Read, Undo::None),
         ("input.vmc_out", OpKind::Edit, Scope::Perform, Undo::Explicit),
         ("input.gestures", OpKind::Query, Scope::Read, Undo::None),
+        ("input.open_video", OpKind::Edit, Scope::EditSettings, Undo::Explicit),
     ];
     for (name, kind, scope, undo) in cases {
         let meta = (find(name).expect("registered").meta)();
@@ -568,4 +569,53 @@ fn gestures_list_their_keys_and_none_shows_before_a_capture() {
     let keys: Vec<_> = hands.iter().map(|row| row["key"].as_str().unwrap()).collect();
     assert_eq!(keys, ["gesture:open_palm", "gesture:fist", "gesture:point", "gesture:peace", "gesture:thumbs_up"]);
     assert!(hands.iter().all(|row| row["active"] == false));
+}
+
+#[test]
+fn a_video_file_becomes_the_webcams_camera_plays_in_the_preview_and_undoes_back() {
+    let rig = Rig::new(false);
+    rig.run("input.select", json!({ "source": "iphone" })).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let clip = dir.path().join("clip.mp4");
+    std::fs::write(&clip, b"a recording").unwrap();
+    let path = clip.display().to_string();
+
+    // Reading a recording of the person is theirs to confirm; a dry run adds nothing.
+    assert_eq!(refusal(rig.plan("input.open_video", json!({ "path": path }), &agent(), false)), Some("needs_person"));
+    let dry = rig.plan("input.open_video", json!({ "path": path }), &person(), true).unwrap();
+    assert_eq!(dry.output.unwrap()["camera"], Value::Null);
+    assert!(!rig.state()["cameras"].to_string().contains("video:"), "{}", rig.state());
+
+    let plan = rig.run("input.open_video", json!({ "path": path })).unwrap();
+    let answer = plan.output.clone().unwrap();
+    let id = format!("video:{path}");
+    assert_eq!(answer["camera"]["id"], json!(id));
+    assert_eq!((answer["camera"]["width"].clone(), answer["camera"]["fps"].clone()), (json!(640), json!(30)));
+    assert_eq!(answer["before"], json!({ "source": "iphone", "camera": null }));
+    let state = rig.state();
+    assert_eq!((state["source"].clone(), state["camera"].clone()), (json!("webcam"), json!(id)), "{state}");
+
+    // The preview plays it, as a webcam.
+    rig.run("input.preview", json!({ "on": true })).unwrap();
+    assert_eq!(rig.log.calls().last(), Some(&support::Call::Start(id.clone())));
+
+    // Undo puts the source and camera back; redo opens it again.
+    let effect = plan.effect.unwrap();
+    rig.run(&effect.undo.op, effect.undo.args.clone()).unwrap();
+    let state = rig.state();
+    assert_eq!((state["source"].clone(), state["camera"].clone()), (json!("iphone"), Value::Null), "{state}");
+    rig.run(&effect.redo.op, effect.redo.args.clone()).unwrap();
+    assert_eq!(rig.state()["camera"], json!(id));
+}
+
+#[test]
+fn a_video_path_must_be_absolute_and_name_a_file() {
+    let rig = Rig::new(false);
+    let refused = |args: Value| rig.run("input.open_video", args).unwrap_err();
+    let relative = refused(json!({ "path": "clip.mp4" }));
+    assert_eq!((relative.code, relative.field.as_deref()), (ErrorCode::Invalid, Some("path")));
+    let missing = refused(json!({ "path": "/no/such/clip.mp4" }));
+    assert_eq!(missing.code, ErrorCode::Invalid);
+    assert!(missing.message.contains("no video file"), "{missing:?}");
+    assert_eq!(refused(json!({})).code, ErrorCode::Invalid, "a path or a restore");
 }
