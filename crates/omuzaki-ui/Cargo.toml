@@ -73,6 +73,8 @@ omuzaki-script = { path = "../omuzaki-script" }
 omuzaki-settings = { path = "../omuzaki-settings" }
 omuzaki-settings-api = { path = "../omuzaki-settings-api" }
 omuzaki-setup = { path = "../omuzaki-setup" }
+# The `sequence.*` ops: keyframed shots, toon volumes and motion graphics to a video.
+omuzaki-sequence = { path = "../omuzaki-sequence" }
 # The `short.*` ops (#2394).
 omuzaki-short = { path = "../omuzaki-short" }
 omuzaki-stage = { path = "../omuzaki-stage" }

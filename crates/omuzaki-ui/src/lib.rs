@@ -57,6 +57,7 @@ omuzaki_core::define_link! {
     omuzaki_render::link();
     omuzaki_script::link();
     omuzaki_settings::link();
+    omuzaki_sequence::link();
     omuzaki_setup::link();
     omuzaki_short::link();
     omuzaki_stage::link();

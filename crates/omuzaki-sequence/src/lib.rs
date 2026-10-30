@@ -6,19 +6,25 @@
 //!
 //! | Module | Holds |
 //! |---|---|
+//! | [`actor`] | an actor's pose, face, talk and gaze keys played through the live performer |
 //! | [`curve`] | the easing library, keys and tracks |
 //! | [`def`] | the sequence file: [`SequenceDef`](def::SequenceDef), its shots, actors and props |
 //! | [`volume`] | toon volumes: smoke, goo, cloud, steam, fire and dust as meshed, cel-shaded puffs |
 //! | [`layer`] | motion-graphics layers: text, shapes, rings, bar charts, icons and speed lines |
+//! | [`render`] | the render loop: shots staged as they show, composited with the layers |
+//! | [`ops`] | the `sequence.*` ops: set, key, delete, get, list, check, kinds, render, stills |
 //! | [`kinds`] | the prop kinds `news-desk`, `skyline`, `cloud-bank` and `card` |
 //! | [`error`] | [`SequenceError`] |
 #![deny(missing_docs)]
 
+pub mod actor;
 pub mod curve;
 pub mod def;
 pub mod error;
 pub mod kinds;
 pub mod layer;
+pub mod ops;
+pub mod render;
 pub mod volume;
 
 pub use def::SequenceDef;

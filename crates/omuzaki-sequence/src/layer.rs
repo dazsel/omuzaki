@@ -246,6 +246,26 @@ fn line_band() -> f32 {
     400.0
 }
 
+impl Draw {
+    /// Every kind's name, for listings.
+    pub const KINDS: [&'static str; 8] = ["text", "rect", "ellipse", "ring", "polygon", "bars", "icon", "lines"];
+
+    /// This one's kind.
+    #[must_use]
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Text { .. } => "text",
+            Self::Rect { .. } => "rect",
+            Self::Ellipse { .. } => "ellipse",
+            Self::Ring { .. } => "ring",
+            Self::Polygon { .. } => "polygon",
+            Self::Bars { .. } => "bars",
+            Self::Icon { .. } => "icon",
+            Self::Lines { .. } => "lines",
+        }
+    }
+}
+
 /// One layer.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -581,11 +601,22 @@ impl<'a> Painter<'a> {
                 .unwrap_or_else(|| Shader::SolidColor(sk_colour(colour, opacity))),
                 _ => Shader::SolidColor(sk_colour(colour, opacity)),
             };
-            canvas.fill_path(&shape.path, &paint, FillRule::EvenOdd, transform, mask.as_ref());
-            if let Some(stroke) = layer.stroke.filter(|s| s.width > 0.0 && shape.colour.is_none()) {
-                let mut line = Paint { anti_alias: true, ..Paint::default() };
+            let rule = if shape.winding { FillRule::Winding } else { FillRule::EvenOdd };
+            let stroke = layer.stroke.filter(|s| s.width > 0.0 && shape.colour.is_none());
+            let mut line = Paint { anti_alias: true, ..Paint::default() };
+            let mut sk = SkStroke { line_join: tiny_skia::LineJoin::Round, ..SkStroke::default() };
+            if let Some(stroke) = stroke {
                 line.set_color(sk_colour(stroke.colour, opacity));
-                let sk = SkStroke { width: stroke.width, line_join: tiny_skia::LineJoin::Round, ..SkStroke::default() };
+                sk.width = stroke.width;
+            }
+            // Type is stroked under its fill at twice the width, as a sign painter outlines letters: a variable font's
+            // outlines overlap inside a letter, and a line on top would draw those overlaps.
+            if stroke.is_some() && shape.winding {
+                let wide = SkStroke { width: sk.width * 2.0, ..sk.clone() };
+                canvas.stroke_path(&shape.path, &line, &wide, transform, mask.as_ref());
+            }
+            canvas.fill_path(&shape.path, &paint, rule, transform, mask.as_ref());
+            if stroke.is_some() && !shape.winding {
                 canvas.stroke_path(&shape.path, &line, &sk, transform, mask.as_ref());
             }
         }
@@ -630,10 +661,17 @@ impl WithAlpha for tiny_skia::Color {
 struct Shape {
     path: Path,
     colour: Option<Colour>,
+    /// Filled by the non-zero rule: type, whose variable outlines overlap; everything else holes by even-odd.
+    winding: bool,
 }
 
 fn shape(path: Option<Path>, colour: Option<Colour>) -> Option<Shape> {
-    path.map(|path| Shape { path, colour })
+    path.map(|path| Shape { path, colour, winding: false })
+}
+
+/// Type as a shape.
+fn type_shape(path: Option<Path>, colour: Option<Colour>) -> Option<Shape> {
+    path.map(|path| Shape { path, colour, winding: true })
 }
 
 fn bounds_of(shapes: &[Shape]) -> Option<Rect> {
@@ -649,7 +687,7 @@ fn bounds_of(shapes: &[Shape]) -> Option<Rect> {
 fn shapes(draw: &Draw, t: f32) -> Vec<Shape> {
     match draw {
         Draw::Text { text, size, weight, tracking, align } => {
-            shape(text_path(text, *size, *weight, *tracking, *align, 0.0, 0.0), None).into_iter().collect()
+            type_shape(text_path(text, *size, *weight, *tracking, *align, 0.0, 0.0), None).into_iter().collect()
         }
         Draw::Rect { w, h, radius } => shape(rounded_rect(0.0, 0.0, *w, *h, *radius), None).into_iter().collect(),
         Draw::Ellipse { w, h } => {
@@ -759,23 +797,24 @@ fn bars(chart: &Bars<'_>, grow: f32) -> Vec<Shape> {
         let own = ((grow * (1.0 + stagger * (nf - 1.0)) - stagger * fi).clamp(0.0, 1.0)).powf(0.7);
         let colour = chart.colours.get(i).or(chart.colours.last()).copied().unwrap_or(Colour::WHITE);
         let label_h = if chart.labels.is_empty() { 0.0 } else { label * 1.5 };
-        let caption_h = if chart.captions.is_empty() { 0.0 } else { label * 1.5 };
         let icon_h = if chart.icons.is_empty() { 0.0 } else { icon_size * 1.3 };
         let slot_top = label_h;
         let slot_h = (chart.h - label_h).max(1.0);
         out.extend(shape(rounded_rect(x, slot_top, column, slot_h, column * 0.08), Some(chart.slot)));
-        let room = (slot_h - icon_h - caption_h).max(1.0);
+        // The bar fills the slot from its foot to under the icon at the top of the scale, the caption printed on it.
+        let pad = column * 0.08;
+        let room = (slot_h - icon_h - pad).max(1.0);
         let bar_h = room * (value / top).clamp(0.0, 1.0) * own;
         if bar_h > 0.5 {
-            let y = slot_top + slot_h - caption_h - bar_h;
+            let y = slot_top + slot_h - pad - bar_h;
             out.extend(shape(Rect::from_xywh(x + column * 0.08, y, column * 0.84, bar_h).map(PathBuilder::from_rect), Some(colour)));
         }
         if let Some(text) = chart.labels.get(i) {
-            out.extend(shape(text_path(text, label, 700.0, 0.0, Align::Centre, x + column / 2.0, label * 1.05), Some(Colour::rgb(20, 20, 30))));
+            out.extend(type_shape(text_path(text, label, 700.0, 0.0, Align::Centre, x + column / 2.0, label * 1.05), Some(Colour::rgb(20, 20, 30))));
         }
         if let Some(text) = chart.captions.get(i) {
-            let y = slot_top + slot_h - label * 0.35;
-            out.extend(shape(text_path(text, label * 0.9, 600.0, 0.0, Align::Centre, x + column / 2.0, y), Some(Colour::WHITE)));
+            let y = slot_top + slot_h - pad - label * 0.3;
+            out.extend(type_shape(text_path(text, label * 0.9, 600.0, 0.0, Align::Centre, x + column / 2.0, y), Some(Colour::WHITE)));
         }
         if let Some(name) = chart.icons.get(i) {
             let y = slot_top + icon_size * 0.15;
@@ -988,7 +1027,8 @@ mod tests {
     fn text_draws_and_grows_with_its_size() {
         let small = layer(serde_json::json!({"id": "t", "draw": {"kind": "text", "text": "NEWS", "size": 60}}));
         let big = layer(serde_json::json!({"id": "t", "draw": {"kind": "text", "text": "NEWS", "size": 120}}));
-        let (a, b) = (coverage(&painted(&[small], 0.0)), coverage(&painted(&[big], 0.0)));
+        let ink = |p: &Pixmap| p.data().chunks(4).map(|px| u32::from(px[3])).sum::<u32>() / 255;
+        let (a, b) = (ink(&painted(&[small], 0.0)), ink(&painted(&[big], 0.0)));
         assert!(a > 50, "the text drew {a} pixels");
         assert!(b > a * 3, "twice the size covers about four times the area: {a} then {b}");
     }
@@ -1055,9 +1095,9 @@ mod tests {
                 "labels": ["6AM", "8AM", "10AM", "12PM", "2PM"], "icons": ["moon", "sun", "sun", "sun", "sun"],
                 "colours": ["#40c040", "#f0e040", "#f0a020", "#f06020", "#e02020"], "w": 900, "h": 500, "grow": grow}}))
         };
-        let empty = coverage(&painted(&[chart(0.0)], 0.0));
-        let grown = coverage(&painted(&[chart(1.0)], 0.0));
-        assert!(grown > empty, "bars add pixels as they grow");
+        let (empty, grown) = (painted(&[chart(0.0)], 0.0), painted(&[chart(1.0)], 0.0));
+        let changed = empty.data().chunks(4).zip(grown.data().chunks(4)).filter(|(a, b)| a != b).count();
+        assert!(changed > 2000, "bars fill their slots as they grow: {changed} pixels changed");
         for name in ICONS {
             let l = layer(serde_json::json!({"id": "i", "draw": {"kind": "icon", "name": name, "size": 120}}));
             l.check("i").unwrap();
@@ -1071,3 +1111,34 @@ mod tests {
         assert!(l.check("l").unwrap_err().contains("no icon"));
     }
 }
+
+#[cfg(test)]
+mod look {
+    use super::*;
+
+    #[test]
+    #[ignore = "writes a picture to look at"]
+    fn dump() {
+        let layers: Vec<Layer> = serde_json::from_value(serde_json::json!([
+            {"id": "bg", "draw": {"kind": "rect", "w": 1200, "h": 2000}, "fill": "#3f6fe0", "fill_to": "#b4b8f4"},
+            {"id": "t", "draw": {"kind": "text", "text": "OMU NEWS", "size": 200, "weight": 800}, "y": 0.15, "skew": 30.0, "fill": "#ffffff", "stroke": {"colour": "#2c3fa0", "width": 6.0}},
+            {"id": "t4", "draw": {"kind": "text", "text": "NEWS WEATHER", "size": 120, "weight": 400}, "y": 0.25, "fill": "#ffffff"},
+            {"id": "t6", "draw": {"kind": "text", "text": "NEWS WEATHER", "size": 120, "weight": 600}, "y": 0.31, "fill": "#ffffff"},
+            {"id": "t8", "draw": {"kind": "text", "text": "NEWS WEATHER", "size": 120, "weight": 800}, "y": 0.37, "fill": "#ffffff"},
+            {"id": "band", "draw": {"kind": "rect", "w": 560, "h": 120}, "y": 0.35, "skew": -16.0, "fill": "#ff3d8b", "fill_to": "#d01770"},
+            {"id": "w", "parent": "band", "draw": {"kind": "text", "text": "WEATHER", "size": 84, "weight": 800}, "x": 0.0, "y": 0.0, "skew": -16.0, "fill": "#ffffff"},
+            {"id": "ring", "draw": {"kind": "ring", "radius": 200, "width": 5}, "y": 0.5, "fill": "#ffffff80"},
+            {"id": "lines", "draw": {"kind": "lines", "count": 22, "length": 700, "thickness": 5, "band": 520, "travel": 0.5}, "y": 0.5, "fill": "#ffffff70"},
+            {"id": "panel", "draw": {"kind": "rect", "w": 1010, "h": 360, "radius": 6}, "y": 0.865, "fill": "#ffffff"},
+            {"id": "bars", "y": 0.89, "fill": "#ffffff", "draw": {"kind": "bars", "values": [64, 72, 86, 91, 102, 104, 97, 86], "max": 110,
+              "labels": ["6AM", "8AM", "10AM", "12PM", "2PM", "4PM", "6PM", "8PM"], "captions": ["64°F", "72°F", "86°F", "91°F", "102°F", "104°F", "97°F", "86°F"],
+              "icons": ["moon", "sun", "sun", "sun", "sun", "sun", "sun", "moon"], "colours": ["#3fc94a", "#f2d21b", "#f5a524", "#f5841f", "#ea3a24", "#e3241c", "#f57c22", "#f5a524"],
+              "slot": "#2a63de", "w": 960, "h": 250, "gap": 12, "grow": 0.8}}
+        ])).unwrap();
+        let mut canvas = Pixmap::new(540, 960).unwrap();
+        Painter::new(&layers, [540, 960]).paint(&mut canvas, Depth::Front, 0.0, 24);
+        let img = image::RgbaImage::from_raw(540, 960, canvas.data().to_vec()).unwrap();
+        img.save(std::env::var("LAYER_DUMP").unwrap_or_else(|_| "layers.png".into())).unwrap();
+    }
+}
+

@@ -26,8 +26,7 @@
 //!
 //! [[layer]]
 //! id = "title"
-//! kind = "text"
-//! text = "WEATHER"
+//! draw = { kind = "text", text = "WEATHER" }
 //! x = [{ t = 0.0, v = -0.5 }, { t = 0.4, v = 0.5, ease = "expo-out" }]
 //! y = 0.3
 //! ```
@@ -50,7 +49,7 @@ use crate::volume::VolumeDef;
 pub const MAX_DURATION_S: f32 = 600.0;
 /// The most shots in a sequence.
 pub const MAX_SHOTS: usize = 64;
-/// The most actors in one shot.
+/// The actors in one shot: one for now; whole casts in a shot come with the cast stage.
 pub const MAX_ACTORS: usize = 1;
 /// The most props in one shot.
 pub const MAX_PROPS: usize = 32;
@@ -549,8 +548,8 @@ impl Shot {
         if !(self.start.is_finite() && self.end.is_finite() && self.end > self.start && self.start >= 0.0) {
             return Err(format!("{at}: start and end are seconds with end after start"));
         }
-        if self.actors.len() > MAX_ACTORS {
-            return Err(format!("{at}: at most {MAX_ACTORS} actor a shot for now"));
+        if self.actors.len() != MAX_ACTORS {
+            return Err(format!("{at}: a shot holds {MAX_ACTORS} actor for now (more come with casts)"));
         }
         if self.props.len() > MAX_PROPS {
             return Err(format!("{at}: at most {MAX_PROPS} props"));
@@ -650,5 +649,29 @@ impl Actor {
             probe.validate().map_err(|e| format!("{at}.surface: {e}"))?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_weather_report_reads_checks_and_round_trips() {
+        let def = SequenceDef::from_toml(include_str!("../sequences/weather-report.seq.toml")).unwrap();
+        def.check().unwrap();
+        assert_eq!(def.frames(), 180);
+        assert_eq!(def.shots.len(), 3);
+        let again = SequenceDef::from_toml(&def.to_toml().unwrap()).unwrap();
+        assert_eq!(again, def);
+        let json: SequenceDef = serde_json::from_value(serde_json::to_value(&def).unwrap()).unwrap();
+        assert_eq!(json, def);
+    }
+
+    #[test]
+    fn a_shot_without_its_actor_is_refused() {
+        let mut def = SequenceDef::from_toml(include_str!("../sequences/weather-report.seq.toml")).unwrap();
+        def.shots[0].actors.clear();
+        assert!(def.check().unwrap_err().to_string().contains("actor"));
     }
 }
