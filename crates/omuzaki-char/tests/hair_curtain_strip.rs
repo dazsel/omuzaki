@@ -316,8 +316,8 @@ fn the_streak_tint_and_shade_of_a_clump_reach_its_strip() {
     clumps[1].shade = 0.5;
     let mesh = curtain::group_mesh(&clumps, &u, 3, &frame(), None, &StrandMap::default()).unwrap();
     let per = 3 * GUIDE_POINTS;
-    // Untinted; the first column is the strip's side, which the strand map feathers.
-    assert_eq!(mesh.colours[0], [1.0, 1.0, 1.0, StrandMap::default().coverage(-1.0)]);
+    // Untinted, and whole to its side: the curtain is one sheet, so a strip's sides are not feathered.
+    assert_eq!(mesh.colours[0], [1.0; 4]);
     assert!(mesh.colours[2 * per..3 * per].iter().all(|c| c[0] > 0.9 && c[1] < 0.1));
     let info = &mesh.extra_attribute(HAIR_INFO).unwrap().data;
     assert!((info[3 * per + 1] - 0.5 * (0.97 + 0.03 * 2.1_f32.sin())).abs() < 1e-6);

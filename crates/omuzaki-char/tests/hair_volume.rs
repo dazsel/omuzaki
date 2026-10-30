@@ -4,6 +4,7 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)] // fixtures; a bad one should stop the test with its reason
 #![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+#![allow(clippy::float_cmp)] // strand seeds are compared as the ids they are
 
 use std::collections::HashMap;
 
@@ -51,10 +52,11 @@ fn static_mesh(out: &PartOutput) -> &PartMesh {
     out.meshes.iter().find(|m| m.name == "hair-static").expect("a static mesh")
 }
 
-/// The mean angle, degrees, between the normals of vertices that sit within 4 mm of each other but belong to different
-/// locks (a different strand seed in `hair-info`): how much neighbouring locks disagree about which way they face.
-fn neighbour_disagreement(mesh: &PartMesh) -> f32 {
-    const CELL: f32 = 0.004;
+/// The mean angle, degrees, between the normals of vertices that share a 1 cm cell but belong to different
+/// locks (a different strand seed in `hair-info`): how much neighbouring locks disagree about which way they face. Only
+/// the vertices `outer` marks count: the hair's outside, where one lock lies beside the next.
+fn neighbour_disagreement(mesh: &PartMesh, outer: &[bool]) -> f32 {
+    const CELL: f32 = 0.01;
     let g = &mesh.geometry;
     let info = &g.extra_attribute(omuzaki_char_api::HAIR_INFO).expect("hair-info").data;
     let cell = |p: Vec3| ((p.x / CELL).floor() as i32, (p.y / CELL).floor() as i32, (p.z / CELL).floor() as i32);
@@ -66,7 +68,7 @@ fn neighbour_disagreement(mesh: &PartMesh) -> f32 {
     for members in grid.values() {
         for (k, &a) in members.iter().enumerate() {
             for &b in &members[k + 1..] {
-                if info[3 * a] == info[3 * b] {
+                if info[3 * a] == info[3 * b] || !outer[a] || !outer[b] {
                     continue;
                 }
                 sum += g.normals[a].dot(g.normals[b]).clamp(-1.0, 1.0).acos().to_degrees();
@@ -80,22 +82,42 @@ fn neighbour_disagreement(mesh: &PartMesh) -> f32 {
 
 #[test]
 fn at_full_blend_neighbouring_locks_face_the_same_way() {
-    let own = neighbour_disagreement(static_mesh(&hair(with(|s| s.normal_blend = 0.0))));
-    let blended = neighbour_disagreement(static_mesh(&hair(HairShading::default())));
+    let (own, blended) = (hair(with(|s| s.normal_blend = 0.0)), hair(HairShading::default()));
+    let (own, blended) = (static_mesh(&own), static_mesh(&blended));
+    // The outside: where the blended normal faces away from the hair's middle. (A lock's inner face, turned to the
+    // volume's inside, lies over the outer face of the lock beneath, and the two rightly disagree.)
+    let g = &blended.geometry;
+    let centre = g.positions.iter().copied().sum::<Vec3>() / g.positions.len() as f32;
+    let outer: Vec<bool> =
+        g.positions.iter().zip(&g.normals).map(|(p, n)| n.dot((*p - centre).normalize_or_zero()) > 0.3).collect();
+    let (own, blended) = (neighbour_disagreement(own, &outer), neighbour_disagreement(blended, &outer));
     // Each lock's own tube normals point every way round it; the volume's agree from lock to lock.
     assert!(own > 45.0, "own normals disagree by {own:.1} degrees");
     assert!(blended < 12.0, "blended normals disagree by {blended:.1} degrees");
 }
 
 #[test]
-fn at_full_blend_every_normal_faces_out_of_the_head() {
-    let out = hair(HairShading::default());
-    let g = &static_mesh(&out).geometry;
-    let centre = g.positions.iter().copied().sum::<Vec3>() / g.positions.len() as f32;
-    let inward = g.positions.iter().zip(&g.normals).filter(|(p, n)| n.dot(**p - centre) < 0.0).count();
-    // The outline's hull grows along these normals, so with none pointing back in it only rings the silhouette.
-    assert!(inward * 100 < g.positions.len(), "{inward} of {} normals face in", g.positions.len());
-    assert!(g.normals.iter().all(|n| (n.length() - 1.0).abs() < 1e-3));
+fn blending_keeps_a_locks_inner_face_facing_in() {
+    // The same mesh both ways: only the normals change.
+    let (own, blended) = (hair(with(|s| s.normal_blend = 0.0)), hair(HairShading::default()));
+    let (own, blended) = (&static_mesh(&own).geometry, &static_mesh(&blended).geometry);
+    assert_eq!(own.positions, blended.positions);
+    let centre = own.positions.iter().copied().sum::<Vec3>() / own.positions.len() as f32;
+    let (mut clear, mut turned) = (0, 0);
+    for ((p, a), b) in own.positions.iter().zip(&own.normals).zip(&blended.normals) {
+        let out = (*p - centre).normalize_or_zero();
+        if a.dot(out).abs() > 0.8 {
+            clear += 1;
+            // A face that clearly faces out stays out, and one that faces the head stays in: the inside of a flared lock
+            // is not lit as if it faced the viewer's way out.
+            if a.dot(out).signum() != b.dot(out).signum() {
+                turned += 1;
+            }
+        }
+    }
+    assert!(clear > 1000, "only {clear} clearly facing vertices");
+    assert!(turned * 50 < clear, "{turned} of {clear} faces turned over");
+    assert!(blended.normals.iter().all(|n| (n.length() - 1.0).abs() < 1e-3));
 }
 
 #[test]

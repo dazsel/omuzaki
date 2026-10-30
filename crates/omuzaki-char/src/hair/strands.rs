@@ -271,7 +271,7 @@ mod tests {
 
     #[test]
     fn a_feathered_side_drops_the_fainter_strands() {
-        let (t, map) = (Strands::default().texture(), StrandMap::default());
+        let (t, map) = (Strands::default().texture(), StrandMap { feather: 0.45, ..StrandMap::default() });
         // The cut on a side's vertex alpha: the strands whose coverage times the side's stay at or over the cutoff.
         let side = map.coverage(1.0);
         assert!((map.coverage(0.0) - 1.0).abs() < 1e-6 && side < 0.7, "whole in the middle, {side} at the side");

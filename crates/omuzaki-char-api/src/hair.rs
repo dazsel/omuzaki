@@ -1306,12 +1306,14 @@ pub struct HairShading {
     pub inner_darkening: f64,
     /// How far each lock's shading normals are bent toward the hair volume's, `0..=1` (#2479): `1` (the default) lights
     /// the hair as one mass, with the light-to-shade sweep running across the head and the outline only round the
-    /// hair's outer silhouette; `0` lights every lock by its own tube, a small cylinder each. Applied to the meshes'
+    /// hair's outer silhouette (a lock's inner face takes the volume's inside, and its sides keep their own turn); `0`
+    /// lights every lock by its own tube, a small cylinder each. Applied to the meshes'
     /// normals on the CPU, so an export carries it.
     pub normal_blend: f64,
     /// How much a lock's strands thin out toward its sides, `0..=0.8` (#2482): its edge's coverage is `1 -
     /// edge_feather`, so the fainter strands drop out through the alpha cut and the side reads as strands, not a cut
-    /// edge. `0` keeps every strand to the edge.
+    /// edge. `0` keeps every strand to the edge. A curtain's strips are one sheet and keep theirs, since each side meets
+    /// the next strip.
     pub edge_feather: f64,
     /// The strand texture's strands across one lock, `8..=64` (#2481).
     pub strands: u32,
@@ -1359,7 +1361,7 @@ impl Default for HairShading {
             streaks: Vec::new(),
             inner_darkening: 1.0,
             normal_blend: 1.0,
-            edge_feather: 0.45,
+            edge_feather: 0.25,
             strands: 28,
             strand_gap: 0.28,
             strand_grain: 0.06,

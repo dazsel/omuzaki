@@ -52,7 +52,8 @@ use super::reach::{HairReach, HairReachFact};
 use super::strands::{self, StrandMap, Strands};
 use super::tie;
 use super::tube::{
-    OutwardFrame, TubeError, TubeLook, TubeMesh, cap_vertices, polar_angles, refine, ring_for, vertex_colour,
+    OutwardFrame, TubeError, TubeLook, TubeMesh, cap_vertices, polar_angles, refine, ring_for, smoothstep,
+    vertex_colour,
 };
 use super::wisp;
 use crate::head::ears::EarCover;
@@ -504,7 +505,9 @@ fn mesh_groups<'a>(
 /// the head and body ([`OutwardFrame::rest`]), or, along a tail, out of its chain, blending from the head's over the
 /// chain's root band as the skin does. At 1 the locks shade as one mass, as drawn hair does, and the ink outline, which
 /// pushes its hull along these normals, draws only the hair's silhouette, not every lock; at 0 each lock is a tube of its
-/// own. A normal that cancels out keeps the lock's own.
+/// own. A lock's inner face, the part that faces the head ([`INNER`]), bends to the volume's inside instead, so the
+/// inside of a flared lock is not lit as if it faced out (the back light's rim would light it grey); between the two
+/// it keeps its own. A normal that cancels out keeps the lock's own.
 fn volume_normals(mesh: &mut MeshData, runs: &[Run<'_>], frame: &OutwardFrame, blend: f32) {
     if blend <= 0.0 {
         return;
@@ -521,9 +524,15 @@ fn volume_normals(mesh: &mut MeshData, runs: &[Run<'_>], frame: &OutwardFrame, b
         }
     }
     for (n, out) in mesh.normals.iter_mut().zip(volume) {
-        *n = n.lerp(out, blend.min(1.0)).try_normalize().unwrap_or(*n);
+        let side = 2.0 * smoothstep(n.dot(out), INNER.0, INNER.1) - 1.0;
+        let target = (out * side + *n * (1.0 - side.abs())).try_normalize().unwrap_or(*n);
+        *n = n.lerp(target, blend.min(1.0)).try_normalize().unwrap_or(*n);
     }
 }
+
+/// The cosines between a lock's own normal and the volume's at which [`volume_normals`] turns from the volume's inside
+/// to its outside: a lock's top and sides take the outside, and only the face toward the head the inside.
+const INNER: (f32, f32) = (-0.75, -0.35);
 
 /// What [`mesh_groups`] makes: the two hair meshes and the tie bands.
 struct Meshes<'a> {

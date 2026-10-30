@@ -306,8 +306,8 @@ pub struct StripLook {
 }
 
 /// The whole strip mesh at rest. `guides` are in curtain order and `looks` has one entry per guide; `head` is the head
-/// centre, from which `hair-info` takes its polar angle; `map` lays each column on the strand texture and feathers the
-/// strip's sides through the vertex alpha. `keep` is applied to every vertex once placed (the body's
+/// centre, from which `hair-info` takes its polar angle; `map` lays each column on the strand texture. A strip's sides
+/// are not feathered: the curtain is one sheet, and each side meets the next strip. `keep` is applied to every vertex once placed (the body's
 /// keep-out; `|p| p` for none), before the winding and normals are worked out.
 ///
 /// # Errors
@@ -361,8 +361,7 @@ pub fn strip_mesh(
                 uv.extend([a, t]);
                 info.extend([seed, shade, polar]);
                 uvs.push(Vec2::new(strands::offset(seed) + 0.5 + 0.5 * a, map.v(lengths[k], length)));
-                let [red, green, blue, _] = look.colour;
-                colours.push([red, green, blue, map.coverage(a)]);
+                colours.push(look.colour);
             }
         }
     }
