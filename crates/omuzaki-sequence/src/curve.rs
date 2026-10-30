@@ -626,7 +626,8 @@ mod tests {
         let held: Track<f32> = serde_json::from_str("3.5").unwrap();
         assert_eq!(held, Track::Hold(3.5));
         let keyed: Track<[f32; 3]> =
-            serde_json::from_str(r#"[{"t": 0, "v": [0, 0, 0]}, {"t": 1, "v": [1, 2, 3], "ease": "back-out"}]"#).unwrap();
+            serde_json::from_str(r#"[{"t": 0, "v": [0, 0, 0]}, {"t": 1, "v": [1, 2, 3], "ease": "back-out"}]"#)
+                .unwrap();
         assert!(keyed.is_animated());
         let spring: Ease = serde_json::from_str(r#"{"spring": {"frequency": 2, "damping": 0.3}}"#).unwrap();
         assert!(matches!(spring, Ease::Spring { .. }));

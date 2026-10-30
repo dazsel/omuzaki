@@ -120,7 +120,12 @@ pub fn camera_at(shot: &Shot, t: f32, seed: u32) -> Camera {
     }
     let forward = (target - eye).try_normalize().unwrap_or(Vec3::NEG_Z);
     let up = Quat::from_axis_angle(forward, -roll.to_radians()) * Vec3::Y;
-    Camera::look_at(eye, target, up, Projection::Perspective { fov_y_deg: c.fov.at(t).clamp(1.0, 170.0), near: NEAR, far: FAR })
+    Camera::look_at(
+        eye,
+        target,
+        up,
+        Projection::Perspective { fov_y_deg: c.fov.at(t).clamp(1.0, 170.0), near: NEAR, far: FAR },
+    )
 }
 
 /// A turn of yaw, pitch and roll in degrees.
@@ -250,10 +255,12 @@ impl Loop<'_> {
             self.live = kept;
             let mut canvas = Pixmap::new(w, h).ok_or_else(|| SequenceError::Invalid("the frame has no area".into()))?;
             painter.paint(&mut canvas, Depth::Back, t, def.fps);
-            let mut order: Vec<usize> = (0..def.shots.len()).filter(|i| {
-                let s = &def.shots[*i];
-                s.start <= t && t < s.end
-            }).collect();
+            let mut order: Vec<usize> = (0..def.shots.len())
+                .filter(|i| {
+                    let s = &def.shots[*i];
+                    s.start <= t && t < s.end
+                })
+                .collect();
             order.sort_by(|a, b| def.shots[*a].start.total_cmp(&def.shots[*b].start).then(a.cmp(b)));
             let mut render_s = 0.0;
             for index in order {
@@ -324,7 +331,14 @@ impl Loop<'_> {
             .map_err(|e| render_error("the shot's target", e))?;
         #[allow(clippy::cast_precision_loss, reason = "frame rates of at most 60")]
         let clock = StageClock::fixed(def.fps as f32);
-        let stage = match body.stage(renderer, UploadOptions::default(), Scene::new(Camera::default()), target, self.quality, clock) {
+        let stage = match body.stage(
+            renderer,
+            UploadOptions::default(),
+            Scene::new(Camera::default()),
+            target,
+            self.quality,
+            clock,
+        ) {
             Ok(stage) => stage,
             Err(e) => {
                 let _ = renderer.release(target.into());
@@ -332,16 +346,8 @@ impl Loop<'_> {
             }
         };
         let seed = shot_seed(def.seed, index);
-        let mut live = LiveShot {
-            index,
-            stage,
-            target,
-            player: None,
-            props: Vec::new(),
-            volumes: Vec::new(),
-            fx: None,
-            seed,
-        };
+        let mut live =
+            LiveShot { index, stage, target, player: None, props: Vec::new(), volumes: Vec::new(), fx: None, seed };
         match fill(renderer, shot, &staged, &mut live, hand_rest, has_face, t) {
             Ok(()) => Ok(live),
             Err(e) => {
@@ -371,8 +377,14 @@ fn fill(
     }
     if let Some(actor) = shot.actors.first() {
         let expressions = stage.trigger_expressions();
-        live.player =
-            Some(ActorPlayer::new(actor, &format!("shot '{}'.actor", shot.id), &expressions, ChannelBuf::NEUTRAL, hand_rest, live.seed)?);
+        live.player = Some(ActorPlayer::new(
+            actor,
+            &format!("shot '{}'.actor", shot.id),
+            &expressions,
+            ChannelBuf::NEUTRAL,
+            hand_rest,
+            live.seed,
+        )?);
     }
     for (i, prop) in shot.props.iter().enumerate() {
         let built = omuzaki_stage_api::prop_kind(&prop.kind)
@@ -450,7 +462,12 @@ fn trail_at(trail: &[(f32, Vec3)], s: f32) -> Vec3 {
 }
 
 /// Renders `live`'s frame at sequence time `t` and returns it as straight RGBA.
-fn shot_frame(renderer: &mut dyn Renderer, def: &SequenceDef, live: &mut LiveShot, t: f32) -> Result<Vec<u8>, SequenceError> {
+fn shot_frame(
+    renderer: &mut dyn Renderer,
+    def: &SequenceDef,
+    live: &mut LiveShot,
+    t: f32,
+) -> Result<Vec<u8>, SequenceError> {
     let shot = &def.shots[live.index];
     let local = t - shot.start;
     // Characters move on `motion_on`s: the pose holds between the frames it moves on.
@@ -463,7 +480,9 @@ fn shot_frame(renderer: &mut dyn Renderer, def: &SequenceDef, live: &mut LiveSho
     {
         let fx = surface.at(local, live.seed);
         if fx != live.fx {
-            live.stage.set_surface_fx(renderer, fx.clone(), &surface.spare).map_err(|e| render_error("the surface fx", e))?;
+            live.stage
+                .set_surface_fx(renderer, fx.clone(), &surface.spare)
+                .map_err(|e| render_error("the surface fx", e))?;
             live.fx = fx;
         }
     }

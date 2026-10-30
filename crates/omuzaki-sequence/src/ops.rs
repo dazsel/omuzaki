@@ -81,7 +81,8 @@ fn put(doc: &dyn DocRead, path: &DocPath, value: Value) -> Patch {
 fn stored(doc: &dyn DocRead, id: &str) -> Result<SequenceDef, OpError> {
     checked_id(id)?;
     let node = doc.get(&sequence_path(id)?).ok_or_else(|| {
-        OpError::not_found(format!("there is no sequence '{id}'")).hint("sequence.list lists them; sequence.set makes one")
+        OpError::not_found(format!("there is no sequence '{id}'"))
+            .hint("sequence.list lists them; sequence.set makes one")
     })?;
     serde_json::from_value(node.clone())
         .map_err(|e| OpError::invalid("id", format!("the sequence '{id}' doesn't read: {e}")))
@@ -313,9 +314,10 @@ fn walk<'a>(root: &'a mut Value, segments: &[&str]) -> Result<&'a mut Value, Str
                 map.get_mut(*segment).ok_or_else(|| format!("'{here}' has no field '{segment}'"))?
             }
             Value::Array(items) => {
-                let index = segment.parse::<usize>().ok().or_else(|| {
-                    items.iter().position(|item| item.get("id").and_then(Value::as_str) == Some(*segment))
-                });
+                let index = segment
+                    .parse::<usize>()
+                    .ok()
+                    .or_else(|| items.iter().position(|item| item.get("id").and_then(Value::as_str) == Some(*segment)));
                 let index = index.ok_or_else(|| format!("'{here}' has no item '{segment}'"))?;
                 items.get_mut(index).ok_or_else(|| format!("'{here}' has no item {index}"))?
             }
@@ -567,8 +569,11 @@ impl Op for CheckSequence {
                 })
             })
             .collect();
-        let layers: Vec<Value> =
-            def.layers.iter().map(|l| json!({ "id": l.id, "kind": l.draw.kind(), "depth": l.depth, "start": l.start, "end": l.end })).collect();
+        let layers: Vec<Value> = def
+            .layers
+            .iter()
+            .map(|l| json!({ "id": l.id, "kind": l.draw.kind(), "depth": l.depth, "start": l.start, "end": l.end }))
+            .collect();
         Ok(Plan::answer(json!({
             "ok": true,
             "duration": def.duration,
@@ -587,7 +592,12 @@ register_op!(CheckSequence);
 /// The stretches of `def` (seconds) that no shot and no back layer covers: frames that would be empty.
 fn uncovered(def: &SequenceDef) -> Vec<[f32; 2]> {
     let mut spans: Vec<[f32; 2]> = def.shots.iter().map(|s| [s.start, s.end]).collect();
-    spans.extend(def.layers.iter().filter(|l| l.depth == crate::layer::Depth::Back).map(|l| [l.start, l.end.unwrap_or(def.duration)]));
+    spans.extend(
+        def.layers
+            .iter()
+            .filter(|l| l.depth == crate::layer::Depth::Back)
+            .map(|l| [l.start, l.end.unwrap_or(def.duration)]),
+    );
     spans.sort_by(|a, b| a[0].total_cmp(&b[0]));
     let mut out = Vec::new();
     let mut reached = 0.0f32;
@@ -655,7 +665,8 @@ fn shot_scene(
     shot: &Shot,
     character: &CharId,
 ) -> Result<(omuzaki_stage_api::SceneDef, omuzaki_stage_api::MemberId), OpError> {
-    let scene = shot.scene.as_ref().map(SceneId::new).transpose().map_err(|e| OpError::invalid("scene", e.to_string()))?;
+    let scene =
+        shot.scene.as_ref().map(SceneId::new).transpose().map_err(|e| OpError::invalid("scene", e.to_string()))?;
     let (_, mut scene) = scene_for(doc, scene.as_ref())?;
     if let Some(name) = &shot.light_rig {
         scene.lighting = LightRig::load(name)
@@ -675,7 +686,8 @@ fn shot_loader<'a>(
 ) -> impl FnMut(&Shot) -> Result<ShotStage, SequenceError> + 'a {
     move |shot: &Shot| {
         let fail = |e: OpError| SequenceError::Render(format!("shot '{}': {}", shot.id, e.message));
-        let actor = shot.actors.first().ok_or_else(|| SequenceError::Invalid(format!("shot '{}' has no actor", shot.id)))?;
+        let actor =
+            shot.actors.first().ok_or_else(|| SequenceError::Invalid(format!("shot '{}' has no actor", shot.id)))?;
         let (scene, member) = job.read(|doc| shot_scene(doc, shot, &actor.character)).map_err(fail)?;
         let clock = SystemClock::default();
         let services = BodyServices::new(
@@ -729,7 +741,13 @@ fn render_seconds(def: &SequenceDef, frames: &[u64], quality: RenderQuality) -> 
 }
 
 /// The plan every render job shares: the outputs it writes and its cost.
-fn render_plan(ctx: &OpCtx<'_>, def: &SequenceDef, out: &str, frames: &[u64], quality: RenderQuality) -> Result<Plan, OpError> {
+fn render_plan(
+    ctx: &OpCtx<'_>,
+    def: &SequenceDef,
+    out: &str,
+    frames: &[u64],
+    quality: RenderQuality,
+) -> Result<Plan, OpError> {
     ctx.fs_access(out, FsMode::Write)?;
     let size = check_size(def.size, quality)?;
     let mut character = 0;
@@ -757,7 +775,9 @@ fn write_file(job: &JobCtx<'_>, path: &str, bytes: &[u8]) -> Result<(), OpError>
 
 fn renderer_of<'a>(job: &'a JobCtx<'_>) -> Result<std::sync::MutexGuard<'a, Box<dyn Renderer>>, OpError> {
     let renderer = job.service::<Mutex<Box<dyn Renderer>>>()?;
-    renderer.lock().map_err(|_| OpError::internal("the renderer is unusable: an earlier render panicked while holding it"))
+    renderer
+        .lock()
+        .map_err(|_| OpError::internal("the renderer is unusable: an earlier render panicked while holding it"))
 }
 
 /// Renders a sequence to a video.
@@ -841,12 +861,15 @@ impl Op for RenderSequence {
             folder.create_dir_all()?;
         }
         if !self.replace && target.open_read().is_ok() {
-            return Err(OpError::invalid("out", format!("{out} is already there")).hint("pass `replace: true`, or another `out`"));
+            return Err(OpError::invalid("out", format!("{out} is already there"))
+                .hint("pass `replace: true`, or another `out`"));
         }
         job.checkpoint("loading", 0.0)?;
         let mut replacement = target.replace()?;
-        let file = replacement.file().try_clone().map_err(|e| OpError::internal(format!("the video file's handle: {e}")))?;
-        let mut writer = ShortWriter::create(file, std::path::Path::new(&out), def.size, def.fps, None).map_err(SequenceError::from)?;
+        let file =
+            replacement.file().try_clone().map_err(|e| OpError::internal(format!("the video file's handle: {e}")))?;
+        let mut writer = ShortWriter::create(file, std::path::Path::new(&out), def.size, def.fps, None)
+            .map_err(SequenceError::from)?;
         let mut stopped: Option<OpError> = None;
         let mut done = 0usize;
         let mut progress = |share: f32| {
@@ -874,7 +897,12 @@ impl Op for RenderSequence {
         let elapsed = started.elapsed().as_secs_f32();
         #[allow(clippy::cast_precision_loss, reason = "frame counts")]
         let seconds = frames.len() as f32 / def.fps as f32;
-        tracing::info!(frames = report.frames, render_s = report.render_s, composite_s = report.composite_s, "sequence rendered");
+        tracing::info!(
+            frames = report.frames,
+            render_s = report.render_s,
+            composite_s = report.composite_s,
+            "sequence rendered"
+        );
         job.checkpoint("done", 1.0)?;
         Ok(json!({
             "path": out,
@@ -978,7 +1006,8 @@ impl Op for SequenceStills {
         let out = self.out(&def);
         job.checkpoint("rendering", 0.0)?;
         let mut sink = Collect::default();
-        let mut progress = |share: f32| job.checkpoint("rendering", 0.9 * share).map_err(|e| SequenceError::Render(e.message));
+        let mut progress =
+            |share: f32| job.checkpoint("rendering", 0.9 * share).map_err(|e| SequenceError::Render(e.message));
         let mut load = shot_loader(job, &def, self.quality);
         {
             let mut renderer = renderer_of(job)?;
@@ -1031,7 +1060,14 @@ mod tests {
     }
 
     fn key(track: &str, t: f32, v: Value) -> KeySequence {
-        KeySequence { id: "s".into(), track: track.into(), t, v: Some(v), ease: Some(Ease::Named(Curve::ExpoOut)), remove: false }
+        KeySequence {
+            id: "s".into(),
+            track: track.into(),
+            t,
+            v: Some(v),
+            ease: Some(Ease::Named(Curve::ExpoOut)),
+            remove: false,
+        }
     }
 
     #[test]

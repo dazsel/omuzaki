@@ -8,8 +8,8 @@ use std::f32::consts::PI;
 
 use omuzaki_core::glam::{Vec2, Vec3, Vec4};
 use omuzaki_render_api::{
-    AlphaEncoding, AlphaMode, ColourSpace, Fog, Light, Mapping, Material, Shading, Skin, SurfaceFxKind, TextureId, Toon,
-    Wrap, srgb_decode,
+    AlphaEncoding, AlphaMode, ColourSpace, Fog, Light, Mapping, Material, Shading, Skin, SurfaceFxKind, TextureId,
+    Toon, Wrap, srgb_decode,
 };
 
 use crate::TextureData;

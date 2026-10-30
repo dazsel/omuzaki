@@ -594,7 +594,10 @@ impl<'a> Painter<'a> {
                 (Some(to), None) => LinearGradient::new(
                     Point::from_xy(0.0, bounds.top()),
                     Point::from_xy(0.0, bounds.bottom()),
-                    vec![GradientStop::new(0.0, sk_colour(colour, opacity)), GradientStop::new(1.0, sk_colour(to, opacity))],
+                    vec![
+                        GradientStop::new(0.0, sk_colour(colour, opacity)),
+                        GradientStop::new(1.0, sk_colour(to, opacity)),
+                    ],
                     SpreadMode::Pad,
                     Transform::identity(),
                 )
@@ -678,8 +681,13 @@ fn bounds_of(shapes: &[Shape]) -> Option<Rect> {
     let mut it = shapes.iter().map(|s| s.path.bounds());
     let first = it.next()?;
     Some(it.fold(first, |a, b| {
-        Rect::from_ltrb(a.left().min(b.left()), a.top().min(b.top()), a.right().max(b.right()), a.bottom().max(b.bottom()))
-            .unwrap_or(a)
+        Rect::from_ltrb(
+            a.left().min(b.left()),
+            a.top().min(b.top()),
+            a.right().max(b.right()),
+            a.bottom().max(b.bottom()),
+        )
+        .unwrap_or(a)
     }))
 }
 
@@ -695,9 +703,10 @@ fn shapes(draw: &Draw, t: f32) -> Vec<Shape> {
         }
         Draw::Ring { radius, width, sweep } => shape(ring(*radius, *width, sweep.at(t)), None).into_iter().collect(),
         Draw::Polygon { points } => shape(polygon(points), None).into_iter().collect(),
-        Draw::Bars { values, max, labels, captions, icons, colours, slot, w, h, gap, grow } => {
-            bars(&Bars { values, max: *max, labels, captions, icons, colours, slot: *slot, w: *w, h: *h, gap: *gap }, grow.at(t))
-        }
+        Draw::Bars { values, max, labels, captions, icons, colours, slot, w, h, gap, grow } => bars(
+            &Bars { values, max: *max, labels, captions, icons, colours, slot: *slot, w: *w, h: *h, gap: *gap },
+            grow.at(t),
+        ),
         Draw::Icon { name, size } => icon(name, 0.0, 0.0, *size, None),
         Draw::Lines { count, length, thickness, band, travel } => {
             lines(*count, *length, *thickness, *band, travel.at(t)).into_iter().collect()
@@ -807,14 +816,23 @@ fn bars(chart: &Bars<'_>, grow: f32) -> Vec<Shape> {
         let bar_h = room * (value / top).clamp(0.0, 1.0) * own;
         if bar_h > 0.5 {
             let y = slot_top + slot_h - pad - bar_h;
-            out.extend(shape(Rect::from_xywh(x + column * 0.08, y, column * 0.84, bar_h).map(PathBuilder::from_rect), Some(colour)));
+            out.extend(shape(
+                Rect::from_xywh(x + column * 0.08, y, column * 0.84, bar_h).map(PathBuilder::from_rect),
+                Some(colour),
+            ));
         }
         if let Some(text) = chart.labels.get(i) {
-            out.extend(type_shape(text_path(text, label, 700.0, 0.0, Align::Centre, x + column / 2.0, label * 1.05), Some(Colour::rgb(20, 20, 30))));
+            out.extend(type_shape(
+                text_path(text, label, 700.0, 0.0, Align::Centre, x + column / 2.0, label * 1.05),
+                Some(Colour::rgb(20, 20, 30)),
+            ));
         }
         if let Some(text) = chart.captions.get(i) {
             let y = slot_top + slot_h - pad - label * 0.3;
-            out.extend(type_shape(text_path(text, label * 0.9, 600.0, 0.0, Align::Centre, x + column / 2.0, y), Some(Colour::WHITE)));
+            out.extend(type_shape(
+                text_path(text, label * 0.9, 600.0, 0.0, Align::Centre, x + column / 2.0, y),
+                Some(Colour::WHITE),
+            ));
         }
         if let Some(name) = chart.icons.get(i) {
             let y = slot_top + icon_size * 0.15;
@@ -842,10 +860,13 @@ fn icon(name: &str, x: f32, y: f32, size: f32, colour: Option<Colour>) -> Vec<Sh
         Rect::from_xywh(px - r * size, py - r * size, 2.0 * r * size, 2.0 * r * size).and_then(PathBuilder::from_oval)
     };
     let poly = |pts: &[(f32, f32)]| {
-        let points: Vec<[f32; 2]> = pts.iter().map(|(a, b)| {
-            let (px, py) = c(*a, *b);
-            [px, py]
-        }).collect();
+        let points: Vec<[f32; 2]> = pts
+            .iter()
+            .map(|(a, b)| {
+                let (px, py) = c(*a, *b);
+                [px, py]
+            })
+            .collect();
         polygon(&points)
     };
     let mut out = Vec::new();
@@ -881,7 +902,10 @@ fn icon(name: &str, x: f32, y: f32, size: f32, colour: Option<Colour>) -> Vec<Sh
             let (px, py) = c(0.2, 0.55);
             out.extend(shape(rounded_rect(px, py, 0.65 * size, 0.2 * size, 0.1 * size), colour));
         }
-        "bolt" => out.extend(shape(poly(&[(0.55, 0.05), (0.2, 0.55), (0.45, 0.55), (0.38, 0.95), (0.8, 0.4), (0.55, 0.4), (0.68, 0.05)]), colour)),
+        "bolt" => out.extend(shape(
+            poly(&[(0.55, 0.05), (0.2, 0.55), (0.45, 0.55), (0.38, 0.95), (0.8, 0.4), (0.55, 0.4), (0.68, 0.05)]),
+            colour,
+        )),
         "drop" => {
             let mut pb = PathBuilder::new();
             let (tx, ty) = c(0.5, 0.08);
@@ -907,7 +931,10 @@ fn icon(name: &str, x: f32, y: f32, size: f32, colour: Option<Colour>) -> Vec<Sh
                 .collect();
             out.extend(shape(poly(&pts), colour));
         }
-        "arrow" => out.extend(shape(poly(&[(0.1, 0.4), (0.55, 0.4), (0.55, 0.2), (0.92, 0.5), (0.55, 0.8), (0.55, 0.6), (0.1, 0.6)]), colour)),
+        "arrow" => out.extend(shape(
+            poly(&[(0.1, 0.4), (0.55, 0.4), (0.55, 0.2), (0.92, 0.5), (0.55, 0.8), (0.55, 0.6), (0.1, 0.6)]),
+            colour,
+        )),
         "heart" => {
             out.extend(shape(circle(0.33, 0.38, 0.2), colour));
             out.extend(shape(circle(0.67, 0.38, 0.2), colour));
@@ -977,7 +1004,9 @@ fn text_path(text: &str, size: f32, weight: f32, tracking: f32, align: Align, x:
         let mut current: Option<(f32, f32)> = None;
         for curve in &outline.curves {
             let (from, to) = match curve {
-                OutlineCurve::Line(a, b) | OutlineCurve::Quad(a, _, b) | OutlineCurve::Cubic(a, _, _, b) => (map(*a), map(*b)),
+                OutlineCurve::Line(a, b) | OutlineCurve::Quad(a, _, b) | OutlineCurve::Cubic(a, _, _, b) => {
+                    (map(*a), map(*b))
+                }
             };
             if current.is_none_or(|c| (c.0 - from.0).abs() > 1e-3 || (c.1 - from.1).abs() > 1e-3) {
                 if current.is_some() {
@@ -1058,7 +1087,9 @@ mod tests {
     #[test]
     fn a_reveal_wipes_on_and_a_layer_hides_outside_its_time() {
         let wipe = |r: f32| {
-            layer(serde_json::json!({"id": "r", "draw": {"kind": "rect", "w": 200, "h": 100}, "reveal": r, "start": 0.5}))
+            layer(
+                serde_json::json!({"id": "r", "draw": {"kind": "rect", "w": 200, "h": 100}, "reveal": r, "start": 0.5}),
+            )
         };
         let half = coverage(&painted(&[wipe(0.5)], 1.0));
         let whole = coverage(&painted(&[wipe(1.0)], 1.0));
@@ -1068,8 +1099,12 @@ mod tests {
 
     #[test]
     fn a_child_follows_its_parent() {
-        let parent = layer(serde_json::json!({"id": "band", "draw": {"kind": "rect", "w": 300, "h": 60}, "x": [{"t": 0, "v": 0.3}, {"t": 1, "v": 0.7}], "opacity": 0.5}));
-        let child = layer(serde_json::json!({"id": "dot", "parent": "band", "draw": {"kind": "ellipse", "w": 20, "h": 20}, "x": 0, "y": 0}));
+        let parent = layer(
+            serde_json::json!({"id": "band", "draw": {"kind": "rect", "w": 300, "h": 60}, "x": [{"t": 0, "v": 0.3}, {"t": 1, "v": 0.7}], "opacity": 0.5}),
+        );
+        let child = layer(
+            serde_json::json!({"id": "dot", "parent": "band", "draw": {"kind": "ellipse", "w": 20, "h": 20}, "x": 0, "y": 0}),
+        );
         let painter_canvas = painted(&[parent.clone(), child.clone()], 1.0);
         let alone = painted(&[parent], 1.0);
         assert_ne!(painter_canvas.data(), alone.data(), "the child draws");
@@ -1141,4 +1176,3 @@ mod look {
         img.save(std::env::var("LAYER_DUMP").unwrap_or_else(|_| "layers.png".into())).unwrap();
     }
 }
-

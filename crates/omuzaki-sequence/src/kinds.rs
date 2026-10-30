@@ -3,6 +3,7 @@
 //! scene, a sequence and `scene.add_prop` all place them.
 
 use omuzaki_core::glam::Vec3;
+use omuzaki_core::mesh::MeshData;
 use omuzaki_render_api::{Colour, Material};
 use omuzaki_stage::props::shape::{At, Shape, darker, glowing, mix, painted, painted_plain};
 use omuzaki_stage_api::{PropKind, PropOutput, PropPart, register_prop_kind};
@@ -99,58 +100,109 @@ impl PropKind for NewsDesk {
         between("accent_height", p.accent_height, 0.0, 0.4)
     }
 
-    #[allow(clippy::cast_precision_loss, reason = "a few dozen segments")]
     fn build(p: &NewsDeskParams) -> Result<PropOutput, String> {
-        const SEGMENTS: u32 = 24;
-        let (h, panel, lip) = (p.height, 0.05, 0.035);
+        let (h, panel, lip, plinth) = (p.height, 0.06, 0.035, 0.07);
         let arc = p.curve.to_radians();
-        // Points along the front: a circular arc through the desk's width whose ends sit back, or a line.
-        let radius = if arc > 1e-3 { p.width * 0.5 / (arc * 0.5).sin() } else { f32::INFINITY };
-        let front = |u: f32| -> (Vec3, f32) {
-            if radius.is_finite() {
-                let a = (u - 0.5) * arc;
-                (Vec3::new(radius * a.sin(), 0.0, radius * a.cos() - radius), -a.to_degrees())
-            } else {
-                (Vec3::new((u - 0.5) * p.width, 0.0, 0.0), 0.0)
-            }
-        };
-        let seg_len = if radius.is_finite() { radius * arc / SEGMENTS as f32 } else { p.width / SEGMENTS as f32 };
-        let mut body = Shape::new();
-        let mut band = Shape::new();
-        let top_colour = p.top;
-        let side = darker(p.colour, 0.25);
-        for i in 0..SEGMENTS {
-            let u = (i as f32 + 0.5) / SEGMENTS as f32;
-            let (at, yaw) = front(u);
-            let half = seg_len * 0.5 + 0.004;
-            // The front panel, set a hair back from the top's lip.
-            body.cuboid(At::pos(at + Vec3::new(0.0, (h - lip) * 0.5, 0.0)).yaw(yaw), Vec3::new(half, (h - lip) * 0.5, panel * 0.5), p.colour);
-            // The top, reaching back from the front.
-            let back = Vec3::new(0.0, 0.0, -p.depth * 0.5 + 0.04);
-            let turn = omuzaki_core::glam::Quat::from_rotation_y(yaw.to_radians());
-            body.cuboid(
-                At::pos(at + turn * back + Vec3::new(0.0, h - lip * 0.5, 0.0)).yaw(yaw),
-                Vec3::new(half, lip * 0.5, p.depth * 0.5),
-                top_colour,
-            );
-            // A plinth at the floor, darker and set back: the desk reads as standing on something.
-            body.cuboid(
-                At::pos(at + turn * Vec3::new(0.0, 0.0, -0.03) + Vec3::new(0.0, 0.03, 0.0)).yaw(yaw),
-                Vec3::new(half, 0.03, panel * 0.5),
-                side,
-            );
+        let side = darker(p.colour, 0.3);
+        let line = darker(p.colour, 0.7);
+        let mut body = MeshData::default();
+        let mut band = MeshData::default();
+        if arc > 1e-3 {
+            // A ring about a centre behind the desk, so the front's middle stands at z = 0 and its ends wrap back.
+            let radius = p.width * 0.5 / (arc * 0.5).sin();
+            let slab = |mesh: &mut MeshData, r: (f32, f32), y: (f32, f32), colour: Colour| {
+                arc_slab(mesh, radius, arc, r, y, colour);
+            };
+            slab(&mut body, (-panel, 0.0), (plinth, h - lip), p.colour);
+            slab(&mut body, (-p.depth, 0.025), (h - lip, h), p.top);
+            slab(&mut body, (-panel - 0.03, -0.03), (0.0, plinth), side);
             if p.accent_height > 0.0 {
                 let y = h * 0.62;
-                band.cuboid(
-                    At::pos(at + turn * Vec3::new(0.0, 0.0, panel * 0.5 + 0.004) + Vec3::new(0.0, y, 0.0)).yaw(yaw),
-                    Vec3::new(half, p.accent_height * 0.5, 0.006),
+                slab(&mut band, (0.0, 0.008), (y - p.accent_height * 0.5, y + p.accent_height * 0.5), p.accent);
+            }
+        } else {
+            let w = p.width * 0.5;
+            let mut s = Shape::new();
+            s.block(Vec3::new(-w, plinth, -panel), Vec3::new(w, h - lip, 0.0), p.colour);
+            s.block(Vec3::new(-w, h - lip, -p.depth), Vec3::new(w, h, 0.025), p.top);
+            s.block(Vec3::new(-w, 0.0, -panel - 0.03), Vec3::new(w, plinth, -0.03), side);
+            body = s.into_mesh();
+            if p.accent_height > 0.0 {
+                let y = h * 0.62;
+                let mut b = Shape::new();
+                b.block(
+                    Vec3::new(-w, y - p.accent_height * 0.5, 0.0),
+                    Vec3::new(w, y + p.accent_height * 0.5, 0.008),
                     p.accent,
                 );
+                band = b.into_mesh();
             }
         }
-        let line = darker(p.colour, 0.7);
-        let band_material = if p.accent_glow { glowing(p.accent) } else { painted(line) };
-        Ok(output(vec![(body, painted(line)), (band, band_material)]))
+        let band_material = if p.accent_glow {
+            let mut m = glowing(p.accent);
+            m.vertex_colours = true;
+            m
+        } else {
+            painted(line)
+        };
+        let mut out = PropOutput::default();
+        out.parts = [(body, painted(line)), (band, band_material)]
+            .into_iter()
+            .filter(|(mesh, _)| !mesh.indices.is_empty())
+            .map(|(mesh, material)| PropPart::new(mesh, material))
+            .collect();
+        Ok(out)
+    }
+}
+
+/// Segments of a desk's arc: smooth enough that the front reads as one curve in a close shot.
+const ARC_SEGMENTS: u32 = 64;
+
+/// Appends to `mesh` a slab of a ring through `arc` radians: a ring of `radius` about a centre `radius` behind the
+/// origin (so the arc's middle stands at z = 0), from `r.0` to `r.1` metres outside that ring and from `y.0` to
+/// `y.1` up, painted `colour`. Its curved faces are smooth, its top, bottom and ends flat.
+#[allow(clippy::cast_precision_loss, reason = "a few dozen segments")]
+fn arc_slab(mesh: &mut MeshData, radius: f32, arc: f32, r: (f32, f32), y: (f32, f32), colour: Colour) {
+    let paint = {
+        let l = colour.to_linear();
+        [l.x, l.y, l.z, 1.0]
+    };
+    let at = |a: f32, rr: f32, yy: f32| Vec3::new((radius + rr) * a.sin(), yy, (radius + rr) * a.cos() - radius);
+    let angle = |i: u32| (i as f32 / ARC_SEGMENTS as f32 - 0.5) * arc;
+    let quad = |mesh: &mut MeshData, corners: [Vec3; 4], normals: [Vec3; 4]| {
+        let base = u32::try_from(mesh.positions.len()).unwrap_or(u32::MAX);
+        for (c, n) in corners.iter().zip(normals) {
+            mesh.positions.push(*c);
+            mesh.normals.push(n);
+            mesh.uvs.push(omuzaki_core::glam::Vec2::ZERO);
+            mesh.colours.push(paint);
+        }
+        // Wind so the triangle faces the way its normals do.
+        let facing = (corners[1] - corners[0]).cross(corners[2] - corners[0]).dot(normals[0] + normals[2]) > 0.0;
+        if facing {
+            mesh.indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+        } else {
+            mesh.indices.extend([base, base + 2, base + 1, base, base + 3, base + 2]);
+        }
+    };
+    for i in 0..ARC_SEGMENTS {
+        let (a0, a1) = (angle(i), angle(i + 1));
+        let out0 = Vec3::new(a0.sin(), 0.0, a0.cos());
+        let out1 = Vec3::new(a1.sin(), 0.0, a1.cos());
+        // Front (outside), back (inside), top and bottom.
+        quad(mesh, [at(a0, r.1, y.0), at(a1, r.1, y.0), at(a1, r.1, y.1), at(a0, r.1, y.1)], [out0, out1, out1, out0]);
+        quad(
+            mesh,
+            [at(a0, r.0, y.0), at(a0, r.0, y.1), at(a1, r.0, y.1), at(a1, r.0, y.0)],
+            [-out0, -out0, -out1, -out1],
+        );
+        quad(mesh, [at(a0, r.0, y.1), at(a0, r.1, y.1), at(a1, r.1, y.1), at(a1, r.0, y.1)], [Vec3::Y; 4]);
+        quad(mesh, [at(a0, r.0, y.0), at(a1, r.0, y.0), at(a1, r.1, y.0), at(a0, r.1, y.0)], [Vec3::NEG_Y; 4]);
+    }
+    // The two ends.
+    for (a, sign) in [(angle(0), -1.0f32), (angle(ARC_SEGMENTS), 1.0)] {
+        let n = Vec3::new(a.cos(), 0.0, -a.sin()) * sign;
+        quad(mesh, [at(a, r.0, y.0), at(a, r.1, y.0), at(a, r.1, y.1), at(a, r.0, y.1)], [n; 4]);
     }
 }
 
@@ -219,7 +271,12 @@ impl PropKind for Skyline {
         between("variation", p.variation, 0.0, 1.0)
     }
 
-    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "small counts")]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "small counts"
+    )]
     fn build(p: &SkylineParams) -> Result<PropOutput, String> {
         let mut blocks = Shape::new();
         let mut windows = Shape::new();

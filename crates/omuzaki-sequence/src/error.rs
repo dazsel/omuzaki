@@ -20,9 +20,8 @@ pub enum SequenceError {
 impl From<SequenceError> for OpError {
     fn from(error: SequenceError) -> Self {
         match error {
-            SequenceError::Invalid(reason) => {
-                OpError::invalid("sequence", reason).hint("sequence.kinds lists the easings, layer kinds and volume presets")
-            }
+            SequenceError::Invalid(reason) => OpError::invalid("sequence", reason)
+                .hint("sequence.kinds lists the easings, layer kinds and volume presets"),
             SequenceError::Render(reason) | SequenceError::Write(reason) => OpError::internal(reason),
         }
     }

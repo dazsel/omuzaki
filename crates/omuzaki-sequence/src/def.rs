@@ -577,7 +577,10 @@ impl Shot {
                     return Err(format!("{field}.attach: there is no actor '{}' in the shot", attach.actor));
                 }
                 if omuzaki_anim_api::HumanoidBone::from_name(&attach.bone).is_none() {
-                    return Err(format!("{field}.attach: '{}' is not a humanoid bone (rightHand, head ...)", attach.bone));
+                    return Err(format!(
+                        "{field}.attach: '{}' is not a humanoid bone (rightHand, head ...)",
+                        attach.bone
+                    ));
                 }
                 attach.weight.check(&format!("{field}.attach.weight"))?;
             }

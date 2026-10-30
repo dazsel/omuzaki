@@ -96,7 +96,8 @@ fn posture_of(key: &crate::def::PoseKey, at: &str) -> Result<Posture, SequenceEr
         posture.body.set(bone, Quat::from_euler(EulerRot::XYZ, x.to_radians(), y.to_radians(), z.to_radians()));
     }
     for (side, shape) in &key.hands {
-        let hand = hands.get(shape).ok_or_else(|| invalid(format!("{at}.hands.{side}: there is no hand shape '{shape}'")))?;
+        let hand =
+            hands.get(shape).ok_or_else(|| invalid(format!("{at}.hands.{side}: there is no hand shape '{shape}'")))?;
         match side.as_str() {
             "left" => posture.left = Hand::of(hand, 1.0),
             _ => posture.right = Hand::of(hand, 1.0),
@@ -278,7 +279,12 @@ impl ActorPlayer {
         // Each syllable opens and closes; some open wider than others, and a few barely move (consonants).
         let size = 0.45 + 0.55 * unit(self.seed ^ 0x5eed, syllable);
         let open = (std::f32::consts::PI * within).sin().powf(0.8) * size * fade;
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss, reason = "an index")]
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            clippy::cast_precision_loss,
+            reason = "an index"
+        )]
         let viseme = (unit(self.seed, syllable) * self.visemes.len() as f32) as usize % self.visemes.len();
         Some((viseme, open))
     }
@@ -310,7 +316,10 @@ impl ActorPlayer {
     /// Where the actor stands at `t`: its position and yaw as a root.
     #[must_use]
     pub fn root_at(&self, t: f32) -> Mat4 {
-        Mat4::from_rotation_translation(Quat::from_rotation_y(self.yaw.at(t).to_radians()), Vec3::from(self.position.at(t)))
+        Mat4::from_rotation_translation(
+            Quat::from_rotation_y(self.yaw.at(t).to_radians()),
+            Vec3::from(self.position.at(t)),
+        )
     }
 
     /// The frame input at `t` seconds of the shot, with the pose held at `pose_t` (the frame the character's motion
@@ -416,8 +425,9 @@ mod tests {
         assert_ne!(p.face_at(1.0).as_slice(), ChannelBuf::NEUTRAL.as_slice());
         let mut bad = actor();
         bad.face[1].set = [("no-such-face".to_owned(), 1.0)].into();
-        let err = ActorPlayer::new(&bad, "actor", &ExpressionSet::default(), ChannelBuf::NEUTRAL, HandRest::nominal(), 1)
-            .unwrap_err();
+        let err =
+            ActorPlayer::new(&bad, "actor", &ExpressionSet::default(), ChannelBuf::NEUTRAL, HandRest::nominal(), 1)
+                .unwrap_err();
         assert!(err.to_string().contains("no-such-face"));
     }
 
@@ -426,8 +436,15 @@ mod tests {
         let mut with_life = actor();
         with_life.life = true;
         let run = || {
-            let mut p = ActorPlayer::new(&with_life, "a", &ExpressionSet::default(), ChannelBuf::NEUTRAL, HandRest::nominal(), 9)
-                .unwrap();
+            let mut p = ActorPlayer::new(
+                &with_life,
+                "a",
+                &ExpressionSet::default(),
+                ChannelBuf::NEUTRAL,
+                HandRest::nominal(),
+                9,
+            )
+            .unwrap();
             (0..48).map(|i| p.advance(i as f32 / 24.0, i as f32 / 24.0).channels.checksum()).collect::<Vec<_>>()
         };
         assert_eq!(run(), run());
