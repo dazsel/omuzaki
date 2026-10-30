@@ -70,5 +70,5 @@ pub use resource::{
 };
 pub use scene::{
     BackdropFit, Background, Bloom, Camera, ColourGrade, DepthOfField, EdgeLines, FilmGrain, Fog, FrameInfo, Instance,
-    JointRange, Light, MorphRange, Post, Projection, SKY_LENS_DEG, Scene, Tonemap, gradient_at,
+    JointRange, Light, MorphRange, Occlusion, Post, Projection, SKY_LENS_DEG, Scene, Tonemap, gradient_at,
 };

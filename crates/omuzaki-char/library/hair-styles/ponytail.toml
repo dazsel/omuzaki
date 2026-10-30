@@ -1,0 +1,60 @@
+id = "ponytail"
+name = "Ponytail"
+summary = "All the hair gathered high at the back into one long tail, a side-swept fringe and loose framing locks."
+origin = "a written description of the cut, built from the kit's generators and tuned by eye on the kit's renders (#2486)"
+
+[volume]
+whorl = { polar_deg = 25.0, azimuth_deg = 180.0 }
+fullness = 1.0
+crown = 1.1
+back = 1.0
+part = { side_deg = 15.0 }
+
+[groups.a-cap]
+dynamics = { simulate = false, follow = "head" }
+
+[groups.a-cap.generator]
+type = "cap"
+hairline_back_deg = 150.0
+
+[groups.b-bangs]
+dynamics = { simulate = false, follow = "head" }
+
+[groups.b-bangs.generator]
+type = "bangs"
+sweep_deg = 24.0
+
+[[groups.b-bangs.generator.layers]]
+count = 10
+spread_deg = 46.0
+tip_heights = [0.03, 0.02, 0.01, 0.0, -0.01, -0.02]
+shade = 0.8
+hook_deg = 5.0
+
+[[groups.b-bangs.generator.layers]]
+count = 8
+spread_deg = 40.0
+tip_heights = [0.045, 0.03, 0.015, 0.0, -0.015, -0.03]
+shade = 1.0
+hook_deg = 8.0
+
+[groups.d-framing]
+dynamics = { simulate = true, follow = "head" }
+
+[groups.d-framing.generator]
+type = "framing"
+
+[groups.e-tail]
+dynamics = { simulate = true, follow = "head" }
+
+[groups.e-tail.generator]
+type = "tail"
+root = [72.0, 180.0, 0.01]
+length = 0.4
+count = 8
+spread_deg = 12.0
+droop = 1.0
+lean = 0.3
+gather = 6
+wave = { amplitude = 0.012, frequency = 1.0 }
+width = { start = 0.03, mid = 0.036, tip = 0.005, tip_at = 0.55 }

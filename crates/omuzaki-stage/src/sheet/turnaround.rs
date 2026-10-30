@@ -599,6 +599,7 @@ fn restore_settings(scene: &mut Scene, saved: Scene) {
         back_light_rim,
         post,
         edges,
+        occlusion,
     } = saved;
     scene.camera = camera;
     scene.lights = lights;
@@ -609,6 +610,7 @@ fn restore_settings(scene: &mut Scene, saved: Scene) {
     scene.back_light_rim = back_light_rim;
     scene.post = post;
     scene.edges = edges;
+    scene.occlusion = occlusion;
 }
 
 /// The largest tile side: the renderer's limit, lowered by the spec.

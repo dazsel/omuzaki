@@ -40,6 +40,7 @@
 pub mod atlas;
 pub mod bake;
 pub mod exaggeration;
+pub mod eye3d;
 pub mod eye_presets;
 pub mod layer;
 pub mod makeup_presets;
