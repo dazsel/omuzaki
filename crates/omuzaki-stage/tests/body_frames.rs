@@ -140,7 +140,7 @@ fn shot(built: &BuiltCharacter) -> Shot {
     // The top of the hair, from the meshes; the bottom 20 cm below the hips, where hands hanging at the sides reach.
     let hair = built.meshes.iter().flat_map(|m| m.mesh.geometry.positions.iter().map(|p| p.y)).fold(f32::MIN, f32::max);
     let (top, bottom) = (hair + 0.03, hips.y - 0.2);
-    let centre = Vec3::new(hips.x, 0.5 * (top + bottom), hips.z);
+    let centre = Vec3::new(hips.x, f32::midpoint(top, bottom), hips.z);
     let fov_y_deg = 45.0_f32;
     let distance = 0.5 * (top - bottom) / (0.5 * fov_y_deg.to_radians()).tan();
     Shot::new(Camera::look_at(
@@ -154,7 +154,7 @@ fn shot(built: &BuiltCharacter) -> Shot {
 /// The picture as a binary PPM (RGB, alpha dropped over the background the still already has).
 fn ppm(image: &omuzaki_render_api::Image) -> Vec<u8> {
     let mut out = format!("P6\n{} {}\n255\n", image.size.x, image.size.y).into_bytes();
-    for pixel in image.rgba8.chunks_exact(4) {
+    for pixel in image.rgba8.as_chunks::<4>().0 {
         out.extend_from_slice(&pixel[..3]);
     }
     out

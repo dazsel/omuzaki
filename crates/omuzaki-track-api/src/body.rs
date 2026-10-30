@@ -2,7 +2,7 @@
 //! newest-wins board that carries it to the stage.
 //!
 //! A [`BodyFrame`] is already solved into the character's terms, so any source fills the same value: a webcam body
-//! tracker (MediaPipe's pose and hand landmarkers), VMC bones from a mocap app, or OpenXR trackers later. The stage
+//! tracker (the `MediaPipe` pose and hand landmarkers), VMC bones from a mocap app, or `OpenXR` trackers later. The stage
 //! never sees landmarks or protocols:
 //!
 //! - **Bones** are [`HumanoidPose`] rotations in VRM normalised space (T space: identity is the T-pose, each rotation
@@ -324,7 +324,8 @@ impl BodyBoard {
     /// returns it to the board.
     pub fn writer(&self) -> Option<BodyWriter> {
         let taken = self.shared.writing.swap(true, Ordering::AcqRel);
-        (!taken).then(|| BodyWriter { shared: Arc::clone(&self.shared), back: self.shared.back.load(Ordering::Acquire) })
+        (!taken)
+            .then(|| BodyWriter { shared: Arc::clone(&self.shared), back: self.shared.back.load(Ordering::Acquire) })
     }
 
     /// Whether a writer is out (a body tracker is running).
@@ -440,7 +441,8 @@ fn decode(w: &[u32; WORDS]) -> BodyFrame {
     let float = |i: usize| f32::from_bits(w[i]);
     let mut frame = BodyFrame::empty(join(SEQ), Seconds(f64::from_bits(join(TIME))));
     let bits = join(MASK);
-    frame.mask = HumanoidBone::ALL.iter().filter(|b| bits >> b.index() & 1 == 1).fold(BoneMask::EMPTY, |m, b| m.with(*b));
+    frame.mask =
+        HumanoidBone::ALL.iter().filter(|b| bits >> b.index() & 1 == 1).fold(BoneMask::EMPTY, |m, b| m.with(*b));
     frame.arms = [float(CONFIDENCE), float(CONFIDENCE + 1)];
     frame.hands = [float(CONFIDENCE + 2), float(CONFIDENCE + 3)];
     for (bone, chunk) in frame.pose.rotations.iter_mut().zip(w[ROTATIONS..FINGERS].as_chunks::<4>().0) {

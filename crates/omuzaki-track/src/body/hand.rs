@@ -63,11 +63,10 @@ impl HandLandmarks {
         let at = |i: usize| self.image[i];
         let wrist = at(0);
         // The knuckle direction: the middle knuckle averaged with the mean of the index and ring knuckles.
-        let side = ((at(5).0 + at(13).0) / 2.0, (at(5).1 + at(13).1) / 2.0);
-        let knuckles = ((side.0 + at(9).0) / 2.0, (side.1 + at(9).1) / 2.0);
-        let rotation = normalize_radians(
-            FRAC_PI_2 - (-(knuckles.1 - wrist.1) * frame_h).atan2((knuckles.0 - wrist.0) * frame_w),
-        );
+        let side = (f32::midpoint(at(5).0, at(13).0), f32::midpoint(at(5).1, at(13).1));
+        let knuckles = (f32::midpoint(side.0, at(9).0), f32::midpoint(side.1, at(9).1));
+        let rotation =
+            normalize_radians(FRAC_PI_2 - (-(knuckles.1 - wrist.1) * frame_h).atan2((knuckles.0 - wrist.0) * frame_w));
         // The box of the points in the frame turned by `-rotation`, about their own box's centre.
         let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
         for &i in &ROI_POINTS {
@@ -76,7 +75,7 @@ impl HandLandmarks {
             y0 = y0.min(at(i).1);
             y1 = y1.max(at(i).1);
         }
-        let centre = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+        let centre = (f32::midpoint(x0, x1), f32::midpoint(y0, y1));
         let (sin, cos) = (-rotation).sin_cos();
         let (mut p0, mut q0, mut p1, mut q1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
         for &i in &ROI_POINTS {
@@ -87,7 +86,7 @@ impl HandLandmarks {
             q0 = q0.min(q);
             q1 = q1.max(q);
         }
-        let (pc, qc) = ((p0 + p1) / 2.0, (q0 + q1) / 2.0);
+        let (pc, qc) = (f32::midpoint(p0, p1), f32::midpoint(q0, q1));
         let (sin, cos) = rotation.sin_cos();
         let rect = NormRect {
             x_center: (pc * cos - qc * sin) / frame_w + centre.0,
@@ -133,7 +132,7 @@ impl HandModel {
         let mut out = HandLandmarks { presence, handedness, ..HandLandmarks::NONE };
         let side = self.graph.side();
         for (point, xyz) in out.image.iter_mut().zip(raw.as_chunks::<3>().0) {
-            *point = placement.to_frame(side, xyz[0], xyz[1]);
+            *point = placement.frame_point(side, xyz[0], xyz[1]);
         }
         // World landmarks come in the crop's axes; turn them by the crop's rotation (`WorldLandmarkProjection`).
         let (sin, cos) = rect.rotation.sin_cos();

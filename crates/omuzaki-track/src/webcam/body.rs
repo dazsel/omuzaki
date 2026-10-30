@@ -104,7 +104,7 @@ const ARMS: u8 = 1;
 const HANDS: u8 = 2;
 
 fn wanted_bits(config: BodyConfig) -> u8 {
-    u8::from(config.arms) * ARMS | u8::from(config.hands) * HANDS
+    (u8::from(config.arms) * ARMS) | (u8::from(config.hands) * HANDS)
 }
 
 /// What the body thread and the tracker share.
@@ -235,8 +235,12 @@ impl Run {
             last_time = Some(time);
             let bits = self.shared.wanted.load(Ordering::Relaxed);
             let wanted = BodyConfig { arms: bits & ARMS != 0, hands: bits & HANDS != 0, precise: false };
-            let rgb =
-                RgbFrame { data: &frame.rgb, width: frame.width, height: frame.height, stride: 3 * frame.width as usize };
+            let rgb = RgbFrame {
+                data: &frame.rgb,
+                width: frame.width,
+                height: frame.height,
+                stride: 3 * frame.width as usize,
+            };
             let started = Instant::now();
             if tracker.track(&rgb, time, &wanted, &mut out).is_err() {
                 out = BodyFrame::empty(0, Seconds(time));
@@ -314,7 +318,8 @@ impl BodyPart {
         let before = self.config;
         let size = if config.precise { PoseSize::Full } else { PoseSize::Lite };
         // A thread that failed to load is replaced, so asking again retries.
-        let usable = |w: &BodyWorker| w.size() == size && !matches!(w.status().state, BodyState::Failed(_) | BodyState::Off);
+        let usable =
+            |w: &BodyWorker| w.size() == size && !matches!(w.status().state, BodyState::Failed(_) | BodyState::Off);
         match self.worker.take() {
             Some(worker) if config.any() && usable(&worker) => {
                 worker.set(config);

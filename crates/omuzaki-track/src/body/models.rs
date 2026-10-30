@@ -127,7 +127,8 @@ impl BodyModelDir {
     /// [`ModelError::Load`] when the runtime is not linked in, refuses a graph, or a graph does not fit its slot.
     pub fn tracker(&self, natives: &dyn FileSource, config: BodyTrackerConfig) -> Result<BodyTracker, ModelError> {
         let id = RuntimeId::new("onnx").map_err(|e| ModelError::Load(e.to_string()))?;
-        let runtime = find_runtime(&id).ok_or_else(|| ModelError::Load("the `onnx` runtime is not linked in".into()))?;
+        let runtime =
+            find_runtime(&id).ok_or_else(|| ModelError::Load("the `onnx` runtime is not linked in".into()))?;
         let options = SessionOptions::new(vec![Provider::Cpu], BODY_THREADS);
         BodyTracker::new(self.load(&*runtime, natives, &options)?, config).map_err(|e| ModelError::Load(e.to_string()))
     }
@@ -162,6 +163,10 @@ mod tests {
     }
 
     fn hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|b| format!("{b:02x}")).collect()
+        use std::fmt::Write;
+        bytes.iter().fold(String::new(), |mut out, b| {
+            let _ = write!(out, "{b:02x}");
+            out
+        })
     }
 }

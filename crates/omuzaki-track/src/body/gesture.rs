@@ -86,22 +86,22 @@ impl HandGestureDetector {
         let time = frame.time.0;
         let mut seen = HandGestures::NONE;
         for (fingers, &confidence) in frame.fingers.iter().zip(&frame.hands) {
-            if let Some(fingers) = fingers.filter(|_| confidence >= self.config.min_confidence) {
-                if let Some(gesture) = classify(&fingers, &self.config) {
-                    seen = seen.with(gesture);
-                }
+            if let Some(fingers) = fingers.filter(|_| confidence >= self.config.min_confidence)
+                && let Some(gesture) = classify(&fingers, &self.config)
+            {
+                seen = seen.with(gesture);
             }
         }
         let mut showing = HandGestures::NONE;
         for (gesture, state) in HandGesture::ALL.into_iter().zip(&mut self.states) {
             let wait = if state.active { self.config.release } else { self.config.hold };
-            if seen.contains(gesture) != state.active {
+            if seen.contains(gesture) == state.active {
+                state.since = None;
+            } else {
                 // The shape differs from what shows: switch once it has held for the wait.
                 if time - *state.since.get_or_insert(time) >= wait {
                     *state = State { active: !state.active, since: None };
                 }
-            } else {
-                state.since = None;
             }
             if state.active {
                 showing = showing.with(gesture);

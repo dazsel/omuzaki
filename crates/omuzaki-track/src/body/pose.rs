@@ -97,7 +97,7 @@ impl PoseDetector {
         decode(&LAYOUT, &self.anchors, regressors, scores, self.min_score, &mut self.candidates);
         weighted_nms(&mut self.candidates, NMS_IOU, &mut self.merged);
         Ok(self.merged.first().map(|best| {
-            let to_frame = |(u, v): (f32, f32)| placement.to_frame(1, u, v);
+            let to_frame = |(u, v): (f32, f32)| placement.frame_point(1, u, v);
             pose_rect(to_frame(best.keypoints[0]), to_frame(best.keypoints[1]), placement.fw, placement.fh)
         }))
     }
@@ -141,7 +141,8 @@ impl PoseModel {
     /// # Errors
     /// [`FaceTrackError::Session`](crate::FaceTrackError::Session) when the session's signature differs.
     pub fn new(session: Box<dyn Session>) -> Result<Self> {
-        let graph = ImageGraph::new("pose landmarks", session, &pose_landmarks_signature(), (0.0, 1.0), Border::Replicate)?;
+        let graph =
+            ImageGraph::new("pose landmarks", session, &pose_landmarks_signature(), (0.0, 1.0), Border::Replicate)?;
         Ok(Self { graph })
     }
 
@@ -164,7 +165,7 @@ impl PoseModel {
         let mut image = [(0.0, 0.0); MODEL_POINTS];
         let mut out = PoseLandmarks { presence, ..PoseLandmarks::NONE };
         for (i, values) in raw.as_chunks::<5>().0.iter().enumerate() {
-            image[i] = placement.to_frame(side, values[0], values[1]);
+            image[i] = placement.frame_point(side, values[0], values[1]);
             if i < POSE_POINTS {
                 out.image[i] = image[i];
                 out.visibility[i] = sigmoid(values[3]);

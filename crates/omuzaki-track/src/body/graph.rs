@@ -13,7 +13,9 @@ pub(super) fn image_signature(side: usize, outputs: &[(&str, &[usize])]) -> Sign
         inputs: vec![TensorSpec::new("image", DType::F32, [1, side, side, 3].map(Dim::Fixed))],
         outputs: outputs
             .iter()
-            .map(|(name, shape)| TensorSpec::new(*name, DType::F32, shape.iter().map(|&d| Dim::Fixed(d)).collect::<Vec<_>>()))
+            .map(|(name, shape)| {
+                TensorSpec::new(*name, DType::F32, shape.iter().map(|&d| Dim::Fixed(d)).collect::<Vec<_>>())
+            })
             .collect(),
     }
 }
@@ -34,13 +36,14 @@ pub(super) struct Placement {
 impl Placement {
     /// A point given in input pixels, in normalised frame coordinates.
     #[allow(clippy::cast_precision_loss)] // input sides are small constants
-    pub fn to_frame(&self, side: usize, x: f32, y: f32) -> (f32, f32) {
+    pub fn frame_point(&self, side: usize, x: f32, y: f32) -> (f32, f32) {
         let lb = &self.letterbox;
         let (horizontal, vertical) = (1.0 - lb.left - lb.right, 1.0 - lb.top - lb.bottom);
         let u = (x / side as f32 - lb.left) / horizontal;
         let v = (y / side as f32 - lb.top) / vertical;
         // The padded ROI covers the input; the unpadded one is what `u`, `v` are relative to.
-        let unpadded = RotatedRect { width: self.roi.width * horizontal, height: self.roi.height * vertical, ..self.roi };
+        let unpadded =
+            RotatedRect { width: self.roi.width * horizontal, height: self.roi.height * vertical, ..self.roi };
         roi_to_frame(&unpadded, self.fw, self.fh, u, v)
     }
 }
@@ -125,10 +128,10 @@ mod tests {
             fw: 600.0,
             fh: 400.0,
         };
-        let (x, y) = placement.to_frame(256, 128.0, 128.0);
+        let (x, y) = placement.frame_point(256, 128.0, 128.0);
         assert!((x - 0.5).abs() < 1e-6 && (y - 0.5).abs() < 1e-6);
         // The input's top edge is in the padding, a quarter of the square above the region's top: y = 150 px.
-        let (_, top) = placement.to_frame(256, 128.0, 0.0);
+        let (_, top) = placement.frame_point(256, 128.0, 0.0);
         assert!((top - 150.0 / 400.0).abs() < 1e-6, "{top}");
     }
 }

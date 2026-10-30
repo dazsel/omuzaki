@@ -32,7 +32,9 @@ use omuzaki_track_api::body::{BodyConfig, BodyFrame, Side};
 pub use filter::{EuroParams, EuroPoint};
 pub use hand::{HAND_POINTS, HandLandmarks, HandModel, hand_signature};
 pub use palm::{PalmDetector, palm_signature};
-pub use pose::{POSE_POINTS, PoseDetector, PoseLandmarks, PoseModel, pose_detector_signature, pose_landmarks_signature};
+pub use pose::{
+    POSE_POINTS, PoseDetector, PoseLandmarks, PoseModel, pose_detector_signature, pose_landmarks_signature,
+};
 pub use solve::{BodyLandmarks, BodySolver};
 
 use crate::error::Result;
@@ -135,28 +137,21 @@ fn reconcile(
     // Which side each found hand's wrist is nearest.
     let nearest = |hand: &HandLandmarks| {
         let at = |side: usize| distance(hand.image[0], pose.image[wrists[side]]);
-        if at(0) <= at(1) { 0 } else { 1 }
+        usize::from(at(0) > at(1))
     };
     let owner = [hands[0].as_ref().map(nearest), hands[1].as_ref().map(nearest)];
     match owner {
-        // Swapped: each hand is at the other's wrist.
-        [Some(1), Some(0)] => {
+        // Swapped: each hand is at the other's wrist; or one hand, on the other side's wrist: it moves there.
+        [Some(1), Some(0) | None] | [None, Some(0)] => {
             hands.swap(0, 1);
             rects.swap(0, 1);
         }
         // Both on one wrist: the one farther from it lets go.
         [Some(a), Some(b)] if a == b => {
-            let off = |side: usize| {
-                hands[side].map_or(f32::MAX, |h| distance(h.image[0], pose.image[wrists[a]]))
-            };
-            let far = if off(0) > off(1) { 0 } else { 1 };
+            let off = |side: usize| hands[side].map_or(f32::MAX, |h| distance(h.image[0], pose.image[wrists[a]]));
+            let far = usize::from(off(0) <= off(1));
             hands[far] = None;
             rects[far] = None;
-        }
-        // One hand, on the other side's wrist: it moves there.
-        [Some(1), None] | [None, Some(0)] => {
-            hands.swap(0, 1);
-            rects.swap(0, 1);
         }
         _ => {}
     }
@@ -228,7 +223,7 @@ impl BodyTracker {
     /// starts over.
     pub fn track(&mut self, frame: &RgbFrame<'_>, time: f64, wanted: &BodyConfig, out: &mut BodyFrame) -> Result<()> {
         frame.validate()?;
-        let result = self.find(frame, wanted);
+        let result = self.find(frame, *wanted);
         if result.is_err() {
             self.pose_rect = None;
             self.hand_rects = [None; 2];
@@ -239,7 +234,7 @@ impl BodyTracker {
     }
 
     #[allow(clippy::cast_precision_loss)] // frame sizes are far below f32's 24 bits
-    fn find(&mut self, frame: &RgbFrame<'_>, wanted: &BodyConfig) -> Result<()> {
+    fn find(&mut self, frame: &RgbFrame<'_>, wanted: BodyConfig) -> Result<()> {
         let (fw, fh) = (frame.width as f32, frame.height as f32);
         self.landmarks = BodyLandmarks::NONE;
         if !wanted.any() {

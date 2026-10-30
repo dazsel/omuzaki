@@ -77,7 +77,7 @@ impl PalmDetector {
         weighted_nms(&mut self.candidates, NMS_IOU, &mut self.merged);
         let (fw, fh) = (placement.fw, placement.fh);
         // Detections are in fractions of the input, so they map through a "side" of one.
-        let to_frame = |(u, v): (f32, f32)| placement.to_frame(1, u, v);
+        let to_frame = |(u, v): (f32, f32)| placement.frame_point(1, u, v);
         for palm in self.merged.iter().take(max) {
             let (x0, y0) = to_frame((palm.bbox.xmin, palm.bbox.ymin));
             let (x1, y1) = to_frame((palm.bbox.xmin + palm.bbox.width, palm.bbox.ymin + palm.bbox.height));

@@ -75,10 +75,8 @@ const ARM_BONES: [[HumanoidBone; 3]; 2] = [
     [HumanoidBone::RightUpperArm, HumanoidBone::RightLowerArm, HumanoidBone::RightHand],
 ];
 /// Shoulder, elbow and wrist landmarks by [`Side`].
-const ARM_POINTS: [[usize; 3]; 2] = [
-    [at::LEFT_SHOULDER, at::LEFT_ELBOW, at::LEFT_WRIST],
-    [at::RIGHT_SHOULDER, at::RIGHT_ELBOW, at::RIGHT_WRIST],
-];
+const ARM_POINTS: [[usize; 3]; 2] =
+    [[at::LEFT_SHOULDER, at::LEFT_ELBOW, at::LEFT_WRIST], [at::RIGHT_SHOULDER, at::RIGHT_ELBOW, at::RIGHT_WRIST]];
 
 /// The camera's axes (x right, y down, z away) to the root's (x the performer's left, y up, z toward the camera).
 fn to_root(v: Vec3) -> Vec3 {
@@ -176,7 +174,7 @@ impl BodySolver {
         out.hands = [0.0; 2];
 
         let pose = landmarks.pose.filter(|_| config.arms);
-        if !pose.is_some() || !self.had_pose {
+        if pose.is_none() || !self.had_pose {
             self.filtered.pose.iter_mut().for_each(EuroPoint::reset);
         }
         self.had_pose = pose.is_some();
@@ -192,7 +190,7 @@ impl BodySolver {
         for side in Side::BOTH {
             let s = side.index();
             let hand = landmarks.hands[s].filter(|_| config.hands);
-            if !hand.is_some() || !self.had_hand[s] {
+            if hand.is_none() || !self.had_hand[s] {
                 self.filtered.hands[s].iter_mut().for_each(EuroPoint::reset);
             }
             self.had_hand[s] = hand.is_some();
@@ -380,7 +378,9 @@ mod tests {
     fn a_t_pose_solves_to_the_rest_pose() {
         let hands = [Some(flat_hand(Side::Left)), Some(flat_hand(Side::Right))];
         let out = solve(&BodyLandmarks { pose: Some(t_pose()), hands });
-        for bone in [HumanoidBone::UpperChest, HumanoidBone::LeftUpperArm, HumanoidBone::RightLowerArm, HumanoidBone::LeftHand] {
+        for bone in
+            [HumanoidBone::UpperChest, HumanoidBone::LeftUpperArm, HumanoidBone::RightLowerArm, HumanoidBone::LeftHand]
+        {
             assert!(out.mask.contains(bone), "{bone:?} is driven");
             assert!(out.pose.get(bone).angle_between(Quat::IDENTITY) < 1e-4, "{bone:?}: {}", out.pose.get(bone));
         }
@@ -452,7 +452,7 @@ mod tests {
             assert!((f.mcp - FRAC_PI_2).abs() < 1e-3, "{f:?}");
             assert!(f.pip > 0.5 && f.dip > 0.5, "{f:?}");
         }
-        assert!(out.fingers[1].is_none() && out.hands == [1.0, 0.0]);
+        assert!(out.fingers[1].is_none() && (out.hands[0] - 1.0).abs() < 1e-6 && out.hands[1].abs() < 1e-6);
     }
 
     #[test]

@@ -133,7 +133,8 @@ fn a_peace_sign_shows_its_bound_expression_until_the_body_tracker_lets_go() {
 
     let (board, _reader) = BodyBoard::new();
     let tap = Arc::new(FrameTap::default());
-    let watch = GestureWatch::start(tap, Some(Arc::clone(&board)), Arc::clone(&handle) as Arc<dyn PerformHost>).unwrap();
+    let watch =
+        GestureWatch::start(tap, Some(Arc::clone(&board)), Arc::clone(&handle) as Arc<dyn PerformHost>).unwrap();
     let shown = |control: &mut omuzaki_stage::perform::host::PerformControl, performer: &mut _, step: u64| {
         control.advance(performer, mid_step(step));
         handle.triggers().iter().find(|t| t.binding.key == key).is_some_and(|t| t.active)

@@ -15,8 +15,8 @@ use omuzaki_anim_api::{HumanoidBone, HumanoidPose};
 use omuzaki_core::glam::{Quat, Vec3};
 use omuzaki_core::time::Seconds;
 use omuzaki_track::RgbFrame;
-use omuzaki_track::body::models::{BodyModelDir, PoseSize};
 use omuzaki_track::body::gesture::{HandGestureConfig, classify};
+use omuzaki_track::body::models::{BodyModelDir, PoseSize};
 use omuzaki_track::body::{BodyTracker, BodyTrackerConfig};
 use omuzaki_track_api::body::{BodyConfig, BodyFrame};
 use track_support::DirSource;
@@ -99,7 +99,12 @@ const ARMS: [([HumanoidBone; 4], Vec3); 2] = [
         Vec3::X,
     ),
     (
-        [HumanoidBone::RightShoulder, HumanoidBone::RightUpperArm, HumanoidBone::RightLowerArm, HumanoidBone::RightHand],
+        [
+            HumanoidBone::RightShoulder,
+            HumanoidBone::RightUpperArm,
+            HumanoidBone::RightLowerArm,
+            HumanoidBone::RightHand,
+        ],
         Vec3::NEG_X,
     ),
 ];
@@ -140,7 +145,9 @@ fn finger_bones(side: usize) -> [[HumanoidBone; 3]; 4] {
 fn kit_frames_score_against_their_poses() {
     let Some((models, natives)) = env("kit_frames_score_against_their_poses") else { return };
     let Some(frames) = std::env::var_os("OMUZAKI_BODY_FRAMES_DIR").map(PathBuf::from) else {
-        eprintln!("skipping kit_frames_score_against_their_poses: set OMUZAKI_BODY_FRAMES_DIR (omuzaki-stage body_frames)");
+        eprintln!(
+            "skipping kit_frames_score_against_their_poses: set OMUZAKI_BODY_FRAMES_DIR (omuzaki-stage body_frames)"
+        );
         return;
     };
     let size = if std::env::var_os("OMUZAKI_BODY_FULL").is_some() { PoseSize::Full } else { PoseSize::Lite };
@@ -149,8 +156,11 @@ fn kit_frames_score_against_their_poses() {
     let min = std::env::var("OMUZAKI_BODY_MIN_DETECTION").ok().and_then(|v| v.parse().ok()).unwrap_or(0.5);
     let config = BodyTrackerConfig { min_pose_detection: min, ..BodyTrackerConfig::default() };
     let mut tracker = tracker_with(&models, &natives, size, config);
-    let mut names: Vec<PathBuf> =
-        std::fs::read_dir(&frames).unwrap().map(|e| e.unwrap().path()).filter(|p| p.extension().is_some_and(|e| e == "ppm")).collect();
+    let mut names: Vec<PathBuf> = std::fs::read_dir(&frames)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|e| e == "ppm"))
+        .collect();
     names.sort();
     assert!(!names.is_empty(), "no frames in {}", frames.display());
     let (mut arm_errors, mut finger_errors, mut times) = (Vec::new(), Vec::new(), Vec::new());
@@ -179,7 +189,8 @@ fn kit_frames_score_against_their_poses() {
         }
         for (side, hand) in landmarks.hands.iter().enumerate() {
             if let Some(hand) = hand {
-                row[format!("hand_{side}")] = serde_json::json!(hand.image.iter().map(|p| [p.0, p.1]).collect::<Vec<_>>());
+                row[format!("hand_{side}")] =
+                    serde_json::json!(hand.image.iter().map(|p| [p.0, p.1]).collect::<Vec<_>>());
             }
         }
         for side in 0..2 {
