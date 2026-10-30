@@ -177,23 +177,24 @@ pub fn iris(iris: &Iris, seed: u32, size: u32) -> Canvas {
         colour *= 0.82 + 0.36 * fbm(u * 6.0, v * 6.0, 3, s ^ 0x11);
         // Mottling: darker and lighter blotches of pigment a few fibres across.
         colour *= 0.86 + 0.28 * fbm(u * 22.0, v * 22.0, 3, s ^ 0x12);
-        // Radial fibres at three scales, wandering a little as they run out.
-        let warp = 0.45 * (fbm(a * 18.0, t * 3.0, 2, s ^ 0x22) - 0.5);
-        let f1 = value_wrapped(a * 240.0 + warp * 3.0, t * 2.5, 240, s ^ 0x33);
-        let f2 = value_wrapped(a * 620.0 + warp * 7.0, t * 5.0, 620, s ^ 0x44);
-        let f3 = value_wrapped(a * 1400.0 + warp * 14.0, t * 9.0, 1400, s ^ 0x55);
+        // Radial fibres at three scales, wandering as they run out and breaking every short run: the stroma is a mesh
+        // of short, wavy strands, never spokes running the whole way from the pupil to the rim.
+        let warp = 0.45 * (fbm(a * 18.0, t * 5.0, 2, s ^ 0x22) - 0.5);
+        let f1 = value_wrapped(a * 240.0 + warp * 4.0, t * 4.0, 240, s ^ 0x33);
+        let f2 = value_wrapped(a * 620.0 + warp * 9.0, t * 8.0, 620, s ^ 0x44);
+        let f3 = value_wrapped(a * 1400.0 + warp * 18.0, t * 16.0, 1400, s ^ 0x55);
         let f = 0.3 * f1 + 0.35 * f2 + 0.35 * f3;
         let light = smoothstep(0.52, 0.8, f);
         let dark = smoothstep(0.48, 0.18, f);
         // The pupillary zone's fibres are coarser and darker (the ruff's spokes).
         let inside = 1.0 - smoothstep(c - 0.02, c + 0.02, t);
-        colour *= 1.0 - fibres * dark * (0.42 + 0.2 * inside);
-        colour = colour.lerp(fibre, fibres * light * (0.46 - 0.16 * inside));
+        colour *= 1.0 - fibres * dark * (0.4 + 0.2 * inside);
+        colour = colour.lerp(fibre, fibres * light * (0.42 - 0.14 * inside));
         // The collarette: a jagged ring where the two zones meet, darker just inside it (the crypts' shadow) and
         // lighter on its ridge.
         let jag = c + 0.04 * (value_wrapped(a * 90.0, t * 4.0, 90, s ^ 0x66) - 0.5);
-        let inside_band = smoothstep(jag - 0.1, jag - 0.02, t) * (1.0 - smoothstep(jag - 0.01, jag + 0.005, t));
-        colour *= 1.0 - 0.35 * inside_band;
+        let inside_band = smoothstep(jag - 0.14, jag - 0.03, t) * (1.0 - smoothstep(jag - 0.01, jag + 0.01, t));
+        colour *= 1.0 - 0.5 * inside_band;
         let ridge = (-((t - jag - 0.012) / 0.012).powi(2)).exp();
         colour = colour.lerp(fibre, 0.18 * ridge);
         // The pupillary ruff: a thin dark rim round the pupil.

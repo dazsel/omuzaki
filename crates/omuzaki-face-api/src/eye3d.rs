@@ -149,7 +149,7 @@ impl Default for Iris {
     fn default() -> Self {
         Self {
             outer: Colour::hex(0x00ae_7a3e),
-            inner: Colour::hex(0x00c0_8c48),
+            inner: Colour::hex(0x00cc_9c58),
             deep: Colour::hex(0x0024_140a),
             fibre_colour: Colour::hex(0x00d4_a466),
             limbal_colour: Colour::hex(0x001e_120a),
@@ -190,7 +190,7 @@ pub struct Sclera {
 
 impl Default for Sclera {
     fn default() -> Self {
-        Self { white: Colour::hex(0x00c8_c6c2), edge: Colour::hex(0x00b8_a8a2), vessels: 25, network: 0.7 }
+        Self { white: Colour::hex(0x00c8_c6c2), edge: Colour::hex(0x00b8_a8a2), vessels: 15, network: 0.7 }
     }
 }
 
@@ -276,7 +276,7 @@ impl Default for Skin {
             tone: Colour::hex(0x0088_5c44),
             freckles: 90.0,
             freckle: Colour::hex(0x0070_3a24),
-            lid_thickness: 0.0009,
+            lid_thickness: 0.0012,
             crease: 0.0058,
             crease_depth: 0.001,
         }

@@ -360,12 +360,18 @@ impl Lids {
         z = z + (self.face(p.x, p.y) - z) * blend;
         // Dry at the outer corner, where the lids pinch together and a wet sheen would catch the key as a hard spot.
         let wet = (1.0 - smoothstep(0.2 * MM, 0.45 * MM, d)) * smoothstep(0.0, 0.12, u);
+        // The pocket behind the margin darkens as it runs back behind the ball, deepest at the inner corner, where the
+        // ball's bulge hides it in shadow.
         if d < 0.0 {
-            cavity = 0.55;
+            cavity = 0.55 - (0.3 + 0.15 * smoothstep(0.7, 1.0, u)) * smoothstep(0.0, 1.2 * MM, -d);
         }
-        // The inner corner and the lid margins are flushed.
+        // The inner corner and the lid margins are flushed: the margin itself, the thin moist rim between the lashes
+        // and the eye, is a deeper red than the skin, more so on the upper lid, whose margin the eye looks up into.
         let inner = smoothstep(0.75, 1.0, u) * (1.0 - smoothstep(0.0, 6.0 * MM, d));
-        let flush = 0.2 * (1.0 - smoothstep(0.0, 5.0 * MM, d)) + 0.5 * inner;
+        let rim = 1.0 - smoothstep(0.25 * MM, 0.75 * MM, d);
+        let flush = 0.2 * (1.0 - smoothstep(0.0, 5.0 * MM, d))
+            + 0.5 * inner
+            + side(0.75, 0.45) * rim * (1.0 - 0.7 * smoothstep(0.7, 0.95, u));
         (Vec3::new(p.x, p.y, z), [wet, cavity, flush, 0.0])
     }
 
@@ -495,7 +501,7 @@ impl Lids {
                 let z = cornea.surface_z(&self.ball, gaze, p.x, p.y).max(self.proxy(p.x, p.y, -0.6 * MM)) + 0.06 * MM;
                 mesh.positions.push(Vec3::new(p.x, p.y, z));
                 // The upper lid shades more and farther than the lower, and the corners, deep in the socket, most.
-                let (strength, reach) = if Self::is_upper(k) { (0.8, 4.0) } else { (0.35, 1.0) };
+                let (strength, reach) = if Self::is_upper(k) { (0.9, 5.0) } else { (0.35, 1.0) };
                 let socket = 1.0 - smoothstep(0.0, 0.25, Self::along(k).min(1.0 - Self::along(k)));
                 let near = strength * (-d / (reach * (1.0 + socket))).exp() * (1.0 - smoothstep(5.0, 7.0, d));
                 // The whole ball sits in the socket: the white darkens broadly toward the lids and corners, so it reads

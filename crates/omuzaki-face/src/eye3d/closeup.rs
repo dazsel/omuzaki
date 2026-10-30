@@ -202,8 +202,8 @@ fn build(
         // A macro lens: sharp on the iris, the lashes and the skin falling out of focus.
         scene.post.depth_of_field = Some(DepthOfField {
             focus_distance: (camera_at - forward * 0.0105).length(),
-            focus_range: 0.0022,
-            max_blur: 0.05,
+            focus_range: 0.005,
+            max_blur: 0.025,
         });
     }
     Ok(scene)
