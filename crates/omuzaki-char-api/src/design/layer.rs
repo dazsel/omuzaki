@@ -318,6 +318,15 @@ pub enum MaskKind {
         /// To.
         to: f32,
     },
+    /// A ramp over the part's height (`0` its bottom, `1` its top): 0 at `from`, 1 at `to`, smooth between, so a tint
+    /// fades along the part (a stocking from teal at the thigh to indigo at the foot: `from = 1, to = 0`).
+    #[non_exhaustive]
+    Gradient {
+        /// Where the ramp is 0.
+        from: f32,
+        /// Where it is 1.
+        to: f32,
+    },
     /// Surfaces facing a direction: 0 at `from` (the cosine to the direction), 1 at `to`.
     Facing {
         /// The direction, bind space.
@@ -354,6 +363,14 @@ pub enum MaskKind {
         /// Where it is full.
         to: f32,
     },
+}
+
+impl MaskKind {
+    /// A [`MaskKind::Gradient`]: 0 at `from` up the part's height, 1 at `to`.
+    #[must_use]
+    pub const fn gradient(from: f32, to: f32) -> Self {
+        Self::Gradient { from, to }
+    }
 }
 
 fn one() -> f32 {
@@ -446,6 +463,9 @@ impl MaterialLayer {
         for (i, mask) in self.masks.iter().enumerate() {
             let ok = match &mask.mask {
                 MaskKind::Region { from, to, .. } | MaskKind::Height { from, to } => from <= to,
+                MaskKind::Gradient { from, to } => {
+                    (from - to).abs() > f32::EPSILON && (0.0..=1.0).contains(from) && (0.0..=1.0).contains(to)
+                }
                 MaskKind::Landmark { reach, .. } => *reach > 0.0 && *reach <= 180.0,
                 MaskKind::Facing { dir, .. } => Vec3::from(*dir).length() > 1e-6,
                 MaskKind::Noise { scale, softness, .. } => *scale > 0.0 && *softness >= 0.0,
@@ -604,6 +624,13 @@ fn mask_value(mask: &Mask, v: &Vertex, frames: &Frames) -> f32 {
         },
         MaskKind::Height { from, to } => {
             smoothstep(from - 0.02, from + 0.02, v.height) * (1.0 - smoothstep(to - 0.02, to + 0.02, v.height))
+        }
+        MaskKind::Gradient { from, to } => {
+            if to > from {
+                smoothstep(*from, *to, v.height)
+            } else {
+                1.0 - smoothstep(*to, *from, v.height)
+            }
         }
         MaskKind::Facing { dir, from, to } => {
             let c = v.n.dot(Vec3::from(*dir).normalize_or(Vec3::Y));
@@ -1128,6 +1155,28 @@ mod tests {
             assert!((0.0..=1.0).contains(&n));
             assert_eq!(n, fbm(p, 3));
         }
+    }
+
+    #[test]
+    fn a_gradient_ramps_along_the_height_either_way() {
+        let frames = Frames { body: None, head: None, part: None };
+        let at = |mask: MaskKind, height: f32| {
+            let v = Vertex { p: Vec3::ZERO, n: Vec3::Y, m: Membership::default(), height, curvature: 0.0, distal: 0.0 };
+            mask_value(&Mask { mask, invert: false }, &v, &frames)
+        };
+        let up = MaskKind::gradient(0.2, 0.8);
+        assert!(at(up.clone(), 0.1) < 1e-6 && (at(up.clone(), 0.9) - 1.0).abs() < 1e-6);
+        assert!((at(up.clone(), 0.5) - 0.5).abs() < 1e-6);
+        let down = MaskKind::gradient(1.0, 0.0);
+        assert!(at(down.clone(), 0.9) < at(down.clone(), 0.5) && at(down.clone(), 0.5) < at(down, 0.1));
+        let id = LayerId::new("fade").unwrap();
+        let layer = |mask| MaterialLayer {
+            masks: vec![Mask { mask, invert: false }],
+            ..MaterialLayer::new(id.clone(), LayerKind::Wet { amount: 0.5 })
+        };
+        assert!(layer(MaskKind::gradient(1.0, 0.0)).check().is_ok());
+        assert!(layer(MaskKind::gradient(0.5, 0.5)).check().is_err());
+        assert!(layer(MaskKind::gradient(0.0, 1.5)).check().is_err());
     }
 
     #[test]

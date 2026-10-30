@@ -279,3 +279,55 @@ waterline = 0.7
 
 [preset.eyes.lash]
 strands = { upper = { count = 40, length = 0.32, curl = 0.7, clumping = 0.15, randomness = 0.1, lift = 0.3, from = -0.9 }, lower = { count = 24, length = 0.2, clumping = 0.1, randomness = 0.1, from = -0.7 } }
+
+[[preset]]
+id = "cyber"
+summary = "Cyber: wide almond eyes with a dark winged liner, a slit pupil ringed with light in a bright iris, a hard catchlight, and one eye a different colour"
+
+[preset.eyes.aperture]
+roundness = 0.45
+upper_height = 0.7
+lower_depth = 0.55
+tilt = 0.12
+inner_sharpness = 0.85
+outer_bluntness = 0.35
+
+[preset.eyes.iris]
+width = 0.74
+height = 0.92
+drop = 0.02
+top = "#2f7cc0"
+mid = "#58b4e6"
+low = "#aee2f8"
+ring = "#24507e"
+detail = { limbal = { strength = 0.6 }, pupil_glow = 0.8 }
+
+[preset.eyes.iris.pupil]
+shape = "slit"
+size = 0.9
+colour = "#141c48"
+
+[preset.eyes.right_iris]
+top = "#7f9e16"
+mid = "#a9c92a"
+low = "#dcec78"
+ring = "#4a6410"
+pupil = { shape = "slit", size = 0.9, colour = "#0e3434" }
+
+[preset.eyes.highlights]
+size = 0.22
+offset = [0.3, 0.32]
+caustic = 0.3
+
+[preset.eyes.sclera]
+corner_shade = 0.45
+caruncle = 0.3
+waterline = 0.3
+
+[preset.eyes.lash]
+thickness = 0.0075
+flick = 1.0
+lower = 0.3
+inner_tick = false
+colour = "#1c2440"
+strands = { upper = { count = 10, length = 0.3, lift = 1.0, curl = 0.3 } }
