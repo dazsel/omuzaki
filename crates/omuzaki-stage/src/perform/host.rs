@@ -369,18 +369,34 @@ pub enum ActRequest {
         #[serde(skip)]
         #[schemars(skip)]
         def: Option<Arc<PoseClip>>,
+        /// It plays over the tracked head, the breath and the living body too: the body is the clip exactly, as a
+        /// recorded take is played back ([`Act::over_tracking`]).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        over_tracking: bool,
     },
 }
 
 impl ActRequest {
     /// The clip library's clip `id`, at `weight`.
     pub fn clip(id: impl Into<String>, weight: f32) -> Self {
-        Self::Clip { clip: id.into(), weight, def: None }
+        Self::Clip { clip: id.into(), weight, def: None, over_tracking: false }
     }
 
     /// `clip` itself (a character's own clip, or any other), at `weight`.
     pub fn clip_def(clip: Arc<PoseClip>, weight: f32) -> Self {
-        Self::Clip { clip: clip.id.clone(), weight, def: Some(clip) }
+        Self::Clip { clip: clip.id.clone(), weight, def: Some(clip), over_tracking: false }
+    }
+
+    /// The same act, played over the tracker when `over` (an expression, channels or a clip; other acts ignore it).
+    #[must_use]
+    pub fn over_tracking(mut self, over: bool) -> Self {
+        match &mut self {
+            Self::Expression { over_tracking, .. }
+            | Self::Channels { over_tracking, .. }
+            | Self::Clip { over_tracking, .. } => *over_tracking = over,
+            Self::Look { .. } => {}
+        }
+        self
     }
 }
 
@@ -1141,7 +1157,9 @@ fn bake_act(
     let channels = |target: ChannelBuf, mask: ChannelMask| Motion::Channels { target, mask };
     let over_tracking = matches!(
         request,
-        ActRequest::Expression { over_tracking: true, .. } | ActRequest::Channels { over_tracking: true, .. }
+        ActRequest::Expression { over_tracking: true, .. }
+            | ActRequest::Channels { over_tracking: true, .. }
+            | ActRequest::Clip { over_tracking: true, .. }
     );
     let (motion, lane, envelope) = match request {
         ActRequest::Expression { expression, intensity, .. } => {
@@ -1177,7 +1195,7 @@ fn bake_act(
             }
             (channels(target, mask), Lane::Channels, envelope)
         }
-        ActRequest::Clip { clip, weight, def } => {
+        ActRequest::Clip { clip, weight, def, .. } => {
             let clip = if let Some(def) = def {
                 Arc::clone(def)
             } else {

@@ -337,6 +337,8 @@ impl Performer {
         self.parts.animator.set_tracked(self.score_pose.busy().union(self.body.busy()));
         self.parts.animator.animate(tick, &self.bus, &[], &mut self.pose);
         self.body.settle_head(&mut self.pose);
+        // A clip played over tracking (a recorded take played back) is the body exactly, head included.
+        PoseLayers(self.score_pose.over_layers()).resolve(&mut self.pose);
     }
 
     /// Polls the source and feeds the retarget: the new frame, or a synthetic lost frame once the source has gone
