@@ -2611,6 +2611,10 @@ ui-panels-back = Back
 ui-panels-back-to-now = Back to now
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+# $reason (id, never translated): "hair-b"
+ui-panels-cant-place = This part can't be placed by hand: { $reason }
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
 ui-panels-delete = Delete
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
@@ -2702,6 +2706,9 @@ ui-panels-grants-session-only = This session only
 ui-panels-grants-spent = { $spent } of
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+ui-panels-handles = Handles
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
 ui-panels-inspector = Inspector
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
@@ -2722,7 +2729,14 @@ ui-panels-many-how = Select one part to edit its settings.
 ui-panels-many-selected = { $count } parts selected
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+ui-panels-move = Move
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
 ui-panels-move-down = Move down
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+# $part (id, never translated): "hair-b"
+ui-panels-move-part = Move { $part }
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
 ui-panels-move-up = Move up
@@ -2851,6 +2865,20 @@ ui-panels-rollback-keep = Keep the change
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
 ui-panels-rollback-retry = Try again
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+ui-panels-rotate = Rotate
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+# $part (id, never translated): "hair-b"
+ui-panels-rotate-part = Rotate { $part }
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+ui-panels-scale = Scale
+
+# The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
+# $part (id, never translated): "hair-b"
+ui-panels-scale-part = Scale { $part }
 
 # The edit panels: the outliner, the inspector, the agent panel, approvals and the setup flow.
 ui-panels-scope-broadcast = Go live and switch scenes: your audience sees what it does.

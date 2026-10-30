@@ -22,6 +22,8 @@ use omuzaki_stage::frame::{FrameInput, Stage, StageClock};
 use omuzaki_stage::ops::render::still::StillLight;
 use omuzaki_stage::{StageError, UploadOptions};
 
+use super::pick::PickMesh;
+
 /// The fixed rate the stage settles at, as stills do, so the viewport's picture is a still's.
 const FPS: f32 = 60.0;
 
@@ -40,11 +42,21 @@ pub struct Job {
     pub renders: u64,
     /// Why the last staging or render failed.
     pub error: Option<String>,
+    /// The staged character's posed triangles, for clicks; new with each staging.
+    pub pick: Option<Arc<PickMesh>>,
 }
 
 impl Default for Job {
     fn default() -> Self {
-        Self { built: None, camera: Camera::default(), size: UVec2::ONE, render: true, renders: 0, error: None }
+        Self {
+            built: None,
+            camera: Camera::default(),
+            size: UVec2::ONE,
+            render: true,
+            renders: 0,
+            error: None,
+            pick: None,
+        }
     }
 }
 
@@ -163,6 +175,7 @@ impl Gpu {
             }
             let (staged, base) =
                 stage(&mut self.renderer, built, &self.light, self.quality, target).map_err(stage_error)?;
+            job.pick = Some(Arc::new(PickMesh::posed(staged.built(), staged.skin())));
             self.stage = Some(staged);
             self.base = base;
             job.render = true;
@@ -383,6 +396,7 @@ impl CallbackTrait for Callback {
                 render: job.render,
                 renders: 0,
                 error: job.error.take(),
+                pick: None,
             }
         };
         gpu.prepare(device, &mut work);
@@ -391,6 +405,9 @@ impl CallbackTrait for Callback {
         job.render = work.render;
         job.renders += work.renders;
         job.error = work.error;
+        if work.pick.is_some() {
+            job.pick = work.pick;
+        }
         if work.built.is_some() {
             // Not staged (the target failed first): ask again next frame.
             job.built = work.built;
