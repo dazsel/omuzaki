@@ -752,6 +752,7 @@ register_op!(RenderShort);
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
     reason = "sample offsets of a short of at most 600 s"
 )]
 fn span_pcm<'a>(pcm: &'a [f32], frames: &std::ops::Range<u64>, fps: u32) -> &'a [f32] {
