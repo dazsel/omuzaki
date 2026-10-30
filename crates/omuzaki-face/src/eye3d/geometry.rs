@@ -177,6 +177,23 @@ pub(super) fn lid_outline(aperture: &Aperture, u: f32, upper: bool) -> Vec2 {
     Lids::outline(aperture, u, upper)
 }
 
+/// The eye's surface under the lids at `(x, y)`, pushed out by `out` metres.
+fn proxy(ball: &Ball, x: f32, y: f32, out: f32) -> f32 {
+    let r = ball.radius + out;
+    // Past the ball's edge the surface eases onto a floor instead of breaking off it: a smooth maximum.
+    let q = r * r - (x / PROXY_WIDEN).powi(2) - y * y;
+    let floor = (0.45 * r).powi(2);
+    let soft = 0.3 * r * r;
+    (0.5 * (q + floor + ((q - floor).powi(2) + soft * soft).sqrt())).sqrt()
+}
+
+/// The point of the opening's edge at `u` along a lid (0 the outer corner, 1 the inner), where the lid's margin meets
+/// the eye: the outline in the frontal plane, laid on the eye's surface.
+pub(super) fn margin_point(design: &EyeDesign, u: f32, upper: bool) -> Vec3 {
+    let p = Lids::outline(&design.aperture, u, upper);
+    Vec3::new(p.x, p.y, proxy(&design.ball, p.x, p.y, 0.15 * MM))
+}
+
 /// The lids: the opening's outline and the surface laid out from it.
 struct Lids {
     ball: Ball,
@@ -269,12 +286,7 @@ impl Lids {
 
     /// The eye's surface under the lids at `(x, y)`, pushed out by `out` metres.
     fn proxy(&self, x: f32, y: f32, out: f32) -> f32 {
-        let r = self.ball.radius + out;
-        // Past the ball's edge the surface eases onto a floor instead of breaking off it: a smooth maximum.
-        let q = r * r - (x / PROXY_WIDEN).powi(2) - y * y;
-        let floor = (0.45 * r).powi(2);
-        let soft = 0.3 * r * r;
-        (0.5 * (q + floor + ((q - floor).powi(2) + soft * soft).sqrt())).sqrt()
+        proxy(&self.ball, x, y, out)
     }
 
     /// The face round the eye, far from the lids: the brow ridge above, the nose's side toward the inner corner, the

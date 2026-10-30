@@ -10,7 +10,10 @@
 //! - [`skin::texture`]: the skin round the eye (tone, mottling, fine lines, freckles);
 //! - [`eye_params`] and [`skin_params`]: the programs' parameters for a design and where the eye is.
 //! - [`closeup::Closeup`]: all of it built on a renderer, lit and framed as a macro still (the lab test and
-//!   `render.eye` draw through it).
+//!   `render.eye` draw through it), from a view or any [`closeup::Shot`];
+//! - [`fit::fit`]: the opening, iris, pupil, gaze and camera fitted to landmarks measured on a photograph
+//!   (`face.eye3d.fit`); named shapes and iris colours ([`EyeShape`](omuzaki_face_api::eye3d::EyeShape),
+//!   [`IrisColour`](omuzaki_face_api::eye3d::IrisColour), `face.eye3d.preset`) are the quick start before it.
 //!
 //! Everything is a pure function of an [`EyeDesign`], whose seed drives every random detail.
 
@@ -22,6 +25,7 @@
 pub mod canvas;
 pub mod closeup;
 pub mod design;
+pub mod fit;
 pub mod geometry;
 pub mod noise;
 pub mod skin;

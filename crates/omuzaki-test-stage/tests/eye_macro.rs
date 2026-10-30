@@ -16,6 +16,7 @@ use std::path::PathBuf;
 use omuzaki_core::glam::UVec2;
 use omuzaki_face::eye3d::closeup::{Closeup, View};
 use omuzaki_face::eye3d::{self, EyeDesign};
+use omuzaki_face_api::eye3d::EyeShape;
 use omuzaki_render::{AdapterPreference, HeadlessOptions, WgpuRenderer};
 use omuzaki_render_api::{AlphaEncoding, Quality, Renderer, RendererExt};
 
@@ -67,12 +68,9 @@ fn luma_spread(frame: &image::RgbaImage) -> (f32, f32) {
 #[test]
 fn the_eye_renders_at_macro_framing_as_an_eye() {
     let Some(mut renderer) = renderer() else { return };
-    // Wide open and tilted up toward the outer corner, as a macro still frames it.
+    // The wide-open shape, as a macro still frames it.
     let mut design = EyeDesign::default();
-    design.aperture.upper = 0.0076;
-    design.aperture.lower = 0.0058;
-    design.aperture.outer_y = 0.0012;
-    design.aperture.outer_x = -0.0122;
+    EyeShape::Wide.apply(&mut design);
     for (view, name) in [(View::Macro, "eye-macro.png"), (View::Front, "eye-front.png")] {
         let frame = render(&mut renderer, &design, view);
         if let Some(dir) = std::env::var_os("OMUZAKI_EYE_OUT").map(PathBuf::from) {

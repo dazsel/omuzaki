@@ -65,6 +65,124 @@ impl EyeDesign {
     }
 }
 
+/// A named shape for the eye's opening, which sets the aperture (and, for some, the iris's size and the lids): the
+/// quick way to an eye's shape before its numbers are tuned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum EyeShape {
+    /// The default adult eye: a soft almond, the inner corner a little lower.
+    Natural,
+    /// Wide open and round: the upper lid high over the iris, white showing above the lower lid, the iris a little
+    /// larger, the outer corner tilted down; the look of an eye opened for a macro photograph.
+    Wide,
+    /// Long and narrow, the outer corner lifted.
+    Almond,
+    /// Round and tall, peaked in the middle.
+    Round,
+    /// A heavy upper lid that sits low over the iris, with a deeper fold above it.
+    Hooded,
+    /// Narrow, the outer corner turned down.
+    Downturned,
+}
+
+impl EyeShape {
+    /// Every shape, in the order a picker lists them.
+    pub const ALL: [Self; 6] = [Self::Natural, Self::Wide, Self::Almond, Self::Round, Self::Hooded, Self::Downturned];
+
+    /// Gives `design` this shape: its aperture, and for `wide` the iris's and pupil's sizes and for `hooded` the lid's
+    /// thickness and fold. Every other field keeps its value.
+    pub fn apply(self, design: &mut EyeDesign) {
+        let natural = Aperture::default();
+        design.aperture = match self {
+            Self::Natural => natural,
+            Self::Wide => Aperture {
+                inner_x: 0.014_4,
+                outer_x: -0.015_7,
+                inner_y: -0.001_9,
+                outer_y: -0.002_6,
+                upper: 0.011_4,
+                upper_peak: 0.57,
+                lower: 0.002_4,
+                lower_peak: 0.53,
+            },
+            Self::Almond => Aperture {
+                inner_y: -0.001_2,
+                outer_y: 0.001_6,
+                upper: 0.004_4,
+                upper_peak: 0.48,
+                lower: 0.003_2,
+                lower_peak: 0.5,
+                ..natural
+            },
+            Self::Round => Aperture { upper: 0.007_6, upper_peak: 0.5, lower: 0.005_4, lower_peak: 0.5, ..natural },
+            Self::Hooded => Aperture { upper: 0.003_8, upper_peak: 0.6, lower: 0.004_2, ..natural },
+            Self::Downturned => Aperture {
+                inner_y: -0.000_6,
+                outer_y: -0.003_2,
+                upper: 0.004_6,
+                upper_peak: 0.62,
+                lower: 0.003_6,
+                lower_peak: 0.4,
+                ..natural
+            },
+        };
+        match self {
+            Self::Wide => {
+                design.ball.iris_radius = 0.006_2;
+                design.ball.pupil = 0.26;
+            }
+            Self::Hooded => {
+                design.skin.crease = 0.004;
+                design.skin.crease_depth = 0.002;
+                design.skin.lid_thickness = 0.001_6;
+            }
+            Self::Natural | Self::Almond | Self::Round | Self::Downturned => {}
+        }
+    }
+}
+
+/// A named iris colour: the iris's outer, inner and fibre colours, measured from the range of real irises.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum IrisColour {
+    /// Warm gold-brown, lighter round the pupil (the default).
+    Amber,
+    /// Dark brown, the commonest iris.
+    Brown,
+    /// Green-brown: a brown ring round the pupil fading to green-olive.
+    Hazel,
+    /// Green with a gold ring round the pupil.
+    Green,
+    /// Blue-grey with a lighter, paler middle.
+    Blue,
+    /// Steel grey.
+    Grey,
+}
+
+impl IrisColour {
+    /// Every colour, in the order a picker lists them.
+    pub const ALL: [Self; 6] = [Self::Amber, Self::Brown, Self::Hazel, Self::Green, Self::Blue, Self::Grey];
+
+    /// The outer, inner and fibre colours.
+    #[must_use]
+    pub fn colours(self) -> (Colour, Colour, Colour) {
+        let (outer, inner, fibre) = match self {
+            Self::Amber => (0x00ae_7a3e, 0x00cc_9c58, 0x00d4_a466),
+            Self::Brown => (0x005a_3a22, 0x007a_5232, 0x008a_6038),
+            Self::Hazel => (0x006a_6a3a, 0x00a0_7a3e, 0x00b0_8a48),
+            Self::Green => (0x004a_6a44, 0x008a_8a4a, 0x009a_a060),
+            Self::Blue => (0x003a_5a7e, 0x007a_98b0, 0x009a_b4c8),
+            Self::Grey => (0x005e_6a72, 0x008e_989e, 0x00a8_b0b4),
+        };
+        (Colour::hex(outer), Colour::hex(inner), Colour::hex(fibre))
+    }
+
+    /// Gives `design`'s iris these colours; its pattern keeps its values.
+    pub fn apply(self, design: &mut EyeDesign) {
+        (design.iris.outer, design.iris.inner, design.iris.fibre_colour) = self.colours();
+    }
+}
+
 impl Validate for EyeDesign {
     fn check(&self, c: &mut Check) {
         c.range_f32("style", self.style, 0.0, 1.0);
@@ -245,7 +363,7 @@ impl Validate for Aperture {
         c.range_f32("outer_x", self.outer_x, -0.018, -0.008);
         c.range_f32("inner_y", self.inner_y, -0.006, 0.006);
         c.range_f32("outer_y", self.outer_y, -0.006, 0.006);
-        c.range_f32("upper", self.upper, 0.0005, 0.01);
+        c.range_f32("upper", self.upper, 0.0005, 0.012);
         c.range_f32("upper_peak", self.upper_peak, 0.15, 0.85);
         c.range_f32("lower", self.lower, 0.0005, 0.008);
         c.range_f32("lower_peak", self.lower_peak, 0.15, 0.85);
@@ -405,6 +523,18 @@ mod tests {
     fn the_default_eye_is_valid_and_an_empty_document_is_the_default() {
         EyeDesign::default().validate().unwrap();
         EyeDesign::anime().validate().unwrap();
+        for shape in EyeShape::ALL {
+            for colour in IrisColour::ALL {
+                let mut design = EyeDesign::anime();
+                shape.apply(&mut design);
+                colour.apply(&mut design);
+                design.validate().unwrap();
+                let mut design = EyeDesign::default();
+                shape.apply(&mut design);
+                colour.apply(&mut design);
+                design.validate().unwrap();
+            }
+        }
         let read: EyeDesign = serde_json::from_str("{}").unwrap();
         assert_eq!(read, EyeDesign::default());
     }

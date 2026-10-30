@@ -30,16 +30,101 @@ pub enum View {
 }
 
 impl View {
-    /// The camera's position, the point it looks at, its vertical field of view in degrees, and the gaze.
-    fn shot(self) -> (Vec3, Vec3, f32, Vec3) {
+    /// The shot this view takes.
+    pub fn shot(self) -> Shot {
         match self {
-            Self::Macro => {
-                (Vec3::new(-0.024, -0.014, 0.048), Vec3::new(0.002, 0.0005, 0.010), 32.0, Vec3::new(-0.36, 0.17, 0.92))
-            }
-            Self::Front => {
-                (Vec3::new(0.0, 0.001, 0.07), Vec3::new(0.0, 0.0005, 0.008), 27.0, Vec3::new(0.0, 0.015, 1.0))
-            }
+            Self::Macro => Shot {
+                camera: [-0.030_45, -0.015_5, 0.050_03],
+                look: [-0.002, -0.000_8, 0.010],
+                roll: -10.1,
+                fov: 32.0,
+                gaze: [-0.184, 0.181, 0.92],
+                depth_of_field: true,
+            },
+            Self::Front => Shot {
+                camera: [0.0, 0.001, 0.07],
+                look: [0.0, 0.0005, 0.008],
+                roll: 0.0,
+                fov: 27.0,
+                gaze: [0.0, 0.015, 1.0],
+                depth_of_field: false,
+            },
         }
+    }
+}
+
+/// Where a close-up is shot from and where the eye looks, in the eye's frame: metres from the eyeball's centre, `+z`
+/// straight out of the eye, `+x` toward the nose, `+y` up. `face.eye3d.fit` finds one that frames the eye as a
+/// photograph does; `render.eye` takes one in place of a view.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Shot {
+    /// The camera's position, metres (a macro still is 4 to 8 cm away).
+    pub camera: [f32; 3],
+    /// The point the camera looks at, metres.
+    pub look: [f32; 3],
+    /// The camera turned about its own axis, degrees, -90 to 90: positive leans the picture's top toward the nose.
+    #[serde(default)]
+    pub roll: f32,
+    /// The vertical field of view, degrees, 5 to 90.
+    pub fov: f32,
+    /// The direction the eye looks, in the same frame (`[0, 0, 1]` straight ahead); its length doesn't matter.
+    pub gaze: [f32; 3],
+    /// A macro lens's shallow depth of field, focused on the iris; `false` keeps everything sharp.
+    #[serde(default)]
+    pub depth_of_field: bool,
+}
+
+impl Shot {
+    /// The camera's up direction, after the roll.
+    pub fn up(&self) -> Vec3 {
+        let roll = self.roll.to_radians();
+        Vec3::new(roll.sin(), roll.cos(), 0.0)
+    }
+
+    /// The eye's gaze, unit length.
+    pub fn forward(&self) -> Vec3 {
+        Vec3::from(self.gaze).normalize_or(Vec3::Z)
+    }
+
+    /// Why the shot can't be taken, if it can't: a non-finite number, a camera on its target or more than a metre
+    /// away, a roll or field of view out of range, or a gaze that is zero or turned away from the camera's side.
+    ///
+    /// # Errors
+    /// What is wrong, naming the field.
+    pub fn check(&self) -> Result<(), String> {
+        let numbers = self.camera.iter().chain(&self.look).chain(&self.gaze).chain([&self.roll, &self.fov]);
+        if numbers.into_iter().any(|v| !v.is_finite()) {
+            return Err("every number must be finite".to_owned());
+        }
+        let (camera, look) = (Vec3::from(self.camera), Vec3::from(self.look));
+        if camera.length() > 1.0 {
+            return Err("camera: must be within a metre of the eye".to_owned());
+        }
+        if (camera - look).length() < 1e-4 {
+            return Err("look: must be away from the camera".to_owned());
+        }
+        if !(-90.0..=90.0).contains(&self.roll) {
+            return Err("roll: must be -90 to 90 degrees".to_owned());
+        }
+        if !(5.0..=90.0).contains(&self.fov) {
+            return Err("fov: must be 5 to 90 degrees".to_owned());
+        }
+        let gaze = Vec3::from(self.gaze);
+        if gaze.length() < 1e-6 || gaze.z <= 0.0 {
+            return Err("gaze: must point out of the eye (a positive z)".to_owned());
+        }
+        Ok(())
+    }
+
+    /// The camera this shot uses.
+    pub fn camera(&self) -> Camera {
+        Camera::look_at(
+            Vec3::from(self.camera),
+            Vec3::from(self.look),
+            self.up(),
+            Projection::Perspective { fov_y_deg: self.fov, near: 0.004, far: 1.0 },
+        )
     }
 }
 
@@ -64,8 +149,23 @@ impl Closeup {
         view: View,
         texture: u32,
     ) -> Result<Self, RenderError> {
+        Self::shoot(renderer, design, &view.shot(), texture)
+    }
+
+    /// Builds `design` on `renderer` and frames it as `shot` takes it.
+    ///
+    /// # Errors
+    /// `Invalid` for a shot [`Shot::check`] refuses; otherwise what the renderer returns when it can't make a resource,
+    /// with everything made before the failure released.
+    pub fn shoot(
+        renderer: &mut dyn Renderer,
+        design: &EyeDesign,
+        shot: &Shot,
+        texture: u32,
+    ) -> Result<Self, RenderError> {
+        shot.check().map_err(|e| RenderError::invalid("shot", e))?;
         let mut made = Vec::new();
-        match build(renderer, design, view, texture, &mut made) {
+        match build(renderer, design, shot, texture, &mut made) {
             Ok(scene) => Ok(Self { scene, made }),
             Err(error) => {
                 // The build's own failure is the one to report; a release refused on top of it adds nothing to fix.
@@ -110,12 +210,12 @@ fn program(name: &str, params: ProgramParams) -> Result<Shading, RenderError> {
 fn build(
     renderer: &mut dyn Renderer,
     design: &EyeDesign,
-    view: View,
+    shot: &Shot,
     texture: u32,
     made: &mut Vec<ResourceRef>,
 ) -> Result<Scene, RenderError> {
-    let (camera_at, look, fov, gaze) = view.shot();
-    let forward = gaze.normalize();
+    let camera_at = Vec3::from(shot.camera);
+    let forward = shot.forward();
     let frame = EyeFrame { centre: Vec3::ZERO, forward, up: Vec3::Y };
     let built = meshes(design, camera_at, forward);
 
@@ -152,12 +252,7 @@ fn build(
     let right = frame.up.cross(forward).normalize();
     let up = forward.cross(right);
     let turned = Mat4::from_mat3(Mat3::from_cols(right, up, forward));
-    let mut scene = Scene::new(Camera::look_at(
-        camera_at,
-        look,
-        Vec3::Y,
-        Projection::Perspective { fov_y_deg: fov, near: 0.004, far: 1.0 },
-    ));
+    let mut scene = Scene::new(shot.camera());
     for (mesh, material, transform) in [
         (&built.eyeball, &eye, turned),
         (&built.region, &skin, Mat4::IDENTITY),
@@ -206,7 +301,7 @@ fn build(
     // flat cels, so it fades out toward anime. No contact shadows: on strands as thin as lashes the screen-space march
     // hits some jittered samples and misses others, so each lash casts a stippled fan.
     scene.occlusion = (real > 0.01).then(|| Occlusion::new(0.0025, 0.7 * real));
-    if view == View::Macro {
+    if shot.depth_of_field {
         // A macro lens: sharp on the iris, the lashes and the skin falling out of focus.
         scene.post.depth_of_field = Some(DepthOfField {
             focus_distance: (camera_at - forward * 0.0105).length(),
