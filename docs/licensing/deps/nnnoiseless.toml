@@ -1,0 +1,8 @@
+section = "rust"
+item = "nnnoiseless 0.5.2"
+kind = "crate"
+used_for = "noise suppression on the microphone, the `fx.denoise` node in `omuzaki-audio-fx` (#2587): a Rust port of Xiph's RNNoise with RNNoise's own model weights compiled in from the crate"
+status = "yes"
+condition = "`license = \"BSD-3-Clause\"` in the manifest; the code and the bundled `weights.rnn` derive from Xiph's RNNoise, also BSD-3-Clause; keep the notice. Built with `default-features = false` (no `dasp`, `hound` or binary); pulls `easyfft`, `realfft`, `rustfft`, `generic_singleton`, `array-init` (MIT OR Apache-2.0) and `anymap3` (BlueOak-1.0.0 OR MIT OR Apache-2.0)"
+audit = "(crates.io)"
+crates = ["nnnoiseless"]

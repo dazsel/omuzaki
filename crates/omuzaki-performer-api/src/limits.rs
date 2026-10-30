@@ -99,3 +99,14 @@ pub const EVENT_QUEUE: usize = 256;
 
 /// The default per-show money cap for a hosted model, in micro-dollars ($1.00): §3.
 pub const SHOW_CAP_MICRO_USD: u64 = 1_000_000;
+
+/// While the person talks, a listening face from their partial words at most once per this long (#2453).
+pub const LISTEN_FACE_INTERVAL_S: f64 = 1.0;
+/// A listener's nod at most once per this long (#2453).
+pub const NOD_GAP_S: f64 = 2.0;
+/// How strongly a backchannel nod dips the head, `0..=1` of a full nod.
+pub const BACKCHANNEL_NOD: f32 = 0.6;
+/// The decision layer's faces peak at most this strong, so a reaction never outshouts the model's own tags (#2453).
+pub const REACTION_APEX: f32 = 0.85;
+/// The decision layer's faces are this much as strong while the character speaks, under its words' own (#2453).
+pub const SPEAKING_DAMP: f32 = 0.8;

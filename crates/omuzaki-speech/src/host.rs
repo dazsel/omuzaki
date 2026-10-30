@@ -29,6 +29,14 @@
 //! | utterance queue (`utterance_queue`) | Whisper is slower than speech | drop the *oldest* utterance | [`SpeechEvent::UtteranceDropped`] |
 //! | event queue (`event_queue`) | the application stopped polling | drop the oldest event | [`HostStats::events_dropped`] |
 //! | partial transcripts | an older partial is still waiting | replace it | [`HostStats::partials_replaced`] |
+//!
+//! # Turn-taking (AP-03)
+//! With [`HostConfig::turn`] set, a [`TurnTaker`] hears every frame and sets the segmenter's wait per pause from the
+//! voice's pitch, loudness and last words: about 160 ms after a finished question, over a second after "and, um". It
+//! also marks where a listener would nod ([`SpeechEvent::Backchannel`]). With [`HostConfig::speculate_ms`] set, a
+//! pause that long sends the utterance so far to Whisper at once; if the person stays quiet and the turn ends on that
+//! pause, its text becomes the final without a second Whisper pass, so the transcript is ready when the turn ends
+//! instead of a Whisper call later. [`HostConfig::conversation`] turns both on, with partials once a second.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -45,6 +53,7 @@ use crate::asr::{Recognizer, Whisper};
 use crate::ears::{EchoLog, SpeechEars};
 use crate::queue::DropOldestQueue;
 use crate::segmenter::{Event, FRAME, Segmenter, SegmenterConfig, ms_to_samples};
+use crate::turn::{TurnConfig, TurnTaker};
 use crate::vad::{SileroVad, VoiceActivity, is_unavailable};
 use crate::{SAMPLE_RATE, SpeechError};
 
@@ -71,6 +80,14 @@ pub struct HostConfig {
     /// [`SpeechEvent::Partial`]. Zero (the default) turns partials off: each one is a full Whisper pass over the audio
     /// so far, so they cost CPU in proportion to utterance length.
     pub partial_interval_ms: u32,
+    /// End-of-turn prediction: `Some` lets a [`TurnTaker`] set the wait per pause (and replaces
+    /// `segmenter.min_silence_ms`, which stays the wait between utterances); `None` (the default) keeps the fixed
+    /// hangover.
+    pub turn: Option<TurnConfig>,
+    /// A pause this long inside an utterance sends the speech so far to Whisper at once (speculative transcription),
+    /// so a turn that ends on that pause has its text ready; zero (the default) is off. Each pause costs a Whisper
+    /// pass, wasted when the person goes on.
+    pub speculate_ms: u32,
 }
 
 /// The host's end-of-speech hangover: how long the VAD must hear silence before an utterance closes and goes to
@@ -91,7 +108,18 @@ impl Default for HostConfig {
             utterance_queue: 4,
             event_queue: 256,
             partial_interval_ms: 0,
+            turn: None,
+            speculate_ms: 0,
         }
+    }
+}
+
+impl HostConfig {
+    /// The settings for a conversation (the AI co-host): end-of-turn prediction, speculative transcription after a
+    /// 96 ms pause, and a partial transcript once a second for the listening face.
+    #[must_use]
+    pub fn conversation() -> Self {
+        Self { turn: Some(TurnConfig::default()), speculate_ms: 96, partial_interval_ms: 1000, ..Self::default() }
     }
 }
 
@@ -150,6 +178,14 @@ pub enum SpeechEvent {
         end: f64,
         /// The text so far.
         text: String,
+        /// Some of it was spoken in `MicMode::CohostOnly` (the tap's `private` flag).
+        private: bool,
+    },
+    /// A place where a listener would nod or say "mm": a low-pitch stretch or a pause after a falling phrase while the
+    /// person keeps the floor (only with [`HostConfig::turn`]).
+    Backchannel {
+        /// When.
+        at: f64,
     },
     /// The transcript of a finished utterance.
     Final {
@@ -217,6 +253,10 @@ pub struct HostStats {
     pub vad_busy: Duration,
     /// Time the ASR thread spent in Whisper (the CPU cost of transcribing, times its thread count).
     pub asr_busy: Duration,
+    /// Speculative transcriptions started at a pause.
+    pub speculations: u64,
+    /// ... whose text became the final (the turn ended on that pause), saving a Whisper pass after the end.
+    pub speculation_hits: u64,
 }
 
 #[derive(Default)]
@@ -234,6 +274,8 @@ struct Counters {
     workers_failed: AtomicU64,
     vad_busy_ns: AtomicU64,
     asr_busy_ns: AtomicU64,
+    speculations: AtomicU64,
+    speculation_hits: AtomicU64,
 }
 
 impl Counters {
@@ -253,6 +295,8 @@ impl Counters {
             workers_failed: get(&self.workers_failed),
             vad_busy: Duration::from_nanos(get(&self.vad_busy_ns)),
             asr_busy: Duration::from_nanos(get(&self.asr_busy_ns)),
+            speculations: get(&self.speculations),
+            speculation_hits: get(&self.speculation_hits),
         }
     }
 }
@@ -356,6 +400,34 @@ impl Drop for TranscriptDemand {
 enum JobKind {
     Partial,
     Final,
+    /// The speech so far at a pause, which becomes the final if the turn ends on that pause.
+    Speculative,
+}
+
+/// The speculative transcription in flight, shared by the two workers.
+#[derive(Default)]
+struct Speculation {
+    /// The utterance and the stream position its audio was cut at; `None` when nothing is in flight.
+    key: Option<(u64, usize)>,
+    /// Its text and Whisper's time, once done.
+    text: Option<(String, Duration)>,
+    /// The utterance ended on this pause before the text came: the ASR worker emits the final.
+    ended: Option<Ended>,
+}
+
+/// An utterance that ended while its speculative transcription was still running.
+struct Ended {
+    start: f64,
+    end: f64,
+    private: bool,
+    at: Instant,
+}
+
+/// The newest partial text of the utterance in progress, for the [`TurnTaker`]'s word cue.
+type Words = Arc<Mutex<Option<(u64, String)>>>;
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// One piece of audio for Whisper.
@@ -369,6 +441,8 @@ struct Job {
     private: bool,
     /// When the VAD thread queued it, for the latency report.
     queued: Instant,
+    /// For a speculative job, the stream position its audio was cut at.
+    upto: usize,
 }
 
 /// The write end of the host's audio ring. Move it into the audio callback and call [`push`](Self::push) with each
@@ -490,6 +564,8 @@ impl SpeechHost {
             stop: Arc::clone(&stop),
             jobs: Arc::clone(&jobs),
             demand: Arc::clone(&demand),
+            speculation: Arc::default(),
+            words: Arc::default(),
         });
         let asr_thread = {
             let worker = AsrWorker {
@@ -500,6 +576,8 @@ impl SpeechHost {
                 demand: Arc::clone(&demand),
                 language: Arc::clone(&language),
                 abort: Arc::clone(&abort),
+                speculation: Arc::clone(&worker_shared.speculation),
+                words: Arc::clone(&worker_shared.words),
             };
             let shared = Arc::clone(&worker_shared);
             spawn("omuzaki-asr", move || guarded("asr", &shared, move || worker.run()))?
@@ -636,6 +714,8 @@ struct WorkerShared {
     stop: Arc<AtomicBool>,
     jobs: Arc<DropOldestQueue<Job>>,
     demand: Arc<Demand>,
+    speculation: Arc<Mutex<Speculation>>,
+    words: Words,
 }
 
 /// Runs a worker body, turning a panic (whisper.cpp, ONNX Runtime, a bug) into one `Error` event and a stopped host
@@ -667,6 +747,7 @@ fn seconds(sample: usize) -> f64 {
 }
 
 /// The VAD thread's state.
+#[allow(clippy::struct_excessive_bools)] // independent facts about the stream
 struct VadWorker {
     vad: Box<dyn VoiceActivity>,
     consumer: Consumer,
@@ -694,6 +775,17 @@ struct VadWorker {
     /// The mute state last reported, and whether the utterance in progress heard a private sample.
     reported_muted: bool,
     utterance_private: bool,
+    /// End-of-turn prediction, when on.
+    turn: Option<TurnTaker>,
+    /// The segmenter's thresholds, to tell the turn taker which frames are speech.
+    threshold: f32,
+    neg_threshold: f32,
+    /// Pause frames that start a speculative transcription (0: off).
+    speculate_frames: usize,
+    /// A speculative transcription of the utterance in progress is valid (no speech since it was cut).
+    speculating: bool,
+    speculation: Arc<Mutex<Speculation>>,
+    words: Words,
 }
 
 impl VadWorker {
@@ -721,6 +813,17 @@ impl VadWorker {
             heard: TapFlags::default(),
             reported_muted: false,
             utterance_private: false,
+            turn: config.turn.map(TurnTaker::new),
+            threshold: cfg.threshold,
+            neg_threshold: cfg.neg_threshold,
+            speculate_frames: if config.speculate_ms == 0 {
+                0
+            } else {
+                ms_to_samples(config.speculate_ms).div_ceil(FRAME).max(1)
+            },
+            speculating: false,
+            speculation: Arc::clone(&shared.speculation),
+            words: Arc::clone(&shared.words),
         }
     }
 
@@ -804,7 +907,9 @@ impl VadWorker {
                 0.0
             }
         };
+        self.hear_turn(frame, probability);
         let event = self.segmenter.push(probability);
+        self.maybe_speculate();
         if let Some(event) = event {
             if matches!(event, Event::Start { .. }) {
                 self.utterance_private = private;
@@ -837,18 +942,24 @@ impl VadWorker {
                     return;
                 }
                 self.counters.utterances.fetch_add(1, Ordering::Relaxed);
-                let samples = self.copy_out(segment.start, segment.end);
-                let job = Job { kind: JobKind::Final, utterance, start, end, samples, private, queued: Instant::now() };
-                if let Some(evicted) = self.jobs.push(job) {
-                    self.counters.utterances_dropped.fetch_add(1, Ordering::Relaxed);
-                    self.emitter.emit(SpeechEvent::UtteranceDropped {
-                        utterance: evicted.utterance,
-                        start: evicted.start,
-                        end: evicted.end,
-                    });
+                if self.finish_speculation(utterance, start, end, private) {
+                    return;
                 }
+                let samples = self.copy_out(segment.start, segment.end);
+                let job = Job {
+                    kind: JobKind::Final,
+                    utterance,
+                    start,
+                    end,
+                    samples,
+                    private,
+                    queued: Instant::now(),
+                    upto: segment.end,
+                };
+                self.queue(job);
             }
             Event::Rejected(segment) => {
+                self.drop_speculation();
                 self.speech_start = None;
                 self.utterance_private = false;
                 let end = segment.end.min(self.total);
@@ -874,10 +985,116 @@ impl VadWorker {
             samples: self.copy_out(from, self.total),
             private: self.utterance_private,
             queued: Instant::now(),
+            upto: self.total,
         };
         if self.jobs.set_ephemeral(job).is_some() {
             self.counters.partials_replaced.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    /// Queues `job`, reporting the oldest one if the queue had to evict it.
+    fn queue(&self, job: Job) {
+        let Some(evicted) = self.jobs.push(job) else { return };
+        if evicted.kind == JobKind::Speculative {
+            let mut spec = lock(&self.speculation);
+            if spec.key != Some((evicted.utterance, evicted.upto)) {
+                return;
+            }
+            let ended = spec.ended.take();
+            *spec = Speculation::default();
+            drop(spec);
+            if ended.is_none() {
+                // Its utterance is still going: the final will be transcribed as usual.
+                return;
+            }
+        }
+        self.counters.utterances_dropped.fetch_add(1, Ordering::Relaxed);
+        self.emitter.emit(SpeechEvent::UtteranceDropped {
+            utterance: evicted.utterance,
+            start: evicted.start,
+            end: evicted.end,
+        });
+    }
+
+    /// The turn taker's view of this frame: it sets the segmenter's wait for the pause in progress and may cue a nod.
+    fn hear_turn(&mut self, frame: &[f32; FRAME], probability: f32) {
+        let Some(turn) = self.turn.as_mut() else { return };
+        let open = self.segmenter.is_open();
+        let speech = probability >= if open { self.neg_threshold } else { self.threshold };
+        if open
+            && let Some((utterance, text)) = self.words.try_lock().ok().and_then(|mut w| w.take())
+            && utterance == self.next_utterance
+        {
+            turn.words(&text);
+        }
+        let told = turn.frame(frame, open || speech, speech);
+        self.segmenter.set_min_silence_ms(told.wait_ms);
+        if told.backchannel {
+            self.emitter.emit(SpeechEvent::Backchannel { at: seconds(self.total) });
+        }
+    }
+
+    /// At a pause of `speculate_frames`, sends the speech so far to Whisper; on speech again, forgets it.
+    fn maybe_speculate(&mut self) {
+        if self.speculate_frames == 0 {
+            return;
+        }
+        let (Some(pause), Some(start)) = (self.segmenter.pause_frames(), self.speech_start) else { return };
+        if pause == 0 {
+            if self.speculating {
+                self.drop_speculation();
+            }
+            return;
+        }
+        if pause != self.speculate_frames || !self.demand.wanted() {
+            return;
+        }
+        let from = start.saturating_sub(self.pad);
+        let job = Job {
+            kind: JobKind::Speculative,
+            utterance: self.next_utterance,
+            start: seconds(from),
+            end: seconds(self.total),
+            samples: self.copy_out(from, self.total),
+            private: self.utterance_private,
+            queued: Instant::now(),
+            upto: self.total,
+        };
+        *lock(&self.speculation) =
+            Speculation { key: Some((self.next_utterance, self.total)), text: None, ended: None };
+        self.speculating = true;
+        self.counters.speculations.fetch_add(1, Ordering::Relaxed);
+        self.queue(job);
+    }
+
+    /// Forgets the speculative transcription in progress: the person went on (or the utterance was rejected).
+    fn drop_speculation(&mut self) {
+        if std::mem::take(&mut self.speculating) {
+            *lock(&self.speculation) = Speculation::default();
+        }
+    }
+
+    /// At the end of `utterance`: if a speculative transcription of it is valid, its text becomes the final (now, or
+    /// when Whisper is done) and `true` is returned; otherwise `false`, and the final is transcribed as usual.
+    fn finish_speculation(&mut self, utterance: u64, start: f64, end: f64, private: bool) -> bool {
+        if !std::mem::take(&mut self.speculating) {
+            return false;
+        }
+        let mut spec = lock(&self.speculation);
+        if spec.key.map(|k| k.0) != Some(utterance) {
+            *spec = Speculation::default();
+            return false;
+        }
+        self.counters.speculation_hits.fetch_add(1, Ordering::Relaxed);
+        if let Some((text, asr)) = spec.text.take() {
+            *spec = Speculation::default();
+            drop(spec);
+            let latency = Latency { queue_wait: Duration::ZERO, asr, detect_to_final: Duration::ZERO };
+            self.emitter.emit(SpeechEvent::Final { utterance, start, end, text, latency, private });
+        } else {
+            spec.ended = Some(Ended { start, end, private, at: Instant::now() });
+        }
+        true
     }
 
     /// A copy of stream samples `start..end`, clamped to what the history still holds.
@@ -910,9 +1127,51 @@ struct AsrWorker {
     demand: Arc<Demand>,
     language: Arc<Mutex<Option<String>>>,
     abort: Arc<AtomicBool>,
+    speculation: Arc<Mutex<Speculation>>,
+    words: Words,
 }
 
 impl AsrWorker {
+    /// Whether `job`, a speculative transcription, is still wanted: the person hasn't spoken since it was cut.
+    fn speculation_live(&self, job: &Job) -> bool {
+        lock(&self.speculation).key == Some((job.utterance, job.upto))
+    }
+
+    /// A speculative transcription is done: the final, if the utterance ended on its pause already; otherwise kept for
+    /// the end, and a partial meanwhile. `None` when the person went on and the text is stale.
+    fn speculated(&self, job: &Job, text: String, asr: Duration) -> Option<SpeechEvent> {
+        let mut spec = lock(&self.speculation);
+        if spec.key != Some((job.utterance, job.upto)) {
+            return None;
+        }
+        if let Some(ended) = spec.ended.take() {
+            *spec = Speculation::default();
+            let latency = Latency {
+                queue_wait: job.queued.elapsed().saturating_sub(asr),
+                asr,
+                detect_to_final: ended.at.elapsed(),
+            };
+            return Some(SpeechEvent::Final {
+                utterance: job.utterance,
+                start: ended.start,
+                end: ended.end,
+                text,
+                latency,
+                private: ended.private,
+            });
+        }
+        spec.text = Some((text.clone(), asr));
+        drop(spec);
+        *lock(&self.words) = Some((job.utterance, text.clone()));
+        Some(SpeechEvent::Partial {
+            utterance: job.utterance,
+            start: job.start,
+            end: job.end,
+            text,
+            private: job.private,
+        })
+    }
+
     fn run(mut self) {
         while let Some(job) = self.jobs.pop() {
             if self.abort.load(Ordering::Acquire) {
@@ -923,6 +1182,10 @@ impl AsrWorker {
                 if job.kind == JobKind::Final {
                     self.counters.utterances_skipped.fetch_add(1, Ordering::Relaxed);
                 }
+                continue;
+            }
+            if job.kind == JobKind::Speculative && !self.speculation_live(&job) {
+                // The person went on before Whisper got to it.
                 continue;
             }
             let queue_wait = job.queued.elapsed();
@@ -940,12 +1203,34 @@ impl AsrWorker {
                     private: job.private,
                 },
                 (Ok(t), JobKind::Partial) => {
-                    SpeechEvent::Partial { utterance: job.utterance, start: job.start, end: job.end, text: t.text }
+                    *lock(&self.words) = Some((job.utterance, t.text.clone()));
+                    SpeechEvent::Partial {
+                        utterance: job.utterance,
+                        start: job.start,
+                        end: job.end,
+                        text: t.text,
+                        private: job.private,
+                    }
                 }
+                (Ok(t), JobKind::Speculative) => match self.speculated(&job, t.text, t.elapsed) {
+                    Some(event) => event,
+                    None => continue,
+                },
                 (Err(error), _) if is_unavailable(&error) => {
                     // The slot is swapping models: this utterance gets no text. Counted, not an error.
                     self.counters.asr_unavailable.fetch_add(1, Ordering::Relaxed);
                     continue;
+                }
+                (Err(error), JobKind::Speculative) => {
+                    // A failed speculation that its utterance was waiting on is that utterance's failure.
+                    let mut spec = lock(&self.speculation);
+                    let waited = spec.key == Some((job.utterance, job.upto)) && spec.ended.is_some();
+                    *spec = Speculation::default();
+                    drop(spec);
+                    if !waited {
+                        continue;
+                    }
+                    SpeechEvent::Error { utterance: Some(job.utterance), message: error.to_string() }
                 }
                 (Err(error), _) => SpeechEvent::Error { utterance: Some(job.utterance), message: error.to_string() },
             };

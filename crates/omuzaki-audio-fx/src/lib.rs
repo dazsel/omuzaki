@@ -5,6 +5,7 @@
 //! |---|---|---|
 //! | `fx.eq` | [`eq`] | up to eight RBJ bands |
 //! | `fx.gate` | [`gate`] | a noise gate with hysteresis, hold and a side-chain high-pass |
+//! | `fx.denoise` | [`denoise`] | `RNNoise` noise suppression with a voice-aware gate |
 //! | `fx.compressor` | [`compressor`] | a feed-forward soft-knee compressor |
 //! | `fx.robot` | [`robot`] | a ring modulator into a feedback comb |
 //! | `fx.radio` | [`radio`] | telephone and radio voices |
@@ -32,6 +33,7 @@ pub mod biquad;
 pub mod chain;
 pub mod clip;
 pub mod compressor;
+pub mod denoise;
 mod dsp;
 pub mod eq;
 pub mod gate;
