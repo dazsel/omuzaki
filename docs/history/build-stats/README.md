@@ -61,6 +61,13 @@ Drawn by `charts.py` (standard library only) from the CSVs; `refresh.py` redraws
   that area's whole spine in a Claude cloud project, lands its own work and keeps `main` green, with no review gate and
   no required checks ("make it exist first, then make it good"). From 3:36 PM PT on 10-21 almost every commit carries
   `Agent-Lane: cloud`.
+- **2026-10-22: big one-shot spines.** Each area owner works in large chunks, one pull request closing many issues at
+  once. The busiest day since the move: 320 commits and about 200,000 lines added, with about 63 cloud agent-hours reported.
+- **2026-10-23: first round done.** The first-round area threads finish; 72 commits that day.
+- **2026-10-24 to 10-27:** no commits and no cloud sessions.
+- **2026-10-28 to 10-29: work resumes in new chunks.** 27 commits on 10-28 and 93 on 10-29, with 31 pull requests
+  opened and 24 merged on 10-29. Reported agent hours are over, so these days show the cloud project's open-session
+  hours (an upper bound).
 
 ## The files
 
@@ -97,7 +104,7 @@ Drawn by `charts.py` (standard library only) from the CSVs; `refresh.py` redraws
   refresh started, from the cloud project's session list (each session counts from its start to its last activity; 101
   hours to the snapshot, under `cloud_reported`). That is an undercount: the cloud project's own usage records are the
   full source for this period.
-- **From 2026-10-23 the reported agent hours stop** (the agents no longer report time through trailers). The cloud project's own sessions are in `cloud_sessions_daily.csv` (an upper bound on working time) and `cloud_usage_snapshots.csv` (token totals), so from 10-23 `agent_hours_daily.csv` carries the cloud project's open-session hours (upper bound) as cloud (reported). The hourly agents-at-once chart ends at 10-23: later days are in the daily charts.
+- **From 2026-10-23 the reported agent hours stop** (the agents no longer report time through trailers). The cloud project's own sessions are in `cloud_sessions_daily.csv` (an upper bound on working time) and `cloud_usage_snapshots.csv` (token totals), so from 10-23 `agent_hours_daily.csv` carries the cloud project's open-session hours (upper bound) as cloud (reported). In `agents_15min.csv` from 10-23 `cloud_reported` is the number of distinct agents (by their commit trailers) that committed in that hour, a lower bound.
 - **Lines of code** are counted at the last commit of each hour on `main`, and before the move on the earlier
   repository's `main`. "Other" includes data files and assets.
 - **Commit trailers** (`Agent-Lane`, `Agent-Model`) were added in mid-October and the squash merges before 2026-10-21
