@@ -44,7 +44,7 @@ dynamics = { simulate = true, follow = "body" }
 type = "curtain"
 length_front = 0.12
 length_back = 0.15
-drape_deg = 60.0
+drape_deg = 90.0
 envelope = [[3.0, 0.13], [0.0, 0.13]]
 count = 40
 columns = 4

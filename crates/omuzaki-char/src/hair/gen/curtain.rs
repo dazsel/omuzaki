@@ -13,8 +13,9 @@
 //! tip. The path is resampled to [`GUIDE_POINTS`] points evenly by arc length.
 //!
 //! **The drape (#2486).** With `drape_deg` set, a guide first lies over the head: it starts that many degrees of polar
-//! angle above its root and follows the head's curve down to it at the root's own height over the scalp, over the
-//! scalp shell rather than tucked under its edge, so the hair reads as one mass from the crown down. A bob or a nape
+//! angle above its root, under the scalp shell at the tuck's height, comes out over the shell over the first
+//! `DRAPE_EMERGE` of the way and follows the head's curve down to the root at the root's own height, so the hair reads
+//! as one mass from the crown down instead of hanging from under the shell's edge. A bob or a nape
 //! layer is a short draped curtain whose `envelope` holds it close to the head.
 //!
 //! **Randomness.** Six draws per guide, in this order and nothing else between guides: length jitter, wave amplitude,
@@ -63,6 +64,8 @@ const ROOT_BELOW_BRAID: f64 = 0.022;
 const ROOT_OFFSET: f64 = 0.032;
 /// Points of the drape over the head before the root ([`CurtainGen::drape_deg`]).
 const DRAPE_POINTS: usize = 6;
+/// The share of the drape over which it rises from under the scalp shell to the root's height over it.
+const DRAPE_EMERGE: f64 = 0.4;
 /// The fall outward finishes over this fraction of the length.
 const FALL_END: f64 = 0.5;
 /// The envelope's outward factor (`0.92 + 0.06`), and how much of it holds at the back.
@@ -323,8 +326,11 @@ fn guide(
     let start: Vec<DVec3> = if params.drape_deg > 0.0 {
         (0..DRAPE_POINTS)
             .map(|k| {
-                let theta = (root_theta - params.drape_deg * (1.0 - along(k, DRAPE_POINTS))).max(0.0);
-                GuidePoint::Surface([theta, phi.to_degrees(), ROOT_OFFSET]).resolve(ctx.head).as_dvec3()
+                let s = along(k, DRAPE_POINTS);
+                let theta = (root_theta - params.drape_deg * (1.0 - s)).max(0.0);
+                // It comes out from under the shell: at the tuck's height where it starts, at the root's over the rest.
+                let offset = lerp(params.root_tuck_offset, ROOT_OFFSET, smoothstep(s, 0.0, DRAPE_EMERGE));
+                GuidePoint::Surface([theta, phi.to_degrees(), offset]).resolve(ctx.head).as_dvec3()
             })
             .collect()
     } else if params.root_tuck_deg > 0.0 {

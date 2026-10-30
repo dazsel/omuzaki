@@ -44,7 +44,7 @@ dynamics = { simulate = true, follow = "body" }
 type = "curtain"
 length_front = 0.48
 length_back = 0.56
-drape_deg = 50.0
+drape_deg = 95.0
 
 [groups.d-framing]
 dynamics = { simulate = true, follow = "head" }

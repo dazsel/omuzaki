@@ -772,9 +772,11 @@ pub struct CurtainGen {
     /// How far off the skull that first point stands, a little under the cap's own thickness, metres.
     pub root_tuck_offset: f64,
     /// How far up the head, in degrees of polar angle, the hair lies over the scalp before it falls (`0..=100`): a
-    /// guide starts this far above its root and follows the head's curve down to it, standing over the cap's shell, so
-    /// short cuts (a bob, a nape layer) and long hair alike read as one mass from the crown instead of a curtain hung
-    /// from under the cap's edge. It takes the place of the tuck. 0 (the default) hangs the curtain from its root.
+    /// guide starts this far above its root, under the cap's shell at `root_tuck_offset`, comes out over the shell and
+    /// follows the head's curve down to its root, so short cuts (a bob, a nape layer) and long hair alike read as one
+    /// mass from the crown instead of a curtain hung from under the cap's edge. Near 100 the guides start close to the
+    /// crown and the hair radiates from it. It takes the place of the tuck. 0 (the default) hangs the curtain from its
+    /// root.
     pub drape_deg: f64,
     /// Let the hair fall in front of the shoulders. Off (the default), where the build has a body the curtain hangs
     /// behind the arms, however wide the shoulders are; with no body it is the prototype's either way.

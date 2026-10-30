@@ -44,7 +44,7 @@ dynamics = { simulate = true, follow = "body" }
 type = "curtain"
 length_front = 0.48
 length_back = 0.56
-drape_deg = 50.0
+drape_deg = 95.0
 wave = { amplitude = 0.05, frequency = 3.0, curl = 0.06 }
 
 [groups.d-framing]
