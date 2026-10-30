@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use omuzaki_ai_api::{FileSource, Provider, RuntimeId, Sha256, SessionOptions, find_runtime};
+use omuzaki_ai_api::{FileSource, Provider, Runtime, RuntimeId, SessionOptions, Sha256, find_runtime};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256 as Hasher};
 
@@ -100,6 +100,26 @@ impl BodyModelDir {
         self.size
     }
 
+    /// The four graphs loaded through `runtime`, each into its slot. Cold: the runtime may take seconds.
+    ///
+    /// # Errors
+    /// [`ModelError::Load`] when the runtime refuses a graph or a graph does not fit its slot.
+    pub fn load(
+        &self,
+        runtime: &dyn Runtime,
+        natives: &dyn FileSource,
+        options: &SessionOptions,
+    ) -> Result<BodyGraphs, ModelError> {
+        let names = Self::names(self.size);
+        let load = |i: usize, slot| load_graph(&self.path, names[i], self.files[i], &slot, runtime, natives, options);
+        Ok(BodyGraphs {
+            palm: load(0, palm_signature())?,
+            hands: [load(1, hand_signature())?, load(1, hand_signature())?],
+            pose_detector: load(2, pose_detector_signature())?,
+            pose_landmarks: load(3, pose_landmarks_signature())?,
+        })
+    }
+
     /// The tracker over these graphs, loaded through the `onnx` runtime (found among the runtimes linked into the
     /// app) on the CPU at [`BODY_THREADS`] threads. Cold: the runtime may take seconds.
     ///
@@ -109,15 +129,7 @@ impl BodyModelDir {
         let id = RuntimeId::new("onnx").map_err(|e| ModelError::Load(e.to_string()))?;
         let runtime = find_runtime(&id).ok_or_else(|| ModelError::Load("the `onnx` runtime is not linked in".into()))?;
         let options = SessionOptions::new(vec![Provider::Cpu], BODY_THREADS);
-        let names = Self::names(self.size);
-        let load = |i: usize, slot| load_graph(&self.path, names[i], self.files[i], &slot, &*runtime, natives, &options);
-        let graphs = BodyGraphs {
-            palm: load(0, palm_signature())?,
-            hands: [load(1, hand_signature())?, load(1, hand_signature())?],
-            pose_detector: load(2, pose_detector_signature())?,
-            pose_landmarks: load(3, pose_landmarks_signature())?,
-        };
-        BodyTracker::new(graphs, config).map_err(|e| ModelError::Load(e.to_string()))
+        BodyTracker::new(self.load(&*runtime, natives, &options)?, config).map_err(|e| ModelError::Load(e.to_string()))
     }
 }
 

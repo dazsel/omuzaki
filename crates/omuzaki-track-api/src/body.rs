@@ -97,6 +97,9 @@ impl Default for BodyConfig {
 }
 
 impl BodyConfig {
+    /// Tracks nothing: body tracking off.
+    pub const OFF: Self = Self { arms: false, hands: false, precise: false };
+
     /// Whether it tracks anything at all.
     pub fn any(&self) -> bool {
         self.arms || self.hands
@@ -139,6 +142,55 @@ impl BodyFrame {
     /// Whether the frame sees any part of the body.
     pub fn sees_anything(&self) -> bool {
         self.arms.iter().chain(&self.hands).any(|&c| c > 0.0)
+    }
+}
+
+/// Where a body tracker stands.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", tag = "state", content = "reason")]
+pub enum BodyState {
+    /// Not tracking: switched off, or this tracker has no body tracking.
+    #[default]
+    Off,
+    /// Its models are loading (seconds, once per switch to another pose model).
+    Loading,
+    /// Tracking every camera frame it is given.
+    Running,
+    /// It could not start: the models are missing or refused. The reason is for the person.
+    Failed(String),
+}
+
+/// How a body tracker is doing: what it was asked for, where it stands, what it sees and what it costs. The default is
+/// a tracker that was never switched on.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct BodyStatus {
+    /// What it was asked to track.
+    pub config: BodyConfig,
+    /// Where it stands.
+    pub state: BodyState,
+    /// How sure it is of each arm on the newest frame, by the performer's [`Side`] (left, right), `0..=1`.
+    pub arms: [f32; 2],
+    /// How sure it is of each hand on the newest frame, by the performer's [`Side`], `0..=1`.
+    pub hands: [f32; 2],
+    /// Frames tracked since it started.
+    pub frames: u64,
+    /// Time to track one frame (every model it ran, and the solve), median of the recent frames, milliseconds.
+    pub ms_p50: f32,
+    /// The same, 95th percentile.
+    pub ms_p95: f32,
+}
+
+impl Default for BodyStatus {
+    fn default() -> Self {
+        Self {
+            config: BodyConfig::OFF,
+            state: BodyState::Off,
+            arms: [0.0; 2],
+            hands: [0.0; 2],
+            frames: 0,
+            ms_p50: 0.0,
+            ms_p95: 0.0,
+        }
     }
 }
 
