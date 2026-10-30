@@ -68,6 +68,30 @@ pub struct NewsDeskParams {
     pub accent_height: f32,
     /// The band glows (a lit panel) rather than being painted.
     pub accent_glow: bool,
+    /// More stripes across the front, over the panel: a broadcast desk's trim, light bars and kick band.
+    pub stripes: Vec<DeskStripe>,
+}
+
+/// A stripe across a news desk's front.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct DeskStripe {
+    /// Its middle's height above the floor, as a share of the desk's height, 0 to 1.
+    pub y: f32,
+    /// Its height, metres, 0.005 to 0.5.
+    pub height: f32,
+    /// Where it starts and ends across the front, as shares of the width from the anchor's right (0) to left (1).
+    pub span: [f32; 2],
+    /// Its colour.
+    pub colour: Colour,
+    /// It glows (a light bar) rather than being painted.
+    pub glow: bool,
+}
+
+impl Default for DeskStripe {
+    fn default() -> Self {
+        Self { y: 0.5, height: 0.03, span: [0.0, 1.0], colour: Colour::hex(0x00c8_f4ff), glow: false }
+    }
 }
 
 impl Default for NewsDeskParams {
@@ -82,6 +106,7 @@ impl Default for NewsDeskParams {
             accent: Colour::hex(0x00ff_4f9a),
             accent_height: 0.12,
             accent_glow: false,
+            stripes: Vec::new(),
         }
     }
 }
@@ -97,7 +122,18 @@ impl PropKind for NewsDesk {
         between("height", p.height, 0.7, 1.2)?;
         between("depth", p.depth, 0.3, 1.0)?;
         between("curve", p.curve, 0.0, 120.0)?;
-        between("accent_height", p.accent_height, 0.0, 0.4)
+        between("accent_height", p.accent_height, 0.0, 0.4)?;
+        for (i, stripe) in p.stripes.iter().enumerate() {
+            between(&format!("stripes[{i}].y"), stripe.y, 0.0, 1.0)?;
+            between(&format!("stripes[{i}].height"), stripe.height, 0.005, 0.5)?;
+            let [from, to] = stripe.span;
+            between(&format!("stripes[{i}].span[0]"), from, 0.0, 1.0)?;
+            between(&format!("stripes[{i}].span[1]"), to, 0.0, 1.0)?;
+            if to <= from {
+                return Err(format!("stripes[{i}].span runs from {from} to {to}: its end must be past its start"));
+            }
+        }
+        Ok(())
     }
 
     fn build(p: &NewsDeskParams) -> Result<PropOutput, String> {
@@ -107,11 +143,12 @@ impl PropKind for NewsDesk {
         let line = darker(p.colour, 0.7);
         let mut body = MeshData::default();
         let mut band = MeshData::default();
+        let mut lights = MeshData::default();
         if arc > 1e-3 {
             // A ring about a centre behind the desk, so the front's middle stands at z = 0 and its ends wrap back.
             let radius = p.width * 0.5 / (arc * 0.5).sin();
             let slab = |mesh: &mut MeshData, r: (f32, f32), y: (f32, f32), colour: Colour| {
-                arc_slab(mesh, radius, arc, r, y, colour);
+                arc_slab(mesh, radius, (-arc * 0.5, arc * 0.5), r, y, colour);
             };
             slab(&mut body, (-panel, 0.0), (plinth, h - lip), p.colour);
             slab(&mut body, (-p.depth, 0.025), (h - lip, h), p.top);
@@ -120,13 +157,28 @@ impl PropKind for NewsDesk {
                 let y = h * 0.62;
                 slab(&mut band, (0.0, 0.008), (y - p.accent_height * 0.5, y + p.accent_height * 0.5), p.accent);
             }
+            for stripe in &p.stripes {
+                // Stand off the panel a little further than the accent, so a stripe crossing it stays in front.
+                let (y, half) = (stripe.y * h, stripe.height * 0.5);
+                let angles = ((stripe.span[0] - 0.5) * arc, (stripe.span[1] - 0.5) * arc);
+                let mesh = if stripe.glow { &mut lights } else { &mut body };
+                arc_slab(mesh, radius, angles, (0.0, 0.012), (y - half, y + half), stripe.colour);
+            }
         } else {
             let w = p.width * 0.5;
             let mut s = Shape::new();
             s.block(Vec3::new(-w, plinth, -panel), Vec3::new(w, h - lip, 0.0), p.colour);
             s.block(Vec3::new(-w, h - lip, -p.depth), Vec3::new(w, h, 0.025), p.top);
             s.block(Vec3::new(-w, 0.0, -panel - 0.03), Vec3::new(w, plinth, -0.03), side);
+            let mut lit = Shape::new();
+            for stripe in &p.stripes {
+                let (y, half) = (stripe.y * h, stripe.height * 0.5);
+                let (x0, x1) = (-w + stripe.span[0] * 2.0 * w, -w + stripe.span[1] * 2.0 * w);
+                let shape = if stripe.glow { &mut lit } else { &mut s };
+                shape.block(Vec3::new(x0, y - half, 0.0), Vec3::new(x1, y + half, 0.012), stripe.colour);
+            }
             body = s.into_mesh();
+            lights = lit.into_mesh();
             if p.accent_height > 0.0 {
                 let y = h * 0.62;
                 let mut b = Shape::new();
@@ -146,7 +198,9 @@ impl PropKind for NewsDesk {
             painted(line)
         };
         let mut out = PropOutput::default();
-        out.parts = [(body, painted(line)), (band, band_material)]
+        let mut light_material = glowing(Colour::hex(0x00ff_ffff));
+        light_material.vertex_colours = true;
+        out.parts = [(body, painted(line)), (band, band_material), (lights, light_material)]
             .into_iter()
             .filter(|(mesh, _)| !mesh.indices.is_empty())
             .map(|(mesh, material)| PropPart::new(mesh, material))
@@ -158,17 +212,17 @@ impl PropKind for NewsDesk {
 /// Segments of a desk's arc: smooth enough that the front reads as one curve in a close shot.
 const ARC_SEGMENTS: u32 = 64;
 
-/// Appends to `mesh` a slab of a ring through `arc` radians: a ring of `radius` about a centre `radius` behind the
-/// origin (so the arc's middle stands at z = 0), from `r.0` to `r.1` metres outside that ring and from `y.0` to
-/// `y.1` up, painted `colour`. Its curved faces are smooth, its top, bottom and ends flat.
+/// Appends to `mesh` a slab of a ring from angle `angles.0` to `angles.1` radians (0 straight ahead): a ring of
+/// `radius` about a centre `radius` behind the origin (so angle 0 stands at z = 0), from `r.0` to `r.1` metres outside
+/// that ring and from `y.0` to `y.1` up, painted `colour`. Its curved faces are smooth, its top, bottom and ends flat.
 #[allow(clippy::cast_precision_loss, reason = "a few dozen segments")]
-fn arc_slab(mesh: &mut MeshData, radius: f32, arc: f32, r: (f32, f32), y: (f32, f32), colour: Colour) {
+fn arc_slab(mesh: &mut MeshData, radius: f32, angles: (f32, f32), r: (f32, f32), y: (f32, f32), colour: Colour) {
     let paint = {
         let l = colour.to_linear();
         [l.x, l.y, l.z, 1.0]
     };
     let at = |a: f32, rr: f32, yy: f32| Vec3::new((radius + rr) * a.sin(), yy, (radius + rr) * a.cos() - radius);
-    let angle = |i: u32| (i as f32 / ARC_SEGMENTS as f32 - 0.5) * arc;
+    let angle = |i: u32| angles.0 + (angles.1 - angles.0) * i as f32 / ARC_SEGMENTS as f32;
     let quad = |mesh: &mut MeshData, corners: [Vec3; 4], normals: [Vec3; 4]| {
         let base = u32::try_from(mesh.positions.len()).unwrap_or(u32::MAX);
         for (c, n) in corners.iter().zip(normals) {
@@ -537,6 +591,34 @@ mod tests {
     fn a_straight_desk_builds_too() {
         let p = NewsDeskParams { curve: 0.0, ..NewsDeskParams::default() };
         NewsDesk::build(&p).unwrap();
+    }
+
+    #[test]
+    fn stripes_add_trim_and_light_bars_on_both_desk_shapes_and_bad_ones_are_refused() {
+        let stripes = vec![
+            DeskStripe { y: 0.7, height: 0.03, span: [0.6, 1.0], ..DeskStripe::default() },
+            DeskStripe { y: 0.3, height: 0.05, glow: true, ..DeskStripe::default() },
+        ];
+        for curve in [80.0, 0.0] {
+            let plain = NewsDesk::build(&NewsDeskParams { curve, ..NewsDeskParams::default() }).unwrap();
+            let p = NewsDeskParams { curve, stripes: stripes.clone(), ..NewsDeskParams::default() };
+            NewsDesk::validate(&p).unwrap();
+            let out = NewsDesk::build(&p).unwrap();
+            assert_eq!(out.parts.len(), plain.parts.len() + 1, "{curve}: the light bar is its own glowing part");
+            assert!(out.parts[0].mesh.positions.len() > plain.parts[0].mesh.positions.len(), "{curve}: painted trim");
+            // The light bar's top and bottom are where its height puts them.
+            let lit = &out.parts.last().unwrap().mesh;
+            let ys = lit.positions.iter().map(|q| q.y);
+            let (lo, hi) = ys.fold((f32::MAX, f32::MIN), |(lo, hi), y| (lo.min(y), hi.max(y)));
+            let mid = 0.3 * p.height;
+            assert!((lo - (mid - 0.025)).abs() < 1e-5 && (hi - (mid + 0.025)).abs() < 1e-5, "{curve}: {lo} {hi}");
+            for part in &out.parts {
+                part.mesh.validate().unwrap();
+            }
+        }
+        let backwards = DeskStripe { span: [0.8, 0.2], ..DeskStripe::default() };
+        let e = NewsDesk::validate(&NewsDeskParams { stripes: vec![backwards], ..NewsDeskParams::default() });
+        assert!(e.unwrap_err().contains("stripes[0].span"));
     }
 
     #[test]
