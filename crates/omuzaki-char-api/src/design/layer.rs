@@ -28,6 +28,8 @@
 //! Points (a dab, a decal) are [`PartPoint`]s, so they stay where they were put after any shape change. Exports that
 //! carry no vertex colours bake the stack into a texture (#2575).
 
+#![allow(clippy::many_single_char_names)] // vector geometry: points, normals, weights and fractions
+
 use std::collections::{BTreeMap, HashMap};
 
 use omuzaki_core::colour::Colour;
@@ -693,7 +695,9 @@ fn apply_layer(r: &Resolved<'_>, v: &Vertex, frames: &Frames, colour: &mut Vec3,
         LayerKind::Spots { density, amount, seed, .. } => {
             let c = cells(v.p * *density, *seed);
             let spot = 1.0 - smoothstep(0.10, 0.22, c);
-            let keep = smoothstep(0.35, 0.6, hash([(c * 1000.0) as i32, 0, 0], *seed));
+            #[allow(clippy::cast_possible_truncation)] // a hash key: the cell distance, quantised
+            let key = (c * 1000.0) as i32;
+            let keep = smoothstep(0.35, 0.6, hash([key, 0, 0], *seed));
             *colour = Blend::Multiply.apply(*colour, r.colour, w * amount * spot * keep);
         }
     }
@@ -729,7 +733,7 @@ fn age_layers(age: &AgeLayers, category: PartCategory) -> Vec<MaterialLayer> {
     let mut out = Vec::new();
     let mut push = |name: &str, kind: LayerKind, masks: Vec<Mask>, opacity: f32| {
         if let Some(id) = id(name) {
-            out.push(MaterialLayer { masks, opacity, ..MaterialLayer::new(id, kind) });
+            out.push(MaterialLayer { opacity, masks, ..MaterialLayer::new(id, kind) });
         }
     };
     match category {
@@ -794,6 +798,7 @@ fn shared_decals<'a>(design: &'a super::DesignDef, part: &PartId) -> Vec<&'a Mat
 ///
 /// # Errors
 /// [`BuildError::Colour`] for a colour that names a slot the palette doesn't have.
+#[allow(clippy::too_many_arguments)] // the build step's own inputs: the design, the age, the palette, the face and the part
 pub fn apply(
     design: &super::DesignDef,
     age: Option<AgeLayers>,
@@ -892,7 +897,7 @@ pub fn apply(
         }
         mesh.geometry.colours = colours;
         needs_colours.insert(mi);
-        if skin && writes_skin || skin && uses_curvature {
+        if skin && (writes_skin || uses_curvature) {
             write_skin_info(mesh, &skin_info);
         }
     }
@@ -1043,7 +1048,7 @@ fn mean_curvature(mesh: &PartMesh) -> Vec<f32> {
         nor[*w] += g.normals[i];
     }
     let mut sums = vec![(0.0f32, 0.0f32); welded.len()];
-    for tri in g.indices.chunks_exact(3) {
+    for tri in g.indices.as_chunks::<3>().0 {
         for (a, b) in [(tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])] {
             let (a, b) = (id[a as usize], id[b as usize]);
             if a == b {
@@ -1068,7 +1073,7 @@ fn mean_curvature(mesh: &PartMesh) -> Vec<f32> {
 /// The `skin-info` values a mesh starts from: its own, or dry, open, unflushed and the surface's curvature.
 fn skin_info_of(mesh: &PartMesh, vertices: &[Vertex]) -> Vec<[f32; 4]> {
     if let Some(a) = mesh.geometry.extra_attribute(SKIN_INFO).filter(|a| a.components == 4) {
-        return a.data.chunks_exact(4).map(|c| [c[0], c[1], c[2], c[3]]).collect();
+        return a.data.as_chunks::<4>().0.iter().map(|c| [c[0], c[1], c[2], c[3]]).collect();
     }
     vertices.iter().map(|v| [0.0, 1.0, 0.0, v.curvature.abs()]).collect()
 }
@@ -1078,10 +1083,10 @@ fn write_skin_info(mesh: &mut PartMesh, info: &[[f32; 4]]) {
     let extra = &mut mesh.geometry.extra;
     if let Some(a) = extra.iter_mut().find(|a| a.name.as_str() == SKIN_INFO) {
         *a = ExtraAttribute { name: a.name.clone(), components: 4, data };
-    } else if extra.len() < omuzaki_core::mesh::MeshData::MAX_EXTRA_ATTRIBUTES {
-        if let Ok(name) = Slug::new(SKIN_INFO) {
-            extra.push(ExtraAttribute { name, components: 4, data });
-        }
+    } else if extra.len() < omuzaki_core::mesh::MeshData::MAX_EXTRA_ATTRIBUTES
+        && let Ok(name) = Slug::new(SKIN_INFO)
+    {
+        extra.push(ExtraAttribute { name, components: 4, data });
     }
 }
 

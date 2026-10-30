@@ -10,6 +10,8 @@
 //! ([`DeformedFit`], [`DeformedHead`]), so garments, hair and accessories built afterwards follow without knowing about
 //! it.
 
+#![allow(clippy::many_single_char_names)] // vector geometry: points, normals, weights and fractions
+
 use std::collections::BTreeMap;
 use std::fmt::{self, Debug};
 use std::sync::Arc;
@@ -176,7 +178,8 @@ impl ShapeField {
             Brush::Crease => -s.normal * (s.strength * bump(p.distance(s.anchor) / (0.45 * s.radius))),
             Brush::Flatten => {
                 let h = (now - s.anchor).dot(s.normal);
-                -s.normal * (h * s.strength * s.falloff(now))
+                // The falloff is read at the rest point, so a full flatten lands its centre on the plane exactly.
+                -s.normal * (h * s.strength * s.falloff(p))
             }
             Brush::Pinch => {
                 let to = s.anchor - now;
@@ -398,10 +401,10 @@ fn snap(output: &PartOutput, p: Vec3, group: Option<RegionGroup>) -> Option<(Vec
         let members = group.map(|_| Membership::of_mesh(mesh, None));
         let g = &mesh.geometry;
         for (i, (q, n)) in g.positions.iter().zip(&g.normals).enumerate() {
-            if let (Some(group), Some(members)) = (group, &members) {
-                if members[i].of(group) < 0.5 {
-                    continue;
-                }
+            if let (Some(group), Some(members)) = (group, &members)
+                && members[i].of(group) < 0.5
+            {
+                continue;
             }
             let d = q.distance_squared(p);
             if best.is_none_or(|(b, _, _)| d < b) {
@@ -636,9 +639,13 @@ mod tests {
 
     #[test]
     fn normals_follow_the_field() {
-        // A grab sideways shears the surface, so its normal tilts away from the grab's direction.
-        let f = sphere_field(Brush::Grab, 0.2);
+        // A grab out of the surface raises a hill, so the normal on its side tilts away from the hill's centre; a
+        // grab along the surface slides it in its own plane, so the normal stays.
+        let mut f = sphere_field(Brush::Grab, 0.2);
         let m = Membership::default();
+        let (_, n) = f.carry(Vec3::new(0.0, -0.2, 1.0), Vec3::Z, &m);
+        assert!((n - Vec3::Z).length() < 1e-4, "{n}");
+        f.strokes[0].direction = Vec3::Z;
         let (_, n) = f.carry(Vec3::new(0.0, -0.2, 1.0), Vec3::Z, &m);
         assert!(n.y < -0.05, "{n}");
         assert!((n.length() - 1.0).abs() < 1e-5);

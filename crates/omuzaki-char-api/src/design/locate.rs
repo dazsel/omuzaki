@@ -86,10 +86,10 @@ pub fn locate(
             return Ok(PartPoint::Body { region: group, t: at.row.t, angle, lift: lift.clamp(0.05, 3.9) });
         }
     }
-    if let Some(head) = published.get::<HeadFrameFact>() {
-        if category == PartCategory::Hair {
-            return Ok(head_point(head, point));
-        }
+    if let Some(head) = published.get::<HeadFrameFact>()
+        && category == PartCategory::Hair
+    {
+        return Ok(head_point(head, point));
     }
     let frame = PartFrame::of(&output.meshes).ok_or_else(|| fail("the part builds no mesh"))?;
     Ok(PartPoint::Box { at: frame.coordinates(point).clamp(Vec3::ZERO, Vec3::ONE).to_array() })

@@ -12,6 +12,8 @@
 //! reaches the right thigh where the two touch, and a vertex weighted between the neck and the head takes a share of
 //! each.
 
+#![allow(clippy::many_single_char_names)] // vector geometry: points, normals, weights and fractions
+
 use std::collections::BTreeMap;
 use std::fmt::{self, Debug};
 use std::sync::Arc;
@@ -102,6 +104,7 @@ impl RegionGroup {
     }
 
     /// The same group on the other side (the torso, neck and head are their own mirror).
+    #[must_use]
     pub fn mirrored(self) -> Self {
         match self {
             Self::ArmLeft => Self::ArmRight,
@@ -268,7 +271,7 @@ impl Row {
 
     /// The mean of the two radii: the region's local scale.
     pub fn scale(&self) -> f32 {
-        0.5 * (self.radii[0] + self.radii[1])
+        f32::midpoint(self.radii[0], self.radii[1])
     }
 
     /// The unit direction in the section's plane at `angle` radians from the front, turning toward `+across`.
@@ -458,6 +461,7 @@ impl Landmark {
     ];
 
     /// The landmark on the other side (a midline landmark is its own mirror).
+    #[must_use]
     pub fn mirrored(self) -> Self {
         match self {
             Self::EyeLeft => Self::EyeRight,
@@ -533,7 +537,7 @@ impl HeadFrame {
             set.push((pick(Landmark::BrowLeft), front(sign * eye_x, brow_y)));
             set.push((pick(Landmark::MouthLeft), front(sign * mouth_half, mouth_y)));
             set.push((pick(Landmark::CheekLeft), front(sign * cheek_x, cheek_y)));
-            set.push((pick(Landmark::CheekboneLeft), front(sign * 1.35 * eye_x, 0.5 * (eye_y + cheek_y))));
+            set.push((pick(Landmark::CheekboneLeft), front(sign * 1.35 * eye_x, f32::midpoint(eye_y, cheek_y))));
         }
         set.push((Landmark::Glabella, front(0.0, brow_y)));
         set.push((Landmark::Forehead, front(0.0, brow_y + 1.6 * l(layout.brow_gap))));

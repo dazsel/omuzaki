@@ -174,13 +174,16 @@ impl SculptStroke {
         }
         match (self.brush, self.direction) {
             (Brush::Grab, None) => Err("direction: grab needs a direction".to_owned()),
-            (Brush::Grab, Some(d)) if !(Vec3::from(d).length() > 1e-6) => Err("direction: zero".to_owned()),
+            (Brush::Grab, Some(d)) if Vec3::from(d).length() <= 1e-6 || !Vec3::from(d).is_finite() => {
+                Err("direction: zero".to_owned())
+            }
             _ => Ok(()),
         }
     }
 
     /// The same stroke on the other side of the body: a body region is swapped for its mirror (the angle turns the
     /// other way), a head or box point has its x mirrored, and so does the direction.
+    #[must_use]
     pub fn mirrored(&self) -> Self {
         let at = match self.at {
             PartPoint::Body { region, t, angle, lift } => {

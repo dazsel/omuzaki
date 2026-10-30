@@ -82,9 +82,7 @@ fn finite(built: &BuiltCharacter) -> bool {
 #[test]
 fn the_library_loads_every_dial_and_the_age_model() {
     omuzaki_char::link();
-    for (stem, _) in omuzaki_char::design::files() {
-        assert!(!stem.is_empty());
-    }
+    assert!(omuzaki_char::design::files().len() >= 4, "face, head, body and age files");
     omuzaki_char::design::load().unwrap();
     let lib = design_library().unwrap();
     assert!(lib.dials.len() >= 40, "{} dials", lib.dials.len());

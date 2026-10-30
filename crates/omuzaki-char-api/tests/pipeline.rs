@@ -154,7 +154,8 @@ fn a_part_is_given_its_stream_by_every_way_of_building_it() {
     let expect = |part: &str| draw(&mut part_rng(def.seed, &id(part)));
     let options = BuildOptions::default();
 
-    for built in [registry(&def, &options).unwrap(), by_hand(&def, &options).unwrap()] {
+    for build in [registry, by_hand] {
+        let built = build(&def, &options).unwrap();
         for report in built.report.parts.iter().filter(|p| p.kind.as_str() == "pipeline-probe") {
             assert_eq!(report.warnings, [expect(report.part.as_str())], "{}", report.part);
         }

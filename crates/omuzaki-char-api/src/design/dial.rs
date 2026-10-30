@@ -282,7 +282,7 @@ impl DialDef {
                     if region.region().is_none() {
                         return Err(format!("dial `{id}`: the {} has no body region", region.as_str()));
                     }
-                    if !(0.0..=1.0).contains(t) || !(*span > 0.0) || !amount.is_finite() {
+                    if !(0.0..=1.0).contains(t) || span.is_nan() || *span <= 0.0 || !amount.is_finite() {
                         return Err(format!("dial `{id}`: t must be 0 to 1, span positive and amount finite"));
                     }
                 }
@@ -290,7 +290,7 @@ impl DialDef {
                     if landmark.is_some() == dir.is_some() {
                         return Err(format!("dial `{id}`: a head effect has a landmark or a dir, not both"));
                     }
-                    if !(*reach > 0.0 && *reach <= 180.0) || !amount.is_finite() {
+                    if !(0.0..=180.0).contains(reach) || *reach <= 0.0 || !amount.is_finite() {
                         return Err(format!("dial `{id}`: reach must be 0 to 180 degrees and amount finite"));
                     }
                 }

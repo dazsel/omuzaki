@@ -119,6 +119,7 @@ register_doc_key!("skin_tone", @built_in);
 register_doc_key!("parts", @built_in);
 register_doc_key!("face", @built_in);
 register_doc_key!("weight_brushes", @built_in);
+register_doc_key!("design", @built_in);
 register_doc_key!("variants", @built_in);
 register_doc_key!("colourways", @built_in);
 register_doc_key!("rig", @built_in);

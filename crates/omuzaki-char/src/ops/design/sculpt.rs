@@ -60,7 +60,7 @@ pub(crate) fn part_point(ctx: &OpCtx<'_>, character: &CharId, part: &PartId, at:
 #[schemars(extend(
     "examples" = [
         {"character": "kit", "part": "head", "brush": "inflate", "at": {"on": "head", "dir": [0.45, -0.25, 0.85]}, "radius": 0.25, "strength": 0.04, "symmetric": true},
-        {"character": "kit", "part": "body", "brush": "inflate", "at": {"on": "body", "region": "leg_left", "t": 0.7, "angle": 3.14}, "radius": 0.9, "strength": 0.12},
+        {"character": "kit", "part": "body", "brush": "inflate", "at": {"on": "body", "region": "leg_left", "t": 0.7, "angle": 3.0}, "radius": 0.9, "strength": 0.12},
         {"character": "kit", "part": "head", "brush": "grab", "at": [0.0, 1.0, 0.1], "radius": 0.3, "strength": 0.03, "direction": [0.0, 0.0, 1.0]}
     ],
     "x-omuzaki-fixture" = "character"

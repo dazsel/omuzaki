@@ -112,10 +112,10 @@ impl DesignDef {
     /// # Errors
     /// A message naming the first field that is wrong, as a path under `design` (`dials/jaw_width/left`).
     pub fn check(&self) -> Result<(), String> {
-        if let Some(age) = self.age {
-            if !(AGE_RANGE.0..=AGE_RANGE.1).contains(&age) {
-                return Err(format!("age: {age} is outside {} to {} years", AGE_RANGE.0, AGE_RANGE.1));
-            }
+        if let Some(age) = self.age
+            && !(AGE_RANGE.0..=AGE_RANGE.1).contains(&age)
+        {
+            return Err(format!("age: {age} is outside {} to {} years", AGE_RANGE.0, AGE_RANGE.1));
         }
         for (id, setting) in &self.dials {
             let def = find_dial(id.as_str()).map_err(|e| format!("dials/{id}: {e}"))?;
