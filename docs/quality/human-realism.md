@@ -50,7 +50,7 @@ custom character that holds up at macro, live in real time, through operations a
 | Image-based lighting: HDRI, SH irradiance, prefiltered specular | ✓ | everyone | |
 | Area lights (rect, disc) with LTC | ○ | UE, Unity | a softbox as a real area light, so catchlights and highlights come from geometry |
 | Light linking and per-light catchlight control | ○ | UE (lighting channels) | catchlight placement as an operation |
-| Order-independent or sorted transparency for lashes, hair cards and the tear film | ◐ one blended pass | UE, Unity | weighted blended OIT, or per-strand sorting for hair |
+| Order-independent or sorted transparency for lashes, hair cards and the tear film | ✓ sorted blending, plus weighted blended OIT per material (`Material::order_independent`) | UE, Unity | weighted blended OIT, or per-strand sorting for hair |
 | Hair BSDF: Marschner or Chiang (R, TT, TRT), with multiple scattering | ◐ the `hair` program is stylised | UE, Unity, path tracers | a dual-scattering approximation in real time |
 | Strand rendering: line or curve rasteriser, with LOD to cards | ○ (ribbons only) | UE grooms, Unity hair | |
 | TAA or another temporal resolve (thin lashes and hair without shimmer) | ○ (supersampling only) | everyone | |

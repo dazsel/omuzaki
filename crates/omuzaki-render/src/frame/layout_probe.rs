@@ -144,6 +144,7 @@ fn probe_material(face: TextureId) -> Material {
             },
         ],
         alpha: AlphaMode::Mask { cutoff: 0.45 },
+        order_independent: false,
         double_sided: true,
         vertex_colours: true,
         outline: Some(Outline { colour: Colour::rgb(40, 30, 60), width: 0.0123 }),

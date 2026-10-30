@@ -144,6 +144,7 @@ impl MaterialSpec {
             shading: self.shading.clone(),
             overlays,
             alpha: self.alpha,
+            order_independent: false,
             double_sided: self.double_sided,
             vertex_colours: self.vertex_colours,
             outline: self.outline,

@@ -77,7 +77,7 @@ The toon materials of v1 have no specular term, so the prefiltered specular chai
 | 3 | `Opaque` | opaque and alpha-mask instances: toon shading into colour and depth, then `Scene::occlusion` multiplied over them | never |
 | 4 | `Outlines` | inverted-hull outlines, back faces only, after the model so they hide behind it; a material's alpha mask cuts its hull where it cuts the surface (three-vrm's `MToon` outline), so a cut-out card is outlined along its visible shape | no material has an outline |
 | 5 | `Particles` | stateless particles evaluated in the vertex stage, two instanced draws per block of batches: colour with alpha-to-coverage and depth, then alpha (particles.md D4 to D6) | no spawn batch |
-| 6 | `Transparent` | blended instances, `order` then back to front, depth-tested, not writing depth | none blended |
+| 6 | `Transparent` | blended instances, `order` then back to front, depth-tested, not writing depth; then those whose material is `order_independent` (#2507), unsorted, as weighted blended order-independent transparency (a weighted colour sum and a revealage target, composited over the scene colour sample by sample; an adapter without independent blending sorts them with the rest) | none blended |
 | 7 | `Bloom` | glow from bright areas | off in `Post`, `post_effects.bloom` false, or unsupported |
 | 8 | `DepthOfField` | blur away from the focus distance | off in `Post`, `post_effects.depth_of_field` false, or unsupported |
 | 9 | `Resolve` | sample resolve, exposure, tone map, grade, grain, output transform to the target's alpha encoding | never |
