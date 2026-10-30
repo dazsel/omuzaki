@@ -448,7 +448,7 @@ Started on full-duplex timing: the speech host predicts the end of the person's 
 length, transcribes speculatively on the first pause, and finds backchannel cues in the voice; the performer nods on
 them and keeps a listening face. On the synthetic conversation in `omuzaki-speech/tests/turn_timing.rs` the transcript
 is ready about 400 ms after a turn ends (844 ms with a fixed 600 ms silence) with no hesitation cut short. The gap to a
-spoken reply and a blind rating need the real models and a person (hand checks).
+spoken reply and a blind rating need the real models and a person (hand checks); the learned model is #2602.
 
 ---
 
