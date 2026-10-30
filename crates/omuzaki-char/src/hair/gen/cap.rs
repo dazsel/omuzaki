@@ -40,6 +40,7 @@ use omuzaki_core::mesh::{ExtraAttribute, MeshData};
 
 use crate::hair::compile::{CompiledGroup, GroupGeometry, HairGenCtx};
 use crate::hair::strands;
+use crate::hair::volume::Field;
 
 /// Quads round the head.
 pub const SEGMENTS: usize = 96;
@@ -48,10 +49,10 @@ pub const RINGS: usize = 48;
 /// How many times the strand texture repeats round the head: a whole number, so its seam at the back closes.
 pub const CAP_STRANDS: f32 = 14.0;
 
-/// Compiles the group: one shell and no clumps.
+/// Compiles the group: one shell and no clumps, its strands combed by the hair's shared flow where it has one.
 pub fn compile(g: &CapGen, ctx: &mut HairGenCtx<'_>) -> CompiledGroup {
     let mut shell = MeshData::default();
-    fill_shell(g, ctx.head, &mut shell);
+    fill_shell_combed(g, ctx.head, ctx.volume, &mut shell);
     CompiledGroup::empty(GroupGeometry::Shell(shell))
 }
 
@@ -99,8 +100,18 @@ fn direction(theta: f64, phi: f64) -> Vec3 {
 /// Writes the shell over `head` into `out`, replacing its positions, normals, `hair-uv`, `hair-info` and indices and
 /// leaving its other fields untouched. Allocates only while `out` is still growing to its first full size (and when
 /// its two attributes are first created).
-#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)] // grid indices are small; attributes are f32
 pub fn fill_shell(g: &CapGen, head: &dyn HeadSurface, out: &mut MeshData) {
+    fill_shell_combed(g, head, None, out);
+}
+
+/// Strands of the strand texture per radian along a parting: as dense as round a whorl a radian away.
+const PART_STRANDS: f64 = CAP_STRANDS as f64 / (TAU * 0.841_470_984_807_896_5);
+
+/// [`fill_shell`] with its strands combed by the hair's shared flow `field` (#2478): `hair-uv.y` and the strand texture
+/// run away from the parting, or from the whorl where that is nearer ([`Field::comb`]), instead of down from the top,
+/// and the texture's strands lie along the parting and round the whorl. Without a field it is the prototype's shell.
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)] // grid indices are small; attributes are f32
+pub fn fill_shell_combed(g: &CapGen, head: &dyn HeadSurface, field: Option<&Field>, out: &mut MeshData) {
     ensure_attributes(&mut out.extra);
     let MeshData { positions, normals, uvs, indices, extra, .. } = out;
     let [uv, info] = extra.as_mut_slice() else {
@@ -126,11 +137,16 @@ pub fn fill_shell(g: &CapGen, head: &dyn HeadSurface, out: &mut MeshData) {
             let t = theta.min(hairline(g, back, phi));
             let offset = g.thickness * (1.0 + g.crown_rise * (1.0 - t / reach));
             positions.push(head.point(direction(t, phi), offset as f32));
-            uv.data.extend([phi.sin() as f32, (t / reach) as f32]);
             // The strand texture runs down from the crown, [`CAP_STRANDS`] locks' worth of strands round the head,
-            // all of it the texture's body: the shell has no tips.
-            let along = (t / reach) as f32 * (1.0 - strands::TIP) * strands::V_END;
-            uvs.push(Vec2::new((j as f64 / SEGMENTS as f64) as f32 * CAP_STRANDS, along));
+            // all of it the texture's body: the shell has no tips. Combed, it runs from the parting or the whorl.
+            let (down, strand) = match field.map(|f| f.comb(direction(t, phi).as_dvec3())) {
+                Some(comb) if comb.from_part => ((comb.distance / reach).min(1.0), (comb.across * PART_STRANDS) as f32),
+                Some(comb) => ((comb.distance / reach).min(1.0), (comb.across / TAU) as f32 * CAP_STRANDS),
+                None => (t / reach, (j as f64 / SEGMENTS as f64) as f32 * CAP_STRANDS),
+            };
+            uv.data.extend([phi.sin() as f32, down as f32]);
+            let along = down as f32 * (1.0 - strands::TIP) * strands::V_END;
+            uvs.push(Vec2::new(strand, along));
             info.data.extend([seed, shade, t as f32]);
         }
     }
