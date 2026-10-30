@@ -18,6 +18,12 @@ use crate::ops::act::performing;
 /// the performer's next step; the step records the call that puts the previous style back.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend("examples" = [
+    { "preset": "energetic" },
+    { "gestures": 1.5, "sway": 0.5 },
+    { "amount": 0 },
+    { "preset": "shy", "handedness": "left" }
+]))]
 pub struct SetBody {
     /// The cast member; the scene's subject when left out.
     #[serde(default)]

@@ -1,14 +1,14 @@
-//! The living body's query ops: `gesture.list`, `body.styles` and `measure.body_motion`. The live dial
+//! The living body's query ops: `gesture.list`, `body.styles`, `measure.body_motion` and `measure.reaction`. The live dial
 //! (`perform.set_body`) is the perform host's, in `omuzaki-stage`, beside `perform.set_retarget`.
 
-use omuzaki_anim_api::{BodyStyle, HumanoidPose, Personality};
+use omuzaki_anim_api::{BodyStyle, HumanoidPose, Impact, Personality};
 use omuzaki_ops_api::{Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::gesture::GestureLibrary;
-use super::measure::{Take, measure, measure_face_only};
+use super::measure::{Take, measure, measure_face_only, measure_reaction};
 use super::tune::Tuning;
 use crate::poses::PoseLibrary;
 
@@ -17,6 +17,7 @@ const MAX_SECONDS: f32 = 600.0;
 
 /// List the co-speech gestures and idle fidgets the living body plays, with their class and hands.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(extend("examples" = [{}]))]
 pub struct ListGestures {}
 
 impl Op for ListGestures {
@@ -45,6 +46,7 @@ omuzaki_ops_api::register_op!(ListGestures);
 /// List the living body's presets and what each does: sway, weight shifts, how much the chest follows the head,
 /// gesture size and rate, speed, posture. `perform.set_body` picks one and scales its parts.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(extend("examples" = [{}]))]
 pub struct ListBodyStyles {}
 
 const PRESETS: [Personality; 5] =
@@ -92,6 +94,10 @@ omuzaki_ops_api::register_op!(ListBodyStyles);
 /// frozen 0.5 s windows, motion by region, the fastest turn, gestures a minute and how close each stroke lands to its
 /// stressed syllable.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(extend("examples" = [
+    { "seconds": 10 },
+    { "style": { "preset": "energetic" }, "seconds": 10, "talk_share": 0.9 }
+]))]
 pub struct MeasureBodyMotion {
     /// The style to measure; the natural preset when left out.
     #[serde(default)]
@@ -159,3 +165,45 @@ impl Op for MeasureBodyMotion {
 }
 
 omuzaki_ops_api::register_op!(MeasureBodyMotion);
+
+/// Measure a physical reaction (`act.react`) before it goes live: a living body talks through a synthetic take, is
+/// knocked one second in, and is compared with the same body unknocked.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(extend("examples" = [
+    {},
+    { "impact": { "kind": "fall", "at": "chest" } },
+    { "impact": { "at": "left_shoulder", "strength": 2 }, "style": { "preset": "calm" } }
+]))]
+pub struct MeasureReaction {
+    /// The blow or fall; a strength-1 bonk on the head from in front when left out.
+    #[serde(default)]
+    pub impact: Option<Impact>,
+    /// The body style; the natural preset when left out.
+    #[serde(default)]
+    pub style: Option<BodyStyle>,
+    /// Seeds the take and the body's choices. Default 7.
+    #[serde(default = "default_seed")]
+    pub seed: u64,
+}
+
+impl Op for MeasureReaction {
+    fn meta() -> OpMeta {
+        OpMeta {
+            name: "measure.reaction",
+            summary: "Measure a physical reaction (a hit or a fall) on a living body before playing it live: how far the head, chest, hips and arms are knocked, when the head peaks, when the body is back, and whether it is back exactly.",
+            kind: OpKind::Query,
+            scope: Scope::Read,
+            undo: Undo::None,
+        }
+    }
+
+    fn plan(&self, _ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        let impact = self.impact.unwrap_or_default().clamped();
+        let style = self.style.unwrap_or_default().clamped();
+        let take = Take::synthesize(impact.recover_s + 2.0, 0.7, self.seed);
+        let motion = measure_reaction(&style, &impact, &take, &standing_base(), self.seed, 1.0);
+        Ok(Plan::answer(json!({ "impact": impact, "style": style, "reaction": motion })))
+    }
+}
+
+omuzaki_ops_api::register_op!(MeasureReaction);
