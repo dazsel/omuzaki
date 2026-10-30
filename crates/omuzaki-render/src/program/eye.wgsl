@@ -178,8 +178,22 @@ fn eye_fresnel(cos_theta: f32) -> f32 {
     return EYE_F0 + (1.0 - EYE_F0) * pow(1.0 - saturate(cos_theta), 5.0);
 }
 
+// The tear film over the sclera is never a perfect sphere: a slow, irregular tilt of its normal (sums of waves in a few
+// directions, about a millimetre across), which breaks its reflections up the way a real wet eye's are.
+fn eye_tear_normal(n: vec3<f32>, w: vec3<f32>, amount: f32) -> vec3<f32> {
+    let k = w * 5200.0;
+    let g = vec3<f32>(
+        cos(k.x * 1.3 + k.y * 0.4) + 0.6 * cos(k.y * 2.1 - k.z * 1.7 + 1.3),
+        cos(k.y * 1.1 - k.z * 0.7 + 2.1) + 0.6 * cos(k.x * 1.9 + k.z * 2.3 + 0.4),
+        cos(k.z * 1.2 + k.x * 0.9 + 4.0) + 0.6 * cos(k.y * 1.6 + k.x * 2.6 + 2.9),
+    );
+    return normalize(n + amount * (g - n * dot(g, n)));
+}
+
 fn program_light(lit: vec3<f32>, n: vec3<f32>, v: vec3<f32>, p: ProgramIn) -> vec3<f32> {
     let f = eye_frame();
+    // The specular normal: the tear film's, wavy over the sclera and nearly smooth over the cornea.
+    let ns = eye_tear_normal(n, p.world_position, program_float(P_TEAR_WOBBLE) * (1.0 - eye_iris));
     // The iris faces forward (tilted a little by its cone); the sclera faces out of the ball.
     let cone = 0.25 * eye_world(f, vec3<f32>(eye_local(f, n).xy, 0.0));
     let relief = program_float(P_IRIS_RELIEF) * eye_world(f, vec3<f32>(eye_relief, 0.0));
@@ -207,10 +221,10 @@ fn program_light(lit: vec3<f32>, n: vec3<f32>, v: vec3<f32>, p: ProgramIn) -> ve
         let iris = saturate(dot(iris_n, incident.to_light) * 0.85 + 0.15)
             * (1.0 + program_float(P_CAUSTIC) * far_side * length(l_local.xy));
         diffuse += light * mix(sclera, vec3<f32>(iris), eye_iris);
-        specular += light * eye_ggx(n, v, incident.to_light, roughness) * eye_fresnel(dot(normalize(v + incident.to_light), v));
+        specular += light * eye_ggx(ns, v, incident.to_light, roughness) * eye_fresnel(dot(normalize(v + incident.to_light), v));
     }
     diffuse += environment_light(mix(n, iris_n, eye_iris));
-    let reflected = reflect(-v, n);
-    specular += environment_specular(reflected, roughness) * eye_fresnel(dot(n, v));
+    let reflected = reflect(-v, ns);
+    specular += environment_specular(reflected, roughness) * eye_fresnel(dot(ns, v));
     return eye_albedo * diffuse / PI + specular * program_float(P_GLOSS);
 }

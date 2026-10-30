@@ -222,10 +222,10 @@ pub fn sclera(sclera: &Sclera, seed: u32, size: u32) -> Canvas {
         // The fine vessel network, on the sphere's surface so it doesn't crowd at the pole of the map.
         let (x, y) = (theta.sin() * phi.cos(), theta.sin() * phi.sin());
         let (f1, f2) = worley(x * 26.0, y * 26.0, s ^ 0x92);
-        let line = 1.0 - smoothstep(0.0, 0.05, f2 - f1);
+        let line = 1.0 - smoothstep(0.0, 0.14, f2 - f1);
         let faint = fbm(x * 40.0, y * 40.0, 2, s ^ 0x93);
         let reach = smoothstep(0.28, 0.55, rho);
-        colour = colour.lerp(Vec3::new(0.6, 0.38, 0.4), net * 0.5 * line * faint * reach);
+        colour = colour.lerp(Vec3::new(0.66, 0.46, 0.48), net * 0.3 * line * faint * reach);
         colour
     });
     vessels(&mut canvas, sclera, seed);
@@ -235,7 +235,7 @@ pub fn sclera(sclera: &Sclera, seed: u32, size: u32) -> Canvas {
 /// Vessels: branching red lines from the corners toward the iris, thinning and fading as they go.
 fn vessels(canvas: &mut Canvas, sclera: &Sclera, seed: u32) {
     let mut rng = Pcg::new(seed, VESSEL_STREAM);
-    let red = Vec3::new(0.42, 0.1, 0.1);
+    let red = Vec3::new(0.45, 0.16, 0.2);
     let mut todo: Vec<(f32, f32, f32, f32, u32)> = Vec::new();
     for _ in 0..sclera.vessels {
         // From the inner or the outer corner mostly, a few from above and below.
@@ -265,7 +265,9 @@ fn vessels(canvas: &mut Canvas, sclera: &Sclera, seed: u32) {
                 todo.push((r, a, width * 0.6, alpha * 0.8, depth + 1));
             }
         }
-        canvas.stroke(&points, (width, 0.35), red, (alpha, 0.0));
+        // A soft halo (the vessel seen through the conjunctiva), then its core.
+        canvas.stroke(&points, (width * 3.5, width), red, (alpha * 0.22, 0.0));
+        canvas.stroke(&points, (width * 0.8, 0.35), red, (alpha * 0.8, 0.0));
     }
 }
 

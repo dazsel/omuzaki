@@ -423,8 +423,8 @@ impl Lids {
                 // The upper lid shades more and farther than the lower, and the corners, deep in the socket, most.
                 let (strength, reach) = if Self::is_upper(k) { (0.85, 3.0) } else { (0.65, 1.6) };
                 let corner = 1.0 - smoothstep(0.0, 0.25, Self::along(k).min(1.0 - Self::along(k)));
-                let alpha = (strength * (-d / (reach * (1.0 + corner))).exp() * (1.0 - smoothstep(5.0, 7.0, d)))
-                    .min(0.92);
+                let alpha =
+                    (strength * (-d / (reach * (1.0 + corner))).exp() * (1.0 - smoothstep(5.0, 7.0, d))).min(0.92);
                 mesh.colours.push([0.0, 0.0, 0.0, alpha]);
             }
         }

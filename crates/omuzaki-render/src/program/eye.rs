@@ -30,6 +30,7 @@
 //! | `sclera-roughness`, `cornea-roughness` | the tear film's roughness | `0.16`, `0.04` |
 //! | `gloss` | the tear film's reflections, as a multiplier | `1` |
 //! | `iris-relief` | how far the iris's light fibres stand out from its dark gaps, lit by each light | `0.008` |
+//! | `tear-wobble` | how unevenly the tear film over the sclera reflects (its normal's tilt) | `0.05` |
 
 use omuzaki_core::colour::Colour;
 use omuzaki_render_api::{Rim, Toon};
@@ -72,6 +73,7 @@ register_shading_program!(
             ParamSpec::float("cornea-roughness", 0.04, 0.01, 1.0),
             ParamSpec::float("gloss", 1.0, 0.0, 4.0),
             ParamSpec::float("iris-relief", 0.008, 0.0, 0.1),
+            ParamSpec::float("tear-wobble", 0.05, 0.0, 0.5),
         ],
         attributes: &[],
         toon,
