@@ -52,11 +52,13 @@ use omuzaki_core::id::Slug;
 use omuzaki_render_api::{ParamValue, ProgramParams, RenderError, Shading, Toon};
 
 mod band_highlight;
+mod eye;
 mod gem;
 mod hair;
 mod metal;
 mod shadow_catcher;
 mod sheen;
+mod skin;
 
 /// Floats in the material uniform's `program[]` (`array<vec4<f32>, 16>`).
 pub(crate) const PACKED_FLOATS: usize = 64;
@@ -76,6 +78,11 @@ impl ParamSpec {
     /// A number in `lo..=hi`.
     pub(crate) const fn float(name: &'static str, default: f32, lo: f32, hi: f32) -> Self {
         Self { name, default: ParamValue::Float(default), range: Some((lo, hi)) }
+    }
+
+    /// Three numbers, each in `lo..=hi`.
+    pub(crate) const fn vec3(name: &'static str, default: [f32; 3], lo: f32, hi: f32) -> Self {
+        Self { name, default: ParamValue::Vec3(Vec3::new(default[0], default[1], default[2])), range: Some((lo, hi)) }
     }
 
     /// A colour given as `0xRRGGBB`.
