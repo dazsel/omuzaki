@@ -175,14 +175,16 @@ fn build(
         scene.instances.push(Instance::new(mesh, material, transform));
     }
 
-    let key = Vec3::new(-0.35, 0.72, 0.6);
+    // The key from above and the nose's side, warm, as in a window-lit portrait: the socket toward the nose falls into
+    // shadow and the ball and the lids are modelled by it.
+    let key = Vec3::new(0.55, 0.6, 0.55);
     scene.lights = vec![
-        Light::Directional { to_light: key, colour: Colour::hex(0x00ff_f2e4), intensity: 0.8, casts_shadow: true },
+        Light::Directional { to_light: key, colour: Colour::hex(0x00ff_e8d0), intensity: 1.0, casts_shadow: true },
         // An anime eye is lit brighter and flatter, as a cel is.
         Light::Hemisphere {
             sky: Colour::hex(0x00c8_d0e0),
             ground: Colour::hex(0x0060_4a40),
-            intensity: 0.12 + 0.4 * design.style,
+            intensity: 0.08 + 0.44 * design.style,
         },
     ];
     // The softbox sits above the camera, so its reflection lands on the cornea as the catchlight.
@@ -200,8 +202,8 @@ fn build(
         // A macro lens: sharp on the iris, the lashes and the skin falling out of focus.
         scene.post.depth_of_field = Some(DepthOfField {
             focus_distance: (camera_at - Vec3::new(0.0, 0.0, 0.011)).length(),
-            focus_range: 0.003,
-            max_blur: 0.035,
+            focus_range: 0.0022,
+            max_blur: 0.05,
         });
     }
     Ok(scene)

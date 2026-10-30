@@ -89,7 +89,7 @@ pub fn eye_params(design: &EyeDesign, frame: EyeFrame) -> ProgramParams {
 pub fn skin_params(design: &EyeDesign) -> ProgramParams {
     let real = 1.0 - design.style;
     let mut p = ProgramParams::new();
-    put(&mut p, "pore-depth", ParamValue::Float(0.07 * real));
+    put(&mut p, "pore-depth", ParamValue::Float(0.02 * real));
     put(&mut p, "roughness", ParamValue::Float(0.52 + 0.4 * design.style));
     put(&mut p, "sheen", ParamValue::Float(0.7 * real));
     put(&mut p, "sss", ParamValue::Float(0.3 + 0.7 * real));
