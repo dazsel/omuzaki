@@ -1,6 +1,7 @@
 //! The skin texture round the eye: the tone, its mottling, a darker band under the eye, fine lines (the upper lid's
 //! creases, arcs under the eye and a fan at the outer corner) and freckles of many sizes, denser on the cheek than on
-//! the lids. Pores are the `skin` shader's, not the texture's.
+//! the lids. Pores are the `skin` shader's, not the texture's. In the anime style the skin is the flat tone, and the
+//! lash lines and the double-lid line are inked on it.
 
 use omuzaki_core::glam::{Vec2, Vec3};
 
@@ -11,10 +12,109 @@ use super::noise::{Pcg, fbm, smoothstep};
 
 /// The skin texture of `design`: `width` pixels across the patch (its height keeps the patch's proportions).
 pub fn texture(design: &EyeDesign, width: u32) -> Canvas {
-    let (skin, seed) = (&design.skin, design.seed);
-    let tone = skin.tone.to_linear();
+    let style = design.style.clamp(0.0, 1.0);
+    let mut canvas = super::textures::styled(style, || real(design, width), || anime(design, width));
+    if style > 0.0 {
+        ink(&mut canvas, design, style);
+    }
+    canvas
+}
+
+/// The anime skin: the flat tone, a little warmer and rosier under the eye.
+fn anime(design: &EyeDesign, width: u32) -> Canvas {
+    let tone = design.skin.tone.to_linear();
+    let (canvas_w, height) = size(width);
+    let mut canvas = Canvas::new(canvas_w, height, tone);
+    let rosy = tone * Vec3::new(1.0, 0.86, 0.84);
+    canvas.fill(|u, v| {
+        let (x, y) = (u * 2.0 * SKIN_HALF.x - SKIN_HALF.x, SKIN_TOP - v * 2.0 * SKIN_HALF.y);
+        let blush = smoothstep(-0.006, -0.012, y)
+            * (1.0 - smoothstep(-0.016, -0.024, y))
+            * (1.0 - smoothstep(0.006, 0.016, x.abs()));
+        tone.lerp(rosy, 0.35 * blush)
+    });
+    canvas
+}
+
+/// The canvas size for `width` pixels across: the height keeps the patch's proportions.
+fn size(width: u32) -> (u32, u32) {
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
     let height = (width as f32 * SKIN_HALF.y / SKIN_HALF.x) as u32;
+    (width, height)
+}
+
+/// The anime style's inked lines, at `style`'s strength: the upper lash line, thickest toward the outer corner and
+/// ending in a wing past it; the lower lash line along the outer part of the lower lid; and the double-lid line above
+/// the upper lid.
+fn ink(canvas: &mut Canvas, design: &EyeDesign, style: f32) {
+    // Strokes along each line.
+    const N: usize = 90;
+    let anime = &design.anime;
+    let ink = anime.ink.to_linear();
+    #[allow(clippy::cast_precision_loss)]
+    let px_per_m = canvas.width as f32 / (2.0 * SKIN_HALF.x);
+    let to_px = |p: Vec2| Vec2::new((p.x + SKIN_HALF.x) * px_per_m, (SKIN_TOP - p.y) * px_per_m);
+    let a = &design.aperture;
+    // Runs of short strokes, each carrying its own width, so a line thickens and thins along its length.
+    let line = |canvas: &mut Canvas, points: &[(Vec2, f32)], alpha: f32| {
+        for pair in points.windows(2) {
+            let (p, q) = (pair[0], pair[1]);
+            canvas.stroke(&[to_px(p.0), to_px(q.0)], (p.1 * px_per_m, q.1 * px_per_m), ink, (alpha, alpha));
+        }
+    };
+    #[allow(clippy::cast_precision_loss)]
+    let along = |i: usize| i as f32 / N as f32;
+    // The upper lash line: its lower edge on the lid's edge, so it grows upward; thickest a third of the way in from
+    // the outer corner, thin at the inner one.
+    let thick =
+        |u: f32| anime.lash_line * (0.25 + 0.75 * smoothstep(0.95, 0.25, u)) * (0.6 + 0.4 * smoothstep(0.0, 0.2, u));
+    let upper: Vec<(Vec2, f32)> = (0..=N)
+        .map(|i| {
+            let u = along(i);
+            let w = thick(u);
+            (lid_outline(a, u, true) + Vec2::new(0.0, 0.5 * w - 0.0002), w + 0.0004)
+        })
+        .collect();
+    line(canvas, &upper, style);
+    // The wing: on from the outer corner, out and up, tapering to a point.
+    let corner = lid_outline(a, 0.0, true);
+    let start = thick(0.0);
+    let wing: Vec<(Vec2, f32)> = (0..=24)
+        .map(|i| {
+            #[allow(clippy::cast_precision_loss)]
+            let t = i as f32 / 24.0;
+            let p = corner + Vec2::new(-1.0, 0.42 + 0.25 * t) * anime.wing * t + Vec2::new(0.0, 0.5 * start);
+            (p, (start + 0.0004) * (1.0 - t).powf(0.8))
+        })
+        .collect();
+    line(canvas, &wing, style);
+    // The lower lash line: along the outer part of the lower lid, fading toward the inner corner.
+    let lower: Vec<(Vec2, f32)> = (0..=N)
+        .filter_map(|i| {
+            let u = along(i) * 0.75;
+            let w = 0.00028 * smoothstep(0.75, 0.2, u) * (0.5 + 0.5 * smoothstep(0.0, 0.08, u));
+            (w > 0.0).then(|| (lid_outline(a, u, false) - Vec2::new(0.0, 0.0002), w))
+        })
+        .collect();
+    line(canvas, &lower, style * anime.lower_line.clamp(0.0, 1.0));
+    // The double-lid line: above the upper lid at the crease, fading at both ends.
+    let crease = design.skin.crease;
+    let fold: Vec<(Vec2, f32)> = (0..=N)
+        .map(|i| {
+            let u = 0.12 + 0.76 * along(i);
+            let rise = crease * (0.6 + 0.4 * (std::f32::consts::PI * u).sin());
+            let w = 0.00022 * (std::f32::consts::PI * (u - 0.12) / 0.76).sin().max(0.0);
+            (lid_outline(a, u, true) + Vec2::new(0.0, rise), w)
+        })
+        .collect();
+    line(canvas, &fold, 0.7 * style * anime.crease_line.clamp(0.0, 1.0));
+}
+
+/// The photoreal skin texture.
+fn real(design: &EyeDesign, width: u32) -> Canvas {
+    let (skin, seed) = (&design.skin, design.seed);
+    let tone = skin.tone.to_linear();
+    let (width, height) = size(width);
     let mut canvas = Canvas::new(width, height, tone);
     let s = seed ^ 0x5c1d;
     canvas.fill(|u, v| {

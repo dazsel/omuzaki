@@ -17,32 +17,21 @@
 //! | `flush-colour` | the multiplier full flush applies | `0xffc8c0` |
 //! | `wet-colour`, `wet-tint` | the wet line's colour and how far wet skin takes it | `0xd88a88`, `0.6` |
 //!
+//! | `style` and `cel-*` | the style axis (#2607): `0` this physical skin, `1` the cel toon in `cel-*` | `0` |
+//!
 //! Attribute: `skin-info` (wet, cavity, flush, curvature in 1/m).
 //!
 //! **Subsurface scattering** is pre-integrated (Penner): for each light the diffusion profile (d'Eon and Luebke's six
 //! Gaussians for skin) is integrated round a ring of the surface's own curvature, so light bleeds past the terminator,
 //! reddening, more where the surface curves tightly (lids, nose, ears). Red diffuses from a smoother normal than blue.
 
-use omuzaki_core::colour::Colour;
-use omuzaki_render_api::{Rim, Toon};
-
-use super::{AttributeSpec, ParamSpec, ProgramSpec, Values, register_shading_program};
-
-/// The program lights itself; the toon base is only what `toon_colour` computes before `program_light` replaces it.
-fn toon(_: &Values) -> Toon {
-    Toon {
-        shade: Colour::hex(0x00ff_ffff),
-        softness: 1.0,
-        rim: Rim { strength: 0.0, ..Rim::default() },
-        ..Toon::default()
-    }
-}
+use super::{AttributeSpec, ParamSpec, ProgramSpec, cel_toon, register_shading_program, with_cel};
 
 register_shading_program!(
     "skin",
     ProgramSpec {
         name: "skin",
-        params: &[
+        params: with_cel![0.0;
             ParamSpec::float("sss", 1.0, 0.0, 4.0),
             ParamSpec::float("wrap", 0.4, 0.0, 1.0),
             ParamSpec::colour("scatter-colour", 0x00d8_584a),
@@ -58,7 +47,8 @@ register_shading_program!(
             ParamSpec::float("wet-tint", 0.6, 0.0, 1.0),
         ],
         attributes: &[AttributeSpec { name: "skin-info", components: 4 }],
-        toon,
+        // The program lights itself at `style` 0; the toon is the cel look it blends toward.
+        toon: cel_toon,
         wgsl: include_str!("skin.wgsl"),
     }
 );

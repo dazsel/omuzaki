@@ -118,10 +118,12 @@ fn registered_facts_are_listed_with_their_types_with_the_built_ins() {
         listed,
         [
             "anchors",
+            "body-frame",
             "colliders",
             "face",
             "fit",
             "head",
+            "head-frame",
             "stature",
             "test-agree",
             "test-append",
