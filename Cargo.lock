@@ -4962,6 +4962,7 @@ dependencies = [
  "omuzaki-obs",
  "omuzaki-ops",
  "omuzaki-ops-api",
+ "omuzaki-paint-ops",
  "omuzaki-performer-api",
  "omuzaki-render",
  "omuzaki-render-api",
@@ -5959,6 +5960,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-paint-ops"
+version = "0.0.0"
+dependencies = [
+ "image",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-ops-api",
+ "omuzaki-ops-mock",
+ "omuzaki-paint",
+ "omuzaki-store-api",
+ "omuzaki-store-mock",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
 name = "omuzaki-performer"
 version = "0.0.0"
 dependencies = [
@@ -6873,6 +6894,7 @@ dependencies = [
  "omuzaki-ops-api",
  "omuzaki-ops-mock",
  "omuzaki-osc",
+ "omuzaki-paint-ops",
  "omuzaki-render",
  "omuzaki-render-api",
  "omuzaki-render-mock",

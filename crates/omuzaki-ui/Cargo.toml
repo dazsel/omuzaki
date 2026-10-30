@@ -74,6 +74,7 @@ omuzaki-settings = { path = "../omuzaki-settings" }
 omuzaki-settings-api = { path = "../omuzaki-settings-api" }
 omuzaki-setup = { path = "../omuzaki-setup" }
 # The `short.*` ops (#2394).
+omuzaki-paint-ops = { path = "../omuzaki-paint-ops" }
 omuzaki-short = { path = "../omuzaki-short" }
 omuzaki-stage = { path = "../omuzaki-stage" }
 omuzaki-theatre = { path = "../omuzaki-theatre" }
