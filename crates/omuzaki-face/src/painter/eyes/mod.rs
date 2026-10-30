@@ -17,12 +17,14 @@
 mod aperture;
 mod closed;
 mod crease;
+mod detail;
 mod effects;
 mod highlight;
 mod iris;
 mod lash;
 mod lid;
 mod sclera;
+mod strands;
 
 use omuzaki_core::colour::Colour;
 use omuzaki_face_api::{Cmd, FaceLayerId};
@@ -52,14 +54,17 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
             let outline = aperture::outline(ctx.list(FaceLayerId::Base), &eye);
             sclera::paint(ctx, &eye, outline);
             ctx.list(FaceLayerId::Base).push(Cmd::PushClip(outline));
+            sclera::paint_detail(ctx, &eye);
             iris::paint(ctx, side);
             effects::paint_iris(ctx, side);
             highlight::paint(ctx, side);
+            sclera::paint_waterline(ctx, &eye);
             effects::paint_cover(ctx, side);
             ctx.list(FaceLayerId::Base).push(Cmd::PopClip);
         }
         lid::paint(ctx, side);
         crease::paint(ctx, side);
+        strands::paint(ctx, side);
         lash::paint(ctx, side);
         let fade = eye.open_fade();
         if fade < 1.0 {

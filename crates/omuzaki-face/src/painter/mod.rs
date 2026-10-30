@@ -9,7 +9,7 @@
 mod brows;
 mod cheeks;
 mod eyes;
-mod marks;
+pub(crate) mod marks;
 mod mouth;
 mod nose;
 mod overlay;

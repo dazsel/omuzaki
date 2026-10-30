@@ -28,12 +28,12 @@ assets are tied to Epic's licence and stay out entirely):
 
 | Part | Best of the benchmarks | Omuzaki today | | Issues |
 |---|---|---|---|---|
-| **Eyes: iris** | fibres, collarette, crypts, limbal ring, two-colour pigment model, heterochromia | three-stop gradient, lit crescent, ring, pupil (round, slit, heart), per-eye colours | ◐ | #2465 |
-| **Eyes: highlights** | highlight texture layer with position and size; real light rig reflections; caustic glow | one catchlight (blob, star, heart), a fixed second one, shimmer, view motion | ◐ | #2466 |
-| **Eyes: sclera, lids** | tint, vessels, caruncle, tear meniscus, lid margin thickness, crease | three-stop white, lid shadow, crease line, lower lid line | ◐ | #2467 |
-| **Eyes: lashes** | strand lashes (count, length, curl, lift, clumping), styles | solid lash band, outer flick, small lower lash | ◐ | #2468 |
+| **Eyes: iris** | fibres, collarette, crypts, limbal ring, two-colour pigment model, heterochromia | gradient, lit crescent, ring, pupil shapes, per-eye colours; seeded fibres, collarette, flecks, limbal ring, pupil glow | ✓ | #2465 |
+| **Eyes: highlights** | highlight texture layer with position and size; real light rig reflections; caustic glow | blob, star, heart, window, ring and crescent catchlights, up to 8 extra, shimmer, view motion, caustic glow | ✓ | #2466 |
+| **Eyes: sclera, lids** | tint, vessels, caruncle, tear meniscus, lid margin thickness, crease | three-stop white, corner shade, vessels, caruncle, wet waterline, lid shadow, crease, lower lid line | ✓ | #2467 |
+| **Eyes: lashes** | strand lashes (count, length, curl, lift, clumping), styles | lash band with flick, plus upper and lower strand lashes (count, length, curl, lift, clumping, randomness) | ✓ | #2468 |
 | **Eyes: aperture** | anatomical lids (fissure width, canthal tilt, lid heights, peaks) | roundness, tilt, corner shapes, lid heights | ✓ | |
-| **Eyes: presets, random** | priors for every knob; presets; blend | none | ✗ | #2469 |
+| **Eyes: presets, random** | priors for every knob; presets; blend | 8 presets (`face.eyes.preset`) and a seeded random eye with locks (`face.eyes.randomise`) | ✓ | #2469 |
 | **Eyes: motion** | pupil reflex, saccades, micro-movements, lid follow, blink rate | gaze, vergence, pupil channel, blink, anime extras; saccades in the performer | ◐ | |
 | **Brows** | brow grooms; brow shape sliders and texture | brow designer, drawn through hair | ✓ | |
 | **Face shape** | blend 3 presets globally or per region; sculpt handles; dozens of sliders | outline profile (superellipse, chin, cheeks), 5 presets blended one at a time, feature layout | ◐ | #2470 |
@@ -54,7 +54,7 @@ assets are tied to Epic's licence and stay out entirely):
 
 ## The plan, in chunks
 
-1. **Eyes to the generator's bar** (#2465, #2466, #2467, #2468, #2469): iris detail, catchlight layers, sclera and lid
+1. **Eyes to the generator's bar** (#2465, #2466, #2467, #2468, #2469; done in the first chunk): iris detail, catchlight layers, sclera and lid
    detail, strand lashes, eye presets and a seeded randomise. New fields default to zero, so the prototype parity tests
    keep their pixels; the kit's presets turn them on.
 2. **Makeup and skin detail** (#2472, then #1986's deep tones), **teeth and tongue** (#2473).

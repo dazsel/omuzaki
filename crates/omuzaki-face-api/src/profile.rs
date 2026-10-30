@@ -16,6 +16,12 @@ use crate::grammar::GrammarRules;
 use crate::mapping::FaceMapping;
 use crate::palette::ColourRef;
 
+mod eye_detail;
+
+pub use eye_detail::{
+    Catchlight, Collarette, IrisDetail, IrisFibres, IrisFlecks, LashStrands, LimbalRing, MAX_CATCHLIGHTS, StrandRow,
+};
+
 const fn rgb(r: u8, g: u8, b: u8) -> ColourRef {
     ColourRef::rgb(r, g, b)
 }
@@ -177,11 +183,20 @@ pub struct Lash {
     pub inner_tick: bool,
     /// Line colour.
     pub colour: ColourRef,
+    /// Strand lashes along both lids, in the line's colour (#2468); none by default.
+    pub strands: LashStrands,
 }
 
 impl Default for Lash {
     fn default() -> Self {
-        Self { thickness: 0.006, flick: 0.5, lower: 0.5, inner_tick: true, colour: rgb(0x3a, 0x24, 0x20) }
+        Self {
+            thickness: 0.006,
+            flick: 0.5,
+            lower: 0.5,
+            inner_tick: true,
+            colour: rgb(0x3a, 0x24, 0x20),
+            strands: LashStrands::default(),
+        }
     }
 }
 
@@ -190,6 +205,7 @@ impl Validate for Lash {
         c.range("thickness", self.thickness, 0.0005, 0.02);
         c.range("flick", self.flick, 0.0, 1.0);
         c.range("lower", self.lower, 0.0, 1.0);
+        c.nested("strands", &self.strands);
     }
 }
 
@@ -280,6 +296,8 @@ pub struct Iris {
     pub gaze_travel: [f64; 2],
     /// The pupil.
     pub pupil: Pupil,
+    /// The iris's structure: fibres, collarette, flecks, limbal ring (#2465); none by default.
+    pub detail: IrisDetail,
 }
 
 impl Default for Iris {
@@ -295,6 +313,7 @@ impl Default for Iris {
             ring: rgb(0x1d, 0x36, 0x2c),
             gaze_travel: [0.026, 0.013],
             pupil: Pupil::default(),
+            detail: IrisDetail::default(),
         }
     }
 }
@@ -308,6 +327,7 @@ impl Validate for Iris {
         c.range("gaze_travel/0", self.gaze_travel[0], 0.0, 0.08);
         c.range("gaze_travel/1", self.gaze_travel[1], 0.0, 0.08);
         c.nested("pupil", &self.pupil);
+        c.nested("detail", &self.detail);
     }
 }
 
@@ -368,16 +388,49 @@ pub struct Sclera {
     pub mid: ColourRef,
     /// Colour at the lower lid.
     pub bottom: ColourRef,
+    /// How much the white darkens toward both corners, where the eyeball turns away, 0 none (#2467).
+    pub corner_shade: f64,
+    /// The corners' shade colour.
+    pub corner_colour: ColourRef,
+    /// Fine vessels running in from the corners, 0 none.
+    pub vessels: f64,
+    /// The vessels' colour.
+    pub vessel_colour: ColourRef,
+    /// The pink caruncle in the inner corner, 0 none.
+    pub caruncle: f64,
+    /// The caruncle's colour.
+    pub caruncle_colour: ColourRef,
+    /// The wet waterline along the lower lid: a soft rim of the lid's colour with a thin bright line on it, 0 none.
+    pub waterline: f64,
+    /// The waterline's rim colour.
+    pub waterline_colour: ColourRef,
 }
 
 impl Default for Sclera {
     fn default() -> Self {
-        Self { top: rgb(0xe6, 0xc9, 0xcc), mid: rgb(0xfb, 0xf3, 0xf1), bottom: rgb(0xff, 0xfa, 0xf8) }
+        Self {
+            top: rgb(0xe6, 0xc9, 0xcc),
+            mid: rgb(0xfb, 0xf3, 0xf1),
+            bottom: rgb(0xff, 0xfa, 0xf8),
+            corner_shade: 0.0,
+            corner_colour: rgb(0xc9, 0xae, 0xb4),
+            vessels: 0.0,
+            vessel_colour: rgb(0xd4, 0x6a, 0x6a),
+            caruncle: 0.0,
+            caruncle_colour: rgb(0xe8, 0x9a, 0x96),
+            waterline: 0.0,
+            waterline_colour: rgb(0xe6, 0xa8, 0xa0),
+        }
     }
 }
 
 impl Validate for Sclera {
-    fn check(&self, _: &mut Check) {}
+    fn check(&self, c: &mut Check) {
+        c.range("corner_shade", self.corner_shade, 0.0, 1.0);
+        c.range("vessels", self.vessels, 0.0, 1.0);
+        c.range("caruncle", self.caruncle, 0.0, 1.0);
+        c.range("waterline", self.waterline, 0.0, 1.0);
+    }
 }
 
 /// The shape of the main catchlight (CB-20). The `eye_heart` and `eye_star` channels swap to their own shape.
@@ -390,6 +443,12 @@ pub enum CatchlightShape {
     Star,
     /// A heart.
     Heart,
+    /// A window: a rounded pane split in four by a cross bar, the reflection of a lit room.
+    Window,
+    /// A thin ring, the reflection of a ring light.
+    Ring,
+    /// A crescent, opening away from the iris centre.
+    Crescent,
     /// No catchlight.
     None,
 }
@@ -410,6 +469,12 @@ pub struct Highlights {
     pub shimmer: f64,
     /// How far reflections slide as the view direction changes, 0 none.
     pub view_motion: f64,
+    /// More catchlights, drawn after the main one (#2466); at most [`MAX_CATCHLIGHTS`].
+    pub extra: Vec<Catchlight>,
+    /// A soft glow of light in the iris opposite the main catchlight, where light focused by the cornea lands, 0 none.
+    pub caustic: f64,
+    /// The glow's colour.
+    pub caustic_colour: ColourRef,
 }
 
 impl Default for Highlights {
@@ -421,6 +486,9 @@ impl Default for Highlights {
             second: 0.65,
             shimmer: 0.0,
             view_motion: 0.5,
+            extra: Vec::new(),
+            caustic: 0.0,
+            caustic_colour: ColourRef::rgba(255, 248, 225, 255),
         }
     }
 }
@@ -433,6 +501,11 @@ impl Validate for Highlights {
         c.range("second", self.second, 0.0, 1.0);
         c.range("shimmer", self.shimmer, 0.0, 1.0);
         c.range("view_motion", self.view_motion, 0.0, 1.0);
+        c.rule(&["extra"], self.extra.len() <= MAX_CATCHLIGHTS, "an eye holds at most 8 extra catchlights");
+        for (i, light) in self.extra.iter().enumerate() {
+            c.nested(&format!("extra/{i}"), light);
+        }
+        c.range("caustic", self.caustic, 0.0, 1.0);
     }
 }
 
@@ -489,6 +562,8 @@ pub struct EyeStyle {
     pub lid_shadow: f64,
     /// Colour of the `tear` drop.
     pub tear: ColourRef,
+    /// Seeds the eye's fine detail (fibres, flecks, vessels, lashes), so one design always paints the same eye.
+    pub seed: u32,
 }
 
 impl Default for EyeStyle {
@@ -506,6 +581,7 @@ impl Default for EyeStyle {
             lower_lid: LowerLidStyle::default(),
             lid_shadow: 0.55,
             tear: ColourRef::rgba(190, 225, 255, 217),
+            seed: 1,
         }
     }
 }
