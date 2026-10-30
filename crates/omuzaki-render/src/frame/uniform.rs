@@ -48,7 +48,8 @@ pub(crate) struct FrameUniform {
     lights: [LightUniform; MAX_LIGHTS],
     /// Light count, then the frame index split into low and high words (grain and jitter seeds).
     counts: [u32; 4],
-    /// `outline_light`, scene time in seconds, `back_light_rim`.
+    /// `outline_light`, scene time in seconds, `back_light_rim`, then the round's coverage dither
+    /// ([`supersample::coverage_dither`](super::supersample::coverage_dither)).
     look: [f32; 4],
     /// Fog colour in linear light (rgb) and the depth where it starts (`w`).
     fog_colour: [f32; 4],
@@ -102,6 +103,14 @@ pub(crate) fn frame_uniform(scene: &Scene, internal: UVec2, jitter: Vec2) -> Fra
         look: [scene.outline_light, scene.frame.time.0 as f32, scene.back_light_rim, 0.0],
         fog_colour: fog.0,
         fog_far: fog.1,
+    }
+}
+
+impl FrameUniform {
+    /// The same frame with particle coverage moved by `dither` before alpha-to-coverage (one supersampling round).
+    pub(crate) fn with_coverage_dither(mut self, dither: f32) -> Self {
+        self.look[3] = dither;
+        self
     }
 }
 
