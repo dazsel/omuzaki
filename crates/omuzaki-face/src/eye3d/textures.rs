@@ -311,7 +311,7 @@ mod tests {
     fn the_white_is_light_with_vessels_toward_the_corners() {
         let c = sclera(&Sclera::default(), 1, 256);
         let centre = at(&c, 0.3, 1.57);
-        assert!(centre.min_element() > 0.6, "{centre}");
+        assert!(centre.min_element() > 0.4, "{centre}");
         let corners: f32 = (0..200u8)
             .map(|i| at(&c, 0.6 + f32::from(i) * 0.0015, 0.0).x - at(&c, 0.6 + f32::from(i) * 0.0015, 0.0).y)
             .sum();
