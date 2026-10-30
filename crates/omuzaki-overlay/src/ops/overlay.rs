@@ -38,7 +38,7 @@ pub struct List {}
     { "id": "chat", "kind": "chat", "settings": { "lines": 6 }, "layout": { "anchor": "bottom_left", "width": 0.25 } },
     { "id": "subathon", "kind": "timer", "settings": { "mode": "subathon", "seconds": 3600, "label": "Subathon" } },
     { "id": "goal", "kind": "goal", "settings": { "title": "Road to 100 subs", "metric": "subs", "target": 100 } },
-    { "id": "brb", "kind": "text", "settings": { "text": "Be right back" }, "scenes": ["brb"] }
+    { "id": "brb", "kind": "text", "settings": { "text": "Be right back" }, "scenes": ["night_stream"] }
 ]))]
 pub struct Add {
     /// The new widget's id: lowercase letters, digits, `-` and `_`.
@@ -68,7 +68,7 @@ pub struct Add {
 #[schemars(extend("examples" = [
     { "id": "goal", "changes": { "target": 150, "title": "Road to 150" } },
     { "id": "chat", "changes": { "layout": { "anchor": "bottom_right" }, "style": { "accent": "#7ad7ff" } } }
-]))]
+], "x-omuzaki-fixture" = "overlay"))]
 pub struct Set {
     /// The widget.
     pub id: WidgetId,
@@ -79,7 +79,7 @@ pub struct Set {
 /// Remove a widget.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(extend("examples" = [{ "id": "brb" }]))]
+#[schemars(extend("examples" = [{ "id": "brb" }], "x-omuzaki-fixture" = "overlay"))]
 pub struct Remove {
     /// The widget.
     pub id: WidgetId,
@@ -88,7 +88,7 @@ pub struct Remove {
 /// Show a hidden widget.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(extend("examples" = [{ "id": "brb" }]))]
+#[schemars(extend("examples" = [{ "id": "brb" }], "x-omuzaki-fixture" = "overlay"))]
 pub struct Show {
     /// The widget.
     pub id: WidgetId,
@@ -97,7 +97,7 @@ pub struct Show {
 /// Hide a widget without removing it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(extend("examples" = [{ "id": "brb" }]))]
+#[schemars(extend("examples" = [{ "id": "brb" }], "x-omuzaki-fixture" = "overlay"))]
 pub struct Hide {
     /// The widget.
     pub id: WidgetId,
@@ -109,7 +109,7 @@ pub struct Hide {
 #[schemars(extend("examples" = [
     { "title": "Thanks for 1,000 followers!" },
     { "title": "Hydrate!", "message": "chat says drink some water", "widget": "alerts" }
-]))]
+], "x-omuzaki-fixture" = "overlay"))]
 pub struct AlertNow {
     /// The alert's title.
     pub title: String,
@@ -127,7 +127,7 @@ pub struct AlertNow {
 #[schemars(extend("examples" = [
     { "id": "subathon", "action": "start" },
     { "id": "subathon", "action": "add", "seconds": 300 }
-]))]
+], "x-omuzaki-fixture" = "overlay"))]
 pub struct Timer {
     /// The timer widget.
     pub id: WidgetId,
@@ -141,7 +141,9 @@ pub struct Timer {
 /// Move a goal bar by hand.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(extend("examples" = [{ "id": "goal", "value": 42 }, { "id": "goal", "value": 1, "add": true }]))]
+#[schemars(extend(
+    "examples" = [{ "id": "goal", "value": 42 }, { "id": "goal", "value": 1, "add": true }], "x-omuzaki-fixture" = "overlay"
+))]
 pub struct Goal {
     /// The goal widget.
     pub id: WidgetId,

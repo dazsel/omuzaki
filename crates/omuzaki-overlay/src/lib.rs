@@ -18,6 +18,7 @@
 
 omuzaki_core::define_link! {
     omuzaki_live_api::link();
+    omuzaki_stage_api::link();
 }
 
 pub mod live;

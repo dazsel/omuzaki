@@ -18,10 +18,10 @@ use crate::transition::{Direction, TransitionKind, TransitionSpec};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(extend("examples" = [
-    { "scene": "brb" },
+    { "scene": "night_stream" },
     { "scene": "main", "transition": { "kind": "iris", "ms": 600 } },
     { "scene": "night_stream", "transition": { "kind": "dip", "ms": 800, "colour": "#ffffff" } }
-]))]
+], "x-omuzaki-fixture" = "scenes"))]
 pub struct SwitchScene {
     /// The scene to put on.
     pub scene: SceneId,
