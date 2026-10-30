@@ -20,6 +20,7 @@ use crate::camera::CameraRig;
 use crate::caption::{Captioner, Ink};
 use crate::def::{ShortDef, ShotFraming, ShotNumbers};
 use crate::error::ShortError;
+use crate::insert::InsertPainter;
 use crate::perform::OfflinePerformer;
 use crate::render::{FrameSink, LoopReport, frame_count};
 use crate::timeline::Timeline;
@@ -165,6 +166,7 @@ pub fn render_puppet_short(
     let mut renderer = CpuRenderer::new(threads);
     let mut canvas = Canvas::new(w, h);
     let captioner = Captioner::new(Ink::of(&def.captions))?;
+    let mut inserts = InsertPainter::default();
     let frames = frame_count(timeline.duration, def.fps);
     let mut report = LoopReport::default();
     for index in 0..frames {
@@ -180,6 +182,7 @@ pub fn render_puppet_short(
         canvas.fill(fill);
         renderer.draw(eval.draw_list(), &textures, view_for(&shot, head, def.size), &mut canvas);
         let mut rgba = canvas.to_straight_rgba8();
+        inserts.draw(&def.inserts, t, &mut rgba, [w, h])?;
         let drawn = std::time::Instant::now();
         if def.captions.enabled
             && let Some(caption) = timeline.caption_at(t)

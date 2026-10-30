@@ -113,6 +113,10 @@ pub struct ShortDef {
     /// same moment, and holds until the next change from either.
     #[serde(rename = "cue", default, skip_serializing_if = "Vec::is_empty")]
     pub cues: Vec<CueDef>,
+    /// Drawn cards that take over the frame for a moment (a cutaway to a cartoon reaction), each with its own backdrop
+    /// and shapes; captions still draw over them.
+    #[serde(rename = "insert", default, skip_serializing_if = "Vec::is_empty")]
+    pub inserts: Vec<crate::insert::InsertDef>,
     /// How much the handheld camera drifts: 1 is a person holding a phone (the default), 0 a locked-off camera, up
     /// to [`MAX_HANDHELD`]. A shot's `shake` comes on top.
     #[serde(default = "one", skip_serializing_if = "is_one")]
@@ -686,6 +690,7 @@ impl ShortDef {
             captions: CaptionsDef::default(),
             lines: Vec::new(),
             cues: Vec::new(),
+            inserts: Vec::new(),
             handheld: 1.0,
         }
     }
@@ -784,6 +789,15 @@ impl ShortDef {
         }
         for (i, cue) in self.cues.iter().enumerate() {
             check_cue(i, cue)?;
+        }
+        if self.inserts.len() > crate::insert::MAX_INSERTS {
+            return Err(ShortError::invalid(
+                "insert",
+                format!("{} inserts; at most {}", self.inserts.len(), crate::insert::MAX_INSERTS),
+            ));
+        }
+        for (i, insert) in self.inserts.iter().enumerate() {
+            crate::insert::check(i, insert, MAX_SECONDS)?;
         }
         Ok(())
     }

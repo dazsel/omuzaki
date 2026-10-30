@@ -20,6 +20,7 @@ use crate::camera::CameraRig;
 use crate::caption::{Captioner, Ink};
 use crate::def::ShortDef;
 use crate::error::ShortError;
+use crate::insert::InsertPainter;
 use crate::perform::OfflinePerformer;
 use crate::timeline::Timeline;
 use crate::voice::VoiceTrack;
@@ -183,6 +184,7 @@ fn run(
         AnyStage::Avatar(avatar) => avatar.settle(SETTLE_STEPS),
     }
     let captioner = Captioner::new(Ink::of(&def.captions))?;
+    let mut inserts = InsertPainter::default();
     let total = frame_count(scene.timeline.duration, def.fps);
     let frames = scene.frames.clone().map_or(0..total, |r| r.start.min(total)..r.end.min(total));
     let mut report = LoopReport::default();
@@ -207,6 +209,7 @@ fn run(
         let image =
             renderer.read_target(stage.target()).map_err(|e| render_error(&format!("reading frame {index}"), e))?;
         let mut rgba = straight_rgba(&image);
+        inserts.draw(&def.inserts, t, &mut rgba, [w, h])?;
         let drawn = std::time::Instant::now();
         if def.captions.enabled
             && let Some(caption) = scene.timeline.caption_at(t)

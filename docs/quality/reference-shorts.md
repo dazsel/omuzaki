@@ -69,6 +69,9 @@ To land on a reference's frames rather than near them:
   edge, a faint shadow, steady; `outline`: semibold, an outline, no shadow) and changes one thing about it with
   `weight`, `outline`, `shadow`, `pop`, `fill` and `line`.
 - A garment's `common.sheer` (0 to 0.9) lets what it covers show through, for chiffon, tulle or a sheer bodysuit.
+- `[[insert]]` cuts away to a drawn card for `duration` seconds from `at`: a flat `backdrop`, a preset `card`
+  (`scream`, `googly`) and `[[insert.shape]]`s (`ellipse`, `blob`, `polygon`, `curve`, each with a `fill`, a `line` or
+  both), the whole card moved with `offset`, `scale` and `roll`. A jumpy cutaway is several inserts in a row.
 4. `python3 tools/reference-loop/compare.py ours.webm reference.mp4 OUT` (OUT outside the repository) and read the
    sheets pair by pair: face, framing, light, captions, timing.
 5. Score it: `python3 tools/reference-loop/parity.py ours.webm reference.mp4 OUT --made-with "..." --assets <the
