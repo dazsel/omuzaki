@@ -29,8 +29,68 @@ pub fn texture(skin: &Skin, seed: u32, width: u32) -> Canvas {
         c *= 1.0 - 0.1 * under;
         c
     });
+    lines(&mut canvas, seed);
     freckles(&mut canvas, skin, seed);
     canvas
+}
+
+/// Fine lines: shallow arcs under the eye following the lower lid, and a fan at the outer corner. Each is a run of
+/// short, broken, wavering strokes, darker in its fold and lighter on the skin just above it.
+fn lines(canvas: &mut Canvas, seed: u32) {
+    let mut rng = Pcg::new(seed, 0x11e5);
+    #[allow(clippy::cast_precision_loss)]
+    let px_per_m = canvas.width as f32 / (2.0 * SKIN_HALF.x);
+    let to_px = |x: f32, y: f32| Vec2::new((x + SKIN_HALF.x) * px_per_m, (SKIN_TOP - y) * px_per_m);
+    let fold = Vec3::new(0.22, 0.1, 0.07);
+    let lift = Vec3::new(0.95, 0.75, 0.65);
+    let draw = |canvas: &mut Canvas, points: &[Vec2], rng: &mut Pcg, strength: f32| {
+        // Broken into short runs.
+        let mut i = 0;
+        while i + 3 < points.len() {
+            // In range: 0..8.
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let run = (3 + (rng.unit() * 8.0) as usize).min(points.len() - i);
+            if rng.unit() < 0.8 {
+                let seg = &points[i..i + run];
+                let up: Vec<Vec2> = seg.iter().map(|p| *p - Vec2::new(0.0, 1.6)).collect();
+                canvas.stroke(&up, (2.4, 2.0), lift, (0.06 * strength, 0.04 * strength));
+                canvas.stroke(seg, (1.6, 1.2), fold, (0.22 * strength, 0.12 * strength));
+            }
+            i += run;
+        }
+    };
+    // Under the eye: arcs a few millimetres below the lid, the lowest the faintest.
+    for (k, depth) in [5.8f32, 7.2, 8.9, 10.8].iter().enumerate() {
+        #[allow(clippy::cast_precision_loss)]
+        let strength = 1.0 - 0.18 * k as f32;
+        let points: Vec<Vec2> = (0..=60)
+            .map(|i| {
+                #[allow(clippy::cast_precision_loss)]
+                let x = -0.016 + 0.027 * i as f32 / 60.0;
+                let wave = 0.00012 * (x * 3100.0 + rng.range(0.0, 0.4)).sin();
+                let y = -depth * 0.001 + 0.0042 * ((x + 0.002) / 0.015).powi(2) + wave;
+                to_px(x, y)
+            })
+            .collect();
+        draw(canvas, &points, &mut rng, strength);
+    }
+    // The outer corner: a fan of lines running out toward the temple.
+    for k in 0..6u8 {
+        let side = f32::from(k) - 2.5;
+        let angle = std::f32::consts::PI + side * 0.2 + rng.range(-0.06, 0.06);
+        let start = Vec2::new(-0.0165, -0.0005) + Vec2::new(angle.cos(), angle.sin()) * rng.range(0.0005, 0.0015);
+        let length = rng.range(0.005, 0.009);
+        let points: Vec<Vec2> = (0..=30)
+            .map(|i| {
+                #[allow(clippy::cast_precision_loss)]
+                let t = i as f32 / 30.0;
+                let bend = angle + 0.25 * t * side.signum();
+                let p = start + Vec2::new(bend.cos(), bend.sin()) * length * t;
+                to_px(p.x, p.y)
+            })
+            .collect();
+        draw(canvas, &points, &mut rng, 0.8);
+    }
 }
 
 fn freckles(canvas: &mut Canvas, skin: &Skin, seed: u32) {
