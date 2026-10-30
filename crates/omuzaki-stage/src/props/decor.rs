@@ -1,5 +1,5 @@
 //! Things that dress a room: `gramophone` (a cabinet, a platter and a flared horn), `picture` (a framed picture to hang
-//! on a wall) and `urn` (a lidded vase with handles). Procedural, in metres, toon with vertex colours, like the other
+//! on a wall), `urn` (a lidded vase with handles) and `chest` (a lidded chest with metal straps). Procedural, in metres, toon with vertex colours, like the other
 //! interior kinds.
 
 use std::f32::consts::{PI, TAU};
@@ -229,7 +229,7 @@ impl PropKind for Picture {
         }
         if let Some(medallion) = p.medallion {
             let (rx, ry) = (cw * 0.62, (c1 - c0) * 0.3);
-            face.ellipsoid(At::xyz(0.0, (c0 + c1) * 0.5 + (c1 - c0) * 0.08, depth * 0.5), Vec3::new(rx, ry, 0.002), 6, 48, medallion);
+            face.ellipsoid(At::xyz(0.0, f32::midpoint(c0, c1) + (c1 - c0) * 0.08, depth * 0.5), Vec3::new(rx, ry, 0.002), 6, 48, medallion);
         }
         Ok(output(vec![(frame, painted(darker(p.frame, 0.6))), (face, painted_plain())]))
     }
@@ -313,6 +313,76 @@ impl PropKind for Urn {
 
 register_prop_kind!(Urn);
 
+/// A chest.
+pub struct Chest;
+
+/// The chest's parameters.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct ChestParams {
+    /// Metres along x, 0.2 to 1.5.
+    pub width: f32,
+    /// Metres along z, 0.15 to 1.0.
+    pub depth: f32,
+    /// Metres to the top of the lid, 0.15 to 1.0.
+    pub height: f32,
+    /// A rounded lid; flat without.
+    pub domed: bool,
+    /// The wood or leather.
+    pub colour: Colour,
+    /// The straps, corners and lock.
+    pub metal: Colour,
+}
+
+impl Default for ChestParams {
+    fn default() -> Self {
+        Self { width: 0.6, depth: 0.38, height: 0.42, domed: true, colour: Colour::hex(0x008a_6a4a), metal: BRASS }
+    }
+}
+
+impl PropKind for Chest {
+    type Params = ChestParams;
+    const ID: &'static str = "chest";
+    const SUMMARY: &'static str = "A chest standing on y = 0, its front toward +Z: a box and a flat or rounded lid, \
+                                   bound by metal straps with corner caps and a lock plate. Size, lid, wood and metal.";
+
+    fn validate(p: &ChestParams) -> Result<(), String> {
+        between("width", p.width, 0.2, 1.5)?;
+        between("depth", p.depth, 0.15, 1.0)?;
+        between("height", p.height, 0.15, 1.0)
+    }
+
+    fn build(p: &ChestParams) -> Result<PropOutput, String> {
+        let (w, d) = (p.width * 0.5, p.depth * 0.5);
+        let lid_h = if p.domed { d.min(p.height * 0.4) } else { p.height * 0.18 };
+        let body_h = p.height - lid_h;
+        let mut wood = Shape::new();
+        let mut metal = Shape::new();
+        wood.bevelled(At::xyz(0.0, body_h * 0.5, 0.0), Vec3::new(w, body_h * 0.5, d), 0.006, p.colour);
+        if p.domed {
+            // A rounded lid: the upper half of an ellipsoid over the box (its lower half is inside it).
+            wood.ellipsoid(At::xyz(0.0, body_h, 0.0), Vec3::new(w, lid_h, d), 12, 40, mix(p.colour, Colour::WHITE, 0.05));
+        } else {
+            wood.bevelled(At::xyz(0.0, body_h + lid_h * 0.5, 0.0), Vec3::new(w + 0.008, lid_h * 0.5, d + 0.008), 0.006, mix(p.colour, Colour::WHITE, 0.05));
+        }
+        // Straps over the front, a third in from each end, and caps on the front corners.
+        let strap = (p.width * 0.04).max(0.015);
+        for x in [-w * 0.55, w * 0.55] {
+            metal.block(Vec3::new(x - strap * 0.5, 0.0, d), Vec3::new(x + strap * 0.5, body_h, d + 0.006), p.metal);
+        }
+        for x in [-1.0, 1.0] {
+            metal.block(Vec3::new(x * w - strap * 0.5 * (1.0 + x), 0.0, d - 0.004), Vec3::new(x * w + strap * 0.5 * (1.0 - x), strap * 2.0, d + 0.008), p.metal);
+            metal.block(Vec3::new(x * w - strap * 0.5 * (1.0 + x), body_h - strap * 2.0, d - 0.004), Vec3::new(x * w + strap * 0.5 * (1.0 - x), body_h, d + 0.008), p.metal);
+        }
+        // A band along the box's rim, and the lock plate.
+        metal.block(Vec3::new(-w - 0.003, body_h - strap * 0.6, -d - 0.003), Vec3::new(w + 0.003, body_h, d + 0.007), darker(p.metal, 0.1));
+        metal.bevelled(At::xyz(0.0, body_h - strap * 1.6, d + 0.006), Vec3::new(strap * 1.2, strap * 1.4, 0.004), 0.002, p.metal);
+        Ok(output(vec![(wood, painted(darker(p.colour, 0.6))), (metal, painted(darker(p.metal, 0.55)))]))
+    }
+}
+
+register_prop_kind!(Chest);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,6 +394,8 @@ mod tests {
             Gramophone::build(&GramophoneParams::default()),
             Picture::build(&PictureParams { medallion: Some(Colour::hex(0x00d8_c8a0)), mat_width: 0.04, ..PictureParams::default() }),
             Urn::build(&UrnParams::default()),
+            Chest::build(&ChestParams::default()),
+            Chest::build(&ChestParams { domed: false, ..ChestParams::default() }),
         ];
         for build in builds {
             let out = build.expect("builds");

@@ -39,6 +39,9 @@ pub struct ShelfParams {
     pub trim: Option<Colour>,
     /// Boards closed by doors, counted from the bottom (a cabinet under open shelves), 0 to the number of boards.
     pub doors: u8,
+    /// Square posts standing proud of each side, full height, with a capital and a base (in the trim, when there is
+    /// one): a carved case rather than a plain one.
+    pub pilasters: bool,
 }
 
 impl Default for ShelfParams {
@@ -54,6 +57,7 @@ impl Default for ShelfParams {
             colour: WOOD,
             trim: None,
             doors: 0,
+            pilasters: false,
         }
     }
 }
@@ -130,6 +134,17 @@ impl PropKind for Shelf {
             gilt.block(Vec3::new(-w - 0.032, h + 0.018, d + 0.035), Vec3::new(w + 0.032, h + 0.032, d + 0.04), trim);
             gilt.block(Vec3::new(-w - 0.035, h + 0.07, -0.012), Vec3::new(w + 0.035, h + 0.085, d + 0.045), trim);
         }
+        if p.pilasters {
+            let post = 0.035_f32.max(p.width * 0.04);
+            let cap = p.trim.unwrap_or_else(|| darker(wood, 0.2));
+            for x in [-1.0, 1.0] {
+                let cx = x * (w + post * 0.2);
+                frame.block(Vec3::new(cx - post, 0.0, d - post * 0.6), Vec3::new(cx + post, h, d + post * 0.9), mix(wood, Colour::WHITE, 0.05));
+                for (y0, y1) in [(0.0, 0.08), (h - 0.1, h - 0.04)] {
+                    gilt.block(Vec3::new(cx - post * 1.25, y0, d - post * 0.7), Vec3::new(cx + post * 1.25, y1, d + post * 1.15), cap);
+                }
+            }
+        }
         let mut parts = vec![(frame, painted(darker(wood, 0.6)))];
         if !gilt.is_empty() {
             parts.push((gilt, painted(darker(p.trim.unwrap_or(wood), 0.55))));
@@ -158,8 +173,8 @@ fn door_bay(frame: &mut Shape, wood: Colour, trim: Option<Colour>, x: (f32, f32)
         if px1 > px0 && py1 > py0 {
             frame.block(Vec3::new(px0, py0, d), Vec3::new(px1, py1, d + 0.008), mix(wood, Colour::WHITE, 0.06));
             if let Some(trim) = trim {
-                let centre = Vec3::new((px0 + px1) * 0.5, (py0 + py1) * 0.5, d + 0.011);
-                let size = ((px1 - px0).min(py1 - py0) * 0.22).max(0.01);
+                let centre = Vec3::new(f32::midpoint(px0, px1), f32::midpoint(py0, py1), d + 0.011);
+                let size = ((px1 - px0).min(py1 - py0) * 0.1).max(0.008);
                 frame.bevelled(At::pos(centre).roll(45.0), Vec3::new(size, size, 0.003), 0.001, trim);
             }
         }
