@@ -49,6 +49,10 @@ pub struct Landmarks {
     /// The pupil, if it was measured.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pupil: Option<Circle>,
+    /// Points on the eyeball's own edge where the picture shows it (the white running out to the eyeball's curve
+    /// rather than to a lid, often toward the inner corner of an eye seen from the side); none if it doesn't.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ball_edge: Vec<[f32; 2]>,
 }
 
 impl Landmarks {
@@ -64,7 +68,12 @@ impl Landmarks {
         if self.outline.len() < 8 {
             return Err("outline: needs at least 8 points round the opening".to_owned());
         }
-        let points = self.outline.iter().chain([&self.iris.centre]).chain(self.pupil.as_ref().map(|p| &p.centre));
+        let points = self
+            .outline
+            .iter()
+            .chain(&self.ball_edge)
+            .chain([&self.iris.centre])
+            .chain(self.pupil.as_ref().map(|p| &p.centre));
         if points.flat_map(|p| p.iter()).any(|v| !v.is_finite()) {
             return Err("every point must be finite".to_owned());
         }
@@ -96,6 +105,10 @@ pub struct Residuals {
     /// ball everywhere, as a real eye's does).
     #[serde(default)]
     pub off_ball: f32,
+    /// The mean distance from the eyeball's edge points to its outline as the camera sees it (0 when none were
+    /// measured).
+    #[serde(default)]
+    pub ball_edge: f32,
 }
 
 impl Residuals {
@@ -105,6 +118,7 @@ impl Residuals {
             + self.iris_radius
             + f32::midpoint(self.pupil_centre, self.pupil_radius)
             + self.off_ball
+            + self.ball_edge
     }
 }
 
@@ -134,6 +148,8 @@ pub struct Projected {
     /// How far the opening reaches past the eyeball's silhouette, averaged over the outline (the lids'
     /// tuck, under a millimetre, allowed, and the corners left out).
     pub off_ball: f32,
+    /// The eyeball's outline as the camera sees it: the circle where the lines of sight graze it.
+    pub ball: Vec<Vec2>,
 }
 
 /// Where `design`'s outlines land in a `size` picture taken as `shot` takes it.
@@ -194,6 +210,7 @@ pub fn project(design: &EyeDesign, shot: &Shot, size: [u32; 2]) -> Projected {
         iris: circle(ball.iris_radius),
         pupil: circle(ball.iris_radius * ball.pupil * PUPIL_MAGNIFY),
         off_ball,
+        ball: silhouette(ball.radius, eye).into_iter().map(to_px).collect(),
     }
 }
 
@@ -224,7 +241,31 @@ pub fn residuals(design: &EyeDesign, shot: &Shot, marks: &Landmarks) -> Residual
         pupil_centre,
         pupil_radius,
         off_ball: p.off_ball,
+        ball_edge: if marks.ball_edge.is_empty() {
+            0.0
+        } else {
+            let edge: Vec<Vec2> = marks.ball_edge.iter().map(|&q| Vec2::from(q)).collect();
+            mean_nearest(&edge, &dense(&p.ball))
+        },
     }
+}
+
+/// The circle where lines of sight from `eye` graze a ball of `radius` at the origin, closed (64 points and the first
+/// again).
+fn silhouette(radius: f32, eye: Vec3) -> Vec<Vec3> {
+    let d2 = eye.length_squared().max(radius * radius * 1.0001);
+    let centre = eye * (radius * radius / d2);
+    let rho = radius * (1.0 - radius * radius / d2).sqrt();
+    let axis = eye.normalize_or(Vec3::Z);
+    let a = axis.any_orthonormal_vector();
+    let b = axis.cross(a);
+    (0..=64)
+        .map(|k| {
+            #[allow(clippy::cast_precision_loss, reason = "64 samples")]
+            let t = std::f32::consts::TAU * (k % 64) as f32 / 64.0;
+            centre + (a * t.cos() + b * t.sin()) * rho
+        })
+        .collect()
 }
 
 /// `line` with five more points on each of its segments.

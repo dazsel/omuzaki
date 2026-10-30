@@ -103,7 +103,8 @@ fn rounds() -> u32 {
             "outline": [[140, 330], [250, 270], [350, 220], [450, 178], [550, 167], [630, 225], [700, 330],
                         [722, 470], [680, 500], [580, 480], [480, 450], [380, 413], [280, 378], [180, 344]],
             "iris": { "centre": [522, 306], "radius": 138 },
-            "pupil": { "centre": [516, 304], "radius": 42 }
+            "pupil": { "centre": [516, 304], "radius": 42 },
+            "ball_edge": [[708, 320], [720, 360], [725, 400], [724, 440], [717, 480]]
         }
     }],
     "x-omuzaki-fixture" = "character"
@@ -126,9 +127,9 @@ impl Op for FitEye {
         OpMeta {
             name: "face.eye3d.fit",
             summary: "Fit a character's 3D eye to landmarks measured on a photograph (the opening's outline, the iris \
-                      and the pupil, in its pixels): set its opening's shape and its iris's and pupil's sizes, and \
-                      return the shot (camera and gaze) that frames it the same way, for render.eye, with the \
-                      remaining error in pixels",
+                      and the pupil, and where it shows, the eyeball's own edge, in its pixels): set its opening's \
+                      shape and its eyeball's, iris's and pupil's sizes, and return the shot (camera and gaze) that \
+                      frames it the same way, for render.eye, with the remaining error in pixels",
             kind: OpKind::Edit,
             scope: Scope::EditCharacter,
             undo: Undo::Auto,
