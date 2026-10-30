@@ -78,6 +78,73 @@ pub struct FingerAngles {
 /// The five fingers of one hand, thumb first.
 pub type Fingers = [FingerAngles; 5];
 
+/// A hand shape held to the camera that presses a trigger key (PF-06 "gestures as triggers", PF-25), the way a face
+/// gesture does: bind an expression to its [`key`](Self::key) with `trigger.bind`. Either hand shows it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum HandGesture {
+    /// Every finger straight: a wave or a "stop".
+    OpenPalm,
+    /// Every finger curled.
+    Fist,
+    /// The index straight, the other three curled.
+    Point,
+    /// The index and middle straight, the ring and little curled.
+    Peace,
+    /// The thumb straight, the four fingers curled.
+    ThumbsUp,
+}
+
+impl HandGesture {
+    /// Every hand gesture, in a fixed order (bit `i` of [`HandGestures`] is `ALL[i]`).
+    pub const ALL: [Self; 5] = [Self::OpenPalm, Self::Fist, Self::Point, Self::Peace, Self::ThumbsUp];
+
+    /// The trigger key it presses.
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::OpenPalm => "gesture:open_palm",
+            Self::Fist => "gesture:fist",
+            Self::Point => "gesture:point",
+            Self::Peace => "gesture:peace",
+            Self::ThumbsUp => "gesture:thumbs_up",
+        }
+    }
+
+    const fn bit(self) -> u8 {
+        1 << self as u8
+    }
+}
+
+/// A set of [`HandGesture`]s: the ones showing now. `Copy`, one byte.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct HandGestures(u8);
+
+impl HandGestures {
+    /// None showing.
+    pub const NONE: Self = Self(0);
+
+    /// The set with `gesture` added.
+    #[must_use]
+    pub const fn with(self, gesture: HandGesture) -> Self {
+        Self(self.0 | gesture.bit())
+    }
+
+    /// Whether `gesture` is in the set.
+    pub const fn contains(self, gesture: HandGesture) -> bool {
+        self.0 & gesture.bit() != 0
+    }
+
+    /// Whether the set is empty.
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// The gestures in the set, in [`HandGesture::ALL`] order.
+    pub fn iter(self) -> impl Iterator<Item = HandGesture> {
+        HandGesture::ALL.into_iter().filter(move |g| self.contains(*g))
+    }
+}
+
 /// What a body tracker should track. Hands and arms each cost a model's run per frame, so each is a switch. A field
 /// left out reads as its [`Default`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -224,6 +291,8 @@ struct Shared {
     back: AtomicU8,
     /// Whether a [`BodyWriter`] is out.
     writing: AtomicBool,
+    /// The hand gestures showing now ([`HandGestures`]' bits), read by whoever presses their keys.
+    gestures: AtomicU8,
 }
 
 /// The newest-wins hand-off from body trackers to the stage. Made once; the reader stays with the stage and each
@@ -246,6 +315,7 @@ impl BodyBoard {
             middle: AtomicU8::new(1),
             back: AtomicU8::new(2),
             writing: AtomicBool::new(false),
+            gestures: AtomicU8::new(0),
         });
         (Arc::new(Self { shared: Arc::clone(&shared) }), BodyReader { shared, front: 0 })
     }
@@ -260,6 +330,11 @@ impl BodyBoard {
     /// Whether a writer is out (a body tracker is running).
     pub fn is_writing(&self) -> bool {
         self.shared.writing.load(Ordering::Acquire)
+    }
+
+    /// The hand gestures showing now; none while no tracker is running. Any number of readers; wait-free.
+    pub fn gestures(&self) -> HandGestures {
+        HandGestures(self.shared.gestures.load(Ordering::Acquire))
     }
 }
 
@@ -285,11 +360,18 @@ impl BodyWriter {
         let previous = self.shared.middle.swap(self.back | FRESH, Ordering::AcqRel);
         self.back = previous & INDEX;
     }
+
+    /// Sets the hand gestures showing now (the tracker decides them, with its own hold and release times).
+    pub fn show(&mut self, gestures: HandGestures) {
+        self.shared.gestures.store(gestures.0, Ordering::Release);
+    }
 }
 
 impl Drop for BodyWriter {
     fn drop(&mut self) {
         self.shared.back.store(self.back, Ordering::Release);
+        // A tracker that stops lets go of its gestures.
+        self.shared.gestures.store(0, Ordering::Release);
         self.shared.writing.store(false, Ordering::Release);
     }
 }
@@ -441,6 +523,17 @@ mod tests {
             // The reader's own slot still holds the frame it took, and the fresh one arrives whole.
             assert_eq!(reader.poll(), Some(frame(round * 2 + 1)));
         }
+    }
+
+    #[test]
+    fn gestures_show_while_the_tracker_runs_and_go_when_it_stops() {
+        let (board, _reader) = BodyBoard::new();
+        let mut writer = board.writer().expect("free");
+        let shown = HandGestures::NONE.with(HandGesture::Peace).with(HandGesture::Fist);
+        writer.show(shown);
+        assert_eq!(board.gestures().iter().collect::<Vec<_>>(), [HandGesture::Fist, HandGesture::Peace]);
+        drop(writer);
+        assert!(board.gestures().is_empty());
     }
 
     #[test]

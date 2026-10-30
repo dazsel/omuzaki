@@ -11,10 +11,11 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use omuzaki_core::time::Seconds;
-use omuzaki_track_api::body::{BodyBoard, BodyConfig, BodyFrame, BodyState, BodyStatus, BodyWriter};
+use omuzaki_track_api::body::{BodyBoard, BodyConfig, BodyFrame, BodyState, BodyStatus, BodyWriter, HandGestures};
 use omuzaki_track_api::error::TrackError;
 
 use crate::body::BodyTracker;
+use crate::body::gesture::HandGestureDetector;
 use crate::body::models::PoseSize;
 use crate::frame::RgbFrame;
 
@@ -207,6 +208,7 @@ impl Run {
         self.shared.status().state = BodyState::Running;
         let mut frame = TapFrame::default();
         let mut out = BodyFrame::empty(0, Seconds(0.0));
+        let mut gestures = HandGestureDetector::default();
         let (mut seq, mut last_time, mut saw) = (0_u64, None::<f64>, false);
         let mut times = [0.0_f32; TIMES];
         let mut frames = 0_u64;
@@ -217,6 +219,8 @@ impl Run {
                 if saw {
                     seq += 1;
                     writer.publish(&BodyFrame::empty(seq, last_time.map_or(Seconds(0.0), Seconds)));
+                    gestures.reset();
+                    writer.show(HandGestures::NONE);
                     saw = false;
                     self.shared.status().arms = [0.0; 2];
                     self.shared.status().hands = [0.0; 2];
@@ -226,6 +230,7 @@ impl Run {
             let time = frame.time.0;
             if last_time.is_none_or(|last| !(0.0..NEW_SESSION_S).contains(&(time - last))) {
                 tracker.reset();
+                gestures.reset();
             }
             last_time = Some(time);
             let bits = self.shared.wanted.load(Ordering::Relaxed);
@@ -241,6 +246,7 @@ impl Run {
             seq += 1;
             (out.seq, out.time) = (seq, Seconds(time));
             writer.publish(&out);
+            writer.show(gestures.update(&out));
             saw = out.sees_anything();
             #[allow(clippy::cast_possible_truncation)] // a ring index
             {

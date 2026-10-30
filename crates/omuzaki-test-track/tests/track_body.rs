@@ -16,6 +16,7 @@ use omuzaki_core::glam::{Quat, Vec3};
 use omuzaki_core::time::Seconds;
 use omuzaki_track::RgbFrame;
 use omuzaki_track::body::models::{BodyModelDir, PoseSize};
+use omuzaki_track::body::gesture::{HandGestureConfig, classify};
 use omuzaki_track::body::{BodyTracker, BodyTrackerConfig};
 use omuzaki_track_api::body::{BodyConfig, BodyFrame};
 use track_support::DirSource;
@@ -154,7 +155,7 @@ fn kit_frames_score_against_their_poses() {
     assert!(!names.is_empty(), "no frames in {}", frames.display());
     let (mut arm_errors, mut finger_errors, mut times) = (Vec::new(), Vec::new(), Vec::new());
     let mut rows = Vec::new();
-    println!("frame | pose | hands L R | upper L R (deg) | fore L R (deg) | finger flex err L R (deg)");
+    println!("frame | pose | hands L R | upper L R (deg) | fore L R (deg) | finger flex err and gesture L R (deg)");
     for path in &names {
         let (rgb, width, height) = read_ppm(path);
         let truth = read_truth(&path.with_extension("json"));
@@ -208,10 +209,12 @@ fn kit_frames_score_against_their_poses() {
                 total += (truth_flex - solved_flex).abs().to_degrees() / 4.0;
             }
             finger_errors.push(total);
+            let gesture = classify(&fingers, &HandGestureConfig::default());
+            row[format!("gesture_{side}")] = serde_json::json!(gesture);
             row[format!("solved_{side}")] =
                 serde_json::json!(fingers.iter().map(|f| [f.spread, f.mcp, f.pip, f.dip]).collect::<Vec<_>>());
             row[format!("fingers_{side}")] = total.into();
-            flex.push(format!("{total:.0}"));
+            flex.push(format!("{total:.0} {}", gesture.map_or("-".to_owned(), |g| format!("{g:?}"))));
         }
         let hands = landmarks.hands.map(|h| h.map_or("-".to_owned(), |h| format!("{:.2}", h.presence)));
         println!(

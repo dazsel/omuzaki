@@ -16,6 +16,7 @@
 //! Everything a frame needs is allocated once; [`BodyTracker::track`] then allocates nothing.
 
 mod filter;
+pub mod gesture;
 mod graph;
 mod hand;
 pub mod models;

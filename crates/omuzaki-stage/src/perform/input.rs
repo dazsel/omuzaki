@@ -29,7 +29,7 @@ use omuzaki_settings_api::meta::{AgentWrite, Apply, InProfile, SettingMeta, Sett
 use omuzaki_settings_api::register_setting;
 use omuzaki_settings_api::setting::Setting;
 use omuzaki_track::gesture::Gesture;
-use omuzaki_track_api::body::{BodyBoard, BodyConfig, BodyStatus};
+use omuzaki_track_api::body::{BodyBoard, BodyConfig, BodyStatus, HandGesture};
 use omuzaki_track_api::camera::CameraId;
 use omuzaki_metrics_api::budget::{BudgetKey, BudgetUse, TRACK_FACE};
 use omuzaki_track_api::doctor::{Diagnosis, Finding};
@@ -398,6 +398,11 @@ pub trait InputHost: Send + Sync {
         Vec::new()
     }
 
+    /// The hand gestures showing now (PF-06), while body tracking runs: each presses its trigger key while it shows.
+    fn hand_gestures(&self) -> Vec<HandGesture> {
+        Vec::new()
+    }
+
     /// Tracks the arms and hands beside the face (PF-06, PF-07) as `config` says, or stops with
     /// [`BodyConfig::OFF`]; returns the config before. It follows the capture: on while the camera runs, idle while it
     /// is off.
@@ -720,12 +725,12 @@ impl LiveInput {
         Self { inner: Mutex::new(inner), slot: self.slot, perform: self.perform, guided: self.guided, gestures: self.gestures }
     }
 
-    /// Starts the gesture watch over `tap` if it isn't running. A watch that can't start leaves gestures off and the
-    /// capture running.
-    fn watch_gestures(&self, tap: &Arc<FrameTap>) {
+    /// Starts the gesture watch over `tap` (and the hand gestures on `board`) if it isn't running. A watch that can't
+    /// start leaves gestures off and the capture running.
+    fn watch_gestures(&self, tap: &Arc<FrameTap>, board: Option<&Arc<BodyBoard>>) {
         let mut watch = self.gestures.lock().unwrap_or_else(PoisonError::into_inner);
         if watch.is_none() {
-            *watch = GestureWatch::start(Arc::clone(tap), Arc::clone(&self.perform)).ok();
+            *watch = GestureWatch::start(Arc::clone(tap), board.cloned(), Arc::clone(&self.perform)).ok();
         }
     }
 
@@ -793,7 +798,7 @@ impl InputHost for LiveInput {
         let (device, id) = inner.startable()?;
         if mode == Mode::Apply {
             inner.start_on(device, id, &self.slot)?;
-            self.watch_gestures(&inner.tap);
+            self.watch_gestures(&inner.tap, inner.body.as_ref());
         }
         Ok(before)
     }
@@ -928,6 +933,10 @@ impl InputHost for LiveInput {
 
     fn gestures(&self) -> Vec<Gesture> {
         self.gestures.lock().unwrap_or_else(PoisonError::into_inner).as_ref().map(GestureWatch::active).unwrap_or_default()
+    }
+
+    fn hand_gestures(&self) -> Vec<HandGesture> {
+        self.gestures.lock().unwrap_or_else(PoisonError::into_inner).as_ref().map(GestureWatch::hands).unwrap_or_default()
     }
 
     fn track_body(&self, config: BodyConfig, mode: Mode) -> Result<BodyConfig, InputError> {
