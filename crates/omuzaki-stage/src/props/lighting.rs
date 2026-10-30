@@ -1,7 +1,7 @@
 //! Kinds that bring their own light (design D7: a practical light counts toward the scene's limit): `lamp`, whose
 //! bulb is a point light, and `window`, a daylit pane with a spot light shining in through it.
 
-use omuzaki_core::glam::Vec3;
+use omuzaki_core::glam::{Vec2, Vec3};
 use omuzaki_render_api::{Colour, Light, Material};
 use omuzaki_stage_api::{PropKind, PropOutput, register_prop_kind};
 use schemars::JsonSchema;
@@ -153,6 +153,21 @@ pub struct WindowParams {
     pub intensity: f32,
     /// How steeply it falls into the room, degrees below level, 0 to 70.
     pub elevation: f32,
+    /// How the glass is divided.
+    pub glazing: Glazing,
+    /// A round head: the top corners filled in under an arch as wide as the window.
+    pub arch: bool,
+}
+
+/// How a window's glass is divided.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Glazing {
+    /// Upright panes, `panes` across and down.
+    #[default]
+    Grid,
+    /// Leaded diamonds: bars crossing at 45°, `panes[0]` diamonds across.
+    Diamond,
 }
 
 impl Default for WindowParams {
@@ -169,6 +184,8 @@ impl Default for WindowParams {
             light: Colour::hex(0x00ff_f1dc),
             intensity: 9.0,
             elevation: 28.0,
+            glazing: Glazing::Grid,
+            arch: false,
         }
     }
 }
@@ -178,7 +195,8 @@ impl PropKind for Window {
     const ID: &'static str = "window";
     const SUMMARY: &'static str = "A window to set on a wall, facing +Z, from y = 0 at its sill: a frame with panes \
                                    over a daylit sky, curtains if a colour is given, and daylight shining in as a spot \
-                                   light (colour, intensity, elevation).";
+                                   light (colour, intensity, elevation). Upright or leaded diamond glazing, square or \
+                                   round-headed.";
 
     fn validate(p: &WindowParams) -> Result<(), String> {
         between("width", p.width, 0.4, 3.0)?;
@@ -204,13 +222,36 @@ impl PropKind for Window {
         frame.block(Vec3::new(-w - bar * 1.6, -bar * 1.5, 0.0), Vec3::new(w + bar * 1.6, -bar, depth + 0.07), p.frame);
         let [across, down] = p.panes.map(f32::from);
         let thin = bar * 0.4;
-        for i in 1..p.panes[0] {
-            let x = -w + p.width * f32::from(i) / across;
-            frame.block(Vec3::new(x - thin * 0.5, 0.0, depth * 0.3), Vec3::new(x + thin * 0.5, h, depth * 0.7), p.frame);
+        match p.glazing {
+            Glazing::Grid => {
+                for i in 1..p.panes[0] {
+                    let x = -w + p.width * f32::from(i) / across;
+                    frame.block(Vec3::new(x - thin * 0.5, 0.0, depth * 0.3), Vec3::new(x + thin * 0.5, h, depth * 0.7), p.frame);
+                }
+                for i in 1..p.panes[1] {
+                    let y = h * f32::from(i) / down;
+                    frame.block(Vec3::new(-w, y - thin * 0.5, depth * 0.3), Vec3::new(w, y + thin * 0.5, depth * 0.7), p.frame);
+                }
+            }
+            Glazing::Diamond => {
+                // Lines y = ±x + c every `pitch`, each clipped to the glass.
+                let pitch = p.width / across;
+                let z = depth * 0.5;
+                #[allow(clippy::cast_possible_truncation)] // a few dozen lines
+                let lines = ((p.width + h) / pitch).ceil() as i32 + 1;
+                for slope in [1.0_f32, -1.0] {
+                    for k in -lines..=lines {
+                        #[allow(clippy::cast_precision_loss)] // small counts
+                        let c = pitch * k as f32;
+                        if let Some((a, b)) = clip_diagonal(slope, c, (-w, w), (0.0, h)) {
+                            frame.tube(&[a.extend(z), b.extend(z)], thin * 0.3, 6, p.frame);
+                        }
+                    }
+                }
+            }
         }
-        for i in 1..p.panes[1] {
-            let y = h * f32::from(i) / down;
-            frame.block(Vec3::new(-w, y - thin * 0.5, depth * 0.3), Vec3::new(w, y + thin * 0.5, depth * 0.7), p.frame);
+        if p.arch {
+            round_head(&mut frame, p.width, h, (bar, depth), p.frame);
         }
         // The glass: a thin slab behind the bars, the sky graded from the top to the horizon.
         let mut glass = Shape::new();
@@ -265,3 +306,67 @@ impl PropKind for Window {
 }
 
 register_prop_kind!(Window);
+
+/// Fills a window's head corners (`width` across, glass `h` tall) in under a half circle, or as much of one as the
+/// height allows, with a moulding along it.
+fn round_head(frame: &mut Shape, width: f32, h: f32, (bar, depth): (f32, f32), colour: Colour) {
+    let w = width * 0.5;
+    let rise = w.min(h * 0.5);
+    let spring = h - rise;
+    let slices = 28_u8;
+    let step = width / f32::from(slices);
+    for k in 0..slices {
+        let (x0, x1) = (-w + step * f32::from(k), -w + step * f32::from(k + 1));
+        let t = x0.abs().min(x1.abs()) / w;
+        let low = spring + rise * (1.0 - t * t).max(0.0).sqrt();
+        if low < h - 0.002 {
+            frame.block(Vec3::new(x0, low, 0.0), Vec3::new(x1, h, depth), colour);
+        }
+    }
+    let points: Vec<Vec3> = (0..=36_u8)
+        .map(|i| {
+            let a = std::f32::consts::PI * f32::from(i) / 36.0;
+            Vec3::new(-w * a.cos(), spring + rise * a.sin(), depth)
+        })
+        .collect();
+    frame.tube(&points, bar * 0.35, 8, colour);
+}
+
+/// The part of the line `y = slope * x + c` inside the box `x` by `y`, if any (`slope` is ±1).
+fn clip_diagonal(slope: f32, c: f32, x: (f32, f32), y: (f32, f32)) -> Option<(Vec2, Vec2)> {
+    // x where the line meets each of the box's bottom and top, ordered, then clamped to the box's sides.
+    let (xa, xb) = ((y.0 - c) / slope, (y.1 - c) / slope);
+    let (lo, hi) = (xa.min(xb).max(x.0), xa.max(xb).min(x.1));
+    if hi - lo < 1e-3 {
+        return None;
+    }
+    Some((Vec2::new(lo, slope * lo + c), Vec2::new(hi, slope * hi + c)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame(p: &WindowParams) -> Vec<Vec3> {
+        Window::build(p).expect("builds").parts[0].mesh.positions.clone()
+    }
+
+    #[test]
+    fn diamond_glazing_and_a_round_head_stay_inside_the_frame() {
+        let plain = WindowParams { curtains: None, ..WindowParams::default() };
+        let fancy = WindowParams { glazing: Glazing::Diamond, arch: true, panes: [3, 3], ..plain.clone() };
+        let (a, b) = (frame(&plain), frame(&fancy));
+        assert!(b.len() > a.len() + 100, "the diamonds and the arch add bars");
+        let hi = |v: &[Vec3]| v.iter().fold(Vec3::splat(f32::NEG_INFINITY), |m, q| m.max(*q));
+        let lo = |v: &[Vec3]| v.iter().fold(Vec3::splat(f32::INFINITY), |m, q| m.min(*q));
+        assert!(hi(&b).x <= hi(&a).x + 1e-4 && lo(&b).x >= lo(&a).x - 1e-4, "a bar pokes out at the sides");
+        assert!(hi(&b).y <= hi(&a).y + 1e-4 && lo(&b).y >= lo(&a).y - 1e-4, "a bar pokes out at the top or bottom");
+    }
+
+    #[test]
+    fn a_diagonal_is_clipped_to_the_box() {
+        let (a, b) = clip_diagonal(1.0, 0.0, (-1.0, 1.0), (0.0, 0.5)).expect("crosses");
+        assert!((a - Vec2::new(0.0, 0.0)).length() < 1e-5 && (b - Vec2::new(0.5, 0.5)).length() < 1e-5, "{a} {b}");
+        assert!(clip_diagonal(-1.0, 5.0, (-1.0, 1.0), (0.0, 0.5)).is_none());
+    }
+}

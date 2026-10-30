@@ -42,6 +42,10 @@ pub struct ShelfParams {
     /// Square posts standing proud of each side, full height, with a capital and a base (in the trim, when there is
     /// one): a carved case rather than a plain one.
     pub pilasters: bool,
+    /// The back panel behind the boards; the paint, darker, when absent.
+    pub back: Option<Colour>,
+    /// Round arches over the top bay: the bay's upper corners filled in under a moulded arch.
+    pub arch: bool,
 }
 
 impl Default for ShelfParams {
@@ -58,6 +62,8 @@ impl Default for ShelfParams {
             trim: None,
             doors: 0,
             pilasters: false,
+            back: None,
+            arch: false,
         }
     }
 }
@@ -72,8 +78,8 @@ impl PropKind for Shelf {
     type Params = ShelfParams;
     const ID: &'static str = "shelf";
     const SUMMARY: &'static str = "A bookcase open toward +Z, its boards filled with seeded books. Size, boards, how \
-                                   full, the spines' colours, the wood or paint, gilded trim and a cabinet of doors \
-                                   under the open boards.";
+                                   full, the spines' colours, the wood or paint, the back panel, gilded trim, pilasters, \
+                                   round arches over the top bay and a cabinet of doors under the open boards.";
 
     fn validate(p: &ShelfParams) -> Result<(), String> {
         between("width", p.width, 0.4, 2.0)?;
@@ -96,7 +102,7 @@ impl PropKind for Shelf {
         let (w, h, d) = (p.width * 0.5, p.height, p.depth);
         let (side, board, back) = (0.022, 0.022, 0.008);
         let wood = p.colour;
-        let inside = darker(wood, 0.28);
+        let inside = p.back.unwrap_or_else(|| darker(wood, 0.28));
         let mut frame = Shape::new();
         for x in [-1.0, 1.0] {
             frame.block(Vec3::new(x * w - side * 0.5, 0.0, 0.0), Vec3::new(x * w + side * 0.5, h, d), wood);
@@ -133,6 +139,9 @@ impl PropKind for Shelf {
             frame.block(Vec3::new(-w - 0.03, h, -0.01), Vec3::new(w + 0.03, h + 0.07, d + 0.035), darker(wood, 0.08));
             gilt.block(Vec3::new(-w - 0.032, h + 0.018, d + 0.035), Vec3::new(w + 0.032, h + 0.032, d + 0.04), trim);
             gilt.block(Vec3::new(-w - 0.035, h + 0.07, -0.012), Vec3::new(w + 0.035, h + 0.085, d + 0.045), trim);
+        }
+        if p.arch {
+            arch_bay(&mut frame, &mut gilt, wood, p.trim, (-w + side * 0.5, w - side * 0.5), (0.07 + gap * f32::from(p.shelves - 1), h - board), d);
         }
         if p.pilasters {
             let post = 0.035_f32.max(p.width * 0.04);
@@ -179,6 +188,39 @@ fn door_bay(frame: &mut Shape, wood: Colour, trim: Option<Colour>, x: (f32, f32)
             }
         }
     }
+}
+
+/// Fills the upper corners of the bay between `x.0` and `x.1` (from `y.0` to `y.1`) under a round arch springing at
+/// half the bay's width below its top, in slices thin enough to read as a curve, with a moulding along the arch: gilded
+/// with `trim`, the paint lightened without.
+fn arch_bay(frame: &mut Shape, gilt: &mut Shape, wood: Colour, trim: Option<Colour>, x: (f32, f32), y: (f32, f32), d: f32) {
+    let r = (x.1 - x.0) * 0.5;
+    let cx = f32::midpoint(x.0, x.1);
+    let spring = (y.1 - r).max(y.0 + (y.1 - y.0) * 0.4);
+    let rise = (y.1 - spring).min(r);
+    let curve = |t: f32| spring + rise * (1.0 - t * t).max(0.0).sqrt();
+    let slices = 24_u8;
+    let step = (x.1 - x.0) / f32::from(slices);
+    for k in 0..slices {
+        let (x0, x1) = (x.0 + step * f32::from(k), x.0 + step * f32::from(k + 1));
+        // The slice stands from the curve at its higher edge, so no gap opens between slices.
+        let t = ((x0 - cx).abs().min((x1 - cx).abs())) / r;
+        let low = curve(t);
+        if low < y.1 - 0.002 {
+            frame.block(Vec3::new(x0, low, d - 0.03), Vec3::new(x1, y.1, d), wood);
+        }
+    }
+    let points: Vec<Vec3> = (0..=32_u8)
+        .map(|i| {
+            let a = std::f32::consts::PI * f32::from(i) / 32.0;
+            Vec3::new(cx - r * a.cos(), spring + rise * a.sin(), d + 0.004)
+        })
+        .collect();
+    let moulding = (r * 0.04).clamp(0.006, 0.02);
+    match trim {
+        Some(trim) => gilt.tube(&points, moulding, 8, trim),
+        None => frame.tube(&points, moulding, 8, mix(wood, Colour::WHITE, 0.08)),
+    };
 }
 
 /// Stands books on one board from `x.0` to `x.1` at height `y` under a clearance of `room`: runs of upright books with
@@ -290,6 +332,21 @@ mod tests {
         let books = &built.parts[2];
         let lowest = books.mesh.positions.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
         assert!(lowest >= 0.07 + gap * 2.0 - 0.025, "the books start above the doors: {lowest}");
+    }
+
+    #[test]
+    fn an_arch_fills_the_top_bays_corners_and_the_back_takes_its_own_colour() {
+        let plain = Shelf::build(&ShelfParams { books: 0.0, ..ShelfParams::default() }).expect("builds");
+        let p = ShelfParams { books: 0.0, arch: true, back: Some(Colour::hex(0x00c0_7a6a)), ..ShelfParams::default() };
+        let arched = Shelf::build(&p).expect("builds");
+        let count = |out: &PropOutput| out.parts[0].mesh.positions.len();
+        assert!(count(&arched) > count(&plain) + 24 * 8, "the arch's slices and moulding add geometry");
+        // The arch's slices lie in the top bay only.
+        let gap = (p.height - 0.07 - 0.022) / f32::from(p.shelves);
+        let top_bay = 0.07 + gap * f32::from(p.shelves - 1);
+        let front = arched.parts[0].mesh.positions.iter().filter(|q| q.z > p.depth - 0.031 && q.z < p.depth - 0.029);
+        assert!(front.into_iter().all(|q| q.y >= top_bay - 1e-3), "a slice below the top bay");
+        assert!(extent(&arched).1.y <= extent(&plain).1.y + 1e-4, "the arch stays inside the case");
     }
 
     #[test]
