@@ -1,5 +1,5 @@
 //! The eye's close-up: one design built on a renderer, lit and framed as a photographer's macro shot of an eye, so the
-//! lab test that tunes the eye against its reference and the `render.eye` op an agent calls draw the same picture.
+//! lab test that renders the eye and the `render.eye` op an agent calls draw the same picture.
 //!
 //! The light is a studio: a dim warm room with one bright softbox above the camera (its reflection is the catchlight on
 //! the cornea), a key light with shadows and a soft fill. Occlusion is at the eye's scale (the crease, the corners, the
