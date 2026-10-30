@@ -1,5 +1,5 @@
 //! `render.eye`: a close-up of a character's photoreal 3D eye, stored as a PNG, so an agent sees the eye it designs
-//! with `face.set_style`. It renders a face with a 3D eye of its own and one without (the design one starts from),
+//! with `face.set_style`. It renders a face with a 3D eye of its own (photoreal and anime) and one without (the design one starts from),
 //! changes nothing in the document, gives back every renderer resource it made, and refuses what it can't render.
 
 // Integration-test helpers may panic: a panic is a clear test failure (clippy.toml covers only #[test] fns).
@@ -46,7 +46,8 @@ fn with_face(face: Value) -> Harness {
 
 #[test]
 fn a_face_with_a_3d_eye_and_one_without_both_render_as_stored_pngs() {
-    for (harness, in_use) in [(Harness::new(mock_doc()), false), (with_eye(), true)] {
+    let anime = with_face(json!({ "eye3d": EyeDesign::anime() }));
+    for (harness, in_use) in [(Harness::new(mock_doc()), false), (with_eye(), true), (anime, true)] {
         for view in ["macro", "front"] {
             let before = harness.renderer.lock().unwrap().stats();
             let args = json!({ "character": "mock", "view": view, "size": [96, 64], "quality": "live" });
