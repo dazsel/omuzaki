@@ -28,6 +28,8 @@ pub(crate) mod flag {
     pub(crate) const OUTLINE_SCREEN: u32 = 128;
     /// The outline's width is multiplied by the green channel of the outline width texture.
     pub(crate) const OUTLINE_WIDTH_TEXTURE: u32 = 256;
+    /// The hair shadow darkens the surface (`HairShadow::receives`).
+    pub(crate) const RECEIVES_HAIR_SHADOW: u32 = 512;
 }
 
 /// Bits of `Material.mtoon_flags.x` (`MTOON_*` in the shader): the material is lit by `MToon`, and which of its
@@ -192,6 +194,7 @@ impl MaterialUniform {
             (material.double_sided, flag::DOUBLE_SIDED),
             (material.vertex_colours, flag::VERTEX_COLOURS),
             (material.receives_shadows, flag::RECEIVES_SHADOWS),
+            (material.hair_shadow.receives, flag::RECEIVES_HAIR_SHADOW),
             (toon.skin.is_some() && kind == shading::TOON, flag::SKIN),
             (material.base_texture.is_some(), flag::BASE_TEXTURE),
             (material.outline.is_some(), flag::OUTLINE),
@@ -373,9 +376,9 @@ mod tests {
 
     #[test]
     fn the_uniform_is_a_multiple_of_sixteen_bytes() {
-        // std140: uniform struct sizes round up to 16. 9 vec4 + 4 overlays of 2 vec4 + 12 vec4 of program parameters + the
-        // UV transform + the outline mix + 6 of MToon = 37 vec4.
-        assert_eq!(size_of::<MaterialUniform>(), 37 * 16);
+        // std140: uniform struct sizes round up to 16. 9 vec4 + 4 overlays of 2 vec4 + 16 vec4 of program parameters + the
+        // UV transform + the outline mix + 6 of MToon = 41 vec4.
+        assert_eq!(size_of::<MaterialUniform>(), 41 * 16);
         assert_eq!(size_of::<OverlayUniform>(), 32);
     }
 

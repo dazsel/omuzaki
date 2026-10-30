@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use omuzaki_anim_api::{Channel, FrameSource, TrackFrame, TrackStatus};
 use omuzaki_core::time::{Clock, FakeClock, Seconds, SystemClock};
+use omuzaki_track_api::body::{BodyBoard, BodyConfig, BodyFrame, BodySource, BodyState, BodyStatus};
 use omuzaki_track_api::camera::CameraId;
 use omuzaki_track_api::doctor::Finding;
 use omuzaki_track_api::tracker::{Tracker, TrackerConfig};
@@ -109,6 +110,82 @@ fn vmc_bundles_drive_the_head_and_garbage_is_counted_not_fatal() {
     assert!((frame.get(Channel::EYE_BLINK_RIGHT) - 0.9).abs() < 1e-6);
     assert!((frame.head.unwrap().yaw - 0.25).abs() < 1e-5);
     assert_eq!(tracker.refused(), 1, "the garbage datagram arrived first and was refused");
+}
+
+/// A `/VMC/Ext/Bone/Pos` for `bone` turned by `q` (Unity's frame).
+fn vmc_bone(bone: &str, q: omuzaki_core::glam::Quat) -> Vec<u8> {
+    let args = [Arg::Str(bone), Arg::Float(0.0), Arg::Float(1.4), Arg::Float(0.0)];
+    let q = [Arg::Float(q.x), Arg::Float(q.y), Arg::Float(q.z), Arg::Float(q.w)];
+    Writer::message("/VMC/Ext/Bone/Pos", &[&args[..], &q[..]].concat())
+}
+
+/// Polls `reader` until a body frame satisfying `want` arrives.
+fn wait_for_body(reader: &mut dyn BodySource, send: impl Fn(), want: impl Fn(&BodyFrame) -> bool) -> BodyFrame {
+    let deadline = Instant::now() + PATIENCE;
+    while Instant::now() < deadline {
+        send();
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_millis(20) {
+            if let Some(frame) = reader.poll()
+                && want(&frame)
+            {
+                return frame;
+            }
+            std::thread::yield_now();
+        }
+    }
+    panic!("no matching body frame within {PATIENCE:?}");
+}
+
+#[test]
+fn vmc_body_bones_reach_the_stages_body_board_once_asked_for() {
+    use omuzaki_anim_api::HumanoidBone;
+    use omuzaki_core::glam::Quat;
+    let mut tracker = tracker(any_ports());
+    let config = TrackerConfig::default().with_lost_after(Duration::from_millis(100));
+    let mut source = tracker.start(&device(Protocol::Vmc), &config).unwrap();
+    let (board, mut reader) = BodyBoard::new();
+    let sender = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let bundle = Writer::bundle(&[
+        vmc_bone("Hips", Quat::from_rotation_y(0.3)),
+        vmc_bone("LeftUpperArm", Quat::from_rotation_z(1.2)),
+        vmc_bone("RightIndexProximal", Quat::from_rotation_z(-0.8)),
+        Writer::message("/VMC/Ext/Blend/Apply", &[]),
+    ]);
+    let to = target(&tracker);
+    let send = || {
+        sender.send_to(&bundle, to).unwrap();
+    };
+    // Not asked for: the face arrives, the board stays empty.
+    send();
+    wait_for(&mut *source, |_| true);
+    assert!(reader.poll().is_none());
+    assert_eq!(tracker.body_status(), BodyStatus::default());
+
+    assert_eq!(tracker.track_body(BodyConfig::default(), &board).unwrap(), BodyConfig::OFF);
+    let body = wait_for_body(&mut reader, send, |f| f.arms[0] > 0.0);
+    assert!(body.pose.get(HumanoidBone::LeftUpperArm).angle_between(Quat::from_rotation_z(-1.2)) < 1e-5);
+    assert!(body.mask.contains(HumanoidBone::Hips) && body.mask.contains(HumanoidBone::RightIndexProximal));
+    assert_eq!((body.hands[1], body.body), (1.0, 1.0));
+    assert!(body.head_relative);
+    let status = tracker.body_status();
+    assert_eq!(status.state, BodyState::Running);
+    assert!(status.frames > 0 && status.arms[0] > 0.99, "{status:?}");
+
+    // The sender goes quiet: the body is let go once, and the board is free for another source.
+    let gone = wait_for_body(&mut reader, || {}, |f| !f.sees_anything());
+    assert!(gone.mask.is_empty());
+    let deadline = Instant::now() + PATIENCE;
+    while board.is_writing() {
+        assert!(Instant::now() < deadline, "the board was never handed back");
+        std::thread::yield_now();
+    }
+
+    // Switched off: nothing more is published.
+    assert_eq!(tracker.track_body(BodyConfig::OFF, &board).unwrap(), BodyConfig::default());
+    send();
+    wait_for(&mut *source, |f| f.status == TrackStatus::Tracking);
+    assert!(reader.poll().is_none());
 }
 
 #[test]

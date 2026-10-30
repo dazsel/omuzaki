@@ -166,7 +166,7 @@ fn fullness_scales_how_far_the_hair_stands_off_the_head_and_leaves_the_fall_alon
     let field = Field::new(&volume);
     let before = compiled(None);
     let mut after = before.clone();
-    volume::swell(&mut after, &field, &Egg);
+    volume::swell(&mut after, &field, &Egg, &volume::Accents::default());
     let height = |p: Vec3| (p - Egg.centre()).length() - Egg.radius((p - Egg.centre()).normalize());
     let (mut over, mut under) = (0, 0);
     for (b, a) in before.iter().zip(&after) {

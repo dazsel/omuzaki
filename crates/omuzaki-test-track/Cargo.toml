@@ -38,6 +38,8 @@ omuzaki-core = { path = "../omuzaki-core" }
 omuzaki-live-api = { path = "../omuzaki-live-api" }
 omuzaki-speech = { path = "../omuzaki-speech" }
 omuzaki-track = { path = "../omuzaki-track" }
+# The body frame the body tracker solves into.
+omuzaki-track-api = { path = "../omuzaki-track-api" }
 
 # The timing probe's CPU-per-frame column on Windows (`GetProcessTimes`).
 [target.'cfg(windows)'.dev-dependencies]

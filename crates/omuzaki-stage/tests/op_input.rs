@@ -564,4 +564,8 @@ fn gestures_list_their_keys_and_none_shows_before_a_capture() {
         rows[0],
         json!({ "gesture": "tongue_out", "key": "gesture:tongue_out", "expression": null, "active": false })
     );
+    let hands = answer["hands"].as_array().unwrap();
+    let keys: Vec<_> = hands.iter().map(|row| row["key"].as_str().unwrap()).collect();
+    assert_eq!(keys, ["gesture:open_palm", "gesture:fist", "gesture:point", "gesture:peace", "gesture:thumbs_up"]);
+    assert!(hands.iter().all(|row| row["active"] == false));
 }

@@ -9,8 +9,8 @@ use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::{Mat3, Mat4, UVec2, Vec3};
 use omuzaki_core::id::Slug;
 use omuzaki_render_api::{
-    AlphaMode, Background, Camera, DepthOfField, EnvironmentDesc, EnvironmentUse, Instance, Light, Material, Occlusion,
-    ProgramParams, Projection, RenderError, Renderer, ResourceRef, Scene, Shading, TextureDesc,
+    AlphaMode, Background, Camera, DepthOfField, EnvironmentDesc, EnvironmentUse, HairShadow, Instance, Light,
+    Material, Occlusion, ProgramParams, Projection, RenderError, Renderer, ResourceRef, Scene, Shading, TextureDesc,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -132,11 +132,13 @@ fn build(
     let eye = Material {
         base_texture: Some(atlas_tex),
         shading: program("eye", eye_params(design, frame))?,
+        hair_shadow: HairShadow::RECEIVES,
         ..Material::toon(white)
     };
     let skin = Material {
         base_texture: Some(skin_tex),
         shading: program("skin", skin_params(design))?,
+        hair_shadow: HairShadow::RECEIVES,
         ..Material::toon(white)
     };
     let lashes = Material {

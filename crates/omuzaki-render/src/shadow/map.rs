@@ -12,6 +12,12 @@
 //!
 //! The receiver group exists from the target's first frame, as one one-texel layer with sampling switched off, so the
 //! lit passes bind it unconditionally and a frame without shadows costs them one uniform read per directional light.
+//!
+//! **The hair shadow** (#2528) lives here too: the hair alone from the camera, at the frame's internal size, as each
+//! texel's distance from the eye, which the `Shadows` pass redraws every frame there is hair to cast it, and whose
+//! lookup settings follow the maps in the receiver uniform. A surface that receives it (`hair_shadow` in `shader/toon.wgsl`) marches toward each
+//! shadow-casting directional light through that depth: the fringe hangs a centimetre or two off the forehead, inside
+//! the maps' normal bias, so the maps cannot draw its shadow on the face.
 
 use bytemuck::{Pod, Zeroable};
 use omuzaki_core::glam::Vec3;
@@ -31,6 +37,13 @@ pub(crate) const NORMAL_BIAS: f32 = 0.01;
 pub(crate) const DEPTH_BIAS: f32 = 0.0024;
 /// Light directions closer than this (per component) are the same direction; a rig switch changes it by far more.
 const SAME_DIRECTION: f32 = 1e-4;
+/// How far toward the light the hair shadow's march goes, in metres: past the deepest fringe's gap at a low light.
+const HAIR_REACH: f32 = 0.05;
+/// How far behind a hair surface a point still lies under the hair, in metres: a fringe's thickness and a little more,
+/// short of the head behind it.
+const HAIR_THICKNESS: f32 = 0.03;
+/// How much of the light the hair takes away (1: the surface's full shade tone).
+const HAIR_STRENGTH: f32 = 1.0;
 
 /// The map's side in texels and the spacing of the lookup's 3 x 3 comparison taps in texels, for a quality. `None` for
 /// [`ShadowQuality::Off`].
@@ -58,10 +71,22 @@ struct ShadowUniform {
     kernel: [f32; 4],
 }
 
+/// `struct Shadows` of `shader/toon.wgsl`: every map's entry, then the hair shadow's settings.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct ReceiverUniform {
+    maps: [ShadowUniform; MAX_SHADOW_MAPS],
+    /// x: 1 when the hair depth holds this frame's hair, y: the march's reach and z the hair's thickness in metres,
+    /// w: the strength.
+    hair: [f32; 4],
+}
+
 /// Byte offset of `params` in an entry: the part that switches a map on and off.
 const PARAMS_OFFSET: u64 = 64;
 /// Bytes between two entries of the receiver uniform (a WGSL uniform array's stride).
 const ENTRY_BYTES: u64 = size_of::<ShadowUniform>() as u64;
+/// Byte offset of the hair shadow's settings in the receiver uniform.
+const HAIR_OFFSET: u64 = std::mem::offset_of!(ReceiverUniform, hair) as u64;
 /// Bytes between two matrices of the caster uniform: the dynamic offsets must be multiples of the device's
 /// `min_uniform_buffer_offset_alignment`, which is at most 256.
 const CASTER_STRIDE: u64 = 256;
@@ -89,6 +114,62 @@ pub(crate) struct ShadowMaps {
     caster_group: wgpu::BindGroup,
     receiver_group: wgpu::BindGroup,
     maps: [MapState; MAX_SHADOW_MAPS],
+    /// Every layer, as the receiver group binds them (kept to rebuild the group when the hair texture changes size).
+    all: wgpu::TextureView,
+    /// The hair textures' size, the distance the lit passes read and the depth that keeps the nearest hair.
+    hair_size: (u32, u32),
+    hair_distance: wgpu::TextureView,
+    hair_depth: wgpu::TextureView,
+    /// Whether the uniform tells the lookup to read the hair distance.
+    hair_on: bool,
+}
+
+/// The format of the hair distance: one float a texel, the distance from the eye along the view axis. A colour
+/// texture, not the depth itself, because the lit shaders read it with a plain load (a depth texture loaded beside the
+/// compared shadow maps crashes the software rasteriser).
+pub(crate) const HAIR_DISTANCE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Float;
+
+/// One `width` x `height` texture of the hair pass: the distance (`format` [`HAIR_DISTANCE_FORMAT`], read by the lit
+/// passes) or its depth.
+fn hair_texture(device: &wgpu::Device, width: u32, height: u32, format: wgpu::TextureFormat) -> wgpu::TextureView {
+    let sampled = if format == HAIR_DISTANCE_FORMAT {
+        wgpu::TextureUsages::TEXTURE_BINDING
+    } else {
+        wgpu::TextureUsages::empty()
+    };
+    device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some("hair shadow"),
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | sampled,
+            view_formats: &[],
+        })
+        .create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+fn receiver_group(
+    shared: &Shared,
+    uniform: &wgpu::Buffer,
+    all: &wgpu::TextureView,
+    hair_distance: &wgpu::TextureView,
+) -> wgpu::BindGroup {
+    shared.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("shadow receiver"),
+        layout: &shared.layouts.shadow_receiver,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(all) },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(&shared.defaults.shadow_compare),
+            },
+            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(hair_distance) },
+        ],
+    })
 }
 
 impl ShadowMaps {
@@ -124,7 +205,7 @@ impl ShadowMaps {
             .collect();
         let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("shadow uniform"),
-            contents: bytemuck::bytes_of(&[ShadowUniform::zeroed(); MAX_SHADOW_MAPS]),
+            contents: bytemuck::bytes_of(&ReceiverUniform::zeroed()),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let casters = device.create_buffer(&wgpu::BufferDescriptor {
@@ -145,18 +226,9 @@ impl ShadowMaps {
                 }),
             }],
         });
-        let receiver_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("shadow receiver"),
-            layout: &shared.layouts.shadow_receiver,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&all) },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&shared.defaults.shadow_compare),
-                },
-            ],
-        });
+        let hair_distance = hair_texture(device, 1, 1, HAIR_DISTANCE_FORMAT);
+        let hair_depth = hair_texture(device, 1, 1, DEPTH_FORMAT);
+        let receiver_group = receiver_group(shared, &uniform, &all, &hair_distance);
         Self {
             size,
             layers,
@@ -165,6 +237,11 @@ impl ShadowMaps {
             caster_group,
             receiver_group,
             maps: [MapState::default(); MAX_SHADOW_MAPS],
+            all,
+            hair_size: (1, 1),
+            hair_distance,
+            hair_depth,
+            hair_on: false,
         }
     }
 
@@ -243,6 +320,55 @@ impl ShadowMaps {
         *map = MapState { drawn_for: Some((light_slot, to_light)), since_drawn: 0, sampling: true };
     }
 
+    /// Starts the render pass that draws the hair's distance, `width` x `height` texels (the frame's internal size; a new
+    /// size replaces the textures and the receiver group), clearing the distance to 0 (no hair) and the depth to the far
+    /// plane.
+    pub(crate) fn begin_hair_pass<'e>(
+        &mut self,
+        shared: &Shared,
+        encoder: &'e mut wgpu::CommandEncoder,
+        width: u32,
+        height: u32,
+    ) -> wgpu::RenderPass<'e> {
+        let size = (width.max(1), height.max(1));
+        if self.hair_size != size {
+            let device = &shared.gpu.device;
+            self.hair_distance = hair_texture(device, size.0, size.1, HAIR_DISTANCE_FORMAT);
+            self.hair_depth = hair_texture(device, size.0, size.1, DEPTH_FORMAT);
+            self.receiver_group = receiver_group(shared, &self.uniform, &self.all, &self.hair_distance);
+            self.hair_size = size;
+        }
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("hair shadow"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &self.hair_distance,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &self.hair_depth,
+                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        })
+    }
+
+    /// Tells the lookup whether the hair distance holds this frame's hair.
+    pub(crate) fn set_hair(&mut self, queue: &wgpu::Queue, on: bool) {
+        if self.hair_on != on {
+            let hair = if on { [1.0, HAIR_REACH, HAIR_THICKNESS, HAIR_STRENGTH] } else { [0.0; 4] };
+            queue.write_buffer(&self.uniform, HAIR_OFFSET, bytemuck::bytes_of(&hair));
+            self.hair_on = on;
+        }
+    }
+
     /// Switches map `index` off (its light no longer casts, or nothing is left to cast), forgetting its drawing.
     pub(crate) fn disable(&mut self, queue: &wgpu::Queue, index: usize) {
         let Some(map) = self.maps.get_mut(index) else { return };
@@ -273,6 +399,8 @@ mod tests {
         assert_eq!(size_of::<ShadowUniform>(), 64 + 16 + 16);
         assert_eq!(ENTRY_BYTES % 16, 0, "a uniform array's stride is a multiple of 16");
         assert_eq!(std::mem::offset_of!(ShadowUniform, params) as u64, PARAMS_OFFSET);
+        assert_eq!(HAIR_OFFSET, ENTRY_BYTES * MAX_SHADOW_MAPS as u64, "the hair's settings follow the maps");
+        assert_eq!(size_of::<ReceiverUniform>() as u64, HAIR_OFFSET + 16);
         const { assert!(CASTER_BYTES <= CASTER_STRIDE) };
     }
 

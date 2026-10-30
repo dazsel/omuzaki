@@ -344,11 +344,11 @@ Warudo (MediaPipe body and hands), XR Animator, mocopi and SlimeVR (body), Leap 
 | Face | iPhone ARKit receivers: iFacialMocap, VTube Studio phone, Live Link Face (PF-02) | Warudo | ✓ | `omuzaki-track-net/src/protocol/` |
 | Face | Android phone apps over the same protocols (PF-03); a web phone page (PF-10) | VTube Studio Android | ◐ | receivers done; web page #595 |
 | Face | Tongue from the webcam (MediaPipe has no tongue channel) | none reliable | ✗ | covered by the "not invented" row below |
-| Body | VMC in for face; body bones over VMC (PF-04) | Warudo, VSeeFace | ◐ | face done; body bones #468 |
+| Body | VMC in for face; body bones over VMC (PF-04) | Warudo, VSeeFace | ✓ | face and full body (hips, spine, legs, arms, finger bones) with `input.track_body` on the VMC source |
 | Body | VMC out (PF-04) | VSeeFace | ✓ | `input.vmc_out` |
-| Body | Upper body from the webcam (PF-07) | Warudo, XR Animator | ✗ | #471 |
+| Body | Upper body from the webcam (PF-07) | Warudo, XR Animator | ◐ | `input.track_body`, `omuzaki-track/src/body/`; waits on a real-webcam hand check, #471 |
 | Body | OpenXR and SteamVR trackers (Vive trackers, Index controllers) as inputs | VNyan, VirtualMotionCapture | ✗ | **new** #2583 |
-| Hands | Webcam hand tracking and Ultraleap; finger curls; gestures as triggers (PF-06) | Warudo, VSeeFace (Leap) | ✗ | #470 |
+| Hands | Webcam hand tracking and Ultraleap; finger curls; gestures as triggers (PF-06) | Warudo, VSeeFace (Leap) | ◐ | webcam hands, finger curls and `gesture:*` keys done (`input.track_body`, `input.gestures`); Ultraleap #470 |
 | Inputs | Keyboard, mouse, gamepad, MIDI, OSC bindings (PF-05) | Warudo | ✓ | `input.binding.*`, `omuzaki-input` |
 | Inputs | Stream Deck: buttons that run ops, with state shown on the keys | VTube Studio and Warudo plugins | ✗ | **new** #2584 |
 | Inputs | Input-driven body motion: hands on the keys, arm to the mouse (PF-29) | VNyan, Warudo | ◐ | #718, #783 |
@@ -366,6 +366,8 @@ Warudo (MediaPipe body and hands), XR Animator, mocopi and SlimeVR (body), Leap 
 - **Everything recorded is re-trackable.** Raw inputs are kept, so a better tracker next year improves last year's
   takes.
 - **One channel bus** that a webcam, an iPhone, audio, an AI and a hotkey all write to, with ownership per channel.
+- **Scored against the truth.** The kit renders its own character in known poses, so body and hand tracking are
+  measured in degrees per bone (`track_body.rs`), not judged by eye.
 
 **Not invented yet**
 
@@ -375,6 +377,7 @@ Warudo (MediaPipe body and hands), XR Animator, mocopi and SlimeVR (body), Leap 
 | Webcam gaze is noisy, so eye contact with the audience breaks | **Gaze with intent:** fuse iris tracking, head pose and the screen layout (where chat and the game are) to snap gaze to likely targets | angular gaze error, target < 3°; share of frames with correct target |
 | Hands from one webcam lose fingers when they overlap the face or each other | **Hand tracking that knows the body:** a model conditioned on the avatar's skeleton and the face position | finger-joint error under occlusion against a mocap reference |
 | Every tracker drifts over a long stream | **Self-calibrating tracking:** continuous re-estimation of the neutral face and ranges from the person's own idle moments | channel drift over 12 h, target < 2% of range |
+| Body and hand trackers are trained on people, so they barely see a drawn or rendered character: re-tracking an anime clip or a recorded VTuber stream fails | **A body tracker that sees stylised characters:** trained on kit renders with their exact skeletons, mixed with people so it keeps working on them (#2600) | person found in ≥ 95% of held-out kit frames, arm error median < 10°, finger flex < 15°; today 0 to 7 of 14 frames, about 90° |
 
 ## 10. Lip sync, voice and audio
 

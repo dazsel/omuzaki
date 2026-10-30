@@ -95,6 +95,11 @@ pub fn unity_bone_name(bone: HumanoidBone) -> &'static str {
     UNITY_NAMES.get(bone.index()).copied().unwrap_or("")
 }
 
+/// The humanoid bone Unity's `HumanBodyBones` name `name` stands for, if any: the inverse of [`unity_bone_name`].
+pub fn bone_from_unity(name: &str) -> Option<HumanoidBone> {
+    UNITY_NAMES.iter().position(|n| *n == name).and_then(|i| HumanoidBone::ALL.get(i).copied())
+}
+
 /// Unity's names in [`HumanoidBone::ALL`] order.
 const UNITY_NAMES: [&str; HUMANOID_COUNT] = [
     "Hips",
@@ -666,5 +671,47 @@ mod tests {
         assert_eq!((encoder.body.capacity(), encoder.face.capacity()), capacity);
         assert_eq!((encoder.body.as_ptr(), encoder.face.as_ptr()), (body_ptr, face_ptr));
         let _ = Arg::Nil;
+    }
+
+    #[test]
+    fn a_pose_sent_out_comes_back_in_as_the_same_body() {
+        use crate::protocol::Decoder;
+        use crate::protocol::vmc::VmcDecoder;
+        let mut frame = sample();
+        for (bone, q) in [
+            (HumanoidBone::Hips, Quat::from_rotation_y(0.4)),
+            (HumanoidBone::Spine, Quat::from_rotation_x(0.2)),
+            (HumanoidBone::LeftUpperArm, Quat::from_euler(omuzaki_core::glam::EulerRot::XYZ, 0.3, -0.2, -1.1)),
+            (HumanoidBone::RightLowerArm, Quat::from_rotation_y(0.9)),
+            (HumanoidBone::LeftThumbMetacarpal, Quat::from_rotation_z(0.5)),
+            (HumanoidBone::RightUpperLeg, Quat::from_rotation_x(-0.7)),
+        ] {
+            frame.pose.set(bone, q);
+        }
+        let mut encoder = VmcEncoder::default();
+        let (body, face) = encoder.encode(&frame, &VmcOutConfig::default());
+        let (body, face) = (body.to_vec(), face.to_vec());
+        let mut decoder = VmcDecoder::new();
+        let mut track = crate::protocol::blank();
+        decoder.decode(&body, &mut track).unwrap();
+        decoder.decode(&face, &mut track).unwrap().unwrap();
+        let mut back = omuzaki_track_api::body::BodyFrame::empty(0, omuzaki_core::time::Seconds(0.0));
+        assert!(decoder.body(&mut back));
+        for bone in HumanoidBone::ALL {
+            if matches!(
+                bone,
+                HumanoidBone::Neck
+                    | HumanoidBone::Head
+                    | HumanoidBone::LeftEye
+                    | HumanoidBone::RightEye
+                    | HumanoidBone::Jaw
+            ) {
+                assert!(!back.mask.contains(bone), "{bone:?} is the face's");
+                continue;
+            }
+            assert!(back.mask.contains(bone), "{bone:?}");
+            let (sent, got) = (frame.pose.get(bone), back.pose.get(bone));
+            assert!(sent.angle_between(got) < 1e-4, "{bone:?}: sent {sent}, got {got}");
+        }
     }
 }

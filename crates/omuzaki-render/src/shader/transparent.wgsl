@@ -26,6 +26,16 @@ fn blended(in: VsOut, front: bool) -> vec4<f32> {
         dpdx(in.extra0),
         dpdy(in.extra0),
     );
+    // A masked surface drawn here is its soft edge (`Material::order_independent` with a mask, hair tips): the texels
+    // the Opaque pass cut, blended, their alpha rising to 1 at the cutoff so the edge meets the opaque part unseen.
+    var alpha = albedo.a;
+    if (material.flags.z == ALPHA_MASK) {
+        if (albedo.a >= material.alpha.x) {
+            discard;
+        }
+        alpha = albedo.a / max(material.alpha.x, 1e-3);
+    }
+    begin_hair_shadow(in.world_position);
     var colour = albedo.rgb;
     if (mtoon_on()) {
         let facing = normalize(in.world_normal);
@@ -42,7 +52,7 @@ fn blended(in: VsOut, front: bool) -> vec4<f32> {
         }
     }
     // Fog fades the surface colour only; the alpha still decides how much of it covers what is behind.
-    return vec4<f32>(apply_fog(colour, in.world_position), program_alpha(program, albedo.a));
+    return vec4<f32>(apply_fog(colour, in.world_position), program_alpha(program, alpha));
 }
 
 @fragment

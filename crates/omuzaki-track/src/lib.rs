@@ -32,6 +32,7 @@
 #![allow(clippy::doc_markdown)]
 
 pub mod blendshapes;
+pub mod body;
 pub mod calibration;
 pub mod detector;
 pub mod doctor;
@@ -49,6 +50,7 @@ pub mod provision;
 pub mod roi;
 pub mod sample;
 pub mod smoothing;
+pub mod ssd;
 pub mod task;
 pub mod webcam;
 
