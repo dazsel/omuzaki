@@ -5897,6 +5897,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-overlay"
+version = "0.0.0"
+dependencies = [
+ "ab_glyph",
+ "glam 0.34.1",
+ "image",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-live-api",
+ "omuzaki-ops-api",
+ "omuzaki-render-api",
+ "omuzaki-stage-api",
+ "schemars",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "omuzaki-performer"
 version = "0.0.0"
 dependencies = [
@@ -6937,6 +6956,24 @@ dependencies = [
  "thiserror 2.0.21",
  "toml",
  "tungstenite",
+]
+
+[[package]]
+name = "omuzaki-youtube"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-core",
+ "omuzaki-doc-mock",
+ "omuzaki-http-api",
+ "omuzaki-http-mock",
+ "omuzaki-live-api",
+ "omuzaki-ops-api",
+ "omuzaki-secrets-api",
+ "omuzaki-secrets-mock",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
