@@ -1,5 +1,6 @@
-//! The design layer on the kit (#2609 to #2615): the dial library loads and every dial moves the shape it names on
-//! every template; sculpt strokes survive a template change and land where they were made; random sampling stays
+//! The design layer on the kit (#2609 to #2615): the dial and anatomy libraries load and every dial, structure and
+//! factor moves the shape it names on every template; random anatomies are coherent; age deflates and lowers the fat
+//! and recedes the bone; sculpt strokes survive a template change and land where they were made; random sampling stays
 //! plausible; material layers and the age re-derive on every build (a recolour, a template change); the cached builder
 //! gives the reference builder's bytes; and every design op keeps the editing contract.
 
@@ -12,7 +13,9 @@ mod common;
 use std::collections::BTreeSet;
 
 use omuzaki_char::builder::CachingBuilder;
-use omuzaki_char_api::design::{Brush, DialSetting, PartPoint, SculptStroke, design_library, locate};
+use omuzaki_char_api::design::{
+    Brush, DialSetting, Factor, PartPoint, SculptStroke, StructureDef, Tissue, design_library, locate,
+};
 use omuzaki_char_api::{
     BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, CharacterDef, PartId, RegistryBuilder,
 };
@@ -82,7 +85,7 @@ fn finite(built: &BuiltCharacter) -> bool {
 #[test]
 fn the_library_loads_every_dial_and_the_age_model() {
     omuzaki_char::link();
-    assert!(omuzaki_char::design::files().len() >= 4, "face, head, body and age files");
+    assert!(omuzaki_char::design::files().len() >= 6, "face, head, body, age and the two anatomy files");
     omuzaki_char::design::load().unwrap();
     let lib = design_library().unwrap();
     assert!(lib.dials.len() >= 40, "{} dials", lib.dials.len());
@@ -92,7 +95,189 @@ fn the_library_loads_every_dial_and_the_age_model() {
     }
     assert!(lib.dials.iter().filter(|d| d.sided).count() >= 10, "per-side dials");
     assert!(!lib.age.is_empty(), "the age model ships");
-    assert!(lib.dials.iter().filter(|d| !d.age.is_empty()).count() >= 10, "age moves the dials");
+    // The anatomy: every tissue, every factor loading several structures, and age carried by the structures.
+    assert!(lib.structures.len() >= 30, "{} structures", lib.structures.len());
+    for tissue in Tissue::ALL {
+        assert!(lib.structures.iter().any(|s| s.tissue == tissue), "no {} structure", tissue.as_str());
+    }
+    for factor in Factor::ALL {
+        let loaded = lib.structures.iter().filter(|s| s.factors.contains_key(&factor)).count();
+        assert!(loaded >= 3, "{} loads only {loaded} structures", factor.as_str());
+    }
+    assert!(lib.structures.iter().filter(|s| !s.age.is_empty()).count() >= 25, "age moves the anatomy");
+    assert!(lib.dials.iter().all(|d| d.age.is_empty()), "the face and body age through the anatomy, not the dials");
+}
+
+/// The structures and factors at `z` standard deviations, built on `base_def`: each one's largest move of the body or
+/// the head, checked for broken vertices and a bounded, visible move.
+fn check_anatomy(template: &str, base_def: &CharacterDef, base: &BuiltCharacter, z: f64) {
+    let tall = height(base);
+    let lib = design_library().unwrap();
+    let check = |what: &str, def: &CharacterDef, floor_m: f32| {
+        let built = build(def);
+        assert!(finite(&built), "{template} {what} {z}: a vertex or a normal is broken");
+        let (body, head) = (largest_move(base, &built, "body"), largest_move(base, &built, "head"));
+        let moved = body.0.max(head.0);
+        assert!(moved > floor_m, "{template} {what} {z}: moves only {moved} m");
+        assert!(moved < 0.04 * tall, "{template} {what} {z}: the body moves {body:?}, the head {head:?}, of a {tall} m body");
+    };
+    for s in &lib.structures {
+        let mut def = base_def.clone();
+        def.design.anatomy.structures.insert(s.id.clone(), DialSetting::new(z));
+        check(s.id.as_str(), &def, expected_floor(s, z));
+    }
+    for f in Factor::ALL {
+        let mut def = base_def.clone();
+        def.design.anatomy.factors.insert(f, z);
+        check(f.as_str(), &def, 5e-4);
+    }
+}
+
+/// The smallest move a structure at `z` must make: a tenth of its millimetres at the centre (the mesh's vertices
+/// needn't fall on the bump's peak, and a small template's girths are a fraction of an adult's).
+#[allow(clippy::cast_possible_truncation)]
+fn expected_floor(s: &StructureDef, z: f64) -> f32 {
+    0.1 * s.sd_mm * 1e-3 * z.abs() as f32
+}
+
+#[test]
+fn every_structure_and_factor_shapes_every_template() {
+    omuzaki_char::link();
+    for template in TEMPLATES {
+        let base_def = bare(kit(template));
+        let base = build(&base_def);
+        check_anatomy(template, &base_def, &base, 2.0);
+        if template == "standard" {
+            check_anatomy(template, &base_def, &base, -2.0);
+        }
+    }
+}
+
+/// The mean pairwise correlation of `values` (one row per sample, one column per structure).
+fn mean_correlation(values: &[Vec<f64>]) -> f64 {
+    let cols = values[0].len();
+    let n = values.len() as f64;
+    let column = |j: usize| values.iter().map(|row| row[j]).collect::<Vec<_>>();
+    let stats = |c: &[f64]| {
+        let mean = c.iter().sum::<f64>() / n;
+        let var = c.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n;
+        (mean, var.sqrt().max(1e-12))
+    };
+    let mut sum = 0.0;
+    let mut pairs = 0.0;
+    for a in 0..cols {
+        for b in a + 1..cols {
+            let (ca, cb) = (column(a), column(b));
+            let ((ma, sa), (mb, sb)) = (stats(&ca), stats(&cb));
+            let cov = ca.iter().zip(&cb).map(|(x, y)| (x - ma) * (y - mb)).sum::<f64>() / n;
+            sum += cov / (sa * sb);
+            pairs += 1.0;
+        }
+    }
+    sum / pairs
+}
+
+#[test]
+fn random_anatomies_are_coherent_bounded_and_repeatable() {
+    omuzaki_char::link();
+    let lib = design_library().unwrap();
+    // The fat pads the adiposity factor loads strongly, read across many samples.
+    let fat: Vec<&StructureDef> = lib
+        .structures
+        .iter()
+        .filter(|s| s.tissue == Tissue::Fat && s.factors.get(&Factor::Adiposity).is_some_and(|w| *w >= 0.6))
+        .collect();
+    assert!(fat.len() >= 6, "{} fat structures", fat.len());
+    let mut doc = kit_doc("standard");
+    let base = build(&bare(common::definition(&doc, "kit")));
+    let tall = height(&base);
+    let mut rows = Vec::new();
+    for seed in 0..48u64 {
+        common::apply(&mut doc, "anatomy.randomise", json!({"character": "kit", "seed": seed, "asymmetry": 0.4}));
+        let def = common::definition(&doc, "kit");
+        let anatomy = &def.design.anatomy;
+        for s in &lib.structures {
+            for side in [None, Some(omuzaki_char_api::design::DialSide::Left)] {
+                let v = s.value(anatomy, None, side);
+                assert!(v.abs() <= 3.0, "seed {seed} {}: {v}", s.id);
+            }
+        }
+        rows.push(fat.iter().map(|s| s.value(anatomy, None, None)).collect::<Vec<f64>>());
+        if seed < 6 {
+            let mut again = kit_doc("standard");
+            common::apply(&mut again, "anatomy.randomise", json!({"character": "kit", "seed": seed, "asymmetry": 0.4}));
+            assert_eq!(def.design, common::definition(&again, "kit").design, "seed {seed} repeats");
+            let built = build(&bare(def));
+            assert!(finite(&built), "seed {seed}");
+            let moved = largest_move(&base, &built, "body").0.max(largest_move(&base, &built, "head").0);
+            assert!(moved < 0.04 * tall, "seed {seed}: moves {moved} m");
+        }
+    }
+    // Coherent: the fat pads rise and fall together, as one body's fat does, not as independent sliders would.
+    let r = mean_correlation(&rows);
+    println!("the fat structures' mean pairwise correlation over {} samples: {r:.2}", rows.len());
+    assert!(r > 0.5, "the fat pads vary independently ({r:.2})");
+}
+
+#[test]
+fn a_factor_moves_the_face_and_the_body_together() {
+    omuzaki_char::link();
+    let mut doc = kit_doc("standard");
+    let base = build(&bare(common::definition(&doc, "kit")));
+    common::round_trip(&mut doc, "anatomy.set", json!({"character": "kit", "name": "adiposity", "value": 2.0}));
+    let heavy = build(&bare(common::definition(&doc, "kit")));
+    let (head, body) = (largest_move(&base, &heavy, "head").0, largest_move(&base, &heavy, "body").0);
+    println!("adiposity +2: the head moves up to {:.1} mm, the body {:.1} mm", head * 1e3, body * 1e3);
+    assert!(head > 3e-3 && body > 1e-2, "head {head}, body {body}");
+    // Outward: the volume grows.
+    let (pa, pb) = (positions(&base, "head"), positions(&heavy, "head"));
+    let centre = pa.iter().copied().sum::<Vec3>() / pa.len() as f32;
+    let out: f32 = pa.iter().zip(&pb).map(|(p, q)| (*q - *p).dot((*p - centre).normalize_or_zero())).sum();
+    assert!(out > 0.0, "adiposity fills the face out");
+}
+
+/// The mean height of the head's vertices that `age` moved outward and inward by more than `at` metres.
+fn moved_heights(young: &BuiltCharacter, old: &BuiltCharacter, at: f32) -> (f32, f32, usize, usize) {
+    let (pa, pb) = (positions(young, "head"), positions(old, "head"));
+    let centre = pa.iter().copied().sum::<Vec3>() / pa.len() as f32;
+    let (mut up, mut down, mut n_out, mut n_in) = (0.0, 0.0, 0, 0);
+    for (p, q) in pa.iter().zip(&pb) {
+        // Only the face's front, where the fat pads and the folds are.
+        if (*p - centre).z <= 0.0 {
+            continue;
+        }
+        let radial = (*q - *p).dot((*p - centre).normalize_or_zero());
+        if radial > at {
+            up += p.y;
+            n_out += 1;
+        } else if radial < -at {
+            down += p.y;
+            n_in += 1;
+        }
+    }
+    (up / n_out.max(1) as f32, down / n_in.max(1) as f32, n_out, n_in)
+}
+
+#[test]
+fn age_deflates_and_lowers_the_fat_and_cuts_the_folds() {
+    omuzaki_char::link();
+    let mut doc = kit_doc("standard");
+    common::apply(&mut doc, "character.set_age", json!({"character": "kit", "age": 30.0}));
+    let thirty = build(&bare(common::definition(&doc, "kit")));
+    common::apply(&mut doc, "character.set_age", json!({"character": "kit", "age": 80.0}));
+    let eighty = build(&bare(common::definition(&doc, "kit")));
+    assert!(finite(&eighty));
+    let (gain_y, loss_y, gains, losses) = moved_heights(&thirty, &eighty, 4e-4);
+    println!("age 30 to 80: {gains} vertices fill out at mean height {gain_y:.3} m, {losses} sink at {loss_y:.3} m");
+    assert!(gains > 20 && losses > 20, "{gains} fill out, {losses} sink");
+    // The fat leaves the upper face and gathers low (the jowls, under the chin): what fills out sits lower than what
+    // sinks.
+    assert!(gain_y < loss_y, "the filled vertices ({gain_y}) sit below the sunken ones ({loss_y})");
+    // The folds are grooves: the nasolabial fold sinks the skin beside the mouth at 80 more than at 30.
+    let listed = common::plan(&doc, "anatomy.list", json!({"character": "kit", "tissue": "skin"})).unwrap();
+    let out = listed.output.unwrap();
+    let fold = out["structures"].as_array().unwrap().iter().find(|s| s["id"] == "nasolabial_fold").unwrap();
+    assert!(fold["value"]["left"].as_f64().unwrap() > 1.5, "{fold}");
 }
 
 #[test]
@@ -349,10 +534,13 @@ fn the_cached_builder_gives_the_reference_builders_character() {
             json!({"character": "kit", "part": "shirt", "layer": {"id": "wear", "kind": {"type": "wear", "colour": "#ffffff", "amount": 0.8}}}),
         ),
         ("character.set_age", json!({"character": "kit", "age": 55.0})),
+        ("anatomy.set", json!({"character": "kit", "name": "robusticity", "value": 1.2})),
         ("shape.set_dial", json!({"character": "kit", "dial": "calf_size", "value": -0.5, "side": "right"})),
+        ("anatomy.set", json!({"character": "kit", "name": "malar_fat", "value": -0.8, "side": "left"})),
         ("body.set_template", json!({"character": "kit", "template": "tall"})),
         ("part.sculpt.clear", json!({"character": "kit", "part": "head"})),
         ("shape.reset", json!({"character": "kit"})),
+        ("anatomy.randomise", json!({"character": "kit", "seed": 9})),
     ];
     for (op, args) in steps {
         common::apply(&mut doc, op, args);
@@ -402,6 +590,12 @@ fn the_design_ops_keep_the_editing_contract() {
         ),
         ("part.layer.remove", json!({"character": "kit", "part": "head", "layer": "wet"})),
         ("shape.reset", json!({"character": "kit", "group": "legs"})),
+        ("anatomy.set", json!({"character": "kit", "name": "adiposity", "value": 1.0})),
+        ("anatomy.set", json!({"character": "kit", "name": "jowl_fat", "value": 0.6, "side": "right"})),
+        ("anatomy.randomise", json!({"character": "kit", "seed": 2, "amount": 0.7, "asymmetry": 0.3})),
+        ("anatomy.reset", json!({"character": "kit", "name": "adiposity"})),
+        ("shape.randomise", json!({"character": "kit", "seed": 5})),
+        ("anatomy.reset", json!({"character": "kit"})),
     ];
     for (op, args) in steps {
         common::round_trip(&mut doc, op, args);
@@ -450,4 +644,13 @@ fn the_ops_refuse_what_they_cannot_do() {
     assert_eq!(e.field.as_deref(), Some("layer/id"));
     let e = common::refused(&doc, "part.layer.remove", json!({"character": "kit", "part": "head", "layer": "b"}));
     assert_eq!(e.field.as_deref(), Some("layer"));
+    let e = common::refused(&doc, "anatomy.set", json!({"character": "kit", "name": "malar_fta", "value": 1.0}));
+    assert!(e.hint.unwrap().contains("malar_fat"));
+    let e = common::refused(&doc, "anatomy.set", json!({"character": "kit", "name": "adiposity", "value": 4.0}));
+    assert_eq!(e.field.as_deref(), Some("value"));
+    let e =
+        common::refused(&doc, "anatomy.set", json!({"character": "kit", "name": "adiposity", "value": 1.0, "side": "left"}));
+    assert_eq!(e.field.as_deref(), Some("side"));
+    let e = common::refused(&doc, "anatomy.list", json!({"tissue": "cartilage"}));
+    assert_eq!(e.field.as_deref(), Some("tissue"));
 }

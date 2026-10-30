@@ -9,7 +9,9 @@
 //!   part's own coordinates so they re-apply after any slider or template change (#2613);
 //! - **layers** ([`layer`]): a material layer stack on every part (tint, detail, wear, wetness, makeup, paint, polish,
 //!   decals, greying, cavity), each layer a parameterised generator with masks (#2609, #2610);
-//! - **age** ([`age`]): one number that drives the dials, the skin layers and the hair coherently (#2615).
+//! - **anatomy** ([`anatomy`]): the bone, fat, muscle and skin under the surface, as z-scores with shared factors
+//!   (adiposity, robusticity, muscularity, laxity), so a change or a random sample stays a plausible face (#2614);
+//! - **age** ([`age`]): one number that drives the anatomy, the dials, the skin layers and the hair coherently (#2615).
 //!
 //! # How it builds
 //!
@@ -37,6 +39,7 @@
 //! the brow of a rounder head.
 
 pub mod age;
+pub mod anatomy;
 pub mod deform;
 pub mod dial;
 pub mod frame;
@@ -53,11 +56,12 @@ use serde::{Deserialize, Serialize};
 use crate::ids::{DialId, PartId};
 
 pub use age::{AGE_RANGE, AgeLayers, AgeModel};
+pub use anatomy::{AnatomyDef, Factor, STRUCTURE_RANGE, StructureDef, Tissue};
 pub use deform::{BodyFrameFact, HeadFrameFact};
 pub use dial::{DialDef, DialEffect, DialSetting, DialSide, Lobes, Push};
 pub use frame::{BodyFrame, HeadFrame, Landmark, PartFrame, RegionGroup};
 pub use layer::{Blend, DecalShape, LayerKind, MakeupZone, Mask, MaskKind, MaterialLayer};
-pub use library::{DesignLibrary, DesignSource, design_library, find_dial};
+pub use library::{DesignLibrary, DesignSource, design_library, find_dial, find_structure};
 pub use locate::locate;
 pub use sculpt::{Brush, PartPoint, SculptStroke};
 
@@ -77,6 +81,9 @@ pub struct DesignDef {
     /// Dial settings by dial id. A dial that is not listed is at 0.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub dials: BTreeMap<DialId, DialSetting>,
+    /// The anatomy under the shape: its factors and structures. Empty: the kit's mean adult.
+    #[serde(skip_serializing_if = "AnatomyDef::is_empty")]
+    pub anatomy: AnatomyDef,
     /// Sculpt strokes by part, in the order they were made.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub sculpt: BTreeMap<PartId, Vec<SculptStroke>>,
@@ -91,9 +98,9 @@ impl DesignDef {
         *self == Self::default()
     }
 
-    /// True when it moves any vertex of the body and the head: a dial off zero, or an age.
+    /// True when it moves any vertex of the body and the head: a dial off zero, an anatomy, or an age.
     pub fn shapes_body(&self) -> bool {
-        self.age.is_some() || self.dials.values().any(|d| !d.is_zero())
+        self.age.is_some() || self.dials.values().any(|d| !d.is_zero()) || !self.anatomy.is_empty()
     }
 
     /// The strokes of `part`, oldest first.
@@ -106,8 +113,8 @@ impl DesignDef {
         self.layers.get(part).map_or(&[], Vec::as_slice)
     }
 
-    /// Checks what can be checked without a build: the age's range, every dial's id against the library and its
-    /// values against the dial's range and sides, every stroke's and layer's numbers.
+    /// Checks what can be checked without a build: the age's range, every dial's and structure's id against the
+    /// library and its values against its range and sides, every stroke's and layer's numbers.
     ///
     /// # Errors
     /// A message naming the first field that is wrong, as a path under `design` (`dials/jaw_width/left`).
@@ -120,6 +127,10 @@ impl DesignDef {
         for (id, setting) in &self.dials {
             let def = find_dial(id.as_str()).map_err(|e| format!("dials/{id}: {e}"))?;
             setting.check(&def).map_err(|e| format!("dials/{id}/{e}"))?;
+        }
+        if !self.anatomy.is_empty() {
+            let structures = design_library().map(|l| l.structures.as_slice())?;
+            self.anatomy.check(structures).map_err(|e| format!("anatomy/{e}"))?;
         }
         for (part, strokes) in &self.sculpt {
             for (i, stroke) in strokes.iter().enumerate() {
