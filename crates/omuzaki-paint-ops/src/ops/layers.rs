@@ -114,6 +114,9 @@ pub struct AddLayer {
     /// Opacity, 0 to 1. Default 1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opacity: Option<f64>,
+    /// Blur the layer by a Gaussian of this many pixels (0 to 256): soft painted edges, glows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blur: Option<f64>,
     /// Clip to the layer under it. Default false.
     #[serde(default)]
     pub clip: bool,
@@ -144,6 +147,7 @@ impl Op for AddLayer {
         layer.blend = self.blend;
         layer.opacity = self.opacity.unwrap_or(1.0);
         layer.clip = self.clip;
+        layer.blur = self.blur.unwrap_or(0.0);
         layer.visible = self.visible.unwrap_or(true);
         layer.role.clone_from(&self.role);
         p.layers.insert(self.id.clone(), layer);
@@ -190,6 +194,9 @@ pub struct SetLayer {
     /// For a group: pass its layers through to what is under it (clears `blend`).
     #[serde(default)]
     pub pass_through: bool,
+    /// Blur the layer by a Gaussian of this many pixels (0 to 256): soft painted edges, glows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blur: Option<f64>,
     /// Clip to the layer under it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clip: Option<bool>,
@@ -200,7 +207,7 @@ pub struct SetLayer {
 
 impl Op for SetLayer {
     fn meta() -> OpMeta {
-        edit("paint.set_layer", "Change a layer's name, visibility, opacity, blend mode, clipping or role.")
+        edit("paint.set_layer", "Change a layer's name, visibility, opacity, blend mode, blur, clipping or role.")
     }
 
     fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
@@ -228,6 +235,9 @@ impl Op for SetLayer {
         if self.pass_through {
             new.blend = None;
         }
+        if let Some(b) = self.blur {
+            new.blur = b;
+        }
         if let Some(c) = self.clip {
             new.clip = c;
         }
@@ -238,7 +248,7 @@ impl Op for SetLayer {
         p.check().map_err(from_paint)?;
         let (old_v, new_v) = (json(&old)?, json(&new)?);
         let mut patch = Patch::new();
-        for field in ["name", "visible", "opacity", "blend", "clip", "role"] {
+        for field in ["name", "visible", "opacity", "blend", "blur", "clip", "role"] {
             let (a, b) = (old_v.get(field).cloned(), new_v.get(field).cloned());
             if a != b {
                 patch = patch.with(path_in(&self.painting, &["layers", &self.layer, field]), a, b);
@@ -252,7 +262,7 @@ impl Op for SetLayer {
 register_op!(SetLayer);
 
 fn settings(l: &Layer) -> Value {
-    json!({ "name": l.name, "visible": l.visible, "opacity": l.opacity, "blend": l.blend, "clip": l.clip, "role": l.role })
+    json!({ "name": l.name, "visible": l.visible, "opacity": l.opacity, "blend": l.blend, "blur": l.blur, "clip": l.clip, "role": l.role })
 }
 
 /// Remove a layer with its marks (a group goes with every layer in it). Undoable.

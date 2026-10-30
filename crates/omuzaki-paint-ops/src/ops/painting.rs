@@ -166,7 +166,7 @@ impl Op for Get {
                     "id": lid, "name": l.name,
                     "kind": if l.kind == LayerKind::Group { "group" } else { "paint" },
                     "parent": l.parent, "visible": l.visible, "opacity": l.opacity, "blend": l.blend,
-                    "clip": l.clip, "role": l.role, "masked": l.mask.is_some(), "marks": l.marks.len(),
+                    "blur": l.blur, "clip": l.clip, "role": l.role, "masked": l.mask.is_some(), "marks": l.marks.len(),
                 })
             })
             .collect();

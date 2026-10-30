@@ -37,6 +37,11 @@ fn yes() -> bool {
     true
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's skip_serializing_if passes a reference
+fn is_zero(v: &f64) -> bool {
+    *v == 0.0
+}
+
 fn one() -> f64 {
     1.0
 }
@@ -117,6 +122,10 @@ pub struct Layer {
     /// Clip to the layer under it: only shows where that layer has paint (shading over a base colour).
     #[serde(default)]
     pub clip: bool,
+    /// Blur the layer's pixels by a Gaussian of this many pixels (a live filter, as a painter softens a pass): soft
+    /// painted edges, glows, depth. Default 0. On a group it blurs the composited group, which must then have a blend.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub blur: f64,
     /// What part of a character it is, for layered-art export to a puppet (`face`, `hair_front`, `iris`, ...).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
@@ -139,6 +148,7 @@ impl Layer {
             opacity: 1.0,
             blend: None,
             clip: false,
+            blur: 0.0,
             role: None,
             mask: None,
             marks: Vec::new(),
@@ -546,6 +556,13 @@ impl Painting {
             check_id(&f, id)?;
             text(&format!("{f}/name"), &layer.name, MAX_NAME)?;
             unit(&format!("{f}/opacity"), layer.opacity)?;
+            range(&format!("{f}/blur"), layer.blur, 0.0, MAX_FEATHER)?;
+            if layer.blur > 0.0 && layer.kind == LayerKind::Group && layer.blend.is_none() {
+                return Err(PaintError::invalid(
+                    format!("{f}/blur"),
+                    "a pass-through group can't blur: give it a blend",
+                ));
+            }
             if let Some(role) = &layer.role {
                 check_id(&format!("{f}/role"), role)?;
             }

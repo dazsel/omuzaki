@@ -288,6 +288,24 @@ impl Canvas {
         }
     }
 
+    /// Blurs every channel by a Gaussian of `sigma` pixels (pixels past the edge count as clear).
+    pub fn blur(&mut self, sigma: f64) {
+        if sigma <= 0.0 {
+            return;
+        }
+        let rect = self.bounds();
+        for c in 0..4 {
+            let mut m = Mask::new(rect);
+            for (v, p) in m.values.iter_mut().zip(&self.px) {
+                *v = p[c];
+            }
+            let b = crate::raster::feather(&m, sigma, rect);
+            for (p, v) in self.px.iter_mut().zip(&b.values) {
+                p[c] = *v;
+            }
+        }
+    }
+
     /// Mixes towards `other` by `t` (0 keeps this, 1 is `other`), pixel by pixel.
     ///
     /// # Errors

@@ -202,9 +202,10 @@ fn composite_children(
                 && base_layer.visible
                 && layer.visible
             {
-                let own = pixels.get(id).ok_or_else(|| PaintError::NoLayer(id.to_owned()))?;
+                let mut own = pixels.get(id).ok_or_else(|| PaintError::NoLayer(id.to_owned()))?.clone();
+                own.blur(layer.blur);
                 #[allow(clippy::cast_possible_truncation)] // 0..1
-                base.composite_from(own, layer.opacity as f32, layer.blend.unwrap_or_default(), Keep::Atop)?;
+                base.composite_from(&own, layer.opacity as f32, layer.blend.unwrap_or_default(), Keep::Atop)?;
             }
             // A clipped layer with no base under it shows nothing, as in Photoshop.
             continue;
@@ -214,8 +215,9 @@ fn composite_children(
         }
         match layer.kind {
             LayerKind::Paint => {
-                let own = pixels.get(id).ok_or_else(|| PaintError::NoLayer(id.to_owned()))?;
-                group = Some((own.clone(), layer));
+                let mut own = pixels.get(id).ok_or_else(|| PaintError::NoLayer(id.to_owned()))?.clone();
+                own.blur(layer.blur);
+                group = Some((own, layer));
             }
             LayerKind::Group => {
                 if !layer.visible {
@@ -232,6 +234,7 @@ fn composite_children(
                     Some(mode) => {
                         let mut isolated = Canvas::new(p.width, p.height)?;
                         composite_children(p, Some(id), pixels, &mut isolated)?;
+                        isolated.blur(layer.blur);
                         #[allow(clippy::cast_possible_truncation)] // 0..1
                         dst.composite_from(&isolated, layer.opacity as f32, mode, Keep::Over)?;
                     }
@@ -420,6 +423,19 @@ mod tests {
         assert_eq!(px(&c, 20, 10), Colour::BLACK);
         assert_eq!(px(&c, 20, 30), Colour::CLEAR);
         assert_eq!(px(&c, 20, 20), Colour::WHITE);
+    }
+
+    #[test]
+    fn a_blurred_layer_softens_its_edge_and_keeps_its_paint() {
+        let mut l = with(Layer::paint("l"), vec![rect(10.0, 10.0, 20.0, 20.0, "#ffffff")]);
+        let sharp = render(&painting(vec![("l", l.clone())])).unwrap();
+        l.blur = 2.0;
+        let soft = render(&painting(vec![("l", l)])).unwrap();
+        let alpha = |c: &Canvas| c.pixels().iter().map(|p| f64::from(p[3])).sum::<f64>();
+        assert!((alpha(&soft) - alpha(&sharp)).abs() < 1.0);
+        let edge = soft.get(10, 20)[3];
+        assert!(edge > 0.3 && edge < 0.7, "{edge}");
+        assert!(soft.get(8, 20)[3] > 0.0 && sharp.get(8, 20)[3] == 0.0);
     }
 
     #[test]
