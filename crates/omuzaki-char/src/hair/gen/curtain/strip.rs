@@ -27,7 +27,7 @@ use omuzaki_core::glam::{Vec2, Vec3};
 use omuzaki_core::id::{Slug, SlugError};
 use omuzaki_core::mesh::MeshData;
 
-use crate::hair::strands;
+use crate::hair::strands::{self, StrandMap};
 use crate::hair::tube::{along, smoothstep};
 
 /// How far the columns bulge outward, metres.
@@ -306,17 +306,20 @@ pub struct StripLook {
 }
 
 /// The whole strip mesh at rest. `guides` are in curtain order and `looks` has one entry per guide; `head` is the head
-/// centre, from which `hair-info` takes its polar angle. `keep` is applied to every vertex once placed (the body's
+/// centre, from which `hair-info` takes its polar angle; `map` lays each column on the strand texture. A strip's sides
+/// are not feathered: the curtain is one sheet, and each side meets the next strip. `keep` is applied to every vertex once placed (the body's
 /// keep-out; `|p| p` for none), before the winding and normals are worked out.
 ///
 /// # Errors
 /// As [`strip_positions`], plus [`StripError::GuideCount`] if `looks` and `guides` differ in length and
 /// [`StripError::TooMany`] if the mesh would need more than 2^32 vertices.
+#[allow(clippy::too_many_arguments)] // the strip's guides, its look and the fields it is laid in
 pub fn strip_mesh(
     guides: &[&[Vec3]],
     looks: &[StripLook],
     columns: u8,
     spacing: Spacing,
+    map: &StrandMap,
     head: Vec3,
     outward: impl Fn(Vec3) -> Vec3,
     keep: impl Fn(Vec3) -> Vec3,
@@ -357,7 +360,7 @@ pub fn strip_mesh(
                 let polar = (guide[k] - head).normalize_or_zero().y.clamp(-1.0, 1.0).acos();
                 uv.extend([a, t]);
                 info.extend([seed, shade, polar]);
-                uvs.push(Vec2::new(strands::offset(seed) + 0.5 + 0.5 * a, strands::tip_v(lengths[k], length)));
+                uvs.push(Vec2::new(strands::offset(seed) + 0.5 + 0.5 * a, map.v(lengths[k], length)));
                 colours.push(look.colour);
             }
         }

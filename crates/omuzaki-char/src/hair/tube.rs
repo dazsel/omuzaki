@@ -20,7 +20,7 @@ use omuzaki_core::glam::{Vec2, Vec3};
 use omuzaki_core::id::{Slug, SlugError};
 use omuzaki_core::mesh::MeshData;
 
-use crate::hair::strands;
+use crate::hair::strands::{self, StrandMap};
 
 /// Vertices in one ring of a live tube (the prototype's `K`).
 pub const RING: usize = 8;
@@ -297,6 +297,8 @@ pub struct TubeMesh {
     info: Vec<f32>,
     /// Vertices per ring.
     ring: usize,
+    /// How each lock is laid on the strand texture.
+    map: StrandMap,
 }
 
 impl Default for TubeMesh {
@@ -313,7 +315,20 @@ impl TubeMesh {
 
     /// An empty mesh whose tubes have `ring` vertices a ring (at least 3; [`ring_for`] picks it by quality).
     pub fn with_ring(ring: usize) -> Self {
-        Self { mesh: MeshData::default(), uv: Vec::new(), info: Vec::new(), ring: ring.max(3) }
+        Self {
+            mesh: MeshData::default(),
+            uv: Vec::new(),
+            info: Vec::new(),
+            ring: ring.max(3),
+            map: StrandMap::default(),
+        }
+    }
+
+    /// The same mesh, its locks laid on the strand texture by `map`.
+    #[must_use]
+    pub fn with_map(mut self, map: StrandMap) -> Self {
+        self.map = map;
+        self
     }
 
     /// Vertices so far.
@@ -386,17 +401,20 @@ impl TubeMesh {
             .collect();
         let length = lengths[last];
         let shift = strands::offset(look.seed);
+        // The vertex colour's alpha feathers the lock's sides: the fainter strands drop out toward them.
+        let colour = vertex_colour(look.tint);
         for (i, polar) in look.polar.iter().enumerate() {
             let t = along(i, last);
-            let v = strands::tip_v(lengths[i], length);
+            let strand_v = self.map.v(lengths[i], length);
             for k in 0..ring {
                 let across = ring_angle(k, ring).cos() * look.flip;
                 self.uv.extend([across, t]);
                 self.info.extend([look.seed, look.shade, *polar]);
-                self.mesh.uvs.push(Vec2::new(shift + 0.5 + 0.5 * across, v));
+                self.mesh.uvs.push(Vec2::new(shift + 0.5 + 0.5 * across, strand_v));
+                let [red, green, blue, _] = colour;
+                self.mesh.colours.push([red, green, blue, self.map.coverage(across)]);
             }
         }
-        self.mesh.colours.extend(std::iter::repeat_n(vertex_colour(look.tint), count));
         self.mesh.indices.extend(tube_indices(base, points.len(), ring));
         // The caps come after every ring vertex, so the ring vertices keep their indices.
         let ring_u32 = u32::try_from(ring).map_err(|_| TubeError::TooMany)?;
@@ -417,7 +435,7 @@ impl TubeMesh {
     fn push_cap(&mut self, cap: &Cap, look: &TubeLook<'_>) -> Result<(), TubeError> {
         // Fails before anything is written, so a refused cap leaves no half-built fan behind.
         let centre = u32::try_from(self.mesh.positions.len()).map_err(|_| TubeError::TooMany)?;
-        let colour = vertex_colour(look.tint);
+        let [r, g, b, _] = vertex_colour(look.tint);
         let rim = cap.ring as usize;
         let add = |m: &mut Self, p: Vec3, across: f32| {
             m.mesh.positions.push(p);
@@ -427,7 +445,7 @@ impl TubeMesh {
             m.mesh
                 .uvs
                 .push(Vec2::new(strands::offset(look.seed) + 0.5 + 0.5 * across * look.flip, cap.t * strands::V_END));
-            m.mesh.colours.push(colour);
+            m.mesh.colours.push([r, g, b, m.map.coverage(across)]);
         };
         let ring = self.ring;
         let ring_u32 = u32::try_from(ring).map_err(|_| TubeError::TooMany)?;

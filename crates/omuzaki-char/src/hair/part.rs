@@ -31,8 +31,8 @@ use std::ops::Range;
 
 use omuzaki_char_api::{
     AnchorsFact, BodyRegion, BuildCtx, BuildError, Bulge, FaceOverlay, Generator, GroupId, HAIR_UV, HairParams,
-    HeadSurface, JointRef, KindProvenance, MaterialName, MaterialSpec, PartCategory, PartId, PartKind, PartMesh,
-    PartMeta, PartOutput, PointedEars, Quality, RecolourCtx, Recoloured, StatureFact, Taper, TextureName,
+    HairShading, HeadSurface, JointRef, KindProvenance, MaterialName, MaterialSpec, PartCategory, PartId, PartKind,
+    PartMesh, PartMeta, PartOutput, PointedEars, Quality, RecolourCtx, Recoloured, StatureFact, Taper, TextureName,
 };
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::{Vec2, Vec3};
@@ -49,10 +49,11 @@ use super::r#gen::tail::Chain;
 use super::r#gen::{ahoge, bun, cap, tail};
 use super::physics::{self, runtime::HairRuntime};
 use super::reach::{HairReach, HairReachFact};
-use super::strands;
+use super::strands::{self, StrandMap, Strands};
 use super::tie;
 use super::tube::{
-    OutwardFrame, TubeError, TubeLook, TubeMesh, cap_vertices, polar_angles, refine, ring_for, vertex_colour,
+    OutwardFrame, TubeError, TubeLook, TubeMesh, cap_vertices, polar_angles, refine, ring_for, smoothstep,
+    vertex_colour,
 };
 use super::wisp;
 use crate::head::ears::EarCover;
@@ -136,7 +137,7 @@ pub fn build_with(
     let mut warnings = Vec::new();
     let chains = tail_chains(params, ctx, head.as_ref())?;
     let Meshes { stat, dynamic, ties } =
-        mesh_groups(&entries, &frame, keep_out.as_ref(), &chains, ctx.quality, &mut warnings)
+        mesh_groups(&entries, &frame, keep_out.as_ref(), &chains, ctx.quality, &params.shading, &mut warnings)
             .map_err(|e| ctx.fail(e.to_string()))?;
 
     let material_name = hair_material_name(ctx.part).map_err(|e| ctx.fail(format!("material name: {e}")))?;
@@ -151,7 +152,7 @@ pub fn build_with(
     };
     let material = hair_material(ctx.part, params, ctx.palette, overlays)?;
     let mut out = PartOutput::new().with_materials(vec![(material_name.clone(), material)]).with_warnings(warnings);
-    out.textures.push(strands_texture(ctx)?);
+    out.textures.push(strands_texture(ctx, &params.shading)?);
     // Built for export, the simulated groups other than tails hang on strand chains of their own.
     let strands = if ctx.rig_export {
         bake::strand_chains(ctx.part, params, &entries, &chains).map_err(|e| ctx.fail(e))?
@@ -388,18 +389,22 @@ const OFFLINE_REFINE: usize = 1;
 /// then strips, then shells, then (offline) the wisps. Pushes a warning for each group that made nothing.
 ///
 /// `quality` sets the detail: live locks are rings of 8 on their compiled points; offline locks are rings of 16 on
-/// twice the points, and the outer locks shed fine wisps ([`wisp`]), for close-ups.
+/// twice the points, and the outer locks shed fine wisps ([`wisp`]), for close-ups. `shading` lays the locks on the strand
+/// texture and sets how far their normals bend to the hair's volume ([`volume_normals`]).
+#[allow(clippy::too_many_arguments)] // the build's state, passed through once
 fn mesh_groups<'a>(
     entries: &[CompiledEntry],
     frame: &OutwardFrame,
     keep_out: Option<&BodyKeepOut>,
     chains: &'a BTreeMap<GroupId, Vec<Chain>>,
     quality: Quality,
+    shading: &HairShading,
     warnings: &mut Vec<String>,
 ) -> Result<Meshes<'a>, MeshError> {
     let ring = ring_for(quality);
     let offline = quality == Quality::Offline;
-    let (mut stat, mut dynamic) = (TubeMesh::with_ring(ring), TubeMesh::with_ring(ring));
+    let map = StrandMap::of(shading);
+    let (mut stat, mut dynamic) = (TubeMesh::with_ring(ring).with_map(map), TubeMesh::with_ring(ring).with_map(map));
     // The wisps the locks shed, with the mesh and the chain each goes with: drawn last, after the shells.
     let mut wisps: Vec<(bool, wisp::Wisp, Option<&'a Chain>, TubeLook<'static>)> = Vec::new();
     let (mut stat_clumps, mut dynamic_clumps) = (0usize, 0usize);
@@ -448,7 +453,7 @@ fn mesh_groups<'a>(
                 warnings.push(format!("the '{}' group made no clumps", entry.id));
                 continue;
             }
-            let strips = curtain::group_mesh(&entry.group.clumps, u, *columns, frame, keep_out)?;
+            let strips = curtain::group_mesh(&entry.group.clumps, u, *columns, frame, keep_out, &map)?;
             if strips.indices.is_empty() {
                 warnings.push(format!(
                     "the '{}' group has {columns} columns, so there is nothing to draw between them",
@@ -481,12 +486,53 @@ fn mesh_groups<'a>(
         }
     }
     let finish = |mesh: TubeMesh| if mesh.is_empty() { Ok(None) } else { mesh.finish().map(Some) };
+    #[allow(clippy::cast_possible_truncation)] // a checked 0..=1
+    let blend = shading.normal_blend as f32;
+    let skinned = |geometry: Option<MeshData>, runs: Vec<Run<'a>>| {
+        geometry.map(|mut geometry| {
+            volume_normals(&mut geometry, &runs, frame, blend);
+            Skinned { geometry, runs }
+        })
+    };
     Ok(Meshes {
-        stat: finish(stat)?.map(|geometry| Skinned { geometry, runs: stat_runs }),
-        dynamic: finish(dynamic)?.map(|geometry| Skinned { geometry, runs: dynamic_runs }),
+        stat: skinned(finish(stat)?, stat_runs),
+        dynamic: skinned(finish(dynamic)?, dynamic_runs),
         ties: tie::mesh(&bands),
     })
 }
+
+/// Bends the normals of `mesh` by `blend` (`0..=1`) from each lock's own toward the hair's volume: the direction out of
+/// the head and body ([`OutwardFrame::rest`]), or, along a tail, out of its chain, blending from the head's over the
+/// chain's root band as the skin does. At 1 the locks shade as one mass, as drawn hair does, and the ink outline, which
+/// pushes its hull along these normals, draws only the hair's silhouette, not every lock; at 0 each lock is a tube of its
+/// own. A lock's inner face, the part that faces the head ([`INNER`]), bends to the volume's inside instead, so the
+/// inside of a flared lock is not lit as if it faced out (the back light's rim would light it grey); between the two
+/// it keeps its own. A normal that cancels out keeps the lock's own.
+fn volume_normals(mesh: &mut MeshData, runs: &[Run<'_>], frame: &OutwardFrame, blend: f32) {
+    if blend <= 0.0 {
+        return;
+    }
+    let mut volume: Vec<Vec3> = mesh.positions.iter().map(|p| frame.rest(*p)).collect();
+    for run in runs {
+        for v in run.range.clone() {
+            let Some(p) = mesh.positions.get(v).copied() else { continue };
+            let s = tail::skin(run.chain, p);
+            let (Some(a), Some(b)) = (run.chain.rest.get(s.bone), run.chain.rest.get(s.bone + 1)) else { continue };
+            let axis = a.lerp(*b, s.along);
+            let along_chain = (p - axis).try_normalize().unwrap_or(volume[v]);
+            volume[v] = volume[v].lerp(along_chain, 1.0 - s.head).try_normalize().unwrap_or(along_chain);
+        }
+    }
+    for (n, out) in mesh.normals.iter_mut().zip(volume) {
+        let side = 2.0 * smoothstep(n.dot(out), INNER.0, INNER.1) - 1.0;
+        let target = (out * side + *n * (1.0 - side.abs())).try_normalize().unwrap_or(*n);
+        *n = n.lerp(target, blend.min(1.0)).try_normalize().unwrap_or(*n);
+    }
+}
+
+/// The cosines between a lock's own normal and the volume's at which [`volume_normals`] turns from the volume's inside
+/// to its outside: a lock's top and sides take the outside, and only the face toward the head the inside.
+const INNER: (f32, f32) = (-0.75, -0.35);
 
 /// What [`mesh_groups`] makes: the two hair meshes and the tie bands.
 struct Meshes<'a> {
@@ -595,9 +641,12 @@ fn strands_texture_name(part: &PartId) -> Result<TextureName, omuzaki_core::id::
 }
 
 /// The strand texture the hair material reads, under its name.
-fn strands_texture(ctx: &BuildCtx<'_>) -> Result<(TextureName, omuzaki_char_api::TextureData), BuildError> {
+fn strands_texture(
+    ctx: &BuildCtx<'_>,
+    shading: &HairShading,
+) -> Result<(TextureName, omuzaki_char_api::TextureData), BuildError> {
     let name = strands_texture_name(ctx.part).map_err(|e| ctx.fail(format!("texture name: {e}")))?;
-    Ok((name, strands::texture()))
+    Ok((name, Strands::of(shading).texture()))
 }
 
 /// The name of the tie material of `part`.
@@ -745,7 +794,11 @@ fn paint_clumps(mesh: &mut MeshData, clumps: &[(Drawn, Option<Colour>)]) -> bool
     }
     let Some(ranges) = clump_ranges(mesh, clumps.iter().map(|c| c.0)) else { return false };
     for (range, (_, tint)) in ranges.into_iter().zip(clumps_in_mesh_order(clumps)) {
-        mesh.colours[range].fill(vertex_colour(tint));
+        // The alpha is the strand map's coverage, which a new tint keeps.
+        let [r, g, b, _] = vertex_colour(tint);
+        for colour in &mut mesh.colours[range] {
+            *colour = [r, g, b, colour[3]];
+        }
     }
     true
 }
