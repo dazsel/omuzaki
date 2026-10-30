@@ -41,9 +41,8 @@ struct Phrase {
     taper: bool,
     /// The words so far at the end of this phrase, as a recogniser would give them.
     words: &'static str,
-    /// The pause after it, ms, and whether the turn ends there.
+    /// The pause after it, ms.
     pause_ms: f32,
-    turn_ends: bool,
 }
 
 /// Where a pause is and what it is.
@@ -56,7 +55,8 @@ enum Pause {
 
 /// The conversation's phrases and their kinds: eight turns from one speaker, about a minute.
 fn script() -> Vec<(Phrase, Pause)> {
-    let p = |syllables, from_hz, to_hz, end_hz, taper, words, pause_ms, turn_ends| Phrase {
+    use Pause::{Clause, Hesitation, TurnEnd};
+    let p = |syllables, from_hz, to_hz, end_hz, taper, words, pause_ms, _turn_ends: bool| Phrase {
         syllables,
         from_hz,
         to_hz,
@@ -64,9 +64,7 @@ fn script() -> Vec<(Phrase, Pause)> {
         taper,
         words,
         pause_ms,
-        turn_ends,
     };
-    use Pause::{Clause, Hesitation, TurnEnd};
     vec![
         (p(8, 150.0, 130.0, 100.0, true, "I just got back from the market.", 2500.0, true), TurnEnd),
         (p(6, 145.0, 150.0, 200.0, false, "Have you tried the new noodle place?", 2500.0, true), TurnEnd),
@@ -89,7 +87,10 @@ fn script() -> Vec<(Phrase, Pause)> {
 }
 
 /// The audio, at 16 kHz, and each pause's span in samples with its kind and the words before it.
-fn render(script: &[(Phrase, Pause)]) -> (Vec<f32>, Vec<(usize, usize, Pause, &'static str)>) {
+/// A pause: its first and last sample, its kind and the words before it.
+type PauseSpan = (usize, usize, Pause, &'static str);
+
+fn render(script: &[(Phrase, Pause)]) -> (Vec<f32>, Vec<PauseSpan>) {
     let syllable_s = 0.19f32;
     let mut out = vec![0.0f32; (0.5 * FS) as usize];
     let mut pauses = Vec::new();
@@ -166,8 +167,7 @@ fn simulate(policy: Policy) -> Timing {
     let mut turn = TurnTaker::new(TurnConfig::default());
     let mut ends: Vec<usize> = Vec::new();
     let frame_of = |sample: usize| sample / FRAME;
-    for (i, frame) in audio.chunks_exact(FRAME).enumerate() {
-        let frame: &[f32; FRAME] = frame.try_into().unwrap();
+    for (i, frame) in audio.as_chunks::<FRAME>().0.iter().enumerate() {
         let p = energy_vad(frame);
         if !matches!(policy, Policy::Fixed(_)) {
             let open = segmenter.is_open();
@@ -265,8 +265,7 @@ fn backchannels_come_while_the_person_talks_and_not_too_often() {
         Segmenter::new(SegmenterConfig { min_silence_ms: 600, pad_ms: 0, ..SegmenterConfig::default() });
     let mut turn = TurnTaker::new(TurnConfig::default());
     let mut cues = Vec::new();
-    for (i, frame) in audio.chunks_exact(FRAME).enumerate() {
-        let frame: &[f32; FRAME] = frame.try_into().unwrap();
+    for (i, frame) in audio.as_chunks::<FRAME>().0.iter().enumerate() {
         let p = energy_vad(frame);
         let open = segmenter.is_open();
         let speech = p >= if open { 0.35 } else { 0.5 };
