@@ -1,0 +1,35 @@
+[package]
+name = "omuzaki-parity"
+description = "Pixel parity: a render against its reference, pixel for pixel and frame for frame, until the exact difference map is 0; overlays, regions, camera and timing alignment, signal parity and the recreate-never-copy check, as the parity.* ops."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+base64.workspace = true
+# PNG and JPEG: reference frames are often extracted from video as JPEG (`omuzaki-measure` enables the same feature).
+image = { workspace = true, features = ["jpeg"] }
+# The colour engine `image` already uses: an embedded colour profile is converted to sRGB before measuring.
+moxcms = "0.8"
+omuzaki-core = { path = "../omuzaki-core" }
+omuzaki-doc-api = { path = "../omuzaki-doc-api" }
+omuzaki-ops-api = { path = "../omuzaki-ops-api" }
+omuzaki-store-api = { path = "../omuzaki-store-api" }
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
+omuzaki-store-mock = { path = "../omuzaki-store-mock" }
+
+[lints]
+workspace = true
+
+[package.metadata.omuzaki]
+kind = "Implementation"
+registers = true
+summary = "pixel parity, the parity.* ops: the exact difference map (done only at 0), CIEDE2000, SSIM, GMSD, edges, silhouettes; found and given regions; camera and timing alignment; overlays; signal parity; the recreate-never-copy check; the per-iteration loop"

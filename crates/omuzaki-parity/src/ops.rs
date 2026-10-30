@@ -1,5 +1,5 @@
 //! The `parity.*` ops: pixel parity of a render against a reference, frame for frame, until the exact difference map
-//! is 0 (see [`crate::parity`]).
+//! is 0 (see the crate's notes).
 //!
 //! - `parity.compare`: one render against one reference: the exact map's count, the metrics, every region, the worst
 //!   regions and tiles with hints, and optionally how far the camera is off.
@@ -24,18 +24,24 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::check_name;
+use crate::align::{AlignMethod, align};
 use crate::colour::parse_hex;
 use crate::image::{ImageRef, Rgba8, load};
-use crate::parity::align::{AlignMethod, align};
-use crate::parity::metrics::{border_colour, silhouette};
-use crate::parity::overlay::{Mode, Picture, draw};
-use crate::parity::provenance::{self, Provenance, RULE, TileHash, tile_hashes};
-use crate::parity::raster::LabImage;
-use crate::parity::regions::{Points, Region, RegionSpec, Shape, fill, found_regions, merge_given};
-use crate::parity::score::{AlignedScore, Metric, PairScore, ScoreOptions, Worst, round, score_pair, srgb};
-use crate::parity::series::{Series, TimeAlign, score_series};
-use crate::parity::timing::{descriptor, descriptor_cost, timing};
+use crate::metrics::{border_colour, silhouette};
+use crate::overlay::{Mode, Picture, draw};
+use crate::provenance::{self, Provenance, RULE, TileHash, tile_hashes};
+use crate::raster::LabImage;
+use crate::regions::{Points, Region, RegionSpec, Shape, fill, found_regions, merge_given};
+use crate::score::{AlignedScore, Metric, PairScore, ScoreOptions, Worst, round, score_pair, srgb};
+use crate::series::{Series, TimeAlign, score_series};
+use crate::timing::{descriptor, descriptor_cost, timing};
+
+/// Checks a target name: a slug, since it is a key in the document.
+fn check_name(name: &str, field: &str) -> Result<(), OpError> {
+    omuzaki_core::id::Slug::new(name).map(|_| ()).map_err(|e| {
+        OpError::invalid(field, format!("'{name}' can't name a parity target: {e}")).hint("use a name like eye-macro")
+    })
+}
 
 /// The most frames one call reads.
 pub const MAX_FRAMES: usize = 4000;
@@ -265,12 +271,12 @@ fn scored(
     if let Some(method) = align_method {
         let a = align(&p.ours, &p.reference, &p.silhouettes.0, &p.silhouettes.1, ours_points, reference_points, method);
         let moved = p.ours.warped(&a.transform, p.reference.w, p.reference.h, p.backdrop);
-        let de = crate::parity::metrics::delta_e_map(&moved, &p.reference);
+        let de = crate::metrics::delta_e_map(&moved, &p.reference);
         let keep = Some(p.keep.as_slice());
-        let after = crate::parity::metrics::stats(&de, keep).mean;
+        let after = crate::metrics::stats(&de, keep).mean;
         let before = s.metrics.iter().find(|m| m.name == "delta_e_mean").map_or(0.0, |m| m.value);
         s.alignment = Some(AlignedScore {
-            within_jnd_aligned: round(crate::parity::metrics::share(&de, keep, |d| d <= 2.3)),
+            within_jnd_aligned: round(crate::metrics::share(&de, keep, |d| d <= 2.3)),
             delta_e_mean_aligned: round(after),
             framing_explains: round(if before > 0.0 { ((before - after) / before).max(0.0) } else { 0.0 }),
             alignment: a,
@@ -294,6 +300,7 @@ fn check_provenance(
             let name = match r {
                 ImageRef::Asset { asset } => format!("asset {asset}"),
                 ImageRef::File { path } => path.clone(),
+                ImageRef::Data { .. } => format!("inline image {k}"),
             };
             load(ctx, r, &format!("built_from[{k}]")).map(|img| (name, img))
         })
@@ -388,10 +395,8 @@ impl ScoreArgs {
 /// Scores one render against one reference, pixel for pixel.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[schemars(extend("examples" = [
-    {"ours": {"asset": "<render.preview hash>"}, "reference": {"path": "refs/front.png"}},
-    {"ours": {"path": "ours.png"}, "reference": {"path": "ref.png"}, "align": "auto",
-     "ours_points": {"eye_right": [300.0, 410.0], "eye_left": [420.0, 410.0]},
-     "reference_points": {"eye_right": [296.0, 404.0], "eye_left": [418.0, 406.0]}}
+    {"ours": {"data": "iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAIAAADZF8uwAAAAMElEQVR42mPUkJNhIASYGIgALMicBRVBaNIJHeuINYl064zcotDlqWwdnRUxEhMtALzXBed3OqrBAAAAAElFTkSuQmCC"}, "reference": {"data": "iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAIAAADZF8uwAAAALklEQVR42mPUkJNhIASYGIgALHDWvn2L0OScnOJIMIlE60QYuCgyaTAqYiQmWgAUhAP9dSFYgQAAAABJRU5ErkJggg=="}},
+    {"ours": {"data": "iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAIAAADZF8uwAAAAMElEQVR42mPUkJNhIASYGIgALMicBRVBaNIJHeuINYl064zcotDlqWwdnRUxEhMtALzXBed3OqrBAAAAAElFTkSuQmCC"}, "reference": {"data": "iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAIAAADZF8uwAAAALklEQVR42mPUkJNhIASYGIgALHDWvn2L0OScnOJIMIlE60QYuCgyaTAqYiQmWgAUhAP9dSFYgQAAAABJRU5ErkJggg=="}, "align": "auto", "ours_points": {"eye_right": [5.0, 7.0], "eye_left": [8.0, 7.0]}, "reference_points": {"eye_right": [4.0, 7.0], "eye_left": [7.0, 7.0]}}
 ]))]
 pub struct Compare {
     /// Our render.
@@ -448,8 +453,8 @@ register_op!(Compare);
 /// Draws an overlay of a render on its reference and stores it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[schemars(extend("examples" = [
-    {"ours": {"path": "ours.png"}, "reference": {"path": "ref.png"}, "overlay": {"mode": "sheet"}},
-    {"ours": {"path": "ours.png"}, "reference": {"path": "ref.png"}, "overlay": {"mode": "wipe", "position": 0.3}}
+    {"ours": {"data": "iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAIAAADZF8uwAAAAMElEQVR42mPUkJNhIASYGIgALMicBRVBaNIJHeuINYl064zcotDlqWwdnRUxEhMtALzXBed3OqrBAAAAAElFTkSuQmCC"}, "reference": {"data": "iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAIAAADZF8uwAAAALklEQVR42mPUkJNhIASYGIgALHDWvn2L0OScnOJIMIlE60QYuCgyaTAqYiQmWgAUhAP9dSFYgQAAAABJRU5ErkJggg=="}, "overlay": {"mode": "sheet"}},
+    {"ours": {"data": "iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAIAAADZF8uwAAAAMElEQVR42mPUkJNhIASYGIgALMicBRVBaNIJHeuINYl064zcotDlqWwdnRUxEhMtALzXBed3OqrBAAAAAElFTkSuQmCC"}, "reference": {"data": "iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAIAAADZF8uwAAAALklEQVR42mPUkJNhIASYGIgALHDWvn2L0OScnOJIMIlE60QYuCgyaTAqYiQmWgAUhAP9dSFYgQAAAABJRU5ErkJggg=="}, "overlay": {"mode": "wipe", "position": 0.3}}
 ]))]
 pub struct Overlay {
     /// Our render.
@@ -511,6 +516,10 @@ register_op!(Overlay);
 
 /// Finds how far the camera is off: the transform that lines the render up with the reference.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(extend("examples" = [
+    {"ours": {"data": "iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAIAAADZF8uwAAAAMElEQVR42mPUkJNhIASYGIgALMicBRVBaNIJHeuINYl064zcotDlqWwdnRUxEhMtALzXBed3OqrBAAAAAElFTkSuQmCC"}, "reference": {"data": "iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAIAAADZF8uwAAAALklEQVR42mPUkJNhIASYGIgALHDWvn2L0OScnOJIMIlE60QYuCgyaTAqYiQmWgAUhAP9dSFYgQAAAABJRU5ErkJggg=="}},
+    {"ours": {"data": "iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAIAAADZF8uwAAAAMElEQVR42mPUkJNhIASYGIgALMicBRVBaNIJHeuINYl064zcotDlqWwdnRUxEhMtALzXBed3OqrBAAAAAElFTkSuQmCC"}, "reference": {"data": "iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAIAAADZF8uwAAAALklEQVR42mPUkJNhIASYGIgALHDWvn2L0OScnOJIMIlE60QYuCgyaTAqYiQmWgAUhAP9dSFYgQAAAABJRU5ErkJggg=="}, "method": "points", "ours_points": {"eye_right": [5.0, 7.0], "eye_left": [8.0, 7.0]}, "reference_points": {"eye_right": [4.0, 7.0], "eye_left": [7.0, 7.0]}}
+]))]
 pub struct Align {
     /// Our render.
     pub ours: ImageRef,
@@ -553,6 +562,9 @@ register_op!(Align);
 /// Lines two frame sequences up in time.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend("examples" = [
+    {"ours": {"frames": [{"data": "iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAIAAADZF8uwAAAAL0lEQVR42mPUkJNhIASYGIgALMicffsWoUk7OcURaxLp1okwcJFv0mBUxEhMtAAACyoD/XmB8mkAAAAASUVORK5CYII="}, {"data": "iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAIAAADZF8uwAAAAL0lEQVR42mPUkJNhIASYGIgALGj8ffsWoYk4OcURZRJZ1okwcJFp0mBUxEhMtAAAAdAD/Z3LGz8AAAAASUVORK5CYII="}]}, "reference": {"frames": [{"data": "iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAIAAADZF8uwAAAALklEQVR42mPUkJNhIASYGIgALHDWvn2L0OScnOJIMIlE60QYuCgyaTAqYiQmWgAUhAP9dSFYgQAAAABJRU5ErkJggg=="}, {"data": "iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAIAAADZF8uwAAAAL0lEQVR42mPUkJNhIASYGIgALMicffsWoUk7OcURaxLp1okwcJFv0mBUxEhMtAAACyoD/XmB8mkAAAAASUVORK5CYII="}, {"data": "iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAIAAADZF8uwAAAAL0lEQVR42mPUkJNhIASYGIgALGj8ffsWoYk4OcURZRJZ1okwcJFp0mBUxEhMtAAAAdAD/Z3LGz8AAAAASUVORK5CYII="}]}, "max_lag": 2}
+]))]
 pub struct TimingOp {
     /// Our frames.
     pub ours: Frames,
@@ -633,8 +645,7 @@ impl SeriesSource {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(extend("examples" = [
-    {"ours": {"rate_hz": 60.0, "channels": {"jawOpen": [0.0, 0.2, 0.5]}},
-     "reference": {"rate_hz": 60.0, "channels": {"jawOpen": [0.0, 0.25, 0.5]}}}
+    {"ours": {"rate_hz": 60.0, "channels": {"jawOpen": [0.0, 0.2, 0.5]}}, "reference": {"rate_hz": 60.0, "channels": {"jawOpen": [0.0, 0.25, 0.5]}}}
 ]))]
 pub struct SeriesOp {
     /// Ours.
@@ -693,6 +704,10 @@ register_op!(SeriesOp);
 /// The recreate-never-copy check on its own.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend("examples" = [
+    {"reference": {"data": "iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAIAAADZF8uwAAAALklEQVR42mPUkJNhIASYGIgALHDWvn2L0OScnOJIMIlE60QYuCgyaTAqYiQmWgAUhAP9dSFYgQAAAABJRU5ErkJggg=="}},
+    {"reference": {"frames": [{"data": "iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAIAAADZF8uwAAAALklEQVR42mPUkJNhIASYGIgALHDWvn2L0OScnOJIMIlE60QYuCgyaTAqYiQmWgAUhAP9dSFYgQAAAABJRU5ErkJggg=="}, {"data": "iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAIAAADZF8uwAAAAL0lEQVR42mPUkJNhIASYGIgALMicffsWoUk7OcURaxLp1okwcJFv0mBUxEhMtAAACyoD/XmB8mkAAAAASUVORK5CYII="}]}, "built_from": [{"data": "iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAIAAADZF8uwAAAAL0lEQVR42mPUkJNhIASYGIgALGj8ffsWoYk4OcURZRJZ1okwcJFp0mBUxEhMtAAAAdAD/Z3LGz8AAAAASUVORK5CYII="}]}
+]))]
 pub struct ProvenanceOp {
     /// The reference's frames.
     pub reference: Frames,
@@ -764,6 +779,9 @@ fn target_path(name: &str) -> DocPath {
 /// Sets a named parity target.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend("examples" = [
+    {"name": "bust", "target": {"reference": {"data": "iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAIAAADZF8uwAAAALklEQVR42mPUkJNhIASYGIgALHDWvn2L0OScnOJIMIlE60QYuCgyaTAqYiQmWgAUhAP9dSFYgQAAAABJRU5ErkJggg=="}, "points": {"eye_right": [4.0, 7.0], "eye_left": [7.0, 7.0]}, "note": "a 12 px synthetic bust"}}
+]))]
 pub struct TargetSet {
     /// The target's name, such as `eye-macro` or `t1-short`.
     pub name: String,
@@ -813,6 +831,9 @@ register_op!(TargetSet);
 /// Removes a named parity target.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(extend("examples" = [
+    {"name": "bust"}
+], "x-omuzaki-fixture" = "parity"))]
 pub struct TargetRemove {
     /// The target's name.
     pub name: String,
@@ -863,10 +884,10 @@ pub enum TargetArg {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(extend("examples" = [
-    {"target": {"name": "eye-macro"}, "ours": {"path": "renders/eye.png"}, "made_with": "kit eye ops, render.preview macro preset"},
-    {"target": {"name": "t1-short"}, "ours": {"pattern": "renders/t1/%04d.png", "count": 120},
-     "made_with": "short.render of the T1 recreation", "previous": "<report hash of the last run>"}
-]))]
+    {"target": {"reference": {"data": "iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAIAAADZF8uwAAAALklEQVR42mPUkJNhIASYGIgALHDWvn2L0OScnOJIMIlE60QYuCgyaTAqYiQmWgAUhAP9dSFYgQAAAABJRU5ErkJggg=="}}, "ours": {"data": "iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAIAAADZF8uwAAAAMElEQVR42mPUkJNhIASYGIgALMicBRVBaNIJHeuINYl064zcotDlqWwdnRUxEhMtALzXBed3OqrBAAAAAElFTkSuQmCC"}, "made_with": "the kit, render.preview at 12 px"},
+    {"target": {"reference": {"frames": [{"data": "iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAIAAADZF8uwAAAALklEQVR42mPUkJNhIASYGIgALHDWvn2L0OScnOJIMIlE60QYuCgyaTAqYiQmWgAUhAP9dSFYgQAAAABJRU5ErkJggg=="}, {"data": "iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAIAAADZF8uwAAAAL0lEQVR42mPUkJNhIASYGIgALMicffsWoUk7OcURaxLp1okwcJFv0mBUxEhMtAAACyoD/XmB8mkAAAAASUVORK5CYII="}, {"data": "iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAIAAADZF8uwAAAAL0lEQVR42mPUkJNhIASYGIgALGj8ffsWoYk4OcURZRJZ1okwcJFp0mBUxEhMtAAAAdAD/Z3LGz8AAAAASUVORK5CYII="}]}, "fps": 30.0}, "ours": {"frames": [{"data": "iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAIAAADZF8uwAAAAL0lEQVR42mPUkJNhIASYGIgALMicffsWoUk7OcURaxLp1okwcJFv0mBUxEhMtAAACyoD/XmB8mkAAAAASUVORK5CYII="}, {"data": "iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAIAAADZF8uwAAAAL0lEQVR42mPUkJNhIASYGIgALGj8ffsWoYk4OcURZRJZ1okwcJFp0mBUxEhMtAAAAdAD/Z3LGz8AAAAASUVORK5CYII="}]}, "made_with": "two frames drawn for the example"},
+    {"target": {"name": "bust"}, "ours": {"data": "iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAIAAADZF8uwAAAAMElEQVR42mPUkJNhIASYGIgALMicBRVBaNIJHeuINYl064zcotDlqWwdnRUxEhMtALzXBed3OqrBAAAAAElFTkSuQmCC"}, "made_with": "the kit"}
+], "x-omuzaki-fixture" = "parity"))]
 pub struct Loop {
     /// The reference to match.
     pub target: TargetArg,

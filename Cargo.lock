@@ -4915,6 +4915,7 @@ dependencies = [
  "omuzaki-obs",
  "omuzaki-ops",
  "omuzaki-ops-api",
+ "omuzaki-parity",
  "omuzaki-performer-api",
  "omuzaki-render",
  "omuzaki-render-api",
@@ -5897,6 +5898,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-parity"
+version = "0.0.0"
+dependencies = [
+ "base64",
+ "image",
+ "moxcms",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-ops-api",
+ "omuzaki-store-api",
+ "omuzaki-store-mock",
+ "schemars",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "omuzaki-performer"
 version = "0.0.0"
 dependencies = [
@@ -6809,6 +6828,7 @@ dependencies = [
  "omuzaki-ops-api",
  "omuzaki-ops-mock",
  "omuzaki-osc",
+ "omuzaki-parity",
  "omuzaki-render",
  "omuzaki-render-api",
  "omuzaki-render-mock",

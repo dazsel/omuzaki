@@ -97,7 +97,7 @@ struct Rig {
 
 impl Rig {
     fn new() -> Self {
-        omuzaki_measure::link();
+        omuzaki_parity::link();
         let store = Arc::new(MemStore::new());
         let services = ServicesBuilder::new().insert::<dyn Store>(store.clone()).build();
         Self { store, services }

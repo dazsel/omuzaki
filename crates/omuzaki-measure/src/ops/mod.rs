@@ -7,7 +7,6 @@
 
 mod measure;
 mod overlay;
-pub mod parity;
 mod readability;
 mod target;
 
