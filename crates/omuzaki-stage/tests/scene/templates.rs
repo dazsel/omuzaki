@@ -33,6 +33,11 @@ fn part(kind: &str, params: serde_json::Value) -> PartDef {
 
 /// A character of `template` made of the parts of `kinds` (each part is named after its kind).
 pub fn build_parts(template: &str, kinds: &[&str]) -> BuiltCharacter {
+    build_dressed(template, kinds, &[])
+}
+
+/// As [`build_parts`], with `extra` parts (kind and parameters, each named after its kind) on top: garments.
+pub fn build_dressed(template: &str, kinds: &[&str], extra: &[(&str, serde_json::Value)]) -> BuiltCharacter {
     omuzaki_stage::link();
     let defaults = registry::find(template).expect("a registered template").defaults();
     let params = |kind: &str| match kind {
@@ -40,8 +45,11 @@ pub fn build_parts(template: &str, kinds: &[&str]) -> BuiltCharacter {
         "head" => serde_json::to_value(&defaults.head).unwrap(),
         other => panic!("no starting parameters for '{other}'"),
     };
-    let parts: BTreeMap<PartId, PartDef> =
-        kinds.iter().map(|kind| (PartId::new(*kind).unwrap(), part(kind, params(kind)))).collect();
+    let parts: BTreeMap<PartId, PartDef> = kinds
+        .iter()
+        .map(|kind| (PartId::new(*kind).unwrap(), part(kind, params(kind))))
+        .chain(extra.iter().map(|(kind, params)| (PartId::new(*kind).unwrap(), part(kind, params.clone()))))
+        .collect();
     let def = CharacterDef::new("Test".to_owned(), BodyTemplateId::new(template).unwrap())
         .with_seed(1)
         .with_palette(skin_palette())

@@ -928,6 +928,7 @@ impl Stage {
         }
         let Staged { new, new_rig, bound, prepared, dynamic, plan, fresh } = staged;
         rig.retiring.retired = Some(self.character.commit_sync(prepared));
+        self.stand = super::stand_matrix(&new);
         rig.retiring.built = Some(mem::replace(&mut self.built, new));
         if let Some(frame) = new_rig {
             rig.retiring.rig = Some(mem::replace(&mut self.rig, frame));
@@ -1015,6 +1016,7 @@ impl Stage {
         // Commit: nothing below can fail.
         let fresh: Vec<FaceLayerId> = prepared.fresh_face_layers(&self.character).collect();
         let retired = self.character.commit_sync(prepared);
+        self.stand = super::stand_matrix(&new);
         self.built = new;
         if let Some(frame) = new_rig {
             self.rig = frame;

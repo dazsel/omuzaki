@@ -59,6 +59,8 @@ pub struct AvatarStage {
     root: Mat4,
     input_root: Mat4,
     subject_root: Mat4,
+    /// Raises the avatar onto its lowest point, as a kit character is (`frame::stand_lift`).
+    stand: Mat4,
     link: SceneLink,
     ground: StageGround,
     environment: StageEnvironment,
@@ -108,7 +110,11 @@ impl AvatarStage {
         let mut scene = scene;
         reserve(&mut scene);
         plan.reserve(&mut scene);
+        let lift = crate::scene::landmarks::lift_for(
+            avatar.meshes.iter().flat_map(|m| m.mesh.geometry.positions.iter().copied()),
+        );
         Ok(Self {
+            stand: Mat4::from_translation(omuzaki_core::glam::Vec3::new(0.0, lift, 0.0)),
             gaze: EyeGaze::of(&avatar),
             pose: ease::at_ease(&avatar.bind),
             avatar,
@@ -163,7 +169,7 @@ impl AvatarStage {
         let tick = self.clock.next(input.dt, input.time);
         self.tick = tick;
         self.input_root = input.root;
-        self.root = self.subject_root * input.root;
+        self.root = self.subject_root * input.root * self.stand;
         self.pose = input.pose;
         if let Some(gaze) = &self.gaze {
             gaze.apply(&input.channels, &mut self.pose);
@@ -270,7 +276,7 @@ impl AvatarStage {
     pub fn set_subject_root(&mut self, subject_root: Mat4) {
         if subject_root != self.subject_root {
             self.subject_root = subject_root;
-            self.root = subject_root * self.input_root;
+            self.root = subject_root * self.input_root * self.stand;
         }
     }
 

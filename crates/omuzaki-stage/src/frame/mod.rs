@@ -153,6 +153,19 @@ pub struct Prepared {
     pub(crate) uploads: u32,
 }
 
+/// How far `built` is raised so it stands on its lowest point: boots' soles and heels reach below the template's floor
+/// line (the bare sole), and a character stands on what it wears, as a modelled character does. 0 for a character
+/// nothing of which reaches below the floor. The same number [`Landmarks`](crate::scene::landmarks::Landmarks) frames
+/// with.
+pub fn stand_lift(built: &BuiltCharacter) -> f32 {
+    crate::scene::landmarks::lift_for(built.meshes.iter().flat_map(|m| m.mesh.geometry.positions.iter().copied()))
+}
+
+/// [`stand_lift`] as the translation the frame's root ends with.
+pub(crate) fn stand_matrix(built: &BuiltCharacter) -> Mat4 {
+    Mat4::from_translation(Vec3::new(0.0, stand_lift(built), 0.0))
+}
+
 /// What [`Stage::pin_time`] took from the stage, to give back with [`Stage::unpin_time`]: the state of the last frame.
 #[derive(Clone, Debug)]
 pub struct TimePin {
@@ -182,6 +195,8 @@ pub struct Stage {
     input_root: Mat4,
     /// The scene's transform of the subject member, applied above every frame's root ([`set_scene`](Stage::set_scene)).
     subject_root: Mat4,
+    /// Raises the character onto its lowest point ([`stand_lift`]): soles and heels stand on the floor, not in it.
+    stand: Mat4,
     /// What the scene has committed for the renderer and still owes it ([`commit_scene`](Stage::commit_scene)).
     link: SceneLink,
     /// The scene's ground disc on the renderer.
@@ -235,6 +250,7 @@ impl Stage {
             Ok((rig, dynamic, plan)) => Ok(Self {
                 input_root: Mat4::IDENTITY,
                 subject_root: Mat4::IDENTITY,
+                stand: stand_matrix(&built),
                 link: SceneLink::new(),
                 ground: StageGround::default(),
                 environment: StageEnvironment::default(),
@@ -307,7 +323,7 @@ impl Stage {
         }
         let tick = self.pinned.unwrap_or_else(|| self.clock.next(input.dt, input.time));
         self.input_root = input.root;
-        self.root = self.subject_root * input.root;
+        self.root = self.subject_root * input.root * self.stand;
         self.pose = input.pose;
         self.goals = input.goals;
         self.tick = tick;
@@ -497,7 +513,7 @@ impl Stage {
         if subject_root != self.subject_root {
             self.subject_root = subject_root;
             // A paused stage redraws from `root`, so it moves with the subject at once.
-            self.root = subject_root * self.input_root;
+            self.root = subject_root * self.input_root * self.stand;
         }
     }
 
