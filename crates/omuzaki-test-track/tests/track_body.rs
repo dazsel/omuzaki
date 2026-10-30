@@ -208,6 +208,8 @@ fn kit_frames_score_against_their_poses() {
                 total += (truth_flex - solved_flex).abs().to_degrees() / 4.0;
             }
             finger_errors.push(total);
+            row[format!("solved_{side}")] =
+                serde_json::json!(fingers.iter().map(|f| [f.spread, f.mcp, f.pip, f.dip]).collect::<Vec<_>>());
             row[format!("fingers_{side}")] = total.into();
             flex.push(format!("{total:.0}"));
         }

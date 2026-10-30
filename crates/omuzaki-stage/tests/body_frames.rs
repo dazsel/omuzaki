@@ -1,6 +1,6 @@
 //! Frames for scoring the body tracker (PF-06, PF-07) against a known answer: the kit's own character, posed in each
-//! pose of the pose library and in a sweep of arm poses, rendered front-on at a webcam's framing (head to hips,
-//! 1280x720, the webcam's default mode), each written as a binary PPM beside a JSON of the pose it shows. `omuzaki-test-track`'s `track_body`
+//! pose of the pose library and in a sweep of arm poses, rendered front-on at a webcam's framing (head to just
+//! below the hips, 1280x720, the webcam's default mode), each written as a binary PPM beside a JSON of the pose it shows. `omuzaki-test-track`'s `track_body`
 //! reads them, tracks them and scores the solved arms and fingers against the JSON.
 //!
 //! Gated on `OMUZAKI_BODY_FRAMES_DIR`; on lavapipe with the `wgpu` feature, through the render mock without it (whose
@@ -11,7 +11,7 @@
 #![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 
 use omuzaki_anim::poses::PoseLibrary;
-use omuzaki_anim_api::{HumanoidBone, HumanoidPose};
+use omuzaki_anim_api::{HumanoidBone, HumanoidPose, Pose};
 use omuzaki_char::builder::CachingBuilder;
 use omuzaki_char_api::{BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, CharacterDef};
 use omuzaki_core::glam::{Quat, UVec2, Vec3};
@@ -129,17 +129,20 @@ fn poses(built: &BuiltCharacter) -> Vec<(String, HumanoidPose)> {
     out
 }
 
-/// A webcam's view of the character: front-on, head to hips, 16:9.
+/// A webcam's view of the character: front-on, from just above the head to a little below the hips (where hands
+/// hanging at the sides reach), 16:9.
 fn shot(built: &BuiltCharacter) -> Shot {
-    let points = built.meshes.iter().flat_map(|m| m.mesh.geometry.positions.iter().copied());
-    let (lo, hi) = points.fold((Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)), |(lo, hi), p| {
-        (lo.min(p), hi.max(p))
-    });
-    let height = hi.y - lo.y;
-    // The upper half and a little more: the top of the head to the hips, the arms' span inside the frame.
-    let centre = Vec3::new(0.5 * (lo.x + hi.x), hi.y - 0.33 * height, 0.5 * (lo.z + hi.z));
+    let skeleton = &built.rig.skeleton;
+    let mut world = Pose::IDENTITY;
+    skeleton.world_pose(&skeleton.rest_pose(), &mut world);
+    let joint = |bone| world.local[skeleton.humanoid_bone(bone).expect("a humanoid bone").index()].translation;
+    let hips = joint(HumanoidBone::Hips);
+    // The top of the hair, from the meshes; the bottom 20 cm below the hips, where hands hanging at the sides reach.
+    let hair = built.meshes.iter().flat_map(|m| m.mesh.geometry.positions.iter().map(|p| p.y)).fold(f32::MIN, f32::max);
+    let (top, bottom) = (hair + 0.03, hips.y - 0.2);
+    let centre = Vec3::new(hips.x, 0.5 * (top + bottom), hips.z);
     let fov_y_deg = 45.0_f32;
-    let distance = 0.42 * height / (0.5 * fov_y_deg.to_radians()).tan();
+    let distance = 0.5 * (top - bottom) / (0.5 * fov_y_deg.to_radians()).tan();
     Shot::new(Camera::look_at(
         centre + Vec3::new(0.0, 0.0, distance),
         centre,
