@@ -130,13 +130,7 @@ impl LiveScene {
             self.stage.set_quality(self.scheduler.quality());
             self.changes += 1;
             self.last_change = Some(change);
-            tracing::info!(
-                step = change.step.name(),
-                direction = ?change.direction,
-                measured_ms = change.measured.0 * 1000.0,
-                budget_ms = change.budget.0 * 1000.0,
-                "adaptive quality changed the stage's quality"
-            );
+            tracing::info!(?change, "adaptive quality changed the stage's quality");
         }
         Ok(Some(out))
     }
