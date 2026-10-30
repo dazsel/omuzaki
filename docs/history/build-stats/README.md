@@ -97,7 +97,7 @@ Drawn by `charts.py` (standard library only) from the CSVs; `refresh.py` redraws
   refresh started, from the cloud project's session list (each session counts from its start to its last activity; 101
   hours to the snapshot, under `cloud_reported`). That is an undercount: the cloud project's own usage records are the
   full source for this period.
-- **From 2026-10-23 the reported agent hours stop** (the agents no longer report time through trailers). The cloud project's own sessions are in `cloud_sessions_daily.csv` (an upper bound on working time) and `cloud_usage_snapshots.csv` (token totals), so agent-hours after 10-23 are not in `agent_hours_daily.csv`.
+- **From 2026-10-23 the reported agent hours stop** (the agents no longer report time through trailers). The cloud project's own sessions are in `cloud_sessions_daily.csv` (an upper bound on working time) and `cloud_usage_snapshots.csv` (token totals), so from 10-23 `agent_hours_daily.csv` carries the cloud project's open-session hours (upper bound) as cloud (reported). The hourly agents-at-once chart ends at 10-23: later days are in the daily charts.
 - **Lines of code** are counted at the last commit of each hour on `main`, and before the move on the earlier
   repository's `main`. "Other" includes data files and assets.
 - **Commit trailers** (`Agent-Lane`, `Agent-Model`) were added in mid-October and the squash merges before 2026-10-21
