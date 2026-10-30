@@ -18,7 +18,7 @@
 #![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)] // pixel indices
 
 use omuzaki_anim_api::ChannelBuf;
-use omuzaki_char::ops::hair::bangs::presets::PRESETS;
+use omuzaki_char::ops::hair::bangs::presets::{PRESETS, find};
 use omuzaki_char_api::{
     BodyTemplateId, BuildOptions, BuildServices, BuiltCharacter, CharId, CharacterBuilder, CharacterDef, Dynamics,
     FaceOverlay, Generator, GroupId, HairGroup, HairParams, MaterialSpec, PartDef, PartId, PartKindId, RegistryBuilder,
@@ -214,7 +214,7 @@ fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
 /// The Brows overlay the hair material of `template` carries when the brows show through: where the layer lands on this
 /// template's head, at the contract's strength.
 fn brows_overlay(template: &str) -> FaceOverlay {
-    let built = build(&character(template, (PRESETS[4].make)(), true));
+    let built = build(&character(template, (find("none").unwrap().make)(), true));
     built
         .materials
         .values()
@@ -425,7 +425,7 @@ fn the_fringe_follows_the_head_mesh_on_every_template() {
     /// 51.8 on standard; the root offset 0.046 m dominates).
     const LOCK_RISE: f32 = 0.0515;
     for template in TEMPLATES {
-        let built = build(&character(template, (PRESETS[4].make)(), true));
+        let built = build(&character(template, (find("none").unwrap().make)(), true));
         let crown = built
             .meshes
             .iter()
