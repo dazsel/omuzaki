@@ -37,8 +37,10 @@ fn write(ctx: &OpCtx<'_>, found: &HairPart, shading: HairShading, field: &str) -
 /// (the strand lines), `tie`, `outline`, `ring` (the angel ring's colour), `ring_strength`, `strand_lines`,
 /// `edge_darkening`, `keep_identity` (how much of the hair's colour survives coloured light), `inner_darkening`, all
 /// `0` to `1`; the angel ring's shape, `ring_width` (radians, `0.01` to `0.3`), `ring_wobble` (radians, up to `0.2`)
-/// and `ring_teeth` (`0` to `1`); `outline_width` (metres, up to 0.01) and `brows_through` (whether the brows show
-/// through the fringe).
+/// and `ring_teeth` (`0` to `1`); the strands, `normal_blend` (`0` to `1`: how far the locks shade as one mass rather
+/// than as tubes of their own), `edge_feather` (`0` to `0.8`: how much the locks' sides thin out), `strands` (`8` to
+/// `64` across a lock), `strand_gap` (`0` to `0.6`), `strand_grain` (`0` to `0.3`) and `tip_length` (metres, `0.002` to
+/// `0.05`); `outline_width` (metres, up to 0.01) and `brows_through` (whether the brows show through the fringe).
 /// A colour is `#rrggbb` or a palette slot, `@hair_root`. Streaks have their own ops (`hair.streak.*`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -65,7 +67,8 @@ impl Op for HairSetShading {
             name: "hair.set_shading",
             summary: "Set one field of a hair part's shading: a colour (root, mid, tip, shade, line, tie, outline, \
                       ring), ring_strength, ring_width, ring_wobble, ring_teeth, strand_lines, edge_darkening, \
-                      keep_identity, inner_darkening, outline_width or brows_through",
+                      keep_identity, inner_darkening, normal_blend, edge_feather, strands, strand_gap, \
+                      strand_grain, tip_length, outline_width or brows_through",
             kind: OpKind::Edit,
             scope: Scope::EditCharacter,
             undo: Undo::Auto,

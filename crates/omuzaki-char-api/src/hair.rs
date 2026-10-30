@@ -1304,6 +1304,23 @@ pub struct HairShading {
     /// full shade `1.0`. Applied to [`HairClump::shade`] on the CPU as `shade += (1 - d) * (1 - shade)`, so the hair
     /// program's parameters don't change.
     pub inner_darkening: f64,
+    /// How far each lock's shading normals are bent toward the hair volume's, `0..=1` (#2479): `1` (the default) lights
+    /// the hair as one mass, with the light-to-shade sweep running across the head and the outline only round the
+    /// hair's outer silhouette; `0` lights every lock by its own tube, a small cylinder each. Applied to the meshes'
+    /// normals on the CPU, so an export carries it.
+    pub normal_blend: f64,
+    /// How much a lock's strands thin out toward its sides, `0..=0.8` (#2482): its edge's coverage is `1 -
+    /// edge_feather`, so the fainter strands drop out through the alpha cut and the side reads as strands, not a cut
+    /// edge. `0` keeps every strand to the edge.
+    pub edge_feather: f64,
+    /// The strand texture's strands across one lock, `8..=64` (#2481).
+    pub strands: u32,
+    /// How dark the gap between neighbouring strands is, `0..=0.6` (#2481).
+    pub strand_gap: f64,
+    /// The fine grain inside each strand, `0..=0.3` (#2481).
+    pub strand_grain: f64,
+    /// How long each lock's frayed tip is, metres, `0.002..=0.05` (#2481); a short lock's tip is at most 15% of it.
+    pub tip_length: f64,
 }
 
 /// The kit's angel ring: a thin band ([`HairShading::ring_width`]) that holds one height from lock to lock
@@ -1341,6 +1358,12 @@ impl Default for HairShading {
             brows_through: true,
             streaks: Vec::new(),
             inner_darkening: 1.0,
+            normal_blend: 1.0,
+            edge_feather: 0.45,
+            strands: 28,
+            strand_gap: 0.28,
+            strand_grain: 0.06,
+            tip_length: 0.012,
         }
     }
 }
@@ -1550,6 +1573,12 @@ impl Validate for HairShading {
         c.range("back_light", self.back_light, 0.0, 2.0);
         c.range("outline_width", self.outline_width, 0.0, 0.01);
         c.range("inner_darkening", self.inner_darkening, 0.0, 1.0);
+        c.range("normal_blend", self.normal_blend, 0.0, 1.0);
+        c.range("edge_feather", self.edge_feather, 0.0, 0.8);
+        c.range("strands", f64::from(self.strands), 8.0, 64.0);
+        c.range("strand_gap", self.strand_gap, 0.0, 0.6);
+        c.range("strand_grain", self.strand_grain, 0.0, 0.3);
+        c.range("tip_length", self.tip_length, 0.002, 0.05);
         for (i, streak) in self.streaks.iter().enumerate() {
             c.nested(&format!("streaks/{i}"), streak);
         }
