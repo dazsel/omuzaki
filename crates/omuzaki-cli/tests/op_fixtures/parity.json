@@ -1,0 +1,27 @@
+{
+  "about": "A parity target named `bust` (a 12 px synthetic reference, inline) for `parity.target.remove` and `parity.loop` to name.",
+  "steps": [
+    {
+      "op": "parity.target.set",
+      "args": {
+        "name": "bust",
+        "target": {
+          "reference": {
+            "data": "iVBORw0KGgoAAAANSUhEUgAAAAwAAAAMCAIAAADZF8uwAAAALklEQVR42mPUkJNhIASYGIgALHDWvn2L0OScnOJIMIlE60QYuCgyaTAqYiQmWgAUhAP9dSFYgQAAAABJRU5ErkJggg=="
+          },
+          "points": {
+            "eye_right": [
+              4.0,
+              7.0
+            ],
+            "eye_left": [
+              7.0,
+              7.0
+            ]
+          },
+          "note": "a 12 px synthetic bust"
+        }
+      }
+    }
+  ]
+}
