@@ -348,7 +348,6 @@ impl ResolvedScene {
         let active = active_camera(def)?;
         let unit = subject.map_or(1.0, |f| f.height_m);
         let post = resolve_post(def, subject, unit, active.map(|i| cameras[i]))?;
-        let occlusion = def.scene.post.occlusion.map(|o| Occlusion::new(o.radius, o.strength).with_contact(o.contact));
         let environment = def.lighting.environment.map(|e| ResolvedEnvironment {
             source: e.source,
             intensity: e.intensity,
@@ -377,7 +376,7 @@ impl ResolvedScene {
         let mut changes = Changes {
             effects: replace(&mut self.effects, effects),
             backdrop: replace(&mut self.background, background),
-            post: replace(&mut self.post, post) | replace(&mut self.occlusion, occlusion),
+            post: replace(&mut self.post, post) | replace(&mut self.occlusion, occlusion_of(def)),
             ground: replace(&mut self.ground, ground),
             skin_floor: replace(&mut self.skin_floor, def.lighting.skin_floor)
                 | replace(&mut self.outline_light, def.lighting.outline_light)
@@ -688,4 +687,9 @@ fn resolve_ground(def: &SceneDef, figures: &BTreeMap<MemberId, Figure>, unit: f3
         radius_m,
         colour: g.colour.unwrap_or(omuzaki_stage_api::Ground::FLOOR),
     }
+}
+
+/// The scene's ambient occlusion, if it asks for any.
+fn occlusion_of(def: &SceneDef) -> Option<Occlusion> {
+    def.scene.post.occlusion.map(|o| Occlusion::new(o.radius, o.strength).with_contact(o.contact))
 }
