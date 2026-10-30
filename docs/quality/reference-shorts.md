@@ -68,6 +68,8 @@ To land on a reference's frames rather than near them:
 - `[captions]` takes a `look` (`punchy`, the default: extra bold, heavy outline, shadow and pop; `clean`: bold, a thin
   edge, a faint shadow, steady; `outline`: semibold, an outline, no shadow) and changes one thing about it with
   `weight`, `outline`, `shadow`, `pop`, `fill` and `line`.
+- `short.render` with `lossless: true` writes a lossless video, so a frame-by-frame score measures the render and not
+  our codec; score parity renders this way.
 - A garment's `common.sheer` (0 to 0.9) lets what it covers show through, for chiffon, tulle or a sheer bodysuit.
 - `[[insert]]` cuts away to a drawn card for `duration` seconds from `at`: a flat `backdrop`, a preset `card`
   (`scream`, `googly`) and `[[insert.shape]]`s (`ellipse`, `blob`, `polygon`, `curve`, each with a `fill`, a `line` or

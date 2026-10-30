@@ -421,6 +421,10 @@ pub struct RenderShort {
     /// performed from its start, so the stretch looks as it does in the whole; the video starts at its first frame.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub span: Option<[f32; 2]>,
+    /// Keep every pixel: a lossless video, many times larger, for scoring against a reference frame by frame (the
+    /// codec adds no error of its own) or a master to edit from.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub lossless: bool,
 }
 
 /// What `short.render` gives back.
@@ -688,8 +692,14 @@ impl RenderShort {
         let has_voice = matches!(def.voice, VoiceDef::File { .. } | VoiceDef::Speech { .. });
         let span = self.frames(timeline, def.fps)?;
         let pcm = span_pcm(&voice.pcm, &span, def.fps);
-        let mut writer =
-            ShortWriter::create(file, std::path::Path::new(out), def.size, def.fps, has_voice.then_some(pcm))?;
+        let mut writer = ShortWriter::create(
+            file,
+            std::path::Path::new(out),
+            def.size,
+            def.fps,
+            has_voice.then_some(pcm),
+            self.lossless,
+        )?;
         let frames = span.end - span.start;
         let mut stopped: Option<OpError> = None;
         let mut done = 0u64;
