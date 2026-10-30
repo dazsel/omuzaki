@@ -16,4 +16,5 @@ pub mod strands;
 pub mod tie;
 pub mod trace;
 pub mod tube;
+pub mod volume;
 pub mod wisp;

@@ -1818,6 +1818,105 @@ pub struct HairParams {
     /// its tip shows through the hair; `cover` lets them fall over it. Human ears are covered either way.
     #[serde(skip_serializing_if = "PointedEars::is_default")]
     pub ears: PointedEars,
+    /// The hair's shared volume and flow (#2478): one parting, one crown whorl and one fullness that every generator
+    /// reads, so the scalp shell, the sweeps and the fringe agree. `None` (the default, left out of a saved file) leaves
+    /// each generator to its own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub volume: Option<HairVolume>,
+}
+
+/// The hair's shared volume and flow field (#2478) over the head ([`HairParams::volume`]).
+///
+/// **Flow.** Hair leaves its sources: the parting, when there is one, and the crown whorl. A point of the scalp is
+/// combed away from whichever is nearer, across the parting and outward from the whorl. The scalp shell lays its strands
+/// that way, the part sweeps start on the parting, and the fringe sweeps away from it.
+///
+/// **Fullness.** How far the hair stands off the head, as a multiple of what each generator makes: applied to every
+/// lock and shell over the head, fading out below the ears so hanging hair keeps its fall.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct HairVolume {
+    /// The parting, or `None` for none: the hair then radiates from the whorl.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub part: Option<HairParting>,
+    /// The crown whorl.
+    pub whorl: HairWhorl,
+    /// How far the hair stands off the head, `0.5..=2.5` times what the generators make.
+    pub fullness: f64,
+    /// The fullness at the crown against the sides, `0.5..=2.5`: above 1 the top stands higher.
+    pub crown: f64,
+    /// The fullness at the back against the sides, `0.5..=2.5`: above 1 the back of the head is rounder.
+    pub back: f64,
+}
+
+impl Default for HairVolume {
+    fn default() -> Self {
+        Self { part: None, whorl: HairWhorl::default(), fullness: 1.0, crown: 1.0, back: 1.0 }
+    }
+}
+
+impl Validate for HairVolume {
+    fn check(&self, c: &mut Check) {
+        if let Some(part) = &self.part {
+            c.nested("part", part);
+        }
+        c.nested("whorl", &self.whorl);
+        c.range("fullness", self.fullness, 0.5, 2.5);
+        c.range("crown", self.crown, 0.5, 2.5);
+        c.range("back", self.back, 0.5, 2.5);
+    }
+}
+
+/// A parting: a line over the top of the head, in a plane through the head's centre tilted `side_deg` off the
+/// midline, from `front_deg` forward of the top to `back_deg` behind it.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct HairParting {
+    /// How far the parting sits off the midline, degrees, `-60..=60`: positive toward the character's left (`+x`),
+    /// `0` a centre part.
+    pub side_deg: f64,
+    /// Where it starts, degrees forward of the top of the head, `0..=90` (the hairline is about 60).
+    pub front_deg: f64,
+    /// Where it ends, degrees behind the top, `0..=90`.
+    pub back_deg: f64,
+}
+
+impl Default for HairParting {
+    fn default() -> Self {
+        Self { side_deg: 0.0, front_deg: 60.0, back_deg: 30.0 }
+    }
+}
+
+impl Validate for HairParting {
+    fn check(&self, c: &mut Check) {
+        c.range("side_deg", self.side_deg, -60.0, 60.0);
+        c.range("front_deg", self.front_deg, 0.0, 90.0);
+        c.range("back_deg", self.back_deg, 0.0, 90.0);
+    }
+}
+
+/// The crown whorl: the point the hair radiates from where there is no parting.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct HairWhorl {
+    /// How far from the top of the head, degrees, `0..=70`.
+    pub polar_deg: f64,
+    /// Which way from the top, degrees round from the front, `-180..=180`: `180` straight back, positive through the
+    /// character's left.
+    pub azimuth_deg: f64,
+}
+
+impl Default for HairWhorl {
+    fn default() -> Self {
+        Self { polar_deg: 25.0, azimuth_deg: 180.0 }
+    }
+}
+
+impl Validate for HairWhorl {
+    fn check(&self, c: &mut Check) {
+        c.range("polar_deg", self.polar_deg, 0.0, 70.0);
+        c.range("azimuth_deg", self.azimuth_deg, -180.0, 180.0);
+    }
 }
 
 /// How hair meets a pointed ear ([`HairParams::ears`]).
@@ -1862,6 +1961,7 @@ impl Default for HairParams {
             groups,
             rng: HairRng::default(),
             ears: PointedEars::default(),
+            volume: None,
         }
     }
 }
@@ -1871,6 +1971,9 @@ impl Validate for HairParams {
         c.nested("shading", &self.shading);
         c.nested("physics", &self.physics);
         c.nested("rng", &self.rng);
+        if let Some(volume) = &self.volume {
+            c.nested("volume", volume);
+        }
         for (id, g) in &self.groups {
             let name = format!("groups/{id}");
             c.nested(&name, g);

@@ -7,3 +7,4 @@ pub(crate) mod part;
 pub mod physics;
 pub mod shading;
 pub mod trace;
+pub mod volume;

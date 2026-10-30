@@ -29,6 +29,7 @@ use omuzaki_core::glam::{DQuat, DVec3, Vec3};
 
 use super::cap::smoothstep;
 use crate::hair::compile::{CompiledGroup, HairGenCtx};
+use crate::hair::volume::Field;
 use crate::kit::catmull::spaced_points_into;
 
 /// Control points per lock, before the Catmull-Rom resample.
@@ -47,7 +48,7 @@ pub type Lock = [Vec3; REST_POINTS];
 /// Compiles the group: `count` locks per side, `+x` side first.
 pub fn compile(g: &PartSweepGen, ctx: &mut HairGenCtx<'_>) -> CompiledGroup {
     let mut locks = Vec::new();
-    rebuild(g, ctx.head, &mut locks);
+    rebuild_on(g, ctx.head, ctx.volume, &mut locks);
     let per_side = usize::from(g.count.max(1));
     let shade = |n: usize| g.shades[usize::from(!(n % per_side).is_multiple_of(2))];
     let clumps = locks.iter().enumerate().map(|(n, lock)| ctx.clump(lock.to_vec(), g.width, g.thickness, shade(n)));
@@ -57,12 +58,19 @@ pub fn compile(g: &PartSweepGen, ctx: &mut HairGenCtx<'_>) -> CompiledGroup {
 /// Replaces `locks` with the group's locks, `+x` side first. Allocates nothing once `locks` has the capacity for
 /// [`clump_count`] locks, so an editor that rebuilds on every slider move reuses one buffer.
 pub fn rebuild(g: &PartSweepGen, head: &dyn HeadSurface, locks: &mut Vec<Lock>) {
+    rebuild_on(g, head, None, locks);
+}
+
+/// [`rebuild`] with the hair's shared flow `field` (#2478): where it has a parting, every lock starts on that parting
+/// instead of the group's own ([`PartSweepGen::part_front_deg`] to [`PartSweepGen::part_back_deg`]), so the sweeps and
+/// the scalp shell part along one line.
+pub fn rebuild_on(g: &PartSweepGen, head: &dyn HeadSurface, field: Option<&Field>, locks: &mut Vec<Lock>) {
     locks.clear();
     let mut controls = [DVec3::ZERO; CONTROL_POINTS];
     let mut spaced = [DVec3::ZERO; REST_POINTS];
     for side in [1.0, -1.0] {
         for i in 0..usize::from(g.count) {
-            control_points(g, head, side, i, &mut controls);
+            control_points_on(g, head, field, side, i, &mut controls);
             // The resample refuses only a non-finite or zero-length path; take the nearest control points then, so
             // the clump count the dispatch checks never changes.
             if spaced_points_into(&controls, &mut spaced).is_err() {
@@ -82,7 +90,6 @@ pub fn clump_count(g: &PartSweepGen) -> usize {
 
 /// The nine control points of lock `i` on `side` (`+1` for +x, `-1` for -x), root first, written into `out`. Allocates
 /// nothing.
-#[allow(clippy::cast_precision_loss)] // lock indices are small
 pub fn control_points(
     g: &PartSweepGen,
     head: &dyn HeadSurface,
@@ -90,10 +97,26 @@ pub fn control_points(
     i: usize,
     out: &mut [DVec3; CONTROL_POINTS],
 ) {
+    control_points_on(g, head, None, side, i, out);
+}
+
+/// [`control_points`] rooted on the shared parting of `field` where it has one (nudged across it, to the lock's side).
+#[allow(clippy::cast_precision_loss)] // lock indices are small
+pub fn control_points_on(
+    g: &PartSweepGen,
+    head: &dyn HeadSurface,
+    field: Option<&Field>,
+    side: f64,
+    i: usize,
+    out: &mut [DVec3; CONTROL_POINTS],
+) {
     let s = if g.count > 1 { i as f64 / f64::from(g.count - 1) } else { 0.0 };
-    let start = (part_direction(g, g.part_start + (1.0 - g.part_start) * s)
-        + DVec3::new(side * g.part_spread, 0.0, 0.0))
-    .normalize();
+    let along = g.part_start + (1.0 - g.part_start) * s;
+    let shared = field.and_then(|f| Some((f.part(along)?, f.part_normal()?)));
+    let start = match shared {
+        Some((on, across)) => (on + across * (side * g.part_spread)).normalize(),
+        None => (part_direction(g, along) + DVec3::new(side * g.part_spread, 0.0, 0.0)).normalize(),
+    };
     let azimuth = side * (g.end_from_deg + (g.end_to_deg - g.end_from_deg) * s.powf(g.end_spread)).to_radians();
     let blend = (g.height_blend_deg[0], g.height_blend_deg[1]);
     let end = height_direction(g.end_height_front, g.end_height_back, blend, head, azimuth);

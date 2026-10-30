@@ -56,6 +56,7 @@ use super::tube::{
     OutwardFrame, TubeError, TubeLook, TubeMesh, cap_vertices, polar_angles, refine, ring_for, smoothstep,
     vertex_colour,
 };
+use super::volume;
 use super::wisp;
 use crate::head::ears::EarCover;
 use crate::head::ears::fact::EarCoverFact;
@@ -254,7 +255,7 @@ fn bind_to_strands<'a>(mesh: &MeshData, strands: &'a [Chain], runs: &mut Vec<Run
     }
 }
 
-/// Settles the compiled locks round the head and body: the fringes clear the skull, the locks make way for the ears,
+/// Settles the compiled locks round the head and body: the hair takes its shared fullness, the fringes clear the skull, the locks make way for the ears,
 /// the shells tuck under the locks, and then every group's locks take their shape (cross-section, tip, sub-locks).
 ///
 /// # Errors
@@ -267,6 +268,9 @@ fn place(
     keep_out: Option<&BodyKeepOut>,
     entries: &mut [CompiledEntry],
 ) -> Result<(), BuildError> {
+    if let Some(volume) = &params.volume {
+        volume::swell(entries, &volume::Field::new(volume), head);
+    }
     clear_fringes(params, head, frame, entries).map_err(|e| ctx.fail(e))?;
     make_way_for_ears(params, ctx, head, entries);
     tuck_shells(head, entries);
