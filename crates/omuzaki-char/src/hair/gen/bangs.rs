@@ -36,6 +36,7 @@ use omuzaki_core::glam::{DVec3, Vec3};
 use super::cap::smoothstep;
 use crate::hair::compile::{CompiledGroup, HairGenCtx};
 use crate::hair::tube::{OutwardFrame, RING, TubeError, tube_vertices};
+use crate::hair::volume::Field;
 use crate::kit::catmull::spaced_points_into;
 
 /// Control points per lock, before the Catmull-Rom resample.
@@ -177,8 +178,20 @@ const TOP_SINK: f64 = 0.45;
 /// Where along the lock the sink fades out.
 const SINK_FADE: (f64, f64) = (0.45, 0.95);
 
+/// How far the fringe sweeps away from a parting, degrees per degree the parting sits off the midline.
+const AWAY_FROM_PART: f64 = 0.8;
+
 /// Compiles the group: the layers under to over, then the wisps.
 pub fn compile(g: &BangsGen, ctx: &mut HairGenCtx<'_>) -> CompiledGroup {
+    // A parting in the hair's shared flow (#2478) sweeps the fringe away from it, on top of its own sweep.
+    let parted;
+    let g = match ctx.volume.and_then(Field::part_side_deg) {
+        Some(side) => {
+            parted = BangsGen { sweep_deg: g.sweep_deg + AWAY_FROM_PART * side, ..g.clone() };
+            &parted
+        }
+        None => g,
+    };
     let mut clumps = Vec::with_capacity(clump_count(g));
     let mut push = |lock: &Lock| {
         let rest = rest_points(g, ctx.head, lock);

@@ -23,6 +23,7 @@ use omuzaki_face_api::{Palette, narrow};
 
 use super::r#gen;
 use super::tie::Tie;
+use super::volume::Field;
 
 /// A stream of uniform numbers in `0..1`.
 pub trait UnitStream {
@@ -75,6 +76,9 @@ pub struct HairGenCtx<'a> {
     /// The body the hair hangs over, where the build has one (a test or tool with a bare head has none). Generators
     /// that fall past the shoulders keep clear of it (`curtain`).
     pub body: Option<&'a dyn BodyFit>,
+    /// The hair's shared volume and flow ([`crate::hair::volume`]), where the style has one: the parting and whorl the
+    /// scalp shell, the part sweeps and the fringe follow.
+    pub volume: Option<&'a Field>,
     group: &'a GroupId,
     dynamics: &'a Dynamics,
     rng: &'a mut dyn UnitStream,
@@ -90,7 +94,14 @@ impl<'a> HairGenCtx<'a> {
         dynamics: &'a Dynamics,
         rng: &'a mut dyn UnitStream,
     ) -> Self {
-        Self { head, palette, quality, body: None, group, dynamics, rng }
+        Self { head, palette, quality, body: None, volume: None, group, dynamics, rng }
+    }
+
+    /// The same context with the hair's shared `volume`.
+    #[must_use]
+    pub fn with_volume(mut self, volume: Option<&'a Field>) -> Self {
+        self.volume = volume;
+        self
     }
 
     /// The same context with the `body` the hair hangs over.
@@ -342,9 +353,12 @@ pub fn compile_groups_over(
     rng: &mut dyn UnitStream,
 ) -> Result<Vec<CompiledEntry>, CompileError> {
     let mid_x = head.centre().x;
+    let field = params.volume.as_ref().map(Field::new);
     let mut entries = Vec::new();
     for (id, group) in enabled(params) {
-        let mut ctx = HairGenCtx::new(head, palette, quality, id, &group.dynamics, rng).with_body(body);
+        let mut ctx = HairGenCtx::new(head, palette, quality, id, &group.dynamics, rng)
+            .with_body(body)
+            .with_volume(field.as_ref());
         let mut compiled = generators.compile(&group.generator, &mut ctx);
         let reported = generators.clump_count(&group.generator);
         if compiled.clumps.len() != reported {
