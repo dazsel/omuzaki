@@ -29,7 +29,7 @@
 <rect x="585.8" y="296.9" width="34.1" height="3.1" fill="#2a6fdb"/>
 <rect x="671.1" y="300.0" width="34.1" height="0.0" fill="#2a6fdb"/>
 <rect x="799.0" y="298.8" width="34.1" height="1.2" fill="#2a6fdb"/>
-<rect x="841.6" y="294.9" width="34.1" height="5.1" fill="#2a6fdb"/>
+<rect x="841.6" y="294.8" width="34.1" height="5.2" fill="#2a6fdb"/>
 <rect x="74.3" y="296.3" width="34.1" height="0.2" fill="#e0832b"/>
 <rect x="116.9" y="279.2" width="34.1" height="2.1" fill="#e0832b"/>
 <rect x="159.5" y="288.2" width="34.1" height="1.1" fill="#e0832b"/>
@@ -48,7 +48,7 @@
 <rect x="713.7" y="300.0" width="34.1" height="0.0" fill="#e0832b"/>
 <rect x="756.4" y="300.0" width="34.1" height="0.0" fill="#e0832b"/>
 <rect x="799.0" y="298.6" width="34.1" height="0.1" fill="#e0832b"/>
-<rect x="841.6" y="294.4" width="34.1" height="0.5" fill="#e0832b"/>
+<rect x="841.6" y="294.2" width="34.1" height="0.6" fill="#e0832b"/>
 <rect x="74.3" y="296.0" width="34.1" height="0.3" fill="#2e9d5b"/>
 <rect x="116.9" y="275.0" width="34.1" height="4.2" fill="#2e9d5b"/>
 <rect x="159.5" y="250.1" width="34.1" height="38.2" fill="#2e9d5b"/>
@@ -60,7 +60,7 @@
 <rect x="543.2" y="276.4" width="34.1" height="15.9" fill="#2e9d5b"/>
 <rect x="585.8" y="291.4" width="34.1" height="5.1" fill="#2e9d5b"/>
 <rect x="799.0" y="296.8" width="34.1" height="1.9" fill="#2e9d5b"/>
-<rect x="841.6" y="283.5" width="34.1" height="10.9" fill="#2e9d5b"/>
+<rect x="841.6" y="283.2" width="34.1" height="10.9" fill="#2e9d5b"/>
 <line x1="112.6" x2="112.6" y1="50" y2="300" stroke="#444" stroke-dasharray="4 3"/>
 <text x="116.6" y="62" text-anchor="start" font-size="11" fill="#222" stroke="#fff" stroke-width="3" paint-order="stroke">First commit</text>
 <line x1="197.9" x2="197.9" y1="50" y2="300" stroke="#444" stroke-dasharray="4 3"/>
