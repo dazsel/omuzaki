@@ -1165,16 +1165,17 @@ pub struct FaceProfile {
     /// out, the face has painted eyes only; `face.set_style` on any `face/eye3d/...` field adds it with its defaults.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub eye3d: Option<EyeDesign>,
-    /// The sculpted 3D nose, for a character modelled in 3D. Left out, the face has its painted nose only;
+    /// The sculpted 3D nose, for a character modelled in 3D (boxed, as are the lips and the ear, so a face without them
+    /// stays small). Left out, the face has its painted nose only;
     /// `face.set_style` on any `face/nose3d/...` field adds it with its defaults.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub nose3d: Option<NoseDesign>,
+    pub nose3d: Option<Box<NoseDesign>>,
     /// The sculpted 3D lips, added the same way under `face/lips3d`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub lips3d: Option<LipsDesign>,
+    pub lips3d: Option<Box<LipsDesign>>,
     /// The sculpted 3D ear, added the same way under `face/ear3d`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub ear3d: Option<EarDesign>,
+    pub ear3d: Option<Box<EarDesign>>,
 }
 
 impl FaceProfile {
@@ -1209,13 +1210,13 @@ impl Validate for FaceProfile {
             c.nested("eye3d", eye);
         }
         if let Some(nose) = &self.nose3d {
-            c.nested("nose3d", nose);
+            c.nested("nose3d", nose.as_ref());
         }
         if let Some(lips) = &self.lips3d {
-            c.nested("lips3d", lips);
+            c.nested("lips3d", lips.as_ref());
         }
         if let Some(ear) = &self.ear3d {
-            c.nested("ear3d", ear);
+            c.nested("ear3d", ear.as_ref());
         }
         if let Err(message) = self.rest.validate_ranges() {
             c.fail("rest", message);

@@ -71,9 +71,9 @@ fn describe(section: Section, profile: &FaceProfile) -> Result<Value, OpError> {
         Section::Nose => section_entry::<NoseStyle>(&path, &profile.nose)?,
         Section::Cheeks => section_entry::<CheekStyle>(&path, &profile.cheeks)?,
         Section::Eye3d => optional_entry(&path, profile.eye3d.as_ref())?,
-        Section::Nose3d => optional_entry(&path, profile.nose3d.as_ref())?,
-        Section::Lips3d => optional_entry(&path, profile.lips3d.as_ref())?,
-        Section::Ear3d => optional_entry(&path, profile.ear3d.as_ref())?,
+        Section::Nose3d => optional_entry(&path, profile.nose3d.as_deref())?,
+        Section::Lips3d => optional_entry(&path, profile.lips3d.as_deref())?,
+        Section::Ear3d => optional_entry(&path, profile.ear3d.as_deref())?,
         Section::Marks => {
             let mut entry = list_entry(&path, &profile.marks)?;
             if let Value::Object(fields) = &mut entry {

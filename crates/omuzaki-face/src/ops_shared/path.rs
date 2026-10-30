@@ -119,9 +119,9 @@ pub(crate) fn template() -> Result<Template, OpError> {
         pupil: Some(iris.pupil.clone()),
     });
     face.eye3d = Some(EyeDesign::default());
-    face.nose3d = Some(NoseDesign::default());
-    face.lips3d = Some(LipsDesign::default());
-    face.ear3d = Some(EarDesign::default());
+    face.nose3d = Some(Box::new(NoseDesign::default()));
+    face.lips3d = Some(Box::new(LipsDesign::default()));
+    face.ear3d = Some(Box::new(EarDesign::default()));
     Ok(Template { profile: to_json(&face)?, mark: to_json(&FaceMark::default())? })
 }
 
