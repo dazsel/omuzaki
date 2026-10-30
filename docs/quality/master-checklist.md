@@ -60,14 +60,14 @@ Counts are rows in this file only (the deep lists above keep their own).
 | 11 | [AI co-host and performer](#11-ai-co-host-and-performer) | 2 | 6 | 5 | **none** | perception, memory, listening reactions |
 | 12 | [Stage, props and particles](#12-stage-props-and-particles) | 2 | 4 | 3 | render owner (in part) | scene transitions, imported props, collab |
 | 13 | [Camera, shots and cinematics](#13-camera-shots-and-cinematics) | 3 | 5 | 5 | reference-video owner (shorts, in part) | the timeline (SH-02), takes, auto-clips |
-| 14 | [Broadcast and outputs](#14-broadcast-and-outputs) | 4 | 4 | 5 | **none** | Windows and macOS virtual camera, NDI, direct streaming |
-| 15 | [Interactivity and automation](#15-interactivity-and-automation) | 0 | 6 | 3 | **none** | YouTube events, widgets and alerts |
+| 14 | [Broadcast and outputs](#14-broadcast-and-outputs) | 4 | 4 | 5 | broadcast owner | Windows and macOS virtual camera, NDI, direct streaming |
+| 15 | [Interactivity and automation](#15-interactivity-and-automation) | 1 | 7 | 1 | broadcast owner | web widgets, captions and the chat bubble on stream, TikTok and Bilibili |
 | 16 | [Studio UX](#16-studio-ux) | 8 | 2 | 1 | **none** | viewport gizmos |
 | 17 | [MCP and the agent surface](#17-mcp-and-the-agent-surface) | 9 | 3 | 0 | **none** | the in-studio assistant |
 | 18 | [Versioning, collaboration and the library](#18-versioning-collaboration-and-the-library) | 2 | 4 | 6 | **none** | backups, review links, teams |
 | 19 | [Import, export and interop](#19-import-export-and-interop) | 5 | 5 | 6 | render owner (import, in part) | web player, Unity and Godot, PMX |
 | 20 | [Plugins, connectors and scripting](#20-plugins-connectors-and-scripting) | 0 | 3 | 2 | **none** | custom nodes, real connectors |
-| 21 | [Performance and reliability](#21-performance-and-reliability) | 1 | 2 | 2 | **none** | hardware numbers, the soak, adaptive quality |
+| 21 | [Performance and reliability](#21-performance-and-reliability) | 2 | 2 | 1 | broadcast owner (adaptive quality) | hardware numbers, the soak |
 | 22 | [Platforms](#22-platforms) | 1 | 2 | 3 | **none** | web player, phone page |
 | 23 | [Accessibility, localisation, privacy and safety](#23-accessibility-localisation-privacy-and-safety) | 0 | 7 | 3 | **none** | signed exports, colour-blind themes |
 | F | [The whole VTuber](#f-the-whole-vtuber) | 2 | 7 | 2 | Director | time to first character, soak |
@@ -455,7 +455,7 @@ voice, NVIDIA ACE and Audio2Face.
 | Level | Feature | Best at it | Status | Where, or the issue |
 |---|---|---|---|---|
 | Scenes | Scenes with backdrops, props, lights, cameras and presets (ST-01) | Warudo | ◐ | `stage.*` (37 ops); image, video and 3D-room backdrops are #490 |
-| Scenes | Scene switching with transitions from hotkeys, chat, timeline (ST-04) | OBS, Warudo | ◐ | switch by op (`stage.set_default_scene`); transitions and triggers #493 |
+| Scenes | Scene switching with transitions from hotkeys, chat, timeline (ST-04) | OBS, Warudo | ◐ | `program.switch_scene` with cut, fade, dip, wipe, slide and iris (`omuzaki-overlay`), from hotkeys, automations and agents; the show timeline is left on #493 |
 | Props | Built-in prop kinds (room, desk, chair, bed, cafe table, lamp, plant, rug, shelf, window, cup) | Warudo | ✓ | `stage.prop_kinds`, `stage.add_prop` |
 | Props | Props attached to hands, physics props, animated, image, GIF and text props, prop sets, in-scene screens (ST-03) | Warudo, VTube Studio items | ◐ | `stage.interact`; #492 |
 | Props | Import a glTF prop or room | Warudo, VNyan | ✗ | part of #490 and #492 |
@@ -547,12 +547,12 @@ and Streamlabs (alerts, widgets).
 | Level | Feature | Best at it | Status | Where, or the issue |
 |---|---|---|---|---|
 | Events | Twitch EventSub: chat, bits, redeems, follows, raids, subs, polls, hype trains (BR-10) | Streamer.bot | ◐ | `omuzaki-twitch`; #500 |
-| Events | YouTube: chat, Super Chat, memberships (BR-10) | Streamer.bot | ✗ | #2352 |
+| Events | YouTube: chat, Super Chat, memberships (BR-10) | Streamer.bot | ✓ | `omuzaki-youtube` (`youtube.*`), new subscribers as follows, quota shown; #2352 |
 | Events | Bilibili, TikTok LIVE adapters (BR-15, BR-16) | Bilibili tools | ✗ | #598, #1428 |
 | Graph | Automation graph: event to condition to action, templates, every node an op (BR-11, BR-26) | Streamer.bot, Warudo blueprints | ◐ | `omuzaki-live`, `omuzaki-live-nodes` (75 nodes), the Broadcast graph panel; #501, #723 |
 | Throws | Item throws with hit reactions and cooldowns (BR-12) | Kawaii Throws, VTube Studio | ◐ | `stage.interact`; #502 |
-| Overlays | Captions, an AI chat bubble and alerts drawn into the output (BR-13) | StreamElements | ◐ | captions in `omuzaki-speech`; #503 |
-| Overlays | Native and web widgets: chat box, goals, timers, now playing (BR-20) | StreamElements, Streamlabs | ✗ | #601 |
+| Overlays | Captions, an AI chat bubble and alerts drawn into the output (BR-13) | StreamElements | ◐ | alerts drawn into the output with alpha (`overlay.*`, `omuzaki-overlay`); captions in `omuzaki-speech` not yet drawn, chat bubble missing; #503 |
+| Overlays | Native and web widgets: chat box, goals, timers, now playing (BR-20) | StreamElements, Streamlabs | ◐ | native chat box, alerts, goals, countdown, stopwatch and subathon timers, text, per scene (`overlay.*`); web widgets, now playing and sponsor cards #601 |
 | Moderation | Blocklists, rate limits, a panic button (BR-14) | Streamer.bot | ◐ | `omuzaki-live-api`; #504 |
 | Bridges | VTube Studio API shim, VMC, OSC (PL-05) | VTube Studio | ◐ | `omuzaki-vts`, `vts.map`; #529 |
 
@@ -714,7 +714,7 @@ model.
 |---|---|---|---|---|
 | Budgets | §10 budgets as gates (face-only stream ≤ 3% CPU, ≤ 1.5 ms GPU) | VSeeFace (light) | ◐ | `omuzaki-budget`; hardware timings are hand checks (QG rows #620 to #628) |
 | Budgets | Face rasteriser ≤ 0.5 ms on the GPU | none | ◐ | `omuzaki-face/src/raster/gpu`; CPU fallback cost #2443 |
-| Budgets | Adaptive quality that holds the frame budget beside a game | Unreal dynamic resolution | ✗ | **new** #2593 |
+| Budgets | Adaptive quality that holds the frame budget beside a game | Unreal dynamic resolution | ✓ | the studio's live scene runs `omuzaki-budget`'s scheduler, held still while recording, `program.set_adaptive`, Health panel row; #2593 |
 | Soak | 12-hour soak with no drift, leak or crash | none publish it | ✗ | QG rows |
 | Robustness | Hostile-input audit of importers and ops | none | ✓ | `omuzaki-stage/tests/hostile_avatar.rs`, `op_conformance.rs` (#2444) |
 
