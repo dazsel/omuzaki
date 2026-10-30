@@ -78,20 +78,29 @@ impl DialSetting {
     /// # Errors
     /// The field that is wrong and why (`left: ...`).
     pub fn check(&self, dial: &DialDef) -> Result<(), String> {
-        let (lo, hi) = dial.range;
+        self.check_in(dial.range, dial.sided, dial.id.as_str())
+    }
+
+    /// [`check`](Self::check) against a range and sidedness given directly (an anatomy structure's, say); `id` names
+    /// what it sets in the message.
+    ///
+    /// # Errors
+    /// The field that is wrong and why (`left: ...`).
+    pub fn check_in(&self, range: (f64, f64), sided: bool, id: &str) -> Result<(), String> {
+        let (lo, hi) = range;
         let within = |name: &str, v: f64| {
             if v.is_finite() && (lo..=hi).contains(&v) {
                 Ok(())
             } else {
-                Err(format!("{name}: {v} is outside the dial's range {lo} to {hi}"))
+                Err(format!("{name}: {v} is outside the range {lo} to {hi}"))
             }
         };
         within("value", self.value)?;
-        if dial.sided {
+        if sided {
             within("left", self.on(Some(DialSide::Left)))?;
             within("right", self.on(Some(DialSide::Right)))?;
         } else if !self.is_unsided() {
-            return Err(format!("left: `{}` is the same on both sides, so it has no left or right offset", dial.id));
+            return Err(format!("left: `{id}` is the same on both sides, so it has no left or right offset"));
         }
         Ok(())
     }

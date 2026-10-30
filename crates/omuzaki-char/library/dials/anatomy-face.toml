@@ -1,0 +1,517 @@
+# The face's anatomy (#2614): the bone, fat pads, muscles and skin under the head's surface. Each structure is a
+# z-score: `sd_mm` is one standard deviation of its thickness across adults, `factors` how strongly the shared factors
+# move it, `age` its course in standard deviations, `descent` how far its centre has moved down the face. The fat pads
+# overlap, so each one's spread is its share of the cheek's: together they vary as the soft tissue there does (a few
+# millimetres a standard deviation). Effects are
+# placed as the face dials are (a landmark of the face layout, nudged in the head's own proportions; `reach` degrees
+# round the head), and `amount` is a weight: 1 is the full spread at the centre. Sided structures are written for the
+# character's left (+x).
+#
+# Origin: design targets from published craniofacial soft-tissue depth studies (the thickness and spread at the
+# glabella, the zygion, the gonion, mid-philtrum and the chin), the anatomy of the facial fat compartments, and the
+# well-known course of facial ageing (fat pads deflating and descending, the orbit widening, the maxilla and the
+# mandible's angle resorbing, the nose's cartilage lengthening, the skin thinning into folds). No face is measured or
+# traced; the numbers are rounded design targets.
+
+# ---------------------------------------------------------------------------------------------------------- bone
+
+[[structure]]
+id = "brow_ridge"
+name = "Brow ridge"
+summary = "The supraorbital ridge of the frontal bone: +1 a heavy brow, -1 a smooth one"
+tissue = "bone"
+group = "face"
+sided = true
+sd_mm = 1.8
+factors = { robusticity = 0.8 }
+age = [[3.0, -1.6], [12.0, -0.8], [20.0, 0.0], [65.0, 0.2]]
+[[structure.effects]]
+frame = "head"
+landmark = "brow_left"
+nudge = [0.0, 0.03, 0.0]
+reach = 18.0
+push = "forward"
+amount = 1.0
+
+[[structure]]
+id = "frontal_bossing"
+name = "Forehead"
+summary = "The frontal bone's curve: +1 a round, upright forehead (a child's), -1 a sloping one"
+tissue = "bone"
+group = "face"
+sd_mm = 2.5
+factors = { robusticity = -0.4 }
+age = [[3.0, 1.8], [10.0, 1.0], [18.0, 0.2], [25.0, 0.0]]
+[[structure.effects]]
+frame = "head"
+landmark = "forehead"
+reach = 32.0
+push = "forward"
+amount = 1.0
+
+[[structure]]
+id = "zygoma"
+name = "Cheekbone"
+summary = "The zygomatic bone and arch: +1 high, prominent cheekbones, -1 flat"
+tissue = "bone"
+group = "face"
+sided = true
+sd_mm = 2.0
+factors = { robusticity = 0.6 }
+age = [[3.0, -1.2], [16.0, -0.2], [25.0, 0.0], [70.0, -0.3], [90.0, -0.5]]
+[[structure.effects]]
+frame = "head"
+landmark = "cheekbone_left"
+reach = 18.0
+amount = 1.0
+
+[[structure]]
+id = "orbital_rim"
+name = "Orbital rim"
+summary = "The bony rim round the eye: +1 a full rim (a shallow socket), -1 a receding one (a deep-set eye)"
+tissue = "bone"
+group = "face"
+sided = true
+sd_mm = 1.6
+factors = { robusticity = -0.2 }
+age = [[3.0, 0.8], [20.0, 0.0], [50.0, -0.5], [80.0, -1.4]]
+[[structure.effects]]
+frame = "head"
+landmark = "eye_left"
+reach = 12.0
+amount = 1.0
+
+[[structure]]
+id = "maxilla"
+name = "Upper jaw"
+summary = "The maxilla under the upper lip and cheeks: +1 forward, -1 receding"
+tissue = "bone"
+group = "face"
+sd_mm = 2.5
+factors = { robusticity = 0.4 }
+age = [[3.0, -1.0], [16.0, -0.2], [25.0, 0.0], [60.0, -0.5], [85.0, -1.3]]
+[[structure.effects]]
+frame = "head"
+landmark = "mouth"
+nudge = [0.0, 0.05, 0.0]
+reach = 16.0
+push = "forward"
+amount = 1.0
+
+[[structure]]
+id = "mandible"
+name = "Jaw bone"
+summary = "The mandible's angle and ramus: +1 a wide, square jaw, -1 a narrow, tapered one"
+tissue = "bone"
+group = "face"
+sided = true
+sd_mm = 3.0
+factors = { robusticity = 0.9 }
+age = [[3.0, -1.8], [12.0, -1.0], [20.0, 0.0], [60.0, -0.3], [85.0, -0.8]]
+[[structure.effects]]
+frame = "head"
+landmark = "jaw_left"
+reach = 26.0
+push = "out"
+amount = 1.0
+[[structure.effects]]
+frame = "head"
+landmark = "jaw_left"
+nudge = [0.05, -0.08, -0.12]
+reach = 14.0
+amount = 0.5
+
+[[structure]]
+id = "chin_bone"
+name = "Chin"
+summary = "The mental protuberance: +1 a long, strong chin, -1 a short, small one"
+tissue = "bone"
+group = "face"
+sd_mm = 2.5
+factors = { robusticity = 0.7 }
+age = [[3.0, -1.6], [12.0, -0.8], [20.0, 0.0], [75.0, -0.4]]
+[[structure.effects]]
+frame = "head"
+landmark = "chin"
+reach = 24.0
+push = "up"
+amount = -1.0
+[[structure.effects]]
+frame = "head"
+landmark = "chin"
+reach = 16.0
+push = "forward"
+amount = 0.6
+
+[[structure]]
+id = "nasal_cartilage"
+name = "Nose"
+summary = "The nose's bone and cartilage: +1 a longer, more projecting nose, -1 a small one (a child's)"
+tissue = "bone"
+group = "face"
+sd_mm = 2.2
+factors = { robusticity = 0.3 }
+age = [[3.0, -2.0], [10.0, -1.2], [18.0, -0.2], [25.0, 0.0], [70.0, 0.6], [90.0, 1.0]]
+[[structure.effects]]
+frame = "head"
+landmark = "nose"
+reach = 10.0
+push = "forward"
+amount = 1.0
+[[structure.effects]]
+frame = "head"
+landmark = "nose_bridge"
+reach = 9.0
+push = "forward"
+amount = 0.6
+[[structure.effects]]
+frame = "head"
+landmark = "nose"
+reach = 9.0
+push = "up"
+amount = -0.7
+
+# ----------------------------------------------------------------------------------------------------------- fat
+
+[[structure]]
+id = "temporal_fat"
+name = "Temple fat"
+summary = "The temporal fat pad: +1 full temples, -1 hollow ones"
+tissue = "fat"
+group = "face"
+sided = true
+sd_mm = 1.4
+factors = { adiposity = 0.6 }
+age = [[3.0, 0.8], [20.0, 0.2], [30.0, 0.0], [55.0, -0.8], [85.0, -1.8]]
+[[structure.effects]]
+frame = "head"
+landmark = "temple_left"
+reach = 18.0
+amount = 1.0
+
+[[structure]]
+id = "malar_fat"
+name = "Malar fat pad"
+summary = "The fat over the cheekbone: +1 full, round cheeks, -1 lean; it slides toward the jowl with age"
+tissue = "fat"
+group = "face"
+sided = true
+sd_mm = 1.8
+factors = { adiposity = 0.9 }
+age = [[3.0, 1.6], [10.0, 1.0], [20.0, 0.3], [30.0, 0.0], [60.0, -0.6], [85.0, -1.2]]
+descent = [[35.0, 0.0], [60.0, 0.06], [85.0, 0.12]]
+depth_mm = 5.0
+[[structure.effects]]
+frame = "head"
+landmark = "cheek_left"
+reach = 26.0
+amount = 1.0
+
+[[structure]]
+id = "buccal_fat"
+name = "Buccal fat"
+summary = "The fat under the cheekbone: +1 filled lower cheeks, -1 hollows"
+tissue = "fat"
+group = "face"
+sided = true
+sd_mm = 1.5
+factors = { adiposity = 0.8 }
+age = [[3.0, 1.8], [12.0, 0.8], [25.0, 0.0], [55.0, -0.6], [85.0, -1.5]]
+[[structure.effects]]
+frame = "head"
+landmark = "cheekbone_left"
+nudge = [0.0, -0.14, 0.0]
+reach = 15.0
+amount = 1.0
+
+[[structure]]
+id = "infraorbital_fat"
+name = "Under-eye fat"
+summary = "The fat under the eye: +1 smooth, -1 a tear trough"
+tissue = "fat"
+group = "face"
+sided = true
+sd_mm = 0.8
+factors = { adiposity = 0.4, laxity = -0.3 }
+age = [[3.0, 0.6], [30.0, 0.0], [60.0, -0.9], [85.0, -1.6]]
+[[structure.effects]]
+frame = "head"
+landmark = "eye_left"
+nudge = [0.0, -0.1, 0.0]
+reach = 8.0
+amount = 1.0
+
+[[structure]]
+id = "jowl_fat"
+name = "Jowls"
+summary = "The fat along the jaw in front of its angle: +1 jowls that break the jaw line, -1 a clean line"
+tissue = "fat"
+group = "face"
+sided = true
+sd_mm = 1.6
+factors = { adiposity = 0.7, laxity = 0.5 }
+age = [[30.0, 0.0], [50.0, 0.6], [70.0, 1.3], [90.0, 1.8]]
+[[structure.effects]]
+frame = "head"
+landmark = "jaw_left"
+nudge = [-0.22, -0.02, 0.24]
+reach = 16.0
+push = "up"
+amount = -1.0
+[[structure.effects]]
+frame = "head"
+landmark = "jaw_left"
+nudge = [-0.22, -0.02, 0.24]
+reach = 14.0
+amount = 0.6
+
+[[structure]]
+id = "submental_fat"
+name = "Under the chin"
+summary = "The fat under the chin and jaw: +1 a full, soft neck line, -1 a sharp one"
+tissue = "fat"
+group = "face"
+sd_mm = 2.2
+factors = { adiposity = 1.0, laxity = 0.4 }
+age = [[3.0, 0.6], [20.0, 0.0], [45.0, 0.2], [70.0, 0.8], [90.0, 1.1]]
+[[structure.effects]]
+frame = "head"
+landmark = "chin"
+nudge = [0.0, -0.12, -0.25]
+reach = 22.0
+amount = 1.0
+
+# -------------------------------------------------------------------------------------------------------- muscle
+
+[[structure]]
+id = "masseter"
+name = "Masseter"
+summary = "The jaw's chewing muscle over the angle: +1 a broad lower face, -1 slight"
+tissue = "muscle"
+group = "face"
+sided = true
+sd_mm = 2.5
+factors = { muscularity = 0.9, robusticity = 0.3 }
+age = [[3.0, -1.0], [18.0, 0.0], [70.0, -0.4], [90.0, -0.8]]
+[[structure.effects]]
+frame = "head"
+landmark = "jaw_left"
+nudge = [0.0, 0.1, 0.05]
+reach = 16.0
+push = "out"
+amount = 1.0
+
+[[structure]]
+id = "temporalis"
+name = "Temporalis"
+summary = "The muscle over the temple: +1 full above the ear, -1 thin"
+tissue = "muscle"
+group = "face"
+sided = true
+sd_mm = 1.5
+factors = { muscularity = 0.7 }
+age = [[18.0, 0.0], [70.0, -0.5], [90.0, -0.9]]
+[[structure.effects]]
+frame = "head"
+landmark = "temple_left"
+nudge = [0.0, 0.12, -0.15]
+reach = 20.0
+amount = 1.0
+
+[[structure]]
+id = "lips"
+name = "Lips"
+summary = "The lips' muscle and tissue: +1 full lips, -1 thin"
+tissue = "muscle"
+group = "face"
+sd_mm = 2.0
+factors = { adiposity = 0.2 }
+age = [[3.0, 0.4], [20.0, 0.2], [30.0, 0.0], [60.0, -0.8], [85.0, -1.5]]
+[[structure.effects]]
+frame = "head"
+landmark = "mouth"
+reach = 6.5
+push = "forward"
+amount = 1.0
+
+# ---------------------------------------------------------------------------------------------------------- skin
+
+[[structure]]
+id = "mouth_corners"
+name = "Mouth corners"
+summary = "The soft tissue at the mouth's corners: +1 corners that turn down, -1 lifted"
+tissue = "skin"
+group = "face"
+sided = true
+sd_mm = 1.2
+factors = { laxity = 0.6 }
+age = [[30.0, 0.0], [60.0, 0.8], [85.0, 1.6]]
+[[structure.effects]]
+frame = "head"
+landmark = "mouth_left"
+reach = 6.0
+push = "up"
+amount = -1.0
+
+[[structure]]
+id = "nasolabial_fold"
+name = "Nasolabial fold"
+summary = "The fold from beside the nose to past the mouth's corner (placed by both, so it spans a drawn face's short gap too): +1 deep, -1 none"
+tissue = "skin"
+group = "face"
+sided = true
+sd_mm = 0.9
+factors = { laxity = 0.6, adiposity = 0.3 }
+age = [[20.0, -0.5], [35.0, 0.0], [50.0, 1.0], [70.0, 2.0], [90.0, 2.8]]
+[[structure.effects]]
+frame = "head"
+landmark = "nose"
+nudge = [0.07, -0.01, 0.0]
+reach = 3.5
+amount = -0.8
+[[structure.effects]]
+frame = "head"
+landmark = "nose"
+nudge = [0.08, -0.05, 0.0]
+reach = 4.0
+amount = -1.0
+[[structure.effects]]
+frame = "head"
+landmark = "mouth_left"
+nudge = [0.05, 0.03, 0.0]
+reach = 4.0
+amount = -1.0
+[[structure.effects]]
+frame = "head"
+landmark = "mouth_left"
+nudge = [0.045, -0.02, 0.0]
+reach = 3.5
+amount = -0.7
+[[structure.effects]]
+frame = "head"
+landmark = "mouth_left"
+nudge = [0.11, 0.05, 0.0]
+reach = 6.0
+amount = 0.5
+
+[[structure]]
+id = "marionette_lines"
+name = "Marionette lines"
+summary = "The lines from the mouth's corners down toward the jaw: +1 deep, -1 none"
+tissue = "skin"
+group = "face"
+sided = true
+sd_mm = 0.7
+factors = { laxity = 0.7 }
+age = [[35.0, 0.0], [55.0, 0.8], [75.0, 1.8], [90.0, 2.4]]
+[[structure.effects]]
+frame = "head"
+landmark = "mouth_left"
+nudge = [0.02, -0.05, 0.0]
+reach = 3.5
+amount = -1.0
+[[structure.effects]]
+frame = "head"
+landmark = "mouth_left"
+nudge = [0.03, -0.11, 0.0]
+reach = 3.5
+amount = -1.0
+[[structure.effects]]
+frame = "head"
+landmark = "mouth_left"
+nudge = [0.035, -0.17, 0.0]
+reach = 3.0
+amount = -0.7
+
+[[structure]]
+id = "crows_feet"
+name = "Crow's feet"
+summary = "The lines fanning from the eye's outer corner: +1 deep, -1 none"
+tissue = "skin"
+group = "face"
+sided = true
+sd_mm = 0.35
+factors = { laxity = 0.5 }
+age = [[25.0, -0.5], [35.0, 0.0], [50.0, 1.0], [70.0, 2.0], [90.0, 2.6]]
+[[structure.effects]]
+frame = "head"
+landmark = "eye_left"
+nudge = [0.17, 0.04, 0.0]
+reach = 2.5
+amount = -1.0
+[[structure.effects]]
+frame = "head"
+landmark = "eye_left"
+nudge = [0.18, 0.0, 0.0]
+reach = 2.5
+amount = -1.0
+[[structure.effects]]
+frame = "head"
+landmark = "eye_left"
+nudge = [0.17, -0.04, 0.0]
+reach = 2.5
+amount = -1.0
+
+[[structure]]
+id = "forehead_lines"
+name = "Forehead lines"
+summary = "The horizontal lines across the forehead: +1 deep, -1 none"
+tissue = "skin"
+group = "face"
+sd_mm = 0.35
+factors = { laxity = 0.5 }
+age = [[25.0, -0.5], [35.0, 0.0], [50.0, 1.0], [70.0, 2.0], [90.0, 2.6]]
+[[structure.effects]]
+frame = "head"
+landmark = "forehead"
+nudge = [-0.24, 0.04, 0.0]
+reach = 4.0
+amount = -0.6
+[[structure.effects]]
+frame = "head"
+landmark = "forehead"
+nudge = [-0.12, 0.05, 0.0]
+reach = 4.0
+amount = -1.0
+[[structure.effects]]
+frame = "head"
+landmark = "forehead"
+nudge = [0.0, 0.05, 0.0]
+reach = 4.0
+amount = -1.0
+[[structure.effects]]
+frame = "head"
+landmark = "forehead"
+nudge = [0.12, 0.05, 0.0]
+reach = 4.0
+amount = -1.0
+[[structure.effects]]
+frame = "head"
+landmark = "forehead"
+nudge = [0.24, 0.04, 0.0]
+reach = 4.0
+amount = -0.6
+[[structure.effects]]
+frame = "head"
+landmark = "forehead"
+nudge = [-0.18, -0.06, 0.0]
+reach = 4.0
+amount = -0.7
+[[structure.effects]]
+frame = "head"
+landmark = "forehead"
+nudge = [-0.06, -0.05, 0.0]
+reach = 4.0
+amount = -0.9
+[[structure.effects]]
+frame = "head"
+landmark = "forehead"
+nudge = [0.06, -0.05, 0.0]
+reach = 4.0
+amount = -0.9
+[[structure.effects]]
+frame = "head"
+landmark = "forehead"
+nudge = [0.18, -0.06, 0.0]
+reach = 4.0
+amount = -0.7

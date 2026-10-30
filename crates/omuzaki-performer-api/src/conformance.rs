@@ -190,6 +190,8 @@ pub fn heard_sequence(events: &[Heard]) -> Result<(), String> {
             Heard::Held { .. } => held = true,
             Heard::Rejected { .. } | Heard::Final { .. } if !open => return fail("ends an utterance that never began"),
             Heard::Rejected { .. } => open = false,
+            Heard::Backchannel { .. } if !open => return fail("a backchannel cue outside an utterance"),
+            Heard::Partial { .. } | Heard::Backchannel { .. } => {}
             Heard::Final { utterance, start, end, .. } => {
                 if end.0 < start.0 {
                     return fail("ends before it starts");

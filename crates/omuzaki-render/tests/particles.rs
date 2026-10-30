@@ -394,3 +394,65 @@ fn presets_composite(r: &mut WgpuRenderer, hardware: u8) -> (Image, Image) {
     assert!(covered > 2_000, "{hardware} samples: the presets are visible: {covered} pixels");
     (over_grey, transparent)
 }
+
+/// #2433: an offline frame turns a particle's coverage into as many levels as it draws samples, whatever the GPU's own
+/// count. A square of coverage `c` covers `c` of its pixels within 1/16 under the WebGPU profile (4 samples, 4 rounds)
+/// and with the adapter's own count, and where the two differ the presets' mean coverage agrees within 1/32.
+#[test]
+fn offline_coverage_does_not_depend_on_the_hardware_sample_count() {
+    let options = HeadlessOptions { adapter: AdapterPreference::Software };
+    let mut renderers = vec![(4u8, WgpuRenderer::headless_with_profile(&options, CapabilityProfile::WebGpu).unwrap())];
+    let native = support::renderer();
+    let hardware = native.capabilities().max_samples;
+    if hardware != 4 {
+        renderers.push((hardware, native));
+    }
+    for (hardware, r) in &mut renderers {
+        assert_eq!(r.capabilities().max_samples, *hardware);
+        for coverage in [0.1, 0.3, 0.55, 0.7, 0.9] {
+            let id = square(r, Colour::WHITE, coverage, 2.0);
+            let scene = at(eye(100.0), Background::Transparent, id, 1.0);
+            let picture = r.render_image(UVec2::new(32, 32), AlphaEncoding::Straight, &scene, &Quality::offline());
+            r.release(id.into()).unwrap();
+            // The mean over the middle: an adapter may spread its alpha-to-coverage over neighbouring pixels (lavapipe
+            // dithers over 2 x 2), so one pixel alone says little.
+            let picture = picture.unwrap();
+            let got = (8..24).flat_map(|y| (8..24).map(move |x| (x, y))).map(|(x, y)| picture.colour(x, y).unwrap().a);
+            let got = got.map(|a| f32::from(a) / 255.0).sum::<f32>() / 256.0;
+            eprintln!("{hardware} samples a pass, offline: coverage {coverage} covers {got:.4}");
+            assert!(
+                (got - coverage).abs() <= 1.0 / 16.0 + 0.5 / 255.0,
+                "{hardware} samples a pass: coverage {coverage} covers {got}, not within 1/16"
+            );
+        }
+    }
+    let [(four, r4), (more, r8)] = renderers.as_mut_slice() else {
+        eprintln!(
+            "the adapter draws 4 samples a pass: the presets comparison runs where it draws more (CI's lavapipe)"
+        );
+        return;
+    };
+    let sheets = [preset_sheet(r4, Background::Transparent), preset_sheet(r8, Background::Transparent)];
+    save(&sheets[0], &format!("presets-offline-{four}x.png"));
+    save(&sheets[1], &format!("presets-offline-{more}x.png"));
+    let names = ["confetti at 0.1 s", "confetti at 0.6 s", "confetti at 2.0 s", "rain at 4 s", "snow at 4 s"];
+    for (i, name) in (0..PRESET.x * 5).step_by(PRESET.x as usize).zip(names) {
+        let (mut sum, mut count) = ([0.0f64; 2], 0u32);
+        for y in 0..PRESET.y {
+            for x in i..i + PRESET.x {
+                let alpha = sheets.each_ref().map(|s| f64::from(s.colour(x, y).unwrap().a) / 255.0);
+                if alpha.iter().any(|&a| a > 0.0) {
+                    count += 1;
+                    sum[0] += alpha[0];
+                    sum[1] += alpha[1];
+                }
+            }
+        }
+        let mean = sum.map(|s| s / f64::from(count.max(1)));
+        eprintln!(
+            "{name}: mean coverage {:.4} at {four} samples, {:.4} at {more}, over {count} pixels",
+            mean[0], mean[1]
+        );
+        assert!((mean[0] - mean[1]).abs() <= 1.0 / 32.0, "{name}: mean coverage {mean:?} differs by more than 1/32");
+    }
+}

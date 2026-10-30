@@ -1,0 +1,29 @@
+# Gesture "present" (metaphoric). Arm angles are degrees in a person's terms: raise, forward, twist, elbow, pronate, wrist,
+# shrug and reach (see crates/omuzaki-anim/src/body/arm.rs). `lead` is the gesturing hand, `other` the second hand of a
+# two-handed gesture (the lead's mirror when left out); `chest` is pitch, yaw toward the lead side and roll, in degrees.
+id = "present"
+summary = "An open palm offered forward and out: here is the idea."
+kind = "metaphoric"
+hands = "one"
+strokes = [1, 2]
+
+[prep.lead]
+raise = 12.0
+forward = 28.0
+twist = 18.0
+elbow = 82.0
+pronate = -60.0
+wrist = 0.0
+hand = "open"
+
+[stroke]
+chest = [1.0, 6.0, 0.0]
+
+[stroke.lead]
+raise = 24.0
+forward = 44.0
+twist = -6.0
+elbow = 44.0
+pronate = -84.0
+wrist = -8.0
+hand = "spread"
