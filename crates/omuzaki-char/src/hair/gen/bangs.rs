@@ -8,8 +8,7 @@
 //! with `u = phi / spread`, so the fringe sweeps to one side and each tip hooks inward. The distance from the head is
 //! `lerp(root_offset, tip_offset, t) + 0.016 sin(pi min(1, 1.15 t))`, less a root tuck: over the first [`ROOT_EMERGE`]
 //! of the lock its root sinks up to [`ROOT_TUCK`] (never closer than [`TUCK_FLOOR`] to the head), so it grows out of the
-//! hair over the crown instead of standing on it as a slab (the comparison with the anime samples showed the fringe's
-//! roots as a ledge on top of draped hair).
+//! hair over the crown instead of standing on it as a slab (or a ledge on top of draped hair).
 //!
 //! **Layers and wisps.** Layers build in [`BangsGen::layers`] order (under to over), then the wisps. Each under-layer
 //! sinks [`UNDER_SINK`] under the next near the root, so layers sharing a root offset lie one over the other instead of
