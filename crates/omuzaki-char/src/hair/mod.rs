@@ -9,6 +9,7 @@ pub mod ears;
 pub mod edit;
 pub mod r#gen;
 pub mod lock;
+pub mod occlusion;
 pub mod part;
 pub mod physics;
 pub mod reach;

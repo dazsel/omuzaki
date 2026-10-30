@@ -6,6 +6,7 @@ pub mod guides;
 pub(crate) mod part;
 pub mod physics;
 pub mod shading;
+pub mod strays;
 pub mod style;
 pub mod trace;
 pub mod volume;

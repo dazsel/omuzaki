@@ -69,9 +69,9 @@ pub use geometry::{FaceOverlay, MaterialError, MaterialSpec, PartMesh, TextureDa
 pub use hair::{
     AhogeGen, BangLayer, BangsGen, BraidGen, Bulge, BunGen, CapGen, CurtainGen, Dynamics, Falloff, Follow, FramingGen,
     Generator, GuideClump, GuidePoint, GuidesGen, HAIR_INFO, HAIR_PROGRAM, HAIR_UV, HairClump, HairGroup, HairParams,
-    HairParting, HairPhysics, HairRng, HairShading, HairShadingError, HairSide, HairVolume, HairWhorl, LegacyLcg,
-    LockProfile, LockShape, LockTip, PartSweepGen, PointedEars, SphereCollider, Streak, StreakBlend, TailBraid,
-    TailGen, Taper, TaperShape, Wave, Wisp,
+    HairParting, HairPhysics, HairPigment, HairRng, HairShading, HairShadingError, HairSide, HairStrays, HairVolume,
+    HairWhorl, LegacyLcg, LockProfile, LockShape, LockTip, PartSweepGen, PointedEars, RingShape, SphereCollider,
+    Streak, StreakBlend, TailBraid, TailGen, Taper, TaperShape, Wave, Wisp,
 };
 pub use head::{
     AnimalEars, Chin, Cranium, EarKind, EarSpecies, Ears, FaceWindow, HeadOutline, HeadParams, Neck, SkinColours,
