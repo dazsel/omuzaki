@@ -90,7 +90,7 @@ fn render(renderer: &mut WgpuRenderer, design: &EyeDesign) -> image::RgbaImage {
     let atlas_tex = renderer
         .create_texture(&TextureDesc::colour(UVec2::new(atlas.width, atlas.height)), Some(&atlas.rgba))
         .unwrap();
-    let skin = eye3d::skin::texture(&design.skin, design.seed, 2048);
+    let skin = eye3d::skin::texture(design, 2048);
     let skin_tex = renderer
         .create_texture(&TextureDesc::colour(UVec2::new(skin.width, skin.height)), Some(&skin.to_srgb()))
         .unwrap();

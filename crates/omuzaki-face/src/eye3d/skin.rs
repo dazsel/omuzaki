@@ -1,15 +1,17 @@
-//! The skin texture round the eye: the tone, its mottling, a darker band under the eye and freckles of many sizes,
-//! denser on the cheek than on the lids. Pores and fine lines are the `skin` shader's, not the texture's.
+//! The skin texture round the eye: the tone, its mottling, a darker band under the eye, fine lines (the upper lid's
+//! creases, arcs under the eye and a fan at the outer corner) and freckles of many sizes, denser on the cheek than on
+//! the lids. Pores are the `skin` shader's, not the texture's.
 
 use omuzaki_core::glam::{Vec2, Vec3};
 
 use super::canvas::Canvas;
-use super::design::Skin;
-use super::geometry::{SKIN_HALF, SKIN_TOP};
+use super::design::{EyeDesign, Skin};
+use super::geometry::{SKIN_HALF, SKIN_TOP, lid_outline};
 use super::noise::{Pcg, fbm, smoothstep};
 
-/// The skin texture: `width` pixels across the patch (its height keeps the patch's proportions).
-pub fn texture(skin: &Skin, seed: u32, width: u32) -> Canvas {
+/// The skin texture of `design`: `width` pixels across the patch (its height keeps the patch's proportions).
+pub fn texture(design: &EyeDesign, width: u32) -> Canvas {
+    let (skin, seed) = (&design.skin, design.seed);
     let tone = skin.tone.to_linear();
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
     let height = (width as f32 * SKIN_HALF.y / SKIN_HALF.x) as u32;
@@ -29,15 +31,16 @@ pub fn texture(skin: &Skin, seed: u32, width: u32) -> Canvas {
         c *= 1.0 - 0.1 * under;
         c
     });
-    lines(&mut canvas, seed);
+    lines(&mut canvas, design);
     freckles(&mut canvas, skin, seed);
     canvas
 }
 
-/// Fine lines: shallow arcs under the eye following the lower lid, and a fan at the outer corner. Each is a run of
-/// short, broken, wavering strokes, darker in its fold and lighter on the skin just above it.
-fn lines(canvas: &mut Canvas, seed: u32) {
-    let mut rng = Pcg::new(seed, 0x11e5);
+/// Fine lines: the upper lid's creases following its edge, shallow arcs under the eye following the lower lid, and a
+/// fan at the outer corner. Each is a run of short, broken, wavering strokes, darker in its fold and lighter on the
+/// skin just above it.
+fn lines(canvas: &mut Canvas, design: &EyeDesign) {
+    let mut rng = Pcg::new(design.seed, 0x11e5);
     #[allow(clippy::cast_precision_loss)]
     let px_per_m = canvas.width as f32 / (2.0 * SKIN_HALF.x);
     let to_px = |x: f32, y: f32| Vec2::new((x + SKIN_HALF.x) * px_per_m, (SKIN_TOP - y) * px_per_m);
@@ -59,6 +62,23 @@ fn lines(canvas: &mut Canvas, seed: u32) {
             i += run;
         }
     };
+    // The upper lid: crinkled creases between the lash line and the crease, then two on the fold above it, each
+    // following the lid's edge and fading toward the corners.
+    let crease = design.skin.crease;
+    let offsets = [0.0016, 0.0024, 0.0032, 0.0041, 0.005, crease + 0.0009, crease + 0.002];
+    for (k, offset) in offsets.iter().enumerate() {
+        let points: Vec<Vec2> = (0..=60)
+            .map(|i| {
+                #[allow(clippy::cast_precision_loss)]
+                let u = 0.06 + 0.86 * i as f32 / 60.0;
+                let edge = lid_outline(&design.aperture, u, true);
+                let rise = offset * (0.55 + 0.45 * (std::f32::consts::PI * u).sin());
+                let wave = 0.00008 * (u * 90.0 + rng.range(0.0, 0.5)).sin();
+                to_px(edge.x, edge.y + rise + wave)
+            })
+            .collect();
+        draw(canvas, &points, &mut rng, if k < 5 { 0.45 } else { 0.6 });
+    }
     // Under the eye: arcs a few millimetres below the lid, the lowest the faintest.
     for (k, depth) in [5.8f32, 7.2, 8.9, 10.8].iter().enumerate() {
         #[allow(clippy::cast_precision_loss)]

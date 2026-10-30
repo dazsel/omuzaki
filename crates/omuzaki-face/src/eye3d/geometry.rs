@@ -158,6 +158,11 @@ fn gauss(x: f32) -> f32 {
     (-x * x).exp()
 }
 
+/// A point of the opening's outline at `u` along a lid (0 the outer corner, 1 the inner), in the frontal plane.
+pub(super) fn lid_outline(aperture: &Aperture, u: f32, upper: bool) -> Vec2 {
+    Lids::outline(aperture, u, upper)
+}
+
 /// The lids: the opening's outline and the surface laid out from it.
 struct Lids {
     ball: Ball,

@@ -185,7 +185,7 @@ pub struct Skin {
 impl Default for Skin {
     fn default() -> Self {
         Self {
-            tone: Colour::hex(0x00a0_7458),
+            tone: Colour::hex(0x00a0_725e),
             freckles: 40.0,
             freckle: Colour::hex(0x0070_3a24),
             lid_thickness: 0.0016,

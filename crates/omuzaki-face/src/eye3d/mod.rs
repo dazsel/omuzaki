@@ -7,7 +7,7 @@
 //!   (vessels, the fine network), one atlas for the `eye` program;
 //! - [`geometry::meshes`]: the eyeball and cornea, the lids with their margins, crease and pocket, the caruncle, the
 //!   occlusion shell and the lashes;
-//! - [`skin::texture`]: the skin round the eye (tone, mottling, freckles);
+//! - [`skin::texture`]: the skin round the eye (tone, mottling, fine lines, freckles);
 //! - [`eye_params`] and [`skin_params`]: the programs' parameters for a design and where the eye is.
 //!
 //! Everything is a pure function of an [`EyeDesign`], whose seed drives every random detail.
