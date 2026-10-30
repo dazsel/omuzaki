@@ -4,7 +4,7 @@
 // generated from the declaration.
 //
 // The `skin-info` attribute: x how wet the skin is (0 dry, 1 the wet line of a lid), y the cavity term (1 open, 0 deep in
-// a fold), z extra flush (redness), w unused.
+// a fold), z extra flush (redness), w the surface's curvature in 1/m (0: flat) for the scattering.
 
 var<private> skin_albedo: vec3<f32>;
 
@@ -90,6 +90,47 @@ fn program_albedo(albedo: vec3<f32>, p: ProgramIn) -> vec3<f32> {
     return skin_albedo;
 }
 
+// Skin's diffusion profile: d'Eon and Luebke's six Gaussians (variances in mm^2, weights per channel).
+const SKIN_VARIANCE: array<f32, 6> = array<f32, 6>(0.0064, 0.0484, 0.187, 0.567, 1.99, 7.41);
+const SKIN_WEIGHT: array<vec3<f32>, 6> = array<vec3<f32>, 6>(
+    vec3<f32>(0.233, 0.455, 0.649),
+    vec3<f32>(0.100, 0.336, 0.344),
+    vec3<f32>(0.118, 0.198, 0.0),
+    vec3<f32>(0.113, 0.007, 0.007),
+    vec3<f32>(0.358, 0.004, 0.0),
+    vec3<f32>(0.078, 0.0, 0.0),
+);
+const SKIN_TAPS: i32 = 24;
+
+// The profile at distance `d` (mm), per channel.
+fn skin_profile(d: f32, spread: f32) -> vec3<f32> {
+    var r = vec3<f32>(0.0);
+    for (var i = 0; i < 6; i++) {
+        let v = SKIN_VARIANCE[i] * spread * spread;
+        r += SKIN_WEIGHT[i] * exp(-d * d / (2.0 * v)) / (2.0 * PI * v);
+    }
+    return r;
+}
+
+// Pre-integrated subsurface scattering (Penner): the light a point on a curved surface of radius `radius_mm` receives
+// once the profile has carried light round the curve from its neighbours, for each colour channel's `cosines` (the
+// cosine of the angle between the light and that channel's normal). Light reaches past the terminator and reddens there.
+fn skin_scatter(cosines: vec3<f32>, radius_mm: f32, spread: f32) -> vec3<f32> {
+    // Only the arc within a few millimetres matters: past that the profile is nothing.
+    let reach = min(PI, 2.0 * asin(min(1.0, 3.0 * spread / max(radius_mm, 1e-3))));
+    let theta = acos(clamp(cosines, vec3<f32>(-1.0), vec3<f32>(1.0)));
+    var sum = vec3<f32>(0.0);
+    var weight = vec3<f32>(0.0);
+    for (var k = 0; k < SKIN_TAPS; k++) {
+        let x = reach * ((f32(k) + 0.5) / f32(SKIN_TAPS) * 2.0 - 1.0);
+        let d = 2.0 * radius_mm * sin(abs(x) * 0.5);
+        let w = skin_profile(d, spread);
+        sum += max(cos(theta + x), vec3<f32>(0.0)) * w;
+        weight += w;
+    }
+    return sum / max(weight, vec3<f32>(1e-6));
+}
+
 fn program_light(lit: vec3<f32>, n: vec3<f32>, v: vec3<f32>, p: ProgramIn) -> vec3<f32> {
     let info = p.extra[0];
     let wet = saturate(info.x);
@@ -103,6 +144,13 @@ fn program_light(lit: vec3<f32>, n: vec3<f32>, v: vec3<f32>, p: ProgramIn) -> ve
     if (pore_fade > 0.0) {
         pore_shade = 1.0 - 0.18 * pore_fade * (1.0 - smoothstep(0.0, 0.18, skin_cells(p.world_position * scale)));
     }
+    // Light that travels further under the skin sees the surface's small bumps less: red diffuses from a smoother
+    // normal than blue.
+    let n_red = normalize(mix(n, nb, 0.2));
+    let n_green = normalize(mix(n, nb, 0.6));
+    // The surface's radius of curvature (`skin-info` w is its curvature, 1/m); flat where it is not given.
+    let radius_mm = 1000.0 / max(info.w, 1.0);
+    let spread = program_float(P_SSS);
     let wrap = program_float(P_WRAP);
     let scatter = program_vec3(P_SCATTER_COLOUR);
     let roughness = mix(program_float(P_ROUGHNESS), program_float(P_WET_ROUGHNESS), wet);
@@ -116,18 +164,25 @@ fn program_light(lit: vec3<f32>, n: vec3<f32>, v: vec3<f32>, p: ProgramIn) -> ve
             continue;
         }
         let incident = incident_light(l, i, n, p.world_position);
-        // Light scattered under the skin: the terminator wraps and reddens, and so do the shadow's edges.
-        let ndl = dot(nb, incident.to_light);
-        let wrapped = saturate((ndl + wrap) / (1.0 + wrap));
-        let tint = mix(scatter, vec3<f32>(1.0), saturate(ndl * 1.6 + 0.15));
+        let to_light = incident.to_light;
+        let cosines = vec3<f32>(dot(n_red, to_light), dot(n_green, to_light), dot(nb, to_light));
+        var received: vec3<f32>;
+        if (spread > 0.0) {
+            received = skin_scatter(cosines, radius_mm, spread);
+        } else {
+            // Without the profile: a wrapped, reddened terminator.
+            let ndl = cosines.z;
+            received = vec3<f32>(saturate((ndl + wrap) / (1.0 + wrap))) * mix(scatter, vec3<f32>(1.0), saturate(ndl * 1.6 + 0.15));
+        }
+        // The shadow's edge is scattered too: it reddens as it softens.
         let s = incident.shadow;
         let shadow = vec3<f32>(s) + scatter * (s * (1.0 - s) * 1.6);
-        diffuse += incident.colour * wrapped * tint * shadow;
-        let h = normalize(v + incident.to_light);
+        diffuse += incident.colour * received * shadow;
+        let h = normalize(v + to_light);
         let fresnel = f0 + (1.0 - f0) * pow(1.0 - saturate(dot(h, v)), 5.0);
-        specular += incident.colour * s * skin_ggx(nb, v, incident.to_light, roughness) * fresnel;
+        specular += incident.colour * s * skin_ggx(nb, v, to_light, roughness) * fresnel;
     }
-    diffuse += environment_light(nb) * cavity;
+    diffuse += environment_light(n_green) * cavity;
     let nv = saturate(dot(nb, v));
     let fresnel_v = f0 + (1.0 - f0) * pow(1.0 - nv, 5.0);
     specular += environment_specular(reflect(-v, nb), roughness) * fresnel_v * cavity;

@@ -83,6 +83,7 @@ pub fn skin_params() -> ProgramParams {
 pub fn lash_params() -> ProgramParams {
     let mut p = ProgramParams::new();
     put(&mut p, "pore-depth", ParamValue::Float(0.0));
+    put(&mut p, "sss", ParamValue::Float(0.0));
     put(&mut p, "wrap", ParamValue::Float(0.25));
     put(&mut p, "roughness", ParamValue::Float(0.45));
     put(&mut p, "sheen", ParamValue::Float(0.4));

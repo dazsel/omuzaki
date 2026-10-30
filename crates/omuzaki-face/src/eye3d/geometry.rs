@@ -326,6 +326,10 @@ impl Lids {
         self.caruncle(&mut mesh, &mut info);
         mesh.normals = smooth_normals(&mesh.positions, &mesh.indices);
         orient_toward(&mut mesh, Vec3::Z);
+        // The skin program scatters light round the surface's curvature.
+        for (i, c) in curvature(&mesh.positions, &mesh.normals, &mesh.indices).into_iter().enumerate() {
+            info[i * 4 + 3] = c;
+        }
         self.meniscus(&mut mesh, &mut info);
         mesh.extra.push(ExtraAttribute { name: slug(SKIN_INFO), components: 4, data: info });
         mesh
@@ -355,7 +359,7 @@ impl Lids {
                 mesh.positions.push(q);
                 mesh.normals.push(n);
                 mesh.uvs.push(skin_uv(q));
-                info.extend_from_slice(&[1.0, 1.0, 0.5, 0.0]);
+                info.extend_from_slice(&[1.0, 1.0, 0.5, 1.0 / radius]);
             }
         }
         let at = |k: usize, j: usize| u32::try_from(first + (k % AROUND) * SIDES + j % SIDES).unwrap_or(0);
@@ -568,6 +572,26 @@ pub const SKIN_TOP: f32 = 0.034;
 fn slug(name: &str) -> Slug {
     // The names here are constants that are valid slugs.
     Slug::new(name).unwrap_or_else(|_| Slug::new("skin-info").unwrap_or_else(|_| unreachable!()))
+}
+
+/// Each vertex's curvature (1/m): how fast the normal turns along the edges round it, averaged.
+fn curvature(positions: &[Vec3], normals: &[Vec3], indices: &[u32]) -> Vec<f32> {
+    let mut sum = vec![0.0f32; positions.len()];
+    let mut count = vec![0.0f32; positions.len()];
+    for t in indices.as_chunks::<3>().0 {
+        for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            let (a, b) = (a as usize, b as usize);
+            let length = (positions[a] - positions[b]).length();
+            if length > 1e-7 {
+                let k = (normals[a] - normals[b]).length() / length;
+                for v in [a, b] {
+                    sum[v] += k;
+                    count[v] += 1.0;
+                }
+            }
+        }
+    }
+    sum.iter().zip(&count).map(|(s, c)| if *c > 0.0 { s / c } else { 0.0 }).collect()
 }
 
 /// Area-weighted vertex normals.
