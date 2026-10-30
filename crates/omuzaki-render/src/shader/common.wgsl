@@ -29,6 +29,7 @@ const FLAG_OUTLINE: u32 = 32u;
 const FLAG_OUTLINE_WORLD: u32 = 64u;            // the outline width is metres at any distance
 const FLAG_OUTLINE_SCREEN: u32 = 128u;          // the outline width is a fraction of the target height
 const FLAG_OUTLINE_WIDTH_TEXTURE: u32 = 256u;   // the width is multiplied by the width texture's green channel
+const FLAG_RECEIVES_HAIR_SHADOW: u32 = 512u;   // the hair shadow darkens it (a face under its fringe)
 
 // Material.mtoon_flags.x: lit by MToon, and which MToon textures the material has.
 const MTOON_ON: u32 = 1u;

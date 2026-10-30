@@ -291,6 +291,26 @@ impl Default for UvTransform {
     }
 }
 
+/// A material's part in the hair shadow (#2528): the shadow hair casts on a face, which shadow maps miss because a fringe
+/// hangs inside their bias.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct HairShadow {
+    /// The surface is drawn into the hair shadow: hair.
+    pub casts: bool,
+    /// The surface turns to its shade tone where hair lies between it and a shadow-casting directional light: a face
+    /// under its fringe.
+    pub receives: bool,
+}
+
+impl HairShadow {
+    /// Neither casts nor receives: the default.
+    pub const NONE: Self = Self { casts: false, receives: false };
+    /// Casts it, as hair does.
+    pub const CASTS: Self = Self { casts: true, receives: false };
+    /// Receives it, as a face does.
+    pub const RECEIVES: Self = Self { casts: false, receives: true };
+}
+
 /// Everything about how one mesh's surface looks.
 #[derive(Clone, Debug, PartialEq)]
 #[allow(clippy::struct_excessive_bools, reason = "independent switches a renderer reads one at a time")]
@@ -320,6 +340,8 @@ pub struct Material {
     pub outline_style: OutlineStyle,
     /// Whether shadow maps darken this surface. Faces turn it off: anime faces stay clean under hair shadows.
     pub receives_shadows: bool,
+    /// The hair shadow (#2528): whether this surface casts it (hair) or receives it (a face). Both off by default.
+    pub hair_shadow: HairShadow,
     /// Applied to the UV of every UV-addressed texture (`base_texture` and [`Mapping::Uv`] overlays).
     pub uv_transform: UvTransform,
     /// `MToon` 1.0's own lighting, for an imported model (LK-07): with toon shading, the surface is lit by the spec's
@@ -342,6 +364,7 @@ impl Material {
             outline: None,
             outline_style: OutlineStyle::KIT,
             receives_shadows: true,
+            hair_shadow: HairShadow::NONE,
             uv_transform: UvTransform::IDENTITY,
             mtoon: None,
         }

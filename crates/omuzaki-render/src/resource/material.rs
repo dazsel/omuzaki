@@ -28,6 +28,8 @@ pub(crate) mod flag {
     pub(crate) const OUTLINE_SCREEN: u32 = 128;
     /// The outline's width is multiplied by the green channel of the outline width texture.
     pub(crate) const OUTLINE_WIDTH_TEXTURE: u32 = 256;
+    /// The hair shadow darkens the surface (`HairShadow::receives`).
+    pub(crate) const RECEIVES_HAIR_SHADOW: u32 = 512;
 }
 
 /// Bits of `Material.mtoon_flags.x` (`MTOON_*` in the shader): the material is lit by `MToon`, and which of its
@@ -192,6 +194,7 @@ impl MaterialUniform {
             (material.double_sided, flag::DOUBLE_SIDED),
             (material.vertex_colours, flag::VERTEX_COLOURS),
             (material.receives_shadows, flag::RECEIVES_SHADOWS),
+            (material.hair_shadow.receives, flag::RECEIVES_HAIR_SHADOW),
             (toon.skin.is_some() && kind == shading::TOON, flag::SKIN),
             (material.base_texture.is_some(), flag::BASE_TEXTURE),
             (material.outline.is_some(), flag::OUTLINE),

@@ -17,6 +17,7 @@
 fn blended(in: VsOut, front: bool) -> vec4<f32> {
     let uv = mtoon_uv(in.uv);
     let albedo = surface_albedo(uv, in.colour, in.local);
+    begin_hair_shadow(in.world_position);
     let program = ProgramIn(
         array<vec4<f32>, 4>(in.extra0, in.extra1, in.extra2, in.extra3),
         front,

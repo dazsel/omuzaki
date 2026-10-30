@@ -197,6 +197,9 @@ pub struct ClassLook {
     /// Whether shadow maps darken the class.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub receives_shadows: Option<bool>,
+    /// Whether the hair shadow shades the class (#2528): the skin under a fringe takes its shade tone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub receives_hair_shadow: Option<bool>,
 }
 
 /// What a look sets for the whole frame (LK-05). Every field is optional: unset keeps what the shot's recipe chose.
@@ -424,7 +427,7 @@ fn first<T: Clone>(over: Option<&T>, base: Option<&T>) -> Option<T> {
 
 impl ClassLook {
     /// The field names, as parameter paths spell them.
-    pub const FIELDS: [&'static str; 8] = [
+    pub const FIELDS: [&'static str; 9] = [
         "softness_scale",
         "rim_scale",
         "program",
@@ -433,6 +436,7 @@ impl ClassLook {
         "outline_width_scale",
         "outline_colour",
         "receives_shadows",
+        "receives_hair_shadow",
     ];
 
     /// True when it sets nothing.
@@ -460,6 +464,7 @@ impl ClassLook {
             outline_width_scale: first(self.outline_width_scale.as_ref(), base.outline_width_scale.as_ref()),
             outline_colour: first(self.outline_colour.as_ref(), base.outline_colour.as_ref()),
             receives_shadows: first(self.receives_shadows.as_ref(), base.receives_shadows.as_ref()),
+            receives_hair_shadow: first(self.receives_hair_shadow.as_ref(), base.receives_hair_shadow.as_ref()),
         }
     }
 
@@ -517,6 +522,9 @@ impl ClassLook {
         out.outline = self.outline(spec);
         if let Some(receives) = self.receives_shadows {
             out.receives_shadows = receives;
+        }
+        if let Some(receives) = self.receives_hair_shadow {
+            out.hair_shadow.receives = receives;
         }
         out
     }
@@ -1119,6 +1127,7 @@ mod tests {
                 outline_width_scale: pick(0.5).then_some(0.5),
                 outline_colour: pick(0.5).then_some(OutlineColour::Flat(flat)),
                 receives_shadows: pick(0.5).then_some(false),
+                receives_hair_shadow: pick(0.5).then_some(true),
                 ..ClassLook::default()
             };
             for spec in [decorated(), hair()] {

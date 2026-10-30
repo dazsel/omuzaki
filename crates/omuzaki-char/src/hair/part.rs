@@ -847,6 +847,7 @@ fn hair_material(
         vertex_colours: true,
         outline: Some(Outline { colour, width: narrow(params.shading.outline_width) }),
         receives_shadows: true,
+        hair_shadow: omuzaki_render_api::HairShadow::CASTS,
         uv_transform: omuzaki_render_api::UvTransform::IDENTITY,
     })
 }

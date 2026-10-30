@@ -3,6 +3,10 @@
 //
 //   group 2  b0  the view-projection of the map being drawn (picked by a dynamic offset, `shadow/map.rs`)
 //
+// `vs_main` draws into a map with that matrix. `vs_camera` draws the hair from the camera, and `fs_hair` (opaque) or
+// `fs_hair_cutout` (masked, blended) writes each texel's distance from the eye along the view axis into the hair
+// distance texture, the nearest hair winning by depth.
+//
 // Opaque casters have no fragment stage at all. Masked and blended ones (hair cards, lashes) run `fs_cutout`, which
 // drops the texels that would not be drawn: below the mask cutoff, and below one half of coverage for blended surfaces,
 // so a glass pane or a translucent skirt casts where it is mostly there.
@@ -20,6 +24,8 @@ struct VsOut {
     @location(0) uv: vec2<f32>,
     @location(1) colour: vec4<f32>,
     @location(2) local: vec3<f32>,
+    // `vs_camera`: the distance from the eye along the view axis (the clip w of a perspective camera).
+    @location(3) distance: f32,
 }
 
 @vertex
@@ -30,6 +36,20 @@ fn vs_main(v: Vertex, @builtin(instance_index) instance: u32) -> VsOut {
     out.uv = v.uv;
     out.colour = v.colour;
     out.local = v.position;
+    out.distance = 0.0;
+    return out;
+}
+
+// The hair depth (#2528): the same casters from the camera, for the hair shadow's lookup.
+@vertex
+fn vs_camera(v: Vertex, @builtin(instance_index) instance: u32) -> VsOut {
+    let posed = pose(v, instances[instance]);
+    var out: VsOut;
+    out.clip = frame.view_proj * vec4<f32>(posed.world_position, 1.0);
+    out.uv = v.uv;
+    out.colour = v.colour;
+    out.local = v.position;
+    out.distance = out.clip.w;
     return out;
 }
 
@@ -40,4 +60,19 @@ fn fs_cutout(in: VsOut) {
     if (albedo.a < cutoff) {
         discard;
     }
+}
+
+@fragment
+fn fs_hair(in: VsOut) -> @location(0) vec4<f32> {
+    return vec4<f32>(in.distance, 0.0, 0.0, 0.0);
+}
+
+@fragment
+fn fs_hair_cutout(in: VsOut) -> @location(0) vec4<f32> {
+    let albedo = surface_albedo(in.uv, in.colour, in.local);
+    let cutoff = select(BLEND_CAST_COVERAGE, material.alpha.x, material.flags.z == ALPHA_MASK);
+    if (albedo.a < cutoff) {
+        discard;
+    }
+    return vec4<f32>(in.distance, 0.0, 0.0, 0.0);
 }

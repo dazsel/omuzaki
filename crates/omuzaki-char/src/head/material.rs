@@ -65,8 +65,8 @@ pub fn face_overlays(p: &HeadParams, head_centre: Vec3) -> Vec<FaceOverlay> {
         .to_vec()
 }
 
-/// The face (`skin-head`): lit flat, no shadows, a soft coloured outline, and the painted face composited over it
-/// (`overlays`, from [`face_overlays`]).
+/// The face (`skin-head`): lit flat, no shadow maps, the hair's own shadow under the fringe (#2528), a soft coloured
+/// outline, and the painted face composited over it (`overlays`, from [`face_overlays`]).
 ///
 /// # Errors
 /// [`BuildError::Colour`] if a skin slot is missing from the palette.
@@ -82,6 +82,7 @@ pub fn skin_head(colour: Resolve<'_>, p: &HeadParams, overlays: Vec<FaceOverlay>
         vertex_colours: false,
         outline: Some(Outline { colour: lighten(line, base, FACE_LINE_LIGHTEN), width: HEAD_OUTLINE }),
         receives_shadows: false,
+        hair_shadow: omuzaki_render_api::HairShadow::RECEIVES,
         uv_transform: omuzaki_render_api::UvTransform::IDENTITY,
     })
 }
@@ -104,6 +105,7 @@ pub fn skin_ear(colour: Resolve<'_>, p: &HeadParams) -> Result<MaterialSpec, Bui
         vertex_colours: false,
         outline: Some(Outline { colour: colour(&p.skin.line)?, width: EAR_OUTLINE }),
         receives_shadows: true,
+        hair_shadow: omuzaki_render_api::HairShadow::NONE,
         uv_transform: omuzaki_render_api::UvTransform::IDENTITY,
     })
 }

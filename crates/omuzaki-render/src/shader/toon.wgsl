@@ -119,11 +119,17 @@ const SHADOW_MAPS: u32 = 4u;
 
 struct Shadows {
     maps: array<ShadowMap, SHADOW_MAPS>,
+    // The hair shadow (`shadow/map.rs`): x 1 when the hair depth holds this frame's hair, y how far toward the light the
+    // march goes and z how far behind a hair surface a point still lies under it, in metres; w its strength.
+    hair: vec4<f32>,
 }
 
 @group(2) @binding(0) var<uniform> shadows: Shadows;
 @group(2) @binding(1) var shadow_maps: texture_depth_2d_array;
 @group(2) @binding(2) var shadow_sampler: sampler_comparison;
+// The hair alone from the camera, at the internal size, drawn by the Shadows pass: each texel's distance from the eye
+// along the view axis, 0 where there is no hair.
+@group(2) @binding(3) var hair_distance: texture_2d<f32>;
 
 // How much of the light that map `m` belongs to reaches `position` (normal `n`): 1 lit, 0 in shadow, in between across
 // a soft edge. The point is moved along the normal first (the prototype's `normalBias`) and the depth compared with the
@@ -152,6 +158,60 @@ fn shadow_visibility(position: vec3<f32>, n: vec3<f32>, m: u32) -> f32 {
     return sum / 9.0;
 }
 
+// The hair shadow (#2528): how much of a light toward `to_light` the hair leaves on `position`, 1 lit, 0 under the
+// hair. Shadow maps cannot draw it: the fringe hangs a centimetre or two off the forehead, inside their normal bias.
+// So the point marches toward the light through the hair's distance from the camera, and lies under the hair where
+// a step passes behind a hair surface by less than the hair's thickness. Only materials that receive it (a face) look.
+//
+// It is marched once per fragment, toward the first shadow-casting directional light (the key), by
+// `begin_hair_shadow` at the top of the lit fragment stages, and `incident_light` reads the result for every casting
+// directional light: marching inside `incident_light` would copy the march into each of its many call sites (the
+// software rasteriser inlines everything), and the kit's largest programs then overflow its stack.
+const HAIR_STEPS: i32 = 12;
+const HAIR_BIAS: f32 = 0.0015;
+
+var<private> hair_lit: f32 = 1.0;
+
+fn begin_hair_shadow(position: vec3<f32>) {
+    hair_lit = 1.0;
+    for (var i = 0u; i < frame.counts.x; i++) {
+        let l = frame.lights[i];
+        if (l.vector.w == LIGHT_DIRECTIONAL && l.colour.w > 0.5) {
+            hair_lit = hair_shadow(position, l.vector.xyz);
+            return;
+        }
+    }
+}
+
+fn hair_shadow(position: vec3<f32>, to_light: vec3<f32>) -> f32 {
+    if ((material.flags.x & FLAG_RECEIVES_HAIR_SHADOW) == 0u || shadows.hair.x == 0.0) {
+        return 1.0;
+    }
+    // The texture's own size, not the frame's: a lane the branch above masks off still runs on a SIMD rasteriser, and
+    // the texture is one texel while the hair shadow is off.
+    let size = vec2<i32>(textureDimensions(hair_distance));
+    var under = 0.0;
+    for (var i = 1; i <= HAIR_STEPS; i++) {
+        let p = position + to_light * (shadows.hair.y * f32(i) / f32(HAIR_STEPS));
+        let clip = frame.view_proj * vec4<f32>(p, 1.0);
+        if (clip.w <= 0.0) {
+            break;
+        }
+        let uv = clip.xy / clip.w * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5, 0.5);
+        if (any(uv < vec2<f32>(0.0)) || any(uv >= vec2<f32>(1.0))) {
+            break;
+        }
+        let hair = textureLoad(hair_distance, clamp(vec2<i32>(uv * vec2<f32>(size)), vec2<i32>(0), size - 1), 0).x;
+        if (hair <= 0.0) {
+            continue;
+        }
+        // How far behind the hair the step lies, along the view axis (a perspective camera's clip w is that distance).
+        let gap = clip.w - hair;
+        under = max(under, smoothstep(HAIR_BIAS, HAIR_BIAS * 2.0, gap) * (1.0 - smoothstep(shadows.hair.z * 0.7, shadows.hair.z, gap)));
+    }
+    return 1.0 - under * shadows.hair.w;
+}
+
 // How much of the light number `index` reaches `position`: its map's visibility, or 1 for a light without a map.
 fn light_shadow(position: vec3<f32>, n: vec3<f32>, index: u32) -> f32 {
     for (var m = 0u; m < SHADOW_MAPS; m++) {
@@ -176,12 +236,14 @@ fn shadow_mask(position: vec3<f32>, n: vec3<f32>) -> vec2<f32> {
 }
 
 // What light number `index` (`l`, not a hemisphere light) sends toward a surface point at `position` with normal `n`:
-// its colour where it arrives (D10's falloff for point and spot lights, a spot's cone), the unit vector toward it, and
-// how much of it the shadow lets through (a light with a shadow map; 1 for the rest).
+// its colour where it arrives (D10's falloff for point and spot lights, a spot's cone), the unit vector toward it, how
+// much of it the shadow lets through (a light with a shadow map; 1 for the rest), and how much the hair leaves (the
+// hair shadow, which turns a surface to its shade tone like the terminator instead of taking the light away).
 struct Incident {
     colour: vec3<f32>,
     to_light: vec3<f32>,
     shadow: f32,
+    hair: f32,
 }
 
 fn incident_light(l: Light, index: u32, n: vec3<f32>, position: vec3<f32>) -> Incident {
@@ -189,6 +251,7 @@ fn incident_light(l: Light, index: u32, n: vec3<f32>, position: vec3<f32>) -> In
     out.to_light = l.vector.xyz;
     out.colour = l.colour.rgb;
     out.shadow = 1.0;
+    out.hair = 1.0;
     if (l.vector.w != LIGHT_DIRECTIONAL) {
         // Point and spot lights: D10's falloff, and a spot is also confined to its cone (no spot shadows yet).
         let offset = l.vector.xyz - position;
@@ -200,6 +263,9 @@ fn incident_light(l: Light, index: u32, n: vec3<f32>, position: vec3<f32>) -> In
         }
     } else {
         out.shadow = light_shadow(position, n, index);
+        if (l.colour.w > 0.5) {
+            out.hair = hair_lit;
+        }
     }
     return out;
 }
@@ -213,7 +279,8 @@ fn light_irradiance(l: Light, index: u32, n: vec3<f32>, position: vec3<f32>) -> 
         return mix(l.ground.rgb, l.colour.rgb, 0.5 + 0.5 * n.y);
     }
     let incident = incident_light(l, index, n, position);
-    return incident.colour * incident.shadow * mix(material.shade.rgb, vec3<f32>(1.0), terminator(dot(n, incident.to_light)));
+    let ramp = terminator(dot(n, incident.to_light)) * incident.hair;
+    return incident.colour * incident.shadow * mix(material.shade.rgb, vec3<f32>(1.0), ramp);
 }
 
 // The unit vector from a surface point toward the eye. An orthographic camera looks along one axis everywhere.
@@ -439,7 +506,7 @@ fn mtoon_colour(lit: vec3<f32>, uv: vec2<f32>, n: vec3<f32>, position: vec3<f32>
         // The shadow is looked up along the surface's own normal, the light's angle taken against the mapped one.
         let incident = incident_light(l, i, n, position);
         let n_dot_l = clamp(dot(normal, incident.to_light), -1.0, 1.0);
-        let shading = mtoon_shading(n_dot_l, incident.shadow, shift);
+        let shading = mtoon_shading(n_dot_l, incident.shadow * incident.hair, shift);
         direct += incident.colour * mix(shade, lit, shading) / PI;
         reaching += incident.colour;
     }
@@ -475,6 +542,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
     if (material.flags.z == ALPHA_MASK && albedo.a < material.alpha.x) {
         discard;
     }
+    begin_hair_shadow(in.world_position);
     var colour = albedo.rgb;
     if (mtoon_on()) {
         let facing = normalize(in.world_normal);

@@ -15,8 +15,8 @@ use omuzaki_core::glam::Vec3;
 use omuzaki_core::mesh::{MeshData, MeshError};
 use omuzaki_face_api::{FaceLayerId, FaceLayerSpec, FaceProjection, PlanarWindow};
 use omuzaki_render_api::{
-    AlphaEncoding, AlphaMode, ColourSpace, Mapping, Material, Outline, OutlineStyle, Overlay, Sampler, Shading,
-    TextureDesc, TextureId, TextureUsage, UvTransform,
+    AlphaEncoding, AlphaMode, ColourSpace, HairShadow, Mapping, Material, Outline, OutlineStyle, Overlay, Sampler,
+    Shading, TextureDesc, TextureId, TextureUsage, UvTransform,
 };
 
 use crate::ids::{JointRef, MaterialName, TextureName};
@@ -71,6 +71,8 @@ pub struct MaterialSpec {
     pub outline: Option<Outline>,
     /// Whether shadow maps darken this surface. Faces turn it off.
     pub receives_shadows: bool,
+    /// Whether the surface casts the hair shadow (hair) or receives it (a face): the renderer's `Material::hair_shadow`.
+    pub hair_shadow: HairShadow,
     /// Scale and offset applied to the UV of every UV-addressed texture of the material (the renderer's
     /// `Material::uv_transform`). Identity for every built part; an imported material keeps its file's texture
     /// transform here, and an expression's UV bind moves it (`byom.md` D3).
@@ -102,6 +104,7 @@ impl MaterialSpec {
             vertex_colours: m.vertex_colours,
             outline: m.outline,
             receives_shadows: m.receives_shadows,
+            hair_shadow: m.hair_shadow,
             uv_transform: m.uv_transform,
         }
     }
@@ -150,6 +153,7 @@ impl MaterialSpec {
             outline: self.outline,
             outline_style: OutlineStyle::KIT,
             receives_shadows: self.receives_shadows,
+            hair_shadow: self.hair_shadow,
             uv_transform: self.uv_transform,
             mtoon: None,
         })

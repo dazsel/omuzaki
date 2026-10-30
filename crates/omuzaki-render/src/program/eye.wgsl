@@ -224,7 +224,9 @@ fn program_light(lit: vec3<f32>, n: vec3<f32>, v: vec3<f32>, p: ProgramIn) -> ve
         let far_side = saturate(-dot(normalize(eye_local(f, iris_n).xy + vec2<f32>(1e-5)), l_local.xy));
         let iris = saturate(dot(iris_n, incident.to_light) * 0.85 + 0.15)
             * (1.0 + program_float(P_CAUSTIC) * far_side * length(l_local.xy));
-        diffuse += light * mix(sclera, vec3<f32>(iris), eye_iris);
+        // The hair shadow (#2528) falls across the white, not the iris, so a fringe's shadow crosses the eye and the
+        // iris and its highlights stay bright.
+        diffuse += light * mix(sclera * incident.hair, vec3<f32>(iris), eye_iris);
         let fresnel = eye_fresnel(dot(normalize(v + incident.to_light), v));
         specular += light * fresnel
             * (coat * eye_ggx(ns, v, incident.to_light, coat_roughness)
