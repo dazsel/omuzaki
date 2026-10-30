@@ -39,7 +39,7 @@ fn blended(in: VsOut, front: bool) -> vec4<f32> {
     if (fx_cut(fx)) {
         discard;
     }
-    albedo = vec4<f32>(fx_albedo(albedo.rgb, fx), albedo.a);
+    albedo = vec4<f32>(fx_over(albedo.rgb, fx), albedo.a);
     begin_hair_shadow(in.world_position);
     var colour = albedo.rgb;
     if (mtoon_on()) {

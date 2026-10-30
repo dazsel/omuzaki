@@ -138,7 +138,7 @@ fn fx_uniform(fx: Option<&SurfaceFx>, uniform: &mut MaterialUniform) {
         SurfaceFxKind::Dissolve => fx_kind::DISSOLVE,
     };
     let sweep = if fx.sweep_mix > 0.0 { fx.sweep.normalize_or_zero() } else { omuzaki_core::glam::Vec3::ZERO };
-    uniform.fx_flags = [kind, fx.seed, 0, 0];
+    uniform.fx_flags = [kind, fx.seed, u32::from(fx.under_paint), 0];
     uniform.fx = [fx.amount, 1.0 / fx.size.max(SURFACE_FX_SIZES.0), fx.edge_width, fx.glow];
     uniform.fx_colour = rgb(fx.colour, fx.sweep_mix);
     uniform.fx_edge = rgb(fx.edge, fx.sweep_range.x);

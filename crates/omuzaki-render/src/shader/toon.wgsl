@@ -546,7 +546,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
     if (fx_cut(fx)) {
         discard;
     }
-    albedo = vec4<f32>(fx_albedo(albedo.rgb, fx), albedo.a);
+    albedo = vec4<f32>(fx_over(albedo.rgb, fx), albedo.a);
     begin_hair_shadow(in.world_position);
     var colour = albedo.rgb;
     if (mtoon_on()) {

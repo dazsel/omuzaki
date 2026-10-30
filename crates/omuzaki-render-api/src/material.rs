@@ -358,6 +358,9 @@ pub struct SurfaceFx {
     pub sweep_range: Vec2,
     /// How much the sweep decides the field against the noise, `0..=1`: 0 is blobs anywhere, 1 a clean line.
     pub sweep_mix: f32,
+    /// The change goes under the surface's overlays instead of over them: a burnt or stone head keeps its painted eyes
+    /// and mouth on top. Off by default, so the change covers everything.
+    pub under_paint: bool,
 }
 
 impl Default for SurfaceFx {
@@ -375,6 +378,7 @@ impl Default for SurfaceFx {
             sweep: Vec3::ZERO,
             sweep_range: Vec2::new(0.0, 1.8),
             sweep_mix: 0.0,
+            under_paint: false,
         }
     }
 }

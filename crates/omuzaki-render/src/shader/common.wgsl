@@ -124,7 +124,7 @@ struct Material {
     mtoon_rim: vec4<f32>,        // rim rgb, fresnel power
     mtoon_matcap: vec4<f32>,     // matcap rgb, rim lift
     mtoon_uv: vec4<f32>,         // UV scroll per second xy, rotation per second, normal map scale
-    fx_flags: vec4<u32>,         // surface fx: FX_* kind (0: none), seed
+    fx_flags: vec4<u32>,         // surface fx: FX_* kind (0: none), seed, 1 if it goes under the overlays
     fx: vec4<f32>,               // amount, 1 / blob size, edge width, glow
     fx_colour: vec4<f32>,        // colour behind the front rgb, sweep mix
     fx_edge: vec4<f32>,          // edge band rgb, sweep start
@@ -347,13 +347,21 @@ fn fx_albedo(albedo: vec3<f32>, at: vec2<f32>) -> vec3<f32> {
     return mix(out, material.fx_edge.rgb, at.y);
 }
 
+// `fx_albedo` for a pass to lay on after `surface_albedo`; a fx that goes under the overlays is already in it.
+fn fx_over(albedo: vec3<f32>, at: vec2<f32>) -> vec3<f32> {
+    if (material.fx_flags.z != 0u) {
+        return albedo;
+    }
+    return fx_albedo(albedo, at);
+}
+
 // The edge band's own light, added after the lights.
 fn fx_glow(at: vec2<f32>) -> vec3<f32> {
     return material.fx_edge.rgb * material.fx.w * at.y;
 }
 
-// The surface colour before lighting: base colour, vertex colours, base texture, then the overlays in order (the
-// painted face goes through these). Straight linear RGBA. Must run in uniform control flow (it samples textures).
+// The surface colour before lighting: base colour, vertex colours, base texture, a surface fx that goes under the
+// overlays, then the overlays in order (the painted face goes through these). Straight linear RGBA. Must run in uniform control flow (it samples textures).
 fn surface_albedo(uv: vec2<f32>, vertex_colour: vec4<f32>, local: vec3<f32>) -> vec4<f32> {
     var albedo = material.base;
     if ((material.flags.x & FLAG_VERTEX_COLOURS) != 0u) {
@@ -361,6 +369,9 @@ fn surface_albedo(uv: vec2<f32>, vertex_colour: vec4<f32>, local: vec3<f32>) -> 
     }
     if ((material.flags.x & FLAG_BASE_TEXTURE) != 0u) {
         albedo = albedo * texel(textureSample(base_texture, base_sampler, material_uv(uv)), texture_flags(0u));
+    }
+    if (material.fx_flags.z != 0u) {
+        albedo = vec4<f32>(fx_albedo(albedo.rgb, fx_at(local)), albedo.a);
     }
     for (var i = 0u; i < material.flags.w; i++) {
         let overlay = material.overlays[i];

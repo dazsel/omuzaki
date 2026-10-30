@@ -390,6 +390,9 @@ pub struct SurfaceTrack {
     /// Materials whose names contain any of these keep their own look (`["eye"]` keeps the eyes clear).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub spare: Vec<String>,
+    /// The change goes under the painted face instead of over it: a charred head keeps its eyes, brows and mouth.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub under_paint: bool,
 }
 
 fn char_colour() -> Colour {
@@ -432,6 +435,7 @@ impl SurfaceTrack {
             sweep: sweep.into(),
             sweep_range: omuzaki_core::glam::Vec2::new(0.0, 1.8),
             sweep_mix,
+            under_paint: self.under_paint,
         })
     }
 }

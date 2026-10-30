@@ -174,6 +174,7 @@ fn probe_material(face: TextureId) -> Material {
             sweep: Vec3::new(0.0, 2.0, 0.0),
             sweep_range: Vec2::new(-0.5, 1.5),
             sweep_mix: 0.375,
+            under_paint: true,
         }),
     }
 }

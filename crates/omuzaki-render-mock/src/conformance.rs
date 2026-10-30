@@ -72,6 +72,7 @@ pub const CHECKS: &[(&str, Check)] = &[
     ("background and alpha encoding", background_and_alpha_encoding),
     ("painted textures show through overlays", painted_textures_show_through_overlays),
     ("a surface fx front recolours or cuts what it has passed", surface_fx_fronts_recolour_or_cut),
+    ("a surface fx under the paint leaves the overlays on top", surface_fx_under_paint_keeps_the_overlays),
     ("outlines hug the silhouette", outlines_hug_the_silhouette),
     ("an open double-sided sheet is outlined from both sides", open_sheets_are_outlined_from_both_sides),
     ("edge lines draw on the near side of every depth jump", edge_lines_draw_on_the_near_side_of_depth_jumps),
@@ -535,6 +536,48 @@ fn surface_fx_fronts_recolour_or_cut(r: &mut dyn Renderer) -> Outcome {
         |e| matches!(e, RenderError::Invalid { .. }),
     )?;
     for resource in [mesh.into(), material.into()] {
+        r.release(resource)?;
+    }
+    Ok(())
+}
+
+/// A tint over the whole quad covers a planar overlay in its middle, unless it goes under the paint: then the overlay
+/// (a burnt face's painted eyes) stays on top of the tint.
+fn surface_fx_under_paint_keeps_the_overlays(r: &mut dyn Renderer) -> Outcome {
+    use omuzaki_render_api::SurfaceFx;
+    let tol = tolerance(r).max(1);
+    let face = r.create_texture(&TextureDesc::colour(UVec2::new(2, 2)).dynamic(), None)?;
+    r.paint_texture(face, &mut |t: &mut dyn PaintTarget| {
+        t.write_rgba(PixelRect::full(t.desc().size), &[0, 0, 255, 255].repeat(4))
+    })?;
+    let planar = Mapping::Planar { min: Vec2::splat(-0.25), max: Vec2::splat(0.25), fade_from: -1.0, fade_to: -1.0 };
+    let overlay = Overlay { texture: face, mapping: planar, strength: 1.0 };
+    let (s, mesh, material) = overlay_scene(r, Some(overlay))?;
+    let probe_edge = (CENTRE.0 + 12, CENTRE.1); // world x = 0.375: on the quad, outside the planar rectangle
+    let burnt = |under_paint: bool| {
+        let mut m = Material::unlit(Colour::WHITE);
+        m.overlays.push(overlay);
+        m.fx = Some(SurfaceFx {
+            amount: 2.0,
+            colour: Colour::rgb(255, 0, 0),
+            edge_width: 0.0,
+            glow: 0.0,
+            under_paint,
+            ..SurfaceFx::default()
+        });
+        m
+    };
+
+    r.update_material(material, &burnt(false))?;
+    let img = draw(r, &s, &plain())?;
+    expect_pixel(&img, CENTRE, Colour::rgb(255, 0, 0), tol, "a tint over the paint covers the overlay")?;
+
+    r.update_material(material, &burnt(true))?;
+    let img = draw(r, &s, &plain())?;
+    expect_pixel(&img, CENTRE, Colour::rgb(0, 0, 255), tol, "a tint under the paint leaves the overlay on top")?;
+    expect_pixel(&img, probe_edge, Colour::rgb(255, 0, 0), tol, "outside the overlay the tint still shows")?;
+
+    for resource in [mesh.into(), material.into(), face.into()] {
         r.release(resource)?;
     }
     Ok(())
