@@ -228,7 +228,12 @@ fn a_scene_switch_holds_the_old_frame_and_fades_into_the_new_scene() {
     s.program.compose(&mut old);
     assert_eq!(s.program.take_switch(true).as_deref(), Some("brb"), "the stage switches next");
 
-    // The new scene's frames blend from the held one over the second.
+    // Staging the new scene took a while; its first frame still starts the fade from the held one...
+    s.tick(0.3);
+    let mut first = frame([0, 0, 200, 255]);
+    s.program.compose(&mut first);
+    assert_eq!(first.pixel(320, 180), Some([200, 0, 0, 255]), "the whole fade is still to play");
+    // ...and the new scene's frames blend from the held one over the second.
     s.tick(0.5);
     let mut mid = frame([0, 0, 200, 255]);
     s.program.compose(&mut mid);
@@ -290,4 +295,31 @@ fn undoing_an_add_takes_the_widget_away() {
     s.doc.apply(&inverse).unwrap();
     s.program.follow(&s.doc);
     assert_eq!(s.program.widgets()["widgets"], json!([]));
+}
+
+#[test]
+fn adaptive_quality_is_a_project_setting_and_the_app_reports_what_it_does() {
+    let mut s = Studio::new();
+    assert_eq!(s.program.adaptive(), omuzaki_overlay::AdaptiveSpec::default(), "unset: the app decides");
+    s.run("program.set_adaptive", json!({ "enabled": true, "while_recording": true })).unwrap();
+    let adaptive = s.program.adaptive();
+    assert_eq!((adaptive.enabled, adaptive.while_recording), (Some(true), true));
+    s.run("program.set_adaptive", json!({ "while_recording": false })).unwrap();
+    assert_eq!(s.program.adaptive().enabled, Some(true), "a change keeps what it doesn't name");
+    assert!(s.run("program.set_adaptive", json!({ "budget": 2 })).is_err());
+
+    s.program.report_quality(omuzaki_overlay::QualityReport {
+        adaptive: true,
+        held: None,
+        rung: 2,
+        changes: 2,
+        last: Some("down: bloom_off".into()),
+        frame_ms: Some(1.4),
+        budget_ms: 1.5,
+    });
+    let status = s.run("program.status", json!({})).unwrap();
+    assert_eq!(
+        (status["quality"]["rung"].clone(), status["quality"]["last"].clone()),
+        (json!(2), json!("down: bloom_off"))
+    );
 }

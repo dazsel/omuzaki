@@ -47,6 +47,11 @@ omuzaki-live-nodes = { path = "../omuzaki-live-nodes" }
 omuzaki-metrics-api = { path = "../omuzaki-metrics-api" }
 omuzaki-obs = { path = "../omuzaki-obs" }
 omuzaki-twitch = { path = "../omuzaki-twitch" }
+# The program compositor (overlays, scene transitions) and YouTube's chat and events.
+omuzaki-overlay = { path = "../omuzaki-overlay" }
+omuzaki-youtube = { path = "../omuzaki-youtube" }
+# Adaptive quality: the frame-budget scheduler the studio's stage runs under.
+omuzaki-budget = { path = "../omuzaki-budget" }
 omuzaki-secrets = { path = "../omuzaki-secrets" }
 omuzaki-secrets-api = { path = "../omuzaki-secrets-api" }
 omuzaki-vts = { path = "../omuzaki-vts" }

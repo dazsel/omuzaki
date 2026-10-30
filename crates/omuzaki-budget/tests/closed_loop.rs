@@ -96,3 +96,25 @@ fn a_load_that_sits_in_the_dead_band_does_not_oscillate() {
     let changes: Vec<_> = (0..8000).filter_map(|_| rig.frame(0.8)).collect();
     assert!(changes.len() <= 4, "{} changes in 8000 frames", changes.len());
 }
+
+/// The longest run of frames over `budget_ms`, while `load` changes every `frames_each` frames.
+fn longest_overrun(rig: &mut Rig, loads: &[f64], frames_each: u32, budget_ms: f64) -> u32 {
+    let (mut run, mut worst) = (0, 0);
+    for &load in loads {
+        for _ in 0..frames_each {
+            let over = rig.settled_ms(load) > budget_ms;
+            rig.frame(load);
+            run = if over { run + 1 } else { 0 };
+            worst = worst.max(run);
+        }
+    }
+    worst
+}
+
+#[test]
+fn a_game_starting_beside_the_show_never_holds_the_frame_over_budget_for_a_second() {
+    // 60 Hz: a game takes the GPU (each pass costs two to four times as much), then lets it go, then takes it again.
+    let mut rig = Rig::new(Quality::high(), budget::HIGH_GPU);
+    let worst = longest_overrun(&mut rig, &[0.5, 2.0, 0.5, 3.0, 1.0, 4.0], 1200, 4.0);
+    assert!(worst < 60, "the frame stayed over budget for {worst} frames ({:.2} s)", f64::from(worst) / 60.0);
+}

@@ -323,6 +323,17 @@ impl SceneStage {
         self.resolve(store, renderer)
     }
 
+    /// Follows `scene` from the next [`sync`](Self::sync) on (`None`: the one the project opens in): the program's scene
+    /// switch (`program.switch_scene`).
+    pub fn ask(&mut self, scene: Option<SceneId>) {
+        self.asked = scene;
+    }
+
+    /// The scene asked for: `None` follows the one the project opens in.
+    pub fn asked(&self) -> Option<&SceneId> {
+        self.asked.as_ref()
+    }
+
     /// The scene staged: `None` for the built-in default of a project with no scene.
     pub fn scene_id(&self) -> Option<&SceneId> {
         self.id.as_ref()

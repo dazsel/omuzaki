@@ -78,6 +78,8 @@ pub struct HealthPublisher {
     late: u64,
     report: Option<FrameReport>,
     track_to_submit_ms: Option<f32>,
+    /// Adaptive quality: ladder rungs applied, and changes so far.
+    quality: (u32, u64),
     /// When the slow sections were last sampled.
     slow_at: Option<f64>,
 }
@@ -98,8 +100,15 @@ impl HealthPublisher {
             late: 0,
             report: None,
             track_to_submit_ms: None,
+            quality: (0, 0),
             slow_at: None,
         }
+    }
+
+    /// Adaptive quality as it stands: `rung` steps of the degrade ladder applied (0 is the quality asked for), after
+    /// `changes` changes. Published with the next frame.
+    pub fn quality(&mut self, rung: u32, changes: u64) {
+        self.quality = (rung, changes);
     }
 
     /// A publisher and the reader of what it writes.
@@ -137,6 +146,7 @@ impl HealthPublisher {
         m.triangles = report.triangles;
         m.render_size = [report.render_size.x, report.render_size.y];
         m.late_frames = self.late;
+        (m.quality_rung, m.quality_changes) = self.quality;
         m.track_to_submit_ms = self.track_to_submit_ms;
         self.writers.frame.publish(&m);
     }
@@ -320,7 +330,7 @@ fn tracking_line(ui: &mut Ui, perform: Option<&PerformMetrics>) {
 }
 
 /// The readings, each a name and its value: "—" for a section that has not published, never zero.
-fn readings(ctx: &egui::Context, live: &LiveMetrics) -> [(String, String); 7] {
+fn readings(ctx: &egui::Context, live: &LiveMetrics) -> [(String, String); 8] {
     let off = || text(ctx, Word::HealthNotReporting).into_owned();
     let count = |n: u64| n.to_string();
     let frame = live.frame.as_ref();
@@ -334,6 +344,10 @@ fn readings(ctx: &egui::Context, live: &LiveMetrics) -> [(String, String); 7] {
         None => text(ctx, Word::HealthNoFace).into_owned(),
     });
     let late = frame.map_or_else(off, |f| count(f.late_frames));
+    let quality = frame.map_or_else(off, |f| match f.quality_rung {
+        0 => text(ctx, Word::HealthQualityFull).into_owned(),
+        n => say(ctx, Word::HealthQualityLowered, &[("n", &n.to_string())]),
+    });
     let dropped = frame.map_or_else(off, |f| {
         f.output_dropped.map_or_else(|| text(ctx, Word::HealthNotApplicable).into_owned(), count)
     });
@@ -345,6 +359,7 @@ fn readings(ctx: &egui::Context, live: &LiveMetrics) -> [(String, String); 7] {
         (name(Word::HealthFrameTime), time),
         (name(Word::HealthLatency), latency),
         (name(Word::HealthLateFrames), late),
+        (name(Word::HealthQuality), quality),
         (name(Word::HealthDroppedFrames), dropped),
         (name(Word::HealthTrackingDrops), tracking),
         (name(Word::HealthUnderruns), underruns),

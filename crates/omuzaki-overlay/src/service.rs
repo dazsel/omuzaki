@@ -40,8 +40,9 @@ enum Switch {
     Requested { scene: String, spec: TransitionSpec, at: f64 },
     /// The outgoing frame is held; the stage switches next.
     Ready { scene: String, spec: TransitionSpec, from: Box<Image> },
-    /// Blending from the held frame since `started`.
-    Running { scene: String, spec: TransitionSpec, from: Box<Image>, started: f64 },
+    /// Blending from the held frame since `started`: the first frame composed after the stage switched, so a scene that
+    /// took a while to stage still plays its whole transition.
+    Running { scene: String, spec: TransitionSpec, from: Box<Image>, started: Option<f64> },
 }
 
 /// A timer action for [`ProgramService::timer`].
@@ -71,6 +72,28 @@ pub struct ComposeStats {
     pub max_ms: f64,
 }
 
+/// Adaptive quality as the app reports it, for `program.status` (the controller runs where the frame is rendered).
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, schemars::JsonSchema)]
+pub struct QualityReport {
+    /// Whether the controller may change quality now.
+    pub adaptive: bool,
+    /// Why it is holding still while on: `"recording"` while a take records and changes are not allowed then.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub held: Option<String>,
+    /// How many rungs of the degrade ladder are applied (0 is the quality asked for).
+    pub rung: u32,
+    /// Changes of quality so far.
+    pub changes: u64,
+    /// The last change: the rung's name and which way.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last: Option<String>,
+    /// The smoothed frame time it holds against the budget, milliseconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frame_ms: Option<f64>,
+    /// The budget, milliseconds.
+    pub budget_ms: f64,
+}
+
 struct Inner {
     widgets: BTreeMap<WidgetId, LiveWidget>,
     settings: OverlaySettings,
@@ -82,6 +105,7 @@ struct Inner {
     blender: Blender,
     last_step: Option<f64>,
     stats: ComposeStats,
+    quality: Option<QualityReport>,
 }
 
 /// The program compositor. Insert it into the runner's services for the `overlay.*` and `program.*` ops.
@@ -113,6 +137,7 @@ impl ProgramService {
                 blender: Blender::default(),
                 last_step: None,
                 stats: ComposeStats::default(),
+                quality: None,
             }),
             clock,
             fonts: Fonts::new()?,
@@ -247,7 +272,7 @@ impl ProgramService {
         let (next, due) = match switch {
             Switch::Requested { scene, at, .. } if !outputs || now - at > CAPTURE_WAIT_S => (Switch::Idle, Some(scene)),
             Switch::Ready { scene, spec, from } if spec.seconds() > 0.0 => {
-                (Switch::Running { scene: scene.clone(), spec, from, started: now }, Some(scene))
+                (Switch::Running { scene: scene.clone(), spec, from, started: None }, Some(scene))
             }
             Switch::Ready { scene, .. } => (Switch::Idle, Some(scene)),
             other => (other, None),
@@ -257,6 +282,16 @@ impl ProgramService {
             inner.scene = Some(scene.clone());
         }
         due
+    }
+
+    /// Adaptive quality as the project sets it (`program.set_adaptive`).
+    pub fn adaptive(&self) -> crate::model::AdaptiveSpec {
+        lock(&self.inner).settings.adaptive.clone()
+    }
+
+    /// What the app's quality controller is doing, for `program.status`.
+    pub fn report_quality(&self, report: QualityReport) {
+        lock(&self.inner).quality = Some(report);
     }
 
     /// The scene on the program, once a switch has happened; `None` while it follows the project's default.
@@ -282,11 +317,12 @@ impl ProgramService {
                 inner.switch = Switch::Ready { scene, spec, from: Box::new(frame.clone()) };
             }
             Switch::Running { scene, spec, from, started } => {
+                let started = started.unwrap_or(now);
                 #[allow(clippy::cast_possible_truncation, reason = "a progress fraction")]
                 let t = ((now - started) / spec.seconds().max(1e-6)) as f32;
                 if t < 1.0 {
                     inner.blender.blend(&spec, &from, frame, t);
-                    inner.switch = Switch::Running { scene, spec, from, started };
+                    inner.switch = Switch::Running { scene, spec, from, started: Some(started) };
                 }
             }
             other => inner.switch = other,
@@ -353,7 +389,7 @@ impl ProgramService {
                 "to": scene,
                 "kind": spec.kind.name(),
                 "state": "running",
-                "progress": ((now - started) / spec.seconds().max(1e-6)).clamp(0.0, 1.0),
+                "progress": started.map_or(0.0, |s| ((now - s) / spec.seconds().max(1e-6)).clamp(0.0, 1.0)),
             }),
         };
         json!({
@@ -362,6 +398,7 @@ impl ProgramService {
             "default_transition": inner.settings.transition,
             "widgets": inner.widgets.len(),
             "compose": inner.stats,
+            "quality": inner.quality,
         })
     }
 }

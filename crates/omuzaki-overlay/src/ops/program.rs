@@ -1,7 +1,8 @@
 //! `program.*`: what goes out (spec v3 ST-04). `program.switch_scene` puts another scene on the program with a
 //! transition, from a hotkey, a Stream Deck key, a chat command through an automation, or an agent; the program's
 //! scene is live state, so switching changes no document and has no undo (switch back instead).
-//! `program.set_transition` sets the default transition, which is saved with the project and undoable.
+//! `program.set_transition` sets the default transition, and `program.set_adaptive` how the frame holds its budget;
+//! both are saved with the project and undoable.
 
 use omuzaki_ops_api::{Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
 use omuzaki_stage_api::{SceneId, paths as scene_paths};
@@ -10,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::{merge, put, service};
-use crate::model::paths;
+use crate::model::{AdaptiveSpec, paths};
 use crate::transition::{Direction, TransitionKind, TransitionSpec};
 
 /// Put another scene on the program, with a transition.
@@ -46,6 +47,20 @@ pub struct SetTransition {
     /// Which way a wipe or slide moves.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub direction: Option<Direction>,
+}
+
+/// Turn adaptive quality on or off, and say whether it may change the look while a take records.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(extend("examples" = [{ "enabled": true }, { "while_recording": true }, { "enabled": false }]))]
+pub struct SetAdaptive {
+    /// Lower quality to hold the frame budget when the GPU is busy (a game beside the show), and raise it again when
+    /// there is room.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// Whether quality may also change while a take records (default no: a recording keeps one look).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub while_recording: Option<bool>,
 }
 
 /// List the kinds of scene transition.
@@ -125,6 +140,39 @@ impl Op for SetTransition {
     }
 }
 
+impl Op for SetAdaptive {
+    fn meta() -> OpMeta {
+        OpMeta {
+            name: "program.set_adaptive",
+            summary: "Turn adaptive quality on or off: lower quality to hold the frame budget beside a game.",
+            kind: OpKind::Edit,
+            scope: Scope::EditScene,
+            undo: Undo::Auto,
+        }
+    }
+
+    fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        let at = paths::settings().join("adaptive");
+        let mut spec: AdaptiveSpec = match ctx.doc.get(&at) {
+            Some(value) => serde_json::from_value(value.clone()).unwrap_or_default(),
+            None => AdaptiveSpec::default(),
+        };
+        if let Some(enabled) = self.enabled {
+            spec.enabled = Some(enabled);
+        }
+        if let Some(while_recording) = self.while_recording {
+            spec.while_recording = while_recording;
+        }
+        let value = serde_json::to_value(&spec).map_err(|e| OpError::internal(e.to_string()))?;
+        let patch = if ctx.doc.get(&at) == Some(&value) {
+            omuzaki_doc_api::Patch::new()
+        } else {
+            put(ctx.doc, &at, value.clone())
+        };
+        Ok(Plan { patch, output: Some(json!({ "adaptive": value })), ..Plan::default() })
+    }
+}
+
 impl Op for Transitions {
     fn meta() -> OpMeta {
         OpMeta {
@@ -161,5 +209,6 @@ impl Op for Status {
 
 register_op!(SwitchScene);
 register_op!(SetTransition);
+register_op!(SetAdaptive);
 register_op!(Transitions);
 register_op!(Status);

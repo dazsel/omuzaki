@@ -633,7 +633,8 @@ pub fn parse_hex(value: &str) -> Option<[u8; 3]> {
     Some([byte(0)?, byte(2)?, byte(4)?])
 }
 
-/// The overlay's settings: the safe margin every widget stays inside, and the program's default transition.
+/// The program's settings: the safe margin every widget stays inside, the default transition, and how the frame holds
+/// its budget.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct OverlaySettings {
@@ -641,12 +642,27 @@ pub struct OverlaySettings {
     pub safe: f32,
     /// The transition `program.switch_scene` uses when it names none.
     pub transition: TransitionSpec,
+    /// Adaptive quality (`program.set_adaptive`).
+    pub adaptive: AdaptiveSpec,
 }
 
 impl Default for OverlaySettings {
     fn default() -> Self {
-        Self { safe: 0.04, transition: TransitionSpec::default() }
+        Self { safe: 0.04, transition: TransitionSpec::default(), adaptive: AdaptiveSpec::default() }
     }
+}
+
+/// Adaptive quality: whether the frame lowers its quality (effects, shadows, render scale, samples) to hold the spec §10
+/// budget when something else (a game) takes the GPU, and raises it again when there is room.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct AdaptiveSpec {
+    /// On or off; unset follows the app (on in the studio).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// Whether quality may also change while a take records. Off by default: a recording keeps one look from start to
+    /// end, at the quality it started with.
+    pub while_recording: bool,
 }
 
 #[cfg(test)]

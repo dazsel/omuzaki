@@ -27,4 +27,5 @@ pub mod paint;
 pub mod service;
 pub mod transition;
 
-pub use service::{ProgramService, Tee, TimerAction};
+pub use model::AdaptiveSpec;
+pub use service::{ProgramService, QualityReport, Tee, TimerAction};

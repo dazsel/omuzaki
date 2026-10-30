@@ -555,6 +555,17 @@ impl LiveViewport {
         Ok(synced)
     }
 
+    /// Puts `scene` on from the next [`follow`](Self::follow) on (`None`: the one the project opens in): the program's
+    /// scene switch.
+    pub fn ask_scene(&mut self, scene: Option<omuzaki_stage_api::SceneId>) {
+        self.scene.stage_mut().ask(scene);
+    }
+
+    /// Adaptive quality on or off, held still while on ([`LiveScene::set_adaptive`]).
+    pub fn set_adaptive(&mut self, on: bool, held: bool) {
+        self.scene.set_adaptive(on, held);
+    }
+
     /// Draws the newest perform frame, if one arrived, and returns the program frame: the newest picture, or `None`
     /// before the first. `dt` is the measured time since the last call. Publishes the program for the panels.
     ///
