@@ -1,3 +1,9 @@
+---
+title: "Character creator parity"
+summary: "Every part of a character against the best character creators, what Omuzaki has, the gaps as issues and the plan in chunks"
+area: quality
+---
+
 # Character creator parity: every part, at the best creators' level
 
 The bar: every part of a character can be made at the level of the best character creators, in Omuzaki's anime and
