@@ -14,10 +14,10 @@
 
 use std::collections::HashMap;
 
-use omuzaki_anim_api::{HumanoidBone as B, HumanoidPose};
+use omuzaki_anim_api::HumanoidBone as B;
 use omuzaki_core::glam::{EulerRot, Quat, Vec3};
 
-use super::{HumanoidTake, MotionError};
+use super::{HumanoidTake, Mapping, MotionError, facing};
 
 /// Metres in an inch.
 const INCH_M: f32 = 0.0254;
@@ -48,18 +48,6 @@ const MAP: [(B, &str); 22] = [
     (B::LeftToes, "ltoes"),
     (B::RightToes, "rtoes"),
 ];
-
-/// Where a humanoid bone points in the VRM T-pose (from its joint to its child's), for the bones whose ASF rest
-/// direction is compared with it; `None` leaves the bone's rotation as the ASF bone's (the hips, the feet).
-fn rest_direction(bone: B) -> Option<Vec3> {
-    Some(match bone {
-        B::Spine | B::Chest | B::UpperChest | B::Neck | B::Head => Vec3::Y,
-        B::LeftShoulder | B::LeftUpperArm | B::LeftLowerArm | B::LeftHand => Vec3::X,
-        B::RightShoulder | B::RightUpperArm | B::RightLowerArm | B::RightHand => Vec3::NEG_X,
-        B::LeftUpperLeg | B::LeftLowerLeg | B::RightUpperLeg | B::RightLowerLeg => Vec3::NEG_Y,
-        _ => return None,
-    })
-}
 
 /// One ASF bone.
 #[derive(Clone, Debug)]
@@ -304,18 +292,10 @@ impl Skeleton {
         }
         let unit_m = INCH_M / self.length_unit;
         // A CMU bone need not rest along the humanoid's: its legs rest 20 degrees apart, its collarbones tilted up.
-        // Each humanoid bone takes its ASF bone's rotation from the ASF rest *direction*, so the limb points where the
-        // performer's did, not 20 degrees inward of it.
-        let aligns: Vec<Quat> = MAP
-            .iter()
-            .map(|(bone, name)| {
-                let theirs = self.by_name.get(*name).map_or(Vec3::ZERO, |i| self.bones[*i].direction);
-                match rest_direction(*bone) {
-                    Some(ours) if theirs.length_squared() > 0.5 => Quat::from_rotation_arc(ours, theirs.normalize()),
-                    _ => Quat::IDENTITY,
-                }
-            })
-            .collect();
+        // The mapping takes each ASF bone's rotation from its rest *direction*.
+        let mapping = Mapping::new(
+            MAP.iter().map(|(bone, name)| (*bone, self.by_name.get(*name).map(|i| (*i, self.bones[*i].direction)))),
+        );
         let mut world = vec![Quat::IDENTITY; n];
         let mut out = Vec::with_capacity(frames.len());
         let mut first: Option<(Quat, Vec3)> = None;
@@ -341,29 +321,9 @@ impl Skeleton {
                 let parent = bone.parent.map_or(Quat::IDENTITY, |p| world[p]);
                 world[i] = (parent * local).normalize();
             }
-            // Face +Z on the first frame: the root's heading about +Y.
-            let (turn, origin) = *first.get_or_insert_with(|| {
-                let forward = world[0] * Vec3::Z;
-                let yaw = forward.x.atan2(forward.z);
-                (Quat::from_rotation_y(-yaw), hips)
-            });
-            let mut pose = HumanoidPose::REST;
-            let mut worlds: HashMap<B, Quat> = HashMap::with_capacity(MAP.len());
-            // MAP lists parents first, so a bone the skeleton lacks takes its parent's world: it stays straight on it.
-            for ((bone, name), align) in MAP.into_iter().zip(&aligns) {
-                let mine = match self.by_name.get(name) {
-                    Some(i) => turn * world[*i] * *align,
-                    None => bone.parent().and_then(|p| worlds.get(&p).copied()).unwrap_or(turn),
-                };
-                worlds.insert(bone, mine);
-            }
-            for (bone, _) in MAP {
-                let mine = worlds[&bone];
-                let parent = bone.parent().and_then(|p| worlds.get(&p).copied()).unwrap_or(Quat::IDENTITY);
-                pose.set(bone, (parent.inverse() * mine).normalize());
-            }
-            let travel = turn * (hips - origin);
-            pose.hips_offset = travel;
+            let (turn, origin) = *first.get_or_insert_with(|| (facing(world[0]), hips));
+            let mut pose = mapping.pose(&world, turn);
+            pose.hips_offset = turn * (hips - origin);
             out.push(pose);
         }
         let take = HumanoidTake { fps, frames: out, hips_height: self.hips_height(&order) };

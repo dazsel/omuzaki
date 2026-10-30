@@ -1,6 +1,6 @@
-//! `motion.import`: a motion-capture take (the CMU library's `.asf` and `.amc`, or any Acclaim pair) retargeted onto the
-//! VRM humanoid and stored in a character's clip set, so `act.clip` plays it live over the body and shorts play it by
-//! name, like any clip `clip.set` makes.
+//! `motion.import`: a motion-capture take (a `.bvh`, or an Acclaim `.asf` and `.amc` pair as the CMU library has them)
+//! retargeted onto the VRM humanoid and stored in a character's clip set, so `act.clip` plays it live over the body and
+//! shorts play it by name, like any clip `clip.set` makes.
 //!
 //! The take is stored **materialised**, as `clip.set` stores a clip: one inline key pose every `1 / key_fps` seconds
 //! with linear pacing, so playing it at a key's time gives the take's own pose there, exactly. Nothing reads the files
@@ -22,6 +22,7 @@ use serde_json::{Map, Value, json};
 
 use super::HumanoidTake;
 use super::asf::Skeleton;
+use super::bvh::Bvh;
 use crate::poses::{ClipBody, ContactsBody, HandBody, HandsBody, KeyBody, PoseBody, ReachesBody};
 
 /// The largest motion file read, bytes: a CMU take of several minutes is a few megabytes.
@@ -74,9 +75,10 @@ impl MotionText {
     }
 }
 
-/// Retarget a motion-capture take (Acclaim `.asf` skeleton and `.amc` motion, the CMU library's format) onto the
-/// humanoid and store it in a character's clip set; `act.clip` then plays it live and shorts play it by name. Bones the
-/// skeleton lacks stay straight on their parents; fingers stay as `hands` says (the CMU takes record none).
+/// Retarget a motion-capture take (a `.bvh`, or an Acclaim `.asf` skeleton and `.amc` motion as the CMU library has
+/// them) onto the humanoid and store it in a character's clip set; `act.clip` then plays it live (`over_tracking` plays
+/// it back exactly) and shorts play it by name. Bones the take lacks stay straight on their parents; fingers stay as
+/// `hands` says.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(extend(
@@ -84,8 +86,8 @@ impl MotionText {
         {"character": "kit", "id": "turn", "summary": "A quarter turn of the hips.",
          "skeleton": {"text": ":units\n  length 0.45\n"},
          "motion": {"text": ":DEGREES\n1\nroot 0 0 0 0 0 0\n2\nroot 0 0 0 0 30 0\n"}, "fps": 1.0},
-        {"character": "kit", "id": "talk", "skeleton": {"path": "mocap/18.asf"}, "motion": {"path": "mocap/18_08.amc"},
-         "from_s": 2.0, "length_s": 8.0, "hands": "rest"}
+        {"character": "kit", "id": "lean", "hands": "rest",
+         "motion": {"text": "HIERARCHY\nROOT Hips { OFFSET 0 0 0 CHANNELS 6 Xposition Yposition Zposition Zrotation Xrotation Yrotation End Site { OFFSET 0 10 0 } }\nMOTION\nFrames: 2\nFrame Time: 0.5\n0 90 0 0 0 0\n0 90 0 0 10 0\n"}}
     ],
     "x-omuzaki-fixture" = "character"
 ))]
@@ -97,11 +99,12 @@ pub struct ImportMotion {
     /// One line saying what the clip is. Default: where it came from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
-    /// The skeleton (`.asf`).
-    pub skeleton: MotionText,
-    /// The motion on it (`.amc`).
+    /// The skeleton (`.asf`) of an Acclaim motion. Left out for a `.bvh`, which holds its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skeleton: Option<MotionText>,
+    /// The motion: a `.bvh` file (Mixamo, Rokoko, Blender and most tools), or an Acclaim `.amc` on `skeleton`.
     pub motion: MotionText,
-    /// Frames a second the motion was recorded at. Default 120 (the CMU library).
+    /// Frames a second an Acclaim motion was recorded at. Default 120 (the CMU library); a `.bvh` says its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fps: Option<f32>,
     /// Seconds into the take the clip starts. Default 0.
@@ -141,11 +144,21 @@ impl ImportMotion {
     fn take(&self, ctx: &OpCtx<'_>) -> Result<HumanoidTake, OpError> {
         let fps = within("fps", self.fps.unwrap_or(DEFAULT_FPS), 1.0, 1000.0)?;
         let hips = within("hips_height", self.hips_height.unwrap_or(DEFAULT_HIPS_HEIGHT), 0.1, 10.0)?;
-        let skeleton = Skeleton::parse(&self.skeleton.read(ctx, "skeleton")?)
-            .map_err(|e| OpError::invalid("skeleton", e.to_string()).hint("an Acclaim .asf skeleton"))?;
-        let take = skeleton
-            .motion(&self.motion.read(ctx, "motion")?, fps, hips)
-            .map_err(|e| OpError::invalid("motion", e.to_string()).hint("an Acclaim .amc motion of that skeleton"))?;
+        let motion = self.motion.read(ctx, "motion")?;
+        let take = if let Some(skeleton) = &self.skeleton {
+            let skeleton = Skeleton::parse(&skeleton.read(ctx, "skeleton")?)
+                .map_err(|e| OpError::invalid("skeleton", e.to_string()).hint("an Acclaim .asf skeleton"))?;
+            skeleton
+                .motion(&motion, fps, hips)
+                .map_err(|e| OpError::invalid("motion", e.to_string()).hint("an Acclaim .amc motion of that skeleton"))?
+        } else {
+            Bvh::parse(&motion)
+                .map_err(|e| {
+                    OpError::invalid("motion", e.to_string())
+                        .hint("a .bvh file, or an Acclaim .amc with its .asf as `skeleton`")
+                })?
+                .motion(hips)
+        };
         Ok(if self.travel { take } else { take.in_place() })
     }
 
@@ -210,7 +223,7 @@ impl Op for ImportMotion {
     fn meta() -> OpMeta {
         OpMeta {
             name: "motion.import",
-            summary: "Retarget a motion-capture take (.asf and .amc) onto the humanoid and store it as a character's clip; act.clip plays it live",
+            summary: "Retarget a motion-capture take (.bvh, or .asf and .amc) onto the humanoid and store it as a character's clip; act.clip plays it live",
             kind: OpKind::Edit,
             scope: Scope::EditCharacter,
             undo: Undo::Auto,

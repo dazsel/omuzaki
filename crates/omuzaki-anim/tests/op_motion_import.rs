@@ -95,6 +95,13 @@ fn every_example_imports_into_a_character() {
     let clip = find_clip(&doc, Some(&CharId::new("kit").unwrap()), "turn").unwrap();
     let turned = clip.sample_posture(clip.length()).body.get(B::Hips);
     assert!((turned.angle_between(Quat::from_rotation_y(30f32.to_radians()))).to_degrees() < 1e-3, "{turned}");
+    // The second example is a .bvh: the hips lean forward 10 degrees over a second, with relaxed hands.
+    let planned = plan(examples[1].clone(), &doc).unwrap();
+    doc.apply(&planned.patch).unwrap();
+    let clip = find_clip(&doc, Some(&CharId::new("kit").unwrap()), "lean").unwrap();
+    let lean = clip.sample_posture(clip.length());
+    assert!((lean.body.get(B::Hips).angle_between(Quat::from_rotation_x(10f32.to_radians()))).to_degrees() < 1e-2);
+    assert!(lean.right.bones.iter().flatten().any(|mix| mix.weight > 0.0), "the hand shape is held");
 }
 
 #[test]
