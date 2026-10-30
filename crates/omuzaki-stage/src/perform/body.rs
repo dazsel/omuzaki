@@ -9,6 +9,10 @@
 //!   arms while the animator's breath and the tracked head still move the body.
 //! - **The head stays where the face put it.** The face tracker measures the head against the camera, not against the
 //!   chest, so when the tracked chest turns, the neck turns back by as much and the head ends up where the face says.
+//!   A mocap source sends the head relative to the chest ([`BodyFrame::head_relative`]), so there the chest carries it.
+//! - **Any bone.** A webcam gives the chest, arms and wrists; a mocap source (VMC) can give the hips, spine, legs and
+//!   finger bones too. Each bone goes with its part's weight: the arms', the hands' (wrists and fingers) or the rest of
+//!   the body's. The head, neck, eyes and jaw are the face's and are never taken from the body.
 //! - **Mirror.** With the retarget's mirror on (PF-27, a selfie preview), the frame is reflected left to right, as the
 //!   face's channels are.
 //! - **Fingers** go through the kit's hand shapes (`omuzaki_anim::hands`), on the nominal thumb rest the score's clips
@@ -17,7 +21,7 @@
 use std::borrow::Cow;
 
 use omuzaki_anim::hands::{self, FingerCurl, HandRest, HandShape};
-use omuzaki_anim_api::{BoneMask, HumanoidBone, HumanoidPose, Tick};
+use omuzaki_anim_api::{BoneMask, HUMANOID_COUNT, HumanoidBone, HumanoidPose, Tick};
 use omuzaki_core::glam::Quat;
 use omuzaki_track_api::body::{BodyFrame, BodySource, FingerAngles, Side};
 
@@ -27,11 +31,50 @@ pub const STALE_BODY_S: f64 = 0.4;
 const EASE_IN_PER_S: f32 = 8.0;
 const EASE_OUT_PER_S: f32 = 3.0;
 
-/// The bones of each arm by the character's side: upper arm, lower arm, hand.
-const ARM_BONES: [[HumanoidBone; 3]; 2] = [
-    [HumanoidBone::LeftUpperArm, HumanoidBone::LeftLowerArm, HumanoidBone::LeftHand],
-    [HumanoidBone::RightUpperArm, HumanoidBone::RightLowerArm, HumanoidBone::RightHand],
-];
+/// Which part's weight a bone shows with, by the character's side.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Part {
+    /// The face's: never taken from the body.
+    Face,
+    /// The upper chest: the webcam's one torso bone, so it follows the arms as well as the body.
+    Chest,
+    /// The hips, spine, chest and legs.
+    Body,
+    /// A shoulder, upper arm or forearm.
+    Arm(usize),
+    /// A wrist: needs its arm as well as its hand.
+    Wrist(usize),
+    /// A finger bone.
+    Finger(usize),
+}
+
+/// The part of each humanoid bone, in [`HumanoidBone::ALL`] order.
+fn parts() -> [Part; HUMANOID_COUNT] {
+    use HumanoidBone as B;
+    std::array::from_fn(|i| {
+        let bone = HumanoidBone::ALL[i];
+        match bone {
+            B::Neck | B::Head | B::LeftEye | B::RightEye | B::Jaw => Part::Face,
+            B::UpperChest => Part::Chest,
+            B::LeftHand => Part::Wrist(0),
+            B::RightHand => Part::Wrist(1),
+            B::LeftShoulder | B::LeftUpperArm | B::LeftLowerArm => Part::Arm(0),
+            B::RightShoulder | B::RightUpperArm | B::RightLowerArm => Part::Arm(1),
+            _ => {
+                // A finger is a bone with a hand above it.
+                let mut up = bone.parent();
+                while let Some(parent) = up {
+                    match parent {
+                        B::LeftHand => return Part::Finger(0),
+                        B::RightHand => return Part::Finger(1),
+                        _ => up = parent.parent(),
+                    }
+                }
+                Part::Body
+            }
+        }
+    })
+}
 
 /// The tracked body layer. Hot path: [`TrackedBody::step`] and [`TrackedBody::apply`] allocate and lock nothing.
 pub struct TrackedBody {
@@ -40,8 +83,10 @@ pub struct TrackedBody {
     frame: BodyFrame,
     /// When it arrived, on the pipeline clock.
     arrived: Option<f64>,
-    /// The weight each part shows with now: arms left, right, then hands left, right.
-    weights: [f32; 4],
+    /// The weight each part shows with now: arms left, right, hands left, right, then the rest of the body.
+    weights: [f32; 5],
+    /// Each bone's part.
+    parts: [Part; HUMANOID_COUNT],
     last_tick: Option<f64>,
     rest: HandRest,
     /// The upper chest's rotation before and after the tracked chest was laid on, for the neck's counter-turn.
@@ -54,7 +99,8 @@ impl Default for TrackedBody {
             source: None,
             frame: BodyFrame::empty(0, omuzaki_core::time::Seconds(0.0)),
             arrived: None,
-            weights: [0.0; 4],
+            weights: [0.0; 5],
+            parts: parts(),
             last_tick: None,
             rest: HandRest::nominal(),
             chest_turn: Quat::IDENTITY,
@@ -73,8 +119,9 @@ impl TrackedBody {
         self.source.is_some()
     }
 
-    /// The weight each part shows with now: arms (left, right), then hands (left, right), by the character's side.
-    pub fn weights(&self) -> [f32; 4] {
+    /// The weight each part shows with now: arms (left, right), hands (left, right), by the character's side, then the
+    /// rest of the body.
+    pub fn weights(&self) -> [f32; 5] {
         self.weights
     }
 
@@ -96,7 +143,7 @@ impl TrackedBody {
         }
         let fresh = self.arrived.is_some_and(|at| now - at <= STALE_BODY_S);
         let f = &self.frame;
-        let targets = if fresh { [f.arms[0], f.arms[1], f.hands[0], f.hands[1]] } else { [0.0; 4] };
+        let targets = if fresh { [f.arms[0], f.arms[1], f.hands[0], f.hands[1], f.body] } else { [0.0; 5] };
         for (weight, target) in self.weights.iter_mut().zip(targets) {
             let target = if target.is_finite() { target.clamp(0.0, 1.0) } else { 0.0 };
             *weight = if target > *weight {
@@ -110,24 +157,30 @@ impl TrackedBody {
     /// Lays the tracked bones and fingers on `pose`, each at its part's weight. Call before the animator.
     pub fn apply(&mut self, pose: &mut HumanoidPose) {
         self.chest_turn = Quat::IDENTITY;
-        let (frame, [arm_l, arm_r, hand_l, hand_r]) = (&self.frame, self.weights);
-        let blend = |pose: &mut HumanoidPose, bone: HumanoidBone, weight: f32| {
+        let (frame, [arm_l, arm_r, hand_l, hand_r, body]) = (&self.frame, self.weights);
+        let (arm, hand) = ([arm_l, arm_r], [hand_l, hand_r]);
+        let before = pose.get(HumanoidBone::UpperChest);
+        for (bone, part) in HumanoidBone::ALL.into_iter().zip(self.parts) {
+            let weight = match part {
+                Part::Face => continue,
+                Part::Chest => arm_l.max(arm_r).max(body),
+                Part::Body => body,
+                Part::Arm(s) => arm[s],
+                Part::Wrist(s) => hand[s].min(arm[s]),
+                Part::Finger(s) => hand[s],
+            };
             if weight > 0.0 && frame.mask.contains(bone) {
                 let value = frame.pose.get(bone);
                 pose.set(bone, if weight >= 1.0 { value } else { pose.get(bone).slerp(value, weight) });
             }
-        };
-        let before = pose.get(HumanoidBone::UpperChest);
-        blend(pose, HumanoidBone::UpperChest, arm_l.max(arm_r));
-        self.chest_turn = (pose.get(HumanoidBone::UpperChest).inverse() * before).normalize();
-        for (s, (arm, hand)) in [(arm_l, hand_l), (arm_r, hand_r)].into_iter().enumerate() {
-            let [upper, lower, wrist] = ARM_BONES[s];
-            blend(pose, upper, arm);
-            blend(pose, lower, arm);
-            blend(pose, wrist, hand.min(arm));
-            if let Some(fingers) = &frame.fingers[s] {
+        }
+        if !frame.head_relative {
+            self.chest_turn = (pose.get(HumanoidBone::UpperChest).inverse() * before).normalize();
+        }
+        for (s, fingers) in frame.fingers.iter().enumerate() {
+            if let Some(fingers) = fingers {
                 let side = if s == 0 { hands::Side::Left } else { hands::Side::Right };
-                hands::apply(pose, side, &self.rest, &shape(fingers), hand);
+                hands::apply(pose, side, &self.rest, &shape(fingers), hand[s]);
             }
         }
     }
@@ -237,7 +290,7 @@ mod tests {
         for i in 20..120 {
             pose = step(&mut body, i, false);
         }
-        assert_eq!(body.weights(), [0.0; 4]);
+        assert_eq!(body.weights(), [0.0; 5]);
         assert_eq!(pose.get(HumanoidBone::LeftUpperArm), Quat::IDENTITY);
     }
 
@@ -264,5 +317,64 @@ mod tests {
         body.settle_head(&mut pose);
         let head_world = pose.get(HumanoidBone::UpperChest) * pose.get(HumanoidBone::Neck);
         assert!(head_world.angle_between(Quat::IDENTITY) < 1e-3, "{head_world}");
+    }
+
+    /// A mocap frame: the hips, spine, a leg and a finger bone, the head and neck too (which must be ignored), the
+    /// head relative to the chest.
+    fn mocap() -> BodyFrame {
+        use HumanoidBone as B;
+        let mut f = BodyFrame::empty(1, Seconds(0.0));
+        for (bone, q) in [
+            (B::Hips, Quat::from_rotation_y(0.4)),
+            (B::Spine, Quat::from_rotation_x(0.2)),
+            (B::UpperChest, Quat::from_rotation_y(0.3)),
+            (B::LeftUpperLeg, Quat::from_rotation_x(-0.6)),
+            (B::RightIndexIntermediate, Quat::from_rotation_z(0.9)),
+            (B::Neck, Quat::from_rotation_x(0.5)),
+            (B::Head, Quat::from_rotation_x(0.5)),
+        ] {
+            f.pose.set(bone, q);
+            f.mask = f.mask.with(bone);
+        }
+        f.arms = [1.0; 2];
+        f.hands = [1.0; 2];
+        f.body = 1.0;
+        f.head_relative = true;
+        f
+    }
+
+    #[test]
+    fn a_mocap_frame_drives_the_hips_spine_legs_and_finger_bones_but_never_the_face() {
+        use HumanoidBone as B;
+        let mut body = TrackedBody::new(Box::new(Script(vec![mocap(); 40])));
+        let mut pose = HumanoidPose::REST;
+        for i in 0..30 {
+            pose = step(&mut body, i, false);
+        }
+        let frame = mocap();
+        for bone in [B::Hips, B::Spine, B::UpperChest, B::LeftUpperLeg, B::RightIndexIntermediate] {
+            assert!(pose.get(bone).angle_between(frame.pose.get(bone)) < 1e-3, "{bone:?}");
+        }
+        assert_eq!(pose.get(B::Neck), Quat::IDENTITY, "the neck is the face's");
+        assert_eq!(pose.get(B::Head), Quat::IDENTITY, "the head is the face's");
+        // The head rides on the chest: no counter-turn.
+        let before = pose;
+        body.settle_head(&mut pose);
+        assert_eq!(pose, before);
+    }
+
+    #[test]
+    fn the_rest_of_the_body_eases_out_with_its_own_confidence() {
+        let mut quiet = mocap();
+        quiet.body = 0.0;
+        let mut frames = vec![mocap(); 30];
+        frames.extend(vec![quiet; 60]);
+        let mut body = TrackedBody::new(Box::new(Script(frames)));
+        let mut pose = HumanoidPose::REST;
+        for i in 0..90 {
+            pose = step(&mut body, i, false);
+        }
+        assert_eq!(pose.get(HumanoidBone::Hips), Quat::IDENTITY);
+        assert!(pose.get(HumanoidBone::UpperChest).angle_between(Quat::IDENTITY) > 0.2, "the chest still follows the arms");
     }
 }

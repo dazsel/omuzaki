@@ -1,4 +1,5 @@
-//! `input.track_body`: track the arms and hands beside the face (PF-06 hands, PF-07 arms).
+//! `input.track_body`: track the arms and hands beside the face (PF-06 hands, PF-07 arms), or a mocap app's full body
+//! (PF-04).
 
 use omuzaki_ops_api::{Effect, Op, OpCall, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo};
 use omuzaki_track_api::body::BodyConfig;
@@ -12,8 +13,10 @@ use crate::perform::input::InputBody;
 /// Track the person's arms and hands from the camera beside the face, so the character's shoulders, elbows, wrists
 /// and every finger follow them; or stop with every switch off. `arms` tracks the chest's turn and both arms, `hands`
 /// each wrist's turn and all ten fingers, `precise` uses the heavier pose model (steadier elbows and wrists, about
-/// twice the cost). A missing field is on for `arms` and `hands` and off for `precise`. It follows the camera: it runs
-/// while the capture does (`input.preview`), and a part the camera loses eases back to the animation.
+/// twice the cost). A missing field is on for `arms` and `hands` and off for `precise`. It follows the capture: it runs
+/// while the capture does (`input.preview`), and a part the camera loses eases back to the animation. With a mocap app
+/// as the source (VMC, from apps such as mocopi or XR Animator), the same switches take the app's full body instead:
+/// `arms` the hips, spine, legs and arms, `hands` the wrists and fingers.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[schemars(extend("examples" = [
     { "arms": true, "hands": true },
