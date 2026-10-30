@@ -72,6 +72,7 @@ fn the_eye_renders_at_macro_framing_as_an_eye() {
     design.aperture.upper = 0.0076;
     design.aperture.lower = 0.0058;
     design.aperture.outer_y = 0.0012;
+    design.aperture.outer_x = -0.0122;
     for (view, name) in [(View::Macro, "eye-macro.png"), (View::Front, "eye-front.png")] {
         let frame = render(&mut renderer, &design, view);
         if let Some(dir) = std::env::var_os("OMUZAKI_EYE_OUT").map(PathBuf::from) {

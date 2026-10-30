@@ -34,7 +34,7 @@ impl View {
     fn shot(self) -> (Vec3, Vec3, f32, Vec3) {
         match self {
             Self::Macro => {
-                (Vec3::new(-0.024, -0.014, 0.048), Vec3::new(0.002, 0.0005, 0.010), 32.0, Vec3::new(-0.48, 0.16, 0.86))
+                (Vec3::new(-0.024, -0.014, 0.048), Vec3::new(0.002, 0.0005, 0.010), 32.0, Vec3::new(-0.36, 0.17, 0.92))
             }
             Self::Front => {
                 (Vec3::new(0.0, 0.001, 0.07), Vec3::new(0.0, 0.0005, 0.008), 27.0, Vec3::new(0.0, 0.015, 1.0))
@@ -175,11 +175,20 @@ fn build(
         scene.instances.push(Instance::new(mesh, material, transform));
     }
 
+    let real = 1.0 - design.style;
     // The key from above and the nose's side, warm, as in a window-lit portrait: the socket toward the nose falls into
     // shadow and the ball and the lids are modelled by it.
     let key = Vec3::new(0.55, 0.6, 0.55);
     scene.lights = vec![
-        Light::Directional { to_light: key, colour: Colour::hex(0x00ff_e8d0), intensity: 0.85, casts_shadow: true },
+        Light::Directional { to_light: key, colour: Colour::hex(0x00ff_e8d0), intensity: 0.8, casts_shadow: true },
+        // A soft fill from the camera, as a photographer bounces one: it reaches under the lids and into the corners,
+        // which the key from above leaves black.
+        Light::Directional {
+            to_light: camera_at.normalize(),
+            colour: Colour::hex(0x00ff_dcc8),
+            intensity: 0.22 * real,
+            casts_shadow: false,
+        },
         // An anime eye is lit brighter and flatter, as a cel is.
         Light::Hemisphere {
             sky: Colour::hex(0x00c8_d0e0),
@@ -188,7 +197,7 @@ fn build(
         },
     ];
     // The softbox sits above the camera, so its reflection lands on the cornea as the catchlight.
-    let softbox = camera_at.normalize() + Vec3::new(0.25, 0.55, 0.0);
+    let softbox = camera_at.normalize() + Vec3::new(0.4, 1.0, 0.0);
     let environment = renderer.create_environment(&studio(softbox))?;
     made.push(environment.into());
     scene.environment = Some(EnvironmentUse::new(environment));
@@ -196,7 +205,6 @@ fn build(
     // The folds' occlusion at the eye's scale: the crease, the corners, the lids on the eye. A drawn eye is shaded in
     // flat cels, so it fades out toward anime. No contact shadows: on strands as thin as lashes the screen-space march
     // hits some jittered samples and misses others, so each lash casts a stippled fan.
-    let real = 1.0 - design.style;
     scene.occlusion = (real > 0.01).then(|| Occlusion::new(0.0025, 0.7 * real));
     if view == View::Macro {
         // A macro lens: sharp on the iris, the lashes and the skin falling out of focus.
