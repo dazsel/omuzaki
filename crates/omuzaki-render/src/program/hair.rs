@@ -24,6 +24,8 @@
 //! | `rim-strength` | the rim's strength | its `0.12` |
 //! | `rim-width` | how far in the rim reaches: the fresnel power is `1 / width` | its power 3 |
 //! | `back-light` | how strongly lights behind the hair edge it in their own colour | (none) |
+//! | `style` | the style axis (#2607): `1` this anime hair, `0` strands lit as fibres (Kajiya-Kay, two shifted lobes) | `1` |
+//! | `strand-shine`, `strand-gloss` | the physical end's specular strength and tightness | `0.35`, `0.5` |
 //!
 //! Attributes: `hair-uv` (`across` in `-1..=1`, `along` in `0..=1`) and `hair-info` (strand seed, shade multiplier,
 //! polar angle: the ring follows it). The toon base is the prototype's hair material: `shift -0.05`, `soft 0.22`, rim
@@ -91,6 +93,9 @@ register_shading_program!(
             ParamSpec::float("rim-strength", 0.12, 0.0, 1.0),
             ParamSpec::float("rim-width", RIM_WIDTH, 0.1, 1.0),
             ParamSpec::float("back-light", 0.6, 0.0, 2.0),
+            ParamSpec::float("style", 1.0, 0.0, 1.0),
+            ParamSpec::float("strand-shine", 0.35, 0.0, 2.0),
+            ParamSpec::float("strand-gloss", 0.5, 0.0, 1.0),
         ],
         attributes: &[
             AttributeSpec { name: "hair-uv", components: 2 },

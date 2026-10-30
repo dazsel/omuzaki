@@ -9,11 +9,13 @@
 //! |---|---|
 //! | [`set_preset`] | `look.set_preset`: draw the character in a preset, clearing or keeping the overrides |
 //! | [`set_param`] | `look.set_param`: set or clear one override |
+//! | [`set_style`] | `look.set_style`: the style axis, 0 physical to 1 cel, for the character or a class |
 //! | [`list_presets`] | `look.list_presets`: the registered presets, a query |
 //! | `access` | reading the look node, writing it back, and the refusals the ops share |
 
 pub mod list_presets;
 pub mod set_param;
 pub mod set_preset;
+pub mod set_style;
 
 pub(crate) mod access;

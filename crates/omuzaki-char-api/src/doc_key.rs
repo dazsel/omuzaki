@@ -55,8 +55,8 @@ pub enum DocKeyError {
 
 /// The keys of `characters/<id>` that make up a [`CharacterDef`](crate::CharacterDef) (`character.toml` and
 /// `face.toml`): its fields. A new field is added here beside the struct.
-pub const BUILT_IN_NODE_KEYS: [&str; 8] =
-    ["name", "template", "seed", "palette", "skin_tone", "parts", "face", "weight_brushes"];
+pub const BUILT_IN_NODE_KEYS: [&str; 9] =
+    ["name", "template", "seed", "palette", "skin_tone", "parts", "face", "weight_brushes", "design"];
 
 /// The built-in sibling keys: the roots of the other files of the character. They are `variants`, `colourways`, `rig`,
 /// `look`, `licence`, `sources`, `applied`, `poses`, `clips`, `emotes`, `avatar`, `voice`, `voice-assignment`, `persona`

@@ -56,6 +56,7 @@ mod eye;
 mod gem;
 mod hair;
 mod metal;
+mod physical;
 mod shadow_catcher;
 mod sheen;
 mod skin;
@@ -151,6 +152,54 @@ macro_rules! register_shading_program {
     };
 }
 use register_shading_program;
+
+// ------------------------------------------------------------------------------------------------ the style axis
+
+/// A program's parameters followed by the style axis's (#2607): `style` (`0` the program's physical model, `1` the cel
+/// look) and the cel toon the program blends toward (`cel-shade`, `cel-shift`, `cel-softness`, `cel-rim`,
+/// `cel-rim-power`, `cel-rim-strength`, `cel-emissive`, `cel-skin` with `cel-skin-floor` and `cel-skin-hue`), which
+/// [`cel_toon`] turns back into the [`Toon`] the program lights with. The look writes them from the material's own toon
+/// when it moves a toon material along the axis, so at `style` 1 the program draws exactly what the toon did: the axis
+/// has no step. `$style` is the default style; the cel defaults are a flat white toon with no rim (what a program that
+/// lights itself wants by default).
+macro_rules! with_cel {
+    ($style:expr; $($param:expr),* $(,)?) => {
+        &[
+            $($param,)*
+            $crate::program::ParamSpec::float("style", $style, 0.0, 1.0),
+            $crate::program::ParamSpec::colour("cel-shade", 0x00ff_ffff),
+            $crate::program::ParamSpec::float("cel-shift", 0.0, -1.0, 1.0),
+            $crate::program::ParamSpec::float("cel-softness", 1.0, 0.0, 1.0),
+            $crate::program::ParamSpec::colour("cel-rim", 0x006d_74a8),
+            $crate::program::ParamSpec::float("cel-rim-power", 3.0, 0.0, 64.0),
+            $crate::program::ParamSpec::float("cel-rim-strength", 0.0, 0.0, 4.0),
+            $crate::program::ParamSpec::colour("cel-emissive", 0x0000_0000),
+            $crate::program::ParamSpec::float("cel-skin", 0.0, 0.0, 1.0),
+            $crate::program::ParamSpec::float("cel-skin-floor", 0.42, 0.0, 1.0),
+            $crate::program::ParamSpec::float("cel-skin-hue", 0.55, 0.0, 1.0),
+        ]
+    };
+}
+use with_cel;
+
+/// The cel toon a program on the style axis lights with, from its `cel-*` parameters ([`with_cel!`]).
+pub(crate) fn cel_toon(values: &Values) -> Toon {
+    let f = |name: &str, default: f32| values.float(name).unwrap_or(default);
+    let skin = (f("cel-skin", 0.0) >= 0.5)
+        .then(|| omuzaki_render_api::Skin { floor: f("cel-skin-floor", 0.42), hue_keep: f("cel-skin-hue", 0.55) });
+    Toon {
+        shade: values.colour("cel-shade").unwrap_or(Colour::WHITE),
+        shift: f("cel-shift", 0.0),
+        softness: f("cel-softness", 1.0),
+        rim: omuzaki_render_api::Rim {
+            colour: values.colour("cel-rim").unwrap_or(Colour::hex(0x006d_74a8)),
+            power: f("cel-rim-power", 3.0),
+            strength: f("cel-rim-strength", 0.0),
+        },
+        emissive: values.colour("cel-emissive").unwrap_or(Colour::BLACK),
+        skin,
+    }
+}
 
 /// Whether a registration's name is its spec's name, at compile time.
 pub(crate) const fn same_name(a: &str, b: &str) -> bool {

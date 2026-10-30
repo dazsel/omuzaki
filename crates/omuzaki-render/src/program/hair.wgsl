@@ -14,6 +14,8 @@ fn hair_noise(x: f32) -> f32 {
     return mix(hair_hash(i), hair_hash(i + 1.0), f);
 }
 
+var<private> hair_albedo: vec3<f32>;
+
 // Root-to-tip colour, strand lines running along the lock, darker clump edges, the inner-layer shade and a darker back.
 fn program_albedo(albedo: vec3<f32>, p: ProgramIn) -> vec3<f32> {
     let u = p.extra[0].x;
@@ -35,7 +37,8 @@ fn program_albedo(albedo: vec3<f32>, p: ProgramIn) -> vec3<f32> {
     // Inner layers sit in the shadow of outer ones.
     col *= shade;
     col *= select(0.80, 1.0, p.front);
-    return albedo * col;
+    hair_albedo = albedo * col;
+    return hair_albedo;
 }
 
 // The angel ring across the crown, broken into comb teeth by the strands, then the pull back toward the hair's own
@@ -47,6 +50,58 @@ fn program_albedo(albedo: vec3<f32>, p: ProgramIn) -> vec3<f32> {
 // normal, which slides the band up or down the head: the kit's -0.75 puts it where the painted ring is, seen from the
 // front. A surface whose `hair-uv` doesn't run along it (a cap's end, a mesh without the attribute) keeps the painted one.
 fn program_light(lit: vec3<f32>, n: vec3<f32>, v: vec3<f32>, p: ProgramIn) -> vec3<f32> {
+    let style = program_float(P_STYLE);
+    let cel = hair_cel(lit, n, v, p);
+    if (style >= 1.0) {
+        return cel;
+    }
+    return mix(hair_physical(n, v, p), cel, style);
+}
+
+// The physical end of the style axis (#2607): strands lit as fibres. Kajiya-Kay diffuse (the sine to the strand)
+// softened toward Lambert, and Scheuermann's two shifted specular lobes along the strand, a white primary toward the
+// tip and a wider secondary tinted by the hair's colour toward the root, broken up per lock by the strand noise.
+fn hair_physical(n: vec3<f32>, v: vec3<f32>, p: ProgramIn) -> vec3<f32> {
+    let u = p.extra[0].x;
+    let seed = p.extra[1].x;
+    let along = program_gradient(p, n, p.extra0_dx.y, p.extra0_dy.y);
+    // Where `hair-uv` doesn't run along the surface, the strands are taken to fall down it.
+    let fallback = normalize(vec3<f32>(0.0, -1.0, 0.0) - n * dot(vec3<f32>(0.0, -1.0, 0.0), n) + vec3<f32>(1e-4, 0.0, 0.0));
+    let t = select(fallback, along, dot(along, along) > 0.5);
+    let shine = program_float(P_STRAND_SHINE);
+    let gloss = program_float(P_STRAND_GLOSS);
+    let jitter = 0.15 * (hair_noise(u * 9.0 + seed * 13.0) - 0.5);
+    let t1 = normalize(t + n * (-0.1 + jitter));
+    let t2 = normalize(t + n * (0.12 + jitter));
+    let e1 = mix(20.0, 400.0, gloss);
+    let e2 = 0.25 * e1;
+    let glint = mix(0.4, 1.0, hair_noise(u * 23.0 + seed * 5.0));
+    var diffuse = vec3<f32>(0.0);
+    var specular = vec3<f32>(0.0);
+    for (var i = 0u; i < frame.counts.x; i++) {
+        let l = frame.lights[i];
+        if (l.vector.w == LIGHT_HEMISPHERE) {
+            diffuse += mix(l.ground.rgb, l.colour.rgb, 0.5 + 0.5 * n.y);
+            continue;
+        }
+        let incident = incident_light(l, i, n, p.world_position);
+        let to_light = incident.to_light;
+        let tl = dot(t, to_light);
+        let kajiya = sqrt(max(1.0 - tl * tl, 0.0));
+        let lambert = saturate(dot(n, to_light) * 0.7 + 0.3);
+        let light = incident.colour * incident.shadow;
+        diffuse += light * mix(kajiya, lambert, 0.6);
+        let h = normalize(to_light + v);
+        let s1 = pow(sqrt(max(1.0 - pow(dot(t1, h), 2.0), 0.0)), e1);
+        let s2 = pow(sqrt(max(1.0 - pow(dot(t2, h), 2.0), 0.0)), e2);
+        let facing = saturate(dot(n, to_light) * 2.0 + 0.5);
+        specular += light * facing * (vec3<f32>(s1) * 0.6 + hair_albedo * s2 * glint) * shine;
+    }
+    diffuse += environment_light(n);
+    return hair_albedo * diffuse / PI + specular + hair_back_light(n, v, p);
+}
+
+fn hair_cel(lit: vec3<f32>, n: vec3<f32>, v: vec3<f32>, p: ProgramIn) -> vec3<f32> {
     let u = p.extra[0].x;
     let seed = p.extra[1].x;
     let polar = p.extra[1].z;
