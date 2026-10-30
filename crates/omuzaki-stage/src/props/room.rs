@@ -35,6 +35,8 @@ pub struct RoomParams {
     pub trim: Colour,
     /// Which walls stand: the back (-Z), the left (-X) and the right (+X).
     pub walls_up: [bool; 3],
+    /// How patchy the walls' plaster is, 0 (flat paint) to 1: soft lighter and darker clouds over the paint.
+    pub mottle: f32,
     /// A ceiling over the room in this colour, with a moulded border a little in from the walls; open when absent.
     pub ceiling: Option<Colour>,
     /// Varies the planks.
@@ -54,6 +56,7 @@ impl Default for RoomParams {
             trim: Colour::hex(0x00f3_ede2),
             walls_up: [true, true, true],
             ceiling: None,
+            mottle: 0.0,
             seed: 7,
         }
     }
@@ -69,7 +72,8 @@ impl PropKind for Room {
     fn validate(p: &RoomParams) -> Result<(), String> {
         between("width", p.width, 2.0, 12.0)?;
         between("depth", p.depth, 2.0, 12.0)?;
-        between("height", p.height, 2.2, 5.0)
+        between("height", p.height, 2.2, 5.0)?;
+        between("mottle", p.mottle, 0.0, 1.0)
     }
 
     fn build(p: &RoomParams) -> Result<PropOutput, String> {
@@ -114,6 +118,9 @@ impl PropKind for Room {
                 walls.block(Vec3::new(x0, -0.03, -d - wall), Vec3::new(x1, h, d), p.walls);
             }
         }
+        if p.mottle > 0.0 {
+            plaster_walls(&mut walls, p);
+        }
         // Trim along each standing wall's inner face: skirting, a chair rail over the panelling, a cornice.
         let mut runs: Vec<(Vec3, Vec3, Vec3)> = Vec::new();
         if back {
@@ -144,21 +151,7 @@ impl PropKind for Room {
             trim.block(lo, hi, p.trim);
         }
         if let Some(ceiling) = p.ceiling {
-            walls.block(Vec3::new(-w - wall, h, -d - wall), Vec3::new(w + wall, h + wall, d), ceiling);
-            // A moulded frame hanging a little below the ceiling, 0.35 m in from the walls (and from the open side).
-            let (inset, band, drop) = (0.35_f32, 0.06, 0.025);
-            let (x0, x1, z0, z1) = (-w + inset, w - inset, -d + inset, d - inset);
-            if x1 - x0 > band * 3.0 && z1 - z0 > band * 3.0 {
-                let y = h - drop;
-                for (lo, hi) in [
-                    (Vec3::new(x0, y, z0), Vec3::new(x1, h, z0 + band)),
-                    (Vec3::new(x0, y, z1 - band), Vec3::new(x1, h, z1)),
-                    (Vec3::new(x0, y, z0 + band), Vec3::new(x0 + band, h, z1 - band)),
-                    (Vec3::new(x1 - band, y, z0 + band), Vec3::new(x1, h, z1 - band)),
-                ] {
-                    trim.block(lo, hi, p.trim);
-                }
-            }
+            close_ceiling(&mut walls, &mut trim, p, ceiling);
         }
         let mut parts = vec![(floor, painted_plain()), (walls, painted_plain())];
         if !trim.is_empty() {
@@ -334,6 +327,84 @@ fn weave(rug: &mut Shape, pattern: RugPattern, motif: Colour, field: (f32, f32),
     }
 }
 
+/// Lays plaster over each of `p`'s standing walls: a sheet just inside the wall, its paint clouded by seeded noise on
+/// a 15 cm grid.
+fn plaster_walls(walls: &mut Shape, p: &RoomParams) {
+    let (w, d, h) = (p.width * 0.5, p.depth * 0.5, p.height);
+    let [back, left, right] = p.walls_up;
+    let faces = [
+        (back, Vec3::new(-w, 0.0, -d + 0.002), Vec3::new(p.width, 0.0, 0.0), 0.0),
+        (left, Vec3::new(-w + 0.002, 0.0, d), Vec3::new(0.0, 0.0, -p.depth), 100.0),
+        (right, Vec3::new(w - 0.002, 0.0, -d), Vec3::new(0.0, 0.0, p.depth), 200.0),
+    ];
+    for (up, origin, along, offset) in faces {
+        if !up {
+            continue;
+        }
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // at most 80 cells a side
+        let cells = ((along.length() / 0.15).ceil() as u32, (h / 0.15).ceil() as u32);
+        let length = along.length();
+        walls.sheet(origin, along, Vec3::new(0.0, h, 0.0), cells, |s, t| {
+            let n = plaster(p.seed, offset + s * length, t * h);
+            if n >= 0.0 {
+                mix(p.walls, Colour::WHITE, n * p.mottle * 0.18)
+            } else {
+                darker(p.walls, -n * p.mottle * 0.22)
+            }
+        });
+    }
+}
+
+/// Closes `p`'s room with a `ceiling` on its walls and a moulded frame hanging a little below it, 0.35 m in from the
+/// walls (and from the open side).
+fn close_ceiling(walls: &mut Shape, trim: &mut Shape, p: &RoomParams, ceiling: Colour) {
+    let (w, d, h, wall) = (p.width * 0.5, p.depth * 0.5, p.height, 0.1);
+    walls.block(Vec3::new(-w - wall, h, -d - wall), Vec3::new(w + wall, h + wall, d), ceiling);
+    let (inset, band, drop) = (0.35_f32, 0.06, 0.025);
+    let (x0, x1, z0, z1) = (-w + inset, w - inset, -d + inset, d - inset);
+    if x1 - x0 > band * 3.0 && z1 - z0 > band * 3.0 {
+        let y = h - drop;
+        for (lo, hi) in [
+            (Vec3::new(x0, y, z0), Vec3::new(x1, h, z0 + band)),
+            (Vec3::new(x0, y, z1 - band), Vec3::new(x1, h, z1)),
+            (Vec3::new(x0, y, z0 + band), Vec3::new(x0 + band, h, z1 - band)),
+            (Vec3::new(x1 - band, y, z0 + band), Vec3::new(x1, h, z1 - band)),
+        ] {
+            trim.block(lo, hi, p.trim);
+        }
+    }
+}
+
+/// Plaster clouds at `(x, y)` metres along a wall: three octaves of seeded value noise, about -1 to 1.
+fn plaster(seed: u32, x: f32, y: f32) -> f32 {
+    let lattice = |i: i32, j: i32, octave: u32| -> f32 {
+        let mut h = seed.wrapping_mul(0x9e37_79b9) ^ (i.cast_unsigned()).wrapping_mul(0x85eb_ca6b) ^ (j.cast_unsigned()).wrapping_mul(0xc2b2_ae35) ^ octave.wrapping_mul(0x27d4_eb2f);
+        h ^= h >> 15;
+        h = h.wrapping_mul(0x2c1b_3c6d);
+        h ^= h >> 12;
+        #[allow(clippy::cast_precision_loss)] // a 24-bit fraction
+        let f = (h & 0x00ff_ffff) as f32 / 16_777_215.0;
+        f * 2.0 - 1.0
+    };
+    let mut sum = 0.0;
+    let mut weight = 0.0;
+    for (octave, (scale, amp)) in [(1.6_f32, 1.0_f32), (0.7, 0.5), (0.3, 0.25)].into_iter().enumerate() {
+        let (fx, fy) = (x / scale, y / scale);
+        let (x0, y0) = (fx.floor(), fy.floor());
+        let (tx, ty) = (fx - x0, fy - y0);
+        let (sx, sy) = (tx * tx * (3.0 - 2.0 * tx), ty * ty * (3.0 - 2.0 * ty));
+        #[allow(clippy::cast_possible_truncation)] // walls are metres across
+        let (i, j) = (x0 as i32, y0 as i32);
+        #[allow(clippy::cast_possible_truncation)] // three octaves
+        let o = octave as u32;
+        let top = lattice(i, j + 1, o) + (lattice(i + 1, j + 1, o) - lattice(i, j + 1, o)) * sx;
+        let bottom = lattice(i, j, o) + (lattice(i + 1, j, o) - lattice(i, j, o)) * sx;
+        sum += (bottom + (top - bottom) * sy) * amp;
+        weight += amp;
+    }
+    sum / weight
+}
+
 /// `out` with no part in the shadow maps: a floor and walls only receive (a directional key's map is fitted to its
 /// casters, and a room-sized caster would spread the cast's shadow over it), and a rug lies flat.
 fn unshadowed(mut out: PropOutput) -> PropOutput {
@@ -370,6 +441,21 @@ mod tests {
         let closed = RoomParams { ceiling: Some(Colour::hex(0x00ee_e4d4)), ..RoomParams::default() };
         assert!((top(&open) - open.height).abs() < 1e-4);
         assert!(top(&closed) > closed.height + 0.05, "the ceiling sits on the walls");
+    }
+
+    #[test]
+    fn mottled_plaster_varies_the_walls_paint_and_stays_on_them() {
+        let flat = Room::build(&RoomParams { planks: false, ..RoomParams::default() }).expect("builds");
+        let p = RoomParams { planks: false, mottle: 1.0, ..RoomParams::default() };
+        let mottled = Room::build(&p).expect("builds");
+        let walls = &mottled.parts[1].mesh;
+        assert!(walls.positions.len() > flat.parts[1].mesh.positions.len() + 500, "the plaster sheets are there");
+        let reds: Vec<f32> = walls.colours.iter().map(|c| c[0]).collect();
+        let (lo, hi) = reds.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), &r| (a.min(r), b.max(r)));
+        assert!(hi - lo > 0.05, "the paint barely varies: {lo}..{hi}");
+        assert!(walls.positions.iter().all(|q| q.y >= -0.031 && q.y <= p.height + 1e-4));
+        let n = (0..200_u16).map(|i| plaster(7, f32::from(i) * 0.05, 1.0));
+        assert!(n.clone().all(|v| (-1.0..=1.0).contains(&v)) && n.clone().any(|v| v > 0.1) && n.clone().any(|v| v < -0.1));
     }
 
     #[test]
