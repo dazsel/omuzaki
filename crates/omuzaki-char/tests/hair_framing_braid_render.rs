@@ -59,7 +59,13 @@ fn character(template: &str) -> CharacterDef {
     ] {
         hair.groups.insert(
             GroupId::new(id).unwrap(),
-            HairGroup { enabled: true, mirror: false, dynamics: Dynamics::default(), generator },
+            HairGroup {
+                enabled: true,
+                mirror: false,
+                dynamics: Dynamics::default(),
+                generator,
+                lock: omuzaki_char_api::LockShape::default(),
+            },
         );
     }
     def.parts.insert(PartId::new("hair").unwrap(), part("hair", serde_json::to_value(hair).unwrap()));

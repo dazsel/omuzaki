@@ -243,6 +243,7 @@ fn a_mirrored_bangs_group_compiles_to_clump_count_clumps() {
         mirror: true,
         dynamics: Dynamics::default(),
         generator: Generator::Bangs(style(2, 2)),
+        lock: omuzaki_char_api::LockShape::default(),
     };
     params.groups.insert(GroupId::new("b-bangs").unwrap(), group.clone());
     let entries =
@@ -260,7 +261,14 @@ fn surface_gap(head: &dyn HeadSurface, frame: &OutwardFrame, clump: &HairClump) 
     let gap = |p: Vec3| (p - centre).length() - head.radius((p - centre).normalize());
     let mut mesh = TubeMesh::new();
     let polar = vec![0.5; clump.rest.len()];
-    let look = TubeLook { seed: 0.5, shade: 1.0, polar: &polar, tint: None, flip: 1.0 };
+    let look = TubeLook {
+        seed: 0.5,
+        shade: 1.0,
+        polar: &polar,
+        tint: None,
+        flip: 1.0,
+        profile: omuzaki_char_api::LockProfile::Lens,
+    };
     mesh.push(&clump.rest, &clump.width, &clump.thickness, |p| frame.rest(p), &look).unwrap();
     let tube = mesh.finish().unwrap();
     let mut worst = f32::MAX;

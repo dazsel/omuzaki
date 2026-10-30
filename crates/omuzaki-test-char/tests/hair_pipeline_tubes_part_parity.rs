@@ -98,7 +98,14 @@ fn build(f: &Fixture, case: &Case) -> MeshData {
     let bulge = Bulge { base: case.bulge.base, swell: case.bulge.swell };
     let frame = frame(f);
     let polar = polar_angles(&points, frame.head);
-    let look = TubeLook { seed: case.seed, shade: case.shade, polar: &polar, tint: None, flip: 1.0 };
+    let look = TubeLook {
+        seed: case.seed,
+        shade: case.shade,
+        polar: &polar,
+        tint: None,
+        flip: 1.0,
+        profile: omuzaki_char_api::LockProfile::Lens,
+    };
     let mut mesh = TubeMesh::new();
     mesh.push(&points, &taper, &bulge, |p| frame.rest(p), &look).unwrap();
     mesh.finish().unwrap()

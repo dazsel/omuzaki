@@ -5,10 +5,11 @@
 //! |---|---|
 //! | `hair.group.add` | a new group of any generator type, with that generator's defaults or the fields given |
 //! | `hair.group.remove` | removes a group, refusing the last one |
+//! | `hair.group.set_lock` | how a group's locks are shaped: cross-section, tip and sub-locks (#2480) |
 //!
-//! Both write the part's `groups` back as one change (`part::changes`), so undo restores it exactly.
+//! Each writes the part's `groups` back as one change (`part::changes`), so undo restores it exactly.
 
-use omuzaki_char_api::{CharId, GroupId, HairGroup, PartId};
+use omuzaki_char_api::{CharId, GroupId, HairGroup, LockShape, PartId};
 use omuzaki_doc_api::Value;
 use omuzaki_ops_api::{Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
 use schemars::JsonSchema;
@@ -150,3 +151,73 @@ impl Op for HairGroupRemove {
 }
 
 register_op!(HairGroupRemove);
+
+/// Shapes every lock of a hair group, whichever generator made it: `profile` (the cross-section: `lens`, the kit's;
+/// `card`, flat with crisp edges; `round`, as thick as it is wide), `tip` (`point`; `fork`, two points over the last
+/// quarter; `blunt`, cut straight; `curl_in`, the last third curled under; `curl_out`, flicked out), `split` (`1` to `4`
+/// sub-locks side by side), `split_from` (where down the lock they part, `0` to `0.9` of its length) and `spread` (how
+/// far they fan apart at the tips, `0` to `2` lock widths). Give any of them. A curtain's strips and a cap's shell keep
+/// their own shape.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "part": "hair", "group": "b-bangs", "lock": {"profile": "card", "tip": "fork"}},
+        {"character": "kit", "part": "hair", "group": "b-bangs", "lock": {"split": 3, "split_from": 0.5, "spread": 0.8}}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
+pub struct HairGroupSetLock {
+    /// The character the hair belongs to.
+    pub character: CharId,
+    /// The hair part.
+    pub part: PartId,
+    /// The group.
+    pub group: GroupId,
+    /// The fields of the group's lock shape to change.
+    pub lock: Value,
+}
+
+impl Op for HairGroupSetLock {
+    fn meta() -> OpMeta {
+        OpMeta {
+            name: "hair.group.set_lock",
+            summary: "Shape every lock of a hair group: its cross-section (lens, card, round), its tip (point, fork, \
+                      blunt, curl_in, curl_out) and how many sub-locks it parts into",
+            kind: OpKind::Edit,
+            scope: Scope::EditCharacter,
+            undo: Undo::Auto,
+        }
+    }
+
+    fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        let Some(fields) = self.lock.as_object().filter(|f| !f.is_empty()) else {
+            return Err(OpError::invalid("lock", "lock is an object of profile, tip, split, split_from and spread")
+                .hint("for example {\"tip\": \"fork\", \"split\": 2}"));
+        };
+        let found = part::load(ctx, &self.character, &self.part)?;
+        let mut after = found.hair.clone();
+        let Some(group) = after.groups.get_mut(&self.group) else {
+            return Err(not_found("group", format!("`{}` has no group `{}`", self.part, self.group))
+                .hint(format!("its groups: {}", list(found.hair.groups.keys()))));
+        };
+        let before = group.lock;
+        group.lock = fields.iter().try_fold(before, |lock: LockShape, (name, value)| {
+            part::with_field(&lock, name, value, &[]).map_err(|mut e| {
+                e.field = Some(format!("lock/{name}"));
+                e
+            })
+        })?;
+        let summary = json!({
+            "character": self.character,
+            "part": self.part,
+            "group": self.group,
+            "before": before,
+            "after": group.lock,
+        });
+        let steps = ["groups", self.group.as_str(), "lock"];
+        Ok(character::edit_plan(part::changes(ctx, &found, &after, &steps, "lock")?, summary))
+    }
+}
+
+register_op!(HairGroupSetLock);

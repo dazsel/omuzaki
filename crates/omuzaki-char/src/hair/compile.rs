@@ -14,7 +14,7 @@
 
 use omuzaki_char_api::{
     BodyFit, Bulge, Dynamics, Generator, GroupId, GuidePoint, HairClump, HairGroup, HairParams, HairRng, HairSide,
-    HeadSurface, LegacyLcg, Quality, Taper,
+    HeadSurface, LegacyLcg, LockShape, Quality, Taper,
 };
 use omuzaki_core::glam::Vec3;
 use omuzaki_core::mesh::MeshData;
@@ -292,6 +292,8 @@ pub struct CompiledEntry {
     pub simulate: bool,
     /// Its clumps and geometry.
     pub group: CompiledGroup,
+    /// How its locks are shaped ([`crate::hair::lock`]).
+    pub lock: LockShape,
 }
 
 /// Why compiling failed.
@@ -351,7 +353,12 @@ pub fn compile_groups_over(
         if group.mirror && !is_bilateral(&group.generator) {
             compiled = compiled.with_mirror(mid_x);
         }
-        entries.push(CompiledEntry { id: id.clone(), simulate: group.dynamics.simulate, group: compiled });
+        entries.push(CompiledEntry {
+            id: id.clone(),
+            simulate: group.dynamics.simulate,
+            group: compiled,
+            lock: group.lock,
+        });
     }
     Ok(entries)
 }

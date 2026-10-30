@@ -1236,10 +1236,88 @@ pub struct HairGroup {
     pub dynamics: Dynamics,
     /// What the group generates.
     pub generator: Generator,
+    /// How each of its locks is shaped: cross-section, tip and sub-locks (#2480). The default is the kit's lens tube
+    /// ending in one point. Read by every generator whose locks are tubes; a curtain's strips and a cap's shell ignore it.
+    #[serde(default, skip_serializing_if = "LockShape::is_default")]
+    pub lock: LockShape,
 }
 
 fn yes() -> bool {
     true
+}
+
+/// How every lock of a group is shaped (#2480): its cross-section, its tip and how many sub-locks it parts into. One
+/// layer for every lock generator, applied to the clumps they compile.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct LockShape {
+    /// The lock's cross-section.
+    pub profile: LockProfile,
+    /// How the lock ends.
+    pub tip: LockTip,
+    /// Sub-locks each lock parts into, `1..=4`: they share the lock's root and part from [`LockShape::split_from`] on,
+    /// fanning apart toward their tips.
+    pub split: u8,
+    /// How far down the lock its sub-locks part, `0..=0.9` of its length.
+    pub split_from: f64,
+    /// How far the sub-locks (and a forked tip's two points) fan apart at their tips, in widths of the lock, `0..=2`.
+    pub spread: f64,
+}
+
+impl Default for LockShape {
+    fn default() -> Self {
+        Self { profile: LockProfile::Lens, tip: LockTip::Point, split: 1, split_from: 0.45, spread: 0.6 }
+    }
+}
+
+impl LockShape {
+    /// Whether this is the default shape (left out of a saved file).
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// How many tubes each compiled clump becomes: its sub-locks, each forked in two by a [`LockTip::Fork`].
+    pub fn tubes_per_clump(&self) -> usize {
+        usize::from(self.split.clamp(1, 4)) * if self.tip == LockTip::Fork { 2 } else { 1 }
+    }
+}
+
+impl Validate for LockShape {
+    fn check(&self, c: &mut Check) {
+        c.range("split", f64::from(self.split), 1.0, 4.0);
+        c.range("split_from", self.split_from, 0.0, 0.9);
+        c.range("spread", self.spread, 0.0, 2.0);
+    }
+}
+
+/// A lock's cross-section.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LockProfile {
+    /// Wide and thin, with flat faces and a rounded spine: the kit's lock.
+    #[default]
+    Lens,
+    /// A flat card: very thin, with crisp edges, for sharp anime spikes and flat bangs.
+    Card,
+    /// Nearly round, as thick as it is wide: a twisted or heavy lock.
+    Round,
+}
+
+/// How a lock ends.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LockTip {
+    /// Tapers to one point.
+    #[default]
+    Point,
+    /// Parts into two points over its last quarter.
+    Fork,
+    /// Ends cut straight across, barely narrowed.
+    Blunt,
+    /// Its last third curls under, toward the head and body.
+    CurlIn,
+    /// Its last third flicks out, away from the head and body.
+    CurlOut,
 }
 
 // ------------------------------------------------------------------------------------------------ shading and physics
@@ -1751,7 +1829,9 @@ impl Default for HairParams {
     fn default() -> Self {
         let group = |name: &str, simulate: bool, follow: Follow, generator: Generator| {
             let dynamics = Dynamics { simulate, follow, stiffness: Falloff::default() };
-            GroupId::new(name).map(|id| (id, HairGroup { enabled: true, mirror: false, dynamics, generator }))
+            GroupId::new(name).map(|id| {
+                (id, HairGroup { enabled: true, mirror: false, dynamics, generator, lock: LockShape::default() })
+            })
         };
         let groups = [
             group("a-cap", false, Follow::Head, Generator::Cap(CapGen::default())),
@@ -1792,6 +1872,7 @@ impl Validate for HairGroup {
     #[allow(clippy::too_many_lines, reason = "one arm per generator, each a few range checks")]
     fn check(&self, c: &mut Check) {
         c.nested("dynamics/stiffness", &self.dynamics.stiffness);
+        c.nested("lock", &self.lock);
         match &self.generator {
             Generator::Cap(g) => {
                 c.range("generator/hairline_front_deg", g.hairline_front_deg, 20.0, 120.0);
@@ -2212,6 +2293,7 @@ mod tests {
             enabled: true,
             mirror: true,
             dynamics: Dynamics::default(),
+            lock: LockShape::default(),
             generator: Generator::Guides(GuidesGen {
                 clumps: vec![GuideClump {
                     points: vec![GuidePoint::Surface([200.0, 0.0, 0.0])],

@@ -14,7 +14,7 @@
 //!
 //! The vertex data is `f32`; the prototype's is `f64`, and the parity test holds them to rounding noise.
 
-use omuzaki_char_api::{Bulge, ExtraAttribute, HAIR_INFO, HAIR_UV, Quality, Taper};
+use omuzaki_char_api::{Bulge, ExtraAttribute, HAIR_INFO, HAIR_UV, LockProfile, Quality, Taper};
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::{Vec2, Vec3};
 use omuzaki_core::id::{Slug, SlugError};
@@ -143,6 +143,25 @@ pub fn tube_vertices(
     positions: &mut [Vec3],
     normals: &mut [Vec3],
 ) -> Result<(), TubeError> {
+    tube_vertices_shaped(points, ring, width, thickness, LockProfile::Lens, outward, positions, normals)
+}
+
+/// [`tube_vertices`] with the cross-section `profile` (#2480): the lens is the kit's; a card is very thin, with crisp
+/// edges; a round lock is about as thick as it is wide.
+///
+/// # Errors
+/// As [`tube_vertices`].
+#[allow(clippy::too_many_arguments)] // the tube's path, its section and the two outputs
+pub fn tube_vertices_shaped(
+    points: &[Vec3],
+    ring: usize,
+    width: &Taper,
+    thickness: &Bulge,
+    profile: LockProfile,
+    outward: impl Fn(Vec3) -> Vec3,
+    positions: &mut [Vec3],
+    normals: &mut [Vec3],
+) -> Result<(), TubeError> {
     let n = points.len();
     if n < 2 {
         return Err(TubeError::TooFewPoints(n));
@@ -167,15 +186,39 @@ pub fn tube_vertices(
         let (half_w, half_t) = (width.at(t) * 0.5, thickness.at(t) * 0.5);
         for (k, (vp, vn)) in ring_p.iter_mut().zip(ring_n.iter_mut()).enumerate() {
             let (sy, cx) = ring_angle(k, ring).sin_cos();
-            // A lens: flat-ish front and back with a soft rounded spine.
-            let yy = sy * half_t * (0.55 + 0.45 * (1.0 - cx * cx).max(0.0).sqrt());
-            *vp = *p + across * (cx * half_w) + thin * yy;
-            let (nx, ny) = (cx / half_w.max(1e-4), sy / half_t.max(1e-4));
-            *vn = (across * nx + thin * (ny * 0.6)).normalize_or_zero();
+            let (side, lift, nx, ny) = match profile {
+                // A lens: flat-ish front and back with a soft rounded spine.
+                LockProfile::Lens => {
+                    let yy = sy * half_t * (0.55 + 0.45 * (1.0 - cx * cx).max(0.0).sqrt());
+                    (cx * half_w, yy, cx / half_w.max(1e-4), sy / half_t.max(1e-4) * 0.6)
+                }
+                // A card: a thin, squared-off ellipse, its faces flat almost to the edge.
+                LockProfile::Card => {
+                    let half_c = (half_t * CARD_THICKNESS).min(half_w * CARD_ASPECT).max(1e-4);
+                    let edge = cx.signum() * cx.abs().powf(CARD_SQUARE) * half_w;
+                    (edge, sy * half_c, cx / half_w.max(1e-4), sy / half_c)
+                }
+                // Round: an ellipse at least nearly as thick as it is wide.
+                LockProfile::Round => {
+                    let half_r = half_t.max(half_w * ROUND_ASPECT).max(1e-4);
+                    (cx * half_w, sy * half_r, cx / half_w.max(1e-4), sy / half_r)
+                }
+            };
+            *vp = *p + across * side + thin * lift;
+            *vn = (across * nx + thin * ny).normalize_or_zero();
         }
     }
     Ok(())
 }
+
+/// A card's thickness against a lens's of the same lock.
+const CARD_THICKNESS: f32 = 0.35;
+/// A card is at most this thick for its width.
+const CARD_ASPECT: f32 = 0.12;
+/// How square a card's edge is: the power its across position is raised to (`1` an ellipse).
+const CARD_SQUARE: f32 = 0.6;
+/// A round lock is at least this thick for its width.
+const ROUND_ASPECT: f32 = 0.85;
 
 /// The angle of vertex `k` of a ring of `ring`.
 #[allow(clippy::cast_precision_loss)] // k < ring, a few dozen
@@ -287,6 +330,8 @@ pub struct TubeLook<'a> {
     pub tint: Option<Colour>,
     /// `1` or `-1`: which way `hair-uv.x` runs across the lock, for a mirrored lock whose shading must not mirror.
     pub flip: f32,
+    /// The lock's cross-section.
+    pub profile: LockProfile,
 }
 
 /// A mesh of tubes at rest, with the two attributes the hair program reads and a vertex colour per vertex.
@@ -376,11 +421,12 @@ impl TubeMesh {
         let base = u32::try_from(first).map_err(|_| TubeError::TooMany)?;
         self.mesh.positions.resize(first + count, Vec3::ZERO);
         self.mesh.normals.resize(first + count, Vec3::ZERO);
-        let written = tube_vertices(
+        let written = tube_vertices_shaped(
             points,
             ring,
             width,
             thickness,
+            look.profile,
             outward,
             &mut self.mesh.positions[first..],
             &mut self.mesh.normals[first..],
@@ -529,7 +575,7 @@ mod tests {
 
     fn mesh_of(points: &[Vec3]) -> MeshData {
         let polar = polar_angles(points, Vec3::ZERO);
-        let look = TubeLook { seed: 0.3, shade: 0.9, polar: &polar, tint: None, flip: 1.0 };
+        let look = TubeLook { seed: 0.3, shade: 0.9, polar: &polar, tint: None, flip: 1.0, profile: LockProfile::Lens };
         let mut m = TubeMesh::new();
         m.push(points, &Taper::default(), &Bulge::default(), |p| frame().rest(p), &look).unwrap();
         m.finish().unwrap()
