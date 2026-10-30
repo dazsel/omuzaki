@@ -10,7 +10,13 @@
 //! - [`skin::texture`]: the skin round the eye (tone, mottling, fine lines, freckles);
 //! - [`eye_params`] and [`skin_params`]: the programs' parameters for a design and where the eye is.
 //! - [`closeup::Closeup`]: all of it built on a renderer, lit and framed as a macro still (the lab test and
-//!   `render.eye` draw through it).
+//!   `render.eye` draw through it), from a view or any [`closeup::Shot`];
+//! - [`fit::fit`]: the opening, iris, pupil, gaze and camera fitted to landmarks measured on a photograph
+//!   (`face.eye3d.fit`); named shapes and iris colours ([`EyeShape`](omuzaki_face_api::eye3d::EyeShape),
+//!   [`IrisColour`](omuzaki_face_api::eye3d::IrisColour), `face.eye3d.preset`) are the quick start before it.
+//!
+//! Marks painted by hand ([`EyeDesign::paint`], `face.eye3d.paint`) go over the generated detail of the skin, the
+//! white and the iris, so any freckle, vessel or fleck can be put exactly where it is wanted.
 //!
 //! Everything is a pure function of an [`EyeDesign`], whose seed drives every random detail.
 
@@ -22,8 +28,10 @@
 pub mod canvas;
 pub mod closeup;
 pub mod design;
+pub mod fit;
 pub mod geometry;
 pub mod noise;
+mod paint;
 pub mod skin;
 pub mod textures;
 
@@ -89,7 +97,7 @@ pub fn eye_params(design: &EyeDesign, frame: EyeFrame) -> ProgramParams {
 pub fn skin_params(design: &EyeDesign) -> ProgramParams {
     let real = 1.0 - design.style;
     let mut p = ProgramParams::new();
-    put(&mut p, "pore-depth", ParamValue::Float(0.07 * real));
+    put(&mut p, "pore-depth", ParamValue::Float(0.02 * real));
     put(&mut p, "roughness", ParamValue::Float(0.52 + 0.4 * design.style));
     put(&mut p, "sheen", ParamValue::Float(0.7 * real));
     put(&mut p, "sss", ParamValue::Float(0.3 + 0.7 * real));

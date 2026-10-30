@@ -255,7 +255,13 @@ impl LivingBody {
         if torso.next_shift_s <= 0.0 {
             let flip = self.rng.next_f32() < 0.75;
             let side = match (torso.shift_target == 0.0, flip) {
-                (true, _) => if self.rng.next_f32() < 0.5 { 1.0 } else { -1.0 },
+                (true, _) => {
+                    if self.rng.next_f32() < 0.5 {
+                        1.0
+                    } else {
+                        -1.0
+                    }
+                }
                 (false, true) => -torso.shift_target.signum(),
                 (false, false) => torso.shift_target.signum(),
             };
@@ -375,9 +381,8 @@ impl LivingBody {
         // One hemisphere, so the rotation vector never jumps by a full turn.
         let torso = if torso.w < 0.0 { -torso } else { torso };
         let now = torso.to_scaled_axis();
-        let lagged = Vec3::from_array(std::array::from_fn(|i| {
-            self.torso.lag[i].step(now[i], Feel::new(1.25, 0.32), dt)
-        }));
+        let lagged =
+            Vec3::from_array(std::array::from_fn(|i| self.torso.lag[i].step(now[i], Feel::new(1.25, 0.32), dt)));
         let lag = torso.inverse() * Quat::from_scaled_axis(lagged);
         for side in [Side::Left, Side::Right] {
             let engaged = self.arms[side.index()].engage.pos().clamp(0.0, 1.0);
@@ -387,8 +392,9 @@ impl LivingBody {
         }
     }
 
-    /// Hands bones another source drives back to it, smoothly.
-    fn yield_tracked(&mut self, dt: f32, incoming: &HumanoidPose, out: &mut HumanoidPose) {
+    /// Hands bones another source drives back to it, smoothly: back to `driven`, the pose as that source left it, before
+    /// the bus animator's lean, breath and turn (a clip or a tracked body already carries its own).
+    fn yield_tracked(&mut self, dt: f32, driven: &HumanoidPose, out: &mut HumanoidPose) {
         for (i, group) in Group::ALL.into_iter().enumerate() {
             let held = B::ALL.into_iter().any(|b| Group::of(b) == Some(group) && self.tracked.contains(b));
             let y = self.yields[i].step(if held { 1.0 } else { 0.0 }, YIELD_FEEL, dt).clamp(0.0, 1.0);
@@ -396,11 +402,11 @@ impl LivingBody {
                 continue;
             }
             for bone in B::ALL.into_iter().filter(|b| Group::of(*b) == Some(group)) {
-                let q = if y >= 0.999 { incoming.get(bone) } else { out.get(bone).slerp(incoming.get(bone), y) };
+                let q = if y >= 0.999 { driven.get(bone) } else { out.get(bone).slerp(driven.get(bone), y) };
                 out.set(bone, q);
             }
             if group == Group::Torso && y >= 0.999 {
-                out.hips_offset = incoming.hips_offset;
+                out.hips_offset = driven.hips_offset;
             }
         }
     }
@@ -438,6 +444,7 @@ fn chain(pose: &HumanoidPose, last: B) -> Quat {
 
 impl Animator for LivingBody {
     fn animate(&mut self, tick: Tick, bus: &Bus, cues: &[Cue], out: &mut HumanoidPose) {
+        let driven = *out;
         self.bus.animate(tick, bus, cues, out);
         let dt = if tick.dt.is_finite() { tick.dt.clamp(0.0, 0.1) } else { 0.0 };
         if self.off() {
@@ -461,7 +468,7 @@ impl Animator for LivingBody {
         self.follow_through(dt, out);
         let posture = Posture { body: *out, left: hands[0], right: hands[1], reach: Reaches::NONE };
         *out = posture.to_humanoid(&self.hand_rest);
-        self.yield_tracked(dt, &incoming, out);
+        self.yield_tracked(dt, &driven, out);
         // The head stays where tracking put it: the neck takes back whatever the torso turned.
         let after = chain(out, B::UpperChest);
         if !self.tracked.contains(B::Neck) {
