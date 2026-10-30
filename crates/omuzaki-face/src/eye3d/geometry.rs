@@ -32,9 +32,9 @@ const PROXY_WIDEN: f32 = 1.12;
 /// How far the lid margin reaches from the opening's edge to the lid's full thickness.
 const MARGIN: f32 = 0.65 * MM;
 /// Distances from the opening's edge, outward (negative: the pocket behind the margin), at which the rings sit.
-const RINGS: [f32; 31] = [
-    -3.2, -2.0, -1.2, -0.7, -0.35, -0.12, 0.0, 0.08, 0.18, 0.3, 0.45, 0.62, 0.8, 1.0, 1.3, 1.7, 2.2, 2.8, 3.6, 4.6,
-    5.8, 7.0, 8.3, 9.8, 11.5, 13.5, 16.0, 19.0, 22.5, 26.0, 30.0,
+const RINGS: [f32; 38] = [
+    -3.2, -2.0, -1.2, -0.7, -0.35, -0.12, 0.0, 0.08, 0.18, 0.3, 0.45, 0.62, 0.8, 1.0, 1.3, 1.7, 2.2, 2.8, 3.6, 4.1,
+    4.6, 5.1, 5.6, 6.1, 6.6, 7.1, 7.7, 8.3, 9.0, 9.8, 10.6, 11.5, 13.5, 16.0, 19.0, 22.5, 26.0, 30.0,
 ];
 /// Samples round the opening.
 const AROUND: usize = 240;
@@ -158,6 +158,11 @@ fn gauss(x: f32) -> f32 {
     (-x * x).exp()
 }
 
+/// A point of the opening's outline at `u` along a lid (0 the outer corner, 1 the inner), in the frontal plane.
+pub(super) fn lid_outline(aperture: &Aperture, u: f32, upper: bool) -> Vec2 {
+    Lids::outline(aperture, u, upper)
+}
+
 /// The lids: the opening's outline and the surface laid out from it.
 struct Lids {
     ball: Ball,
@@ -220,12 +225,15 @@ impl Lids {
         if k < half { k as f32 / half as f32 } else { 1.0 - (k - half) as f32 / half as f32 }
     }
 
-    /// The outer boundary's point matching outline sample `k`.
+    /// The outer boundary's point matching outline sample `k`. Its angle round the centre follows the sample's place
+    /// along its lid (the outer corner at the far left, the inner at the right, each lid sweeping its half), so the
+    /// lines out from the outline fan evenly instead of bunching where the outline turns at the corners.
     fn boundary(&self, k: usize) -> Vec2 {
-        let e = self.edge[k];
-        let d = e - self.centre;
-        let (rx, ry) = (42.0 * MM, 34.0 * MM);
-        let angle = (d.y / ry).atan2(d.x / rx);
+        let u = Self::along(k);
+        let angle = if Self::is_upper(k) { PI * (1.0 - u) } else { PI * (1.0 + u) };
+        // Wider toward the temple, so a view from the nose's side sees skin past the far corner.
+        let rx = if angle.cos() < 0.0 { 56.0 * MM } else { 42.0 * MM };
+        let ry = 34.0 * MM;
         self.centre + Vec2::new(rx * angle.cos(), ry * angle.sin() + 2.0 * MM)
     }
 
@@ -254,19 +262,39 @@ impl Lids {
     /// temple falling away past the outer one and the cheek below.
     fn face(&self, x: f32, y: f32) -> f32 {
         let base = self.ball.radius + self.thickness - 0.8 * MM;
-        let curve = -(x * x) / (2.0 * 60.0 * MM) - (y * y) / (2.0 * 90.0 * MM);
+        let curve = -(x * x) / (2.0 * 85.0 * MM) - (y * y) / (2.0 * 90.0 * MM);
         let brow = 3.6 * MM * smoothstep(9.0 * MM, 20.0 * MM, y);
         let nose = 0.55 * (x - 14.0 * MM).max(0.0) * smoothstep(-22.0 * MM, -4.0 * MM, y);
-        let temple = -0.45 * (-x - 12.0 * MM).max(0.0);
+        let temple = -0.22 * (-x - 14.0 * MM).max(0.0);
         let cheek = 1.8 * MM * smoothstep(-9.0 * MM, -22.0 * MM, y);
         base + curve + brow + nose + temple + cheek
+    }
+
+    /// The distance from `p` to the opening's outline, and whether the nearest point is on the upper lid and where
+    /// along its lid it lies (0 the outer corner, 1 the inner).
+    fn nearest(&self, p: Vec2) -> (f32, bool, f32) {
+        let mut best = (f32::INFINITY, true, 0.0);
+        for j in 0..AROUND {
+            let next = (j + 1) % AROUND;
+            let (a, b) = (self.edge[j], self.edge[next]);
+            let ab = b - a;
+            let t = ((p - a).dot(ab) / ab.length_squared().max(1e-12)).clamp(0.0, 1.0);
+            let dist = (a + ab * t - p).length();
+            if dist < best.0 {
+                let end = if t < 0.5 { j } else { next };
+                best = (dist, Self::is_upper(end), Self::along(j) + (Self::along(next) - Self::along(j)) * t);
+            }
+        }
+        best
     }
 
     /// The surface point `d` metres from outline sample `k`, and its skin info (wet, cavity, flush).
     fn surface(&self, k: usize, d: f32) -> (Vec3, [f32; 4]) {
         let p = self.plane_point(k, d);
-        let upper = Self::is_upper(k);
-        let u = Self::along(k);
+        // Outside the opening, the lids' shapes follow the true distance to its outline rather than the distance along
+        // this sample's line out: past a sharp corner the lines out run nearly parallel, and measuring along them would
+        // fold each shape into a chevron with a ridge running out of the corner.
+        let (d, upper, u) = if d > 0.0 { self.nearest(p) } else { (d, Self::is_upper(k), Self::along(k)) };
         // The margin: tucked under the ball's surface in the pocket, rounding up to the lid's thickness.
         let offset = if d <= 0.0 {
             0.15 * MM + 1.05 * d
@@ -277,7 +305,9 @@ impl Lids {
         // The upper lid's crease and the skin above it folding forward; the lower lid's gentle rise to the cheek. Toward
         // the corners each lid's shape eases to the two lids' mean, so the lids meet there without a seam.
         let fold = gauss((d - self.crease) / (1.4 * MM));
-        let upper_z = -self.crease_depth * fold + 1.1 * MM * smoothstep(self.crease, self.crease + 5.0 * MM, d);
+        // The skin above the crease hangs forward over it, so the fold reads as a shelf with a shadow under it.
+        let hood = 2.2 * MM * smoothstep(self.crease - 0.5 * MM, self.crease + 3.5 * MM, d);
+        let upper_z = -self.crease_depth * fold + hood;
         let lower_z = 0.5 * MM * smoothstep(2.0 * MM, 7.0 * MM, d);
         let own = smoothstep(0.0, 0.3, u.min(1.0 - u));
         let side = |upper_v: f32, lower_v: f32| {
@@ -285,10 +315,12 @@ impl Lids {
             mean + ((if upper { upper_v } else { lower_v }) - mean) * own
         };
         z += side(upper_z, lower_z);
-        let mut cavity = 1.0 - side(0.3 * fold, 0.0);
+        // The lash line: the roots' dense shadow along each lid's front edge, darker on the upper lid.
+        let lash_line = gauss((d - 0.7 * MM) / (0.3 * MM));
+        let mut cavity = 1.0 - side(0.5 * fold + 0.45 * lash_line, 0.25 * lash_line);
         // The lids blend into the face round them, sooner at the corners.
         let corner = (2.0 * (u - 0.5)).abs();
-        let reach = side(12.0, 9.0) * MM * (1.0 - 0.45 * corner);
+        let reach = side(14.0, 9.0) * MM * (1.0 - 0.45 * corner);
         let blend = smoothstep(0.35 * reach, reach, d);
         z = z + (self.face(p.x, p.y) - z) * blend;
         let wet = 1.0 - smoothstep(0.2 * MM, 0.45 * MM, d);
@@ -381,9 +413,10 @@ impl Lids {
     /// The caruncle: a small wet mound in the inner corner.
     fn caruncle(&self, mesh: &mut MeshData, info: &mut Vec<f32>) {
         let a = &self.aperture;
-        let at = Vec2::new(a.inner_x - 1.5 * MM, a.inner_y + 0.3 * MM);
-        let centre = Vec3::new(at.x, at.y, self.proxy(at.x, at.y, -1.4 * MM));
-        let radii = Vec3::new(1.3 * MM, 1.05 * MM, 0.75 * MM);
+        let at = Vec2::new(a.inner_x - 1.3 * MM, a.inner_y + 0.3 * MM);
+        let centre = Vec3::new(at.x, at.y, self.proxy(at.x, at.y, -1.5 * MM));
+        // Low and flattened against the corner's floor: a wet fold, not a bead.
+        let radii = Vec3::new(1.5 * MM, 1.0 * MM, 0.45 * MM);
         let first = u32::try_from(mesh.positions.len()).unwrap_or(0);
         let (rings, segments) = (12u32, 20u32);
         for i in 0..=rings {
@@ -483,19 +516,18 @@ impl Lids {
             (half + ((1.0 - u) * half as f32) as usize).min(AROUND - 1)
         };
         // Rooted along the margin's front edge, in two or three loose rows.
-        let row = rng.range(0.38, 0.62) * MM;
+        let row = rng.range(0.55, 0.85) * MM;
         let (root, _) = self.surface(k, row);
         let (ahead, _) = self.surface(k, row + 0.4 * MM);
         let out = (ahead - root).normalize_or_zero();
         let normal = root.normalize_or_zero();
         let up = if upper { Vec3::Y } else { -Vec3::Y };
-        // Outer lashes sweep toward the outer corner.
-        let sweep = Vec3::new(-1.0, 0.0, 0.0) * (0.55 * (1.0 - u)).powi(2)
-            + Vec3::new(0.25, 0.0, 0.0) * smoothstep(0.8, 1.0, u);
+        // Lashes fan out from the lid's middle toward each corner, the outer ones sweeping furthest.
+        let sweep = Vec3::new(-0.9, 0.0, 0.0) * (0.5 - u) + Vec3::new(-0.3, 0.0, 0.0) * (1.0 - u).powi(3);
         let length = if upper { lashes.upper_length } else { lashes.lower_length }
             * (0.3 + 0.7 * bump(u, if upper { 0.38 } else { 0.4 }).powf(0.6))
             * if rng.unit() < 0.15 { rng.range(0.35, 0.7) } else { rng.range(0.75, 1.08) };
-        let start = (normal * 0.9 + out * 0.12 - up * 0.2 + sweep * 0.7).normalize_or_zero();
+        let start = (normal * 0.85 + out * 0.1 - up * 0.08 + sweep * 0.7).normalize_or_zero();
         let curl = (up * 1.2 - normal * 0.35).normalize_or_zero()
             * lashes.curl
             * if upper { 1.0 } else { 0.5 }
@@ -552,7 +584,8 @@ fn ribbon(mesh: &mut MeshData, info: &mut Vec<f32>, line: &[Vec3], width: f32, v
             mesh.positions.push(p + side * w * s);
             mesh.normals.push(normal);
             mesh.uvs.push(Vec2::new(s + 0.5, t));
-            info.extend_from_slice(&[0.0, 1.0, 0.0, 0.0]);
+            // Darker toward the root, where the lash is thickest and its neighbours shade it.
+            info.extend_from_slice(&[0.0, 0.45 + 0.55 * t.sqrt(), 0.0, 0.0]);
         }
     }
     for i in 0..u32::try_from(n - 1).unwrap_or(0) {

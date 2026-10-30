@@ -39,6 +39,7 @@ pub(crate) fn diagnose(face: &Value, defaults: &Template) -> Vec<Problem> {
         cheeks: section(face, "cheeks", defaults, &mut problems),
         marks: marks(face, defaults, &mut problems),
         mapping: section(face, "mapping", defaults, &mut problems),
+        eye3d: face.get("eye3d").is_some().then(|| section(face, "eye3d", defaults, &mut problems)),
         ..FaceProfile::default()
     };
     rest(face, &mut problems);
@@ -48,7 +49,7 @@ pub(crate) fn diagnose(face: &Value, defaults: &Template) -> Vec<Problem> {
     problems
 }
 
-/// One of the five sections that are a single struct, read from its part of the face.
+/// One of the sections that are a single struct, read from its part of the face.
 fn section<T: DeserializeOwned + Default>(
     face: &Value,
     name: &str,

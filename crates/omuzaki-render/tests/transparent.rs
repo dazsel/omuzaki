@@ -123,6 +123,65 @@ fn overlapping_quads_look_the_same_in_either_submission_order_and_the_nearer_one
     assert!(green > red, "moving the green quad nearer must put it on top: {:?}", pixel(&swapped, CENTRE));
 }
 
+/// A half-transparent unlit material of `colour`, blended order-independently.
+fn independent(r: &mut dyn Renderer, colour: Colour) -> MaterialId {
+    let mut material = Material::unlit(colour);
+    material.alpha = AlphaMode::Blend;
+    material.order_independent = true;
+    r.create_material(&material).unwrap()
+}
+
+/// An sRGB byte as linear light.
+fn linear(byte: u8) -> f32 {
+    let v = f32::from(byte) / 255.0;
+    if v <= 0.040_45 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+}
+
+#[test]
+fn order_independent_layers_ignore_submission_order_cover_as_alpha_says_and_hide_behind_opaque_depth() {
+    let _serial = serial();
+    let mut r = support::renderer();
+    let q = quads(&mut r);
+    let (red, green) =
+        (independent(&mut r, Colour::rgba(255, 0, 0, 128)), independent(&mut r, Colour::rgba(0, 255, 0, 128)));
+    for samples in [1, 4] {
+        let quality = Quality { samples, ..plain() };
+        let draw = |r: &mut dyn Renderer, instances: &[Instance]| {
+            let mut scene = quad_scene();
+            scene.instances.extend_from_slice(instances);
+            r.render_image(SIZE, AlphaEncoding::Straight, &scene, &quality).unwrap()
+        };
+        let (near, far) = (at(q.mesh, red, 0.5), at(q.mesh, green, -0.5));
+        let one = draw(&mut r, &[far, near]);
+        let two = draw(&mut r, &[near, far]);
+        save(&one, &format!("independent-quads-{samples}x.png"));
+        assert_eq!(one.rgba8, two.rgba8, "order-independent layers must not depend on submission order ({samples}x)");
+        // Two half-covering layers over black cover three quarters: the weighted average of red and green, times
+        // 0.75. The nearer (red) weighs at least as much as the farther.
+        let [r8, g8, b8, _] = pixel(&one, CENTRE);
+        let (lr, lg) = (linear(r8), linear(g8));
+        assert!(b8 == 0 && (lr + lg - 0.75).abs() < 0.03, "covers 3/4 ({samples}x): {:?}", pixel(&one, CENTRE));
+        assert!(lr >= lg, "the nearer layer weighs at least as much ({samples}x): {:?}", pixel(&one, CENTRE));
+        // Unlike a sorted blend (red 0.5 over green 0.25), layers this close in depth weigh almost alike, and an
+        // authored order, which a sorted blend obeys, changes nothing.
+        assert!(lr - lg < 0.1, "the layers average rather than stack ({samples}x): {:?}", pixel(&one, CENTRE));
+        let (mut first, mut second) = (near, far);
+        (first.order, second.order) = (0, 1);
+        assert_eq!(draw(&mut r, &[first, second]).rgba8, one.rgba8, "an authored order changes nothing ({samples}x)");
+        // A single layer is exactly a blend: half red over black.
+        let single = draw(&mut r, &[near]);
+        let [sr, sg, ..] = pixel(&single, CENTRE);
+        assert!((linear(sr) - 0.5).abs() < 0.01 && sg == 0, "one layer ({samples}x): {:?}", pixel(&single, CENTRE));
+        // An opaque wall in front hides them; behind them it shows through.
+        let wall = draw(&mut r, &[at(q.mesh, q.wall, 0.0)]);
+        let hidden = draw(&mut r, &[at(q.mesh, q.wall, 0.0), at(q.mesh, red, -0.5)]);
+        assert_eq!(hidden.rgba8, wall.rgba8, "a wall in front hides an order-independent layer ({samples}x)");
+        let over = draw(&mut r, &[at(q.mesh, q.wall, 0.0), near]);
+        let [or, _, ob, _] = pixel(&over, CENTRE);
+        assert!(or > 0 && ob > 0, "a layer in front blends with the wall ({samples}x): {:?}", pixel(&over, CENTRE));
+    }
+}
+
 #[test]
 fn an_authored_order_beats_distance_and_a_blended_surface_does_not_write_depth() {
     let _serial = serial();

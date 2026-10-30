@@ -192,8 +192,13 @@ fn eye_tear_normal(n: vec3<f32>, w: vec3<f32>, amount: f32) -> vec3<f32> {
 
 fn program_light(lit: vec3<f32>, n: vec3<f32>, v: vec3<f32>, p: ProgramIn) -> vec3<f32> {
     let f = eye_frame();
-    // The specular normal: the tear film's, wavy over the sclera and nearly smooth over the cornea.
+    // Two reflecting layers. The tear film is a clear coat: its normal is wavy over the sclera and smooth over the
+    // cornea, which it becomes over the iris. Under it, the sclera's own satin sheen follows the ball.
     let ns = eye_tear_normal(n, p.world_position, program_float(P_TEAR_WOBBLE) * (1.0 - eye_iris));
+    let coat = mix(program_float(P_TEAR_COAT), 1.0, eye_iris);
+    let coat_roughness = mix(program_float(P_TEAR_ROUGHNESS), program_float(P_CORNEA_ROUGHNESS), eye_iris);
+    let base = (1.0 - eye_iris) * (1.0 - coat * eye_fresnel(dot(ns, v)));
+    let base_roughness = program_float(P_SCLERA_ROUGHNESS);
     // The iris faces forward (tilted a little by its cone); the sclera faces out of the ball.
     let cone = 0.25 * eye_world(f, vec3<f32>(eye_local(f, n).xy, 0.0));
     let relief = program_float(P_IRIS_RELIEF) * eye_world(f, vec3<f32>(eye_relief, 0.0));
@@ -202,7 +207,6 @@ fn program_light(lit: vec3<f32>, n: vec3<f32>, v: vec3<f32>, p: ProgramIn) -> ve
     let scatter = program_vec3(P_SCATTER_COLOUR);
     var diffuse = vec3<f32>(0.0);
     var specular = vec3<f32>(0.0);
-    let roughness = mix(program_float(P_SCLERA_ROUGHNESS), program_float(P_CORNEA_ROUGHNESS), eye_iris);
     for (var i = 0u; i < frame.counts.x; i++) {
         let l = frame.lights[i];
         if (l.vector.w == LIGHT_HEMISPHERE) {
@@ -221,10 +225,15 @@ fn program_light(lit: vec3<f32>, n: vec3<f32>, v: vec3<f32>, p: ProgramIn) -> ve
         let iris = saturate(dot(iris_n, incident.to_light) * 0.85 + 0.15)
             * (1.0 + program_float(P_CAUSTIC) * far_side * length(l_local.xy));
         diffuse += light * mix(sclera, vec3<f32>(iris), eye_iris);
-        specular += light * eye_ggx(ns, v, incident.to_light, roughness) * eye_fresnel(dot(normalize(v + incident.to_light), v));
+        let fresnel = eye_fresnel(dot(normalize(v + incident.to_light), v));
+        specular += light * fresnel
+            * (coat * eye_ggx(ns, v, incident.to_light, coat_roughness)
+                + base * eye_ggx(n, v, incident.to_light, base_roughness));
     }
     diffuse += environment_light(mix(n, iris_n, eye_iris));
-    let reflected = reflect(-v, ns);
-    specular += environment_specular(reflected, roughness) * eye_fresnel(dot(ns, v));
-    return eye_albedo * diffuse / PI + specular * program_float(P_GLOSS);
+    specular += environment_specular(reflect(-v, ns), coat_roughness) * eye_fresnel(dot(ns, v)) * coat;
+    specular += environment_specular(reflect(-v, n), base_roughness) * eye_fresnel(dot(n, v)) * base;
+    // What the tear film reflects does not reach the eye beneath it.
+    let through = 1.0 - coat * eye_fresnel(dot(ns, v));
+    return eye_albedo * diffuse * through / PI + specular * program_float(P_GLOSS);
 }

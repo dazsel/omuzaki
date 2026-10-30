@@ -11,8 +11,8 @@ use crate::ops_shared::check::check_edit;
 use crate::ops_shared::edit::{changed_output, diff, first_null, marks_len, put, stored_face, working_copy};
 use crate::ops_shared::path::{canonical, chain, steps, template};
 
-/// Sets one field of a character's face: a key under `face/eyes`, `brows`, `mouth`, `nose` or `cheeks`, or a field of one
-/// mark (`face/marks/<i>/...`). An object value sets the fields it names and leaves the others. The marks list itself is
+/// Sets one field of a character's face: a key under `face/eyes`, `brows`, `mouth`, `nose`, `cheeks` or `eye3d` (the
+/// photoreal 3D eye, added with its defaults when the face has none), or a field of one mark (`face/marks/<i>/...`). An object value sets the fields it names and leaves the others. The marks list itself is
 /// changed with `face.add_mark` and `face.remove_mark`, never here.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -30,8 +30,8 @@ impl Op for SetStyle {
     fn meta() -> OpMeta {
         OpMeta {
             name: "face.set_style",
-            summary: "Set one face field (eyes, brows, mouth, nose, cheeks or a mark's field), validate the whole face, \
-                      and return the changed paths",
+            summary: "Set one face field (eyes, brows, mouth, nose, cheeks, the 3D eye `eye3d`, or a mark's field), \
+                      validate the whole face, and return the changed paths",
             kind: OpKind::Edit,
             scope: Scope::EditCharacter,
             undo: Undo::Auto,
