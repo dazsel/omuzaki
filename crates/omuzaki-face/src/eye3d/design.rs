@@ -188,7 +188,7 @@ impl Default for Skin {
             tone: Colour::hex(0x00a0_7458),
             freckles: 40.0,
             freckle: Colour::hex(0x0070_3a24),
-            lid_thickness: 0.0012,
+            lid_thickness: 0.0016,
             crease: 0.0058,
             crease_depth: 0.0014,
         }
@@ -220,14 +220,14 @@ pub struct Lashes {
 impl Default for Lashes {
     fn default() -> Self {
         Self {
-            upper: 220,
+            upper: 300,
             lower: 60,
             upper_length: 0.0048,
             lower_length: 0.003,
             curl: 0.8,
             clumping: 0.55,
-            thickness: 0.000_085,
-            colour: Colour::hex(0x0020_1612),
+            thickness: 0.000_07,
+            colour: Colour::hex(0x0030_2018),
         }
     }
 }

@@ -311,7 +311,7 @@ impl Lids {
         };
         z += side(upper_z, lower_z);
         // The lash line: the roots' dense shadow along each lid's front edge, darker on the upper lid.
-        let lash_line = gauss((d - 0.55 * MM) / (0.3 * MM));
+        let lash_line = gauss((d - 0.7 * MM) / (0.3 * MM));
         let mut cavity = 1.0 - side(0.5 * fold + 0.45 * lash_line, 0.25 * lash_line);
         // The lids blend into the face round them, sooner at the corners.
         let corner = (2.0 * (u - 0.5)).abs();
@@ -511,19 +511,18 @@ impl Lids {
             (half + ((1.0 - u) * half as f32) as usize).min(AROUND - 1)
         };
         // Rooted along the margin's front edge, in two or three loose rows.
-        let row = rng.range(0.38, 0.62) * MM;
+        let row = rng.range(0.55, 0.85) * MM;
         let (root, _) = self.surface(k, row);
         let (ahead, _) = self.surface(k, row + 0.4 * MM);
         let out = (ahead - root).normalize_or_zero();
         let normal = root.normalize_or_zero();
         let up = if upper { Vec3::Y } else { -Vec3::Y };
-        // Outer lashes sweep toward the outer corner.
-        let sweep = Vec3::new(-1.0, 0.0, 0.0) * (0.42 * (1.0 - u)).powi(2)
-            + Vec3::new(0.25, 0.0, 0.0) * smoothstep(0.8, 1.0, u);
+        // Lashes fan out from the lid's middle toward each corner, the outer ones sweeping furthest.
+        let sweep = Vec3::new(-0.9, 0.0, 0.0) * (0.5 - u) + Vec3::new(-0.3, 0.0, 0.0) * (1.0 - u).powi(3);
         let length = if upper { lashes.upper_length } else { lashes.lower_length }
             * (0.3 + 0.7 * bump(u, if upper { 0.38 } else { 0.4 }).powf(0.6))
             * if rng.unit() < 0.15 { rng.range(0.35, 0.7) } else { rng.range(0.75, 1.08) };
-        let start = (normal * 0.9 + out * 0.12 - up * 0.2 + sweep * 0.7).normalize_or_zero();
+        let start = (normal * 0.85 + out * 0.1 - up * 0.08 + sweep * 0.7).normalize_or_zero();
         let curl = (up * 1.2 - normal * 0.35).normalize_or_zero()
             * lashes.curl
             * if upper { 1.0 } else { 0.5 }
