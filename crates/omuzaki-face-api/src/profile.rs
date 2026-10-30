@@ -16,6 +16,7 @@ use crate::eye3d::EyeDesign;
 use crate::grammar::GrammarRules;
 use crate::mapping::FaceMapping;
 use crate::palette::ColourRef;
+use crate::sculpt::{EarDesign, LipsDesign, NoseDesign};
 
 mod eye_detail;
 mod makeup;
@@ -1164,6 +1165,16 @@ pub struct FaceProfile {
     /// out, the face has painted eyes only; `face.set_style` on any `face/eye3d/...` field adds it with its defaults.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub eye3d: Option<EyeDesign>,
+    /// The sculpted 3D nose, for a character modelled in 3D. Left out, the face has its painted nose only;
+    /// `face.set_style` on any `face/nose3d/...` field adds it with its defaults.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nose3d: Option<NoseDesign>,
+    /// The sculpted 3D lips, added the same way under `face/lips3d`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lips3d: Option<LipsDesign>,
+    /// The sculpted 3D ear, added the same way under `face/ear3d`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ear3d: Option<EarDesign>,
 }
 
 impl FaceProfile {
@@ -1196,6 +1207,15 @@ impl Validate for FaceProfile {
         c.nested("grammar", &self.grammar);
         if let Some(eye) = &self.eye3d {
             c.nested("eye3d", eye);
+        }
+        if let Some(nose) = &self.nose3d {
+            c.nested("nose3d", nose);
+        }
+        if let Some(lips) = &self.lips3d {
+            c.nested("lips3d", lips);
+        }
+        if let Some(ear) = &self.ear3d {
+            c.nested("ear3d", ear);
         }
         if let Err(message) = self.rest.validate_ranges() {
             c.fail("rest", message);

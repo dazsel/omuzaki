@@ -13,9 +13,9 @@ use std::path::PathBuf;
 use omuzaki_core::glam::{UVec2, Vec3};
 use omuzaki_core::mesh::MeshData;
 use omuzaki_face::feature::closeup::{Closeup, FeatureView};
-use omuzaki_face::feature::ear::EarDesign;
-use omuzaki_face::feature::lips::LipsDesign;
-use omuzaki_face::feature::nose::NoseDesign;
+use omuzaki_face::feature::ear::{self, EarDesign};
+use omuzaki_face::feature::lips::{self, LipsDesign};
+use omuzaki_face::feature::nose::{self, NoseDesign};
 use omuzaki_face::feature::{Paint, skin_mesh};
 use omuzaki_render::{AdapterPreference, HeadlessOptions, WgpuRenderer};
 use omuzaki_render_api::{AlphaEncoding, Quality, Renderer, RendererExt};
@@ -75,12 +75,12 @@ fn save(sheet: &image::RgbaImage, name: &str) {
 }
 
 fn nose_mesh(design: &NoseDesign) -> MeshData {
-    let field = design.field();
-    let (min, max) = design.bounds();
+    let field = nose::field(design);
+    let (min, max) = nose::bounds(design);
     let tone = design.tone.to_linear();
-    let colour = |p: Vec3| tone.lerp(tone * Vec3::new(1.05, 0.86, 0.84), 0.45 * design.redness(p));
+    let colour = |p: Vec3| tone.lerp(tone * Vec3::new(1.05, 0.86, 0.84), 0.45 * nose::redness(design, p));
     let wet = |_: Vec3| 0.0;
-    let flush = |p: Vec3| 0.4 * design.redness(p);
+    let flush = |p: Vec3| 0.4 * nose::redness(design, p);
     skin_mesh(&field, min, max, 0.00035, &Paint { colour: &colour, wet: &wet, flush: &flush })
 }
 
@@ -90,16 +90,16 @@ fn the_nose_renders_from_every_side_in_both_styles() {
     for (design, name) in [(NoseDesign::default(), "nose-real.png"), (NoseDesign::anime(), "nose-anime.png")] {
         let mesh = nose_mesh(&design);
         assert!(mesh.indices.len() > 30_000, "{name}: {} triangles", mesh.indices.len() / 3);
-        let sheet = render(&mut renderer, &mesh, design.bounds(), design.style);
+        let sheet = render(&mut renderer, &mesh, nose::bounds(&design), design.style);
         save(&sheet, name);
     }
 }
 
 fn lips_mesh(design: &LipsDesign) -> MeshData {
-    let field = design.field();
-    let (min, max) = design.bounds();
-    let colour = |p: Vec3| design.colour_at(p);
-    let wet = |p: Vec3| design.wet_at(p);
+    let field = lips::field(design);
+    let (min, max) = lips::bounds(design);
+    let colour = |p: Vec3| lips::colour_at(design, p);
+    let wet = |p: Vec3| lips::wet_at(design, p);
     let flush = |_: Vec3| 0.0;
     skin_mesh(&field, min, max, 0.00035, &Paint { colour: &colour, wet: &wet, flush: &flush })
 }
@@ -110,18 +110,18 @@ fn the_lips_render_from_every_side_in_both_styles() {
     for (design, name) in [(LipsDesign::default(), "lips-real.png"), (LipsDesign::anime(), "lips-anime.png")] {
         let mesh = lips_mesh(&design);
         assert!(mesh.indices.len() > 30_000, "{name}: {} triangles", mesh.indices.len() / 3);
-        let sheet = render(&mut renderer, &mesh, design.bounds(), design.style);
+        let sheet = render(&mut renderer, &mesh, lips::bounds(&design), design.style);
         save(&sheet, name);
     }
 }
 
 fn ear_mesh(design: &EarDesign) -> MeshData {
-    let field = design.field();
-    let (min, max) = design.bounds();
+    let field = ear::field(design);
+    let (min, max) = ear::bounds(design);
     let tone = design.tone.to_linear();
-    let colour = |p: Vec3| tone.lerp(tone * Vec3::new(1.06, 0.84, 0.82), 0.3 * design.redness(p));
+    let colour = |p: Vec3| tone.lerp(tone * Vec3::new(1.06, 0.84, 0.82), 0.3 * ear::redness(design, p));
     let wet = |_: Vec3| 0.0;
-    let flush = |p: Vec3| 0.5 * design.redness(p);
+    let flush = |p: Vec3| 0.5 * ear::redness(design, p);
     skin_mesh(&field, min, max, 0.00035, &Paint { colour: &colour, wet: &wet, flush: &flush })
 }
 
@@ -131,7 +131,7 @@ fn the_ear_renders_from_every_side_in_both_styles() {
     for (design, name) in [(EarDesign::default(), "ear-real.png"), (EarDesign::anime(), "ear-anime.png")] {
         let mesh = ear_mesh(&design);
         assert!(mesh.indices.len() > 30_000, "{name}: {} triangles", mesh.indices.len() / 3);
-        let sheet = render(&mut renderer, &mesh, design.bounds(), design.style);
+        let sheet = render(&mut renderer, &mesh, ear::bounds(&design), design.style);
         save(&sheet, name);
     }
 }

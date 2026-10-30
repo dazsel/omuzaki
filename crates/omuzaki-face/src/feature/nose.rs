@@ -10,109 +10,38 @@
 //! Frame: x across the face (to the person's left), y up, z out of the face; metres. The face's front plane passes
 //! through the origin near the base of the nose.
 
-use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::Vec3;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+pub use omuzaki_face_api::sculpt::NoseDesign;
 
 use super::sdf::{carve, ellipsoid, ellipsoid_turned, frame, round_cone, smax, smin, smoothstep, tube};
 
 const MM: f32 = 0.001;
 
-/// Every number that shapes one nose.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(default, deny_unknown_fields)]
-pub struct NoseDesign {
-    /// 0 photoreal, 1 anime.
-    pub style: f32,
-    /// From between the eyes (the nasion) to where the nose meets the lip (the subnasale), metres.
-    pub length: f32,
-    /// How far the tip stands out of the face, metres.
-    pub projection: f32,
-    /// How far the bridge stands out between the eyes, metres.
-    pub bridge: f32,
-    /// The width across the wings, metres.
-    pub width: f32,
-    /// The radius of each of the tip's domes, metres.
-    pub tip: f32,
-    /// How far apart the tip's domes sit, as a share of their radius (0 one round tip, 1 a clearly split one).
-    pub bifid: f32,
-    /// How far the tip turns up, degrees (negative droops).
-    pub upturn: f32,
-    /// A bump on the bridge, metres (0 straight, negative a scooped bridge).
-    pub hump: f32,
-    /// The nostrils' size, a scale on the default.
-    pub nostrils: f32,
-    /// How full the wings are, a scale on the default.
-    pub flare: f32,
-    /// The skin's colour.
-    pub tone: Colour,
+/// Where the nostrils open, as a field for the cavity term: negative inside a nostril.
+pub fn nostril_depth(d: &NoseDesign, p: Vec3) -> f32 {
+    let s = Shape::new(d);
+    s.nostrils(p)
 }
 
-impl Default for NoseDesign {
-    fn default() -> Self {
-        Self {
-            style: 0.0,
-            length: 0.046,
-            projection: 0.021,
-            bridge: 0.009,
-            width: 0.033,
-            tip: 0.0052,
-            bifid: 0.7,
-            upturn: 4.0,
-            hump: 0.0006,
-            nostrils: 1.0,
-            flare: 1.0,
-            tone: Colour::hex(0x009e_745e),
-        }
-    }
+/// The nose's field, the face patch it sits on included.
+pub fn field(d: &NoseDesign) -> impl Fn(Vec3) -> f32 + '_ {
+    let shape = Shape::new(d);
+    move |p| shape.distance(p)
 }
 
-impl NoseDesign {
-    /// A drawn anime nose: small, low and smooth, on fair skin.
-    pub fn anime() -> Self {
-        Self {
-            style: 1.0,
-            length: 0.036,
-            projection: 0.009,
-            bridge: 0.003,
-            width: 0.022,
-            tip: 0.0035,
-            bifid: 0.0,
-            upturn: 12.0,
-            hump: 0.0,
-            nostrils: 0.6,
-            flare: 0.6,
-            tone: Colour::hex(0x00f6_dccf),
-        }
-    }
+/// The box the nose and its patch of face fill.
+pub fn bounds(d: &NoseDesign) -> (Vec3, Vec3) {
+    let half = (0.6 * d.width).max(0.026);
+    (Vec3::new(-half, -0.034, -0.012), Vec3::new(half, 0.034, d.projection + 0.004))
+}
 
-    /// Where the nostrils open, as a field for the cavity term: negative inside a nostril.
-    pub fn nostril_depth(&self, p: Vec3) -> f32 {
-        let s = Shape::new(self);
-        s.nostrils(p)
-    }
-
-    /// The nose's field, the face patch it sits on included.
-    pub fn field(&self) -> impl Fn(Vec3) -> f32 + '_ {
-        let shape = Shape::new(self);
-        move |p| shape.distance(p)
-    }
-
-    /// The box the nose and its patch of face fill.
-    pub fn bounds(&self) -> (Vec3, Vec3) {
-        let half = (0.6 * self.width).max(0.026);
-        (Vec3::new(-half, -0.034, -0.012), Vec3::new(half, 0.034, self.projection + 0.004))
-    }
-
-    /// How much of the surface at `p` is the nose's own skin (0 the face round it, 1 the tip and wings), for the flush.
-    pub fn redness(&self, p: Vec3) -> f32 {
-        let s = Shape::new(self);
-        let tip = 1.0 - smoothstep(-2.0 * MM, 9.0 * MM, (p - s.tip_centre).length() - s.tip);
-        let wings = [s.ala_centre, s.ala_centre * Vec3::new(-1.0, 1.0, 1.0)]
-            .map(|c| 1.0 - smoothstep(-2.0 * MM, 8.0 * MM, (p - c).length() - 3.0 * MM));
-        tip.max(wings[0]).max(wings[1]) * (1.0 - self.style)
-    }
+/// How much of the surface at `p` is the nose's own skin (0 the face round it, 1 the tip and wings), for the flush.
+pub fn redness(d: &NoseDesign, p: Vec3) -> f32 {
+    let s = Shape::new(d);
+    let tip = 1.0 - smoothstep(-2.0 * MM, 9.0 * MM, (p - s.tip_centre).length() - s.tip);
+    let wings = [s.ala_centre, s.ala_centre * Vec3::new(-1.0, 1.0, 1.0)]
+        .map(|c| 1.0 - smoothstep(-2.0 * MM, 8.0 * MM, (p - c).length() - 3.0 * MM));
+    tip.max(wings[0]).max(wings[1]) * (1.0 - d.style)
 }
 
 /// The placed forms of one design.

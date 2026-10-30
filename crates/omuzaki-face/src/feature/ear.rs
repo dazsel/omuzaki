@@ -10,85 +10,30 @@
 //! Frame: x along the head toward the back, y up, z out of the side of the head; metres. The ear canal's mouth is near
 //! the origin.
 
-use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::{Mat3, Vec3};
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+pub use omuzaki_face_api::sculpt::EarDesign;
 
 use super::sdf::{capsule, carve, ellipsoid, resample, smin, smoothstep, tube};
 
 const MM: f32 = 0.001;
 
-/// Every number that shapes one ear.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(default, deny_unknown_fields)]
-pub struct EarDesign {
-    /// 0 photoreal, 1 anime.
-    pub style: f32,
-    /// Top to the bottom of the lobe, metres.
-    pub height: f32,
-    /// Front to back, metres.
-    pub width: f32,
-    /// How far the ear stands out from the head at the back, degrees.
-    pub protrusion: f32,
-    /// The rim's roll, a scale on the default.
-    pub helix: f32,
-    /// The inner ridge, a scale on the default (0 smooth).
-    pub antihelix: f32,
-    /// The lobe, a scale on the default (0 attached and small).
-    pub lobe: f32,
-    /// The skin's colour.
-    pub tone: Colour,
+/// The ear's field, the patch of head it stands on included.
+pub fn field(d: &EarDesign) -> impl Fn(Vec3) -> f32 + '_ {
+    let shape = Shape::new(d);
+    move |p| shape.distance(p)
 }
 
-impl Default for EarDesign {
-    fn default() -> Self {
-        Self {
-            style: 0.0,
-            height: 0.062,
-            width: 0.032,
-            protrusion: 22.0,
-            helix: 1.0,
-            antihelix: 1.0,
-            lobe: 1.0,
-            tone: Colour::hex(0x009e_745e),
-        }
-    }
+/// The box the ear and its patch of head fill.
+pub fn bounds(d: &EarDesign) -> (Vec3, Vec3) {
+    let (h, w) = (0.5 * d.height + 0.006, 0.5 * d.width + 0.012);
+    (Vec3::new(-w - 0.004, -h, -0.012), Vec3::new(w + 0.004, h, 0.006 + 0.6 * d.width))
 }
 
-impl EarDesign {
-    /// A drawn anime ear: a little smaller, one rim round a shallow bowl, on fair skin.
-    pub fn anime() -> Self {
-        Self {
-            style: 1.0,
-            height: 0.052,
-            width: 0.028,
-            protrusion: 16.0,
-            helix: 1.1,
-            antihelix: 0.3,
-            lobe: 0.8,
-            tone: Colour::hex(0x00f6_dccf),
-        }
-    }
-
-    /// The ear's field, the patch of head it stands on included.
-    pub fn field(&self) -> impl Fn(Vec3) -> f32 + '_ {
-        let shape = Shape::new(self);
-        move |p| shape.distance(p)
-    }
-
-    /// The box the ear and its patch of head fill.
-    pub fn bounds(&self) -> (Vec3, Vec3) {
-        let (h, w) = (0.5 * self.height + 0.006, 0.5 * self.width + 0.012);
-        (Vec3::new(-w - 0.004, -h, -0.012), Vec3::new(w + 0.004, h, 0.006 + 0.6 * self.width))
-    }
-
-    /// How much redder the skin is at `p`: the ear's thin rim and lobe let the light through warm.
-    pub fn redness(&self, p: Vec3) -> f32 {
-        let s = Shape::new(self);
-        let rim = 1.0 - smoothstep(-1.5 * MM, 5.0 * MM, s.helix_distance(s.local(p)));
-        rim * (1.0 - self.style)
-    }
+/// How much redder the skin is at `p`: the ear's thin rim and lobe let the light through warm.
+pub fn redness(d: &EarDesign, p: Vec3) -> f32 {
+    let s = Shape::new(d);
+    let rim = 1.0 - smoothstep(-1.5 * MM, 5.0 * MM, s.helix_distance(s.local(p)));
+    rim * (1.0 - d.style)
 }
 
 /// The placed forms of one design, in the auricle's own frame (before it is turned out from the head).
