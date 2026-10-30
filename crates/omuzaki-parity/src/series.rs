@@ -288,4 +288,16 @@ mod tests {
         assert!((c.amplitude_ratio - 0.5).abs() < 0.01, "{c:?}");
         assert!(score.worst[0].hint.contains("amplitude 50%"), "{}", score.worst[0].hint);
     }
+
+    #[test]
+    fn huge_values_score_without_overflowing() {
+        let reference = series(|i| [0.0, 0.25, 0.5][i], 3);
+        for big in [[0.0, 1e300, 0.5], [1e300, 0.2, 0.5], [-1e300, 1e300, f64::MAX]] {
+            let ours = series(|i| big[i], 3);
+            for align in [TimeAlign::None, TimeAlign::Offset, TimeAlign::Warp] {
+                let score = score_series(&ours, &reference, 0.0, align, 1.0);
+                assert!(!score.done, "{score:?}");
+            }
+        }
+    }
 }

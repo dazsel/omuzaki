@@ -77,7 +77,7 @@ pub fn best_offset(cost: &dyn Fn(usize, usize) -> f32, n_ours: usize, n_ref: usi
             if j < 0 || j >= n_ref as i64 {
                 continue;
             }
-            sum += f64::from(cost(i, usize::try_from(j).unwrap_or(0)));
+            sum += f64::from(bounded(cost(i, usize::try_from(j).unwrap_or(0))));
             n += 1;
         }
         if n >= need {
@@ -90,6 +90,11 @@ pub fn best_offset(cost: &dyn Fn(usize, usize) -> f32, n_ours: usize, n_ref: usi
     best
 }
 
+/// A frame cost the sums can carry: an overflowed or undefined cost (from values near `f64::MAX`) counts as the worst.
+fn bounded(cost: f32) -> f32 {
+    if cost.is_nan() { f32::MAX } else { cost.min(f32::MAX) }
+}
+
 /// The dynamic time warp of ours against the reference: for each frame of ours, the reference frame on the least-cost
 /// monotonic path (steps of one frame on either side or both), and the path's mean cost. The path may start and end
 /// anywhere in the reference (a subsequence warp), so a clip is placed inside a longer reference.
@@ -99,7 +104,7 @@ pub fn warp(cost: &dyn Fn(usize, usize) -> f32, n_ours: usize, n_ref: usize) -> 
     if n_ours == 0 || n_ref == 0 {
         return (Vec::new(), 0.0);
     }
-    let c: Vec<f32> = (0..n_ours * n_ref).map(|k| cost(k / n_ref, k % n_ref)).collect();
+    let c: Vec<f32> = (0..n_ours * n_ref).map(|k| bounded(cost(k / n_ref, k % n_ref))).collect();
     let mut acc = vec![f64::INFINITY; n_ours * n_ref];
     for i in 0..n_ours {
         for j in 0..n_ref {
@@ -143,7 +148,7 @@ pub fn warp(cost: &dyn Fn(usize, usize) -> f32, n_ours: usize, n_ref: usize) -> 
         if diag <= up && diag <= left {
             i -= 1;
             j -= 1;
-        } else if up <= left {
+        } else if up <= left || j == 0 {
             i -= 1;
         } else {
             j -= 1;

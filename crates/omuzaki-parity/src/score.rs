@@ -169,6 +169,8 @@ pub struct PairScore {
     pub ignored: usize,
     /// The scored pixels that are off.
     pub pixels_off: usize,
+    /// The largest per-channel byte difference over the scored pixels (0 at parity).
+    pub max_level: u8,
     /// The whole frame's measures.
     pub metrics: Vec<Metric>,
     /// Each region's score.
@@ -218,6 +220,8 @@ pub fn score_pair(
     let off: Vec<bool> = levels.v.iter().zip(keep).map(|(d, k)| *k && *d > tol).collect();
     let pixels = keep.iter().filter(|k| **k).count();
     let pixels_off = off.iter().filter(|o| **o).count();
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // a byte difference
+    let max_level = levels.v.iter().zip(keep).filter(|(_, k)| **k).map(|(d, _)| *d as u8).max().unwrap_or(0);
     let total_error: f64 = de.v.iter().zip(keep).filter(|(_, k)| **k).map(|(d, _)| f64::from(*d)).sum();
     let all = Some(keep);
     let de_stats = stats(&de, all);
@@ -313,6 +317,7 @@ pub fn score_pair(
         pixels,
         ignored: w * h - pixels,
         pixels_off,
+        max_level,
         metrics,
         regions: scored,
         worst,

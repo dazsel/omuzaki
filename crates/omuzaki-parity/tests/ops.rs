@@ -165,6 +165,7 @@ fn one_level_on_one_pixel_is_not_parity() {
     let out = rig.answer(&doc, "parity.compare", json!({ "ours": ours, "reference": reference }));
     assert_eq!(out["done"], false);
     assert_eq!(out["pixels_off"], 1, "{out}");
+    assert_eq!(out["max_level"], 1);
     let tile = &out["worst_tiles"][0]["rect"];
     let [x, y, w, h] = [0, 1, 2, 3].map(|k| tile[k].as_u64().unwrap());
     assert!((x..x + w).contains(&33) && (y..y + h).contains(&120), "the worst tile holds the pixel: {tile}");
