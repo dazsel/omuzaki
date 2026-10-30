@@ -659,12 +659,67 @@ impl Actor {
 mod tests {
     use super::*;
 
+    /// Two overlapping shots with a moving camera, a talking actor, a prop, a smoke volume, and layers behind and in
+    /// front.
+    const TWO_SHOTS: &str = r##"
+title = "Two shots"
+duration = 3.0
+fps = 24
+size = [540, 960]
+
+[[layer]]
+id = "wall"
+depth = "back"
+draw = { kind = "rect", w = 600, h = 1000 }
+fill = "#22305a"
+
+[[layer]]
+id = "title"
+draw = { kind = "text", text = "HELLO", size = 72 }
+y = 0.8
+x = [{ t = 0.0, v = -0.5 }, { t = 0.5, v = 0.5, ease = "back-out" }]
+
+[[shot]]
+id = "near"
+start = 0.0
+end = 1.75
+camera = { position = [{ t = 0.0, v = [0.0, 1.4, 2.4] }, { t = 1.75, v = [0.0, 1.4, 2.0] }], target = [0.0, 1.3, 0.0], fov = 30 }
+
+[[shot.actor]]
+id = "host"
+character = "kit"
+talk = [[0.2, 1.4]]
+face = [{ t = 0.0, set = { happy = 0.6 } }]
+
+[[shot.prop]]
+id = "desk"
+kind = "news-desk"
+position = [0.0, 0.0, 0.5]
+
+[[shot]]
+id = "far"
+start = 1.5
+end = 3.0
+backdrop = { kind = "gradient", top = "#8fb4ff", bottom = "#f0f4ff" }
+camera = { position = [0.0, 1.2, 4.5], target = [0.0, 1.0, 0.0], fov = 34 }
+
+[[shot.actor]]
+id = "host"
+character = "kit"
+pose = [{ t = 0.0, pose = "cheer" }]
+
+[[shot.volume]]
+id = "puff"
+preset = "smoke"
+emitter = { at = [0.0, 0.2, -0.5], radius = 0.3 }
+"##;
+
     #[test]
-    fn the_weather_report_reads_checks_and_round_trips() {
-        let def = SequenceDef::from_toml(include_str!("../sequences/weather-report.seq.toml")).unwrap();
+    fn a_two_shot_sequence_reads_checks_and_round_trips() {
+        let def = SequenceDef::from_toml(TWO_SHOTS).unwrap();
         def.check().unwrap();
-        assert_eq!(def.frames(), 180);
-        assert_eq!(def.shots.len(), 3);
+        assert_eq!(def.frames(), 72);
+        assert_eq!(def.shots.len(), 2);
         let again = SequenceDef::from_toml(&def.to_toml().unwrap()).unwrap();
         assert_eq!(again, def);
         let json: SequenceDef = serde_json::from_value(serde_json::to_value(&def).unwrap()).unwrap();
@@ -673,7 +728,7 @@ mod tests {
 
     #[test]
     fn a_shot_without_its_actor_is_refused() {
-        let mut def = SequenceDef::from_toml(include_str!("../sequences/weather-report.seq.toml")).unwrap();
+        let mut def = SequenceDef::from_toml(TWO_SHOTS).unwrap();
         def.shots[0].actors.clear();
         assert!(def.check().unwrap_err().to_string().contains("actor"));
     }
