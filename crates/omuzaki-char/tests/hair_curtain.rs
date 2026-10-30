@@ -223,7 +223,13 @@ fn a_disabled_group_does_not_shift_later_draws() {
     let with_disabled = |disabled: bool| {
         let mut params = HairParams::default();
         params.groups.clear();
-        let group = |enabled, generator| HairGroup { enabled, mirror: false, dynamics: Dynamics::default(), generator };
+        let group = |enabled, generator| HairGroup {
+            enabled,
+            mirror: false,
+            dynamics: Dynamics::default(),
+            generator,
+            lock: omuzaki_char_api::LockShape::default(),
+        };
         if disabled {
             params.groups.insert(
                 GroupId::new("a-off").unwrap(),
@@ -264,4 +270,23 @@ fn a_non_finite_parameter_still_makes_every_clump() {
     // Pins the clump count only (the contract check that rejects such a group is #1775); the points are not promised.
     let nan = CurtainGen { count: 8, spread_deg: f64::NAN, ..CurtainGen::default() };
     assert_eq!(compile_forked(&nan, 1).clumps.len(), 8);
+}
+
+#[test]
+fn a_drape_lays_each_guide_over_the_head_from_above_its_root() {
+    let plain = compile_forked(&CurtainGen { root_tuck_deg: 0.0, ..params(8) }, 3);
+    let draped = compile_forked(&CurtainGen { drape_deg: 50.0, ..params(8) }, 3);
+    assert_eq!(plain.clumps.len(), draped.clumps.len());
+    for (p, d) in plain.clumps.iter().zip(&draped.clumps) {
+        assert_eq!(d.rest.len(), GUIDE_POINTS);
+        // It starts well up the head, under the scalp shell (at the tuck's height), and comes out over it: the point
+        // just above the plain guide's root stands over the shell (under 2.6 cm thick).
+        assert!(d.rest[0].y > p.rest[0].y + 0.03, "{} against {}", d.rest[0], p.rest[0]);
+        assert!(gap(d.rest[0]) < 0.02, "it starts under the shell: {} m off the head", gap(d.rest[0]));
+        let over = d.rest.iter().rfind(|q| q.y > p.rest[0].y).unwrap();
+        assert!(gap(*over) > 0.026, "{over} is {} m off the head", gap(*over));
+        // Below, it falls as the plain guide does.
+        let (pe, de) = (p.rest[GUIDE_POINTS - 1], d.rest[GUIDE_POINTS - 1]);
+        assert!(pe.distance(de) < 0.03, "the tips land {} m apart", pe.distance(de));
+    }
 }

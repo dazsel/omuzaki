@@ -1,0 +1,285 @@
+# Body dials (#2612): regional swellings of the body's regions, placed by a fraction along the region and shaped round
+# its section, so one definition serves every template and body shape. Amounts are fractions of the section's radius.
+# Sided dials are written for the left side (+x); the right is mirrored. Design targets from surface anatomy (the
+# deltoid, biceps, the calf's gastrocnemius, the gluteal mass), not likenesses. The age curves are gentle: the belly
+# fills in middle age, a child's bust is flat.
+
+[[dial]]
+id = "neck_girth"
+name = "Neck girth"
+summary = "+1 a thick neck; -1 a slender one"
+group = "neck"
+prior = 0.3
+[[dial.effects]]
+frame = "body"
+region = "neck"
+t = 0.5
+span = 0.75
+lobes = { all = 1.0 }
+amount = 0.12
+
+[[dial]]
+id = "adams_apple"
+name = "Adam's apple"
+summary = "+1 a prominent larynx; -1 none"
+group = "neck"
+prior = 0.3
+range = [-1.0, 1.0]
+[[dial.effects]]
+frame = "body"
+region = "neck"
+t = 0.45
+span = 0.22
+lobes = { front = 1.0 }
+amount = 0.09
+amount_down = 0.03
+
+[[dial]]
+id = "trapezius"
+name = "Trapezius"
+summary = "+1 a heavy slope of muscle from the neck to the shoulders; -1 a flat one"
+group = "torso"
+prior = 0.3
+[[dial.effects]]
+frame = "body"
+region = "torso"
+t = 0.96
+span = 0.1
+lobes = { out = 1.0, back = 0.6 }
+amount = 0.1
+
+[[dial]]
+id = "chest_depth"
+name = "Chest depth"
+summary = "+1 a deep, barrel chest; -1 a shallow one"
+group = "torso"
+prior = 0.3
+[[dial.effects]]
+frame = "body"
+region = "torso"
+t = 0.78
+span = 0.16
+lobes = { front = 1.0, back = 0.4 }
+amount = 0.1
+
+[[dial]]
+id = "bust_size"
+name = "Bust"
+summary = "+1 a fuller bust; -1 a flat chest"
+group = "torso"
+prior = 0.35
+age = [[3.0, -0.8], [12.0, -0.6], [18.0, 0.0]]
+[[dial.effects]]
+frame = "body"
+region = "torso"
+t = 0.74
+span = 0.1
+lobes = { front = 1.0 }
+amount = 0.18
+
+[[dial]]
+id = "belly"
+name = "Belly"
+summary = "+1 a round belly; -1 a flat stomach"
+group = "torso"
+prior = 0.3
+age = [[25.0, 0.0], [50.0, 0.25], [80.0, 0.35]]
+[[dial.effects]]
+frame = "body"
+region = "torso"
+t = 0.38
+span = 0.17
+lobes = { front = 1.0, all = 0.2 }
+amount = 0.16
+
+[[dial]]
+id = "waist_width"
+name = "Waist width"
+summary = "+1 a wide waist; -1 a narrow one"
+group = "torso"
+prior = 0.3
+[[dial.effects]]
+frame = "body"
+region = "torso"
+t = 0.48
+span = 0.13
+lobes = { out = 1.0 }
+amount = 0.12
+
+[[dial]]
+id = "hip_fullness"
+name = "Hip fullness"
+summary = "+1 full hips at the sides; -1 narrow hips"
+group = "torso"
+prior = 0.3
+[[dial.effects]]
+frame = "body"
+region = "torso"
+t = 0.12
+span = 0.14
+lobes = { out = 1.0 }
+amount = 0.1
+
+[[dial]]
+id = "buttocks"
+name = "Buttocks"
+summary = "+1 full buttocks; -1 flat"
+group = "torso"
+prior = 0.3
+[[dial.effects]]
+frame = "body"
+region = "torso"
+t = 0.08
+span = 0.12
+lobes = { back = 1.0 }
+amount = 0.15
+
+[[dial]]
+id = "deltoid"
+name = "Shoulder muscle"
+summary = "+1 a rounded, muscular shoulder cap; -1 a slight one"
+group = "arms"
+sided = true
+prior = 0.3
+[[dial.effects]]
+frame = "body"
+region = "arm_left"
+t = 0.06
+span = 0.14
+lobes = { up = 1.0, front = 0.4, back = 0.4 }
+amount = 0.18
+
+[[dial]]
+id = "upper_arm_size"
+name = "Upper arm"
+summary = "+1 a thick upper arm; -1 a thin one"
+group = "arms"
+sided = true
+prior = 0.3
+[[dial.effects]]
+frame = "body"
+region = "arm_left"
+t = 0.3
+span = 0.24
+lobes = { all = 1.0 }
+amount = 0.14
+
+[[dial]]
+id = "biceps"
+name = "Biceps"
+summary = "+1 a pronounced biceps; -1 none"
+group = "arms"
+sided = true
+prior = 0.3
+[[dial.effects]]
+frame = "body"
+region = "arm_left"
+t = 0.3
+span = 0.16
+lobes = { front = 1.0 }
+amount = 0.16
+
+[[dial]]
+id = "forearm_size"
+name = "Forearm"
+summary = "+1 a thick forearm; -1 a thin one"
+group = "arms"
+sided = true
+prior = 0.3
+[[dial.effects]]
+frame = "body"
+region = "arm_left"
+t = 0.7
+span = 0.22
+lobes = { all = 1.0 }
+amount = 0.12
+
+[[dial]]
+id = "thigh_size"
+name = "Thigh"
+summary = "+1 a thick thigh; -1 a thin one"
+group = "legs"
+sided = true
+prior = 0.3
+[[dial.effects]]
+frame = "body"
+region = "leg_left"
+t = 0.22
+span = 0.22
+lobes = { all = 1.0 }
+amount = 0.12
+
+[[dial]]
+id = "inner_thigh"
+name = "Inner thigh"
+summary = "+1 full inner thighs; -1 a gap between them"
+group = "legs"
+sided = true
+prior = 0.25
+[[dial.effects]]
+frame = "body"
+region = "leg_left"
+t = 0.16
+span = 0.16
+lobes = { in = 1.0 }
+amount = 0.12
+
+[[dial]]
+id = "knee_definition"
+name = "Knee"
+summary = "+1 a defined kneecap; -1 a smooth knee"
+group = "legs"
+sided = true
+prior = 0.25
+[[dial.effects]]
+frame = "body"
+region = "leg_left"
+t = 0.5
+span = 0.07
+lobes = { front = 1.0 }
+amount = 0.08
+
+[[dial]]
+id = "calf_size"
+name = "Calf"
+summary = "+1 a full, muscular calf; -1 a slender one"
+group = "legs"
+sided = true
+prior = 0.3
+[[dial.effects]]
+frame = "body"
+region = "leg_left"
+t = 0.68
+span = 0.16
+lobes = { back = 1.0, out = 0.35, in = 0.35 }
+amount = 0.16
+
+[[dial]]
+id = "ankle_width"
+name = "Ankle"
+summary = "+1 thick ankles; -1 fine ones"
+group = "legs"
+sided = true
+prior = 0.25
+[[dial.effects]]
+frame = "body"
+region = "leg_left"
+t = 0.96
+span = 0.07
+lobes = { all = 1.0 }
+amount = 0.1
+
+[[dial]]
+id = "foot_width"
+name = "Foot width"
+summary = "+1 a wide foot; -1 a narrow one"
+group = "legs"
+sided = true
+prior = 0.25
+[[dial.effects]]
+frame = "body"
+region = "foot_left"
+t = 0.6
+span = 0.4
+lobes = { out = 1.0, in = 1.0 }
+amount = 0.1

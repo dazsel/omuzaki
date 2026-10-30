@@ -4,6 +4,8 @@
 //! bus) belongs to `omuzaki-anim-api`; this crate owns what the face *does* with it:
 //! - [`mapping`]: [`FaceMapping`], the formulas that turn channels into [`PaintParams`], with their coefficients
 //! - [`profile`]: [`FaceProfile`], one character's face design (layout, eye/brow/mouth styles, mapping, expressions)
+//! - [`eye3d`]: [`eye3d::EyeDesign`], the photoreal 3D eye and the skin round it, stored on the face as `eye3d`
+//! - [`sculpt`]: the sculpted 3D nose, lips and ear, stored on the face as `nose3d`, `lips3d` and `ear3d`
 //! - [`expression`]: named expressions (channel deltas) and the five lip-sync visemes
 //! - [`grammar`]: the anime grammar rule switches (FE-05), which the grammar stage in `omuzaki-anim` reads
 //! - [`paint`]: the [`FacePainter`] contract and the vector [`DrawList`] it produces, and how layers composite
@@ -17,12 +19,14 @@
 mod baker;
 pub mod check;
 pub mod expression;
+pub mod eye3d;
 pub mod grammar;
 pub mod mapping;
 pub mod paint;
 pub mod palette;
 pub mod profile;
 mod resolve;
+pub mod sculpt;
 pub mod underlay;
 
 pub use baker::{BakerInput, FaceBakerConflict, FaceBakerFactory, FaceBakerRegistration, face_baker};
@@ -40,14 +44,15 @@ pub use omuzaki_core::colour::Colour;
 pub use paint::{
     Cap, Cmd, ColourExt, Composite, DEFAULT_PX_PER_M, DrawList, FaceDrawing, FaceError, FaceInput, FaceLayerId,
     FaceLayerSpec, FacePainter, FaceProjection, FaceRasterizer, FaceRect, FaceView, Fade, GradientStop, Join,
-    LayerTarget, Paint, PathBuilder, PathEl, PathRef, PlanarWindow, Raster, Stops, narrow,
+    LayerTarget, Paint, PathBuilder, PathEl, PathRef, PlanarWindow, Raster, RasterRect, Stops, narrow,
 };
 pub use palette::{ColourError, ColourRef, Palette, PaletteSlot};
 pub use profile::{
-    AngerVeinStyle, Aperture, BlushKind, BrowStyle, CLOSE_SHOT, CatchlightShape, CheekStyle, Crease, EffectStyle,
-    EyeStyle, FaceLayout, FaceMark, FaceProfile, FaceRatios, FangKind, FangStyle, Highlights, Iris, IrisColours,
-    IrisPaint, Lash, Lips, LowerLidStyle, MarkKind, MarkSide, MouthInterior, MouthStyle, NoseKind, NoseStyle, Pupil,
-    PupilShape, Sclera, WIDE_SHOT,
+    AngerVeinStyle, Aperture, BlushKind, BrowStyle, CLOSE_SHOT, Catchlight, CatchlightShape, CheekStyle, Collarette,
+    Crease, EffectStyle, EyeShadow, EyeStyle, FaceLayout, FaceMark, FaceProfile, FaceRatios, FangKind, FangStyle,
+    Highlights, Iris, IrisColours, IrisDetail, IrisFibres, IrisFlecks, IrisPaint, Lash, LashStrands, LimbalRing, Lips,
+    LowerLidStyle, MAX_CATCHLIGHTS, MarkKind, MarkSide, MouthInterior, MouthStyle, NoseKind, NoseStyle, Pupil,
+    PupilShape, Sclera, StrandRow, TeethStyle, TongueStyle, WIDE_SHOT,
 };
 pub use resolve::ResolveError;
 

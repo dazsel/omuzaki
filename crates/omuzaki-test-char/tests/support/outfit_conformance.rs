@@ -666,7 +666,7 @@ fn pieces(fit: &dyn BodyFit, table: &RegionTable) -> Option<Vec<Piece>> {
 }
 
 /// The point of triangle `abc` nearest `p` (Ericson, Real-Time Collision Detection 5.1.5).
-fn closest_on_triangle(p: DVec3, a: DVec3, b: DVec3, c: DVec3) -> DVec3 {
+pub fn closest_on_triangle(p: DVec3, a: DVec3, b: DVec3, c: DVec3) -> DVec3 {
     let (ab, ac, ap) = (b - a, c - a, p - a);
     let (d1, d2) = (ab.dot(ap), ac.dot(ap));
     if d1 <= 0.0 && d2 <= 0.0 {
@@ -1173,4 +1173,47 @@ fn check_repeat(
 /// The fit a garment published (its envelope), from what was published after it.
 pub fn envelope_of(published: &Published, index: usize) -> Arc<dyn BodyFit> {
     published.get::<FitFact>().fits[index].clone()
+}
+
+/// The waist's and the bust's heights, as fractions of the torso: below the shoulder blades, where the fit stands off
+/// the back by its own gap.
+pub const GAP_BANDS: [std::ops::RangeInclusive<f64>; 2] = [0.35..=0.55, 0.65..=0.8];
+
+/// How far a close garment's inside stands off the torso's own mesh, at most, over the bust and the waist, on the
+/// `tall` template in `shape`: for each height and each of the front, the side and the back, the nearest of its body's
+/// vertices (its `-shell` mesh, not its sleeves) to the mesh there. Returns the gap, metres, and where it is.
+pub fn torso_gap(kind: &str, layer: i32, params: Value, shape: &BodyShape, services: &BuildServices) -> (f64, String) {
+    let def = character("tall", shape, &[(PART, kind, layer, params)]);
+    let stack = build(def, services).unwrap();
+    let fit = stack.before(PART).get::<FitFact>().fits[0].clone();
+    let name = omuzaki_char::body::mesh::name_of(BodyRegion::Torso);
+    let mut triangles = Vec::new();
+    for mesh in stack.output(BODY).meshes.iter().filter(|m| m.name == name) {
+        let g = &mesh.geometry;
+        for t in g.indices.as_chunks::<3>().0 {
+            triangles.push(t.map(|k| g.positions[k as usize].as_dvec3()));
+        }
+    }
+    let section = |t: f64| fit.section(BodyRegion::Torso, t as f32).unwrap();
+    let (bottom, top) = (f64::from(section(0.0).centre.y), f64::from(section(1.0).centre.y));
+    let mut nearest = std::collections::BTreeMap::<(i32, usize), f64>::new();
+    for mesh in stack.output(PART).meshes.iter().filter(|m| m.name.ends_with("-shell")) {
+        for v in &mesh.geometry.positions {
+            let v = v.as_dvec3();
+            let t = (v.y - bottom) / (top - bottom);
+            if !GAP_BANDS.iter().any(|band| band.contains(&t)) {
+                continue;
+            }
+            let c = section(t).centre.as_dvec3();
+            let angle = (v.x - c.x).atan2(v.z - c.z).to_degrees().abs();
+            let Some(side) = [0.0, 90.0, 180.0].iter().position(|a: &f64| (angle - a).abs() < 8.0) else { continue };
+            let d = triangles.iter().map(|&[a, b, c]| (v - closest_on_triangle(v, a, b, c)).length());
+            let at = nearest.entry(((t * 40.0).round() as i32, side)).or_insert(f64::INFINITY);
+            *at = d.fold(*at, f64::min);
+        }
+    }
+    assert!(nearest.len() > 20, "the {kind} covers the bust and the waist front, side and back");
+    let ((height, side), gap) =
+        nearest.iter().map(|(k, d)| (*k, *d)).fold(((0, 0_usize), 0.0), |w, x| if x.1 > w.1 { x } else { w });
+    (gap, format!("t = {:.3}, {}", f64::from(height) / 40.0, ["front", "side", "back"][side]))
 }

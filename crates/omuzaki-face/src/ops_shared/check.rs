@@ -39,6 +39,10 @@ pub(crate) fn diagnose(face: &Value, defaults: &Template) -> Vec<Problem> {
         cheeks: section(face, "cheeks", defaults, &mut problems),
         marks: marks(face, defaults, &mut problems),
         mapping: section(face, "mapping", defaults, &mut problems),
+        eye3d: face.get("eye3d").is_some().then(|| section(face, "eye3d", defaults, &mut problems)),
+        nose3d: face.get("nose3d").is_some().then(|| section(face, "nose3d", defaults, &mut problems)),
+        lips3d: face.get("lips3d").is_some().then(|| section(face, "lips3d", defaults, &mut problems)),
+        ear3d: face.get("ear3d").is_some().then(|| section(face, "ear3d", defaults, &mut problems)),
         ..FaceProfile::default()
     };
     rest(face, &mut problems);
@@ -48,7 +52,7 @@ pub(crate) fn diagnose(face: &Value, defaults: &Template) -> Vec<Problem> {
     problems
 }
 
-/// One of the five sections that are a single struct, read from its part of the face.
+/// One of the sections that are a single struct, read from its part of the face.
 fn section<T: DeserializeOwned + Default>(
     face: &Value,
     name: &str,
@@ -187,7 +191,7 @@ fn marks(face: &Value, defaults: &Template, problems: &mut Vec<Problem>) -> Vec<
 }
 
 /// Walks `value` against the default `template` at `at`. Each key the default doesn't have, and each value of the wrong
-/// kind or the wrong length, becomes a problem and is put back to its default, so the rest of the value still reads.
+/// kind or the wrong length (for a fixed-length list), becomes a problem and is put back to its default, so the rest of the value still reads.
 fn repair(value: &Value, template: &Value, at: &str, problems: &mut Vec<Problem>) -> Value {
     match (template, value) {
         (Value::Object(defaults), Value::Object(given)) => {
@@ -203,6 +207,9 @@ fn repair(value: &Value, template: &Value, at: &str, problems: &mut Vec<Problem>
             }
             Value::Object(kept)
         }
+        // A list whose default is empty (the extra catchlights) holds any number of items; reading the section checks
+        // each one.
+        (Value::Array(defaults), Value::Array(_)) if defaults.is_empty() => value.clone(),
         (Value::Array(defaults), Value::Array(given)) if defaults.len() == given.len() => Value::Array(
             given
                 .iter()

@@ -10,7 +10,8 @@ use std::collections::BTreeMap;
 
 use omuzaki_core::glam::{Affine3A, Mat3A, Mat4, Vec3};
 use omuzaki_render_api::{
-    BackdropFit, Background, Bloom, Camera, Colour, DepthOfField, FilmGrain, Fog, Light, Post, Projection,
+    BackdropFit, Background, Bloom, Camera, Colour, DepthOfField, FilmGrain, Fog, Light, Occlusion, Post,
+    Projection,
 };
 use omuzaki_stage_api::resolve::{AnchorFrame, LightBuf};
 use omuzaki_stage_api::{
@@ -99,7 +100,7 @@ pub struct Changes {
     pub structure: bool,
     /// The background changed.
     pub backdrop: bool,
-    /// The post settings changed (the exposure, the tone map, bloom, depth of field, grain or grade).
+    /// The post settings changed (the exposure, the tone map, bloom, depth of field, grain, grade or occlusion).
     pub post: bool,
     /// The ground changed. Apply may recreate its mesh, so this is not a value-only change.
     pub ground: bool,
@@ -152,6 +153,8 @@ pub struct ResolvedScene {
     pub background: Background,
     /// The post look: the post settings with the lighting's exposure, and its bloom when the scene turns it on.
     pub post: Post,
+    /// Ambient occlusion and contact shadows (the post settings' `occlusion`).
+    pub occlusion: Option<Occlusion>,
     /// Scales outline colours (the lighting's `outline_light`).
     pub outline_light: f32,
     /// How strongly lights behind the cast edge its silhouette (the lighting's `back_light_rim`).
@@ -264,6 +267,7 @@ impl ResolvedScene {
             active: None,
             background: Background::default(),
             post: Post::default(),
+            occlusion: None,
             outline_light: 1.0,
             back_light_rim: 0.0,
             ground: ResolvedGround::default(),
@@ -372,7 +376,7 @@ impl ResolvedScene {
         let mut changes = Changes {
             effects: replace(&mut self.effects, effects),
             backdrop: replace(&mut self.background, background),
-            post: replace(&mut self.post, post),
+            post: replace(&mut self.post, post) | replace(&mut self.occlusion, occlusion_of(def)),
             ground: replace(&mut self.ground, ground),
             skin_floor: replace(&mut self.skin_floor, def.lighting.skin_floor)
                 | replace(&mut self.outline_light, def.lighting.outline_light)
@@ -683,4 +687,9 @@ fn resolve_ground(def: &SceneDef, figures: &BTreeMap<MemberId, Figure>, unit: f3
         radius_m,
         colour: g.colour.unwrap_or(omuzaki_stage_api::Ground::FLOOR),
     }
+}
+
+/// The scene's ambient occlusion, if it asks for any.
+fn occlusion_of(def: &SceneDef) -> Option<Occlusion> {
+    def.scene.post.occlusion.map(|o| Occlusion::new(o.radius, o.strength).with_contact(o.contact))
 }

@@ -31,8 +31,9 @@ use std::ops::Range;
 
 use omuzaki_char_api::{
     AnchorsFact, BodyRegion, BuildCtx, BuildError, Bulge, FaceOverlay, Generator, GroupId, HAIR_UV, HairParams,
-    HeadSurface, JointRef, KindProvenance, MaterialName, MaterialSpec, PartCategory, PartId, PartKind, PartMesh,
-    PartMeta, PartOutput, Quality, RecolourCtx, Recoloured, StatureFact, Taper,
+    HairShading, HeadSurface, JointRef, KindProvenance, LockProfile, MaterialName, MaterialSpec, PartCategory, PartId,
+    PartKind, PartMesh, PartMeta, PartOutput, PointedEars, Quality, RecolourCtx, Recoloured, StatureFact, Taper,
+    TextureName,
 };
 use omuzaki_core::colour::Colour;
 use omuzaki_core::glam::{Vec2, Vec3};
@@ -42,17 +43,26 @@ use omuzaki_render_api::{AlphaMode, Outline};
 
 use super::bake;
 use super::compile::{self, CompiledEntry, Dispatch, GroupGenerator, GroupGeometry, enabled};
+use super::ears;
 use super::r#gen::bangs;
 use super::r#gen::curtain::{self, BodyKeepOut, StripError};
 use super::r#gen::tail::Chain;
 use super::r#gen::{ahoge, bun, cap, tail};
+use super::lock;
+use super::occlusion;
 use super::physics::{self, runtime::HairRuntime};
 use super::reach::{HairReach, HairReachFact};
+use super::strands::{self, StrandMap, Strands};
 use super::tie;
 use super::tube::{
-    OutwardFrame, TubeError, TubeLook, TubeMesh, cap_vertices, polar_angles, refine, ring_for, vertex_colour,
+    OutwardFrame, TubeError, TubeLook, TubeMesh, cap_vertices, polar_angles, refine, ring_for, smoothstep,
+    vertex_colour,
 };
+use super::volume;
 use super::wisp;
+use crate::cloth::collide::BodyDepth;
+use crate::head::ears::EarCover;
+use crate::head::ears::fact::EarCoverFact;
 
 /// Where along the torso the body's vertical axis is read, from hips (0) to neck base (1): the upper back, where long
 /// hair hangs.
@@ -100,6 +110,7 @@ omuzaki_char_api::register_part_kind!(Hair);
 /// [`BuildError::Missing`] without a head, [`BuildError::Colour`] for an undefined palette slot, [`BuildError::Part`] for
 /// an invalid legacy seed, a generator whose clump count disagrees with its `clump_count`, or a clump with fewer than two
 /// points.
+#[allow(clippy::too_many_lines, reason = "the build's steps in order, each a call")]
 pub fn build_with(
     params: &HairParams,
     ctx: &mut BuildCtx<'_>,
@@ -109,6 +120,7 @@ pub fn build_with(
     // The body the hair hangs over: the curtain keeps off it. A character without one still builds.
     let body = ctx.fit().ok();
     let keep_out = body.as_deref().map(BodyKeepOut::new);
+    let depth = body.as_deref().map(BodyDepth::new);
     let fail = |message: String| BuildError::Part { part: ctx.part.clone(), message };
     let mut stream =
         compile::stream(params.rng, &mut ctx.rng).map_err(|seed| fail(format!("invalid legacy seed {seed}")))?;
@@ -126,16 +138,27 @@ pub fn build_with(
     apply_streaks(params, ctx.palette, &mut entries).map_err(|e| ctx.fail(e.to_string()))?;
 
     let frame = OutwardFrame { head: head.centre(), body_axis: body_axis(ctx, head.centre()) };
-    clear_fringes(params, head.as_ref(), &frame, &mut entries).map_err(|e| ctx.fail(e))?;
-    tuck_shells(head.as_ref(), &mut entries);
+    let accents = place(params, ctx, head.as_ref(), &frame, keep_out.as_ref(), depth.as_ref(), &mut entries)?;
     let mut warnings = Vec::new();
-    let chains = tail_chains(params, ctx, head.as_ref())?;
-    let Meshes { stat, dynamic, ties } =
-        mesh_groups(&entries, &frame, keep_out.as_ref(), &chains, ctx.quality, &mut warnings)
-            .map_err(|e| ctx.fail(e.to_string()))?;
+    let chains = tail_chains(params, ctx, head.as_ref(), &accents)?;
+    let strays = Strays::of(params, head.as_ref(), ctx.quality);
+    let Meshes { mut stat, mut dynamic, ties } = mesh_groups(
+        &entries,
+        strays,
+        head.as_ref(),
+        &frame,
+        keep_out.as_ref(),
+        &chains,
+        ctx.quality,
+        &params.shading,
+        &mut warnings,
+    )
+    .map_err(|e| ctx.fail(e.to_string()))?;
+    if let Some(body) = &depth {
+        clear_vertices(body, stat.as_mut(), dynamic.as_mut());
+    }
 
-    let material_name =
-        MaterialName::new(format!("{}-hair", ctx.part)).map_err(|e| ctx.fail(format!("material name: {e}")))?;
+    let material_name = hair_material_name(ctx.part).map_err(|e| ctx.fail(format!("material name: {e}")))?;
     // The brows when they show through, and the face's overlay (sweat drop, gloom hatch), which is in front of the hair.
     let overlays = || {
         let mut overlays = Vec::with_capacity(2);
@@ -147,6 +170,7 @@ pub fn build_with(
     };
     let material = hair_material(ctx.part, params, ctx.palette, overlays)?;
     let mut out = PartOutput::new().with_materials(vec![(material_name.clone(), material)]).with_warnings(warnings);
+    out.textures.push(strands_texture(ctx, &params.shading)?);
     // Built for export, the simulated groups other than tails hang on strand chains of their own.
     let strands = if ctx.rig_export {
         bake::strand_chains(ctx.part, params, &entries, &chains).map_err(|e| ctx.fail(e))?
@@ -213,7 +237,7 @@ pub fn build_with(
     tail::add_chains(strands, &colliders, &mut out.rig);
     let reach = HairReach::from_points(head.as_ref(), out.meshes.iter().flat_map(|m| &m.geometry.positions));
     out.publishes.put::<HairReachFact>(reach);
-    publish_ties(params, ctx, head.as_ref(), &mut out)?;
+    publish_ties(params, ctx, head.as_ref(), &accents, &mut out)?;
     Ok(out)
 }
 
@@ -249,10 +273,105 @@ fn bind_to_strands<'a>(mesh: &MeshData, strands: &'a [Chain], runs: &mut Vec<Run
     }
 }
 
-/// Lifts every bangs group's locks off the head, measured in `frame`, the frame the tubes are drawn in. This runs here,
-/// not in the generator, because the frame reads the torso as well as the head, and a lock cleared in the head's own
-/// frame can still enter the skull in the drawn one (below the frame's blend height, 78 mm under the head's centre).
-/// Only bangs groups are touched: the other generators' tubes are as their generators make them.
+/// Settles the compiled locks round the head and body: the hair takes its shared fullness, the fringes clear the skull, the locks make way for the ears,
+/// the shells tuck under the locks, and then every group's locks take their shape (cross-section, tip, sub-locks).
+/// Returns how far each accent piece moved as the hair swelled, for its chains and anchors.
+///
+/// # Errors
+/// [`BuildError::Part`] if a fringe cannot be cleared.
+fn place(
+    params: &HairParams,
+    ctx: &BuildCtx<'_>,
+    head: &dyn omuzaki_char_api::HeadSurface,
+    frame: &OutwardFrame,
+    keep_out: Option<&BodyKeepOut>,
+    depth: Option<&BodyDepth>,
+    entries: &mut [CompiledEntry],
+) -> Result<volume::Accents, BuildError> {
+    let field = params.volume.as_ref().map(volume::Field::new);
+    let accents = volume::Accents::new(params, field.as_ref(), head);
+    if let Some(field) = &field {
+        volume::swell(entries, field, head, &accents);
+    }
+    make_way_for_ears(params, ctx, head, entries);
+    lock::shape(entries, frame, head, keep_out);
+    // After the lock shapes, so a curled or split fringe or framing lock is cleared as it is drawn, and before the
+    // shells tuck under the locks where they finally lie.
+    clear_fringes(params, head, frame, entries).map_err(|e| ctx.fail(e))?;
+    if let Some(body) = depth {
+        clear_body(body, entries);
+    }
+    tuck_shells(head, entries);
+    Ok(accents)
+}
+
+/// Moves every lock out of the body (#2485): each point of a tube lock (a framing lock down the front, a tail over the
+/// shoulder) that lies within its own half thickness and [`lock::CLEARANCE`] of the body ([`BodyDepth`], the same
+/// measure `hair.settle` reports clipping by) is pushed out, down the slope of that distance. A framing lock hanging
+/// straight down from the temple otherwise passes through the top of the chest or the slope of the shoulders on a
+/// broad-shouldered template, by up to 57 mm on `tall`. Curtain strips keep themselves out vertex by vertex
+/// (`curtain::group_mesh`) and shells lie on the head, so neither is moved here.
+fn clear_body(body: &BodyDepth, entries: &mut [CompiledEntry]) {
+    let tubes =
+        entries.iter_mut().filter(|e| matches!(e.group.geometry, GroupGeometry::Tube | GroupGeometry::Tied { .. }));
+    for entry in tubes {
+        for clump in &mut entry.group.clumps {
+            let last = clump.rest.len().saturating_sub(1).max(1);
+            for (i, p) in clump.rest.iter_mut().enumerate() {
+                #[allow(clippy::cast_precision_loss)] // a lock's few dozen points
+                let t = i as f32 / last as f32;
+                *p = out_of(body, *p, lock::CLEARANCE + clump.thickness.at(t) * 0.5 + clump.width.at(t) * 0.1);
+            }
+        }
+    }
+}
+
+/// `p` pushed out until it stands `margin` off the body, down the slope of the body's distance ([`BodyDepth`]); `p`
+/// itself when it already does.
+fn out_of(body: &BodyDepth, mut p: Vec3, margin: f32) -> Vec3 {
+    /// The step the slope is measured over, metres.
+    const STEP: f32 = 0.002;
+    /// Pushes: each lands on the surface the slope points to; another catches a neighbouring region.
+    const PASSES: usize = 4;
+    for _ in 0..PASSES {
+        let depth = body.depth(p);
+        if depth >= margin || !depth.is_finite() {
+            break;
+        }
+        let slope = Vec3::new(
+            body.depth(p + Vec3::X * STEP) - body.depth(p - Vec3::X * STEP),
+            body.depth(p + Vec3::Y * STEP) - body.depth(p - Vec3::Y * STEP),
+            body.depth(p + Vec3::Z * STEP) - body.depth(p - Vec3::Z * STEP),
+        );
+        let Some(out) = slope.try_normalize() else { break };
+        p += out * (margin - depth);
+    }
+    p
+}
+
+/// Moves every vertex of the finished hair meshes that lies within [`lock::CLEARANCE`] of the body out to it (#2485): the
+/// last word after the locks were cleared point by point, for what lies between their points, the width of a lens tube
+/// and the curtain's strips, whose own keep-out leaves the base of the neck to the head. The simulated mesh keeps
+/// [`SAG_ROOM`] more: its colliders sit inside the body, so hanging under gravity it settles a few millimetres toward
+/// it.
+fn clear_vertices<'a>(body: &BodyDepth, stat: Option<&mut Skinned<'a>>, dynamic: Option<&mut Skinned<'a>>) {
+    for (mesh, margin) in [(stat, lock::CLEARANCE), (dynamic, lock::CLEARANCE + SAG_ROOM)] {
+        for p in mesh.into_iter().flat_map(|m| m.geometry.positions.iter_mut()) {
+            *p = out_of(body, *p, margin);
+        }
+    }
+}
+
+/// How much further off the body the simulated hair rests, metres: what it sags toward the body once it hangs
+/// (measured on the library's styles after three seconds, 6 mm at most on `tall`).
+const SAG_ROOM: f32 = 0.008;
+
+/// Lifts every bangs and framing group's locks off the head, measured in `frame`, the frame the tubes are drawn in. This
+/// runs here, not in the generator, because the frame reads the torso as well as the head, and a lock cleared in the
+/// head's own frame can still enter the skull in the drawn one (below the frame's blend height, 78 mm under the head's
+/// centre). The framing locks lie on the head down the temple and cheek, where a tall template's face cut 5 mm into
+/// them (#2486). The other generators' tubes are as their generators make them: a tail's or bun's locks start inside
+/// their tie on purpose.
 fn clear_fringes(
     params: &HairParams,
     head: &dyn omuzaki_char_api::HeadSurface,
@@ -260,14 +379,27 @@ fn clear_fringes(
     entries: &mut [CompiledEntry],
 ) -> Result<(), String> {
     for entry in entries {
-        if let Some(group) = params.groups.get(&entry.id)
-            && matches!(group.generator, Generator::Bangs(_))
-        {
-            bangs::keep_clear(head, frame, &mut entry.group.clumps)
-                .map_err(|e| format!("the bangs group '{}': {e}", entry.id))?;
+        match params.groups.get(&entry.id).map(|g| &g.generator) {
+            Some(Generator::Bangs(_)) => bangs::keep_clear(head, frame, &mut entry.group.clumps)
+                .map_err(|e| format!("the bangs group '{}': {e}", entry.id))?,
+            Some(Generator::Framing(_)) => bangs::keep_locks_clear(head, frame, &mut entry.group.clumps)
+                .map_err(|e| format!("the framing group '{}': {e}", entry.id))?,
+            _ => {}
         }
     }
     Ok(())
+}
+
+/// Routes every lock behind the pointed ears the head published ([`ears::make_way`], #2449), unless the hair is set to
+/// cover them. Shells (the scalp cap) are left as they are: they lie under the ears.
+fn make_way_for_ears(params: &HairParams, ctx: &BuildCtx<'_>, head: &dyn HeadSurface, entries: &mut [CompiledEntry]) {
+    if params.ears == PointedEars::Cover {
+        return;
+    }
+    let covers: Vec<EarCover> = ctx.published.get::<EarCoverFact>().values().copied().collect();
+    for entry in entries.iter_mut().filter(|e| !matches!(e.group.geometry, GroupGeometry::Shell(_))) {
+        ears::make_way(&covers, head, &mut entry.group.clumps);
+    }
 }
 
 /// Tucks every shell (the scalp cap) under the locks drawn over it ([`cap::tuck`]), so no lock cuts through it.
@@ -297,30 +429,35 @@ fn publish_ties(
     params: &HairParams,
     ctx: &BuildCtx<'_>,
     head: &dyn HeadSurface,
+    accents: &volume::Accents,
     out: &mut PartOutput,
 ) -> Result<(), BuildError> {
     let colliders: Vec<String> = ctx.colliders().iter().map(|group| group.name.clone()).collect();
     let body = ctx.fit().ok();
     for (id, group) in enabled(params) {
-        let anchors = match &group.generator {
+        let (chains, anchors) = match &group.generator {
             Generator::Tail(g) => {
                 let prefix = chain_prefix(ctx.part, id);
-                tail::rig(g, head, body.as_deref(), &prefix, group.mirror, &colliders, &mut out.rig)
+                let chains = tail::chains(g, head, body.as_deref(), &prefix, group.mirror)
                     .map_err(|e| ctx.fail(format!("group '{id}': a tail bone name: {e}")))?;
-                tail::anchors(g, head, group.mirror)
+                (chains, tail::anchors(g, head, group.mirror))
             }
             Generator::Ahoge(g) => {
                 let chains = ahoge::chains(g, head, &chain_prefix(ctx.part, id), group.mirror)
                     .map_err(|e| ctx.fail(format!("group '{id}': an ahoge bone name: {e}")))?;
-                tail::add_chains(chains, &colliders, &mut out.rig);
-                continue;
+                (chains, Vec::new())
             }
-            Generator::Bun(g) => {
-                bun::anchors(g, head).into_iter().map(|(name, anchor)| (name.to_owned(), anchor)).collect()
-            }
+            Generator::Bun(g) => (
+                Vec::new(),
+                bun::anchors(g, head).into_iter().map(|(name, anchor)| (name.to_owned(), anchor)).collect(),
+            ),
             _ => continue,
         };
-        for (name, anchor) in anchors {
+        let mut chains = chains;
+        accents.move_chains(id, &mut chains);
+        tail::add_chains(chains, &colliders, &mut out.rig);
+        for (name, mut anchor) in anchors {
+            accents.move_anchor(id, &mut anchor);
             let key = format!("{id}_{name}");
             let anchor_id = key.parse().map_err(|e| ctx.fail(format!("group '{id}': anchor name '{key}': {e}")))?;
             out.publishes.put::<AnchorsFact>((anchor_id, anchor));
@@ -368,21 +505,29 @@ enum MeshError {
 const OFFLINE_REFINE: usize = 1;
 
 /// The static and the dynamic mesh of the entries (`None` for a mesh with nothing in it): tubes first, in group order,
-/// then strips, then shells, then (offline) the wisps. Pushes a warning for each group that made nothing.
+/// then strips, then shells, then the wisps and baby hairs. Pushes a warning for each group that made nothing.
 ///
 /// `quality` sets the detail: live locks are rings of 8 on their compiled points; offline locks are rings of 16 on
-/// twice the points, and the outer locks shed fine wisps ([`wisp`]), for close-ups.
+/// twice the points. The outer locks shed fine flyaways and baby hairs lie along the hairline as `strays` says
+/// ([`wisp`]); a close-up sheds more. `shading` lays the locks on the strand
+/// texture, sets how far their normals bend to the hair's volume ([`volume_normals`]) and how much the hair darkens where
+/// it is buried in itself and the head ([`occlusion::bake`]).
+#[allow(clippy::too_many_arguments)] // the build's state, passed through once
 fn mesh_groups<'a>(
     entries: &[CompiledEntry],
+    strays: Strays,
+    head: &dyn HeadSurface,
     frame: &OutwardFrame,
     keep_out: Option<&BodyKeepOut>,
     chains: &'a BTreeMap<GroupId, Vec<Chain>>,
     quality: Quality,
+    shading: &HairShading,
     warnings: &mut Vec<String>,
 ) -> Result<Meshes<'a>, MeshError> {
     let ring = ring_for(quality);
     let offline = quality == Quality::Offline;
-    let (mut stat, mut dynamic) = (TubeMesh::with_ring(ring), TubeMesh::with_ring(ring));
+    let map = StrandMap::of(shading);
+    let (mut stat, mut dynamic) = (TubeMesh::with_ring(ring).with_map(map), TubeMesh::with_ring(ring).with_map(map));
     // The wisps the locks shed, with the mesh and the chain each goes with: drawn last, after the shells.
     let mut wisps: Vec<(bool, wisp::Wisp, Option<&'a Chain>, TubeLook<'static>)> = Vec::new();
     let (mut stat_clumps, mut dynamic_clumps) = (0usize, 0usize);
@@ -405,15 +550,19 @@ fn mesh_groups<'a>(
                     let rest = if offline { refine(&clump.rest, OFFLINE_REFINE) } else { clump.rest.clone() };
                     let polar = polar_angles(&rest, frame.head);
                     let seed = strand_seed(*drawn, entry.simulate);
-                    let look = TubeLook { seed, shade: clump.shade, polar: &polar, tint: clump.tint, flip: 1.0 };
+                    let profile = entry.lock.profile;
+                    let look =
+                        TubeLook { seed, shade: clump.shade, polar: &polar, tint: clump.tint, flip: 1.0, profile };
                     let first = target.vertex_count();
                     target.push(&rest, &clump.width, &clump.thickness, |p| frame.rest(p), &look)?;
                     let chain = chains.get(k / per_chain);
                     if let Some(chain) = chain {
                         runs.push(Run { range: first..target.vertex_count(), chain });
                     }
-                    if offline && let Some(w) = wisp::wisp(*drawn, &rest, &clump.width, clump.shade, frame) {
-                        let look = TubeLook { seed, shade: 1.0, polar: &[], tint: clump.tint, flip: 1.0 };
+                    if let Some(shed) = &strays.shed
+                        && let Some(w) = wisp::wisp(*drawn, &rest, &clump.width, clump.shade, frame, shed)
+                    {
+                        let look = TubeLook { seed, shade: 1.0, polar: &[], tint: clump.tint, flip: 1.0, profile };
                         wisps.push((entry.simulate, w, chain, look));
                     }
                     *drawn += 1;
@@ -431,7 +580,7 @@ fn mesh_groups<'a>(
                 warnings.push(format!("the '{}' group made no clumps", entry.id));
                 continue;
             }
-            let strips = curtain::group_mesh(&entry.group.clumps, u, *columns, frame, keep_out)?;
+            let strips = curtain::group_mesh(&entry.group.clumps, u, *columns, frame, keep_out, &map)?;
             if strips.indices.is_empty() {
                 warnings.push(format!(
                     "the '{}' group has {columns} columns, so there is nothing to draw between them",
@@ -454,6 +603,8 @@ fn mesh_groups<'a>(
             }
         }
     }
+    let baby = TubeLook { seed: 0.5, shade: 1.0, polar: &[], tint: None, flip: 1.0, profile: LockProfile::default() };
+    wisps.extend(strays.baby.into_iter().map(|w| (false, w, None, baby)));
     for (simulate, w, chain, look) in wisps {
         let (target, runs) = if simulate { (&mut dynamic, &mut dynamic_runs) } else { (&mut stat, &mut stat_runs) };
         let polar = polar_angles(&w.points, frame.head);
@@ -463,12 +614,86 @@ fn mesh_groups<'a>(
             runs.push(Run { range: first..target.vertex_count(), chain });
         }
     }
-    let finish = |mesh: TubeMesh| if mesh.is_empty() { Ok(None) } else { mesh.finish().map(Some) };
-    Ok(Meshes {
-        stat: finish(stat)?.map(|geometry| Skinned { geometry, runs: stat_runs }),
-        dynamic: finish(dynamic)?.map(|geometry| Skinned { geometry, runs: dynamic_runs }),
-        ties: tie::mesh(&bands),
-    })
+    let meshes = finish_meshes([(stat, stat_runs), (dynamic, dynamic_runs)], head, frame, shading)?;
+    let [stat, dynamic] = meshes;
+    Ok(Meshes { stat, dynamic, ties: tie::mesh(&bands) })
+}
+
+/// The static and the dynamic tube meshes finished, their normals bent to the hair's volume ([`volume_normals`]) and the
+/// occlusion baked over both ([`occlusion::bake`]): they shadow each other, as a simulated tail lies over the static
+/// back.
+fn finish_meshes<'a>(
+    meshes: [(TubeMesh, Vec<Run<'a>>); 2],
+    head: &dyn HeadSurface,
+    frame: &OutwardFrame,
+    shading: &HairShading,
+) -> Result<[Option<Skinned<'a>>; 2], MeshError> {
+    #[allow(clippy::cast_possible_truncation)] // checked 0..=1, and metres
+    let (blend, occlusion, reach) =
+        (shading.normal_blend as f32, shading.occlusion as f32, shading.occlusion_reach as f32);
+    let mut finished = Vec::with_capacity(2);
+    for (mesh, runs) in meshes {
+        let geometry = if mesh.is_empty() { None } else { Some(mesh.finish()?) };
+        finished.push(geometry.map(|mut geometry| {
+            volume_normals(&mut geometry, &runs, frame, blend);
+            Skinned { geometry, runs }
+        }));
+    }
+    let mut baked: Vec<&mut MeshData> = finished.iter_mut().flatten().map(|s| &mut s.geometry).collect();
+    occlusion::bake(&mut baked, head, occlusion, reach);
+    let mut finished = finished.into_iter();
+    Ok([finished.next().flatten(), finished.next().flatten()])
+}
+
+/// Bends the normals of `mesh` by `blend` (`0..=1`) from each lock's own toward the hair's volume: the direction out of
+/// the head and body ([`OutwardFrame::rest`]), or, along a tail, out of its chain, blending from the head's over the
+/// chain's root band as the skin does. At 1 the locks shade as one mass, as drawn hair does, and the ink outline, which
+/// pushes its hull along these normals, draws only the hair's silhouette, not every lock; at 0 each lock is a tube of its
+/// own. A lock's inner face, the part that faces the head ([`INNER`]), bends to the volume's inside instead, so the
+/// inside of a flared lock is not lit as if it faced out (the back light's rim would light it grey); between the two
+/// it keeps its own. A normal that cancels out keeps the lock's own.
+fn volume_normals(mesh: &mut MeshData, runs: &[Run<'_>], frame: &OutwardFrame, blend: f32) {
+    if blend <= 0.0 {
+        return;
+    }
+    let mut volume: Vec<Vec3> = mesh.positions.iter().map(|p| frame.rest(*p)).collect();
+    for run in runs {
+        for v in run.range.clone() {
+            let Some(p) = mesh.positions.get(v).copied() else { continue };
+            let s = tail::skin(run.chain, p);
+            let (Some(a), Some(b)) = (run.chain.rest.get(s.bone), run.chain.rest.get(s.bone + 1)) else { continue };
+            let axis = a.lerp(*b, s.along);
+            let along_chain = (p - axis).try_normalize().unwrap_or(volume[v]);
+            volume[v] = volume[v].lerp(along_chain, 1.0 - s.head).try_normalize().unwrap_or(along_chain);
+        }
+    }
+    for (n, out) in mesh.normals.iter_mut().zip(volume) {
+        let side = 2.0 * smoothstep(n.dot(out), INNER.0, INNER.1) - 1.0;
+        let target = (out * side + *n * (1.0 - side.abs())).try_normalize().unwrap_or(*n);
+        *n = n.lerp(target, blend.min(1.0)).try_normalize().unwrap_or(*n);
+    }
+}
+
+/// The cosines between a lock's own normal and the volume's at which [`volume_normals`] turns from the volume's inside
+/// to its outside: a lock's top and sides take the outside, and only the face toward the head the inside.
+const INNER: (f32, f32) = (-0.75, -0.35);
+
+/// The loose strands [`mesh_groups`] adds (#2516): how the outer locks shed flyaways, and the baby hairs along the front
+/// hairline of the first scalp shell.
+struct Strays {
+    shed: Option<wisp::Shed>,
+    baby: Vec<wisp::Wisp>,
+}
+
+impl Strays {
+    fn of(params: &HairParams, head: &dyn HeadSurface, quality: Quality) -> Self {
+        let cap = enabled(params).find_map(|(_, g)| match &g.generator {
+            Generator::Cap(cap) => Some(cap),
+            _ => None,
+        });
+        let baby = cap.map_or_else(Vec::new, |cap| wisp::baby_hairs(&params.strays, head, cap));
+        Self { shed: wisp::Shed::of(&params.strays, quality), baby }
+    }
 }
 
 /// What [`mesh_groups`] makes: the two hair meshes and the tie bands.
@@ -525,18 +750,20 @@ fn tail_chains(
     params: &HairParams,
     ctx: &BuildCtx<'_>,
     head: &dyn HeadSurface,
+    accents: &volume::Accents,
 ) -> Result<BTreeMap<GroupId, Vec<Chain>>, BuildError> {
     let mut out = BTreeMap::new();
     let body = ctx.fit().ok();
     for (id, group) in enabled(params) {
         let prefix = chain_prefix(ctx.part, id);
-        let chains = match &group.generator {
+        let mut chains = match &group.generator {
             Generator::Tail(g) => tail::chains(g, head, body.as_deref(), &prefix, group.mirror)
                 .map_err(|e| ctx.fail(format!("group '{id}': a tail bone name: {e}")))?,
             Generator::Ahoge(g) => ahoge::chains(g, head, &prefix, group.mirror)
                 .map_err(|e| ctx.fail(format!("group '{id}': an ahoge bone name: {e}")))?,
             _ => continue,
         };
+        accents.move_chains(id, &mut chains);
         if !chains.is_empty() {
             out.insert(id.clone(), chains);
         }
@@ -565,6 +792,25 @@ fn mesh_name(part: &PartId, simulated: bool) -> String {
 /// The name of the tie mesh of `part`.
 fn ties_mesh_name(part: &PartId) -> String {
     format!("{part}-ties")
+}
+
+/// The name of the hair material of `part`.
+fn hair_material_name(part: &PartId) -> Result<MaterialName, omuzaki_core::id::SlugError> {
+    MaterialName::new(format!("{part}-hair"))
+}
+
+/// The name of the strand texture of `part` ([`strands`]).
+fn strands_texture_name(part: &PartId) -> Result<TextureName, omuzaki_core::id::SlugError> {
+    TextureName::new(format!("{part}-strands"))
+}
+
+/// The strand texture the hair material reads, under its name.
+fn strands_texture(
+    ctx: &BuildCtx<'_>,
+    shading: &HairShading,
+) -> Result<(TextureName, omuzaki_char_api::TextureData), BuildError> {
+    let name = strands_texture_name(ctx.part).map_err(|e| ctx.fail(format!("texture name: {e}")))?;
+    Ok((name, Strands::of(shading).texture()))
 }
 
 /// The name of the tie material of `part`.
@@ -599,16 +845,20 @@ fn hair_material(
     let overlays = overlays()?;
     let colour =
         palette.resolve(&params.shading.outline).map_err(|error| BuildError::Colour { part: part.clone(), error })?;
+    let texture =
+        strands_texture_name(part).map_err(|e| BuildError::Part { part: part.clone(), message: e.to_string() })?;
     Ok(MaterialSpec {
         base: Colour::WHITE,
-        base_texture: None,
+        base_texture: Some(texture),
         shading,
         overlays,
-        alpha: AlphaMode::Opaque,
+        alpha: AlphaMode::Mask { cutoff: strands::CUTOFF },
+        order_independent: true,
         double_sided: true,
         vertex_colours: true,
         outline: Some(Outline { colour, width: narrow(params.shading.outline_width) }),
         receives_shadows: true,
+        hair_shadow: omuzaki_render_api::HairShadow::CASTS,
         uv_transform: omuzaki_render_api::UvTransform::IDENTITY,
     })
 }
@@ -625,6 +875,7 @@ enum Drawn {
 }
 
 /// One clump of the hair as a recolour sees it: from the parameters alone.
+#[derive(Clone, Copy)]
 struct Slot<'a> {
     group: &'a GroupId,
     simulate: bool,
@@ -656,9 +907,21 @@ pub fn recolour_with(
     ctx: &RecolourCtx<'_>,
     generators: &dyn GroupGenerator,
 ) -> Result<Recoloured, BuildError> {
-    let layout = layout(params, generators);
-    let groups: Vec<&GroupId> = layout.iter().map(|s| s.group).collect();
-    let tints = params.shading.streak_tints(ctx.palette, &groups).map_err(|e| ctx.fail(e.to_string()))?;
+    let compiled = layout(params, generators);
+    let groups: Vec<&GroupId> = compiled.iter().map(|s| s.group).collect();
+    let compiled_tints = params.shading.streak_tints(ctx.palette, &groups).map_err(|e| ctx.fail(e.to_string()))?;
+    // The streaks tint the compiled clumps; each one's tubes (its sub-locks and forks, [`lock`]) take its tint.
+    let (layout, tints): (Vec<Slot<'_>>, Vec<Option<Colour>>) = compiled
+        .into_iter()
+        .zip(compiled_tints)
+        .flat_map(|(slot, tint)| {
+            let tubes = match (slot.drawn, params.groups.get(slot.group)) {
+                (Drawn::Tube, Some(group)) => group.lock.tubes_per_clump(),
+                _ => 1,
+            };
+            std::iter::repeat_n((slot, tint), tubes)
+        })
+        .unzip();
     // A mesh the layout says holds tubes, or a cap's shell (which has no clumps, so the layout cannot see it), must
     // exist: without it there is nothing to tint or keep, and `Done` would be a lie.
     for simulated in [false, true] {
@@ -710,7 +973,11 @@ fn paint_clumps(mesh: &mut MeshData, clumps: &[(Drawn, Option<Colour>)]) -> bool
     }
     let Some(ranges) = clump_ranges(mesh, clumps.iter().map(|c| c.0)) else { return false };
     for (range, (_, tint)) in ranges.into_iter().zip(clumps_in_mesh_order(clumps)) {
-        mesh.colours[range].fill(vertex_colour(tint));
+        // The alpha is the strand map's coverage, which a new tint keeps.
+        let [r, g, b, _] = vertex_colour(tint);
+        for colour in &mut mesh.colours[range] {
+            *colour = [r, g, b, colour[3]];
+        }
     }
     true
 }
@@ -725,7 +992,7 @@ fn clumps_in_mesh_order(clumps: &[(Drawn, Option<Colour>)]) -> impl Iterator<Ite
 /// The vertex ranges of `clumps` in `mesh`, in mesh order (see [`clumps_in_mesh_order`]). A tube starts at a ring whose
 /// `hair-uv.y` is 0 (the vertices up to the first that isn't are its ring, 8 live and 16 offline) and ends after the
 /// ring where it reaches 1 (the last ring of every tube) and its two caps, which take the tube's tint too. What follows
-/// the clumps (an offline build's wisps) keeps its colours. A strip is `columns` runs of vertices, each from `hair-uv.y` 0 to 1. `None` if the mesh
+/// the clumps (the wisps and baby hairs) keeps its colours. A strip is `columns` runs of vertices, each from `hair-uv.y` 0 to 1. `None` if the mesh
 /// doesn't hold that many.
 fn clump_ranges(mesh: &MeshData, clumps: impl Iterator<Item = Drawn> + Clone) -> Option<Vec<Range<usize>>> {
     let uv = &mesh.extra_attribute(HAIR_UV)?.data;

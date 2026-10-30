@@ -12,6 +12,7 @@ use omuzaki_face_api::{FaceProfile, Palette};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::design::DesignDef;
 use crate::doc_key;
 use crate::ids::{AnchorId, BodyTemplateId, JointRef, PartId, PartKindId, SkinToneId};
 use crate::skin::WeightBrush;
@@ -46,6 +47,11 @@ pub mod paths {
     /// `characters/<id>/weight_brushes`: every part's [`WeightBrush`](crate::WeightBrush) list.
     pub fn weight_brushes(id: &CharId) -> DocPath {
         character(id).join("weight_brushes")
+    }
+
+    /// `characters/<id>/design`: the design layer (dials, age, sculpt strokes, material layers; #2609 to #2615).
+    pub fn design(id: &CharId) -> DocPath {
+        character(id).join("design")
     }
 
     /// `characters/<id>/palette`.
@@ -247,11 +253,21 @@ pub struct CharacterDef {
     /// Skin-weight corrections (RG-02) the builder applies to each part's skinned meshes after the part builds.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub weight_brushes: BTreeMap<PartId, Vec<WeightBrush>>,
+    /// The shared design layer (`design`): shape dials, sculpt strokes, material layers and age, applied over what
+    /// the parts build. Empty: the parts' character exactly. Boxed: most characters have none, and a definition is
+    /// held by value in every built character.
+    #[serde(default, skip_serializing_if = "design_is_empty")]
+    pub design: Box<DesignDef>,
     /// Growth probe (feature `growth-probe`): a field no other crate knows about. See `tests/growth_probe.rs`.
     #[cfg(feature = "growth-probe")]
     #[serde(skip)]
     // a saved field would also need the closed document-key lists (ADR 0054 §5), which this probe doesn't test
     pub growth_probe: u8,
+}
+
+#[allow(clippy::borrowed_box)] // serde's `skip_serializing_if` passes a reference to the field
+fn design_is_empty(design: &Box<DesignDef>) -> bool {
+    design.is_empty()
 }
 
 impl CharacterDef {
@@ -266,6 +282,7 @@ impl CharacterDef {
             parts: BTreeMap::new(),
             face: FaceProfile::default(),
             weight_brushes: BTreeMap::new(),
+            design: Box::default(),
             #[cfg(feature = "growth-probe")]
             growth_probe: 0,
         }
@@ -310,6 +327,13 @@ impl CharacterDef {
     #[must_use]
     pub fn with_weight_brushes(mut self, weight_brushes: BTreeMap<PartId, Vec<WeightBrush>>) -> Self {
         self.weight_brushes = weight_brushes;
+        self
+    }
+
+    /// Sets the design layer.
+    #[must_use]
+    pub fn with_design(mut self, design: DesignDef) -> Self {
+        self.design = Box::new(design);
         self
     }
 }
@@ -377,7 +401,7 @@ pub(crate) fn nearest_name<'a>(key: &str, candidates: impl IntoIterator<Item = &
 
 impl CharacterDef {
     /// The keys of `characters/<id>` that make up a [`CharacterDef`] (`character.toml` and `face.toml`).
-    pub const NODE_KEYS: [&'static str; 8] = doc_key::BUILT_IN_NODE_KEYS;
+    pub const NODE_KEYS: [&'static str; 9] = doc_key::BUILT_IN_NODE_KEYS;
 
     /// The other keys of `characters/<id>`: the character's other files, each a sub-tree with its own contract
     /// (`variants`, `colourways`, `rig.toml`, `look.toml`, the `licence` record, the per-part `sources` rows, the

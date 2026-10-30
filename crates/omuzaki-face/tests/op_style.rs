@@ -134,6 +134,32 @@ fn thirty_paths_dry_run_apply_and_undo_identically() {
 }
 
 #[test]
+fn an_agent_gives_the_right_eye_its_own_iris_by_path() {
+    // The right iris is left out of a saved face until it is set: one colour by path, then a whole section, both
+    // through the op, and the face reads back with the left iris untouched.
+    let mut doc = doc_with_face(full_face());
+    let one = run(&doc, "face.set_style", set_args("face/eyes/right_iris/mid", json!("#8a96a8"))).expect("one colour");
+    doc.apply(&one.patch).expect("applies");
+    let typed: FaceProfile = serde_json::from_value(value_at(&doc, "characters/mira/face")).expect("still a face");
+    let right = typed.eyes.right_iris.as_ref().expect("the right eye has its own iris");
+    assert_eq!(right.mid.as_ref().map(ToString::to_string).as_deref(), Some("#8a96a8"));
+    assert!(right.top.is_none(), "only the colour that was set is the right eye's own");
+    assert_eq!(typed.eyes.iris, FaceProfile::default().eyes.iris, "the left iris is untouched");
+
+    let whole = json!({ "top": "#4a5260", "low": "#c8d2e0", "pupil": { "shape": "slit" } });
+    let section = run(&doc, "face.set_style", set_args("face/eyes/right_iris", whole)).expect("a whole section");
+    doc.apply(&section.patch).expect("applies");
+    let typed: FaceProfile = serde_json::from_value(value_at(&doc, "characters/mira/face")).expect("still a face");
+    assert!(typed.validate().is_ok());
+    let right = typed.eyes.right_iris.expect("still its own");
+    assert!(right.top.is_some() && right.low.is_some() && right.mid.is_some() && right.pupil.is_some());
+
+    let wrong = run(&doc, "face.set_style", set_args("face/eyes/right_iris/middle", json!("#000000")))
+        .expect_err("an unknown key under the right iris");
+    assert!(wrong.to_string().contains("mid"), "the nearest key is suggested: {wrong}");
+}
+
+#[test]
 fn every_bad_field_is_reported_with_its_path() {
     let doc = doc_with_face(full_face());
     let err =
@@ -343,7 +369,7 @@ fn describe_covers_every_section_and_the_marks_list() {
     let sections = all.output.as_ref().expect("answers")["sections"].as_object().expect("an object").clone();
     assert_eq!(
         sections.keys().map(String::as_str).collect::<Vec<_>>(),
-        ["brows", "cheeks", "eyes", "marks", "mouth", "nose"]
+        ["brows", "cheeks", "ear3d", "eye3d", "eyes", "lips3d", "marks", "mouth", "nose", "nose3d"]
     );
 
     let marks = &sections["marks"];

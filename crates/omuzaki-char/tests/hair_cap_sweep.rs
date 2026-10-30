@@ -212,7 +212,14 @@ fn locks(g: &PartSweepGen, head: &dyn HeadSurface) -> Vec<Lock> {
 fn watertight(lock: &Lock, head: &dyn HeadSurface, g: &PartSweepGen) -> bool {
     let mut mesh = TubeMesh::new();
     let polar = vec![0.5; REST_POINTS];
-    let tube_look = TubeLook { seed: 0.5, shade: 1.0, polar: &polar, tint: None, flip: 1.0 };
+    let tube_look = TubeLook {
+        seed: 0.5,
+        shade: 1.0,
+        polar: &polar,
+        tint: None,
+        flip: 1.0,
+        profile: omuzaki_char_api::LockProfile::Lens,
+    };
     let centre = head.centre();
     if mesh.push(lock, &g.width, &g.thickness, |p| (p - centre).normalize_or_zero(), &tube_look).is_err() {
         return false;
@@ -332,7 +339,13 @@ fn a_mirrored_cap_or_sweep_group_has_no_coincident_duplicates() {
     let head = Egg { scale: 1.0 };
     let sweep = PartSweepGen { count: 5, ..PartSweepGen::default() };
     let make = |mirror: bool| {
-        let group = |generator| HairGroup { enabled: true, mirror, dynamics: Dynamics::default(), generator };
+        let group = |generator| HairGroup {
+            enabled: true,
+            mirror,
+            dynamics: Dynamics::default(),
+            generator,
+            lock: omuzaki_char_api::LockShape::default(),
+        };
         let mut params = HairParams::default();
         params.groups.clear();
         params.groups.insert(GroupId::new("a-cap").unwrap(), group(Generator::Cap(CapGen::default())));

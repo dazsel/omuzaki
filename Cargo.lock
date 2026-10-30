@@ -4879,6 +4879,7 @@ name = "omuzaki-cli"
 version = "0.0.0"
 dependencies = [
  "clap",
+ "image",
  "omuzaki-anim-api",
  "omuzaki-app",
  "omuzaki-audio-api",
@@ -4903,6 +4904,7 @@ dependencies = [
  "omuzaki-io-mock",
  "omuzaki-io-ops",
  "omuzaki-io-vrm",
+ "omuzaki-l10n-api",
  "omuzaki-library",
  "omuzaki-library-api",
  "omuzaki-link-build",
@@ -4913,6 +4915,8 @@ dependencies = [
  "omuzaki-obs",
  "omuzaki-ops",
  "omuzaki-ops-api",
+ "omuzaki-performer-api",
+ "omuzaki-render",
  "omuzaki-render-api",
  "omuzaki-render-mock",
  "omuzaki-script",
@@ -4921,6 +4925,8 @@ dependencies = [
  "omuzaki-settings",
  "omuzaki-settings-api",
  "omuzaki-settings-mock",
+ "omuzaki-short",
+ "omuzaki-speech",
  "omuzaki-stage",
  "omuzaki-stage-api",
  "omuzaki-store",
@@ -5312,6 +5318,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-inochi2d"
+version = "0.0.0"
+dependencies = [
+ "crc32fast",
+ "image",
+ "omuzaki-puppet-api",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "omuzaki-input"
 version = "0.0.0"
 dependencies = [
@@ -5446,9 +5464,11 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.21",
  "toml",
+ "zip",
 ]
 
 [[package]]
@@ -6000,6 +6020,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "omuzaki-puppet"
+version = "0.0.0"
+dependencies = [
+ "image",
+ "omuzaki-anim-api",
+ "omuzaki-core",
+ "omuzaki-puppet-api",
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "toml",
+]
+
+[[package]]
+name = "omuzaki-puppet-api"
+version = "0.0.0"
+dependencies = [
+ "omuzaki-core",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "omuzaki-render"
 version = "0.0.0"
 dependencies = [
@@ -6177,6 +6223,46 @@ dependencies = [
  "rustix 1.1.5",
  "thiserror 2.0.21",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "omuzaki-short"
+version = "0.0.0"
+dependencies = [
+ "ab_glyph",
+ "hound",
+ "omuzaki-ai",
+ "omuzaki-ai-api",
+ "omuzaki-ai-ort",
+ "omuzaki-anim",
+ "omuzaki-anim-api",
+ "omuzaki-char",
+ "omuzaki-char-api",
+ "omuzaki-core",
+ "omuzaki-doc-api",
+ "omuzaki-doc-mock",
+ "omuzaki-face-api",
+ "omuzaki-link-build",
+ "omuzaki-ops-api",
+ "omuzaki-performer-api",
+ "omuzaki-puppet",
+ "omuzaki-puppet-api",
+ "omuzaki-render",
+ "omuzaki-render-api",
+ "omuzaki-render-mock",
+ "omuzaki-speech",
+ "omuzaki-stage",
+ "omuzaki-stage-api",
+ "omuzaki-store-api",
+ "omuzaki-stream",
+ "omuzaki-track-voice",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "toml",
+ "tracing",
 ]
 
 [[package]]
@@ -6548,6 +6634,7 @@ dependencies = [
  "omuzaki-performer-api",
  "omuzaki-speech",
  "omuzaki-track",
+ "omuzaki-track-api",
  "omuzaki-track-voice",
  "serde_json",
  "sha2 0.10.9",
@@ -6644,6 +6731,7 @@ dependencies = [
  "omuzaki-core",
  "omuzaki-face-api",
  "omuzaki-performer-api",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 
@@ -6732,6 +6820,7 @@ dependencies = [
  "omuzaki-settings-api",
  "omuzaki-settings-mock",
  "omuzaki-setup",
+ "omuzaki-short",
  "omuzaki-stage",
  "omuzaki-stage-api",
  "omuzaki-store",

@@ -19,6 +19,7 @@
 //! - [`stature`]: [`Stature`], real-size scaling of the body and head before the parts that simulate
 //! - [`variant`]: per-use variants as path overrides, and automatic selection by shot
 //! - [`head`], [`hair`], [`body`], [`shape`]: parameters of the core part kinds and face-shape profiles
+//! - [`design`]: the shared design layer every part gets: shape dials, sculpt strokes, the material layer stack and age
 //!
 //! The face itself (channels, profile, painter) is in `omuzaki-face-api`, which this crate builds on.
 #![deny(missing_docs)]
@@ -26,6 +27,7 @@
 pub mod body;
 pub mod build;
 pub mod character;
+pub mod design;
 pub mod doc_key;
 pub mod drivers;
 pub mod error;
@@ -58,6 +60,7 @@ pub use build::{
     RegistryBuilder, RuntimeSlot, build_part, part_rng, plan, recolour_part,
 };
 pub use character::{Attach, AttachOffset, CharacterDef, PartDef, TreeError, paths};
+pub use design::{DesignDef, DialDef, MaterialLayer, SculptStroke};
 pub use doc_key::{DocKeyError, DocKeyRegistration};
 pub use drivers::{
     BakedDriver, BoneDriver, Drive, DriverError, DriverExport, DriverPlan, Mapping, NodeConstraint, RollAxis,
@@ -69,16 +72,17 @@ pub use geometry::{FaceOverlay, MaterialError, MaterialSpec, PartMesh, TextureDa
 pub use hair::{
     AhogeGen, BangLayer, BangsGen, BraidGen, Bulge, BunGen, CapGen, CurtainGen, Dynamics, Falloff, Follow, FramingGen,
     Generator, GuideClump, GuidePoint, GuidesGen, HAIR_INFO, HAIR_PROGRAM, HAIR_UV, HairClump, HairGroup, HairParams,
-    HairPhysics, HairRng, HairShading, HairShadingError, HairSide, LegacyLcg, PartSweepGen, SphereCollider, Streak,
-    StreakBlend, TailBraid, TailGen, Taper, TaperShape, Wave, Wisp,
+    HairParting, HairPhysics, HairPigment, HairRng, HairShading, HairShadingError, HairSide, HairStrays, HairVolume,
+    HairWhorl, Hairline, LegacyLcg, LockProfile, LockShape, LockTip, PartSweepGen, PointedEars, RingShape,
+    SphereCollider, Streak, StreakBlend, TailBraid, TailGen, Taper, TaperShape, Wave, Wisp,
 };
 pub use head::{
     AnimalEars, Chin, Cranium, EarKind, EarSpecies, Ears, FaceWindow, HeadOutline, HeadParams, Neck, SkinColours,
     TracedHead,
 };
 pub use ids::{
-    AnchorId, BodyShapeId, BodyTemplateId, BoneName, CharId, ColourwayId, GroupId, JointRef, LookPresetId,
-    MaterialName, PartId, PartKindId, ProfileId, SkinToneId, TextureName, VariantId,
+    AnchorId, BodyShapeId, BodyTemplateId, BoneName, CharId, ColourwayId, DialId, GroupId, JointRef, LayerId,
+    LookPresetId, MaterialName, PartId, PartKindId, ProfileId, SkinToneId, TextureName, VariantId,
 };
 pub use kind::{
     Anchor, AnchorsFact, BodyFit, BodyRegion, BuildCtx, CollidersFact, FaceFact, FitFact, Fits, HeadFact, HeadSurface,
@@ -87,7 +91,8 @@ pub use kind::{
 };
 pub use look::{
     ClassLook, DEFAULT_PRESET, DERIVED_LINE, GradeOverride, LookDef, LookError, LookParams, LookPreset,
-    LookPresetSource, MaterialClass, OutlineColour, ProgramLook, SceneLook, find_look_preset, look_presets,
+    LookPresetSource, MaterialClass, OcclusionOverride, OutlineColour, ProgramLook, SceneLook, find_look_preset,
+    look_presets,
 };
 pub use omuzaki_core::mesh::{ExtraAttribute, MeshData, MeshError};
 pub use omuzaki_store_api::ContentHash;

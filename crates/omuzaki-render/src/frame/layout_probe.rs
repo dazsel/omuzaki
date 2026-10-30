@@ -28,8 +28,8 @@ use crate::shared::Shared;
 const FRAME_CHUNKS: usize = 12 + 3 + 32 + 4;
 /// Chunks before the program parameters: the nine leading vec4s and the four overlays' two each.
 const PROGRAM_START: usize = 9 + 8;
-/// Chunks of the program parameters (`program: array<vec4<f32>, 8>`).
-const PROGRAM_CHUNKS: usize = 8;
+/// Chunks of the program parameters (`program: array<vec4<f32>, 16>`).
+const PROGRAM_CHUNKS: usize = 16;
 // Then the UV transform, the outline mix and the six of MToon.
 const MATERIAL_CHUNKS: usize = PROGRAM_START + PROGRAM_CHUNKS + 2 + 6;
 const INSTANCE_CHUNKS: usize = 4 + 3 + 1;
@@ -76,14 +76,14 @@ fn material_chunk(i: u32) -> vec4<u32> {
         if ((i - 9u) % 2u == 0u) { return bits(overlay.rect); }
         return bits(overlay.params);
     }
-    if (i < 25u) { return bits(material.program[i - 17u]); }
-    if (i == 25u) { return bits(material.uv_transform); }
-    if (i == 26u) { return bits(material.outline_mix); }
-    if (i == 27u) { return material.mtoon_flags; }
-    if (i == 28u) { return bits(material.mtoon_shade); }
-    if (i == 29u) { return bits(material.mtoon_shading); }
-    if (i == 30u) { return bits(material.mtoon_rim); }
-    if (i == 31u) { return bits(material.mtoon_matcap); }
+    if (i < 33u) { return bits(material.program[i - 17u]); }
+    if (i == 33u) { return bits(material.uv_transform); }
+    if (i == 34u) { return bits(material.outline_mix); }
+    if (i == 35u) { return material.mtoon_flags; }
+    if (i == 36u) { return bits(material.mtoon_shade); }
+    if (i == 37u) { return bits(material.mtoon_shading); }
+    if (i == 38u) { return bits(material.mtoon_rim); }
+    if (i == 39u) { return bits(material.mtoon_matcap); }
     return bits(material.mtoon_uv);
 }
 
@@ -144,6 +144,7 @@ fn probe_material(face: TextureId) -> Material {
             },
         ],
         alpha: AlphaMode::Mask { cutoff: 0.45 },
+        order_independent: false,
         double_sided: true,
         vertex_colours: true,
         outline: Some(Outline { colour: Colour::rgb(40, 30, 60), width: 0.0123 }),
@@ -153,6 +154,7 @@ fn probe_material(face: TextureId) -> Material {
             lighting_mix: 0.375,
         },
         receives_shadows: false,
+        hair_shadow: omuzaki_render_api::HairShadow { casts: true, receives: true },
         uv_transform: UvTransform { scale: Vec2::new(0.5, 0.25), offset: Vec2::new(0.125, 0.75) },
         mtoon: None,
     }

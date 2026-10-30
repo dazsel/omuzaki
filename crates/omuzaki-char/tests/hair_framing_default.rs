@@ -109,6 +109,7 @@ fn character(template: &str, framing: &FramingGen) -> CharacterDef {
             mirror: false,
             dynamics: Dynamics::default(),
             generator: Generator::Framing(framing.clone()),
+            lock: omuzaki_char_api::LockShape::default(),
         },
     );
     def.parts.insert(PartId::new("hair").unwrap(), part("framing-probe", serde_json::to_value(hair).unwrap()));

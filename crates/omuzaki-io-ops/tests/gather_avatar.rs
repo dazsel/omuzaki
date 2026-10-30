@@ -81,6 +81,9 @@ fn params(stiffness: f32, gravity_power: f32, gravity_dir: Vec3, drag_force: f32
 /// The mock's meshes on a skeleton with all 55 humanoid bones (eyes included) and two spring chains over extra bones
 /// whose parameters all differ: hair under the head (colliding with both groups, simulated about the head) and a tail
 /// under the hips (tilted gravity, no groups, no centre).
+/// Both characters, built one at a time: a character is too large to hold two of in one array on the stack.
+const BUILDS: [fn() -> BuiltCharacter; 2] = [mock_built, rich_built];
+
 fn rich_built() -> BuiltCharacter {
     rich_with(rest)
 }
@@ -206,7 +209,8 @@ fn avatar_of(gathered: &Gathered) -> &io::Avatar {
 
 #[test]
 fn every_humanoid_bone_of_the_skeleton_is_in_the_avatar_map() {
-    for (built, expected) in [(mock_built(), 17), (rich_built(), 55)] {
+    for (make, expected) in [(mock_built as fn() -> BuiltCharacter, 17), (rich_built, 55)] {
+        let built = make();
         let gathered = vrm_gathered(&built, &clear_record(), None);
         let skeleton = &built.rig.skeleton;
         let humanoid = &avatar_of(&gathered).humanoid;
@@ -222,7 +226,8 @@ fn every_humanoid_bone_of_the_skeleton_is_in_the_avatar_map() {
 
 #[test]
 fn the_finished_scene_passes_every_check_and_the_mock_exporter_keeps_the_humanoid_and_the_meta() {
-    for built in [mock_built(), rich_built()] {
+    for make in BUILDS {
+        let built = make();
         let gathered = vrm_gathered(&built, &clear_record(), None);
         let scene = &gathered.scene;
         assert_eq!(errors(&scene.check()), Vec::<&str>::new());
@@ -386,7 +391,8 @@ fn set_from_io(sb: &SpringBones) -> SpringSet {
 
 #[test]
 fn spring_chains_keep_their_parameters_through_the_file_structures() {
-    for built in [mock_built(), rich_built()] {
+    for make in BUILDS {
+        let built = make();
         let set = &built.rig.springs;
         let file = springs::to_io(set, 1.0, &mut io::Report::default());
         assert_eq!(set_from_io(&file), *set, "set -> file structures -> set");
@@ -957,7 +963,8 @@ fn uncleared_records() -> Vec<(&'static str, LicenceRecord)> {
 #[test]
 fn a_record_that_is_not_cleared_never_yields_permissive_terms() {
     for (label, r) in uncleared_records() {
-        for built in [mock_built(), rich_built()] {
+        for make in BUILDS {
+            let built = make();
             let scene = vrm_gathered(&built, &r, Some(1.5)).scene;
             assert_eq!(scene.meta.terms, UseTerms::default(), "{label}: the most restrictive terms, nothing widened");
             assert_eq!(scene.meta.terms.commercial_usage, io::CommercialUsage::PersonalNonProfit, "{label}");

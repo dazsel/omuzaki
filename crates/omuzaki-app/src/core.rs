@@ -40,8 +40,9 @@ use crate::studio;
 const REAP_EVERY: Duration = Duration::from_secs(5);
 /// How long [`AppCore::save`] waits by default.
 const SAVE_TIMEOUT: Duration = Duration::from_secs(10);
-/// The asset store's folder inside the person's data folder (the studio's connector host uses the same).
-const ASSET_STORE: &str = "store";
+/// The asset store's folder inside the person's data folder (the studio's connector host uses the same), where the
+/// render ops put their PNGs and `omuzaki store export` reads them.
+pub const ASSET_STORE: &str = "store";
 /// The person's own library items inside the data folder (`items/<publisher>/<name>/<version>.toml`).
 const LIBRARY: &str = "library";
 /// Worker threads of the MCP runtime: the server is I/O-bound and every call it makes runs on the executor's lock.

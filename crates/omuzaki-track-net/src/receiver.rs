@@ -3,8 +3,13 @@
 //! ```text
 //!  receiver thread (one per running session)
 //!  recv_from (≤ TICK) ─▶ Decoder::decode ─▶ ClockMap::map ─▶ MailboxWriter::publish ┄┄▶ the stage's poll
+//!        │                 └─▶ Decoder::body ─▶ BodyWriter::publish ┄┄▶ the stage's body layer (VMC, when asked)
 //!        └─ every TICK: renew the phone's request when due; publish one lost frame after `lost_after` of silence
 //! ```
+//!
+//! **The body** (PF-04, PF-07): a sender that sends body bones (VMC) drives the character's body too once
+//! [`Tracker::track_body`] gives the session the stage's [`BodyBoard`]. The thread leases the board's writer while
+//! body frames come and hands it back when the sender goes quiet, so the webcam's body tracker can take over.
 //!
 //! The thread owns the socket, the decoder, the clock map and the mailbox's writer, so nothing on it is shared but a
 //! few atomics. It allocates its packet buffer once at start; decoding and publishing allocate nothing per packet
@@ -12,13 +17,14 @@
 
 use std::io::ErrorKind;
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use omuzaki_anim_api::{FrameSource, TrackFrame, TrackStatus};
 use omuzaki_core::time::{Clock, Seconds};
+use omuzaki_track_api::body::{BodyBoard, BodyConfig, BodyFrame, BodyState, BodyStatus, BodyWriter};
 use omuzaki_track_api::camera::{CameraId, CameraInfo, DeviceTime};
 use omuzaki_track_api::clock::{ClockError, ClockMap};
 use omuzaki_track_api::doctor::{Diagnosis, Doctor, DoctorBoard};
@@ -46,6 +52,30 @@ const IFACIALMOCAP_RETRY_S: f64 = 2.0;
 
 /// How often, in seconds, the tracking doctor reads the drop counters.
 const DOCTOR_EVERY: f64 = 0.5;
+
+/// The body side of the tracker: where body frames go and what is asked of them, set by `track_body` and read by the
+/// receiver thread when `changed` says so; and what the thread saw, as atomics.
+#[derive(Debug, Default)]
+struct BodyLink {
+    /// The board and the config, while body tracking is asked for.
+    target: Mutex<Option<(Arc<BodyBoard>, BodyConfig)>>,
+    changed: AtomicBool,
+    frames: AtomicU64,
+    /// Arms (left, right), hands (left, right): the newest frame's confidences, as `f32` bits.
+    seen: [AtomicU32; 4],
+}
+
+impl BodyLink {
+    fn target(&self) -> Option<(Arc<BodyBoard>, BodyConfig)> {
+        self.target.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    fn record(&self, frame: &BodyFrame) {
+        for (slot, value) in self.seen.iter().zip(frame.arms.iter().chain(&frame.hands)) {
+            slot.store(value.to_bits(), Ordering::Relaxed);
+        }
+    }
+}
 
 /// What the session publishes for the health meter and `latency`, as atomics the thread writes and anyone reads.
 #[derive(Debug, Default)]
@@ -104,12 +134,13 @@ pub struct NetTracker {
     clock: Arc<dyn Clock>,
     session: Option<Session>,
     shared: Arc<Shared>,
+    body: Arc<BodyLink>,
 }
 
 impl NetTracker {
     /// A stopped tracker with `settings`, timing frames on `clock`.
     pub fn new(settings: PhoneSettings, clock: Arc<dyn Clock>) -> Self {
-        Self { settings, clock, session: None, shared: Arc::new(Shared::default()) }
+        Self { settings, clock, session: None, shared: Arc::new(Shared::default()), body: Arc::default() }
     }
 
     /// Replaces the settings; a running session keeps the old ones until it is started again.
@@ -186,7 +217,9 @@ impl Tracker for NetTracker {
             writer,
             shared: Arc::clone(&self.shared),
             stop: Arc::clone(&stop),
+            body: Arc::clone(&self.body),
         };
+        self.body.changed.store(true, Ordering::Release);
         let thread = std::thread::Builder::new()
             .name(format!("omuzaki-track-net-{}", protocol.device_id()))
             .spawn(move || receiver.run())
@@ -215,6 +248,27 @@ impl Tracker for NetTracker {
     fn recheck(&self) {
         self.shared.doctor.request_recheck();
     }
+
+    fn track_body(&mut self, config: BodyConfig, board: &Arc<BodyBoard>) -> Result<BodyConfig, TrackError> {
+        let mut target = self.body.target.lock().unwrap_or_else(PoisonError::into_inner);
+        let before = target.as_ref().map_or(BodyConfig::OFF, |(_, config)| *config);
+        *target = config.any().then(|| (Arc::clone(board), config));
+        self.body.changed.store(true, Ordering::Release);
+        Ok(before)
+    }
+
+    fn body_status(&self) -> BodyStatus {
+        let Some((_, config)) = self.body.target() else { return BodyStatus::default() };
+        let seen = |i: usize| f32::from_bits(self.body.seen[i].load(Ordering::Relaxed));
+        BodyStatus {
+            config,
+            state: BodyState::Running,
+            arms: [seen(0), seen(1)],
+            hands: [seen(2), seen(3)],
+            frames: self.body.frames.load(Ordering::Relaxed),
+            ..BodyStatus::default()
+        }
+    }
 }
 
 impl Drop for NetTracker {
@@ -236,6 +290,17 @@ struct Receiver {
     writer: MailboxWriter,
     shared: Arc<Shared>,
     stop: Arc<AtomicBool>,
+    body: Arc<BodyLink>,
+}
+
+/// The receiver thread's body output: the board and config it was given, the writer while it holds one.
+#[derive(Default)]
+struct BodyOut {
+    target: Option<(Arc<BodyBoard>, BodyConfig)>,
+    writer: Option<BodyWriter>,
+    frame: Option<BodyFrame>,
+    /// Whether the last frame published saw anything, so a quiet sender's body is let go once.
+    saw: bool,
 }
 
 /// The receiver thread's running state.
@@ -257,6 +322,7 @@ struct Run {
     /// The tracking doctor, and when it last read the counters (stage seconds).
     doctor: Doctor,
     last_checkup: Option<f64>,
+    body: BodyOut,
 }
 
 impl Receiver {
@@ -277,6 +343,7 @@ impl Receiver {
             latency_count: 0,
             doctor: Doctor::default(),
             last_checkup: None,
+            body: BodyOut { frame: Some(BodyFrame::empty(0, Seconds(0.0))), ..BodyOut::default() },
         };
         while !self.stop.load(Ordering::Relaxed) {
             let now = self.clock.now().0;
@@ -298,6 +365,45 @@ impl Receiver {
             }
             self.check_silence(&mut run);
         }
+        // Stopped: the stage lets the body go.
+        if let Some(writer) = run.body.writer.as_mut() {
+            writer.publish(&BodyFrame::empty(run.seq, self.clock.now()));
+        }
+    }
+
+    /// The body the sender has sent, after a frame at `time`: published while body tracking is asked for (PF-04).
+    /// Allocates nothing; a lock is taken only when `track_body` changed something.
+    fn publish_body(&self, run: &mut Run, time: Seconds) {
+        let out = &mut run.body;
+        if self.body.changed.swap(false, Ordering::AcqRel) {
+            out.target = self.body.target();
+            if out.target.is_none() {
+                if let Some(writer) = out.writer.as_mut() {
+                    writer.publish(&BodyFrame::empty(run.seq, time));
+                }
+                out.writer = None;
+            }
+        }
+        let (Some((board, config)), Some(frame)) = (&out.target, out.frame.as_mut()) else { return };
+        if !self.decoder.body(frame) {
+            return;
+        }
+        if out.writer.is_none() {
+            // Another source (the webcam's body tracker) holds the board: try again on the next frame.
+            out.writer = board.writer();
+        }
+        let Some(writer) = out.writer.as_mut() else { return };
+        if !config.arms {
+            (frame.arms, frame.body) = ([0.0; 2], 0.0);
+        }
+        if !config.hands {
+            frame.hands = [0.0; 2];
+        }
+        (frame.seq, frame.time) = (run.seq, time);
+        writer.publish(frame);
+        out.saw = frame.sees_anything();
+        self.body.record(frame);
+        self.body.frames.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Sends the handshake when it is due: VTube Studio renews its lease every second; iFacialMocap asks again after
@@ -341,6 +447,7 @@ impl Receiver {
         frame.seq = run.seq;
         frame.time = time;
         self.writer.publish(frame);
+        self.publish_body(run, time);
         run.last = Some(*frame);
         if frame.status == TrackStatus::Tracking {
             run.last_tracked = arrived.0;
@@ -401,6 +508,15 @@ impl Receiver {
         let seq = run.last.map_or(run.seq, |f| f.seq);
         let lost = TrackFrame { seq, time: now, status: TrackStatus::Lost, ..blank() };
         self.writer.publish(&lost);
+        // The body goes quiet with the face: let it go once, and hand the board back.
+        if let Some(writer) = run.body.writer.as_mut()
+            && run.body.saw
+        {
+            writer.publish(&BodyFrame::empty(seq, now));
+            self.body.record(&BodyFrame::empty(seq, now));
+        }
+        run.body.saw = false;
+        run.body.writer = None;
         run.last = Some(lost);
         run.lost_sent = true;
         self.shared.frames.fetch_add(1, Ordering::Relaxed);

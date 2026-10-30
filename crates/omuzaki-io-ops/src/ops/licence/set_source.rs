@@ -21,6 +21,7 @@ use super::derive::no_such_character;
 use super::source::{PartSource, row_patch, source_path};
 use super::store;
 use crate::gather::avatar::record_path;
+use crate::ops::avatar::import::AVATAR_PART;
 
 /// Records the source row of one part of a character: `characters/<id>/sources/<part>`, replacing any row there.
 ///
@@ -98,10 +99,15 @@ impl Op for LicenceSetSource {
     fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
         let character =
             ctx.doc.get(&paths::character(&self.character)).ok_or_else(|| no_such_character(&self.character))?;
-        let known: Vec<&str> = match character.get("parts") {
+        let mut known: Vec<&str> = match character.get("parts") {
             Some(serde_json::Value::Object(parts)) => parts.keys().map(String::as_str).collect(),
             _ => Vec::new(),
         };
+        // An imported avatar is one part of its own: its row is `sources/avatar`, which the import wrote from the file's
+        // meta. A person who has read the model's actual licence corrects it here.
+        if character.get("avatar").is_some() {
+            known.push(AVATAR_PART);
+        }
         if !known.contains(&self.part.as_str()) {
             let mut error = OpError::not_found(format!("character `{}` has no part `{}`", self.character, self.part));
             error.field = Some("part".to_owned());

@@ -51,7 +51,7 @@ symphonia = { version = "0.6", default-features = false, features = ["opt-simd",
 http-body-util = "0.1"
 hyper = { version = "1", default-features = false, features = ["http1", "server"] }
 hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "hdr"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "hdr", "tga"] }   # tga: Inochi2D 0.8 writes its puppet textures as TGA (omuzaki-inochi2d)
 inventory = "0.3"
 cpal = { version = "0.18", default-features = false }   # audio device I/O for the live engine (Apache-2.0); `asio` stays off (docs/licensing/deps/cpal.toml), omuzaki-audio-engine
 libc = "0.2"   # the Linux virtual camera's device calls (open, ioctl, write) (MIT OR Apache-2.0), omuzaki-vcam; already in the lock
@@ -75,7 +75,7 @@ rustls-platform-verifier = "0.7"   # checks TLS certificates against the OS trus
 schemars = "1.2"
 semver = { version = "1", features = ["serde"] } # versions in the updater contract (MIT OR Apache-2.0), omuzaki-update-api
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["float_roundtrip"] } # recorded tracks must replay bit-identically after a save
+serde_json = { version = "1", features = ["float_roundtrip", "raw_value"] } # recorded tracks must replay bit-identically after a save; raw_value: omuzaki-inochi2d parses a node's type-specific fields only for the types it knows
 sse-stream = "0.2"   # Server-Sent Events framing for the LLM providers (MIT OR Apache-2.0), omuzaki-llm; already in the lock through rmcp
 sha2 = "0.10"   # pins the lazily downloaded fallback fonts by SHA-256 (MIT OR Apache-2.0), omuzaki-stage
 ufbx = "0.11"   # FBX import (MIT OR Unlicense; compiles the bundled ufbx.c with cc), omuzaki-io-fbx
@@ -150,6 +150,9 @@ opt-level = 2                # the CPU rasteriser draws every mock render in the
 
 [profile.dev.package.omuzaki-char]
 opt-level = 2                # the kit's geometry: its property and fit tests and every mock preview run about 4x faster
+
+[profile.dev.package.omuzaki-char-api]
+opt-level = 2                # the design layer's shape field and material layers run per vertex of every kit build
 
 [profile.dev.package.omuzaki-face]
 opt-level = 2                # the face painter: its sweep tests paint and rasterise thousands of frames (#2289)

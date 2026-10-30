@@ -40,7 +40,11 @@
 pub mod atlas;
 pub mod bake;
 pub mod exaggeration;
+pub mod eye3d;
+pub mod eye_presets;
+pub mod feature;
 pub mod layer;
+pub mod makeup_presets;
 pub mod ops;
 /// The helpers the face ops share. They sit beside `ops/`, not in it, because the generated family list in `ops/` makes
 /// every folder there `pub`, and these are crate-private.

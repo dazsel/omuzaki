@@ -1,0 +1,25 @@
+[package]
+name = "omuzaki-puppet-api"
+description = "Contract for flat 2D puppets (spec v3 EX-08, ADR 0010): the puppet model (textured meshes, lattice deformers, parameters and their keyform bindings, masks, blend modes, physics), the channel mapping and the 2D draw list."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+schemars.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+omuzaki-core = { path = "../omuzaki-core" }
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true
+
+[package.metadata.omuzaki]
+kind = "API"
+summary = "flat 2D puppets (EX-08): `PuppetDef` (parts, composites, lattices, parameters with keyform bindings, masks, blend modes, physics), `ParamMapping` from the channel bus, and the `DrawList2D` a renderer draws"

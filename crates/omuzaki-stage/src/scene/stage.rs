@@ -24,7 +24,7 @@ use omuzaki_stage_api::{Framing, MemberId, SceneDef, SceneId};
 use omuzaki_store_api::Store;
 use serde_json::Value;
 
-use super::alone::post_in_look;
+use super::alone::{occlusion_in_look, post_in_look};
 use super::apply::Owed;
 use super::default::scene_for;
 use super::landmarks::Landmarks;
@@ -466,6 +466,7 @@ impl SceneStage {
         if let AnyStage::Kit(lead) = self.cast.lead() {
             // A kit character's look sets part of the frame too, as in every render of it.
             post_in_look(&mut self.resolved.post, &lead.built().look().scene);
+            occlusion_in_look(&mut self.resolved.occlusion, &lead.built().look().scene);
         }
         let lead = self.cast.lead_id().clone();
         let root = figures.get(&lead).map_or(Mat4::IDENTITY, |figure| Mat4::from(figure.root));

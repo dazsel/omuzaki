@@ -38,7 +38,7 @@ pub const PREVIEW_LINE: &str = "Hi chat! This is how I sound. Thanks for hanging
 /// Show which voice a character speaks in, with the voice's languages and whether it needs a consent record.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(extend("examples" = [{ "character": "mochi" }]))]
+#[schemars(extend("examples" = [{ "character": "mochi" }], "x-omuzaki-fixture" = "voiced"))]
 pub struct VoiceGet {
     /// The character.
     pub character: CharId,
@@ -65,7 +65,7 @@ pub struct VoiceList {
     { "character": "mochi", "voice": "kokoro-82m/af_heart" },
     { "character": "mochi", "voice": "kokoro-82m/bf_emma", "speed": 1.1, "pitch_semitones": 2.0 },
     { "character": "mochi", "voice": "tts-cloud/Rachel", "provider": "tts-cloud" },
-]))]
+], "x-omuzaki-fixture" = "voiced"))]
 pub struct VoiceAssign {
     /// The character.
     pub character: CharId,
@@ -93,7 +93,7 @@ pub struct VoiceAssign {
 #[schemars(extend("examples" = [
     { "character": "mochi" },
     { "voice": "kokoro-82m/am_michael", "text": "Welcome back, everyone!" },
-]))]
+], "x-omuzaki-fixture" = "voiced"))]
 pub struct VoicePreviewOp {
     /// Preview this character's voice (its speed and pitch too).
     #[serde(default, skip_serializing_if = "Option::is_none")]

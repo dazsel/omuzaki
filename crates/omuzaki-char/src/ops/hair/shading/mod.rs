@@ -7,6 +7,7 @@
 //! | `hair.streak.set` | one field of a streak |
 //! | `hair.streak.remove` | removes a streak |
 //! | `hair.recolour` | the root, mid and tip colours at once, through the palette's `hair_root`, `hair_mid` and `hair_tip` slots by default, so a colourway swap recolours the hair too |
+//! | `hair.colour.natural` | every hair colour from melanin and redness, with a dye, greying and a root-to-tip gradient (#2524) |
 //!
 //! Each writes the part's `shading` back as one change (`part::changes`), so undo restores it exactly. Colours reach
 //! the materials as resolved colours: a palette change recolours the hair without rebuilding its geometry.
@@ -36,13 +37,28 @@ fn write(ctx: &OpCtx<'_>, found: &HairPart, shading: HairShading, field: &str) -
 /// Sets one field of a hair part's shading: `root`, `mid`, `tip` (the gradient), `shade` (the shadowed side), `line`
 /// (the strand lines), `tie`, `outline`, `ring` (the angel ring's colour), `ring_strength`, `strand_lines`,
 /// `edge_darkening`, `keep_identity` (how much of the hair's colour survives coloured light), `inner_darkening`, all
-/// `0` to `1`; `outline_width` (metres, up to 0.01) and `brows_through` (whether the brows show through the fringe).
-/// A colour is `#rrggbb` or a palette slot, `@hair_root`. Streaks have their own ops (`hair.streak.*`).
+/// `0` to `1`; the angel ring's shape, `ring_width` (radians, `0.01` to `0.3`), `ring_wobble` (radians, up to `0.2`)
+/// and `ring_teeth` (`0` to `1`), `ring_follow` (`0` paints it at one height, `1` makes it follow each lock's strands)
+/// and `ring_shift` (`-2` to `2`: where the following ring sits, lower toward 0); the strands, `normal_blend` (`0` to
+/// `1`: how far the locks shade as one mass rather than as tubes of their own), `edge_feather` (`0` to `0.8`: how much the locks' sides thin out), `strands` (`8` to
+/// `64` across a lock), `strand_gap` (`0` to `0.6`), `strand_grain` (`0` to `0.3`) and `tip_length` (metres, `0.002` to
+/// `0.05`); `outline_width` (metres, up to 0.01) and `brows_through` (whether the brows show through the fringe).
+/// The per-light highlights (#2521): `highlight` (a colour), `highlight_strength` and `highlight_secondary` (`0` to
+/// `2`), `highlight_width` (`0.02` to `0.8`), `highlight_shift` (`-0.6` to `0.6`, toward the roots below 0),
+/// `highlight_jitter` and `highlight_cel` (`0` soft to `1` a crisp band). The second shadow tone (#2525): `shade_deep`
+/// (a colour multiplier, `#ffffff` for none) and `shade_deep_at` (`-1` to `1`). The ring's shape: `ring_shape`
+/// (`band`, `zigzag`, `streak` or `crescent`) and `ring_shape_depth` (`0` to `1`). The occlusion (#2526):
+/// `occlusion` (`0` to `1`) and `occlusion_reach` (metres, `0.01` to `0.1`). The terminator, as `MToon`'s: `shade_shift`
+/// (`-1` to `1`, the cosine where the shadow starts; lower wraps the light further round) and `shade_softness` (`0` a
+/// hard cel edge to `1`).
+/// A colour is `#rrggbb` or a palette slot, `@hair_root`. Streaks have their own ops (`hair.streak.*`), and so does a
+/// natural colour (`hair.colour.natural`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(extend(
     "examples" = [
-        {"character": "kit", "part": "hair", "field": "ring_strength", "value": 0.4}
+        {"character": "kit", "part": "hair", "field": "ring_strength", "value": 0.4},
+        {"character": "kit", "part": "hair", "field": "ring_shape", "value": "zigzag"}
     ],
     "x-omuzaki-fixture" = "character"
 ))]
@@ -62,8 +78,12 @@ impl Op for HairSetShading {
         OpMeta {
             name: "hair.set_shading",
             summary: "Set one field of a hair part's shading: a colour (root, mid, tip, shade, line, tie, outline, \
-                      ring), ring_strength, strand_lines, edge_darkening, keep_identity, inner_darkening, \
-                      outline_width or brows_through",
+                      ring), ring_strength, ring_width, ring_wobble, ring_teeth, ring_follow, ring_shift, strand_lines, \
+                      edge_darkening, keep_identity, inner_darkening, normal_blend, edge_feather, strands, strand_gap, \
+                      strand_grain, tip_length, outline_width, brows_through, the highlights (highlight, \
+                      highlight_strength, highlight_width, highlight_shift, highlight_secondary, highlight_jitter, \
+                      highlight_cel), shade_deep, shade_deep_at, ring_shape, ring_shape_depth, occlusion, \
+                      occlusion_reach, shade_shift or shade_softness",
             kind: OpKind::Edit,
             scope: Scope::EditCharacter,
             undo: Undo::Auto,
@@ -73,7 +93,7 @@ impl Op for HairSetShading {
     fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
         let found = part::load(ctx, &self.character, &self.part)?;
         let before = &found.hair.shading;
-        let after = part::with_field(before, &self.field, &self.value, &["streaks"])?;
+        let after = part::with_field(before, &self.field, &self.value, &["streaks", "pigment"])?;
         let read = |s: &HairShading| serde_json::to_value(s).ok().and_then(|v| v.get(&self.field).cloned());
         let summary = json!({
             "character": self.character,
@@ -268,6 +288,9 @@ const SLOTS: [&str; 3] = ["hair_root", "hair_mid", "hair_tip"];
 /// Recolours a hair part's gradient at once: `root`, `mid` and `tip`, each `#rrggbb` (any left out keeps its colour).
 /// By default the colours go into the palette's `hair_root`, `hair_mid` and `hair_tip` slots (added when missing) and
 /// the part refers to them, so a colourway swap recolours the hair too; `slots: false` writes them into the part alone.
+/// The shadow tone, strand lines, outline, ring and rim follow the new middle colour (an anime shadow, lines a shade
+/// darker, a ring and rim toward white), so pale or bright hair doesn't keep the old colour's; `derive: false` keeps
+/// them as they are.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(extend(
@@ -293,6 +316,9 @@ pub struct HairRecolour {
     /// Whether the colours go through the palette's hair slots (the default) or into the part alone.
     #[serde(default = "yes")]
     pub slots: bool,
+    /// Whether the shadow tone, strand lines, outline, ring and rim follow the new middle colour (the default).
+    #[serde(default = "yes")]
+    pub derive: bool,
 }
 
 fn yes() -> bool {
@@ -321,6 +347,7 @@ impl Op for HairRecolour {
         let mut shading = found.hair.shading.clone();
         let mut palette_changes = Vec::new();
         let mut colours = serde_json::Map::new();
+        let mut new_mid = None;
         for ((field, text), slot) in given.iter().zip(SLOTS) {
             let Some(text) = text else { continue };
             let colour: omuzaki_core::colour::Colour = text.parse().map_err(|_| {
@@ -328,6 +355,9 @@ impl Op for HairRecolour {
                     .hint("write it as #rrggbb or #rrggbbaa, e.g. #6a5a8a")
             })?;
             colours.insert((*field).to_owned(), json!(colour));
+            if *field == "mid" {
+                new_mid = Some(colour);
+            }
             let reference = if self.slots {
                 let slot = PaletteSlot::new(slot).map_err(|e| OpError::internal(format!("a hair slot: {e}")))?;
                 let path = slot_path(&self.character, &slot);
@@ -349,6 +379,20 @@ impl Op for HairRecolour {
                 _ => shading.tip = reference,
             }
         }
+        if self.derive
+            && let Some(mid) = new_mid.or_else(|| found.def.palette.resolve(&shading.mid).ok())
+        {
+            let c = crate::hair::colour::companions(mid);
+            for (slot, colour) in [
+                (&mut shading.shade, c.shade),
+                (&mut shading.line, c.line),
+                (&mut shading.outline, c.outline),
+                (&mut shading.ring, c.ring),
+                (&mut shading.rim, c.rim),
+            ] {
+                *slot = ColourRef::Fixed(colour);
+            }
+        }
         let mut changes = palette_changes;
         changes.extend(write(ctx, &found, shading, "root")?);
         let summary = json!({
@@ -362,3 +406,118 @@ impl Op for HairRecolour {
 }
 
 register_op!(HairRecolour);
+
+/// Colours a hair part naturally (#2524): from `melanin` (`0` platinum, `0.3` blond, `0.5` light brown, `0.75` dark
+/// brown, `1` black) and `redness` (`0` ash, `1` red), with `dye` (`#rrggbb`, or `"none"`) at `dye_strength` over them
+/// (a dye shows fully on light hair and barely on black), `grey` (the share gone grey) and `gradient` (how much darker
+/// the roots and lighter the tips), each `0` to `1`. Fields left out keep the part's last natural colour (or the
+/// default, a warm light brown). Writes the root, mid, tip, shade, line, outline, ring and rim colours into the part,
+/// and keeps the pigment for the next edit.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [
+        {"character": "kit", "part": "hair", "melanin": 0.75, "redness": 0.3},
+        {"character": "kit", "part": "hair", "melanin": 0.15, "dye": "#d04080", "dye_strength": 0.9}
+    ],
+    "x-omuzaki-fixture" = "character"
+))]
+pub struct HairColourNatural {
+    /// The character the hair belongs to.
+    pub character: CharId,
+    /// The hair part.
+    pub part: PartId,
+    /// How much melanin.
+    #[serde(default)]
+    pub melanin: Option<f64>,
+    /// How much of it is the red kind.
+    #[serde(default)]
+    pub redness: Option<f64>,
+    /// A dye, `#rrggbb`, or `"none"`.
+    #[serde(default)]
+    pub dye: Option<String>,
+    /// How strong the dye is.
+    #[serde(default)]
+    pub dye_strength: Option<f64>,
+    /// The share gone grey.
+    #[serde(default)]
+    pub grey: Option<f64>,
+    /// How much darker the roots and lighter the tips.
+    #[serde(default)]
+    pub gradient: Option<f64>,
+}
+
+impl Op for HairColourNatural {
+    fn meta() -> OpMeta {
+        OpMeta {
+            name: "hair.colour.natural",
+            summary: "Colour a hair part naturally from melanin and redness, with a dye, greying and a root-to-tip \
+                      gradient over them",
+            kind: OpKind::Edit,
+            scope: Scope::EditCharacter,
+            undo: Undo::Auto,
+        }
+    }
+
+    fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        let found = part::load(ctx, &self.character, &self.part)?;
+        let mut shading = found.hair.shading.clone();
+        let before = shading.pigment.clone();
+        let mut pigment = before.clone().unwrap_or_default();
+        for (field, given, slot) in [
+            ("melanin", self.melanin, &mut pigment.melanin),
+            ("redness", self.redness, &mut pigment.redness),
+            ("dye_strength", self.dye_strength, &mut pigment.dye_strength),
+            ("grey", self.grey, &mut pigment.grey),
+            ("gradient", self.gradient, &mut pigment.gradient),
+        ] {
+            if let Some(value) = given {
+                if !(0.0..=1.0).contains(&value) {
+                    return Err(OpError::invalid(field, format!("{value} is outside 0 to 1"))
+                        .hint("melanin, redness, dye_strength, grey and gradient each run from 0 to 1"));
+                }
+                *slot = value;
+            }
+        }
+        match self.dye.as_deref() {
+            Some("none") => pigment.dye = None,
+            Some(text) => {
+                let colour: omuzaki_core::colour::Colour = text.parse().map_err(|_| {
+                    OpError::invalid("dye", format!("`{text}` isn't a colour"))
+                        .hint("write it as #rrggbb, e.g. #d04080, or \"none\" for no dye")
+                })?;
+                pigment.dye = Some(ColourRef::Fixed(colour));
+            }
+            None => {}
+        }
+        let dye = match &pigment.dye {
+            Some(ColourRef::Fixed(colour)) => Some(*colour),
+            Some(ColourRef::Slot(slot)) => found.def.palette.0.get(slot).copied(),
+            None => None,
+        };
+        let colours = crate::hair::colour::natural(&pigment, dye);
+        for (slot, colour) in [
+            (&mut shading.root, colours.root),
+            (&mut shading.mid, colours.mid),
+            (&mut shading.tip, colours.tip),
+            (&mut shading.shade, colours.shade),
+            (&mut shading.line, colours.line),
+            (&mut shading.outline, colours.outline),
+            (&mut shading.ring, colours.ring),
+            (&mut shading.rim, colours.rim),
+        ] {
+            *slot = ColourRef::Fixed(colour);
+        }
+        shading.pigment = Some(pigment.clone());
+        let summary = json!({
+            "character": self.character,
+            "part": self.part,
+            "before": before,
+            "after": pigment,
+            "colours": {"root": colours.root, "mid": colours.mid, "tip": colours.tip, "shade": colours.shade},
+        });
+        Ok(character::edit_plan(write(ctx, &found, shading, "melanin")?, summary))
+    }
+}
+
+register_op!(HairColourNatural);

@@ -353,6 +353,7 @@ impl Op for HairGuideAddClump {
                 mirror: false,
                 dynamics: Dynamics::default(),
                 generator: Generator::Guides(GuidesGen::default()),
+                lock: omuzaki_char_api::LockShape::default(),
             };
             after.groups.insert(self.group.clone(), group);
         }

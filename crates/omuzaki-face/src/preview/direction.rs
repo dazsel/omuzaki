@@ -134,6 +134,7 @@ pub fn measure(name: &str, p: &PaintParams) -> Option<f32> {
         "effect.pill" => e.pill,
         "teeth_sharp" => m.teeth_sharp,
         "anger_vein" => p.anger_vein,
+        "nose_sneer" => p.nose_sneer,
         _ => return None,
     })
 }

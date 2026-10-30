@@ -282,3 +282,13 @@ fn the_body_colliders_sit_inside_the_body_and_reach_its_surface() {
         widest_gap.max(0.0) * 1e3
     );
 }
+
+#[test]
+fn the_settle_reports_the_hanging_hair_clear_of_the_body() {
+    let doc = kit();
+    let answer = settle(&doc, 25.0, 1.0);
+    let clipping = &answer["clipping"];
+    assert_eq!(clipping["clear"], json!(true), "{clipping}");
+    assert!(clipping["of"].as_u64().unwrap() > 1000, "every point of the hair is measured: {clipping}");
+    assert!(clipping["body_mm"].as_f64().unwrap() <= clipping["tolerance_mm"].as_f64().unwrap(), "{clipping}");
+}

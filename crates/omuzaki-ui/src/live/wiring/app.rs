@@ -45,6 +45,7 @@ use omuzaki_stream::feed::ProgramFeed;
 use omuzaki_stream::service::{Program as StreamProgram, StreamService};
 use omuzaki_stream_api::window::{ClickThrough, WindowHost};
 use omuzaki_theatre::TheatreBook;
+use omuzaki_track_api::body::BodyBoard;
 use omuzaki_track_api::camera::{CameraId, CameraInfo};
 use omuzaki_track_api::error::TrackError;
 use omuzaki_track_api::tracker::{LatencyStats, Tracker, TrackerConfig};
@@ -303,6 +304,7 @@ impl LiveApp {
             settings,
             scripts: crate::script::store::DirScriptStore::in_user_config()
                 .map(|store| Arc::new(store) as Arc<dyn omuzaki_script::ScriptStore>),
+            body: None,
         };
         Self::start_with(document, inputs.webcam, extras, clock, transparency, &base)
     }
@@ -316,7 +318,11 @@ impl LiveApp {
         base: &HumanoidPose,
     ) -> Result<Self, StartError> {
         let hub = InputWiring::hub(clock.as_ref(), extras.data.clone());
-        let performer = live_performer(Box::new(NoSource), ChannelBuf::NEUTRAL, *base);
+        // The tracked arms and hands reach the performer through a board made with it; the input hands the board to the
+        // webcam when `input.track_body` switches them on.
+        let (body, body_reader) = BodyBoard::new();
+        let performer = live_performer(Box::new(NoSource), ChannelBuf::NEUTRAL, *base).with_body(Box::new(body_reader));
+        extras.body = Some(body);
         // The viewport reads the tracker's latency while the input owns the tracker: two handles to one.
         let tracker = SharedTracker::new(tracker);
         let observer = clock.observer();
@@ -358,6 +364,11 @@ impl LiveApp {
             services = services.insert::<VtsService>(vts);
         }
         services = InputWiring::serve(services, hub.as_ref());
+        // Downloads an op asks for (a starter character) go through the verified cache the models use.
+        if let Some(data) = &data {
+            let cache = omuzaki_ai::VerifiedCache::new(data.join(omuzaki_ai::CACHE_DIR), HttpFetcher::new());
+            services = services.insert::<dyn omuzaki_ai_api::FileSource>(Arc::new(cache));
+        }
         let (with, renders) = with_connectors(services, data.as_deref(), secrets.as_ref(), settings.as_ref());
         // The Theatre's book is kept beside the project, so a reopened project shows its plans and cards again.
         let theatre = document.dir().map_or_else(TheatreBook::new, TheatreBook::for_project);

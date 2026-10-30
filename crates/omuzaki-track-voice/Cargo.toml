@@ -21,6 +21,7 @@ omuzaki-performer-api = { path = "../omuzaki-performer-api" }
 criterion.workspace = true
 omuzaki-ai-mock = { path = "../omuzaki-ai-mock" }
 omuzaki-audio-mock = { path = "../omuzaki-audio-mock" }
+serde_json.workspace = true
 
 [[bench]]
 name = "analyze"

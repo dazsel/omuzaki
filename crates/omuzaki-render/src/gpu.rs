@@ -20,6 +20,10 @@ pub(crate) const WAIT_LIMIT: Duration = Duration::from_secs(120);
 /// The colour format scene passes draw into: linear light, premultiplied alpha, and headroom above 1.0 for bright
 /// lights and bloom. Changing it is a one-line edit here; every pass reads it from this constant.
 pub(crate) const SCENE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
+/// Order-independent transparency's revealage: how much of what is behind its layers shows through (#2507). Its
+/// weighted colour sum is in [`SCENE_FORMAT`].
+pub(crate) const OIT_REVEAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R16Float;
 /// The depth format of scene passes.
 pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// The format of a render target: sRGB-*encoded* bytes (the Resolve pass encodes by hand), so the same texture can be
@@ -67,6 +71,10 @@ pub(crate) struct Gpu {
     pub(crate) timestamps: bool,
     /// Whether the adapter is lavapipe/llvmpipe, whose anisotropic filter is not trustworthy (see `max_anisotropy`).
     lavapipe: bool,
+    /// The sample counts order-independent transparency can draw at, as `sample_counts` holds them: its targets
+    /// ([`OIT_REVEAL_FORMAT`] beside the scene colour's format) must take that many samples, and its pass blends the
+    /// two targets differently, which needs independent blending. 0 when the adapter has no independent blending.
+    oit_sample_counts: u32,
     /// Set by the device-lost callback. Only headless devices have one (the owner of a shared device sees the loss
     /// first); on a shared device a loss shows up as the errors every call then returns.
     lost: Arc<AtomicBool>,
@@ -105,6 +113,10 @@ impl Gpu {
         let info = adapter.get_info();
         let formats = adapter.get_texture_format_features(SCENE_FORMAT);
         let sample_counts = sample_count_mask(device.features(), formats.flags);
+        let reveal = adapter.get_texture_format_features(OIT_REVEAL_FORMAT);
+        let independent = adapter.get_downlevel_capabilities().flags.contains(wgpu::DownlevelFlags::INDEPENDENT_BLEND);
+        let oit_sample_counts =
+            if independent { sample_counts & sample_count_mask(device.features(), reveal.flags) } else { 0 };
         let wanted = wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
         Self {
             max_texture_size: device.limits().max_texture_dimension_2d,
@@ -112,6 +124,7 @@ impl Gpu {
             lavapipe: is_lavapipe(info.device_type, &info.name, &info.driver),
             backend_name: format!("wgpu {:?} ({})", info.backend, info.name),
             sample_counts,
+            oit_sample_counts,
             device,
             queue,
             lost: Arc::new(AtomicBool::new(false)),
@@ -181,6 +194,11 @@ impl Gpu {
     /// offline frame reaches the rest in rounds (`frame/supersample.rs`).
     pub(crate) fn samples_for(&self, requested: u8) -> u32 {
         [8u32, 4, 2, 1].into_iter().find(|&n| n <= u32::from(requested) && self.sample_counts & n != 0).unwrap_or(1)
+    }
+
+    /// Whether order-independent transparency can draw at `samples` per pixel.
+    pub(crate) fn order_independent(&self, samples: u32) -> bool {
+        self.oit_sample_counts & samples != 0
     }
 
     /// Blocks until the GPU has finished everything submitted so far, running the callbacks that were waiting on it,

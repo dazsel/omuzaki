@@ -5,8 +5,9 @@
 //! `[-1, -0.5, 0, 0.5, 1]` for 5; a single column is `a = 0` alone). A column at `a != 0` is the guide's own point pulled
 //! `|a| / 2` of the way toward the neighbouring guide on its side (the missing neighbour mirrored at the ends of the
 //! curtain), so the outer columns of neighbours meet halfway. Columns end at `1 - 0.15 |a|^1.5` of the length, so the
-//! bottom splits into pointed clumps, and every column bulges outward by `0.007 (1 - a^2) ss(t, 0.04, 0.25)` (zero only
-//! at the outer edge).
+//! bottom splits into pointed clumps, and every column bulges outward by `BULGE (1 - a^2) ss(t, 0.04, 0.25)` (zero only
+//! at the outer edge). The prototype's bulge was 7 mm, which ribbed the curtain into a row of ridges next to the anime
+//! samples' smooth sheets; it is 1.5 mm.
 //!
 //! **Separate vertices per strip.** Neighbouring strips share no vertices, so each clump shades on its own; `hair-info`
 //! carries a seed per strip. Triangles join the columns of one guide only.
@@ -27,10 +28,11 @@ use omuzaki_core::glam::{Vec2, Vec3};
 use omuzaki_core::id::{Slug, SlugError};
 use omuzaki_core::mesh::MeshData;
 
+use crate::hair::strands::{self, StrandMap};
 use crate::hair::tube::{along, smoothstep};
 
-/// How far the columns bulge outward, metres.
-const BULGE: f32 = 0.007;
+/// How far the columns bulge outward, metres: enough to round each clump, not to rib the sheet.
+const BULGE: f32 = 0.0015;
 /// The bulge grows in over this span of the strip's length ...
 const BULGE_FROM: f32 = 0.04;
 /// ... to here.
@@ -305,17 +307,20 @@ pub struct StripLook {
 }
 
 /// The whole strip mesh at rest. `guides` are in curtain order and `looks` has one entry per guide; `head` is the head
-/// centre, from which `hair-info` takes its polar angle. `keep` is applied to every vertex once placed (the body's
+/// centre, from which `hair-info` takes its polar angle; `map` lays each column on the strand texture. A strip's sides
+/// are not feathered: the curtain is one sheet, and each side meets the next strip. `keep` is applied to every vertex once placed (the body's
 /// keep-out; `|p| p` for none), before the winding and normals are worked out.
 ///
 /// # Errors
 /// As [`strip_positions`], plus [`StripError::GuideCount`] if `looks` and `guides` differ in length and
 /// [`StripError::TooMany`] if the mesh would need more than 2^32 vertices.
+#[allow(clippy::too_many_arguments)] // the strip's guides, its look and the fields it is laid in
 pub fn strip_mesh(
     guides: &[&[Vec3]],
     looks: &[StripLook],
     columns: u8,
     spacing: Spacing,
+    map: &StrandMap,
     head: Vec3,
     outward: impl Fn(Vec3) -> Vec3,
     keep: impl Fn(Vec3) -> Vec3,
@@ -340,13 +345,23 @@ pub fn strip_mesh(
         let shade = (SHADE_BASE + SHADE_SWING * (u_f32(j) * SHADE_STRIDE).sin()) * look.shade;
         for c in 0..count {
             let a = column_offset(c, count);
+            // The strand texture's `v` runs by the column's own length, so its tip frays over the same few centimetres
+            // as a lock's.
+            let run = &positions[(j * count + c) * points..(j * count + c + 1) * points];
+            let lengths: Vec<f32> = std::iter::once(0.0)
+                .chain(run.windows(2).scan(0.0, |sum, pair| {
+                    *sum += pair[0].distance(pair[1]);
+                    Some(*sum)
+                }))
+                .collect();
+            let length = lengths[points - 1];
             for k in 0..points {
                 let t = along(k, points - 1);
                 // The guide's own point sets the polar angle, as in the prototype, not the column's.
                 let polar = (guide[k] - head).normalize_or_zero().y.clamp(-1.0, 1.0).acos();
                 uv.extend([a, t]);
                 info.extend([seed, shade, polar]);
-                uvs.push(Vec2::new(0.5 + 0.5 * a, t));
+                uvs.push(Vec2::new(strands::offset(seed) + 0.5 + 0.5 * a, map.v(lengths[k], length)));
                 colours.push(look.colour);
             }
         }

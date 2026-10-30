@@ -48,6 +48,15 @@ const SHINE_X: f32 = -0.15;
 const SHINE_AT: f32 = 0.72;
 const SHINE_RX: f32 = 0.22;
 const SHINE_RY: f32 = 0.12;
+/// The tongue's groove: the mouth line's colour at this alpha, this wide (metres, times the performance scale).
+const GROOVE_ALPHA: f32 = 0.45;
+const GROOVE_WIDTH: f32 = 0.0005;
+/// The gum strip's share of the teeth band's depth.
+const GUM_SHARE: f32 = 0.22;
+/// The lines between teeth: the mouth line's colour at this alpha, this wide, reaching this share down the band.
+const GAP_ALPHA: f32 = 0.5;
+const GAP_WIDTH: f32 = 0.00035;
+const GAP_REACH: f32 = 0.85;
 /// Upper teeth show from this strength.
 const BAND_MIN: f32 = 0.01;
 /// Fangs make the band at least this strong, once the channel is above [`FANG_BAND_ABOVE`].
@@ -171,10 +180,28 @@ fn sharp_teeth(ctx: &mut PaintCtx<'_>, open: &OpenMouth, strength: f32) {
 
 fn tongue(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
     let colour = fixed_colour(&ctx.profile.mouth.interior.tongue, DEFAULT_TONGUE);
+    let shape = &ctx.profile.mouth.tongue;
+    let (wide, tall, groove) = (narrow(shape.width), narrow(shape.height), narrow(shape.groove).clamp(0.0, 1.0));
     let (c, w, h) = (open.centre, open.half_width, open.height);
+    let line = fixed_colour(&ctx.profile.mouth.line_colour, DEFAULT_LINE);
     let list = ctx.list(FaceLayerId::Base);
-    let body = list.path().ellipse(c - Vec2::new(0.0, h * TONGUE_AT), w * TONGUE_RX, h * TONGUE_RY).finish();
+    let centre = c - Vec2::new(0.0, h * TONGUE_AT);
+    let (rx, ry) = (w * TONGUE_RX * wide, h * TONGUE_RY * tall);
+    let body = list.path().ellipse(centre, rx, ry).finish();
     list.push(Cmd::Fill { path: body, paint: Paint::Solid(colour), opacity: open.reveal });
+    if groove > 0.0 {
+        // The groove down the middle, from the tongue's top toward its centre.
+        let path =
+            list.path().move_to(centre + Vec2::new(0.0, ry)).line_to(centre + Vec2::new(0.0, ry * 0.15)).finish();
+        list.push(Cmd::Stroke {
+            path,
+            paint: solid(line, GROOVE_ALPHA),
+            width: GROOVE_WIDTH * open.grow,
+            cap: Cap::Round,
+            join: Join::Round,
+            opacity: groove * open.reveal,
+        });
+    }
     let shine = list.path().ellipse(c + Vec2::new(w * SHINE_X, -h * SHINE_AT), w * SHINE_RX, h * SHINE_RY).finish();
     list.push(Cmd::Fill { path: shine, paint: solid(lighten(colour, SHINE_WHITE), SHINE_ALPHA), opacity: open.reveal });
 }
@@ -187,7 +214,12 @@ fn upper_teeth(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
         return;
     }
     let share = if mouth.teeth_lower > CLENCHED_ABOVE { BAND_SHARE_LOW } else { BAND_SHARE };
-    let depth = (open.height * share).min(BAND_MAX * open.grow) * band;
+    let teeth = &ctx.profile.mouth.teeth;
+    let depth = (open.height * share).min(BAND_MAX * open.grow) * band * narrow(teeth.height);
+    let (gaps, gum, count) =
+        (narrow(teeth.gaps).clamp(0.0, 1.0), narrow(teeth.gum).clamp(0.0, 1.0), teeth.count.max(2));
+    let gum_colour = fixed_colour(&teeth.gum_colour, DEFAULT_TONGUE);
+    let line = fixed_colour(&ctx.profile.mouth.line_colour, DEFAULT_LINE);
     let colour = fixed_colour(&ctx.profile.mouth.interior.teeth, DEFAULT_TEETH);
     let edge = |i: usize| {
         let u = along(i, BAND_SEGMENTS);
@@ -203,6 +235,38 @@ fn upper_teeth(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {
     }
     let band = outline.close().finish();
     list.push(Cmd::Fill { path: band, paint: Paint::Solid(colour), opacity: open.reveal });
+    if gum > 0.0 {
+        // A strip of gum along the top of the band, its share of the band's depth.
+        let mut strip = list.path();
+        for i in 0..=BAND_SEGMENTS {
+            strip = if i == 0 { strip.move_to(edge(i)) } else { strip.line_to(edge(i)) };
+        }
+        for i in (0..=BAND_SEGMENTS).rev() {
+            strip = strip.line_to(edge(i) - Vec2::new(0.0, depth * GUM_SHARE));
+        }
+        let strip = strip.close().finish();
+        list.push(Cmd::Fill { path: strip, paint: Paint::Solid(gum_colour), opacity: gum * open.reveal });
+    }
+    if gaps > 0.0 {
+        // The lines between teeth, short of the band's bottom so the row's edge stays clean; one stroke for all.
+        let mut path = list.path();
+        for k in 1..count {
+            // At most 16 teeth (validated), exact in f32.
+            #[allow(clippy::cast_precision_loss)]
+            let u = -1.0 + 2.0 * k as f32 / count as f32;
+            let top = open.centre + Vec2::new(u * open.half_width, open.top(u));
+            path = path.move_to(top).line_to(top - Vec2::new(0.0, depth * GAP_REACH));
+        }
+        let path = path.finish();
+        list.push(Cmd::Stroke {
+            path,
+            paint: solid(line, GAP_ALPHA),
+            width: GAP_WIDTH * open.grow,
+            cap: Cap::Round,
+            join: Join::Round,
+            opacity: gaps * open.reveal,
+        });
+    }
 }
 
 fn lower_teeth(ctx: &mut PaintCtx<'_>, open: &OpenMouth) {

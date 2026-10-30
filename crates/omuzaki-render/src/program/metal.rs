@@ -18,6 +18,8 @@
 //! | `sharpness` | how hard their edges are, `0..=1` | `0.85` |
 //! | `reflection` | how much the reflected sky and ground replace the lit colour, `0..=1` | `0.55` |
 //! | `sparkle` | how strongly the brightest band glints, `0..=1` | `0.35` |
+//! | `style` | the style axis (#2607): `1` this anime metal, `0` a physical conductor (GGX, the colour its reflectance) | `1` |
+//! | `roughness` | the physical end's roughness, `0.02..=1` | `0.25` |
 //!
 //! The toon base is a hard terminator (`softness 0.08`) with a dark shade and a thin bright rim, so the form reads as
 //! hard metal before the bands are added.
@@ -49,6 +51,8 @@ register_shading_program!(
             ParamSpec::float("sharpness", 0.85, 0.0, 1.0),
             ParamSpec::float("reflection", 0.55, 0.0, 1.0),
             ParamSpec::float("sparkle", 0.35, 0.0, 1.0),
+            ParamSpec::float("style", 1.0, 0.0, 1.0),
+            ParamSpec::float("roughness", 0.25, 0.02, 1.0),
         ],
         attributes: &[],
         toon,

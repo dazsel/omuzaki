@@ -64,6 +64,12 @@ fn sweep(frame: &Frame, side: Side, back_deg: f64) -> DVec3 {
     ((frame.up * angle.cos() + back * angle.sin()) * lean.cos() + out * lean.sin()).normalize_or_zero()
 }
 
+/// The direction the `side` ear's tip points, for what has to make way for it.
+#[must_use]
+pub fn tip_direction(ears: &Ears, side: Side) -> DVec3 {
+    sweep(&Frame::of(ears, side), side, ears.tip_angle_deg)
+}
+
 /// The elf ear of `ears.size`, tip and orientation on the `side` of the head, rooted at `root`. The lean out of the head is
 /// a look, not a guarantee: a small ear at a low flare still ends in the head, so the shell is pushed out of it where
 /// it would ([`human::CLEARANCE`]).

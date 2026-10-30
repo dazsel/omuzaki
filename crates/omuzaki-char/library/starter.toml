@@ -6,6 +6,7 @@
 # The look: a chibi with open, round eyes, five-finger hands, a warm brown bob with side-swept bangs and locks that
 # frame the face, and a cream shirt over a plaid pleated skirt, dark tights and buckled boots.
 
+# The eyes are the `kit` eye preset (`omuzaki-face`'s library/eyes.toml; a test there keeps the two the same).
 [face.eyes.aperture]
 roundness = 0.6
 upper_height = 0.75
@@ -15,6 +16,22 @@ tilt = 0.05
 [face.eyes.iris]
 drop = 0.0
 height = 0.9
+detail = { fibres = { strength = 0.55 }, collarette = { strength = 0.6 }, flecks = { strength = 0.4 }, limbal = { strength = 0.65 }, pupil_glow = 0.35 }
+
+[face.eyes.highlights]
+shape = "window"
+size = 0.3
+offset = [0.26, 0.3]
+caustic = 0.55
+
+[face.eyes.sclera]
+corner_shade = 0.55
+caruncle = 0.6
+waterline = 0.6
+
+[face.eyes.lash.strands]
+upper = { count = 26 }
+lower = { count = 10, opacity = 0.7 }
 
 [[parts]]
 id = "body"
@@ -33,7 +50,7 @@ kind = "hair"
 root = "#6e4334"
 mid = "#8a5a44"
 tip = "#a8725a"
-shade = "#5e3a30"
+shade = "#f4d8c8"
 line = "#4a2c24"
 outline = "#3e241e"
 ring = "#e8b896"

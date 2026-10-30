@@ -30,7 +30,7 @@ use crate::body::{Body, BodyServices, load_body};
 use crate::frame::face::FacePoints;
 use crate::recipe::preset::{PresetOutline, PresetPost, PresetProjection};
 use crate::recipe::{LightRig, RenderPreset};
-use crate::scene::alone::{ShotChoice, StagedScene, cast_alone, post_in_look, stage_alone};
+use crate::scene::alone::{ShotChoice, StagedScene, cast_alone, occlusion_in_look, post_in_look, stage_alone};
 use crate::scene::default::scene_for;
 use crate::scene::landmarks::Landmarks;
 
@@ -348,6 +348,7 @@ impl Op for Preview {
         } else if let Body::Kit(built) = &body {
             // A kit character's look sets part of the frame too: its bloom, depth of field, grain and grade.
             post_in_look(&mut staged.resolved.post, &built.look().scene);
+            occlusion_in_look(&mut staged.resolved.occlusion, &built.look().scene);
         }
         if preset.and_then(|p| p.camera).is_some_and(|c| c.projection == PresetProjection::Orthographic) {
             orthographic(&mut staged, &landmarks)?;

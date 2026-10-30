@@ -10,7 +10,10 @@
 //! of `cos phi` over [`CapGen::front_blend`]) to [`CapGen::hairline_front_deg`] at the forehead, minus an ear notch,
 //! [`CapGen::ear_notch_deg`] x `exp(-cos^2 phi / `[`CapGen::notch_width`]`)` x smoothstep of `cos phi` over [`CapGen::notch_edges`],
 //! that lifts the edge above each ear. Rings past the hairline collapse onto it (the prototype's `min`), so the grid
-//! keeps its shape and the surplus triangles have no area.
+//! keeps its shape and the surplus triangles have no area. The front height is a curve across the forehead
+//! ([`CapGen::hairline`], #2517): an arch, a widow's peak or receding temples, each fading out toward the sides. Over
+//! the last [`Hairline::density_fade_deg`](omuzaki_char_api::Hairline::density_fade_deg) above it the shell takes the
+//! strand texture's tips, so its strands end one by one and skin shows between them toward the hairline.
 //!
 //! **The offset.** [`CapGen::thickness`] at the hairline, rising by [`CapGen::crown_rise`] of itself (0.010 m on the default
 //! 0.016 m) toward the crown, so the shell is a thin cap over the scalp and stands a little off it at the top where the
@@ -34,21 +37,25 @@
 use std::f64::consts::TAU;
 
 use omuzaki_char_api::{Bulge, CapGen, HAIR_INFO, HAIR_UV, HeadSurface, Taper};
-use omuzaki_core::glam::Vec3;
+use omuzaki_core::glam::{Vec2, Vec3};
 use omuzaki_core::id::Slug;
 use omuzaki_core::mesh::{ExtraAttribute, MeshData};
 
 use crate::hair::compile::{CompiledGroup, GroupGeometry, HairGenCtx};
+use crate::hair::strands;
+use crate::hair::volume::Field;
 
 /// Quads round the head.
 pub const SEGMENTS: usize = 96;
 /// Rings of quads from the crown to the hairline.
 pub const RINGS: usize = 48;
+/// How many times the strand texture repeats round the head: a whole number, so its seam at the back closes.
+pub const CAP_STRANDS: f32 = 14.0;
 
-/// Compiles the group: one shell and no clumps.
+/// Compiles the group: one shell and no clumps, its strands combed by the hair's shared flow where it has one.
 pub fn compile(g: &CapGen, ctx: &mut HairGenCtx<'_>) -> CompiledGroup {
     let mut shell = MeshData::default();
-    fill_shell(g, ctx.head, &mut shell);
+    fill_shell_combed(g, ctx.head, ctx.volume, &mut shell);
     CompiledGroup::empty(GroupGeometry::Shell(shell))
 }
 
@@ -74,11 +81,19 @@ pub const fn vertex_count() -> usize {
     (SEGMENTS + 1) * (RINGS + 1)
 }
 
-/// The polar angle (radians) where the shell ends at azimuth `phi`: the hairline, lifted over the ears.
+/// The polar angle (radians) where the shell ends at azimuth `phi` (radians, 0 the front, round through the
+/// character's left): the hairline's curve across the forehead ([`CapGen::hairline`]), eased into the back height and
+/// lifted over the ears. Baby hairs and anything else that grows from the hairline read it here.
+pub fn hairline_at(g: &CapGen, phi: f64) -> f64 {
+    hairline(g, g.hairline_back_deg.to_radians().max(1e-6), phi)
+}
+
+/// [`hairline_at`] with the back height in radians.
 fn hairline(g: &CapGen, back: f64, phi: f64) -> f64 {
     let front = phi.cos();
     let blend = smoothstep(front, g.front_blend[0], g.front_blend[1]);
-    let edge = back + (g.hairline_front_deg.to_radians() - back) * blend;
+    let middle = (g.hairline_front_deg + g.hairline.offset_deg(phi)).clamp(5.0, 150.0).to_radians();
+    let edge = back + (middle - back) * blend;
     let notch = g.ear_notch_deg.to_radians()
         * (-front * front / g.notch_width).exp()
         * smoothstep(front, g.notch_edges[0], g.notch_edges[1]);
@@ -96,10 +111,20 @@ fn direction(theta: f64, phi: f64) -> Vec3 {
 /// Writes the shell over `head` into `out`, replacing its positions, normals, `hair-uv`, `hair-info` and indices and
 /// leaving its other fields untouched. Allocates only while `out` is still growing to its first full size (and when
 /// its two attributes are first created).
-#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)] // grid indices are small; attributes are f32
 pub fn fill_shell(g: &CapGen, head: &dyn HeadSurface, out: &mut MeshData) {
+    fill_shell_combed(g, head, None, out);
+}
+
+/// Strands of the strand texture per radian along a parting: as dense as round a whorl a radian away.
+const PART_STRANDS: f64 = CAP_STRANDS as f64 / (TAU * 0.841_470_984_807_896_5);
+
+/// [`fill_shell`] with its strands combed by the hair's shared flow `field` (#2478): `hair-uv.y` and the strand texture
+/// run away from the parting, or from the whorl where that is nearer ([`Field::comb`]), instead of down from the top,
+/// and the texture's strands lie along the parting and round the whorl. Without a field it is the prototype's shell.
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)] // grid indices are small; attributes are f32
+pub fn fill_shell_combed(g: &CapGen, head: &dyn HeadSurface, field: Option<&Field>, out: &mut MeshData) {
     ensure_attributes(&mut out.extra);
-    let MeshData { positions, normals, indices, extra, .. } = out;
+    let MeshData { positions, normals, uvs, indices, extra, .. } = out;
     let [uv, info] = extra.as_mut_slice() else {
         // `ensure_attributes` leaves exactly these two, and `attribute_names_are_slugs` proves it can create them; a
         // shell without them would be silently empty, so a broken invariant stops a debug build.
@@ -112,7 +137,9 @@ pub fn fill_shell(g: &CapGen, head: &dyn HeadSurface, out: &mut MeshData) {
     // lower on the head than the back one); by default that is the back, as in the prototype.
     let reach = back.max(g.hairline_front_deg.to_radians());
     let (seed, shade) = (g.strand_seed as f32, g.shade as f32);
+    let fade = g.hairline.density_fade_deg.to_radians();
     positions.clear();
+    uvs.clear();
     uv.data.clear();
     info.data.clear();
     for i in 0..=RINGS {
@@ -122,7 +149,21 @@ pub fn fill_shell(g: &CapGen, head: &dyn HeadSurface, out: &mut MeshData) {
             let t = theta.min(hairline(g, back, phi));
             let offset = g.thickness * (1.0 + g.crown_rise * (1.0 - t / reach));
             positions.push(head.point(direction(t, phi), offset as f32));
-            uv.data.extend([phi.sin() as f32, (t / reach) as f32]);
+            // The strand texture runs down from the crown, [`CAP_STRANDS`] locks' worth of strands round the head,
+            // all of it the texture's body: the shell has no tips. Combed, it runs from the parting or the whorl.
+            let (down, strand) = match field.map(|f| f.comb(direction(t, phi).as_dvec3())) {
+                Some(comb) if comb.from_part => ((comb.distance / reach).min(1.0), (comb.across * PART_STRANDS) as f32),
+                Some(comb) => ((comb.distance / reach).min(1.0), (comb.across / TAU) as f32 * CAP_STRANDS),
+                None => (t / reach, (j as f64 / SEGMENTS as f64) as f32 * CAP_STRANDS),
+            };
+            uv.data.extend([phi.sin() as f32, down as f32]);
+            let along = match thinning(t, hairline(g, back, phi), fade) {
+                // In the band above the hairline the shell takes the strand texture's tips, so its strands end one by
+                // one and the hairline thins out instead of stopping at one edge.
+                Some(f) => (1.0 - strands::TIP + strands::TIP * f) * strands::V_END,
+                None => down as f32 * (1.0 - strands::TIP) * strands::V_END,
+            };
+            uvs.push(Vec2::new(strand, along));
             info.data.extend([seed, shade, t as f32]);
         }
     }
@@ -134,6 +175,14 @@ pub fn fill_shell(g: &CapGen, head: &dyn HeadSurface, out: &mut MeshData) {
     lift_to_clearance(head, positions, indices, normals);
     normals.fill(Vec3::ZERO);
     smooth_normals(positions, indices, normals);
+}
+
+/// How far into the thinning band above the hairline a point at polar angle `t` is, `0..=1` (1 on the hairline), or
+/// `None` above the band or without one. The band is `fade` radians, never more than the hairline's own height.
+#[allow(clippy::cast_possible_truncation)] // a fraction
+fn thinning(t: f64, edge: f64, fade: f64) -> Option<f32> {
+    let fade = fade.min(edge * 0.5);
+    (fade > 0.0 && t > edge - fade).then(|| ((t - (edge - fade)) / fade).clamp(0.0, 1.0) as f32)
 }
 
 /// A lock the shell tucks under ([`tuck`]): its rest points, width and thickness.

@@ -53,6 +53,40 @@ fn library_item(text: &str) -> omuzaki_library_api::ItemManifest {
     omuzaki_library_api::ItemManifest::parse(&text).unwrap_or_else(|e| panic!("{e}\n{text}"))
 }
 
+/// The voices the `voice.*` examples and the `voiced` fixture use: Kokoro's stock voices locally, and `Rachel` from the
+/// hosted provider `tts-cloud` at a price; and voice commands with the shipped phrase list.
+fn speech_services(builder: ServicesBuilder) -> ServicesBuilder {
+    use omuzaki_performer_api::ids::VoiceId;
+    use omuzaki_performer_api::speech::VoiceError;
+    use omuzaki_performer_api::voice::{TtsPrice, VoiceCatalog, VoiceInfo, VoiceProvider};
+
+    struct RigVoices;
+    impl VoiceCatalog for RigVoices {
+        fn voices(&self, provider: &VoiceProvider) -> Result<Vec<VoiceInfo>, VoiceError> {
+            let voice = |id: &str, lang: &str| {
+                VoiceInfo::new(
+                    VoiceId::new(id).expect("a voice id"),
+                    vec![omuzaki_l10n_api::Locale::new(lang).expect("a locale")],
+                )
+            };
+            Ok(match provider {
+                VoiceProvider::Local => vec![
+                    voice("kokoro-82m/af_heart", "en-US"),
+                    voice("kokoro-82m/am_michael", "en-US"),
+                    voice("kokoro-82m/bf_emma", "en-GB"),
+                ],
+                _ => vec![voice("tts-cloud/Rachel", "en-US")],
+            })
+        }
+        fn price(&self, provider: &VoiceProvider) -> Option<TtsPrice> {
+            matches!(provider, VoiceProvider::Hosted(_)).then(|| TtsPrice::new(15_000_000, "2026-10-01"))
+        }
+    }
+    builder.insert::<dyn VoiceCatalog>(Arc::new(RigVoices)).insert::<omuzaki_speech::commands::VoiceCommands>(Arc::new(
+        omuzaki_speech::commands::VoiceCommands::new(omuzaki_speech::commands::default_phrases()),
+    ))
+}
+
 /// The library the `library.*` examples and fixtures use, with the person's own items in `folder`: the colourway
 /// `night-iris` and the hairstyle `twintails` (first-party), and the person's `anon/hair/ribbon-bow`.
 fn library_services(builder: ServicesBuilder, folder: &Path) -> ServicesBuilder {
@@ -183,7 +217,7 @@ fn fixture_project(name: &str) -> Result<tempfile::TempDir, String> {
     let library = tempfile::tempdir().map_err(|e| e.to_string())?;
     let setup = Executor::new(Box::new(doc), Arc::new(SystemClock::new()))
         .map_err(|e| e.to_string())?
-        .with_services(library_services(ServicesBuilder::new(), library.path()).build())
+        .with_services(speech_services(library_services(ServicesBuilder::new(), library.path())).build())
         .with_project_dir(project);
     for FixtureStep { op, args } in steps {
         let request = Request {
@@ -339,6 +373,15 @@ impl InputHost for IdleInput {
     ) -> Result<omuzaki_track_api::pose_out::PoseOutStatus, InputError> {
         Ok(omuzaki_track_api::pose_out::PoseOutStatus::default())
     }
+
+    // Body tracking that "starts" without tracking: the `input.track_body` examples dry-run against it.
+    fn track_body(
+        &self,
+        _config: omuzaki_track_api::body::BodyConfig,
+        _mode: Mode,
+    ) -> Result<omuzaki_track_api::body::BodyConfig, InputError> {
+        Ok(omuzaki_track_api::body::BodyConfig::OFF)
+    }
 }
 
 impl PerformHost for IdleHost {
@@ -439,50 +482,51 @@ impl Rig {
         let runner = Executor::with_registrations(Box::new(doc), Arc::new(SystemClock::new()), [reg])
             .map_err(|e| e.to_string())?
             .with_services(
-                library_services(window_host::with_window(ServicesBuilder::new(), (reg.meta)().name), library.path())
-                    // The stream service with nothing running: the `record.*` and `output.*` examples dry-run
-                    // against it as they would in the app.
-                    .insert::<omuzaki_stream::service::StreamService>(Arc::new(
-                        omuzaki_stream::service::StreamService::new().expect("the stream service starts"),
-                    ))
-                    // The mock audio engine: the `audio.*` examples bind its default microphone.
-                    .insert::<dyn omuzaki_audio_api::engine::AudioEngine>(Arc::new(
-                        omuzaki_audio_mock::MockEngine::new(),
-                    ))
-                    // No OBS connection: the `obs.*` examples dry-run and say they would need one.
-                    .insert::<omuzaki_obs::service::ObsService>(Arc::new(omuzaki_obs::service::ObsService::new()))
-                    // No VTube Studio bridge: the `vts.*` examples dry-run and say they would need a connection.
-                    .insert::<omuzaki_vts::service::VtsService>(Arc::new(
-                        omuzaki_vts::service::VtsService::new().expect("the built-in channel map parses"),
-                    ))
-                    .insert::<omuzaki_live::Automation>(Arc::new(omuzaki_live::Automation::new()))
-                    // A Twitch service on a transport that answers nothing: the `twitch.*` examples dry-run and
-                    // report that no token is stored.
-                    .insert::<omuzaki_twitch::TwitchService>(Arc::new(omuzaki_twitch::TwitchService::new(
-                        Arc::new(omuzaki_http_mock::FakeHttp::new()),
-                        Arc::new(omuzaki_live::Automation::new()),
-                    )))
-                    // Settings in memory: the `settings.*` examples read and write them as they would in the app,
-                    // with the profile `stream-0001` the `settings.profile.*` examples name.
-                    .insert::<dyn omuzaki_settings_api::service::Settings>(settings_with_a_profile())
-                    .insert::<dyn PerformHost>(Arc::new(IdleHost))
-                    .insert::<dyn InputHost>(Arc::new(IdleInput))
-                    // The stage's effect queue with no stage draining it: the `stage.effect.*` examples dry-run.
-                    .insert::<dyn omuzaki_stage_api::EffectService>(Arc::new(
-                        omuzaki_stage::effects::service::StageEffects::new(0),
-                    ))
-                    // Snapshots with nothing to reload: `project.save` and `project.reload` run as they would on a
-                    // project whose files match the document.
-                    .insert::<dyn omuzaki_history_api::state::HistoryView>(Arc::new(view))
-                    // `main` (the folder branch, at the fixture's state) and `aria/oval`, forked from it with the note
-                    // changed: the `branch.*` examples merge, list and compare them.
-                    .insert::<dyn omuzaki_history_api::state::BranchStore>(branches)
-                    .insert::<dyn omuzaki_history_api::HistoryLog>(Arc::new(log))
-                    .insert::<dyn Snapshots>(Arc::new(MemorySnapshots::new(
-                        Value::Null,
-                        Arc::new(omuzaki_history_mock::SystemWallClock),
-                    )))
-                    .build(),
+                speech_services(library_services(
+                    window_host::with_window(ServicesBuilder::new(), (reg.meta)().name),
+                    library.path(),
+                ))
+                // The stream service with nothing running: the `record.*` and `output.*` examples dry-run
+                // against it as they would in the app.
+                .insert::<omuzaki_stream::service::StreamService>(Arc::new(
+                    omuzaki_stream::service::StreamService::new().expect("the stream service starts"),
+                ))
+                // The mock audio engine: the `audio.*` examples bind its default microphone.
+                .insert::<dyn omuzaki_audio_api::engine::AudioEngine>(Arc::new(omuzaki_audio_mock::MockEngine::new()))
+                // No OBS connection: the `obs.*` examples dry-run and say they would need one.
+                .insert::<omuzaki_obs::service::ObsService>(Arc::new(omuzaki_obs::service::ObsService::new()))
+                // No VTube Studio bridge: the `vts.*` examples dry-run and say they would need a connection.
+                .insert::<omuzaki_vts::service::VtsService>(Arc::new(
+                    omuzaki_vts::service::VtsService::new().expect("the built-in channel map parses"),
+                ))
+                .insert::<omuzaki_live::Automation>(Arc::new(omuzaki_live::Automation::new()))
+                // A Twitch service on a transport that answers nothing: the `twitch.*` examples dry-run and
+                // report that no token is stored.
+                .insert::<omuzaki_twitch::TwitchService>(Arc::new(omuzaki_twitch::TwitchService::new(
+                    Arc::new(omuzaki_http_mock::FakeHttp::new()),
+                    Arc::new(omuzaki_live::Automation::new()),
+                )))
+                // Settings in memory: the `settings.*` examples read and write them as they would in the app,
+                // with the profile `stream-0001` the `settings.profile.*` examples name.
+                .insert::<dyn omuzaki_settings_api::service::Settings>(settings_with_a_profile())
+                .insert::<dyn PerformHost>(Arc::new(IdleHost))
+                .insert::<dyn InputHost>(Arc::new(IdleInput))
+                // The stage's effect queue with no stage draining it: the `stage.effect.*` examples dry-run.
+                .insert::<dyn omuzaki_stage_api::EffectService>(Arc::new(
+                    omuzaki_stage::effects::service::StageEffects::new(0),
+                ))
+                // Snapshots with nothing to reload: `project.save` and `project.reload` run as they would on a
+                // project whose files match the document.
+                .insert::<dyn omuzaki_history_api::state::HistoryView>(Arc::new(view))
+                // `main` (the folder branch, at the fixture's state) and `aria/oval`, forked from it with the note
+                // changed: the `branch.*` examples merge, list and compare them.
+                .insert::<dyn omuzaki_history_api::state::BranchStore>(branches)
+                .insert::<dyn omuzaki_history_api::HistoryLog>(Arc::new(log))
+                .insert::<dyn Snapshots>(Arc::new(MemorySnapshots::new(
+                    Value::Null,
+                    Arc::new(omuzaki_history_mock::SystemWallClock),
+                )))
+                .build(),
             )
             .with_project_dir(project);
         let actor = Actor::Person { name: "conformance".to_owned() };

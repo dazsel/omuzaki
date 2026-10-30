@@ -42,6 +42,21 @@ fn cost(phone: Phone, f: &VoiceFrame) -> f32 {
     }
 }
 
+/// A phone's usual length, frames, at a speaker's usual pace: what the duration prior pulls its run toward.
+fn usual(phone: Phone) -> f32 {
+    match phone {
+        Phone::Vowel(_) => 8.0,
+        Phone::Bilabial | Phone::Labiodental => 7.0,
+        Phone::Round | Phone::Consonant => 6.0,
+        Phone::Silence => 0.0,
+    }
+}
+
+/// How strongly a run's length is pulled toward its phone's usual length (scaled to the line's pace).
+const DURATION_WEIGHT: f32 = 1.5;
+/// The cost of a pause where the text has no word break or punctuation.
+const PAUSE_IN_WORD: f32 = 2.0;
+
 /// The time between frames `k - 1` and `k`. The first frame is the first full window, and each is centred on its
 /// window, so frame `k` is heard at `WINDOW_S / 2 + k · HOP_S`.
 #[allow(clippy::cast_precision_loss)] // frame counts are small
@@ -54,11 +69,23 @@ fn boundary(k: usize) -> f64 {
 pub fn align(phones: &[Phone], frames: &[VoiceFrame]) -> Vec<PhoneSpan> {
     // A silence may fall before, after and between any two phones, whether the text marks a pause there or not.
     let mut seq = Vec::with_capacity(2 * phones.len() + 1);
+    // Whether a pause at each place costs nothing: the line's ends, and where the text breaks between words.
+    let mut free = Vec::with_capacity(2 * phones.len() + 1);
     seq.push(Phone::Silence);
-    for &phone in phones.iter().filter(|p| **p != Phone::Silence) {
+    free.push(true);
+    for (i, &phone) in phones.iter().enumerate().filter(|(_, p)| **p != Phone::Silence) {
         seq.push(phone);
+        free.push(false);
         seq.push(Phone::Silence);
+        free.push(phones.get(i + 1).is_none_or(|next| *next == Phone::Silence));
     }
+    // The line's pace: the frames from its first sound to its last, over the phones' usual lengths.
+    let sounding = |f: &&VoiceFrame| f.speaking || f.loudness > 0.0;
+    let first = frames.iter().position(|f| sounding(&f)).unwrap_or(0);
+    let last = frames.iter().rposition(|f| sounding(&f)).map_or(frames.len(), |i| i + 1);
+    let usual_total: f32 = seq.iter().map(|p| usual(*p)).sum();
+    #[allow(clippy::cast_precision_loss)] // frame counts are small
+    let pace = (last.saturating_sub(first) as f32 / usual_total.max(1.0)).clamp(0.4, 2.5);
     let (n, f) = (seq.len(), frames.len());
     // Prefix sums of each phone's cost over the frames.
     let mut pre = vec![0.0f32; n * (f + 1)];
@@ -79,8 +106,17 @@ pub fn align(phones: &[Phone], frames: &[VoiceFrame]) -> Vec<PhoneSpan> {
             if !here.is_finite() {
                 continue;
             }
+            let expected = usual(seq[p]) * pace;
             for d in lo..=hi.min(f - k) {
-                let c = here + pre[p * (f + 1) + k + d] - pre[p * (f + 1) + k];
+                #[allow(clippy::cast_precision_loss)] // a run is at most 300 frames
+                let prior = if expected > 0.0 {
+                    DURATION_WEIGHT * ((d as f32 - expected) / expected).powi(2)
+                } else if d > 0 && !free[p] {
+                    PAUSE_IN_WORD
+                } else {
+                    0.0
+                };
+                let c = here + pre[p * (f + 1) + k + d] - pre[p * (f + 1) + k] + prior;
                 let slot = (p + 1) * (f + 1) + k + d;
                 if c < best[slot] {
                     best[slot] = c;

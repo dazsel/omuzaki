@@ -5,6 +5,10 @@
 //! - **Auto-stop.** An expression with `auto_stop_s` starts fading out that long after it was last shown.
 //! - **Exclusive groups.** Showing an expression fades out every other one in its group, so one mood shows at a time;
 //!   the two cross-fade.
+//! - **Dwell.** An expression with `dwell_s` holds at least that long before another in its group replaces it: one
+//!   asked for sooner waits, the latest asked for winning, and shows when the dwell is up, so a face doesn't flicker
+//!   between moods. One with `cuts_in` (a startle) replaces it at once. Showing the expression that is up again renews
+//!   it: its fade carries on, and its auto-stop and dwell count from the renewal, so the hold extends.
 //! - **Layers.** Momentary expressions play over the held ones: on each channel a momentary one moves, the held ones
 //!   step back by its weight and return as it fades, so a wink takes the eye from a smile and gives it back. Channels it
 //!   leaves alone keep the held expression.
@@ -46,6 +50,8 @@ struct Entry {
     on: bool,
     /// Seconds since it was last shown.
     shown_for: f32,
+    /// The least time it holds before another in its group may replace it.
+    dwell: f32,
 }
 
 impl Entry {
@@ -60,7 +66,13 @@ impl Entry {
             weight: 0.0,
             on: true,
             shown_for: 0.0,
+            dwell: playback.dwell_s.map_or(0.0, narrow).max(0.0),
         }
+    }
+
+    /// Whether it is up and still inside its dwell, so another in `group` must wait.
+    fn holds(&self, group: &str) -> bool {
+        self.on && self.group.as_deref() == Some(group) && self.shown_for < self.dwell
     }
 
     /// Moves the fade `dt` seconds toward its target.
@@ -87,12 +99,14 @@ impl Entry {
 pub struct ExpressionPlayer {
     entries: Vec<Entry>,
     default: Option<ExpressionId>,
+    /// Expressions asked for while another in their group dwells, at most one per group: they show when it is up.
+    waiting: Vec<(ExpressionId, Playback)>,
 }
 
 impl ExpressionPlayer {
     /// A player with nothing showing, returning to `default` (the face's `default_expression`) when nothing held shows.
     pub fn new(default: Option<ExpressionId>) -> Self {
-        Self { entries: Vec::with_capacity(MAX_SHOWN), default }
+        Self { entries: Vec::with_capacity(MAX_SHOWN), default, waiting: Vec::new() }
     }
 
     /// Changes the default expression.
@@ -100,14 +114,30 @@ impl ExpressionPlayer {
         self.default = default;
     }
 
-    /// Shows `id` with its playback from `set`: it fades in (or keeps showing, its auto-stop restarted), and every other
-    /// expression in its group fades out.
+    /// Shows `id` with its playback from `set`: it fades in (or keeps showing, its auto-stop and dwell renewed), and
+    /// every other expression in its group fades out. While another in its group dwells, it waits instead (unless it
+    /// cuts in), replacing whatever else waited in the group, and shows when the dwell is up.
     ///
     /// # Errors
     /// [`UnknownExpression`] when `set` has no such expression; nothing changes.
     pub fn show(&mut self, set: &ExpressionSet, id: &ExpressionId) -> Result<(), UnknownExpression> {
         let playback = &set.0.get(id).ok_or_else(|| UnknownExpression(id.clone()))?.playback;
+        if let Some(group) = &playback.group
+            && !playback.cuts_in
+            && self.entries.iter().any(|e| e.id != *id && e.holds(group))
+        {
+            self.waiting.retain(|(_, p)| p.group.as_ref() != Some(group));
+            self.waiting.push((id.clone(), playback.clone()));
+            return Ok(());
+        }
+        self.start(id, playback);
+        Ok(())
+    }
+
+    /// Shows `id` now, whatever dwells.
+    fn start(&mut self, id: &ExpressionId, playback: &Playback) {
         if let Some(group) = &playback.group {
+            self.waiting.retain(|(_, p)| p.group.as_ref() != Some(group));
             for other in self.entries.iter_mut().filter(|e| e.id != *id && e.group.as_ref() == Some(group)) {
                 other.on = false;
             }
@@ -115,7 +145,7 @@ impl ExpressionPlayer {
         if let Some(entry) = self.entries.iter_mut().find(|e| e.id == *id) {
             let weight = entry.weight;
             *entry = Entry { weight, ..Entry::new(id, playback) };
-            return Ok(());
+            return;
         }
         if self.entries.len() >= MAX_SHOWN {
             let faintest =
@@ -123,7 +153,6 @@ impl ExpressionPlayer {
             self.entries.swap_remove(faintest);
         }
         self.entries.push(Entry::new(id, playback));
-        Ok(())
     }
 
     /// Cuts to `id`: it shows at full weight at once, and whatever it takes over from is gone at once: every other
@@ -149,27 +178,45 @@ impl ExpressionPlayer {
         Ok(())
     }
 
-    /// Fades `id` out, if it shows.
+    /// Fades `id` out, if it shows, and forgets it if it waits.
     pub fn hide(&mut self, id: &ExpressionId) {
+        self.waiting.retain(|(w, _)| w != id);
         for entry in self.entries.iter_mut().filter(|e| e.id == *id) {
             entry.on = false;
         }
     }
 
-    /// Fades everything out.
+    /// Fades everything out, and forgets what waits.
     pub fn hide_all(&mut self) {
+        self.waiting.clear();
         for entry in &mut self.entries {
             entry.on = false;
         }
     }
 
-    /// Advances every fade and auto-stop by `dt` seconds (at most 0.25 per call), and forgets what has faded out.
+    /// Advances every fade, auto-stop and dwell by `dt` seconds (at most 0.25 per call), shows what waited for a dwell
+    /// that is now up, and forgets what has faded out.
     pub fn step(&mut self, dt: f32) {
         let dt = if dt.is_finite() { dt.clamp(0.0, MAX_DT) } else { 0.0 };
         for entry in &mut self.entries {
             entry.step(dt);
         }
+        let mut i = 0;
+        while i < self.waiting.len() {
+            let held = self.waiting[i].1.group.as_deref().is_some_and(|g| self.entries.iter().any(|e| e.holds(g)));
+            if held {
+                i += 1;
+            } else {
+                let (id, playback) = self.waiting.swap_remove(i);
+                self.start(&id, &playback);
+            }
+        }
         self.entries.retain(|e| e.on || e.weight > 0.0);
+    }
+
+    /// Whether `id` waits for another in its group to finish its dwell.
+    pub fn is_waiting(&self, id: &ExpressionId) -> bool {
+        self.waiting.iter().any(|(w, _)| w == id)
     }
 
     /// The fade of `id` (`0` when it isn't showing), before layers step it back.

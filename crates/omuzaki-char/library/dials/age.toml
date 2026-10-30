@@ -1,0 +1,9 @@
+# The age model (#2615): how age reaches the skin and the hair, as `[age, strength]` curves (linear between points,
+# constant past the ends). The dials carry their own age curves (face.toml, body.toml). Design targets from the usual
+# course of ageing: greying from the mid-thirties, folds deepening from the late twenties, age spots from the
+# mid-forties, a child's rosy flush.
+[age]
+grey = [[35.0, 0.0], [50.0, 0.3], [65.0, 0.75], [80.0, 0.95]]
+wrinkles = [[28.0, 0.0], [40.0, 0.2], [60.0, 0.6], [80.0, 0.95]]
+spots = [[45.0, 0.0], [65.0, 0.35], [85.0, 0.7]]
+flush = [[3.0, 0.6], [12.0, 0.3], [20.0, 0.0]]

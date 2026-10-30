@@ -3,6 +3,7 @@
 //!
 //! ```text
 //!  <install>/models/mediapipe-face  ─▶ face_models ─▶ face_tracker ─┐
+//!  <install>/models/mediapipe-body  ─▶ BodyModelDir (on demand) ────┤
 //!  <install>/natives (the runtime's pinned archive)  ───────────────┤
 //!  the platform's camera (Media Foundation on Windows) ─────────────┴▶ WebcamTracker
 //!  the `input.phone` setting ─▶ NetTracker          (VMC out) ─▶ VmcOut
@@ -31,8 +32,10 @@ use omuzaki_track_net::vmc_out::VmcOut;
 use omuzaki_track_net::{NetTracker, PhoneSettings};
 use sha2::Digest;
 
+use omuzaki_track::body::BodyTrackerConfig;
+use omuzaki_track::body::models::BodyModelDir;
 use omuzaki_track::provision::{face_models, face_tracker};
-use omuzaki_track::webcam::{WebcamConfig, WebcamTracker};
+use omuzaki_track::webcam::{BodyLoader, WebcamConfig, WebcamTracker};
 
 /// The model registry over `data_dir` (the app's data folder): the shipped models' slots and the person's own models,
 /// with the `model.*` ops over it. Files a model needs are downloaded through a verified cache in `<data_dir>/cache`,
@@ -48,6 +51,10 @@ pub fn model_registry(data_dir: &Path) -> Result<Registry, String> {
 
 /// Where the face models sit under the install folder.
 pub const FACE_MODELS_DIR: &str = "models/mediapipe-face";
+
+/// Where the body models (the `MediaPipe` pose and hand landmarkers, `tools/models/mediapipe-body.sh`) sit under the
+/// install folder.
+pub const BODY_MODELS_DIR: &str = "models/mediapipe-body";
 
 /// Where the runtimes' native archives sit under the install folder, under their release file names.
 pub const NATIVES_DIR: &str = "natives";
@@ -101,9 +108,20 @@ fn webcam_tracker(
     let dir = install.join(FACE_MODELS_DIR);
     let loaded = face_models(&dir).and_then(|models| face_tracker(&models, &InstallFiles(install.join(NATIVES_DIR))));
     match loaded {
-        Ok(tracker) => Ok(WebcamTracker::new(camera, Box::new(tracker), WebcamConfig::default(), clock)),
+        Ok(tracker) => Ok(WebcamTracker::new(camera, Box::new(tracker), WebcamConfig::default(), clock)
+            .with_body(body_loader(install))),
         Err(e) => Err((camera, format!("the face tracker could not load from the install: {e}"))),
     }
+}
+
+/// How the webcam builds its body tracker, when `input.track_body` first asks: the install's body models, checked
+/// against their manifest, through the same runtime archive as the face. A missing folder says so in `input.body`.
+fn body_loader(install: &Path) -> BodyLoader {
+    let (dir, natives) = (install.join(BODY_MODELS_DIR), InstallFiles(install.join(NATIVES_DIR)));
+    Arc::new(move |size| {
+        let models = BodyModelDir::open(&dir, size).map_err(|e| format!("the body models: {e}"))?;
+        models.tracker(&natives, BodyTrackerConfig::default()).map_err(|e| format!("the body tracker: {e}"))
+    })
 }
 
 /// The platform's camera: Media Foundation on Windows.

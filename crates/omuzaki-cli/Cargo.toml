@@ -51,6 +51,8 @@ omuzaki-io-vrm = { path = "../omuzaki-io-vrm" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
 omuzaki-stage = { path = "../omuzaki-stage" }
 omuzaki-stream = { path = "../omuzaki-stream" }
+# The `short.*` ops: a script to a finished video.
+omuzaki-short = { path = "../omuzaki-short" }
 # The `vcam` output kind (`output.start { kind: "vcam" }`).
 omuzaki-vcam = { path = "../omuzaki-vcam" }
 # The `spout` and `syphon` output kinds (`output.start { kind: "spout" }`).
@@ -69,8 +71,15 @@ omuzaki-live-nodes = { path = "../omuzaki-live-nodes" }
 omuzaki-twitch = { path = "../omuzaki-twitch" }
 omuzaki-store = { path = "../omuzaki-store" }
 omuzaki-store-api = { path = "../omuzaki-store-api" }
+# The render services of a project command (`src/gpu.rs`): a headless renderer that opens on the first render, the
+# kit's character builder, and the capabilities the render ops read.
+omuzaki-char-api = { path = "../omuzaki-char-api" }
+omuzaki-render = { path = "../omuzaki-render" }
+omuzaki-render-api = { path = "../omuzaki-render-api" }
 
 [dev-dependencies]
+# Reads the PNG a headless render exported (`tests/render_preview.rs`).
+image.workspace = true
 # The library the `library.*` op examples run against (`tests/op_conformance.rs`).
 omuzaki-library = { path = "../omuzaki-library" }
 omuzaki-library-api = { path = "../omuzaki-library-api" }
@@ -84,6 +93,10 @@ omuzaki-settings-api = { path = "../omuzaki-settings-api" }
 omuzaki-settings-mock = { path = "../omuzaki-settings-mock" }
 # The performer the conformance rig stands in for the `trigger.*` examples (`tests/op_conformance.rs`).
 omuzaki-anim-api = { path = "../omuzaki-anim-api" }
+# The voice catalog and voice commands the conformance rig gives the `voice.*` and `voice_commands.*` examples.
+omuzaki-l10n-api = { path = "../omuzaki-l10n-api" }
+omuzaki-performer-api = { path = "../omuzaki-performer-api" }
+omuzaki-speech = { path = "../omuzaki-speech" }
 # The end-to-end design test (tests/design_e2e.rs, #2216) builds the designed character to compare it after a reopen.
 omuzaki-char-api = { path = "../omuzaki-char-api" }
 # ...and runs the same design as an MCP client over `omuzaki mcp`'s server.
@@ -144,4 +157,4 @@ summary = "the `omuzaki` command: ops, help, run (dry-run/JSON), undo/redo, all 
 wasm = false
 # Held only to link their registrations in (`omuzaki_cli::link`, ADR 0015); this crate's source calls none of their API.
 # A change to one of them runs just `tests/registrations.rs` here (`cargo xtask check --affected`), not every test.
-link_only = ["omuzaki-io-fbx", "omuzaki-io-gltf", "omuzaki-io-ops", "omuzaki-io-vrm", "omuzaki-stage", "omuzaki-stream", "omuzaki-stream-share", "omuzaki-vcam", "omuzaki-audio-engine", "omuzaki-audio-fx", "omuzaki-obs", "omuzaki-vts", "omuzaki-live", "omuzaki-live-nodes", "omuzaki-twitch"]
+link_only = ["omuzaki-io-fbx", "omuzaki-io-gltf", "omuzaki-io-ops", "omuzaki-io-vrm", "omuzaki-short", "omuzaki-stage", "omuzaki-stream", "omuzaki-stream-share", "omuzaki-vcam", "omuzaki-audio-engine", "omuzaki-audio-fx", "omuzaki-obs", "omuzaki-vts", "omuzaki-live", "omuzaki-live-nodes", "omuzaki-twitch"]

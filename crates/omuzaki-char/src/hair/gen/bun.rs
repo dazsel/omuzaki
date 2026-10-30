@@ -68,6 +68,11 @@ impl Ball {
     }
 }
 
+/// Where the bun sits on the head (its lowest pole), bind space.
+pub fn root(g: &BunGen, head: &dyn HeadSurface) -> DVec3 {
+    Ball::new(g, head).root.point
+}
+
 /// Compiles the group: [`BunGen::strands`] strands.
 pub fn compile(g: &BunGen, ctx: &mut HairGenCtx<'_>) -> CompiledGroup {
     let ball = Ball::new(g, ctx.head);

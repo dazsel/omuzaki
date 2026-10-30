@@ -29,4 +29,6 @@ workspace = true
 
 [package.metadata.omuzaki]
 kind = "API"
+# Its `link()` forwards to the char and stage API crates, which register.
+registers = true
 summary = "the AI performer's contract (ADR 0031, ADR 0041): `Intent` with `GazeTarget`, `PlaceId` and the closed `StyleTag` set, the seams `Brain` (non-blocking `TurnStream` of `BrainEvent`s), `Voice` with `SpeechHandle`, `Ears` with `Heard`, `Stage` with `Inventory` and `Perception`, `PerformerEvent` and the JSON Lines `TranscriptLine`, `AiLine` (not yet a live event kind, #1915), the limits, `VoiceId` and `PersonaRevision`, the voice and face types `SpendGate`, `VoiceAssignment`, `VoiceCatalog`, `VoiceLead`, `CutProbe`, `TalkState`, `MoveContext`, `StyleKnobs` and the per-frame `BigMovePlanner`, and the conformance checks every implementation passes; design in `docs/design/ai-performer.md` and `docs/design/ai-performer-voice-face.md`"

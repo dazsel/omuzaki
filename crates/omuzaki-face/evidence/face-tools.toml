@@ -26,3 +26,48 @@ steps = [
     { run = ["cargo", "test", "--locked", "-p", "omuzaki-face", "--test", "exaggeration", "--", "--exact", "render_the_exaggeration_sheet_when_asked"] },
 ]
 images = ["exaggeration.png"]
+
+[[case]]
+name = "eye-presets"
+description = "face.eyes.preset's eight presets (kit, sparkle, tareme, tsurime, sleepy, realistic, cat, doll): the left eye close up, then both eyes at stream size. Fibred irises, window, ring and star catchlights, the caustic glow, the caruncle, the waterline and strand lashes (#2465 to #2469)."
+env = { OMUZAKI_FACE_EVIDENCE_DIR = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-face", "--test", "eye_detail", "--", "--exact", "render_the_eye_presets_when_asked"] },
+]
+images = ["eye-presets-close.png", "eye-presets.png"]
+
+[[case]]
+name = "eye-random"
+description = "face.eyes.randomise from the kit eye, seeds 0 to 23: every group of the design drawn from the priors (shape, colours, catchlights, iris detail, lashes, eye white)."
+env = { OMUZAKI_FACE_EVIDENCE_DIR = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-face", "--test", "eye_detail", "--", "--exact", "render_random_eyes_when_asked"] },
+]
+images = ["eye-random.png"]
+
+[[case]]
+name = "eye-kit-before-after"
+description = "The kit's eye close up, before (a gradient iris, one blob catchlight, a solid lash band) and after (the kit eye preset new characters now start with)."
+env = { OMUZAKI_FACE_EVIDENCE_DIR = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-face", "--test", "eye_detail", "--", "--exact", "render_the_kit_eye_before_and_after_when_asked"] },
+]
+images = ["eye-kit-before-after.png"]
+
+[[case]]
+name = "makeup-looks"
+description = "The kit's face wearing each makeup look (none, natural, soft-glam, idol, gothic): eyeshadow, lip colour, blush styles, contour and the nose's shade and highlight."
+env = { OMUZAKI_FACE_EVIDENCE_DIR = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-face", "--test", "makeup", "--", "--exact", "render_the_makeup_looks_when_asked"] },
+]
+images = ["makeup-looks.png"]
+
+[[case]]
+name = "mouth-teeth-tongue"
+description = "The kit's open mouth: the plain anime teeth band, then teeth with gaps, taller teeth with a gum line, and a wider tongue with a groove."
+env = { OMUZAKI_FACE_EVIDENCE_DIR = "{out}" }
+steps = [
+    { run = ["cargo", "test", "--locked", "-p", "omuzaki-face", "--test", "makeup", "--", "--exact", "render_the_teeth_and_tongue_when_asked"] },
+]
+images = ["mouth-teeth-tongue.png"]

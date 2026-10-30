@@ -412,6 +412,85 @@ pub struct CapGen {
     pub strand_seed: f64,
     /// `hair-info.y`: the shell's shade, the underlayer sitting in the shadow of the locks, `0.5..=1`.
     pub shade: f64,
+    /// The front hairline's shape across the forehead and how the hair thins toward it (#2517).
+    #[serde(skip_serializing_if = "Hairline::is_default")]
+    pub hairline: Hairline,
+}
+
+/// The shape of the front hairline across the forehead, and how the hair thins toward it (#2517).
+///
+/// The hairline is a curve on the head: [`CapGen::hairline_front_deg`] in the middle of the forehead, moved down (a
+/// larger polar angle) or up by each term below, the terms fading out toward the sides of the head as the hairline
+/// eases into the back one. Across the forehead `x` runs from 0 in the middle to 1 at the temples (`|sin phi|` of
+/// [`Hairline::FOREHEAD`]). The default, every term 0, is a hairline level across the forehead with rounded corners.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Hairline {
+    /// How much lower the hairline sits at the temples than in the middle, degrees, `-20..=20`: positive rounds it
+    /// into an arch, negative lifts the temples into a broad, receding line.
+    pub arch_deg: f64,
+    /// A widow's peak: how far the middle dips toward the brows, degrees, `0..=20`.
+    pub peak_deg: f64,
+    /// The widow's peak's half width, as a share of the forehead, `0.05..=0.8`.
+    pub peak_width: f64,
+    /// How far the temples recede up into the hair, degrees, `0..=25`: an M-shaped hairline.
+    pub temple_recess_deg: f64,
+    /// How far above the hairline the hair starts to thin, degrees, `0..=15`: in that band the strands of the
+    /// scalp shell end one by one at their own lengths, so skin shows through between them toward the hairline
+    /// instead of at one hard edge (0: a hard edge). Baby hairs and the scalp's shade follow the same curve.
+    pub density_fade_deg: f64,
+}
+
+impl Hairline {
+    /// `|sin phi|` at the temples: where `x` across the forehead reaches 1.
+    pub const FOREHEAD: f64 = 0.7;
+
+    /// The named shapes: `level`, `rounded`, `widows_peak`, `m_shape`, `straight`.
+    pub const PRESETS: [&'static str; 5] = ["level", "rounded", "widows_peak", "m_shape", "straight"];
+
+    /// True for the default (level, a hard edge).
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// A named shape (one of [`PRESETS`](Self::PRESETS)), with the default thinning, or `None` for an unknown name.
+    pub fn preset(name: &str) -> Option<Self> {
+        let base = Self { density_fade_deg: 4.0, ..Self::default() };
+        Some(match name {
+            "level" => base,
+            "rounded" => Self { arch_deg: 9.0, ..base },
+            "widows_peak" => Self { arch_deg: 4.0, peak_deg: 9.0, peak_width: 0.3, ..base },
+            "m_shape" => Self { temple_recess_deg: 12.0, peak_deg: 3.0, peak_width: 0.35, ..base },
+            "straight" => Self { arch_deg: -3.0, density_fade_deg: 2.0, ..base },
+            _ => return None,
+        })
+    }
+
+    /// How far, degrees, the hairline at azimuth `phi` (radians, 0 the front) sits below the middle height, before the
+    /// fade toward the back: positive is lower on the head.
+    pub fn offset_deg(&self, phi: f64) -> f64 {
+        let x = (phi.sin().abs() / Self::FOREHEAD).min(1.25);
+        let arch = self.arch_deg * x * x;
+        let peak = self.peak_deg * (1.0 - x / self.peak_width.max(0.01)).max(0.0).powf(1.4);
+        let recess = self.temple_recess_deg * (-((x - 0.85) / 0.28).powi(2)).exp();
+        arch + peak - recess
+    }
+}
+
+impl Default for Hairline {
+    fn default() -> Self {
+        Self { arch_deg: 0.0, peak_deg: 0.0, peak_width: 0.3, temple_recess_deg: 0.0, density_fade_deg: 0.0 }
+    }
+}
+
+impl Validate for Hairline {
+    fn check(&self, c: &mut Check) {
+        c.range("arch_deg", self.arch_deg, -20.0, 20.0);
+        c.range("peak_deg", self.peak_deg, 0.0, 20.0);
+        c.range("peak_width", self.peak_width, 0.05, 0.8);
+        c.range("temple_recess_deg", self.temple_recess_deg, 0.0, 25.0);
+        c.range("density_fade_deg", self.density_fade_deg, 0.0, 15.0);
+    }
 }
 
 impl Default for CapGen {
@@ -427,6 +506,7 @@ impl Default for CapGen {
             crown_rise: 0.625,
             strand_seed: 0.37,
             shade: 0.93,
+            hairline: Hairline::default(),
         }
     }
 }
@@ -706,6 +786,20 @@ pub struct BraidGen {
     /// uses the head's own crown radius.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub height_radius: Option<f64>,
+    /// A path of its own over the head in place of the crown round the back (#2448): two or more points on the head's
+    /// surface, `[theta_deg, phi_deg]` as a guide's `surface` point (`theta` from the top, `phi` from the front toward
+    /// the character's left), root first. One braid follows it, with no mirrored side: from a side part over the crown,
+    /// or from ear to ear as a headband. Empty (the default) is the crown.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub path: Vec<[f64; 2]>,
+    /// How far the braid stands off the head, metres. `None`: the crown's 3.6 cm, which clears the default cap; a braid
+    /// on its own path lies on the cap at 2.4 cm.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lift: Option<f64>,
+    /// How far each end sinks toward the head over the first and last eighth of the braid, metres, so it goes into
+    /// the hair round it instead of ending in mid-air. `None`: none for the crown, 1.2 cm on a path of its own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tuck: Option<f64>,
 }
 
 impl Default for BraidGen {
@@ -722,6 +816,9 @@ impl Default for BraidGen {
             strand_width: 0.024,
             strand_thickness: 0.014,
             height_radius: None,
+            path: Vec::new(),
+            lift: None,
+            tuck: None,
         }
     }
 }
@@ -754,6 +851,13 @@ pub struct CurtainGen {
     pub root_tuck_deg: f64,
     /// How far off the skull that first point stands, a little under the cap's own thickness, metres.
     pub root_tuck_offset: f64,
+    /// How far up the head, in degrees of polar angle, the hair lies over the scalp before it falls (`0..=100`): a
+    /// guide starts this far above its root, under the cap's shell at `root_tuck_offset`, comes out over the shell and
+    /// follows the head's curve down to its root, so short cuts (a bob, a nape layer) and long hair alike read as one
+    /// mass from the crown instead of a curtain hung from under the cap's edge. Near 100 the guides start close to the
+    /// crown and the hair radiates from it. It takes the place of the tuck. 0 (the default) hangs the curtain from its
+    /// root.
+    pub drape_deg: f64,
     /// Let the hair fall in front of the shoulders. Off (the default), where the build has a body the curtain hangs
     /// behind the arms, however wide the shoulders are; with no body it is the prototype's either way.
     pub in_front: bool,
@@ -778,6 +882,7 @@ impl Default for CurtainGen {
             wave: Wave { amplitude: 0.036, frequency: 2.1, phase: 0.0, curl: 0.045, growth: [0.15, 0.65] },
             root_tuck_deg: 20.0,
             root_tuck_offset: 0.015,
+            drape_deg: 0.0,
             in_front: false,
             columns: 5,
             width: Taper::new(0.066, 0.095, 0.014),
@@ -1219,10 +1324,88 @@ pub struct HairGroup {
     pub dynamics: Dynamics,
     /// What the group generates.
     pub generator: Generator,
+    /// How each of its locks is shaped: cross-section, tip and sub-locks (#2480). The default is the kit's lens tube
+    /// ending in one point. Read by every generator whose locks are tubes; a curtain's strips and a cap's shell ignore it.
+    #[serde(default, skip_serializing_if = "LockShape::is_default")]
+    pub lock: LockShape,
 }
 
 fn yes() -> bool {
     true
+}
+
+/// How every lock of a group is shaped (#2480): its cross-section, its tip and how many sub-locks it parts into. One
+/// layer for every lock generator, applied to the clumps they compile.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct LockShape {
+    /// The lock's cross-section.
+    pub profile: LockProfile,
+    /// How the lock ends.
+    pub tip: LockTip,
+    /// Sub-locks each lock parts into, `1..=4`: they share the lock's root and part from [`LockShape::split_from`] on,
+    /// fanning apart toward their tips.
+    pub split: u8,
+    /// How far down the lock its sub-locks part, `0..=0.9` of its length.
+    pub split_from: f64,
+    /// How far the sub-locks (and a forked tip's two points) fan apart at their tips, in widths of the lock, `0..=2`.
+    pub spread: f64,
+}
+
+impl Default for LockShape {
+    fn default() -> Self {
+        Self { profile: LockProfile::Lens, tip: LockTip::Point, split: 1, split_from: 0.45, spread: 0.6 }
+    }
+}
+
+impl LockShape {
+    /// Whether this is the default shape (left out of a saved file).
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// How many tubes each compiled clump becomes: its sub-locks, each forked in two by a [`LockTip::Fork`].
+    pub fn tubes_per_clump(&self) -> usize {
+        usize::from(self.split.clamp(1, 4)) * if self.tip == LockTip::Fork { 2 } else { 1 }
+    }
+}
+
+impl Validate for LockShape {
+    fn check(&self, c: &mut Check) {
+        c.range("split", f64::from(self.split), 1.0, 4.0);
+        c.range("split_from", self.split_from, 0.0, 0.9);
+        c.range("spread", self.spread, 0.0, 2.0);
+    }
+}
+
+/// A lock's cross-section.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LockProfile {
+    /// Wide and thin, with flat faces and a rounded spine: the kit's lock.
+    #[default]
+    Lens,
+    /// A flat card: very thin, with crisp edges, for sharp anime spikes and flat bangs.
+    Card,
+    /// Nearly round, as thick as it is wide: a twisted or heavy lock.
+    Round,
+}
+
+/// How a lock ends.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LockTip {
+    /// Tapers to one point.
+    #[default]
+    Point,
+    /// Parts into two points over its last quarter.
+    Fork,
+    /// Ends cut straight across, barely narrowed.
+    Blunt,
+    /// Its last third curls under, toward the head and body.
+    CurlIn,
+    /// Its last third flicks out, away from the head and body.
+    CurlOut,
 }
 
 // ------------------------------------------------------------------------------------------------ shading and physics
@@ -1251,6 +1434,22 @@ pub struct HairShading {
     pub ring: ColourRef,
     /// Strength of the angel ring, `0..=1`.
     pub ring_strength: f64,
+    /// The angel ring's half width, in radians of polar angle from the crown, `0.01..=0.3`.
+    pub ring_width: f64,
+    /// How far each lock's copy of the angel ring wanders up and down, in radians, `0..=0.2`: 0 lines the locks' copies
+    /// up into one arc round the head.
+    pub ring_wobble: f64,
+    /// How much comb teeth break the angel ring, `0..=1`: 1 breaks it into soft blobs, 0 leaves it whole (the strand
+    /// texture still breaks it into strands).
+    pub ring_teeth: f64,
+    /// How far the angel ring follows the strands, `0..=1` (#2483): `0` paints it at one height round the head, `1` (the
+    /// default) makes it a highlight along each lock's own direction, so it bends with every lock and still reads as one
+    /// band where neighbours run alike.
+    pub ring_follow: f64,
+    /// Where the strand-following ring sits, `-2..=2`: how far the strands tilt toward the surface's normal for the
+    /// highlight. The default, `-0.75`, puts it where the painted ring is, seen from the front; nearer 0 slides it down
+    /// toward the brow, further below 0 up toward the crown.
+    pub ring_shift: f64,
     /// Strength of the strand lines, `0..=1`.
     pub strand_lines: f64,
     /// How much darker each clump's edges are, so overlapping locks separate, `0..=1`.
@@ -1274,12 +1473,158 @@ pub struct HairShading {
     pub brows_through: bool,
     /// Coloured streaks laid over shares of the clumps, applied in order (CB-34). See [`HairShading::apply_to_clumps`].
     pub streaks: Vec<Streak>,
-    /// How much of the prototype's inner-layer darkening is applied, `0..=1`: `1` (the default) is the designed
+    /// How much of the prototype's inner-layer darkening is applied, `0..=1` (the kit's default, `0.3`, keeps the
+    /// hair a light, even mass, as the anime samples read): `1` is the designed
     /// darkening, so a clump authored darker (`shade < 1`) keeps its shade; `0` is none, and every clump is drawn at
     /// full shade `1.0`. Applied to [`HairClump::shade`] on the CPU as `shade += (1 - d) * (1 - shade)`, so the hair
     /// program's parameters don't change.
     pub inner_darkening: f64,
+    /// How far each lock's shading normals are bent toward the hair volume's, `0..=1` (#2479): `1` (the default) lights
+    /// the hair as one mass, with the light-to-shade sweep running across the head and the outline only round the
+    /// hair's outer silhouette (a lock's inner face takes the volume's inside, and its sides keep their own turn); `0`
+    /// lights every lock by its own tube, a small cylinder each. Applied to the meshes'
+    /// normals on the CPU, so an export carries it.
+    pub normal_blend: f64,
+    /// How much a lock's strands thin out toward its sides, `0..=0.8` (#2482): its edge's coverage is `1 -
+    /// edge_feather`, so the fainter strands drop out through the alpha cut and the side reads as strands, not a cut
+    /// edge. `0` keeps every strand to the edge. A curtain's strips are one sheet and keep theirs, since each side meets
+    /// the next strip.
+    pub edge_feather: f64,
+    /// The strand texture's strands across one lock, `8..=64` (#2481).
+    pub strands: u32,
+    /// How dark the gap between neighbouring strands is, `0..=0.6` (#2481).
+    pub strand_gap: f64,
+    /// The fine grain inside each strand, `0..=0.3` (#2481).
+    pub strand_grain: f64,
+    /// How long each lock's frayed tip is, metres, `0.002..=0.05` (#2481); a short lock's tip is at most 15% of it.
+    pub tip_length: f64,
+    /// The per-light highlights' colour (#2521): each light draws two lobes along every lock's strands, the primary in
+    /// this colour times the light's, the secondary in the hair's own.
+    pub highlight: ColourRef,
+    /// The primary lobe's strength, `0..=2`; `0` turns it off.
+    pub highlight_strength: f64,
+    /// How wide the lobes are, `0.02..=0.8`: the cosine between the strands and the half vector at which the primary
+    /// fades out (the secondary is twice as wide).
+    pub highlight_width: f64,
+    /// How far the primary lobe is tilted along the strands, `-0.6..=0.6`: below 0 it slides toward the roots, above
+    /// toward the tips. The secondary sits `0.25` further toward the tips.
+    pub highlight_shift: f64,
+    /// The secondary lobe's strength, `0..=2`: a wider, hair-coloured glint that breaks up along the strands.
+    pub highlight_secondary: f64,
+    /// How far each strand shifts the lobes, `0..=1`, so the highlight's edge is combed rather than ruled.
+    pub highlight_jitter: f64,
+    /// How crisp the lobes' edges are, `0..=1`: `0` a soft, physical falloff, `1` a hard anime band.
+    pub highlight_cel: f64,
+    /// The second, deeper shadow tone (#2525), a multiplier over the first (`shade`): where a lock turns further from
+    /// the lights than `shade_deep_at`, or lies in a cast shadow, it takes this tone too. White turns it off.
+    pub shade_deep: ColourRef,
+    /// Where the second shadow tone starts, as the cosine between the surface and the light, `-1..=1`: nearer 1 it
+    /// reaches further into the light.
+    pub shade_deep_at: f64,
+    /// The angel ring's shape on each lock (#2525).
+    pub ring_shape: RingShape,
+    /// How deep a zig-zag's teeth hang, how long the streaks run or how far a crescent curls, `0..=1`.
+    pub ring_shape_depth: f64,
+    /// How much the hair darkens where it is buried in itself (#2526), `0..=1`: lock roots, the undersides of outer
+    /// locks and the inner layers. Baked at build from how much hair and head surround each vertex, within
+    /// `occlusion_reach`, into the vertices' shade (`hair-info`), so an export carries it. `0` is none.
+    pub occlusion: f64,
+    /// How far the occlusion looks for hair and head around each vertex, metres, `0.01..=0.1`.
+    pub occlusion_reach: f64,
+    /// Where the shadow starts, as the cosine between the surface and the light, `-1..=1`: below 0 the light wraps
+    /// further round the hair, as `MToon`'s shade shift does. The default, `-0.45`, lights most of the hair as the anime
+    /// samples' `MToon` hair is lit; the prototype's was `-0.05`.
+    pub shade_shift: f64,
+    /// How soft the shadow's edge is, `0..=1`: half the width of the blend from light to shade, in the same cosine
+    /// (`MToon`'s `1 - shade toony`, halved). `0` is a hard cel edge; the default, `0.45`, is soft, as the anime samples'
+    /// is; the prototype's was `0.22`.
+    pub shade_softness: f64,
+    /// The natural colour the root, mid, tip, shade, line, outline, ring and rim colours were made from, if they were
+    /// (`hair.colour.natural`, #2524): kept so the next edit starts from it. Setting the colours by hand keeps it as a
+    /// record; it is not read at build.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pigment: Option<HairPigment>,
 }
+
+/// The shape of the angel ring on each lock (#2525).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RingShape {
+    /// A band with level edges.
+    #[default]
+    Band,
+    /// Two teeth hang from each lock, a W whose ends meet the neighbours'.
+    Zigzag,
+    /// Short strokes along the strands, two to a lock.
+    Streak,
+    /// A crescent on each lock, widest in its middle, its points curling up at its sides.
+    Crescent,
+}
+
+impl RingShape {
+    /// The shape's number in the `hair` program's `ring-shape` parameter.
+    #[must_use]
+    pub const fn program_index(self) -> f64 {
+        match self {
+            Self::Band => 0.0,
+            Self::Zigzag => 1.0,
+            Self::Streak => 2.0,
+            Self::Crescent => 3.0,
+        }
+    }
+}
+
+/// A natural hair colour (#2524): the two melanins real hair is coloured by, with an optional dye and greying over
+/// them. `hair.colour.natural` turns it into the hair's colours.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct HairPigment {
+    /// How much melanin, `0..=1`: `0` platinum blond, about `0.3` blond, `0.5` light brown, `0.75` dark brown, `1`
+    /// black.
+    pub melanin: f64,
+    /// How much of the melanin is the red kind (pheomelanin), `0..=1`: `0` ash, `0.5` warm, `1` red or ginger.
+    pub redness: f64,
+    /// A dye over the natural colour, absorbed as the melanins are: it shows fully on light hair and barely on black.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dye: Option<ColourRef>,
+    /// How strong the dye is, `0..=1`.
+    pub dye_strength: f64,
+    /// How grey the hair has gone, `0..=1`: the share of strands with no pigment.
+    pub grey: f64,
+    /// How much darker the roots are than the lengths and how much lighter the tips, `0..=1`.
+    pub gradient: f64,
+}
+
+impl Default for HairPigment {
+    fn default() -> Self {
+        Self { melanin: 0.5, redness: 0.3, dye: None, dye_strength: 0.8, grey: 0.0, gradient: 0.35 }
+    }
+}
+
+impl Validate for HairPigment {
+    fn check(&self, c: &mut Check) {
+        c.range("melanin", self.melanin, 0.0, 1.0);
+        c.range("redness", self.redness, 0.0, 1.0);
+        c.range("dye_strength", self.dye_strength, 0.0, 1.0);
+        c.range("grey", self.grey, 0.0, 1.0);
+        c.range("gradient", self.gradient, 0.0, 1.0);
+    }
+}
+
+/// The kit's angel ring: a thin band ([`HairShading::ring_width`]) that holds one height from lock to lock
+/// ([`HairShading::ring_wobble`]) and is barely combed ([`HairShading::ring_teeth`]), so it reads as one arc following
+/// the head, as on the CC0 sample avatars (#2462). The prototype's soft, stepped band is `0.11`, `0.06` and `1`.
+const RING_WIDTH: f64 = 0.035;
+/// See [`RING_WIDTH`].
+const RING_WOBBLE: f64 = 0.012;
+/// See [`RING_WIDTH`].
+const RING_TEETH: f64 = 0.25;
+
+/// The hair's default terminator: the shadow starts well past square to the light, as `MToon` hair's does with its
+/// shade shift (the anime samples' `-0.3`, on a half-Lambert scale).
+pub const SHADE_SHIFT: f64 = -0.45;
+/// The hair's default terminator softness: a soft edge, as `MToon` hair's with a low shade toony.
+pub const SHADE_SOFTNESS: f64 = 0.45;
 
 impl Default for HairShading {
     fn default() -> Self {
@@ -1293,8 +1638,13 @@ impl Default for HairShading {
             outline: ColourRef::rgb(0xa4, 0x78, 0x68),
             ring: ColourRef::rgb(0xff, 0xf4, 0xe8),
             ring_strength: 0.22,
-            strand_lines: 0.10,
-            edge_darkening: 0.14,
+            ring_width: RING_WIDTH,
+            ring_wobble: RING_WOBBLE,
+            ring_teeth: RING_TEETH,
+            ring_follow: 1.0,
+            ring_shift: -0.75,
+            strand_lines: 0.03,
+            edge_darkening: 0.03,
             keep_identity: 0.36,
             rim: ColourRef::rgb(0xff, 0xe2, 0xcc),
             rim_strength: 0.12,
@@ -1303,7 +1653,29 @@ impl Default for HairShading {
             outline_width: 0.0014,
             brows_through: true,
             streaks: Vec::new(),
-            inner_darkening: 1.0,
+            inner_darkening: 0.3,
+            normal_blend: 1.0,
+            edge_feather: 0.0,
+            strands: 28,
+            strand_gap: 0.05,
+            strand_grain: 0.02,
+            tip_length: 0.012,
+            highlight: ColourRef::rgb(0xff, 0xf6, 0xec),
+            highlight_strength: 0.4,
+            highlight_width: 0.14,
+            highlight_shift: -0.08,
+            highlight_secondary: 0.2,
+            highlight_jitter: 0.25,
+            highlight_cel: 0.2,
+            shade_deep: ColourRef::rgb(0xf4, 0xee, 0xf2),
+            shade_deep_at: -0.25,
+            ring_shape: RingShape::Band,
+            ring_shape_depth: 0.5,
+            occlusion: 0.25,
+            occlusion_reach: 0.04,
+            shade_shift: SHADE_SHIFT,
+            shade_softness: SHADE_SOFTNESS,
+            pigment: None,
         }
     }
 }
@@ -1392,8 +1764,10 @@ pub enum HairShadingError {
 impl HairShading {
     /// The renderer's shading for this hair: `Shading::Program { name: "hair", params }`. Parameters, all read by the
     /// program: colours `root`, `mid`, `tip`, `shade`, `line`, `ring`, `rim` (resolved through `palette`) and floats
-    /// `ring-strength`, `strand-lines`, `edge-darkening`, `keep-identity`, `rim-strength`, `rim-width`, `back-light`. The outline width and `brows_through` are not
-    /// shader parameters: the first goes on the material's `Outline`, the second adds the brow overlay.
+    /// `ring-strength`, `ring-width`, `ring-wobble`, `ring-teeth`, `ring-follow`, `ring-shift`, `strand-lines`,
+    /// `edge-darkening`, `keep-identity`, `rim-strength`, `rim-width`, `back-light`. The outline width and
+    /// `brows_through` are not shader parameters: the first goes on the material's `Outline`, the second adds the brow
+    /// overlay.
     ///
     /// # Errors
     /// [`HairShadingError`] for an undefined palette slot.
@@ -1407,17 +1781,36 @@ impl HairShading {
             ("line", &self.line),
             ("ring", &self.ring),
             ("rim", &self.rim),
+            ("highlight", &self.highlight),
+            ("shade-deep", &self.shade_deep),
         ] {
             params.insert(Slug::new(name)?, ParamValue::Colour(palette.resolve(colour)?));
         }
         for (name, value) in [
             ("ring-strength", self.ring_strength),
+            ("ring-width", self.ring_width),
+            ("ring-wobble", self.ring_wobble),
+            ("ring-teeth", self.ring_teeth),
+            ("ring-follow", self.ring_follow),
+            ("ring-shift", self.ring_shift),
             ("strand-lines", self.strand_lines),
             ("edge-darkening", self.edge_darkening),
             ("keep-identity", self.keep_identity),
             ("rim-strength", self.rim_strength),
             ("rim-width", self.rim_width),
             ("back-light", self.back_light),
+            ("highlight-strength", self.highlight_strength),
+            ("highlight-width", self.highlight_width),
+            ("highlight-shift", self.highlight_shift),
+            ("highlight-secondary", self.highlight_secondary),
+            ("highlight-jitter", self.highlight_jitter),
+            ("highlight-cel", self.highlight_cel),
+            ("shade-deep-at", self.shade_deep_at),
+            ("ring-shape", self.ring_shape.program_index()),
+            ("ring-shape-depth", self.ring_shape_depth),
+            // `keep-hue` is left at the program's own default, 1: the material's parameter count is capped.
+            ("shade-shift", self.shade_shift),
+            ("shade-softness", self.shade_softness),
         ] {
             params.insert(Slug::new(name)?, ParamValue::Float(narrow(value)));
         }
@@ -1436,7 +1829,7 @@ impl HairShading {
     pub fn apply_to_clumps(&self, palette: &Palette, clumps: &mut [HairClump]) -> Result<(), HairShadingError> {
         let lift = narrow(1.0 - self.inner_darkening);
         for clump in clumps.iter_mut() {
-            // At the default `1` the added term is exactly zero, so the shade stays bit-identical, not merely close.
+            // At `1` (the prototype's darkening) the added term is exactly zero, so the shade stays bit-identical.
             clump.shade += lift * (1.0 - clump.shade);
         }
         let groups: Vec<&GroupId> = clumps.iter().map(|c| &c.group).collect();
@@ -1498,6 +1891,11 @@ impl HairShading {
 impl Validate for HairShading {
     fn check(&self, c: &mut Check) {
         c.range("ring_strength", self.ring_strength, 0.0, 1.0);
+        c.range("ring_width", self.ring_width, 0.01, 0.3);
+        c.range("ring_wobble", self.ring_wobble, 0.0, 0.2);
+        c.range("ring_teeth", self.ring_teeth, 0.0, 1.0);
+        c.range("ring_follow", self.ring_follow, 0.0, 1.0);
+        c.range("ring_shift", self.ring_shift, -2.0, 2.0);
         c.range("strand_lines", self.strand_lines, 0.0, 1.0);
         c.range("edge_darkening", self.edge_darkening, 0.0, 1.0);
         c.range("keep_identity", self.keep_identity, 0.0, 1.0);
@@ -1506,6 +1904,27 @@ impl Validate for HairShading {
         c.range("back_light", self.back_light, 0.0, 2.0);
         c.range("outline_width", self.outline_width, 0.0, 0.01);
         c.range("inner_darkening", self.inner_darkening, 0.0, 1.0);
+        c.range("normal_blend", self.normal_blend, 0.0, 1.0);
+        c.range("edge_feather", self.edge_feather, 0.0, 0.8);
+        c.range("strands", f64::from(self.strands), 8.0, 64.0);
+        c.range("strand_gap", self.strand_gap, 0.0, 0.6);
+        c.range("strand_grain", self.strand_grain, 0.0, 0.3);
+        c.range("tip_length", self.tip_length, 0.002, 0.05);
+        c.range("highlight_strength", self.highlight_strength, 0.0, 2.0);
+        c.range("highlight_width", self.highlight_width, 0.02, 0.8);
+        c.range("highlight_shift", self.highlight_shift, -0.6, 0.6);
+        c.range("highlight_secondary", self.highlight_secondary, 0.0, 2.0);
+        c.range("highlight_jitter", self.highlight_jitter, 0.0, 1.0);
+        c.range("highlight_cel", self.highlight_cel, 0.0, 1.0);
+        c.range("shade_deep_at", self.shade_deep_at, -1.0, 1.0);
+        c.range("ring_shape_depth", self.ring_shape_depth, 0.0, 1.0);
+        c.range("occlusion", self.occlusion, 0.0, 1.0);
+        c.range("occlusion_reach", self.occlusion_reach, 0.01, 0.1);
+        c.range("shade_shift", self.shade_shift, -1.0, 1.0);
+        c.range("shade_softness", self.shade_softness, 0.0, 1.0);
+        if let Some(pigment) = &self.pigment {
+            c.nested("pigment", pigment);
+        }
         for (i, streak) in self.streaks.iter().enumerate() {
             c.nested(&format!("streaks/{i}"), streak);
         }
@@ -1646,6 +2065,177 @@ pub struct HairParams {
     pub groups: BTreeMap<GroupId, HairGroup>,
     /// Where the random jitter comes from. The default is the per-part forked stream; `LegacyLcg` is parity mode.
     pub rng: HairRng,
+    /// What the locks do where a pointed (elf) ear stands (#2449): `behind`, the default, routes them behind the ear so
+    /// its tip shows through the hair; `cover` lets them fall over it. Human ears are covered either way.
+    #[serde(skip_serializing_if = "PointedEars::is_default")]
+    pub ears: PointedEars,
+    /// The hair's shared volume and flow (#2478): one parting, one crown whorl and one fullness that every generator
+    /// reads, so the scalp shell, the sweeps and the fringe agree. `None` (the default, left out of a saved file) leaves
+    /// each generator to its own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub volume: Option<HairVolume>,
+    /// Loose strands (#2516): flyaways off the outer locks and short baby hairs along the front hairline. The default
+    /// (left out of a saved file) is a few flyaways and no baby hairs.
+    #[serde(skip_serializing_if = "HairStrays::is_default")]
+    pub strays: HairStrays,
+}
+
+/// Loose strands over the locks (#2516, [`HairParams::strays`]): fine flyaways that leave the outer locks part way down
+/// and stray off them, and short baby hairs that lie on the forehead along the front hairline. Both are thin tubes the
+/// hair's outline draws as ink lines; which locks shed one and where each falls come from hashes, the same on every
+/// build.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct HairStrays {
+    /// The share of outer locks that shed a flyaway, `0..=1`; `0` none. A close-up (offline) build sheds about a third
+    /// more.
+    pub share: f64,
+    /// How far a flyaway strays from its lock by its tip, metres, `0.002..=0.04`: each picks from half to one and a
+    /// half times this.
+    pub stray: f64,
+    /// How frizzy the flyaways and baby hairs are, `0..=1`: kinks along each.
+    pub frizz: f64,
+    /// How many baby hairs lie along the front hairline, `0..=200` (a scalp shell's hairline; none without one).
+    pub baby: u32,
+    /// How long the baby hairs are, metres, `0.003..=0.03`.
+    pub baby_length: f64,
+}
+
+impl Default for HairStrays {
+    fn default() -> Self {
+        Self { share: 0.18, stray: 0.008, frizz: 0.2, baby: 0, baby_length: 0.01 }
+    }
+}
+
+impl HairStrays {
+    /// Whether these are the defaults, which a saved file leaves out.
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+impl Validate for HairStrays {
+    fn check(&self, c: &mut Check) {
+        c.range("share", self.share, 0.0, 1.0);
+        c.range("stray", self.stray, 0.002, 0.04);
+        c.range("frizz", self.frizz, 0.0, 1.0);
+        c.range("baby", f64::from(self.baby), 0.0, 200.0);
+        c.range("baby_length", self.baby_length, 0.003, 0.03);
+    }
+}
+
+/// The hair's shared volume and flow field (#2478) over the head ([`HairParams::volume`]).
+///
+/// **Flow.** Hair leaves its sources: the parting, when there is one, and the crown whorl. A point of the scalp is
+/// combed away from whichever is nearer, across the parting and outward from the whorl. The scalp shell lays its strands
+/// that way, the part sweeps start on the parting, and the fringe sweeps away from it.
+///
+/// **Fullness.** How far the hair stands off the head, as a multiple of what each generator makes: applied to every
+/// lock and shell over the head, fading out below the ears so hanging hair keeps its fall.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct HairVolume {
+    /// The parting, or `None` for none: the hair then radiates from the whorl.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub part: Option<HairParting>,
+    /// The crown whorl.
+    pub whorl: HairWhorl,
+    /// How far the hair stands off the head, `0.5..=2.5` times what the generators make.
+    pub fullness: f64,
+    /// The fullness at the crown against the sides, `0.5..=2.5`: above 1 the top stands higher.
+    pub crown: f64,
+    /// The fullness at the back against the sides, `0.5..=2.5`: above 1 the back of the head is rounder.
+    pub back: f64,
+}
+
+impl Default for HairVolume {
+    fn default() -> Self {
+        Self { part: None, whorl: HairWhorl::default(), fullness: 1.0, crown: 1.0, back: 1.0 }
+    }
+}
+
+impl Validate for HairVolume {
+    fn check(&self, c: &mut Check) {
+        if let Some(part) = &self.part {
+            c.nested("part", part);
+        }
+        c.nested("whorl", &self.whorl);
+        c.range("fullness", self.fullness, 0.5, 2.5);
+        c.range("crown", self.crown, 0.5, 2.5);
+        c.range("back", self.back, 0.5, 2.5);
+    }
+}
+
+/// A parting: a line over the top of the head, in a plane through the head's centre tilted `side_deg` off the
+/// midline, from `front_deg` forward of the top to `back_deg` behind it.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct HairParting {
+    /// How far the parting sits off the midline, degrees, `-60..=60`: positive toward the character's left (`+x`),
+    /// `0` a centre part.
+    pub side_deg: f64,
+    /// Where it starts, degrees forward of the top of the head, `0..=90` (the hairline is about 60).
+    pub front_deg: f64,
+    /// Where it ends, degrees behind the top, `0..=90`.
+    pub back_deg: f64,
+}
+
+impl Default for HairParting {
+    fn default() -> Self {
+        Self { side_deg: 0.0, front_deg: 60.0, back_deg: 30.0 }
+    }
+}
+
+impl Validate for HairParting {
+    fn check(&self, c: &mut Check) {
+        c.range("side_deg", self.side_deg, -60.0, 60.0);
+        c.range("front_deg", self.front_deg, 0.0, 90.0);
+        c.range("back_deg", self.back_deg, 0.0, 90.0);
+    }
+}
+
+/// The crown whorl: the point the hair radiates from where there is no parting.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct HairWhorl {
+    /// How far from the top of the head, degrees, `0..=70`.
+    pub polar_deg: f64,
+    /// Which way from the top, degrees round from the front, `-180..=180`: `180` straight back, positive through the
+    /// character's left.
+    pub azimuth_deg: f64,
+}
+
+impl Default for HairWhorl {
+    fn default() -> Self {
+        Self { polar_deg: 25.0, azimuth_deg: 180.0 }
+    }
+}
+
+impl Validate for HairWhorl {
+    fn check(&self, c: &mut Check) {
+        c.range("polar_deg", self.polar_deg, 0.0, 70.0);
+        c.range("azimuth_deg", self.azimuth_deg, -180.0, 180.0);
+    }
+}
+
+/// How hair meets a pointed ear ([`HairParams::ears`]).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PointedEars {
+    /// The locks pass behind the ear, so it shows through the hair (the anime convention).
+    #[default]
+    Behind,
+    /// The locks fall over the ear as they are styled.
+    Cover,
+}
+
+impl PointedEars {
+    /// Whether this is the default, which a saved file leaves out.
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 impl Default for HairParams {
@@ -1653,7 +2243,9 @@ impl Default for HairParams {
     fn default() -> Self {
         let group = |name: &str, simulate: bool, follow: Follow, generator: Generator| {
             let dynamics = Dynamics { simulate, follow, stiffness: Falloff::default() };
-            GroupId::new(name).map(|id| (id, HairGroup { enabled: true, mirror: false, dynamics, generator }))
+            GroupId::new(name).map(|id| {
+                (id, HairGroup { enabled: true, mirror: false, dynamics, generator, lock: LockShape::default() })
+            })
         };
         let groups = [
             group("a-cap", false, Follow::Head, Generator::Cap(CapGen::default())),
@@ -1663,7 +2255,15 @@ impl Default for HairParams {
         .into_iter()
         .filter_map(Result::ok)
         .collect();
-        Self { shading: HairShading::default(), physics: HairPhysics::default(), groups, rng: HairRng::default() }
+        Self {
+            shading: HairShading::default(),
+            physics: HairPhysics::default(),
+            groups,
+            rng: HairRng::default(),
+            ears: PointedEars::default(),
+            volume: None,
+            strays: HairStrays::default(),
+        }
     }
 }
 
@@ -1672,6 +2272,10 @@ impl Validate for HairParams {
         c.nested("shading", &self.shading);
         c.nested("physics", &self.physics);
         c.nested("rng", &self.rng);
+        if let Some(volume) = &self.volume {
+            c.nested("volume", volume);
+        }
+        c.nested("strays", &self.strays);
         for (id, g) in &self.groups {
             let name = format!("groups/{id}");
             c.nested(&name, g);
@@ -1688,12 +2292,14 @@ impl Validate for HairGroup {
     #[allow(clippy::too_many_lines, reason = "one arm per generator, each a few range checks")]
     fn check(&self, c: &mut Check) {
         c.nested("dynamics/stiffness", &self.dynamics.stiffness);
+        c.nested("lock", &self.lock);
         match &self.generator {
             Generator::Cap(g) => {
                 c.range("generator/hairline_front_deg", g.hairline_front_deg, 20.0, 120.0);
                 c.range("generator/hairline_back_deg", g.hairline_back_deg, 60.0, 150.0);
                 c.range("generator/ear_notch_deg", g.ear_notch_deg, 0.0, 40.0);
                 c.range("generator/thickness", g.thickness, 0.002, 0.06);
+                c.nested("generator/hairline", &g.hairline);
             }
             Generator::PartSweep(g) => {
                 count("generator/count", c, u32::from(g.count), 1, 80);
@@ -1732,6 +2338,19 @@ impl Validate for HairGroup {
                 // The narrowest part of a strand is 0.4 of its width, which a width must be allowed to reach.
                 c.range("generator/strand_width", g.strand_width, 0.0025, 0.3);
                 c.range("generator/strand_thickness", g.strand_thickness, 0.0005, 0.05);
+                if g.path.len() == 1 {
+                    c.fail("generator/path", "a path needs at least two points (or none, for the crown)");
+                }
+                for (i, [theta, phi]) in g.path.iter().enumerate() {
+                    c.range(&format!("generator/path/{i}/0"), *theta, 0.0, 180.0);
+                    c.range(&format!("generator/path/{i}/1"), *phi, -360.0, 360.0);
+                }
+                if let Some(lift) = g.lift {
+                    c.range("generator/lift", lift, 0.0, 0.1);
+                }
+                if let Some(tuck) = g.tuck {
+                    c.range("generator/tuck", tuck, 0.0, 0.05);
+                }
                 if let Some(r) = g.height_radius {
                     c.range("generator/height_radius", r, 0.01, 1.0);
                 }
@@ -1744,6 +2363,7 @@ impl Validate for HairGroup {
                 c.range("generator/length_back", g.length_back, 0.05, 1.5);
                 c.range("generator/root_tuck_deg", g.root_tuck_deg, 0.0, 60.0);
                 c.range("generator/root_tuck_offset", g.root_tuck_offset, 0.0, 0.1);
+                c.range("generator/drape_deg", g.drape_deg, 0.0, 100.0);
                 if g.envelope.len() < 2 {
                     c.fail("generator/envelope", "needs at least two [y, distance] points");
                 }
@@ -2011,8 +2631,10 @@ mod tests {
         let shading = HairShading::default().shading(&Palette::default()).unwrap();
         let Shading::Program { name, params } = &shading else { panic!("a program") };
         assert_eq!(name.as_str(), HAIR_PROGRAM);
-        assert_eq!(params.len(), 14);
+        // 9 colours and 23 numbers: `keep-hue` stays at the program's default, under the 32-parameter cap.
+        assert_eq!(params.len(), 32);
         assert_eq!(params[&Slug::new("rim-strength").unwrap()], ParamValue::Float(0.12));
+        assert_eq!(params[&Slug::new("ring-width").unwrap()], ParamValue::Float(0.035));
         assert_eq!(params[&Slug::new("back-light").unwrap()], ParamValue::Float(0.6));
         assert!(
             matches!(params[&Slug::new("root").unwrap()], ParamValue::Colour(c) if c == omuzaki_core::colour::Colour::rgb(0xc8, 0xb0, 0x9a))
@@ -2094,6 +2716,7 @@ mod tests {
             enabled: true,
             mirror: true,
             dynamics: Dynamics::default(),
+            lock: LockShape::default(),
             generator: Generator::Guides(GuidesGen {
                 clumps: vec![GuideClump {
                     points: vec![GuidePoint::Surface([200.0, 0.0, 0.0])],
@@ -2134,12 +2757,15 @@ mod tests {
     fn the_default_shading_keeps_the_program_and_adds_no_streaks() {
         let shading = HairShading::default();
         assert_eq!(shading.streaks, Vec::new());
-        assert_eq!(shading.inner_darkening, 1.0);
+        // The kit's anime defaults: a light inner darkening and faint clump edges.
+        assert_eq!(shading.inner_darkening, 0.3);
         let Shading::Program { params, .. } = shading.shading(&Palette::default()).unwrap() else {
             panic!("a program")
         };
         assert_eq!(params[&Slug::new("keep-identity").unwrap()], ParamValue::Float(0.36));
-        assert_eq!(params[&Slug::new("edge-darkening").unwrap()], ParamValue::Float(0.14));
+        assert_eq!(params[&Slug::new("edge-darkening").unwrap()], ParamValue::Float(0.03));
+        assert_eq!(params[&Slug::new("shade-shift").unwrap()], ParamValue::Float(-0.45));
+        assert_eq!(params[&Slug::new("shade-softness").unwrap()], ParamValue::Float(0.45));
     }
 
     #[test]

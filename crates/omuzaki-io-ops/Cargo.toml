@@ -16,8 +16,14 @@ inventory.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# Checks a starter character's model against its pin (`ops::starter`).
+sha2.workspace = true
 thiserror.workspace = true
 toml.workspace = true
+# Takes a starter character's model out of its downloaded archive (`ops::starter`).
+zip.workspace = true
+# The verified download cache a starter character is fetched through (`ops::starter`).
+omuzaki-ai-api = { path = "../omuzaki-ai-api" }
 omuzaki-anim-api = { path = "../omuzaki-anim-api" }
 omuzaki-avatar-api = { path = "../omuzaki-avatar-api" }
 omuzaki-char-api = { path = "../omuzaki-char-api" }
@@ -37,8 +43,6 @@ omuzaki-store-api = { path = "../omuzaki-store-api" }
 [dev-dependencies]
 criterion.workspace = true
 tempfile.workspace = true
-# A tray record's connector version (`tests/import_tray.rs`).
-omuzaki-ai-api = { path = "../omuzaki-ai-api" }
 omuzaki-char-mock = { path = "../omuzaki-char-mock" }
 omuzaki-doc-mock = { path = "../omuzaki-doc-mock" }
 omuzaki-face-mock = { path = "../omuzaki-face-mock" }

@@ -6,7 +6,10 @@
 //! [`part_sweep`](super::part_sweep) uses it, so a style keeps its shape when the head is scaled; the prototype uses one
 //! fixed head radius). The azimuth is `phi * lerp(0.3, 1, ss(t, 0, 0.65)) - sweep * t^2 - u * hook * ss(t, 0.75, 1)`
 //! with `u = phi / spread`, so the fringe sweeps to one side and each tip hooks inward. The distance from the head is
-//! `lerp(root_offset, tip_offset, t) + 0.016 sin(pi min(1, 1.15 t))`.
+//! `lerp(root_offset, tip_offset, t) + 0.016 sin(pi min(1, 1.15 t))`, less a root tuck: over the first [`ROOT_EMERGE`]
+//! of the lock its root sinks up to [`ROOT_TUCK`] (never closer than [`TUCK_FLOOR`] to the head), so it grows out of the
+//! hair over the crown instead of standing on it as a slab (the comparison with the anime samples showed the fringe's
+//! roots as a ledge on top of draped hair).
 //!
 //! **Layers and wisps.** Layers build in [`BangsGen::layers`] order (under to over), then the wisps. Each under-layer
 //! sinks [`UNDER_SINK`] under the next near the root, so layers sharing a root offset lie one over the other instead of
@@ -36,6 +39,7 @@ use omuzaki_core::glam::{DVec3, Vec3};
 use super::cap::smoothstep;
 use crate::hair::compile::{CompiledGroup, HairGenCtx};
 use crate::hair::tube::{OutwardFrame, RING, TubeError, tube_vertices};
+use crate::hair::volume::Field;
 use crate::kit::catmull::spaced_points_into;
 
 /// Control points per lock, before the Catmull-Rom resample.
@@ -50,6 +54,12 @@ pub const FALL_EXPONENT: f64 = 0.8;
 pub const ROOT_AZIMUTH: f64 = 0.3;
 /// Height of the bulge above the root-to-tip offset, metres.
 pub const BELLY: f64 = 0.016;
+/// How far a lock's root sinks into the hair over the crown, metres.
+pub const ROOT_TUCK: f64 = 0.02;
+/// The share of the lock over which it comes out of the hair to its own offset.
+pub const ROOT_EMERGE: f64 = 0.3;
+/// The tuck never brings the root closer to the head than this, metres.
+pub const TUCK_FLOOR: f64 = 0.012;
 /// Ratio of the belly's reach: it peaks and falls again at `t = 1 / BELLY_REACH`.
 const BELLY_REACH: f64 = 1.15;
 /// Top layer: the angular jitter of a clump's position, degrees (times `hj`).
@@ -177,8 +187,20 @@ const TOP_SINK: f64 = 0.45;
 /// Where along the lock the sink fades out.
 const SINK_FADE: (f64, f64) = (0.45, 0.95);
 
+/// How far the fringe sweeps away from a parting, degrees per degree the parting sits off the midline.
+const AWAY_FROM_PART: f64 = 0.8;
+
 /// Compiles the group: the layers under to over, then the wisps.
 pub fn compile(g: &BangsGen, ctx: &mut HairGenCtx<'_>) -> CompiledGroup {
+    // A parting in the hair's shared flow (#2478) sweeps the fringe away from it, on top of its own sweep.
+    let parted;
+    let g = match ctx.volume.and_then(Field::part_side_deg) {
+        Some(side) => {
+            parted = BangsGen { sweep_deg: g.sweep_deg + AWAY_FROM_PART * side, ..g.clone() };
+            &parted
+        }
+        None => g,
+    };
     let mut clumps = Vec::with_capacity(clump_count(g));
     let mut push = |lock: &Lock| {
         let rest = rest_points(g, ctx.head, lock);
@@ -317,7 +339,7 @@ pub enum ClearanceError {
         short_mm: f64,
     },
     /// A clump of the group has not the points a lock has.
-    #[error("a bangs clump has {0} points, not {REST_POINTS}")]
+    #[error("a bangs clump has {0} points, not {REST_POINTS} (another lock needs at least two)")]
     WrongPoints(usize),
     /// A tube could not be built to measure.
     #[error("the fringe's tube could not be built: {0}")]
@@ -402,12 +424,28 @@ pub fn keep_clear(
     frame: &OutwardFrame,
     clumps: &mut [HairClump],
 ) -> Result<(), ClearanceError> {
+    if let Some(clump) = clumps.iter().find(|c| c.rest.len() != REST_POINTS) {
+        return Err(ClearanceError::WrongPoints(clump.rest.len()));
+    }
+    keep_locks_clear(head, frame, clumps)
+}
+
+/// [`keep_clear`] for locks of any number of points (two or more), whatever generator made them: the framing locks
+/// that run down beside the face are kept off the cheek and temple this way (#2486).
+///
+/// # Errors
+/// As [`keep_clear`]; a clump of fewer than two points is [`ClearanceError::WrongPoints`].
+pub fn keep_locks_clear(
+    head: &dyn HeadSurface,
+    frame: &OutwardFrame,
+    clumps: &mut [HairClump],
+) -> Result<(), ClearanceError> {
     let spacing = sample_spacing(head)?;
     for clump in clumps {
-        let points = clump.rest.len();
-        let rest: &mut [Vec3; REST_POINTS] =
-            clump.rest.as_mut_slice().try_into().map_err(|_| ClearanceError::WrongPoints(points))?;
-        clear_lock(head, frame, spacing, &clump.width, &clump.thickness, rest)?;
+        if clump.rest.len() < 2 {
+            return Err(ClearanceError::WrongPoints(clump.rest.len()));
+        }
+        clear_lock(head, frame, spacing, &clump.width, &clump.thickness, &mut clump.rest)?;
     }
     Ok(())
 }
@@ -420,8 +458,9 @@ fn clear_lock(
     spacing: f64,
     width: &Taper,
     thickness: &Bulge,
-    rest: &mut [Vec3; REST_POINTS],
+    rest: &mut [Vec3],
 ) -> Result<(), ClearanceError> {
+    let points = rest.len();
     let centre = head.centre();
     let outward = |p: Vec3| (p - centre).normalize_or_zero();
     let gap = |p: Vec3| {
@@ -429,16 +468,16 @@ fn clear_lock(
         d.length() - head.radius(d.normalize_or_zero())
     };
     let (target, spacing_f) = (SURFACE_CLEARANCE as f32, spacing as f32);
-    let mut positions = [Vec3::ZERO; REST_POINTS * RING];
-    let mut normals = [Vec3::ZERO; REST_POINTS * RING];
+    let mut positions = vec![Vec3::ZERO; points * RING];
+    let mut normals = vec![Vec3::ZERO; points * RING];
     // A lock counts as clear when it stands within a tenth of the target of it (float noise, not a lock in the skull).
     let settled = target * SETTLED_FRACTION;
     let mut short = 0.0_f32;
     // One measurement more than pushes, so the last push is checked too.
     for pass in 0..=CLEARANCE_PASSES {
         tube_vertices(rest, RING, width, thickness, |p| frame.rest(p), &mut positions, &mut normals)?;
-        let mut deficit = [0.0_f32; REST_POINTS];
-        for ring in 0..REST_POINTS - 1 {
+        let mut deficit = vec![0.0_f32; points];
+        for ring in 0..points - 1 {
             for k in 0..RING {
                 let at = |r: usize, k: usize| positions[r * RING + k % RING];
                 let (a, b, c, d) = (at(ring, k), at(ring, k + 1), at(ring + 1, k), at(ring + 1, k + 1));
@@ -460,7 +499,7 @@ fn clear_lock(
         if pass == CLEARANCE_PASSES {
             break;
         }
-        for (point, d) in rest.iter_mut().zip(deficit) {
+        for (point, &d) in rest.iter_mut().zip(&deficit) {
             if d > 0.0 {
                 *point += outward(*point) * d;
             }
@@ -512,6 +551,7 @@ fn control_points(g: &BangsGen, head: &dyn HeadSurface, lock: &Lock, out: &mut [
     let root_theta = ROOT_THETA_DEG.to_radians();
     let sweep = sane(g.sweep_deg, -MAX_ANGLE_DEG, MAX_ANGLE_DEG, 0.0).to_radians();
     let hook = lock.hook_deg.to_radians();
+    let tuck = ROOT_TUCK.min((lock.root_offset - TUCK_FLOOR).max(0.0));
     for (k, point) in out.iter_mut().enumerate() {
         let t = k as f64 / (CONTROL_POINTS - 1) as f64;
         let theta = root_theta + (tip_theta - root_theta) * t.powf(FALL_EXPONENT);
@@ -521,7 +561,8 @@ fn control_points(g: &BangsGen, head: &dyn HeadSurface, lock: &Lock, out: &mut [
         let offset = lock.root_offset
             + (lock.tip_offset - lock.root_offset) * t
             + BELLY * (std::f64::consts::PI * (t * BELLY_REACH).min(1.0)).sin()
-            - lock.sink * (1.0 - smoothstep(t, SINK_FADE.0, SINK_FADE.1));
+            - lock.sink * (1.0 - smoothstep(t, SINK_FADE.0, SINK_FADE.1))
+            - tuck * (1.0 - smoothstep(t, 0.0, ROOT_EMERGE));
         let dir = DVec3::new(theta.sin() * phi.sin(), theta.cos(), theta.sin() * phi.cos());
         *point = head.centre().as_dvec3() + dir * (f64::from(head.radius(dir.as_vec3())) + offset);
     }

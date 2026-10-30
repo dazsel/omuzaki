@@ -106,7 +106,8 @@ fn run_on_core(cli: &Cli, dir: &Path, mut session: Session) -> Result<Reply, OpE
             crate::mcp::serve_core(&core, args.branch.as_deref(), &session).map(|()| Reply::ok(String::new()))
         }
         Command::Branch { action } => crate::branch::run(&core, action, &session, cli.json),
-        _ => execute(cli, core.runner(), &session, &mut io::stdin()).map(Reply::ok),
+        // A render that failed for want of a GPU says so, as `unavailable`, rather than as the renderer's error.
+        _ => execute(cli, core.runner(), &session, &mut io::stdin()).map(Reply::ok).map_err(crate::gpu::explain),
     };
     let closed = core.close().map_err(|e| e.to_op_error());
     let reply = result?;
