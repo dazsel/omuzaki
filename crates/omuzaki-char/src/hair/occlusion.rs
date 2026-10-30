@@ -39,8 +39,10 @@ const CONE: f32 = 0.75;
 const START: f32 = 2.0;
 /// The darkest a vertex's shade is taken to, against its own.
 const FLOOR: f32 = 0.08;
-/// How far past the head's largest radius (along the axes) its solid cells are looked for.
+/// How far past the head's largest radius (of the directions sampled) its solid cells are looked for.
 const HEAD_MARGIN: f32 = 1.3;
+/// How far inside the head's least radius (of the directions sampled) a cell is taken as solid without asking.
+const HEAD_INNER: f32 = 0.85;
 
 /// Darkens the `hair-info` shade of every vertex of `meshes` by how buried it is in the hair (all of `meshes`
 /// together) and in `head`, at `strength` (`0..=1`) within `reach` metres. A mesh without `hair-info` (three
@@ -87,6 +89,54 @@ struct Grid {
     density: Vec<f32>,
     /// Whether the cell's centre lies inside the head.
     solid: Vec<bool>,
+}
+
+/// The head's radius over a grid of latitude and longitude, read bilinearly: a cell needs its radius to a fraction of
+/// itself, and the table costs a few thousand radii where the cells would cost tens of thousands.
+struct Radii {
+    radii: Vec<f32>,
+}
+
+/// The table's columns (longitude) and rows (latitude, pole to pole inclusive).
+const RADII: (usize, usize) = (72, 37);
+
+impl Radii {
+    fn of(head: &dyn HeadSurface) -> Self {
+        let (columns, rows) = RADII;
+        let mut radii = Vec::with_capacity(columns * rows);
+        for row in 0..rows {
+            #[allow(clippy::cast_precision_loss)] // small table
+            let polar = std::f32::consts::PI * row as f32 / (rows - 1) as f32;
+            for column in 0..columns {
+                #[allow(clippy::cast_precision_loss)] // small table
+                let azimuth = std::f32::consts::TAU * column as f32 / columns as f32;
+                let dir = Vec3::new(polar.sin() * azimuth.cos(), polar.cos(), polar.sin() * azimuth.sin());
+                radii.push(head.radius(dir));
+            }
+        }
+        Self { radii }
+    }
+
+    /// The least and largest radius in the table.
+    fn bounds(&self) -> (f32, f32) {
+        self.radii.iter().fold((f32::INFINITY, 0.0_f32), |(lo, hi), r| (lo.min(*r), hi.max(*r)))
+    }
+
+    /// The radius toward the unit direction `dir`.
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)] // small table
+    fn at(&self, dir: Vec3) -> f32 {
+        let (columns, rows) = RADII;
+        let polar = dir.y.clamp(-1.0, 1.0).acos() / std::f32::consts::PI * (rows - 1) as f32;
+        let azimuth = dir.z.atan2(dir.x).rem_euclid(std::f32::consts::TAU) / std::f32::consts::TAU * columns as f32;
+        let (row, column) = (polar.floor(), azimuth.floor());
+        let (fr, fc) = (polar - row, azimuth - column);
+        let (r0, c0) = ((row as usize).min(rows - 1), (column as usize) % columns);
+        let (r1, c1) = ((r0 + 1).min(rows - 1), (c0 + 1) % columns);
+        let get = |r: usize, c: usize| self.radii.get(r * columns + c).copied().unwrap_or(0.0);
+        let top = get(r0, c0) * (1.0 - fc) + get(r0, c1) * fc;
+        let bottom = get(r1, c0) * (1.0 - fc) + get(r1, c1) * fc;
+        top * (1.0 - fr) + bottom * fr
+    }
 }
 
 impl Grid {
@@ -137,21 +187,23 @@ impl Grid {
                 }
             }
         }
-        // The head is solid: only the cells within its largest radius need asking.
+        // The head is solid. A radius costs microseconds and the box around the head holds tens of thousands of cells,
+        // so the radii come from a table over latitude and longitude, and only the cells in the shell between the
+        // head's least and largest radius ask it: those nearer the centre are inside, those further out are not.
         let centre = head.centre();
-        let largest = [Vec3::X, Vec3::NEG_X, Vec3::Y, Vec3::NEG_Y, Vec3::Z, Vec3::NEG_Z]
-            .into_iter()
-            .map(|d| head.radius(d))
-            .fold(0.0_f32, f32::max)
-            * HEAD_MARGIN;
-        let from = grid.cell_of(centre - Vec3::splat(largest)).max(IVec3::ZERO);
-        let to = grid.cell_of(centre + Vec3::splat(largest)).min(size - IVec3::ONE);
+        let radii = Radii::of(head);
+        let (least, largest) = radii.bounds();
+        let (inner, outer) = (least * HEAD_INNER, largest * HEAD_MARGIN);
+        let from = grid.cell_of(centre - Vec3::splat(outer)).max(IVec3::ZERO);
+        let to = grid.cell_of(centre + Vec3::splat(outer)).min(size - IVec3::ONE);
         for z in from.z..=to.z {
             for y in from.y..=to.y {
                 for x in from.x..=to.x {
                     let at = IVec3::new(x, y, z);
                     let d = grid.origin + (at.as_vec3() + 0.5) * cell - centre;
-                    let inside = d.try_normalize().is_none_or(|dir| d.length() < head.radius(dir));
+                    let distance = d.length();
+                    let inside = distance < inner
+                        || (distance < outer && d.try_normalize().is_none_or(|dir| distance < radii.at(dir)));
                     if let (true, Some(i)) = (inside, grid.index(at)) {
                         grid.solid[i] = true;
                     }
