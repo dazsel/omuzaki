@@ -68,7 +68,6 @@ dynamics = { simulate = false, follow = "head" }
 [groups.e-braid.generator]
 type = "braid"
 path = [[70.0, -96.0], [46.0, -90.0], [24.0, -66.0], [24.0, 66.0], [46.0, 90.0], [70.0, 96.0]]
-tuck = 0.02
 strands = 3
 lobes = 12.0
 across = 0.017
