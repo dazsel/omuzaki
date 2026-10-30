@@ -413,8 +413,8 @@ mod tests {
     #[test]
     fn the_uniform_is_a_multiple_of_sixteen_bytes() {
         // std140: uniform struct sizes round up to 16. 9 vec4 + 4 overlays of 2 vec4 + 16 vec4 of program parameters + the
-        // UV transform + the outline mix + 6 of MToon = 41 vec4.
-        assert_eq!(size_of::<MaterialUniform>(), 41 * 16);
+        // UV transform + the outline mix + 6 of MToon + 5 of surface fx = 46 vec4.
+        assert_eq!(size_of::<MaterialUniform>(), 46 * 16);
         assert_eq!(size_of::<OverlayUniform>(), 32);
     }
 
