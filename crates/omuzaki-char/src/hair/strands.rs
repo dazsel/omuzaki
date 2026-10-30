@@ -281,7 +281,8 @@ mod tests {
 
     #[test]
     fn the_strands_show_across_the_lock_and_repeat_seamlessly() {
-        let t = Strands::default().texture();
+        // A painted gap (the prototype's 0.28; the kit's default is a faint 0.05).
+        let t = Strands { gap: 0.28, ..Strands::default() }.texture();
         let grey = |x: u32, y: u32| t.rgba8[((y * WIDTH + x) * 4) as usize];
         let row: Vec<u8> = (0..WIDTH).map(|x| grey(x, 100)).collect();
         let (lo, hi) = (row.iter().min().copied().unwrap_or(0), row.iter().max().copied().unwrap_or(0));

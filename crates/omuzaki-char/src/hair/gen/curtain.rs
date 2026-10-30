@@ -15,7 +15,10 @@
 //! **The drape (#2486).** With `drape_deg` set, a guide first lies over the head: it starts that many degrees of polar
 //! angle above its root, under the scalp shell at the tuck's height, comes out over the shell over the first
 //! `DRAPE_EMERGE` of the way and follows the head's curve down to the root at the root's own height, so the hair reads
-//! as one mass from the crown down instead of hanging from under the shell's edge. A bob or a nape
+//! as one mass from the crown down instead of hanging from under the shell's edge. A drape that starts near the crown
+//! (within [`DRAPE_CROWN_DEG`] of the pole) comes out more slowly, over the whole drape the nearer it starts: the
+//! guides meet there, so a quick rise pinched the crown into a dimple, and starting over the shell left a crater of
+//! strip ends round the pole that showed from behind. A bob or a nape
 //! layer is a short draped curtain whose `envelope` holds it close to the head.
 //!
 //! **Randomness.** Six draws per guide, in this order and nothing else between guides: length jitter, wave amplitude,
@@ -66,6 +69,9 @@ const ROOT_OFFSET: f64 = 0.032;
 const DRAPE_POINTS: usize = 6;
 /// The share of the drape over which it rises from under the scalp shell to the root's height over it.
 const DRAPE_EMERGE: f64 = 0.4;
+/// A drape starting this near the pole, degrees, or nearer, comes out from under the shell over its whole length; from
+/// here to twice this it comes out faster the farther from the pole it starts, over [`DRAPE_EMERGE`] at most.
+const DRAPE_CROWN_DEG: f64 = 15.0;
 /// The fall outward finishes over this fraction of the length.
 const FALL_END: f64 = 0.5;
 /// The envelope's outward factor (`0.92 + 0.06`), and how much of it holds at the back.
@@ -324,12 +330,15 @@ fn guide(
     // The drape, where there is one, takes its place: the guide lies over the head from `drape_deg` above the root down
     // to it, at the root's own height over the scalp, so it covers the cap instead of starting under it.
     let start: Vec<DVec3> = if params.drape_deg > 0.0 {
+        let start_theta = (root_theta - params.drape_deg).max(0.0);
+        let crown = 1.0 - smoothstep(start_theta, DRAPE_CROWN_DEG, 2.0 * DRAPE_CROWN_DEG);
+        let emerge = lerp(DRAPE_EMERGE, 1.0, crown);
         (0..DRAPE_POINTS)
             .map(|k| {
                 let s = along(k, DRAPE_POINTS);
                 let theta = (root_theta - params.drape_deg * (1.0 - s)).max(0.0);
                 // It comes out from under the shell: at the tuck's height where it starts, at the root's over the rest.
-                let offset = lerp(params.root_tuck_offset, ROOT_OFFSET, smoothstep(s, 0.0, DRAPE_EMERGE));
+                let offset = lerp(params.root_tuck_offset, ROOT_OFFSET, smoothstep(s, 0.0, emerge));
                 GuidePoint::Surface([theta, phi.to_degrees(), offset]).resolve(ctx.head).as_dvec3()
             })
             .collect()
