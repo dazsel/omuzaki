@@ -201,6 +201,7 @@ struct Lids {
     thickness: f32,
     crease: f32,
     crease_depth: f32,
+    corner_shadow: f32,
     caruncle: Caruncle,
     /// How far toward anime the eye is drawn (0 photoreal, 1 anime): the hood and the crease flatten, as an anime
     /// face draws them as lines.
@@ -230,6 +231,7 @@ impl Lids {
             thickness: design.skin.lid_thickness * (1.0 - 0.35 * design.style),
             crease: design.skin.crease,
             crease_depth: design.skin.crease_depth * (1.0 - 0.7 * design.style),
+            corner_shadow: design.skin.corner_shadow,
             caruncle: design.skin.caruncle.clone(),
             style: design.style,
             edge,
@@ -380,6 +382,12 @@ impl Lids {
         // ball's bulge hides it in shadow; at the outer corner the lids meet in a point and the pink inside shows.
         if d < 0.0 {
             cavity = 0.85 - (0.1 + 0.2 * smoothstep(0.6, 1.0, u)) * smoothstep(0.0, 1.2 * MM, -d);
+        }
+        // Under the upper lid's overhang at the inner corner, the margin and the pocket fall into shadow as deep as the
+        // design asks, fading out along the lid toward the eye's middle and out onto the lid's front.
+        if upper {
+            let under = smoothstep(0.55, 0.95, u) * (1.0 - smoothstep(0.3 * MM, 1.2 * MM, d));
+            cavity *= 1.0 - 0.9 * self.corner_shadow * under;
         }
         // The inner corner and the lid margins are flushed: the margin itself, the thin moist rim between the lashes
         // and the eye, is a deeper red than the skin, more so on the upper lid, whose margin the eye looks up into.

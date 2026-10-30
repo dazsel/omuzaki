@@ -451,6 +451,9 @@ pub struct Skin {
     pub crease: f32,
     /// How deep the crease folds, metres.
     pub crease_depth: f32,
+    /// How deep the shadow in the inner corner is, from 0 (only the pocket's own shade) to 1 (near black): the upper
+    /// lid overhangs the corner, and in a light from above its margin and the pocket behind it fall into shadow.
+    pub corner_shadow: f32,
     /// The pink mound in the inner corner.
     pub caruncle: Caruncle,
 }
@@ -464,6 +467,7 @@ impl Default for Skin {
             lid_thickness: 0.0012,
             crease: 0.0058,
             crease_depth: 0.001,
+            corner_shadow: 0.0,
             caruncle: Caruncle::default(),
         }
     }
@@ -475,6 +479,7 @@ impl Validate for Skin {
         c.range_f32("lid_thickness", self.lid_thickness, 0.0005, 0.004);
         c.range_f32("crease", self.crease, 0.002, 0.012);
         c.range_f32("crease_depth", self.crease_depth, 0.0, 0.004);
+        c.range_f32("corner_shadow", self.corner_shadow, 0.0, 1.0);
         c.nested("caruncle", &self.caruncle);
     }
 }
