@@ -44,10 +44,10 @@ assets are tied to Epic's licence and stay out entirely):
 | **Brows** | brow grooms; brow shape sliders and texture | brow designer, drawn through hair | ✓ | |
 | **Face shape** | blend 3 presets globally or per region; sculpt handles; dozens of sliders | outline profile (superellipse, chin, cheeks), 5 presets blended one at a time, feature layout | ◐ | #2470 |
 | **Nose, cheekbones, jaw (3D)** | sculpted regions | painted nose only; the head mesh has none | ✗ | #2471 |
-| **Mouth, teeth, tongue** | teeth variation, length, spacing, bite, gums; mouth interior | painted mouth with lips, interior colours, teeth band, fang, tongue | ◐ | #2473 |
+| **Mouth, teeth, tongue** | teeth variation, length, spacing, bite, gums; mouth interior | painted mouth with lips, interior colours, teeth band with height, gaps and gum, fang, tongue with size and groove | ✓ | #2473 |
 | **Ears** | sculpted regions | human, elf, animal ears with placement and hair interaction | ✓ | |
 | **Skin** | tone picker, texture by age, freckles, SSS, wrinkle maps | curated tone range with toon tints per tone; marks (freckles, beauty marks) | ◐ | #1986 |
-| **Makeup** | foundation, eyeshadow, liner, blush, lipstick | blush only | ✗ | #2472 |
+| **Makeup** | foundation, eyeshadow, liner, blush, lipstick | eyeshadow with wing and lower smudge, lip colour, blush as makeup (soft, sweep, bridge, hatched), contour, nose shade and highlight; 5 looks (`face.makeup.preset`) | ✓ | #2472 |
 | **Hair** | strand grooms and cards, colour model, ombre, highlights | clumps, bangs, guides, physics, gradient, streaks, strand texture, angel ring | ◐ | hair line of work (#2445 and its issues) |
 | **Facial hair** | beards, moustaches, stubble, peach fuzz | none | ✗ | #2475 |
 | **Body** | parametric body from measurements; many regional sliders | 4 templates, 5-axis shape space, proportions, hands | ◐ | #2474 |
@@ -63,7 +63,8 @@ assets are tied to Epic's licence and stay out entirely):
 1. **Eyes to the generator's bar** (#2465, #2466, #2467, #2468, #2469; done in the first chunk): iris detail, catchlight layers, sclera and lid
    detail, strand lashes, eye presets and a seeded randomise. New fields default to zero, so the prototype parity tests
    keep their pixels; the kit's presets turn them on.
-2. **Makeup and skin detail** (#2472, then #1986's deep tones), **teeth and tongue** (#2473).
+2. **Makeup** (#2472) and **teeth and tongue** (#2473); done in the second chunk. Skin detail (#1986's deep tones) moves to
+   chunk 3.
 3. **Face shape**: n-way, per-region blending (#2470) and the 3D nose, cheekbone and jaw (#2471).
 4. **Start fast**: `character.explore` and per-part randomise (#2477), built on every part's priors from chunks 1 to 3.
 5. **Body measurements** (#2474), **facial hair** (#2475) and **LODs** (#2476).

@@ -62,6 +62,21 @@ const PUFF_MIN: f32 = 0.005;
 const HATCH_GAPS: u8 = 12;
 /// Hatch line width as a share of the gap between lines.
 const HATCH_WIDTH: f32 = 0.35;
+/// The sweep: each patch moves this far out and up (in patch radii), grows by these factors and turns this far toward
+/// the temple (radians).
+const SWEEP_OUT: f32 = 0.35;
+const SWEEP_UP: f32 = 0.55;
+const SWEEP_RADII: Vec2 = Vec2::new(1.2, 0.8);
+const SWEEP_TURN: f32 = 0.38;
+/// The bridge band's height, as a share of a patch's.
+const BRIDGE_HEIGHT: f32 = 0.75;
+/// The contour: how far out (patch half-widths) and down (patch half-heights) from the blush, its radii as factors of
+/// the patch's, its turn toward the jaw (radians) and its opacity at full strength.
+const CONTOUR_OUT: f32 = 1.05;
+const CONTOUR_DOWN: f32 = 1.3;
+const CONTOUR_RADII: Vec2 = Vec2::new(0.55, 1.5);
+const CONTOUR_TURN: f32 = 0.6;
+const CONTOUR_ALPHA: f32 = 0.5;
 /// Colour used when a palette slot reached the painter unresolved (it should not: the host resolves them).
 const FALLBACK_COLOUR: Colour = Colour::rgb(0xf0, 0x8c, 0x84);
 
@@ -72,9 +87,17 @@ pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
     let layout = &ctx.profile.layout;
     let (blush_y, spacing) = (narrow(layout.blush_y), narrow(layout.blush_spacing));
     wash(ctx, &rect, narrow(style.wash), blush_y);
-    let strength = narrow(style.strength) * settled(ctx.params.blush);
-    for side in [1.0, -1.0] {
-        patch(ctx, style, strength, Vec2::new(side * spacing, blush_y));
+    contour(ctx, style, spacing, blush_y);
+    let channel = narrow(style.strength) * settled(ctx.params.blush);
+    // Makeup blush shows whatever the channel says; the channel's blush builds on it.
+    let base = narrow(style.base).clamp(0.0, 1.0);
+    let strength = channel + base * (1.0 - channel.min(1.0));
+    if style.kind == BlushKind::Bridge {
+        bridge(ctx, style, strength, spacing, blush_y);
+    } else {
+        for side in [1.0, -1.0] {
+            patch(ctx, style, strength, side, Vec2::new(side * spacing, blush_y));
+        }
     }
     let puff = ctx.params.cheek_puff.clamp(0.0, 1.0);
     let puff = if puff < PUFF_DEAD { 0.0 } else { settled(puff) };
@@ -125,8 +148,8 @@ fn corners(rect: &FaceRect, lo: Vec2, hi: Vec2) -> [Vec2; 4] {
     [Vec2::new(x0, y0), Vec2::new(x1, y0), Vec2::new(x1, y1), Vec2::new(x0, y1)]
 }
 
-/// One blush patch centred on `centre`, in the style's kind.
-fn patch(ctx: &mut PaintCtx<'_>, style: &CheekStyle, strength: f32, centre: Vec2) {
+/// One blush patch centred on `centre`, in the style's kind; `side` is `+1` on the character's left.
+fn patch(ctx: &mut PaintCtx<'_>, style: &CheekStyle, strength: f32, side: f32, centre: Vec2) {
     let colour = fixed_colour(&style.colour, FALLBACK_COLOUR);
     // Coverage saturates first (the prototype's `rgba()` clamps alpha at 1), then the colour's own alpha scales it, so
     // a translucent colour never peaks above its alpha and a transparent one paints nothing.
@@ -137,19 +160,50 @@ fn patch(ctx: &mut PaintCtx<'_>, style: &CheekStyle, strength: f32, centre: Vec2
     let rgb = [colour.r, colour.g, colour.b];
     let radii = Vec2::new(narrow(style.radius[0]), narrow(style.radius[1]));
     match style.kind {
-        BlushKind::Soft => soft_patch(ctx, rgb, strength, alpha, centre, radii),
+        BlushKind::Soft | BlushKind::Bridge => soft_patch(ctx, rgb, strength, alpha, centre, radii, 0.0),
         BlushKind::Hatched => hatched_patch(ctx, rgb, strength.min(1.0) * alpha, centre, radii),
+        BlushKind::Sweep => {
+            let at = centre + Vec2::new(side * SWEEP_OUT * radii.x, SWEEP_UP * radii.y);
+            soft_patch(ctx, rgb, strength, alpha, at, radii * SWEEP_RADII, side * SWEEP_TURN);
+        }
+    }
+}
+
+/// The bridge blush: one soft band across the nose from one patch's outer edge to the other's.
+fn bridge(ctx: &mut PaintCtx<'_>, style: &CheekStyle, strength: f32, spacing: f32, blush_y: f32) {
+    let colour = fixed_colour(&style.colour, FALLBACK_COLOUR);
+    if strength.min(1.0) * colour.alpha() <= 0.0 {
+        return;
+    }
+    let radii = Vec2::new(spacing + narrow(style.radius[0]), narrow(style.radius[1]) * BRIDGE_HEIGHT);
+    soft_patch(ctx, [colour.r, colour.g, colour.b], strength, colour.alpha(), Vec2::new(0.0, blush_y), radii, 0.0);
+}
+
+/// Contour: a soft shade under each cheekbone, leaning toward the jaw, in the contour colour.
+fn contour(ctx: &mut PaintCtx<'_>, style: &CheekStyle, spacing: f32, blush_y: f32) {
+    let strength = narrow(style.contour).clamp(0.0, 1.0);
+    let colour = fixed_colour(&style.contour_colour, FALLBACK_COLOUR);
+    if strength * colour.alpha() <= 0.0 {
+        return;
+    }
+    let radii = Vec2::new(narrow(style.radius[0]), narrow(style.radius[1]));
+    for side in [1.0, -1.0] {
+        let at = Vec2::new(side * (spacing + CONTOUR_OUT * radii.x), blush_y - CONTOUR_DOWN * radii.y);
+        let rgb = [colour.r, colour.g, colour.b];
+        soft_patch(ctx, rgb, strength * CONTOUR_ALPHA, colour.alpha(), at, radii * CONTOUR_RADII, -side * CONTOUR_TURN);
     }
 }
 
 /// A radial gradient on a disc of the patch's half-width, squashed to the patch's half-height by a transform, exactly
-/// as the prototype does: the soft edge stays round-symmetric whatever the aspect.
-fn soft_patch(ctx: &mut PaintCtx<'_>, rgb: [u8; 3], strength: f32, alpha: f32, centre: Vec2, radii: Vec2) {
+/// as the prototype does: the soft edge stays round-symmetric whatever the aspect. `turn` turns it counter-clockwise
+/// (radians; the prototype's patches have none).
+fn soft_patch(ctx: &mut PaintCtx<'_>, rgb: [u8; 3], strength: f32, alpha: f32, centre: Vec2, radii: Vec2, turn: f32) {
     // Each stop saturates on its own, as the prototype's per-stop `rgba()` does, before the colour's alpha.
     let stop = |coverage: f32| with_alpha(rgb, coverage.min(1.0) * alpha);
     let stops =
         Stops::new(&[(0.0, stop(strength)), (0.5, stop(strength * MID_STOP_ALPHA)), (1.0, with_alpha(rgb, 0.0))]);
     let squash = Affine2::from_translation(centre)
+        * Affine2::from_angle(turn)
         * Affine2::from_scale(Vec2::new(1.0, radii.y / radii.x))
         * Affine2::from_translation(-centre);
     let list = ctx.list(FaceLayerId::Base);

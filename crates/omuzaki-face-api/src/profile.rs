@@ -17,6 +17,9 @@ use crate::mapping::FaceMapping;
 use crate::palette::ColourRef;
 
 mod eye_detail;
+mod makeup;
+
+pub use makeup::{EyeShadow, TeethStyle, TongueStyle};
 
 pub use eye_detail::{
     Catchlight, Collarette, IrisDetail, IrisFibres, IrisFlecks, LashStrands, LimbalRing, MAX_CATCHLIGHTS, StrandRow,
@@ -564,6 +567,8 @@ pub struct EyeStyle {
     pub tear: ColourRef,
     /// Seeds the eye's fine detail (fibres, flecks, vessels, lashes), so one design always paints the same eye.
     pub seed: u32,
+    /// Eyeshadow on the lid (#2472); none by default.
+    pub shadow: EyeShadow,
 }
 
 impl Default for EyeStyle {
@@ -582,6 +587,7 @@ impl Default for EyeStyle {
             lid_shadow: 0.55,
             tear: ColourRef::rgba(190, 225, 255, 217),
             seed: 1,
+            shadow: EyeShadow::default(),
         }
     }
 }
@@ -601,6 +607,7 @@ impl Validate for EyeStyle {
         c.nested("highlights", &self.highlights);
         c.nested("lower_lid", &self.lower_lid);
         c.range("lid_shadow", self.lid_shadow, 0.0, 1.0);
+        c.nested("shadow", &self.shadow);
     }
 }
 
@@ -681,17 +688,20 @@ pub struct Lips {
     pub strength: f64,
     /// Rim and gloss tint.
     pub colour: ColourRef,
+    /// Lip colour (makeup, #2472): both lips washed with `colour` round a closed mouth, 0 none.
+    pub tint: f64,
 }
 
 impl Default for Lips {
     fn default() -> Self {
-        Self { strength: 0.0, colour: rgb(0xee, 0x8e, 0x92) }
+        Self { strength: 0.0, colour: rgb(0xee, 0x8e, 0x92), tint: 0.0 }
     }
 }
 
 impl Validate for Lips {
     fn check(&self, c: &mut Check) {
         c.range("strength", self.strength, 0.0, 1.0);
+        c.range("tint", self.tint, 0.0, 1.0);
     }
 }
 
@@ -812,6 +822,10 @@ pub struct MouthStyle {
     /// for a close-up shrinks to a few pixels in a full-body shot, so lip sync stops reading. It eases back to 1 by
     /// [`CLOSE_SHOT`] ([`shot_scale`](Self::shot_scale)).
     pub wide_shot_scale: f64,
+    /// The upper teeth's shape (#2473).
+    pub teeth: TeethStyle,
+    /// The tongue's shape (#2473).
+    pub tongue: TongueStyle,
 }
 
 /// The head's share of the frame's height at or below which a shot is wide: a full-body shot.
@@ -845,6 +859,8 @@ impl Default for MouthStyle {
             interior: MouthInterior::default(),
             fang: FangStyle::default(),
             wide_shot_scale: 1.4,
+            teeth: TeethStyle::default(),
+            tongue: TongueStyle::default(),
         }
     }
 }
@@ -860,6 +876,8 @@ impl Validate for MouthStyle {
         c.nested("lips", &self.lips);
         c.nested("interior", &self.interior);
         c.nested("fang", &self.fang);
+        c.nested("teeth", &self.teeth);
+        c.nested("tongue", &self.tongue);
     }
 }
 
@@ -887,17 +905,23 @@ pub struct NoseStyle {
     pub size: f64,
     /// Mark colour.
     pub colour: ColourRef,
+    /// Contour (makeup, #2472): a soft shade down the shadow side of the nose, 0 none.
+    pub shadow: f64,
+    /// A soft light spot on the bridge and the tip, 0 none.
+    pub highlight: f64,
 }
 
 impl Default for NoseStyle {
     fn default() -> Self {
-        Self { kind: NoseKind::None, size: 1.0, colour: rgb(0xbe, 0x78, 0x78) }
+        Self { kind: NoseKind::None, size: 1.0, colour: rgb(0xbe, 0x78, 0x78), shadow: 0.0, highlight: 0.0 }
     }
 }
 
 impl Validate for NoseStyle {
     fn check(&self, c: &mut Check) {
         c.range("size", self.size, 0.2, 3.0);
+        c.range("shadow", self.shadow, 0.0, 1.0);
+        c.range("highlight", self.highlight, 0.0, 1.0);
     }
 }
 
@@ -909,6 +933,10 @@ pub enum BlushKind {
     Soft,
     /// Diagonal hatch lines (manga).
     Hatched,
+    /// Soft patches swept up toward the temples.
+    Sweep,
+    /// One soft band across the nose from cheek to cheek.
+    Bridge,
 }
 
 /// Blush and the warm wash over the lower face (CB-23). The `blush` channel scales `strength`.
@@ -925,11 +953,26 @@ pub struct CheekStyle {
     pub strength: f64,
     /// Opacity of the warm wash over the lower face.
     pub wash: f64,
+    /// Blush as makeup (#2472): opacity of blush that shows whatever the `blush` channel says, 0 none.
+    pub base: f64,
+    /// Contour: a soft shade under the cheekbones toward the jaw, 0 none.
+    pub contour: f64,
+    /// The contour's colour.
+    pub contour_colour: ColourRef,
 }
 
 impl Default for CheekStyle {
     fn default() -> Self {
-        Self { kind: BlushKind::Soft, colour: rgb(0xf0, 0x8c, 0x84), radius: [0.068, 0.028], strength: 0.95, wash: 0.3 }
+        Self {
+            kind: BlushKind::Soft,
+            colour: rgb(0xf0, 0x8c, 0x84),
+            radius: [0.068, 0.028],
+            strength: 0.95,
+            wash: 0.3,
+            base: 0.0,
+            contour: 0.0,
+            contour_colour: rgb(0xc8, 0x8e, 0x80),
+        }
     }
 }
 
@@ -939,6 +982,8 @@ impl Validate for CheekStyle {
         c.range("radius/1", self.radius[1], 0.005, 0.1);
         c.range("strength", self.strength, 0.0, 1.0);
         c.range("wash", self.wash, 0.0, 1.0);
+        c.range("base", self.base, 0.0, 1.0);
+        c.range("contour", self.contour, 0.0, 1.0);
     }
 }
 

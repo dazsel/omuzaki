@@ -24,6 +24,7 @@ mod iris;
 mod lash;
 mod lid;
 mod sclera;
+mod shadow;
 mod strands;
 
 use omuzaki_core::colour::Colour;
@@ -47,6 +48,8 @@ const FALLBACK_COLOUR: Colour = Colour::rgb(128, 128, 128);
 /// Paints both eyes.
 pub(super) fn paint(ctx: &mut PaintCtx<'_>) {
     for side in [Side::Left, Side::Right] {
+        // Eyeshadow first, under the whole eye and outside the open-eye fade: it stays on a shut lid.
+        shadow::paint(ctx, side);
         let eye = Eye::new(ctx.profile, ctx.params, side);
         // The open pieces start here; an eye that is shutting (a blink, an arc or a squeeze) fades them all together (see `open_fade`).
         let mark = ctx.list(FaceLayerId::Base).cmds().len();
