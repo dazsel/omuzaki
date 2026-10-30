@@ -37,8 +37,6 @@ const DEFAULT_KEY_FPS: f32 = 30.0;
 const DEFAULT_FPS: f32 = 120.0;
 /// The hips height the take's travel is scaled to when the call gives none, metres: the kit's standard body.
 const DEFAULT_HIPS_HEIGHT: f32 = 0.9;
-/// A rotation this close to the T-pose is left out of a key (the bone stays at rest).
-const AT_REST: f32 = 1e-7;
 
 /// Where a motion file's text comes from.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -184,11 +182,17 @@ impl ImportMotion {
         let keys = times
             .into_iter()
             .map(|t| {
-                let pose = take.sample(from + t);
+                // On a recorded frame (keys a whole number of frames apart, from a frame), the key is that frame
+                // itself, not a blend a rounding error away from it.
+                let at = (from + t) * take.fps;
+                let pose = match take.frames.get(at.round() as usize) {
+                    Some(frame) if (at - at.round()).abs() < 1e-3 => *frame,
+                    _ => take.sample(from + t),
+                };
                 let bones = HumanoidBone::ALL
                     .iter()
                     .map(|bone| (*bone, pose.get(*bone)))
-                    .filter(|(_, q)| !q.abs_diff_eq(Quat::IDENTITY, AT_REST))
+                    .filter(|(_, q)| *q != Quat::IDENTITY)
                     .map(|(bone, q)| (bone.name().to_owned(), q.to_array()))
                     .collect();
                 KeyBody {
