@@ -369,7 +369,7 @@ fn describe_covers_every_section_and_the_marks_list() {
     let sections = all.output.as_ref().expect("answers")["sections"].as_object().expect("an object").clone();
     assert_eq!(
         sections.keys().map(String::as_str).collect::<Vec<_>>(),
-        ["brows", "cheeks", "eyes", "marks", "mouth", "nose"]
+        ["brows", "cheeks", "eye3d", "eyes", "marks", "mouth", "nose"]
     );
 
     let marks = &sections["marks"];

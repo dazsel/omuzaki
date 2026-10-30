@@ -36,6 +36,7 @@ those areas one summary row each and does not repeat them.
 
 | Area | Deep list | Issues |
 |---|---|---|
+| Character design at every level, with parity, beyond and the inventions (MetaHuman grade and the perfect VTuber) | [character-design.md](character-design.md) | #2607 to #2626 |
 | Character parts in the anime and toon style (eyes, brows, face shape, mouth, ears, skin, makeup, body, start fast) | [creator-parity.md](creator-parity.md) | #2465 to #2477 |
 | The photoreal human: renderer for humans, skin, eye, face and head, body and motion | `docs/quality/human-realism.md` (lands with #2506) | #2507, #2508, #2509, #2510 |
 | Hair, garments and accessories as systems (84 features, an 8-chunk order) | one issue per feature, with the summary and build order on #2445 | hair #2511 to #2538, garments #2539 to #2559, accessories #2560 to #2571 |

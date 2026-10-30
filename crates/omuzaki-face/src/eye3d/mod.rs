@@ -7,8 +7,10 @@
 //!   (vessels, the fine network), one atlas for the `eye` program;
 //! - [`geometry::meshes`]: the eyeball and cornea, the lids with their margins, crease and pocket, the caruncle, the
 //!   occlusion shell and the lashes;
-//! - [`skin::texture`]: the skin round the eye (tone, mottling, freckles);
+//! - [`skin::texture`]: the skin round the eye (tone, mottling, fine lines, freckles);
 //! - [`eye_params`] and [`skin_params`]: the programs' parameters for a design and where the eye is.
+//! - [`closeup::Closeup`]: all of it built on a renderer, lit and framed as a macro still (the lab test and
+//!   `render.eye` draw through it).
 //!
 //! Everything is a pure function of an [`EyeDesign`], whose seed drives every random detail.
 
@@ -18,6 +20,7 @@
 )]
 
 pub mod canvas;
+pub mod closeup;
 pub mod design;
 pub mod geometry;
 pub mod noise;
@@ -71,7 +74,7 @@ pub fn eye_params(design: &EyeDesign, frame: EyeFrame) -> ProgramParams {
 /// The `skin` program's parameters for the skin round the eye.
 pub fn skin_params() -> ProgramParams {
     let mut p = ProgramParams::new();
-    put(&mut p, "pore-depth", ParamValue::Float(0.035));
+    put(&mut p, "pore-depth", ParamValue::Float(0.07));
     put(&mut p, "roughness", ParamValue::Float(0.52));
     put(&mut p, "sheen", ParamValue::Float(0.7));
     put(&mut p, "wet-colour", ParamValue::Colour(Colour::hex(0x00b8_8070)));

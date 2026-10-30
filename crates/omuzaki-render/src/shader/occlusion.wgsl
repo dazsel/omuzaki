@@ -120,22 +120,35 @@ fn fs_occlusion(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32
         open = 1.0 - strength * saturate(2.0 * occluded / f32(DIRECTIONS * STEPS));
     }
 
-    // Contact shadows: march toward the light; a step behind drawn depth, within a thickness, is blocked.
+    // Contact shadows: march toward the light; a step behind drawn depth, within a thickness, is blocked. Depth is the
+    // triangles' flat facets and is read a whole pixel at a time, so behind the drawn depth alone would find the surface
+    // shadowing itself wherever it curves or is seen at a slant. A blocker must also rise above the pixel's own tangent
+    // plane: a convex surface never does, a crease or a wall beside it does. Each hit is weighed by how clearly it
+    // passes both tests, so the shadow's edge is soft instead of banding into the facets' shapes.
     var lit = 1.0;
     let contact = params.shape.z;
     if (params.light.w > 0.0 && contact > 0.0 && dot(n, params.light.xyz) > 0.0) {
-        let start = centre + n * (0.02 * contact);
+        let footprint = d * 2.0 * params.lens.y / params.lens.w;
+        let start = centre + n * max(0.02 * contact, 0.5 * footprint);
         let thickness = max(0.5 * contact, 0.0005);
+        var shadow = 0.0;
         for (var s = 1; s <= CONTACT_STEPS; s++) {
             let t = contact * (f32(s) - jitter) / f32(CONTACT_STEPS);
             let v = start + params.light.xyz * t;
-            let qd = distance_at(vec2<i32>(to_pixel(v)));
-            let behind = -v.z - qd;
-            if (qd > 0.0 && behind > 0.0002 * d && behind < thickness) {
-                lit = 1.0 - strength * (1.0 - f32(s) / f32(CONTACT_STEPS + 1)) * 0.85;
-                break;
+            let q = vec2<i32>(to_pixel(v));
+            let qd = distance_at(q);
+            if (qd <= 0.0) {
+                continue;
             }
+            let behind = -v.z - qd;
+            // The drawn point itself, at its pixel's centre: the depth read there belongs to that point only.
+            let rise = dot(point_at(q) - centre, n);
+            let hit = smoothstep(0.0002 * d, 0.0002 * d + footprint, behind)
+                * (1.0 - smoothstep(0.5 * thickness, thickness, behind))
+                * smoothstep(0.5 * footprint, 2.0 * footprint, rise);
+            shadow = max(shadow, hit * (1.0 - f32(s) / f32(CONTACT_STEPS + 1)));
         }
+        lit = 1.0 - strength * shadow * 0.85;
     }
     return vec4<f32>(vec3<f32>(open * lit), 1.0);
 }
