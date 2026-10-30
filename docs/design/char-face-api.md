@@ -36,7 +36,7 @@ A character is **parts on a standard skeleton** plus a **painted face**. Two cra
 
 `crates/omuzaki-char-mock/tests/stage.rs` runs this whole picture against the real `omuzaki-render-mock`: the mock character is built, its face layers are painted through the renderer's `Painter`, and the frame is rendered. The face reaches the screen through an overlay and changes when channels change:
 
-![The mock character rendered by the render mock: neutral on the left, jaw open and a smile and a sideways glance on the right. Only the face region changes.](img/char-face-api-stage.png)
+*Figure (renders are kept outside the repository): The mock character rendered by the render mock: neutral on the left, jaw open and a smile and a sideways glance on the right. Only the face region changes.*
 
 *Left: neutral. Right: `jawOpen`, both `mouthSmile`, `eyeLookOutLeft`. The head is an ellipsoid, the garment below is the layered torso tube, the face is the painted overlay. Hair hangs behind the head and isn't in view. Colours are shifted by the toon skin treatment (decision Q9 below).*
 
@@ -172,7 +172,7 @@ An expression is `{ kind, deltas: {channel: value}, curve }` in the bus's own vo
 
 **Playback (FE-03).** An expression may carry `playback = { fade_in_s, fade_out_s, auto_stop_s, group, layer, dwell_s, cuts_in }`. It says how the expression plays when a trigger shows it; the default (in 0.12 s, out 0.2 s, held, no group, no auto-stop) is left out of files. `group` makes expressions exclusive: showing one fades out the others in its group. `layer = "momentary"` plays over the held expressions. On each channel the momentary one moves, the held ones step back by its weight, so a wink takes the eye from a smile and gives it back when it ends. The profile's `default_expression` (a mood or an accent) fills in where nothing held shows. `omuzaki_face::player::ExpressionPlayer` runs all of this without allocating per frame, and the trigger runtime (PF-25) decides when to show and hide. `dwell_s` is the least time an expression holds before another in its group replaces it: one asked for sooner waits (the latest asked for wins) and shows when the dwell is up, and showing the expression that is up again renews it, so the hold extends instead of the fade restarting. `cuts_in` lets an expression replace another through its dwell, as a startle does; a cut (`ExpressionPlayer::cut`) ignores dwell. In the built-in library every mood is in the group `mood` and dwells 1.1 s, its fades follow its family (alert faces 0.12 s in and 0.3 s out, cutting in; warm faces 0.3 s and 0.42 s; down faces 0.45 s and 0.6 s; the rest 0.12 s and 0.2 s), and the accents are momentary with an auto-stop. Lip sync and scores give weights directly and skip playback.
 
-![Eight mock-painted faces: neutral, happy (arcs, blush), surprised, angry, sad (tears), the aa viseme, a wink, a smirk with a sideways glance.](img/char-face-api-expressions.png)
+*Figure (renders are kept outside the repository): Eight mock-painted faces: neutral, happy (arcs, blush), surprised, angry, sad (tears), the aa viseme, a wink, a smirk with a sideways glance.*
 
 *`cargo run -p omuzaki-face-mock --example sweep`: the starter expressions through the default mapping and the mock painter. Row one: neutral, happy, surprised, angry. Row two: sad, `aa`, wink (`eyeBlinkLeft` + `eyeArcLeft`), smirk and glance. The mock draws about a third of what the real painter will; it exists so every seam can be tested.*
 

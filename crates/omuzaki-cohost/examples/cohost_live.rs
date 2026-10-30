@@ -38,9 +38,9 @@ use omuzaki_ai::{Registry, RegistrySettings};
 use omuzaki_ai_api::{
     FetchError, FileSource, ModelRef, ModelRegistry, NoProgress, PinnedFile, Progress, Sha256, SlotRef, Version,
 };
+use omuzaki_anim::body::LivingBody;
 use omuzaki_anim::life::Life;
 use omuzaki_anim::retarget::ArkitRetarget;
-use omuzaki_anim::{BusAnimator, BusAnimatorParams};
 use omuzaki_anim_api::{Channel, ChannelBuf, DeviceProfile, HumanoidPose, LifeConfig};
 use omuzaki_audio_api::engine::AudioEngine;
 use omuzaki_audio_api::graph::{BusSpec, Channels, GraphSpec, SourceRef};
@@ -225,7 +225,7 @@ fn performer(base: &HumanoidPose) -> Performer {
         source: Box::new(NoSource),
         retarget: Box::new(ArkitRetarget::new(DeviceProfile::Webcam)),
         life: Box::new(Life::new(LifeConfig::new(7))),
-        animator: Box::new(BusAnimator::new(BusAnimatorParams::default())),
+        animator: Box::new(LivingBody::default()),
     };
     Performer::new(parts, ChannelBuf::NEUTRAL, *base)
 }

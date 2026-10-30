@@ -220,7 +220,11 @@ fn particle_colour(in: ParticleOut) -> vec4<f32> {
     if (edge) {
         colour = colour * (sys.turn.w * frame.look.x);
     }
-    return vec4<f32>(apply_fog(colour, in.centre), alpha * sys.size.z * in.shape.z);
+    // Each supersampling round moves a partial coverage by its own step (`frame.look.w`, #2433), so the rounds together
+    // reach as many coverage levels as they draw samples; a particle that is fully in or out stays so.
+    let coverage = alpha * sys.size.z * in.shape.z;
+    let dithered = select(coverage, clamp(coverage + frame.look.w, 0.0, 1.0), coverage > 0.0 && coverage < 1.0);
+    return vec4<f32>(apply_fog(colour, in.centre), dithered);
 }
 
 // The colour draw with alpha-to-coverage (two or more samples).

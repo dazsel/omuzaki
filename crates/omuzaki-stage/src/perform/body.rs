@@ -154,6 +154,29 @@ impl TrackedBody {
         }
     }
 
+    /// The bones the tracked body shows on now (a part at any weight): the animator hands them over to it
+    /// ([`Animator::set_tracked`](omuzaki_anim_api::Animator::set_tracked)).
+    pub fn busy(&self) -> BoneMask {
+        let [arm_l, arm_r, hand_l, hand_r, body] = self.weights;
+        let (arm, hand) = ([arm_l, arm_r], [hand_l, hand_r]);
+        let mut mask = BoneMask::EMPTY;
+        for (bone, part) in HumanoidBone::ALL.into_iter().zip(self.parts) {
+            let weight = match part {
+                Part::Face => continue,
+                Part::Chest => arm_l.max(arm_r).max(body),
+                Part::Body => body,
+                Part::Arm(s) => arm[s],
+                Part::Wrist(s) => hand[s].min(arm[s]),
+                Part::Finger(s) => hand[s],
+            };
+            let fingers = matches!(part, Part::Finger(s) if self.frame.fingers[s].is_some());
+            if weight > 0.0 && (self.frame.mask.contains(bone) || fingers) {
+                mask = mask.with(bone);
+            }
+        }
+        mask
+    }
+
     /// Lays the tracked bones and fingers on `pose`, each at its part's weight. Call before the animator.
     pub fn apply(&mut self, pose: &mut HumanoidPose) {
         self.chest_turn = Quat::IDENTITY;

@@ -47,6 +47,7 @@ harfrust = "0.14"   # OpenType shaping (MIT): Arabic joining, Devanagari conjunc
 glam = { version = "0.34", features = ["serde", "bytemuck"] }
 httpdate = "1"   # `Retry-After` HTTP dates (MIT OR Apache-2.0), omuzaki-http; already in the lock through hyper
 hound = "3.5"   # WAV reading in the speech host benchmark (Apache-2.0), omuzaki-speech
+nnnoiseless = { version = "=0.5.2", default-features = false }   # RNNoise noise suppression for `fx.denoise` (BSD-3-Clause; pulls easyfft and rustfft, MIT OR Apache-2.0), omuzaki-audio-fx
 symphonia = { version = "0.6", default-features = false, features = ["opt-simd", "pcm", "adpcm", "wav", "aiff", "flac", "ogg", "vorbis", "mp3", "aac", "isomp4"] }   # audio file decoding for sounds and music (MPL-2.0, unmodified; AAC needs the patent review before release, docs/licensing/deps/symphonia.toml), omuzaki-audio-decode; omuzaki-speech (the speech smoke clips)
 http-body-util = "0.1"
 hyper = { version = "1", default-features = false, features = ["http1", "server"] }

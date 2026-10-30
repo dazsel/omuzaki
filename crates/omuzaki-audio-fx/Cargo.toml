@@ -11,6 +11,8 @@ repository.workspace = true
 [dependencies]
 omuzaki-audio-api = { path = "../omuzaki-audio-api" }
 omuzaki-core = { path = "../omuzaki-core" }
+# `fx.denoise`: RNNoise, its model weights compiled in from the crate.
+nnnoiseless.workspace = true
 # The `audio.fx.*` ops: presets in the document, the render jobs and their WAVs in the asset store.
 omuzaki-doc-api = { path = "../omuzaki-doc-api" }
 omuzaki-ops-api = { path = "../omuzaki-ops-api" }
@@ -35,5 +37,5 @@ harness = false
 
 [package.metadata.omuzaki]
 kind = "Implementation"
-summary = "the voice effects as registered audio node kinds: `fx.eq` (RBJ biquads, up to 8 bands), `fx.gate` (hysteresis, hold, side-chain high-pass), `fx.compressor` (feed-forward soft knee), `fx.robot` (ring modulator and comb), `fx.radio` (telephone and radio voices), `fx.limiter` (the program's -1 dBTP true-peak limiter) and `fx.pitch` (pitch and formant shift: TD-PSOLA on the LPC residual with an LSF formant warp, on a streaming F0 tracker and pitch marks); every node is allocation-free, block-size invariant and declares its latency exactly"
+summary = "the voice effects as registered audio node kinds: `fx.eq` (RBJ biquads, up to 8 bands), `fx.gate` (hysteresis, hold, side-chain high-pass), `fx.compressor` (feed-forward soft knee), `fx.robot` (ring modulator and comb), `fx.radio` (telephone and radio voices), `fx.limiter` (the program's -1 dBTP true-peak limiter), `fx.pitch` (pitch and formant shift: TD-PSOLA on the LPC residual with an LSF formant warp, on a streaming F0 tracker and pitch marks) and `fx.denoise` (RNNoise noise suppression with a VAD gate); every node is block-size invariant and declares its latency exactly, and every node but `fx.denoise` (allocation-free from its second frame, #2603) is allocation-free"
 registers = true

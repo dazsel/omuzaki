@@ -47,8 +47,8 @@ our character) at the same view. Both are images. Each image goes through the sa
                   └── the same code for both: nothing branches on where the image came from     score, terms, worst sector
 ```
 
-![Three synthetic faces of our own, measured: green dots are the outline samples, magenta crosses the snapped eyes,
-the magenta square the mouth line, red rays the samples a hair lock covers.](img/likeness-measures-faces.png)
+*Figure (renders are kept outside the repository): Three synthetic faces of our own, measured: green dots are the outline samples, magenta crosses the snapped eyes,
+the magenta square the mouth line, red rays the samples a hair lock covers.*
 
 *A and B: render-like (thin outline in the skin palette's line colour). C: a drawing style with thick tapered lines,
 hatched blush, an ear, an open mouth, a side lock over one cheek and JPEG compression. The side lock's samples are
@@ -687,9 +687,9 @@ times the repeatability p95 or more.
 **Graded edits of face A** (11 steps, -5 to +5; each step measured at 4 shots with click noise, against one clean
 measurement of A):
 
-![Outline distance against graded edits of face A, for both styles: the lower face, the jaw's width, the jaw's
+*Figure (renders are kept outside the repository): Outline distance against graded edits of face A, for both styles: the lower face, the jaw's width, the jaw's
 squareness and the eye spacing all rise steadily from zero on both sides; moving the mouth leaves the outline at the
-noise floor.](img/likeness-measures-perturbations.png)
+noise floor.*
 
 | Edit (per step) | `O` at ±1 step | `O` strictly increasing with \|step\| on both sides | The matching spacing field (Spearman with the step) |
 |---|---|---|---|
