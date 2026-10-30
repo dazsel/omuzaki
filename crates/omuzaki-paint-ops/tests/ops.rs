@@ -350,6 +350,7 @@ fn brushes_lists_every_preset_and_blend() {
 }
 
 #[test]
+#[allow(clippy::disallowed_methods)] // reads back the files the export wrote into a temporary folder; no op runs here
 fn layered_art_exports_for_the_puppet() {
     let rig = Rig::new();
     layered(&rig);
