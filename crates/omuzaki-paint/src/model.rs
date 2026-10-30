@@ -183,6 +183,10 @@ pub struct Stroke {
     pub settings: Option<BrushSettings>,
     /// The colour.
     pub colour: Colour,
+    /// Paint the stroke with this instead of `colour`: a gradient along it (a lip line that warms toward a corner) or
+    /// a freeform gradient (a wall that shades as it turns). Default none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill: Option<Box<Fill>>,
     /// The brush width in pixels at full pressure.
     pub size: f64,
     /// Opacity of the whole stroke, 0 to 1. Default 1.
@@ -379,6 +383,9 @@ impl Mark {
                 unit(&format!("{field}/opacity"), s.opacity)?;
                 size(&format!("{field}/size"), s.size)?;
                 s.brush(field)?.check(&format!("{field}/settings"))?;
+                if let Some(f) = &s.fill {
+                    f.check(&format!("{field}/fill"))?;
+                }
                 s.points(field).map(|_| ())
             }
             Self::Shape(s) => {
@@ -663,6 +670,7 @@ mod tests {
             brush: ink(),
             settings: None,
             colour: Colour::BLACK,
+            fill: None,
             size: 4.0,
             opacity: 1.0,
             points,

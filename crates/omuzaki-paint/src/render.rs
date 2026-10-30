@@ -96,7 +96,11 @@ pub fn draw_mark(
             }
             let mask = stroke_mask(&input, clip);
             let mode = if s.erase { None } else { s.blend.or_else(|| default_blend(&brush)) };
-            canvas.paint_mask(&mask, s.colour.premul(), opacity(s.opacity), mode, keep);
+            match (&s.fill, mode) {
+                // An eraser (a mode of `None`) ignores the fill as it ignores the colour.
+                (Some(fill), Some(_)) => lay(canvas, &mask, fill, opacity(s.opacity), false, mode, keep),
+                _ => canvas.paint_mask(&mask, s.colour.premul(), opacity(s.opacity), mode, keep),
+            }
         }
         Mark::Shape(s) => {
             let path = s.geometry.to_path("geometry")?;
@@ -183,6 +187,7 @@ fn lay(canvas: &mut Canvas, mask: &Mask, fill: &Fill, opacity: f32, erase: bool,
     match fill {
         Fill::Colour(c) => canvas.paint_mask(mask, c.premul(), opacity, Some(mode), keep),
         Fill::Gradient(g) => canvas.paint_mask_with(mask, &|x, y| g.at(x, y), opacity, mode, keep),
+        Fill::Freeform(f) => canvas.paint_mask_with(mask, &|x, y| f.at(x, y), opacity, mode, keep),
     }
 }
 
@@ -406,6 +411,7 @@ mod tests {
                 brush: "hard_round".into(),
                 settings: None,
                 colour: Colour::BLACK,
+                fill: None,
                 size: 6.0,
                 opacity: 1.0,
                 points: vec![vec![5.0, y], vec![35.0, y]],
@@ -423,6 +429,34 @@ mod tests {
         assert_eq!(px(&c, 20, 10), Colour::BLACK);
         assert_eq!(px(&c, 20, 30), Colour::CLEAR);
         assert_eq!(px(&c, 20, 20), Colour::WHITE);
+    }
+
+    #[test]
+    fn a_stroke_takes_a_gradient_along_it_and_a_shape_a_freeform_field() {
+        let fill: Fill = serde_json::from_str(
+            r##"{"from":[5,0],"to":[35,0],"stops":[{"at":0,"colour":"#000000"},{"at":1,"colour":"#ffffff"}]}"##,
+        )
+        .unwrap();
+        let line: Mark = serde_json::from_value(serde_json::json!({
+            "type": "stroke", "brush": "hard_round", "colour": "#ff0000", "size": 6, "points": [[5, 10], [35, 10]],
+            "fill": fill,
+        }))
+        .unwrap();
+        let field: Mark = serde_json::from_value(serde_json::json!({
+            "type": "shape", "geometry": { "kind": "rect", "x": 0, "y": 20, "w": 40, "h": 20 },
+            "fill": { "freeform": [
+                { "at": [0, 30], "colour": "#0000ff", "spread": 6 }, { "at": [40, 30], "colour": "#00ff00", "spread": 6 }
+            ] },
+        }))
+        .unwrap();
+        let c = render(&painting(vec![("l", with(Layer::paint("l"), vec![line, field]))])).unwrap();
+        let (dark, light) = (px(&c, 8, 10), px(&c, 32, 10));
+        assert!(dark.r < 40 && light.r > 215 && dark.g == dark.r, "the gradient, not the colour: {dark:?} {light:?}");
+        let (blue, green) = (px(&c, 1, 30), px(&c, 38, 30));
+        assert!(blue.b > 230 && green.g > 230, "{blue:?} {green:?}");
+        // Pixels 19 and 20 sit either side of the midline (x = 20): mirror images.
+        let (left, right) = (px(&c, 19, 30), px(&c, 20, 30));
+        assert!(left.b.abs_diff(right.g) <= 1 && left.g.abs_diff(right.b) <= 1 && left.r == 0, "{left:?} {right:?}");
     }
 
     #[test]

@@ -39,7 +39,7 @@ pub use brush::{Brush, BrushSettings, Preset, StrokeInput, preset, presets, stro
 pub use canvas::{Canvas, Mask, Rect};
 pub use colour::{Colour, Px};
 pub use error::PaintError;
-pub use geom::{Fill, Geometry, Gradient, GradientKind, Stop};
+pub use geom::{ColourPoint, Fill, Freeform, Geometry, Gradient, GradientKind, Stop};
 pub use model::{Bucket, Hatch, Layer, LayerKind, Mark, Outline, Painting, ShapeMark, Stroke, check_id};
 pub use raster::FillRule;
 pub use render::{draw_mark, layer_pixels, render};

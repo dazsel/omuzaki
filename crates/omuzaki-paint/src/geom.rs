@@ -241,25 +241,101 @@ impl Gradient {
     }
 }
 
-/// What fills a shape or a bucket fill: a colour (`"#rrggbb"`) or a gradient (an object).
+/// One colour of a freeform gradient, pinned to a point.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ColourPoint {
+    /// Where, `[x, y]` in canvas pixels.
+    pub at: [f64; 2],
+    /// The colour there.
+    pub colour: Colour,
+    /// How far the colour reaches before its neighbours take over, in pixels (0.5 to 4096). Default 32.
+    #[serde(default = "default_spread")]
+    pub spread: f64,
+}
+
+fn default_spread() -> f64 {
+    32.0
+}
+
+/// A freeform gradient (Illustrator's freeform, a painter's soft colour field): colours pinned to points and blended
+/// smoothly between them, so a wall, a cheek or a tongue shades as it is painted, from a handful of points.
+///
+/// The colour at a point is the weighted mean of the points' colours (premultiplied, in sRGB as painters blend), each
+/// weighted by `1 / (1 + (d / spread)²)²` for its distance `d`: exactly a point's colour at the point when the others
+/// are far, an even mix midway between two of equal spread, never a seam.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Freeform {
+    /// One to [`MAX_STOPS`] colour points.
+    pub freeform: Vec<ColourPoint>,
+}
+
+impl Freeform {
+    /// Checks the field can be drawn.
+    ///
+    /// # Errors
+    /// [`PaintError::Invalid`] under `field` for no points or more than [`MAX_STOPS`], a point that isn't finite, or a
+    /// spread outside 0.5 to 4096.
+    pub fn check(&self, field: &str) -> Result<(), PaintError> {
+        if self.freeform.is_empty() || self.freeform.len() > MAX_STOPS {
+            return Err(PaintError::invalid(
+                format!("{field}/freeform"),
+                format!("give 1 to {MAX_STOPS} colour points"),
+            ));
+        }
+        for (i, p) in self.freeform.iter().enumerate() {
+            let at = format!("{field}/freeform/{i}");
+            finite(&at, p.at[0])?;
+            finite(&at, p.at[1])?;
+            if !(0.5..=4096.0).contains(&p.spread) {
+                return Err(PaintError::invalid(format!("{at}/spread"), "a spread from 0.5 to 4096 pixels"));
+            }
+        }
+        Ok(())
+    }
+
+    /// The colour at canvas point `(x, y)`, premultiplied.
+    pub fn at(&self, x: f64, y: f64) -> Px {
+        let mut sum = [0.0f64; 4];
+        let mut total = 0.0;
+        for p in &self.freeform {
+            let d2 = ((x - p.at[0]).powi(2) + (y - p.at[1]).powi(2)) / (p.spread * p.spread);
+            let w = 1.0 / ((1.0 + d2) * (1.0 + d2));
+            let c = p.colour.premul();
+            for (s, v) in sum.iter_mut().zip(c) {
+                *s += w * f64::from(v);
+            }
+            total += w;
+        }
+        #[allow(clippy::cast_possible_truncation)] // a mean of 0..1 values
+        std::array::from_fn(|c| (sum[c] / total) as f32)
+    }
+}
+
+/// What fills a shape or a bucket fill, or colours a stroke: a colour (`"#rrggbb"`), a gradient (an object with
+/// `from`, `to` and `stops`) or a freeform gradient (an object with `freeform`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum Fill {
     /// One colour.
     Colour(Colour),
-    /// A gradient.
+    /// A linear or radial gradient.
     Gradient(Gradient),
+    /// Colours pinned to points, blended smoothly.
+    Freeform(Freeform),
 }
 
 impl Fill {
     /// Checks the fill can be drawn.
     ///
     /// # Errors
-    /// As [`Gradient::check`].
+    /// As [`Gradient::check`] and [`Freeform::check`].
     pub fn check(&self, field: &str) -> Result<(), PaintError> {
         match self {
             Self::Colour(_) => Ok(()),
             Self::Gradient(g) => g.check(field),
+            Self::Freeform(f) => f.check(field),
         }
     }
 }
@@ -307,5 +383,28 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(g, Fill::Gradient(_)));
+        let f: Fill = serde_json::from_str(r##"{"freeform":[{"at":[0,0],"colour":"#ffffff"}]}"##).unwrap();
+        assert!(matches!(f, Fill::Freeform(_)));
+    }
+
+    #[test]
+    fn a_freeform_gradient_holds_each_colour_at_its_point_and_mixes_between() {
+        let point = |x: f64, colour: Colour| ColourPoint { at: [x, 0.0], colour, spread: 4.0 };
+        let f = Freeform { freeform: vec![point(0.0, Colour::BLACK), point(1000.0, Colour::WHITE)] };
+        f.check("f").unwrap();
+        assert!(f.at(0.0, 0.0)[0] < 1e-6, "black at its own point");
+        assert!((f.at(1000.0, 0.0)[0] - 1.0).abs() < 1e-6, "white at its own point");
+        assert!((f.at(500.0, 0.0)[0] - 0.5).abs() < 1e-6, "an even mix midway");
+        assert!((f.at(500.0, 300.0)[0] - 0.5).abs() < 1e-6, "and anywhere on the midline");
+        let left = f.at(400.0, 0.0)[0];
+        let right = f.at(600.0, 0.0)[0];
+        assert!(left < 0.5 && right > 0.5 && (left + right - 1.0).abs() < 1e-6, "symmetric about the midline");
+        // One point is a flat colour everywhere.
+        let one = Freeform { freeform: vec![point(10.0, Colour::rgb(255, 0, 0))] };
+        assert_eq!(one.at(-500.0, 900.0), Colour::rgb(255, 0, 0).premul());
+        assert!(Freeform { freeform: vec![] }.check("f").is_err());
+        assert!(
+            Freeform { freeform: vec![ColourPoint { spread: 0.0, ..point(0.0, Colour::BLACK) }] }.check("f").is_err()
+        );
     }
 }

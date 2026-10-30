@@ -64,6 +64,17 @@ fn check_after(p: &Painting) -> Result<(), OpError> {
           "fill": "#d9a5a0", "feather": 1.5, "tag": "neck shadow" },
         { "type": "hatch", "region": { "kind": "ellipse", "cx": 450, "cy": 690, "rx": 40, "ry": 16 },
           "colour": "#ff6f7f", "angle": 110, "spacing": 7, "width": 2, "opacity": 0.8, "tag": "blush, left" }
+    ] },
+    { "painting": "bust", "layer": "flats", "marks": [
+        { "type": "shape", "geometry": { "kind": "ellipse", "cx": 540, "cy": 790, "rx": 30, "ry": 22 },
+          "fill": { "freeform": [
+              { "at": [520, 780], "colour": "#8a2e41", "spread": 10 },
+              { "at": [560, 800], "colour": "#d9969f", "spread": 14 }
+          ] }, "feather": 1, "tag": "mouth, shaded" },
+        { "type": "stroke", "brush": "g_pen", "colour": "#a36d77", "size": 3,
+          "fill": { "from": [505, 770], "to": [575, 770],
+                    "stops": [{ "at": 0, "colour": "#7d4e5c" }, { "at": 1, "colour": "#c27f8b" }] },
+          "points": [[505, 772], [540, 766], [575, 772]], "tag": "upper lip line" }
     ] }
 ],
     "x-omuzaki-fixture" = "painting"
