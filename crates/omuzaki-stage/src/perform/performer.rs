@@ -207,6 +207,16 @@ impl Performer {
         &self.cues
     }
 
+    /// The animator in use, for its body style (control calls, between steps).
+    pub fn animator_mut(&mut self) -> &mut dyn Animator {
+        &mut *self.parts.animator
+    }
+
+    /// The animator in use.
+    pub fn animator(&self) -> &dyn Animator {
+        &*self.parts.animator
+    }
+
     /// The retarget in use.
     pub fn retarget(&self) -> &dyn Retarget {
         &*self.parts.retarget
@@ -294,11 +304,15 @@ impl Performer {
         if let Some(grammar) = self.grammar.as_mut() {
             grammar.step(tick, &self.cues, &mut self.bus);
         }
+        // The animator hears the voice too (the living body gestures on the stresses), onset included.
+        self.parts.animator.hear(&self.cues);
         self.cues.onset = false;
         self.bus.values.sanitize();
-        // The score's clips lie under the animator, so the tracked head and the breath still move a waving body.
+        // The score's clips lie under the animator, so the tracked head and the breath still move a waving body; the
+        // bones a clip plays are the clip's, and the animator leaves them alone.
         self.pose = self.base;
         PoseLayers(self.score_pose.layers()).resolve(&mut self.pose);
+        self.parts.animator.set_tracked(self.score_pose.busy());
         self.parts.animator.animate(tick, &self.bus, &[], &mut self.pose);
     }
 

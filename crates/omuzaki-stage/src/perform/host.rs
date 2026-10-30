@@ -50,7 +50,7 @@ use omuzaki_anim::{
     MAX_NEUTRAL_FRAMES, MAX_TRIGGERS, MIN_NEUTRAL_FRAMES, NeutralCapture, NeutralError, TriggerFades, TriggerSlot,
 };
 use omuzaki_anim_api::{
-    ARKIT_COUNT, BoneMask, Calibration, Channel, ChannelBuf, ChannelMask, Cues, DeviceProfile, HeadPose,
+    ARKIT_COUNT, BodyStyle, BoneMask, Calibration, Channel, ChannelBuf, ChannelMask, Cues, DeviceProfile, HeadPose,
     RetargetConfig, Tick, TrackStatus,
 };
 use omuzaki_core::glam::Vec3;
@@ -264,6 +264,19 @@ pub trait PerformHost: Send + Sync {
     /// The drive map last set: every driver at full strength until one is.
     fn drive(&self) -> DriveMap {
         DriveMap::open()
+    }
+
+    /// How the body moves on its own from the next step (the living body's dials, `perform.set_body`).
+    ///
+    /// # Errors
+    /// [`PerformError::QueueFull`] or [`PerformError::Disconnected`]; nothing changes then.
+    fn set_body(&self, _style: BodyStyle) -> Result<(), PerformError> {
+        Err(PerformError::Unsupported)
+    }
+
+    /// The body style last set, or `None` before one is.
+    fn body(&self) -> Option<BodyStyle> {
+        None
     }
 
     /// The expression library the triggers bake against (empty until [`set_expressions`](Self::set_expressions)).
@@ -499,6 +512,8 @@ enum Command {
     Release(Option<u64>),
     /// The drive gate, from [`PerformHost::set_drive`].
     Drive(DriveGate),
+    /// The living body's dials, from [`PerformHost::set_body`].
+    Body(BodyStyle),
 }
 
 /// An attached voice, as the control holds it: the analyser's mailbox and the lip sync over the character's visemes.
@@ -569,6 +584,8 @@ struct Shared {
     act_book: Mutex<VecDeque<ActInfo>>,
     /// The drive map last set. Handle side only.
     drive: Mutex<DriveMap>,
+    /// The body style last set. Handle side only.
+    body: Mutex<Option<BodyStyle>>,
     /// The clips of the acts handed to the control, kept until the control has dropped its own reference, so the
     /// perform thread never frees a clip when an act ends. Handle side only; pruned on each act.
     clips: Mutex<Vec<Arc<PoseClip>>>,
@@ -784,6 +801,7 @@ pub fn perform_channel(performer: &Performer) -> (PerformHandle, PerformControl)
         act_book: Mutex::new(VecDeque::with_capacity(ACT_BOOK_LEN + 1)),
         clips: Mutex::new(Vec::new()),
         drive: Mutex::new(DriveMap::open()),
+        body: Mutex::new(None),
     });
     let control = PerformControl {
         commands: commands_rx,
@@ -1076,6 +1094,17 @@ impl PerformHost for PerformHandle {
 
     fn drive(&self) -> DriveMap {
         lock(&self.shared.drive).clone()
+    }
+
+    fn set_body(&self, style: BodyStyle) -> Result<(), PerformError> {
+        let mut held = lock(&self.shared.body);
+        self.send(Command::Body(style))?;
+        *held = Some(style);
+        Ok(())
+    }
+
+    fn body(&self) -> Option<BodyStyle> {
+        *lock(&self.shared.body)
     }
 }
 
@@ -1432,6 +1461,9 @@ impl PerformControl {
                 self.score.release(id);
             }
             Command::Drive(gate) => performer.set_drive(gate),
+            Command::Body(style) => {
+                performer.animator_mut().set_style(&style);
+            }
         }
     }
 

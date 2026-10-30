@@ -301,7 +301,7 @@ impl GestureScheduler {
                 let need = self.stroke_need(speed);
                 let predicted = if ready && !cues.onset { self.predicted_lead(now, need) } else { None };
                 if ready && (cues.onset || predicted.is_some()) {
-                    self.from_here(speed);
+                    self.start_where_the_arm_is(speed);
                     self.strike(predicted.unwrap_or(REACTIVE_STROKE_S).max(need), predicted.is_some(), need);
                 } else {
                     match self.phase {
@@ -312,7 +312,7 @@ impl GestureScheduler {
                             self.enter(Phase::Retract);
                         }
                         Phase::Recoil if self.phase_s >= POST_HOLD_S + RECOIL_S / speed => {
-                            self.from_here(speed);
+                            self.start_where_the_arm_is(speed);
                             self.enter(Phase::Hold);
                         }
                         _ => {}
@@ -425,7 +425,7 @@ impl GestureScheduler {
     }
 
     /// Sets where the next stroke starts: where the phase's path has the arm now (the arm springs smooth the rest).
-    fn from_here(&mut self, speed: f32) {
+    fn start_where_the_arm_is(&mut self, speed: f32) {
         let recoil = self.phase == Phase::Recoil;
         let back = ((self.phase_s - POST_HOLD_S) * speed / RECOIL_S).clamp(0.0, 1.0) * RECOIL_SHARE;
         let prep = self.phase == Phase::Prep;
