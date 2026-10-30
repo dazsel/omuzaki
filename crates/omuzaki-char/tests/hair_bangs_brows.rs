@@ -417,13 +417,13 @@ fn render_the_bangs_when_asked() {
 
 /// The hair of the `none` preset is one lock whose tip ends at the crown, so its top stands off the head by the root
 /// offset's rise plus the tip offset. That rise must be the same on every template: the fringe follows the head surface
-/// the head part publishes, which must match the head mesh the renderer draws. (The roots themselves stand 46 mm off the
-/// scalp by design, as in the prototype, where the cap shell hides them; see `LOCK_RISE`.)
+/// the head part publishes, which must match the head mesh the renderer draws. (The lock's offset is 46 mm at the root
+/// by design, as in the prototype; the root tuck sinks its first stretch into the hair, so its top is where it comes out.)
 #[test]
 fn the_fringe_follows_the_head_mesh_on_every_template() {
-    /// How far the `none` lock's top stands above the head mesh's crown at soft-sd, metres (measured; the root
-    /// offset 0.046 m dominates).
-    const LOCK_RISE: f32 = 0.0508;
+    /// How far the `none` lock's top stands above the head mesh's crown, metres (measured: 51.2 mm on soft-sd and mini,
+    /// 51.8 on standard; the root offset 0.046 m dominates).
+    const LOCK_RISE: f32 = 0.0515;
     for template in TEMPLATES {
         let built = build(&character(template, (PRESETS[4].make)(), true));
         let crown = built
