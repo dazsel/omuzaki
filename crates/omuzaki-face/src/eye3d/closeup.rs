@@ -189,10 +189,11 @@ fn build(
     made.push(environment.into());
     scene.environment = Some(EnvironmentUse::new(environment));
     scene.background = Background::Solid { colour: Colour::hex(0x0030_2420) };
-    // The folds' and contacts' occlusion at the eye's scale: the crease, the corners, the lids and lashes on the eye. A
-    // drawn eye is shaded in flat cels, so it fades out toward anime.
+    // The folds' occlusion at the eye's scale: the crease, the corners, the lids on the eye. A drawn eye is shaded in
+    // flat cels, so it fades out toward anime. No contact shadows: on strands as thin as lashes the screen-space march
+    // hits some jittered samples and misses others, so each lash casts a stippled fan.
     let real = 1.0 - design.style;
-    scene.occlusion = (real > 0.01).then(|| Occlusion::new(0.0025, 0.7 * real).with_contact(0.0015));
+    scene.occlusion = (real > 0.01).then(|| Occlusion::new(0.0025, 0.7 * real));
     if view == View::Macro {
         // A macro lens: sharp on the iris, the lashes and the skin falling out of focus.
         scene.post.depth_of_field = Some(DepthOfField {

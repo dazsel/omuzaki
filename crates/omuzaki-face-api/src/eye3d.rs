@@ -317,12 +317,12 @@ pub struct Lashes {
 impl Default for Lashes {
     fn default() -> Self {
         Self {
-            upper: 300,
+            upper: 170,
             lower: 60,
             upper_length: 0.0048,
             lower_length: 0.003,
             curl: 0.8,
-            clumping: 0.55,
+            clumping: 0.7,
             thickness: 0.000_07,
             colour: Colour::hex(0x0030_2018),
         }

@@ -290,9 +290,10 @@ pub fn sclera(sclera: &Sclera, seed: u32, size: u32) -> Canvas {
     canvas.fill(|u, v| {
         let (rho, phi) = polar(u, v);
         let theta = rho.min(1.0) * SCLERA_REACH;
-        let mut colour = white.lerp(edge, smoothstep(0.3, 0.95, rho));
+        // Whitest round the iris, warming toward the edges seen in the opening (about half the map's radius).
+        let mut colour = white.lerp(edge, smoothstep(0.22, 0.65, rho));
         // The corners of the eye are pinker: the conjunctiva is thicker and the vessels denser there.
-        let corner = smoothstep(0.42, 0.9, rho) * phi.cos().abs().powi(3);
+        let corner = smoothstep(0.3, 0.62, rho) * phi.cos().abs().powi(3);
         colour = colour.lerp(pink, 0.28 * corner);
         colour *= 0.95 + 0.08 * fbm(u * 9.0, v * 9.0, 3, s ^ 0x91);
         // The fine vessel network, on the sphere's surface so it doesn't crowd at the pole of the map.
@@ -300,7 +301,7 @@ pub fn sclera(sclera: &Sclera, seed: u32, size: u32) -> Canvas {
         let (f1, f2) = worley(x * 26.0, y * 26.0, s ^ 0x92);
         let line = 1.0 - smoothstep(0.0, 0.14, f2 - f1);
         let faint = fbm(x * 40.0, y * 40.0, 2, s ^ 0x93);
-        let reach = smoothstep(0.28, 0.55, rho);
+        let reach = smoothstep(0.24, 0.48, rho);
         colour = colour.lerp(Vec3::new(0.66, 0.46, 0.48), net * 0.3 * line * faint * reach);
         colour
     });
@@ -317,8 +318,9 @@ fn vessels(canvas: &mut Canvas, sclera: &Sclera, seed: u32) {
         // From the inner or the outer corner mostly, a few from above and below.
         let side = if rng.unit() < 0.5 { 0.0 } else { PI };
         let spread = if rng.unit() < 0.8 { 0.55 } else { 1.4 };
+        // Rooted where the opening shows the white, so most of each vessel's length is seen.
         todo.push((
-            rng.range(0.7, 0.95),
+            rng.range(0.52, 0.8),
             side + spread * rng.normal() * 0.6,
             rng.range(3.0, 5.0),
             rng.range(0.5, 0.75),
@@ -330,7 +332,7 @@ fn vessels(canvas: &mut Canvas, sclera: &Sclera, seed: u32) {
         let (mut r, mut a) = (r0, a0);
         // `heading`: the vessel's sideways drift per step inward, as a share of the step.
         let mut heading = rng.normal() * 0.3;
-        let end = rng.range(0.3, 0.42);
+        let end = rng.range(0.27, 0.38);
         let step = 0.008;
         while r > end {
             points.push(to_px(canvas.width, r, a));

@@ -337,6 +337,13 @@ impl Lids {
         // The lash line: the roots' dense shadow along each lid's front edge, darker on the upper lid.
         let lash_line = gauss((d - 0.7 * MM) / (0.3 * MM));
         let mut cavity = 1.0 - side(0.5 * fold + 0.45 * lash_line, 0.25 * lash_line);
+        // Past the lid's roll the skin never sinks far below the face: the ball's sphere falls away under the lower lid,
+        // and following it would carve a deep trench between the lid and the cheek. The lid-cheek junction stays a soft
+        // groove; the hollow under the brow keeps its depth.
+        let floor = self.face(p.x, p.y) - side(3.0, 0.6) * MM;
+        let k = 0.5 * MM;
+        let lifted = 0.5 * (z + floor + ((z - floor).powi(2) + k * k).sqrt());
+        z += (lifted - z) * smoothstep(0.5 * MM, 2.0 * MM, d);
         // The lids blend into the face round them, sooner at the corners.
         let corner = (2.0 * (u - 0.5)).abs();
         let reach = side(14.0, 9.0) * MM * (1.0 - 0.45 * corner);
