@@ -14,6 +14,8 @@ default = ["capture"]
 capture = ["dep:egui_kittest"]
 
 [dependencies]
+# Inline (base64) reference images of parity targets (panels/viewport/matching.rs).
+base64.workspace = true
 clap.workspace = true
 eframe.workspace = true
 egui.workspace = true
@@ -78,6 +80,7 @@ omuzaki-setup = { path = "../omuzaki-setup" }
 # The `parity.*` ops: the viewport's reference overlay and difference count call them.
 omuzaki-parity = { path = "../omuzaki-parity" }
 # The `short.*` ops (#2394).
+omuzaki-paint-ops = { path = "../omuzaki-paint-ops" }
 omuzaki-short = { path = "../omuzaki-short" }
 omuzaki-stage = { path = "../omuzaki-stage" }
 omuzaki-theatre = { path = "../omuzaki-theatre" }
