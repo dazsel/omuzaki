@@ -22,6 +22,7 @@ pub mod pose;
 pub(crate) mod rig;
 pub(crate) mod runtimes;
 pub(crate) mod scene;
+pub(crate) mod smear;
 pub(crate) mod squash;
 pub(crate) mod timing;
 
@@ -37,6 +38,7 @@ use self::timing::{HoldFrame, Holds};
 use self::rig::{RigFrame, SkinPose};
 use self::runtimes::DynamicMeshes;
 use self::scene::ScenePlan;
+use self::smear::Trails;
 use self::squash::Jelly;
 use crate::effects::frame::{EffectsFrame, FrameCtx, palette_colours};
 use crate::effects::log::EffectLimits;
@@ -218,6 +220,8 @@ pub struct Stage {
     holds: Holds,
     /// The scene's squash and stretch of the drawn body.
     squash: Jelly,
+    /// The body's recent palettes, for the scene's smear frames.
+    trails: Trails,
 }
 
 impl Stage {
@@ -269,6 +273,7 @@ impl Stage {
                 effects: None,
                 holds: Holds::default(),
                 squash: Jelly::default(),
+                trails: Trails::default(),
             }),
             Err(error) => {
                 if let Err(cleanup) = character.release(renderer) {
@@ -312,6 +317,8 @@ impl Stage {
         self.swap_variant(renderer)?;
         if !std::ptr::eq(table, self.built.meshes.as_ptr()) {
             self.revision += 1;
+            // The new character's bones are not the old one's: its smears start afresh.
+            self.trails.clear();
             if let Some(effects) = self.effects.as_mut() {
                 effects.set_palette(palette_colours(&self.built.palette));
             }
@@ -343,8 +350,7 @@ impl Stage {
         });
         // Filled even when the frame can't be prepared: a variant swapped in at the top of this tick, and the scene
         // must not go on naming the character it retired (its meshes are released).
-        let drawn = self.drawn_root();
-        self.plan.fill(&mut self.scene, self.rig.skin(), drawn);
+        self.fill_character(tick.time.0, true);
         self.ground.push(&mut self.scene);
         self.push_props();
         if let Some(effects) = self.effects.as_mut() {
@@ -406,8 +412,7 @@ impl Stage {
             (pin.tick, pin.root, pin.input_root, pin.pose, pin.goals);
         // A solve for no time: the bones follow the restored pose and channels without stepping the springs.
         self.rig.solve_with_channels(Tick { dt: 0.0, ..pin.tick }, &pin.pose, &pin.goals, &pin.channels);
-        let drawn = self.drawn_root();
-        self.plan.fill(&mut self.scene, self.rig.skin(), drawn);
+        self.fill_character(pin.tick.time.0, false);
         self.ground.push(&mut self.scene);
         self.push_props();
         self.scene.frame = FrameInfo { index: pin.tick.index, time: pin.tick.time };
@@ -512,6 +517,7 @@ impl Stage {
         self.props.take(&resolved.props);
         self.holds.set(resolved.timing);
         self.squash.set(resolved.squash);
+        self.trails.set(resolved.smears);
         self.set_subject_root(subject_root);
         owed
     }
@@ -525,6 +531,24 @@ impl Stage {
     /// the body as posed.
     pub fn squash_scale(&self) -> f32 {
         if self.pinned.is_some() { 1.0 } else { self.squash.scale() }
+    }
+
+    /// Puts the character's instances and joints for a frame at `time` in the scene, drawn at
+    /// [`drawn_root`](Self::drawn_root), with the smear's trailing pose unless the stage is pinned. `record` keeps the
+    /// frame for later frames' smears (a tick; a redraw or an unpin shows a frame again). Hot path: allocation-free once
+    /// warm.
+    fn fill_character(&mut self, time: f64, record: bool) {
+        let drawn = self.drawn_root();
+        self.plan.fill(&mut self.scene, self.rig.skin(), drawn);
+        if self.pinned.is_some() {
+            return;
+        }
+        if let Some((past, carry)) = self.trails.trail(time, drawn) {
+            self.plan.smear(&mut self.scene, past, carry, &self.trails);
+        }
+        if record {
+            self.trails.push(time, self.rig.skin(), drawn);
+        }
     }
 
     /// The character's world matrix as drawn: the root under the squash and stretch about its ground point. The rig,
@@ -614,8 +638,7 @@ impl Stage {
         // A pin set since the last tick holds here too: the face and the frame info see the pinned time.
         let tick = self.pinned.unwrap_or(self.tick);
         self.update_face(renderer, tick, input)?;
-        let drawn = self.drawn_root();
-        self.plan.fill(&mut self.scene, self.rig.skin(), drawn);
+        self.fill_character(tick.time.0, false);
         self.ground.push(&mut self.scene);
         self.push_props();
         // What the last tick wrote into the scene, so a redraw before any tick doesn't render the caller's frame info.

@@ -123,6 +123,11 @@ impl SceneDef {
         within("scene.squash.bounce_hz", q.bounce_hz, 0.5, 12.0)?;
         within("scene.squash.damping", q.damping, 0.05, 1.0)?;
         within("scene.squash.limit", q.limit, 0.0, 0.6)?;
+        let m = &s.smears;
+        within("scene.smears.amount", m.amount, 0.0, 2.0)?;
+        within("scene.smears.length_s", m.length_s, 0.01, 0.25)?;
+        within("scene.smears.min_speed", m.min_speed, 0.0, 10.0)?;
+        within("scene.smears.jag", m.jag, 0.0, 1.0)?;
         if let Some(stylize) = &s.post.stylize
             && let Err(omuzaki_render_api::RenderError::Invalid { reason, .. }) = stylize.validate()
         {

@@ -456,6 +456,114 @@ pub struct MorphRange {
     pub len: u32,
 }
 
+/// A smear frame on one skinned instance: the animated-film trick of drawing a fast move as one stretched shape
+/// instead of a sharp pose. The instance is skinned twice, by its own joints and by `trail` (the pose a moment ago, in
+/// the same model space), and every vertex on the side facing away from the motion is pulled back toward where the
+/// trail put it, so a swinging hand leaves a streak behind it and a still body is drawn as posed.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Smear {
+    /// The trailing pose's skinning matrices: as many as the instance's own [`Instance::skin`], each mapping the
+    /// same bind-pose space to the same model space.
+    pub trail: JointRange,
+    /// How far back the trailing side is pulled, `0..=2`: `1` reaches the trailing pose, `2` as far again behind it.
+    pub amount: f32,
+    /// How far a vertex must have moved since the trailing pose before it smears, metres, `0..=0.2`; the smear fades in
+    /// over the same distance again, so slow moves stay crisp.
+    pub threshold: f32,
+    /// How ragged the streak's edge is, `0..=1`: `0` pulls neighbouring vertices back alike, `1` breaks the streak
+    /// into uneven fingers, as a drawn smear is.
+    pub jag: f32,
+}
+
+impl Smear {
+    /// The most [`amount`](Self::amount) a smear can take.
+    pub const MAX_AMOUNT: f32 = 2.0;
+    /// The most [`threshold`](Self::threshold) a smear can take, metres.
+    pub const MAX_THRESHOLD: f32 = 0.2;
+
+    /// A smear along `trail` at `amount`, with no threshold and a clean edge.
+    pub fn new(trail: JointRange, amount: f32) -> Self {
+        Self { trail, amount, threshold: 0.0, jag: 0.0 }
+    }
+
+    /// The smear's amount, threshold and jag as a renderer holds them: each in a byte of its range, so every renderer
+    /// draws the same smear.
+    #[must_use]
+    pub fn quantized(&self) -> Self {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped to 0..=255 first
+        let byte = |v: f32, max: f32| f32::from((v / max).clamp(0.0, 1.0).mul_add(255.0, 0.5) as u8) / 255.0 * max;
+        Self {
+            amount: byte(self.amount, Self::MAX_AMOUNT),
+            threshold: byte(self.threshold, Self::MAX_THRESHOLD),
+            jag: byte(self.jag, 1.0),
+            ..*self
+        }
+    }
+
+    /// Where the smear draws a vertex, in model space: `posed` is where the instance's own skin puts it, `trailed` where
+    /// the trail does, `normal` its skinned normal and `bind` its bind-pose position (which picks its finger of a ragged
+    /// edge). The side facing away from the motion is pulled back by `amount` times the move, in full when it faces
+    /// straight back and partly side-on, once the move passes the threshold. The renderers' shaders compute exactly
+    /// this, on [`quantized`](Self::quantized) values.
+    #[must_use]
+    pub fn pull(&self, posed: Vec3, trailed: Vec3, normal: Vec3, bind: Vec3) -> Vec3 {
+        let moved = posed - trailed;
+        let distance = moved.length();
+        let n = normal.length();
+        if distance < 1e-6 || n < 1e-6 {
+            return posed;
+        }
+        let trailing = smoothstep(-0.1, 0.6, -(normal / n).dot(moved / distance));
+        let past = smoothstep(self.threshold, self.threshold * 2.0 + 1e-4, distance);
+        let cell = (bind / 0.03).floor();
+        #[allow(clippy::cast_possible_truncation)] // a cell of a mesh in metres fits an i32
+        let finger = 1.0 + (0.25 + 1.5 * cell_hash([cell.x as i32, cell.y as i32, cell.z as i32]) - 1.0) * self.jag;
+        posed - moved * (self.amount * trailing * past * finger)
+    }
+
+    fn validate(&self, i: usize, skin: Option<JointRange>, joints: usize) -> Result<(), RenderError> {
+        let Some(skin) = skin else {
+            return Err(RenderError::invalid("instance", format!("instance {i} smears but has no skin")));
+        };
+        let end = u64::from(self.trail.start) + u64::from(self.trail.len);
+        if self.trail.len != skin.len || end > joints as u64 {
+            let reason = format!(
+                "instance {i} smears along joints {}..{end}, which must be {} of the scene's {joints}",
+                self.trail.start, skin.len
+            );
+            return Err(RenderError::invalid("instance", reason));
+        }
+        let within = |v: f32, hi: f32| v.is_finite() && (0.0..=hi).contains(&v);
+        if !within(self.amount, Self::MAX_AMOUNT)
+            || !within(self.threshold, Self::MAX_THRESHOLD)
+            || !within(self.jag, 1.0)
+        {
+            let reason = format!("instance {i}'s smear needs amount 0..=2, threshold 0..=0.2 and jag 0..=1");
+            return Err(RenderError::invalid("instance", reason));
+        }
+        Ok(())
+    }
+}
+
+/// GLSL's and WGSL's `smoothstep`.
+fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
+    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// A number in `0..1` for an integer cell, the same as the shaders' `smear_hash`.
+fn cell_hash(cell: [i32; 3]) -> f32 {
+    #[allow(clippy::cast_sign_loss)] // the bits, as the shader's bitcast
+    let [x, y, z] = cell.map(|c| c as u32);
+    let mut h = x.wrapping_mul(0x8da6_b343) ^ y.wrapping_mul(0xd816_3841) ^ z.wrapping_mul(0xcb1a_b31f);
+    h = (h ^ (h >> 16)).wrapping_mul(0x7feb_352d);
+    h = (h ^ (h >> 15)).wrapping_mul(0x846c_a68b);
+    h ^= h >> 16;
+    #[allow(clippy::cast_precision_loss)] // 24 bits fit an f32 exactly
+    let unit = (h >> 8) as f32 / 16_777_216.0;
+    unit
+}
+
 /// One mesh drawn with one material at one place.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Instance {
@@ -476,12 +584,14 @@ pub struct Instance {
     pub casts_shadow: bool,
     /// Draw order among blended instances: lower first. Equal values sort back to front by distance.
     pub order: i16,
+    /// A smear frame along a trailing pose, for a skinned instance. `None` draws it as posed.
+    pub smear: Option<Smear>,
 }
 
 impl Instance {
     /// A rigid, shadow-casting instance.
     pub fn new(mesh: MeshId, material: MaterialId, transform: Mat4) -> Self {
-        Self { mesh, material, transform, skin: None, morph: None, casts_shadow: true, order: 0 }
+        Self { mesh, material, transform, skin: None, morph: None, casts_shadow: true, order: 0, smear: None }
     }
 }
 
@@ -863,6 +973,9 @@ impl Scene {
                     return Err(RenderError::invalid("instance", reason));
                 }
             }
+            if let Some(smear) = inst.smear {
+                smear.validate(i, inst.skin, self.joints.len())?;
+            }
             if let Some(morph) = inst.morph {
                 let end = u64::from(morph.start) + u64::from(morph.len);
                 if morph.len == 0 || end > self.morph_weights.len() as u64 {
@@ -995,6 +1108,35 @@ mod tests {
         assert!(s.validate().unwrap_err().to_string().contains("joints 2..5"), "range past the palette");
         s.joints = vec![Mat4::IDENTITY; 5];
         assert_eq!(s.validate(), Ok(()));
+        s.instances[0].smear = Some(Smear::new(JointRange { start: 0, len: 3 }, 1.0));
+        assert_eq!(s.validate(), Ok(()));
+        s.instances[0].smear = Some(Smear::new(JointRange { start: 3, len: 3 }, 1.0));
+        assert!(s.validate().unwrap_err().to_string().contains("joints 3..6"), "a trail past the palette");
+        s.instances[0].smear = Some(Smear::new(JointRange { start: 0, len: 2 }, 1.0));
+        assert!(s.validate().is_err(), "a trail of another length");
+        s.instances[0].smear = Some(Smear { jag: 1.5, ..Smear::new(JointRange { start: 0, len: 3 }, 1.0) });
+        assert!(s.validate().is_err(), "a jag past 1");
+        s.instances[0].smear = Some(Smear::new(JointRange { start: 0, len: 3 }, 1.0));
+        s.instances[0].skin = None;
+        assert!(s.validate().unwrap_err().to_string().contains("no skin"), "a rigid smear");
+        s.instances[0].skin = Some(JointRange { start: 2, len: 3 });
+        s.instances[0].smear = None;
+
+        // The pull: the trailing side goes back by the move, the leading side and a still vertex stay.
+        let smear = Smear::new(JointRange { start: 0, len: 1 }, 1.0);
+        let (now, then) = (Vec3::new(0.3, 0.0, 0.0), Vec3::ZERO);
+        assert!(smear.pull(now, then, Vec3::NEG_X, Vec3::ZERO).abs_diff_eq(then, 1e-5), "trailing reaches the trail");
+        assert_eq!(smear.pull(now, then, Vec3::X, Vec3::ZERO), now, "leading holds");
+        assert_eq!(smear.pull(now, now, Vec3::NEG_X, Vec3::ZERO), now, "no move, no smear");
+        let held = Smear { threshold: 0.2, ..smear };
+        let short = Vec3::new(0.15, 0.0, 0.0);
+        assert_eq!(held.pull(short, then, Vec3::NEG_X, Vec3::ZERO), short, "a move under the threshold stays crisp");
+        let ragged = Smear { jag: 1.0, ..smear };
+        let fingers: Vec<f32> = (0..20u8)
+            .map(|i| ragged.pull(now, then, Vec3::NEG_X, Vec3::new(f32::from(i) * 0.03, 0.0, 0.0)).x)
+            .collect();
+        assert!(fingers.iter().any(|&x| x > 0.1) && fingers.iter().any(|&x| x < 0.0), "uneven fingers: {fingers:?}");
+        assert!((Smear { amount: 0.7, ..smear }.quantized().amount - 178.0 / 255.0).abs() < 1e-6, "a byte of 0..=2");
 
         s.instances[0].transform = Mat4::from_scale(Vec3::splat(f32::INFINITY));
         assert!(s.validate().is_err());

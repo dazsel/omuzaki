@@ -1,9 +1,12 @@
 //! What a scene looks like around its cast (design D2, D8): `stage.set_backdrop`, `stage.set_ground`,
-//! `stage.set_post`, and how its cast moves as drawn animation: `stage.set_timing` and `stage.set_squash`.
+//! `stage.set_post`, and how its cast moves as drawn animation: `stage.set_timing`, `stage.set_squash` and
+//! `stage.set_smears`.
 
 use omuzaki_ops_api::{Op, OpCtx, OpError, OpKind, OpMeta, Plan, Scope, Undo, register_op};
 use omuzaki_render_api::{BackdropFit, Colour, Stylize, Tonemap};
-use omuzaki_stage_api::{Backdrop, Bars, DepthOfFieldDef, GradeDef, GroundKind, OcclusionDef, SceneId, Squash};
+use omuzaki_stage_api::{
+    Backdrop, Bars, DepthOfFieldDef, GradeDef, GroundKind, OcclusionDef, SceneId, Smears, Squash,
+};
 use omuzaki_store_api::{ContentHash, Store};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -490,7 +493,7 @@ impl SquashPreset {
 }
 
 /// `value` if given, checked to `lo..=hi`.
-fn squash_field(field: &str, value: Option<f32>, lo: f32, hi: f32) -> Result<Option<f32>, OpError> {
+fn ranged(field: &str, value: Option<f32>, lo: f32, hi: f32) -> Result<Option<f32>, OpError> {
     match value {
         Some(v) if !(v.is_finite() && (lo..=hi).contains(&v)) => {
             Err(OpError::invalid(field, format!("{v} is outside {lo} to {hi}")))
@@ -513,11 +516,11 @@ impl Op for SetSquash {
     }
 
     fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
-        let stretch = squash_field("stretch", self.stretch, 0.0, 1.0)?;
-        let squash = squash_field("squash", self.squash, 0.0, 1.0)?;
-        let bounce = squash_field("bounce_hz", self.bounce_hz, 0.5, 12.0)?;
-        let damping = squash_field("damping", self.damping, 0.05, 1.0)?;
-        let limit = squash_field("limit", self.limit, 0.0, 0.6)?;
+        let stretch = ranged("stretch", self.stretch, 0.0, 1.0)?;
+        let squash = ranged("squash", self.squash, 0.0, 1.0)?;
+        let bounce = ranged("bounce_hz", self.bounce_hz, 0.5, 12.0)?;
+        let damping = ranged("damping", self.damping, 0.05, 1.0)?;
+        let limit = ranged("limit", self.limit, 0.0, 0.6)?;
         let mut edit = SceneEdit::open(ctx.doc, self.scene.as_ref())?;
         let q = &mut edit.def.scene.squash;
         if let Some(preset) = self.preset {
@@ -547,3 +550,104 @@ impl Op for SetSquash {
 
 register_op!(SetSquash);
 
+/// Sets how a scene's cast smears on fast moves: a part that whips across the frame is drawn as one streak from where it
+/// was a moment ago to where it is, the way animated films draw a swing, and slow moves stay crisp. Drawn only.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(extend(
+    "examples" = [{"preset": "cartoon"}, {"preset": "subtle"}, {"preset": "wild", "jag": 1.0}, {"amount": 1.2, "length_s": 0.06, "min_speed": 1.5}, {"preset": "off"}],
+    "x-omuzaki-fixture" = "scenes"
+))]
+pub struct SetSmears {
+    /// The scene; the one the project opens in when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene: Option<SceneId>,
+    /// A starting point by name: `off`, `subtle` (short streaks on the fastest moves), `cartoon` (the classic smear
+    /// on a swing) or `wild` (long, ragged streaks). The fields below adjust it; left out, they adjust the scene's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<SmearPreset>,
+    /// How far back the streak reaches: `1` to where the part was `length_s` ago, `2` as far again, `0..=2`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount: Option<f32>,
+    /// How far back in time the earlier pose is taken, seconds, `0.01..=0.25`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub length_s: Option<f32>,
+    /// The speed a part must pass before it smears, metres per second, `0..=10`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_speed: Option<f32>,
+    /// How ragged the streak's edge is, `0..=1` (0 one clean shape, 1 uneven fingers).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jag: Option<f32>,
+}
+
+/// A named smear.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SmearPreset {
+    /// None: every frame drawn as posed.
+    Off,
+    /// Short, clean streaks on the fastest moves only.
+    Subtle,
+    /// The classic smear on a swing.
+    Cartoon,
+    /// Long, ragged streaks on anything quick.
+    Wild,
+}
+
+impl SmearPreset {
+    /// The settings it names.
+    pub fn settings(self) -> Smears {
+        match self {
+            Self::Off => Smears::OFF,
+            Self::Subtle => Smears { amount: 0.6, length_s: 0.033, min_speed: 1.5, jag: 0.2 },
+            Self::Cartoon => Smears { amount: 1.0, length_s: 0.05, min_speed: 1.0, jag: 0.5 },
+            Self::Wild => Smears { amount: 1.6, length_s: 0.08, min_speed: 0.6, jag: 0.9 },
+        }
+    }
+}
+
+impl Op for SetSmears {
+    fn meta() -> OpMeta {
+        OpMeta {
+            name: "stage.set_smears",
+            summary: "Give a scene's cast smear frames: a fast move is drawn as one streak from where a part was a moment \
+                      ago, the animated-film way, while slow moves stay crisp. A preset (`subtle`, `cartoon`, `wild`) \
+                      or the streak's reach, time, speed threshold and raggedness by hand; `off` draws every frame as \
+                      posed.",
+            kind: OpKind::Edit,
+            scope: Scope::EditScene,
+            undo: Undo::Auto,
+        }
+    }
+
+    fn plan(&self, ctx: &OpCtx<'_>) -> Result<Plan, OpError> {
+        let amount = ranged("amount", self.amount, 0.0, 2.0)?;
+        let length = ranged("length_s", self.length_s, 0.01, 0.25)?;
+        let speed = ranged("min_speed", self.min_speed, 0.0, 10.0)?;
+        let jag = ranged("jag", self.jag, 0.0, 1.0)?;
+        let mut edit = SceneEdit::open(ctx.doc, self.scene.as_ref())?;
+        let m = &mut edit.def.scene.smears;
+        if let Some(preset) = self.preset {
+            *m = preset.settings();
+        }
+        m.amount = amount.unwrap_or(m.amount);
+        m.length_s = length.unwrap_or(m.length_s);
+        m.min_speed = speed.unwrap_or(m.min_speed);
+        m.jag = jag.unwrap_or(m.jag);
+        let now = *m;
+        let id = edit.id.clone();
+        let plan = edit.finish(ctx, serde_json::Value::Null)?;
+        let output = json!({
+            "scene": id.as_str(),
+            "amount": now.amount,
+            "length_s": now.length_s,
+            "min_speed": now.min_speed,
+            "jag": now.jag,
+            "on": !now.is_off(),
+            "changed": changed(&plan.patch),
+        });
+        Ok(Plan { output: Some(output), ..plan })
+    }
+}
+
+register_op!(SetSmears);
