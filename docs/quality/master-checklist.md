@@ -50,7 +50,7 @@ Counts are rows in this file only (the deep lists above keep their own).
 |---|---|---|---|---|---|---|
 | 1 | [Renderer and materials (stylised)](#1-renderer-and-materials-stylised) | 5 | 5 | 7 | render owner; photoreal side: face owner (#2507) | anime face shadows, material editing for imports, texture painting |
 | 2 | [Lighting, post and the look](#2-lighting-post-and-the-look) | 6 | 1 | 5 | render owner | area lights, soft shadows, light matching |
-| 3 | [Creating a character](#3-creating-a-character-the-flow-from-idea-to-finished) | 5 | 4 | 6 | creator parity owner (explore, blend) | the concept workspace (CO-01 to CO-10) and create from a sheet or a description |
+| 3 | [Creating a character](#3-creating-a-character-the-flow-from-idea-to-finished) | 5 | 5 | 5 | creator parity owner (explore, blend); studio UX and agent owner (from a description) | the concept workspace (CO-01 to CO-10) and create from a sheet or a description |
 | 4 | [Head, face and eyes](#4-head-face-and-eyes-the-parts) | 3 | 4 | 2 | eye and face owner | the photoreal eye, 3D nose and jaw |
 | 5 | [Hair, garments and accessories](#5-hair-garments-and-accessories) | 0 | 3 | 0 | hair, garments and accessories owner | 61 system issues, #2511 to #2571 |
 | 6 | [Body, rig and physics](#6-body-rig-and-physics) | 9 | 1 | 6 | **none** | non-human templates, auto-rig, spring gizmos |
@@ -63,9 +63,9 @@ Counts are rows in this file only (the deep lists above keep their own).
 | 13 | [Camera, shots and cinematics](#13-camera-shots-and-cinematics) | 3 | 5 | 5 | reference-video owner (shorts, in part) | the timeline (SH-02), takes, auto-clips |
 | 14 | [Broadcast and outputs](#14-broadcast-and-outputs) | 4 | 4 | 5 | **none** | Windows and macOS virtual camera, NDI, direct streaming |
 | 15 | [Interactivity and automation](#15-interactivity-and-automation) | 0 | 6 | 3 | **none** | YouTube events, widgets and alerts |
-| 16 | [Studio UX](#16-studio-ux) | 8 | 2 | 1 | **none** | viewport gizmos |
-| 17 | [MCP and the agent surface](#17-mcp-and-the-agent-surface) | 9 | 3 | 0 | **none** | the in-studio assistant |
-| 18 | [Versioning, collaboration and the library](#18-versioning-collaboration-and-the-library) | 2 | 4 | 6 | **none** | backups, review links, teams |
+| 16 | [Studio UX](#16-studio-ux) | 8 | 2 | 1 | studio UX and agent owner | viewport gizmos |
+| 17 | [MCP and the agent surface](#17-mcp-and-the-agent-surface) | 10 | 3 | 0 | studio UX and agent owner | the in-studio assistant |
+| 18 | [Versioning, collaboration and the library](#18-versioning-collaboration-and-the-library) | 2 | 4 | 6 | studio UX and agent owner | backups, review links, teams |
 | 19 | [Import, export and interop](#19-import-export-and-interop) | 5 | 5 | 6 | render owner (import, in part) | web player, Unity and Godot, PMX |
 | 20 | [Plugins, connectors and scripting](#20-plugins-connectors-and-scripting) | 0 | 3 | 2 | **none** | custom nodes, real connectors |
 | 21 | [Performance and reliability](#21-performance-and-reliability) | 1 | 2 | 2 | **none** | hardware numbers, the soak, adaptive quality |
@@ -177,7 +177,7 @@ randomise, sliders), and AI image tools for concept work.
 | Build | Every part a parametric generator with ops | none | ✓ | 121 part kinds, 414 ops; see [creator-parity.md](creator-parity.md) |
 | Build | Fit proportions to a reference sheet with a difference heatmap (CB-03) | none | ✓ | `fit.reference`, `fit.apply` |
 | Build | Create from a sheet: analysis to build to compare, iterated until the likeness gate passes (CB-90) | none | ✗ | #461 |
-| Build | Create from a text description alone, no sheet: brief to parameters to build to self-check | none ship it | ✗ | **new** #2578 |
+| Build | Create from a text description alone, no sheet: brief to parameters to build to self-check | none ship it | ◐ | `character.create_from_description`, `character.brief_vocabulary` (`omuzaki-brief`); the Setup card and the palette; 20 descriptions build and self-check; the ≥ 70% rater bar is the hand check on #2578 |
 | Build | Part-level variants and branches (CB-91, CB-13) | none | ✓ | `variant.*`, `branch.*` |
 | Check | Character report card: likeness, readability, expression coverage, budget, licence (CB-92) | none | ◐ | `measure.likeness`, `measure.readability`, `face.expression.range_test`; #463 |
 | Check | Stress test: poses and head turns report clipping with images (RG-07) | none | ◐ | `fit` checker and hair clearance; whole-character battery is #2485 for hair, rest open |
@@ -592,10 +592,10 @@ Warudo (live workflow).
 | Viewport | The character rendered live in the viewport with orbit, pan, frame | Blender, VRoid | ✓ | `panels/viewport` |
 | Viewport | Move, rotate and scale gizmos for props, lights, cameras, guides and colliders | Blender, Unity | ✗ | **new** #2590 |
 | Panels | Outliner, schema inspector, library, history, agent panel | Blender, Figma | ✓ | `panels/` |
-| Panels | Command palette over every op | Blender F3, VS Code | ✓ | `shell/palette.rs` |
+| Panels | Command palette over every op | Blender F3, VS Code | ✓ | `shell/palette.rs`; a query of three or more words offers "Make a character from these words" |
 | Panels | History showing who did what with undo and redo, thumbnails (VC-01) | Figma | ✓ | `shell/history.rs` |
 | Live | Perform workspace with health, channels and stage | Warudo | ✓ | `omuzaki-ui/src/live` |
-| First run | First-run wizard to live in under 2 minutes (SE-01) | VSeeFace (fast), VTube Studio | ◐ | `panels/setup`; QG-03 #1467 |
+| First run | First-run wizard to live in under 2 minutes (SE-01) | VSeeFace (fast), VTube Studio | ◐ | `panels/setup` (sample, describe in words, import); QG-03 #1467 |
 | Save | Autosave and crash recovery (VC-08) | Blender | ✓ | `shell/saver.rs`, `omuzaki-app/src/recover.rs` |
 | Feel | Undo for every action, including an agent's | Figma | ✓ | `omuzaki-ops` executor |
 | Feel | Taste bar: a first-time user understands without a manual (QG-03 hand test) | VRoid | ◐ | hand-only check |
@@ -625,6 +625,7 @@ model.
 | Safety | Sessions, approvals, budgets, scopes, tokens | none | ✓ | `omuzaki-ops/src/sessions.rs`, `approvals.rs`, `budget.rs` |
 | Context | Resources and prompts; recipes | MCP spec | ✓ | `omuzaki-mcp/src/resources`, `prompts.rs`, `recipes` |
 | Seeing | Renders, contact sheets and comparisons returned to the agent | Figma MCP (screenshots) | ✓ | `render.preview`, `render.compare`, `measure.*` |
+| Create | A character from one sentence in one call: every choice reported with its words, what was set aside, a self-check, and the vocabulary to name facets directly | none | ✓ | `character.create_from_description`, `character.brief_vocabulary` |
 | Jobs | Long jobs with progress and cancel | none | ✓ | `omuzaki-ops/src/jobs`, `omuzaki-mcp/src/jobs.rs` |
 | CLI | `omuzaki run, undo, redo, mcp` | Blender CLI | ✓ | `omuzaki-cli` |
 | Script | Rhai script host with macros | Blender Python | ✓ | `omuzaki-script`, `script.*` ops |
