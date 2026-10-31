@@ -1,7 +1,7 @@
 //! Scene settings (design D2): `scene.toml`: the subject, the opening camera, the backdrop, the ground, the post look.
 
 pub use omuzaki_render_api::BackdropFit;
-use omuzaki_render_api::{ColourGrade, Tonemap};
+use omuzaki_render_api::{ColourGrade, Stylize, Tonemap};
 use omuzaki_store_api::ContentHash;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -210,6 +210,10 @@ pub struct PostDef {
     /// Ambient occlusion and contact shadows, if wanted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub occlusion: Option<OcclusionDef>,
+    /// The drawn look laid over the frame (halftone, hatching, posterize, paper, vignette, fringe, split toning), if
+    /// wanted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stylize: Option<Stylize>,
 }
 
 fn yes() -> bool {
@@ -218,7 +222,58 @@ fn yes() -> bool {
 
 impl Default for PostDef {
     fn default() -> Self {
-        Self { bloom: true, tonemap: Tonemap::Aces, depth_of_field: None, grain: None, grade: None, occlusion: None }
+        Self {
+            bloom: true,
+            tonemap: Tonemap::Aces,
+            depth_of_field: None,
+            grain: None,
+            grade: None,
+            occlusion: None,
+            stylize: None,
+        }
+    }
+}
+
+/// How the cast moves in time (#animated timing): every frame, the default, or held as drawn animation is, on twos or
+/// threes. Only the poses are held: the camera, the lights, the effects and the render run at the frame rate, so a
+/// held pose under a moving camera reads as drawn, not as a dropped frame.
+#[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Timing {
+    /// Body poses per second: `0` moves every frame; `12` is "on twos" and `8` "on threes" at 24 fps.
+    /// `0..=60`.
+    #[schemars(range(min = 0.0, max = 60.0))]
+    pub body_hz: f32,
+    /// Face updates (expressions, eyes, mouth) per second, held the same way: `0` every frame. Speech reads best at 12
+    /// or more. `0..=60`.
+    #[schemars(range(min = 0.0, max = 60.0))]
+    pub face_hz: f32,
+    /// Whether hair, cloth and other secondary motion hold with the body (the drawn look; they catch up in one step
+    /// at each new pose) or keep moving between the held poses.
+    pub hold_secondary: bool,
+}
+
+impl Timing {
+    /// Every frame: no holds.
+    pub const SMOOTH: Self = Self { body_hz: 0.0, face_hz: 0.0, hold_secondary: true };
+
+    /// True when nothing is held.
+    pub fn is_smooth(&self) -> bool {
+        self.body_hz <= 0.0 && self.face_hz <= 0.0
+    }
+
+    /// Which held pose a frame at `time` seconds shows, for a rate of `hz` (`None` when the rate is 0: every frame).
+    /// Frames in the same slot show the same pose.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // floored and clamped to >= 0
+    pub fn slot(time: f64, hz: f32) -> Option<u64> {
+        // A hair over the boundary, so a frame exactly on it (time 0.5 at 12 Hz) starts the new pose.
+        (hz > 0.0).then(|| (time.max(0.0) * f64::from(hz) + 1e-6).floor() as u64)
+    }
+}
+
+impl Default for Timing {
+    fn default() -> Self {
+        Self::SMOOTH
     }
 }
 
@@ -243,6 +298,9 @@ pub struct SceneSettings {
     /// The post look.
     #[serde(default)]
     pub post: PostDef,
+    /// How the cast moves in time: every frame, or held on twos or threes.
+    #[serde(default, skip_serializing_if = "Timing::is_smooth")]
+    pub timing: Timing,
 }
 
 impl SceneSettings {
@@ -255,6 +313,7 @@ impl SceneSettings {
             backdrop: Backdrop::default(),
             ground: Ground::default(),
             post: PostDef::default(),
+            timing: Timing::SMOOTH,
         }
     }
 }

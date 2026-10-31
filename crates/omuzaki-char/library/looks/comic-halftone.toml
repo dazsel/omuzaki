@@ -1,0 +1,59 @@
+# Comic halftone: a printed comic in motion. Hard cel tones with a deep shade, heavy dark lines, a halftone dot screen
+# printed into the shade, ink hatching in the deepest shadow, misregistered colour at the edges and a paper stock.
+id = "comic-halftone"
+name = "Comic halftone"
+summary = "Hard cel tones, heavy ink lines, halftone dots in the shade, hatching in the deepest shadow, a colour fringe and paper."
+origin = """Design target: the printed-comic animated look (halftone screens, ink hatching, off-register colour, paper), \
+recreated with Omuzaki's own `stylized` program and stylize pass. Numbers are this preset's own, chosen by rendering \
+the kit character."""
+
+[params.all]
+softness_scale = 0.1
+outline_width_scale = 1.9
+outline_colour = { flat = "#1c1426" }
+
+[params.skin.program]
+name = "stylized"
+
+[params.skin.program.params]
+shade-2-strength = { float = 0.5 }
+shade-2-shift = { float = -0.5 }
+shade-2-softness = { float = 0.0 }
+
+[params.cloth.program]
+name = "stylized"
+
+[params.cloth.program.params]
+shade-2-strength = { float = 1.0 }
+shade-2-shift = { float = -0.35 }
+shade-2-softness = { float = 0.0 }
+spec-strength = { float = 0.5 }
+spec-size = { float = 0.1 }
+spec-softness = { float = 0.0 }
+
+[params.scene]
+bloom = false
+
+[params.scene.stylize]
+fringe = 0.0025
+
+[params.scene.stylize.halftone]
+cell = 0.0075
+angle_deg = 45.0
+ink = "#3a2a52"
+strength = 0.75
+threshold = 0.62
+
+[params.scene.stylize.hatching]
+spacing = 0.006
+width = 0.5
+angle_deg = 60.0
+ink = "#1c1426"
+strength = 0.8
+threshold = 0.25
+cross_threshold = 0.12
+
+[params.scene.stylize.paper]
+strength = 0.06
+scale = 0.003
+tint = "#fbf4e6"

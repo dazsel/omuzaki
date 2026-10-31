@@ -15,7 +15,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::limits::{MAX_JOINTS, MAX_LIGHTS, MAX_MORPH_WEIGHTS};
-use crate::{Colour, EnvironmentUse, MaterialId, MeshId, RenderError, SpawnBatch, TextureId};
+use crate::{Colour, EnvironmentUse, MaterialId, MeshId, RenderError, SpawnBatch, Stylize, TextureId};
 
 /// The vertical field of view, in degrees, through which an orthographic camera sees an environment backdrop
 /// ([`Camera::sky_rays`]).
@@ -650,6 +650,10 @@ pub struct Post {
     pub grain: Option<FilmGrain>,
     /// Colour grade, if wanted.
     pub grade: Option<ColourGrade>,
+    /// The drawn look laid over the frame last: halftone, hatching, posterize, paper, vignette, fringe and split
+    /// toning ([`Stylize`]). The empty value (the default) draws nothing.
+    #[serde(default)]
+    pub stylize: Stylize,
 }
 
 impl Post {
@@ -687,13 +691,21 @@ impl Post {
             check(at_least_zero(g.saturation), "grade.saturation", ">= 0")?;
             check(at_least_zero(g.contrast), "grade.contrast", ">= 0")?;
         }
-        Ok(())
+        self.stylize.validate()
     }
 }
 
 impl Default for Post {
     fn default() -> Self {
-        Self { exposure: 1.0, tonemap: Tonemap::Aces, bloom: None, depth_of_field: None, grain: None, grade: None }
+        Self {
+            exposure: 1.0,
+            tonemap: Tonemap::Aces,
+            bloom: None,
+            depth_of_field: None,
+            grain: None,
+            grade: None,
+            stylize: Stylize::default(),
+        }
     }
 }
 
@@ -1072,6 +1084,7 @@ mod tests {
             depth_of_field: Some(DepthOfField { focus_distance: 2.0, focus_range: 0.3, max_blur: 0.01 }),
             grain: Some(FilmGrain { strength: 0.05 }),
             grade: Some(ColourGrade { saturation: 1.1, contrast: 1.0 }),
+            stylize: Stylize::default(),
         };
         good.validate().unwrap();
         Post { exposure: 0.0, ..good }.validate().unwrap();

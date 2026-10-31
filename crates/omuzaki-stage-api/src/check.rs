@@ -114,6 +114,14 @@ impl SceneDef {
             within("scene.post.occlusion.strength", o.strength, 0.0, 1.0)?;
             non_negative("scene.post.occlusion.contact", o.contact)?;
         }
+        for (path, hz) in [("scene.timing.body_hz", s.timing.body_hz), ("scene.timing.face_hz", s.timing.face_hz)] {
+            within(path, hz, 0.0, 60.0)?;
+        }
+        if let Some(stylize) = &s.post.stylize
+            && let Err(omuzaki_render_api::RenderError::Invalid { reason, .. }) = stylize.validate()
+        {
+            return refuse("scene.post.stylize", reason);
+        }
         if let Some(subject) = &s.subject {
             self.require_member("scene.subject", subject)?;
         }

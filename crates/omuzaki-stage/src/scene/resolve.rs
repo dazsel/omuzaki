@@ -16,7 +16,7 @@ use omuzaki_render_api::{
 use omuzaki_stage_api::resolve::{AnchorFrame, LightBuf};
 use omuzaki_stage_api::{
     Anchor, Backdrop, Bars, CameraDef, CameraId, CastMember, EnvironmentSource, Focus, Framing, GroundKind,
-    MAX_CAMERAS, MemberId, SceneDef, SceneError,
+    MAX_CAMERAS, MemberId, SceneDef, SceneError, Timing,
 };
 
 use super::backdrop::ImagePixels;
@@ -123,6 +123,8 @@ pub struct Changes {
     /// A prop was added, removed or rebuilt (a kind or a param changed). Apply uploads it, so this is not a value-only
     /// change.
     pub prop_builds: bool,
+    /// The animated timing changed.
+    pub timing: bool,
 }
 
 impl Changes {
@@ -180,6 +182,8 @@ pub struct ResolvedScene {
     pub effects: SceneEffects,
     /// The props: their builds, where each is drawn, and their lights (already in `lights`).
     pub props: ResolvedProps,
+    /// How the cast moves in time: every frame, or held on twos or threes (`scene.timing`).
+    pub timing: Timing,
 }
 
 /// An image backdrop as the renderer takes it: the picture's asset, how it fits, and the bars' gradient.
@@ -279,6 +283,7 @@ impl ResolvedScene {
             image: None,
             effects: SceneEffects::default(),
             props: ResolvedProps::default(),
+            timing: Timing::SMOOTH,
         }
     }
 
@@ -387,6 +392,7 @@ impl ResolvedScene {
             image: self.backdrop_image.map(|i| i.asset) != backdrop_image.map(|i| i.asset),
             props: prop_changes.placements,
             prop_builds: prop_changes.builds,
+            timing: replace(&mut self.timing, def.scene.timing),
             ..Changes::default()
         };
         changes.backdrop |= replace(&mut self.backdrop_image, backdrop_image);
@@ -641,6 +647,7 @@ fn resolve_post(
         depth_of_field,
         grain: p.grain.map(|strength| FilmGrain { strength }),
         grade: p.grade.map(Into::into),
+        stylize: p.stylize.unwrap_or_default(),
     })
 }
 

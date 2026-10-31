@@ -22,14 +22,17 @@ pub mod pose;
 pub(crate) mod rig;
 pub(crate) mod runtimes;
 pub(crate) mod scene;
+pub(crate) mod timing;
 
 use omuzaki_anim_api::{ChannelBuf, HumanoidPose, IkGoals, Reaches, Tick};
 use omuzaki_char_api::{BuiltCharacter, LookParams, StepCtx};
 use omuzaki_core::glam::{Mat4, Vec3};
 use omuzaki_core::time::Seconds;
 use omuzaki_render_api::{FrameInfo, FrameReport, Quality, Renderer, Scene, TargetId};
+use omuzaki_stage_api::Timing;
 
 use self::face::FaceRig;
+use self::timing::{HoldFrame, Holds};
 use self::rig::{RigFrame, SkinPose};
 use self::runtimes::DynamicMeshes;
 use self::scene::ScenePlan;
@@ -209,6 +212,8 @@ pub struct Stage {
     pinned: Option<Tick>,
     /// Particle effects, once attached ([`Stage::attach_effects`]).
     effects: Option<Box<EffectsFrame>>,
+    /// The scene's animated timing: which frames move the body, the secondary motion and the face.
+    holds: Holds,
 }
 
 impl Stage {
@@ -258,6 +263,7 @@ impl Stage {
                 clock,
                 pinned: None,
                 effects: None,
+                holds: Holds::default(),
             }),
             Err(error) => {
                 if let Err(cleanup) = character.release(renderer) {
@@ -306,20 +312,26 @@ impl Stage {
             }
         }
         let tick = self.pinned.unwrap_or_else(|| self.clock.next(input.dt, input.time));
-        self.input_root = input.root;
-        self.root = self.subject_root * input.root;
-        self.pose = input.pose;
-        self.goals = input.goals;
+        // A pinned frame shows exactly the pose it is given, whatever the timing.
+        let hold = if self.pinned.is_some() { HoldFrame::all(tick.dt) } else { self.holds.frame(tick) };
+        if hold.body {
+            // A held pose holds where it stands too: the character's root moves with its pose.
+            self.input_root = input.root;
+            self.pose = input.pose;
+            self.goals = input.goals;
+            self.rig.set_reaches(&input.reach);
+            self.rig.solve_with_channels(tick, &input.pose, &input.goals, &input.channels);
+        }
+        self.root = self.subject_root * self.input_root;
         self.tick = tick;
-        self.rig.set_reaches(&input.reach);
-        self.rig.solve_with_channels(tick, &input.pose, &input.goals, &input.channels);
-        let pose = SkinPose { character: &self.built.rig, skin: self.rig.skin(), root: self.root };
-        let ctx = StepCtx::new(tick.dt, tick.time, &pose, input.wind);
-        DynamicMeshes::step(&mut self.built.runtimes, &ctx);
-        let prepared = self
-            .dynamic
-            .upload(&self.built.runtimes, renderer)
-            .and_then(|uploads| self.update_face(renderer, tick, input).map(|()| uploads));
+        if let Some(dt) = hold.secondary_dt {
+            let pose = SkinPose { character: &self.built.rig, skin: self.rig.skin(), root: self.root };
+            let ctx = StepCtx::new(dt, tick.time, &pose, input.wind);
+            DynamicMeshes::step(&mut self.built.runtimes, &ctx);
+        }
+        let prepared = self.dynamic.upload(&self.built.runtimes, renderer).and_then(|uploads| {
+            if hold.face { self.update_face(renderer, tick, input) } else { Ok(()) }.map(|()| uploads)
+        });
         // Filled even when the frame can't be prepared: a variant swapped in at the top of this tick, and the scene
         // must not go on naming the character it retired (its meshes are released).
         self.plan.fill(&mut self.scene, self.rig.skin(), self.root);
@@ -487,8 +499,14 @@ impl Stage {
             self.scene.background = picture;
         }
         self.props.take(&resolved.props);
+        self.holds.set(resolved.timing);
         self.set_subject_root(subject_root);
         owed
+    }
+
+    /// The animated timing in force (`scene.timing`, from the last [`set_scene`](Self::set_scene)).
+    pub fn timing(&self) -> Timing {
+        self.holds.timing()
     }
 
     /// Moves the subject member alone: the scene's camera, lights and look stay as they are. Takes effect from the next
