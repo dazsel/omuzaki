@@ -54,6 +54,8 @@ pub struct CaptionSpan {
     pub text: String,
     /// How it looks.
     pub style: CaptionStyle,
+    /// Where it sits, as a share of the frame height from the top; the short's caption line when `None`.
+    pub y: Option<f32>,
 }
 
 /// A short on the clock.
@@ -117,7 +119,7 @@ impl Timeline {
             if def.captions.enabled && line.caption != CaptionStyle::None {
                 let spoken = line.spoken();
                 let text = line.caption_text.as_deref().unwrap_or(&spoken);
-                lay_captions(text, line.caption, def.captions.max_chars, *span, &mut captions);
+                lay_captions(text, line.caption, line.caption_y, def.captions.max_chars, *span, &mut captions);
             }
         }
         place_cues(def, &mut faces, &mut shots, voice.duration)?;
@@ -390,7 +392,14 @@ pub fn phrases(text: &str, max_chars: usize) -> Vec<String> {
 
 /// Lays `text`'s phrases over `span`, each for its share of the characters.
 #[allow(clippy::cast_precision_loss, reason = "character counts")]
-fn lay_captions(text: &str, style: CaptionStyle, max_chars: usize, span: Span, out: &mut Vec<CaptionSpan>) {
+fn lay_captions(
+    text: &str,
+    style: CaptionStyle,
+    y: Option<f32>,
+    max_chars: usize,
+    span: Span,
+    out: &mut Vec<CaptionSpan>,
+) {
     let limit = match style {
         CaptionStyle::Shout => max_chars * 3 / 4,
         CaptionStyle::Big => 12,
@@ -407,7 +416,7 @@ fn lay_captions(text: &str, style: CaptionStyle, max_chars: usize, span: Span, o
     for part in parts {
         let len = span.len() * part.chars().count() as f32 / total as f32;
         let shown = if style == CaptionStyle::Shout { part.to_uppercase() } else { part };
-        out.push(CaptionSpan { start: t, end: t + len + CAPTION_HOLD_S, text: shown, style });
+        out.push(CaptionSpan { start: t, end: t + len + CAPTION_HOLD_S, text: shown, style, y });
         t += len;
     }
 }
@@ -480,6 +489,18 @@ camera = "bust"
         assert!((eyes.start - 0.5).abs() < 1e-6 && eyes.line_end > eyes.start, "{eyes:?}");
         assert!(tl.faces.windows(2).all(|w| w[0].start < w[1].start), "faces stay in time order");
         assert!(tl.shots.windows(2).all(|w| w[0].start < w[1].start), "shots stay in time order");
+    }
+
+    #[test]
+    fn a_line_places_its_own_caption() {
+        let text = "character = \"lumi\"\n[[line]]\ntext = \"Down here, a long line to split\"\ncaption_y = 0.8\n\
+                    [[line]]\ntext = \"Then the usual place\"\n";
+        let tl = timeline(text);
+        let (own, usual): (Vec<_>, Vec<_>) = tl.captions.iter().partition(|c| c.y.is_some());
+        assert!(own.len() >= 2 && own.iter().all(|c| c.y == Some(0.8)), "every phrase of the line: {own:?}");
+        assert_eq!(usual.iter().map(|c| c.text.as_str()).collect::<Vec<_>>(), ["Then the usual place"]);
+        let bad = ShortDef::from_toml("character = \"lumi\"\n[[line]]\ntext = \"Hi\"\ncaption_y = 1.2\n");
+        assert!(bad.is_err_and(|e| e.to_string().contains("caption_y")));
     }
 
     #[test]

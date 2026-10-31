@@ -143,8 +143,14 @@ pub fn render_puppet_short(
     let mut physics = Physics::new(puppet_def.physics.len());
     let mut eval = Evaluator::new(puppet_def).map_err(|e| ShortError::invalid("puppet", e.to_string()))?;
     let expressions = ExpressionSet::library().map_err(ShortError::Render)?;
-    let mut performer =
-        OfflinePerformer::new(timeline, &expressions, ChannelBuf::NEUTRAL, HumanoidPose::default(), def.seed)?;
+    let mut performer = OfflinePerformer::new(
+        timeline,
+        &expressions,
+        ChannelBuf::NEUTRAL,
+        HumanoidPose::default(),
+        def.seed,
+        def.body,
+    )?;
     eval.evaluate();
     let head = head_box(&eval);
 
