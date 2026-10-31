@@ -33,7 +33,7 @@
 
 use std::collections::BTreeMap;
 
-use omuzaki_char_api::CharId;
+use omuzaki_char_api::{CharId, VariantId};
 use omuzaki_core::colour::Colour;
 use omuzaki_render_api::{SurfaceFx, SurfaceFxKind};
 use schemars::JsonSchema;
@@ -265,6 +265,10 @@ pub struct Actor {
     pub id: String,
     /// The character of the project.
     pub character: CharId,
+    /// The character's variant to show in this shot (a costume change, a burnt or soaked look), made with
+    /// `variant.create`; the base character without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant: Option<VariantId>,
     /// Where its feet are, metres.
     #[serde(default = "origin")]
     pub position: Track<[f32; 3]>,

@@ -414,6 +414,7 @@ mod tests {
         Actor {
             id: "a".into(),
             character: omuzaki_char_api::CharId::new("kit").unwrap(),
+            variant: None,
             position: Track::Hold([0.0; 3]),
             yaw: Track::Hold(0.0),
             pose: vec![

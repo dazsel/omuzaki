@@ -14,7 +14,7 @@ use std::sync::Mutex;
 
 use omuzaki_anim::hands::HandLibrary;
 use omuzaki_anim::poses::PoseLibrary;
-use omuzaki_char_api::{BuildServices, CharId, CharacterBuilder, paths as char_paths};
+use omuzaki_char_api::{BuildServices, CharId, CharacterBuilder, VariantId, paths as char_paths};
 use omuzaki_core::id::Slug;
 use omuzaki_core::time::SystemClock;
 use omuzaki_doc_api::{DocPath, DocRead, Patch, Value};
@@ -101,6 +101,15 @@ fn check_in(doc: &dyn DocRead, def: &SequenceDef) -> Result<(), OpError> {
                     shot.id, actor.character
                 ))
                 .hint("check the id; characters live under characters/<id>"));
+            }
+            if let Some(variant) = &actor.variant
+                && doc.get(&char_paths::variant(&actor.character, variant)).is_none()
+            {
+                return Err(OpError::not_found(format!(
+                    "shot '{}': character '{}' has no variant '{variant}'",
+                    shot.id, actor.character
+                ))
+                .hint("variant.list names them; variant.create makes one"));
             }
         }
         if let Some(scene) = &shot.scene {
@@ -748,6 +757,7 @@ fn shot_scene(
     doc: &dyn DocRead,
     shot: &Shot,
     character: &CharId,
+    variant: Option<&VariantId>,
 ) -> Result<(omuzaki_stage_api::SceneDef, omuzaki_stage_api::MemberId), OpError> {
     let scene =
         shot.scene.as_ref().map(SceneId::new).transpose().map_err(|e| OpError::invalid("scene", e.to_string()))?;
@@ -757,7 +767,7 @@ fn shot_scene(
             .and_then(|rig| rig.to_lighting())
             .map_err(|e| OpError::internal(format!("the light rig '{name}' doesn't load: {e}")))?;
     }
-    let member = cast_alone(&mut scene, character, None)
+    let member = cast_alone(&mut scene, character, variant)
         .map_err(|e| OpError::internal(format!("casting the character: {e}")))?;
     Ok((scene, member))
 }
@@ -772,7 +782,8 @@ fn shot_loader<'a>(
         let fail = |e: OpError| SequenceError::Render(format!("shot '{}': {}", shot.id, e.message));
         let actor =
             shot.actors.first().ok_or_else(|| SequenceError::Invalid(format!("shot '{}' has no actor", shot.id)))?;
-        let (scene, member) = job.read(|doc| shot_scene(doc, shot, &actor.character)).map_err(fail)?;
+        let (scene, member) =
+            job.read(|doc| shot_scene(doc, shot, &actor.character, actor.variant.as_ref())).map_err(fail)?;
         let clock = SystemClock::default();
         let services = BodyServices::new(
             job.service::<dyn CharacterBuilder>().map_err(fail)?,
@@ -781,8 +792,9 @@ fn shot_loader<'a>(
             job.service::<Capabilities>().map_or(MtoonSupport::NONE, |c| c.mtoon),
             &clock,
         );
-        let body: Body =
-            job.read(|doc| load_body(doc, &services, &actor.character, None, quality.detail())).map_err(fail)?;
+        let body: Body = job
+            .read(|doc| load_body(doc, &services, &actor.character, actor.variant.as_ref(), quality.detail()))
+            .map_err(fail)?;
         let landmarks = body.landmarks().map_err(|e| SequenceError::Render(e.to_string()))?;
         let [w, h] = def.size;
         #[allow(clippy::cast_precision_loss, reason = "sides are at most 4096")]
@@ -843,7 +855,7 @@ fn render_plan(
     let mut character = 0;
     for shot in &def.shots {
         for actor in &shot.actors {
-            character = character.max(character_bytes(ctx, &actor.character, None, quality)?);
+            character = character.max(character_bytes(ctx, &actor.character, actor.variant.as_ref(), quality)?);
         }
     }
     // Two shots alive at once (a crossfade) hold two characters.
