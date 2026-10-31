@@ -1,8 +1,9 @@
 //! Kinds that bring their own light (design D7: a practical light counts toward the scene's limit): `lamp`, whose
-//! bulb is a point light, and `window`, a daylit pane with a spot light shining in through it.
+//! bulb is a point light, `window`, a daylit pane with a spot light shining in through it, and `glow`, a floating orb
+//! of light (a spell in a hand, a wisp, a fairy light) whose point light colours whatever it is near.
 
 use omuzaki_core::glam::{Vec2, Vec3};
-use omuzaki_render_api::{Colour, Light, Material};
+use omuzaki_render_api::{AlphaMode, Colour, Light, Material};
 use omuzaki_stage_api::{PropKind, PropOutput, register_prop_kind};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -319,6 +320,90 @@ impl PropKind for Window {
 }
 
 register_prop_kind!(Window);
+
+/// A glowing orb.
+pub struct Glow;
+
+/// The orb's parameters.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct GlowParams {
+    /// The orb's radius in metres, 0.005 to 0.5.
+    pub radius: f32,
+    /// Metres from the prop's origin up to the orb's centre, 0 to 3: 0 for an orb held at a bone, more for one floating
+    /// over the floor where the prop stands.
+    pub height: f32,
+    /// The light's colour, and the orb's rim.
+    pub colour: Colour,
+    /// How white its heart burns, 0 (the colour all through) to 1 (white with a coloured rim).
+    pub core: f32,
+    /// The point light's intensity (three.js units, inverse square), 0 to 20; 0 is an orb that lights nothing.
+    pub intensity: f32,
+    /// Metres where its light reaches zero, 0.2 to 15.
+    pub range: f32,
+}
+
+impl Default for GlowParams {
+    fn default() -> Self {
+        Self {
+            radius: 0.06,
+            height: 1.2,
+            colour: Colour::hex(0x00a8_c8ff),
+            core: 0.7,
+            intensity: 3.0,
+            range: 2.5,
+        }
+    }
+}
+
+impl PropKind for Glow {
+    type Params = GlowParams;
+    const ID: &'static str = "glow";
+    const SUMMARY: &'static str = "A floating orb of light: a spell in a hand, a wisp or a fairy light. A white-hot \
+                                   heart in a coloured shell (radius, colour, core), with a point light of its colour \
+                                   (intensity, range) that joins the scene's lights; the scene's bloom gives its halo.";
+
+    fn validate(p: &GlowParams) -> Result<(), String> {
+        between("radius", p.radius, 0.005, 0.5)?;
+        between("height", p.height, 0.0, 3.0)?;
+        between("core", p.core, 0.0, 1.0)?;
+        between("intensity", p.intensity, 0.0, 20.0)?;
+        between("range", p.range, 0.2, 15.0)
+    }
+
+    fn build(p: &GlowParams) -> Result<PropOutput, String> {
+        let centre = Vec3::new(0.0, p.height, 0.0);
+        // A white-hot heart inside two see-through shells of the light's colour: from any side the orb reads as a
+        // bright centre fading to a coloured rim, and the scene's bloom spreads it into a halo.
+        let mut heart = Shape::new();
+        heart.ellipsoid(At::pos(centre), Vec3::splat(p.radius * 0.6), 10, 16, Colour::WHITE);
+        let mut shell = Shape::new();
+        shell.ellipsoid(At::pos(centre), Vec3::splat(p.radius), 12, 20, Colour::WHITE);
+        let mut haze = Shape::new();
+        haze.ellipsoid(At::pos(centre), Vec3::splat(p.radius * 1.8), 12, 20, Colour::WHITE);
+        let mut out = output(vec![
+            (heart, orb(mix(p.colour, Colour::WHITE, p.core), 1.0)),
+            (shell, orb(p.colour, 0.55)),
+            (haze, orb(p.colour, 0.18)),
+        ]);
+        if p.intensity > 0.0 {
+            out.lights.push(Light::Point { position: centre, colour: p.colour, intensity: p.intensity, range: p.range });
+        }
+        Ok(out)
+    }
+}
+
+/// An unlit part of an orb: `colour` at `alpha` (blended below 1, drawn without depth so the heart shows through).
+fn orb(colour: Colour, alpha: f32) -> Material {
+    let mut m = glowing(Colour::from_linear(colour.to_linear(), alpha));
+    m.vertex_colours = true;
+    if alpha < 1.0 {
+        m.alpha = AlphaMode::Blend;
+    }
+    m
+}
+
+register_prop_kind!(Glow);
 
 /// Fills a window's head corners (`width` across, glass `h` tall) in under a half circle, or as much of one as the
 /// height allows, with a moulding along it.

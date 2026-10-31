@@ -1051,6 +1051,11 @@ fn refresh_dynamic(
     Ok(())
 }
 
+/// How many steps [`Stage::face_points`] takes up from the outline's chin toward the mouth to find the head under it.
+const CHIN_STEPS: u32 = 16;
+/// How far up toward the mouth it looks at most, as a share of the way.
+const CHIN_REACH: f32 = 0.5;
+
 /// Where a painted face's layout points land in a picture (`docs/design/likeness-measures.md` D10, §5): pixels of the
 /// target, origin top-left, x right, y down, pixel centres at .5. What `render.preview` reports as `face_landmarks`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1067,6 +1072,12 @@ pub struct FacePoints {
 }
 
 impl FacePoints {
+    /// Points given by hand, as a test or a caller that measured them elsewhere does.
+    #[must_use]
+    pub fn new(eye_right: Vec2, eye_left: Vec2, mouth: Vec2, chin: Vec2) -> Self {
+        Self { eye_right, eye_left, mouth, chin }
+    }
+
     /// The distance between the eye centres, pixels.
     #[must_use]
     pub fn iod(&self) -> f32 {
@@ -1117,8 +1128,19 @@ impl Stage {
         let to_clip = camera.projection_matrix(width / height.max(1.0)) * camera.view();
         let view = camera.view();
         let mut pixels = [Vec2::ZERO; 4];
-        for (pixel, at) in pixels.iter_mut().zip(plane) {
-            let world = self.face_surface(&carriers, &face.projection, at)?;
+        for (k, (pixel, at)) in pixels.iter_mut().zip(plane).enumerate() {
+            // The chin sits on the outline's lowest point, which a head built at another size (a tall body, a long
+            // neck) can leave just off its mesh: it is then taken at the lowest point of the head under it, found by
+            // stepping up toward the mouth.
+            let world = if k == 3 {
+                (0..=CHIN_STEPS).find_map(|step| {
+                    #[allow(clippy::cast_precision_loss, reason = "a few steps")]
+                    let up = step as f32 / CHIN_STEPS as f32 * CHIN_REACH;
+                    self.face_surface(&carriers, &face.projection, at.lerp(plane[2], up))
+                })?
+            } else {
+                self.face_surface(&carriers, &face.projection, at)?
+            };
             if view.transform_point3(world).z >= 0.0 {
                 return None;
             }

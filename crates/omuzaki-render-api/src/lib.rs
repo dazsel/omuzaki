@@ -44,6 +44,7 @@ mod quality;
 mod renderer;
 mod resource;
 mod scene;
+mod stylize;
 
 pub use environment::{EnvironmentDesc, EnvironmentUse, sky_radiance};
 pub use error::RenderError;
@@ -72,3 +73,4 @@ pub use scene::{
     BackdropFit, Background, Bloom, Camera, ColourGrade, DepthOfField, EdgeLines, FilmGrain, Fog, FrameInfo, Instance,
     JointRange, Light, MorphRange, Occlusion, Post, Projection, SKY_LENS_DEG, Scene, Tonemap, gradient_at,
 };
+pub use stylize::{Halftone, Hatching, MAX_POSTERIZE, Paper, SplitTone, Stylize, Vignette};

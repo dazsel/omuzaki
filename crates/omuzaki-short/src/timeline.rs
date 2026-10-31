@@ -69,6 +69,8 @@ pub struct Timeline {
     pub shots: Vec<ShotSpan>,
     /// Captions, in time order.
     pub captions: Vec<CaptionSpan>,
+    /// How much the handheld camera drifts: 0 is locked off, 1 a phone in a hand.
+    pub handheld: f32,
 }
 
 impl Timeline {
@@ -118,6 +120,7 @@ impl Timeline {
                 lay_captions(text, line.caption, def.captions.max_chars, *span, &mut captions);
             }
         }
+        place_cues(def, &mut faces, &mut shots, voice.duration)?;
         // A caption gives way to the next one.
         for i in 1..captions.len() {
             let next = captions[i].start;
@@ -125,7 +128,14 @@ impl Timeline {
                 captions[i - 1].end = next;
             }
         }
-        Ok(Self { duration: voice.duration, lines: voice.spans.clone(), faces, shots, captions })
+        Ok(Self {
+            duration: voice.duration,
+            lines: voice.spans.clone(),
+            faces,
+            shots,
+            captions,
+            handheld: def.handheld,
+        })
     }
 
     /// The face in force at `t`.
@@ -205,8 +215,22 @@ impl Timeline {
 }
 
 /// Expressions of the built-in library that are anime marks (FE-02) rather than plain moods.
-pub const MARK_EXPRESSIONS: [&str; 9] =
-    ["flustered", "laugh", "gloom", "dizzy", "hearts", "stars", "sparkle", "sweat", "scared"];
+pub const MARK_EXPRESSIONS: [&str; 14] = [
+    "flustered",
+    "laugh",
+    "gloom",
+    "dizzy",
+    "hearts",
+    "stars",
+    "sparkle",
+    "sweat",
+    "scared",
+    "cross",
+    "vein",
+    "stare",
+    "shocked",
+    "menace",
+];
 /// Channels that are anime marks, set directly.
 pub const MARK_CHANNELS: [&str; 16] = [
     "eyesSqueeze",
@@ -270,6 +294,64 @@ fn face_key(f: &FaceSpan) -> String {
 fn at<T>(spans: &[T], t: f32, start: impl Fn(&T) -> f32) -> &T {
     let i = spans.partition_point(|s| start(s) <= t).saturating_sub(1);
     &spans[i.min(spans.len() - 1)]
+}
+
+/// Lays `def`'s cues over the faces and shots the lines placed: each lands exactly at its moment (no lead: a cue is
+/// timed to a frame) and replaces a change from a line at the same moment. A cue with channels and no face keeps the
+/// face in force and sets its channels on top.
+fn place_cues(
+    def: &ShortDef,
+    faces: &mut Vec<FaceSpan>,
+    shots: &mut Vec<ShotSpan>,
+    duration: f32,
+) -> Result<(), ShortError> {
+    let mut order: Vec<usize> = (0..def.cues.len()).collect();
+    order.sort_by(|&a, &b| def.cues[a].at.total_cmp(&def.cues[b].at));
+    for i in order {
+        let cue = &def.cues[i];
+        if cue.face.is_some() || !cue.channels.is_empty() {
+            let mut channels = Vec::new();
+            for (name, value) in &cue.channels {
+                let c = Channel::from_name(name).ok_or_else(|| {
+                    ShortError::invalid(format!("cue[{i}].channels.{name}"), "there is no such channel")
+                })?;
+                channels.push((c, *value));
+            }
+            let span = if let Some(face) = &cue.face {
+                FaceSpan { start: cue.at, ids: face.ids(), channels }
+            } else {
+                let current = at(faces, cue.at, |f| f.start);
+                let mut merged: Vec<(Channel, f32)> =
+                    current.channels.iter().filter(|(c, _)| !channels.iter().any(|(n, _)| n == c)).copied().collect();
+                merged.extend(channels);
+                FaceSpan { start: cue.at, ids: current.ids.clone(), channels: merged }
+            };
+            insert_at(faces, span, |f| f.start);
+        }
+        if let Some(camera) = &cue.camera {
+            let shot = camera.numbers().map_err(|e| e.at(format!("cue[{i}].camera")))?;
+            let line_end = cue.hold.map_or(f32::NAN, |hold| cue.at + hold);
+            insert_at(shots, ShotSpan { start: cue.at, line_end, shot }, |s| s.start);
+        }
+    }
+    // A cue's push runs until the next change of shot.
+    for i in 0..shots.len() {
+        if shots[i].line_end.is_nan() {
+            shots[i].line_end = shots.get(i + 1).map_or(duration, |next| next.start);
+        }
+    }
+    Ok(())
+}
+
+/// Inserts `span` in time order, replacing a span that starts at the same moment.
+fn insert_at<T>(spans: &mut Vec<T>, span: T, start: impl Fn(&T) -> f32) {
+    let t = start(&span);
+    let i = spans.partition_point(|s| start(s) < t - 1e-4);
+    if spans.get(i).is_some_and(|s| (start(s) - t).abs() < 1e-4) {
+        spans[i] = span;
+    } else {
+        spans.insert(i, span);
+    }
 }
 
 /// Pushes `span`, or replaces the last one when it starts at the same moment (a first line at the very start).
@@ -377,6 +459,27 @@ camera = "bust"
         assert_eq!(m.marks, ["flustered"]);
         assert_eq!(m.distinct_faces, 3);
         assert_eq!(m.changes, 2, "line 1 changes face and shot together; line 3 changes both again");
+    }
+
+    #[test]
+    fn cues_land_on_their_frame_and_win_over_a_line_at_the_same_moment() {
+        let text = format!(
+            "{SHORT}\n[[cue]]\nat = 0.5\nface = \"stare\"\ncamera = \"eyes\"\n\
+             [[cue]]\nat = 0.9\nchannels = {{ angerVein = 1.0 }}\n\
+             [[cue]]\nat = 0.0\nface = \"vein\"\ncamera = {{ zoom = 2.0, push = 1.2 }}\nhold = 0.3\n"
+        );
+        let tl = timeline(&text);
+        assert_eq!(tl.face_at(0.0).ids, ["vein"], "a cue at 0 replaces the resting face");
+        assert_eq!(tl.face_at(0.6).ids, ["stare"]);
+        let held = tl.face_at(0.95);
+        assert_eq!(held.ids, ["stare"], "a channel cue keeps the face in force");
+        assert_eq!(held.channels.len(), 1);
+        assert!((tl.shots[tl.shot_index_at(0.1)].shot.zoom - 2.0).abs() < 1e-6);
+        assert!((tl.shots[0].line_end - 0.3).abs() < 1e-6, "hold sets where the push ends");
+        let eyes = &tl.shots[tl.shot_index_at(0.6)];
+        assert!((eyes.start - 0.5).abs() < 1e-6 && eyes.line_end > eyes.start, "{eyes:?}");
+        assert!(tl.faces.windows(2).all(|w| w[0].start < w[1].start), "faces stay in time order");
+        assert!(tl.shots.windows(2).all(|w| w[0].start < w[1].start), "shots stay in time order");
     }
 
     #[test]

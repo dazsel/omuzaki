@@ -3,8 +3,9 @@
 //!
 //! - [`shape`]: boxes, frustums, vessels, ellipsoids, tubes and leaves, closed and painted, appended into one mesh.
 //! - The interior kinds (#1166): [`room`] (`room`, `rug`), [`furniture`] (`desk`, `chair`, `cafe-table`, `bed`),
-//!   [`shelf`], [`lighting`] (`lamp`, `window`), [`small`] (`cup`, `plant`) and [`decor`] (`gramophone`, `picture`,
-//!   `urn`, `chest`, `armchair`). Each is procedural, in metres, toon with vertex colours, and registers itself.
+//!   [`shelf`], [`lighting`] (`lamp`, `window`, `glow`), [`small`] (`cup`, `plant`) and [`decor`] (`gramophone`,
+//!   `picture`, `urn`, `chest`, `armchair`). Each is procedural, in metres, toon with vertex colours, and registers
+//!   itself.
 //! - [`staged`]: a scene's props resolved (builds kept while their params are), uploaded once per build and drawn
 //!   every frame, attached ones under their bones.
 
@@ -89,8 +90,8 @@ mod tests {
 
     use super::shape::tests::assert_solid;
 
-    const KINDS: [&str; 11] =
-        ["bed", "cafe-table", "chair", "cup", "desk", "lamp", "plant", "room", "rug", "shelf", "window"];
+    const KINDS: [&str; 12] =
+        ["bed", "cafe-table", "chair", "cup", "desk", "glow", "lamp", "plant", "room", "rug", "shelf", "window"];
 
     /// Each kind's extreme parameters: what the contact sheet shows beside the default.
     fn extremes(kind: &str) -> Vec<Value> {
@@ -100,6 +101,7 @@ mod tests {
             "chair" => vec![json!({"back": 0.0, "cushion": null}), json!({"seat_height": 0.6, "width": 0.6, "back": 0.7})],
             "cup" => vec![json!({"height": 0.05, "radius": 0.07, "handle": false, "drink": null}), json!({"height": 0.16, "radius": 0.025, "saucer": true})],
             "desk" => vec![json!({"width": 0.6, "depth": 0.4, "height": 0.6, "drawers": false}), json!({"width": 2.4, "depth": 1.0, "height": 1.1})],
+            "glow" => vec![json!({"radius": 0.005, "height": 0.0, "core": 0.0, "intensity": 0.0}), json!({"radius": 0.5, "height": 3.0, "core": 1.0, "intensity": 20.0, "range": 15.0})],
             "lamp" => vec![json!({"style": "table", "height": 0.3}), json!({"style": "table", "height": 0.8, "on": false}), json!({"height": 1.9, "intensity": 20.0, "range": 15.0})],
             "plant" => vec![json!({"height": 0.2, "leaves": 4}), json!({"height": 2.0, "leaves": 60, "seed": 99})],
             "room" => vec![json!({"width": 2.0, "depth": 2.0, "height": 2.2, "wainscot": null, "planks": false}), json!({"width": 12.0, "depth": 12.0, "height": 5.0, "walls_up": [true, false, true]})],
@@ -151,6 +153,7 @@ mod tests {
             ("lamp", json!({"style": "table", "height": 1.5}), "height"),
             ("window", json!({"panes": [0, 2]}), "panes[0]"),
             ("plant", json!({"leaves": 2}), "leaves"),
+            ("glow", json!({"radius": 0.0}), "radius"),
         ] {
             let err = omuzaki_stage_api::prop_kind(kind).unwrap().check(&params).unwrap_err();
             assert!(err.to_string().contains(field), "{kind}: {err}");
@@ -164,6 +167,8 @@ mod tests {
         assert_eq!(build("lamp", json!({"on": false})).lights.len(), 0);
         assert_eq!(build("window", json!({})).lights.len(), 1);
         assert_eq!(build("window", json!({"daylight": false})).lights.len(), 0);
+        assert_eq!(build("glow", json!({})).lights.len(), 1);
+        assert_eq!(build("glow", json!({"intensity": 0.0})).lights.len(), 0);
     }
 
     #[test]

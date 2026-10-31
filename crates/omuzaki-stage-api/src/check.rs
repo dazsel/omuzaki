@@ -114,6 +114,20 @@ impl SceneDef {
             within("scene.post.occlusion.strength", o.strength, 0.0, 1.0)?;
             non_negative("scene.post.occlusion.contact", o.contact)?;
         }
+        for (path, hz) in [("scene.timing.body_hz", s.timing.body_hz), ("scene.timing.face_hz", s.timing.face_hz)] {
+            within(path, hz, 0.0, 60.0)?;
+        }
+        let q = &s.squash;
+        within("scene.squash.stretch", q.stretch, 0.0, 1.0)?;
+        within("scene.squash.squash", q.squash, 0.0, 1.0)?;
+        within("scene.squash.bounce_hz", q.bounce_hz, 0.5, 12.0)?;
+        within("scene.squash.damping", q.damping, 0.05, 1.0)?;
+        within("scene.squash.limit", q.limit, 0.0, 0.6)?;
+        if let Some(stylize) = &s.post.stylize
+            && let Err(omuzaki_render_api::RenderError::Invalid { reason, .. }) = stylize.validate()
+        {
+            return refuse("scene.post.stylize", reason);
+        }
         if let Some(subject) = &s.subject {
             self.require_member("scene.subject", subject)?;
         }
@@ -210,6 +224,7 @@ impl SceneDef {
     fn check_camera(&self, path: &str, c: &CameraDef) -> Check {
         within(&format!("{path}.yaw"), c.yaw, -180.0, 180.0)?;
         within(&format!("{path}.pitch"), c.pitch, -90.0, 90.0)?;
+        within(&format!("{path}.roll"), c.roll, -180.0, 180.0)?;
         finite(&format!("{path}.fov"), c.fov)?;
         if c.fov <= 0.0 || c.fov >= 180.0 {
             return refuse(

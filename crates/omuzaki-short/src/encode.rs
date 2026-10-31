@@ -16,6 +16,8 @@ use crate::voice::RATE;
 
 /// The VP9 constant-quality level: visually clean for the hard edges of toon shading and burned-in captions.
 pub const CQ_LEVEL: u32 = 18;
+/// The VP9 constant-quality level of a lossless video: the decoded picture is the 4:2:0 picture encoded, exactly.
+pub const LOSSLESS: u32 = 0;
 /// The VP9 speed in good-quality mode: 0 is slowest, 5 fastest.
 pub const CPU_USED: i32 = 3;
 /// A keyframe at least this often, seconds, so an editor can seek.
@@ -91,7 +93,8 @@ pub fn wav_bytes(pcm: &[f32]) -> Result<Vec<u8>, ShortError> {
 
 impl ShortWriter {
     /// Starts a video of `size` at `fps` in `file` (open, empty, writable and seekable; `name` is for messages), with
-    /// `voice` (mono, [`RATE`]) as its sound when given and libopus is on this machine.
+    /// `voice` (mono, [`RATE`]) as its sound when given and libopus is on this machine. A `lossless` video keeps every
+    /// pixel of its 4:2:0 picture (for scoring against a reference, or a master to edit from), at many times the size.
     ///
     /// # Errors
     /// [`ShortError::Encode`] when libvpx is missing or refuses the settings, or the file can't be written.
@@ -101,6 +104,7 @@ impl ShortWriter {
         size: [u32; 2],
         fps: u32,
         voice: Option<&[f32]>,
+        lossless: bool,
     ) -> Result<Self, ShortError> {
         vp9::available().map_err(|e| {
             ShortError::Encode(format!("{e}; install libvpx (BSD) to write videos, as the recorder needs it too"))
@@ -110,7 +114,7 @@ impl ShortWriter {
             width,
             height,
             fps: (fps, 1),
-            cq_level: CQ_LEVEL,
+            cq_level: if lossless { LOSSLESS } else { CQ_LEVEL },
             cpu_used: CPU_USED,
             threads: vp9::default_threads(),
             studio_range: true,

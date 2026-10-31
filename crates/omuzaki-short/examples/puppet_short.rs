@@ -54,7 +54,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let timeline = Timeline::new(&def, &voice)?;
     let has_voice = !voice.pcm.is_empty() && !matches!(def.voice, omuzaki_short::def::VoiceDef::Silent { .. });
     let file = std::fs::File::create(out)?;
-    let mut writer = ShortWriter::create(file, Path::new(out), def.size, def.fps, has_voice.then_some(&voice.pcm[..]))?;
+    let mut writer =
+        ShortWriter::create(file, Path::new(out), def.size, def.fps, has_voice.then_some(&voice.pcm[..]), false)?;
     let started = std::time::Instant::now();
     let report = render_puppet_short(bundle, &def, &timeline, &voice, &mut writer, &mut |_| Ok(()))?;
     let written = writer.finish()?;

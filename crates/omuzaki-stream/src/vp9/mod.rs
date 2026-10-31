@@ -159,7 +159,7 @@ pub struct EncoderSettings {
     pub height: u32,
     /// Frames per second as numerator and denominator: one pts tick per frame.
     pub fps: (u32, u32),
-    /// Constant-quality level, 0 (best) to 63.
+    /// Constant-quality level, 0 (best) to 63; 0 is lossless: the decoded picture is the 4:2:0 picture given, exactly.
     pub cq_level: u32,
     /// Speed, 0 (slowest, best) to 9 (fastest; above 5 in real-time mode only).
     pub cpu_used: i32,
@@ -331,6 +331,9 @@ impl Vp9Encoder {
         let tiles = (settings.width / 256).max(1).ilog2().min(settings.threads.max(1).ilog2() + 1);
         encoder.control(ffi::SET_CPUUSED, settings.cpu_used.clamp(0, speed_max))?;
         encoder.control(ffi::SET_CQ_LEVEL, c_int::try_from(settings.cq_level.min(63)).unwrap_or(63))?;
+        if settings.cq_level == 0 {
+            encoder.control(ffi::SET_LOSSLESS, 1)?;
+        }
         encoder.control(ffi::SET_TILE_COLUMNS, c_int::try_from(tiles).unwrap_or(0))?;
         encoder.control(ffi::SET_ROW_MT, 1)?;
         encoder.control(ffi::SET_COLOR_SPACE, if settings.studio_range { ffi::CS_BT_709 } else { ffi::CS_UNKNOWN })?;

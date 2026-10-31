@@ -60,6 +60,7 @@ mod physical;
 mod shadow_catcher;
 mod sheen;
 mod skin;
+mod stylized;
 
 /// Floats in the material uniform's `program[]` (`array<vec4<f32>, 16>`).
 pub(crate) const PACKED_FLOATS: usize = 64;

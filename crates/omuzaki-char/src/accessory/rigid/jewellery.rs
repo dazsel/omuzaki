@@ -784,6 +784,13 @@ pub struct CollarParams {
     pub scroll_scale: f64,
     /// How far the scrollwork stands out in relief, metres: 0 lays the wire on the surface.
     pub scroll_depth: f64,
+    /// How many points the gorget's chest piece hangs in along its lower edge, `0..=15` (an odd count hangs one at the
+    /// front); 0 keeps a smooth crescent.
+    #[serde(skip_serializing_if = "is_zero_u8")]
+    pub points: u8,
+    /// How far the gorget's lower edge rises between two points, as a share of its depth there, `0..=0.9`.
+    #[serde(skip_serializing_if = "is_default_point_depth")]
+    pub point_depth: f64,
     /// The large stone at the centre front.
     pub centre: CentreStone,
     /// The metal's colour.
@@ -807,6 +814,8 @@ impl Default for CollarParams {
             plate: 0.0012,
             scroll_scale: 1.0,
             scroll_depth: 0.0,
+            points: 0,
+            point_depth: DEFAULT_POINT_DEPTH,
             centre: CentreStone::default(),
             primary: gold(),
             accent: ruby(),
@@ -834,6 +843,8 @@ impl Validate for CollarParams {
         c.range("plate", self.plate, 0.0004, 0.004);
         c.range("scroll_scale", self.scroll_scale, 0.4, 3.0);
         c.range("scroll_depth", self.scroll_depth, 0.0, 0.004);
+        c.range("points", f64::from(self.points), 0.0, 15.0);
+        c.range("point_depth", self.point_depth, 0.0, 0.9);
         c.nested("centre", &self.centre);
     }
 }
@@ -967,6 +978,19 @@ fn set_large_stone(
     shells.lathe_along(Slot::Accent, girdle, axis, &profile, shape.segments(lathe))
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde's `skip_serializing_if` passes a reference
+fn is_zero_u8(v: &u8) -> bool {
+    *v == 0
+}
+
+/// How far a pointed gorget's edge rises between its points unless told.
+const DEFAULT_POINT_DEPTH: f64 = 0.5;
+
+#[allow(clippy::trivially_copy_pass_by_ref, clippy::float_cmp)] // serde passes a reference; the default exactly
+fn is_default_point_depth(v: &f64) -> bool {
+    *v == DEFAULT_POINT_DEPTH
+}
+
 /// How high a large set stone is for its width.
 const LOW_CUT: f64 = 0.6;
 
@@ -1018,9 +1042,12 @@ impl PartKind for Collar {
                 band: 3.4 * p.wire,
                 ease: p.ease,
                 thickness: p.plate,
+                points: u32::from(p.points),
+                notch: p.point_depth,
             };
-            let plate = Plate::new(&fits, &neck_to_bind, &neck_to_bind.inverse(), shape, detail.ring * 2)
-                .ok_or_else(|| ctx.fail("the body has no neck or torso to lay the gorget on"))?;
+            let plate =
+                Plate::new(&fits, &neck_to_bind, &neck_to_bind.inverse(), shape, shape.samples(detail.ring * 2))
+                    .ok_or_else(|| ctx.fail("the body has no neck or torso to lay the gorget on"))?;
             build_gorget(p, &plate, &mut shells).map_err(&err)?;
         } else {
             build_band(p, (across + p.ease, front + p.ease), &mut shells).map_err(&err)?;
@@ -1112,11 +1139,11 @@ fn build_band(p: &CollarParams, (rx, rz): (f64, f64), shells: &mut Shells<'_>) -
 fn build_gorget(p: &CollarParams, plate: &Plate, shells: &mut Shells<'_>) -> Result<(), KitError> {
     let (wire, detail) = (p.wire, shells.detail);
     let shape = *plate.shape();
-    let (rows, middles) = plate.shell(detail.ring * 2, detail.rows * 3);
+    let (rows, middles) = plate.shell(shape.samples(detail.ring * 2), detail.rows * 3);
     shells.sheet(Slot::Primary, &rows, &middles)?;
     let lift = wire + p.scroll_depth;
     // The edges' twisted wire, just inside each edge.
-    let steps = detail.ring * 3;
+    let steps = shape.samples(detail.ring * 3);
     let edges: [&dyn Fn(f64) -> f64; 2] = [&|_| shape.top() - 1.4 * wire, &|theta: f64| plate.foot(theta) + 1.4 * wire];
     for (edge, phase) in edges.iter().zip([0.0, PI]) {
         for strand in [0.0, PI] {

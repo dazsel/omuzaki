@@ -56,7 +56,26 @@ issues are under the epic.
    their word: `"I watered him. {happy+sparkle @close+tilt-left} I sang to him."`.
 2. `short.plan` until the bar checks pass.
 3. `short.render` to a WebM in the project (VP9 with the voice as Opus; 1080x1920 at 30 fps by default; `size` and
-   `quality: "live"` for a quick draft).
+   `quality: "live"` for a quick draft, `span: [from, to]` to render only the seconds you changed).
+
+To land on a reference's frames rather than near them:
+
+- `[[cue]]` tables place a face, channels or a shot at an exact second (`at`), apart from the lines' words, so a cut
+  or a face change lands on the frame it lands on in the reference; a cue wins over a line's change at the same moment.
+- `handheld = 0` locks the camera off (1, the default, is a phone in a hand), so the only motion is what the shots ask.
+- A shot's `head_width` frames the head (hair included) at a share of the frame's width, the same on every character,
+  where `zoom` alone depends on the character's size; `zoom`, `punch` and `push` scale it from there.
+- `[captions]` takes a `look` (`punchy`, the default: extra bold, heavy outline, shadow and pop; `clean`: bold, a thin
+  edge, a faint shadow, steady; `outline`: semibold, an outline, no shadow) and changes one thing about it with
+  `weight`, `outline`, `shadow`, `pop`, `fill` and `line`.
+- `short.render` with `lossless: true` writes a lossless video, so a frame-by-frame score measures the render and not
+  our codec; score parity renders this way. `face_points: true` also writes `<video>.points.json`: where the face's
+  eyes, mouth and chin landed in each frame, ready for `parity.loop`'s `ours_points` and for fitting each shot's camera
+  to the reference's (the eye spacing gives `head_width`, the eyes' midpoint gives `shift`).
+- A garment's `common.sheer` (0 to 0.9) lets what it covers show through, for chiffon, tulle or a sheer bodysuit.
+- `[[insert]]` cuts away to a drawn card for `duration` seconds from `at`: a flat `backdrop`, a preset `card`
+  (`scream`, `googly`) and `[[insert.shape]]`s (`ellipse`, `blob`, `polygon`, `curve`, each with a `fill`, a `line` or
+  both), the whole card moved with `offset`, `scale` and `roll`. A jumpy cutaway is several inserts in a row.
 4. `python3 tools/reference-loop/compare.py ours.webm reference.mp4 OUT` (OUT outside the repository) and read the
    sheets pair by pair: face, framing, light, captions, timing.
 5. Score it with `parity.loop` (MCP, the CLI or a script; `omuzaki-parity`), on frames extracted from both videos

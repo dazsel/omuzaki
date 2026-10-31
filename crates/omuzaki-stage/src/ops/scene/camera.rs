@@ -40,6 +40,7 @@ fn opening_after(current: Option<&CameraId>, removed: &CameraId, remaining: &[Ca
     "examples" = [
         {},
         {"id": "low", "framing": "full", "yaw": -25.0, "pitch": -8.0, "fov": 35.0},
+        {"id": "dutch", "framing": "face", "roll": 10.0, "zoom": 1.2},
         {"scene": "night_stream", "framing": "free", "position": [0.0, 1.4, 2.5], "target": [0.0, 1.2, 0.0]}
     ],
     "x-omuzaki-fixture" = "scenes"
@@ -63,6 +64,9 @@ pub struct AddCamera {
     /// Degrees, -90 to 90: more is from above.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pitch: Option<f32>,
+    /// Degrees, -180 to 180, the picture turns about the lens (a Dutch angle): more turns it clockwise. 0 when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roll: Option<f32>,
     /// Vertical field of view, degrees, between 0 and 180; 30 when left out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fov: Option<f32>,
@@ -142,6 +146,7 @@ impl Op for AddCamera {
         }
         camera.yaw = self.yaw.unwrap_or(camera.yaw);
         camera.pitch = self.pitch.unwrap_or(camera.pitch);
+        camera.roll = self.roll.unwrap_or(camera.roll);
         camera.fov = self.fov.unwrap_or(camera.fov);
         camera.zoom = self.zoom.unwrap_or(camera.zoom);
         camera.shift = self.shift.unwrap_or(camera.shift);
@@ -162,6 +167,7 @@ register_op!(AddCamera);
 #[schemars(extend(
     "examples" = [
         {"camera": "full", "yaw": 45.0},
+        {"camera": "bust", "roll": -12.0},
         {"camera": "bust", "framing": "free", "position": [0.4, 1.5, 1.8], "target": [0.0, 1.35, 0.0]}
     ],
     "x-omuzaki-fixture" = "scenes"
@@ -185,6 +191,9 @@ pub struct SetCamera {
     /// Degrees from above.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pitch: Option<f32>,
+    /// Degrees the picture turns about the lens (a Dutch angle): more turns it clockwise; 0 levels it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roll: Option<f32>,
     /// Vertical field of view, degrees.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fov: Option<f32>,
@@ -209,7 +218,7 @@ impl Op for SetCamera {
     fn meta() -> OpMeta {
         OpMeta {
             name: "stage.set_camera",
-            summary: "Change a camera of a scene: framing, subject, yaw, pitch, fov, zoom, shift, or a free camera's \
+            summary: "Change a camera of a scene: framing, subject, yaw, pitch, roll, fov, zoom, shift, or a free camera's \
                       position and target. Only the fields given change.",
             kind: OpKind::Edit,
             scope: Scope::EditScene,
@@ -262,6 +271,7 @@ impl Op for SetCamera {
         }
         camera.yaw = self.yaw.unwrap_or(camera.yaw);
         camera.pitch = self.pitch.unwrap_or(camera.pitch);
+        camera.roll = self.roll.unwrap_or(camera.roll);
         camera.fov = self.fov.unwrap_or(camera.fov);
         camera.zoom = self.zoom.unwrap_or(camera.zoom);
         camera.shift = self.shift.unwrap_or(camera.shift);
