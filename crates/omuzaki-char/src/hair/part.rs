@@ -301,8 +301,50 @@ fn place(
     if let Some(body) = depth {
         clear_body(body, entries);
     }
+    seat_braids(params, head, entries);
     tuck_shells(head, entries);
     Ok(accents)
+}
+
+/// Seats each braid that asks for it on the rest of the hair as it now lies ([`omuzaki_char_api::BraidGen::seat`]),
+/// before the shells tuck under the locks.
+fn seat_braids(params: &HairParams, head: &dyn HeadSurface, entries: &mut [CompiledEntry]) {
+    let braid = |entry: &CompiledEntry| match params.groups.get(&entry.id).map(|g| &g.generator) {
+        Some(Generator::Braid(b)) if b.seat.is_some() => Some(b.clone()),
+        _ => None,
+    };
+    for i in 0..entries.len() {
+        let Some(g) = braid(&entries[i]) else { continue };
+        let centre = head.centre();
+        let hair: Vec<Vec3> = entries
+            .iter()
+            .enumerate()
+            .filter(|&(j, _)| j != i)
+            .flat_map(|(_, e)| outer_face(&e.group, centre))
+            .collect();
+        super::r#gen::braid::seat(&g, head, &hair, &mut entries[i].group.clumps);
+    }
+}
+
+/// The outer face of a compiled group as points: each clump's points carried out from `centre` by half their
+/// thickness, and a shell's vertices.
+fn outer_face(group: &compile::CompiledGroup, centre: Vec3) -> Vec<Vec3> {
+    let mut points: Vec<Vec3> = group
+        .clumps
+        .iter()
+        .flat_map(|c| {
+            let last = c.rest.len().saturating_sub(1).max(1);
+            c.rest.iter().enumerate().map(move |(k, p)| {
+                #[allow(clippy::cast_precision_loss)] // a clump's few dozen points
+                let t = k as f32 / last as f32;
+                *p + (*p - centre).normalize_or_zero() * c.thickness.at(t) * 0.5
+            })
+        })
+        .collect();
+    if let GroupGeometry::Shell(shell) = &group.geometry {
+        points.extend_from_slice(&shell.positions);
+    }
+    points
 }
 
 /// Moves every lock out of the body (#2485): each point of a tube lock (a framing lock down the front, a tail over the

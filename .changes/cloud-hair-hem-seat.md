@@ -1,0 +1,4 @@
+# Hair: blunt hems and braids that lie on the hair
+
+- A curtain can be cut level (`hem` on the curtain generator, `[at the sides, at the back]` in metres from the head's centre): each strand's length is solved so its lowest point sits on the hem, so a bob ends in a clean line instead of hanging to a point at the nape. Equal heights cut a level bob, a lower side an A-line, a higher side an inverted bob. Set it with `part.set_param` (`groups/<curtain>/generator/hem`).
+- A braid can sit on the hair under it (`seat` on the braid generator, metres above the hair's outer face, negative sinks it in): it lies over the cap and the fringe's roots on any head and at any fullness, instead of standing at a fixed height off the head. The crown-braid style uses it, so its braid now lies over the crown instead of arching off it on a narrow head.
